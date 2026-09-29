@@ -33,43 +33,59 @@ def _record_block(state_dir, scorelog, scores):
     return selected
 
 
-def test_lower_headless_candidate_is_staged_and_live_abba_can_promote_it(tmp_path):
+def test_live_abba_winner_is_automatically_promoted(tmp_path, monkeypatch):
+    from docich import corner_improve
+
     state_dir = tmp_path / "run"
     scorelog = state_dir / "scores" / "moon-buggy.jsonl"
+    monkeypatch.setenv("DOCICH_BOT_BRAIN_DIR", str(tmp_path / "brain"))
+    original_promote = corner_improve._promote
+
+    def verify_scorelog_not_yet_complete(*args):
+        assert len(scorelog.read_text().splitlines()) == 3
+        return original_promote(*args)
+
+    monkeypatch.setattr(corner_improve, "_promote", verify_scorelog_not_yet_complete)
     staged = _stage(state_dir)
     assert staged["status"] == "staged"
     assert staged["headless_candidate_mean"] < staged["headless_baseline_mean"]
     assert ab.pending_matches(state_dir) == 4
 
-    selected = _record_block(state_dir, scorelog, [10, 100, 90, 20])
+    # Final adoption is independent of the shared LLM/evaluation lane.
+    with corner_improve.improve_lane(state_dir, timeout=0) as lane:
+        assert lane
+        selected = _record_block(state_dir, scorelog, [10, 100, 90, 20])
     assert [item["arm"] for item in selected] == list("ABBA")
     assert [item["weights_sha256"] for item in selected] == [
         staged["baseline_sha256"], staged["candidate_sha256"],
         staged["candidate_sha256"], staged["baseline_sha256"],
     ]
 
-    completed = ab.read_experiment(state_dir)
-    assert completed["status"] == "completed"
-    assert completed["means"] == {"A": 15.0, "B": 95.0}
-    assert completed["winner"] == "B"
+    promoted = ab.read_experiment(state_dir)
+    assert promoted["status"] == "promoted"
+    assert promoted["means"] == {"A": 15.0, "B": 95.0}
+    assert promoted["winner"] == "B"
     rows = [json.loads(line) for line in scorelog.read_text().splitlines()]
     assert [(row["ab_arm"], row["weights_sha256"]) for row in rows] == [
         (item["arm"], item["weights_sha256"]) for item in selected
     ]
     assert all(row["ab_experiment_id"] == staged["experiment_id"] for row in rows)
-
-    resolved = ab.finish(state_dir, status="promoted")
-    assert resolved["status"] == "promoted"
-    assert "candidate" not in resolved
+    assert json.loads(
+        (tmp_path / "brain" / "moon-buggy" / "weights.json").read_text()
+    ) == CANDIDATE
+    retry = ab.record_score(state_dir, scorelog, 20)
+    assert retry["status"] == "promoted"
+    assert len(scorelog.read_text().splitlines()) == 4
 
 
 def test_tied_scores_keep_the_incumbent(tmp_path):
     state_dir = tmp_path / "run"
     _stage(state_dir)
     _record_block(state_dir, state_dir / "scores.jsonl", [12, 12, 12, 12])
-    completed = ab.read_experiment(state_dir)
-    assert completed["means"] == {"A": 12.0, "B": 12.0}
-    assert completed["winner"] == "A"
+    resolved = ab.read_experiment(state_dir)
+    assert resolved["status"] == "kept"
+    assert resolved["means"] == {"A": 12.0, "B": 12.0}
+    assert resolved["winner"] == "A"
 
 
 def test_incomplete_block_resumes_at_next_unrecorded_arm(tmp_path):

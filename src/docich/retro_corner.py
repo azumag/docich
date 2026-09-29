@@ -1040,6 +1040,10 @@ class RetroCornerManager:
         # queue dispatchでは次コーナーが共有stateを上書きし得るため、確定済みの
         # コーナー期間も明示して競合させる (job側のstate読みを不要にする)。
         argv += self._spawn_window_args(state)
+        request_id = state.get("rotation_request_id")
+        if (state.get("game") == "moon-buggy"
+                and isinstance(request_id, str) and request_id):
+            argv += ["--request-id", request_id]
         try:
             self._spawn(argv, log_path)
             state["improve_job"] = {"spawned": True, "date": date_str, "log": str(log_path)}
@@ -1056,6 +1060,7 @@ class RetroCornerManager:
         dry_run: bool = False,
         game: str | None = None,
         window: tuple[float, float] | None = None,
+        request_id: str | None = None,
     ) -> dict:
         from .corner_improve import run_corner_improve
 
@@ -1089,6 +1094,7 @@ class RetroCornerManager:
             margin_pct=float(margin_pct),
             dry_run=dry_run,
             window=window,
+            rotation_request_id=request_id,
         )
 
     def _finish_locked(self, state: dict[str, object], completed_at: dt.datetime) -> CornerResult:
@@ -1625,10 +1631,15 @@ class RetroCornerManager:
                 continue
             not_ready = 0
             run = observation.meta.get('hanjuku') or {}
+            # Network side channel runs only AFTER shared_section has released
+            # the input gate. It re-verifies durable terminal evidence itself.
+            from .hanjuku_predictions import tick as prediction_tick
+            prediction = prediction_tick(self.g, owned_identity)
             with self._locked():
                 latest = self._read_state()
                 if latest.get('status') != 'active':
                     return self._state_result(latest)
+                latest['prediction'] = prediction
                 latest['ends_at'] = None
                 latest['end_reason'] = run.get('terminal_reason')
                 latest['bot_phase'] = run.get('phase')
@@ -2006,6 +2017,9 @@ class RetroCornerManager:
             return self._finish_locked(state, self._local_now())
 
     def tick(self) -> CornerResult:
+        # Retry our durable result after a network failure, even after teardown.
+        from .hanjuku_predictions import tick as prediction_tick
+        prediction_tick(self.g)
         from .corner_catalog import rotation_enabled
         if rotation_enabled(self.g):
             from .corner_rotation import CornerRotationManager
@@ -2782,6 +2796,8 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="確定済みコーナー開始 epoch秒 (queue dispatch用)")
     once.add_argument("--ends-at", type=float, default=None,
                       help="確定済みコーナー終了予定 epoch秒")
+    once.add_argument("--request-id", default=None,
+                      help="完了したコーナーのrequest ID (queue dispatch用)")
     once.add_argument("--agents", default=None, help="LLM委任先 (既定は設定値)")
     once.add_argument("--matches", type=int, default=None)
     once.add_argument("--margin-pct", type=float, default=None)
@@ -2819,6 +2835,7 @@ def main(argv: list[str] | None = None) -> int:
                     margin_pct=args.margin_pct, dry_run=args.dry_run,
                     game=getattr(args, "game", None),
                     window=window,
+                    request_id=getattr(args, "request_id", None),
                 )
             except CornerImproveError as exc:
                 print(f"docich: エラー: {exc}", file=sys.stderr)
