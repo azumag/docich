@@ -221,6 +221,40 @@ class EvidenceTests(EvidenceFixture, unittest.TestCase):
         with patch.object(e, "_read", side_effect=read), self.assertRaisesRegex(e.EvidenceError, "source_changed"):
             self.pack()
 
+    def test_optional_file_created_during_snapshot_fails_closed(self):
+        target = self.run / "hanjuku_events.previous.jsonl"
+        target.unlink()
+        original = e._read
+        created = False
+
+        def read(parent, name, limit, **kw):
+            nonlocal created
+            raw = original(parent, name, limit, **kw)
+            if name == "hanjuku_events.previous.jsonl" and raw is None and not created:
+                target.write_bytes(e._dump({"event": "action_plan", "decision_id": "late"}))
+                created = True
+            return raw
+
+        with patch.object(e, "_read", side_effect=read), self.assertRaisesRegex(
+                e.EvidenceError, "source_changed"):
+            self.pack()
+
+    def test_frame_created_after_initial_scan_fails_closed(self):
+        original = e._read
+        created = False
+
+        def read(parent, name, limit, **kw):
+            nonlocal created
+            raw = original(parent, name, limit, **kw)
+            if name == "frame-000.png" and not created:
+                (self.run / "hanjuku_frames" / "frame-999.png").write_bytes(png()[0])
+                created = True
+            return raw
+
+        with patch.object(e, "_read", side_effect=read), self.assertRaisesRegex(
+                e.EvidenceError, "source_changed"):
+            self.pack()
+
     def test_budget_and_frame_count(self):
         with patch.object(e, "MAX_TOTAL", 1), self.assertRaisesRegex(e.EvidenceError, "snapshot_budget_exceeded"):
             self.pack()

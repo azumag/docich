@@ -249,6 +249,7 @@ def snapshot(state_dir, runtime_id):
                     total += len(value)
                     if total > MAX_TOTAL or time.monotonic() > deadline:
                         _fail("snapshot_budget_exceeded")
+                frame_names = None
                 try:
                     frames_fd = os.open("hanjuku_frames", FLAGS | os.O_DIRECTORY, dir_fd=runtime_fd)
                 except FileNotFoundError:
@@ -256,16 +257,16 @@ def snapshot(state_dir, runtime_id):
                     missing.append("hanjuku_frames/")
                 if frames_fd is not None:
                     try:
-                        names = []
+                        frame_names = []
                         with os.scandir(frames_fd) as entries:
                             for index, entry in enumerate(entries):
                                 if index >= MAX_ENTRIES:
                                     _fail("frame_scan_limit")
                                 if FRAME_NAME.fullmatch(entry.name):
-                                    names.append(entry.name)
-                        if len(names) > MAX_FRAMES:
+                                    frame_names.append(entry.name)
+                        if len(frame_names) > MAX_FRAMES:
                             _fail("frame_count_limit")
-                        for name in sorted(names):
+                        for name in sorted(frame_names):
                             value = _read(frames_fd, name, MAX_PNG)
                             total += len(value)
                             if total > MAX_TOTAL or time.monotonic() > deadline:
@@ -275,13 +276,39 @@ def snapshot(state_dir, runtime_id):
                         os.close(frames_fd)
                 # Catch writers which do not use the switch lock, including
                 # post-game chart review jobs. Never publish a torn snapshot.
+                # Membership matters as well as bytes: a file which was absent
+                # on the first pass, or a frame created after the first directory
+                # scan, must invalidate the whole snapshot rather than silently
+                # exporting an older subset.
+                for name in missing:
+                    if name == "hanjuku_frames/":
+                        continue
+                    limit = MAX_JSON if name.endswith(".json") else MAX_FILE
+                    if _read(runtime_fd, name, limit, optional=True) is not None:
+                        _fail("source_changed")
                 for name, value in data.items():
                     if "/" in name:
                         continue
                     if _read(runtime_fd, name, MAX_FILE) != value:
                         _fail("source_changed")
-                if frames_fd is not None:
+                if frame_names is None:
+                    try:
+                        os.stat("hanjuku_frames", dir_fd=runtime_fd, follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        _fail("source_changed")
+                else:
                     with _child(runtime_fd, "hanjuku_frames") as check_fd:
+                        current_names = []
+                        with os.scandir(check_fd) as entries:
+                            for index, entry in enumerate(entries):
+                                if index >= MAX_ENTRIES:
+                                    _fail("frame_scan_limit")
+                                if FRAME_NAME.fullmatch(entry.name):
+                                    current_names.append(entry.name)
+                        if sorted(current_names) != sorted(frame_names):
+                            _fail("source_changed")
                         for name, value in data.items():
                             if name.startswith("hanjuku_frames/"):
                                 if _read(check_fd, name.split("/")[1], MAX_PNG) != value:
