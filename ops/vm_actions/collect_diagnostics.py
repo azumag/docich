@@ -167,6 +167,67 @@ TMP_SO_MAX_PROC_FDS = 50000
 STORAGE_MAX_ENTRIES = 100000
 
 
+def _collect_opencode_retention(soren, now):
+    """Project only bounded enums/numbers; never forward exception or DB text."""
+    OPENCODE_RETENTION_TIMER = _REG.OPENCODE_RETENTION_TIMER
+    OPENCODE_RETENTION_MAX_AGE_SEC = _REG.OPENCODE_RETENTION_MAX_AGE_SEC
+    result = {}
+    enums = {
+        "status": {"running", "completed", "gate_timeout", "disabled", "deferred", "failed"},
+        "reason": {"ok", "deadline", "insufficient_space", "space_unknown", "checkpoint_busy",
+                   "unsafe_journal_mode", "sqlite_busy", "sqlite_error", "filesystem_or_input", "interrupted"},
+        "stage": {"preflight", "delete", "compact_copy", "compact_writeback", "checkpoint", "vacuum", "done"},
+    }
+    numbers = ("started_at", "completed_at", "retention_days", "deleted_sessions", "eligible_sessions",
+               "before_bytes", "after_bytes", "available_before_bytes", "available_after_bytes",
+               "compact_bytes", "page_size", "page_count", "freelist_count")
+    for label, filename in (("attempt", "opencode_db_retention.json"),
+                            ("default", "opencode_retention_default.json"),
+                            ("worker", "opencode_retention_worker.json")):
+        path = Path(soren) / "tmp/state" / filename
+        item = {"present": False, "readable": False}
+        try:
+            st = path.lstat()
+            item["present"] = True
+            if not stat.S_ISREG(st.st_mode) or st.st_size > 4096:
+                result[label] = item
+                continue
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, encoding="utf-8") as handle:
+                opened = os.fstat(handle.fileno())
+                if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
+                    raise ValueError()
+                data = json.loads(handle.read(4097))
+            if not isinstance(data, dict):
+                raise ValueError()
+            item["readable"] = True
+            for key, allowed in enums.items():
+                value = data.get(key)
+                if isinstance(value, str):
+                    item[key] = value if value in allowed else "unknown"
+            for key in numbers:
+                value = data.get(key)
+                if type(value) is int and 0 <= value < 2**63:
+                    item[key] = value
+            stamp = item.get("completed_at", item.get("started_at"))
+            if stamp is not None:
+                item["age_sec"] = max(0, int(now - stamp))
+                item["stale"] = stamp > now + 60 or now - stamp > OPENCODE_RETENTION_MAX_AGE_SEC
+        except (OSError, ValueError):
+            pass
+        result[label] = item
+    result["timer"] = {"unit": OPENCODE_RETENTION_TIMER}
+    for action, field in (("is-active", "active"), ("is-enabled", "enabled")):
+        try:
+            env = {**os.environ, "XDG_RUNTIME_DIR": "/run/user/%d" % os.getuid()}
+            proc = subprocess.run(["systemctl", "--user", action, "--quiet", OPENCODE_RETENTION_TIMER],
+                                  capture_output=True, timeout=2, env=env)
+            result["timer"][field] = proc.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            result["timer"][field] = None
+    return result
+
+
 def _storage_allocated_bytes(st):
     blocks = getattr(st, "st_blocks", None)
     if isinstance(blocks, int) and blocks >= 0:
@@ -3439,9 +3500,18 @@ def main(argv):
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "webui": _collect_webui(),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
+        "opencode_retention": _collect_opencode_retention(soren, now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
     }
+    retention = payload["opencode_retention"]
+    attempt = retention["attempt"]
+    if payload["status"] == "ok" and attempt.get("present") and (
+        not attempt.get("readable") or attempt.get("stale")
+        or attempt.get("status") in {"failed", "deferred", "gate_timeout", "unknown"}
+        or retention["timer"].get("active") is not True
+    ):
+        payload["status"] = "warn"
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         payload["ai"]["recent_events"] = []

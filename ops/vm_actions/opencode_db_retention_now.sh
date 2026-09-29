@@ -14,6 +14,14 @@ root="/home/ubuntu/soren"
 default_db="/home/ubuntu/.local/share/opencode/opencode.db"
 worker_db="$root/tmp/state/xdg_data/opencode/opencode.db"
 retention_days=1
+case "${1:-}" in
+  "") ;; # One-shot recovery after this reviewed epoch.
+  --scheduled) retention_days=1 ;;
+  *) exit 2 ;;
+esac
+export OPENCODE_ROTATION_GATE_WAIT_SEC=600
+export OPENCODE_RETENTION_DEADLINE_EPOCH=$(( $(date +%s) + 780 ))
+export OPENCODE_RETENTION_STATE_DIR="$root/tmp/state"
 env_file="$root/.env"
 
 [[ -d "$root" ]] || { echo "soren root missing" >&2; exit 2; }

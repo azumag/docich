@@ -56,6 +56,13 @@ def render(data):
         parts.append(f"{category}_bytes={_uint(item, 'allocated_bytes')}")
         parts.append(f"{category}_count={_uint(item, 'count')}")
 
+    retention = data.get("opencode_retention") or {}
+    for label in ("attempt", "default", "worker"):
+        item = retention.get(label) or {}
+        state = item.get("status")
+        if state not in {"running", "completed", "gate_timeout", "disabled", "deferred", "failed"}:
+            state = "unknown"
+        parts.append(f"retention_{label}={state}")
     return 1, int(incomplete), ",".join(parts)
 
 
