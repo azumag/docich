@@ -80,6 +80,41 @@ def test_exact_card_selection_is_only_a_plan_and_clears_stale_context():
     assert mem['_records'][-1]['resulting_event'] == 'selection_planned_not_yet_confirmed'
 
 
+def test_unknown_card_name_row_is_read_but_never_selected():
+    # g454 10:02: バルムンク (an event card outside CARD_NAMES) made every
+    # card_select reading fail and the sortie held forever.
+    screen = measured_card_select(('バルムンク', 'フットバース'), stocks=[1, 2])
+    inventory = policy._measured_card_select(screen)
+    assert [row['card'] for row in inventory['rows']] == ['バルムンク', 'フットバース']
+    assert inventory['remaining'] == 3
+    mem = {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
+           'orders': {'1-A2': 'pending'}, 'picked': []}
+    assert policy.deploy_step(screen, mem) == [policy.pad('down')]
+    assert 'バルムンク' not in mem.get('picked', [])
+    assert mem['card_stock'] == {'バルムンク': 1, 'フットバース': 2}
+    # A malformed name (digit inside) still fails the structure.
+    assert policy._measured_card_select(measured_card_select(('バル2ンク',), stocks=[1])) is None
+
+
+def test_unreadable_card_select_is_bounded_and_cancels_the_sortie():
+    mem = {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
+           'orders': {'1-A2': 'pending'}, 'picked': []}
+    screen = menu('card_select', ['クースカン1'], True)
+    for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+        assert mem['orders']['1-A2'] == 'pending'
+    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['orders']['1-A2'] == 'failed' and mem['active'] is None
+
+
+def test_a_base_boss_sortie_keeps_its_strict_hold_on_unreadable_panels():
+    mem = memory()                       # active 1-B1, the base boss order
+    screen = menu('card_select', ['クースカン1'], True)
+    for _ in range(policy.CARD_UNREADABLE_LIMIT + 2):
+        assert policy.deploy_step(screen, mem) == []
+    assert mem['orders']['1-B1'] == 'pending' and mem['active'] == '1-B1'
+
+
 def test_sortie_card_stock_is_recorded_for_the_adjusted_chart():
     # g438 04:04: the adjusted chart planned ミックミー/エンジェリン that the
     # player never held. The card panel now feeds the request's card_stock.

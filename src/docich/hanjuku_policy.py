@@ -36,6 +36,9 @@ CARD_NAMES = frozenset({
     'カンケリン', 'ノリウツール', 'クースカン', 'ゼンマイン', 'ミックミー', 'デッドガン',
     'ブレイコウ', 'ブンシーン', 'ファイアーボイス', 'ファバード', 'エンジェリン', 'マグネガキン',
     'ハリケーン'})
+# Every real card name (the 32-card gcgx table). The panel reader accepts
+# these as rows; only CARD_NAMES can be planned or selected.
+ALL_CARD_NAMES = frozenset(reference.ALL_CARD_IDS)
 
 
 def pad(button, frames=6):
@@ -2097,6 +2100,7 @@ def _deploy_cards(order, mem):
 
 CARD_SCROLL_LIMIT = 8         # downward presses looking for a card below a full panel
 CARD_MISS_LIMIT = 5           # card_select readings before a missing card is left behind
+CARD_UNREADABLE_LIMIT = 6     # unreadable card_select readings before cancelling the sortie
 CARD_STOCK_LIMIT = 24         # observed card names kept for the adjusted-chart request
 
 
@@ -2320,7 +2324,12 @@ def _measured_card_select(screen):
             name_limit = 232
             stock_cells = ((232, ones),)
         names = TextLine(y, tuple((x, ch) for x, ch in row if x < name_limit)).spans()
-        if len(names) != 1 or names[0][0] != 160 or names[0][1] not in CARD_NAMES:
+        # Every real card name (ALL_CARD_NAMES, the 32-card gcgx table) is a
+        # valid row, not just the selectable subset: g454 10:02 the panel
+        # showed バルムンク (an event card outside CARD_NAMES) and every
+        # reading was rejected, so the sortie held forever. Unknown cards are
+        # read as rows but can never be selected by name.
+        if len(names) != 1 or names[0][0] != 160 or names[0][1] not in ALL_CARD_NAMES:
             return None
         name = names[0][1]
         if row != text_cells(160, name) + stock_cells:
@@ -2642,8 +2651,22 @@ def deploy_step(screen: Screen, mem):
         card = wanted[0] if wanted else None
         inventory = _measured_card_select(screen)
         if inventory is None:
+            if not _strict_boss_cards(order, mem):
+                # An unreadable panel must not hold the sortie forever (g454
+                # 10:02: an unknown card name stalled シェーブル's sortie). The
+                # base boss kit keeps its strict hold.
+                misses = mem.setdefault('card_unreadable', {})
+                misses[order['step']] = misses.get(order['step'], 0) + 1
+                if misses[order['step']] >= CARD_UNREADABLE_LIMIT:
+                    misses.pop(order['step'], None)
+                    _finish_order(mem, 'failed', deviation_reason='切り札一覧を実測構造として読めない',
+                                  observed_metric={'screen': screen.kind,
+                                                   'readings': CARD_UNREADABLE_LIMIT},
+                                  reason='切り札一覧を読み取れないため出撃を取り消して次の指示へ進む')
+                    return [pad('b'), pad('b')]
             return _hold_deploy(screen, mem, order,
                                 '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
+        mem.get('card_unreadable', {}).pop(order['step'], None)
         _observe_card_stock(mem, inventory)
         if not wanted:
             return _deploy_input(screen, mem, order, [pad('b')], '予定切り札の選択入力後に携行確認へ進む')
