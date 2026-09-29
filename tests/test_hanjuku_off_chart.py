@@ -848,6 +848,8 @@ def test_a_general_far_behind_opens_the_rescue_menu_before_the_melee_decides():
     close['ally_hp'] = 26                                  # after one clash: 26 <= 70% of 38
     assert policy._survival_needed(close)
     ahead = {'ally_hp': 82, 'enemy_hp': 39, 'start_ally_hp': 82, 'enemy': 'カシュー', 'ally': 'ヴィーナス'}
+    assert policy._survival_needed(ahead)  # HP lead cannot answer an egg clash without a kit
+    ahead['side'] = 'defense'
     assert not policy._survival_needed(ahead)
 
 

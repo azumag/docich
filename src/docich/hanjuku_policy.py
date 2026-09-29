@@ -3299,6 +3299,15 @@ BEHIND_EGG_RATIO_TENTHS = 7    # ally HP at or below 70% of the enemy's: rescue 
 GENERAL_CRITICAL_RETREAT_HP = 12
 
 
+def _unarmed_clash_risk(cur):
+    """Check resources before a non-boss egg clash, rather than idle into it."""
+    if (cur.get('side') == 'defense' or cur.get('planned_cards')
+            or cur.get('enemy') in chart.BOSSES.values()):
+        return False
+    triggers = enemy_egg_triggers(cur.get('enemy'))
+    return triggers.has_egg is True and triggers.clash_position is True
+
+
 def _survival_needed(cur):
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
     if any(type(n) is not int or n <= 0 for n in (hp, enemy, start)):
@@ -3318,7 +3327,8 @@ def _survival_needed(cur):
     behind_start = (type(cur.get('start_enemy_hp')) is int and start < cur['start_enemy_hp']
                     and not cur.get('planned_cards') and cur.get('enemy') not in chart.BOSSES.values())
     return (hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 5 <= start * 2)
-            or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS or behind_start)
+            or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS or behind_start
+            or _unarmed_clash_risk(cur))
 
 
 def _survival_state(mem, cur):
@@ -3328,7 +3338,9 @@ def _survival_state(mem, cur):
         _record(mem, 'battle_survival', **_battle_labels(cur),
                 observed_metric={'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp')},
                 expected_metric='使用可能な切り札・たまごを確認して選択',
-                reason='HP低下のため温存を中止し、戦闘メニューで救済手段を確認')
+                reason=('携行戦術のない卵持ち敵との衝突前に、戦闘メニューで救済手段を確認'
+                        if _unarmed_clash_risk(cur)
+                        else 'HP低下のため温存を中止し、戦闘メニューで救済手段を確認'))
     return cur['survival']
 
 
@@ -3343,6 +3355,8 @@ def _hero_retreat_needed(cur):
         return False
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
     ref = (max(start, int(cur.get('ref_ally_hp') or 0)) if cur.get('ally') == NAME else start)
+    if _unarmed_clash_risk(cur) and (cur.get('survival') or {}).get('exhausted'):
+        return True  # no observed rescue remains; retreat before the summon
     if cur.get('egg_battle'):
         # An enemy summon we cannot answer (no egg left, no cards) is not a
         # winnable melee: retreat before the general dies (owner 2026-09-29;
