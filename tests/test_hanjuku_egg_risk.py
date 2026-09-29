@@ -96,7 +96,7 @@ def test_an_hp_gated_chart_card_opens_before_the_clash_egg():
 
 
 def test_an_egg_risk_hold_is_bounded_and_then_engages():
-    mem = memory()                       # no charted tactic for クミン
+    mem = memory(side='defense')         # retreat/pre-clash rescue is not a defense tactic
     policy.battle_step(panel('クミン'), mem)          # first reading: wait for a stable one
     for _ in range(policy.MELEE_HOLD_LIMIT):
         assert policy.battle_step(panel('クミン'), mem) == []
@@ -120,8 +120,12 @@ def test_charted_boss_clash_opens_the_fight_with_the_kit():
 
 
 @pytest.mark.parametrize('enemy,chapter', [('クミン', 1), ('クイーン', 1), ('オレガノ', 10), ('不明', 10)])
-def test_risk_or_unknown_enemy_holds_without_any_assist_pulse(enemy, chapter):
+def test_risk_or_unknown_enemy_avoids_assist_pulses_until_resources_are_checked(enemy, chapter):
     mem = memory(chapter=chapter)
+    if enemy in ('クミン', 'オレガノ'):
+        assert enter(panel(enemy), mem) == [policy.pad('b')]
+        assert mem['_records'][-1]['decision'] == 'battle_survival'
+        return  # a known unarmed egg fight now checks resources before contact
     assert enter(panel(enemy), mem) == []
     for _ in range(3):
         assert policy.battle_step(panel(enemy), mem) == []
@@ -187,7 +191,7 @@ def test_melee_observability_survives_existing_schema_one_persistence(tmp_path, 
     spec = importlib.util.spec_from_file_location('egg_risk_persistence', path)
     entry = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(entry)
-    mem = memory()
+    mem = memory(side='defense')
     actions = enter(panel(enemy), mem)
     rec = mem['_records'][-1]
     state = {'step': 2, 'screen_kind': 'battle', 'phase': 'battle', 'policy': mem}
