@@ -200,6 +200,8 @@ class NethackProgressResolver:
         self._pending_door_raw_text: str | None = None
         self._pending_door_unchanged_captures = 0
         self._door_result_pending: _DoorTarget | None = None
+        self._door_result_raw_text: str | None = None
+        self._door_result_unchanged_captures = 0
 
     def _pending_door_capture_unchanged(self, obs: NethackObservation) -> bool:
         target = self._pending_door
@@ -216,6 +218,23 @@ class NethackProgressResolver:
         self._pending_door = None
         self._pending_door_raw_text = None
         self._pending_door_unchanged_captures = 0
+
+    def _door_result_capture_unchanged(self, obs: NethackObservation) -> bool:
+        target = self._door_result_pending
+        return (
+            target is not None
+            and self._door_result_raw_text is not None
+            and obs.prompt == "none"
+            and obs.raw_text == self._door_result_raw_text
+            and obs.vitals.dungeon_level == target.key[0]
+            and obs.player == target.player
+            and _glyph(obs, target.key[1:]) == "+"
+        )
+
+    def _clear_door_result(self) -> None:
+        self._door_result_pending = None
+        self._door_result_raw_text = None
+        self._door_result_unchanged_captures = 0
 
     def observe(self, obs: NethackObservation, explorer) -> None:
         if obs.raw_text != self._answered_prompt:
@@ -241,13 +260,22 @@ class NethackProgressResolver:
                 self._clear_pending_door()
         if self._door_result_pending is not None and obs.prompt == "none":
             target = self._door_result_pending
-            self._door_result_pending = None
-            if obs.vitals.dungeon_level == target.key[0] and obs.player == target.player:
-                glyph = _glyph(obs, target.key[1:])
-                if glyph in OPEN_DOOR_GLYPHS:
-                    explorer.mark_opened_door(target.key)
-                elif glyph == "+":
-                    explorer.mark_failed_door(target.key)
+            if self._door_result_capture_unchanged(obs):
+                # Direction-key transport may return one or more copies of the
+                # pre-open gameplay frame before NetHack publishes the result.
+                # That old '+' is not evidence that the open command failed.
+                self._door_result_unchanged_captures = min(
+                    self._door_result_unchanged_captures + 1,
+                    MAX_UNCHANGED_DOOR_CAPTURES,
+                )
+            else:
+                self._clear_door_result()
+                if obs.vitals.dungeon_level == target.key[0] and obs.player == target.player:
+                    glyph = _glyph(obs, target.key[1:])
+                    if glyph in OPEN_DOOR_GLYPHS:
+                        explorer.mark_opened_door(target.key)
+                    elif glyph == "+":
+                        explorer.mark_failed_door(target.key)
         decline = decline_prompt(obs)
         if decline is not None:
             # An observed rejection is causal only if our preceding action
@@ -324,6 +352,8 @@ class NethackProgressResolver:
                 if not _door_target_matches(obs, target):
                     raise RuntimeError("open door direction lost its prompt context")
                 self._door_result_pending = target
+                self._door_result_raw_text = self._pending_door_raw_text
+                self._door_result_unchanged_captures = 0
                 self._clear_pending_door()
                 return
             key = decision.actions[0].text
@@ -381,6 +411,12 @@ class NethackProgressResolver:
             ):
                 explorer.mark_failed_door(target.key)
             self._clear_pending_door()
+        if self._door_result_pending is not None:
+            # Do not send another gameplay key while a successfully transported
+            # direction command still lacks a fresh result frame.
+            if self._door_result_capture_unchanged(obs) or obs.prompt != "none":
+                return self._hold("door result is pending; waiting for a fresh frame")
+            return self._hold("door result is pending; awaiting observation reconciliation")
         if decision.intent in {
             "explore_step",
             "exploration_blocked",

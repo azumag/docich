@@ -346,6 +346,27 @@ def test_unchanged_capture_after_open_door_waits_for_delayed_direction_prompt():
     assert agent.last_progress_decision.intent == "open_door_direction"
 
 
+def test_stale_closed_capture_after_direction_waits_for_fresh_door_result():
+    agent = brain()
+    closed = frame({"l": "+"})
+    door = (1, 41, 14)
+    assert act(agent, closed) == ["o"]
+    prompt = frame({"l": "+"}, message="In what direction?")
+    assert act(agent, prompt) == ["l"]
+
+    # A delayed capture may briefly replay the gameplay frame from before 'o'.
+    # Keep the result pending instead of poisoning this door as failed.
+    assert act(agent, closed) == []
+    assert agent.last_progress_decision.intent == "progress_blocked"
+    assert door not in agent.policy.explorer.failed_doors
+    assert agent.progress._door_result_pending is not None
+
+    opened = frame({"l": "-"}, message="The door opens.", turn=13)
+    assert act(agent, opened) == ["l"]
+    assert door in agent.policy.explorer.opened_doors
+    assert door not in agent.policy.explorer.failed_doors
+
+
 def test_pending_door_more_prompt_is_advanced_only_once():
     agent = brain()
     assert act(agent, frame({"l": "+"})) == ["o"]
