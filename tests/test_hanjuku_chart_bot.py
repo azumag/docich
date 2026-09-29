@@ -576,7 +576,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v84-cursor-components'
+    assert state['bot_version'] == 'hanjuku-chart-v85-cursor-safe-okunote'
     assert '_records' not in state['policy']
 
 

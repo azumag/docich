@@ -3566,12 +3566,31 @@ def battle_menu_step(screen: Screen, mem):
     return [pad('b')]
 
 
+OKUNOTE_MAX_SELF_DAMAGE = 88  # gcgx: ヤケクソ at castle Lv1; higher levels reduce it
+
+
 def okunote_step(screen, mem):
     cur = mem.get('battle')
     if not cur:
         return []
     flow = cur.setdefault('okunote_flow', {'ticks': 0})
     flow['ticks'] += 1
+    if screen.kind == 'battle_menu':
+        hp = cur.get('ally_hp')
+        # g482: パプリカ34 entered the irreversible random choices and chose
+        # しんだフリ (28..48 self damage), then lost at HP0. Before opening
+        # the candidates, require enough *current* HP to survive even the
+        # worst Lv1 result. An already-open list cannot be cancelled: below
+        # we still choose the strongest visible candidate there.
+        if type(hp) is not int or hp <= OKUNOTE_MAX_SELF_DAMAGE:
+            rescue = _survival_state(mem, cur)
+            if not flow.get('risk_declined'):
+                flow['risk_declined'] = True
+                _record(mem, 'battle_okunote_risk_declined', **_battle_labels(cur),
+                        observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
+                        reason='奥の手は候補確認後にキャンセルできず自傷もあるため、低HPでは開かず白兵へ戻る')
+            rescue['exhausted'] = True
+            return [pad('b')]
     if flow['ticks'] > 16:
         return [pad('b')] if screen.kind == 'battle_menu' else []
     if screen.hidden_battle_commands:
