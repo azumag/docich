@@ -59,3 +59,4 @@ jobs:
           ops/vm_actions/restart_webui.sh
           ops/vm_actions/recover_soren_game.sh
           ops/vm_actions/storage_reclaim.sh
+          ops/vm_actions/opencode_db_retention_now.sh
