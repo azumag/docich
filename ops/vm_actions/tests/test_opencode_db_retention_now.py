@@ -14,7 +14,7 @@ class OpenCodeRetentionNowContractTest(unittest.TestCase):
         self.assertIn('root="/home/ubuntu/soren"', text)
         self.assertIn('default_db="/home/ubuntu/.local/share/opencode/opencode.db"', text)
         self.assertIn('worker_db="$root/tmp/state/xdg_data/opencode/opencode.db"', text)
-        self.assertIn("retention_days=3", text)
+        self.assertIn("retention_days=1", text)
         self.assertIn('source "$root/lib/opencode_db_retention.sh"', text)
         self.assertIn('_opencode_db_retention_rotate "$retention_days" "$worker_db" "$default_db"', text)
         self.assertEqual(text.count("export OPENCODE_DEFAULT_DB_RETENTION_ENABLED=1"), 1)
