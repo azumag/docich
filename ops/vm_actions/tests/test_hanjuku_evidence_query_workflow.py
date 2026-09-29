@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import sys
 import textwrap
 import unittest
@@ -93,6 +94,9 @@ class AuthorizationTests(unittest.TestCase):
             "/hanjuku-evidence export g12-12345678 extra",
             "/hanjuku-evidence export g12-12345678;id",
             "/hanjuku-evidence",
+            " /hanjuku-evidence list",
+            "/hanjuku-evidence list\n",
+            "/hanjuku-evidence export g12-12345678\n",
             "",
         ):
             with self.subTest(body=body), self.assertRaises(ValueError):
@@ -144,6 +148,33 @@ class QueryGatewayTests(EvidenceFixture, unittest.TestCase):
         ))
         payload = json.loads(gateway._completed_candidates(self.state))
         self.assertEqual(payload["runtimes"], [])
+
+    def test_retiring_runtime_is_not_offered(self):
+        (self.state / "game_switch.json").write_text(json.dumps(
+            canonical(retiring=[{"runtime_id": RID, "generation": 7}])
+        ))
+        self.assertEqual(json.loads(gateway._completed_candidates(self.state))["runtimes"], [])
+
+    def test_candidate_mutation_is_not_offered(self):
+        original = gateway.evidence._read
+        reads = 0
+
+        def changing(parent, name, limit, **kw):
+            nonlocal reads
+            value = original(parent, name, limit, **kw)
+            if name == "hanjuku_run.json":
+                reads += 1
+                if reads == 2:
+                    return value + b" "
+            return value
+
+        with patch.object(gateway.evidence, "_read", side_effect=changing):
+            self.assertEqual(json.loads(gateway._completed_candidates(self.state))["runtimes"], [])
+
+    def test_candidate_query_time_budget(self):
+        with patch.object(gateway.time, "monotonic", side_effect=[0, 4]):
+            with self.assertRaisesRegex(gateway.evidence.EvidenceError, "query_budget_exceeded"):
+                gateway._completed_candidates(self.state)
 
     def test_nonterminal_runtime_is_not_offered(self):
         (self.run / "hanjuku_run.json").write_text(
@@ -228,6 +259,28 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertGreaterEqual(len(blocks), 5)
         for block in blocks:
             subprocess.run(["bash", "-n"], input=textwrap.dedent(block), text=True, check=True)
+
+    def test_current_main_checks_fail_closed_before_transport_and_upload(self):
+        # Execute the actual workflow check with a fake git remote; a queued
+        # comment must not publish an old deployed SHA after main advances.
+        check = 'current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"'
+        self.assertEqual(self.workflow.count(check), 3)
+        auth = self.workflow.index(check)
+        transport = self.workflow.index(check, auth + 1)
+        publish = self.workflow.index(check, transport + 1)
+        self.assertLess(auth, self.workflow.index('- name: Configure pinned SSH transport'))
+        self.assertLess(transport, self.workflow.index('status_json='))
+        self.assertGreater(publish, self.workflow.index('from receive_hanjuku_evidence import verify_archive'))
+        self.assertLess(publish, self.workflow.index('uses: actions/upload-artifact@'))
+        with tempfile.TemporaryDirectory() as directory:
+            fake = Path(directory) / 'git'
+            fake.write_text('#!/bin/bash\nprintf "%s\\trefs/heads/main\\n" "$REMOTE_SHA"\nexit "${REMOTE_RC:-0}"\n')
+            fake.chmod(0o700)
+            for remote, rc, expected in [('a' * 40, '0', 0), ('b' * 40, '0', 1), ('a' * 40, '1', 1)]:
+                env = dict(os.environ, PATH=directory + os.pathsep + os.environ['PATH'],
+                           SHA='a' * 40, REMOTE_SHA=remote, REMOTE_RC=rc)
+                result = subprocess.run(['bash', '-c', 'set -euo pipefail\n' + check + '\n[[ "$current" == "$SHA" ]]'], env=env)
+                self.assertEqual(result.returncode == 0, expected == 0)
 
     def test_actions_are_commit_pinned(self):
         pins = re.findall(r"uses: [^@\n]+@([^\n]+)", self.workflow)

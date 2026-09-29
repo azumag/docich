@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixed, installed-only SSH operation for encrypted completed Hanjuku evidence.
+"""Fixed, installed-only SSH operation for completed Hanjuku evidence and bounded candidate queries.
 
 No shell, caller paths, remote destinations, diagnostics projection or runtime
 code imports. Activation requires the owner to upgrade the root-owned gateway.
@@ -17,6 +17,7 @@ import signal
 import stat
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hanjuku_evidence as evidence
@@ -154,6 +155,7 @@ def _ready(core, cfg, sha):
 
 def _completed_candidates(state_dir):
     root = Path(state_dir)
+    deadline = time.monotonic() + 3
     with evidence._directory(root) as root_fd, evidence._child(root_fd, "locks") as locks_fd:
         lock = os.open("game-switch.lock", evidence.FLAGS, dir_fd=locks_fd)
         try:
@@ -167,10 +169,15 @@ def _completed_candidates(state_dir):
             evidence._inactive(canonical, "")
             candidates = []
             with evidence._child(root_fd, "runtimes") as runtimes_fd:
-                names = os.listdir(runtimes_fd)
-                if len(names) > MAX_RUNTIME_ENTRIES:
-                    raise evidence.EvidenceError("runtime_scan_limit")
+                names = []
+                with os.scandir(runtimes_fd) as entries:
+                    for index, item in enumerate(entries):
+                        if index >= MAX_RUNTIME_ENTRIES:
+                            raise evidence.EvidenceError("runtime_scan_limit")
+                        names.append(item.name)
                 for name in names:
+                    if time.monotonic() > deadline:
+                        raise evidence.EvidenceError("query_budget_exceeded")
                     match = evidence.RUN_ID.fullmatch(name)
                     if not match:
                         continue
@@ -182,10 +189,15 @@ def _completed_candidates(state_dir):
                         raise
                     try:
                         with evidence._child(runtimes_fd, name) as runtime_fd:
-                            run = evidence._json(
-                                evidence._read(runtime_fd, "hanjuku_run.json", evidence.MAX_JSON)
-                            )
+                            run_raw = evidence._read(runtime_fd, "hanjuku_run.json", evidence.MAX_JSON)
+                            run = evidence._json(run_raw)
                             evidence.terminal_identity(run, name)
+                            if evidence._read(runtime_fd, "hanjuku_run.json", evidence.MAX_JSON) != run_raw:
+                                raise evidence.EvidenceError("source_changed")
+                            opened = os.fstat(runtime_fd)
+                            named = os.stat(name, dir_fd=runtimes_fd, follow_symlinks=False)
+                            if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+                                raise evidence.EvidenceError("source_changed")
                     except (OSError, evidence.EvidenceError):
                         continue
                     observations = run.get("observations", 0)
@@ -199,6 +211,8 @@ def _completed_candidates(state_dir):
                         "actions_sent": actions_sent
                         if type(actions_sent) is int and actions_sent >= 0 else None,
                     })
+            if time.monotonic() > deadline:
+                raise evidence.EvidenceError("query_budget_exceeded")
             if evidence._read(root_fd, "game_switch.json", evidence.MAX_JSON) != before:
                 raise evidence.EvidenceError("source_changed")
             named_lock = os.stat("game-switch.lock", dir_fd=locks_fd, follow_symlinks=False)
@@ -265,16 +279,16 @@ def main(core, config_path):
         os.environ["GIT_CONFIG_GLOBAL"] = "/dev/null"
         command = os.environ.get("SSH_ORIGINAL_COMMAND", "")
         if command.split(" ")[:1] == [QUERY_OPERATION]:
-            ciphertext = query(core, config_path, command)
+            payload = query(core, config_path, command)
         else:
             raw = sys.stdin.buffer.read(MAX_REQUEST + 1)
-            ciphertext = export(core, config_path, command, raw)
+            payload = export(core, config_path, command, raw)
         signal.alarm(0)
     except Exception:
         # Do not write exception details, request bytes, or source evidence to
         # the legacy gateway's private exec/error log either.
         print("Hanjuku evidence export rejected", file=sys.stderr)
         return 1
-    sys.stdout.buffer.write(ciphertext)
+    sys.stdout.buffer.write(payload)
     sys.stdout.buffer.flush()
     return 0

@@ -56,6 +56,8 @@ jobs:
           set -euo pipefail
           python3 control/ops/vm_actions/authorize_hanjuku_evidence_query.py
           [[ "$(git -C control rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [[ "$current" == "$GITHUB_SHA" ]]
           umask 077
           install -m 700 -d "$RUNNER_TEMP/hanjuku-query/output"
 
@@ -91,6 +93,8 @@ jobs:
           set -euo pipefail
           work="$RUNNER_TEMP/hanjuku-query"
           ssh_args=(-F /dev/null -T -p "$HANJUKU_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
+          current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [[ "$current" == "$SHA" ]]
           status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
           python3 - "$status_json" "$SHA" <<'PY'
           import json, sys
@@ -111,7 +115,10 @@ jobs:
           umask 077
           work="$RUNNER_TEMP/hanjuku-query"
           ssh_args=(-F /dev/null -T -p "$HANJUKU_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
-          if ! timeout --kill-after=5s 60s ssh "${ssh_args[@]}"               "$VM_SSH_USER@$VM_SSH_HOST"               "hanjuku_evidence_query docich production $SHA list"               > "$work/output/candidates.json" 2> "$work/transport.stderr"; then
+          if ! (ulimit -f 128; timeout --kill-after=5s 60s ssh "${ssh_args[@]}" \
+              "$VM_SSH_USER@$VM_SSH_HOST" \
+              "hanjuku_evidence_query docich production $SHA list" \
+              > "$work/output/candidates.json" 2> "$work/transport.stderr"); then
             rm -f "$work/output/candidates.json"
             echo '::error::Hanjuku evidence list rejected or unavailable'
             exit 1
@@ -119,7 +126,9 @@ jobs:
           python3 - "$work/output/candidates.json" <<'PY'
           import json, pathlib, re, sys
           data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-          if data.get("schema") != 1 or data.get("status") != "ok":
+          if (type(data) is not dict or set(data) != {"schema", "status", "runtimes", "truncated"}
+                  or type(data["schema"]) is not int or data["schema"] != 1
+                  or data["status"] != "ok" or type(data["truncated"]) is not bool):
               raise SystemExit("invalid Hanjuku candidate list")
           items = data.get("runtimes")
           if not isinstance(items, list) or len(items) > 20:
@@ -127,8 +136,12 @@ jobs:
           pat = re.compile(r"g[1-9][0-9]{0,17}-[0-9a-f]{8}\Z")
           for item in items:
               if (not isinstance(item, dict)
+                      or set(item) != {"runtime_id", "generation", "terminal_reason", "observations", "actions_sent"}
                       or not pat.fullmatch(str(item.get("runtime_id", "")))
                       or type(item.get("generation")) is not int
+                      or item["generation"] != int(item["runtime_id"].split("-")[0][1:])
+                      or any(item[k] is not None and (type(item[k]) is not int or item[k] < 0)
+                             for k in ("observations", "actions_sent"))
                       or item.get("terminal_reason") not in {"game_over", "screen_stalled"}):
                   raise SystemExit("invalid Hanjuku candidate")
           PY
@@ -148,7 +161,10 @@ jobs:
           [[ "$RUNTIME_ID" =~ ^g[1-9][0-9]{0,17}-[0-9a-f]{8}$ ]]
           work="$RUNNER_TEMP/hanjuku-query"
           ssh_args=(-F /dev/null -T -p "$HANJUKU_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
-          if ! (ulimit -f 33792; timeout --kill-after=5s 135s ssh "${ssh_args[@]}"               "$VM_SSH_USER@$VM_SSH_HOST"               "hanjuku_evidence_query docich production $SHA export $RUNTIME_ID"               > "$work/output/evidence.zip" 2> "$work/transport.stderr"); then
+          if ! (ulimit -f 33792; timeout --kill-after=5s 135s ssh "${ssh_args[@]}" \
+              "$VM_SSH_USER@$VM_SSH_HOST" \
+              "hanjuku_evidence_query docich production $SHA export $RUNTIME_ID" \
+              > "$work/output/evidence.zip" 2> "$work/transport.stderr"); then
             rm -f "$work/output/evidence.zip"
             echo '::error::Hanjuku evidence export rejected or unavailable'
             exit 1
@@ -162,6 +178,15 @@ jobs:
               raise SystemExit("unexpected Hanjuku runtime")
           PY
           rm -f "$work/transport.stderr"
+
+      - name: Recheck current protected main before publishing
+        shell: bash
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [[ "$current" == "$SHA" ]]
 
       - name: Upload short-lived plaintext query result
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

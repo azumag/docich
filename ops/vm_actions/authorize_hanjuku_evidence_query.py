@@ -37,7 +37,7 @@ def authorize(env):
     sha = env.get("GITHUB_SHA", "")
     if not all(checks) or not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("authorization_denied")
-    body = env.get("COMMENT_BODY", "").strip()
+    body = env.get("COMMENT_BODY", "")
     if body == "/hanjuku-evidence list":
         return "list", ""
     match = EXPORT.fullmatch(body)
