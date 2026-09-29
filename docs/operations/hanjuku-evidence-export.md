@@ -12,6 +12,19 @@
 runtime IDを明示選択する。候補は正常な終了証拠がありactive/retiringではない世代の最大20件。
 世代・終了理由・観測数・入力数のみを返す。`latest` や任意pathは受け付けない。
 
+Actionsは同じIssueへ結果を返信する。返信には元コメントへのリンク、run/attempt、main SHA、
+成功時のartifact IDとartifact ZIPのSHA-256だけを含める。画像・ログ・拒否時のstderrは出さない。
+失敗時は成功artifactが無いことを返信する。botの返信はowner条件を満たさず再実行を起こさない。
+返信先は固定Issue #1339のみで、jobの `issues: write` はこの応答に使う。
+
+ChatGPT connectorでは `fetch_issue_comments` で元コメントに対応する返信を取得し、
+`fetch_workflow_run_jobs` / `fetch_workflow_run_artifacts` で実行者・結果・attempt・SHA・
+artifact IDを照合して `download_workflow_artifact` を呼ぶ。run一覧CLIは不要。
+返却された一時download URLをローカルで読む場合は期限内にHTTP取得する。
+本環境では標準ブラウザUser-Agentを指定すると取得でき、Python既定ヘッダーは403だった。
+外側ZIPのSHA-256をGitHubのdigestと比較し、内側 `evidence.zip` を既存verifierで検証する。
+資格情報や一時URLを文書・ログへ保存しない。
+
 `Hanjuku evidence query` runのevent/actor/SHA/attemptとIssueコメント時刻を照合し、
 GitHub connectorのworkflow artifacts一覧とdownloadを使う。export artifactの内側にある
 `evidence.zip` はログ・最大240画像・manifestを含む。保持は1日で、ユーザー判断により
