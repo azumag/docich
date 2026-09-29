@@ -172,6 +172,12 @@ if nethack_retrospective_argv is not None:
 
     sys.exit(nethack_retrospective_main(nethack_retrospective_argv))
 
+nethack_daily_improve_argv = _nethack_sidecar_argv("nethack-daily-improve", sys.argv[1:])
+if nethack_daily_improve_argv is not None:
+    from .nethack_daily_improve import main as nethack_daily_improve_main
+
+    sys.exit(nethack_daily_improve_main(nethack_daily_improve_argv))
+
 nethack_regression_argv = _nethack_sidecar_argv("nethack-regression", sys.argv[1:])
 if nethack_regression_argv is not None:
     from .nethack_regression import main as nethack_regression_main

@@ -13,6 +13,7 @@ import datetime as dt
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -25,6 +26,8 @@ from typing import Iterator
 from .config import ConfigError, GlobalConfig, load_global
 from .game_switch import atomic_write_json
 from .nethack_run import (
+    MAX_PROGRESS_TRACE_BYTES,
+    PROGRESS_SCHEMA_VERSION,
     SCHEMA_VERSION as RUN_SCHEMA_VERSION,
     TERMINAL_STATUSES,
     NethackRunError,
@@ -170,7 +173,14 @@ def _advisory_evidence(root: Path, run: dict[str, object]) -> dict[str, object]:
         if isinstance(ts, bool) or not isinstance(ts, (int, float)):
             malformed += 1
             continue
-        value = float(ts)
+        try:
+            value = float(ts)
+        except (OverflowError, ValueError):
+            malformed += 1
+            continue
+        if not math.isfinite(value) or value < 0:
+            malformed += 1
+            continue
         if start_epoch is not None and value < start_epoch - 5.0:
             continue
         if end_epoch is not None and value > end_epoch + 5.0:
@@ -224,6 +234,125 @@ def _dump_evidence(dump_dir: Path | None, run: dict[str, object]) -> dict[str, o
         "size_bytes": size,
         "tail_sha256": hashlib.sha256(tail).hexdigest(),
         "tail_excerpt": excerpt,
+    }
+
+
+def _progress_evidence(root: Path, run: dict[str, object]) -> dict[str, object]:
+    run_id = run.get("run_id")
+    if not isinstance(run_id, str):
+        return {"status": "invalid_run_id", "sample_count": 0}
+    path = root / "progress" / f"{run_id}.jsonl"
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return {"status": "missing", "sample_count": 0}
+    except OSError:
+        return {"status": "error", "sample_count": 0}
+    if size > MAX_PROGRESS_TRACE_BYTES:
+        return {"status": "too_large", "sample_count": 0}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return {"status": "error", "sample_count": 0}
+
+    start = run.get("started_epoch")
+    start_epoch = float(start) if type(start) is int and start >= 0 else None
+    end_epoch = _terminal_end_epoch(run)
+    samples: list[dict[str, object]] = []
+    malformed = 0
+    truncated = False
+    for line in lines:
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError:
+            malformed += 1
+            continue
+        if not isinstance(raw, dict) or raw.get("schema_version") != PROGRESS_SCHEMA_VERSION:
+            malformed += 1
+            continue
+        if raw.get("event") == "truncated":
+            truncated = True
+            continue
+        ts = raw.get("ts")
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+            malformed += 1
+            continue
+        try:
+            value = float(ts)
+        except (OverflowError, ValueError):
+            malformed += 1
+            continue
+        if not math.isfinite(value) or value < 0:
+            malformed += 1
+            continue
+        if start_epoch is not None and value < start_epoch - 5.0:
+            continue
+        if end_epoch is not None and value > end_epoch + 5.0:
+            continue
+        samples.append(raw)
+
+    intents = Counter(
+        item["intent"] for item in samples
+        if isinstance(item.get("intent"), str)
+    )
+    resolved = Counter(
+        item["resolved_intent"] for item in samples
+        if isinstance(item.get("resolved_intent"), str)
+    )
+    phases = Counter(
+        item["phase"] for item in samples
+        if item.get("phase") in {"sent", "hold"}
+    )
+    keys = Counter(
+        item["key"] for item in samples
+        if item.get("phase") == "sent" and isinstance(item.get("key"), str)
+    )
+    hp_ratios = [
+        float(item["hp"]) / float(item["hp_max"])
+        for item in samples
+        if type(item.get("hp")) is int
+        and type(item.get("hp_max")) is int
+        and item["hp_max"] > 0
+    ]
+    sent = [item for item in samples if item.get("phase") == "sent"]
+    same_frame_pairs = 0
+    same_frame_streak = 0
+    max_same_frame_streak = 0
+    previous_hash = None
+    previous_turn = None
+    for item in sent:
+        frame_hash = item.get("frame_hash")
+        turn = item.get("turn")
+        if isinstance(frame_hash, str) and frame_hash == previous_hash and turn == previous_turn:
+            same_frame_pairs += 1
+            same_frame_streak += 1
+        else:
+            max_same_frame_streak = max(max_same_frame_streak, same_frame_streak)
+            same_frame_streak = 1 if isinstance(frame_hash, str) else 0
+        previous_hash = frame_hash
+        previous_turn = turn
+    max_same_frame_streak = max(max_same_frame_streak, same_frame_streak)
+    turns = [item["turn"] for item in samples if type(item.get("turn")) is int]
+    depths = [item["depth"] for item in samples if type(item.get("depth")) is int]
+    timestamps = [float(item["ts"]) for item in samples]
+    return {
+        "status": "ok" if samples else "empty",
+        "sample_count": len(samples),
+        "malformed_lines": malformed,
+        "truncated": truncated,
+        "first_ts": min(timestamps) if timestamps else None,
+        "last_ts": max(timestamps) if timestamps else None,
+        "first_turn": turns[0] if turns else None,
+        "last_turn": turns[-1] if turns else None,
+        "max_turn": max(turns) if turns else None,
+        "max_depth": max(depths) if depths else None,
+        "min_hp_ratio": round(min(hp_ratios), 3) if hp_ratios else None,
+        "phase_counts": dict(sorted(phases.items())),
+        "intent_counts": dict(sorted(intents.items())),
+        "resolved_intent_counts": dict(sorted(resolved.items())),
+        "sent_key_counts": dict(sorted(keys.items())),
+        "same_frame_sent_pairs": same_frame_pairs,
+        "max_same_frame_sent_streak": max_same_frame_streak,
     }
 
 
@@ -489,6 +618,7 @@ class NethackRetrospectiveEngine:
             ]
             advisory = _advisory_evidence(self.root, run)
             dump = _dump_evidence(self.dump_dir, run)
+            progress = _progress_evidence(self.root, run)
             lessons = _candidate_lessons(
                 run,
                 signature=signature,
@@ -503,6 +633,7 @@ class NethackRetrospectiveEngine:
                 "turns": run.get("turns"),
                 "max_depth": run.get("max_depth"),
                 "advisory": advisory,
+                "progress": progress,
                 "dump_tail_sha256": dump.get("tail_sha256"),
             }
             evidence_fingerprint = hashlib.sha256(
@@ -525,6 +656,7 @@ class NethackRetrospectiveEngine:
                 "max_depth": run.get("max_depth"),
                 "got_amulet": run.get("got_amulet") is True,
                 "advisory_evidence": advisory,
+                "progress_evidence": progress,
                 "dump_evidence": dump,
                 "evidence_fingerprint": evidence_fingerprint,
                 "candidate_lessons": lessons,
