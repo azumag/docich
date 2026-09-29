@@ -412,6 +412,10 @@ class NethackProgressResolver:
                 explorer.mark_failed_door(target.key)
             self._clear_pending_door()
         if self._door_result_pending is not None:
+            # A door result can itself require paging. Advance each fresh More
+            # frame once while retaining the pending result for reconciliation.
+            if obs.prompt == "more" and decision.intent == "advance_message":
+                return decision
             # Do not send another gameplay key while a successfully transported
             # direction command still lacks a fresh result frame.
             if self._door_result_capture_unchanged(obs) or obs.prompt != "none":

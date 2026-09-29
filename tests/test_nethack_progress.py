@@ -367,6 +367,27 @@ def test_stale_closed_capture_after_direction_waits_for_fresh_door_result():
     assert door not in agent.policy.explorer.failed_doors
 
 
+def test_more_after_open_door_direction_is_advanced_once_while_result_pending():
+    agent = brain()
+    closed = frame({"l": "+"})
+    door = (1, 41, 14)
+    assert act(agent, closed) == ["o"]
+    prompt = frame({"l": "+"}, message="In what direction?")
+    assert act(agent, prompt) == ["l"]
+
+    more = frame({"l": "-"}, message="The door opens. --More--", turn=13)
+    assert normalize_tty(more).prompt == "more"
+    assert act(agent, more) == [" "]
+    assert agent.progress._door_result_pending is not None
+    assert act(agent, more) == []
+    assert agent.progress._door_result_pending is not None
+
+    opened = frame({"l": "-"}, turn=13)
+    assert act(agent, opened) == ["l"]
+    assert door in agent.policy.explorer.opened_doors
+    assert door not in agent.policy.explorer.failed_doors
+
+
 def test_pending_door_more_prompt_is_advanced_only_once():
     agent = brain()
     assert act(agent, frame({"l": "+"})) == ["o"]
