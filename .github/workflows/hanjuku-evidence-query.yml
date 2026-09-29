@@ -1,0 +1,180 @@
+name: Hanjuku evidence query
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vm-storage-monitor-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  query:
+    if: >-
+      github.actor_id == 9018513 &&
+      github.triggering_actor == 'azumag' &&
+      github.event.issue.number == 1339 &&
+      github.event.comment.user.id == 9018513 &&
+      startsWith(github.event.comment.body, '/hanjuku-evidence ')
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout trusted query code from event main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+          submodules: false
+
+      - name: Authorize fixed owner command
+        id: auth
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_ACTOR_ID: ${{ github.actor_id }}
+          GITHUB_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          GITHUB_SHA: ${{ github.sha }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          COMMENT_AUTHOR_ID: ${{ github.event.comment.user.id }}
+        run: |
+          set -euo pipefail
+          python3 control/ops/vm_actions/authorize_hanjuku_evidence_query.py
+          [[ "$(git -C control rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          umask 077
+          install -m 700 -d "$RUNNER_TEMP/hanjuku-query/output"
+
+      - name: Configure pinned SSH transport
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          work="$RUNNER_TEMP/hanjuku-query"
+          install -m 700 -d "$work/ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$work/ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$work/ssh/known_hosts"
+          chmod 600 "$work/ssh/"*
+          printf 'HANJUKU_SSH_PORT=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Require production to equal event SHA
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/hanjuku-query"
+          ssh_args=(-F /dev/null -T -p "$HANJUKU_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
+          status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
+          python3 - "$status_json" "$SHA" <<'PY'
+          import json, sys
+          data = json.loads(sys.argv[1])
+          if data.get("status") != "configured" or data.get("sha") != sys.argv[2]:
+              raise SystemExit("production is not exactly the event SHA")
+          PY
+
+      - name: List completed Hanjuku runtimes
+        if: steps.auth.outputs.mode == 'list'
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$RUNNER_TEMP/hanjuku-query"
+          ssh_args=(-F /dev/null -T -p "$HANJUKU_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
+          if ! timeout --kill-after=5s 60s ssh "${ssh_args[@]}"               "$VM_SSH_USER@$VM_SSH_HOST"               "hanjuku_evidence_query docich production $SHA list"               > "$work/output/candidates.json" 2> "$work/transport.stderr"; then
+            rm -f "$work/output/candidates.json"
+            echo '::error::Hanjuku evidence list rejected or unavailable'
+            exit 1
+          fi
+          python3 - "$work/output/candidates.json" <<'PY'
+          import json, pathlib, re, sys
+          data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if data.get("schema") != 1 or data.get("status") != "ok":
+              raise SystemExit("invalid Hanjuku candidate list")
+          items = data.get("runtimes")
+          if not isinstance(items, list) or len(items) > 20:
+              raise SystemExit("invalid Hanjuku candidate list")
+          pat = re.compile(r"g[1-9][0-9]{0,17}-[0-9a-f]{8}\Z")
+          for item in items:
+              if (not isinstance(item, dict)
+                      or not pat.fullmatch(str(item.get("runtime_id", "")))
+                      or type(item.get("generation")) is not int
+                      or item.get("terminal_reason") not in {"game_over", "screen_stalled"}):
+                  raise SystemExit("invalid Hanjuku candidate")
+          PY
+          rm -f "$work/transport.stderr"
+
+      - name: Export completed Hanjuku runtime
+        if: steps.auth.outputs.mode == 'export'
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+          RUNTIME_ID: ${{ steps.auth.outputs.runtime_id }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$RUNTIME_ID" =~ ^g[1-9][0-9]{0,17}-[0-9a-f]{8}$ ]]
+          work="$RUNNER_TEMP/hanjuku-query"
+          ssh_args=(-F /dev/null -T -p "$HANJUKU_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
+          if ! (ulimit -f 33792; timeout --kill-after=5s 135s ssh "${ssh_args[@]}"               "$VM_SSH_USER@$VM_SSH_HOST"               "hanjuku_evidence_query docich production $SHA export $RUNTIME_ID"               > "$work/output/evidence.zip" 2> "$work/transport.stderr"); then
+            rm -f "$work/output/evidence.zip"
+            echo '::error::Hanjuku evidence export rejected or unavailable'
+            exit 1
+          fi
+          python3 - "$work/output/evidence.zip" "$RUNTIME_ID" <<'PY'
+          import pathlib, sys
+          sys.path.insert(0, "control/ops/vm_actions")
+          from receive_hanjuku_evidence import verify_archive
+          manifest = verify_archive(pathlib.Path(sys.argv[1]).read_bytes())
+          if manifest["identity"]["runtime_id"] != sys.argv[2]:
+              raise SystemExit("unexpected Hanjuku runtime")
+          PY
+          rm -f "$work/transport.stderr"
+
+      - name: Upload short-lived plaintext query result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hanjuku-evidence-query-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hanjuku-query/output
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false
+
+      - name: Clear runner staging
+        if: ${{ always() }}
+        shell: bash
+        run: rm -rf -- "$RUNNER_TEMP/hanjuku-query"
