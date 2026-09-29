@@ -552,7 +552,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v76-melee-progress-bound'
+    assert state['bot_version'] == 'hanjuku-chart-v77-hero-egg-reserve'
     assert '_records' not in state['policy']
 
 
@@ -2268,6 +2268,19 @@ def test_soldier_count_is_read_from_the_army_total_line():
     assert [r['decision'] for r in mem['_records']] == ['soldiers_seen']
     policy.observe_events(screen, mem)          # unchanged: no duplicate record
     assert [r['decision'] for r in mem['_records']].count('soldiers_seen') == 1
+
+
+def test_a_depleted_hero_egg_reserves_before_soldiers():
+    # g458 15:45: the hero's egg was spent, the months kept buying soldiers
+    # and the recovery was skipped until the fatal defense (no retreat there).
+    mem = {'chapter': 1, 'egg_uses': {'どうし': 1}}
+    reserve, _ = policy._extras_reserve(mem, {'year': 1, 'month': 8, 'gold': 100})
+    assert reserve == 50
+    shop = policy._plan(dict(mem), {'year': 1, 'month': 8, 'gold': 100})
+    assert shop['reserve'] == 50 and shop['egg'] == 'pending' and shop['soldiers'] == 20
+    # Another general's egg without the hero and without the count: unchanged.
+    other = {'chapter': 1, 'egg_uses': {'ココット': 1}}
+    assert policy._extras_reserve(other, {'year': 1, 'month': 8, 'gold': 100})[0] == 0
 
 
 def test_egg_recovery_holds_the_gold_over_more_soldiers_when_army_is_big():
