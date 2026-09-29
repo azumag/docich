@@ -1,11 +1,11 @@
 {
-  "output_sha256": "6d08c4c0c9e7a8a9bc80b5fa9e489acb5f96c0ec892afa0cdc0c887aa67be721",
+  "output_sha256": "7b7bb3bf80f5c49a78195374bf558f5500b1bdb5873ed766a7d1b8c311f934a8",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "7bd3b8fd336565f4a6a05c98a4baabede8edb37d7f7214b193b71812726a29cf",
+  "source_sha256": "0000b85b4a8a0f2ad1d387586ba099e0848590bd88ebe26b8628487736ec78f2",
   "topics": [
-    "卵使わせない戦略の白兵死結を修正（v75/v76）とg458稼働・24時間監視（opencode）",
-    "g454 出撃確認の不一致で画面停止→v74修正・ホットロード復帰（opencode）",
-    "g454 切り札一覧の未知札で画面停止→v73修正・ホットロード復帰（opencode）"
+    "敵卵召喚後の退却優先と召喚獣の回復/攻撃交互（v79）をライブ修正（opencode）",
+    "敗因分析に基づく卵温存・開幕札・他将軍退却・月一実況の修正（v77/v78）と監視停止（opencode）",
+    "卵使わせない戦略の白兵死結を修正（v75/v76）とg458稼働・24時間監視（opencode）"
   ]
 }
