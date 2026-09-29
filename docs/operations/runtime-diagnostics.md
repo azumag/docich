@@ -116,7 +116,7 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 
 - common rotation: `corner_rotation.json` の固定projectionを
   `corners.corner_rotation`へ出す。status、slot、next_due_at、last_seen_at、
-  eligible_count、pending有無、および設定由来の `schedule_mode` / `cooldown_seconds`
+  eligible_count、pending有無、`queued_manual`（ledgerまたは固定inboxに手動予約があるboolean）、および設定由来の `schedule_mode` / `cooldown_seconds`
   のみ。seed・request payload・自由文は出さない。
   さらに、`error_kind`（`docich.corner_rotation.ERROR_KINDS` と同一の固定enum。
   例外本文はstateにもdiagnosticsにも書かない。欠落はnull、不正値は`unknown`。

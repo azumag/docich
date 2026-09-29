@@ -271,7 +271,86 @@ class CornerRotationManager:
                 raise RotationError("invalid manual pending request")
             uuid.UUID(manual["request_id"])
             timestamp(manual["selected_at"])
+        queued = state.get("queued_manual")
+        if queued is not None:
+            if (not isinstance(queued, dict) or not isinstance(queued.get("corner"), str)):
+                raise RotationError("invalid queued manual request")
+            uuid.UUID(queued["request_id"])
+            timestamp(queued["selected_at"])
         return state
+
+    @contextmanager
+    def _manual_queue_lock(self):
+        # Independent of the execution lock, which a live corner may hold for
+        # its entire match. This lock protects only the tiny durable inbox.
+        path = Path(self.g.state_dir) / "corner-manual-queue.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+    @property
+    def _manual_queue_path(self):
+        return Path(self.g.state_dir) / "corner_manual_queue.json"
+
+    def _read_manual_queue(self):
+        if not self._manual_queue_path.exists():
+            return None
+        request = json.loads(self._manual_queue_path.read_text())
+        if (not isinstance(request, dict) or not isinstance(request.get("corner"), str)):
+            raise RotationError("invalid manual queue inbox")
+        uuid.UUID(request["request_id"])
+        timestamp(request["selected_at"])
+        return request
+
+    def _import_manual_queue(self, state):
+        with self._manual_queue_lock():
+            request = self._read_manual_queue()
+            if request is None:
+                return
+            current = state.get("queued_manual")
+            if current is not None and current != request:
+                raise RotationError("conflicting manual queue ownership")
+            state["queued_manual"] = request
+            self.save(state)  # durable transfer before removing the inbox
+            self._manual_queue_path.unlink()
+
+    def queue_manual(self, game):
+        """Queue one owner request even while the current corner holds its lock.
+
+        The timer imports this inbox and consumes it only after existing corner
+        ownership settles. Eligibility and pauses apply; cooldown is bypassed.
+        Duplicate calls retain the same durable identity across the transfer.
+        """
+        if not rotation_enabled(self.g):
+            raise RotationError("common corner rotation is disabled")
+        with self._manual_queue_lock():
+            now = timestamp(self.clock())
+            state = self.load(now)  # atomic ledger read; never edit execution state
+            if state["status"] == "recovery_required":
+                raise RotationError("corner recovery required before manual reservation")
+            if now < state["last_seen_at"]:
+                raise RotationError("clock regressed")
+            eligible, _ = self._eligible()
+            choices = [c.id for c in self.catalog if c.game == game and c.id in eligible]
+            if len(choices) != 1:
+                raise RotationError("no unique eligible manual corner")
+            chosen = choices[0]
+            queued = self._read_manual_queue() or state.get("queued_manual")
+            pending = state.get("manual_pending") or state.get("pending") or {}
+            if queued is None and (pending.get("source") == "manual"
+                                   or pending.get("corner") == chosen):
+                queued = pending
+            if queued is not None:
+                if queued["corner"] != chosen:
+                    raise RotationError("another manual corner is already queued")
+            else:
+                queued = dict(corner=chosen, selected_at=now, request_id=str(uuid.uuid4()))
+                atomic_write_json(self._manual_queue_path, queued)
+            return {"status": "queued", "corner": chosen, "request_id": queued["request_id"]}
 
     def _remember_catalog(self, state):
         known = state.setdefault("known_corners", {})
@@ -417,6 +496,7 @@ class CornerRotationManager:
             self._remember_catalog(state)
             if state["status"] == "recovery_required":
                 return {"status": "recovery_required", "reason": state.get("reason")}
+            self._import_manual_queue(state)
             if now < state["last_seen_at"]:
                 return self._wait(state, "clock-regressed")
             if now - state["last_seen_at"] > DAY:
@@ -494,6 +574,17 @@ class CornerRotationManager:
                 pending = state.get("pending")
                 if busy:
                     return self._wait(state, "other-corner-needs-finish-or-recovery")
+                queued = state.get("queued_manual")
+                if pending is None and queued is not None:
+                    if queued["corner"] not in self.adapters:
+                        raise RotationError("queued manual corner removed", kind="catalog-mismatch")
+                    if queued["corner"] not in eligible:
+                        return self._wait(state, "queued-manual-disabled-or-paused")
+                    pending = dict(queued, phase="selected", source="manual")
+                    state["pending"] = pending
+                    state["queued_manual"] = None
+                    state["slot"] += 1
+                    self.save(state)  # atomically transfer queued ownership
                 if pending is None:
                     if not eligible:
                         return self._wait(state, "no-enabled-corner")
@@ -540,8 +631,9 @@ class CornerRotationManager:
                     if pending["corner"] not in eligible:
                         return self._wait(state, "selected-corner-disabled-or-paused")
                     # Re-check cooldown after importing concurrent/manual activity.
-                    if any(r["corner"] == pending["corner"] and r["at"] > now - self.cooldown_seconds
-                           for r in state["history"]):
+                    if pending.get("source") != "manual" and any(
+                            r["corner"] == pending["corner"] and r["at"] > now - self.cooldown_seconds
+                            for r in state["history"]):
                         return self._wait(state, "selected-corner-cooling-down")
                     pending["phase"] = "dispatched"
                     state["last_slot_at"] = now
@@ -549,7 +641,8 @@ class CornerRotationManager:
                         now + state["interval_seconds"]
                         if self.schedule_mode == "interval" else now
                     )
-                    state["history"].append(dict(corner=pending["corner"], at=now, source="reservation"))
+                    source = "manual-reservation" if pending.get("source") == "manual" else "reservation"
+                    state["history"].append(dict(corner=pending["corner"], at=now, source=source))
                 state.update(status="running", reason=None)
                 self.save(state)
                 result = self.executor.execute(adapter, pending)
