@@ -2819,6 +2819,25 @@ def _bind_sortie(mem, step, castle):
         sortie.update(status='arrived', target=castle)
 
 
+def _sortie_step_for(mem, general, castle):
+    """The newest sortie of this general already bound to this castle.
+
+    An ambiguous boss entry (g460 17:32: the base 1-B1 and the adjusted
+    A:bd2304e3:K1 were both still marching on けっかい) must not bind an order
+    id that was never read. The battle still has to fight with the kit of the
+    sortie that is actually out there: with an unknown step every charted
+    tactic is filtered out and the hero swings bare-handed (g460 17:32:
+    planned_cards=[] -> ally HP 88..0 -> 17:35 game over)."""
+    if not general or not castle:
+        return None
+    march = [(sortie.get('tick') or 0, step)
+             for step, sortie in (mem.get('sorties') or {}).items()
+             if sortie.get('general') == general
+             and sortie.get('target') == castle
+             and sortie.get('status') in ('en_route', 'arrived')]
+    return max(march)[1] if march else None
+
+
 def _battle_context(mem, ally):
     """Only a matching attack message establishes a battle location and side."""
     attack = mem.get('attack') or {}
@@ -2827,7 +2846,10 @@ def _battle_context(mem, ally):
         side = attack.get('side')
         if side == 'attack' and attack.get('castle') in captured:
             side = 'defense'          # a battle at a castle we hold is not a capture attempt
-        return {'castle': attack.get('castle'), 'side': side, 'step': attack.get('step'),
+        step = attack.get('step')
+        if step is None and side == 'attack':
+            step = _sortie_step_for(mem, ally, attack.get('castle'))
+        return {'castle': attack.get('castle'), 'side': side, 'step': step,
                 'entry_evidence': attack.get('entry_evidence')}
     captured = set(mem.get('captured', []))
     en_route = [step for step, sortie in (mem.get('sorties') or {}).items()
@@ -2962,6 +2984,13 @@ def battle_step(screen: Screen, mem):
             mem['hero_max_hp'] = max(int(mem.get('hero_max_hp') or 0), b.ally_hp)
             cur['ref_ally_hp'] = mem['hero_max_hp']
         _bind_battle_strategy(mem, cur)
+        if cur.get('step') and not (mem.get('attack') or {}).get('step'):
+            # The order id stayed unknown (ambiguous entry): only the marching
+            # sortie's kit is bound, and the record says so.
+            _record(mem, 'battle_step_resolved', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
+                    castle=cur.get('castle'), side=cur.get('side'),
+                    observed_metric={'sortie_step': cur['step']},
+                    reason='出撃注文を特定できない突入のため、同じ将軍の進軍中出撃の携行札だけを結び付け')
         planned = [t['card'] for t in _tactics(mem, cur['step'])
                    if t['enemy'] in (None, b.enemy) and t.get('step') in (None, cur['step'])
                    and not (t.get('boss_only')
@@ -3983,6 +4012,9 @@ WAGE_RESERVE = 30
 EGG_RECOVER_COST = 50
 RECRUIT_COST = 50
 MONTH_SUB_LIMIT = 8              # A presses through an unmeasured sub-screen
+# The month menu stays on screen for a few observations after the A press that
+# opens a sub (g462 18:06:02-05); only that stale frame may not end the sub.
+MONTH_SUB_MENU_WAIT = 4
 RECRUIT_CANDIDATE_LIMIT = 32     # paid candidate introductions outlast the generic 8 observations
 EGG_RITUAL_LIMIT = 64            # measured paid recovery includes a long chant
 
@@ -4245,7 +4277,7 @@ def month_step(screen: Screen, mem):
         if (shop and shop.get('recruit') == 'unverified' and type(gold) is int
                 and gold >= RECRUIT_COST and shop.get('soldiers', 0) >= SOLDIER_CAP):
             mem['month_sub'] = {'kind': 'recruit', 'gold_before': gold, 'presses': 0,
-                                'key': shop['key']}
+                                'key': shop['key'], 'left_menu': False}
             shop['recruit'] = 'opened'
             _record(mem, 'month_sub_resumed', choice='しょうぐんぼしゅう',
                     reason='実測した募集導入文と費用条件が一致したため失われた会話追跡を再開')
@@ -4282,8 +4314,11 @@ def month_step(screen: Screen, mem):
             shop['egg'] = 'not_needed'
         _record(mem, 'egg_recover_not_needed', reason='ゲームが回復不要と表示したため支払わず説明を閉じる')
         return [pad('a')]
-    if mem.get('month_sub'):
-        _finish_month_sub(screen, mem, shop)
+    if mem.get('month_sub') and not _finish_month_sub(screen, mem, shop):
+        # g462 18:06:04: the menu frame still predates the game's reaction to
+        # the A press that opened the sub. Pressing anything here (も〜おしまい!
+        # navigation) races the flow that is starting, so hold instead.
+        return []
     extra = _month_extra(screen, mem, shop)
     if extra is not None:
         return extra
@@ -4338,7 +4373,8 @@ def _month_extra(screen, mem, shop):
         move = menu_to(screen, label)
         if move == 'here':
             shop[sub] = 'opened'
-            mem['month_sub'] = {'kind': sub, 'gold_before': gold, 'presses': 0, 'key': shop.get('key')}
+            mem['month_sub'] = {'kind': sub, 'gold_before': gold, 'presses': 0, 'key': shop.get('key'),
+                                'left_menu': False}
             _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice=label,
                     reason=f'{label}を選択')
             return [pad('a')]
@@ -4376,7 +4412,8 @@ def _month_chikujou(screen, mem, shop):
     if move != 'here':
         return [move]
     shop['chikujou'] = 'opened'
-    mem['month_sub'] = {'kind': 'chikujou', 'gold_before': gold, 'presses': 0, 'key': shop.get('key')}
+    mem['month_sub'] = {'kind': 'chikujou', 'gold_before': gold, 'presses': 0, 'key': shop.get('key'),
+                        'left_menu': False}
     _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice='ちくじょう',
             reason='所持金に余裕があるため、ちくじょうで城の防衛力を上げる')
     return [pad('a')]
@@ -4436,15 +4473,32 @@ def _chikujou_step(screen, mem, sub):
     return []
 
 
-def _finish_month_sub(screen, mem, shop):
-    """Back on the month menu: judge the sub-action by the gold it cost."""
-    sub = mem.pop('month_sub')
+def _finish_month_sub(screen, mem, shop) -> bool:
+    """Back on the month menu: judge the sub-action by the gold it cost.
+
+    Returns False while the sub must stay tracked. g462 18:06:02-18:11:11: the
+    menu frame was still on screen when ちくじょう opened, so the sub ended
+    before the game reacted; the castle list and its confirm then ran through
+    the generic paths and the 「これいじょうのぞうちく」 exit screen repeated A
+    for 300 s until the run watchdog ended the corner. Defer while the menu is
+    unchanged (nothing judged yet): finish once the flow left the menu, the
+    payment is readable, or MONTH_SUB_MENU_WAIT stale menu frames passed.
+    """
+    sub = mem.get('month_sub')
+    if sub is None:
+        return True
     gold = (screen.header or {}).get('gold')
     before = sub.get('gold_before')
     cost = sub.get('quoted_cost') if sub['kind'] in ('egg', 'chikujou') else RECRUIT_COST
     paid = (type(cost) is int and cost > 0 and type(gold) is int and type(before) is int
             and before - gold == cost
             and (sub['kind'] != 'egg' or sub.get('full_selected') is True))
+    if sub.get('left_menu') is False and not paid and not sub.get('declined'):
+        wait = int(sub.get('menu_wait', 0)) + 1
+        sub['menu_wait'] = wait
+        if wait < MONTH_SUB_MENU_WAIT:
+            return False
+    sub = mem.pop('month_sub')
     if shop and shop.get(sub['kind']) == 'opened':
         shop[sub['kind']] = 'done' if paid else 'unverified'
     if sub['kind'] == 'recruit':
@@ -4461,7 +4515,7 @@ def _finish_month_sub(screen, mem, shop):
                 deviation_reason=None if paid or sub.get('declined') else 'cost_not_observed',
                 reason='月一メニュー復帰時の所持金でちくじょうの支払いを確認' if paid
                 else 'ちくじょうを見送った／支払いを確認できない')
-        return
+        return True
     _record(mem, 'egg_recover' if sub['kind'] == 'egg' else 'recruit', month=sub.get('key'),
             strategy_variant='recruit_default_cursor' if sub['kind'] == 'recruit' else 'egg_recover',
             observed_metric={'gold_before': before, 'gold_after': gold, 'presses': sub.get('presses'),
@@ -4470,6 +4524,32 @@ def _finish_month_sub(screen, mem, shop):
             deviation_reason=None if paid else 'cost_not_observed',
             reason='月一メニュー復帰時の所持金で実行を確認' if paid
             else '月一メニューに戻ったが所持金の減少を確認できない')
+    return True
+
+
+CHIKUJOU_LEFTOVER = ('これいじょうのぞうちく', 'ぞうちくなさいます')
+
+
+def chikujou_leftover(screen, mem) -> bool:
+    """An untracked ちくじょう overlay: only B leaves it.
+
+    g462 18:06:10-18:11: the sub had been closed early, so the castle list
+    (「これいじょうのぞうちくはできませんぞ!! どのしろをぞうちくなさいますか?」)
+    fell through to legacy A presses that changed nothing for 300 s and the run
+    watchdog ended the corner. Measured screens: kind text, phrase above.
+    """
+    if mem.get('month_sub'):
+        return False
+    if not any(phrase in screen.text for phrase in CHIKUJOU_LEFTOVER):
+        mem.pop('chikujou_leftover', None)
+        return False
+    if not mem.get('chikujou_leftover'):
+        mem['chikujou_leftover'] = True
+        _record(mem, 'chikujou_leftover', screen=screen.kind,
+                observed_metric={'text': screen.text[-60:]},
+                deviation_reason='chikujou_state_lost',
+                reason='ちくじょうの画面を方策状態なしで確認したためBで閉じる')
+    return True
 
 
 def _paid_recruit_candidate(screen, sub):
@@ -4495,6 +4575,8 @@ def month_sub_step(screen: Screen, mem):
     """
     sub = mem['month_sub']
     kind = screen.kind
+    if kind != 'month_menu':
+        sub['left_menu'] = True     # the flow really left the month menu
     if kind in MONTH_SUB_EXIT_KINDS:
         mem.pop('month_sub')
         _record(mem, 'month_sub_lost', screen=kind, observed_metric=sub,

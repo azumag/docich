@@ -1,11 +1,11 @@
 {
-  "output_sha256": "9cbaf324a2b7fb669f9f6808f82c9b0b805e94ccba52e16cd2f8c2d56a41a8b3",
+  "output_sha256": "eea15c8b47800b0b31c7c9039030ba0b3f8534aa9f474d3225b328f2fc493af8",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "51bede51fdf6593cf06290f1aca686e52c6e3b82b0cf96b900fd4857a4d37b05",
+  "source_sha256": "de8f177f4eb86f0403dbff081a197026f5bf0e4eed5344df975619f2a8baa261",
   "topics": [
+    "OpenCode ENOSPC対策を配備し容量回収完了（Codex）",
     "OpenCode容量回収の安全化と定期実行を実装（VM反映前・Codex）",
-    "容量回収時の一時的な満量と配信復帰を調査（Codex）",
-    "敵卵召喚後の退却優先と召喚獣の回復/攻撃交互（v79）をライブ修正（opencode）"
+    "容量回収時の一時的な満量と配信復帰を調査（Codex）"
   ]
 }

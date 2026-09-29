@@ -188,3 +188,5 @@ WALではEXCLUSIVE connectionを維持したVACUUM INTO+SQLite Backup API+checkp
 PRAGMA locking_modeの保持契約とbackup_finishのrollback契約を使い、DBファイル差し替え・journal無効化・全履歴初期化は行わない。
 根拠: https://www.sqlite.org/c3ref/backup_finish.html と https://www.sqlite.org/pragma.html#pragma_locking_mode 。
 ゲームが休止しても動くdocich user timerで1時間毎・1日保持へ変更する。producerの通常共有gateや緊急opt-outは維持する。
+
+- 2026-09-29 の実測で、圧縮コピー3.02GB＋writeback WAL＋予約1GiBは空き6.55GBを超えることが判明した。`OPENCODE_RETENTION_MEMORY_COMPACTION=1` の正規helperでは、通常のディスク圧縮予算が不足する場合だけ `/dev/shm` の private tmpfs を利用できる。MemAvailableとcgroup v1/v2の全祖先の実効余裕を検査し、コピーの最大見積もり＋4GiBのRAM、tmpfs側にも1GiBの空きを事前確保する。処理中も各予約値を検査し、圧迫時は延期して一時コピーを片付ける。live DBへのSQLite transactional writebackとディスク1GiB予約は共通であり、DB・WALの置換や既存データの追加削除はしない。
