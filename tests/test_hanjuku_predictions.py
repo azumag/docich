@@ -391,6 +391,26 @@ def test_transport_is_fixed_host_bounded_no_secrets_in_errors():
     assert api.NoRedirect().redirect_request(None,None,302,'',{},'https://other.example') is None
 
 
+@pytest.mark.parametrize('prediction_id', [None, 'owned-prediction'])
+def test_helix_lists_latest_one_or_exact_owned_prediction(prediction_id):
+    from urllib.parse import parse_qs, urlsplit
+
+    class Opener:
+        def open(self, request, timeout):
+            assert request.get_method() == 'GET'
+            query = parse_qs(urlsplit(request.full_url).query)
+            expected = {'broadcaster_id': ['channel']}
+            if prediction_id is None:
+                expected['first'] = ['1']
+            else:
+                expected['id'] = [prediction_id]
+            assert query == expected
+            return io.BytesIO(b'{"data":[]}')
+
+    client = api.Helix('test-secret', 'client', 'channel', opener=Opener())
+    assert client.list(prediction_id) == []
+
+
 @pytest.mark.parametrize('body', [b'{}', b'{"data":null}', b'{bad', b'x'*(api.MAX_BYTES+1),
                                  b'{"data":[{"id":"a","title":"b","status":"OTHER","outcomes":[]}]}'])
 def test_bad_remote_response_fails_closed(body):
