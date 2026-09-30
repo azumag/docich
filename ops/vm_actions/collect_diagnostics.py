@@ -447,6 +447,11 @@ def _collect_opencode_session_attribution(
             bucket: _empty_opencode_attribution_bucket()
             for bucket in OPENCODE_CALLER_BUCKETS
         },
+        "coverage": {
+            "all_sessions": 0,
+            "attributed": _empty_opencode_attribution_bucket(),
+            "unattributed": _empty_opencode_attribution_bucket(),
+        },
     }
     try:
         st = db_path.lstat()
@@ -493,21 +498,33 @@ def _collect_opencode_session_attribution(
         cutoff_ms = int((float(now) - max(0, int(window_sec))) * 1000)
         titles = tuple(OPENCODE_CALLER_TITLES)
         placeholders = ",".join("?" for _ in titles)
-        params = (cutoff_ms, *titles)
+        grouped_params = (*titles, cutoff_ms)
 
+        # Collapse every non-allowlisted title to SQL NULL before it crosses
+        # the SQLite/Python boundary. This exposes coverage counts without
+        # leaking unknown/default session titles into diagnostics.
         for title, count in con.execute(
             f"""
-            SELECT title, COUNT(*)
+            SELECT CASE
+                       WHEN title IN ({placeholders}) THEN title
+                       ELSE NULL
+                   END AS fixed_title,
+                   COUNT(*)
               FROM session
              WHERE time_created >= ?
-               AND title IN ({placeholders})
-             GROUP BY title
+             GROUP BY fixed_title
             """,
-            params,
+            grouped_params,
         ):
+            count = max(0, int(count or 0))
+            result["coverage"]["all_sessions"] += count
+            coverage_key = "unattributed" if title is None else "attributed"
+            result["coverage"][coverage_key]["sessions"] += count
+            if title is None:
+                continue
             bucket = OPENCODE_CALLER_TITLES.get(str(title))
             if bucket is not None:
-                result["buckets"][bucket]["sessions"] = max(0, int(count or 0))
+                result["buckets"][bucket]["sessions"] = count
 
         table_specs = (
             ("message", "session_id", "messages", "message_data_chars", "message_max_chars"),
@@ -516,24 +533,36 @@ def _collect_opencode_session_attribution(
         )
         for table, session_column, count_key, chars_key, max_key in table_specs:
             sql = f"""
-                SELECT s.title,
+                SELECT CASE
+                           WHEN s.title IN ({placeholders}) THEN s.title
+                           ELSE NULL
+                       END AS fixed_title,
                        COUNT(x.id),
                        COALESCE(SUM(length(x.data)), 0),
                        COALESCE(MAX(length(x.data)), 0)
                   FROM session AS s
                   JOIN {table} AS x ON x.{session_column} = s.id
                  WHERE s.time_created >= ?
-                   AND s.title IN ({placeholders})
-                 GROUP BY s.title
+                 GROUP BY fixed_title
             """
-            for title, count, chars, max_chars in con.execute(sql, params):
+            for title, count, chars, max_chars in con.execute(sql, grouped_params):
+                count = max(0, int(count or 0))
+                chars = max(0, int(chars or 0))
+                max_chars = max(0, int(max_chars or 0))
+                coverage_key = "unattributed" if title is None else "attributed"
+                coverage_item = result["coverage"][coverage_key]
+                coverage_item[count_key] += count
+                coverage_item[chars_key] += chars
+                coverage_item[max_key] = max(coverage_item[max_key], max_chars)
+                if title is None:
+                    continue
                 bucket = OPENCODE_CALLER_TITLES.get(str(title))
                 if bucket is None:
                     continue
                 item = result["buckets"][bucket]
-                item[count_key] = max(0, int(count or 0))
-                item[chars_key] = max(0, int(chars or 0))
-                item[max_key] = max(0, int(max_chars or 0))
+                item[count_key] = count
+                item[chars_key] = chars
+                item[max_key] = max_chars
 
         result["scan_complete"] = True
         return result
