@@ -173,17 +173,23 @@ def _field_budget(mem, scope):
 
     v121's shared counter includes every monthly attempt. Both counters carry
     chapter/month scope, so subtract only matching, nonnegative integer counts.
-    The new field counter thereafter remains independent of monthly checks.
+    Freeze before any new monthly increment; the new counter thereafter remains
+    independent of monthly checks, including the legacy marker provenance.
     """
     current = mem.get('recruit_field_scan_attempts') or {}
     if current.get('scope') == scope:
-        return current.get('count', 0), False
+        return current.get('count', 0), current.get('legacy_monthly', False)
     def count(key):
         row = mem.get(key) or {}
         value = row.get('count')
         return value if row.get('scope') == scope and type(value) is int and value >= 0 else 0
     monthly = count('recruit_month_scan_attempts')
-    return min(2, max(0, count('recruit_roster_attempts') - monthly)), bool(monthly)
+    field_count = min(2, max(0, count('recruit_roster_attempts') - monthly))
+    current = {'scope': scope, 'count': field_count}
+    if monthly:
+        current['legacy_monthly'] = True
+    mem['recruit_field_scan_attempts'] = current
+    return field_count, bool(monthly)
 
 
 def _observe_status(screen, mem):
@@ -262,6 +268,8 @@ def step(screen, mem, frame):
         return None
     if state is None:
         tick = int(mem.get('tick') or 0)
+        scope = [mem.get('chapter'), mem.get('month')]
+        field_count, legacy_monthly = _field_budget(mem, scope)
         monthly = p.month_menu_ready(screen) and not mem.get('month_sub')
         if monthly:
             if any(mem.get(k) for k in ('recall', 'battle')):
@@ -284,8 +292,6 @@ def step(screen, mem, frame):
                 return None
             mem['recruit_month_scan_attempts'] = {'scope': scope, 'count':
                 (attempts.get('count', 0) if attempts.get('scope') == scope else 0) + 1}
-        scope = [mem.get('chapter'), mem.get('month')]
-        field_count, legacy_monthly = _field_budget(mem, scope)
         field = mem.get('house_field_scan') or {}
         field_done = field.get('scope') == scope
         # Legacy house_scan_* may be the last monthly check. Its source is
@@ -305,7 +311,7 @@ def step(screen, mem, frame):
                                 'age': 0, 'total': 0,
                                 'chapter': mem['chapter'], 'seen': [], 'pending': [], 'month_scan': monthly}
         if not monthly:
-            mem['recruit_field_scan_attempts'] = {'scope': scope, 'count': field_count + 1}
+            mem['recruit_field_scan_attempts']['count'] = field_count + 1
         receipts.begin(mem, state)
         _record(mem, 'scan_started', reason='月ごとに全将軍の卵を確認する')
         return ([p.pad('a')] if move == 'here' else [move]) if monthly else [p.pad('x')]

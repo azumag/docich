@@ -501,7 +501,7 @@ def test_two_failed_month_scans_release_field_repair_scan_in_native_flow():
     state=_failed_month_roster(state)
     mem=state['policy']
     assert mem['recruit_month_scan_attempts']['count']==2
-    assert not mem.get('recruit_field_scan_attempts')
+    assert mem['recruit_field_scan_attempts']['count']==0
     assert 'house_scan_month' not in mem and 'house_scan_tick' not in mem
     # Ordinary monthly policy resumes; it cannot start a third free scan.
     actions,state=decide(month_canvas(250,on='メインメニュー',month=7),state)
@@ -566,3 +566,19 @@ def test_month_finish_never_overwrites_an_existing_field_completion_marker():
     house._finish(mem)
     assert mem['house_scan_tick']==500 and mem['house_scan_month']=='1-7'
     assert mem['house_field_scan']=={'scope':[1,'1-7'],'tick':500}
+
+
+def test_hotload_freezes_legacy_field_exhaustion_before_two_new_month_scans():
+    from docich.hanjuku_bot import decide
+    mem=memory(complete=False);mem['tick']=500;mem.pop('recruit_roster')
+    mem.update(recruit_roster_recheck=True,house_scan_tick=200,house_scan_month='1-7',
+               recruit_roster_attempts={'scope':[1,'1-7'],'count':2},
+               recruit_month_scan_attempts={'scope':[1,'1-7'],'count':0})
+    state=_failed_month_roster({'policy':mem})
+    assert state['policy']['recruit_field_scan_attempts']['count']==2
+    state=_failed_month_roster(state)
+    assert state['policy']['recruit_month_scan_attempts']['count']==2
+    assert state['policy']['recruit_field_scan_attempts']['count']==2
+    actions,state=decide(_survey_field(),state)
+    assert not state['policy'].get('house')
+    assert state['policy']['recruit_field_scan_attempts']['count']==2
