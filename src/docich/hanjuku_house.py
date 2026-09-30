@@ -153,12 +153,43 @@ def _exit(mem, reason, *, limit=None):
 
 
 def _finish(mem):
-    mem.pop('house', None)
-    mem['house_scan_tick'] = int(mem.get('tick') or 0)
-    mem['house_scan_month'] = mem.get('month')
+    state = mem.pop('house', None) or {}
+    # The free monthly roster check never completes or delays field repair.
+    # Only a field transaction in its original chapter/month owns this marker.
+    scope = [mem.get('chapter'), mem.get('month')]
+    if (not state.get('month_scan') and state.get('chapter', scope[0]) == scope[0]
+            and state.get('roster_month', scope[1]) == scope[1]):
+        tick = int(mem.get('tick') or 0)
+        mem['house_scan_tick'] = tick
+        mem['house_scan_month'] = scope[1]
+        mem['house_field_scan'] = {'scope': scope, 'tick': tick}
     mem['uncertain'] = True
     for key in ('near_goal', 'nav_last', 'anchor', 'expect_menu'):
         mem.pop(key, None)
+
+
+def _field_budget(mem, scope):
+    """Separate field budget, including a bounded migration of v121 state.
+
+    v121's shared counter includes every monthly attempt. Both counters carry
+    chapter/month scope, so subtract only matching, nonnegative integer counts.
+    Freeze before any new monthly increment; the new counter thereafter remains
+    independent of monthly checks, including the legacy marker provenance.
+    """
+    current = mem.get('recruit_field_scan_attempts') or {}
+    if current.get('scope') == scope:
+        return current.get('count', 0), current.get('legacy_monthly', False)
+    def count(key):
+        row = mem.get(key) or {}
+        value = row.get('count')
+        return value if row.get('scope') == scope and type(value) is int and value >= 0 else 0
+    monthly = count('recruit_month_scan_attempts')
+    field_count = min(2, max(0, count('recruit_roster_attempts') - monthly))
+    current = {'scope': scope, 'count': field_count}
+    if monthly:
+        current['legacy_monthly'] = True
+    mem['recruit_field_scan_attempts'] = current
+    return field_count, bool(monthly)
 
 
 def _observe_status(screen, mem):
@@ -237,6 +268,8 @@ def step(screen, mem, frame):
         return None
     if state is None:
         tick = int(mem.get('tick') or 0)
+        scope = [mem.get('chapter'), mem.get('month')]
+        field_count, legacy_monthly = _field_budget(mem, scope)
         monthly = p.month_menu_ready(screen) and not mem.get('month_sub')
         if monthly:
             if any(mem.get(k) for k in ('recall', 'battle')):
@@ -259,20 +292,26 @@ def step(screen, mem, frame):
                 return None
             mem['recruit_month_scan_attempts'] = {'scope': scope, 'count':
                 (attempts.get('count', 0) if attempts.get('scope') == scope else 0) + 1}
+        field = mem.get('house_field_scan') or {}
+        field_done = field.get('scope') == scope
+        # Legacy house_scan_* may be the last monthly check. Its source is
+        # ambiguous when monthly attempts exist, so it cannot block the
+        # remaining bounded field observation. A new field receipt can.
+        field_tick = (field.get('tick', 0) if field_done else
+                      0 if legacy_monthly else mem.get('house_scan_tick', 0))
+        field_month = (scope[1] if field_done else
+                       None if legacy_monthly else mem.get('house_scan_month'))
         if ((screen.kind != 'map' and not monthly) or mem.get('chapter') not in HOUSE_VIEW
                 or (not monthly and any(mem.get(k) for k in ('active', 'recall', 'y_jump', 'sortie_attempt', 'month_sub', 'battle')))
-                or (not monthly and tick - int(mem.get('house_scan_tick', 0)) < SCAN_INTERVAL)
-                or (not monthly and 'house_scan_month' in mem and mem['house_scan_month'] == mem.get('month')
-                    and (not mem.get('recruit_roster_recheck')
-                         or (mem.get('recruit_roster_attempts') or {}).get('count', 0) >= 2))):
+                or (not monthly and tick - int(field_tick) < SCAN_INTERVAL)
+                or (not monthly and field_count >= 2)
+                or (not monthly and field_month == mem.get('month') and not mem.get('recruit_roster_recheck'))):
             return None
         state = mem['house'] = {'phase': ('month_open' if monthly and move != 'here' else 'open_roster'),
                                 'age': 0, 'total': 0,
                                 'chapter': mem['chapter'], 'seen': [], 'pending': [], 'month_scan': monthly}
-        attempts = mem.get('recruit_roster_attempts') or {}
-        scope = [mem['chapter'], mem.get('month')]
-        mem['recruit_roster_attempts'] = {'scope': scope, 'count':
-            (attempts.get('count', 0) if attempts.get('scope') == scope else 0) + 1}
+        if not monthly:
+            mem['recruit_field_scan_attempts']['count'] = field_count + 1
         receipts.begin(mem, state)
         _record(mem, 'scan_started', reason='月ごとに全将軍の卵を確認する')
         return ([p.pad('a')] if move == 'here' else [move]) if monthly else [p.pad('x')]
