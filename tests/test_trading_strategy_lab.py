@@ -22,6 +22,7 @@ from docich.trading.strategy_lab import (  # noqa: E402
     StrategyExperiment,
     evaluate_experiment,
     experiment_from_mapping,
+    load_evaluation_history,
     load_strategy_experiment,
     persist_evaluation,
     save_pending_experiment,
@@ -277,6 +278,62 @@ def test_rotation_ignores_pending_identical_to_active(tmp_path):
     assert result["activated_from"] == "generated"
     active = load_strategy_experiment(trading_dir)
     assert active is not None and active.experiment_id == "lab-fresh"
+
+
+def test_evaluation_history_upserts_latest_row_per_experiment(tmp_path):
+    spec_a = experiment_from_mapping(experiment_payload("lab-a"))
+    for closed in (3, 9):
+        persist_evaluation(
+            tmp_path,
+            {"schema_version": 1, "experiment_id": "lab-a", "closed_sells": closed},
+            spec_a,
+        )
+    persist_evaluation(
+        tmp_path,
+        {"schema_version": 1, "experiment_id": "lab-b", "closed_sells": 1,
+         "realized_pnl_jpy": "-500", "profit_factor": "0.4"},
+        experiment_from_mapping(experiment_payload("lab-b")),
+    )
+    history = load_evaluation_history(tmp_path, limit=10)
+    assert [entry["experiment_id"] for entry in history] == ["lab-a", "lab-b"]
+    assert history[0]["closed_sells"] == 9
+    assert history[1]["realized_pnl_jpy"] == "-500"
+    assert load_evaluation_history(tmp_path, limit=0) == []
+
+
+def test_improve_prompt_includes_experiment_history_and_cost_model(tmp_path):
+    g = _global(tmp_path)
+    trading_dir = _trading_dir(g)
+    active = experiment_from_mapping(experiment_payload("lab-active"))
+    save_strategy_experiment(trading_dir, active, activated_at=NOW - 60)
+    persist_evaluation(
+        trading_dir,
+        {
+            "schema_version": 1,
+            "experiment_id": "lab-old",
+            "closed_sells": 40,
+            "wins": 10,
+            "realized_pnl_jpy": "-500",
+            "profit_factor": "0.4",
+            "promotion_ready": False,
+        },
+        experiment_from_mapping(experiment_payload("lab-old")),
+    )
+    captured = {}
+
+    def llm(prompt):
+        captured["prompt"] = prompt
+        return json.dumps({"strategy_experiment": experiment_payload("lab-next")})
+
+    run_paper_improve(g, trading_dir=trading_dir, agents="opencode:x", llm=llm, now=NOW)
+    prompt = captured["prompt"]
+    assert "experiment_history" in prompt
+    assert "lab-old" in prompt
+    assert "-500" in prompt
+    assert "cost_model" in prompt
+    assert '"round_trip_cost_bps": "34"' in prompt
+    assert '"per_execution_cost_bps": "17"' in prompt
+    assert "負けが続いた条件構造を繰り返さず" in prompt
 
 
 def test_promotion_candidate_is_evidence_only_and_private(tmp_path):

@@ -18,6 +18,8 @@ tmux 常駐 (architecture.md §2) を主に systemd --user ユニットで包む
 | `docich-game-switch-fifo.timer` | ゲーム切替FIFOを30秒ごとに独立監視するtimer |
 | `docich-soren91-corner.service` | Soren本番 `:99` にSoren91定時コーナーを載せる長時間oneshot |
 | `docich-soren91-corner.timer` | 毎分 `soren91-corner tick`。設定timezone/start_hour(/weekdays)に一致した時だけ1日1回実行 |
+| `docich-nethack-daily-improve.service` | 完了runの結果・経過要約からcanary候補を作るoneshot。ゲーム操作なし |
+| `docich-nethack-daily-improve.timer` | 毎日05:10 JSTに日次改善候補を1回実行 |
 | `docich-webui.service` | `docich webui` を常駐させる simple ユニット (Tailscale serve で公開する場合のみ利用) |
 
 `docich-free-strategy-worker.service` だけはDocker socketを使うためsystem scopeのunitです。
@@ -43,7 +45,9 @@ for f in \
   docich-game-switch-fifo.service \
   docich-game-switch-fifo.timer \
   docich-soren91-corner.service \
-  docich-soren91-corner.timer
+  docich-soren91-corner.timer \
+  docich-nethack-daily-improve.service \
+  docich-nethack-daily-improve.timer
 do
   sed "s|__DOCICH_ROOT__|${DOCICH_ROOT}|g" "scripts/systemd/${f}" \
     > ~/.config/systemd/user/"${f}"
@@ -63,6 +67,10 @@ systemctl --user enable --now docich-rotate.timer
 # 移行期間中は docich-retro-corner.timer を独立にenableしない
 # (移行後はcanonical timerへのaliasとして解決される)。
 systemctl --user enable --now docich-corner-rotation.timer
+
+# production profileで設定済みのNetHack日次改善候補生成。
+# timerはゲームを起動・操作せず、要約からcanary候補を作る。
+systemctl --user enable --now docich-nethack-daily-improve.timer
 
 # ゲーム切替の呼び出し元が停止しても、期限切れdrainingとFIFOを復旧する。
 # 期限前の試合終了待ちは変更せず、共通配信基盤も再起動しない。

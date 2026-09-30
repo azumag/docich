@@ -36,7 +36,7 @@ def _near(pixel, color, tolerance=10):
 
 def find_hand(frame: Frame):
     """Bounding box of the orange pointing-hand menu cursor, or None."""
-    xs, ys = [], []
+    points = set()
     rgb, width = frame.rgb, frame.width
     for y in range(frame.height):
         base = y * width * 3
@@ -44,15 +44,37 @@ def find_hand(frame: Frame):
             i = base + 3 * x
             pixel = (rgb[i], rgb[i + 1], rgb[i + 2])
             if pixel[0] >= 195 and any(_near(pixel, c) for c in HAND_COLORS):
-                xs.append(x)
-                ys.append(y)
-    if len(xs) < 40:
+                points.add((x, y))
+    if len(points) < 40:
         return None
+    xs, ys = zip(*points)
     # The hand is 18-20 px wide; a wider spread means two orange objects.
     x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-    if x1 - x0 > 26 or y1 - y0 > 18:
-        return None
-    return x0, y0, x1, y1
+    if x1 - x0 <= 26 and y1 - y0 <= 18:
+        return x0, y0, x1, y1
+    # g478: the merchant's orange sprite shares the cursor palette. A
+    # global box merges both objects and loses the hand. Keep only a unique
+    # connected component of the measured hand size; ambiguity still holds.
+    candidates = []
+    while points:
+        seed = points.pop()
+        component, pending = [seed], [seed]
+        while pending:
+            x, y = pending.pop()
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    neighbor = (x + dx, y + dy)
+                    if neighbor in points:
+                        points.remove(neighbor)
+                        component.append(neighbor)
+                        pending.append(neighbor)
+        if len(component) < 40:
+            continue
+        xs, ys = zip(*component)
+        box = min(xs), min(ys), max(xs), max(ys)
+        if 12 <= box[2] - box[0] <= 26 and 8 <= box[3] - box[1] <= 18:
+            candidates.append(box)
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _target_marker(frame: Frame):
@@ -145,36 +167,74 @@ def castle_roofs(frame: Frame, exclude=None) -> list[dict]:
     return out
 
 
-# Our camping tent (野営): a small yellow/orange tent with a pure-red flag.
-# Measured in the isolated probe (2026-09-28): A on it opens
-# いどう/ステータス/キャンプ/きかん. Enemy camps fly another flag.
+# Our camping tent (野営): a yellow/orange body with a light-blue base band
+# and a pure-red flag above it (isolated probe 2026-09-28, confirmed on a
+# live frame). The flag can be clipped by the top edge in live frames
+# (g421 17:06: body at y0-8, no red anywhere in the frame), so the band
+# carries the body signature when the flag is out of view.
+# いどう/ステータス/キャンプ/きかん opens on A; enemy camps fly another flag.
 CAMP_FLAG = (255, 0, 0)
 CAMP_YELLOW = (238, 198, 65)
 CAMP_ORANGE = (238, 113, 57)
+CAMP_BAND = (131, 198, 222)
+
+
+def _camp_flagish(p) -> bool:
+    return p[0] >= 190 and p[1] <= 110 and p[2] <= 110
 
 
 def own_camps(frame: Frame) -> list[dict]:
-    """Our camping tents (野営) with the cursor cell that selects them."""
-    found = []
-    for y in range(3, frame.height - 15):
-        for x in range(3, frame.width - 10):
-            if frame.pixel(x, y) != CAMP_FLAG:
-                continue
-            yellow = orange = 0
-            for yy in range(y + 2, y + 14):
-                for xx in range(x - 5, x + 6):
-                    p = frame.pixel(xx, yy)
-                    if p == CAMP_YELLOW:
-                        yellow += 1
-                    elif p == CAMP_ORANGE:
-                        orange += 1
-            if yellow < 6 or orange < 6:
-                continue
-            target = (x - 8, y - 2)
-            if any(abs(t['target'][0] - target[0]) <= 6 and abs(t['target'][1] - target[1]) <= 6
-                   for t in found):
-                continue
-            found.append({'target': target})
+    """Our camping tents (野営) with the cursor cell that selects them.
+
+    A fully visible tent must show its red flag above the body. A tent
+    clipped by the top edge has no flag in frame: the body (yellow+orange
+    with the light-blue band) still counts, and the target may sit above
+    the screen so the servo scrolls the camera until the flag appears.
+    """
+    body = {(x, y) for y in range(frame.height) for x in range(frame.width)
+            if frame.pixel(x, y) in (CAMP_YELLOW, CAMP_ORANGE, CAMP_BAND)}
+    found, seen = [], set()
+    for start in sorted(body):
+        if start in seen:
+            continue
+        stack, comp = [start], []
+        seen.add(start)
+        while stack:
+            x, y = stack.pop()
+            comp.append((x, y))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    n = (x + dx, y + dy)
+                    if n in body and n not in seen:
+                        seen.add(n)
+                        stack.append(n)
+        if not 12 <= len(comp) <= 200:
+            continue
+        xs = [c[0] for c in comp]
+        ys = [c[1] for c in comp]
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        if x1 - x0 > 16 or y1 - y0 > 16:
+            continue
+        yellow = sum(1 for c in comp if frame.pixel(*c) == CAMP_YELLOW)
+        orange = sum(1 for c in comp if frame.pixel(*c) == CAMP_ORANGE)
+        band = sum(1 for c in comp if frame.pixel(*c) == CAMP_BAND)
+        if yellow < 6 or orange < 6 or band < 3:
+            continue
+        flag = None
+        for yy in range(max(0, y0 - 4), y0):
+            hits = [(xx, yy) for xx in range(max(0, x0 - 6), min(frame.width, x1 + 7))
+                    if _camp_flagish(frame.pixel(xx, yy))]
+            if len(hits) >= 2:
+                flag = hits[0]
+                break
+        clipped = y0 - 6 < 0
+        if flag is None and not clipped:
+            continue
+        target = (flag[0] - 8, flag[1] - 2) if flag else (x0 - 6, y0 - 6)
+        if any(abs(t['target'][0] - target[0]) <= 8 and abs(t['target'][1] - target[1]) <= 8
+               for t in found):
+            continue
+        found.append({'target': target, 'clipped': flag is None})
     return found
 
 
@@ -304,7 +364,9 @@ def _egg_rows(frame: Frame) -> list[EggRow]:
     otherwise it sits left.
     """
     rows = []
-    for line in read_lines(frame, predicate=dark, rect=(0, 140, 256, 216)):
+    # g508: the lower HP row starts at y212; its glyphs need the
+    # final eight-pixel band too (216 cropped the enemy monster away).
+    for line in read_lines(frame, predicate=dark, rect=(0, 140, 256, 224)):
         left, right = line.words(0, 128), line.words(128, 256)
         if len(left) >= 2 and len(right) >= 2:
             continue          # the standard side-by-side battle panel
@@ -330,12 +392,45 @@ def _egg_rows(frame: Frame) -> list[EggRow]:
 _BATTLE_COMMANDS = ((176, 'たまごをつかう'), (192, 'きりふだ'), (208, 'たいきゃく'))
 
 
+def _boss_command_rows(screen):
+    # Measured boss boxes: g508 y192/208; g510 Zeus y196/212. Require
+    # both exact labels: a lone egg row is also an egg-opponent command.
+    rows = {line.y: line.spans() for line in screen.menu_rows}
+    for y in (192, 196):
+        if (rows.get(y) == [(176, 'たまごをつかう')]
+                and rows.get(y + 16) == [(176, 'きりふだ')]):
+            return [line for line in screen.menu_rows if line.y in (y, y + 16)]
+    return []
+
+
 def _human_commands(screen):
-    # The egg-opponent menu has たまごをつかう on its third row. Only
-    # おくのて may move rows as the human command box scrolls.
-    return any((line.y == y and line.spans() == [(176, label)])
+    return bool(_boss_command_rows(screen)) or any((line.y == y and line.spans() == [(176, label)])
                or (line.y in (176, 192, 208) and line.spans() == [(176, 'おくのて')])
                for line in screen.menu_rows for y, label in _BATTLE_COMMANDS)
+
+
+def _partial_human_commands(screen):
+    # The opening box is clipped at the bottom before the other rows arrive.
+    # It must wait, never fall through to legacy A on the egg command.
+    return (screen.battle is None and not screen.egg_rows
+            and len(screen.menu_rows) == 1
+            and screen.menu_rows[0].y in (192, 196, 208, 212, 216)
+            and screen.menu_rows[0].spans() == [(176, 'たまごをつかう')])
+
+
+def egg_choice_names(screen):
+    """The measured Elabel summon picker, not monster skills or HP panels."""
+    from .hanjuku_reference import MONSTER_SKILLS
+    digit_fold = str.maketrans('０１２３４５６７８９', '0123456789')
+    known = {name.translate(digit_fold) for name in MONSTER_SKILLS}
+    rows = {line.y: line.spans() for line in screen.menu_rows}
+    choices = []
+    for y in (176, 192, 208):
+        spans = rows.get(y, [])
+        if len(spans) != 1 or spans[0][0] != 176 or spans[0][1].translate(digit_fold) not in known:
+            return []
+        choices.append(spans[0][1])
+    return choices if screen.battle is None and not screen.egg_rows else []
 
 
 def parse(frame: Frame, *, phase: str | None = None) -> Screen:
@@ -363,8 +458,9 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
             any(line.y == y and line.spans() == [(176,label)] for line in grey)
             for y,label in _BATTLE_COMMANDS)
     if screen.menu_rows or screen.hidden_battle_commands:
-        cursor_rows = ([TextLine(y, ((176, label),)) for y, label in _BATTLE_COMMANDS]
-                       if _human_commands(screen) or screen.hidden_battle_commands else screen.menu_rows)
+        cursor_rows = (_boss_command_rows(screen) or
+                       ([TextLine(y, ((176, label),)) for y, label in _BATTLE_COMMANDS]
+                        if _human_commands(screen) or screen.hidden_battle_commands else screen.menu_rows))
         screen.menu_cursor = _menu_cursor(frame, cursor_rows)
         screen.hidden_battle_commands &= screen.menu_cursor is not None
         screen.egg_rows = _egg_rows(frame)
@@ -392,7 +488,8 @@ def is_world_map(frame: Frame) -> bool:
 
 def classify_text(s: Screen) -> str:
     t = s.text
-    if t == 'いばらのとうをとりまいていたすべてのいばらがしょうめつしました!':
+    if t in ('いばらのとうをとりまいていたすべてのいばらがしょうめつしました!',
+             'いばらとともにけっかいもしょうめつしたようです!'):
         return 'barrier_removed'
     if 'なまえのかきとり' in t:
         return 'name_entry'
@@ -410,7 +507,7 @@ def classify_text(s: Screen) -> str:
         return 'shop_quantity_prompt'
     if 'よろしいでっか' in t or 'なりまんな' in t:
         return 'shop_quantity'
-    if 'かいあたえ' in t or 'ほしいな' in t:
+    if 'かいあたえ' in t or 'ほしいな' in t or 'だからなんかかって' in t:
         return 'gift_request'
     if sum(1 for line in s.lines if PRICE.match(''.join(line.words(120, 256)))) >= 3:
         return 'shop_list'
@@ -422,8 +519,12 @@ def classify_text(s: Screen) -> str:
             word in OKUNOTE_CHOICES for line in s.menu_rows for _,word in line.spans()) and not any(
             'もどれ' in r.known.replace(' ', '') for r in s.menu_rows):
         return 'okunote_menu'
+    if egg_choice_names(s):
+        return 'egg_choice_menu'
     if _human_commands(s) or s.hidden_battle_commands:
         return 'battle_menu'
+    if _partial_human_commands(s):
+        return 'battle_menu_pending'
     if 'たまごをつかう' in t and 'たいきゃく' in t:
         return 'battle_menu'
     if 'きりふだ' in t and 'たいきゃく' in t and any('たいきゃく' in r.known.replace(' ', '') for r in s.menu_rows):

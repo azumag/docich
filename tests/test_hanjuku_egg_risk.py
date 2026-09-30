@@ -8,7 +8,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_policy as policy, hanjuku_reference as reference
-from docich.hanjuku_egg_reference import GENERAL_EGGS, enemy_egg_triggers
+from docich.hanjuku_egg_reference import (GENERAL_DEBUT, GENERAL_EGGS, GENERAL_HP,
+                                          enemy_egg_triggers, general_debut_chapter, general_max_hp)
 from docich.hanjuku_screen import Battle, Screen
 
 MASH = [action for _ in range(policy.POWER_TAPS)
@@ -45,11 +46,18 @@ def test_static_sfc_roster_matches_local_canonical_source_when_available():
     if not source.exists():
         pytest.skip('optional strategy submodule not initialized')
     with source.open() as f:
-        expected = {r['名前']: (r['エッグ'] != '－', int(r['思考']))
-                    for r in csv.DictReader(f) if int(r['ID']) < 128}
+        rows = [r for r in csv.DictReader(f) if int(r['ID']) < 128]
+    expected = {r['名前']: (r['エッグ'] != '－', int(r['思考'])) for r in rows}
     assert GENERAL_EGGS == expected
     assert len(expected) == 128
+    assert GENERAL_HP == {r['名前']: int(r['HP']) for r in rows}
+    assert GENERAL_DEBUT == {r['名前']: int(r['話']) for r in rows if int(r['話']) > 0}
+    assert general_max_hp('クイーン') == 70 and general_max_hp('キッシュ') == 26
+    assert general_max_hp('しゅじんこう') == 90
+    assert general_debut_chapter('ピオーネ') == 2 and general_debut_chapter('クイーン') == 1
+    assert general_debut_chapter('ヒュドラ') is None
     assert enemy_egg_triggers('アルベルト').has_egg is None  # not an SFC roster row
+    assert general_max_hp('アルベルト') is None       # fail-closed outside the roster
 
 
 @pytest.mark.parametrize('name,expected', [
@@ -77,9 +85,47 @@ def test_known_no_clash_risk_preserves_exact_released_mash(enemy):
     assert rec['enemy_hp'] == 27 and rec['ally_hp'] == 90
 
 
+def test_an_hp_gated_chart_card_keeps_its_gate_despite_egg_risk():
+    mem = memory(step='1-A2')
+    assert enter(panel('ガルバンゾー', 30), mem) == MASH
+    assert not mem['battle'].get('card_flow')
+    assert policy.battle_step(panel('ガルバンゾー', 24), mem) == [policy.pad('b')]
+    assert mem['battle']['card_flow']['card'] == 'フットバース'
+    assert mem['battle'].get('strategy_variant') != 'egg_denial_timing'
+
+
+def test_an_egg_risk_hold_is_bounded_and_then_engages():
+    mem = memory(side='defense')         # after the actual rescue alternatives are exhausted
+    policy.battle_step(panel('クミン'), mem)          # first reading: wait for a stable one
+    assert policy.battle_step(panel('クミン'), mem) == [policy.pad('b')]
+    mem['battle']['survival'] = {'exhausted': True}
+    for _ in range(policy.MELEE_HOLD_LIMIT):
+        assert policy.battle_step(panel('クミン'), mem) == []
+    assert policy.battle_step(panel('クミン'), mem) == MASH
+    assert mem['_records'][-1]['melee_control_mode'] == 'power_mash'
+    assert '保留上限' in mem['_records'][-1]['reason']
+
+
+def test_charted_boss_kit_waits_for_a_measured_clash():
+    mem = memory(step='1-B1')
+    assert enter(panel('クイーン', 70), mem) == MASH
+    assert not mem['battle'].get('card_flow')
+    assert not mem['battle'].get('clashed')
+    assert policy.battle_step(panel('クイーン', 68), mem) == [policy.pad('b')]
+    assert mem['battle']['clashed'] is True
+    assert mem['battle']['card_flow']['card'] == 'クースカン'
+    assert mem['battle'].get('strategy_variant') != 'clash_kit_open_timing'
+    assert enter(panel('クイーン'), memory()) == []
+
+
+
 @pytest.mark.parametrize('enemy,chapter', [('クミン', 1), ('クイーン', 1), ('オレガノ', 10), ('不明', 10)])
-def test_risk_or_unknown_enemy_holds_without_any_assist_pulse(enemy, chapter):
+def test_risk_or_unknown_enemy_avoids_assist_pulses_until_resources_are_checked(enemy, chapter):
     mem = memory(chapter=chapter)
+    if enemy in ('クミン', 'オレガノ'):
+        assert enter(panel(enemy), mem) == [policy.pad('b')]
+        assert mem['_records'][-1]['decision'] == 'battle_survival'
+        return  # a known unarmed egg fight now checks resources before contact
     assert enter(panel(enemy), mem) == []
     for _ in range(3):
         assert policy.battle_step(panel(enemy), mem) == []
@@ -145,8 +191,11 @@ def test_melee_observability_survives_existing_schema_one_persistence(tmp_path, 
     spec = importlib.util.spec_from_file_location('egg_risk_persistence', path)
     entry = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(entry)
-    mem = memory()
-    actions = enter(panel(enemy), mem)
+    mem = memory(side='defense')
+    assert policy.battle_step(panel(enemy), mem) == []
+    policy.battle_step(panel(enemy), mem)  # stable observation creates the battle
+    mem['battle']['survival'] = {'exhausted': True}
+    actions = policy.battle_step(panel(enemy), mem)
     rec = mem['_records'][-1]
     state = {'step': 2, 'screen_kind': 'battle', 'phase': 'battle', 'policy': mem}
     entry.persist(tmp_path, state, [rec], {'hanjuku': {'game': 'hanjuku-hero',

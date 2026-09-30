@@ -66,3 +66,9 @@ requires = ["retroarch", "dbus-run-session", "python3"]
 category_id = "21236"
 category_name = "Hanjuku Hero: Aa Sekai yo Hanjuku Nare...!!"
 title_prefix = "[半熟英雄]"
+
+# 2026-09-30 owner-confirmed best: chapter 2 reached, chapter 1 cleared.
+[hanjuku.predictions]
+enabled = true
+seed_best_cleared = 1
+ending_window_seconds = 1800

@@ -22,6 +22,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from ..eval_tmux import kill_session, pane_pids, record_pane, register, release
+from ..tmux import eval_tmux_argv
 from . import frame as F
 from .nudge import Nudge
 from .sandbox import PolicyProcess
@@ -35,7 +37,8 @@ class ArenaError(RuntimeError):
 
 
 def _tmux(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["tmux", *args], capture_output=True, text=True)
+    # 評価は本番tmuxサーバを共有しない (Issue #1280)。
+    return subprocess.run(eval_tmux_argv(list(args)), capture_output=True, text=True)
 
 
 def resolve_binary() -> list[str]:
@@ -56,9 +59,13 @@ def play_match(policy_path, *, binary: list[str] | None = None, tick_s: float = 
     if shutil.which("tmux") is None:
         raise ArenaError("tmux が見つかりません")
     session = f"nva-{os.getpid()}-{threading.get_ident() % 100000}-{int(time.time() * 1000) % 100000}"
+    register()
     created = _tmux("new-session", "-d", "-x", "80", "-y", "24", "-s", session, shlex.join(binary))
     if created.returncode != 0:
+        release()
         raise ArenaError(f"評価用セッションの起動に失敗しました: {created.stderr.strip()[:160]}")
+    for pane in pane_pids(lambda args: _tmux(*args), session):
+        record_pane(pane)
     policy = None
     out: dict = {"end": "error", "score": None, "ticks": 0, "seconds": 0.0, "level": 1,
                  "lives_min": None, "cause": None, "last_frames": [], "policy": {}}
@@ -133,7 +140,8 @@ def play_match(policy_path, *, binary: list[str] | None = None, tick_s: float = 
             policy.close()
         # "=" forces an exact session-name match: without it, tmux falls back to a
         # PREFIX match when the session already died and could kill a parallel match.
-        _tmux("kill-session", "-t", f"={session}")
+        kill_session(lambda args: _tmux(*args), session)
+        release()
 
 
 def _safe_match(policy_path, kwargs) -> dict:

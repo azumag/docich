@@ -67,7 +67,7 @@ def test_off_chart_records_one_request_per_situation_and_holds():
 
 
 def test_unavailable_and_exhausted_charts_are_distinguished():
-    mem = {'chapter': 2, 'orders': {}, '_records': []}
+    mem = {'chapter': 3, 'orders': {}, '_records': []}
     policy.map_step(map_screen(), mem, FRAME)
     assert decisions(mem, 'chart_adjust_request')[0]['off_chart_reason'] == 'chart_unavailable'
     mem = stuck_memory()
@@ -195,6 +195,7 @@ def test_chapter_change_drops_adjusted_chart():
     {'orders': [{'step': 'J1', 'general': 'x', 'source': 'ゴーメン', 'target': 'けっかい',
                  'after': ['whenever']}]},
     {'orders': [{'step': 'J1', 'general': 'x', 'source': 'ゴーメン', 'target': 'けっかい'}] * 2},
+    {'request_digest': 'nothex'},
     {'purchases': {'month': [1, 13]}},
     {'purchases': {'month': [1, 8], 'cards': [['ハッキング', 1]]}},
     {'purchases': {'month': [1, 8], 'soldiers': -1}},
@@ -274,7 +275,11 @@ def test_interim_candidates_exclude_boss_and_captured_castles():
     candidates = policy.interim_candidates(mem)
     targets = {c['target'] for c in candidates.values()}
     assert targets == {'ジョンリギ', 'スペンソニア'}
-    assert all(c['cards'] == [] and c['after'] is None for c in candidates.values())
+    assert all(c['after'] is None for c in candidates.values())
+    # Owner (2026-09-28): attacks carry cards - the chart's for that castle, else the opener.
+    chart_cards = {o['target']: list(o['cards']) for o in chart.orders(1) if o['cards']}
+    for c in candidates.values():
+        assert c['cards'] == chart_cards.get(c['target'], list(policy.INTERIM_CARDS))
     # ジョンリギ is uncaptured: 1-C2 (ココット from ジョンリギ) starts from ほんじょう.
     assert all(c['source'] in set(mem['captured']) | {'ほんじょう'} for c in candidates.values())
 
@@ -632,6 +637,152 @@ def test_adjusted_boss_order_reaches_boss_entry_and_battle_tactics(monkeypatch):
     assert mem['retry_context'][j2]['expected_metric']['cards'] == ['クースカン', 'ノリウツール']
 
 
+def test_a_later_chapter_enemy_general_advances_the_chapter():
+    # g454 08:24: クイーン defeated, then ピオーネ/ヘラ (debut chapter 2)
+    # attacked; no chapter-2 castle name appeared and the bot stayed on
+    # chapter 1 coordinates.
+    mem = stuck_memory()
+    policy.observe_chapter_general(mem, 'ピオーネ')
+    assert mem['chapter'] == 2
+    [seen] = decisions(mem, 'chapter_seen')
+    assert seen['observed_metric'] == {'chapter': 2, 'evidence': 'ピオーネ'}
+    # A chapter-1 general or an unknown name never moves the chapter.
+    mem = stuck_memory()
+    policy.observe_chapter_general(mem, 'クイーン')
+    policy.observe_chapter_general(mem, 'ヒュドラ')
+    assert mem['chapter'] == 1 and not decisions(mem, 'chapter_seen')
+    # A further jump (debut 7) needs this chapter's boss defeat as context;
+    # with it, the chapter advances to the general's debut chapter.
+    policy.observe_chapter_general(mem, 'ミモザ')
+    assert mem['chapter'] == 1
+    mem['boss_defeated'] = 1
+    policy.observe_chapter_general(mem, 'ミモザ')
+    assert mem['chapter'] == 7
+
+
+def test_a_battle_panel_with_a_next_chapter_enemy_advances_the_chapter():
+    from docich.hanjuku_screen import Battle
+    mem = stuck_memory()
+    for _ in range(2):
+        screen = _text_screen('', 'battle')
+        screen.battle = Battle(enemy='ピオーネ', ally='どうし', enemy_hp=46, ally_hp=90)
+        policy.battle_step(screen, mem)
+    assert mem['chapter'] == 2
+    assert decisions(mem, 'chapter_seen')[-1]['observed_metric']['evidence'] == 'ピオーネ'
+
+
+def test_an_unclassified_card_use_leaves_the_sortie_kit():
+    # g452 07:14: ヴィーナス selected both carried イッテツーン (no calibrated
+    # receipt); the next battle re-planned them and opened an empty list.
+    mem = {'_records': []}
+    order = {'step': 'I:x:1', 'general': 'ヴィーナス', 'source': 'スペンソニア',
+             'target': 'ジョンリギ', 'cards': ['イッテツーン', 'イッテツーン'], 'after': None}
+    mem['launched_orders'] = {'I:x:1': order}
+    for _ in range(2):
+        policy._card_use_unclassified(
+            mem, {'step': 'I:x:1', 'cards_selected': ['イッテツーン'], 'cards_unclassified': [],
+                  'card_flow': {'card': 'イッテツーン', 'stage': 'announce', 'selection_planned': True}},
+            '実使用告知を確認できないまま白兵戦へ復帰')
+    assert mem['kit_spent'] == {'I:x:1': ['イッテツーン', 'イッテツーン']}
+    assert policy._deploy_cards(order, mem) == []
+    assert [t['card'] for t in policy._tactics(mem, 'I:x:1') if t.get('step') == 'I:x:1'] == []
+    # A new sortie of the same order carries a fresh kit.
+    mem['active'] = 'I:x:1'
+    policy._finish_order(mem, 'launched')
+    assert policy._deploy_cards(order, mem) == ['イッテツーン', 'イッテツーン']
+    assert [t['card'] for t in policy._tactics(mem, 'I:x:1') if t.get('step') == 'I:x:1'] \
+        == ['イッテツーン', 'イッテツーン']
+
+
+def test_a_second_battle_does_not_replan_a_spent_sortie_card():
+    mem = stuck_memory()
+    step = 'I:abc:1'
+    order = {'step': step, 'general': 'ヴィーナス', 'source': 'スペンソニア',
+             'target': 'ジョンリギ', 'cards': ['イッテツーン', 'イッテツーン'], 'after': None}
+    mem['orders'] = {step: 'launched'}
+    mem['launched_orders'] = {step: order}
+    mem['kit_spent'] = {step: ['イッテツーン', 'イッテツーン']}
+    mem['_records'] = []
+    mem['attack'] = {'general': 'ヴィーナス', 'castle': 'ジョンリギ', 'side': 'attack',
+                     'step': step, 'entry_evidence': None}
+    actions = _battle(mem, 'キャンディー', 'ヴィーナス', [26, 26])
+    assert decisions(mem, 'battle_card') == []
+    assert decisions(mem, 'battle_start')[0]['planned_cards'] == []
+    assert actions[-1] == [policy.pad('b')]  # check rescue resources, never re-plan a spent card
+    assert decisions(mem, 'battle_survival')
+
+
+def test_dropped_chart_card_is_never_planned_or_announced_in_battle():
+    # g438 04:18: the sortie dropped ミックミー (never in stock), but the battle
+    # still planned it and announced 開幕にミックミーを使います for the missing card.
+    mem = stuck_memory()
+    mem['captured'] += ['スペンソニア', 'ジョンリギ']
+    mem['orders']['1-B1'] = 'failed'
+    rid = _adopt(mem, [{'step': 'J2', 'general': chart.HERO, 'source': 'スペンソニア',
+                        'target': 'けっかい', 'cards': ['クースカン', 'ミックミー', 'ミックミー']}])
+    j2 = adjust.execution_step(rid, 'J2')
+    mem['card_drop'] = {j2: ['ミックミー', 'ミックミー']}   # both copies left behind
+    derived = [t for t in policy._tactics(mem, j2) if t.get('step') == j2]
+    assert [(t['enemy'], t['card']) for t in derived] == [('クイーン', 'クースカン')]
+    mem['_records'] = []
+    mem['attack'] = {'general': chart.HERO, 'castle': 'けっかい', 'side': 'attack',
+                     'step': j2, 'entry_evidence': 'measured_boss_entry'}
+    assert _battle(mem, 'クイーン', chart.HERO, [90, 90, 85])[-1] == [policy.pad('b')]
+    assert mem['battle']['card_flow']['card'] == 'クースカン'
+    assert [r['card'] for r in decisions(mem, 'battle_card')] == ['クースカン']
+    assert decisions(mem, 'battle_start')[0]['planned_cards'] == ['クースカン']
+
+
+def test_boss_kits_unverified_card_requires_measured_boss_evidence():
+    # The boss kit must not fire in the road/guard fight on the way (g438
+    # 04:18: ソーピニヨン road battle opened the boss kit's ミックミー).
+    mem = stuck_memory()
+    mem['captured'] += ['スペンソニア', 'ジョンリギ']
+    mem['orders']['1-B1'] = 'failed'
+    rid = _adopt(mem, [{'step': 'J2', 'general': 'ヴィーナス', 'source': 'スペンソニア',
+                        'target': 'けっかい', 'cards': ['クースカン', 'ミックミー', 'ミックミー']}])
+    j2 = adjust.execution_step(rid, 'J2')
+    defaults = [t for t in policy._tactics(mem, j2)
+                if t.get('step') == j2 and t['card'] == 'ミックミー']
+    assert defaults and all(t['open'] and t['boss_only'] for t in defaults)
+
+    def fight(enemy, hp_seq, **attack):
+        mem['battle'] = None
+        mem['battle_seen'] = None
+        mem['_records'] = []
+        mem['attack'] = attack or None
+        from docich.hanjuku_screen import Battle
+        out = []
+        for enemy_hp in hp_seq:
+            screen = _text_screen('', 'battle')
+            screen.battle = Battle(enemy=enemy, ally='ヴィーナス', enemy_hp=enemy_hp, ally_hp=80)
+            out.append(policy.battle_step(screen, mem))
+        return out
+    # An unmeasured location never opens the kit.
+    fight('ソーピニヨン', [48, 48])
+    assert not decisions(mem, 'battle_card')
+    assert 'card_flow' not in (mem['battle'] or {})
+    assert decisions(mem, 'battle_start')[0]['planned_cards'] == []
+    # The measured boss entry does.
+    fight('クイーン', [90, 90], general='ヴィーナス', castle='けっかい', side='attack',
+          step=j2, entry_evidence='measured_boss_entry')
+    assert [r['card'] for r in decisions(mem, 'battle_card')] == ['ミックミー']
+    assert mem['battle']['card_flow']['card'] == 'ミックミー'
+    # g484: entry text was not recognized, but the Queen panel was measured.
+    # Use the known carried kit without inventing a castle/side/entry receipt.
+    mem['sorties'] = {j2: {'general': 'ヴィーナス', 'target': 'けっかい',
+                          'status': 'en_route'}}
+    fight('クイーン', [70, 70])
+    assert [r['card'] for r in decisions(mem, 'battle_card')] == ['ミックミー']
+    assert decisions(mem, 'battle_start')[0]['planned_cards'] == ['クースカン', 'ミックミー', 'ミックミー']
+    assert mem['battle']['castle'] is None and mem['battle']['side'] is None
+    assert mem['battle'].get('entry_evidence') is None
+    # A boss name from another chapter cannot unlock this chapter's kit.
+    fight('にせヒーロー', [70, 70])
+    assert not decisions(mem, 'battle_card')
+    assert decisions(mem, 'battle_start')[0]['planned_cards'] == []
+
+
 def test_launched_old_generation_keeps_its_tactics_after_a_new_plan(monkeypatch):
     mem = stuck_memory()
     first = _adopt(mem, [{'step': 'J1', 'general': 'ココット', 'source': 'ゴーメン',
@@ -681,11 +832,51 @@ def test_ambiguous_sorties_are_not_guessed(monkeypatch):
     assert mem['attack']['step'] is None
     assert decisions(mem, 'attack_observed')[-1]['deviation_reason'] == 'ambiguous_sortie'
     assert all(v['status'] == 'en_route' for v in mem['sorties'].values())
-    # An ambiguous boss entry is held, never bound to either sortie.
+    # An ambiguous boss entry advances the screen without binding either sortie.
     mem['attack'] = None
     entry = f'{chart.HERO}しょうぐんがボスじょうにせめこんだ!!'
-    assert policy.message_step(_text_screen(entry), mem) == []
-    assert decisions(mem, 'situation_held')[-1]['observed_metric']['sortie_match'] == 'ambiguous'
+    assert policy.message_step(_text_screen(entry), mem) == [policy.pad('a')]
+    assert mem['attack']['step'] is None
+    assert decisions(mem, 'attack_observed')[-1]['deviation_reason'] == 'ambiguous_sortie'
+    assert all(v['status'] == 'en_route' for v in mem['sorties'].values())
+
+
+def test_ambiguous_boss_entry_fights_with_the_marching_sorties_kit():
+    # g460 17:32: the boss entry could not name which どうし->けっかい sortie it
+    # was - the base 1-B1 and the adjusted K1 were both still on the road - so
+    # no order may be bound. The battle must still fight with the kit of the
+    # sortie that is marching: with an unknown step every charted tactic is
+    # filtered out and the hero swings bare-handed (planned_cards=[] -> HP
+    # 88..0 -> 17:35 game over).
+    mem = stuck_memory()
+    mem['captured'] += ['スペンソニア', 'ジョンリギ']
+    k1 = 'A:bd2304e3:K1'
+    base = {'step': '1-B1', 'general': chart.HERO, 'source': 'スペンソニア', 'target': 'けっかい',
+            'cards': ['クースカン', 'ノリウツール'], 'after': None,
+            'note': 'クースカン ノリウツールを持ちボス城へ 途中敵は無視'}
+    adjusted = {'step': k1, 'general': chart.HERO, 'source': 'スペンソニア', 'target': 'けっかい',
+                'cards': ['クースカン', 'ノリウツール', 'イッテツーン'],
+                'after': ['captured', 'スペンソニア'], 'note': '卵落としにイッテツーンを携行'}
+    mem['orders'].update({'1-B1': 'launched', k1: 'launched'})
+    mem['launched_orders'] = {'1-B1': base, k1: adjusted}
+    mem['sorties'] = {
+        '1-B1': {'general': chart.HERO, 'target': 'けっかい', 'status': 'en_route', 'tick': 1684},
+        k1: {'general': chart.HERO, 'target': 'けっかい', 'status': 'en_route', 'tick': 2292}}
+    mem['_records'] = []
+    entry = f'{chart.HERO}しょうぐんがボスじょうにせめこんだ!!'
+    assert policy.message_step(_text_screen(entry), mem) == [policy.pad('a')]
+    assert mem['attack'] == {'general': chart.HERO, 'castle': 'けっかい', 'side': 'attack',
+                             'step': None, 'entry_evidence': 'measured_boss_entry'}
+    _battle(mem, 'クイーン', chart.HERO, [70, 70])
+    assert decisions(mem, 'battle_start')[0]['planned_cards'] \
+        == ['クースカン', 'ノリウツール', 'イッテツーン']
+    assert [r['observed_metric']['sortie_step'] for r in decisions(mem, 'battle_step_resolved')] == [k1]
+    # A battle at a castle we hold is a defence and keeps its own step.
+    context = policy._battle_context({'attack': {'general': chart.HERO, 'castle': 'スペンソニア',
+                                                 'side': 'attack', 'step': None},
+                                      'captured': ['スペンソニア'], 'sorties': mem['sorties']},
+                                     chart.HERO)
+    assert (context['side'], context['step']) == ('defense', None)
 
 
 def test_interim_runs_after_an_exhausted_plan_but_not_while_a_plan_waits(monkeypatch):
@@ -754,3 +945,206 @@ def test_soldier_recalc_holds_on_unreadable_gold_and_skips_when_broke():
     month.header = {**header, 'gold': 0}
     policy.month_step(month, mem)
     assert shop['soldiers'] == 0 and shop['soldiers_done'] is True
+
+
+def test_worker_prompts_with_garrisons_and_drops_orders_whose_general_is_elsewhere(tmp_path):
+    # g421 e7df88f1: F2/F3/F5 sent ココット/ヴィーナス from スペンソニア, where only
+    # どうし stood; each failed at the castle list. The request now says who is
+    # where, and orders that cannot start are dropped at save.
+    from docich import hanjuku_chart_worker as worker
+    mem = stuck_memory()
+    mem.update(tick=500, lost=['ジョンリギ'],
+               garrison={'スペンソニア': [chart.HERO], 'カストーラ': ['ヴィーナス']},
+               sorties={'I:1': {'general': 'ゼウス', 'target': 'スペンソニア', 'status': 'en_route', 'tick': 450},
+                        'I:0': {'general': 'ココット', 'target': 'ゴーメン', 'status': 'en_route', 'tick': 1}})
+    policy.map_step(map_screen(), mem, FRAME)
+    [record] = decisions(mem, 'chart_adjust_request')
+    assert record['garrison'] == {'カストーラ': ['ヴィーナス'], 'スペンソニア': [chart.HERO]}
+    assert record['lost'] == ['ジョンリギ'] and record['home_lost'] is False
+    assert record['en_route'] == [{'general': 'ゼウス', 'target': 'スペンソニア'}]   # stale ココット ages out
+    adjust.write_request(tmp_path, record, {'game': 'hanjuku-hero', 'runtime_id': 'r', 'generation': 1,
+                                            'lease_id': 'l'})
+    prompts = []
+
+    def order(step, general, source):
+        return {'step': step, 'general': general, 'source': source, 'target': 'けっかい',
+                'cards': [], 'after': None}
+
+    def generate(g, cfg, prompt):
+        prompts.append(prompt)
+        body = {'orders': [order('F1', chart.HERO, 'スペンソニア'),      # recorded there
+                           order('F2', 'ヴィーナス', 'スペンソニア'),     # recorded at カストーラ
+                           order('F3', 'ゼウス', 'スペンソニア'),         # marching
+                           order('F4', 'ココット', 'ゴーメン'),           # unknown: allowed
+                           order('F5', chart.HERO, 'ジョンリギ')]}        # lost source
+        return json.dumps(body, ensure_ascii=False), 'codex'
+    assert worker.consider(None, Game(), tmp_path, generate=generate, background=False)
+    assert '"garrison"' in prompts[0] and 'カストーラ' in prompts[0] and '"en_route"' in prompts[0]
+    saved = adjust.load(tmp_path)
+    assert [o['step'] for o in saved['orders']] == ['F1', 'F4']
+    events = [json.loads(line) for line in
+              (tmp_path / f'{adjust.HISTORY_LOG}.jsonl').read_text(encoding='utf-8').splitlines()]
+    [dropped] = [e for e in events if e['event'] == 'adjusted_orders_dropped']
+    assert {d['step']: d['why'] for d in dropped['dropped']} == {
+        'F2': 'general_elsewhere', 'F3': 'general_marching', 'F5': 'source_lost'}
+
+
+def test_adjust_prompt_grounds_cards_in_observed_stock_and_chapter_purchases(tmp_path):
+    # g438 04:04: the model planned ミックミー/エンジェリン for chapter 1, where
+    # neither is sold or owned; it was never told what the player holds.
+    from docich import hanjuku_chart_worker as worker
+    mem = stuck_memory()
+    mem['card_stock'] = {'イッテツーン': 10, 'クースカン': 2}
+    policy.map_step(map_screen(), mem, FRAME)
+    [record] = decisions(mem, 'chart_adjust_request')
+    assert record['card_stock'] == {'イッテツーン': 10, 'クースカン': 2}
+    adjust.write_request(tmp_path, record, {'game': 'hanjuku-hero', 'runtime_id': 'r',
+                                            'generation': 1, 'lease_id': 'l'})
+    request = json.loads((tmp_path / adjust.REQUEST_FILE).read_text(encoding='utf-8'))
+    assert request['card_stock'] == {'イッテツーン': 10, 'クースカン': 2}
+    prompt = worker.build_prompt(request, [])
+    assert '"card_stock"' in prompt and '"クースカン": 2' in prompt
+    assert 'card_stock に無い札・在庫0の札' in prompt
+    # The chapter's charted month purchases tell the model which cards its
+    # shops sell (chapter 1 lists no ミックミー/エンジェリン).
+    assert '"purchases"' in prompt and '"chart_gold"' in prompt
+    # The 卵落 rule grounds which cards can actually drop an egg, on max HP.
+    assert '卵落値: ' in prompt and 'イッテツーン=8' in prompt and 'クースカン=0' in prompt
+    assert 'mod 16' in prompt and 'ally_max_hp / enemy_max_hp' in prompt
+    assert '開戦時HPは負傷していることがある' in prompt
+
+
+def test_recent_results_carry_battle_start_hp_for_the_egg_drop_rule(tmp_path):
+    from docich import hanjuku_chart_worker as worker
+    records = [{'event': 'decision', 'decision': 'battle_start', 'enemy': 'キッシュ',
+                'ally': 'ココット', 'enemy_hp': 26, 'ally_hp': 24, 'chart_step': 'A:x:J1'},
+               {'event': 'decision', 'decision': 'battle_card_selected', 'card': 'グリンボー'},
+               {'event': 'decision', 'decision': 'order_failed', 'general': 'ココット'}]
+    (tmp_path / 'hanjuku_decisions.jsonl').write_text(
+        '\n'.join(json.dumps(r, ensure_ascii=False) for r in records) + '\n', encoding='utf-8')
+    assert worker._recent_results(tmp_path) == [
+        {'decision': 'battle_start', 'enemy': 'キッシュ', 'ally': 'ココット',
+         'enemy_hp': 26, 'ally_hp': 24, 'chart_step': 'A:x:J1',
+         'ally_max_hp': 24, 'enemy_max_hp': 26},
+        {'decision': 'order_failed', 'general': 'ココット'}]
+
+
+def test_recent_results_maps_the_named_hero_to_fixed_max_hp(tmp_path):
+    from docich import hanjuku_chart_worker as worker
+    record = {'event': 'decision', 'decision': 'battle_start', 'enemy': 'キッシュ',
+              'ally': chart.HERO, 'enemy_hp': 20, 'ally_hp': 60, 'chart_step': 'A:x:J1'}
+    (tmp_path / 'hanjuku_decisions.jsonl').write_text(
+        json.dumps(record, ensure_ascii=False) + '\n', encoding='utf-8')
+    [result] = worker._recent_results(tmp_path)
+    assert result['ally'] == chart.HERO
+    assert result['ally_max_hp'] == 90
+    assert result['enemy_max_hp'] == 26
+
+
+def test_same_situation_with_new_card_stock_republishes_the_request():
+    mem = stuck_memory()
+    policy.map_step(map_screen(), mem, FRAME)
+    [first] = decisions(mem, 'chart_adjust_request')
+    rid, digest = first['request_id'], mem['chart_adjust']['request_digest']
+    assert digest == adjust.request_digest(first)
+    mem['card_stock'] = {'クースカン': 2}
+    policy.map_step(map_screen(), mem, FRAME)
+    requests = decisions(mem, 'chart_adjust_request')
+    assert len(requests) == 2
+    second = requests[-1]
+    assert second['request_id'] == rid and second['card_stock'] == {'クースカン': 2}
+    assert mem['chart_adjust']['request_digest'] != digest
+
+
+def test_write_request_binds_the_payload_revision(tmp_path):
+    mem = stuck_memory()
+    policy.map_step(map_screen(), mem, FRAME)
+    [record] = decisions(mem, 'chart_adjust_request')
+    payload = adjust.write_request(tmp_path, record, {'game': 'hanjuku-hero', 'runtime_id': 'r',
+                                                      'generation': 1, 'lease_id': 'l'})
+    assert payload['request_digest'] == adjust.request_digest(record)
+    written = json.loads((tmp_path / adjust.REQUEST_FILE).read_text(encoding='utf-8'))
+    assert written['request_digest'] == payload['request_digest']
+    assert adjust.request_digest({**record, 'card_stock': {'クースカン': 2}}) \
+        != payload['request_digest']
+
+
+def test_a_bound_answer_is_adopted_only_for_the_current_payload_revision():
+    mem = stuck_memory()
+    policy.map_step(map_screen(), mem, FRAME)
+    rid = mem['chart_adjust']['request_id']
+    digest = mem['chart_adjust']['request_digest']
+    mem['_adjusted'] = adjust.validate(adjusted_doc(rid, request_digest='0' * 64))
+    policy.map_step(map_screen(), mem, FRAME)
+    assert not decisions(mem, 'chart_adjust_applied') and mem.get('active') is None
+    mem['_adjusted'] = adjust.validate(adjusted_doc(rid, request_digest=digest))
+    policy.map_step(map_screen(), mem, FRAME)
+    [applied] = decisions(mem, 'chart_adjust_applied')
+    assert applied['steps'] == [adjust.execution_step(rid, 'J1'),
+                                adjust.execution_step(rid, 'J2')]
+    # A digestless answer predates the revision field: adopted once (hot-load).
+    mem = stuck_memory()
+    policy.map_step(map_screen(), mem, FRAME)
+    mem['_adjusted'] = adjust.validate(adjusted_doc(mem['chart_adjust']['request_id']))
+    policy.map_step(map_screen(), mem, FRAME)
+    assert decisions(mem, 'chart_adjust_applied')
+
+
+def test_worker_discards_answer_when_the_payload_revision_changed(tmp_path):
+    from docich import hanjuku_chart_worker as worker
+    request = _requested(tmp_path)
+
+    def generate(g, cfg, prompt):
+        current = json.loads((tmp_path / adjust.REQUEST_FILE).read_text(encoding='utf-8'))
+        current['card_stock'] = {'イッテツーン': 0}
+        current['request_digest'] = adjust.request_digest(current)
+        (tmp_path / adjust.REQUEST_FILE).write_text(json.dumps(current), encoding='utf-8')
+        return json.dumps(adjusted_doc(request['request_id'])), 'codex'
+    assert worker.consider(None, Game(), tmp_path, generate=generate, background=False)
+    assert adjust.load(tmp_path) is None
+    events = [json.loads(line) for line in
+              (tmp_path / f'{adjust.HISTORY_LOG}.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [e['status'] for e in events if e['event'] == 'adjust_worker'] == ['superseded']
+
+
+def test_an_answer_with_no_startable_order_is_invalid(tmp_path):
+    request = {'request_id': 'a' * 16, 'lost': [], 'en_route': [],
+               'garrison': {'スペンソニア': [chart.HERO], 'ゴーメン': ['ココット']}}
+    doc = adjusted_doc('a' * 16, orders=[{'step': 'J1', 'general': 'ココット', 'source': 'スペンソニア',
+                                          'target': 'けっかい', 'cards': [], 'after': None}])
+    with pytest.raises(ValueError):
+        adjust.save(tmp_path, doc, request)
+    assert adjust.load(tmp_path) is None
+    assert adjust.save(tmp_path, doc)['orders'][0]['step'] == 'J1'   # no request: unchanged behaviour
+
+
+
+def test_two_carried_unverified_cards_keep_distinct_identity_after_first_selection():
+    from docich.hanjuku_screen import Battle, Screen
+    from docich.hanjuku_font import TextLine
+    order = {'step': 'I:pair:1', 'general': 'ヴィーナス', 'source': 'カストーラ',
+             'target': 'キカンドン', 'cards': ['イッテツーン', 'イッテツーン'], 'after': None}
+    mem = {'chapter': 1, 'launched_orders': {'I:pair:1': order},
+           'attack': {'general': 'ヴィーナス', 'castle': 'キカンドン', 'side': 'attack', 'step': 'I:pair:1'}}
+    battle = Screen(lines=[], hand=None, text='', kind='battle',
+                    battle=Battle('ガルバンゾー', 30, 'ヴィーナス', 82))
+    policy.battle_step(battle, mem)
+    assert policy.battle_step(battle, mem) == [policy.pad('b')]
+    cur = mem['battle']
+    first = cur['card_flow']['tactic_id']
+    for expected_remaining in (1, 0):
+        cur['card_flow']['stage'] = 'list'
+        listing = Screen(lines=[TextLine(176, tuple((176+8*i,c) for i,c in enumerate('イッテツーン')))],
+                         hand=(150,170,172,186), text='イッテツーン', kind='text')
+        assert policy.card_list_step(listing, mem) == [policy.pad('a')]
+        policy._card_use_unclassified(mem, cur, '選択後の告知未確認')
+        assert len(policy._deploy_cards(order, mem)) == expected_remaining
+        out = policy.battle_step(battle, mem)
+        if expected_remaining:
+            assert out == [policy.pad('b')]
+            assert cur['card_flow']['card'] == 'イッテツーン'
+            assert cur['card_flow']['tactic_id'] != first
+        else:
+            assert cur['card_flow'] is None
+    assert mem['kit_spent']['I:pair:1'] == ['イッテツーン', 'イッテツーン']
+    assert len(set(cur['tactics_done'])) == 2

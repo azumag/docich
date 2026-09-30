@@ -26,7 +26,7 @@ from ..game_switch import (
 )
 from ..naming import NameValidationError, validate_tmux_name
 from ..presentation import cell_aspect_scale
-from ..tmux import OwnershipMismatchError, Tmux, TmuxOwnership
+from ..tmux import OwnershipMismatchError, Tmux, TmuxOwnership, eval_server_name
 from ..xkit import XKit
 from ..resolver.lease import activity_lock
 from .base import Adapter, AdapterError, Observation
@@ -301,7 +301,7 @@ class CliCoordinatorAdapter:
 
     name = "cli"
 
-    def __init__(self, g, game, spec: RuntimeSpec):
+    def __init__(self, g, game, spec: RuntimeSpec, *, eval_tmux=None):
         self.g = g
         self.game = game
         self.spec = spec
@@ -309,6 +309,9 @@ class CliCoordinatorAdapter:
         # ("docich") only reaches docich-game-gN via tmux prefix matching,
         # which breaks the moment any other docich-* session exists.
         self.tmux = Tmux(self.spec.adapter_session)
+        # resolver/bot_eval sessions live on the private evaluation server
+        # (Issue #1280), so the cleanup watch must look there.
+        self.eval_tmux = eval_tmux or Tmux(server=eval_server_name())
         self.agent_enabled = game.agent.enabled
         self.requires_round_boundary = game.lifecycle.require_round_boundary
         self.round_boundary_timeout_s = game.lifecycle.boundary_timeout_s
@@ -572,7 +575,7 @@ class CliCoordinatorAdapter:
                 if not isinstance(sessions,list) or any(not isinstance(s,str) or not s.startswith(f"evalr-{pid}-") for s in sessions):
                     raise AdapterError("resolver改善sessionの所有情報が不正です")
                 for session in sessions:
-                    if self.tmux.session_target_exists(session,strict=True) and not cmdline.exists():
+                    if self.eval_tmux.session_target_exists(session,strict=True) and not cmdline.exists():
                         raise AdapterError("resolver改善daemon消滅後も評価sessionが残っています")
                 if not cmdline.exists(): marker.unlink();break
                 raw=cmdline.read_bytes().replace(b"\0",b" ").decode("utf-8",errors="replace")

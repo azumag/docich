@@ -29,6 +29,7 @@ from .game_switch import (
     ERROR_RECOVERY_REQUIRED,
     GameSwitchCoordinator,
     GameSwitchStore,
+    RuntimeSpec,
     atomic_write_json,
     new_request_id,
 )
@@ -56,6 +57,10 @@ STARTING_STALE_MINUTES = 10
 # active slot中のゲーム専用agent監視間隔。共通配信基盤やゲーム本体は触らない。
 AGENT_REPAIR_POLL_SECONDS = 30.0
 PENDING_SWITCH_STATUSES = {"queued", "in_progress", "busy"}
+# 死んだruntimeの正規復旧 (recover-runtime) が game window の再作成と
+# readiness に使う上限。通常の switch より短くし、operatorの対話操作を
+# 待たせ続けない。
+RECOVER_RUNTIME_DEADLINE_S = 180.0
 
 
 class RetroCornerError(RuntimeError):
@@ -348,6 +353,10 @@ def _strategy_value_text(value) -> str:
         return "未設定"
     text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return text if len(text) <= 32 else text[:29] + "…"
+
+
+PRESENTATION_NOT_READY = "RetroArch native presentation is not ready"
+PRESENTATION_RETRY_LIMIT = 45  # x 2 s: a presenter still starting under load (Issue #1280)
 
 
 class RetroCornerManager:
@@ -1031,6 +1040,10 @@ class RetroCornerManager:
         # queue dispatchでは次コーナーが共有stateを上書きし得るため、確定済みの
         # コーナー期間も明示して競合させる (job側のstate読みを不要にする)。
         argv += self._spawn_window_args(state)
+        request_id = state.get("rotation_request_id")
+        if (state.get("game") == "moon-buggy"
+                and isinstance(request_id, str) and request_id):
+            argv += ["--request-id", request_id]
         try:
             self._spawn(argv, log_path)
             state["improve_job"] = {"spawned": True, "date": date_str, "log": str(log_path)}
@@ -1047,6 +1060,7 @@ class RetroCornerManager:
         dry_run: bool = False,
         game: str | None = None,
         window: tuple[float, float] | None = None,
+        request_id: str | None = None,
     ) -> dict:
         from .corner_improve import run_corner_improve
 
@@ -1080,6 +1094,7 @@ class RetroCornerManager:
             margin_pct=float(margin_pct),
             dry_run=dry_run,
             window=window,
+            rotation_request_id=request_id,
         )
 
     def _finish_locked(self, state: dict[str, object], completed_at: dt.datetime) -> CornerResult:
@@ -1561,7 +1576,9 @@ class RetroCornerManager:
         from .game_switch import DeadlineExceededError, GameSwitchBusyError
         from .hanjuku_run import event
         from .naming import runtime_directory
+        from .adapters.base import AdapterError
         next_repair = 0.
+        not_ready = 0
         owned_runtime = state.get('bot_runtime_id')
         owned_identity = state.get('bot_identity')
         if not isinstance(owned_identity, dict):
@@ -1597,11 +1614,32 @@ class RetroCornerManager:
                 })
                 self._sleep(2.)
                 continue
+            except AdapterError as exc:
+                # g433 (2026-09-28 20:22): one "presentation is not ready"
+                # right after the switch killed the manager on the first try
+                # and left canonical on a runtime nobody watched (Issue #1280).
+                # Only this exact state is retried, and only for a bounded
+                # window; any other adapter error still fails closed.
+                if str(exc) != PRESENTATION_NOT_READY or not_ready >= PRESENTATION_RETRY_LIMIT:
+                    raise
+                not_ready += 1
+                event(runtime_directory(self.g.state_dir, owned_runtime), {
+                    'event': 'observation_retry', 'at': time.time(),
+                    'reason': 'presentation_not_ready', 'attempt': not_ready,
+                })
+                self._sleep(2.)
+                continue
+            not_ready = 0
             run = observation.meta.get('hanjuku') or {}
+            # Network side channel runs only AFTER shared_section has released
+            # the input gate. It re-verifies durable terminal evidence itself.
+            from .hanjuku_predictions import tick as prediction_tick
+            prediction = prediction_tick(self.g, owned_identity)
             with self._locked():
                 latest = self._read_state()
                 if latest.get('status') != 'active':
                     return self._state_result(latest)
+                latest['prediction'] = prediction
                 latest['ends_at'] = None
                 latest['end_reason'] = run.get('terminal_reason')
                 latest['bot_phase'] = run.get('phase')
@@ -1615,7 +1653,7 @@ class RetroCornerManager:
                     from .hanjuku_policy import summary
                     from .retroarch_boundary import read_record
                     bot = read_record(runtime_directory(self.g.state_dir, active['runtime_id'])
-                                      / 'hanjuku_bot.json')
+                                      / 'hanjuku_bot.json', limit=256 * 1024)
                     latest['bot_chart'] = summary(bot.get('policy'))
                     latest['bot_version'] = bot.get('bot_version')
                 except Exception:
@@ -1833,6 +1871,60 @@ class RetroCornerManager:
             return CornerResult("failed", game=target, detail="failed-slotの再開状態を作成できません")
         return self._wait_and_finish(resumed)
 
+    def recover_runtime(self) -> CornerResult:
+        """Relaunch a dead scripted runtime, then end the corner safely.
+
+        Operator recovery for "hanjuku is active in canonical, the process is
+        dead, and there is no terminal evidence" (Issue #1280): a crashed tmux
+        server leaves nothing to observe, so every normal ending path refuses.
+        This is the supported replacement for the ad-hoc relaunch script:
+
+        1. verify the corner state and the canonical active runtime identity
+           match the recorded bot identity (fail closed otherwise),
+        2. rebuild the shared session/display (``cmd_up``), then re-run the
+           runtime's own ``preflight`` / ``materialize_runtime`` /
+           ``readiness`` contract so the recorded window is either already
+           owned or recreated from scratch,
+        3. end through the explicit operator stop path, which attempts a save
+           and permits a forced unsaved stop when the save fails.
+
+        The rotation latch is cleared afterwards with the existing
+        ``corner-rotation-operator recover-failed`` operator step.
+        """
+
+        with self._tick_guard() as single:
+            if not single:
+                return CornerResult("queued", detail="already-running")
+            with self._locked():
+                state = self._read_state()
+                if not self._scripted_hanjuku(state):
+                    return CornerResult("noop", detail="not-a-scripted-corner")
+                if state.get("status") not in {"active", "failed"}:
+                    return CornerResult("noop", detail="not-recoverable")
+                identity = state.get("bot_identity")
+                identity_keys = {"game", "runtime_id", "generation", "lease_id"}
+                canonical, _missing = self.store.canonical.load()
+                active = canonical.get("active")
+                if (
+                    canonical.get("phase") != "ready"
+                    or not isinstance(active, dict)
+                    or not isinstance(identity, dict)
+                    or set(identity) != identity_keys
+                    or any(active.get(key) != identity.get(key) for key in identity_keys)
+                    or identity.get("game") != "hanjuku-hero"
+                ):
+                    raise RetroCornerError("復旧対象runtimeのidentityを確認できません")
+            # Adapter calls can take seconds; the tick guard keeps a live
+            # corner manager from racing this recovery.
+            self._ensure_runtime()
+            spec = RuntimeSpec.from_runtime(self.g.state_dir, active)
+            adapter = make_coordinator_adapter(self.g, spec)
+            deadline = time.monotonic() + RECOVER_RUNTIME_DEADLINE_S
+            adapter.preflight(deadline, None)
+            adapter.materialize_runtime(deadline, None)
+            adapter.readiness(deadline, None)
+            return self._stop_direct()
+
     def start(self) -> CornerResult:
         from .corner_catalog import rotation_enabled
         if rotation_enabled(self.g):
@@ -1925,6 +2017,9 @@ class RetroCornerManager:
             return self._finish_locked(state, self._local_now())
 
     def tick(self) -> CornerResult:
+        # Retry our durable result after a network failure, even after teardown.
+        from .hanjuku_predictions import tick as prediction_tick
+        prediction_tick(self.g)
         from .corner_catalog import rotation_enabled
         if rotation_enabled(self.g):
             from .corner_rotation import CornerRotationManager
@@ -2688,6 +2783,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "recover-failed",
         help="canonical failed後のレトロ枠を安全に復旧し、同じゲームを再試行する",
     )
+    sub.add_parser(
+        "recover-runtime",
+        help="死んだscripted runtimeを正規手順で再起動し、セーブを試みた停止でコーナーを終了する",
+    )
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
     once = sub.add_parser("improve-once")
@@ -2697,6 +2796,8 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="確定済みコーナー開始 epoch秒 (queue dispatch用)")
     once.add_argument("--ends-at", type=float, default=None,
                       help="確定済みコーナー終了予定 epoch秒")
+    once.add_argument("--request-id", default=None,
+                      help="完了したコーナーのrequest ID (queue dispatch用)")
     once.add_argument("--agents", default=None, help="LLM委任先 (既定は設定値)")
     once.add_argument("--matches", type=int, default=None)
     once.add_argument("--margin-pct", type=float, default=None)
@@ -2734,6 +2835,7 @@ def main(argv: list[str] | None = None) -> int:
                     margin_pct=args.margin_pct, dry_run=args.dry_run,
                     game=getattr(args, "game", None),
                     window=window,
+                    request_id=getattr(args, "request_id", None),
                 )
             except CornerImproveError as exc:
                 print(f"docich: エラー: {exc}", file=sys.stderr)
@@ -2742,6 +2844,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         method_name = {
             "recover-failed": "recover_failed",
+            "recover-runtime": "recover_runtime",
         }.get(args.command, args.command)
         result = getattr(manager, method_name)()
         print(

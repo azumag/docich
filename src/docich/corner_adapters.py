@@ -164,8 +164,41 @@ class GameCornerAdapter:
     def run(self, request):
         return self.manager.run_rotation(request["request_id"], self.corner.game)
 
-    def reconcile_failed_start(self, request_id):
-        return self.manager.reconcile_failed_rotation_start(request_id)
+    def _manager_for_state_file(self, state_file):
+        """Return the manager that owns one fixed main or manual state file."""
+
+        if not isinstance(state_file, str) or Path(state_file).name != state_file:
+            return None
+        current = Path(self.state_path)
+        if state_file == current.name:
+            return self.manager
+        if state_file != f"{current.stem}_manual.json":
+            return None
+
+        adapter = self.corner.adapter
+        if adapter == "meriken":
+            from .soren91_corner_manual import ManualSoren91CornerManager
+
+            return ManualSoren91CornerManager(self.g)
+        if adapter == "nethack":
+            from .nethack_corner_manual import ManualNethackCornerManager
+
+            return ManualNethackCornerManager(self.g)
+        if adapter == "game":
+            from .retro_corner_manual import ManualRetroCornerManager
+
+            return ManualRetroCornerManager(self.g, game=self.corner.game)
+        return None
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        """Reconcile only the adapter state file named by its rotation owner."""
+
+        manager = self.manager if state_file is None else self._manager_for_state_file(state_file)
+        if manager is None:
+            return False
+        if state_file is not None and manager.state_path.name != state_file:
+            return False
+        return manager.reconcile_failed_rotation_start(request_id)
 
     def improvement_paths(self):
         root = Path(self.g.state_dir)

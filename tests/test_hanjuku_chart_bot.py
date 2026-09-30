@@ -252,24 +252,49 @@ def test_chart_orders_follow_the_chart_and_unlock_on_captures():
     mem['captured'] = ['キカンドン', 'ナキューメラ', 'ジョンリギ', 'ゴーメン', 'スペンソニア', 'カストーラ']
     mem['orders'].update({s: 'launched' for s in ('1-A2', '1-V2', '1-C2', '1-A3')})
     assert policy.next_order(mem)['target'] == 'けっかい'
-    assert policy.next_order({'chapter': 2, 'orders': {}}) is None
+    assert policy.next_order({'chapter': 3, 'orders': {}}) is None
 
 
-def test_boss_tactic_waits_for_the_first_clash_then_chains_cards():
+def test_month_plan_commentary_follows_the_actual_plan():
+    key, text = hanjuku_commentary.compose({
+        'decision': 'month_plan', 'month': '1-5', 'gold': 171,
+        'deviation_reason': '所持金171Gがチャート想定214G未満',
+        'plan': {'cards': [['クースカン', 1], ['イッテツーン', 6]], 'soldiers': 40}})
+    assert '214' in text and 'クースカン1個' in text and '兵士を40人補充します' in text
+    assert '優先順で買える分' in text
+    # A chart-uncovered month must not claim it buys the boss kit (g460 1年6月:
+    # the commentary said it would buy クースカン/ノリウツール with an empty plan).
+    _, text = hanjuku_commentary.compose({
+        'decision': 'month_plan', 'month': '1-6', 'gold': 185,
+        'deviation_reason': 'chart_month_uncovered',
+        'plan': {'cards': [], 'soldiers': 0}})
+    assert 'チャートの購入予定がない' in text and '切り札の購入はありません' in text
+    assert 'クースカン' not in text
+
+
+def test_charted_boss_kit_waits_for_clash_then_chains_cards():
     mem = {'chapter': 1, 'attack': {'general': 'どうし', 'castle': 'けっかい', 'side': 'attack', 'step': '1-B1'}}
     from docich.hanjuku_screen import Battle, Screen
     screen = lambda hp: Screen(lines=[], hand=None, text='', battle=Battle('クイーン', hp, 'どうし', 90), kind='battle')
     assert policy.battle_step(screen(70), mem) == []          # first reading: wait for a stable one
-    assert policy.battle_step(screen(70), mem) == []          # risky queen: wait for natural clash
-    assert policy.battle_step(screen(60), mem)[0]['buttons'] == ['b']
+    # Follow the actual chart: one measured clash, then the ordered kit.
+    assert policy.battle_step(screen(70), mem)[0]['buttons'] == ['a']
+    assert not mem['battle'].get('card_flow')
+    assert policy.battle_step(screen(68), mem) == [policy.pad('b')]
     assert mem['battle']['card_flow']['card'] == 'クースカン'
-    # A still-pending card has priority over both follow-up tactics and melee.
+    assert mem['battle'].get('strategy_variant') != 'clash_kit_open_timing'
+    # The menu ask is retried instead of handing the turn back to melee, and
+    # it stays bounded (g462 17:59:31: two idle frames dropped the first card).
+    for _ in range(policy.CARD_MENU_OPEN_RETRIES):
+        assert policy.battle_step(screen(70), mem) == [policy.pad('b')]
     assert policy.battle_step(screen(60), mem) == []
-    # The after_card contract consumes confirmed-use memory, never selection.
-    mem['battle']['cards_used'] = ['クースカン']
-    mem['battle']['card_flow'] = None
+    assert mem['battle'].get('card_flow') is None
+    assert mem['battle']['cards_unclassified'] == []
+    assert not mem.get('kit_spent')
+    # Opening never reached a selection: retry the first chart card, without
+    # falsely unlocking the dependent ノリウツール.
     assert policy.battle_step(screen(30), mem) == [policy.pad('b')]
-    assert mem['battle']['card_flow']['card'] == 'ノリウツール'
+    assert mem['battle']['card_flow']['card'] == 'クースカン'
 
 
 def test_quantity_editor_uses_the_digit_cursor_and_the_price_message():
@@ -303,6 +328,38 @@ def test_accept_duels_and_do_not_confirm_unrequested_month_exit():
     c2.hand(162, 177)
     assert policy.month_step(parse(c2.frame()), {'chapter': 2})[0]['buttons'] == ['down']
     assert policy.month_step(parse(c2.frame()), {'chapter': 2, 'month_exit': True})[0]['buttons'] == ['a']
+
+
+def test_decline_the_general_trade_prompt():
+    # Owner rule 2026-09-28: 花いちもんめ (将軍トレード) is always declined —
+    # the offers are almost always unfair. Question wording measured on
+    # 倒転王国's monthly-event page.
+    c = Canvas()
+    c.text(24, 183, 'しょうぐんどうしのトレードだ!')
+    c.text(184, 183, 'うむッ!')
+    c.text(184, 199, 'いかんッ!')
+    c.hand(162, 177)
+    mem = {'_records': []}
+    # The cursor starts on うむッ! (accept): step down to いかんッ! first.
+    assert policy.yes_no_step(parse(c.frame()), mem)[0]['buttons'] == ['down']
+    c2 = Canvas()
+    c2.text(24, 183, 'しょうぐんどうしのトレードだ!')
+    c2.text(184, 183, 'うむッ!')
+    c2.text(184, 199, 'いかんッ!')
+    c2.hand(162, 193)
+    assert policy.yes_no_step(parse(c2.frame()), mem)[0]['buttons'] == ['a']
+    rec = mem['_records'][-1]
+    assert rec['strategy_variant'] == 'decline_general_trade'
+    assert rec['choice'] == 'いかんッ!'
+    # An unclassified prompt still proceeds by default.
+    c3 = Canvas()
+    c3.text(24, 183, 'たまごを つかいますか?')
+    c3.text(184, 183, 'うむッ!')
+    c3.text(184, 199, 'いかんッ!')
+    c3.hand(162, 177)
+    mem3 = {'_records': []}
+    assert policy.yes_no_step(parse(c3.frame()), mem3)[0]['buttons'] == ['a']
+    assert mem3['_records'][-1]['strategy_variant'] == 'unclassified_prompt'
 
 
 def test_a_lost_source_castle_releases_the_running_order_instead_of_steer_back():
@@ -516,7 +573,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v42-egg-when-behind'
+    assert state['bot_version'] == 'hanjuku-chart-v110-entry-successor'
     assert '_records' not in state['policy']
 
 
@@ -575,6 +632,24 @@ def test_summoned_monster_turn_menu_is_answered_instead_of_stalling():
     assert actions[0]['buttons'] == ['a']
 
 
+def test_a_heal_first_monster_inflates_then_shouts():
+    # バルーンフィンチ: ふくらむ to the tracked max, then シャウト while at max
+    # (owner 2026-09-29); damage re-enables the heal.
+    def run(ally_hp, state=None):
+        frame = monster_menu_frame(['ふくらむ', 'シャウト'],
+                                   ally=('バルーンフィンチ', ally_hp), enemy=('クミン', 40), cursor=0)
+        state = state or {'policy': {'chapter': 1, 'battle': {
+            'enemy': 'クミン', 'ally': 'バルーンフィンチ', 'enemy_hp': 40,
+            'ally_hp': ally_hp, 'step': None}}}
+        return decide(frame, state)
+    _, state = run(30)                                             # hurt: inflate first
+    assert state['policy']['monster_menu_choice'] == 'skill1'
+    _, state = run(120, state)                                     # healed to the new max
+    assert state['policy']['monster_menu_choice'] == 'skill2'      # shout at full
+    _, state = run(30, state)                                      # damaged again
+    assert state['policy']['monster_menu_choice'] == 'skill1'
+
+
 def test_egg_summon_menu_falls_back_to_attack_when_the_egg_is_spent():
     # 2026-09-28 live incident: a general whose egg is already spent draws
     # たまごをつかう greyed out (dropped from OCR) on the enemy-summon menu.
@@ -593,9 +668,16 @@ def test_egg_summon_menu_falls_back_to_attack_when_the_egg_is_spent():
     spent.text(176, 191, 'もうこうげき')
     actions, state = decide(spent.frame(), state)
     assert state['screen_kind'] == 'egg_battle_menu'
-    assert actions[0]['buttons'] == ['a']
+    # With no cards left the bot tries the retreat once (owner 2026-09-29)
+    # instead of attacking into a summon it cannot answer.
+    assert actions[0]['buttons'] == ['b']
     assert state['policy']['egg_battle_row_dead'] is True
-    # Repeats cleanly rather than resuming the dead down/down/a search.
+    # Three bounded return attempts; no immediate A after an unconfirmed B.
+    for _ in range(2):
+        actions, state = decide(spent.frame(), state)
+        assert actions[0]['buttons'] == ['b']
+    actions, state = decide(spent.frame(), state)
+    assert actions[0]['buttons'] == ['a']
     actions, state = decide(spent.frame(), state)
     assert actions[0]['buttons'] == ['a']
 
@@ -775,6 +857,7 @@ def test_unreadable_name_screen_never_uses_legacy_confirmation(monkeypatch):
 
 @pytest.mark.parametrize('step,ally,hp,expected', [
     ('1-V2', 'ヴィーナス', 60, 'フットバース'),
+    # User 2026-09-30: preserve the chart's actual HP gates.
     ('1-C2', 'ココット', 14, None),
     ('1-C2', 'ココット', 13, 'ダイチスイム'),
     ('1-A2', 'どうし', 25, None),
@@ -787,7 +870,10 @@ def test_garbanzo_tactics_follow_each_generals_chart_branch(step, ally, hp, expe
     assert policy.battle_step(screen, mem) == []
     actions = policy.battle_step(screen, mem)
     if expected is None:
-        assert actions == [] and not mem['battle'].get('card_flow')
+        # The gate is not reached yet: push the melee toward it instead of
+        # holding (an unbounded hold never reaches the HP gate).
+        assert actions and actions[0]['buttons'] == ['a']
+        assert not mem['battle'].get('card_flow')
     else:
         assert actions[0]['buttons'] == ['b']
         assert mem['battle']['card_flow']['card'] == expected
@@ -819,15 +905,37 @@ def _card_screen(cards, *, announcement=None, hand=True):
                   text=announcement or ''.join(cards), kind='text')
 
 
-def test_missing_and_selected_cards_do_not_confirm_use_or_unlock_after_card():
+def test_a_chained_hp_card_does_not_early_fire_for_the_egg():
+    # 3-B1 プリンス: ゼンマイン (HP25) follows クースカン open/after_card, so it
+    # keeps its gate, as do the other HP-gated chart tactics.
+    from docich.hanjuku_screen import Battle, Screen
+    mem = {'chapter': 3, 'attack': {'general': 'どうし', 'castle': None, 'side': 'attack', 'step': '3-B1'}}
+    screen = Screen(lines=[], hand=None, text='', battle=Battle('プリンス', 100, 'どうし', 90), kind='battle')
+    assert policy.battle_step(screen, mem) == []
+    actions = policy.battle_step(screen, mem)
+    assert actions and actions[0]['buttons'] == ['b']
+    assert mem['battle']['card_flow']['card'] == 'クースカン'
+    assert 'ゼンマイン' not in [r.get('card') for r in mem['_records']
+                                if r.get('decision') == 'battle_card']
+
+
+def test_missing_and_selected_cards_do_not_confirm_use_but_chain_the_charted_follow_up():
     mem, screen = _card_evidence_battle()
     cur = mem['battle']
+    # The opening kit already claimed this fight's deviation slot (v82), so the
+    # missing-card reporting is checked on a fight with no deviation of its own.
+    cur.pop('strategy_variant', None); cur.pop('deviation_reason', None)
     cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
+    assert policy.card_list_step(_card_screen(['ノリウツール']), mem) == []
     assert policy.card_list_step(_card_screen(['ノリウツール']), mem)
     assert cur['cards_used'] == [] and cur['cards_missing'] == ['クースカン']
     missing = mem['_records'][-1]
+    assert missing['decision'] == 'battle_card_missing' and missing['card'] == 'クースカン'
+    assert missing['expected_metric'] == {'carried_card': 'クースカン'}
     assert missing['strategy_variant'] == 'chart_card_unavailable' and missing['deviation_reason']
-    assert policy.battle_step(screen, mem) == []  # no ノリウツール without confirmed クースカン
+    # No ノリウツール without a confirmed クースカン; the clash proceeds.
+    assert cur.get('card_flow') is None
+    assert policy.battle_step(screen, mem)[0]['buttons'] == ['a']
     cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
     policy.card_list_step(_card_screen(['クースカン']), mem)
     assert cur['cards_selected'] == ['クースカン'] and cur['cards_used'] == []
@@ -838,11 +946,15 @@ def test_missing_and_selected_cards_do_not_confirm_use_or_unlock_after_card():
         assert cur['cards_used'] == []
     policy.battle_step(screen, mem); policy.battle_step(screen, mem)
     assert cur['card_flow'] is None and cur['cards_unclassified'] == ['クースカン']
-    assert policy.battle_step(screen, mem) == []     # no follow-up card; risky queen stays held
+    # No calibrated use receipt exists, so the charted follow-up continues on
+    # the selection record and is recorded as a deviation.
+    assert policy.battle_step(screen, mem)[0]['buttons'] == ['b']
+    assert cur['card_flow']['card'] == 'ノリウツール'
+    assert '未校正' in mem['_records'][-1]['reason']
 
 
 @pytest.mark.parametrize('statement', ['クースカンをつかった', 'クースカンをしようした'])
-def test_uncalibrated_card_text_never_confirms_use_or_unlocks_after_card(statement):
+def test_uncalibrated_card_text_never_confirms_use_but_chains_the_charted_follow_up(statement):
     mem, screen = _card_evidence_battle()
     cur = mem['battle']
     cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
@@ -865,7 +977,11 @@ def test_uncalibrated_card_text_never_confirms_use_or_unlocks_after_card(stateme
     policy.battle_step(screen, mem); policy.battle_step(screen, mem)
     assert cur['card_flow'] is None
     assert policy.summary(mem)['cards_used'] is None  # unclassified despite cleared flow
-    assert policy.battle_step(screen, mem) == []     # no follow-up card; risky queen stays held
+    # The charted follow-up continues on the selection record (deviation);
+    # consumption itself stays unclassified.
+    assert policy.battle_step(screen, mem)[0]['buttons'] == ['b']
+    assert cur['card_flow']['card'] == 'ノリウツール'
+    assert policy.summary(mem)['cards_used'] is None
     cur['enemy_hp'] = 0
     policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
     assert mem['stats']['cards_used'] is None and mem['stats']['cards_confirmed'] == 0
@@ -914,10 +1030,16 @@ def test_unconfirmed_card_flow_is_bounded_after_return_to_battle(stage):
     mem, screen = _card_evidence_battle()
     cur = mem['battle']
     cur['card_flow'] = {'card': 'クースカン', 'stage': stage}
-    policy.battle_step(screen, mem); policy.battle_step(screen, mem)
+    # The opening stage keeps asking the panel for the menu it never got
+    # (g462 17:59:29); every other stage is already past the menu ask and
+    # gives up as soon as the second observation carries no receipt.
+    for _ in range(policy.CARD_MENU_OPEN_RETRIES + 1 if stage == 'menu' else 2):
+        policy.battle_step(screen, mem)
     assert cur['card_flow'] is None
     assert cur['cards_used'] == []
-    assert cur['cards_unclassified'] == ['クースカン']
+    assert cur['cards_unclassified'] == []
+    assert not mem.get('kit_spent')
+    assert mem['_records'][-1]['decision'] == 'battle_card_open_unclassified'
 
 def test_hp_defeat_followed_by_living_hero_does_not_count_a_general_loss():
     from docich.hanjuku_screen import Screen
@@ -992,7 +1114,7 @@ def test_visible_chapter_transition_clears_old_route_state_and_records_evidence(
     screen = Screen(lines=[], hand=None, text='', kind='main_menu',
                     header={'chapter': 2, 'year': 1, 'month': 6, 'gold': 294})
     policy.observe_events(screen, mem)
-    assert mem['chapter'] == 2 and mem['variant'] == 'chart_unavailable'
+    assert mem['chapter'] == 2 and mem['variant'] == 'chart'
     assert mem['name']['done'] and mem['stats']['wins'] == 4
     for key in ('active', 'orders', 'captured', 'launched', 'cursor', 'shop', 'retries'):
         assert not mem.get(key)
@@ -1658,15 +1780,19 @@ def test_sortie_screens_record_each_generals_remaining_egg_uses():
 
 
 def test_an_empty_egg_reserves_its_recovery_ahead_of_soldiers():
-    mem = {'chapter': 1, 'egg_uses': {'どうし': 4, 'ココット': 0}}
+    # Owner 2026-09-29: eggs go first only with this month's army counted at 50+.
+    mem = {'chapter': 1, 'egg_uses': {'どうし': 4, 'ココット': 0}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
     assert (shop['soldiers'] == 80 - policy.WAGE_RESERVE and shop['egg'] == 'pending'
             and shop['recruit'] == 'check')
+    # Army not counted this month: soldiers first, the egg from what is left.
+    shop = policy._plan({'chapter': 1, 'egg_uses': {'ココット': 0}}, {'year': 1, 'month': 7, 'gold': 130})
+    assert shop['soldiers'] == 99 and shop['egg'] == 'check' and shop['reserve'] == 0
     # No empty egg: soldiers keep the whole gold as before.
     shop = policy._plan({'chapter': 1, 'egg_uses': {'どうし': 4}}, {'year': 1, 'month': 7, 'gold': 130})
     assert shop['soldiers'] == 99 and shop['egg'] is None and shop['recruit'] == 'check'
     # The owner now prioritizes affordable egg recovery even before a later chart purchase.
-    mem = {'chapter': 3, 'egg_uses': {'どうし': 0}}
+    mem = {'chapter': 3, 'egg_uses': {'どうし': 0}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 475})
     assert shop['egg'] == 'pending' and shop['reserve'] == 50 and shop['recruit'] is None
 
@@ -1770,10 +1896,14 @@ def test_tutorial_sword_practice_mashes_a_to_push_instead_of_idling():
     assert policy.battle_step(over, mem) == []              # the panel has ended: stop
 
 
-def _menu_without_egg_row():
+def _menu_without_egg_row(cursor=None):
     c = Canvas((0, 0, 0))
     c.text(176, 192, 'きりふだ')
     c.text(176, 208, 'たいきゃく')
+    if cursor is not None:
+        for y in range(168 + 16 * cursor, 180 + 16 * cursor):
+            for x in range(152, 164):
+                c.put(x, y, (230, 105, 74))
     return c.frame()
 
 
@@ -1783,9 +1913,9 @@ def test_menu_with_greyed_egg_row_is_the_battle_menu_and_reaches_the_card():
     assert parse(_menu_without_egg_row()).kind == 'battle_menu'
     mem = {'chapter': 1, 'battle': {'enemy': 'ガルバンゾー', 'ally': 'どうし', 'cards_used': [],
                                     'card_flow': {'card': 'フットバース', 'stage': 'menu', 'note': ''}}}
-    actions, state = decide(_menu_without_egg_row(), {'policy': mem})
+    actions, state = decide(_menu_without_egg_row(cursor=0), {'policy': mem})
     assert actions[0]['buttons'] == ['down']                # off the dead egg row to きりふだ
-    actions, state = decide(_menu_without_egg_row(), state)
+    actions, state = decide(_menu_without_egg_row(cursor=1), state)
     assert actions[0]['buttons'] == ['a']
 
 
@@ -1824,7 +1954,7 @@ def test_open_sea_search_spirals_around_the_centroid_and_records_each_leg(monkey
 
 @pytest.mark.parametrize('uses', [0, 1, 2, 3])
 def test_partial_egg_reserves_full_recovery_cost(uses):
-    mem = {'chapter': 1, 'egg_uses': {'ココット': uses}}
+    mem = {'chapter': 1, 'egg_uses': {'ココット': uses}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
     assert (shop['reserve'] == 50 and shop['soldiers'] == 80 - policy.WAGE_RESERVE
             and shop['egg'] == 'pending')
@@ -1833,13 +1963,13 @@ def test_partial_egg_reserves_full_recovery_cost(uses):
 def test_all_depleted_eggs_are_budgeted_and_invalid_or_full_counts_are_ignored():
     mem = {'chapter': 1, 'egg_uses': {'どうし': 3, 'ココット': 1, 'ヴィーナス': 4,
            'bad': True, 'unknown': None, 'negative': -1, 'boosted': 5, 'one-shot': 1},
-           'egg_types': {'one-shot': 'いっぱつエッグ'}}
+           'egg_types': {'one-shot': 'いっぱつエッグ'}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 180})
     assert shop['reserve'] == 100 and shop['soldiers'] == 80 - policy.WAGE_RESERVE
     assert policy._egg_recovery_targets(mem) == ['どうし', 'ココット']
-    poor = {'chapter': 1, 'egg_uses': {'どうし': 3, 'ココット': 1}}
+    poor = {'chapter': 1, 'egg_uses': {'どうし': 3, 'ココット': 1}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     shop = policy._plan(poor, {'year': 1, 'month': 7, 'gold': 99})
-    assert shop['egg'] is None and shop['soldiers'] == 99 - policy.WAGE_RESERVE
+    assert shop['egg'] == 'pending' and shop['soldiers'] == 0
 
 
 def test_soldiers_never_spend_the_wage_reserve():
@@ -1854,7 +1984,7 @@ def test_soldiers_never_spend_the_wage_reserve():
 
 
 def test_attempted_summon_rechecks_stale_full_sortie_count():
-    mem = {'battle': {'ally': 'どうし'}, 'egg_uses': {'どうし': 4}}
+    mem = {'battle': {'ally': 'どうし'}, 'egg_uses': {'どうし': 4}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     policy._egg_recheck(mem)
     policy._egg_recheck(mem)
     assert mem['egg_recheck'] == ['どうし']
@@ -1902,7 +2032,7 @@ def test_paid_recovery_ritual_has_bounded_longer_wait_without_inferring_stock():
 def test_recovery_only_month_preserves_later_chart_budget(monkeypatch):
     monkeypatch.setattr(policy, '_charted_purchase_ahead', lambda *args: True)
     monkeypatch.setattr(policy.chart, 'purchase_for', lambda *args: None)
-    mem={'chapter':3,'egg_uses':{'どうし':2}}
+    mem={'chapter':3,'egg_uses':{'どうし':2}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     shop=policy._plan(mem,{'year':1,'month':7,'gold':300})
     assert shop['reserve']==50 and shop['egg']=='pending'
     assert shop['items']==[] and shop['soldiers']==0 and shop['recruit'] is None
@@ -1970,6 +2100,18 @@ def test_recruit_intro_restores_lost_tracking_only_from_measured_dialogue():
     assert mem['_records'][0]['decision']=='month_sub_resumed'
 
 
+def test_the_untracked_chikujou_overlay_is_closed_with_b(monkeypatch):
+    # g462 18:06:10-18:11:11: legacy A presses on the ちくじょう exit screen
+    # changed nothing for 300 s and the run watchdog ended the corner.
+    from docich import hanjuku_screen
+    sc = Screen(lines=[], hand=None, kind='text', header=None,
+                text='アルマムーン3これいじょうのぞうちくはできませんぞ!!どのしろをぞうちくなさいますか?')
+    monkeypatch.setattr(hanjuku_screen, 'parse', lambda *a, **k: sc)
+    actions, state = decide(month_canvas(75), {'policy': {'chapter': 1, '_records': []}})
+    assert actions == [policy.pad('b')]
+    assert state['_records'][0]['decision'] == 'chikujou_leftover'
+
+
 def test_month_background_does_not_end_active_recruit_dialogue(monkeypatch):
     from docich import hanjuku_screen
     sc=recruit_overlay_screen();mem=recruit_overlay_memory()
@@ -1984,6 +2126,8 @@ def test_month_background_does_not_end_active_recruit_dialogue(monkeypatch):
     sc.hand=(160,177,177,189)  # a bottom dialogue cursor is also not the menu
     assert not policy.month_menu_ready(sc)
     sc.hand=(160,41,177,53)
+    assert not policy.month_menu_ready(sc)  # g496 retained this background hand
+    sc.lines=[line for line in sc.lines if line.y < 175]
     assert policy.month_menu_ready(sc)
 
 
@@ -2049,8 +2193,25 @@ def _camp_frame():
     for yy in range(72, 81):
         for xx in range(30, 39):
             c.put(xx, yy, (238, 198, 65) if yy < 76 else (238, 113, 57))
+    for yy in (77, 78):                       # light-blue base band
+        for xx in range(31, 39):
+            c.put(xx, yy, (131, 198, 222))
     for p in ((34, 68), (35, 68), (34, 69)):
         c.put(p[0], p[1], (255, 0, 0))
+    return c.frame()
+
+
+def _clipped_camp_frame():
+    """A tent touching the top edge: flag off-screen (g421 live frame)."""
+    c = Canvas()
+    for yy in range(0, 4):
+        for xx in range(30, 39):
+            c.put(xx, yy, (238, 198, 65))
+    for yy in range(4, 8):
+        for xx in range(30, 39):
+            c.put(xx, yy, (238, 113, 57))
+    for xx in range(31, 39):
+        c.put(xx, 8, (131, 198, 222))
     return c.frame()
 
 
@@ -2067,7 +2228,40 @@ def test_own_camps_finds_the_tent_and_skips_roof_reds():
     from docich.hanjuku_screen import own_camps
     camps = own_camps(_camp_frame())
     assert [c['target'] for c in camps] == [(26, 66)]
+    assert camps[0]['clipped'] is False
     assert own_camps(_own_roof_frame()) == []
+
+
+def test_own_camps_accepts_a_tent_clipped_by_the_top_edge():
+    from docich.hanjuku_screen import own_camps
+    camps = own_camps(_clipped_camp_frame())
+    assert len(camps) == 1
+    assert camps[0]['clipped'] is True
+    # selecting cell above the screen: the servo must scroll the camera up
+    assert camps[0]['target'] == (24, -6)
+
+
+def test_own_camps_rejects_a_full_tent_without_a_visible_flag():
+    from docich.hanjuku_screen import own_camps
+    c = Canvas()
+    for yy in range(20, 24):
+        for xx in range(30, 39):
+            c.put(xx, yy, (238, 198, 65))
+    for yy in range(24, 28):
+        for xx in range(30, 39):
+            c.put(xx, yy, (238, 113, 57))
+    for xx in range(31, 39):
+        c.put(xx, 28, (131, 198, 222))
+    assert own_camps(c.frame()) == []
+
+
+def test_camp_recall_scrolls_the_camera_for_a_tent_clipped_at_the_top():
+    frame = _clipped_camp_frame()
+    mem = {'chapter': 1, '_records': []}
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(100, 100))
+    actions = policy.camp_recall_step(screen, mem, frame)
+    assert actions == [policy.pad('up', 8)]
+    assert mem['recall']['stage'] == 'to_camp'
 
 
 def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
@@ -2079,8 +2273,10 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     assert [r['decision'] for r in mem['_records']] == ['camp_found']
 
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(27, 67))
+    mem['recall']['steps'] = 89                      # the long scroll may eat the budget
     assert policy.camp_recall_step(screen, mem, frame) == [policy.pad('a')]
     assert mem['recall']['stage'] == 'menu'
+    assert mem['recall']['steps'] == 0               # each stage restarts the budget
     assert [r['decision'] for r in mem['_records']][-1] == 'camp_enter'
 
     window = Screen(lines=[], hand=None, text='いどう ステータス キャンプ きかん', kind='text')
@@ -2088,6 +2284,7 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
         assert policy.camp_recall_step(window, mem, frame) == [policy.pad('down')]
     assert policy.camp_recall_step(window, mem, frame) == [policy.pad('a')]
     assert mem['recall']['stage'] == 'dest'
+    assert mem['recall']['steps'] == 0               # destination gets a full budget too
 
     monkeypatch.setattr(policy, 'castle_roofs',
                         lambda frame, exclude=None: [{'kind': 'own', 'target': (165, 117), 'clipped': False}])
@@ -2109,11 +2306,845 @@ def test_camp_recall_cancels_when_no_own_castle_is_visible():
     assert [r['decision'] for r in mem['_records']][-1] == 'camp_recall_skipped'
 
 
-def test_map_step_recalls_a_camp_when_nothing_is_charted(monkeypatch):
+def test_map_step_recalls_a_visible_camp_before_any_order():
+    # g421: the recall never started because it waited for a chartless idle
+    # map. A visible camp must win over any order state.
     frame = _camp_frame()
-    monkeypatch.setattr(policy, 'next_order', lambda mem: None)
     mem = {'chapter': 1, 'variant': 'chart', 'picked': [], '_records': [],
-           'tick': 500, 'world_map_tick': 400}
+           'tick': 500, 'world_map_tick': 400, 'active': 'I:test:1'}
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
     assert policy.map_step(screen, mem, frame) == [policy.pad('left', 8)]
     assert mem['recall']['stage'] == 'to_camp'
+    assert [r['decision'] for r in mem['_records']][-1] == 'camp_found'
+
+
+def test_map_step_does_not_start_a_camp_recall_while_a_y_jump_view_is_opening():
+    frame = _camp_frame()
+    mem = {'chapter': 1, 'variant': 'chart', 'picked': [], '_records': [],
+           'tick': 500, 'world_map_tick': 400,
+           'y_jump': {'goal': 'ジョンリギ', 'mode': 'map', 'step': 'I:test:1',
+                      'moves': 0, 'wait': 0, 'tick': 500}}
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
+    policy.map_step(screen, mem, frame)
+    assert 'recall' not in mem
+    assert not [r for r in mem['_records'] if r['decision'] == 'camp_found']
+
+
+def test_map_step_refocuses_on_the_hero_periodically():
+    # Owner rule (2026-09-28): periodically SELECT to the hero's position.
+    # The first map frame only seeds the interval; the press comes later.
+    frame = _own_roof_frame()
+    mem = {'chapter': 1, 'variant': 'chart', 'picked': [], '_records': [],
+           'tick': 500, 'world_map_tick': 500}
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
+    actions = policy.map_step(screen, mem, frame)
+    assert actions != [policy.pad('select')]
+    assert mem['select_focus_tick'] == 500
+    mem['tick'] = 500 + policy.SELECT_FOCUS_INTERVAL
+    mem['_records'] = []
+    actions = policy.map_step(screen, mem, frame)
+    assert actions == [policy.pad('select')]
+    assert 'select_focus' in [r['decision'] for r in mem['_records']]
+    assert mem['nav_last'] is None
+    assert mem['uncertain'] is True
+
+
+def test_soldier_count_is_read_from_the_army_total_line():
+    from docich.hanjuku_screen import Screen as S
+    mem = {'_records': []}
+    screen = S(lines=[], hand=None, kind='text',
+               text='げんざい わがぐんの へいしすうは 60めいです')
+    policy.observe_events(screen, mem)
+    assert mem['soldiers_seen'] == 60
+    assert [r['decision'] for r in mem['_records']] == ['soldiers_seen']
+    policy.observe_events(screen, mem)          # unchanged: no duplicate record
+    assert [r['decision'] for r in mem['_records']].count('soldiers_seen') == 1
+
+
+def test_a_depleted_hero_egg_reserves_before_soldiers():
+    # g458 15:45: the hero's egg was spent, the months kept buying soldiers
+    # and the recovery was skipped until the fatal defense (no retreat there).
+    mem = {'chapter': 1, 'egg_uses': {'どうし': 1}}
+    reserve, _ = policy._extras_reserve(mem, {'year': 1, 'month': 8, 'gold': 100})
+    assert reserve == 50
+    shop = policy._plan(dict(mem), {'year': 1, 'month': 8, 'gold': 100})
+    assert shop['reserve'] == 50 and shop['egg'] == 'pending' and shop['soldiers'] == 20
+    # Another general's egg without the hero and without the count: unchanged.
+    other = {'chapter': 1, 'egg_uses': {'ココット': 1}}
+    assert policy._extras_reserve(other, {'year': 1, 'month': 8, 'gold': 100})[0] == 0
+
+
+def test_egg_recovery_holds_the_gold_over_more_soldiers_when_army_is_big():
+    # Owner rule 2026-09-28: 50+ soldiers → egg recovery wins; no soldiers.
+    mem = {'chapter': 1, 'egg_uses': {'ココット': 0}, 'soldiers_seen': 60, 'soldiers_seen_key': '2-4'}
+    # gold is short of the 50G cost but above the wage reserve: hold it all
+    # for the egg and buy no soldiers (today the gap (30, 50) was eaten).
+    reserve, _ = policy._extras_reserve(mem, {'year': 2, 'month': 4, 'gold': 45})
+    assert reserve == 45 - policy.WAGE_RESERVE
+    shop = policy._plan(dict(mem), {'year': 2, 'month': 4, 'gold': 45})
+    assert shop['soldiers'] == 0 and shop['egg'] == 'pending'
+    # a weak army (<50) keeps today's behaviour: no hold below the cost
+    mem2 = {'chapter': 1, 'egg_uses': {'ココット': 0}, 'soldiers_seen': 40}
+    assert policy._extras_reserve(mem2, {'year': 2, 'month': 4, 'gold': 45})[0] == 0
+    # full cost still reserves normally
+    assert policy._extras_reserve(dict(mem), {'year': 2, 'month': 4, 'gold': 130})[0] == 50
+
+
+def test_summarize_recap_counts_only_the_runs_own_story(tmp_path):
+    from docich.hanjuku_commentary import summarize_recap
+    rows = [
+        {'event': 'decision', 'decision': 'month_seen', 'month': '2-7'},
+        {'event': 'decision', 'decision': 'order_launched'},
+        {'event': 'decision', 'decision': 'order_launched'},
+        {'event': 'decision', 'decision': 'order_launched_unconfirmed'},
+        {'event': 'decision', 'decision': 'discharge_general'},
+        {'event': 'decision', 'decision': 'castle_owned_observed',
+         'resulting_event': 'captured:ジョンリギ'},
+        {'event': 'decision', 'decision': 'world_map_owners',
+         'resulting_event': ['captured:ゴーメン', 'lost:ココット']},
+        {'event': 'decision', 'chapter': 2},
+        {'event': 'action_plan', 'chapter': 5},          # not a decision: ignored
+    ]
+    (tmp_path / 'hanjuku_decisions.jsonl').write_text(
+        ''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in rows))
+    key, text = summarize_recap(tmp_path, {'battles_finished': 42})
+    assert key == 'game_over_recap'
+    assert text == ('ゲームオーバー。第2章まで進み、2城を獲得、2回出撃と42回戦闘を重ね、'
+                    '2年7月まで戦いました（将軍の解雇1回）。今回の挑戦はここまでです。')
+    assert len(text) <= 120
+    _, bare = summarize_recap(tmp_path, {})
+    assert bare.startswith('ゲームオーバー。')
+
+
+def test_narration_delivers_only_the_game_over_recap_at_terminal(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from docich.game_switch import atomic_write_json
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g9-test', 'generation': 9,
+                'lease_id': 'lease-9'}
+    g = SimpleNamespace(state_dir=tmp_path)
+    atomic_write_json(tmp_path / 'hanjuku_run.json',
+                      {**identity, 'terminal_reason': 'game_over'})
+    monkeypatch.setattr('docich.agent.fence.read_canonical', lambda _: {'active': identity})
+    sent, now = [], time.time()
+    write_candidates(tmp_path, [
+        {'seq': 1, 'at': now, 'key': 'battle:x', 'text': 'たたかいの実況', **identity},
+        {'seq': 2, 'at': now, 'key': 'game_over_recap',
+         'text': 'ゲームオーバー。第1章までの記録でした。', 'terminal_recap': True, **identity},
+    ])
+    hanjuku_narration.consider(g, Game(), tmp_path, terminal=True, now=now,
+                               enqueue=lambda *a, **k: sent.append((a, k)))
+    log_path = tmp_path / 'hanjuku_narration.jsonl'
+    for _ in range(100):
+        try:
+            log = [json.loads(x) for x in log_path.read_text().splitlines()]
+        except FileNotFoundError:
+            log = []
+        if len(log) >= 2 and len(sent) >= 1:
+            break
+        time.sleep(0.02)
+    statuses = {i['seq']: i['status'] for i in log}
+    assert statuses[1] == 'skipped:terminal'          # the ordinary line stays silent
+    assert statuses[2] == 'enqueued'
+    assert len(sent) == 1
+    args, kwargs = sent[0]
+    assert kwargs.get('runtime_fence') is None        # teardown-safe delivery
+
+
+def test_narration_stays_silent_at_terminal_without_a_recap(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from docich.game_switch import atomic_write_json
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g10-test', 'generation': 10,
+                'lease_id': 'lease-10'}
+    g = SimpleNamespace(state_dir=tmp_path)
+    atomic_write_json(tmp_path / 'hanjuku_run.json',
+                      {**identity, 'terminal_reason': 'game_over'})
+    monkeypatch.setattr('docich.agent.fence.read_canonical', lambda _: {'active': identity})
+    sent, now = [], time.time()
+    write_candidates(tmp_path, [{'seq': 1, 'at': now, 'key': 'a', 'text': '通常の実況', **identity}])
+    hanjuku_narration.consider(g, Game(), tmp_path, terminal=True, now=now,
+                               enqueue=lambda *a, **k: sent.append(a))
+    log_path = tmp_path / 'hanjuku_narration.jsonl'
+    for _ in range(100):
+        if log_path.exists():
+            break
+        time.sleep(0.02)
+    log = [json.loads(x) for x in log_path.read_text().splitlines()]
+    assert log and log[0]['status'] == 'skipped:terminal'
+    assert not sent
+
+
+@pytest.mark.parametrize('selected,enemy_hp,expected_card', [(True, 34, 'ノリウツール'),
+                                                         (False, 34, 'クースカン'),
+                                                         (True, 68, 'クースカン')])
+def test_boss_selected_card_hp_drop_chains_without_idle_frames(selected, enemy_hp, expected_card):
+    from docich.hanjuku_screen import Battle, Screen
+    mem = {'chapter': 1, 'attack': {'general': 'どうし', 'castle': 'けっかい',
+                                  'side': 'attack', 'step': '1-B1'}}
+    def screen(hp):
+        return Screen(lines=[], hand=None, text='', kind='battle',
+                      battle=Battle('クイーン', hp, 'どうし', 90))
+    policy.battle_step(screen(70), mem)
+    policy.battle_step(screen(70), mem)
+    policy.battle_step(screen(68), mem)
+    cur = mem['battle']
+    cur['card_flow']['stage'] = 'announce'
+    cur['cards_selected'] = ['クースカン'] if selected else []
+    out = policy.battle_step(screen(enemy_hp), mem)
+    assert cur['card_flow']['card'] == expected_card
+    assert cur['cards_used'] == []
+    if expected_card == 'ノリウツール':
+        assert out == [policy.pad('b')]
+        assert cur['cards_unclassified'] == ['クースカン']
+        assert cur['card_consumption_complete'] is False
+    else:
+        assert out == []
+
+
+def test_month_gift_request_with_three_prices_is_not_a_merchant_list():
+    from docich.hanjuku_screen import parse
+    c = Canvas((20, 20, 20))
+    c.text(16, 176, 'だからなんかかって。')
+    for y, label in [(176, 'エンドマン50G'), (192, 'みずまき100G'), (208, 'スカラーベ200G')]:
+        c.text(160, y, label)
+    screen = parse(c.frame())
+    assert screen.kind == 'gift_request'
+    mem = {'chapter': 1, '_records': []}
+    screen.hand = (138, 169, 156, 181)
+    assert policy.gift_step(screen, mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['decision'] == 'gift'
+    assert mem['_records'][-1]['price'] == 50
+
+
+@pytest.mark.parametrize('stage', ['menu', 'down', 'list', 'announce'])
+def test_unselected_card_return_never_spends_kit_or_unlocks_after_card(stage):
+    mem, screen = _card_evidence_battle()
+    cur = mem['battle']
+    tid = cur['card_flow']['tactic_id']
+    cur['tactics_done'] = [tid]
+    cur['card_flow'] = {'card': 'クースカン', 'stage': stage, 'tactic_id': tid}
+    policy._card_use_unclassified(mem, cur, '白兵へ復帰')
+    assert cur['cards_selected'] == []
+    assert cur['cards_unclassified'] == []
+    assert not mem.get('kit_spent')
+    assert cur['card_flow'] is None
+    assert cur['tactics_done'] == []
+    assert mem['_records'][-1]['decision'] == 'battle_card_open_unclassified'
+    assert mem['_records'][-1]['observed_metric']['retry_allowed'] is True
+    out = policy.battle_step(screen, mem)
+    assert out == [policy.pad('b')]
+    assert cur['card_flow']['card'] == 'クースカン'  # not dependent ノリウツール
+
+
+def test_unselected_chart_open_retry_is_bounded_and_keeps_the_carried_card():
+    mem, screen = _card_evidence_battle()
+    cur = mem['battle']
+    tid = cur['card_flow']['tactic_id']
+    cur['tactics_done'] = [tid]
+    for attempt in (1, 2):
+        cur['card_flow'] = {'card': 'クースカン', 'stage': 'menu', 'tactic_id': tid}
+        policy._card_use_unclassified(mem, cur, '表示待ち上限')
+        assert cur['card_open_failures'][tid] == attempt
+        if attempt == 1:
+            assert policy.battle_step(screen, mem) == [policy.pad('b')]
+    assert cur['tactics_done'] == [tid]
+    assert not mem.get('kit_spent')
+    assert cur['cards_unclassified'] == []
+    assert mem['_records'][-1]['observed_metric']['retry_allowed'] is False
+    for _ in range(5):
+        policy.battle_step(screen, mem)
+        assert cur.get('card_flow') is None
+
+
+def test_selected_unconfirmed_card_still_spends_and_chains_once():
+    mem, screen = _card_evidence_battle()
+    cur = mem['battle']
+    tid = cur['card_flow']['tactic_id']
+    cur['tactics_done'] = [tid]
+    cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
+    policy.card_list_step(_card_screen(['クースカン']), mem)
+    policy._card_use_unclassified(mem, cur, '告知未確認')
+    assert mem['kit_spent']['1-B1'] == ['クースカン']
+    assert cur['cards_unclassified'] == ['クースカン']
+    assert cur['tactics_done'] == [tid]
+    assert policy.battle_step(screen, mem) == [policy.pad('b')]
+    assert cur['card_flow']['card'] == 'ノリウツール'
+
+
+
+def test_recruit_intro_with_upper_background_hand_resumes_only_guarded_flow():
+    sc = recruit_overlay_screen()
+    sc.hand = (115, 41, 132, 54)
+    mem = recruit_overlay_memory()
+    assert policy.month_step(sc, mem) == [policy.pad('a')]
+    assert mem['month_sub']['kind'] == 'recruit'
+    assert not policy.month_menu_ready(sc)
+    for gold, soldiers in ((49, 99), (158, 60)):
+        sc.header['gold'] = gold
+        guarded = recruit_overlay_memory()
+        guarded['shop']['soldiers'] = soldiers
+        assert policy.month_step(sc, guarded) == []
+        assert not guarded.get('month_sub')
+
+
+@pytest.mark.parametrize('hand', [None, (115, 41, 132, 54)])
+def test_measured_recruit_goodbye_closes_without_navigating_background(hand):
+    from docich.hanjuku_font import TextLine
+    sc = recruit_overlay_screen()
+    sc.lines = [line for line in sc.lines if line.y < 175]
+    sc.lines.extend(TextLine(183+16*i, tuple((8+8*j,ch) for j,ch in enumerate(w)))
+                    for i,w in enumerate(['それではまたのきかいに。', 'ごようのさいはいつでもおまかせを。']))
+    sc.hand = hand
+    mem = recruit_overlay_memory()
+    assert not policy.month_menu_ready(sc)
+    assert policy.month_step(sc, mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['decision'] == 'month_recruit_goodbye'
+
+
+def test_powerless_allied_monster_returns_before_wasting_attack_turns():
+    for hp in (120, 46, 11):
+        frame = monster_menu_frame(['なぐれっ!', 'かきむしれ!'],
+                                   ally=('ウゴカザル', hp), enemy=('ピスタチオ', 49), cursor=0)
+        actions, state = decide(frame, {'policy': {'chapter': 2}})
+        choice = next(r for r in state['_records'] if r['decision'] == 'monster_menu_choice')
+        assert choice['observed_metric']['owner'] == 'ally'
+        assert choice['observed_metric']['action'] == 'retreat'
+        assert '攻撃性能がない' in choice['reason']
+        assert actions[0]['buttons'] == ['down']
+
+
+def test_powerless_enemy_monster_is_left_to_enemy_ai():
+    frame = monster_menu_frame(['なぐれっ!', 'かきむしれ!'],
+                               ally=('ピスタチオ', 49), enemy=('ウゴカザル', 120), cursor=0)
+    actions, state = decide(frame, {'policy': {'chapter': 2}})
+    assert actions == []
+    assert state['_records'][0]['decision'] == 'monster_menu_wait'
+    assert state['_records'][0]['observed_metric']['owner'] == 'enemy'
+
+
+def test_powerless_return_navigates_to_measured_return_row():
+    state = {'policy': {'chapter': 2}}
+    for cursor, expected in ((0, 'down'), (1, 'down'), (2, 'a')):
+        frame = monster_menu_frame(['なぐれっ!', 'かきむしれ!'],
+                                   ally=('ウゴカザル', 120), enemy=('ピスタチオ', 49), cursor=cursor)
+        actions, state = decide(frame, state)
+        assert actions[0]['buttons'] == [expected]
+
+
+def _short_recruit_memory():
+    return {'chapter': 1, 'garrison': {'ほんじょう': ['どうし', 'ゼウス']},
+            'orders': {}, 'picked': []}
+
+
+@pytest.mark.parametrize('gold,soldiers,reserved', [(154, 74, 50), (101, 21, 50), (79, 0, 49), (46, 0, 16)])
+def test_short_generals_reserve_fee_before_soldiers(gold, soldiers, reserved):
+    mem = _short_recruit_memory()
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': gold})
+    assert shop['soldiers'] == soldiers
+    assert shop['recruit_priority'] and shop['recruit_reserve'] == reserved
+    assert shop['recruit'] == 'check'
+    assert policy._recruit_shortage(mem)['total_roster'] == 'unclassified'
+
+
+def test_short_generals_recruit_without_the_old_99_refill_gate():
+    mem = _short_recruit_memory()
+    actions = policy.month_step(parse(month_canvas(101, on='しょうぐんぼしゅう')), mem)
+    assert actions == [policy.pad('a')]
+    assert mem['shop']['soldiers'] == 21 and not mem['shop']['soldiers_done']
+    assert mem['month_sub']['kind'] == 'recruit'
+    # Stale background menu cannot launch soldiers while recruitment is opening.
+    assert policy.month_step(parse(month_canvas(101, on='しょうぐんぼしゅう')), mem) == []
+    # Payment is observed before the remaining soldier refill opens.
+    actions = policy.month_step(parse(month_canvas(51, on='しょうぐんぼしゅう')), mem)
+    assert mem['shop']['recruit'] == 'done' and mem['shop']['recruit_reserve'] == 0
+    assert mem['shop']['soldiers'] == 21
+    assert 'month_sub' not in mem
+
+
+def test_short_generals_save_insufficient_fee_without_building_it_away():
+    mem = _short_recruit_memory()
+    policy.month_step(parse(month_canvas(79, on='しょうぐんぼしゅう')), mem)
+    assert mem['shop']['soldiers'] == 0
+    assert mem['shop']['recruit'] == 'skipped'
+    assert mem['shop']['chikujou'] == 'skipped'
+    assert 'month_sub' not in mem
+
+
+def test_same_month_cached_shop_is_migrated_only_once():
+    mem = _short_recruit_memory()
+    mem['shop'] = {'key': '1-7', 'items': [], 'soldiers': 71, 'gold_start': 101,
+                   'soldiers_done': False, 'merchant_done': True, 'egg': None,
+                   'recruit': 'skipped', 'chikujou': 'check'}
+    policy.month_step(parse(month_canvas(101)), mem)
+    policy.month_step(parse(month_canvas(101)), mem)
+    assert mem['shop']['soldiers'] == 21
+    assert sum(r['decision'] == 'recruit_priority_plan' for r in mem['_records']) == 1
+
+
+def test_confirmed_six_generals_do_not_trigger_priority_from_one_small_garrison():
+    mem = _short_recruit_memory()
+    mem['captured'] = ['キカンドン']
+    mem['garrison']['キカンドン'] = ['ココット', 'ヴィーナス', 'クミン']
+    mem['tick'] = 10
+    mem['sorties'] = {'x': {'general': 'シャルドネ', 'status': 'en_route', 'tick': 9}}
+    assert policy._recruit_shortage(mem) is None
+    mem['sorties']['x']['status'] = 'launched_unconfirmed'
+    assert policy._recruit_shortage(mem)['count_lower_bound'] == 5
+
+
+def test_short_generals_keep_hero_egg_and_wage_reserves():
+    mem = _short_recruit_memory(); mem['egg_uses'] = {'どうし': 0}
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
+    assert shop['reserve'] == 50 and shop['recruit_reserve'] == 50 and shop['soldiers'] == 0
+    assert policy.month_step(parse(month_canvas(130, on='しょうぐんぼしゅう')), mem) == [policy.pad('a')]
+    mem = _short_recruit_memory(); mem['egg_uses'] = {'どうし': 0}
+    policy.month_step(parse(month_canvas(100, on='しょうぐんぼしゅう')), mem)
+    assert mem['shop']['recruit'] == 'check'  # defer until the real egg cost is known
+    assert mem['shop']['soldiers'] == 0
+
+
+def test_short_generals_can_reserve_even_before_a_future_chart_purchase():
+    mem = _short_recruit_memory(); mem['chapter'] = 3
+    shop = policy._plan(mem, {'year': 1, 'month': 6, 'gold': 79})
+    assert shop['recruit_priority'] and shop['recruit_reserve'] == 49
+    assert shop['soldiers'] == 0
+
+
+def test_recruit_join_is_verified_at_the_heros_observed_castle():
+    mem = {'chapter': 1, 'garrison': {'ほんじょう': [], 'ジョンリギ': ['どうし']},
+           'month_sub': {'kind': 'recruit', 'gold_before': 100, 'key': '1-7',
+                         'candidate_names': ['ラズベリー'], 'generals_before': ['どうし']}}
+    policy._finish_month_sub(parse(month_canvas(50)), mem, {'recruit': 'opened'})
+    assert 'ジョンリギ' not in mem['garrison']
+    c = Canvas(); c.text(64, 31, 'しゅつげき'); c.text(64, 47, 'ステータス')
+    c.text(144, 39, 'どうし'); c.text(144, 55, 'ラズベリー'); c.hand(122, 33)
+    policy._observe_garrison(parse(c.frame()), mem,
+                             {'step': 'x', 'source': 'ジョンリギ', 'target': 'キカンドン',
+                              'general': 'どうし', 'cards': [], 'note': 'verification'})
+    assert any(r['decision'] == 'recruit_join_observed' and r['castle'] == 'ジョンリギ' for r in mem['_records'])
+    assert 'recruit_verification' not in mem
+
+
+def test_cached_paid_recruit_does_not_earmark_another_fee():
+    mem = _short_recruit_memory()
+    mem['shop'] = {'key': '1-7', 'items': [], 'soldiers': 21, 'gold_start': 101,
+                   'soldiers_done': False, 'merchant_done': True, 'egg': None,
+                   'recruit': 'done', 'chikujou': 'check'}
+    policy.month_step(parse(month_canvas(51)), mem)
+    assert mem['shop']['recruit_reserve'] == 0 and mem['shop']['soldiers'] == 21
+    assert mem.get('month_sub', {}).get('kind') != 'recruit'
+
+
+def test_overestimated_egg_cost_defers_recruit_then_uses_real_balance():
+    # g498 month 1-6: reserve 150, quote/pay 50; 166G remained but v95
+    # had already permanently skipped recruiting before recovery.
+    mem = _short_recruit_memory()
+    shop = {'key': '1-6', 'recruit_priority': True, 'recruit': 'check',
+            'egg': 'pending', 'reserve': 150, 'recruit_reserve': 36,
+            'soldiers': 0, 'chikujou': 'check'}
+    screen = parse(month_canvas(216, on='しょうぐんぼしゅう'))
+    assert policy._month_extra(screen, mem, shop, recruit_only=True) is None
+    assert shop['recruit'] == 'check'
+    assert mem['_records'][-1]['decision'] == 'recruit_deferred_egg'
+    # Paid full recovery is measured rather than replacing the reserve by
+    # an invented quote; then the same month's real 166G affords recruitment.
+    shop['egg'] = 'opened'
+    mem['month_sub'] = {'kind': 'egg', 'gold_before': 216, 'quoted_cost': 50,
+                        'full_selected': True, 'left_menu': True, 'key': '1-6'}
+    screen = parse(month_canvas(166, on='しょうぐんぼしゅう'))
+    assert policy._finish_month_sub(screen, mem, shop)
+    assert policy._month_extra(screen, mem, shop) == [policy.pad('a')]
+    assert mem['month_sub']['kind'] == 'recruit'
+
+
+@pytest.mark.parametrize('enemy', ['ダークエルフ', 'だいまおう'])
+def test_excalibur_uses_four_hits_against_known_enemy_monsters(enemy):
+    frame = monster_menu_frame(['エクスカリバる', 'マサムネる'],
+                               ally=('エクスカリバー', 282), enemy=(enemy, 240), cursor=0)
+    actions, state = decide(frame, {'policy': {'chapter': 1}})
+    assert actions[0]['buttons'] == ['down']
+    assert state['policy']['monster_menu_choice'] == 'skill2'
+    # The old cached first skill must also migrate on a same-HP hotload.
+    state['policy']['monster_menu_choice'] = 'skill1'
+    actions, state = decide(frame, state)
+    assert state['policy']['monster_menu_choice'] == 'skill2'
+
+
+def test_excalibur_keeps_first_skill_against_a_general_and_waits_on_enemy_menu():
+    frame = monster_menu_frame(['エクスカリバる', 'マサムネる'],
+                               ally=('エクスカリバー', 299), enemy=('カシュー', 39), cursor=0)
+    actions, state = decide(frame, {'policy': {'chapter': 1}})
+    assert actions[0]['buttons'] == ['a']
+    frame = monster_menu_frame(['エクスカリバる', 'マサムネる'],
+                               ally=('どうし', 90), enemy=('エクスカリバー', 299), cursor=0)
+    actions, state = decide(frame, {'policy': {'chapter': 1}})
+    assert actions == [] and 'monster_menu_choice' not in state['policy']
+
+
+def test_excalibur_low_hp_still_returns_instead_of_forced_four_hits():
+    frame = monster_menu_frame(['エクスカリバる', 'マサムネる'],
+                               ally=('エクスカリバー', 80), enemy=('ダークエルフ', 240), cursor=0)
+    _, state = decide(frame, {'policy': {'chapter': 1}})
+    assert state['policy']['monster_menu_choice'] == 'retreat'
+
+
+def test_deferred_recruit_does_not_replace_the_egg_payment_tracker():
+    mem = _short_recruit_memory()
+    mem['shop'] = {'key': '1-7', 'gold_start': 216, 'items': [], 'merchant_done': True,
+                   'soldiers': 0, 'soldiers_done': True, 'reserve': 150,
+                   'recruit_priority': True, 'recruit_budget_version': 1,
+                   'recruit_measured_budget': True, 'recruit_reserve': 36,
+                   'recruit': 'check', 'egg': 'opened', 'chikujou': 'check'}
+    mem['month_sub'] = {'kind': 'egg', 'gold_before': 216, 'quoted_cost': 50,
+                        'full_selected': True, 'left_menu': False, 'key': '1-7'}
+    assert policy.month_step(parse(month_canvas(216, on='しょうぐんぼしゅう')), mem) == []
+    assert mem['month_sub']['kind'] == 'egg'
+    assert policy.month_step(parse(month_canvas(166, on='しょうぐんぼしゅう')), mem) == [policy.pad('a')]
+    assert mem['shop']['egg'] == 'done' and mem['month_sub']['kind'] == 'recruit'
+    assert any(r['decision'] == 'egg_recover' for r in mem['_records'])
+
+
+def test_paid_recruit_receipt_survives_later_deduction_and_tracks_actual_join_name():
+    mem = {'chapter': 1, 'month_sub': {'kind': 'recruit', 'gold_before': 158, 'key': '1-7'}}
+    policy.month_sub_step(paid_recruit_screen(gold=108), mem)
+    c = Canvas(); c.text(16, 15, '1ねん7のつき108G')
+    c.text(16, 151, 'チコリがはいかにくわわった!')
+    policy.month_sub_step(parse(c.frame()), mem)
+    assert mem['month_sub']['joined_names'] == ['チコリ']
+    assert any(r['decision'] == 'recruit_join_announced' for r in mem['_records'])
+    shop = {'recruit': 'opened', 'recruit_reserve': 50}
+    policy._finish_month_sub(parse(month_canvas(106)), mem, shop)
+    assert shop['recruit'] == 'done' and shop['recruit_reserve'] == 0
+    assert 'チコリ' in mem['recruit_verification']['candidates']
+    assert 'recruit_join_observed' not in [r['decision'] for r in mem['_records']]
+
+
+def test_recruit_larger_balance_drop_alone_does_not_prove_payment():
+    mem = {'chapter': 1, 'month_sub': {'kind': 'recruit', 'gold_before': 158, 'key': '1-7',
+                                    'left_menu': True}}
+    shop = {'recruit': 'opened'}
+    policy._finish_month_sub(parse(month_canvas(106)), mem, shop)
+    assert shop['recruit'] == 'unverified' and 'recruit_verification' not in mem
+
+
+def _broken_hero_memory():
+    mem = _short_recruit_memory()
+    mem['house_eggs'] = {'どうし': {'broken': True, 'month': '1-6'}}
+    return mem
+
+
+def test_broken_hero_waits_for_real_repair_status_not_house_departure():
+    mem = _broken_hero_memory()
+    order = {'step': 'x', 'general': 'どうし', 'source': 'ほんじょう',
+             'target': 'ゴーメン', 'cards': ['フットバース'], 'after': None}
+    assert not policy._ready(order, mem)
+    mem['house'] = {'phase': 'travel', 'general': 'どうし', 'purchased': False}
+    assert not policy._ready(order, mem)
+    mem.pop('house')  # travel timeout does not clear the observed broken egg
+    assert not policy._ready(order, mem)
+    mem['house_eggs']['どうし'] = {'broken': False, 'uses': 4, 'month': '1-7'}
+    assert policy._ready(order, mem)
+
+
+def test_broken_hero_allows_other_general_and_friendly_staffing_move():
+    mem = _broken_hero_memory()
+    order = {'step': 'x', 'general': 'ゼウス', 'target': 'ゴーメン', 'after': None}
+    assert policy._ready(order, mem)
+    assert policy._ready({**order, 'general': 'どうし', 'purpose': 'move'}, mem)
+    mem['house_eggs']['どうし'] = {'broken': None}
+    assert policy._ready({**order, 'general': 'どうし'}, mem)
+
+
+def test_interim_attack_uses_another_general_instead_of_broken_hero():
+    mem = _broken_hero_memory()
+    assert policy._interim_source(mem, 'ゴーメン', None, {'ほんじょう'}, set()) == ('ほんじょう', 'ゼウス')
+    mem['garrison']['ほんじょう'] = ['どうし']
+    assert policy._interim_source(mem, 'ゴーメン', None, {'ほんじょう'}, set()) is None
+
+
+@pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm', 'map_target'])
+def test_hotloaded_broken_hero_sortie_is_cancelled_before_commit(kind):
+    mem = _broken_hero_memory()
+    mem['active'] = '1-A1'; mem['orders']['1-A1'] = 'pending'
+    mem['sortie_attempt'] = {'step': '1-A1'}
+    screen = parse(Canvas().frame()); screen.kind = kind
+    actions = (policy.target_step(screen, mem, None) if kind == 'map_target'
+               else policy.deploy_step(screen, mem))
+    assert actions == [policy.pad('b')]
+    assert mem['active'] is None and mem['orders']['1-A1'] == 'pending'
+    assert 'sortie_attempt' not in mem
+    assert mem['_records'][0]['decision'] == 'hero_broken_egg_sortie_held'
+
+
+@pytest.mark.parametrize('gold,soldiers,recruit', [(136, 6, 50), (101, 0, 21), (79, 0, 0)])
+def test_broken_hero_keeps_house_fee_before_recruit_and_soldiers(gold, soldiers, recruit):
+    mem = _broken_hero_memory()
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': gold})
+    assert shop['hero_repair_reserve'] == 50
+    assert shop['soldiers'] == soldiers and shop['recruit_reserve'] == recruit
+    assert shop['recruit_priority']
+
+
+def test_recruit_and_castle_cannot_spend_broken_hero_house_fund():
+    mem = _broken_hero_memory()
+    screen = parse(month_canvas(101, on='しょうぐんぼしゅう'))
+    policy.month_step(screen, mem)
+    assert mem['shop']['recruit'] == 'skipped'
+    assert mem['shop']['soldiers'] == 0 and mem['shop']['chikujou'] == 'skipped'
+    assert 'month_sub' not in mem
+
+
+def test_cached_month_plan_protects_newly_observed_broken_hero_once():
+    mem = _broken_hero_memory()
+    mem['shop'] = {'key': '1-7', 'gold_start': 136, 'items': [], 'merchant_done': True,
+                   'soldiers': 56, 'soldiers_done': False, 'reserve': 0,
+                   'recruit_priority': True, 'recruit_budget_version': 1,
+                   'recruit_reserve': 50, 'recruit': 'check', 'egg': None}
+    for _ in range(2): policy._plan(mem, {'year': 1, 'month': 7, 'gold': 136})
+    assert mem['shop']['soldiers'] == 6 and mem['shop']['hero_repair_reserve'] == 50
+    assert sum(r['decision'] == 'hero_repair_funds_reserved' for r in mem['_records']) == 1
+
+
+def test_post_recruit_extra_deduction_reclamps_soldiers_to_keep_house_and_wage():
+    mem = _broken_hero_memory()
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 136})
+    assert shop['soldiers'] == 6
+    shop['recruit'] = 'opened'
+    mem['month_sub'] = {'kind': 'recruit', 'gold_before': 136, 'recruit_paid_gold': 86,
+                        'left_menu': True, 'key': '1-7'}
+    policy._finish_month_sub(parse(month_canvas(84)), mem, shop)
+    assert shop['soldiers'] == 4 and shop['recruit_reserve'] == 0
+    assert 84 - shop['soldiers'] == 50 + policy.WAGE_RESERVE
+
+
+def test_actual_castle_upgrade_quote_cannot_consume_hero_repair_fund():
+    mem = _broken_hero_memory(); mem['shop'] = {'hero_repair_reserve': 50, 'recruit_reserve': 0}
+    c = Canvas(); c.text(16, 15, '1ねん7のつき120G')
+    c.text(16, 151, '80Gかかりますがよろしいですかな')
+    c.text(32, 191, 'うむッ!'); c.text(136, 191, 'いかんッ!')
+    sub = {}
+    policy._chikujou_step(parse(c.frame()), mem, sub)
+    assert sub['declined'] and 'quoted_cost' not in sub
+
+
+def test_actual_egg_recovery_quote_cannot_consume_hero_repair_fund():
+    mem = _broken_hero_memory(); mem['shop'] = {'hero_repair_reserve': 50}
+    c = Canvas(); c.text(16, 15, '1ねん7のつき180G')
+    c.text(16, 151, '3こで150Gになりまんな')
+    c.text(32, 191, 'うむッ!'); c.text(136, 191, 'いかんッ!')
+    sub = {'full_selected': True}
+    assert policy._egg_recovery_step(parse(c.frame()), mem, sub) == [policy.pad('b')]
+    assert sub['aborted'] and 'quoted_cost' not in sub
+
+
+def test_egg_quote_keeps_wage_as_well_as_house_fee():
+    mem = _broken_hero_memory(); mem['shop'] = {'hero_repair_reserve': 50}
+    c = Canvas(); c.text(16, 15, '1ねん7のつき150G')
+    c.text(16, 151, '2こで100Gになりまんな')
+    c.text(32, 191, 'うむッ!'); c.text(136, 191, 'いかんッ!')
+    sub = {'full_selected': True}
+    assert policy._egg_recovery_step(parse(c.frame()), mem, sub) == [policy.pad('b')]
+    assert sub['aborted']
+
+
+def egg_choice_frame(names=('ぼーぼーどり', 'ゲーラス', 'ガーコイル'), cursor=0, x=176):
+    c = Canvas()
+    for i, name in enumerate(names):
+        c.text(x, 176 + 16 * i, name)
+    if cursor is not None:
+        for dy in range(14):
+            for dx in range(12):
+                c.put(x - 30 + dx, 170 + 16 * cursor + dy, (230, 105, 74))
+    return c.frame()
+
+
+@pytest.mark.parametrize('cursor', [0, 1, 2])
+def test_elabel_choice_uses_actual_names_and_knight_cursor(cursor):
+    s = parse(egg_choice_frame(cursor=cursor))
+    assert s.kind == 'egg_choice_menu'
+    assert s.menu_cursor == 176 + 16 * cursor
+    mem = {}
+    assert policy.egg_choice_step(s, mem) == [policy.pad('a' if cursor == 0 else 'up')]
+    assert bool(mem.get('_records')) == (cursor == 0)
+
+
+@pytest.mark.parametrize('names,x', [
+    (('ぼーぼーどり', 'ゲーラス'), 176),
+    (('ぼーぼーどり', 'ゲーラス', 'しらない'), 176),
+    (('ぼーぼーどり', 'ゲーラス', 'ガーコイル'), 40),
+    (('こうげき', 'もうこうげき', 'たまごをつかう'), 176),
+])
+def test_elabel_choice_does_not_reinterpret_other_or_incomplete_menus(names, x):
+    assert parse(egg_choice_frame(names, x=x)).kind != 'egg_choice_menu'
+
+
+def test_elabel_choice_never_confirms_without_cursor():
+    s = parse(egg_choice_frame(cursor=None))
+    assert s.kind == 'egg_choice_menu'
+    assert policy.egg_choice_step(s, {}) == []
+
+
+def test_elabel_choice_routes_before_field_fallback_and_keeps_battle():
+    battle = {'ally': 'どうし', 'enemy': 'クミン', 'ally_hp': 90, 'enemy_hp': 26}
+    actions, state = decide(egg_choice_frame(), {'policy': {'chapter': 1, 'battle': battle}})
+    assert actions == [policy.pad('a')]
+    assert state['screen_kind'] == 'egg_choice_menu'
+    assert state['policy']['battle'] == battle
+    assert state['_records'][-1]['resulting_event'] == 'summon_selected_not_yet_confirmed'
+    _, state = decide(Canvas().frame(), state)
+    assert 'egg_choice' not in state['policy']
+
+
+def test_elabel_choice_bounds_confirmation_retries_without_claiming_summoned():
+    mem = {}
+    s = parse(egg_choice_frame())
+    assert policy.egg_choice_step(s, mem) == [policy.pad('a')]
+    for _ in range(3):
+        assert policy.egg_choice_step(s, mem) == []
+    assert policy.egg_choice_step(s, mem) == [policy.pad('a')]
+    for _ in range(5):
+        assert policy.egg_choice_step(s, mem) == []
+    assert [r['decision'] for r in mem['_records']] == ['egg_choice_select', 'egg_choice_select', 'egg_choice_unconfirmed']
+
+
+def test_elabel_choice_interrupts_house_menu_even_without_prior_battle_panel():
+    state = {'policy': {'chapter': 1, 'house': {'phase': 'open_roster', 'age': 0, 'total': 0, 'chapter': 1}}}
+    actions, updated = decide(egg_choice_frame(), state)
+    assert actions == [policy.pad('a')]
+    assert updated['policy']['house']['interrupted'] is True
+
+
+def test_elabel_choice_is_an_exit_from_unrelated_month_transaction():
+    assert 'egg_choice_menu' in policy.MONTH_SUB_EXIT_KINDS
+
+
+@pytest.mark.parametrize('cursor', [0, 1, 2])
+def test_elabel_choice_matches_actual_ascii_digit_but_preserves_visible_labels(cursor):
+    from docich.hanjuku_screen import egg_choice_names
+    names = ('ユニコーン', 'てつじん8ごう', 'ドラゴンパピー')
+    s = parse(egg_choice_frame(names, cursor=cursor))
+    assert s.kind == 'egg_choice_menu'
+    assert egg_choice_names(s) == list(names)
+    assert policy.egg_choice_step(s, {}) == [policy.pad('a' if cursor == 0 else 'up')]
+
+
+def test_elabel_digit_fold_does_not_accept_a_different_monster_number():
+    assert parse(egg_choice_frame(('ユニコーン', 'てつじん9ごう', 'ドラゴンパピー'))).kind != 'egg_choice_menu'
+
+
+def test_recruit_priority_waits_for_the_first_menu_cursor_instead_of_skipping():
+    mem = _short_recruit_memory()
+    incomplete = parse(month_canvas(166))
+    incomplete.hand = None
+    assert policy.month_step(incomplete, mem) == []
+    assert mem['shop']['recruit'] == 'check'
+    assert not mem['shop']['soldiers_done']
+    ready = parse(month_canvas(166, on='しょうぐんぼしゅう'))
+    assert policy.month_step(ready, mem) == [policy.pad('a')]
+    assert mem['month_sub']['kind'] == 'recruit'
+    assert not mem['shop']['soldiers_done']
+
+
+def test_missing_priority_recruit_menu_has_a_bound_and_keeps_the_fee():
+    mem = _short_recruit_memory()
+    sc = parse(month_canvas(166, on='へいしほじゅう'))
+    sc.lines = [line for line in sc.lines if 'しょうぐんぼしゅう' not in line.known]
+    for _ in range(6):
+        assert policy.month_step(sc, mem) == []
+    assert policy.month_step(sc, mem) == [policy.pad('a')]
+    assert mem['shop']['recruit'] == 'unverified'
+    assert mem['shop']['recruit_reserve'] == 50
+    assert mem['shop']['soldiers'] == 86
+    assert any(r['decision'] == 'recruit_menu_unconfirmed' for r in mem['_records'])
+
+
+@pytest.mark.parametrize('after,expected', [(106, 76), (94, 64), (30, 0), (18, 0)])
+def test_paid_recruit_actual_balance_always_protects_wages_without_broken_hero(after, expected):
+    mem = _short_recruit_memory()
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 156})
+    assert shop['soldiers'] == 76 and not shop.get('hero_repair_reserve')
+    shop['recruit'] = 'opened'
+    mem['month_sub'] = {'kind': 'recruit', 'gold_before': 156, 'recruit_paid_gold': 106,
+                        'left_menu': True, 'key': '1-7'}
+    assert policy._finish_month_sub(parse(month_canvas(after)), mem, shop)
+    assert shop['recruit'] == 'done' and shop['recruit_reserve'] == 0
+    assert shop['soldiers'] == expected
+    assert shop['soldiers_done'] == (expected == 0)
+    assert after - expected >= min(after, policy.WAGE_RESERVE)
+
+
+def test_unverified_recruit_cannot_release_its_reserved_fee_or_rewrite_soldiers():
+    mem = _short_recruit_memory()
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 156})
+    shop['recruit'] = 'opened'
+    mem['month_sub'] = {'kind': 'recruit', 'gold_before': 156, 'left_menu': True, 'key': '1-7'}
+    assert policy._finish_month_sub(parse(month_canvas(94)), mem, shop)
+    assert shop['recruit'] == 'unverified' and shop['recruit_reserve'] == 50
+    assert shop['soldiers'] == 76
+
+
+def test_paid_recruit_never_refills_again_after_soldiers_already_finished():
+    mem = _short_recruit_memory()
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 156})
+    shop.update(recruit='opened', soldiers_done=True)
+    mem['month_sub'] = {'kind': 'recruit', 'gold_before': 156, 'recruit_paid_gold': 106,
+                        'left_menu': True, 'key': '1-7'}
+    assert policy._finish_month_sub(parse(month_canvas(94)), mem, shop)
+    assert shop['soldiers_done'] and shop['soldiers'] == 76
+
+
+def test_chart_card_command_without_cursor_never_confirms_and_has_a_bound():
+    mem = {'chapter': 1, 'battle': {'enemy': 'ガルバンゾー', 'ally': 'どうし',
+           'cards_used': [], 'card_flow': {'card': 'フットバース', 'stage': 'menu'}}}
+    state = {'policy': mem}
+    for _ in range(8):
+        actions, state = decide(_menu_without_egg_row(), state)
+        assert actions == []
+    actions, state = decide(_menu_without_egg_row(), state)
+    assert actions == [policy.pad('b')]
+    assert state['policy']['battle']['card_flow'] is None
+
+
+@pytest.mark.parametrize('x,y,expected', [(176,192,'battle_menu_pending'),
+    (176,208,'battle_menu_pending'), (176,216,'battle_menu_pending'),
+    (40,192,'text'), (176,200,'text')])
+def test_clipped_command_requires_measured_position_and_never_confirms_without_cursor(x,y,expected):
+    c = Canvas((0,0,0));c.text(x,y,'たまごをつかう')
+    s = parse(c.frame())
+    assert s.kind == expected
+    if expected == 'battle_menu_pending':
+        actions, state = decide(c.frame(), {'policy': {'chapter': 1}})
+        assert actions == []
+
+
+@pytest.mark.parametrize('y', [192, 196])
+def test_measured_boss_two_line_command_uses_live_card_row_instead_of_egg(y):
+    c = Canvas((0,0,0)); c.text(176,y,'たまごをつかう'); c.text(176,y+16,'きりふだ')
+    for yy in range(y-8,y+4):
+        for xx in range(152,164): c.put(xx,yy,(230,105,74))
+    s = parse(c.frame()); assert s.kind == 'battle_menu' and s.menu_cursor == y
+    mem = {'chapter':1,'battle':{'ally':'ゼウス','enemy':'クイーン','ally_hp':35,
+        'enemy_hp':70,'cards_used':[], 'card_flow':{'card':'イッテツーン','stage':'menu'}}}
+    actions,state=decide(c.frame(), {'policy':mem})
+    assert actions == [policy.pad('down')]
+    assert state['policy']['battle']['card_flow']['stage'] == 'down'
+    # Moving the actual cursor to the card row authorizes A.
+    c = Canvas((0,0,0)); c.text(176,y,'たまごをつかう'); c.text(176,y+16,'きりふだ')
+    for yy in range(y+8,y+20):
+        for xx in range(152,164): c.put(xx,yy,(230,105,74))
+    assert parse(c.frame()).menu_cursor == y + 16
+    actions,state=decide(c.frame(),state)
+    assert actions == [policy.pad('a')]
+    assert state['policy']['battle']['card_flow']['stage'] == 'list'
+
+
+@pytest.mark.parametrize('y',[196,212])
+def test_measured_shifted_single_egg_command_waits_for_the_second_row(y):
+    c=Canvas((0,0,0));c.text(176,y,'たまごをつかう')
+    assert parse(c.frame()).kind == 'battle_menu_pending'
+    assert decide(c.frame(),{'policy':{'chapter':1}})[0] == []
+
+
+@pytest.mark.parametrize('y',[188,200,204])
+def test_unmeasured_boss_pair_offset_does_not_guess_a_human_command(y):
+    c=Canvas((0,0,0));c.text(176,y,'たまごをつかう');c.text(176,y+16,'きりふだ')
+    assert parse(c.frame()).kind != 'battle_menu'

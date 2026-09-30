@@ -120,7 +120,7 @@ sudo bash ops/vm_actions/install_vm_gateway.sh ~/.ssh/github-vm-ops.pub ubuntu
 
 preview deploy の成功後、gateway は `state/releases/docich` の展開済みreleaseを世代GCします。現在要求されたSHAを必ず保護し、それを含めて最大2世代を残します。古いreleaseでもHEAD不一致、tracked drift、symlink等がある場合は証拠保全を優先して削除しません。
 
-Git bundle は `ops/vm_actions/prune_bundles.py` と `.github/workflows/vm-bundle-retention.yml` で別途ローテーションします。current production / previous HEAD / retained preview / active pending repair から参照されるbundleは常に保護します。未参照bundleも7日以内は保護し、それより古くても新しい方から8世代を残します。deployment recovery中、非active repair、production tracked/submodule drift、scan不完全、未知entry/symlink、またはscan後の候補変化がある場合は1件も削除しません。mutationは既存owner-only production `exec` を使うため、gatewayの `vm-operations.lock` 内でupload/deploy/previewと直列化されます。詳細は `BUNDLE_RETENTION.md` を参照してください。
+Git bundle は `ops/vm_actions/prune_bundles.py` と `.github/workflows/vm-bundle-retention.yml` で別途ローテーションします。current production / previous HEAD / retained preview / active pending repair から参照されるbundleは常に保護します。未参照bundleは経過日数に関係なく新しい方から2件を残します（既定 `min_age_seconds=0` / `keep_unreferenced=2`）。参照中のbundleは件数制限の対象外です。deployment recovery中、非active repair、production tracked/submodule drift、scan不完全、未知entry/symlink、またはscan後の候補変化がある場合は1件も削除しません。mutationは既存owner-only production `exec` を使うため、gatewayの `vm-operations.lock` 内でupload/deploy/previewと直列化されます。詳細は `BUNDLE_RETENTION.md` を参照してください。
 
 `.github/workflows/vm-storage-monitor.yml` は毎時17分・47分にproduction `status` だけをforced-command gateway経由で読み、80%でWARN、90%でCRITICALのGitHub Issueを1件だけ作ります。同一severityのopen Issueがあれば最新snapshotへ更新し、severity変化時は旧Issueを閉じて新しいseverityを作成し、80%未満へ戻るとopen alertを閉じます。通知には使用率・空き容量・総容量・workflow URLだけを載せ、VMログ、filesystem path、資格情報、command outputは載せません。手動確認は workflow_dispatch でも実行できます。
 

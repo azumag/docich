@@ -1523,9 +1523,10 @@ class TestRetroCornerImproveWindow(RetroCornerTestBase):
         mgr.config = replace(mgr.config, improve_agents="test-agent")
         state = {
             "date": "2026-09-06",
-            "game": "nsnake",
+            "game": "moon-buggy",
             "started_at": "2026-09-06T12:00:00+09:00",
             "ends_at": "2026-09-06T12:20:00+09:00",
+            "rotation_request_id": "12345678-1234-5678-1234-567812345678",
         }
         captured = []
 
@@ -1545,3 +1546,4 @@ class TestRetroCornerImproveWindow(RetroCornerTestBase):
         end = datetime.fromisoformat(state["ends_at"]).timestamp()
         assert argv[argv.index("--started-at") + 1] == f"{start:.6f}"
         assert argv[argv.index("--ends-at") + 1] == f"{end:.6f}"
+        assert argv[argv.index("--request-id") + 1] == state["rotation_request_id"]

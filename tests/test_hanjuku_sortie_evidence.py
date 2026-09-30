@@ -49,7 +49,8 @@ def measured_card_select(names=('イッテツーン', 'ダイチスイム', 'ブ
 
 
 def memory():
-    return {'chapter': 1, 'active': '1-B1', 'variant': 'chart',
+    # These contracts start after the separate rare-inventory discovery pass.
+    return {'rare_scan_month': 'chapter-1:unknown', 'chapter': 1, 'active': '1-B1', 'variant': 'chart',
             'orders': {'1-B1': 'pending'}, 'picked': [], 'sortie_general': {'1-B1': 'どうし'}}
 
 
@@ -78,6 +79,66 @@ def test_exact_card_selection_is_only_a_plan_and_clears_stale_context():
     assert mem['picked'] == ['クースカン']
     assert '1-B1' not in mem['order_context']
     assert mem['_records'][-1]['resulting_event'] == 'selection_planned_not_yet_confirmed'
+
+
+def test_unknown_card_name_row_is_read_but_never_selected():
+    # g454 10:02: バルムンク (an event card outside CARD_NAMES) made every
+    # card_select reading fail and the sortie held forever.
+    screen = measured_card_select(('バルムンク', 'フットバース'), stocks=[1, 2])
+    inventory = policy._measured_card_select(screen)
+    assert [row['card'] for row in inventory['rows']] == ['バルムンク', 'フットバース']
+    assert inventory['remaining'] == 3
+    mem = {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
+           'orders': {'1-A2': 'pending'}, 'picked': []}
+    assert policy.deploy_step(screen, mem) == [policy.pad('down')]
+    assert 'バルムンク' not in mem.get('picked', [])
+    assert mem['card_stock'] == {'バルムンク': 1, 'フットバース': 2}
+    # A malformed name (digit inside) still fails the structure.
+    assert policy._measured_card_select(measured_card_select(('バル2ンク',), stocks=[1])) is None
+
+
+def test_unreadable_card_select_is_bounded_and_cancels_the_sortie():
+    mem = {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
+           'orders': {'1-A2': 'pending'}, 'picked': []}
+    screen = menu('card_select', ['クースカン1'], True)
+    for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+        assert mem['orders']['1-A2'] == 'pending'
+    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['orders']['1-A2'] == 'failed' and mem['active'] is None
+
+
+def test_a_base_boss_sortie_keeps_its_strict_hold_on_unreadable_panels():
+    mem = memory()                       # active 1-B1, the base boss order
+    screen = menu('card_select', ['クースカン1'], True)
+    for _ in range(policy.CARD_UNREADABLE_LIMIT + 2):
+        assert policy.deploy_step(screen, mem) == []
+    assert mem['orders']['1-B1'] == 'pending' and mem['active'] == '1-B1'
+
+
+def test_sortie_card_stock_is_recorded_for_the_adjusted_chart():
+    # g438 04:04: the adjusted chart planned ミックミー/エンジェリン that the
+    # player never held. The card panel now feeds the request's card_stock.
+    mem = {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
+           'orders': {'1-A2': 'pending'}, 'picked': []}
+    screen = measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'クースカン'),
+                                  stocks=[10, 1, 2, 2])
+    policy.deploy_step(screen, mem)
+    assert mem['card_stock'] == {'イッテツーン': 10, 'ブラッキー': 1,
+                                 'フットバース': 2, 'クースカン': 2}
+    assert policy._adjust_situation(mem)['card_stock'] == mem['card_stock']
+    # Fewer than four rows is the whole inventory: a known card that is no
+    # longer shown is out of stock now (depleted items disappear).
+    policy.deploy_step(measured_card_select(('ブラッキー', 'クースカン'), stocks=[1, 1]), mem)
+    assert mem['card_stock'] == {'イッテツーン': 0, 'ブラッキー': 1,
+                                 'フットバース': 0, 'クースカン': 1}
+    # A four-row panel is a window: only the rows it shows are updated.
+    policy.deploy_step(measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'クースカン'),
+                                            stocks=[1, 1, 1, 1]), mem)
+    policy.deploy_step(measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'クースカン'),
+                                            stocks=[2, 1, 1, 1]), mem)
+    assert mem['card_stock']['イッテツーン'] == 2
+    assert mem['card_stock']['クースカン'] == 1
 
 
 def test_general_cursor_failure_does_not_install_a_substitute():
@@ -363,13 +424,14 @@ def test_nonempty_uncalibrated_unknowns_remain_held():
 
 
 def foot_order_memory():
-    return {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
+    # Isolate calibrated selection after bounded rare-stock discovery.
+    return {'rare_scan_month': 'chapter-1:unknown', 'chapter': 1, 'active': '1-A2', 'variant': 'chart',
             'orders': {'1-A2': 'pending'}, 'picked': []}
 
 
 def test_measured_two_digit_stock_row_keeps_cursor_and_moves_to_planned_card():
     # Live g328: イッテツーン stock 10 is tens at x=224 and ones at x=232.
-    mem = {'chapter': 1, 'active': '1-C2', 'variant': 'chart',
+    mem = {'rare_scan_month': 'chapter-1:unknown', 'chapter': 1, 'active': '1-C2', 'variant': 'chart',
            'orders': {'1-C2': 'pending'}, 'picked': []}
     screen = measured_card_select(('イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース'),
                                   stocks=('10', '2', '2', '2'), selected=0, remaining='3')
@@ -782,6 +844,39 @@ def _c2_memory():
             'orders': {'1-C2': 'pending'}, 'picked': []}
 
 
+def test_a_picked_card_kept_after_its_drop_approves_the_sortie():
+    # g454 12:22: the plan イッテツーンx2 had one copy picked and the second
+    # dropped as out of stock; removing every copy of the card shrank the plan
+    # below what the game carried and the confirmation held forever.
+    mem = _c2_memory()
+    mem['picked'] = ['ブラッキー', 'ダイチスイム']
+    mem['card_drop'] = {'1-C2': ['ダイチスイム']}    # one unpicked copy left behind
+    screen = measured_loaded_sortie(('ブラッキー', 'ダイチスイム'))
+    assert policy._deploy_cards(policy._order(mem), mem) == ['ダイチスイム', 'ブラッキー']
+    assert policy.deploy_step(screen, mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['decision'] == 'sortie_confirm'
+
+
+def test_a_readable_but_mismatched_kit_is_approved_after_bounded_readings():
+    mem = _c2_memory()
+    mem['picked'] = ['ブラッキー']
+    screen = measured_loaded_sortie(('ブラッキー', 'ダイチスイム'))
+    for _ in range(policy.SORTIE_CONFIRM_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+        assert mem['_records'][-1]['decision'] == 'situation_held'
+    assert policy.deploy_step(screen, mem) == [policy.pad('a')]
+    assert [r['decision'] for r in mem['_records'][-2:]] == ['sortie_kit_mismatch', 'sortie_confirm']
+
+
+def test_an_unreadable_sortie_confirmation_is_bounded_and_cancelled():
+    mem = _c2_memory()
+    screen = menu('sortie_confirm', ['うむッ!'], hand=False)
+    for _ in range(policy.SORTIE_CONFIRM_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['orders']['1-C2'] == 'failed' and mem['active'] is None
+
+
 def test_a_card_absent_from_the_panel_is_left_behind_after_bounded_readings():
     """g401 21:16: ダイチスイム was not on the panel and the sortie screen stayed open."""
     mem = _c2_memory()
@@ -794,7 +889,7 @@ def test_a_card_absent_from_the_panel_is_left_behind_after_bounded_readings():
         assert mem['_records'][-1]['decision'] == 'situation_held'
     assert policy.deploy_step(screen, mem) == []
     rec = mem['_records'][-1]
-    assert rec['decision'] == 'card_dropped' and rec['dropped'] == ['ダイチスイム']
+    assert rec['decision'] == 'card_dropped' and rec['dropped'] == ['ダイチスイム', 'ダイチスイム']
     assert rec['observed_metric']['complete_list'] is False      # 4 rows may hide more
     assert rec['deviation_reason'] == 'ダイチスイムを選べないため携行せずに出撃する'
     assert policy._deploy_cards(policy._order(mem), mem) == ['ブラッキー']
@@ -808,7 +903,7 @@ def test_no_carry_slot_left_drops_every_remaining_card():
     screen = measured_card_select(('ダイチスイム', 'ブラッキー'), stocks=('2', '1'), remaining='0')
     for _ in range(policy.CARD_MISS_LIMIT):
         policy.deploy_step(screen, mem)
-    assert mem['_records'][-1]['dropped'] == ['ダイチスイム']
+    assert mem['_records'][-1]['dropped'] == ['ダイチスイム', 'ダイチスイム']
     assert policy._deploy_cards(policy._order(mem), mem) == ['ブラッキー']
     assert policy.deploy_step(screen, mem) == [policy.pad('b')]   # on to the sortie confirm
 

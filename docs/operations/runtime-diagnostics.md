@@ -116,7 +116,7 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 
 - common rotation: `corner_rotation.json` の固定projectionを
   `corners.corner_rotation`へ出す。status、slot、next_due_at、last_seen_at、
-  eligible_count、pending有無、および設定由来の `schedule_mode` / `cooldown_seconds`
+  eligible_count、pending有無、`queued_manual`（ledgerまたは固定inboxに手動予約があるboolean）、および設定由来の `schedule_mode` / `cooldown_seconds`
   のみ。seed・request payload・自由文は出さない。
   さらに、`error_kind`（`docich.corner_rotation.ERROR_KINDS` と同一の固定enum。
   例外本文はstateにもdiagnosticsにも書かない。欠落はnull、不正値は`unknown`。
@@ -272,6 +272,46 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - Actions maskingで数値が`***`になった場合は欠測扱い。復元や推定をしない。
   フェーズ中央値を足して全体中央値と比較しない。
 
+## NetHack 日次結果・終了履歴の読み取り投影
+
+`nethack_history` は既存owner-only `diagnostics` のJSON（VM operations Actionsログ）で取得する。
+新しいtimer、公開Issueへの自動転載、artifact、production exec経路は追加しない。
+**この変更をmainへ統合しcanonical deployするまでは、新フィールドは実環境で使えない。**
+
+固定収集元はproduction設定から解決した `state_dir/nethack/daily-improvements/YYYY-MM-DD.json`
+と `state_dir/nethack/runs/<uuid>.json` のみ。候補catalog、raw progress JSONL、TTY、
+xlogfile、dump、advisory、lockは開かず、既に保存されたretrospectiveの数値集計だけを読む。
+run終了処理や日次処理を起動しない。owner境界・既存lock・稼働中ゲームに介入しない。
+
+- 各source最大128ディレクトリエントリ、各JSON最大64KiB。directory/fileは
+  dirfd相対openと`O_NOFOLLOW`で全階層のsymlinkを拒否、regular fileのみ。
+  schema v1のみを投影し、JSON不正・過大・リンク・非regular・日時不正は除外する。
+- 日次は観測した有効結果のうち生成日時の新しい7件。statusは`review_ready` /
+  `no_new_runs`、run_count、固定candidate category件数、`pending_canary_evaluation` /
+  `no_change` / `unknown`、policy_effect=none、automatic_promotion=falseのみ。
+  policy変更や自動昇格を示す不正なreportは受理しない。
+- 終了runは観測した有効結果のうち終了日時の新しい8件。`dead` / `ascended` /
+  `ended` / `ended_unknown`、expedition、score/turns/max_depth、開始・終了日時、
+  retrospective有無・生成日時、同種死因件数とprogressのsample/不正行/反復送信/turn/depth/
+  HP比率/phase集計だけ。run ID・death reason/signature・候補本文・path・hashは出さない。
+  同種死因件数や反復送信は観測パターンであり、失敗原因・改善効果の確定ではない。
+- `collected_at`、`generated_at` / `ended_at` / `started_at`、`file_mtime` はUTC epoch秒。
+  `ended_at` はproducerのroot `last_finished_at`（終了処理時刻）を投影する。
+  session内の`ended_at`やxlogの死亡時刻とは区別する。
+  日次`date`はproducer設定のローカル日付。日次結果が無い日は失敗・成功を推測しない。
+- 各sourceのstatusは`missing` / `unavailable` / `empty` / `ok` / `partial`。
+  `invalid_records`、`excluded_active`、`scanned_entries`、`scan_complete`と
+  `omitted_records`を返す。`scan_complete=false`なら全履歴・全体の最新記録を証明しない。
+  active/suspended等は結果から除外。nullable数値・`unknown`・progressの`missing`を0件の成功にしない。
+  retrospectiveが無ければprogressや同種死因は不明。bounded JSONに含まれる余分な自由文は
+  メモリ内のparseだけに留め、allowlist projectionで除去する。
+- collector全体の既存36KiB予算を超えた場合は古いrecordsから段階的に省略し、
+  各sourceの最新1件を残した状態で既存のAI詳細・worker詳細・Soren比較詳細の
+  縮退を適用する。それでも上限超過なら最新1件も省略する。実際に省略したsourceだけ
+  `output_omitted=true`と`omitted_records`に記録する。gatewayの49KiB上限・型・深さ・
+  secret-redactionは維持。複数ファイルの逐次観測であり原子的snapshotではない。
+  遠征・日次の一覧は互いに独立した観測なので、同じ終了runを二重加算しない。
+
 ## 出さないもの
 
 secrets・token・raw environment・prompt 本文・生成本文・HTTP header・
@@ -337,3 +377,21 @@ worker / queue / model / provider / fallback / runtime component を変えたら
 - [ ] regression tests（正常・停止・stale・重複・未登録・malformed・redact・bound）
 - [ ] secret-redaction（新規 field が出ていないか）
 - [ ] deploy 影響（collector はデプロイ済み main から動くこと）
+
+## OpenCode retention health
+
+`opencode_retention` は固定stateの `attempt` / `default` / `worker` と専用timerのactive/enabledを返す。
+statusは `running/completed/gate_timeout/disabled/deferred/failed`、reason/stageは固定enum、前後bytes・page数・削除件数・日時だけを許可する。
+最新attemptが失敗/延期/ロック待機切れ、3時間超stale、timer停止ならWARN。古いDB単位のcompletedを最新attemptの成功とみなさない。
+秘密・prompt・DB行の内容・例外本文は出力しない。DBファイルサイズと実際のroot空き容量は別に実測する。
+
+`docich-opencode-retention.timer` はゲームから独立した1時間毎のoneshot maintenanceで、supervisor worker / AI queueは追加しない。
+直近1日のOpenCode実行履歴を残す（認証・ゲーム結果・戦略履歴は別管理）。3日分で5GB級に再増加したため、#1337の回復後も1日保持を定期適用する。
+既存のdefault DB retention opt-outは維持する。timerはcanonical deployだけで導入し、ゲーム・配信・共通音声を再起動しない。
+status 75は未実行/延期であり、serviceの異常終了ループを避けてもdiagnosticsで成功には変換しない。
+
+回収は1GiBの空きを確保し、gate→SQLite EXCLUSIVE→transactional prune→checkpoint→private VACUUM INTO→transactional backup→checkpointを使う。
+各段の見込み容量と途中の空きを判定する。コピーのサイズを実測してから書き戻しを予算化する。ライブDB/WALをrename/unlinkしない。
+デプロイepoch=3の1回回収後はtimerが継続担当する。回収が失敗/延期ならcanonical runも非成功になり、`diagnostics`で段階・理由と容量を確認する。
+
+OpenCodeの `compact_storage` は `disk` / `memory` を区別する。圧縮コピーにtmpfsを利用した場合も、root空き1GiB・利用可能RAM4GiB（cgroup制限込み）を予約する。`insufficient_memory` / `memory_unknown` は成功ではなく延期で、次回の定期実行へ持ち越す。

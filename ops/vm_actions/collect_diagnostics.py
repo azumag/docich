@@ -165,6 +165,83 @@ TMP_SO_MAX_CANDIDATES = 4096
 TMP_SO_MAX_PROC_FDS = 50000
 
 STORAGE_MAX_ENTRIES = 100000
+OPENCODE_ATTRIBUTION_WINDOW_SEC = 24 * 60 * 60
+OPENCODE_ATTRIBUTION_QUERY_TIMEOUT_SEC = 2.0
+OPENCODE_CALLER_BUCKETS = (
+    "radio_prepass",
+    "radio_main",
+    "comment",
+    "improvement",
+    "soren91",
+    "probe",
+    "other",
+)
+OPENCODE_CALLER_TITLES = {
+    f"docich:{bucket}": bucket for bucket in OPENCODE_CALLER_BUCKETS
+}
+
+
+def _collect_opencode_retention(soren, now):
+    """Project only bounded enums/numbers; never forward exception or DB text."""
+    OPENCODE_RETENTION_TIMER = _REG.OPENCODE_RETENTION_TIMER
+    OPENCODE_RETENTION_MAX_AGE_SEC = _REG.OPENCODE_RETENTION_MAX_AGE_SEC
+    result = {}
+    enums = {
+        "status": {"running", "completed", "gate_timeout", "disabled", "deferred", "failed"},
+        "reason": {"ok", "deadline", "insufficient_space", "space_unknown", "checkpoint_busy",
+                   "unsafe_journal_mode", "sqlite_busy", "sqlite_error", "filesystem_or_input", "interrupted",
+                   "insufficient_memory", "memory_unknown"},
+        "compact_storage": {"disk", "memory"},
+        "stage": {"preflight", "delete", "compact_copy", "compact_writeback", "checkpoint", "vacuum", "done"},
+    }
+    numbers = ("started_at", "completed_at", "retention_days", "deleted_sessions", "eligible_sessions",
+               "before_bytes", "after_bytes", "available_before_bytes", "available_after_bytes",
+               "compact_bytes", "page_size", "page_count", "freelist_count")
+    for label, filename in (("attempt", "opencode_db_retention.json"),
+                            ("default", "opencode_retention_default.json"),
+                            ("worker", "opencode_retention_worker.json")):
+        path = Path(soren) / "tmp/state" / filename
+        item = {"present": False, "readable": False}
+        try:
+            st = path.lstat()
+            item["present"] = True
+            if not stat.S_ISREG(st.st_mode) or st.st_size > 4096:
+                result[label] = item
+                continue
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, encoding="utf-8") as handle:
+                opened = os.fstat(handle.fileno())
+                if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
+                    raise ValueError()
+                data = json.loads(handle.read(4097))
+            if not isinstance(data, dict):
+                raise ValueError()
+            item["readable"] = True
+            for key, allowed in enums.items():
+                value = data.get(key)
+                if isinstance(value, str):
+                    item[key] = value if value in allowed else "unknown"
+            for key in numbers:
+                value = data.get(key)
+                if type(value) is int and 0 <= value < 2**63:
+                    item[key] = value
+            stamp = item.get("completed_at", item.get("started_at"))
+            if stamp is not None:
+                item["age_sec"] = max(0, int(now - stamp))
+                item["stale"] = stamp > now + 60 or now - stamp > OPENCODE_RETENTION_MAX_AGE_SEC
+        except (OSError, ValueError):
+            pass
+        result[label] = item
+    result["timer"] = {"unit": OPENCODE_RETENTION_TIMER}
+    for action, field in (("is-active", "active"), ("is-enabled", "enabled")):
+        try:
+            env = {**os.environ, "XDG_RUNTIME_DIR": "/run/user/%d" % os.getuid()}
+            proc = subprocess.run(["systemctl", "--user", action, "--quiet", OPENCODE_RETENTION_TIMER],
+                                  capture_output=True, timeout=2, env=env)
+            result["timer"][field] = proc.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            result["timer"][field] = None
+    return result
 
 
 def _storage_allocated_bytes(st):
@@ -332,6 +409,142 @@ def _collect_storage_breakdown(
         "voicevox_root": _storage_tree_usage(voicevox_root, max_entries=max_entries),
         "voicevox_archive": _storage_file_usage(voicevox_root / "voicevox.7z.001"),
     }
+
+
+
+def _empty_opencode_attribution_bucket():
+    return {
+        "sessions": 0,
+        "messages": 0,
+        "message_data_chars": 0,
+        "message_max_chars": 0,
+        "parts": 0,
+        "part_data_chars": 0,
+        "part_max_chars": 0,
+        "events": 0,
+        "event_data_chars": 0,
+        "event_max_chars": 0,
+    }
+
+
+def _collect_opencode_session_attribution(
+    db_path,
+    now,
+    *,
+    window_sec=OPENCODE_ATTRIBUTION_WINDOW_SEC,
+    query_timeout_sec=OPENCODE_ATTRIBUTION_QUERY_TIMEOUT_SEC,
+):
+    """Read fixed OpenCode caller aggregates without exposing stored content."""
+
+    db_path = Path(db_path)
+    result = {
+        "version": 1,
+        "present": False,
+        "scan_complete": False,
+        "schema_supported": False,
+        "window_sec": int(window_sec),
+        "buckets": {
+            bucket: _empty_opencode_attribution_bucket()
+            for bucket in OPENCODE_CALLER_BUCKETS
+        },
+    }
+    try:
+        st = db_path.lstat()
+    except FileNotFoundError:
+        result["scan_complete"] = True
+        return result
+    except OSError:
+        return result
+    result["present"] = True
+    if not stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
+        return result
+
+    con = None
+    deadline = time.monotonic() + max(0.05, float(query_timeout_sec))
+    try:
+        con = sqlite3.connect(
+            f"file:{db_path}?mode=ro",
+            uri=True,
+            timeout=min(max(float(query_timeout_sec), 0.05), 1.0),
+        )
+        con.execute("PRAGMA query_only = ON")
+        con.execute("PRAGMA busy_timeout = 500")
+        con.set_progress_handler(
+            lambda: 1 if time.monotonic() >= deadline else 0,
+            1000,
+        )
+
+        required = {
+            "session": {"id", "title", "time_created"},
+            "message": {"id", "session_id", "data"},
+            "part": {"id", "session_id", "data"},
+            "event": {"id", "aggregate_id", "data"},
+        }
+        for table, columns in required.items():
+            actual = {
+                str(row[1])
+                for row in con.execute(f"PRAGMA table_info({table})")
+                if len(row) > 1
+            }
+            if not columns.issubset(actual):
+                return result
+        result["schema_supported"] = True
+
+        cutoff_ms = int((float(now) - max(0, int(window_sec))) * 1000)
+        titles = tuple(OPENCODE_CALLER_TITLES)
+        placeholders = ",".join("?" for _ in titles)
+        params = (cutoff_ms, *titles)
+
+        for title, count in con.execute(
+            f"""
+            SELECT title, COUNT(*)
+              FROM session
+             WHERE time_created >= ?
+               AND title IN ({placeholders})
+             GROUP BY title
+            """,
+            params,
+        ):
+            bucket = OPENCODE_CALLER_TITLES.get(str(title))
+            if bucket is not None:
+                result["buckets"][bucket]["sessions"] = max(0, int(count or 0))
+
+        table_specs = (
+            ("message", "session_id", "messages", "message_data_chars", "message_max_chars"),
+            ("part", "session_id", "parts", "part_data_chars", "part_max_chars"),
+            ("event", "aggregate_id", "events", "event_data_chars", "event_max_chars"),
+        )
+        for table, session_column, count_key, chars_key, max_key in table_specs:
+            sql = f"""
+                SELECT s.title,
+                       COUNT(x.id),
+                       COALESCE(SUM(length(x.data)), 0),
+                       COALESCE(MAX(length(x.data)), 0)
+                  FROM session AS s
+                  JOIN {table} AS x ON x.{session_column} = s.id
+                 WHERE s.time_created >= ?
+                   AND s.title IN ({placeholders})
+                 GROUP BY s.title
+            """
+            for title, count, chars, max_chars in con.execute(sql, params):
+                bucket = OPENCODE_CALLER_TITLES.get(str(title))
+                if bucket is None:
+                    continue
+                item = result["buckets"][bucket]
+                item[count_key] = max(0, int(count or 0))
+                item[chars_key] = max(0, int(chars or 0))
+                item[max_key] = max(0, int(max_chars or 0))
+
+        result["scan_complete"] = True
+        return result
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return result
+    finally:
+        if con is not None:
+            try:
+                con.close()
+            except sqlite3.Error:
+                pass
 
 
 VALUE_REDACT_RES = (
@@ -989,6 +1202,7 @@ def _collect_ai(soren, now):
     paths = [stats_dir / f"{day}.jsonl" for day in sorted(days)]
     attempts = successes = failures = rate_limits = winners = 0
     all_failed = queue_giveups = gate_giveups = 0
+    all_failed_components = {component: 0 for component in AI_COMPONENTS}
     budget_exhausted = 0
     budget_exhausted_components = {component: 0 for component in AI_COMPONENTS}
     budget_exhausted_detail_sampled = 0
@@ -1114,6 +1328,7 @@ def _collect_ai(soren, now):
         elif kind == "all_failed":
             all_failed += 1
             entry["all_failed"] += 1
+            all_failed_components[_ai_component_bucket(label)] += 1
         elif kind == "queue_giveup":
             queue_giveups += 1
         elif kind == "gate_giveup":
@@ -1158,6 +1373,8 @@ def _collect_ai(soren, now):
         "winners": winners,
         "fallbacks": fallback_ok,
         "all_failed": all_failed,
+        "all_failed_components": all_failed_components,
+        "recent_events_omitted": False,
         "queue_giveups": queue_giveups,
         "gate_giveups": gate_giveups,
         "budget_exhausted": budget_exhausted,
@@ -2118,6 +2335,8 @@ def _collect_corner_files(state_dir, payload, now):
             slot=_bounded_int(data.get("slot")),
             eligible_count=len(data["eligible"]) if isinstance(data.get("eligible"), list) else None,
             pending=isinstance(data.get("pending"), dict),
+            queued_manual=(isinstance(data.get("queued_manual"), dict)
+                           or (state_dir / "corner_manual_queue.json").is_file()),
             error_kind=_rotation_error_kind(data.get("error_kind")),
         )
         rotation.update(_rotation_pending_projection(state_dir, data, now))
@@ -2173,6 +2392,35 @@ def _collect_corner_files(state_dir, payload, now):
     payload["rotation_evidence"] = _collect_rotation_evidence(state_dir)
 
 
+def _collect_hanjuku_predictions(state_dir):
+    """Read-only bounded projection; never expose OAuth config or API payloads."""
+    present, readable, data = _load_state_file(Path(state_dir) / "hanjuku_predictions.json")
+    data = data if isinstance(data, dict) else {}
+    row = data.get("round")
+    row = row if isinstance(row, dict) else {}
+    result = row.get("result") if isinstance(row.get("result"), dict) else {}
+    modes = {"incompatible_soren", "idle", "disabled", "explore", "unconfigured", "paused", "blocked", "pending",
+             "active", "settling", "resolved", "canceled", "known_result", "complete_record", "error"}
+    errors = {"transport", "auth", "rate_limited", "rejected", "invalid_response", "configuration",
+              "invalid_state", "unexpected", "create_unknown", "remote_missing", "remote_mismatch",
+              "clock_regressed"}
+    def chapter(value):
+        return value if type(value) is int and 0 <= value <= 12 else None
+    def choice(value, allowed):
+        return value if isinstance(value, str) and value in allowed else None
+    return {"present": present, "readable": readable,
+            "mode": choice(data.get("mode"), modes),
+            "error": choice(data.get("error"), errors),
+            "best_cleared": chapter(data.get("best_cleared")),
+            "target": chapter(row.get("target")), "middle": chapter(row.get("middle")),
+            "window_seconds": (row.get("window") if type(row.get("window")) is int
+                               and 1 <= row["window"] <= 1800 else None),
+            "status": choice(row.get("status"), {
+                "INTENT", "ACTIVE", "LOCKED", "RESOLVED", "CANCELED"}),
+            "cleared": chapter(result.get("cleared")),
+            "next_poll_at": _finite_number(data.get("next_poll_at"))}
+
+
 def _collect_programs(state_dir, soren, now):
     """Sanitized corner/program lifecycle plus boundary and A/B wait state.
 
@@ -2220,6 +2468,7 @@ def _collect_programs(state_dir, soren, now):
             and isinstance(game_switch, dict)
             and game_switch.get("active_game") == "hanjuku-hero"):
         retro["narration_playback"] = _collect_hanjuku_narration_playback(soren)
+    payload["hanjuku_predictions"] = _collect_hanjuku_predictions(state_dir)
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
     payload["ab"] = _collect_ab(soren, now)
     payload["soren_game"] = _collect_soren_game(soren, now)
@@ -3390,6 +3639,219 @@ def _collect_nethack_panes(state_dir, now):
     return result
 
 
+# NetHack evidence only: never invoke the game/retrospective/provider or probe locks.
+NETHACK_HISTORY_SCAN_LIMIT = 128
+NETHACK_HISTORY_FILE_BYTES = 65536
+NETHACK_TERMINAL = frozenset({'dead', 'ascended', 'ended', 'ended_unknown'})
+NETHACK_LESSONS = frozenset({'repeated_death', 'survival_signal', 'food_survival',
+                            'proposal_drift', 'evidence_gap', 'terminal_evidence',
+                            'progress_stall'})
+
+
+def _nethack_number(value):
+    return value if type(value) is int and 0 <= value <= 10**12 else None
+
+
+def _nethack_time(value):
+    if not isinstance(value, str) or len(value) > 64:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            return None
+        epoch = parsed.timestamp()
+        return epoch if math.isfinite(epoch) and 0 <= epoch <= 253402300799 else None
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _nethack_progress(raw):
+    if not isinstance(raw, dict):
+        return {'status': 'missing'}
+    result = {'status': _rotation_enum(raw.get('status'),
+              {'ok', 'empty', 'missing', 'error', 'too_large', 'invalid_run_id'})}
+    for key in ('sample_count', 'malformed_lines', 'first_turn', 'last_turn',
+                'max_turn', 'max_depth', 'same_frame_sent_pairs', 'max_same_frame_sent_streak'):
+        result[key] = _nethack_number(raw.get(key))
+    for key in ('first_ts', 'last_ts', 'min_hp_ratio'):
+        value = raw.get(key)
+        result[key] = value if type(value) in (int, float) and 0 <= value <= 10**12 and math.isfinite(value) else None
+    result['truncated'] = raw.get('truncated') if type(raw.get('truncated')) is bool else None
+    result['phase_counts'] = {key: _nethack_number(raw.get('phase_counts', {}).get(key))
+                             for key in ('sent', 'hold')} if isinstance(raw.get('phase_counts'), dict) else {}
+    return result
+
+
+def _nethack_record(raw, daily):
+    if type(raw.get('schema_version')) is not int or raw['schema_version'] != 1:
+        return None
+    if daily:
+        if _rotation_enum(raw.get('status'), {'review_ready', 'no_new_runs'}) == 'unknown':
+            return None
+        date = raw.get('date')
+        if not isinstance(date, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date):
+            return None
+        try:
+            dt.date.fromisoformat(date)
+        except ValueError:
+            return None
+        if raw.get('policy_effect') != 'none' or raw.get('automatic_promotion') is not False:
+            return None
+        count = _nethack_number(raw.get('run_count'))
+        if count is None or count > 8:
+            return None
+        candidates = raw.get('candidates')
+        if not isinstance(candidates, list) or len(candidates) > 100:
+            return None
+        categories = {}
+        for item in candidates:
+            category = _rotation_enum(item.get('category') if isinstance(item, dict) else None, NETHACK_LESSONS)
+            categories[category] = categories.get(category, 0) + 1
+        result = {'date': date, 'status': raw['status'], 'run_count': count,
+                  'candidate_state': _rotation_enum(raw.get('candidate_state'), {'no_change', 'pending_canary_evaluation'}),
+                  'candidate_categories': categories, 'policy_effect': 'none', 'automatic_promotion': False}
+        timestamp = _nethack_time(raw.get('generated_at'))
+    else:
+        if _rotation_enum(raw.get('status'), NETHACK_TERMINAL) == 'unknown':
+            return None
+        # The run producer persists session closure on the root under
+        # last_finished_at; ended_at exists only inside individual sessions.
+        timestamp = _nethack_time(raw.get('last_finished_at'))
+        retrospective = raw.get('retrospective')
+        retrospective = retrospective if (
+            isinstance(retrospective, dict)
+            and type(retrospective.get('schema_version')) is int
+            and retrospective['schema_version'] == 1
+            and retrospective.get('source') == 'p5a_retrospective'
+            and retrospective.get('run_id') == raw.get('run_id')
+            and retrospective.get('terminal_status') == raw['status']
+        ) else {}
+        result = {'terminal_status': raw['status'], 'started_at': _nethack_time(raw.get('started_at')),
+                  'expedition': _nethack_number(raw.get('expedition')),
+                  'retrospective_present': bool(retrospective),
+                  'retrospective_generated_at': _nethack_time(retrospective.get('generated_at')),
+                  'same_death_total_count': _nethack_number(retrospective.get('same_death_total_count')),
+                  'progress': _nethack_progress(retrospective.get('progress_evidence'))}
+        for key in ('score', 'turns', 'max_depth'):
+            result[key] = _nethack_number(raw.get(key))
+    if timestamp is None:
+        return None
+    result['generated_at' if daily else 'ended_at'] = timestamp
+    return result
+
+
+def _nethack_history(state_dir, daily):
+    """Open each directory relative to a pinned fd: no symlink traversal/races."""
+    result = {'status': 'unavailable', 'scan_complete': False, 'scanned_entries': 0,
+              'invalid_records': 0, 'excluded_active': 0, 'omitted_records': 0, 'records': []}
+    directory = Path(state_dir) / 'nethack' / ('daily-improvements' if daily else 'runs')
+    fd = None
+    try:
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+        for component in directory.absolute().parts[1:]:
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        records = []
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                if result['scanned_entries'] >= NETHACK_HISTORY_SCAN_LIMIT:
+                    break
+                result['scanned_entries'] += 1
+                pattern = r'\d{4}-\d{2}-\d{2}\.json' if daily else r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json'
+                if not re.fullmatch(pattern, entry.name):
+                    continue
+                try:
+                    file_fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+                    with os.fdopen(file_fd, 'rb') as handle:
+                        info = os.fstat(handle.fileno())
+                        if not stat.S_ISREG(info.st_mode) or info.st_size > NETHACK_HISTORY_FILE_BYTES:
+                            raise ValueError('bounded file required')
+                        content = handle.read(NETHACK_HISTORY_FILE_BYTES + 1)
+                    if len(content) > NETHACK_HISTORY_FILE_BYTES:
+                        raise ValueError('bounded file required')
+                    raw = json.loads(content)
+                    if not isinstance(raw, dict):
+                        raise ValueError('object required')
+                    if not daily and _rotation_enum(raw.get('status'), {'active', 'starting', 'suspended', 'saved'}) != 'unknown':
+                        result['excluded_active'] += 1
+                        continue
+                    record = _nethack_record(raw, daily)
+                    if record is None or (daily and raw['date'] + '.json' != entry.name) or (
+                        not daily and raw.get('run_id') != entry.name[:-5]
+                    ):
+                        raise ValueError('invalid evidence')
+                    record['file_mtime'] = info.st_mtime
+                    records.append(record)
+                except (OSError, ValueError, UnicodeError, RecursionError):
+                    result['invalid_records'] += 1
+            else:
+                result['scan_complete'] = True
+        key = 'generated_at' if daily else 'ended_at'
+        records.sort(key=lambda item: item[key], reverse=True)
+        limit = 7 if daily else 8
+        result['records'] = records[:limit]
+        result['omitted_records'] = max(0, len(records) - limit)
+        result['status'] = 'partial' if not result['scan_complete'] or result['invalid_records'] else ('ok' if records else 'empty')
+    except FileNotFoundError:
+        result['status'] = 'missing'
+    except OSError:
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return result
+
+
+def _collect_nethack_history(state_dir, now):
+    return {'schema_version': 1, 'collected_at': now, 'scan_limit_per_source': NETHACK_HISTORY_SCAN_LIMIT,
+            'file_byte_limit': NETHACK_HISTORY_FILE_BYTES,
+            'daily': _nethack_history(state_dir, True), 'completed_runs': _nethack_history(state_dir, False)}
+
+
+def _nethack_history_budget(payload, *, keep_latest=False):
+    """Trim oldest history first, keeping the latest of each source if possible."""
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    while len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        sources = [payload["nethack_history"][name]
+                   for name in ("daily", "completed_runs")
+                   if len(payload["nethack_history"][name]["records"]) > int(keep_latest)]
+        if not sources:
+            break  # Existing diagnostics retain their original budget handling.
+        # Each source is newest-first. Exhaust older records before removing
+        # either source's latest record; never mark an empty/missing source.
+        history = max(sources, key=lambda item: len(item["records"]))
+        history["records"].pop()
+        history["omitted_records"] += 1
+        history["output_omitted"] = True
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return text
+
+
+def _diagnostics_budget(payload):
+    """Keep latest history through existing detail reductions, then bound it."""
+    text = _nethack_history_budget(payload, keep_latest=True)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        payload["ai"]["recent_events"] = []
+        payload["ai"]["recent_events_omitted"] = True
+        payload["workers"]["details"] = {}
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+            payload["ai"]["anomalous_components"] = {}
+            text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        profile = payload["soren91_drop_profile"]
+        if profile.get('profileStatus') == 'ok':
+            profile['omittedComparisonGroups'] += len(profile['groups'])
+            profile['omittedGameGroups'] += len(profile['games'])
+            profile['groups'] = {}
+            profile['games'] = []
+            profile['slowest'] = []
+            profile['representativeOmitted'] = True
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return _nethack_history_budget(payload)
+
+
 def main(argv):
     if len(argv) != 2:
         print("usage: collect_diagnostics.py <soren_root>", file=sys.stderr)
@@ -3433,33 +3895,30 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": corners,
+        "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "webui": _collect_webui(),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
+        "opencode_session_attribution": _collect_opencode_session_attribution(
+            Path(soren).parent / ".local" / "share" / "opencode" / "opencode.db",
+            now,
+        ),
+        "opencode_retention": _collect_opencode_retention(soren, now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
     }
-    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
-        payload["ai"]["recent_events"] = []
-        payload["workers"]["details"] = {}
-        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-        if len(text.encode("utf-8")) > MAX_JSON_BYTES:
-            payload["ai"]["anomalous_components"] = {}
-            text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
-        profile = payload["soren91_drop_profile"]
-        if profile.get('profileStatus') == 'ok':
-            profile['omittedComparisonGroups'] += len(profile['groups'])
-            profile['omittedGameGroups'] += len(profile['games'])
-            profile['groups'] = {}
-            profile['games'] = []
-            profile['slowest'] = []
-            profile['representativeOmitted'] = True
-        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    retention = payload["opencode_retention"]
+    attempt = retention["attempt"]
+    if payload["status"] == "ok" and attempt.get("present") and (
+        not attempt.get("readable") or attempt.get("stale")
+        or attempt.get("status") in {"failed", "deferred", "gate_timeout", "unknown"}
+        or retention["timer"].get("active") is not True
+    ):
+        payload["status"] = "warn"
+    text = _diagnostics_budget(payload)
     sys.stdout.write(text + "\n")
     return 0
 

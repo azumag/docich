@@ -19,10 +19,12 @@ from docich.game_switch import atomic_write_json
 from docich import hanjuku_chart_adjust
 from docich import hanjuku_experience
 from docich.hanjuku_bot import BOT_VERSION, decide
-from docich.hanjuku_commentary import COMMENTARY_VERSION, SPOKEN, compose
+from docich.hanjuku_commentary import COMMENTARY_VERSION, SPOKEN, compose, evidence_kind
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_run import append_log
 from docich.retroarch_boundary import read_record
+
+BOT_STATE_LIMIT = 256 * 1024   # the bot's own memory file, not a boundary record
 
 
 # Only records that explain this observation's planned input/hold may override
@@ -30,13 +32,13 @@ from docich.retroarch_boundary import read_record
 INPUT_CONTEXT_DECISIONS=frozenset({
     'battle_survival','battle_survival_select','battle_survival_unavailable',
     'egg_recover_select','egg_recover_confirm','egg_recover_skip',
-    'battle_okunote_scroll','battle_okunote_select',
+    'battle_okunote_scroll','battle_okunote_select','battle_okunote_risk_declined',
     'battle_hero_retreat_open','battle_hero_retreat_select',
     'battle_hero_retreat_unavailable','battle_hero_retreat_cancel_card',
     'name_wait','name_confirm','name_delete','name_type','order_start',
     'unexpected_target','order_substitute','order_source_changed','order_launched','order_failed',
     'attack_observed','defense_observed','card_missing',
-    'card_pick','sortie_confirm','sortie_input','battle_card','battle_card_missing','battle_card_selected',
+    'card_pick','sortie_confirm','sortie_input','battle_card','battle_card_missing','battle_card_selected','battle_card_list_unclassified','battle_card_open_unclassified',
     'barrier_removed','month_plan','month_confirm','month_done','buy_skip','buy',
     'soldier_refill','prompt','egg_battle','gift','close_panel','situation_held',
     'chart_adjust_request','chart_adjust_applied','independent_menu',
@@ -49,6 +51,13 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     decision_id=f"{identity['runtime_id']}:{identity['generation']}:{state.get('step')}"
     state['decision_trace']={**identity, 'decision_id': decision_id, 'frame_sha256': frame_sha256}
     policy=state.get('policy') or {}
+    # A durable maximum survives log rotation, policy resets and corner teardown.
+    # Prediction bookkeeping must not drop an otherwise valid gameplay action.
+    try:
+        from docich.hanjuku_progress import record as record_progress
+        record_progress(runtime, identity, policy, records, frame_sha256)
+    except Exception:
+        print('hanjuku-bot: progress_record_failed', file=sys.stderr)
     snapshot=None
     battle=policy.get('battle') if isinstance(policy.get('battle'),dict) else {}
     chart_step=battle.get('step') if battle else policy.get('active')
@@ -103,6 +112,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
         append_log(runtime,'hanjuku_commentary',{
             'schema':1,'seq':seq,'at':now,'key':key,'text':text,
             'commentary_version':COMMENTARY_VERSION,
+            'evidence_kind':evidence_kind(record), 'decision_id':decision_id,
             'status':'candidate' if text else 'held',
             'held_reason':None if text else '状況判定保留',
             'decision':record.get('decision'),'chart_step':record.get('chart_step'),
@@ -152,12 +162,19 @@ def ask_interim(runtime: Path, state: dict, obs_meta: dict, *, settings=None, as
 
 
 def observation_interval_ms(state):
-    """Short feedback cycles only for readable, living human melee panels."""
+    """Short feedback for living melee and its in-flight card command.
+
+    g486: slowing to 1500 ms as soon as B planned a card let the Queen
+    summon between the chained B and its next readable command menu.
+    Keep the existing allowed 500 ms cycle across card-menu fades too.
+    """
     policy=state.get('policy') or {}
     battle=policy.get('battle') or {}
     living=all(type(battle.get(k)) is int and battle[k]>0 for k in ('ally_hp','enemy_hp'))
-    if (state.get('screen_kind')=='battle' and living
-            and not policy.get('egg_battle') and not battle.get('card_flow')):
+    if (living and not policy.get('egg_battle')
+            and (state.get('screen_kind') == 'battle'
+                 or (battle.get('card_flow') and state.get('screen_kind') in
+                     {'unknown', 'text', 'battle_menu'}))):
         return 500
     return 1500
 
@@ -177,7 +194,9 @@ def main():
             raise ValueError('invalid runtime')
         if not meta.get('terminal_reason') and not meta.get('terminal_candidate'):
             frame=read_png(Path(obs['screenshot'])).resized()
-            state=read_record(runtime/'hanjuku_bot.json')
+            # g438 04:18: the policy memory passed 16 KiB after a long game and
+            # every observation failed to load it (no input, screen_stalled).
+            state=read_record(runtime/'hanjuku_bot.json',limit=BOT_STATE_LIMIT)
             experience_path=ROOT/'run'/hanjuku_experience.EXPERIENCE_FILE
             experience=hanjuku_experience.load(experience_path)
             actions,state=decide(frame,state,adjusted=hanjuku_chart_adjust.load(runtime),

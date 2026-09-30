@@ -1,0 +1,168 @@
+{
+  "schema": 1,
+  "source_main": "7a40e340ae4ac72e5d2ef424fe2521a77b6e2161",
+  "label_method": "source images inspected at nearest-neighbor magnification; independent of parser predictions; transcription corrections recorded in evaluation report",
+  "samples": [
+    {
+      "file": "g464-decision-013.png",
+      "runtime_id": "g464-4425b813",
+      "snapshot": "hanjuku_frames/decision-013.png",
+      "file_sha256": "8b943defa7132204c8db583e4066d7c89ddce5f4c38b0d12395d06d7e9350ff3",
+      "rgb_sha256": "d18bd8f2426ee456ac12495c1811a9ccb74b33335ba6b6e93b2bf7f1a9d1e9b9",
+      "source_archive_sha256": "3356d4ac2ac2ce406bb2c6740f214ba49bfcf985bfa8b200f91571a1c618e632",
+      "artifact_id": 11028416035,
+      "run_id": 36558217979,
+      "expected": {
+        "selected": "しょうにん",
+        "kind": "month_menu"
+      }
+    },
+    {
+      "file": "g464-decision-026.png",
+      "runtime_id": "g464-4425b813",
+      "snapshot": "hanjuku_frames/decision-026.png",
+      "file_sha256": "1a29f033f16b6430bd0baa141de4c475aaf59f5fe4b8473ec52938481b234930",
+      "rgb_sha256": "decea41d4db3c4ffe203d841aaf1c1169d4c1744ff32da826a00ef6afbb89418",
+      "source_archive_sha256": "3356d4ac2ac2ce406bb2c6740f214ba49bfcf985bfa8b200f91571a1c618e632",
+      "artifact_id": 11028416035,
+      "run_id": 36558217979,
+      "expected": {
+        "selected": "ゼウス",
+        "kind": "general_list"
+      }
+    },
+    {
+      "file": "g464-decision-032.png",
+      "runtime_id": "g464-4425b813",
+      "snapshot": "hanjuku_frames/decision-032.png",
+      "file_sha256": "e52e6593a2243f94074cac7f6e841ec0cc87624b2295bdbab359be5108be408c",
+      "rgb_sha256": "e90635e1a03de5f765f334841e8cc4bf831d005d639848b07413e67d0ecfb0a4",
+      "source_archive_sha256": "3356d4ac2ac2ce406bb2c6740f214ba49bfcf985bfa8b200f91571a1c618e632",
+      "artifact_id": 11028416035,
+      "run_id": 36558217979,
+      "expected": {
+        "selected": "うむッ!",
+        "kind": "sortie_confirm"
+      }
+    },
+    {
+      "file": "g464-decision-057.png",
+      "runtime_id": "g464-4425b813",
+      "snapshot": "hanjuku_frames/decision-057.png",
+      "file_sha256": "383fe4d410ef30e69211a4c594d3d0486c756576be732839ce93239bdca89a4c",
+      "rgb_sha256": "9c282c6ffd2e0ff62354b36a56d7224974175130e57b13aa67fdd206c29c31c2",
+      "source_archive_sha256": "3356d4ac2ac2ce406bb2c6740f214ba49bfcf985bfa8b200f91571a1c618e632",
+      "artifact_id": 11028416035,
+      "run_id": 36558217979,
+      "expected": {
+        "selected": "イッテツーン",
+        "kind": "card_select"
+      }
+    },
+    {
+      "file": "g464-frame-022.png",
+      "runtime_id": "g464-4425b813",
+      "snapshot": "hanjuku_frames/frame-022.png",
+      "file_sha256": "f82736603b23caf91c49a4187f30327ac6ca0a39bf05de15dae4c10bf23d1d40",
+      "rgb_sha256": "bc5ec09d757409461dcaf9724e6057822d0a4e1d05dd1d2631b121e5223c25c2",
+      "source_archive_sha256": "3356d4ac2ac2ce406bb2c6740f214ba49bfcf985bfa8b200f91571a1c618e632",
+      "artifact_id": 11028416035,
+      "run_id": 36558217979,
+      "expected": {
+        "selected": null,
+        "kind": "world_map"
+      }
+    },
+    {
+      "file": "g464-frame-053.png",
+      "runtime_id": "g464-4425b813",
+      "snapshot": "hanjuku_frames/frame-053.png",
+      "file_sha256": "1eecc92c63d453034e69898cf460381e4e1167a2ac0c4c1b0b5507890fa307e4",
+      "rgb_sha256": "eef9e8ee5e169e6b2083f1d5d0d6e9ec3a2cd0721cb1769ebaec2ef75bcae1a7",
+      "source_archive_sha256": "3356d4ac2ac2ce406bb2c6740f214ba49bfcf985bfa8b200f91571a1c618e632",
+      "artifact_id": 11028416035,
+      "run_id": 36558217979,
+      "expected": {
+        "selected": null,
+        "enemy": "クイーン",
+        "enemy_hp": 65,
+        "ally": "どうし",
+        "ally_hp": 0
+      }
+    },
+    {
+      "file": "g460-decision-000.png",
+      "runtime_id": "g460-6041c5e9",
+      "snapshot": "hanjuku_frames/decision-000.png",
+      "file_sha256": "810623fca9777e55867800ab39aad41c917a892affa16ae91d014bf6b81579de",
+      "rgb_sha256": "ff22b9e0ca0dbe35f6c80f0351114728b610c758aec0556186e60bc56f595e9f",
+      "source_archive_sha256": "73823afce35d7ccc0af9bb06093adc3b6944e4545341b030a20092301e06c33c",
+      "artifact_id": 11028401113,
+      "run_id": 36558226839,
+      "expected": {
+        "selected": "クースカン",
+        "kind": "card_select"
+      }
+    },
+    {
+      "file": "g460-decision-028.png",
+      "runtime_id": "g460-6041c5e9",
+      "snapshot": "hanjuku_frames/decision-028.png",
+      "file_sha256": "6f90a2e306a79c4d6bf1a450c71596ce519796db4693e22e964049077e1578cc",
+      "rgb_sha256": "ebc62594d8a130860c56ae5ee14890cd85820b64159b6d9ad95af294ddb66ecb",
+      "source_archive_sha256": "73823afce35d7ccc0af9bb06093adc3b6944e4545341b030a20092301e06c33c",
+      "artifact_id": 11028401113,
+      "run_id": 36558226839,
+      "expected": {
+        "selected": null,
+        "kind": "battle",
+        "enemy": "タピオカ",
+        "enemy_hp": 50,
+        "ally": "ヴィーナス",
+        "ally_hp": 82
+      }
+    },
+    {
+      "file": "g460-decision-035.png",
+      "runtime_id": "g460-6041c5e9",
+      "snapshot": "hanjuku_frames/decision-035.png",
+      "file_sha256": "af2780faa093e33737fb337c30d6642947eaebf238688c699b1c550135efe1a7",
+      "rgb_sha256": "7aef9aae4d5b2a91bd37781c95728b73954a60a55b1fe10f6c3ff80e4d1e8b4b",
+      "source_archive_sha256": "73823afce35d7ccc0af9bb06093adc3b6944e4545341b030a20092301e06c33c",
+      "artifact_id": 11028401113,
+      "run_id": 36558226839,
+      "expected": {
+        "selected": null,
+        "kind": "battle_menu"
+      }
+    },
+    {
+      "file": "g460-decision-107.png",
+      "runtime_id": "g460-6041c5e9",
+      "snapshot": "hanjuku_frames/decision-107.png",
+      "file_sha256": "e90fd7658be42bd153bc87a0082c179c568345bd4c554600f7efd9be0d19f38d",
+      "rgb_sha256": "f15aefb0dda1e4a70fe104f7a635992ec8dc2ca63ff3738731c1d6d657ce96e4",
+      "source_archive_sha256": "73823afce35d7ccc0af9bb06093adc3b6944e4545341b030a20092301e06c33c",
+      "artifact_id": 11028401113,
+      "run_id": 36558226839,
+      "expected": {
+        "selected": "フットバース",
+        "kind": "card_select"
+      }
+    },
+    {
+      "file": "g462-frame-100.png",
+      "runtime_id": "g462-a1a34ce8",
+      "snapshot": "hanjuku_frames/frame-100.png",
+      "file_sha256": "36db1bdb02414c1a4622b4a0331962261c7c26f653096a2fed7ecc83410e9a22",
+      "rgb_sha256": "b404246030ca4b38f9725694fe956b4afbd8ec3889703dadac531f88ebdab8ae",
+      "source_archive_sha256": "e87067d0ab8b749d131e7c0e0d5a47aaa8893f191a08185004a8fa0987c35b12",
+      "artifact_id": 11028331841,
+      "run_id": 36558740739,
+      "expected": {
+        "kind": "text",
+        "selected": "アルマムーン"
+      }
+    }
+  ]
+}

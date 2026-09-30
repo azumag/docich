@@ -37,6 +37,18 @@ CARDS: dict[str, dict] = {
     'ハリケーン': {'general_damage': None, 'price': 38},
 }
 
+# 卵落 values (gcgx card table, fetched 2026-09-29; the local
+# egg-drop-table.md's 余り7/3/2 thresholds agree with 8/4/3). A card drops the
+# enemy egg when its 卵落 is strictly greater than the two generals' max-HP sum
+# mod 16 (see egg_drop_threshold / can_drop_egg).
+EGG_DROP_VALUES: dict[str, int] = {
+    'イッテツーン': 8, 'ダイチスイム': 1, 'ブラッキー': 3, 'フットバース': 5,
+    'グリンボー': 4, 'ピッグローラー': 2, 'カンケリン': 1, 'ノリウツール': 0,
+    'クースカン': 0, 'ゼンマイン': 3, 'ミックミー': 2, 'デッドガン': 0,
+    'ブレイコウ': 0, 'ブンシーン': 3, 'ファイアーボイス': 4, 'ファバード': 0,
+    'エンジェリン': 0, 'マグネガキン': 8, 'ハリケーン': 0,
+}
+
 # Actual zero-based No., not price or this module's supported-card order.
 # Local README examples + https://wikiwiki.jp/hjksfc/切り札 (No. column).
 CARD_IDS: dict[str, int] = {
@@ -46,6 +58,31 @@ CARD_IDS: dict[str, int] = {
     'ブレイコウ': 12, 'ブンシーン': 14, 'ファイアーボイス': 18, 'ファバード': 31,
     'エンジェリン': 22, 'マグネガキン': 27, 'ハリケーン': 30,
 }
+# The whole gcgx kirihuda.html decimal ID table (0-31), for ID sums.
+ALL_CARD_IDS: dict[str, int] = {**CARD_IDS,
+    'ダンスライン': 4, 'カルゲンジー': 6, 'ラピニアール': 8, 'バルムンク': 16, 'グルミー': 19,
+    'ブラックホール': 20, 'シュプレボイス': 21, 'ころぼぐんだん': 23, 'バグストーム': 24,
+    'リューキーシ': 25, 'ドデカヘー': 26, 'キャトルミュー': 28, 'ビッグウェイブ': 29,
+}
+
+# Owner advice (2026-09-29, gcgx ai.html): the enemy uses its egg when the
+# battle's card IDs total 48 or more, so a sortie carries 47 or less, e.g.
+# クースカン+ミックミー×2 (47: クースカン then ミックミー wipes a general of
+# HP<=69 with his soldiers), クースカン+ビッグウェイブ+イッテツーン (42),
+# イッテツーン+グリンボー+ころぼぐんだん (28: cheap, ころぼぐんだん drops eggs
+# often), エンジェリン×2+イッテツーン (44: エンジェリン fully heals).
+RECOMMENDED_CARD_SETS = (
+    ('クースカン', 'ミックミー', 'ミックミー'),
+    ('クースカン', 'ビッグウェイブ', 'イッテツーン'),
+    ('イッテツーン', 'グリンボー', 'ころぼぐんだん'),
+    ('エンジェリン', 'エンジェリン', 'イッテツーン'),
+)
+
+# Castle level (wikiwiki.jp/hjksfc/城, 2026-09-29): the defender's egg monster
+# gains +level defense and speed (also egg vs general), a defending general's
+# charge speed +level, garrison capacity is level-1 (over it the AI sorties),
+# and a defender loses one level per general killed. No bonus at boss castles.
+CASTLE_LEVEL_DEFENSE_BONUS = True
 
 # Egg-drop formula: 卵落 > (敵・味方将軍の最大HP合計 mod 16).
 EGG_DROP_MOD = 16
@@ -260,3 +297,18 @@ def enemy_egg_likely(card_ids: list[int]) -> bool:
 def egg_drop_threshold(max_hp_sum: int) -> int:
     """Minimum 卵落 value required to drop an egg given combined max HPs."""
     return max_hp_sum % EGG_DROP_MOD + 1
+
+
+def egg_drop_value(card: str) -> int | None:
+    """The card's 卵落 value, or None when it is outside the measured table."""
+    return EGG_DROP_VALUES.get(card)
+
+
+def can_drop_egg(card: str, max_hp_sum: int) -> bool:
+    """True when this card's 卵落 exceeds the HP-sum remainder (gcgx rule).
+
+    ``卵落 > 敵・味方将軍の最大HP合計 mod 16`` drops the enemy's egg, which
+    makes its summons unusable for the rest of the battle.
+    """
+    value = EGG_DROP_VALUES.get(card)
+    return value is not None and value > max_hp_sum % EGG_DROP_MOD

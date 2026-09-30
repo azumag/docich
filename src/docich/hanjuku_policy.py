@@ -16,7 +16,7 @@ from . import hanjuku_chart as chart
 from . import hanjuku_chart_adjust as chart_adjust
 from . import hanjuku_experience as experience
 from . import hanjuku_reference as reference
-from .hanjuku_egg_reference import enemy_egg_triggers
+from .hanjuku_egg_reference import enemy_egg_triggers, general_debut_chapter, general_max_hp
 from .hanjuku_font import UNKNOWN, TextLine
 from .hanjuku_screen import HEADER as HEADER_RE, OKUNOTE_CHOICES, Screen, castle_roofs, own_camps
 
@@ -35,7 +35,10 @@ CARD_NAMES = frozenset({
     'イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース', 'グリンボー', 'ピッグローラー',
     'カンケリン', 'ノリウツール', 'クースカン', 'ゼンマイン', 'ミックミー', 'デッドガン',
     'ブレイコウ', 'ブンシーン', 'ファイアーボイス', 'ファバード', 'エンジェリン', 'マグネガキン',
-    'ハリケーン'})
+    'ハリケーン', 'キャトルミュー'})
+# Every real card name (the 32-card gcgx table). The panel reader accepts
+# these as rows; only CARD_NAMES can be planned or selected.
+ALL_CARD_NAMES = frozenset(reference.ALL_CARD_IDS)
 
 
 def pad(button, frames=6):
@@ -478,7 +481,40 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
 
 
 # ---------------------------------------------------------------- orders
+def _boss_egg_depleted(order, mem) -> bool:
+    # g486: どうし left with 3 uses and lost to the Queen's Hydra after
+    # the second card missed its input window. Chapter 1's source recommends
+    # a fully recovered egg as the backup; do not invent a missing count.
+    uses = (mem.get('egg_uses') or {}).get(NAME)
+    return (mem.get('chapter') == 1 and order.get('general') == NAME
+            and _is_boss_order(order, mem) and type(uses) is int and 0 <= uses < 4)
+
+
+def _hero_egg_broken(mem):
+    # Only a read status is authoritative. A house dispatch/timeout is not
+    # repair; only a later real non-broken status releases this guard.
+    return (mem.get('house_eggs') or {}).get(NAME, {}).get('broken') is True
+
+
+def _broken_hero_order(order, mem):
+    general = mem.get('general_override', {}).get(order.get('step'), order.get('general'))
+    return (general == NAME and _hero_egg_broken(mem)
+            and order.get('purpose') != 'move'
+            and order.get('target') in chart.castles(mem.get('chapter') or 0))
+
+
+def _cancel_broken_hero_sortie(mem, order):
+    _record(mem, 'hero_broken_egg_sortie_held', chart_step=order['step'],
+            observed_metric={'target': order.get('target'), 'repair': 'unconfirmed'},
+            reason='主人公の卵破損を観測済みで修復未確認のため攻撃出撃を保留する')
+    mem.pop('sortie_attempt', None)
+    _finish_order(mem, 'pending', reason='主人公の卵修復確認を待つ')
+    return [pad('b')]
+
+
 def _ready(order, mem) -> bool:
+    if _broken_hero_order(order, mem) or _boss_egg_depleted(order, mem):
+        return False
     after = order['after']
     captured = set(mem.get('captured', []))
     if after is None:
@@ -542,11 +578,16 @@ def _plan_pending(mem) -> bool:
     heading = _en_route(mem)[1] | {o['target'] for o in plan
                                    if status.get(o['step']) == 'launched' and o['step'] not in sorties}
 
+    garrison = mem.get('garrison') or {}
+
     def live(o):
         after = o.get('after') or ()
         if after and after[0] == 'captured' and after[1] not in owned:
             return after[1] in heading          # waits on a capture somebody is making
-        return _ready(o, mem) and _source(o, mem) in owned
+        # A source read empty cannot start the order (g438: dead ココット's J1).
+        return (_ready(o, mem) and _source(o, mem) in owned
+                and garrison.get(_source(o, mem)) != []
+                and not _retake_reserved(o, mem) and not _source_spare_missing(o, mem))
 
     return any(status.get(o['step']) in (None, 'pending') and live(o) for o in plan)
 
@@ -569,16 +610,45 @@ def next_order(mem):
                if step not in steps and status.get(step) == 'pending']
     owned = _owned(mem)
     garrison = mem.get('garrison') or {}
-    for order in (*current, *retries):
+    # The base chart's remaining orders follow an adopted plan that cannot run
+    # (g438 03:48: the plan's only order sent the dead ココット from an empty
+    # ジョンリギ, so the bot idled with every castle but the boss's taken while
+    # the base 1-B1 boss sortie was never looked at).
+    base = [o for o in chart.orders(mem.get('chapter') or 0)
+            if o['step'] not in steps and o['target'] not in owned] if mem.get('chart_plan') else []
+    chart_steps = {o['step'] for o in chart.orders(mem.get('chapter') or 0)}
+    for order in (*current, *retries, *base):
+        if (order['step'] in chart_steps
+                and (status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
+                and _ready(order, mem)):
+            _follow_general(mem, order, garrison, owned)
         if ((status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
                 and _ready(order, mem)
                 and _source(order, mem) in owned
                 # A source last read empty would open an empty list and fail
                 # the order (g407: the plan's どうし/ヴィーナス from an empty home).
                 and garrison.get(_source(order, mem)) != []
+                and not _last_castle_held(mem, order)      # its castle must keep its last general
+                and not _retake_reserved(order, mem)
+                and not _source_spare_missing(order, mem)
                 and mem.get('general_override', {}).get(order['step'], order['general']) not in _en_route(mem)[0]):
             return order
     return None
+
+
+def _follow_general(mem, order, garrison, owned):
+    """Send the order from the castle its general is recorded in (g438: 1-B1
+    assumes どうし at スペンソニア, but he held ゴーメン)."""
+    general = order.get('general')
+    source = _source(order, mem)
+    if not general or general in (garrison.get(source) or ()):
+        return
+    where = next((c for c, names in garrison.items() if general in (names or ()) and c in owned), None)
+    if where and where != source and not mem.get('source_override', {}).get(order['step']):
+        mem.setdefault('source_override', {})[order['step']] = where
+        _record(mem, 'order_source_changed', chart_step=order['step'], strategy_variant='follow_general',
+                observed_metric={'source': source, 'general_at': where},
+                reason=f'{general}は{where}にいると記録されているため、そこから出撃させる')
 
 
 def _order(mem):
@@ -591,15 +661,41 @@ def _tactics(mem, step):
 
     A carried card reuses every verified base tactic for that card (its enemy
     and timing), re-keyed to this step. A card with no verified tactic uses the
-    explicit default: once at the battle opening against any enemy, the same
-    mechanism and evidence guards as a retry's opening cards.
+    explicit default: once at the battle opening, the same mechanism and
+    evidence guards as a retry's opening cards. Only cards the sortie actually
+    carried count (``_deploy_cards``): a card left behind at card select must
+    never be planned or announced in battle (g438 04:18: the bot opened the
+    card menu for ミックミー after the sortie had dropped it). A boss-castle
+    order's unverified card opens only in the measured boss entry, so the boss
+    kit never fires in the road/guard fights on the way there.
     """
     base = chart.tactics(mem.get('chapter') or 0)
     order = _order_for_step(mem, step)
+    rare_kit = (mem.get('rare_card_kit') or {}).get(step)
+    rare = ()
+    carried = None
+    if rare_kit is not None and order:
+        carried = list(((mem.get('order_context') or {}).get(step) or {}).get('observed_metric', {}).get('cards') or [])
+        for card in (mem.get('kit_spent') or {}).get(step) or ():
+            if card in carried:
+                carried.remove(card)
+        base = tuple(t for t in base if t.get('step') not in (None, step)
+                     or t['card'] in carried)
+        if 'キャトルミュー' in carried:
+            rare = ({'enemy': None, 'card': 'キャトルミュー', 'open': True, 'step': step,
+                     'tactic_id': f'rare:{step}:キャトルミュー',
+                     'boss_only': _is_boss_order(order, mem),
+                     'note': 'レアイベント札を活用: 通常将軍を一撃、EMへ224と石化、ボスへ90ダメージ'},)
     if order is None or any(o['step'] == step for o in chart.orders(mem.get('chapter') or 0)):
-        return base
+        return (*rare, *base)
+    override = set() if rare_kit is not None else set((mem.get('card_override') or {}).get(step) or ())
+    if carried is None:
+        carried = _deploy_cards(order, mem)
+    carried = [card for card in carried if card not in override and not (rare and card == 'キャトルミュー')]
     derived, seen = [], set()
-    for card in order.get('cards') or ():
+    occurrences = {}
+    spent = (mem.get('kit_spent') or {}).get(step, [])
+    for card in carried:
         verified = [t for t in base if t['card'] == card]
         if verified:
             if card in seen:
@@ -607,9 +703,15 @@ def _tactics(mem, step):
             seen.add(card)
             derived += [{**t, 'step': step, 'note': f"調整: {t['note']}"} for t in verified]
         else:
+            ordinal = spent.count(card) + occurrences.get(card, 0)
+            occurrences[card] = occurrences.get(card, 0) + 1
+            # Removing the first spent card must not renumber the second
+            # into an already-done tactic (two carried イッテツーン).
             derived.append({'enemy': None, 'card': card, 'open': True, 'step': step,
+                            'tactic_id': f'd:{step}:{card}:{ordinal}',
+                            'boss_only': _is_boss_order(order, mem),
                             'note': '調整チャート既定: 検証済み戦術のない携行切り札を開幕使用'})
-    return (*base, *derived)
+    return (*rare, *base, *derived)
 
 
 INTERIM_LIMIT = 2             # JEV answers per off-chart situation
@@ -640,6 +742,59 @@ def _en_route(mem):
     return {s.get('general') for s in sorties}, {s['target'] for s in sorties if s.get('target')}
 
 
+def _sortie_reserved_target(mem, step, sortie):
+    if sortie.get('target'):
+        return sortie['target']
+    if sortie.get('status') == 'launched_unconfirmed':
+        # Reserve the intended destination without claiming observed arrival.
+        # An interrupted target selection must not dispatch reinforcements.
+        return ((mem.get('launched_orders') or {}).get(step) or {}).get('target')
+    return None
+
+
+def _reserved_targets(mem):
+    now = int(mem.get('tick') or 0)
+    return {_sortie_reserved_target(mem, step, s)
+            for step, s in (mem.get('sorties') or {}).items()
+            if s.get('status') in ('en_route', 'launched_unconfirmed')
+            and s.get('tick') is not None
+            and 0 <= now - int(s['tick']) < SORTIE_BUSY_TICKS} - {None}
+
+
+def _retake_order(order, mem):
+    return (not _is_boss_order(order, mem)
+            and (order.get('purpose') == 'retake'
+                 or order.get('target') in (mem.get('lost') or ())))
+
+
+def _reserve_source_guard(order, mem):
+    # Original chart offensives and boss waves retain their sequences. A
+    # recapture or an off-chart attack must leave a measured idle defender.
+    return (_retake_order(order, mem)
+            or (order.get('purpose') == 'attack' and order['step'].startswith('I:')))
+
+
+def _retake_reserved(order, mem):
+    if (not _retake_order(order, mem)
+            or (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed'):
+        return False
+    now = int(mem.get('tick') or 0)
+    return any(step != order['step'] and _sortie_reserved_target(mem, step, s) == order.get('target')
+               and s.get('status') in ('en_route', 'launched_unconfirmed')
+               and s.get('tick') is not None
+               and 0 <= now - int(s['tick']) < SORTIE_BUSY_TICKS
+               for step, s in (mem.get('sorties') or {}).items())
+
+
+def _source_spare_missing(order, mem):
+    if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
+        return False  # reconcile an issued sortie; do not cancel its carried-kit receipt
+    present = (mem.get('garrison') or {}).get(_source(order, mem))
+    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    return (_reserve_source_guard(order, mem) and present is not None
+            and len(set(present) - unavailable) < 2)
+
+
 def _interim_source(mem, target, chart_order, owned, busy):
     """(source, general) for an interim sortie to ``target``, or None.
 
@@ -652,17 +807,19 @@ def _interim_source(mem, target, chart_order, owned, busy):
     home = chart.home_castle(chapter)
     garrison = mem.get('garrison') or {}
     busy = busy | set(mem.get('general_location_unknown') or ())
+    unavailable_for_attack = {NAME} if _hero_egg_broken(mem) else set()
     free = {c: [g for g in garrison.get(c) or () if g not in busy] for c in owned}
     # Emptying a castle is how the undefended ジョンリギ fell (g401), so a
-    # castle that keeps somebody behind goes first, then the nearest.
-    staffed = sorted((c for c in owned if free[c]),
-                     key=lambda c: (len(free[c]) < 2, _distance(chapter, c, target)))
+    # castle that keeps somebody behind is required, then the nearest goes.
+    staffed = sorted((c for c in owned if len(set(free[c])) >= 2
+                      and set(free[c]) - unavailable_for_attack),
+                     key=lambda c: _distance(chapter, c, target))
     if staffed:
-        present = [g for g in garrison[staffed[0]] if g not in busy]
+        present = [g for g in free[staffed[0]] if g not in unavailable_for_attack]
         present.sort(key=lambda g: g == NAME)          # risk the hero last
         return staffed[0], present[0]
     general = chart_order['general'] if chart_order else NAME
-    if general in busy:
+    if general in busy or general in unavailable_for_attack:
         return None
     for source in ((chart_order or {}).get('source'), home):
         if source in owned and garrison.get(source) is None:
@@ -671,6 +828,9 @@ def _interim_source(mem, target, chart_order, owned, busy):
 
 
 MOVE_ANY_GENERAL = 'しょうぐん'    # move from an unread list: the spare is picked on the list
+
+
+INTERIM_CARDS = ('イッテツーン', 'イッテツーン')   # same opener as a lost melee's retry
 
 
 def interim_candidates(mem) -> dict:
@@ -684,7 +844,7 @@ def interim_candidates(mem) -> dict:
     castles fell without a battle and g407 left the home castle empty.
     Sources and generals come from measured general lists when known
     (``garrison``), so an idle general at any castle is used instead of only
-    the chart's general. No cards (stock is not verified). There is no hold
+    the chart's general. Attacks carry cards (INTERIM_CARDS). There is no hold
     label: JEV must pick one, and an unusable answer falls back to the first
     candidate. JEV never produces keys or orders itself.
     """
@@ -693,7 +853,8 @@ def interim_candidates(mem) -> dict:
     home = chart.home_castle(chapter)
     boss = chart.boss_castle(chapter)
     owned = _owned(mem) & set(castles)
-    busy, heading = _en_route(mem)
+    busy, _ = _en_route(mem)
+    heading = _reserved_targets(mem)
     chart_orders = {}
     for order in chart.orders(chapter):
         chart_orders.setdefault(order['target'], order)
@@ -702,9 +863,9 @@ def interim_candidates(mem) -> dict:
     targets = [c for c in (*lost, *chart_orders, *castles)
                if c in castles and c not in owned and c != boss]
     targets = list(dict.fromkeys(targets))
-    # A castle a unit is already marching on goes last, not away: that unit
-    # may never arrive (g401: 1-A2 stayed en_route for 20 minutes).
-    targets.sort(key=lambda c: c in heading)
+    # One recent expedition per target. Unobserved old arrivals stop reserving
+    # after SORTIE_BUSY_TICKS; they must not empty every castle in the meantime.
+    targets = [c for c in targets if c not in heading]
     sorties = {'retake': [], 'attack': []}
     for target in targets:
         picked = _interim_source(mem, target, chart_orders.get(target), owned, busy)
@@ -714,8 +875,13 @@ def interim_candidates(mem) -> dict:
         purpose = 'retake' if target in lost else 'attack'
         note = (f"暫定: {general}で奪われた{target}を奪還" if purpose == 'retake'
                 else f"暫定: {general}で{target}を攻撃")
+        # Owner (2026-09-28): 切り札は持たせたほうが良い. The chart's cards for
+        # this castle, else the retry opener (two イッテツーン). Cards out of
+        # stock are dropped at the card list (card_drop), never waited for.
+        base = chart_orders.get(target)
+        cards = list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS)
         sorties[purpose].append({
-            'general': general, 'target': target, 'cards': [], 'source': source,
+            'general': general, 'target': target, 'cards': cards, 'source': source,
             'after': None, 'purpose': purpose, 'note': note})
     garrison = mem.get('garrison') or {}
     moves = []
@@ -791,6 +957,27 @@ def _adopt_interim(mem, state, rid):
                 reason='調整チャート待ちの間、JEVが決定的候補から暫定出撃を選択')
 
 
+def _adjust_situation(mem):
+    """Where the generals are, for the adjusted-chart request.
+
+    g421 (e7df88f1): the LLM chart sent F2/F3/F5 with generals that were not
+    in their source castles (it was never told who stood where) and each
+    order failed at the castle menu. The request now carries the recorded
+    garrisons, marching generals and lost castles so the worker can prompt
+    with them and drop orders that cannot start.
+    """
+    now = int(mem.get('tick') or 0)
+    # Same bound as _en_route: an unread arrival stops counting as marching.
+    marching = sorted({(s['general'], s.get('target')) for s in (mem.get('sorties') or {}).values()
+                       if s.get('status') in ('en_route', 'launched_unconfirmed') and s.get('general')
+                       and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS},
+                      key=str)
+    return {'garrison': {castle: sorted(names) for castle, names in sorted((mem.get('garrison') or {}).items())},
+            'lost': sorted(mem.get('lost') or []), 'home_lost': bool(mem.get('home_lost')),
+            'en_route': [{'general': g, 'target': t} for g, t in marching],
+            'card_stock': dict(sorted((mem.get('card_stock') or {}).items()))}
+
+
 def _adopt_plan(mem, doc, rid):
     """Adopt a validated adjusted chart as the plan, with per-generation step ids."""
     orders = [{**o, 'step': chart_adjust.execution_step(rid, o['step']), 'local_step': o['step'],
@@ -823,28 +1010,63 @@ def _off_chart(mem):
     replaces the previous plan. Until then the previous plan keeps waiting, or,
     with no plan waiting, a bounded number of JEV-chosen interim orders may run.
     """
+    # A deliberate recovery wait is not an exhausted chart. Do not ask the
+    # planner to replace the boss order or send an interim sortie while the
+    # next normal month advances. Other ready orders were considered first.
+    waiting = next((o for o in _orders(mem) if _boss_egg_depleted(o, mem)
+                    and _ready(o, {**mem, 'egg_uses': {}})
+                    and (mem.get('orders') or {}).get(o['step']) in (None, 'pending')), None)
+    if waiting:
+        key = (waiting['step'], mem.get('month'), (mem.get('egg_uses') or {}).get(NAME))
+        if mem.get('boss_egg_wait') != list(key):
+            mem['boss_egg_wait'] = list(key)
+            _record(mem, 'boss_egg_recovery_wait', chart_step=waiting['step'],
+                    observed_metric={'general': NAME, 'egg_uses': key[2], 'month': key[1]},
+                    expected_metric={'egg_uses': 4},
+                    reason='第1話ボス出撃前に主人公の卵が消耗しているため、通常の月次回復を待つ')
+        return
+    mem.pop('boss_egg_wait', None)
     state = mem.setdefault('chart_adjust', {})
     rid = chart_adjust.request_id(mem)
+    orders = [o for o in _orders(mem) if not o['step'].startswith(chart_adjust.INTERIM_PREFIX)]
+    status = mem.get('orders') or {}
+    blocked = [{'step': o['step'], 'after': list(o['after'] or ())} for o in orders
+               if status.get(o['step']) in (None, 'pending')]
+    reason = ('chart_unavailable' if not orders
+              else 'orders_locked' if blocked else 'orders_exhausted')
+    fields = {'request_id': rid, 'off_chart_reason': reason, 'blocked': blocked,
+              'captured': sorted(mem.get('captured') or []), 'orders': dict(status),
+              'gold': mem.get('gold'), 'month': mem.get('month'), **_adjust_situation(mem)}
+    digest = chart_adjust.request_digest(fields)
+    prior_digest = state.get('request_digest')
     if state.get('request_id') != rid:
-        orders = [o for o in _orders(mem) if not o['step'].startswith(chart_adjust.INTERIM_PREFIX)]
-        status = mem.get('orders') or {}
-        blocked = [{'step': o['step'], 'after': list(o['after'] or ())} for o in orders
-                   if status.get(o['step']) in (None, 'pending')]
-        reason = ('chart_unavailable' if not orders
-                  else 'orders_locked' if blocked else 'orders_exhausted')
         state.clear()
         state['request_id'] = rid
+        state['request_digest'] = digest
         state['interim_wanted'] = not _plan_pending(mem) and bool(interim_candidates(mem))
         _record(mem, 'chart_adjust_request', chart_step=None, strategy_variant='chart_adjust_pending',
-                request_id=rid, off_chart_reason=reason, blocked=blocked,
-                captured=sorted(mem.get('captured') or []), orders=dict(status),
-                gold=mem.get('gold'), month=mem.get('month'),
+                **fields,
                 reason='チャート外: 出撃可能な指示がないため調整チャートを非同期に要求し入力を保留')
         return
+    revision_changed = prior_digest is not None and prior_digest != digest
+    if prior_digest != digest:
+        # Same situation, newer payload (stock, gold, lost castles): republish
+        # so the worker answers the current revision, then keep going so the
+        # interim fallback still progresses this observation.
+        state['request_digest'] = digest
+        _record(mem, 'chart_adjust_request', chart_step=None, strategy_variant='chart_adjust_pending',
+                **fields,
+                reason='チャート外: 状況が更新されたため同じ要求を最新の在庫・配置で再要求')
     doc = mem.get('_adjusted')
     plan = mem.get('chart_plan') or {}
+    doc_digest = doc.get('request_digest') if doc else None
     if (doc and doc.get('request_id') == rid and doc.get('chapter') == mem.get('chapter')
-            and plan.get('request_id') != rid):
+            and plan.get('request_id') != rid
+            and ((doc_digest == state.get('request_digest'))
+                 # A digestless answer predates the revision field (old worker
+                 # during a hot-load): accepted until a revision actually
+                 # changed under it, then only a bound answer counts.
+                 or (doc_digest is None and not revision_changed))):
         _adopt_plan(mem, doc, rid)
         return
     if plan.get('request_id') == rid or _plan_pending(mem):
@@ -883,6 +1105,11 @@ def _finish_order(mem, state, **fields):
     step = mem.get('active')
     if step:
         mem.setdefault('orders', {})[step] = state
+        if state == 'launched':
+            # A new sortie carries a fresh kit: attempted uses from the
+            # previous one must not shrink it (``kit_spent`` is per sortie).
+            (mem.get('kit_spent') or {}).pop(step, None)
+            (mem.get('sortie_confirm_miss') or {}).pop(step, None)
         _record(mem, 'order_' + state, chart_step=step, **fields)
     mem['active'] = None
     mem['picked'] = []
@@ -917,6 +1144,11 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
                 mem['active'] = step
                 mem['orders'][step] = 'pending'
                 (mem.get('sorties') or {}).pop(step, None)
+                # The interruption moved the camera: the resumed selection gets
+                # fresh target jumps (g421 18:24: six were spent before a defense
+                # battle, the marker came back unplaced and the bot idled).
+                (mem.get('y_jumps') or {}).pop(f'{step}:target', None)
+                (mem.get('y_jumped') or {}).pop(step, None)
                 _record(mem, 'sortie_target_resumed', chart_step=step,
                         reason='割り込み後に同じ出撃先マーカーが戻ったため目標選択を再開')
         attempt['target_seen'] = True
@@ -996,11 +1228,13 @@ def _verify_sortie_source(screen, mem, order):
 # Y shows the whole island at 1/8 scale; each castle's flag sits at the
 # castle cell / 8 + offset (chapter 1 measured in an isolated emulator on
 # 2026-09-28, all seven flags within 1 px). Blue fill = enemy, red = ours.
-WORLD_MAP_OFFSET = {1: (64.5, 44.4)}
+WORLD_MAP_OFFSET = {1: (64.5, 44.4), 2: (64.2, 45.0)}   # chapter 2: 3 flags vs measured cells
 WORLD_FLAG_ENEMY = (0, 64, 189)
 WORLD_FLAG_OWN = (230, 56, 90)
+WORLD_MARKER = (255, 24, 0)     # ▲ army marker on the Y view (probe-measured)
 WORLD_SURVEY_TICKS = 200       # observations between surveys (~5 min at 1.5 s)
 WORLD_MAP_WAIT = 4             # fade frames before giving up a reading
+SELECT_FOCUS_INTERVAL = 300    # observations between hero re-focuses (~7.5 min)
 
 
 WORLD_COLOUR_TOL = 8           # live capture shifts colours by ~1 (g419: gold 255,181,0)
@@ -1033,6 +1267,44 @@ def world_flags(frame, chapter, cursor=None):
     return out
 
 
+def world_markers(frame) -> list:
+    """▲ army markers on the whole-island view, as (x0, y0, x1, y1) boxes.
+
+    Owner rule (2026-09-28): the Y view also shows ▲ marks for units, and
+    they must be checked on every survey. Measured in the isolated probe:
+    an own marker is a ~7x6 bright red-orange triangle (255,24,0); castle
+    flags (230,56,90)/(0,64,189) sit far outside that colour's tolerance.
+    """
+    if frame is None:
+        return []
+    pts = [(x, y) for y in range(frame.height) for x in range(frame.width)
+           if _near_colour(frame.pixel(x, y), WORLD_MARKER)]
+    seen, out = set(), []
+    for p in sorted(pts):
+        if p in seen:
+            continue
+        stack, comp = [p], []
+        seen.add(p)
+        while stack:
+            x, y = stack.pop()
+            comp.append((x, y))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    n = (x + dx, y + dy)
+                    if (n not in seen and 0 <= n[0] < frame.width and 0 <= n[1] < frame.height
+                            and _near_colour(frame.pixel(*n), WORLD_MARKER)):
+                        seen.add(n)
+                        stack.append(n)
+        if not 6 <= len(comp) <= 60:
+            continue
+        xs = [c[0] for c in comp]
+        ys = [c[1] for c in comp]
+        if max(xs) - min(xs) > 12 or max(ys) - min(ys) > 12:
+            continue
+        out.append((min(xs), min(ys), max(xs), max(ys)))
+    return out
+
+
 def _world_map_wanted(mem) -> bool:
     if (mem.get('chapter') or 0) not in WORLD_MAP_OFFSET:
         return False
@@ -1047,6 +1319,42 @@ def world_map_step(screen, mem, frame):
     (or, while a Y jump is running, steer its cursor to the goal castle)."""
     if mem.get('y_jump'):
         return _y_jump_step(mem, frame)
+    recall = mem.get('recall')
+    if recall and recall.get('stage') == 'dest':
+        # きかん opens a whole-island picker (chapter 1 and 2, isolated probe
+        # 2026-09-29): the R ring starts on the home castle, A selects it and a
+        # second A confirms; the general then walks back home (measured: the
+        # hero turned from キカンドン towards ほんじょう). Y does not close it.
+        chapter = mem.get('chapter') or 0
+        cursor = world_cursor(frame) if frame is not None else None
+        flags = world_flags(frame, chapter)
+        if flags:
+            _apply_world_flags(mem, flags)
+        offset = WORLD_MAP_OFFSET.get(chapter)
+        nearby = [name for name, (x, y) in chart.castles(chapter).items()
+                  if cursor and offset and abs(x / 8 + offset[0] - cursor[0]) <= 6
+                  and abs(y / 8 + offset[1] - cursor[1]) <= 6]
+        recall['picker_observations'] = int(recall.get('picker_observations', 0)) + 1
+        if len(nearby) != 1 or flags.get(nearby[0]) != 'own':
+            if recall['picker_observations'] >= RECALL_LIMIT:
+                _record(mem, 'camp_recall_aborted',
+                        observed_metric={'cursor': cursor, 'flags': flags},
+                        reason='帰還先の自軍旗を確認できないため敵城へ確定せず帰還操作を取り消す')
+                mem.pop('recall', None)
+                mem['uncertain'] = True
+                return [pad('b')]
+            return [pad('right')] if cursor else []
+        home = nearby[0]  # the measured R picker, never an assumed home castle
+        mem.pop('recall', None)
+        mem['uncertain'] = True
+        if recall.get('hero'):
+            actions = _finish_hero_recall(mem, recall, home)
+        else:
+            _record(mem, 'camp_recall', observed_metric={'castle': home, 'camp': recall.get('target'),
+                                                          'screen': 'world_map'},
+                    reason='野営の将軍に自軍旗を確認した城への帰還を指示（全体マップ型の帰還先選択でAを2回）')
+            actions = [pad('a')]
+        return actions + [{'type': 'wait', 'ms': 700}, pad('a')]
     flags = world_flags(frame, mem.get('chapter') or 0)
     if not flags:
         waited = int(mem.get('world_map_wait') or 0) + 1
@@ -1054,12 +1362,26 @@ def world_map_step(screen, mem, frame):
         return [] if waited < WORLD_MAP_WAIT else [pad('y')]
     mem.pop('world_map_wait', None)
     _apply_world_flags(mem, flags)
+    markers = world_markers(frame)
+    if markers:
+        _record(mem, 'world_map_units', observed_metric={'count': len(markers),
+                'boxes': [list(m) for m in markers]},
+                reason='全体マップの▲（部隊マーカー）を定期確認')
     return [pad('y')]
 
 
 def _apply_world_flags(mem, flags):
     chapter = mem.get('chapter') or 0
     home = chart.home_castle(chapter)
+    cur = mem.get('battle') or {}
+    castle = cur.get('castle')
+    if (cur.get('side') == 'defense' and castle in chart.castles(chapter)
+            and type(cur.get('ally_hp')) is int and cur['ally_hp'] == 0
+            and type(cur.get('enemy_hp')) is int and cur['enemy_hp'] > 0
+            and flags.get(castle) in ('own', 'enemy')):
+        # This flag was read after this defender's zero HP, not before entry
+        # or in an earlier battle/month. Keep it only inside this battle.
+        cur['defeat_owner'] = {'castle': castle, 'chapter': chapter, 'owner': flags[castle]}
     captured = mem.setdefault('captured', [])
     changed = []
     home_owner = flags.get(home)
@@ -1110,9 +1432,10 @@ def _apply_world_flags(mem, flags):
 # each roof, and the target marker 5 px from キカンドン's roof. Roof-based
 # cursor motion was the source of most mis-sorties (lone-roof mix-ups,
 # edge-scroll drift of ~60 px), so far goals go through Y instead.
-Y_JUMP_OFFSET = {1: (63.0, 47.5)}
+Y_JUMP_OFFSET = {1: (63.0, 47.5), 2: (63.0, 47.5)}
 Y_JUMP_FAR = 48                # world px from the goal before a jump is worth it
-Y_JUMP_LIMIT = 2               # jumps per order and screen mode
+Y_JUMP_LIMIT = 6               # jumps per order and screen mode (reset when the order starts).
+                               # 2 ran out mid-order and left roof walking (g421 15:25: SELECT loops)
 Y_JUMP_MOVES = 8               # D-pad steps inside one jump before confirming anyway
 Y_JUMP_WAIT = 6                # frames without a readable cursor before closing Y
 Y_JUMP_FINAL_TOL = 3.0         # view px: beyond this at the move limit the jump is abandoned
@@ -1127,11 +1450,20 @@ def world_cursor(frame):
     """Centre of the Y view's cursor: gold G corners, else the white dashed ring."""
     gold = [(x, y) for x in range(40, 220) for y in range(40, 200)
             if _near_colour(frame.pixel(x, y), (255, 182, 0))]
-    if len(gold) >= 12:
-        xs = [x for x, _ in gold]; ys = [y for _, y in gold]
-        # Only the compact G corners (~14 px): the map's gold edge arrows are
-        # far apart and their joint box read as a cursor (g419 10:49).
-        if max(xs) - min(xs) <= 18 and max(ys) - min(ys) <= 18:
+    # Only the compact G corners (~15 px box): the map's gold edge arrows are
+    # far apart and their joint box read as a cursor (g419 10:49), and chapter
+    # 2's gold camp triangle beside フーリック widened the box so no target
+    # jump there could read the G (isolated probe, g421 state). Take the
+    # G-sized window holding the most gold instead of the whole box.
+    best = None
+    for x0 in sorted({x for x, _ in gold}):
+        for y0 in sorted({y for _, y in gold}):
+            inside = [(x, y) for x, y in gold if x0 <= x <= x0 + 18 and y0 <= y <= y0 + 18]
+            if best is None or len(inside) > len(best):
+                best = inside
+    if best and len(best) >= 12:
+        xs = [x for x, _ in best]; ys = [y for _, y in best]
+        if max(xs) - min(xs) >= 10 and max(ys) - min(ys) >= 10:
             return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
     votes = {}
     for x in range(40, 220):
@@ -1381,7 +1713,13 @@ def _align_on_roof(screen, mem, frame, kinds, key):
     s = _cursor(screen)
     if not s or frame is None:
         return None
-    near = [(abs(r['target'][0] - s[0]) + abs(r['target'][1] - s[1]), r) for r in castle_roofs(frame)
+    roofs = castle_roofs(frame)
+    if not roofs:
+        # Winter repaints the map (g421 18:13: the G stood on フーリック's
+        # castle, no roof was read, and the jump was reopened six times).
+        # A confirmed jump lands on the castle; nothing on screen contradicts it.
+        return 'on'
+    near = [(abs(r['target'][0] - s[0]) + abs(r['target'][1] - s[1]), r) for r in roofs
             if r['kind'] in kinds and abs(r['target'][0] - s[0]) <= ALIGN_RADIUS
             and abs(r['target'][1] - s[1]) <= ALIGN_RADIUS]
     if not near:
@@ -1411,6 +1749,12 @@ MENU_HOLD_LIMIT = 10           # arrived-but-unanchored holds after a failed cas
 RECALL_LIMIT = 90              # observations for one camp recall
 RECALL_ARRIVE_PX = 4           # cursor cell onto the tent
 RECALL_CONFIRM_PX = 4          # marker onto the own castle's selecting cell
+RECALL_SKIP_TICKS = 400        # observations without recalls after a skipped picker
+
+
+def is_camp_menu(screen) -> bool:
+    """Our tent's menu: いどう/ステータス/キャンプ/きかん (isolated probe, g436 22:04)."""
+    return all(word in screen.text for word in ('いどう', 'ステータス', 'キャンプ', 'きかん'))
 
 
 def camp_recall_step(screen: Screen, mem, frame):
@@ -1428,6 +1772,11 @@ def camp_recall_step(screen: Screen, mem, frame):
         if screen.kind != 'map' or frame is None:
             return None
         camps = own_camps(frame)
+        skip = mem.get('recall_skip')
+        if skip and int(mem.get('tick') or 0) - int(skip.get('tick') or 0) < RECALL_SKIP_TICKS:
+            # A skipped camp would reopen the same picker on every map frame.
+            # The cursor moves with the camera, so skip every camp meanwhile.
+            camps = []
         if not camps:
             return None
         cursor = _cursor(screen)
@@ -1445,11 +1794,32 @@ def camp_recall_step(screen: Screen, mem, frame):
         mem['uncertain'] = True
         return []
     stage = state.get('stage')
+    if stage == 'hero_focus':
+        if screen.kind != 'map':
+            return []                  # battle results and messages fade out first
+        state['stage'], state['steps'] = 'hero_open', 0
+        return [pad('select')]         # measured: SELECT centres the cursor on the hero
+    if stage == 'hero_open':
+        if screen.kind != 'map':
+            return []
+        state['stage'], state['steps'] = 'menu', 0
+        _record(mem, 'camp_enter', observed_metric={'hero': True, 'cursor': list(_cursor(screen) or ())},
+                reason='主人公にカーソルを合わせて決定し、きかんを選ぶ')
+        return [pad('a')]
     if stage == 'to_camp':
         if screen.kind != 'map':
             mem.pop('recall', None)
             mem['uncertain'] = True
             return []
+        # Re-detect every step: a tent clipped by the top edge is targeted
+        # above the screen, and the cursor servo there scrolls the camera
+        # until the flag shows and the real selecting cell is known.
+        camps = own_camps(frame) if frame is not None else []
+        if camps:
+            cursor = _cursor(screen)
+            camp = min(camps, key=lambda c: (abs(c['target'][0] - cursor[0])
+                                             + abs(c['target'][1] - cursor[1])) if cursor else 0)
+            state['target'] = list(camp['target'])
         cursor = _cursor(screen)
         if not cursor:
             return []
@@ -1457,6 +1827,7 @@ def camp_recall_step(screen: Screen, mem, frame):
         dy = state['target'][1] - cursor[1]
         if abs(dx) <= RECALL_ARRIVE_PX and abs(dy) <= RECALL_ARRIVE_PX:
             state['stage'] = 'menu'
+            state['steps'] = 0        # each stage gets the full observation budget
             _record(mem, 'camp_enter', observed_metric={'camp': list(state['target'])},
                     reason='野営にカーソルを合わせて決定し、きかんを選ぶ')
             return [pad('a')]
@@ -1464,6 +1835,14 @@ def camp_recall_step(screen: Screen, mem, frame):
             return [pad('right' if dx > 0 else 'left', min(8, abs(dx)))]
         return [pad('down' if dy > 0 else 'up', min(8, abs(dy)))]
     if stage == 'menu':
+        if state.get('hero') and (screen.kind in ('castle_menu', 'general_list')
+                                  or (screen.kind == 'map' and state['steps'] > 4)):
+            # SELECT put the cursor on a castle (the hero is inside one) or on
+            # nothing: he is not marching, so there is nothing to call off.
+            mem.pop('recall', None)
+            _record(mem, 'hero_recall_skipped', observed_metric={'screen': screen.kind},
+                    reason='主人公の部隊メニューが開かない（城内など）ため帰還指示を取り消す')
+            return [pad('b')] if screen.kind != 'map' else []
         if 'きかん' not in screen.text and 'いどう' not in screen.text:
             return []              # the window is still fading in
         downs = int(state.get('downs') or 0)
@@ -1471,6 +1850,7 @@ def camp_recall_step(screen: Screen, mem, frame):
             state['downs'] = downs + 1
             return [pad('down')]   # いどう → ステータス → キャンプ → きかん
         state['stage'] = 'dest'
+        state['steps'] = 0            # each stage gets the full observation budget
         return [pad('a')]
     if stage == 'dest':
         if screen.kind != 'map_target':
@@ -1481,6 +1861,14 @@ def camp_recall_step(screen: Screen, mem, frame):
         marker = screen.marker
         roofs = ([r for r in castle_roofs(frame) if r['kind'] == 'own' and not r['clipped']]
                  if frame is not None else [])
+        if state.get('hero') and marker:
+            goal = state.get('goal') or _recall_goal(mem)
+            state['goal'] = goal
+            jumped = (mem.get('y_jumped') or {}).get('RECALL') == goal
+            if goal and jumped and not castle_roofs(frame):
+                return _finish_hero_recall(mem, state, goal)      # roofs hidden: trust the jump
+            if goal and not roofs and not jumped and (mem.get('y_jumps') or {}).get('RECALL:target', 0) < 2:
+                return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
         if not marker or not roofs:
             mem.pop('recall', None)
             mem['uncertain'] = True
@@ -1492,6 +1880,8 @@ def camp_recall_step(screen: Screen, mem, frame):
         dx = roof['target'][0] - marker[0]
         dy = roof['target'][1] - marker[1]
         if abs(dx) <= RECALL_CONFIRM_PX and abs(dy) <= RECALL_CONFIRM_PX:
+            if state.get('hero'):
+                return _finish_hero_recall(mem, state, state.get('goal'))
             mem.pop('recall', None)
             mem['uncertain'] = True
             _record(mem, 'camp_recall',
@@ -1502,6 +1892,37 @@ def camp_recall_step(screen: Screen, mem, frame):
             return [pad('right' if dx > 0 else 'left', min(6, abs(dx)))]
         return [pad('down' if dy > 0 else 'up', min(6, abs(dy)))]
     return []
+
+
+def _recall_goal(mem):
+    """The owned castle the hero returns to: where he set out from, else the nearest to home."""
+    chapter = mem.get('chapter') or 0
+    cells = chart.castles(chapter)
+    owned = [c for c in _owned(mem) if c in cells]
+    for step in (mem.get('recall') or {}).get('sorties') or ():
+        source = ((mem.get('sorties') or {}).get(step) or {}).get('source')
+        if source in owned:
+            return source
+    home = chart.home_castle(chapter)
+    if home in owned:
+        return home
+    return owned[0] if owned else None
+
+
+def _finish_hero_recall(mem, state, goal):
+    mem.pop('recall', None)
+    mem['uncertain'] = True
+    tick = int(mem.get('tick') or 0)
+    for step in state.get('sorties') or ():
+        sortie = (mem.get('sorties') or {}).get(step)
+        if sortie:
+            sortie['status'] = 'recalled'
+    if goal:
+        mem.setdefault('sorties', {})[f'RECALL:{tick}'] = {
+            'general': NAME, 'target': goal, 'status': 'en_route', 'purpose': 'move', 'tick': tick}
+    _record(mem, 'hero_recalled', observed_metric={'castle': goal, 'sorties': state.get('sorties')},
+            reason='弱った主人公の進軍を取りやめ自軍城へ帰還させた')
+    return [pad('a')]
 
 
 def map_step(screen: Screen, mem, frame):
@@ -1531,6 +1952,31 @@ def map_step(screen: Screen, mem, frame):
                 observed_metric={'menu_miss': mem['menu_miss'], 'cursor': mem.get('cursor'),
                                  'screen_cursor': list(_cursor(screen) or ()),
                                  'roofs': mem.get('roofs_seen')})
+    # Owner rule (2026-09-28): a camp (野営) seen on screen is recalled, even
+    # while an order is being driven (g421: a visible camp produced no
+    # camp_found because the recall only started on chartless idle maps).
+    # A Y jump in flight has already returned above (_drop_stale_y_jump), so
+    # a jump can neither be hijacked nor block a later recall.
+    recall = camp_recall_step(screen, mem, frame)
+    if recall is not None:
+        return recall
+    # Owner rule (2026-09-28): periodically SELECT to the hero's position to
+    # re-focus the view on where we are. The jump is camera motion we did not
+    # measure: drop nav_last and demand a re-anchor (mirrors the search's
+    # select_to_hero). Seeded on the first map frame, then every interval.
+    if (_cursor(screen) and not screen.marker and not mem.get('y_jump')
+            and not mem.get('select_used') and not mem.get('near_goal')):
+        tick = int(mem.get('tick') or 0)
+        last = mem.get('select_focus_tick')
+        if last is None:
+            mem['select_focus_tick'] = tick
+        elif tick - int(last) >= SELECT_FOCUS_INTERVAL:
+            mem['select_focus_tick'] = tick
+            mem['nav_last'] = None
+            mem['uncertain'] = True
+            _record(mem, 'select_focus', observed_metric={'screen_cursor': list(_cursor(screen))},
+                    reason='定期的にSELECTで主人公の位置へフォーカスして現在地を確認')
+            return [pad('select')]
     order = _order(mem)
     if order is not None and (mem.get('source_miss') or {}).get(order['step'], 0) >= SOURCE_MISS_LIMIT:
         _give_up_source(mem, order)
@@ -1567,13 +2013,15 @@ def map_step(screen: Screen, mem, frame):
             _off_chart(mem)
             order = next_order(mem)
         if order is None:
-            recall = camp_recall_step(screen, mem, frame)
-            if recall is not None:
-                return recall
             update_world(screen, mem, frame)
             return []           # nothing charted: let real time advance
         mem['active'] = order['step']
         mem['picked'] = []
+        mem.setdefault('rare_card_kit', {}).pop(order['step'], None)
+        mem.pop('rare_scan', None)
+        mem['y_jumps'] = {k: v for k, v in (mem.get('y_jumps') or {}).items()
+                          if not k.startswith(f"{order['step']}:")}
+        mem.pop('castle_verified', None)
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], purpose=order.get('purpose'),
                 cards=list(order['cards']),
@@ -1644,10 +2092,12 @@ def target_step(screen: Screen, mem, frame):
         # A marker we did not request: cancel instead of sending a general.
         _record(mem, 'unexpected_target', reason='指示中でない出撃先選択画面のためBで取消')
         return [pad('b')]
+    if _broken_hero_order(order, mem):
+        return _cancel_broken_hero_sortie(mem, order)
     if _is_boss_order(order, mem):
         context = (mem.get('order_context') or {}).get(order['step']) or {}
         if (context.get('actual_general') != order['general']
-                or (context.get('observed_metric') or {}).get('cards') != sorted(order['cards'])):
+                or (context.get('observed_metric') or {}).get('cards') != sorted(_deploy_cards(order, mem))):
             return _hold_deploy(screen, mem, order, 'ボス出撃の主人公と携行品の確認証拠がないため目標確定を保留')
     goal = chart.castles(mem['chapter'])[order['target']]
     result = None
@@ -1672,6 +2122,11 @@ def target_step(screen: Screen, mem, frame):
         return _start_y_jump(mem, order, order['target'], 'target')
     if result is None:
         result = nav_step(screen, mem, frame, goal)
+        if not result and screen.marker and not mem.get('cursor'):
+            # Jumps spent and the marker's place unknown: nothing steers it
+            # (g421 18:24: 70 idle observations). Count it as an unverified
+            # arrival so the sortie is cancelled and retried within its bounds.
+            return _unverified_target(screen, mem, order)
     if result == 'arrived' and not _target_roof_under_marker(screen, mem, frame, order):
         return _unverified_target(screen, mem, order)
     if result == 'arrived':
@@ -1720,11 +2175,14 @@ def _target_roof_under_marker(screen, mem, frame, order) -> bool:
         # The boss tower has no own/enemy roof (g421 13:48: two cancels).
         # Accept it only when a Y jump placed the marker on it.
         return (mem.get('y_jumped') or {}).get(order['step']) == order['target']
+    roofs = castle_roofs(frame)
+    if not roofs and (mem.get('y_jumped') or {}).get(order['step']) == order['target']:
+        return True                           # winter palette: trust the Y jump (g421 18:13)
     want = 'own' if order['target'] in _owned(mem) else 'enemy'
     return any(r['kind'] == want
                and abs(r['target'][0] - s[0]) <= UNDER_CURSOR_PX
                and abs(r['target'][1] - s[1]) <= UNDER_CURSOR_PX
-               for r in castle_roofs(frame))
+               for r in roofs)
 
 
 def _unverified_target(screen, mem, order):
@@ -1758,18 +2216,150 @@ def _unverified_target(screen, mem, order):
     return [pad('b')]
 
 
+# Owner (2026-09-29): 敵にエッグを使わせない. gcgx ai.html: an enemy general
+# uses its egg when the battle's card IDs total 48 or more (patterns 1-3).
+CARD_IDS = reference.ALL_CARD_IDS
+ENEMY_EGG_CARD_ID_SUM = reference.ENEMY_EGG_CARD_ID_SUM
+
+
+def _cap_card_ids(cards):
+    """Keep cards in plan order while their ID total stays under the enemy egg threshold."""
+    kept, total = [], 0
+    for card in cards:
+        card_id = CARD_IDS.get(card)
+        if card_id is None or total + card_id >= ENEMY_EGG_CARD_ID_SUM:
+            continue
+        kept.append(card)
+        total += card_id
+    return kept
+
+
+def _strict_boss_cards(order, mem) -> bool:
+    """The base chart's boss sortie carries exactly its charted cards; an
+    adjusted/interim boss order may leave an unavailable card behind (g438
+    04:03: J1 wanted ミックミー, none was owned, and card_select held for good)."""
+    return _is_boss_order(order, mem) and any(
+        o['step'] == order['step'] for o in chart.orders(mem.get('chapter') or 0))
+
+
 def _deploy_cards(order, mem):
-    if _is_boss_order(order, mem):
+    rare_kit = (mem.get('rare_card_kit') or {}).get(order['step'])
+    if _strict_boss_cards(order, mem) and rare_kit is None:
         return list(order['cards'])
-    cards = list(mem.get('card_override', {}).get(order['step'], order['cards']))
+    cards = list(rare_kit if rare_kit is not None else
+                 mem.get('card_override', {}).get(order['step'], order['cards']))
+    # One planned copy leaves the kit per drop entry. g454 12:22: a planned
+    # イッテツーン x2 had one copy already picked and the second recorded as
+    # dropped; removing every copy of the card shrank the plan below what the
+    # sortie actually carried and the confirmation held forever.
     for card in (mem.get('card_drop') or {}).get(order['step']) or ():
-        cards = [c for c in cards if c != card]
-    return cards
+        if card in cards:
+            cards.remove(card)
+    # One carried copy leaves the kit per attempted use in this sortie (g452:
+    # ヴィーナス spent both イッテツーン in one battle and the next battle
+    # re-planned them, opened an empty きりふだ list and stalled).
+    for card in (mem.get('kit_spent') or {}).get(order['step']) or ():
+        if card in cards:
+            cards.remove(card)
+    capped = _cap_card_ids(cards)
+    if capped != cards and (mem.get('cards_capped') or {}).get(order['step']) != capped:
+        mem.setdefault('cards_capped', {})[order['step']] = capped
+        _record(mem, 'cards_capped', chart_step=order['step'],
+                observed_metric={'planned': cards, 'carried': capped,
+                                 'id_sum': sum(CARD_IDS[c] for c in capped)},
+                reason='切り札IDの合計が48以上だと敵がエッグを使うため、47以下になるよう携行札を絞る')
+    return capped
 
 
+RARE_SCAN_LIMIT = 32          # the entire 32-card catalogue, once per observed month
 CARD_SCROLL_LIMIT = 8         # downward presses looking for a card below a full panel
 CARD_MISS_LIMIT = 5           # card_select readings before a missing card is left behind
+CARD_UNREADABLE_LIMIT = 6     # unreadable card_select readings before cancelling the sortie
+SORTIE_CONFIRM_LIMIT = 8      # readings before a readable but mismatched kit is approved
+CARD_STOCK_LIMIT = 24         # observed card names kept for the adjusted-chart request
 
+
+def _observe_card_stock(mem, inventory):
+    """Remember the stocks a sortie card panel showed (chart-adjust grounding).
+
+    Fewer than four rows is the whole inventory (depleted items disappear), so
+    a known card absent from it is out of stock now and recorded as 0; a
+    four-row panel is a window and only its rows are updated. g438 04:04: the
+    adjusted chart planned ミックミー and エンジェリン for chapter 1, where
+    neither was ever in the panel -- the model was never told what the player
+    actually holds. The request now carries this so it plans from observed
+    stock.
+    """
+    stock = mem.setdefault('card_stock', {})
+    shown = {row['card']: row['stock'] for row in inventory['rows']}
+    stock.update(shown)
+    if len(inventory['rows']) < 4:
+        for card in stock:
+            if card not in shown:
+                stock[card] = 0
+    while len(stock) > CARD_STOCK_LIMIT:
+        stock.pop(next(iter(stock)))
+
+
+
+def _rare_card_inventory(screen, mem, order, inventory):
+    """Discover event stock before picking; freeze a positive, measured kit.
+
+    One bounded sweep per month reaches hidden event cards without declaring
+    the first four rows a complete inventory. Rewind before normal selection.
+    Never change an already picked/in-flight sortie or invent event stock.
+    """
+    if (mem.get('picked') or inventory['remaining'] == 0
+            or (mem.get('rare_card_kit') or {}).get(order['step']) is not None):
+        return None
+    month = mem.get('month') or f"chapter-{mem.get('chapter')}:unknown"
+    scan = mem.get('rare_scan') or {}
+    if scan.get('rewind', 0) > 0:
+        scan['rewind'] -= 1
+        if not scan['rewind']:
+            mem.pop('rare_scan', None)
+        _record(mem, 'sortie_input', **_deploy_context(order, mem),
+                screen='card_select', observed_metric={'rare_scan': 'rewind', 'remaining': scan['rewind']},
+                reason='レア札在庫の有限探索後に選択カーソルを戻す')
+        return [pad('up')]
+    row = next((r for r in inventory['rows'] if r['card'] == 'キャトルミュー'), None)
+    if row and row['stock'] > 0 and inventory['remaining'] > 0:
+        original = _deploy_cards(order, mem)
+        kit = _cap_card_ids(['キャトルミュー', *[c for c in original if c != 'キャトルミュー']])[:3]
+        mem.setdefault('rare_card_kit', {})[order['step']] = kit
+        mem['rare_scan_month'] = month
+        mem.pop('rare_scan', None)
+        _record(mem, 'rare_card_kit', **_deploy_context(order, mem), chart_step=order['step'],
+                observed_metric={'card': row['card'], 'stock': row['stock'], 'cards': kit,
+                                 'original_cards': original, 'id_sum': sum(CARD_IDS[c] for c in kit)},
+                reason='実在庫と携行枠を確認し、イベント札を1枚携行して活用する')
+        return []
+    if not isinstance(month, str) or mem.get('rare_scan_month') == month:
+        return None
+    scan = mem.setdefault('rare_scan', {'step': order['step'], 'presses': 0, 'rows': None})
+    if scan['step'] != order['step']:
+        mem.pop('rare_scan', None)
+        return None
+    rows = [r['card'] for r in inventory['rows']]
+    at_bottom = inventory['selected_y'] == inventory['rows'][-1]['y']
+    if (len(rows) < 4 or scan['presses'] >= RARE_SCAN_LIMIT
+            or (at_bottom and scan['rows'] == rows and scan.get('was_bottom'))):
+        mem['rare_scan_month'] = month
+        if scan['presses']:
+            scan['rewind'] = scan['presses'] - 1
+            if not scan['rewind']:
+                mem.pop('rare_scan', None)
+            _record(mem, 'sortie_input', **_deploy_context(order, mem),
+                    screen='card_select', observed_metric={'rare_scan': 'rewind', 'remaining': scan['rewind']},
+                    reason='レア札探索の末尾または上限に達したため選択カーソルを戻す')
+            return [pad('up')]
+        mem.pop('rare_scan', None)
+        return None
+    scan.update(presses=scan['presses'] + 1, rows=rows, was_bottom=at_bottom)
+    _record(mem, 'sortie_input', **_deploy_context(order, mem), screen='card_select',
+            observed_metric={'rare_scan': 'discover', 'presses': scan['presses'], 'rows': rows},
+            reason='未選択の実在庫を有限回探索し、隠れたイベント札の有無を確認する')
+    return [pad('down')]
 
 def _drop_card(screen, mem, order, card, inventory):
     """Leave a planned card behind after it stays unselectable (non-boss only).
@@ -1791,9 +2381,11 @@ def _drop_card(screen, mem, order, card, inventory):
     for picked in mem.get('picked') or ():
         if picked in wanted:
             wanted.remove(picked)
-    dropped = sorted(set(wanted)) if inventory['remaining'] == 0 else [card]
-    mem.setdefault('card_drop', {}).setdefault(order['step'], []).extend(
-        c for c in dropped if c not in mem['card_drop'][order['step']])
+    # One entry per unselectable copy: with no carry slot left every remaining
+    # planned copy goes, otherwise every copy of the missing card does.
+    dropped = (list(wanted) if inventory['remaining'] == 0
+               else [c for c in wanted if c == card])
+    mem.setdefault('card_drop', {}).setdefault(order['step'], []).extend(dropped)
     context = {**_deploy_context(order, mem),
                'deviation_reason': f'{card}を選べないため携行せずに出撃する'}
     _record(mem, 'card_dropped', **context, card=card, dropped=dropped,
@@ -1819,6 +2411,9 @@ def _deploy_context(order, mem, *, expected_metric=None):
         context.update(strategy_variant=retry.get('strategy_variant', 'retry_with_opening_cards'),
                        deviation_reason=retry.get('deviation_reason'),
                        expected_metric=retry.get('expected_metric'))
+    if (mem.get('rare_card_kit') or {}).get(order['step']):
+        context.update(strategy_variant='rare_cattlemyu',
+                       deviation_reason='実在庫のキャトルミューを活用するため携行札を変更')
     return context
 
 
@@ -1969,7 +2564,12 @@ def _measured_card_select(screen):
             name_limit = 232
             stock_cells = ((232, ones),)
         names = TextLine(y, tuple((x, ch) for x, ch in row if x < name_limit)).spans()
-        if len(names) != 1 or names[0][0] != 160 or names[0][1] not in CARD_NAMES:
+        # Every real card name (ALL_CARD_NAMES, the 32-card gcgx table) is a
+        # valid row, not just the selectable subset: g454 10:02 the panel
+        # showed バルムンク (an event card outside CARD_NAMES) and every
+        # reading was rejected, so the sortie held forever. Unknown cards are
+        # read as rows but can never be selected by name.
+        if len(names) != 1 or names[0][0] != 160 or names[0][1] not in ALL_CARD_NAMES:
             return None
         name = names[0][1]
         if row != text_cells(160, name) + stock_cells:
@@ -2047,6 +2647,14 @@ def _observe_garrison(screen, mem, order):
     garrison = mem.setdefault('garrison', {})
     mem['general_location_unknown'] = [g for g in mem.get('general_location_unknown') or ()
                                        if g not in present or not _general_visible(screen, g)]
+    verification = mem.get('recruit_verification') or {}
+    joined = (set(present) & set(verification.get('candidates') or ())) - set(
+        verification.get('generals_before') or ())
+    if joined:
+        _record(mem, 'recruit_join_observed', castle=castle, month=verification.get('month'),
+                observed_metric={'generals': sorted(joined)},
+                reason='募集で紹介された将軍を在城一覧で確認し、採用後の配置を実測した')
+        mem.pop('recruit_verification', None)
     if garrison.get(castle) != present:
         garrison[castle] = present
         _record(mem, 'garrison_seen', **_deploy_context(order, mem), castle=castle,
@@ -2079,13 +2687,159 @@ def _name_read_cleanly(line, name) -> bool:
             and cells.get(span + 8 * len(name)) != UNKNOWN)
 
 
+# Chart label -> the name ステータス shows. Chapter 1's home is labelled
+# ほんじょう in the chart but the game names it アルマムーン (g436 21:19: every
+# home sortie was refused as "the wrong castle" and 1-A1/1-V1 failed).
+STATUS_NAMES = {'ほんじょう': 'アルマムーン'}
+CASTLE_STATUS = re.compile(r'(?:しゅつげき)?([^\ufffd\s]+?)じょうステータスしゅうにゅう')
+
+
+def _check_source_castle(screen, mem, order):
+    """Read the castle's name (ステータス) before sending anyone from it.
+
+    g421 18:13: a Y jump to アルマムーン closed early, A opened the menu of
+    the castle under the cursor - フーリック, where the hero stood - and the
+    bot recorded どうし at アルマムーン and sent him to フーリック itself; the
+    sortie went nowhere. Measured (isolated probe): ステータス shows
+    「<name>じょう しゅうにゅう… しょうぐんNめい …」 beside the menu and B
+    returns to it. ``None`` means verified: continue with しゅつげき.
+    """
+    step, source = order['step'], _source(order, mem)
+    if mem.get('castle_verified') == step:
+        return None
+    m = CASTLE_STATUS.search(screen.text)
+    if m is None:
+        move = menu_to(screen, 'ステータス')
+        if move is None:
+            return None                   # unreadable menu: the old path holds with evidence
+        return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
+                             '出撃前に城のステータスで城名を確認')
+    name = m.group(1)
+    if name == source or STATUS_NAMES.get(source) == name:
+        mem['castle_verified'] = step
+        return [pad('b')]
+    cells = chart.castles(mem.get('chapter') or 0)
+    label = next((k for k, v in STATUS_NAMES.items() if v == name and k in cells), name)
+    if label in cells:
+        mem['cursor'], mem['uncertain'] = list(cells[label]), False    # we know where we are now
+    misses = mem.setdefault('source_miss', {})
+    misses[step] = misses.get(step, 0) + 1
+    _record(mem, 'source_castle_mismatch', chart_step=step, source=source,
+            observed_metric={'castle': name, 'misses': misses[step]},
+            reason=f'出撃元{source}のつもりで開いた城が{name}だったため出撃せず現在地を直して向かい直す')
+    return [pad('b'), {'type': 'wait', 'ms': 500}, pad('b')]
+
+
+LAST_CASTLE_HOLD_TICKS = 300   # observations before the last castle's list is read again
+
+
+def _staffed_elsewhere(mem, source) -> bool:
+    """Another castle of ours is known to hold a general who is not marching.
+
+    A castle whose list was never read (or was cleared by a recruit) is not
+    counted: the guard below errs towards keeping someone home.
+    """
+    busy, _ = _en_route(mem)
+    garrison = mem.get('garrison') or {}
+    owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
+    return any(c != source and any(g not in busy for g in garrison.get(c) or ()) for c in owned)
+
+
+def _keep_last_castle(screen, mem, order):
+    """Never send out the last general standing in any castle of ours.
+
+    g421 18:55: フーリック had fallen, アルマムーン was our only castle and どうし
+    its only general; he was sent to ドミノーラ, the empty castle was taken at
+    18:57 and with no castle left the game ended (title, game_over). The
+    isolated probe then showed the same with two castles: エシャロット left
+    アルマムーン and ゼウス left フーリック, both empty at once. A sortie whose
+    list shows one general, while no other castle of ours is known to keep
+    one, is cancelled and waits (bounded) for another general. ``None`` lets
+    the sortie go on.
+    """
+    if _is_boss_order(order, mem) or order.get('purpose') == 'move':
+        return None                        # the boss battle ends the chapter; a move keeps one (_move_general_pick)
+    source = _source(order, mem)
+    present = _present_generals(screen)
+    if (present is None or len(present) != 1 or source not in _owned(mem)
+            or not _few_castles(mem) or _staffed_elsewhere(mem, source)):
+        return None
+    mem['last_castle_hold'] = {'castle': source, 'tick': int(mem.get('tick') or 0)}
+    mem['orders'][order['step']] = 'pending'
+    mem['active'] = None
+    mem['picked'] = []
+    _record(mem, 'sortie_held_last_castle', chart_step=order['step'], source=source,
+            observed_metric=present[:4],
+            reason=f'{source}の将軍が{len(present)}人で他の自軍城に待機将軍がいないため、全城を空にして落城・ゲームオーバーにならないよう出撃しない')
+    return [pad('b'), {'type': 'wait', 'ms': 300}, pad('b')]
+
+
+LAST_CASTLE_GUARD_OWNED = 2   # the guard only matters while so few castles remain
+
+
+def _few_castles(mem) -> bool:
+    """Owner (2026-09-29): with six castles the guard only cancelled the chart's
+    hero sortie to スペンソニア on stream; a total loss (game over) is a risk
+    only when one or two castles are left (g436 18:57: the last one fell)."""
+    owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
+    return len(owned) <= LAST_CASTLE_GUARD_OWNED
+
+
+def _last_castle_held(mem, order) -> bool:
+    hold = mem.get('last_castle_hold') or {}
+    source = _source(order, mem)
+    return (not _is_boss_order(order, mem) and order.get('purpose') != 'move' and hold.get('castle') == source
+            and _few_castles(mem) and not _staffed_elsewhere(mem, source)
+            and int(mem.get('tick') or 0) - int(hold.get('tick') or 0) < LAST_CASTLE_HOLD_TICKS)
+
+
+def _hold_guarded_sortie(mem, order, decision, reason, observed):
+    mem.setdefault('orders', {})[order['step']] = (
+        'failed' if order['step'].startswith('I:') else 'pending')
+    mem['active'] = None
+    mem['picked'] = []
+    mem.setdefault('sortie_general', {}).pop(order['step'], None)
+    mem.setdefault('order_context', {}).pop(order['step'], None)
+    _record(mem, decision, chart_step=order['step'], source=_source(order, mem),
+            target=order['target'], observed_metric=observed, reason=reason)
+    return [pad('b'), pad('b')]
+
+
+def _keep_sortie_defender(screen, mem, order):
+    if not _reserve_source_guard(order, mem):
+        return None
+    present = _present_generals(screen)
+    if present is None:
+        return _hold_deploy(screen, mem, order, '守備を残せる将軍一覧を読めないため出撃を保留')
+    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    available = set(present) - unavailable
+    if len(available) >= 2:
+        return None
+    return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',
+        '奪還・暫定攻撃の出撃元に待機将軍を1人残せないため出撃を取り消す',
+        {'present': present[:8], 'available': sorted(available)})
+
+
 def deploy_step(screen: Screen, mem):
     order = _order(mem)
     kind = screen.kind
     if order is None:
         # Menus we did not open (e.g. confirm pressed by an earlier fallback).
         return [pad('b')]
+    if _broken_hero_order(order, mem):
+        return _cancel_broken_hero_sortie(mem, order)
+    if _retake_reserved(order, mem):
+        return _hold_guarded_sortie(mem, order, 'sortie_held_target_reserved',
+            '同じ奪還先へ向かう部隊が既にいるため重複出撃を取り消す',
+            {'target': order['target']})
+    if kind != 'general_list' and _source_spare_missing(order, mem):
+        return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',
+            '出撃元の記録で待機将軍を1人残せないため出撃を取り消す',
+            {'present': (mem.get('garrison') or {}).get(_source(order, mem))})
     if kind == 'castle_menu':
+        checked = _check_source_castle(screen, mem, order)
+        if checked is not None:
+            return checked
         (mem.get('source_miss') or {}).pop(order['step'], None)
         move = menu_to(screen, 'しゅつげき')
         if move is None:
@@ -2098,6 +2852,12 @@ def deploy_step(screen: Screen, mem):
         _observe_garrison(screen, mem, order)
         if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
             return _verify_sortie_source(screen, mem, order)
+        guard = _keep_sortie_defender(screen, mem, order)
+        if guard is not None:
+            return guard
+        guard = _keep_last_castle(screen, mem, order)
+        if guard is not None:
+            return guard
         if order.get('purpose') == 'move':
             return _move_general_pick(screen, mem, order)
         if _is_boss_order(order, mem):
@@ -2172,6 +2932,18 @@ def deploy_step(screen: Screen, mem):
                           reason='チャートの将軍が出撃元の城にいない')
             return [pad('b')]
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move], '出撃将軍を選択')
+    if kind in {'card_select', 'sortie_confirm'} and _boss_egg_depleted(order, mem):
+        # observe_events reads the egg row before this decision. Cancel a
+        # sortie that was chosen while its quantity was still unknown.
+        mem.setdefault('orders', {})[order['step']] = 'pending'
+        mem['active'] = None
+        mem['picked'] = []
+        mem.setdefault('order_context', {}).pop(order['step'], None)
+        _record(mem, 'boss_sortie_cancelled_for_egg', chart_step=order['step'],
+                observed_metric={'general': NAME, 'egg_uses': mem['egg_uses'][NAME],
+                                 'screen': kind}, expected_metric={'egg_uses': 4},
+                reason='出撃画面で主人公の卵の消耗を確認したため、ボス出撃を取り消して回復を待つ')
+        return [pad('b'), pad('b')]
     if kind in {'card_select', 'sortie_confirm'} and _is_boss_order(order, mem):
         mem.setdefault('order_context', {}).pop(order['step'], None)
         if (mem.get('sortie_general') or {}).get(order['step']) != order['general']:
@@ -2186,8 +2958,26 @@ def deploy_step(screen: Screen, mem):
         card = wanted[0] if wanted else None
         inventory = _measured_card_select(screen)
         if inventory is None:
+            if not _strict_boss_cards(order, mem):
+                # An unreadable panel must not hold the sortie forever (g454
+                # 10:02: an unknown card name stalled シェーブル's sortie). The
+                # base boss kit keeps its strict hold.
+                misses = mem.setdefault('card_unreadable', {})
+                misses[order['step']] = misses.get(order['step'], 0) + 1
+                if misses[order['step']] >= CARD_UNREADABLE_LIMIT:
+                    misses.pop(order['step'], None)
+                    _finish_order(mem, 'failed', deviation_reason='切り札一覧を実測構造として読めない',
+                                  observed_metric={'screen': screen.kind,
+                                                   'readings': CARD_UNREADABLE_LIMIT},
+                                  reason='切り札一覧を読み取れないため出撃を取り消して次の指示へ進む')
+                    return [pad('b'), pad('b')]
             return _hold_deploy(screen, mem, order,
                                 '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
+        mem.get('card_unreadable', {}).pop(order['step'], None)
+        _observe_card_stock(mem, inventory)
+        rare_actions = _rare_card_inventory(screen, mem, order, inventory)
+        if rare_actions is not None:
+            return rare_actions
         if not wanted:
             return _deploy_input(screen, mem, order, [pad('b')], '予定切り札の選択入力後に携行確認へ進む')
         # Pick what is on screen first: a full 4-row panel scrolls, and a card
@@ -2196,16 +2986,19 @@ def deploy_step(screen: Screen, mem):
         card = next((c for c in wanted if c in shown), card)
         row = next((row for row in inventory['rows'] if row['card'] == card), None)
         if (row is None and len(inventory['rows']) == 4 and inventory['remaining'] > 0
-                and int((mem.get('card_scroll') or {}).get(order['step'], 0)) < CARD_SCROLL_LIMIT):
+                and int((mem.get('card_scroll') or {}).get(order['step'], 0)) < (RARE_SCAN_LIMIT if (mem.get('rare_card_kit') or {}).get(order['step'])
+                   else CARD_SCROLL_LIMIT)):
             scrolls = mem.setdefault('card_scroll', {})
             scrolls[order['step']] = scrolls.get(order['step'], 0) + 1
             _record(mem, 'card_scroll', **_deploy_context(order, mem), card=card,
                     observed_metric={'rows': [[r['card'], r['stock']] for r in inventory['rows']],
                                      'selected_y': inventory['selected_y'], 'scrolls': scrolls[order['step']]},
                     reason='予定切り札が一覧に見えないため下へ送って隠れた行を表示する')
-            return [pad('down')]
+            direction = ('up' if CARD_IDS.get(card, 99) <
+                         min(CARD_IDS[r['card']] for r in inventory['rows']) else 'down')
+            return [pad(direction)]
         if row is None or row['stock'] == 0 or inventory['remaining'] == 0:
-            if not _is_boss_order(order, mem):
+            if not _strict_boss_cards(order, mem):
                 dropped = _drop_card(screen, mem, order, card, inventory)
                 if dropped is not None:
                     return dropped
@@ -2243,8 +3036,28 @@ def deploy_step(screen: Screen, mem):
         want = sorted(_deploy_cards(order, mem))
         got = sorted(carried) if carried is not None else None
         if ambiguous or got != want:
-            return _hold_deploy(screen, mem, order,
-                                '携行切り札の読取が不確実または計画と不一致のため出撃承認を保留', carried=carried)
+            misses = mem.setdefault('sortie_confirm_miss', {})
+            misses[order['step']] = misses.get(order['step'], 0) + 1
+            if (not _strict_boss_cards(order, mem)
+                    and misses[order['step']] >= SORTIE_CONFIRM_LIMIT):
+                if carried is None:
+                    misses.pop(order['step'], None)
+                    _finish_order(mem, 'failed', deviation_reason='出撃確認の携行札を読めない',
+                                  observed_metric={'carried': None},
+                                  reason='出撃確認を読み取れないため出撃を取り消して次の指示へ進む')
+                    return [pad('b'), pad('b')]
+                if misses[order['step']] == SORTIE_CONFIRM_LIMIT:
+                    # A readable panel is the truth: approve the shown kit.
+                    _record(mem, 'sortie_kit_mismatch',
+                            **_deploy_context(order, mem, expected_metric=want),
+                            carried=carried,
+                            observed_metric={'carried': carried, 'planned': want},
+                            reason='読み取れた携行札を実際の携行として出撃を承認（計画と不一致）')
+            else:
+                return _hold_deploy(screen, mem, order,
+                                    '携行切り札の読取が不確実または計画と不一致のため出撃承認を保留', carried=carried)
+        else:
+            mem.get('sortie_confirm_miss', {}).pop(order['step'], None)
         move = menu_to(screen, 'うむッ!')
         if move is None:
             return _hold_deploy(screen, mem, order, '出撃確認カーソルまたは承認項目を読めないため保留', carried=carried)
@@ -2310,6 +3123,50 @@ def _bind_sortie(mem, step, castle):
         sortie.update(status='arrived', target=castle)
 
 
+def _sortie_step_for(mem, general, castle):
+    """The newest sortie of this general already bound to this castle.
+
+    An ambiguous boss entry (g460 17:32: the base 1-B1 and the adjusted
+    A:bd2304e3:K1 were both still marching on けっかい) must not bind an order
+    id that was never read. The battle still has to fight with the kit of the
+    sortie that is actually out there: with an unknown step every charted
+    tactic is filtered out and the hero swings bare-handed (g460 17:32:
+    planned_cards=[] -> ally HP 88..0 -> 17:35 game over)."""
+    if not general or not castle:
+        return None
+    march = [(sortie.get('tick') or 0, step)
+             for step, sortie in (mem.get('sorties') or {}).items()
+             if sortie.get('general') == general
+             and sortie.get('target') == castle
+             and sortie.get('status') in ('en_route', 'arrived')]
+    return max(march)[1] if march else None
+
+
+ENTRY_RETURN_KINDS = frozenset({'main_menu', 'castle_info', 'castle_menu',
+    'general_list', 'card_select', 'sortie_confirm', 'month_menu', 'shop_list',
+    'shop_quantity_prompt', 'shop_quantity', 'shop_exit_confirm', 'discharge_menu'})
+
+
+def observe_entry_return(screen, mem):
+    """A measured management menu ends an entry that never reached combat.
+
+    A field/map frame can flash before combat, so it is not a receipt. Keep
+    active battles and their pending first panel until battle_end finishes.
+    Never manufacture a loss, death, or castle owner from a skipped entry.
+    """
+    entry = mem.get('attack')
+    if not isinstance(entry, dict) or not entry or mem.get('battle'):
+        return
+    if screen.kind not in ENTRY_RETURN_KINDS:
+        return
+    _record(mem, 'battle_entry_expired', castle=entry.get('castle'),
+            side=entry.get('side'), general=entry.get('general'), screen=screen.kind,
+            resulting_event='unclassified_entry_closed',
+            reason='戦闘未開始のまま管理画面へ戻ったため古い城情報を解除')
+    mem['attack'] = None
+    mem.pop('battle_seen', None)
+
+
 def _battle_context(mem, ally):
     """Only a matching attack message establishes a battle location and side."""
     attack = mem.get('attack') or {}
@@ -2318,11 +3175,15 @@ def _battle_context(mem, ally):
         side = attack.get('side')
         if side == 'attack' and attack.get('castle') in captured:
             side = 'defense'          # a battle at a castle we hold is not a capture attempt
-        return {'castle': attack.get('castle'), 'side': side, 'step': attack.get('step'),
+        step = attack.get('step')
+        if step is None and side == 'attack':
+            step = _sortie_step_for(mem, ally, attack.get('castle'))
+        return {'castle': attack.get('castle'), 'side': side, 'step': step,
                 'entry_evidence': attack.get('entry_evidence')}
     captured = set(mem.get('captured', []))
     en_route = [step for step, sortie in (mem.get('sorties') or {}).items()
-                if sortie.get('general') == ally and sortie.get('status') in ('en_route', 'arrived')
+                if sortie.get('general') == ally
+                and sortie.get('status') in ('en_route', 'arrived', 'launched_unconfirmed')
                 and sortie.get('target') not in captured]
     if len(en_route) == 1:
         return {'castle': None, 'side': None, 'step': en_route[0],
@@ -2334,6 +3195,21 @@ def _battle_context(mem, ally):
             return {'castle': None, 'side': None, 'step': info.get('step'),
                     'context': 'unclassified_location'}
     return {'castle': None, 'side': None, 'step': None, 'context': 'unclassified'}
+
+
+def _boss_tactics_allowed(mem, cur):
+    """Gate carried boss cards on entry text or a measured chapter-boss name.
+
+    A boss dialogue may hide/skip the entry message (g484: Venus vs Queen).
+    Reading the boss in the battle panel authorizes its carried tactics, but
+    does not establish castle ownership, arrival, or a retry context.
+    """
+    if cur.get('entry_evidence') == 'measured_boss_entry':
+        return True
+    chapter = mem.get('chapter')
+    boss = chart.BOSSES.get(chapter)
+    return bool(boss and cur.get('enemy') == boss
+                and _is_boss_order(_order_for_step(mem, cur.get('step')), mem))
 
 
 def _battle_labels(cur):
@@ -2401,8 +3277,40 @@ def _migrate_card_evidence(mem):
 def _card_use_unclassified(mem, cur, reason):
     flow = cur.get('card_flow') or {}
     card = flow.get('card')
+    selected = (flow.get('selection_planned') is True
+                or (flow.get('stage') == 'announce'
+                    and card in cur.get('cards_selected', [])))
+    if not selected:
+        # g496: the B/menu opening expired before any list selection, but the
+        # old path consumed an イッテツーン and counted it for after_card.
+        # Preserve the carried kit and retry only this tactic, boundedly.
+        tid = flow.get('tactic_id')
+        done = cur.get('tactics_done', [])
+        if tid is None and card:
+            matches = [item for item in done if item.endswith(':' + card)]
+            if len(matches) == 1:
+                tid = matches[0]  # a flow opened by the previous bot version
+        failures = cur.setdefault('card_open_failures', {})
+        count = int(failures.get(tid, 0)) + 1 if tid else CARD_OPEN_ATTEMPTS
+        if tid:
+            failures[tid] = count
+            if count < CARD_OPEN_ATTEMPTS and tid in done:
+                done.remove(tid)
+        _record(mem, 'battle_card_open_unclassified', **_battle_labels(cur), card=card,
+                expected_metric='実メニューと札一覧の選択',
+                observed_metric={'selection_planned': False, 'attempts': count,
+                                 'retry_allowed': bool(tid and count < CARD_OPEN_ATTEMPTS)},
+                reason='札の選択前に操作が戻ったため携行札を差し引かず、有限回だけ再試行')
+        cur['card_flow'] = None
+        return
     if card:
         cur.setdefault('cards_unclassified', []).append(card)
+        # A selected card with no calibrated receipt still leaves the kit for
+        # this sortie: re-planning it would open an empty list next battle.
+        step = cur.get('step')
+        if step:
+            spent = mem.setdefault('kit_spent', {}).setdefault(step, [])
+            spent.append(card)
     cur['card_consumption_complete'] = False
     if not cur.get('deviation_reason'):
         cur['strategy_variant'] = 'card_use_unclassified'
@@ -2413,14 +3321,102 @@ def _card_use_unclassified(mem, cur, reason):
     cur['card_flow'] = None
 
 
+def reset_battle_controls(mem):
+    """Discard controls belonging to the previous combatant."""
+    mem['egg_battle'] = False
+    mem.pop('battle_menu_pending_ticks', None)
+    for key in ('egg_action', 'egg_key', 'egg_menu_stage', 'egg_battle_row_dead',
+                'egg_retreat_tried', 'egg_retreat_flow', 'egg_choice', 'egg_row_dead',
+                'indep_menu', 'indep_menu_key', 'indep_menu_action',
+                'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
+                'monster_menu_choice', 'monster_menu_choice_key', 'monster_panel'):
+        mem.pop(key, None)
+
+
+def _defender_successor(mem, cur, b):
+    """Two stable living-general panels can continue a known castle defense."""
+    maximum = general_max_hp('しゅじんこう' if b.ally == NAME else b.ally)
+    eligible = (cur.get('side') == 'defense' and bool(cur.get('castle'))
+                and cur.get('ally_hp') == 0 and (cur.get('enemy_hp') or 0) > 0
+                and b.enemy == cur.get('enemy') and b.ally != cur.get('ally')
+                and maximum is not None and 0 < b.ally_hp <= maximum and b.enemy_hp > 0)
+    reading = [b.enemy, b.ally]
+    if not eligible:
+        cur.pop('successor_seen', None)
+        return False
+    if cur.get('successor_seen') != reading:
+        cur['successor_seen'] = reading
+        return False
+    context = {'castle': cur['castle'], 'side': 'defense', 'step': None,
+               'entry_evidence': cur.get('entry_evidence')}
+    predecessor = cur['ally']
+    battle_end(mem, 'defender_successor', defense_continues=True)
+    reset_battle_controls(mem)
+    mem['attack'] = context
+    mem['battle_seen'] = reading
+    _record(mem, 'defender_successor', ally=b.ally, enemy=b.enemy,
+            castle=context['castle'], previous_ally=predecessor,
+            observed_metric={'ally_hp': b.ally_hp, 'enemy_hp': b.enemy_hp},
+            reason='同じ敵と戦う次の守備将軍を連続した完全パネルで確認')
+    return True
+
+
+def _entered_battle_successor(mem, cur, b):
+    """A measured new entry and two complete panels release a finished win.
+
+    g510: only one attack-entry frame separated Gasupacho/Cinnamon from
+    the hero/Venus. The old zero-enemy-HP record then blocked every input.
+    Never infer a transition from changed names alone or from a living enemy.
+    """
+    entry = mem.get('attack')
+    maximum = general_max_hp('しゅじんこう' if b.ally == NAME else b.ally)
+    eligible = (isinstance(entry, dict) and entry.get('side') == 'attack'
+                and entry.get('general') == b.ally and b.ally != cur.get('ally')
+                and entry.get('castle') in chart.castles(mem.get('chapter') or 0)
+                and type(cur.get('enemy_hp')) is int and cur['enemy_hp'] == 0
+                and type(cur.get('ally_hp')) is int and cur['ally_hp'] > 0
+                and type(cur.get('away')) is int and cur['away'] >= 1
+                and maximum is not None and 0 < b.ally_hp <= maximum and b.enemy_hp > 0)
+    reading = [b.enemy, b.ally]
+    if not eligible:
+        cur.pop('entry_successor_seen', None)
+        return False
+    if cur.get('entry_successor_seen') != reading:
+        cur['entry_successor_seen'] = reading
+        return False
+    context = dict(entry)
+    previous_ally, previous_enemy = cur['ally'], cur['enemy']
+    battle_end(mem, 'confirmed_new_entry')
+    reset_battle_controls(mem)
+    mem['attack'] = context
+    mem['battle_seen'] = reading
+    _record(mem, 'battle_entry_successor', ally=b.ally, enemy=b.enemy,
+            castle=context['castle'], previous_ally=previous_ally, previous_enemy=previous_enemy,
+            observed_metric={'ally_hp': b.ally_hp, 'enemy_hp': b.enemy_hp},
+            reason='前戦の敵HP0・新しい突入記録・連続した完全パネルから次の戦闘へ移行')
+    return True
+
+
 def battle_step(screen: Screen, mem):
     b = screen.battle
     if (b is None or not b.enemy or not b.ally or UNKNOWN in b.enemy or UNKNOWN in b.ally
             or any(type(hp) is not int or hp < 0 for hp in (b.enemy_hp, b.ally_hp))):
         mem['battle_seen'] = None
+        if mem.get('battle'):
+            mem['battle'].pop('successor_seen', None)
+            mem['battle'].pop('entry_successor_seen', None)
         return []  # partial panel must not replace the last clear HP/context
     _migrate_card_evidence(mem)
     cur = mem.get('battle')
+    if cur:
+        cur.pop('defeat_owner', None)  # a later complete combat panel invalidates the post-combat flag
+    if cur and (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
+        if not (_entered_battle_successor(mem, cur, b) or _defender_successor(mem, cur, b)):
+            return []
+        cur = None
+    elif cur:
+        cur.pop('successor_seen', None)
+        cur.pop('entry_successor_seen', None)
     if cur is None:
         # Fades dim the panel and can drop dakuten; open a battle record only
         # after two consecutive identical readings of both names.
@@ -2429,16 +3425,37 @@ def battle_step(screen: Screen, mem):
             mem['battle_seen'] = reading
             return []
         mem['battle_seen'] = None
+        # The panel's opponent is a chapter fact: a general whose debut
+        # chapter is later than ours proves the game advanced (g454: ピオーネ/
+        # ヘラ after the chapter 1 boss). This resets the chapter state, so it
+        # runs before the new battle record is built.
+        observe_chapter_general(mem, b.enemy)
         context = _battle_context(mem, b.ally)
         cur = mem['battle'] = {'enemy': b.enemy, 'ally': b.ally, 'start_enemy_hp': b.enemy_hp,
                                'start_ally_hp': b.ally_hp, 'cards_used': [], 'plan': None,
                                'cards_selected': [], 'cards_missing': [], 'cards_unclassified': [],
                                'card_consumption_complete': True, 'card_evidence_version': 1,
                                **context}
+        if b.ally == NAME and type(b.ally_hp) is int:
+            # The hero's full strength, remembered across battles: a hero who
+            # starts a fight already weak never looks "far down" against his
+            # own start HP (g436 23:17: 14 HP after a road battle, then died).
+            mem['hero_max_hp'] = max(int(mem.get('hero_max_hp') or 0), b.ally_hp)
+            cur['ref_ally_hp'] = mem['hero_max_hp']
         _bind_battle_strategy(mem, cur)
+        if cur.get('step') and not (mem.get('attack') or {}).get('step'):
+            # The order id stayed unknown (ambiguous entry): only the marching
+            # sortie's kit is bound, and the record says so.
+            _record(mem, 'battle_step_resolved', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
+                    castle=cur.get('castle'), side=cur.get('side'),
+                    observed_metric={'sortie_step': cur['step']},
+                    reason='出撃注文を特定できない突入のため、同じ将軍の進軍中出撃の携行札だけを結び付け')
         planned = [t['card'] for t in _tactics(mem, cur['step'])
-                   if t['enemy'] in (None, b.enemy) and t.get('step') in (None, cur['step'])]
+                   if t['enemy'] in (None, b.enemy) and t.get('step') in (None, cur['step'])
+                   and not (t.get('boss_only')
+                            and not _boss_tactics_allowed(mem, cur))]
         planned += list(mem.get('card_override', {}).get(cur['step']) or [])
+        cur['planned_cards'] = list(planned)
         _record(mem, 'battle_start', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
                 expected_metric=cur['strategy_expected'],
                 observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
@@ -2452,41 +3469,109 @@ def battle_step(screen: Screen, mem):
     cur['enemy_hp'], cur['ally_hp'] = b.enemy_hp, b.ally_hp
     if b.enemy_hp is not None and cur.get('start_enemy_hp') is not None and b.enemy_hp < cur['start_enemy_hp']:
         cur['clashed'] = True
+    if (_boss_tactics_allowed(mem, cur) and type(b.ally_hp) is int
+            and type(cur.get('start_ally_hp')) is int and b.ally_hp < cur['start_ally_hp']):
+        # The first clash can hurt only our general (g506 Queen 70 stays
+        # unchanged while hero 66->55). Do not wait for an enemy HP drop
+        # before starting the carried post-clash boss sequence.
+        cur['clashed'] = True
     if b.enemy_hp == 0 or b.ally_hp == 0:
+        if (cur.get('card_flow') or {}).get('stage') == 'menu':
+            # A panel at zero is the end of the fight: drop the opening card
+            # that has not reached the command menu yet instead of pushing B
+            # after a resolution the chart cannot follow up on.
+            cur['card_flow'] = None
         return []
     retreat = _hero_retreat_open(mem, cur)
     if retreat is not None:
         return retreat
     if cur.get('card_flow'):
         flow = cur['card_flow']
-        flow['battle_frames_without_receipt'] = flow.get('battle_frames_without_receipt', 0) + 1
-        if flow['battle_frames_without_receipt'] >= 2:
-            _card_use_unclassified(mem, cur, '実使用告知を確認できないまま白兵戦へ復帰')
-        return []
+        opening_hp = flow.get('enemy_hp_at_open')
+        # g484: Queen 68->34 after selected クースカン, but two idle
+        # observations before reopening B let the Queen summon. A measured
+        # HP drop after selection is enough to continue an existing chain;
+        # the uncalibrated consumption receipt remains unclassified.
+        fast_chain = (flow.get('stage') == 'announce'
+                      and flow.get('card') in cur.get('cards_selected', [])
+                      and type(opening_hp) is int and type(b.enemy_hp) is int
+                      and b.enemy_hp < opening_hp
+                      and _boss_tactics_allowed(mem, cur)
+                      and any(t.get('after_card') == flow.get('card')
+                              and t.get('enemy') in (None, b.enemy)
+                              and t.get('step') in (None, cur.get('step'))
+                              for t in _tactics(mem, cur.get('step'))))
+        if fast_chain:
+            _card_use_unclassified(mem, cur, '選択後の敵HP低下と白兵復帰を実測したため、使用告知は未確認のまま後続札へ進む')
+        else:
+            flow['battle_frames_without_receipt'] = flow.get('battle_frames_without_receipt', 0) + 1
+            waited = flow['battle_frames_without_receipt']
+            opening = flow.get('stage') == 'menu'
+            if opening and waited <= CARD_MENU_OPEN_RETRIES:
+                return [pad('b')]
+            if waited >= (CARD_MENU_OPEN_RETRIES + 1 if opening else 2):
+                _card_use_unclassified(mem, cur, '実使用告知を確認できないまま白兵戦へ復帰')
+            return []
     extra = [{'enemy': b.enemy, 'card': card, 'open': True, 'step': cur.get('step'),
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
-             for card in mem.get('card_override', {}).get(cur.get('step')) or []]
+             for card in ([] if (mem.get('rare_card_kit') or {}).get(cur.get('step')) is not None
+                          else mem.get('card_override', {}).get(cur.get('step')) or [])]
+    tactics = [*extra, *_tactics(mem, cur.get('step'))]
     done = cur.setdefault('tactics_done', [])
-    for index, tactic in enumerate([*extra, *_tactics(mem, cur.get('step'))]):
-        tid = f"{'x' if index < len(extra) else 'c'}{index}:{tactic['card']}"
+    for index, tactic in enumerate(tactics):
+        tid = tactic.get('tactic_id') or f"{'x' if index < len(extra) else 'c'}{index}:{tactic['card']}"
         if tactic['enemy'] not in (None, b.enemy) or tid in done:
             continue
         if tactic.get('step') and tactic['step'] != cur.get('step'):
             continue
+        if (tactic.get('boss_only')
+                and not _boss_tactics_allowed(mem, cur)):
+            continue          # do not spend the boss kit in an unmeasured road fight
+        # No calibrated use receipt exists, so a selected-then-unclassified card
+        # is the best evidence there is. Without chaining on it the charted boss
+        # strategy never fires its second card (1-B1: クースカン→ノリウツール)
+        # and the queen summons. The chain is recorded as a deviation.
+        attempted = [*cur['cards_used'], *[card for card in (cur.get('cards_unclassified') or [])
+                                          if card in cur.get('cards_selected', [])]]
         due = (tactic.get('open')
                or (tactic.get('when_hp_at_most') is not None and b.enemy_hp is not None
                    and b.enemy_hp <= tactic['when_hp_at_most'])
                or (tactic.get('after_clash') and cur.get('clashed'))
-               or (tactic.get('after_card') and tactic['after_card'] in cur['cards_used']))
+               or (tactic.get('after_card') and tactic['after_card'] in attempted))
         if due:
             done.append(tid)
-            cur['card_flow'] = {'card': tactic['card'], 'stage': 'menu', 'note': tactic['note']}
+            chained_unconfirmed = (tactic.get('after_card')
+                                   and tactic['after_card'] not in cur['cards_used']
+                                   and tactic['after_card'] in (cur.get('cards_unclassified') or []))
+            note = tactic['note']
+            if chained_unconfirmed:
+                note = f"{note}（前札の実使用告知は未校正のため選択記録で連続使用）"
+                if not cur.get('deviation_reason'):
+                    cur['strategy_variant'] = 'after_card_unconfirmed'
+                    cur['deviation_reason'] = '前の切り札の実使用告知が未校正のため、選択記録を根拠に連続使用を継続'
+            cur['card_flow'] = {'card': tactic['card'], 'stage': 'menu', 'note': note,
+                                'enemy_hp_at_open': b.enemy_hp, 'tactic_id': tid}
             _record(mem, 'battle_card', **_battle_labels(cur), card=tactic['card'], enemy=b.enemy,
-                    enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, reason=tactic['note'],
+                    enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, reason=note,
                     expected_metric='選択後の実使用告知と敵HP減少',
                     observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
                     resulting_event='card_planned')
             return [pad('b')]
+    if (_defender_last_resort(mem, cur)
+            and not cur.get('okunote_last_resort_reopened')
+            and not cur.get('okunote_last_resort_recorded')
+            and (cur.get('survival') or {}).get('exhausted')):
+        # An earlier healthy menu may have rejected the lottery. Recheck the
+        # live menu once when later complete HP panels prove losing melee.
+        cur['okunote_last_resort_reopened'] = True
+        rescue = _survival_state(mem, cur)
+        rescue['exhausted'] = False
+        rescue['pending_opens'] = 0
+        rescue['menu_ticks'] = 0
+        _record(mem, 'battle_okunote_recheck', **_battle_labels(cur),
+                observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp']},
+                reason='先の使用不能メニューを確認後、押し負けが実測されたため一度だけ再確認')
+        return [pad('b')]
     if _survival_needed(cur):
         rescue = _survival_state(mem, cur)
         if (not rescue.get('exhausted') and rescue['opens'] < 12
@@ -2498,11 +3583,40 @@ def battle_step(screen: Screen, mem):
     return _melee_step(mem, cur)
 
 
+CARD_OPEN_ATTEMPTS = 2        # initial chart opening plus one bounded retry
+CARD_MENU_OPEN_RETRIES = 4    # B repeats while the command menu has not opened yet
+MELEE_HOLD_LIMIT = 8          # egg-safe holds in one fight before melee proceeds
+
+
+def _charted_melee(mem, cur) -> bool:
+    """The chart needs this fight's melee to progress toward a card.
+
+    Holding input under the clash egg risk never reaches ``after_clash`` or
+    the HP gate of a ``when_hp_at_most`` card (g454 08:19: the queen battle
+    held, どうし fell to 43 and the rescue used its own egg -> ヒュドラ; g456
+    14:13: どうし 90 vs ガルバンゾー 30 held until the フットバース gate at
+    enemy HP 24 was unreachable, and the hero died).
+    """
+    return any((t.get('after_clash') or t.get('when_hp_at_most') is not None)
+               and t.get('enemy') in (None, cur.get('enemy'))
+               and t.get('step') in (None, cur.get('step'))
+               for t in _tactics(mem, cur.get('step')))
+
+
 def _melee_step(mem, cur):
     side = cur.get('side')
     defense = True if side == 'defense' else False if side == 'attack' else None
     triggers = enemy_egg_triggers(cur.get('enemy'), player_castle_defense=defense)
-    safe = triggers.has_egg is False or triggers.clash_position is False
+    charted = _charted_melee(mem, cur)
+    holds = int(cur.get('melee_holds') or 0)
+    forced = bool(cur.get('melee_forced')) or holds >= MELEE_HOLD_LIMIT
+    # An unbounded hold is a passive death: after the bound the melee proceeds
+    # for the rest of the fight even at the clash egg risk (the rescue already
+    # had its chances).
+    safe = (triggers.has_egg is False or triggers.clash_position is False
+            or charted or forced)
+    cur['melee_forced'] = forced
+    cur['melee_holds'] = 0 if safe else holds + 1
     mode = 'power_mash' if safe else 'egg_safe_hold'
     actions = _power_mash(mem, cur) if safe else []
     # Per returned action batch, not just the first use in a fight. These are
@@ -2511,7 +3625,10 @@ def _melee_step(mem, cur):
             enemy=cur.get('enemy'), enemy_hp=cur.get('enemy_hp'), ally_hp=cur.get('ally_hp'),
             egg_risk_flags=asdict(triggers), melee_control_mode=mode,
             a_frames_sent=POWER_TAPS * 3 if safe else 0,
-            reason='卵の激突判定なし' if safe else '卵の激突リスクあり・戦線位置未校正のため入力保留')
+            reason=('チャートのぶつかり合いに向けて押し込む' if charted
+                    else '卵の激突リスクの保留上限に達したため押し込む' if forced
+                    else '卵の激突判定なし' if safe
+                    else '卵の激突リスクあり・戦線位置未校正のため入力保留'))
     return actions
 
 
@@ -2545,13 +3662,69 @@ def _behind(cur: dict) -> bool:
 # Only non-sacrificial cards are eligible for automatic survival use. Rank
 # healing first, then control/damage; this is not a guaranteed damage model.
 # Effects: https://gcgx.games/hanjuku/kirihuda.html
-SURVIVAL_CARDS = ('エンジェリン', 'ミックミー', 'マグネガキン', 'クースカン',
+SURVIVAL_CARDS = ('エンジェリン', 'キャトルミュー', 'ミックミー', 'マグネガキン', 'クースカン',
                   'グリンボー', 'ゼンマイン', 'ブラッキー', 'ファイアーボイス',
                   'ハリケーン', 'ブンシーン', 'ピッグローラー', 'イッテツーン',
                   'カンケリン', 'フットバース', 'ダイチスイム', 'ノリウツール')
 
 
+def _egg_drop_evidence(cur, card):
+    """This battle's 卵落 fit for ``card``, or None when max HP is unknown.
+
+    gcgx: a card drops the enemy egg when its 卵落 exceeds the two generals'
+    *max* HP sum mod 16. A wounded battle reading is not max HP, so the
+    comparison uses the fixed char.csv HP (hero: the remembered full-strength
+    ``ref_ally_hp``) and fails closed to the fixed priority when the general
+    is unknown.
+    """
+    ally_max = cur.get('ref_ally_hp')
+    if type(ally_max) is not int or ally_max <= 0:
+        ally_name = 'しゅじんこう' if cur.get('ally') == NAME else cur.get('ally')
+        ally_max = general_max_hp(ally_name)
+    enemy_max = general_max_hp(cur.get('enemy'))
+    value = reference.egg_drop_value(card)
+    if value is None or any(type(n) is not int or n <= 0 for n in (enemy_max, ally_max)):
+        return None
+    total = enemy_max + ally_max
+    return {'value': value, 'threshold': reference.egg_drop_threshold(total),
+            'max_hp_sum': total, 'drops': reference.can_drop_egg(card, total)}
+
+
+def _rescue_card(candidates, cur):
+    """The rescue card: a visible heal first, else the best egg dropper.
+
+    ``SURVIVAL_CARDS`` stays the damage/control fallback. A card that would
+    drop this battle's egg goes before it: the enemy summon is what a
+    low-HP rescue is usually racing. HPs are the battle's start readings
+    (the hero's remembered full strength); without them the fixed order stands.
+    """
+    if not candidates:
+        return None
+    if 'エンジェリン' in candidates:
+        return 'エンジェリン'                     # heal always goes first
+    if 'キャトルミュー' in candidates:
+        return 'キャトルミュー'                   # instant general kill / 224 EM / 90 boss
+    if enemy_egg_triggers(cur.get('enemy')).has_egg is False:
+        return candidates[0]                      # no egg to drop
+    droppers = [card for card in candidates
+                if (_egg_drop_evidence(cur, card) or {}).get('drops')]
+    if not droppers:
+        return candidates[0]
+    return min(droppers, key=lambda card: (-reference.egg_drop_value(card),
+                                           SURVIVAL_CARDS.index(card)))
+
+
 BEHIND_EGG_RATIO_TENTHS = 7    # ally HP at or below 70% of the enemy's: rescue (egg) now
+GENERAL_CRITICAL_RETREAT_HP = 12
+
+
+def _unarmed_clash_risk(cur):
+    """Check resources before a non-boss egg clash, rather than idle into it."""
+    if (cur.get('planned_cards')
+            or cur.get('enemy') in chart.BOSSES.values()):
+        return False
+    triggers = enemy_egg_triggers(cur.get('enemy'))
+    return triggers.has_egg is True and triggers.clash_position is True
 
 
 def _survival_needed(cur):
@@ -2566,8 +3739,15 @@ def _survival_needed(cur):
     # only at HP ~10, after the melee had already decided the fight, and
     # generals died with an unused egg (g421 15:09 26 vs 48, 15:13 27 vs 38;
     # owner: eggs unused while dying).
-    return (hp <= 12 or (hp < enemy and hp * 5 <= start * 2)
-            or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS)
+    # Behind from the very start (g438 03:31: ココット 22 vs キッシュ 26 went
+    # 22 -> 10 in one observation of melee before any card was used, then
+    # died). The rescue (cards first, then the egg) opens before the melee.
+    # Not for boss fights or battles with charted cards: their plan runs.
+    behind_start = (type(cur.get('start_enemy_hp')) is int and start < cur['start_enemy_hp']
+                    and not cur.get('planned_cards') and cur.get('enemy') not in chart.BOSSES.values())
+    return (hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 5 <= start * 2)
+            or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS or behind_start
+            or _unarmed_clash_risk(cur))
 
 
 def _survival_state(mem, cur):
@@ -2577,37 +3757,78 @@ def _survival_state(mem, cur):
         _record(mem, 'battle_survival', **_battle_labels(cur),
                 observed_metric={'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp')},
                 expected_metric='使用可能な切り札・たまごを確認して選択',
-                reason='HP低下のため温存を中止し、戦闘メニューで救済手段を確認')
+                reason=('携行戦術のない卵持ち敵との衝突前に、戦闘メニューで救済手段を確認'
+                        if _unarmed_clash_risk(cur)
+                        else 'HP低下のため温存を中止し、戦闘メニューで救済手段を確認'))
     return cur['survival']
 
 
 def _hero_retreat_needed(cur):
-    if cur.get('ally') != NAME or not _survival_needed(cur):
+    """Any general's retreat threshold in an attack battle.
+
+    The hero keeps his remembered full-strength reference; another general
+    uses this battle's start HP (g460 16:11: ココット 24 vs タピオカ 50 spent
+    the whole fight in card menus, fell 24->12->0 and died with no retreat).
+    """
+    if (cur.get('ally') and cur.get('egg_battle') and cur.get('egg_retreat_needed')
+            and all(type(cur.get(k)) is int and cur[k] > 0
+                    for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))):
+        return True
+    if not cur.get('ally') or not _survival_needed(cur):
         return False
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
-    return hp <= 12 or (hp < enemy and hp * 4 <= start)
+    ref = (max(start, int(cur.get('ref_ally_hp') or 0)) if cur.get('ally') == NAME else start)
+    if _unarmed_clash_risk(cur) and (cur.get('survival') or {}).get('exhausted'):
+        return True  # no observed rescue remains; retreat before the summon
+    if cur.get('egg_battle'):
+        # An enemy summon we cannot answer (no egg left, no cards) is not a
+        # winnable melee: retreat before the general dies (owner 2026-09-29;
+        # g460 16:46: ヴィーナス 82 vs アルファルファ 38 summoned and killed
+        # her while the bot chose こうげき and the retreat came too late).
+        return hp <= GENERAL_CRITICAL_RETREAT_HP or hp * 2 <= enemy or hp * 2 <= ref
+    return hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 4 <= ref)
 
 
 def _hero_retreat_open(mem, cur):
     if not _hero_retreat_needed(cur) or cur.get('side') == 'defense':
         return None
-    # A selected card is already executing; preserve its receipt observer.
-    if (cur.get('card_flow') or {}).get('stage') == 'announce':
-        return None
-    flow = cur.setdefault('hero_retreat', {})
+    flow = cur.get('hero_retreat') or {}
     if flow.get('unavailable') or flow.get('exhausted') or flow.get('opens', 0) >= 3:
         return None
+    card_flow = cur.get('card_flow') or {}
+    if card_flow.get('stage') == 'announce':
+        # Preserve a selected card's receipt while HP is above the critical
+        # threshold. At critical HP, waiting for an uncalibrated receipt can
+        # cost the general before the retreat menu opens (g460: ココット
+        # 24 -> 12 -> 0 while stuck in card menus). Unknown card use stays
+        # unknown; survival takes precedence over continuing that selection.
+        hp = cur.get('ally_hp')
+        if type(hp) is not int or hp > GENERAL_CRITICAL_RETREAT_HP:
+            return None
+        pending_card = card_flow.get('card')
+        _card_use_unclassified(mem, cur, '危険HPに達したため未確認の切り札を保留し、退却を優先')
+        _record(mem, 'battle_retreat_preempted_card', **_battle_labels(cur),
+                general=cur.get('ally'), enemy=cur.get('enemy'), card=pending_card,
+                observed_metric={'ally_hp': hp, 'enemy_hp': cur.get('enemy_hp'),
+                                 'card_confirmation': 'unclassified'},
+                resulting_event='retreat_preempted_card_use',
+                reason='切り札の使用確認を待つ間に将軍を失わず、主人公の敗北も避けるため退却を優先')
+    flow = cur.setdefault('hero_retreat', {})
     flow['opens'] = flow.get('opens', 0) + 1
     cur['card_flow'] = None  # supersede an unselected chart card intention
     _record(mem, 'battle_hero_retreat_open', **_battle_labels(cur),
+            general=cur.get('ally'), enemy=cur.get('enemy'),
+            castle=cur.get('castle'), side=cur.get('side'),
             observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
                              'start_ally_hp': cur['start_ally_hp']},
-            reason='どうしの敗北によるゲームオーバーを避けるため退却の可否を確認')
+            reason='主人公の敗北によるゲームオーバーまたは一般将軍の喪失を避けるため退却の可否を確認')
     return [pad('b')]
 
 
 def _hero_retreat_menu(screen, mem, cur):
-    if not _hero_retreat_needed(cur):
+    # A castle defense cannot retreat (owner 2026-09-29; the menu has no
+    # たいきゃく row there), so never try to select it.
+    if not _hero_retreat_needed(cur) or cur.get('side') == 'defense':
         return None
     flow = cur.setdefault('hero_retreat', {})
     if flow.get('unavailable') or flow.get('exhausted'):
@@ -2615,6 +3836,8 @@ def _hero_retreat_menu(screen, mem, cur):
     if 'たいきゃく' not in {w for _,_,w in _options(screen)}:
         flow['unavailable'] = True
         _record(mem, 'battle_hero_retreat_unavailable', **_battle_labels(cur),
+                general=cur.get('ally'), enemy=cur.get('enemy'),
+                castle=cur.get('castle'), side=cur.get('side'),
                 reason='退却が有効な項目として読めないため卵・切り札・奥の手で対処')
         return None
     if flow.get('selected'):
@@ -2637,10 +3860,12 @@ def _hero_retreat_menu(screen, mem, cur):
         cur['card_flow'] = None
     flow['selected'] = flow.get('selected', 0) + 1
     flow['wait'] = 0
-    _record(mem, 'battle_hero_retreat_select', **_battle_labels(cur), choice='たいきゃく',
+    _record(mem, 'battle_hero_retreat_select', **_battle_labels(cur),
+            general=cur.get('ally'), enemy=cur.get('enemy'),
+            castle=cur.get('castle'), side=cur.get('side'), choice='たいきゃく',
             observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp']},
             resulting_event='retreat_selected_not_yet_confirmed',
-            reason='どうしの危険な戦闘を打ち切るため有効な退却行とカーソルを確認して決定')
+            reason='主人公または将軍の危険な敗北を避けるため有効な退却行とカーソルを確認して決定')
     return [pad('a')]
 
 
@@ -2671,6 +3896,7 @@ def _survival_menu(screen, mem, cur):
     # A visible list is authoritative. Do not infer carried cards from the
     # chart, a different general's sortie, or a planned inventory.
     labels = {word for _, _, word in _options(screen)}
+    # Cards first, then the egg (owner: 切り札が先 - the chart's order).
     if ('きりふだ' in labels and not rescue.get('cards_exhausted')
             and rescue['cards_checked'] < 3):
         label = 'きりふだ'
@@ -2710,7 +3936,7 @@ def _survival_card_list(screen, mem, cur, flow, names):
         rescue['cards_exhausted'] = True
         cur['card_flow'] = None
         return [pad('b')]
-    card = candidates[0]
+    card = _rescue_card(candidates, cur)
     move = _battle_menu_to(screen, card)
     if move != 'here':
         return [move] if move else []
@@ -2718,11 +3944,33 @@ def _survival_card_list(screen, mem, cur, flow, names):
     rescue['cards_attempted'].append(card)
     cur['card_consumption_complete'] = False
     cur.setdefault('cards_selected', []).append(card)
+    egg_drop = _egg_drop_evidence(cur, card)
     _record(mem, 'battle_card_selected', **_battle_labels(cur), card=card,
-            expected_metric='実使用告知', observed_metric={'listed_cards': names, 'survival': True},
+            expected_metric='実使用告知と卵落' if egg_drop and egg_drop['drops'] else '実使用告知',
+            observed_metric={'listed_cards': names, 'survival': True, 'egg_drop': egg_drop},
             resulting_event='selection_planned_not_yet_confirmed',
-            reason='HP低下に対処する切り札を選択。消費は未確定')
+            reason=('HP低下で卵を落とせる切り札を選択。消費は未確定' if egg_drop and egg_drop['drops']
+                    else 'HP低下に対処する切り札を選択。消費は未確定'))
     return [pad('a')]
+
+
+
+def _available_rare_tactic(mem, cur):
+    return next((t for t in _tactics(mem, cur.get('step'))
+                 if t['card'] == 'キャトルミュー' and t.get('step') == cur.get('step')
+                 and t.get('tactic_id') not in cur.get('tactics_done', [])
+                 and (not t.get('boss_only') or _boss_tactics_allowed(mem, cur))), None)
+
+def battle_menu_pending_step(mem):
+    if not mem.get('battle'):
+        return []
+    ticks = mem['battle_menu_pending_ticks'] = mem.get('battle_menu_pending_ticks', 0) + 1
+    if ticks <= 8:
+        return []
+    mem.pop('battle_menu_pending_ticks', None)
+    _record(mem, 'battle_command_incomplete',
+            reason='表示途中の戦闘メニューが観測上限に達したため決定せず戻る')
+    return [pad('b')]
 
 
 def battle_menu_step(screen: Screen, mem):
@@ -2747,11 +3995,31 @@ def battle_menu_step(screen: Screen, mem):
             cur['card_flow'] = None
         return _survival_menu(screen, mem, cur)
     if flow:
-        if flow['stage'] == 'menu':
-            flow['stage'] = 'down'
-            return [pad('down')]
+        flow['command_menu_ticks'] = flow.get('command_menu_ticks', 0) + 1
+        if flow['command_menu_ticks'] > 8:
+            _card_use_unclassified(mem, cur, '切り札行とカーソルの確認が観測上限に達したため保留')
+            return [pad('b')]
+        move = _battle_menu_to(screen, 'きりふだ')
+        if move != 'here':
+            if move:
+                flow['stage'] = 'down'
+            return [move] if move else []
         flow['stage'] = 'list'
         return [pad('a')]
+    if not flow and cur.get('egg_battle') and 'きりふだ' in screen.text:
+        rare = _available_rare_tactic(mem, cur)
+        move = _battle_menu_to(screen, 'きりふだ') if rare else None
+        if move is not None:
+            tid = rare['tactic_id']
+            cur.setdefault('tactics_done', []).append(tid)
+            cur['card_flow'] = {'card': 'キャトルミュー', 'stage': 'list' if move == 'here' else 'down',
+                                'tactic_id': tid, 'enemy_hp_at_open': cur.get('enemy_hp')}
+            _record(mem, 'battle_card', **_battle_labels(cur), card='キャトルミュー',
+                    observed_metric={'enemy_hp': cur.get('enemy_hp'), 'egg_battle': True},
+                    reason=('実携行のキャトルミューをボスへ使用し90ダメージを狙う'
+                            if cur.get('enemy') in chart.BOSSES.values() else
+                            '実携行のキャトルミューを敵EMへ使用し224ダメージと石化を狙う'))
+            return [pad('a')] if move == 'here' else [move]
     if cur.get('survival') or _survival_needed(cur):
         return _survival_menu(screen, mem, cur)
     # Chart has no card due this frame: independent judgment under the chart,
@@ -2802,12 +4070,73 @@ def battle_menu_step(screen: Screen, mem):
     return [pad('b')]
 
 
+OKUNOTE_MAX_SELF_DAMAGE = 88  # gcgx: ヤケクソ at castle Lv1; higher levels reduce it
+
+
+def _defender_last_resort(mem, cur):
+    """A losing non-hero human defender may take the irreversible last chance.
+
+    HP defeat is not certain death; neither is the lottery safe. This only
+    replaces repeated losing melee after *measured* resource unavailability.
+    Boss kits, the hero, uncertain locations and healthy fights stay excluded.
+    """
+    if (cur.get('ally') in (None, NAME, 'しゅじんこう', 'だいじん')
+            or cur.get('side') != 'defense'
+            or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)
+            or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('planned_cards') or cur.get('card_flow') or cur.get('egg_battle')
+            or cur.get('okunote_last_resort_selected')
+            or not cur.get('okunote_only_observed')):
+        return False
+    hp, enemy, start, enemy_start = (cur.get(k) for k in
+        ('ally_hp', 'enemy_hp', 'start_ally_hp', 'start_enemy_hp'))
+    ally_max = general_max_hp(cur.get('ally'))
+    enemy_max = general_max_hp(cur.get('enemy'))
+    if any(type(v) is not int or v <= 0 for v in
+           (hp, enemy, start, enemy_start, ally_max, enemy_max)):
+        return False
+    return (hp <= start <= ally_max and enemy <= enemy_start <= enemy_max
+            and hp * 2 <= start and enemy * 5 >= enemy_start * 4)
+
+
 def okunote_step(screen, mem):
     cur = mem.get('battle')
     if not cur:
         return []
     flow = cur.setdefault('okunote_flow', {'ticks': 0})
     flow['ticks'] += 1
+    if screen.kind == 'battle_menu':
+        hp = cur.get('ally_hp')
+        # g482: パプリカ34 entered the irreversible random choices and chose
+        # しんだフリ (28..48 self damage), then lost at HP0. Before opening
+        # the candidates, require enough *current* HP to survive even the
+        # worst Lv1 result, except the measured losing non-hero defense below.
+        # An already-open list cannot be cancelled: below
+        # we still choose the strongest visible candidate there.
+        labels = {w for _, _, w in _options(screen)}
+        # The gray parent rows or a sole active おくのて are direct evidence;
+        # chart inventory/house state cannot prove the currently usable menu.
+        cur['okunote_only_observed'] = ((screen.hidden_battle_commands or 'おくのて' in labels)
+            and not labels.intersection({'たまごをつかう', 'きりふだ', 'たいきゃく'}))
+        last_resort = _defender_last_resort(mem, cur)
+        if last_resort and not cur.get('okunote_last_resort_recorded'):
+            cur['okunote_last_resort_recorded'] = True
+            _record(mem, 'battle_okunote_last_resort', **_battle_labels(cur),
+                    observed_metric={'ally_hp': hp, 'start_ally_hp': cur['start_ally_hp'],
+                                     'enemy_hp': cur['enemy_hp'],
+                                     'start_enemy_hp': cur['start_enemy_hp'],
+                                     'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
+                    resulting_event='irreversible_risk_accepted',
+                    reason='他の手段が使用不能で押し負ける一般守備将軍の最後の救済。自傷リスクは残る')
+        if (type(hp) is not int or hp <= OKUNOTE_MAX_SELF_DAMAGE) and not last_resort:
+            rescue = _survival_state(mem, cur)
+            if not flow.get('risk_declined'):
+                flow['risk_declined'] = True
+                _record(mem, 'battle_okunote_risk_declined', **_battle_labels(cur),
+                        observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
+                        reason='奥の手は候補確認後にキャンセルできず自傷もあるため、低HPでは開かず白兵へ戻る')
+            rescue['exhausted'] = True
+            return [pad('b')]
     if flow['ticks'] > 16:
         return [pad('b')] if screen.kind == 'battle_menu' else []
     if screen.hidden_battle_commands:
@@ -2826,6 +4155,8 @@ def okunote_step(screen, mem):
     move = _battle_menu_to(screen, label)
     if move != 'here':
         return [move] if move else []
+    if label == 'おくのて' and cur.get('okunote_last_resort_recorded'):
+        cur['okunote_last_resort_selected'] = True
     _record(mem, 'battle_okunote_select', **_battle_labels(cur), choice=label,
             observed_metric={'options': sorted(names)},
             reason='奥の手のカーソルを確認して選択。候補は効果が高いものを優先')
@@ -2851,6 +4182,26 @@ def card_list_step(screen: Screen, mem):
         return _survival_card_list(screen, mem, cur, flow, names)
     if flow['stage'] == 'list':
         if flow['card'] not in names:
+            # A 500-ms observation can catch the opening text before the
+            # carried names draw (g490: two confirmed イッテツーン, then an
+            # empty OCR list). An unreadable frame is not a missing-card
+            # receipt. Explicit absence stays immediate; other readable
+            # lists must agree twice, and unreadable lists back out boundedly.
+            absent = any(text in ''.join(screen.text.split()) for text in
+                         ('きりふだはありません', 'きりふだなし'))
+            flow['list_observations'] = int(flow.get('list_observations', 0)) + 1
+            previous = flow.get('missing_list_names')
+            flow['missing_list_names'] = names
+            if not absent and (not names or previous != names):
+                if flow['list_observations'] < 4:
+                    return []
+                _record(mem, 'battle_card_list_unclassified', **_battle_labels(cur),
+                        card=flow['card'], observed_metric={'listed_cards': names,
+                                                           'observations': flow['list_observations']},
+                        expected_metric='読める切り札一覧または明示的な切り札なし表示',
+                        reason='札一覧を確定できないため、携行不足と断定せず入力を戻す')
+                cur['card_flow'] = None
+                return [pad('b'), pad('b')]
             cur.setdefault('cards_missing', []).append(flow['card'])
             if not cur.get('deviation_reason'):
                 cur['strategy_variant'] = 'chart_card_unavailable'
@@ -2909,7 +4260,7 @@ def _hold_general_loss_metric(mem):
                     reason='HP敗北から将軍喪失は確定できず、喪失観測器がないため旧集計を未分類化')
 
 
-def battle_end(mem, next_kind):
+def battle_end(mem, next_kind, *, defense_continues=False):
     _hold_general_loss_metric(mem)
     _migrate_card_evidence(mem)
     cur = mem.get('battle')
@@ -2918,7 +4269,7 @@ def battle_end(mem, next_kind):
     # A panel can blink during the melee; end only on the second
     # consecutive observation without it.
     cur['away'] = cur.get('away', 0) + 1
-    if cur['away'] < 2:
+    if cur['away'] < 2 and not defense_continues:
         return
     if (cur.get('card_flow') or {}).get('stage') == 'announce':
         _card_use_unclassified(mem, cur, '実使用告知がないまま戦闘が終了')
@@ -2933,6 +4284,15 @@ def battle_end(mem, next_kind):
     else:
         outcome = 'unclassified'
     castle = cur.get('castle')
+    receipt = cur.get('defeat_owner') or {}
+    observed_owner = (receipt.get('owner') if isinstance(receipt, dict)
+                      and receipt.get('castle') == castle
+                      and receipt.get('chapter') == (mem.get('chapter') or 0)
+                      and castle in chart.castles(mem.get('chapter') or 0)
+                      and receipt.get('owner') in ('own', 'enemy')
+                      and type(ally_hp) is int and type(enemy_hp) is int
+                      and cur.get('side') == 'defense' and outcome == 'loss' else None)
+    defense_retained = observed_owner == 'own'
     if outcome == 'win' and castle and cur.get('side') == 'attack':
         captured = mem.setdefault('captured', [])
         if castle not in captured:
@@ -2943,13 +4303,13 @@ def battle_end(mem, next_kind):
         _garrison_move(mem, cur.get('ally'), target=castle)
     if outcome == 'win' and castle and cur.get('side') == 'defense':
         _garrison_move(mem, cur.get('ally'), target=castle)
-    if outcome == 'loss' and castle and cur.get('side') == 'defense':
+    if outcome == 'loss' and castle and cur.get('side') == 'defense' and not (defense_continues or defense_retained):
         mem['captured'] = [c for c in mem.get('captured', []) if c != castle]
         (mem.get('garrison') or {}).pop(castle, None)
         lost = mem.setdefault('lost', [])
         if castle not in lost:
             lost.append(castle)
-    if outcome == 'loss' and cur.get('side') == 'attack' and cur.get('ally'):
+    if outcome == 'loss' and (cur.get('side') == 'attack' or defense_continues or defense_retained) and cur.get('ally'):
         general = cur['ally']
         for source in list(mem.get('garrison') or {}):
             _garrison_move(mem, general, source=source)
@@ -2957,7 +4317,7 @@ def battle_end(mem, next_kind):
         if general not in unknown:
             unknown.append(general)
         _record(mem, 'general_location_unclassified', general=general, castle=castle,
-                reason='攻撃敗北後の所在は未確認のため古い駐留情報を破棄し、一覧での再確認を待つ')
+                reason='敗北した将軍の所在は未確認のため古い駐留情報を破棄し、一覧での再確認を待つ')
     stats = mem.setdefault('stats', {'wins': 0, 'losses': 0, 'unclassified': 0, 'cards_used': 0,
                                      'generals_lost': None, 'cards_confirmed': 0, 'card_evidence_version': 1})
     stats[{'win': 'wins', 'loss': 'losses'}.get(outcome, 'unclassified')] += 1
@@ -2985,7 +4345,7 @@ def battle_end(mem, next_kind):
     if outcome == 'loss' and boss_attempt:
         retries = mem.setdefault('retries', {})
         retries[step] = retries.get(step, 0) + 1
-        for key in ('general_override', 'card_override', 'order_context', 'sortie_general'):
+        for key in ('general_override', 'card_override', 'rare_card_kit', 'order_context', 'sortie_general'):
             mem.setdefault(key, {}).pop(step, None)
         if retries[step] <= 3:
             mem.setdefault('orders', {})[step] = 'pending'
@@ -3030,11 +4390,18 @@ def battle_end(mem, next_kind):
     if outcome == 'win' and boss and cur.get('enemy') == boss:
         resulting = f"chapter_{mem['chapter']}_boss_defeated"
         # A boss HP reading proves this battle result, not the next chapter.
-        # Only a visible chapter header may advance and reset route state.
+        # Only a visible chapter header or a next-chapter fact (castle name,
+        # enemy general debut) may advance and reset route state; the defeat
+        # is the context a further-jump general needs (observe_chapter_general).
+        mem['boss_defeated'] = mem.get('chapter')
     elif outcome == 'win' and castle and cur.get('side') == 'attack':
         resulting = f'captured:{castle}'
-    elif outcome == 'loss' and castle and cur.get('side') == 'defense':
+    elif outcome == 'loss' and castle and cur.get('side') == 'defense' and not (defense_continues or defense_retained):
         resulting = f'lost:{castle}'
+    if defense_continues:
+        resulting = f'defense_continues:{castle}'
+    elif defense_retained:
+        resulting = f'defense_retained:{castle}'
     _record(mem, 'battle_result', **_battle_labels(cur), enemy=cur.get('enemy'),
             expected_metric=cur.get('strategy_expected'),
             ally=cur.get('ally'), castle=castle, side=cur.get('side'), outcome=outcome,
@@ -3045,14 +4412,53 @@ def battle_end(mem, next_kind):
                              'cards_unclassified': cur.get('cards_unclassified', []),
                              'card_consumption_complete': cur.get('card_consumption_complete', False),
                              'hero_retreat_selected': bool((cur.get('hero_retreat') or {}).get('selected')),
-                             'general_loss': 'unclassified'},
+                             'general_loss': 'unclassified',
+                             **({'castle_owner_after_defeat': observed_owner} if observed_owner else {})},
             resulting_event=resulting or outcome, resulting_stage=None, next_screen=next_kind,
             reason='戦闘終了時のHP表示から判定' if outcome != 'unclassified'
             else '最終HPが0/非0で確定しないため未分類')
+    _maybe_recall_weak_hero(mem, cur, outcome, ally_hp)
+
+
+HERO_RECALL_RATIO_TENTHS = 4   # hero HP at or below 40% of his full strength after a win
+HERO_RECALL_MIN_HP = 20        # and never below this when his full strength is unknown
+
+
+def _hero_marching(mem):
+    now = int(mem.get('tick') or 0)
+    return [step for step, s in (mem.get('sorties') or {}).items()
+            if s.get('general') == NAME and s.get('status') in ('en_route', 'launched_unconfirmed')
+            and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS]
+
+
+def _maybe_recall_weak_hero(mem, cur, outcome, ally_hp):
+    """Pull the hero back to a castle after a win that left him weak.
+
+    g436 23:15-23:18: the hero, marching on ゴーメン (1-A2), won a road battle
+    90 -> 14 HP with no soldiers left, marched on, and fell there within two
+    seconds of the next battle opening (14 -> 9 -> 0): too fast for any
+    in-battle retreat. The march itself has to be called off. The unit menu
+    SELECT + A opens is the camp menu (g436 22:04), so the camp recall's
+    きかん path is reused.
+    """
+    if cur.get('ally') != NAME or outcome != 'win' or type(ally_hp) is not int or mem.get('recall'):
+        return
+    full = int(mem.get('hero_max_hp') or 0)
+    limit = max(HERO_RECALL_MIN_HP, full * HERO_RECALL_RATIO_TENTHS // 10)
+    marching = _hero_marching(mem)
+    if ally_hp > limit or not marching:
+        return
+    mem['recall'] = {'stage': 'hero_focus', 'hero': True, 'steps': 0, 'sorties': marching}
+    (mem.get('y_jumps') or {}).pop('RECALL:target', None)
+    (mem.get('y_jumped') or {}).pop('RECALL', None)
+    _record(mem, 'hero_recall_start', observed_metric={'ally_hp': ally_hp, 'full_hp': full,
+                                                        'sorties': marching},
+            reason=f'主人公がHP{ally_hp}まで減って進軍中のため、次の戦闘で倒れる前に自軍城へ帰還させる')
 
 
 ATTACK = re.compile(r'(\S+?)しょうぐんが(\S+?)じょうにのりこんだ')
 DEFENSE = re.compile(r'(\S+?)じょうがてきにせめこまれ')
+BOSS_ENTRY_HOLD_LIMIT = 8   # unmatched boss entry messages before the screen is closed anyway
 
 
 def message_step(screen: Screen, mem):
@@ -3070,10 +4476,40 @@ def message_step(screen: Screen, mem):
         # Base boss order or an adjusted/interim boss order (generation-scoped id):
         # the launched order itself must target this chapter's boss castle.
         if not _is_boss_order(_order_for_step(mem, step), mem):
-            _record(mem, 'situation_held', screen='boss_attack_started',
-                    observed_metric={'message': text, 'sortie_match': match},
-                    reason='実測ボス突入文を読んだが出撃注文と一致しないため保留')
-            return []
+            if match == 'ambiguous':
+                # Two sorties of this general are still heading for the boss
+                # castle (g460 17:10: the base order and its adjusted wave), so
+                # the order id is unknown. Never bind either of them - but the
+                # message is measured and the screen must keep moving.
+                _record(mem, 'attack_observed', chart_step=None, general=general, castle=boss_cell,
+                        expected_metric=None,
+                        observed_metric={'general': general, 'message': text, 'sortie_match': match},
+                        deviation_reason='ambiguous_sortie',
+                        reason='ボス城への出撃が複数在途のため注文は特定せず、実測文のみで進行')
+                mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack',
+                                 'step': None, 'entry_evidence': 'measured_boss_entry'}
+                return [pad('a')]
+            held = mem.get('boss_entry_hold') or {}
+            misses = held.get('n') + 1 if held.get('text') == text else 1
+            if misses < BOSS_ENTRY_HOLD_LIMIT:
+                mem['boss_entry_hold'] = {'text': text, 'n': misses}
+                _record(mem, 'situation_held', screen='boss_attack_started',
+                        observed_metric={'message': text, 'sortie_match': match,
+                                         'hold_count': misses},
+                        reason='実測ボス突入文を読んだが出撃注文と一致しないため保留')
+                return []
+            # Unmatched for the whole limit: the game already committed this
+            # attack, so holding the message freezes the screen forever
+            # (g460 16:43-). Close it and let the battle be measured.
+            mem.pop('boss_entry_hold', None)
+            _record(mem, 'attack_observed', chart_step=step, general=general, castle=boss_cell,
+                    expected_metric=None,
+                    observed_metric={'general': general, 'message': text, 'sortie_match': match},
+                    deviation_reason='boss_entry_hold_released',
+                    reason=f'出撃注文と一致しない突入文を{BOSS_ENTRY_HOLD_LIMIT}回保留したため表示を閉じる')
+            mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack',
+                             'step': step, 'entry_evidence': 'measured_boss_entry'}
+            return [pad('a')]
         _bind_sortie(mem, step, boss_cell)
         mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack', 'step': step,
                          'entry_evidence': 'measured_boss_entry'}
@@ -3084,6 +4520,8 @@ def message_step(screen: Screen, mem):
     m = ATTACK.search(text)
     if m:
         general, castle = m.groups()
+        observe_chapter_castle(mem, castle)
+        castle = _castle_label(mem, castle)
         launched = (mem.get('launched') or {}).get(castle) or {}
         current = mem.get('attack') or {}
         step, match = _match_sortie(mem, castle, general)
@@ -3102,12 +4540,122 @@ def message_step(screen: Screen, mem):
     m = DEFENSE.search(text)
     if m:
         castle = m.group(1)
+        observe_chapter_castle(mem, castle)
+        castle = _castle_label(mem, castle)
         if (mem.get('attack') or {}).get('castle') != castle or (mem.get('attack') or {}).get('side') != 'defense':
             _record(mem, 'defense_observed', castle=castle, reason='せめこまれました表示')
             mem['world_map_due'] = True      # the castle may have fallen without a battle
         mem['attack'] = {'general': None, 'castle': castle, 'side': 'defense', 'step': None}
         return [pad('a')]
     return None
+
+
+def _enter_chapter(mem, chapter, *, reason, evidence=None):
+    previous = mem.get('chapter')
+    # Route state belongs to the measured map of one chapter. Keep
+    # run-wide counters/name evidence, never carry coordinates/orders.
+    for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
+                'captured', 'card_override', 'rare_card_kit', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
+                'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
+                'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
+                'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
+                'boss_defeated', 'boss_entry_hold',
+                'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
+                'garrison', 'general_location_unknown', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
+                'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
+                'target_miss', 'target_cancel', 'menu_hold', 'card_scroll', 'card_unreadable',
+                'sortie_confirm_miss',
+                'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
+                'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip',
+                'near_goal', 'align_steps', 'unanchored', 'select_tick',
+                'house', 'house_scan_tick', 'house_scan_month', 'house_eggs',
+                'select_used', 'castle_verified', 'last_castle_hold',
+                'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
+                'indep_menu_key', 'indep_menu_action',
+                'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
+                'monster_menu_choice', 'monster_menu_choice_key', 'monster_panel'):
+        mem.pop(key, None)
+    mem['chapter'] = chapter
+    mem['chapter_evidence'] = evidence or 'header'
+    mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'
+    _record(mem, 'chapter_seen', previous_stage=previous,
+            observed_metric={'chapter': chapter, **({'evidence': evidence} if evidence else {})},
+            resulting_stage=chapter,
+            reason=reason)
+
+
+def observe_chapter_castle(mem, castle):
+    """Advance the chapter on a castle name that only the next chapter has.
+
+    The month header reads 「2ねん5のつき」 (year, month) and never shows the
+    chapter, so the header branch never fired: g421 beat クイーン at 14:41,
+    fought at アルマムーン from 14:47 and navigated chapter 2 with chapter 1
+    coordinates for 80 minutes (every Y jump and roof check missed).
+    A name absent from this chapter and present in the next one is proof.
+    """
+    chapter = mem.get('chapter') or 0
+    if not castle or not chapter:
+        return
+    here = set(chart.CASTLE_NAMES.get(chapter, ())) | {chart.home_castle(chapter), chart.boss_castle(chapter)}
+    # The home castle is アルマムーン in every chapter; chapter 1's chart only
+    # labels it ほんじょう (g436 21:33: a defense of アルマムーン in chapter 1
+    # switched the bot to chapter 2 cells and parked the cursor at sea).
+    here |= {STATUS_NAMES.get(label, label) for label in here}
+    if castle in here:
+        return
+    nxt = chapter + 1
+    if castle in chart.CASTLE_NAMES.get(nxt, ()) or castle == chart.home_castle(nxt):
+        _enter_chapter(mem, nxt, evidence=castle,
+                       reason='次章にしかない城名を確認したため章を進め、前章の座標・出撃・購入状態を初期化')
+
+
+def observe_chapter_general(mem, general):
+    """Advance the chapter on an enemy general that only later chapters have.
+
+    g454 08:24: どうし defeated クイーン, but the bot stayed on chapter 1 while
+    ピオーネ and ヘラ (char.csv 話=2) attacked its castles. No chapter-2 castle
+    name ever appeared, so ``observe_chapter_castle`` had no evidence and the
+    bot navigated chapter 1 coordinates for 30+ minutes. The battle panel's
+    enemy general is a chapter fact; a debut chapter later than the bot's
+    current one proves the game advanced.
+    """
+    chapter = mem.get('chapter') or 0
+    debut = general_debut_chapter(general)
+    if not chapter or debut is None or debut <= chapter:
+        return
+    # The immediate next chapter's roster is proof by itself; a further jump
+    # (a missed transition) needs this chapter's boss defeated as context.
+    if debut != chapter + 1 and mem.get('boss_defeated') != chapter:
+        return
+    _enter_chapter(mem, debut, evidence=general,
+                   reason='次章以降に初登場する敵将軍を確認したため章を進め、前章の座標・出撃・購入状態を初期化')
+
+
+def _castle_label(mem, name):
+    """The chart label for a castle name read from a message (アルマムーン -> ほんじょう in chapter 1)."""
+    cells = chart.castles(mem.get('chapter') or 0)
+    if name in cells:
+        return name
+    return next((label for label, real in STATUS_NAMES.items() if real == name and label in cells), name)
+
+
+def _repair_home_name_chapter(mem):
+    """Undo the chapter 2 switch that only a defense of アルマムーン caused (v44-v60).
+
+    Chapter entries now keep their evidence; a chapter 2 memory without it
+    predates this fix, and the only such live game (g436, 21:33) was still
+    in chapter 1. Its route state is reset for chapter 1 once.
+    """
+    # Only a game that v60 already saw in chapter 1 (its one-time repair flag)
+    # and that then entered chapter 2 without recorded evidence.
+    if ((mem.get('chapter') or 0) != 2 or 'chapter_evidence' in mem
+            or not mem.get('home_alias_repaired')):
+        return
+    mem['chapter_evidence'] = 'reverted_home_name'
+    _enter_chapter(mem, 1, evidence='reverted_home_name',
+                   reason='本城の実名アルマムーンを次章の証拠と誤認して第2章にしていたため第1章へ戻す')
+    mem['chapter_evidence'] = 'reverted_home_name'
+
 
 
 # ---------------------------------------------------------------- month
@@ -3131,6 +4679,9 @@ WAGE_RESERVE = 30
 EGG_RECOVER_COST = 50
 RECRUIT_COST = 50
 MONTH_SUB_LIMIT = 8              # A presses through an unmeasured sub-screen
+# The month menu stays on screen for a few observations after the A press that
+# opens a sub (g462 18:06:02-05); only that stale frame may not end the sub.
+MONTH_SUB_MENU_WAIT = 4
 RECRUIT_CANDIDATE_LIMIT = 32     # paid candidate introductions outlast the generic 8 observations
 EGG_RITUAL_LIMIT = 64            # measured paid recovery includes a long chant
 
@@ -3165,10 +4716,33 @@ def _egg_recovery_targets(mem):
 
 
 def _extras_reserve(mem, header):
-    """Reserve the cost of all observed depleted eggs before soldiers."""
-    cost = EGG_RECOVER_COST * len(_egg_recovery_targets(mem))
+    """Reserve the cost of all observed depleted eggs before soldiers.
+
+    Owner rule (2026-09-28): with 50+ soldiers on hand (read from the
+    「へいしすうはNめい」 line), egg recovery wins even when the gold is
+    short of the full cost: hold ALL of it for the egg and buy no soldiers,
+    so the balance grows until the recovery can run.
+
+    The hero's depleted egg reserves first even without the soldier count:
+    a castle defense cannot be retreated from and an eggless hero cannot
+    answer a summon (g458 15:45: どうし 90 vs シェーブル 27, the enemy's egg
+    summon came, the hero's egg was spent and he died -> game over).
+    """
+    targets = _egg_recovery_targets(mem)
+    cost = EGG_RECOVER_COST * len(targets)
     gold = (header or {}).get('gold')
-    reserve = cost if type(gold) is int and gold >= cost else 0
+    # Owner (2026-09-29): 兵士の数を確認せず卵回復した - the army is read on the
+    # soldier screen, so without this month's count the soldiers go first and
+    # the eggs are recovered from what is left (_plan_extras: egg 'check').
+    counted = (mem.get('soldiers_seen_key') == _month_key(header) if header else False)
+    big_army = counted and (mem.get('soldiers_seen') or 0) >= 50
+    if type(gold) is not int or gold < 0 or not cost:
+        reserve = 0
+    elif NAME in targets or big_army:
+        # 卵へ温存（兵士は今月見送り）。賃金リザーブは守る。
+        reserve = cost if gold >= cost else max(0, gold - WAGE_RESERVE)
+    else:
+        reserve = 0
     return reserve, not _charted_purchase_ahead(mem, header)
 
 
@@ -3180,18 +4754,109 @@ def _egg_recheck(mem):
             pending.append(ally)
 
 
+# Six confirmed available generals keep the opening chart's attack/defense
+# roles covered. This is a lower bound from observations, never a death count.
+RECRUIT_GENERAL_TARGET = 6
+
+
+def _recruit_shortage(mem):
+    garrison = mem.get('garrison') or {}
+    if not garrison:
+        return None                       # no roster observation yet
+    owned = _owned(mem)
+    owned |= {STATUS_NAMES.get(c, c) for c in owned}
+    names = {g for c, gs in garrison.items() if c in owned for g in gs or ()}
+    now = int(mem.get('tick') or 0)
+    names.update(s.get('general') for s in (mem.get('sorties') or {}).values()
+                 if s.get('status') == 'en_route' and s.get('tick') is not None
+                 and now - int(s['tick']) < SORTIE_BUSY_TICKS)
+    names.discard(None)
+    names -= set(mem.get('general_location_unknown') or ())
+    if len(names) >= RECRUIT_GENERAL_TARGET:
+        return None
+    return {'available_observed': sorted(names), 'count_lower_bound': len(names),
+            'target': RECRUIT_GENERAL_TARGET, 'total_roster': 'unclassified'}
+
+
+def _month_held_reserve(shop):
+    return shop.get('reserve', 0) + shop.get('hero_repair_reserve', 0)
+
+
+def _reserve_hero_repair(mem, shop, gold):
+    if not _hero_egg_broken(mem) or shop.get('hero_repair_reserve'):
+        return
+    shop['hero_repair_reserve'] = 50  # cheapest measured house gift; wage is separate
+    items = [] if shop.get('merchant_done') else shop.get('items') or []
+    card_cost = (sum(KNOWN_PRICES[n] * qty for n, qty in items)
+                 if all(n in KNOWN_PRICES for n, _ in items) else None)
+    if not shop.get('soldiers_done') and type(gold) is int and card_cost is not None:
+        shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - card_cost
+                               - _month_held_reserve(shop) - WAGE_RESERVE
+                               - shop.get('recruit_reserve', 0)))
+        shop['soldiers_done'] = shop['soldiers'] == 0
+    _record(mem, 'hero_repair_funds_reserved', month=shop.get('key'),
+            observed_metric={'gold': gold, 'reserve': 50, 'soldiers': shop.get('soldiers')},
+            reason='主人公の壊れた卵の家修復費を募集・兵士・築城へ使い切らず温存する')
+
+
+def _prioritise_recruit(mem, shop, gold):
+    """Once per month, reserve a recruitment fee before optional soldiers.
+
+    Includes existing cached shops on hotload. Original card purchases and
+    the existing egg/wage reserves are kept; unconfirmed deaths are not used.
+    """
+    if shop.get('recruit_budget_version') == 1:
+        return
+    shortage = _recruit_shortage(mem)
+    if not shortage:
+        return
+    shop['recruit_budget_version'] = 1
+    shop['recruit_priority'] = True
+    if shop.get('recruit') not in ('opened', 'done', 'unverified'):
+        shop['recruit'] = 'check'
+    items = shop.get('items') or []
+    card_cost = (sum(KNOWN_PRICES[n] * qty for n, qty in items)
+                 if all(n in KNOWN_PRICES for n, _ in items) else None)
+    # Only subtract pending card purchases. A cached post-merchant menu
+    # already shows the remaining balance.
+    if shop.get('merchant_done'):
+        card_cost = 0
+    available = (max(0, gold - card_cost - _month_held_reserve(shop) - WAGE_RESERVE)
+                 if type(gold) is int and card_cost is not None else 0)
+    budget = 0 if shop.get('recruit') == 'done' else min(RECRUIT_COST, available)
+    shop['recruit_reserve'] = budget
+    if not shop.get('soldiers_done'):
+        if card_cost is not None:
+            shop['soldiers'] = min(shop.get('soldiers', 0), max(0, available - budget))
+        if shop['soldiers'] == 0:
+            shop['soldiers_done'] = True
+    _record(mem, 'recruit_priority_plan', month=shop.get('key'),
+            observed_metric={**shortage, 'gold': gold, 'reserved': budget,
+                             'soldiers': shop.get('soldiers')},
+            reason='確認できる将軍が不足しているため募集費を兵士補充より先に確保する。総人数や死亡は未確定')
+
+
 def _plan_extras(mem, shop, reserve, recruit):
     shop['reserve'] = reserve
-    shop['egg'] = 'pending' if reserve else None
+    egg_cost = EGG_RECOVER_COST * len(_egg_recovery_targets(mem))
+    shop['egg'] = 'pending' if reserve else ('check' if egg_cost else None)
+    shop['egg_cost'] = egg_cost
     shop['recruit'] = 'check' if recruit else None
+    shop['chikujou'] = 'check'
+    _reserve_hero_repair(mem, shop, shop.get('gold_start'))
+    _prioritise_recruit(mem, shop, shop.get('gold_start'))
     if reserve or recruit:
         _record(mem, 'month_extras_plan', chart_step='1-month', month=shop['key'],
                 strategy_variant=shop.get('variant', 'chart'),
                 observed_metric={'egg_uses': dict(mem.get('egg_uses') or {})},
                 plan={'egg_recover': bool(reserve), 'egg_recover_budget': reserve,
                       'egg_recover_targets': _egg_recovery_targets(mem),
-                      'recruit_if_left': RECRUIT_COST if recruit else None},
-                reason='使用回数が減った卵の全回復費を兵士より先に確保し、兵士99人分の後に余りがあれば将軍を募集')
+                      'recruit_if_left': RECRUIT_COST if recruit else None,
+                      'recruit_before_soldiers': bool(shop.get('recruit_priority')),
+                      'recruit_reserve': shop.get('recruit_reserve', 0)},
+                reason=('将軍不足時は募集費を兵士より先に確保し、卵回復・賃金予備も維持する'
+                        if shop.get('recruit_priority') else
+                        '使用回数が減った卵の全回復費を兵士より先に確保し、兵士99人分の後に余りがあれば将軍を募集'))
 
 
 def _adjusted_plan(mem, header, key):
@@ -3238,7 +4903,7 @@ def _recalc_soldiers(screen, mem, shop):
     if type(gold) is not int:
         return False
     shop['soldiers'] = max(0, min(shop.get('soldiers_target', 0),
-                                  gold - shop.get('reserve', 0) - WAGE_RESERVE))
+                                  gold - _month_held_reserve(shop) - shop.get('recruit_reserve', 0) - WAGE_RESERVE))
     shop['soldiers_done'] = shop['soldiers'] == 0
     shop['soldiers_recalculated'] = True
     _record(mem, 'soldier_plan_recalc', chart_step='adjusted-month',
@@ -3269,6 +4934,7 @@ def _plan(mem, header):
     key = _month_key(header)
     shop = mem.get('shop')
     if shop and shop.get('key') == key:
+        _reserve_hero_repair(mem, shop, (header or {}).get('gold'))
         return shop
     adjusted = _adjusted_plan(mem, header, key) if header else None
     if adjusted:
@@ -3280,7 +4946,7 @@ def _plan(mem, header):
     if not spec:
         if ahead:
             reserve, _ = _extras_reserve(mem, header)
-            if not reserve:
+            if not reserve and not _recruit_shortage(mem):
                 return None
             shop = mem['shop'] = {'key': key, 'items': [], 'soldiers': 0,
                 'merchant_done': True, 'soldiers_done': True, 'gold_start': header['gold'],
@@ -3350,24 +5016,38 @@ def _soldier_refill_plan(mem, header, key):
     return shop
 
 
+RECRUIT_INTRO = 'ども!しょうぐんえんごかいのものです。しょうぐんのぼしゅうでございますね?'
+RECRUIT_GOODBYE = 'それではまたのきかいに。ごようのさいはいつでもおまかせを。'
+
+
+def _month_dialog_body(screen):
+    return ''.join(line.known.replace(' ', '') for line in screen.lines if line.y >= 175)
+
+
 def month_menu_ready(screen):
-    """A month menu background remains behind sub-dialogues; require its hand."""
-    return screen.kind == 'month_menu' and bool(screen.hand and screen.hand[1] < 120)
+    """The recruitment overlay can retain the background menu's upper hand."""
+    return (screen.kind == 'month_menu' and bool(screen.hand and screen.hand[1] < 120)
+            and _month_dialog_body(screen) not in (RECRUIT_INTRO, RECRUIT_GOODBYE))
 
 
 def month_step(screen: Screen, mem):
     shop = _plan(mem, screen.header)
-    body = ''.join(line.known.replace(' ', '') for line in screen.lines if line.y >= 175)
-    if (not screen.hand and body == 'ども!しょうぐんえんごかいのものです。しょうぐんのぼしゅうでございますね?'
+    body = _month_dialog_body(screen)
+    if shop:
+        _prioritise_recruit(mem, shop, (screen.header or {}).get('gold'))
+    if body == RECRUIT_GOODBYE:
+        _record(mem, 'month_recruit_goodbye', reason='実測した募集終了文を閉じて本メニューへ戻る')
+        return [pad('a')]
+    if (body == RECRUIT_INTRO
             and all(UNKNOWN not in line.span(8, 248) for line in screen.lines if line.y in (183, 199))):
-        # v14 dropped month_sub on this measured introduction because the
-        # menu remains in the background. Recover only this exact dialogue
-        # with the existing recruitment budget/army preconditions.
+        # g496: the real background hand remained visible, so a hand alone
+        # could neither prove menu return nor rule out this measured dialogue.
         gold = (screen.header or {}).get('gold')
         if (shop and shop.get('recruit') == 'unverified' and type(gold) is int
-                and gold >= RECRUIT_COST and shop.get('soldiers', 0) >= SOLDIER_CAP):
+                and gold >= RECRUIT_COST and (shop.get('recruit_priority')
+                                             or shop.get('soldiers', 0) >= SOLDIER_CAP)):
             mem['month_sub'] = {'kind': 'recruit', 'gold_before': gold, 'presses': 0,
-                                'key': shop['key']}
+                                'key': shop['key'], 'left_menu': False}
             shop['recruit'] = 'opened'
             _record(mem, 'month_sub_resumed', choice='しょうぐんぼしゅう',
                     reason='実測した募集導入文と費用条件が一致したため失われた会話追跡を再開')
@@ -3388,13 +5068,6 @@ def month_step(screen: Screen, mem):
     if shop and not shop['merchant_done'] and shop['items']:
         move = menu_to(screen, 'しょうにん')
         return [pad('a')] if move == 'here' else [move] if move else []
-    if (shop and shop.get('soldiers_from_gold') and not shop.get('soldiers_recalculated')
-            and not shop['soldiers_done']):
-        if not _recalc_soldiers(screen, mem, shop):
-            return []
-    if shop and not shop['soldiers_done']:
-        move = menu_to(screen, 'へいしほじゅう')
-        return [pad('a')] if move == 'here' else [move] if move else []
     if (mem.get('month_sub', {}).get('kind') == 'egg'
             and screen.has('おはらいのひつような') and screen.has('たまごはありませんぞ')):
         mem.pop('month_sub')
@@ -3404,8 +5077,43 @@ def month_step(screen: Screen, mem):
             shop['egg'] = 'not_needed'
         _record(mem, 'egg_recover_not_needed', reason='ゲームが回復不要と表示したため支払わず説明を閉じる')
         return [pad('a')]
-    if mem.get('month_sub'):
-        _finish_month_sub(screen, mem, shop)
+    # Finish the tracked egg/recruit flow before opening another one;
+    # after an egg-cost deferral recruitment is still pending here.
+    if mem.get('month_sub') and not _finish_month_sub(screen, mem, shop):
+        return []
+    if (shop and shop.get('recruit_priority') and not shop.get('recruit_measured_budget')
+            and not mem.get('month_sub')):
+        gold = (screen.header or {}).get('gold')
+        if type(gold) is not int:
+            return []
+        shop['recruit_reserve'] = (0 if shop.get('recruit') == 'done' else
+                                   min(RECRUIT_COST, max(0, gold - _month_held_reserve(shop) - WAGE_RESERVE)))
+        if not shop.get('soldiers_done'):
+            shop['soldiers'] = min(shop.get('soldiers', 0),
+                                   max(0, gold - _month_held_reserve(shop)
+                                       - shop['recruit_reserve'] - WAGE_RESERVE))
+            shop['soldiers_done'] = shop['soldiers'] == 0
+        shop['recruit_measured_budget'] = True
+    if (shop and shop.get('soldiers_from_gold') and not shop.get('soldiers_recalculated')
+            and not shop['soldiers_done']):
+        if not _recalc_soldiers(screen, mem, shop):
+            return []
+    if (shop and shop.get('recruit_priority')
+            and shop.get('recruit') in ('check', 'pending')):
+        extra = _month_extra(screen, mem, shop, recruit_only=True)
+        if extra is not None:
+            return extra
+    if mem.get('month_sub') and mem['month_sub'].get('kind') == 'recruit':
+        if not _finish_month_sub(screen, mem, shop):
+            return []
+    if shop and not shop['soldiers_done']:
+        move = menu_to(screen, 'へいしほじゅう')
+        return [pad('a')] if move == 'here' else [move] if move else []
+    if mem.get('month_sub') and not _finish_month_sub(screen, mem, shop):
+        # g462 18:06:04: the menu frame still predates the game's reaction to
+        # the A press that opened the sub. Pressing anything here (も〜おしまい!
+        # navigation) races the flow that is starting, so hold instead.
+        return []
     extra = _month_extra(screen, mem, shop)
     if extra is not None:
         return extra
@@ -3423,27 +5131,54 @@ def month_step(screen: Screen, mem):
     return [move] if move else []
 
 
-def _month_extra(screen, mem, shop):
-    """After soldiers: たまごのかいふく, then しょうぐんぼしゅう (owner order)."""
+def _month_extra(screen, mem, shop, *, recruit_only=False):
+    """Recruit before soldiers when short; otherwise keep the old extras order."""
     if not shop:
         return None
     gold = (screen.header or {}).get('gold')
     for sub, label, cost in (('egg', 'たまごのかいふく', shop.get('reserve') or EGG_RECOVER_COST),
                              ('recruit', 'しょうぐんぼしゅう', RECRUIT_COST)):
+        if recruit_only and sub != 'recruit':
+            continue
         status = shop.get(sub)
         if status not in ('pending', 'check'):
             continue
-        if status == 'check':
+        if sub == 'egg' and status == 'check':
+            # After the soldiers: recover the eggs only from what is left.
+            cost = shop.get('egg_cost') or EGG_RECOVER_COST
+            if type(gold) is not int or gold < cost + WAGE_RESERVE + shop.get('hero_repair_reserve', 0):
+                shop[sub] = 'skipped'
+                _record(mem, 'egg_recover_skip', month=shop.get('key'), gold=gold,
+                        observed_metric={'cost': cost, 'gold': gold},
+                        reason='兵士補充の後の残金が卵の回復費と賃金リザーブに足りないため見送る')
+                continue
+        elif status == 'check':
             # Owner rule (2026-09-27): recruit only when the soldiers got
             # their full 99 and the fee plus the wage reserve is still left.
-            if (type(gold) is not int or shop.get('soldiers', 0) < SOLDIER_CAP
-                    or gold < cost + WAGE_RESERVE):
+            if (type(gold) is not int or (not shop.get('recruit_priority') and shop.get('soldiers', 0) < SOLDIER_CAP)
+                    or gold < cost + WAGE_RESERVE + shop.get('hero_repair_reserve', 0)
+                    + (shop.get('reserve', 0) if shop.get('recruit_priority')
+                       and shop.get('egg') in ('pending', 'check') else 0)):
+                if (shop.get('recruit_priority') and type(gold) is int
+                        and gold >= RECRUIT_COST + WAGE_RESERVE + shop.get('hero_repair_reserve', 0)
+                        and shop.get('egg') in ('pending', 'check')):
+                    # g498: estimate 150G, actual recovery only 50G; the
+                    # early check must not permanently skip recruitment.
+                    if not shop.get('recruit_deferred_egg'):
+                        shop['recruit_deferred_egg'] = True
+                        _record(mem, 'recruit_deferred_egg', month=shop.get('key'),
+                                observed_metric={'gold': gold, 'egg_reserve': shop.get('reserve')},
+                                reason='卵回復費は見積もりのため、回復後の実残金で募集を再判定する')
+                    continue
                 shop[sub] = 'skipped'
                 _record(mem, 'recruit_skip', month=shop.get('key'), gold=gold,
                         observed_metric={'soldiers': shop.get('soldiers'), 'gold': gold},
-                        reason='兵士99人分と賃金リザーブの後に募集費が残っていないため将軍を募集しない')
+                        reason=('募集費と卵回復・賃金リザーブが足りないため資金を温存して次月へ待つ'
+                                if shop.get('recruit_priority') else
+                                '兵士99人分と賃金リザーブの後に募集費が残っていないため将軍を募集しない'))
                 continue
-        elif type(gold) is not int or gold < cost:
+        elif (type(gold) is not int or gold < cost + shop.get('hero_repair_reserve', 0)
+              + (WAGE_RESERVE if shop.get('hero_repair_reserve') else 0)):
             shop[sub] = 'skipped'
             _record(mem, 'egg_recover_skip', month=shop.get('key'), gold=gold,
                     reason='所持金が卵の回復費に足りないため見送る')
@@ -3451,45 +5186,239 @@ def _month_extra(screen, mem, shop):
         move = menu_to(screen, label)
         if move == 'here':
             shop[sub] = 'opened'
-            mem['month_sub'] = {'kind': sub, 'gold_before': gold, 'presses': 0, 'key': shop.get('key')}
+            mem['month_sub'] = {'kind': sub, 'gold_before': gold, 'presses': 0, 'key': shop.get('key'),
+                                'left_menu': False}
+            if sub == 'recruit':
+                mem['month_sub']['generals_before'] = sorted({
+                    g for gs in (mem.get('garrison') or {}).values() for g in gs or ()})
             _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice=label,
                     reason=f'{label}を選択')
             return [pad('a')]
         if move is None:
+            if sub == 'recruit' and shop.get('recruit_priority'):
+                # g508 1-8: the first menu/cursor reading was incomplete;
+                # skipping immediately sent all optional money to soldiers.
+                waits = int(shop.get('recruit_menu_wait') or 0) + 1
+                shop['recruit_menu_wait'] = waits
+                if waits <= 6:
+                    if waits == 1:
+                        _record(mem, 'recruit_menu_wait', month=shop.get('key'),
+                                reason='将軍不足時の募集欄・カーソルを有限回待ち、兵士補充を先に始めない')
+                    return []
+                shop[sub] = 'unverified'
+                _record(mem, 'recruit_menu_unconfirmed', month=shop.get('key'),
+                        observed_metric={'waits': waits},
+                        reason='募集欄を有限回待っても読めないため実行を未確認とし、募集費は温存する')
+                continue
             shop[sub] = 'skipped'
             _record(mem, 'situation_held', screen=screen.kind, choice=label,
                     reason=f'月一メニューに{label}が読めないため見送る')
             continue
+        if sub == 'recruit':
+            shop.pop('recruit_menu_wait', None)
         return [move]
-    return None
+    return None if recruit_only else _month_chikujou(screen, mem, shop)
 
 
-def _finish_month_sub(screen, mem, shop):
-    """Back on the month menu: judge the sub-action by the gold it cost."""
-    sub = mem.pop('month_sub')
+CHIKUJOU_SPARE = 40            # gold beyond the wage reserve before a castle is upgraded
+
+
+def _month_chikujou(screen, mem, shop):
+    """Owner (2026-09-29): with money to spare, ちくじょう raises a castle's level.
+
+    wikiwiki 城: a defender's egg monster gains +level defense and speed and a
+    defending general +level charge speed. Measured (isolated probe, chapter
+    2): ちくじょう lists our castles (the first row is the home castle),
+    「NGかかりますがよろしいですかな」 asks うむッ!/いかんッ!, and one level per
+    month is allowed (「これいじょうのぞうちくはできませんぞ!!」).
+    """
+    if shop.get('chikujou') != 'check':
+        return None
+    gold = (screen.header or {}).get('gold')
+    if type(gold) is not int or gold < WAGE_RESERVE + CHIKUJOU_SPARE + shop.get('recruit_reserve', 0) + shop.get('hero_repair_reserve', 0):
+        shop['chikujou'] = 'skipped'
+        return None
+    move = menu_to(screen, 'ちくじょう')
+    if move is None:
+        shop['chikujou'] = 'skipped'
+        return None
+    if move != 'here':
+        return [move]
+    shop['chikujou'] = 'opened'
+    mem['month_sub'] = {'kind': 'chikujou', 'gold_before': gold, 'presses': 0, 'key': shop.get('key'),
+                        'left_menu': False}
+    _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice='ちくじょう',
+            reason='所持金に余裕があるため、ちくじょうで城の防衛力を上げる')
+    return [pad('a')]
+
+
+def _chikujou_step(screen, mem, sub):
+    text = screen.text
+    if screen.has('うむッ') and screen.has('いかんッ'):
+        quote = re.search(r'(\d+)Gかかりますが', text)
+        gold = (screen.header or {}).get('gold')
+        cost = int(quote[1]) if quote else None
+        if (cost is None or type(gold) is not int or gold - cost < WAGE_RESERVE + (mem.get('shop') or {}).get('hero_repair_reserve', 0)
+                + (mem.get('shop') or {}).get('recruit_reserve', 0)):
+            sub['declined'] = True
+            move = menu_to(screen, 'いかんッ!')
+            _record(mem, 'chikujou_declined', observed_metric={'cost': cost, 'gold': gold},
+                    reason='ちくじょう費用を払うと賃金リザーブを割るか費用が読めないため見送る')
+            return [pad('a')] if move == 'here' else [move] if move else [pad('b')]
+        move = menu_to(screen, 'うむッ!')
+        if move == 'here':
+            sub['quoted_cost'] = cost
+            _record(mem, 'chikujou_confirm', observed_metric={'cost': cost, 'gold': gold},
+                    reason=f'{cost}Gで城のレベルを上げる')
+            return [pad('a')]
+        return [move] if move else []
+    if 'になりましたぞ' in text:
+        sub['upgraded'] = True
+        return [pad('a')]
+    if 'これいじょう' in text or sub.get('upgraded') or sub.get('declined'):
+        return [pad('b')]              # one level per month: back to the month menu
+    if 'ぞうちく' in text:
+        # g438 03:37: the first row was ジョンリギ with nobody inside
+        # (「しょうぐんがおりませなんだ」) and the upgrade never happened. Pick the
+        # home castle, else a castle a general is known to hold.
+        chapter = mem.get('chapter') or 0
+        home = chart.home_castle(chapter)
+        names = [STATUS_NAMES.get(home, home)] + [
+            STATUS_NAMES.get(c, c) for c, gs in (mem.get('garrison') or {}).items() if gs and c != home]
+        tried = sub.setdefault('rows_tried', [])
+        for name in names:
+            if name in tried:
+                continue
+            move = menu_to(screen, name)
+            if move is None:
+                tried.append(name)
+                continue
+            if move == 'here':
+                if 'おりませなんだ' in text and sub.get('chosen') == name:
+                    tried.append(name)     # nobody there: try the next castle
+                    continue
+                sub['chosen'] = name
+                return [pad('a')]
+            return [move]
+        sub['declined'] = True
+        _record(mem, 'chikujou_declined', observed_metric={'tried': tried},
+                reason='将軍のいる城を一覧で選べないため、ちくじょうを見送る')
+        return [pad('b')]
+    return []
+
+
+def _finish_month_sub(screen, mem, shop) -> bool:
+    """Back on the month menu: judge the sub-action by the gold it cost.
+
+    Returns False while the sub must stay tracked. g462 18:06:02-18:11:11: the
+    menu frame was still on screen when ちくじょう opened, so the sub ended
+    before the game reacted; the castle list and its confirm then ran through
+    the generic paths and the 「これいじょうのぞうちく」 exit screen repeated A
+    for 300 s until the run watchdog ended the corner. Defer while the menu is
+    unchanged (nothing judged yet): finish once the flow left the menu, the
+    payment is readable, or MONTH_SUB_MENU_WAIT stale menu frames passed.
+    """
+    sub = mem.get('month_sub')
+    if sub is None:
+        return True
     gold = (screen.header or {}).get('gold')
     before = sub.get('gold_before')
-    cost = sub.get('quoted_cost') if sub['kind'] == 'egg' else RECRUIT_COST
+    cost = sub.get('quoted_cost') if sub['kind'] in ('egg', 'chikujou') else RECRUIT_COST
     paid = (type(cost) is int and cost > 0 and type(gold) is int and type(before) is int
             and before - gold == cost
             and (sub['kind'] != 'egg' or sub.get('full_selected') is True))
+    if sub['kind'] == 'recruit':
+        receipt = sub.get('recruit_paid_gold')
+        # g498: the 235 ->185 fee was observed in the candidate dialogue;
+        # the final menu was 183, so later deductions cannot erase that fee.
+        paid = paid or (type(receipt) is int and type(before) is int
+                        and before - receipt == RECRUIT_COST)
+    if sub.get('left_menu') is False and not paid and not sub.get('declined'):
+        wait = int(sub.get('menu_wait', 0)) + 1
+        sub['menu_wait'] = wait
+        if wait < MONTH_SUB_MENU_WAIT:
+            return False
+    sub = mem.pop('month_sub')
     if shop and shop.get(sub['kind']) == 'opened':
         shop[sub['kind']] = 'done' if paid else 'unverified'
     if sub['kind'] == 'recruit':
-        # A recruit (paid or not confirmed) may now stand in the home castle:
-        # its last reading no longer proves it empty.
-        (mem.get('garrison') or {}).pop(chart.home_castle(mem.get('chapter') or 0), None)
+        if shop and paid:
+            shop['recruit_reserve'] = 0
+        # A recruit joins the hero's castle, which need not be home.
+        # Invalidate its old list; observe the candidate there before claiming
+        # admission. Payment alone is not a roster increase.
+        garrison = mem.get('garrison') or {}
+        placements = {c for c, gs in garrison.items() if NAME in (gs or ())}
+        placements.add(chart.home_castle(mem.get('chapter') or 0))
+        for c in placements:
+            garrison.pop(c, None)
+        if paid:
+            mem['recruit_verification'] = {
+                'month': sub.get('key'), 'candidates': sorted(set(sub.get('candidate_names', []))
+                                                           | set(sub.get('joined_names', []))),
+                'generals_before': sub.get('generals_before', []), 'placement': 'unclassified'}
+    if (shop and type(gold) is int and not shop.get('soldiers_done')
+            and (shop.get('hero_repair_reserve') or (paid and sub['kind'] == 'recruit'))):
+        # g508: a confirmed 50G fee plus a further 12G deduction left 94G;
+        # the original 76 soldiers then spent the wage reserve down to 18G.
+        # All paid recruits need the actual balance, not only broken heroes.
+        previous_soldiers = shop.get('soldiers', 0)
+        shop['soldiers'] = min(previous_soldiers, max(0, gold
+                               - _month_held_reserve(shop) - WAGE_RESERVE
+                               - shop.get('recruit_reserve', 0)))
+        shop['soldiers_done'] = shop['soldiers'] == 0
+        if paid and sub['kind'] == 'recruit':
+            _record(mem, 'soldier_budget_after_recruit', month=sub.get('key'),
+                    observed_metric={'gold_after': gold, 'soldiers_before': previous_soldiers,
+                                     'soldiers': shop['soldiers'], 'wage_reserve': WAGE_RESERVE},
+                    reason='募集後の実残金から兵士予算を再計算し、追加出費で賃金予備を使い込まない')
     if paid and sub['kind'] == 'egg':
         mem['egg_uses'] = {}      # counts are re-read at the next sorties
         mem.pop('egg_recheck', None)
+    if sub['kind'] == 'chikujou':
+        _record(mem, 'chikujou', month=sub.get('key'),
+                observed_metric={'gold_before': before, 'gold_after': gold, 'quoted_cost': cost,
+                                 'declined': sub.get('declined', False)},
+                deviation_reason=None if paid or sub.get('declined') else 'cost_not_observed',
+                reason='月一メニュー復帰時の所持金でちくじょうの支払いを確認' if paid
+                else 'ちくじょうを見送った／支払いを確認できない')
+        return True
     _record(mem, 'egg_recover' if sub['kind'] == 'egg' else 'recruit', month=sub.get('key'),
             strategy_variant='recruit_default_cursor' if sub['kind'] == 'recruit' else 'egg_recover',
             observed_metric={'gold_before': before, 'gold_after': gold, 'presses': sub.get('presses'),
                              'aborted': sub.get('aborted', False),
-                             'full_selected': sub.get('full_selected'), 'quoted_cost': cost},
+                             'full_selected': sub.get('full_selected'), 'quoted_cost': cost,
+                             'fee_receipt_gold': sub.get('recruit_paid_gold'),
+                             'joined_announced': sub.get('joined_names', [])},
             deviation_reason=None if paid else 'cost_not_observed',
             reason='月一メニュー復帰時の所持金で実行を確認' if paid
             else '月一メニューに戻ったが所持金の減少を確認できない')
+    return True
+
+
+CHIKUJOU_LEFTOVER = ('これいじょうのぞうちく', 'ぞうちくなさいます')
+
+
+def chikujou_leftover(screen, mem) -> bool:
+    """An untracked ちくじょう overlay: only B leaves it.
+
+    g462 18:06:10-18:11: the sub had been closed early, so the castle list
+    (「これいじょうのぞうちくはできませんぞ!! どのしろをぞうちくなさいますか?」)
+    fell through to legacy A presses that changed nothing for 300 s and the run
+    watchdog ended the corner. Measured screens: kind text, phrase above.
+    """
+    if mem.get('month_sub'):
+        return False
+    if not any(phrase in screen.text for phrase in CHIKUJOU_LEFTOVER):
+        mem.pop('chikujou_leftover', None)
+        return False
+    if not mem.get('chikujou_leftover'):
+        mem['chikujou_leftover'] = True
+        _record(mem, 'chikujou_leftover', screen=screen.kind,
+                observed_metric={'text': screen.text[-60:]},
+                deviation_reason='chikujou_state_lost',
+                reason='ちくじょうの画面を方策状態なしで確認したためBで閉じる')
+    return True
 
 
 def _paid_recruit_candidate(screen, sub):
@@ -3515,12 +5444,26 @@ def month_sub_step(screen: Screen, mem):
     """
     sub = mem['month_sub']
     kind = screen.kind
+    if kind != 'month_menu':
+        sub['left_menu'] = True     # the flow really left the month menu
     if kind in MONTH_SUB_EXIT_KINDS:
         mem.pop('month_sub')
         _record(mem, 'month_sub_lost', screen=kind, observed_metric=sub,
                 reason='月一の実行中に月一メニューへ戻らず別画面になったため追跡をやめる')
         return None
     candidate = _paid_recruit_candidate(screen, sub)
+    if candidate:
+        sub['recruit_paid_gold'] = screen.header['gold']
+    if sub['kind'] == 'recruit' and sub.get('recruit_paid_gold') is not None:
+        for line in screen.lines:
+            joined = re.fullmatch(r'([^�]+)がはいかにくわわった!', line.known.replace(' ', '').replace('！', '!'))
+            if joined and joined[1] not in sub.setdefault('joined_names', []):
+                sub['joined_names'].append(joined[1])
+                _record(mem, 'recruit_join_announced', general=joined[1], month=sub.get('key'),
+                        observed_metric={'placement': 'unclassified'},
+                        reason='募集の実加入告知を確認。配置は次の在城一覧で照合する')
+    if candidate and candidate not in sub.setdefault('candidate_names', []):
+        sub['candidate_names'].append(candidate)
     if candidate and not sub.get('paid_candidates'):
         # v16 may already have entered the old 8-observation abort. The
         # measured paid candidate screen is new progress, so recover once;
@@ -3541,6 +5484,8 @@ def month_sub_step(screen: Screen, mem):
         return [pad('b')]
     if sub['kind'] == 'egg':
         return _egg_recovery_step(screen, mem, sub)
+    if sub['kind'] == 'chikujou':
+        return _chikujou_step(screen, mem, sub)
     if kind == 'yes_no' or (screen.has('うむッ') and screen.has('いかんッ')):
         move = menu_to(screen, 'うむッ!')
         if move and move != 'here':
@@ -3563,7 +5508,9 @@ def _egg_recovery_step(screen, mem, sub):
         gold = (screen.header or {}).get('gold')
         if (not sub.get('full_selected') or not quote
                 or int(quote[1]) <= 0 or int(quote[2]) != int(quote[1]) * EGG_RECOVER_COST
-                or type(gold) is not int or gold < int(quote[2])):
+                or type(gold) is not int or gold < int(quote[2])
+                + (mem.get('shop') or {}).get('hero_repair_reserve', 0)
+                + (WAGE_RESERVE if (mem.get('shop') or {}).get('hero_repair_reserve') else 0)):
             sub['aborted'] = True
             _record(mem, 'egg_recover_skip', observed_metric={'gold': gold, 'quote_read': bool(quote)},
                     reason='全回復の選択・費用・所持金を確認できないか、費用が足りないため戻る')
@@ -3590,7 +5537,7 @@ def _egg_recovery_step(screen, mem, sub):
     return [pad('a')]  # bounded introduction/paid ritual dialogue
 
 
-MONTH_SUB_EXIT_KINDS = frozenset({'map', 'map_target', 'battle', 'battle_menu', 'egg_battle_menu',
+MONTH_SUB_EXIT_KINDS = frozenset({'map', 'map_target', 'battle', 'battle_menu', 'egg_battle_menu', 'egg_choice_menu',
                                   'monster_menu', 'attack_started', 'defense_started',
                                   'boss_attack_started', 'name_entry', 'castle_menu'})
 
@@ -3758,6 +5705,12 @@ def discharge_step(screen: Screen, mem):
     return [pad('a')]
 
 
+# The general-trade event (花いちもんめ) must always be declined (owner rule
+# 2026-09-28). 'トレード' is the measured question word; the song title is a
+# belt-and-braces match for a variant scene.
+TRADE_DECLINE_TOKENS = ('トレード', 'はないちもんめ', 'いちもんめ')
+
+
 def yes_no_step(screen: Screen, mem):
     text = screen.text
     if re.search(r'\d+Gでいい', text):
@@ -3768,17 +5721,59 @@ def yes_no_step(screen: Screen, mem):
         # needs shielding from the offer.
         choice, reason = 'うむッ!', '一騎打ちは青ゲージを消費する前提で受ける'
         variant = 'accept_duel'
+    elif any(tok in text for tok in TRADE_DECLINE_TOKENS):
+        # Owner rule (2026-09-28): the general trade (花いちもんめ) almost
+        # always offers an unfair deal (odoru7094: ろくでもないのしか手に
+        # 入らないのでやってはいけない), so decline it. Measured question
+        # (倒転王国 月イチイベント): 「ここで将軍同士のトレードをしようじゃ
+        # ないか。そちらの◯◯将軍と我が軍のイキのいいのとではどーだ?」
+        choice, reason = 'いかんッ!', '将軍トレード（花いちもんめ）は不平等な提案が多いため断る'
+        variant = 'decline_general_trade'
     else:
         choice, reason, variant = 'うむッ!', '未分類の確認は既定で進行', 'unclassified_prompt'
     move = menu_to(screen, choice)
     if move == 'here':
         _record(mem, 'prompt', choice=choice, prompt=text[-40:], reason=reason, strategy_variant=variant)
         return [pad('a')]
+    if move is None:
+        _record(mem, 'situation_held', screen=screen.kind,
+                observed_metric={'choice': choice, 'hand_visible': screen.hand is not None},
+                reason='確認画面の選択位置を読めないため決定せず再観測')
     return [move] if move else []
+
+
+def _repair_home_alias_failures(mem):
+    """Undo order failures caused by the ほんじょう/アルマムーン name check (v53-v59).
+
+    g436 (21:19): the status check refused chapter 1's home castle as a
+    mismatch three times per order and failed 1-A1, 1-V1, 1-C1... before any
+    of them left. Orders from the home castle that failed without ever
+    launching go back to pending once.
+    """
+    if mem.get('home_alias_repaired') or (mem.get('chapter') or 0) != 1:
+        return
+    mem['home_alias_repaired'] = True
+    status = mem.get('orders') or {}
+    launched = mem.get('launched_orders') or {}
+    home = chart.home_castle(1)
+    restored = []
+    for order in chart.orders(1):
+        step = order['step']
+        if status.get(step) == 'failed' and order['source'] == home and step not in launched:
+            status.pop(step, None)
+            for key in ('source_miss', 'source_override', 'general_override'):
+                (mem.get(key) or {}).pop(step, None)
+            restored.append(step)
+    if restored:
+        mem['active'] = None
+        _record(mem, 'orders_restored', observed_metric=restored,
+                reason='本城の城名確認の誤判定（ほんじょう/アルマムーン）で失敗扱いになった指示を未実行に戻す')
 
 
 def observe_events(screen: Screen, mem):
     """Record chart-relevant facts that need no input (month header, harvest)."""
+    _repair_home_name_chapter(mem)
+    _repair_home_alias_failures(mem)
     mem['tick'] = int(mem.get('tick') or 0) + 1      # observations: ages sorties (_en_route)
     _hold_general_loss_metric(mem)
     _migrate_card_evidence(mem)
@@ -3797,32 +5792,7 @@ def observe_events(screen: Screen, mem):
     if header:
         chapter = header.get('chapter')
         if chapter and chapter != mem.get('chapter'):
-            previous = mem.get('chapter')
-            # Route state belongs to the measured map of one chapter. Keep
-            # run-wide counters/name evidence, never carry coordinates/orders.
-            for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
-                        'captured', 'card_override', 'cursor', 'egg_battle',
-                        'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
-                        'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
-                        'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
-                        'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
-                        'garrison', 'general_location_unknown', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
-                        'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
-                        'target_miss', 'target_cancel', 'menu_hold', 'card_scroll',
-                        'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
-                        'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent',
-                        'near_goal', 'align_steps', 'unanchored', 'select_tick',
-                        'select_used',
-                        'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
-                        'indep_menu_key', 'indep_menu_action',
-                        'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
-                        'monster_menu_choice', 'monster_menu_choice_key', 'monster_panel'):
-                mem.pop(key, None)
-            mem['chapter'] = chapter
-            mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'
-            _record(mem, 'chapter_seen', previous_stage=previous,
-                    observed_metric={'chapter': chapter}, resulting_stage=chapter,
-                    reason='画面の章表示を確認し、前章の座標・出撃・購入状態を初期化')
+            _enter_chapter(mem, chapter, reason='画面の章表示を確認し、前章の座標・出撃・購入状態を初期化')
         key = _month_key(header)
         if mem.get('month') != key:
             mem['month'] = key
@@ -3834,6 +5804,17 @@ def observe_events(screen: Screen, mem):
         _record(mem, 'poor_harvest', deviation_reason='reset_forbidden',
                 reason='チャートは凶作でリセット指示だがbotはリセットしない',
                 expected_metric='収入減')
+    # Owner rule (2026-09-28): with 50+ soldiers on hand, egg recovery wins
+    # over buying more soldiers. The army total is read wherever the game
+    # states it (e.g. 「げんざい わがぐんの へいしすうは Nめいです」).
+    m = re.search(r'へいしすうは([0-9０-９]+)めい', screen.text.replace(' ', ''))
+    if m:
+        seen = int(m.group(1).translate(str.maketrans('０１２３４５６７８９', '0123456789')))
+        mem['soldiers_seen_key'] = mem.get('month')
+        if seen != mem.get('soldiers_seen'):
+            mem['soldiers_seen'] = seen
+            _record(mem, 'soldiers_seen', observed_metric={'soldiers': seen},
+                    reason='兵士の総数を画面の文言から読み取った')
 
 
 def summary(mem: dict | None) -> dict:
@@ -3868,6 +5849,55 @@ def summary(mem: dict | None) -> dict:
     }
 
 
+def egg_choice_step(screen: Screen, mem):
+    """Choose a real offered summon; never type a name or infer an egg result."""
+    from .hanjuku_screen import egg_choice_names
+    names = egg_choice_names(screen)
+    if not names or screen.menu_cursor not in (176, 192, 208):
+        return []
+    key = tuple(names)
+    flow = mem.get('egg_choice')
+    if not flow or tuple(flow.get('names') or ()) != key:
+        flow = mem['egg_choice'] = {'names': names, 'selected': 0, 'wait': 0}
+    if flow['selected']:
+        flow['wait'] += 1
+        if flow['wait'] <= 3:
+            return []
+        if flow['selected'] >= 2:
+            if not flow.get('held'):
+                flow['held'] = True
+                _record(mem, 'egg_choice_unconfirmed', observed_metric={'candidates': names},
+                        reason='有限回の召喚選択後も同じ三択のため、召喚成功とせず保留')
+            return []
+    # The first actual candidate is a valid summon. No unverified power ranking
+    # or arbitrary entry is introduced; later skill/HP policy handles its fight.
+    choice = names[0]
+    move = _battle_menu_to(screen, choice)
+    if move != 'here':
+        return [move] if move else []
+    flow['selected'] += 1
+    flow['wait'] = 0
+    _record(mem, 'egg_choice_select', observed_metric={'candidates': names, 'choice': choice},
+            resulting_event='summon_selected_not_yet_confirmed',
+            reason='実表示の三候補と騎士カーソルを確認し、先頭の召喚獣を選択')
+    return [pad('a')]
+
+
+def _egg_general_reading(screen, mem, battle):
+    """Read this battle's general, never substitute a summoned monster's HP."""
+    rows = [row for row in screen.egg_rows
+            if row.side == 'ally' and row.name == battle.get('ally')
+            and type(row.hp) is int and row.hp >= 0]
+    if len(rows) != 1:
+        return None
+    ally = battle.get('ally')
+    full = (mem.get('hero_max_hp') if ally == NAME else general_max_hp(ally))
+    if type(full) is not int or full <= 0 or rows[0].hp > full:
+        return None
+    battle['ally_hp'] = rows[0].hp
+    return rows[0].hp, full
+
+
 def egg_battle_step(screen: Screen, mem):
     """Summoned-monster battle: a turn menu that waits for a command.
 
@@ -3891,26 +5921,80 @@ def egg_battle_step(screen: Screen, mem):
         if isinstance(battle, dict):
             battle['independent'] = {'kind': 'egg_summon', 'key': key, 'action': action,
                                      'pattern': '⑥'}
+            battle['egg_battle'] = True     # earlier retreat threshold (see _hero_retreat_needed)
         _record(mem, 'egg_battle', strategy_variant=f'egg_battle_{action}',
                 deviation_reason='チャート外: 敵の卵召喚戦',
                 expected_metric='召喚獣への対処と戦闘結果',
                 observed_metric={'experience_key': key}, source_pattern='⑥',
                 reason='チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）')
+    battle = mem.get('battle') or {}
+    general_reading = _egg_general_reading(screen, mem, battle)
+    if (_available_rare_tactic(mem, battle) and not battle.get('rare_egg_command_return')):
+        battle['rare_egg_command_return'] = True
+        _record(mem, 'battle_rare_egg_command', **_battle_labels(battle),
+                observed_metric={'card': 'キャトルミュー'},
+                reason='実携行のレア札で召喚敵へ対処するため、通常コマンドへ一度戻る')
+        return [pad('b')]
     action = mem.get('egg_action', 'use_egg')
     if action == 'use_egg' and 'たまごをつかう' not in screen.text:
         # A spent egg greys the row out and drops it from OCR (mirrors
         # battle_menu_step's きりふだ/たいきゃく fallback); chasing a label
         # that never appears held the bot here forever (viewer report
         # 2026-09-28: 持ってないタマゴを使おうとして止まっている). The
-        # panel opens with the cursor on こうげき, so answer with a plain
-        # attack instead.
+        # attack fallback still checks the observed command cursor.
         if not mem.get('egg_battle_row_dead'):
             mem['egg_battle_row_dead'] = True
             _record(mem, 'situation_held', screen=screen.kind, strategy_variant='egg_unavailable',
                     reason='たまごをつかうが使えない表示のため卵を諦めてこうげきで応戦する')
         action = 'attack'
     if action == 'attack':
-        return [pad('a')]
+        battle = (mem.get('battle') if isinstance(mem.get('battle'), dict)
+                  else mem.setdefault('egg_retreat_flow', {}))
+        attempted = {*(battle.get('cards_selected') or []), *(battle.get('cards_used') or []),
+                     *(battle.get('cards_unclassified') or [])}
+        cards_left = [c for c in (battle.get('planned_cards') or []) if c not in attempted]
+        # g498: B did not leave the turn menu, yet the next observation
+        # immediately chose A and Venus lost. Require a bounded return flow,
+        # and actually request retreat if the normal command menu is reached.
+        if not cards_left and battle.get('side') != 'defense':
+            attempts = int(battle.get('egg_retreat_attempts') or 0)
+            battle['egg_retreat_needed'] = True
+            battle['egg_retreat_tried'] = True  # legacy hotloaded state
+            if attempts < 3:
+                battle['egg_retreat_attempts'] = attempts + 1
+                _record(mem, 'battle_egg_retreat_attempt', **_battle_labels(battle),
+                        observed_metric={'enemy': battle.get('enemy'), 'ally_hp': battle.get('ally_hp'),
+                                         'enemy_hp': battle.get('enemy_hp'), 'attempt': attempts + 1},
+                        reason='卵も札もない召喚戦のため、通常の退却メニューへの復帰を再確認する')
+                return [pad('b')]
+            if not battle.get('egg_retreat_unavailable_recorded'):
+                battle['egg_retreat_unavailable_recorded'] = True
+                _record(mem, 'battle_egg_retreat_unavailable', **_battle_labels(battle),
+                        observed_metric={'attempts': attempts, 'screen': screen.kind},
+                        reason='有限回の復帰入力でも退却メニューを確認できないため、退却成功とせず応戦する')
+        # g508: after Excalibur fell, stale general HP82 concealed the
+        # wounded Venus while blind A kept choosing the weakest attack.
+        # Fierce attack adds lost HP to damage, but can miss/lose initiative;
+        # use it only as a bounded-resource last resort with actual panels.
+        enemy_rows = [r for r in screen.egg_rows if r.side == 'enemy'
+                      and r.name in _MONSTER_SKILLS and type(r.hp) is int and r.hp > 0]
+        fierce = (general_reading is not None and 0 < general_reading[0] * 2 <= general_reading[1]
+                  and len(enemy_rows) == 1 and not cards_left
+                  and 'たまごをつかう' not in screen.text)
+        label = 'もうこうげき' if fierce else 'こうげき'
+        move = _battle_menu_to(screen, label)
+        if move is None:
+            # Never confirm a previously selected fierce row blindly.
+            return [] if fierce or battle.get('egg_attack_label') == 'もうこうげき' else [pad('a')]
+        if battle.get('egg_attack_label') != label:
+            battle['egg_attack_label'] = label
+            _record(mem, 'battle_egg_general_attack', **_battle_labels(battle),
+                    observed_metric={'command': label, 'general_hp': battle.get('ally_hp'),
+                                     'max_hp': general_reading[1] if general_reading else None,
+                                     'enemy_monster': enemy_rows[0].name if len(enemy_rows) == 1 else None},
+                    reason=('卵・予定札がなく退却もできない負傷将軍は、実HPに基づきもうこうげきで応戦する'
+                            if fierce else '実コマンド位置を確認して通常攻撃へ戻す'))
+        return [pad('a')] if move == 'here' else [move]
     _egg_recheck(mem)
     if screen.hand:
         move = menu_to(screen, 'たまごをつかう')
@@ -3945,7 +6029,7 @@ MONSTER_MENU_HOLD_LIMIT = 30
 
 
 def _fold_skill(text: str) -> str:
-    return text.replace(' ', '').translate(_KANA_FOLD)
+    return text.replace(' ', '').replace('！', '!').replace('？', '?').translate(_KANA_FOLD)
 
 
 _MONSTER_SKILLS = {name: frozenset(_fold_skill(s) for s in skills)
@@ -3995,7 +6079,8 @@ def monster_menu_step(screen: Screen, mem):
     menu_key = tuple(row_texts)
     if mem.get('monster_menu_key') != menu_key:
         mem['monster_menu_key'] = menu_key
-        for key in ('monster_menu_cursor', 'monster_menu_choice', 'monster_menu_choice_key'):
+        for key in ('monster_menu_cursor', 'monster_menu_choice', 'monster_menu_choice_key',
+                    'monster_menu_choice_hp', 'monster_ally_max_hp'):
             mem.pop(key, None)
         mem['monster_menu_hold'] = 0
     skill_lines = [line for line, text in zip(rows, row_texts) if 'もどれ' not in text]
@@ -4028,34 +6113,71 @@ def monster_menu_step(screen: Screen, mem):
                     reason='敵側表示のまま停留が上限を超えたため、画面停止を避けて選択へ移行')
     else:
         mem['monster_menu_hold'] = 0
-    if not mem.get('monster_menu_choice'):
+    # Re-decide when the panel HP changed: a cached choice repeated the same
+    # skill every turn (g407: ふくらむ x71) and never let a heal-first monster
+    # alternate ふくらむ→シャウト (owner 2026-09-29).
+    hp_state = (ally.hp if ally else None, enemy.hp if enemy else None)
+    # GCGX: エクスカリバる is instant death (11/current HP against
+    # monsters), マサムネる hits four times. g498 used the former at
+    # 282HP against a 240HP Dark Elf, then lost the summon and Venus.
+    damage_second = (owner == 'ally' and ally.name == 'エクスカリバー'
+                     and enemy is not None and enemy.name in _MONSTER_SKILLS
+                     and len(skill_lines) == 2
+                     and [_fold_skill(t) for t in row_texts[:2]]
+                     == [_fold_skill(t) for t in reference.MONSTER_SKILLS['エクスカリバー']])
+    if (not mem.get('monster_menu_choice') or mem.get('monster_menu_choice_hp') != hp_state
+            or (damage_second and mem.get('monster_menu_choice') not in ('skill2', 'retreat'))):
         ally_hp = ally.hp if ally else None
         enemy_hp = enemy.hp if enemy else None
         behind = _behind({'ally_hp': ally_hp, 'enemy_hp': enemy_hp})
         retreat = type(ally_hp) is int and type(enemy_hp) is int and ally_hp * 2 <= enemy_hp
         first = ''.join(skill_lines[0].known.split())
         second = ''.join(skill_lines[1].known.split()) if len(skill_lines) >= 2 else ''
+        # g496: ウゴカザル's two commands do nothing; spending turns on
+        # them cost 120 -> 46 -> 11 HP without reducing the defender.
+        powerless = (owner == 'ally' and ally.name == 'ウゴカザル'
+                     and len(skill_lines) == 2
+                     and {_fold_skill(first), _fold_skill(second)}
+                     == _MONSTER_SKILLS['ウゴカザル'])
         heal_first = bool(second) and _monster_heal(first) and not _monster_heal(second)
         default = 'skill1'
-        if behind and len(skill_lines) >= 2 and _monster_effectful(second):
+        if damage_second:
             default = 'skill2'
-        elif heal_first and not behind:
-            # Healing at full HP loops forever without ever lowering the
-            # enemy (g407: ふくらむ x71 vs an enemy left at 12 HP).
+        elif heal_first:
+            # バルーンフィンチ: ふくらむ→シャウト (owner 2026-09-29). Inflate to
+            # the tracked max first (the first turn heals so a damaged summon
+            # reaches it), then shout while at max; damage re-enables the heal.
+            # The old "heal at full forever" loop (g407: ふくらむ x71) stays
+            # impossible because a full HP attacks instead.
+            seen = mem.get('monster_ally_max_hp')
+            if type(ally_hp) is not int:
+                default = 'skill1'
+            elif behind or (type(seen) is int and ally_hp < seen):
+                default = 'skill1'      # hurt: inflate back to the tracked max
+            else:
+                default = 'skill2'      # at max (or ahead): shout
+            if type(ally_hp) is int:
+                mem['monster_ally_max_hp'] = max(int(seen or 0), ally_hp)
+        elif behind and len(skill_lines) >= 2 and _monster_effectful(second):
             default = 'skill2'
         exp = mem.get('_experience')
         key = experience.situation_key('monster_menu', mem)
-        action = 'retreat' if retreat else experience.preferred(exp, key, default=default, kind='monster_menu')
+        action = ('retreat' if retreat or powerless else 'skill2' if damage_second
+                  else experience.preferred(exp, key, default=default, kind='monster_menu'))
         mem['monster_menu_choice'] = action
         mem['monster_menu_choice_key'] = key
+        mem['monster_menu_choice_hp'] = hp_state
         battle = mem.get('battle')
         if isinstance(battle, dict):
             battle['independent'] = {'kind': 'monster_menu', 'key': key, 'action': action}
         if action == 'retreat':
-            label, why = 'たまごに もどれ', '味方HPが敵の半分以下なので撤退して見守る'
+            label = 'たまごに もどれ'
+            why = ('両技に攻撃性能がない召喚獣のため、無効な攻撃を繰り返さず戻す'
+                   if powerless else '味方HPが敵の半分以下なので撤退して見守る')
         elif action == 'skill2' and len(skill_lines) >= 2:
             label = second
-            why = ('1技目が回復技のため敵を減らす2技目を選ぶ'
+            why = ('敵召喚獣には低確率の即死より4回攻撃を優先する' if damage_second else
+                   '1技目が回復技のため敵を減らす2技目を選ぶ'
                    if heal_first and not behind else '味方が劣勢で効果付きの2技目')
         else:
             label, why = first, '先手を取れる1技目を続ける'
@@ -4098,7 +6220,9 @@ def gift_step(screen: Screen, mem):
     it buys the cheapest listed item and records the deviation."""
     items = []
     for line in screen.lines:
-        joined = ''.join(line.words(64, 256))
+        # The live gift prompt shares the first price row. Restrict the
+        # item/price to the right menu, not the dialogue at its left.
+        joined = ''.join(word for x, word in line.spans() if x >= 144)
         m = re.match(r'^(\S+?)(\d+)G$', joined)
         if m and not HEADER_RE.search(line.known.replace(' ', '')):
             items.append((int(m.group(2)), m.group(1)))

@@ -8,7 +8,11 @@ No model or network is used. Delivery is owned by ``hanjuku_narration``.
 """
 from __future__ import annotations
 
-COMMENTARY_VERSION = "hanjuku-commentary-v2-observed-context"
+import json
+import re
+from pathlib import Path
+
+COMMENTARY_VERSION = "hanjuku-commentary-v4-explicit-evidence"
 
 _STEP_LABEL = {
     '1-A1': '主人公の初手', '1-V1': 'ヴィーナスの初手', '1-C1': 'ココットの初手',
@@ -19,6 +23,20 @@ _STEP_LABEL = {
 
 def _cards(cards):
     return '、'.join(cards) if cards else '切り札なし'
+
+
+# These records are emitted while choosing actions, before input delivery.
+# They must remain intentions, never receipts of a completed game operation.
+PLANNED = frozenset({
+    'name_confirm', 'order_start', 'order_retry', 'order_source_changed',
+    'order_substitute', 'battle_survival', 'battle_card', 'month_plan', 'buy',
+    'soldier_refill', 'prompt', 'gift', 'egg_battle', 'independent_menu',
+    'chart_adjust_request', 'chart_interim_order', 'chart_interim_hold',
+})
+
+
+def evidence_kind(record):
+    return 'plan' if record.get('decision') in PLANNED else 'observation'
 
 
 def compose(rec: dict) -> tuple[str, str | None]:
@@ -68,44 +86,53 @@ def compose(rec: dict) -> tuple[str, str | None]:
         else:
             tail = '体力は互角です。状況を見て使える手を選びます。'
         return (key,
-                f"{rec['ally']}対{rec['enemy']}、体力は{ally_hp}対{enemy_hp}。{tail}")
+                f"{rec['ally']}対{rec['enemy']}、戦闘開始時の体力は{ally_hp}対{enemy_hp}。{tail}")
     if kind == 'battle_survival':
         hp = (rec.get('observed_metric') or {}).get('ally_hp')
         return f'survival:{step}', f'体力が{hp}まで減ったので、切り札とたまごを確認して使える手を選びます。'
     if kind == 'battle_card':
         reason = rec.get('reason') or ''
         if '開幕' in reason:
-            why = f"開幕に{rec['card']}を使います。"
+            why = f"開幕に{rec['card']}を使う予定です。"
         elif 'ぶつかり' in reason:
-            why = f"一度ぶつかって敵の体力が{rec['enemy_hp']}になったので、{rec['card']}を使います。"
+            why = f"一度ぶつかって敵の体力が{rec['enemy_hp']}になったので、{rec['card']}を使う予定です。"
         else:
-            why = f"敵の{rec['enemy']}の体力が{rec['enemy_hp']}まで下がったので、{rec['card']}を使います。"
+            why = f"敵の{rec['enemy']}の体力が{rec['enemy_hp']}まで下がったので、{rec['card']}を使う予定です。"
         return f"card:{rec.get('card')}:{rec.get('enemy')}", why
     if kind == 'battle_result':
         outcome = rec.get('outcome')
         ally, enemy = rec.get('ally'), rec.get('enemy')
         if outcome == 'win':
-            tail = f"{rec['castle']}城を確保しました。" if rec.get('castle') and rec.get('side') == 'attack' else ''
-            return f'result:{ally}:{enemy}:win', f'{ally}将軍が{enemy}に勝ちました。{tail}'
+            # HP battle outcome is not a receipt for final castle ownership.
+            return f'result:{ally}:{enemy}:win', f'{ally}将軍が{enemy}に勝ちました。'
         if outcome == 'loss':
             return f'result:{ally}:{enemy}:loss', f'{ally}将軍は{enemy}に敗れました。'
         return 'result:held', None
     if kind == 'month_plan':
         plan = rec.get('plan') or {}
-        cards = '、'.join(f'{n}{q}個' for n, q in plan.get('cards', [])) or 'なし'
+        cards = '、'.join(f'{n}{q}個' for n, q in plan.get('cards', []))
+        soldiers = plan.get('soldiers')
         text = f"{rec['month'].replace('-', '年')}月、所持金は{rec['gold']}ゴールドです。"
-        if rec.get('deviation_reason'):
-            text += 'チャート想定の214ゴールドに届かないので、ボス用のクースカンとノリウツールを優先して買います。'
-        text += f'購入予定は{cards}です。'
+        deviation = rec.get('deviation_reason') or ''
+        shortfall = re.search(r'チャート想定(\d+)G', deviation)
+        if deviation == 'chart_month_uncovered':
+            text += '今月はチャートの購入予定がないので、'
+        elif shortfall:
+            text += f"チャート想定の{shortfall.group(1)}ゴールドに届かないので、優先順で買える分を買います。"
+        elif deviation:
+            text += 'チャートの予定と条件が異なるため、買える範囲で進めます。'
+        text += f'購入予定は{cards}です。' if cards else '切り札の購入はありません。'
+        if type(soldiers) is int and soldiers > 0:
+            text += f'兵士を{soldiers}人補充します。'
         return f"plan:{rec['month']}", text
     if kind == 'buy':
-        return f"buy:{rec.get('card')}:{rec.get('qty')}", f"{rec['card']}を{rec['qty']}個買いました。"
+        return f"buy:{rec.get('card')}:{rec.get('qty')}", f"{rec['card']}を{rec['qty']}個購入する予定です。決定操作を進めます。"
     if kind == 'soldier_refill':
         return 'soldiers', f"兵士を{rec['qty']}人補充します。"
     if kind == 'poor_harvest':
         return 'harvest', '凶作です。チャートならリセットする場面ですが、このまま進めます。'
     if kind == 'prompt' and rec.get('strategy_variant') == 'accept_duel':
-        return 'duel', '一騎打ちの申し出を受けた。青ゲージを消費して勝負します。'
+        return 'duel', '一騎打ちを受ける操作を選びます。成立後は青ゲージを使う予定です。'
     if kind == 'egg_battle':
         if rec.get('strategy_variant') == 'egg_battle_use_egg':
             return 'egg', '敵が卵で召喚獣を呼び出しました。こちらもたまごで応戦します。'
@@ -151,6 +178,8 @@ def compose(rec: dict) -> tuple[str, str | None]:
                     f"調整チャートを待つ間、{rec['general']}が{stem}{polite}。")
         return (f"jev_interim:{rec.get('target')}",
                 f"JEVは調整チャートを待つ間、{rec['general']}が{stem}{plain}と判断しました。{conf_s}")
+    if kind == 'castle_owned_observed':
+        return f"owned:{rec.get('castle')}", f"{rec.get('castle')}が自軍の城になっているのを確認しました。"
     if kind == 'castle_lost_observed':
         return f"lost:{rec.get('castle')}", f"{rec.get('castle')}が敵の城になっているのを確認しました。"
     if kind == 'chart_interim_hold':
@@ -165,4 +194,72 @@ SPOKEN = frozenset({
     'order_launched_unconfirmed', 'defense_observed', 'battle_start', 'battle_survival', 'battle_card', 'battle_result', 'month_plan', 'poor_harvest',
     'prompt', 'situation_held', 'gift', 'egg_battle', 'order_substitute', 'independent_menu',
     'chart_adjust_request', 'chart_adjust_applied', 'chart_interim_order', 'chart_interim_hold',
-    'castle_lost_observed'})
+    'castle_lost_observed', 'castle_owned_observed'})
+
+
+# ---------------------------------------------------------------- game over
+_MAX_DECISIONS = 200000
+
+
+def _decisions(runtime_dir):
+    for name in ('hanjuku_decisions.jsonl', 'hanjuku_decisions.previous.jsonl'):
+        path = Path(runtime_dir) / name
+        if not path.exists() or path.is_symlink():
+            continue
+        with path.open(encoding='utf-8', errors='ignore') as stream:
+            for index, line in enumerate(stream):
+                if index >= _MAX_DECISIONS:
+                    break
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(item, dict) and item.get('event') == 'decision':
+                    yield item
+
+
+def summarize_recap(runtime_dir, run_state) -> tuple[str, str]:
+    """A grounded game-over recap for the 实況 (owner rule 2026-09-28).
+
+    Looks back over this run's own decision log and run state: the story
+    (how far the chapters went) and the actions (sorties, battles, captures,
+    dismissals). Every number is read from the run's records; nothing is
+    invented, per the module contract.
+    """
+    chapter, captured, launches, discharged, months = 1, set(), 0, 0, []
+    for rec in _decisions(runtime_dir):
+        ch = rec.get('chapter')
+        if type(ch) is int and 1 <= ch <= 99:
+            chapter = max(chapter, ch)
+        kind = rec.get('decision')
+        if kind == 'order_launched':
+            launches += 1
+        elif kind == 'discharge_general':
+            discharged += 1
+        elif kind == 'month_seen':
+            key = rec.get('month')
+            if isinstance(key, str) and '-' in key:
+                year, month = key.split('-', 1)
+                if year.isdigit() and month.isdigit():
+                    months.append((int(year), int(month)))
+        elif kind in ('castle_owned_observed', 'world_map_owners'):
+            events = rec.get('resulting_event')
+            if isinstance(events, str):
+                events = [events]
+            for event in events or ():
+                if isinstance(event, str) and event.startswith('captured:'):
+                    captured.add(event.split(':', 1)[1])
+    try:
+        battles = int((run_state or {}).get('battles_finished') or 0)
+    except (TypeError, ValueError):
+        battles = 0
+    label = None
+    if months:
+        year, month = max(months)
+        label = f'{year}年{month}月'
+    text = f'ゲームオーバー。第{chapter}章まで進み、{len(captured)}城を獲得、{launches}回出撃と{battles}回戦闘を重ね、'
+    text += f'{label}まで戦いました' if label else '進軍を続けました'
+    if discharged:
+        text += f'（将軍の解雇{discharged}回）'
+    text += '。今回の挑戦はここまでです。'
+    return 'game_over_recap', text

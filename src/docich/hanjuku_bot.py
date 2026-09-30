@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v42-egg-when-behind'
+BOT_VERSION = 'hanjuku-chart-v110-entry-successor'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -168,6 +168,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     """
     from . import hanjuku_experience as experience_module
     from . import hanjuku_policy as policy
+    from . import hanjuku_house
     from .hanjuku_screen import parse
     phase=classify(frame)
     step=int(state.get('step',0))+1
@@ -194,21 +195,29 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         mem.pop('expect_menu',None)
         mem.pop('menu_miss',None)   # a real menu proves the cell was correct
     flow=(mem.get('battle') or {}).get('card_flow')
+    # A readable card name routes the open list, but a depleted list draws no
+    # card name at all (g452 07:14: ヴィーナス had spent both イッテツーン, the
+    # きりふだ menu showed nothing, the flow stayed on this text screen and
+    # legacy A presses stalled the run). The open list itself is evidence
+    # enough to let card_list_step back out with B.
     card_list=bool(flow) and kind in {'text','unknown'} and (
-        (flow.get('survival') and flow.get('stage') == 'list') or any(
-            w in policy.CARD_NAMES for line in screen.lines for _,w in line.spans()))
+        (flow.get('stage') == 'list' and (kind == 'text' or flow.get('survival')))
+        or any(w in policy.CARD_NAMES for line in screen.lines for _,w in line.spans()))
     # Egg/card announcements and fades inside a battle are not its end; only
     # a return to the map or a following event/menu closes the record.
+    if kind != 'battle_menu_pending':
+        mem.pop('battle_menu_pending_ticks', None)
+    if kind != 'battle' and mem.get('battle'):
+        mem['battle'].pop('successor_seen', None)
+        mem['battle'].pop('entry_successor_seen', None)
     after_battle = kind in policy.AFTER_BATTLE_KINDS or kind == 'barrier_removed'
     if mem.get('battle') and after_battle:
         policy.battle_end(mem,kind)
     if after_battle:
-        mem['egg_battle']=False
-        for key in ('egg_action','egg_key','egg_menu_stage','egg_battle_row_dead','indep_menu',
-                    'indep_menu_key','indep_menu_action',
-                    'monster_menu_key','monster_menu_cursor','monster_menu_hold',
-                    'monster_menu_choice','monster_menu_choice_key','monster_panel'):
-            mem.pop(key,None)
+        policy.reset_battle_controls(mem)
+    policy.observe_entry_return(screen, mem)
+    if kind != 'egg_choice_menu':
+        mem.pop('egg_choice', None)
     if kind != 'egg_battle_menu':
         mem.pop('egg_menu_stage',None)
         mem.pop('egg_battle_row_dead',None)
@@ -221,9 +230,15 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
             mem.pop(key,None)
     recruit_dialog = (mem.get('month_sub') or {}).get('kind') == 'recruit' and not policy.month_menu_ready(screen)
     recall_dialog = mem.get('recall') and not mem.get('month_sub') and kind in ('map', 'map_target', 'text')
+    # Cancel an outstanding repair before an emergency recall can move its
+    # general; the old house route must not resume afterwards.
+    if mem.get('house') and mem.get('recall'):
+        hanjuku_house.step(screen, mem, frame)
     actions = (policy.camp_recall_step(screen, mem, frame) if recall_dialog
                else policy.month_sub_step(screen, mem) if mem.get('month_sub') and (kind != 'month_menu' or recruit_dialog)
                else None)
+    if actions is None:
+        actions = hanjuku_house.step(screen, mem, frame)
     if actions is not None:
         pass
     elif phase=='name' and kind!='name_entry':
@@ -251,12 +266,16 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=policy.card_list_step(screen,mem)
     elif kind=='battle':
         actions=policy.battle_step(screen,mem)
+    elif kind=='egg_choice_menu':
+        actions=policy.egg_choice_step(screen,mem)
     elif kind=='monster_menu':
         actions=policy.monster_menu_step(screen,mem)
     elif kind=='egg_battle_menu' or (mem.get('egg_battle') and kind=='text'):
         actions=policy.egg_battle_step(screen,mem)
     elif kind=='okunote_menu':
         actions=policy.okunote_step(screen,mem)
+    elif kind=='battle_menu_pending':
+        actions=policy.battle_menu_pending_step(mem)
     elif kind=='battle_menu':
         actions=policy.battle_menu_step(screen,mem)
     elif kind in {'attack_started','defense_started','boss_attack_started'}:
@@ -292,6 +311,14 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=policy.yes_no_step(screen,mem)
     elif kind in {'castle_info','sealed_castle','main_menu'}:
         policy._record(mem,'close_panel',screen=kind,reason='意図しない情報画面を閉じる')
+        actions=[pad('b')]
+    elif kind == 'text' and policy.chikujou_leftover(screen, mem):
+        actions = [pad('b')]
+    elif kind=='text' and policy.is_camp_menu(screen):
+        # g436 22:04: an A after closing the Y view landed on the hero's tent
+        # and opened いどう/ステータス/キャンプ/きかん with no recall in flight;
+        # nothing handled it and the bot pressed nothing for over an hour.
+        policy._record(mem,'close_panel',screen='camp_menu',reason='帰還指示中でない野営メニューを閉じる')
         actions=[pad('b')]
     if actions is None:
         actions=legacy_actions(frame,phase,updated)

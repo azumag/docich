@@ -74,18 +74,35 @@ class TextLine:
         return ' '.join(part for part in self.text.replace(UNKNOWN, ' ').split())
 
 
-def row_masks(frame: Frame, predicate) -> list[int]:
+def row_masks(frame: Frame, predicate, *, rect=None) -> list[int]:
+    """Build masks in frame coordinates, optionally sampling only a region.
+
+    Unscanned rows/pixels stay zero. The caller must include any glyph-mark
+    context it needs; read_lines includes the preceding eight pixel rows.
+    """
     width, rgb = frame.width, frame.rgb
-    masks = []
-    for y in range(frame.height):
+    if rect is None or rect == (0, 0, width, frame.height):
+        # Preserve the original full-frame hot path for the shared white mask.
+        masks = []
+        for y in range(frame.height):
+            base, value = y * width * 3, 0
+            for x in range(width):
+                i = base + 3 * x
+                value = (value << 1) | bool(predicate(rgb[i], rgb[i + 1], rgb[i + 2]))
+            masks.append(value)
+        return masks
+    x0, y0, x1, y1 = rect
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(width, x1), min(frame.height, y1)
+    masks = [0] * frame.height
+    for y in range(y0, y1):
         base = y * width * 3
         value = 0
-        for x in range(width):
+        for x in range(x0, x1):
             i = base + 3 * x
             value = (value << 1) | bool(predicate(rgb[i], rgb[i + 1], rgb[i + 2]))
-        masks.append(value)
+        masks[y] = value << max(0, width - x1)
     return masks
-
 
 def _tile(masks: list[int], width: int, x: int, y: int) -> int:
     shift = width - 8 - x
@@ -116,7 +133,11 @@ def read_lines(frame: Frame, *, predicate=light, rect=(0, 0, 256, 224),
     """
     x0, y0, x1, y1 = rect
     width = frame.width
-    masks = row_masks(frame, predicate) if masks is None else masks
+    if masks is None:
+        # Tile columns are aligned downward and kana marks occupy the tile
+        # above a character, even when that tile lies outside the text rect.
+        region = (x0 - x0 % 8, max(0, y0 - 8), x1, y1)
+        masks = row_masks(frame, predicate, rect=region)
     best = (-1, 0, [])
     for dy in offsets:
         lines, score = [], 0

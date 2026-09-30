@@ -14,6 +14,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Mapping
 
 from ..config import GlobalConfig
 
@@ -104,6 +105,7 @@ def generate_text(
     agents: str,
     prompt_text: str,
     timeout: int = 600,
+    env: Mapping[str, str] | None = None,
 ) -> str:
     """Run one AI generation and return its stdout.
 
@@ -111,8 +113,14 @@ def generate_text(
     ``DOCICH_ALLOW_REAL_AI=1`` and every failure (non-zero rc, empty output,
     transport error) raises ``AiTextError``. The prompt remains in memory and
     only the typed request is forwarded to the dispatch layer.
+
+    ``env`` (when given) is the dispatch environment. Callers that run
+    concurrently, such as the PAPER narration prefetch, grant the gate in a
+    private copy instead of mutating the process-wide ``os.environ``, which
+    cannot be saved/restored safely across threads.
     """
-    if os.environ.get("DOCICH_ALLOW_REAL_AI") != "1":
+    effective_env = os.environ if env is None else env
+    if effective_env.get("DOCICH_ALLOW_REAL_AI") != "1":
         raise AiTextError("AI生成の実実行には DOCICH_ALLOW_REAL_AI=1 が必要です", kind="gate-disabled")
     if type(timeout) is not int or timeout < 1:
         raise AiTextError("timeout は1以上である必要があります", kind="invalid-timeout")
@@ -127,6 +135,7 @@ def generate_text(
             prompt_text=prompt_text,
             timeout=timeout,
             timeout_sec=float(timeout + 60),
+            env=None if env is None else dict(env),
         )
     except (AiError, OSError) as exc:
         raise AiTextError(f"AI呼び出しに失敗しました: {_safe_detail(exc)}", kind="invocation-error") from exc
