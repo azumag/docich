@@ -8,7 +8,7 @@ from test_hanjuku_chart_bot import Canvas as BaseCanvas, MARK
 from docich import hanjuku_house as house, hanjuku_policy as p
 from docich.hanjuku_screen import Screen, parse
 from docich.hanjuku_bot import classify, decide
-from docich.hanjuku_pixels import read_png
+from docich.hanjuku_pixels import Frame, read_png
 
 
 class Canvas(BaseCanvas):
@@ -377,6 +377,31 @@ def test_returning_house_yields_frame_077_text_to_concert_fallback(monkeypatch):
     assert actions == [p.pad('x')]
     assert (house_state['phase'], house_state['age'], house_state['total']) == (
         'field_roster_open', 0, 42)
+
+
+def test_returning_house_still_closes_the_concert_music_picker():
+    rgb = bytearray(bytes((160, 110, 60)) * (256 * 224))
+    for y in range(150, 208):
+        for x in range(18, 236):
+            i = (y * 256 + x) * 3
+            rgb[i:i + 3] = bytes((16, 72, 57))
+    for y in range(128):
+        for x in (*range(32), *range(224, 256)):
+            i = (y * 256 + x) * 3
+            rgb[i:i + 3] = bytes((200, 0, 0))
+    for x in range(200, 240):
+        i = (184 * 256 + x) * 3
+        rgb[i:i + 3] = bytes((197, 141, 74))
+    frame = Frame(256, 224, bytes(rgb))
+    assert classify(frame) == 'concert'
+    assert parse(frame, phase='concert').kind == 'unknown'
+
+    mem = memory('find_field', age=17, total=41)
+    mem['house']['returning'] = True
+    actions, state = decide(frame, {'step': 76, 'policy': mem})
+    assert actions == [p.pad('b')]
+    assert (state['policy']['house']['phase'], state['policy']['house']['age'],
+            state['policy']['house']['total']) == ('find_field', 18, 42)
 
 
 def test_return_does_not_confirm_enemy_castle():
