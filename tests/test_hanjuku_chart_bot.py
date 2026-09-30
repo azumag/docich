@@ -573,7 +573,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v93-cattlemyu'
+    assert state['bot_version'] == 'hanjuku-chart-v94-powerless-monster'
     assert '_records' not in state['policy']
 
 
@@ -2591,3 +2591,33 @@ def test_measured_recruit_goodbye_closes_without_navigating_background(hand):
     assert not policy.month_menu_ready(sc)
     assert policy.month_step(sc, mem) == [policy.pad('a')]
     assert mem['_records'][-1]['decision'] == 'month_recruit_goodbye'
+
+
+def test_powerless_allied_monster_returns_before_wasting_attack_turns():
+    for hp in (120, 46, 11):
+        frame = monster_menu_frame(['なぐれっ!', 'かきむしれ!'],
+                                   ally=('ウゴカザル', hp), enemy=('ピスタチオ', 49), cursor=0)
+        actions, state = decide(frame, {'policy': {'chapter': 2}})
+        choice = next(r for r in state['_records'] if r['decision'] == 'monster_menu_choice')
+        assert choice['observed_metric']['owner'] == 'ally'
+        assert choice['observed_metric']['action'] == 'retreat'
+        assert '攻撃性能がない' in choice['reason']
+        assert actions[0]['buttons'] == ['down']
+
+
+def test_powerless_enemy_monster_is_left_to_enemy_ai():
+    frame = monster_menu_frame(['なぐれっ!', 'かきむしれ!'],
+                               ally=('ピスタチオ', 49), enemy=('ウゴカザル', 120), cursor=0)
+    actions, state = decide(frame, {'policy': {'chapter': 2}})
+    assert actions == []
+    assert state['_records'][0]['decision'] == 'monster_menu_wait'
+    assert state['_records'][0]['observed_metric']['owner'] == 'enemy'
+
+
+def test_powerless_return_navigates_to_measured_return_row():
+    state = {'policy': {'chapter': 2}}
+    for cursor, expected in ((0, 'down'), (1, 'down'), (2, 'a')):
+        frame = monster_menu_frame(['なぐれっ!', 'かきむしれ!'],
+                                   ally=('ウゴカザル', 120), enemy=('ピスタチオ', 49), cursor=cursor)
+        actions, state = decide(frame, state)
+        assert actions[0]['buttons'] == [expected]
