@@ -227,3 +227,41 @@ class HistoryTests(unittest.TestCase):
         self.assertTrue(record['retrospective_present'])
         self.assertNotIn('grid bug', json.dumps(record))
         self.assertEqual(before, {p: p.read_bytes() for p in self.runs.iterdir()})
+
+    def test_full_budget_keeps_latest_after_existing_detail_reductions(self):
+        for index in range(7):
+            self.run_record(index, last_finished_at=f'2026-09-30T01:00:0{index}+00:00')
+        self.daily.rmdir()
+        payload = {'nethack_history': self.collect(),
+                   'ai': {'recent_events': ['x' * diag.MAX_JSON_BYTES],
+                          'anomalous_components': {'preserved': 1}},
+                   'workers': {'details': {'large': 'old detail'}},
+                   'soren91_drop_profile': {'profileStatus': 'missing'}}
+        text = diag._diagnostics_budget(payload)
+        self.assertLessEqual(len(text.encode()), diag.MAX_JSON_BYTES)
+        runs = payload['nethack_history']['completed_runs']
+        self.assertEqual([r['expedition'] for r in runs['records']], [6])
+        self.assertEqual(runs['omitted_records'], 6)
+        self.assertTrue(runs['output_omitted'])
+        self.assertEqual(payload['ai']['recent_events'], [])
+        self.assertTrue(payload['ai']['recent_events_omitted'])
+        self.assertEqual(payload['ai']['anomalous_components'], {'preserved': 1})
+        self.assertNotIn('output_omitted', payload['nethack_history']['daily'])
+
+    def test_full_budget_can_drop_latest_only_after_other_reductions(self):
+        self.run_record()
+        self.daily.rmdir()
+        payload = {'nethack_history': self.collect(), 'other': 'x' * 100,
+                   'ai': {'recent_events': [], 'anomalous_components': {}},
+                   'workers': {'details': {}},
+                   'soren91_drop_profile': {'profileStatus': 'missing'}}
+        import copy
+        expected = copy.deepcopy(payload)
+        expected['nethack_history']['completed_runs'].update(
+            records=[], omitted_records=1, output_omitted=True)
+        expected['ai']['recent_events_omitted'] = True
+        budget = len(json.dumps(expected, sort_keys=True, ensure_ascii=False).encode())
+        with mock.patch.object(diag, 'MAX_JSON_BYTES', budget):
+            text = diag._diagnostics_budget(payload)
+        self.assertLessEqual(len(text.encode()), budget)
+        self.assertEqual(payload, expected)
