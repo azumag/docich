@@ -1,11 +1,11 @@
 {
-  "output_sha256": "7d74e1cec481cce8cde0246cd99fac152a5c2a054e6354986a4b27e83339384c",
+  "output_sha256": "f4c6a692c0f87d629831075af5f1c45666ae1a3ecc690c3641f89745c1adcd07",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "ed2e4c8c13b6c9637ffb5d11291f6ce6527282bba2fc884e546e9858b3d5a3cd",
+  "source_sha256": "35d1a0c89867c630d4d8da9f3ad477d71ca51d1602f799df07ad45c496374f3e",
   "topics": [
+    "未開始入場の古い城情報解除 v107準備",
     "防衛敗北後の新しい城旗保持 v106準備",
-    "g508主人公ボス敗北とv105実メニュー対策",
-    "g508守備将軍交代停止とv104準備"
+    "g508主人公ボス敗北とv105実メニュー対策"
   ]
 }

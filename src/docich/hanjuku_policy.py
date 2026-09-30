@@ -3039,6 +3039,31 @@ def _sortie_step_for(mem, general, castle):
     return max(march)[1] if march else None
 
 
+ENTRY_RETURN_KINDS = frozenset({'main_menu', 'castle_info', 'castle_menu',
+    'general_list', 'card_select', 'sortie_confirm', 'month_menu', 'shop_list',
+    'shop_quantity_prompt', 'shop_quantity', 'shop_exit_confirm', 'discharge_menu'})
+
+
+def observe_entry_return(screen, mem):
+    """A measured management menu ends an entry that never reached combat.
+
+    A field/map frame can flash before combat, so it is not a receipt. Keep
+    active battles and their pending first panel until battle_end finishes.
+    Never manufacture a loss, death, or castle owner from a skipped entry.
+    """
+    entry = mem.get('attack')
+    if not isinstance(entry, dict) or not entry or mem.get('battle'):
+        return
+    if screen.kind not in ENTRY_RETURN_KINDS:
+        return
+    _record(mem, 'battle_entry_expired', castle=entry.get('castle'),
+            side=entry.get('side'), general=entry.get('general'), screen=screen.kind,
+            resulting_event='unclassified_entry_closed',
+            reason='戦闘未開始のまま管理画面へ戻ったため古い城情報を解除')
+    mem['attack'] = None
+    mem.pop('battle_seen', None)
+
+
 def _battle_context(mem, ally):
     """Only a matching attack message establishes a battle location and side."""
     attack = mem.get('attack') or {}
