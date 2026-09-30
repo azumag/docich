@@ -165,6 +165,19 @@ TMP_SO_MAX_CANDIDATES = 4096
 TMP_SO_MAX_PROC_FDS = 50000
 
 STORAGE_MAX_ENTRIES = 100000
+OPENCODE_ATTRIBUTION_WINDOW_SEC = 24 * 60 * 60
+OPENCODE_ATTRIBUTION_QUERY_TIMEOUT_SEC = 2.0
+OPENCODE_CALLER_BUCKETS = (
+    "radio_prepass",
+    "radio_main",
+    "comment",
+    "improvement",
+    "probe",
+    "other",
+)
+OPENCODE_CALLER_TITLES = {
+    f"docich:{bucket}": bucket for bucket in OPENCODE_CALLER_BUCKETS
+}
 
 
 def _collect_opencode_retention(soren, now):
@@ -395,6 +408,142 @@ def _collect_storage_breakdown(
         "voicevox_root": _storage_tree_usage(voicevox_root, max_entries=max_entries),
         "voicevox_archive": _storage_file_usage(voicevox_root / "voicevox.7z.001"),
     }
+
+
+
+def _empty_opencode_attribution_bucket():
+    return {
+        "sessions": 0,
+        "messages": 0,
+        "message_data_chars": 0,
+        "message_max_chars": 0,
+        "parts": 0,
+        "part_data_chars": 0,
+        "part_max_chars": 0,
+        "events": 0,
+        "event_data_chars": 0,
+        "event_max_chars": 0,
+    }
+
+
+def _collect_opencode_session_attribution(
+    db_path,
+    now,
+    *,
+    window_sec=OPENCODE_ATTRIBUTION_WINDOW_SEC,
+    query_timeout_sec=OPENCODE_ATTRIBUTION_QUERY_TIMEOUT_SEC,
+):
+    """Read fixed OpenCode caller aggregates without exposing stored content."""
+
+    db_path = Path(db_path)
+    result = {
+        "version": 1,
+        "present": False,
+        "scan_complete": False,
+        "schema_supported": False,
+        "window_sec": int(window_sec),
+        "buckets": {
+            bucket: _empty_opencode_attribution_bucket()
+            for bucket in OPENCODE_CALLER_BUCKETS
+        },
+    }
+    try:
+        st = db_path.lstat()
+    except FileNotFoundError:
+        result["scan_complete"] = True
+        return result
+    except OSError:
+        return result
+    result["present"] = True
+    if not stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
+        return result
+
+    con = None
+    deadline = time.monotonic() + max(0.05, float(query_timeout_sec))
+    try:
+        con = sqlite3.connect(
+            f"file:{db_path}?mode=ro",
+            uri=True,
+            timeout=min(max(float(query_timeout_sec), 0.05), 1.0),
+        )
+        con.execute("PRAGMA query_only = ON")
+        con.execute("PRAGMA busy_timeout = 500")
+        con.set_progress_handler(
+            lambda: 1 if time.monotonic() >= deadline else 0,
+            1000,
+        )
+
+        required = {
+            "session": {"id", "title", "time_created"},
+            "message": {"id", "session_id", "data"},
+            "part": {"id", "session_id", "data"},
+            "event": {"id", "aggregate_id", "data"},
+        }
+        for table, columns in required.items():
+            actual = {
+                str(row[1])
+                for row in con.execute(f"PRAGMA table_info({table})")
+                if len(row) > 1
+            }
+            if not columns.issubset(actual):
+                return result
+        result["schema_supported"] = True
+
+        cutoff_ms = int((float(now) - max(0, int(window_sec))) * 1000)
+        titles = tuple(OPENCODE_CALLER_TITLES)
+        placeholders = ",".join("?" for _ in titles)
+        params = (cutoff_ms, *titles)
+
+        for title, count in con.execute(
+            f"""
+            SELECT title, COUNT(*)
+              FROM session
+             WHERE time_created >= ?
+               AND title IN ({placeholders})
+             GROUP BY title
+            """,
+            params,
+        ):
+            bucket = OPENCODE_CALLER_TITLES.get(str(title))
+            if bucket is not None:
+                result["buckets"][bucket]["sessions"] = max(0, int(count or 0))
+
+        table_specs = (
+            ("message", "session_id", "messages", "message_data_chars", "message_max_chars"),
+            ("part", "session_id", "parts", "part_data_chars", "part_max_chars"),
+            ("event", "aggregate_id", "events", "event_data_chars", "event_max_chars"),
+        )
+        for table, session_column, count_key, chars_key, max_key in table_specs:
+            sql = f"""
+                SELECT s.title,
+                       COUNT(x.id),
+                       COALESCE(SUM(length(x.data)), 0),
+                       COALESCE(MAX(length(x.data)), 0)
+                  FROM session AS s
+                  JOIN {table} AS x ON x.{session_column} = s.id
+                 WHERE s.time_created >= ?
+                   AND s.title IN ({placeholders})
+                 GROUP BY s.title
+            """
+            for title, count, chars, max_chars in con.execute(sql, params):
+                bucket = OPENCODE_CALLER_TITLES.get(str(title))
+                if bucket is None:
+                    continue
+                item = result["buckets"][bucket]
+                item[count_key] = max(0, int(count or 0))
+                item[chars_key] = max(0, int(chars or 0))
+                item[max_key] = max(0, int(max_chars or 0))
+
+        result["scan_complete"] = True
+        return result
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return result
+    finally:
+        if con is not None:
+            try:
+                con.close()
+            except sqlite3.Error:
+                pass
 
 
 VALUE_REDACT_RES = (
@@ -3538,6 +3687,10 @@ def main(argv):
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "webui": _collect_webui(),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
+        "opencode_session_attribution": _collect_opencode_session_attribution(
+            Path(soren).parent / ".local" / "share" / "opencode" / "opencode.db",
+            now,
+        ),
         "opencode_retention": _collect_opencode_retention(soren, now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
