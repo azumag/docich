@@ -49,7 +49,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     now=time.time()
     identity={k:(obs_meta.get('hanjuku') or {}).get(k) for k in ('game','runtime_id','generation','lease_id')}
     decision_id=f"{identity['runtime_id']}:{identity['generation']}:{state.get('step')}"
-    state['decision_trace']={**identity, 'decision_id': decision_id, 'frame_sha256': frame_sha256}
+    state['decision_trace']={**identity, 'decision_id': decision_id, 'frame_sha256': frame_sha256, 'at': now}
     policy=state.get('policy') or {}
     # A durable maximum survives log rotation, policy resets and corner teardown.
     # Prediction bookkeeping must not drop an otherwise valid gameplay action.

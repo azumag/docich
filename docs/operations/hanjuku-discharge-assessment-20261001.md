@@ -18,3 +18,25 @@ v116 はこの A を削除し、`discharge.status=assessment_required` と未確
 繰返し観測で A/B を出さないことと、非負残金の B 退出を検証する。
 v114 の採用計画再評価と v115 の同戦闘主人公退却接続を保持する。
 実ゲームでの解雇/退却発火はこの変更では実施・確認していない。
+
+## 判断待ちと終了判定
+
+`hanjuku_run.observe` は元々連続同画面300秒で `screen_stalled` を確定し、
+`RetroCorner._wait_hanjuku` と RetroArch boundary がそのreceiptを終了の根拠にする。
+本変更は同identityの判断traceが15秒以内・直近2画像のhashに一致し、policyが
+assessment_required、現在実読する画面も解雇一覧で非負残金未確認の場合だけ、
+このstasis terminalを抑止する。画面停止時間はそのまま保持する。trace欠落/古さ/
+別identity、解雇画面離脱、非負残金の実読時は通常判定に戻す。title returnの
+ゲームオーバー判定は抑止しない。runイベントとcorner stateへ decision_required
+を明示する。主担当の読取監視へ報告できるが、常設のroot自動通知は未実装。
+保存やゲーム入力による回避は行わない。
+
+## 反映制約
+
+botは毎観測の新プロセスで更新できる一方、常駐adapter/corner内の
+`hanjuku_run` はimport済みモジュールを使う。canonicalのファイル配布だけでは
+現在g514の監視抑止を読み込んだ証拠にならない。正規の無停止reload経路は
+現コードに確認できていない。本PRは主担当判断でマージ/現ラン配備を保留し、
+controllerも新コードを読んだことが確認できる反映境界が前提となる。
+現ランでbotだけ反映する部分適用を安全とは扱わず、プロセス再起動/リセットは
+実施しない。次ランなら新controllerでの起動時適用を検証する必要がある。
