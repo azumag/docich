@@ -584,11 +584,11 @@ def test_unarmed_egg_enemy_checks_rescue_before_clash_and_retreats_if_unavailabl
     assert cur['hero_retreat']['selected']
 
 
-@pytest.mark.parametrize('enemy,side,cards', [('チコリ', 'defense', []),
+@pytest.mark.parametrize('enemy,side,cards', [('チコリ', 'defense', ['イッテツーン']),
                                             ('チコリ', 'attack', ['イッテツーン']),
                                             ('クイーン', 'attack', []),
                                             ('ミント', 'attack', [])])
-def test_preclash_rescue_leaves_defense_charted_boss_and_no_egg_battles_unchanged(enemy, side, cards):
+def test_preclash_rescue_leaves_charted_boss_and_no_egg_battles_unchanged(enemy, side, cards):
     cur = {'enemy': enemy, 'side': side, 'planned_cards': cards}
     assert not p._unarmed_clash_risk(cur)
 
@@ -630,3 +630,23 @@ def test_failed_summon_requests_real_retreat_even_when_general_hp_is_still_full(
     assert p._hero_retreat_needed(mem['battle'])
     assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
     assert mem['battle']['hero_retreat']['selected'] == 1
+
+
+def test_g504_defense_opens_rescue_at_full_hp_before_known_egg_clash():
+    mem = memory(hp=90, enemy=26)
+    mem['battle'].update(enemy='キャンディー', start_enemy_hp=26, side='defense', planned_cards=[])
+    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+    assert mem['battle']['survival']['opens'] == 1
+    assert not mem['battle'].get('hero_retreat')
+    assert p.battle_menu_step(menu(), mem) == [p.pad('down')]
+    assert p.battle_menu_step(menu(selected=1), mem) == [p.pad('a')]
+
+
+def test_defense_preclash_with_only_hidden_commands_scrolls_to_okunote_not_retreat():
+    mem = memory(hp=90, enemy=26)
+    mem['battle'].update(enemy='キャンディー', start_enemy_hp=26, side='defense', planned_cards=[])
+    p.battle_step(battle(mem), mem)
+    screen = Screen([], None, '', kind='battle_menu', menu_cursor=176, hidden_battle_commands=True)
+    assert p.battle_menu_step(screen, mem) == [p.pad('down')]
+    assert mem['_records'][-1]['decision'] == 'battle_okunote_scroll'
+    assert not mem['battle'].get('hero_retreat')

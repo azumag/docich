@@ -850,7 +850,9 @@ def test_a_general_far_behind_opens_the_rescue_menu_before_the_melee_decides():
     ahead = {'ally_hp': 82, 'enemy_hp': 39, 'start_ally_hp': 82, 'enemy': 'カシュー', 'ally': 'ヴィーナス'}
     assert policy._survival_needed(ahead)  # HP lead cannot answer an egg clash without a kit
     ahead['side'] = 'defense'
-    assert not policy._survival_needed(ahead)
+    assert policy._survival_needed(ahead)  # defense also needs resources before an egg clash
+    ahead['planned_cards'] = ['フットバース']
+    assert not policy._survival_needed(ahead)  # keep the charted kit's path
 
 
 def _message(text):
