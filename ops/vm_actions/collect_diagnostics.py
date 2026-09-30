@@ -186,17 +186,31 @@ def _collect_opencode_retention(soren, now):
     OPENCODE_RETENTION_TIMER = _REG.OPENCODE_RETENTION_TIMER
     OPENCODE_RETENTION_MAX_AGE_SEC = _REG.OPENCODE_RETENTION_MAX_AGE_SEC
     result = {}
+    # Fixed enums emitted by lib/opencode_db_retention.py; unknown values
+    # degrade to "unknown" and raw text is never forwarded.
+    reason_values = {"ok", "deadline", "insufficient_space", "space_unknown", "checkpoint_busy",
+                     "unsafe_journal_mode", "sqlite_busy", "sqlite_error", "filesystem_or_input", "interrupted",
+                     "insufficient_memory", "memory_unknown",
+                     "wal_limit_unavailable", "bounded_prune_committed", "bounded_prune_io_error"}
     enums = {
         "status": {"running", "completed", "gate_timeout", "disabled", "deferred", "failed"},
-        "reason": {"ok", "deadline", "insufficient_space", "space_unknown", "checkpoint_busy",
-                   "unsafe_journal_mode", "sqlite_busy", "sqlite_error", "filesystem_or_input", "interrupted",
-                   "insufficient_memory", "memory_unknown"},
+        "reason": reason_values,
         "compact_storage": {"disk", "memory"},
-        "stage": {"preflight", "delete", "compact_copy", "compact_writeback", "checkpoint", "vacuum", "done"},
+        "stage": {"preflight", "delete", "compact_copy", "compact_writeback", "checkpoint", "vacuum", "done",
+                  "compact_deferred"},
+        "compact_defer_reason": reason_values,
+        "preflight_phase": {"input", "budget", "connect", "busy_timeout", "temp_store", "synchronous",
+                            "locking_mode", "begin_exclusive", "commit_exclusive", "journal_mode",
+                            "checkpoint", "pages", "eligible_count", "delete_budget", "complete"},
+        "prune_mode": {"bounded_wal"},
+        "recovery_action": {"inspect_io_or_add_capacity"},
     }
     numbers = ("started_at", "completed_at", "retention_days", "deleted_sessions", "eligible_sessions",
                "before_bytes", "after_bytes", "available_before_bytes", "available_after_bytes",
-               "compact_bytes", "page_size", "page_count", "freelist_count")
+               "compact_bytes", "page_size", "page_count", "freelist_count",
+               "selected_sessions", "remaining_sessions", "prune_batches", "wal_limit_bytes",
+               "sqlite_error_code", "sqlite_extended_error_code")
+    booleans = ("bounded_prune_blocked",)
     for label, filename in (("attempt", "opencode_db_retention.json"),
                             ("default", "opencode_retention_default.json"),
                             ("worker", "opencode_retention_worker.json")):
@@ -224,6 +238,10 @@ def _collect_opencode_retention(soren, now):
             for key in numbers:
                 value = data.get(key)
                 if type(value) is int and 0 <= value < 2**63:
+                    item[key] = value
+            for key in booleans:
+                value = data.get(key)
+                if type(value) is bool:
                     item[key] = value
             stamp = item.get("completed_at", item.get("started_at"))
             if stamp is not None:
