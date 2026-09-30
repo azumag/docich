@@ -2,7 +2,7 @@
   "output_sha256": "babf05e7b6ff591bcc5f991c2db69a1837e437cb9862ee8d7a153c070b7c0cca",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "4415e374f78b89e0b548e02017ae3b3cc7ff8afeec57885fd11e52b455ed9193",
+  "source_sha256": "e52b1fdb77d346ce15730928b50ec2ac4d0c93460ecefc7bbcffc3286e8c136d",
   "topics": [
     "半熟v96 募集実残金再判定とヴィーナス敗因対策",
     "半熟v95配備・同月の募集資金温存を実測",
