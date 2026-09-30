@@ -2218,7 +2218,7 @@ def _rare_card_inventory(screen, mem, order, inventory):
     """
     if mem.get('picked') or (mem.get('rare_card_kit') or {}).get(order['step']) is not None:
         return None
-    month = mem.get('month')
+    month = mem.get('month') or f"chapter-{mem.get('chapter')}:unknown"
     scan = mem.get('rare_scan') or {}
     if scan.get('rewind', 0) > 0:
         scan['rewind'] -= 1

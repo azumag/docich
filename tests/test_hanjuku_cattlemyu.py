@@ -70,8 +70,9 @@ def test_four_row_inventory_is_scanned_boundedly_and_rewound():
     assert policy._deploy_cards(order,mem) == list(order['cards'])
 
 
-def test_hidden_rare_row_becomes_usable_during_inventory_sweep():
-    order,mem=memory();mem.pop('rare_card_kit')
+@pytest.mark.parametrize('month', ['1-10', None])
+def test_hidden_rare_row_becomes_usable_during_inventory_sweep(month):
+    order,mem=memory();mem.pop('rare_card_kit');mem['month']=month
     assert policy._rare_card_inventory(None,mem,order,inventory([
         ('イッテツーン',3),('ブラッキー',2),('ノリウツール',1),('クースカン',1)])) == [policy.pad('down')]
     assert policy._rare_card_inventory(None,mem,order,inventory([(RARE,5)])) == []
