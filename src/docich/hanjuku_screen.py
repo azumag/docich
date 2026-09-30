@@ -398,6 +398,19 @@ def _human_commands(screen):
                for line in screen.menu_rows for y, label in _BATTLE_COMMANDS)
 
 
+def egg_choice_names(screen):
+    """The measured Elabel summon picker, not monster skills or HP panels."""
+    from .hanjuku_reference import MONSTER_SKILLS
+    rows = {line.y: line.spans() for line in screen.menu_rows}
+    choices = []
+    for y in (176, 192, 208):
+        spans = rows.get(y, [])
+        if len(spans) != 1 or spans[0][0] != 176 or spans[0][1] not in MONSTER_SKILLS:
+            return []
+        choices.append(spans[0][1])
+    return choices if screen.battle is None and not screen.egg_rows else []
+
+
 def parse(frame: Frame, *, phase: str | None = None) -> Screen:
     masks = row_masks(frame, light)
     lines = read_lines(frame, masks=masks)
@@ -483,6 +496,8 @@ def classify_text(s: Screen) -> str:
             word in OKUNOTE_CHOICES for line in s.menu_rows for _,word in line.spans()) and not any(
             'もどれ' in r.known.replace(' ', '') for r in s.menu_rows):
         return 'okunote_menu'
+    if egg_choice_names(s):
+        return 'egg_choice_menu'
     if _human_commands(s) or s.hidden_battle_commands:
         return 'battle_menu'
     if 'たまごをつかう' in t and 'たいきゃく' in t:

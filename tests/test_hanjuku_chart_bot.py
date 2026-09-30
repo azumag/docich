@@ -573,7 +573,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v97-broken-hero-guard'
+    assert state['bot_version'] == 'hanjuku-chart-v98-egg-choice'
     assert '_records' not in state['policy']
 
 
@@ -2940,3 +2940,74 @@ def test_egg_quote_keeps_wage_as_well_as_house_fee():
     sub = {'full_selected': True}
     assert policy._egg_recovery_step(parse(c.frame()), mem, sub) == [policy.pad('b')]
     assert sub['aborted']
+
+
+def egg_choice_frame(names=('ぼーぼーどり', 'ゲーラス', 'ガーコイル'), cursor=0, x=176):
+    c = Canvas()
+    for i, name in enumerate(names):
+        c.text(x, 176 + 16 * i, name)
+    if cursor is not None:
+        for dy in range(14):
+            for dx in range(12):
+                c.put(x - 30 + dx, 170 + 16 * cursor + dy, (230, 105, 74))
+    return c.frame()
+
+
+@pytest.mark.parametrize('cursor', [0, 1, 2])
+def test_elabel_choice_uses_actual_names_and_knight_cursor(cursor):
+    s = parse(egg_choice_frame(cursor=cursor))
+    assert s.kind == 'egg_choice_menu'
+    assert s.menu_cursor == 176 + 16 * cursor
+    mem = {}
+    assert policy.egg_choice_step(s, mem) == [policy.pad('a' if cursor == 0 else 'up')]
+    assert bool(mem.get('_records')) == (cursor == 0)
+
+
+@pytest.mark.parametrize('names,x', [
+    (('ぼーぼーどり', 'ゲーラス'), 176),
+    (('ぼーぼーどり', 'ゲーラス', 'しらない'), 176),
+    (('ぼーぼーどり', 'ゲーラス', 'ガーコイル'), 40),
+    (('こうげき', 'もうこうげき', 'たまごをつかう'), 176),
+])
+def test_elabel_choice_does_not_reinterpret_other_or_incomplete_menus(names, x):
+    assert parse(egg_choice_frame(names, x=x)).kind != 'egg_choice_menu'
+
+
+def test_elabel_choice_never_confirms_without_cursor():
+    s = parse(egg_choice_frame(cursor=None))
+    assert s.kind == 'egg_choice_menu'
+    assert policy.egg_choice_step(s, {}) == []
+
+
+def test_elabel_choice_routes_before_field_fallback_and_keeps_battle():
+    battle = {'ally': 'どうし', 'enemy': 'クミン', 'ally_hp': 90, 'enemy_hp': 26}
+    actions, state = decide(egg_choice_frame(), {'policy': {'chapter': 1, 'battle': battle}})
+    assert actions == [policy.pad('a')]
+    assert state['screen_kind'] == 'egg_choice_menu'
+    assert state['policy']['battle'] == battle
+    assert state['_records'][-1]['resulting_event'] == 'summon_selected_not_yet_confirmed'
+    _, state = decide(Canvas().frame(), state)
+    assert 'egg_choice' not in state['policy']
+
+
+def test_elabel_choice_bounds_confirmation_retries_without_claiming_summoned():
+    mem = {}
+    s = parse(egg_choice_frame())
+    assert policy.egg_choice_step(s, mem) == [policy.pad('a')]
+    for _ in range(3):
+        assert policy.egg_choice_step(s, mem) == []
+    assert policy.egg_choice_step(s, mem) == [policy.pad('a')]
+    for _ in range(5):
+        assert policy.egg_choice_step(s, mem) == []
+    assert [r['decision'] for r in mem['_records']] == ['egg_choice_select', 'egg_choice_select', 'egg_choice_unconfirmed']
+
+
+def test_elabel_choice_interrupts_house_menu_even_without_prior_battle_panel():
+    state = {'policy': {'chapter': 1, 'house': {'phase': 'open_roster', 'age': 0, 'total': 0, 'chapter': 1}}}
+    actions, updated = decide(egg_choice_frame(), state)
+    assert actions == [policy.pad('a')]
+    assert updated['policy']['house']['interrupted'] is True
+
+
+def test_elabel_choice_is_an_exit_from_unrelated_month_transaction():
+    assert 'egg_choice_menu' in policy.MONTH_SUB_EXIT_KINDS

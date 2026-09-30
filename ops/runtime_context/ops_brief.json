@@ -1,11 +1,11 @@
 {
-  "output_sha256": "1718a2dc1a88c654e1af853e06c02a817fa07090ef4f9eea1f4001cfec4e047c",
+  "output_sha256": "226e40e6b5b084ab9c255b62b493875112777e59512158534c8ab590da752176",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "c68831cc655626a3b346bfd89346b72b36fa4d6e26056581d914aec10d37dd75",
+  "source_sha256": "908b947d71da30337315da77aeccacdb83b26f228e131ec518809aeceefc27ac",
   "topics": [
+    "g500エラベルエッグ三択停滞とv98対応",
     "g498主人公死亡ゲームオーバーとv97修復未確認出撃抑止",
-    "半熟v96 募集実残金再判定とヴィーナス敗因対策",
-    "半熟v95配備・同月の募集資金温存を実測"
+    "半熟v96 募集実残金再判定とヴィーナス敗因対策"
   ]
 }

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v97-broken-hero-guard'
+BOT_VERSION = 'hanjuku-chart-v98-egg-choice'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -215,6 +215,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
                     'monster_menu_key','monster_menu_cursor','monster_menu_hold',
                     'monster_menu_choice','monster_menu_choice_key','monster_panel'):
             mem.pop(key,None)
+    if kind != 'egg_choice_menu':
+        mem.pop('egg_choice', None)
     if kind != 'egg_battle_menu':
         mem.pop('egg_menu_stage',None)
         mem.pop('egg_battle_row_dead',None)
@@ -263,6 +265,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=policy.card_list_step(screen,mem)
     elif kind=='battle':
         actions=policy.battle_step(screen,mem)
+    elif kind=='egg_choice_menu':
+        actions=policy.egg_choice_step(screen,mem)
     elif kind=='monster_menu':
         actions=policy.monster_menu_step(screen,mem)
     elif kind=='egg_battle_menu' or (mem.get('egg_battle') and kind=='text'):
