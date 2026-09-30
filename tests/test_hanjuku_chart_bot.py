@@ -573,7 +573,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v102-wounded-counterattack'
+    assert state['bot_version'] == 'hanjuku-chart-v103-recruit-receipt-budget'
     assert '_records' not in state['policy']
 
 
@@ -3051,3 +3051,38 @@ def test_missing_priority_recruit_menu_has_a_bound_and_keeps_the_fee():
     assert mem['shop']['recruit_reserve'] == 50
     assert mem['shop']['soldiers'] == 86
     assert any(r['decision'] == 'recruit_menu_unconfirmed' for r in mem['_records'])
+
+
+@pytest.mark.parametrize('after,expected', [(106, 76), (94, 64), (30, 0), (18, 0)])
+def test_paid_recruit_actual_balance_always_protects_wages_without_broken_hero(after, expected):
+    mem = _short_recruit_memory()
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 156})
+    assert shop['soldiers'] == 76 and not shop.get('hero_repair_reserve')
+    shop['recruit'] = 'opened'
+    mem['month_sub'] = {'kind': 'recruit', 'gold_before': 156, 'recruit_paid_gold': 106,
+                        'left_menu': True, 'key': '1-7'}
+    assert policy._finish_month_sub(parse(month_canvas(after)), mem, shop)
+    assert shop['recruit'] == 'done' and shop['recruit_reserve'] == 0
+    assert shop['soldiers'] == expected
+    assert shop['soldiers_done'] == (expected == 0)
+    assert after - expected >= min(after, policy.WAGE_RESERVE)
+
+
+def test_unverified_recruit_cannot_release_its_reserved_fee_or_rewrite_soldiers():
+    mem = _short_recruit_memory()
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 156})
+    shop['recruit'] = 'opened'
+    mem['month_sub'] = {'kind': 'recruit', 'gold_before': 156, 'left_menu': True, 'key': '1-7'}
+    assert policy._finish_month_sub(parse(month_canvas(94)), mem, shop)
+    assert shop['recruit'] == 'unverified' and shop['recruit_reserve'] == 50
+    assert shop['soldiers'] == 76
+
+
+def test_paid_recruit_never_refills_again_after_soldiers_already_finished():
+    mem = _short_recruit_memory()
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 156})
+    shop.update(recruit='opened', soldiers_done=True)
+    mem['month_sub'] = {'kind': 'recruit', 'gold_before': 156, 'recruit_paid_gold': 106,
+                        'left_menu': True, 'key': '1-7'}
+    assert policy._finish_month_sub(parse(month_canvas(94)), mem, shop)
+    assert shop['soldiers_done'] and shop['soldiers'] == 76
