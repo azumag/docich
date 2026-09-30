@@ -130,3 +130,24 @@ def test_survival_prefers_visible_rare_and_event_card_cannot_be_purchased():
     assert policy._rescue_card(['ミックミー',RARE],{'enemy':'ミント'})==RARE
     with pytest.raises(ValueError,match='invalid purchase card'):
         adjust._purchases({'month':[1,10],'cards':[[RARE,5]]})
+
+
+def test_deploy_discovers_hidden_rare_then_plans_only_measured_selection():
+    from test_hanjuku_sortie_evidence import memory, measured_card_select
+    mem=memory();mem.pop('rare_scan_month')
+    assert policy.deploy_step(measured_card_select(),mem)==[policy.pad('down')]
+    assert mem['_records'][-1]['decision']=='sortie_input'
+    assert mem['picked']==[]
+    screen=measured_card_select((RARE,),stock='5')
+    assert policy.deploy_step(screen,mem)==[]
+    assert mem['picked']==[]
+    assert policy.deploy_step(screen,mem)==[policy.pad('a')]
+    assert mem['picked']==[RARE]
+    assert mem['_records'][-1]['observed_metric']['stock']==5
+
+
+def test_zero_slots_never_trigger_discovery_input():
+    order,mem=memory();mem.pop('rare_card_kit')
+    assert policy._rare_card_inventory(None,mem,order,inventory([
+        ('イッテツーン',3),('ブラッキー',2),('ノリウツール',1),('クースカン',1)],remaining=0)) is None
+    assert not mem.get('rare_scan')

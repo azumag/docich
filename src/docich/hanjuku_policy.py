@@ -2216,7 +2216,8 @@ def _rare_card_inventory(screen, mem, order, inventory):
     the first four rows a complete inventory. Rewind before normal selection.
     Never change an already picked/in-flight sortie or invent event stock.
     """
-    if mem.get('picked') or (mem.get('rare_card_kit') or {}).get(order['step']) is not None:
+    if (mem.get('picked') or inventory['remaining'] == 0
+            or (mem.get('rare_card_kit') or {}).get(order['step']) is not None):
         return None
     month = mem.get('month') or f"chapter-{mem.get('chapter')}:unknown"
     scan = mem.get('rare_scan') or {}
@@ -2224,6 +2225,9 @@ def _rare_card_inventory(screen, mem, order, inventory):
         scan['rewind'] -= 1
         if not scan['rewind']:
             mem.pop('rare_scan', None)
+        _record(mem, 'sortie_input', **_deploy_context(order, mem),
+                screen='card_select', observed_metric={'rare_scan': 'rewind', 'remaining': scan['rewind']},
+                reason='レア札在庫の有限探索後に選択カーソルを戻す')
         return [pad('up')]
     row = next((r for r in inventory['rows'] if r['card'] == 'キャトルミュー'), None)
     if row and row['stock'] > 0 and inventory['remaining'] > 0:
@@ -2252,10 +2256,16 @@ def _rare_card_inventory(screen, mem, order, inventory):
             scan['rewind'] = scan['presses'] - 1
             if not scan['rewind']:
                 mem.pop('rare_scan', None)
+            _record(mem, 'sortie_input', **_deploy_context(order, mem),
+                    screen='card_select', observed_metric={'rare_scan': 'rewind', 'remaining': scan['rewind']},
+                    reason='レア札探索の末尾または上限に達したため選択カーソルを戻す')
             return [pad('up')]
         mem.pop('rare_scan', None)
         return None
     scan.update(presses=scan['presses'] + 1, rows=rows, was_bottom=at_bottom)
+    _record(mem, 'sortie_input', **_deploy_context(order, mem), screen='card_select',
+            observed_metric={'rare_scan': 'discover', 'presses': scan['presses'], 'rows': rows},
+            reason='未選択の実在庫を有限回探索し、隠れたイベント札の有無を確認する')
     return [pad('down')]
 
 def _drop_card(screen, mem, order, card, inventory):

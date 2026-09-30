@@ -49,7 +49,8 @@ def measured_card_select(names=('イッテツーン', 'ダイチスイム', 'ブ
 
 
 def memory():
-    return {'chapter': 1, 'active': '1-B1', 'variant': 'chart',
+    # These contracts start after the separate rare-inventory discovery pass.
+    return {'rare_scan_month': 'chapter-1:unknown', 'chapter': 1, 'active': '1-B1', 'variant': 'chart',
             'orders': {'1-B1': 'pending'}, 'picked': [], 'sortie_general': {'1-B1': 'どうし'}}
 
 
@@ -423,13 +424,14 @@ def test_nonempty_uncalibrated_unknowns_remain_held():
 
 
 def foot_order_memory():
-    return {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
+    # Isolate calibrated selection after bounded rare-stock discovery.
+    return {'rare_scan_month': 'chapter-1:unknown', 'chapter': 1, 'active': '1-A2', 'variant': 'chart',
             'orders': {'1-A2': 'pending'}, 'picked': []}
 
 
 def test_measured_two_digit_stock_row_keeps_cursor_and_moves_to_planned_card():
     # Live g328: イッテツーン stock 10 is tens at x=224 and ones at x=232.
-    mem = {'chapter': 1, 'active': '1-C2', 'variant': 'chart',
+    mem = {'rare_scan_month': 'chapter-1:unknown', 'chapter': 1, 'active': '1-C2', 'variant': 'chart',
            'orders': {'1-C2': 'pending'}, 'picked': []}
     screen = measured_card_select(('イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース'),
                                   stocks=('10', '2', '2', '2'), selected=0, remaining='3')
