@@ -1,11 +1,11 @@
 {
-  "output_sha256": "90bb274687d6fdca3c3e0c4219db945e1669f1fa48a93d3e93a1971b51ce2db4",
+  "output_sha256": "aaa7a04d2e51f9ed32e763250c38a75c926e6e49c553f920002df10a021eb8ef",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "24599ec26b1298457cc7140ac9e26605cca4ffc68f87fff80ada35afdc5850b6",
+  "source_sha256": "d158577094584f115fa0fc428ca56c6cb0f1173d97e354eda75396d799b9ebd8",
   "topics": [
+    "半熟の将軍不足・募集費先取りv95準備",
     "g496第2話防衛敗北・キャトルミュー自然選択確認",
-    "半熟v93キャトルミュー配備・実在庫5確認",
-    "VM容量回収と配備bundle保持短縮"
+    "半熟v93キャトルミュー配備・実在庫5確認"
   ]
 }

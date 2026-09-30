@@ -573,7 +573,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v94-powerless-monster'
+    assert state['bot_version'] == 'hanjuku-chart-v95-recruit-priority'
     assert '_records' not in state['policy']
 
 
@@ -2621,3 +2621,107 @@ def test_powerless_return_navigates_to_measured_return_row():
                                    ally=('ウゴカザル', 120), enemy=('ピスタチオ', 49), cursor=cursor)
         actions, state = decide(frame, state)
         assert actions[0]['buttons'] == [expected]
+
+
+def _short_recruit_memory():
+    return {'chapter': 1, 'garrison': {'ほんじょう': ['どうし', 'ゼウス']},
+            'orders': {}, 'picked': []}
+
+
+@pytest.mark.parametrize('gold,soldiers,reserved', [(154, 74, 50), (101, 21, 50), (79, 0, 49), (46, 0, 16)])
+def test_short_generals_reserve_fee_before_soldiers(gold, soldiers, reserved):
+    mem = _short_recruit_memory()
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': gold})
+    assert shop['soldiers'] == soldiers
+    assert shop['recruit_priority'] and shop['recruit_reserve'] == reserved
+    assert shop['recruit'] == 'check'
+    assert policy._recruit_shortage(mem)['total_roster'] == 'unclassified'
+
+
+def test_short_generals_recruit_without_the_old_99_refill_gate():
+    mem = _short_recruit_memory()
+    actions = policy.month_step(parse(month_canvas(101, on='しょうぐんぼしゅう')), mem)
+    assert actions == [policy.pad('a')]
+    assert mem['shop']['soldiers'] == 21 and not mem['shop']['soldiers_done']
+    assert mem['month_sub']['kind'] == 'recruit'
+    # Stale background menu cannot launch soldiers while recruitment is opening.
+    assert policy.month_step(parse(month_canvas(101, on='しょうぐんぼしゅう')), mem) == []
+    # Payment is observed before the remaining soldier refill opens.
+    actions = policy.month_step(parse(month_canvas(51, on='しょうぐんぼしゅう')), mem)
+    assert mem['shop']['recruit'] == 'done' and mem['shop']['recruit_reserve'] == 0
+    assert mem['shop']['soldiers'] == 21
+    assert 'month_sub' not in mem
+
+
+def test_short_generals_save_insufficient_fee_without_building_it_away():
+    mem = _short_recruit_memory()
+    policy.month_step(parse(month_canvas(79, on='しょうぐんぼしゅう')), mem)
+    assert mem['shop']['soldiers'] == 0
+    assert mem['shop']['recruit'] == 'skipped'
+    assert mem['shop']['chikujou'] == 'skipped'
+    assert 'month_sub' not in mem
+
+
+def test_same_month_cached_shop_is_migrated_only_once():
+    mem = _short_recruit_memory()
+    mem['shop'] = {'key': '1-7', 'items': [], 'soldiers': 71, 'gold_start': 101,
+                   'soldiers_done': False, 'merchant_done': True, 'egg': None,
+                   'recruit': 'skipped', 'chikujou': 'check'}
+    policy.month_step(parse(month_canvas(101)), mem)
+    policy.month_step(parse(month_canvas(101)), mem)
+    assert mem['shop']['soldiers'] == 21
+    assert sum(r['decision'] == 'recruit_priority_plan' for r in mem['_records']) == 1
+
+
+def test_confirmed_six_generals_do_not_trigger_priority_from_one_small_garrison():
+    mem = _short_recruit_memory()
+    mem['captured'] = ['キカンドン']
+    mem['garrison']['キカンドン'] = ['ココット', 'ヴィーナス', 'クミン']
+    mem['tick'] = 10
+    mem['sorties'] = {'x': {'general': 'シャルドネ', 'status': 'en_route', 'tick': 9}}
+    assert policy._recruit_shortage(mem) is None
+    mem['sorties']['x']['status'] = 'launched_unconfirmed'
+    assert policy._recruit_shortage(mem)['count_lower_bound'] == 5
+
+
+def test_short_generals_keep_hero_egg_and_wage_reserves():
+    mem = _short_recruit_memory(); mem['egg_uses'] = {'どうし': 0}
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
+    assert shop['reserve'] == 50 and shop['recruit_reserve'] == 50 and shop['soldiers'] == 0
+    assert policy.month_step(parse(month_canvas(130, on='しょうぐんぼしゅう')), mem) == [policy.pad('a')]
+    mem = _short_recruit_memory(); mem['egg_uses'] = {'どうし': 0}
+    policy.month_step(parse(month_canvas(100, on='しょうぐんぼしゅう')), mem)
+    assert mem['shop']['recruit'] == 'skipped'
+    assert mem['shop']['soldiers'] == 0
+
+
+def test_short_generals_can_reserve_even_before_a_future_chart_purchase():
+    mem = _short_recruit_memory(); mem['chapter'] = 3
+    shop = policy._plan(mem, {'year': 1, 'month': 6, 'gold': 79})
+    assert shop['recruit_priority'] and shop['recruit_reserve'] == 49
+    assert shop['soldiers'] == 0
+
+
+def test_recruit_join_is_verified_at_the_heros_observed_castle():
+    mem = {'chapter': 1, 'garrison': {'ほんじょう': [], 'ジョンリギ': ['どうし']},
+           'month_sub': {'kind': 'recruit', 'gold_before': 100, 'key': '1-7',
+                         'candidate_names': ['ラズベリー'], 'generals_before': ['どうし']}}
+    policy._finish_month_sub(parse(month_canvas(50)), mem, {'recruit': 'opened'})
+    assert 'ジョンリギ' not in mem['garrison']
+    c = Canvas(); c.text(64, 31, 'しゅつげき'); c.text(64, 47, 'ステータス')
+    c.text(144, 39, 'どうし'); c.text(144, 55, 'ラズベリー'); c.hand(122, 33)
+    policy._observe_garrison(parse(c.frame()), mem,
+                             {'step': 'x', 'source': 'ジョンリギ', 'target': 'キカンドン',
+                              'general': 'どうし', 'cards': [], 'note': 'verification'})
+    assert any(r['decision'] == 'recruit_join_observed' and r['castle'] == 'ジョンリギ' for r in mem['_records'])
+    assert 'recruit_verification' not in mem
+
+
+def test_cached_paid_recruit_does_not_earmark_another_fee():
+    mem = _short_recruit_memory()
+    mem['shop'] = {'key': '1-7', 'items': [], 'soldiers': 21, 'gold_start': 101,
+                   'soldiers_done': False, 'merchant_done': True, 'egg': None,
+                   'recruit': 'done', 'chikujou': 'check'}
+    policy.month_step(parse(month_canvas(51)), mem)
+    assert mem['shop']['recruit_reserve'] == 0 and mem['shop']['soldiers'] == 21
+    assert mem.get('month_sub', {}).get('kind') != 'recruit'

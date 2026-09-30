@@ -2554,6 +2554,14 @@ def _observe_garrison(screen, mem, order):
     garrison = mem.setdefault('garrison', {})
     mem['general_location_unknown'] = [g for g in mem.get('general_location_unknown') or ()
                                        if g not in present or not _general_visible(screen, g)]
+    verification = mem.get('recruit_verification') or {}
+    joined = (set(present) & set(verification.get('candidates') or ())) - set(
+        verification.get('generals_before') or ())
+    if joined:
+        _record(mem, 'recruit_join_observed', castle=castle, month=verification.get('month'),
+                observed_metric={'generals': sorted(joined)},
+                reason='募集で紹介された将軍を在城一覧で確認し、採用後の配置を実測した')
+        mem.pop('recruit_verification', None)
     if garrison.get(castle) != present:
         garrison[castle] = present
         _record(mem, 'garrison_seen', **_deploy_context(order, mem), castle=castle,
@@ -4198,7 +4206,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
                 'boss_defeated', 'boss_entry_hold',
                 'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
-                'garrison', 'general_location_unknown', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
+                'garrison', 'general_location_unknown', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                 'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
                 'target_miss', 'target_cancel', 'menu_hold', 'card_scroll', 'card_unreadable',
                 'sortie_confirm_miss',
@@ -4391,6 +4399,67 @@ def _egg_recheck(mem):
             pending.append(ally)
 
 
+# Six confirmed available generals keep the opening chart's attack/defense
+# roles covered. This is a lower bound from observations, never a death count.
+RECRUIT_GENERAL_TARGET = 6
+
+
+def _recruit_shortage(mem):
+    garrison = mem.get('garrison') or {}
+    if not garrison:
+        return None                       # no roster observation yet
+    owned = _owned(mem)
+    owned |= {STATUS_NAMES.get(c, c) for c in owned}
+    names = {g for c, gs in garrison.items() if c in owned for g in gs or ()}
+    now = int(mem.get('tick') or 0)
+    names.update(s.get('general') for s in (mem.get('sorties') or {}).values()
+                 if s.get('status') == 'en_route' and s.get('tick') is not None
+                 and now - int(s['tick']) < SORTIE_BUSY_TICKS)
+    names.discard(None)
+    names -= set(mem.get('general_location_unknown') or ())
+    if len(names) >= RECRUIT_GENERAL_TARGET:
+        return None
+    return {'available_observed': sorted(names), 'count_lower_bound': len(names),
+            'target': RECRUIT_GENERAL_TARGET, 'total_roster': 'unclassified'}
+
+
+def _prioritise_recruit(mem, shop, gold):
+    """Once per month, reserve a recruitment fee before optional soldiers.
+
+    Includes existing cached shops on hotload. Original card purchases and
+    the existing egg/wage reserves are kept; unconfirmed deaths are not used.
+    """
+    if shop.get('recruit_budget_version') == 1:
+        return
+    shortage = _recruit_shortage(mem)
+    if not shortage:
+        return
+    shop['recruit_budget_version'] = 1
+    shop['recruit_priority'] = True
+    if shop.get('recruit') not in ('opened', 'done', 'unverified'):
+        shop['recruit'] = 'check'
+    items = shop.get('items') or []
+    card_cost = (sum(KNOWN_PRICES[n] * qty for n, qty in items)
+                 if all(n in KNOWN_PRICES for n, _ in items) else None)
+    # Only subtract pending card purchases. A cached post-merchant menu
+    # already shows the remaining balance.
+    if shop.get('merchant_done'):
+        card_cost = 0
+    available = (max(0, gold - card_cost - shop.get('reserve', 0) - WAGE_RESERVE)
+                 if type(gold) is int and card_cost is not None else 0)
+    budget = 0 if shop.get('recruit') == 'done' else min(RECRUIT_COST, available)
+    shop['recruit_reserve'] = budget
+    if not shop.get('soldiers_done'):
+        if card_cost is not None:
+            shop['soldiers'] = min(shop.get('soldiers', 0), max(0, available - budget))
+        if shop['soldiers'] == 0:
+            shop['soldiers_done'] = True
+    _record(mem, 'recruit_priority_plan', month=shop.get('key'),
+            observed_metric={**shortage, 'gold': gold, 'reserved': budget,
+                             'soldiers': shop.get('soldiers')},
+            reason='確認できる将軍が不足しているため募集費を兵士補充より先に確保する。総人数や死亡は未確定')
+
+
 def _plan_extras(mem, shop, reserve, recruit):
     shop['reserve'] = reserve
     egg_cost = EGG_RECOVER_COST * len(_egg_recovery_targets(mem))
@@ -4398,14 +4467,19 @@ def _plan_extras(mem, shop, reserve, recruit):
     shop['egg_cost'] = egg_cost
     shop['recruit'] = 'check' if recruit else None
     shop['chikujou'] = 'check'
+    _prioritise_recruit(mem, shop, shop.get('gold_start'))
     if reserve or recruit:
         _record(mem, 'month_extras_plan', chart_step='1-month', month=shop['key'],
                 strategy_variant=shop.get('variant', 'chart'),
                 observed_metric={'egg_uses': dict(mem.get('egg_uses') or {})},
                 plan={'egg_recover': bool(reserve), 'egg_recover_budget': reserve,
                       'egg_recover_targets': _egg_recovery_targets(mem),
-                      'recruit_if_left': RECRUIT_COST if recruit else None},
-                reason='使用回数が減った卵の全回復費を兵士より先に確保し、兵士99人分の後に余りがあれば将軍を募集')
+                      'recruit_if_left': RECRUIT_COST if recruit else None,
+                      'recruit_before_soldiers': bool(shop.get('recruit_priority')),
+                      'recruit_reserve': shop.get('recruit_reserve', 0)},
+                reason=('将軍不足時は募集費を兵士より先に確保し、卵回復・賃金予備も維持する'
+                        if shop.get('recruit_priority') else
+                        '使用回数が減った卵の全回復費を兵士より先に確保し、兵士99人分の後に余りがあれば将軍を募集'))
 
 
 def _adjusted_plan(mem, header, key):
@@ -4452,7 +4526,7 @@ def _recalc_soldiers(screen, mem, shop):
     if type(gold) is not int:
         return False
     shop['soldiers'] = max(0, min(shop.get('soldiers_target', 0),
-                                  gold - shop.get('reserve', 0) - WAGE_RESERVE))
+                                  gold - shop.get('reserve', 0) - shop.get('recruit_reserve', 0) - WAGE_RESERVE))
     shop['soldiers_done'] = shop['soldiers'] == 0
     shop['soldiers_recalculated'] = True
     _record(mem, 'soldier_plan_recalc', chart_step='adjusted-month',
@@ -4494,7 +4568,7 @@ def _plan(mem, header):
     if not spec:
         if ahead:
             reserve, _ = _extras_reserve(mem, header)
-            if not reserve:
+            if not reserve and not _recruit_shortage(mem):
                 return None
             shop = mem['shop'] = {'key': key, 'items': [], 'soldiers': 0,
                 'merchant_done': True, 'soldiers_done': True, 'gold_start': header['gold'],
@@ -4581,6 +4655,8 @@ def month_menu_ready(screen):
 def month_step(screen: Screen, mem):
     shop = _plan(mem, screen.header)
     body = _month_dialog_body(screen)
+    if shop:
+        _prioritise_recruit(mem, shop, (screen.header or {}).get('gold'))
     if body == RECRUIT_GOODBYE:
         _record(mem, 'month_recruit_goodbye', reason='実測した募集終了文を閉じて本メニューへ戻る')
         return [pad('a')]
@@ -4590,7 +4666,8 @@ def month_step(screen: Screen, mem):
         # could neither prove menu return nor rule out this measured dialogue.
         gold = (screen.header or {}).get('gold')
         if (shop and shop.get('recruit') == 'unverified' and type(gold) is int
-                and gold >= RECRUIT_COST and shop.get('soldiers', 0) >= SOLDIER_CAP):
+                and gold >= RECRUIT_COST and (shop.get('recruit_priority')
+                                             or shop.get('soldiers', 0) >= SOLDIER_CAP)):
             mem['month_sub'] = {'kind': 'recruit', 'gold_before': gold, 'presses': 0,
                                 'key': shop['key'], 'left_menu': False}
             shop['recruit'] = 'opened'
@@ -4613,9 +4690,30 @@ def month_step(screen: Screen, mem):
     if shop and not shop['merchant_done'] and shop['items']:
         move = menu_to(screen, 'しょうにん')
         return [pad('a')] if move == 'here' else [move] if move else []
+    if (shop and shop.get('recruit_priority') and not shop.get('recruit_measured_budget')
+            and not mem.get('month_sub')):
+        gold = (screen.header or {}).get('gold')
+        if type(gold) is not int:
+            return []
+        shop['recruit_reserve'] = (0 if shop.get('recruit') == 'done' else
+                                   min(RECRUIT_COST, max(0, gold - shop.get('reserve', 0) - WAGE_RESERVE)))
+        if not shop.get('soldiers_done'):
+            shop['soldiers'] = min(shop.get('soldiers', 0),
+                                   max(0, gold - shop.get('reserve', 0)
+                                       - shop['recruit_reserve'] - WAGE_RESERVE))
+            shop['soldiers_done'] = shop['soldiers'] == 0
+        shop['recruit_measured_budget'] = True
     if (shop and shop.get('soldiers_from_gold') and not shop.get('soldiers_recalculated')
             and not shop['soldiers_done']):
         if not _recalc_soldiers(screen, mem, shop):
+            return []
+    if (shop and shop.get('recruit_priority')
+            and shop.get('recruit') in ('check', 'pending')):
+        extra = _month_extra(screen, mem, shop, recruit_only=True)
+        if extra is not None:
+            return extra
+    if mem.get('month_sub') and mem['month_sub'].get('kind') == 'recruit':
+        if not _finish_month_sub(screen, mem, shop):
             return []
     if shop and not shop['soldiers_done']:
         move = menu_to(screen, 'へいしほじゅう')
@@ -4651,13 +4749,15 @@ def month_step(screen: Screen, mem):
     return [move] if move else []
 
 
-def _month_extra(screen, mem, shop):
-    """After soldiers: たまごのかいふく, then しょうぐんぼしゅう (owner order)."""
+def _month_extra(screen, mem, shop, *, recruit_only=False):
+    """Recruit before soldiers when short; otherwise keep the old extras order."""
     if not shop:
         return None
     gold = (screen.header or {}).get('gold')
     for sub, label, cost in (('egg', 'たまごのかいふく', shop.get('reserve') or EGG_RECOVER_COST),
                              ('recruit', 'しょうぐんぼしゅう', RECRUIT_COST)):
+        if recruit_only and sub != 'recruit':
+            continue
         status = shop.get(sub)
         if status not in ('pending', 'check'):
             continue
@@ -4673,12 +4773,16 @@ def _month_extra(screen, mem, shop):
         elif status == 'check':
             # Owner rule (2026-09-27): recruit only when the soldiers got
             # their full 99 and the fee plus the wage reserve is still left.
-            if (type(gold) is not int or shop.get('soldiers', 0) < SOLDIER_CAP
-                    or gold < cost + WAGE_RESERVE):
+            if (type(gold) is not int or (not shop.get('recruit_priority') and shop.get('soldiers', 0) < SOLDIER_CAP)
+                    or gold < cost + WAGE_RESERVE
+                    + (shop.get('reserve', 0) if shop.get('recruit_priority')
+                       and shop.get('egg') in ('pending', 'check') else 0)):
                 shop[sub] = 'skipped'
                 _record(mem, 'recruit_skip', month=shop.get('key'), gold=gold,
                         observed_metric={'soldiers': shop.get('soldiers'), 'gold': gold},
-                        reason='兵士99人分と賃金リザーブの後に募集費が残っていないため将軍を募集しない')
+                        reason=('募集費と卵回復・賃金リザーブが足りないため資金を温存して次月へ待つ'
+                                if shop.get('recruit_priority') else
+                                '兵士99人分と賃金リザーブの後に募集費が残っていないため将軍を募集しない'))
                 continue
         elif type(gold) is not int or gold < cost:
             shop[sub] = 'skipped'
@@ -4690,6 +4794,9 @@ def _month_extra(screen, mem, shop):
             shop[sub] = 'opened'
             mem['month_sub'] = {'kind': sub, 'gold_before': gold, 'presses': 0, 'key': shop.get('key'),
                                 'left_menu': False}
+            if sub == 'recruit':
+                mem['month_sub']['generals_before'] = sorted({
+                    g for gs in (mem.get('garrison') or {}).values() for g in gs or ()})
             _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice=label,
                     reason=f'{label}を選択')
             return [pad('a')]
@@ -4699,7 +4806,7 @@ def _month_extra(screen, mem, shop):
                     reason=f'月一メニューに{label}が読めないため見送る')
             continue
         return [move]
-    return _month_chikujou(screen, mem, shop)
+    return None if recruit_only else _month_chikujou(screen, mem, shop)
 
 
 CHIKUJOU_SPARE = 40            # gold beyond the wage reserve before a castle is upgraded
@@ -4717,7 +4824,7 @@ def _month_chikujou(screen, mem, shop):
     if shop.get('chikujou') != 'check':
         return None
     gold = (screen.header or {}).get('gold')
-    if type(gold) is not int or gold < WAGE_RESERVE + CHIKUJOU_SPARE:
+    if type(gold) is not int or gold < WAGE_RESERVE + CHIKUJOU_SPARE + shop.get('recruit_reserve', 0):
         shop['chikujou'] = 'skipped'
         return None
     move = menu_to(screen, 'ちくじょう')
@@ -4817,9 +4924,20 @@ def _finish_month_sub(screen, mem, shop) -> bool:
     if shop and shop.get(sub['kind']) == 'opened':
         shop[sub['kind']] = 'done' if paid else 'unverified'
     if sub['kind'] == 'recruit':
-        # A recruit (paid or not confirmed) may now stand in the home castle:
-        # its last reading no longer proves it empty.
-        (mem.get('garrison') or {}).pop(chart.home_castle(mem.get('chapter') or 0), None)
+        if shop and paid:
+            shop['recruit_reserve'] = 0
+        # A recruit joins the hero's castle, which need not be home.
+        # Invalidate its old list; observe the candidate there before claiming
+        # admission. Payment alone is not a roster increase.
+        garrison = mem.get('garrison') or {}
+        placements = {c for c, gs in garrison.items() if NAME in (gs or ())}
+        placements.add(chart.home_castle(mem.get('chapter') or 0))
+        for c in placements:
+            garrison.pop(c, None)
+        if paid:
+            mem['recruit_verification'] = {
+                'month': sub.get('key'), 'candidates': sub.get('candidate_names', []),
+                'generals_before': sub.get('generals_before', []), 'placement': 'unclassified'}
     if paid and sub['kind'] == 'egg':
         mem['egg_uses'] = {}      # counts are re-read at the next sorties
         mem.pop('egg_recheck', None)
@@ -4898,6 +5016,8 @@ def month_sub_step(screen: Screen, mem):
                 reason='月一の実行中に月一メニューへ戻らず別画面になったため追跡をやめる')
         return None
     candidate = _paid_recruit_candidate(screen, sub)
+    if candidate and candidate not in sub.setdefault('candidate_names', []):
+        sub['candidate_names'].append(candidate)
     if candidate and not sub.get('paid_candidates'):
         # v16 may already have entered the old 8-observation abort. The
         # measured paid candidate screen is new progress, so recover once;
