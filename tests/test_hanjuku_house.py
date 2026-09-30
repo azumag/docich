@@ -404,6 +404,27 @@ def test_returning_house_still_closes_the_concert_music_picker():
             state['policy']['house']['total']) == ('find_field', 18, 42)
 
 
+def test_decide_keeps_purchase_and_verified_receipt_owned_by_house():
+    buying = memory('buy', purchase={'item': 'ピアス', 'cost': 50,
+                                     'gold_before': 80, 'month': '2-6'})
+    actions, state = decide(gifts(gold=80, selected=0, price=50),
+                            {'step': 90, 'policy': buying})
+    assert actions == [p.pad('a')]
+    assert state['policy']['house']['phase'] == 'receipt'
+    assert state['_records'][-1]['decision'] == 'house_purchase_requested'
+
+    verifying = memory('verify_status', purchase={'item': 'ピアス', 'cost': 50,
+                                                  'gold_before': 80, 'month': '1-6'})
+    verifying['month'] = '1-6'
+    actions, state = decide(status('ゼウス', 'エラベルエッグ0', gold=30),
+                            {'step': 91, 'policy': verifying})
+    assert actions == [p.pad('b')]
+    assert state['policy']['house']['phase'] == 'return_close'
+    assert state['policy']['house']['purchased'] is True
+    assert state['_records'][-1]['decision'] == 'house_repair_verified'
+    assert state['_records'][-1]['observed_metric']['gold_after'] == 30
+
+
 def test_return_does_not_confirm_enemy_castle():
     mem = memory('return_view')
     screen = Screen([], None, '', kind='world_map')
