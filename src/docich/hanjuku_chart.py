@@ -17,6 +17,9 @@ from __future__ import annotations
 
 HERO = 'どうし'
 
+# Optional chapter-specific role overrides; no fixed total headcount.
+RECRUITMENT_BY_CHAPTER: dict[int, dict[str, int]] = {}
+
 # Map-cursor cells that select each castle (top-left of the 16x16 cursor).
 # Filled per chapter by measurement; empty dict means the chapter is gated.
 CASTLES: dict[int, dict[str, tuple[int, int]]] = {

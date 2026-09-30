@@ -296,7 +296,7 @@ def observe_owners(mem, roofs, cam):
     for roof in roofs:
         wx, wy = roof['target'][0] + cam[0], roof['target'][1] + cam[1]
         hits = [name for name, (x, y) in castles.items() if abs(wx - x) + abs(wy - y) <= 12]
-        if len(hits) == 1 and hits[0] not in fixed and roof.get('kind') in ('own', 'enemy'):
+        if len(hits) == 1 and roof.get('kind') in ('own', 'enemy'):
             seen[hits[0]] = roof['kind']
     streak = mem.setdefault('owner_streak', {})
     for castle, kind in seen.items():
@@ -305,8 +305,13 @@ def observe_owners(mem, roofs, cam):
         streak[castle] = {'kind': kind, 'count': count}
         if count < OWNER_CONFIRM:
             continue
+        from .hanjuku_roster import owner
+        owner(mem, STATUS_NAMES.get(castle, castle), kind)
+        if castle in fixed:
+            continue
         captured = mem.setdefault('captured', [])
         if kind == 'enemy' and castle in captured:
+            (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
             mem['captured'] = [c for c in captured if c != castle]
             lost = mem.setdefault('lost', [])
             if castle not in lost:
@@ -317,6 +322,7 @@ def observe_owners(mem, roofs, cam):
                     resulting_event=f'lost:{castle}',
                     reason='占領していた城の屋根が敵の色になったため失陥として奪還対象にする')
         elif kind == 'own' and castle not in captured:
+            (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
             captured.append(castle)
             if castle in (mem.get('lost') or []):
                 mem['lost'] = [c for c in mem['lost'] if c != castle]
@@ -986,6 +992,7 @@ def _adopt_plan(mem, doc, rid):
     purchases = doc.get('purchases')
     mem['chart_plan'] = {
         'request_id': rid, 'source': doc.get('source'), 'orders': orders,
+        'recruitment': doc.get('recruitment'),
         'purchases': ({**purchases, 'month': list(purchases['month']),
                        'cards': [list(c) for c in purchases['cards']]} if purchases else None)}
     state = mem.setdefault('chart_adjust', {})
@@ -1376,6 +1383,10 @@ def world_map_step(screen, mem, frame):
 
 def _apply_world_flags(mem, flags):
     chapter = mem.get('chapter') or 0
+    from .hanjuku_roster import owner
+    for name, kind in flags.items():
+        if name in chart.castles(chapter):
+            owner(mem, STATUS_NAMES.get(name, name), kind)
     home = chart.home_castle(chapter)
     cur = mem.get('battle') or {}
     castle = cur.get('castle')
@@ -4316,6 +4327,9 @@ def battle_end(mem, next_kind, *, defense_continues=False):
     mem.pop('battle', None)
     mem['attack'] = None
     enemy_hp, ally_hp = cur.get('enemy_hp'), cur.get('ally_hp')
+    if ally_hp == 0:
+        from .hanjuku_roster import invalidate
+        invalidate(mem)  # HP defeat makes membership uncertain; it is not proof of death.
     if enemy_hp == 0 and ally_hp not in (None, 0):
         outcome = 'win'
     elif ally_hp == 0 and enemy_hp not in (None, 0):
@@ -4333,6 +4347,7 @@ def battle_end(mem, next_kind, *, defense_continues=False):
                       and cur.get('side') == 'defense' and outcome == 'loss' else None)
     defense_retained = observed_owner == 'own'
     if outcome == 'win' and castle and cur.get('side') == 'attack':
+        (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
         captured = mem.setdefault('captured', [])
         if castle not in captured:
             captured.append(castle)
@@ -4343,6 +4358,7 @@ def battle_end(mem, next_kind, *, defense_continues=False):
     if outcome == 'win' and castle and cur.get('side') == 'defense':
         _garrison_move(mem, cur.get('ally'), target=castle)
     if outcome == 'loss' and castle and cur.get('side') == 'defense' and not (defense_continues or defense_retained):
+        (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
         mem['captured'] = [c for c in mem.get('captured', []) if c != castle]
         (mem.get('garrison') or {}).pop(castle, None)
         lost = mem.setdefault('lost', [])
@@ -4591,6 +4607,10 @@ def message_step(screen: Screen, mem):
 
 def _enter_chapter(mem, chapter, *, reason, evidence=None):
     previous = mem.get('chapter')
+    from .hanjuku_roster import fresh
+    previous_roster = fresh(mem)
+    if previous_roster and previous_roster.get('complete') is True:
+        mem['recruit_payroll_pending'] = list(previous_roster['names'])
     # Route state belongs to the measured map of one chapter. Keep
     # run-wide counters/name evidence, never carry coordinates/orders.
     for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
@@ -4608,6 +4628,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip',
                 'near_goal', 'align_steps', 'unanchored', 'select_tick',
                 'house', 'house_scan_tick', 'house_scan_month', 'house_eggs',
+                'recruit_roster', 'recruit_roster_floor', 'recruit_roster_recheck', 'recruit_roster_attempts', 'recruit_month_scan_attempts', 'castle_income', 'castle_ownership',
                 'select_used', 'castle_verified', 'last_castle_hold',
                 'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                 'indep_menu_key', 'indep_menu_action',
@@ -4793,55 +4814,102 @@ def _egg_recheck(mem):
             pending.append(ally)
 
 
-# Six confirmed available generals keep the opening chart's attack/defense
-# roles covered. This is a lower bound from observations, never a death count.
-RECRUIT_GENERAL_TARGET = 6
+def _recruit_target(mem):
+    from .hanjuku_roster import roles
+    chapter = mem.get('chapter')
+    expected = set(chart.CASTLE_NAMES.get(chapter, ())) - {chart.boss_castle(chapter)}
+    owned = _owned(mem)
+    # Unknown ownership/chapters are not zero castles; aliases count once.
+    owned = {STATUS_NAMES.get(c, c) for c in owned}
+    expected = {STATUS_NAMES.get(c, c) for c in expected}
+    if not owned or not owned <= expected or type(chapter) is not int:
+        return None
+    raw = (mem.get('chart_plan') or {}).get('recruitment')
+    if raw is None:
+        raw = chart.RECRUITMENT_BY_CHAPTER.get(chapter, {'per_castle': 2, 'attack': 3})
+    try:
+        spec = roles(raw)
+    except ValueError:
+        return None
+    target = spec['per_castle'] * len(owned) + spec['attack']
+    from .hanjuku_roster import MAX_GENERALS
+    return min(target, MAX_GENERALS) if target > 0 else None
 
 
 def _recruit_sufficient(mem):
-    """A recent single roster page proves a lower bound, never a total."""
-    seen = mem.get('recruit_roster_floor') or {}
-    tick = mem.get('tick')
-    return (isinstance(seen, dict) and seen.get('chapter') == mem.get('chapter')
-            and type(seen.get('count')) is int and RECRUIT_GENERAL_TARGET <= seen['count'] <= 8
-            and type(tick) is int and type(seen.get('tick')) is int
-            and 0 <= tick - seen['tick'] < SORTIE_BUSY_TICKS)
+    from .hanjuku_roster import fresh
+    seen, target = fresh(mem), _recruit_target(mem)
+    return seen is not None and target is not None and len(seen['names']) >= target
 
 
 def _stop_unneeded_recruit(mem, shop):
-    if not _recruit_sufficient(mem):
+    from .hanjuku_roster import fresh
+    if shop.get('recruit') in ('opened', 'done', 'unverified'):
+        return True  # finish the existing transaction; do not invent a refund
+    seen, target = fresh(mem), _recruit_target(mem)
+    if seen is not None and target is not None and len(seen['names']) < target and seen.get('complete') is True:
         return False
-    # Finish an already opened/paid audition; never claim the fee was undone.
-    if shop.get('recruit') not in ('opened', 'done', 'unverified'):
-        if shop.get('recruit') != 'not_needed':
-            _record(mem, 'recruit_not_needed', month=shop.get('key'),
-                    observed_metric={'roster_lower_bound': mem['recruit_roster_floor']['count']},
-                    reason='直近の将軍一覧だけで必要人数以上を確認したため追加募集を見送る')
-        shop['recruit'] = 'not_needed'
-        shop['recruit_priority'] = False
+    sufficient = _recruit_sufficient(mem)
+    status = 'not_needed' if sufficient else 'deferred_roster'
+    if shop.get('recruit') != status:
+        _record(mem, 'recruit_not_needed' if sufficient else 'recruit_roster_unknown',
+                month=shop.get('key'),
+                observed_metric={'roster_lower_bound': len(seen['names']) if seen else None,
+                                 'target': target, 'complete': seen.get('complete') if seen else False},
+                reason=('新鮮な同一scanの実一覧で必要人数以上を確認したため募集を見送る' if sufficient
+                        else '実在人数または必要人数が不明のため募集を保留し、実一覧を再確認する'))
+    shop['recruit'] = status
+    shop['recruit_priority'] = False
+    mem['recruit_hold'] = {'chapter': mem.get('chapter'), 'month': shop.get('key'),
+                          'reason': ('enough_observed' if sufficient
+                                     else 'roster_incomplete' if seen and target is not None
+                                     else 'roster_or_demand_unknown'), 'status': status}
+    if sufficient:
         shop['recruit_reserve'] = 0
+    else:
+        mem['recruit_roster_recheck'] = True
     return True
 
 
 def _recruit_shortage(mem):
-    if _recruit_sufficient(mem):
+    from .hanjuku_roster import fresh
+    seen, target = fresh(mem), _recruit_target(mem)
+    if (seen is None or target is None or seen.get('complete') is not True
+            or len(seen['names']) >= target):
         return None
-    garrison = mem.get('garrison') or {}
-    if not garrison:
-        return None                       # no roster observation yet
-    owned = _owned(mem)
-    owned |= {STATUS_NAMES.get(c, c) for c in owned}
-    names = {g for c, gs in garrison.items() if c in owned for g in gs or ()}
-    now = int(mem.get('tick') or 0)
-    names.update(s.get('general') for s in (mem.get('sorties') or {}).values()
-                 if s.get('status') == 'en_route' and s.get('tick') is not None
-                 and now - int(s['tick']) < SORTIE_BUSY_TICKS)
-    names.discard(None)
-    names -= set(mem.get('general_location_unknown') or ())
-    if len(names) >= RECRUIT_GENERAL_TARGET:
-        return None
-    return {'available_observed': sorted(names), 'count_lower_bound': len(names),
-            'target': RECRUIT_GENERAL_TARGET, 'total_roster': 'unclassified'}
+    return {'available_observed': list(seen['names']), 'count_lower_bound': len(seen['names']),
+            'target': target, 'total_roster': len(seen['names']),
+            'garrison': mem.get('garrison') or {}, 'placement': 'observed_only'}
+
+
+def _stop_uneconomic_recruit(mem, shop):
+    from .hanjuku_roster import economics
+    if shop.get('recruit') in ('opened', 'done', 'unverified'):
+        return False  # finish the existing conversation without guessing refunds
+    owned = {STATUS_NAMES.get(c, c) for c in _owned(mem)}
+    economy = economics(mem, owned)
+    # Owner approved ordinary observed income plus the existing cash reserves.
+    # Do not silently apply an unapproved permanent quarter-income factor.
+    sustainable = economy and economy['income'] >= economy['wages'] + economy['additional_wage_max']
+    if sustainable:
+        mem.pop('recruit_hold', None)
+        return False
+    status = 'deferred_economy' if economy is None else 'not_affordable'
+    if shop.get('recruit') != status:
+        _record(mem, 'recruit_economy_held', month=shop.get('key'),
+                observed_metric={'economy': economy,
+                                 'pending_employees': mem.get('recruit_payroll_pending') or []},
+                expected_metric='募集後も賃金を収入で支払えることを確認',
+                reason=('実収入・同一scan総賃金が不明のため募集を保留し確認する' if economy is None
+                        else '募集後の賃金を安全側の収入で賄えないため募集を見送る'))
+    shop['recruit'] = status
+    shop['recruit_priority'] = False
+    mem['recruit_hold'] = {'chapter': mem.get('chapter'), 'month': shop.get('key'),
+                          'reason': ('pending_employees' if mem.get('recruit_payroll_pending')
+                                     else 'income_or_payroll_unknown' if economy is None else 'wages_exceed_income'),
+                          'status': status}
+    mem['recruit_roster_recheck'] = economy is None
+    return True
 
 
 def _month_held_reserve(shop):
@@ -4873,12 +4941,12 @@ def _prioritise_recruit(mem, shop, gold):
     """
     if _stop_unneeded_recruit(mem, shop):
         return
-    if shop.get('recruit_budget_version') == 1:
+    if shop.get('recruit_budget_version') == 2 and shop.get('recruit') == 'check':
         return
     shortage = _recruit_shortage(mem)
-    if not shortage:
+    if not shortage or _stop_uneconomic_recruit(mem, shop):
         return
-    shop['recruit_budget_version'] = 1
+    shop['recruit_budget_version'] = 2
     shop['recruit_priority'] = True
     if shop.get('recruit') not in ('opened', 'done', 'unverified'):
         shop['recruit'] = 'check'
@@ -5204,7 +5272,8 @@ def _month_extra(screen, mem, shop, *, recruit_only=False):
     if not shop:
         return None
     gold = (screen.header or {}).get('gold')
-    _stop_unneeded_recruit(mem, shop)
+    if not _stop_unneeded_recruit(mem, shop):
+        _stop_uneconomic_recruit(mem, shop)
     for sub, label, cost in (('egg', 'たまごのかいふく', shop.get('reserve') or EGG_RECOVER_COST),
                              ('recruit', 'しょうぐんぼしゅう', RECRUIT_COST)):
         if recruit_only and sub != 'recruit':
@@ -5442,6 +5511,8 @@ def _finish_month_sub(screen, mem, shop) -> bool:
     if shop and shop.get(sub['kind']) == 'opened':
         shop[sub['kind']] = 'done' if paid else 'unverified'
     if sub['kind'] == 'recruit':
+        from .hanjuku_roster import invalidate
+        invalidate(mem)  # payment/return never proves an extra general
         if shop and paid:
             shop['recruit_reserve'] = 0
         # A recruit joins the hero's castle, which need not be home.
@@ -5559,6 +5630,8 @@ def month_sub_step(screen: Screen, mem):
             joined = re.fullmatch(r'([^�]+)がはいかにくわわった!', line.known.replace(' ', '').replace('！', '!'))
             if joined and joined[1] not in sub.setdefault('joined_names', []):
                 sub['joined_names'].append(joined[1])
+                from .hanjuku_roster import invalidate
+                invalidate(mem)
                 _record(mem, 'recruit_join_announced', general=joined[1], month=sub.get('key'),
                         observed_metric={'placement': 'unclassified'},
                         reason='募集の実加入告知を確認。配置は次の在城一覧で照合する')
@@ -5875,11 +5948,6 @@ def observe_events(screen: Screen, mem):
     _repair_home_name_chapter(mem)
     _repair_home_alias_failures(mem)
     mem['tick'] = int(mem.get('tick') or 0) + 1      # observations: ages sorties (_en_route)
-    from .hanjuku_house import roster
-    visible_generals = roster(screen)
-    if visible_generals is not None and len(set(visible_generals)) >= RECRUIT_GENERAL_TARGET:
-        mem['recruit_roster_floor'] = {'chapter': mem.get('chapter'),
-                                      'tick': mem['tick'], 'count': len(set(visible_generals))}
     _hold_general_loss_metric(mem)
     _migrate_card_evidence(mem)
     if screen.kind in ('card_select', 'sortie_confirm'):
@@ -5904,6 +5972,19 @@ def observe_events(screen: Screen, mem):
             mem['gold'] = header['gold']
             _record(mem, 'month_seen', month=key, gold=header['gold'], reason='月の表示')
         mem['gold'] = header['gold']
+    castle = CASTLE_STATUS.search(screen.text)
+    income = re.search(r'しゅうにゅう(\d{1,3})Gレベル\d+しょうぐん', screen.text)
+    if castle and income and mem.get('chapter') and mem.get('month'):
+        label = STATUS_NAMES.get(castle[1], castle[1])
+        if label in {STATUS_NAMES.get(c, c) for c in _owned(mem)}:
+            mem.setdefault('castle_income', {})[label] = {
+                'chapter': mem['chapter'], 'month': mem['month'], 'tick': mem['tick'], 'income': int(income[1])}
+    if 'がはいかにくわわった!' in screen.text.replace('！', '!'):
+        from .hanjuku_roster import invalidate
+        invalidate(mem)
+    from .hanjuku_house import roster
+    from .hanjuku_roster import page
+    page(mem, roster(screen))
     if 'きょうさく' in screen.text and not mem.get('poor_harvest_' + str(mem.get('month'))):
         mem['poor_harvest_' + str(mem.get('month'))] = True
         _record(mem, 'poor_harvest', deviation_reason='reset_forbidden',
