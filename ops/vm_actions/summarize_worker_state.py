@@ -118,6 +118,31 @@ def summarize_worker_state(data):
             unregistered_paused += 1
             unregistered_by_category["paused"][category] += 1
 
+    # The gateway redacts sensitive-looking dynamic detail keys.  Preserve the
+    # collector's aggregate flags so a redacted unregistered pid-file cannot
+    # disappear from the public stale/alive/paused totals.  Older collectors
+    # lack this map, so keep the detail-derived values as the fallback.
+    unregistered_counts = {
+        "alive": unregistered_alive,
+        "stale": unregistered_stale,
+        "paused": unregistered_paused,
+    }
+    unregistered_flags = workers.get("unregistered_flags")
+    if isinstance(unregistered_flags, dict):
+        for state in ("alive", "stale", "paused"):
+            aggregate = unregistered_flags.get(state)
+            if (
+                isinstance(aggregate, int)
+                and not isinstance(aggregate, bool)
+                and aggregate >= unregistered_counts[state]
+            ):
+                missing = aggregate - unregistered_counts[state]
+                unregistered_counts[state] = aggregate
+                # If the dynamic detail key was sanitized, its exact name is
+                # unavailable by design.  Collapse that evidence to the fixed
+                # "other" bucket instead of inventing a lifecycle category.
+                unregistered_by_category[state]["other"] += missing
+
     pause_ownership = workers.get("pause_ownership")
     unregistered_health = workers.get("unregistered_health")
 
@@ -132,9 +157,9 @@ def summarize_worker_state(data):
             f"pause_owner_lifecycle={_count(pause_ownership, 'lifecycle_owned')}",
             f"pause_owner_operator={_count(pause_ownership, 'operator_owned')}",
             f"pause_owner_unknown={_count(pause_ownership, 'unknown')}",
-            f"unregistered_alive={unregistered_alive}",
-            f"unregistered_stale={unregistered_stale}",
-            f"unregistered_paused={unregistered_paused}",
+            f"unregistered_alive={unregistered_counts['alive']}",
+            f"unregistered_stale={unregistered_counts['stale']}",
+            f"unregistered_paused={unregistered_counts['paused']}",
             f"unregistered_stale_only={_count(unregistered_health, 'stale_only')}",
             f"unregistered_unknown={_count(unregistered_health, 'unknown')}",
         ]
