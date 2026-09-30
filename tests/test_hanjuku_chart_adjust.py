@@ -1211,4 +1211,3 @@ def test_g514_live_plan_and_recent_target_reservation_still_suppress_retake():
     mem['sorties']['recent'] = {'general': 'ヴィーナス', 'target': 'ナキューメラ',
                                'status': 'en_route', 'tick': mem['tick'] - 1}
     assert not any(o['target'] == 'ナキューメラ' for o in policy.interim_candidates(mem).values())
-
