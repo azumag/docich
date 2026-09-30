@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v104-defense-successor'
+BOT_VERSION = 'hanjuku-chart-v105-boss-command-menu'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -205,6 +205,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         or any(w in policy.CARD_NAMES for line in screen.lines for _,w in line.spans()))
     # Egg/card announcements and fades inside a battle are not its end; only
     # a return to the map or a following event/menu closes the record.
+    if kind != 'battle_menu_pending':
+        mem.pop('battle_menu_pending_ticks', None)
     if kind != 'battle' and mem.get('battle'):
         mem['battle'].pop('successor_seen', None)
     after_battle = kind in policy.AFTER_BATTLE_KINDS or kind == 'barrier_removed'
@@ -270,6 +272,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=policy.egg_battle_step(screen,mem)
     elif kind=='okunote_menu':
         actions=policy.okunote_step(screen,mem)
+    elif kind=='battle_menu_pending':
+        actions=policy.battle_menu_pending_step(mem)
     elif kind=='battle_menu':
         actions=policy.battle_menu_step(screen,mem)
     elif kind in {'attack_started','defense_started','boss_attack_started'}:

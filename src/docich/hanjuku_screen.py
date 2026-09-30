@@ -393,11 +393,23 @@ _BATTLE_COMMANDS = ((176, 'たまごをつかう'), (192, 'きりふだ'), (208,
 
 
 def _human_commands(screen):
-    # The egg-opponent menu has たまごをつかう on its third row. Only
-    # おくのて may move rows as the human command box scrolls.
-    return any((line.y == y and line.spans() == [(176, label)])
+    # The boss command box can show only egg/card at y192/y208. Require
+    # both exact labels: a lone egg row is also an egg-opponent command.
+    rows = {line.y: line.spans() for line in screen.menu_rows}
+    boss_pair = (rows.get(192) == [(176, 'たまごをつかう')]
+                 and rows.get(208) == [(176, 'きりふだ')])
+    return boss_pair or any((line.y == y and line.spans() == [(176, label)])
                or (line.y in (176, 192, 208) and line.spans() == [(176, 'おくのて')])
                for line in screen.menu_rows for y, label in _BATTLE_COMMANDS)
+
+
+def _partial_human_commands(screen):
+    # The opening box is clipped at the bottom before the other rows arrive.
+    # It must wait, never fall through to legacy A on the egg command.
+    return (screen.battle is None and not screen.egg_rows
+            and len(screen.menu_rows) == 1
+            and screen.menu_rows[0].y in (192, 208, 216)
+            and screen.menu_rows[0].spans() == [(176, 'たまごをつかう')])
 
 
 def egg_choice_names(screen):
@@ -504,6 +516,8 @@ def classify_text(s: Screen) -> str:
         return 'egg_choice_menu'
     if _human_commands(s) or s.hidden_battle_commands:
         return 'battle_menu'
+    if _partial_human_commands(s):
+        return 'battle_menu_pending'
     if 'たまごをつかう' in t and 'たいきゃく' in t:
         return 'battle_menu'
     if 'きりふだ' in t and 'たいきゃく' in t and any('たいきゃく' in r.known.replace(' ', '') for r in s.menu_rows):

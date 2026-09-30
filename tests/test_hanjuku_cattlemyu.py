@@ -122,6 +122,8 @@ def test_egg_menu_returns_once_to_use_rare_instead_of_summoning(monkeypatch, mov
     assert policy.battle_menu_step(screen,mem)==([policy.pad('a')] if move == 'here' else [move])
     assert mem['battle']['card_flow']['card']==RARE
     if move != 'here':
+        assert policy.battle_menu_step(screen,mem)==[move]  # not yet on the observed card row
+        monkeypatch.setattr(policy,'_battle_menu_to',lambda s,label:'here')
         assert policy.battle_menu_step(screen,mem)==[policy.pad('a')]
     assert mem['battle']['card_flow']['stage']=='list'
 
