@@ -1,4 +1,5 @@
 """Broken-egg repair contracts using measured layouts and synthetic pixels."""
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -6,7 +7,8 @@ import pytest
 from test_hanjuku_chart_bot import Canvas as BaseCanvas, MARK
 from docich import hanjuku_house as house, hanjuku_policy as p
 from docich.hanjuku_screen import Screen, parse
-from docich.hanjuku_bot import decide
+from docich.hanjuku_bot import classify, decide
+from docich.hanjuku_pixels import Frame, read_png
 
 
 class Canvas(BaseCanvas):
@@ -333,6 +335,94 @@ def test_return_picker_accepts_only_an_own_flag_under_its_ring():
         assert house.step(screen, mem, None) == [p.pad('a')]
         assert mem['house']['phase'] == 'return_done'
     assert mem['_records'][-1]['decision'] == 'house_return_requested'
+
+
+def test_returning_house_yields_frame_077_text_to_concert_fallback(monkeypatch):
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g514-frame-077-retainer-offer.png')
+    assert frame.digest() == '8378607bff6fe0f2e596855af19b8c37001182561a6561bb9114e74a2bf4355d'
+    assert classify(frame) == 'concert'
+    screen = parse(frame, phase='concert')
+    assert screen.kind == 'text' and screen.header['gold'] == 30
+    assert 'どうしさまのぶかにしていただきたくはせさんじました' in screen.text
+
+    legacy = memory('find_field', age=17, total=41)
+    legacy['house']['returning'] = True
+    for age, total in ((18, 42), (19, 43)):
+        assert house.step(screen, legacy, frame) == [p.pad('b')]
+        assert (legacy['house']['phase'], legacy['house']['age'], legacy['house']['total']) == (
+            'find_field', age, total)
+
+    # The coarse concert fallback is still owned by an ordinary house scan.
+    ordinary = memory('find_field', age=17, total=41)
+    actions, state = decide(frame, {'step': 76, 'policy': ordinary})
+    assert actions == [p.pad('b')]
+    assert (state['policy']['house']['age'], state['policy']['house']['total']) == (18, 42)
+
+    mem = memory('find_field', age=17, total=41)
+    mem['house']['returning'] = True
+    actions, state = decide(frame, {'step': 76, 'policy': mem})
+    # The house handler used to answer B on this non-map return observation.
+    # The ordinary concert fallback advances this text with A instead.
+    assert actions == [p.pad('a')]
+    house_state = state['policy']['house']
+    assert (house_state['phase'], house_state['age'], house_state['total']) == ('find_field', 17, 41)
+    assert house_state['returning'] is True
+
+    # Once the event has ended and the map is visible again, the same house
+    # route resumes and consumes exactly its next observation.
+    monkeypatch.setattr('docich.hanjuku_screen.parse',
+                        lambda *_args, **_kwargs: Screen([], None, '', kind='map'))
+    actions, state = decide(frame, state)
+    house_state = state['policy']['house']
+    assert actions == [p.pad('x')]
+    assert (house_state['phase'], house_state['age'], house_state['total']) == (
+        'field_roster_open', 0, 42)
+
+
+def test_returning_house_still_closes_the_concert_music_picker():
+    rgb = bytearray(bytes((160, 110, 60)) * (256 * 224))
+    for y in range(150, 208):
+        for x in range(18, 236):
+            i = (y * 256 + x) * 3
+            rgb[i:i + 3] = bytes((16, 72, 57))
+    for y in range(128):
+        for x in (*range(32), *range(224, 256)):
+            i = (y * 256 + x) * 3
+            rgb[i:i + 3] = bytes((200, 0, 0))
+    for x in range(200, 240):
+        i = (184 * 256 + x) * 3
+        rgb[i:i + 3] = bytes((197, 141, 74))
+    frame = Frame(256, 224, bytes(rgb))
+    assert classify(frame) == 'concert'
+    assert parse(frame, phase='concert').kind == 'unknown'
+
+    mem = memory('find_field', age=17, total=41)
+    mem['house']['returning'] = True
+    actions, state = decide(frame, {'step': 76, 'policy': mem})
+    assert actions == [p.pad('b')]
+    assert (state['policy']['house']['phase'], state['policy']['house']['age'],
+            state['policy']['house']['total']) == ('find_field', 18, 42)
+
+
+def test_decide_keeps_purchase_and_verified_receipt_owned_by_house():
+    buying = memory('buy', purchase={'item': 'ピアス', 'cost': 50,
+                                     'gold_before': 80, 'month': '2-6'})
+    actions, state = decide(gifts(gold=80, selected=0, price=50),
+                            {'step': 90, 'policy': buying})
+    assert actions == [p.pad('a')]
+    assert state['policy']['house']['phase'] == 'receipt'
+    assert state['_records'][-1]['decision'] == 'house_purchase_requested'
+
+    verifying = memory('verify_status', purchase={'item': 'ピアス', 'cost': 50,
+                                                  'gold_before': 80, 'month': '1-6'})
+    verifying['month'] = '1-6'
+    actions, state = decide(status('ゼウス', 'エラベルエッグ0', gold=30),
+                            {'step': 91, 'policy': verifying})
+    assert actions == [p.pad('b')]
+    assert state['policy']['house']['phase'] == 'return_close'
+    assert state['policy']['house']['purchased'] is True
+    assert state['_records'][-1]['decision'] == 'house_repair_verified'
+    assert state['_records'][-1]['observed_metric']['gold_after'] == 30
 
 
 def test_return_does_not_confirm_enemy_castle():
