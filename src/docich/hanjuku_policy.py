@@ -2873,6 +2873,13 @@ def deploy_step(screen: Screen, mem):
                 holds[order['step']] = holds.get(order['step'], 0) + 1
                 if holds[order['step']] >= BOSS_ABSENT_LIMIT:
                     holds.pop(order['step'], None)
+                    # A target-cancel retry is only valid for target verification
+                    # failures. Once the general is confirmed absent, retire that
+                    # retry entitlement or next_order() can select this failed
+                    # boss order forever.
+                    target_cancels = mem.get('target_cancel')
+                    if target_cancels is not None:
+                        target_cancels.pop(order['step'], None)
                     _finish_order(mem, 'failed', deviation_reason=f"{order['general']}が出撃元にいない",
                                   observed_metric=present[:8], source=_source(order, mem),
                                   reason='ボス出撃の将軍が出撃元の一覧にいないため指示を諦めて次へ進む')
