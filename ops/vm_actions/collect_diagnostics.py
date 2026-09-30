@@ -433,6 +433,8 @@ def _collect_opencode_session_attribution(
     *,
     window_sec=OPENCODE_ATTRIBUTION_WINDOW_SEC,
     query_timeout_sec=OPENCODE_ATTRIBUTION_QUERY_TIMEOUT_SEC,
+    soren_root=None,
+    prod_root=None,
 ):
     """Read fixed OpenCode caller aggregates without exposing stored content."""
 
@@ -457,6 +459,16 @@ def _collect_opencode_session_attribution(
             "unattributed_1h_sessions": 0,
             "unattributed_2h_sessions": 0,
             "unattributed_6h_sessions": 0,
+            "source_scan_complete": False,
+            "sources": {
+                source: {
+                    "sessions": 0,
+                    "latest_age_sec": 0,
+                    "sessions_15m": 0,
+                    "sessions_1h": 0,
+                }
+                for source in ("soren_root", "docich_root", "self_repair_tmp", "other")
+            },
         },
     }
     try:
@@ -491,12 +503,14 @@ def _collect_opencode_session_attribution(
             "part": {"id", "session_id", "data"},
             "event": {"id", "aggregate_id", "data"},
         }
+        table_columns = {}
         for table, columns in required.items():
             actual = {
                 str(row[1])
                 for row in con.execute(f"PRAGMA table_info({table})")
                 if len(row) > 1
             }
+            table_columns[table] = actual
             if not columns.issubset(actual):
                 return result
         result["schema_supported"] = True
@@ -615,6 +629,78 @@ def _collect_opencode_session_attribution(
             )
         except (sqlite3.Error, TypeError, ValueError):
             pass
+
+        # Attribute only the *unattributed* session rows to fixed execution
+        # locations. Directory strings are query parameters and never leave
+        # this function; diagnostics publishes only the fixed source enum and
+        # counts. This distinguishes the Soren comment bridge, native docich
+        # jobs, and the root-owned self-repair broker without exposing paths or
+        # generated OpenCode titles.
+        if (
+            "directory" in table_columns.get("session", set())
+            and soren_root is not None
+            and prod_root is not None
+        ):
+            source_deadline = time.monotonic() + min(
+                1.0, max(0.05, float(query_timeout_sec))
+            )
+            con.set_progress_handler(
+                lambda: 1 if time.monotonic() >= source_deadline else 0,
+                1000,
+            )
+            try:
+                soren_directory = str(Path(soren_root).resolve())
+                prod_directory = str(Path(prod_root).resolve())
+                source_cutoff_15m = int((float(now) - 15 * 60) * 1000)
+                source_cutoff_1h = int((float(now) - 60 * 60) * 1000)
+                rows = con.execute(
+                    f"""
+                    SELECT CASE
+                               WHEN directory = ? THEN 'soren_root'
+                               WHEN directory = ? THEN 'docich_root'
+                               WHEN directory LIKE '/tmp/soren-repair-model-%'
+                                   THEN 'self_repair_tmp'
+                               ELSE 'other'
+                           END AS source,
+                           COUNT(*),
+                           MAX(time_created),
+                           COALESCE(SUM(CASE WHEN time_created >= ? THEN 1 ELSE 0 END), 0),
+                           COALESCE(SUM(CASE WHEN time_created >= ? THEN 1 ELSE 0 END), 0)
+                      FROM session
+                     WHERE time_created >= ?
+                       AND (title IS NULL OR title NOT IN ({placeholders}))
+                     GROUP BY source
+                    """,
+                    (
+                        soren_directory,
+                        prod_directory,
+                        source_cutoff_15m,
+                        source_cutoff_1h,
+                        cutoff_ms,
+                        *titles,
+                    ),
+                ).fetchall()
+                source_total = 0
+                for source, count, latest_ms, count_15m, count_1h in rows:
+                    if source not in coverage["sources"]:
+                        raise ValueError("invalid source bucket")
+                    item = coverage["sources"][source]
+                    item["sessions"] = max(0, int(count or 0))
+                    item["sessions_15m"] = max(0, int(count_15m or 0))
+                    item["sessions_1h"] = max(0, int(count_1h or 0))
+                    if type(latest_ms) is int and latest_ms >= 0 and item["sessions"]:
+                        item["latest_age_sec"] = max(
+                            0, int(float(now) - latest_ms / 1000.0)
+                        )
+                    source_total += item["sessions"]
+                if (
+                    coverage.get("scan_complete") is True
+                    and source_total != coverage.get("unattributed_sessions")
+                ):
+                    raise ValueError("unattributed source coverage mismatch")
+                coverage["source_scan_complete"] = True
+            except (sqlite3.Error, TypeError, ValueError, OSError):
+                pass
         result["scan_complete"] = True
         return result
     except (OSError, sqlite3.Error, TypeError, ValueError):
@@ -3985,6 +4071,8 @@ def main(argv):
         "opencode_session_attribution": _collect_opencode_session_attribution(
             Path(soren).parent / ".local" / "share" / "opencode" / "opencode.db",
             now,
+            soren_root=soren,
+            prod_root=PROD_ROOT,
         ),
         "opencode_retention": _collect_opencode_retention(soren, now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
