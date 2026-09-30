@@ -729,3 +729,70 @@ def test_general_hp_requires_unique_ally_row_and_known_maximum():
     mem['battle']['ally'] = 'どうし'
     assert p.egg_battle_step(wounded_egg_screen(30, 'どうし'), mem) == [p.pad('down')]
     assert mem['battle']['ally_hp'] == 30
+
+
+def g514_hero_egg_memory():
+    step = 'A:8a1a091c:K2'
+    mem = memory(34, 70)
+    mem['hero_max_hp'] = 90
+    mem['egg_battle'] = True
+    mem['battle'].update(ally=p.NAME, enemy='クイーン', side='attack', castle='けっかい',
+                        step=step, away=0, egg_battle=True,
+                        planned_cards=['クースカン', 'ノリウツール'], ref_ally_hp=90)
+    mem['attack'] = {'general': p.NAME, 'side': 'attack', 'castle': 'けっかい', 'step': step}
+    return mem
+
+
+def hero_egg_screen(hp=34):
+    screen = wounded_egg_screen(hp, ally=p.NAME, enemy='ヒュドラ')
+    screen.text += 'たまごをつかう'
+    return screen
+
+
+def test_g514_hero_with_unused_cards_and_available_egg_reaches_bounded_retreat_probe():
+    mem = g514_hero_egg_memory()
+    for _ in range(3):
+        assert p.egg_battle_step(hero_egg_screen(), mem) == [p.pad('b')]
+    assert mem['battle']['hero_retreat']['opens'] == 3
+    # B did not establish escape or a normal menu; bound the probe and resume.
+    for _ in range(5):
+        assert p.egg_battle_step(hero_egg_screen(), mem) != [p.pad('b')]
+    assert not mem['battle']['hero_retreat'].get('selected')
+    assert mem['battle']['planned_cards'] == ['クースカン', 'ノリウツール']
+
+
+def test_g514_probe_selects_only_a_real_normal_menu_retreat_and_handles_unavailable():
+    mem = g514_hero_egg_memory()
+    assert p.egg_battle_step(hero_egg_screen(), mem) == [p.pad('b')]
+    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
+    assert mem['battle']['hero_retreat']['selected'] == 1
+    assert mem['_records'][-1]['resulting_event'] == 'retreat_selected_not_yet_confirmed'
+    mem = g514_hero_egg_memory()
+    p.egg_battle_step(hero_egg_screen(), mem)
+    p.battle_menu_step(menu(labels=('たまごをつかう', 'きりふだ')), mem)
+    assert mem['battle']['hero_retreat']['unavailable'] is True
+    assert p.egg_battle_step(hero_egg_screen(), mem) != [p.pad('b')]
+
+
+@pytest.mark.parametrize('change', ['other_general', 'no_current_panel', 'other_attack',
+                                    'away', 'no_start', 'bad_start', 'defense', 'healthy', 'dead'])
+def test_hero_egg_probe_never_uses_another_general_or_old_unknown_hp(change):
+    mem = g514_hero_egg_memory(); screen = hero_egg_screen()
+    if change == 'other_general':
+        mem['battle']['ally'] = 'ヴィーナス'
+    elif change == 'no_current_panel':
+        screen.egg_rows = []
+    elif change == 'other_attack':
+        mem['attack']['step'] = 'new-battle'
+    elif change == 'away':
+        mem['battle']['away'] = 1
+    elif change == 'no_start':
+        mem['battle'].pop('start_ally_hp')
+    elif change == 'bad_start':
+        mem['battle']['start_ally_hp'] = 100
+    elif change == 'defense':
+        mem['battle']['side'] = mem['attack']['side'] = 'defense'
+    else:
+        screen = hero_egg_screen(90 if change == 'healthy' else 0)
+    assert p.egg_battle_step(screen, mem) != [p.pad('b')]
+    assert not mem['battle'].get('hero_retreat')

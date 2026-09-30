@@ -1,11 +1,11 @@
 {
-  "output_sha256": "1e1481b81ed64a0329b4d51c4b14a8611cd9db4e19af8aaaa7ff2b158aadb78b",
+  "output_sha256": "d66cbec404ba9005460d3dd87d2d7d471501dc28a69d3b6e791c81a8f86683a9",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "aa243648df83703ca146a790ef6f1c2bff92e572360492b339158cfbc801bd9f",
+  "source_sha256": "b8a231caa87a8fa4856c0d81df8d671ef1dbb4eb4147de27713b32081f73ec5c",
   "topics": [
+    "半熟ナキューメラ自然奪還・主人公卵戦退却接続準備",
     "半熟ナキューメラ再評価修正準備・主担当レビュー中",
-    "半熟監視・改善をユーザー指示で一時停止",
-    "奪還重複出撃と出撃元の守備維持 v109準備"
+    "半熟監視・改善をユーザー指示で一時停止"
   ]
 }
