@@ -3473,7 +3473,7 @@ GENERAL_CRITICAL_RETREAT_HP = 12
 
 def _unarmed_clash_risk(cur):
     """Check resources before a non-boss egg clash, rather than idle into it."""
-    if (cur.get('side') == 'defense' or cur.get('planned_cards')
+    if (cur.get('planned_cards')
             or cur.get('enemy') in chart.BOSSES.values()):
         return False
     triggers = enemy_egg_triggers(cur.get('enemy'))

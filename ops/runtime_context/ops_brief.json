@@ -1,11 +1,11 @@
 {
-  "output_sha256": "351ae17bf025d96685967cd8fcd07923db386491746b9f2c3b5c84d1243535c8",
+  "output_sha256": "581315c94a591eae56a5ac430d2da34c285b7a92b67b0927988a2b5dcec5d869",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "b483bc1ed858778f65076b7120bd5d748c9854f5348952758d47d623ea052a42",
+  "source_sha256": "5a56333ef15e8af0193acdb5b252464cae7c83f7e8c4ffdc8d739a7d4802a3ee",
   "topics": [
+    "g504主人公防衛敗北とv100状態確認・早期救済",
     "g502エラベル三択数字差の停滞とv99",
-    "g500エラベルエッグ三択停滞とv98対応",
-    "g498主人公死亡ゲームオーバーとv97修復未確認出撃抑止"
+    "g500エラベルエッグ三択停滞とv98対応"
   ]
 }

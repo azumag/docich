@@ -351,3 +351,38 @@ def test_unknown_hp_does_not_authorize_a_repair_trip():
     screen.lines = [r for r in screen.lines if r.y != 47]
     assert house.step(screen, mem, None) == [p.pad('b')]
     assert mem['house']['returning'] is True
+
+
+@pytest.mark.parametrize('gold', [0, 78])
+def test_low_funds_still_open_free_general_status_scan(gold):
+    c = Canvas(); c.text(48, 47, 'しょうぐん'); c.hand(26, 41)
+    screen = parse(c.frame()); screen.kind = 'main_menu'; screen.header = {'gold': gold}
+    mem = memory('open_roster'); mem['gold'] = gold
+    assert house.step(screen, mem, c.frame()) == [p.pad('a')]
+    assert mem['house']['phase'] == 'roster'
+
+
+def test_low_funds_record_broken_hero_and_defer_paid_dispatch():
+    mem = memory('status', selected='どうし', general='どうし')
+    mem['gold'] = 0
+    assert feed(mem, status('どうし', gold=0, hp=90, max_hp=90)) == [p.pad('b')]
+    assert p._hero_egg_broken(mem)
+    assert mem['house']['pending'] == ['どうし']
+    house._next_general(mem)
+    assert mem['house']['phase'] == 'close'
+    assert not any(r['decision']=='house_dispatch_requested' for r in mem['_records'])
+
+
+def test_roster_open_retry_is_bounded_and_only_on_known_map():
+    mem = memory('open_roster'); screen = Screen([], None, '', kind='map')
+    actions = [house.step(screen, mem, Canvas().frame()) for _ in range(24)]
+    assert actions.count([p.pad('x')]) == 2
+    assert house.step(screen, mem, Canvas().frame()) == []
+    assert mem['house']['phase'] == 'close'
+    assert sum(r['decision']=='house_roster_open_retry' for r in mem['_records']) == 2
+
+
+def test_roster_open_retry_never_presses_x_on_unknown_screen():
+    mem = memory('open_roster'); screen = Screen([], None, '', kind='unknown')
+    assert all(house.step(screen, mem, Canvas().frame()) == [] for _ in range(6))
+    assert not any(r['decision']=='house_roster_open_retry' for r in mem.get('_records', []))

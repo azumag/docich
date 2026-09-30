@@ -254,9 +254,13 @@ def step(screen, mem, frame):
             return []
         return [p.pad('y' if screen.kind == 'world_map' else 'b')]
     if phase == 'open_roster':
+        if screen.kind == 'map' and state['age'] in (3, 6):
+            _record(mem, 'roster_open_retry', observed_metric={'age': state['age']},
+                    reason='既知のマップへ戻ったままのため、将軍一覧を開くXを有限回再試行')
+            return [p.pad('x')]
         if screen.kind == 'main_menu' and screen.hand:
-            if not affordable_gift((screen.header or {}).get('gold'), p.WAGE_RESERVE):
-                return _exit(mem, '賃金を残して贈り物を買う資金がないため次月に確認')
+            # Status reading is free. Repair dispatch still checks funds in
+            # _next_general; never keep a stale egg state just because we are poor.
             actions = _choose(screen, 'しょうぐん')
             if actions == [p.pad('a')]:
                 _phase(state, 'roster')
