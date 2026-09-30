@@ -1,8 +1,11 @@
-import copy
 import json
 import os
 import pytest
-from docich import hanjuku_diagnostics as d
+import importlib.util
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('hanjuku_collector', Path(__file__).resolve().parents[1] / 'ops/vm_actions/collect_diagnostics.py')
+d = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(d)
 
 
 def setup(tmp_path):
@@ -23,7 +26,7 @@ def setup(tmp_path):
 
 def test_projection_fresh_fixed_enum_and_unknown_not_zero(tmp_path):
     file,bot=setup(tmp_path); before=file.read_bytes()
-    out=d.collect(tmp_path,110)
+    out=d._collect_hanjuku_tactical(tmp_path,110)
     assert out['status']=='ok' and out['age_sec']==10
     rows={r['castle']:r for r in out['castles']}
     assert rows['ほんじょう']['idle_generals_record']==1
@@ -40,29 +43,29 @@ def test_projection_fresh_fixed_enum_and_unknown_not_zero(tmp_path):
 def test_identity_mismatch_hidden(tmp_path,change):
     file,bot=setup(tmp_path); bot['decision_trace'].update(change)
     file.write_text(json.dumps(bot)); os.utime(file,(100,100))
-    assert d.collect(tmp_path,110)['status']=='unavailable'
+    assert d._collect_hanjuku_tactical(tmp_path,110)['status']=='unavailable'
 
 
 @pytest.mark.parametrize('now',[99,131,float('nan')])
 def test_stale_future_invalid_clock_hidden(tmp_path,now):
     setup(tmp_path)
-    assert 'castles' not in d.collect(tmp_path,now)
+    assert 'castles' not in d._collect_hanjuku_tactical(tmp_path,now)
 
 
 def test_terminal_and_symlink_and_large_records_hidden(tmp_path):
     file,bot=setup(tmp_path)
     run=file.parent/'hanjuku_run.json'; saved=run.read_text()
     run.write_text(json.dumps({**json.loads(saved),'terminal_reason':'game_over'}))
-    assert 'castles' not in d.collect(tmp_path,110)
+    assert 'castles' not in d._collect_hanjuku_tactical(tmp_path,110)
     run.write_text(saved)
     file.unlink(); file.symlink_to(run)
-    assert 'castles' not in d.collect(tmp_path,110)
-    file.unlink(); file.write_text('x'*(d.LIMIT+1))
-    assert 'castles' not in d.collect(tmp_path,110)
+    assert 'castles' not in d._collect_hanjuku_tactical(tmp_path,110)
+    file.unlink(); file.write_text('x'*(d.HANJUKU_TACTICAL_LIMIT+1))
+    assert 'castles' not in d._collect_hanjuku_tactical(tmp_path,110)
 
 
 def test_generation_switch_during_read_hides_projection(tmp_path,monkeypatch):
-    setup(tmp_path); original=d._read; calls=0
+    setup(tmp_path); original=d._read_hanjuku_record; calls=0
     def read(path):
         nonlocal calls
         data,mtime=original(path)
@@ -71,13 +74,13 @@ def test_generation_switch_during_read_hides_projection(tmp_path,monkeypatch):
             if calls==2:
                 data['active']['generation']=515
         return data,mtime
-    monkeypatch.setattr(d,'_read',read)
-    assert d.collect(tmp_path,110)['status']=='identity_changed'
+    monkeypatch.setattr(d,'_read_hanjuku_record',read)
+    assert d._collect_hanjuku_tactical(tmp_path,110)['status']=='identity_changed'
 
 
 def test_directory_symlink_and_non_hanjuku_canonical_are_rejected(tmp_path):
     file,bot=setup(tmp_path)
     runtime=file.parent; moved=runtime.with_name('moved');runtime.rename(moved);runtime.symlink_to(moved,target_is_directory=True)
-    assert 'castles' not in d.collect(tmp_path,110)
+    assert 'castles' not in d._collect_hanjuku_tactical(tmp_path,110)
     p=tmp_path/'game_switch.json'; state=json.loads(p.read_text()); state['active']['game']='sorengame';p.write_text(json.dumps(state))
-    assert 'castles' not in d.collect(tmp_path,110)
+    assert 'castles' not in d._collect_hanjuku_tactical(tmp_path,110)
