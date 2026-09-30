@@ -95,8 +95,10 @@ def test_an_hp_gated_chart_card_keeps_its_gate_despite_egg_risk():
 
 
 def test_an_egg_risk_hold_is_bounded_and_then_engages():
-    mem = memory(side='defense')         # retreat/pre-clash rescue is not a defense tactic
+    mem = memory(side='defense')         # after the actual rescue alternatives are exhausted
     policy.battle_step(panel('クミン'), mem)          # first reading: wait for a stable one
+    assert policy.battle_step(panel('クミン'), mem) == [policy.pad('b')]
+    mem['battle']['survival'] = {'exhausted': True}
     for _ in range(policy.MELEE_HOLD_LIMIT):
         assert policy.battle_step(panel('クミン'), mem) == []
     assert policy.battle_step(panel('クミン'), mem) == MASH
@@ -190,7 +192,10 @@ def test_melee_observability_survives_existing_schema_one_persistence(tmp_path, 
     entry = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(entry)
     mem = memory(side='defense')
-    actions = enter(panel(enemy), mem)
+    assert policy.battle_step(panel(enemy), mem) == []
+    policy.battle_step(panel(enemy), mem)  # stable observation creates the battle
+    mem['battle']['survival'] = {'exhausted': True}
+    actions = policy.battle_step(panel(enemy), mem)
     rec = mem['_records'][-1]
     state = {'step': 2, 'screen_kind': 'battle', 'phase': 'battle', 'policy': mem}
     entry.persist(tmp_path, state, [rec], {'hanjuku': {'game': 'hanjuku-hero',
