@@ -4016,9 +4016,6 @@ def _nethack_history_budget(payload, *, keep_latest=False):
 
 def _diagnostics_budget(payload):
     """Keep latest history through existing detail reductions, then bound it."""
-    if (len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > MAX_JSON_BYTES
-            and "hanjuku_tactical" in payload):
-        payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
     text = _nethack_history_budget(payload, keep_latest=True)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         payload["ai"]["recent_events"] = []
@@ -4038,6 +4035,9 @@ def _diagnostics_budget(payload):
             profile['slowest'] = []
             profile['representativeOmitted'] = True
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # Keep current game evidence through the older detail reductions first.
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES and "hanjuku_tactical" in payload:
+        payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
     return _nethack_history_budget(payload)
 
 
@@ -4084,7 +4084,7 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": corners,
-        "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), now),
+        "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),

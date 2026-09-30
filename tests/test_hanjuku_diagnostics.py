@@ -84,3 +84,25 @@ def test_directory_symlink_and_non_hanjuku_canonical_are_rejected(tmp_path):
     assert 'castles' not in d._collect_hanjuku_tactical(tmp_path,110)
     p=tmp_path/'game_switch.json'; state=json.loads(p.read_text()); state['active']['game']='sorengame';p.write_text(json.dumps(state))
     assert 'castles' not in d._collect_hanjuku_tactical(tmp_path,110)
+
+
+def test_current_tactical_record_survives_old_detail_reduction():
+    tactical={'status':'ok','basis':'bot_record','remaining_castles':['ナキューメラ']}
+    payload={'hanjuku_tactical':tactical.copy(),
+             'nethack_history':{'daily':{'records':[]},'completed_runs':{'records':[]}},
+             'ai':{'recent_events':['x'*d.MAX_JSON_BYTES], 'anomalous_components':{}},
+             'workers':{'details':{}}, 'soren91_drop_profile':{'profileStatus':'missing'}}
+    text=d._diagnostics_budget(payload)
+    assert payload['hanjuku_tactical']==tactical
+    assert len(text.encode())<=d.MAX_JSON_BYTES
+
+
+def test_tactical_omission_only_when_detail_reductions_insufficient(monkeypatch):
+    payload={'hanjuku_tactical':{'status':'ok','castles':['x'*2000]},
+             'nethack_history':{'daily':{'records':[]},'completed_runs':{'records':[]}},
+             'ai':{'recent_events':[], 'anomalous_components':{}},
+             'workers':{'details':{}}, 'soren91_drop_profile':{'profileStatus':'missing'}}
+    monkeypatch.setattr(d,'MAX_JSON_BYTES',600)
+    text=d._diagnostics_budget(payload)
+    assert payload['hanjuku_tactical']['status']=='output_omitted'
+    assert len(text.encode())<=600
