@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 
 from .hanjuku_font import UNKNOWN
+from . import hanjuku_roster as receipts
 
 HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5)}
 # The heart's centre and the selectable cell differ by half a view pixel
@@ -220,16 +221,28 @@ def step(screen, mem, frame):
         if (screen.kind != 'map' or mem.get('chapter') not in HOUSE_VIEW
                 or any(mem.get(k) for k in ('active', 'recall', 'y_jump', 'sortie_attempt', 'month_sub', 'battle'))
                 or tick - int(mem.get('house_scan_tick', 0)) < SCAN_INTERVAL
-                or ('house_scan_month' in mem and mem['house_scan_month'] == mem.get('month'))):
+                or ('house_scan_month' in mem and mem['house_scan_month'] == mem.get('month')
+                    and (not mem.get('recruit_roster_recheck')
+                         or (mem.get('recruit_roster_attempts') or {}).get('count', 0) >= 2))):
             return None
         state = mem['house'] = {'phase': 'open_roster', 'age': 0, 'total': 0,
                                 'chapter': mem['chapter'], 'seen': [], 'pending': []}
+        attempts = mem.get('recruit_roster_attempts') or {}
+        scope = [mem['chapter'], mem.get('month')]
+        mem['recruit_roster_attempts'] = {'scope': scope, 'count':
+            (attempts.get('count', 0) if attempts.get('scope') == scope else 0) + 1}
+        receipts.begin(mem, state)
         _record(mem, 'scan_started', reason='月ごとに全将軍の卵を確認する')
         return [p.pad('x')]
     if state.get('chapter') != mem.get('chapter'):
         _finish(mem)
         return None
     phase = state['phase']
+    if ('roster_month' in state and state['roster_month'] != mem.get('month')
+            and phase in ('roster', 'status', 'roster_next', 'roster_advance')):
+        state['roster_invalidated'] = True
+        return _exit(mem, '月が変わったため一覧の同一scanを破棄して次の再観測へ戻る')
+    receipts.page(mem, roster(screen))
     owns_observation = (bool(mem.get('battle')) or bool(mem.get('month_sub')) or screen.kind in {
         'battle', 'battle_menu', 'egg_battle_menu', 'egg_choice_menu', 'monster_menu',
         'okunote_menu', 'attack_started', 'defense_started', 'boss_attack_started'})
@@ -289,6 +302,8 @@ def step(screen, mem, frame):
         if selected not in names:
             return []
         if selected in state['seen'] or len(state['seen']) >= ROSTER_LIMIT:
+            state['roster_wrapped'] = (len(state['seen']) >= 2 and selected == state['seen'][0]
+                                       and len(state['seen']) < ROSTER_LIMIT)
             _phase(state, 'leave_roster')
             return [p.pad('b')]
         state['selected'] = selected
@@ -319,12 +334,15 @@ def step(screen, mem, frame):
         if state['age'] in (3, 6):
             return [p.pad('down')]
         if state['age'] >= 9:
+            state['roster_wrapped'] = False  # unchanged cursor is not a complete scan
             _phase(state, 'leave_roster')
             return [p.pad('b')]
         return []
     if phase == 'leave_roster':
         if screen.kind == 'map':
-            _record(mem, 'scan_complete', observed_metric={'generals': list(state['seen']), 'broken': list(state['pending'])},
+            complete = receipts.complete(mem, state)
+            _record(mem, 'scan_complete', observed_metric={'generals': list(state['seen']), 'broken': list(state['pending']),
+                                                         'roster_complete': complete},
                     reason='一覧で確認した将軍の卵状態から修理対象を決定')
             _next_general(mem)
             return []

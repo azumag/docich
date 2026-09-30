@@ -231,7 +231,10 @@ def validate(doc) -> dict:
     if digest is not None and (not isinstance(digest, str)
                                or not re.fullmatch(r'[0-9a-f]{64}', digest)):
         raise ValueError('invalid request_digest')
+    from .hanjuku_roster import roles
+    recruitment = roles(doc['recruitment']) if doc.get('recruitment') is not None else None
     return {'schema': SCHEMA, 'chapter': chapter, 'request_id': rid, 'orders': orders,
+            'recruitment': recruitment,
             'request_digest': digest,
             'purchases': _purchases(doc.get('purchases')),
             'generated_at': (doc['generated_at'] if type(doc.get('generated_at')) in (int, float)
