@@ -3489,6 +3489,187 @@ def _collect_nethack_panes(state_dir, now):
     return result
 
 
+# NetHack evidence only: never invoke the game/retrospective/provider or probe locks.
+NETHACK_HISTORY_SCAN_LIMIT = 128
+NETHACK_HISTORY_FILE_BYTES = 65536
+NETHACK_TERMINAL = frozenset({'dead', 'ascended', 'ended', 'ended_unknown'})
+NETHACK_LESSONS = frozenset({'repeated_death', 'survival_signal', 'food_survival',
+                            'proposal_drift', 'evidence_gap', 'terminal_evidence',
+                            'progress_stall'})
+
+
+def _nethack_number(value):
+    return value if type(value) is int and 0 <= value <= 10**12 else None
+
+
+def _nethack_time(value):
+    if not isinstance(value, str) or len(value) > 64:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            return None
+        epoch = parsed.timestamp()
+        return epoch if math.isfinite(epoch) and 0 <= epoch <= 253402300799 else None
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _nethack_progress(raw):
+    if not isinstance(raw, dict):
+        return {'status': 'missing'}
+    result = {'status': _rotation_enum(raw.get('status'),
+              {'ok', 'empty', 'missing', 'error', 'too_large', 'invalid_run_id'})}
+    for key in ('sample_count', 'malformed_lines', 'first_turn', 'last_turn',
+                'max_turn', 'max_depth', 'same_frame_sent_pairs', 'max_same_frame_sent_streak'):
+        result[key] = _nethack_number(raw.get(key))
+    for key in ('first_ts', 'last_ts', 'min_hp_ratio'):
+        value = raw.get(key)
+        result[key] = value if type(value) in (int, float) and 0 <= value <= 10**12 and math.isfinite(value) else None
+    result['truncated'] = raw.get('truncated') if type(raw.get('truncated')) is bool else None
+    result['phase_counts'] = {key: _nethack_number(raw.get('phase_counts', {}).get(key))
+                             for key in ('sent', 'hold')} if isinstance(raw.get('phase_counts'), dict) else {}
+    return result
+
+
+def _nethack_record(raw, daily):
+    if type(raw.get('schema_version')) is not int or raw['schema_version'] != 1:
+        return None
+    if daily:
+        if _rotation_enum(raw.get('status'), {'review_ready', 'no_new_runs'}) == 'unknown':
+            return None
+        date = raw.get('date')
+        if not isinstance(date, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date):
+            return None
+        try:
+            dt.date.fromisoformat(date)
+        except ValueError:
+            return None
+        if raw.get('policy_effect') != 'none' or raw.get('automatic_promotion') is not False:
+            return None
+        count = _nethack_number(raw.get('run_count'))
+        if count is None or count > 8:
+            return None
+        candidates = raw.get('candidates')
+        if not isinstance(candidates, list) or len(candidates) > 100:
+            return None
+        categories = {}
+        for item in candidates:
+            category = _rotation_enum(item.get('category') if isinstance(item, dict) else None, NETHACK_LESSONS)
+            categories[category] = categories.get(category, 0) + 1
+        result = {'date': date, 'status': raw['status'], 'run_count': count,
+                  'candidate_state': _rotation_enum(raw.get('candidate_state'), {'no_change', 'pending_canary_evaluation'}),
+                  'candidate_categories': categories, 'policy_effect': 'none', 'automatic_promotion': False}
+        timestamp = _nethack_time(raw.get('generated_at'))
+    else:
+        if _rotation_enum(raw.get('status'), NETHACK_TERMINAL) == 'unknown':
+            return None
+        timestamp = _nethack_time(raw.get('ended_at'))
+        retrospective = raw.get('retrospective')
+        retrospective = retrospective if (
+            isinstance(retrospective, dict)
+            and type(retrospective.get('schema_version')) is int
+            and retrospective['schema_version'] == 1
+            and retrospective.get('source') == 'p5a_retrospective'
+            and retrospective.get('run_id') == raw.get('run_id')
+            and retrospective.get('terminal_status') == raw['status']
+        ) else {}
+        result = {'terminal_status': raw['status'], 'started_at': _nethack_time(raw.get('started_at')),
+                  'expedition': _nethack_number(raw.get('expedition')),
+                  'retrospective_present': bool(retrospective),
+                  'retrospective_generated_at': _nethack_time(retrospective.get('generated_at')),
+                  'same_death_total_count': _nethack_number(retrospective.get('same_death_total_count')),
+                  'progress': _nethack_progress(retrospective.get('progress_evidence'))}
+        for key in ('score', 'turns', 'max_depth'):
+            result[key] = _nethack_number(raw.get(key))
+    if timestamp is None:
+        return None
+    result['generated_at' if daily else 'ended_at'] = timestamp
+    return result
+
+
+def _nethack_history(state_dir, daily):
+    """Open each directory relative to a pinned fd: no symlink traversal/races."""
+    result = {'status': 'unavailable', 'scan_complete': False, 'scanned_entries': 0,
+              'invalid_records': 0, 'excluded_active': 0, 'omitted_records': 0, 'records': []}
+    directory = Path(state_dir) / 'nethack' / ('daily-improvements' if daily else 'runs')
+    fd = None
+    try:
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+        for component in directory.absolute().parts[1:]:
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        records = []
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                if result['scanned_entries'] >= NETHACK_HISTORY_SCAN_LIMIT:
+                    break
+                result['scanned_entries'] += 1
+                pattern = r'\d{4}-\d{2}-\d{2}\.json' if daily else r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json'
+                if not re.fullmatch(pattern, entry.name):
+                    continue
+                try:
+                    file_fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+                    with os.fdopen(file_fd, 'rb') as handle:
+                        info = os.fstat(handle.fileno())
+                        if not stat.S_ISREG(info.st_mode) or info.st_size > NETHACK_HISTORY_FILE_BYTES:
+                            raise ValueError('bounded file required')
+                        content = handle.read(NETHACK_HISTORY_FILE_BYTES + 1)
+                    if len(content) > NETHACK_HISTORY_FILE_BYTES:
+                        raise ValueError('bounded file required')
+                    raw = json.loads(content)
+                    if not isinstance(raw, dict):
+                        raise ValueError('object required')
+                    if not daily and _rotation_enum(raw.get('status'), {'active', 'starting', 'suspended', 'saved'}) != 'unknown':
+                        result['excluded_active'] += 1
+                        continue
+                    record = _nethack_record(raw, daily)
+                    if record is None or (daily and raw['date'] + '.json' != entry.name) or (
+                        not daily and raw.get('run_id') != entry.name[:-5]
+                    ):
+                        raise ValueError('invalid evidence')
+                    record['file_mtime'] = info.st_mtime
+                    records.append(record)
+                except (OSError, ValueError, UnicodeError, RecursionError):
+                    result['invalid_records'] += 1
+            else:
+                result['scan_complete'] = True
+        key = 'generated_at' if daily else 'ended_at'
+        records.sort(key=lambda item: item[key], reverse=True)
+        limit = 7 if daily else 8
+        result['records'] = records[:limit]
+        result['omitted_records'] = max(0, len(records) - limit)
+        result['status'] = 'partial' if not result['scan_complete'] or result['invalid_records'] else ('ok' if records else 'empty')
+    except FileNotFoundError:
+        result['status'] = 'missing'
+    except OSError:
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return result
+
+
+def _collect_nethack_history(state_dir, now):
+    return {'schema_version': 1, 'collected_at': now, 'scan_limit_per_source': NETHACK_HISTORY_SCAN_LIMIT,
+            'file_byte_limit': NETHACK_HISTORY_FILE_BYTES,
+            'daily': _nethack_history(state_dir, True), 'completed_runs': _nethack_history(state_dir, False)}
+
+
+def _nethack_history_budget(payload):
+    """Omit new history first, preserving the existing diagnostic budget priorities."""
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        for source in ("daily", "completed_runs"):
+            history = payload["nethack_history"][source]
+            history["omitted_records"] += len(history["records"])
+            history["records"] = []
+            history["output_omitted"] = True
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return text
+
+
 def main(argv):
     if len(argv) != 2:
         print("usage: collect_diagnostics.py <soren_root>", file=sys.stderr)
@@ -3532,6 +3713,7 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": corners,
+        "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
@@ -3550,7 +3732,7 @@ def main(argv):
         or retention["timer"].get("active") is not True
     ):
         payload["status"] = "warn"
-    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    text = _nethack_history_budget(payload)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         payload["ai"]["recent_events"] = []
         payload["ai"]["recent_events_omitted"] = True

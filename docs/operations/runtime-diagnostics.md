@@ -272,6 +272,42 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - Actions maskingで数値が`***`になった場合は欠測扱い。復元や推定をしない。
   フェーズ中央値を足して全体中央値と比較しない。
 
+## NetHack 日次結果・終了履歴の読み取り投影
+
+`nethack_history` は既存owner-only `diagnostics` のJSON（VM operations Actionsログ）で取得する。
+新しいtimer、公開Issueへの自動転載、artifact、production exec経路は追加しない。
+**この変更をmainへ統合しcanonical deployするまでは、新フィールドは実環境で使えない。**
+
+固定収集元はproduction設定から解決した `state_dir/nethack/daily-improvements/YYYY-MM-DD.json`
+と `state_dir/nethack/runs/<uuid>.json` のみ。候補catalog、raw progress JSONL、TTY、
+xlogfile、dump、advisory、lockは開かず、既に保存されたretrospectiveの数値集計だけを読む。
+run終了処理や日次処理を起動しない。owner境界・既存lock・稼働中ゲームに介入しない。
+
+- 各source最大128ディレクトリエントリ、各JSON最大64KiB。directory/fileは
+  dirfd相対openと`O_NOFOLLOW`で全階層のsymlinkを拒否、regular fileのみ。
+  schema v1のみを投影し、JSON不正・過大・リンク・非regular・日時不正は除外する。
+- 日次は観測した有効結果のうち生成日時の新しい7件。statusは`review_ready` /
+  `no_new_runs`、run_count、固定candidate category件数、`pending_canary_evaluation` /
+  `no_change` / `unknown`、policy_effect=none、automatic_promotion=falseのみ。
+  policy変更や自動昇格を示す不正なreportは受理しない。
+- 終了runは観測した有効結果のうち終了日時の新しい8件。`dead` / `ascended` /
+  `ended` / `ended_unknown`、expedition、score/turns/max_depth、開始・終了日時、
+  retrospective有無・生成日時、同種死因件数とprogressのsample/不正行/反復送信/turn/depth/
+  HP比率/phase集計だけ。run ID・death reason/signature・候補本文・path・hashは出さない。
+  同種死因件数や反復送信は観測パターンであり、失敗原因・改善効果の確定ではない。
+- `collected_at`、`generated_at` / `ended_at` / `started_at`、`file_mtime` はUTC epoch秒。
+  日次`date`はproducer設定のローカル日付。日次結果が無い日は失敗・成功を推測しない。
+- 各sourceのstatusは`missing` / `unavailable` / `empty` / `ok` / `partial`。
+  `invalid_records`、`excluded_active`、`scanned_entries`、`scan_complete`と
+  `omitted_records`を返す。`scan_complete=false`なら全履歴・全体の最新記録を証明しない。
+  active/suspended等は結果から除外。nullable数値・`unknown`・progressの`missing`を0件の成功にしない。
+  retrospectiveが無ければprogressや同種死因は不明。bounded JSONに含まれる余分な自由文は
+  メモリ内のparseだけに留め、allowlist projectionで除去する。
+- collector全体の既存36KiB予算を超えた場合はこの投影のrecordsを省略し、
+  `output_omitted=true`と`omitted_records`に記録する。gatewayの49KiB上限・型・深さ・
+  secret-redactionは維持。複数ファイルの逐次観測であり原子的snapshotではない。
+  遠征・日次の一覧は互いに独立した観測なので、同じ終了runを二重加算しない。
+
 ## 出さないもの
 
 secrets・token・raw environment・prompt 本文・生成本文・HTTP header・
