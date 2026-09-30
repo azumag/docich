@@ -5279,8 +5279,39 @@ def _chikujou_step(screen, mem, sub):
     if 'になりましたぞ' in text:
         sub['upgraded'] = True
         return [pad('a')]
-    if 'これいじょう' in text or sub.get('upgraded') or sub.get('declined'):
-        return [pad('b')]              # one level per month: back to the month menu
+    if sub.get('upgraded') or sub.get('declined'):
+        return [pad('b')]              # keep the existing one-success spending budget
+    if 'これいじょう' in text:
+        # A refusal applies to the chosen castle, not every castle. Never
+        # infer a permanent level cap (it can also mean upgraded this month).
+        chosen = sub.get('chosen')
+        if sub.get('rejected_frame') == text:
+            if chosen:
+                # Input may not have taken effect yet. Do not attribute the
+                # previous castle's unchanged refusal to our next candidate.
+                sub['rejected_wait'] = sub.get('rejected_wait', 0) + 1
+                if sub['rejected_wait'] >= 6:
+                    sub['declined'] = True
+                    return [pad('b')]
+                return []
+        elif chosen:
+            tried = sub.setdefault('rows_tried', [])
+            if chosen not in tried:
+                tried.append(chosen)
+            sub['rejected_frame'] = text
+            sub.pop('chosen', None)
+            sub.pop('quoted_cost', None)
+            sub['rejected_wait'] = 0
+            _record(mem, 'chikujou_castle_unavailable',
+                    observed_metric={'castle': chosen},
+                    reason='選択した城が増築不可のため、その城を今回の候補から外して次を探す')
+        else:
+            # Lost selection context cannot identify which castle was refused.
+            sub['declined'] = True
+            return [pad('b')]
+    else:
+        sub.pop('rejected_frame', None)
+        sub.pop('rejected_wait', None)
     if 'ぞうちく' in text:
         # g438 03:37: the first row was ジョンリギ with nobody inside
         # (「しょうぐんがおりませなんだ」) and the upgrade never happened. Pick the

@@ -1363,3 +1363,57 @@ def test_recall_picker_never_confirms_enemy_or_unread_flag(monkeypatch):
     assert policy.world_map_step(screen, mem, FRAME) == [policy.pad('b')]
     assert not mem.get('recall')
     assert decisions(mem, 'camp_recall_aborted')
+
+
+def test_chikujou_refused_home_tries_staffed_castle_without_false_payment(monkeypatch):
+    from docich.hanjuku_screen import Screen as S
+    mem = {'chapter': 1, '_records': [], 'garrison': {'ジョンリギ': ['ココット'], 'ゴーメン': []}}
+    sub = {'kind': 'chikujou', 'chosen': 'アルマムーン', 'gold_before': 96, 'quoted_cost': 5}
+    labels = []
+    def menu(screen, label):
+        labels.append(label)
+        return 'here' if label == 'ジョンリギ' else None
+    monkeypatch.setattr(policy, 'menu_to', menu)
+    frame = S(lines=[], hand=None, kind='text', header=None,
+              text='アルマムーン5これいじょうのぞうちくはできませんぞ!!どのしろをぞうちくなさいますか?')
+    assert policy._chikujou_step(frame, mem, sub) == [policy.pad('a')]
+    assert labels == ['ジョンリギ']
+    assert sub['rows_tried'] == ['アルマムーン']
+    assert sub['chosen'] == 'ジョンリギ' and 'quoted_cost' not in sub
+    assert not sub.get('upgraded') and not sub.get('declined')
+    # The old dialogue may remain after A: never reject the new castle from it.
+    for _ in range(5):
+        assert policy._chikujou_step(frame, mem, sub) == []
+    assert sub['rows_tried'] == ['アルマムーン']
+    assert policy._chikujou_step(frame, mem, sub) == [policy.pad('b')]
+    assert sub['declined']
+
+
+def test_chikujou_refused_home_can_confirm_fresh_alternative(monkeypatch):
+    from docich.hanjuku_screen import Screen as S
+    mem = {'chapter': 1, '_records': [], 'garrison': {'ジョンリギ': ['ココット']}}
+    sub = {'kind': 'chikujou', 'chosen': 'アルマムーン', 'gold_before': 96}
+    monkeypatch.setattr(policy, 'menu_to', lambda screen, label: 'here')
+    refused = S(lines=[], hand=None, kind='text', header=None,
+                text='これいじょうのぞうちくはできませんぞ!!どのしろをぞうちくなさいますか?')
+    assert policy._chikujou_step(refused, mem, sub) == [policy.pad('a')]
+    confirm = S(lines=[], hand=None, kind='yes_no', header={'gold': 96},
+                text='ジョンリギじょうですなうむッ!5Gかかりますがよろしいですかないかんッ!')
+    assert policy._chikujou_step(confirm, mem, sub) == [policy.pad('a')]
+    assert sub['quoted_cost'] == 5
+    done = S(lines=[], hand=None, kind='text', header=None, text='ジョンリギじょうのレベルが2になりましたぞ')
+    assert policy._chikujou_step(done, mem, sub) == [policy.pad('a')]
+    assert sub['upgraded']
+    assert policy._chikujou_step(refused, mem, sub) == [policy.pad('b')]
+
+
+def test_chikujou_refusal_without_alternative_or_selection_exits(monkeypatch):
+    from docich.hanjuku_screen import Screen as S
+    monkeypatch.setattr(policy, 'menu_to', lambda screen, label: None)
+    refused = S(lines=[], hand=None, kind='text', header=None,
+                text='これいじょうのぞうちくはできませんぞ!!どのしろをぞうちくなさいますか?')
+    for chosen in ('アルマムーン', None):
+        mem = {'chapter': 1, '_records': [], 'garrison': {'ジョンリギ': []}}
+        sub = {'kind': 'chikujou', 'chosen': chosen}
+        assert policy._chikujou_step(refused, mem, sub) == [policy.pad('b')]
+        assert sub['declined']
