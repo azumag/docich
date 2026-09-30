@@ -1148,3 +1148,66 @@ def test_two_carried_unverified_cards_keep_distinct_identity_after_first_selecti
             assert cur['card_flow'] is None
     assert mem['kit_spent']['I:pair:1'] == ['イッテツーン', 'イッテツーン']
     assert len(set(cur['tactics_done'])) == 2
+
+
+def g514_locked_plan():
+    """Limited read-only snapshot; already persisted, bypasses new validation."""
+    source = Path(__file__).parent / 'fixtures/hanjuku_g514_locked_plan.json'
+    receipt = json.loads(source.read_text())
+    mem = receipt['policy']
+    mem['_records'] = []
+    return receipt, mem
+
+
+def test_g514_adopted_self_locked_plan_reopens_existing_retake_candidates():
+    receipt, mem = g514_locked_plan()
+    before = copy.deepcopy(mem)
+    rid = adjust.request_id(mem)
+    assert rid == mem['chart_plan']['request_id'] == mem['chart_adjust']['request_id']
+    assert not policy._plan_pending(mem) and receipt['plan_pending'] is False
+    assert policy.interim_candidates(mem) == receipt['candidates']
+    assert mem.get('active') is None and not mem.get('recall')
+    assert policy.next_order(mem) is None
+    policy._off_chart(mem)
+    assert mem['chart_adjust']['interim_wanted'] is True
+    mem['_interim'] = {'request_id': rid, 'seq': 0, 'status': 'ok',
+                       'choice': 'retake_1', 'confidence': 1}
+    policy._off_chart(mem)
+    order = policy.next_order(mem)
+    assert order['target'] == 'ナキューメラ' and order['source'] == 'ほんじょう'
+    assert order['purpose'] == 'retake' and order['general'] == 'ヴィーナス'
+    assert order['after'] is None
+    assert mem['captured'] == before['captured'] and mem['lost'] == before['lost']
+    assert mem['garrison'] == before['garrison']
+    assert mem.get('house') == before.get('house')  # an in-progress scan remains owned by house
+    assert not decisions(mem, 'chart_adjust_applied')  # no duplicate adoption
+
+
+@pytest.mark.parametrize('present,allows', [(['ヴィーナス', 'ゼウス'], True),
+                                            (['ヴィーナス'], False), (None, False)])
+def test_g514_recovered_retake_still_requires_a_readable_spare_defender(monkeypatch, present, allows):
+    _, mem = g514_locked_plan()
+    mem['chart_adjust']['interim_count'] = policy.INTERIM_LIMIT
+    policy._off_chart(mem)
+    order = policy.next_order(mem)
+    assert order['target'] == 'ナキューメラ'
+    mem['active'] = order['step']
+    monkeypatch.setattr(policy, '_present_generals', lambda screen: present)
+    result = policy._keep_sortie_defender(
+        Screen(lines=[], hand=(150, 40), text='', kind='general_list'), mem, order)
+    assert (result is None) == allows
+    if result:
+        assert all('a' not in action.get('buttons', []) for action in result)
+
+
+def test_g514_live_plan_and_recent_target_reservation_still_suppress_retake():
+    _, mem = g514_locked_plan()
+    mem['chart_plan']['orders'][0]['after'] = None
+    mem['garrison']['カストーラ'] = ['ココット', 'ゼウス']
+    assert policy._plan_pending(mem)
+    policy._off_chart(mem)
+    assert not mem['chart_adjust']['interim_wanted']
+    _, mem = g514_locked_plan()
+    mem['sorties']['recent'] = {'general': 'ヴィーナス', 'target': 'ナキューメラ',
+                               'status': 'en_route', 'tick': mem['tick'] - 1}
+    assert not any(o['target'] == 'ナキューメラ' for o in policy.interim_candidates(mem).values())

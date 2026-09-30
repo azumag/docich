@@ -1,11 +1,11 @@
 {
-  "output_sha256": "73d486523717fecb7f7c3c9a302a5ade236b0835f78e448cc7fca8a4145b620b",
+  "output_sha256": "1e1481b81ed64a0329b4d51c4b14a8611cd9db4e19af8aaaa7ff2b158aadb78b",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "a400ad1af059e7d69b3595633d7ee91d321aa87a08637cd95b85d3bc31ca5c25",
+  "source_sha256": "aa243648df83703ca146a790ef6f1c2bff92e572360492b339158cfbc801bd9f",
   "topics": [
-    "奪還重複出撃と出撃元の守備維持 v109準備",
-    "無資源の一般守備将軍への最後の救済 v108準備",
-    "未開始入場の古い城情報解除 v107準備"
+    "半熟ナキューメラ再評価修正準備・主担当レビュー中",
+    "半熟監視・改善をユーザー指示で一時停止",
+    "奪還重複出撃と出撃元の守備維持 v109準備"
   ]
 }
