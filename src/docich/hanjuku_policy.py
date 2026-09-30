@@ -6003,6 +6003,22 @@ def egg_battle_step(screen: Screen, mem):
                 reason='チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）')
     battle = mem.get('battle') or {}
     general_reading = _egg_general_reading(screen, mem, battle)
+    attack = mem.get('attack') or {}
+    # g514: the hero was 34/90 against the boss's Hydra, with both planned
+    # cards unused. Available eggs/cards must not bypass his retreat check.
+    # A current named general panel and the same attack receipt are required;
+    # monster HP, another general, or a previous battle cannot authorize B.
+    if (general_reading and battle.get('ally') == NAME
+            and battle.get('side') == attack.get('side') == 'attack'
+            and attack.get('general') == NAME and battle.get('step')
+            and attack.get('step') == battle.get('step')
+            and attack.get('castle') == battle.get('castle')
+            and not battle.get('away')
+            and type(battle.get('start_ally_hp')) is int
+            and 0 < battle['start_ally_hp'] <= general_reading[1]):
+        retreat = _hero_retreat_open(mem, battle)
+        if retreat is not None:
+            return retreat
     if (_available_rare_tactic(mem, battle) and not battle.get('rare_egg_command_return')):
         battle['rare_egg_command_return'] = True
         _record(mem, 'battle_rare_egg_command', **_battle_labels(battle),
