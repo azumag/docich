@@ -14,6 +14,46 @@ FIXTURES = Path(__file__).parent / 'fixtures' / 'hanjuku'
 
 
 class RealFrameTests(unittest.TestCase):
+    def test_boss_two_row_command_menu_uses_carried_card_not_egg(self):
+        frame = vision._frame((FIXTURES / 'g508-boss-command-menu.png').read_bytes())
+        self.assertEqual(frame.digest(), '1ce3f3171d315ebe31c500a3fb59784c6e3feb2756cba50cd8aca80f27f17c36')
+        from docich.hanjuku_screen import parse
+        from docich.hanjuku_bot import decide
+        from docich.hanjuku_policy import battle_menu_step, pad
+        screen = parse(frame)
+        self.assertEqual(screen.kind, 'battle_menu')
+        self.assertEqual(screen.menu_cursor, 192)
+        memory = {'chapter': 1, 'battle': {'ally': 'どうし', 'enemy': 'クイーン',
+                  'ally_hp': 40, 'enemy_hp': 70, 'start_ally_hp': 62,
+                  'side': 'attack', 'castle': 'けっかい', 'step': '1-B1',
+                  'cards_used': [], 'card_flow': {'stage': 'menu', 'card': 'クースカン'}}}
+        actions, state = decide(frame, {'policy': memory})
+        self.assertEqual(actions, [pad('down')])
+        screen.menu_cursor = 208  # synthetic next observed cursor at actual card row
+        self.assertEqual(battle_menu_step(screen, state['policy']), [pad('a')])
+        self.assertEqual(state['policy']['battle']['card_flow']['stage'], 'list')
+
+    def test_clipped_boss_command_menu_waits_without_legacy_egg_confirm(self):
+        frame = vision._frame((FIXTURES / 'g508-boss-partial-menu.png').read_bytes())
+        self.assertEqual(frame.digest(), 'fe9530e4992d27f33379cef8cd2b3bf1cc295112ddeaf5852a9be3e98cfe7c3b')
+        from docich.hanjuku_screen import parse
+        from docich.hanjuku_bot import decide
+        screen = parse(frame)
+        self.assertEqual(screen.kind, 'battle_menu_pending')
+        memory = {'chapter': 1, 'battle': {'ally': 'どうし', 'enemy': 'クイーン',
+                  'ally_hp': 18, 'enemy_hp': 70, 'side': 'attack',
+                  'cards_used': [], 'card_flow': {'stage': 'menu', 'card': 'クースカン'}}}
+        actions, state = decide(frame, {'policy': memory})
+        self.assertEqual(actions, [])
+        self.assertEqual(state['policy']['battle']['card_flow']['stage'], 'menu')
+        for _ in range(7):
+            actions, state = decide(frame, state)
+            self.assertEqual(actions, [])
+        from docich.hanjuku_policy import pad
+        actions, state = decide(frame, state)
+        self.assertEqual(actions, [pad('b')])
+        self.assertEqual(state['_records'][-1]['decision'], 'battle_command_incomplete')
+
     def test_live_defender_successor_panel_resumes_the_next_general(self):
         frame = vision._frame((FIXTURES / 'g508-defense-successor.png').read_bytes())
         self.assertEqual(frame.digest(), '39df9a8aa8a43f6aa8cf083fc42f7b312502e5d4a63f53b70fc84564a58c5ac3')

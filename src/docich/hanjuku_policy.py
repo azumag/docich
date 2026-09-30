@@ -3187,6 +3187,7 @@ def _card_use_unclassified(mem, cur, reason):
 def reset_battle_controls(mem):
     """Discard controls belonging to the previous combatant."""
     mem['egg_battle'] = False
+    mem.pop('battle_menu_pending_ticks', None)
     for key in ('egg_action', 'egg_key', 'egg_menu_stage', 'egg_battle_row_dead',
                 'egg_retreat_tried', 'egg_retreat_flow', 'egg_choice', 'egg_row_dead',
                 'indep_menu', 'indep_menu_key', 'indep_menu_action',
@@ -3768,6 +3769,18 @@ def _available_rare_tactic(mem, cur):
                  and t.get('tactic_id') not in cur.get('tactics_done', [])
                  and (not t.get('boss_only') or _boss_tactics_allowed(mem, cur))), None)
 
+def battle_menu_pending_step(mem):
+    if not mem.get('battle'):
+        return []
+    ticks = mem['battle_menu_pending_ticks'] = mem.get('battle_menu_pending_ticks', 0) + 1
+    if ticks <= 8:
+        return []
+    mem.pop('battle_menu_pending_ticks', None)
+    _record(mem, 'battle_command_incomplete',
+            reason='表示途中の戦闘メニューが観測上限に達したため決定せず戻る')
+    return [pad('b')]
+
+
 def battle_menu_step(screen: Screen, mem):
     _migrate_card_evidence(mem)
     cur = mem.get('battle') or {}
@@ -3790,9 +3803,15 @@ def battle_menu_step(screen: Screen, mem):
             cur['card_flow'] = None
         return _survival_menu(screen, mem, cur)
     if flow:
-        if flow['stage'] == 'menu':
-            flow['stage'] = 'down'
-            return [pad('down')]
+        flow['command_menu_ticks'] = flow.get('command_menu_ticks', 0) + 1
+        if flow['command_menu_ticks'] > 8:
+            _card_use_unclassified(mem, cur, '切り札行とカーソルの確認が観測上限に達したため保留')
+            return [pad('b')]
+        move = _battle_menu_to(screen, 'きりふだ')
+        if move != 'here':
+            if move:
+                flow['stage'] = 'down'
+            return [move] if move else []
         flow['stage'] = 'list'
         return [pad('a')]
     if not flow and cur.get('egg_battle') and 'きりふだ' in screen.text:

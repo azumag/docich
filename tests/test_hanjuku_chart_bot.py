@@ -573,7 +573,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v104-defense-successor'
+    assert state['bot_version'] == 'hanjuku-chart-v105-boss-command-menu'
     assert '_records' not in state['policy']
 
 
@@ -1896,10 +1896,14 @@ def test_tutorial_sword_practice_mashes_a_to_push_instead_of_idling():
     assert policy.battle_step(over, mem) == []              # the panel has ended: stop
 
 
-def _menu_without_egg_row():
+def _menu_without_egg_row(cursor=None):
     c = Canvas((0, 0, 0))
     c.text(176, 192, 'きりふだ')
     c.text(176, 208, 'たいきゃく')
+    if cursor is not None:
+        for y in range(168 + 16 * cursor, 180 + 16 * cursor):
+            for x in range(152, 164):
+                c.put(x, y, (230, 105, 74))
     return c.frame()
 
 
@@ -1909,9 +1913,9 @@ def test_menu_with_greyed_egg_row_is_the_battle_menu_and_reaches_the_card():
     assert parse(_menu_without_egg_row()).kind == 'battle_menu'
     mem = {'chapter': 1, 'battle': {'enemy': 'ガルバンゾー', 'ally': 'どうし', 'cards_used': [],
                                     'card_flow': {'card': 'フットバース', 'stage': 'menu', 'note': ''}}}
-    actions, state = decide(_menu_without_egg_row(), {'policy': mem})
+    actions, state = decide(_menu_without_egg_row(cursor=0), {'policy': mem})
     assert actions[0]['buttons'] == ['down']                # off the dead egg row to きりふだ
-    actions, state = decide(_menu_without_egg_row(), state)
+    actions, state = decide(_menu_without_egg_row(cursor=1), state)
     assert actions[0]['buttons'] == ['a']
 
 
@@ -3086,3 +3090,27 @@ def test_paid_recruit_never_refills_again_after_soldiers_already_finished():
                         'left_menu': True, 'key': '1-7'}
     assert policy._finish_month_sub(parse(month_canvas(94)), mem, shop)
     assert shop['soldiers_done'] and shop['soldiers'] == 76
+
+
+def test_chart_card_command_without_cursor_never_confirms_and_has_a_bound():
+    mem = {'chapter': 1, 'battle': {'enemy': 'ガルバンゾー', 'ally': 'どうし',
+           'cards_used': [], 'card_flow': {'card': 'フットバース', 'stage': 'menu'}}}
+    state = {'policy': mem}
+    for _ in range(8):
+        actions, state = decide(_menu_without_egg_row(), state)
+        assert actions == []
+    actions, state = decide(_menu_without_egg_row(), state)
+    assert actions == [policy.pad('b')]
+    assert state['policy']['battle']['card_flow'] is None
+
+
+@pytest.mark.parametrize('x,y,expected', [(176,192,'battle_menu_pending'),
+    (176,208,'battle_menu_pending'), (176,216,'battle_menu_pending'),
+    (40,192,'text'), (176,200,'text')])
+def test_clipped_command_requires_measured_position_and_never_confirms_without_cursor(x,y,expected):
+    c = Canvas((0,0,0));c.text(x,y,'たまごをつかう')
+    s = parse(c.frame())
+    assert s.kind == expected
+    if expected == 'battle_menu_pending':
+        actions, state = decide(c.frame(), {'policy': {'chapter': 1}})
+        assert actions == []
