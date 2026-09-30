@@ -3964,10 +3964,12 @@ def _survival_card_list(screen, mem, cur, flow, names):
             return []
         rescue['cards_exhausted'] = True
         cur['card_flow'] = None
+        if flow['list_ticks'] > 10 and counts:
+            rescue['cards_uncertain'] = True
         if uncertain:
             _record(mem, 'battle_card_remaining_unconfirmed', **_battle_labels(cur),
                     observed_metric={'listed_counts': counts,
-                                     'counts_at_selection': previous},
+                                     'counts_at_selection': dict(previous)},
                     reason='同名札が実一覧に残るが使用・枚数減少を確認できないため再決定を保留。救済手段なしとは断定しない')
         return [pad('b')]
     card = _rescue_card(candidates, cur)

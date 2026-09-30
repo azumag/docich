@@ -889,3 +889,17 @@ def test_legacy_attempt_without_count_does_not_allow_duplicate_reselection():
     assert p.card_list_step(one, mem) == [p.pad('b')]
     assert not cur.get('cards_selected')
     assert cur['survival']['cards_uncertain']
+
+
+def test_visible_copy_with_missing_cursor_times_out_without_false_resource_exhaustion():
+    mem = basil_rescue_memory()
+    first_basil_card(mem)
+    open_rescue_list(mem)
+    no_cursor = menu(('イッテツーン',), selected=None, kind='text')
+    for _ in range(10):
+        assert p.card_list_step(no_cursor, mem) == []
+    assert p.card_list_step(no_cursor, mem) == [p.pad('b')]
+    assert mem['battle']['survival']['cards_uncertain']
+    mem['battle']['survival']['exhausted'] = True
+    assert not p._hero_retreat_needed(mem['battle'])
+    assert mem['battle']['cards_selected'] == ['イッテツーン']
