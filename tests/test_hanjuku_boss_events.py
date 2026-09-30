@@ -159,3 +159,70 @@ def test_legacy_or_unclassified_boss_loss_never_falls_back_to_generic_retry(side
 def test_measured_boss_name_requires_matching_chapter_and_boss_sortie(chapter, step, enemy):
     mem = {'chapter': chapter}
     assert not policy._boss_tactics_allowed(mem, {'enemy': enemy, 'step': step})
+
+
+def unconfirmed_boss_memory():
+    kit = ['クースカン', 'ノリウツール']
+    evidence = {'actual_general': 'どうし', 'planned_general': 'どうし',
+                'observed_metric': {'general': 'どうし', 'cards': kit},
+                'expected_metric': {'general': 'どうし', 'cards': kit}}
+    order = dict(next(o for o in policy.chart.orders(1) if o['step'] == '1-B1'))
+    return {'chapter': 1, 'captured': ['ゴーメン', 'スペンソニア'],
+            'sorties': {'1-A2': {'general': 'どうし', 'status': 'arrived', 'target': 'ゴーメン'},
+                        '1-B1': {'general': 'どうし', 'status': 'launched_unconfirmed',
+                                 'target': None, 'planned_target': 'けっかい', 'evidence': evidence}},
+            'order_context': {'1-B1': evidence}, 'launched_orders': {'1-B1': order}}
+
+
+def test_unconfirmed_boss_sortie_keeps_measured_kit_without_claiming_arrival():
+    mem = unconfirmed_boss_memory()
+    panel = Screen([], None, '', battle=Battle('クイーン', 70, 'どうし', 66), kind='battle')
+    policy.battle_step(panel, mem); policy.battle_step(panel, mem)
+    cur = mem['battle']
+    assert cur['step'] == '1-B1'
+    assert cur['planned_cards'] == ['クースカン', 'ノリウツール']
+    assert cur['castle'] is None and cur['side'] is None
+    assert cur['context'] == 'unclassified_location'
+    assert mem['sorties']['1-B1']['status'] == 'launched_unconfirmed'
+    assert mem['sorties']['1-B1']['target'] is None
+    assert not mem.get('boss_seen')
+    # Actual g506: the Queen stays at 70, only the hero loses HP at clash.
+    hurt = Screen([], None, '', battle=Battle('クイーン', 70, 'どうし', 55), kind='battle')
+    assert policy.battle_step(hurt, mem) == [policy.pad('b')]
+    assert cur['card_flow']['card'] == 'クースカン'
+    cur['cards_selected'] = ['クースカン']
+    cur['card_flow'] = {'card': 'クースカン', 'stage': 'announce', 'enemy_hp_at_open': 70}
+    half = Screen([], None, '', battle=Battle('クイーン', 34, 'どうし', 55), kind='battle')
+    assert policy.battle_step(half, mem) == [policy.pad('b')]
+    assert cur['card_flow']['card'] == 'ノリウツール'
+    assert cur['cards_used'] == []  # HP change is not a calibrated use receipt.
+
+
+def test_unconfirmed_boss_kit_is_not_spent_on_road_enemy():
+    mem = unconfirmed_boss_memory()
+    panel = Screen([], None, '', battle=Battle('ミント', 32, 'どうし', 66), kind='battle')
+    policy.battle_step(panel, mem); policy.battle_step(panel, mem)
+    assert mem['battle']['step'] == '1-B1'
+    assert mem['battle']['planned_cards'] == []
+    policy.battle_step(Screen([], None, '', battle=Battle('ミント', 32, 'どうし', 55), kind='battle'), mem)
+    assert not mem['battle'].get('card_flow')
+
+
+@pytest.mark.parametrize('kind', ['ambiguous', 'different_general', 'finished'])
+def test_unconfirmed_sortie_binding_stays_unclassified_when_no_unique_march(kind):
+    mem = unconfirmed_boss_memory()
+    if kind == 'ambiguous':
+        mem['sorties']['other'] = dict(mem['sorties']['1-B1'])
+    elif kind == 'different_general':
+        mem['sorties']['1-B1']['general'] = 'ゼウス'
+    else:
+        mem['sorties']['1-B1']['status'] = 'finished'
+    cur = policy._battle_context(mem, 'どうし')
+    assert cur['step'] is None and cur['castle'] is None and cur['side'] is None
+
+
+def test_measured_defense_context_wins_over_unconfirmed_march():
+    mem = unconfirmed_boss_memory()
+    mem['attack'] = {'general': 'どうし', 'side': 'defense', 'castle': 'ゴーメン'}
+    cur = policy._battle_context(mem, 'どうし')
+    assert cur['side'] == 'defense' and cur['castle'] == 'ゴーメン' and cur['step'] is None

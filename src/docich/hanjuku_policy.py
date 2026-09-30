@@ -3045,7 +3045,8 @@ def _battle_context(mem, ally):
                 'entry_evidence': attack.get('entry_evidence')}
     captured = set(mem.get('captured', []))
     en_route = [step for step, sortie in (mem.get('sorties') or {}).items()
-                if sortie.get('general') == ally and sortie.get('status') in ('en_route', 'arrived')
+                if sortie.get('general') == ally
+                and sortie.get('status') in ('en_route', 'arrived', 'launched_unconfirmed')
                 and sortie.get('target') not in captured]
     if len(en_route) == 1:
         return {'castle': None, 'side': None, 'step': en_route[0],
@@ -3242,6 +3243,12 @@ def battle_step(screen: Screen, mem):
     cur.pop('okunote_flow', None)  # the command finished; a later use is a new attempt
     cur['enemy_hp'], cur['ally_hp'] = b.enemy_hp, b.ally_hp
     if b.enemy_hp is not None and cur.get('start_enemy_hp') is not None and b.enemy_hp < cur['start_enemy_hp']:
+        cur['clashed'] = True
+    if (_boss_tactics_allowed(mem, cur) and type(b.ally_hp) is int
+            and type(cur.get('start_ally_hp')) is int and b.ally_hp < cur['start_ally_hp']):
+        # The first clash can hurt only our general (g506 Queen 70 stays
+        # unchanged while hero 66->55). Do not wait for an enemy HP drop
+        # before starting the carried post-clash boss sequence.
         cur['clashed'] = True
     if b.enemy_hp == 0 or b.ally_hp == 0:
         if (cur.get('card_flow') or {}).get('stage') == 'menu':

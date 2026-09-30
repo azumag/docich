@@ -1,11 +1,11 @@
 {
-  "output_sha256": "581315c94a591eae56a5ac430d2da34c285b7a92b67b0927988a2b5dcec5d869",
+  "output_sha256": "d6b189253f00523e89c2b6d4663835e78358ed9baa257f947226e98cbe0abec3",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "99d40b90b684dcb972a93209daa239932ce7792e313a122febeb929c0389de14",
+  "source_sha256": "c294ad484d3b3fe3118143ff655ee32bc63214cbb65bf57a4565201885f36da2",
   "topics": [
+    "g506ボス戦携行引継ぎとv101",
     "g504主人公防衛敗北とv100状態確認・早期救済",
-    "g502エラベル三択数字差の停滞とv99",
-    "g500エラベルエッグ三択停滞とv98対応"
+    "g502エラベル三択数字差の停滞とv99"
   ]
 }
