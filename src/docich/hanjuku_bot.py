@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v95-recruit-priority'
+BOT_VERSION = 'hanjuku-chart-v96-recruit-recheck'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -210,7 +210,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         policy.battle_end(mem,kind)
     if after_battle:
         mem['egg_battle']=False
-        for key in ('egg_action','egg_key','egg_menu_stage','egg_battle_row_dead','egg_retreat_tried','indep_menu',
+        for key in ('egg_action','egg_key','egg_menu_stage','egg_battle_row_dead','egg_retreat_tried','egg_retreat_flow','indep_menu',
                     'indep_menu_key','indep_menu_action',
                     'monster_menu_key','monster_menu_cursor','monster_menu_hold',
                     'monster_menu_choice','monster_menu_choice_key','monster_panel'):
