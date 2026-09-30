@@ -1,11 +1,11 @@
 {
-  "output_sha256": "472eeec6645134cde8da2fa39d4ac9e347f1461c7a11eba6c2b8435fc1db6fbe",
+  "output_sha256": "196d35d838605cf15375f282b7ed84ca9b234fefdf02c30bd82c2e63eab3c0c9",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "8bc8c4ce1e31baa022680d958d8f78ed4dd803c81a9b0690ffa7ad9bdb37ad0a",
+  "source_sha256": "5c66b10cf653c2006f8fb6611fa07c5d7562d95d17b2bb13debc9b1576e4b426",
   "topics": [
+    "半熟の月境界・単独名簿の募集v121再レビュー準備",
     "半熟の募集需要・通常収支v119レビュー準備",
-    "半熟の同名救済札・退却再評価の修正準備",
-    "半熟第2話確認・未評価の強制解雇ガード準備"
+    "半熟の同名救済札・退却再評価の修正準備"
   ]
 }

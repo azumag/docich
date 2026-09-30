@@ -141,7 +141,7 @@ def _choose(screen, label):
 def _exit(mem, reason, *, limit=None):
     state = mem['house']
     if state['phase'].startswith('income_') or state['phase'] in {
-            'open_roster', 'roster', 'status', 'roster_next', 'roster_advance', 'leave_roster'}:
+            'month_open', 'open_roster', 'roster', 'status', 'roster_next', 'roster_advance', 'leave_roster'}:
         mem['recruit_roster_recheck'] = True
         mem['recruit_hold'] = {'chapter': mem.get('chapter'), 'month': mem.get('month'),
                               'status': 'observation_failed', 'reason': reason}
@@ -294,7 +294,7 @@ def step(screen, mem, frame):
         if phase == 'month_open':
             state['age'] += 1
             if state['age'] >= STEP_LIMIT:
-                return _exit(mem, '月初の情報メニューへ移動できないため募集確認を有限に保留')
+                return _exit(mem, '月初の情報メニューへ移動できないため募集確認を有限に保留', limit='step')
             actions = _choose(screen, 'メインメニュー')
             if actions == [p.pad('a')]:
                 _phase(state, 'open_roster')
@@ -302,7 +302,7 @@ def step(screen, mem, frame):
         if phase == 'open_roster':
             state['age'] += 1
             if state['age'] >= STEP_LIMIT:
-                return _exit(mem, '月初メニューから情報画面を開けないため募集確認を有限に保留')
+                return _exit(mem, '月初メニューから情報画面を開けないため募集確認を有限に保留', limit='step')
             return []
     if ('roster_month' in state and state['roster_month'] != mem.get('month')
             and (phase in ('roster', 'status', 'roster_next', 'roster_advance')
