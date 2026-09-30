@@ -41,6 +41,39 @@ class RetentionHealthTests(unittest.TestCase):
             self.assertEqual(result['default']['compact_storage'],'memory')
             self.assertEqual(result['default']['reason'],'insufficient_memory')
 
+    def test_bounded_prune_fields_are_projected_without_text(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);state=root/'tmp/state';state.mkdir(parents=True)
+            (state/'opencode_retention_default.json').write_text(json.dumps(dict(
+                status='deferred', reason='bounded_prune_committed', stage='compact_deferred',
+                compact_defer_reason='insufficient_space', preflight_phase='complete',
+                prune_mode='bounded_wal', recovery_action='inspect_io_or_add_capacity',
+                selected_sessions=395, remaining_sessions=0, prune_batches=50,
+                wal_limit_bytes=8388608, bounded_prune_blocked=False,
+                sqlite_error_code=5, sqlite_extended_error_code=261,
+                completed_at=9999, detail='must not leak')))
+            item=self.collect(root)['default']
+            self.assertEqual(item['reason'],'bounded_prune_committed')
+            self.assertEqual(item['stage'],'compact_deferred')
+            self.assertEqual(item['compact_defer_reason'],'insufficient_space')
+            self.assertEqual(item['preflight_phase'],'complete')
+            self.assertEqual(item['prune_mode'],'bounded_wal')
+            self.assertEqual(item['recovery_action'],'inspect_io_or_add_capacity')
+            self.assertEqual(item['selected_sessions'],395)
+            self.assertEqual(item['remaining_sessions'],0)
+            self.assertEqual(item['prune_batches'],50)
+            self.assertEqual(item['wal_limit_bytes'],8388608)
+            self.assertIs(item['bounded_prune_blocked'],False)
+            self.assertEqual(item['sqlite_error_code'],5)
+            self.assertEqual(item['sqlite_extended_error_code'],261)
+            self.assertNotIn('detail',item)
+            self.assertNotIn('must not leak',json.dumps(item))
+            (state/'opencode_retention_default.json').write_text(json.dumps(dict(
+                status='deferred', reason='free form attacker text', stage='other')))
+            item=self.collect(root)['default']
+            self.assertEqual(item['reason'],'unknown')
+            self.assertEqual(item['stage'],'unknown')
+
     def test_missing_malformed_large_and_symlink_are_not_success(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);state=root/'tmp/state';state.mkdir(parents=True)
