@@ -1,11 +1,11 @@
 {
-  "output_sha256": "431087fa5262275a0ed8f62cb93b697dd6913df4287c0bd25de1dbf16eddcb60",
+  "output_sha256": "c9801db8e7e462e497a2325f78a134c9c1f87d43bc209343e29e67e35b34b96b",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "a93f2c48edce1eebab963e3357f682e55c0c2cf94cf8763b2969f84b5b3e88ec",
+  "source_sha256": "9763064dd87393a87b198157fb7d0b485cb99d38eeedf1f7bcceac20e2f31cd8",
   "topics": [
+    "半熟v93キャトルミュー配備・実在庫5確認",
     "VM容量回収と配備bundle保持短縮",
-    "半熟v93キャトルミュー活用を実装準備",
-    "半熟v92配備照合・同一g496入力再開"
+    "半熟v93キャトルミュー活用を実装準備"
   ]
 }
