@@ -11,10 +11,10 @@
 - retained preview release から参照されていない
 - `deployment_intent.from/to` から参照されていない
 - `pending_repairs[].candidate_sha` から参照されていない
-- mtime が 7 日以上前
+- mtime が 2 日以上前
 - 未参照 bundle の新しい方から 8 世代に含まれない
 
-つまり、最近 upload されたがまだ deploy されていない bundle は最低7日間保護されます。また長期間 deploy がない場合でも、未参照bundleを新しい方から8世代残します。
+つまり、最近 upload されたがまだ deploy されていない bundle は最低2日間保護されます。また長期間 deploy がない場合でも、未参照bundleを新しい方から8世代残します。
 
 ## Fail-closed rules
 
