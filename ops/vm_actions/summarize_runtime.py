@@ -258,6 +258,36 @@ def summarize(data):
     sampled = sum(cause_counts.values())
     sampled_queue_giveups = sum(queue_giveup_component_counts.values())
     sampled_all_failed = sum(all_failed_component_counts.values())
+
+    # The collector aggregates anomalous components across the full diagnostics
+    # window before trimming recent_events to fit the bounded payload. Collapse
+    # those labels to the same fixed public buckets and keep any truncated or
+    # omitted remainder explicit as "unknown".
+    aggregate_all_failed = _integer(ai, "all_failed_15m")
+    full_all_failed_counts = Counter()
+    full_all_failed_sampled = 0
+    full_all_failed_consistent = False
+    anomalous = ai.get("anomalous_components")
+    if isinstance(anomalous, dict):
+        full_all_failed_consistent = True
+        for label, row in anomalous.items():
+            if not isinstance(label, str) or not isinstance(row, dict):
+                full_all_failed_consistent = False
+                break
+            value = row.get("all_failed", 0)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                full_all_failed_consistent = False
+                break
+            if value:
+                full_all_failed_counts[_component_bucket({"component": label})] += value
+                full_all_failed_sampled += value
+        if full_all_failed_sampled > aggregate_all_failed:
+            full_all_failed_consistent = False
+    if not full_all_failed_consistent:
+        full_all_failed_counts = Counter()
+        full_all_failed_sampled = 0
+    full_all_failed_unknown = aggregate_all_failed - full_all_failed_sampled
+    full_all_failed_exact = full_all_failed_consistent and full_all_failed_unknown == 0
     retro = corners.get("retro_corner") if isinstance(corners, dict) else None
     fifo = corners.get("game_switch_fifo") if isinstance(corners, dict) else None
     paper = corners.get("paper_corner") if isinstance(corners, dict) else None
@@ -336,6 +366,14 @@ def summarize(data):
     parts.append(f"ai_recent_all_failed_sampled={sampled_all_failed}")
     parts.extend(
         f"ai_recent_all_failed_component_{component}={all_failed_component_counts[component]}"
+        for component in COMPONENTS
+    )
+    parts.append(f"ai_all_failed_attribution_sampled={full_all_failed_sampled}")
+    parts.append(f"ai_all_failed_attribution_unknown={full_all_failed_unknown}")
+    parts.append(f"ai_all_failed_attribution_consistent={int(full_all_failed_consistent)}")
+    parts.append(f"ai_all_failed_attribution_exact={int(full_all_failed_exact)}")
+    parts.extend(
+        f"ai_all_failed_component_{component}={full_all_failed_counts[component]}"
         for component in COMPONENTS
     )
     parts.extend(
