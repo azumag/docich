@@ -55,7 +55,8 @@ def test_guard_is_scoped_to_chapter_one_hero_boss_and_known_counts():
     mem = memory(3)
     road = next(o for o in chart.orders(1) if o['step'] == '1-A1')
     assert policy._ready(road, mem)
-    assert not policy._boss_egg_depleted({**order(), 'general': 'ゼウス'}, mem)
+    assert not policy._boss_egg_depleted({**order(), 'general': 'ゼウス'},
+                                         {**mem, 'sortie_general': {'1-B1': 'ゼウス'}})
     assert not policy._boss_egg_depleted(order(), {**mem, 'chapter': 2})
     assert policy._ready(order(), memory(4))
     assert policy._ready(order(), memory())

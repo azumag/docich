@@ -219,9 +219,9 @@ def test_sortie_capture_keeps_exact_read_frame_even_without_records(tmp_path, ki
     assert len(list((tmp_path/'hanjuku_frames').glob('*.png'))) == 1
 
 
-@pytest.mark.parametrize('words,hand', [(['ゼウス'], True), (['どうし', 'ゼウス'], False),
+@pytest.mark.parametrize('words,hand', [(['ゼウス' + UNKNOWN], True), (['どうし', 'ゼウス'], False),
                                        (['どうし' + UNKNOWN], True)])
-def test_boss_never_substitutes_for_an_unconfirmed_hero(words, hand):
+def test_boss_never_substitutes_from_an_unreadable_list(words, hand):
     mem = memory()
     mem['general_override'] = {'1-B1': 'ゼウス'}
     assert policy.deploy_step(menu('general_list', words, hand), mem) == []
@@ -235,10 +235,16 @@ def test_boss_visible_hero_does_not_authorize_an_uncalibrated_kit(monkeypatch):
     mem = memory()
     mem['general_override'] = {'1-B1': 'ゼウス'}
     mem['card_override'] = {'1-B1': ['イッテツーン', 'イッテツーン']}
-    assert policy.deploy_step(menu('general_list', ['どうし', 'ゼウス']), mem) == [policy.pad('a')]
-    assert mem['sortie_general']['1-B1'] == 'どうし' and '1-B1' not in mem['general_override']
+    assert policy.deploy_step(menu('general_list', ['どうし', 'ゼウス']), mem) == [policy.pad('down')]
+    picked = menu('general_list', ['どうし', 'ゼウス'])
+    picked.hand = (122, 57, 139, 69)
+    assert policy.deploy_step(picked, mem) == [policy.pad('a')]
+    assert mem['sortie_general']['1-B1'] == mem['general_override']['1-B1'] == 'ゼウス'
     for cards in (['イッテツーン', 'イッテツーン'], ['クースカン', 'ノリウツール']):
-        assert policy.deploy_step(menu('sortie_confirm', ['うむッ!'] + cards), mem) == []
+        screen = menu('sortie_confirm', ['うむッ!'] + cards)
+        screen.lines.insert(0, TextLine(31, tuple((16 + 8*i, ch) for i, ch in enumerate('ゼウス'))
+                                      + tuple((80 + 8*i, ch) for i, ch in enumerate('しょうぐん'))))
+        assert policy.deploy_step(screen, mem) == []
     assert '1-B1' not in mem['order_context']
     monkeypatch.setattr(policy, 'nav_step', lambda *args: pytest.fail('unverified boss navigation'))
     assert policy.target_step(menu('map_target', []), mem, None) == []
@@ -929,3 +935,148 @@ def test_a_boss_card_below_a_full_panel_is_reached_by_scrolling_after_visible_on
     for _ in range(policy.CARD_SCROLL_LIMIT - 1):
         policy.deploy_step(panel, mem)
     assert policy.deploy_step(panel, mem) == []                          # bounded: boss kit holds
+
+
+# These new-path tests use the already measured name/header cells. No game
+# operation or arbitrary alternate-name override establishes the actor.
+def actor_panel(screen, general):
+    right = tuple(cell for line in screen.lines if line.y == 31 for cell in line.cells if cell[0] >= 136)
+    screen.lines = [line for line in screen.lines if line.y != 31] + [
+        TextLine(31, tuple((16 + 8*i, ch) for i, ch in enumerate(general))
+                 + tuple((80 + 8*i, ch) for i, ch in enumerate('しょうぐん')) + right)]
+    screen.text = ''.join(line.known for line in screen.lines)
+    return screen
+
+
+def selected_list(names, index=0):
+    screen = menu('general_list', names)
+    screen.hand = (122, 41 + index*16, 139, 53 + index*16)
+    return screen
+
+
+def test_hero_priority_full_boss_departure_keeps_real_actor_through_battle(monkeypatch):
+    from docich.hanjuku_screen import Battle
+    mem = memory()
+    mem['tick'] = 100
+    # The hero is visible and planned, but the existing cursor is on him.
+    assert policy.deploy_step(selected_list(['どうし', 'ゼウス']), mem) == [policy.pad('down')]
+    assert '1-B1' not in mem['sortie_general']
+    assert policy.deploy_step(selected_list(['どうし', 'ゼウス'], 1), mem) == [policy.pad('a')]
+    assert mem['sortie_general']['1-B1'] == 'ゼウス'
+    cards = ('クースカン', 'ノリウツール')
+    assert policy.deploy_step(actor_panel(measured_card_select(cards), 'ゼウス'), mem) == [policy.pad('a')]
+    assert policy.deploy_step(actor_panel(measured_card_select(cards, selected=1), 'ゼウス'), mem) == [policy.pad('a')]
+    assert policy.deploy_step(actor_panel(measured_card_select(cards), 'ゼウス'), mem) == [policy.pad('b')]
+    assert policy.deploy_step(actor_panel(measured_loaded_sortie(cards), 'ゼウス'), mem) == [policy.pad('a')]
+    context = mem['order_context']['1-B1']
+    assert context['actual_general'] == 'ゼウス' and context['planned_general'] == 'どうし'
+    assert context['observed_metric']['cards'] == list(cards)
+    # Hot-load/adopted-plan bookkeeping cannot relabel the already confirmed
+    # unit. Even a changed override must keep the selected companion.
+    mem['general_override']['1-B1'] = 'どうし'
+    monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
+    assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
+    assert mem['sorties']['1-B1']['general'] == mem['launched']['けっかい']['general'] == 'ゼウス'
+    launch = mem['_records'][-1]
+    assert launch['general'] == 'ゼウス' and launch['planned_general'] == 'どうし'
+    message = Screen([], None, 'ゼウスしょうぐんがボスじょうにせめこんだ!!', kind='boss_attack_started')
+    assert policy.message_step(message, mem) == [policy.pad('a')]
+    assert mem['attack']['general'] == 'ゼウス' and mem['attack']['step'] == '1-B1'
+    panel = Screen([], None, '', battle=Battle('クイーン', 70, 'ゼウス', 85), kind='battle')
+    policy.battle_step(panel, mem); policy.battle_step(panel, mem)
+    assert mem['battle']['ally'] == 'ゼウス' and mem['battle']['step'] == '1-B1'
+    assert mem['battle']['strategy_variant'] == 'substitute_general'
+    assert any(r['decision'] == 'battle_start' and r['ally'] == 'ゼウス' for r in mem['_records'])
+
+
+@pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm'])
+def test_priority_selection_input_missing_never_relabels_actual_hero(kind):
+    mem = memory()
+    policy.deploy_step(selected_list(['どうし', 'ゼウス'], 1), mem)
+    screen = measured_card_select() if kind == 'card_select' else measured_loaded_sortie(('クースカン', 'ノリウツール'))
+    assert policy.deploy_step(actor_panel(screen, 'どうし'), mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['active'] is None and '1-B1' not in mem['sortie_general']
+    assert not any(r['decision'] == 'sortie_confirm' for r in mem['_records'])
+    assert mem['_records'][-1]['decision'] == 'sortie_actor_unconfirmed'
+
+
+def test_priority_actor_unknown_is_bounded_and_does_not_issue_more_a():
+    mem = memory()
+    policy.deploy_step(selected_list(['ゼウス']), mem)
+    for _ in range(2):
+        assert policy.deploy_step(measured_card_select(), mem) == []
+    assert policy.deploy_step(measured_card_select(), mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['active'] is None and not mem['sortie_actor_miss']
+
+
+@pytest.mark.parametrize('words', [['どうし', 'ゼウス', 'ゼウス'], ['どうし', '未確認'],
+                                   ['どうし', 'ゼウス' + UNKNOWN]])
+def test_priority_rejects_duplicates_unknown_and_partial_names(words):
+    mem = memory()
+    assert policy.deploy_step(selected_list(words), mem) == []
+    assert '1-B1' not in mem['sortie_general']
+
+
+def test_busy_companion_does_not_force_a_substitute_or_remove_hero_guard():
+    mem = memory()
+    mem.update(tick=100, egg_uses={'どうし': 3},
+               sorties={'elsewhere': {'general': 'ゼウス', 'target': 'ゴーメン', 'tick': 99, 'status': 'en_route'}})
+    assert policy.deploy_step(selected_list(['どうし', 'ゼウス']), mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['active'] is None and '1-B1' not in mem['sortie_general']
+
+
+def test_broken_or_depleted_hero_may_open_list_but_only_companion_can_commit():
+    from docich import hanjuku_chart as chart
+    boss = next(o for o in chart.orders(1) if o['step'] == '1-B1')
+    mem = memory()
+    mem.update(egg_uses={'どうし': 0}, house_eggs={'どうし': {'broken': True}},
+               garrison={'スペンソニア': ['どうし', 'ゼウス']}, captured=list(chart.castles(1)))
+    assert policy._ready(boss, mem)
+    assert policy.deploy_step(selected_list(['どうし', 'ゼウス'], 1), mem) == [policy.pad('a')]
+    assert mem['sortie_general']['1-B1'] == 'ゼウス'
+    assert not policy._boss_egg_depleted(boss, mem) and not policy._broken_hero_order(boss, mem)
+    # Garrison memory did not prove a companion was actually selectable.
+    other = memory()
+    other.update(egg_uses={'どうし': 0}, house_eggs={'どうし': {'broken': True}},
+                 garrison={'スペンソニア': ['どうし', 'ゼウス']})
+    assert policy.deploy_step(selected_list(['どうし']), other) == [policy.pad('b')]
+    assert other['active'] is None and not other.get('sortie_general')
+
+
+def test_priority_keeps_single_defender_and_explicit_nonhero_chart_role():
+    # The existing retake guard still cancels a singleton before selection.
+    mem = memory()
+    mem.update(active='1-A2', orders={'1-A2': 'pending'}, lost=['ゴーメン'])
+    assert policy.deploy_step(selected_list(['どうし']), mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['_records'][-1]['decision'] == 'sortie_held_source_defender'
+    # The new rule is scoped to a planned hero, not every chart actor.
+    mem = memory()
+    mem.update(active='1-C1', orders={'1-C1': 'pending'})
+    assert policy.deploy_step(selected_list(['ココット', 'ゼウス']), mem) == [policy.pad('a')]
+    assert not mem.get('general_override')
+
+
+def test_chart_source_companion_is_inspected_before_following_a_busy_hero():
+    from docich import hanjuku_chart as chart
+    boss = next(o for o in chart.orders(1) if o['step'] == '1-B1')
+    mem = memory()
+    mem.update(tick=100, captured=list(chart.castles(1)),
+               garrison={'スペンソニア': ['ゼウス', 'ココット'], 'ゴーメン': ['どうし']},
+               sorties={'other': {'general': 'どうし', 'target': 'ジョンリギ', 'tick': 99, 'status': 'en_route'}})
+    mem['orders'] = {o['step']: 'launched' for o in chart.orders(1)}
+    mem['orders']['1-B1'] = 'pending'
+    assert policy.next_order(mem) == boss
+    assert not mem.get('source_override')
+    assert policy.deploy_step(selected_list(['ゼウス', 'ココット']), mem) == [policy.pad('a')]
+    assert mem['sortie_general']['1-B1'] == 'ゼウス'
+
+
+def test_new_nonhero_selection_does_not_inherit_previous_sortie_actor():
+    mem = memory()
+    mem.update(active='1-C1', orders={'1-C1': 'pending'},
+               order_context={'1-C1': {'actual_general': 'ゼウス'}},
+               sortie_general={'1-C1': 'ゼウス'})
+    assert policy.deploy_step(selected_list(['ココット', 'ゼウス']), mem) == [policy.pad('a')]
+    from docich import hanjuku_chart as chart
+    order = next(o for o in chart.orders(1) if o['step'] == '1-C1')
+    assert policy._deploy_context(order, mem)['general'] == 'ココット'
