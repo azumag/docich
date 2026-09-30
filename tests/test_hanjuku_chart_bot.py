@@ -573,13 +573,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v121-roster-demand'
+    assert state['bot_version'] == 'hanjuku-chart-v122-hero-sortie-priority'
     assert '_records' not in state['policy']
 
 
-def test_bot_version_marks_roster_demand_release():
+def test_bot_version_marks_hero_priority_release():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v121-roster-demand'
+    assert BOT_VERSION == 'hanjuku-chart-v122-hero-sortie-priority'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -2840,6 +2840,7 @@ def _broken_hero_memory():
 
 def test_broken_hero_waits_for_real_repair_status_not_house_departure():
     mem = _broken_hero_memory()
+    mem['garrison']['ほんじょう'] = ['どうし']
     order = {'step': 'x', 'general': 'どうし', 'source': 'ほんじょう',
              'target': 'ゴーメン', 'cards': ['フットバース'], 'after': None}
     assert not policy._ready(order, mem)
@@ -3154,3 +3155,19 @@ def test_measured_shifted_single_egg_command_waits_for_the_second_row(y):
 def test_unmeasured_boss_pair_offset_does_not_guess_a_human_command(y):
     c=Canvas((0,0,0));c.text(176,y,'たまごをつかう');c.text(176,y+16,'きりふだ')
     assert parse(c.frame()).kind != 'battle_menu'
+
+
+def test_native_list_hero_priority_waits_for_companion_cursor_before_a():
+    def frame(selected):
+        c = Canvas()
+        c.text(64, 31, 'しゅつげき')
+        c.text(64, 47, 'ステータス')
+        c.text(144, 39, 'どうし')
+        c.text(144, 55, 'ゼウス')
+        c.hand(122, 33 + 16*selected)
+        return parse(c.frame())
+    mem = {'chapter': 1, 'active': '1-B1', 'orders': {'1-B1': 'pending'}}
+    assert policy.deploy_step(frame(0), mem) == [policy.pad('down')]
+    assert not mem.get('sortie_general')
+    assert policy.deploy_step(frame(1), mem) == [policy.pad('a')]
+    assert mem['sortie_general']['1-B1'] == 'ゼウス'

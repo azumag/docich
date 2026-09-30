@@ -6,6 +6,7 @@ Regressions from g401 (2026-09-27): after the chart ran out the bot pressed A
 already marching elsewhere) while ゼウス idled in the home castle.
 Synthetic roofs and screens only; no ROM images.
 """
+import pytest
 from pathlib import Path
 import sys
 
@@ -808,7 +809,7 @@ def test_a_boss_sortie_without_its_general_gives_up_and_a_cancelled_boss_retries
 def test_an_absent_boss_general_retires_an_old_target_cancel_retry():
     """A target-cancel retry must not loop forever after its general is confirmed absent."""
     from docich.hanjuku_font import TextLine
-    order = {'step': 'F1', 'general': 'どうし', 'source': 'スペンソニア', 'target': 'けっかい',
+    order = {'step': 'F1', 'general': 'ココット', 'source': 'スペンソニア', 'target': 'けっかい',
              'cards': [], 'after': None, 'note': 't'}
     mem = {'chapter': 1, 'orders': {'F1': 'failed'}, 'picked': [], '_records': [], 'active': 'F1',
            'target_cancel': {'F1': 2}, 'captured': ['スペンソニア'],
@@ -1319,21 +1320,26 @@ def test_the_castle_guard_only_holds_while_few_castles_remain(monkeypatch):
     assert policy._keep_last_castle(screen, mem, order) is not None
 
 
-def test_a_plan_that_cannot_run_falls_back_to_the_base_boss_order_from_the_heros_castle():
+@pytest.mark.parametrize('companion', [True, False])
+def test_unusable_plan_falls_back_to_boss_companion_before_following_hero(companion):
     # g438 03:48: the adopted plan's only order sent the dead ココット from an
     # empty ジョンリギ; every castle but the boss's was ours and the bot idled.
     mem = {'chapter': 1, 'tick': 1800, '_records': [], 'orders': {'A:x:J1': 'pending'},
            'captured': ['カストーラ', 'キカンドン', 'ゴーメン', 'ジョンリギ', 'スペンソニア', 'ナキューメラ'],
-           'garrison': {'ほんじょう': [], 'ジョンリギ': [], 'ゴーメン': [policy.NAME], 'スペンソニア': ['ヴィーナス']},
+           'garrison': {'ほんじょう': [], 'ジョンリギ': [], 'ゴーメン': [policy.NAME], 'スペンソニア': ['ヴィーナス'] if companion else []},
            'chart_plan': {'request_id': 'x', 'orders': [
                {'step': 'A:x:J1', 'general': 'ココット', 'source': 'ジョンリギ', 'target': 'スペンソニア',
                 'cards': [], 'after': None, 'note': 't', 'local_step': 'J1'}]}}
     assert not policy._plan_pending(mem)
     order = policy.next_order(mem)
     assert order['target'] == policy.chart.boss_castle(1) and order['general'] == policy.NAME
-    assert policy._source(order, mem) == 'ゴーメン'
-    assert decisions(mem, 'order_source_changed')[0]['observed_metric'] == {'source': 'スペンソニア',
-                                                                             'general_at': 'ゴーメン'}
+    if companion:
+        assert policy._source(order, mem) == 'スペンソニア'
+        assert not mem.get('source_override')
+    else:
+        assert policy._source(order, mem) == 'ゴーメン'
+        assert decisions(mem, 'order_source_changed')[0]['observed_metric'] == {
+            'source': 'スペンソニア', 'general_at': 'ゴーメン'}
 
 
 def test_an_adjusted_boss_order_leaves_an_unowned_card_behind_but_the_base_boss_order_does_not():

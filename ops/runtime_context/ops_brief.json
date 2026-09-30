@@ -1,11 +1,11 @@
 {
-  "output_sha256": "196d35d838605cf15375f282b7ed84ca9b234fefdf02c30bd82c2e63eab3c0c9",
+  "output_sha256": "294c052d8d1e2520fd36acccfa90cfe5d8ade4809f25ca54ef11d1a0073391c1",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "5c66b10cf653c2006f8fb6611fa07c5d7562d95d17b2bb13debc9b1576e4b426",
+  "source_sha256": "b1263c2307528f73025bebdcaa0d982ce3202ed59763bf0006e0cd1a6444188c",
   "topics": [
+    "半熟の主人公出撃後順位v122レビュー準備",
     "半熟の月境界・単独名簿の募集v121再レビュー準備",
-    "半熟の募集需要・通常収支v119レビュー準備",
-    "半熟の同名救済札・退却再評価の修正準備"
+    "半熟の募集需要・通常収支v119レビュー準備"
   ]
 }

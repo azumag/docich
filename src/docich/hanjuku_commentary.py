@@ -56,11 +56,13 @@ def compose(rec: dict) -> tuple[str, str | None]:
         return f'launch_unconfirmed:{step}', f"{rec['general']}将軍の出撃先選択が中断されました。出撃の成否と行き先を確認します。"
     if kind == 'order_retry':
         if rec.get('strategy_variant') == 'retry_chart_boss_kit':
-            return f'retry:{step}', 'ボス戦に敗れたので、主人公とチャートの切り札を確認して再攻撃を準備します。'
+            return f'retry:{step}', 'ボス戦に敗れたので、待機将軍とチャートの切り札を確認して再攻撃を準備します。'
         return (f'retry:{step}',
                 'チャートどおりの白兵では負けたので、今度は開幕にイッテツーンを2枚使う作戦で同じ城へ攻め直します。')
     if kind == 'order_source_changed':
         return f'source:{step}', '出撃予定の城に将軍が見当たらないので、本城から出し直します。'
+    if kind == 'hero_priority_selected':
+        return f'hero_priority:{step}', f"主人公の危険を避けるため、実一覧で確認した{rec['general']}将軍を先発にします。"
     if kind == 'order_substitute':
         return f'substitute:{step}', f"予定の将軍がいないので、{rec.get('observed_metric', ['別の将軍'])[0]}将軍を代わりに向かわせます。"
     if kind == 'attack_observed':

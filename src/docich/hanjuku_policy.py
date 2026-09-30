@@ -487,12 +487,40 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
 
 
 # ---------------------------------------------------------------- orders
+def _sortie_general(order, mem):
+    """Keep a confirmed departure's actor even if a plan/override changes."""
+    step = order.get('step')
+    context = (mem.get('order_context') or {}).get(step) or {}
+    if mem.get('active') == step:
+        selected = context.get('actual_general') or (mem.get('sortie_general') or {}).get(step)
+        if selected:
+            return selected
+    return (mem.get('general_override') or {}).get(step, order.get('general'))
+
+
+def _hero_alternatives(mem, names):
+    """Recognized idle companions; actual list selection must confirm each name.
+
+    Garrison memory only permits opening the list, never a selection receipt.
+    List order is retained; this is no prediction that a companion will win.
+    """
+    if not names or len(names) != len(set(names)):
+        return []
+    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    return [g for g in names if g != NAME and general_max_hp(g) is not None and g not in unavailable]
+
+
+def _hero_source_alternative(order, mem):
+    return (order.get('general') == NAME
+            and bool(_hero_alternatives(mem, (mem.get('garrison') or {}).get(_source(order, mem)))))
+
+
 def _boss_egg_depleted(order, mem) -> bool:
     # g486: どうし left with 3 uses and lost to the Queen's Hydra after
     # the second card missed its input window. Chapter 1's source recommends
     # a fully recovered egg as the backup; do not invent a missing count.
     uses = (mem.get('egg_uses') or {}).get(NAME)
-    return (mem.get('chapter') == 1 and order.get('general') == NAME
+    return (mem.get('chapter') == 1 and _sortie_general(order, mem) == NAME
             and _is_boss_order(order, mem) and type(uses) is int and 0 <= uses < 4)
 
 
@@ -503,7 +531,7 @@ def _hero_egg_broken(mem):
 
 
 def _broken_hero_order(order, mem):
-    general = mem.get('general_override', {}).get(order.get('step'), order.get('general'))
+    general = _sortie_general(order, mem)
     return (general == NAME and _hero_egg_broken(mem)
             and order.get('purpose') != 'move'
             and order.get('target') in chart.castles(mem.get('chapter') or 0))
@@ -519,7 +547,8 @@ def _cancel_broken_hero_sortie(mem, order):
 
 
 def _ready(order, mem) -> bool:
-    if _broken_hero_order(order, mem) or _boss_egg_depleted(order, mem):
+    if ((_broken_hero_order(order, mem) or _boss_egg_depleted(order, mem))
+            and not _hero_source_alternative(order, mem)):
         return False
     after = order['after']
     captured = set(mem.get('captured', []))
@@ -637,7 +666,8 @@ def next_order(mem):
                 and not _last_castle_held(mem, order)      # its castle must keep its last general
                 and not _retake_reserved(order, mem)
                 and not _source_spare_missing(order, mem)
-                and mem.get('general_override', {}).get(order['step'], order['general']) not in _en_route(mem)[0]):
+                and (mem.get('general_override', {}).get(order['step'], order['general']) not in _en_route(mem)[0]
+                     or _hero_source_alternative(order, mem))):
             return order
     return None
 
@@ -647,6 +677,8 @@ def _follow_general(mem, order, garrison, owned):
     assumes どうし at スペンソニア, but he held ゴーメン)."""
     general = order.get('general')
     source = _source(order, mem)
+    if general == NAME and _hero_alternatives(mem, garrison.get(source)):
+        return  # inspect the chart source's companion rather than chase the hero
     if not general or general in (garrison.get(source) or ()):
         return
     where = next((c for c, names in garrison.items() if general in (names or ()) and c in owned), None)
@@ -1021,6 +1053,7 @@ def _off_chart(mem):
     # planner to replace the boss order or send an interim sortie while the
     # next normal month advances. Other ready orders were considered first.
     waiting = next((o for o in _orders(mem) if _boss_egg_depleted(o, mem)
+                    and not _hero_source_alternative(o, mem)
                     and _ready(o, {**mem, 'egg_uses': {}})
                     and (mem.get('orders') or {}).get(o['step']) in (None, 'pending')), None)
     if waiting:
@@ -2111,9 +2144,11 @@ def target_step(screen: Screen, mem, frame):
         return _cancel_broken_hero_sortie(mem, order)
     if _is_boss_order(order, mem):
         context = (mem.get('order_context') or {}).get(order['step']) or {}
-        if (context.get('actual_general') != order['general']
+        if (not context.get('actual_general')
+                or context.get('actual_general') != _sortie_general(order, mem)
+                or (mem.get('sortie_general') or {}).get(order['step']) != context.get('actual_general')
                 or (context.get('observed_metric') or {}).get('cards') != sorted(_deploy_cards(order, mem))):
-            return _hold_deploy(screen, mem, order, 'ボス出撃の主人公と携行品の確認証拠がないため目標確定を保留')
+            return _hold_deploy(screen, mem, order, 'ボス出撃の選択本人と携行品の確認証拠がないため目標確定を保留')
     goal = chart.castles(mem['chapter'])[order['target']]
     result = None
     if screen.marker and _near_goal(mem, order, order['target'], 'target'):
@@ -2413,9 +2448,38 @@ def _drop_card(screen, mem, order, card, inventory):
     return []
 
 
+def _selected_actor_guard(screen, mem, order):
+    """The priority substitute must be the actual named sortie-panel actor.
+
+    x16/80 y31 is the existing measured field/sortie status layout. A planned
+    A on the list can miss; its stored name alone never authorizes card or
+    departure confirmation for the new substitute path.
+    """
+    selected = (mem.get('sortie_general') or {}).get(order['step'])
+    if order['general'] != NAME or not selected or selected == NAME:
+        return None
+    row = next((line for line in screen.lines if line.y == 31), None)
+    name = row.span(16, 80).strip() if row else None
+    if (not row or row.span(80, 128) != 'しょうぐん' or not name
+            or UNKNOWN in name or general_max_hp('しゅじんこう' if name == NAME else name) is None):
+        misses = mem.setdefault('sortie_actor_miss', {})
+        misses[order['step']] = misses.get(order['step'], 0) + 1
+        if misses[order['step']] < 3:
+            return _hold_deploy(screen, mem, order, '代役の出撃画面の本人名を読めないため保留')
+        reason = '代役の出撃画面の本人名を3回で確認できず出撃を取り消す'
+    elif name != selected:
+        reason = f'選択予定の{selected}と実画面の{name}が違うため出撃を取り消す'
+    else:
+        (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
+        return None
+    (mem.get('general_override') or {}).pop(order['step'], None)
+    (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
+    return _hold_guarded_sortie(mem, order, 'sortie_actor_unconfirmed', reason,
+                               {'selected': selected, 'observed': name, 'screen': screen.kind})
+
+
 def _deploy_context(order, mem, *, expected_metric=None):
-    general = (order['general'] if _is_boss_order(order, mem)
-               else mem.get('general_override', {}).get(order['step'], order['general']))
+    general = _sortie_general(order, mem)
     context = {'general': general, 'planned_general': order['general'],
             'expected_metric': expected_metric,
             'strategy_variant': 'substitute_general' if general != order['general'] else mem.get('variant', 'chart'),
@@ -2845,7 +2909,14 @@ def deploy_step(screen: Screen, mem):
     if order is None:
         # Menus we did not open (e.g. confirm pressed by an earlier fallback).
         return [pad('b')]
-    if _broken_hero_order(order, mem):
+    if kind == 'general_list' and (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed':
+        # A newly selected sortie may use a different actor. An interrupted
+        # departure instead retains its evidence for source reconciliation.
+        (mem.get('order_context') or {}).pop(order['step'], None)
+        (mem.get('sortie_general') or {}).pop(order['step'], None)
+    if (_broken_hero_order(order, mem)
+            and kind != 'general_list'
+            and not (kind == 'castle_menu' and _hero_source_alternative(order, mem))):
         return _cancel_broken_hero_sortie(mem, order)
     if _retake_reserved(order, mem):
         return _hold_guarded_sortie(mem, order, 'sortie_held_target_reserved',
@@ -2879,38 +2950,54 @@ def deploy_step(screen: Screen, mem):
             return guard
         if order.get('purpose') == 'move':
             return _move_general_pick(screen, mem, order)
-        if _is_boss_order(order, mem):
+        # A readable list is the selection evidence. Boss orders used to
+        # force the chart hero and discard the actual substitute identity.
+        # Prefer an idle companion when the planned attacker is the hero;
+        # preserve a chart's explicit non-hero role.
+        if order['general'] == NAME or _is_boss_order(order, mem):
             mem.setdefault('sortie_general', {}).pop(order['step'], None)
             mem.setdefault('order_context', {}).pop(order['step'], None)
-            move = menu_to(screen, order['general'])
+            (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
             present = _present_generals(screen)
-            if move is None and present is not None and order['general'] not in present:
-                # The planned general is not in this castle's full list: a
-                # boss sortie never substitutes, and holding here stalled
-                # g421 for 12+ minutes (ココット at スペンソニア). Give it up.
+            if (present is None or len(present) != len(set(present))
+                    or any(not _general_visible(screen, g) or general_max_hp(
+                        'しゅじんこう' if g == NAME else g) is None for g in present)):
+                return _hold_deploy(screen, mem, order, '出撃一覧の本人・カーソルを確認できないため保留')
+            candidates = _hero_alternatives(mem, present) if order['general'] == NAME else []
+            general = candidates[0] if candidates else order['general']
+            # A stale override is not a receipt, and a companion selected in
+            # this list must not inherit the hero's depleted-egg guard.
+            mem.setdefault('general_override', {}).pop(order['step'], None)
+            if general != order['general']:
+                mem['general_override'][order['step']] = general
+            if general not in present or general in _en_route(mem)[0]:
                 holds = mem.setdefault('boss_absent', {})
                 holds[order['step']] = holds.get(order['step'], 0) + 1
                 if holds[order['step']] >= BOSS_ABSENT_LIMIT:
                     holds.pop(order['step'], None)
-                    # A target-cancel retry is only valid for target verification
-                    # failures. Once the general is confirmed absent, retire that
-                    # retry entitlement or next_order() can select this failed
-                    # boss order forever.
-                    target_cancels = mem.get('target_cancel')
-                    if target_cancels is not None:
-                        target_cancels.pop(order['step'], None)
-                    _finish_order(mem, 'failed', deviation_reason=f"{order['general']}が出撃元にいない",
+                    (mem.get('target_cancel') or {}).pop(order['step'], None)
+                    _finish_order(mem, 'failed', deviation_reason=f"{general}が出撃元で待機していない",
                                   observed_metric=present[:8], source=_source(order, mem),
-                                  reason='ボス出撃の将軍が出撃元の一覧にいないため指示を諦めて次へ進む')
+                                  reason='出撃できる本人を有限回の一覧読取で確認できず指示を取り消す')
                     return [pad('b'), pad('b')]
-            if move is None or any(order['general'] in line.text and not _name_read_cleanly(line, order['general'])
-                                   for line in screen.lines):
-                return _hold_deploy(screen, mem, order, 'ボス出撃の主人公を一覧とカーソルで確認できないため代役を選ばず保留')
+                return _hold_deploy(screen, mem, order, '出撃できる本人が一覧にいないため保留')
+            if _broken_hero_order(order, mem):
+                return _cancel_broken_hero_sortie(mem, order)
+            if _boss_egg_depleted(order, mem):
+                return _hold_guarded_sortie(mem, order, 'boss_sortie_cancelled_for_egg',
+                    '代役がいないため主人公の卵回復を待つ', {'general': NAME, 'egg_uses': mem['egg_uses'][NAME]})
+            (mem.get('boss_absent') or {}).pop(order['step'], None)
+            move = menu_to(screen, general)
+            if move is None:
+                return _hold_deploy(screen, mem, order, '選択本人へカーソルを合わせられないため保留')
             if move == 'here':
-                mem.setdefault('general_override', {}).pop(order['step'], None)
-                mem['sortie_general'][order['step']] = order['general']
-                return _deploy_input(screen, mem, order, [pad('a')], 'ボス戦へ主人公を選択')
-            return _deploy_input(screen, mem, order, [move], 'ボス戦の主人公へ選択カーソルを移動')
+                mem['sortie_general'][order['step']] = general
+                if general != order['general']:
+                    _record(mem, 'hero_priority_selected', **_deploy_context(order, mem),
+                            observed_metric={'present': present[:8], 'selected': general},
+                            reason='主人公の敗北でゲームオーバーになる危険を避け、実在する待機将軍を先発にする')
+                return _deploy_input(screen, mem, order, [pad('a')], '実一覧の出撃本人を選択')
+            return _deploy_input(screen, mem, order, [move], '主人公以外の待機将軍を優先して選択カーソルを移動')
         empty_list = 'おりません' in screen.text
         if not screen.hand and not empty_list:
             return _hold_deploy(screen, mem, order, '将軍選択カーソルを判定できないため入力を保留')
@@ -2951,6 +3038,10 @@ def deploy_step(screen: Screen, mem):
                           reason='チャートの将軍が出撃元の城にいない')
             return [pad('b')]
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move], '出撃将軍を選択')
+    if kind in {'card_select', 'sortie_confirm'}:
+        guard = _selected_actor_guard(screen, mem, order)
+        if guard is not None:
+            return guard
     if kind in {'card_select', 'sortie_confirm'} and _boss_egg_depleted(order, mem):
         # observe_events reads the egg row before this decision. Cancel a
         # sortie that was chosen while its quantity was still unknown.
@@ -2965,8 +3056,8 @@ def deploy_step(screen: Screen, mem):
         return [pad('b'), pad('b')]
     if kind in {'card_select', 'sortie_confirm'} and _is_boss_order(order, mem):
         mem.setdefault('order_context', {}).pop(order['step'], None)
-        if (mem.get('sortie_general') or {}).get(order['step']) != order['general']:
-            return _hold_deploy(screen, mem, order, 'ボス出撃の主人公選択を確認できないため保留')
+        if not (mem.get('sortie_general') or {}).get(order['step']):
+            return _hold_deploy(screen, mem, order, 'ボス出撃の選択本人を確認できないため保留')
     if kind == 'card_select':
         mem.setdefault('order_context', {}).pop(order['step'], None)
         picked = mem.setdefault('picked', [])
@@ -4400,12 +4491,12 @@ def battle_end(mem, next_kind, *, defense_continues=False):
     if outcome == 'loss' and boss_attempt:
         retries = mem.setdefault('retries', {})
         retries[step] = retries.get(step, 0) + 1
-        for key in ('general_override', 'card_override', 'rare_card_kit', 'order_context', 'sortie_general'):
+        for key in ('general_override', 'card_override', 'rare_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss'):
             mem.setdefault(key, {}).pop(step, None)
         if retries[step] <= 3:
             mem.setdefault('orders', {})[step] = 'pending'
             context = {'strategy_variant': 'retry_chart_boss_kit',
-                       'deviation_reason': 'ボス戦のHP敗北を確認。主人公と既定切り札を再確認して再試行',
+                       'deviation_reason': 'ボス戦のHP敗北を確認。出撃将軍と既定切り札を再確認して再試行',
                        'expected_metric': {'general': boss_order['general'],
                                            'cards': list(boss_order['cards']),
                                            'goal': f'{boss_name or "ボス"}戦勝利'}}
@@ -4617,7 +4708,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'captured', 'card_override', 'rare_card_kit', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
                 'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
-                'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
+                'source_override', 'uncertain', 'month', 'order_context', 'sortie_general', 'sortie_actor_miss',
                 'boss_defeated', 'boss_entry_hold',
                 'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
                 'garrison', 'general_location_unknown', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',

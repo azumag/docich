@@ -134,7 +134,7 @@ def test_boss_retry_commentary_preserves_chart_kit_description():
     from docich.hanjuku_commentary import compose
     _, text = compose({'decision': 'order_retry', 'chart_step': '1-B1',
                        'strategy_variant': 'retry_chart_boss_kit'})
-    assert '主人公とチャートの切り札' in text
+    assert '待機将軍とチャートの切り札' in text
     assert 'イッテツーン' not in text
 
 

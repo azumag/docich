@@ -620,6 +620,7 @@ def test_adjusted_boss_order_reaches_boss_entry_and_battle_tactics(monkeypatch):
     assert _launch(monkeypatch, mem) == []
     mem['order_context'] = {j2: {'actual_general': chart.HERO,
                                  'observed_metric': {'cards': sorted(['クースカン', 'ノリウツール'])}}}
+    mem['sortie_general'] = {j2: chart.HERO}
     assert _launch(monkeypatch, mem) == [policy.pad('a')]
     assert mem['launched']['けっかい'] == {'general': chart.HERO, 'step': j2}
     # Unknown general on the measured boss entry text is still refused.
