@@ -25,15 +25,15 @@ OPENCODE_ATTRIBUTION_METRICS = (
     "event_data_chars",
     "event_max_chars",
 )
-OPENCODE_COVERAGE_GROUPS = ("attributed", "unattributed")
 OPENCODE_COVERAGE_METRICS = (
-    "sessions",
-    "messages",
-    "message_data_chars",
-    "parts",
-    "part_data_chars",
-    "events",
-    "event_data_chars",
+    "all_sessions",
+    "attributed_sessions",
+    "unattributed_sessions",
+    "unattributed_latest_age_sec",
+    "unattributed_15m_sessions",
+    "unattributed_1h_sessions",
+    "unattributed_2h_sessions",
+    "unattributed_6h_sessions",
 )
 
 TREE_CATEGORIES = (
@@ -113,19 +113,14 @@ def render(data):
     coverage = attribution.get("coverage") if attribution_complete else None
     coverage_complete = (
         isinstance(coverage, dict)
-        and all(isinstance(coverage.get(group), dict) for group in OPENCODE_COVERAGE_GROUPS)
+        and coverage.get("scan_complete") is True
     )
     parts.append(f"opencode_attr_coverage_complete={int(coverage_complete)}")
-    parts.append(
-        f"opencode_attr_all_sessions={_uint(coverage, 'all_sessions') if coverage_complete else 0}"
-    )
-    for group in OPENCODE_COVERAGE_GROUPS:
-        item = coverage.get(group) if coverage_complete else {}
-        for metric in OPENCODE_COVERAGE_METRICS:
-            parts.append(
-                f"opencode_attr_{group}_{metric}="
-                f"{_uint(item, metric) if coverage_complete else 0}"
-            )
+    for metric in OPENCODE_COVERAGE_METRICS:
+        parts.append(
+            f"opencode_attr_{metric}="
+            f"{_uint(coverage, metric) if coverage_complete else 0}"
+        )
 
     retention = data.get("opencode_retention") or {}
     for label in ("attempt", "default", "worker"):
