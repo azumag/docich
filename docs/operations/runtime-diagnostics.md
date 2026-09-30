@@ -306,7 +306,8 @@ run終了処理や日次処理を起動しない。owner境界・既存lock・�
   retrospectiveが無ければprogressや同種死因は不明。bounded JSONに含まれる余分な自由文は
   メモリ内のparseだけに留め、allowlist projectionで除去する。
 - collector全体の既存36KiB予算を超えた場合は古いrecordsから段階的に省略し、
-  可能な限り各sourceの最新1件を残す。実際に省略したsourceだけ
+  各sourceの最新1件を残した状態で既存のAI詳細・worker詳細・Soren比較詳細の
+  縮退を適用する。それでも上限超過なら最新1件も省略する。実際に省略したsourceだけ
   `output_omitted=true`と`omitted_records`に記録する。gatewayの49KiB上限・型・深さ・
   secret-redactionは維持。複数ファイルの逐次観測であり原子的snapshotではない。
   遠征・日次の一覧は互いに独立した観測なので、同じ終了runを二重加算しない。
