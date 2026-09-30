@@ -796,3 +796,96 @@ def test_hero_egg_probe_never_uses_another_general_or_old_unknown_hp(change):
         screen = hero_egg_screen(90 if change == 'healthy' else 0)
     assert p.egg_battle_step(screen, mem) != [p.pad('b')]
     assert not mem['battle'].get('hero_retreat')
+
+
+def basil_rescue_memory():
+    # g514 I:8577dd:1, 12845: actual carry expectation was two cards;
+    # planned_cards was empty. 12851 selected one, usage stayed unclassified.
+    mem = memory(40, 27)
+    mem['battle'].update(ally='バジル', enemy='ビシソワーズ',
+                         start_ally_hp=40, start_enemy_hp=27,
+                         side='attack', step='I:8577dd:1', planned_cards=[])
+    return mem
+
+
+def open_rescue_list(mem):
+    assert p.battle_menu_step(menu(('きりふだ', 'たいきゃく')), mem) == [p.pad('a')]
+
+
+def first_basil_card(mem):
+    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+    open_rescue_list(mem)
+    assert p.card_list_step(menu(('イッテツーン', 'イッテツーン'), kind='text'), mem) == [p.pad('a')]
+    p.battle_step(battle(mem), mem)
+    p.battle_step(battle(mem), mem)
+    assert mem['battle']['cards_used'] == []
+    assert mem['battle']['cards_unclassified'] == ['イッテツーン']
+
+
+def test_g514_live_decreased_duplicate_count_can_select_remaining_copy():
+    mem = basil_rescue_memory()
+    first_basil_card(mem)
+    open_rescue_list(mem)
+    one = menu(('イッテツーン',), kind='text')
+    assert p.card_list_step(one, mem) == []  # one partial reading is insufficient
+    assert p.card_list_step(one, mem) == [p.pad('a')]
+    assert mem['battle']['cards_selected'] == ['イッテツーン', 'イッテツーン']
+    assert mem['battle']['cards_used'] == []  # count change is not a use receipt
+    assert mem['_records'][-1]['observed_metric']['listed_count'] == 1
+    assert not mem['battle'].get('hero_retreat')
+
+
+def test_g514_unchanged_unclassified_card_is_not_retried_or_called_unavailable():
+    mem = basil_rescue_memory()
+    first_basil_card(mem)
+    open_rescue_list(mem)
+    two = menu(('イッテツーン', 'イッテツーン'), kind='text')
+    assert p.card_list_step(two, mem) == []
+    assert p.card_list_step(two, mem) == [p.pad('b')]
+    assert mem['battle']['survival']['cards_uncertain']
+    assert p.battle_menu_step(menu(('きりふだ', 'たいきゃく')), mem) == [p.pad('b')]
+    assert mem['battle']['survival']['exhausted']
+    assert not p._hero_retreat_needed(mem['battle'])
+    for _ in range(12):
+        p.battle_step(battle(mem), mem)
+    assert mem['battle']['cards_selected'] == ['イッテツーン']
+    assert not mem['battle'].get('hero_retreat')
+
+
+def test_duplicate_count_requires_two_agreeing_readings_and_real_cursor():
+    mem = basil_rescue_memory()
+    first_basil_card(mem)
+    open_rescue_list(mem)
+    assert p.card_list_step(menu(('イッテツーン',), kind='text'), mem) == []
+    # The initial count returns; do not treat a single partial row as a copy spent.
+    assert p.card_list_step(menu(('イッテツーン', 'イッテツーン'), kind='text'), mem) == []
+    assert p.card_list_step(menu(('イッテツーン', 'イッテツーン'), kind='text'), mem) == [p.pad('b')]
+    assert mem['battle']['cards_selected'] == ['イッテツーン']
+    other = basil_rescue_memory()
+    first_basil_card(other)
+    open_rescue_list(other)
+    no_cursor = menu(('イッテツーン',), selected=None, kind='text')
+    for _ in range(3):
+        assert p.card_list_step(no_cursor, other) == []
+    assert other['battle']['cards_selected'] == ['イッテツーン']
+
+
+@pytest.mark.parametrize('ally,hp', [('バジル', 12), ('どうし', 12)])
+def test_uncertain_copy_does_not_disable_measured_critical_retreat(ally, hp):
+    mem = basil_rescue_memory()
+    mem['battle'].update(ally=ally, ally_hp=hp,
+                         survival={'exhausted': True, 'cards_uncertain': True})
+    assert p._hero_retreat_open(mem, mem['battle']) == [p.pad('b')]
+
+
+def test_legacy_attempt_without_count_does_not_allow_duplicate_reselection():
+    mem = basil_rescue_memory()
+    cur = mem['battle']
+    cur['survival'] = {'cards_attempted': ['イッテツーン'], 'opens': 1,
+                       'cards_checked': 1, 'menu_ticks': 0, 'egg_attempted': False}
+    cur['card_flow'] = {'survival': True, 'card': None, 'stage': 'list', 'list_ticks': 0}
+    one = menu(('イッテツーン',), kind='text')
+    assert p.card_list_step(one, mem) == []
+    assert p.card_list_step(one, mem) == [p.pad('b')]
+    assert not cur.get('cards_selected')
+    assert cur['survival']['cards_uncertain']

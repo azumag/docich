@@ -3786,7 +3786,9 @@ def _hero_retreat_needed(cur):
         return False
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
     ref = (max(start, int(cur.get('ref_ally_hp') or 0)) if cur.get('ally') == NAME else start)
-    if _unarmed_clash_risk(cur) and (cur.get('survival') or {}).get('exhausted'):
+    rescue = cur.get('survival') or {}
+    if (_unarmed_clash_risk(cur) and rescue.get('exhausted')
+            and not rescue.get('cards_uncertain')):
         return True  # no observed rescue remains; retreat before the summon
     if cur.get('egg_battle'):
         # An enemy summon we cannot answer (no egg left, no cards) is not a
@@ -3937,12 +3939,36 @@ def _survival_card_list(screen, mem, cur, flow, names):
     flow['list_ticks'] += 1
     # Names can disappear during a fade. Bound the wait and return to the
     # parent menu once, so an empty/unsupported list can still lead to an egg.
-    candidates = [c for c in SURVIVAL_CARDS if c in names and c not in rescue['cards_attempted']]
+    # A name is not an inventory count (g514: two イッテツーン, one
+    # unclassified selection, then healthy バジル40 vs27 retreated). A
+    # second copy is eligible only after two agreeing live lists show fewer
+    # copies than at the previous selection. No consumption receipt is
+    # inferred, and an unchanged/unreadable list cannot cause repeated A.
+    counts = {c: names.count(c) for c in SURVIVAL_CARDS if c in names}
+    same = counts == flow.get('counts')
+    flow['count_readings'] = flow.get('count_readings', 0) + 1 if same else 1
+    flow['counts'] = counts
+    previous = rescue.setdefault('card_counts_at_selection', {})
+    attempted = rescue['cards_attempted']
+    candidates = [c for c in SURVIVAL_CARDS if c in counts and (
+        c not in attempted or (type(previous.get(c)) is int
+                              and counts[c] < previous[c]
+                              and flow['count_readings'] >= 2))]
+    uncertain = [c for c in counts if c in attempted and c not in candidates]
+    rescue['cards_uncertain'] = bool(uncertain)
+    if (not candidates and uncertain and flow['count_readings'] < 2
+            and flow['list_ticks'] <= 10):
+        return []
     if not candidates or flow['list_ticks'] > 10:
         if not names and flow['list_ticks'] <= 3:
             return []
         rescue['cards_exhausted'] = True
         cur['card_flow'] = None
+        if uncertain:
+            _record(mem, 'battle_card_remaining_unconfirmed', **_battle_labels(cur),
+                    observed_metric={'listed_counts': counts,
+                                     'counts_at_selection': previous},
+                    reason='同名札が実一覧に残るが使用・枚数減少を確認できないため再決定を保留。救済手段なしとは断定しない')
         return [pad('b')]
     card = _rescue_card(candidates, cur)
     move = _battle_menu_to(screen, card)
@@ -3950,12 +3976,15 @@ def _survival_card_list(screen, mem, cur, flow, names):
         return [move] if move else []
     flow.update(card=card, stage='announce', selection_planned=True)
     rescue['cards_attempted'].append(card)
+    previous[card] = counts[card]
+    rescue['cards_uncertain'] = False
     cur['card_consumption_complete'] = False
     cur.setdefault('cards_selected', []).append(card)
     egg_drop = _egg_drop_evidence(cur, card)
     _record(mem, 'battle_card_selected', **_battle_labels(cur), card=card,
             expected_metric='実使用告知と卵落' if egg_drop and egg_drop['drops'] else '実使用告知',
-            observed_metric={'listed_cards': names, 'survival': True, 'egg_drop': egg_drop},
+            observed_metric={'listed_cards': names, 'listed_count': counts[card],
+                             'survival': True, 'egg_drop': egg_drop},
             resulting_event='selection_planned_not_yet_confirmed',
             reason=('HP低下で卵を落とせる切り札を選択。消費は未確定' if egg_drop and egg_drop['drops']
                     else 'HP低下に対処する切り札を選択。消費は未確定'))
