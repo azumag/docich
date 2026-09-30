@@ -22,7 +22,7 @@ fixtureは秘密情報・save・ROM・プロンプトを含まず、採用計画
 v114は停止gateを_plan_pendingだけに限定する。
 同じ採用planを二重適用しない条件は既存のadoption条件に残る。
 既に保存された矛盾planでも、次の通常off-chart判断から候補を再評価できる。
-新しい調整チャートは自分のtargetのcapturedをafterにする指示をvalidatorで拒否する。
+target攻略後に別部隊が合流する条件として有効な場合もあるため、validator契約は変更しない。
 所有・勝利・配置は推測変更しない。house/recallの入力所有も維持する。
 
 回帰は実fixtureのrequest_id一致、既存矛盾plan、候補復活、二重採用なし、

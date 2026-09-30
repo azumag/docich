@@ -1,11 +1,11 @@
 {
-  "output_sha256": "2d7aac0ebb44eacbec7a9646f0987741815b9732ca2be1d9f09d497d6685cbaa",
+  "output_sha256": "1e1481b81ed64a0329b4d51c4b14a8611cd9db4e19af8aaaa7ff2b158aadb78b",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "95f3176d75c1db94254e61af4dfd18b21685696e976d6032441737670fd3a3c8",
+  "source_sha256": "aa243648df83703ca146a790ef6f1c2bff92e572360492b339158cfbc801bd9f",
   "topics": [
+    "半熟ナキューメラ再評価修正準備・主担当レビュー中",
     "半熟監視・改善をユーザー指示で一時停止",
-    "奪還重複出撃と出撃元の守備維持 v109準備",
-    "無資源の一般守備将軍への最後の救済 v108準備"
+    "奪還重複出撃と出撃元の守備維持 v109準備"
   ]
 }

@@ -1212,9 +1212,3 @@ def test_g514_live_plan_and_recent_target_reservation_still_suppress_retake():
                                'status': 'en_route', 'tick': mem['tick'] - 1}
     assert not any(o['target'] == 'ナキューメラ' for o in policy.interim_candidates(mem).values())
 
-
-def test_adjusted_order_rejects_dependency_on_its_own_capture():
-    doc = adjusted_doc('a' * 16)
-    doc['orders'][0]['after'] = ['captured', doc['orders'][0]['target']]
-    with pytest.raises(ValueError, match='own target capture'):
-        adjust.validate(doc)
