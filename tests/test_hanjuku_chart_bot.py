@@ -3025,3 +3025,29 @@ def test_elabel_choice_matches_actual_ascii_digit_but_preserves_visible_labels(c
 
 def test_elabel_digit_fold_does_not_accept_a_different_monster_number():
     assert parse(egg_choice_frame(('ユニコーン', 'てつじん9ごう', 'ドラゴンパピー'))).kind != 'egg_choice_menu'
+
+
+def test_recruit_priority_waits_for_the_first_menu_cursor_instead_of_skipping():
+    mem = _short_recruit_memory()
+    incomplete = parse(month_canvas(166))
+    incomplete.hand = None
+    assert policy.month_step(incomplete, mem) == []
+    assert mem['shop']['recruit'] == 'check'
+    assert not mem['shop']['soldiers_done']
+    ready = parse(month_canvas(166, on='しょうぐんぼしゅう'))
+    assert policy.month_step(ready, mem) == [policy.pad('a')]
+    assert mem['month_sub']['kind'] == 'recruit'
+    assert not mem['shop']['soldiers_done']
+
+
+def test_missing_priority_recruit_menu_has_a_bound_and_keeps_the_fee():
+    mem = _short_recruit_memory()
+    sc = parse(month_canvas(166, on='へいしほじゅう'))
+    sc.lines = [line for line in sc.lines if 'しょうぐんぼしゅう' not in line.known]
+    for _ in range(6):
+        assert policy.month_step(sc, mem) == []
+    assert policy.month_step(sc, mem) == [policy.pad('a')]
+    assert mem['shop']['recruit'] == 'unverified'
+    assert mem['shop']['recruit_reserve'] == 50
+    assert mem['shop']['soldiers'] == 86
+    assert any(r['decision'] == 'recruit_menu_unconfirmed' for r in mem['_records'])

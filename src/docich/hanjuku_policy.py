@@ -4879,10 +4879,27 @@ def _month_extra(screen, mem, shop, *, recruit_only=False):
                     reason=f'{label}を選択')
             return [pad('a')]
         if move is None:
+            if sub == 'recruit' and shop.get('recruit_priority'):
+                # g508 1-8: the first menu/cursor reading was incomplete;
+                # skipping immediately sent all optional money to soldiers.
+                waits = int(shop.get('recruit_menu_wait') or 0) + 1
+                shop['recruit_menu_wait'] = waits
+                if waits <= 6:
+                    if waits == 1:
+                        _record(mem, 'recruit_menu_wait', month=shop.get('key'),
+                                reason='将軍不足時の募集欄・カーソルを有限回待ち、兵士補充を先に始めない')
+                    return []
+                shop[sub] = 'unverified'
+                _record(mem, 'recruit_menu_unconfirmed', month=shop.get('key'),
+                        observed_metric={'waits': waits},
+                        reason='募集欄を有限回待っても読めないため実行を未確認とし、募集費は温存する')
+                continue
             shop[sub] = 'skipped'
             _record(mem, 'situation_held', screen=screen.kind, choice=label,
                     reason=f'月一メニューに{label}が読めないため見送る')
             continue
+        if sub == 'recruit':
+            shop.pop('recruit_menu_wait', None)
         return [move]
     return None if recruit_only else _month_chikujou(screen, mem, shop)
 
