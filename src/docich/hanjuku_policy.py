@@ -5724,16 +5724,13 @@ DISCHARGE_EXIT_LIMIT = 4         # B presses per month once the balance is paid 
 
 
 def discharge_step(screen: Screen, mem):
-    """Forced discharge list: dismiss generals only while the balance is negative.
+    """Leave a paid-up list; require assessment before any forced dismissal.
 
-    Wages come out at the month boundary; a negative balance forces
-    dismissing generals (their 賃金 becomes cash) until it is back to at
-    least zero (gcgx 収入). While the balance is negative the header gold is
-    unreadable (the game prints ー1G and the header only matches digits) and
-    B is refused. Once the balance is non-negative the header gold parses:
-    leave with B instead of dismissing more generals (owner 2026-09-28:
-    そもそも将軍解雇はしないで欲しい). A list that refuses every bounded B
-    press holds for the screen-stall terminal.
+    A missing gold header may be debt or partial OCR. Do not dismiss the
+    default cursor's general without measured candidate and budget evidence.
+    The explicit assessment-required state logs once per month, also when
+    hot-loaded over an old default-A discharge session. Positive gold keeps
+    the existing bounded B exit; B under an unreadable balance is unproven.
     """
     month = re.search(r'(\d+)ねん(\d+)のつき', screen.text)
     key = f'{month[1]}-{month[2]}' if month else None
@@ -5758,20 +5755,23 @@ def discharge_step(screen: Screen, mem):
                                  'selected': screen.selected},
                 reason='所持金が0以上になったため解雇を続けずBで画面を出る')
         return [pad('b')]
-    if state['presses'] >= DISCHARGE_LIMIT:
-        if not state.get('held'):
-            state['held'] = True
-            _record(mem, 'situation_held', screen=screen.kind, strategy_variant='discharge_limit',
-                    observed_metric={'month': key, 'presses': state['presses']},
-                    reason='解雇画面で上限回数まで決定しても抜けないため入力を保留')
-        return []
-    state['presses'] += 1
-    _record(mem, 'discharge_general', general=screen.selected,
-            strategy_variant='forced_discharge_default_cursor',
-            observed_metric={'month': key, 'presses': state['presses'],
-                             'hand': list(screen.hand) if screen.hand else None},
-            reason='所持金不足で将軍の解雇を強制されたため既定カーソルの将軍を解雇')
-    return [pad('a')]
+    # A missing non-negative header is not a proven debt amount. Neither
+    # the visible name nor historical house status proves a safe dismissal.
+    # No measured route for inspecting this forced list is available yet;
+    # enter an explicit decision-required state once, without probing A/B.
+    if state.get('status') != 'assessment_required':
+        state['status'] = 'assessment_required'
+        state['held'] = True
+        state['reason'] = '解雇候補の能力・役割・負債額・解雇後収支が未確認'
+        _record(mem, 'situation_held', screen=screen.kind,
+                strategy_variant='discharge_assessment_required',
+                observed_metric={'month': key, 'gold': gold,
+                                 'selected': screen.selected,
+                                 'hand': list(screen.hand) if screen.hand else None,
+                                 'status': state['status']},
+                expected_metric='実候補の能力・役割と解雇後収支を評価するまで判断待ち',
+                reason=state['reason'])
+    return []
 
 
 # The general-trade event (花いちもんめ) must always be declined (owner rule
