@@ -208,10 +208,10 @@ def test_failed_scan_retries_once_then_releases_and_next_month_can_retry():
     assert house.step(map_screen,mem,None)==[p.pad('x')]
     house._finish(mem);mem['tick']+=200
     assert house.step(map_screen,mem,None) is None
-    assert mem['recruit_roster_attempts']['count']==2
+    assert mem['recruit_field_scan_attempts']['count']==2
     mem['month']='1-8'
     assert house.step(map_screen,mem,None)==[p.pad('x')]
-    assert mem['recruit_roster_attempts']['count']==1
+    assert mem['recruit_field_scan_attempts']['count']==1
 
 
 def test_real_castle_status_records_income_without_guessing_level(monkeypatch):
@@ -455,3 +455,114 @@ def test_actual_ownership_updates_do_not_change_base_income_on_unchanged_flags()
     p._apply_world_flags(mem,{'ほんじょう':'enemy'})
     assert not r.owned_fresh(mem,'アルマムーン')
     assert 'ほんじょう' not in p._owned(mem)
+
+
+def _survey_field():
+    from test_hanjuku_house import Canvas
+    c=Canvas((16,120,57))
+    for dy in (1,14):
+        for dx in (2,3,4,11,12,13):c.put(100+dx,100+dy,(255,255,255))
+    for dy in (2,3,4):c.put(101,100+dy,(255,255,255))
+    return c.frame()
+
+
+def _failed_month_roster(state):
+    """Actual decide menu/status flow; Down at the final row never wraps."""
+    from docich.hanjuku_bot import decide
+    from test_hanjuku_chart_bot import month_canvas
+    from test_hanjuku_house import roster,status
+    month=month_canvas(250,on='メインメニュー',month=7)
+    actions,state=decide(month,state);assert actions==[p.pad('a')]
+    actions,state=decide(_survey_main(7),state);assert actions==[p.pad('a')]
+    names=['どうし','ゼウス']
+    for i,name in enumerate(names):
+        frame=_survey_header(roster(names,i),7)
+        actions,state=decide(frame,state);assert actions==[p.pad('a')]
+        actions,state=decide(_survey_header(status(name,'エラベルエッグ4'),7),state)
+        assert actions==[p.pad('b')]
+        actions,state=decide(frame,state);assert actions==[p.pad('down')]
+        if i==0:
+            actions,state=decide(_survey_header(roster(names,1),7),state);assert actions==[]
+    for _ in range(9):actions,state=decide(frame,state)
+    assert actions==[p.pad('b')] and not state['policy']['house']['roster_wrapped']
+    actions,state=decide(_survey_main(7),state);assert actions==[p.pad('b')]
+    actions,state=decide(month,state);assert actions==[]
+    assert not state['policy'].get('house')
+    assert not state['policy']['recruit_roster']['complete']
+    return state
+
+
+def test_two_failed_month_scans_release_field_repair_scan_in_native_flow():
+    from docich.hanjuku_bot import decide
+    from test_hanjuku_chart_bot import month_canvas
+    from test_hanjuku_house import roster,status
+    mem=memory(complete=False);mem['tick']=500;mem.pop('recruit_roster')
+    state=_failed_month_roster({'policy':mem})
+    state=_failed_month_roster(state)
+    mem=state['policy']
+    assert mem['recruit_month_scan_attempts']['count']==2
+    assert not mem.get('recruit_field_scan_attempts')
+    assert 'house_scan_month' not in mem and 'house_scan_tick' not in mem
+    # Ordinary monthly policy resumes; it cannot start a third free scan.
+    actions,state=decide(month_canvas(250,on='メインメニュー',month=7),state)
+    assert not state['policy'].get('house')
+    # Returning to the measured field opens the independent repair survey.
+    actions,state=decide(_survey_field(),state);assert actions==[p.pad('x')]
+    assert not state['policy']['house']['month_scan']
+    assert state['policy']['recruit_field_scan_attempts']['count']==1
+    actions,state=decide(_survey_main(7),state);assert actions==[p.pad('a')]
+    actions,state=decide(_survey_header(roster(['どうし','ゼウス'],1),7),state)
+    assert actions==[p.pad('a')]
+    actions,state=decide(_survey_header(status('ゼウス','こわれている'),7),state)
+    assert actions==[p.pad('b')]
+    assert state['policy']['house']['pending']==['ゼウス']
+    assert state['policy']['house_eggs']['ゼウス']['broken'] is True
+    assert state['policy']['recruit_month_scan_attempts']['count']==2
+
+
+@pytest.mark.parametrize('legacy_field_count',[0,1,2])
+def test_hotload_migrates_matching_v121_shared_budget_without_resetting_field_cap(legacy_field_count):
+    # Same poisoned chapter/month/count flags reported for g514 4-8 / 4-9.
+    # Hypothetical prior field work is parameterized rather than inferred.
+    mem={'chapter':2,'month':'4-9','tick':19659,'house_scan_month':'4-9',
+         'house_scan_tick':19627,'recruit_roster_recheck':True,
+         'recruit_month_scan_attempts':{'scope':[2,'4-9'],'count':2},
+         'recruit_roster_attempts':{'scope':[2,'4-9'],'count':2+legacy_field_count}}
+    got=house.step(Screen([],None,'',kind='map'),mem,None)
+    if legacy_field_count==2:
+        assert got is None and not mem.get('house')
+    else:
+        assert got==[p.pad('x')]
+        assert mem['recruit_field_scan_attempts']['count']==legacy_field_count+1
+        assert mem['recruit_month_scan_attempts']['count']==2
+
+
+def test_field_and_month_retry_caps_remain_independent_and_finite():
+    from docich.hanjuku_bot import decide
+    from test_hanjuku_chart_bot import month_canvas
+    from docich.hanjuku_screen import parse
+    mem=memory(complete=False);mem.update(tick=500);mem.pop('recruit_roster')
+    state=_failed_month_roster({'policy':mem});state=_failed_month_roster(state)
+    mem=state['policy'];field=parse(_survey_field());unknown=Screen([],None,'unreadable',kind='text')
+    for attempt in (1,2):
+        assert house.step(field,mem,None)==[p.pad('x')]
+        for _ in range(house.STEP_LIMIT+1):house.step(unknown,mem,None)
+        assert mem['house']['phase']=='close'
+        assert house.step(field,mem,None)==[] and not mem.get('house')
+        assert mem['recruit_field_scan_attempts']['count']==attempt
+        mem['tick']+=house.SCAN_INTERVAL
+    assert house.step(field,mem,None) is None
+    assert house.step(parse(month_canvas(250,on='メインメニュー',month=7)),mem,None) is None
+    assert mem['recruit_month_scan_attempts']['count']==2
+    mem['month']='1-8'
+    assert house.step(field,mem,None)==[p.pad('x')]
+    assert mem['recruit_field_scan_attempts']=={'scope':[1,'1-8'],'count':1}
+
+
+def test_month_finish_never_overwrites_an_existing_field_completion_marker():
+    mem={'chapter':1,'month':'1-7','tick':900,'house_scan_month':'1-7',
+         'house_scan_tick':500,'house_field_scan':{'scope':[1,'1-7'],'tick':500},
+         'house':{'chapter':1,'month_scan':True,'phase':'close'}}
+    house._finish(mem)
+    assert mem['house_scan_tick']==500 and mem['house_scan_month']=='1-7'
+    assert mem['house_field_scan']=={'scope':[1,'1-7'],'tick':500}

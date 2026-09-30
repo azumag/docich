@@ -1,11 +1,11 @@
 {
-  "output_sha256": "294c052d8d1e2520fd36acccfa90cfe5d8ade4809f25ca54ef11d1a0073391c1",
+  "output_sha256": "a32facb002603bf00d517f3095eaca41cf0eecaa0534159c8b7aa6268defc593",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "b1263c2307528f73025bebdcaa0d982ce3202ed59763bf0006e0cd1a6444188c",
+  "source_sha256": "38713671fe431519ef1df3e57d4dc1e912e8a997c8f6865f47a9c1b467acb843",
   "topics": [
+    "半熟の月menu確認とfield修理予算の分離v123準備",
     "半熟の主人公出撃後順位v122レビュー準備",
-    "半熟の月境界・単独名簿の募集v121再レビュー準備",
-    "半熟の募集需要・通常収支v119レビュー準備"
+    "半熟の月境界・単独名簿の募集v121再レビュー準備"
   ]
 }
