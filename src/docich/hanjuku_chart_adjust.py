@@ -32,7 +32,7 @@ CARD_NAMES = frozenset({
     'イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース', 'グリンボー', 'ピッグローラー',
     'カンケリン', 'ノリウツール', 'クースカン', 'ゼンマイン', 'ミックミー', 'デッドガン',
     'ブレイコウ', 'ブンシーン', 'ファイアーボイス', 'ファバード', 'エンジェリン', 'マグネガキン',
-    'ハリケーン'})
+    'ハリケーン', 'キャトルミュー'})
 
 
 def settings(raw) -> dict:
@@ -192,7 +192,7 @@ def _purchases(raw):
         raise ValueError('invalid purchase month')
     cards = []
     for item in raw.get('cards') or ():
-        if (not isinstance(item, (list, tuple)) or len(item) != 2 or item[0] not in CARD_NAMES
+        if (not isinstance(item, (list, tuple)) or len(item) != 2 or item[0] not in CARD_NAMES or item[0] == 'キャトルミュー'
                 or type(item[1]) is not int or not 1 <= item[1] <= 99):
             raise ValueError('invalid purchase card')
         cards.append((item[0], item[1]))
