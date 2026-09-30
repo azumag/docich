@@ -2,7 +2,7 @@
   "output_sha256": "f4c6a692c0f87d629831075af5f1c45666ae1a3ecc690c3641f89745c1adcd07",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "35d1a0c89867c630d4d8da9f3ad477d71ca51d1602f799df07ad45c496374f3e",
+  "source_sha256": "9942eba679fd46ee7fea3acb28697cdc07b1bf71bcb7b6cc7260c6320799ad91",
   "topics": [
     "未開始入場の古い城情報解除 v107準備",
     "防衛敗北後の新しい城旗保持 v106準備",
