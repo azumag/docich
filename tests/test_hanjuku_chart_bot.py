@@ -573,7 +573,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v96-recruit-recheck'
+    assert state['bot_version'] == 'hanjuku-chart-v97-broken-hero-guard'
     assert '_records' not in state['policy']
 
 
@@ -2820,3 +2820,123 @@ def test_recruit_larger_balance_drop_alone_does_not_prove_payment():
     shop = {'recruit': 'opened'}
     policy._finish_month_sub(parse(month_canvas(106)), mem, shop)
     assert shop['recruit'] == 'unverified' and 'recruit_verification' not in mem
+
+
+def _broken_hero_memory():
+    mem = _short_recruit_memory()
+    mem['house_eggs'] = {'どうし': {'broken': True, 'month': '1-6'}}
+    return mem
+
+
+def test_broken_hero_waits_for_real_repair_status_not_house_departure():
+    mem = _broken_hero_memory()
+    order = {'step': 'x', 'general': 'どうし', 'source': 'ほんじょう',
+             'target': 'ゴーメン', 'cards': ['フットバース'], 'after': None}
+    assert not policy._ready(order, mem)
+    mem['house'] = {'phase': 'travel', 'general': 'どうし', 'purchased': False}
+    assert not policy._ready(order, mem)
+    mem.pop('house')  # travel timeout does not clear the observed broken egg
+    assert not policy._ready(order, mem)
+    mem['house_eggs']['どうし'] = {'broken': False, 'uses': 4, 'month': '1-7'}
+    assert policy._ready(order, mem)
+
+
+def test_broken_hero_allows_other_general_and_friendly_staffing_move():
+    mem = _broken_hero_memory()
+    order = {'step': 'x', 'general': 'ゼウス', 'target': 'ゴーメン', 'after': None}
+    assert policy._ready(order, mem)
+    assert policy._ready({**order, 'general': 'どうし', 'purpose': 'move'}, mem)
+    mem['house_eggs']['どうし'] = {'broken': None}
+    assert policy._ready({**order, 'general': 'どうし'}, mem)
+
+
+def test_interim_attack_uses_another_general_instead_of_broken_hero():
+    mem = _broken_hero_memory()
+    assert policy._interim_source(mem, 'ゴーメン', None, {'ほんじょう'}, set()) == ('ほんじょう', 'ゼウス')
+    mem['garrison']['ほんじょう'] = ['どうし']
+    assert policy._interim_source(mem, 'ゴーメン', None, {'ほんじょう'}, set()) is None
+
+
+@pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm', 'map_target'])
+def test_hotloaded_broken_hero_sortie_is_cancelled_before_commit(kind):
+    mem = _broken_hero_memory()
+    mem['active'] = '1-A1'; mem['orders']['1-A1'] = 'pending'
+    mem['sortie_attempt'] = {'step': '1-A1'}
+    screen = parse(Canvas().frame()); screen.kind = kind
+    actions = (policy.target_step(screen, mem, None) if kind == 'map_target'
+               else policy.deploy_step(screen, mem))
+    assert actions == [policy.pad('b')]
+    assert mem['active'] is None and mem['orders']['1-A1'] == 'pending'
+    assert 'sortie_attempt' not in mem
+    assert mem['_records'][0]['decision'] == 'hero_broken_egg_sortie_held'
+
+
+@pytest.mark.parametrize('gold,soldiers,recruit', [(136, 6, 50), (101, 0, 21), (79, 0, 0)])
+def test_broken_hero_keeps_house_fee_before_recruit_and_soldiers(gold, soldiers, recruit):
+    mem = _broken_hero_memory()
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': gold})
+    assert shop['hero_repair_reserve'] == 50
+    assert shop['soldiers'] == soldiers and shop['recruit_reserve'] == recruit
+    assert shop['recruit_priority']
+
+
+def test_recruit_and_castle_cannot_spend_broken_hero_house_fund():
+    mem = _broken_hero_memory()
+    screen = parse(month_canvas(101, on='しょうぐんぼしゅう'))
+    policy.month_step(screen, mem)
+    assert mem['shop']['recruit'] == 'skipped'
+    assert mem['shop']['soldiers'] == 0 and mem['shop']['chikujou'] == 'skipped'
+    assert 'month_sub' not in mem
+
+
+def test_cached_month_plan_protects_newly_observed_broken_hero_once():
+    mem = _broken_hero_memory()
+    mem['shop'] = {'key': '1-7', 'gold_start': 136, 'items': [], 'merchant_done': True,
+                   'soldiers': 56, 'soldiers_done': False, 'reserve': 0,
+                   'recruit_priority': True, 'recruit_budget_version': 1,
+                   'recruit_reserve': 50, 'recruit': 'check', 'egg': None}
+    for _ in range(2): policy._plan(mem, {'year': 1, 'month': 7, 'gold': 136})
+    assert mem['shop']['soldiers'] == 6 and mem['shop']['hero_repair_reserve'] == 50
+    assert sum(r['decision'] == 'hero_repair_funds_reserved' for r in mem['_records']) == 1
+
+
+def test_post_recruit_extra_deduction_reclamps_soldiers_to_keep_house_and_wage():
+    mem = _broken_hero_memory()
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 136})
+    assert shop['soldiers'] == 6
+    shop['recruit'] = 'opened'
+    mem['month_sub'] = {'kind': 'recruit', 'gold_before': 136, 'recruit_paid_gold': 86,
+                        'left_menu': True, 'key': '1-7'}
+    policy._finish_month_sub(parse(month_canvas(84)), mem, shop)
+    assert shop['soldiers'] == 4 and shop['recruit_reserve'] == 0
+    assert 84 - shop['soldiers'] == 50 + policy.WAGE_RESERVE
+
+
+def test_actual_castle_upgrade_quote_cannot_consume_hero_repair_fund():
+    mem = _broken_hero_memory(); mem['shop'] = {'hero_repair_reserve': 50, 'recruit_reserve': 0}
+    c = Canvas(); c.text(16, 15, '1ねん7のつき120G')
+    c.text(16, 151, '80Gかかりますがよろしいですかな')
+    c.text(32, 191, 'うむッ!'); c.text(136, 191, 'いかんッ!')
+    sub = {}
+    policy._chikujou_step(parse(c.frame()), mem, sub)
+    assert sub['declined'] and 'quoted_cost' not in sub
+
+
+def test_actual_egg_recovery_quote_cannot_consume_hero_repair_fund():
+    mem = _broken_hero_memory(); mem['shop'] = {'hero_repair_reserve': 50}
+    c = Canvas(); c.text(16, 15, '1ねん7のつき180G')
+    c.text(16, 151, '3こで150Gになりまんな')
+    c.text(32, 191, 'うむッ!'); c.text(136, 191, 'いかんッ!')
+    sub = {'full_selected': True}
+    assert policy._egg_recovery_step(parse(c.frame()), mem, sub) == [policy.pad('b')]
+    assert sub['aborted'] and 'quoted_cost' not in sub
+
+
+def test_egg_quote_keeps_wage_as_well_as_house_fee():
+    mem = _broken_hero_memory(); mem['shop'] = {'hero_repair_reserve': 50}
+    c = Canvas(); c.text(16, 15, '1ねん7のつき150G')
+    c.text(16, 151, '2こで100Gになりまんな')
+    c.text(32, 191, 'うむッ!'); c.text(136, 191, 'いかんッ!')
+    sub = {'full_selected': True}
+    assert policy._egg_recovery_step(parse(c.frame()), mem, sub) == [policy.pad('b')]
+    assert sub['aborted']
