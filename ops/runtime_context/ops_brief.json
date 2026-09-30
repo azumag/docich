@@ -1,11 +1,11 @@
 {
-  "output_sha256": "59a7fe80bbc646900e92685e288ac3102ab5141437ee2eabe414afb286c43eb6",
+  "output_sha256": "472eeec6645134cde8da2fa39d4ac9e347f1461c7a11eba6c2b8435fc1db6fbe",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "1683ee585bcae189b2c694307cdbdf7374fe43b11e8cc0c20e4c4e403719f9e0",
+  "source_sha256": "8bc8c4ce1e31baa022680d958d8f78ed4dd803c81a9b0690ffa7ad9bdb37ad0a",
   "topics": [
+    "半熟の募集需要・通常収支v119レビュー準備",
     "半熟の同名救済札・退却再評価の修正準備",
-    "半熟第2話確認・未評価の強制解雇ガード準備",
-    "半熟ナキューメラ自然奪還・主人公卵戦退却接続準備"
+    "半熟第2話確認・未評価の強制解雇ガード準備"
   ]
 }

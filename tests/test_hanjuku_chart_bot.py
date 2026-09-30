@@ -1789,20 +1789,20 @@ def test_an_empty_egg_reserves_its_recovery_ahead_of_soldiers():
     mem = {'chapter': 1, 'egg_uses': {'どうし': 4, 'ココット': 0}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
     assert (shop['soldiers'] == 80 - policy.WAGE_RESERVE and shop['egg'] == 'pending'
-            and shop['recruit'] == 'check')
+            and shop['recruit'] == 'deferred_roster')
     # Army not counted this month: soldiers first, the egg from what is left.
     shop = policy._plan({'chapter': 1, 'egg_uses': {'ココット': 0}}, {'year': 1, 'month': 7, 'gold': 130})
     assert shop['soldiers'] == 99 and shop['egg'] == 'check' and shop['reserve'] == 0
     # No empty egg: soldiers keep the whole gold as before.
     shop = policy._plan({'chapter': 1, 'egg_uses': {'どうし': 4}}, {'year': 1, 'month': 7, 'gold': 130})
-    assert shop['soldiers'] == 99 and shop['egg'] is None and shop['recruit'] == 'check'
+    assert shop['soldiers'] == 99 and shop['egg'] is None and shop['recruit'] == 'deferred_roster'
     # The owner now prioritizes affordable egg recovery even before a later chart purchase.
     mem = {'chapter': 3, 'egg_uses': {'どうし': 0}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 475})
-    assert shop['egg'] == 'pending' and shop['reserve'] == 50 and shop['recruit'] is None
+    assert shop['egg'] == 'pending' and shop['reserve'] == 50 and shop['recruit'] == 'deferred_roster'
 
 
-def test_month_menu_recovers_the_egg_then_recruits_when_gold_is_left():
+def test_month_menu_recovers_egg_then_defers_recruit_until_actual_roster_is_known():
     home = {'year': 1, 'month': 7, 'gold': 300}
     mem = {'chapter': 1, 'egg_uses': {'ココット': 0}, 'orders': {}, 'picked': []}
     shop = policy._plan(mem, home)
@@ -1842,22 +1842,19 @@ def test_month_menu_recovers_the_egg_then_recruits_when_gold_is_left():
     mem = state['policy']
     assert mem['shop']['egg'] == 'done' and mem['egg_uses'] == {} and 'month_sub' not in mem
     assert [r for r in state['_records'] if r['decision'] == 'egg_recover'][0]['deviation_reason'] is None
-    assert actions[0]['buttons'] == ['up']                         # toward しょうぐんぼしゅう
-    actions, state = decide(month_canvas(151, on='しょうぐんぼしゅう'), state)
-    assert actions[0]['buttons'] == ['a'] and state['policy']['month_sub']['kind'] == 'recruit'
-    actions, state = decide(month_canvas(101, on='しょうぐんぼしゅう'), state)
-    assert state['policy']['shop']['recruit'] == 'done'
-    assert actions[0]['buttons'] == ['down']                       # on to も〜おしまい!
+    assert mem['shop']['recruit'] == 'deferred_roster'
+    assert not mem.get('month_sub')
+    assert not [r for r in state['_records'] if r['decision'] == 'month_sub_open' and r.get('choice') == 'しょうぐんぼしゅう']
 
 
-def test_recruit_needs_the_full_99_soldiers_and_50g_left():
+def test_unknown_roster_defers_recruit_even_with_sufficient_cash_and_soldiers():
     for soldiers, gold in ((99, 49), (99, 79), (60, 200)):
         mem = {'chapter': 1, 'shop': {'key': '1-7', 'items': [], 'soldiers': soldiers,
                                       'merchant_done': True, 'soldiers_done': True,
                                       'egg': None, 'recruit': 'check', 'gold_start': 300}}
         actions = policy.month_step(parse(month_canvas(gold)), mem)
-        assert mem['shop']['recruit'] == 'skipped'
-        assert [r['decision'] for r in mem['_records']][:1] == ['recruit_skip']
+        assert mem['shop']['recruit'] == 'deferred_roster'
+        assert [r['decision'] for r in mem['_records']][:1] == ['recruit_roster_unknown']
         assert actions[0]['buttons'] != ['a'] or mem['month_exit']
 
 
@@ -2040,7 +2037,7 @@ def test_recovery_only_month_preserves_later_chart_budget(monkeypatch):
     mem={'chapter':3,'egg_uses':{'どうし':2}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     shop=policy._plan(mem,{'year':1,'month':7,'gold':300})
     assert shop['reserve']==50 and shop['egg']=='pending'
-    assert shop['items']==[] and shop['soldiers']==0 and shop['recruit'] is None
+    assert shop['items']==[] and shop['soldiers']==0 and shop['recruit']=='deferred_roster'
 
 
 def test_no_recovery_needed_message_is_closed_without_paying_or_reopening():
@@ -2636,8 +2633,11 @@ def test_powerless_return_navigates_to_measured_return_row():
 
 
 def _short_recruit_memory():
-    return {'chapter': 1, 'garrison': {'ほんじょう': ['どうし', 'ゼウス']},
-            'orders': {}, 'picked': []}
+    return {'chapter': 1, 'month': '1-7', 'tick': 100,
+            'garrison': {'ほんじょう': ['どうし', 'ゼウス']}, 'orders': {}, 'picked': [],
+            'recruit_roster': {'chapter': 1, 'month': '1-7', 'tick': 95,
+                'names': ['どうし', 'ゼウス'], 'wages': {'どうし': 0, 'ゼウス': 4}, 'complete': True},
+            'castle_income': {'アルマムーン': {'chapter': 1, 'month': '1-7', 'tick': 95, 'income': 30}}}
 
 
 @pytest.mark.parametrize('gold,soldiers,reserved', [(154, 74, 50), (101, 21, 50), (79, 0, 49), (46, 0, 16)])
@@ -2647,7 +2647,7 @@ def test_short_generals_reserve_fee_before_soldiers(gold, soldiers, reserved):
     assert shop['soldiers'] == soldiers
     assert shop['recruit_priority'] and shop['recruit_reserve'] == reserved
     assert shop['recruit'] == 'check'
-    assert policy._recruit_shortage(mem)['total_roster'] == 'unclassified'
+    assert policy._recruit_shortage(mem)['total_roster'] == 2
 
 
 def test_short_generals_recruit_without_the_old_99_refill_gate():
@@ -2685,15 +2685,14 @@ def test_same_month_cached_shop_is_migrated_only_once():
     assert sum(r['decision'] == 'recruit_priority_plan' for r in mem['_records']) == 1
 
 
-def test_confirmed_six_generals_do_not_trigger_priority_from_one_small_garrison():
+def test_garrisons_and_sortie_records_do_not_replace_fresh_global_roster():
     mem = _short_recruit_memory()
     mem['captured'] = ['キカンドン']
     mem['garrison']['キカンドン'] = ['ココット', 'ヴィーナス', 'クミン']
-    mem['tick'] = 10
-    mem['sorties'] = {'x': {'general': 'シャルドネ', 'status': 'en_route', 'tick': 9}}
+    mem['sorties'] = {'x': {'general': 'シャルドネ', 'status': 'en_route', 'tick': 99}}
+    assert policy._recruit_shortage(mem)['total_roster'] == 2
+    mem.pop('recruit_roster')
     assert policy._recruit_shortage(mem) is None
-    mem['sorties']['x']['status'] = 'launched_unconfirmed'
-    assert policy._recruit_shortage(mem)['count_lower_bound'] == 5
 
 
 def test_short_generals_keep_hero_egg_and_wage_reserves():
@@ -2708,7 +2707,9 @@ def test_short_generals_keep_hero_egg_and_wage_reserves():
 
 
 def test_short_generals_can_reserve_even_before_a_future_chart_purchase():
-    mem = _short_recruit_memory(); mem['chapter'] = 3
+    mem = _short_recruit_memory(); mem['chapter'] = 3; mem['month'] = '1-6'
+    mem['recruit_roster'].update(chapter=3, month='1-6')
+    mem['castle_income']['アルマムーン'].update(chapter=3, month='1-6')
     shop = policy._plan(mem, {'year': 1, 'month': 6, 'gold': 79})
     assert shop['recruit_priority'] and shop['recruit_reserve'] == 49
     assert shop['soldiers'] == 0
@@ -2735,7 +2736,7 @@ def test_cached_paid_recruit_does_not_earmark_another_fee():
                    'soldiers_done': False, 'merchant_done': True, 'egg': None,
                    'recruit': 'done', 'chikujou': 'check'}
     policy.month_step(parse(month_canvas(51)), mem)
-    assert mem['shop']['recruit_reserve'] == 0 and mem['shop']['soldiers'] == 21
+    assert mem['shop'].get('recruit_reserve', 0) == 0 and mem['shop']['soldiers'] == 21
     assert mem.get('month_sub', {}).get('kind') != 'recruit'
 
 
