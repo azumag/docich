@@ -5385,7 +5385,7 @@ MONSTER_MENU_HOLD_LIMIT = 30
 
 
 def _fold_skill(text: str) -> str:
-    return text.replace(' ', '').translate(_KANA_FOLD)
+    return text.replace(' ', '').replace('！', '!').replace('？', '?').translate(_KANA_FOLD)
 
 
 _MONSTER_SKILLS = {name: frozenset(_fold_skill(s) for s in skills)
@@ -5480,6 +5480,12 @@ def monster_menu_step(screen: Screen, mem):
         retreat = type(ally_hp) is int and type(enemy_hp) is int and ally_hp * 2 <= enemy_hp
         first = ''.join(skill_lines[0].known.split())
         second = ''.join(skill_lines[1].known.split()) if len(skill_lines) >= 2 else ''
+        # g496: ウゴカザル's two commands do nothing; spending turns on
+        # them cost 120 -> 46 -> 11 HP without reducing the defender.
+        powerless = (owner == 'ally' and ally.name == 'ウゴカザル'
+                     and len(skill_lines) == 2
+                     and {_fold_skill(first), _fold_skill(second)}
+                     == _MONSTER_SKILLS['ウゴカザル'])
         heal_first = bool(second) and _monster_heal(first) and not _monster_heal(second)
         default = 'skill1'
         if heal_first:
@@ -5501,7 +5507,7 @@ def monster_menu_step(screen: Screen, mem):
             default = 'skill2'
         exp = mem.get('_experience')
         key = experience.situation_key('monster_menu', mem)
-        action = 'retreat' if retreat else experience.preferred(exp, key, default=default, kind='monster_menu')
+        action = 'retreat' if retreat or powerless else experience.preferred(exp, key, default=default, kind='monster_menu')
         mem['monster_menu_choice'] = action
         mem['monster_menu_choice_key'] = key
         mem['monster_menu_choice_hp'] = hp_state
@@ -5509,7 +5515,9 @@ def monster_menu_step(screen: Screen, mem):
         if isinstance(battle, dict):
             battle['independent'] = {'kind': 'monster_menu', 'key': key, 'action': action}
         if action == 'retreat':
-            label, why = 'たまごに もどれ', '味方HPが敵の半分以下なので撤退して見守る'
+            label = 'たまごに もどれ'
+            why = ('両技に攻撃性能がない召喚獣のため、無効な攻撃を繰り返さず戻す'
+                   if powerless else '味方HPが敵の半分以下なので撤退して見守る')
         elif action == 'skill2' and len(skill_lines) >= 2:
             label = second
             why = ('1技目が回復技のため敵を減らす2技目を選ぶ'

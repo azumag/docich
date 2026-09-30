@@ -1,11 +1,11 @@
 {
-  "output_sha256": "c9801db8e7e462e497a2325f78a134c9c1f87d43bc209343e29e67e35b34b96b",
+  "output_sha256": "90bb274687d6fdca3c3e0c4219db945e1669f1fa48a93d3e93a1971b51ce2db4",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "9763064dd87393a87b198157fb7d0b485cb99d38eeedf1f7bcceac20e2f31cd8",
+  "source_sha256": "b718862209e1bfdaeeac4067464a3c4cd4e26b0d7c60fd7166a1e6e60c8a28ce",
   "topics": [
+    "g496第2話防衛敗北・キャトルミュー自然選択確認",
     "半熟v93キャトルミュー配備・実在庫5確認",
-    "VM容量回収と配備bundle保持短縮",
-    "半熟v93キャトルミュー活用を実装準備"
+    "VM容量回収と配備bundle保持短縮"
   ]
 }
