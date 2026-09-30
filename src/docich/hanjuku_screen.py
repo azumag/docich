@@ -452,7 +452,8 @@ def is_world_map(frame: Frame) -> bool:
 
 def classify_text(s: Screen) -> str:
     t = s.text
-    if t == 'いばらのとうをとりまいていたすべてのいばらがしょうめつしました!':
+    if t in ('いばらのとうをとりまいていたすべてのいばらがしょうめつしました!',
+             'いばらとともにけっかいもしょうめつしたようです!'):
         return 'barrier_removed'
     if 'なまえのかきとり' in t:
         return 'name_entry'
