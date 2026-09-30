@@ -172,6 +172,7 @@ OPENCODE_CALLER_BUCKETS = (
     "radio_main",
     "comment",
     "improvement",
+    "soren91",
     "probe",
     "other",
 )
