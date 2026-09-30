@@ -144,6 +144,45 @@ class ChainSummaryDiagnosticsTests(unittest.TestCase):
         self.assertFalse(any(event["event"] == "all_failed" for event in ai["recent_events"]))
         self.assertNotIn("private-dynamic-component", json.dumps(ai["all_failed_components"]))
 
+    def test_failure_causes_survive_recent_event_truncation(self):
+        events = [
+            {"ts": self.now, "event": "fail", "label": "RADIO:private:prepass",
+             "agent": "private:model", "rc": "79", "error": "429 rate limit"},
+            {"ts": self.now, "event": "fail", "label": "RADIO:private:main",
+             "agent": "private:model", "rc": "1", "error": "request timeout after 20s"},
+            {"ts": self.now, "event": "fail", "label": "COMMENT:private",
+             "agent": "private:model", "rc": "1", "error": "403 restricted model"},
+            {"ts": self.now, "event": "fail", "label": "COMMENT:private",
+             "agent": "private:model", "rc": "1", "error": "503 service unavailable"},
+            {"ts": self.now, "event": "fail", "label": "COMMENT:private",
+             "agent": "private:model", "rc": "1", "error": "model not found 404"},
+            {"ts": self.now, "event": "fail", "label": "COMMENT:private",
+             "agent": "private:model", "rc": "1", "error": "validator rejected empty output"},
+            {"ts": self.now, "event": "fail", "label": "private-dynamic-component",
+             "agent": "private:model", "rc": "1", "error": "opaque private failure text"},
+        ]
+        for index in range(self.collector.MAX_RECENT_EVENTS + 5):
+            events.append(
+                {
+                    "ts": self.now,
+                    "event": "winner",
+                    "label": "RADIO:public:main",
+                    "agent": f"vercel:m{index}",
+                    "rc": "0",
+                }
+            )
+        self.write_events(events)
+        ai = self.collector._collect_ai(self.soren, self.now)
+        self.assertEqual(ai["failures"], len(self.collector.AI_FAILURE_CAUSES))
+        for cause in self.collector.AI_FAILURE_CAUSES:
+            self.assertEqual(ai["failure_causes"][cause], 1)
+        self.assertEqual(sum(ai["failure_causes"].values()), ai["failures"])
+        self.assertFalse(any(event["event"] == "fail" for event in ai["recent_events"]))
+        rendered = json.dumps(ai["failure_causes"])
+        self.assertNotIn("private-dynamic-component", rendered)
+        self.assertNotIn("opaque private failure text", rendered)
+        self.assertNotIn("private:model", rendered)
+
     def test_public_runtime_summary_includes_fixed_chain_counters(self):
         severity, summary = attribution.render(
             {
