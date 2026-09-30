@@ -187,6 +187,59 @@ def test_battle_and_month_inputs_keep_their_original_handler(kind):
     assert mem['house']['phase'] == 'travel'
 
 
+@pytest.mark.parametrize('interrupt', ['battle', 'defense', 'month_sub'])
+def test_long_owned_interrupt_does_not_spend_budget_before_travel_arrival(interrupt):
+    mem = memory('travel', total=house.SESSION_LIMIT - 1, age=house.TRAVEL_LIMIT - 1)
+    if interrupt == 'battle':
+        mem['battle'] = {'status': 'active'}
+        screen = Screen([], None, '', kind='map')
+    elif interrupt == 'defense':
+        screen = Screen([], None, '', kind='defense_started')
+    else:
+        mem['month_sub'] = {'kind': 'recruit'}
+        screen = Screen([], None, '', kind='unknown')
+
+    for _ in range(house.SESSION_LIMIT + 20):
+        house.step(screen, mem, None)
+
+    assert mem['house']['phase'] == 'travel'
+    assert mem['house']['total'] == house.SESSION_LIMIT - 1
+    assert mem['house']['age'] == house.TRAVEL_LIMIT - 1
+    mem.pop('battle', None)
+    mem.pop('month_sub', None)
+    feed(mem, gifts())  # visible gift list is arrival evidence, not repair success
+    assert mem['house']['phase'] == 'buy'
+    assert any(r['decision'] == 'house_arrival_seen' for r in mem.get('_records', []))
+    assert not any(r['decision'] == 'house_repair_verified' for r in mem.get('_records', []))
+
+
+def test_unowned_unknown_travel_still_hits_named_phase_limit():
+    mem = memory('travel', age=house.TRAVEL_LIMIT)
+    house.step(Screen([], None, '', kind='unknown'), mem, None)
+    assert mem['house']['phase'] == 'close'
+    result = mem['_records'][-1]
+    assert result['decision'] == 'house_deferred'
+    assert result['observed_metric'] == {
+        'phase': 'travel', 'age': house.TRAVEL_LIMIT + 1, 'total': 1, 'limit': 'travel'}
+
+
+def test_session_limit_deferred_records_phase_counters_and_limit_name():
+    mem = memory('travel', total=house.SESSION_LIMIT)
+    house.step(Screen([], None, '', kind='unknown'), mem, None)
+    assert mem['house']['phase'] == 'close'
+    result = mem['_records'][-1]
+    assert result['decision'] == 'house_deferred'
+    assert result['observed_metric'] == {
+        'phase': 'travel', 'age': 1, 'total': house.SESSION_LIMIT + 1, 'limit': 'session'}
+
+
+def test_month_menu_without_owned_month_sub_still_counts_toward_session_budget():
+    mem = memory('travel', total=7)
+    assert house.step(Screen([], None, '', kind='month_menu'), mem, None) is None
+    assert mem['house']['total'] == 8
+    assert mem['house']['age'] == 0
+
+
 def test_interruption_during_general_selection_cannot_buy_or_send_another_general():
     mem = memory('castle_pick')
     house.step(Screen([], None, '', kind='defense_started'), mem, None)
