@@ -562,7 +562,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         # Fail closed before any side effect: env/ports shape first.  At
         # least one renderer host must be fully configured; a broken
         # candidate is only skipped (and reported) when another one is usable.
-        self._usable_hosts()
+        usable_hosts = self._usable_hosts()
         self._oci_ip()
         self._game_command()
         if not (procs.which(self.ffplay_bin) or shutil.which(self.ffplay_bin)):
@@ -583,8 +583,10 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             bot_cwd = Path(self._bot_cwd())
             if not bot_cwd.is_dir():
                 raise AdapterError("soren91 bot の作業ディレクトリが見つかりません")
-            # The bot dials the Mac renderer over CDP; resolve now so a bad
-            # base URL fails here, not mid-corner.
+            # Validate the first usable policy host here so a broken primary
+            # can fall back before the corner starts instead of being selected
+            # again by _host_for_call().
+            self._host = usable_hosts[0]
             self.remote_cdp_url()
         self._check_active(deadline, cancel)
 
