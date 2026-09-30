@@ -5041,13 +5041,21 @@ def _finish_month_sub(screen, mem, shop) -> bool:
                 'month': sub.get('key'), 'candidates': sorted(set(sub.get('candidate_names', []))
                                                            | set(sub.get('joined_names', []))),
                 'generals_before': sub.get('generals_before', []), 'placement': 'unclassified'}
-    if shop and shop.get('hero_repair_reserve') and type(gold) is int and not shop.get('soldiers_done'):
-        # A candidate's extra deduction (g498: 2G) is real money too.
-        # Re-clamp optional soldiers from the actual post-dialogue balance.
-        shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold
+    if (shop and type(gold) is int and not shop.get('soldiers_done')
+            and (shop.get('hero_repair_reserve') or (paid and sub['kind'] == 'recruit'))):
+        # g508: a confirmed 50G fee plus a further 12G deduction left 94G;
+        # the original 76 soldiers then spent the wage reserve down to 18G.
+        # All paid recruits need the actual balance, not only broken heroes.
+        previous_soldiers = shop.get('soldiers', 0)
+        shop['soldiers'] = min(previous_soldiers, max(0, gold
                                - _month_held_reserve(shop) - WAGE_RESERVE
                                - shop.get('recruit_reserve', 0)))
         shop['soldiers_done'] = shop['soldiers'] == 0
+        if paid and sub['kind'] == 'recruit':
+            _record(mem, 'soldier_budget_after_recruit', month=sub.get('key'),
+                    observed_metric={'gold_after': gold, 'soldiers_before': previous_soldiers,
+                                     'soldiers': shop['soldiers'], 'wage_reserve': WAGE_RESERVE},
+                    reason='募集後の実残金から兵士予算を再計算し、追加出費で賃金予備を使い込まない')
     if paid and sub['kind'] == 'egg':
         mem['egg_uses'] = {}      # counts are re-read at the next sorties
         mem.pop('egg_recheck', None)

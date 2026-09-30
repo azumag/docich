@@ -1,11 +1,11 @@
 {
-  "output_sha256": "7e5edaa7e7298ef12f8463193554af1470237104e62d6d135e4fba9294877783",
+  "output_sha256": "2b723b7deb8195fe88768c0bb6653fc81ff365c7ba5d68ccf16009adfd66092b",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "cc2f3d586fa33ab5068e57f1eab4388394d6099fc035499d64a73536e25c10f6",
+  "source_sha256": "b992cb72770ab236c6ec7e8b89bad4e6be2cfc7ff82b18d104335bdb5901178b",
   "topics": [
+    "g508募集後予算とv103準備",
     "g508消耗・実将軍募集とv102準備",
-    "g506ボス戦携行引継ぎとv101",
-    "g504主人公防衛敗北とv100状態確認・早期救済"
+    "g506ボス戦携行引継ぎとv101"
   ]
 }
