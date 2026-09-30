@@ -662,7 +662,7 @@ def _tactics(mem, step):
                      'note': 'レアイベント札を活用: 通常将軍を一撃、EMへ224と石化、ボスへ90ダメージ'},)
     if order is None or any(o['step'] == step for o in chart.orders(mem.get('chapter') or 0)):
         return (*rare, *base)
-    override = set((mem.get('card_override') or {}).get(step) or ())
+    override = set() if rare_kit is not None else set((mem.get('card_override') or {}).get(step) or ())
     if carried is None:
         carried = _deploy_cards(order, mem)
     carried = [card for card in carried if card not in override and not (rare and card == 'キャトルミュー')]
@@ -2219,8 +2219,6 @@ def _rare_card_inventory(screen, mem, order, inventory):
     if mem.get('picked') or (mem.get('rare_card_kit') or {}).get(order['step']) is not None:
         return None
     month = mem.get('month')
-    if not isinstance(month, str):
-        return None
     scan = mem.get('rare_scan') or {}
     if scan.get('rewind', 0) > 0:
         scan['rewind'] -= 1
@@ -2239,7 +2237,7 @@ def _rare_card_inventory(screen, mem, order, inventory):
                                  'original_cards': original, 'id_sum': sum(CARD_IDS[c] for c in kit)},
                 reason='実在庫と携行枠を確認し、イベント札を1枚携行して活用する')
         return []
-    if mem.get('rare_scan_month') == month:
+    if not isinstance(month, str) or mem.get('rare_scan_month') == month:
         return None
     scan = mem.setdefault('rare_scan', {'step': order['step'], 'presses': 0, 'rows': None})
     if scan['step'] != order['step']:
@@ -2305,14 +2303,14 @@ def _deploy_context(order, mem, *, expected_metric=None):
             'strategy_variant': 'substitute_general' if general != order['general'] else mem.get('variant', 'chart'),
             'deviation_reason': (f"計画の{order['general']}に代わり{general}を出撃させる"
                                  if general != order['general'] else None)}
-    if (mem.get('rare_card_kit') or {}).get(order['step']):
-        context.update(strategy_variant='rare_cattlemyu',
-                       deviation_reason='実在庫のキャトルミューを活用するため携行札を変更')
     retry = (mem.get('retry_context') or {}).get(order['step'])
     if retry:
         context.update(strategy_variant=retry.get('strategy_variant', 'retry_with_opening_cards'),
                        deviation_reason=retry.get('deviation_reason'),
                        expected_metric=retry.get('expected_metric'))
+    if (mem.get('rare_card_kit') or {}).get(order['step']):
+        context.update(strategy_variant='rare_cattlemyu',
+                       deviation_reason='実在庫のキャトルミューを活用するため携行札を変更')
     return context
 
 
@@ -3238,7 +3236,8 @@ def battle_step(screen: Screen, mem):
             return []
     extra = [{'enemy': b.enemy, 'card': card, 'open': True, 'step': cur.get('step'),
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
-             for card in mem.get('card_override', {}).get(cur.get('step')) or []]
+             for card in ([] if (mem.get('rare_card_kit') or {}).get(cur.get('step')) is not None
+                          else mem.get('card_override', {}).get(cur.get('step')) or [])]
     tactics = [*extra, *_tactics(mem, cur.get('step'))]
     done = cur.setdefault('tactics_done', [])
     for index, tactic in enumerate(tactics):

@@ -39,9 +39,11 @@ def test_measured_inventory_accepts_five_event_cards():
     assert RARE in policy.CARD_NAMES and RARE in adjust.CARD_NAMES
 
 
-def test_actual_five_stock_changes_kit_to_one_rare_with_id_below_48():
+@pytest.mark.parametrize('month', ['1-10', None])
+def test_actual_five_stock_changes_kit_to_one_rare_with_id_below_48(month):
     order, mem = memory(boss=True)
-    mem.pop('rare_card_kit')
+    mem.pop('rare_card_kit');mem['month']=month
+    mem['retry_context']={order['step']:{'strategy_variant':'retry_chart_boss_kit'}}
     assert policy._rare_card_inventory(None,mem,order,inventory([(RARE,5)])) == []
     cards = policy._deploy_cards(order,mem)
     assert cards[0] == RARE and cards.count(RARE) == 1
@@ -90,6 +92,7 @@ def test_normal_general_uses_carried_rare_before_clash():
     mem['battle']={'enemy':'ミント','ally':chart.HERO,'enemy_hp':70,'ally_hp':80,
         'start_enemy_hp':70,'start_ally_hp':80,'step':order['step'],'cards_used':[],
         'side':'attack','castle':'キカンドン','clashed':False,'planned_cards':[RARE]}
+    mem['card_override']={order['step']:['イッテツーン']}
     screen=Screen(lines=[],hand=None,text='');screen.kind='battle'
     screen.battle=Battle(enemy='ミント',ally=chart.HERO,enemy_hp=70,ally_hp=80)
     assert policy.battle_step(screen,mem)==[policy.pad('b')]
