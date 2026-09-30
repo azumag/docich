@@ -74,6 +74,19 @@ def roster(screen):
     return names
 
 
+def _singleton_page(screen, frame):
+    """A fully drawn first row and physically empty remaining name slots.
+
+    OCR's one readable name is insufficient: unknown or undrawn pixels in
+    any other slot must not masquerade as a one-member global list.
+    """
+    from .hanjuku_bot import green
+    return (frame is not None and roster(screen) == ['どうし']
+            and screen.selected == 'どうし' and screen.hand[1] == 33
+            and all(green(*frame.pixel(x, y))
+                    for y in range(47, 159) for x in range(168, 232)))
+
+
 def _names_at(screen, x, y0, y1):
     from . import hanjuku_policy as p
     names = []
@@ -224,26 +237,73 @@ def step(screen, mem, frame):
         return None
     if state is None:
         tick = int(mem.get('tick') or 0)
-        if (screen.kind != 'map' or mem.get('chapter') not in HOUSE_VIEW
-                or any(mem.get(k) for k in ('active', 'recall', 'y_jump', 'sortie_attempt', 'month_sub', 'battle'))
-                or tick - int(mem.get('house_scan_tick', 0)) < SCAN_INTERVAL
-                or ('house_scan_month' in mem and mem['house_scan_month'] == mem.get('month')
+        monthly = p.month_menu_ready(screen) and not mem.get('month_sub')
+        if monthly:
+            if any(mem.get(k) for k in ('recall', 'battle')):
+                return None
+            if ((mem.get('shop') or {}).get('key') == mem.get('month')
+                    and (mem.get('shop') or {}).get('recruit') in ('opened', 'done', 'unverified')):
+                return None
+            if (p._egg_recovery_targets(mem)
+                    and (mem.get('shop') or {}).get('egg') not in ('done', 'skipped', 'not_needed')):
+                return None  # existing recovery/reserve ordering precedes the free survey
+            if (p._recruit_sufficient(mem) or (receipts.fresh(mem)
+                    and receipts.fresh(mem).get('complete'))):
+                return None
+            attempts = mem.get('recruit_month_scan_attempts') or {}
+            scope = [mem.get('chapter'), mem.get('month')]
+            if attempts.get('scope') == scope and attempts.get('count', 0) >= 2:
+                return None
+            move = p.menu_to(screen, 'メインメニュー')
+            if not move:
+                return None
+            mem['recruit_month_scan_attempts'] = {'scope': scope, 'count':
+                (attempts.get('count', 0) if attempts.get('scope') == scope else 0) + 1}
+        if ((screen.kind != 'map' and not monthly) or mem.get('chapter') not in HOUSE_VIEW
+                or (not monthly and any(mem.get(k) for k in ('active', 'recall', 'y_jump', 'sortie_attempt', 'month_sub', 'battle')))
+                or (not monthly and tick - int(mem.get('house_scan_tick', 0)) < SCAN_INTERVAL)
+                or (not monthly and 'house_scan_month' in mem and mem['house_scan_month'] == mem.get('month')
                     and (not mem.get('recruit_roster_recheck')
                          or (mem.get('recruit_roster_attempts') or {}).get('count', 0) >= 2))):
             return None
-        state = mem['house'] = {'phase': 'open_roster', 'age': 0, 'total': 0,
-                                'chapter': mem['chapter'], 'seen': [], 'pending': []}
+        state = mem['house'] = {'phase': ('month_open' if monthly and move != 'here' else 'open_roster'),
+                                'age': 0, 'total': 0,
+                                'chapter': mem['chapter'], 'seen': [], 'pending': [], 'month_scan': monthly}
         attempts = mem.get('recruit_roster_attempts') or {}
         scope = [mem['chapter'], mem.get('month')]
         mem['recruit_roster_attempts'] = {'scope': scope, 'count':
             (attempts.get('count', 0) if attempts.get('scope') == scope else 0) + 1}
         receipts.begin(mem, state)
         _record(mem, 'scan_started', reason='月ごとに全将軍の卵を確認する')
-        return [p.pad('x')]
+        return ([p.pad('a')] if move == 'here' else [move]) if monthly else [p.pad('x')]
     if state.get('chapter') != mem.get('chapter'):
         _finish(mem)
         return None
     phase = state['phase']
+    # The monthly main-menu survey returns to the same monthly menu, never
+    # starts a repair trip, and gives the ordinary spending policy the next
+    # observation. Delayed pre-open monthly frames do not start another flow.
+    if state.get('month_scan') and screen.kind == 'month_menu':
+        if phase in ('leave_roster', 'close'):
+            if phase == 'leave_roster':
+                complete = receipts.complete(mem, state)
+                _record(mem, 'month_scan_complete', observed_metric={'roster_complete': complete,
+                        'generals': state['seen']}, reason='当月の実一覧を確認して月初メニューへ戻る')
+            _finish(mem)
+            return []
+        if phase == 'month_open':
+            state['age'] += 1
+            if state['age'] >= STEP_LIMIT:
+                return _exit(mem, '月初の情報メニューへ移動できないため募集確認を有限に保留')
+            actions = _choose(screen, 'メインメニュー')
+            if actions == [p.pad('a')]:
+                _phase(state, 'open_roster')
+            return actions
+        if phase == 'open_roster':
+            state['age'] += 1
+            if state['age'] >= STEP_LIMIT:
+                return _exit(mem, '月初メニューから情報画面を開けないため募集確認を有限に保留')
+            return []
     if ('roster_month' in state and state['roster_month'] != mem.get('month')
             and (phase in ('roster', 'status', 'roster_next', 'roster_advance')
                  or phase.startswith('income_'))):
@@ -298,6 +358,7 @@ def step(screen, mem, frame):
             # _next_general; never keep a stale egg state just because we are poor.
             actions = _choose(screen, 'しょうぐん')
             if actions == [p.pad('a')]:
+                state['roster_opened'] = True
                 _phase(state, 'roster')
             return actions
         return []
@@ -308,6 +369,8 @@ def step(screen, mem, frame):
         selected = screen.selected
         if selected not in names:
             return []
+        if not state['seen'] and state.get('roster_opened'):
+            state['singleton_first_page'] = _singleton_page(screen, frame)
         if selected in state['seen'] or len(state['seen']) >= ROSTER_LIMIT:
             state['roster_wrapped'] = (len(state['seen']) >= 2 and selected == state['seen'][0]
                                        and len(state['seen']) <= ROSTER_LIMIT)
@@ -337,8 +400,17 @@ def step(screen, mem, frame):
         if names is None:
             return []
         if screen.selected != state['selected']:
+            state.pop('singleton_first_page', None)
             _phase(state, 'roster')
             return []
+        single = (state.get('singleton_first_page') and state['seen'] == ['どうし']
+                  and _singleton_page(screen, frame))
+        state['singleton_observations'] = state.get('singleton_observations', 0) + 1 if single else 0
+        if state['age'] >= 6 and state['singleton_observations'] >= 3:
+            state['roster_wrapped'] = True
+            state['singleton_complete'] = True
+            _phase(state, 'leave_roster')
+            return [p.pad('b')]
         if state['age'] in (3, 6):
             return [p.pad('down')]
         if state['age'] >= 9:
@@ -396,6 +468,7 @@ def _income_step(screen, mem, frame):
         if screen.kind == 'map':
             aligned = p._align_on_roof(screen, mem, frame, {'own'}, 'HOUSE:income')
             if aligned == 'on':
+                receipts.owner(mem, p.STATUS_NAMES.get(state['source'], state['source']), 'own')
                 _phase(state, 'income_verify')
                 return [p.pad('a')]
             return aligned or []

@@ -296,7 +296,7 @@ def observe_owners(mem, roofs, cam):
     for roof in roofs:
         wx, wy = roof['target'][0] + cam[0], roof['target'][1] + cam[1]
         hits = [name for name, (x, y) in castles.items() if abs(wx - x) + abs(wy - y) <= 12]
-        if len(hits) == 1 and hits[0] not in fixed and roof.get('kind') in ('own', 'enemy'):
+        if len(hits) == 1 and roof.get('kind') in ('own', 'enemy'):
             seen[hits[0]] = roof['kind']
     streak = mem.setdefault('owner_streak', {})
     for castle, kind in seen.items():
@@ -305,8 +305,13 @@ def observe_owners(mem, roofs, cam):
         streak[castle] = {'kind': kind, 'count': count}
         if count < OWNER_CONFIRM:
             continue
+        from .hanjuku_roster import owner
+        owner(mem, STATUS_NAMES.get(castle, castle), kind)
+        if castle in fixed:
+            continue
         captured = mem.setdefault('captured', [])
         if kind == 'enemy' and castle in captured:
+            (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
             mem['captured'] = [c for c in captured if c != castle]
             lost = mem.setdefault('lost', [])
             if castle not in lost:
@@ -317,6 +322,7 @@ def observe_owners(mem, roofs, cam):
                     resulting_event=f'lost:{castle}',
                     reason='占領していた城の屋根が敵の色になったため失陥として奪還対象にする')
         elif kind == 'own' and castle not in captured:
+            (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
             captured.append(castle)
             if castle in (mem.get('lost') or []):
                 mem['lost'] = [c for c in mem['lost'] if c != castle]
@@ -1377,6 +1383,10 @@ def world_map_step(screen, mem, frame):
 
 def _apply_world_flags(mem, flags):
     chapter = mem.get('chapter') or 0
+    from .hanjuku_roster import owner
+    for name, kind in flags.items():
+        if name in chart.castles(chapter):
+            owner(mem, STATUS_NAMES.get(name, name), kind)
     home = chart.home_castle(chapter)
     cur = mem.get('battle') or {}
     castle = cur.get('castle')
@@ -4337,6 +4347,7 @@ def battle_end(mem, next_kind, *, defense_continues=False):
                       and cur.get('side') == 'defense' and outcome == 'loss' else None)
     defense_retained = observed_owner == 'own'
     if outcome == 'win' and castle and cur.get('side') == 'attack':
+        (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
         captured = mem.setdefault('captured', [])
         if castle not in captured:
             captured.append(castle)
@@ -4347,6 +4358,7 @@ def battle_end(mem, next_kind, *, defense_continues=False):
     if outcome == 'win' and castle and cur.get('side') == 'defense':
         _garrison_move(mem, cur.get('ally'), target=castle)
     if outcome == 'loss' and castle and cur.get('side') == 'defense' and not (defense_continues or defense_retained):
+        (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
         mem['captured'] = [c for c in mem.get('captured', []) if c != castle]
         (mem.get('garrison') or {}).pop(castle, None)
         lost = mem.setdefault('lost', [])
@@ -4616,7 +4628,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip',
                 'near_goal', 'align_steps', 'unanchored', 'select_tick',
                 'house', 'house_scan_tick', 'house_scan_month', 'house_eggs',
-                'recruit_roster', 'recruit_roster_floor', 'recruit_roster_recheck', 'recruit_roster_attempts', 'castle_income',
+                'recruit_roster', 'recruit_roster_floor', 'recruit_roster_recheck', 'recruit_roster_attempts', 'recruit_month_scan_attempts', 'castle_income', 'castle_ownership',
                 'select_used', 'castle_verified', 'last_castle_hold',
                 'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                 'indep_menu_key', 'indep_menu_action',

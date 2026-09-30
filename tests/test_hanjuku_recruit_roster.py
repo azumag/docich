@@ -300,3 +300,158 @@ def test_hp_defeat_invalidates_scan_without_inferring_death():
     assert r.fresh(mem) is None
     result=next(x for x in mem['_records'] if x['decision']=='battle_result')
     assert result['observed_metric']['general_loss']=='unclassified'
+
+
+def _survey_main(month):
+    from test_hanjuku_house import Canvas
+    c=Canvas();c.text(56,7,f'1わ1ねん{month}のつき250G')
+    c.text(48,47,'しょうぐん');c.text(48,63,'ステータス');c.text(144,63,'システム');c.hand(26,41)
+    return c.frame()
+
+
+def _survey_header(frame, month):
+    from test_hanjuku_house import Canvas
+    c=Canvas();c.rgb=bytearray(frame.rgb)
+    for y in range(7,15):
+        for x in range(256):c.put(x,y,(16,72,57))
+    c.text(56,7,f'1わ1ねん{month}のつき250G')
+    return c.frame()
+
+
+def _drive_survey(state, names, month):
+    """Native pixels through decide, no hand-edited phases or receipts."""
+    from docich.hanjuku_bot import decide
+    from test_hanjuku_house import roster,status
+    actions,state=decide(_survey_main(month),state)
+    assert actions==[p.pad('a')]
+    for i,name in enumerate(names):
+        frame=_survey_header(roster(names,i),month)
+        actions,state=decide(frame,state);assert actions==[p.pad('a')]
+        actions,state=decide(_survey_header(status(name,'エラベルエッグ4'),month),state)
+        assert actions==[p.pad('b')]
+        actions,state=decide(frame,state);assert actions==[p.pad('down')]
+        if len(names)>1:
+            actions,state=decide(_survey_header(roster(names,(i+1)%len(names)),month),state)
+            assert actions==[]
+        else:
+            for _ in range(6):actions,state=decide(frame,state)
+            assert actions==[p.pad('b')]
+    if len(names)>1:
+        actions,state=decide(_survey_header(roster(names,0),month),state)
+        assert actions==[p.pad('b')]
+    actions,state=decide(_survey_main(month),state)
+    assert actions==[p.pad('b')]
+    return state
+
+
+@pytest.mark.parametrize('names',[['どうし'],['どうし','ゼウス']])
+def test_field_scan_then_month_boundary_rescans_and_reaches_paid_recruitment(names):
+    from docich.hanjuku_bot import decide
+    from test_hanjuku_chart_bot import month_canvas
+    def field(x,y):
+        from test_hanjuku_house import Canvas
+        c=Canvas((16,120,57))
+        for dy in (1,14):
+            for dx in (2,3,4,11,12,13):c.put(x+dx,y+dy,(255,255,255))
+        for dy in (2,3,4):c.put(x+1,y+dy,(255,255,255))
+        return c.frame()
+    mem=memory(names=names,income=22);mem.update(month='1-6',tick=500)
+    p._apply_world_flags(mem,{'ほんじょう':'own'})
+    mem['recruit_roster']['month']='1-6'
+    mem['castle_income']['アルマムーン'].update(month='1-6',tick=10)
+    state={'policy':mem}
+    actions,state=decide(field(100,100),state);assert actions==[p.pad('x')]
+    state=_drive_survey(state,names,6)
+    actions,state=decide(field(100,100),state);assert actions==[]
+    # The field scan is complete in the old month, not silently re-dated.
+    assert r.fresh(state['policy'])['complete']
+    # Finish the free field survey before the next monthly menu.
+    actions,state=decide(field(100,100),state)
+    actions,state=decide(field(100,100),state)
+    old_tick=state['policy']['recruit_roster']['tick']
+    actions,state=decide(month_canvas(250,on='メインメニュー',month=7),state)
+    assert actions==[p.pad('a')]
+    assert state['policy']['house']['month_scan']
+    assert state['policy']['recruit_roster']['tick']>old_tick
+    state=_drive_survey(state,names,7)
+    actions,state=decide(month_canvas(250,on='メインメニュー',month=7),state)
+    assert actions==[] and not state['policy'].get('house')
+    assert r.fresh(state['policy'])['complete']
+    # Native monthly frames navigate to, and actually open, recruitment.
+    actions,state=decide(month_canvas(250,on='しょうぐんぼしゅう',month=7),state)
+    assert actions==[p.pad('a')]
+    assert state['policy']['month_sub']['kind']=='recruit'
+    assert state['policy']['shop']['recruit']=='opened'
+    assert state['policy']['castle_income']['アルマムーン']['tick']==10
+
+
+def test_single_readable_name_with_nonblank_unknown_slot_is_never_complete():
+    from test_hanjuku_house import Canvas,roster,feed,status
+    from docich.hanjuku_screen import parse
+    frame=roster(['どうし']);c=Canvas();c.rgb=bytearray(frame.rgb)
+    c.tile(168,55,0x0123456789ABCDEF)
+    assert not house._singleton_page(parse(c.frame()),c.frame())
+    mem=memory();mem['house']={'chapter':1,'phase':'open_roster','age':0,'total':0,'seen':[], 'pending':[]}
+    r.begin(mem,mem['house']);feed(mem,_survey_main(7))
+    feed(mem,c.frame());feed(mem,status('どうし','エラベルエッグ4'));feed(mem,c.frame())
+    for _ in range(9):feed(mem,c.frame())
+    assert not mem['house'].get('roster_wrapped')
+
+
+def test_month_information_open_failure_is_bounded_and_ordinary_month_policy_resumes():
+    from docich.hanjuku_bot import decide
+    from test_hanjuku_chart_bot import month_canvas
+    state={'policy':memory()};state['policy'].pop('recruit_roster')
+    frame=month_canvas(250,on='メインメニュー')
+    actions,state=decide(frame,state);assert actions==[p.pad('a')]
+    for _ in range(house.STEP_LIMIT):actions,state=decide(frame,state)
+    assert state['policy']['house']['phase']=='close'
+    actions,state=decide(frame,state);assert not state['policy'].get('house')
+    actions,state=decide(frame,state);assert actions==[p.pad('a')]
+    for _ in range(house.STEP_LIMIT+1):actions,state=decide(frame,state)
+    actions,state=decide(frame,state)
+    assert not state['policy'].get('house')
+    assert state['policy']['recruit_month_scan_attempts']['count']==2
+    assert state['policy']['recruit_hold']['status']=='deferred_roster'
+
+
+
+def test_known_castle_property_reuses_original_receipt_only_with_fresh_current_owner():
+    mem=memory(income=22);mem['tick']=500;mem['recruit_roster']['tick']=500
+    row=mem['castle_income']['アルマムーン'];row.update(month='1-1',tick=10)
+    original=dict(row)
+    assert r.economics(mem,{'アルマムーン'}) is None
+    p._apply_world_flags(mem,{'ほんじょう':'own'})
+    assert r.economics(mem,{'アルマムーン'})['income']==22
+    assert row==original
+    for proof in ({'chapter':1,'tick':100,'owner':'own'},
+                  {'chapter':2,'tick':499,'owner':'own'},
+                  {'chapter':1,'tick':501,'owner':'own'},
+                  {'chapter':1,'tick':True,'owner':'own'},
+                  {'chapter':1,'tick':499,'owner':'enemy'}):
+        mem['castle_ownership']['アルマムーン']=proof
+        assert r.economics(mem,{'アルマムーン'}) is None
+    r.owner(mem,'アルマムーン','own')
+    row['income']=100  # mismatch with stage's fixed base is not a static property
+    assert r.economics(mem,{'アルマムーン'}) is None
+    row.update(income=22,chapter=2)
+    assert r.economics(mem,{'アルマムーン'}) is None
+
+
+def test_static_income_never_supplies_an_unobserved_or_future_receipt():
+    mem=memory(income=22);r.owner(mem,'アルマムーン','own')
+    mem['castle_income'].clear()
+    assert r.economics(mem,{'アルマムーン'}) is None
+    for tick in (True,101,-1):
+        mem['castle_income']['アルマムーン']={'chapter':1,'month':'1-1','tick':tick,'income':22}
+        assert r.economics(mem,{'アルマムーン'}) is None
+
+
+def test_actual_ownership_updates_do_not_change_base_income_on_unchanged_flags():
+    mem=memory(income=22);old=dict(mem['castle_income']['アルマムーン'])
+    p._apply_world_flags(mem,{'ほんじょう':'own'})
+    assert r.owned_fresh(mem,'アルマムーン')
+    assert mem['castle_income']['アルマムーン']==old
+    p._apply_world_flags(mem,{'ほんじょう':'enemy'})
+    assert not r.owned_fresh(mem,'アルマムーン')
+    assert 'ほんじょう' not in p._owned(mem)

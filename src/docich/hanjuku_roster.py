@@ -5,6 +5,16 @@ MAX_GENERALS = 32
 # SFC ID0..127 canonical char.csv: candidate wage is not known before payment.
 MAX_RECRUIT_WAGE = 15
 FRESH_TICKS = 400
+# Stage castle properties (SFC): gcgx 01.html/02.html. These validate an
+# actual income receipt; they never supply an unobserved income themselves.
+# castle.html reports no income increase from level, and separates harvest
+# multipliers from the normal sum. Unsupported stages retain bounded reads.
+NORMAL_CASTLE_INCOME = {
+    1: {'アルマムーン': 22, 'ナキューメラ': 13, 'キカンドン': 14, 'ジョンリギ': 16,
+        'カストーラ': 18, 'スペンソニア': 22, 'ゴーメン': 17},
+    2: {'アルマムーン': 30, 'ハドリバーグ': 27, 'フーリック': 22, 'グロン': 30,
+        'ドミノーラ': 32, 'ウラノポリス': 24, 'スペランザ': 38, 'アウスパジア': 39},
+}
 
 # Fixed SFC wages, char.csv at 5e982942ec24fb559f58b29250560fd784e5ae5c.
 # Only freshly identified actual roster members contribute to the total.
@@ -249,11 +259,28 @@ def economics(mem, owned):
     for castle in owned:
         row = incomes.get(castle)
         if (not isinstance(row, dict) or row.get('chapter') != mem.get('chapter')
-                or row.get('month') != mem.get('month')
-                or type(row.get('tick')) is not int
-                or not 0 <= mem['tick'] - row['tick'] < FRESH_TICKS
+                or type(row.get('tick')) is not int or not 0 <= row['tick'] <= mem['tick']
                 or type(row.get('income')) is not int or not 0 <= row['income'] <= 999):
+            return None
+        recent = row.get('month') == mem.get('month') and mem['tick'] - row['tick'] < FRESH_TICKS
+        expected = NORMAL_CASTLE_INCOME.get(mem.get('chapter'), {}).get(castle)
+        property_read = (expected is not None and row['income'] == expected
+                         and owned_fresh(mem, castle))
+        if not recent and not property_read:
             return None
         observed.append(row['income'])
     total = sum(observed)
     return {'income': total, 'wages': sum(wages.values()), 'additional_wage_max': MAX_RECRUIT_WAGE}
+
+
+def owner(mem, castle, kind):
+    if kind in ('own', 'enemy'):
+        mem.setdefault('castle_ownership', {})[castle] = {
+            'chapter': mem.get('chapter'), 'tick': mem.get('tick'), 'owner': kind}
+
+
+def owned_fresh(mem, castle):
+    proof = (mem.get('castle_ownership') or {}).get(castle) or {}
+    return (proof.get('chapter') == mem.get('chapter') and proof.get('owner') == 'own'
+            and type(proof.get('tick')) is int
+            and 0 <= mem['tick'] - proof['tick'] < FRESH_TICKS)
