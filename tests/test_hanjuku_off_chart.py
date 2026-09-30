@@ -1103,7 +1103,7 @@ def test_the_source_castle_name_is_read_before_anyone_is_sent():
                    kind='castle_menu')
     assert policy._check_source_castle(right, mem, order) == [policy.pad('b')]
     assert mem['castle_verified'] == '2-Z1'
-    assert policy._check_source_castle(right, mem, order) is None       # verified: go on to しゅつげき
+    assert policy._check_source_castle(right, mem, order) == [policy.pad('b')]  # still open: close first
 
 
 def test_the_last_general_never_leaves_our_last_castle(monkeypatch):
