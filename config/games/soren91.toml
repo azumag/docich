@@ -22,6 +22,10 @@ require_round_boundary = false
 agent_base_url_env = "SOREN91_MACOS_AGENT_BASE_URL"
 # Bearer token を持つ環境変数名 (値そのものは書かない)。
 agent_token_env = "SOREN91_LOCAL_AGENT_TOKEN"
+# 有線 Windows の local agent (同じ /v1 契約 + CDP プロキシ)。URL が env に無ければ
+# 候補から外れる。どちらを使うかは webui の「メリケンAI 描画ホスト」(auto/windows/mac)。
+windows_agent_base_url_env = "SOREN91_WINDOWS_AGENT_BASE_URL"
+windows_agent_token_env = "SOREN91_WINDOWS_AGENT_TOKEN"
 # OCI 側 Tailscale IP を持つ環境変数名。viewer listener の bind と
 # Mac agent へ渡す caller URL の host になる (100.64.0.0/10 のみ許可)。
 oci_tailscale_ip_env = "SOREN91_OCI_TAILSCALE_IP"

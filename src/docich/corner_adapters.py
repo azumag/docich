@@ -237,6 +237,8 @@ class MerikenCornerAdapter(GameCornerAdapter):
     ENV_KEYS = (
         "SOREN91_MACOS_AGENT_BASE_URL",
         "SOREN91_LOCAL_AGENT_TOKEN",
+        "SOREN91_WINDOWS_AGENT_BASE_URL",
+        "SOREN91_WINDOWS_AGENT_TOKEN",
         "SOREN91_OCI_TAILSCALE_IP",
     )
 
