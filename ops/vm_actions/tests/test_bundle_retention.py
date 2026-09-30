@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ SPEC.loader.exec_module(retention)
 class BundleRetentionTests(unittest.TestCase):
     def setUp(self):
         self.base = Path(tempfile.mkdtemp(prefix="vmops-bundle-retention-"))
+        self.addCleanup(shutil.rmtree, self.base)
         self.state = self.base / "state"
         self.state.mkdir()
         self.production = self.base / "production"
@@ -100,6 +102,22 @@ class BundleRetentionTests(unittest.TestCase):
         self.assertEqual(result["deleted_count"], 0)
         self.assertEqual(result["retained_recent_count"], 12)
         self.assertTrue(all(path.exists() for _, path in recent))
+
+    def test_two_day_boundary_preserves_recent_and_referenced_bundles(self):
+        previous, previous_path = self.make_bundle(2, age_days=10)
+        self.write_current(self.current_sha, previous_head=previous)
+        old = [self.make_bundle(value, age_days=3) for value in range(100, 112)]
+        recent = [self.make_bundle(value, age_days=1) for value in range(200, 208)]
+        # Put one unreferenced bundle exactly on the two-day boundary.
+        boundary = old[0][1]
+        os.utime(boundary, (self.now - 2 * 86400, self.now - 2 * 86400))
+        result = retention.rotate_bundles(self.cfg, now=self.now)
+        self.assertEqual(result["deleted_count"], 12)
+        self.assertFalse(boundary.exists())
+        self.assertTrue(all(not path.exists() for _, path in old[1:]))
+        self.assertTrue(all(path.exists() for _, path in recent))
+        self.assertTrue(previous_path.exists())
+        self.assertTrue(self.current_bundle.exists())
 
     def test_dry_run_reports_deletions_without_unlinking(self):
         old = [self.make_bundle(value) for value in range(100, 112)]

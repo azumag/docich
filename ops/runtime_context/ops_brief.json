@@ -1,11 +1,11 @@
 {
-  "output_sha256": "5e9490b73011ab6cb053af7b0d46127a675eea4820b05fe398cab379300c2c21",
+  "output_sha256": "431087fa5262275a0ed8f62cb93b697dd6913df4287c0bd25de1dbf16eddcb60",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "2cc92beffe6148ec3b4bf9b700aa202fb089b46fd3fa10d8367c76747ed84d75",
+  "source_sha256": "deaf6a2005538ba5d78868d67906bcf995d8e9458d57bd705d448b51ae744b3f",
   "topics": [
-    "半熟v92配備照合・同一g496入力再開",
-    "半熟v92いばら後続確認文の停滞を復旧・修正準備",
-    "半熟v91配備照合と同一g496ホットロード"
+    "VM容量回収と配備bundle保持短縮",
+    "半熟v93キャトルミュー活用を実装準備",
+    "半熟v92配備照合・同一g496入力再開"
   ]
 }
