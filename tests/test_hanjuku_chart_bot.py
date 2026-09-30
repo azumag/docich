@@ -573,7 +573,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v108-defender-last-resort'
+    assert state['bot_version'] == 'hanjuku-chart-v108-battle-rescue'
     assert '_records' not in state['policy']
 
 
@@ -3114,3 +3114,37 @@ def test_clipped_command_requires_measured_position_and_never_confirms_without_c
     if expected == 'battle_menu_pending':
         actions, state = decide(c.frame(), {'policy': {'chapter': 1}})
         assert actions == []
+
+
+@pytest.mark.parametrize('y', [192, 196])
+def test_measured_boss_two_line_command_uses_live_card_row_instead_of_egg(y):
+    c = Canvas((0,0,0)); c.text(176,y,'たまごをつかう'); c.text(176,y+16,'きりふだ')
+    for yy in range(y-8,y+4):
+        for xx in range(152,164): c.put(xx,yy,(230,105,74))
+    s = parse(c.frame()); assert s.kind == 'battle_menu' and s.menu_cursor == y
+    mem = {'chapter':1,'battle':{'ally':'ゼウス','enemy':'クイーン','ally_hp':35,
+        'enemy_hp':70,'cards_used':[], 'card_flow':{'card':'イッテツーン','stage':'menu'}}}
+    actions,state=decide(c.frame(), {'policy':mem})
+    assert actions == [policy.pad('down')]
+    assert state['policy']['battle']['card_flow']['stage'] == 'down'
+    # Moving the actual cursor to the card row authorizes A.
+    c = Canvas((0,0,0)); c.text(176,y,'たまごをつかう'); c.text(176,y+16,'きりふだ')
+    for yy in range(y+8,y+20):
+        for xx in range(152,164): c.put(xx,yy,(230,105,74))
+    assert parse(c.frame()).menu_cursor == y + 16
+    actions,state=decide(c.frame(),state)
+    assert actions == [policy.pad('a')]
+    assert state['policy']['battle']['card_flow']['stage'] == 'list'
+
+
+@pytest.mark.parametrize('y',[196,212])
+def test_measured_shifted_single_egg_command_waits_for_the_second_row(y):
+    c=Canvas((0,0,0));c.text(176,y,'たまごをつかう')
+    assert parse(c.frame()).kind == 'battle_menu_pending'
+    assert decide(c.frame(),{'policy':{'chapter':1}})[0] == []
+
+
+@pytest.mark.parametrize('y',[188,200,204])
+def test_unmeasured_boss_pair_offset_does_not_guess_a_human_command(y):
+    c=Canvas((0,0,0));c.text(176,y,'たまごをつかう');c.text(176,y+16,'きりふだ')
+    assert parse(c.frame()).kind != 'battle_menu'

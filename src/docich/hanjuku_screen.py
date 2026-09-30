@@ -392,13 +392,19 @@ def _egg_rows(frame: Frame) -> list[EggRow]:
 _BATTLE_COMMANDS = ((176, 'たまごをつかう'), (192, 'きりふだ'), (208, 'たいきゃく'))
 
 
-def _human_commands(screen):
-    # The boss command box can show only egg/card at y192/y208. Require
+def _boss_command_rows(screen):
+    # Measured boss boxes: g508 y192/208; g510 Zeus y196/212. Require
     # both exact labels: a lone egg row is also an egg-opponent command.
     rows = {line.y: line.spans() for line in screen.menu_rows}
-    boss_pair = (rows.get(192) == [(176, 'たまごをつかう')]
-                 and rows.get(208) == [(176, 'きりふだ')])
-    return boss_pair or any((line.y == y and line.spans() == [(176, label)])
+    for y in (192, 196):
+        if (rows.get(y) == [(176, 'たまごをつかう')]
+                and rows.get(y + 16) == [(176, 'きりふだ')]):
+            return [line for line in screen.menu_rows if line.y in (y, y + 16)]
+    return []
+
+
+def _human_commands(screen):
+    return bool(_boss_command_rows(screen)) or any((line.y == y and line.spans() == [(176, label)])
                or (line.y in (176, 192, 208) and line.spans() == [(176, 'おくのて')])
                for line in screen.menu_rows for y, label in _BATTLE_COMMANDS)
 
@@ -408,7 +414,7 @@ def _partial_human_commands(screen):
     # It must wait, never fall through to legacy A on the egg command.
     return (screen.battle is None and not screen.egg_rows
             and len(screen.menu_rows) == 1
-            and screen.menu_rows[0].y in (192, 208, 216)
+            and screen.menu_rows[0].y in (192, 196, 208, 212, 216)
             and screen.menu_rows[0].spans() == [(176, 'たまごをつかう')])
 
 
@@ -452,8 +458,9 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
             any(line.y == y and line.spans() == [(176,label)] for line in grey)
             for y,label in _BATTLE_COMMANDS)
     if screen.menu_rows or screen.hidden_battle_commands:
-        cursor_rows = ([TextLine(y, ((176, label),)) for y, label in _BATTLE_COMMANDS]
-                       if _human_commands(screen) or screen.hidden_battle_commands else screen.menu_rows)
+        cursor_rows = (_boss_command_rows(screen) or
+                       ([TextLine(y, ((176, label),)) for y, label in _BATTLE_COMMANDS]
+                        if _human_commands(screen) or screen.hidden_battle_commands else screen.menu_rows))
         screen.menu_cursor = _menu_cursor(frame, cursor_rows)
         screen.hidden_battle_commands &= screen.menu_cursor is not None
         screen.egg_rows = _egg_rows(frame)
