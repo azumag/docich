@@ -1,11 +1,11 @@
 {
-  "output_sha256": "ae2fc2ec7fcdf5774a973747925c7719e0e5a107af5619ff0804c2d993d97550",
+  "output_sha256": "a36c255afbc5b9652865e53c147a6efbea60f449bad4863356201b31b62531a0",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "3470f675c836726d06944b66d1a6d2be57c5bb8a99e7fe7ee14ed3040152e0ae",
+  "source_sha256": "fe2a4212594386cc6aa3059b5a4694c564b7b2fbc0c02ce0fbb7a2be5cce210f",
   "topics": [
+    "半熟v92いばら後続確認文の停滞を復旧・修正準備",
     "半熟v91配備照合と同一g496ホットロード",
-    "半熟v91未選択札・2枚連携・募集停滞を修正準備",
-    "半熟の次枠予約配備・v90新ラン入力・確認間隔30分"
+    "半熟v91未選択札・2枚連携・募集停滞を修正準備"
   ]
 }

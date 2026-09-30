@@ -10,6 +10,7 @@ from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import Screen, classify_text
 
 MESSAGE = 'いばらのとうをとりまいていたすべてのいばらがしょうめつしました!'
+FOLLOWUP = 'いばらとともにけっかいもしょうめつしたようです!'
 
 
 def screen(text=MESSAGE):
@@ -24,32 +25,36 @@ def run(monkeypatch, memory, text=MESSAGE):
     return hanjuku_bot.decide(Frame(256, 224, bytes(256 * 224 * 3)), {'policy': memory})
 
 
-def test_exact_barrier_message_is_not_generic_field_text():
-    assert screen().kind == 'barrier_removed'
-    assert screen(MESSAGE[:-1]).kind == 'text'
+@pytest.mark.parametrize('message', [MESSAGE, FOLLOWUP])
+def test_exact_barrier_message_is_not_generic_field_text(message):
+    assert screen(message).kind == 'barrier_removed'
+    assert screen(message[:-1]).kind == 'text'
     assert screen('いばらのとう').kind == 'text'
+    assert screen(message + 'つづく').kind == 'text'
 
 
-def test_barrier_ack_allows_confirmed_final_battle_to_close_without_advancing_chapter(monkeypatch):
+@pytest.mark.parametrize('message', [MESSAGE, FOLLOWUP])
+def test_barrier_ack_allows_confirmed_final_battle_to_close_without_advancing_chapter(monkeypatch, message):
     actions, state = run(monkeypatch, {
         'chapter': 1,
         'battle': {'ally': 'ゼウス', 'enemy': 'デュオニソス', 'ally_hp': 85,
                    'enemy_hp': 0, 'castle': 'スペンソニア', 'side': 'attack',
                    'step': '1-C2', 'away': 1, 'cards_used': []},
-    })
+    }, message)
     assert actions == [hanjuku_bot.pad('a')]
     assert state['policy']['chapter'] == 1
     assert state['policy']['captured'] == ['スペンソニア']
     records = state['_records']
     assert any(r['decision'] == 'battle_result' and r['outcome'] == 'win' for r in records)
     event = next(r for r in records if r['decision'] == 'barrier_removed')
-    assert event['observed_metric'] == {'message': MESSAGE}
+    assert event['observed_metric'] == {'message': message}
     assert event['resulting_stage'] is None
 
 
+@pytest.mark.parametrize('message', [MESSAGE, FOLLOWUP])
 @pytest.mark.parametrize('chapter', [None, 2])
-def test_barrier_with_unknown_or_other_chapter_holds(monkeypatch, chapter):
-    actions, state = run(monkeypatch, {'chapter': chapter})
+def test_barrier_with_unknown_or_other_chapter_holds(monkeypatch, chapter, message):
+    actions, state = run(monkeypatch, {'chapter': chapter}, message)
     assert actions == []
     assert state['_records'][-1]['decision'] == 'situation_held'
 
