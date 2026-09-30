@@ -165,6 +165,19 @@ TMP_SO_MAX_CANDIDATES = 4096
 TMP_SO_MAX_PROC_FDS = 50000
 
 STORAGE_MAX_ENTRIES = 100000
+OPENCODE_ATTRIBUTION_WINDOW_SEC = 24 * 60 * 60
+OPENCODE_ATTRIBUTION_QUERY_TIMEOUT_SEC = 2.0
+OPENCODE_CALLER_BUCKETS = (
+    "radio_prepass",
+    "radio_main",
+    "comment",
+    "improvement",
+    "probe",
+    "other",
+)
+OPENCODE_CALLER_TITLES = {
+    f"docich:{bucket}": bucket for bucket in OPENCODE_CALLER_BUCKETS
+}
 
 
 def _collect_opencode_retention(soren, now):
@@ -395,6 +408,142 @@ def _collect_storage_breakdown(
         "voicevox_root": _storage_tree_usage(voicevox_root, max_entries=max_entries),
         "voicevox_archive": _storage_file_usage(voicevox_root / "voicevox.7z.001"),
     }
+
+
+
+def _empty_opencode_attribution_bucket():
+    return {
+        "sessions": 0,
+        "messages": 0,
+        "message_data_chars": 0,
+        "message_max_chars": 0,
+        "parts": 0,
+        "part_data_chars": 0,
+        "part_max_chars": 0,
+        "events": 0,
+        "event_data_chars": 0,
+        "event_max_chars": 0,
+    }
+
+
+def _collect_opencode_session_attribution(
+    db_path,
+    now,
+    *,
+    window_sec=OPENCODE_ATTRIBUTION_WINDOW_SEC,
+    query_timeout_sec=OPENCODE_ATTRIBUTION_QUERY_TIMEOUT_SEC,
+):
+    """Read fixed OpenCode caller aggregates without exposing stored content."""
+
+    db_path = Path(db_path)
+    result = {
+        "version": 1,
+        "present": False,
+        "scan_complete": False,
+        "schema_supported": False,
+        "window_sec": int(window_sec),
+        "buckets": {
+            bucket: _empty_opencode_attribution_bucket()
+            for bucket in OPENCODE_CALLER_BUCKETS
+        },
+    }
+    try:
+        st = db_path.lstat()
+    except FileNotFoundError:
+        result["scan_complete"] = True
+        return result
+    except OSError:
+        return result
+    result["present"] = True
+    if not stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
+        return result
+
+    con = None
+    deadline = time.monotonic() + max(0.05, float(query_timeout_sec))
+    try:
+        con = sqlite3.connect(
+            f"file:{db_path}?mode=ro",
+            uri=True,
+            timeout=min(max(float(query_timeout_sec), 0.05), 1.0),
+        )
+        con.execute("PRAGMA query_only = ON")
+        con.execute("PRAGMA busy_timeout = 500")
+        con.set_progress_handler(
+            lambda: 1 if time.monotonic() >= deadline else 0,
+            1000,
+        )
+
+        required = {
+            "session": {"id", "title", "time_created"},
+            "message": {"id", "session_id", "data"},
+            "part": {"id", "session_id", "data"},
+            "event": {"id", "aggregate_id", "data"},
+        }
+        for table, columns in required.items():
+            actual = {
+                str(row[1])
+                for row in con.execute(f"PRAGMA table_info({table})")
+                if len(row) > 1
+            }
+            if not columns.issubset(actual):
+                return result
+        result["schema_supported"] = True
+
+        cutoff_ms = int((float(now) - max(0, int(window_sec))) * 1000)
+        titles = tuple(OPENCODE_CALLER_TITLES)
+        placeholders = ",".join("?" for _ in titles)
+        params = (cutoff_ms, *titles)
+
+        for title, count in con.execute(
+            f"""
+            SELECT title, COUNT(*)
+              FROM session
+             WHERE time_created >= ?
+               AND title IN ({placeholders})
+             GROUP BY title
+            """,
+            params,
+        ):
+            bucket = OPENCODE_CALLER_TITLES.get(str(title))
+            if bucket is not None:
+                result["buckets"][bucket]["sessions"] = max(0, int(count or 0))
+
+        table_specs = (
+            ("message", "session_id", "messages", "message_data_chars", "message_max_chars"),
+            ("part", "session_id", "parts", "part_data_chars", "part_max_chars"),
+            ("event", "aggregate_id", "events", "event_data_chars", "event_max_chars"),
+        )
+        for table, session_column, count_key, chars_key, max_key in table_specs:
+            sql = f"""
+                SELECT s.title,
+                       COUNT(x.id),
+                       COALESCE(SUM(length(x.data)), 0),
+                       COALESCE(MAX(length(x.data)), 0)
+                  FROM session AS s
+                  JOIN {table} AS x ON x.{session_column} = s.id
+                 WHERE s.time_created >= ?
+                   AND s.title IN ({placeholders})
+                 GROUP BY s.title
+            """
+            for title, count, chars, max_chars in con.execute(sql, params):
+                bucket = OPENCODE_CALLER_TITLES.get(str(title))
+                if bucket is None:
+                    continue
+                item = result["buckets"][bucket]
+                item[count_key] = max(0, int(count or 0))
+                item[chars_key] = max(0, int(chars or 0))
+                item[max_key] = max(0, int(max_chars or 0))
+
+        result["scan_complete"] = True
+        return result
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return result
+    finally:
+        if con is not None:
+            try:
+                con.close()
+            except sqlite3.Error:
+                pass
 
 
 VALUE_REDACT_RES = (
@@ -3489,6 +3638,187 @@ def _collect_nethack_panes(state_dir, now):
     return result
 
 
+# NetHack evidence only: never invoke the game/retrospective/provider or probe locks.
+NETHACK_HISTORY_SCAN_LIMIT = 128
+NETHACK_HISTORY_FILE_BYTES = 65536
+NETHACK_TERMINAL = frozenset({'dead', 'ascended', 'ended', 'ended_unknown'})
+NETHACK_LESSONS = frozenset({'repeated_death', 'survival_signal', 'food_survival',
+                            'proposal_drift', 'evidence_gap', 'terminal_evidence',
+                            'progress_stall'})
+
+
+def _nethack_number(value):
+    return value if type(value) is int and 0 <= value <= 10**12 else None
+
+
+def _nethack_time(value):
+    if not isinstance(value, str) or len(value) > 64:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            return None
+        epoch = parsed.timestamp()
+        return epoch if math.isfinite(epoch) and 0 <= epoch <= 253402300799 else None
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _nethack_progress(raw):
+    if not isinstance(raw, dict):
+        return {'status': 'missing'}
+    result = {'status': _rotation_enum(raw.get('status'),
+              {'ok', 'empty', 'missing', 'error', 'too_large', 'invalid_run_id'})}
+    for key in ('sample_count', 'malformed_lines', 'first_turn', 'last_turn',
+                'max_turn', 'max_depth', 'same_frame_sent_pairs', 'max_same_frame_sent_streak'):
+        result[key] = _nethack_number(raw.get(key))
+    for key in ('first_ts', 'last_ts', 'min_hp_ratio'):
+        value = raw.get(key)
+        result[key] = value if type(value) in (int, float) and 0 <= value <= 10**12 and math.isfinite(value) else None
+    result['truncated'] = raw.get('truncated') if type(raw.get('truncated')) is bool else None
+    result['phase_counts'] = {key: _nethack_number(raw.get('phase_counts', {}).get(key))
+                             for key in ('sent', 'hold')} if isinstance(raw.get('phase_counts'), dict) else {}
+    return result
+
+
+def _nethack_record(raw, daily):
+    if type(raw.get('schema_version')) is not int or raw['schema_version'] != 1:
+        return None
+    if daily:
+        if _rotation_enum(raw.get('status'), {'review_ready', 'no_new_runs'}) == 'unknown':
+            return None
+        date = raw.get('date')
+        if not isinstance(date, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date):
+            return None
+        try:
+            dt.date.fromisoformat(date)
+        except ValueError:
+            return None
+        if raw.get('policy_effect') != 'none' or raw.get('automatic_promotion') is not False:
+            return None
+        count = _nethack_number(raw.get('run_count'))
+        if count is None or count > 8:
+            return None
+        candidates = raw.get('candidates')
+        if not isinstance(candidates, list) or len(candidates) > 100:
+            return None
+        categories = {}
+        for item in candidates:
+            category = _rotation_enum(item.get('category') if isinstance(item, dict) else None, NETHACK_LESSONS)
+            categories[category] = categories.get(category, 0) + 1
+        result = {'date': date, 'status': raw['status'], 'run_count': count,
+                  'candidate_state': _rotation_enum(raw.get('candidate_state'), {'no_change', 'pending_canary_evaluation'}),
+                  'candidate_categories': categories, 'policy_effect': 'none', 'automatic_promotion': False}
+        timestamp = _nethack_time(raw.get('generated_at'))
+    else:
+        if _rotation_enum(raw.get('status'), NETHACK_TERMINAL) == 'unknown':
+            return None
+        timestamp = _nethack_time(raw.get('ended_at'))
+        retrospective = raw.get('retrospective')
+        retrospective = retrospective if (
+            isinstance(retrospective, dict)
+            and type(retrospective.get('schema_version')) is int
+            and retrospective['schema_version'] == 1
+            and retrospective.get('source') == 'p5a_retrospective'
+            and retrospective.get('run_id') == raw.get('run_id')
+            and retrospective.get('terminal_status') == raw['status']
+        ) else {}
+        result = {'terminal_status': raw['status'], 'started_at': _nethack_time(raw.get('started_at')),
+                  'expedition': _nethack_number(raw.get('expedition')),
+                  'retrospective_present': bool(retrospective),
+                  'retrospective_generated_at': _nethack_time(retrospective.get('generated_at')),
+                  'same_death_total_count': _nethack_number(retrospective.get('same_death_total_count')),
+                  'progress': _nethack_progress(retrospective.get('progress_evidence'))}
+        for key in ('score', 'turns', 'max_depth'):
+            result[key] = _nethack_number(raw.get(key))
+    if timestamp is None:
+        return None
+    result['generated_at' if daily else 'ended_at'] = timestamp
+    return result
+
+
+def _nethack_history(state_dir, daily):
+    """Open each directory relative to a pinned fd: no symlink traversal/races."""
+    result = {'status': 'unavailable', 'scan_complete': False, 'scanned_entries': 0,
+              'invalid_records': 0, 'excluded_active': 0, 'omitted_records': 0, 'records': []}
+    directory = Path(state_dir) / 'nethack' / ('daily-improvements' if daily else 'runs')
+    fd = None
+    try:
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+        for component in directory.absolute().parts[1:]:
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        records = []
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                if result['scanned_entries'] >= NETHACK_HISTORY_SCAN_LIMIT:
+                    break
+                result['scanned_entries'] += 1
+                pattern = r'\d{4}-\d{2}-\d{2}\.json' if daily else r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json'
+                if not re.fullmatch(pattern, entry.name):
+                    continue
+                try:
+                    file_fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+                    with os.fdopen(file_fd, 'rb') as handle:
+                        info = os.fstat(handle.fileno())
+                        if not stat.S_ISREG(info.st_mode) or info.st_size > NETHACK_HISTORY_FILE_BYTES:
+                            raise ValueError('bounded file required')
+                        content = handle.read(NETHACK_HISTORY_FILE_BYTES + 1)
+                    if len(content) > NETHACK_HISTORY_FILE_BYTES:
+                        raise ValueError('bounded file required')
+                    raw = json.loads(content)
+                    if not isinstance(raw, dict):
+                        raise ValueError('object required')
+                    if not daily and _rotation_enum(raw.get('status'), {'active', 'starting', 'suspended', 'saved'}) != 'unknown':
+                        result['excluded_active'] += 1
+                        continue
+                    record = _nethack_record(raw, daily)
+                    if record is None or (daily and raw['date'] + '.json' != entry.name) or (
+                        not daily and raw.get('run_id') != entry.name[:-5]
+                    ):
+                        raise ValueError('invalid evidence')
+                    record['file_mtime'] = info.st_mtime
+                    records.append(record)
+                except (OSError, ValueError, UnicodeError, RecursionError):
+                    result['invalid_records'] += 1
+            else:
+                result['scan_complete'] = True
+        key = 'generated_at' if daily else 'ended_at'
+        records.sort(key=lambda item: item[key], reverse=True)
+        limit = 7 if daily else 8
+        result['records'] = records[:limit]
+        result['omitted_records'] = max(0, len(records) - limit)
+        result['status'] = 'partial' if not result['scan_complete'] or result['invalid_records'] else ('ok' if records else 'empty')
+    except FileNotFoundError:
+        result['status'] = 'missing'
+    except OSError:
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return result
+
+
+def _collect_nethack_history(state_dir, now):
+    return {'schema_version': 1, 'collected_at': now, 'scan_limit_per_source': NETHACK_HISTORY_SCAN_LIMIT,
+            'file_byte_limit': NETHACK_HISTORY_FILE_BYTES,
+            'daily': _nethack_history(state_dir, True), 'completed_runs': _nethack_history(state_dir, False)}
+
+
+def _nethack_history_budget(payload):
+    """Omit new history first, preserving the existing diagnostic budget priorities."""
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        for source in ("daily", "completed_runs"):
+            history = payload["nethack_history"][source]
+            history["omitted_records"] += len(history["records"])
+            history["records"] = []
+            history["output_omitted"] = True
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return text
+
+
 def main(argv):
     if len(argv) != 2:
         print("usage: collect_diagnostics.py <soren_root>", file=sys.stderr)
@@ -3532,12 +3862,17 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": corners,
+        "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "webui": _collect_webui(),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
+        "opencode_session_attribution": _collect_opencode_session_attribution(
+            Path(soren).parent / ".local" / "share" / "opencode" / "opencode.db",
+            now,
+        ),
         "opencode_retention": _collect_opencode_retention(soren, now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
@@ -3550,7 +3885,7 @@ def main(argv):
         or retention["timer"].get("active") is not True
     ):
         payload["status"] = "warn"
-    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    text = _nethack_history_budget(payload)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         payload["ai"]["recent_events"] = []
         payload["ai"]["recent_events_omitted"] = True
