@@ -3354,6 +3354,42 @@ def _defender_successor(mem, cur, b):
     return True
 
 
+def _entered_battle_successor(mem, cur, b):
+    """A measured new entry and two complete panels release a finished win.
+
+    g510: only one attack-entry frame separated Gasupacho/Cinnamon from
+    the hero/Venus. The old zero-enemy-HP record then blocked every input.
+    Never infer a transition from changed names alone or from a living enemy.
+    """
+    entry = mem.get('attack')
+    maximum = general_max_hp('しゅじんこう' if b.ally == NAME else b.ally)
+    eligible = (isinstance(entry, dict) and entry.get('side') == 'attack'
+                and entry.get('general') == b.ally and b.ally != cur.get('ally')
+                and entry.get('castle') in chart.castles(mem.get('chapter') or 0)
+                and type(cur.get('enemy_hp')) is int and cur['enemy_hp'] == 0
+                and type(cur.get('ally_hp')) is int and cur['ally_hp'] > 0
+                and type(cur.get('away')) is int and cur['away'] >= 1
+                and maximum is not None and 0 < b.ally_hp <= maximum and b.enemy_hp > 0)
+    reading = [b.enemy, b.ally]
+    if not eligible:
+        cur.pop('entry_successor_seen', None)
+        return False
+    if cur.get('entry_successor_seen') != reading:
+        cur['entry_successor_seen'] = reading
+        return False
+    context = dict(entry)
+    previous_ally, previous_enemy = cur['ally'], cur['enemy']
+    battle_end(mem, 'confirmed_new_entry')
+    reset_battle_controls(mem)
+    mem['attack'] = context
+    mem['battle_seen'] = reading
+    _record(mem, 'battle_entry_successor', ally=b.ally, enemy=b.enemy,
+            castle=context['castle'], previous_ally=previous_ally, previous_enemy=previous_enemy,
+            observed_metric={'ally_hp': b.ally_hp, 'enemy_hp': b.enemy_hp},
+            reason='前戦の敵HP0・新しい突入記録・連続した完全パネルから次の戦闘へ移行')
+    return True
+
+
 def battle_step(screen: Screen, mem):
     b = screen.battle
     if (b is None or not b.enemy or not b.ally or UNKNOWN in b.enemy or UNKNOWN in b.ally
@@ -3361,17 +3397,19 @@ def battle_step(screen: Screen, mem):
         mem['battle_seen'] = None
         if mem.get('battle'):
             mem['battle'].pop('successor_seen', None)
+            mem['battle'].pop('entry_successor_seen', None)
         return []  # partial panel must not replace the last clear HP/context
     _migrate_card_evidence(mem)
     cur = mem.get('battle')
     if cur:
         cur.pop('defeat_owner', None)  # a later complete combat panel invalidates the post-combat flag
     if cur and (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
-        if not _defender_successor(mem, cur, b):
+        if not (_entered_battle_successor(mem, cur, b) or _defender_successor(mem, cur, b)):
             return []
         cur = None
     elif cur:
         cur.pop('successor_seen', None)
+        cur.pop('entry_successor_seen', None)
     if cur is None:
         # Fades dim the panel and can drop dakuten; open a battle record only
         # after two consecutive identical readings of both names.
