@@ -27,6 +27,7 @@ STATE = 'hanjuku_narration.json'
 TAIL_BYTES = 65536
 MAX_TEXT = 120
 RECENT = 32
+PLAN_MAX_AGE_S = 5
 _busy = threading.Event()
 
 
@@ -66,12 +67,17 @@ def _tail(path: Path) -> list[dict]:
     return out
 
 
+def _item_max_age(item, max_age):
+    return min(max_age, PLAN_MAX_AGE_S) if item.get('evidence_kind') == 'plan' else max_age
+
+
 def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age):
     from .agent.fence import AgentFence, FenceLost, check_fence, read_canonical, shared_section
     from .hanjuku_run import load
     from .game_switch import GameSwitchBusyError
 
     status = 'enqueued'
+    max_age = _item_max_age(item, max_age)
     identity = {k: item.get(k) for k in ('game', 'runtime_id', 'generation', 'lease_id')}
 
     def deliver_active():
@@ -88,6 +94,13 @@ def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age):
         if not run or ((run.get('terminal_reason') or run.get('terminal_candidate'))
                        and not item.get('terminal_recap')):
             return 'skipped:terminal'
+        if item.get('evidence_kind') == 'plan':
+            bot = read_record(runtime_dir / 'hanjuku_bot.json', limit=256 * 1024)
+            trace = bot.get('decision_trace') or {}
+            if (not isinstance(item.get('decision_id'), str) or not item['decision_id']
+                    or trace.get('decision_id') != item['decision_id']
+                    or any(trace.get(k) != v for k, v in identity.items())):
+                return 'skipped:plan_superseded'
         return 'ready'
 
     try:
@@ -155,7 +168,7 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=No
                 reason = 'terminal'
             elif chosen is not None:
                 reason = 'superseded'
-            elif not isinstance(item.get('at'), (int, float)) or now - item['at'] > cfg['max_age_s']:
+            elif not isinstance(item.get('at'), (int, float)) or now - item['at'] > _item_max_age(item, cfg['max_age_s']):
                 reason = 'stale'
             elif len(text) > MAX_TEXT:
                 reason = 'too_long'
