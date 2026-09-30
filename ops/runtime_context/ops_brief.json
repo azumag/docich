@@ -1,11 +1,11 @@
 {
-  "output_sha256": "16b52908e937be85b2a4cca59de9383a6eefdc855c71a1a68940016aebd70649",
+  "output_sha256": "7d74e1cec481cce8cde0246cd99fac152a5c2a054e6354986a4b27e83339384c",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "d8bcbf581903d87072cc33b9acfdb65c89fd0b34f55a1a51d1faaf14576aa158",
+  "source_sha256": "d2e00328bd4b562a6d6d846c9e04bcbfefdfc27536eeeb33285635aaa0e11ba9",
   "topics": [
+    "防衛敗北後の新しい城旗保持 v106準備",
     "g508主人公ボス敗北とv105実メニュー対策",
-    "g508守備将軍交代停止とv104準備",
-    "g508募集後予算とv103準備"
+    "g508守備将軍交代停止とv104準備"
   ]
 }

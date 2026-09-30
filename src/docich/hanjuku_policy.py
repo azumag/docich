@@ -1315,6 +1315,15 @@ def world_map_step(screen, mem, frame):
 def _apply_world_flags(mem, flags):
     chapter = mem.get('chapter') or 0
     home = chart.home_castle(chapter)
+    cur = mem.get('battle') or {}
+    castle = cur.get('castle')
+    if (cur.get('side') == 'defense' and castle in chart.castles(chapter)
+            and type(cur.get('ally_hp')) is int and cur['ally_hp'] == 0
+            and type(cur.get('enemy_hp')) is int and cur['enemy_hp'] > 0
+            and flags.get(castle) in ('own', 'enemy')):
+        # This flag was read after this defender's zero HP, not before entry
+        # or in an earlier battle/month. Keep it only inside this battle.
+        cur['defeat_owner'] = {'castle': castle, 'chapter': chapter, 'owner': flags[castle]}
     captured = mem.setdefault('captured', [])
     changed = []
     home_owner = flags.get(home)
@@ -3234,6 +3243,8 @@ def battle_step(screen: Screen, mem):
         return []  # partial panel must not replace the last clear HP/context
     _migrate_card_evidence(mem)
     cur = mem.get('battle')
+    if cur:
+        cur.pop('defeat_owner', None)  # a later complete combat panel invalidates the post-combat flag
     if cur and (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
         if not _defender_successor(mem, cur, b):
             return []
@@ -4048,6 +4059,15 @@ def battle_end(mem, next_kind, *, defense_continues=False):
     else:
         outcome = 'unclassified'
     castle = cur.get('castle')
+    receipt = cur.get('defeat_owner') or {}
+    observed_owner = (receipt.get('owner') if isinstance(receipt, dict)
+                      and receipt.get('castle') == castle
+                      and receipt.get('chapter') == (mem.get('chapter') or 0)
+                      and castle in chart.castles(mem.get('chapter') or 0)
+                      and receipt.get('owner') in ('own', 'enemy')
+                      and type(ally_hp) is int and type(enemy_hp) is int
+                      and cur.get('side') == 'defense' and outcome == 'loss' else None)
+    defense_retained = observed_owner == 'own'
     if outcome == 'win' and castle and cur.get('side') == 'attack':
         captured = mem.setdefault('captured', [])
         if castle not in captured:
@@ -4058,13 +4078,13 @@ def battle_end(mem, next_kind, *, defense_continues=False):
         _garrison_move(mem, cur.get('ally'), target=castle)
     if outcome == 'win' and castle and cur.get('side') == 'defense':
         _garrison_move(mem, cur.get('ally'), target=castle)
-    if outcome == 'loss' and castle and cur.get('side') == 'defense' and not defense_continues:
+    if outcome == 'loss' and castle and cur.get('side') == 'defense' and not (defense_continues or defense_retained):
         mem['captured'] = [c for c in mem.get('captured', []) if c != castle]
         (mem.get('garrison') or {}).pop(castle, None)
         lost = mem.setdefault('lost', [])
         if castle not in lost:
             lost.append(castle)
-    if outcome == 'loss' and (cur.get('side') == 'attack' or defense_continues) and cur.get('ally'):
+    if outcome == 'loss' and (cur.get('side') == 'attack' or defense_continues or defense_retained) and cur.get('ally'):
         general = cur['ally']
         for source in list(mem.get('garrison') or {}):
             _garrison_move(mem, general, source=source)
@@ -4151,10 +4171,12 @@ def battle_end(mem, next_kind, *, defense_continues=False):
         mem['boss_defeated'] = mem.get('chapter')
     elif outcome == 'win' and castle and cur.get('side') == 'attack':
         resulting = f'captured:{castle}'
-    elif outcome == 'loss' and castle and cur.get('side') == 'defense' and not defense_continues:
+    elif outcome == 'loss' and castle and cur.get('side') == 'defense' and not (defense_continues or defense_retained):
         resulting = f'lost:{castle}'
     if defense_continues:
         resulting = f'defense_continues:{castle}'
+    elif defense_retained:
+        resulting = f'defense_retained:{castle}'
     _record(mem, 'battle_result', **_battle_labels(cur), enemy=cur.get('enemy'),
             expected_metric=cur.get('strategy_expected'),
             ally=cur.get('ally'), castle=castle, side=cur.get('side'), outcome=outcome,
@@ -4165,7 +4187,8 @@ def battle_end(mem, next_kind, *, defense_continues=False):
                              'cards_unclassified': cur.get('cards_unclassified', []),
                              'card_consumption_complete': cur.get('card_consumption_complete', False),
                              'hero_retreat_selected': bool((cur.get('hero_retreat') or {}).get('selected')),
-                             'general_loss': 'unclassified'},
+                             'general_loss': 'unclassified',
+                             **({'castle_owner_after_defeat': observed_owner} if observed_owner else {})},
             resulting_event=resulting or outcome, resulting_stage=None, next_screen=next_kind,
             reason='戦闘終了時のHP表示から判定' if outcome != 'unclassified'
             else '最終HPが0/非0で確定しないため未分類')
