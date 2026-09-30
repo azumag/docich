@@ -155,6 +155,15 @@ AI_COMPONENTS = (
     "improvement",
     "other",
 )
+AI_FAILURE_CAUSES = (
+    "rate_limit",
+    "timeout",
+    "auth_policy",
+    "provider_server",
+    "model_unavailable",
+    "invalid_output",
+    "other",
+)
 TMP_SO_ROOT = Path("/tmp")
 TMP_SO_PATTERNS = (
     re.compile(r"^\..+-00000000\.so\Z"),
@@ -1045,6 +1054,26 @@ def _ai_component_bucket(label):
     return "other"
 
 
+def _ai_failure_cause(rc, error):
+    """Collapse one fail event to a fixed cause without exposing its text."""
+    rc = str(rc or "").lower()
+    preview = str(error or "").lower()
+    text = f"{rc} {preview}"
+    if rc == RATE_LIMIT_RC or re.search(r"\b429\b|rate[ _-]?limit|quota", text):
+        return "rate_limit"
+    if re.search(r"timed? out|timeout|deadline exceeded", text):
+        return "timeout"
+    if re.search(r"\b401\b|\b403\b|unauthori[sz]ed|forbidden|permission denied|restricted.?model", text):
+        return "auth_policy"
+    if re.search(r"\b50[0-4]\b|server error|internal server|bad gateway|service unavailable|gateway timeout", text):
+        return "provider_server"
+    if re.search(r"\b404\b|model not found|unknown model|model unavailable|model is not available", text):
+        return "model_unavailable"
+    if re.search(r"validation|validator|empty output|output empty|too short|provider error text|invalid output", text):
+        return "invalid_output"
+    return "other"
+
+
 def _collect_ai(soren, now):
     stats_dir = soren / "tmp" / "state" / "ai_stats"
     window_start = now - DIAG_WINDOW_SEC
@@ -1053,6 +1082,7 @@ def _collect_ai(soren, now):
     attempts = successes = failures = rate_limits = winners = 0
     all_failed = queue_giveups = gate_giveups = 0
     all_failed_components = {component: 0 for component in AI_COMPONENTS}
+    failure_causes = {cause: 0 for cause in AI_FAILURE_CAUSES}
     budget_exhausted = 0
     budget_exhausted_components = {component: 0 for component in AI_COMPONENTS}
     budget_exhausted_detail_sampled = 0
@@ -1169,6 +1199,7 @@ def _collect_ai(soren, now):
             failures += 1
             entry["fail"] += 1
             entry["agents"].add(agent)
+            failure_causes[_ai_failure_cause(rc, event.get("error"))] += 1
             if rc == RATE_LIMIT_RC:
                 rate_limits += 1
         elif kind == "winner":
@@ -1224,6 +1255,7 @@ def _collect_ai(soren, now):
         "fallbacks": fallback_ok,
         "all_failed": all_failed,
         "all_failed_components": all_failed_components,
+        "failure_causes": failure_causes,
         "recent_events_omitted": False,
         "queue_giveups": queue_giveups,
         "gate_giveups": gate_giveups,
