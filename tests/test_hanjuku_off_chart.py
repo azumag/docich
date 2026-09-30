@@ -123,6 +123,7 @@ def test_castle_menu_clears_the_source_miss_count():
 def test_roof_colours_revoke_an_undefended_castle_and_put_its_retake_first(monkeypatch):
     monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: g401_roofs())
     mem = {**g401_memory(), 'cursor': [566, 729], 'uncertain': False}
+    mem['garrison']['カストーラ'].append('アルテミス')  # keep a defender
     policy.update_world(map_screen(190, 200), mem, FRAME)
     assert 'ジョンリギ' in mem['captured']               # one reading is not enough
     policy.update_world(map_screen(190, 200), mem, FRAME)
@@ -159,17 +160,21 @@ def test_off_chart_uses_measured_idle_generals_not_the_marching_chart_general():
     candidates = policy.interim_candidates(mem)
     assert all(c['general'] != 'どうし' for c in candidates.values())
     assert all(c['source'] != 'キカンドン' for c in candidates.values())   # measured empty
+    # Single defenders stay in their castles. Unread sources can only be
+    # inspected; the live list guard must verify a spare before selection.
+    assert not any(c['purpose'] in {'retake', 'attack'}
+                   and c['source'] in {'ほんじょう', 'カストーラ'} for c in candidates.values())
+    mem['garrison']['カストーラ'].append('アルテミス')
+    candidates = policy.interim_candidates(mem)
     first = candidates['retake_1']
-    # ほんじょう and カストーラ each hold one general: the nearer one goes.
-    assert (first['general'], first['source'], first['target']) == ('ヴィーナス', 'カストーラ', 'ジョンリギ')
-    # A castle that keeps a defender behind is preferred over the nearest.
-    mem['garrison']['ほんじょう'] = ['ゼウス', 'アルテミス']
-    first = policy.interim_candidates(mem)['retake_1']
-    assert (first['general'], first['source']) == ('ゼウス', 'ほんじょう')
-    # A castle somebody is still marching on is kept, but after the others.
-    targets = [c['target'] for c in candidates.values()]
-    assert targets.index('ジョンリギ') < targets.index('ゴーメン')
-    assert targets[-2:] == ['ゴーメン', 'スペンソニア']
+    assert first['source'] == 'カストーラ' and first['general'] != 'どうし'
+    # Recent expeditions reserve their targets, instead of being offered last.
+    mem['tick'] = 10
+    for sortie in mem['sorties'].values():
+        sortie['tick'] = 5
+    targets = {c['target'] for c in policy.interim_candidates(mem).values()}
+    assert 'ジョンリギ' in targets
+    assert not {'ゴーメン', 'スペンソニア'} & targets
 
 
 def test_interim_without_garrison_reading_keeps_the_chart_general_and_source():
@@ -219,7 +224,7 @@ def test_an_order_from_a_lost_castle_is_neither_picked_nor_blocking():
     actions = policy.map_step(Screen(lines=[], hand=None, text='', kind='map'), mem, FRAME)
     order = policy._order(mem)
     assert order is not None and order['source'] != 'ジョンリギ'
-    assert decisions(mem, 'chart_interim_order')[-1]['purpose'] == 'retake'
+    assert decisions(mem, 'chart_interim_order')[-1]['purpose'] == 'move'  # no spare for retake
     assert actions == [] or all(a['type'] == 'pad' for a in actions)
 
 

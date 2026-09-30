@@ -585,7 +585,9 @@ def _plan_pending(mem) -> bool:
         if after and after[0] == 'captured' and after[1] not in owned:
             return after[1] in heading          # waits on a capture somebody is making
         # A source read empty cannot start the order (g438: dead ココット's J1).
-        return _ready(o, mem) and _source(o, mem) in owned and garrison.get(_source(o, mem)) != []
+        return (_ready(o, mem) and _source(o, mem) in owned
+                and garrison.get(_source(o, mem)) != []
+                and not _retake_reserved(o, mem) and not _source_spare_missing(o, mem))
 
     return any(status.get(o['step']) in (None, 'pending') and live(o) for o in plan)
 
@@ -627,6 +629,8 @@ def next_order(mem):
                 # the order (g407: the plan's どうし/ヴィーナス from an empty home).
                 and garrison.get(_source(order, mem)) != []
                 and not _last_castle_held(mem, order)      # its castle must keep its last general
+                and not _retake_reserved(order, mem)
+                and not _source_spare_missing(order, mem)
                 and mem.get('general_override', {}).get(order['step'], order['general']) not in _en_route(mem)[0]):
             return order
     return None
@@ -738,6 +742,59 @@ def _en_route(mem):
     return {s.get('general') for s in sorties}, {s['target'] for s in sorties if s.get('target')}
 
 
+def _sortie_reserved_target(mem, step, sortie):
+    if sortie.get('target'):
+        return sortie['target']
+    if sortie.get('status') == 'launched_unconfirmed':
+        # Reserve the intended destination without claiming observed arrival.
+        # An interrupted target selection must not dispatch reinforcements.
+        return ((mem.get('launched_orders') or {}).get(step) or {}).get('target')
+    return None
+
+
+def _reserved_targets(mem):
+    now = int(mem.get('tick') or 0)
+    return {_sortie_reserved_target(mem, step, s)
+            for step, s in (mem.get('sorties') or {}).items()
+            if s.get('status') in ('en_route', 'launched_unconfirmed')
+            and s.get('tick') is not None
+            and 0 <= now - int(s['tick']) < SORTIE_BUSY_TICKS} - {None}
+
+
+def _retake_order(order, mem):
+    return (not _is_boss_order(order, mem)
+            and (order.get('purpose') == 'retake'
+                 or order.get('target') in (mem.get('lost') or ())))
+
+
+def _reserve_source_guard(order, mem):
+    # Original chart offensives and boss waves retain their sequences. A
+    # recapture or an off-chart attack must leave a measured idle defender.
+    return (_retake_order(order, mem)
+            or (order.get('purpose') == 'attack' and order['step'].startswith('I:')))
+
+
+def _retake_reserved(order, mem):
+    if (not _retake_order(order, mem)
+            or (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed'):
+        return False
+    now = int(mem.get('tick') or 0)
+    return any(step != order['step'] and _sortie_reserved_target(mem, step, s) == order.get('target')
+               and s.get('status') in ('en_route', 'launched_unconfirmed')
+               and s.get('tick') is not None
+               and 0 <= now - int(s['tick']) < SORTIE_BUSY_TICKS
+               for step, s in (mem.get('sorties') or {}).items())
+
+
+def _source_spare_missing(order, mem):
+    if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
+        return False  # reconcile an issued sortie; do not cancel its carried-kit receipt
+    present = (mem.get('garrison') or {}).get(_source(order, mem))
+    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    return (_reserve_source_guard(order, mem) and present is not None
+            and len(set(present) - unavailable) < 2)
+
+
 def _interim_source(mem, target, chart_order, owned, busy):
     """(source, general) for an interim sortie to ``target``, or None.
 
@@ -750,19 +807,19 @@ def _interim_source(mem, target, chart_order, owned, busy):
     home = chart.home_castle(chapter)
     garrison = mem.get('garrison') or {}
     busy = busy | set(mem.get('general_location_unknown') or ())
-    if _hero_egg_broken(mem):
-        busy = busy | {NAME}
+    unavailable_for_attack = {NAME} if _hero_egg_broken(mem) else set()
     free = {c: [g for g in garrison.get(c) or () if g not in busy] for c in owned}
     # Emptying a castle is how the undefended ジョンリギ fell (g401), so a
-    # castle that keeps somebody behind goes first, then the nearest.
-    staffed = sorted((c for c in owned if free[c]),
-                     key=lambda c: (len(free[c]) < 2, _distance(chapter, c, target)))
+    # castle that keeps somebody behind is required, then the nearest goes.
+    staffed = sorted((c for c in owned if len(set(free[c])) >= 2
+                      and set(free[c]) - unavailable_for_attack),
+                     key=lambda c: _distance(chapter, c, target))
     if staffed:
-        present = [g for g in garrison[staffed[0]] if g not in busy]
+        present = [g for g in free[staffed[0]] if g not in unavailable_for_attack]
         present.sort(key=lambda g: g == NAME)          # risk the hero last
         return staffed[0], present[0]
     general = chart_order['general'] if chart_order else NAME
-    if general in busy:
+    if general in busy or general in unavailable_for_attack:
         return None
     for source in ((chart_order or {}).get('source'), home):
         if source in owned and garrison.get(source) is None:
@@ -796,7 +853,8 @@ def interim_candidates(mem) -> dict:
     home = chart.home_castle(chapter)
     boss = chart.boss_castle(chapter)
     owned = _owned(mem) & set(castles)
-    busy, heading = _en_route(mem)
+    busy, _ = _en_route(mem)
+    heading = _reserved_targets(mem)
     chart_orders = {}
     for order in chart.orders(chapter):
         chart_orders.setdefault(order['target'], order)
@@ -805,9 +863,9 @@ def interim_candidates(mem) -> dict:
     targets = [c for c in (*lost, *chart_orders, *castles)
                if c in castles and c not in owned and c != boss]
     targets = list(dict.fromkeys(targets))
-    # A castle a unit is already marching on goes last, not away: that unit
-    # may never arrive (g401: 1-A2 stayed en_route for 20 minutes).
-    targets.sort(key=lambda c: c in heading)
+    # One recent expedition per target. Unobserved old arrivals stop reserving
+    # after SORTIE_BUSY_TICKS; they must not empty every castle in the meantime.
+    targets = [c for c in targets if c not in heading]
     sorties = {'retake': [], 'attack': []}
     for target in targets:
         picked = _interim_source(mem, target, chart_orders.get(target), owned, busy)
@@ -2735,6 +2793,33 @@ def _last_castle_held(mem, order) -> bool:
             and int(mem.get('tick') or 0) - int(hold.get('tick') or 0) < LAST_CASTLE_HOLD_TICKS)
 
 
+def _hold_guarded_sortie(mem, order, decision, reason, observed):
+    mem.setdefault('orders', {})[order['step']] = (
+        'failed' if order['step'].startswith('I:') else 'pending')
+    mem['active'] = None
+    mem['picked'] = []
+    mem.setdefault('sortie_general', {}).pop(order['step'], None)
+    mem.setdefault('order_context', {}).pop(order['step'], None)
+    _record(mem, decision, chart_step=order['step'], source=_source(order, mem),
+            target=order['target'], observed_metric=observed, reason=reason)
+    return [pad('b'), pad('b')]
+
+
+def _keep_sortie_defender(screen, mem, order):
+    if not _reserve_source_guard(order, mem):
+        return None
+    present = _present_generals(screen)
+    if present is None:
+        return _hold_deploy(screen, mem, order, '守備を残せる将軍一覧を読めないため出撃を保留')
+    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    available = set(present) - unavailable
+    if len(available) >= 2:
+        return None
+    return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',
+        '奪還・暫定攻撃の出撃元に待機将軍を1人残せないため出撃を取り消す',
+        {'present': present[:8], 'available': sorted(available)})
+
+
 def deploy_step(screen: Screen, mem):
     order = _order(mem)
     kind = screen.kind
@@ -2743,6 +2828,14 @@ def deploy_step(screen: Screen, mem):
         return [pad('b')]
     if _broken_hero_order(order, mem):
         return _cancel_broken_hero_sortie(mem, order)
+    if _retake_reserved(order, mem):
+        return _hold_guarded_sortie(mem, order, 'sortie_held_target_reserved',
+            '同じ奪還先へ向かう部隊が既にいるため重複出撃を取り消す',
+            {'target': order['target']})
+    if kind != 'general_list' and _source_spare_missing(order, mem):
+        return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',
+            '出撃元の記録で待機将軍を1人残せないため出撃を取り消す',
+            {'present': (mem.get('garrison') or {}).get(_source(order, mem))})
     if kind == 'castle_menu':
         checked = _check_source_castle(screen, mem, order)
         if checked is not None:
@@ -2759,6 +2852,9 @@ def deploy_step(screen: Screen, mem):
         _observe_garrison(screen, mem, order)
         if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
             return _verify_sortie_source(screen, mem, order)
+        guard = _keep_sortie_defender(screen, mem, order)
+        if guard is not None:
+            return guard
         guard = _keep_last_castle(screen, mem, order)
         if guard is not None:
             return guard
