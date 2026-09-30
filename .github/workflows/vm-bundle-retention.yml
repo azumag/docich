@@ -7,6 +7,15 @@ on:
   schedule:
     - cron: '37 21 * * *'
   workflow_dispatch:
+    inputs:
+      emergency_prune:
+        description: One manual pass ignoring age; preserve all references and newest 8 unreferenced bundles
+        type: boolean
+        default: false
+      confirm:
+        description: For emergency pass type prune-unreferenced-bundles
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -47,6 +56,14 @@ jobs:
           ref: main
           persist-credentials: false
           submodules: false
+
+      - name: Authorize fixed emergency age override
+        id: emergency
+        env:
+          EMERGENCY_PRUNE: ${{ inputs.emergency_prune }}
+          EMERGENCY_CONFIRM: ${{ inputs.confirm }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: python3 ops/vm_actions/authorize_bundle_retention.py
 
       - name: Ignore superseded workflow-run trigger
         id: gate
@@ -113,6 +130,9 @@ jobs:
           sha="$(git rev-parse HEAD)"
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           command='python3 ops/vm_actions/prune_bundles.py /etc/azumag-vm-ops.json --repo docich --json'
+          if [[ '${{ steps.emergency.outputs.emergency }}' == '1' ]]; then
+            command='python3 ops/vm_actions/prune_bundles.py /etc/azumag-vm-ops.json --repo docich --min-age-seconds 0 --keep-unreferenced 8 --json'
+          fi
           ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $sha" <<< "$command"
 
       - name: Verify production remains configured
