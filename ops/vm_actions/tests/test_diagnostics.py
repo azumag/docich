@@ -118,6 +118,10 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         evil_data = json.loads(evil.stdout.decode())
         for data in (clean_data, evil_data):
             data["diagnostics"]["meta"].pop("generated_at", None)
+            # The two independent read-only calls can cross a wall-clock second.
+            history = data["diagnostics"]["nethack_history"]
+            self.assertIs(type(history["collected_at"]), int)
+            history.pop("collected_at")
         self.assertEqual(clean_data, evil_data)
 
     def test_modified_collector_is_refused(self):

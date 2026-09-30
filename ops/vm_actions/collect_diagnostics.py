@@ -3809,13 +3809,13 @@ def _collect_nethack_history(state_dir, now):
             'daily': _nethack_history(state_dir, True), 'completed_runs': _nethack_history(state_dir, False)}
 
 
-def _nethack_history_budget(payload):
+def _nethack_history_budget(payload, *, keep_latest=False):
     """Trim oldest history first, keeping the latest of each source if possible."""
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     while len(text.encode("utf-8")) > MAX_JSON_BYTES:
         sources = [payload["nethack_history"][name]
                    for name in ("daily", "completed_runs")
-                   if payload["nethack_history"][name]["records"]]
+                   if len(payload["nethack_history"][name]["records"]) > int(keep_latest)]
         if not sources:
             break  # Existing diagnostics retain their original budget handling.
         # Each source is newest-first. Exhaust older records before removing
@@ -3826,6 +3826,30 @@ def _nethack_history_budget(payload):
         history["output_omitted"] = True
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return text
+
+
+def _diagnostics_budget(payload):
+    """Keep latest history through existing detail reductions, then bound it."""
+    text = _nethack_history_budget(payload, keep_latest=True)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        payload["ai"]["recent_events"] = []
+        payload["ai"]["recent_events_omitted"] = True
+        payload["workers"]["details"] = {}
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+            payload["ai"]["anomalous_components"] = {}
+            text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        profile = payload["soren91_drop_profile"]
+        if profile.get('profileStatus') == 'ok':
+            profile['omittedComparisonGroups'] += len(profile['groups'])
+            profile['omittedGameGroups'] += len(profile['games'])
+            profile['groups'] = {}
+            profile['games'] = []
+            profile['slowest'] = []
+            profile['representativeOmitted'] = True
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return _nethack_history_budget(payload)
 
 
 def main(argv):
@@ -3894,25 +3918,7 @@ def main(argv):
         or retention["timer"].get("active") is not True
     ):
         payload["status"] = "warn"
-    text = _nethack_history_budget(payload)
-    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
-        payload["ai"]["recent_events"] = []
-        payload["ai"]["recent_events_omitted"] = True
-        payload["workers"]["details"] = {}
-        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-        if len(text.encode("utf-8")) > MAX_JSON_BYTES:
-            payload["ai"]["anomalous_components"] = {}
-            text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
-        profile = payload["soren91_drop_profile"]
-        if profile.get('profileStatus') == 'ok':
-            profile['omittedComparisonGroups'] += len(profile['groups'])
-            profile['omittedGameGroups'] += len(profile['games'])
-            profile['groups'] = {}
-            profile['games'] = []
-            profile['slowest'] = []
-            profile['representativeOmitted'] = True
-        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    text = _diagnostics_budget(payload)
     sys.stdout.write(text + "\n")
     return 0
 
