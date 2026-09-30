@@ -108,6 +108,16 @@ def test_actual_sender_receipts_bind_request_then_leave_arrival_unconfirmed(tmp_
     assert [r['decision'] for r in mem['_records']] == ['camp_recall_input_sent', 'camp_recall_unconfirmed']
 
 
+def test_unread_cursor_snapshot_uses_existing_ring_without_an_unrelated_chart_context(tmp_path):
+    module=command_bot();frame=picker()
+    state={'step':241,'screen_kind':'text','policy':{'active':'unrelated'}}
+    record={'decision':'camp_menu_unread','chart_step':None}
+    module.persist(tmp_path,state,[record],{'hanjuku':ID},actions=[],frame_sha256=frame.digest(),frame=frame)
+    plan=json.loads((tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()[0])
+    assert plan['chart_step'] is None and plan['snapshot']=='decision-001.png'
+    assert len(list((tmp_path/'hanjuku_frames').glob('*.png')))==1
+
+
 def test_receipt_reader_rejects_old_identity_frame_time_and_duplicate_lines(tmp_path):
     module = command_bot(); _, state = pending()
     trace = {**ID, 'decision_id': 'g514-8937051b:514:1', 'frame_sha256': picker().digest(), 'planned_at': 100}

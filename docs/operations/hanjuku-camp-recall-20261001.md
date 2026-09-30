@@ -18,6 +18,6 @@ Base: `8cb955e7b5137c17dcbb50619d7b574e854d0939`。v123のscan境界、v122の�
 
 ## 検証と残件
 
-同じcursorの未反映Downを確定に使わない、未知hand有限退出、実picker/自軍旗、実senderの2入力照合、旧/別identity/画面/時刻/重複/読み取れないtail、誤った旧hero/status更新、別chart出撃と混同しないことを回帰。半熟全1592passed39.40s。最後のreaderをstrict64KiBにした変更は関連217回帰成功(8.86s)、巨大な先頭/部分行とsymlinkを含む。
+同じcursorの未反映Downを確定に使わない、未知hand有限退出、実picker/自軍旗、実senderの2入力照合、旧/別identity/画面/時刻/重複/読み取れないtail、誤った旧hero/status更新、別chart出撃と混同しないことを回帰。半熟全1593passed39.54s。最後のreaderをstrict64KiBにした変更は関連568回帰成功(21.22s)、巨大な先頭/部分行とsymlinkを含む。
 
 実将軍本人、指示受理、移動、入城は未確認のまま。`recall_verification`は到着を主張しない単一の未確認記録であり、占有する操作FSMではない。g514の自然menu/dispatch/arrivalと先発隊3名・速度改善は残件。house.py/卵修理入口/共通配信/controller/watchdogは変更せず、VMは読取だけ、ゲーム入力やresetなし。

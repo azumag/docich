@@ -1898,17 +1898,18 @@ def camp_recall_step(screen: Screen, mem, frame):
         if move is None:
             misses = state['cursor_misses'] = int(state.get('cursor_misses', 0)) + 1
             if misses == 1:
-                _record(mem, 'camp_menu_unread', resulting_event='cursor_unconfirmed',
+                _record(mem, 'camp_menu_unread', chart_step=None, resulting_event='cursor_unconfirmed',
                         reason='野営メニューの実カーソルを読めないため帰還の確定を保留')
             if misses >= 3:
                 mem.pop('recall', None)
+                mem['uncertain'] = True
                 mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
                 _record(mem, 'camp_recall_aborted', resulting_event='cursor_unconfirmed',
                         reason='実カーソルを3回で確認できず野営メニューを閉じる')
                 return [pad('b')]
             return []
         state.pop('cursor_misses', None)
-        _record(mem, 'camp_recall_cursor', observed_metric={'current': _current(screen),
+        _record(mem, 'camp_recall_cursor', chart_step=None, observed_metric={'current': _current(screen),
                 'choice': 'きかん', 'move': move}, reason='野営の実手カーソルを帰還項目へ合わせる')
         if move != 'here':
             return [move]
@@ -1980,7 +1981,7 @@ def _request_recall(mem, state, goal, actions, **fields):
     state.pop('request_trace', None)
     state.pop('input_sent', None)
     state.pop('picker_closed', None)
-    _record(mem, 'camp_recall_requested',
+    _record(mem, 'camp_recall_requested', chart_step=None,
             observed_metric={'castle': goal, 'camp': state.get('target'),
                              'hero_intended': bool(state.get('hero')), **fields},
             resulting_event='planned_not_yet_sent',
@@ -2007,7 +2008,7 @@ def _recall_dispatch_step(screen, mem, state):
         mem.pop('recall', None)
         mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
         mem['uncertain'] = True
-        _record(mem, 'camp_recall_unconfirmed', observed_metric={'castle': state.get('goal'),
+        _record(mem, 'camp_recall_unconfirmed', chart_step=None, observed_metric={'castle': state.get('goal'),
                 'input_sent': bool(state.get('input_sent')), 'picker_closed': bool(state.get('picker_closed')),
                 'general': None}, resulting_event=status,
                 reason='帰還の本人・移動・到着を確認できず未確認として保持し、有限な操作を終了')

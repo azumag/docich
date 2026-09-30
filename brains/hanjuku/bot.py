@@ -42,6 +42,7 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'barrier_removed','month_plan','month_confirm','month_done','buy_skip','buy',
     'soldier_refill','prompt','egg_battle','gift','close_panel','situation_held',
     'chart_adjust_request','chart_adjust_applied','independent_menu',
+    'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
 })
 
 
@@ -78,7 +79,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
                               'card_pick','card_missing','sortie_confirm','order_substitute',
                               'order_launched_unconfirmed','sortie_arrival_confirmed',
                               'sortie_departed_observed','sortie_cancelled_observed',
-                              'camp_recall_cursor','camp_recall_requested','camp_recall_unconfirmed',
+                              'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
                               'house_dispatch_requested','house_arrival_seen'}
         or (r.get('decision') == 'order_start' and r.get('cards'))
         or (r.get('decision') == 'situation_held' and r.get('screen') in {'card_select','sortie_confirm'})
