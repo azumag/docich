@@ -364,7 +364,9 @@ def _egg_rows(frame: Frame) -> list[EggRow]:
     otherwise it sits left.
     """
     rows = []
-    for line in read_lines(frame, predicate=dark, rect=(0, 140, 256, 216)):
+    # g508: the lower HP row starts at y212; its glyphs need the
+    # final eight-pixel band too (216 cropped the enemy monster away).
+    for line in read_lines(frame, predicate=dark, rect=(0, 140, 256, 224)):
         left, right = line.words(0, 128), line.words(128, 256)
         if len(left) >= 2 and len(right) >= 2:
             continue          # the standard side-by-side battle panel

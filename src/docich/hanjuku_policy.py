@@ -5542,6 +5542,21 @@ def egg_choice_step(screen: Screen, mem):
     return [pad('a')]
 
 
+def _egg_general_reading(screen, mem, battle):
+    """Read this battle's general, never substitute a summoned monster's HP."""
+    rows = [row for row in screen.egg_rows
+            if row.side == 'ally' and row.name == battle.get('ally')
+            and type(row.hp) is int and row.hp >= 0]
+    if len(rows) != 1:
+        return None
+    ally = battle.get('ally')
+    full = (mem.get('hero_max_hp') if ally == NAME else general_max_hp(ally))
+    if type(full) is not int or full <= 0 or rows[0].hp > full:
+        return None
+    battle['ally_hp'] = rows[0].hp
+    return rows[0].hp, full
+
+
 def egg_battle_step(screen: Screen, mem):
     """Summoned-monster battle: a turn menu that waits for a command.
 
@@ -5572,6 +5587,7 @@ def egg_battle_step(screen: Screen, mem):
                 observed_metric={'experience_key': key}, source_pattern='⑥',
                 reason='チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）')
     battle = mem.get('battle') or {}
+    general_reading = _egg_general_reading(screen, mem, battle)
     if (_available_rare_tactic(mem, battle) and not battle.get('rare_egg_command_return')):
         battle['rare_egg_command_return'] = True
         _record(mem, 'battle_rare_egg_command', **_battle_labels(battle),
@@ -5584,8 +5600,7 @@ def egg_battle_step(screen: Screen, mem):
         # battle_menu_step's きりふだ/たいきゃく fallback); chasing a label
         # that never appears held the bot here forever (viewer report
         # 2026-09-28: 持ってないタマゴを使おうとして止まっている). The
-        # panel opens with the cursor on こうげき, so answer with a plain
-        # attack instead.
+        # attack fallback still checks the observed command cursor.
         if not mem.get('egg_battle_row_dead'):
             mem['egg_battle_row_dead'] = True
             _record(mem, 'situation_held', screen=screen.kind, strategy_variant='egg_unavailable',
@@ -5616,7 +5631,29 @@ def egg_battle_step(screen: Screen, mem):
                 _record(mem, 'battle_egg_retreat_unavailable', **_battle_labels(battle),
                         observed_metric={'attempts': attempts, 'screen': screen.kind},
                         reason='有限回の復帰入力でも退却メニューを確認できないため、退却成功とせず応戦する')
-        return [pad('a')]
+        # g508: after Excalibur fell, stale general HP82 concealed the
+        # wounded Venus while blind A kept choosing the weakest attack.
+        # Fierce attack adds lost HP to damage, but can miss/lose initiative;
+        # use it only as a bounded-resource last resort with actual panels.
+        enemy_rows = [r for r in screen.egg_rows if r.side == 'enemy'
+                      and r.name in _MONSTER_SKILLS and type(r.hp) is int and r.hp > 0]
+        fierce = (general_reading is not None and 0 < general_reading[0] * 2 <= general_reading[1]
+                  and len(enemy_rows) == 1 and not cards_left
+                  and 'たまごをつかう' not in screen.text)
+        label = 'もうこうげき' if fierce else 'こうげき'
+        move = _battle_menu_to(screen, label)
+        if move is None:
+            # Never confirm a previously selected fierce row blindly.
+            return [] if fierce or battle.get('egg_attack_label') == 'もうこうげき' else [pad('a')]
+        if battle.get('egg_attack_label') != label:
+            battle['egg_attack_label'] = label
+            _record(mem, 'battle_egg_general_attack', **_battle_labels(battle),
+                    observed_metric={'command': label, 'general_hp': battle.get('ally_hp'),
+                                     'max_hp': general_reading[1] if general_reading else None,
+                                     'enemy_monster': enemy_rows[0].name if len(enemy_rows) == 1 else None},
+                    reason=('卵・予定札がなく退却もできない負傷将軍は、実HPに基づきもうこうげきで応戦する'
+                            if fierce else '実コマンド位置を確認して通常攻撃へ戻す'))
+        return [pad('a')] if move == 'here' else [move]
     _egg_recheck(mem)
     if screen.hand:
         move = menu_to(screen, 'たまごをつかう')
