@@ -35,7 +35,7 @@ CARD_NAMES = frozenset({
     'イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース', 'グリンボー', 'ピッグローラー',
     'カンケリン', 'ノリウツール', 'クースカン', 'ゼンマイン', 'ミックミー', 'デッドガン',
     'ブレイコウ', 'ブンシーン', 'ファイアーボイス', 'ファバード', 'エンジェリン', 'マグネガキン',
-    'ハリケーン'})
+    'ハリケーン', 'キャトルミュー'})
 # Every real card name (the 32-card gcgx table). The panel reader accepts
 # these as rows; only CARD_NAMES can be planned or selected.
 ALL_CARD_NAMES = frozenset(reference.ALL_CARD_IDS)
@@ -645,10 +645,27 @@ def _tactics(mem, step):
     """
     base = chart.tactics(mem.get('chapter') or 0)
     order = _order_for_step(mem, step)
+    rare_kit = (mem.get('rare_card_kit') or {}).get(step)
+    rare = ()
+    carried = None
+    if rare_kit is not None and order:
+        carried = list(((mem.get('order_context') or {}).get(step) or {}).get('observed_metric', {}).get('cards') or [])
+        for card in (mem.get('kit_spent') or {}).get(step) or ():
+            if card in carried:
+                carried.remove(card)
+        base = tuple(t for t in base if t.get('step') not in (None, step)
+                     or t['card'] in carried)
+        if 'キャトルミュー' in carried:
+            rare = ({'enemy': None, 'card': 'キャトルミュー', 'open': True, 'step': step,
+                     'tactic_id': f'rare:{step}:キャトルミュー',
+                     'boss_only': _is_boss_order(order, mem),
+                     'note': 'レアイベント札を活用: 通常将軍を一撃、EMへ224と石化、ボスへ90ダメージ'},)
     if order is None or any(o['step'] == step for o in chart.orders(mem.get('chapter') or 0)):
-        return base
-    override = set((mem.get('card_override') or {}).get(step) or ())
-    carried = [card for card in _deploy_cards(order, mem) if card not in override]
+        return (*rare, *base)
+    override = set() if rare_kit is not None else set((mem.get('card_override') or {}).get(step) or ())
+    if carried is None:
+        carried = _deploy_cards(order, mem)
+    carried = [card for card in carried if card not in override and not (rare and card == 'キャトルミュー')]
     derived, seen = [], set()
     occurrences = {}
     spent = (mem.get('kit_spent') or {}).get(step, [])
@@ -668,7 +685,7 @@ def _tactics(mem, step):
                             'tactic_id': f'd:{step}:{card}:{ordinal}',
                             'boss_only': _is_boss_order(order, mem),
                             'note': '調整チャート既定: 検証済み戦術のない携行切り札を開幕使用'})
-    return (*base, *derived)
+    return (*rare, *base, *derived)
 
 
 INTERIM_LIMIT = 2             # JEV answers per off-chart situation
@@ -1909,6 +1926,8 @@ def map_step(screen: Screen, mem, frame):
             return []           # nothing charted: let real time advance
         mem['active'] = order['step']
         mem['picked'] = []
+        mem.setdefault('rare_card_kit', {}).pop(order['step'], None)
+        mem.pop('rare_scan', None)
         mem['y_jumps'] = {k: v for k, v in (mem.get('y_jumps') or {}).items()
                           if not k.startswith(f"{order['step']}:")}
         mem.pop('castle_verified', None)
@@ -2131,9 +2150,11 @@ def _strict_boss_cards(order, mem) -> bool:
 
 
 def _deploy_cards(order, mem):
-    if _strict_boss_cards(order, mem):
+    rare_kit = (mem.get('rare_card_kit') or {}).get(order['step'])
+    if _strict_boss_cards(order, mem) and rare_kit is None:
         return list(order['cards'])
-    cards = list(mem.get('card_override', {}).get(order['step'], order['cards']))
+    cards = list(rare_kit if rare_kit is not None else
+                 mem.get('card_override', {}).get(order['step'], order['cards']))
     # One planned copy leaves the kit per drop entry. g454 12:22: a planned
     # イッテツーン x2 had one copy already picked and the second recorded as
     # dropped; removing every copy of the card shrank the plan below what the
@@ -2157,6 +2178,7 @@ def _deploy_cards(order, mem):
     return capped
 
 
+RARE_SCAN_LIMIT = 32          # the entire 32-card catalogue, once per observed month
 CARD_SCROLL_LIMIT = 8         # downward presses looking for a card below a full panel
 CARD_MISS_LIMIT = 5           # card_select readings before a missing card is left behind
 CARD_UNREADABLE_LIMIT = 6     # unreadable card_select readings before cancelling the sortie
@@ -2185,6 +2207,66 @@ def _observe_card_stock(mem, inventory):
     while len(stock) > CARD_STOCK_LIMIT:
         stock.pop(next(iter(stock)))
 
+
+
+def _rare_card_inventory(screen, mem, order, inventory):
+    """Discover event stock before picking; freeze a positive, measured kit.
+
+    One bounded sweep per month reaches hidden event cards without declaring
+    the first four rows a complete inventory. Rewind before normal selection.
+    Never change an already picked/in-flight sortie or invent event stock.
+    """
+    if (mem.get('picked') or inventory['remaining'] == 0
+            or (mem.get('rare_card_kit') or {}).get(order['step']) is not None):
+        return None
+    month = mem.get('month') or f"chapter-{mem.get('chapter')}:unknown"
+    scan = mem.get('rare_scan') or {}
+    if scan.get('rewind', 0) > 0:
+        scan['rewind'] -= 1
+        if not scan['rewind']:
+            mem.pop('rare_scan', None)
+        _record(mem, 'sortie_input', **_deploy_context(order, mem),
+                screen='card_select', observed_metric={'rare_scan': 'rewind', 'remaining': scan['rewind']},
+                reason='レア札在庫の有限探索後に選択カーソルを戻す')
+        return [pad('up')]
+    row = next((r for r in inventory['rows'] if r['card'] == 'キャトルミュー'), None)
+    if row and row['stock'] > 0 and inventory['remaining'] > 0:
+        original = _deploy_cards(order, mem)
+        kit = _cap_card_ids(['キャトルミュー', *[c for c in original if c != 'キャトルミュー']])[:3]
+        mem.setdefault('rare_card_kit', {})[order['step']] = kit
+        mem['rare_scan_month'] = month
+        mem.pop('rare_scan', None)
+        _record(mem, 'rare_card_kit', **_deploy_context(order, mem), chart_step=order['step'],
+                observed_metric={'card': row['card'], 'stock': row['stock'], 'cards': kit,
+                                 'original_cards': original, 'id_sum': sum(CARD_IDS[c] for c in kit)},
+                reason='実在庫と携行枠を確認し、イベント札を1枚携行して活用する')
+        return []
+    if not isinstance(month, str) or mem.get('rare_scan_month') == month:
+        return None
+    scan = mem.setdefault('rare_scan', {'step': order['step'], 'presses': 0, 'rows': None})
+    if scan['step'] != order['step']:
+        mem.pop('rare_scan', None)
+        return None
+    rows = [r['card'] for r in inventory['rows']]
+    at_bottom = inventory['selected_y'] == inventory['rows'][-1]['y']
+    if (len(rows) < 4 or scan['presses'] >= RARE_SCAN_LIMIT
+            or (at_bottom and scan['rows'] == rows and scan.get('was_bottom'))):
+        mem['rare_scan_month'] = month
+        if scan['presses']:
+            scan['rewind'] = scan['presses'] - 1
+            if not scan['rewind']:
+                mem.pop('rare_scan', None)
+            _record(mem, 'sortie_input', **_deploy_context(order, mem),
+                    screen='card_select', observed_metric={'rare_scan': 'rewind', 'remaining': scan['rewind']},
+                    reason='レア札探索の末尾または上限に達したため選択カーソルを戻す')
+            return [pad('up')]
+        mem.pop('rare_scan', None)
+        return None
+    scan.update(presses=scan['presses'] + 1, rows=rows, was_bottom=at_bottom)
+    _record(mem, 'sortie_input', **_deploy_context(order, mem), screen='card_select',
+            observed_metric={'rare_scan': 'discover', 'presses': scan['presses'], 'rows': rows},
+            reason='未選択の実在庫を有限回探索し、隠れたイベント札の有無を確認する')
+    return [pad('down')]
 
 def _drop_card(screen, mem, order, card, inventory):
     """Leave a planned card behind after it stays unselectable (non-boss only).
@@ -2236,6 +2318,9 @@ def _deploy_context(order, mem, *, expected_metric=None):
         context.update(strategy_variant=retry.get('strategy_variant', 'retry_with_opening_cards'),
                        deviation_reason=retry.get('deviation_reason'),
                        expected_metric=retry.get('expected_metric'))
+    if (mem.get('rare_card_kit') or {}).get(order['step']):
+        context.update(strategy_variant='rare_cattlemyu',
+                       deviation_reason='実在庫のキャトルミューを活用するため携行札を変更')
     return context
 
 
@@ -2742,6 +2827,9 @@ def deploy_step(screen: Screen, mem):
                                 '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
         mem.get('card_unreadable', {}).pop(order['step'], None)
         _observe_card_stock(mem, inventory)
+        rare_actions = _rare_card_inventory(screen, mem, order, inventory)
+        if rare_actions is not None:
+            return rare_actions
         if not wanted:
             return _deploy_input(screen, mem, order, [pad('b')], '予定切り札の選択入力後に携行確認へ進む')
         # Pick what is on screen first: a full 4-row panel scrolls, and a card
@@ -2750,14 +2838,17 @@ def deploy_step(screen: Screen, mem):
         card = next((c for c in wanted if c in shown), card)
         row = next((row for row in inventory['rows'] if row['card'] == card), None)
         if (row is None and len(inventory['rows']) == 4 and inventory['remaining'] > 0
-                and int((mem.get('card_scroll') or {}).get(order['step'], 0)) < CARD_SCROLL_LIMIT):
+                and int((mem.get('card_scroll') or {}).get(order['step'], 0)) < (RARE_SCAN_LIMIT if (mem.get('rare_card_kit') or {}).get(order['step'])
+                   else CARD_SCROLL_LIMIT)):
             scrolls = mem.setdefault('card_scroll', {})
             scrolls[order['step']] = scrolls.get(order['step'], 0) + 1
             _record(mem, 'card_scroll', **_deploy_context(order, mem), card=card,
                     observed_metric={'rows': [[r['card'], r['stock']] for r in inventory['rows']],
                                      'selected_y': inventory['selected_y'], 'scrolls': scrolls[order['step']]},
                     reason='予定切り札が一覧に見えないため下へ送って隠れた行を表示する')
-            return [pad('down')]
+            direction = ('up' if CARD_IDS.get(card, 99) <
+                         min(CARD_IDS[r['card']] for r in inventory['rows']) else 'down')
+            return [pad(direction)]
         if row is None or row['stock'] == 0 or inventory['remaining'] == 0:
             if not _strict_boss_cards(order, mem):
                 dropped = _drop_card(screen, mem, order, card, inventory)
@@ -3155,7 +3246,8 @@ def battle_step(screen: Screen, mem):
             return []
     extra = [{'enemy': b.enemy, 'card': card, 'open': True, 'step': cur.get('step'),
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
-             for card in mem.get('card_override', {}).get(cur.get('step')) or []]
+             for card in ([] if (mem.get('rare_card_kit') or {}).get(cur.get('step')) is not None
+                          else mem.get('card_override', {}).get(cur.get('step')) or [])]
     tactics = [*extra, *_tactics(mem, cur.get('step'))]
     done = cur.setdefault('tactics_done', [])
     for index, tactic in enumerate(tactics):
@@ -3287,7 +3379,7 @@ def _behind(cur: dict) -> bool:
 # Only non-sacrificial cards are eligible for automatic survival use. Rank
 # healing first, then control/damage; this is not a guaranteed damage model.
 # Effects: https://gcgx.games/hanjuku/kirihuda.html
-SURVIVAL_CARDS = ('エンジェリン', 'ミックミー', 'マグネガキン', 'クースカン',
+SURVIVAL_CARDS = ('エンジェリン', 'キャトルミュー', 'ミックミー', 'マグネガキン', 'クースカン',
                   'グリンボー', 'ゼンマイン', 'ブラッキー', 'ファイアーボイス',
                   'ハリケーン', 'ブンシーン', 'ピッグローラー', 'イッテツーン',
                   'カンケリン', 'フットバース', 'ダイチスイム', 'ノリウツール')
@@ -3327,6 +3419,8 @@ def _rescue_card(candidates, cur):
         return None
     if 'エンジェリン' in candidates:
         return 'エンジェリン'                     # heal always goes first
+    if 'キャトルミュー' in candidates:
+        return 'キャトルミュー'                   # instant general kill / 224 EM / 90 boss
     if enemy_egg_triggers(cur.get('enemy')).has_egg is False:
         return candidates[0]                      # no egg to drop
     droppers = [card for card in candidates
@@ -3573,6 +3667,13 @@ def _survival_card_list(screen, mem, cur, flow, names):
     return [pad('a')]
 
 
+
+def _available_rare_tactic(mem, cur):
+    return next((t for t in _tactics(mem, cur.get('step'))
+                 if t['card'] == 'キャトルミュー' and t.get('step') == cur.get('step')
+                 and t.get('tactic_id') not in cur.get('tactics_done', [])
+                 and (not t.get('boss_only') or _boss_tactics_allowed(mem, cur))), None)
+
 def battle_menu_step(screen: Screen, mem):
     _migrate_card_evidence(mem)
     cur = mem.get('battle') or {}
@@ -3600,6 +3701,20 @@ def battle_menu_step(screen: Screen, mem):
             return [pad('down')]
         flow['stage'] = 'list'
         return [pad('a')]
+    if not flow and cur.get('egg_battle') and 'きりふだ' in screen.text:
+        rare = _available_rare_tactic(mem, cur)
+        move = _battle_menu_to(screen, 'きりふだ') if rare else None
+        if move is not None:
+            tid = rare['tactic_id']
+            cur.setdefault('tactics_done', []).append(tid)
+            cur['card_flow'] = {'card': 'キャトルミュー', 'stage': 'list' if move == 'here' else 'down',
+                                'tactic_id': tid, 'enemy_hp_at_open': cur.get('enemy_hp')}
+            _record(mem, 'battle_card', **_battle_labels(cur), card='キャトルミュー',
+                    observed_metric={'enemy_hp': cur.get('enemy_hp'), 'egg_battle': True},
+                    reason=('実携行のキャトルミューをボスへ使用し90ダメージを狙う'
+                            if cur.get('enemy') in chart.BOSSES.values() else
+                            '実携行のキャトルミューを敵EMへ使用し224ダメージと石化を狙う'))
+            return [pad('a')] if move == 'here' else [move]
     if cur.get('survival') or _survival_needed(cur):
         return _survival_menu(screen, mem, cur)
     # Chart has no card due this frame: independent judgment under the chart,
@@ -3872,7 +3987,7 @@ def battle_end(mem, next_kind):
     if outcome == 'loss' and boss_attempt:
         retries = mem.setdefault('retries', {})
         retries[step] = retries.get(step, 0) + 1
-        for key in ('general_override', 'card_override', 'order_context', 'sortie_general'):
+        for key in ('general_override', 'card_override', 'rare_card_kit', 'order_context', 'sortie_general'):
             mem.setdefault(key, {}).pop(step, None)
         if retries[step] <= 3:
             mem.setdefault('orders', {})[step] = 'pending'
@@ -4077,7 +4192,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
     # Route state belongs to the measured map of one chapter. Keep
     # run-wide counters/name evidence, never carry coordinates/orders.
     for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
-                'captured', 'card_override', 'cursor', 'egg_battle',
+                'captured', 'card_override', 'rare_card_kit', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
                 'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                 'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
@@ -5195,6 +5310,13 @@ def egg_battle_step(screen: Screen, mem):
                 expected_metric='召喚獣への対処と戦闘結果',
                 observed_metric={'experience_key': key}, source_pattern='⑥',
                 reason='チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）')
+    battle = mem.get('battle') or {}
+    if (_available_rare_tactic(mem, battle) and not battle.get('rare_egg_command_return')):
+        battle['rare_egg_command_return'] = True
+        _record(mem, 'battle_rare_egg_command', **_battle_labels(battle),
+                observed_metric={'card': 'キャトルミュー'},
+                reason='実携行のレア札で召喚敵へ対処するため、通常コマンドへ一度戻る')
+        return [pad('b')]
     action = mem.get('egg_action', 'use_egg')
     if action == 'use_egg' and 'たまごをつかう' not in screen.text:
         # A spent egg greys the row out and drops it from OCR (mirrors

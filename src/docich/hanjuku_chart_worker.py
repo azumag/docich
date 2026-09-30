@@ -98,6 +98,8 @@ def build_prompt(request: dict, results: list[dict]) -> str:
         'card_stock に無い札・在庫0の札は、そのプランの purchases で買う札を除いて cards に含めない'
         '（card_stock が空または無い場合は携行在庫が不明なので cards は空にする）。'
         '章に存在しない切り札を計画すると、出撃時に選べず保留と破棄になる。',
+        '- キャトルミューは火星人イベント限定で店では買えない。実在庫があれば1枚を優先活用する。'
+        '通常将軍を一撃で倒し、EMへ224ダメージと石化、ボスへ90ダメージ。ID28なので2枚携行は避ける。',
         '- 基本戦術: 携行する切り札のID合計が48以上だと敵将軍がエッグを使う。cards のID合計は47以下にすること'
         '（ID: ' + '、'.join(f'{n}={i}' for n, i in sorted(reference.ALL_CARD_IDS.items(), key=lambda kv: kv[1])
                              if n in adjust.CARD_NAMES) + '）。'
