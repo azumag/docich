@@ -14,6 +14,25 @@ FIXTURES = Path(__file__).parent / 'fixtures' / 'hanjuku'
 
 
 class RealFrameTests(unittest.TestCase):
+    def test_live_defender_successor_panel_resumes_the_next_general(self):
+        frame = vision._frame((FIXTURES / 'g508-defense-successor.png').read_bytes())
+        self.assertEqual(frame.digest(), '39df9a8aa8a43f6aa8cf083fc42f7b312502e5d4a63f53b70fc84564a58c5ac3')
+        from docich.hanjuku_screen import parse
+        from docich.hanjuku_policy import battle_step
+        screen = parse(frame)
+        self.assertEqual(screen.kind, 'battle')
+        self.assertEqual((screen.battle.enemy, screen.battle.enemy_hp,
+                          screen.battle.ally, screen.battle.ally_hp),
+                         ('シナモン', 39, 'ヴィーナス', 82))
+        memory = {'chapter': 1, 'captured': ['ジョンリギ'],
+                  'battle': {'ally': 'クミン', 'enemy': 'シナモン', 'side': 'defense',
+                             'castle': 'ジョンリギ', 'ally_hp': 0, 'enemy_hp': 39,
+                             'cards_used': []}}
+        self.assertEqual(battle_step(screen, memory), [])
+        self.assertTrue(battle_step(screen, memory))
+        self.assertEqual(memory['battle']['ally'], 'ヴィーナス')
+        self.assertEqual(memory['captured'], ['ジョンリギ'])
+
     def test_bottom_enemy_hp_row_is_not_cropped_in_general_egg_menu(self):
         # Owner-authorized read-only live snapshot; RGB matched observation
         # 1790753591.2442434 from g508, not an exported running-runtime archive.

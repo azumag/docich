@@ -3184,14 +3184,61 @@ def _card_use_unclassified(mem, cur, reason):
     cur['card_flow'] = None
 
 
+def reset_battle_controls(mem):
+    """Discard controls belonging to the previous combatant."""
+    mem['egg_battle'] = False
+    for key in ('egg_action', 'egg_key', 'egg_menu_stage', 'egg_battle_row_dead',
+                'egg_retreat_tried', 'egg_retreat_flow', 'egg_choice', 'egg_row_dead',
+                'indep_menu', 'indep_menu_key', 'indep_menu_action',
+                'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
+                'monster_menu_choice', 'monster_menu_choice_key', 'monster_panel'):
+        mem.pop(key, None)
+
+
+def _defender_successor(mem, cur, b):
+    """Two stable living-general panels can continue a known castle defense."""
+    maximum = general_max_hp('しゅじんこう' if b.ally == NAME else b.ally)
+    eligible = (cur.get('side') == 'defense' and bool(cur.get('castle'))
+                and cur.get('ally_hp') == 0 and (cur.get('enemy_hp') or 0) > 0
+                and b.enemy == cur.get('enemy') and b.ally != cur.get('ally')
+                and maximum is not None and 0 < b.ally_hp <= maximum and b.enemy_hp > 0)
+    reading = [b.enemy, b.ally]
+    if not eligible:
+        cur.pop('successor_seen', None)
+        return False
+    if cur.get('successor_seen') != reading:
+        cur['successor_seen'] = reading
+        return False
+    context = {'castle': cur['castle'], 'side': 'defense', 'step': None,
+               'entry_evidence': cur.get('entry_evidence')}
+    predecessor = cur['ally']
+    battle_end(mem, 'defender_successor', defense_continues=True)
+    reset_battle_controls(mem)
+    mem['attack'] = context
+    mem['battle_seen'] = reading
+    _record(mem, 'defender_successor', ally=b.ally, enemy=b.enemy,
+            castle=context['castle'], previous_ally=predecessor,
+            observed_metric={'ally_hp': b.ally_hp, 'enemy_hp': b.enemy_hp},
+            reason='同じ敵と戦う次の守備将軍を連続した完全パネルで確認')
+    return True
+
+
 def battle_step(screen: Screen, mem):
     b = screen.battle
     if (b is None or not b.enemy or not b.ally or UNKNOWN in b.enemy or UNKNOWN in b.ally
             or any(type(hp) is not int or hp < 0 for hp in (b.enemy_hp, b.ally_hp))):
         mem['battle_seen'] = None
+        if mem.get('battle'):
+            mem['battle'].pop('successor_seen', None)
         return []  # partial panel must not replace the last clear HP/context
     _migrate_card_evidence(mem)
     cur = mem.get('battle')
+    if cur and (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
+        if not _defender_successor(mem, cur, b):
+            return []
+        cur = None
+    elif cur:
+        cur.pop('successor_seen', None)
     if cur is None:
         # Fades dim the panel and can drop dakuten; open a battle record only
         # after two consecutive identical readings of both names.
@@ -3958,7 +4005,7 @@ def _hold_general_loss_metric(mem):
                     reason='HP敗北から将軍喪失は確定できず、喪失観測器がないため旧集計を未分類化')
 
 
-def battle_end(mem, next_kind):
+def battle_end(mem, next_kind, *, defense_continues=False):
     _hold_general_loss_metric(mem)
     _migrate_card_evidence(mem)
     cur = mem.get('battle')
@@ -3967,7 +4014,7 @@ def battle_end(mem, next_kind):
     # A panel can blink during the melee; end only on the second
     # consecutive observation without it.
     cur['away'] = cur.get('away', 0) + 1
-    if cur['away'] < 2:
+    if cur['away'] < 2 and not defense_continues:
         return
     if (cur.get('card_flow') or {}).get('stage') == 'announce':
         _card_use_unclassified(mem, cur, '実使用告知がないまま戦闘が終了')
@@ -3992,13 +4039,13 @@ def battle_end(mem, next_kind):
         _garrison_move(mem, cur.get('ally'), target=castle)
     if outcome == 'win' and castle and cur.get('side') == 'defense':
         _garrison_move(mem, cur.get('ally'), target=castle)
-    if outcome == 'loss' and castle and cur.get('side') == 'defense':
+    if outcome == 'loss' and castle and cur.get('side') == 'defense' and not defense_continues:
         mem['captured'] = [c for c in mem.get('captured', []) if c != castle]
         (mem.get('garrison') or {}).pop(castle, None)
         lost = mem.setdefault('lost', [])
         if castle not in lost:
             lost.append(castle)
-    if outcome == 'loss' and cur.get('side') == 'attack' and cur.get('ally'):
+    if outcome == 'loss' and (cur.get('side') == 'attack' or defense_continues) and cur.get('ally'):
         general = cur['ally']
         for source in list(mem.get('garrison') or {}):
             _garrison_move(mem, general, source=source)
@@ -4006,7 +4053,7 @@ def battle_end(mem, next_kind):
         if general not in unknown:
             unknown.append(general)
         _record(mem, 'general_location_unclassified', general=general, castle=castle,
-                reason='攻撃敗北後の所在は未確認のため古い駐留情報を破棄し、一覧での再確認を待つ')
+                reason='敗北した将軍の所在は未確認のため古い駐留情報を破棄し、一覧での再確認を待つ')
     stats = mem.setdefault('stats', {'wins': 0, 'losses': 0, 'unclassified': 0, 'cards_used': 0,
                                      'generals_lost': None, 'cards_confirmed': 0, 'card_evidence_version': 1})
     stats[{'win': 'wins', 'loss': 'losses'}.get(outcome, 'unclassified')] += 1
@@ -4085,8 +4132,10 @@ def battle_end(mem, next_kind):
         mem['boss_defeated'] = mem.get('chapter')
     elif outcome == 'win' and castle and cur.get('side') == 'attack':
         resulting = f'captured:{castle}'
-    elif outcome == 'loss' and castle and cur.get('side') == 'defense':
+    elif outcome == 'loss' and castle and cur.get('side') == 'defense' and not defense_continues:
         resulting = f'lost:{castle}'
+    if defense_continues:
+        resulting = f'defense_continues:{castle}'
     _record(mem, 'battle_result', **_battle_labels(cur), enemy=cur.get('enemy'),
             expected_metric=cur.get('strategy_expected'),
             ally=cur.get('ally'), castle=castle, side=cur.get('side'), outcome=outcome,
