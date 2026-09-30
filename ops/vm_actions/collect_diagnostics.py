@@ -448,9 +448,15 @@ def _collect_opencode_session_attribution(
             for bucket in OPENCODE_CALLER_BUCKETS
         },
         "coverage": {
+            "scan_complete": False,
             "all_sessions": 0,
-            "attributed": _empty_opencode_attribution_bucket(),
-            "unattributed": _empty_opencode_attribution_bucket(),
+            "attributed_sessions": 0,
+            "unattributed_sessions": 0,
+            "unattributed_latest_age_sec": 0,
+            "unattributed_15m_sessions": 0,
+            "unattributed_1h_sessions": 0,
+            "unattributed_2h_sessions": 0,
+            "unattributed_6h_sessions": 0,
         },
     }
     try:
@@ -498,33 +504,23 @@ def _collect_opencode_session_attribution(
         cutoff_ms = int((float(now) - max(0, int(window_sec))) * 1000)
         titles = tuple(OPENCODE_CALLER_TITLES)
         placeholders = ",".join("?" for _ in titles)
-        grouped_params = (*titles, cutoff_ms)
+        params = (cutoff_ms, *titles)
 
-        # Collapse every non-allowlisted title to SQL NULL before it crosses
-        # the SQLite/Python boundary. This exposes coverage counts without
-        # leaking unknown/default session titles into diagnostics.
+        # Preserve the existing allowlisted detail query: it is intentionally
+        # narrow enough to stay within the production diagnostics deadline.
         for title, count in con.execute(
             f"""
-            SELECT CASE
-                       WHEN title IN ({placeholders}) THEN title
-                       ELSE NULL
-                   END AS fixed_title,
-                   COUNT(*)
+            SELECT title, COUNT(*)
               FROM session
              WHERE time_created >= ?
-             GROUP BY fixed_title
+               AND title IN ({placeholders})
+             GROUP BY title
             """,
-            grouped_params,
+            params,
         ):
-            count = max(0, int(count or 0))
-            result["coverage"]["all_sessions"] += count
-            coverage_key = "unattributed" if title is None else "attributed"
-            result["coverage"][coverage_key]["sessions"] += count
-            if title is None:
-                continue
             bucket = OPENCODE_CALLER_TITLES.get(str(title))
             if bucket is not None:
-                result["buckets"][bucket]["sessions"] = count
+                result["buckets"][bucket]["sessions"] = max(0, int(count or 0))
 
         table_specs = (
             ("message", "session_id", "messages", "message_data_chars", "message_max_chars"),
@@ -533,37 +529,92 @@ def _collect_opencode_session_attribution(
         )
         for table, session_column, count_key, chars_key, max_key in table_specs:
             sql = f"""
-                SELECT CASE
-                           WHEN s.title IN ({placeholders}) THEN s.title
-                           ELSE NULL
-                       END AS fixed_title,
+                SELECT s.title,
                        COUNT(x.id),
                        COALESCE(SUM(length(x.data)), 0),
                        COALESCE(MAX(length(x.data)), 0)
                   FROM session AS s
                   JOIN {table} AS x ON x.{session_column} = s.id
                  WHERE s.time_created >= ?
-                 GROUP BY fixed_title
+                   AND s.title IN ({placeholders})
+                 GROUP BY s.title
             """
-            for title, count, chars, max_chars in con.execute(sql, grouped_params):
-                count = max(0, int(count or 0))
-                chars = max(0, int(chars or 0))
-                max_chars = max(0, int(max_chars or 0))
-                coverage_key = "unattributed" if title is None else "attributed"
-                coverage_item = result["coverage"][coverage_key]
-                coverage_item[count_key] += count
-                coverage_item[chars_key] += chars
-                coverage_item[max_key] = max(coverage_item[max_key], max_chars)
-                if title is None:
-                    continue
+            for title, count, chars, max_chars in con.execute(sql, params):
                 bucket = OPENCODE_CALLER_TITLES.get(str(title))
                 if bucket is None:
                     continue
                 item = result["buckets"][bucket]
-                item[count_key] = count
-                item[chars_key] = chars
-                item[max_key] = max_chars
+                item[count_key] = max(0, int(count or 0))
+                item[chars_key] = max(0, int(chars or 0))
+                item[max_key] = max(0, int(max_chars or 0))
 
+        # Coverage is deliberately session-table-only. Expanding the joins to
+        # every unattributed message/part/event made a 7+ GiB production DB hit
+        # the global 2s diagnostics deadline (#1334/#1454). Give this cheap,
+        # read-only count query its own bounded 1s budget so a coverage timeout
+        # never erases the proven fixed-bucket detail above.
+        coverage = result["coverage"]
+        coverage_deadline = time.monotonic() + min(
+            1.0, max(0.05, float(query_timeout_sec))
+        )
+        con.set_progress_handler(
+            lambda: 1 if time.monotonic() >= coverage_deadline else 0,
+            1000,
+        )
+        try:
+            all_sessions = max(
+                0,
+                int(
+                    con.execute(
+                        "SELECT COUNT(*) FROM session WHERE time_created >= ?",
+                        (cutoff_ms,),
+                    ).fetchone()[0]
+                    or 0
+                ),
+            )
+            attributed_sessions = sum(
+                item["sessions"] for item in result["buckets"].values()
+            )
+            cutoffs_ms = (
+                int((float(now) - 15 * 60) * 1000),
+                int((float(now) - 60 * 60) * 1000),
+                int((float(now) - 2 * 60 * 60) * 1000),
+                int((float(now) - 6 * 60 * 60) * 1000),
+            )
+            row = con.execute(
+                f"""
+                SELECT COUNT(*),
+                       MAX(time_created),
+                       COALESCE(SUM(CASE WHEN time_created >= ? THEN 1 ELSE 0 END), 0),
+                       COALESCE(SUM(CASE WHEN time_created >= ? THEN 1 ELSE 0 END), 0),
+                       COALESCE(SUM(CASE WHEN time_created >= ? THEN 1 ELSE 0 END), 0),
+                       COALESCE(SUM(CASE WHEN time_created >= ? THEN 1 ELSE 0 END), 0)
+                  FROM session
+                 WHERE time_created >= ?
+                   AND (title IS NULL OR title NOT IN ({placeholders}))
+                """,
+                (*cutoffs_ms, cutoff_ms, *titles),
+            ).fetchone()
+            unattributed_sessions = max(0, int(row[0] or 0))
+            if all_sessions != attributed_sessions + unattributed_sessions:
+                raise ValueError("attribution coverage mismatch")
+            latest_ms = row[1]
+            latest_age_sec = 0
+            if type(latest_ms) is int and latest_ms >= 0 and unattributed_sessions:
+                latest_age_sec = max(0, int(float(now) - latest_ms / 1000.0))
+            coverage.update(
+                scan_complete=True,
+                all_sessions=all_sessions,
+                attributed_sessions=attributed_sessions,
+                unattributed_sessions=unattributed_sessions,
+                unattributed_latest_age_sec=latest_age_sec,
+                unattributed_15m_sessions=max(0, int(row[2] or 0)),
+                unattributed_1h_sessions=max(0, int(row[3] or 0)),
+                unattributed_2h_sessions=max(0, int(row[4] or 0)),
+                unattributed_6h_sessions=max(0, int(row[5] or 0)),
+            )
+        except (sqlite3.Error, TypeError, ValueError):
+            pass
         result["scan_complete"] = True
         return result
     except (OSError, sqlite3.Error, TypeError, ValueError):
