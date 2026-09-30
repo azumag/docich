@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v106-defense-owner-receipt'
+BOT_VERSION = 'hanjuku-chart-v107-entry-return'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -214,6 +214,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         policy.battle_end(mem,kind)
     if after_battle:
         policy.reset_battle_controls(mem)
+    policy.observe_entry_return(screen, mem)
     if kind != 'egg_choice_menu':
         mem.pop('egg_choice', None)
     if kind != 'egg_battle_menu':
