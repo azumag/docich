@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v109-retake-guard'
+BOT_VERSION = 'hanjuku-chart-v110-entry-successor'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -209,6 +209,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         mem.pop('battle_menu_pending_ticks', None)
     if kind != 'battle' and mem.get('battle'):
         mem['battle'].pop('successor_seen', None)
+        mem['battle'].pop('entry_successor_seen', None)
     after_battle = kind in policy.AFTER_BATTLE_KINDS or kind == 'barrier_removed'
     if mem.get('battle') and after_battle:
         policy.battle_end(mem,kind)
