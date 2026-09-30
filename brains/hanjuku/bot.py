@@ -51,6 +51,9 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     decision_id=f"{identity['runtime_id']}:{identity['generation']}:{state.get('step')}"
     state['decision_trace']={**identity, 'decision_id': decision_id, 'frame_sha256': frame_sha256}
     policy=state.get('policy') or {}
+    recall = policy.get('recall') or {}
+    if recall.get('stage') == 'await_dispatch' and not recall.get('request_trace'):
+        recall['request_trace'] = {**state['decision_trace'], 'planned_at': now}
     # A durable maximum survives log rotation, policy resets and corner teardown.
     # Prediction bookkeeping must not drop an otherwise valid gameplay action.
     try:
@@ -75,6 +78,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
                               'card_pick','card_missing','sortie_confirm','order_substitute',
                               'order_launched_unconfirmed','sortie_arrival_confirmed',
                               'sortie_departed_observed','sortie_cancelled_observed',
+                              'camp_recall_cursor','camp_recall_requested','camp_recall_unconfirmed',
                               'house_dispatch_requested','house_arrival_seen'}
         or (r.get('decision') == 'order_start' and r.get('cards'))
         or (r.get('decision') == 'situation_held' and r.get('screen') in {'card_select','sortie_confirm'})
@@ -180,6 +184,56 @@ def observation_interval_ms(state):
     return 1500
 
 
+def recall_input_receipts(runtime, state, meta):
+    """Read only a bounded tail of the existing sender journal; never replay.
+
+    This command process reloads on each observation. No controller restart
+    or new controller receipt writer is required for the current live run.
+    """
+    recall = (state.get('policy') or {}).get('recall') or {}
+    trace = recall.get('request_trace') or {}
+    identity = meta.get('hanjuku') or {}
+    keys = ('game', 'runtime_id', 'generation', 'lease_id')
+    if (recall.get('stage') != 'await_dispatch' or not trace
+            or any(identity.get(k) is None or trace.get(k) != identity[k] for k in keys)
+            or not isinstance(trace.get('decision_id'), str)
+            or not isinstance(trace.get('frame_sha256'), str)
+            or len(trace['frame_sha256']) != 64
+            or type(trace.get('planned_at')) not in (int, float)):
+        return None
+    count = 0
+    seen = set()
+    try:
+        path = runtime / 'hanjuku_events.jsonl'
+        if path.is_symlink() or not path.is_file():
+            return None
+        with path.open('rb') as stream:
+            stream.seek(0, 2)
+            offset = max(0, stream.tell() - 65536)
+            stream.seek(offset)
+            tail = stream.read(65536)
+            if offset:
+                tail = tail.partition(b'\n')[2]
+            for raw in tail.splitlines():
+                try:
+                    row = json.loads(raw)
+                except (ValueError, UnicodeError):
+                    continue
+                if (isinstance(row, dict) and row.get('event') == 'input_sent'
+                        and row.get('decision_id') == trace.get('decision_id')
+                        and row.get('decision_frame_sha256') == trace.get('frame_sha256')
+                        and type(row.get('at')) in (int, float)
+                        and 0 <= trace['planned_at'] <= row['at'] < 10**12
+                        and row.get('type') == 'pad' and row.get('buttons') == ['a']
+                        and row.get('hold_ms') == 100):
+                    if row['at'] not in seen:
+                        seen.add(row['at'])
+                        count = min(2, count + 1)
+    except OSError:
+        return None
+    return {'request_trace': trace, 'a_inputs': count}
+
+
 def main():
     actions=[]
     interval_ms=1500
@@ -202,7 +256,8 @@ def main():
             experience=hanjuku_experience.load(experience_path)
             actions,state=decide(frame,state,adjusted=hanjuku_chart_adjust.load(runtime),
                                  interim=state.get('chart_interim_answer'),
-                                 experience=experience)
+                                 experience=experience,
+                                 recall_inputs=recall_input_receipts(runtime, state, meta))
             interval_ms=observation_interval_ms(state)
             records=state.pop('_records',[])
             updated_experience=state.pop('_experience',None)

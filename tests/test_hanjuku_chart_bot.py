@@ -573,13 +573,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v123-scan-budget-separation'
+    assert state['bot_version'] == 'hanjuku-chart-v124-camp-recall-evidence'
     assert '_records' not in state['policy']
 
 
-def test_bot_version_marks_scan_budget_separation_release():
+def test_bot_version_marks_camp_recall_evidence_release():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v123-scan-budget-separation'
+    assert BOT_VERSION == 'hanjuku-chart-v124-camp-recall-evidence'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -2266,6 +2266,14 @@ def test_camp_recall_scrolls_the_camera_for_a_tent_clipped_at_the_top():
     assert mem['recall']['stage'] == 'to_camp'
 
 
+def camp_menu(selected):
+    from docich.hanjuku_font import TextLine
+    rows = ['いどう', 'ステータス', 'キャンプ', 'きかん']
+    return Screen([TextLine(39+16*i, tuple((80+8*j,ch) for j,ch in enumerate(word)))
+                   for i,word in enumerate(rows)], (58,33+16*selected,75,45+16*selected),
+                  ''.join(rows), kind='text')
+
+
 def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     frame = _camp_frame()
     mem = {'chapter': 1, '_records': []}
@@ -2281,10 +2289,9 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     assert mem['recall']['steps'] == 0               # each stage restarts the budget
     assert [r['decision'] for r in mem['_records']][-1] == 'camp_enter'
 
-    window = Screen(lines=[], hand=None, text='いどう ステータス キャンプ きかん', kind='text')
-    for _ in range(3):
-        assert policy.camp_recall_step(window, mem, frame) == [policy.pad('down')]
-    assert policy.camp_recall_step(window, mem, frame) == [policy.pad('a')]
+    for i in range(3):
+        assert policy.camp_recall_step(camp_menu(i), mem, frame) == [policy.pad('down')]
+    assert policy.camp_recall_step(camp_menu(3), mem, frame) == [policy.pad('a')]
     assert mem['recall']['stage'] == 'dest'
     assert mem['recall']['steps'] == 0               # destination gets a full budget too
 
@@ -2294,9 +2301,9 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     assert policy.camp_recall_step(far, mem, frame) == [policy.pad('down', 6)]
     near = Screen(lines=[], hand=None, text='', kind='map_target', marker=(163, 115))
     assert policy.camp_recall_step(near, mem, frame) == [policy.pad('a')]
-    assert 'recall' not in mem
-    assert [r['decision'] for r in mem['_records']][-1] == 'camp_recall'
-    assert mem.get('uncertain') is True
+    assert mem['recall']['stage'] == 'await_dispatch'
+    assert [r['decision'] for r in mem['_records']][-1] == 'camp_recall_requested'
+    assert not any(r['decision'] == 'camp_recall' for r in mem['_records'])
 
 
 def test_camp_recall_cancels_when_no_own_castle_is_visible():

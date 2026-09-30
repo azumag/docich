@@ -1,11 +1,11 @@
 {
-  "output_sha256": "a32facb002603bf00d517f3095eaca41cf0eecaa0534159c8b7aa6268defc593",
+  "output_sha256": "1d836d9c2c975492bab5132bc863a44ad524124ad7f44d8bfaa53245887a28b3",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "8449ddb800e966c8424b913de256625287ccf00fe10bef733f46732da2cd4f29",
+  "source_sha256": "719fa1cc31aca97fc116ccd0e079bcac3015bce700de2b6f3fc03dfe90423366",
   "topics": [
+    "半熟キャンプの実カーソル・帰還送信照合v124準備",
     "半熟の月menu確認とfield修理予算の分離v123準備",
-    "半熟の主人公出撃後順位v122レビュー準備",
-    "半熟の月境界・単独名簿の募集v121再レビュー準備"
+    "半熟の主人公出撃後順位v122レビュー準備"
   ]
 }
