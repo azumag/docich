@@ -3416,6 +3416,21 @@ def battle_step(screen: Screen, mem):
                     observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
                     resulting_event='card_planned')
             return [pad('b')]
+    if (_defender_last_resort(mem, cur)
+            and not cur.get('okunote_last_resort_reopened')
+            and not cur.get('okunote_last_resort_recorded')
+            and (cur.get('survival') or {}).get('exhausted')):
+        # An earlier healthy menu may have rejected the lottery. Recheck the
+        # live menu once when later complete HP panels prove losing melee.
+        cur['okunote_last_resort_reopened'] = True
+        rescue = _survival_state(mem, cur)
+        rescue['exhausted'] = False
+        rescue['pending_opens'] = 0
+        rescue['menu_ticks'] = 0
+        _record(mem, 'battle_okunote_recheck', **_battle_labels(cur),
+                observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp']},
+                reason='先の使用不能メニューを確認後、押し負けが実測されたため一度だけ再確認')
+        return [pad('b')]
     if _survival_needed(cur):
         rescue = _survival_state(mem, cur)
         if (not rescue.get('exhausted') and rescue['opens'] < 12
@@ -3917,6 +3932,32 @@ def battle_menu_step(screen: Screen, mem):
 OKUNOTE_MAX_SELF_DAMAGE = 88  # gcgx: ヤケクソ at castle Lv1; higher levels reduce it
 
 
+def _defender_last_resort(mem, cur):
+    """A losing non-hero human defender may take the irreversible last chance.
+
+    HP defeat is not certain death; neither is the lottery safe. This only
+    replaces repeated losing melee after *measured* resource unavailability.
+    Boss kits, the hero, uncertain locations and healthy fights stay excluded.
+    """
+    if (cur.get('ally') in (None, NAME, 'しゅじんこう', 'だいじん')
+            or cur.get('side') != 'defense'
+            or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)
+            or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('planned_cards') or cur.get('card_flow') or cur.get('egg_battle')
+            or cur.get('okunote_last_resort_selected')
+            or not cur.get('okunote_only_observed')):
+        return False
+    hp, enemy, start, enemy_start = (cur.get(k) for k in
+        ('ally_hp', 'enemy_hp', 'start_ally_hp', 'start_enemy_hp'))
+    ally_max = general_max_hp(cur.get('ally'))
+    enemy_max = general_max_hp(cur.get('enemy'))
+    if any(type(v) is not int or v <= 0 for v in
+           (hp, enemy, start, enemy_start, ally_max, enemy_max)):
+        return False
+    return (hp <= start <= ally_max and enemy <= enemy_start <= enemy_max
+            and hp * 2 <= start and enemy * 5 >= enemy_start * 4)
+
+
 def okunote_step(screen, mem):
     cur = mem.get('battle')
     if not cur:
@@ -3928,9 +3969,25 @@ def okunote_step(screen, mem):
         # g482: パプリカ34 entered the irreversible random choices and chose
         # しんだフリ (28..48 self damage), then lost at HP0. Before opening
         # the candidates, require enough *current* HP to survive even the
-        # worst Lv1 result. An already-open list cannot be cancelled: below
+        # worst Lv1 result, except the measured losing non-hero defense below.
+        # An already-open list cannot be cancelled: below
         # we still choose the strongest visible candidate there.
-        if type(hp) is not int or hp <= OKUNOTE_MAX_SELF_DAMAGE:
+        labels = {w for _, _, w in _options(screen)}
+        # The gray parent rows or a sole active おくのて are direct evidence;
+        # chart inventory/house state cannot prove the currently usable menu.
+        cur['okunote_only_observed'] = ((screen.hidden_battle_commands or 'おくのて' in labels)
+            and not labels.intersection({'たまごをつかう', 'きりふだ', 'たいきゃく'}))
+        last_resort = _defender_last_resort(mem, cur)
+        if last_resort and not cur.get('okunote_last_resort_recorded'):
+            cur['okunote_last_resort_recorded'] = True
+            _record(mem, 'battle_okunote_last_resort', **_battle_labels(cur),
+                    observed_metric={'ally_hp': hp, 'start_ally_hp': cur['start_ally_hp'],
+                                     'enemy_hp': cur['enemy_hp'],
+                                     'start_enemy_hp': cur['start_enemy_hp'],
+                                     'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
+                    resulting_event='irreversible_risk_accepted',
+                    reason='他の手段が使用不能で押し負ける一般守備将軍の最後の救済。自傷リスクは残る')
+        if (type(hp) is not int or hp <= OKUNOTE_MAX_SELF_DAMAGE) and not last_resort:
             rescue = _survival_state(mem, cur)
             if not flow.get('risk_declined'):
                 flow['risk_declined'] = True
@@ -3957,6 +4014,8 @@ def okunote_step(screen, mem):
     move = _battle_menu_to(screen, label)
     if move != 'here':
         return [move] if move else []
+    if label == 'おくのて' and cur.get('okunote_last_resort_recorded'):
+        cur['okunote_last_resort_selected'] = True
     _record(mem, 'battle_okunote_select', **_battle_labels(cur), choice=label,
             observed_metric={'options': sorted(names)},
             reason='奥の手のカーソルを確認して選択。候補は効果が高いものを優先')
