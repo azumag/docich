@@ -573,7 +573,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v98-egg-choice'
+    assert state['bot_version'] == 'hanjuku-chart-v99-egg-choice-digits'
     assert '_records' not in state['policy']
 
 
@@ -3011,3 +3011,17 @@ def test_elabel_choice_interrupts_house_menu_even_without_prior_battle_panel():
 
 def test_elabel_choice_is_an_exit_from_unrelated_month_transaction():
     assert 'egg_choice_menu' in policy.MONTH_SUB_EXIT_KINDS
+
+
+@pytest.mark.parametrize('cursor', [0, 1, 2])
+def test_elabel_choice_matches_actual_ascii_digit_but_preserves_visible_labels(cursor):
+    from docich.hanjuku_screen import egg_choice_names
+    names = ('ユニコーン', 'てつじん8ごう', 'ドラゴンパピー')
+    s = parse(egg_choice_frame(names, cursor=cursor))
+    assert s.kind == 'egg_choice_menu'
+    assert egg_choice_names(s) == list(names)
+    assert policy.egg_choice_step(s, {}) == [policy.pad('a' if cursor == 0 else 'up')]
+
+
+def test_elabel_digit_fold_does_not_accept_a_different_monster_number():
+    assert parse(egg_choice_frame(('ユニコーン', 'てつじん9ごう', 'ドラゴンパピー'))).kind != 'egg_choice_menu'
