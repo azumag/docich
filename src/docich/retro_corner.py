@@ -1642,6 +1642,7 @@ class RetroCornerManager:
                 latest['prediction'] = prediction
                 latest['ends_at'] = None
                 latest['end_reason'] = run.get('terminal_reason')
+                latest['decision_required'] = run.get('decision_required')
                 latest['bot_phase'] = run.get('phase')
                 latest['bot_actions_sent'] = run.get('actions_sent', 0)
                 latest['battles_started'] = run.get('battles_started', 0)

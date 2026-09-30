@@ -573,7 +573,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v115-hero-egg-retreat'
+    assert state['bot_version'] == 'hanjuku-chart-v116-discharge-assessment'
     assert '_records' not in state['policy']
 
 
@@ -1679,18 +1679,20 @@ def _discharge_canvas(month=8, gold=None):
     return c
 
 
-def test_forced_discharge_list_confirms_default_cursor_instead_of_b():
+def test_forced_discharge_list_requires_assessment_without_a_or_b():
     """g358 16:49-17:41: debt forced「どのしょうぐんをかいこに?」, read as shop → 2700 B."""
     state = {'policy': {'chapter': 1, 'orders': {}, 'picked': []}}
     actions, state = decide(_discharge_canvas().frame(), state)
     assert state['screen_kind'] == 'discharge_menu'
-    assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
+    assert actions == []
+    assert state['policy']['discharge']['status'] == 'assessment_required'
     record = state['_records'][-1]
-    assert record['decision'] == 'discharge_general' and record['general'] == 'ミント'
+    assert record['decision'] == 'situation_held'
+    assert record['observed_metric']['selected'] == 'ミント'
     assert record['observed_metric']['month'] == '2-8'
 
 
-def test_forced_discharge_without_month_header_initializes_state_and_confirms():
+def test_forced_discharge_without_month_header_requires_assessment():
     """A missed month OCR must not leave the discharge counters uninitialized."""
     canvas = Canvas()
     canvas.text(24, 47, 'ミント')
@@ -1702,10 +1704,12 @@ def test_forced_discharge_without_month_header_initializes_state_and_confirms():
     actions, state = decide(canvas.frame(), state)
 
     assert state['screen_kind'] == 'discharge_menu'
-    assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
-    assert state['policy']['discharge'] == {'key': None, 'presses': 1, 'exits': 0}
+    assert actions == []
+    assert state['policy']['discharge']['key'] is None
+    assert state['policy']['discharge']['presses'] == 0
+    assert state['policy']['discharge']['status'] == 'assessment_required'
     record = state['_records'][-1]
-    assert record['decision'] == 'discharge_general'
+    assert record['decision'] == 'situation_held'
     assert record['observed_metric']['month'] is None
 
 
@@ -1723,23 +1727,37 @@ def test_paid_up_discharge_list_leaves_with_b_instead_of_discharging():
     actions, state = decide(_discharge_canvas(gold='32G').frame(), state)
     assert actions == []
     assert 'situation_held' in [r['decision'] for r in state['_records']]
-    # A still-negative month discharges again; the exit counter is per month.
+    # An unreadable balance in another month requires assessment again.
     actions, state = decide(_discharge_canvas(month=9).frame(), state)
-    assert actions and actions[0]['buttons'] == ['a']
+    assert actions == []
+    assert state['policy']['discharge']['status'] == 'assessment_required'
 
 
-def test_forced_discharge_holds_after_monthly_limit_and_resets_next_month():
+def test_forced_discharge_assessment_logs_once_and_resets_next_month():
     state = {'policy': {'chapter': 1, 'orders': {}, 'picked': []}}
-    for _ in range(policy.DISCHARGE_LIMIT):
-        actions, state = decide(_discharge_canvas().frame(), state)
-        assert actions and actions[0]['buttons'] == ['a']
     actions, state = decide(_discharge_canvas().frame(), state)
     assert actions == []
     assert 'situation_held' in [r['decision'] for r in state['_records']]
-    actions, state = decide(_discharge_canvas().frame(), state)
-    assert actions == [] and state['_records'] == []          # held once, not per frame
+    for _ in range(policy.DISCHARGE_LIMIT + 2):
+        actions, state = decide(_discharge_canvas().frame(), state)
+        assert actions == [] and state['_records'] == []
     actions, state = decide(_discharge_canvas(month=9).frame(), state)
-    assert actions and actions[0]['buttons'] == ['a']
+    assert actions == []
+    assert state['policy']['discharge']['status'] == 'assessment_required'
+    assert 'situation_held' in [r['decision'] for r in state['_records']]
+
+
+def test_hot_loaded_discharge_does_not_resume_old_default_a_or_trust_house_stats():
+    state = {'policy': {'chapter': 1, 'orders': {}, 'picked': [],
+                       'house_eggs': {'ミント': {'broken': True}},
+                       'discharge': {'key': '2-8', 'presses': 2, 'exits': 0, 'held': True}}}
+    actions, state = decide(_discharge_canvas().frame(), state)
+    assert actions == []
+    assert state['policy']['discharge']['status'] == 'assessment_required'
+    assert state['_records'][-1]['strategy_variant'] == 'discharge_assessment_required'
+    actions, state = decide(_discharge_canvas(gold='0G').frame(), state)
+    assert actions[0]['buttons'] == ['b']
+
 # ---------------------------------------------------------------- 月一: 卵の回復・将軍募集
 MONTH_GRID = {'しょうにん': (48, 47), 'しょうぐんぼしゅう': (144, 47),
               'へいしほじゅう': (48, 63), 'しょうぐんかいこ': (144, 63),

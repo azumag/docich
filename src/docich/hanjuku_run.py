@@ -108,6 +108,30 @@ def _next_commentary_seq(runtime_dir: Path) -> int:
     return seq + 1
 
 
+def _discharge_assessment(runtime_dir, identity, frame, phase, wall, recent):
+    """A fresh same-run decision plus the currently measured forced list."""
+    from .hanjuku_screen import parse
+    bot = read_record(runtime_dir / 'hanjuku_bot.json', limit=256 * 1024)
+    trace = bot.get('decision_trace') or {}
+    policy = bot.get('policy')
+    if not isinstance(policy, dict):
+        return None
+    discharge = policy.get('discharge') or {}
+    if (not isinstance(trace, dict) or not isinstance(discharge, dict)
+            or any(trace.get(k) != v for k, v in identity.items())
+            or discharge.get('status') != 'assessment_required'
+            or bot.get('screen_kind') != 'discharge_menu'
+            or type(trace.get('at')) not in (int, float)
+            or not 0 <= wall - trace['at'] <= MAX_SAMPLE_GAP
+            or trace.get('frame_sha256') not in recent):
+        return None
+    screen = parse(frame, phase=phase)
+    if screen.kind != 'discharge_menu' or type((screen.header or {}).get('gold')) is int:
+        return None
+    return {'status': 'assessment_required', 'reason': 'discharge_candidate_unassessed',
+            'decision_id': trace.get('decision_id')}
+
+
 def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
             now=None, wall=None, playing=True):
     now=time.monotonic() if now is None else now
@@ -140,7 +164,8 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     title_since=old.get('title_since',now) if candidate and consecutive and old.get('terminal_candidate') else now
     title_count=int(old.get('title_count',0))+1 if candidate and consecutive and old.get('terminal_candidate') else int(candidate)
     reason='game_over' if candidate and title_count>=3 and now-title_since>=2 else None
-    if not reason and duration>=STALL_SECONDS:
+    assessment = _discharge_assessment(runtime_dir, identity, frame, phase, wall, recent)
+    if not reason and not assessment and duration>=STALL_SECONDS:
         reason='screen_stalled'
     if reason == 'game_over':
         # Owner rule (2026-09-28): narrate a grounded recap of the run when it
@@ -168,6 +193,7 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
            'phase':phase,'frame_sha256':digest,'recent_frame_sha256':recent,'observed_monotonic':now,
            'observed_at':wall,'unchanged_since':since,'unchanged_seconds':duration,
            'playing':playing,'terminal_reason':reason,
+           'decision_required': assessment,
            'name_entered':named,'gameplay_seen':played,
            'terminal_candidate':candidate,'title_since':title_since,'title_count':title_count,
            'terminal_evidence':'title_return_after_gameplay' if reason=='game_over' else None,
@@ -198,6 +224,7 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
         'event': 'observation', 'at': wall, 'phase': phase,
         'frame_sha256': digest, 'unchanged_seconds': round(duration, 3),
         'playing': playing, 'terminal_reason': reason, 'bot_version': BOT_VERSION,
+        'decision_required': assessment,
         'terminal_candidate': candidate, 'terminal_evidence': state['terminal_evidence'],
         'snapshot': snapshot, 'previous_phase': old.get('phase'),
         'battle_started': battle_started, 'battle_ended': battle_ended,

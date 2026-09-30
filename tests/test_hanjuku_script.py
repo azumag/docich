@@ -682,3 +682,77 @@ def test_game_over_writes_a_grounded_recap_candidate(tmp_path):
     # The terminal latch returns the old state: never a second recap.
     hanjuku_run.observe(tmp_path, IDENTITY, title, now=9, wall=1009)
     assert len((tmp_path / 'hanjuku_commentary.jsonl').read_text().splitlines()) == 1
+
+
+# Assessment holds preserve the current game; they are not a corner end.
+def _assessment_trace(tmp_path, native, wall, **changes):
+    bot = {'screen_kind': 'discharge_menu',
+           'policy': {'discharge': {'status': 'assessment_required'}},
+           'decision_trace': {**IDENTITY, 'decision_id': 'g1-abcdef:1:8',
+                              'frame_sha256': native.digest(), 'at': wall}}
+    bot['decision_trace'].update(changes)
+    (tmp_path / 'hanjuku_bot.json').write_text(json.dumps(bot))
+
+
+def _debt_list_frame():
+    from test_hanjuku_chart_bot import _discharge_canvas
+    return _discharge_canvas().frame()
+
+
+def test_assessment_hold_never_becomes_stall_terminal_and_exposes_request(tmp_path):
+    native = _debt_list_frame()
+    for now in range(0, 410, 10):
+        _assessment_trace(tmp_path, native, 1000 + now)
+        run = hanjuku_run.observe(tmp_path, IDENTITY, native, now=now, wall=1000 + now)
+        assert run['terminal_reason'] is None
+        assert run['decision_required']['status'] == 'assessment_required'
+        assert hanjuku_run.terminal(tmp_path, IDENTITY) is None
+    assert run['unchanged_seconds'] == 400
+    rows = [json.loads(line) for line in (tmp_path / 'hanjuku_events.jsonl').read_text().splitlines()]
+    assert rows[-1]['decision_required']['decision_id'] == 'g1-abcdef:1:8'
+
+
+@pytest.mark.parametrize('change', [
+    {'at': 0}, {'at': float('nan')}, {'at': 1310}, {'generation': 2},
+    {'runtime_id': 'g2-other'}, {'lease_id': 'other'}, {'game': 'other'},
+    {'frame_sha256': '0' * 64},
+])
+def test_unfresh_or_foreign_assessment_cannot_mute_stall(tmp_path, change):
+    native = _debt_list_frame()
+    for now in range(0, 300, 10):
+        _assessment_trace(tmp_path, native, 1000 + now)
+        hanjuku_run.observe(tmp_path, IDENTITY, native, now=now, wall=1000 + now)
+    _assessment_trace(tmp_path, native, 1300, **change)
+    run = hanjuku_run.observe(tmp_path, IDENTITY, native, now=300, wall=1300)
+    assert run['decision_required'] is None
+    assert run['terminal_reason'] == 'screen_stalled'
+
+
+@pytest.mark.parametrize('paid', [False, True])
+def test_leaving_discharge_or_reading_paid_balance_restores_monitor(tmp_path, paid):
+    from test_hanjuku_chart_bot import _discharge_canvas
+    native = _debt_list_frame()
+    _assessment_trace(tmp_path, native, 1000)
+    run = hanjuku_run.observe(tmp_path, IDENTITY, native, now=0, wall=1000)
+    assert run['decision_required']
+    other = _discharge_canvas(gold='0G').frame() if paid else frame()
+    # Even an artificially fresh matching digest cannot mute another screen.
+    _assessment_trace(tmp_path, other, 1001)
+    run = hanjuku_run.observe(tmp_path, IDENTITY, other, now=1, wall=1001)
+    assert run['decision_required'] is None
+    for now in range(11, 302, 10):
+        _assessment_trace(tmp_path, other, 1000 + now)
+        run = hanjuku_run.observe(tmp_path, IDENTITY, other, now=now, wall=1000 + now)
+    assert run['terminal_reason'] == 'screen_stalled'
+
+
+def test_assessment_cannot_suppress_title_return_game_over(tmp_path):
+    title = title_frame()
+    # Establish a real post-name gameplay observation before the title.
+    old = {**IDENTITY, 'name_entered': True, 'gameplay_seen': True}
+    (tmp_path / 'hanjuku_run.json').write_text(json.dumps(old))
+    for now in range(3):
+        _assessment_trace(tmp_path, title, 1000 + now)
+        run = hanjuku_run.observe(tmp_path, IDENTITY, title, now=now, wall=1000 + now)
+    assert run['terminal_reason'] == 'game_over'
+    assert run['decision_required'] is None
