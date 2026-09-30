@@ -175,9 +175,12 @@ def _order(raw, castles, base_steps):
     if (not isinstance(cards, (list, tuple)) or len(cards) > MAX_CARDS_PER_ORDER
             or any(card not in CARD_NAMES for card in cards)):
         raise ValueError('invalid cards')
+    after = _after(raw.get('after'), castles)
+    if after == ('captured', target):
+        raise ValueError('order depends on its own target capture')
     return {'step': step, 'general': _text(raw.get('general'), 'general', limit=16),
             'source': source, 'target': target, 'cards': tuple(cards),
-            'after': _after(raw.get('after'), castles),
+            'after': after,
             'note': _text(raw.get('note'), 'note', required=False)}
 
 

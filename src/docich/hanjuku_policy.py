@@ -1069,7 +1069,11 @@ def _off_chart(mem):
                  or (doc_digest is None and not revision_changed))):
         _adopt_plan(mem, doc, rid)
         return
-    if plan.get('request_id') == rid or _plan_pending(mem):
+    # An adopted answer may be locked or exhausted without changing its
+    # request id (g514: retake Nakyume waited for Nakyume to be captured).
+    # Adoption identity prevents replay above; only a live plan may block
+    # the interim candidates from being evaluated again.
+    if _plan_pending(mem):
         state['interim_wanted'] = False
         return
     _adopt_interim(mem, state, rid)
