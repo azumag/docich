@@ -1165,6 +1165,10 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     A hotloaded old policy has no attempt marker; its verified confirmation
     context and previous map_target observation provide the same evidence.
     """
+    # A recall destination picker belongs to the recall, not to an active
+    # chart sortie's interrupted target selection.
+    if (mem.get('recall') or {}).get('stage') in ('dest', 'await_dispatch'):
+        return
     order = _order(mem)
     attempt = mem.get('sortie_attempt')
     if not attempt and order and previous_kind == 'map_target':
@@ -1364,6 +1368,8 @@ def world_map_step(screen, mem, frame):
     if mem.get('y_jump'):
         return _y_jump_step(mem, frame)
     recall = mem.get('recall')
+    if recall and recall.get('stage') == 'await_dispatch':
+        return _recall_dispatch_step(screen, mem, recall)
     if recall and recall.get('stage') == 'dest':
         # きかん opens a whole-island picker (chapter 1 and 2, isolated probe
         # 2026-09-29): the R ring starts on the home castle, A selects it and a
@@ -1389,16 +1395,8 @@ def world_map_step(screen, mem, frame):
                 return [pad('b')]
             return [pad('right')] if cursor else []
         home = nearby[0]  # the measured R picker, never an assumed home castle
-        mem.pop('recall', None)
-        mem['uncertain'] = True
-        if recall.get('hero'):
-            actions = _finish_hero_recall(mem, recall, home)
-        else:
-            _record(mem, 'camp_recall', observed_metric={'castle': home, 'camp': recall.get('target'),
-                                                          'screen': 'world_map'},
-                    reason='野営の将軍に自軍旗を確認した城への帰還を指示（全体マップ型の帰還先選択でAを2回）')
-            actions = [pad('a')]
-        return actions + [{'type': 'wait', 'ms': 700}, pad('a')]
+        return _request_recall(mem, recall, home,
+                               [pad('a'), {'type': 'wait', 'ms': 700}, pad('a')])
     flags = world_flags(frame, mem.get('chapter') or 0)
     if not flags:
         waited = int(mem.get('world_map_wait') or 0) + 1
@@ -1809,7 +1807,7 @@ def camp_recall_step(screen: Screen, mem, frame):
     """Owner rule (2026-09-28): a camp (野営) seen on screen is recalled.
 
     Measured in the isolated probe: A on our tent opens
-    いどう/ステータス/キャンプ/きかん with the cursor on いどう; down x3 then A
+    いどう/ステータス/キャンプ/きかん; its observed cursor must reach きかん before A
     opens the destination marker (kind map_target), and A over an own castle's
     roof cell sends the general home. The destination is the nearest visible
     own castle (補給できる城). ``None`` means "no recall in flight": the
@@ -1833,6 +1831,8 @@ def camp_recall_step(screen: Screen, mem, frame):
         state = mem['recall'] = {'stage': 'to_camp', 'target': list(camp['target']), 'steps': 0}
         _record(mem, 'camp_found', observed_metric={'camp': list(camp['target'])},
                 reason='画面に自軍の野営を見つけたため補給できる自軍城への帰還を指示する')
+    if state.get('stage') == 'await_dispatch':
+        return _recall_dispatch_step(screen, mem, state)
     state['steps'] = int(state.get('steps') or 0) + 1
     if state['steps'] > RECALL_LIMIT:
         _record(mem, 'camp_recall_aborted',
@@ -1840,7 +1840,8 @@ def camp_recall_step(screen: Screen, mem, frame):
                 reason='野営の帰還指示が上限内に完了しないため断念し位置を再測定する')
         mem.pop('recall', None)
         mem['uncertain'] = True
-        return []
+        mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+        return [pad('b')] if is_camp_menu(screen) else []
     stage = state.get('stage')
     if stage == 'hero_focus':
         if screen.kind != 'map':
@@ -1891,12 +1892,27 @@ def camp_recall_step(screen: Screen, mem, frame):
             _record(mem, 'hero_recall_skipped', observed_metric={'screen': screen.kind},
                     reason='主人公の部隊メニューが開かない（城内など）ため帰還指示を取り消す')
             return [pad('b')] if screen.kind != 'map' else []
-        if 'きかん' not in screen.text and 'いどう' not in screen.text:
+        if not is_camp_menu(screen):
             return []              # the window is still fading in
-        downs = int(state.get('downs') or 0)
-        if downs < 3:
-            state['downs'] = downs + 1
-            return [pad('down')]   # いどう → ステータス → キャンプ → きかん
+        move = menu_to(screen, 'きかん')
+        if move is None:
+            misses = state['cursor_misses'] = int(state.get('cursor_misses', 0)) + 1
+            if misses == 1:
+                _record(mem, 'camp_menu_unread', chart_step=None, resulting_event='cursor_unconfirmed',
+                        reason='野営メニューの実カーソルを読めないため帰還の確定を保留')
+            if misses >= 3:
+                mem.pop('recall', None)
+                mem['uncertain'] = True
+                mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+                _record(mem, 'camp_recall_aborted', resulting_event='cursor_unconfirmed',
+                        reason='実カーソルを3回で確認できず野営メニューを閉じる')
+                return [pad('b')]
+            return []
+        state.pop('cursor_misses', None)
+        _record(mem, 'camp_recall_cursor', chart_step=None, observed_metric={'current': _current(screen),
+                'choice': 'きかん', 'move': move}, reason='野営の実手カーソルを帰還項目へ合わせる')
+        if move != 'here':
+            return [move]
         state['stage'] = 'dest'
         state['steps'] = 0            # each stage gets the full observation budget
         return [pad('a')]
@@ -1930,12 +1946,8 @@ def camp_recall_step(screen: Screen, mem, frame):
         if abs(dx) <= RECALL_CONFIRM_PX and abs(dy) <= RECALL_CONFIRM_PX:
             if state.get('hero'):
                 return _finish_hero_recall(mem, state, state.get('goal'))
-            mem.pop('recall', None)
-            mem['uncertain'] = True
-            _record(mem, 'camp_recall',
-                    observed_metric={'castle': list(roof['target']), 'camp': list(state.get('target') or ())},
-                    reason='野営の将軍に補給できる自軍城への帰還を指示')
-            return [pad('a')]
+            return _request_recall(mem, state, None, [pad('a')],
+                                   target_cell=list(roof['target']))
         if abs(dx) >= abs(dy):
             return [pad('right' if dx > 0 else 'left', min(6, abs(dx)))]
         return [pad('down' if dy > 0 else 'up', min(6, abs(dy)))]
@@ -1958,19 +1970,50 @@ def _recall_goal(mem):
 
 
 def _finish_hero_recall(mem, state, goal):
-    mem.pop('recall', None)
-    mem['uncertain'] = True
-    tick = int(mem.get('tick') or 0)
-    for step in state.get('sorties') or ():
-        sortie = (mem.get('sorties') or {}).get(step)
-        if sortie:
-            sortie['status'] = 'recalled'
-    if goal:
-        mem.setdefault('sorties', {})[f'RECALL:{tick}'] = {
-            'general': NAME, 'target': goal, 'status': 'en_route', 'purpose': 'move', 'tick': tick}
-    _record(mem, 'hero_recalled', observed_metric={'castle': goal, 'sorties': state.get('sorties')},
-            reason='弱った主人公の進軍を取りやめ自軍城へ帰還させた')
-    return [pad('a')]
+    return _request_recall(mem, state, goal, [pad('a')])
+
+
+def _request_recall(mem, state, goal, actions, **fields):
+    """A proposal remains pending; neither an input nor an arrival receipt."""
+    state.update(stage='await_dispatch', steps=0, goal=goal,
+                 a_inputs=sum(a.get('buttons') == ['a'] for a in actions),
+                 requested_tick=int(mem.get('tick') or 0), **fields)
+    state.pop('request_trace', None)
+    state.pop('input_sent', None)
+    state.pop('picker_closed', None)
+    _record(mem, 'camp_recall_requested', chart_step=None,
+            observed_metric={'castle': goal, 'camp': state.get('target'),
+                             'hero_intended': bool(state.get('hero')), **fields},
+            resulting_event='planned_not_yet_sent',
+            reason='実選択した自軍城への帰還入力を予定し、送信と到着は未確認として保持')
+    return actions
+
+
+def _recall_dispatch_step(screen, mem, state):
+    state['steps'] = int(state.get('steps') or 0) + 1
+    receipt = mem.get('_recall_inputs') or {}
+    trace = state.get('request_trace') or {}
+    if (trace and receipt.get('request_trace') == trace
+            and receipt.get('a_inputs', 0) >= state.get('a_inputs', 1)):
+        if not state.get('input_sent'):
+            state['input_sent'] = True
+            _record(mem, 'camp_recall_input_sent', observed_metric={'castle': state.get('goal'),
+                    'request_trace': trace}, resulting_event='sent_not_yet_accepted',
+                    reason='同じラン・判断ID・実画面の帰還A送信記録を確認、受理と到着は未確認')
+    if state.get('input_sent') and screen.kind == 'map':
+        state['picker_closed'] = True
+    if state.get('picker_closed') or state['steps'] >= 6:
+        status = 'arrival_unconfirmed' if state.get('input_sent') else 'dispatch_unconfirmed'
+        mem['recall_verification'] = {**state, 'status': status}
+        mem.pop('recall', None)
+        mem['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
+        mem['uncertain'] = True
+        _record(mem, 'camp_recall_unconfirmed', chart_step=None, observed_metric={'castle': state.get('goal'),
+                'input_sent': bool(state.get('input_sent')), 'picker_closed': bool(state.get('picker_closed')),
+                'general': None}, resulting_event=status,
+                reason='帰還の本人・移動・到着を確認できず未確認として保持し、有限な操作を終了')
+        return [pad('b')] if screen.kind in ('world_map', 'map_target') else []
+    return []
 
 
 def map_step(screen: Screen, mem, frame):
@@ -4716,7 +4759,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'target_miss', 'target_cancel', 'menu_hold', 'card_scroll', 'card_unreadable',
                 'sortie_confirm_miss',
                 'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
-                'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip',
+                'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip', 'recall_verification',
                 'near_goal', 'align_steps', 'unanchored', 'select_tick',
                 'house', 'house_scan_tick', 'house_scan_month', 'house_field_scan', 'house_eggs',
                 'recruit_roster', 'recruit_roster_floor', 'recruit_roster_recheck', 'recruit_roster_attempts', 'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'castle_income', 'castle_ownership',

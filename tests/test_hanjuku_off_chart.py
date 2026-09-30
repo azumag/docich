@@ -953,16 +953,17 @@ def test_the_island_picker_confirms_the_observed_owned_castle_with_a_twice(monke
     monkeypatch.setattr(policy, 'world_flags', lambda frame, chapter: {chart.home_castle(chapter): 'own'})
     assert policy.world_map_step(view, mem, FRAME) == [policy.pad('a'), {'type': 'wait', 'ms': 700},
                                                         policy.pad('a')]
-    assert 'recall' not in mem
-    assert decisions(mem, 'camp_recall')[0]['observed_metric']['castle'] == 'アルマムーン'
+    assert mem['recall']['stage'] == 'await_dispatch'
+    assert decisions(mem, 'camp_recall_requested')[0]['observed_metric']['castle'] == 'アルマムーン'
     # The weak hero's recall ends the same way and cancels his attack march.
     mem = {'chapter': 1, 'tick': 50, '_records': [],
            'sorties': {'1-A2': {'general': policy.NAME, 'target': 'ゴーメン', 'status': 'en_route', 'tick': 40}},
            'recall': {'stage': 'dest', 'hero': True, 'steps': 1, 'sorties': ['1-A2']}}
     assert policy.world_map_step(view, mem, FRAME) == [policy.pad('a'), {'type': 'wait', 'ms': 700},
                                                         policy.pad('a')]
-    assert mem['sorties']['1-A2']['status'] == 'recalled'
-    assert decisions(mem, 'hero_recalled')[0]['observed_metric']['castle'] == 'ほんじょう'
+    assert mem['recall']['stage'] == 'await_dispatch'
+    assert mem['sorties']['1-A2']['status'] == 'en_route'
+    assert decisions(mem, 'camp_recall_requested')[0]['observed_metric']['castle'] == 'ほんじょう'
 
 
 def test_the_g_cursor_is_read_beside_another_gold_icon():
@@ -1190,8 +1191,8 @@ def test_a_hero_weakened_by_a_road_battle_is_recalled_before_his_next_fight(monk
     # SELECT, then A on the hero, then the menu walk to きかん.
     assert policy.camp_recall_step(map_screen(140, 120), mem, FRAME) == [policy.pad('select')]
     assert policy.camp_recall_step(map_screen(140, 120), mem, FRAME) == [policy.pad('a')]
-    menu = Screen(lines=[], hand=(50, 25), text='いどうステータスキャンプきかん', kind='text')
-    assert [policy.camp_recall_step(menu, mem, FRAME) for _ in range(4)] == [[policy.pad('down')]] * 3 + [[policy.pad('a')]]
+    from test_hanjuku_chart_bot import camp_menu
+    assert [policy.camp_recall_step(camp_menu(i), mem, FRAME) for i in range(4)] == [[policy.pad('down')]] * 3 + [[policy.pad('a')]]
     # Destination marker with no own roof in view: jump to the castle he came from.
     monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
     marker = Screen(lines=[], hand=None, text='', kind='map_target', marker=(140, 120))
@@ -1200,8 +1201,8 @@ def test_a_hero_weakened_by_a_road_battle_is_recalled_before_his_next_fight(monk
     mem.pop('y_jump')
     mem.setdefault('y_jumped', {})['RECALL'] = 'キカンドン'          # the jump confirmed there
     assert policy.camp_recall_step(marker, mem, FRAME) == [policy.pad('a')]
-    assert 'recall' not in mem and mem['sorties']['1-A2']['status'] == 'recalled'
-    assert decisions(mem, 'hero_recalled')[0]['observed_metric']['castle'] == 'キカンドン'
+    assert mem['recall']['stage'] == 'await_dispatch' and mem['sorties']['1-A2']['status'] == 'en_route'
+    assert decisions(mem, 'camp_recall_requested')[0]['observed_metric']['castle'] == 'キカンドン'
 
 
 def test_a_hero_inside_a_castle_is_not_recalled():

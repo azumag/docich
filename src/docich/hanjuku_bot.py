@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v123-scan-budget-separation'
+BOT_VERSION = 'hanjuku-chart-v124-camp-recall-evidence'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -153,7 +153,8 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
 
 
 def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
-           interim: dict | None = None, experience: dict | None = None) -> tuple[list[dict], dict]:
+           interim: dict | None = None, experience: dict | None = None,
+           recall_inputs: dict | None = None) -> tuple[list[dict], dict]:
     """Return bounded pad actions and new policy memory; never write or send.
 
     ``adjusted`` is a validated runtime-adjusted chart (``hanjuku_chart_adjust``)
@@ -177,6 +178,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     mem['_records']=[]
     mem['_adjusted']=adjusted
     mem['_interim']=interim
+    mem['_recall_inputs']=recall_inputs
     mem['_experience']=experience if isinstance(experience, dict) else experience_module.empty()
     updated={**state,'phase':phase,'step':step,'phase_step':phase_step,'bot_version':BOT_VERSION}
     updated.pop('_records',None)
@@ -229,7 +231,10 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         for key in ('indep_menu','indep_menu_key','indep_menu_action','egg_row_dead'):
             mem.pop(key,None)
     recruit_dialog = (mem.get('month_sub') or {}).get('kind') == 'recruit' and not policy.month_menu_ready(screen)
-    recall_dialog = mem.get('recall') and not mem.get('month_sub') and kind in ('map', 'map_target', 'text')
+    recall = mem.get('recall') or {}
+    recall_dialog = recall and not mem.get('month_sub') and (
+        kind in ('map', 'map_target', 'text') or
+        (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no')))
     # Cancel an outstanding repair before an emergency recall can move its
     # general; the old house route must not resume afterwards.
     if mem.get('house') and mem.get('recall'):
@@ -332,6 +337,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     updated['screen_kind']=kind
     mem.pop('_adjusted',None)
     mem.pop('_interim',None)
+    mem.pop('_recall_inputs',None)
     updated['_records']=mem.pop('_records')
     updated['_experience']=mem.pop('_experience',None)
     updated['policy']=mem
