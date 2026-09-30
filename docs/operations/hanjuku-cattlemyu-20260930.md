@@ -80,3 +80,7 @@ decision-018.pngは今取得したRGB efadb3428c8dが7458の記録と一致せ�
 最終policyを根拠とし、タイトル実画像は終了後の状態確認に限定する。
 
 v94半熟全体1178 passed / 1 skipped / 1 deselected。除外は未初期化submodule実知識検査のみ。自己レビュー、独立レビュー未実施。
+
+### v94配備照合
+
+PR1402/head0431a6bb97d57cb38793910187b7066efb5d8d94は全9CI success、自己レビュー後通常squash。main/VMceea901fcca9c2cf451ce3fd2a0fea84013473d6、canonical deploy36656541770 success、5対象SHA全一致。共通audio54659/start_all53946/Xvfb53865/stream348262のPID/start ticks維持。g496分析gate解放、正規手動operator36656688098 success。10:47 JST背景Soren g497 draining、半熟pendingの完走待ち。新ラン実入力版・自然なウゴカザル帰還は未確認。バナーstop、実クリア未達。
