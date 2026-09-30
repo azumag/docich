@@ -232,7 +232,7 @@ def step(screen, mem, frame):
     if mem.get('battle') and screen.kind == 'map':
         return []  # battle_end needs two map observations; do not start an unrelated sortie between them
     # Repair must never consume unrelated battle commands or monthly menus.
-    if (mem.get('battle') or screen.kind in {'battle', 'battle_menu', 'egg_battle_menu',
+    if (mem.get('battle') or screen.kind in {'battle', 'battle_menu', 'egg_battle_menu', 'egg_choice_menu',
             'monster_menu', 'okunote_menu', 'attack_started', 'defense_started', 'boss_attack_started',
             'month_menu', 'shop_quantity', 'shop_quantity_prompt', 'shop_exit_confirm', 'discharge_menu'}
             or mem.get('month_sub')):

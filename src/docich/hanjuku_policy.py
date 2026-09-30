@@ -5189,7 +5189,7 @@ def _egg_recovery_step(screen, mem, sub):
     return [pad('a')]  # bounded introduction/paid ritual dialogue
 
 
-MONTH_SUB_EXIT_KINDS = frozenset({'map', 'map_target', 'battle', 'battle_menu', 'egg_battle_menu',
+MONTH_SUB_EXIT_KINDS = frozenset({'map', 'map_target', 'battle', 'battle_menu', 'egg_battle_menu', 'egg_choice_menu',
                                   'monster_menu', 'attack_started', 'defense_started',
                                   'boss_attack_started', 'name_entry', 'castle_menu'})
 
@@ -5499,6 +5499,40 @@ def summary(mem: dict | None) -> dict:
         'name_entered': bool((mem.get('name') or {}).get('done')),
         'name_matches': (mem.get('name') or {}).get('typed') == NAME,
     }
+
+
+def egg_choice_step(screen: Screen, mem):
+    """Choose a real offered summon; never type a name or infer an egg result."""
+    from .hanjuku_screen import egg_choice_names
+    names = egg_choice_names(screen)
+    if not names or screen.menu_cursor not in (176, 192, 208):
+        return []
+    key = tuple(names)
+    flow = mem.get('egg_choice')
+    if not flow or tuple(flow.get('names') or ()) != key:
+        flow = mem['egg_choice'] = {'names': names, 'selected': 0, 'wait': 0}
+    if flow['selected']:
+        flow['wait'] += 1
+        if flow['wait'] <= 3:
+            return []
+        if flow['selected'] >= 2:
+            if not flow.get('held'):
+                flow['held'] = True
+                _record(mem, 'egg_choice_unconfirmed', observed_metric={'candidates': names},
+                        reason='有限回の召喚選択後も同じ三択のため、召喚成功とせず保留')
+            return []
+    # The first actual candidate is a valid summon. No unverified power ranking
+    # or arbitrary entry is introduced; later skill/HP policy handles its fight.
+    choice = names[0]
+    move = _battle_menu_to(screen, choice)
+    if move != 'here':
+        return [move] if move else []
+    flow['selected'] += 1
+    flow['wait'] = 0
+    _record(mem, 'egg_choice_select', observed_metric={'candidates': names, 'choice': choice},
+            resulting_event='summon_selected_not_yet_confirmed',
+            reason='実表示の三候補と騎士カーソルを確認し、先頭の召喚獣を選択')
+    return [pad('a')]
 
 
 def egg_battle_step(screen: Screen, mem):
