@@ -1,11 +1,11 @@
 {
-  "output_sha256": "89d5c404994074ade139b5452e9ed9dcdef7d97c0adbc02c5224f514c96347b3",
+  "output_sha256": "73d486523717fecb7f7c3c9a302a5ade236b0835f78e448cc7fca8a4145b620b",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "6d52b20f8c8d849e174e8e0ac490d0e9261fd9db5985152a985ad2b3b0bc5a20",
+  "source_sha256": "f2730b587f09410040d8388cc00bf0e508a0863035033dd37c9e3c5ef9e39453",
   "topics": [
+    "奪還重複出撃と出撃元の守備維持 v109準備",
     "無資源の一般守備将軍への最後の救済 v108準備",
-    "未開始入場の古い城情報解除 v107準備",
-    "防衛敗北後の新しい城旗保持 v106準備"
+    "未開始入場の古い城情報解除 v107準備"
   ]
 }
