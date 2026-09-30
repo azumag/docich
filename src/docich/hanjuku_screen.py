@@ -401,11 +401,13 @@ def _human_commands(screen):
 def egg_choice_names(screen):
     """The measured Elabel summon picker, not monster skills or HP panels."""
     from .hanjuku_reference import MONSTER_SKILLS
+    digit_fold = str.maketrans('０１２３４５６７８９', '0123456789')
+    known = {name.translate(digit_fold) for name in MONSTER_SKILLS}
     rows = {line.y: line.spans() for line in screen.menu_rows}
     choices = []
     for y in (176, 192, 208):
         spans = rows.get(y, [])
-        if len(spans) != 1 or spans[0][0] != 176 or spans[0][1] not in MONSTER_SKILLS:
+        if len(spans) != 1 or spans[0][0] != 176 or spans[0][1].translate(digit_fold) not in known:
             return []
         choices.append(spans[0][1])
     return choices if screen.battle is None and not screen.egg_rows else []
