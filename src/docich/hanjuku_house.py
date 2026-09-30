@@ -123,9 +123,11 @@ def _choose(screen, label):
     return [p.pad('a')] if move == 'here' else [move] if move else []
 
 
-def _exit(mem, reason):
+def _exit(mem, reason, *, limit=None):
     state = mem['house']
-    _record(mem, 'deferred', reason=reason, observed_metric={'phase': state['phase']})
+    _record(mem, 'deferred', reason=reason, observed_metric={
+        'phase': state['phase'], 'age': state.get('age'), 'total': state.get('total'),
+        'limit': limit})
     _phase(state, 'close')
     return []
 
@@ -228,7 +230,11 @@ def step(screen, mem, frame):
         _finish(mem)
         return None
     phase = state['phase']
-    state['total'] += 1
+    owns_observation = (bool(mem.get('battle')) or bool(mem.get('month_sub')) or screen.kind in {
+        'battle', 'battle_menu', 'egg_battle_menu', 'egg_choice_menu', 'monster_menu',
+        'okunote_menu', 'attack_started', 'defense_started', 'boss_attack_started'})
+    if not owns_observation:
+        state['total'] += 1
     if mem.get('battle') and screen.kind == 'map':
         return []  # battle_end needs two map observations; do not start an unrelated sortie between them
     # Repair must never consume unrelated battle commands or monthly menus.
@@ -242,12 +248,21 @@ def step(screen, mem, frame):
     if state.pop('interrupted', False):
         return _exit(mem, '割り込みでメニューの同一性を失ったため修理操作を中断')
     state['age'] += 1
-    if state['total'] > SESSION_LIMIT or state['age'] > (TRAVEL_LIMIT if phase == 'travel' else STEP_LIMIT):
+    if state['total'] > SESSION_LIMIT:
         if phase == 'close':
             _record(mem, 'aborted', reason='閉じる操作も上限に達したため入力を解放')
             _finish(mem)
             return None
-        return _exit(mem, '卵修理の観測回数上限に達したため入力を中止')
+        return _exit(mem, '卵修理の共通セッション観測上限に達したため入力を中止',
+                     limit='session')
+    phase_limit = TRAVEL_LIMIT if phase == 'travel' else STEP_LIMIT
+    if state['age'] > phase_limit:
+        if phase == 'close':
+            _record(mem, 'aborted', reason='閉じる操作も上限に達したため入力を解放')
+            _finish(mem)
+            return None
+        limit = 'travel' if phase == 'travel' else 'step'
+        return _exit(mem, '卵修理の観測回数上限に達したため入力を中止', limit=limit)
     if phase == 'close':
         if screen.kind == 'map':
             _finish(mem)
@@ -450,7 +465,11 @@ def _repair_step(screen, mem, frame):
         discovery = re.search(r'([^\ufffd\s]+)しょうぐんがあたし.*いえを', screen.text)
         if discovery and discovery[1] != name:
             return _exit(mem, '家を訪れた将軍が派遣対象と異なるため購入しない')
-        if gift_prices(screen):
+        prices = gift_prices(screen)
+        if prices:
+            _record(mem, 'arrival_seen', screen=screen.kind,
+                    observed_metric={'prices': prices, 'gold': (screen.header or {}).get('gold')},
+                    reason='家の贈り物一覧と価格を実画面で確認')
             gold = (screen.header or {}).get('gold')
             gift = affordable_gift(gold, p.WAGE_RESERVE)
             if not gift:

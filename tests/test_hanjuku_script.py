@@ -84,6 +84,66 @@ def test_other_generation_or_symlink_cannot_supply_terminal_evidence(tmp_path):
         hanjuku_run.event(tmp_path,{'event':'test'})
 
 
+def test_new_runtime_does_not_resume_previous_runtime_house_flow(tmp_path, monkeypatch):
+    import importlib.util
+    import io
+    from docich.game_switch import atomic_write_json
+
+    old_identity = {**IDENTITY,'runtime_id':'g1-abcdef12'}
+    new_identity = {'game':'hanjuku-hero','runtime_id':'g2-fedcba12','generation':2,'lease_id':'lease-2'}
+    old_runtime = tmp_path/'run'/'runtimes'/old_identity['runtime_id']
+    new_runtime = tmp_path/'run'/'runtimes'/new_identity['runtime_id']
+    old_runtime.mkdir(parents=True)
+    new_runtime.mkdir(parents=True)
+    old_bot = {'policy':{'chapter':1,'house':{'phase':'travel','general':'どうし'}},
+               'decision_trace':old_identity}
+    atomic_write_json(old_runtime/'hanjuku_bot.json',old_bot)
+
+    path = Path(__file__).resolve().parents[1]/'brains'/'hanjuku'/'bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_runtime_scope_test',path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.ROOT = tmp_path
+    monkeypatch.setattr(module,'read_png',lambda _: frame())
+    observation = {'game':'hanjuku-hero','screenshot':'unused',
+                   'meta':{'runtime_dir':str(new_runtime),'hanjuku':new_identity}}
+    output = io.StringIO()
+    monkeypatch.setattr(sys,'stdin',io.StringIO(json.dumps(observation)))
+    monkeypatch.setattr(sys,'stdout',output)
+
+    assert module.main() == 0
+    current = json.loads((new_runtime/'hanjuku_bot.json').read_text())
+    prior = json.loads((old_runtime/'hanjuku_bot.json').read_text())
+    assert 'house' not in current['policy']
+    assert prior['policy']['house'] == {'phase':'travel','general':'どうし'}
+
+
+@pytest.mark.parametrize('decision,screen', [
+    ('house_dispatch_requested','map_target'), ('house_arrival_seen','gift_request')])
+def test_house_route_snapshot_is_bound_to_its_decision_and_rgb_digest(tmp_path, decision, screen):
+    import importlib.util
+
+    identity = {'game':'hanjuku-hero','runtime_id':'g7-1234abcd','generation':7,'lease_id':'lease-7'}
+    runtime = tmp_path/'runtimes'/identity['runtime_id']
+    runtime.mkdir(parents=True)
+    path = Path(__file__).resolve().parents[1]/'brains'/'hanjuku'/'bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_arrival_snapshot_test',path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source = frame((70,80,90))
+    state = {'step':42,'screen_kind':screen,'policy':{'chapter':2,'house':{'phase':'buy'}}}
+
+    module.persist(runtime,state,[{'decision':decision,'screen':screen,
+                    'observed_metric':{'prices':{'ピアス':50,'みずぎ':100,'スカーフ':200}}}],
+                   {'hanjuku':identity},actions=[],frame_sha256=source.digest(),frame=source)
+
+    record = json.loads((runtime/'hanjuku_decisions.jsonl').read_text().splitlines()[-1])
+    assert record['decision'] == decision
+    assert record['decision_id'] == 'g7-1234abcd:7:42'
+    assert record['frame_sha256'] == source.digest()
+    assert read_png(runtime/'hanjuku_frames'/record['snapshot']).digest() == source.digest()
+
+
 def test_actions_are_bounded_pad_only_and_black_transition_waits():
     state={}
     for index in range(100):
