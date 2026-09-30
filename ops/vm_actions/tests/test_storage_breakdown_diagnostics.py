@@ -118,19 +118,15 @@ class OpenCodeSessionAttributionTests(unittest.TestCase):
         self.assertEqual(result["buckets"]["radio_main"]["sessions"], 0)
 
         coverage = result["coverage"]
+        self.assertTrue(coverage["scan_complete"])
         self.assertEqual(coverage["all_sessions"], 4)
-        self.assertEqual(coverage["attributed"]["sessions"], 3)
-        self.assertEqual(coverage["unattributed"]["sessions"], 1)
-        self.assertEqual(coverage["attributed"]["messages"], 4)
-        self.assertEqual(coverage["attributed"]["message_data_chars"], 50)
-        self.assertEqual(coverage["unattributed"]["messages"], 1)
-        self.assertEqual(coverage["unattributed"]["message_data_chars"], 600)
-        self.assertEqual(coverage["attributed"]["parts"], 2)
-        self.assertEqual(coverage["attributed"]["part_data_chars"], 8)
-        self.assertEqual(coverage["unattributed"]["parts"], 0)
-        self.assertEqual(coverage["attributed"]["events"], 3)
-        self.assertEqual(coverage["attributed"]["event_data_chars"], 221)
-        self.assertEqual(coverage["unattributed"]["events"], 0)
+        self.assertEqual(coverage["attributed_sessions"], 3)
+        self.assertEqual(coverage["unattributed_sessions"], 1)
+        self.assertEqual(coverage["unattributed_15m_sessions"], 1)
+        self.assertEqual(coverage["unattributed_1h_sessions"], 1)
+        self.assertEqual(coverage["unattributed_2h_sessions"], 1)
+        self.assertEqual(coverage["unattributed_6h_sessions"], 1)
+        self.assertEqual(coverage["unattributed_latest_age_sec"], 60)
 
         encoded = json.dumps(result)
         self.assertNotIn("SECRET_DYNAMIC_TITLE", encoded)
@@ -301,25 +297,15 @@ class StorageSummaryTests(unittest.TestCase):
                 "window_sec": 86400,
                 "buckets": buckets,
                 "coverage": {
+                    "scan_complete": True,
                     "all_sessions": 5,
-                    "attributed": {
-                        "sessions": 2,
-                        "messages": 3,
-                        "message_data_chars": 100,
-                        "parts": 4,
-                        "part_data_chars": 200,
-                        "events": 5,
-                        "event_data_chars": 900,
-                    },
-                    "unattributed": {
-                        "sessions": 3,
-                        "messages": 7,
-                        "message_data_chars": 800,
-                        "parts": 8,
-                        "part_data_chars": 700,
-                        "events": 9,
-                        "event_data_chars": 600,
-                    },
+                    "attributed_sessions": 2,
+                    "unattributed_sessions": 3,
+                    "unattributed_latest_age_sec": 45,
+                    "unattributed_15m_sessions": 1,
+                    "unattributed_1h_sessions": 2,
+                    "unattributed_2h_sessions": 3,
+                    "unattributed_6h_sessions": 3,
                 },
             },
         }
@@ -332,8 +318,9 @@ class StorageSummaryTests(unittest.TestCase):
         self.assertIn("opencode_attr_all_sessions=5", context)
         self.assertIn("opencode_attr_attributed_sessions=2", context)
         self.assertIn("opencode_attr_unattributed_sessions=3", context)
-        self.assertIn("opencode_attr_unattributed_message_data_chars=800", context)
-        self.assertIn("opencode_attr_unattributed_event_data_chars=600", context)
+        self.assertIn("opencode_attr_unattributed_latest_age_sec=45", context)
+        self.assertIn("opencode_attr_unattributed_15m_sessions=1", context)
+        self.assertIn("opencode_attr_unattributed_2h_sessions=3", context)
         self.assertNotIn("SECRET_DYNAMIC_BUCKET", context)
 
     def test_renders_fixed_numeric_context_only(self):
