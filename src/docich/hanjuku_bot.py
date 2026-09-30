@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v101-unconfirmed-boss-kit'
+BOT_VERSION = 'hanjuku-chart-v102-wounded-counterattack'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match

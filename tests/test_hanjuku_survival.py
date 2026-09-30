@@ -650,3 +650,82 @@ def test_defense_preclash_with_only_hidden_commands_scrolls_to_okunote_not_retre
     assert p.battle_menu_step(screen, mem) == [p.pad('down')]
     assert mem['_records'][-1]['decision'] == 'battle_okunote_scroll'
     assert not mem['battle'].get('hero_retreat')
+
+
+def wounded_egg_screen(hp=30, ally='ヴィーナス', enemy='ダークエルフ', selected=0):
+    from docich.hanjuku_screen import EggRow
+    sc = egg_menu_screen()
+    sc.hand = None
+    sc.menu_rows = sc.lines
+    sc.menu_cursor = 176 + selected * 16
+    sc.egg_rows = [EggRow(ally, hp, 'ally', 80), EggRow(enemy, 149, 'enemy', 80)]
+    return sc
+
+
+def wounded_egg_memory():
+    mem = memory(82, 29)
+    mem['battle'].update(ally='ヴィーナス', side='attack', planned_cards=[], egg_retreat_attempts=3)
+    return mem
+
+
+def test_wounded_general_counterattacks_from_actual_hp_and_measured_cursor():
+    mem = wounded_egg_memory()
+    assert p.egg_battle_step(wounded_egg_screen(), mem) == [p.pad('down')]
+    assert mem['battle']['ally_hp'] == 30
+    assert mem['battle']['enemy_hp'] == 29  # monster HP is not the enemy general's
+    assert p.egg_battle_step(wounded_egg_screen(selected=1), mem) == [p.pad('a')]
+    assert mem['battle']['egg_attack_label'] == 'もうこうげき'
+    assert p.egg_battle_step(wounded_egg_screen(hp=82, selected=1), mem) == [p.pad('up')]
+    assert p.egg_battle_step(wounded_egg_screen(hp=82), mem) == [p.pad('a')]
+
+
+@pytest.mark.parametrize('ally,hp,enemy', [('エクスカリバー', 30, 'ダークエルフ'),
+    ('ココット', 10, 'ダークエルフ'), ('ヴィーナス', 83, 'ダークエルフ'),
+    ('ヴィーナス', 0, 'ダークエルフ'), ('ヴィーナス', 30, 'カシュー'),
+    ('ヴィーナス', 42, 'ダークエルフ')])
+def test_fierce_requires_live_wounded_matching_general_and_actual_monster(ally, hp, enemy):
+    mem = wounded_egg_memory()
+    assert p.egg_battle_step(wounded_egg_screen(hp, ally, enemy), mem) == [p.pad('a')]
+    assert mem['battle']['egg_attack_label'] == 'こうげき'
+
+
+def test_last_resort_still_tries_attack_retreat_and_forbids_defense_retreat():
+    mem = wounded_egg_memory();mem['battle']['egg_retreat_attempts'] = 0
+    for _ in range(3):
+        assert p.egg_battle_step(wounded_egg_screen(), mem) == [p.pad('b')]
+    assert p.egg_battle_step(wounded_egg_screen(), mem) == [p.pad('down')]
+    mem = wounded_egg_memory();mem['battle'].update(side='defense', egg_retreat_attempts=0)
+    assert p.egg_battle_step(wounded_egg_screen(), mem) == [p.pad('down')]
+    assert mem['battle']['egg_retreat_attempts'] == 0
+
+
+def test_fierce_preserves_available_egg_cards_and_requires_known_cursor():
+    mem = wounded_egg_memory();sc = wounded_egg_screen();sc.text += 'たまごをつかう'
+    assert p.egg_battle_step(sc, mem) == [p.pad('down')]
+    assert 'egg_attack_label' not in mem['battle']
+    mem = wounded_egg_memory();mem['battle']['planned_cards'] = ['キャトルミュー']
+    assert p.egg_battle_step(wounded_egg_screen(), mem) == [p.pad('a')]
+    assert mem['battle']['egg_attack_label'] == 'こうげき'
+    mem = wounded_egg_memory();sc = wounded_egg_screen();sc.menu_cursor = None
+    assert p.egg_battle_step(sc, mem) == []
+    assert p.egg_battle_step(wounded_egg_screen(), mem) == [p.pad('down')]
+    sc = wounded_egg_screen(hp=82);sc.menu_cursor = None
+    assert p.egg_battle_step(sc, mem) == []
+
+
+def test_general_hp_requires_unique_ally_row_and_known_maximum():
+    from docich.hanjuku_screen import EggRow
+    for invalid in ('unknown_max', 'duplicate', 'wrong_side'):
+        mem = wounded_egg_memory();sc = wounded_egg_screen()
+        if invalid == 'unknown_max':
+            mem['battle']['ally'] = 'どうし';sc.egg_rows[0].name = 'どうし'
+        elif invalid == 'duplicate':
+            sc.egg_rows.append(EggRow('ヴィーナス', 30, 'ally', 88))
+        else:
+            sc.egg_rows[0].side = 'enemy'
+        assert p.egg_battle_step(sc, mem) == [p.pad('a')]
+        assert mem['battle']['ally_hp'] == 82
+    mem = wounded_egg_memory();mem.update(hero_max_hp=90)
+    mem['battle']['ally'] = 'どうし'
+    assert p.egg_battle_step(wounded_egg_screen(30, 'どうし'), mem) == [p.pad('down')]
+    assert mem['battle']['ally_hp'] == 30

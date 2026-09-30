@@ -14,6 +14,25 @@ FIXTURES = Path(__file__).parent / 'fixtures' / 'hanjuku'
 
 
 class RealFrameTests(unittest.TestCase):
+    def test_bottom_enemy_hp_row_is_not_cropped_in_general_egg_menu(self):
+        # Owner-authorized read-only live snapshot; RGB matched observation
+        # 1790753591.2442434 from g508, not an exported running-runtime archive.
+        frame = vision._frame((FIXTURES / 'g508-egg-general-menu.png').read_bytes())
+        self.assertEqual(frame.digest(), '232a183fd4ea57828eb88540f3f1b429d86d6f0e82a2383cdc94e0a50d97b546')
+        from docich.hanjuku_screen import parse
+        from docich.hanjuku_policy import egg_battle_step, pad
+        screen = parse(frame)
+        self.assertEqual(screen.kind, 'egg_battle_menu')
+        self.assertEqual(screen.menu_cursor, 188)
+        self.assertEqual([(r.name, r.hp, r.side) for r in screen.egg_rows],
+                         [('ヴィーナス', 82, 'ally'), ('ダークエルフ', 216, 'enemy')])
+        memory = {'battle': {'ally': 'ヴィーナス', 'enemy': 'カシュー', 'ally_hp': 30,
+                             'enemy_hp': 29, 'side': 'attack', 'egg_retreat_attempts': 3}}
+        self.assertEqual(egg_battle_step(screen, memory), [pad('a')])
+        self.assertEqual(memory['battle']['ally_hp'], 82)
+        self.assertEqual(memory['battle']['enemy_hp'], 29)
+        self.assertEqual(memory['battle']['egg_attack_label'], 'こうげき')
+
     def test_wounded_defender_does_not_open_random_self_damage_choices(self):
         frame = vision._frame((FIXTURES / 'g482-disabled-defense.png').read_bytes())
         from docich.hanjuku_screen import parse
