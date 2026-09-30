@@ -32,7 +32,7 @@ class BundleEmergencyTests(unittest.TestCase):
 
     def test_workflow_keeps_fixed_paths_and_count(self):
         text = (ROOT.parents[1] / '.github/workflows/vm-bundle-retention.yml').read_text()
-        self.assertIn('--min-age-seconds 0 --keep-unreferenced 8 --json', text)
+        self.assertIn('--min-age-seconds 0 --keep-unreferenced 2 --json', text)
         self.assertIn('default: false', text)
         self.assertNotIn('${{ inputs.confirm }}\'', text)
         self.assertLess(text.index('Authorize fixed emergency age override'), text.index('Configure pinned SSH client'))

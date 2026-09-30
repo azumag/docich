@@ -71,7 +71,7 @@ class BundleRetentionTests(unittest.TestCase):
         path.mkdir()
         return path
 
-    def test_rotates_only_old_unreferenced_bundles_beyond_newest_eight(self):
+    def test_preserves_all_references_and_only_newest_two_unreferenced(self):
         previous, previous_path = self.make_bundle(2)
         repair, repair_path = self.make_bundle(5)
         preview, preview_path = self.make_bundle(6)
@@ -85,25 +85,28 @@ class BundleRetentionTests(unittest.TestCase):
         old = [self.make_bundle(value) for value in range(100, 112)]
         result = retention.rotate_bundles(self.cfg, now=self.now)
 
-        self.assertEqual(result["deleted_count"], 4)
+        self.assertEqual(result["deleted_count"], 10)
         self.assertEqual(result["referenced_count"], 4)
         for path in (self.current_bundle, previous_path, repair_path, preview_path):
             self.assertTrue(path.exists(), "referenced bundle must always be preserved")
-        oldest_four = [path for _, path in old[:4]]
-        newest_eight = [path for _, path in old[4:]]
-        self.assertTrue(all(not path.exists() for path in oldest_four))
-        self.assertTrue(all(path.exists() for path in newest_eight))
+        oldest_ten = [path for _, path in old[:10]]
+        newest_two = [path for _, path in old[10:]]
+        self.assertTrue(all(not path.exists() for path in oldest_ten))
+        self.assertTrue(all(path.exists() for path in newest_two))
 
-    def test_keeps_recent_unreferenced_bundles_even_beyond_generation_cap(self):
+    def test_recent_unreferenced_bundles_are_also_capped_by_count(self):
         recent = [self.make_bundle(value, age_days=1) for value in range(100, 112)]
 
         result = retention.rotate_bundles(self.cfg, now=self.now)
 
-        self.assertEqual(result["deleted_count"], 0)
-        self.assertEqual(result["retained_recent_count"], 12)
-        self.assertTrue(all(path.exists() for _, path in recent))
+        self.assertEqual(result["deleted_count"], 10)
+        self.assertEqual(result["retained_recent_count"], 0)
+        self.assertEqual(result["retained_generation_cap"], 2)
+        self.assertEqual(result["min_age_seconds"], 0)
+        self.assertTrue(all(not path.exists() for _, path in recent[:10]))
+        self.assertTrue(all(path.exists() for _, path in recent[10:]))
 
-    def test_two_day_boundary_preserves_recent_and_referenced_bundles(self):
+    def test_age_boundary_does_not_override_count_or_reference_protection(self):
         previous, previous_path = self.make_bundle(2, age_days=10)
         self.write_current(self.current_sha, previous_head=previous)
         old = [self.make_bundle(value, age_days=3) for value in range(100, 112)]
@@ -112,11 +115,29 @@ class BundleRetentionTests(unittest.TestCase):
         boundary = old[0][1]
         os.utime(boundary, (self.now - 2 * 86400, self.now - 2 * 86400))
         result = retention.rotate_bundles(self.cfg, now=self.now)
-        self.assertEqual(result["deleted_count"], 12)
+        self.assertEqual(result["deleted_count"], 18)
         self.assertFalse(boundary.exists())
         self.assertTrue(all(not path.exists() for _, path in old[1:]))
-        self.assertTrue(all(path.exists() for _, path in recent))
+        self.assertTrue(all(not path.exists() for _, path in recent[:-2]))
+        self.assertTrue(all(path.exists() for _, path in recent[-2:]))
         self.assertTrue(previous_path.exists())
+        self.assertTrue(self.current_bundle.exists())
+
+    def test_newly_uploaded_and_equal_timestamp_bundles_are_count_bounded(self):
+        bundles = [self.make_bundle(value, age_days=0) for value in range(100, 112)]
+        for _, path in bundles:
+            os.utime(path, (self.now, self.now))
+        result = retention.rotate_bundles(self.cfg, now=self.now)
+        self.assertEqual(result["deleted_count"], 10)
+        self.assertTrue(all(not path.exists() for _, path in bundles[:-2]))
+        self.assertTrue(all(path.exists() for _, path in bundles[-2:]))
+        self.assertTrue(self.current_bundle.exists())
+
+    def test_fewer_than_two_unreferenced_bundles_are_preserved(self):
+        _, path = self.make_bundle(100, age_days=0)
+        result = retention.rotate_bundles(self.cfg, now=self.now)
+        self.assertEqual(result["deleted_count"], 0)
+        self.assertTrue(path.exists())
         self.assertTrue(self.current_bundle.exists())
 
     def test_dry_run_reports_deletions_without_unlinking(self):
@@ -125,7 +146,7 @@ class BundleRetentionTests(unittest.TestCase):
         result = retention.rotate_bundles(self.cfg, now=self.now, dry_run=True)
 
         self.assertEqual(result["status"], "dry_run")
-        self.assertEqual(result["deleted_count"], 4)
+        self.assertEqual(result["deleted_count"], 10)
         self.assertTrue(all(path.exists() for _, path in old))
 
     def test_refuses_all_deletion_when_deployment_recovery_is_active(self):
