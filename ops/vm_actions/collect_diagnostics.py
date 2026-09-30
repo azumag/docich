@@ -4084,7 +4084,7 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": corners,
-        "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), now),
+        "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
