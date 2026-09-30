@@ -59,3 +59,17 @@ v97は自己レビュー。AGENTSのサブエージェント禁止により独�
 完走待ちの手動予約から起動する。実クリアまで監視は継続する。
 
 最終検証: 全半熟1214 passed / 1 skipped / 1 deselected、追加15回帰。除外は未初期化submodule知識検査のみ。差分/予算/出撃前ガード/画像証拠の自己レビュー済み。
+
+## 配備と再起動予約
+
+PR1408/head958f9d30837e9149ec5a1deaeb0b871742b59ddb全9CI success、自己レビュー
+5361103396後通常merge。main/VM0fcbe58cf18081a404401c2697e526699acd78d6、
+canonical36664066984 success、5対象SHA一致。配備前後の現行audio54659/
+start_all53946/Xvfb53865/stream_runner2087888/ffmpeg2088069のPID/start ticks同一。
+旧ffmpeg348262は配備前に別途終了していたため維持の証拠に使わない。
+
+終了g498の分析done後、正規手動operator36664240871 success。軽量監視も同時に
+36664241577を送信、現在は単一pending半熟/source=manual/request
+ a391af45-ac27-4e06-86dd-a1dfbf970a6f。背景Soren g499完走待ち、30fps、バナーstop。
+新ランv97入力/画像・自然家修復/帰還・実クリアは未確認。既存20秒監視・30分
+automationを継続、これらの実測は次の運用記録へ残す。
