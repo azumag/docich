@@ -1819,6 +1819,45 @@ def _game_switch_view(g: GlobalConfig) -> dict[str, Any]:
     }
 
 
+def _soren91_renderer_view(g: GlobalConfig) -> dict[str, Any]:
+    """メリケン描画ホストの方針と直近の選択。URL/token は出さず有無だけ返す。"""
+    from . import soren91_renderer
+    from .corner_adapters import MerikenCornerAdapter
+
+    configured: dict[str, bool | None] = {host: None for host in soren91_renderer.HOSTS}
+    env_path = Path(os.environ.get("DOCICH_SOREN91_ENV_FILE",
+                                   str(MerikenCornerAdapter.DEFAULT_ENV_FILE)))
+    try:
+        values = MerikenCornerAdapter._read_env_file(env_path) if env_path.is_file() else {}
+        keys = {
+            "windows": ("SOREN91_WINDOWS_AGENT_BASE_URL", "SOREN91_WINDOWS_AGENT_TOKEN"),
+            "mac": ("SOREN91_MACOS_AGENT_BASE_URL", "SOREN91_LOCAL_AGENT_TOKEN"),
+        }
+        configured = {host: all(values.get(k) for k in pair) for host, pair in keys.items()}
+    except Exception:
+        pass
+    selection = soren91_renderer.load_selection(g.state_dir)
+    if selection:
+        attempts = selection.get("attempts") if isinstance(selection.get("attempts"), list) else []
+        selection = {
+            "host": selection["host"],
+            "selected_at": _view_time(selection.get("selected_at")),
+            "attempts": [
+                {"host": a.get("host") if a.get("host") in soren91_renderer.HOSTS else None,
+                 "ok": a.get("error") is None,
+                 "error": _view_str(a.get("error"), 200)}
+                for a in attempts[:4] if isinstance(a, dict)
+            ],
+        }
+    return {
+        "mode": soren91_renderer.load_mode(g.state_dir),
+        "modes": list(soren91_renderer.MODES),
+        "order": list(soren91_renderer.host_order(g.state_dir)),
+        "configured": configured,
+        "selection": selection,
+    }
+
+
 def _corners_view(g: GlobalConfig) -> dict[str, Any]:
     """Read-only page model: rotation ledger + game switch + catalog + corner states."""
     from .corner_catalog import load_catalog
@@ -3016,6 +3055,16 @@ input:checked+.slider:before{transform:translateX(20px)}
 </div>
 <div id="corners-hint" class="help"></div>
 <div id="corners-msg" class="help"></div>
+</div>
+<div class="card"><h2>メリケンAI 描画ホスト</h2>
+<p class="desc">メリケンAIコーナーのゲーム画面をどのPCで描画するかを選びます。「自動」は有線の Windows を優先し、つながらない・起動しないときは Mac に切り替えます。変更は次にコーナーが始まるときから効きます（実行中のコーナーは切り替わりません）。</p>
+<div class="row"><div><label>描画ホスト</label><select id="renderer-mode">
+<option value="auto">自動（Windows 優先 → Mac）</option>
+<option value="windows">Windows のみ</option>
+<option value="mac">Mac のみ</option>
+</select></div></div>
+<div class="actions"><button class="btn primary" id="renderer-save">保存</button></div>
+<div id="renderer-status" class="help">読込中…</div>
 </div>
 <div class="card"><h2>コーナー状態ファイル</h2><p class="desc">各コーナーの自動/手動実行の最終記録です（問題調査用）。</p><div class="table-wrap"><table><thead><tr><th>state</th><th>状態</th><th>game</th><th>開始</th><th>終了予定</th><th>完了</th><th>要復旧</th><th>試合数</th></tr></thead><tbody id="corners-table"></tbody></table></div></div>
 </section>
@@ -4753,7 +4802,27 @@ async function saveStreamSettings(){
     await loadConfig();
   }catch(e){ if(msg) msg.textContent=String(e); toast(String(e),5000); }
 }
+const RENDERER_HOST_JA={windows:"Windows",mac:"Mac"};
+function renderRenderer(v){
+  const sel=document.getElementById("renderer-mode");
+  const out=document.getElementById("renderer-status");
+  if(sel && document.activeElement!==sel) sel.value=v.mode;
+  if(!out) return;
+  const conf=Object.entries(v.configured||{}).map(([h,ok])=>`${RENDERER_HOST_JA[h]||h}: ${ok===null?"不明":(ok?"接続情報あり":"接続情報なし")}`).join(" / ");
+  let last="まだ記録がありません";
+  if(v.selection){
+    const at=v.selection.selected_at?new Date(v.selection.selected_at*1000).toLocaleString():"-";
+    const tries=(v.selection.attempts||[]).map(a=>`${RENDERER_HOST_JA[a.host]||"?"}${a.ok?"(成功)":"(失敗: "+esc(a.error||"")+")"}`).join(" → ");
+    last=`${esc(RENDERER_HOST_JA[v.selection.host]||v.selection.host)}（${esc(at)}）${tries?"<br/>試行: "+tries:""}`;
+  }
+  out.innerHTML=`試す順番: ${esc((v.order||[]).map(h=>RENDERER_HOST_JA[h]||h).join(" → "))}<br/>${esc(conf)}<br/>直近に使ったホスト: ${last}`;
+}
+async function loadRenderer(){
+  try{ renderRenderer(await api("/api/soren91/renderer")); }
+  catch(e){ const out=document.getElementById("renderer-status"); if(out) out.textContent=String(e); }
+}
 async function loadCorners(){
+  loadRenderer();
   try{
     renderCorners(await api("/api/corners"));
   }catch(e){
@@ -5560,6 +5629,14 @@ document.addEventListener("DOMContentLoaded",()=>{
   // corners (rotation view / one-off manual start-stop / latch recovery)
   const cRefresh=document.getElementById("corners-refresh");
   if(cRefresh) cRefresh.onclick=()=>loadCorners();
+  const rSave=document.getElementById("renderer-save");
+  if(rSave) rSave.onclick=async()=>{
+    const sel=document.getElementById("renderer-mode");
+    try{
+      renderRenderer(await api("/api/soren91/renderer",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:sel.value})}));
+      toast("描画ホストを保存しました（次のコーナーから有効）");
+    }catch(e){ toast(String(e)); }
+  };
   const cStart=document.getElementById("corners-start");
   if(cStart) cStart.onclick=()=>{
     const sel=document.getElementById("corners-select");
@@ -5954,6 +6031,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_get_predictions()
             elif path == "/api/corners":
                 status = self._handle_get_corners()
+            elif path == "/api/soren91/renderer":
+                status = self._handle_get_soren91_renderer()
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -6065,6 +6144,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_post_prediction_action()
             elif parsed.path == "/api/corners":
                 status = self._handle_post_corners()
+            elif parsed.path == "/api/soren91/renderer":
+                status = self._handle_post_soren91_renderer()
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -6964,6 +7045,42 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(500, "corners_unavailable", str(exc)[:200])
             return 500
         self._send_json(200, view)
+        return 200
+
+    def _handle_get_soren91_renderer(self) -> int:
+        try:
+            view = _soren91_renderer_view(self.g)
+        except Exception as exc:
+            self._send_error_json(500, "renderer_unavailable", str(exc)[:200])
+            return 500
+        self._send_json(200, view)
+        return 200
+
+    def _handle_post_soren91_renderer(self) -> int:
+        """描画ホスト方針 (auto/windows/mac) を保存する。次のコーナー開始から効く。"""
+        from . import soren91_renderer
+
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be object")
+            return 400
+        mode = str(data.get("mode", "")).strip().lower()
+        try:
+            soren91_renderer.save_mode(self.g.state_dir, mode)
+        except ValueError as exc:
+            self._send_error_json(400, "invalid_mode", str(exc))
+            return 400
+        except OSError as exc:
+            self._send_error_json(500, "renderer_save_failed", str(exc)[:200])
+            return 500
+        self._send_json(200, _soren91_renderer_view(self.g))
         return 200
 
     def _handle_post_corners(self) -> int:

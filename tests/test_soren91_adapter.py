@@ -15,6 +15,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import config  # noqa: E402
+from docich import soren91_renderer  # noqa: E402
 from docich.adapters import make_coordinator_adapter  # noqa: E402
 from docich.adapters.base import AdapterError  # noqa: E402
 from docich.adapters.soren91 import (  # noqa: E402
@@ -959,3 +960,158 @@ class TestSoren91TwitchSync(Soren91AdapterTestBase):
                 self.http_plan = [(202, {"ok": True, "stopping": True})]
                 adapter.cleanup_runtime(time.monotonic() + 30, None)
         self.assertEqual(calls, ["sorengame"])
+
+
+WIN_IP = "100.90.0.9"
+WIN_URL = f"http://{WIN_IP}:19191"
+WIN_TOKEN = "windows-token-0123456789abcdef"
+
+
+class TestRendererFailover(Soren91AdapterTestBase):
+    """Windows primary / Mac failover selection (docich.soren91_renderer)."""
+
+    _enabled_game = TestBotAgent._enabled_game
+
+    def setUp(self):
+        super().setUp()
+        env = mock.patch.dict(
+            "os.environ",
+            {"SOREN91_WINDOWS_AGENT_BASE_URL": WIN_URL, "SOREN91_WINDOWS_AGENT_TOKEN": WIN_TOKEN},
+        )
+        env.start()
+        self.addCleanup(env.stop)
+
+    def _materialize(self, plan, deadline_s=30):
+        adapter = self._adapter(self._enabled_game())
+        with mock.patch("docich.procs.which", return_value="/usr/bin/node"):
+            with self._ffplay(), self._bound_listener(True), self._http():
+                self.http_plan = list(plan)
+                adapter.materialize_runtime(time.monotonic() + deadline_s, None)
+        return adapter
+
+    def _bot_cdp_url(self):
+        return self.tmux.window_env["docich-game-g3:agent-g3"]["SOREN91_REMOTE_CDP_URL"]
+
+    def test_auto_prefers_windows(self):
+        self._materialize([
+            (200, {"ok": True, "running": False}),
+            (202, {"ok": True, "started": True}),
+        ])
+        self.assertTrue(all(c["url"].startswith(f"http://{WIN_IP}:") for c in self.http_calls))
+        self.assertEqual(self.http_calls[0]["auth"], f"Bearer {WIN_TOKEN}")
+        self.assertEqual(self._bot_cdp_url(), f"http://{WIN_IP}:9322")
+        self.assertEqual(soren91_renderer.selected_host(self.g.state_dir, "g3-abcdef12"), "windows")
+
+    def test_unreachable_windows_fails_over_to_mac(self):
+        self._materialize([
+            urllib.error.URLError("no route"),  # windows /v1/status
+            urllib.error.URLError("no route"),  # windows best-effort /v1/stop
+            (200, {"ok": True, "running": False}),  # mac /v1/status
+            (202, {"ok": True, "started": True}),
+        ])
+        self.assertEqual(self.http_calls[2]["auth"], f"Bearer {TOKEN}")
+        self.assertEqual(self._bot_cdp_url(), f"http://{MAC_IP}:9322")
+        record = soren91_renderer.load_selection(self.g.state_dir)
+        self.assertEqual(record["host"], "mac")
+        self.assertEqual([a["host"] for a in record["attempts"]], ["windows", "mac"])
+        self.assertNotIn(WIN_TOKEN, json.dumps(record))
+
+    def test_silent_windows_cdp_proxy_fails_over_and_stops_windows(self):
+        adapter = self._adapter(self._enabled_game())
+        adapter.cdp_wait_sec = 1.5
+        # Only the Mac CDP proxy ever answers.
+        adapter._cdp_proxy_ready = lambda: adapter._host == "mac"
+        with mock.patch("docich.procs.which", return_value="/usr/bin/node"):
+            with self._ffplay(), self._bound_listener(True), self._http():
+                self.http_plan = [
+                    (200, {"ok": True, "running": False}),  # windows status
+                    (202, {"ok": True, "started": True}),  # windows start
+                    (202, {"ok": True, "stopping": True}),  # windows stop
+                    (200, {"ok": True, "running": False}),  # mac status
+                    (202, {"ok": True, "started": True}),  # mac start
+                ]
+                adapter.materialize_runtime(time.monotonic() + 30, None)
+        calls = [(c["method"], c["url"]) for c in self.http_calls]
+        self.assertEqual(calls, [
+            ("GET", f"{WIN_URL}/v1/status"),
+            ("POST", f"{WIN_URL}/v1/start"),
+            ("POST", f"{WIN_URL}/v1/stop"),
+            ("GET", f"{BASE_URL}/v1/status"),
+            ("POST", f"{BASE_URL}/v1/start"),
+        ])
+        self.assertEqual(self._bot_cdp_url(), f"http://{MAC_IP}:9322")
+        attempts = soren91_renderer.load_selection(self.g.state_dir)["attempts"]
+        self.assertIn("CDP proxy", attempts[0]["error"])
+
+    def test_mode_pins_one_host(self):
+        soren91_renderer.save_mode(self.g.state_dir, "mac")
+        self._materialize([
+            (200, {"ok": True, "running": False}),
+            (202, {"ok": True, "started": True}),
+        ])
+        self.assertTrue(all(c["url"].startswith(f"http://{MAC_IP}:") for c in self.http_calls))
+
+    def test_pinned_windows_does_not_fall_back(self):
+        soren91_renderer.save_mode(self.g.state_dir, "windows")
+        adapter = self._adapter(self._enabled_game())
+        with mock.patch("docich.procs.which", return_value="/usr/bin/node"):
+            with self._ffplay(), self._bound_listener(True), self._http():
+                self.http_plan = [urllib.error.URLError("no route")]
+                with self.assertRaises(AdapterError) as caught:
+                    adapter.materialize_runtime(time.monotonic() + 30, None)
+        self.assertIn("Windows", str(caught.exception))
+        self.assertFalse(any(c["url"].startswith(f"http://{MAC_IP}:") for c in self.http_calls))
+
+    def test_later_instance_uses_recorded_host_for_stop(self):
+        self._materialize([
+            urllib.error.URLError("no route"),
+            urllib.error.URLError("no route"),
+            (200, {"ok": True, "running": False}),
+            (202, {"ok": True, "started": True}),
+        ])
+        self.http_calls.clear()
+        other = self._adapter(self._enabled_game())
+        with self._bound_listener(False), self._http():
+            other.cleanup_runtime(time.monotonic() + 30, None)
+        stops = [c for c in self.http_calls if c["url"].endswith("/v1/stop")]
+        self.assertEqual([c["url"].split("/")[2] for c in stops], [f"{MAC_IP}:19191"])
+
+    def test_cleanup_without_record_stops_every_configured_host(self):
+        adapter = self._adapter(self._enabled_game())
+        with self._bound_listener(False), self._http():
+            adapter.cleanup_runtime(time.monotonic() + 30, None)
+        stops = [c["url"].split("/")[2] for c in self.http_calls if c["url"].endswith("/v1/stop")]
+        self.assertEqual(stops, [f"{WIN_IP}:19191", f"{MAC_IP}:19191"])
+
+    def test_invalid_windows_config_is_skipped_when_mac_usable(self):
+        with mock.patch.dict("os.environ", {"SOREN91_WINDOWS_AGENT_BASE_URL": "http://8.8.8.8:1"}):
+            adapter = self._adapter(self._enabled_game())
+            self.assertEqual(adapter._usable_hosts(), ["mac"])
+            with mock.patch.dict("os.environ", {"SOREN91_MACOS_AGENT_BASE_URL": ""}):
+                with self.assertRaises(AdapterError):
+                    adapter._usable_hosts()
+
+    def test_materialize_budget_covers_each_candidate(self):
+        adapter = self._adapter(self._enabled_game())
+        self.assertEqual(adapter.materialize_timeout_s, adapter.cdp_wait_sec * 2 + 120.0)
+        soren91_renderer.save_mode(self.g.state_dir, "windows")
+        self.assertEqual(adapter.materialize_timeout_s, adapter.cdp_wait_sec + 120.0)
+
+
+class TestRendererPolicyFile(unittest.TestCase):
+    def test_policy_defaults_and_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(soren91_renderer.load_mode(tmp), "auto")
+            self.assertEqual(soren91_renderer.host_order(tmp), ("windows", "mac"))
+            soren91_renderer.save_mode(tmp, "windows")
+            self.assertEqual(soren91_renderer.host_order(tmp), ("windows",))
+            with self.assertRaises(ValueError):
+                soren91_renderer.save_mode(tmp, "linux")
+            (Path(tmp) / soren91_renderer.POLICY_FILE).write_text("{broken", encoding="utf-8")
+            self.assertEqual(soren91_renderer.load_mode(tmp), "auto")
+
+    def test_selection_is_scoped_to_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            soren91_renderer.record_selection(tmp, "g1-aaaa", "windows", [])
+            self.assertEqual(soren91_renderer.selected_host(tmp, "g1-aaaa"), "windows")
+            self.assertIsNone(soren91_renderer.selected_host(tmp, "g2-bbbb"))
