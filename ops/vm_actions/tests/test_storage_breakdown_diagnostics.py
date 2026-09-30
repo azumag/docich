@@ -60,6 +60,7 @@ class OpenCodeSessionAttributionTests(unittest.TestCase):
         rows = (
             ("s-radio", "docich:radio_prepass", fresh),
             ("s-comment", "docich:comment", fresh),
+            ("s-soren91", "docich:soren91", fresh),
             ("s-secret", "SECRET_DYNAMIC_TITLE", fresh),
             ("s-old", "docich:radio_main", old),
         )
@@ -70,6 +71,7 @@ class OpenCodeSessionAttributionTests(unittest.TestCase):
                 ("m1", "s-radio", "x" * 11),
                 ("m2", "s-radio", "y" * 13),
                 ("m3", "s-comment", "z" * 7),
+                ("m4", "s-soren91", "s" * 19),
                 ("m-secret", "s-secret", "SECRET" * 100),
                 ("m-old", "s-old", "o" * 999),
             ),
@@ -111,6 +113,8 @@ class OpenCodeSessionAttributionTests(unittest.TestCase):
         self.assertEqual(comment["sessions"], 1)
         self.assertEqual(comment["message_data_chars"], 7)
         self.assertEqual(comment["event_data_chars"], 17)
+        self.assertEqual(result["buckets"]["soren91"]["sessions"], 1)
+        self.assertEqual(result["buckets"]["soren91"]["message_data_chars"], 19)
         self.assertEqual(result["buckets"]["radio_main"]["sessions"], 0)
         encoded = json.dumps(result)
         self.assertNotIn("SECRET_DYNAMIC_TITLE", encoded)
