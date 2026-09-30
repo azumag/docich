@@ -3714,7 +3714,9 @@ def _nethack_record(raw, daily):
     else:
         if _rotation_enum(raw.get('status'), NETHACK_TERMINAL) == 'unknown':
             return None
-        timestamp = _nethack_time(raw.get('ended_at'))
+        # The run producer persists session closure on the root under
+        # last_finished_at; ended_at exists only inside individual sessions.
+        timestamp = _nethack_time(raw.get('last_finished_at'))
         retrospective = raw.get('retrospective')
         retrospective = retrospective if (
             isinstance(retrospective, dict)
@@ -3808,14 +3810,20 @@ def _collect_nethack_history(state_dir, now):
 
 
 def _nethack_history_budget(payload):
-    """Omit new history first, preserving the existing diagnostic budget priorities."""
+    """Trim oldest history first, keeping the latest of each source if possible."""
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
-        for source in ("daily", "completed_runs"):
-            history = payload["nethack_history"][source]
-            history["omitted_records"] += len(history["records"])
-            history["records"] = []
-            history["output_omitted"] = True
+    while len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        sources = [payload["nethack_history"][name]
+                   for name in ("daily", "completed_runs")
+                   if payload["nethack_history"][name]["records"]]
+        if not sources:
+            break  # Existing diagnostics retain their original budget handling.
+        # Each source is newest-first. Exhaust older records before removing
+        # either source's latest record; never mark an empty/missing source.
+        history = max(sources, key=lambda item: len(item["records"]))
+        history["records"].pop()
+        history["omitted_records"] += 1
+        history["output_omitted"] = True
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return text
 

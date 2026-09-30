@@ -3,11 +3,15 @@ import importlib.util
 import json
 import os
 import tempfile
+import sys
+from datetime import datetime, timedelta, timezone
 import unittest
 from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / 'src'))
+
 spec = importlib.util.spec_from_file_location('nethack_history_collector', ROOT / 'ops/vm_actions/collect_diagnostics.py')
 diag = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(diag)
@@ -25,7 +29,7 @@ class HistoryTests(unittest.TestCase):
 
     def run_record(self, index=0, **extra):
         raw = dict(schema_version=1, status='dead', expedition=index,
-                   started_at='2026-09-29T01:00:00+00:00', ended_at='2026-09-30T01:00:00+00:00',
+                   started_at='2026-09-29T01:00:00+00:00', last_finished_at='2026-09-30T01:00:00+00:00',
                    score=5, turns=10, max_depth=2, death_reason='SECRET', run_id='SECRET',
                    dump_file='/SECRET', lessons=[{'text': 'SECRET'}],
                    retrospective=dict(schema_version=1, generated_at='2026-09-30T02:00:00+00:00',
@@ -77,7 +81,7 @@ class HistoryTests(unittest.TestCase):
 
     def test_hostile_values_and_schema(self):
         for extra in ({'schema_version': True}, {'schema_version': 2}, {'status': []},
-                      {'ended_at': '2026-09-30'}, {'ended_at': 'SECRET'}):
+                      {'last_finished_at': '2026-09-30'}, {'last_finished_at': 'SECRET'}):
             self.run_record(**extra)
             self.assertEqual(self.collect()['completed_runs']['invalid_records'], 1)
         self.run_record(score=True, turns='SECRET')
@@ -114,7 +118,7 @@ class HistoryTests(unittest.TestCase):
         self.assertLess(len(json.dumps(self.collect()).encode()), 12000)
 
     def test_latest_order_and_nullable_progress(self):
-        self.run_record(0, ended_at='2026-09-29T00:00:00+00:00')
+        self.run_record(0, last_finished_at='2026-09-29T00:00:00+00:00')
         self.run_record(1)
         records = self.collect()['completed_runs']['records']
         self.assertEqual(records[0]['expedition'], 1)
@@ -135,16 +139,91 @@ class HistoryTests(unittest.TestCase):
         gateway_spec.loader.exec_module(gateway)
         self.assertEqual(gateway._sanitize_diagnostics(result), result)
 
-    def test_global_budget_omits_history_without_changing_existing_evidence(self):
+    def test_legacy_root_timestamp_cannot_replace_producer_timestamp(self):
+        self.run_record(last_finished_at=None, ended_at='2026-09-30T01:00:00+00:00')
+        self.assertEqual(self.collect()['completed_runs']['invalid_records'], 1)
+
+    def test_global_budget_keeps_latest_and_does_not_mark_missing_daily(self):
+        for index in range(8):
+            self.run_record(index, last_finished_at=f'2026-09-30T01:00:0{index}+00:00')
+        self.daily.rmdir()
+        payload = {'nethack_history': self.collect(), 'other': 'unchanged'}
+        latest = payload['nethack_history']['completed_runs']['records'][0].copy()
+        # Calculate a deterministic budget that fits exactly one run + metadata.
+        import copy
+        expected = copy.deepcopy(payload)
+        expected['nethack_history']['completed_runs'].update(
+            records=[latest], omitted_records=7, output_omitted=True)
+        budget = len(json.dumps(expected, sort_keys=True, ensure_ascii=False).encode())
+        with mock.patch.object(diag, 'MAX_JSON_BYTES', budget):
+            text = diag._nethack_history_budget(payload)
+        self.assertLessEqual(len(text.encode()), budget)
+        self.assertEqual(payload, expected)
+        self.assertNotIn('output_omitted', payload['nethack_history']['daily'])
+
+    def test_budget_retains_both_latest_then_truthfully_omits(self):
         for index in range(8):
             self.run_record(index)
         self.daily_record()
-        payload = {'nethack_history': self.collect(), 'other': 'x' * (diag.MAX_JSON_BYTES - 2000)}
-        original = payload['other']
-        text = diag._nethack_history_budget(payload)
-        self.assertLessEqual(len(text.encode()), diag.MAX_JSON_BYTES)
-        self.assertEqual(payload['other'], original)
+        payload = {'nethack_history': self.collect(), 'other': 'unchanged'}
+        import copy
+        expected = copy.deepcopy(payload)
+        runs = expected['nethack_history']['completed_runs']
+        runs.update(records=runs['records'][:1], omitted_records=7, output_omitted=True)
+        budget = len(json.dumps(expected, sort_keys=True, ensure_ascii=False).encode())
+        with mock.patch.object(diag, 'MAX_JSON_BYTES', budget):
+            self.assertLessEqual(len(diag._nethack_history_budget(payload).encode()), budget)
+        self.assertEqual(payload, expected)
+        with mock.patch.object(diag, 'MAX_JSON_BYTES', 1):
+            diag._nethack_history_budget(payload)
         for source, count in (('daily', 1), ('completed_runs', 8)):
             self.assertTrue(payload['nethack_history'][source]['output_omitted'])
             self.assertEqual(payload['nethack_history'][source]['omitted_records'], count)
             self.assertEqual(payload['nethack_history'][source]['records'], [])
+        self.assertEqual(payload['other'], 'unchanged')
+
+    def test_real_run_store_and_retrospective_contract(self):
+        from docich import config
+        from docich.nethack_run import NethackRunStore
+        from docich.nethack_retrospective import NethackRetrospectiveEngine
+
+        repo = self.root / 'fixture-repo'
+        games = repo / 'config/games'
+        games.mkdir(parents=True)
+        playground = self.root / 'playground'
+        save = playground / 'save'
+        dump = playground / 'dumps'
+        save.mkdir(parents=True)
+        dump.mkdir()
+        xlog = playground / 'xlogfile'
+        (repo / 'config/docich.toml').write_text(
+            f'[paths]\nstate_dir = "{self.root}"\ngames_dir = "config/games"\n')
+        (games / 'nethack.toml').write_text(
+            '[game]\nname="nethack"\ntitle="NetHack"\nadapter="cli"\n'
+            '[cli]\ncommand="nethack"\n[nethack]\npersistent_run=true\n'
+            'player_name="docich"\n'
+            f'save_dir="{save}"\ndump_dir="{dump}"\nxlogfile="{xlog}"\n')
+        g = config.load_global(repo)
+        store = NethackRunStore.from_global(g)
+        start = datetime(2026, 9, 30, tzinfo=timezone.utc)
+        probe = store.prepare_start(current_is_nethack=False, now=start)
+        store.record_started(probe, now=start)
+        finished = start + timedelta(hours=1)
+        xlog.write_text('name=docich\tdeath=killed by a grid bug\tpoints=42'
+                       '\tturns=120\tmaxlvl=3\tachieve=0x0\n')
+        run = store.record_finished(now=finished, nethack_still_active=False)
+        self.assertNotIn('ended_at', run)
+        self.assertEqual(run['last_finished_at'], finished.isoformat())
+        NethackRetrospectiveEngine(g).generate(run_id=run['run_id'], now=finished)
+        before = {p: p.read_bytes() for p in self.runs.iterdir()}
+        result = self.collect()['completed_runs']
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['invalid_records'], 0)
+        self.assertEqual(len(result['records']), 1)
+        record = result['records'][0]
+        self.assertEqual(record['ended_at'], finished.timestamp())
+        self.assertEqual(record['score'], 42)
+        self.assertEqual(record['turns'], 120)
+        self.assertTrue(record['retrospective_present'])
+        self.assertNotIn('grid bug', json.dumps(record))
+        self.assertEqual(before, {p: p.read_bytes() for p in self.runs.iterdir()})

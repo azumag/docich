@@ -296,6 +296,8 @@ run終了処理や日次処理を起動しない。owner境界・既存lock・�
   HP比率/phase集計だけ。run ID・death reason/signature・候補本文・path・hashは出さない。
   同種死因件数や反復送信は観測パターンであり、失敗原因・改善効果の確定ではない。
 - `collected_at`、`generated_at` / `ended_at` / `started_at`、`file_mtime` はUTC epoch秒。
+  `ended_at` はproducerのroot `last_finished_at`（終了処理時刻）を投影する。
+  session内の`ended_at`やxlogの死亡時刻とは区別する。
   日次`date`はproducer設定のローカル日付。日次結果が無い日は失敗・成功を推測しない。
 - 各sourceのstatusは`missing` / `unavailable` / `empty` / `ok` / `partial`。
   `invalid_records`、`excluded_active`、`scanned_entries`、`scan_complete`と
@@ -303,7 +305,8 @@ run終了処理や日次処理を起動しない。owner境界・既存lock・�
   active/suspended等は結果から除外。nullable数値・`unknown`・progressの`missing`を0件の成功にしない。
   retrospectiveが無ければprogressや同種死因は不明。bounded JSONに含まれる余分な自由文は
   メモリ内のparseだけに留め、allowlist projectionで除去する。
-- collector全体の既存36KiB予算を超えた場合はこの投影のrecordsを省略し、
+- collector全体の既存36KiB予算を超えた場合は古いrecordsから段階的に省略し、
+  可能な限り各sourceの最新1件を残す。実際に省略したsourceだけ
   `output_omitted=true`と`omitted_records`に記録する。gatewayの49KiB上限・型・深さ・
   secret-redactionは維持。複数ファイルの逐次観測であり原子的snapshotではない。
   遠征・日次の一覧は互いに独立した観測なので、同じ終了runを二重加算しない。
