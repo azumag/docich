@@ -1052,6 +1052,7 @@ def _collect_ai(soren, now):
     paths = [stats_dir / f"{day}.jsonl" for day in sorted(days)]
     attempts = successes = failures = rate_limits = winners = 0
     all_failed = queue_giveups = gate_giveups = 0
+    all_failed_components = {component: 0 for component in AI_COMPONENTS}
     budget_exhausted = 0
     budget_exhausted_components = {component: 0 for component in AI_COMPONENTS}
     budget_exhausted_detail_sampled = 0
@@ -1177,6 +1178,7 @@ def _collect_ai(soren, now):
         elif kind == "all_failed":
             all_failed += 1
             entry["all_failed"] += 1
+            all_failed_components[_ai_component_bucket(label)] += 1
         elif kind == "queue_giveup":
             queue_giveups += 1
         elif kind == "gate_giveup":
@@ -1221,6 +1223,8 @@ def _collect_ai(soren, now):
         "winners": winners,
         "fallbacks": fallback_ok,
         "all_failed": all_failed,
+        "all_failed_components": all_failed_components,
+        "recent_events_omitted": False,
         "queue_giveups": queue_giveups,
         "gate_giveups": gate_giveups,
         "budget_exhausted": budget_exhausted,
@@ -3549,6 +3553,7 @@ def main(argv):
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         payload["ai"]["recent_events"] = []
+        payload["ai"]["recent_events_omitted"] = True
         payload["workers"]["details"] = {}
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         if len(text.encode("utf-8")) > MAX_JSON_BYTES:
