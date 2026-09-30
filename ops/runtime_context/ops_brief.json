@@ -1,11 +1,11 @@
 {
-  "output_sha256": "bb1c67ec46581cfd29881cac52dee153ed09a66a82f4c195001a0719673c6823",
+  "output_sha256": "babf05e7b6ff591bcc5f991c2db69a1837e437cb9862ee8d7a153c070b7c0cca",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "fd491edcea7b0cffc9b3287809167e1a26db536e3df0f6c7626cb8d7e9481ff2",
+  "source_sha256": "4415e374f78b89e0b548e02017ae3b3cc7ff8afeec57885fd11e52b455ed9193",
   "topics": [
+    "半熟v96 募集実残金再判定とヴィーナス敗因対策",
     "半熟v95配備・同月の募集資金温存を実測",
-    "g496第2話防衛敗北・キャトルミュー自然選択確認",
-    "半熟v93キャトルミュー配備・実在庫5確認"
+    "g496第2話防衛敗北・キャトルミュー自然選択確認"
   ]
 }

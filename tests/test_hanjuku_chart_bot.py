@@ -573,7 +573,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v95-recruit-priority'
+    assert state['bot_version'] == 'hanjuku-chart-v96-recruit-recheck'
     assert '_records' not in state['policy']
 
 
@@ -672,7 +672,10 @@ def test_egg_summon_menu_falls_back_to_attack_when_the_egg_is_spent():
     # instead of attacking into a summon it cannot answer.
     assert actions[0]['buttons'] == ['b']
     assert state['policy']['egg_battle_row_dead'] is True
-    # One attempt only: the fallback is a plain attack, bounded (no dead search).
+    # Three bounded return attempts; no immediate A after an unconfirmed B.
+    for _ in range(2):
+        actions, state = decide(spent.frame(), state)
+        assert actions[0]['buttons'] == ['b']
     actions, state = decide(spent.frame(), state)
     assert actions[0]['buttons'] == ['a']
     actions, state = decide(spent.frame(), state)
@@ -2691,7 +2694,7 @@ def test_short_generals_keep_hero_egg_and_wage_reserves():
     assert policy.month_step(parse(month_canvas(130, on='しょうぐんぼしゅう')), mem) == [policy.pad('a')]
     mem = _short_recruit_memory(); mem['egg_uses'] = {'どうし': 0}
     policy.month_step(parse(month_canvas(100, on='しょうぐんぼしゅう')), mem)
-    assert mem['shop']['recruit'] == 'skipped'
+    assert mem['shop']['recruit'] == 'check'  # defer until the real egg cost is known
     assert mem['shop']['soldiers'] == 0
 
 
@@ -2725,3 +2728,95 @@ def test_cached_paid_recruit_does_not_earmark_another_fee():
     policy.month_step(parse(month_canvas(51)), mem)
     assert mem['shop']['recruit_reserve'] == 0 and mem['shop']['soldiers'] == 21
     assert mem.get('month_sub', {}).get('kind') != 'recruit'
+
+
+def test_overestimated_egg_cost_defers_recruit_then_uses_real_balance():
+    # g498 month 1-6: reserve 150, quote/pay 50; 166G remained but v95
+    # had already permanently skipped recruiting before recovery.
+    mem = _short_recruit_memory()
+    shop = {'key': '1-6', 'recruit_priority': True, 'recruit': 'check',
+            'egg': 'pending', 'reserve': 150, 'recruit_reserve': 36,
+            'soldiers': 0, 'chikujou': 'check'}
+    screen = parse(month_canvas(216, on='しょうぐんぼしゅう'))
+    assert policy._month_extra(screen, mem, shop, recruit_only=True) is None
+    assert shop['recruit'] == 'check'
+    assert mem['_records'][-1]['decision'] == 'recruit_deferred_egg'
+    # Paid full recovery is measured rather than replacing the reserve by
+    # an invented quote; then the same month's real 166G affords recruitment.
+    shop['egg'] = 'opened'
+    mem['month_sub'] = {'kind': 'egg', 'gold_before': 216, 'quoted_cost': 50,
+                        'full_selected': True, 'left_menu': True, 'key': '1-6'}
+    screen = parse(month_canvas(166, on='しょうぐんぼしゅう'))
+    assert policy._finish_month_sub(screen, mem, shop)
+    assert policy._month_extra(screen, mem, shop) == [policy.pad('a')]
+    assert mem['month_sub']['kind'] == 'recruit'
+
+
+@pytest.mark.parametrize('enemy', ['ダークエルフ', 'だいまおう'])
+def test_excalibur_uses_four_hits_against_known_enemy_monsters(enemy):
+    frame = monster_menu_frame(['エクスカリバる', 'マサムネる'],
+                               ally=('エクスカリバー', 282), enemy=(enemy, 240), cursor=0)
+    actions, state = decide(frame, {'policy': {'chapter': 1}})
+    assert actions[0]['buttons'] == ['down']
+    assert state['policy']['monster_menu_choice'] == 'skill2'
+    # The old cached first skill must also migrate on a same-HP hotload.
+    state['policy']['monster_menu_choice'] = 'skill1'
+    actions, state = decide(frame, state)
+    assert state['policy']['monster_menu_choice'] == 'skill2'
+
+
+def test_excalibur_keeps_first_skill_against_a_general_and_waits_on_enemy_menu():
+    frame = monster_menu_frame(['エクスカリバる', 'マサムネる'],
+                               ally=('エクスカリバー', 299), enemy=('カシュー', 39), cursor=0)
+    actions, state = decide(frame, {'policy': {'chapter': 1}})
+    assert actions[0]['buttons'] == ['a']
+    frame = monster_menu_frame(['エクスカリバる', 'マサムネる'],
+                               ally=('どうし', 90), enemy=('エクスカリバー', 299), cursor=0)
+    actions, state = decide(frame, {'policy': {'chapter': 1}})
+    assert actions == [] and 'monster_menu_choice' not in state['policy']
+
+
+def test_excalibur_low_hp_still_returns_instead_of_forced_four_hits():
+    frame = monster_menu_frame(['エクスカリバる', 'マサムネる'],
+                               ally=('エクスカリバー', 80), enemy=('ダークエルフ', 240), cursor=0)
+    _, state = decide(frame, {'policy': {'chapter': 1}})
+    assert state['policy']['monster_menu_choice'] == 'retreat'
+
+
+def test_deferred_recruit_does_not_replace_the_egg_payment_tracker():
+    mem = _short_recruit_memory()
+    mem['shop'] = {'key': '1-7', 'gold_start': 216, 'items': [], 'merchant_done': True,
+                   'soldiers': 0, 'soldiers_done': True, 'reserve': 150,
+                   'recruit_priority': True, 'recruit_budget_version': 1,
+                   'recruit_measured_budget': True, 'recruit_reserve': 36,
+                   'recruit': 'check', 'egg': 'opened', 'chikujou': 'check'}
+    mem['month_sub'] = {'kind': 'egg', 'gold_before': 216, 'quoted_cost': 50,
+                        'full_selected': True, 'left_menu': False, 'key': '1-7'}
+    assert policy.month_step(parse(month_canvas(216, on='しょうぐんぼしゅう')), mem) == []
+    assert mem['month_sub']['kind'] == 'egg'
+    assert policy.month_step(parse(month_canvas(166, on='しょうぐんぼしゅう')), mem) == [policy.pad('a')]
+    assert mem['shop']['egg'] == 'done' and mem['month_sub']['kind'] == 'recruit'
+    assert any(r['decision'] == 'egg_recover' for r in mem['_records'])
+
+
+def test_paid_recruit_receipt_survives_later_deduction_and_tracks_actual_join_name():
+    mem = {'chapter': 1, 'month_sub': {'kind': 'recruit', 'gold_before': 158, 'key': '1-7'}}
+    policy.month_sub_step(paid_recruit_screen(gold=108), mem)
+    c = Canvas(); c.text(16, 15, '1ねん7のつき108G')
+    c.text(16, 151, 'チコリがはいかにくわわった!')
+    policy.month_sub_step(parse(c.frame()), mem)
+    assert mem['month_sub']['joined_names'] == ['チコリ']
+    assert any(r['decision'] == 'recruit_join_announced' for r in mem['_records'])
+    shop = {'recruit': 'opened', 'recruit_reserve': 50}
+    policy._finish_month_sub(parse(month_canvas(106)), mem, shop)
+    assert shop['recruit'] == 'done' and shop['recruit_reserve'] == 0
+    assert 'チコリ' in mem['recruit_verification']['candidates']
+    assert 'recruit_join_observed' not in [r['decision'] for r in mem['_records']]
+
+
+def test_recruit_larger_balance_drop_alone_does_not_prove_payment():
+    mem = {'chapter': 1, 'month_sub': {'kind': 'recruit', 'gold_before': 158, 'key': '1-7',
+                                    'left_menu': True}}
+    shop = {'recruit': 'opened'}
+    policy._finish_month_sub(parse(month_canvas(106)), mem, shop)
+    assert shop['recruit'] == 'unverified' and 'recruit_verification' not in mem

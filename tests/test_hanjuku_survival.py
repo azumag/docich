@@ -345,7 +345,11 @@ def test_a_hopeless_egg_battle_tries_the_retreat_before_attacking():
     screen = egg_menu_screen()
     assert p.egg_battle_step(screen, mem) == [p.pad('b')]
     assert mem['battle']['egg_retreat_tried']
-    assert p.egg_battle_step(screen, mem) == [p.pad('a')]      # one attempt only
+    assert p.egg_battle_step(screen, mem) == [p.pad('b')]
+    assert p.egg_battle_step(screen, mem) == [p.pad('b')]
+    assert p.egg_battle_step(screen, mem) == [p.pad('a')]
+    assert any(r['decision'] == 'battle_egg_retreat_unavailable' for r in mem['_records'])
+    assert p._hero_retreat_needed(mem['battle'])
     # A castle defense cannot retreat: attack as before.
     mem['battle'].update(side='defense', egg_retreat_tried=False)
     assert p.egg_battle_step(screen, mem) == [p.pad('a')]
@@ -616,3 +620,13 @@ def test_missing_list_does_not_accumulate_intermittent_partial_names():
         assert p.card_list_step(menu(labels, kind='text'), mem) == []
     assert not mem['battle'].get('cards_missing')
     assert p.card_list_step(menu(('クースカン',), kind='text'), mem) == [p.pad('a')]
+
+
+def test_failed_summon_requests_real_retreat_even_when_general_hp_is_still_full():
+    mem = memory(82, 39)
+    mem['battle'].update(ally='ヴィーナス', side='attack', planned_cards=[])
+    assert not p._hero_retreat_needed(mem['battle'])
+    assert p.egg_battle_step(egg_menu_screen(), mem) == [p.pad('b')]
+    assert p._hero_retreat_needed(mem['battle'])
+    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
+    assert mem['battle']['hero_retreat']['selected'] == 1
