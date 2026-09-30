@@ -4763,7 +4763,34 @@ def _egg_recheck(mem):
 RECRUIT_GENERAL_TARGET = 6
 
 
+def _recruit_sufficient(mem):
+    """A recent single roster page proves a lower bound, never a total."""
+    seen = mem.get('recruit_roster_floor') or {}
+    tick = mem.get('tick')
+    return (isinstance(seen, dict) and seen.get('chapter') == mem.get('chapter')
+            and type(seen.get('count')) is int and RECRUIT_GENERAL_TARGET <= seen['count'] <= 8
+            and type(tick) is int and type(seen.get('tick')) is int
+            and 0 <= tick - seen['tick'] < SORTIE_BUSY_TICKS)
+
+
+def _stop_unneeded_recruit(mem, shop):
+    if not _recruit_sufficient(mem):
+        return False
+    # Finish an already opened/paid audition; never claim the fee was undone.
+    if shop.get('recruit') not in ('opened', 'done', 'unverified'):
+        if shop.get('recruit') != 'not_needed':
+            _record(mem, 'recruit_not_needed', month=shop.get('key'),
+                    observed_metric={'roster_lower_bound': mem['recruit_roster_floor']['count']},
+                    reason='直近の将軍一覧だけで必要人数以上を確認したため追加募集を見送る')
+        shop['recruit'] = 'not_needed'
+        shop['recruit_priority'] = False
+        shop['recruit_reserve'] = 0
+    return True
+
+
 def _recruit_shortage(mem):
+    if _recruit_sufficient(mem):
+        return None
     garrison = mem.get('garrison') or {}
     if not garrison:
         return None                       # no roster observation yet
@@ -4809,6 +4836,8 @@ def _prioritise_recruit(mem, shop, gold):
     Includes existing cached shops on hotload. Original card purchases and
     the existing egg/wage reserves are kept; unconfirmed deaths are not used.
     """
+    if _stop_unneeded_recruit(mem, shop):
+        return
     if shop.get('recruit_budget_version') == 1:
         return
     shortage = _recruit_shortage(mem)
@@ -5140,6 +5169,7 @@ def _month_extra(screen, mem, shop, *, recruit_only=False):
     if not shop:
         return None
     gold = (screen.header or {}).get('gold')
+    _stop_unneeded_recruit(mem, shop)
     for sub, label, cost in (('egg', 'たまごのかいふく', shop.get('reserve') or EGG_RECOVER_COST),
                              ('recruit', 'しょうぐんぼしゅう', RECRUIT_COST)):
         if recruit_only and sub != 'recruit':
@@ -5810,6 +5840,11 @@ def observe_events(screen: Screen, mem):
     _repair_home_name_chapter(mem)
     _repair_home_alias_failures(mem)
     mem['tick'] = int(mem.get('tick') or 0) + 1      # observations: ages sorties (_en_route)
+    from .hanjuku_house import roster
+    visible_generals = roster(screen)
+    if visible_generals is not None and len(set(visible_generals)) >= RECRUIT_GENERAL_TARGET:
+        mem['recruit_roster_floor'] = {'chapter': mem.get('chapter'),
+                                      'tick': mem['tick'], 'count': len(set(visible_generals))}
     _hold_general_loss_metric(mem)
     _migrate_card_evidence(mem)
     if screen.kind in ('card_select', 'sortie_confirm'):
