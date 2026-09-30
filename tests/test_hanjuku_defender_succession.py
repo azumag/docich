@@ -91,3 +91,20 @@ def test_successor_final_result_alone_updates_castle_ownership(won):
     assert ('ジョンリギ' in mem.get('lost', [])) is (not won)
     assert mem['stats']['losses'] == (1 if won else 2)
     assert mem['stats']['wins'] == (1 if won else 0)
+
+
+def test_intervening_nonbattle_screen_breaks_confirmation_in_bot(monkeypatch):
+    from docich.hanjuku_bot import decide
+    from docich.hanjuku_pixels import Frame
+    from docich import hanjuku_screen
+    mem = memory()
+    policy.battle_step(panel(), mem)
+    monkeypatch.setattr(hanjuku_screen, 'parse',
+                        lambda *args, **kwargs: Screen(lines=[], hand=None, text='', kind='text'))
+    _, updated = decide(Frame(256, 224, bytes(256 * 224 * 3)), {'policy': mem})
+    mem = updated['policy']
+    assert 'successor_seen' not in mem['battle']
+    assert policy.battle_step(panel(), mem) == []
+    assert mem['battle']['ally'] == 'クミン'
+    assert policy.battle_step(panel(), mem)
+    assert mem['battle']['ally'] == 'ヴィーナス'
