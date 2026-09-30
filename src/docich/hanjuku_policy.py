@@ -2705,10 +2705,10 @@ def _check_source_castle(screen, mem, order):
     returns to it. ``None`` means verified: continue with しゅつげき.
     """
     step, source = order['step'], _source(order, mem)
-    if mem.get('castle_verified') == step:
-        return None
     m = CASTLE_STATUS.search(screen.text)
     if m is None:
+        if mem.get('castle_verified') == step:
+            return None
         move = menu_to(screen, 'ステータス')
         if move is None:
             return None                   # unreadable menu: the old path holds with evidence
@@ -2717,7 +2717,11 @@ def _check_source_castle(screen, mem, order):
     name = m.group(1)
     if name == source or STATUS_NAMES.get(source) == name:
         mem['castle_verified'] = step
+        # Verification does not prove the status panel has closed. Its hand
+        # is hidden while open, so attempting a sortie here can wait forever.
+        # Keep closing only the positively identified panel until it is gone.
         return [pad('b')]
+    mem.pop('castle_verified', None)
     cells = chart.castles(mem.get('chapter') or 0)
     label = next((k for k, v in STATUS_NAMES.items() if v == name and k in cells), name)
     if label in cells:
