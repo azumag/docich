@@ -283,6 +283,21 @@ class TestStart(CoordinatorTestBase):
         self.assertIsNone(state["candidate"])
         self.assertEqual(self.mirror_text(), None)
 
+    def test_start_factory_deadline_is_timeout(self):
+        def deadline_factory(_spec):
+            raise game_switch.DeadlineExceededError("factory deadline")
+
+        self.coordinator.adapter_factory = deadline_factory
+        result = self.coordinator.start("nethack")
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, game_switch.ERROR_TIMEOUT)
+        state = self.canonical()
+        self.assertEqual(state["phase"], "failed")
+        self.assertIsNone(state["active"])
+        self.assertIsNone(state["candidate"])
+        self.assertEqual(self.mirror_text(), None)
+
     def test_start_when_other_game_active_requests_switch(self):
         self.coordinator.start("nethack")
         result = self.coordinator.start("robots")
