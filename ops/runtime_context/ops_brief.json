@@ -2,7 +2,7 @@
   "output_sha256": "431087fa5262275a0ed8f62cb93b697dd6913df4287c0bd25de1dbf16eddcb60",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "deaf6a2005538ba5d78868d67906bcf995d8e9458d57bd705d448b51ae744b3f",
+  "source_sha256": "1b16d30e884e7bbec51be3cdaba43a8db12fd583b1b79fb33b4a9287ddb21102",
   "topics": [
     "VM容量回収と配備bundle保持短縮",
     "半熟v93キャトルミュー活用を実装準備",
