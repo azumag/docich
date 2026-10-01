@@ -80,7 +80,7 @@ def generate(request,policy):
             'Return ONLY JSON {"replacements":{"path":"complete replacement UTF-8 source"}}. '
             'If evidence is insufficient return {"replacements":{}}.\n'+json.dumps(request,ensure_ascii=False))
     with tempfile.TemporaryDirectory(prefix='soren-repair-model-') as cwd:
-        code,raw=run_bounded(['/snap/bin/opencode','run','--format','json','--agent','soren-self-repair','--model',model],
+        code,raw=run_bounded(['/snap/bin/opencode','run','--format','json','--agent','soren-self-repair','--title','docich:improvement','--model',model],
                              cwd=cwd,env=model_environment(home),stdin_data=prompt.encode(),
                              timeout=min(180,int(policy.get('timeout',120))),limit=MAX_BYTES*2)
         if code: raise ValueError('model failed')
