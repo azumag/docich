@@ -11,6 +11,7 @@ from docich import hanjuku_run
 from docich.adapters.base import AdapterError
 from docich.hanjuku_bot import decide, classify, _TITLE_ROWS
 from docich.hanjuku_pixels import Frame, read_png
+from docich.hanjuku_screen import parse
 
 IDENTITY={'game':'hanjuku-hero','runtime_id':'g1-abcdef','generation':1,'lease_id':'lease'}
 
@@ -196,6 +197,34 @@ def test_title_return_requires_a_started_game_and_multiple_timed_observations(tm
     assert run['terminal_evidence']=='title_return_after_gameplay'
     # Terminal evidence is latched even if a later screen is different.
     assert hanjuku_run.observe(tmp_path,IDENTITY,frame(),now=9,wall=1009)==run
+
+
+def test_g514_squaresoft_splash_is_transition_not_battle(tmp_path):
+    path = Path(__file__).parent / 'fixtures/hanjuku/g514-frame-025-squaresoft.png'
+    logo = read_png(path)
+    assert (logo.width, logo.height) == (256, 224)
+    assert logo.digest() == 'd5df0a7853026c3d65b1eac53408efebf7625862c3fa20a6b55db90221e85108'
+    paper = lambda r,g,b: r > 185 and g > 185 and b > 155
+    assert logo.fraction((16,174,113,191), paper) > .65
+    assert logo.fraction((146,174,234,191), paper) > .55
+    assert classify(logo) == 'transition'
+    assert parse(logo, phase='transition').kind == 'unknown'
+
+    actions, state = decide(logo, {'step': 24, 'policy': {'chapter': 2}})
+    assert actions == []
+    assert state['phase'] == 'transition' and state['screen_kind'] == 'unknown'
+    assert 'battle' not in state['policy']
+
+    observed = hanjuku_run.observe(tmp_path, IDENTITY, logo, now=0, wall=1000)
+    assert observed['phase'] == 'transition'
+    assert not observed['gameplay_seen'] and not observed['battle_active']
+    assert observed['terminal_candidate'] is False and observed['terminal_reason'] is None
+
+
+def test_non_logo_unknown_frame_keeps_existing_event_fallback():
+    generic = frame((100, 95, 105))
+    assert classify(generic) == 'event'
+    assert parse(generic, phase='event').kind == 'unknown'
 
 
 def test_waiting_boundary_keeps_bot_live_until_stasis_then_needs_no_save(adapter):
