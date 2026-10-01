@@ -1,11 +1,11 @@
 {
-  "output_sha256": "ff7f522506b06b0f6e1edb82f963d2c70c96eac72741a003efeef162c228ccd5",
+  "output_sha256": "54dabf9d2863501d5f79f8d3bd961a722f8c9754e13bea7f0f5e6a09ab30c69e",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "6d8b362324abb5c73e4d7e3a96913a157ed791f8aeb6c6ccb202124a4d89d8c6",
+  "source_sha256": "7550c9bda7885a0bbead60e5e31dbd26558d298207dd34231f312eb37457147a",
   "topics": [
+    "followup 2件: #1044 終端化経路と #968 PulseAudio mute 観測（未マージ・未VM配備）",
     "ゲーム終了時の結果まとめをチャット投稿をマージ・VM配備済み",
-    "卵修復派遣が「あたしの家」に入らない障害の根因確定と予防PR #1497（マージ・VM配備済み）",
-    "followup ・#1286 を で対応（マージ・VM 配備済み）"
+    "卵修復派遣が「あたしの家」に入らない障害の根因確定と予防PR #1497（マージ・VM配備済み）"
   ]
 }
