@@ -3643,26 +3643,35 @@ HANJUKU_TACTICAL_KEYS = ('game', 'runtime_id', 'generation', 'lease_id')
 HANJUKU_TACTICAL_LIMIT = 256 * 1024
 
 TMUX_SERVER_NAMES = ('docich', 'docich-eval')
-TMUX_SERVER_SESSION_LIMIT = 8
+TMUX_SERVER_OUTPUT_LIMIT = 4096
 
 
-def _tmux_server_sessions(server):
-    """Read-only session names on a tmux server socket; [] if absent."""
-    if not isinstance(server, str) or re.fullmatch(r'[A-Za-z0-9_-]+', server) is None:
-        return []
+def _tmux_server_session_count(server):
+    """Read a count without requesting session names; None means unknown."""
+    if server not in TMUX_SERVER_NAMES:
+        return None
     try:
         proc = subprocess.run(
-            ["tmux", "-L", server, "list-sessions", "-F", "#{session_name}"],
-            capture_output=True,
+            ["tmux", "-L", server, "list-sessions", "-F", "1"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True,
             timeout=5,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        return []
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return None
     if proc.returncode != 0:
-        return []
-    return [name.strip() for name in proc.stdout.splitlines() if name.strip()]
+        return None
+    output = proc.stdout
+    if not isinstance(output, str) or len(output) > TMUX_SERVER_OUTPUT_LIMIT:
+        return None
+    if any(char not in '1\n' for char in output):
+        return None
+    markers = output.splitlines()
+    if any(marker != '1' for marker in markers):
+        return None
+    return len(markers)
 
 
 def _collect_tmux_servers():
@@ -3675,11 +3684,11 @@ def _collect_tmux_servers():
     """
     servers = {}
     for name in TMUX_SERVER_NAMES:
-        sessions = _tmux_server_sessions(name)
+        count = _tmux_server_session_count(name)
         servers[name] = {
-            'present': bool(sessions),
-            'session_count': len(sessions),
-            'sessions': sessions[:TMUX_SERVER_SESSION_LIMIT],
+            'readable': count is not None,
+            'present': bool(count) if count is not None else None,
+            'session_count': count,
         }
     return {'schema_version': 1, 'servers': servers}
 
