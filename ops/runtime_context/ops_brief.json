@@ -2,7 +2,7 @@
   "output_sha256": "b67ee85c24766c1229e117d1b4844f457a88bec3edb512c2eb9f8773e2d2daca",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "6cfc1310bdc55360f6cf50c5f2bcd823cdc679c3cfb95759c7312de8743cb2ef",
+  "source_sha256": "1ebe86f8628616c110ce3fd246bdf8bc7cc6c3a2652d30805d8c7c18a22e662f",
   "topics": [
     "卵修復派遣が「あたしの家」に入らない障害の根因確定と予防PR #1497（マージ・VM配備済み）",
     "followup ・#1286 を で対応（マージ・VM 配備済み）",
