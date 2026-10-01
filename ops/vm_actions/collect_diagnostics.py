@@ -209,6 +209,7 @@ def _collect_opencode_retention(soren, now):
                "before_bytes", "after_bytes", "available_before_bytes", "available_after_bytes",
                "compact_bytes", "page_size", "page_count", "freelist_count",
                "selected_sessions", "remaining_sessions", "prune_batches", "wal_limit_bytes",
+               "skipped_batches", "skipped_sessions",
                "sqlite_error_code", "sqlite_extended_error_code")
     booleans = ("bounded_prune_blocked",)
     for label, filename in (("attempt", "opencode_db_retention.json"),
