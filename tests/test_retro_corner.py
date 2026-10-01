@@ -1200,15 +1200,20 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
         )
         return mgr, coordinator
 
-    def test_start_posts_intro_and_strategy(self):
+    def test_start_posts_intro_then_end_result_summary(self):
         chats = []
         mgr, _ = self._manager_with_chat([None], chats.append)
         self.assertEqual(mgr.start().status, "completed")
-        self.assertEqual(len(chats), 1)
+        self.assertEqual(len(chats), 2)
         self.assertIn("レトロゲームコーナー", chats[0])
         self.assertIn("Robotsをお送りします", chats[0])
         self.assertIn("比較に使える同じゲームの過去戦略記録が見つからない", chats[0])
         self.assertTrue(mgr.status().get("announced"))
+        # 終了時は結果まとめが続けて投稿される (ゲーム名＋終了理由＋時間)。
+        self.assertIn("Robotsは", chats[1])
+        self.assertIn("予定時間になりましたので終了しました", chats[1])
+        self.assertIn("約1分間お楽しみいただきました", chats[1])
+        self.assertTrue(mgr.status().get("end_announced"))
 
     def test_strategy_announcement_uses_game_scoped_history_and_all_value_types(self):
         from docich.resolver import strategy_history_dir, strategy_path
@@ -1291,11 +1296,100 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
         chats = []
         mgr, _ = self._manager_with_chat([None], chats.append)
         mgr.start()
+        self.assertEqual(len(chats), 2)
         mgr._locked_announce_again = None
         with mgr._locked():
             state = mgr._read_state()
             mgr._announce_start_locked(state)
-        self.assertEqual(len(chats), 1)
+            mgr._announce_end_result_locked(state, self.now_value)
+        self.assertEqual(len(chats), 2)
+
+    def test_end_announce_failure_does_not_fail_corner(self):
+        chats = []
+
+        def flaky(text):
+            if chats:  # 2投稿目の結果まとめだけ失敗させる
+                raise RuntimeError("chat down")
+            chats.append(text)
+
+        mgr, _ = self._manager_with_chat([None], flaky)
+        self.assertEqual(mgr.start().status, "completed")
+        state = mgr.status()
+        self.assertEqual(state.get("status"), "completed")
+        self.assertTrue(state.get("end_announced"))
+        self.assertIn("end_announce_error", state)
+
+    def test_end_result_labels_cover_every_reason(self):
+        mgr, _ = self._manager_with_chat([None], lambda text: None)
+        cases = {
+            None: "予定時間になりましたので終了しました",
+            "game_over": "ゲームオーバーになりました",
+            "screen_stalled": "画面停止で終了しました",
+            "manual_saved_stop": "セーブして終了しました",
+            "manual_forced_stop": "セーブ失敗で強制終了しました",
+            # 未知コードは内部語彙を出さず既定文面に落とす。
+            "switch-terminal-before-corner-active": "終了しました",
+        }
+        for reason, clause in cases.items():
+            state: dict = {"game": "robots"}
+            if reason is not None:
+                state["end_reason"] = reason
+            text = mgr._end_result_text(state, self.now_value)
+            self.assertTrue(text.startswith("Robotsは"), reason)
+            self.assertIn(clause, text, reason)
+
+    def test_hanjuku_end_result_uses_grounded_run_numbers(self):
+        from docich.naming import runtime_directory
+
+        mgr, _ = self._manager_with_chat([None], lambda text: None)
+        identity = {
+            "game": "hanjuku-hero",
+            "runtime_id": "g1-abcdef",
+            "generation": 1,
+            "lease_id": "lease-hanjuku-test",
+        }
+        runtime_dir = runtime_directory(self.g.state_dir, identity["runtime_id"])
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        rows = [
+            {"event": "decision", "decision": "month_seen", "month": "2-7"},
+            {"event": "decision", "decision": "order_launched"},
+            {"event": "decision", "decision": "order_launched_unconfirmed"},
+            {"event": "decision", "decision": "discharge_general"},
+            {"event": "decision", "decision": "castle_owned_observed",
+             "resulting_event": "captured:ジョンリギ"},
+            {"event": "decision", "chapter": 3},
+        ]
+        (runtime_dir / "hanjuku_decisions.jsonl").write_text(
+            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+            encoding="utf-8",
+        )
+        (runtime_dir / "hanjuku_run.json").write_text(
+            json.dumps({**identity, "schema": 1, "battles_finished": 7}),
+            encoding="utf-8",
+        )
+        state: dict = {
+            "game": "hanjuku-hero",
+            "bot_identity": identity,
+            "end_reason": "manual_forced_stop",
+        }
+        # 数値は decision log / run state から算出 (recap と同内容)、
+        # 終了理由は末尾の一文。
+        self.assertEqual(
+            mgr._end_result_text(state, self.now_value),
+            "第3章まで進み、1城を獲得、1回出撃と7回戦闘を重ね、2年7月まで戦いました"
+            "（将軍の解雇1回）。セーブ失敗による強制終了で、今回の挑戦はここまでです。",
+        )
+        state["end_reason"] = "game_over"
+        self.assertTrue(
+            mgr._end_result_text(state, self.now_value).endswith(
+                "ゲームオーバーで、今回の挑戦はここまでです。"
+            )
+        )
+        # 記録が読めない場合は generic 文面 (ゲーム名＋理由) へフォールバック。
+        fallback = mgr._end_result_text(
+            {"game": "hanjuku-hero", "end_reason": "game_over"}, self.now_value
+        )
+        self.assertIn("はゲームオーバーになりました", fallback)
 
 
 class TestRetroCornerTickGuard(RetroCornerTestBase):
