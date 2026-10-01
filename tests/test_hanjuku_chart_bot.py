@@ -3214,3 +3214,44 @@ def test_native_list_hero_priority_waits_for_companion_cursor_before_a():
     assert not mem.get('sortie_general')
     assert policy.deploy_step(frame(1), mem) == [policy.pad('a')]
     assert mem['sortie_general']['1-B1'] == 'ゼウス'
+
+
+def test_merchant_scene_finds_the_hand_and_does_not_hold_silently():
+    """#1369 regression: the merchant's orange sprite shares the cursor palette.
+
+    g478 (2026-09-30): the merchant confirmation screen held input for ~16
+    minutes because find_hand returned None (the sprite merged with the hand
+    in one bbox) and yes_no_step returned [] silently. The connected-component
+    fix must keep the hand readable on the real frame, and yes_no_step must
+    record situation_held (not an empty plan) when it cannot.
+    """
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_merchant_regression', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_screen import parse, find_hand
+    frame = read_png(Path(__file__).resolve().parent
+                     / 'fixtures/hanjuku/g478-merchant.png').resized()
+    screen = parse(frame)
+    assert screen.kind == 'yes_no'
+    hand = find_hand(frame)
+    assert hand is not None, 'the merchant sprite must not hide the hand cursor'
+    assert screen.hand == hand
+    # The hand is readable, so yes_no_step proceeds (no silent hold).
+    mem = {'_records': []}
+    actions = policy.yes_no_step(screen, mem)
+    assert actions != []
+    assert all(r['decision'] != 'situation_held' for r in mem['_records'])
+
+
+def test_unreadable_yes_no_records_situation_held_not_silent_empty():
+    """#1369: an unreadable yes_no must record situation_held, never a silent []."""
+    from docich.hanjuku_screen import Screen
+    screen = Screen(lines=[], hand=None, kind='yes_no', header=None,
+                    text='ふかくは きかねえよ。なにか かってかねーかい?うむッ!いかんッ!')
+    mem = {'_records': []}
+    actions = policy.yes_no_step(screen, mem)
+    assert actions == []
+    assert any(r['decision'] == 'situation_held' for r in mem['_records'])
