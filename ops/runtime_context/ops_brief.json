@@ -1,11 +1,11 @@
 {
-  "output_sha256": "1d836d9c2c975492bab5132bc863a44ad524124ad7f44d8bfaa53245887a28b3",
+  "output_sha256": "b234d09fc15cd69e1364ecd066ff9eecdc3af4615b223fc98a536eeac4169589",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "89823694aeeda317e73298ae1c1292180bca60b7db02717f06c782f6d402360a",
+  "source_sha256": "d4bbcc10a9ddc1807518bd5467f670d3b4916e3d01559dccc1b43c416738cf71",
   "topics": [
-    "半熟キャンプの実カーソル・帰還送信照合v124準備",
-    "半熟の月menu確認とfield修理予算の分離v123準備",
-    "半熟の主人公出撃後順位v122レビュー準備"
+    "容量緊急対応: bounded retention初回停止の原因特定と巨大セッション隔離配備（01:39Z実行の検証待ち）",
+    "g514タイトル復帰・v126配備・次回起動境界の確認",
+    "半熟キャンプの実カーソル・帰還送信照合v124準備"
   ]
 }
