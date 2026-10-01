@@ -153,6 +153,19 @@ def _exit(mem, reason, *, limit=None):
 
 
 def _finish(mem):
+    # A trip that ends without a seen arrival leaves its bookkeeping sortie
+    # looking like a marching army. target=None then matches every castle in
+    # _bind_sortie, which claimed キカンドン as this sortie's arrival at
+    # 2026-10-01 07:08 and could turn later arrivals ambiguous. Close them
+    # here; a successful trip already recorded them as 'recalled'.
+    stale = [key for key, sortie in (mem.get('sorties') or {}).items()
+             if sortie.get('purpose') == 'house'
+             and sortie.get('status') in ('en_route', 'launched_unconfirmed')]
+    for key in stale:
+        mem['sorties'][key]['status'] = 'closed'
+    if stale:
+        _record(mem, 'sortie_closed', observed_metric={'sorties': stale},
+                reason='到着を確認できないまま卵修理を終了したため仮の出撃を閉じて入城表示との誤結合を防ぐ')
     state = mem.pop('house', None) or {}
     # The free monthly roster check never completes or delays field repair.
     # Only a field transaction in its original chapter/month owns this marker.
@@ -242,6 +255,21 @@ def _next_general(mem):
     state.update(general=name, pending=pending, source=None, purchased=False, purchase=None,
                  returning=False)
     state.pop('return_goal', None)
+    # Re-routing a marching army was measured not to reach the house: the
+    # 2026-10-01 06:48 dispatch re-aimed ヴィーナス while en_route, and she
+    # instead charged キカンドン at 07:08 instead of the house. Wait for her
+    # arrival instead of spending the session on a destination the game
+    # ignores; the next scan retries her.
+    marching = next((s for s in (mem.get('sorties') or {}).values()
+                     if s.get('general') == name
+                     and s.get('status') in ('en_route', 'launched_unconfirmed')), None)
+    if marching:
+        _record(mem, 'general_deferred',
+                observed_metric={'status': marching.get('status'),
+                                 'target': marching.get('target')},
+                reason='行軍中の将軍はいどう先を到着まで確定できないため派遣を保留')
+        _next_general(mem)
+        return
     if info.get('location') == 'castle':
         owned = p._owned(mem) & p.chart.castles(mem['chapter']).keys()
         known = [c for c in sorted(owned) if name in (mem.get('garrison') or {}).get(c, [])]
@@ -541,7 +569,9 @@ def _repair_step(screen, mem, frame):
     phase, name = state['phase'], state['general']
     if phase == 'find_castle':
         if screen.kind != 'map':
-            return [p.pad('b')]
+            if screen.kind == 'text' and roster(screen) is None:
+                return None  # event/dialogue text: the ordinary handler advances it
+            return [p.pad('y' if screen.kind == 'world_map' else 'b')]
         castles = state.get('castles') or []
         if not castles:
             _record(mem, 'general_deferred', reason='修理対象の在城を確認できないため次の将軍へ進む')
@@ -654,6 +684,13 @@ def _repair_step(screen, mem, frame):
     if phase in ('find_field', 'field_roster_open', 'field_pick', 'field_open', 'field_status', 'field_read', 'unit_move'):
         return _field_step(screen, mem, frame)
     if phase == 'travel':
+        # Checked before the map early-return: an arrival toast can be drawn
+        # over the field map (parse keeps kind 'map' while the free cursor is
+        # visible), where the old `return []` left it unanswered forever and
+        # the trip starved to its travel limit instead of entering the house.
+        discovery = re.search(r'([^\ufffd\s]+)しょうぐんがあたし.*いえを', screen.text, re.S)
+        if discovery and discovery[1] != name:
+            return _exit(mem, '家を訪れた将軍が派遣対象と異なるため購入しない')
         if screen.kind == 'map':
             if state.pop('departure_pending', False):
                 p._garrison_move(mem, name, source=state.get('source'))
@@ -664,10 +701,10 @@ def _repair_step(screen, mem, frame):
                 mem.setdefault('sorties', {})[f'HOUSE_OUT:{tick}'] = {
                     'general': name, 'target': None, 'status': 'en_route', 'purpose': 'house', 'tick': tick}
                 _record(mem, 'departed', reason='移動先選択からフィールドへ戻ったことを確認')
+                return []
+            if discovery:
+                return [p.pad('a')]  # dismiss the house-visit toast; prices arrive next
             return []
-        discovery = re.search(r'([^\ufffd\s]+)しょうぐんがあたし.*いえを', screen.text)
-        if discovery and discovery[1] != name:
-            return _exit(mem, '家を訪れた将軍が派遣対象と異なるため購入しない')
         prices = gift_prices(screen)
         if prices:
             _record(mem, 'arrival_seen', screen=screen.kind,
@@ -798,7 +835,9 @@ def _field_step(screen, mem, frame):
     phase, name = state['phase'], state['general']
     if phase == 'find_field':
         if screen.kind != 'map':
-            return [p.pad('b')]
+            if screen.kind == 'text' and roster(screen) is None:
+                return None  # event/dialogue text: the ordinary handler advances it
+            return [p.pad('y' if screen.kind == 'world_map' else 'b')]
         if name == p.NAME:
             _phase(state, 'field_open')
             return [p.pad('select')]
@@ -832,7 +871,16 @@ def _field_step(screen, mem, frame):
         if screen.kind == 'map':
             _phase(state, 'field_status')
             return [p.pad('a')]
-        return []
+        if screen.kind == 'text':
+            # A menu the SELECT jump left behind is closed; any other text is
+            # an event the ordinary handler advances (holding [] here starved
+            # the dispatch until STEP_LIMIT when a concert cut in at 07:01).
+            return [p.pad('b')] if roster(screen) is not None else None
+        if screen.kind == 'world_map':
+            return [p.pad('y')]
+        if screen.kind in ('main_menu', 'castle_menu', 'castle_info', 'general_list'):
+            return [p.pad('b')]
+        return []  # transition/unknown frames still wait for the map
     if phase == 'field_status':
         if p.is_camp_menu(screen):
             actions = _choose(screen, 'ステータス')
@@ -841,6 +889,16 @@ def _field_step(screen, mem, frame):
             return actions
         if screen.kind in ('castle_menu', 'castle_info') or (screen.kind == 'map' and state['age'] > 4):
             return _exit(mem, '本人の部隊メニューを確認できないため派遣を保留')
+        if screen.kind == 'map':
+            return []
+        if screen.kind == 'text':
+            # Not the camp menu: a lingering roster closes, an event text is
+            # yielded so the ordinary handler can advance it (07:44/07:52).
+            return [p.pad('b')] if roster(screen) is not None else None
+        if screen.kind == 'world_map':
+            return [p.pad('y')]
+        if screen.kind in ('main_menu', 'general_list'):
+            return [p.pad('b')]
         return []
     if phase == 'field_read':
         info = general_status(screen)

@@ -262,22 +262,17 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     actions = (policy.camp_recall_step(screen, mem, frame) if recall_dialog
                else policy.month_sub_step(screen, mem) if mem.get('month_sub') and (kind != 'month_menu' or recruit_dialog)
                else None)
-    # A return trip can be interrupted by a text event over the same red-curtain
-    # background that the coarse classifier calls a concert. Let its normal
-    # fallback advance that event without consuming the bounded house budget;
-    # resume the return flow when its screen returns. Other house phases retain
-    # their existing ownership of concert-looking frames.
-    house_state = mem.get('house') or {}
-    returning_house_event = (
-        phase == 'concert' and kind == 'text'
-        and house_state.get('returning') is True
-        and house_state.get('phase') in {
-            'unit_move', 'return_view', 'return_confirm', 'return_done', 'return_close',
-            'find_field', 'field_roster_open', 'field_pick', 'field_open',
-            'field_status', 'field_read',
-        }
-    )
-    if actions is None and not returning_house_event:
+    # No house phase expects a red-curtain screen (concert/merchant backdrop):
+    # every branch answers such a text frame with [] or B, which advances
+    # neither the event nor input. On an outbound repair that starved the trip
+    # until STEP_LIMIT (g530 2026-10-01 07:01/07:44/07:52 field_status stalls)
+    # and the close phase's repeated B could not clear it either, so the
+    # transaction aborted (07:53:43). Let the ordinary concert fallback advance
+    # the event without consuming the bounded house budget; the house route
+    # resumes on its own screen. This covers return and outbound flows alike.
+    concert_house_event = (
+        mem.get('house') is not None and phase == 'concert' and kind == 'text')
+    if actions is None and not concert_house_event:
         actions = hanjuku_house.step(screen, mem, frame)
     if actions is not None:
         pass

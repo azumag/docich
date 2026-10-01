@@ -345,28 +345,26 @@ def test_returning_house_yields_frame_077_text_to_concert_fallback(monkeypatch):
     assert screen.kind == 'text' and screen.header['gold'] == 30
     assert 'どうしさまのぶかにしていただきたくはせさんじました' in screen.text
 
+    # house.step itself yields an event text it cannot consume: only the
+    # ordinary handler advances it, while the bounded budget still ticks.
     legacy = memory('find_field', age=17, total=41)
     legacy['house']['returning'] = True
     for age, total in ((18, 42), (19, 43)):
-        assert house.step(screen, legacy, frame) == [p.pad('b')]
+        assert house.step(screen, legacy, frame) is None
         assert (legacy['house']['phase'], legacy['house']['age'], legacy['house']['total']) == (
             'find_field', age, total)
 
-    # The coarse concert fallback is still owned by an ordinary house scan.
-    ordinary = memory('find_field', age=17, total=41)
-    actions, state = decide(frame, {'step': 76, 'policy': ordinary})
-    assert actions == [p.pad('b')]
-    assert (state['policy']['house']['age'], state['policy']['house']['total']) == (18, 42)
-
-    mem = memory('find_field', age=17, total=41)
-    mem['house']['returning'] = True
-    actions, state = decide(frame, {'step': 76, 'policy': mem})
-    # The house handler used to answer B on this non-map return observation.
-    # The ordinary concert fallback advances this text with A instead.
-    assert actions == [p.pad('a')]
-    house_state = state['policy']['house']
-    assert (house_state['phase'], house_state['age'], house_state['total']) == ('find_field', 17, 41)
-    assert house_state['returning'] is True
+    # The concert fallback now owns this frame for outbound scans as well:
+    # holding []/B on it starved the repair dispatch until STEP_LIMIT
+    # (g530 2026-10-01 07:01/07:44/07:52 field stalls, 07:53:43 abort).
+    for returning in (False, True):
+        mem = memory('find_field', age=17, total=41)
+        mem['house']['returning'] = returning
+        actions, state = decide(frame, {'step': 76, 'policy': mem})
+        assert actions == [p.pad('a')]
+        house_state = state['policy']['house']
+        assert (house_state['phase'], house_state['age'], house_state['total']) == ('find_field', 17, 41)
+        assert bool(house_state.get('returning')) is returning
 
     # Once the event has ended and the map is visible again, the same house
     # route resumes and consumes exactly its next observation.
@@ -529,3 +527,83 @@ def test_roster_open_retry_never_presses_x_on_unknown_screen():
     mem = memory('open_roster'); screen = Screen([], None, '', kind='unknown')
     assert all(house.step(screen, mem, Canvas().frame()) == [] for _ in range(6))
     assert not any(r['decision']=='house_roster_open_retry' for r in mem.get('_records', []))
+
+
+def test_marching_general_dispatch_defers_until_arrival():
+    mem = memory('leave_roster', pending=['ヴィーナス', 'ゼウス'])
+    mem['gold'] = 250
+    mem['sorties'] = {'A:ce:J2': {'general': 'ヴィーナス', 'target': 'ナキューメラ',
+                                  'status': 'en_route', 'purpose': 'sortie', 'tick': 9}}
+    mem['house_eggs'] = {'ヴィーナス': {'location': 'field'}, 'ゼウス': {'location': 'field'}}
+    house._next_general(mem)
+    assert any(r['decision'] == 'house_general_deferred' for r in mem['_records'])
+    assert (mem['house']['general'], mem['house']['phase']) == ('ゼウス', 'find_field')
+
+    # A sole marching candidate closes the trip instead of dispatching:
+    # re-aiming an army in march was measured not to reach the house.
+    mem = memory('leave_roster', pending=['ヴィーナス'])
+    mem['sorties'] = {'A:ce:J2': {'general': 'ヴィーナス', 'status': 'launched_unconfirmed', 'tick': 9}}
+    house._next_general(mem)
+    assert mem['house']['phase'] == 'close'
+    assert any(r['decision'] == 'house_general_deferred' for r in mem['_records'])
+
+
+def test_travel_map_arrival_text_is_dismissed_and_wrong_visitor_exits():
+    arrival = Screen([], None, 'ゼウスしょうぐんがあたしのいえをはっけんしました', kind='map')
+    mem = memory('travel', general='ゼウス')
+    assert house.step(arrival, mem, None) == [p.pad('a')]
+    assert mem['house']['phase'] == 'travel'
+
+    stranger = Screen([], None, 'アレスしょうぐんがあたしのいえをはっけんしました', kind='map')
+    other = memory('travel', general='ゼウス')
+    assert house.step(stranger, other, None) == []
+    assert other['house']['phase'] == 'close'
+    assert any(r['decision'] == 'house_deferred' for r in other['_records'])
+
+
+def test_house_finish_closes_stale_bookkeeping_sorties():
+    mem = memory('close', tick=9)
+    mem['sorties'] = {
+        'HOUSE_OUT:9': {'general': 'ゼウス', 'target': None, 'status': 'en_route',
+                        'purpose': 'house', 'tick': 9},
+        'HOUSE:10': {'general': 'ゼウス', 'target': 'ほんじょう', 'status': 'en_route',
+                     'purpose': 'move', 'tick': 10},
+        'A:ce:J2': {'general': 'ヴィーナス', 'target': 'ナキューメラ', 'status': 'en_route',
+                    'purpose': 'sortie', 'tick': 11},
+    }
+    assert house.step(Screen([], None, '', kind='map'), mem, None) == []
+    # target=None must stop matching every castle arrival (_bind_sortie).
+    assert mem['sorties']['HOUSE_OUT:9']['status'] == 'closed'
+    assert mem['sorties']['HOUSE:10']['status'] == 'en_route'
+    assert mem['sorties']['A:ce:J2']['status'] == 'en_route'
+    assert 'house' not in mem
+    assert any(r['decision'] == 'house_sortie_closed' for r in mem['_records'])
+
+
+def test_field_wait_phases_close_menus_but_yield_event_text():
+    event = Screen([], None, 'こうかんが終わったようです', kind='text')
+    for phase in ('find_field', 'find_castle', 'field_open', 'field_status'):
+        mem = memory(phase, general='ゼウス')
+        assert house.step(event, mem, None) is None, phase
+
+    for phase in ('field_open', 'field_status'):
+        mem = memory(phase, general='ゼウス')
+        assert house.step(Screen([], None, '', kind='unknown'), mem, None) == [], phase
+
+    # A roster the SELECT jump left behind is closed, not waited for.
+    for phase in ('find_field', 'field_open', 'field_status'):
+        mem = memory(phase, general='ゼウス')
+        lingering = parse(roster())
+        assert lingering.kind == 'text'
+        assert house.step(lingering, mem, None) == [p.pad('b')], phase
+
+
+def test_close_phase_concert_text_falls_back_to_ordinary():
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g514-frame-077-retainer-offer.png')
+    mem = memory('close', age=20, total=60)
+    actions, state = decide(frame, {'step': 76, 'policy': mem})
+    # The close phase's repeated B never cleared the concert (07:53:43 abort);
+    # the ordinary fallback advances it while the house budget stays frozen.
+    assert actions == [p.pad('a')]
+    house_state = state['policy']['house']
+    assert (house_state['phase'], house_state['age'], house_state['total']) == ('close', 20, 60)
