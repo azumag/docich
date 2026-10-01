@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from docich import hanjuku_run
 from docich.adapters.base import AdapterError
-from docich.hanjuku_bot import decide, classify, _TITLE_ROWS
+from docich.hanjuku_bot import decide, classify, is_squaresoft_splash, _TITLE_ROWS
 from docich.hanjuku_pixels import Frame, read_png
 from docich.hanjuku_screen import parse
 
@@ -225,6 +225,26 @@ def test_non_logo_unknown_frame_keeps_existing_event_fallback():
     generic = frame((100, 95, 105))
     assert classify(generic) == 'event'
     assert parse(generic, phase='event').kind == 'unknown'
+
+
+def test_non_logo_skips_full_frame_neutral_scan(monkeypatch):
+    rgb = bytearray(frame((213, 214, 213)).rgb)
+    for y in (108, 110):
+        for x in (108, 110, 112, 114):
+            offset = (y * 256 + x) * 3
+            rgb[offset:offset + 3] = bytes((246, 56, 16))
+    candidate = Frame(256, 224, bytes(rgb))
+
+    calls = []
+    original_fraction = Frame.fraction
+
+    def record_fraction(self, rect, predicate):
+        calls.append(rect)
+        return original_fraction(self, rect, predicate)
+
+    monkeypatch.setattr(Frame, 'fraction', record_fraction)
+    assert not is_squaresoft_splash(candidate)
+    assert calls == [(108, 108, 124, 120), (76, 102, 180, 120)]
 
 
 def test_waiting_boundary_keeps_bot_live_until_stasis_then_needs_no_save(adapter):

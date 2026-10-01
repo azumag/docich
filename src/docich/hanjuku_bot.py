@@ -71,9 +71,11 @@ def is_squaresoft_splash(frame: Frame) -> bool:
     neutral = lambda r,g,b: max(r,g,b) - min(r,g,b) <= 2 and min(r,g,b) > 170
     wordmark = lambda r,g,b: max(r,g,b) < 100
     red_accent = lambda r,g,b: r > 180 and g < 100 and b < 80
-    return (frame.fraction((0,0,256,224), neutral) > .985
-            and frame.fraction((76,102,180,120), wordmark) > .20
-            and frame.fraction((108,108,124,120), red_accent) > .10)
+    if frame.fraction((108,108,124,120), red_accent) <= .10:
+        return False
+    if frame.fraction((76,102,180,120), wordmark) <= .20:
+        return False
+    return frame.fraction((0,0,256,224), neutral) > .985
 
 
 def classify(frame: Frame) -> str:
