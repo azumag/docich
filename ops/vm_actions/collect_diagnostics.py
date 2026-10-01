@@ -2870,6 +2870,7 @@ def _collect_resolver_daemon():
 
 
 GAME_SWITCH_WATCHDOG_UNIT = "docich-game-switch-fifo.timer"
+GAME_SWITCH_WATCHDOG_SERVICE_UNIT = "docich-game-switch-fifo.service"
 
 
 def _collect_game_switch_watchdog():
@@ -2883,8 +2884,8 @@ def _collect_game_switch_watchdog():
         'timer_active': _unit_is_active(GAME_SWITCH_WATCHDOG_UNIT),
         'timer_enabled': _unit_is_enabled(GAME_SWITCH_WATCHDOG_UNIT),
     }
-    # Latest service result from the timer's unit
-    show = _systemctl_user(["show", GAME_SWITCH_WATCHDOG_UNIT, "--property", "ExecMainStatus,ExecMainCode,Result,ActiveEnterTimestamp"])
+    # The timer only schedules the oneshot; read the service for its last result.
+    show = _systemctl_user(["show", GAME_SWITCH_WATCHDOG_SERVICE_UNIT, "--property", "ExecMainStatus,Result,ActiveEnterTimestamp"])
     if show is not None:
         _, out = show
         props = {}
@@ -2892,7 +2893,7 @@ def _collect_game_switch_watchdog():
             if '=' in line:
                 key, _, value = line.partition('=')
                 props[key.strip()] = value.strip()
-        result['last_exit_code'] = int(props['ExecMainCode']) if props.get('ExecMainCode', '').lstrip('-').isdigit() else None
+        result['last_exit_code'] = int(props['ExecMainStatus']) if props.get('ExecMainStatus', '').lstrip('-').isdigit() else None
         result['last_result'] = props.get('Result') or None
         result['last_active_at'] = props.get('ActiveEnterTimestamp') or None
     return result

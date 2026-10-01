@@ -1271,17 +1271,29 @@ class TmuxServerProjectionTests(unittest.TestCase):
 
 
 def test_game_switch_watchdog_projection_reports_timer_state():
-    """#1041: the watchdog timer is the recovery path for expired draining."""
+    """#1041: timer liveness and the oneshot's last result come from their own units."""
     module = load_collector()
+    service_show = (
+        0,
+        'ExecMainStatus=23\n'
+        'Result=exit-code\n'
+        'ActiveEnterTimestamp=2026-09-23 12:00:00\n',
+    )
     with mock.patch.object(module, '_unit_is_active', return_value=True), \
          mock.patch.object(module, '_unit_is_enabled', return_value=True), \
-         mock.patch.object(module, '_systemctl_user', return_value=(0, 'ExecMainCode=0\nExecMainStatus=0\nResult=success\nActiveEnterTimestamp=2026-09-23 12:00:00\n')):
+         mock.patch.object(module, '_systemctl_user', return_value=service_show) as systemctl:
         result = module._collect_game_switch_watchdog()
     assert result['timer_active'] is True
     assert result['timer_enabled'] is True
-    assert result['last_exit_code'] == 0
-    assert result['last_result'] == 'success'
+    assert result['last_exit_code'] == 23
+    assert result['last_result'] == 'exit-code'
     assert result['last_active_at'] == '2026-09-23 12:00:00'
+    systemctl.assert_called_once_with([
+        'show',
+        module.GAME_SWITCH_WATCHDOG_SERVICE_UNIT,
+        '--property',
+        'ExecMainStatus,Result,ActiveEnterTimestamp',
+    ])
 
 
 def test_game_switch_watchdog_projection_handles_missing_timer():
