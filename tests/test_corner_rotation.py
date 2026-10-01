@@ -1591,7 +1591,8 @@ def test_tick_uses_post_reconcile_clock_for_new_terminal_timestamp(setup):
     assert final["manual_pending"] is None
     assert final["last_result"]["request_id"] == request_id
     assert final["last_result"]["status"] == "interrupted"
-    assert final["last_seen_at"] == clock[0]
+    # #1064: settled_at is clamped to the tick's now, not the post-reconcile clock.
+    assert final["last_seen_at"] <= clock[0]
     assert len(executor.calls) == original_calls
     assert manager.tick() == {"status": "waiting", "reason": "no-enabled-corner"}
     assert state(manager)["last_result"] == final["last_result"]
@@ -1997,3 +1998,41 @@ def test_manual_queue_deduplicates_existing_same_corner_reservation(setup, manua
     assert result['request_id'] == request['request_id']
     assert not manager._manual_queue_path.exists()
     assert executor.calls == []
+
+
+def test_reconcile_settled_at_is_clamped_to_tick_now():
+    """#1064: a reconcile that writes completed_at a few ms after the tick's
+    now must not latch adapter-timestamp. The settled_at is clamped to the
+    tick's now so the observation never sees a future timestamp."""
+    from types import SimpleNamespace
+    from docich import corner_rotation
+
+    g = SimpleNamespace(state_dir=None, config_path=None)
+    manager = corner_rotation.CornerRotationManager.__new__(corner_rotation.CornerRotationManager)
+    manager.g = g
+    manager.catalog = {}
+    manager.cooldown_seconds = 86400
+    manager.lock = SimpleNamespace()
+    manager.adapters = {}
+
+    tick_now = 1700000000.0
+    reconcile_now = tick_now + 0.0012  # 1.2ms after the tick's now
+
+    class FakeClock:
+        def __call__(self):
+            return reconcile_now
+
+    manager.clock = FakeClock()
+
+    class FakeAdapter:
+        def reconcile_failed_start(self, request_id, state_file=None):
+            return True
+
+        def resources_released(self):
+            return True
+
+    reservation = {"request_id": "req-1", "state_file": "/tmp/state.json"}
+    settled = manager._reconcile_failed_start(
+        FakeAdapter(), reservation, manual=True, now=tick_now
+    )
+    assert settled == tick_now
