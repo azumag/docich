@@ -2484,6 +2484,7 @@ def _collect_corner_files(state_dir, payload, now):
     payload["game_switch"] = entry
     payload["game_switch_fifo"] = _collect_game_switch_fifo(state_dir, now)
     payload["game_switch_watchdog"] = _collect_game_switch_watchdog()
+    payload["corner_rotation_timer_alias"] = _collect_corner_rotation_timer_alias()
 
     for name in (
         "retro_corner",
@@ -2896,6 +2897,42 @@ def _collect_game_switch_watchdog():
         result['last_result'] = props.get('Result') or None
         result['last_active_at'] = props.get('ActiveEnterTimestamp') or None
     return result
+
+
+CORNER_ROTATION_LEGACY_SERVICE = "docich-retro-corner.service"
+CORNER_ROTATION_LEGACY_TIMER = "docich-retro-corner.timer"
+CORNER_ROTATION_CANONICAL_SERVICE = "docich-corner-rotation.service"
+CORNER_ROTATION_CANONICAL_TIMER = "docich-corner-rotation.timer"
+
+
+def _collect_corner_rotation_timer_alias():
+    """Fixed projection of corner rotation timer alias state (#1092).
+
+    The deploy hook (ensure_corner_rotation_timer.sh) fails with exit 23
+    when the legacy alias pair is inconsistent (one side only, or wrong
+    target). This projection makes the alias state directly observable in
+    diagnostics without publishing paths or unit file contents.
+    """
+    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    legacy_service = unit_dir / CORNER_ROTATION_LEGACY_SERVICE
+    legacy_timer = unit_dir / CORNER_ROTATION_LEGACY_TIMER
+    service_is_link = legacy_service.is_symlink()
+    timer_is_link = legacy_timer.is_symlink()
+    service_target = legacy_service.resolve().name if service_is_link else None
+    timer_target = legacy_timer.resolve().name if timer_is_link else None
+    pair_valid = (service_is_link and timer_is_link
+                  and service_target == CORNER_ROTATION_CANONICAL_SERVICE
+                  and timer_target == CORNER_ROTATION_CANONICAL_TIMER)
+    return {
+        'schema_version': 1,
+        'legacy_service_alias': service_is_link,
+        'legacy_timer_alias': timer_is_link,
+        'legacy_service_target': service_target,
+        'legacy_timer_target': timer_target,
+        'legacy_alias_pair_valid': pair_valid,
+        'canonical_service_present': (unit_dir / CORNER_ROTATION_CANONICAL_SERVICE).exists(),
+        'canonical_timer_present': (unit_dir / CORNER_ROTATION_CANONICAL_TIMER).exists(),
+    }
 
 
 # --- webui unit / served-UI observation (read-only) ---------------------------

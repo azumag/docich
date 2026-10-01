@@ -1329,3 +1329,71 @@ def test_game_switch_deadline_expired_projection():
         deadline_dt = datetime.fromisoformat(deadline_at.replace('Z', '+00:00'))
         deadline_expired = deadline_dt.timestamp() < now
         assert deadline_expired is True
+
+
+def _corner_rotation_unit_dir(tmp):
+    """Build the systemd user unit dir under a fake home."""
+    unit_dir = Path(tmp) / '.config' / 'systemd' / 'user'
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    return unit_dir
+
+
+def test_corner_rotation_timer_projection_reports_alias_state():
+    """#1092: the deploy hook fails exit 23 on inconsistent legacy alias pairs."""
+    module = load_collector()
+    from pathlib import Path
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        unit_dir = _corner_rotation_unit_dir(tmp)
+        # Canonical pair: both aliases point to canonical units
+        (unit_dir / 'docich-corner-rotation.service').write_text('[Unit]')
+        (unit_dir / 'docich-corner-rotation.timer').write_text('[Unit]')
+        (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
+        (unit_dir / 'docich-retro-corner.timer').symlink_to(unit_dir / 'docich-corner-rotation.timer')
+        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+            result = module._collect_corner_rotation_timer_alias()
+        assert result['legacy_service_alias'] is True
+        assert result['legacy_timer_alias'] is True
+        assert result['legacy_service_target'] == 'docich-corner-rotation.service'
+        assert result['legacy_timer_target'] == 'docich-corner-rotation.timer'
+        assert result['legacy_alias_pair_valid'] is True
+        assert result['canonical_service_present'] is True
+        assert result['canonical_timer_present'] is True
+
+
+def test_corner_rotation_timer_projection_detects_inconsistent_alias():
+    """#1092: one-sided alias is the exit-23 condition."""
+    module = load_collector()
+    from pathlib import Path
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        unit_dir = _corner_rotation_unit_dir(tmp)
+        (unit_dir / 'docich-corner-rotation.service').write_text('[Unit]')
+        (unit_dir / 'docich-corner-rotation.timer').write_text('[Unit]')
+        # Only the service alias exists (timer is missing)
+        (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
+        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+            result = module._collect_corner_rotation_timer_alias()
+        assert result['legacy_service_alias'] is True
+        assert result['legacy_timer_alias'] is False
+        assert result['legacy_alias_pair_valid'] is False
+
+
+def test_corner_rotation_timer_projection_detects_wrong_target():
+    """#1092: wrong alias target is the exit-23 condition."""
+    module = load_collector()
+    from pathlib import Path
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        unit_dir = _corner_rotation_unit_dir(tmp)
+        (unit_dir / 'docich-corner-rotation.service').write_text('[Unit]')
+        (unit_dir / 'docich-corner-rotation.timer').write_text('[Unit]')
+        (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
+        # Timer alias points to the wrong target
+        (unit_dir / 'docich-retro-corner.timer').symlink_to(unit_dir / 'docich-corner-rotation.service')
+        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+            result = module._collect_corner_rotation_timer_alias()
+        assert result['legacy_service_alias'] is True
+        assert result['legacy_timer_alias'] is True
+        assert result['legacy_timer_target'] == 'docich-corner-rotation.service'
+        assert result['legacy_alias_pair_valid'] is False
