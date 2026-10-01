@@ -315,7 +315,12 @@ run終了処理や日次処理を起動しない。owner境界・既存lock・�
 ## tmux サーバ所有と resolver daemon の read-only 投影（#1286 follow-up）
 
 `tmux_servers` は本番コーナーが使う既定ソケット `docich` と評価ジョブ専用ソケット
-`docich-eval` の有無・セッション数・セッション名（最大8件）を投影する。
+`docich-eval` の読取成否・セッション数・確認できた有無を投影する。
+セッション名は取得せず、`list-sessions -F 1` の固定マーカーだけを数える。
+出力は4KiBまでを検証し、不正な行、上限超過、timeout、実行失敗、非zero終了は
+`readable=false / present=null / session_count=null` とする。不在や0件に推測変換しない。
+正常終了した空出力だけが `readable=true / present=false / session_count=0` になる。
+旧 `sessions` フィールドは出力しない。各サーバの結果は独立している。
 #1284 で評価用 tmux を専用サーバへ隔離したが、分離はプロセスツリーからは直接観測できなかった。
 この投影で「eval セッションが `docich-eval` 上に作られ、本番 `docich` サーバに現れない」ことを
 diagnostics で直接確認できる。`tmux -L <server> list-sessions` は read-only（入力送信なし）。
