@@ -1,11 +1,11 @@
 {
-  "output_sha256": "ff7f522506b06b0f6e1edb82f963d2c70c96eac72741a003efeef162c228ccd5",
+  "output_sha256": "194a004d6ea843cf51ec6edaf7877f6a238b14dce3f21ac72ee51272c12c91e3",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "6d8b362324abb5c73e4d7e3a96913a157ed791f8aeb6c6ccb202124a4d89d8c6",
+  "source_sha256": "c5603887ca02344f61c630b0e7ec3c4e4edf4dccfd569382481d147e6bd8ffda",
   "topics": [
-    "ゲーム終了時の結果まとめをチャット投稿をマージ・VM配備済み",
-    "卵修復派遣が「あたしの家」に入らない障害の根因確定と予防PR #1497（マージ・VM配備済み）",
-    "followup ・#1286 を で対応（マージ・VM 配備済み）"
+    "YouTube同一コメントの30分毎再読み上げを停止（soviet_now #553 / docich gitlink）",
+    "followup 2件: #1044 終端化経路と #968 PulseAudio mute 観測（未マージ・未VM配備）",
+    "ゲーム終了時の結果まとめをチャット投稿をマージ・VM配備済み"
   ]
 }
