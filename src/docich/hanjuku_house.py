@@ -209,7 +209,9 @@ def _observe_status(screen, mem):
     info = general_status(screen)
     if info:
         name = info['general']
-        mem.setdefault('house_eggs', {})[name] = {**info, 'month': mem.get('month')}
+        mem.setdefault('house_eggs', {})[name] = {
+            **info, 'month': mem.get('month'), 'observed_chapter': mem.get('chapter'),
+            'observed_tick': mem.get('tick')}
         if info['uses'] is not None:
             mem.setdefault('egg_uses', {})[name] = info['uses']
             mem.setdefault('egg_types', {})[name] = info['egg']
@@ -243,6 +245,25 @@ def _castle_view(mem, name):
     return x / 8 + ox, y / 8 + oy
 
 
+def _castle_status_after_sortie(info, sortie, mem):
+    """A fresh named status permits rechecking a castle, not assuming arrival.
+
+    A missing arrival toast must not make an old en_route hint permanent.
+    The later castle picker still requires the actual named resident and a
+    remaining defender before it permits any dispatch.
+    """
+    now, observed, launched = mem.get('tick'), info.get('observed_tick'), sortie.get('tick')
+    return (info.get('location') == 'castle'
+            and info.get('general') == sortie.get('general')
+            and type(mem.get('chapter')) is int and mem['chapter'] > 0
+            and type(info.get('observed_chapter')) is int
+            and info['observed_chapter'] == mem.get('chapter')
+            and isinstance(mem.get('month'), str) and bool(mem['month'])
+            and info.get('month') == mem.get('month')
+            and all(type(value) is int for value in (now, observed, launched))
+            and 0 <= launched < observed <= now and now - observed <= 400)
+
+
 def _next_general(mem):
     from . import hanjuku_policy as p
     state = mem['house']
@@ -272,7 +293,8 @@ def _next_general(mem):
     # ignores; the next scan retries her.
     marching = next((s for s in (mem.get('sorties') or {}).values()
                      if s.get('general') == name
-                     and s.get('status') in ('en_route', 'launched_unconfirmed')), None)
+                     and s.get('status') in ('en_route', 'launched_unconfirmed')
+                     and not _castle_status_after_sortie(info, s, mem)), None)
     if marching:
         _record(mem, 'general_deferred',
                 observed_metric={'status': marching.get('status'),
