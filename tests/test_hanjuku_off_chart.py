@@ -185,6 +185,29 @@ def test_interim_without_garrison_reading_keeps_the_chart_general_and_source():
     assert (gomen['general'], gomen['source'], gomen['purpose']) == ('どうし', 'キカンドン', 'attack')
 
 
+def test_a_hold_with_no_candidates_is_recorded_once_per_revision():
+    """g530 (2026-10-01): the sortie stopped for ~35 minutes with zero
+    evidence in decisions or diagnostics. When no candidate can be built,
+    the silent hold must become a recorded, once-per-revision event."""
+    mem = {'chapter': 1, 'variant': 'chart', '_records': [], 'tick': 10,
+           'captured': ['キカンドン', 'ナキューメラ', 'ゴーメン', 'カストーラ'],
+           'orders': {o['step']: 'launched' for o in chart.orders(1) if o['step'] != '1-B1'},
+           'garrison': {'ほんじょう': ['どうし'], 'キカンドン': [], 'ナキューメラ': [],
+                        'ゴーメン': [], 'カストーラ': []},
+           'sorties': {'I:s:1': {'general': 'どうし', 'target': 'スペンソニア',
+                                 'status': 'en_route', 'tick': 5}}}
+    assert policy.map_step(Screen(lines=[], hand=None, text='', kind='map'), mem, FRAME) == []
+    assert decisions(mem, 'chart_adjust_request')
+    assert not decisions(mem, 'chart_interim_hold')
+    assert policy.map_step(Screen(lines=[], hand=None, text='', kind='map'), mem, FRAME) == []
+    [hold] = decisions(mem, 'chart_interim_hold')
+    assert hold['deviation_reason'] == 'interim_no_candidates'
+    assert hold['jev_status'] == 'no_candidates'
+    # The same situation does not spam the hold.
+    assert policy.map_step(Screen(lines=[], hand=None, text='', kind='map'), mem, FRAME) == []
+    assert len(decisions(mem, 'chart_interim_hold')) == 1
+
+
 def test_a_spare_general_moves_into_an_owned_castle_last_seen_empty():
     targets = set(CASTLES) - {'ほんじょう', 'けっかい'}
     mem = {'chapter': 1, 'captured': sorted(targets), 'orders': {}, '_records': [],

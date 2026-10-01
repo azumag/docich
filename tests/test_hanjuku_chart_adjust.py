@@ -408,6 +408,27 @@ def _requested(tmp_path):
     return adjust.write_request(tmp_path, record, identity)
 
 
+def test_an_order_waiting_on_its_own_target_becomes_unconditional():
+    """g530 (2026-10-01): the LLM answered with recapture orders whose
+    after waited on the order's own target, so _ready refused every order
+    and the sortie stood still. The vacuous condition is dropped; a real
+    prerequisite on another castle stays."""
+    doc = adjusted_doc('a' * 16, orders=[
+        {'step': 'J1', 'general': 'どうし', 'source': 'ほんじょう', 'target': 'キカンドン',
+         'cards': [], 'after': ['captured', 'キカンドン'], 'note': '奪回'},
+        {'step': 'J2', 'general': 'ココット', 'source': 'スペンソニア', 'target': 'けっかい',
+         'cards': [], 'after': ['captured', 'スペンソニア'], 'note': '追撃'}])
+    j1, j2 = adjust.validate(doc)['orders']
+    assert j1['after'] is None
+    assert j2['after'] == ('captured', 'スペンソニア')
+
+
+def test_prompt_forbids_a_capture_condition_on_the_orders_own_target():
+    from docich import hanjuku_chart_worker as worker
+    prompt = worker.build_prompt({'chapter': 1}, [])
+    assert 'after: null' in prompt and '永遠に出撃できない' in prompt
+
+
 def test_worker_generates_validates_and_saves_adjusted_chart(tmp_path):
     from docich import hanjuku_chart_worker as worker
     request = _requested(tmp_path)

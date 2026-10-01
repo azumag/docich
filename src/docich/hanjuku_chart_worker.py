@@ -115,7 +115,10 @@ def build_prompt(request: dict, results: list[dict]) -> str:
         '「直近の実績」の battle_start にある ally_max_hp / enemy_max_hp（固定最大HPの判明分）で計算すること。',
         '- 基本戦術: 城レベルが高いほど防衛側のエッグモンスターの防御・速さと防衛将軍の突撃速度が上がる'
         '（ボス城は補正なし）。定員は城Lv−1で、防衛側は将軍が倒されるたびに城レベルが1下がる。',
-        '- after は null / ["captured", 城名] / ["all_captured"] のいずれか。',
+        '- after は出撃の前に満たすべき状態で、null / ["captured", 城名] / ["all_captured"] のいずれか。'
+        '["captured", X] は「すでにXを奪取済み」の時だけ出撃する条件なので、'
+        'target が X の指示（攻略・奪回）に付けると条件は指示自身の結果待ちになり永遠に出撃できない。'
+        'いま奪う城の指示には必ず after: null を使うこと。',
         '- source は将軍を出す自軍の城。target は攻める城。general は将軍名。',
         '- general は「駐留（garrison）」でその source にいると記録された将軍にすること。'
         '別の城にいると記録された将軍・進軍中（en_route）の将軍・失った城（lost）からの出撃は実行できず破棄される。'
