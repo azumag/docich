@@ -1,10 +1,10 @@
 {
-  "output_sha256": "de7e1e17f28cd586e0a29f0c8d338929dc1bb4ff43bd9f521d646ab029edc621",
+  "output_sha256": "526d285e654eb6acc75404f391c6b73bb6a408300df9e3fb59b98660250f2767",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "fe0d7f2296fa52e536e6d0291481ccbe4057ca22a190be69960a07f6815a7e4d",
+  "source_sha256": "1fa2f18ca7365fb7bb50dd198b2be577831a487f628c80815c88fb2c7e404ae9",
   "topics": [
-    "容量回収の走査再開修正を統合・親配備準備",
+    "容量回収の走査再開修正を正規配備・自然結果待ち",
     "切替失敗の共有ロック修正をマージ・正規配備済み",
     "無料モデル追加をマージ・正規配備済み"
   ]
