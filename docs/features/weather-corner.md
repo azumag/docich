@@ -12,6 +12,12 @@ OBSやGameSwitchの状態は変更しない。コードをマージしても放�
 これは実放送まで完成したコーナーではなく、次の統合で使う取得・表示基盤である。
 専用HTTPサーバーを本番配信へ直接つないでこの境界を迂回しない。
 
+統合の準備として、`weather-view` という合成GameSwitch runtime adapterを追加した。
+既に公開済みのsnapshotだけをloopbackで表示し、`runtime_id` と `generation` をserverへ渡し、
+既存の960×540 presentationとGameSwitch所有プロセスの終了処理を使う。start前のfreshnessと
+起動後の同一runtime応答を検証する。このviewはcorner catalogに登録しておらず、専用の
+corner managerからも呼ばれない。fetch・音声送信・タイマーを行わず、単独では起動しない。
+
 ## 権利・出典・予報業務の境界
 
 2026-09-29に確認した一次資料：
@@ -101,9 +107,14 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
 2. GameSwitchのgeneration/runtime_idに結び付けて開始・復帰する。
    operatorが既に切り替えた別runtimeを停止・上書きしない。
    960×540・既存presentation viewportとowned child cleanupを再利用する。
+   `weather-view` のruntime adapterとreadiness検証は実装済みだが、corner managerからの
+   start/終了/復帰の呼出しと所有stateはまだない。
 3. 音声は既存の共有queueを使い、出典・対象日・発表時刻を保持する。
    冪等キー、runtime fence、再生完了確認を実装し、終了後に古い原稿を再生しない。
    他コーナーの音声を削除・停止しない。
+   現行docich mainがpinする`soviet_now` `860e363c` の`enqueue_audio_text` runtime fenceは
+   `hanjuku_commentary` 専用であり、weatherからは安全に使えない。generic runtime fence、
+   冪等キー、再生完了receiptを共有queue側で確認するまでは、weather音声を送らない。
 4. 開始前だけでなく放送直前の有効性を再確認し、失敗はコーナーをskipする。
    cache期限切れや開始失敗から元のゲームへ安全に戻るテストを追加する。
 5. 独立レビュー、CI、全11地点の現行データ確認、非本番の開始/終了実測を完了してから
@@ -111,11 +122,13 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
 
 ## 検証記録
 
-- ローカル：`PYTHONPATH=src pytest -q tests/test_weather.py`、78件成功。
+- ローカル：`PYTHONPATH=src pytest -q tests/test_weather.py tests/test_weather_program.py`、89件成功。
 - Pythonコンパイルとshell構文確認。
 - Chromiumで合成データを注入して960×540、両ページ、JS例外なし、取得失敗後の非表示を確認。
   この環境ではChromiumからloopback URLへの直接アクセスが管理ポリシーで拒否されたため、
   HTTPはstdlibクライアントで別途試験。実HTTPからブラウザーまでのE2Eとは区別する。
 - 現行の気象庁JSONの全国11地点一括取得、実VM、実OBS、音声、GameSwitch復帰は未実測。
+- `weather-view` のpreflight/readinessは合成snapshotとmocked GameSwitch runtimeで検証する。
+  実ブラウザー・実VM・GameSwitchの実start/復帰を確認したことにはならない。
 - GitHubの非本番作業のみ。owner checkout固有のgitignored `handoff.md`、運用メモリ、
   VM作業中バナー・音声は利用できず未操作。本書とPR本文に未確認事項を残す。

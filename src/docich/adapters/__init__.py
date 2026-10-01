@@ -74,6 +74,9 @@ def make_coordinator_adapter(g, spec: RuntimeSpec):
     if spec.game == "paper-view":
         from .program import make_program_view_adapter
         return make_program_view_adapter(g, spec)
+    if spec.game == "weather-view":
+        from .weather_program import make_weather_view_adapter
+        return make_weather_view_adapter(g, spec)
     game = load_game(g, spec.game)
     # NetHack remains a normal CLI game for legacy obs/send and for existing
     # installations.  The save-safe coordinator lifecycle is an explicit

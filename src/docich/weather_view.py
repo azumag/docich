@@ -96,9 +96,11 @@ def read_view(path: Path, *, clock=time.time) -> dict:
     return project(decode(raw, limit=MAX_BUNDLE_BYTES), now=clock())
 
 
-def handler_for(path: Path, runtime_id: str = "preview", *, clock=time.time):
-    if re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", runtime_id) is None:
+def handler_for(path: Path, runtime_id: str = "preview", *, generation=None, clock=time.time):
+    if not isinstance(runtime_id, str) or re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", runtime_id) is None:
         raise WeatherError("invalid-runtime-id")
+    if generation is not None and (type(generation) is not int or generation < 1):
+        raise WeatherError("invalid-generation")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -131,7 +133,8 @@ def handler_for(path: Path, runtime_id: str = "preview", *, clock=time.time):
                 return
             try:
                 data = read_view(path, clock=clock)
-                data.update(ok=True, runtime_id=runtime_id, narration=narration(data))
+                data.update(ok=True, runtime_id=runtime_id, generation=generation,
+                            narration=narration(data))
                 status = 200
             except (OSError, WeatherError):
                 data, status = {"ok": False, "reason": "forecast-unavailable"}, 503
@@ -140,11 +143,14 @@ def handler_for(path: Path, runtime_id: str = "preview", *, clock=time.time):
     return Handler
 
 
-def serve(path: Path, *, port=DEFAULT_PORT, runtime_id="preview") -> None:
+def serve(path: Path, *, port=DEFAULT_PORT, runtime_id="preview", generation=None) -> None:
     if type(port) is not int or not 1024 <= port <= 65535:
         raise WeatherError("invalid-port")
     # No --host switch: the listener can never bind publicly by configuration.
-    with ThreadingHTTPServer(("127.0.0.1", port), handler_for(path, runtime_id)) as server:
+    with ThreadingHTTPServer(
+        ("127.0.0.1", port),
+        handler_for(path, runtime_id, generation=generation),
+    ) as server:
         server.serve_forever(poll_interval=0.2)
 
 
@@ -159,6 +165,7 @@ def main(argv=None) -> int:
     server = sub.add_parser("serve", help="外部通信しない読み取り専用画面")
     server.add_argument("--port", type=int, default=DEFAULT_PORT)
     server.add_argument("--runtime-id", default="preview")
+    server.add_argument("--generation", type=int)
     args = parser.parse_args(argv)
     path = args.state_dir / "snapshot.json"
     try:
@@ -174,7 +181,8 @@ def main(argv=None) -> int:
                 data = read_view(path)
             print(json.dumps({"ok": True, "date": data["date"], "cities": len(data["cities"]), "expires_at": data["expires_at"]}))
         elif args.command == "serve":
-            serve(path, port=args.port, runtime_id=args.runtime_id)
+            serve(path, port=args.port, runtime_id=args.runtime_id,
+                  generation=args.generation)
         else:
             data = read_view(path)
             print(json.dumps({"ok": True, "date": data["date"], "narration": narration(data)} if args.command == "narration" else {"ok": True, "date": data["date"], "expires_at": data["expires_at"]}, ensure_ascii=False))

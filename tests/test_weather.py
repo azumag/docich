@@ -186,8 +186,9 @@ from docich import weather_view as v
 
 
 @contextmanager
-def serving(path, *, clock=lambda: NOW, runtime_id="preview"):
-    server = ThreadingHTTPServer(("127.0.0.1", 0), v.handler_for(path, runtime_id, clock=clock))
+def serving(path, *, clock=lambda: NOW, runtime_id="preview", generation=None):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), v.handler_for(
+        path, runtime_id, generation=generation, clock=clock))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     try:
@@ -218,6 +219,15 @@ def test_readonly_server_and_literal_narration(tmp_path):
         assert "connect-src 'self'" in headers["Content-Security-Policy"]
         code,headers,raw=request(port,"/")
         assert code==200 and "気象庁" in raw.decode()
+
+
+def test_readonly_server_reports_the_game_switch_generation(tmp_path):
+    path=tmp_path/"snapshot.json"; w.write_json(path,bundle())
+    with serving(path,runtime_id="g4-a1b2c3d4",generation=4) as port:
+        code,_,raw=request(port)
+        data=json.loads(raw)
+        assert code==200 and data["runtime_id"]=="g4-a1b2c3d4"
+        assert data["generation"]==4
 
 
 @pytest.mark.parametrize("method",["POST","PUT","DELETE","PATCH"])
