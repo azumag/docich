@@ -26,10 +26,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .adapters import make_coordinator_adapter
 from .config import ConfigError, GlobalConfig, load_game, load_global
 from .game_switch import (
+    ERROR_QUIESCE_FAILED,
     ERROR_RECOVERY_REQUIRED,
+    GameSwitchBusyError,
     GameSwitchCoordinator,
     GameSwitchStore,
     RuntimeSpec,
+    StateCorruptError,
     atomic_write_json,
     new_request_id,
 )
@@ -366,6 +369,9 @@ _END_CLAUSE = {
     "screen_stalled": "画面停止で終了しました",
     "manual_saved_stop": "セーブして終了しました",
     "manual_forced_stop": "セーブ失敗で強制終了しました",
+    # 起動前の切替失敗でゲームが始まらなかった終了。予定終了や game over と
+    # 区別できる文面を出す (#1044)。
+    "switch-terminal-before-corner-active": "開始前の切り替えが失敗したため開始できませんでした",
 }
 # 半熟英雄は grounded な数値本文 (recap_body) の直後にこの一文を続け、
 # 終了理由を末尾に置く (音声 recap と同内容、owner rule 2026-09-28)。
@@ -375,6 +381,8 @@ _END_HANJUKU_CLOSING = {
     "screen_stalled": "画面停止のため、今回の挑戦はここまでです。",
     "manual_saved_stop": "セーブして、今回の挑戦はここまでです。",
     "manual_forced_stop": "セーブ失敗による強制終了で、今回の挑戦はここまでです。",
+    # 開始前の切替失敗。開始していないのに「遊んだ」にしない (#1044)。
+    "switch-terminal-before-corner-active": "開始前の切り替えが失敗したため、今日は挑戦できませんでした。",
 }
 _END_HANJUKU_CLOSING_DEFAULT = "今回の挑戦はここまでです。"
 _END_CLAUSE_DEFAULT = "終了しました"
@@ -800,6 +808,164 @@ class RetroCornerManager:
             # An owner still holds a lock: keep the reservation and retry on
             # the next timer tick, without replaying the switch.
             return False
+
+    def _prelaunch_quiesce_failure_proved(self, state: dict[str, object]) -> bool:
+        """Prove a ``quiesce_failed`` slot never reached the corner (#1044).
+
+        ``reconcile_failed_rotation_start`` only accepts a ``rolled_back``
+        receipt.  A switch that dies *inside* the boundary step keeps the
+        outgoing runtime and reports ``quiesce_failed``, so the corner is left
+        ``failed`` with no canonical path left to roll back and no retry that
+        can succeed: replaying the switch would only re-enter the same drain.
+
+        A receipt is accepted only when it proves all of the following about
+        *this* request: it is a ``switch`` to the corner's target, it reached
+        the terminal ``failed`` status, and its own result carries
+        ``quiesce_failed`` for the very same ``from_game``/``to_game`` pair the
+        corner recorded.  Anything else — a missing, pruned, non-terminal or
+        differently-shaped receipt — leaves the ``failed`` state latched.
+        """
+
+        if (state.get("status") != "failed"
+                or state.get("last_error_code") != ERROR_QUIESCE_FAILED):
+            return False
+        target = state.get("game")
+        previous = state.get("previous_game")
+        request_id = state.get("switch_request_id")
+        if (not isinstance(target, str) or not target
+                or not isinstance(previous, str) or not previous
+                or target == previous
+                or not isinstance(request_id, str) or not request_id):
+            return False
+        try:
+            receipt = self.store.receipts.load(request_id)
+        except StateCorruptError:
+            # An unreadable receipt is missing evidence, never permission.
+            return False
+        if receipt is None:
+            return False
+        result = receipt.get("result")
+        return not (
+            receipt.get("request_id") != request_id
+            or receipt.get("operation") != "switch"
+            or receipt.get("target") != target
+            or receipt.get("status") != "failed"
+            or not isinstance(result, dict)
+            or result.get("request_id") != request_id
+            or result.get("operation") != "switch"
+            or result.get("status") != "failed"
+            or result.get("error_code") != ERROR_QUIESCE_FAILED
+            or result.get("from_game") != previous
+            or result.get("to_game") != target
+        )
+
+    def _canonical_never_switched_to(
+        self, canonical: dict[str, object], target: str
+    ) -> bool:
+        """Accept only a canonical state that still owns another game.
+
+        The terminal receipt above says the switch failed; this says the
+        canonical owner was restored and nothing is still in flight.  A
+        lingering candidate, a retained previous runtime or a retiring runtime
+        all mean some part of that switch is still live, so the corner's
+        terminalization would race it.
+        """
+
+        if (canonical.get("phase") not in {"idle", "ready"}
+                or canonical.get("candidate") is not None
+                or canonical.get("previous") is not None
+                or canonical.get("retiring")):
+            return False
+        active = canonical.get("active")
+        if active is None:
+            return True
+        return isinstance(active, dict) and active.get("game") != target
+
+    def _terminalize_prelaunch_quiesce_failure(
+        self, state: dict[str, object]
+    ) -> CornerResult | None:
+        """Settle a slot whose switch failed before launch, else ``None``.
+
+        The durable receipt, canonical state, and final corner write are one
+        read-side transaction under the shared game-switch store lock.  A
+        coordinator writer therefore cannot begin after canonical verification
+        and before the corner is terminalized.  Lock contention leaves the
+        failed slot untouched and asks the operator to retry later.
+
+        On success the corner is recorded as ``interrupted`` with the same
+        terminal vocabulary as ``reconcile_failed_rotation_start`` so the
+        rotation ledger can commit the reservation through the ordinary
+        ``corner-rotation recover`` step.  The original ``failed`` timestamp is
+        preserved: it is the moment the slot really ended, and the rotation
+        ledger clamps it exactly like a reconcile-written ``completed_at``.
+        """
+
+        if (state.get("status") != "failed"
+                or state.get("last_error_code") != ERROR_QUIESCE_FAILED):
+            return None
+        target = state.get("game")
+        previous = state.get("previous_game")
+        request_id = state.get("switch_request_id")
+        if (not isinstance(target, str) or not target
+                or not isinstance(previous, str) or not previous
+                or target == previous
+                or not isinstance(request_id, str) or not request_id):
+            return None
+        try:
+            completed_at = dt.datetime.fromisoformat(state["completed_at"])
+        except (KeyError, OverflowError, TypeError, ValueError):
+            return None
+        if completed_at.tzinfo is None or completed_at.timestamp() < 0:
+            return None
+
+        try:
+            with self.store.lock(exclusive=False):
+                # Keep receipt proof, canonical verification, and the corner
+                # commit in the same lock interval.  Game-switch writers take
+                # this store lock exclusively.
+                if not self._prelaunch_quiesce_failure_proved(state):
+                    return None
+                try:
+                    canonical, missing = self.store.canonical.load()
+                except StateCorruptError:
+                    return None
+                if missing:
+                    return None
+                phase = canonical.get("phase")
+                if phase in {"failed", "recovery_required"}:
+                    return CornerResult(
+                        "failed", game=target, previous_game=previous,
+                        detail=f"canonical stateが{phase}のため確定しません",
+                    )
+                if phase not in {"idle", "ready"}:
+                    return CornerResult(
+                        "queued", game=target, previous_game=previous,
+                        detail=f"canonical phase={phase!r} の完了を待っています",
+                    )
+                if not self._canonical_never_switched_to(canonical, target):
+                    return CornerResult(
+                        "failed", game=target, previous_game=previous,
+                        detail="canonical がtargetを所有中のため確定しません",
+                    )
+                state.update(
+                    status="interrupted",
+                    end_reason="switch-terminal-before-corner-active",
+                    last_error=None,
+                    last_error_code=None,
+                )
+                state.pop("switch_status", None)
+                self._write_state(state)
+        except GameSwitchBusyError:
+            return CornerResult(
+                "queued", game=target, previous_game=previous,
+                detail="game-switch lockを別writerが保持中のため確定を待っています",
+            )
+        return CornerResult(
+            "succeeded",
+            game=target,
+            previous_game=previous,
+            detail="起動前に失敗した手動起動をinterruptedとして確定",
+        )
 
     def _due_game(self, now: dt.datetime, state: dict) -> str | None:
         games = self.config.games if getattr(self.config, "daily_each_game", False) else [select_game(self.config.games, now.date())]
@@ -1926,11 +2092,24 @@ class RetroCornerManager:
         live ``draining`` boundary, never touches an explicit
         ``recovery_required`` phase, and preserves the rotation history so a
         recovered slot cannot cause a duplicate selection inside 24 hours.
+
+        A slot whose game switch failed *before* the corner started
+        (``quiesce_failed``, #1044) is terminalized as ``interrupted`` instead
+        of being replayed: no canonical recovery is outstanding, and retrying
+        would re-enter the same failed round boundary.  This is the only step
+        that clears such a latch, and ``corner-rotation recover`` then commits
+        the reservation.
         """
 
         now = self._local_now()
         with self._locked():
             state = self._read_state()
+            # Deliberately ahead of the recovery-required gate below: a
+            # quiesce_failed slot is not a canonical-recovery failure, so the
+            # retry path must not claim it.
+            terminalized = self._terminalize_prelaunch_quiesce_failure(state)
+            if terminalized is not None:
+                return terminalized
             if not self._failed_state_is_recoverable(state):
                 return CornerResult("noop", detail="failed-slot-not-recoverable")
             target = state.get("game")

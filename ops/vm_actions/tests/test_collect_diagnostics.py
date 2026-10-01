@@ -94,6 +94,23 @@ def test_hanjuku_telemetry_is_enum_only_and_never_publishes_frames_or_state():
     assert output['bot_actions_sent'] is None and output['screen_unchanged_seconds'] is None
 
 
+def test_corner_end_reason_reports_the_prelaunch_switch_terminal_vocabulary():
+    # #1044: an interrupted slot whose switch failed before launch has to stay
+    # distinguishable from every other interrupted corner, or the operator
+    # cannot tell a rolled-back boundary from a retired launch.
+    module=load_collector()
+    output=module._project_corner_state({
+        'status':'interrupted','game':'hanjuku-hero',
+        'end_reason':'switch-terminal-before-corner-active',
+        'completed_at':'2026-09-23T20:54:30+09:00'})
+    assert output['status']=='interrupted'
+    assert output['end_reason']=='switch-terminal-before-corner-active'
+    unknown=module._project_corner_state({
+        'status':'interrupted','game':'hanjuku-hero',
+        'end_reason':'SECRET-END-REASON'})
+    assert unknown['end_reason'] is None
+
+
 PULSE_SINK_INPUTS = (
     'Sink Input #41\n'
     '\tDriver: protocol-native.c\n'

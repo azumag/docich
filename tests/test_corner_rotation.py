@@ -1599,6 +1599,38 @@ def test_tick_uses_post_reconcile_clock_for_new_terminal_timestamp(setup):
     assert len(executor.calls) == original_calls
 
 
+def test_recover_commits_a_manual_slot_the_corner_terminalized_as_interrupted(setup):
+    """#1044: after the corner's own operator step terminalizes a quiesce_failed
+    manual start, the ordinary ledger step must commit the reservation — the
+    same two-step sequence every other terminal corner result uses."""
+    g, clock, _, executor, make = setup
+    manager, request_id = _latch_manual(make, executor, clock, corner="retro")
+    latched = state(manager)
+    latched["manual_pending"]["state_file"] = "retro_corner.json"
+    manager.path.write_text(json.dumps(latched))
+    adapter = manager.adapters["retro"]
+    adapter.state_path = Path(g.state_dir) / "retro_corner.json"
+    # The corner state the retro-corner operator step left behind: the switch
+    # failed before launch, so the slot is terminal and was never relaunched.
+    adapter.states = [{"status": "interrupted",
+                       "rotation_request_id": request_id,
+                       "started_at": clock[0] - 10,
+                       "completed_at": clock[0] - 1}]
+    adapter.reconcile_failed_start = lambda identity, **_kw: False
+    calls = len(executor.calls)
+
+    outcome = manager.recover()
+
+    assert outcome == {"status": "ready", "corner": "retro",
+                       "result": "interrupted", "recovered": True}
+    final = state(manager)
+    assert final["status"] == "ready"
+    assert final["manual_pending"] is None
+    assert final["last_result"]["request_id"] == request_id
+    assert final["last_result"]["status"] == "interrupted"
+    assert len(executor.calls) == calls
+
+
 def test_tick_rejects_clock_regression_after_failed_start_reconciliation(setup):
     g, clock, _, executor, make = setup
     manager, request_id = _latch_manual(make, executor, clock, corner="retro")

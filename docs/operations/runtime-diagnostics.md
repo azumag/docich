@@ -91,6 +91,11 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `status=failed` かつ `recovery_required=true` の場合だけ severity を `warn` にし、
   owner-only の固定 `recover-failed` 操作を許可する。`draining` / `recovery_required`
   のcanonical phaseは自動でリセットしない。
+- `corners.<id>.end_reason` は固定enumのみを出す。`interrupted` で
+  `switch-terminal-before-corner-active` の場合、その枠は**ゲーム切替が起動前に
+  terminal へ到達して中断した**ことを意味し（#1044）、他の中断と区別して読む。
+  通常の完了や停止で起きた中断ではないため、以降の `recover-failed` と
+  `corner-rotation recover` の2操作でのみ確定する。severity は変えない。
 - `pulse_sink_inputs` は PulseAudio の playback stream 状態を read-only で出す
   （#968）。各要素は `index` / `sink` / `role` / `mute` / `corked` /
   `volume_percent` / `player` の固定キーのみで、`player` は

@@ -1914,7 +1914,9 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                                 and not isinstance(target, bool) and 1 <= target <= 100 else None),
                 stop_retryable=_hanjuku_stop_retryable(g, raw),
                 end_reason=(raw.get("end_reason") if raw.get("end_reason") in
-                            {"game_over", "screen_stalled", "manual_saved_stop", "manual_forced_stop"} else None),
+                            {"game_over", "screen_stalled", "manual_saved_stop",
+                             "manual_forced_stop",
+                             "switch-terminal-before-corner-active"} else None),
                 last_error_code=_view_str(raw.get("last_error_code")),
             )
         corners[name] = entry
@@ -4850,6 +4852,7 @@ const ROT_REASON_JA={
 const CORNER_STATUS_JA={idle:"待機",waiting:"待機",starting:"開始中",active:"実行中",restoring:"復帰中",preparing:"準備中",recovery_required:"要復旧",failed:"失敗",completed:"完了",interrupted:"中断",expired:"期限切れ",running:"実行中"};
 const CORNER_BUSY=new Set(["starting","active","restoring","preparing","waiting","recovery_required","failed"]);
 const CORNER_ACTIVE_STOP=new Set(["starting","active","restoring"]);
+const CORNER_END_REASON_JA={"manual_saved_stop":"セーブして終了","manual_forced_stop":"セーブ失敗・強制終了","switch-terminal-before-corner-active":"起動前の切替失敗で中断"};
 let CORNERS_DATA=null;
 function jaStatus(s){ return CORNER_STATUS_JA[s]||s||"-"; }
 function relTime(ts){
@@ -4985,7 +4988,7 @@ function renderCorners(d){
   if(tb && d.corners){
     tb.innerHTML=Object.entries(d.corners).map(([name,c])=>{
       if(!c.present) return `<tr><td class="mono">${esc(name)}</td><td colspan="7" class="help">記録なし</td></tr>`;
-      const detail=c.last_error_code?` / ${esc(c.last_error_code)}`:(c.end_reason==="manual_saved_stop"?" / セーブして終了":c.end_reason==="manual_forced_stop"?" / セーブ失敗・強制終了":"");
+      const detail=c.last_error_code?` / ${esc(c.last_error_code)}`:(CORNER_END_REASON_JA[c.end_reason]?` / ${CORNER_END_REASON_JA[c.end_reason]}`:"");
       return `<tr><td class="mono">${esc(name)}</td><td>${esc(jaStatus(c.status))}${detail}</td>`
         +`<td>${esc(c.game||"-")}</td><td>${fmtTime(c.started_at)}</td>`
         +`<td>${fmtTime(c.ends_at)}</td><td>${fmtTime(c.completed_at)}</td>`
