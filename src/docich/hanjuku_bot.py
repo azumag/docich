@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v125-returning-house-event'
+BOT_VERSION = 'hanjuku-chart-v126-squaresoft-phase'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -60,12 +60,32 @@ def green(r,g,b):
     return 8 <= r <= 40 and 48 <= g <= 100 and 40 <= b <= 95 and g > r*1.5
 
 
+def is_squaresoft_splash(frame: Frame) -> bool:
+    """Recognize the centered SQUARESOFT logo on its plain gray startup card.
+
+    The old lower-screen paper heuristic also matched this non-game screen.
+    Requiring the neutral field, dark wordmark, and its red accent keeps this
+    exception specific to the observed splash instead of changing battle or
+    generic-event classification.
+    """
+    neutral = lambda r,g,b: max(r,g,b) - min(r,g,b) <= 2 and min(r,g,b) > 170
+    wordmark = lambda r,g,b: max(r,g,b) < 100
+    red_accent = lambda r,g,b: r > 180 and g < 100 and b < 80
+    if frame.fraction((108,108,124,120), red_accent) <= .10:
+        return False
+    if frame.fraction((76,102,180,120), wordmark) <= .20:
+        return False
+    return frame.fraction((0,0,256,224), neutral) > .985
+
+
 def classify(frame: Frame) -> str:
     f=frame
     if is_title(f):
         return 'title'
     dark=f.fraction((0,0,256,224),lambda r,g,b:max(r,g,b)<25)
     if dark > .97:
+        return 'transition'
+    if is_squaresoft_splash(f):
         return 'transition'
     paper=lambda r,g,b:r>185 and g>185 and b>155
     if (f.fraction((16,174,113,191),paper)>.65

@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_chart as chart
 from docich import hanjuku_commentary, hanjuku_narration, hanjuku_policy as policy
 from docich import pulse_volume
-from docich.hanjuku_bot import decide
+from docich.hanjuku_bot import classify, decide
 from docich.hanjuku_font import UNKNOWN, read_lines
 from docich.hanjuku_screen import Screen
 
@@ -97,6 +97,7 @@ def test_header_menu_hand_and_battle_panel_are_structured():
     b.text(224, 176, '90', (32, 32, 32))
     battle = parse(b.frame()).battle
     assert (battle.enemy, battle.enemy_hp, battle.ally, battle.ally_hp) == ('ミント', 32, 'どうし', 90)
+    assert classify(b.frame()) == 'battle'
 
 
 def name_screen(typed='', cell=None, menu=False):
@@ -573,13 +574,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v125-returning-house-event'
+    assert state['bot_version'] == 'hanjuku-chart-v126-squaresoft-phase'
     assert '_records' not in state['policy']
 
 
-def test_bot_version_marks_returning_house_event_release():
+def test_bot_version_marks_squaresoft_phase_release():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v125-returning-house-event'
+    assert BOT_VERSION == 'hanjuku-chart-v126-squaresoft-phase'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
