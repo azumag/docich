@@ -628,7 +628,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             raise AdapterError(f"{self.ffplay_bin} にSRT対応がありません")
 
     def _sync_twitch(self, game: str) -> None:
-        """Best-effort Twitch category-only switch for the corner.
+        """Best-effort Twitch category and viewer-title switch for the corner.
 
         update_stream_game.sh lives in the Soren root and reads the docich
         game config's [twitch] table. Failures are logged but never fail the
@@ -641,7 +641,8 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         if not script.is_file():
             return
         try:
-            cmd = ["bash", str(script), "--game", game, "--category-only"]
+            from ..stream_category import viewer_title_args
+            cmd = ["bash", str(script), "--game", game, *viewer_title_args(game)]
             if self.games_dir:
                 cmd += ["--games-dir", self.games_dir]
             proc = subprocess.run(
