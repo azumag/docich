@@ -1,11 +1,11 @@
 {
-  "output_sha256": "846fe11a9a2fac753497f52cab830cf81691ad2340a54fe8711d3c2f685148a5",
+  "output_sha256": "b67ee85c24766c1229e117d1b4844f457a88bec3edb512c2eb9f8773e2d2daca",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "9bd7d8420acc3118b4d33b139463f564f3a2b0f882bcaa0fe1880ee5e8f1ed4f",
+  "source_sha256": "6cfc1310bdc55360f6cf50c5f2bcd823cdc679c3cfb95759c7312de8743cb2ef",
   "topics": [
-    "hanjuku g530出撃停止の調査・復旧と予防PR（#1487）",
-    "容量緊急対応: bounded retention完全停止を修正し341/341削除を検証（compact完了待ち）",
-    "g514タイトル復帰・v126配備・次回起動境界の確認"
+    "卵修復派遣が「あたしの家」に入らない障害の根因確定と予防PR #1497（マージ・VM配備済み）",
+    "followup ・#1286 を で対応（マージ・VM 配備済み）",
+    "hanjuku g530出撃停止の調査・復旧と予防PR（#1487）"
   ]
 }
