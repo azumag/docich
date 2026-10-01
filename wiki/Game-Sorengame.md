@@ -95,6 +95,15 @@ opencode-go:muse-spark-1.2-contributor
   contributor 枠 (`https://opencode.ai/workspace/wrk_01M04NATCGAVB03SVAEZ4RBV1Y/go`
   の opt-in が必要)。`opencode-go:` プレフィックス (opencode CLI 直呼び、provider `opencode-go`) でのみ呼び、
   codex 経由では受け付けない。チェーン末尾の最終フォールバック枠（`opencode:` だと zen 側の free 枠と衝突し Model not found になる）。
+- **opencode-go の無料枠 (2026-10-01 追加)**: `opencode-go:longcat-2.5-preview-free` /
+  `opencode-go:space-bunny-free` は models.dev と `opencode models opencode-go` で
+  cost 0 の実在モデル。docich 側の webui 既定チェーン 3 本 (`AI_COMMON_AGENTS` /
+  `MODEL_IMPROVE_LIST` / `PEAK_HOURS_AGENT_PREFERENCE`)、live profile の
+  `retro_corner.improve_agents` / `paper_corner.script_agents` /
+  `paper_corner.improve_agents`、`config/games/hanjuku-hero.toml` の
+  `hanjuku.chart_adjust.agents` に、有料 `opencode-go` より前の無料枠として加えた。
+  `AI_BACKOFF_SEC_ITEMS` にも 1日 backoff を入れて 429 連打を止める。
+  VM の `.env` に値が設定されていればそちらが優先される（既定値は webui の表示・空のとき）。
 - **モデル別バックオフ (2026-08-19)**: `deepseek-v4-flash-free` / `amd-token-factory…` /
   `openrouter/free` / `muse-spark-1.2-contributor` = 1日、`local` = 30分、
   `deepseek-v4-flash` / `minimax-m3` = 5時間。
