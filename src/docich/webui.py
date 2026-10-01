@@ -121,8 +121,8 @@ WEBUI_ALLOWLIST = {
 
 # hard defaults from core/config.sh
 DEFAULTS: dict[str, str] = {
-    "AI_COMMON_AGENTS": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,vercel:poolside/laguna-s-2.1-free,vercel:inclusionai/ling-3.0-flash-fin,vercel:zai/glm-5.3-flash,vercel:xiaomi/mimo-v2.5,vercel:alibaba/qwen3.8-flash,vercel:xiaomi/mimo-v2.5-pro,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash",
-    "MODEL_IMPROVE_LIST": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash",
+    "AI_COMMON_AGENTS": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,vercel:poolside/laguna-s-2.1-free,vercel:inclusionai/ling-3.0-flash-fin,vercel:zai/glm-5.3-flash,vercel:xiaomi/mimo-v2.5,vercel:alibaba/qwen3.8-flash,vercel:xiaomi/mimo-v2.5-pro,opencode:mimo-v2.6-flash-free,opencode-go:mimo-v2.6-flash,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash",
+    "MODEL_IMPROVE_LIST": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode:mimo-v2.6-flash-free,opencode-go:mimo-v2.6-flash,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash",
     "MODEL_IMPROVE_PEAK_LIST": "",  # inherits MODEL_IMPROVE_LIST
     "RADIO_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "RADIO_PREPASS_AGENTS": "",  # inherits AI_COMMON_AGENTS
@@ -135,7 +135,7 @@ DEFAULTS: dict[str, str] = {
     "PEAK_HOURS_WINDOWS": "10-13,15-19",
     "PEAK_HOURS_TZ": "Asia/Tokyo",
     "PEAK_HOURS_PRIORITY_AGENT": "opencode:muse-spark-1.3-contributor-free",
-    "PEAK_HOURS_AGENT_PREFERENCE": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,vercel:poolside/laguna-s-2.1-free,vercel:inclusionai/ling-3.0-flash-fin,vercel:zai/glm-5.3-flash,vercel:xiaomi/mimo-v2.5,vercel:alibaba/qwen3.8-flash,vercel:xiaomi/mimo-v2.5-pro,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor",
+    "PEAK_HOURS_AGENT_PREFERENCE": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,vercel:poolside/laguna-s-2.1-free,vercel:inclusionai/ling-3.0-flash-fin,vercel:zai/glm-5.3-flash,vercel:xiaomi/mimo-v2.5,vercel:alibaba/qwen3.8-flash,vercel:xiaomi/mimo-v2.5-pro,opencode:mimo-v2.6-flash-free,opencode-go:mimo-v2.6-flash,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor",
     "PEAK_HOURS_QUEUE_GATE_ENABLED": "1",
     "IMPROVE_PEAK_CHAIN_ENABLED": "0",
     "IMPROVE_PEAK_HOUR_DEFER_ENABLED": "0",

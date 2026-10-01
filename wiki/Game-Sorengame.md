@@ -95,6 +95,14 @@ opencode-go:muse-spark-1.2-contributor
   contributor 枠 (`https://opencode.ai/workspace/wrk_01M04NATCGAVB03SVAEZ4RBV1Y/go`
   の opt-in が必要)。`opencode-go:` プレフィックス (opencode CLI 直呼び、provider `opencode-go`) でのみ呼び、
   codex 経由では受け付けない。チェーン末尾の最終フォールバック枠（`opencode:` だと zen 側の free 枠と衝突し Model not found になる）。
+- **`Mimo-v2.6-flash` 追加 (2026-09-23)**: docich 側の既定チェーン
+  (`src/docich/webui.py` DEFAULTS の `AI_COMMON_AGENTS` / `MODEL_IMPROVE_LIST` /
+  `PEAK_HOURS_AGENT_PREFERENCE`、`config/docich.soren-live.toml` の `script_agents` /
+  `improve_agents`、`ops/shadow_once/run.py` の固定リスト)に
+  `opencode:mimo-v2.6-flash-free` (opencode zen の free 枠) と `opencode-go:mimo-v2.6-flash` を、
+  muse の直後・最初の deepseek 系エントリの直前に追加した (`improve_agents` は muse が末尾かつ
+  deepseek が先頭のため末尾追加)。VM の `core/config.sh` / `.env` への反映は未実施で、
+  上の実測スナップショットは変更していない。
 - **モデル別バックオフ (2026-08-19)**: `deepseek-v4-flash-free` / `amd-token-factory…` /
   `openrouter/free` / `muse-spark-1.2-contributor` = 1日、`local` = 30分、
   `deepseek-v4-flash` / `minimax-m3` = 5時間。
@@ -136,6 +144,10 @@ RADIO_PREPASS_AGENTS (既定) = 共通チェーン (AI_COMMON_AGENTS、local を
   `local` と `openrouter/free` を除外し、`amd-token-factory` を含む 4 段へ更新。
   2026-08-20 に `deepseek-v4-flash-free` の経路を `opencode:` へ統一。
   `RADIO_PREPASS_AGENTS` は共通チェーン (7段、`local` を含む) を継承。
+- **`Mimo-v2.6-flash` 追加 (2026-09-23)**: 上の「既定」は VM 実物のスナップショットだが、
+  docich の既定値 (`src/docich/webui.py` DEFAULTS) の `MODEL_IMPROVE_LIST` には
+  `opencode:mimo-v2.6-flash-free` → `opencode-go:mimo-v2.6-flash` を muse の直後・
+  `opencode-go:deepseek-v4.1-flash` の直前へ追加した。VM 反映は未実施。
 - **解決済み（2026-08-19 追記）**: 上の「未解決の疑問」は誤りだった。`soren/radio_engine.sh`
   （リポジトリ直下）と `soren/broadcast/radio_engine.sh` の**2ファイルが同時に存在**しており、
   `eloop_lib.sh` が実際に `source` するのは **`broadcast/radio_engine.sh`** の方
