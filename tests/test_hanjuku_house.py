@@ -607,3 +607,16 @@ def test_close_phase_concert_text_falls_back_to_ordinary():
     assert actions == [p.pad('a')]
     house_state = state['policy']['house']
     assert (house_state['phase'], house_state['age'], house_state['total']) == ('close', 20, 60)
+
+
+def test_unaffordable_dispatch_records_the_defer_before_closing():
+    mem = memory('leave_roster', pending=['ゼウス'])
+    mem['gold'] = 31
+    house._next_general(mem)
+    # Closing is right (the visit could not buy anything), but it used to end
+    # without a trace and the owner just saw "never entered the house".
+    assert mem['house']['phase'] == 'close'
+    rec = [r for r in mem['_records'] if r['decision'] == 'house_general_deferred'][-1]
+    metric = rec['observed_metric']
+    assert (metric['gold'], metric['pending'], metric['need']) == (31, ['ゼウス'], 80)
+    assert mem['house']['pending'] == ['ゼウス']

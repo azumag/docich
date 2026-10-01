@@ -247,7 +247,17 @@ def _next_general(mem):
     from . import hanjuku_policy as p
     state = mem['house']
     pending = state.get('pending') or []
-    if not pending or not affordable_gift(mem.get('gold'), p.WAGE_RESERVE):
+    if not pending:
+        _phase(state, 'close')
+        return
+    if not affordable_gift(mem.get('gold'), p.WAGE_RESERVE):
+        # Without this record an unaffordable trip closes silently and the
+        # owner sees "the general never entered the house" with no evidence
+        # (g530 2026-10-01 09:20:30: ゼウス broken, gold≈18-31 < 80).
+        _record(mem, 'general_deferred',
+                observed_metric={'gold': mem.get('gold'), 'pending': list(pending),
+                                 'need': min(cost for _, cost in GIFTS) + p.WAGE_RESERVE},
+                reason='所持金では家の贈り物と賃金予備を賄えないため派遣せず保留（次スキャンで再判定）')
         _phase(state, 'close')
         return
     name = pending.pop(0)
