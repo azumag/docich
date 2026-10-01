@@ -2461,6 +2461,18 @@ def test_summarize_recap_counts_only_the_runs_own_story(tmp_path):
     assert bare.startswith('ゲームオーバー。')
 
 
+def test_recap_body_is_shared_by_chat_summary(tmp_path):
+    from docich.hanjuku_commentary import recap_body, summarize_recap
+
+    (tmp_path / 'hanjuku_decisions.jsonl').write_text(
+        json.dumps({'event': 'decision', 'chapter': 4}) + '\n')
+    body = recap_body(tmp_path, {})
+    assert body.startswith('第4章まで進み')
+    # 音声 recap はこの共有本文＋定型の頭と尻尾だけ。
+    assert summarize_recap(tmp_path, {}) == (
+        'game_over_recap', f'ゲームオーバー。{body}。今回の挑戦はここまでです。')
+
+
 def test_narration_delivers_only_the_game_over_recap_at_terminal(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from docich.game_switch import atomic_write_json

@@ -358,8 +358,33 @@ def _strategy_value_text(value) -> str:
 PRESENTATION_NOT_READY = "RetroArch native presentation is not ready"
 PRESENTATION_RETRY_LIMIT = 45  # x 2 s: a presenter still starting under load (Issue #1280)
 
+# 終了時チャット結果まとめの視聴者向け終了理由 (内部の終了コードは出さない)。
+# None は end_reason 未設定＝時間切れ通常終了。未知コードは既定文面へ落とす。
+_END_CLAUSE = {
+    None: "予定時間になりましたので終了しました",
+    "game_over": "ゲームオーバーになりました",
+    "screen_stalled": "画面停止で終了しました",
+    "manual_saved_stop": "セーブして終了しました",
+    "manual_forced_stop": "セーブ失敗で強制終了しました",
+}
+# 半熟英雄は grounded な数値本文 (recap_body) の直後にこの一文を続け、
+# 終了理由を末尾に置く (音声 recap と同内容、owner rule 2026-09-28)。
+_END_HANJUKU_CLOSING = {
+    None: "今回の挑戦はここまでです。",
+    "game_over": "ゲームオーバーで、今回の挑戦はここまでです。",
+    "screen_stalled": "画面停止のため、今回の挑戦はここまでです。",
+    "manual_saved_stop": "セーブして、今回の挑戦はここまでです。",
+    "manual_forced_stop": "セーブ失敗による強制終了で、今回の挑戦はここまでです。",
+}
+_END_HANJUKU_CLOSING_DEFAULT = "今回の挑戦はここまでです。"
+_END_CLAUSE_DEFAULT = "終了しました"
+
 
 class RetroCornerManager:
+    # 終了時の結果まとめチャット投稿。nethack/soren91 系サブコーナーは独自の
+    # 終了告知を finish 直後に呼ぶため、それぞれで無効化する。
+    announce_end_result = True
+
     def __init__(
         self,
         g: GlobalConfig,
@@ -515,6 +540,97 @@ class RetroCornerManager:
             return
         state["announced"] = True
         state.pop("announce_error", None)
+
+    @staticmethod
+    def _end_reason_key(state: dict[str, object]) -> str | None:
+        """終了理由の辞書キー。未知/非文字列コードは内部語彙を出さず既定文面へ。"""
+        reason = state.get("end_reason")
+        return reason if isinstance(reason, str) or reason is None else "unknown"
+
+    @staticmethod
+    def _played_minutes(
+        state: dict[str, object], completed_at: dt.datetime
+    ) -> int | None:
+        raw = state.get("started_at")
+        if not isinstance(raw, str) or not raw:
+            return None
+        try:
+            started = dt.datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=completed_at.tzinfo)
+        try:
+            seconds = (completed_at - started).total_seconds()
+        except TypeError:
+            return None
+        if seconds < 0.0 or seconds > 7 * 24 * 3600:
+            return None
+        return max(1, round(seconds / 60))
+
+    def _hanjuku_end_body(self, state: dict[str, object]) -> str | None:
+        """半熟英雄の grounded な結果まとめ本文。記録が読めない時は None。"""
+        identity = state.get("bot_identity")
+        if not isinstance(identity, dict) or not isinstance(
+            identity.get("runtime_id"), str
+        ):
+            return None
+        try:
+            from .hanjuku_commentary import recap_body
+            from .hanjuku_run import load as load_hanjuku_run
+            from .naming import runtime_directory
+
+            runtime_dir = runtime_directory(self.g.state_dir, identity["runtime_id"])
+            return recap_body(runtime_dir, load_hanjuku_run(runtime_dir, identity))
+        except Exception:
+            return None
+
+    def _end_result_text(
+        self, state: dict[str, object], completed_at: dt.datetime
+    ) -> str:
+        """終了時の視聴者向け結果まとめ文面 (チャット投稿用)。
+
+        半熟英雄は decision log と run state から数値を数える (音声 recap と
+        同内容)。他のゲームは ゲーム名＋終了理由＋プレイ時間。数値はすべて
+        記録から読み、捏造しない。
+        """
+        reason = self._end_reason_key(state)
+        if state.get("game") == "hanjuku-hero":
+            body = self._hanjuku_end_body(state)
+            if body is not None:
+                closing = _END_HANJUKU_CLOSING.get(
+                    reason, _END_HANJUKU_CLOSING_DEFAULT
+                )
+                return f"{body}。{closing}"
+        game = state.get("game")
+        title = game if isinstance(game, str) and game else "ゲーム"
+        try:
+            title = load_game(self.g, title).title
+        except Exception:
+            pass
+        clause = _END_CLAUSE.get(reason, _END_CLAUSE_DEFAULT)
+        minutes = self._played_minutes(state, completed_at)
+        duration = (
+            f"。約{minutes}分間お楽しみいただきました" if minutes is not None else ""
+        )
+        return f"{title}は{clause}{duration}。"
+
+    def _announce_end_result_locked(
+        self, state: dict[str, object], completed_at: dt.datetime
+    ) -> None:
+        """終了時の結果まとめチャット投稿。_finish_locked の lock 保持中に呼ぶ。
+
+        投稿/文面作成の失敗はコーナー自体を失敗させない。結果は state に記録する。
+        """
+        if state.get("end_announced"):
+            return
+        try:
+            self._chat(self._end_result_text(state, completed_at))
+        except Exception as exc:
+            state["end_announce_error"] = _safe_detail(exc)
+        else:
+            state.pop("end_announce_error", None)
+        state["end_announced"] = True
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
@@ -1191,6 +1307,10 @@ class RetroCornerManager:
             # child immediately; if it reads the old active state first, the
             # improvement command returns wrong-status and silently skips.
             self._write_state(state)
+            # 終了時の結果まとめは terminal 確定後・improve 起動前のここで
+            # 投稿する。improve 起動の成否に結果まとめは依存させない。
+            if self.announce_end_result:
+                self._announce_end_result_locked(state, completed_at)
             self._spawn_improve_once(state)
             self._write_state(state)
             return self._state_result(state)

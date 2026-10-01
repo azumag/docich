@@ -220,13 +220,14 @@ def _decisions(runtime_dir):
                     yield item
 
 
-def summarize_recap(runtime_dir, run_state) -> tuple[str, str]:
-    """A grounded game-over recap for the 实況 (owner rule 2026-09-28).
+def recap_body(runtime_dir, run_state) -> str:
+    """The grounded numbers clause of a run summary.
 
-    Looks back over this run's own decision log and run state: the story
-    (how far the chapters went) and the actions (sorties, battles, captures,
-    dismissals). Every number is read from the run's records; nothing is
-    invented, per the module contract.
+    Shared by the voice game-over recap (``summarize_recap``) and the
+    end-of-corner chat summary (retro_corner). Looks back over this run's own
+    decision log and run state: the story (how far the chapters went) and the
+    actions (sorties, battles, captures, dismissals). Every number is read
+    from the run's records; nothing is invented, per the module contract.
     """
     chapter, captured, launches, discharged, months = 1, set(), 0, 0, []
     for rec in _decisions(runtime_dir):
@@ -259,9 +260,17 @@ def summarize_recap(runtime_dir, run_state) -> tuple[str, str]:
     if months:
         year, month = max(months)
         label = f'{year}年{month}月'
-    text = f'ゲームオーバー。第{chapter}章まで進み、{len(captured)}城を獲得、{launches}回出撃と{battles}回戦闘を重ね、'
+    text = f'第{chapter}章まで進み、{len(captured)}城を獲得、{launches}回出撃と{battles}回戦闘を重ね、'
     text += f'{label}まで戦いました' if label else '進軍を続けました'
     if discharged:
         text += f'（将軍の解雇{discharged}回）'
-    text += '。今回の挑戦はここまでです。'
-    return 'game_over_recap', text
+    return text
+
+
+def summarize_recap(runtime_dir, run_state) -> tuple[str, str]:
+    """A grounded game-over recap for the 实況 (owner rule 2026-09-28).
+
+    The numbers all come from ``recap_body`` (this run's own decision log and
+    run state); nothing is invented, per the module contract.
+    """
+    return 'game_over_recap', f'ゲームオーバー。{recap_body(runtime_dir, run_state)}。今回の挑戦はここまでです。'
