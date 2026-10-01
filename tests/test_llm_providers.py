@@ -74,6 +74,47 @@ print('<analysis>hidden</analysis><final>usable</final>')
     assert count_file.read_text(encoding="utf-8") == "2"
 
 
+def test_opencode_uses_fixed_session_title_without_persisting_raw_label():
+    spec = parse_agents("opencode:fixture")[0]
+    request = DispatchRequest(
+        label="COMMENT:private-topic",
+        prompt="safe prompt",
+        agents=(spec,),
+    )
+    with mock.patch(
+        "docich.llm.providers._process",
+        return_value=(0, "<final>usable</final>", ""),
+    ) as process:
+        result = call_agent(
+            spec,
+            request,
+            timeout=5,
+            env={"OPENCODE_BIN": "/tmp/fake-opencode", "OPENCODE_ABORT_RETRY": "0"},
+        )
+
+    assert result.returncode == 0
+    command = process.call_args.args[0]
+    title_index = command.index("--title")
+    assert command[title_index + 1] == "docich:comment"
+    assert "COMMENT:private-topic" not in command
+    assert command[-1] == "safe prompt"
+
+
+def test_opencode_session_title_buckets_are_fixed():
+    from docich.llm.providers import _opencode_session_title
+
+    cases = {
+        "COMMENT:user-provided": "docich:comment",
+        "IMPROVEMENT:secret": "docich:improvement",
+        "PROBE:slot-1": "docich:probe",
+        "RADIO:RESEARCH:topic": "docich:radio_prepass",
+        "JIJI:news": "docich:radio_main",
+        "UNKNOWN:private": "docich:other",
+    }
+    for label, expected in cases.items():
+        assert _opencode_session_title(label) == expected
+
+
 def test_provider_rate_limit_is_normalized_to_rc_79(tmp_path):
     script = _script(
         tmp_path,
