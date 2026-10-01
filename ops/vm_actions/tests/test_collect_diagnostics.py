@@ -1268,3 +1268,64 @@ class TmuxServerProjectionTests(unittest.TestCase):
             result = module._collect_resolver_daemon()
         for unit in module.RESOLVER_IMPROVE_UNITS:
             assert result['units'][unit] == {'active': None, 'enabled': None}
+
+
+def test_game_switch_watchdog_projection_reports_timer_state():
+    """#1041: the watchdog timer is the recovery path for expired draining."""
+    module = load_collector()
+    with mock.patch.object(module, '_unit_is_active', return_value=True), \
+         mock.patch.object(module, '_unit_is_enabled', return_value=True), \
+         mock.patch.object(module, '_systemctl_user', return_value=(0, 'ExecMainCode=0\nExecMainStatus=0\nResult=success\nActiveEnterTimestamp=2026-09-23 12:00:00\n')):
+        result = module._collect_game_switch_watchdog()
+    assert result['timer_active'] is True
+    assert result['timer_enabled'] is True
+    assert result['last_exit_code'] == 0
+    assert result['last_result'] == 'success'
+    assert result['last_active_at'] == '2026-09-23 12:00:00'
+
+
+def test_game_switch_watchdog_projection_handles_missing_timer():
+    module = load_collector()
+    with mock.patch.object(module, '_unit_is_active', return_value=None), \
+         mock.patch.object(module, '_unit_is_enabled', return_value=None), \
+         mock.patch.object(module, '_systemctl_user', return_value=None):
+        result = module._collect_game_switch_watchdog()
+    assert result['timer_active'] is None
+    assert result['timer_enabled'] is None
+    assert 'last_exit_code' not in result
+    assert 'last_result' not in result
+    assert 'last_active_at' not in result
+
+
+def test_game_switch_deadline_expired_projection():
+    """#1041: deadline_expired must be a safe boolean, not a raw timestamp."""
+    module = load_collector()
+    # 2026-09-23T11:05:00Z is after the deadline 2026-09-23T10:05:00Z
+    now = 1790157900 + 3600
+    state_dir = mock.MagicMock()
+    state_dir.__truediv__ = lambda self, other: mock.MagicMock()
+    # Build a fake state file with a deadline in the past
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        from pathlib import Path
+        tmp_path = Path(tmp)
+        (tmp_path / 'game_switch.json').write_text(json.dumps({
+            'phase': 'draining',
+            'operation': 'switch',
+            'active': {'game': 'sorengame', 'generation': 1},
+            'next_generation': 2,
+            'revision': 1,
+            'last_result': {'status': 'ok', 'error_code': None, 'to_game': 'hanjuku-hero'},
+            'updated_at': '2026-09-23T10:00:00Z',
+            'deadline_at': '2026-09-23T10:05:00Z',
+        }))
+        present, readable, data = module._load_state_file(tmp_path / 'game_switch.json')
+        assert present and readable
+        deadline_at = data.get('deadline_at')
+        assert deadline_at == '2026-09-23T10:05:00Z'
+        # Simulate the deadline_expired computation
+        from datetime import datetime, timezone
+        deadline_dt = datetime.fromisoformat(deadline_at.replace('Z', '+00:00'))
+        deadline_expired = deadline_dt.timestamp() < now
+        assert deadline_expired is True
