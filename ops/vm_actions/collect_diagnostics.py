@@ -982,6 +982,7 @@ def _collect_workers(soren, now):
     unregistered = []
     pause_ownership = {key: 0 for key in PAUSE_OWNERS}
     unregistered_health = {key: 0 for key in UNREGISTERED_HEALTH}
+    unregistered_flags = {"alive": 0, "stale": 0, "paused": 0}
     details = {}
     seen_pids = {}
     for name, is_required, _category, pid_rel, _kind in WORKERS:
@@ -1052,6 +1053,9 @@ def _collect_workers(soren, now):
                     continue
                 record["unregistered"] = True
                 unregistered.append(name)
+                unregistered_flags["alive"] += int(record["alive"])
+                unregistered_flags["stale"] += int(record["stale_pid_file"])
+                unregistered_flags["paused"] += int(record["paused"])
                 if record["alive"]:
                     health = "alive"
                 elif record["paused"]:
@@ -1076,6 +1080,7 @@ def _collect_workers(soren, now):
         "stale_pid_files": sorted(stale_pid_files),
         "unregistered": sorted(unregistered),
         "unregistered_health": unregistered_health,
+        "unregistered_flags": unregistered_flags,
         "required_down": sorted(n for n in stopped if n in required),
         "required_stale": sorted(n for n in stale_pid_files if n in required),
         "details": details,
