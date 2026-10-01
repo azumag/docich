@@ -358,3 +358,23 @@ def test_receipt_schema_does_not_treat_bool_as_integer_version_or_time():
 
     with pytest.raises(WeatherAudioError):
         build_weather_audio_receipt(item, status="played", recorded_at=True)
+
+
+@pytest.mark.parametrize("generation,bad_generation", [(1, True), (7, 7.0)])
+def test_receipt_fence_rejects_bool_or_float_generation(generation, bad_generation):
+    identity = {
+        **IDENTITY,
+        "generation": generation,
+        "runtime_id": f"g{generation}-a1b2c3d4",
+    }
+    item = _request(runtime_identity=identity)
+    receipt = build_weather_audio_receipt(
+        item, status="played", recorded_at=NOW + 1
+    )
+    receipt["runtime_fence"] = {
+        **receipt["runtime_fence"],
+        "generation": bad_generation,
+    }
+
+    with pytest.raises(WeatherAudioError, match="runtime generation"):
+        validate_weather_audio_receipt(item, receipt)

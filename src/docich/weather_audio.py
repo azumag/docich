@@ -137,6 +137,14 @@ def runtime_identity_matches(current: object, expected_fence: object) -> bool:
     return current_identity == expected_identity
 
 
+def _runtime_fence(value: object, *, now: float | None) -> dict[str, object]:
+    if not isinstance(value, Mapping) or set(value) != RUNTIME_FENCE_KEYS:
+        raise WeatherAudioError("weather audio runtime fence is invalid")
+    identity = _runtime_identity({key: value[key] for key in RUNTIME_IDENTITY_KEYS})
+    expiry = _expiry(value.get("expires_at"), now=now)
+    return {**identity, "expires_at": expiry}
+
+
 def _forecast(value: object, *, expiry: float, now: float | None) -> dict[str, str]:
     if not isinstance(value, Mapping) or set(value) != FORECAST_KEYS:
         raise WeatherAudioError("weather audio forecast metadata is invalid")
@@ -315,11 +323,8 @@ def _validate_request(request: object, *, now: float | None) -> dict[str, object
     if request.get("item_key") != key:
         raise WeatherAudioError("weather audio item key does not match its execution item")
     text = _text(request.get("text"))
-    raw_fence = request.get("runtime_fence")
-    if not isinstance(raw_fence, Mapping) or set(raw_fence) != RUNTIME_FENCE_KEYS:
-        raise WeatherAudioError("weather audio runtime fence is invalid")
-    identity = _runtime_identity({key: raw_fence[key] for key in RUNTIME_IDENTITY_KEYS})
-    expiry = _expiry(raw_fence.get("expires_at"), now=now)
+    fence = _runtime_fence(request.get("runtime_fence"), now=now)
+    expiry = fence["expires_at"]
     forecast = _forecast(request.get("forecast"), expiry=expiry, now=now)
     return {
         "schema_version": REQUEST_SCHEMA_VERSION,
@@ -328,7 +333,7 @@ def _validate_request(request: object, *, now: float | None) -> dict[str, object
         "item_index": item_index,
         "item_key": key,
         "text": text,
-        "runtime_fence": {**identity, "expires_at": expiry},
+        "runtime_fence": fence,
         "forecast": forecast,
     }
 
@@ -437,10 +442,11 @@ def validate_weather_audio_receipt(
     if (type(receipt.get("schema_version")) is not int
             or receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION):
         raise WeatherAudioError("weather audio receipt schema is unsupported")
+    receipt_fence = _runtime_fence(receipt.get("runtime_fence"), now=None)
     if (receipt.get("source") != WEATHER_AUDIO_SOURCE
             or receipt.get("item_key") != item["item_key"]
             or receipt.get("request_digest") != request_fingerprint(item)
-            or receipt.get("runtime_fence") != item["runtime_fence"]
+            or receipt_fence != item["runtime_fence"]
             or receipt.get("forecast") != item["forecast"]):
         raise WeatherAudioError("weather audio receipt does not match its item")
     status = receipt.get("status")
