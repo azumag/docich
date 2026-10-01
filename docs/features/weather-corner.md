@@ -1,0 +1,144 @@
+# 全国の天気 — 気象庁予報の伝達（非配信プレビュー）
+
+## このPRの範囲と未完了部分
+
+全国11地点の公式予報取得、厳格な正規化、定型原稿生成、出典付き960×540画面、
+読み取り専用loopbackサーバーを実装した。weather用adapterとowner stateを共通corner
+catalog/rotationへ接続し、既存program slot、GameSwitchのゲーム境界待ち、runtime cleanup、
+rollback、実行終了後の元のゲームへの復帰も実装した。weatherをcatalogへ追加する場合は
+明示的に`enabled=true`と1〜14分の`duration_minutes`が必要で、省略時は無効になる。
+既存の本番profile/catalog、配信encoder、音声worker、OBSや実GameSwitch状態は変更しない。
+コードをマージしても放送は始まらない。
+
+**既存音声queueへの送信・冪等性・再生完了確認は未実装のため、音声は送らない。**
+本PRは配信運用まで完成したコーナーではない。production catalogへの登録、現行データの
+全国確認、非本番の実runtime開始・復帰確認、Ready化も行っていない。専用HTTPサーバーを
+本番配信へ直接つないで既存の境界を迂回しない。
+
+`weather-view` は合成GameSwitch runtime adapterとして実装した。
+既に公開済みのsnapshotだけをloopbackで表示し、`runtime_id` と `generation` をserverへ渡し、
+`lease_id`を含めた3つのidentityを応答でも照合する。既存の960×540 presentationとGameSwitch
+所有プロセスの終了処理を使い、start直前のfreshnessと起動後の同一runtime応答を検証する。
+共通corner managerはこのviewを通してのみ起動する。adapter実装は登録済みだが、production
+catalogにはweather行がなく、行を追加する場合も明示的なenabled設定と期間指定が必要。
+weather-view用のTwitch category/title mappingは追加せず、合成view起動時にstream titleも更新しない。
+復帰先の実ゲームについてはGameSwitchの既存commit hookを使う。fetch・音声送信・独立timerを行わず、
+単独では起動しない。
+
+## 権利・出典・予報業務の境界
+
+2026-09-29に確認した一次資料：
+
+- 気象庁ホームページ利用規約：<https://www.jma.go.jp/jma/kishou/info/coment.html>
+- 気象庁「予報業務の許可等に関するQ&A」：<https://www.jma.go.jp/jma/kishou/minkan/q_a_m.html>
+- 気象データの利用案内：<https://www.data.jma.go.jp/developer/index.html>
+
+気象庁サイトの対象コンテンツは公共データ利用規約（PDL1.0）に従って利用する。
+出典と加工・編集した旨を表示し、気象庁が編集後の番組を作ったように見せない。
+画面・原稿に「気象庁の発表をもとにdocichが編集」と明記する。原データのURL、
+区域・地点と発表日時を保持する。第三者に権利がある素材やロゴは利用対象に含めない。
+
+画面は自作HTML/CSSのみ。民間天気サービスの画面・文章・天気アイコン、
+気象庁ロゴ、外部地図タイル、外部フォント配信は使用しない。
+フォントは実行ホストのシステムフォントを参照し、フォントファイルは配布しない。
+テストデータは合成データであり、実際の天気として表示・配信しない。
+
+気象庁が発表した予報の伝達・解説という範囲を維持する。
+数値予報の独自解析、地点補間、独自の降雨時刻・確率・警報生成、
+「雨の心配はない」等の入力にない判断はしない。原稿は定型でありLLMを呼ばない。
+公式警報・注意報はこの版の対象外。これは個別案件の法的保証ではないため、
+運用開始時と取得方法変更時には利用条件を再確認する。
+
+## 取得とデータ契約
+
+取得先は気象庁サイトが利用するHTTPS JSON資源に限定する。
+サポートや可用性が保証された公開APIという扱いにはしない。
+提供形式の変更、停止、取得不可は休止として扱い、他社サービスへ勝手に切り替えない。
+
+対象：札幌、仙台、東京、新潟、名古屋、大阪、広島、高松、福岡、鹿児島、那覇。
+天気・降水確率は各地点を含む予報区域、気温は表示地点の予報であり、
+市町村単位に細分化した独自予報ではない。
+
+- 日付はJSTで明示。`auto` は17時より前が当日、17時以降が翌日。
+- 各事務所の短期予報を別々に検証し、区域コード・観測地点名を完全一致で選択する。
+  最初の配列要素や似た地域へのfallbackはしない。
+- 降水確率は00–06 / 06–12 / 12–18 / 18–24時の4区分。
+  平均・最大を「一日の降水確率」に変換しない。`0%` と欠測を区別する。
+- 温度は時刻軸を見て選ぶ。同日00時の値を最低気温と解釈しない。
+  翌日の00時・09時から最低・最高を取り出す。週間予報の数値で穴埋めしない。
+- 出典文字列、数値範囲、時刻軸、重複キー・重複地点、配列長を検証する。
+- 現在より未来の発表時刻、発表から18時間超、取得/生成から15分以上は不受理。
+  この18時間は製品側の上限であり「常に最新の発表である」ことの保証ではない。
+  発表日時を画面に併記する。
+- 11地点の一つでも必須データが不正なら全国snapshotを公開しない。
+  発表されていない気温・時間帯は補完せず `—`。
+- 取得は明示的な `fetch` だけ。各事務所を15分cacheし、有効なcacheも中身を再検証する。
+  固定host/事務所allowlist、redirect拒否、1応答256KiB、socket timeout最大4秒、
+  次の取得開始前の総予算確認を設ける。ただしsocket timeoutは厳密なwall-clock上限ではない。
+- fetchは同一ディレクトリ内で排他し、旧公開snapshotを先に無効化する。
+  更新失敗時に以前の公開snapshotを再表示しない。cacheを捏造して埋め戻さない。
+
+## ローカルでの確認
+
+Linux/macOS、Python 3.11以降。`fcntl` によるfetch排他を利用する。
+本番stateディレクトリではなく、検証用の専用ディレクトリを指定する。
+
+```bash
+bin/docich-weather --state-dir /tmp/docich-weather-preview fetch --day auto
+bin/docich-weather --state-dir /tmp/docich-weather-preview status
+bin/docich-weather --state-dir /tmp/docich-weather-preview narration
+bin/docich-weather --state-dir /tmp/docich-weather-preview serve --port 8803
+```
+
+`http://127.0.0.1:8803/` を通常のブラウザーで確認する。`serve` は新しい予報を取得せず、
+既存snapshotを読むだけ。更新が必要なときは別プロセスで明示的に `fetch` する。
+外部bind設定、ファイル一覧、任意URL proxy、mutation APIはない。
+CLIの `status` / `narration` は有効なsnapshotがなければ固定理由とexit 2を返す。
+`narration` は原稿のJSON出力であり、TTS queueへの送信ではない。
+
+画面は6地点/5地点の2ページを12秒間隔で切り替える。
+外部文字列をHTMLとして挿入せず、全て `textContent` で描画する。
+長すぎる原文を勝手に切って意味を変えず、表示枠に収まらない場合は休止する。
+描画は960×540を縦横比維持でcontainし、外側の配信枠は操作しない。
+
+`GET /api/weather` はraw予報を毎回再検証する。有効なら200、欠損・期限切れなら503。
+全応答を`no-store`とし、Host検証・CSPも設定する。
+ブラウザー側は2秒poll・2秒request timeout、最長5秒のmonotonic表示leaseを持つ。
+ブラウザーのJSが動いていれば、サーバー停止時にも最後の予報を無期限に残さない。
+遅い旧pollが新しいpollの失敗を上書きしないよう、poll世代も確認する。
+
+## 統合の安全条件と未完了作業
+
+1. 共通corner catalog/adapter、owner state、既存program slotへの登録は実装済み。
+   weather行の省略時は無効、enabled時は`duration_minutes` 1〜14が必須。
+   期間は上限で、snapshotの15分鮮度期限が先に来ればそこで復帰する。独立timerはない。
+2. GameSwitchの`game` / `runtime_id` / `generation` / `lease_id`を使って開始と復帰をfenceする。
+   開始時は旧ゲームの宣言済みラウンド境界を待ち、終了時はweather runtimeの同一identityを
+   `expected_source`に指定する。operatorが別runtimeへ切替済みなら、それを停止・上書きせず
+   weather ownerを中断扱いにする。960×540・既存presentation viewportとowned child cleanupを使う。
+3. 音声は既存の共有queueを使う設計とし、出典・対象日・発表時刻を保持する。
+   冪等キー、runtime fence、再生完了確認を実装し、終了後に古い原稿を再生しない。
+   他コーナーの音声を削除・停止しない。
+   現行docich mainがpinする`soviet_now` `860e363c` の`enqueue_audio_text` runtime fenceは
+   `hanjuku_commentary` 専用であり、weatherからは安全に使えない。generic runtime fence、
+   冪等キー、再生完了receiptを共有queue側で確認するまでは、weather音声を送らない。
+4. snapshotの有効性は適格性判定、GameSwitch preflight/readiness、放送中の表示再検証で
+   確認する。取得失敗は休止とし、鮮度期限が来たらGameSwitchで復帰する。
+   合成adapterによる境界待ち、開始rollback、終了後復帰、operator移動のfenceをオフラインで検証した。
+5. 独立レビュー、CI、全11地点の現行データ確認、非本番の開始/終了実測を完了してから
+   ready化・本番有効化を判断する。未実施の項目を成功扱いしない。
+
+## 検証記録
+
+- ローカル：`PYTHONPATH=src pytest -q tests/test_weather.py tests/test_weather_program.py tests/test_weather_corner.py tests/test_corner_rotation.py tests/test_corner_rotation_execution.py tests/test_game_switch.py tests/test_round_boundary.py`、346 passed・10 subtests passed。
+  合成adapterで旧ゲームの境界待ち、共有program slot保持、期限後restore、start失敗rollback、
+  operator移動とgeneration/runtime/lease不一致時の非上書きを検証する。VMや実game processは起動しない。
+- Pythonコンパイルとshell構文確認。
+- Chromiumで合成データを注入して960×540、両ページ、JS例外なし、取得失敗後の非表示を確認。
+  この環境ではChromiumからloopback URLへの直接アクセスが管理ポリシーで拒否されたため、
+  HTTPはstdlibクライアントで別途試験。実HTTPからブラウザーまでのE2Eとは区別する。
+- 現行の気象庁JSONの全国11地点一括取得、実VM、実OBS、音声、GameSwitch復帰は未実測。
+- `weather-view` のpreflight/readinessは合成snapshotとmocked GameSwitch runtimeで検証する。
+  実ブラウザー・実VM・GameSwitchの実start/復帰を確認したことにはならない。
+- GitHubの非本番作業のみ。owner checkout固有のgitignored `handoff.md`、運用メモリ、
+  VM作業中バナー・音声は利用できず未操作。本書とPR本文に未確認事項を残す。
