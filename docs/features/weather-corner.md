@@ -11,6 +11,8 @@ rollback、実行終了後の元のゲームへの復帰も実装した。weathe
 コードをマージしても放送は始まらない。
 
 **既存音声queueへの送信・冪等性・再生完了確認は未実装のため、音声は送らない。**
+weather専用のrequest/receipt schemaと純粋なvalidation、dummy queue/playerの契約テストは
+別スライスで追加したが、天気producer・共有queue・audio workerには接続していない。
 本PRは配信運用まで完成したコーナーではない。production catalogへの登録、現行データの
 全国確認、非本番の実runtime開始・復帰確認、Ready化も行っていない。専用HTTPサーバーを
 本番配信へ直接つないで既存の境界を迂回しない。
@@ -122,6 +124,9 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
    現行docich mainがpinする`soviet_now` `860e363c` の`enqueue_audio_text` runtime fenceは
    `hanjuku_commentary` 専用であり、weatherからは安全に使えない。generic runtime fence、
    冪等キー、再生完了receiptを共有queue側で確認するまでは、weather音声を送らない。
+   `docs/features/weather-audio-queue-contract.md` と
+   `src/docich/weather_audio.py` はconsumer拡張用の値契約のみを定義し、shared queue接続の
+   実装済みを意味しない。
 4. snapshotの有効性は適格性判定、GameSwitch preflight/readiness、放送中の表示再検証で
    確認する。取得失敗は休止とし、鮮度期限が来たらGameSwitchで復帰する。
    合成adapterによる境界待ち、開始rollback、終了後復帰、operator移動のfenceをオフラインで検証した。

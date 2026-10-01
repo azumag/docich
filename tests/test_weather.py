@@ -171,6 +171,43 @@ def test_narration_is_literal_and_has_no_invented_minimum():
     assert "気象庁" in lines[-1] and "編集" in lines[-1]
 
 
+def test_projected_read_view_narration_builds_all_thirteen_offline_audio_requests(tmp_path):
+    from docich.weather_audio import build_weather_audio_request, weather_report_digest
+
+    path = tmp_path / "snapshot.json"
+    w.write_json(path, bundle())
+    view = v.read_view(path, clock=lambda: NOW)
+    lines = w.narration(view)
+    runtime_identity = {
+        "game": "weather-view",
+        "runtime_id": "g4-a1b2c3d4",
+        "generation": 4,
+        "lease_id": "01234567-89ab-4cde-8123-456789abcdef",
+    }
+
+    requests = [
+        build_weather_audio_request(
+            execution_id="12345678-1234-4234-8234-123456789abc",
+            item_index=index,
+            text=line,
+            runtime_identity=runtime_identity,
+            forecast_view=view,
+            now=NOW,
+        )
+        for index, line in enumerate(lines)
+    ]
+
+    assert len(requests) == 13
+    assert [item["item_index"] for item in requests] == list(range(13))
+    assert [item["text"] for item in requests] == lines
+    assert len({item["item_key"] for item in requests}) == 13
+    expected_report = weather_report_digest(view, now=NOW)
+    assert {item["forecast"]["report_digest"] for item in requests} == {expected_report}
+    assert [item["forecast"]["issued_at"] for item in requests[1:12]] == [
+        row["issued_at"] for row in view["cities"]
+    ]
+
+
 # Read-only presentation and publication contracts.
 from contextlib import contextmanager
 from http.client import HTTPConnection
