@@ -1,11 +1,11 @@
 {
-  "output_sha256": "04ff7938945fe2d18f1e5491d897634b84a816b15f6ef20090c2ab28847660c2",
+  "output_sha256": "de7e1e17f28cd586e0a29f0c8d338929dc1bb4ff43bd9f521d646ab029edc621",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "128f70272687e1b3019e6f6141adadadff75a2ba7bccf1834e34458e705158a9",
+  "source_sha256": "fe0d7f2296fa52e536e6d0291481ccbe4057ca22a190be69960a07f6815a7e4d",
   "topics": [
-    "YouTube同一コメントの再読み上げを停止（マージ・VM配備済み）",
-    "followup 2件: #1044 終端化経路と #968 PulseAudio mute 観測（未マージ・未VM配備）",
-    "ゲーム終了時の結果まとめをチャット投稿をマージ・VM配備済み"
+    "容量回収の走査再開修正を統合・親配備準備",
+    "切替失敗の共有ロック修正をマージ・正規配備済み",
+    "無料モデル追加をマージ・正規配備済み"
   ]
 }
