@@ -171,9 +171,30 @@ class RotationReleaseEvidenceTests(unittest.TestCase):
     def test_full_corner_projection_includes_new_evidence(self):
         tmp_path = self.temp_state()
         module = load_collector()
+        write(tmp_path / "moon_buggy_ab.json", {
+            "status": "completed",
+            "results": [{"score": 11}, {"score": 20}, {"score": 19}, {"score": 12}],
+            "winner": "B",
+            "means": {"A": 11.5, "B": 19.5},
+            "candidate": {"laser_period": 8.0},
+            "candidate_sha256": "DO-NOT-EMIT",
+        })
         output = {}
         module._collect_corner_files(tmp_path, output, 100)
-        self.assertEqual(set(output["rotation_evidence"]), {"corners", "improvements"})
+        rotation = output["rotation_evidence"]
+        self.assertEqual(set(rotation), {"corners", "improvements", "moon_buggy_ab"})
+        self.assertEqual(rotation["moon_buggy_ab"], {
+            "present": True,
+            "readable": True,
+            "status": "completed",
+            "matches": 4,
+            "target_matches": 4,
+            "winner": "B",
+            "baseline_mean": 11.5,
+            "candidate_mean": 19.5,
+        })
+        self.assertNotIn("DO-NOT-EMIT", json.dumps(rotation))
+        self.assertNotIn("laser_period", json.dumps(rotation))
         self.assertLess(len(json.dumps(output["rotation_evidence"])), 8192)
 
 

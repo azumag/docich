@@ -22,6 +22,9 @@ TERMINAL_REASONS=frozenset({'game_over','screen_stalled'})
 STALL_SECONDS=300
 MAX_SAMPLE_GAP=15
 MAX_LOG_BYTES=4*1024*1024
+# Consecutive observations the battle panel must hold (or stay away) before a
+# start or an end is counted. Matches the policy's own two-reading debounce.
+BATTLE_PHASE_DEBOUNCE=2
 
 
 def enabled(game):
@@ -91,6 +94,23 @@ def terminal(runtime_dir: Path, identity: dict):
     return state
 
 
+def _next_commentary_seq(runtime_dir: Path) -> int:
+    """One past the highest seq in the (bounded) commentary tail."""
+    path = runtime_dir / 'hanjuku_commentary.jsonl'
+    seq = 0
+    if path.exists() and not path.is_symlink():
+        with path.open('rb') as stream:
+            stream.seek(max(0, stream.stat().st_size - 8192))
+            for line in stream.read().decode('utf-8', 'ignore').splitlines():
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(item, dict) and type(item.get('seq')) is int:
+                    seq = max(seq, item['seq'])
+    return seq + 1
+
+
 def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
             now=None, wall=None, playing=True):
     now=time.monotonic() if now is None else now
@@ -104,7 +124,12 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     phase=classify(frame)
     previous=old.get('observed_monotonic')
     consecutive=(type(previous) in (int,float) and 0 <= now-previous <= MAX_SAMPLE_GAP)
-    unchanged=consecutive and old.get('frame_sha256')==digest and playing and old.get('playing') is True
+    # A blinking cursor alternates two images forever (g358: the forced
+    # discharge list never stalled while B was ignored for 50 min). Treat the
+    # two most recent distinct images as one unchanged screen.
+    recent=[d for d in (old.get('recent_frame_sha256') or [old.get('frame_sha256')]) if isinstance(d,str)][:2]
+    unchanged=consecutive and digest in recent and playing and old.get('playing') is True
+    recent=[digest]+[d for d in recent if d!=digest][:1]
     since=old.get('unchanged_since',now) if unchanged else now
     if type(since) not in (int,float) or not math.isfinite(since):
         raise AdapterError('invalid Hanjuku stasis evidence')
@@ -120,19 +145,51 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     reason='game_over' if candidate and title_count>=3 and now-title_since>=2 else None
     if not reason and duration>=STALL_SECONDS:
         reason='screen_stalled'
+    if reason == 'game_over':
+        # Owner rule (2026-09-28): narrate a grounded recap of the run when it
+        # ends. Written BEFORE the terminal state is persisted so the adapter's
+        # narration claim in the same capture tick can deliver it. A recap
+        # failure must never block the terminal latch.
+        try:
+            from .hanjuku_commentary import COMMENTARY_VERSION, summarize_recap
+            key, text = summarize_recap(runtime_dir, old)
+            if text:
+                append_log(runtime_dir, 'hanjuku_commentary', {
+                    'schema': 1, 'seq': _next_commentary_seq(runtime_dir), 'at': wall,
+                    'key': key, 'text': text, 'commentary_version': COMMENTARY_VERSION,
+                    'status': 'candidate', 'held_reason': None, 'decision': 'game_over_recap',
+                    'chart_step': None, 'strategy_variant': None,
+                    'reason': 'ゲームオーバーの振り返り実況', 'terminal_recap': True, **identity})
+        except Exception:
+            pass
+    # The battle panel blinks during the melee, so a single frame in `battle`
+    # is not a battle. 2026-10-02 measurement on g534: 45 frame-level entries
+    # against 24 real battles, and the counters were reported as 34 started /
+    # 33 finished. Require the same two-consecutive-observation debounce the
+    # policy uses (battle_end's `away >= 2`) so the corner counters and the
+    # judged battle records describe the same battles. Counting an end on any
+    # non-battle phase also covers the most common measured ending, which the
+    # old exit-phase whitelist missed entirely (`next_screen: map`).
     battle_active=old.get('battle_active',False)
-    battle_started=phase=='battle' and not battle_active
-    battle_ended=battle_active and phase in {'field','field_menu','dialogue','shop','month_menu'}
+    def _streak(key):
+        value=old.get(key,0)
+        return value+1 if type(value) is int and 0 <= value < 1000000 else 1
+    battle_streak=_streak('battle_streak') if phase=='battle' else 0
+    away_streak=(_streak('battle_away_streak')
+                 if (battle_active and phase!='battle') else 0)
+    battle_started=battle_streak==BATTLE_PHASE_DEBOUNCE and not battle_active
+    battle_ended=battle_active and away_streak>=BATTLE_PHASE_DEBOUNCE
     if battle_started: battle_active=True
     if battle_ended: battle_active=False
     state={**identity,'schema':1,'bot_version':BOT_VERSION,
-           'phase':phase,'frame_sha256':digest,'observed_monotonic':now,
+           'phase':phase,'frame_sha256':digest,'recent_frame_sha256':recent,'observed_monotonic':now,
            'observed_at':wall,'unchanged_since':since,'unchanged_seconds':duration,
            'playing':playing,'terminal_reason':reason,
            'name_entered':named,'gameplay_seen':played,
            'terminal_candidate':candidate,'title_since':title_since,'title_count':title_count,
            'terminal_evidence':'title_return_after_gameplay' if reason=='game_over' else None,
-           'battle_active':battle_active,
+           'battle_active':battle_active,'battle_streak':battle_streak,
+           'battle_away_streak':away_streak,
            'battles_started':int(old.get('battles_started',0))+int(battle_started),
            'battles_finished':int(old.get('battles_finished',0))+int(battle_ended),
            'observations':int(old.get('observations',0))+1,
@@ -170,7 +227,7 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
 
 def action_sent(runtime_dir: Path, identity: dict, action):
     state=load(runtime_dir,identity)
-    trace=(read_record(runtime_dir/'hanjuku_bot.json').get('decision_trace') or {})
+    trace=(read_record(runtime_dir/'hanjuku_bot.json', limit=256 * 1024).get('decision_trace') or {})
     if not isinstance(trace,dict) or any(trace.get(k)!=v for k,v in identity.items()):
         trace={}
     event(runtime_dir,{'event':'input_sent','at':time.time(),'type':action.type,

@@ -19,8 +19,10 @@ from pathlib import Path
 
 from ..adapters.cli_game import cli_cols, cli_command_list, cli_rows
 from ..config import load_game, load_global
+from ..tmux import eval_tmux_argv
 from . import read_strategy, resolver_policy, strategy_path
 from . import robots as _robots
+from ..eval_tmux import kill_session, pane_pids, record_pane, register, release
 
 
 class EvaluationCleanupError(RuntimeError):
@@ -37,7 +39,8 @@ def _session_absent(result) -> bool:
 
 
 def _tmux(args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(["tmux", *args], capture_output=True, text=True)
+    # 評価は本番tmuxサーバを共有しない (Issue #1280)。
+    return subprocess.run(eval_tmux_argv(args), capture_output=True, text=True)
 
 
 def resolve_command(cmd: list[str]) -> list[str]:
@@ -70,7 +73,8 @@ def run_match(
     ``decide(text) -> list[str]`` returns the keys to send for a pane capture.
     """
     session = f"evalr-{os.getpid()}-{int(time.time() * 1000) % 1000000}"
-    _tmux(["kill-session", "-t", session])
+    register()
+    _tmux(["kill-session", "-t", f"={session}"])
     if session_hook is not None:
         session_hook("add",session)
     turns = 0
@@ -83,6 +87,8 @@ def run_match(
         )
         if created.returncode != 0:
             raise RuntimeError(f"評価用セッションの起動に失敗しました: {created.stderr.strip()}")
+        for pane in pane_pids(_tmux, session):
+            record_pane(pane)
         while turns < max_turns:
             if guard is not None:
                 guard()
@@ -118,9 +124,14 @@ def run_match(
         else:
             score = _robots.score_from_text(_tmux(["capture-pane", "-p", "-t", session]).stdout)
     finally:
-        _tmux(["kill-session", "-t", session])
-        if not _session_absent(_tmux(["has-session", "-t", session])):
+        remaining = kill_session(_tmux, session)
+        if remaining:
+            raise EvaluationCleanupError(
+                f"評価用セッションの子プロセスが停止しませんでした: {remaining}"
+            )
+        if not _session_absent(_tmux(["has-session", "-t", f"={session}"])):
             raise EvaluationCleanupError(f"評価用セッションの停止に失敗しました: {session}")
+        release()
         if session_hook is not None:
             session_hook("remove",session)
     return {"score": score, "turns": turns, "maxed": turns >= max_turns, "cause": cause}

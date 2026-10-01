@@ -49,7 +49,8 @@ def measured_card_select(names=('イッテツーン', 'ダイチスイム', 'ブ
 
 
 def memory():
-    return {'chapter': 1, 'active': '1-B1', 'variant': 'chart',
+    # These contracts start after the separate rare-inventory discovery pass.
+    return {'rare_scan_month': 'chapter-1:unknown', 'chapter': 1, 'active': '1-B1', 'variant': 'chart',
             'orders': {'1-B1': 'pending'}, 'picked': [], 'sortie_general': {'1-B1': 'どうし'}}
 
 
@@ -78,6 +79,66 @@ def test_exact_card_selection_is_only_a_plan_and_clears_stale_context():
     assert mem['picked'] == ['クースカン']
     assert '1-B1' not in mem['order_context']
     assert mem['_records'][-1]['resulting_event'] == 'selection_planned_not_yet_confirmed'
+
+
+def test_unknown_card_name_row_is_read_but_never_selected():
+    # g454 10:02: バルムンク (an event card outside CARD_NAMES) made every
+    # card_select reading fail and the sortie held forever.
+    screen = measured_card_select(('バルムンク', 'フットバース'), stocks=[1, 2])
+    inventory = policy._measured_card_select(screen)
+    assert [row['card'] for row in inventory['rows']] == ['バルムンク', 'フットバース']
+    assert inventory['remaining'] == 3
+    mem = {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
+           'orders': {'1-A2': 'pending'}, 'picked': []}
+    assert policy.deploy_step(screen, mem) == [policy.pad('down')]
+    assert 'バルムンク' not in mem.get('picked', [])
+    assert mem['card_stock'] == {'バルムンク': 1, 'フットバース': 2}
+    # A malformed name (digit inside) still fails the structure.
+    assert policy._measured_card_select(measured_card_select(('バル2ンク',), stocks=[1])) is None
+
+
+def test_unreadable_card_select_is_bounded_and_cancels_the_sortie():
+    mem = {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
+           'orders': {'1-A2': 'pending'}, 'picked': []}
+    screen = menu('card_select', ['クースカン1'], True)
+    for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+        assert mem['orders']['1-A2'] == 'pending'
+    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['orders']['1-A2'] == 'failed' and mem['active'] is None
+
+
+def test_a_base_boss_sortie_keeps_its_strict_hold_on_unreadable_panels():
+    mem = memory()                       # active 1-B1, the base boss order
+    screen = menu('card_select', ['クースカン1'], True)
+    for _ in range(policy.CARD_UNREADABLE_LIMIT + 2):
+        assert policy.deploy_step(screen, mem) == []
+    assert mem['orders']['1-B1'] == 'pending' and mem['active'] == '1-B1'
+
+
+def test_sortie_card_stock_is_recorded_for_the_adjusted_chart():
+    # g438 04:04: the adjusted chart planned ミックミー/エンジェリン that the
+    # player never held. The card panel now feeds the request's card_stock.
+    mem = {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
+           'orders': {'1-A2': 'pending'}, 'picked': []}
+    screen = measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'クースカン'),
+                                  stocks=[10, 1, 2, 2])
+    policy.deploy_step(screen, mem)
+    assert mem['card_stock'] == {'イッテツーン': 10, 'ブラッキー': 1,
+                                 'フットバース': 2, 'クースカン': 2}
+    assert policy._adjust_situation(mem)['card_stock'] == mem['card_stock']
+    # Fewer than four rows is the whole inventory: a known card that is no
+    # longer shown is out of stock now (depleted items disappear).
+    policy.deploy_step(measured_card_select(('ブラッキー', 'クースカン'), stocks=[1, 1]), mem)
+    assert mem['card_stock'] == {'イッテツーン': 0, 'ブラッキー': 1,
+                                 'フットバース': 0, 'クースカン': 1}
+    # A four-row panel is a window: only the rows it shows are updated.
+    policy.deploy_step(measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'クースカン'),
+                                            stocks=[1, 1, 1, 1]), mem)
+    policy.deploy_step(measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'クースカン'),
+                                            stocks=[2, 1, 1, 1]), mem)
+    assert mem['card_stock']['イッテツーン'] == 2
+    assert mem['card_stock']['クースカン'] == 1
 
 
 def test_general_cursor_failure_does_not_install_a_substitute():
@@ -158,9 +219,9 @@ def test_sortie_capture_keeps_exact_read_frame_even_without_records(tmp_path, ki
     assert len(list((tmp_path/'hanjuku_frames').glob('*.png'))) == 1
 
 
-@pytest.mark.parametrize('words,hand', [(['ゼウス'], True), (['どうし', 'ゼウス'], False),
+@pytest.mark.parametrize('words,hand', [(['ゼウス' + UNKNOWN], True), (['どうし', 'ゼウス'], False),
                                        (['どうし' + UNKNOWN], True)])
-def test_boss_never_substitutes_for_an_unconfirmed_hero(words, hand):
+def test_boss_never_substitutes_from_an_unreadable_list(words, hand):
     mem = memory()
     mem['general_override'] = {'1-B1': 'ゼウス'}
     assert policy.deploy_step(menu('general_list', words, hand), mem) == []
@@ -174,10 +235,16 @@ def test_boss_visible_hero_does_not_authorize_an_uncalibrated_kit(monkeypatch):
     mem = memory()
     mem['general_override'] = {'1-B1': 'ゼウス'}
     mem['card_override'] = {'1-B1': ['イッテツーン', 'イッテツーン']}
-    assert policy.deploy_step(menu('general_list', ['どうし', 'ゼウス']), mem) == [policy.pad('a')]
-    assert mem['sortie_general']['1-B1'] == 'どうし' and '1-B1' not in mem['general_override']
+    assert policy.deploy_step(menu('general_list', ['どうし', 'ゼウス']), mem) == [policy.pad('down')]
+    picked = menu('general_list', ['どうし', 'ゼウス'])
+    picked.hand = (122, 57, 139, 69)
+    assert policy.deploy_step(picked, mem) == [policy.pad('a')]
+    assert mem['sortie_general']['1-B1'] == mem['general_override']['1-B1'] == 'ゼウス'
     for cards in (['イッテツーン', 'イッテツーン'], ['クースカン', 'ノリウツール']):
-        assert policy.deploy_step(menu('sortie_confirm', ['うむッ!'] + cards), mem) == []
+        screen = menu('sortie_confirm', ['うむッ!'] + cards)
+        screen.lines.insert(0, TextLine(31, tuple((16 + 8*i, ch) for i, ch in enumerate('ゼウス'))
+                                      + tuple((80 + 8*i, ch) for i, ch in enumerate('しょうぐん'))))
+        assert policy.deploy_step(screen, mem) == []
     assert '1-B1' not in mem['order_context']
     monkeypatch.setattr(policy, 'nav_step', lambda *args: pytest.fail('unverified boss navigation'))
     assert policy.target_step(menu('map_target', []), mem, None) == []
@@ -363,13 +430,14 @@ def test_nonempty_uncalibrated_unknowns_remain_held():
 
 
 def foot_order_memory():
-    return {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
+    # Isolate calibrated selection after bounded rare-stock discovery.
+    return {'rare_scan_month': 'chapter-1:unknown', 'chapter': 1, 'active': '1-A2', 'variant': 'chart',
             'orders': {'1-A2': 'pending'}, 'picked': []}
 
 
 def test_measured_two_digit_stock_row_keeps_cursor_and_moves_to_planned_card():
     # Live g328: イッテツーン stock 10 is tens at x=224 and ones at x=232.
-    mem = {'chapter': 1, 'active': '1-C2', 'variant': 'chart',
+    mem = {'rare_scan_month': 'chapter-1:unknown', 'chapter': 1, 'active': '1-C2', 'variant': 'chart',
            'orders': {'1-C2': 'pending'}, 'picked': []}
     screen = measured_card_select(('イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース'),
                                   stocks=('10', '2', '2', '2'), selected=0, remaining='3')
@@ -439,6 +507,9 @@ def test_zero_inventory_or_unmeasured_list_layout_is_held(change):
     else:
         screen = measured_card_select(('クースカン', 'ダイチスイム', 'ブラッキー', 'ノリウツール'))
     mem = foot_order_memory()
+    if change == 'wrong_name':
+        # A full panel is first scrolled for the card; past that bound it holds.
+        mem['card_scroll'] = {mem['active']: policy.CARD_SCROLL_LIMIT}
     assert policy.deploy_step(screen, mem) == []
     assert mem['picked'] == []
     assert mem['_records'][-1]['decision'] == 'situation_held'
@@ -711,3 +782,301 @@ def test_uncertain_short_inventory_never_exits_even_after_all_planned_picks(chan
     assert policy.deploy_step(screen, mem) == []
     assert mem['picked'] == ['フットバース']
     assert mem['_records'][-1]['decision'] == 'situation_held'
+
+
+def empty_general_list_screen():
+    """Measured g340 stall frame: empty list beside the castle menu, no hand."""
+    def line(y, x, word):
+        return TextLine(y, tuple((x + 8 * i, ch) for i, ch in enumerate(word)))
+    lines = [line(31, 64, 'しゅつげき'), line(39, 136, 'しょうぐんは'),
+             line(47, 64, 'ステータス'), line(79, 152, 'おりません……')]
+    from docich.hanjuku_screen import joined, classify_text
+    text = joined(lines)
+    screen = Screen(lines=lines, hand=None, text=text, kind='unknown')
+    screen.kind = classify_text(screen)
+    return screen
+
+
+def test_empty_general_list_without_hand_is_not_misread_as_castle_menu():
+    screen = empty_general_list_screen()
+    assert screen.kind == 'general_list'
+    assert screen.hand is None
+    assert 'おりません' in screen.text
+
+
+def empty_list_memory():
+    # 1-C1 is a non-boss order sourced from ほんじょう (empty-list recovery path).
+    return {'chapter': 1, 'active': '1-C1', 'variant': 'chart',
+            'orders': {'1-C1': 'pending'}, 'picked': []}
+
+
+def test_empty_general_list_falls_back_to_home_source_instead_of_silent_hold():
+    mem = empty_list_memory()  # 1-C1 sources from ほんじょう when not overridden;
+    # simulate a non-home source so the fallback must redirect.
+    # Base chart source is ほんじょう; force a routed source for the assertion.
+    screen = empty_general_list_screen()
+    # With source already ほんじょう the first empty observation still installs
+    # the override and closes the menus (same as any missing general).
+    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['source_override']['1-C1'] == 'ほんじょう'
+    assert mem['active'] is None and mem['orders']['1-C1'] == 'pending'
+    assert mem['_records'][-1]['decision'] == 'order_source_changed'
+    assert not mem.get('general_override')
+
+
+def test_empty_general_list_after_home_fallback_fails_the_order_with_evidence():
+    mem = empty_list_memory()
+    mem['source_override'] = {'1-C1': 'ほんじょう'}
+    screen = empty_general_list_screen()
+    assert policy.deploy_step(screen, mem) == [policy.pad('b')]
+    assert mem['orders']['1-C1'] == 'failed' and mem['active'] is None
+    rec = mem['_records'][-1]
+    assert rec['decision'] == 'order_failed'
+    assert rec['deviation_reason']
+
+
+def test_castle_menu_without_hand_holds_with_evidence_instead_of_empty_plan():
+    mem = memory()
+    screen = menu('castle_menu', ['しゅつげき', 'ステータス'], hand=False)
+    assert policy.deploy_step(screen, mem) == []
+    assert mem['active'] == '1-B1'
+    assert mem['_records'][-1]['decision'] == 'situation_held'
+    assert 'しゅつげき' in mem['_records'][-1]['reason']
+
+
+def _c2_memory():
+    """1-C2 wants ダイチスイム x2 + ブラッキー (non-boss)."""
+    return {'chapter': 1, 'active': '1-C2', 'variant': 'chart', 'captured': ['ジョンリギ'],
+            'orders': {'1-C2': 'pending'}, 'picked': []}
+
+
+def test_a_picked_card_kept_after_its_drop_approves_the_sortie():
+    # g454 12:22: the plan イッテツーンx2 had one copy picked and the second
+    # dropped as out of stock; removing every copy of the card shrank the plan
+    # below what the game carried and the confirmation held forever.
+    mem = _c2_memory()
+    mem['picked'] = ['ブラッキー', 'ダイチスイム']
+    mem['card_drop'] = {'1-C2': ['ダイチスイム']}    # one unpicked copy left behind
+    screen = measured_loaded_sortie(('ブラッキー', 'ダイチスイム'))
+    assert policy._deploy_cards(policy._order(mem), mem) == ['ダイチスイム', 'ブラッキー']
+    assert policy.deploy_step(screen, mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['decision'] == 'sortie_confirm'
+
+
+def test_a_readable_but_mismatched_kit_is_approved_after_bounded_readings():
+    mem = _c2_memory()
+    mem['picked'] = ['ブラッキー']
+    screen = measured_loaded_sortie(('ブラッキー', 'ダイチスイム'))
+    for _ in range(policy.SORTIE_CONFIRM_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+        assert mem['_records'][-1]['decision'] == 'situation_held'
+    assert policy.deploy_step(screen, mem) == [policy.pad('a')]
+    assert [r['decision'] for r in mem['_records'][-2:]] == ['sortie_kit_mismatch', 'sortie_confirm']
+
+
+def test_an_unreadable_sortie_confirmation_is_bounded_and_cancelled():
+    mem = _c2_memory()
+    screen = menu('sortie_confirm', ['うむッ!'], hand=False)
+    for _ in range(policy.SORTIE_CONFIRM_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['orders']['1-C2'] == 'failed' and mem['active'] is None
+
+
+def test_a_card_absent_from_the_panel_is_left_behind_after_bounded_readings():
+    """g401 21:16: ダイチスイム was not on the panel and the sortie screen stayed open."""
+    mem = _c2_memory()
+    screen = measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'ノリウツール'),
+                                  stocks=('11', '1', '1', '1'))
+    mem['card_scroll'] = {'1-C2': policy.CARD_SCROLL_LIMIT}      # already scrolled for it
+    mem['picked'] = ['ブラッキー']                                # the visible card goes first
+    for _ in range(policy.CARD_MISS_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+        assert mem['_records'][-1]['decision'] == 'situation_held'
+    assert policy.deploy_step(screen, mem) == []
+    rec = mem['_records'][-1]
+    assert rec['decision'] == 'card_dropped' and rec['dropped'] == ['ダイチスイム', 'ダイチスイム']
+    assert rec['observed_metric']['complete_list'] is False      # 4 rows may hide more
+    assert rec['deviation_reason'] == 'ダイチスイムを選べないため携行せずに出撃する'
+    assert policy._deploy_cards(policy._order(mem), mem) == ['ブラッキー']
+    # Every remaining planned card is picked: on to the sortie confirmation.
+    assert policy.deploy_step(screen, mem) == [policy.pad('b')]
+
+
+def test_no_carry_slot_left_drops_every_remaining_card():
+    mem = _c2_memory()
+    mem['picked'] = ['ブラッキー']
+    screen = measured_card_select(('ダイチスイム', 'ブラッキー'), stocks=('2', '1'), remaining='0')
+    for _ in range(policy.CARD_MISS_LIMIT):
+        policy.deploy_step(screen, mem)
+    assert mem['_records'][-1]['dropped'] == ['ダイチスイム', 'ダイチスイム']
+    assert policy._deploy_cards(policy._order(mem), mem) == ['ブラッキー']
+    assert policy.deploy_step(screen, mem) == [policy.pad('b')]   # on to the sortie confirm
+
+
+def test_boss_kit_is_never_dropped():
+    mem = memory()
+    screen = measured_card_select(('イッテツーン', 'ブラッキー'), stocks=('3', '1'))
+    for _ in range(policy.CARD_MISS_LIMIT * 2):
+        assert policy.deploy_step(screen, mem) == []
+    assert not mem.get('card_drop')
+    assert policy._deploy_cards(policy._order(mem), mem) == ['クースカン', 'ノリウツール']
+
+
+def test_a_boss_card_below_a_full_panel_is_reached_by_scrolling_after_visible_ones():
+    """g421 13:27: クースカン (bought x4) was below the 4-row panel; the boss sortie held."""
+    mem = memory()                                   # 1-B1: クースカン + ノリウツール
+    panel = measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'ノリウツール'),
+                                 stocks=('11', '1', '1', '2'), selected=3)
+    assert policy.deploy_step(panel, mem) == [policy.pad('a')]          # visible ノリウツール first
+    assert mem['picked'] == ['ノリウツール']
+    assert policy.deploy_step(panel, mem) == [policy.pad('down')]       # scroll for クースカン
+    assert mem['_records'][-1]['decision'] == 'card_scroll'
+    for _ in range(policy.CARD_SCROLL_LIMIT - 1):
+        policy.deploy_step(panel, mem)
+    assert policy.deploy_step(panel, mem) == []                          # bounded: boss kit holds
+
+
+# These new-path tests use the already measured name/header cells. No game
+# operation or arbitrary alternate-name override establishes the actor.
+def actor_panel(screen, general):
+    right = tuple(cell for line in screen.lines if line.y == 31 for cell in line.cells if cell[0] >= 136)
+    screen.lines = [line for line in screen.lines if line.y != 31] + [
+        TextLine(31, tuple((16 + 8*i, ch) for i, ch in enumerate(general))
+                 + tuple((80 + 8*i, ch) for i, ch in enumerate('しょうぐん')) + right)]
+    screen.text = ''.join(line.known for line in screen.lines)
+    return screen
+
+
+def selected_list(names, index=0):
+    screen = menu('general_list', names)
+    screen.hand = (122, 41 + index*16, 139, 53 + index*16)
+    return screen
+
+
+def test_hero_priority_full_boss_departure_keeps_real_actor_through_battle(monkeypatch):
+    from docich.hanjuku_screen import Battle
+    mem = memory()
+    mem['tick'] = 100
+    # The hero is visible and planned, but the existing cursor is on him.
+    assert policy.deploy_step(selected_list(['どうし', 'ゼウス']), mem) == [policy.pad('down')]
+    assert '1-B1' not in mem['sortie_general']
+    assert policy.deploy_step(selected_list(['どうし', 'ゼウス'], 1), mem) == [policy.pad('a')]
+    assert mem['sortie_general']['1-B1'] == 'ゼウス'
+    cards = ('クースカン', 'ノリウツール')
+    assert policy.deploy_step(actor_panel(measured_card_select(cards), 'ゼウス'), mem) == [policy.pad('a')]
+    assert policy.deploy_step(actor_panel(measured_card_select(cards, selected=1), 'ゼウス'), mem) == [policy.pad('a')]
+    assert policy.deploy_step(actor_panel(measured_card_select(cards), 'ゼウス'), mem) == [policy.pad('b')]
+    assert policy.deploy_step(actor_panel(measured_loaded_sortie(cards), 'ゼウス'), mem) == [policy.pad('a')]
+    context = mem['order_context']['1-B1']
+    assert context['actual_general'] == 'ゼウス' and context['planned_general'] == 'どうし'
+    assert context['observed_metric']['cards'] == list(cards)
+    # Hot-load/adopted-plan bookkeeping cannot relabel the already confirmed
+    # unit. Even a changed override must keep the selected companion.
+    mem['general_override']['1-B1'] = 'どうし'
+    monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
+    assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
+    assert mem['sorties']['1-B1']['general'] == mem['launched']['けっかい']['general'] == 'ゼウス'
+    launch = mem['_records'][-1]
+    assert launch['general'] == 'ゼウス' and launch['planned_general'] == 'どうし'
+    message = Screen([], None, 'ゼウスしょうぐんがボスじょうにせめこんだ!!', kind='boss_attack_started')
+    assert policy.message_step(message, mem) == [policy.pad('a')]
+    assert mem['attack']['general'] == 'ゼウス' and mem['attack']['step'] == '1-B1'
+    panel = Screen([], None, '', battle=Battle('クイーン', 70, 'ゼウス', 85), kind='battle')
+    policy.battle_step(panel, mem); policy.battle_step(panel, mem)
+    assert mem['battle']['ally'] == 'ゼウス' and mem['battle']['step'] == '1-B1'
+    assert mem['battle']['strategy_variant'] == 'substitute_general'
+    assert any(r['decision'] == 'battle_start' and r['ally'] == 'ゼウス' for r in mem['_records'])
+
+
+@pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm'])
+def test_priority_selection_input_missing_never_relabels_actual_hero(kind):
+    mem = memory()
+    policy.deploy_step(selected_list(['どうし', 'ゼウス'], 1), mem)
+    screen = measured_card_select() if kind == 'card_select' else measured_loaded_sortie(('クースカン', 'ノリウツール'))
+    assert policy.deploy_step(actor_panel(screen, 'どうし'), mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['active'] is None and '1-B1' not in mem['sortie_general']
+    assert not any(r['decision'] == 'sortie_confirm' for r in mem['_records'])
+    assert mem['_records'][-1]['decision'] == 'sortie_actor_unconfirmed'
+
+
+def test_priority_actor_unknown_is_bounded_and_does_not_issue_more_a():
+    mem = memory()
+    policy.deploy_step(selected_list(['ゼウス']), mem)
+    for _ in range(2):
+        assert policy.deploy_step(measured_card_select(), mem) == []
+    assert policy.deploy_step(measured_card_select(), mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['active'] is None and not mem['sortie_actor_miss']
+
+
+@pytest.mark.parametrize('words', [['どうし', 'ゼウス', 'ゼウス'], ['どうし', '未確認'],
+                                   ['どうし', 'ゼウス' + UNKNOWN]])
+def test_priority_rejects_duplicates_unknown_and_partial_names(words):
+    mem = memory()
+    assert policy.deploy_step(selected_list(words), mem) == []
+    assert '1-B1' not in mem['sortie_general']
+
+
+def test_busy_companion_does_not_force_a_substitute_or_remove_hero_guard():
+    mem = memory()
+    mem.update(tick=100, egg_uses={'どうし': 3},
+               sorties={'elsewhere': {'general': 'ゼウス', 'target': 'ゴーメン', 'tick': 99, 'status': 'en_route'}})
+    assert policy.deploy_step(selected_list(['どうし', 'ゼウス']), mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['active'] is None and '1-B1' not in mem['sortie_general']
+
+
+def test_broken_or_depleted_hero_may_open_list_but_only_companion_can_commit():
+    from docich import hanjuku_chart as chart
+    boss = next(o for o in chart.orders(1) if o['step'] == '1-B1')
+    mem = memory()
+    mem.update(egg_uses={'どうし': 0}, house_eggs={'どうし': {'broken': True}},
+               garrison={'スペンソニア': ['どうし', 'ゼウス']}, captured=list(chart.castles(1)))
+    assert policy._ready(boss, mem)
+    assert policy.deploy_step(selected_list(['どうし', 'ゼウス'], 1), mem) == [policy.pad('a')]
+    assert mem['sortie_general']['1-B1'] == 'ゼウス'
+    assert not policy._boss_egg_depleted(boss, mem) and not policy._broken_hero_order(boss, mem)
+    # Garrison memory did not prove a companion was actually selectable.
+    other = memory()
+    other.update(egg_uses={'どうし': 0}, house_eggs={'どうし': {'broken': True}},
+                 garrison={'スペンソニア': ['どうし', 'ゼウス']})
+    assert policy.deploy_step(selected_list(['どうし']), other) == [policy.pad('b')]
+    assert other['active'] is None and not other.get('sortie_general')
+
+
+def test_priority_keeps_single_defender_and_explicit_nonhero_chart_role():
+    # The existing retake guard still cancels a singleton before selection.
+    mem = memory()
+    mem.update(active='1-A2', orders={'1-A2': 'pending'}, lost=['ゴーメン'])
+    assert policy.deploy_step(selected_list(['どうし']), mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['_records'][-1]['decision'] == 'sortie_held_source_defender'
+    # The new rule is scoped to a planned hero, not every chart actor.
+    mem = memory()
+    mem.update(active='1-C1', orders={'1-C1': 'pending'})
+    assert policy.deploy_step(selected_list(['ココット', 'ゼウス']), mem) == [policy.pad('a')]
+    assert not mem.get('general_override')
+
+
+def test_chart_source_companion_is_inspected_before_following_a_busy_hero():
+    from docich import hanjuku_chart as chart
+    boss = next(o for o in chart.orders(1) if o['step'] == '1-B1')
+    mem = memory()
+    mem.update(tick=100, captured=list(chart.castles(1)),
+               garrison={'スペンソニア': ['ゼウス', 'ココット'], 'ゴーメン': ['どうし']},
+               sorties={'other': {'general': 'どうし', 'target': 'ジョンリギ', 'tick': 99, 'status': 'en_route'}})
+    mem['orders'] = {o['step']: 'launched' for o in chart.orders(1)}
+    mem['orders']['1-B1'] = 'pending'
+    assert policy.next_order(mem) == boss
+    assert not mem.get('source_override')
+    assert policy.deploy_step(selected_list(['ゼウス', 'ココット']), mem) == [policy.pad('a')]
+    assert mem['sortie_general']['1-B1'] == 'ゼウス'
+
+
+def test_new_nonhero_selection_does_not_inherit_previous_sortie_actor():
+    mem = memory()
+    mem.update(active='1-C1', orders={'1-C1': 'pending'},
+               order_context={'1-C1': {'actual_general': 'ゼウス'}},
+               sortie_general={'1-C1': 'ゼウス'})
+    assert policy.deploy_step(selected_list(['ココット', 'ゼウス']), mem) == [policy.pad('a')]
+    from docich import hanjuku_chart as chart
+    order = next(o for o in chart.orders(1) if o['step'] == '1-C1')
+    assert policy._deploy_context(order, mem)['general'] == 'ココット'

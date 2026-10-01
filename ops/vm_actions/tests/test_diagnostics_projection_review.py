@@ -202,6 +202,8 @@ class ProjectionReviewTests(unittest.TestCase):
             "ops/vm_actions/collect_diagnostics.py",
             "ops/vm_actions/runtime_registry.py",
             "src/docich/runtime_backend.py",
+            "src/docich/pulse_volume.py",
+            "src/docich/corner_rotation.py",
             "src/docich/__init__.py",
             "src/docich/semantic_decision/__init__.py",
             "src/docich/semantic_decision/diagnostics.py",

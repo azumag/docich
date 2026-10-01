@@ -21,6 +21,8 @@ jobs:
       - name: Validate parent-owned operations brief (private handoff stays local)
         run: python3 ops/vm_actions/ops_brief.py check-artifact
       - run: python3 -m unittest discover -s ops/self_repair/tests -v
+      - name: macOS Soren91 agent service contracts
+        run: python3 -m unittest discover -s ops/local/tests -v
       - name: External VM monitor watchdog contracts
         run: node --test ops/vm_monitor_watchdog/worker.test.mjs
       - run: >-
@@ -57,3 +59,5 @@ jobs:
           ops/vm_actions/restart_webui.sh
           ops/vm_actions/recover_soren_game.sh
           ops/vm_actions/storage_reclaim.sh
+          ops/vm_actions/opencode_db_retention_now.sh
+          ops/vm_actions/ensure_opencode_retention_timer.sh

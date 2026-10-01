@@ -1,0 +1,314 @@
+"""Gameplay reference tables from gamecentergx / original charts (gcgx).
+
+Static facts only: card damage tables, egg-drop rule, AI patterns, half-raw
+level thresholds, event tables and summoned-monster skill names used by
+tests, commentary and independent judgment. No network, no model calls.
+Sources:
+
+- https://gcgx.games/hanjuku/ (cards, bosses, castles, events, levels)
+- games/hanjuku-sfc-speedrun/data/egg-drop-table.md (local transcription)
+- https://wikiwiki.jp/hjksfc/エッグモンスター/攻撃データ (skill names, effects;
+  transcribed once, matched by folded kana because the tile reader can drop a
+  dakuten mark)
+"""
+from __future__ import annotations
+
+# 切り札 basic stats (general damage / egg drop / price where measured).
+# IDs used by enemy-egg summon detection (sum of card IDs >= 48).
+CARDS: dict[str, dict] = {
+    'イッテツーン': {'general_damage': 10, 'price': 1},
+    'ダイチスイム': {'general_damage': 16, 'price': None},
+    'ブラッキー': {'general_damage': 18, 'price': None, 'egg_drop': True},
+    'フットバース': {'general_damage': 12, 'price': None},
+    'グリンボー': {'general_damage': 6, 'price': 6},
+    'ピッグローラー': {'general_damage': None, 'price': None},
+    'カンケリン': {'general_damage': None, 'price': None},
+    'ノリウツール': {'general_damage': 53, 'price': 18},
+    'クースカン': {'general_damage': 45, 'price': 24, 'egg_drop': True},
+    'ゼンマイン': {'general_damage': 50, 'price': 32},
+    'ミックミー': {'general_damage': None, 'price': 40},
+    'デッドガン': {'general_damage': None, 'price': None},
+    'ブレイコウ': {'general_damage': None, 'price': None},
+    'ブンシーン': {'general_damage': None, 'price': None},
+    'ファイアーボイス': {'general_damage': None, 'price': None},
+    'ファバード': {'general_damage': 100, 'price': 40, 'egg_drop': True},
+    'エンジェリン': {'general_damage': None, 'price': 32},
+    'マグネガキン': {'general_damage': 80, 'price': 34},
+    'ハリケーン': {'general_damage': None, 'price': 38},
+}
+
+# 卵落 values (gcgx card table, fetched 2026-09-29; the local
+# egg-drop-table.md's 余り7/3/2 thresholds agree with 8/4/3). A card drops the
+# enemy egg when its 卵落 is strictly greater than the two generals' max-HP sum
+# mod 16 (see egg_drop_threshold / can_drop_egg).
+EGG_DROP_VALUES: dict[str, int] = {
+    'イッテツーン': 8, 'ダイチスイム': 1, 'ブラッキー': 3, 'フットバース': 5,
+    'グリンボー': 4, 'ピッグローラー': 2, 'カンケリン': 1, 'ノリウツール': 0,
+    'クースカン': 0, 'ゼンマイン': 3, 'ミックミー': 2, 'デッドガン': 0,
+    'ブレイコウ': 0, 'ブンシーン': 3, 'ファイアーボイス': 4, 'ファバード': 0,
+    'エンジェリン': 0, 'マグネガキン': 8, 'ハリケーン': 0,
+}
+
+# Actual zero-based No., not price or this module's supported-card order.
+# Local README examples + https://wikiwiki.jp/hjksfc/切り札 (No. column).
+CARD_IDS: dict[str, int] = {
+    'イッテツーン': 0, 'ダイチスイム': 1, 'ブラッキー': 2, 'フットバース': 3,
+    'グリンボー': 5, 'ピッグローラー': 7, 'カンケリン': 9, 'ノリウツール': 11,
+    'クースカン': 13, 'ゼンマイン': 15, 'ミックミー': 17, 'デッドガン': 10,
+    'ブレイコウ': 12, 'ブンシーン': 14, 'ファイアーボイス': 18, 'ファバード': 31,
+    'エンジェリン': 22, 'マグネガキン': 27, 'ハリケーン': 30,
+}
+# The whole gcgx kirihuda.html decimal ID table (0-31), for ID sums.
+ALL_CARD_IDS: dict[str, int] = {**CARD_IDS,
+    'ダンスライン': 4, 'カルゲンジー': 6, 'ラピニアール': 8, 'バルムンク': 16, 'グルミー': 19,
+    'ブラックホール': 20, 'シュプレボイス': 21, 'ころぼぐんだん': 23, 'バグストーム': 24,
+    'リューキーシ': 25, 'ドデカヘー': 26, 'キャトルミュー': 28, 'ビッグウェイブ': 29,
+}
+
+# Owner advice (2026-09-29, gcgx ai.html): the enemy uses its egg when the
+# battle's card IDs total 48 or more, so a sortie carries 47 or less, e.g.
+# クースカン+ミックミー×2 (47: クースカン then ミックミー wipes a general of
+# HP<=69 with his soldiers), クースカン+ビッグウェイブ+イッテツーン (42),
+# イッテツーン+グリンボー+ころぼぐんだん (28: cheap, ころぼぐんだん drops eggs
+# often), エンジェリン×2+イッテツーン (44: エンジェリン fully heals).
+RECOMMENDED_CARD_SETS = (
+    ('クースカン', 'ミックミー', 'ミックミー'),
+    ('クースカン', 'ビッグウェイブ', 'イッテツーン'),
+    ('イッテツーン', 'グリンボー', 'ころぼぐんだん'),
+    ('エンジェリン', 'エンジェリン', 'イッテツーン'),
+)
+
+# Castle level (wikiwiki.jp/hjksfc/城, 2026-09-29): the defender's egg monster
+# gains +level defense and speed (also egg vs general), a defending general's
+# charge speed +level, garrison capacity is level-1 (over it the AI sorties),
+# and a defender loses one level per general killed. No bonus at boss castles.
+CASTLE_LEVEL_DEFENSE_BONUS = True
+
+# Egg-drop formula: 卵落 > (敵・味方将軍の最大HP合計 mod 16).
+EGG_DROP_MOD = 16
+
+# Enemy egg判定: summoned card IDs sum >= threshold, plus AI pattern 0-3.
+ENEMY_EGG_CARD_ID_SUM = 48
+AI_PATTERNS = (0, 1, 2, 3)
+
+# 半熟レベル needed values (gcgx level table; index = level).
+HALF_RAW_LEVEL_NEED = {
+    1: 0, 2: 100, 3: 200, 4: 350, 5: 550, 6: 800, 7: 1100, 8: 1500, 9: 2000,
+}
+
+# Original six melee/strategy patterns mapped onto bot decisions.
+# ①③: continue melee; ②④⑤: chart-directed cards; ⑥: own egg when behind.
+MELEE_PATTERNS = {
+    '①': {'action': 'pass', 'note': '白兵を続ける（劣勢でない）'},
+    '②': {'action': 'chart_card', 'note': 'チャート指示の切り札'},
+    '③': {'action': 'pass_clashed', 'note': 'ぶつかり合い後も白兵'},
+    '④': {'action': 'chart_card', 'note': 'チャート指示の切り札'},
+    '⑤': {'action': 'chart_card', 'note': 'チャート指示の切り札'},
+    '⑥': {'action': 'use_egg', 'note': '劣勢/召喚時にたまご'},
+}
+
+# Monthly / cave / hot-spring event tables (gcgx event page; labels only).
+EVENT_TABLES = {
+    'monthly': ('凶作', '豊作', '大豊作', '美女来訪', 'おねだり', '時報'),
+    'cave': ('洞窟商人', '将軍遭遇'),
+    'spring': ('温泉効果',),
+}
+
+# Boss HP samples from the original charts (not exhaustive).
+BOSS_HP = {
+    'クイーン': None,          # ch1 panel-measured in live runs
+    'にせヒーロー': 90,
+    'プリンス': 100,
+    'だいまおう': 1218,
+    'ハードマン': 500,
+    'ハードロボ': 1688,
+}
+
+# Summoned-monster skill tables (wikiwiki attack-data page, transcribed).
+# Each unit knows exactly two skills; MONSTER_EFFECT_SKILLS is the global set
+# of skills whose effect flag is non-empty (duplicates agree on the flag).
+MONSTER_SKILLS: dict[str, tuple[str, ...]] = {
+    'エッグスライム': ('どろどろ', 'ぐちゃぐちゃ'),
+    'コロボックル': ('たたかう', 'あいさつする'),
+    'バリゾーゴン': ('ばらす', 'わるぐち'),
+    'ライトきょうだい': ('せかいでさいしょ', 'なかまわれ'),
+    'モザイクマン': ('れんぞくこうげき', 'コマンダーＸ'),
+    'ケロベロス': ('かみつく', 'しっぽをふる'),
+    'ランプキン': ('へんなおどり', 'かぼちゃ'),
+    'ウッドボール': ('たいあたり', 'ばくはつする'),
+    'セクシーボンバー': ('ダイナマイト', 'ミサイルくん'),
+    'おーでーん': ('ざんてつけん', 'グングニル'),
+    'バルーンフィンチ': ('ふくらむ', 'シャウト'),
+    'ボルシチ': ('ちゃんこ', 'げきからカレー'),
+    'くちびるナイト': ('じょうねつのキス', 'メイクアップ'),
+    'てつじん８ごう': ('コダイミサイル', 'サイシュウヘイキ'),
+    'はんぎょじん': ('もりこうげき', 'あしひれアタック'),
+    'グランドパパ': ('わらう', 'いかる'),
+    'グランドパパ(怒)': ('だいげきど', 'ひっくりかえる'),
+    'ガートルード': ('であい', 'そして わかれ'),
+    'デス': ('しにがみのカマ', 'タマシイヌキ'),
+    'さすらいマンボー': ('あのひのおもい', 'さすらいのうた'),
+    'しろまどうし': ('ケアル', 'ソーリー'),
+    'ワラワラ': ('９９かいパンチ', '９９かいキック'),
+    'ピスクピグプレム': ('いばらのむち', 'わかくさのかおり'),
+    'ムーンマッスル': ('ムーンライト', 'ダンベルボム'),
+    'スカイプリンセス': ('ナパームだん', 'さいるいだん'),
+    'ハデデス': ('ギャグ', 'ダジャレ'),
+    'おやすみメリー': ('バリカンでかる', 'ヴァイオリン'),
+    'さんようちゅう': ('ぺろぺろなめる', 'もぐりこむ'),
+    'ムンクゴースト': ('シッポビンタ', 'さけび'),
+    'メイジュース': ('かるくずつき', 'メイクイーン'),
+    'ファイナルゼリー': ('けんかをうる', 'へばりつく'),
+    'やよい': ('そちゃ', 'おちゃうけ'),
+    'オイジュース': ('ずつき', 'じゃがいも'),
+    'カメレオンマン': ('たべちゃうぞー', 'とけこむぞー'),
+    'ダークエルフ': ('ひとだまくん', 'ダークフォース'),
+    'ウゴカザル': ('なぐれっ！', 'かきむしれ！'),
+    'プチデビル': ('とびげり', 'リトルモアモア'),
+    'キャンドロー': ('ロウをたらす', 'かなしいはなし'),
+    'なめくじおとこ': ('たんをはく', 'ねんえきネバネバ'),
+    'キノコやろう': ('トリップダケ', 'ワライダケ'),
+    'ゲーラス': ('ひっかく', 'クサイいきをはく'),
+    'クレクレ': ('ムシャムシャくう', 'しょうかえき'),
+    'とうめいにんげん': ('イタズラがき', 'イナイイナイバア'),
+    'ラビットサタン': ('デスのカマ', 'ラビットキック'),
+    'スモーキーガスト': ('けむにまく', 'ちっそくスモーク'),
+    'フランソワーズ': ('にげまどう', 'すねる'),
+    'アモン': ('きゅうしゅう', 'あんこく'),
+    'デビルウーマン': ('モーニングスター', 'とっつかまえる'),
+    'ルキュフェル': ('６まいのつばさ', 'だらくさせる'),
+    'バブリー': ('バブルストーム', 'シルキーミスト'),
+    'バール': ('もうどく', 'マリオネット'),
+    'フラフラ': ('フラフラアタック', 'バタバタアタック'),
+    'ゾンビ': ('ゾンビパンチ', 'ケアル'),
+    'ニンフ': ('うっふんウインク', 'にくたいび'),
+    'エルフドラゴン': ('かわいいツメ', 'かわいくはばたく'),
+    'ドラゴンたろう': ('ツメとキバ', 'キックとパンチ'),
+    'ベビーモス': ('でんぐりがえし', 'おぶさる'),
+    'モーグリ': ('トライデント', 'とっしん'),
+    'ハーフドラゴン': ('しっぽ', 'キック'),
+    'コマイヌ': ('かみつく', 'おどす'),
+    'ドラゴンフライ': ('シャチホコ', 'エビフリャー'),
+    'ローラーキラー': ('ダッシュプレス', 'メガトンプレス'),
+    'たまごキャリー': ('うっちゃり', 'たまご'),
+    'ぼーぼーどり': ('ほのおのはね', 'へるファイア'),
+    'マシンナイト': ('ロケットパンチ', 'すもうタックル'),
+    'ダディ': ('ボディプレス', 'にくあつ'),
+    'ドラゴンパピー': ('ほのおをはく', 'なつく'),
+    'ヘビーモス': ('けんかをする', 'しっぽをふる'),
+    'テュポーン': ('クジラアタック', 'しおふき'),
+    'ハニワゴーレム': ('ハニードリル', 'ハニーはりて'),
+    'あ た し ♥': ('く ち づ け♥', 'か た ら い♥'),
+    'ぞうさんだいおう': ('パオーのはな', 'パオーのおなか'),
+    'サイクロプス': ('にくだんこうげき', 'ほうがんなげ'),
+    'にんげんライダー': ('ドラゴンアタック', 'にんげんアタック'),
+    'てんりゅう': ('イカズチ', 'ほうこう'),
+    'ちきゅうちゃん': ('だいじしん', 'ハルマゲドン'),
+    'コロコロムシ': ('せなかにはりつく', 'いとをだす'),
+    'あいのししゃ': ('あいのひかり', 'だきしめる'),
+    'マミー': ('ファラオのさばき', 'ほうたいのまい'),
+    'メトロノーム': ('もっとはやく！！', 'もっとおそく！！'),
+    'フリージーボーイ': ('エアコン', 'れいとう'),
+    'ニンニクマン': ('でまえいっちょ', 'ニオウンデス'),
+    'バッティングマン': ('ホームラン', 'せんぼんノック'),
+    'エルフ': ('こうきゅう', 'かえんのまい'),
+    'サンドワーム': ('ドリルでほる', 'てぬきこうじ'),
+    'コーヒービート': ('マラカスビート', 'エスプレッソ'),
+    'なると': ('ぎざぎざ', 'うずまき'),
+    'エクスカリバー': ('エクスカリバる', 'マサムネる'),
+    'ヒュドラ': ('まきつく', 'ウォーター'),
+    'ユニコーン': ('つのでつく', 'うしろあしキック'),
+    'ガーコイル': ('スプリング', 'するどいツメ'),
+    'スロウケンタ': ('ばていしゅりけん', 'ぴたんこアロー'),
+    'メデューサ': ('おうふくビンタ', 'せきぞうにおなり'),
+    'たまごまじん': ('どつく', 'いかずちをおとす'),
+    'アマゾン': ('サラマンドのけん', 'ガラハドのけん'),
+    'シカルドラゴン': ('ステッキでたたく', 'せっきょう'),
+    'フロストベビー': ('バブー', 'オギャー'),
+    'アレス': ('けんできる', 'けんをかざす'),
+    'レッドドラゴン': ('ウイング', 'マグマふんしゃ'),
+    'カバドラゴン': ('きこうだん', 'ぼんじこうせん'),
+    'ハデス': ('デビルオーラ', 'サイコバーン'),
+    'エッグマン': ('エッグチョップ', 'エッグキック'),
+    'エッグマンナイト': ('エッグソード', 'エッグビーム'),
+    'しんエッグマン': ('メガチョップ', 'メガキック'),
+    'キングエッグマン': ('キングこづち', 'スーパー…ビーム'),
+    'エッグベビー': ('バブーチョップ', 'オギャービーム'),
+    'あけまつ': ('ごあいさつ', 'おもてなし'),
+    'おめでとり': ('ミカンをおす', 'あたためる'),
+    'スプリミョーネ': ('つくしんボム', 'はるのうた'),
+    'フォーリシア': ('かれはのまい', 'うらみうた'),
+    'ウイナッツォ': ('あついおでん', 'こたつでねむれ'),
+    'サマカンテ': ('ホットないちげき', 'ひとなつのこい'),
+    'だいまおう': ('かんぺきこうげき', 'てんぺんちい'),
+    'ハードマン': ('ハードアタック', 'ハードバズーカ'),
+    'ハードロボ': ('かたゆでぎり', 'エッグスライサー'),
+    'ランパイア': ('デッドリーネイル', 'エキスキッス'),
+    'ノブナーガ': ('おけはざまぎり', 'ナーガいもの'),
+    'だいとうりょう': ('じょうりゅうけん', 'ズグラーク！'),
+    'エッグママ': ('ぼせいほんのう', 'せんのう'),
+    'クーモン': ('ちょうみりょう', 'くうもん！'),
+    'スーモン': ('マントをとじる', 'すうもん！'),
+}
+MONSTER_EFFECT_SKILLS: frozenset[str] = frozenset({
+    'あたためる', 'あのひのおもい', 'あんこく', 'いかる', 'いとをだす', 'うずまき',
+    'うっふんウインク', 'うらみうた', 'おけはざまぎり', 'おちゃうけ', 'おどす', 'おぶさる',
+    'おもてなし', 'か た ら い♥', 'かえんのまい', 'かなしいはなし', 'かぼちゃ', 'かわいくはばたく',
+    'きゅうしゅう', 'く ち づ け♥', 'くうもん！', 'ぐちゃぐちゃ', 'げきからカレー', 'こたつでねむれ',
+    'ごあいさつ', 'さいるいだん', 'さけび', 'さすらいのうた', 'しおふき', 'しっぽをふる',
+    'じゃがいも', 'じょうねつのキス', 'じょうりゅうけん', 'すうもん！', 'せきぞうにおなり', 'せっきょう',
+    'せんのう', 'たまご', 'だいじしん', 'だきしめる', 'だらくさせる', 'ちっそくスモーク',
+    'ちょうみりょう', 'つのでつく', 'とけこむぞー', 'とっしん', 'どつく', 'なかまわれ',
+    'なつく', 'にくあつ', 'にんげんアタック', 'ねんえきネバネバ', 'はるのうた', 'ばくはつする',
+    'ばらす', 'ひっくりかえる', 'ひとだまくん', 'ひとなつのこい', 'ぴたんこアロー', 'ふくらむ',
+    'へばりつく', 'へるファイア', 'へんなおどり', 'ぺろぺろなめる', 'ほうこう', 'ほうたいのまい',
+    'まきつく', 'もぐりこむ', 'もっとおそく！！', 'れいとう', 'わかくさのかおり', 'わるぐち',
+    'イタズラがき', 'イナイイナイバア', 'エアコン', 'エキスキッス', 'エクスカリバる', 'エスプレッソ',
+    'エッグビーム', 'エビフリャー', 'オギャービーム', 'ガラハドのけん', 'キングこづち', 'クサイいきをはく',
+    'グングニル', 'ケアル', 'コマンダーＸ', 'サイコバーン', 'サイシュウヘイキ', 'サラマンドのけん',
+    'シャウト', 'シルキーミスト', 'ソーリー', 'ゾンビパンチ', 'タマシイヌキ', 'ダジャレ',
+    'ダークフォース', 'デスのカマ', 'デビルオーラ', 'トリップダケ', 'ナーガいもの', 'ニオウンデス',
+    'ハルマゲドン', 'バブー', 'バリカンでかる', 'パオーのおなか', 'ファラオのさばき', 'ホットないちげき',
+    'ホームラン', 'マリオネット', 'ミカンをおす', 'ミサイルくん', 'ムシャムシャくう', 'メイクアップ',
+    'メイクイーン', 'メガトンプレス', 'モーニングスター', 'リトルモアモア', 'ワライダケ',
+    'ヴァイオリン',
+})
+# Owner-confirmed heals (2026-09-28): バルーンフィンチ's ふくらむ was picked
+# 71 times in a row at full HP, so the enemy never took damage (g407 loop).
+MONSTER_HEAL_SKILLS: frozenset[str] = frozenset({'ふくらむ', 'ケアル'})
+
+#食いしばり (endure): lethal card damage clamps to HP-1 when
+# damage <= current_hp + 16.
+ENDURE_HEADROOM = 16
+
+
+def endure_safe_kill_hp(card_damage: int) -> int:
+    """Max enemy HP where ``card_damage`` still kills through 食いしばり."""
+    # Need damage > hp + 16, i.e. hp <= damage - 17? Chart: ファバード100 →
+    # kill at HP83 or less (84+ survives). 100 - 17 = 83. Yes.
+    return card_damage - (ENDURE_HEADROOM + 1)
+
+
+def enemy_egg_likely(card_ids: list[int]) -> bool:
+    """True when a summon's card ID sum meets the gcgx enemy-egg rule."""
+    return sum(card_ids) >= ENEMY_EGG_CARD_ID_SUM
+
+
+def egg_drop_threshold(max_hp_sum: int) -> int:
+    """Minimum 卵落 value required to drop an egg given combined max HPs."""
+    return max_hp_sum % EGG_DROP_MOD + 1
+
+
+def egg_drop_value(card: str) -> int | None:
+    """The card's 卵落 value, or None when it is outside the measured table."""
+    return EGG_DROP_VALUES.get(card)
+
+
+def can_drop_egg(card: str, max_hp_sum: int) -> bool:
+    """True when this card's 卵落 exceeds the HP-sum remainder (gcgx rule).
+
+    ``卵落 > 敵・味方将軍の最大HP合計 mod 16`` drops the enemy's egg, which
+    makes its summons unusable for the rest of the battle.
+    """
+    value = EGG_DROP_VALUES.get(card)
+    return value is not None and value > max_hp_sum % EGG_DROP_MOD

@@ -12,6 +12,7 @@ from typing import Callable
 
 from .backoff import BackoffStore, failure_backoff_seconds, model_backoff_seconds, safe_key
 from .contracts import AgentSpec, DispatchRequest, DispatchResult, LlmError, ProviderResult
+from .images import image_capable, validate_images
 from .locks import FileLock, LockTimeout
 from .policy import (
     MAX_PROMPT_BYTES,
@@ -41,6 +42,8 @@ KNOWN_FAILURE_KINDS = frozenset({
     "invalid_output",
     "invalid_provider",
     "invalid_response",
+    "image_context_expired",
+    "unsupported_image_model",
     "output_too_large",
     "provider_error",
     "provider_failed",
@@ -131,7 +134,20 @@ def _remaining_timeout(deadline: float | None, default: float) -> float | None:
     return min(float(default), remaining)
 
 
+def _image_context_current(request: DispatchRequest) -> bool:
+    try:
+        return callable(request.image_guard) and request.image_guard() is True
+    except Exception:
+        return False
+
+
 def _request_checks(request: DispatchRequest, env: dict[str, str]) -> None:
+    try:
+        validate_images(request.images)
+    except ValueError as exc:
+        raise LlmError("invalid_images") from exc
+    if request.images and not callable(request.image_guard):
+        raise LlmError("image_guard_required")
     try:
         validate_label(request.label)
     except (LlmError, TypeError) as exc:
@@ -266,6 +282,11 @@ class Dispatcher:
         saw_rate_limit = False
 
         for spec in request.agents:
+            if request.images and not image_capable(spec, self.env):
+                skipped += 1
+                record(self.telemetry_dir, event="skipped", label=request.label,
+                       spec=spec, failure_kind="unsupported_image_model")
+                continue
             if not allow_vercel(spec, self.env):
                 skipped += 1
                 record(self.telemetry_dir, event="skipped", label=request.label, spec=spec, failure_kind="disabled")
@@ -329,6 +350,8 @@ class Dispatcher:
                         if provider_timeout_sec is None:
                             result = ProviderResult(124, failure_kind="timeout", detail="timeout")
                             deadline_exhausted = True
+                        elif request.images and not _image_context_current(request):
+                            result = ProviderResult(1, failure_kind="image_context_expired")
                         else:
                             attempted += 1
                             record(self.telemetry_dir, event="attempt", label=request.label, spec=spec)
@@ -345,6 +368,17 @@ class Dispatcher:
 
             if not isinstance(result, ProviderResult):
                 result = ProviderResult(1, failure_kind="provider_failed", detail="adapter_error")
+            if request.images and result.failure_kind == "image_context_expired":
+                _write_sidecar(failure_kind_file, "image_context_expired")
+                record(self.telemetry_dir, event="failure", label=request.label,
+                       failure_kind="image_context_expired", returncode=1)
+                return DispatchResult(1, failure_kind="image_context_expired",
+                                      attempted=attempted, skipped=skipped)
+            if (request.images and result.returncode == 0
+                    and (type(result.images_sent) is not int
+                         or result.images_sent != len(request.images))):
+                result = ProviderResult(1, failure_kind="invalid_response",
+                                        detail="image_delivery_unverified")
             try:
                 returncode = int(result.returncode)
             except (TypeError, ValueError):
@@ -386,6 +420,7 @@ class Dispatcher:
                     last_agent=spec.raw,
                     attempted=attempted,
                     skipped=skipped,
+                    images_sent=result.images_sent,
                 )
 
             fallback_kind = "invalid_output" if returncode == 0 else "provider_failed"

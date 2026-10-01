@@ -121,21 +121,21 @@ WEBUI_ALLOWLIST = {
 
 # hard defaults from core/config.sh
 DEFAULTS: dict[str, str] = {
-    "AI_COMMON_AGENTS": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,vercel:poolside/laguna-s-2.1-free,vercel:inclusionai/ling-3.0-flash-fin,vercel:zai/glm-5.3-flash,vercel:xiaomi/mimo-v2.5,vercel:alibaba/qwen3.8-flash,vercel:xiaomi/mimo-v2.5-pro,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash",
-    "MODEL_IMPROVE_LIST": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash",
+    "AI_COMMON_AGENTS": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,opencode-go:longcat-2.5-preview-free,opencode-go:space-bunny-free,vercel:poolside/laguna-s-2.1-free,vercel:inclusionai/ling-3.0-flash-fin,vercel:zai/glm-5.3-flash,vercel:xiaomi/mimo-v2.5,vercel:alibaba/qwen3.8-flash,vercel:xiaomi/mimo-v2.5-pro,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash",
+    "MODEL_IMPROVE_LIST": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,opencode-go:longcat-2.5-preview-free,opencode-go:space-bunny-free,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash",
     "MODEL_IMPROVE_PEAK_LIST": "",  # inherits MODEL_IMPROVE_LIST
     "RADIO_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "RADIO_PREPASS_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "COMMENT_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "COMMENT_TRANSLATION_AGENTS": "",  # inherits COMMENT_AGENTS
-    "AI_BACKOFF_SEC_ITEMS": "deepseek-v4-flash-free:86400 amd-token-factory-deepseek-v4-flash:86400 openrouter/free:86400 local:1800 deepseek-v4-flash:18000 muse-spark-1.2-contributor:86400",
+    "AI_BACKOFF_SEC_ITEMS": "deepseek-v4-flash-free:86400 amd-token-factory-deepseek-v4-flash:86400 openrouter/free:86400 local:1800 deepseek-v4-flash:18000 muse-spark-1.2-contributor:86400 longcat-2.5-preview-free:86400 space-bunny-free:86400",
     "AI_AGENT_BACKOFF_SEC": "600",
     "AI_BACKOFF_FAILURE_SEC": "300",
     "PEAK_HOURS_AGENT_SWAP_ENABLED": "1",
     "PEAK_HOURS_WINDOWS": "10-13,15-19",
     "PEAK_HOURS_TZ": "Asia/Tokyo",
     "PEAK_HOURS_PRIORITY_AGENT": "opencode:muse-spark-1.3-contributor-free",
-    "PEAK_HOURS_AGENT_PREFERENCE": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,vercel:poolside/laguna-s-2.1-free,vercel:inclusionai/ling-3.0-flash-fin,vercel:zai/glm-5.3-flash,vercel:xiaomi/mimo-v2.5,vercel:alibaba/qwen3.8-flash,vercel:xiaomi/mimo-v2.5-pro,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor",
+    "PEAK_HOURS_AGENT_PREFERENCE": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,opencode-go:longcat-2.5-preview-free,opencode-go:space-bunny-free,vercel:poolside/laguna-s-2.1-free,vercel:inclusionai/ling-3.0-flash-fin,vercel:zai/glm-5.3-flash,vercel:xiaomi/mimo-v2.5,vercel:alibaba/qwen3.8-flash,vercel:xiaomi/mimo-v2.5-pro,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor",
     "PEAK_HOURS_QUEUE_GATE_ENABLED": "1",
     "IMPROVE_PEAK_CHAIN_ENABLED": "0",
     "IMPROVE_PEAK_HOUR_DEFER_ENABLED": "0",
@@ -1692,6 +1692,23 @@ _CORNER_MANUAL_LAUNCHERS = {
     "nethack": ("docich-nethack-corner-manual", True, False),
     "paper": ("docich-paper-corner-manual", False, False),
 }
+# rotation / 自動起動が書く base state の停止経路（webui stop は manual だけを見ない）。
+# paper は専用 restore CLI が scheduled service を止めて表示を復帰するため、
+# bin/docich の paper-corner stop ではなく専用 launcher を使う。
+_CORNER_BASE_STOP_CLI = {
+    "game": ("docich", "retro-corner"),
+    "meriken": ("docich-soren91-corner",),
+    "nethack": ("docich-nethack-corner",),
+    "paper": ("docich-paper-corner-restore",),
+}
+# 停止可能 status（画面のボタン有効化と POST stop の振り分けで共通）。
+# manual: 既存の手動停止契約 + restoring（中断からの復帰中も手動で終わらせる）。
+# base: RetroCornerManager._stop_direct / stop_manual が実際に stop できるもの。
+_CORNER_MANUAL_STOP_STATUSES = frozenset(
+    {"starting", "active", "restoring", "failed", "recovery_required"}
+)
+_CORNER_MANUAL_ACTIVE_STOP_STATUSES = frozenset({"starting", "active", "restoring"})
+_CORNER_BASE_STOP_STATUSES = frozenset({"starting", "active", "restoring"})
 
 
 def _view_str(value: Any, limit: int = 64) -> str | None:
@@ -1802,6 +1819,45 @@ def _game_switch_view(g: GlobalConfig) -> dict[str, Any]:
     }
 
 
+def _soren91_renderer_view(g: GlobalConfig) -> dict[str, Any]:
+    """メリケン描画ホストの方針と直近の選択。URL/token は出さず有無だけ返す。"""
+    from . import soren91_renderer
+    from .corner_adapters import MerikenCornerAdapter
+
+    configured: dict[str, bool | None] = {host: None for host in soren91_renderer.HOSTS}
+    env_path = Path(os.environ.get("DOCICH_SOREN91_ENV_FILE",
+                                   str(MerikenCornerAdapter.DEFAULT_ENV_FILE)))
+    try:
+        values = MerikenCornerAdapter._read_env_file(env_path) if env_path.is_file() else {}
+        keys = {
+            "windows": ("SOREN91_WINDOWS_AGENT_BASE_URL", "SOREN91_WINDOWS_AGENT_TOKEN"),
+            "mac": ("SOREN91_MACOS_AGENT_BASE_URL", "SOREN91_LOCAL_AGENT_TOKEN"),
+        }
+        configured = {host: all(values.get(k) for k in pair) for host, pair in keys.items()}
+    except Exception:
+        pass
+    selection = soren91_renderer.load_selection(g.state_dir)
+    if selection:
+        attempts = selection.get("attempts") if isinstance(selection.get("attempts"), list) else []
+        selection = {
+            "host": selection["host"],
+            "selected_at": _view_time(selection.get("selected_at")),
+            "attempts": [
+                {"host": a.get("host") if a.get("host") in soren91_renderer.HOSTS else None,
+                 "ok": a.get("error") is None,
+                 "error": _view_str(a.get("error"), 200)}
+                for a in attempts[:4] if isinstance(a, dict)
+            ],
+        }
+    return {
+        "mode": soren91_renderer.load_mode(g.state_dir),
+        "modes": list(soren91_renderer.MODES),
+        "order": list(soren91_renderer.host_order(g.state_dir)),
+        "configured": configured,
+        "selection": selection,
+    }
+
+
 def _corners_view(g: GlobalConfig) -> dict[str, Any]:
     """Read-only page model: rotation ledger + game switch + catalog + corner states."""
     from .corner_catalog import load_catalog
@@ -1856,6 +1912,12 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                                    if isinstance(raw.get("recovery_required"), bool) else None),
                 target_matches=(target if isinstance(target, int)
                                 and not isinstance(target, bool) and 1 <= target <= 100 else None),
+                stop_retryable=_hanjuku_stop_retryable(g, raw),
+                end_reason=(raw.get("end_reason") if raw.get("end_reason") in
+                            {"game_over", "screen_stalled", "manual_saved_stop",
+                             "manual_forced_stop",
+                             "switch-terminal-before-corner-active"} else None),
+                last_error_code=_view_str(raw.get("last_error_code")),
             )
         corners[name] = entry
     return {
@@ -1899,11 +1961,7 @@ def _rotation_last_runs(ledger: Any) -> dict[str, float]:
     return out
 
 
-def _corner_manual_argv(g: GlobalConfig, corner_id: str, action: str,
-                        duration: int) -> tuple[list[str], dict[str, Any]]:
-    """Reviewed one-off runner argv. corner id is resolved through the catalog
-    (config-validated, game-name validated) and passed as an exec list -- never
-    through a shell."""
+def _corner_catalog_row(g: GlobalConfig, corner_id: str) -> Any:
     from .corner_catalog import load_catalog
 
     try:
@@ -1913,6 +1971,31 @@ def _corner_manual_argv(g: GlobalConfig, corner_id: str, action: str,
     row = rows.get(corner_id)
     if row is None:
         raise ValueError("unknown corner")
+    return row
+
+
+def _corner_state_present(g: GlobalConfig, state_file: str, row: Any) -> dict[str, Any] | None:
+    """base/manual state のうち、このカタログ行に属する present な状態のみ返す。"""
+    if not state_file:
+        return None
+    raw = _load_json_file(Path(g.state_dir) / f"{state_file}.json")
+    if not isinstance(raw, dict):
+        return None
+    # game adapter は複数コーナーで state を共有。game が読めるときは一致行だけが対象。
+    # game 欄が欠落/unknown の古い手動記録は対象外（全 game 行へ誤表示しない）。
+    if getattr(row, "adapter", None) == "game":
+        game = raw.get("game")
+        if not isinstance(game, str) or not game or game == "unknown" or game != row.game:
+            return None
+    return raw
+
+
+def _corner_manual_argv(g: GlobalConfig, corner_id: str, action: str,
+                        duration: int) -> tuple[list[str], dict[str, Any]]:
+    """Reviewed one-off runner argv. corner id is resolved through the catalog
+    (config-validated, game-name validated) and passed as an exec list -- never
+    through a shell."""
+    row = _corner_catalog_row(g, corner_id)
     spec = _CORNER_MANUAL_LAUNCHERS.get(row.adapter)
     if spec is None:
         raise ValueError("corner has no manual runner")
@@ -1928,6 +2011,81 @@ def _corner_manual_argv(g: GlobalConfig, corner_id: str, action: str,
     if action == "start" and supports_duration:
         argv += ["--duration-minutes", str(duration)]
     return argv, {"id": row.id, "adapter": row.adapter, "game": row.game}
+
+
+def _corner_base_stop_argv(g: GlobalConfig, corner_id: str) -> tuple[list[str], dict[str, Any]]:
+    """rotation / 自動起動が書く base state 用の停止 argv（exec list、shell 不使用）。"""
+    row = _corner_catalog_row(g, corner_id)
+    spec = _CORNER_BASE_STOP_CLI.get(row.adapter)
+    if spec is None:
+        raise ValueError("corner has no base runner")
+    bin_dir = Path(g.repo_root) / "bin"
+    if row.adapter == "paper":
+        if not g.config_path:
+            raise ValueError("PAPER restore requires an explicit config")
+        argv = [str(bin_dir / spec[0])]
+        argv += ["--config", str(g.config_path)]
+        return argv, {
+            "id": row.id, "adapter": row.adapter, "game": row.game, "target": "base"
+        }
+    if len(spec) == 1:
+        argv = [str(bin_dir / spec[0])]
+    else:
+        # bin/docich --config PATH <sub> stop
+        argv = [str(bin_dir / spec[0])]
+        if g.config_path:
+            argv += ["--config", str(g.config_path)]
+        argv.append(spec[1])
+        argv.append("stop")
+        return argv, {"id": row.id, "adapter": row.adapter, "game": row.game, "target": "base"}
+    if g.config_path:
+        argv += ["--config", str(g.config_path)]
+    argv.append("stop")
+    return argv, {"id": row.id, "adapter": row.adapter, "game": row.game, "target": "base"}
+
+
+def _hanjuku_stop_retryable(g: GlobalConfig, state: dict) -> bool:
+    if state.get("game") != "hanjuku-hero" or state.get("status") != "failed":
+        return False
+    canonical = _load_json_file(Path(g.state_dir) / "game_switch.json") or {}
+    active = canonical.get("active") or {}
+    expected = state.get("bot_identity")
+    return (canonical.get("phase") == "ready" and isinstance(active, dict)
+            and active.get("game") == "hanjuku-hero" and isinstance(expected, dict)
+            and all(active.get(k) is not None and active.get(k) == expected.get(k)
+                    for k in ("game", "runtime_id", "generation", "lease_id")))
+
+
+def _corner_stop_argv(g: GlobalConfig, corner_id: str,
+                      duration: int) -> tuple[list[str], dict[str, Any]]:
+    """進行中の手動実行、次に base 実行へ stop を振り分ける。
+
+    手動側の failed / recovery_required は base の進行を隠さない。
+    実行中の対象がない場合は、既存の manual stop 契約を維持する。
+    """
+    try:
+        row = _corner_catalog_row(g, corner_id)
+    except ValueError:
+        raise
+    base_file = _CORNER_STATE_FILE_BY_ADAPTER.get(row.adapter)
+    manual = _corner_state_present(g, f"{base_file}_manual" if base_file else "", row)
+    base = _corner_state_present(g, base_file or "", row)
+    # A failed/recovery-required manual record can be stale while the scheduled
+    # runner owns the current PAPER view. Prefer an actually progressing owner;
+    # retry the manual failure only when no base run is active.
+    if manual and manual.get("status") in _CORNER_MANUAL_ACTIVE_STOP_STATUSES:
+        argv, meta = _corner_manual_argv(g, corner_id, "stop", duration)
+        meta = {**meta, "target": "manual"}
+        return argv, meta
+    if base and (base.get("status") in _CORNER_BASE_STOP_STATUSES or _hanjuku_stop_retryable(g, base)):
+        return _corner_base_stop_argv(g, corner_id)
+    if manual and manual.get("status") in _CORNER_MANUAL_STOP_STATUSES:
+        argv, meta = _corner_manual_argv(g, corner_id, "stop", duration)
+        meta = {**meta, "target": "manual"}
+        return argv, meta
+    argv, meta = _corner_manual_argv(g, corner_id, "stop", duration)
+    meta = {**meta, "target": "manual"}
+    return argv, meta
 
 
 def _rotation_recover_argv(g: GlobalConfig) -> list[str]:
@@ -2882,12 +3040,12 @@ input:checked+.slider:before{transform:translateX(20px)}
 </div>
 <div class="card"><h2>コーナー一覧</h2>
 <p class="desc">各コーナーが次に自動で選ばれるかどうかと、選ばれない場合の理由です。行を押すと、下の手動操作の対象に選ばれます。</p>
-<div class="table-wrap"><table><thead><tr><th>コーナー</th><th>種類</th><th>自動選択</th><th>最終実行</th><th>cooldown 明け</th><th>手動の状態</th></tr></thead><tbody id="corners-catalog"></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>コーナー</th><th>種類</th><th>自動選択</th><th>最終実行</th><th>cooldown 明け</th><th>稼働/手動の状態</th></tr></thead><tbody id="corners-catalog"></tbody></table></div>
 </div>
 <div class="card"><h2>手動操作</h2>
 <p class="desc">使い方:<br/>
 ① <b>手動開始</b>: コーナーと分数を選ぶと、そのコーナーを今すぐ1回だけ実行します。実行中はローテーションの自動起動が待機します。<br/>
-② <b>手動停止</b>: 手動で開始したコーナーを途中で終わらせ、元のゲームへ戻します。<br/>
+② <b>手動停止</b>: 手動開始・ローテーション自動起動のどちらで動いているコーナーでも、停止可能な状態なら途中で終わらせ、元のゲームへ戻します。<br/>
 ③ <b>ローテーション復旧</b>: 状態が「要復旧」で止まったときだけ押せます。先に該当コーナーの停止/復旧を済ませてください。</p>
 <div class="row"><div><label>コーナー</label><select id="corners-select"></select></div>
 <div><label>分数 (1-60、PAPER は無視)</label><input id="corners-duration" type="number" min="1" max="60" value="5"/></div></div>
@@ -2899,6 +3057,16 @@ input:checked+.slider:before{transform:translateX(20px)}
 </div>
 <div id="corners-hint" class="help"></div>
 <div id="corners-msg" class="help"></div>
+</div>
+<div class="card"><h2>メリケンAI 描画ホスト</h2>
+<p class="desc">メリケンAIコーナーのゲーム画面をどのPCで描画するかを選びます。「自動」は有線の Windows を優先し、つながらない・起動しないときは Mac に切り替えます。変更は次にコーナーが始まるときから効きます（実行中のコーナーは切り替わりません）。</p>
+<div class="row"><div><label>描画ホスト</label><select id="renderer-mode">
+<option value="auto">自動（Windows 優先 → Mac）</option>
+<option value="windows">Windows のみ</option>
+<option value="mac">Mac のみ</option>
+</select></div></div>
+<div class="actions"><button class="btn primary" id="renderer-save">保存</button></div>
+<div id="renderer-status" class="help">読込中…</div>
 </div>
 <div class="card"><h2>コーナー状態ファイル</h2><p class="desc">各コーナーの自動/手動実行の最終記録です（問題調査用）。</p><div class="table-wrap"><table><thead><tr><th>state</th><th>状態</th><th>game</th><th>開始</th><th>終了予定</th><th>完了</th><th>要復旧</th><th>試合数</th></tr></thead><tbody id="corners-table"></tbody></table></div></div>
 </section>
@@ -4636,7 +4804,27 @@ async function saveStreamSettings(){
     await loadConfig();
   }catch(e){ if(msg) msg.textContent=String(e); toast(String(e),5000); }
 }
+const RENDERER_HOST_JA={windows:"Windows",mac:"Mac"};
+function renderRenderer(v){
+  const sel=document.getElementById("renderer-mode");
+  const out=document.getElementById("renderer-status");
+  if(sel && document.activeElement!==sel) sel.value=v.mode;
+  if(!out) return;
+  const conf=Object.entries(v.configured||{}).map(([h,ok])=>`${RENDERER_HOST_JA[h]||h}: ${ok===null?"不明":(ok?"接続情報あり":"接続情報なし")}`).join(" / ");
+  let last="まだ記録がありません";
+  if(v.selection){
+    const at=v.selection.selected_at?new Date(v.selection.selected_at*1000).toLocaleString():"-";
+    const tries=(v.selection.attempts||[]).map(a=>`${RENDERER_HOST_JA[a.host]||"?"}${a.ok?"(成功)":"(失敗: "+esc(a.error||"")+")"}`).join(" → ");
+    last=`${esc(RENDERER_HOST_JA[v.selection.host]||v.selection.host)}（${esc(at)}）${tries?"<br/>試行: "+tries:""}`;
+  }
+  out.innerHTML=`試す順番: ${esc((v.order||[]).map(h=>RENDERER_HOST_JA[h]||h).join(" → "))}<br/>${esc(conf)}<br/>直近に使ったホスト: ${last}`;
+}
+async function loadRenderer(){
+  try{ renderRenderer(await api("/api/soren91/renderer")); }
+  catch(e){ const out=document.getElementById("renderer-status"); if(out) out.textContent=String(e); }
+}
 async function loadCorners(){
+  loadRenderer();
   try{
     renderCorners(await api("/api/corners"));
   }catch(e){
@@ -4663,6 +4851,8 @@ const ROT_REASON_JA={
 };
 const CORNER_STATUS_JA={idle:"待機",waiting:"待機",starting:"開始中",active:"実行中",restoring:"復帰中",preparing:"準備中",recovery_required:"要復旧",failed:"失敗",completed:"完了",interrupted:"中断",expired:"期限切れ",running:"実行中"};
 const CORNER_BUSY=new Set(["starting","active","restoring","preparing","waiting","recovery_required","failed"]);
+const CORNER_ACTIVE_STOP=new Set(["starting","active","restoring"]);
+const CORNER_END_REASON_JA={"manual_saved_stop":"セーブして終了","manual_forced_stop":"セーブ失敗・強制終了","switch-terminal-before-corner-active":"起動前の切替失敗で中断"};
 let CORNERS_DATA=null;
 function jaStatus(s){ return CORNER_STATUS_JA[s]||s||"-"; }
 function relTime(ts){
@@ -4678,6 +4868,35 @@ function manualStateOf(d,c){
   if(!m||!m.present) return null;
   if(c.adapter==="game" && m.game && m.game!==c.game) return null;
   return m;
+}
+function baseStateOf(d,c){
+  if(!c||!c.state_file||!d.corners) return null;
+  const b=d.corners[c.state_file];
+  if(!b||!b.present) return null;
+  if(c.adapter==="game" && b.game && b.game!==c.game) return null;
+  return b;
+}
+// 表示用: 稼働中の busy を優先。手動 started が terminal でも base が
+// restoring/active なら「動いている」と出さないと誤判定になる。
+function displayStateOf(d,c){
+  const m=manualStateOf(d,c), b=baseStateOf(d,c);
+  const busy=x=>x&&CORNER_BUSY.has(x.status);
+  const progressing=x=>x&&CORNER_ACTIVE_STOP.has(x.status);
+  if(progressing(m)) return m;
+  if(progressing(b)) return b;
+  if(busy(m)) return m;
+  if(busy(b)) return b;
+  return m||b||null;
+}
+// 停止可能対象（サーバの _corner_stop_argv と同じ契約）。
+const CORNER_MANUAL_STOP=new Set(["starting","active","restoring","failed","recovery_required"]);
+const CORNER_BASE_STOP=new Set(["starting","active","restoring"]);
+function stopStateOf(d,c){
+  const m=manualStateOf(d,c), b=baseStateOf(d,c);
+  if(m&&CORNER_ACTIVE_STOP.has(m.status)) return m;
+  if(b&&(CORNER_BASE_STOP.has(b.status)||b.stop_retryable===true)) return b;
+  if(m&&CORNER_MANUAL_STOP.has(m.status)) return m;
+  return null;
 }
 function renderCorners(d){
   CORNERS_DATA=d;
@@ -4744,8 +4963,8 @@ function renderCorners(d){
         else if(c.cooldown_until) auto='<span class="badge">cooldown中</span>';
         else if(c.eligible) auto='<span class="badge ok">候補</span>';
         else auto='<span class="badge warn">対象外</span>';
-        const m=manualStateOf(d,c);
-        const ms=m?`${esc(jaStatus(m.status))}${m.recovery_required?' <span class="badge bad">要復旧</span>':""}`:"-";
+        const shown=displayStateOf(d,c);
+        const ms=shown?`${esc(jaStatus(shown.status))}${shown.recovery_required?' <span class="badge bad">要復旧</span>':""}`:"-";
         return `<tr data-corner="${esc(c.id)}" style="cursor:pointer"><td class="mono">${esc(c.id)}</td><td>${esc(c.adapter)}${c.manual?"":' <span class="help">(手動不可)</span>'}</td>`
           +`<td>${auto}</td><td title="${esc(fmtTime(c.last_run_at))}">${relTime(c.last_run_at)}</td>`
           +`<td title="${esc(fmtTime(c.cooldown_until))}">${c.cooldown_until?relTime(c.cooldown_until):"-"}</td><td>${ms}</td></tr>`;
@@ -4769,7 +4988,8 @@ function renderCorners(d){
   if(tb && d.corners){
     tb.innerHTML=Object.entries(d.corners).map(([name,c])=>{
       if(!c.present) return `<tr><td class="mono">${esc(name)}</td><td colspan="7" class="help">記録なし</td></tr>`;
-      return `<tr><td class="mono">${esc(name)}</td><td>${esc(jaStatus(c.status))}</td>`
+      const detail=c.last_error_code?` / ${esc(c.last_error_code)}`:(CORNER_END_REASON_JA[c.end_reason]?` / ${CORNER_END_REASON_JA[c.end_reason]}`:"");
+      return `<tr><td class="mono">${esc(name)}</td><td>${esc(jaStatus(c.status))}${detail}</td>`
         +`<td>${esc(c.game||"-")}</td><td>${fmtTime(c.started_at)}</td>`
         +`<td>${fmtTime(c.ends_at)}</td><td>${fmtTime(c.completed_at)}</td>`
         +`<td>${c.recovery_required===true?'<span class="badge bad">yes</span>':(c.recovery_required===false?"no":"-")}</td>`
@@ -4784,20 +5004,26 @@ function updateCornerButtons(){
   const sel=document.getElementById("corners-select");
   const c=(d.catalog||[]).find(x=>x.id===(sel?sel.value:""));
   const m=manualStateOf(d,c);
+  const b=baseStateOf(d,c);
   const switching=gsw.phase&&!["ready","idle"].includes(gsw.phase);
-  const manualBusy=m&&CORNER_BUSY.has(m.status);
+  const progressing=x=>x&&CORNER_ACTIVE_STOP.has(x.status);
+  const busy=progressing(m)?m:(progressing(b)?b:((m&&CORNER_BUSY.has(m.status))?m:((b&&CORNER_BUSY.has(b.status))?b:null)));
+  const stopTarget=stopStateOf(d,c);
   const hints=[];
-  const canStart=!!c && !switching && !r.latch && !manualBusy;
+  const canStart=!!c && !switching && !r.latch && !busy;
   if(!c) hints.push("手動実行できるコーナーを選んでください。");
   else if(r.latch) hints.push("ローテーションが要復旧のため、手動開始できません。");
   else if(switching) hints.push("ゲーム切替中のため、手動開始できません。");
-  else if(manualBusy) hints.push(`${c.id} の手動実行の記録が「${jaStatus(m.status)}」です。先に手動停止してください。`);
+  else if(busy){
+    const src=busy===m?"手動":"自動/ローテーション";
+    hints.push(`${c.id} の${src}実行の記録が「${jaStatus(busy.status)}」です。先に手動停止してください。`);
+  }
   else if(r.pending) hints.push(`いまは ${r.pending.corner} を実行中です。手動開始すると、現在のコーナーが終わってから始まります。`);
   const startBtn=document.getElementById("corners-start");
   const stopBtn=document.getElementById("corners-stop");
   const recBtn=document.getElementById("corners-recover");
   if(startBtn) startBtn.disabled=!canStart;
-  if(stopBtn) stopBtn.disabled=!(c&&m&&["starting","active","failed","recovery_required"].includes(m.status));
+  if(stopBtn) stopBtn.disabled=!(c&&stopTarget);
   if(recBtn) recBtn.disabled=!r.can_recover;
   if(r.can_recover) hints.push("「ローテーション復旧」を押せます。");
   const h=document.getElementById("corners-hint"); if(h) h.textContent=hints.join(" ");
@@ -4811,7 +5037,10 @@ async function cornerAction(payload, confirmText){
     if(msg){
       let t;
       if(r.action==="recover") t=r.ok?"復旧しました。次の tick（1分以内）でローテーションが再開します。":`復旧できませんでした（exit ${r.exit_code==null?"-":r.exit_code}）。先に要復旧のコーナーを停止/復旧してください。${r.detail?" 詳細: "+r.detail:""}`;
-      else t=`${r.action==="start"?"手動開始":"手動停止"}を受け付けました（${r.corner&&r.corner.id||"-"}）。進行はこの画面の状態欄に反映されます。ログ: ${r.log||"-"}`;
+      else {
+        const target=r.corner&&r.corner.target==="base"?"自動実行":"手動実行";
+        t=`${r.action==="start"?"手動開始":"手動停止"}を受け付けました（${r.corner&&r.corner.id||"-"}・${target}）。進行と完了はこの画面の状態欄をご確認ください。ログ: ${r.log||"-"}`;
+      }
       msg.textContent=t;
     }
     toast(r.ok?`${r.action}: OK`:`${r.action}: ok=${r.ok} exit=${r.exit_code==null?"-":r.exit_code}`);
@@ -5403,6 +5632,14 @@ document.addEventListener("DOMContentLoaded",()=>{
   // corners (rotation view / one-off manual start-stop / latch recovery)
   const cRefresh=document.getElementById("corners-refresh");
   if(cRefresh) cRefresh.onclick=()=>loadCorners();
+  const rSave=document.getElementById("renderer-save");
+  if(rSave) rSave.onclick=async()=>{
+    const sel=document.getElementById("renderer-mode");
+    try{
+      renderRenderer(await api("/api/soren91/renderer",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:sel.value})}));
+      toast("描画ホストを保存しました（次のコーナーから有効）");
+    }catch(e){ toast(String(e)); }
+  };
   const cStart=document.getElementById("corners-start");
   if(cStart) cStart.onclick=()=>{
     const sel=document.getElementById("corners-select");
@@ -5418,7 +5655,7 @@ document.addEventListener("DOMContentLoaded",()=>{
     const sel=document.getElementById("corners-select");
     const corner=sel?sel.value:"";
     if(!corner){ toast("コーナーを選択してください"); return; }
-    cornerAction({action:"stop",corner},`コーナー ${corner} を手動停止しますか？`);
+    cornerAction({action:"stop",corner},`コーナー ${corner} を停止しますか？（手動/自動どちらの起動でも、停止可能な状態なら対象の runner/CLI へ渡します）`);
   };
   const cRecover=document.getElementById("corners-recover");
   if(cRecover) cRecover.onclick=()=>{
@@ -5797,6 +6034,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_get_predictions()
             elif path == "/api/corners":
                 status = self._handle_get_corners()
+            elif path == "/api/soren91/renderer":
+                status = self._handle_get_soren91_renderer()
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -5908,6 +6147,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_post_prediction_action()
             elif parsed.path == "/api/corners":
                 status = self._handle_post_corners()
+            elif parsed.path == "/api/soren91/renderer":
+                status = self._handle_post_soren91_renderer()
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -6809,6 +7050,42 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, view)
         return 200
 
+    def _handle_get_soren91_renderer(self) -> int:
+        try:
+            view = _soren91_renderer_view(self.g)
+        except Exception as exc:
+            self._send_error_json(500, "renderer_unavailable", str(exc)[:200])
+            return 500
+        self._send_json(200, view)
+        return 200
+
+    def _handle_post_soren91_renderer(self) -> int:
+        """描画ホスト方針 (auto/windows/mac) を保存する。次のコーナー開始から効く。"""
+        from . import soren91_renderer
+
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be object")
+            return 400
+        mode = str(data.get("mode", "")).strip().lower()
+        try:
+            soren91_renderer.save_mode(self.g.state_dir, mode)
+        except ValueError as exc:
+            self._send_error_json(400, "invalid_mode", str(exc))
+            return 400
+        except OSError as exc:
+            self._send_error_json(500, "renderer_save_failed", str(exc)[:200])
+            return 500
+        self._send_json(200, _soren91_renderer_view(self.g))
+        return 200
+
     def _handle_post_corners(self) -> int:
         """One-off manual start/stop and the fixed latch recovery (issue #42 の
         dangerous action: confirm:true 必須)。rotation の cooldown/latch 契約は
@@ -6886,7 +7163,11 @@ class _Handler(BaseHTTPRequestHandler):
             return 400
         corner_id = str(data.get("corner", "")).strip()
         try:
-            argv, meta = _corner_manual_argv(self.g, corner_id, action, duration)
+            if action == "stop":
+                argv, meta = _corner_stop_argv(self.g, corner_id, duration)
+            else:
+                argv, meta = _corner_manual_argv(self.g, corner_id, action, duration)
+                meta = {**meta, "target": "manual"}
         except ValueError as exc:
             self._send_error_json(400, "invalid_corner", str(exc))
             return 400

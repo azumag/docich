@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v2'
+BOT_VERSION = 'hanjuku-chart-v127-fresh-castle-recheck'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -60,12 +60,32 @@ def green(r,g,b):
     return 8 <= r <= 40 and 48 <= g <= 100 and 40 <= b <= 95 and g > r*1.5
 
 
+def is_squaresoft_splash(frame: Frame) -> bool:
+    """Recognize the centered SQUARESOFT logo on its plain gray startup card.
+
+    The old lower-screen paper heuristic also matched this non-game screen.
+    Requiring the neutral field, dark wordmark, and its red accent keeps this
+    exception specific to the observed splash instead of changing battle or
+    generic-event classification.
+    """
+    neutral = lambda r,g,b: max(r,g,b) - min(r,g,b) <= 2 and min(r,g,b) > 170
+    wordmark = lambda r,g,b: max(r,g,b) < 100
+    red_accent = lambda r,g,b: r > 180 and g < 100 and b < 80
+    if frame.fraction((108,108,124,120), red_accent) <= .10:
+        return False
+    if frame.fraction((76,102,180,120), wordmark) <= .20:
+        return False
+    return frame.fraction((0,0,256,224), neutral) > .985
+
+
 def classify(frame: Frame) -> str:
     f=frame
     if is_title(f):
         return 'title'
     dark=f.fraction((0,0,256,224),lambda r,g,b:max(r,g,b)<25)
     if dark > .97:
+        return 'transition'
+    if is_squaresoft_splash(f):
         return 'transition'
     paper=lambda r,g,b:r>185 and g>185 and b>155
     if (f.fraction((16,174,113,191),paper)>.65
@@ -143,50 +163,120 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
     if phase=='title':
         return [pad('start')]
     if phase in {'field','field_menu','battle'}:
-        # Battles are fought by the game's own melee; A in a battle has no
-        # measured benefit and A on the map would open a sortie menu.
+        # A readable battle panel goes through the risk-aware policy.battle_step;
+        # without one the target is unknown, and A on the map would open a
+        # sortie menu.
         return []
     # Scripted scenes, battle prompts and dark cutscenes use confirm. No
     # reset, emulator shortcuts, arbitrary keys or LLM-produced actions.
     return [pad('a')]
 
 
-def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
+def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
+           interim: dict | None = None, experience: dict | None = None,
+           recall_inputs: dict | None = None) -> tuple[list[dict], dict]:
     """Return bounded pad actions and new policy memory; never write or send.
 
+    ``adjusted`` is a validated runtime-adjusted chart (``hanjuku_chart_adjust``)
+    offered for adoption when the base chart has no ready order. ``interim``
+    is a JEV answer (a candidate label, never keys) for the pending request.
+    ``experience`` is the persistent independent-judgment memory
+    (``hanjuku_experience``). None of these are persisted in policy memory.
+
     Decision records produced for this observation are returned in
-    ``state['_records']`` for the caller to persist; they are not memory.
+    ``state['_records']`` for the caller to persist; the updated experience
+    is returned in ``state['_experience']``. Neither is memory.
     """
+    from . import hanjuku_experience as experience_module
     from . import hanjuku_policy as policy
+    from . import hanjuku_house
     from .hanjuku_screen import parse
     phase=classify(frame)
     step=int(state.get('step',0))+1
     phase_step=int(state.get('phase_step',0))+1 if state.get('phase')==phase else 1
     mem=dict(state.get('policy') or {})
     mem['_records']=[]
+    mem['_adjusted']=adjusted
+    mem['_interim']=interim
+    mem['_recall_inputs']=recall_inputs
+    mem['_experience']=experience if isinstance(experience, dict) else experience_module.empty()
     updated={**state,'phase':phase,'step':step,'phase_step':phase_step,'bot_version':BOT_VERSION}
     updated.pop('_records',None)
+    updated.pop('_experience',None)
     screen=parse(frame,phase=phase)
     policy.observe_events(screen,mem)
+    policy.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     kind=screen.kind
     map_kinds={'map','map_target','castle_menu','general_list','card_select','sortie_confirm'}
     if kind not in map_kinds and mem.get('cursor'):
         # Battles, events and month menus can move the map cursor.
         mem['uncertain']=True
+        for key in ('nav_last','nav_pressed','nav_still'):
+            mem.pop(key,None)
     if kind in {'castle_menu','general_list'}:
         mem.pop('expect_menu',None)
+        mem.pop('menu_miss',None)   # a real menu proves the cell was correct
     flow=(mem.get('battle') or {}).get('card_flow')
-    card_list=bool(flow) and kind in {'text','unknown'} and any(
-        w in policy.CARD_NAMES for line in screen.lines for _,w in line.spans())
+    # A readable card name routes the open list, but a depleted list draws no
+    # card name at all (g452 07:14: ヴィーナス had spent both イッテツーン, the
+    # きりふだ menu showed nothing, the flow stayed on this text screen and
+    # legacy A presses stalled the run). The open list itself is evidence
+    # enough to let card_list_step back out with B.
+    card_list=bool(flow) and kind in {'text','unknown'} and (
+        (flow.get('stage') == 'list' and (kind == 'text' or flow.get('survival')))
+        or any(w in policy.CARD_NAMES for line in screen.lines for _,w in line.spans()))
     # Egg/card announcements and fades inside a battle are not its end; only
     # a return to the map or a following event/menu closes the record.
+    if kind != 'battle_menu_pending':
+        mem.pop('battle_menu_pending_ticks', None)
+    if kind != 'battle' and mem.get('battle'):
+        mem['battle'].pop('successor_seen', None)
+        mem['battle'].pop('entry_successor_seen', None)
     after_battle = kind in policy.AFTER_BATTLE_KINDS or kind == 'barrier_removed'
     if mem.get('battle') and after_battle:
         policy.battle_end(mem,kind)
     if after_battle:
-        mem['egg_battle']=False
-    actions=None
-    if phase=='name' and kind!='name_entry':
+        policy.reset_battle_controls(mem)
+    policy.observe_entry_return(screen, mem)
+    if kind != 'egg_choice_menu':
+        mem.pop('egg_choice', None)
+    if kind != 'egg_battle_menu':
+        mem.pop('egg_menu_stage',None)
+        mem.pop('egg_battle_row_dead',None)
+    if kind != 'monster_menu':
+        for key in ('monster_menu_key','monster_menu_cursor','monster_menu_hold',
+                    'monster_menu_choice','monster_menu_choice_key','monster_panel'):
+            mem.pop(key,None)
+    if kind != 'battle_menu':
+        for key in ('indep_menu','indep_menu_key','indep_menu_action','egg_row_dead'):
+            mem.pop(key,None)
+    recruit_dialog = (mem.get('month_sub') or {}).get('kind') == 'recruit' and not policy.month_menu_ready(screen)
+    recall = mem.get('recall') or {}
+    recall_dialog = recall and not mem.get('month_sub') and (
+        kind in ('map', 'map_target', 'text') or
+        (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no')))
+    # Cancel an outstanding repair before an emergency recall can move its
+    # general; the old house route must not resume afterwards.
+    if mem.get('house') and mem.get('recall'):
+        hanjuku_house.step(screen, mem, frame)
+    actions = (policy.camp_recall_step(screen, mem, frame) if recall_dialog
+               else policy.month_sub_step(screen, mem) if mem.get('month_sub') and (kind != 'month_menu' or recruit_dialog)
+               else None)
+    # No house phase expects a red-curtain screen (concert/merchant backdrop):
+    # every branch answers such a text frame with [] or B, which advances
+    # neither the event nor input. On an outbound repair that starved the trip
+    # until STEP_LIMIT (g530 2026-10-01 07:01/07:44/07:52 field_status stalls)
+    # and the close phase's repeated B could not clear it either, so the
+    # transaction aborted (07:53:43). Let the ordinary concert fallback advance
+    # the event without consuming the bounded house budget; the house route
+    # resumes on its own screen. This covers return and outbound flows alike.
+    concert_house_event = (
+        mem.get('house') is not None and phase == 'concert' and kind == 'text')
+    if actions is None and not concert_house_event:
+        actions = hanjuku_house.step(screen, mem, frame)
+    if actions is not None:
+        pass
+    elif phase=='name' and kind!='name_entry':
         policy._record(mem,'name_wait',chart_step='name',
                        reason='状況判定保留: 名前入力画面の文字を読めないため入力を保留')
         actions=[]
@@ -195,20 +285,32 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
             # A second name screen means a new game: never carry the previous
             # game's orders, captures or cursor into it.
             stats=mem.get('stats')
-            mem={'_records':mem['_records'],'previous_stats':stats}
+            kept_experience=mem.get('_experience')
+            mem={'_records':mem['_records'],'previous_stats':stats,'_experience':kept_experience}
             policy._record(mem,'new_game_detected',chart_step='name',
                            reason='名前入力画面を再度確認したため方策状態を初期化')
         actions=policy.name_step(screen,mem)
         if mem.get('name',{}).get('done') and not mem.get('chapter'):
             mem['chapter']=1
-            mem['variant']='chart'
-            mem['cursor']=list(policy.chart.castles(1)['ほんじょう'])
+            mem['variant']='chart' if policy.chart.orders(1) else 'chart_unavailable'
+            home=policy.chart.home_castle(1)
+            castles=policy.chart.castles(1)
+            if home in castles:
+                mem['cursor']=list(castles[home])
     elif card_list:
         actions=policy.card_list_step(screen,mem)
     elif kind=='battle':
         actions=policy.battle_step(screen,mem)
+    elif kind=='egg_choice_menu':
+        actions=policy.egg_choice_step(screen,mem)
+    elif kind=='monster_menu':
+        actions=policy.monster_menu_step(screen,mem)
     elif kind=='egg_battle_menu' or (mem.get('egg_battle') and kind=='text'):
         actions=policy.egg_battle_step(screen,mem)
+    elif kind=='okunote_menu':
+        actions=policy.okunote_step(screen,mem)
+    elif kind=='battle_menu_pending':
+        actions=policy.battle_menu_pending_step(mem)
     elif kind=='battle_menu':
         actions=policy.battle_menu_step(screen,mem)
     elif kind in {'attack_started','defense_started','boss_attack_started'}:
@@ -232,14 +334,26 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
         actions=policy.deploy_step(screen,mem)
     elif kind=='map_target' and mem.get('chapter'):
         actions=policy.target_step(screen,mem,frame)
+    elif kind=='world_map' and mem.get('chapter'):
+        actions=policy.world_map_step(screen,mem,frame)
     elif kind=='map' and mem.get('chapter'):
         actions=policy.map_step(screen,mem,frame)
+    elif kind=='discharge_menu':
+        actions=policy.discharge_step(screen,mem)
     elif kind=='gift_request':
         actions=policy.gift_step(screen,mem)
     elif kind=='yes_no':
         actions=policy.yes_no_step(screen,mem)
     elif kind in {'castle_info','sealed_castle','main_menu'}:
         policy._record(mem,'close_panel',screen=kind,reason='意図しない情報画面を閉じる')
+        actions=[pad('b')]
+    elif kind == 'text' and policy.chikujou_leftover(screen, mem):
+        actions = [pad('b')]
+    elif kind=='text' and policy.is_camp_menu(screen):
+        # g436 22:04: an A after closing the Y view landed on the hero's tent
+        # and opened いどう/ステータス/キャンプ/きかん with no recall in flight;
+        # nothing handled it and the bot pressed nothing for over an hour.
+        policy._record(mem,'close_panel',screen='camp_menu',reason='帰還指示中でない野営メニューを閉じる')
         actions=[pad('b')]
     if actions is None:
         actions=legacy_actions(frame,phase,updated)
@@ -251,6 +365,10 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
         else:
             mem['held_phase']=None
     updated['screen_kind']=kind
+    mem.pop('_adjusted',None)
+    mem.pop('_interim',None)
+    mem.pop('_recall_inputs',None)
     updated['_records']=mem.pop('_records')
+    updated['_experience']=mem.pop('_experience',None)
     updated['policy']=mem
     return actions,updated

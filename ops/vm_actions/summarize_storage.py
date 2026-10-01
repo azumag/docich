@@ -4,6 +4,38 @@ import json
 import sys
 
 DB_FAMILIES = ("opencode_default", "opencode_worker")
+OPENCODE_CALLER_BUCKETS = (
+    "radio_prepass",
+    "radio_main",
+    "comment",
+    "improvement",
+    "soren91",
+    "probe",
+    "other",
+)
+OPENCODE_ATTRIBUTION_METRICS = (
+    "sessions",
+    "messages",
+    "message_data_chars",
+    "message_max_chars",
+    "parts",
+    "part_data_chars",
+    "part_max_chars",
+    "events",
+    "event_data_chars",
+    "event_max_chars",
+)
+OPENCODE_COVERAGE_METRICS = (
+    "all_sessions",
+    "attributed_sessions",
+    "unattributed_sessions",
+    "unattributed_latest_age_sec",
+    "unattributed_15m_sessions",
+    "unattributed_1h_sessions",
+    "unattributed_2h_sessions",
+    "unattributed_6h_sessions",
+)
+
 TREE_CATEGORIES = (
     "opencode_default_total",
     "opencode_worker_total",
@@ -56,6 +88,47 @@ def render(data):
         parts.append(f"{category}_bytes={_uint(item, 'allocated_bytes')}")
         parts.append(f"{category}_count={_uint(item, 'count')}")
 
+    attribution = data.get("opencode_session_attribution")
+    attribution_complete = (
+        isinstance(attribution, dict)
+        and attribution.get("version") == 1
+        and attribution.get("scan_complete") is True
+        and attribution.get("schema_supported") is True
+        and isinstance(attribution.get("buckets"), dict)
+    )
+    parts.append(f"opencode_attr_complete={int(attribution_complete)}")
+    parts.append(
+        f"opencode_attr_window_sec={_uint(attribution, 'window_sec') if attribution_complete else 0}"
+    )
+    buckets = attribution.get("buckets") if attribution_complete else {}
+    for bucket in OPENCODE_CALLER_BUCKETS:
+        item = buckets.get(bucket) if isinstance(buckets, dict) else None
+        item = item if isinstance(item, dict) else {}
+        for metric in OPENCODE_ATTRIBUTION_METRICS:
+            parts.append(
+                f"opencode_attr_{bucket}_{metric}="
+                f"{_uint(item, metric) if attribution_complete else 0}"
+            )
+
+    coverage = attribution.get("coverage") if attribution_complete else None
+    coverage_complete = (
+        isinstance(coverage, dict)
+        and coverage.get("scan_complete") is True
+    )
+    parts.append(f"opencode_attr_coverage_complete={int(coverage_complete)}")
+    for metric in OPENCODE_COVERAGE_METRICS:
+        parts.append(
+            f"opencode_attr_{metric}="
+            f"{_uint(coverage, metric) if coverage_complete else 0}"
+        )
+
+    retention = data.get("opencode_retention") or {}
+    for label in ("attempt", "default", "worker"):
+        item = retention.get(label) or {}
+        state = item.get("status")
+        if state not in {"running", "completed", "gate_timeout", "disabled", "deferred", "failed"}:
+            state = "unknown"
+        parts.append(f"retention_{label}={state}")
     return 1, int(incomplete), ",".join(parts)
 
 

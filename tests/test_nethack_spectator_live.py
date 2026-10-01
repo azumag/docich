@@ -7,10 +7,16 @@ from pathlib import Path
 
 from docich.nethack_spectator_live import (
     LiveNethackSpectator,
+    MAX_FRAME_JSON_BYTES,
+    NethackFrameReader,
+    NethackFrameSnapshot,
     NethackSpectatorLiveError,
+    SnapshotStore,
+    encode_snapshot_json,
     active_nethack_runtime,
     process_window_name,
 )
+from docich.nethack_spectator import parse_tty
 from docich.tmux import TmuxOwnership
 
 
@@ -45,6 +51,7 @@ class FakeTmux:
     ) -> None:
         self.session = session
         self.ownership = ownership or TmuxOwnership(RUNTIME_ID, 3, "game")
+        self.session_ownership = TmuxOwnership(RUNTIME_ID, 3, "adapter")
         self.windows = (
             ["nethack-console", "game-g3", "agent-g3"]
             if windows is None
@@ -52,17 +59,41 @@ class FakeTmux:
         )
         self.capture = capture
         self.calls: list[tuple[str, str]] = []
+        self.bounded_capture_error: Exception | None = None
+
+    def read_session_ownership(self, session: str) -> TmuxOwnership:
+        self.calls.append(("session_ownership", session))
+        return self.session_ownership
+
+    def read_session_ownership_bounded(self, session: str) -> TmuxOwnership:
+        return self.read_session_ownership(session)
 
     def read_window_ownership(self, target: str) -> TmuxOwnership:
         self.calls.append(("ownership", target))
         return self.ownership
 
+    def read_window_ownership_bounded(self, target: str) -> TmuxOwnership:
+        return self.read_window_ownership(target)
+
     def list_windows(self) -> list[str]:
         self.calls.append(("list", self.session))
         return list(self.windows)
 
+    def list_windows_bounded(self, _session: str) -> list[str]:
+        return self.list_windows()
+
     def capture_pane_checked(self, target: str) -> str:
         self.calls.append(("capture", target))
+        return self.capture
+
+    def capture_pane_bounded_checked(
+        self, target: str, *, cols: int, rows: int, max_bytes: int, timeout_s: float
+    ) -> str:
+        self.calls.append(("capture_bounded", target))
+        if self.bounded_capture_error is not None:
+            raise self.bounded_capture_error
+        if len(self.capture.encode("utf-8")) > max_bytes:
+            raise RuntimeError("bounded capture rejected")
         return self.capture
 
 
@@ -133,12 +164,16 @@ class TestLiveSpectator(unittest.TestCase):
         self.assertEqual(
             made[0].calls,
             [
+                ("session_ownership", "docich-game-g3"),
                 ("ownership", "docich-game-g3:game-g3"),
                 ("list", "docich-game-g3"),
-                ("capture", "docich-game-g3:nethack-console"),
+                ("capture_bounded", "docich-game-g3:nethack-console"),
+                ("session_ownership", "docich-game-g3"),
+                ("ownership", "docich-game-g3:game-g3"),
+                ("list", "docich-game-g3"),
             ],
         )
-        self.assertNotIn(("capture", "docich-game-g3:game-g3"), made[0].calls)
+        self.assertNotIn(("capture_bounded", "docich-game-g3:game-g3"), made[0].calls)
         rendered = self.output.read_text(encoding="utf-8")
         self.assertIn("AI、ダンジョンに潜る", rendered)
         self.assertIn('class="cell player"', rendered)
@@ -211,7 +246,7 @@ class TestLiveSpectator(unittest.TestCase):
                 self.assertEqual(spectator.render_once(), "degraded")
                 self.assertEqual(self.output.read_text(encoding="utf-8"), "LAST-GOOD")
                 self.assertEqual(
-                    [call for call in made[0].calls if call[0] == "capture"], []
+                    [call for call in made[0].calls if call[0] == "capture_bounded"], []
                 )
                 status = json.loads(
                     (self.output.parent / "status.json").read_text(encoding="utf-8")
@@ -260,15 +295,13 @@ class TestProcessWindowName(unittest.TestCase):
 
     def test_ambiguous_or_absent_birth_window_fails_closed(self) -> None:
         for names in (
-            ["game-g3", "agent-g3"],                                  # no birth window
-            ["game-g3", "agent-g3", "nethack-console", "stray"],      # two candidates
+            ["game-g3", "agent-g3"],
+            ["game-g3", "agent-g3", "nethack-console", "stray"],
         ):
             with self.subTest(names=names):
                 self.assertIsNone(process_window_name(names, self.runtime()))
 
     def test_another_generations_agent_window_is_not_excluded(self) -> None:
-        # Only this runtime's own agent window is excluded, so a leftover from
-        # another generation makes the resolution ambiguous instead of wrong.
         names = ["game-g3", "agent-g3", "nethack-console", "agent-g2"]
         self.assertIsNone(process_window_name(names, self.runtime()))
 
@@ -276,6 +309,161 @@ class TestProcessWindowName(unittest.TestCase):
         names = ["game-g3", "agent-g3", "nethack-console", "", None]
         self.assertEqual(process_window_name(names, self.runtime()), "nethack-console")
 
+
+class TestNethackFrameReader(unittest.TestCase):
+    TTY = "msg\n.@!>\n.|d?\nHP:10\nDlvl:2\n"
+
+    def setUp(self) -> None:
+        self.runtime = active_nethack_runtime(ready_state())
+        assert self.runtime is not None
+        self.tmux = FakeTmux(
+            "docich-game-g3",
+            capture=self.TTY,
+        )
+        self.now = [100.0]
+
+    def _reader(self, state_loader=None) -> NethackFrameReader:
+        return NethackFrameReader(
+            expected_runtime=self.runtime,
+            state_loader=state_loader or (lambda: ready_state()),
+            cols=8,
+            rows=5,
+            presentation_epoch="p-test-epoch",
+            stale_after_ms=1000,
+            tmux_factory=lambda _session: self.tmux,
+            now_monotonic=lambda: self.now[0],
+        )
+
+    def test_explicit_empty_epoch_is_rejected(self) -> None:
+        with self.assertRaises(NethackSpectatorLiveError):
+            NethackFrameReader(
+                expected_runtime=self.runtime,
+                state_loader=lambda: ready_state(),
+                presentation_epoch="",
+            )
+
+    def test_capture_is_pinned_before_and_after_and_advances_sequences(self) -> None:
+        states = iter((ready_state(), ready_state(), ready_state(), ready_state()))
+        reader = self._reader(lambda: next(states))
+        first = reader.read_once()
+        second = reader.read_once()
+        self.assertEqual(first.state, "active")
+        self.assertEqual(first.capture_seq, 1)
+        self.assertEqual(first.content_seq, 1)
+        self.assertEqual(second.capture_seq, 2)
+        self.assertEqual(second.content_seq, 1)
+        self.assertEqual(
+            [call[0] for call in self.tmux.calls],
+            [
+                "session_ownership", "ownership", "list", "capture_bounded",
+                "session_ownership", "ownership", "list",
+                "session_ownership", "ownership", "list", "capture_bounded",
+                "session_ownership", "ownership", "list",
+            ],
+        )
+
+    def test_content_sequence_moves_only_when_the_terminal_changes(self) -> None:
+        reader = self._reader()
+        first = reader.read_once()
+        self.tmux.capture = self.TTY.replace("HP:10", "HP:9")
+        second = reader.read_once()
+        self.assertEqual((first.capture_seq, first.content_seq), (1, 1))
+        self.assertEqual((second.capture_seq, second.content_seq), (2, 2))
+
+    def test_generation_change_during_capture_masks_the_frame(self) -> None:
+        states = iter((ready_state(), {"phase": "quiescing", "active": ready_state()["active"]}))
+        reader = self._reader(lambda: next(states))
+        frame = reader.read_once()
+        self.assertEqual(frame.state, "standby")
+        self.assertEqual(frame.reason, "runtime_not_committed")
+        self.assertIsNone(frame.frame)
+        self.assertEqual(frame.capture_seq, 0)
+
+    def test_missing_or_foreign_windows_fail_closed(self) -> None:
+        for windows in ([], ["game-g3", "agent-g3"], ["nethack-console", "game-g3", "agent-g3", "stray"]):
+            with self.subTest(windows=windows):
+                self.tmux.windows = windows
+                frame = self._reader().read_once()
+                self.assertEqual(frame.state, "unavailable")
+                self.assertEqual(frame.reason, "window_unavailable")
+                self.assertFalse(any(call[0] == "capture_bounded" for call in self.tmux.calls))
+                self.tmux.calls.clear()
+        self.tmux.windows = ["nethack-console", "game-g3", "agent-g3"]
+
+    def test_ownership_mismatch_never_captures(self) -> None:
+        self.tmux.session_ownership = TmuxOwnership("g3-feedface", 3, "adapter")
+        frame = self._reader().read_once()
+        self.assertEqual(frame.state, "unavailable")
+        self.assertEqual(frame.reason, "ownership_mismatch")
+        self.assertFalse(any(call[0] == "capture_bounded" for call in self.tmux.calls))
+
+    def test_same_runtime_capture_failure_is_stale_then_expires(self) -> None:
+        reader = self._reader()
+        first = reader.read_once()
+        self.tmux.bounded_capture_error = RuntimeError("private child output")
+        self.now[0] += 0.5
+        stale = reader.read_once()
+        self.assertEqual(stale.state, "stale")
+        self.assertIs(stale.frame, first.frame)
+        self.assertEqual(stale.reason, "capture_failed")
+        self.now[0] += 1.1
+        expired = reader.read_once()
+        self.assertEqual(expired.state, "unavailable")
+        self.assertEqual(expired.reason, "stale_timeout")
+        self.assertIsNone(expired.frame)
+
+    def test_snapshot_json_is_bounded_and_masks_expired_content(self) -> None:
+        snapshot = self._reader().read_once()
+        body = encode_snapshot_json(
+            snapshot,
+            now_monotonic=self.now[0],
+            stale_after_ms=1000,
+        )
+        self.assertLessEqual(len(body), 262_144)
+        self.assertIn(b'"capture_seq":1', body)
+        self.assertIn(b'"tile_key":"player"', body)
+        expired = encode_snapshot_json(
+            snapshot,
+            now_monotonic=self.now[0] + 2,
+            stale_after_ms=1000,
+        )
+        self.assertIn(b'"state":"unavailable"', expired)
+        self.assertIn(b'"frame_kind":"placeholder"', expired)
+        self.assertNotIn(b'"tile_key":"player"', expired)
+
+    def test_default_80_by_24_map_snapshot_fits_json_response_bound(self) -> None:
+        map_lines = ["#" * 80 for _ in range(21)]
+        center = list(map_lines[10])
+        center[40] = "@"
+        map_lines[10] = "".join(center)
+        terminal = "Map status\n" + "\n".join(map_lines) + "\nHP:10\nDlvl:2\n"
+        frame = parse_tty(terminal, cols=80, rows=24)
+        self.assertEqual(frame.frame_kind, "map")
+        snapshot = NethackFrameSnapshot(
+            runtime=self.runtime,
+            presentation_epoch="p-test-epoch",
+            capture_seq=1,
+            content_seq=1,
+            state="active",
+            frame=frame,
+            captured_monotonic=self.now[0],
+        )
+        body = encode_snapshot_json(
+            snapshot,
+            now_monotonic=self.now[0],
+            stale_after_ms=1000,
+        )
+        self.assertLessEqual(len(body), MAX_FRAME_JSON_BYTES)
+
+    def test_snapshot_store_rejects_identity_and_sequence_regressions(self) -> None:
+        from dataclasses import replace
+
+        snapshot = self._reader().read_once()
+        store = SnapshotStore(snapshot)
+        with self.assertRaises(NethackSpectatorLiveError):
+            store.publish(replace(snapshot, capture_seq=0))
+        with self.assertRaises(NethackSpectatorLiveError):
+            store.publish(replace(snapshot, presentation_epoch="p-other"))
 
 if __name__ == "__main__":
     unittest.main()

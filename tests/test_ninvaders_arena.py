@@ -169,9 +169,38 @@ def test_evaluate_runs_every_match_and_isolates_a_failing_one(monkeypatch, polic
         return {"end": "title", "score": 1000 * n, "ticks": 100, "policy": {}}
 
     monkeypatch.setattr(arena, "_safe_match", fake_match)
-    result = arena.evaluate(policy(), 4, parallel=1, max_seconds=5.0)
+    result = arena.evaluate(policy(), 4, parallel=1, max_seconds=5.0, retries=0)
     assert result["summary"]["n"] == 4 and result["summary"]["played"] == 3
     assert all(c["max_seconds"] == 5.0 for c in calls)
+
+
+def test_evaluate_replays_infrastructure_failures_once(monkeypatch, policy):
+    calls = []
+
+    def fake_match(path, kwargs):
+        calls.append(kwargs)
+        if len(calls) <= 2:
+            return {"end": "no-start", "score": None, "ticks": 0, "policy": {}}
+        return {"end": "title", "score": 1000, "ticks": 100, "policy": {}}
+
+    monkeypatch.setattr(arena, "_safe_match", fake_match)
+    result = arena.evaluate(policy(), 4, parallel=1, retries=1)
+    assert result["summary"]["played"] == 4
+    assert result["summary"]["incomplete"] == 0
+    assert len(calls) == 6  # 4 first pass + 2 replays
+
+
+def test_evaluate_stops_after_the_bounded_retry(monkeypatch, policy):
+    calls = []
+
+    def fake_match(path, kwargs):
+        calls.append(kwargs)
+        return {"end": "error", "score": None, "ticks": 0, "policy": {}}
+
+    monkeypatch.setattr(arena, "_safe_match", fake_match)
+    result = arena.evaluate(policy(), 3, parallel=1, retries=1)
+    assert result["summary"]["played"] == 0
+    assert len(calls) == 6  # 3 first pass + 3 replays; a persistent fault stays failed
 
 
 def test_resolve_binary_honours_the_env_override(monkeypatch):

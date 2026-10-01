@@ -23,7 +23,9 @@ def _queue_dispatch(g) -> bool:
     return schedule_mode(g) == "queue"
 
 
-TERMINAL_IMPROVEMENT_STATUSES = frozenset({"promoted", "kept", "improved", "dry-run", "skipped"})
+TERMINAL_IMPROVEMENT_STATUSES = frozenset({
+    "promoted", "kept", "improved", "dry-run", "skipped", "ab-staged",
+})
 
 
 def _improvement_released(status_path, state):
@@ -93,7 +95,25 @@ class GameCornerAdapter:
         cap equal to the per-corner target prevents a second match from being
         started during the poll interval before the manager restores Soren.
         """
-        target_matches = self._runtime_target_matches(request) if hasattr(self, "target_matches") else None
+        ab_remaining = None
+        ab_active = False
+        if getattr(getattr(self, "corner", None), "game", None) == "moon-buggy":
+            from .moon_buggy_ab import MoonBuggyABError, pending_matches
+
+            request_id = request.get("request_id") if isinstance(request, dict) else None
+            if isinstance(request_id, str):
+                try:
+                    ab_remaining = pending_matches(self.g.state_dir)
+                except MoonBuggyABError as exc:
+                    raise CornerExecutionError("Moon Buggy A/B state is invalid") from exc
+                ab_active = ab_remaining is not None
+
+        if ab_active:
+            target_matches = ab_remaining
+        elif hasattr(self, "target_matches"):
+            target_matches = self._runtime_target_matches(request)
+        else:
+            target_matches = None
         if target_matches is None:
             yield
             return
@@ -102,12 +122,28 @@ class GameCornerAdapter:
         target_env = getattr(self, "_target_matches_env", None)
         if target_env:
             env_names.append(target_env)
+        if ab_active:
+            env_names.extend((
+                "DOCICH_MOON_BUGGY_AB_STATE", "DOCICH_MOON_BUGGY_AB_ACTIVE",
+                "DOCICH_MOON_BUGGY_AB_REQUEST",
+            ))
         previous = {name: os.environ.get(name) for name in env_names}
         for name in env_names:
-            os.environ[name] = str(target_matches)
+            if name == "DOCICH_TARGET_MATCHES" or name == target_env:
+                os.environ[name] = str(target_matches)
+        manager_config = self.manager.config if ab_active else None
+        if ab_active:
+            from .moon_buggy_ab import active_path, state_path
+
+            os.environ["DOCICH_MOON_BUGGY_AB_STATE"] = str(state_path(self.g.state_dir))
+            os.environ["DOCICH_MOON_BUGGY_AB_ACTIVE"] = str(active_path(self.g.state_dir))
+            os.environ["DOCICH_MOON_BUGGY_AB_REQUEST"] = request_id
+            self.manager.config = replace(manager_config, target_matches=target_matches)
         try:
             yield
         finally:
+            if ab_active:
+                self.manager.config = manager_config
             for name, value in previous.items():
                 if value is None:
                     os.environ.pop(name, None)
@@ -128,8 +164,41 @@ class GameCornerAdapter:
     def run(self, request):
         return self.manager.run_rotation(request["request_id"], self.corner.game)
 
-    def reconcile_failed_start(self, request_id):
-        return self.manager.reconcile_failed_rotation_start(request_id)
+    def _manager_for_state_file(self, state_file):
+        """Return the manager that owns one fixed main or manual state file."""
+
+        if not isinstance(state_file, str) or Path(state_file).name != state_file:
+            return None
+        current = Path(self.state_path)
+        if state_file == current.name:
+            return self.manager
+        if state_file != f"{current.stem}_manual.json":
+            return None
+
+        adapter = self.corner.adapter
+        if adapter == "meriken":
+            from .soren91_corner_manual import ManualSoren91CornerManager
+
+            return ManualSoren91CornerManager(self.g)
+        if adapter == "nethack":
+            from .nethack_corner_manual import ManualNethackCornerManager
+
+            return ManualNethackCornerManager(self.g)
+        if adapter == "game":
+            from .retro_corner_manual import ManualRetroCornerManager
+
+            return ManualRetroCornerManager(self.g, game=self.corner.game)
+        return None
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        """Reconcile only the adapter state file named by its rotation owner."""
+
+        manager = self.manager if state_file is None else self._manager_for_state_file(state_file)
+        if manager is None:
+            return False
+        if state_file is not None and manager.state_path.name != state_file:
+            return False
+        return manager.reconcile_failed_rotation_start(request_id)
 
     def improvement_paths(self):
         root = Path(self.g.state_dir)
@@ -168,6 +237,8 @@ class MerikenCornerAdapter(GameCornerAdapter):
     ENV_KEYS = (
         "SOREN91_MACOS_AGENT_BASE_URL",
         "SOREN91_LOCAL_AGENT_TOKEN",
+        "SOREN91_WINDOWS_AGENT_BASE_URL",
+        "SOREN91_WINDOWS_AGENT_TOKEN",
         "SOREN91_OCI_TAILSCALE_IP",
     )
 
@@ -269,6 +340,20 @@ class NethackCornerAdapter(GameCornerAdapter):
         return all(self.manager._executable_exists(path) for path in required)
 
 
+def _reconcile_terminal_paper_failures(g):
+    from .paper_corner import PaperCornerManager
+    from .paper_corner_manual import ManualPaperCornerManager
+
+    ready = True
+    for filename, manager_type in (("paper_corner.json", PaperCornerManager),
+                                   ("paper_corner_manual.json", ManualPaperCornerManager)):
+        if not (Path(g.state_dir) / filename).exists():
+            continue
+        if manager_type(g).reconcile_terminal_failure() in {"already-running", "switch-busy"}:
+            ready = False
+    return ready
+
+
 class PaperCornerAdapter(GameCornerAdapter):
     def __init__(self, g, corner):
         from .paper_corner_fast import FastPaperCornerManager
@@ -299,6 +384,9 @@ class PaperCornerAdapter(GameCornerAdapter):
                 raise CornerExecutionError("invalid adapter state")
             yield normalize_terminal_paper_failure(self.g.state_dir, state, self.corner.game)
 
+    def reconcile_terminal_failures(self):
+        return _reconcile_terminal_paper_failures(self.g)
+
     def run(self, request):
         return self.manager.run_rotation(request["request_id"])
 
@@ -313,6 +401,7 @@ class RetiredCornerObserver:
     STATE_FILES = {
         "game": "retro_corner.json",
         "paper": "paper_corner.json",
+        "weather": "weather_corner.json",
         "meriken": "soren91_corner.json",
         "nethack": "nethack_corner.json",
     }
@@ -336,6 +425,11 @@ class RetiredCornerObserver:
                 if self.adapter_name == "paper":
                     state = normalize_terminal_paper_failure(self.g.state_dir, state, self.game)
                 yield state
+
+    def reconcile_terminal_failures(self):
+        if self.adapter_name == "paper":
+            return _reconcile_terminal_paper_failures(self.g)
+        return True
 
     def improvement_paths(self):
         root = Path(self.g.state_dir)
@@ -362,11 +456,40 @@ class RetiredCornerObserver:
         return True
 
 
+class WeatherCornerAdapter:
+    """Opt-in weather lifecycle through GameSwitch and the common program slot."""
+
+    def __init__(self, g, corner):
+        from .weather_corner import WeatherCornerManager
+
+        self.g, self.corner = g, corner
+        self.manager = WeatherCornerManager(g, duration_minutes=corner.duration_minutes)
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
+
 ADAPTERS = {
     "game": GameCornerAdapter,
     "meriken": MerikenCornerAdapter,
     "paper": PaperCornerAdapter,
     "nethack": NethackCornerAdapter,
+    "weather": WeatherCornerAdapter,
 }
 
 

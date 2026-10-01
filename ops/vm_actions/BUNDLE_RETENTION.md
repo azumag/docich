@@ -11,10 +11,9 @@
 - retained preview release から参照されていない
 - `deployment_intent.from/to` から参照されていない
 - `pending_repairs[].candidate_sha` から参照されていない
-- mtime が 7 日以上前
-- 未参照 bundle の新しい方から 8 世代に含まれない
+- 未参照 bundle の新しい方から 2 件に含まれない
 
-つまり、最近 upload されたがまだ deploy されていない bundle は最低7日間保護されます。また長期間 deploy がない場合でも、未参照bundleを新しい方から8世代残します。
+経過日数ではなく件数で保持します。通常の既定は `min_age_seconds=0` / `keep_unreferenced=2` です。作成当日の未参照bundleも最新2件を超えれば候補になります。mtime が同じ場合は SHA で順序を決めます。参照中のbundleはこの2件とは別枠で保護し、deployment recovery中は全削除を拒否します。これにより短時間の多数の配備でも「2日未満だから全件保持」という増加を防ぎます。
 
 ## Fail-closed rules
 

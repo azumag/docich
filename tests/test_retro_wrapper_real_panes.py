@@ -18,6 +18,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPERS = ROOT / "games/cli-wrappers"
+sys.path.insert(0, str(ROOT / "src"))
+
+from docich import moon_buggy_ab  # noqa: E402
 
 BASTET_BOARD = [
     "                            lqqqqqqqqqqqqqqqqqqqqk lqqqqqqqqqqqqqqk",
@@ -34,6 +37,12 @@ BASTET_TRY_AGAIN = [
     "                            xthe high score list! x xScore:{score} x",
     "                            x     Try again!      x xLines:      0 x",
     "                            mqqqqqqqqqqqqqqqqqqqqqj xLevel:      0 x",
+]
+BASTET_NAME = [
+    "                            lqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqk",
+    "                            x Congratulations! You got a high score  x",
+    "                            x Please enter your name                 x",
+    "                            x                                          x",
 ]
 BASTET_MENU = [
     "                         lqqqqqqqqqqqqqqqqqqqqqqqqqqqkqqqqqqqqqqqqqk",
@@ -99,7 +108,7 @@ def pane(lines, score="", level=""):
     return "\n".join(lines).replace("{score}", score).replace("{level}", level)
 
 
-def run_wrapper(tmp_path, wrapper, bin_var, log_var, panes, args=()):
+def run_wrapper(tmp_path, wrapper, bin_var, log_var, panes, args=(), extra_env=None):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (tmp_path / "panes.json").write_text(json.dumps(panes))
@@ -138,6 +147,7 @@ raise SystemExit(1)
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "TMUX_PANE": "%9",
            "FAKE_ROOT": str(tmp_path), bin_var: str(fake_game),
            log_var: str(tmp_path / "scores.jsonl")}
+    env.update(extra_env or {})
     result = subprocess.run(["/bin/sh", str(WRAPPERS / wrapper), *args], env=env,
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
@@ -160,6 +170,22 @@ def test_bastet_records_right_aligned_score_and_retries(tmp_path, score):
     assert [(s["game"], s["score"]) for s in scores] == [("bastet", int(score))]
 
 
+def test_bastet_enters_neutral_name_after_high_score(tmp_path):
+    panes = [
+        pane(BASTET_BOARD, "300"), pane(BASTET_NAME), pane(BASTET_NAME),
+        pane(BASTET_MENU), pane(BASTET_BOARD, "0"),
+    ]
+    keys, scores = run_wrapper(
+        tmp_path, "bastet_docich.sh", "BASTET_BIN", "BASTET_SCORELOG", panes,
+    )
+    assert keys == [
+        ["-t", "%9", "-l", "Docich"],
+        ["-t", "%9", "Enter"],
+        ["-t", "%9", "Enter"],
+    ]
+    assert [(s["game"], s["score"]) for s in scores] == [("bastet", 300)]
+
+
 def test_moon_buggy_enters_name_then_records_and_restarts(tmp_path):
     panes = [
         pane(MOONBUGGY_PLAY, "33"), pane(MOONBUGGY_NAME, "33"),
@@ -177,6 +203,45 @@ def test_moon_buggy_without_high_score_skips_name_entry(tmp_path):
     keys, scores = run_wrapper(tmp_path, "moon-buggy_docich.sh", "MOONBUGGY_BIN", "MOONBUGGY_SCORELOG", panes)
     assert keys == [["-t", "%9", "-l", "y"]]
     assert [s["score"] for s in scores] == [8]
+
+
+def test_moon_buggy_wrapper_records_the_selected_ab_arm_and_hash(tmp_path):
+    state_dir = tmp_path / "run"
+    staged = moon_buggy_ab.stage(
+        state_dir,
+        {"laser_period": 7.0},
+        {"laser_period": 8.0},
+        source_date="2026-09-24",
+        headless_baseline_mean=100.0,
+        headless_candidate_mean=10.0,
+    )
+    request_id = "12345678-1234-5678-1234-567812345678"
+    panes = [
+        "Moon Buggy\nstart game",
+        pane(MOONBUGGY_PLAY, "33"),
+        pane(MOONBUGGY_NAME, "33"),
+        pane(MOONBUGGY_NEW_GAME, "33"),
+        pane(MOONBUGGY_PLAY, "0"),
+    ]
+    keys, scores = run_wrapper(
+        tmp_path, "moon-buggy_docich.sh", "MOONBUGGY_BIN", "MOONBUGGY_SCORELOG", panes,
+        extra_env={
+            "DOCICH_STATE_DIR": str(state_dir),
+            "DOCICH_TARGET_MATCHES": "1",
+            "DOCICH_MOON_BUGGY_AB_STATE": str(moon_buggy_ab.state_path(state_dir)),
+            "DOCICH_MOON_BUGGY_AB_ACTIVE": str(moon_buggy_ab.active_path(state_dir)),
+            "DOCICH_MOON_BUGGY_AB_REQUEST": request_id,
+        },
+    )
+
+    result = moon_buggy_ab.read_experiment(state_dir)
+    assert len(result["results"]) == 1
+    assert result["results"][0]["arm"] == "A"
+    assert result["results"][0]["weights_sha256"] == staged["baseline_sha256"]
+    assert scores[0]["ab_experiment_id"] == staged["experiment_id"]
+    assert scores[0]["ab_arm"] == "A"
+    assert scores[0]["weights_sha256"] == staged["baseline_sha256"]
+    assert keys == [["-t", "%9", "-l", "y"], ["-t", "%9", "Enter"]]
 
 
 def test_bastet_flushes_match_when_try_again_dialog_was_missed(tmp_path):

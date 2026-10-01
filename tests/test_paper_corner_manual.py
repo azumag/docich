@@ -78,7 +78,7 @@ def test_manual_start_narrates_and_restores(tmp_path):
     mgr._active_game = _active
     assert mgr.start() == 'completed'
     state = json.loads(mgr.path.read_text())
-    assert state['end_reason'] == 'exhausted'
+    assert state['end_reason'] == 'eight-slots-drained'
     assert state['previous_game'] == 'sorengame'
     assert ('switch', PAPER_VIEW_NAME) in coord.calls
     assert ('switch', 'sorengame') in coord.calls
@@ -228,7 +228,7 @@ def test_manual_run_delivers_opening_and_all_eight_fallback_segments(tmp_path):
 
     mgr._active_game = _active
     assert mgr.start() == 'completed'
-    delivered = {str(e).split(':')[-1] for e in voice if ':fallback:' in str(e)}
+    delivered = {str(e).split(':')[-1] for e in voice if ':script:' in str(e)}
     assert delivered == {str(index) for index in range(1, 9)}
     assert any(str(e).endswith(':opening') for e in voice)
 

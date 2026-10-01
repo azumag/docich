@@ -119,8 +119,12 @@ def run_agent(
 
     while True:
         t0 = time.monotonic()
+        effective_interval = interval_ms
         try:
             n = _run_iteration(adapter, brain, interval_ms, fence=fence, state_dir=g.state_dir)
+            next_interval = getattr(brain, "observation_interval_ms", None)
+            if type(next_interval) is int and next_interval in (500, 1500):
+                effective_interval = next_interval
             print(
                 f"[agent] {game.name}: {n} 件のアクションを実行しました (brain={game.agent.brain})",
                 flush=True,
@@ -135,5 +139,5 @@ def run_agent(
             print(f"[agent] 警告: {game.name} のループでエラーが発生しました: {exc}", flush=True)
 
         elapsed_s = time.monotonic() - t0
-        remaining_s = max(interval_ms / 1000 - elapsed_s, 0)
+        remaining_s = max(effective_interval / 1000 - elapsed_s, 0)
         time.sleep(remaining_s)

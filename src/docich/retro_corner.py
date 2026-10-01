@@ -26,9 +26,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .adapters import make_coordinator_adapter
 from .config import ConfigError, GlobalConfig, load_game, load_global
 from .game_switch import (
+    ERROR_QUIESCE_FAILED,
     ERROR_RECOVERY_REQUIRED,
+    GameSwitchBusyError,
     GameSwitchCoordinator,
     GameSwitchStore,
+    RuntimeSpec,
+    StateCorruptError,
     atomic_write_json,
     new_request_id,
 )
@@ -56,6 +60,10 @@ STARTING_STALE_MINUTES = 10
 # active slot中のゲーム専用agent監視間隔。共通配信基盤やゲーム本体は触らない。
 AGENT_REPAIR_POLL_SECONDS = 30.0
 PENDING_SWITCH_STATUSES = {"queued", "in_progress", "busy"}
+# 死んだruntimeの正規復旧 (recover-runtime) が game window の再作成と
+# readiness に使う上限。通常の switch より短くし、operatorの対話操作を
+# 待たせ続けない。
+RECOVER_RUNTIME_DEADLINE_S = 180.0
 
 
 class RetroCornerError(RuntimeError):
@@ -300,7 +308,12 @@ def corner_intro(g: GlobalConfig, game_name: str) -> str:
 
 
 def describe_strategy_change(state_dir, game_name: str) -> str:
-    """今回戦略と同じゲームの前回戦略を比較し、差分を短く説明する。"""
+    """ゲーム固有の前回履歴を今回の開始案内向けに短く説明する。"""
+    if game_name == "hanjuku-hero":
+        from .hanjuku_history import describe_latest_run
+
+        return describe_latest_run(Path(state_dir))
+
     if game_name == "ninvaders":
         from .ninvaders.store import PolicyStore
 
@@ -316,7 +329,7 @@ def describe_strategy_change(state_dir, game_name: str) -> str:
     current = read_strategy_for_game(game_name, current_path)
     previous = latest_strategy_snapshot(state_dir, game_name)
     if previous is None:
-        return "同じゲームの過去戦略を確認できないため、現在の戦略でお送りします。"
+        return "比較に使える同じゲームの過去戦略記録が見つからないため、現在の戦略でお送りします。"
 
     missing = object()
     changes = []
@@ -345,7 +358,41 @@ def _strategy_value_text(value) -> str:
     return text if len(text) <= 32 else text[:29] + "…"
 
 
+PRESENTATION_NOT_READY = "RetroArch native presentation is not ready"
+PRESENTATION_RETRY_LIMIT = 45  # x 2 s: a presenter still starting under load (Issue #1280)
+
+# 終了時チャット結果まとめの視聴者向け終了理由 (内部の終了コードは出さない)。
+# None は end_reason 未設定＝時間切れ通常終了。未知コードは既定文面へ落とす。
+_END_CLAUSE = {
+    None: "予定時間になりましたので終了しました",
+    "game_over": "ゲームオーバーになりました",
+    "screen_stalled": "画面停止で終了しました",
+    "manual_saved_stop": "セーブして終了しました",
+    "manual_forced_stop": "セーブ失敗で強制終了しました",
+    # 起動前の切替失敗でゲームが始まらなかった終了。予定終了や game over と
+    # 区別できる文面を出す (#1044)。
+    "switch-terminal-before-corner-active": "開始前の切り替えが失敗したため開始できませんでした",
+}
+# 半熟英雄は grounded な数値本文 (recap_body) の直後にこの一文を続け、
+# 終了理由を末尾に置く (音声 recap と同内容、owner rule 2026-09-28)。
+_END_HANJUKU_CLOSING = {
+    None: "今回の挑戦はここまでです。",
+    "game_over": "ゲームオーバーで、今回の挑戦はここまでです。",
+    "screen_stalled": "画面停止のため、今回の挑戦はここまでです。",
+    "manual_saved_stop": "セーブして、今回の挑戦はここまでです。",
+    "manual_forced_stop": "セーブ失敗による強制終了で、今回の挑戦はここまでです。",
+    # 開始前の切替失敗。開始していないのに「遊んだ」にしない (#1044)。
+    "switch-terminal-before-corner-active": "開始前の切り替えが失敗したため、今日は挑戦できませんでした。",
+}
+_END_HANJUKU_CLOSING_DEFAULT = "今回の挑戦はここまでです。"
+_END_CLAUSE_DEFAULT = "終了しました"
+
+
 class RetroCornerManager:
+    # 終了時の結果まとめチャット投稿。nethack/soren91 系サブコーナーは独自の
+    # 終了告知を finish 直後に呼ぶため、それぞれで無効化する。
+    announce_end_result = True
+
     def __init__(
         self,
         g: GlobalConfig,
@@ -502,6 +549,97 @@ class RetroCornerManager:
         state["announced"] = True
         state.pop("announce_error", None)
 
+    @staticmethod
+    def _end_reason_key(state: dict[str, object]) -> str | None:
+        """終了理由の辞書キー。未知/非文字列コードは内部語彙を出さず既定文面へ。"""
+        reason = state.get("end_reason")
+        return reason if isinstance(reason, str) or reason is None else "unknown"
+
+    @staticmethod
+    def _played_minutes(
+        state: dict[str, object], completed_at: dt.datetime
+    ) -> int | None:
+        raw = state.get("started_at")
+        if not isinstance(raw, str) or not raw:
+            return None
+        try:
+            started = dt.datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=completed_at.tzinfo)
+        try:
+            seconds = (completed_at - started).total_seconds()
+        except TypeError:
+            return None
+        if seconds < 0.0 or seconds > 7 * 24 * 3600:
+            return None
+        return max(1, round(seconds / 60))
+
+    def _hanjuku_end_body(self, state: dict[str, object]) -> str | None:
+        """半熟英雄の grounded な結果まとめ本文。記録が読めない時は None。"""
+        identity = state.get("bot_identity")
+        if not isinstance(identity, dict) or not isinstance(
+            identity.get("runtime_id"), str
+        ):
+            return None
+        try:
+            from .hanjuku_commentary import recap_body
+            from .hanjuku_run import load as load_hanjuku_run
+            from .naming import runtime_directory
+
+            runtime_dir = runtime_directory(self.g.state_dir, identity["runtime_id"])
+            return recap_body(runtime_dir, load_hanjuku_run(runtime_dir, identity))
+        except Exception:
+            return None
+
+    def _end_result_text(
+        self, state: dict[str, object], completed_at: dt.datetime
+    ) -> str:
+        """終了時の視聴者向け結果まとめ文面 (チャット投稿用)。
+
+        半熟英雄は decision log と run state から数値を数える (音声 recap と
+        同内容)。他のゲームは ゲーム名＋終了理由＋プレイ時間。数値はすべて
+        記録から読み、捏造しない。
+        """
+        reason = self._end_reason_key(state)
+        if state.get("game") == "hanjuku-hero":
+            body = self._hanjuku_end_body(state)
+            if body is not None:
+                closing = _END_HANJUKU_CLOSING.get(
+                    reason, _END_HANJUKU_CLOSING_DEFAULT
+                )
+                return f"{body}。{closing}"
+        game = state.get("game")
+        title = game if isinstance(game, str) and game else "ゲーム"
+        try:
+            title = load_game(self.g, title).title
+        except Exception:
+            pass
+        clause = _END_CLAUSE.get(reason, _END_CLAUSE_DEFAULT)
+        minutes = self._played_minutes(state, completed_at)
+        duration = (
+            f"。約{minutes}分間お楽しみいただきました" if minutes is not None else ""
+        )
+        return f"{title}は{clause}{duration}。"
+
+    def _announce_end_result_locked(
+        self, state: dict[str, object], completed_at: dt.datetime
+    ) -> None:
+        """終了時の結果まとめチャット投稿。_finish_locked の lock 保持中に呼ぶ。
+
+        投稿/文面作成の失敗はコーナー自体を失敗させない。結果は state に記録する。
+        """
+        if state.get("end_announced"):
+            return
+        try:
+            self._chat(self._end_result_text(state, completed_at))
+        except Exception as exc:
+            state["end_announce_error"] = _safe_detail(exc)
+        else:
+            state.pop("end_announce_error", None)
+        state["end_announced"] = True
+
     @contextmanager
     def _locked(self) -> Iterator[None]:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -566,10 +704,18 @@ class RetroCornerManager:
         still be draining or rolling back. The durable terminal receipt and a
         stable canonical owner must both prove that this exact switch ended.
         A ``failed`` state is accepted only for a known switch-start error whose
-        own terminal rollback receipt carries the same error code.
+        own terminal rollback receipt carries the same error code. A switch
+        quiesce failure (``quiesce_failed``) qualifies: the outgoing runtime is
+        kept and restored as ``active``, so the receipt below proves the very
+        same property that this method exists for, that the corner never became
+        active. The same holds for a target that never became ready
+        (``readiness_timeout``): the switch rolled back to the previous game,
+        so the corner never became active either.
         """
         from .game_switch import (
             ERROR_AGENT_START_FAILED,
+            ERROR_QUIESCE_FAILED,
+            ERROR_READINESS_TIMEOUT,
             ERROR_START_FAILED,
             GameSwitchBusyError,
         )
@@ -591,6 +737,7 @@ class RetroCornerManager:
                     if (completed.tzinfo is None or completed_ts < 0
                             or state.get("last_error_code") not in {
                                 ERROR_START_FAILED, ERROR_AGENT_START_FAILED,
+                                ERROR_QUIESCE_FAILED, ERROR_READINESS_TIMEOUT,
                             }):
                         return False
                 if ((status not in {"starting", "interrupted"} and not failed_start)
@@ -661,6 +808,164 @@ class RetroCornerManager:
             # An owner still holds a lock: keep the reservation and retry on
             # the next timer tick, without replaying the switch.
             return False
+
+    def _prelaunch_quiesce_failure_proved(self, state: dict[str, object]) -> bool:
+        """Prove a ``quiesce_failed`` slot never reached the corner (#1044).
+
+        ``reconcile_failed_rotation_start`` only accepts a ``rolled_back``
+        receipt.  A switch that dies *inside* the boundary step keeps the
+        outgoing runtime and reports ``quiesce_failed``, so the corner is left
+        ``failed`` with no canonical path left to roll back and no retry that
+        can succeed: replaying the switch would only re-enter the same drain.
+
+        A receipt is accepted only when it proves all of the following about
+        *this* request: it is a ``switch`` to the corner's target, it reached
+        the terminal ``failed`` status, and its own result carries
+        ``quiesce_failed`` for the very same ``from_game``/``to_game`` pair the
+        corner recorded.  Anything else — a missing, pruned, non-terminal or
+        differently-shaped receipt — leaves the ``failed`` state latched.
+        """
+
+        if (state.get("status") != "failed"
+                or state.get("last_error_code") != ERROR_QUIESCE_FAILED):
+            return False
+        target = state.get("game")
+        previous = state.get("previous_game")
+        request_id = state.get("switch_request_id")
+        if (not isinstance(target, str) or not target
+                or not isinstance(previous, str) or not previous
+                or target == previous
+                or not isinstance(request_id, str) or not request_id):
+            return False
+        try:
+            receipt = self.store.receipts.load(request_id)
+        except StateCorruptError:
+            # An unreadable receipt is missing evidence, never permission.
+            return False
+        if receipt is None:
+            return False
+        result = receipt.get("result")
+        return not (
+            receipt.get("request_id") != request_id
+            or receipt.get("operation") != "switch"
+            or receipt.get("target") != target
+            or receipt.get("status") != "failed"
+            or not isinstance(result, dict)
+            or result.get("request_id") != request_id
+            or result.get("operation") != "switch"
+            or result.get("status") != "failed"
+            or result.get("error_code") != ERROR_QUIESCE_FAILED
+            or result.get("from_game") != previous
+            or result.get("to_game") != target
+        )
+
+    def _canonical_never_switched_to(
+        self, canonical: dict[str, object], target: str
+    ) -> bool:
+        """Accept only a canonical state that still owns another game.
+
+        The terminal receipt above says the switch failed; this says the
+        canonical owner was restored and nothing is still in flight.  A
+        lingering candidate, a retained previous runtime or a retiring runtime
+        all mean some part of that switch is still live, so the corner's
+        terminalization would race it.
+        """
+
+        if (canonical.get("phase") not in {"idle", "ready"}
+                or canonical.get("candidate") is not None
+                or canonical.get("previous") is not None
+                or canonical.get("retiring")):
+            return False
+        active = canonical.get("active")
+        if active is None:
+            return True
+        return isinstance(active, dict) and active.get("game") != target
+
+    def _terminalize_prelaunch_quiesce_failure(
+        self, state: dict[str, object]
+    ) -> CornerResult | None:
+        """Settle a slot whose switch failed before launch, else ``None``.
+
+        The durable receipt, canonical state, and final corner write are one
+        read-side transaction under the shared game-switch store lock.  A
+        coordinator writer therefore cannot begin after canonical verification
+        and before the corner is terminalized.  Lock contention leaves the
+        failed slot untouched and asks the operator to retry later.
+
+        On success the corner is recorded as ``interrupted`` with the same
+        terminal vocabulary as ``reconcile_failed_rotation_start`` so the
+        rotation ledger can commit the reservation through the ordinary
+        ``corner-rotation recover`` step.  The original ``failed`` timestamp is
+        preserved: it is the moment the slot really ended, and the rotation
+        ledger clamps it exactly like a reconcile-written ``completed_at``.
+        """
+
+        if (state.get("status") != "failed"
+                or state.get("last_error_code") != ERROR_QUIESCE_FAILED):
+            return None
+        target = state.get("game")
+        previous = state.get("previous_game")
+        request_id = state.get("switch_request_id")
+        if (not isinstance(target, str) or not target
+                or not isinstance(previous, str) or not previous
+                or target == previous
+                or not isinstance(request_id, str) or not request_id):
+            return None
+        try:
+            completed_at = dt.datetime.fromisoformat(state["completed_at"])
+        except (KeyError, OverflowError, TypeError, ValueError):
+            return None
+        if completed_at.tzinfo is None or completed_at.timestamp() < 0:
+            return None
+
+        try:
+            with self.store.lock(exclusive=False):
+                # Keep receipt proof, canonical verification, and the corner
+                # commit in the same lock interval.  Game-switch writers take
+                # this store lock exclusively.
+                if not self._prelaunch_quiesce_failure_proved(state):
+                    return None
+                try:
+                    canonical, missing = self.store.canonical.load()
+                except StateCorruptError:
+                    return None
+                if missing:
+                    return None
+                phase = canonical.get("phase")
+                if phase in {"failed", "recovery_required"}:
+                    return CornerResult(
+                        "failed", game=target, previous_game=previous,
+                        detail=f"canonical stateが{phase}のため確定しません",
+                    )
+                if phase not in {"idle", "ready"}:
+                    return CornerResult(
+                        "queued", game=target, previous_game=previous,
+                        detail=f"canonical phase={phase!r} の完了を待っています",
+                    )
+                if not self._canonical_never_switched_to(canonical, target):
+                    return CornerResult(
+                        "failed", game=target, previous_game=previous,
+                        detail="canonical がtargetを所有中のため確定しません",
+                    )
+                state.update(
+                    status="interrupted",
+                    end_reason="switch-terminal-before-corner-active",
+                    last_error=None,
+                    last_error_code=None,
+                )
+                state.pop("switch_status", None)
+                self._write_state(state)
+        except GameSwitchBusyError:
+            return CornerResult(
+                "queued", game=target, previous_game=previous,
+                detail="game-switch lockを別writerが保持中のため確定を待っています",
+            )
+        return CornerResult(
+            "succeeded",
+            game=target,
+            previous_game=previous,
+            detail="起動前に失敗した手動起動をinterruptedとして確定",
+        )
 
     def _due_game(self, now: dt.datetime, state: dict) -> str | None:
         games = self.config.games if getattr(self.config, "daily_each_game", False) else [select_game(self.config.games, now.date())]
@@ -1017,6 +1322,10 @@ class RetroCornerManager:
         # queue dispatchでは次コーナーが共有stateを上書きし得るため、確定済みの
         # コーナー期間も明示して競合させる (job側のstate読みを不要にする)。
         argv += self._spawn_window_args(state)
+        request_id = state.get("rotation_request_id")
+        if (state.get("game") == "moon-buggy"
+                and isinstance(request_id, str) and request_id):
+            argv += ["--request-id", request_id]
         try:
             self._spawn(argv, log_path)
             state["improve_job"] = {"spawned": True, "date": date_str, "log": str(log_path)}
@@ -1033,6 +1342,7 @@ class RetroCornerManager:
         dry_run: bool = False,
         game: str | None = None,
         window: tuple[float, float] | None = None,
+        request_id: str | None = None,
     ) -> dict:
         from .corner_improve import run_corner_improve
 
@@ -1066,6 +1376,7 @@ class RetroCornerManager:
             margin_pct=float(margin_pct),
             dry_run=dry_run,
             window=window,
+            rotation_request_id=request_id,
         )
 
     def _finish_locked(self, state: dict[str, object], completed_at: dt.datetime) -> CornerResult:
@@ -1145,6 +1456,16 @@ class RetroCornerManager:
                 last_error=None,
                 last_error_code=None,
             )
+            if state.pop("manual_stop_requested", False):
+                state["end_reason"] = "manual_saved_stop"
+                from .naming import runtime_directory
+                from .retroarch_boundary import BOUNDARY_FILE, read_record
+                boundary = read_record(runtime_directory(self.g.state_dir, expected_source['runtime_id']) / BOUNDARY_FILE)
+                if (boundary.get('outcome') == 'manual_forced_stop'
+                        and boundary.get('request_id') == request_id
+                        and all(boundary.get(key) == expected_source.get(key) for key in
+                                ('game', 'runtime_id', 'generation', 'lease_id'))):
+                    state['end_reason'] = 'manual_forced_stop'
             state.pop("switch_request_id", None)
             state.pop("switch_status", None)
             # Persist the terminal corner state before handing control to the
@@ -1152,6 +1473,10 @@ class RetroCornerManager:
             # child immediately; if it reads the old active state first, the
             # improvement command returns wrong-status and silently skips.
             self._write_state(state)
+            # 終了時の結果まとめは terminal 確定後・improve 起動前のここで
+            # 投稿する。improve 起動の成否に結果まとめは依存させない。
+            if self.announce_end_result:
+                self._announce_end_result_locked(state, completed_at)
             self._spawn_improve_once(state)
             self._write_state(state)
             return self._state_result(state)
@@ -1537,7 +1862,9 @@ class RetroCornerManager:
         from .game_switch import DeadlineExceededError, GameSwitchBusyError
         from .hanjuku_run import event
         from .naming import runtime_directory
+        from .adapters.base import AdapterError
         next_repair = 0.
+        not_ready = 0
         owned_runtime = state.get('bot_runtime_id')
         owned_identity = state.get('bot_identity')
         if not isinstance(owned_identity, dict):
@@ -1573,11 +1900,32 @@ class RetroCornerManager:
                 })
                 self._sleep(2.)
                 continue
+            except AdapterError as exc:
+                # g433 (2026-09-28 20:22): one "presentation is not ready"
+                # right after the switch killed the manager on the first try
+                # and left canonical on a runtime nobody watched (Issue #1280).
+                # Only this exact state is retried, and only for a bounded
+                # window; any other adapter error still fails closed.
+                if str(exc) != PRESENTATION_NOT_READY or not_ready >= PRESENTATION_RETRY_LIMIT:
+                    raise
+                not_ready += 1
+                event(runtime_directory(self.g.state_dir, owned_runtime), {
+                    'event': 'observation_retry', 'at': time.time(),
+                    'reason': 'presentation_not_ready', 'attempt': not_ready,
+                })
+                self._sleep(2.)
+                continue
+            not_ready = 0
             run = observation.meta.get('hanjuku') or {}
+            # Network side channel runs only AFTER shared_section has released
+            # the input gate. It re-verifies durable terminal evidence itself.
+            from .hanjuku_predictions import tick as prediction_tick
+            prediction = prediction_tick(self.g, owned_identity)
             with self._locked():
                 latest = self._read_state()
                 if latest.get('status') != 'active':
                     return self._state_result(latest)
+                latest['prediction'] = prediction
                 latest['ends_at'] = None
                 latest['end_reason'] = run.get('terminal_reason')
                 latest['bot_phase'] = run.get('phase')
@@ -1591,7 +1939,7 @@ class RetroCornerManager:
                     from .hanjuku_policy import summary
                     from .retroarch_boundary import read_record
                     bot = read_record(runtime_directory(self.g.state_dir, active['runtime_id'])
-                                      / 'hanjuku_bot.json')
+                                      / 'hanjuku_bot.json', limit=256 * 1024)
                     latest['bot_chart'] = summary(bot.get('policy'))
                     latest['bot_version'] = bot.get('bot_version')
                 except Exception:
@@ -1621,6 +1969,16 @@ class RetroCornerManager:
                         raise RetroCornerError('Hanjuku terminal evidence is not durable')
                     latest['terminal_evidence'] = evidence.get('terminal_evidence')
                     latest['terminal_generation'] = evidence.get('generation')
+                    if run.get('terminal_reason') == 'game_over':
+                        # #1085 L4: collate base/adjusted charts with outcomes
+                        # once; a failure must never block the teardown.
+                        try:
+                            from .hanjuku_chart_review import review
+                            latest['chart_review'] = review(
+                                runtime_directory(self.g.state_dir, active['runtime_id']),
+                                runtime_identity(fence))
+                        except Exception as exc:
+                            latest['chart_review'] = {'error': type(exc).__name__}
                     return self._finish_locked(latest, self._local_now())
                 if time.monotonic() >= next_repair:
                     self._repair_active_agent(latest)
@@ -1636,6 +1994,52 @@ class RetroCornerManager:
                 return None
             self._ensure_runtime()
             return self._finish_locked(state, now)
+
+    def _verify_restoring_request(self, state: dict[str, object], request_id: str) -> None:
+        """Fail closed before replaying a persisted restoration request."""
+        if (state.get("status") != "restoring"
+                or state.get("rotation_request_id") != request_id
+                or not isinstance(state.get("switch_request_id"), str)
+                or not state.get("switch_request_id")):
+            raise RetroCornerError("restoring request ownership is unverified")
+        if not self._scripted_hanjuku(state):
+            return
+
+        identity = state.get("bot_identity")
+        identity_keys = {"game", "runtime_id", "generation", "lease_id"}
+        if (not isinstance(identity, dict) or set(identity) != identity_keys
+                or identity.get("game") != "hanjuku-hero"
+                or type(identity.get("generation")) is not int
+                or identity["generation"] < 1
+                or not isinstance(identity.get("runtime_id"), str)
+                or not identity["runtime_id"]
+                or not isinstance(identity.get("lease_id"), str)
+                or not identity["lease_id"]
+                or state.get("bot_runtime_id") != identity["runtime_id"]):
+            raise RetroCornerError("Hanjuku runtime identity is unverified before restore")
+
+        reason = state.get("end_reason")
+        if reason not in {"game_over", "screen_stalled"}:
+            # Explicit stop paths can enter restoring without a terminal frame.
+            # Their source runtime is still fenced by verify_runtime and the
+            # coordinator's expected_source check in _finish_locked.
+            return
+        terminal_generation = state.get("terminal_generation")
+        if (type(terminal_generation) is not int
+                or terminal_generation != identity["generation"]):
+            raise RetroCornerError("Hanjuku terminal generation does not match runtime")
+
+        from .hanjuku_run import terminal
+        from .naming import runtime_directory
+
+        evidence = terminal(
+            runtime_directory(self.g.state_dir, identity["runtime_id"]), identity
+        )
+        if (evidence is None
+                or evidence.get("terminal_reason") != reason
+                or evidence.get("generation") != identity["generation"]
+                or evidence.get("terminal_evidence") != state.get("terminal_evidence")):
+            raise RetroCornerError("Hanjuku terminal evidence changed before restore")
 
     def _retry_starting_tick(self, now: dt.datetime) -> CornerResult | None:
         """Retry a queued corner start independently of its schedule window."""
@@ -1688,11 +2092,24 @@ class RetroCornerManager:
         live ``draining`` boundary, never touches an explicit
         ``recovery_required`` phase, and preserves the rotation history so a
         recovered slot cannot cause a duplicate selection inside 24 hours.
+
+        A slot whose game switch failed *before* the corner started
+        (``quiesce_failed``, #1044) is terminalized as ``interrupted`` instead
+        of being replayed: no canonical recovery is outstanding, and retrying
+        would re-enter the same failed round boundary.  This is the only step
+        that clears such a latch, and ``corner-rotation recover`` then commits
+        the reservation.
         """
 
         now = self._local_now()
         with self._locked():
             state = self._read_state()
+            # Deliberately ahead of the recovery-required gate below: a
+            # quiesce_failed slot is not a canonical-recovery failure, so the
+            # retry path must not claim it.
+            terminalized = self._terminalize_prelaunch_quiesce_failure(state)
+            if terminalized is not None:
+                return terminalized
             if not self._failed_state_is_recoverable(state):
                 return CornerResult("noop", detail="failed-slot-not-recoverable")
             target = state.get("game")
@@ -1753,6 +2170,60 @@ class RetroCornerManager:
             return CornerResult("failed", game=target, detail="failed-slotの再開状態を作成できません")
         return self._wait_and_finish(resumed)
 
+    def recover_runtime(self) -> CornerResult:
+        """Relaunch a dead scripted runtime, then end the corner safely.
+
+        Operator recovery for "hanjuku is active in canonical, the process is
+        dead, and there is no terminal evidence" (Issue #1280): a crashed tmux
+        server leaves nothing to observe, so every normal ending path refuses.
+        This is the supported replacement for the ad-hoc relaunch script:
+
+        1. verify the corner state and the canonical active runtime identity
+           match the recorded bot identity (fail closed otherwise),
+        2. rebuild the shared session/display (``cmd_up``), then re-run the
+           runtime's own ``preflight`` / ``materialize_runtime`` /
+           ``readiness`` contract so the recorded window is either already
+           owned or recreated from scratch,
+        3. end through the explicit operator stop path, which attempts a save
+           and permits a forced unsaved stop when the save fails.
+
+        The rotation latch is cleared afterwards with the existing
+        ``corner-rotation-operator recover-failed`` operator step.
+        """
+
+        with self._tick_guard() as single:
+            if not single:
+                return CornerResult("queued", detail="already-running")
+            with self._locked():
+                state = self._read_state()
+                if not self._scripted_hanjuku(state):
+                    return CornerResult("noop", detail="not-a-scripted-corner")
+                if state.get("status") not in {"active", "failed"}:
+                    return CornerResult("noop", detail="not-recoverable")
+                identity = state.get("bot_identity")
+                identity_keys = {"game", "runtime_id", "generation", "lease_id"}
+                canonical, _missing = self.store.canonical.load()
+                active = canonical.get("active")
+                if (
+                    canonical.get("phase") != "ready"
+                    or not isinstance(active, dict)
+                    or not isinstance(identity, dict)
+                    or set(identity) != identity_keys
+                    or any(active.get(key) != identity.get(key) for key in identity_keys)
+                    or identity.get("game") != "hanjuku-hero"
+                ):
+                    raise RetroCornerError("復旧対象runtimeのidentityを確認できません")
+            # Adapter calls can take seconds; the tick guard keeps a live
+            # corner manager from racing this recovery.
+            self._ensure_runtime()
+            spec = RuntimeSpec.from_runtime(self.g.state_dir, active)
+            adapter = make_coordinator_adapter(self.g, spec)
+            deadline = time.monotonic() + RECOVER_RUNTIME_DEADLINE_S
+            adapter.preflight(deadline, None)
+            adapter.materialize_runtime(deadline, None)
+            adapter.readiness(deadline, None)
+            return self._stop_direct()
+
     def start(self) -> CornerResult:
         from .corner_catalog import rotation_enabled
         if rotation_enabled(self.g):
@@ -1784,6 +2255,7 @@ class RetroCornerManager:
                         if result is not None:
                             return result
                     elif status == "restoring":
+                        self._verify_restoring_request(state, request_id)
                         return self._finish_locked(state, self._local_now())
                     elif status != "active":
                         raise RetroCornerError("rotation execution requires recovery")
@@ -1813,12 +2285,40 @@ class RetroCornerManager:
     def _stop_direct(self) -> CornerResult:
         with self._locked():
             state = self._read_state()
+            if self._scripted_hanjuku(state) and state.get("status") in {"active", "failed"}:
+                # Explicit operator stop attempts a save, then permits an
+                # unsaved stop on failure. Natural endings do not opt in.
+                from .agent.fence import shared_section
+                from .naming import runtime_directory
+                from .retroarch_boundary import MANUAL_SAVE_FILE
+
+                def request_save():
+                    canonical, _ = self.store.canonical.load()
+                    active = canonical.get("active") or {}
+                    expected = state.get("bot_identity")
+                    if (canonical.get("phase") != "ready" or not isinstance(expected, dict)
+                            or active.get("game") != "hanjuku-hero"
+                            or any(active.get(k) is None or active.get(k) != expected.get(k) for k in
+                                   ("game", "runtime_id", "generation", "lease_id"))):
+                        raise RetroCornerError("Hanjuku stop runtime identity is unverified")
+                    request_id = new_request_id()
+                    atomic_write_json(runtime_directory(self.g.state_dir, active["runtime_id"])
+                                      / MANUAL_SAVE_FILE,
+                                      {**expected, "schema": 1, "request_id": request_id,
+                                       "allow_unsaved_stop": True})
+                    state.update(status="active", switch_request_id=request_id,
+                                 manual_stop_requested=True)
+
+                shared_section(self.g.state_dir, request_save)
             if state.get("status") not in {"active", "restoring"}:
                 return CornerResult("noop", detail="not-active")
             self._ensure_runtime()
             return self._finish_locked(state, self._local_now())
 
     def tick(self) -> CornerResult:
+        # Retry our durable result after a network failure, even after teardown.
+        from .hanjuku_predictions import tick as prediction_tick
+        prediction_tick(self.g)
         from .corner_catalog import rotation_enabled
         if rotation_enabled(self.g):
             from .corner_rotation import CornerRotationManager
@@ -2582,6 +3082,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "recover-failed",
         help="canonical failed後のレトロ枠を安全に復旧し、同じゲームを再試行する",
     )
+    sub.add_parser(
+        "recover-runtime",
+        help="死んだscripted runtimeを正規手順で再起動し、セーブを試みた停止でコーナーを終了する",
+    )
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
     once = sub.add_parser("improve-once")
@@ -2591,6 +3095,8 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="確定済みコーナー開始 epoch秒 (queue dispatch用)")
     once.add_argument("--ends-at", type=float, default=None,
                       help="確定済みコーナー終了予定 epoch秒")
+    once.add_argument("--request-id", default=None,
+                      help="完了したコーナーのrequest ID (queue dispatch用)")
     once.add_argument("--agents", default=None, help="LLM委任先 (既定は設定値)")
     once.add_argument("--matches", type=int, default=None)
     once.add_argument("--margin-pct", type=float, default=None)
@@ -2628,6 +3134,7 @@ def main(argv: list[str] | None = None) -> int:
                     margin_pct=args.margin_pct, dry_run=args.dry_run,
                     game=getattr(args, "game", None),
                     window=window,
+                    request_id=getattr(args, "request_id", None),
                 )
             except CornerImproveError as exc:
                 print(f"docich: エラー: {exc}", file=sys.stderr)
@@ -2636,6 +3143,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         method_name = {
             "recover-failed": "recover_failed",
+            "recover-runtime": "recover_runtime",
         }.get(args.command, args.command)
         result = getattr(manager, method_name)()
         print(

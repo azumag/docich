@@ -1,8 +1,8 @@
-"""Keep the stream's category on whichever game or view is actually running.
+"""Keep the stream's category and viewer title on the running game or view.
 
 The reviewed Soren-side script ``update_stream_game.sh`` owns every Twitch
 call; this module only decides *when* to run it and with which fixed,
-category-only arguments.  No token, channel id, or other secret is read or
+viewer-facing arguments.  No token, channel id, or other secret is read or
 passed here: the script loads its own ``.env`` from the Soren root.
 
 Failure is always non-fatal.  A stale category is a cosmetic problem; a game
@@ -24,9 +24,37 @@ LOG_NAME = "stream-game.log"
 
 # ``paper-view`` is a synthetic program view, not a game in ``config/games``.
 # Use Twitch's technology category instead of leaving the category of the game
-# that was displaced behind.  The title is intentionally left unchanged.
+# that was displaced behind.
 PAPER_CATEGORY_ID = "509670"
 PAPER_CATEGORY_NAME = "Science & Technology"
+
+# Public viewer labels only: never use operational briefs, chart versions,
+# paths or generated/private text to compose an automatic broadcast title.
+VIEWER_GAME_NAMES = {
+    "sorengame": "ソ連ゲーム", "soren91": "ソ連ゲーム91",
+    "hanjuku-hero": "半熟英雄", "nethack": "NetHack",
+    "bastet": "Bastet", "gnurobots": "GNU Robots", "moon-buggy": "Moon Buggy",
+    "ninvaders": "Space Invaders", "nsnake": "Snake",
+    "pacman4console": "Pac-Man", "robots": "Robots",
+    "paper-view": "ペーパートレード",
+}
+
+
+def viewer_title_args(game: str, g: GlobalConfig | None = None) -> list[str]:
+    """Explicit nonempty text prevents updater ops-brief/env fallbacks.
+
+    The reviewed Soren updater still owns the date-based [dayN] prefix and
+    Twitch's length limit. Unknown catalog games use only a validated id.
+    """
+    game = validate_game_name(game)
+    label = VIEWER_GAME_NAMES.get(game, game)
+    suffix = "AIの検証配信" if game == "paper-view" else "AIプレイ配信"
+    if g is not None:
+        from .stream_title_context import progress_phrase
+        from .trading.soren_output import resolve_soren_root
+
+        suffix = progress_phrase(game, Path(g.state_dir), resolve_soren_root(g)) or suffix
+    return ["--activity", label, "--strategy", suffix]
 
 
 class StreamCategoryError(RuntimeError):
@@ -163,9 +191,10 @@ def _announce_explicit_category(
     script = script_path(g)
     if not script.is_file() or not os.access(script, os.X_OK):
         raise StreamCategoryError(f"{SCRIPT_NAME} が見つかりません: {script}")
-    argv = [str(script), "--category-id", category_id.strip(), "--category-only"]
+    argv = [str(script), "--category-id", category_id.strip()]
     if category_name:
         argv.extend(["--category-name", str(category_name)])
+    argv.extend(viewer_title_args("paper-view", g))
     (spawn or _spawn)(
         argv,
         cwd=script.parent,
@@ -196,7 +225,7 @@ def announce_stream_game(g: GlobalConfig, game: str, *, spawn=None) -> bool:
         game,
         "--games-dir",
         str(Path(g.games_dir).resolve()),
-        "--category-only",
+        *viewer_title_args(game, g),
     ]
     (spawn or _spawn)(
         argv,

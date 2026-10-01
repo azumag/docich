@@ -15,18 +15,39 @@
 # syntax error.  Keep it strictly POSIX (no [[ ]], no $((10#...))).
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 . "$SCRIPT_DIR/_run_with_driver.sh"
-SCORELOG="${MOONBUGGY_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/moon-buggy.jsonl}"
+if [ -n "${MOONBUGGY_SCORELOG:-}" ]; then
+  SCORELOG="$MOONBUGGY_SCORELOG"
+elif [ -n "${DOCICH_STATE_DIR:-}" ]; then
+  SCORELOG="$DOCICH_STATE_DIR/scores/moon-buggy.jsonl"
+else
+  SCORELOG="/home/ubuntu/docich/run-soren-live/scores/moon-buggy.jsonl"
+fi
 PANE="${TMUX_PANE:-}"
 MOONBUGGY_BIN="${MOONBUGGY_BIN:-/usr/games/moon-buggy}"
 MAX_MATCHES="${MOONBUGGY_MAX_MATCHES:-${DOCICH_TARGET_MATCHES:-3}}"
+AB_STATE="${DOCICH_MOON_BUGGY_AB_STATE:-}"
+AB_REQUEST="${DOCICH_MOON_BUGGY_AB_REQUEST:-}"
+DOCICH_SRC_PATH="$SCRIPT_DIR/../../src"
 case "$MAX_MATCHES" in
   ''|*[!0-9]*|0*) echo "MOONBUGGY_MAX_MATCHES must be a positive integer" >&2; exit 2 ;;
 esac
 
 record_score() {
   [ "$1" -ge 0 ] 2>/dev/null || return 0
+  if [ -n "$AB_STATE" ]; then
+    PYTHONPATH="$DOCICH_SRC_PATH${PYTHONPATH:+:$PYTHONPATH}" \
+      python3 -m docich.moon_buggy_ab record-score --score "$1" --scorelog "$SCORELOG"
+    return $?
+  fi
   mkdir -p "$(dirname "$SCORELOG")" 2>/dev/null || true
   printf '{"ts":%s,"game":"moon-buggy","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$1" >>"$SCORELOG" 2>/dev/null || true
+}
+
+select_ab_arm() {
+  [ -n "$AB_STATE" ] || return 0
+  [ -n "$AB_REQUEST" ] || return 1
+  PYTHONPATH="$DOCICH_SRC_PATH${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 -m docich.moon_buggy_ab select --request-id "$AB_REQUEST"
 }
 
 dec() {
@@ -65,17 +86,25 @@ driver() {
         ;;
       *"new game"*)
         if [ "$seen_game" = "1" ]; then
-          record_score "$max_score"
+          if ! record_score "$max_score"; then
+            continue
+          fi
           matches=$((matches + 1))
           max_score=0
           seen_game=0
         fi
         [ "$matches" -lt "$MAX_MATCHES" ] || continue
+        if ! select_ab_arm; then
+          continue
+        fi
         tmux send-keys -t "$PANE" -l "y"
         sleep 3
         ;;
       *"start game"*)
         if [ "$started" = "0" ]; then
+          if ! select_ab_arm; then
+            continue
+          fi
           started=1
           tmux send-keys -t "$PANE" -l "y"
         fi

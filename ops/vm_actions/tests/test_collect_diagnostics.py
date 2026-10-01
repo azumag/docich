@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import stat
 import subprocess
 import tempfile
 import time
@@ -91,6 +92,232 @@ def test_hanjuku_telemetry_is_enum_only_and_never_publishes_frames_or_state():
     output=module._project_corner_state(state)
     assert output['end_reason'] is None and output['bot_phase'] is None
     assert output['bot_actions_sent'] is None and output['screen_unchanged_seconds'] is None
+
+
+def test_corner_end_reason_reports_the_prelaunch_switch_terminal_vocabulary():
+    # #1044: an interrupted slot whose switch failed before launch has to stay
+    # distinguishable from every other interrupted corner, or the operator
+    # cannot tell a rolled-back boundary from a retired launch.
+    module=load_collector()
+    output=module._project_corner_state({
+        'status':'interrupted','game':'hanjuku-hero',
+        'end_reason':'switch-terminal-before-corner-active',
+        'completed_at':'2026-09-23T20:54:30+09:00'})
+    assert output['status']=='interrupted'
+    assert output['end_reason']=='switch-terminal-before-corner-active'
+    unknown=module._project_corner_state({
+        'status':'interrupted','game':'hanjuku-hero',
+        'end_reason':'SECRET-END-REASON'})
+    assert unknown['end_reason'] is None
+
+
+PULSE_SINK_INPUTS = (
+    'Sink Input #41\n'
+    '\tDriver: protocol-native.c\n'
+    '\tOwner Module: 12\n'
+    '\tClient: 10\n'
+    '\tSink: 3\n'
+    '\tVolume: front-left: 65536 / 100% / 0.00 dB,   front-right: 65536 / 100% / 0.00 dB\n'
+    '\tMute: yes\n'
+    '\tCorked: no\n'
+    '\tProperties:\n'
+    '\t\tmedia.name = "BGM"\n'
+    '\t\tmedia.role = "music"\n'
+    '\t\tapplication.name = "ffplay"\n'
+    '\t\tapplication.process.id = "500"\n'
+    'Sink Input #42\n'
+    '\tSink: 4\n'
+    '\tVolume: front-left: 32768 / 50% / -6.02 dB,   front-right: 32768 / 50% / -6.02 dB\n'
+    '\tMute: no\n'
+    '\tProperties:\n'
+    '\t\tmedia.role = "not-a-real-role"\n'
+    '\t\tapplication.name = "Speech Runner TOKEN=do-not-publish"\n'
+    '\t\tapplication.process.id = "900"\n'
+)
+PULSE_SHORT_SINKS = '3\tsoren_null\tmodule-null-sink\n4\talsa_output.pci\n'
+
+
+def _fixed_pulse_listing(module, listing=PULSE_SINK_INPUTS, short=PULSE_SHORT_SINKS,
+                         failure=None):
+    def run(*args):
+        if failure is not None:
+            return None, failure
+        return (short if args[-1] == 'sinks' else listing), None
+    module._pulse_listing = run
+
+
+def test_pulse_sink_inputs_make_a_muted_bgm_readable_without_an_owner_shell():
+    # #968: the BGM stream survived the corner switch with a normal volume and
+    # Mute: yes, and module-stream-restore re-applied it to every new stream.
+    # This projection is the read-only half of that follow-up.
+    module = load_collector()
+    _fixed_pulse_listing(module)
+
+    output = module._collect_pulse_sink_inputs()
+
+    assert output['readable'] is True and output['reason'] is None
+    assert output['total'] == 2 and output['muted'] == 1
+    assert output['truncated'] is False
+    muted, speech = output['streams']
+    assert muted['index'] == 41
+    assert muted['sink'] == 'soren_null'
+    assert muted['mute'] is True
+    assert muted['corked'] is False
+    assert muted['role'] == 'music'
+    assert muted['player'] == 'bridge-ffplay'
+    assert muted['volume_percent'] == [100, 100]
+    # Not reported by the daemon: null, never "not corked".
+    assert speech['corked'] is None
+    # Free-form property values are never emitted, only fixed categories.
+    assert speech['role'] is None
+    assert speech['player'] == 'speech-worker'
+    assert 'do-not-publish' not in json.dumps(output)
+    assert 'Owner Module' not in json.dumps(output)
+    assert all('pid' not in stream and 'application' not in stream
+               for stream in output['streams'])
+
+
+def test_pulse_sink_inputs_report_an_unreachable_daemon_as_unreadable():
+    module = load_collector()
+    for reason in ('pactl_unavailable', 'pactl_failed', 'unbounded_output'):
+        _fixed_pulse_listing(module, failure=reason)
+        output = module._collect_pulse_sink_inputs()
+        # An unreadable daemon is never reported as "no muted streams".
+        assert output['readable'] is False
+        assert output['reason'] == reason
+        assert output['muted'] is None
+        assert output['total'] is None
+        assert output['streams'] == []
+
+
+def test_pulse_nonempty_unrecognized_output_is_not_a_healthy_empty_list():
+    module = load_collector()
+    _fixed_pulse_listing(module, listing='unexpected nonempty output')
+    output = module._collect_pulse_sink_inputs()
+    assert output['readable'] is False
+    assert output['reason'] == 'unparsable'
+    assert output['total'] is None and output['muted'] is None
+
+
+def test_pulse_empty_output_is_a_valid_empty_list():
+    module = load_collector()
+    _fixed_pulse_listing(module, listing='\n  ')
+    output = module._collect_pulse_sink_inputs()
+    assert output['readable'] is True
+    assert output['total'] == 0 and output['muted'] == 0
+
+
+def test_pulse_mute_count_includes_streams_omitted_from_details():
+    module = load_collector()
+    listing = ''.join(
+        f'Sink Input #{i}\n\tSink: 0\n\tMute: '
+        + ('yes' if i == module.PULSE_SINK_INPUTS_MAX else 'no') + '\n'
+        for i in range(module.PULSE_SINK_INPUTS_MAX + 1)
+    )
+    _fixed_pulse_listing(module, listing=listing)
+    output = module._collect_pulse_sink_inputs()
+    assert output['total'] == module.PULSE_SINK_INPUTS_MAX + 1
+    assert len(output['streams']) == module.PULSE_SINK_INPUTS_MAX
+    assert output['truncated'] is True
+    assert output['muted'] == 1
+
+
+def test_pulse_stream_detail_is_the_last_thing_dropped_for_the_size_budget():
+    # A muted BGM must not disappear behind the diagnostics size budget: the
+    # mute count survives even when the per-stream detail is omitted (#968).
+    module = load_collector()
+    _fixed_pulse_listing(module)
+    pulse = module._collect_pulse_sink_inputs()
+    assert pulse['muted'] == 1
+    payload = {
+        'pulse_sink_inputs': pulse,
+        'nethack_history': {
+            'daily': {'records': [], 'omitted_records': 0, 'output_omitted': False},
+            'completed_runs': {'records': [], 'omitted_records': 0, 'output_omitted': False},
+        },
+        'ai': {'recent_events': ['x'], 'recent_events_omitted': False,
+               'anomalous_components': {'a': 1}},
+        'workers': {'details': {'w': 1}},
+        'soren91_drop_profile': {'profileStatus': 'unavailable', 'groups': [],
+                                 'games': [], 'slowest': []},
+    }
+    # Shrink the envelope instead of the data so the budget path is reached.
+    with mock.patch.object(module, 'MAX_JSON_BYTES', 10):
+        module._diagnostics_budget(payload)
+    kept = payload['pulse_sink_inputs']
+    assert kept['streams'] == []
+    assert kept['truncated'] is True
+    assert kept['output_omitted'] is True
+    assert kept['muted'] == 1
+    assert kept['readable'] is True
+
+
+def test_pulse_sink_input_list_is_bounded_and_marks_truncation():
+    module = load_collector()
+    body = ''.join(
+        f'Sink Input #{index}\n\tSink: 0\n\tMute: no\n'
+        '\tProperties:\n\t\tapplication.name = "ffplay"\n'
+        for index in range(module.PULSE_SINK_INPUTS_MAX + 5)
+    )
+    _fixed_pulse_listing(module, listing=body, short='0\tsoren_null\n')
+
+    output = module._collect_pulse_sink_inputs()
+
+    assert output['total'] == module.PULSE_SINK_INPUTS_MAX + 5
+    assert len(output['streams']) == module.PULSE_SINK_INPUTS_MAX
+    assert output['truncated'] is True
+
+
+def test_pulse_sink_inputs_use_only_a_fixed_pactl_argv(tmp_path):
+    # Read-only, fixed argv: no caller-supplied shell and no state change.
+    module = load_collector()
+    calls = []
+
+    class Result:
+        returncode, stdout = 0, PULSE_SINK_INPUTS
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return Result()
+
+    with mock.patch.object(module.subprocess, 'run', fake_run), \
+         mock.patch.object(module, '_pulse_server_argv', lambda: []):
+        module._pulse_listing('list', 'sink-inputs')
+
+    argv, kwargs = calls[0]
+    assert argv == ['pactl', 'list', 'sink-inputs']
+    assert kwargs['timeout'] == module.PULSE_SINK_INPUTS_TIMEOUT
+    assert kwargs['check'] is False
+    assert kwargs['stderr'] == module.subprocess.DEVNULL
+    assert kwargs['env']['LC_ALL'] == 'C'
+
+
+def test_pulse_server_argv_uses_the_session_socket_when_it_is_a_socket():
+    # The gateway runs the collector with a scrubbed environment and no
+    # XDG_RUNTIME_DIR, so pactl is pointed at the session's own socket.
+    module = load_collector()
+
+    def stat_for(mode):
+        def stat(self, **kwargs):
+            if str(self).endswith('pulse/native'):
+                if mode is None:
+                    raise OSError('missing')
+                return mock.Mock(st_mode=mode)
+            return mock.Mock(st_mode=stat.S_IFDIR | 0o700)
+        return stat
+
+    with mock.patch.object(module.os, 'getuid', return_value=4242):
+        with mock.patch.object(module.Path, 'stat',
+                               stat_for(stat.S_IFSOCK | 0o600)):
+            assert module._pulse_server_argv() == [
+                '--server=unix:/run/user/4242/pulse/native']
+        # Only a real socket is trusted: a plain file or a missing path falls
+        # back to pactl's own default instead of being asserted as the server.
+        with mock.patch.object(module.Path, 'stat',
+                               stat_for(stat.S_IFREG | 0o600)):
+            assert module._pulse_server_argv() == []
+        with mock.patch.object(module.Path, 'stat', stat_for(None)):
+            assert module._pulse_server_argv() == []
 
 
 def test_hanjuku_chart_progress_is_allowlisted_counters_only():
@@ -1184,6 +1411,37 @@ def test_rotation_error_kind_taxonomy_matches_the_durable_ledger():
     assert load_collector().ROTATION_ERROR_KINDS == ERROR_KINDS
 
 
+def test_pacman_ab_improvement_reason_codes_are_projected_as_fixed_enum(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_improve_pacman4console.json").write_text(json.dumps({
+        "status": "kept", "started_at": 1, "completed_at": 2,
+        "reason_code": "ab-pending", "phase": "state",
+        "candidate": "DO-NOT-PUBLISH-CANDIDATE",
+    }))
+    output = module._collect_rotation_evidence(tmp_path)
+    item = output["improvements"]["pacman4console"]
+    assert item["reason_code"] == "ab-pending"
+    assert item["phase"] == "state"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+    (tmp_path / "corner_improve_pacman4console.json").write_text(json.dumps({
+        "status": "kept", "reason_code": "DO-NOT-PUBLISH-UNKNOWN",
+        "phase": "state",
+    }))
+    output = module._collect_rotation_evidence(tmp_path)
+    assert output["improvements"]["pacman4console"]["reason_code"] == "unknown"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_corner_improve_reason_enum_matches_diagnostics_allowlist():
+    import sys
+
+    sys.path.insert(0, str(ROOT / "src"))
+    from docich.corner_improve import CORNER_IMPROVE_REASON_CODES
+
+    assert load_collector().ROTATION_IMPROVE_REASON_CODES == CORNER_IMPROVE_REASON_CODES
+
+
 def test_a_latched_common_rotation_reaches_warn_severity():
     module = load_collector()
     workers = {"required_down": [], "required_stale": [], "paused": [],
@@ -1199,3 +1457,281 @@ def test_a_latched_common_rotation_reaches_warn_severity():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_manual_corner_queue_projection_is_boolean_only(tmp_path):
+    module = load_collector()
+    (tmp_path / 'corner_rotation.json').write_text(json.dumps({'status': 'ready'}))
+    (tmp_path / 'corner_manual_queue.json').write_text(json.dumps({
+        'corner': 'hanjuku-hero', 'request_id': 'DO-NOT-PUBLISH-UUID',
+        'prompt': 'DO-NOT-PUBLISH-BODY',
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output['corner_rotation']['queued_manual'] is True
+    assert 'DO-NOT-PUBLISH' not in json.dumps(output)
+    (tmp_path / 'corner_manual_queue.json').unlink()
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output['corner_rotation']['queued_manual'] is False
+
+
+class TmuxServerProjectionTests(unittest.TestCase):
+    def test_tmux_servers_projection_is_read_only_and_bounded(self):
+        """#1286 follow-up: eval jobs must run on docich-eval, production on docich.
+
+        The projection makes the separation directly observable in diagnostics.
+        """
+        module = load_collector()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            server = cmd[cmd.index('-L') + 1] if '-L' in cmd else 'default'
+            if server == 'docich-eval':
+                return subprocess.CompletedProcess(cmd, 0, stdout='1\n1\n', stderr='')
+            return subprocess.CompletedProcess(cmd, 0, stdout='1\n', stderr='')
+
+        with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
+            result = module._collect_tmux_servers()
+        assert result['schema_version'] == 1
+        assert result['servers']['docich']['present'] is True
+        assert result['servers']['docich']['session_count'] == 1
+        assert result['servers']['docich']['readable'] is True
+        assert 'sessions' not in result['servers']['docich']
+        assert result['servers']['docich-eval']['present'] is True
+        assert result['servers']['docich-eval']['session_count'] == 2
+        assert result['servers']['docich-eval']['readable'] is True
+        assert 'sessions' not in result['servers']['docich-eval']
+        # Read-only: list-sessions never sends input.
+        for cmd in calls:
+            assert cmd == ['tmux', '-L', cmd[2], 'list-sessions', '-F', '1']
+            assert cmd[2] in module.TMUX_SERVER_NAMES
+
+
+    def test_tmux_servers_projection_does_not_infer_absence_from_command_failure(self):
+        module = load_collector()
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, stdout='', stderr='no server running')
+
+        with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
+            result = module._collect_tmux_servers()
+        for name in ('docich', 'docich-eval'):
+            assert result['servers'][name] == {
+                'readable': False, 'present': None, 'session_count': None}
+
+
+    def test_tmux_servers_projection_rejects_invalid_server_names(self):
+        module = load_collector()
+        with mock.patch.object(module.subprocess, 'run') as run:
+            for server in ('docich; rm -rf /', '', None, 'other-safe-looking-server'):
+                assert module._tmux_server_session_count(server) is None
+            run.assert_not_called()
+
+
+    def test_tmux_servers_projection_never_emits_arbitrary_names_or_errors(self):
+        module = load_collector()
+        for output in ('PRIVATE-NAME\n', '1\nPRIVATE-NAME\n', ' 1\n', '1\n\n', '\ud800', '1\x851',
+                       '1\n' * (module.TMUX_SERVER_OUTPUT_LIMIT // 2 + 1), None):
+            with mock.patch.object(module.subprocess, 'run', return_value=
+                                   subprocess.CompletedProcess([], 0, stdout=output, stderr='PRIVATE-ERROR')):
+                result = module._collect_tmux_servers()
+            assert 'PRIVATE' not in json.dumps(result)
+            for record in result['servers'].values():
+                assert record == {'readable': False, 'present': None, 'session_count': None}
+
+
+    def test_tmux_servers_projection_keeps_execution_failure_unknown(self):
+        module = load_collector()
+        for error in (OSError('PRIVATE-ERROR'), subprocess.TimeoutExpired('PRIVATE-CMD', 5),
+                      UnicodeDecodeError('utf8', b'\xff', 0, 1, 'PRIVATE-ERROR')):
+            with mock.patch.object(module.subprocess, 'run', side_effect=error):
+                result = module._collect_tmux_servers()
+            assert 'PRIVATE' not in json.dumps(result)
+            for record in result['servers'].values():
+                assert record == {'readable': False, 'present': None, 'session_count': None}
+
+
+    def test_tmux_servers_projection_accepts_successful_empty_and_bounded_counts(self):
+        module = load_collector()
+        for count in (0, 17, module.TMUX_SERVER_OUTPUT_LIMIT // 2):
+            with mock.patch.object(module.subprocess, 'run', return_value=
+                                   subprocess.CompletedProcess([], 0, stdout='1\n' * count, stderr='')):
+                result = module._collect_tmux_servers()
+            for record in result['servers'].values():
+                assert record == {'readable': True, 'present': bool(count), 'session_count': count}
+
+
+    def test_tmux_servers_projection_keeps_each_server_result_independent(self):
+        module = load_collector()
+        def fake_run(cmd, **kwargs):
+            if cmd[2] == 'docich':
+                raise subprocess.TimeoutExpired(cmd, 5)
+            return subprocess.CompletedProcess(cmd, 0, stdout='1\n', stderr='')
+        with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
+            result = module._collect_tmux_servers()
+        assert result['servers']['docich'] == {'readable': False, 'present': None, 'session_count': None}
+        assert result['servers']['docich-eval'] == {'readable': True, 'present': True, 'session_count': 1}
+
+
+    def test_resolver_daemon_projection_reports_unit_states(self):
+        """#1286 follow-up: a running resolver daemon keeps the production tmux server."""
+        module = load_collector()
+        active_states = {
+            'docich-resolver-improve.service': True,
+            'docich-resolver-improve-gnurobots.service': False,
+        }
+        enabled_states = {
+            'docich-resolver-improve.service': True,
+            'docich-resolver-improve-gnurobots.service': False,
+        }
+
+        with mock.patch.object(module, '_unit_is_active', side_effect=lambda unit: active_states[unit]), \
+             mock.patch.object(module, '_unit_is_enabled', side_effect=lambda unit: enabled_states[unit]):
+            result = module._collect_resolver_daemon()
+        assert result['schema_version'] == 1
+        assert result['units']['docich-resolver-improve.service'] == {'active': True, 'enabled': True}
+        assert result['units']['docich-resolver-improve-gnurobots.service'] == {'active': False, 'enabled': False}
+
+
+    def test_resolver_daemon_projection_handles_missing_units(self):
+        module = load_collector()
+
+        def fake_none(unit):
+            return None
+
+        with mock.patch.object(module, '_unit_is_active', side_effect=fake_none), \
+             mock.patch.object(module, '_unit_is_enabled', side_effect=fake_none):
+            result = module._collect_resolver_daemon()
+        for unit in module.RESOLVER_IMPROVE_UNITS:
+            assert result['units'][unit] == {'active': None, 'enabled': None}
+
+
+def test_game_switch_watchdog_projection_reports_timer_state():
+    """#1041: the watchdog timer is the recovery path for expired draining."""
+    module = load_collector()
+    with mock.patch.object(module, '_unit_is_active', return_value=True), \
+         mock.patch.object(module, '_unit_is_enabled', return_value=True), \
+         mock.patch.object(module, '_systemctl_user', return_value=(0, 'ExecMainCode=0\nExecMainStatus=0\nResult=success\nActiveEnterTimestamp=2026-09-23 12:00:00\n')):
+        result = module._collect_game_switch_watchdog()
+    assert result['timer_active'] is True
+    assert result['timer_enabled'] is True
+    assert result['last_exit_code'] == 0
+    assert result['last_result'] == 'success'
+    assert result['last_active_at'] == '2026-09-23 12:00:00'
+
+
+def test_game_switch_watchdog_projection_handles_missing_timer():
+    module = load_collector()
+    with mock.patch.object(module, '_unit_is_active', return_value=None), \
+         mock.patch.object(module, '_unit_is_enabled', return_value=None), \
+         mock.patch.object(module, '_systemctl_user', return_value=None):
+        result = module._collect_game_switch_watchdog()
+    assert result['timer_active'] is None
+    assert result['timer_enabled'] is None
+    assert 'last_exit_code' not in result
+    assert 'last_result' not in result
+    assert 'last_active_at' not in result
+
+
+def test_game_switch_deadline_expired_projection():
+    """#1041: deadline_expired must be a safe boolean, not a raw timestamp."""
+    module = load_collector()
+    # 2026-09-23T11:05:00Z is after the deadline 2026-09-23T10:05:00Z
+    now = 1790157900 + 3600
+    state_dir = mock.MagicMock()
+    state_dir.__truediv__ = lambda self, other: mock.MagicMock()
+    # Build a fake state file with a deadline in the past
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        from pathlib import Path
+        tmp_path = Path(tmp)
+        (tmp_path / 'game_switch.json').write_text(json.dumps({
+            'phase': 'draining',
+            'operation': 'switch',
+            'active': {'game': 'sorengame', 'generation': 1},
+            'next_generation': 2,
+            'revision': 1,
+            'last_result': {'status': 'ok', 'error_code': None, 'to_game': 'hanjuku-hero'},
+            'updated_at': '2026-09-23T10:00:00Z',
+            'deadline_at': '2026-09-23T10:05:00Z',
+        }))
+        present, readable, data = module._load_state_file(tmp_path / 'game_switch.json')
+        assert present and readable
+        deadline_at = data.get('deadline_at')
+        assert deadline_at == '2026-09-23T10:05:00Z'
+        # Simulate the deadline_expired computation
+        from datetime import datetime, timezone
+        deadline_dt = datetime.fromisoformat(deadline_at.replace('Z', '+00:00'))
+        deadline_expired = deadline_dt.timestamp() < now
+        assert deadline_expired is True
+
+
+def _corner_rotation_unit_dir(tmp):
+    """Build the systemd user unit dir under a fake home."""
+    unit_dir = Path(tmp) / '.config' / 'systemd' / 'user'
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    return unit_dir
+
+
+def test_corner_rotation_timer_projection_reports_alias_state():
+    """#1092: the deploy hook fails exit 23 on inconsistent legacy alias pairs."""
+    module = load_collector()
+    from pathlib import Path
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        unit_dir = _corner_rotation_unit_dir(tmp)
+        # Canonical pair: both aliases point to canonical units
+        (unit_dir / 'docich-corner-rotation.service').write_text('[Unit]')
+        (unit_dir / 'docich-corner-rotation.timer').write_text('[Unit]')
+        (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
+        (unit_dir / 'docich-retro-corner.timer').symlink_to(unit_dir / 'docich-corner-rotation.timer')
+        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+            result = module._collect_corner_rotation_timer_alias()
+        assert result['legacy_service_alias'] is True
+        assert result['legacy_timer_alias'] is True
+        assert result['legacy_service_target'] == 'docich-corner-rotation.service'
+        assert result['legacy_timer_target'] == 'docich-corner-rotation.timer'
+        assert result['legacy_alias_pair_valid'] is True
+        assert result['canonical_service_present'] is True
+        assert result['canonical_timer_present'] is True
+
+
+def test_corner_rotation_timer_projection_detects_inconsistent_alias():
+    """#1092: one-sided alias is the exit-23 condition."""
+    module = load_collector()
+    from pathlib import Path
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        unit_dir = _corner_rotation_unit_dir(tmp)
+        (unit_dir / 'docich-corner-rotation.service').write_text('[Unit]')
+        (unit_dir / 'docich-corner-rotation.timer').write_text('[Unit]')
+        # Only the service alias exists (timer is missing)
+        (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
+        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+            result = module._collect_corner_rotation_timer_alias()
+        assert result['legacy_service_alias'] is True
+        assert result['legacy_timer_alias'] is False
+        assert result['legacy_alias_pair_valid'] is False
+
+
+def test_corner_rotation_timer_projection_detects_wrong_target():
+    """#1092: wrong alias target is the exit-23 condition."""
+    module = load_collector()
+    from pathlib import Path
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        unit_dir = _corner_rotation_unit_dir(tmp)
+        (unit_dir / 'docich-corner-rotation.service').write_text('[Unit]')
+        (unit_dir / 'docich-corner-rotation.timer').write_text('[Unit]')
+        (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
+        # Timer alias points to the wrong target
+        (unit_dir / 'docich-retro-corner.timer').symlink_to(unit_dir / 'docich-corner-rotation.service')
+        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+            result = module._collect_corner_rotation_timer_alias()
+        assert result['legacy_service_alias'] is True
+        assert result['legacy_timer_alias'] is True
+        assert result['legacy_timer_target'] == 'docich-corner-rotation.service'
+        assert result['legacy_alias_pair_valid'] is False

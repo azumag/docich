@@ -1,11 +1,11 @@
 {
-  "output_sha256": "532c9ab7d90873f788d6e17fe9dadcc9ba38970ba9d4f27cfc25f2d5c0b6dbcc",
+  "output_sha256": "de19769f4af5a1ed5d371ba960b553f6b7881a69f4c0a0526ec7de5f13fe863f",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "d69b4864c5b6792ab048fd60d41c8eef51052e045fba49d765b051db6d235e51",
+  "source_sha256": "49770a032a930d1a2b90b76fd73459cb84a1b288d4a8ee0d22faa5b18c8683b8",
   "topics": [
-    "半熟英雄 #1072配備後の空携行品判定を実画面で校正中",
-    "NInvaders automatic strategy repair and acceptance",
-    "半熟英雄 #1070配備・自然ゲームオーバーからSoren復帰（攻略受入は継続）"
+    "レイドお礼の読み上げ欠落: AIチェーンの「タイムアウト→レート制限」誤判定を修正・配備済み",
+    "半熟英雄コーナー継続監視: 09:44裏取り完了（初回死亡の否定）・保持HP予算ゲート",
+    "容量回収の走査再開修正を正規配備・自然結果待ち"
   ]
 }

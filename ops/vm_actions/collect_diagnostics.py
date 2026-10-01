@@ -43,6 +43,12 @@ Observed sources (all read-only):
     (tmp/state/corner_boundary_*.json, ab_state.json, ab_games.jsonl,
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
     bodies and environment values are never read out.
+  - the PulseAudio sink-input list (`pactl list sink-inputs`, read-only) so a
+    muted or silent BGM/SE playback stream is observable without an ad-hoc
+    owner shell (#968). Only index, sink name, fixed media role, mute,
+    corked-when-reported, volume percents and a fixed player category are
+    emitted; PIDs, raw application names, module/client identifiers and stream
+    property dumps are never emitted.
   - the registered chat_worker's own live environ (#882), restricted to a
     fixed 4-name allowlist (never the raw block, never any other name),
     projected through the already-reviewed
@@ -165,6 +171,106 @@ TMP_SO_MAX_CANDIDATES = 4096
 TMP_SO_MAX_PROC_FDS = 50000
 
 STORAGE_MAX_ENTRIES = 100000
+OPENCODE_ATTRIBUTION_WINDOW_SEC = 24 * 60 * 60
+OPENCODE_ATTRIBUTION_QUERY_TIMEOUT_SEC = 2.0
+OPENCODE_CALLER_BUCKETS = (
+    "radio_prepass",
+    "radio_main",
+    "comment",
+    "improvement",
+    "soren91",
+    "probe",
+    "other",
+)
+OPENCODE_CALLER_TITLES = {
+    f"docich:{bucket}": bucket for bucket in OPENCODE_CALLER_BUCKETS
+}
+
+
+def _collect_opencode_retention(soren, now):
+    """Project only bounded enums/numbers; never forward exception or DB text."""
+    OPENCODE_RETENTION_TIMER = _REG.OPENCODE_RETENTION_TIMER
+    OPENCODE_RETENTION_MAX_AGE_SEC = _REG.OPENCODE_RETENTION_MAX_AGE_SEC
+    result = {}
+    # Fixed enums emitted by lib/opencode_db_retention.py; unknown values
+    # degrade to "unknown" and raw text is never forwarded.
+    reason_values = {"ok", "deadline", "insufficient_space", "space_unknown", "checkpoint_busy",
+                     "unsafe_journal_mode", "sqlite_busy", "sqlite_error", "filesystem_or_input", "interrupted",
+                     "insufficient_memory", "memory_unknown",
+                     "wal_limit_unavailable", "bounded_prune_committed", "bounded_prune_io_error",
+                     "sparse_unsupported", "sparse_lock_required", "sparse_identity_changed",
+                     "sparse_deadline", "sparse_alignment", "sparse_filesystem_unsupported", "sparse_fd_required"}
+    enums = {
+        "status": {"running", "completed", "gate_timeout", "disabled", "deferred", "failed"},
+        "reason": reason_values,
+        "compact_storage": {"disk", "memory"},
+        "stage": {"preflight", "delete", "compact_copy", "compact_writeback", "checkpoint", "vacuum", "done",
+                  "compact_deferred", "sparse_reclaim", "sparse_reclaimed"},
+        "compact_defer_reason": reason_values,
+        "preflight_phase": {"input", "budget", "connect", "busy_timeout", "temp_store", "synchronous",
+                            "locking_mode", "begin_exclusive", "commit_exclusive", "journal_mode",
+                            "checkpoint", "pages", "eligible_count", "delete_budget", "complete"},
+        "prune_mode": {"bounded_wal"},
+        "recovery_action": {"inspect_io_or_add_capacity"},
+    }
+    numbers = ("started_at", "completed_at", "retention_days", "deleted_sessions", "eligible_sessions",
+               "before_bytes", "after_bytes", "available_before_bytes", "available_after_bytes",
+               "compact_bytes", "page_size", "page_count", "freelist_count",
+               "selected_sessions", "remaining_sessions", "prune_batches", "wal_limit_bytes",
+               "skipped_batches", "skipped_sessions",
+               "sqlite_error_code", "sqlite_extended_error_code",
+               "sparse_scanned_bytes", "sparse_allocated_before_bytes",
+               "sparse_allocated_after_bytes", "sparse_reclaimed_bytes")
+    booleans = ("bounded_prune_blocked", "sparse_complete")
+    for label, filename in (("attempt", "opencode_db_retention.json"),
+                            ("default", "opencode_retention_default.json"),
+                            ("worker", "opencode_retention_worker.json")):
+        path = Path(soren) / "tmp/state" / filename
+        item = {"present": False, "readable": False}
+        try:
+            st = path.lstat()
+            item["present"] = True
+            if not stat.S_ISREG(st.st_mode) or st.st_size > 4096:
+                result[label] = item
+                continue
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, encoding="utf-8") as handle:
+                opened = os.fstat(handle.fileno())
+                if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
+                    raise ValueError()
+                data = json.loads(handle.read(4097))
+            if not isinstance(data, dict):
+                raise ValueError()
+            item["readable"] = True
+            for key, allowed in enums.items():
+                value = data.get(key)
+                if isinstance(value, str):
+                    item[key] = value if value in allowed else "unknown"
+            for key in numbers:
+                value = data.get(key)
+                if type(value) is int and 0 <= value < 2**63:
+                    item[key] = value
+            for key in booleans:
+                value = data.get(key)
+                if type(value) is bool:
+                    item[key] = value
+            stamp = item.get("completed_at", item.get("started_at"))
+            if stamp is not None:
+                item["age_sec"] = max(0, int(now - stamp))
+                item["stale"] = stamp > now + 60 or now - stamp > OPENCODE_RETENTION_MAX_AGE_SEC
+        except (OSError, ValueError):
+            pass
+        result[label] = item
+    result["timer"] = {"unit": OPENCODE_RETENTION_TIMER}
+    for action, field in (("is-active", "active"), ("is-enabled", "enabled")):
+        try:
+            env = {**os.environ, "XDG_RUNTIME_DIR": "/run/user/%d" % os.getuid()}
+            proc = subprocess.run(["systemctl", "--user", action, "--quiet", OPENCODE_RETENTION_TIMER],
+                                  capture_output=True, timeout=2, env=env)
+            result["timer"][field] = proc.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            result["timer"][field] = None
+    return result
 
 
 def _storage_allocated_bytes(st):
@@ -332,6 +438,222 @@ def _collect_storage_breakdown(
         "voicevox_root": _storage_tree_usage(voicevox_root, max_entries=max_entries),
         "voicevox_archive": _storage_file_usage(voicevox_root / "voicevox.7z.001"),
     }
+
+
+
+def _empty_opencode_attribution_bucket():
+    return {
+        "sessions": 0,
+        "messages": 0,
+        "message_data_chars": 0,
+        "message_max_chars": 0,
+        "parts": 0,
+        "part_data_chars": 0,
+        "part_max_chars": 0,
+        "events": 0,
+        "event_data_chars": 0,
+        "event_max_chars": 0,
+    }
+
+
+def _collect_opencode_session_attribution(
+    db_path,
+    now,
+    *,
+    window_sec=OPENCODE_ATTRIBUTION_WINDOW_SEC,
+    query_timeout_sec=OPENCODE_ATTRIBUTION_QUERY_TIMEOUT_SEC,
+):
+    """Read fixed OpenCode caller aggregates without exposing stored content."""
+
+    db_path = Path(db_path)
+    result = {
+        "version": 1,
+        "present": False,
+        "scan_complete": False,
+        "schema_supported": False,
+        "window_sec": int(window_sec),
+        "buckets": {
+            bucket: _empty_opencode_attribution_bucket()
+            for bucket in OPENCODE_CALLER_BUCKETS
+        },
+        "coverage": {
+            "scan_complete": False,
+            "all_sessions": 0,
+            "attributed_sessions": 0,
+            "unattributed_sessions": 0,
+            "unattributed_latest_age_sec": 0,
+            "unattributed_15m_sessions": 0,
+            "unattributed_1h_sessions": 0,
+            "unattributed_2h_sessions": 0,
+            "unattributed_6h_sessions": 0,
+        },
+    }
+    try:
+        st = db_path.lstat()
+    except FileNotFoundError:
+        result["scan_complete"] = True
+        return result
+    except OSError:
+        return result
+    result["present"] = True
+    if not stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
+        return result
+
+    con = None
+    deadline = time.monotonic() + max(0.05, float(query_timeout_sec))
+    try:
+        con = sqlite3.connect(
+            f"file:{db_path}?mode=ro",
+            uri=True,
+            timeout=min(max(float(query_timeout_sec), 0.05), 1.0),
+        )
+        con.execute("PRAGMA query_only = ON")
+        con.execute("PRAGMA busy_timeout = 500")
+        con.set_progress_handler(
+            lambda: 1 if time.monotonic() >= deadline else 0,
+            1000,
+        )
+
+        required = {
+            "session": {"id", "title", "time_created"},
+            "message": {"id", "session_id", "data"},
+            "part": {"id", "session_id", "data"},
+            "event": {"id", "aggregate_id", "data"},
+        }
+        for table, columns in required.items():
+            actual = {
+                str(row[1])
+                for row in con.execute(f"PRAGMA table_info({table})")
+                if len(row) > 1
+            }
+            if not columns.issubset(actual):
+                return result
+        result["schema_supported"] = True
+
+        cutoff_ms = int((float(now) - max(0, int(window_sec))) * 1000)
+        titles = tuple(OPENCODE_CALLER_TITLES)
+        placeholders = ",".join("?" for _ in titles)
+        params = (cutoff_ms, *titles)
+
+        # Preserve the existing allowlisted detail query: it is intentionally
+        # narrow enough to stay within the production diagnostics deadline.
+        for title, count in con.execute(
+            f"""
+            SELECT title, COUNT(*)
+              FROM session
+             WHERE time_created >= ?
+               AND title IN ({placeholders})
+             GROUP BY title
+            """,
+            params,
+        ):
+            bucket = OPENCODE_CALLER_TITLES.get(str(title))
+            if bucket is not None:
+                result["buckets"][bucket]["sessions"] = max(0, int(count or 0))
+
+        table_specs = (
+            ("message", "session_id", "messages", "message_data_chars", "message_max_chars"),
+            ("part", "session_id", "parts", "part_data_chars", "part_max_chars"),
+            ("event", "aggregate_id", "events", "event_data_chars", "event_max_chars"),
+        )
+        for table, session_column, count_key, chars_key, max_key in table_specs:
+            sql = f"""
+                SELECT s.title,
+                       COUNT(x.id),
+                       COALESCE(SUM(length(x.data)), 0),
+                       COALESCE(MAX(length(x.data)), 0)
+                  FROM session AS s
+                  JOIN {table} AS x ON x.{session_column} = s.id
+                 WHERE s.time_created >= ?
+                   AND s.title IN ({placeholders})
+                 GROUP BY s.title
+            """
+            for title, count, chars, max_chars in con.execute(sql, params):
+                bucket = OPENCODE_CALLER_TITLES.get(str(title))
+                if bucket is None:
+                    continue
+                item = result["buckets"][bucket]
+                item[count_key] = max(0, int(count or 0))
+                item[chars_key] = max(0, int(chars or 0))
+                item[max_key] = max(0, int(max_chars or 0))
+
+        # Coverage is deliberately session-table-only. Expanding the joins to
+        # every unattributed message/part/event made a 7+ GiB production DB hit
+        # the global 2s diagnostics deadline (#1334/#1454). Give this cheap,
+        # read-only count query its own bounded 1s budget so a coverage timeout
+        # never erases the proven fixed-bucket detail above.
+        coverage = result["coverage"]
+        coverage_deadline = time.monotonic() + min(
+            1.0, max(0.05, float(query_timeout_sec))
+        )
+        con.set_progress_handler(
+            lambda: 1 if time.monotonic() >= coverage_deadline else 0,
+            1000,
+        )
+        try:
+            all_sessions = max(
+                0,
+                int(
+                    con.execute(
+                        "SELECT COUNT(*) FROM session WHERE time_created >= ?",
+                        (cutoff_ms,),
+                    ).fetchone()[0]
+                    or 0
+                ),
+            )
+            attributed_sessions = sum(
+                item["sessions"] for item in result["buckets"].values()
+            )
+            cutoffs_ms = (
+                int((float(now) - 15 * 60) * 1000),
+                int((float(now) - 60 * 60) * 1000),
+                int((float(now) - 2 * 60 * 60) * 1000),
+                int((float(now) - 6 * 60 * 60) * 1000),
+            )
+            row = con.execute(
+                f"""
+                SELECT COUNT(*),
+                       MAX(time_created),
+                       COALESCE(SUM(CASE WHEN time_created >= ? THEN 1 ELSE 0 END), 0),
+                       COALESCE(SUM(CASE WHEN time_created >= ? THEN 1 ELSE 0 END), 0),
+                       COALESCE(SUM(CASE WHEN time_created >= ? THEN 1 ELSE 0 END), 0),
+                       COALESCE(SUM(CASE WHEN time_created >= ? THEN 1 ELSE 0 END), 0)
+                  FROM session
+                 WHERE time_created >= ?
+                   AND (title IS NULL OR title NOT IN ({placeholders}))
+                """,
+                (*cutoffs_ms, cutoff_ms, *titles),
+            ).fetchone()
+            unattributed_sessions = max(0, int(row[0] or 0))
+            if all_sessions != attributed_sessions + unattributed_sessions:
+                raise ValueError("attribution coverage mismatch")
+            latest_ms = row[1]
+            latest_age_sec = 0
+            if type(latest_ms) is int and latest_ms >= 0 and unattributed_sessions:
+                latest_age_sec = max(0, int(float(now) - latest_ms / 1000.0))
+            coverage.update(
+                scan_complete=True,
+                all_sessions=all_sessions,
+                attributed_sessions=attributed_sessions,
+                unattributed_sessions=unattributed_sessions,
+                unattributed_latest_age_sec=latest_age_sec,
+                unattributed_15m_sessions=max(0, int(row[2] or 0)),
+                unattributed_1h_sessions=max(0, int(row[3] or 0)),
+                unattributed_2h_sessions=max(0, int(row[4] or 0)),
+                unattributed_6h_sessions=max(0, int(row[5] or 0)),
+            )
+        except (sqlite3.Error, TypeError, ValueError):
+            pass
+        result["scan_complete"] = True
+        return result
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return result
+    finally:
+        if con is not None:
+            try:
+                con.close()
+            except sqlite3.Error:
+                pass
 
 
 VALUE_REDACT_RES = (
@@ -666,6 +988,7 @@ def _collect_workers(soren, now):
     unregistered = []
     pause_ownership = {key: 0 for key in PAUSE_OWNERS}
     unregistered_health = {key: 0 for key in UNREGISTERED_HEALTH}
+    unregistered_flags = {"alive": 0, "stale": 0, "paused": 0}
     details = {}
     seen_pids = {}
     for name, is_required, _category, pid_rel, _kind in WORKERS:
@@ -736,6 +1059,9 @@ def _collect_workers(soren, now):
                     continue
                 record["unregistered"] = True
                 unregistered.append(name)
+                unregistered_flags["alive"] += int(record["alive"])
+                unregistered_flags["stale"] += int(record["stale_pid_file"])
+                unregistered_flags["paused"] += int(record["paused"])
                 if record["alive"]:
                     health = "alive"
                 elif record["paused"]:
@@ -760,6 +1086,7 @@ def _collect_workers(soren, now):
         "stale_pid_files": sorted(stale_pid_files),
         "unregistered": sorted(unregistered),
         "unregistered_health": unregistered_health,
+        "unregistered_flags": unregistered_flags,
         "required_down": sorted(n for n in stopped if n in required),
         "required_stale": sorted(n for n in stale_pid_files if n in required),
         "details": details,
@@ -989,6 +1316,7 @@ def _collect_ai(soren, now):
     paths = [stats_dir / f"{day}.jsonl" for day in sorted(days)]
     attempts = successes = failures = rate_limits = winners = 0
     all_failed = queue_giveups = gate_giveups = 0
+    all_failed_components = {component: 0 for component in AI_COMPONENTS}
     budget_exhausted = 0
     budget_exhausted_components = {component: 0 for component in AI_COMPONENTS}
     budget_exhausted_detail_sampled = 0
@@ -1114,6 +1442,7 @@ def _collect_ai(soren, now):
         elif kind == "all_failed":
             all_failed += 1
             entry["all_failed"] += 1
+            all_failed_components[_ai_component_bucket(label)] += 1
         elif kind == "queue_giveup":
             queue_giveups += 1
         elif kind == "gate_giveup":
@@ -1158,6 +1487,8 @@ def _collect_ai(soren, now):
         "winners": winners,
         "fallbacks": fallback_ok,
         "all_failed": all_failed,
+        "all_failed_components": all_failed_components,
+        "recent_events_omitted": False,
         "queue_giveups": queue_giveups,
         "gate_giveups": gate_giveups,
         "budget_exhausted": budget_exhausted,
@@ -1451,7 +1782,7 @@ ROTATION_IMPROVE_GAMES = (
 ROTATION_STATUSES = frozenset({
     "idle", "waiting", "starting", "active", "restoring", "preparing",
     "recovery_required", "failed", "completed", "interrupted", "expired",
-    "running", "promoted", "kept", "improved", "dry-run", "skipped",
+    "running", "promoted", "kept", "improved", "dry-run", "skipped", "ab-staged",
 })
 
 # Fixed end-of-corner improvement reason taxonomy. Keep in sync with
@@ -1462,7 +1793,9 @@ ROTATION_IMPROVE_REASON_CODES = frozenset({
     "llm-empty", "llm-format", "llm-keys", "llm-values", "llm-unexpected",
     "eval", "lane-busy", "policy-promoted", "policy-incomplete", "policy-faults",
     "policy-below-margin", "policy-not-significant", "policy-identical",
-    "policy-invalid", "policy-kept", "policy-eval", "unexpected",
+    "policy-invalid", "policy-kept", "policy-eval", "ab-pending",
+    "ab-incomplete", "ab-adopted", "ab-rejected", "ab-stale", "ab-invalid",
+    "ab-eval", "ab-state", "ab-baseline-changed", "unexpected",
 })
 ROTATION_IMPROVE_PHASES = frozenset({"state", "llm", "eval", "unknown"})
 
@@ -1576,6 +1909,28 @@ def _collect_rotation_evidence(state_dir):
                 phase=_rotation_enum(raw.get("phase"), ROTATION_IMPROVE_PHASES),
             )
         result["improvements"][game] = entry
+    present, readable, raw = _rotation_evidence_file(state_dir, "moon_buggy_ab.json")
+    ab = {"present": present, "readable": readable}
+    if readable:
+        status = raw.get("status")
+        ab["status"] = _rotation_enum(
+            status, {"staged", "running", "completed", "promoted", "kept"}
+        )
+        results = raw.get("results")
+        ab["matches"] = len(results) if isinstance(results, list) and len(results) <= 4 else None
+        ab["target_matches"] = 4
+        winner = raw.get("winner")
+        ab["winner"] = winner if isinstance(winner, str) and winner in {"A", "B"} else None
+        means = raw.get("means")
+        if isinstance(means, dict):
+            for arm, key in (("A", "baseline_mean"), ("B", "candidate_mean")):
+                value = means.get(arm)
+                try:
+                    number = float(value) if type(value) in (int, float) else None
+                except (OverflowError, ValueError):
+                    number = None
+                ab[key] = number if number is not None and math.isfinite(number) else None
+    result["moon_buggy_ab"] = ab
     return result
 
 
@@ -1819,7 +2174,9 @@ def _project_corner_state(data):
         "announcements": announcements,
         "improve_job": improve_job,
         "end_reason": (data.get("end_reason") if data.get("end_reason")
-                       in {"game_over", "screen_stalled"} else None),
+                       in {"game_over", "screen_stalled", "manual_saved_stop",
+                           "manual_forced_stop",
+                           "switch-terminal-before-corner-active"} else None),
         "bot_phase": (data.get("bot_phase") if data.get("bot_phase") in {
             "transition", "name", "dialogue", "shop", "field", "field_menu",
             "battle_intro", "battle", "title_or_intro", "title", "month_menu", "concert", "event"} else None),
@@ -2145,6 +2502,8 @@ def _collect_corner_files(state_dir, payload, now):
             slot=_bounded_int(data.get("slot")),
             eligible_count=len(data["eligible"]) if isinstance(data.get("eligible"), list) else None,
             pending=isinstance(data.get("pending"), dict),
+            queued_manual=(isinstance(data.get("queued_manual"), dict)
+                           or (state_dir / "corner_manual_queue.json").is_file()),
             error_kind=_rotation_error_kind(data.get("error_kind")),
         )
         rotation.update(_rotation_pending_projection(state_dir, data, now))
@@ -2157,6 +2516,15 @@ def _collect_corner_files(state_dir, payload, now):
     if readable:
         active = data.get("active") if isinstance(data.get("active"), dict) else {}
         last = data.get("last_result") if isinstance(data.get("last_result"), dict) else {}
+        deadline_at = data.get("deadline_at")
+        deadline_expired = None
+        if isinstance(deadline_at, str) and deadline_at:
+            try:
+                from datetime import datetime, timezone
+                deadline_dt = datetime.fromisoformat(deadline_at.replace('Z', '+00:00'))
+                deadline_expired = deadline_dt.timestamp() < now
+            except (ValueError, TypeError):
+                deadline_expired = None
         entry.update(
             {
                 "phase": _bounded_str(data.get("phase"), 32),
@@ -2169,10 +2537,14 @@ def _collect_corner_files(state_dir, payload, now):
                 "last_error_code": _bounded_str(last.get("error_code"), 64),
                 "last_to_game": _bounded_str(last.get("to_game"), 64),
                 "updated_at": _bounded_str(data.get("updated_at"), 40),
+                "deadline_at": _bounded_str(deadline_at, 40),
+                "deadline_expired": deadline_expired,
             }
         )
     payload["game_switch"] = entry
     payload["game_switch_fifo"] = _collect_game_switch_fifo(state_dir, now)
+    payload["game_switch_watchdog"] = _collect_game_switch_watchdog()
+    payload["corner_rotation_timer_alias"] = _collect_corner_rotation_timer_alias()
 
     for name in (
         "retro_corner",
@@ -2199,6 +2571,35 @@ def _collect_corner_files(state_dir, payload, now):
     payload["presentation"] = entry
     payload["paper_improve"] = _collect_paper_improve_status(state_dir, now)
     payload["rotation_evidence"] = _collect_rotation_evidence(state_dir)
+
+
+def _collect_hanjuku_predictions(state_dir):
+    """Read-only bounded projection; never expose OAuth config or API payloads."""
+    present, readable, data = _load_state_file(Path(state_dir) / "hanjuku_predictions.json")
+    data = data if isinstance(data, dict) else {}
+    row = data.get("round")
+    row = row if isinstance(row, dict) else {}
+    result = row.get("result") if isinstance(row.get("result"), dict) else {}
+    modes = {"incompatible_soren", "idle", "disabled", "explore", "unconfigured", "paused", "blocked", "pending",
+             "active", "settling", "resolved", "canceled", "known_result", "complete_record", "error"}
+    errors = {"transport", "auth", "rate_limited", "rejected", "invalid_response", "configuration",
+              "invalid_state", "unexpected", "create_unknown", "remote_missing", "remote_mismatch",
+              "clock_regressed"}
+    def chapter(value):
+        return value if type(value) is int and 0 <= value <= 12 else None
+    def choice(value, allowed):
+        return value if isinstance(value, str) and value in allowed else None
+    return {"present": present, "readable": readable,
+            "mode": choice(data.get("mode"), modes),
+            "error": choice(data.get("error"), errors),
+            "best_cleared": chapter(data.get("best_cleared")),
+            "target": chapter(row.get("target")), "middle": chapter(row.get("middle")),
+            "window_seconds": (row.get("window") if type(row.get("window")) is int
+                               and 1 <= row["window"] <= 1800 else None),
+            "status": choice(row.get("status"), {
+                "INTENT", "ACTIVE", "LOCKED", "RESOLVED", "CANCELED"}),
+            "cleared": chapter(result.get("cleared")),
+            "next_poll_at": _finite_number(data.get("next_poll_at"))}
 
 
 def _collect_programs(state_dir, soren, now):
@@ -2248,6 +2649,7 @@ def _collect_programs(state_dir, soren, now):
             and isinstance(game_switch, dict)
             and game_switch.get("active_game") == "hanjuku-hero"):
         retro["narration_playback"] = _collect_hanjuku_narration_playback(soren)
+    payload["hanjuku_predictions"] = _collect_hanjuku_predictions(state_dir)
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
     payload["ab"] = _collect_ab(soren, now)
     payload["soren_game"] = _collect_soren_game(soren, now)
@@ -2502,6 +2904,95 @@ def _unit_is_enabled(unit):
     if out in ("disabled", "masked", "masked-runtime", "not-found", "bad"):
         return False
     return None
+
+
+# --- resolver improve daemon observation (read-only) ----------------------------
+#
+# #1286 follow-up: the resolver improve daemons (python -m docich.resolver.improve
+# --daemon) are long-lived. If one is installed and running, it keeps using the
+# production default tmux server until the next restart — the exact path #1284
+# fixed for the corner. This section answers "is one running?" directly.
+
+RESOLVER_IMPROVE_UNITS = (
+    "docich-resolver-improve.service",
+    "docich-resolver-improve-gnurobots.service",
+)
+
+
+def _collect_resolver_daemon():
+    """Active/enabled state of the resolver improve daemons (#1286 follow-up)."""
+    units = {}
+    for unit in RESOLVER_IMPROVE_UNITS:
+        units[unit] = {
+            'active': _unit_is_active(unit),
+            'enabled': _unit_is_enabled(unit),
+        }
+    return {'schema_version': 1, 'units': units}
+
+
+GAME_SWITCH_WATCHDOG_UNIT = "docich-game-switch-fifo.timer"
+
+
+def _collect_game_switch_watchdog():
+    """Active/enabled state of the game-switch FIFO watchdog timer (#1041).
+
+    The watchdog (docich-game-switch-fifo.timer / maintain-fifo) is the
+    recovery path for expired draining. If it is not running, an expired
+    draining request stays stuck forever.
+    """
+    result = {
+        'timer_active': _unit_is_active(GAME_SWITCH_WATCHDOG_UNIT),
+        'timer_enabled': _unit_is_enabled(GAME_SWITCH_WATCHDOG_UNIT),
+    }
+    # Latest service result from the timer's unit
+    show = _systemctl_user(["show", GAME_SWITCH_WATCHDOG_UNIT, "--property", "ExecMainStatus,ExecMainCode,Result,ActiveEnterTimestamp"])
+    if show is not None:
+        _, out = show
+        props = {}
+        for line in out.splitlines():
+            if '=' in line:
+                key, _, value = line.partition('=')
+                props[key.strip()] = value.strip()
+        result['last_exit_code'] = int(props['ExecMainCode']) if props.get('ExecMainCode', '').lstrip('-').isdigit() else None
+        result['last_result'] = props.get('Result') or None
+        result['last_active_at'] = props.get('ActiveEnterTimestamp') or None
+    return result
+
+
+CORNER_ROTATION_LEGACY_SERVICE = "docich-retro-corner.service"
+CORNER_ROTATION_LEGACY_TIMER = "docich-retro-corner.timer"
+CORNER_ROTATION_CANONICAL_SERVICE = "docich-corner-rotation.service"
+CORNER_ROTATION_CANONICAL_TIMER = "docich-corner-rotation.timer"
+
+
+def _collect_corner_rotation_timer_alias():
+    """Fixed projection of corner rotation timer alias state (#1092).
+
+    The deploy hook (ensure_corner_rotation_timer.sh) fails with exit 23
+    when the legacy alias pair is inconsistent (one side only, or wrong
+    target). This projection makes the alias state directly observable in
+    diagnostics without publishing paths or unit file contents.
+    """
+    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    legacy_service = unit_dir / CORNER_ROTATION_LEGACY_SERVICE
+    legacy_timer = unit_dir / CORNER_ROTATION_LEGACY_TIMER
+    service_is_link = legacy_service.is_symlink()
+    timer_is_link = legacy_timer.is_symlink()
+    service_target = legacy_service.resolve().name if service_is_link else None
+    timer_target = legacy_timer.resolve().name if timer_is_link else None
+    pair_valid = (service_is_link and timer_is_link
+                  and service_target == CORNER_ROTATION_CANONICAL_SERVICE
+                  and timer_target == CORNER_ROTATION_CANONICAL_TIMER)
+    return {
+        'schema_version': 1,
+        'legacy_service_alias': service_is_link,
+        'legacy_timer_alias': timer_is_link,
+        'legacy_service_target': service_target,
+        'legacy_timer_target': timer_target,
+        'legacy_alias_pair_valid': pair_valid,
+        'canonical_service_present': (unit_dir / CORNER_ROTATION_CANONICAL_SERVICE).exists(),
+        'canonical_timer_present': (unit_dir / CORNER_ROTATION_CANONICAL_TIMER).exists(),
+    }
 
 
 # --- webui unit / served-UI observation (read-only) ---------------------------
@@ -3238,6 +3729,7 @@ _BOUNDARY_DIAG_PROMPT_CLASSES = frozenset(
         "save_prompt_pending",
         "save_confirmation",
         "character_creation",
+        "dead_disclosure",
         "capture_failed",
         "unknown",
     }
@@ -3281,6 +3773,317 @@ def _list_window_names(session):
     if proc.returncode != 0:
         return []
     return [name.strip() for name in proc.stdout.splitlines() if name.strip()]
+
+
+HANJUKU_TACTICAL_CASTLES = ('ほんじょう', 'キカンドン', 'ナキューメラ', 'ジョンリギ',
+           'ゴーメン', 'スペンソニア', 'カストーラ', 'けっかい')
+HANJUKU_TACTICAL_KEYS = ('game', 'runtime_id', 'generation', 'lease_id')
+HANJUKU_TACTICAL_LIMIT = 256 * 1024
+
+TMUX_SERVER_NAMES = ('docich', 'docich-eval')
+TMUX_SERVER_OUTPUT_LIMIT = 4096
+
+
+def _tmux_server_session_count(server):
+    """Read a count without requesting session names; None means unknown."""
+    if server not in TMUX_SERVER_NAMES:
+        return None
+    try:
+        proc = subprocess.run(
+            ["tmux", "-L", server, "list-sessions", "-F", "1"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return None
+    if proc.returncode != 0:
+        return None
+    output = proc.stdout
+    if not isinstance(output, str) or len(output) > TMUX_SERVER_OUTPUT_LIMIT:
+        return None
+    if any(char not in '1\n' for char in output):
+        return None
+    markers = output.splitlines()
+    if any(marker != '1' for marker in markers):
+        return None
+    return len(markers)
+
+
+def _collect_tmux_servers():
+    """Fixed projection of tmux server ownership (#1286 follow-up).
+
+    The production corner runs on the default ``docich`` socket; evaluation
+    jobs must run on ``docich-eval``. This projection makes the separation
+    directly observable in diagnostics instead of inferring it from process
+    trees. Read-only: ``list-sessions`` never sends input.
+    """
+    servers = {}
+    for name in TMUX_SERVER_NAMES:
+        count = _tmux_server_session_count(name)
+        servers[name] = {
+            'readable': count is not None,
+            'present': bool(count) if count is not None else None,
+            'session_count': count,
+        }
+    return {'schema_version': 1, 'servers': servers}
+
+
+PULSE_SINK_INPUTS_TIMEOUT = 5
+# Bounded so the projection cannot crowd the 36 KiB diagnostics envelope; the
+# production session has far fewer streams than this, and the omitted remainder
+# is reported rather than silently dropped.
+PULSE_SINK_INPUTS_MAX = 32
+PULSE_SINK_INPUTS_OUTPUT_MAX = 256 * 1024
+# ``application.name`` is an externally supplied free-form string, so it is
+# never emitted verbatim. These fixed categories still separate the bridge's
+# BGM player from a speech worker, which is what the #968 report needs.
+PULSE_PLAYER_CATEGORIES = (
+    ('ffplay', 'bridge-ffplay'),
+    ('retroarch', 'retroarch'),
+    ('chrom', 'browser'),
+    ('firefox', 'browser'),
+    ('speech', 'speech-worker'),
+    ('voicevox', 'speech-worker'),
+    ('tts', 'speech-worker'),
+    ('parec', 'monitor-capture'),
+    ('monitor', 'monitor-capture'),
+    ('ffmpeg', 'stream-capture'),
+    ('stream', 'stream-capture'),
+)
+
+
+def _pulse_player_category(name):
+    """Coarse fixed category for a PulseAudio application name."""
+    if not isinstance(name, str):
+        return None
+    lowered = name.lower()
+    for needle, category in PULSE_PLAYER_CATEGORIES:
+        if needle in lowered:
+            return category
+    return 'other'
+
+
+def _pulse_server_argv():
+    """Point ``pactl`` at the session's own PulseAudio socket.
+
+    The gateway runs this collector with a scrubbed environment and no
+    ``XDG_RUNTIME_DIR``, so ``pactl`` cannot find the server on its own. The
+    per-user runtime directory is the only derived path used here; if it is not
+    a socket, ``pactl`` falls back to its compiled-in default and the
+    projection reports the failure instead of guessing.
+    """
+    runtime_dir = Path('/run/user') / str(os.getuid())
+    socket_path = runtime_dir / 'pulse' / 'native'
+    try:
+        if stat.S_ISSOCK(socket_path.stat().st_mode):
+            return ['--server=unix:' + str(socket_path)]
+    except OSError:
+        pass
+    return []
+
+
+def _pulse_listing(*args):
+    """Return one bounded pactl listing, or a fixed failure reason."""
+    try:
+        proc = subprocess.run(
+            ['pactl', *_pulse_server_argv(), *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=PULSE_SINK_INPUTS_TIMEOUT,
+            env={**os.environ, 'LC_ALL': 'C'},
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, 'pactl_unavailable'
+    if proc.returncode != 0:
+        return None, 'pactl_failed'
+    output = proc.stdout
+    if not isinstance(output, str) or len(output) > PULSE_SINK_INPUTS_OUTPUT_MAX:
+        return None, 'unbounded_output'
+    return output, None
+
+
+def _project_pulse_stream(item, names, roles):
+    """One sink input as a fixed, sanitized shape.
+
+    ``application.process.id`` and the module/client identifiers are parsed by
+    the shared helper but deliberately dropped: a pid is neither stable nor
+    needed to tell "the BGM is muted" from "the BGM is missing".
+    """
+    sink = item.get('sink')
+    percents = item.get('volume_percent')
+    if not isinstance(percents, list):
+        percents = None
+    else:
+        percents = [p for p in percents if type(p) is int and 0 <= p <= 200] or None
+    role = item.get('role')
+    return {
+        'index': item.get('index') if type(item.get('index')) is int else None,
+        'sink': names.get(sink) if isinstance(sink, str) else None,
+        # The role vocabulary is fixed in pulse_volume; re-checked here so this
+        # projection's contract holds on its own.
+        'role': role if role in roles else None,
+        'mute': item.get('mute') if isinstance(item.get('mute'), bool) else None,
+        # None means the daemon did not report it, never "not corked".
+        'corked': item.get('corked') if isinstance(item.get('corked'), bool) else None,
+        'volume_percent': percents,
+        'player': _pulse_player_category(item.get('application')),
+    }
+
+
+def _collect_pulse_sink_inputs():
+    """Read-only PulseAudio sink-input projection (#968).
+
+    BGM/SE playback silence after a corner switch was previously only visible
+    through an ad-hoc owner shell: the bridge's ffplay stream stayed alive with
+    a normal volume while its sink input carried ``Mute: yes``, and
+    ``module-stream-restore`` re-applied that mute to every new stream with the
+    same key. Making mute/volume/sink/role readable here is the observability
+    half of that follow-up; the fixed recovery operation is deliberately not
+    part of this projection.
+
+    Every field is a fixed key with a bounded value, and an unreachable daemon
+    is reported as unreadable rather than as "no muted streams".
+    """
+    from docich.pulse_volume import MEDIA_ROLES, parse_sink_inputs, sink_names
+
+    listing, failure = _pulse_listing('list', 'sink-inputs')
+    if failure is not None:
+        return {'schema_version': 1, 'readable': False, 'reason': failure,
+                'total': None, 'muted': None, 'streams': []}
+    # ``list sink-inputs`` reports the sink by index; the name is what makes a
+    # muted shared stream recognizable, so the fixed short listing is read too.
+    # A missing name mapping is not a failure: mute is still readable.
+    short, _short_failure = _pulse_listing('list', 'short', 'sinks')
+    try:
+        items = parse_sink_inputs(listing)
+        # The shared parser deliberately ignores unknown lines. Nonempty
+        # output with no recognized stream must not look like a healthy empty
+        # daemon (for example when a localized or changed format is returned).
+        if listing.strip() and not items:
+            raise ValueError('unrecognized sink-input listing')
+        names = sink_names(short or '')
+    except (TypeError, ValueError):
+        return {'schema_version': 1, 'readable': False, 'reason': 'unparsable',
+                'total': None, 'muted': None, 'streams': []}
+    streams = [_project_pulse_stream(item, names, MEDIA_ROLES)
+               for item in items[:PULSE_SINK_INPUTS_MAX]]
+    return {
+        'schema_version': 1,
+        'readable': True,
+        'reason': None,
+        'total': len(items),
+        # Count all parsed streams before limiting the per-stream details.
+        'muted': sum(1 for item in items if item.get('mute') is True),
+        # Bounded list; the omitted remainder is explicit so a full list is
+        # never mistaken for a complete one.
+        'truncated': len(items) > PULSE_SINK_INPUTS_MAX,
+        'streams': streams,
+    }
+
+
+def _read_hanjuku_record(path):
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+    file_fd = None
+    try:
+        parts = Path(path).absolute().parts[1:]
+        for part in parts[:-1]:
+            nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        file_fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        info = os.fstat(file_fd)
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= HANJUKU_TACTICAL_LIMIT:
+            raise ValueError('invalid bounded record')
+        raw = os.read(file_fd, HANJUKU_TACTICAL_LIMIT + 1)
+        if len(raw) > HANJUKU_TACTICAL_LIMIT:
+            raise ValueError('record grew')
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError('not object')
+        return data, info.st_mtime
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+        os.close(fd)
+
+
+def _collect_hanjuku_tactical(state_dir, now):
+    """Only chapter-1 fixed castle labels, counts and flags from a fresh run.
+
+    These are the bot's recorded beliefs, not independently verified ownership
+    or roster. An absent garrison record remains unknown rather than empty.
+    """
+    out = {'status': 'unavailable', 'basis': 'bot_record', 'age_sec': None}
+    try:
+        if type(now) not in (int, float) or not math.isfinite(now):
+            return out
+        root = Path(state_dir)
+        canonical, _ = _read_hanjuku_record(root / 'game_switch.json')
+        active = canonical.get('active')
+        if (canonical.get('phase') != 'ready' or not isinstance(active, dict)
+                or active.get('game') != 'hanjuku-hero'
+                or type(active.get('generation')) is not int
+                or not isinstance(active.get('lease_id'), str) or not active['lease_id']
+                or not isinstance(active.get('runtime_id'), str)
+                or not re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', active['runtime_id'])):
+            return out
+        runtime = root / 'runtimes' / active['runtime_id']
+        bot, modified = _read_hanjuku_record(runtime / 'hanjuku_bot.json')
+        run, _ = _read_hanjuku_record(runtime / 'hanjuku_run.json')
+        trace = bot.get('decision_trace')
+        if (not isinstance(trace, dict)
+                or any(trace.get(k) != active.get(k) or run.get(k) != active.get(k) for k in HANJUKU_TACTICAL_KEYS)
+                or run.get('terminal_reason') or run.get('terminal_candidate')):
+            return out
+        age = now - modified
+        if not 0 <= age <= 30:
+            return {**out, 'status': 'stale'}
+        mem = bot.get('policy')
+        if not isinstance(mem, dict) or type(mem.get('chapter')) is not int or mem['chapter'] != 1:
+            return {**out, 'status': 'unsupported_chapter'}
+        captured = mem.get('captured', [])
+        garrison = mem.get('garrison', {})
+        sorties = mem.get('sorties', {})
+        tick = mem.get('tick')
+        unknown = mem.get('general_location_unknown', [])
+        if (not isinstance(captured, list) or not isinstance(garrison, dict)
+                or not isinstance(sorties, dict) or not isinstance(unknown, list)
+                or type(tick) is not int or tick < 0):
+            return out
+        busy = {g for g in unknown if isinstance(g, str)}
+        reserved = set()
+        for entry in sorties.values():
+            if (not isinstance(entry, dict)
+                    or entry.get('status') not in ('en_route', 'launched_unconfirmed')
+                    or type(entry.get('tick')) is not int or not 0 <= tick-entry['tick'] < 400):
+                continue
+            if isinstance(entry.get('general'), str):
+                busy.add(entry['general'])
+            if entry.get('target') in HANJUKU_TACTICAL_CASTLES:
+                reserved.add(entry['target'])
+        rows = []
+        for castle in HANJUKU_TACTICAL_CASTLES[:-1]:
+            names = garrison.get(castle)
+            known = isinstance(names, list) and len(names) <= 64 and all(isinstance(g, str) for g in names)
+            idle = len(set(names) - busy) if known else None
+            rows.append({'castle': castle, 'captured_record': castle in captured,
+                         'garrison_known': known, 'idle_generals_record': idle,
+                         'target_reserved_record': castle in reserved})
+        again, _ = _read_hanjuku_record(root / 'game_switch.json')
+        if again.get('phase') != 'ready' or again.get('active') != active:
+            return {**out, 'status': 'identity_changed'}
+        out.update(status='ok', age_sec=int(age), chapter=1,
+                   remaining_castles=[c for c in HANJUKU_TACTICAL_CASTLES[1:-1] if c not in captured],
+                   castles=rows, home_lost_record=mem.get('home_lost') is True)
+        return out
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        return out
+
 
 
 def _collect_nethack_boundary(state_dir, now):
@@ -3417,6 +4220,231 @@ def _collect_nethack_panes(state_dir, now):
     return result
 
 
+# NetHack evidence only: never invoke the game/retrospective/provider or probe locks.
+NETHACK_HISTORY_SCAN_LIMIT = 128
+NETHACK_HISTORY_FILE_BYTES = 65536
+NETHACK_TERMINAL = frozenset({'dead', 'ascended', 'ended', 'ended_unknown'})
+NETHACK_LESSONS = frozenset({'repeated_death', 'survival_signal', 'food_survival',
+                            'proposal_drift', 'evidence_gap', 'terminal_evidence',
+                            'progress_stall'})
+
+
+def _nethack_number(value):
+    return value if type(value) is int and 0 <= value <= 10**12 else None
+
+
+def _nethack_time(value):
+    if not isinstance(value, str) or len(value) > 64:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            return None
+        epoch = parsed.timestamp()
+        return epoch if math.isfinite(epoch) and 0 <= epoch <= 253402300799 else None
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _nethack_progress(raw):
+    if not isinstance(raw, dict):
+        return {'status': 'missing'}
+    result = {'status': _rotation_enum(raw.get('status'),
+              {'ok', 'empty', 'missing', 'error', 'too_large', 'invalid_run_id'})}
+    for key in ('sample_count', 'malformed_lines', 'first_turn', 'last_turn',
+                'max_turn', 'max_depth', 'same_frame_sent_pairs', 'max_same_frame_sent_streak'):
+        result[key] = _nethack_number(raw.get(key))
+    for key in ('first_ts', 'last_ts', 'min_hp_ratio'):
+        value = raw.get(key)
+        result[key] = value if type(value) in (int, float) and 0 <= value <= 10**12 and math.isfinite(value) else None
+    result['truncated'] = raw.get('truncated') if type(raw.get('truncated')) is bool else None
+    result['phase_counts'] = {key: _nethack_number(raw.get('phase_counts', {}).get(key))
+                             for key in ('sent', 'hold')} if isinstance(raw.get('phase_counts'), dict) else {}
+    return result
+
+
+def _nethack_record(raw, daily):
+    if type(raw.get('schema_version')) is not int or raw['schema_version'] != 1:
+        return None
+    if daily:
+        if _rotation_enum(raw.get('status'), {'review_ready', 'no_new_runs'}) == 'unknown':
+            return None
+        date = raw.get('date')
+        if not isinstance(date, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date):
+            return None
+        try:
+            dt.date.fromisoformat(date)
+        except ValueError:
+            return None
+        if raw.get('policy_effect') != 'none' or raw.get('automatic_promotion') is not False:
+            return None
+        count = _nethack_number(raw.get('run_count'))
+        if count is None or count > 8:
+            return None
+        candidates = raw.get('candidates')
+        if not isinstance(candidates, list) or len(candidates) > 100:
+            return None
+        categories = {}
+        for item in candidates:
+            category = _rotation_enum(item.get('category') if isinstance(item, dict) else None, NETHACK_LESSONS)
+            categories[category] = categories.get(category, 0) + 1
+        result = {'date': date, 'status': raw['status'], 'run_count': count,
+                  'candidate_state': _rotation_enum(raw.get('candidate_state'), {'no_change', 'pending_canary_evaluation'}),
+                  'candidate_categories': categories, 'policy_effect': 'none', 'automatic_promotion': False}
+        timestamp = _nethack_time(raw.get('generated_at'))
+    else:
+        if _rotation_enum(raw.get('status'), NETHACK_TERMINAL) == 'unknown':
+            return None
+        # The run producer persists session closure on the root under
+        # last_finished_at; ended_at exists only inside individual sessions.
+        timestamp = _nethack_time(raw.get('last_finished_at'))
+        retrospective = raw.get('retrospective')
+        retrospective = retrospective if (
+            isinstance(retrospective, dict)
+            and type(retrospective.get('schema_version')) is int
+            and retrospective['schema_version'] == 1
+            and retrospective.get('source') == 'p5a_retrospective'
+            and retrospective.get('run_id') == raw.get('run_id')
+            and retrospective.get('terminal_status') == raw['status']
+        ) else {}
+        result = {'terminal_status': raw['status'], 'started_at': _nethack_time(raw.get('started_at')),
+                  'expedition': _nethack_number(raw.get('expedition')),
+                  'retrospective_present': bool(retrospective),
+                  'retrospective_generated_at': _nethack_time(retrospective.get('generated_at')),
+                  'same_death_total_count': _nethack_number(retrospective.get('same_death_total_count')),
+                  'progress': _nethack_progress(retrospective.get('progress_evidence'))}
+        for key in ('score', 'turns', 'max_depth'):
+            result[key] = _nethack_number(raw.get(key))
+    if timestamp is None:
+        return None
+    result['generated_at' if daily else 'ended_at'] = timestamp
+    return result
+
+
+def _nethack_history(state_dir, daily):
+    """Open each directory relative to a pinned fd: no symlink traversal/races."""
+    result = {'status': 'unavailable', 'scan_complete': False, 'scanned_entries': 0,
+              'invalid_records': 0, 'excluded_active': 0, 'omitted_records': 0, 'records': []}
+    directory = Path(state_dir) / 'nethack' / ('daily-improvements' if daily else 'runs')
+    fd = None
+    try:
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+        for component in directory.absolute().parts[1:]:
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        records = []
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                if result['scanned_entries'] >= NETHACK_HISTORY_SCAN_LIMIT:
+                    break
+                result['scanned_entries'] += 1
+                pattern = r'\d{4}-\d{2}-\d{2}\.json' if daily else r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json'
+                if not re.fullmatch(pattern, entry.name):
+                    continue
+                try:
+                    file_fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+                    with os.fdopen(file_fd, 'rb') as handle:
+                        info = os.fstat(handle.fileno())
+                        if not stat.S_ISREG(info.st_mode) or info.st_size > NETHACK_HISTORY_FILE_BYTES:
+                            raise ValueError('bounded file required')
+                        content = handle.read(NETHACK_HISTORY_FILE_BYTES + 1)
+                    if len(content) > NETHACK_HISTORY_FILE_BYTES:
+                        raise ValueError('bounded file required')
+                    raw = json.loads(content)
+                    if not isinstance(raw, dict):
+                        raise ValueError('object required')
+                    if not daily and _rotation_enum(raw.get('status'), {'active', 'starting', 'suspended', 'saved'}) != 'unknown':
+                        result['excluded_active'] += 1
+                        continue
+                    record = _nethack_record(raw, daily)
+                    if record is None or (daily and raw['date'] + '.json' != entry.name) or (
+                        not daily and raw.get('run_id') != entry.name[:-5]
+                    ):
+                        raise ValueError('invalid evidence')
+                    record['file_mtime'] = info.st_mtime
+                    records.append(record)
+                except (OSError, ValueError, UnicodeError, RecursionError):
+                    result['invalid_records'] += 1
+            else:
+                result['scan_complete'] = True
+        key = 'generated_at' if daily else 'ended_at'
+        records.sort(key=lambda item: item[key], reverse=True)
+        limit = 7 if daily else 8
+        result['records'] = records[:limit]
+        result['omitted_records'] = max(0, len(records) - limit)
+        result['status'] = 'partial' if not result['scan_complete'] or result['invalid_records'] else ('ok' if records else 'empty')
+    except FileNotFoundError:
+        result['status'] = 'missing'
+    except OSError:
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return result
+
+
+def _collect_nethack_history(state_dir, now):
+    return {'schema_version': 1, 'collected_at': now, 'scan_limit_per_source': NETHACK_HISTORY_SCAN_LIMIT,
+            'file_byte_limit': NETHACK_HISTORY_FILE_BYTES,
+            'daily': _nethack_history(state_dir, True), 'completed_runs': _nethack_history(state_dir, False)}
+
+
+def _nethack_history_budget(payload, *, keep_latest=False):
+    """Trim oldest history first, keeping the latest of each source if possible."""
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    while len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        sources = [payload["nethack_history"][name]
+                   for name in ("daily", "completed_runs")
+                   if len(payload["nethack_history"][name]["records"]) > int(keep_latest)]
+        if not sources:
+            break  # Existing diagnostics retain their original budget handling.
+        # Each source is newest-first. Exhaust older records before removing
+        # either source's latest record; never mark an empty/missing source.
+        history = max(sources, key=lambda item: len(item["records"]))
+        history["records"].pop()
+        history["omitted_records"] += 1
+        history["output_omitted"] = True
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return text
+
+
+def _diagnostics_budget(payload):
+    """Keep latest history through existing detail reductions, then bound it."""
+    text = _nethack_history_budget(payload, keep_latest=True)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        payload["ai"]["recent_events"] = []
+        payload["ai"]["recent_events_omitted"] = True
+        payload["workers"]["details"] = {}
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+            payload["ai"]["anomalous_components"] = {}
+            text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        profile = payload["soren91_drop_profile"]
+        if profile.get('profileStatus') == 'ok':
+            profile['omittedComparisonGroups'] += len(profile['groups'])
+            profile['omittedGameGroups'] += len(profile['games'])
+            profile['groups'] = {}
+            profile['games'] = []
+            profile['slowest'] = []
+            profile['representativeOmitted'] = True
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # Keep current game evidence through the older detail reductions first.
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES and "hanjuku_tactical" in payload:
+        payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
+    # The pulse stream list is the last detail to go: an omitted list must
+    # still report its own mute count, so a muted BGM never disappears behind
+    # the size budget (#968).
+    text = _nethack_history_budget(payload)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES and "pulse_sink_inputs" in payload:
+        pulse = payload["pulse_sink_inputs"]
+        payload["pulse_sink_inputs"] = {
+            key: value for key, value in pulse.items() if key != 'streams'
+        } | {'streams': [], 'truncated': True, 'output_omitted': True}
+    return _nethack_history_budget(payload)
+
+
 def main(argv):
     if len(argv) != 2:
         print("usage: collect_diagnostics.py <soren_root>", file=sys.stderr)
@@ -3460,33 +4488,34 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": corners,
+        "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
+        "tmux_servers": _collect_tmux_servers(),
+        "pulse_sink_inputs": _collect_pulse_sink_inputs(),
+        "resolver_daemon": _collect_resolver_daemon(),
+        "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "webui": _collect_webui(),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
+        "opencode_session_attribution": _collect_opencode_session_attribution(
+            Path(soren).parent / ".local" / "share" / "opencode" / "opencode.db",
+            now,
+        ),
+        "opencode_retention": _collect_opencode_retention(soren, now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
     }
-    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
-        payload["ai"]["recent_events"] = []
-        payload["workers"]["details"] = {}
-        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-        if len(text.encode("utf-8")) > MAX_JSON_BYTES:
-            payload["ai"]["anomalous_components"] = {}
-            text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
-        profile = payload["soren91_drop_profile"]
-        if profile.get('profileStatus') == 'ok':
-            profile['omittedComparisonGroups'] += len(profile['groups'])
-            profile['omittedGameGroups'] += len(profile['games'])
-            profile['groups'] = {}
-            profile['games'] = []
-            profile['slowest'] = []
-            profile['representativeOmitted'] = True
-        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    retention = payload["opencode_retention"]
+    attempt = retention["attempt"]
+    if payload["status"] == "ok" and attempt.get("present") and (
+        not attempt.get("readable") or attempt.get("stale")
+        or attempt.get("status") in {"failed", "deferred", "gate_timeout", "unknown"}
+        or retention["timer"].get("active") is not True
+    ):
+        payload["status"] = "warn"
+    text = _diagnostics_budget(payload)
     sys.stdout.write(text + "\n")
     return 0
 

@@ -180,6 +180,37 @@ def test_game_adapter_inherits_global_match_target_when_omitted(tmp_path, config
     assert adapter.manager.config.target_matches == (configured or 3)
 
 
+def test_game_adapter_reconciles_only_the_reserved_manual_state_file(tmp_path, monkeypatch):
+    from docich import soren91_corner_manual
+
+    corner = Corner("meriken", "meriken", "soren91")
+    main_reconcile = Mock(return_value=False)
+    manual_reconcile = Mock(return_value=True)
+    adapter = GameCornerAdapter.__new__(GameCornerAdapter)
+    adapter.g = SimpleNamespace(state_dir=tmp_path)
+    adapter.corner = corner
+    adapter.manager = SimpleNamespace(
+        state_path=tmp_path / "soren91_corner.json",
+        reconcile_failed_rotation_start=main_reconcile,
+    )
+    manual_manager = SimpleNamespace(
+        state_path=tmp_path / "soren91_corner_manual.json",
+        reconcile_failed_rotation_start=manual_reconcile,
+    )
+    monkeypatch.setattr(
+        soren91_corner_manual, "ManualSoren91CornerManager", lambda _g: manual_manager
+    )
+
+    assert adapter.reconcile_failed_start(
+        "exact-request", state_file="soren91_corner_manual.json"
+    ) is True
+    manual_reconcile.assert_called_once_with("exact-request")
+    main_reconcile.assert_not_called()
+    assert adapter.reconcile_failed_start(
+        "other-request", state_file="../soren91_corner_manual.json"
+    ) is False
+
+
 def test_runtime_environment_uses_persisted_target_for_resumed_request(tmp_path, monkeypatch):
     from docich.config import load_global
 
@@ -206,6 +237,55 @@ def test_runtime_environment_uses_persisted_target_for_resumed_request(tmp_path,
     with adapter.runtime_environment({"request_id": "req-2"}):
         assert os.environ["DOCICH_TARGET_MATCHES"] == "3"
         assert os.environ["NSNAKE_MAX_MATCHES"] == "3"
+
+
+def test_moon_buggy_ab_runtime_environment_caps_to_remaining_matches(tmp_path, monkeypatch):
+    from docich import moon_buggy_ab
+    from docich.config import load_global
+
+    path = tmp_path / "config.toml"
+    path.write_text('[retro_corner]\ngames=["moon-buggy"]\ntarget_matches=3\n')
+    g = load_global(tmp_path, path)
+    corner = Corner("moon-buggy", "game", "moon-buggy", target_matches=3)
+    adapter = GameCornerAdapter(g, corner)
+    moon_buggy_ab.stage(
+        g.state_dir, {"laser_period": 7.0}, {"laser_period": 8.0},
+        source_date="2026-09-24", headless_baseline_mean=10.0,
+        headless_candidate_mean=5.0,
+    )
+    selected = moon_buggy_ab.select_arm(g.state_dir)
+    moon_buggy_ab.record_score(g.state_dir, Path(g.state_dir) / "scores.jsonl", 20)
+    request_id = "12345678-1234-5678-1234-567812345678"
+    for name in (
+        "DOCICH_TARGET_MATCHES", "MOONBUGGY_MAX_MATCHES",
+        "DOCICH_MOON_BUGGY_AB_STATE", "DOCICH_MOON_BUGGY_AB_ACTIVE",
+        "DOCICH_MOON_BUGGY_AB_REQUEST",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    original_config = adapter.manager.config
+
+    with adapter.runtime_environment({"request_id": request_id}):
+        assert os.environ["DOCICH_TARGET_MATCHES"] == "3"
+        assert os.environ["MOONBUGGY_MAX_MATCHES"] == "3"
+        assert os.environ["DOCICH_MOON_BUGGY_AB_STATE"] == str(moon_buggy_ab.state_path(g.state_dir))
+        assert os.environ["DOCICH_MOON_BUGGY_AB_ACTIVE"] == str(moon_buggy_ab.active_path(g.state_dir))
+        assert os.environ["DOCICH_MOON_BUGGY_AB_REQUEST"] == request_id
+        assert adapter.manager.config.target_matches == 3
+    assert adapter.manager.config == original_config
+    assert moon_buggy_ab.pending_matches(g.state_dir) == 3
+    assert selected["arm"] == "A"
+
+
+def test_moon_buggy_ab_staged_improvement_is_terminal_for_rotation(tmp_path):
+    from docich.corner_adapters import _improvement_released
+
+    status_path = tmp_path / "corner_improve_moon-buggy.json"
+    status_path.write_text(json.dumps({
+        "status": "ab-staged",
+        "started_at": "2026-09-24T00:02:00+00:00",
+    }))
+    corner_state = {"completed_at": "2026-09-24T00:01:00+00:00"}
+    assert _improvement_released(status_path, corner_state)
 
 
 @pytest.mark.parametrize("adapter_name", ["paper", "nethack"])
@@ -236,11 +316,14 @@ def test_meriken_env_file_is_scoped_to_adapter_execution(tmp_path, monkeypatch):
     env_file.write_text(
         "SOREN91_MACOS_AGENT_BASE_URL='http://100.64.0.2:8787'\n"
         "SOREN91_LOCAL_AGENT_TOKEN=secret-token\n"
-        "export SOREN91_OCI_TAILSCALE_IP=100.64.0.3\n",
+        "export SOREN91_OCI_TAILSCALE_IP=100.64.0.3\n"
+        "SOREN91_WINDOWS_AGENT_BASE_URL=http://100.64.0.4:8787\n"
+        "SOREN91_WINDOWS_AGENT_TOKEN=windows-token\n"
+        "UNRELATED_SECRET=not-loaded\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("DOCICH_SOREN91_ENV_FILE", str(env_file))
-    for key in MerikenCornerAdapter.ENV_KEYS:
+    for key in (*MerikenCornerAdapter.ENV_KEYS, "UNRELATED_SECRET"):
         monkeypatch.delenv(key, raising=False)
 
     adapter = MerikenCornerAdapter.__new__(MerikenCornerAdapter)
@@ -248,6 +331,9 @@ def test_meriken_env_file_is_scoped_to_adapter_execution(tmp_path, monkeypatch):
         assert os.environ["SOREN91_MACOS_AGENT_BASE_URL"] == "http://100.64.0.2:8787"
         assert os.environ["SOREN91_LOCAL_AGENT_TOKEN"] == "secret-token"
         assert os.environ["SOREN91_OCI_TAILSCALE_IP"] == "100.64.0.3"
+        assert os.environ["SOREN91_WINDOWS_AGENT_BASE_URL"] == "http://100.64.0.4:8787"
+        assert os.environ["SOREN91_WINDOWS_AGENT_TOKEN"] == "windows-token"
+        assert "UNRELATED_SECRET" not in os.environ
     for key in MerikenCornerAdapter.ENV_KEYS:
         assert key not in os.environ
 
@@ -259,7 +345,9 @@ def test_paper_rotation_replays_same_request_and_remains_non_live(tmp_path, monk
     mgr = manager(g, clock=lambda: now[0], overlay=lambda *a, **k: None,
                   speech=lambda *a, **k: None, stream_paper=lambda: None)
     mgr._ensure_fallback_script = lambda state: None
-    mgr._next_narration_item = lambda state: ("exhausted", None)
+    mgr._next_narration_item = lambda state, index: {
+        "key": f"script:{index}", "text": f"slot {index}", "source": "fallback"
+    }
     mgr._wait_for_speech = lambda state: True
     mgr._refresh_paper_flag = lambda state: None
     mgr._clear_paper_flag = lambda: None

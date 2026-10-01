@@ -18,7 +18,7 @@ NInvaders 専用の構造方策ループを追加します。ほかのレトロ�
 | ライブrunner | `src/docich/ninvaders/player.py` | 次の試合開始時に昇格版を読む |
 | 試合wrapper | `games/cli-wrappers/ninvaders_docich.sh` | 試合開始・スコア記録・runnerの後始末 |
 
-改善jobは既存のコーナー単一実行ロックと共有改善レーンを通ります。NInvadersの比較は incumbent と candidate を各6試合、3並列、1試合あたり240秒以内で行います。共通設定の `improve_matches=2` は他ゲームのままです。両評価で十分な試合が成立し、候補のpolicy fault率が2%以下、平均スコアが10%以上向上し、片側置換検定が `p <= 0.10` の場合だけ昇格します。
+改善jobは既存のコーナー単一実行ロックと共有改善レーンを通ります。LLM候補生成は1エージェントあたり300秒・チェーン全体1260秒の予算で実行し、先頭エージェントが固まっても後続のフォールバックに再試行余地を残します（2026-09-25/09-27 に600秒の先頭停滞で全体が `llm-rc` になったため）。NInvadersの比較は incumbent と candidate を各6試合、3並列、1試合あたり240秒以内で行います。ゲームが起動しない・tmuxセッションが落ちる等のインフラ失敗（`no-start` / `session-lost` / `error`）の枠は1回だけ再試行し、完了試合不足による据え置きを減らします（2026-09-28 に候補6試合中3試合がインフラ失敗で `policy-incomplete` 据え置きになったため）。共通設定の `improve_matches=2` は他ゲームのままです。両評価で十分な試合が成立し、候補のpolicy fault率が2%以下、平均スコアが10%以上向上し、片側置換検定が `p <= 0.10` の場合だけ昇格します。
 
 昇格先は `<state_dir>/resolver/ninvaders/current.json` です。ライブrunnerは試合境界で現行版を再選択します。ポリシーrunnerが起動できない、または停止した場合は固定スイープへ縮退します。agent commandは無効にして入力の競合を防ぎます。adapterは設定済みの `state_dir` をwrapperへ渡すため、改善器とライブrunnerは同じポリシーストアを参照します。
 

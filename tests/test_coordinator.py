@@ -283,6 +283,21 @@ class TestStart(CoordinatorTestBase):
         self.assertIsNone(state["candidate"])
         self.assertEqual(self.mirror_text(), None)
 
+    def test_start_factory_deadline_is_timeout(self):
+        def deadline_factory(_spec):
+            raise game_switch.DeadlineExceededError("factory deadline")
+
+        self.coordinator.adapter_factory = deadline_factory
+        result = self.coordinator.start("nethack")
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, game_switch.ERROR_TIMEOUT)
+        state = self.canonical()
+        self.assertEqual(state["phase"], "failed")
+        self.assertIsNone(state["active"])
+        self.assertIsNone(state["candidate"])
+        self.assertEqual(self.mirror_text(), None)
+
     def test_start_when_other_game_active_requests_switch(self):
         self.coordinator.start("nethack")
         result = self.coordinator.start("robots")
@@ -1206,7 +1221,7 @@ class TestRequestContract(CoordinatorTestBase):
 
 
 class TestAdapterTimeouts(CoordinatorTestBase):
-    def _hanging_coordinator(self):
+    def _hanging_coordinator(self, *, start_s=0.2):
         return game_switch.GameSwitchCoordinator(
             self.store,
             self.factory,
@@ -1216,7 +1231,7 @@ class TestAdapterTimeouts(CoordinatorTestBase):
             step_timeouts=game_switch.StepTimeouts(
                 preflight_s=2.0,
                 stop_agent_s=2.0,
-                start_s=0.2,
+                start_s=start_s,
                 agent_start_s=2.0,
                 cleanup_s=2.0,
                 probe_s=0.5,
@@ -1270,17 +1285,45 @@ class TestAdapterTimeouts(CoordinatorTestBase):
     def test_rollback_gets_fresh_budget_after_request_timeout(self):
         hang = threading.Event()
         self.behaviors["robots"]["hang_materialize"] = hang
-        coordinator = self._hanging_coordinator()
+        # Issue #253: with the request deadline equal to the materialize cap
+        # (both 0.2s), a loaded runner could spend the request during
+        # quiesce/stop, so rollback found the previous runtime alive and
+        # kept generation 1.  Uncap materialize so the request deadline is
+        # the only binding timeout, and give quiesce/stop (milliseconds) a
+        # wide margin before it expires inside the hanging materialize.
+        coordinator = self._hanging_coordinator(start_s=30.0)
         self.coordinator.start("nethack")
-        # The request deadline (0.2s) is spent by the hanging materialize;
-        # the rollback must still restore the stopped previous game on its
-        # own budget instead of failing immediately.
-        result = coordinator.switch("robots", timeout_s=0.2)
+        request_timeout_s = 1.5
+        started = time.monotonic()
+        result = coordinator.switch("robots", timeout_s=request_timeout_s)
+        elapsed = time.monotonic() - started
         self.assertEqual(result.status, "rolled_back")
+        # The request deadline really expired, and the previous game was
+        # stopped before it: the precondition for a fresh-generation restore.
+        self.assertGreaterEqual(elapsed, request_timeout_s)
+        self.assertLess(elapsed, 10.0)
+        self.assertIn("cleanup", self.factory.adapter("nethack", 1).runtime.events)
+        # The rollback still restored the previous game on its own budget.
         state = self.canonical()
         self.assertEqual(state["phase"], "ready")
         self.assertEqual(state["active"]["game"], "nethack")
         self.assertEqual(state["active"]["generation"], 3)
+
+    def test_rollback_restores_living_previous_without_new_generation(self):
+        # Complement to the fresh-budget test: when the previous runtime is
+        # still alive at rollback, restoring it keeps its generation.  Both
+        # outcomes of the #253 race are valid rollbacks; pin each explicitly.
+        hang = threading.Event()
+        self.behaviors["robots"]["hang_materialize"] = hang
+        self.behaviors["nethack"]["immortal"] = True
+        coordinator = self._hanging_coordinator()
+        self.coordinator.start("nethack")
+        result = coordinator.switch("robots", timeout_s=30.0)
+        self.assertEqual(result.status, "rolled_back")
+        state = self.canonical()
+        self.assertEqual(state["phase"], "ready")
+        self.assertEqual(state["active"]["game"], "nethack")
+        self.assertEqual(state["active"]["generation"], 1)
 
 
 class TestMirror(CoordinatorTestBase):

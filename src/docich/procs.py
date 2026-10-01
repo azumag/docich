@@ -4,9 +4,14 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 EXTRA_PATH_DIRS = ("/usr/games", "/usr/local/games")
+
+
+class OutputLimitExceeded(RuntimeError):
+    """A bounded child process produced more stdout than its caller permits."""
 
 
 def user_bus_env(env: dict | None = None) -> dict:
@@ -75,6 +80,82 @@ def run(
         cwd=cwd,
         **kwargs,
     )
+
+
+def run_bounded_output(
+    cmd: list[str],
+    *,
+    max_output_bytes: int,
+    timeout: float,
+    env_extra: dict | None = None,
+    strip_tmux: bool = False,
+) -> subprocess.CompletedProcess:
+    """Run a command while bounding stdout in memory and wall-clock time.
+
+    Stderr is discarded because this helper is used for small, fixed-format
+    probes whose public error messages must not contain child-process output.
+    The process is killed as soon as it exceeds the byte cap or deadline.
+    """
+    if type(max_output_bytes) is not int or not 1 <= max_output_bytes <= 1_048_576:
+        raise ValueError("max_output_bytes must be between 1 and 1048576")
+    if type(timeout) not in (int, float) or not 0 < timeout <= 30:
+        raise ValueError("timeout must be greater than 0 and at most 30 seconds")
+
+    process = subprocess.Popen(
+        cmd,
+        env=_build_env(env_extra, strip_tmux),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    assert process.stdout is not None
+    output = bytearray()
+    output_exceeded = threading.Event()
+
+    def drain_stdout() -> None:
+        assert process.stdout is not None
+        while True:
+            chunk = process.stdout.read(4096)
+            if not chunk:
+                return
+            if len(output) + len(chunk) > max_output_bytes:
+                output_exceeded.set()
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                return
+            output.extend(chunk)
+
+    reader = threading.Thread(target=drain_stdout, name="bounded-command-output", daemon=True)
+    try:
+        reader.start()
+        try:
+            process.wait(timeout=float(timeout))
+        except subprocess.TimeoutExpired as exc:
+            process.kill()
+            process.wait()
+            reader.join(timeout=1)
+            raise subprocess.TimeoutExpired(cmd, timeout, output=bytes(output)) from exc
+        reader.join(timeout=1)
+        if reader.is_alive():
+            process.kill()
+            process.wait()
+            raise subprocess.TimeoutExpired(cmd, timeout, output=bytes(output))
+        if output_exceeded.is_set():
+            raise OutputLimitExceeded(
+                f"command output exceeded {max_output_bytes} bytes"
+            )
+        return subprocess.CompletedProcess(
+            cmd, process.wait(), stdout=bytes(output), stderr=b""
+        )
+    finally:
+        process.stdout.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        if reader.ident is not None:
+            reader.join(timeout=1)
 
 
 def which(name: str) -> str | None:

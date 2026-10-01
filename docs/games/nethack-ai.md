@@ -95,6 +95,9 @@ blank / unseen area
 可視の退避先がない場合だけ通常の方向入力1個で接触する。攻撃確認は `n` で拒否し、同じ拒否を繰り返さない。
 これは旧P3bからの意図した行動面拡張であり、生存を保証しない。
 
+探索・食料探索・低HP/食料危険状態でも、隣接creatureがなく方向入力が信頼できる隣接閉扉は `o` と方向を別のfresh観測で1回試す。
+HP 50%以下や `Hungry` を理由に扉を避けず、`Fainted` と移動障害状態では入力しない。開かなかった扉は同じruntime中に再試行せず、開いたことを観測したglyphだけ通路として探索する。
+
 通常の完全な gameplay frame で、移動・接触・回復計画などの reviewed action がない場合は、判断保留を返さず
 `.` を1回送る。重篤状態・空腹・低HPも同じであり、ターンを消費して再観測する。`Hungry` では探索を優先し、
 隣接creatureでは退避・通常接触を先に試し、候補が尽きた時だけ `.` にする。
@@ -188,12 +191,15 @@ NetHackの `.` 1キーへ固定変換する。item使用・階段移動・prompt
 2. tactical / decline_save / n（canonical ready・境界要求なしを送信直前に確認）
 3. midlevel / explore_step / h|j|k|l|y|u|b|n の1キー
 4. production / retreat_step または bump_creature / 方向1キー
-5. production / rest_turn / . の1キー
-6. production / decline_attack / n（共有base policy/canaryには追加しない）
+5. production / open_door_start / o（隣接する可視 `+` を確認）
+6. production / open_door_direction / cardinal（次のfresh frameで同じ扉のpromptを確認）
+7. production / rest_turn / . の1キー
+8. production / decline_attack / n（共有base policy/canaryには追加しない）
 ```
 
 `assert_production_safe()` が最終候補のprompt/player/status/targetを再検証する。
-強制攻撃、item使用、open、階段コマンド、任意prompt回答はguardを通らない。
+強制攻撃、item使用、未観測の扉、階段コマンド、任意prompt回答はguardを通らない。
+開扉は隣接する可視 `+` と次フレームの同じ扉向けdirection promptを確認する2段階入力に限る。
 
 ## Brain integration
 
@@ -203,7 +209,7 @@ NetHackの `.` 1キーへ固定変換する。item使用・階段移動・prompt
 TTY Observation
   -> normalize_tty
   -> NethackLayeredPolicy
-  -> NethackProgressResolver（待機解決・拒否記憶）
+  -> NethackProgressResolver（待機解決・開扉・拒否記憶）
   -> observed-context action guard
   -> agent loop / shared_section内でfresh再観測・canonical境界確認
   -> adapter.act成功後だけprogressへ送信通知

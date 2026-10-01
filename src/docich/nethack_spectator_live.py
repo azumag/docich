@@ -12,24 +12,51 @@ file Browser Source update without requiring another HTTP service.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+from uuid import uuid4
 
 from .adapters.cli_game import cli_cols, cli_rows
 from .config import ConfigError, load_game, load_global
 from .game_switch import GameSwitchError, GameSwitchStore, atomic_write_json
-from .nethack_spectator import VISUAL_MODES, blank_frame, parse_tty, render_html
+from .nethack_spectator import (
+    DEFAULT_COLS,
+    DEFAULT_ROWS,
+    Frame,
+    VISUAL_MODES,
+    blank_frame,
+    parse_tty,
+    render_html,
+)
+from .nethack_tiles import tile_key
 from .tmux import Tmux, TmuxError, TmuxOwnership
 
 GAME_NAME = "nethack"
 DEFAULT_INTERVAL_MS = 500
 DEFAULT_REFRESH_MS = 750
 DEFAULT_VISUAL_MODE = "tiles"
+MAX_TTY_BYTES = 65_536
+MAX_FRAME_JSON_BYTES = 262_144
+SNAPSHOT_REASONS = frozenset(
+    {
+        "runtime_not_committed",
+        "runtime_mismatch",
+        "runtime_state_invalid",
+        "ownership_mismatch",
+        "window_unavailable",
+        "capture_failed",
+        "stale_timeout",
+        "frame_invalid",
+    }
+)
 
 
 class NethackSpectatorLiveError(RuntimeError):
@@ -54,6 +81,327 @@ class ActiveRuntime:
             generation=self.generation,
             role="game",
         )
+
+
+@dataclass(frozen=True)
+class NethackFrameSnapshot:
+    """One bounded display snapshot pinned to a single runtime and epoch."""
+
+    runtime: ActiveRuntime
+    presentation_epoch: str
+    capture_seq: int
+    content_seq: int
+    state: str
+    frame: Frame | None
+    captured_monotonic: float | None
+    reason: str | None = None
+    process_window: str | None = None
+
+    def public_dict(
+        self,
+        *,
+        now_monotonic: float,
+        stale_after_ms: int,
+    ) -> dict[str, object]:
+        age_ms = (
+            None
+            if self.captured_monotonic is None
+            else max(0, int((now_monotonic - self.captured_monotonic) * 1000))
+        )
+        state = self.state
+        frame = self.frame
+        reason = self.reason
+        if age_ms is not None and age_ms > stale_after_ms:
+            state = "unavailable"
+            frame = None
+            reason = "stale_timeout"
+
+        frame_kind = "placeholder"
+        cols = DEFAULT_COLS
+        rows = DEFAULT_ROWS
+        cells: list[dict[str, object]] = []
+        message = ""
+        status_lines: list[str] = []
+        tty_lines: list[str] = []
+        if frame is not None:
+            frame_kind = frame.frame_kind
+            cols = frame.cols
+            rows = frame.rows
+            message = frame.message
+            status_lines = list(frame.status)
+            tty_lines = list(frame.tty_lines) if frame_kind == "text" else []
+            if frame_kind == "map":
+                cells = [
+                    {
+                        "x": cell.x,
+                        "y": cell.y,
+                        "glyph": cell.char,
+                        "kind": cell.kind,
+                        "tile_key": tile_key(cell.kind, cell.char),
+                    }
+                    for cell in frame.cells
+                ]
+
+        return {
+            "schema_version": 1,
+            "runtime_id": self.runtime.runtime_id,
+            "generation": self.runtime.generation,
+            "presentation_epoch": self.presentation_epoch,
+            "capture_seq": self.capture_seq,
+            "content_seq": self.content_seq,
+            "capture_age_ms": age_ms,
+            "state": state,
+            "frame_kind": frame_kind,
+            "cols": cols,
+            "rows": rows,
+            "cells": cells,
+            "message": message,
+            "status_lines": status_lines,
+            "tty_lines": tty_lines,
+            "reason": reason if reason in SNAPSHOT_REASONS else None,
+        }
+
+
+def encode_snapshot_json(
+    snapshot: NethackFrameSnapshot,
+    *,
+    now_monotonic: float,
+    stale_after_ms: int,
+) -> bytes:
+    """Serialize only the fixed public schema under its hard response cap."""
+    body = json.dumps(
+        snapshot.public_dict(
+            now_monotonic=now_monotonic,
+            stale_after_ms=stale_after_ms,
+        ),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(body) > MAX_FRAME_JSON_BYTES:
+        raise NethackSpectatorLiveError("frame snapshot exceeds its size bound")
+    return body
+
+
+class SnapshotStore:
+    """Thread-safe latest-only snapshot storage; no history or queue."""
+
+    def __init__(self, initial: NethackFrameSnapshot) -> None:
+        self._lock = threading.Lock()
+        self._latest = initial
+
+    def publish(self, snapshot: NethackFrameSnapshot) -> None:
+        with self._lock:
+            if (
+                snapshot.presentation_epoch != self._latest.presentation_epoch
+                or snapshot.runtime != self._latest.runtime
+            ):
+                raise NethackSpectatorLiveError("snapshot identity changed within the store")
+            if snapshot.capture_seq < self._latest.capture_seq:
+                raise NethackSpectatorLiveError("snapshot capture sequence moved backwards")
+            if snapshot.content_seq < self._latest.content_seq:
+                raise NethackSpectatorLiveError("snapshot content sequence moved backwards")
+            self._latest = snapshot
+
+    def latest(self) -> NethackFrameSnapshot:
+        with self._lock:
+            return self._latest
+
+
+class NethackFrameReader:
+    """Read the committed NetHack TTY without changing its gameplay session."""
+
+    def __init__(
+        self,
+        *,
+        expected_runtime: ActiveRuntime,
+        state_loader: Callable[[], dict[str, object]],
+        cols: int = DEFAULT_COLS,
+        rows: int = DEFAULT_ROWS,
+        presentation_epoch: str | None = None,
+        stale_after_ms: int = 3000,
+        max_tty_bytes: int = MAX_TTY_BYTES,
+        tmux_factory: Callable[[str], object] = Tmux,
+        now_monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if type(cols) is not int or not 1 <= cols <= 80:
+            raise NethackSpectatorLiveError("cols must be between 1 and 80")
+        if type(rows) is not int or not 3 <= rows <= 24:
+            raise NethackSpectatorLiveError("rows must be between 3 and 24")
+        if type(stale_after_ms) is not int or not 1000 <= stale_after_ms <= 10_000:
+            raise NethackSpectatorLiveError("stale_after_ms must be between 1000 and 10000")
+        if type(max_tty_bytes) is not int or not 1 <= max_tty_bytes <= MAX_TTY_BYTES:
+            raise NethackSpectatorLiveError("max_tty_bytes must be between 1 and 65536")
+        epoch = (
+            f"p-{uuid4().hex}"
+            if presentation_epoch is None
+            else presentation_epoch
+        )
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,96}", epoch):
+            raise NethackSpectatorLiveError("presentation_epoch is invalid")
+        if expected_runtime.generation < 1:
+            raise NethackSpectatorLiveError("expected runtime generation is invalid")
+        self.expected_runtime = expected_runtime
+        self.presentation_epoch = epoch
+        self.state_loader = state_loader
+        self.cols = cols
+        self.rows = rows
+        self.stale_after_ms = stale_after_ms
+        self.max_tty_bytes = max_tty_bytes
+        self.tmux_factory = tmux_factory
+        self.now_monotonic = now_monotonic
+        self.capture_timeout_s = 1.0
+        self._capture_seq = 0
+        self._content_seq = 0
+        self._last_raw: str | None = None
+        self._last_success: NethackFrameSnapshot | None = None
+
+    def _snapshot(
+        self,
+        *,
+        state: str,
+        frame: Frame | None = None,
+        captured_monotonic: float | None = None,
+        reason: str | None = None,
+        process_window: str | None = None,
+    ) -> NethackFrameSnapshot:
+        return NethackFrameSnapshot(
+            runtime=self.expected_runtime,
+            presentation_epoch=self.presentation_epoch,
+            capture_seq=self._capture_seq,
+            content_seq=self._content_seq,
+            state=state,
+            frame=frame,
+            captured_monotonic=captured_monotonic,
+            reason=reason,
+            process_window=process_window,
+        )
+
+    def _load_runtime(self) -> tuple[dict[str, object], ActiveRuntime | None]:
+        state = self.state_loader()
+        if not isinstance(state, dict):
+            raise NethackSpectatorLiveError("canonical runtime state is invalid")
+        return state, active_nethack_runtime(state)
+
+    @staticmethod
+    def _not_ready_reason(state: dict[str, object]) -> str:
+        return "runtime_not_committed" if state.get("phase") != "ready" else "runtime_mismatch"
+
+    def _verify_tmux_target(self, tmux, *, expected_process: str | None = None) -> str:
+        runtime = self.expected_runtime
+        if tmux.read_session_ownership_bounded(runtime.adapter_session) != TmuxOwnership(
+            runtime.runtime_id, runtime.generation, "adapter"
+        ):
+            raise NethackSpectatorLiveError("ownership mismatch")
+        if tmux.read_window_ownership_bounded(runtime.target) != runtime.ownership:
+            raise NethackSpectatorLiveError("ownership mismatch")
+        process_name = process_window_name(
+            tmux.list_windows_bounded(runtime.adapter_session), runtime
+        )
+        if process_name is None:
+            raise LookupError("process window unavailable")
+        if expected_process is not None and process_name != expected_process:
+            raise LookupError("process window changed")
+        return process_name
+
+    def _empty(self, reason: str, *, state: str = "unavailable") -> NethackFrameSnapshot:
+        self._last_success = None
+        self._last_raw = None
+        return self._snapshot(state=state, reason=reason)
+
+    def _capture_failure(self, tmux) -> NethackFrameSnapshot:
+        """Retain a last-good image only while the same owner is still proven."""
+        try:
+            state, runtime = self._load_runtime()
+        except Exception:
+            return self._empty("runtime_state_invalid")
+        if runtime != self.expected_runtime:
+            return self._empty(self._not_ready_reason(state), state="standby")
+        last = self._last_success
+        try:
+            self._verify_tmux_target(
+                tmux,
+                expected_process=last.process_window if last is not None else None,
+            )
+        except LookupError:
+            return self._empty("window_unavailable")
+        except Exception:
+            return self._empty("ownership_mismatch")
+
+        now = self.now_monotonic()
+        if last is None or last.captured_monotonic is None:
+            return self._snapshot(state="unavailable", reason="capture_failed")
+        age_ms = max(0, int((now - last.captured_monotonic) * 1000))
+        if age_ms > self.stale_after_ms:
+            return self._snapshot(state="unavailable", reason="stale_timeout")
+        return self._snapshot(
+            state="stale",
+            frame=last.frame,
+            captured_monotonic=last.captured_monotonic,
+            reason="capture_failed",
+        )
+
+    def read_once(self) -> NethackFrameSnapshot:
+        """Return one fresh, stale, standby or unavailable pinned snapshot."""
+        try:
+            state, active_runtime = self._load_runtime()
+        except Exception:
+            return self._empty("runtime_state_invalid")
+        if active_runtime != self.expected_runtime:
+            return self._empty(self._not_ready_reason(state), state="standby")
+        try:
+            tmux = self.tmux_factory(self.expected_runtime.adapter_session)
+        except Exception:
+            return self._empty("ownership_mismatch")
+        try:
+            process_name = self._verify_tmux_target(tmux)
+        except LookupError:
+            return self._empty("window_unavailable")
+        except Exception:
+            return self._empty("ownership_mismatch")
+
+        target = f"{self.expected_runtime.adapter_session}:{process_name}"
+        try:
+            raw = tmux.capture_pane_bounded_checked(
+                target,
+                cols=self.cols,
+                rows=self.rows,
+                max_bytes=self.max_tty_bytes,
+                timeout_s=self.capture_timeout_s,
+            )
+        except Exception:
+            return self._capture_failure(tmux)
+
+        try:
+            if len(raw.encode("utf-8", errors="replace")) > self.max_tty_bytes:
+                return self._capture_failure(tmux)
+            state_after, runtime_after = self._load_runtime()
+        except Exception:
+            return self._empty("runtime_state_invalid")
+        if runtime_after != self.expected_runtime:
+            return self._empty(self._not_ready_reason(state_after), state="standby")
+        try:
+            self._verify_tmux_target(tmux, expected_process=process_name)
+        except LookupError:
+            return self._empty("window_unavailable")
+        except Exception:
+            return self._empty("ownership_mismatch")
+        try:
+            frame = parse_tty(raw, cols=self.cols, rows=self.rows)
+        except Exception:
+            return self._empty("frame_invalid")
+
+        self._capture_seq += 1
+        if raw != self._last_raw:
+            self._content_seq += 1
+            self._last_raw = raw
+        snapshot = self._snapshot(
+            state="active",
+            frame=frame,
+            captured_monotonic=self.now_monotonic(),
+            process_window=process_name,
+        )
+        self._last_success = snapshot
+        return snapshot
 
 
 def process_window_name(window_names, runtime: ActiveRuntime) -> str | None:
@@ -224,19 +572,31 @@ class LiveNethackSpectator:
             payload["error"] = error
         atomic_write_json(self.status_path, payload)
 
-    def _capture(self, runtime: ActiveRuntime) -> str:
-        tmux = self._tmux_factory(runtime.adapter_session)
-        actual = tmux.read_window_ownership(runtime.target)
-        if actual != runtime.ownership:
+    def _capture(self, runtime: ActiveRuntime) -> Frame:
+        reader = NethackFrameReader(
+            expected_runtime=runtime,
+            state_loader=self._state_loader,
+            cols=self.cols,
+            rows=self.rows,
+            stale_after_ms=3000,
+            tmux_factory=self._tmux_factory,
+        )
+        snapshot = reader.read_once()
+        if snapshot.state != "active" or snapshot.frame is None:
+            errors = {
+                "runtime_not_committed": "NetHack runtime is not committed",
+                "runtime_mismatch": "NetHack runtime changed during capture",
+                "runtime_state_invalid": "NetHack runtime state is unavailable",
+                "ownership_mismatch": "NetHack runtime ownership mismatch",
+                "window_unavailable": "active NetHack process window cannot be resolved safely",
+                "capture_failed": "NetHack TTY capture failed",
+                "stale_timeout": "NetHack TTY capture is stale",
+                "frame_invalid": "NetHack TTY frame is invalid",
+            }
             raise NethackSpectatorLiveError(
-                "active NetHack game window ownership does not match canonical runtime"
+                errors.get(snapshot.reason, "NetHack frame is unavailable")
             )
-        process_name = process_window_name(tmux.list_windows(), runtime)
-        if process_name is None:
-            raise NethackSpectatorLiveError(
-                "active NetHack process window cannot be resolved safely"
-            )
-        return tmux.capture_pane_checked(f"{runtime.adapter_session}:{process_name}")
+        return snapshot.frame
 
     def render_once(self) -> str:
         """Render one snapshot and return active/idle/degraded."""
@@ -249,8 +609,7 @@ class LiveNethackSpectator:
                 self._write_status("idle")
                 return "idle"
 
-            text = self._capture(runtime)
-            frame = parse_tty(text, cols=self.cols, rows=self.rows)
+            frame = self._capture(runtime)
             atomic_write_text(
                 self.output,
                 render_html(
