@@ -16,6 +16,14 @@ import tempfile
 import threading
 import time
 
+# PulseAudio media roles. Only these are reported: an application may set an
+# arbitrary ``media.role`` string, and a projection must never pass one through
+# as if it were part of this vocabulary (#968).
+MEDIA_ROLES = frozenset({
+    'music', 'movie', 'sound', 'ui', 'communication', 'phone', 'gaming',
+    'event', 'content', 'accessibility', 'photo', 'video', 'text',
+})
+
 
 def descendants(root: int, proc=Path('/proc')) -> set[int]:
     parents = {}
@@ -56,10 +64,31 @@ def parse_sink_inputs(text: str) -> list[dict]:
             percents = [int(p) for p in re.findall(r'(\d+)%', s)]
             if percents:
                 cur['volume_percent'] = percents
+        elif s.startswith('Corked:'):
+            # Only some PulseAudio versions report this per sink input. Absent
+            # stays absent so a caller never reads "not reported" as "not
+            # corked" (#968).
+            value = s.split(':', 1)[1].strip()
+            if value in {'yes', 'no'}:
+                cur['corked'] = value == 'yes'
         else:
             m = re.match(r'application\.process\.id = "(\d+)"', s)
             if m:
                 cur['pid'] = int(m.group(1))
+                continue
+            # Only the application name is captured, never the rest of the
+            # property dump: a caller needs to tell the bridge's BGM player
+            # from a speech worker, not the whole stream description (#968).
+            m = re.match(r'application\.name = "([^"\n]{1,48})"', s)
+            if m:
+                cur['application'] = m.group(1)
+                continue
+            # A fixed role set is what separates BGM/SE playback from speech or
+            # monitor capture; an unknown role is left unset rather than
+            # reported as a free-form string (#968).
+            m = re.match(r'media\.role = "([a-z]+)"', s)
+            if m and m.group(1) in MEDIA_ROLES:
+                cur['role'] = m.group(1)
     return items
 
 
