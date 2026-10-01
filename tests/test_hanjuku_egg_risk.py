@@ -106,6 +106,44 @@ def test_an_egg_risk_hold_is_bounded_and_then_engages():
     assert '保留上限' in mem['_records'][-1]['reason']
 
 
+def test_hp_bleed_budget_cuts_the_hold_before_the_count_limit():
+    # g530 09:52 defense: the count bound alone let 90 bleed to 73, and the
+    # forced push after it fought the summoned モーグリ at 73 and died at its
+    # last 4 HP. The budget stops the hold at 81 instead and latches.
+    mem = memory(side='defense')
+    policy.battle_step(panel('クミン'), mem)          # first reading: wait for a stable one
+    assert policy.battle_step(panel('クミン'), mem) == [policy.pad('b')]
+    mem['battle']['survival'] = {'exhausted': True}
+    assert max(policy.MELEE_HP_HOLD_FLOOR,
+               90 // policy.MELEE_HP_HOLD_DIVISOR) == 9
+    # A bleed under the budget leaves the count bound alone in charge.
+    for hp in (90, 86, 82):
+        assert policy.battle_step(panel('クミン', 27, hp), mem) == []
+    # 90 - 81 reaches the budget while the count limit is five holds away.
+    assert policy.battle_step(panel('クミン', 27, 81), mem) == MASH
+    rec = mem['_records'][-1]
+    assert rec['melee_control_mode'] == 'power_mash'
+    assert (rec['hold_hp_budget'], rec['hold_hp_bled']) == (9, 9)
+    assert 'HP劣化' in rec['reason']
+    # The cut latches for the rest of the fight: a recovered reading mashes.
+    assert policy.battle_step(panel('クミン', 27, 90), mem) == MASH
+    assert '打ち切り後' in mem['_records'][-1]['reason']
+
+
+def test_hp_bleed_budget_floor_gives_a_tiny_opening_hp_real_room_to_hold():
+    mem = memory(side='defense')
+    policy.battle_step(panel('クミン', 27, 20), mem)
+    assert policy.battle_step(panel('クミン', 27, 20), mem) == [policy.pad('b')]
+    mem['battle']['survival'] = {'exhausted': True}
+    # 20 // 10 would be 1; the floor allows max(3, ...) of wear first.
+    assert policy.battle_step(panel('クミン', 27, 20), mem) == []
+    assert policy.battle_step(panel('クミン', 27, 18), mem) == []
+    assert policy.battle_step(panel('クミン', 27, 17), mem) == MASH
+    rec = mem['_records'][-1]
+    assert (rec['hold_hp_budget'], rec['hold_hp_bled']) == (3, 3)
+    assert 'HP劣化' in rec['reason']
+
+
 def test_charted_boss_kit_waits_for_a_measured_clash():
     mem = memory(step='1-B1')
     assert enter(panel('クイーン', 70), mem) == MASH
