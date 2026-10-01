@@ -548,6 +548,62 @@ def test_marching_general_dispatch_defers_until_arrival():
     assert any(r['decision'] == 'house_general_deferred' for r in mem['_records'])
 
 
+def test_fresh_named_castle_status_allows_recheck_despite_old_marching_hint():
+    mem = memory('leave_roster', pending=['どうし'])
+    mem['sorties'] = {'old': {'general': 'どうし', 'target': 'キカンドン',
+                              'status': 'en_route', 'tick': 100}}
+    original = dict(mem['sorties']['old'])
+    house._observe_status(parse(status('どうし', castle=True, hp=90, max_hp=90)), mem)
+    mem['tick'] += 25
+    house._next_general(mem)
+    assert mem['house']['phase'] == 'find_castle'
+    assert mem['house']['general'] == 'どうし'
+    assert mem['sorties']['old'] == original  # no inferred destination/arrival
+    assert not any(r['decision'] == 'house_dispatch_requested' for r in mem['_records'])
+
+
+@pytest.mark.parametrize('changes', [
+    {'location': 'field'}, {'general': 'ゼウス'}, {'month': 'old'},
+    {'observed_chapter': 2}, {'observed_chapter': True},
+    {'observed_tick': None}, {'observed_tick': True},
+    {'observed_tick': 501}, {'observed_tick': 99}, {'observed_tick': 100},
+])
+def test_uncertain_or_old_castle_status_cannot_override_marching(changes):
+    mem = memory('leave_roster', pending=['どうし'])
+    mem['sorties'] = {'old': {'general': 'どうし', 'status': 'en_route', 'tick': 100}}
+    house._observe_status(parse(status('どうし')), mem)
+    mem['house_eggs']['どうし'].update(changes)
+    house._next_general(mem)
+    assert mem['house']['phase'] == 'close'
+    assert any(r['decision'] == 'house_general_deferred' for r in mem['_records'])
+
+
+def test_newer_departure_or_expired_observation_still_blocks_repair():
+    for expired in (False, True):
+        mem = memory('leave_roster', pending=['どうし'])
+        mem['sorties'] = {'old': {'general': 'どうし', 'status': 'en_route', 'tick': 100}}
+        house._observe_status(parse(status('どうし')), mem)
+        if expired:
+            mem['tick'] += 401
+        else:
+            mem['sorties']['new'] = {'general': 'どうし', 'status': 'launched_unconfirmed', 'tick': 501}
+            mem['tick'] = 502
+        house._next_general(mem)
+        assert mem['house']['phase'] == 'close'
+
+
+def test_fresh_castle_recheck_does_not_allow_a_sole_defender_to_leave():
+    mem = memory('castle_pick', general='どうし', source='ほんじょう')
+    mem['house_eggs'] = {'どうし': {'general': 'どうし', 'location': 'castle',
+                                   'observed_tick': 499, 'observed_chapter': 1, 'month': '2-6'}}
+    screen = Screen([], None, '', kind='general_list')
+    with patch.object(p, '_present_generals', return_value=['どうし']), \
+            patch.object(p, '_owned', return_value={'ほんじょう'}):
+        actions = house.step(screen, mem, Canvas().frame())
+    assert actions != [p.pad('a')]
+    assert mem['house']['phase'] == 'close'
+
+
 def test_travel_map_arrival_text_is_dismissed_and_wrong_visitor_exits():
     arrival = Screen([], None, 'ゼウスしょうぐんがあたしのいえをはっけんしました', kind='map')
     mem = memory('travel', general='ゼウス')
