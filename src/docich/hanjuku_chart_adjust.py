@@ -175,9 +175,18 @@ def _order(raw, castles, base_steps):
     if (not isinstance(cards, (list, tuple)) or len(cards) > MAX_CARDS_PER_ORDER
             or any(card not in CARD_NAMES for card in cards)):
         raise ValueError('invalid cards')
+    after = _after(raw.get('after'), castles)
+    # g530 (2026-10-01): the answered recapture orders carried
+    # after=["captured", <their own target>]; that condition needs the
+    # order's own result, so _ready refused every one of them and the
+    # sortie stood still while castles fell. A condition on the order's
+    # own target is vacuous either way, so the order stays unconditional
+    # about it.
+    if after is not None and after[0] == 'captured' and after[1] == target:
+        after = None
     return {'step': step, 'general': _text(raw.get('general'), 'general', limit=16),
             'source': source, 'target': target, 'cards': tuple(cards),
-            'after': _after(raw.get('after'), castles),
+            'after': after,
             'note': _text(raw.get('note'), 'note', required=False)}
 
 

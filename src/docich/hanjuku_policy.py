@@ -1125,6 +1125,17 @@ def _off_chart(mem):
             and _source(interim, mem) in _owned(mem))
     candidates = interim_candidates(mem)
     if busy or not candidates:
+        if not candidates and state.get('interim_hold_digest') != digest:
+            # A hold nobody can act on used to be silent (g530: sortie
+            # stopped with zero evidence); record the starvation once per
+            # request revision so diagnostics can see it.
+            state['interim_hold_digest'] = digest
+            _record(mem, 'chart_interim_hold', chart_step=None,
+                    strategy_variant='chart_adjust_pending',
+                    request_id=rid, choice=None, confidence=None,
+                    jev_status='no_candidates',
+                    deviation_reason='interim_no_candidates',
+                    reason='奪還・攻撃・移動のいずれも作れないため暫定出撃を持てず調整チャートを待つ')
         state['interim_wanted'] = False
     elif state.get('interim_count', 0) < INTERIM_LIMIT:
         state['interim_wanted'] = True
