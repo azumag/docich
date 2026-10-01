@@ -1016,10 +1016,28 @@ def _adjust_situation(mem):
             'card_stock': dict(sorted((mem.get('card_stock') or {}).items()))}
 
 
+def _normalize_after(after, target):
+    """Drop a self-waiting capture condition (g530 defense in depth).
+
+    ``after=["captured", X]`` on an order for X needs the order's own result,
+    so ``_ready`` would refuse it forever. A condition on the order's own
+    target is vacuous either way; foreign prerequisites stay.
+    """
+    if after is not None and after[0] == 'captured' and after[1] == target:
+        return None
+    return list(after) if after else None
+
+
 def _adopt_plan(mem, doc, rid):
-    """Adopt a validated adjusted chart as the plan, with per-generation step ids."""
+    """Adopt a validated adjusted chart as the plan, with per-generation step ids.
+
+    The doc came from ``adjust.load`` (validated), but the self-waiting
+    normalization is applied again here as defense in depth: a future path
+    that adopts an unvalidated doc must not lock the plan either (g530).
+    """
     orders = [{**o, 'step': chart_adjust.execution_step(rid, o['step']), 'local_step': o['step'],
-               'cards': list(o['cards']), 'after': list(o['after']) if o['after'] else None}
+               'cards': list(o['cards']),
+               'after': _normalize_after(o['after'], o['target'])}
               for o in doc['orders']]
     purchases = doc.get('purchases')
     mem['chart_plan'] = {

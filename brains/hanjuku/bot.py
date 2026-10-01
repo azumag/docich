@@ -27,6 +27,15 @@ from docich.retroarch_boundary import read_record
 BOT_STATE_LIMIT = 256 * 1024   # the bot's own memory file, not a boundary record
 
 
+# Chart/interim/hold decisions are the primary evidence for stall diagnosis
+# (g530: the 05:26-06:0x sortie stop left no trace once the decisions log
+# rotated). They are mirrored into a separate bounded log so a long run's
+# tail rotation cannot erase them.
+CHART_DECISIONS=frozenset({
+    'chart_adjust_request','chart_adjust_applied',
+    'chart_interim_order','chart_interim_hold',
+})
+
 # Only records that explain this observation's planned input/hold may override
 # the active battle. Observation, migration and result records are not actions.
 INPUT_CONTEXT_DECISIONS=frozenset({
@@ -44,6 +53,31 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'chart_adjust_request','chart_adjust_applied','independent_menu',
     'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
 })
+
+
+def chart_decision_summary(record: dict, *, now: float, identity: dict, decision_id: str) -> dict:
+    """Bounded summary of a chart/interim/hold decision for the persistent log.
+
+    Keeps the fields stall diagnosis needs (kind, request, choice, sortie,
+    reason) without the full observation payload, so the mirror log stays
+    small across a whole run.
+    """
+    return {
+        'schema': 1, 'event': 'chart_decision', 'at': now,
+        'decision_id': decision_id,
+        'decision': record.get('decision'),
+        'chart_step': record.get('chart_step'),
+        'strategy_variant': record.get('strategy_variant'),
+        'request_id': record.get('request_id'),
+        'choice': record.get('choice'),
+        'general': record.get('general'),
+        'source': record.get('source'),
+        'target': record.get('target'),
+        'purpose': record.get('purpose'),
+        'reason': record.get('reason'),
+        'deviation_reason': record.get('deviation_reason'),
+        **identity,
+    }
 
 
 def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, actions, frame_sha256, frame=None):
@@ -110,6 +144,10 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
                  'phase':state.get('phase'),'decision_id':decision_id,
                  'frame_sha256':frame_sha256,'snapshot':snapshot,**identity,**record}
         append_log(runtime,'hanjuku_decisions',payload)
+        if record.get('decision') in CHART_DECISIONS:
+            append_log(runtime,'hanjuku_chart_decisions',
+                       chart_decision_summary(record,now=now,identity=identity,
+                                              decision_id=decision_id))
         if record.get('decision') not in SPOKEN:
             continue
         key,text=compose(record)

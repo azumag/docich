@@ -1447,3 +1447,26 @@ def test_chikujou_refusal_without_alternative_or_selection_exits(monkeypatch):
         sub = {'kind': 'chikujou', 'chosen': chosen}
         assert policy._chikujou_step(refused, mem, sub) == [policy.pad('b')]
         assert sub['declined']
+
+
+def test_adopt_plan_drops_a_self_waiting_capture_condition_again():
+    """g530 follow-up (#1488): defense in depth at adoption time.
+
+    ``adjust.load`` validates, but a future path that adopts an unvalidated
+    doc must not lock the plan either: an after on the order's own target is
+    dropped here too, while a foreign prerequisite stays.
+    """
+    from docich import hanjuku_chart_adjust as adjust
+    doc = {'schema': adjust.SCHEMA, 'chapter': 1, 'request_id': 'a1b2c3d4e5f60718',
+           'orders': [
+               {'step': 'J1', 'general': 'どうし', 'source': 'ほんじょう', 'target': 'キカンドン',
+                'cards': [], 'after': ('captured', 'キカンドン'), 'note': '奪回'},
+               {'step': 'J2', 'general': 'ココット', 'source': 'スペンソニア', 'target': 'けっかい',
+                'cards': [], 'after': ('captured', 'スペンソニア'), 'note': '追撃'}],
+           'purchases': None, 'generated_at': None, 'source': 'llm:test', 'reason': ''}
+    mem = {'_records': [], 'chart_adjust': {}}
+    policy._adopt_plan(mem, doc, 'a1b2c3d4e5f60718')
+    orders = mem['chart_plan']['orders']
+    assert orders[0]['after'] is None
+    assert orders[1]['after'] == ['captured', 'スペンソニア']
+    assert mem['variant'] == 'chart_adjusted'
