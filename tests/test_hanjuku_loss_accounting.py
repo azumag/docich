@@ -177,9 +177,12 @@ class PanelRenderTests(unittest.TestCase):
     """The renderer must not present the judged subset as the whole run."""
 
     def _render(self, snippet: dict) -> str:
-        root = Path("/Users/azumag/work/soren-ai-timeout-fix")
+        # The pinned submodule, not a local working checkout: CI checks out
+        # submodules recursively, so this verifies the committed renderer
+        # instead of whatever happens to be on someone's disk.
+        root = ROOT / "games" / "soviet_now"
         if not (root / "status_dashboard.py").is_file():
-            self.skipTest("soviet_now checkout with status_dashboard.py is not present")
+            self.skipTest("games/soviet_now submodule not checked out")
         proc = subprocess.run(
             [sys.executable, "-c",
              "import sys; sys.path.insert(0, sys.argv[1]);"

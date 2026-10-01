@@ -116,6 +116,7 @@ jobs:
           tests/test_hanjuku_script.py tests/test_hanjuku_entry_return.py tests/test_hanjuku_defense_ownership.py tests/test_hanjuku_font_regions.py tests/test_hanjuku_commentary_evidence.py tests/test_hanjuku_chart_bot.py tests/test_hanjuku_melee_cadence.py tests/test_hanjuku_egg_risk.py tests/test_hanjuku_hp_visibility.py tests/test_hanjuku_chart_chapters.py tests/test_hanjuku_survival.py tests/test_hanjuku_map_events.py
           tests/test_hanjuku_boss_events.py tests/test_hanjuku_sortie_evidence.py tests/test_hanjuku_sortie_interruption.py tests/test_hanjuku_chart_adjust.py tests/test_hanjuku_off_chart.py tests/test_hanjuku_castle_panel.py
           tests/test_hanjuku_house.py tests/test_hanjuku_recruit_roster.py tests/test_hanjuku_execution.py tests/test_hanjuku_cursor_components.py
+          tests/test_hanjuku_loss_accounting.py
           tests/test_agent_loop.py tests/test_agent_fence.py tests/test_agent_action_lock.py
           tests/test_nethack_corner.py tests/test_nethack_corner_p5.py tests/test_nethack_corner_force_recover.py
           tests/test_nethack_run.py tests/test_nethack_run_recovery.py

@@ -167,7 +167,9 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     # against 24 real battles, and the counters were reported as 34 started /
     # 33 finished. Require the same two-consecutive-observation debounce the
     # policy uses (battle_end's `away >= 2`) so the corner counters and the
-    # judged battle records describe the same battles.
+    # judged battle records describe the same battles. Counting an end on any
+    # non-battle phase also covers the most common measured ending, which the
+    # old exit-phase whitelist missed entirely (`next_screen: map`).
     battle_active=old.get('battle_active',False)
     def _streak(key):
         value=old.get(key,0)
@@ -225,7 +227,7 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
 
 def action_sent(runtime_dir: Path, identity: dict, action):
     state=load(runtime_dir,identity)
-    trace=(read_record(runtime_dir/'hanjuku_bot.json').get('decision_trace') or {})
+    trace=(read_record(runtime_dir/'hanjuku_bot.json', limit=256 * 1024).get('decision_trace') or {})
     if not isinstance(trace,dict) or any(trace.get(k)!=v for k,v in identity.items()):
         trace={}
     event(runtime_dir,{'event':'input_sent','at':time.time(),'type':action.type,
