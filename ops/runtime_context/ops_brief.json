@@ -1,11 +1,11 @@
 {
-  "output_sha256": "b6f29ac783945c020aeb35724b7c7d379ab0dcf095ac2c9baa6979f041335d70",
+  "output_sha256": "b67ee85c24766c1229e117d1b4844f457a88bec3edb512c2eb9f8773e2d2daca",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "33c427cfaba566ddfcc816eeff297c3bec520e19c254cfca8dac9d48c48b451e",
+  "source_sha256": "6cfc1310bdc55360f6cf50c5f2bcd823cdc679c3cfb95759c7312de8743cb2ef",
   "topics": [
+    "卵修復派遣が「あたしの家」に入らない障害の根因確定と予防PR #1497（マージ・VM配備済み）",
     "followup ・#1286 を で対応（マージ・VM 配備済み）",
-    "hanjuku g530出撃停止の調査・復旧と予防PR（#1487）",
-    "容量緊急対応: bounded retention完全停止を修正し341/341削除を検証（compact完了待ち）"
+    "hanjuku g530出撃停止の調査・復旧と予防PR（#1487）"
   ]
 }
