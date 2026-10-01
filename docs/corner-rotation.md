@@ -98,6 +98,14 @@ latchし、`tick()`は自動開始と手動startを拒否する。latchは自動
    - adapter観測に同じrequestの**terminal**があれば、それを確定する
      （request identity・history・cooldownを保ち、**二重起動しない**）。
      失敗startのterminal rollback証拠が揃う場合は`interrupted`として確定する。
+     `rolled_back` でない `quiesce_failed`（試合終了境界の待機中にSorenの
+     lifecycleが停止したなど、canonical側の復旧対象が残らない失敗）は
+     `retro-corner-operator recover-failed` が `interrupted` として確定する
+     （#1044）。受領記録が `switch` / `status=failed` /
+     `error_code=quiesce_failed` / cornerが記録したのと同じ
+     `from_game`→`to_game` を証明し、かつcanonicalが別ゲームを所有したまま
+     静止している場合のみ確定する。**再実行はしない**（同じ切替の
+     drainingへ再入して同じ失敗を繰り返すため）。
      自動予約は `pending`、手動予約は `manual_pending` を同じ規則で解決し、
      手動のcompletedだけ `manual-completion` の履歴行を足す。
    - そのrequestが**一度も起動していない**自動予約なら、ledgerは `waiting`/`execution-pending`
