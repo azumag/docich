@@ -1447,3 +1447,5 @@ def test_chikujou_refusal_without_alternative_or_selection_exits(monkeypatch):
         sub = {'kind': 'chikujou', 'chosen': chosen}
         assert policy._chikujou_step(refused, mem, sub) == [policy.pad('b')]
         assert sub['declined']
+
+

@@ -312,6 +312,19 @@ run終了処理や日次処理を起動しない。owner境界・既存lock・�
   secret-redactionは維持。複数ファイルの逐次観測であり原子的snapshotではない。
   遠征・日次の一覧は互いに独立した観測なので、同じ終了runを二重加算しない。
 
+## tmux サーバ所有と resolver daemon の read-only 投影（#1286 follow-up）
+
+`tmux_servers` は本番コーナーが使う既定ソケット `docich` と評価ジョブ専用ソケット
+`docich-eval` の有無・セッション数・セッション名（最大8件）を投影する。
+#1284 で評価用 tmux を専用サーバへ隔離したが、分離はプロセスツリーからは直接観測できなかった。
+この投影で「eval セッションが `docich-eval` 上に作られ、本番 `docich` サーバに現れない」ことを
+diagnostics で直接確認できる。`tmux -L <server> list-sessions` は read-only（入力送信なし）。
+
+`resolver_daemon` は `docich-resolver-improve.service` と
+`docich-resolver-improve-gnurobots.service` の active / enabled 状態を投影する。
+これらの長命 daemon が稼働していると、次回再起動まで本番既定 tmux サーバを共有し続ける
+（#1284 の対象外経路）。`systemctl --user is-active` / `is-enabled` は read-only。
+
 ## 出さないもの
 
 secrets・token・raw environment・prompt 本文・生成本文・HTTP header・

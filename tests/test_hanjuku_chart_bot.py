@@ -1326,6 +1326,41 @@ def test_input_context_survives_order_cleanup_and_later_information(tmp_path, de
         assert plan[key] == record[key]
 
 
+@pytest.mark.parametrize('decision', [
+    'chart_adjust_request', 'chart_adjust_applied', 'chart_interim_order', 'chart_interim_hold'])
+def test_chart_decisions_are_mirrored_into_their_own_bounded_log(tmp_path, decision):
+    """g530 follow-up (#1488): stall evidence must survive decisions rotation."""
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_chart_mirror_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    record = {'decision': decision, 'chart_step': '1-A1',
+              'strategy_variant': 'chart_adjust_pending', 'request_id': 'a1b2c3d4e5f60718',
+              'choice': 'retake_1', 'general': 'どうし', 'source': 'アルマムーン',
+              'target': 'キカンドン', 'purpose': 'retake',
+              'reason': '奪還・攻撃・移動できる候補が無いため暫定出撃を作らず調整チャートを待つ'}
+    module.persist(tmp_path, {'step': 10, 'policy': {'active': None, 'variant': 'chart'}},
+                   [record, {'decision': 'order_launched', 'chart_step': '1-A2'}],
+                   {'hanjuku': {'game': 'hanjuku-hero', 'runtime_id': 'g1-test',
+                                'generation': 1, 'lease_id': 'lease'}},
+                   actions=[], frame_sha256='a'*64)
+    mirrored = [json.loads(line)
+                for line in (tmp_path/'hanjuku_chart_decisions.jsonl').read_text().splitlines()]
+    assert len(mirrored) == 1
+    entry = mirrored[0]
+    assert entry['event'] == 'chart_decision' and entry['decision'] == decision
+    assert entry['decision_id'] == 'g1-test:1:10'
+    assert entry['request_id'] == 'a1b2c3d4e5f60718'
+    assert entry['choice'] == 'retake_1' and entry['target'] == 'キカンドン'
+    assert entry['reason'] == record['reason']
+    # The plain order record stays in the decisions log only.
+    decisions = [json.loads(line)
+                 for line in (tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()]
+    assert [e['event'] for e in decisions] == ['action_plan', 'decision', 'decision']
+    assert not (tmp_path/'hanjuku_chart_decisions.jsonl').read_text().count('order_launched')
+
+
 def test_failed_menu_drops_cursor_estimate_and_stops_sea_a_spam():
     """g340: A on open water with a stale ほんじょう estimate looped forever."""
     from docich.hanjuku_pixels import Frame

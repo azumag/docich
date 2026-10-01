@@ -1136,3 +1136,86 @@ def test_manual_corner_queue_projection_is_boolean_only(tmp_path):
     output = {}
     module._collect_corner_files(tmp_path, output, 100)
     assert output['corner_rotation']['queued_manual'] is False
+
+
+def test_tmux_servers_projection_is_read_only_and_bounded():
+    """#1286 follow-up: eval jobs must run on docich-eval, production on docich.
+
+    The projection makes the separation directly observable in diagnostics.
+    """
+    module = load_collector()
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        server = cmd[cmd.index('-L') + 1] if '-L' in cmd else 'default'
+        if server == 'docich-eval':
+            return subprocess.CompletedProcess(cmd, 0, stdout='eval-session-1\neval-session-2\n', stderr='')
+        return subprocess.CompletedProcess(cmd, 0, stdout='corner-1\n', stderr='')
+
+    with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
+        result = module._collect_tmux_servers()
+    assert result['schema_version'] == 1
+    assert result['servers']['docich']['present'] is True
+    assert result['servers']['docich']['session_count'] == 1
+    assert result['servers']['docich']['sessions'] == ['corner-1']
+    assert result['servers']['docich-eval']['present'] is True
+    assert result['servers']['docich-eval']['session_count'] == 2
+    assert result['servers']['docich-eval']['sessions'] == ['eval-session-1', 'eval-session-2']
+    # Read-only: list-sessions never sends input.
+    for cmd in calls:
+        assert 'list-sessions' in cmd and '-L' in cmd
+
+
+def test_tmux_servers_projection_handles_absent_servers():
+    module = load_collector()
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout='', stderr='no server running')
+
+    with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
+        result = module._collect_tmux_servers()
+    for name in ('docich', 'docich-eval'):
+        assert result['servers'][name]['present'] is False
+        assert result['servers'][name]['session_count'] == 0
+        assert result['servers'][name]['sessions'] == []
+
+
+def test_tmux_servers_projection_rejects_invalid_server_names():
+    module = load_collector()
+    assert module._tmux_server_sessions('docich; rm -rf /') == []
+    assert module._tmux_server_sessions('') == []
+    assert module._tmux_server_sessions(None) == []
+
+
+def test_resolver_daemon_projection_reports_unit_states():
+    """#1286 follow-up: a running resolver daemon keeps the production tmux server."""
+    module = load_collector()
+    active_states = {
+        'docich-resolver-improve.service': True,
+        'docich-resolver-improve-gnurobots.service': False,
+    }
+    enabled_states = {
+        'docich-resolver-improve.service': True,
+        'docich-resolver-improve-gnurobots.service': False,
+    }
+
+    with mock.patch.object(module, '_unit_is_active', side_effect=lambda unit: active_states[unit]), \
+         mock.patch.object(module, '_unit_is_enabled', side_effect=lambda unit: enabled_states[unit]):
+        result = module._collect_resolver_daemon()
+    assert result['schema_version'] == 1
+    assert result['units']['docich-resolver-improve.service'] == {'active': True, 'enabled': True}
+    assert result['units']['docich-resolver-improve-gnurobots.service'] == {'active': False, 'enabled': False}
+
+
+def test_resolver_daemon_projection_handles_missing_units():
+    module = load_collector()
+
+    def fake_none(unit):
+        return None
+
+    with mock.patch.object(module, '_unit_is_active', side_effect=fake_none), \
+         mock.patch.object(module, '_unit_is_enabled', side_effect=fake_none):
+        result = module._collect_resolver_daemon()
+    for unit in module.RESOLVER_IMPROVE_UNITS:
+        assert result['units'][unit] == {'active': None, 'enabled': None}
