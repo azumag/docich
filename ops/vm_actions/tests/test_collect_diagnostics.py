@@ -173,6 +173,38 @@ def test_pulse_sink_inputs_report_an_unreachable_daemon_as_unreadable():
         assert output['streams'] == []
 
 
+def test_pulse_nonempty_unrecognized_output_is_not_a_healthy_empty_list():
+    module = load_collector()
+    _fixed_pulse_listing(module, listing='unexpected nonempty output')
+    output = module._collect_pulse_sink_inputs()
+    assert output['readable'] is False
+    assert output['reason'] == 'unparsable'
+    assert output['total'] is None and output['muted'] is None
+
+
+def test_pulse_empty_output_is_a_valid_empty_list():
+    module = load_collector()
+    _fixed_pulse_listing(module, listing='\n  ')
+    output = module._collect_pulse_sink_inputs()
+    assert output['readable'] is True
+    assert output['total'] == 0 and output['muted'] == 0
+
+
+def test_pulse_mute_count_includes_streams_omitted_from_details():
+    module = load_collector()
+    listing = ''.join(
+        f'Sink Input #{i}\n\tSink: 0\n\tMute: '
+        + ('yes' if i == module.PULSE_SINK_INPUTS_MAX else 'no') + '\n'
+        for i in range(module.PULSE_SINK_INPUTS_MAX + 1)
+    )
+    _fixed_pulse_listing(module, listing=listing)
+    output = module._collect_pulse_sink_inputs()
+    assert output['total'] == module.PULSE_SINK_INPUTS_MAX + 1
+    assert len(output['streams']) == module.PULSE_SINK_INPUTS_MAX
+    assert output['truncated'] is True
+    assert output['muted'] == 1
+
+
 def test_pulse_stream_detail_is_the_last_thing_dropped_for_the_size_budget():
     # A muted BGM must not disappear behind the diagnostics size budget: the
     # mute count survives even when the per-stream detail is omitted (#968).
@@ -240,6 +272,7 @@ def test_pulse_sink_inputs_use_only_a_fixed_pactl_argv(tmp_path):
     assert kwargs['timeout'] == module.PULSE_SINK_INPUTS_TIMEOUT
     assert kwargs['check'] is False
     assert kwargs['stderr'] == module.subprocess.DEVNULL
+    assert kwargs['env']['LC_ALL'] == 'C'
 
 
 def test_pulse_server_argv_uses_the_session_socket_when_it_is_a_socket():

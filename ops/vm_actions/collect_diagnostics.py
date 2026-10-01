@@ -3840,6 +3840,7 @@ def _pulse_listing(*args):
             stderr=subprocess.DEVNULL,
             text=True,
             timeout=PULSE_SINK_INPUTS_TIMEOUT,
+            env={**os.environ, 'LC_ALL': 'C'},
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -3906,6 +3907,11 @@ def _collect_pulse_sink_inputs():
     short, _short_failure = _pulse_listing('list', 'short', 'sinks')
     try:
         items = parse_sink_inputs(listing)
+        # The shared parser deliberately ignores unknown lines. Nonempty
+        # output with no recognized stream must not look like a healthy empty
+        # daemon (for example when a localized or changed format is returned).
+        if listing.strip() and not items:
+            raise ValueError('unrecognized sink-input listing')
         names = sink_names(short or '')
     except (TypeError, ValueError):
         return {'schema_version': 1, 'readable': False, 'reason': 'unparsable',
@@ -3917,7 +3923,8 @@ def _collect_pulse_sink_inputs():
         'readable': True,
         'reason': None,
         'total': len(items),
-        'muted': sum(1 for s in streams if s['mute'] is True),
+        # Count all parsed streams before limiting the per-stream details.
+        'muted': sum(1 for item in items if item.get('mute') is True),
         # Bounded list; the omitted remainder is explicit so a full list is
         # never mistaken for a complete one.
         'truncated': len(items) > PULSE_SINK_INPUTS_MAX,
