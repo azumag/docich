@@ -43,6 +43,12 @@ Observed sources (all read-only):
     (tmp/state/corner_boundary_*.json, ab_state.json, ab_games.jsonl,
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
     bodies and environment values are never read out.
+  - the PulseAudio sink-input list (`pactl list sink-inputs`, read-only) so a
+    muted or silent BGM/SE playback stream is observable without an ad-hoc
+    owner shell (#968). Only index, sink name, fixed media role, mute,
+    corked-when-reported, volume percents and a fixed player category are
+    emitted; PIDs, raw application names, module/client identifiers and stream
+    property dumps are never emitted.
   - the registered chat_worker's own live environ (#882), restricted to a
     fixed 4-name allowlist (never the raw block, never any other name),
     projected through the already-reviewed
@@ -3771,6 +3777,161 @@ def _collect_tmux_servers():
     return {'schema_version': 1, 'servers': servers}
 
 
+PULSE_SINK_INPUTS_TIMEOUT = 5
+# Bounded so the projection cannot crowd the 36 KiB diagnostics envelope; the
+# production session has far fewer streams than this, and the omitted remainder
+# is reported rather than silently dropped.
+PULSE_SINK_INPUTS_MAX = 32
+PULSE_SINK_INPUTS_OUTPUT_MAX = 256 * 1024
+# ``application.name`` is an externally supplied free-form string, so it is
+# never emitted verbatim. These fixed categories still separate the bridge's
+# BGM player from a speech worker, which is what the #968 report needs.
+PULSE_PLAYER_CATEGORIES = (
+    ('ffplay', 'bridge-ffplay'),
+    ('retroarch', 'retroarch'),
+    ('chrom', 'browser'),
+    ('firefox', 'browser'),
+    ('speech', 'speech-worker'),
+    ('voicevox', 'speech-worker'),
+    ('tts', 'speech-worker'),
+    ('parec', 'monitor-capture'),
+    ('monitor', 'monitor-capture'),
+    ('ffmpeg', 'stream-capture'),
+    ('stream', 'stream-capture'),
+)
+
+
+def _pulse_player_category(name):
+    """Coarse fixed category for a PulseAudio application name."""
+    if not isinstance(name, str):
+        return None
+    lowered = name.lower()
+    for needle, category in PULSE_PLAYER_CATEGORIES:
+        if needle in lowered:
+            return category
+    return 'other'
+
+
+def _pulse_server_argv():
+    """Point ``pactl`` at the session's own PulseAudio socket.
+
+    The gateway runs this collector with a scrubbed environment and no
+    ``XDG_RUNTIME_DIR``, so ``pactl`` cannot find the server on its own. The
+    per-user runtime directory is the only derived path used here; if it is not
+    a socket, ``pactl`` falls back to its compiled-in default and the
+    projection reports the failure instead of guessing.
+    """
+    runtime_dir = Path('/run/user') / str(os.getuid())
+    socket_path = runtime_dir / 'pulse' / 'native'
+    try:
+        if stat.S_ISSOCK(socket_path.stat().st_mode):
+            return ['--server=unix:' + str(socket_path)]
+    except OSError:
+        pass
+    return []
+
+
+def _pulse_listing(*args):
+    """Return one bounded pactl listing, or a fixed failure reason."""
+    try:
+        proc = subprocess.run(
+            ['pactl', *_pulse_server_argv(), *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=PULSE_SINK_INPUTS_TIMEOUT,
+            env={**os.environ, 'LC_ALL': 'C'},
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, 'pactl_unavailable'
+    if proc.returncode != 0:
+        return None, 'pactl_failed'
+    output = proc.stdout
+    if not isinstance(output, str) or len(output) > PULSE_SINK_INPUTS_OUTPUT_MAX:
+        return None, 'unbounded_output'
+    return output, None
+
+
+def _project_pulse_stream(item, names, roles):
+    """One sink input as a fixed, sanitized shape.
+
+    ``application.process.id`` and the module/client identifiers are parsed by
+    the shared helper but deliberately dropped: a pid is neither stable nor
+    needed to tell "the BGM is muted" from "the BGM is missing".
+    """
+    sink = item.get('sink')
+    percents = item.get('volume_percent')
+    if not isinstance(percents, list):
+        percents = None
+    else:
+        percents = [p for p in percents if type(p) is int and 0 <= p <= 200] or None
+    role = item.get('role')
+    return {
+        'index': item.get('index') if type(item.get('index')) is int else None,
+        'sink': names.get(sink) if isinstance(sink, str) else None,
+        # The role vocabulary is fixed in pulse_volume; re-checked here so this
+        # projection's contract holds on its own.
+        'role': role if role in roles else None,
+        'mute': item.get('mute') if isinstance(item.get('mute'), bool) else None,
+        # None means the daemon did not report it, never "not corked".
+        'corked': item.get('corked') if isinstance(item.get('corked'), bool) else None,
+        'volume_percent': percents,
+        'player': _pulse_player_category(item.get('application')),
+    }
+
+
+def _collect_pulse_sink_inputs():
+    """Read-only PulseAudio sink-input projection (#968).
+
+    BGM/SE playback silence after a corner switch was previously only visible
+    through an ad-hoc owner shell: the bridge's ffplay stream stayed alive with
+    a normal volume while its sink input carried ``Mute: yes``, and
+    ``module-stream-restore`` re-applied that mute to every new stream with the
+    same key. Making mute/volume/sink/role readable here is the observability
+    half of that follow-up; the fixed recovery operation is deliberately not
+    part of this projection.
+
+    Every field is a fixed key with a bounded value, and an unreachable daemon
+    is reported as unreadable rather than as "no muted streams".
+    """
+    from docich.pulse_volume import MEDIA_ROLES, parse_sink_inputs, sink_names
+
+    listing, failure = _pulse_listing('list', 'sink-inputs')
+    if failure is not None:
+        return {'schema_version': 1, 'readable': False, 'reason': failure,
+                'total': None, 'muted': None, 'streams': []}
+    # ``list sink-inputs`` reports the sink by index; the name is what makes a
+    # muted shared stream recognizable, so the fixed short listing is read too.
+    # A missing name mapping is not a failure: mute is still readable.
+    short, _short_failure = _pulse_listing('list', 'short', 'sinks')
+    try:
+        items = parse_sink_inputs(listing)
+        # The shared parser deliberately ignores unknown lines. Nonempty
+        # output with no recognized stream must not look like a healthy empty
+        # daemon (for example when a localized or changed format is returned).
+        if listing.strip() and not items:
+            raise ValueError('unrecognized sink-input listing')
+        names = sink_names(short or '')
+    except (TypeError, ValueError):
+        return {'schema_version': 1, 'readable': False, 'reason': 'unparsable',
+                'total': None, 'muted': None, 'streams': []}
+    streams = [_project_pulse_stream(item, names, MEDIA_ROLES)
+               for item in items[:PULSE_SINK_INPUTS_MAX]]
+    return {
+        'schema_version': 1,
+        'readable': True,
+        'reason': None,
+        'total': len(items),
+        # Count all parsed streams before limiting the per-stream details.
+        'muted': sum(1 for item in items if item.get('mute') is True),
+        # Bounded list; the omitted remainder is explicit so a full list is
+        # never mistaken for a complete one.
+        'truncated': len(items) > PULSE_SINK_INPUTS_MAX,
+        'streams': streams,
+    }
+
+
 def _read_hanjuku_record(path):
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
     file_fd = None
@@ -4218,6 +4379,15 @@ def _diagnostics_budget(payload):
     # Keep current game evidence through the older detail reductions first.
     if len(text.encode("utf-8")) > MAX_JSON_BYTES and "hanjuku_tactical" in payload:
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
+    # The pulse stream list is the last detail to go: an omitted list must
+    # still report its own mute count, so a muted BGM never disappears behind
+    # the size budget (#968).
+    text = _nethack_history_budget(payload)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES and "pulse_sink_inputs" in payload:
+        pulse = payload["pulse_sink_inputs"]
+        payload["pulse_sink_inputs"] = {
+            key: value for key, value in pulse.items() if key != 'streams'
+        } | {'streams': [], 'truncated': True, 'output_omitted': True}
     return _nethack_history_budget(payload)
 
 
@@ -4266,6 +4436,7 @@ def main(argv):
         "corners": corners,
         "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
         "tmux_servers": _collect_tmux_servers(),
+        "pulse_sink_inputs": _collect_pulse_sink_inputs(),
         "resolver_daemon": _collect_resolver_daemon(),
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),

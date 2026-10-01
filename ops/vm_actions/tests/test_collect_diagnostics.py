@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import stat
 import subprocess
 import tempfile
 import time
@@ -91,6 +92,215 @@ def test_hanjuku_telemetry_is_enum_only_and_never_publishes_frames_or_state():
     output=module._project_corner_state(state)
     assert output['end_reason'] is None and output['bot_phase'] is None
     assert output['bot_actions_sent'] is None and output['screen_unchanged_seconds'] is None
+
+
+PULSE_SINK_INPUTS = (
+    'Sink Input #41\n'
+    '\tDriver: protocol-native.c\n'
+    '\tOwner Module: 12\n'
+    '\tClient: 10\n'
+    '\tSink: 3\n'
+    '\tVolume: front-left: 65536 / 100% / 0.00 dB,   front-right: 65536 / 100% / 0.00 dB\n'
+    '\tMute: yes\n'
+    '\tCorked: no\n'
+    '\tProperties:\n'
+    '\t\tmedia.name = "BGM"\n'
+    '\t\tmedia.role = "music"\n'
+    '\t\tapplication.name = "ffplay"\n'
+    '\t\tapplication.process.id = "500"\n'
+    'Sink Input #42\n'
+    '\tSink: 4\n'
+    '\tVolume: front-left: 32768 / 50% / -6.02 dB,   front-right: 32768 / 50% / -6.02 dB\n'
+    '\tMute: no\n'
+    '\tProperties:\n'
+    '\t\tmedia.role = "not-a-real-role"\n'
+    '\t\tapplication.name = "Speech Runner TOKEN=do-not-publish"\n'
+    '\t\tapplication.process.id = "900"\n'
+)
+PULSE_SHORT_SINKS = '3\tsoren_null\tmodule-null-sink\n4\talsa_output.pci\n'
+
+
+def _fixed_pulse_listing(module, listing=PULSE_SINK_INPUTS, short=PULSE_SHORT_SINKS,
+                         failure=None):
+    def run(*args):
+        if failure is not None:
+            return None, failure
+        return (short if args[-1] == 'sinks' else listing), None
+    module._pulse_listing = run
+
+
+def test_pulse_sink_inputs_make_a_muted_bgm_readable_without_an_owner_shell():
+    # #968: the BGM stream survived the corner switch with a normal volume and
+    # Mute: yes, and module-stream-restore re-applied it to every new stream.
+    # This projection is the read-only half of that follow-up.
+    module = load_collector()
+    _fixed_pulse_listing(module)
+
+    output = module._collect_pulse_sink_inputs()
+
+    assert output['readable'] is True and output['reason'] is None
+    assert output['total'] == 2 and output['muted'] == 1
+    assert output['truncated'] is False
+    muted, speech = output['streams']
+    assert muted['index'] == 41
+    assert muted['sink'] == 'soren_null'
+    assert muted['mute'] is True
+    assert muted['corked'] is False
+    assert muted['role'] == 'music'
+    assert muted['player'] == 'bridge-ffplay'
+    assert muted['volume_percent'] == [100, 100]
+    # Not reported by the daemon: null, never "not corked".
+    assert speech['corked'] is None
+    # Free-form property values are never emitted, only fixed categories.
+    assert speech['role'] is None
+    assert speech['player'] == 'speech-worker'
+    assert 'do-not-publish' not in json.dumps(output)
+    assert 'Owner Module' not in json.dumps(output)
+    assert all('pid' not in stream and 'application' not in stream
+               for stream in output['streams'])
+
+
+def test_pulse_sink_inputs_report_an_unreachable_daemon_as_unreadable():
+    module = load_collector()
+    for reason in ('pactl_unavailable', 'pactl_failed', 'unbounded_output'):
+        _fixed_pulse_listing(module, failure=reason)
+        output = module._collect_pulse_sink_inputs()
+        # An unreadable daemon is never reported as "no muted streams".
+        assert output['readable'] is False
+        assert output['reason'] == reason
+        assert output['muted'] is None
+        assert output['total'] is None
+        assert output['streams'] == []
+
+
+def test_pulse_nonempty_unrecognized_output_is_not_a_healthy_empty_list():
+    module = load_collector()
+    _fixed_pulse_listing(module, listing='unexpected nonempty output')
+    output = module._collect_pulse_sink_inputs()
+    assert output['readable'] is False
+    assert output['reason'] == 'unparsable'
+    assert output['total'] is None and output['muted'] is None
+
+
+def test_pulse_empty_output_is_a_valid_empty_list():
+    module = load_collector()
+    _fixed_pulse_listing(module, listing='\n  ')
+    output = module._collect_pulse_sink_inputs()
+    assert output['readable'] is True
+    assert output['total'] == 0 and output['muted'] == 0
+
+
+def test_pulse_mute_count_includes_streams_omitted_from_details():
+    module = load_collector()
+    listing = ''.join(
+        f'Sink Input #{i}\n\tSink: 0\n\tMute: '
+        + ('yes' if i == module.PULSE_SINK_INPUTS_MAX else 'no') + '\n'
+        for i in range(module.PULSE_SINK_INPUTS_MAX + 1)
+    )
+    _fixed_pulse_listing(module, listing=listing)
+    output = module._collect_pulse_sink_inputs()
+    assert output['total'] == module.PULSE_SINK_INPUTS_MAX + 1
+    assert len(output['streams']) == module.PULSE_SINK_INPUTS_MAX
+    assert output['truncated'] is True
+    assert output['muted'] == 1
+
+
+def test_pulse_stream_detail_is_the_last_thing_dropped_for_the_size_budget():
+    # A muted BGM must not disappear behind the diagnostics size budget: the
+    # mute count survives even when the per-stream detail is omitted (#968).
+    module = load_collector()
+    _fixed_pulse_listing(module)
+    pulse = module._collect_pulse_sink_inputs()
+    assert pulse['muted'] == 1
+    payload = {
+        'pulse_sink_inputs': pulse,
+        'nethack_history': {
+            'daily': {'records': [], 'omitted_records': 0, 'output_omitted': False},
+            'completed_runs': {'records': [], 'omitted_records': 0, 'output_omitted': False},
+        },
+        'ai': {'recent_events': ['x'], 'recent_events_omitted': False,
+               'anomalous_components': {'a': 1}},
+        'workers': {'details': {'w': 1}},
+        'soren91_drop_profile': {'profileStatus': 'unavailable', 'groups': [],
+                                 'games': [], 'slowest': []},
+    }
+    # Shrink the envelope instead of the data so the budget path is reached.
+    with mock.patch.object(module, 'MAX_JSON_BYTES', 10):
+        module._diagnostics_budget(payload)
+    kept = payload['pulse_sink_inputs']
+    assert kept['streams'] == []
+    assert kept['truncated'] is True
+    assert kept['output_omitted'] is True
+    assert kept['muted'] == 1
+    assert kept['readable'] is True
+
+
+def test_pulse_sink_input_list_is_bounded_and_marks_truncation():
+    module = load_collector()
+    body = ''.join(
+        f'Sink Input #{index}\n\tSink: 0\n\tMute: no\n'
+        '\tProperties:\n\t\tapplication.name = "ffplay"\n'
+        for index in range(module.PULSE_SINK_INPUTS_MAX + 5)
+    )
+    _fixed_pulse_listing(module, listing=body, short='0\tsoren_null\n')
+
+    output = module._collect_pulse_sink_inputs()
+
+    assert output['total'] == module.PULSE_SINK_INPUTS_MAX + 5
+    assert len(output['streams']) == module.PULSE_SINK_INPUTS_MAX
+    assert output['truncated'] is True
+
+
+def test_pulse_sink_inputs_use_only_a_fixed_pactl_argv(tmp_path):
+    # Read-only, fixed argv: no caller-supplied shell and no state change.
+    module = load_collector()
+    calls = []
+
+    class Result:
+        returncode, stdout = 0, PULSE_SINK_INPUTS
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return Result()
+
+    with mock.patch.object(module.subprocess, 'run', fake_run), \
+         mock.patch.object(module, '_pulse_server_argv', lambda: []):
+        module._pulse_listing('list', 'sink-inputs')
+
+    argv, kwargs = calls[0]
+    assert argv == ['pactl', 'list', 'sink-inputs']
+    assert kwargs['timeout'] == module.PULSE_SINK_INPUTS_TIMEOUT
+    assert kwargs['check'] is False
+    assert kwargs['stderr'] == module.subprocess.DEVNULL
+    assert kwargs['env']['LC_ALL'] == 'C'
+
+
+def test_pulse_server_argv_uses_the_session_socket_when_it_is_a_socket():
+    # The gateway runs the collector with a scrubbed environment and no
+    # XDG_RUNTIME_DIR, so pactl is pointed at the session's own socket.
+    module = load_collector()
+
+    def stat_for(mode):
+        def stat(self, **kwargs):
+            if str(self).endswith('pulse/native'):
+                if mode is None:
+                    raise OSError('missing')
+                return mock.Mock(st_mode=mode)
+            return mock.Mock(st_mode=stat.S_IFDIR | 0o700)
+        return stat
+
+    with mock.patch.object(module.os, 'getuid', return_value=4242):
+        with mock.patch.object(module.Path, 'stat',
+                               stat_for(stat.S_IFSOCK | 0o600)):
+            assert module._pulse_server_argv() == [
+                '--server=unix:/run/user/4242/pulse/native']
+        # Only a real socket is trusted: a plain file or a missing path falls
+        # back to pactl's own default instead of being asserted as the server.
+        with mock.patch.object(module.Path, 'stat',
+                               stat_for(stat.S_IFREG | 0o600)):
+            assert module._pulse_server_argv() == []
+        with mock.patch.object(module.Path, 'stat', stat_for(None)):
+            assert module._pulse_server_argv() == []
 
 
 def test_hanjuku_chart_progress_is_allowlisted_counters_only():

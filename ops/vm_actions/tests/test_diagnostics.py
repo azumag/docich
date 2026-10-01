@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -34,6 +35,8 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             "ops/vm_actions/collect_diagnostics.py",
             "ops/vm_actions/runtime_registry.py",
             "src/docich/runtime_backend.py",
+            "src/docich/pulse_volume.py",
+            "src/docich/corner_rotation.py",
             "src/docich/__init__.py",
             "src/docich/semantic_decision/__init__.py",
             "src/docich/semantic_decision/diagnostics.py",
@@ -95,6 +98,27 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         self.assertEqual(diag["workers"]["expected"] >= 10, True)
         self.assertEqual(diag["semantic_decision"], {"present": False, "readable": False})
         self.assertEqual(self.snapshot(self.soren), before)
+
+    def test_every_docich_module_the_collector_imports_is_drift_verified(self):
+        # The gateway refuses to run a collector whose reviewed inputs drifted.
+        # A new `from docich...` import that is missing from DIAGNOSTICS_FILES
+        # would therefore ship unverified collector code, or fail the whole
+        # diagnostics operation with an ImportError (#968 regression guard).
+        gateway = load_gateway()
+        source = (ROOT / "ops" / "vm_actions" / "collect_diagnostics.py").read_text(
+            encoding="utf-8"
+        )
+        imported = set(
+            re.findall(r"^\s*from\s+(docich\.[A-Za-z0-9_.]+)\s+import", source, re.M)
+        )
+        self.assertTrue(imported, "collector must import at least one docich module")
+        verified = set(gateway.DIAGNOSTICS_FILES)
+        for module in sorted(imported):
+            relative = "src/" + module.replace(".", "/") + ".py"
+            with self.subTest(module=module):
+                self.assertIn(relative, verified)
+                # The production checkout the gateway builds must contain it.
+                self.assertTrue((ROOT / relative).is_file())
 
     def test_preview_diagnostics_is_rejected(self):
         proc = self.call(f"diagnostics docich preview {'b' * 40}")

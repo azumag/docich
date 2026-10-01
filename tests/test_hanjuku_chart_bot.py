@@ -559,6 +559,43 @@ def test_game_volume_touches_only_the_games_own_stream():
                                    'volume_percent': [80, 80], 'mute': False}]}
 
 
+def test_sink_input_parser_captures_only_fixed_vocabulary_fields():
+    # #968: diagnostics must be able to say "the BGM stream is muted" from a
+    # bounded, fixed-vocabulary read. Absent Corked stays absent, and an
+    # unknown media.role is dropped rather than passed through.
+    listing = (
+        'Sink Input #41\n'
+        '\tSink: 3\n'
+        '\tMute: yes\n'
+        '\tCorked: no\n'
+        '\tVolume: front-left: 65536 / 100% / 0.00 dB,   front-right: 65536 / 100% / 0.00 dB\n'
+        '\tProperties:\n'
+        '\t\tmedia.role = "music"\n'
+        '\t\tapplication.name = "ffplay"\n'
+        '\t\tapplication.process.id = "500"\n'
+        'Sink Input #42\n'
+        '\tSink: 3\n'
+        '\tMute: no\n'
+        '\tProperties:\n'
+        '\t\tmedia.role = "not-a-real-role"\n'
+        '\t\tapplication.name = "Speech Runner"\n'
+        '\t\tapplication.process.binary = "/usr/bin/secret-path"\n'
+    )
+    parsed = pulse_volume.parse_sink_inputs(listing)
+
+    assert parsed[0]['mute'] is True
+    assert parsed[0]['corked'] is False
+    assert parsed[0]['role'] == 'music'
+    assert parsed[0]['application'] == 'ffplay'
+    assert parsed[0]['pid'] == 500
+    # Corked was not reported for this one: absent never reads as "not corked".
+    assert 'corked' not in parsed[1]
+    assert 'role' not in parsed[1]
+    assert parsed[1]['application'] == 'Speech Runner'
+    # Only application.name is captured; the rest of the property dump is not.
+    assert all('binary' not in item for item in parsed)
+
+
 def test_presentation_rejects_out_of_range_volume():
     from docich.presentation import _parser
     with pytest.raises(SystemExit):
