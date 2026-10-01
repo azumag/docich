@@ -53,6 +53,24 @@ def _record(mem, kind, **fields):
     return rec
 
 
+def _tally(mem, key, amount=1):
+    """Bounded, monotonically increasing evidence counter kept beside stats.
+
+    `stats` only advances on a battle whose final HP panel was decisive, so a
+    defeat seen on the world map (or a battle that ended before the panel was
+    read) left no trace there. The corner status read "0 losses" while castles
+    were visibly falling, so these counters give the status panel a complete,
+    non-strategy-facing account. Nothing here feeds retries or experience.
+    """
+    counters = mem.setdefault('tally', {})
+    value = counters.get(key)
+    if type(value) is not int or value < 0:
+        value = 0
+    value = min(value + amount, 10 ** 6)
+    counters[key] = value
+    return value
+
+
 # ---------------------------------------------------------------- menus
 def _options(screen: Screen) -> list[tuple[int, int, str]]:
     return [(x, line.y, word) for line in screen.lines for x, word in line.spans()]
@@ -313,6 +331,7 @@ def observe_owners(mem, roofs, cam):
                     observed_metric={'roof': kind, 'readings': count},
                     resulting_event=f'lost:{castle}',
                     reason='占領していた城の屋根が敵の色になったため失陥として奪還対象にする')
+            _tally(mem, 'castle_losses')
         elif kind == 'own' and castle not in captured:
             captured.append(castle)
             if castle in (mem.get('lost') or []):
@@ -1189,6 +1208,8 @@ def _apply_world_flags(mem, flags):
                 resulting_event=f'{kind}:{castle}',
                 reason=('全体マップで城の旗が敵の色になったため失陥として奪還対象にする'
                         if kind == 'lost' else '全体マップで城の旗が自軍の色のため占領として扱う'))
+        if kind == 'lost':
+            _tally(mem, 'castle_losses')
 
 
 # Y jump (owner hint 2026-09-28: "select the castle on the Y map instead of
@@ -2694,6 +2715,7 @@ def battle_step(screen: Screen, mem):
                 planned_cards=planned, context=cur.get('context', 'message'),
                 enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, castle=cur['castle'],
                 reason='戦闘パネルの将軍名とHPを確認')
+        _tally(mem, 'battles_started')
     if (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
         return []            # faded/partial panel: keep the last clear reading
     cur['away'] = 0
@@ -3298,6 +3320,9 @@ def battle_end(mem, next_kind):
             resulting_event=resulting or outcome, resulting_stage=None, next_screen=next_kind,
             reason='戦闘終了時のHP表示から判定' if outcome != 'unclassified'
             else '最終HPが0/非0で確定しないため未分類')
+    # One judged battle per started battle, whatever the verdict. The gap
+    # against battles_started is the set the status panel must disclose.
+    _tally(mem, 'battles_judged')
 
 
 ATTACK = re.compile(r'(\S+?)しょうぐんが(\S+?)じょうにのりこんだ')
@@ -4219,11 +4244,18 @@ def summary(mem: dict | None) -> dict:
     """Bounded, secret-free chart progress for corner state and diagnostics."""
     mem = mem if isinstance(mem, dict) else {}
     stats = mem.get('stats') if isinstance(mem.get('stats'), dict) else {}
+    tally = mem.get('tally') if isinstance(mem.get('tally'), dict) else {}
     orders = mem.get('orders') if isinstance(mem.get('orders'), dict) else {}
     battle = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
     chart_step = battle.get('step') if battle else mem.get('active')
     strategy_variant = battle.get('strategy_variant') if battle else mem.get('variant')
     as_int = lambda v: v if type(v) is int and 0 <= v <= 10**6 else None
+    battles_started = as_int(tally.get('battles_started'))
+    battles_judged = as_int(tally.get('battles_judged'))
+    # A started battle without a verdict is not a win and not a loss: the
+    # status must say so instead of reporting the judged subset as the whole.
+    battles_unjudged = (max(0, battles_started - battles_judged)
+                        if battles_started is not None and battles_judged is not None else None)
     return {
         'chapter': as_int(mem.get('chapter')),
         'chart_step': chart_step if isinstance(chart_step, str) else None,
@@ -4233,6 +4265,11 @@ def summary(mem: dict | None) -> dict:
         'captured': len(mem.get('captured') or []),
         'wins': as_int(stats.get('wins')), 'losses': as_int(stats.get('losses')),
         'unclassified': as_int(stats.get('unclassified')),
+        'battles_started': battles_started,
+        'battles_judged': battles_judged,
+        'battles_unjudged': battles_unjudged,
+        'castle_losses': as_int(tally.get('castle_losses')),
+        'castle_lost_names': len(mem.get('lost') or []),
         'cards_used': (as_int(stats.get('cards_used')) if stats.get('card_evidence_version') == 1
                        and not battle.get('card_flow')
                        and battle.get('card_consumption_complete', True) is True else None),
