@@ -399,10 +399,10 @@ class CornerRotationManager:
                 # never become eligible 24h after its much earlier selection.
                 stamps = [timestamp(raw[key]) for key in ("started_at", "completed_at") if raw.get(key) is not None]
                 if stamps:
-                    stamp = max(stamps)
-                    if stamp > now:
-                        raise RotationError("adapter timestamp is in the future",
-                                            kind="adapter-timestamp")
+                    # Clamp to the tick's now: a reconcile that writes
+                    # completed_at a few ms after the tick's now must not
+                    # latch adapter-timestamp (#1064).
+                    stamp = min(max(stamps), now)
                     previous = max((r["at"] for r in state["history"] if r["corner"] == history_id), default=-1)
                     if stamp > previous:
                         state["history"].append(dict(corner=history_id, at=stamp, source="execution"))
@@ -460,7 +460,9 @@ class CornerRotationManager:
         if not reconciled:
             return None
 
-        settled_at = timestamp(self.clock())
+        # Clamp to the tick's now: a reconcile that writes completed_at a
+        # few ms after the tick's now would latch adapter-timestamp (#1064).
+        settled_at = min(timestamp(self.clock()), now)
         if settled_at < now:
             raise RotationError("clock regressed", kind="invalid-state")
         resources_released = getattr(adapter, "resources_released", None)
@@ -835,11 +837,10 @@ class CornerRotationManager:
         observed = raw.get("status", "idle")
         if observed not in TERMINAL:
             raise RotationError("unknown adapter state", kind="adapter-state")
-        finished = (timestamp(raw["completed_at"])
-                    if raw.get("completed_at") is not None else now)
-        if finished > now:
-            raise RotationError("adapter timestamp is in the future",
-                                kind="adapter-timestamp")
+        # Clamp to the tick's now: a reconcile that writes completed_at a few
+        # ms after the tick's now must not latch adapter-timestamp (#1064).
+        finished = min(timestamp(raw["completed_at"])
+                       if raw.get("completed_at") is not None else now, now)
         started = raw.get("started_at")
         if started is not None:
             stamp_at = timestamp(started)
