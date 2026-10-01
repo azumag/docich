@@ -91,6 +91,20 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `status=failed` かつ `recovery_required=true` の場合だけ severity を `warn` にし、
   owner-only の固定 `recover-failed` 操作を許可する。`draining` / `recovery_required`
   のcanonical phaseは自動でリセットしない。
+- `pulse_sink_inputs` は PulseAudio の playback stream 状態を read-only で出す
+  （#968）。各要素は `index` / `sink` / `role` / `mute` / `corked` /
+  `volume_percent` / `player` の固定キーのみで、`player` は
+  `bridge-ffplay` / `retroarch` / `browser` / `speech-worker` /
+  `monitor-capture` / `stream-capture` / `other` の固定カテゴリに落とす。
+  `application.name` の生値・PID・module/client id・stream プロパティの平文は
+  **出さない**。`corked` は daemon が報告しない環境では `null`（= 未報告）で
+  「corked していない」とは言わない。`muted > 0` は BGM/SE が無音になり得る
+  状態だが、意図的な mute と区別できないため severity は変えない。
+  `readable=false` のときは「無音なし」ではなく **観測できなかった** として読む
+  （`reason` は `pactl_unavailable` / `pactl_failed` / `unbounded_output` /
+  `unparsable`）。gateway は `XDG_RUNTIME_DIR` を渡さないため、collector は
+  `/run/user/<uid>/pulse/native` が socket のときだけそこを明示する。
+  固定(owner-only)な mute 解除 operation は本 projection に含めない。
 - `game_switch_fifo` は `game-switch/requests` のreceiptを固定上限で読み、queued件数と
   FIFO先頭の operation/target/age だけを出す。request ID、payload、生成本文、秘密情報は
   出さない。malformed receiptやscan未完了は復旧せず、監視側で要対応として扱う。
