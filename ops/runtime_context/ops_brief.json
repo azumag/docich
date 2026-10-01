@@ -2,7 +2,7 @@
   "output_sha256": "de19769f4af5a1ed5d371ba960b553f6b7881a69f4c0a0526ec7de5f13fe863f",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "f7f7efe860688b3150b9bf708f8c8709372022edd4f3035db6792612aa7a86d1",
+  "source_sha256": "49770a032a930d1a2b90b76fd73459cb84a1b288d4a8ee0d22faa5b18c8683b8",
   "topics": [
     "レイドお礼の読み上げ欠落: AIチェーンの「タイムアウト→レート制限」誤判定を修正・配備済み",
     "半熟英雄コーナー継続監視: 09:44裏取り完了（初回死亡の否定）・保持HP予算ゲート",
