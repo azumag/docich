@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from docich.llm.backoff import model_backoff_seconds
 from docich.llm.policy import parse_agents
-from docich.webui import DEFAULTS
+from docich import webui
 
 FREE_GO = ("opencode-go:longcat-2.5-preview-free", "opencode-go:space-bunny-free")
 
@@ -24,7 +24,7 @@ WEBUI_CHAINS = (
 
 
 def _raws(chain: str) -> list[str]:
-    return [spec.raw for spec in parse_agents(DEFAULTS[chain])]
+    return [spec.raw for spec in parse_agents(webui.DEFAULTS[chain])]
 
 
 def _toml_agents(rel: str) -> list[str]:
@@ -52,10 +52,29 @@ def test_free_go_models_sit_before_paid_opencode_go_models():
 
 
 def test_free_go_models_have_daily_backoff_in_defaults():
-    env = {"AI_BACKOFF_SEC_ITEMS": DEFAULTS["AI_BACKOFF_SEC_ITEMS"]}
+    env = {"AI_BACKOFF_SEC_ITEMS": webui.DEFAULTS["AI_BACKOFF_SEC_ITEMS"]}
     for agent in FREE_GO:
         spec = parse_agents(agent, env)[0]
         assert model_backoff_seconds(spec, "RADIO", env, now=0) == 86400
+
+
+def test_dotenv_values_override_webui_defaults():
+    chain_override = "opencode-go:deepseek-v4.1-flash"
+    backoff_override = "longcat-2.5-preview-free:300"
+    assert webui._effective_value(
+        "AI_COMMON_AGENTS", {"AI_COMMON_AGENTS": chain_override}
+    ) == chain_override
+    assert webui._effective_value(
+        "MODEL_IMPROVE_LIST", {"MODEL_IMPROVE_LIST": chain_override}
+    ) == chain_override
+    assert webui._effective_value(
+        "AI_BACKOFF_SEC_ITEMS", {"AI_BACKOFF_SEC_ITEMS": backoff_override}
+    ) == backoff_override
+
+    spec = parse_agents(FREE_GO[0])[0]
+    assert model_backoff_seconds(
+        spec, "RADIO", {"AI_BACKOFF_SEC_ITEMS": backoff_override}, now=0
+    ) == 300
 
 
 def test_live_profile_chains_include_free_go_models():
@@ -68,7 +87,10 @@ def test_live_profile_chains_include_free_go_models():
     game = _toml_agents("config/games/hanjuku-hero.toml")
     chains["hanjuku.chart_adjust.agents"] = game["hanjuku"]["chart_adjust"]["agents"]
 
+    paid = "opencode-go:deepseek-v4.1-flash"
     for name, raw in chains.items():
         raws = [spec.raw for spec in parse_agents(raw)]
         for agent in FREE_GO:
             assert agent in raws, f"{name} に {agent} が無い"
+        assert paid in raws, f"{name} に {paid} が無い"
+        assert max(raws.index(agent) for agent in FREE_GO) < raws.index(paid), name
