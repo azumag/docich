@@ -2828,6 +2828,30 @@ def _unit_is_enabled(unit):
     return None
 
 
+# --- resolver improve daemon observation (read-only) ----------------------------
+#
+# #1286 follow-up: the resolver improve daemons (python -m docich.resolver.improve
+# --daemon) are long-lived. If one is installed and running, it keeps using the
+# production default tmux server until the next restart — the exact path #1284
+# fixed for the corner. This section answers "is one running?" directly.
+
+RESOLVER_IMPROVE_UNITS = (
+    "docich-resolver-improve.service",
+    "docich-resolver-improve-gnurobots.service",
+)
+
+
+def _collect_resolver_daemon():
+    """Active/enabled state of the resolver improve daemons (#1286 follow-up)."""
+    units = {}
+    for unit in RESOLVER_IMPROVE_UNITS:
+        units[unit] = {
+            'active': _unit_is_active(unit),
+            'enabled': _unit_is_enabled(unit),
+        }
+    return {'schema_version': 1, 'units': units}
+
+
 # --- webui unit / served-UI observation (read-only) ---------------------------
 #
 # The webui is a long-running process, so "deployed" and "what the operator
@@ -3613,6 +3637,47 @@ HANJUKU_TACTICAL_CASTLES = ('ほんじょう', 'キカンドン', 'ナキュー�
 HANJUKU_TACTICAL_KEYS = ('game', 'runtime_id', 'generation', 'lease_id')
 HANJUKU_TACTICAL_LIMIT = 256 * 1024
 
+TMUX_SERVER_NAMES = ('docich', 'docich-eval')
+TMUX_SERVER_SESSION_LIMIT = 8
+
+
+def _tmux_server_sessions(server):
+    """Read-only session names on a tmux server socket; [] if absent."""
+    if not isinstance(server, str) or re.fullmatch(r'[A-Za-z0-9_-]+', server) is None:
+        return []
+    try:
+        proc = subprocess.run(
+            ["tmux", "-L", server, "list-sessions", "-F", "#{session_name}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    return [name.strip() for name in proc.stdout.splitlines() if name.strip()]
+
+
+def _collect_tmux_servers():
+    """Fixed projection of tmux server ownership (#1286 follow-up).
+
+    The production corner runs on the default ``docich`` socket; evaluation
+    jobs must run on ``docich-eval``. This projection makes the separation
+    directly observable in diagnostics instead of inferring it from process
+    trees. Read-only: ``list-sessions`` never sends input.
+    """
+    servers = {}
+    for name in TMUX_SERVER_NAMES:
+        sessions = _tmux_server_sessions(name)
+        servers[name] = {
+            'present': bool(sessions),
+            'session_count': len(sessions),
+            'sessions': sessions[:TMUX_SERVER_SESSION_LIMIT],
+        }
+    return {'schema_version': 1, 'servers': servers}
+
 
 def _read_hanjuku_record(path):
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
@@ -4108,6 +4173,8 @@ def main(argv):
         "improvement": improvement,
         "corners": corners,
         "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
+        "tmux_servers": _collect_tmux_servers(),
+        "resolver_daemon": _collect_resolver_daemon(),
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
