@@ -49,6 +49,7 @@ class RetentionHealthTests(unittest.TestCase):
                 compact_defer_reason='insufficient_space', preflight_phase='complete',
                 prune_mode='bounded_wal', recovery_action='inspect_io_or_add_capacity',
                 selected_sessions=395, remaining_sessions=0, prune_batches=50,
+                skipped_batches=2, skipped_sessions=1,
                 wal_limit_bytes=8388608, bounded_prune_blocked=False,
                 sqlite_error_code=5, sqlite_extended_error_code=261,
                 completed_at=9999, detail='must not leak')))
@@ -62,6 +63,8 @@ class RetentionHealthTests(unittest.TestCase):
             self.assertEqual(item['selected_sessions'],395)
             self.assertEqual(item['remaining_sessions'],0)
             self.assertEqual(item['prune_batches'],50)
+            self.assertEqual(item['skipped_batches'],2)
+            self.assertEqual(item['skipped_sessions'],1)
             self.assertEqual(item['wal_limit_bytes'],8388608)
             self.assertIs(item['bounded_prune_blocked'],False)
             self.assertEqual(item['sqlite_error_code'],5)
