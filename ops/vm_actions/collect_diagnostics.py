@@ -2456,6 +2456,15 @@ def _collect_corner_files(state_dir, payload, now):
     if readable:
         active = data.get("active") if isinstance(data.get("active"), dict) else {}
         last = data.get("last_result") if isinstance(data.get("last_result"), dict) else {}
+        deadline_at = data.get("deadline_at")
+        deadline_expired = None
+        if isinstance(deadline_at, str) and deadline_at:
+            try:
+                from datetime import datetime, timezone
+                deadline_dt = datetime.fromisoformat(deadline_at.replace('Z', '+00:00'))
+                deadline_expired = deadline_dt.timestamp() < now
+            except (ValueError, TypeError):
+                deadline_expired = None
         entry.update(
             {
                 "phase": _bounded_str(data.get("phase"), 32),
@@ -2468,10 +2477,13 @@ def _collect_corner_files(state_dir, payload, now):
                 "last_error_code": _bounded_str(last.get("error_code"), 64),
                 "last_to_game": _bounded_str(last.get("to_game"), 64),
                 "updated_at": _bounded_str(data.get("updated_at"), 40),
+                "deadline_at": _bounded_str(deadline_at, 40),
+                "deadline_expired": deadline_expired,
             }
         )
     payload["game_switch"] = entry
     payload["game_switch_fifo"] = _collect_game_switch_fifo(state_dir, now)
+    payload["game_switch_watchdog"] = _collect_game_switch_watchdog()
 
     for name in (
         "retro_corner",
@@ -2855,6 +2867,35 @@ def _collect_resolver_daemon():
             'enabled': _unit_is_enabled(unit),
         }
     return {'schema_version': 1, 'units': units}
+
+
+GAME_SWITCH_WATCHDOG_UNIT = "docich-game-switch-fifo.timer"
+
+
+def _collect_game_switch_watchdog():
+    """Active/enabled state of the game-switch FIFO watchdog timer (#1041).
+
+    The watchdog (docich-game-switch-fifo.timer / maintain-fifo) is the
+    recovery path for expired draining. If it is not running, an expired
+    draining request stays stuck forever.
+    """
+    result = {
+        'timer_active': _unit_is_active(GAME_SWITCH_WATCHDOG_UNIT),
+        'timer_enabled': _unit_is_enabled(GAME_SWITCH_WATCHDOG_UNIT),
+    }
+    # Latest service result from the timer's unit
+    show = _systemctl_user(["show", GAME_SWITCH_WATCHDOG_UNIT, "--property", "ExecMainStatus,ExecMainCode,Result,ActiveEnterTimestamp"])
+    if show is not None:
+        _, out = show
+        props = {}
+        for line in out.splitlines():
+            if '=' in line:
+                key, _, value = line.partition('=')
+                props[key.strip()] = value.strip()
+        result['last_exit_code'] = int(props['ExecMainCode']) if props.get('ExecMainCode', '').lstrip('-').isdigit() else None
+        result['last_result'] = props.get('Result') or None
+        result['last_active_at'] = props.get('ActiveEnterTimestamp') or None
+    return result
 
 
 # --- webui unit / served-UI observation (read-only) ---------------------------
