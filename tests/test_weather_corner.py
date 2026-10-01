@@ -375,3 +375,101 @@ def test_start_source_fence_leaves_an_operator_replacement_untouched(tmp_path, m
     assert state["status"] == "interrupted"
     assert state["end_reason"] == "switch-terminal-before-corner-active"
     assert expected_source["lease_id"] != replacement["active"]["lease_id"]
+
+
+def test_stop_recovers_a_weather_start_committed_before_corner_owner_write(tmp_path, monkeypatch):
+    import docich.weather_corner as weather_corner
+
+    g, now, _factory, store, switch = _setup(tmp_path, boundary_generation=None)
+    monkeypatch.setattr(weather_corner, "read_view",
+                        lambda _path, clock=None: {"expires_at": now[0] + 900})
+    manager = WeatherCornerManager(g, duration_minutes=1, coordinator=switch,
+                                   clock=lambda: now[0])
+    request_id = str(uuid.uuid4())
+    state = manager._new_state({"request_id": request_id, "selected_at": now[0]})
+    manager._save(state)
+    expected_source = dict(state["previous_runtime_identity"])
+
+    # Simulate a crash after GameSwitch durably commits but before the local
+    # corner owner can record weather_runtime_identity.
+    started = switch.switch(
+        "weather-view", request_id=request_id,
+        payload={"expected_source": expected_source},
+    )
+    assert started.status == "succeeded"
+    receipt = store.receipts.load(request_id)
+    committed_identity = receipt["result"]["active_runtime"]
+    assert json.loads(manager.state_path.read_text())["status"] == "starting"
+
+    assert manager.stop() == "queued"
+    assert manager.run_rotation(request_id) == "completed"
+
+    final, _ = store.canonical.load()
+    state = json.loads(manager.state_path.read_text())
+    assert state["status"] == "completed"
+    assert state["end_reason"] == "manual"
+    assert state["weather_runtime_identity"] == committed_identity
+    assert final["phase"] == "ready"
+    assert final["active"]["game"] == "robots"
+    assert final["active"]["runtime_id"] == state["restored_runtime_identity"]["runtime_id"]
+    assert state["restored_runtime_identity"]["runtime_id"] != committed_identity["runtime_id"]
+
+
+def test_stop_keeps_queued_start_owner_until_game_switch_terminally_fences_it(tmp_path, monkeypatch):
+    import docich.weather_corner as weather_corner
+
+    g, now, factory, store, switch = _setup(tmp_path, boundary_generation=1)
+    monkeypatch.setattr(weather_corner, "read_view",
+                        lambda _path, clock=None: {"expires_at": now[0] + 900})
+    operator_results = []
+    operator_errors = []
+
+    def move_operator_runtime():
+        try:
+            operator_results.append(switch.switch("nethack"))
+        except Exception as exc:
+            operator_errors.append(exc)
+
+    operator = threading.Thread(target=move_operator_runtime)
+    operator.start()
+    old = factory.adapters[next(key for key in factory.adapters if "g1-" in key)]
+    assert old.boundary_entered.wait(2.0)
+
+    manager = WeatherCornerManager(g, duration_minutes=1, coordinator=switch,
+                                   clock=lambda: now[0])
+    request_id = str(uuid.uuid4())
+    state = manager._new_state({"request_id": request_id, "selected_at": now[0]})
+    manager._save(state)
+    assert manager._dispatch_start(state) == "queued"
+    assert store.receipts.load(request_id)["status"] == "queued"
+
+    assert manager.stop() == "queued"
+    stop_path = Path(g.state_dir) / "corner-stop-requests" / manager.path.name
+    assert stop_path.exists()
+    assert manager.run_rotation(request_id) == "queued"
+    state = json.loads(manager.state_path.read_text())
+    assert state["status"] == "starting"
+    assert state["switch_request_id"] == request_id
+    assert store.receipts.load(request_id)["status"] == "queued"
+    assert stop_path.exists()
+
+    old.boundary_release.set()
+    operator.join(5.0)
+    assert not operator.is_alive()
+    assert operator_errors == []
+    assert operator_results[0].status == "succeeded"
+    expected_source = state["previous_runtime_identity"]
+    fenced = switch.switch(
+        "weather-view", request_id=request_id,
+        payload={"expected_source": expected_source},
+    )
+    assert fenced.status == "failed"
+    assert manager.reconcile_failed_start(request_id) is True
+
+    final, _ = store.canonical.load()
+    state = json.loads(manager.state_path.read_text())
+    assert state["status"] == "interrupted"
+    assert state["end_reason"] == "switch-terminal-before-corner-active"
+    assert final["phase"] == "ready"
+    assert final["active"]["game"] == "nethack"
+    assert not stop_path.exists()

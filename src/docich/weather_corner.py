@@ -7,6 +7,7 @@ full runtime identity. It never fetches a forecast or enqueues speech.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import time
 import uuid
@@ -263,23 +264,56 @@ class WeatherCornerManager:
             )
             self._save(state)
             raise WeatherCornerError("weather view start did not succeed")
+        receipt = getattr(result, "receipt", None)
+        result_body = receipt.get("result") if isinstance(receipt, dict) else None
+        if (not isinstance(receipt, dict)
+                or receipt.get("status") != "succeeded"
+                or receipt.get("request_id") != request_id
+                or receipt.get("target") != WEATHER_VIEW_NAME
+                or receipt.get("operation") not in {"start", "switch"}
+                or not isinstance(result_body, dict)
+                or result_body.get("request_id") != request_id
+                or result_body.get("status") != "succeeded"
+                or result_body.get("to_game") != WEATHER_VIEW_NAME):
+            raise WeatherCornerError("weather start receipt identity is invalid")
+        identity = _identity(result_body.get("active_runtime"), expected_game=WEATHER_VIEW_NAME)
+        if (identity is None
+                or getattr(result, "request_id", None) != request_id
+                or getattr(result, "to_game", None) != WEATHER_VIEW_NAME
+                or getattr(result, "generation", None) != identity["generation"]
+                or receipt.get("generation") != identity["generation"]):
+            raise WeatherCornerError("weather start result identity does not match receipt")
         canonical = self._canonical()
         if canonical is None:
+            # The receipt is already terminal and proves the exact candidate
+            # identity. Keep the write-ahead owner until canonical state can
+            # be read and reconciled against it.
+            state.update(status="starting", switch_status="in_progress",
+                         starting_runtime_identity=identity)
             self._save(state)
             return "queued"
         active = canonical.get("active")
-        if (canonical.get("phase") != "ready"
-                or not isinstance(active, dict)
-                or active.get("game") != WEATHER_VIEW_NAME):
-            if _stable(canonical):
-                return self._mark_interrupted(state, "operator-moved-after-start")
-            raise WeatherCornerError("weather start result has no stable runtime owner")
-        identity = _identity(active, expected_game=WEATHER_VIEW_NAME)
-        if (getattr(result, "request_id", request_id) != request_id
-                or getattr(result, "to_game", WEATHER_VIEW_NAME) != WEATHER_VIEW_NAME
-                or getattr(result, "generation", identity["generation"]) != identity["generation"]):
-            raise WeatherCornerError("weather start result identity does not match canonical owner")
-        started = self.clock()
+        if (canonical.get("phase") in {"ready", "draining"}
+                and isinstance(active, dict)
+                and _identity(active) == identity):
+            pass
+        elif _stable(canonical):
+            return self._mark_interrupted(state, "operator-moved-after-start")
+        else:
+            # The successful GameSwitch receipt survives a crash before this
+            # owner-state write. Retain its exact runtime identity until the
+            # canonical switch transaction settles; never discard the owner
+            # just because the runtime is temporarily outside active.
+            state.update(status="starting", switch_status="in_progress",
+                         starting_runtime_identity=identity)
+            self._save(state)
+            return "queued"
+        try:
+            started = dt.datetime.fromisoformat(
+                str(receipt.get("updated_at")).replace("Z", "+00:00")
+            ).timestamp()
+        except (TypeError, ValueError, OverflowError):
+            started = self.clock()
         try:
             forecast = read_view(self.snapshot_path)
             expires_at = forecast.get("expires_at")
@@ -295,8 +329,9 @@ class WeatherCornerManager:
                         expires_at if type(expires_at) in (int, float) else started),
             forecast_expires_at=expires_at,
         )
+        state.pop("starting_runtime_identity", None)
         self._save(state)
-        return None
+        return "queued" if canonical.get("phase") == "draining" else None
 
     @staticmethod
     def _matches_active(canonical, identity):
@@ -392,10 +427,11 @@ class WeatherCornerManager:
                 or not _stable(canonical)):
             return False
         try:
-            _identity(active, expected_game=previous)
+            expected = _identity(result.get("active_runtime"), expected_game=previous)
+            actual = _identity(active, expected_game=previous)
         except WeatherCornerError:
             return False
-        return True
+        return expected is not None and actual == expected
 
     def _restore(self, state, *, end_reason="duration"):
         from .game_switch import ERROR_SOURCE_FENCE_LOST
@@ -486,7 +522,22 @@ class WeatherCornerManager:
                 return "completed"
             if status == "starting":
                 if self._stop_requested():
-                    return self._mark_interrupted(state, "operator-stopped-before-start")
+                    switch_request_id = state.get("switch_request_id")
+                    if (not isinstance(switch_request_id, str)
+                            or switch_request_id != state.get("start_request_id")):
+                        raise WeatherCornerError("weather start owner has no matching switch request")
+                    try:
+                        receipt = self.store.receipts.load(switch_request_id)
+                    except Exception:
+                        raise WeatherCornerError("weather start receipt cannot be verified") from None
+                    if receipt is None:
+                        # A stop marker can cancel a write-ahead reservation
+                        # only before GameSwitch has durably accepted it.
+                        return self._mark_interrupted(state, "operator-stopped-before-start")
+                    # Accepted/queued/succeeded receipts are durable owners.
+                    # Replay the same request id: if it is queued, keep this
+                    # state; if it committed before a crash, recover its exact
+                    # active_runtime and flow through the normal restore path.
                 result = self._dispatch_start(state)
                 if result is not None:
                     return result
@@ -585,6 +636,7 @@ class WeatherCornerManager:
                 state.pop("switch_request_id", None)
                 state.pop("switch_status", None)
                 self._save(state)
+                self._clear_stop_request()
                 return True
         except (OSError, ValueError, GameSwitchBusyError, WeatherCornerError):
             return False
