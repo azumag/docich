@@ -56,6 +56,14 @@ def test_free_go_models_have_daily_backoff_in_defaults():
     for agent in FREE_GO:
         spec = parse_agents(agent, env)[0]
         assert model_backoff_seconds(spec, "RADIO", env, now=0) == 86400
+        # Native docich jobs do not inherit WebUI DEFAULTS, so the dispatcher
+        # itself must retain the safe free-tier default when the env key is absent.
+        assert model_backoff_seconds(spec, "RADIO", {}, now=0) == 86400
+
+    # The built-in default is scoped to OpenCode Go; a same-suffix model on
+    # another provider keeps the normal RADIO fallback unless explicitly configured.
+    other_provider = parse_agents("opencode:space-bunny-free")[0]
+    assert model_backoff_seconds(other_provider, "RADIO", {}, now=0) == 18000
 
 
 def test_dotenv_values_override_webui_defaults():
