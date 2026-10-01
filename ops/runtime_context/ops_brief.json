@@ -1,11 +1,11 @@
 {
-  "output_sha256": "b9eef1e0645af64f25b931febcd330a50c32eb65d86861718198e1e87478d764",
+  "output_sha256": "846fe11a9a2fac753497f52cab830cf81691ad2340a54fe8711d3c2f685148a5",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "ea34ec3e044f65c07e079b5e421c957571589947c0717f095431ecde3a03e3fb",
+  "source_sha256": "7743a4e1064e6c922a52253a820cd84a1eebfa834089c31624df857c269bf585",
   "topics": [
+    "hanjuku g530出撃停止の調査・復旧と予防PR（#1487）",
     "容量緊急対応: bounded retention完全停止を修正し341/341削除を検証（compact完了待ち）",
-    "g514タイトル復帰・v126配備・次回起動境界の確認",
-    "半熟キャンプの実カーソル・帰還送信照合v124準備"
+    "g514タイトル復帰・v126配備・次回起動境界の確認"
   ]
 }
