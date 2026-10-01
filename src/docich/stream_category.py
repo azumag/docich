@@ -40,7 +40,7 @@ VIEWER_GAME_NAMES = {
 }
 
 
-def viewer_title_args(game: str) -> list[str]:
+def viewer_title_args(game: str, g: GlobalConfig | None = None) -> list[str]:
     """Explicit nonempty text prevents updater ops-brief/env fallbacks.
 
     The reviewed Soren updater still owns the date-based [dayN] prefix and
@@ -49,6 +49,11 @@ def viewer_title_args(game: str) -> list[str]:
     game = validate_game_name(game)
     label = VIEWER_GAME_NAMES.get(game, game)
     suffix = "AIの検証配信" if game == "paper-view" else "AIプレイ配信"
+    if g is not None:
+        from .stream_title_context import progress_phrase
+        from .trading.soren_output import resolve_soren_root
+
+        suffix = progress_phrase(game, Path(g.state_dir), resolve_soren_root(g)) or suffix
     return ["--activity", label, "--strategy", suffix]
 
 
@@ -189,7 +194,7 @@ def _announce_explicit_category(
     argv = [str(script), "--category-id", category_id.strip()]
     if category_name:
         argv.extend(["--category-name", str(category_name)])
-    argv.extend(viewer_title_args("paper-view"))
+    argv.extend(viewer_title_args("paper-view", g))
     (spawn or _spawn)(
         argv,
         cwd=script.parent,
@@ -220,7 +225,7 @@ def announce_stream_game(g: GlobalConfig, game: str, *, spawn=None) -> bool:
         game,
         "--games-dir",
         str(Path(g.games_dir).resolve()),
-        *viewer_title_args(game),
+        *viewer_title_args(game, g),
     ]
     (spawn or _spawn)(
         argv,

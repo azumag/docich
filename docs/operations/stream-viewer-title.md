@@ -21,3 +21,16 @@
 反映のためにゲームを強制切替しない。次の自然な切替でタイトルとカテゴリを照合する。
 手動タイトルや日次タイトル更新を恒久的に禁止する変更ではなく、次のゲーム切替で
 上記の固定タイトルに更新される。
+
+## Record-aware title context
+
+The switch hook can include bounded numeric evidence: Soren's durable best score,
+or Hanjuku's recorded cleared-chapter count. A cleared chapter and the next
+chapter goal are explicitly different. Current score, chapter-in-progress,
+unadopted strategy proposals, private handoff text and generated prose are not
+read as title claims. Missing, malformed, oversized or symlink evidence retains
+the neutral fallback. An identity-matched ready generation selects one of three
+reviewed wordings, stable for retries within that generation. Other game state
+cannot select that wording. This is record-based variety, not proof of strategy
+adoption or improved game performance. Strategy-feature metadata is still a
+separate extension.
