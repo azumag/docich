@@ -191,13 +191,15 @@ def _collect_opencode_retention(soren, now):
     reason_values = {"ok", "deadline", "insufficient_space", "space_unknown", "checkpoint_busy",
                      "unsafe_journal_mode", "sqlite_busy", "sqlite_error", "filesystem_or_input", "interrupted",
                      "insufficient_memory", "memory_unknown",
-                     "wal_limit_unavailable", "bounded_prune_committed", "bounded_prune_io_error"}
+                     "wal_limit_unavailable", "bounded_prune_committed", "bounded_prune_io_error",
+                     "sparse_unsupported", "sparse_lock_required", "sparse_identity_changed",
+                     "sparse_deadline", "sparse_alignment", "sparse_filesystem_unsupported", "sparse_fd_required"}
     enums = {
         "status": {"running", "completed", "gate_timeout", "disabled", "deferred", "failed"},
         "reason": reason_values,
         "compact_storage": {"disk", "memory"},
         "stage": {"preflight", "delete", "compact_copy", "compact_writeback", "checkpoint", "vacuum", "done",
-                  "compact_deferred"},
+                  "compact_deferred", "sparse_reclaim", "sparse_reclaimed"},
         "compact_defer_reason": reason_values,
         "preflight_phase": {"input", "budget", "connect", "busy_timeout", "temp_store", "synchronous",
                             "locking_mode", "begin_exclusive", "commit_exclusive", "journal_mode",
@@ -210,8 +212,10 @@ def _collect_opencode_retention(soren, now):
                "compact_bytes", "page_size", "page_count", "freelist_count",
                "selected_sessions", "remaining_sessions", "prune_batches", "wal_limit_bytes",
                "skipped_batches", "skipped_sessions",
-               "sqlite_error_code", "sqlite_extended_error_code")
-    booleans = ("bounded_prune_blocked",)
+               "sqlite_error_code", "sqlite_extended_error_code",
+               "sparse_scanned_bytes", "sparse_allocated_before_bytes",
+               "sparse_allocated_after_bytes", "sparse_reclaimed_bytes")
+    booleans = ("bounded_prune_blocked", "sparse_complete")
     for label, filename in (("attempt", "opencode_db_retention.json"),
                             ("default", "opencode_retention_default.json"),
                             ("worker", "opencode_retention_worker.json")):

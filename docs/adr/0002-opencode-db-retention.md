@@ -190,3 +190,28 @@ PRAGMA locking_modeの保持契約とbackup_finishのrollback契約を使い、D
 ゲームが休止しても動くdocich user timerで1時間毎・1日保持へ変更する。producerの通常共有gateや緊急opt-outは維持する。
 
 - 2026-09-29 の実測で、圧縮コピー3.02GB＋writeback WAL＋予約1GiBは空き6.55GBを超えることが判明した。`OPENCODE_RETENTION_MEMORY_COMPACTION=1` の正規helperでは、通常のディスク圧縮予算が不足する場合だけ `/dev/shm` の private tmpfs を利用できる。MemAvailableとcgroup v1/v2の全祖先の実効余裕を検査し、コピーの最大見積もり＋4GiBのRAM、tmpfs側にも1GiBの空きを事前確保する。処理中も各予約値を検査し、圧迫時は延期して一時コピーを片付ける。live DBへのSQLite transactional writebackとディスク1GiB予約は共通であり、DB・WALの置換や既存データの追加削除はしない。
+
+
+## 12. 2026-10-01: byte-preserving sparse recovery
+
+owner approval のある回収方式として、固定 retention helper で
+`OPENCODE_RETENTION_SPARSE_RECLAIM=1` を有効化する。Soren #547 の実装は
+shared writer gate と SQLite EXCLUSIVE を保持し、checkpoint 後に
+filesystem block 全体がゼロと実読した範囲のみを同じプロセスの
+fallocate(PUNCH_HOLE|KEEP_SIZE) で解放する。64MiB ごとの全バイト SHA-256
+前後一致を確認し、inode・logical size・SQLite の行とページ配置を維持する。
+外部子プロセスに解放を任せず、親終了後に子だけが DB を変更する窓を作らない。
+追加 FD を SQLite より先に閉じると POSIX lock が落ち得るため、close 順も固定する。
+
+1日保持、8件/batch、64batch、WAL ceiling、1GiB reserve、既存780秒 deadline、
+既存 hourly timer と opt-out は変更しない。sparse scan は更に90秒で区切り、
+未完了は deferred。新しい timer、epoch cleanup、直接 SQL、DB/WAL置換は追加しない。
+成功時の stage は sparse_reclaimed。logical bytes や freelist は減らなくても
+allocated bytes は減り得るため、sparse_allocated_before/after_bytes と
+sparse_reclaimed_bytes、実 filesystem available を区別して確認する。
+secure_delete OFF 等で未使用ページが非ゼロなら回収ゼロでも正常であり、
+completed だけで容量問題解消とは判定しない。
+
+diagnostics は固定 enum・非負整数・bool のみを追加投影する。hash、path、
+SQL、prompt、本文、例外文字列は公開しない。稼働中ゲームや共通配信を再起動しない。
+本番の物理回収量は配備後の通常 retention 実行と診断で検証する。

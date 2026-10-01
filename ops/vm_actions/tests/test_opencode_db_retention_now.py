@@ -15,6 +15,9 @@ class OpenCodeRetentionNowContractTest(unittest.TestCase):
         self.assertIn('default_db="/home/ubuntu/.local/share/opencode/opencode.db"', text)
         self.assertIn('worker_db="$root/tmp/state/xdg_data/opencode/opencode.db"', text)
         self.assertIn("retention_days=1", text)
+        self.assertIn("export OPENCODE_RETENTION_SPARSE_RECLAIM=1", text)
+        self.assertIn("OPENCODE_RETENTION_DEADLINE_EPOCH", text)
+        self.assertNotIn("fallocate ", text)  # Never bypass the Python SQLite lock.
         self.assertIn('source "$root/lib/opencode_db_retention.sh"', text)
         self.assertIn('_opencode_db_retention_rotate "$retention_days" "$worker_db" "$default_db"', text)
         self.assertEqual(text.count("export OPENCODE_DEFAULT_DB_RETENTION_ENABLED=1"), 1)
