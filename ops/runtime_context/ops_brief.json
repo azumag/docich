@@ -1,10 +1,10 @@
 {
-  "output_sha256": "b234d09fc15cd69e1364ecd066ff9eecdc3af4615b223fc98a536eeac4169589",
+  "output_sha256": "b9eef1e0645af64f25b931febcd330a50c32eb65d86861718198e1e87478d764",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "d4bbcc10a9ddc1807518bd5467f670d3b4916e3d01559dccc1b43c416738cf71",
+  "source_sha256": "ea34ec3e044f65c07e079b5e421c957571589947c0717f095431ecde3a03e3fb",
   "topics": [
-    "容量緊急対応: bounded retention初回停止の原因特定と巨大セッション隔離配備（01:39Z実行の検証待ち）",
+    "容量緊急対応: bounded retention完全停止を修正し341/341削除を検証（compact完了待ち）",
     "g514タイトル復帰・v126配備・次回起動境界の確認",
     "半熟キャンプの実カーソル・帰還送信照合v124準備"
   ]
