@@ -4,7 +4,7 @@ set -euo pipefail
 # Fixed owner-only production helper for an immediate OpenCode DB retention pass.
 # The actual mutation contract lives in the deployed, reviewed soviet_now
 # lib/opencode_db_retention.sh: shared producer flock, exclusive retention flock,
-# transactional prune, then VACUUM. This helper only invokes that existing
+# transactional prune, then byte-preserving zero-block reclaim. This helper invokes
 # contract on the two fixed production DB paths.
 #
 # No restart, sudo, arbitrary path, prompt, model output, or credential data is
@@ -22,6 +22,10 @@ esac
 export OPENCODE_ROTATION_GATE_WAIT_SEC=600
 # Use a private tmpfs copy only under disk pressure and with >=4 GiB RAM reserved.
 export OPENCODE_RETENTION_MEMORY_COMPACTION=1
+# Approved sparse recovery avoids an unfittable compact-image writeback WAL.
+# The reviewed Python helper holds SQLite EXCLUSIVE throughout and verifies
+# unchanged bytes; the existing cutoff, gate, reserve and deadline remain.
+export OPENCODE_RETENTION_SPARSE_RECLAIM=1
 export OPENCODE_RETENTION_DEADLINE_EPOCH=$(( $(date +%s) + 780 ))
 export OPENCODE_RETENTION_STATE_DIR="$root/tmp/state"
 env_file="$root/.env"

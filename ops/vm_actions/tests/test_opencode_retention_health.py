@@ -77,6 +77,36 @@ class RetentionHealthTests(unittest.TestCase):
             self.assertEqual(item['reason'],'unknown')
             self.assertEqual(item['stage'],'unknown')
 
+    def test_sparse_recovery_projects_only_bounded_metrics(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); state = root / 'tmp/state'; state.mkdir(parents=True)
+            p = state / 'opencode_retention_default.json'
+            p.write_text(json.dumps(dict(status='completed', reason='ok',
+                stage='sparse_reclaimed', sparse_complete=True,
+                sparse_scanned_bytes=10400141312,
+                sparse_allocated_before_bytes=10400145408,
+                sparse_allocated_after_bytes=6900000000,
+                sparse_reclaimed_bytes=3500145408,
+                payload='secret', sha256='secret', path='secret', completed_at=9999)))
+            item = self.collect(root)['default']
+            self.assertEqual(item['stage'], 'sparse_reclaimed')
+            self.assertIs(item['sparse_complete'], True)
+            self.assertEqual(item['sparse_scanned_bytes'], 10400141312)
+            self.assertEqual(item['sparse_allocated_before_bytes'], 10400145408)
+            self.assertEqual(item['sparse_allocated_after_bytes'], 6900000000)
+            self.assertEqual(item['sparse_reclaimed_bytes'], 3500145408)
+            self.assertNotIn('secret', json.dumps(item))
+            p.write_text(json.dumps(dict(status='deferred', reason='sparse_deadline',
+                stage='sparse_reclaim', sparse_scanned_bytes=67108864,
+                sparse_complete='true', sparse_reclaimed_bytes=True,
+                sparse_allocated_before_bytes=-1, sparse_allocated_after_bytes=1e99)))
+            item = self.collect(root)['default']
+            self.assertEqual(item['reason'], 'sparse_deadline')
+            self.assertEqual(item['sparse_scanned_bytes'], 67108864)
+            for field in ('sparse_complete', 'sparse_reclaimed_bytes',
+                          'sparse_allocated_before_bytes', 'sparse_allocated_after_bytes'):
+                self.assertNotIn(field, item)
+
     def test_missing_malformed_large_and_symlink_are_not_success(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);state=root/'tmp/state';state.mkdir(parents=True)
