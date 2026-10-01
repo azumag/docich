@@ -1,10 +1,10 @@
 {
-  "output_sha256": "194a004d6ea843cf51ec6edaf7877f6a238b14dce3f21ac72ee51272c12c91e3",
+  "output_sha256": "04ff7938945fe2d18f1e5491d897634b84a816b15f6ef20090c2ab28847660c2",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "c5603887ca02344f61c630b0e7ec3c4e4edf4dccfd569382481d147e6bd8ffda",
+  "source_sha256": "128f70272687e1b3019e6f6141adadadff75a2ba7bccf1834e34458e705158a9",
   "topics": [
-    "YouTube同一コメントの30分毎再読み上げを停止（soviet_now #553 / docich gitlink）",
+    "YouTube同一コメントの再読み上げを停止（マージ・VM配備済み）",
     "followup 2件: #1044 終端化経路と #968 PulseAudio mute 観測（未マージ・未VM配備）",
     "ゲーム終了時の結果まとめをチャット投稿をマージ・VM配備済み"
   ]
