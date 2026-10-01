@@ -1,11 +1,11 @@
 {
-  "output_sha256": "b67ee85c24766c1229e117d1b4844f457a88bec3edb512c2eb9f8773e2d2daca",
+  "output_sha256": "ff7f522506b06b0f6e1edb82f963d2c70c96eac72741a003efeef162c228ccd5",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "1ebe86f8628616c110ce3fd246bdf8bc7cc6c3a2652d30805d8c7c18a22e662f",
+  "source_sha256": "6d8b362324abb5c73e4d7e3a96913a157ed791f8aeb6c6ccb202124a4d89d8c6",
   "topics": [
+    "ゲーム終了時の結果まとめをチャット投稿をマージ・VM配備済み",
     "卵修復派遣が「あたしの家」に入らない障害の根因確定と予防PR #1497（マージ・VM配備済み）",
-    "followup ・#1286 を で対応（マージ・VM 配備済み）",
-    "hanjuku g530出撃停止の調査・復旧と予防PR（#1487）"
+    "followup ・#1286 を で対応（マージ・VM 配備済み）"
   ]
 }
