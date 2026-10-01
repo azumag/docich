@@ -401,6 +401,7 @@ class RetiredCornerObserver:
     STATE_FILES = {
         "game": "retro_corner.json",
         "paper": "paper_corner.json",
+        "weather": "weather_corner.json",
         "meriken": "soren91_corner.json",
         "nethack": "nethack_corner.json",
     }
@@ -455,11 +456,40 @@ class RetiredCornerObserver:
         return True
 
 
+class WeatherCornerAdapter:
+    """Opt-in weather lifecycle through GameSwitch and the common program slot."""
+
+    def __init__(self, g, corner):
+        from .weather_corner import WeatherCornerManager
+
+        self.g, self.corner = g, corner
+        self.manager = WeatherCornerManager(g, duration_minutes=corner.duration_minutes)
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
+
 ADAPTERS = {
     "game": GameCornerAdapter,
     "meriken": MerikenCornerAdapter,
     "paper": PaperCornerAdapter,
     "nethack": NethackCornerAdapter,
+    "weather": WeatherCornerAdapter,
 }
 
 

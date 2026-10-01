@@ -75,7 +75,7 @@ def test_weather_view_factory_is_generation_owned_and_uses_existing_viewport(tmp
         str(Path(weather_program.__file__).resolve().parents[3] / "bin" / "docich-weather"),
         "--state-dir", str(g.state_dir / "weather"), "serve",
         "--port", "8803", "--runtime-id", spec.runtime_id,
-        "--generation", str(spec.generation),
+        "--generation", str(spec.generation), "--lease-id", spec.lease_id,
     ]
     viewer = adapter._viewer_command()
     assert viewer[0] == sys.executable
@@ -114,16 +114,21 @@ def test_weather_view_preflight_only_reads_the_snapshot(tmp_path, monkeypatch):
     assert seen == [adapter.snapshot_path]
 
 
-@pytest.mark.parametrize("identity", ["runtime_id", "generation"])
+@pytest.mark.parametrize("identity", ["runtime_id", "generation", "lease_id"])
 def test_weather_view_readiness_rejects_another_runtime(identity, tmp_path, monkeypatch):
     g = _global(tmp_path)
     spec = _spec(tmp_path)
     adapter = make_coordinator_adapter(g, spec)
     data = {
         "ok": True, "runtime_id": spec.runtime_id,
-        "generation": spec.generation, "cities": [{} for _ in range(11)],
+        "generation": spec.generation, "lease_id": spec.lease_id,
+        "cities": [{} for _ in range(11)],
     }
-    data[identity] = "g3-old" if identity == "runtime_id" else spec.generation - 1
+    data[identity] = {
+        "runtime_id": "g3-old",
+        "generation": spec.generation - 1,
+        "lease_id": str(uuid.uuid4()),
+    }[identity]
     monkeypatch.setattr(cli_game.CliCoordinatorAdapter, "readiness", lambda *_: None)
     monkeypatch.setattr(weather_program, "urlopen", lambda *_args, **_kwargs: _response(data))
     now = time.monotonic()
@@ -140,7 +145,8 @@ def test_weather_view_readiness_accepts_only_exact_runtime_response(tmp_path, mo
     adapter = make_coordinator_adapter(g, spec)
     data = {
         "ok": True, "runtime_id": spec.runtime_id,
-        "generation": spec.generation, "cities": [{} for _ in range(11)],
+        "generation": spec.generation, "lease_id": spec.lease_id,
+        "cities": [{} for _ in range(11)],
     }
     requests = []
 

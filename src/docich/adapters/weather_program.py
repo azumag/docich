@@ -60,6 +60,7 @@ class WeatherProgramViewAdapter(ProgramViewAdapter):
             "--port", str(self.dashboard_port),
             "--runtime-id", self.spec.runtime_id,
             "--generation", str(self.spec.generation),
+            "--lease-id", self.spec.lease_id,
         ]
 
     def _viewer_command(self) -> list[str]:
@@ -123,6 +124,7 @@ class WeatherProgramViewAdapter(ProgramViewAdapter):
                     and data.get("runtime_id") == self.spec.runtime_id
                     and type(data.get("generation")) is int
                     and data.get("generation") == self.spec.generation
+                    and data.get("lease_id") == self.spec.lease_id
                     and isinstance(data.get("cities"), list)
                     and len(data["cities"]) == 11
                 ):

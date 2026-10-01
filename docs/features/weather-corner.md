@@ -3,20 +3,27 @@
 ## このPRの範囲と未完了部分
 
 全国11地点の公式予報取得、厳格な正規化、定型原稿生成、出典付き960×540画面、
-読み取り専用loopbackサーバーまでを実装する。LLM・新しい音声queue・常駐取得worker・
-timerは追加しない。既存の本番profile、コーナーcatalog、配信encoder、音声worker、
-OBSやGameSwitchの状態は変更しない。コードをマージしても放送は始まらない。
+読み取り専用loopbackサーバーを実装した。weather用adapterとowner stateを共通corner
+catalog/rotationへ接続し、既存program slot、GameSwitchのゲーム境界待ち、runtime cleanup、
+rollback、実行終了後の元のゲームへの復帰も実装した。weatherをcatalogへ追加する場合は
+明示的に`enabled=true`と1〜14分の`duration_minutes`が必要で、省略時は無効になる。
+既存の本番profile/catalog、配信encoder、音声worker、OBSや実GameSwitch状態は変更しない。
+コードをマージしても放送は始まらない。
 
-**自動ローテーションへの登録、既存音声queueへの送信・再生完了確認、
-共通program slotによる開始/終了/元のゲームへの復帰は、このPRでは未実装。**
-これは実放送まで完成したコーナーではなく、次の統合で使う取得・表示基盤である。
-専用HTTPサーバーを本番配信へ直接つないでこの境界を迂回しない。
+**既存音声queueへの送信・冪等性・再生完了確認は未実装のため、音声は送らない。**
+本PRは配信運用まで完成したコーナーではない。production catalogへの登録、現行データの
+全国確認、非本番の実runtime開始・復帰確認、Ready化も行っていない。専用HTTPサーバーを
+本番配信へ直接つないで既存の境界を迂回しない。
 
-統合の準備として、`weather-view` という合成GameSwitch runtime adapterを追加した。
+`weather-view` は合成GameSwitch runtime adapterとして実装した。
 既に公開済みのsnapshotだけをloopbackで表示し、`runtime_id` と `generation` をserverへ渡し、
-既存の960×540 presentationとGameSwitch所有プロセスの終了処理を使う。start前のfreshnessと
-起動後の同一runtime応答を検証する。このviewはcorner catalogに登録しておらず、専用の
-corner managerからも呼ばれない。fetch・音声送信・タイマーを行わず、単独では起動しない。
+`lease_id`を含めた3つのidentityを応答でも照合する。既存の960×540 presentationとGameSwitch
+所有プロセスの終了処理を使い、start直前のfreshnessと起動後の同一runtime応答を検証する。
+共通corner managerはこのviewを通してのみ起動する。adapter実装は登録済みだが、production
+catalogにはweather行がなく、行を追加する場合も明示的なenabled設定と期間指定が必要。
+weather-view用のTwitch category/title mappingは追加せず、合成view起動時にstream titleも更新しない。
+復帰先の実ゲームについてはGameSwitchの既存commit hookを使う。fetch・音声送信・独立timerを行わず、
+単独では起動しない。
 
 ## 権利・出典・予報業務の境界
 
@@ -100,29 +107,32 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
 ブラウザーのJSが動いていれば、サーバー停止時にも最後の予報を無期限に残さない。
 遅い旧pollが新しいpollの失敗を上書きしないよう、poll世代も確認する。
 
-## 次の統合で満たす必須条件
+## 統合の安全条件と未完了作業
 
-1. 共通corner catalog/adapterとowner stateへ登録し、default disabledを維持する。
-   既存program slotと予想・ラウンド境界を通す。独立timerを追加しない。
-2. GameSwitchのgeneration/runtime_idに結び付けて開始・復帰する。
-   operatorが既に切り替えた別runtimeを停止・上書きしない。
-   960×540・既存presentation viewportとowned child cleanupを再利用する。
-   `weather-view` のruntime adapterとreadiness検証は実装済みだが、corner managerからの
-   start/終了/復帰の呼出しと所有stateはまだない。
-3. 音声は既存の共有queueを使い、出典・対象日・発表時刻を保持する。
+1. 共通corner catalog/adapter、owner state、既存program slotへの登録は実装済み。
+   weather行の省略時は無効、enabled時は`duration_minutes` 1〜14が必須。
+   期間は上限で、snapshotの15分鮮度期限が先に来ればそこで復帰する。独立timerはない。
+2. GameSwitchの`game` / `runtime_id` / `generation` / `lease_id`を使って開始と復帰をfenceする。
+   開始時は旧ゲームの宣言済みラウンド境界を待ち、終了時はweather runtimeの同一identityを
+   `expected_source`に指定する。operatorが別runtimeへ切替済みなら、それを停止・上書きせず
+   weather ownerを中断扱いにする。960×540・既存presentation viewportとowned child cleanupを使う。
+3. 音声は既存の共有queueを使う設計とし、出典・対象日・発表時刻を保持する。
    冪等キー、runtime fence、再生完了確認を実装し、終了後に古い原稿を再生しない。
    他コーナーの音声を削除・停止しない。
    現行docich mainがpinする`soviet_now` `860e363c` の`enqueue_audio_text` runtime fenceは
    `hanjuku_commentary` 専用であり、weatherからは安全に使えない。generic runtime fence、
    冪等キー、再生完了receiptを共有queue側で確認するまでは、weather音声を送らない。
-4. 開始前だけでなく放送直前の有効性を再確認し、失敗はコーナーをskipする。
-   cache期限切れや開始失敗から元のゲームへ安全に戻るテストを追加する。
+4. snapshotの有効性は適格性判定、GameSwitch preflight/readiness、放送中の表示再検証で
+   確認する。取得失敗は休止とし、鮮度期限が来たらGameSwitchで復帰する。
+   合成adapterによる境界待ち、開始rollback、終了後復帰、operator移動のfenceをオフラインで検証した。
 5. 独立レビュー、CI、全11地点の現行データ確認、非本番の開始/終了実測を完了してから
-   ready化・本番有効化を判断する。本PRでこれらを成功扱いしない。
+   ready化・本番有効化を判断する。未実施の項目を成功扱いしない。
 
 ## 検証記録
 
-- ローカル：`PYTHONPATH=src pytest -q tests/test_weather.py tests/test_weather_program.py`、89件成功。
+- ローカル：`PYTHONPATH=src pytest -q tests/test_weather.py tests/test_weather_program.py tests/test_weather_corner.py tests/test_corner_rotation.py tests/test_corner_rotation_execution.py tests/test_game_switch.py tests/test_round_boundary.py`、346 passed・10 subtests passed。
+  合成adapterで旧ゲームの境界待ち、共有program slot保持、期限後restore、start失敗rollback、
+  operator移動とgeneration/runtime/lease不一致時の非上書きを検証する。VMや実game processは起動しない。
 - Pythonコンパイルとshell構文確認。
 - Chromiumで合成データを注入して960×540、両ページ、JS例外なし、取得失敗後の非表示を確認。
   この環境ではChromiumからloopback URLへの直接アクセスが管理ポリシーで拒否されたため、
