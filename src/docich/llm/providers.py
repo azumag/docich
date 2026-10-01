@@ -155,11 +155,26 @@ def _opencode_model(spec: AgentSpec) -> str:
     return f"opencode/{spec.model}"
 
 
+def _opencode_session_title(label: str) -> str:
+    value = str(label or "").upper()
+    if value.startswith("COMMENT"):
+        return "docich:comment"
+    if value.startswith(("IMPROVE", "IMPROVEMENT", "ROLLBACK-POSTMORTEM")):
+        return "docich:improvement"
+    if value.startswith("PROBE"):
+        return "docich:probe"
+    if value.startswith(("RADIO", "NEWS", "JIJI", "CELEBRATION")):
+        if "PREPASS" in value or "RESEARCH" in value:
+            return "docich:radio_prepass"
+        return "docich:radio_main"
+    return "docich:other"
+
+
 def _opencode(spec: AgentSpec, request: DispatchRequest, timeout: float, env: dict[str, str]) -> ProviderResult:
     binary = env.get("OPENCODE_BIN") or (
         "/snap/bin/opencode" if Path("/snap/bin/opencode").is_file() else "opencode"
     )
-    base_command = [binary, "run"]
+    base_command = [binary, "run", "--title", _opencode_session_title(request.label)]
     if spec.provider in {"vercel", "amd"}:
         role = "soren-research" if "RESEARCH" in request.label.upper() or "PREPASS" in request.label.upper() else "soren-lite"
         base_command += ["--agent", role]
