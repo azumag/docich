@@ -1138,132 +1138,133 @@ def test_manual_corner_queue_projection_is_boolean_only(tmp_path):
     assert output['corner_rotation']['queued_manual'] is False
 
 
-def test_tmux_servers_projection_is_read_only_and_bounded():
-    """#1286 follow-up: eval jobs must run on docich-eval, production on docich.
+class TmuxServerProjectionTests(unittest.TestCase):
+    def test_tmux_servers_projection_is_read_only_and_bounded(self):
+        """#1286 follow-up: eval jobs must run on docich-eval, production on docich.
 
-    The projection makes the separation directly observable in diagnostics.
-    """
-    module = load_collector()
-    calls = []
+        The projection makes the separation directly observable in diagnostics.
+        """
+        module = load_collector()
+        calls = []
 
-    def fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        server = cmd[cmd.index('-L') + 1] if '-L' in cmd else 'default'
-        if server == 'docich-eval':
-            return subprocess.CompletedProcess(cmd, 0, stdout='1\n1\n', stderr='')
-        return subprocess.CompletedProcess(cmd, 0, stdout='1\n', stderr='')
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            server = cmd[cmd.index('-L') + 1] if '-L' in cmd else 'default'
+            if server == 'docich-eval':
+                return subprocess.CompletedProcess(cmd, 0, stdout='1\n1\n', stderr='')
+            return subprocess.CompletedProcess(cmd, 0, stdout='1\n', stderr='')
 
-    with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
-        result = module._collect_tmux_servers()
-    assert result['schema_version'] == 1
-    assert result['servers']['docich']['present'] is True
-    assert result['servers']['docich']['session_count'] == 1
-    assert result['servers']['docich']['readable'] is True
-    assert 'sessions' not in result['servers']['docich']
-    assert result['servers']['docich-eval']['present'] is True
-    assert result['servers']['docich-eval']['session_count'] == 2
-    assert result['servers']['docich-eval']['readable'] is True
-    assert 'sessions' not in result['servers']['docich-eval']
-    # Read-only: list-sessions never sends input.
-    for cmd in calls:
-        assert cmd == ['tmux', '-L', cmd[2], 'list-sessions', '-F', '1']
-        assert cmd[2] in module.TMUX_SERVER_NAMES
-
-
-def test_tmux_servers_projection_does_not_infer_absence_from_command_failure():
-    module = load_collector()
-
-    def fake_run(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, 1, stdout='', stderr='no server running')
-
-    with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
-        result = module._collect_tmux_servers()
-    for name in ('docich', 'docich-eval'):
-        assert result['servers'][name] == {
-            'readable': False, 'present': None, 'session_count': None}
-
-
-def test_tmux_servers_projection_rejects_invalid_server_names():
-    module = load_collector()
-    with mock.patch.object(module.subprocess, 'run') as run:
-        for server in ('docich; rm -rf /', '', None, 'other-safe-looking-server'):
-            assert module._tmux_server_session_count(server) is None
-        run.assert_not_called()
-
-
-def test_tmux_servers_projection_never_emits_arbitrary_names_or_errors():
-    module = load_collector()
-    for output in ('PRIVATE-NAME\n', '1\nPRIVATE-NAME\n', ' 1\n', '1\n\n', '\ud800', '1\x851',
-                   '1\n' * (module.TMUX_SERVER_OUTPUT_LIMIT // 2 + 1), None):
-        with mock.patch.object(module.subprocess, 'run', return_value=
-                               subprocess.CompletedProcess([], 0, stdout=output, stderr='PRIVATE-ERROR')):
+        with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
             result = module._collect_tmux_servers()
-        assert 'PRIVATE' not in json.dumps(result)
-        for record in result['servers'].values():
-            assert record == {'readable': False, 'present': None, 'session_count': None}
+        assert result['schema_version'] == 1
+        assert result['servers']['docich']['present'] is True
+        assert result['servers']['docich']['session_count'] == 1
+        assert result['servers']['docich']['readable'] is True
+        assert 'sessions' not in result['servers']['docich']
+        assert result['servers']['docich-eval']['present'] is True
+        assert result['servers']['docich-eval']['session_count'] == 2
+        assert result['servers']['docich-eval']['readable'] is True
+        assert 'sessions' not in result['servers']['docich-eval']
+        # Read-only: list-sessions never sends input.
+        for cmd in calls:
+            assert cmd == ['tmux', '-L', cmd[2], 'list-sessions', '-F', '1']
+            assert cmd[2] in module.TMUX_SERVER_NAMES
 
 
-def test_tmux_servers_projection_keeps_execution_failure_unknown():
-    module = load_collector()
-    for error in (OSError('PRIVATE-ERROR'), subprocess.TimeoutExpired('PRIVATE-CMD', 5),
-                  UnicodeDecodeError('utf8', b'\xff', 0, 1, 'PRIVATE-ERROR')):
-        with mock.patch.object(module.subprocess, 'run', side_effect=error):
+    def test_tmux_servers_projection_does_not_infer_absence_from_command_failure(self):
+        module = load_collector()
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, stdout='', stderr='no server running')
+
+        with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
             result = module._collect_tmux_servers()
-        assert 'PRIVATE' not in json.dumps(result)
-        for record in result['servers'].values():
-            assert record == {'readable': False, 'present': None, 'session_count': None}
+        for name in ('docich', 'docich-eval'):
+            assert result['servers'][name] == {
+                'readable': False, 'present': None, 'session_count': None}
 
 
-def test_tmux_servers_projection_accepts_successful_empty_and_bounded_counts():
-    module = load_collector()
-    for count in (0, 17, module.TMUX_SERVER_OUTPUT_LIMIT // 2):
-        with mock.patch.object(module.subprocess, 'run', return_value=
-                               subprocess.CompletedProcess([], 0, stdout='1\n' * count, stderr='')):
+    def test_tmux_servers_projection_rejects_invalid_server_names(self):
+        module = load_collector()
+        with mock.patch.object(module.subprocess, 'run') as run:
+            for server in ('docich; rm -rf /', '', None, 'other-safe-looking-server'):
+                assert module._tmux_server_session_count(server) is None
+            run.assert_not_called()
+
+
+    def test_tmux_servers_projection_never_emits_arbitrary_names_or_errors(self):
+        module = load_collector()
+        for output in ('PRIVATE-NAME\n', '1\nPRIVATE-NAME\n', ' 1\n', '1\n\n', '\ud800', '1\x851',
+                       '1\n' * (module.TMUX_SERVER_OUTPUT_LIMIT // 2 + 1), None):
+            with mock.patch.object(module.subprocess, 'run', return_value=
+                                   subprocess.CompletedProcess([], 0, stdout=output, stderr='PRIVATE-ERROR')):
+                result = module._collect_tmux_servers()
+            assert 'PRIVATE' not in json.dumps(result)
+            for record in result['servers'].values():
+                assert record == {'readable': False, 'present': None, 'session_count': None}
+
+
+    def test_tmux_servers_projection_keeps_execution_failure_unknown(self):
+        module = load_collector()
+        for error in (OSError('PRIVATE-ERROR'), subprocess.TimeoutExpired('PRIVATE-CMD', 5),
+                      UnicodeDecodeError('utf8', b'\xff', 0, 1, 'PRIVATE-ERROR')):
+            with mock.patch.object(module.subprocess, 'run', side_effect=error):
+                result = module._collect_tmux_servers()
+            assert 'PRIVATE' not in json.dumps(result)
+            for record in result['servers'].values():
+                assert record == {'readable': False, 'present': None, 'session_count': None}
+
+
+    def test_tmux_servers_projection_accepts_successful_empty_and_bounded_counts(self):
+        module = load_collector()
+        for count in (0, 17, module.TMUX_SERVER_OUTPUT_LIMIT // 2):
+            with mock.patch.object(module.subprocess, 'run', return_value=
+                                   subprocess.CompletedProcess([], 0, stdout='1\n' * count, stderr='')):
+                result = module._collect_tmux_servers()
+            for record in result['servers'].values():
+                assert record == {'readable': True, 'present': bool(count), 'session_count': count}
+
+
+    def test_tmux_servers_projection_keeps_each_server_result_independent(self):
+        module = load_collector()
+        def fake_run(cmd, **kwargs):
+            if cmd[2] == 'docich':
+                raise subprocess.TimeoutExpired(cmd, 5)
+            return subprocess.CompletedProcess(cmd, 0, stdout='1\n', stderr='')
+        with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
             result = module._collect_tmux_servers()
-        for record in result['servers'].values():
-            assert record == {'readable': True, 'present': bool(count), 'session_count': count}
+        assert result['servers']['docich'] == {'readable': False, 'present': None, 'session_count': None}
+        assert result['servers']['docich-eval'] == {'readable': True, 'present': True, 'session_count': 1}
 
 
-def test_tmux_servers_projection_keeps_each_server_result_independent():
-    module = load_collector()
-    def fake_run(cmd, **kwargs):
-        if cmd[2] == 'docich':
-            raise subprocess.TimeoutExpired(cmd, 5)
-        return subprocess.CompletedProcess(cmd, 0, stdout='1\n', stderr='')
-    with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
-        result = module._collect_tmux_servers()
-    assert result['servers']['docich'] == {'readable': False, 'present': None, 'session_count': None}
-    assert result['servers']['docich-eval'] == {'readable': True, 'present': True, 'session_count': 1}
+    def test_resolver_daemon_projection_reports_unit_states(self):
+        """#1286 follow-up: a running resolver daemon keeps the production tmux server."""
+        module = load_collector()
+        active_states = {
+            'docich-resolver-improve.service': True,
+            'docich-resolver-improve-gnurobots.service': False,
+        }
+        enabled_states = {
+            'docich-resolver-improve.service': True,
+            'docich-resolver-improve-gnurobots.service': False,
+        }
+
+        with mock.patch.object(module, '_unit_is_active', side_effect=lambda unit: active_states[unit]), \
+             mock.patch.object(module, '_unit_is_enabled', side_effect=lambda unit: enabled_states[unit]):
+            result = module._collect_resolver_daemon()
+        assert result['schema_version'] == 1
+        assert result['units']['docich-resolver-improve.service'] == {'active': True, 'enabled': True}
+        assert result['units']['docich-resolver-improve-gnurobots.service'] == {'active': False, 'enabled': False}
 
 
-def test_resolver_daemon_projection_reports_unit_states():
-    """#1286 follow-up: a running resolver daemon keeps the production tmux server."""
-    module = load_collector()
-    active_states = {
-        'docich-resolver-improve.service': True,
-        'docich-resolver-improve-gnurobots.service': False,
-    }
-    enabled_states = {
-        'docich-resolver-improve.service': True,
-        'docich-resolver-improve-gnurobots.service': False,
-    }
+    def test_resolver_daemon_projection_handles_missing_units(self):
+        module = load_collector()
 
-    with mock.patch.object(module, '_unit_is_active', side_effect=lambda unit: active_states[unit]), \
-         mock.patch.object(module, '_unit_is_enabled', side_effect=lambda unit: enabled_states[unit]):
-        result = module._collect_resolver_daemon()
-    assert result['schema_version'] == 1
-    assert result['units']['docich-resolver-improve.service'] == {'active': True, 'enabled': True}
-    assert result['units']['docich-resolver-improve-gnurobots.service'] == {'active': False, 'enabled': False}
+        def fake_none(unit):
+            return None
 
-
-def test_resolver_daemon_projection_handles_missing_units():
-    module = load_collector()
-
-    def fake_none(unit):
-        return None
-
-    with mock.patch.object(module, '_unit_is_active', side_effect=fake_none), \
-         mock.patch.object(module, '_unit_is_enabled', side_effect=fake_none):
-        result = module._collect_resolver_daemon()
-    for unit in module.RESOLVER_IMPROVE_UNITS:
-        assert result['units'][unit] == {'active': None, 'enabled': None}
+        with mock.patch.object(module, '_unit_is_active', side_effect=fake_none), \
+             mock.patch.object(module, '_unit_is_enabled', side_effect=fake_none):
+            result = module._collect_resolver_daemon()
+        for unit in module.RESOLVER_IMPROVE_UNITS:
+            assert result['units'][unit] == {'active': None, 'enabled': None}
