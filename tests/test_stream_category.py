@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import json
+import shutil
 import stat
 import subprocess
 import sys
@@ -27,6 +29,8 @@ from docich.stream_category import (  # noqa: E402
     commit_hook,
     script_path,
     twitch_category,
+    viewer_title_args,
+    VIEWER_GAME_NAMES,
 )
 
 
@@ -86,7 +90,7 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
                 "nethack",
                 "--games-dir",
                 str(Path(self.g.games_dir).resolve()),
-                "--category-only",
+                "--activity", "NetHack", "--strategy", "AIプレイ配信",
             ],
         )
         # The script loads its own .env from the Soren root, so it must run
@@ -108,9 +112,9 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
                 str(script.resolve()),
                 "--category-id",
                 PAPER_CATEGORY_ID,
-                "--category-only",
                 "--category-name",
                 PAPER_CATEGORY_NAME,
+                "--activity", "ペーパートレード", "--strategy", "AIの検証配信",
             ],
         )
         self.assertNotIn("--game", call["argv"])
@@ -179,9 +183,9 @@ class TestRunningView(StreamCategoryTestBase):
                 str(script.resolve()),
                 "--category-id",
                 PAPER_CATEGORY_ID,
-                "--category-only",
                 "--category-name",
                 PAPER_CATEGORY_NAME,
+                "--activity", "ペーパートレード", "--strategy", "AIの検証配信",
             ],
         )
 
@@ -194,8 +198,95 @@ class TestRunningView(StreamCategoryTestBase):
         self._install_script()
         hook = commit_hook(self.g, spawn=self._recorder)
         hook("nethack")
-        self.assertEqual(self.spawned[0]["argv"][-1], "--category-only")
+        self.assertEqual(self.spawned[0]["argv"][-4:], viewer_title_args("nethack"))
         self.assertIn("nethack", self.spawned[0]["argv"])
+
+    def test_each_switch_replaces_the_previous_game_title(self) -> None:
+        self._install_script()
+        for game in ("hanjuku-hero", "sorengame", "soren91"):
+            self._write_game(game, twitch=True)
+        hook = commit_hook(self.g, spawn=self._recorder)
+        sequence = ("hanjuku-hero", "sorengame", "soren91", "paper-view", "hanjuku-hero")
+        with mock.patch.dict(os.environ, {"STREAM_GAME_STRATEGY": "PRIVATE-OLD-STRATEGY"}):
+            for game in sequence:
+                hook(game)
+        self.assertEqual(len(self.spawned), len(sequence))
+        for game, call in zip(sequence, self.spawned):
+            argv = call["argv"]
+            self.assertEqual(argv[-4:], viewer_title_args(game))
+            self.assertNotIn("--category-only", argv)
+            self.assertNotIn("--title-only", argv)
+            self.assertNotIn("--day", argv)  # day stays owned by the reviewed updater
+            self.assertNotIn("PRIVATE-OLD-STRATEGY", " ".join(argv))
+
+    def test_all_catalog_games_have_public_viewer_labels(self) -> None:
+        catalog = Path(__file__).resolve().parents[1] / "config" / "games"
+        for path in catalog.glob("*.toml"):
+            self.assertIn(path.stem, VIEWER_GAME_NAMES)
+        self.assertEqual(viewer_title_args("hanjuku-hero")[1], "半熟英雄")
+        self.assertEqual(viewer_title_args("sorengame")[1], "ソ連ゲーム")
+
+    def test_unknown_safe_id_is_explicit_and_bad_ids_are_rejected(self) -> None:
+        self.assertEqual(viewer_title_args("new-game"),
+                         ["--activity", "new-game", "--strategy", "AIプレイ配信"])
+        for game in ("", "../secret", "x;id", "bad name"):
+            with self.assertRaises(ValueError):
+                viewer_title_args(game)
+
+    def test_title_update_preserves_hook_error_contract(self) -> None:
+        self._install_script()
+        # The coordinator already catches StreamCategoryError from this hook;
+        # adding title arguments does not introduce another transport path.
+        with mock.patch("docich.stream_category._spawn", side_effect=StreamCategoryError("unavailable")):
+            with self.assertRaises(StreamCategoryError):
+                commit_hook(self.g)("nethack")
+
+    def test_reviewed_updater_receives_public_title_and_category_together(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "games/soviet_now/update_stream_game.sh"
+        if not source.is_file():
+            self.skipTest("pinned soviet_now submodule not initialized")
+        script = self.soren / SCRIPT_NAME
+        shutil.copyfile(source, script)
+        script.chmod(0o755)
+        stub_dir = self.root / "stub-bin"
+        stub_dir.mkdir()
+        result = self.root / "patch.json"
+        stub = stub_dir / "curl"
+        stub.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, pathlib, sys\n"
+            "a=sys.argv[1:]\n"
+            "if '-X' in a:\n"
+            " assert a[a.index('-X')+1]=='PATCH'\n"
+            " pathlib.Path(os.environ['TEST_PATCH']).write_text(a[a.index('-d')+1])\n"
+            " pathlib.Path(a[a.index('-o')+1]).write_text('')\n"
+            " print('204',end='')\n"
+            "elif any('oauth2/validate' in x for x in a):\n"
+            " print(json.dumps({'client_id':'test','login':'test','scopes':['channel:manage:broadcast']}))\n"
+            "else:\n"
+            " print(json.dumps({'data':[{'title':'OLD PRIVATE WORK','game_id':'1','game_name':'Old'}]}))\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        env = {
+            "PATH": str(stub_dir) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
+            "TWITCH_GAME_TOKEN": "test-only", "TWITCH_BROADCASTER_ID": "test-only",
+            "STREAM_GAME_STRATEGY": "PRIVATE-OLD-STRATEGY", "TEST_PATCH": str(result),
+            "OPS_BRIEF_FILE": str(self.root / "private-brief"),
+        }
+        (self.root / "private-brief").write_text("- PRIVATE-OPS-BRIEF\n")
+        for game in ("nethack", "sorengame", "hanjuku-hero", "paper-view"):
+            if game != "paper-view":
+                self._write_game(game, twitch=True)
+            announce_running_view(self.g, game, spawn=self._recorder)
+            argv = self.spawned[-1]["argv"]
+            proc = subprocess.run([*argv, "--day", "202"], env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            payload = json.loads(result.read_text())
+            args = viewer_title_args(game)
+            self.assertEqual(payload["title"], f"[day202] {args[1]} {args[3]}")
+            self.assertEqual(payload["game_id"], PAPER_CATEGORY_ID if game == "paper-view" else "130")
+            self.assertNotIn("PRIVATE", json.dumps(payload))
 
 
 class TestSpawnMechanics(StreamCategoryTestBase):
