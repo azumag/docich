@@ -3750,6 +3750,14 @@ def battle_step(screen: Screen, mem):
 CARD_OPEN_ATTEMPTS = 2        # initial chart opening plus one bounded retry
 CARD_MENU_OPEN_RETRIES = 4    # B repeats while the command menu has not opened yet
 MELEE_HOLD_LIMIT = 8          # egg-safe holds in one fight before melee proceeds
+# A hold that bleeds the general past this share of the fight's opening HP
+# stops before the count bound (g530 09:52 defense: 90 -> 81 by the 7th hold,
+# the count alone let it reach 73, and the forced push that followed fought
+# the summoned モーグリ at 73 and died with it at 4 HP; entering with the 8 HP
+# the budget saves wins that trade, by a thin margin). The floor keeps a
+# small opening HP from tripping on the first scratch.
+MELEE_HP_HOLD_DIVISOR = 10
+MELEE_HP_HOLD_FLOOR = 3
 
 
 def _charted_melee(mem, cur) -> bool:
@@ -3773,7 +3781,21 @@ def _melee_step(mem, cur):
     triggers = enemy_egg_triggers(cur.get('enemy'), player_castle_defense=defense)
     charted = _charted_melee(mem, cur)
     holds = int(cur.get('melee_holds') or 0)
-    forced = bool(cur.get('melee_forced')) or holds >= MELEE_HOLD_LIMIT
+    # The count bound cannot see the bleed: hold reads that stay under
+    # MELEE_HOLD_LIMIT can still spend most of the fight's opening HP.
+    start_hp, hp = cur.get('start_ally_hp'), cur.get('ally_hp')
+    if type(start_hp) is int and type(hp) is int and hp > 0:
+        hp_budget = max(MELEE_HP_HOLD_FLOOR, start_hp // MELEE_HP_HOLD_DIVISOR)
+        hp_bled = start_hp - hp
+    else:
+        hp_budget = hp_bled = None      # fail closed to the count bound alone
+    # Only a hold that is actually in charge can be cut by the budget; an
+    # eggless, clash-free or charted melee already mashes regardless.
+    hold_cut = (hp_bled is not None and hp_bled >= hp_budget
+                and triggers.has_egg is not False and triggers.clash_position is not False
+                and not charted)
+    forced = (bool(cur.get('melee_forced')) or holds >= MELEE_HOLD_LIMIT
+              or hold_cut)
     # An unbounded hold is a passive death: after the bound the melee proceeds
     # for the rest of the fight even at the clash egg risk (the rescue already
     # had its chances).
@@ -3789,8 +3811,11 @@ def _melee_step(mem, cur):
             enemy=cur.get('enemy'), enemy_hp=cur.get('enemy_hp'), ally_hp=cur.get('ally_hp'),
             egg_risk_flags=asdict(triggers), melee_control_mode=mode,
             a_frames_sent=POWER_TAPS * 3 if safe else 0,
+            hold_hp_budget=hp_budget, hold_hp_bled=hp_bled,
             reason=('チャートのぶつかり合いに向けて押し込む' if charted
-                    else '卵の激突リスクの保留上限に達したため押し込む' if forced
+                    else '保持中のHP劣化が予算に達したため押し込む' if hold_cut
+                    else '卵の激突リスクの保留上限に達したため押し込む' if holds >= MELEE_HOLD_LIMIT
+                    else '保持の打ち切り後はこの戦闘を通しで押し込む' if forced
                     else '卵の激突判定なし' if safe
                     else '卵の激突リスクあり・戦線位置未校正のため入力保留'))
     return actions
