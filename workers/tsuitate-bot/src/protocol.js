@@ -1,8 +1,10 @@
-export const SUPPORTED_GAME_TYPES = new Set(["ダーク", "ついたて", "ついたて5五", "ついたてリレー"]);
+// The current picker has only been scoped against the ordinary Tsuitate rules.
+// Other modes stay safely rejected until their rule-specific behavior is tested.
+export const SUPPORTED_GAME_TYPES = new Set(["ついたて"]);
 export const MAX_BODY_BYTES = 256 * 1024;
 
 const CSA_PIECE = /^(?:FU|KY|KE|GI|KI|KA|HI)$/;
-const CSA_MOVE = /^[+-](?:[1-9]{4}(?:FU|KY|KE|GI|KI|KA|HI|OU|TO|NY|NK|NG|UM|RY)|00(?:00|[1-9]{2})ZZ|0000TORYO)$/;
+const CSA_MOVE = /^[+-](?:[1-9]{4}(?:FU|KY|KE|GI|KI|KA|HI|OU|TO|NY|NK|NG|UM|RY)|00[1-9]{2}(?:FU|KY|KE|GI|KI|KA|HI)|00(?:00|[1-9]{2})ZZ|0000TORYO)$/;
 
 export class ProtocolFault extends Error {
   constructor(status, code) {

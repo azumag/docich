@@ -146,7 +146,10 @@ export function chooseObservedMove({ sfen, color, gameId, ply, recentOwnMoves = 
   const previous = lastOwnMove(recentOwnMoves);
   const forbidden = new Set([...forbiddenMoves, previous].filter(Boolean));
   const fresh = moves.filter((move) => !forbidden.has(move));
-  const pool = fresh.length > 0 ? fresh : moves;
+  // Never repeat an observed foul or recent own move just because all visible
+  // candidates are exhausted. The hidden board may explain the foul; guessing
+  // again would waste another turn (or repeat a known violation).
+  if (fresh.length === 0) return null;
   const seed = [...`${gameId}:${ply}`].reduce((value, char) => (value * 33 + char.charCodeAt(0)) >>> 0, 5381);
-  return pool[seed % pool.length];
+  return fresh[seed % fresh.length];
 }

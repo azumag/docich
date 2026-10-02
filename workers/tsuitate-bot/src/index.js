@@ -11,6 +11,7 @@ import {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const RPC_BUDGET_MS = 2500;
+const REQUEST_BUDGET_MS = 7000;
 
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), {
@@ -40,8 +41,50 @@ async function digestHex(bytes) {
   return bytesToHex(await crypto.subtle.digest("SHA-256", bytes));
 }
 
+async function readBoundedBody(request, signal) {
+  const contentLength = request.headers.get("content-length");
+  if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > MAX_BODY_BYTES) {
+    throw new ProtocolFault(413, "body_too_large");
+  }
+  const reader = request.body?.getReader();
+  if (!reader) return new Uint8Array();
+  const chunks = [];
+  let total = 0;
+  const cancelReader = () => { void reader.cancel().catch(() => {}); };
+  if (signal?.aborted) throw new ProtocolFault(503, "request_timeout");
+  signal?.addEventListener("abort", cancelReader, { once: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (signal?.aborted) throw new ProtocolFault(503, "request_timeout");
+      if (done) break;
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+      if (total + chunk.byteLength > MAX_BODY_BYTES) {
+        cancelReader();
+        throw new ProtocolFault(413, "body_too_large");
+      }
+      chunks.push(chunk);
+      total += chunk.byteLength;
+    }
+  } catch (error) {
+    if (signal?.aborted) throw new ProtocolFault(503, "request_timeout");
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", cancelReader);
+    try { reader.releaseLock(); } catch { /* cancellation may already have released it */ }
+  }
+
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
 /** Validate all signed headers against the original request bytes. */
-export async function authenticateRequest(request, env, nowSeconds = Math.floor(Date.now() / 1000)) {
+export async function authenticateRequest(request, env, nowSeconds = Math.floor(Date.now() / 1000), signal) {
   const contentType = request.headers.get("content-type") ?? "";
   if (!/^application\/json(?:\s*;|\s*$)/i.test(contentType)) throw new ProtocolFault(415, "content_type_required");
   if (typeof env.WEBHOOK_SECRET !== "string" || env.WEBHOOK_SECRET.length === 0
@@ -60,12 +103,7 @@ export async function authenticateRequest(request, env, nowSeconds = Math.floor(
     throw new ProtocolFault(403, "timestamp_out_of_range");
   }
 
-  const contentLength = request.headers.get("content-length");
-  if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > MAX_BODY_BYTES) {
-    throw new ProtocolFault(413, "body_too_large");
-  }
-  const rawBody = new Uint8Array(await request.arrayBuffer());
-  if (rawBody.byteLength > MAX_BODY_BYTES) throw new ProtocolFault(413, "body_too_large");
+  const rawBody = await readBoundedBody(request, signal);
 
   const expectedBodyHash = request.headers.get("x-amz-content-sha256") ?? "";
   const suppliedHash = /^[a-f0-9]{64}$/i.test(expectedBodyHash) ? hexToBytes(expectedBodyHash) : new Uint8Array();
@@ -107,14 +145,14 @@ function withTimeout(promise, timeoutMs) {
 }
 
 /** Pure request handler exported for local fixture tests. */
-export async function handleWebhook(request, env, options = {}) {
+async function handleWebhookRequest(request, env, options, signal) {
   const url = new URL(request.url);
   if (url.pathname !== "/webhook") return jsonResponse(404, { error: "not_found" });
   if (request.method !== "POST") return jsonResponse(405, { error: "method_not_allowed" });
 
   try {
     const nowSeconds = options.nowSeconds ?? Math.floor(Date.now() / 1000);
-    const { bodyText, bodyHash } = await authenticateRequest(request, env, nowSeconds);
+    const { bodyText, bodyHash } = await authenticateRequest(request, env, nowSeconds, signal);
     let decoded;
     try {
       decoded = JSON.parse(bodyText);
@@ -132,6 +170,7 @@ export async function handleWebhook(request, env, options = {}) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ payload: decoded, bodyHash }),
+      signal,
     });
     const result = await withTimeout(
       stub.fetch(internal),
@@ -146,6 +185,25 @@ export async function handleWebhook(request, env, options = {}) {
     if (error instanceof ProtocolFault) return jsonResponse(error.status, { error: error.code });
     // Deliberately do not log request data, signatures, secrets, or raw errors.
     return jsonResponse(500, { error: "internal_error" });
+  }
+}
+
+/** Bound the complete fetch, including streaming body reads and state RPC. */
+export async function handleWebhook(request, env, options = {}) {
+  const budgetMs = options.requestBudgetMs ?? REQUEST_BUDGET_MS;
+  const controller = new AbortController();
+  let timer;
+  const task = handleWebhookRequest(request, env, options, controller.signal);
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve(jsonResponse(503, { error: "request_timeout" }));
+    }, budgetMs);
+  });
+  try {
+    return await Promise.race([task, timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

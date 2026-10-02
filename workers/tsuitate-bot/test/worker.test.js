@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import worker, { GameState, handleWebhook } from "../src/index.js";
 import { chooseObservedMove, parseVisibleSfen } from "../src/bot.js";
+import { MAX_BODY_BYTES } from "../src/protocol.js";
 
 const SECRET = "test-only-not-a-deployable-secret";
 const BOT_ID = "fixture-bot-id";
@@ -10,6 +11,7 @@ const FIXTURE_DIR = new URL("./fixtures/", import.meta.url);
 const initialFixture = JSON.parse(readFileSync(new URL("initial-request.json", FIXTURE_DIR), "utf8"));
 const incrementalFixture = JSON.parse(readFileSync(new URL("incremental-request.json", FIXTURE_DIR), "utf8"));
 const foulFixture = JSON.parse(readFileSync(new URL("foul-request.json", FIXTURE_DIR), "utf8"));
+const relayDropFixture = JSON.parse(readFileSync(new URL("relay-drop-request.json", FIXTURE_DIR), "utf8"));
 const encoder = new TextEncoder();
 
 class MemoryStorage {
@@ -244,12 +246,13 @@ test("concurrent duplicate requests are single-flight and concurrent deltas cann
   assert.equal([...deltaBinding.objects.values()][0].state.storage.values.get("session:b:0").lastPly, 2);
 });
 
-test("relay seat histories are isolated by color and player number", async () => {
+test("relay mode is rejected before a seat history can be created", async () => {
   const binding = stateBinding();
   const relayInitial = structuredClone(initialFixture);
   relayInitial.game.type = "ついたてリレー";
   relayInitial.game.requiredPlayers = { b: 2, w: 2 };
-  await post(relayInitial, { binding });
+  const initial = await post(relayInitial, { binding });
+  assert.equal(initial.status, 422);
   const seatOne = {
     requestId: "game-demo:2:b:1",
     gameId: "game-demo",
@@ -265,7 +268,24 @@ test("relay seat histories are isolated by color and player number", async () =>
   assert.equal(binding.objects.size, 1);
 });
 
-test("reusing a request ID across relay seats is rejected before touching a second seat", async () => {
+test("CSA drops in received history are accepted and preserved", async () => {
+  const binding = stateBinding();
+  const response = await post(relayDropFixture, { binding });
+  assert.equal(response.status, 422); // relay mode is outside the current tested scope
+  assert.deepEqual(await responseJson(response), { error: "unsupported_game_type" });
+
+  const ordinary = structuredClone(relayDropFixture);
+  ordinary.gameId = "ordinary-drop-demo";
+  ordinary.requestId = "ordinary-drop-demo:2:b:0";
+  ordinary.game = { type: "ついたて", requiredPlayers: { b: 1, w: 1 } };
+  ordinary.number = 0;
+  const accepted = await post(ordinary, { binding });
+  assert.equal(accepted.status, 200);
+  const object = binding.objects.get("ordinary-drop-demo");
+  assert.equal(object.state.storage.values.get("position:b:0:1").lastMove, "+0055FU");
+});
+
+test("reusing a request ID across rejected relay seats is still idempotency-protected", async () => {
   const binding = stateBinding();
   const relayInitial = structuredClone(initialFixture);
   relayInitial.game.type = "ついたてリレー";
@@ -279,16 +299,17 @@ test("reusing a request ID across relay seats is rejected before touching a seco
   assert.equal(binding.objects.size, 1);
 });
 
-test("all four documented game types are explicitly supported", async () => {
-  for (const [index, type] of ["ダーク", "ついたて", "ついたて5五", "ついたてリレー"].entries()) {
+test("only the ordinarily tested Tsuitate mode is supported", async () => {
+  for (const [index, type] of ["ダーク", "ついたて5五", "ついたてリレー"].entries()) {
     const payload = structuredClone(initialFixture);
     payload.gameId = `type-${index}`;
     payload.requestId = `type-${index}:0:b:0`;
     payload.game.type = type;
-    if (type === "ついたてリレー") payload.game.requiredPlayers = { b: 2, w: 2 };
     const response = await post(payload);
-    assert.equal(response.status, 200, type);
+    assert.equal(response.status, 422, type);
+    assert.deepEqual(await responseJson(response), { error: "unsupported_game_type" });
   }
+  assert.equal((await post(initialFixture)).status, 200);
 });
 
 test("unsupported game types and malformed positions are rejected", async () => {
@@ -303,6 +324,12 @@ test("unsupported game types and malformed positions are rejected", async () => 
   const malformedByoyomi = structuredClone(initialFixture);
   malformedByoyomi.positions["0"].byoyomiActive.b = 0;
   assert.equal((await post(malformedByoyomi)).status, 400);
+
+  for (const drop of ["+0055OU", "+0005FU"]) {
+    const malformedDrop = structuredClone(initialFixture);
+    malformedDrop.positions["0"].lastMove = drop;
+    assert.equal((await post(malformedDrop)).status, 400, drop);
+  }
 });
 
 test("internal state timeout returns before the site's 10-second forfeiture limit", async () => {
@@ -314,6 +341,71 @@ test("internal state timeout returns before the site's 10-second forfeiture limi
   const response = await post(initialFixture, { binding: slowBinding, rpcBudgetMs: 8 });
   assert.equal(response.status, 503);
   assert.ok(performance.now() - started < 90);
+});
+
+test("all forbidden observed candidates return no move instead of repeating one", () => {
+  const move = chooseObservedMove({
+    sfen: "9/9/9/9/9/9/4P4/9/4K4 b - 1",
+    color: "b",
+    gameId: "forbidden-demo",
+    ply: 1,
+    forbiddenMoves: ["+5756FU"],
+  });
+  assert.equal(move, null);
+});
+
+test("oversized streaming request is cancelled as soon as the limit is crossed", async () => {
+  let emittedBytes = 0;
+  let cancelled = false;
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(MAX_BODY_BYTES + 1));
+      emittedBytes = MAX_BODY_BYTES + 1;
+    },
+    pull() {
+      return new Promise(() => {}); // never closes unless the reader cancels it
+    },
+    cancel() { cancelled = true; },
+  });
+  const request = new Request("https://worker.test/webhook", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "X-Tsuitate-Bot-Id": BOT_ID,
+      "X-Tsuitate-Timestamp": "1000000",
+    },
+    body,
+    duplex: "half",
+  });
+  const response = await handleWebhook(request, env(), { nowSeconds: 1_000_000, requestBudgetMs: 100 });
+  assert.equal(response.status, 413);
+  assert.deepEqual(await responseJson(response), { error: "body_too_large" });
+  assert.equal(emittedBytes, MAX_BODY_BYTES + 1);
+  assert.equal(cancelled, true);
+});
+
+test("whole-request timeout covers a body stream that never produces bytes", async () => {
+  let cancelled = false;
+  const body = new ReadableStream({
+    pull() { return new Promise(() => {}); },
+    cancel() { cancelled = true; },
+  });
+  const request = new Request("https://worker.test/webhook", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "X-Tsuitate-Bot-Id": BOT_ID,
+      "X-Tsuitate-Timestamp": "1000000",
+    },
+    body,
+    duplex: "half",
+  });
+  const started = performance.now();
+  const response = await handleWebhook(request, env(), { nowSeconds: 1_000_000, requestBudgetMs: 20 });
+  assert.equal(response.status, 503);
+  assert.deepEqual(await responseJson(response), { error: "request_timeout" });
+  assert.ok(performance.now() - started < 250);
+  assert.equal(cancelled, true);
 });
 
 test("only an observed own piece is selected and king movement is not guessed", () => {

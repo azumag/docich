@@ -4,11 +4,11 @@
 
 ## 対応範囲
 
-- `ダーク`、`ついたて`、`ついたて5五`、`ついたてリレー` を受け付けます。リレーの状態は `gameId + color + number` ごとに分離します。
+- 現在受け付けるのは通常の `ついたて` です。`ダーク`、`ついたて5五`、`ついたてリレー` は、モード固有ルールの根拠と検証fixtureが揃うまで `422 unsupported_game_type` で安全に拒否します。
 - 初回は手数0から `ply` まで、差分は `basePly + 1` から `ply` までを連番検証して保存します。差分の `basePly` は保持済みの最後の手数と完全一致する必要があります。
 - Durable Objectのトランザクションで局面履歴、進行位置、直近の指し手、requestIdの応答レシートを一括更新します。同じrequestIdと同じraw本文なら同じ応答を返し、本文が変わっていれば `409` を返します。
 - HMAC-SHA256はJSON parseより先に受信raw bytesへ検証します。`X-Tsuitate-Timestamp` の差が300秒以上、Bot ID、署名、`x-amz-content-sha256` が合わないリクエストは拒否します。本文・署名・secretをログへ出しません。
-- 状態Worker呼び出しは2.5秒で打ち切り、10秒の対局応答枠に余裕を残します。タイムアウト後に再送された同一リクエストは、DO側の保存済みレシートで処理されます。
+- 本文は受信ストリームの段階で256 KiBに制限し、リクエスト全体は7秒で打ち切ります。状態Worker呼び出しは2.5秒で打ち切り、10秒の対局応答枠に余裕を残します。タイムアウト後に再送された同一リクエストは、DO側の保存済みレシートで処理されます。
 
 指し手は公開された自駒とSFENだけから決定的に選びます。王の移動と長距離駒の遠方移動は候補にせず、隠れた相手駒・王手・ピン・千日手を推定しません。それでも隠し盤面では経路上の駒や王手回避を完全には検証できないため、CSA形式の出力や合法手を保証する将棋エンジンではありません。候補を作れない場合は `422 no_observed_move` で失敗を明示します。
 
@@ -16,7 +16,9 @@ SQLite-backed Durable Objectを保存先に使います。D1や外部DBは使い
 
 ## ローカル検証と起動
 
-Node.js 20以降を用意します。fixtureテストには外部アカウント、ネットワーク、Cloudflareリソースは必要ありません。
+Node.js 20以降を用意します。fixtureテストはNodeの`node:test`とDurable Objectのローカルmockを使い、外部アカウント、ネットワーク、Cloudflareリソースは必要ありません。実workerd環境でのSQLite Durable Object起動・transaction rollback・並行実行検証はまだ網羅していません。
+
+このPRではWrangler 4.119.0のローカルworkerdでWebhookと同一requestIdの再送を確認しました。設定済みの`compatibility_date = "2026-09-21"`は同梱runtimeが未対応だったため、実行時だけ対応済みの`2026-08-08`へ上書きしています。したがって、設定日付でのworkerd実行や本番環境は未検証です。
 
 ```sh
 cd workers/tsuitate-bot
@@ -44,4 +46,3 @@ npm run dev
 ```sh
 npx wrangler secret put WEBHOOK_SECRET
 ```
-
