@@ -246,3 +246,29 @@ def enqueue_audio_text(
         raise SorenOutputError(
             f"Soren audio queue rejected notification: {(proc.stderr or '').strip()[:200]}"
         )
+
+
+def enqueue_hanjuku_terminal(
+    g: GlobalConfig, text: str, *, context: str = "hanjuku_terminal",
+    speaker: str = "", delivery_key: str,
+) -> dict[str, object]:
+    """Publish a fixed Hanjuku end recap through the durable shared outbox.
+
+    Ordinary Hanjuku narration remains on the fenced shell queue. The terminal
+    snapshot instead gets a run-scoped receipt because its source run may be
+    torn down as soon as the recap is queued.
+    """
+    if context != "hanjuku_terminal" or not delivery_key.startswith("hanjuku-terminal:"):
+        raise SorenOutputError("Hanjuku terminal delivery key is invalid")
+    root = resolve_soren_root(g)
+    try:
+        from .. import webui
+        result = webui._enqueue_audio_text(
+            root, text, "hanjuku_terminal", speaker=speaker,
+            delivery_key=delivery_key,
+        )
+    except Exception as exc:
+        raise SorenOutputError("Hanjuku terminal audio queue delivery failed") from exc
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise SorenOutputError("Hanjuku terminal audio queue rejected recap")
+    return result

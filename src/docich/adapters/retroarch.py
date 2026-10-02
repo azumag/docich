@@ -349,15 +349,6 @@ class RetroArchAdapter(Adapter):
                 state = hanjuku_run.observe(runtime_dir, hanjuku_run.runtime_identity(self.ctx.fence),
                                            frame, playing=not paused)
                 try:
-                    from .. import hanjuku_narration
-                    # Side channel only: at most one daemon-thread enqueue,
-                    # never blocking capture, input or terminal evidence.
-                    hanjuku_narration.consider(
-                        self.ctx.g, self.ctx.game, runtime_dir,
-                        terminal=bool(state.get('terminal_reason') or state.get('terminal_candidate')))
-                except Exception:
-                    print('[hanjuku-narration] status=consider_failed', file=sys.stderr)
-                try:
                     from .. import hanjuku_chart_worker
                     # Side channel only: at most one daemon-thread LLM call
                     # for an off-chart request; the bot keeps holding meanwhile.

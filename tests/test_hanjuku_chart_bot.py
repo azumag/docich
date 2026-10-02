@@ -2555,14 +2555,16 @@ def test_summarize_recap_counts_only_the_runs_own_story(tmp_path):
     from docich.hanjuku_commentary import summarize_recap
     rows = [
         {'event': 'decision', 'decision': 'month_seen', 'month': '2-7'},
-        {'event': 'decision', 'decision': 'order_launched'},
-        {'event': 'decision', 'decision': 'order_launched'},
+        {'event': 'decision', 'decision': 'order_start', 'general': 'どうし', 'target': 'ジョンリギ'},
+        {'event': 'decision', 'decision': 'order_launched', 'general': 'どうし', 'target': 'ジョンリギ'},
         {'event': 'decision', 'decision': 'order_launched_unconfirmed'},
+        {'event': 'decision', 'decision': 'battle_result', 'enemy': 'クイーン',
+         'castle': 'けっかい', 'outcome': 'win'},
         {'event': 'decision', 'decision': 'discharge_general'},
         {'event': 'decision', 'decision': 'castle_owned_observed',
          'resulting_event': 'captured:ジョンリギ'},
-        {'event': 'decision', 'decision': 'world_map_owners',
-         'resulting_event': ['captured:ゴーメン', 'lost:ココット']},
+        {'event': 'decision', 'decision': 'castle_lost_observed',
+         'resulting_event': 'lost:ココット'},
         {'event': 'decision', 'chapter': 2},
         {'event': 'action_plan', 'chapter': 5},          # not a decision: ignored
     ]
@@ -2570,11 +2572,18 @@ def test_summarize_recap_counts_only_the_runs_own_story(tmp_path):
         ''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in rows))
     key, text = summarize_recap(tmp_path, {'battles_finished': 42})
     assert key == 'game_over_recap'
-    assert text == ('ゲームオーバー。第2章まで進み、2城を獲得、2回出撃と42回戦闘を重ね、'
-                    '2年7月まで戦いました（将軍の解雇1回）。今回の挑戦はここまでです。')
-    assert len(text) <= 120
+    sentences = text.split('。')
+    assert 4 <= len(sentences) - 1 <= 6
+    assert 'どうし将軍をジョンリギ城へ向かわせる予定' in text
+    assert 'ジョンリギ城への出撃が確認' in text
+    assert 'けっかい城でクイーンとの戦闘は勝利' in text
+    assert 'ココット城の失陥が観測で確認' in text
+    assert '城を勝ち取った' not in text  # battle victory is not castle ownership
+    assert '第2章まで' in text and '2年7月まで' in text
+    assert '戦闘42回' in text and '将軍の解雇1回' in text
+    assert 120 < len(text) <= 1000
     _, bare = summarize_recap(tmp_path, {})
-    assert bare.startswith('ゲームオーバー。')
+    assert '今回の挑戦はここまでです。' in bare
 
 
 def test_recap_body_is_shared_by_chat_summary(tmp_path):
@@ -2583,10 +2592,10 @@ def test_recap_body_is_shared_by_chat_summary(tmp_path):
     (tmp_path / 'hanjuku_decisions.jsonl').write_text(
         json.dumps({'event': 'decision', 'chapter': 4}) + '\n')
     body = recap_body(tmp_path, {})
-    assert body.startswith('第4章まで進み')
-    # 音声 recap はこの共有本文＋定型の頭と尻尾だけ。
+    assert body == '記録では第4章までの経過が確認できます。'
+    # Voice and chat use the same recorded story; voice adds its game-over ending.
     assert summarize_recap(tmp_path, {}) == (
-        'game_over_recap', f'ゲームオーバー。{body}。今回の挑戦はここまでです。')
+        'game_over_recap', f'{body}ゲームオーバー表示で、今回の挑戦はここまでです。')
 
 
 def test_narration_delivers_only_the_game_over_recap_at_terminal(tmp_path, monkeypatch):
@@ -2607,20 +2616,208 @@ def test_narration_delivers_only_the_game_over_recap_at_terminal(tmp_path, monke
     hanjuku_narration.consider(g, Game(), tmp_path, terminal=True, now=now,
                                enqueue=lambda *a, **k: sent.append((a, k)))
     log_path = tmp_path / 'hanjuku_narration.jsonl'
-    for _ in range(100):
-        try:
-            log = [json.loads(x) for x in log_path.read_text().splitlines()]
-        except FileNotFoundError:
-            log = []
-        if len(log) >= 2 and len(sent) >= 1:
-            break
-        time.sleep(0.02)
+    log = [json.loads(x) for x in log_path.read_text().splitlines()]
     statuses = {i['seq']: i['status'] for i in log}
     assert statuses[1] == 'skipped:terminal'          # the ordinary line stays silent
     assert statuses[2] == 'enqueued'
     assert len(sent) == 1
     args, kwargs = sent[0]
-    assert kwargs.get('runtime_fence') is None        # teardown-safe delivery
+    assert kwargs.get('context') == 'hanjuku_terminal'
+    assert kwargs.get('delivery_key', '').startswith('hanjuku-terminal:')
+    assert 'runtime_fence' not in kwargs            # dedicated durable terminal source
+
+
+def test_terminal_delivery_uses_run_receipt_and_precedes_next_opening(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from docich import webui
+    from docich.game_switch import atomic_write_json
+
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g11-terminal',
+                'generation': 11, 'lease_id': 'lease-11'}
+    state_dir = tmp_path / 'state'
+    runtime_dir = tmp_path / 'runtime'
+    soren_root = tmp_path / 'soren'
+    queue = soren_root / 'queue'
+    runtime_dir.mkdir()
+    state_dir.mkdir()
+    soren_root.mkdir()
+    atomic_write_json(runtime_dir / 'hanjuku_run.json',
+                      {**identity, 'terminal_reason': 'game_over'})
+    monkeypatch.setattr('docich.agent.fence.read_canonical', lambda _: {'active': identity})
+    monkeypatch.setenv('COMMENT_QUEUE_DIR', str(queue))
+    g = SimpleNamespace(state_dir=state_dir, repo_root=tmp_path,
+                        webui=SimpleNamespace(soren_root=str(soren_root)))
+    now = time.time()
+    text = '記録された出来事をたどる終了の物語です。' * 6
+    write_candidates(runtime_dir, [{
+        'seq': 1, 'at': now, 'key': 'game_over_recap', 'text': text,
+        'terminal_recap': True, **identity,
+    }])
+
+    selected = hanjuku_narration.consider(g, Game(), runtime_dir, terminal=True, now=now)
+    assert selected['terminal_recap'] is True
+    recap, = queue.glob('*_hanjuku_terminal.txt')
+    assert recap.read_text(encoding='utf-8').strip() == text
+    assert not Path(str(recap) + '.runtime_fence.json').exists()
+
+    # _wait_hanjuku queues this recap before the manager can enqueue the next
+    # corner's opening. Re-observation is idempotent even if state persistence
+    # or the caller's acknowledgement was interrupted.
+    webui._enqueue_audio_text(
+        soren_root, '次のコーナーを始めます。', 'crypto_paper',
+        delivery_key='paper-corner:test-opening',
+    )
+    hanjuku_narration.consider(g, Game(), runtime_dir, terminal=True, now=now + 5)
+    queued = sorted(queue.glob('comment_announce_*.txt'))
+    assert len(queued) == 2
+    assert queued[0] == recap
+    log = [json.loads(line) for line in
+           (runtime_dir / 'hanjuku_narration.jsonl').read_text().splitlines()]
+    assert [record['status'] for record in log].count('enqueued') == 1
+
+
+def test_terminal_delivery_retries_failed_outbox_with_same_run_key(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from docich.game_switch import atomic_write_json
+
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g12-retry',
+                'generation': 12, 'lease_id': 'lease-12'}
+    state_dir = tmp_path / 'state'
+    runtime_dir = tmp_path / 'runtime'
+    state_dir.mkdir()
+    runtime_dir.mkdir()
+    atomic_write_json(runtime_dir / 'hanjuku_run.json',
+                      {**identity, 'terminal_reason': 'game_over'})
+    monkeypatch.setattr('docich.agent.fence.read_canonical', lambda _: {'active': identity})
+    g = SimpleNamespace(state_dir=state_dir)
+    now = time.time()
+    write_candidates(runtime_dir, [{
+        'seq': 1, 'at': now, 'key': 'game_over_recap', 'text': '終端の事実をまとめました。',
+        'terminal_recap': True, **identity,
+    }])
+    attempts = []
+
+    def flaky_enqueue(_g, _text, **kwargs):
+        attempts.append(kwargs['delivery_key'])
+        if len(attempts) == 1:
+            raise OSError('transient outbox failure')
+
+    hanjuku_narration.consider(g, Game(), runtime_dir, terminal=True,
+                               now=now, enqueue=flaky_enqueue)
+    assert attempts[0] == attempts[1]
+    assert attempts[0].startswith('hanjuku-terminal:')
+    log = [json.loads(line) for line in
+           (runtime_dir / 'hanjuku_narration.jsonl').read_text().splitlines()]
+    assert [record['status'] for record in log] == ['delivery_failed', 'enqueued']
+
+
+def test_terminal_candidate_waits_for_confirmed_ending_then_retries(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from docich.game_switch import atomic_write_json
+
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g15-confirmed',
+                'generation': 15, 'lease_id': 'lease-15'}
+    state_dir = tmp_path / 'state'
+    runtime_dir = tmp_path / 'runtime'
+    state_dir.mkdir()
+    runtime_dir.mkdir()
+    run_path = runtime_dir / 'hanjuku_run.json'
+    atomic_write_json(run_path, {**identity, 'terminal_candidate': True})
+    monkeypatch.setattr('docich.agent.fence.read_canonical', lambda _: {'active': identity})
+    sent = []
+    g = SimpleNamespace(state_dir=state_dir)
+    write_candidates(runtime_dir, [{
+        'seq': 1, 'at': time.time(), 'key': 'game_over_recap',
+        'text': '終了確認後に届ける記録です。', 'terminal_recap': True, **identity,
+    }])
+
+    hanjuku_narration.consider(g, Game(), runtime_dir, terminal=True,
+                               enqueue=lambda *a, **k: sent.append((a, k)))
+    assert not sent
+    atomic_write_json(run_path, {**identity, 'terminal_reason': 'game_over'})
+    hanjuku_narration.consider(g, Game(), runtime_dir, terminal=True,
+                               enqueue=lambda *a, **k: sent.append((a, k)))
+    assert len(sent) == 1
+    log = [json.loads(line) for line in
+           (runtime_dir / 'hanjuku_narration.jsonl').read_text().splitlines()]
+    assert [record['status'] for record in log] == [
+        'skipped:terminal_unconfirmed', 'enqueued']
+
+
+def test_terminal_publish_recovers_when_state_ack_fails_after_queue_commit(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from docich import webui
+    from docich.game_switch import atomic_write_json
+
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g14-crash',
+                'generation': 14, 'lease_id': 'lease-14'}
+    state_dir = tmp_path / 'state'
+    runtime_dir = tmp_path / 'runtime'
+    soren_root = tmp_path / 'soren'
+    queue = soren_root / 'queue'
+    state_dir.mkdir()
+    runtime_dir.mkdir()
+    soren_root.mkdir()
+    atomic_write_json(runtime_dir / 'hanjuku_run.json',
+                      {**identity, 'terminal_reason': 'game_over'})
+    monkeypatch.setattr('docich.agent.fence.read_canonical', lambda _: {'active': identity})
+    monkeypatch.setenv('COMMENT_QUEUE_DIR', str(queue))
+    g = SimpleNamespace(state_dir=state_dir, repo_root=tmp_path,
+                        webui=SimpleNamespace(soren_root=str(soren_root)))
+    write_candidates(runtime_dir, [{
+        'seq': 1, 'at': time.time(), 'key': 'game_over_recap', 'text': '固定された終了スナップショットです。',
+        'terminal_recap': True, **identity,
+    }])
+
+    original = hanjuku_narration.atomic_write_json
+    def fail_ack(path, value):
+        delivery_states = value.get(hanjuku_narration.TERMINAL_DELIVERIES_KEY, {})
+        if any(status == 'enqueued' for status in delivery_states.values()):
+            raise OSError('simulated crash before local acknowledgement')
+        return original(path, value)
+
+    monkeypatch.setattr(hanjuku_narration, 'atomic_write_json', fail_ack)
+    with pytest.raises(OSError, match='simulated crash'):
+        hanjuku_narration.consider(g, Game(), runtime_dir, terminal=True)
+    recap, = queue.glob('*_hanjuku_terminal.txt')
+
+    # A different process can enqueue the next opening while the durable
+    # receipt survives. Retrying the frozen terminal candidate reuses its key.
+    webui._enqueue_audio_text(
+        soren_root, '次のコーナーです。', 'crypto_paper',
+        delivery_key='paper-corner:opening-after-crash',
+    )
+    monkeypatch.setattr(hanjuku_narration, 'atomic_write_json', original)
+    hanjuku_narration.consider(g, Game(), runtime_dir, terminal=True)
+    queued = sorted(queue.glob('comment_announce_*.txt'))
+    assert len(queued) == 2 and queued[0] == recap
+
+
+def test_terminal_recap_from_old_generation_is_never_queued(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from docich.game_switch import atomic_write_json
+
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g13-old',
+                'generation': 13, 'lease_id': 'lease-13'}
+    active = {**identity, 'generation': 14, 'runtime_id': 'g14-new', 'lease_id': 'lease-14'}
+    state_dir = tmp_path / 'state'
+    runtime_dir = tmp_path / 'runtime'
+    state_dir.mkdir()
+    runtime_dir.mkdir()
+    atomic_write_json(runtime_dir / 'hanjuku_run.json',
+                      {**identity, 'terminal_reason': 'game_over'})
+    monkeypatch.setattr('docich.agent.fence.read_canonical', lambda _: {'active': active})
+    sent = []
+    write_candidates(runtime_dir, [{
+        'seq': 1, 'at': time.time(), 'key': 'game_over_recap', 'text': '古いrunの記録です。',
+        'terminal_recap': True, **identity,
+    }])
+    hanjuku_narration.consider(SimpleNamespace(state_dir=state_dir), Game(), runtime_dir,
+                               terminal=True, enqueue=lambda *a, **k: sent.append(a))
+    assert not sent
+    log = [json.loads(line) for line in
+           (runtime_dir / 'hanjuku_narration.jsonl').read_text().splitlines()]
+    assert log[-1]['status'] == 'skipped:generation_mismatch'
 
 
 def test_narration_stays_silent_at_terminal_without_a_recap(tmp_path, monkeypatch):

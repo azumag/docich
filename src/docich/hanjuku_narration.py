@@ -26,8 +26,10 @@ from .retroarch_boundary import read_record
 STATE = 'hanjuku_narration.json'
 TAIL_BYTES = 65536
 MAX_TEXT = 120
+TERMINAL_MAX_TEXT = 1000
 RECENT = 32
 PLAN_MAX_AGE_S = 5
+TERMINAL_DELIVERIES_KEY = 'terminal_deliveries'
 _busy = threading.Event()
 
 
@@ -71,7 +73,15 @@ def _item_max_age(item, max_age):
     return min(max_age, PLAN_MAX_AGE_S) if item.get('evidence_kind') == 'plan' else max_age
 
 
-def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age):
+def _terminal_delivery_key(identity: dict) -> str:
+    canonical = json.dumps(
+        {key: identity.get(key) for key in ('game', 'runtime_id', 'generation', 'lease_id')},
+        ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+    )
+    return 'hanjuku-terminal:' + hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+
+
+def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age, *, terminal=False):
     from .agent.fence import AgentFence, FenceLost, check_fence, read_canonical, shared_section
     from .hanjuku_run import load
     from .game_switch import GameSwitchBusyError
@@ -82,15 +92,31 @@ def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age):
 
     def deliver_active():
         # Check briefly under the transition lock; never hold it across
-        # queue I/O. The consumer rechecks identity/expiry before playback.
-        if (identity['game'] != 'hanjuku-hero' or not identity['runtime_id']
-                or type(identity['generation']) is not int or not identity['lease_id']):
+        # ordinary queue I/O. The terminal outbox publish is deliberately
+        # included in the shared section so a new corner cannot enqueue its
+        # opening first.
+        if (identity['game'] != 'hanjuku-hero'
+                or not isinstance(identity['runtime_id'], str) or not identity['runtime_id']
+                or type(identity['generation']) is not int
+                or not isinstance(identity['lease_id'], str) or not identity['lease_id']):
             raise FenceLost('incomplete commentary identity')
-        if time.time() - item['at'] > max_age:
+        if not terminal and time.time() - item['at'] > max_age:
             return 'skipped:stale'
         canonical = read_canonical(g.state_dir)
-        check_fence(AgentFence(**identity), canonical.get('active'))
-        run = load(runtime_dir, identity)
+        active = canonical.get('active') or {}
+        if any(active.get(key) != value for key, value in identity.items()):
+            if terminal:
+                return 'skipped:generation_mismatch'
+            raise FenceLost('commentary runtime identity changed')
+        check_fence(AgentFence(**identity), active)
+        try:
+            run = load(runtime_dir, identity)
+        except Exception:
+            if terminal:
+                return 'skipped:generation_mismatch'
+            raise
+        if terminal and (not run or run.get('terminal_reason') != 'game_over'):
+            return 'skipped:terminal_unconfirmed'
         if not run or ((run.get('terminal_reason') or run.get('terminal_candidate'))
                        and not item.get('terminal_recap')):
             return 'skipped:terminal'
@@ -104,31 +130,42 @@ def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age):
         return 'ready'
 
     try:
-        status = shared_section(g.state_dir, deliver_active, timeout_s=0)
-        if status == 'ready':
-            # The game-over recap is a fixed statement of a finished run:
-            # deliver it without the runtime fence so the queue-side
-            # identity/expiry recheck cannot drop it during teardown.
-            fence = None if item.get('terminal_recap') else {
-                **identity, 'expires_at': item['at'] + max_age}
-            enqueue(g, item['text'], context='hanjuku_commentary', speaker=speaker,
-                    runtime_fence=fence)
-            status = 'enqueued'
+        if terminal:
+            def publish_terminal():
+                status = deliver_active()
+                if status != 'ready':
+                    return status
+                enqueue(g, item['text'], context='hanjuku_terminal', speaker=speaker,
+                        delivery_key=_terminal_delivery_key(identity))
+                return 'enqueued'
+
+            # Bounded shared lock + nonblocking receipt lock: a contention
+            # leaves the immutable candidate available for the next observer.
+            status = shared_section(g.state_dir, publish_terminal, timeout_s=0)
+        else:
+            status = shared_section(g.state_dir, deliver_active, timeout_s=0)
+            if status == 'ready':
+                fence = {**identity, 'expires_at': item['at'] + max_age}
+                enqueue(g, item['text'], context='hanjuku_commentary', speaker=speaker,
+                        runtime_fence=fence)
+                status = 'enqueued'
     except FenceLost:
-        status = 'skipped:fence_lost'
+        status = 'skipped:generation_mismatch' if terminal else 'skipped:fence_lost'
     except GameSwitchBusyError:
         status = 'skipped:switch_busy'
     except Exception:
         # No exception text: queue errors can carry private payloads.
         status = 'delivery_failed'
     finally:
-        _busy.clear()
+        if not terminal:
+            _busy.clear()
     try:
         append_log(runtime_dir, 'hanjuku_narration', {
             'schema': 1, 'at': time.time(), 'seq': item['seq'], 'key': item.get('key'),
             'status': status, 'text': item['text'], **identity})
     except Exception:
         pass
+    return status
 
 
 def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=None):
@@ -153,18 +190,21 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=No
             return None              # another observer is handling it
         state = read_record(runtime_dir / STATE) or {}
         last_seq = int(state.get('last_seq', 0))
-        new = [i for i in _tail(runtime_dir / 'hanjuku_commentary.jsonl') if i['seq'] > last_seq]
-        if not new:
+        all_items = _tail(runtime_dir / 'hanjuku_commentary.jsonl')
+        new = [i for i in all_items if i['seq'] > last_seq]
+        if not new and not terminal:
             return None
-        state['last_seq'] = max(i['seq'] for i in new)
+        if new:
+            state['last_seq'] = max(i['seq'] for i in new)
+        ordinary_new = [item for item in new if not item.get('terminal_recap')]
         results = []
         chosen = None
-        for item in reversed(new):   # newest first; older ones are dropped
+        for item in reversed(ordinary_new):   # newest first; older ones are dropped
             text = item.get('text')
             reason = None
             if not text:
                 reason = 'held'
-            elif terminal and not item.get('terminal_recap'):
+            elif terminal:
                 reason = 'terminal'
             elif chosen is not None:
                 reason = 'superseded'
@@ -188,6 +228,59 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=No
             append_log(runtime_dir, 'hanjuku_narration', {
                 'schema': 1, 'at': now, 'seq': item['seq'], 'key': item.get('key'),
                 'status': status, 'text': item.get('text')})
+        if terminal:
+            # Terminal recaps are selected by immutable run identity, not by
+            # the ordinary commentary sequence cursor. Failed writes can
+            # therefore retry after a restart; the durable outbox receipt
+            # makes a post-publish retry a no-op.
+            candidate = next((item for item in reversed(all_items)
+                              if item.get('terminal_recap')), None)
+            terminal_done = state.get(TERMINAL_DELIVERIES_KEY)
+            if not isinstance(terminal_done, dict):
+                terminal_done = {}
+                state[TERMINAL_DELIVERIES_KEY] = terminal_done
+            delivery_key = _terminal_delivery_key({
+                key: candidate.get(key) if candidate else None
+                for key in ('game', 'runtime_id', 'generation', 'lease_id')
+            }) if candidate else None
+            prior = terminal_done.get(delivery_key) if delivery_key else None
+            if candidate and prior not in {'enqueued', 'skipped:generation_mismatch',
+                                           'skipped:too_long'}:
+                text = candidate.get('text')
+                if not isinstance(text, str) or not text.strip() or len(text) > TERMINAL_MAX_TEXT:
+                    status = 'skipped:too_long'
+                    terminal_done[delivery_key] = status
+                    append_log(runtime_dir, 'hanjuku_narration', {
+                        'schema': 1, 'at': now, 'seq': candidate.get('seq'),
+                        'key': candidate.get('key'), 'status': status, 'text': text,
+                        **{key: candidate.get(key) for key in ('game', 'runtime_id', 'generation', 'lease_id')},
+                    })
+                else:
+                    # Commit ordinary cursor movement before the terminal
+                    # publish. If this process dies after queue publication,
+                    # candidate scanning is independent and the same key
+                    # reconciles against the existing receipt.
+                    atomic_write_json(runtime_dir / STATE, state)
+                    if enqueue is None:
+                        from .trading.soren_output import enqueue_hanjuku_terminal as enqueue
+                    # A busy switch or briefly held durable-outbox lock must
+                    # not drop the only terminal result before the corner
+                    # advances. Retry a few times with short bounded waits;
+                    # the stable run key makes a post-publish retry harmless.
+                    for attempt in range(3):
+                        status = _deliver(g, runtime_dir, candidate, cfg['speaker'], enqueue,
+                                          cfg['max_age_s'], terminal=True)
+                        if status not in {'delivery_failed', 'skipped:switch_busy'} or attempt == 2:
+                            break
+                        time.sleep(0.05 * (attempt + 1))
+                    if status in {'enqueued', 'skipped:generation_mismatch'}:
+                        terminal_done[delivery_key] = status
+            atomic_write_json(runtime_dir / STATE, state)
+            for item, status in reversed(results):
+                append_log(runtime_dir, 'hanjuku_narration', {
+                    'schema': 1, 'at': now, 'seq': item['seq'], 'key': item.get('key'),
+                    'status': status, 'text': item.get('text')})
+            return candidate
         if chosen:
             digest = hashlib.sha256(chosen['text'].encode()).hexdigest()[:16]
             state.update(last_at=now, last_key=chosen.get('key'),

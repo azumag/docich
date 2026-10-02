@@ -1618,13 +1618,16 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
             "bot_identity": identity,
             "end_reason": "manual_forced_stop",
         }
-        # 数値は decision log / run state から算出 (recap と同内容)、
-        # 終了理由は末尾の一文。
-        self.assertEqual(
-            mgr._end_result_text(state, self.now_value),
-            "第3章まで進み、1城を獲得、1回出撃と7回戦闘を重ね、2年7月まで戦いました"
-            "（将軍の解雇1回）。セーブ失敗による強制終了で、今回の挑戦はここまでです。",
-        )
+        # Progress remains grounded in the decision log/run state and the
+        # closing still reflects the actual corner end reason.
+        result = mgr._end_result_text(state, self.now_value)
+        self.assertIn("第3章まで", result)
+        self.assertIn("2年7月まで", result)
+        self.assertIn("出撃1回", result)
+        self.assertIn("戦闘7回", result)
+        self.assertIn("1城の獲得記録", result)
+        self.assertIn("将軍の解雇1回", result)
+        self.assertTrue(result.endswith("セーブ失敗による強制終了で、今回の挑戦はここまでです。"))
         state["end_reason"] = "game_over"
         self.assertTrue(
             mgr._end_result_text(state, self.now_value).endswith(
