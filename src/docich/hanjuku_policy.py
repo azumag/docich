@@ -719,7 +719,8 @@ def _tactics(mem, step):
     A carried card reuses every verified base tactic for that card (its enemy
     and timing), re-keyed to this step. A card with no verified tactic uses the
     explicit default: once at the battle opening, the same mechanism and
-    evidence guards as a retry's opening cards. Only cards the sortie actually
+    evidence guards as a retry's opening cards. An added strong-card kit is
+    handled only by its strong-only tactic below. Only cards the sortie actually
     carried count (``_deploy_cards``): a card left behind at card select must
     never be planned or announced in battle (g438 04:18: the bot opened the
     card menu for ミックミー after the sortie had dropped it). A boss-castle
@@ -729,6 +730,7 @@ def _tactics(mem, step):
     base = chart.tactics(mem.get('chapter') or 0)
     order = _order_for_step(mem, step)
     rare_kit = (mem.get('rare_card_kit') or {}).get(step)
+    strong_kit = None if rare_kit is not None else (mem.get('strong_card_kit') or {}).get(step)
     rare = ()
     carried = None
     if rare_kit is not None and order:
@@ -748,7 +750,9 @@ def _tactics(mem, step):
     override = set() if rare_kit is not None else set((mem.get('card_override') or {}).get(step) or ())
     if carried is None:
         carried = _deploy_cards(order, mem)
-    carried = [card for card in carried if card not in override and not (rare and card == 'キャトルミュー')]
+    carried = [card for card in carried
+               if card not in override and card != strong_kit
+               and not (rare and card == 'キャトルミュー')]
     derived, seen = [], set()
     occurrences = {}
     spent = (mem.get('kit_spent') or {}).get(step, [])
@@ -3659,17 +3663,22 @@ def _entered_battle_successor(mem, cur, b):
 def _strong_cards_carried(mem, cur):
     """この戦闘で実際に携行している強い切り札(消費・破棄済みは除く)。
 
-    札一覧に無い札を開くと空の一覧で止まる (g438 04:18) ので、携行実績
-    (``_deploy_cards``) に残っている札だけを戦術にしない。
+    計画は携行実績ではない。出撃確認の読めた札一覧だけを正本にし、
+    この出撃で消費済みのコピーを差し引いてから戦術にする。
     """
     step = cur.get('step')
     kit = (mem.get('strong_card_kit') or {}).get(step)
     if not kit or not step:
         return []
-    order = _order_for_step(mem, step)
-    if order is None:
+    context = (mem.get('order_context') or {}).get(step) or {}
+    observed = (context.get('observed_metric') or {}).get('cards')
+    if not isinstance(observed, list):
         return []
-    return [kit] if kit in _deploy_cards(order, mem) else []
+    carried = list(observed)
+    for card in (mem.get('kit_spent') or {}).get(step) or ():
+        if card in carried:
+            carried.remove(card)
+    return [kit] if kit in carried else []
 
 
 def _strong_enemy(mem, cur):
