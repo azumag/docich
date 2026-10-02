@@ -243,6 +243,17 @@ def _gated_real_consumer_wrapper(tmp_path):
         "spec = importlib.util.spec_from_file_location('weather_audio_consumer', os.environ['WEATHER_HELPER_PATH'])\n"
         "consumer = importlib.util.module_from_spec(spec)\n"
         "spec.loader.exec_module(consumer)\n"
+        "class TestOnlyProcessGroupPermissionDenied(PermissionError): pass\n"
+        "real_killpg = consumer.os.killpg\n"
+        "def marked_killpg(pid, sig):\n"
+        "    try:\n"
+        "        return real_killpg(pid, sig)\n"
+        "    except PermissionError as exc:\n"
+        "        Path(os.environ['WEATHER_TEST_PERMISSION_MARKER']).write_text(\n"
+        "            'TestOnlyProcessGroupPermissionDenied', encoding='utf-8')\n"
+        "        raise TestOnlyProcessGroupPermissionDenied(\n"
+        "            'test observed process-group stop denial') from exc\n"
+        "consumer.os.killpg = marked_killpg\n"
         "monitor = consumer._monitor_runtime_matches\n"
         "def gated_monitor(canonical, request):\n"
         "    ready = Path(os.environ['WEATHER_MONITOR_READY'])\n"
@@ -436,6 +447,8 @@ def test_restore_waits_for_pinned_consumer_stop_ack_after_lost_response_and_resu
     monkeypatch.setenv("WEATHER_HELPER_PATH", str(helper))
     monkeypatch.setenv("WEATHER_MONITOR_READY", str(ready))
     monkeypatch.setenv("WEATHER_MONITOR_RELEASE", str(release))
+    permission_marker = tmp_path / "consumer-stop-permission.marker"
+    monkeypatch.setenv("WEATHER_TEST_PERMISSION_MARKER", str(permission_marker))
     port = SorenWeatherAudioPort(
         wrapper.parent.parent, g.state_dir, queue_dir=queue,
         timeout_s=2, interrupt_wait_s=0.12,
@@ -519,11 +532,14 @@ def test_restore_waits_for_pinned_consumer_stop_ack_after_lost_response_and_resu
 
         release.write_text("release", encoding="utf-8")
         stdout, stderr = player.communicate(timeout=5)
-        if player.returncode == 1:
+        if (player.returncode == 1 and permission_marker.is_file()
+                and permission_marker.read_text(encoding="utf-8") == "TestOnlyProcessGroupPermissionDenied"):
             state = port._get_quiescence(request["item_key"])
             assert state["quiescent"] is False
             canonical, _missing = store.canonical.load()
             assert canonical["active"]["game"] == "weather-view"
+            if os.environ.get("WEATHER_TEST_REQUIRE_PROCESS_GROUP_STOP") == "1":
+                pytest.fail("CI forbids skipping after an observed process-group stop PermissionError")
             pytest.skip("sandbox denied process-group stop; GameSwitch restore stayed blocked")
         assert player.returncode == 74, stderr or stdout
         assert port._get_quiescence(request["item_key"])["quiescent"] is True
