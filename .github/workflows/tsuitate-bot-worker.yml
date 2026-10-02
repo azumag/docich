@@ -28,8 +28,10 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
-      - name: Install Wrangler and its local runtime
+      - name: Install Cloudflare CLI and local runtime dependencies
         run: npm install --no-audit --no-fund
+      - name: Build Cloudflare Worker without deploying
+        run: ./node_modules/.bin/cf build
       - name: Run protocol fixtures and local workerd integration checks
         run: |
           node --version

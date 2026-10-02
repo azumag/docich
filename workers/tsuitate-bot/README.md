@@ -16,7 +16,7 @@ SQLite-backed Durable Objectを保存先に使います。D1や外部DBは使い
 
 ## ローカル検証と起動
 
-Node.js 20以降を用意します。`npm test`はNodeの`node:test`とDurable Objectの`MemoryStorage` mockを使います。mockは値をstagingしてcallback成功後にcommitし、transactionを直列化しますが、rollbackを検証するfault-injectionテストはありません。
+Node.js 22.18以降、npm、Cloudflare CLI `cf` 1.0.0-beta.12を用意します。依存関係には `cf` と、CfのWorker build/runtime要件を満たすWrangler 4.136以降を宣言しています。`npm test`はNodeの`node:test`、`cf/config`の静的設定、Durable Objectの`MemoryStorage` mockを使います。mockは値をstagingしてcallback成功後にcommitし、transactionを直列化しますが、rollbackを検証するfault-injectionテストはありません。
 
 ```sh
 cd workers/tsuitate-bot
@@ -28,24 +28,20 @@ npm run test:workerd
 
 この検証環境のグローバルWrangler 4.119.0/workerdは設定日付`2026-09-21`を拒否し、対応可能な最新日として`2026-08-08`を返しました。ローカルではその日付へoverrideして4つのfixtureが成功しています。一方、GitHub Actionsは通常のnpm installで得たWranglerを使い、overrideなしで設定日付`2026-09-21`のまま4つすべて成功しました。ローカルにあるruntimeとnpm取得版の差はこのように確認できましたが、本番Cloudflare環境の動作は未検証です。
 
-ローカルWorkerを起動する場合はWranglerをインストールし、`wrangler.toml` の `BOT_ID` を手元のBot IDへ置き換えます。`.dev.vars` を作成し、ローカル用の `WEBHOOK_SECRET` を自分で設定してから起動してください。
+Cloudflare CLIでWorkerをローカル起動する場合は、`.dev.vars` にローカル専用の `BOT_ID` と `WEBHOOK_SECRET` を自分で設定し、次を実行します。値はコードへ書かず、このファイルをGitへ追加しないでください。
 
 ```sh
 npm install
-# .dev.vars に WEBHOOK_SECRET を設定（このファイルはGit管理外）
-npm run dev
+# .dev.vars にローカル専用の値を設定（このファイルはGit管理外）
+npm run dev:cf
 ```
 
-`wrangler dev` はローカルシミュレーションを使います。`wrangler deploy` はこの手順に含めません。
+`dev:cf` は `cf dev --local` を使い、`.wrangler/cf-local` へローカル状態を保存します。`cf deploy` はこの手順に含めません。
 
 ## Cloudflare設定
 
-- `wrangler.toml` は `GameState` のSQLite Durable Object bindingと初回migrationを記述します。migrationは実デプロイ時に初めてCloudflare側へ適用されます。
-- `BOT_ID` はWorker変数、`WEBHOOK_SECRET` はWrangler Secretとして設定します。Secretをソース、ログ、Issue、PRへ書かないでください。
+- `cloudflare.config.ts` をCfの明示的なプロジェクト設定とし、`GameState` のSQLite Durable Object exportと `GAME_STATE` bindingを宣言します。Cf移行時に生成した `wrangler.config.ts` では型生成を無効にしています。旧 `wrangler.toml` はレビュー用に保持しており、Cloudflareリソースへは適用していません。
+- `BOT_ID` は差し替え用placeholder、`WEBHOOK_SECRET` は値を含まないSecret binding宣言です。実値をソース、ログ、Issue、PRへ書かないでください。ローカル値はGit管理外の`.dev.vars`、将来の本番Secretは別途ユーザーが設定します。
 - 実Cloudflareリソースの作成、デプロイ、Secret設定、サイト `https://tsuitateviewer.web.app/` へのBot登録、実対局はまだ行っていません。
 
-将来のSecret設定コマンドは、アカウントと対象Workerを確認したあとに実行してください。
-
-```sh
-npx wrangler secret put WEBHOOK_SECRET
-```
+この構成ではCloudflareの実アカウントへ接続せず、fixtureとローカルworkerd統合テストを実行できます。ローカルの `cf build` は、環境のWrangler 4.119.0が必要な4.136.0未満で、npmレジストリも名前解決できず未検証です。一方、PR #1550のコード・設定commit `fda7ff4` は [Cloudflare Worker CI run 37054256586](https://github.com/azumag/docich/actions/runs/37054256586) で依存のインストール、`cf build`、fixture、workerd統合テストが成功しました。このrunのbuildログは `Build complete` を示しますが、生成物はartifactとして保存されていません。`test/cloudflare-config.test.js` は `GameState` のSQLite exportとself `GAME_STATE` bindingの設定形を検証し、Worker entrypointのexportテストも通過していますが、ビルド後bundleそのものは直接確認していません。4つのworkerd統合テストは `wrangler.runtime.toml` のtest-only Worker/configで実行し、Cf buildの生成物は使用しません。CIのbuild成功はCloudflareへのdeployや実アカウント上の動作を示すものではありません。
