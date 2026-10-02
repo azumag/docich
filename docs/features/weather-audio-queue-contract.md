@@ -7,7 +7,7 @@
 ## 使用する既存consumer API
 
 このPRはconsumer変更PR [#558](https://github.com/azumag/soviet_now/pull/558) のhead
-`3794a6661c4396c647f38d6b789fc42a91df9458` をsubmoduleでpinし、weather専用の
+`b5ffca79243bf52c35602b1d1b0b61d280864524` をsubmoduleでpinし、weather専用の
 `lib/weather_audio_consumer.py` がある。旧`enqueue_audio_text`/本文MD5 dedup/Hanjuku-only fenceは流用しない。
 producerは`enqueue`, `get`, `interrupt`, `quiescence` CLIを呼び、consumerのweather-specific durable receiptと既存
 `_play_comment_queue` / `say_enqueue.sh` owned player boundaryを使う。Hanjuku・他コメントの動作は変更しない。

@@ -118,7 +118,7 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
    原稿は`weather.narration(view)`の13 literal lineをその順で使い、出典・対象日・地点別発表時刻・
    全11地点report digestをitem requestへ保持する。LLMや独自予測を使わない。
 4. producerはconsumer変更PR [#558](https://github.com/azumag/soviet_now/pull/558) のhead
-   `3794a6661c4396c647f38d6b789fc42a91df9458` をsubmoduleでpinして
+   `b5ffca79243bf52c35602b1d1b0b61d280864524` をsubmoduleでpinして
    `lib/weather_audio_consumer.py`を使う。item keyは実行UUIDとordinalから作り、
    完全requestをweather owner stateへ先に保存する。最大1項目だけqueueへ置き、再開時は先に
    durable receiptを照会する。同じitemのretryは同一payload/keyに限定し、consumerの永続冪等性に
@@ -135,9 +135,8 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
 
 ## 検証記録
 
-- Producer/lifecycle回帰は387 passed、13 deselected、10 subtests passed。13件のloopback HTTP testsはこのsandboxの`PermissionError: [Errno 1] Operation not permitted`でbindできず、CIで確認する。
-- 追加した`tests/test_weather_corner.py`, `tests/test_weather_audio_contract.py`, `tests/test_soren_weather_audio.py`のfocused runは60 passed。
-- Pinned `soviet_now` consumer suiteは22 passed、3 subtests passed。temporary queue/GameSwitchとdummy playerを使い、実TTS/audio workerを呼ばない。
+- weather/audio focused regressionは62 passed、1 skipped。skipはsandboxがowned process-group停止を拒否したため、quiescence=falseとGameSwitch restore保留を確認したケース。
+- `soviet_now` consumer suiteは22 passed、2 skipped、3 subtests passed。2件のprocess-group回帰は拒否時にstop ackがfalseのままなのを確認してskipし、通常のprocess回帰はGitHub CIで確認する。
 - Pinned consumerに対するisolated CLI smokeでenqueue/get/interruptを確認し、`queued` → `queued` → `rejected`を得た。queueは一時ディレクトリで、audio worker/TTSは起動していない。
 - Python compileと`git diff --check`は成功。
 - 現行JMA全国11地点一括取得、実VM、実OBS、実音声、実GameSwitch復帰は未実測。
