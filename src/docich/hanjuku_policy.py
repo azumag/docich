@@ -358,8 +358,8 @@ NAV_STILL_LIMIT = 3                   # pressed frames with no motion before dis
 def _nav_stuck(screen, mem, world, s):
     """Distrust a cell that pressing no longer changes.
 
-    g401 21:31: one roof at the top-left (ほんじょう) was voted as ジョンリギ, so
-    the cell said ほんじょう was below; the cursor sat pinned at the map's
+    g401 21:31: one roof at the top-left (the home castle) was voted as ジョンリギ, so
+    the cell said アルマムーン was below; the cursor sat pinned at the map's
     bottom-right corner on open sea and "down" was pressed for 16 minutes.
     When neither the screen cursor nor the cell moves across pressed frames,
     drop to the inland search, which only re-anchors on two or more roofs.
@@ -1404,7 +1404,7 @@ def world_map_step(screen, mem, frame):
         # きかん opens a whole-island picker (chapter 1 and 2, isolated probe
         # 2026-09-29): the R ring starts on the home castle, A selects it and a
         # second A confirms; the general then walks back home (measured: the
-        # hero turned from キカンドン towards ほんじょう). Y does not close it.
+        # hero turned from キカンドン towards アルマムーン). Y does not close it.
         chapter = mem.get('chapter') or 0
         cursor = world_cursor(frame) if frame is not None else None
         flags = world_flags(frame, chapter)
@@ -1506,7 +1506,7 @@ def _apply_world_flags(mem, flags):
 # cursor - a white dashed ring on the map, gold-cornered G while choosing a
 # sortie target - centred at cell/8 + offset; the D-pad moves it 0.5 px per
 # frame and A returns with the map cursor (or target marker) on that cell.
-# Jumps to キカンドン, ジョンリギ, スペンソニア and ほんじょう landed 4-9 px from
+# Jumps to キカンドン, ジョンリギ, スペンソニア and アルマムーン landed 4-9 px from
 # each roof, and the target marker 5 px from キカンドン's roof. Roof-based
 # cursor motion was the source of most mis-sorties (lone-roof mix-ups,
 # edge-scroll drift of ~60 px), so far goals go through Y instead.
@@ -1723,8 +1723,8 @@ def _roof_under_cursor(screen, frame) -> bool:
 def _hold_off_castle(screen, mem, order) -> bool:
     """Refuse A when the estimate says "on the source" but no roof is there.
 
-    A lone roof is ambiguous: g401 21:31 and g405 00:26 voted ほんじょう's roof
-    as another castle, so the cell said "on ほんじょう" while the cursor was on
+    A lone roof is ambiguous: g401 21:31 and g405 00:26 voted アルマムーン's roof
+    as another castle, so the cell said "on アルマムーン" while the cursor was on
     open sea; three A presses failed the chart's 1-C1 for good. Distrust the
     cell and search inland (anchoring on 2+ roofs). Bounded per order.
     """
@@ -2841,10 +2841,14 @@ def _name_read_cleanly(line, name) -> bool:
             and cells.get(span + 8 * len(name)) != UNKNOWN)
 
 
-# Chart label -> the name ステータス shows. Chapter 1's home is labelled
-# ほんじょう in the chart but the game names it アルマムーン (g436 21:19: every
-# home sortie was refused as "the wrong castle" and 1-A1/1-V1 failed).
-STATUS_NAMES = {'ほんじょう': 'アルマムーン'}
+# Chart label -> the name ステータス shows. Chapter 1's home castle is
+# アルマムーン in the game and in this chart; it used to be labelled ほんじょう
+# here, which sent every home sortie through a name check and switched the
+# chapter detector (g436 21:19: every home sortie refused as "the wrong
+# castle", 1-A1/1-V1 failed; g436 21:33: a defense of アルマムーン advanced a
+# chapter 1 game to chapter 2). The labels now equal the on-screen names, so
+# this map is empty; it stays for a genuine future alias.
+STATUS_NAMES: dict[str, str] = {}
 CASTLE_STATUS = re.compile(r'(?:しゅつげき)?([^\ufffd\s]+?)じょうステータスしゅうにゅう')
 
 
@@ -4852,9 +4856,10 @@ def observe_chapter_castle(mem, castle):
     if not castle or not chapter:
         return
     here = set(chart.CASTLE_NAMES.get(chapter, ())) | {chart.home_castle(chapter), chart.boss_castle(chapter)}
-    # The home castle is アルマムーン in every chapter; chapter 1's chart only
-    # labels it ほんじょう (g436 21:33: a defense of アルマムーン in chapter 1
-    # switched the bot to chapter 2 cells and parked the cursor at sea).
+    # The home castle is アルマムーン in every chapter (あるまむーん in 8), and the
+    # chart now labels it the same way, so it can never read as "only the next
+    # chapter has it" (g436 21:33: a defense of アルマムーン in chapter 1 advanced
+    # the bot to chapter 2 cells and parked the cursor at sea).
     here |= {STATUS_NAMES.get(label, label) for label in here}
     if castle in here:
         return
@@ -4887,7 +4892,12 @@ def observe_chapter_general(mem, general):
 
 
 def _castle_label(mem, name):
-    """The chart label for a castle name read from a message (アルマムーン -> ほんじょう in chapter 1)."""
+    """The chart label for a castle name read from a message.
+
+    The chart uses the game's own names, so this is the identity unless
+    ``STATUS_NAMES`` holds a genuine alias; it existed because chapter 1's
+    home castle was read as アルマムーン while the chart said ほんじょう.
+    """
     cells = chart.castles(mem.get('chapter') or 0)
     if name in cells:
         return name
@@ -6111,7 +6121,7 @@ def yes_no_step(screen: Screen, mem):
 
 
 def _repair_home_alias_failures(mem):
-    """Undo order failures caused by the ほんじょう/アルマムーン name check (v53-v59).
+    """Undo order failures caused by the home castle chart/screen name check (v53-v59).
 
     g436 (21:19): the status check refused chapter 1's home castle as a
     mismatch three times per order and failed 1-A1, 1-V1, 1-C1... before any
@@ -6135,7 +6145,7 @@ def _repair_home_alias_failures(mem):
     if restored:
         mem['active'] = None
         _record(mem, 'orders_restored', observed_metric=restored,
-                reason='本城の城名確認の誤判定（ほんじょう/アルマムーン）で失敗扱いになった指示を未実行に戻す')
+                reason='本城の城名確認の誤判定（旧チャートラベルと画面実名の不一致）で失敗扱いになった指示を未実行に戻す')
 
 
 def observe_events(screen: Screen, mem):

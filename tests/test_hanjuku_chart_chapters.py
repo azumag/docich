@@ -23,7 +23,7 @@ def test_chapter_one_orders_are_fully_measured():
     assert chart.orders(1) == chart.CHAPTER_1_ORDERS
     for order in chart.orders(1):
         assert order['source'] in castles and order['target'] in castles
-    assert chart.home_castle(1) == 'ほんじょう'
+    assert chart.home_castle(1) == 'アルマムーン'
     assert chart.boss_castle(1) == 'けっかい'
 
 

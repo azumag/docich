@@ -62,7 +62,7 @@ def test_g510_main_menu_return_is_wired_into_decide(monkeypatch):
 def successor_memory():
     return {'chapter': 1, 'captured': [],
         'battle': {'ally': 'ガスパチョ', 'enemy': 'シナモン', 'ally_hp': 17,
-                   'enemy_hp': 0, 'side': 'defense', 'castle': 'ほんじょう', 'away': 1,
+                   'enemy_hp': 0, 'side': 'defense', 'castle': 'アルマムーン', 'away': 1,
                    'cards_used': [], 'card_consumption_complete': True},
         'attack': {'general': policy.NAME, 'castle': 'ゴーメン', 'side': 'attack', 'step': None}}
 

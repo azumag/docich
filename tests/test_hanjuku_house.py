@@ -160,7 +160,7 @@ def test_wrong_general_status_does_not_confirm_repair():
 
 
 def test_castle_repair_will_not_empty_even_one_of_many_owned_castles():
-    mem = memory('castle_pick', source='ほんじょう')
+    mem = memory('castle_pick', source='アルマムーン')
     c = Canvas()
     c.text(64, 31, 'しゅつげき')
     c.text(64, 47, 'ステータス')
@@ -299,7 +299,7 @@ def test_insufficient_funds_uses_unaffordable_option_in_forced_house_list():
 
 
 def test_castle_path_selects_the_named_nonhero_without_substitution():
-    mem = memory('castle_pick', source='ほんじょう')
+    mem = memory('castle_pick', source='アルマムーン')
     c = Canvas()
     c.text(64, 31, 'しゅつげき')
     c.text(64, 47, 'ステータス')
@@ -427,7 +427,7 @@ def test_return_does_not_confirm_enemy_castle():
     mem = memory('return_view')
     screen = Screen([], None, '', kind='world_map')
     with patch.object(p, 'world_cursor', return_value=(127, 150)), \
-            patch.object(p, 'world_flags', return_value={'ほんじょう': 'enemy'}):
+            patch.object(p, 'world_flags', return_value={'アルマムーン': 'enemy'}):
         assert house.step(screen, mem, None) == [p.pad('right')]
 
 
@@ -456,8 +456,8 @@ def test_nonhero_uses_selected_roster_jump_then_requires_named_unit_status():
 
 
 def test_castle_view_tolerates_measured_ring_jitter_before_roof_and_name_checks():
-    mem = memory('castle_view', source='ほんじょう')
-    x, y = house._castle_view(mem, 'ほんじょう')
+    mem = memory('castle_view', source='アルマムーン')
+    x, y = house._castle_view(mem, 'アルマムーン')
     with patch.object(p, 'world_cursor', return_value=(x, y + 0.9)), patch.object(p, 'world_flags', return_value={}):
         assert house.step(Screen([], None, '', kind='world_map'), mem, None) == [p.pad('a')]
     assert mem['house']['phase'] == 'castle_open'
@@ -593,12 +593,12 @@ def test_newer_departure_or_expired_observation_still_blocks_repair():
 
 
 def test_fresh_castle_recheck_does_not_allow_a_sole_defender_to_leave():
-    mem = memory('castle_pick', general='どうし', source='ほんじょう')
+    mem = memory('castle_pick', general='どうし', source='アルマムーン')
     mem['house_eggs'] = {'どうし': {'general': 'どうし', 'location': 'castle',
                                    'observed_tick': 499, 'observed_chapter': 1, 'month': '2-6'}}
     screen = Screen([], None, '', kind='general_list')
     with patch.object(p, '_present_generals', return_value=['どうし']), \
-            patch.object(p, '_owned', return_value={'ほんじょう'}):
+            patch.object(p, '_owned', return_value={'アルマムーン'}):
         actions = house.step(screen, mem, Canvas().frame())
     assert actions != [p.pad('a')]
     assert mem['house']['phase'] == 'close'
@@ -622,7 +622,7 @@ def test_house_finish_closes_stale_bookkeeping_sorties():
     mem['sorties'] = {
         'HOUSE_OUT:9': {'general': 'ゼウス', 'target': None, 'status': 'en_route',
                         'purpose': 'house', 'tick': 9},
-        'HOUSE:10': {'general': 'ゼウス', 'target': 'ほんじょう', 'status': 'en_route',
+        'HOUSE:10': {'general': 'ゼウス', 'target': 'アルマムーン', 'status': 'en_route',
                      'purpose': 'move', 'tick': 10},
         'A:ce:J2': {'general': 'ヴィーナス', 'target': 'ナキューメラ', 'status': 'en_route',
                     'purpose': 'sortie', 'tick': 11},

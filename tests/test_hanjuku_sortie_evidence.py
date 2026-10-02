@@ -805,20 +805,20 @@ def test_empty_general_list_without_hand_is_not_misread_as_castle_menu():
 
 
 def empty_list_memory():
-    # 1-C1 is a non-boss order sourced from ほんじょう (empty-list recovery path).
+    # 1-C1 is a non-boss order sourced from アルマムーン (empty-list recovery path).
     return {'chapter': 1, 'active': '1-C1', 'variant': 'chart',
             'orders': {'1-C1': 'pending'}, 'picked': []}
 
 
 def test_empty_general_list_falls_back_to_home_source_instead_of_silent_hold():
-    mem = empty_list_memory()  # 1-C1 sources from ほんじょう when not overridden;
+    mem = empty_list_memory()  # 1-C1 sources from アルマムーン when not overridden;
     # simulate a non-home source so the fallback must redirect.
-    # Base chart source is ほんじょう; force a routed source for the assertion.
+    # Base chart source is アルマムーン; force a routed source for the assertion.
     screen = empty_general_list_screen()
-    # With source already ほんじょう the first empty observation still installs
+    # With source already アルマムーン the first empty observation still installs
     # the override and closes the menus (same as any missing general).
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['source_override']['1-C1'] == 'ほんじょう'
+    assert mem['source_override']['1-C1'] == 'アルマムーン'
     assert mem['active'] is None and mem['orders']['1-C1'] == 'pending'
     assert mem['_records'][-1]['decision'] == 'order_source_changed'
     assert not mem.get('general_override')
@@ -826,7 +826,7 @@ def test_empty_general_list_falls_back_to_home_source_instead_of_silent_hold():
 
 def test_empty_general_list_after_home_fallback_fails_the_order_with_evidence():
     mem = empty_list_memory()
-    mem['source_override'] = {'1-C1': 'ほんじょう'}
+    mem['source_override'] = {'1-C1': 'アルマムーン'}
     screen = empty_general_list_screen()
     assert policy.deploy_step(screen, mem) == [policy.pad('b')]
     assert mem['orders']['1-C1'] == 'failed' and mem['active'] is None

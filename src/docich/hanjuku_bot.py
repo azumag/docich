@@ -190,7 +190,12 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     from . import hanjuku_experience as experience_module
     from . import hanjuku_policy as policy
     from . import hanjuku_house
+    from . import hanjuku_chart
     from .hanjuku_screen import parse
+    # State written before the castle-label rename still names chapter 1's home
+    # castle ほんじょう. Rename it here, before anything reads or writes it, so
+    # garrison keys, order sources and free-text notes all match the chart.
+    hanjuku_chart.migrate_legacy_labels(state)
     phase=classify(frame)
     step=int(state.get('step',0))+1
     phase_step=int(state.get('phase_step',0))+1 if state.get('phase')==phase else 1

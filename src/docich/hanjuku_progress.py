@@ -46,6 +46,8 @@ def policy_cleared(policy):
         return 0
     evidence = policy.get('chapter_evidence')
     # Legacy home-alias migration incorrectly labelled chapter 1 as chapter 2.
+    # ほんじょう is the chart label older builds persisted for the home castle;
+    # kept so a memory written before the rename still reports no clear.
     if (not isinstance(evidence, str) or not evidence
             or evidence in {'reverted_home_name', 'アルマムーン', 'あるまむーん', 'ほんじょう'}):
         return None

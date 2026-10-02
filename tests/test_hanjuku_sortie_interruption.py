@@ -12,8 +12,8 @@ from docich.hanjuku_font import TextLine, UNKNOWN
 
 def memory():
     return {'chapter': 1, 'active': '1-A2', 'orders': {'1-A2': 'pending'},
-            'general_override': {'1-A2': 'ゼウス'}, 'source_override': {'1-A2': 'ほんじょう'},
-            'garrison': {'ほんじょう': ['どうし', 'ゼウス']},
+            'general_override': {'1-A2': 'ゼウス'}, 'source_override': {'1-A2': 'アルマムーン'},
+            'garrison': {'アルマムーン': ['どうし', 'ゼウス']},
             'order_context': {'1-A2': {'actual_general': 'ゼウス'}},
             'sortie_attempt': {'step': '1-A2', 'target_seen': True}}
 
@@ -70,7 +70,7 @@ def test_real_entry_confirms_actual_not_planned_destination():
     assert mem['sorties']['1-A2']['status'] == 'arrived'
     assert mem['attack']['step'] == '1-A2'
     assert mem['orders']['1-A2'] == 'launched'
-    assert mem['garrison']['ほんじょう'] == ['どうし']
+    assert mem['garrison']['アルマムーン'] == ['どうし']
     assert not mem.get('sortie_attempt')
 
 
@@ -98,7 +98,7 @@ def test_partial_list_does_not_prove_absence_or_select_replacement(words):
     mem['active'] = '1-A2'
     assert p.deploy_step(screen('general_list', words), mem) == []
     assert mem['orders']['1-A2'] == 'launched_unconfirmed'
-    assert mem['source_override'] == {'1-A2': 'ほんじょう'}
+    assert mem['source_override'] == {'1-A2': 'アルマムーン'}
 
 
 def test_unreachable_verification_does_not_fail_or_resend_sortie():
@@ -126,19 +126,19 @@ def test_goal_anchor_survives_cursor_occluding_the_roof(monkeypatch):
              {'kind':'own','target':(206,173),'clipped':False}]
     monkeypatch.setattr(p, 'castle_roofs', lambda *a, **k: roofs)
     mem = {'chapter':1,'cursor':[741,804]}
-    a = p.nav_step(Screen(lines=[],hand=None,text='',kind='map',cursor=(216,172)),mem,None,(731,805),'ほんじょう')
-    assert a == [p.pad('left',10)] and mem['goal_anchor_lock'] == 'ほんじょう'
+    a = p.nav_step(Screen(lines=[],hand=None,text='',kind='map',cursor=(216,172)),mem,None,(731,805),'アルマムーン')
+    assert a == [p.pad('left',10)] and mem['goal_anchor_lock'] == 'アルマムーン'
     roofs.pop()  # cursor at 205 removes the goal roof; other roofs vote x=536
-    assert p.nav_step(Screen(lines=[],hand=None,text='',kind='map',cursor=(205,172)),mem,None,(731,805),'ほんじょう') == 'arrived'
+    assert p.nav_step(Screen(lines=[],hand=None,text='',kind='map',cursor=(205,172)),mem,None,(731,805),'アルマムーン') == 'arrived'
     assert mem['cursor'] == [730,804]
 
 
 @pytest.mark.parametrize('change', ['uncertain','edge','goal','marker'])
 def test_goal_lock_does_not_survive_unmeasured_camera_or_changed_goal(monkeypatch,change):
     monkeypatch.setattr(p,'castle_roofs',lambda *a,**k: [])
-    mem={'chapter':1,'cursor':[741,804],'goal_anchor_lock':'ほんじょう',
+    mem={'chapter':1,'cursor':[741,804],'goal_anchor_lock':'アルマムーン',
          'nav_last':{'screen':[216,172],'expected':[-10,0]}}
-    sc=Screen(lines=[],hand=None,text='',kind='map',cursor=(205,172));goal='ほんじょう'
+    sc=Screen(lines=[],hand=None,text='',kind='map',cursor=(205,172));goal='アルマムーン'
     if change=='uncertain':mem['uncertain']=True
     if change=='edge':sc.cursor=(232,172)
     if change=='goal':goal='キカンドン'
@@ -149,15 +149,15 @@ def test_goal_lock_does_not_survive_unmeasured_camera_or_changed_goal(monkeypatc
 
 
 def test_unbound_attack_loss_invalidates_old_garrison_without_guessing_a_home():
-    mem={'chapter':1,'garrison':{'ほんじょう':['ゼウス','どうし']},
+    mem={'chapter':1,'garrison':{'アルマムーン':['ゼウス','どうし']},
          'battle':{'ally':'ゼウス','ally_hp':0,'enemy_hp':21,'castle':'ジョンリギ',
                    'side':'attack','step':None,'away':1}}
     p.battle_end(mem,'map')
-    assert mem['garrison']=={'ほんじょう':['どうし']}
+    assert mem['garrison']=={'アルマムーン':['どうし']}
     assert mem['general_location_unknown']==['ゼウス']
     assert not mem.get('retries')
     assert p._interim_source(mem,'ジョンリギ',{'general':'ゼウス','source':'キカンドン'}, {'キカンドン'},set()) is None
-    mem.update(active='1-A2',source_override={'1-A2':'ほんじょう'})
+    mem.update(active='1-A2',source_override={'1-A2':'アルマムーン'})
     p._observe_garrison(screen('general_list',['ゼウス']),mem,p._order(mem))
     assert mem['general_location_unknown']==[]
 

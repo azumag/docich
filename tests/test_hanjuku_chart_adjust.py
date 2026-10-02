@@ -280,8 +280,8 @@ def test_interim_candidates_exclude_boss_and_captured_castles():
     chart_cards = {o['target']: list(o['cards']) for o in chart.orders(1) if o['cards']}
     for c in candidates.values():
         assert c['cards'] == chart_cards.get(c['target'], list(policy.INTERIM_CARDS))
-    # ジョンリギ is uncaptured: 1-C2 (ココット from ジョンリギ) starts from ほんじょう.
-    assert all(c['source'] in set(mem['captured']) | {'ほんじょう'} for c in candidates.values())
+    # ジョンリギ is uncaptured: 1-C2 (ココット from ジョンリギ) starts from アルマムーン.
+    assert all(c['source'] in set(mem['captured']) | {'アルマムーン'} for c in candidates.values())
 
 
 def test_jev_interim_choice_becomes_a_bounded_deterministic_order():
@@ -414,7 +414,7 @@ def test_an_order_waiting_on_its_own_target_becomes_unconditional():
     and the sortie stood still. The vacuous condition is dropped; a real
     prerequisite on another castle stays."""
     doc = adjusted_doc('a' * 16, orders=[
-        {'step': 'J1', 'general': 'どうし', 'source': 'ほんじょう', 'target': 'キカンドン',
+        {'step': 'J1', 'general': 'どうし', 'source': 'アルマムーン', 'target': 'キカンドン',
          'cards': [], 'after': ['captured', 'キカンドン'], 'note': '奪回'},
         {'step': 'J2', 'general': 'ココット', 'source': 'スペンソニア', 'target': 'けっかい',
          'cards': [], 'after': ['captured', 'スペンソニア'], 'note': '追撃'}])
@@ -1196,7 +1196,7 @@ def test_g514_adopted_self_locked_plan_reopens_existing_retake_candidates():
                        'choice': 'retake_1', 'confidence': 1}
     policy._off_chart(mem)
     order = policy.next_order(mem)
-    assert order['target'] == 'ナキューメラ' and order['source'] == 'ほんじょう'
+    assert order['target'] == 'ナキューメラ' and order['source'] == 'アルマムーン'
     assert order['purpose'] == 'retake' and order['general'] == 'ヴィーナス'
     assert order['after'] is None
     assert mem['captured'] == before['captured'] and mem['lost'] == before['lost']
