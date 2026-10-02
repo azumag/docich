@@ -15,6 +15,8 @@ Observed sources (all read-only):
   - tmp/state/ai_stats/YYYYMMDD.jsonl structured telemetry
   - tmp/state/improve_state.json, improve lock/monitor/retry/gate markers
   - deployed git HEADs (docich + intended soviet_now gitlink)
+  - one bounded owner-only Soren stream-title journal, projected to fixed enums,
+    UTC time and SHA only; title and integrated stream-log bodies are never read
   - fixed, known temporary shared-object filename families under /tmp plus
     same-user /proc maps/fd references; only bounded counts/bytes/booleans are
     emitted, never filenames, PIDs, mappings or file contents
@@ -1608,6 +1610,214 @@ def _git_text(repo, *args):
         return out.decode("utf-8", "strict").strip()
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, UnicodeError):
         return None
+
+
+STREAM_TITLE_SYNC_MAX_BYTES = 32 * 1024
+STREAM_TITLE_SYNC_MAX_LINE_BYTES = 512
+STREAM_TITLE_SYNC_MAX_AGE_SEC = 15 * 60
+STREAM_TITLE_SYNC_FUTURE_TOLERANCE_SEC = 60
+STREAM_TITLE_SYNC_EVENTS = frozenset({"started", "result", "skipped"})
+STREAM_TITLE_SYNC_SKIP_REASONS = frozenset({
+    "category_only", "dry_run", "show_only", "twitch_read_failed",
+    "twitch_update_failed", "category_not_configured", "updater_missing",
+    "dispatch_failed", "invalid_title",
+})
+STREAM_TITLE_SYNC_YOUTUBE_RESULTS = frozenset({
+    "not_configured", "stream_not_configured", "no_unique_live_broadcast",
+    "invalid_video_id", "video_not_found", "invalid_video_snippet",
+    "unchanged", "updated", "unconfirmed", "update_failed",
+})
+STREAM_TITLE_SYNC_KICK_RESULTS = frozenset({
+    "not_configured", "invalid_broadcaster", "wrong_broadcaster", "not_live",
+    "unchanged", "updated", "unconfirmed", "update_failed",
+})
+STREAM_TITLE_SYNC_RECORD_FIELDS = frozenset({
+    "occurred_at", "event", "skip_reason", "youtube", "kick", "soviet_sha",
+})
+
+
+def _stream_title_sync_empty(record_status):
+    return {
+        "record_status": record_status,
+        "occurred_at": None,
+        "age_sec": -1,
+        "event": "unknown",
+        "run_soren_sha": None,
+        "same_soren_sha": None,
+        "skip_reason": "unknown",
+        "youtube": "unknown",
+        "kick": "unknown",
+    }
+
+
+def _stream_title_sync_unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate field")
+        result[key] = value
+    return result
+
+
+def _collect_stream_title_sync(soren, now, expected_soren_sha):
+    """Read one bounded private journal row without following parent symlinks."""
+    result = _stream_title_sync_empty("absent")
+    dir_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    file_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    dir_fds = []
+    fd = None
+    try:
+        current_fd = os.open(soren, dir_flags)
+        dir_fds.append(current_fd)
+        info = os.fstat(current_fd)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+            result["record_status"] = "unreadable"
+            return result
+        for name, private in (("tmp", False), ("state", False), ("stream_title_sync", True)):
+            current_fd = os.open(name, dir_flags, dir_fd=current_fd)
+            dir_fds.append(current_fd)
+            info = os.fstat(current_fd)
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.getuid()
+                or (private and info.st_mode & 0o077)
+            ):
+                result["record_status"] = "unreadable"
+                return result
+        fd = os.open("events.jsonl", file_flags, dir_fd=current_fd)
+    except FileNotFoundError:
+        return result
+    except OSError:
+        result["record_status"] = "unreadable"
+        return result
+    finally:
+        for dir_fd in reversed(dir_fds):
+            try:
+                os.close(dir_fd)
+            except OSError:
+                pass
+
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_nlink != 1
+            or info.st_mode & 0o077
+        ):
+            result["record_status"] = "unreadable"
+            return result
+        if info.st_size == 0:
+            result["record_status"] = "no_record"
+            return result
+        if info.st_size > STREAM_TITLE_SYNC_MAX_BYTES:
+            result["record_status"] = "oversized"
+            return result
+        chunks = []
+        remaining = STREAM_TITLE_SYNC_MAX_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(remaining, 4096))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > STREAM_TITLE_SYNC_MAX_BYTES:
+            result["record_status"] = "oversized"
+            return result
+    except OSError:
+        result["record_status"] = "unreadable"
+        return result
+    finally:
+        os.close(fd)
+
+    if not data.endswith(b"\n"):
+        result["record_status"] = "malformed"
+        return result
+    lines = data[:-1].split(b"\n")
+    if not lines or any(not line or len(line) > STREAM_TITLE_SYNC_MAX_LINE_BYTES for line in lines):
+        result["record_status"] = "malformed"
+        return result
+    try:
+        row = json.loads(lines[-1].decode("utf-8", "strict"), object_pairs_hook=_stream_title_sync_unique_object)
+    except (UnicodeError, ValueError, json.JSONDecodeError):
+        result["record_status"] = "malformed"
+        return result
+    if not isinstance(row, dict) or set(row) != STREAM_TITLE_SYNC_RECORD_FIELDS:
+        result["record_status"] = "malformed"
+        return result
+    occurred_at = row.get("occurred_at")
+    event = row.get("event")
+    skip_reason = row.get("skip_reason")
+    youtube = row.get("youtube")
+    kick = row.get("kick")
+    run_soren_sha = row.get("soviet_sha")
+    if (
+        not isinstance(occurred_at, str)
+        or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", occurred_at)
+        or not isinstance(event, str)
+        or event not in STREAM_TITLE_SYNC_EVENTS
+        or not isinstance(skip_reason, str)
+        or not isinstance(youtube, str)
+        or not isinstance(kick, str)
+        or not isinstance(run_soren_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", run_soren_sha)
+    ):
+        result["record_status"] = "malformed"
+        return result
+    if event == "result":
+        if skip_reason != "none" or youtube not in STREAM_TITLE_SYNC_YOUTUBE_RESULTS or kick not in STREAM_TITLE_SYNC_KICK_RESULTS:
+            result["record_status"] = "malformed"
+            return result
+    elif event == "started":
+        if skip_reason != "none" or youtube != "not_run" or kick != "not_run":
+            result["record_status"] = "malformed"
+            return result
+    elif skip_reason not in STREAM_TITLE_SYNC_SKIP_REASONS or youtube != "not_run" or kick != "not_run":
+        result["record_status"] = "malformed"
+        return result
+    try:
+        stamp = dt.datetime.strptime(occurred_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        result["record_status"] = "malformed"
+        return result
+
+    age = int(now - stamp.timestamp())
+    result.update({
+        "occurred_at": occurred_at,
+        "age_sec": max(0, age),
+        "event": event,
+        "run_soren_sha": run_soren_sha,
+    })
+    if not isinstance(expected_soren_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_soren_sha):
+        result["record_status"] = "source_unavailable"
+        return result
+    same_sha = run_soren_sha == expected_soren_sha
+    result["same_soren_sha"] = same_sha
+    if not same_sha:
+        result["record_status"] = "source_mismatch"
+        return result
+    if age < -STREAM_TITLE_SYNC_FUTURE_TOLERANCE_SEC:
+        result["record_status"] = "future"
+        return result
+    if age > STREAM_TITLE_SYNC_MAX_AGE_SEC:
+        result["record_status"] = "stale"
+        return result
+    result["record_status"] = "fresh"
+    result["skip_reason"] = skip_reason
+    result["youtube"] = youtube
+    result["kick"] = kick
+    return result
 
 
 def _collect_meta(soren, now):
@@ -4573,6 +4783,7 @@ def main(argv):
             return 1
         sys.stdout.write(text + "\n")
         return 0
+    meta = _collect_meta(soren, now)
     workers = _collect_workers(soren, now)
     queues = _collect_queues(soren, now)
     ai = _collect_ai(soren, now)
@@ -4580,7 +4791,10 @@ def main(argv):
     corners = _collect_programs(_program_state_dir(), soren, now)
     payload = {
         "status": _severity(workers, queues, ai, improvement, corners),
-        "meta": _collect_meta(soren, now),
+        "meta": meta,
+        "stream_title_sync": _collect_stream_title_sync(
+            soren, now, meta.get("soviet_head")
+        ),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
         "workers": workers,
         "semantic_decision": _collect_semantic_decision(workers),

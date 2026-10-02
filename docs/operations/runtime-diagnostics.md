@@ -29,6 +29,7 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   stdout 上限 64 KiB、最終 JSON 上限 49 KiB、文字列 500 字、list 100 件、深さ 8。
 - production exec の stdout 秘匿境界は不変。diagnostics 以外の経路で
   production の任意コマンド結果を Actions へ公開してはならない。
+- `stream_title_sync` は Soren の owner-only journal 1ファイルだけを読む。最大32KiB、最新行だけを許可schemaで検証し、現在の Soren gitlink SHA と一致し15分以内の記録に限って platform enum / skip reason を表示する。
 
 ## Output 契約
 
@@ -36,6 +37,10 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 {
   "status": "ok",
   "meta": {"generated_at": 0, "window_sec": 900, "docich_head": null, "soviet_head": null, ...},
+  "stream_title_sync": {"record_status": "fresh", "occurred_at": "2026-10-02T12:00:00Z",
+                        "age_sec": 30, "event": "result",
+                        "run_soren_sha": "<40-hex>", "same_soren_sha": true,
+                        "skip_reason": "none", "youtube": "updated", "kick": "not_live"},
   "tracked_drift": {"parent_tracked_dirty": 0, "owned_submodule_head_mismatch": 0,
                     "owned_submodule_tracked_dirty": 0,
                     "owned_submodule_missing_or_invalid": 0,
@@ -362,6 +367,23 @@ diagnostics で直接確認できる。`tmux -L <server> list-sessions` は read
 `docich-resolver-improve-gnurobots.service` の active / enabled 状態を投影する。
 これらの長命 daemon が稼働していると、次回再起動まで本番既定 tmux サーバを共有し続ける
 （#1284 の対象外経路）。`systemctl --user is-active` / `is-enabled` は read-only。
+
+
+## YouTube / Kick title sync の read-only 投影
+
+`stream_title_sync` は Soren の `tmp/state/stream_title_sync/events.jsonl` を最大32KiBだけ読み、
+親の`tmp` / `state` / 専用journal directoryと末尾ファイルの各segmentをdirfd + nofollowで開き、
+専用directory・regular fileのowner/mode、最大32KiB、最新レコードの厳密schema・固定enum・
+時刻・SHAを検証する。出力するのは時刻、年齢、記録イベント、実行時Soren SHAと現在の
+gitlink SHA一致、固定skip reason、YouTube/Kickの固定結果enumだけ。追加フィールド、
+不正enum、親/末尾symlink、owner-onlyでないdirectory/file、過大・不完全・古い記録は結果を
+公開せず固定状態として返す。新しい状態項目はdiagnosticのoverall severityに影響しない。
+
+`event=skipped` は `skip_reason` が示す早期終了を表し、両platformは `not_run`。
+`event=started` のままならhelper開始後に結果行が残らなかった状態。
+`event=result` の `updated` はAPI read-backが依頼したtitleと一致したことを示すだけで、
+視聴者に見える実表示は保証しない。Twitchのtitle/categoryはこのjournalへ保存しない。
+統合ログ `stream-game.log` / `stream_title_day.log` の読取り・出力もしない。
 
 ## 出さないもの
 
