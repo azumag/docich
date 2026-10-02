@@ -15,6 +15,10 @@ class SorenOutputError(RuntimeError):
     """Raised when an existing Soren viewer-output queue cannot accept output."""
 
 
+class HanjukuTerminalPendingError(SorenOutputError):
+    """A validated earlier recap must enter the shared queue before new audio."""
+
+
 # Narration personas: the stream's two AI personalities take turns hosting
 # the PAPER corner. Chuka (中華AI) speaks in the worker's default voice;
 # Meriken (メリケンAI) uses the Soren91 voice. Exactly one persona hosts an
@@ -165,7 +169,9 @@ def _retry_pending_hanjuku_terminal(g: GlobalConfig, *, exclude_key: str = "") -
     from ..hanjuku_narration import retry_pending_terminal_deliveries
 
     if not retry_pending_terminal_deliveries(g, exclude_key=exclude_key):
-        raise SorenOutputError("A prior Hanjuku terminal recap is still pending in the audio outbox")
+        raise HanjukuTerminalPendingError(
+            "A prior Hanjuku terminal recap is still pending in the audio outbox"
+        )
 
 
 def enqueue_speech(g: GlobalConfig, text: str, *, event_id: str = "") -> None:

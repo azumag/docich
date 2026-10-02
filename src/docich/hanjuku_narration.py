@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import errno
 import json
 import math
 import os
@@ -33,6 +34,14 @@ PLAN_MAX_AGE_S = 5
 TERMINAL_DELIVERIES_KEY = 'terminal_deliveries'
 TERMINAL_SPEAKERS_KEY = 'terminal_delivery_speakers'
 _busy = threading.Event()
+
+
+def _permanent_io_error(exc: OSError) -> bool:
+    return isinstance(exc, (PermissionError, FileNotFoundError, NotADirectoryError,
+                            IsADirectoryError)) or getattr(exc, 'errno', None) in {
+        errno.EACCES, errno.EPERM, errno.ENOENT, errno.ENOTDIR, errno.EISDIR,
+        errno.EINVAL, errno.ENAMETOOLONG,
+    }
 
 
 def settings(game) -> dict:
@@ -88,6 +97,7 @@ def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age, *
     from .agent.fence import AgentFence, FenceLost, check_fence, read_canonical, shared_section
     from .hanjuku_run import load
     from .game_switch import GameSwitchBusyError
+    from .trading.soren_output import HanjukuTerminalPendingError
 
     status = 'enqueued'
     max_age = _item_max_age(item, max_age)
@@ -158,11 +168,24 @@ def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age, *
         status = 'skipped:generation_mismatch' if terminal else 'skipped:fence_lost'
     except GameSwitchBusyError:
         status = 'skipped:switch_busy'
-    except (TypeError, ValueError, RuntimeError):
+    except HanjukuTerminalPendingError:
+        # An older recap temporarily owns the next queue position. Retry this
+        # candidate later rather than classifying it as malformed.
+        status = 'delivery_failed'
+    except (BlockingIOError, InterruptedError, TimeoutError):
+        status = 'delivery_failed'
+    except OSError as exc:
+        status = ('delivery_failed_permanent'
+                  if terminal and _permanent_io_error(exc) else 'delivery_failed')
+    except (TypeError, ValueError, RuntimeError) as exc:
         # A corrupt durable outbox receipt or invalid terminal payload will
         # not heal on retry. Keep its failure on this run, but do not let it
         # hold later, unrelated audio producers.
-        status = 'delivery_failed_permanent' if terminal else 'delivery_failed'
+        cause = getattr(exc, '__cause__', None)
+        transient = (isinstance(cause, (BlockingIOError, InterruptedError, TimeoutError))
+                     or isinstance(cause, OSError) and not _permanent_io_error(cause))
+        status = ('delivery_failed' if transient else
+                  'delivery_failed_permanent' if terminal else 'delivery_failed')
     except Exception:
         # No exception text: queue errors can carry private payloads.
         status = 'delivery_failed'
@@ -190,6 +213,24 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=No
     """
     cfg = settings(game)
     if not cfg['enabled']:
+        if terminal:
+            candidate = next((item for item in reversed(_terminal_candidates(runtime_dir))
+                              if item.get('terminal_recap')), None)
+            try:
+                run_record = read_record(runtime_dir / 'hanjuku_run.json', limit=256 * 1024)
+            except Exception:
+                run_record = {}
+            source = candidate or run_record
+            identity = {key: source.get(key)
+                        for key in ('game', 'runtime_id', 'generation', 'lease_id')}
+            if (identity.get('game') == 'hanjuku-hero'
+                    and identity.get('runtime_id') == runtime_dir.name
+                    and type(identity.get('generation')) is int
+                    and isinstance(identity.get('lease_id'), str) and identity['lease_id']):
+                _record_terminal_delivery(
+                    runtime_dir, _terminal_delivery_key(identity), 'disabled',
+                    identity=identity, candidate=candidate,
+                )
         return None
     now = time.time() if now is None else now
     lock_path = runtime_dir / 'hanjuku_narration.lock'
@@ -263,7 +304,7 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=No
             prior = terminal_done.get(delivery_key) if delivery_key else None
             if candidate and not (isinstance(prior, str) and prior in {
                     'enqueued', 'skipped:generation_mismatch', 'skipped:too_long',
-                    'delivery_failed_permanent'}):
+                    'delivery_failed_permanent', 'disabled'}):
                 text = candidate.get('text')
                 if not isinstance(text, str) or not text.strip() or len(text) > TERMINAL_MAX_TEXT:
                     status = 'skipped:too_long'
@@ -339,7 +380,7 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=No
 def terminal_delivery_pending(runtime_dir: Path, identity: dict) -> bool:
     """Whether this confirmed run has a durable recap awaiting audio handoff."""
     candidate = next((item for item in reversed(
-        _tail(runtime_dir / 'hanjuku_commentary.jsonl'))
+        _terminal_candidates(runtime_dir))
         if item.get('terminal_recap')
         and all(item.get(key) == identity.get(key)
                 for key in ('game', 'runtime_id', 'generation', 'lease_id'))), None)
@@ -349,13 +390,27 @@ def terminal_delivery_pending(runtime_dir: Path, identity: dict) -> bool:
     deliveries = state.get(TERMINAL_DELIVERIES_KEY)
     delivery_key = _terminal_delivery_key(identity)
     status = deliveries.get(delivery_key) if isinstance(deliveries, dict) else None
-    for record in _tail_any(runtime_dir / 'hanjuku_narration.jsonl'):
+    for record in _narration_records(runtime_dir):
         if record.get('delivery_key') == delivery_key:
             status = record.get('status')
     return not (isinstance(status, str) and status in {
         'enqueued', 'skipped:generation_mismatch', 'skipped:too_long',
-        'delivery_failed_permanent',
+        'delivery_failed_permanent', 'disabled',
     })
+
+
+def _terminal_candidates(runtime_dir: Path) -> list[dict]:
+    """Read terminal candidates across the existing commentary log rotation."""
+    return [item for name in ('hanjuku_commentary.previous.jsonl',
+                              'hanjuku_commentary.jsonl')
+            for item in _tail(runtime_dir / name)]
+
+
+def _narration_records(runtime_dir: Path) -> list[dict]:
+    """Read delivery outcomes across the existing one-generation log rotation."""
+    return [item for name in ('hanjuku_narration.previous.jsonl',
+                              'hanjuku_narration.jsonl')
+            for item in _tail_any(runtime_dir / name)]
 
 
 def _record_terminal_delivery(runtime_dir: Path, delivery_key: str, status: str,
@@ -394,7 +449,7 @@ def _record_terminal_delivery(runtime_dir: Path, delivery_key: str, status: str,
                     state[TERMINAL_SPEAKERS_KEY] = speakers
                 current = deliveries.get(delivery_key)
                 final = {'enqueued', 'skipped:generation_mismatch', 'skipped:too_long',
-                         'delivery_failed_permanent'}
+                         'delivery_failed_permanent', 'disabled'}
                 if not isinstance(current, str) or current not in final:
                     deliveries[delivery_key] = status
                     if status == 'pending' and speaker:
@@ -448,8 +503,10 @@ def retry_pending_terminal_deliveries(g, *, exclude_key: str = '') -> bool:
     if runtime_root.is_symlink() or not runtime_root.is_dir():
         return True
 
+    from .hanjuku_run import terminal as terminal_evidence
+
     final_statuses = {'enqueued', 'skipped:generation_mismatch', 'skipped:too_long',
-                      'delivery_failed_permanent'}
+                      'delivery_failed_permanent', 'disabled'}
     def is_final(status):
         return isinstance(status, str) and status in final_statuses
 
@@ -469,7 +526,7 @@ def retry_pending_terminal_deliveries(g, *, exclude_key: str = '') -> bool:
         deliveries = state.get(TERMINAL_DELIVERIES_KEY)
         if not isinstance(deliveries, dict):
             deliveries = {}
-        logs = _tail_any(runtime_dir / 'hanjuku_narration.jsonl')
+        logs = _narration_records(runtime_dir)
         log_statuses = {}
         for entry in logs:
             key = entry.get('delivery_key')
@@ -478,8 +535,7 @@ def retry_pending_terminal_deliveries(g, *, exclude_key: str = '') -> bool:
         speakers = state.get(TERMINAL_SPEAKERS_KEY)
         if not isinstance(speakers, dict):
             speakers = {}
-        commentary_path = runtime_dir / 'hanjuku_commentary.jsonl'
-        for candidate in _tail(commentary_path):
+        for candidate in _terminal_candidates(runtime_dir):
             if not candidate.get('terminal_recap'):
                 continue
             identity = {key: candidate.get(key)
@@ -503,6 +559,26 @@ def retry_pending_terminal_deliveries(g, *, exclude_key: str = '') -> bool:
                     and delivery_key not in candidates_by_key):
                 orphaned.append((runtime_dir, delivery_key))
 
+        # A confirmed game-over run is itself enough to detect a missing
+        # recap candidate, even when narration lock contention prevented a
+        # mutable state receipt from ever being created.
+        try:
+            run_record = read_record(runtime_dir / 'hanjuku_run.json', limit=256 * 1024)
+        except Exception:
+            run_record = {}
+        if run_record.get('terminal_reason') == 'game_over':
+            identity = {key: run_record.get(key)
+                        for key in ('game', 'runtime_id', 'generation', 'lease_id')}
+            delivery_key = _terminal_delivery_key(identity)
+            if delivery_key != exclude_key and delivery_key not in candidates_by_key:
+                state_status = deliveries.get(delivery_key)
+                log_status = log_statuses.get(delivery_key)
+                status = (state_status if is_final(state_status)
+                          else log_status if is_final(log_status)
+                          else state_status or log_status)
+                if not is_final(status):
+                    orphaned.append((runtime_dir, delivery_key))
+
     for runtime_dir, delivery_key in orphaned:
         _record_terminal_delivery(runtime_dir, delivery_key, 'delivery_failed_permanent')
 
@@ -510,7 +586,6 @@ def retry_pending_terminal_deliveries(g, *, exclude_key: str = '') -> bool:
         return True
 
     verified = []
-    from .hanjuku_run import terminal as terminal_evidence
     for delivery_key, (runtime_dir, candidate, speaker) in candidates_by_key.items():
         identity = {key: candidate.get(key)
                     for key in ('game', 'runtime_id', 'generation', 'lease_id')}
@@ -570,6 +645,18 @@ def retry_pending_terminal_deliveries(g, *, exclude_key: str = '') -> bool:
                 _record_terminal_delivery(runtime_dir, delivery_key, 'pending',
                                           identity=identity, candidate=candidate, speaker=speaker)
                 return False
+        except (BlockingIOError, InterruptedError, TimeoutError):
+            _record_terminal_delivery(runtime_dir, delivery_key, 'pending',
+                                      identity=identity, candidate=candidate, speaker=speaker)
+            return False
+        except OSError as exc:
+            if _permanent_io_error(exc):
+                _record_terminal_delivery(runtime_dir, delivery_key, 'delivery_failed_permanent',
+                                          identity=identity, candidate=candidate)
+                continue
+            _record_terminal_delivery(runtime_dir, delivery_key, 'pending',
+                                      identity=identity, candidate=candidate, speaker=speaker)
+            return False
         except (TypeError, ValueError, RuntimeError):
             _record_terminal_delivery(runtime_dir, delivery_key, 'delivery_failed_permanent',
                                       identity=identity, candidate=candidate)

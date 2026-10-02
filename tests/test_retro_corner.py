@@ -1786,7 +1786,19 @@ class TestHanjukuTerminalDelivery(RetroCornerTestBase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(len(observed), 1)
         self.assertEqual(len(finished), 1)
-        self.assertFalse((runtime_dir / "hanjuku_narration.json").exists())
+        narration_state = json.loads((runtime_dir / "hanjuku_narration.json").read_text())
+        delivery_key = hanjuku_narration._terminal_delivery_key(identity)
+        self.assertEqual(
+            narration_state[hanjuku_narration.TERMINAL_DELIVERIES_KEY][delivery_key],
+            "disabled",
+        )
+        queued = []
+        with (
+            patch("docich.trading.soren_output.resolve_soren_root", return_value=self.g.repo_root),
+            patch("docich.webui._enqueue_audio_text", side_effect=lambda *a, **k: queued.append((a, k))),
+        ):
+            self.assertTrue(hanjuku_narration.retry_pending_terminal_deliveries(self.g))
+        self.assertEqual(queued, [])
 
 
 class TestRetroCornerTickGuard(RetroCornerTestBase):
