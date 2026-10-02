@@ -22,9 +22,10 @@ RECRUITMENT_BY_CHAPTER: dict[int, dict[str, int]] = {}
 
 # Map-cursor cells that select each castle (top-left of the 16x16 cursor).
 # Filled per chapter by measurement; empty dict means the chapter is gated.
+# Keys are the game's own on-screen castle names, every chapter including 1.
 CASTLES: dict[int, dict[str, tuple[int, int]]] = {
     1: {
-        'ほんじょう': (731, 805),
+        'アルマムーン': (731, 805),
         'キカンドン': (567, 725),
         'ナキューメラ': (711, 645),
         'ジョンリギ': (551, 574),
@@ -52,9 +53,10 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
 
 # Expected on-screen castle labels per chapter (gcgx + charts). Navigation
 # still requires CASTLES; this list documents names for measurement and
-# order encoding.
+# order encoding. Chapter 1's home castle is アルマムーン on screen too
+# (gcgx 第1話 城情報; g550 frame-034 「アルマムーン…のしろをぞうちくなさいますか?」).
 CASTLE_NAMES: dict[int, tuple[str, ...]] = {
-    1: ('ほんじょう', 'キカンドン', 'ナキューメラ', 'ジョンリギ',
+    1: ('アルマムーン', 'キカンドン', 'ナキューメラ', 'ジョンリギ',
         'ゴーメン', 'スペンソニア', 'カストーラ', 'けっかい'),
     2: ('アルマムーン', 'ハドリバーグ', 'フーリック', 'グロン',
         'ドミノーラ', 'ウラノポリス', 'スペランザ', 'アウスパジア', 'ボス'),
@@ -85,7 +87,7 @@ CASTLE_NAMES: dict[int, tuple[str, ...]] = {
 }
 
 HOME_CASTLES: dict[int, str] = {
-    1: 'ほんじょう',
+    1: 'アルマムーン',
     2: 'アルマムーン', 3: 'アルマムーン', 4: 'アルマムーン',
     5: 'アルマムーン', 6: 'アルマムーン', 7: 'アルマムーン',
     8: 'あるまむーん',
@@ -102,18 +104,80 @@ BOSS_CASTLES: dict[int, str] = {
     7: 'ボス', 8: 'ボス', 9: 'ボス', 10: 'ボス', 11: 'ボス', 12: 'ボス',
 }
 
+# Castle labels this chart used before they matched the game's own text.
+# Chapter 1's home castle was labelled ほんじょう here while the game always
+# writes アルマムーン: gcgx 第1話 城情報 lists アルマムーン as the castle holding
+# 主人公・ゼウス・ヴィーナス・ココット (ほんじょう/本城: 0 hits in the whole page),
+# g436 21:19 read 「アルマムーンじょうステータス」, and g550 frame-034 reads
+# 「アルマムーン…のしろをぞうちくなさいますか?」. The mismatch reached the
+# narration (「どうし将軍をほんじょうから…」) and the chapter detector.
+# Runtime state written before the rename still carries the old label.
+LEGACY_CASTLE_LABELS: dict[str, str] = {'ほんじょう': 'アルマムーン'}
+
+
+def _relabel(text: str) -> str:
+    for old, new in LEGACY_CASTLE_LABELS.items():
+        text = text.replace(old, new)
+    return text
+
+
+def _mentions_legacy(value) -> bool:
+    """Pre-check so an already-migrated document never gets rebuilt."""
+    if isinstance(value, str):
+        return any(old in value for old in LEGACY_CASTLE_LABELS)
+    if isinstance(value, (list, tuple)):
+        return any(_mentions_legacy(item) for item in value)
+    if isinstance(value, dict):
+        return any(_mentions_legacy(k) or _mentions_legacy(v) for k, v in value.items())
+    return False
+
+
+def migrate_legacy_labels(value):
+    """Rename legacy castle labels inside a persisted document.
+
+    Dict keys, list items and strings are rewritten in place (a tuple, which
+    cannot be, is rebuilt) so policy memory, an adopted adjusted chart and
+    their free-text order notes keep working after the rename. Returns
+    ``value`` so callers can chain it. A key that already exists under its new
+    name has its list value merged instead of dropped.
+    """
+    if isinstance(value, str):
+        return _relabel(value)
+    if isinstance(value, tuple):
+        return tuple(migrate_legacy_labels(item) for item in value)
+    if isinstance(value, list):
+        for i, item in enumerate(value):
+            value[i] = migrate_legacy_labels(item)
+        return value
+    if not isinstance(value, dict):
+        return value
+    if not _mentions_legacy(value):
+        return value
+    migrated: dict = {}
+    for key, item in value.items():
+        new = _relabel(key) if isinstance(key, str) else key
+        item = migrate_legacy_labels(item)
+        if new in migrated and isinstance(migrated[new], list) and isinstance(item, list):
+            migrated[new] = migrated[new] + [x for x in item if x not in migrated[new]]
+        else:
+            migrated[new] = item
+    value.clear()
+    value.update(migrated)
+    return value
+
+
 # Orders. ``after`` is the event that unlocks an order: None at chapter start,
 # ('captured', castle) after a verified win at that castle, or
 # ('all_captured',) once every non-boss castle has been won.
 # Source/target names must match CASTLES keys (on-screen labels) for navigation.
 CHAPTER_1_ORDERS = (
-    {'step': '1-A1', 'general': HERO, 'source': 'ほんじょう', 'cards': (),
+    {'step': '1-A1', 'general': HERO, 'source': 'アルマムーン', 'cards': (),
      'target': 'キカンドン', 'after': None,
      'note': '主人公切り札なし 左:キカンドン VSミント 白兵'},
-    {'step': '1-V1', 'general': 'ヴィーナス', 'source': 'ほんじょう', 'cards': (),
+    {'step': '1-V1', 'general': 'ヴィーナス', 'source': 'アルマムーン', 'cards': (),
      'target': 'ナキューメラ', 'after': None,
      'note': 'ヴィーナス切り札なし 右上:ナキューメラ コリアンダー 白兵'},
-    {'step': '1-C1', 'general': 'ココット', 'source': 'ほんじょう', 'cards': (),
+    {'step': '1-C1', 'general': 'ココット', 'source': 'アルマムーン', 'cards': (),
      'target': 'ジョンリギ', 'after': None,
      'note': 'ココット切り札なし 左上:ジョリンギ 白兵'},
     {'step': '1-A2', 'general': HERO, 'source': 'キカンドン', 'cards': ('フットバース',),

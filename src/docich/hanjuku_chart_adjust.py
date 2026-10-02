@@ -258,7 +258,9 @@ def load(runtime_dir: Path):
     if path.is_symlink():
         return None
     try:
-        return validate(json.loads(path.read_text(encoding='utf-8')))
+        # Adopted before the castle-label rename: keep the plan instead of
+        # rejecting it for naming a castle the chart no longer has.
+        return validate(chart.migrate_legacy_labels(json.loads(path.read_text(encoding='utf-8'))))
     except (OSError, ValueError):
         return None
 

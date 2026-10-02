@@ -16,7 +16,7 @@ def memory(names=None, complete=True, castles=1, income=100):
     captured = ['キカンドン', 'ジョンリギ', 'ゴーメン', 'スペンソニア', 'カストーラ'][:castles-1]
     owned = ['アルマムーン', *captured]
     return {'chapter': 1, 'month': '1-7', 'tick': 100, '_records': [],
-            'garrison': {'ほんじょう': NAMES[:2]}, 'captured': captured,
+            'garrison': {'アルマムーン': NAMES[:2]}, 'captured': captured,
             'recruit_roster': {'chapter': 1, 'month': '1-7', 'tick': 95,
                                'names': list(names), 'complete': complete,
                                'wages': {n:r.fixed_wage(n) for n in names}},
@@ -148,7 +148,7 @@ def test_global_scan_counts_field_generals_without_inventing_castle_placements()
     mem['house']=state;r.begin(mem,state);r.page(mem,['どうし','バジル'])
     r.wage(mem,{'general':'バジル','wage':7,'location':'field'})
     assert mem['recruit_roster']['wages']=={'バジル':7}
-    assert 'バジル' not in mem['garrison']['ほんじょう']
+    assert 'バジル' not in mem['garrison']['アルマムーン']
 
 
 def test_fixed_wages_match_pinned_sfc_data_and_maximum_when_submodule_present():
@@ -228,7 +228,7 @@ def test_missing_income_survey_only_reads_status_and_returns_without_sortie(monk
     from test_hanjuku_castle_panel import status
     mem=memory();mem['castle_income'].clear()
     mem['house']={'phase':'income_next','chapter':1,'age':0,'total':0,
-                  'income_castles':['ほんじょう'],'income_failures':[], 'pending':[]}
+                  'income_castles':['アルマムーン'],'income_failures':[], 'pending':[]}
     map_screen=Screen([],None,'',kind='map')
     assert house.step(map_screen,mem,None)==[p.pad('y')]
     assert mem['house']['phase']=='income_view'
@@ -248,7 +248,7 @@ def test_missing_income_survey_only_reads_status_and_returns_without_sortie(monk
 
 def test_income_survey_is_aborted_at_month_boundary_without_spending():
     mem=memory();mem['house']={'phase':'income_view','chapter':1,'age':0,'total':0,
-                              'roster_month':'1-6','source':'ほんじょう'}
+                              'roster_month':'1-6','source':'アルマムーン'}
     assert house.step(Screen([],None,'',kind='world_map'),mem,None)==[]
     assert mem['house']['phase']=='close'
     assert mem['recruit_hold']['status']=='observation_failed'
@@ -356,7 +356,7 @@ def test_field_scan_then_month_boundary_rescans_and_reaches_paid_recruitment(nam
         for dy in (2,3,4):c.put(x+1,y+dy,(255,255,255))
         return c.frame()
     mem=memory(names=names,income=22);mem.update(month='1-6',tick=500)
-    p._apply_world_flags(mem,{'ほんじょう':'own'})
+    p._apply_world_flags(mem,{'アルマムーン':'own'})
     mem['recruit_roster']['month']='1-6'
     mem['castle_income']['アルマムーン'].update(month='1-6',tick=10)
     state={'policy':mem}
@@ -421,7 +421,7 @@ def test_known_castle_property_reuses_original_receipt_only_with_fresh_current_o
     row=mem['castle_income']['アルマムーン'];row.update(month='1-1',tick=10)
     original=dict(row)
     assert r.economics(mem,{'アルマムーン'}) is None
-    p._apply_world_flags(mem,{'ほんじょう':'own'})
+    p._apply_world_flags(mem,{'アルマムーン':'own'})
     assert r.economics(mem,{'アルマムーン'})['income']==22
     assert row==original
     for proof in ({'chapter':1,'tick':100,'owner':'own'},
@@ -449,12 +449,12 @@ def test_static_income_never_supplies_an_unobserved_or_future_receipt():
 
 def test_actual_ownership_updates_do_not_change_base_income_on_unchanged_flags():
     mem=memory(income=22);old=dict(mem['castle_income']['アルマムーン'])
-    p._apply_world_flags(mem,{'ほんじょう':'own'})
+    p._apply_world_flags(mem,{'アルマムーン':'own'})
     assert r.owned_fresh(mem,'アルマムーン')
     assert mem['castle_income']['アルマムーン']==old
-    p._apply_world_flags(mem,{'ほんじょう':'enemy'})
+    p._apply_world_flags(mem,{'アルマムーン':'enemy'})
     assert not r.owned_fresh(mem,'アルマムーン')
-    assert 'ほんじょう' not in p._owned(mem)
+    assert 'アルマムーン' not in p._owned(mem)
 
 
 def _survey_field():

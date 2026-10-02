@@ -15,7 +15,7 @@ def setup(tmp_path):
     (tmp_path/'game_switch.json').write_text(json.dumps(dict(phase='ready', active=active)))
     (runtime/'hanjuku_run.json').write_text(json.dumps(active))
     bot = dict(decision_trace=active, policy=dict(chapter=1, tick=500,
-        captured=['キカンドン', 'PRIVATE'], garrison={'ほんじょう':['private-general', 'second'],
+        captured=['キカンドン', 'PRIVATE'], garrison={'アルマムーン':['private-general', 'second'],
         'キカンドン':[], 'ナキューメラ':['lost']},
         sorties={'x':dict(status='en_route',tick=499,general='second',target='ナキューメラ')},
         general_location_unknown=['lost']), secret='DO NOT EMIT')
@@ -29,7 +29,7 @@ def test_projection_fresh_fixed_enum_and_unknown_not_zero(tmp_path):
     out=d._collect_hanjuku_tactical(tmp_path,110)
     assert out['status']=='ok' and out['age_sec']==10
     rows={r['castle']:r for r in out['castles']}
-    assert rows['ほんじょう']['idle_generals_record']==1
+    assert rows['アルマムーン']['idle_generals_record']==1
     assert rows['キカンドン']['idle_generals_record']==0
     assert rows['ゴーメン']['idle_generals_record'] is None
     assert rows['ナキューメラ']['target_reserved_record']

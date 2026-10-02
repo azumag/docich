@@ -77,7 +77,7 @@ def build_prompt(request: dict, results: list[dict]) -> str:
                  for plan in chart.purchases(chapter)]
     measured = sorted(chart.castles(chapter))
     allowed_castles = measured or sorted(chart.CASTLE_NAMES.get(chapter, ()))
-    example = {'orders': [{'step': 'J1', 'general': 'ココット', 'source': 'ほんじょう',
+    example = {'orders': [{'step': 'J1', 'general': 'ココット', 'source': 'アルマムーン',
                            'target': 'スペンソニア', 'cards': ['ダイチスイム'], 'after': None,
                            'note': '理由を短く'}],
                'purchases': {'month': [1, 8], 'cards': [['イッテツーン', 3]], 'soldiers': 20,
@@ -221,6 +221,9 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, generate=None, backg
     request = read_record(runtime_dir / adjust.REQUEST_FILE)
     if not request or not isinstance(request.get('request_id'), str):
         return None
+    # A payload published before the castle-label rename still names the old
+    # home castle; the prompt and its validation use the current chart labels.
+    chart.migrate_legacy_labels(request)
     lock_path = runtime_dir / LOCK
     if lock_path.is_symlink():
         return None

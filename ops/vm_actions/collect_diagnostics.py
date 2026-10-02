@@ -3775,7 +3775,7 @@ def _list_window_names(session):
     return [name.strip() for name in proc.stdout.splitlines() if name.strip()]
 
 
-HANJUKU_TACTICAL_CASTLES = ('ほんじょう', 'キカンドン', 'ナキューメラ', 'ジョンリギ',
+HANJUKU_TACTICAL_CASTLES = ('アルマムーン', 'キカンドン', 'ナキューメラ', 'ジョンリギ',
            'ゴーメン', 'スペンソニア', 'カストーラ', 'けっかい')
 HANJUKU_TACTICAL_KEYS = ('game', 'runtime_id', 'generation', 'lease_id')
 HANJUKU_TACTICAL_LIMIT = 256 * 1024

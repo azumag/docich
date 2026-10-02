@@ -862,7 +862,7 @@ def test_empty_general_list_canvas_parses_as_general_list_without_hand():
     mem = {'chapter': 1, 'active': '1-C1', 'orders': {'1-C1': 'pending'}}
     actions = policy.deploy_step(s, mem)
     assert actions == [policy.pad('b'), policy.pad('b')]
-    assert mem['source_override']['1-C1'] == 'ほんじょう'
+    assert mem['source_override']['1-C1'] == 'アルマムーン'
     assert mem['_records'][-1]['decision'] == 'order_source_changed'
 
 
@@ -1222,7 +1222,7 @@ def test_bot_records_plans_separately_from_sent_input_with_full_identity(tmp_pat
     state = {'step': 7, 'screen_kind': 'map', 'policy': {'active': '1-A1', 'variant': 'chart'}}
     actions = [{'type': 'pad', 'buttons': ['right'], 'hold_ms': 100}]
     module.persist(tmp_path, state, [{'decision': 'order_start', 'chart_step': '1-A1',
-                   'general': 'どうし', 'source': 'ほんじょう', 'target': 'キカンドン', 'cards': [], 'reason': 'チャート順'}],
+                   'general': 'どうし', 'source': 'アルマムーン', 'target': 'キカンドン', 'cards': [], 'reason': 'チャート順'}],
                    {'hanjuku': identity}, actions=actions, frame_sha256='b'*64)
     plans = [json.loads(x) for x in (tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()]
     assert plans[0]['dispatch_status'] == 'planned_not_yet_sent'
@@ -1399,13 +1399,13 @@ def test_chart_decisions_are_mirrored_into_their_own_bounded_log(tmp_path, decis
 
 
 def test_failed_menu_drops_cursor_estimate_and_stops_sea_a_spam():
-    """g340: A on open water with a stale ほんじょう estimate looped forever."""
+    """g340: A on open water with a stale アルマムーン estimate looped forever."""
     from docich.hanjuku_pixels import Frame
     from docich.hanjuku_screen import Screen
     frame = Frame(256, 224, bytes(256 * 224 * 3))
     mem = {'chapter': 1, 'variant': 'chart', 'active': '1-A1',
            'orders': {'1-A1': 'pending'}, 'picked': [],
-           'cursor': list(policy.chart.castles(1)['ほんじょう']),
+           'cursor': list(policy.chart.castles(1)['アルマムーン']),
            'expect_menu': True, '_records': [], 'select_used': True}
     screen = Screen(lines=[], hand=None, text='', kind='map',
                     cursor=(200, 160))  # bracket on water, not a roof cell
@@ -1421,7 +1421,7 @@ def test_failed_menu_drops_cursor_estimate_and_stops_sea_a_spam():
     mem['_records'] = []
     mem['expect_menu'] = False
     # Simulate update_world wrongly still "at goal" without anchor.
-    mem['cursor'] = list(policy.chart.castles(1)['ほんじょう'])
+    mem['cursor'] = list(policy.chart.castles(1)['アルマムーン'])
     monkey_arrived = Screen(lines=[], hand=None, text='', kind='map', cursor=(200, 160))
     # menu_miss path: arrived but no anchor → hold, no A
     def arrived(*_a, **_k):
@@ -1445,7 +1445,7 @@ def test_failed_menu_on_open_sea_steers_inland_until_roofs_reanchor(monkeypatch)
     from docich.hanjuku_screen import Screen
     frame = Frame(256, 224, bytes(256 * 224 * 3))
     monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
-    home = policy.chart.castles(1)['ほんじょう']
+    home = policy.chart.castles(1)['アルマムーン']
     mem = {'chapter': 1, 'variant': 'chart', 'active': '1-A1',
            'orders': {'1-A1': 'pending'}, 'picked': [],
            'cursor': [home[0] - 3, home[1]], 'expect_menu': True, '_records': [],
@@ -1477,7 +1477,7 @@ def test_failed_menu_on_open_sea_steers_inland_until_roofs_reanchor(monkeypatch)
     assert mem['cursor'] == [cam[0] + 120, cam[1] + 100]
     assert mem['uncertain'] is False and 'nav_search' not in mem
     assert mem['menu_miss'] == 0
-    # Normal navigation resumes toward the order's source (ほんじょう).
+    # Normal navigation resumes toward the order's source (アルマムーン).
     assert {a['buttons'][0] for a in actions} == {'right', 'down'}
 
 
@@ -1514,7 +1514,7 @@ def test_chart_adjust_applied_commentary_lists_order_content():
     key, text = hanjuku_commentary.compose({
         'decision': 'chart_adjust_applied',
         'order_digest': [
-            {'general': 'ココット', 'source': 'ほんじょう', 'target': 'ジョンリギ', 'cards': []},
+            {'general': 'ココット', 'source': 'アルマムーン', 'target': 'ジョンリギ', 'cards': []},
             {'general': 'ヴィーナス', 'source': 'ナキューメラ', 'target': 'カストーラ', 'cards': ['フットバース']},
             {'general': 'どうし', 'source': 'ゴーメン', 'target': 'スペンソニア', 'cards': []},
             {'general': 'どうし', 'source': 'スペンソニア', 'target': 'けっかい', 'cards': ['クースカン']},
@@ -1526,7 +1526,7 @@ def test_chart_adjust_applied_commentary_lists_order_content():
     assert len(text) <= 120
     assert 'chart_adjust_applied' in hanjuku_commentary.SPOKEN
     # Long plans collapse to a bounded line instead of exceeding MAX_TEXT.
-    long_digest = [{'general': f'将軍{i}', 'source': 'ほんじょう', 'target': f'城{i}', 'cards': []}
+    long_digest = [{'general': f'将軍{i}', 'source': 'アルマムーン', 'target': f'城{i}', 'cards': []}
                    for i in range(8)]
     _, long_text = hanjuku_commentary.compose(
         {'decision': 'chart_adjust_applied', 'order_digest': long_digest})
@@ -1536,7 +1536,7 @@ def test_chart_adjust_applied_commentary_lists_order_content():
 def test_jev_interim_commentary_includes_choice_and_confidence():
     key, text = hanjuku_commentary.compose({
         'decision': 'chart_interim_order', 'general': 'どうし', 'target': 'スペンソニア',
-        'source': 'ほんじょう', 'confidence': 0.85})
+        'source': 'アルマムーン', 'confidence': 0.85})
     assert key == 'jev_interim:スペンソニア'
     assert 'JEV' in text and 'スペンソニア' in text and '0.85' in text
     assert 'chart_interim_order' in hanjuku_commentary.SPOKEN
@@ -2726,7 +2726,7 @@ def test_powerless_return_navigates_to_measured_return_row():
 
 def _short_recruit_memory():
     return {'chapter': 1, 'month': '1-7', 'tick': 100,
-            'garrison': {'ほんじょう': ['どうし', 'ゼウス']}, 'orders': {}, 'picked': [],
+            'garrison': {'アルマムーン': ['どうし', 'ゼウス']}, 'orders': {}, 'picked': [],
             'recruit_roster': {'chapter': 1, 'month': '1-7', 'tick': 95,
                 'names': ['どうし', 'ゼウス'], 'wages': {'どうし': 0, 'ゼウス': 4}, 'complete': True},
             'castle_income': {'アルマムーン': {'chapter': 1, 'month': '1-7', 'tick': 95, 'income': 30}}}
@@ -2808,7 +2808,7 @@ def test_short_generals_can_reserve_even_before_a_future_chart_purchase():
 
 
 def test_recruit_join_is_verified_at_the_heros_observed_castle():
-    mem = {'chapter': 1, 'garrison': {'ほんじょう': [], 'ジョンリギ': ['どうし']},
+    mem = {'chapter': 1, 'garrison': {'アルマムーン': [], 'ジョンリギ': ['どうし']},
            'month_sub': {'kind': 'recruit', 'gold_before': 100, 'key': '1-7',
                          'candidate_names': ['ラズベリー'], 'generals_before': ['どうし']}}
     policy._finish_month_sub(parse(month_canvas(50)), mem, {'recruit': 'opened'})
@@ -2932,8 +2932,8 @@ def _broken_hero_memory():
 
 def test_broken_hero_waits_for_real_repair_status_not_house_departure():
     mem = _broken_hero_memory()
-    mem['garrison']['ほんじょう'] = ['どうし']
-    order = {'step': 'x', 'general': 'どうし', 'source': 'ほんじょう',
+    mem['garrison']['アルマムーン'] = ['どうし']
+    order = {'step': 'x', 'general': 'どうし', 'source': 'アルマムーン',
              'target': 'ゴーメン', 'cards': ['フットバース'], 'after': None}
     assert not policy._ready(order, mem)
     mem['house'] = {'phase': 'travel', 'general': 'どうし', 'purchased': False}
@@ -2955,9 +2955,9 @@ def test_broken_hero_allows_other_general_and_friendly_staffing_move():
 
 def test_interim_attack_uses_another_general_instead_of_broken_hero():
     mem = _broken_hero_memory()
-    assert policy._interim_source(mem, 'ゴーメン', None, {'ほんじょう'}, set()) == ('ほんじょう', 'ゼウス')
-    mem['garrison']['ほんじょう'] = ['どうし']
-    assert policy._interim_source(mem, 'ゴーメン', None, {'ほんじょう'}, set()) is None
+    assert policy._interim_source(mem, 'ゴーメン', None, {'アルマムーン'}, set()) == ('アルマムーン', 'ゼウス')
+    mem['garrison']['アルマムーン'] = ['どうし']
+    assert policy._interim_source(mem, 'ゴーメン', None, {'アルマムーン'}, set()) is None
 
 
 @pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm', 'map_target'])
