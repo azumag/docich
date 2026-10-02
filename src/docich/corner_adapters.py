@@ -463,7 +463,19 @@ class WeatherCornerAdapter:
         from .weather_corner import WeatherCornerManager
 
         self.g, self.corner = g, corner
-        self.manager = WeatherCornerManager(g, duration_minutes=corner.duration_minutes)
+        audio_enabled = getattr(corner, "audio_enabled", False)
+        audio_port = None
+        if audio_enabled:
+            from .soren_weather_audio import SorenWeatherAudioPort
+            from .trading.soren_output import resolve_soren_root
+
+            audio_port = SorenWeatherAudioPort(resolve_soren_root(g), g.state_dir)
+        self.manager = WeatherCornerManager(
+            g,
+            duration_minutes=corner.duration_minutes,
+            audio_enabled=audio_enabled,
+            audio_port=audio_port,
+        )
         self.state_path = self.manager.state_path
 
     def eligible(self):

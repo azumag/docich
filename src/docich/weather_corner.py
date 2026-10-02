@@ -2,8 +2,9 @@
 
 Scheduling and shared program-slot arbitration stay in corner_rotation and
 corner_adapters. GameSwitch owns boundary waits, runtime teardown, rollback,
-and restoration; this module persists only the weather corner's request and
-full runtime identity. It never fetches a forecast or enqueues speech.
+and restoration; this module persists the weather corner's request and full
+runtime identity, plus an opt-in shared-audio item plan. It never fetches a
+forecast or generates speech.
 """
 from __future__ import annotations
 
@@ -24,7 +25,12 @@ from .game_switch import (
     GameSwitchStore,
     atomic_write_json,
 )
-from .weather import WeatherError
+from .weather import WeatherError, narration
+from .weather_audio import (
+    MAX_ITEM_INDEX, WeatherAudioError, build_weather_audio_request,
+    item_idempotency_key, request_fingerprint, runtime_identity_matches,
+    validate_weather_audio_receipt, validate_weather_audio_request,
+)
 from .weather_view import read_view
 
 WEATHER_VIEW_NAME = "weather-view"
@@ -70,14 +76,21 @@ class WeatherCornerManager:
     """Run one weather display under an existing GameSwitch/program slot."""
 
     def __init__(self, g, *, duration_minutes=None, coordinator=None,
+                 audio_enabled=False, audio_port=None,
                  clock=time.time, sleep=time.sleep, poll_s=1.0):
         if duration_minutes is not None and (
                 type(duration_minutes) is not int or not 1 <= duration_minutes <= 14):
             raise WeatherCornerError("weather duration must be an integer from 1 to 14 minutes")
         if type(poll_s) not in (int, float) or poll_s <= 0:
             raise WeatherCornerError("weather poll interval must be positive")
+        if type(audio_enabled) is not bool:
+            raise WeatherCornerError("weather audio setting must be boolean")
+        if audio_enabled and audio_port is None:
+            raise WeatherCornerError("weather audio consumer is unavailable")
         self.g = g
         self.duration_minutes = duration_minutes
+        self.audio_enabled = audio_enabled
+        self.audio_port = audio_port
         self.clock, self.sleep, self.poll_s = clock, sleep, float(poll_s)
         self.path = Path(g.state_dir) / STATE_FILENAME
         self.state_path = self.path
@@ -343,6 +356,173 @@ class WeatherCornerManager:
             return False
         return actual == identity
 
+    def _validate_audio_delivery(self, state):
+        delivery = state.get("audio_delivery")
+        if delivery is None:
+            return None
+        if (not isinstance(delivery, dict)
+                or delivery.get("execution_id") != state.get("rotation_request_id")
+                or delivery.get("status") not in {"running", "stopping", "completed", "stopped", "failed"}
+                or type(delivery.get("next_index")) is not int):
+            raise WeatherCornerError("weather audio delivery state is invalid")
+        next_index = delivery["next_index"]
+        requests = delivery.get("requests")
+        if delivery["status"] == "failed":
+            if requests != [] or next_index != 0:
+                raise WeatherCornerError("failed weather audio state is invalid")
+            return delivery
+        if (not isinstance(requests, list) or len(requests) != MAX_ITEM_INDEX + 1
+                or not 0 <= next_index <= len(requests)):
+            raise WeatherCornerError("weather audio request plan is invalid")
+        identity = state.get("weather_runtime_identity")
+        expected_digest = None
+        for index, request in enumerate(requests):
+            try:
+                request_fingerprint(request)
+                expected_key = item_idempotency_key(delivery["execution_id"], index)
+            except (TypeError, ValueError) as exc:
+                raise WeatherCornerError("weather audio request plan is invalid") from exc
+            if (request.get("execution_id") != delivery["execution_id"]
+                    or request.get("item_index") != index
+                    or request.get("item_key") != expected_key
+                    or not runtime_identity_matches(identity, request.get("runtime_fence"))):
+                raise WeatherCornerError("weather audio request owner does not match the runtime")
+            forecast = request.get("forecast")
+            digest = forecast.get("report_digest") if isinstance(forecast, dict) else None
+            if expected_digest is None:
+                expected_digest = digest
+            elif digest != expected_digest:
+                raise WeatherCornerError("weather audio request plan mixes forecasts")
+        if delivery["status"] == "running" and next_index >= len(requests):
+            raise WeatherCornerError("weather audio completion state is invalid")
+        if delivery["status"] == "stopping" and next_index >= len(requests):
+            raise WeatherCornerError("weather audio stop state is invalid")
+        if delivery["status"] == "completed" and next_index != len(requests):
+            raise WeatherCornerError("weather audio completion state is invalid")
+        return delivery
+
+    def _prepare_audio_delivery(self, state):
+        delivery = state.get("audio_delivery")
+        if delivery is not None:
+            return self._validate_audio_delivery(state)
+        try:
+            forecast = read_view(self.snapshot_path, clock=self.clock)
+            lines = narration(forecast)
+            if len(lines) != MAX_ITEM_INDEX + 1:
+                raise WeatherAudioError("weather narration item count changed")
+            execution_id = state.get("rotation_request_id")
+            identity = state.get("weather_runtime_identity")
+            requests = [
+                build_weather_audio_request(
+                    execution_id=execution_id,
+                    item_index=index,
+                    text=line,
+                    runtime_identity=identity,
+                    forecast_view=forecast,
+                    now=self.clock(),
+                )
+                for index, line in enumerate(lines)
+            ]
+        except (OSError, TypeError, ValueError) as exc:
+            state["audio_delivery"] = {
+                "status": "failed", "execution_id": state.get("rotation_request_id"),
+                "requests": [], "next_index": 0, "reason": "request-invalid",
+            }
+            self._save(state)
+            return state["audio_delivery"]
+        state["audio_delivery"] = {
+            "status": "running", "execution_id": execution_id,
+            "requests": requests, "next_index": 0,
+        }
+        self._save(state)
+        return state["audio_delivery"]
+
+    def _stop_audio_delivery(self, state, reason):
+        delivery = self._validate_audio_delivery(state)
+        if delivery is None or delivery["status"] in {"completed", "stopped", "failed"}:
+            return
+        if self.audio_port is None:
+            raise WeatherCornerError("weather audio consumer is unavailable during cancellation")
+        index = delivery["next_index"]
+        request = delivery["requests"][index]
+        if delivery["status"] == "running":
+            delivery.update(status="stopping", stop_reason=reason, stop_requested_at=self.clock())
+            self._save(state)
+        else:
+            reason = delivery.get("stop_reason", reason)
+        try:
+            receipt = self.audio_port.interrupt_weather_audio(request["item_key"])
+            if receipt is not None:
+                receipt = validate_weather_audio_receipt(request, receipt)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise WeatherCornerError("weather audio item termination is unconfirmed") from exc
+        if receipt is not None and receipt["status"] == "played":
+            delivery["next_index"] += 1
+            if delivery["next_index"] == len(delivery["requests"]):
+                delivery.update(status="completed", completed_at=self.clock())
+            else:
+                delivery.update(
+                    status="stopped", reason=reason,
+                    quiescence_confirmed_at=self.clock(),
+                )
+        else:
+            delivery.update(status="stopped", reason=reason, quiescence_confirmed_at=self.clock())
+        self._save(state)
+
+    def _advance_audio_delivery(self, state):
+        if not self.audio_enabled:
+            if state.get("audio_delivery") is not None:
+                self._stop_audio_delivery(state, "audio-disabled")
+            return
+        delivery = self._prepare_audio_delivery(state)
+        if delivery["status"] == "stopping":
+            self._stop_audio_delivery(state, delivery.get("stop_reason", "resume-stop"))
+            return
+        if delivery["status"] != "running":
+            return
+        index = delivery["next_index"]
+        request = delivery["requests"][index]
+        try:
+            receipt = self.audio_port.get_weather_audio_receipt(request["item_key"])
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise WeatherCornerError("shared weather audio consumer is unavailable") from exc
+        if receipt is None:
+            try:
+                request = validate_weather_audio_request(request, now=self.clock())
+            except WeatherAudioError:
+                self._stop_audio_delivery(state, "forecast-expired")
+                return
+            try:
+                receipt = self.audio_port.enqueue_weather_audio(request)
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                # A lost command response is resolved on restart by querying
+                # the same durable key before attempting the same payload.
+                raise WeatherCornerError("shared weather audio enqueue is unavailable") from exc
+        try:
+            receipt = validate_weather_audio_receipt(request, receipt)
+        except WeatherAudioError as exc:
+            raise WeatherCornerError("weather audio receipt could not be verified") from exc
+        if receipt["status"] == "queued":
+            if self.clock() >= request["runtime_fence"]["expires_at"]:
+                self._stop_audio_delivery(state, "forecast-expired")
+            return
+        if receipt["status"] == "played":
+            delivery["next_index"] += 1
+            if delivery["next_index"] == len(delivery["requests"]):
+                delivery.update(status="completed", completed_at=self.clock())
+            self._save(state)
+            return
+        if receipt["status"] in {"rejected", "interrupted"}:
+            delivery.update(
+                status="stopping", stop_reason=f"{receipt['status']}:{receipt['reason']}",
+                stop_requested_at=self.clock(),
+            )
+            self._save(state)
+            self._stop_audio_delivery(state, delivery["stop_reason"])
+            return
+        delivery.update(status="stopped", reason=f"{receipt['status']}:{receipt['reason']}")
+        self._save(state)
+
     def _wait_and_restore(self, state):
         weather_identity = state.get("weather_runtime_identity")
         if (not isinstance(weather_identity, dict)
@@ -365,6 +545,7 @@ class WeatherCornerManager:
                 # An operator or another owner has begun a GameSwitch request.
                 # Let that durable request finish, then decide from the stable
                 # canonical owner on the next scheduler tick.
+                self._stop_audio_delivery(state, "runtime-transition")
                 self._save(state)
                 return "queued"
             if phase in {"stopping", "starting", "rolling_back"}:
@@ -377,11 +558,14 @@ class WeatherCornerManager:
                         except WeatherCornerError:
                             continue
                 if weather_identity in identities:
+                    self._stop_audio_delivery(state, "runtime-transition")
                     self._save(state)
                     return "queued"
             if not _stable(canonical):
+                self._stop_audio_delivery(state, "runtime-transition")
                 raise WeatherCornerError("weather runtime ownership is in an unsafe switch phase")
             if not self._matches_active(canonical, weather_identity):
+                self._stop_audio_delivery(state, "operator-moved")
                 return self._mark_interrupted(state, "operator-moved-during-weather")
             remaining = state.get("ends_at")
             if type(remaining) not in (int, float) or remaining < 0:
@@ -389,6 +573,7 @@ class WeatherCornerManager:
             remaining = remaining - self.clock()
             if remaining <= 0:
                 return self._restore(state)
+            self._advance_audio_delivery(state)
             self.sleep(min(self.poll_s, remaining))
 
     def _restore_receipt_finished(self, state, canonical):
@@ -441,6 +626,9 @@ class WeatherCornerManager:
                 or set(weather_identity) != set(RUNTIME_IDENTITY_KEYS)
                 or weather_identity.get("game") != WEATHER_VIEW_NAME):
             raise WeatherCornerError("weather runtime owner identity is missing before restore")
+        # Quiesce the only weather-owned shared-queue item before restoring the
+        # prior runtime. At most one narration item can be outstanding.
+        self._stop_audio_delivery(state, "corner-ended")
         if state.get("status") != "restoring":
             state.update(status="restoring", restore_requested_at=self.clock(), end_reason=end_reason)
             state["restore_request_id"] = str(uuid.uuid4())

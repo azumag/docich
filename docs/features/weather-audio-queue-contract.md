@@ -1,18 +1,16 @@
-# 天気原稿の共有audio queue契約（未接続）
+# 天気原稿の共有audio queue契約（default-off producer）
 
-この文書と `src/docich/weather_audio.py` は、天気音声を既存共有queueへ安全に接続する前の
-**値契約**を定義する。docichの天気cornerは依然として原稿JSONを生成するだけで、音声を
-queueへ送らない。別queue/spool、player、timer、production接続は追加していない。
+この文書と `src/docich/weather_audio.py` は、天気音声の**値契約**を定義する。
+`audio_enabled`のcatalog defaultはfalseで、明示opt-inがない限りproducerは共有queueを呼ばない。
+接続時も既存comment queue/worker/owned playerだけを使い、別queue/spool、player、timerは追加しない。
 
-## 既存consumerをそのまま呼べない理由
+## 使用する既存consumer API
 
-確認した `soviet_now/main` は `c72add7bd10725efb65eb4913a02ec6bf540a5b1`。
-
-- [`lib/outbound_queue.sh`](https://github.com/azumag/soviet_now/blob/c72add7bd10725efb65eb4913a02ec6bf540a5b1/lib/outbound_queue.sh) の `enqueue_audio_text` は任意source文字列と4番目のruntime fence引数を受けるが、fenceがある場合は `source=hanjuku_commentary` を必須にし、`hanjuku_audio_fence.py` を呼ぶ。これは `hanjuku-hero` と `hanjuku_run.json` を要求するため、weatherから流用できない。
-- 同関数の通常dedupは本文MD5を120秒保持する。これは別の予報項目が同じ文面だった場合に項目を区別できず、予報項目ごとの永続idempotency keyにはならない。
-- [`workers/audio_worker.sh`](https://github.com/azumag/soviet_now/blob/c72add7bd10725efb65eb4913a02ec6bf540a5b1/workers/audio_worker.sh) は既存の `_play_comment_queue` を呼ぶ薄いconsumerである。[`broadcast/comment_lib.sh`](https://github.com/azumag/soviet_now/blob/c72add7bd10725efb65eb4913a02ec6bf540a5b1/broadcast/comment_lib.sh) はfence違反のitemを除去するが、item keyに結びつくplayed/rejected/interrupted receiptを返さない。[`say_enqueue.sh`](https://github.com/azumag/soviet_now/blob/c72add7bd10725efb65eb4913a02ec6bf540a5b1/say_enqueue.sh) の既存played logもdelivery key単位の永続receiptではない。
-
-よって、`enqueue_audio_text` の成功や本文dedupを再生完了と解釈しない。Hanjuku・コメントのsource、dedup、fence、consumerの挙動も変更しない。
+このPRはconsumer変更PR [#558](https://github.com/azumag/soviet_now/pull/558) の統合commit
+`46d5043911645692aa765f101b9494de332ec09d` をsubmoduleでpinし、weather専用の
+`lib/weather_audio_consumer.py` がある。旧`enqueue_audio_text`/本文MD5 dedup/Hanjuku-only fenceは流用しない。
+producerは`enqueue`, `get`, `interrupt`, `quiescence` CLIを呼び、consumerのweather-specific durable receiptと既存
+`_play_comment_queue` / `say_enqueue.sh` owned player boundaryを使う。Hanjuku・他コメントの動作は変更しない。
 
 ## docich側の値契約
 
@@ -25,21 +23,20 @@ queueへ送らない。別queue/spool、player、timer、production接続は追�
 - `forecast`: 固定JMA source URL、対象日、項目に対応する発表時刻、検証済みprojected view 11地点全体のreport digest。report digestは事務所/区域/観測地点、対象日・発表時刻、天気・気温・降水確率、各地点の出典URLを正規化してSHA-256にする。都市項目はweather.narrationの地点順、冒頭/結びは同report内の最新発表時刻を使う。LLMや予測文の生成はしない。
 - receipt: source、item key、正規化したrequest全体（本文・対象日・発表時刻・予報metadata・完全runtime fenceを含む）のSHA-256 digest、完全runtime fence、予報metadata、記録時刻をitemへ結び、`queued` / `played` / `rejected` / `interrupted` と限定reason codeだけを許可する。従って同一execution IDとordinalでも本文・予報identity・runtime tupleが変われば、前の成功receiptを照合できない。digestはpayload結合用であり、署名やconsumer認証ではない。
 
-`SharedWeatherAudioPort` と `validate_weather_audio_receipt` は後続adapter向けの拡張点であり、現状このProtocolを実装するproduction adapterはない。pure validatorはreceiptのshape・request digest・完全runtime identity・時刻の整合だけを検証する。`played`値もこのvalidatorやhelperだけでは実再生済みの証明にならない。将来の実consumerがowned playerの完了を確認した場所でitem-keyごとのdurable receiptを記録し、そのconsumerが返すreceiptをdocichが照合して初めて完了証跡として扱える。
+`SharedWeatherAudioPort`はこのproducer adapterの最小境界である。pure validatorはreceiptのshape・request digest・完全runtime identity・時刻の整合だけを検証する。`played`値そのものが汎用的に実再生を証明するわけではない。このpinned consumerがplanned chunk全部の完了を確認した後に返すdurable receiptだけをdocichが照合し、全13 itemのreceiptが`played`なら音声全体を完了扱いする。
 
 requestの現在時刻検証は既存weather契約に合わせ、JST上の今日/翌日の対象日、発表時刻が未来でないこと、発表から18時間以内、期限が現在より先かつ15分以内、発表後18時間を越えない期限を確認する。時計・期限・generation・schema versionなどの整数相当値に`bool`を受け入れず、NaN/Infinityも拒否する。
 
-## 共有consumer接続時の最小追加範囲
+## Producer lifecycle
 
-本当に共有queueへ接続する段階では、別repo `soviet_now` に対し少なくとも次を別レビュー・別CIで実装し、docichはその安定APIをpinした後に明示的producerを追加する。
+1. weather catalog rowの`audio_enabled`は省略時false。audio-off cornerは既存表示/GameSwitch動作のみ実行し、consumer processも呼ばない。
+2. audio-on後、GameSwitch start receiptで確定した同一weather runtime identityと新鮮なsnapshotから13 requestを作り、完全payloadをowner stateへ保存してからitem 00をenqueueする。文面は`weather.narration(view)`のliteral lineそのもの。
+3. 各poll/restartで保存済みitemの`get`を先に呼ぶ。receiptがあればenqueueを繰り返さず検証する。見つからずforecastがまだ有効な場合だけ同じkey・完全に同じpayloadでretryする。consumer側のper-key durable idempotencyが二重publishを防ぐ。
+4. `played`後にだけ次ordinalへ進み、`rejected`/`interrupted`後はそこで止める。manual stop、snapshot expiry、GameSwitch transition時は1 pending itemのみ既存`interrupt`で終端化する。terminal receiptとは別に、pinned consumerのdurable `player_stop_confirmed` ackを照会し、ackがない間は再開後もGameSwitch restoreを進めない。queue filename消失だけをplayer停止の証拠にしない。
+5. 受理済み`queued`は再生完了を意味しない。13 receiptすべてがconsumerから`played`になって初めてdelivery stateが`completed`となる。全itemがcornerのduration/forecast expiry前に終わらない場合は残りを送らずstopped/incompleteのまま終える。
 
-1. `weather_corner` 専用enqueue入口と永続item keyを追加する。既存の本文MD5 dedupを流用せず、同keyの異なるpayloadは拒否する。
-2. Hanjuku helperを拡張利用せず、weather専用fence pathでcanonicalのweather-view完全identityと期限を照合する。queue受理時と再生開始時に確認する。
-3. 既存 `_play_comment_queue` / `say_enqueue.sh` のowned player開始・終了点へ、期限切れ/identity不一致の `rejected`、正常終了後のみ `played`、開始後のfence loss/worker interruptionの `interrupted` receiptをitem keyごとに永続化する。
-4. 旧sourceのdedup・並び順・fence・receipt挙動を変更しない回帰を、isolated shell fixture上で検証する。
-
-receiptがなくworker crashした場合に実際にどこまで再生されたかは現在のplayer contractからは証明できない。将来consumerでその不確実性をどう扱うか（再送せず `interrupted` にするか等）は、共有queue側の具体的な設計判断として保留する。
+一度に存在するweather queue itemは最大1件。cancel-by-key CLIのないconsumer版に合わせ、adapterはexecution UUID/ordinalに一致するconsumerの規定filenameだけを特定して既存`interrupt` commandへ渡す。helper自身もfilename、sidecar、request digestを再検証するため、別sourceや別itemには操作しない。
 
 ## オフライン回帰
 
-`tests/test_weather_audio_contract.py` のdummy queue/playerはメモリ内だけで動き、Soren shellをsourceせず、audio queueファイルを作らず、音声を鳴らさない。ここで検証するのはrequest/receipt schema、runtime/期限のvalidation、item-key retry/conflict、および将来consumerが返す3種の終端receipt形状だけである。実queue consumerや音声連携の検証には数えない。
+`tests/test_weather_audio_contract.py` はrequest/receipt値契約を、weather corner testsはdefault-off/逐次配送/receipt restart/cancel/全13-item completionをfake portで確認する。shared consumer自身はpinned source repoのtemporary queue + temporary GameSwitch + dummy player testsで確認し、TTS/audio worker/production queueは起動しない。これらは実配信音声や実VM GameSwitchの確認とは区別する。
