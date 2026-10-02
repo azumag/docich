@@ -16,16 +16,17 @@ SQLite-backed Durable Objectを保存先に使います。D1や外部DBは使い
 
 ## ローカル検証と起動
 
-Node.js 20以降を用意します。fixtureテストはNodeの`node:test`とDurable Objectの`MemoryStorage` mockを使い、外部アカウント、ネットワーク、Cloudflareリソースは必要ありません。mockは値をstagingしてcallback成功後にcommitし、transactionを直列化しますが、rollbackを検証するfault-injectionテストはありません。したがって、Nodeテストも実workerd上のSQLite rollbackを証明しません。
-
-このPRではWrangler 4.119.0のローカルworkerdでSQLite Durable Objectを起動し、署名付きWebhookと同一requestIdの再送を確認しました。設定済みの`compatibility_date = "2026-09-21"`は同梱runtimeが未対応だったため、smoke testの実行時だけ`2026-08-08`へ上書きしています。設定日付でのworkerd実行や本番環境は未検証です。
-
-実workerdのtransaction rollback、同時リクエストの競合、および応答timeout後にDurable Objectが遅れてcommitした場合の同一リクエスト再送は未検証です。
+Node.js 20以降を用意します。`npm test`はNodeの`node:test`とDurable Objectの`MemoryStorage` mockを使います。mockは値をstagingしてcallback成功後にcommitし、transactionを直列化しますが、rollbackを検証するfault-injectionテストはありません。
 
 ```sh
 cd workers/tsuitate-bot
 npm test
+npm run test:workerd
 ```
+
+`test:workerd`は`wrangler.runtime.toml`のtest-only Workerを`wrangler dev --local`で起動し、同じ要求の同時送信、同じrequestIdの別本文競合、storage書込み例外後のSQLite transaction rollback、timeout応答後のlate commit再送を検証します。runtimeが設定compatibility dateに未対応なら、起動エラーに表示された最新対応日へテスト実行中だけ上書きし、その日付を出力します。テスト状態は一時ディレクトリへ保存して終了時に削除し、Cloudflareアカウントやリソースにはアクセスしません。この設定はローカル専用で、deployしないでください。
+
+この検証環境のグローバルWrangler 4.119.0/workerdは設定日付`2026-09-21`を拒否し、対応可能な最新日として`2026-08-08`を返しました。ローカルではその日付へoverrideして4つのfixtureが成功しています。一方、GitHub Actionsは通常のnpm installで得たWranglerを使い、overrideなしで設定日付`2026-09-21`のまま4つすべて成功しました。ローカルにあるruntimeとnpm取得版の差はこのように確認できましたが、本番Cloudflare環境の動作は未検証です。
 
 ローカルWorkerを起動する場合はWranglerをインストールし、`wrangler.toml` の `BOT_ID` を手元のBot IDへ置き換えます。`.dev.vars` を作成し、ローカル用の `WEBHOOK_SECRET` を自分で設定してから起動してください。
 

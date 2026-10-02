@@ -1,0 +1,15 @@
+# Local integration-test configuration only. Do not deploy this Worker.
+name = "docich-tsuitate-runtime-test-only"
+main = "test/workerd-worker.js"
+compatibility_date = "2026-09-21"
+
+[vars]
+BOT_ID = "fixture-bot-id"
+
+[[durable_objects.bindings]]
+name = "GAME_STATE"
+class_name = "RuntimeGameState"
+
+[[migrations]]
+tag = "runtime-test-v1"
+new_sqlite_classes = ["RuntimeGameState"]

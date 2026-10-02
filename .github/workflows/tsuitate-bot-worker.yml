@@ -28,7 +28,10 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
-      - name: Run local protocol and state fixtures
+      - name: Install Wrangler and its local runtime
+        run: npm install --no-audit --no-fund
+      - name: Run protocol fixtures and local workerd integration checks
         run: |
           node --version
           npm test
+          npm run test:workerd
