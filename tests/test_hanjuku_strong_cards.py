@@ -182,6 +182,7 @@ def battle_memory(step, enemy, ally):
     mem = {'chapter': 1, 'month': '1-10', 'active': step, 'variant': 'chart',
            'orders': {step: 'pending'}, 'picked': [], '_records': [],
            'strong_card_kit': {step: 'クースカン'},
+           'order_context': {step: {'observed_metric': {'cards': ['クースカン']}}},
            'battle': {'enemy': enemy, 'ally': ally, 'enemy_hp': 70, 'ally_hp': 80,
                       'start_enemy_hp': 70, 'start_ally_hp': 80, 'step': step,
                       'cards_used': [], 'cards_selected': [], 'side': 'attack',
@@ -234,3 +235,37 @@ def test_no_strong_opening_without_an_actual_carry():
     mem.pop('strong_card_kit')
     policy.battle_step(battle_screen('バタール', 'ココット'), mem)
     assert mem['battle'].get('card_flow') is None
+
+
+@pytest.mark.parametrize('card', ['ミックミー', 'マグネガキン'])
+def test_adjusted_strong_card_does_not_enter_ungated_derived_tactics(card):
+    step = 'A:abcdef123456:J1'
+    mem = battle_memory(step, 'キャラウェイ', 'ヴィーナス')
+    mem['strong_card_kit'] = {step: card}
+    mem['order_context'] = {step: {'observed_metric': {'cards': [card]}}}
+    mem['chart_plan'] = {'orders': [{'step': step, 'general': 'ヴィーナス',
+                                    'source': 'アルマムーン', 'cards': [],
+                                    'target': 'ジョンリギ', 'after': None}]}
+
+    # The carry is added by _deploy_cards, but its default derived tactic must
+    # not run before the dedicated strong_only tactic on an adjusted order.
+    assert policy._deploy_cards(policy._order(mem), mem) == [card]
+    assert not [t for t in policy._tactics(mem, step)
+                if t.get('step') == step and t['card'] == card]
+    policy.battle_step(battle_screen('キャラウェイ', 'ヴィーナス'), mem)
+    assert mem['battle'].get('card_flow') is None
+    assert not [r for r in mem['_records'] if r['decision'] == 'battle_card']
+
+
+def test_strong_card_requires_measured_carry_even_when_the_plan_includes_it():
+    mem = battle_memory('1-A1', 'バタール', 'ココット')
+    mem['strong_card_kit'] = {'1-A1': 'ミックミー'}
+    mem['order_context']['1-A1']['observed_metric']['cards'] = []
+
+    # The plan still contains the strong-card addition; the readable sortie
+    # panel is authoritative and shows that no card was actually carried.
+    assert policy._deploy_cards(policy._order(mem), mem) == ['ミックミー']
+    assert policy._strong_cards_carried(mem, mem['battle']) == []
+    policy.battle_step(battle_screen('バタール', 'ココット'), mem)
+    assert mem['battle'].get('card_flow') is None
+    assert not [r for r in mem['_records'] if r['decision'] == 'battle_card']
