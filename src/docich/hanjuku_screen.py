@@ -270,6 +270,8 @@ class Screen:
     menu_cursor: int | None = None
     egg_rows: list[EggRow] = field(default_factory=list)
     hidden_battle_commands: bool = False
+    # The two-row item box with every row disabled (measured g534 07:51).
+    disabled_item_box: bool = False
 
     def has(self, needle: str) -> bool:
         return needle.replace(' ', '') in self.text
@@ -392,15 +394,21 @@ def _egg_rows(frame: Frame) -> list[EggRow]:
 _BATTLE_COMMANDS = ((176, 'たまごをつかう'), (192, 'きりふだ'), (208, 'たいきゃく'))
 
 
-def _boss_command_rows(screen):
-    # Measured boss boxes: g508 y192/208; g510 Zeus y196/212. Require
-    # both exact labels: a lone egg row is also an egg-opponent command.
-    rows = {line.y: line.spans() for line in screen.menu_rows}
+def _box_rows(rows):
+    # Measured two-row box without たいきゃく: g508 y192/208, g510 Zeus
+    # y196/212, and the g534 07:51 castle-defense frame y192/208 with both
+    # rows disabled grey. Require both exact labels: a lone egg row is also
+    # an egg-opponent command.
+    by_y = {line.y: line.spans() for line in rows}
     for y in (192, 196):
-        if (rows.get(y) == [(176, 'たまごをつかう')]
-                and rows.get(y + 16) == [(176, 'きりふだ')]):
-            return [line for line in screen.menu_rows if line.y in (y, y + 16)]
+        if (by_y.get(y) == [(176, 'たまごをつかう')]
+                and by_y.get(y + 16) == [(176, 'きりふだ')]):
+            return [line for line in rows if line.y in (y, y + 16)]
     return []
+
+
+def _boss_command_rows(screen):
+    return _box_rows(screen.menu_rows)
 
 
 def _human_commands(screen):
@@ -447,6 +455,7 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
     screen.selected = _selected(lines, hand)
     screen.battle = _battle(frame)
     screen.menu_rows = _menu_rows(lines)
+    box_rows = _box_rows(screen.menu_rows)
     if not screen.menu_rows:
         # Measured disabled text is (106,105,106), not white. Keep it out
         # of selectable labels: only use all three exact rows to detect the
@@ -457,12 +466,23 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         screen.hidden_battle_commands = all(
             any(line.y == y and line.spans() == [(176,label)] for line in grey)
             for y,label in _BATTLE_COMMANDS)
-    if screen.menu_rows or screen.hidden_battle_commands:
-        cursor_rows = (_boss_command_rows(screen) or
+        # A castle defense has no たいきゃく row, so its item box is the
+        # two-row box one row lower than the three-row human command box
+        # (g534 07:51 death frame: y192 たまごをつかう / y208 きりふだ, both
+        # disabled grey, knight cursor on y192). The three-row rule above
+        # cannot see it and no light row survives, so an open rescue menu
+        # read 'unknown' and the bot answered it with a blind A instead of
+        # closing it: that menu episode ran 3.8 s while どうし fell
+        # 40 -> 22 and the enemy only 57 -> 49.
+        box_rows = _box_rows(grey)
+        screen.disabled_item_box = bool(box_rows)
+    if screen.menu_rows or screen.hidden_battle_commands or screen.disabled_item_box:
+        cursor_rows = (box_rows or
                        ([TextLine(y, ((176, label),)) for y, label in _BATTLE_COMMANDS]
                         if _human_commands(screen) or screen.hidden_battle_commands else screen.menu_rows))
         screen.menu_cursor = _menu_cursor(frame, cursor_rows)
         screen.hidden_battle_commands &= screen.menu_cursor is not None
+        screen.disabled_item_box &= screen.menu_cursor is not None
         screen.egg_rows = _egg_rows(frame)
     if phase in (None, 'field', 'field_menu', 'battle_intro', 'event'):
         screen.marker = _target_marker(frame)
@@ -521,7 +541,7 @@ def classify_text(s: Screen) -> str:
         return 'okunote_menu'
     if egg_choice_names(s):
         return 'egg_choice_menu'
-    if _human_commands(s) or s.hidden_battle_commands:
+    if _human_commands(s) or s.hidden_battle_commands or s.disabled_item_box:
         return 'battle_menu'
     if _partial_human_commands(s):
         return 'battle_menu_pending'

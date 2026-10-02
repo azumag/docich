@@ -117,8 +117,8 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
 3. catalogのweather行に`audio_enabled=true`を明示した場合だけ、既存の共有comment queueへ送る。
    原稿は`weather.narration(view)`の13 literal lineをその順で使い、出典・対象日・地点別発表時刻・
    全11地点report digestをitem requestへ保持する。LLMや独自予測を使わない。
-4. producerはconsumer変更PR [#558](https://github.com/azumag/soviet_now/pull/558) で導入したコードcommit
-   `b5ffca79243bf52c35602b1d1b0b61d280864524` をsubmoduleでpinして
+4. producerはconsumer変更PR [#558](https://github.com/azumag/soviet_now/pull/558) の統合commit
+   `46d5043911645692aa765f101b9494de332ec09d` をsubmoduleでpinして
    `lib/weather_audio_consumer.py`を使う。item keyは実行UUIDとordinalから作り、
    完全requestをweather owner stateへ先に保存する。最大1項目だけqueueへ置き、再開時は先に
    durable receiptを照会する。同じitemのretryは同一payload/keyに限定し、consumerの永続冪等性に
