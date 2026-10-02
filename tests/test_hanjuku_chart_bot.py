@@ -363,6 +363,85 @@ def test_decline_the_general_trade_prompt():
     assert mem3['_records'][-1]['strategy_variant'] == 'unclassified_prompt'
 
 
+def _goninja_offer(gold, hand_y=177):
+    """The measured monthly-event offer (gcgx img/ninja.png):
+
+    「5ねん 10のつき 7572G / 50Gで てきの ティピオカしょうぐんで /
+    うちとおすか? いかがかな!? / うむッ! / いかんッ!」
+
+    ``gold=None`` draws the same offer without a readable status header,
+    ``hand_y=193`` the cursor already moved down onto いかんッ!.
+    """
+    c = Canvas()
+    if gold is not None:
+        c.text(16, 15, f'5ねん 10のつき {gold}G')
+    c.text(24, 151, '50Gで てきの ティピオカ')
+    c.text(24, 183, 'うちとおすか?')
+    c.text(184, 183, 'うむッ!')
+    c.text(184, 199, 'いかんッ!')
+    c.hand(162, hand_y)
+    return c
+
+
+def test_goninja_is_ordered_only_with_money_to_spare():
+    # Owner rule 2026-10-02: 隠密戦隊ごにんじゃー（月イチイベント「ゴニンジャー」
+    # 50Gで敵将軍の暗殺を依頼）はお金に余裕がある時のみ依頼する。
+    screen = parse(_goninja_offer(7572).frame())
+    assert screen.kind == 'yes_no'
+    assert screen.header == {'chapter': None, 'year': 5, 'month': 10, 'gold': 7572}
+    mem = {'chapter': 3, '_records': []}
+    assert policy.yes_no_step(screen, mem)[0]['buttons'] == ['a']   # うむッ! is already selected
+    rec = mem['_records'][-1]
+    assert rec['strategy_variant'] == 'accept_goninja'
+    assert rec['choice'] == 'うむッ!'
+    assert rec['observed_metric']['spare'] >= policy.GONINJA_COST
+
+    # 賃金リザーブ30Gを残して依頼料が出せない所持金では断る。
+    mem2 = {'chapter': 3, '_records': []}
+    assert policy.yes_no_step(parse(_goninja_offer(60).frame()), mem2)[0]['buttons'] == ['down']
+    low = _goninja_offer(60, hand_y=193)                 # うむッ! -> いかんッ! へ移動済み
+    assert policy.yes_no_step(parse(low.frame()), mem2)[0]['buttons'] == ['a']
+    assert mem2['_records'][-1]['strategy_variant'] == 'decline_goninja_no_spare'
+    assert mem2['_records'][-1]['choice'] == 'いかんッ!'
+    assert mem2['_records'][-1]['observed_metric']['gold'] == 60
+
+    # 所持金が読めない時も払わない（fail closed）。
+    unheaded = parse(_goninja_offer(None).frame())
+    assert unheaded.header is None
+    mem3 = {'chapter': 3, '_records': []}
+    assert policy.yes_no_step(unheaded, mem3)[0]['buttons'] == ['down']
+    blind = _goninja_offer(None, hand_y=193)
+    assert policy.yes_no_step(parse(blind.frame()), mem3)[0]['buttons'] == ['a']
+    assert mem3['_records'][-1]['strategy_variant'] == 'decline_goninja_unreadable'
+    assert mem3['_records'][-1]['observed_metric'] is None
+
+
+def test_goninja_never_takes_the_charted_month_purchase():
+    # 第1話 5月のチャート購入は214G。その分と賃金リザーブを差し引いて残る額だけが
+    # 依頼に使える余裕。
+    assert policy.GONINJA_COST == 50
+    mem = {'chapter': 1, '_records': []}
+    header = {'chapter': None, 'year': 1, 'month': 5, 'gold': 240}
+    budget = policy._goninja_budget(mem, header)
+    assert budget['planned'] == 214
+    assert budget['spare'] == 240 - 214 - policy.WAGE_RESERVE
+    assert budget['spare'] < policy.GONINJA_COST
+    # 同じ予定でも所持金が残っていれば受ける。
+    rich = policy._goninja_budget(mem, dict(header, gold=300))
+    assert rich['spare'] == 300 - 214 - policy.WAGE_RESERVE
+    assert rich['spare'] >= policy.GONINJA_COST
+
+    # 採用済み調整チャートは実価格で見積もる。価格未測定のカードが混ざれば読めない扱い。
+    adjusted = {'chapter': 1, '_records': [],
+                'chart_plan': {'purchases': {'month': (1, 5),
+                                             'cards': (('クースカン', 1), ('ノリウツール', 2)),
+                                             'soldiers': 10}}}
+    priced = policy._goninja_budget(adjusted, dict(header, gold=400))
+    assert priced['planned'] == policy.KNOWN_PRICES['クースカン'] + 2 * policy.KNOWN_PRICES['ノリウツール'] + 10
+    adjusted['chart_plan']['purchases']['cards'] = (('デッドガン', 1),)   # 未測定価格
+    assert policy._goninja_budget(adjusted, header) is None
+
+
 def test_a_lost_source_castle_releases_the_running_order_instead_of_steer_back():
     from docich.hanjuku_screen import Screen as S
     order = {'step': 'A:test:J3', 'general': 'ゼウス', 'source': 'ジョンリギ',

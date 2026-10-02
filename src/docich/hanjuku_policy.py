@@ -4943,6 +4943,9 @@ WAGE_RESERVE = 30
 # 月一の たまごのかいふく / しょうぐんぼしゅう (gcgx: どちらも50G)。
 EGG_RECOVER_COST = 50
 RECRUIT_COST = 50
+# 月イチイベント「ゴニンジャー」(gcgx event.html: 50Gで敵将軍の暗殺を依頼できる。
+# 成功率は低い)。隠密戦隊ごにんじゃーへの依頼料。
+GONINJA_COST = 50
 MONTH_SUB_LIMIT = 8              # A presses through an unmeasured sub-screen
 # The month menu stays on screen for a few observations after the A press that
 # opens a sub (g462 18:06:02-05); only that stale frame may not end the sub.
@@ -6089,10 +6092,54 @@ def discharge_step(screen: Screen, mem):
 TRADE_DECLINE_TOKENS = ('トレード', 'はないちもんめ', 'いちもんめ')
 
 
+def _goninja_budget(mem, header):
+    """{gold, planned, spare} behind the monthly ゴニンジャー offer, else None.
+
+    Owner rule (2026-10-02): 隠密戦隊ごにんじゃーへの依頼はお金に余裕がある時のみ。
+
+    余裕 = 所持金 − 当月の購入予定（チャート or 採用済み調整チャート） − 卵回復の
+    予約 − 賃金リザーブ。この残りで依頼料50Gが払えて初めて受ける。所持金もしくは
+    当月の予定が読めない時（調整チャートの価格未測定カードを含む）は None で、
+    None の時は払わない。残金での兵士補充と「余りがあれば」の募集費は元々余り金の
+    使い道なので、ここでは予約しない。
+    """
+    gold = (header or {}).get('gold')
+    if type(gold) is not int or gold < 0 or not header:
+        return None
+    here = (header['year'], header['month'])
+    adjusted = ((mem.get('chart_plan') or {}).get('purchases') or {})
+    if tuple(adjusted.get('month') or ()) == here:
+        cards = tuple(adjusted.get('cards') or ())
+        if any(name not in KNOWN_PRICES for name, _ in cards):
+            return None      # 価格未測定では当月の予算が読めない
+        planned = (sum(KNOWN_PRICES[name] * qty for name, qty in cards)
+                   + max(0, int(adjusted.get('soldiers') or 0)))   # 兵士は1G=1人
+    else:
+        spec = chart.purchase_for(mem.get('chapter') or 0, *here)
+        planned = int(spec.get('chart_gold') or 0) if spec else 0
+    egg, _ = _extras_reserve(mem, header)
+    return {'gold': gold, 'planned': planned, 'egg_reserve': egg,
+            'spare': gold - planned - egg - WAGE_RESERVE}
+
+
 def yes_no_step(screen: Screen, mem):
     text = screen.text
+    metric = None
     if re.search(r'\d+Gでいい', text):
         choice, reason, variant = 'いかんッ!', '追加のおねだりは所持金を月一購入に残すため断る', 'decline_extra_gift'
+    elif 'うちとおす' in text:
+        # 月イチイベント「ゴニンジャー」: 50Gで敵将軍の暗殺を依頼する。成功率は低い。
+        # Owner rule (2026-10-02): お金に余裕がある時だけ依頼する。
+        budget = metric = _goninja_budget(mem, screen.header)
+        if budget is None:
+            choice, reason, variant = ('いかんッ!', '所持金か当月の購入予定が読めないためゴニンジャーへの依頼を見送る',
+                                       'decline_goninja_unreadable')
+        elif budget['spare'] >= GONINJA_COST:
+            choice, reason, variant = ('うむッ!', '当月の購入予定と卵回復・賃金リザーブを差し引いても依頼料50Gが残るため依頼する',
+                                       'accept_goninja')
+        else:
+            choice, reason, variant = ('いかんッ!', '当月の購入予定とリザーブを差し引くと依頼料50Gに足りないため依頼しない',
+                                       'decline_goninja_no_spare')
     elif 'はたしあい' in text or 'ごあいて' in text:
         # Owner decision (2026-09-25): accept. A duel fought with the blue
         # gauge spent properly is a near-certain win, so the hero no longer
@@ -6111,11 +6158,13 @@ def yes_no_step(screen: Screen, mem):
         choice, reason, variant = 'うむッ!', '未分類の確認は既定で進行', 'unclassified_prompt'
     move = menu_to(screen, choice)
     if move == 'here':
-        _record(mem, 'prompt', choice=choice, prompt=text[-40:], reason=reason, strategy_variant=variant)
+        _record(mem, 'prompt', choice=choice, prompt=text[-40:], reason=reason,
+                strategy_variant=variant, observed_metric=metric)
         return [pad('a')]
     if move is None:
         _record(mem, 'situation_held', screen=screen.kind,
-                observed_metric={'choice': choice, 'hand_visible': screen.hand is not None},
+                observed_metric={'choice': choice, 'hand_visible': screen.hand is not None,
+                                 **({'goninja': metric} if metric else {})},
                 reason='確認画面の選択位置を読めないため決定せず再観測')
     return [move] if move else []
 
