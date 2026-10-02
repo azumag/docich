@@ -1896,6 +1896,27 @@ class StreamTitleSyncProjectionTests(CollectorFixture):
         self.assertEqual(result["record_status"], "malformed")
         self.assertNotIn("PRIVATE API BODY", json.dumps(result))
 
+    def test_non_string_call_conditions_fail_closed(self):
+        module = load_collector()
+        for value in ([], {}, None, 7):
+            with self.subTest(value_type=type(value).__name__):
+                self.write_stream_title_sync(
+                    call_condition="normal",
+                    updater_sha="c" * 64,
+                    helper_sha="d" * 64,
+                    extra={"call_condition": value},
+                )
+                result = module._collect_stream_title_sync(
+                    self.soren, self.now, "a" * 40,
+                    {
+                        "expected_update_stream_game_sha256": "c" * 64,
+                        "expected_stream_title_sync_sha256": "d" * 64,
+                    },
+                )
+                self.assertEqual(result["record_status"], "malformed")
+                self.assertEqual(result["youtube"], "unknown")
+                self.assertEqual(result["kick"], "unknown")
+
     def test_untrusted_file_shapes_are_fixed_statuses_only(self):
         module = load_collector()
         path = self.soren / "tmp" / "state" / "stream_title_sync" / "events.jsonl"
