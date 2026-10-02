@@ -2712,16 +2712,16 @@ def test_terminal_delivery_retries_failed_outbox_with_same_run_key(tmp_path, mon
     assert [record['status'] for record in log] == ['delivery_failed', 'enqueued']
 
 
-def test_terminal_retry_exhaustion_remains_pending_for_next_observation(tmp_path, monkeypatch):
+def test_terminal_retry_exhaustion_drains_before_later_audio_after_generation_switch(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from docich.game_switch import atomic_write_json
 
     identity = {'game': 'hanjuku-hero', 'runtime_id': 'g16-exhausted',
                 'generation': 16, 'lease_id': 'lease-16'}
     state_dir = tmp_path / 'state'
-    runtime_dir = tmp_path / 'runtime'
+    runtime_dir = state_dir / 'runtimes' / identity['runtime_id']
     state_dir.mkdir()
-    runtime_dir.mkdir()
+    runtime_dir.mkdir(parents=True)
     atomic_write_json(runtime_dir / 'hanjuku_run.json',
                       {**identity, 'terminal_reason': 'game_over'})
     monkeypatch.setattr('docich.agent.fence.read_canonical', lambda _: {'active': identity})
@@ -2745,10 +2745,18 @@ def test_terminal_retry_exhaustion_remains_pending_for_next_observation(tmp_path
     assert len(set(attempts)) == 1
     assert hanjuku_narration.terminal_delivery_pending(runtime_dir, identity)
 
-    # A later observer keeps the same frozen candidate and run receipt key.
-    hanjuku_narration.consider(g, Game(), runtime_dir, terminal=True,
-                               enqueue=flaky_enqueue)
-    assert attempts[3] == attempts[0]
+    # A later audio producer drains the durable handoff even after ownership
+    # moves to a newer runtime generation.
+    queued = []
+    active = {**identity, 'generation': 17, 'runtime_id': 'g17-a1b2c3',
+              'lease_id': 'lease-17'}
+    monkeypatch.setattr('docich.agent.fence.read_canonical', lambda _: {'active': active})
+    monkeypatch.setattr('docich.trading.soren_output.resolve_soren_root', lambda _g: tmp_path / 'soren')
+    monkeypatch.setattr('docich.webui._enqueue_audio_text',
+                        lambda root, text, source, speaker='', *, delivery_key='':
+                        queued.append((text, source, delivery_key)) or {'ok': True})
+    assert hanjuku_narration.retry_pending_terminal_deliveries(g)
+    assert queued == [('固定された終了の記録です。', 'hanjuku_terminal', attempts[0])]
     assert not hanjuku_narration.terminal_delivery_pending(runtime_dir, identity)
     log = [json.loads(line) for line in
            (runtime_dir / 'hanjuku_narration.jsonl').read_text().splitlines()]

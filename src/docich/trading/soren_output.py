@@ -160,10 +160,19 @@ def send_overlay(g: GlobalConfig, payload: dict[str, object]) -> None:
         raise SorenOutputError("Soren overlay queue delivery failed") from exc
 
 
+def _retry_pending_hanjuku_terminal(g: GlobalConfig, *, exclude_key: str = "") -> None:
+    """Drain validated terminal recaps before publishing later audio."""
+    from ..hanjuku_narration import retry_pending_terminal_deliveries
+
+    if not retry_pending_terminal_deliveries(g, exclude_key=exclude_key):
+        raise SorenOutputError("A prior Hanjuku terminal recap is still pending in the audio outbox")
+
+
 def enqueue_speech(g: GlobalConfig, text: str, *, event_id: str = "") -> None:
     # Reuse the same production Soren comment-audio queue used by Web UI.  The
     # paper event id is a durable sink-side dedupe key so a crash after enqueue
     # but before notification ACK cannot cause a later replay.
+    _retry_pending_hanjuku_terminal(g)
     speech_text = _paper_corner_speech_text(text, event_id)
     root = resolve_soren_root(g)
     speaker = ""
@@ -224,6 +233,7 @@ def enqueue_audio_text(
 
     if not text or not text.strip():
         raise SorenOutputError("empty audio text")
+    _retry_pending_hanjuku_terminal(g)
     root = resolve_soren_root(g)
     command = ["bash", "-c",
                'source lib/outbound_queue.sh && enqueue_audio_text "$0" "$1" "$2"',
@@ -260,6 +270,7 @@ def enqueue_hanjuku_terminal(
     """
     if context != "hanjuku_terminal" or not delivery_key.startswith("hanjuku-terminal:"):
         raise SorenOutputError("Hanjuku terminal delivery key is invalid")
+    _retry_pending_hanjuku_terminal(g, exclude_key=delivery_key)
     root = resolve_soren_root(g)
     try:
         from .. import webui
