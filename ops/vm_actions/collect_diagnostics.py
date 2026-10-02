@@ -1616,11 +1616,15 @@ STREAM_TITLE_SYNC_MAX_BYTES = 32 * 1024
 STREAM_TITLE_SYNC_MAX_LINE_BYTES = 512
 STREAM_TITLE_SYNC_MAX_AGE_SEC = 15 * 60
 STREAM_TITLE_SYNC_FUTURE_TOLERANCE_SEC = 60
-STREAM_TITLE_SYNC_EVENTS = frozenset({"started", "result", "skipped"})
+STREAM_TITLE_SYNC_EVENTS = frozenset({"invoked", "started", "result", "skipped"})
 STREAM_TITLE_SYNC_SKIP_REASONS = frozenset({
     "category_only", "dry_run", "show_only", "twitch_read_failed",
     "twitch_update_failed", "category_not_configured", "updater_missing",
     "dispatch_failed", "invalid_title",
+})
+STREAM_TITLE_SYNC_CALL_CONDITIONS = frozenset({
+    "unknown", "normal", "category_only", "dry_run", "show_only",
+    "title_only", "force",
 })
 STREAM_TITLE_SYNC_YOUTUBE_RESULTS = frozenset({
     "not_configured", "stream_not_configured", "no_unique_live_broadcast",
@@ -1631,9 +1635,14 @@ STREAM_TITLE_SYNC_KICK_RESULTS = frozenset({
     "not_configured", "invalid_broadcaster", "wrong_broadcaster", "not_live",
     "unchanged", "updated", "unconfirmed", "update_failed",
 })
-STREAM_TITLE_SYNC_RECORD_FIELDS = frozenset({
+STREAM_TITLE_SYNC_LEGACY_RECORD_FIELDS = frozenset({
     "occurred_at", "event", "skip_reason", "youtube", "kick", "soviet_sha",
 })
+STREAM_TITLE_SYNC_RECORD_FIELDS = frozenset({
+    "occurred_at", "event", "skip_reason", "youtube", "kick", "execution_head",
+    "call_condition", "update_stream_game_sha256", "stream_title_sync_sha256",
+})
+STREAM_TITLE_SYNC_SHA_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 
 def _stream_title_sync_empty(record_status):
@@ -1643,10 +1652,25 @@ def _stream_title_sync_empty(record_status):
         "age_sec": -1,
         "event": "unknown",
         "run_soren_sha": None,
+        "execution_soren_head": None,
+        "expected_soren_gitlink_sha": None,
         "same_soren_sha": None,
+        "same_execution_head_as_gitlink": None,
+        "runtime_code_matches_gitlink": None,
+        "call_condition": "unknown",
+        "update_stream_game_sha256": None,
+        "stream_title_sync_sha256": None,
         "skip_reason": "unknown",
         "youtube": "unknown",
         "kick": "unknown",
+        "journal_destination": {
+            "root": "unknown",
+            "tmp": "not_checked",
+            "state": "not_checked",
+            "directory": "not_checked",
+            "lock_file": "not_checked",
+            "events_file": "not_checked",
+        },
     }
 
 
@@ -1659,9 +1683,101 @@ def _stream_title_sync_unique_object(pairs):
     return result
 
 
-def _collect_stream_title_sync(soren, now, expected_soren_sha):
-    """Read one bounded private journal row without following parent symlinks."""
+def _stream_title_sync_path_status(info, *, directory=False, private=False):
+    if directory:
+        valid_type = stat.S_ISDIR(info.st_mode)
+    else:
+        valid_type = stat.S_ISREG(info.st_mode)
+    if not valid_type or info.st_uid != os.getuid():
+        return "unsafe"
+    if not directory and getattr(info, "st_nlink", 1) != 1:
+        return "unsafe"
+    if private and info.st_mode & 0o077:
+        return "unsafe"
+    return "present"
+
+
+def _stream_title_sync_source_sha256(path):
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 512 * 1024:
+            return None
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(fd, 64 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 512 * 1024:
+                return None
+            digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def _stream_title_sync_git_blob_sha256(repo, commit_sha, relative_path):
+    if (
+        not isinstance(commit_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", commit_sha)
+        or relative_path not in {"update_stream_game.sh", "lib/stream_title_sync.py"}
+    ):
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "git", "-C", str(repo), "-c", "core.hooksPath=/dev/null",
+                "show", commit_sha + ":" + relative_path,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or len(result.stdout) > 512 * 1024:
+        return None
+    return hashlib.sha256(result.stdout).hexdigest()
+
+
+def _stream_title_sync_code_versions(soren, tracked_soren_root, expected_soren_sha=None):
+    soren = Path(soren)
+    tracked_soren_root = Path(tracked_soren_root)
+    return {
+        "runtime_update_stream_game_sha256": _stream_title_sync_source_sha256(
+            soren / "update_stream_game.sh"
+        ),
+        "runtime_stream_title_sync_sha256": _stream_title_sync_source_sha256(
+            soren / "lib" / "stream_title_sync.py"
+        ),
+        "expected_update_stream_game_sha256": _stream_title_sync_git_blob_sha256(
+            tracked_soren_root, expected_soren_sha, "update_stream_game.sh"
+        ),
+        "expected_stream_title_sync_sha256": _stream_title_sync_git_blob_sha256(
+            tracked_soren_root, expected_soren_sha, "lib/stream_title_sync.py"
+        ),
+    }
+
+
+def _collect_stream_title_sync(soren, now, expected_soren_sha, expected_code=None):
+    """Read one bounded private journal row and report fixed destination states."""
     result = _stream_title_sync_empty("absent")
+    destination = result["journal_destination"]
     dir_flags = (
         os.O_RDONLY
         | getattr(os, "O_DIRECTORY", 0)
@@ -1677,44 +1793,75 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha):
     dir_fds = []
     fd = None
     try:
-        current_fd = os.open(soren, dir_flags)
-        dir_fds.append(current_fd)
-        info = os.fstat(current_fd)
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        try:
+            current_fd = os.open(soren, dir_flags)
+        except FileNotFoundError:
+            destination["root"] = "missing"
+            return result
+        except OSError:
+            destination["root"] = "unavailable"
             result["record_status"] = "unreadable"
             return result
-        for name, private in (("tmp", False), ("state", False), ("stream_title_sync", True)):
-            current_fd = os.open(name, dir_flags, dir_fd=current_fd)
-            dir_fds.append(current_fd)
-            info = os.fstat(current_fd)
-            if (
-                not stat.S_ISDIR(info.st_mode)
-                or info.st_uid != os.getuid()
-                or (private and info.st_mode & 0o077)
-            ):
+        dir_fds.append(current_fd)
+        info = os.fstat(current_fd)
+        destination["root"] = _stream_title_sync_path_status(info, directory=True)
+        if destination["root"] != "present":
+            result["record_status"] = "unreadable"
+            return result
+
+        for name, key, private in (
+            ("tmp", "tmp", False),
+            ("state", "state", False),
+            ("stream_title_sync", "directory", True),
+        ):
+            try:
+                current_fd = os.open(name, dir_flags, dir_fd=current_fd)
+            except FileNotFoundError:
+                destination[key] = "missing"
+                return result
+            except OSError:
+                destination[key] = "unavailable"
                 result["record_status"] = "unreadable"
                 return result
-        fd = os.open("events.jsonl", file_flags, dir_fd=current_fd)
-    except FileNotFoundError:
-        return result
-    except OSError:
-        result["record_status"] = "unreadable"
-        return result
-    finally:
+            dir_fds.append(current_fd)
+            info = os.fstat(current_fd)
+            destination[key] = _stream_title_sync_path_status(
+                info, directory=True, private=private
+            )
+            if destination[key] != "present":
+                result["record_status"] = "unreadable"
+                return result
+
+        try:
+            lock_info = os.stat("lock", dir_fd=current_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            destination["lock_file"] = "missing"
+        except OSError:
+            destination["lock_file"] = "unavailable"
+        else:
+            destination["lock_file"] = _stream_title_sync_path_status(
+                lock_info, private=True
+            )
+
+        try:
+            fd = os.open("events.jsonl", file_flags, dir_fd=current_fd)
+        except FileNotFoundError:
+            destination["events_file"] = "missing"
+            return result
+        except OSError:
+            destination["events_file"] = "unavailable"
+            result["record_status"] = "unreadable"
+            return result
         for dir_fd in reversed(dir_fds):
             try:
                 os.close(dir_fd)
             except OSError:
                 pass
+        dir_fds.clear()
 
-    try:
         info = os.fstat(fd)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_uid != os.getuid()
-            or info.st_nlink != 1
-            or info.st_mode & 0o077
-        ):
+        destination["events_file"] = _stream_title_sync_path_status(info, private=True)
+        if destination["events_file"] != "present":
             result["record_status"] = "unreadable"
             return result
         if info.st_size == 0:
@@ -1739,7 +1886,16 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha):
         result["record_status"] = "unreadable"
         return result
     finally:
-        os.close(fd)
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        for dir_fd in reversed(dir_fds):
+            try:
+                os.close(dir_fd)
+            except OSError:
+                pass
 
     if not data.endswith(b"\n"):
         result["record_status"] = "malformed"
@@ -1749,19 +1905,49 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha):
         result["record_status"] = "malformed"
         return result
     try:
-        row = json.loads(lines[-1].decode("utf-8", "strict"), object_pairs_hook=_stream_title_sync_unique_object)
+        row = json.loads(
+            lines[-1].decode("utf-8", "strict"),
+            object_pairs_hook=_stream_title_sync_unique_object,
+        )
     except (UnicodeError, ValueError, json.JSONDecodeError):
         result["record_status"] = "malformed"
         return result
-    if not isinstance(row, dict) or set(row) != STREAM_TITLE_SYNC_RECORD_FIELDS:
+    if not isinstance(row, dict):
         result["record_status"] = "malformed"
         return result
+
+    row_fields = set(row)
+    is_legacy = row_fields == STREAM_TITLE_SYNC_LEGACY_RECORD_FIELDS
+    if not is_legacy and row_fields != STREAM_TITLE_SYNC_RECORD_FIELDS:
+        result["record_status"] = "malformed"
+        return result
+
     occurred_at = row.get("occurred_at")
     event = row.get("event")
     skip_reason = row.get("skip_reason")
     youtube = row.get("youtube")
     kick = row.get("kick")
-    run_soren_sha = row.get("soviet_sha")
+    if is_legacy:
+        execution_head = row.get("soviet_sha")
+        call_condition = "unknown"
+        updater_sha256 = None
+        helper_sha256 = None
+    else:
+        execution_head = row.get("execution_head")
+        call_condition = row.get("call_condition")
+        updater_sha256 = row.get("update_stream_game_sha256")
+        helper_sha256 = row.get("stream_title_sync_sha256")
+
+    valid_execution_head = (
+        execution_head is None
+        or (
+            isinstance(execution_head, str)
+            and re.fullmatch(r"[0-9a-f]{40}", execution_head)
+        )
+    )
+    valid_source_sha256 = lambda value: value is None or (
+        isinstance(value, str) and STREAM_TITLE_SYNC_SHA_RE.fullmatch(value)
+    )
     if (
         not isinstance(occurred_at, str)
         or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", occurred_at)
@@ -1770,49 +1956,114 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha):
         or not isinstance(skip_reason, str)
         or not isinstance(youtube, str)
         or not isinstance(kick, str)
-        or not isinstance(run_soren_sha, str)
-        or not re.fullmatch(r"[0-9a-f]{40}", run_soren_sha)
+        or not valid_execution_head
+        or (is_legacy and not isinstance(execution_head, str))
+        or (not is_legacy and call_condition not in STREAM_TITLE_SYNC_CALL_CONDITIONS)
+        or not valid_source_sha256(updater_sha256)
+        or not valid_source_sha256(helper_sha256)
     ):
         result["record_status"] = "malformed"
         return result
+
     if event == "result":
-        if skip_reason != "none" or youtube not in STREAM_TITLE_SYNC_YOUTUBE_RESULTS or kick not in STREAM_TITLE_SYNC_KICK_RESULTS:
+        if (
+            skip_reason != "none"
+            or youtube not in STREAM_TITLE_SYNC_YOUTUBE_RESULTS
+            or kick not in STREAM_TITLE_SYNC_KICK_RESULTS
+        ):
             result["record_status"] = "malformed"
             return result
-    elif event == "started":
+    elif event in {"invoked", "started"}:
         if skip_reason != "none" or youtube != "not_run" or kick != "not_run":
             result["record_status"] = "malformed"
             return result
-    elif skip_reason not in STREAM_TITLE_SYNC_SKIP_REASONS or youtube != "not_run" or kick != "not_run":
+    elif (
+        skip_reason not in STREAM_TITLE_SYNC_SKIP_REASONS
+        or youtube != "not_run"
+        or kick != "not_run"
+    ):
         result["record_status"] = "malformed"
         return result
+
     try:
-        stamp = dt.datetime.strptime(occurred_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+        stamp = dt.datetime.strptime(
+            occurred_at, "%Y-%m-%dT%H:%M:%SZ"
+        ).replace(tzinfo=dt.timezone.utc)
     except ValueError:
         result["record_status"] = "malformed"
         return result
 
     age = int(now - stamp.timestamp())
+    expected_sha_valid = (
+        isinstance(expected_soren_sha, str)
+        and re.fullmatch(r"[0-9a-f]{40}", expected_soren_sha)
+    )
+    same_head = (
+        execution_head == expected_soren_sha
+        if execution_head is not None and expected_sha_valid
+        else None
+    )
     result.update({
         "occurred_at": occurred_at,
         "age_sec": max(0, age),
         "event": event,
-        "run_soren_sha": run_soren_sha,
+        "run_soren_sha": execution_head,
+        "execution_soren_head": execution_head,
+        "expected_soren_gitlink_sha": expected_soren_sha if expected_sha_valid else None,
+        "same_soren_sha": same_head,
+        "same_execution_head_as_gitlink": same_head,
+        "call_condition": call_condition,
+        "update_stream_game_sha256": updater_sha256,
+        "stream_title_sync_sha256": helper_sha256,
     })
-    if not isinstance(expected_soren_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_soren_sha):
-        result["record_status"] = "source_unavailable"
-        return result
-    same_sha = run_soren_sha == expected_soren_sha
-    result["same_soren_sha"] = same_sha
-    if not same_sha:
-        result["record_status"] = "source_mismatch"
-        return result
+
+    if is_legacy:
+        if not expected_sha_valid:
+            result["record_status"] = "source_unavailable"
+            return result
+        if not same_head:
+            result["record_status"] = "source_mismatch"
+            return result
+    else:
+        expected_updater_sha = (
+            expected_code.get("expected_update_stream_game_sha256")
+            if isinstance(expected_code, dict)
+            else None
+        )
+        expected_helper_sha = (
+            expected_code.get("expected_stream_title_sync_sha256")
+            if isinstance(expected_code, dict)
+            else None
+        )
+        code_comparison_available = (
+            isinstance(expected_updater_sha, str)
+            and STREAM_TITLE_SYNC_SHA_RE.fullmatch(expected_updater_sha)
+            and isinstance(expected_helper_sha, str)
+            and STREAM_TITLE_SYNC_SHA_RE.fullmatch(expected_helper_sha)
+            and isinstance(updater_sha256, str)
+            and isinstance(helper_sha256, str)
+        )
+        code_matches = (
+            updater_sha256 == expected_updater_sha
+            and helper_sha256 == expected_helper_sha
+            if code_comparison_available
+            else None
+        )
+        result["runtime_code_matches_gitlink"] = code_matches
+        if not code_comparison_available or not expected_sha_valid:
+            result["record_status"] = "source_unavailable"
+            return result
+        if not code_matches:
+            result["record_status"] = "source_mismatch"
+            return result
+
     if age < -STREAM_TITLE_SYNC_FUTURE_TOLERANCE_SEC:
         result["record_status"] = "future"
         return result
     if age > STREAM_TITLE_SYNC_MAX_AGE_SEC:
         result["record_status"] = "stale"
         return result
+
     result["record_status"] = "fresh"
     result["skip_reason"] = skip_reason
     result["youtube"] = youtube
@@ -1830,12 +2081,21 @@ def _collect_meta(soren, now):
         fields = soviet_link.split()
         if len(fields) >= 3 and fields[0] == "160000" and re.fullmatch(r"[0-9a-f]{40}", fields[2]):
             soviet_head = fields[2]
+    runtime_soren_head = _git_text(soren, "rev-parse", "--verify", "HEAD")
+    if not runtime_soren_head or not re.fullmatch(r"[0-9a-f]{40}", runtime_soren_head):
+        runtime_soren_head = None
+    soren_code = _stream_title_sync_code_versions(
+        soren, PROD_ROOT / "games" / "soviet_now", soviet_head
+    )
     return {
         "generated_at": now,
         "window_sec": DIAG_WINDOW_SEC,
         "soren_root_exists": soren.is_dir(),
         "docich_head": docich_head,
         "soviet_head": soviet_head,
+        "soren_gitlink_sha": soviet_head,
+        "runtime_soren_head": runtime_soren_head,
+        "soren_code": soren_code,
     }
 
 
@@ -4793,7 +5053,7 @@ def main(argv):
         "status": _severity(workers, queues, ai, improvement, corners),
         "meta": meta,
         "stream_title_sync": _collect_stream_title_sync(
-            soren, now, meta.get("soviet_head")
+            soren, now, meta.get("soren_gitlink_sha"), meta.get("soren_code")
         ),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
         "workers": workers,
