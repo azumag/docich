@@ -16,9 +16,11 @@ SQLite-backed Durable Objectを保存先に使います。D1や外部DBは使い
 
 ## ローカル検証と起動
 
-Node.js 20以降を用意します。fixtureテストはNodeの`node:test`とDurable Objectのローカルmockを使い、外部アカウント、ネットワーク、Cloudflareリソースは必要ありません。実workerd環境でのSQLite Durable Object起動・transaction rollback・並行実行検証はまだ網羅していません。
+Node.js 20以降を用意します。fixtureテストはNodeの`node:test`とDurable Objectの`MemoryStorage` mockを使い、外部アカウント、ネットワーク、Cloudflareリソースは必要ありません。mockは値をstagingしてcallback成功後にcommitし、transactionを直列化しますが、rollbackを検証するfault-injectionテストはありません。したがって、Nodeテストも実workerd上のSQLite rollbackを証明しません。
 
-このPRではWrangler 4.119.0のローカルworkerdでWebhookと同一requestIdの再送を確認しました。設定済みの`compatibility_date = "2026-09-21"`は同梱runtimeが未対応だったため、実行時だけ対応済みの`2026-08-08`へ上書きしています。したがって、設定日付でのworkerd実行や本番環境は未検証です。
+このPRではWrangler 4.119.0のローカルworkerdでSQLite Durable Objectを起動し、署名付きWebhookと同一requestIdの再送を確認しました。設定済みの`compatibility_date = "2026-09-21"`は同梱runtimeが未対応だったため、smoke testの実行時だけ`2026-08-08`へ上書きしています。設定日付でのworkerd実行や本番環境は未検証です。
+
+実workerdのtransaction rollback、同時リクエストの競合、および応答timeout後にDurable Objectが遅れてcommitした場合の同一リクエスト再送は未検証です。
 
 ```sh
 cd workers/tsuitate-bot
