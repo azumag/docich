@@ -258,9 +258,13 @@ def load(runtime_dir: Path):
     if path.is_symlink():
         return None
     try:
-        # Adopted before the castle-label rename: keep the plan instead of
-        # rejecting it for naming a castle the chart no longer has.
-        return validate(chart.migrate_legacy_labels(json.loads(path.read_text(encoding='utf-8'))))
+        doc = json.loads(path.read_text(encoding='utf-8'))
+        # An adopted plan written before the castle-label rename still names a
+        # castle chapter 1 no longer has; migrate the castle fields (only) so
+        # validate() keeps the plan instead of dropping it for a stale label.
+        if isinstance(doc, dict):
+            chart.migrate_legacy_orders(doc.get('orders'))
+        return validate(doc)
     except (OSError, ValueError):
         return None
 
