@@ -2141,6 +2141,7 @@ def map_step(screen: Screen, mem, frame):
         mem['active'] = order['step']
         mem['picked'] = []
         mem.setdefault('rare_card_kit', {}).pop(order['step'], None)
+        mem.setdefault('strong_card_kit', {}).pop(order['step'], None)
         mem.pop('rare_scan', None)
         mem['y_jumps'] = {k: v for k, v in (mem.get('y_jumps') or {}).items()
                           if not k.startswith(f"{order['step']}:")}
@@ -2369,8 +2370,9 @@ def _strict_boss_cards(order, mem) -> bool:
 
 def _deploy_cards(order, mem):
     rare_kit = (mem.get('rare_card_kit') or {}).get(order['step'])
+    strong = (mem.get('strong_card_kit') or {}).get(order['step']) if rare_kit is None else None
     if _strict_boss_cards(order, mem) and rare_kit is None:
-        return list(order['cards'])
+        return _with_strong_card(list(order['cards']), strong, mem, order['step'])
     cards = list(rare_kit if rare_kit is not None else
                  mem.get('card_override', {}).get(order['step'], order['cards']))
     # One planned copy leaves the kit per drop entry. g454 12:22: a planned
@@ -2393,10 +2395,28 @@ def _deploy_cards(order, mem):
                 observed_metric={'planned': cards, 'carried': capped,
                                  'id_sum': sum(CARD_IDS[c] for c in capped)},
                 reason='切り札IDの合計が48以上だと敵がエッグを使うため、47以下になるよう携行札を絞る')
-    return capped
+    return _with_strong_card(capped, strong, mem, order['step'])
+
+
+def _with_strong_card(cards, strong, mem, step):
+    """A carried strong card only when a slot, a budget and the kit allow it.
+
+    予定札(チャート/調整/レア札)は外さない。gcgx: 携行札のID合計が48以上だと敵が
+    エッグを使うため、追加後も ``< 48`` を満たす時だけ1枚足す。同じ札がもう1枚
+    携行済みなら足さない(在庫を無駄にしない)。この出撃で消費・破棄した札は
+    再び足さない: 一覧に無い札を開くと空の一覧で止まる(g438 04:18)。
+    """
+    if not strong or strong in cards or len(cards) >= CARRY_SLOTS:
+        return cards
+    if strong in ((mem.get('kit_spent') or {}).get(step) or ()) or strong in ((mem.get('card_drop') or {}).get(step) or ()):
+        return cards
+    if sum(CARD_IDS[c] for c in cards) + CARD_IDS.get(strong, ENEMY_EGG_CARD_ID_SUM) >= ENEMY_EGG_CARD_ID_SUM:
+        return cards
+    return [*cards, strong]
 
 
 RARE_SCAN_LIMIT = 32          # the entire 32-card catalogue, once per observed month
+CARRY_SLOTS = 3               # card_select「あとNこ」の携行枠(実測 header は 0..3)
 CARD_SCROLL_LIMIT = 8         # downward presses looking for a card below a full panel
 CARD_MISS_LIMIT = 5           # card_select readings before a missing card is left behind
 CARD_UNREADABLE_LIMIT = 6     # unreadable card_select readings before cancelling the sortie
@@ -2485,6 +2505,46 @@ def _rare_card_inventory(screen, mem, order, inventory):
             observed_metric={'rare_scan': 'discover', 'presses': scan['presses'], 'rows': rows},
             reason='未選択の実在庫を有限回探索し、隠れたイベント札の有無を確認する')
     return [pad('down')]
+
+def _strong_card_inventory(mem, order, inventory, wanted) -> bool:
+    """Add one held strong card to a sortie that still has a carry slot free.
+
+    owner 2026-10-03: 「強い切り札を偶然手に入れている時などは、強い将軍とたたかう
+    ときに積極的に利用するようにして下さい」→ 携行はここで決めるが、使うのは
+    戦闘で敵が強い将軍と判定されたときだけ (``reference.strong_general``)。
+
+    予定札(チャート/調整)は外さず、追加後も携行札のID合計が48未満を維持する
+    (gcgx: 48以上だと敵がエッグを使う)。レア札キットの出撃と残枠なしの出撃には
+    追加しない。決定は一度だけ(order_start で破棄して次の出撃で選び直す)。
+    在庫の根拠は直前に更新された ``card_stock`` の正数だけにする。
+    追加した時だけ True を返し、呼び出し側が同じ観測の選択対象を並べ直す
+    (予定札が先頭なので、強い切り札は残り枠が空いた時に選ばれる)。
+    """
+    step = order['step']
+    if (mem.get('strong_card_kit') or {}).get(step) is not None:
+        return False
+    if (mem.get('rare_card_kit') or {}).get(step) is not None:
+        return False                     # レア札キットが携行札の主導権を持つ
+    # 1枚でも選ぶ前 (予定札の内訳がまだ揃っている時点) だけ決める。
+    if mem.get('picked') or inventory['remaining'] - len(wanted) < 1:
+        return False                     # 残り枠は予定札で埋まる
+    stock = mem.get('card_stock') or {}
+    used = sum(CARD_IDS[c] for c in wanted)
+    card = next((name for name in reference.STRONG_CARDS
+                 if name not in wanted and int(stock.get(name, 0) or 0) > 0
+                 and used + CARD_IDS.get(name, ENEMY_EGG_CARD_ID_SUM) < ENEMY_EGG_CARD_ID_SUM
+                 and len(wanted) + 1 <= CARRY_SLOTS), None)
+    if card is None:
+        return False
+    mem.setdefault('strong_card_kit', {})[step] = card
+    carried = _deploy_cards(order, mem)
+    _record(mem, 'strong_card_kit', **_deploy_context(order, mem), chart_step=step, card=card,
+            observed_metric={'stock': int(stock.get(card, 0) or 0), 'planned': list(wanted),
+                             'cards': carried, 'id_sum': sum(CARD_IDS[c] for c in carried),
+                             'remaining': inventory['remaining']},
+            reason='実在庫の強い切り札を携行枠に加え、強い将軍との戦闘で開幕に使う')
+    return True
+
 
 def _drop_card(screen, mem, order, card, inventory):
     """Leave a planned card behind after it stays unselectable (non-boss only).
@@ -3167,12 +3227,22 @@ def deploy_step(screen: Screen, mem):
         rare_actions = _rare_card_inventory(screen, mem, order, inventory)
         if rare_actions is not None:
             return rare_actions
+        if _strong_card_inventory(mem, order, inventory, wanted):
+            # 携行枠に1枚追加した: この観測の選択対象も並べ直す(予定札が先頭)。
+            wanted = _deploy_cards(order, mem)
+            for card in picked:
+                if card in wanted:
+                    wanted.remove(card)
+        strong = (mem.get('strong_card_kit') or {}).get(order['step'])
         if not wanted:
             return _deploy_input(screen, mem, order, [pad('b')], '予定切り札の選択入力後に携行確認へ進む')
         # Pick what is on screen first: a full 4-row panel scrolls, and a card
         # below it (g421 13:27: クースカン, bought x4) is reached by scrolling.
+        # 予定札(チャート/調整)が残っている間は、追加携行の強い切り札を先に選ばない:
+        # 空き枠に足した札が予定札より先に消費されるのを避ける。
+        planned = [c for c in wanted if c != strong] or wanted
         shown = {r['card'] for r in inventory['rows'] if r['stock'] > 0}
-        card = next((c for c in wanted if c in shown), card)
+        card = next((c for c in planned if c in shown), planned[0])
         row = next((row for row in inventory['rows'] if row['card'] == card), None)
         if (row is None and len(inventory['rows']) == 4 and inventory['remaining'] > 0
                 and int((mem.get('card_scroll') or {}).get(order['step'], 0)) < (RARE_SCAN_LIMIT if (mem.get('rare_card_kit') or {}).get(order['step'])
@@ -3586,6 +3656,46 @@ def _entered_battle_successor(mem, cur, b):
     return True
 
 
+def _strong_cards_carried(mem, cur):
+    """この戦闘で実際に携行している強い切り札(消費・破棄済みは除く)。
+
+    札一覧に無い札を開くと空の一覧で止まる (g438 04:18) ので、携行実績
+    (``_deploy_cards``) に残っている札だけを戦術にしない。
+    """
+    step = cur.get('step')
+    kit = (mem.get('strong_card_kit') or {}).get(step)
+    if not kit or not step:
+        return []
+    order = _order_for_step(mem, step)
+    if order is None:
+        return []
+    return [kit] if kit in _deploy_cards(order, mem) else []
+
+
+def _strong_enemy(mem, cur):
+    """この敵が「強い将軍」か (gcgx shogun.html の戦闘・最大HPを主判定)。
+
+    返り値は (verdict, evidence)。ボスは後期ボスが表 (SFC ID 0..127) に載らない
+    ため、表の値に関わらず強い将軍とみなす。判定不能 (表に無い) は False に
+    正規化し、積極利用は True の時だけ許可する。
+    """
+    enemy, ally = cur.get('enemy'), cur.get('ally')
+    if ally == NAME:
+        ally = 'しゅじんこう'
+    verdict, evidence = reference.strong_general(enemy, ally)
+    if enemy and enemy in chart.BOSSES.values():
+        return True, {**evidence, 'rule': 'boss'}
+    return verdict is True, evidence
+
+
+def _strong_card_tactics(mem, cur, enemy):
+    """携行した強い切り札を開幕に使う戦術 (実行は強い将軍と判定された時だけ)。"""
+    return [{'enemy': enemy, 'card': card, 'open': True, 'step': cur.get('step'),
+             'tactic_id': f"strong:{cur.get('step')}:{card}", 'strong_only': True,
+             'note': '出撃時に携行した強い切り札を強い将軍へ開幕で使う'}
+            for card in _strong_cards_carried(mem, cur)]
+
+
 def battle_step(screen: Screen, mem):
     b = screen.battle
     if (b is None or not b.enemy or not b.ally or UNKNOWN in b.enemy or UNKNOWN in b.ally
@@ -3706,7 +3816,8 @@ def battle_step(screen: Screen, mem):
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
              for card in ([] if (mem.get('rare_card_kit') or {}).get(cur.get('step')) is not None
                           else mem.get('card_override', {}).get(cur.get('step')) or [])]
-    tactics = [*extra, *_tactics(mem, cur.get('step'))]
+    tactics = [*extra, *_tactics(mem, cur.get('step')),
+               *_strong_card_tactics(mem, cur, b.enemy)]
     done = cur.setdefault('tactics_done', [])
     for index, tactic in enumerate(tactics):
         tid = tactic.get('tactic_id') or f"{'x' if index < len(extra) else 'c'}{index}:{tactic['card']}"
@@ -3717,6 +3828,12 @@ def battle_step(screen: Screen, mem):
         if (tactic.get('boss_only')
                 and not _boss_tactics_allowed(mem, cur)):
             continue          # do not spend the boss kit in an unmeasured road fight
+        strong_evidence = None
+        if tactic.get('strong_only'):
+            strong, strong_evidence = _strong_enemy(mem, cur)
+            if not strong:
+                # 追加携行した切り札は、強い将軍と判定された戦闘以外では温存する。
+                continue
         # No calibrated use receipt exists, so a selected-then-unclassified card
         # is the best evidence there is. Without chaining on it the charted boss
         # strategy never fires its second card (1-B1: クースカン→ノリウツール)
@@ -3745,6 +3862,7 @@ def battle_step(screen: Screen, mem):
                     enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, reason=note,
                     expected_metric='選択後の実使用告知と敵HP減少',
                     observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
+                    **({'strong_enemy': strong_evidence} if strong_evidence is not None else {}),
                     resulting_event='card_planned')
             return [pad('b')]
     if (_defender_last_resort(mem, cur)
@@ -4596,7 +4714,7 @@ def battle_end(mem, next_kind, *, defense_continues=False):
     if outcome == 'loss' and boss_attempt:
         retries = mem.setdefault('retries', {})
         retries[step] = retries.get(step, 0) + 1
-        for key in ('general_override', 'card_override', 'rare_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss'):
+        for key in ('general_override', 'card_override', 'rare_card_kit', 'strong_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss'):
             mem.setdefault(key, {}).pop(step, None)
         if retries[step] <= 3:
             mem.setdefault('orders', {})[step] = 'pending'
@@ -4813,7 +4931,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
     # Route state belongs to the measured map of one chapter. Keep
     # run-wide counters/name evidence, never carry coordinates/orders.
     for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
-                'captured', 'card_override', 'rare_card_kit', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
+                'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
                 'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                 'source_override', 'uncertain', 'month', 'order_context', 'sortie_general', 'sortie_actor_miss',
