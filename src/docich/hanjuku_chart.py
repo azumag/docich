@@ -132,6 +132,31 @@ def _mentions_legacy(value) -> bool:
     return False
 
 
+def migrate_legacy_orders(orders):
+    """Rename legacy castle labels in order dicts' castle fields only.
+
+    Used for a document that still has to pass ``hanjuku_chart_adjust``'s
+    validation: ``reason``/``note`` are capped at a fixed length and the
+    rename only ever makes text longer (g550's adopted reason sat exactly on
+    the 200 char cap and named ほんじょう, so migrating it rejected an otherwise
+    valid plan). The prose has no cap in policy memory, which ``decide``
+    migrates in full, and that is where it reaches a decision record.
+    """
+    if not isinstance(orders, list):
+        return orders
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        for key in ('source', 'target'):
+            value = order.get(key)
+            if isinstance(value, str):
+                order[key] = _relabel(value)
+        after = order.get('after')
+        if isinstance(after, list) and len(after) == 2 and isinstance(after[1], str):
+            after[1] = _relabel(after[1])
+    return orders
+
+
 def migrate_legacy_labels(value):
     """Rename legacy castle labels inside a persisted document.
 

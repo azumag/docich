@@ -56,10 +56,11 @@ def collate(runtime_dir: Path) -> dict:
     adjusted_orders = {}
     for item in _read_jsonl(runtime_dir, adjust.HISTORY_LOG):
         if item.get('event') == 'adjusted_chart_saved':
+            # Saved before the castle-label rename: keep its outcome in the
+            # review instead of dropping the plan for an unknown castle.
+            chart.migrate_legacy_orders(item.get('orders'))
             try:
-                # Saved before the castle-label rename: keep its outcome in the
-                # review instead of dropping the plan for an unknown castle.
-                doc = adjust.validate(chart.migrate_legacy_labels(item))
+                doc = adjust.validate(item)
             except ValueError:
                 continue
             for order in doc['orders']:

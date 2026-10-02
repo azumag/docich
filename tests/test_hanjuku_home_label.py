@@ -140,5 +140,25 @@ def test_adjusted_chart_adopted_before_the_rename_still_loads(tmp_path):
         json.dumps(_adjusted_doc(RETIRED), ensure_ascii=False), encoding='utf-8')
     loaded = adjust.load(tmp_path)
     assert loaded is not None
+    assert loaded['orders'][0]['source'] == HOME and loaded['orders'][0]['target'] == 'キカンドン'
+    # validate() caps note/reason by length and the rename only lengthens text,
+    # so the prose is left as written here; policy memory — which has no cap
+    # and is migrated in full by decide() — renames it before a record quotes it.
+    assert loaded['orders'][0]['note'] == f'{RETIRED}からの一手'
+
+
+def test_adjusted_chart_reason_at_the_length_cap_still_loads(tmp_path):
+    # Live g550: the adopted reason was exactly 200 characters (the cap) and
+    # named ほんじょう, so migrating the prose there made it 201 and rejected a
+    # plan that was otherwise fine.
+    doc = _adjusted_doc(RETIRED)
+    doc['reason'] = RETIRED + 'あ' * (200 - len(RETIRED))
+    assert len(doc['reason']) == 200
+    assert len(chart.migrate_legacy_labels(json.loads(json.dumps(doc)))['reason']) > 200
+
+    (tmp_path / adjust.ADJUSTED_FILE).write_text(
+        json.dumps(doc, ensure_ascii=False), encoding='utf-8')
+    loaded = adjust.load(tmp_path)
+    assert loaded is not None
     assert loaded['orders'][0]['source'] == HOME
-    assert loaded['orders'][0]['note'] == 'アルマムーンからの一手'
+    assert len(loaded['reason']) == 200
