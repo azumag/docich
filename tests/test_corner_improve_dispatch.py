@@ -309,6 +309,42 @@ class TestLiveBrainHotSwap(unittest.TestCase):
                     for key, value in delta.items():
                         self.assertEqual(written[key], value)
 
+    def test_bastet_zero_weight_candidate_is_evaluated_and_promoted(self):
+        import tempfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = _setup_completed(Path(tmp), "bastet", [0, 0])
+            prompts = []
+            evaluated = []
+
+            def fake_run(**kwargs):
+                weights = json.loads(
+                    Path(kwargs["env"]["DOCICH_BRAIN_WEIGHTS"]).read_text()
+                )
+                evaluated.append(weights)
+                score = 100.0 if weights["hard_drop"] == 0 else 10.0
+                return {
+                    "game": "bastet",
+                    "matches": [{"score": int(score), "turns": 5, "maxed": False}],
+                    "mean_score": score,
+                }
+
+            with patch.object(corner_improve, "run_bot_matches", side_effect=fake_run):
+                result = run_corner_improve(
+                    _G(state_dir), game="bastet", date_str="2026-09-10", agents="a",
+                    llm=lambda prompt: prompts.append(prompt) or '{"hard_drop": 0}',
+                    margin_pct=10.0,
+                )
+
+            self.assertEqual(result["status"], "promoted", result)
+            self.assertEqual([weights["hard_drop"] for weights in evaluated], [1.0, 0])
+            self.assertIn("hard_drop は有限なJSON数値で 0.0 以上", prompts[0])
+            self.assertIn("1e+06 以下", prompts[0])
+            self.assertIn("ソフトドロップ", prompts[0])
+            live = self.brain / "bastet" / "weights.json"
+            self.assertEqual(json.loads(live.read_text(encoding="utf-8"))["hard_drop"], 0)
+
     def test_kept_does_not_touch_live_weights(self):
         import tempfile
 

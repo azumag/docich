@@ -86,6 +86,8 @@ class CornerImproveError(RuntimeError):
 # lifecycle; adding a game to only one of these lists silently disables its
 # improvement path.
 BOT_GAMES = bot_games()
+MIN_CANDIDATE_WEIGHT = 0.001
+MAX_CANDIDATE_WEIGHT = 1e6
 
 
 def numeric_weights(weights: dict) -> set[str]:
@@ -94,6 +96,11 @@ def numeric_weights(weights: dict) -> set[str]:
         key for key, value in weights.items()
         if isinstance(value, (int, float)) and not isinstance(value, bool)
     }
+
+
+def _minimum_candidate_weight(game: str, key: str) -> float:
+    """Bastet の hard_drop だけは 0 で soft drop を選べる。"""
+    return 0.0 if game == "bastet" and key == "hard_drop" else MIN_CANDIDATE_WEIGHT
 
 
 def _lane_path(state_dir) -> Path:
@@ -606,6 +613,13 @@ def _run_pacman_ab_trial(g, *, path: Path, trial: dict, current: dict, date_str:
 
 def build_prompt(*, game: str, stats: dict, current: dict, previous: dict) -> str:
     basis = stats.get("basis", "live scorelog")
+    game_guidance = ""
+    if game == "bastet":
+        game_guidance = (
+            "\nBastet の tunable key は hard_drop のみです。hard_drop は有限なJSON数値で"
+            f" 0.0 以上 {MAX_CANDIDATE_WEIGHT:g} 以下にしてください。"
+            "0.5 以上で Enter によるハードドロップ、0.5 未満で Down によるソフトドロップです。\n"
+        )
     return f"""あなたはレトロゲームコーナーの戦略改善担当です。
 対象ゲーム: {game}
 今回コーナーの実戦成績: {stats['n']}試合、平均{stats['mean']:.1f}点、最高{stats['best']}点
@@ -617,11 +631,12 @@ def build_prompt(*, game: str, stats: dict, current: dict, previous: dict) -> st
 
 今回の成績を踏まえ、平均スコアを上げる方向に数値重みだけを調整した候補を
 1つ提案してください。キー構成は変えず、既存キーの数値のみ変更すること。
+各値は有限なJSON数値で、原則 {MIN_CANDIDATE_WEIGHT:g} 以上 {MAX_CANDIDATE_WEIGHT:g} 以下にしてください。{game_guidance}
 出力はJSONオブジェクト1つのみ。説明文は書かず、```jsonフェンスで囲むこと。
 """
 
 
-def parse_candidate(text: str, allowed_keys: set[str]) -> dict:
+def parse_candidate(text: str, allowed_keys: set[str], *, game: str | None = None) -> dict:
     """LLM出力から候補重みを取り出す。形式不正は CornerImproveError。"""
     match = JSON_FENCE_RE.search(text or "")
     payload = match.group(1) if match else (text or "")
@@ -650,7 +665,13 @@ def parse_candidate(text: str, allowed_keys: set[str]) -> dict:
                 f"重みは数値である必要があります: {key}",
                 code="llm-values", phase="llm",
             )
-        if not (0.001 <= float(value) <= 1e6):
+        try:
+            numeric_value = float(value)
+        except (OverflowError, ValueError):
+            numeric_value = float("inf")
+        minimum = _minimum_candidate_weight(game or "", key)
+        outside_range = not minimum <= numeric_value <= MAX_CANDIDATE_WEIGHT
+        if not math.isfinite(numeric_value) or outside_range:
             raise CornerImproveError(
                 f"重みが範囲外です: {key}={value}",
                 code="llm-values", phase="llm",
@@ -1099,7 +1120,7 @@ def _run_corner_improve(
     llm = llm or (lambda text: _default_llm(g, agents=agents, prompt_text=text))
     try:
         raw_output = llm(prompt_text)
-        candidate_delta = parse_candidate(raw_output, proposable)
+        candidate_delta = parse_candidate(raw_output, proposable, game=game)
     except CornerImproveError:
         raise
     except Exception as exc:
