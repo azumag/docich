@@ -2076,7 +2076,7 @@ class StreamTitleSyncProjectionTests(CollectorFixture):
         }
         with mock.patch.object(module, "_git_text", side_effect=[
             docich_head,
-            f"160000 commit {gitlink_sha}\\tgames/soviet_now",
+            f"160000 commit {gitlink_sha}\tgames/soviet_now",
             runtime_head,
         ]) as git_text, mock.patch.object(
             module, "_stream_title_sync_code_versions", return_value=code_versions
