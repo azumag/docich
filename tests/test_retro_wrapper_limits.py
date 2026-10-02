@@ -127,7 +127,7 @@ elif sys.argv[1] == "send-keys":
     assert sys.argv[2:4] == ["-t", "%9"], sys.argv
     key = sys.argv[4]
     s["keys"].append([s["screen"], s["item"], key])
-    if fault == "send" and key == "3":
+    if fault == "send" and key == "4":
         rc = 1
     elif s["screen"] == "main":
         if key == "Home":
@@ -199,7 +199,7 @@ raise SystemExit(1)
 @pytest.mark.parametrize("speed", [None, "", *map(str, range(1, 10))])
 def test_nsnake_wrapper_uses_speed_override_before_start(tmp_path, speed):
     state, recorded = _run_nsnake_menu(tmp_path, speed)
-    expected = int(speed or "3")
+    expected = int(speed or "4")
     assert state["starts"] == [expected]
     assert [row["score"] for row in recorded] == [0]
     digits = [entry for entry in state["keys"] if entry[2].isdigit()]
@@ -213,7 +213,7 @@ def test_nsnake_wrapper_does_not_start_without_verified_speed(tmp_path, fault):
     assert state["starts"] == []
     assert recorded == []
     digits = [entry for entry in state["keys"] if entry[2].isdigit()]
-    assert digits == ([["settings", 1, "3"]] if fault in {"value", "send"} else [])
+    assert digits == ([["settings", 1, "4"]] if fault in {"value", "send"} else [])
 
 
 @pytest.mark.parametrize("screen", ["playing", "over", "unknown"])
