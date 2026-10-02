@@ -466,8 +466,13 @@ def _survey_field():
     return c.frame()
 
 
-def _failed_month_roster(state):
-    """Actual decide menu/status flow; Down at the final row never wraps."""
+def _month_roster(state, visited=None):
+    """Actual decide menu/status flow; Down at the final row never wraps.
+
+    `visited` stops the walk early, leaving listed names unread. Reaching
+    every listed name completes the receipt even though the cursor never
+    returned to the first row; a partial walk never completes.
+    """
     from docich.hanjuku_bot import decide
     from test_hanjuku_chart_bot import month_canvas
     from test_hanjuku_house import roster,status
@@ -475,21 +480,26 @@ def _failed_month_roster(state):
     actions,state=decide(month,state);assert actions==[p.pad('a')]
     actions,state=decide(_survey_main(7),state);assert actions==[p.pad('a')]
     names=['どうし','ゼウス']
-    for i,name in enumerate(names):
+    walk=names if visited is None else names[:visited]
+    for i,name in enumerate(walk):
         frame=_survey_header(roster(names,i),7)
         actions,state=decide(frame,state);assert actions==[p.pad('a')]
         actions,state=decide(_survey_header(status(name,'エラベルエッグ4'),7),state)
         assert actions==[p.pad('b')]
         actions,state=decide(frame,state);assert actions==[p.pad('down')]
-        if i==0:
-            actions,state=decide(_survey_header(roster(names,1),7),state);assert actions==[]
+        if i+1<len(walk):
+            actions,state=decide(_survey_header(roster(names,i+1),7),state);assert actions==[]
     for _ in range(9):actions,state=decide(frame,state)
     assert actions==[p.pad('b')] and not state['policy']['house']['roster_wrapped']
     actions,state=decide(_survey_main(7),state);assert actions==[p.pad('b')]
     actions,state=decide(month,state);assert actions==[]
     assert not state['policy'].get('house')
-    assert not state['policy']['recruit_roster']['complete']
+    assert state['policy']['recruit_roster']['complete'] is (visited is None)
     return state
+
+
+def _failed_month_roster(state):
+    return _month_roster(state, visited=1)
 
 
 def test_two_failed_month_scans_release_field_repair_scan_in_native_flow():
@@ -518,6 +528,53 @@ def test_two_failed_month_scans_release_field_repair_scan_in_native_flow():
     assert state['policy']['house']['pending']==['ゼウス']
     assert state['policy']['house_eggs']['ゼウス']['broken'] is True
     assert state['policy']['recruit_month_scan_attempts']['count']==2
+
+
+def test_completed_month_scan_is_not_repeated_after_its_receipt_expires():
+    from docich.hanjuku_bot import decide
+    from test_hanjuku_chart_bot import month_canvas
+    mem=memory(complete=False);mem.pop('recruit_roster')
+    state=_month_roster({'policy':mem})
+    mem=state['policy']
+    assert mem['recruit_roster']['complete'] is True
+    assert mem['recruit_month_scan_attempts']['count']==1
+    assert r.surveyed(mem)
+    # The short-lived receipt goes stale; the completed month does not.
+    mem['tick']+=r.FRESH_TICKS
+    actions,state=decide(month_canvas(250,on='メインメニュー',month=7),state)
+    assert not state['policy'].get('house')
+    assert mem['recruit_month_scan_attempts']['count']==1
+
+
+def test_one_completed_month_scan_replaces_the_redundant_field_walk():
+    from docich.hanjuku_bot import decide
+    mem=memory(complete=False);mem['tick']=300;mem.pop('recruit_roster')
+    for row in mem['castle_income'].values():row['tick']=250
+    state=_month_roster({'policy':mem})
+    mem=state['policy']
+    assert mem['recruit_roster']['complete'] is True
+    assert not mem['recruit_roster_recheck']
+    # Nothing to repair and the payroll income is current, so the second walk
+    # of the same statuses adds no information.
+    actions,state=decide(_survey_field(),state)
+    assert not state['policy'].get('house')
+    assert mem['recruit_field_scan_attempts']['count']==0
+
+
+def test_field_walk_still_dispatches_a_repair_found_by_the_month_scan():
+    from docich.hanjuku_bot import decide
+    mem=memory(complete=False);mem['tick']=300;mem.pop('recruit_roster')
+    for row in mem['castle_income'].values():row['tick']=250
+    state=_month_roster({'policy':mem})
+    mem=state['policy']
+    # The egg breaks after the free monthly read recorded it; only the field
+    # walk leaves the monthly menu and dispatches the repair.
+    mem.setdefault('house_eggs',{}).setdefault('ゼウス',{}).update(
+        broken=True,month=mem['month'])
+    actions,state=decide(_survey_field(),state)
+    assert actions==[p.pad('x')]
+    assert not state['policy']['house']['month_scan']
+    assert mem['recruit_field_scan_attempts']['count']==1
 
 
 @pytest.mark.parametrize('legacy_field_count',[0,1,2])
