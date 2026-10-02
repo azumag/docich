@@ -1813,7 +1813,8 @@ class StreamTitleSyncProjectionTests(CollectorFixture):
     def write_stream_title_sync(self, *, occurred_at=None, event="result",
                                 skip_reason="none", youtube="updated",
                                 kick="not_live", run_soren_sha="a" * 40,
-                                extra=None):
+                                call_condition=None, updater_sha=None,
+                                helper_sha=None, extra=None):
         row = {
             "occurred_at": occurred_at or time.strftime(
                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.now)
@@ -1822,8 +1823,16 @@ class StreamTitleSyncProjectionTests(CollectorFixture):
             "skip_reason": skip_reason,
             "youtube": youtube,
             "kick": kick,
-            "soviet_sha": run_soren_sha,
         }
+        if call_condition is None:
+            row["soviet_sha"] = run_soren_sha
+        else:
+            row.update({
+                "execution_head": run_soren_sha,
+                "call_condition": call_condition,
+                "update_stream_game_sha256": updater_sha,
+                "stream_title_sync_sha256": helper_sha,
+            })
         if extra:
             row.update(extra)
         path = self.soren / "tmp" / "state" / "stream_title_sync" / "events.jsonl"
@@ -1966,3 +1975,118 @@ class StreamTitleSyncProjectionTests(CollectorFixture):
         result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
         self.assertEqual(result["record_status"], "unreadable")
         self.assertEqual(result["youtube"], "unknown")
+
+
+    def test_new_runtime_record_uses_file_hashes_separate_from_checkout_head(self):
+        module = load_collector()
+        self.write_stream_title_sync(
+            event="skipped", skip_reason="category_only",
+            youtube="not_run", kick="not_run", run_soren_sha="c" * 40,
+            call_condition="category_only", updater_sha="b" * 64,
+            helper_sha="d" * 64,
+        )
+        expected_code = {
+            "expected_update_stream_game_sha256": "b" * 64,
+            "expected_stream_title_sync_sha256": "d" * 64,
+        }
+        result = module._collect_stream_title_sync(
+            self.soren, self.now, "a" * 40, expected_code
+        )
+        self.assertEqual(result["record_status"], "fresh")
+        self.assertEqual(result["execution_soren_head"], "c" * 40)
+        self.assertEqual(result["expected_soren_gitlink_sha"], "a" * 40)
+        self.assertFalse(result["same_execution_head_as_gitlink"])
+        self.assertTrue(result["runtime_code_matches_gitlink"])
+        self.assertEqual(result["call_condition"], "category_only")
+        self.assertEqual(result["skip_reason"], "category_only")
+        self.assertEqual(result["youtube"], "not_run")
+        self.assertEqual(result["kick"], "not_run")
+        self.assertNotIn("title", result)
+        self.assertNotIn("token", json.dumps(result).lower())
+
+    def test_new_runtime_code_mismatch_suppresses_platform_outcomes(self):
+        module = load_collector()
+        self.write_stream_title_sync(
+            run_soren_sha="c" * 40, call_condition="normal",
+            updater_sha="b" * 64, helper_sha="d" * 64,
+        )
+        expected_code = {
+            "expected_update_stream_game_sha256": "e" * 64,
+            "expected_stream_title_sync_sha256": "d" * 64,
+        }
+        result = module._collect_stream_title_sync(
+            self.soren, self.now, "a" * 40, expected_code
+        )
+        self.assertEqual(result["record_status"], "source_mismatch")
+        self.assertFalse(result["runtime_code_matches_gitlink"])
+        self.assertEqual(result["youtube"], "unknown")
+        self.assertEqual(result["kick"], "unknown")
+
+    def test_missing_journal_destination_reports_only_fixed_component_states(self):
+        module = load_collector()
+        result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
+        self.assertEqual(result["record_status"], "absent")
+        self.assertEqual(result["journal_destination"], {
+            "root": "present",
+            "tmp": "present",
+            "state": "present",
+            "directory": "missing",
+            "lock_file": "not_checked",
+            "events_file": "not_checked",
+        })
+        self.assertNotIn(str(self.soren), json.dumps(result))
+        self.assertNotIn("title", result)
+        self.assertNotIn("token", json.dumps(result).lower())
+
+    def test_runtime_and_expected_code_fingerprints_are_hashes_only(self):
+        module = load_collector()
+        runtime = Path(self.tmp.name) / "runtime"
+        expected = Path(self.tmp.name) / "expected"
+        for root in (runtime, expected):
+            (root / "lib").mkdir(parents=True)
+        (runtime / "update_stream_game.sh").write_text("runtime marker", encoding="utf-8")
+        (runtime / "lib/stream_title_sync.py").write_text("runtime helper", encoding="utf-8")
+        (expected / "update_stream_game.sh").write_text("reviewed marker", encoding="utf-8")
+        (expected / "lib/stream_title_sync.py").write_text("reviewed helper", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(expected)], check=True)
+        subprocess.run(["git", "-C", str(expected), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(expected), "config", "user.email", "test@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(expected), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(expected), "commit", "-qm", "expected code"], check=True)
+        expected_head = subprocess.check_output(
+            ["git", "-C", str(expected), "rev-parse", "HEAD"], text=True
+        ).strip()
+        result = module._stream_title_sync_code_versions(runtime, expected, expected_head)
+        for key, value in result.items():
+            self.assertRegex(value, r"^[0-9a-f]{64}$", key)
+        serialized = json.dumps(result)
+        for marker in ("runtime marker", "runtime helper", "reviewed marker", "reviewed helper"):
+            self.assertNotIn(marker, serialized)
+        self.assertNotIn(str(runtime), serialized)
+    def test_meta_separates_runtime_head_gitlink_and_code_versions(self):
+        module = load_collector()
+        docich_head = "a" * 40
+        gitlink_sha = "b" * 40
+        runtime_head = "c" * 40
+        code_versions = {
+            "runtime_update_stream_game_sha256": "d" * 64,
+            "runtime_stream_title_sync_sha256": "e" * 64,
+            "expected_update_stream_game_sha256": "f" * 64,
+            "expected_stream_title_sync_sha256": "0" * 64,
+        }
+        with mock.patch.object(module, "_git_text", side_effect=[
+            docich_head,
+            f"160000 commit {gitlink_sha}\\tgames/soviet_now",
+            runtime_head,
+        ]) as git_text, mock.patch.object(
+            module, "_stream_title_sync_code_versions", return_value=code_versions
+        ) as versions:
+            result = module._collect_meta(self.soren, self.now)
+        self.assertEqual(result["docich_head"], docich_head)
+        self.assertEqual(result["soren_gitlink_sha"], gitlink_sha)
+        self.assertEqual(result["runtime_soren_head"], runtime_head)
+        self.assertEqual(result["soren_code"], code_versions)
+        versions.assert_called_once_with(
+            self.soren, module.PROD_ROOT / "games" / "soviet_now", gitlink_sha
+        )
+        self.assertEqual(git_text.call_count, 3)
