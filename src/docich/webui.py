@@ -1066,7 +1066,10 @@ def _validate_audio_delivery_key(delivery_key: str) -> str:
     return value
 
 
-def _enqueue_audio_delivery(soren_root: Path, text: str, delivery: str, *, speaker: str = "") -> dict[str, Any]:
+def _enqueue_audio_delivery(
+    soren_root: Path, text: str, delivery: str, *, source: str = "crypto_paper", speaker: str = "",
+    wait_for_lock: bool = True,
+) -> dict[str, Any]:
     """Publish once by atomically moving a prepared payload into the queue.
 
     A complete receipt directory is installed before publication. Its payload
@@ -1087,17 +1090,24 @@ def _enqueue_audio_delivery(soren_root: Path, text: str, delivery: str, *, speak
     queue = _comment_queue_dir(soren_root)
     receipts = _comment_audio_delivery_dir(soren_root)
     receipts.mkdir(parents=True, exist_ok=True)
-    key = hashlib.sha256(delivery.encode("utf-8")).hexdigest()
+    if source not in {"crypto_paper", "hanjuku_terminal"}:
+        raise ValueError("unsupported durable audio source")
+    # Keep existing PAPER receipt names stable; the new source is separately
+    # namespaced so an identical caller key cannot alias across source types.
+    receipt_key = delivery if source == "crypto_paper" else f"{source}\0{delivery}"
+    key = hashlib.sha256(receipt_key.encode("utf-8")).hexdigest()
     marker = receipts / key
     # The lock inode is permanent; the kernel releases it when a process dies.
     with (receipts / ".publish.lock").open("a") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        lock_flags = fcntl.LOCK_EX if wait_for_lock else fcntl.LOCK_EX | fcntl.LOCK_NB
+        fcntl.flock(lock.fileno(), lock_flags)
         if not marker.exists():
             stage = Path(tempfile.mkdtemp(prefix=".prepared.", dir=receipts))
             try:
-                filename = f"comment_announce_{time.time_ns()}_{key}_crypto_paper.txt"
+                filename = f"comment_announce_{time.time_ns()}_{key}_{source}.txt"
                 for name, content in (("receipt.json", json.dumps({
-                    "version": 1, "event_id": delivery, "filename": filename,
+                    "version": 1, "event_id": delivery, "source": source,
+                    "filename": filename,
                 })), ("payload", text + "\n")):
                     with (stage / name).open("w", encoding="utf-8") as handle:
                         handle.write(content)
@@ -1113,9 +1123,11 @@ def _enqueue_audio_delivery(soren_root: Path, text: str, delivery: str, *, speak
         try:
             record = json.loads((marker / "receipt.json").read_text(encoding="utf-8"))
             filename = record["filename"]
+            recorded_source = record.get("source", "crypto_paper")
             if (record.get("version") != 1 or record.get("event_id") != delivery
+                    or recorded_source != source
                     or not isinstance(filename, str)
-                    or re.fullmatch(rf"comment_announce_[0-9]+_{key}_crypto_paper\.txt", filename) is None):
+                    or re.fullmatch(rf"comment_announce_[0-9]+_{key}_{re.escape(source)}\.txt", filename) is None):
                 raise ValueError("invalid receipt")
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise RuntimeError("audio delivery receipt is ambiguous; manual reconciliation required") from exc
@@ -1288,10 +1300,16 @@ def _enqueue_audio_text(
     src = _validate_audio_source(source)
     spk = _validate_audio_speaker(speaker)
     delivery = _validate_audio_delivery_key(delivery_key)
+    if src == "hanjuku_terminal" and not delivery:
+        raise ValueError("hanjuku_terminal requires a durable delivery_key")
     if delivery:
-        if src != "crypto_paper":
-            raise ValueError("delivery_key is reserved for crypto_paper")
-        return _enqueue_audio_delivery(soren_root, cleaned, delivery, speaker=spk)
+        if src not in {"crypto_paper", "hanjuku_terminal"}:
+            raise ValueError("delivery_key is reserved for durable audio sources")
+        # Each durable source keeps its own semantic queue classification.
+        return _enqueue_audio_delivery(
+            soren_root, cleaned, delivery, source=src, speaker=spk,
+            wait_for_lock=(src == "crypto_paper"),
+        )
     claimed = _comment_audio_claim_enqueue_key(soren_root, cleaned)
     if not claimed:
         return {"ok": True, "dedup": True, "filename": None}
