@@ -1958,7 +1958,13 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha, expected_code=Non
         or not isinstance(kick, str)
         or not valid_execution_head
         or (is_legacy and not isinstance(execution_head, str))
-        or (not is_legacy and call_condition not in STREAM_TITLE_SYNC_CALL_CONDITIONS)
+        or (
+            not is_legacy
+            and (
+                not isinstance(call_condition, str)
+                or call_condition not in STREAM_TITLE_SYNC_CALL_CONDITIONS
+            )
+        )
         or not valid_source_sha256(updater_sha256)
         or not valid_source_sha256(helper_sha256)
     ):
