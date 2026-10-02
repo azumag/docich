@@ -108,6 +108,158 @@ def _proc_start_ticks(pid: int) -> int | None:
         return None
 
 
+def _proc_identity(pid: int) -> dict[str, int | str] | None:
+    """Read PID, process-group, session and start-time identity from procfs."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return {}
+    try:
+        fields = raw[raw.rfind(")") + 2 :].split()
+        return {
+            "state": fields[0],
+            "pgid": int(fields[2]),
+            "sid": int(fields[3]),
+            "start_ticks": int(fields[19]),
+        }
+    except (ValueError, IndexError):
+        return {}
+
+
+def _proc_group_members(pgid: int) -> list[dict[str, int | str]] | None:
+    """List visible members of the supervisor's private session/process group."""
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return None
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return None
+    members = []
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        identity = _proc_identity(int(entry.name))
+        if identity is None:
+            continue
+        if not identity:
+            return None
+        if identity.get("pgid") == pgid and identity.get("sid") == pgid:
+            members.append(identity)
+    return members
+
+
+def stop_manifest_process_group(
+    pid: int,
+    start_ticks: int,
+    pgid: int,
+    *,
+    deadline: float,
+    cancel=None,
+) -> bool:
+    """Stop one manifest-owned private group after revalidating its identity.
+
+    Each browser/TTY child starts a new session, so its PID, PGID and SID are
+    the same. A current PID with a different start time is a recycled PID and
+    is never signalled. If its leader exited but members remain, their PGID
+    and SID still identify the isolated session recorded by the manifest.
+    """
+    if (
+        type(pid) is not int or pid <= 1
+        or type(start_ticks) is not int or start_ticks <= 0
+        or type(pgid) is not int or pgid != pid
+    ):
+        return False
+
+    def members():
+        return _proc_group_members(pgid)
+
+    def running_members():
+        group = members()
+        if group is None:
+            return None
+        return [member for member in group if member.get("state") != "Z"]
+
+    def identity_is_owned() -> bool:
+        root = _proc_identity(pid)
+        group = members()
+        if group is None:
+            return False
+        if root is not None:
+            return bool(
+                root
+                and root.get("start_ticks") == start_ticks
+                and root.get("pgid") == pgid
+                and root.get("sid") == pgid
+            )
+        # A missing leader is safe only while the saved isolated group still
+        # has members. If the whole group is gone, there is nothing to signal.
+        return bool(group)
+
+    remaining = running_members()
+    if remaining is None:
+        return False
+    if not remaining:
+        root = _proc_identity(pid)
+        return root is None or bool(
+            root
+            and root.get("start_ticks") == start_ticks
+            and root.get("pgid") == pgid
+            and root.get("sid") == pgid
+            and root.get("state") == "Z"
+        )
+    if time.monotonic() >= deadline or not identity_is_owned():
+        return False
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        return False
+
+    term_deadline = min(deadline, time.monotonic() + 2.0)
+    while True:
+        remaining = running_members()
+        if remaining is None:
+            return False
+        if not remaining:
+            return True
+        now = time.monotonic()
+        if now >= term_deadline:
+            break
+        wait_for = min(0.05, term_deadline - now)
+        if cancel is not None and cancel.wait(wait_for):
+            return False
+        if cancel is None:
+            time.sleep(wait_for)
+
+    if time.monotonic() >= deadline or not identity_is_owned():
+        return False
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        return False
+
+    while time.monotonic() < deadline:
+        remaining = running_members()
+        if remaining is None:
+            return False
+        if not remaining:
+            return True
+        now = time.monotonic()
+        wait_for = min(0.05, max(0.0, deadline - now))
+        if cancel is not None and cancel.wait(wait_for):
+            return False
+        if cancel is None and wait_for:
+            time.sleep(wait_for)
+    remaining = running_members()
+    return remaining == []
+
+
 def manifest_matches(
     value: object,
     *,
@@ -199,6 +351,10 @@ class NethackTilesSupervisor:
         self._server: NethackSpectatorFrameServer | None = None
         self._browser: subprocess.Popen | None = None
         self._tty: subprocess.Popen | None = None
+        self._browser_start_ticks: int | None = None
+        self._browser_pgid: int | None = None
+        self._tty_start_ticks: int | None = None
+        self._tty_pgid: int | None = None
         self._profile_path = self.runtime_dir / "nethack-tiles-profile"
         self._presentation_epoch = f"p-{uuid4().hex}"
         self._previous_manifest = _load_json(self.manifest_path)
@@ -225,12 +381,37 @@ class NethackTilesSupervisor:
             "owner_start_ticks": _proc_start_ticks(os.getpid()),
             "frame_port": self._server.port if self._server is not None else None,
             "browser_pid": self._browser.pid if self._browser is not None else None,
+            "browser_start_ticks": self._browser_start_ticks,
+            "browser_pgid": self._browser_pgid,
             "tty_pid": self._tty.pid if self._tty is not None else None,
+            "tty_start_ticks": self._tty_start_ticks,
+            "tty_pgid": self._tty_pgid,
             "reason": self._reason if self._reason in FAILURE_REASONS else None,
             "updated_at": time.time(),
             "cleanup_complete": cleanup_complete,
         }
         atomic_write_json(self.manifest_path, payload)
+
+    def _record_process_identity(self, process: subprocess.Popen, *, browser: bool) -> None:
+        start_ticks = _proc_start_ticks(process.pid)
+        try:
+            pgid = os.getpgid(process.pid)
+        except OSError:
+            pgid = None
+        if browser:
+            self._browser_start_ticks = start_ticks
+            self._browser_pgid = pgid
+        else:
+            self._tty_start_ticks = start_ticks
+            self._tty_pgid = pgid
+
+    def _clear_process_identity(self, *, browser: bool) -> None:
+        if browser:
+            self._browser_start_ticks = None
+            self._browser_pgid = None
+        else:
+            self._tty_start_ticks = None
+            self._tty_pgid = None
 
     def _load_state(self) -> dict[str, object]:
         store = GameSwitchStore(self.state_dir)
@@ -399,6 +580,7 @@ class NethackTilesSupervisor:
             )
         except OSError as exc:
             raise RuntimeError("browser_start_failed") from exc
+        self._record_process_identity(self._browser, browser=True)
         self._write_manifest()
         if not self._wait_window(self._browser, timeout_s=BROWSER_WINDOW_WAIT_S):
             raise RuntimeError(self._window_wait_failure_reason(self._browser))
@@ -430,6 +612,7 @@ class NethackTilesSupervisor:
             )
         except OSError as exc:
             raise RuntimeError("fallback_start_failed") from exc
+        self._record_process_identity(self._tty, browser=False)
         self._write_manifest()
         if not self._wait_window(self._tty, timeout_s=_TTY_WINDOW_WAIT_S):
             raise RuntimeError("fallback_start_failed")
@@ -514,8 +697,12 @@ class NethackTilesSupervisor:
         self._status = "fallback_starting"
         self._write_manifest()
         browser_stopped = self._stop_process(self._browser)
-        self._browser = None
+        if browser_stopped:
+            self._browser = None
+            self._clear_process_identity(browser=True)
         service_stopped = self._stop_frame_service()
+        if service_stopped:
+            self._server = None
         if not browser_stopped or not service_stopped:
             self._status = "failed"
             self._reason = "fallback_start_failed"
@@ -616,12 +803,20 @@ class NethackTilesSupervisor:
         finally:
             browser_stopped = self._stop_process(self._browser)
             tty_stopped = self._stop_process(self._tty)
-            self._browser = None
-            self._tty = None
+            if browser_stopped:
+                self._browser = None
+                self._clear_process_identity(browser=True)
+            if tty_stopped:
+                self._tty = None
+                self._clear_process_identity(browser=False)
             service_stopped = self._stop_frame_service()
+            if service_stopped:
+                self._server = None
             cleanup_ok = browser_stopped and tty_stopped and service_stopped
             try:
-                if self._profile_path.is_symlink():
+                if not browser_stopped:
+                    cleanup_ok = False
+                elif self._profile_path.is_symlink():
                     cleanup_ok = False
                 elif self._profile_path.exists():
                     if self._profile_path.is_dir():

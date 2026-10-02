@@ -193,6 +193,115 @@ class NethackTilesSupervisorTests(unittest.TestCase):
         self.assertNotIn("secret", json.dumps(record))
         self.assertNotIn("argv", json.dumps(record))
 
+    def test_failed_browser_stop_retains_handle_and_never_marks_cleanup_complete(self):
+        supervisor = self.supervisor()
+        browser = _FakeProcess()
+        supervisor._browser = browser
+        supervisor._browser_start_ticks = 456
+        supervisor._browser_pgid = browser.pid
+        supervisor._start_frame_service = mock.Mock(
+            side_effect=RuntimeError("server_start_failed")
+        )
+        supervisor._stop_process = mock.Mock(side_effect=lambda process: process is None)
+        supervisor._stop_frame_service = mock.Mock(return_value=True)
+        supervisor._start_tty = mock.Mock()
+        supervisor.stop()
+
+        self.assertEqual(supervisor.run(), 1)
+        self.assertIs(supervisor._browser, browser)
+        supervisor._start_tty.assert_not_called()
+        record = json.loads(supervisor.manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(record["status"], "cleanup_failed")
+        self.assertFalse(record["cleanup_complete"])
+        self.assertEqual(record["browser_pid"], browser.pid)
+        self.assertEqual(record["browser_start_ticks"], 456)
+        self.assertEqual(record["browser_pgid"], browser.pid)
+
+    def test_manifest_group_rejects_recycled_pid_without_signalling(self):
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            from docich.nethack_tiles_supervisor import _proc_start_ticks, stop_manifest_process_group
+
+            start_ticks = _proc_start_ticks(process.pid)
+            if start_ticks is None:
+                self.skipTest("procfs process identity is unavailable")
+            with mock.patch(
+                "docich.nethack_tiles_supervisor.os.killpg"
+            ) as killpg:
+                self.assertFalse(
+                    stop_manifest_process_group(
+                        process.pid,
+                        start_ticks + 1,
+                        process.pid,
+                        deadline=time.monotonic() + 1,
+                    )
+                )
+                killpg.assert_not_called()
+            self.assertIsNone(process.poll())
+        finally:
+            process.terminate()
+            process.wait(timeout=3)
+
+    def test_manifest_group_cleanup_uses_only_isolated_fixture_process(self):
+        if not Path("/proc").is_dir():
+            self.skipTest("manifest process-group recovery requires procfs")
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
+            ],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            from docich.nethack_tiles_supervisor import _proc_start_ticks, stop_manifest_process_group
+
+            start_ticks = _proc_start_ticks(process.pid)
+            self.assertIsNotNone(start_ticks)
+            self.assertTrue(
+                stop_manifest_process_group(
+                    process.pid,
+                    start_ticks,
+                    process.pid,
+                    deadline=time.monotonic() + 4,
+                )
+            )
+            process.wait(timeout=1)
+            self.assertIsNotNone(process.returncode)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=3)
+
+    def test_manifest_group_cleanup_does_not_signal_after_deadline(self):
+        with (
+            mock.patch(
+                "docich.nethack_tiles_supervisor._proc_group_members",
+                return_value=[{"state": "S", "pgid": 34567, "sid": 34567}],
+            ),
+            mock.patch("docich.nethack_tiles_supervisor.os.killpg") as killpg,
+        ):
+            from docich.nethack_tiles_supervisor import stop_manifest_process_group
+
+            self.assertFalse(
+                stop_manifest_process_group(
+                    34567,
+                    1234,
+                    34567,
+                    deadline=time.monotonic() - 1,
+                )
+            )
+            killpg.assert_not_called()
+
     def test_owned_process_group_cleanup_is_bounded(self):
         process = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(30)"],

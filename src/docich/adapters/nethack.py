@@ -22,6 +22,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import shutil
+import stat
 import sys
 import time
 from dataclasses import replace
@@ -30,8 +32,9 @@ from pathlib import Path
 from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, atomic_write_json
 from ..nethack_tiles_supervisor import (
     PRESENTATION_WINDOW_WAIT_S,
-    browser_binary,
+    _proc_start_ticks,
     presentation_window_pattern,
+    stop_manifest_process_group,
 )
 from ..xkit import XKit
 from .base import AdapterError
@@ -292,8 +295,6 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         if self.presentation_mode == "tiles":
             if self.g.display.viewport_width <= 0 or self.g.display.viewport_height <= 0:
                 raise AdapterError("tiles presentation にはdisplay viewportが必要です")
-            if browser_binary() is None:
-                raise AdapterError("chromium が見つかりません (NetHack tiles presentation)")
             supervisor = Path(__file__).resolve().parents[1] / "nethack_tiles_supervisor.py"
             if not supervisor.is_file():
                 raise AdapterError("NetHack tiles supervisor が見つかりません")
@@ -446,11 +447,105 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
                 and presentation.get("status") == "stopped"
             ):
                 return
-            if manifest.get("status") == "cleanup_failed":
-                raise AdapterError("NetHack tiles child cleanupに失敗しました")
+            if manifest and manifest.get("cleanup_complete") is not True:
+                owner_alive = self._tiles_supervisor_alive(manifest)
+                if owner_alive is False:
+                    manifest = self._resume_orphaned_tiles_cleanup(
+                        manifest, deadline=deadline, cancel=cancel
+                    )
+                    if presentation.get("status") == "stopped":
+                        self._finish_orphaned_tiles_cleanup(
+                            manifest, deadline=deadline, cancel=cancel
+                        )
+                        return
             if time.monotonic() >= deadline:
                 raise ReadinessTimeoutError("NetHack tiles child cleanupが確認できません")
             time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+
+    def _tiles_supervisor_alive(self, manifest: dict) -> bool | None:
+        """Return liveness only when the manifest records a verifiable owner."""
+        owner_pid = manifest.get("owner_pid")
+        owner_start_ticks = manifest.get("owner_start_ticks")
+        if (
+            type(owner_pid) is not int or owner_pid <= 1
+            or type(owner_start_ticks) is not int or owner_start_ticks <= 0
+        ):
+            return None
+        return _proc_start_ticks(owner_pid) == owner_start_ticks
+
+    def _resume_orphaned_tiles_cleanup(
+        self,
+        manifest: dict,
+        *,
+        deadline: float,
+        cancel,
+    ) -> dict:
+        """Recover only browser/TTY groups pinned to this runtime and epoch."""
+        self._validate_tiles_manifest(manifest)
+        epoch = manifest.get("presentation_epoch")
+        if not isinstance(epoch, str) or re.fullmatch(r"p-[0-9a-f]{32}", epoch) is None:
+            raise AdapterError("NetHack tiles presentation epochを確認できません")
+        changed = False
+        for prefix in ("browser", "tty"):
+            pid = manifest.get(f"{prefix}_pid")
+            start_ticks = manifest.get(f"{prefix}_start_ticks")
+            pgid = manifest.get(f"{prefix}_pgid")
+            if pid is None:
+                if start_ticks is not None or pgid is not None:
+                    raise AdapterError("NetHack tiles child processの所有情報が不整合です")
+                continue
+            self._check_active(deadline, cancel)
+            if not stop_manifest_process_group(
+                pid,
+                start_ticks,
+                pgid,
+                deadline=deadline,
+                cancel=cancel,
+            ):
+                self._check_active(deadline, cancel)
+                raise AdapterError("NetHack tiles child processの所有権を再確認できません")
+            manifest[f"{prefix}_pid"] = None
+            manifest[f"{prefix}_start_ticks"] = None
+            manifest[f"{prefix}_pgid"] = None
+            changed = True
+        if changed:
+            manifest["status"] = "cleanup_failed"
+            manifest["cleanup_complete"] = False
+            self._check_active(deadline, cancel)
+            atomic_write_json(self._tiles_manifest_path(), manifest)
+        return manifest
+
+    def _finish_orphaned_tiles_cleanup(
+        self,
+        manifest: dict,
+        *,
+        deadline: float,
+        cancel,
+    ) -> None:
+        """Publish complete only after both private groups and presenter stop."""
+        for prefix in ("browser", "tty"):
+            if manifest.get(f"{prefix}_pid") is not None:
+                raise AdapterError("NetHack tiles child process cleanupが未完了です")
+        profile = self.spec.runtime_dir / "nethack-tiles-profile"
+        try:
+            info = profile.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise AdapterError("NetHack tiles browser profile cleanupを確認できません") from exc
+        else:
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                raise AdapterError("NetHack tiles browser profileの所有パスが不正です")
+            try:
+                self._check_active(deadline, cancel)
+                shutil.rmtree(profile)
+            except OSError as exc:
+                raise AdapterError("NetHack tiles browser profile cleanupに失敗しました") from exc
+        manifest["frame_port"] = None
+        manifest["status"] = "stopped"
+        manifest["cleanup_complete"] = True
+        self._check_active(deadline, cancel)
+        atomic_write_json(self._tiles_manifest_path(), manifest)
 
     def _read_presentation_state(self) -> dict:
         try:
