@@ -18,8 +18,9 @@ def _write_executable(path: Path, body: str) -> None:
 
 def test_ninvaders_config_launches_deployed_tracked_wrapper() -> None:
     text = NINVADERS_CONFIG.read_text(encoding="utf-8")
-    # "brain": the command brain plays; the wrapper only starts matches and records.
-    assert 'command = "/bin/sh games/cli-wrappers/ninvaders_docich.sh brain"' in text
+    # The wrapper's policy player owns in-match input; a second command brain would compete.
+    assert 'command = "/bin/sh games/cli-wrappers/ninvaders_docich.sh policy"' in text
+    assert "enabled = false" in text
     assert "/usr/local/bin/ninvaders_docich" not in text
 
 

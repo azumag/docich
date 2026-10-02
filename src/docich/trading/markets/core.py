@@ -16,6 +16,9 @@ from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from .exits import (exit_reason, fill_exit_details, initialize_exit, observe_exit,
+                    record_exit_stats)
+
 JST = ZoneInfo("Asia/Tokyo")
 NY = ZoneInfo("America/New_York")
 TITLES = {"stocks": "中華AIのデイトレ", "fx": "FXで大儲け結果発表"}
@@ -65,19 +68,32 @@ class Policy:
     stop_bps: int = 60
     take_bps: int = 100
     max_hold_s: int = 900
+    exit_mode: str = "fixed"
+    trail_activation_bps: int = 100
+    trail_distance_bps: int = 50
 
     def __post_init__(self):
+        if self.exit_mode not in ("fixed", "trailing"):
+            raise ValueError("unsupported exit mode")
         if self.kind not in ("momentum", "reversion"):
             raise ValueError("unsupported strategy")
         for key, lo, hi in (("lookback", 3, 120), ("entry_bps", 1, 200),
-                            ("stop_bps", 5, 300), ("take_bps", 5, 600), ("max_hold_s", 30, 3600)):
+                            ("stop_bps", 5, 300), ("take_bps", 5, 600), ("max_hold_s", 30, 3600),
+                            ("trail_activation_bps", 5, 600), ("trail_distance_bps", 5, 300)):
             value = getattr(self, key)
             if type(value) is not int or not lo <= value <= hi:
                 raise ValueError(f"invalid policy {key}")
+        if self.trail_distance_bps >= self.trail_activation_bps:
+            raise ValueError("trail distance must be below activation")
 
     @property
     def version(self) -> str:
-        return digest(asdict(self))[:20]
+        body = asdict(self)
+        if self.exit_mode == "fixed":
+            # Preserve IDs for existing six-field policies, fills and paper trials.
+            for key in ("exit_mode", "trail_activation_bps", "trail_distance_bps"):
+                body.pop(key)
+        return digest(body)[:20]
 
 
 @dataclass(frozen=True)
@@ -236,6 +252,16 @@ class PaperBook:
                 return self.snapshot(now=now)
             if now < state["last_ts"]:
                 raise ValueError("clock moved backwards")
+            # Do not let replayed/out-of-order quotes move extrema or execute exits.
+            # Apply the same observation gate to both arms of a paper comparison.
+            for symbol, q in list(valid.items()):
+                history = state["history"].get(symbol, [])
+                last_quote = max(history[-1][0] if history else 0,
+                                 state["positions"].get(symbol, {}).get("mark_ts", 0),
+                                 state["last_entry"].get(symbol, 0))
+                if q.ts <= last_quote:
+                    errors.append(symbol)
+                    del valid[symbol]
             # Financing continues while the bot is off; close quotes may be absent.
             if self.market == "fx":
                 for pos in state["positions"].values():
@@ -259,12 +285,11 @@ class PaperBook:
                 direction = signal(history, policy)
                 pos = state["positions"].get(symbol)
                 if pos:
-                    signed_return = ((decimal(pos["mark"]) / decimal(pos["entry"]) - 1)
-                                     * pos["side"] * 10000)
-                    close = (force_flat or state["risk_stopped"] or signed_return <= -pos["stop_bps"]
-                             or signed_return >= pos["take_bps"] or now - pos["opened_at"] >= pos["max_hold_s"]
-                             or (direction and direction != pos["side"]))
-                    if close:
+                    observe_exit(pos, fee_bps=decimal(self.limits.fee_bps),
+                                 slippage_bps=decimal(self.limits.slippage_bps))
+                    reason = exit_reason(pos, now=now, direction=direction,
+                                         force_flat=force_flat, risk_stopped=state["risk_stopped"])
+                    if reason is not None:
                         qty = decimal(pos["qty"])
                         available = decimal(q.bid_size if pos["side"] == 1 else q.ask_size)
                         # All-or-none conservative fills. Never pretend a halt or
@@ -278,7 +303,9 @@ class PaperBook:
                         fill = {"kind": "close", "symbol": symbol, "side": pos["side"], "qty": str(qty),
                                 "price": str(price), "fee": str(fee), "policy": pos["policy"], "ts": now,
                                 "net_pnl_jpy": str(gross - fee - decimal(pos["entry_fee"]) - decimal(pos["financing"])),
-                                "reason": "session_end" if force_flat else "risk_or_strategy"}
+                                "reason": reason}
+                        fill.update(fill_exit_details(pos, decimal(fill["net_pnl_jpy"])))
+                        record_exit_stats(state, fill)
                         self.db.execute("INSERT INTO fills VALUES (?,?,?)", (digest([tick_id, symbol, "close"]), now, json.dumps(fill)))
                         del state["positions"][symbol]
                         state["blocked"].append(symbol)
@@ -310,6 +337,9 @@ class PaperBook:
                     "entry_fee": str(fee), "mark": q.bid if direction == 1 else q.ask, "mark_ts": q.ts,
                     "opened_at": now, "financed_at": now, "financing": "0", "policy": policy.version,
                     "stop_bps": policy.stop_bps, "take_bps": policy.take_bps, "max_hold_s": policy.max_hold_s}
+                initialize_exit(state["positions"][symbol], policy)
+                observe_exit(state["positions"][symbol], fee_bps=decimal(self.limits.fee_bps),
+                             slippage_bps=decimal(self.limits.slippage_bps))
                 fill = {"kind": "open", "symbol": symbol, "side": direction, "qty": str(qty),
                         "price": str(price), "fee": str(fee), "policy": policy.version, "ts": now}
                 self.db.execute("INSERT INTO fills VALUES (?,?,?)", (digest([tick_id, symbol, "open"]), now, json.dumps(fill)))
@@ -329,7 +359,9 @@ class PaperBook:
                       "unrealized_jpy": str(unreal), "deployed_jpy": str(deployed), "policy": policy.version,
                       "max_drawdown": state["max_drawdown"], "positions": state["positions"],
                       "rejected_quotes": errors, "accepted_quotes": len(valid), "market_as_of": max((q.ts for q in valid.values()), default=0),
-                      "pending_liquidation": bool(force_flat and state["positions"]), "risk_stopped": state["risk_stopped"]}
+                      "pending_liquidation": bool(force_flat and state["positions"]) or any(
+                          p.get("exit_state", {}).get("requested_reason") for p in state["positions"].values()),
+                      "exit_stats": state.get("exit_stats", {}), "risk_stopped": state["risk_stopped"]}
             self.db.execute("UPDATE account SET body=? WHERE id=1", (json.dumps(state),))
             self.db.execute("INSERT INTO ticks VALUES (?,?,?)", (tick_id, now, json.dumps([asdict(q) for q in quotes])))
             self.db.execute("INSERT OR REPLACE INTO metrics VALUES (?,?)", (now, json.dumps(metric)))

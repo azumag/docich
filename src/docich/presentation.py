@@ -85,7 +85,8 @@ def _cell_aspect(value: str) -> float:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
-def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0) -> str:
+def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0,
+                   nearest: bool = False) -> str:
     filters = []
     if cell_stretch != 1.0:
         # 端末セルを正方形として見せるための水平補正。等倍 (既定) では従来と
@@ -93,10 +94,21 @@ def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0) -> str
         # 幅が奇数になり得るが、x11grab の bgra 入力は間引きが無く、最終段の
         # pad が 960x540 (偶数) に正規化するため配信フォーマットは変わらない。
         filters.append(f"scale=iw*{cell_stretch:g}:ih:flags=neighbor")
-    filters.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease")
+    filters.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease"
+                   + (":flags=neighbor" if nearest else ""))
     filters.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
     filters.append("setsar=1")
     return ",".join(filters)
+
+
+def tv_filter(width: int, height: int) -> str:
+    """A native 256x224 SNES frame at the 4:3 it had when RetroArch drew it
+    3x (897x672), centred with bars, nearest neighbour (crisp and cheap).
+    Filling a 16:9 rectangle stretched it sideways (owner, 2026-09-27)."""
+    w, h = min(width, height * 4 // 3), min(height, width * 3 // 4)
+    w, h = w - w % 2, h - h % 2
+    return (f"scale={w}:{h}:flags=neighbor,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1")
 
 
 def _positive_int(value: str) -> int:
@@ -147,6 +159,12 @@ def _parser() -> argparse.ArgumentParser:
     # Used by RetroArch only: dbus-run-session owns the process group, but
     # the X window belongs to its child. Search only the private X server.
     parser.add_argument('--window-pattern')
+    # Projection capture rate and fit. The broadcast encoder runs at 30 fps;
+    # 15 fps (the default, unchanged for other games) shows every frame twice.
+    parser.add_argument('--framerate', type=_positive_int, default=15)
+    parser.add_argument('--fit', choices=('contain', 'tv'), default='contain')
+    parser.add_argument('--nearest', action='store_true',
+                        help='Use nearest-neighbour scaling for contained pixel-art sources')
     parser.add_argument('--runtime-state')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     return parser
@@ -258,16 +276,18 @@ def main(argv=None) -> int:
         if width > 4096 or height > 2160:
             raise RuntimeError('native viewer exceeds private display capacity')
         cell_note = '' if args.cell_stretch is None else f' cell-stretch={args.cell_stretch:g}'
-        print(f'native={width}x{height} output={args.width}x{args.height} fit=contain{cell_note}',
-              flush=True)
+        print(f'native={width}x{height} output={args.width}x{args.height} fit={args.fit}'
+              f' fps={args.framerate}{cell_note}', flush=True)
         output_env = dict(os.environ, DISPLAY=args.display)
         player = launch([
             'ffplay', '-loglevel', 'warning', '-nostats', '-an', '-sn',
-            '-f', 'x11grab', '-framerate', '15', '-draw_mouse', '0',
+            '-f', 'x11grab', '-framerate', str(args.framerate), '-draw_mouse', '0',
             '-window_id', window, '-video_size', f'{width}x{height}',
             '-i', f':{number}',
-            '-vf', contain_filter(args.width, args.height,
-                                  cell_stretch=args.cell_stretch or 1.0),
+            '-vf', (tv_filter(args.width, args.height) if args.fit == 'tv'
+                    else contain_filter(args.width, args.height,
+                                        cell_stretch=args.cell_stretch or 1.0,
+                                        nearest=args.nearest)),
             '-noborder', '-window_title', args.title,
             '-left', str(args.x), '-top', str(args.y),
             '-x', str(args.width), '-y', str(args.height),

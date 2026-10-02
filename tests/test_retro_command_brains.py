@@ -40,13 +40,15 @@ def test_live_rolling_games():
         assert required and all(path.startswith("/usr/games/") for path in required), name
     for game in BRAIN_GAMES:
         loaded = load_game(g, game)
-        assert loaded.agent.enabled and loaded.agent.brain == "command"
+        if game == "ninvaders":
+            assert not loaded.agent.enabled and loaded.agent.brain == "command"
+            assert loaded.raw["cli"]["command"].endswith("ninvaders_docich.sh policy")
+        else:
+            assert loaded.agent.enabled and loaded.agent.brain == "command"
         assert loaded.agent.command == ["python3", f"brains/{game}/brain.py"]
         assert 0 < loaded.agent.interval_ms <= 500
-    # The baseline wrapper sweeps every 0.35s; the brain must not be slower.
-    assert load_game(g, "ninvaders").agent.interval_ms <= 350
     assert cli_command_list(load_game(g, "ninvaders")) == [
-        "/bin/sh", "games/cli-wrappers/ninvaders_docich.sh", "brain",
+        "/bin/sh", "games/cli-wrappers/ninvaders_docich.sh", "policy",
     ]
 
 
@@ -91,6 +93,18 @@ def test_improvement_dry_run_accepts_without_live_matches(game, tmp_path):
     assert "bounded headless evaluation" in result["stats"]["basis"]
 
 
+def _bastet_color_capture():
+    """Styled capture with the spawned I piece, as CliGameAdapter passes it."""
+    rows = ["     lqqqqqqqqqqqqqqqqqqqqk"]
+    for y in range(20):
+        cells = "".join(
+            "\x1b[46m  \x1b[0m" if y == 1 and 3 <= x < 7 else "  " for x in range(10)
+        )
+        rows.append(f"     x{cells}x")
+    rows.append("     mqqqqqqqqqqqqqqqqqqqqj")
+    return "\n".join(rows + ["Score: 0", "Lines: 0", "Level: 0"])
+
+
 @pytest.mark.parametrize("game,text", [
     ("bastet", "Score: 0\nLines: 0\nLevel: 0"),
     ("moon-buggy", "score: 0\nlevel: 1"),
@@ -104,12 +118,57 @@ def test_real_command_brain_contract(game, text, tmp_path, monkeypatch):
     loaded = load_game(g, game)
     # Match test interpreter instead of relying on whichever python3 is on PATH.
     loaded.agent.command[0] = sys.executable
-    obs = SimpleNamespace(to_json=lambda: json.dumps({"text": text, "game": game}))
+    payload = {"text": text, "game": game}
+    if game == "bastet":
+        # Bastet's brain only acts on the colored board the adapter supplies.
+        payload["meta"] = {"bastet_color_text": _bastet_color_capture()}
+    obs = SimpleNamespace(to_json=lambda: json.dumps(payload))
     actions = CommandBrain(g, loaded).decide(obs)
     assert len(actions) == 1
     assert actions[0].type == "key"
     assert actions[0].keys[0] in {"Enter", "Down", "Space", "Up", "Left", "Right", "l"}
     assert parse_actions({"actions": [{"type": "key", "keys": actions[0].keys}]})
+
+
+def test_command_brain_pins_moon_buggy_ab_environment_and_fails_closed_if_state_disappears(tmp_path, monkeypatch):
+    from docich import moon_buggy_ab
+
+    g = SimpleNamespace(
+        state_dir=tmp_path,
+        repo_root=ROOT,
+        agent=SimpleNamespace(brain_timeout_s=1.0),
+    )
+    game = load_game(load_global(ROOT, ROOT / "config/docich.soren-live.toml"), "moon-buggy")
+    game.agent.command = [sys.executable, "brains/moon-buggy/brain.py"]
+    obs = SimpleNamespace(to_json=lambda: json.dumps({"game": "moon-buggy", "text": "score: 0\nlevel: 1"}))
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(returncode=0, stdout='{"actions":[]}', stderr="")
+
+    monkeypatch.setattr("docich.agent.brains.procs.run", fake_run)
+    moon_buggy_ab.stage(
+        tmp_path, {"laser_period": 7.0}, {"laser_period": 8.0},
+        source_date="2026-09-24", headless_baseline_mean=10.0,
+        headless_candidate_mean=5.0,
+    )
+    experiment_id = moon_buggy_ab.read_experiment(tmp_path)["experiment_id"]
+    moon_buggy_ab.select_arm(tmp_path)
+
+    CommandBrain(g, game).decide(obs)
+    assert calls[-1]["env_extra"] == {
+        "DOCICH_MOON_BUGGY_AB_ACTIVE": str(moon_buggy_ab.active_path(tmp_path)),
+        "DOCICH_MOON_BUGGY_AB_EXPERIMENT_ID": experiment_id,
+        "DOCICH_MOON_BUGGY_AB_MATCH_INDEX": "0",
+    }
+
+    moon_buggy_ab.state_path(tmp_path).unlink()
+    CommandBrain(g, game).decide(obs)
+    assert calls[-1]["env_extra"]["DOCICH_MOON_BUGGY_AB_ACTIVE"] == str(
+        moon_buggy_ab.active_path(tmp_path)
+    )
+    assert calls[-1]["env_extra"]["DOCICH_MOON_BUGGY_AB_EXPERIMENT_ID"] == ""
 
 
 @pytest.mark.parametrize("game", ("ninvaders", *GAMES))

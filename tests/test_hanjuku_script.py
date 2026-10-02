@@ -9,8 +9,9 @@ import pytest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from docich import hanjuku_run
 from docich.adapters.base import AdapterError
-from docich.hanjuku_bot import decide, classify, _TITLE_ROWS
+from docich.hanjuku_bot import decide, classify, is_squaresoft_splash, _TITLE_ROWS
 from docich.hanjuku_pixels import Frame, read_png
+from docich.hanjuku_screen import parse
 
 IDENTITY={'game':'hanjuku-hero','runtime_id':'g1-abcdef','generation':1,'lease_id':'lease'}
 
@@ -84,6 +85,66 @@ def test_other_generation_or_symlink_cannot_supply_terminal_evidence(tmp_path):
         hanjuku_run.event(tmp_path,{'event':'test'})
 
 
+def test_new_runtime_does_not_resume_previous_runtime_house_flow(tmp_path, monkeypatch):
+    import importlib.util
+    import io
+    from docich.game_switch import atomic_write_json
+
+    old_identity = {**IDENTITY,'runtime_id':'g1-abcdef12'}
+    new_identity = {'game':'hanjuku-hero','runtime_id':'g2-fedcba12','generation':2,'lease_id':'lease-2'}
+    old_runtime = tmp_path/'run'/'runtimes'/old_identity['runtime_id']
+    new_runtime = tmp_path/'run'/'runtimes'/new_identity['runtime_id']
+    old_runtime.mkdir(parents=True)
+    new_runtime.mkdir(parents=True)
+    old_bot = {'policy':{'chapter':1,'house':{'phase':'travel','general':'どうし'}},
+               'decision_trace':old_identity}
+    atomic_write_json(old_runtime/'hanjuku_bot.json',old_bot)
+
+    path = Path(__file__).resolve().parents[1]/'brains'/'hanjuku'/'bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_runtime_scope_test',path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.ROOT = tmp_path
+    monkeypatch.setattr(module,'read_png',lambda _: frame())
+    observation = {'game':'hanjuku-hero','screenshot':'unused',
+                   'meta':{'runtime_dir':str(new_runtime),'hanjuku':new_identity}}
+    output = io.StringIO()
+    monkeypatch.setattr(sys,'stdin',io.StringIO(json.dumps(observation)))
+    monkeypatch.setattr(sys,'stdout',output)
+
+    assert module.main() == 0
+    current = json.loads((new_runtime/'hanjuku_bot.json').read_text())
+    prior = json.loads((old_runtime/'hanjuku_bot.json').read_text())
+    assert 'house' not in current['policy']
+    assert prior['policy']['house'] == {'phase':'travel','general':'どうし'}
+
+
+@pytest.mark.parametrize('decision,screen', [
+    ('house_dispatch_requested','map_target'), ('house_arrival_seen','gift_request')])
+def test_house_route_snapshot_is_bound_to_its_decision_and_rgb_digest(tmp_path, decision, screen):
+    import importlib.util
+
+    identity = {'game':'hanjuku-hero','runtime_id':'g7-1234abcd','generation':7,'lease_id':'lease-7'}
+    runtime = tmp_path/'runtimes'/identity['runtime_id']
+    runtime.mkdir(parents=True)
+    path = Path(__file__).resolve().parents[1]/'brains'/'hanjuku'/'bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_arrival_snapshot_test',path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source = frame((70,80,90))
+    state = {'step':42,'screen_kind':screen,'policy':{'chapter':2,'house':{'phase':'buy'}}}
+
+    module.persist(runtime,state,[{'decision':decision,'screen':screen,
+                    'observed_metric':{'prices':{'ピアス':50,'みずぎ':100,'スカーフ':200}}}],
+                   {'hanjuku':identity},actions=[],frame_sha256=source.digest(),frame=source)
+
+    record = json.loads((runtime/'hanjuku_decisions.jsonl').read_text().splitlines()[-1])
+    assert record['decision'] == decision
+    assert record['decision_id'] == 'g7-1234abcd:7:42'
+    assert record['frame_sha256'] == source.digest()
+    assert read_png(runtime/'hanjuku_frames'/record['snapshot']).digest() == source.digest()
+
+
 def test_actions_are_bounded_pad_only_and_black_transition_waits():
     state={}
     for index in range(100):
@@ -136,6 +197,54 @@ def test_title_return_requires_a_started_game_and_multiple_timed_observations(tm
     assert run['terminal_evidence']=='title_return_after_gameplay'
     # Terminal evidence is latched even if a later screen is different.
     assert hanjuku_run.observe(tmp_path,IDENTITY,frame(),now=9,wall=1009)==run
+
+
+def test_g514_squaresoft_splash_is_transition_not_battle(tmp_path):
+    path = Path(__file__).parent / 'fixtures/hanjuku/g514-frame-025-squaresoft.png'
+    logo = read_png(path)
+    assert (logo.width, logo.height) == (256, 224)
+    assert logo.digest() == 'd5df0a7853026c3d65b1eac53408efebf7625862c3fa20a6b55db90221e85108'
+    paper = lambda r,g,b: r > 185 and g > 185 and b > 155
+    assert logo.fraction((16,174,113,191), paper) > .65
+    assert logo.fraction((146,174,234,191), paper) > .55
+    assert classify(logo) == 'transition'
+    assert parse(logo, phase='transition').kind == 'unknown'
+
+    actions, state = decide(logo, {'step': 24, 'policy': {'chapter': 2}})
+    assert actions == []
+    assert state['phase'] == 'transition' and state['screen_kind'] == 'unknown'
+    assert 'battle' not in state['policy']
+
+    observed = hanjuku_run.observe(tmp_path, IDENTITY, logo, now=0, wall=1000)
+    assert observed['phase'] == 'transition'
+    assert not observed['gameplay_seen'] and not observed['battle_active']
+    assert observed['terminal_candidate'] is False and observed['terminal_reason'] is None
+
+
+def test_non_logo_unknown_frame_keeps_existing_event_fallback():
+    generic = frame((100, 95, 105))
+    assert classify(generic) == 'event'
+    assert parse(generic, phase='event').kind == 'unknown'
+
+
+def test_non_logo_skips_full_frame_neutral_scan(monkeypatch):
+    rgb = bytearray(frame((213, 214, 213)).rgb)
+    for y in (108, 110):
+        for x in (108, 110, 112, 114):
+            offset = (y * 256 + x) * 3
+            rgb[offset:offset + 3] = bytes((246, 56, 16))
+    candidate = Frame(256, 224, bytes(rgb))
+
+    calls = []
+    original_fraction = Frame.fraction
+
+    def record_fraction(self, rect, predicate):
+        calls.append(rect)
+        return original_fraction(self, rect, predicate)
+
+    monkeypatch.setattr(Frame, 'fraction', record_fraction)
+    assert not is_squaresoft_splash(candidate)
+    assert calls == [(108, 108, 124, 120), (76, 102, 180, 120)]
 
 
 def test_waiting_boundary_keeps_bot_live_until_stasis_then_needs_no_save(adapter):
@@ -205,7 +314,7 @@ def test_green_map_encounter_prompt_is_confirmed_not_waited_on():
 def test_corner_waits_past_deadline_then_restores_only_on_terminal(manager, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import Mock
-    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame',
+    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame','bot_identity':dict(IDENTITY),
            'ends_at':'2000-01-01T00:00:00+00:00'}
     observations=iter([
         {'phase':'battle','terminal_reason':None,'actions_sent':5},
@@ -234,6 +343,95 @@ def test_corner_waits_past_deadline_then_restores_only_on_terminal(manager, monk
     assert state['bot_runtime_id']==IDENTITY['runtime_id']
 
 
+def _write_restoring_hanjuku_owner(manager, tmp_path, *, terminal_generation=None):
+    import uuid
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from docich.game_switch import atomic_write_json
+    from docich.naming import runtime_directory
+
+    rotation_request_id = str(uuid.uuid4())
+    switch_request_id = str(uuid.uuid4())
+    runtime = runtime_directory(manager.g.state_dir, IDENTITY['runtime_id'])
+    runtime.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(runtime / hanjuku_run.RUN_FILE, {
+        **IDENTITY, 'terminal_reason': 'game_over',
+        'terminal_evidence': 'title_return_after_gameplay',
+        'phase': 'title', 'frame_sha256': '0' * 64,
+        'title_count': 3, 'title_since': 1.0, 'observed_monotonic': 4.0,
+        'name_entered': True, 'gameplay_seen': True,
+    })
+    manager._active_game_reader = lambda: 'hanjuku-hero'
+    manager.store.canonical.load = Mock(return_value=(
+        {'phase': 'ready', 'active': dict(IDENTITY)}, False
+    ))
+    manager.coordinator.switch.return_value = SimpleNamespace(
+        status='succeeded', error_code=None, detail=None
+    )
+    manager._write_state({
+        'schema_version': 1, 'status': 'restoring',
+        'game': 'hanjuku-hero', 'previous_game': 'sorengame',
+        'rotation_request_id': rotation_request_id,
+        'rotation_runtime_id': IDENTITY['runtime_id'],
+        'switch_request_id': switch_request_id,
+        'bot_identity': dict(IDENTITY), 'bot_runtime_id': IDENTITY['runtime_id'],
+        'end_reason': 'game_over',
+        'terminal_evidence': 'title_return_after_gameplay',
+        'terminal_generation': (IDENTITY['generation'] if terminal_generation is None
+                                else terminal_generation),
+    })
+    return rotation_request_id, switch_request_id
+
+
+def test_replaying_restoring_hanjuku_rechecks_durable_terminal_and_source_identity(
+        manager, tmp_path):
+    rotation_request_id, switch_request_id = _write_restoring_hanjuku_owner(manager, tmp_path)
+
+    result = manager.run_rotation(rotation_request_id)
+
+    assert result.status == 'completed'
+    manager.coordinator.switch.assert_called_once()
+    args, kwargs = manager.coordinator.switch.call_args
+    assert args == ('sorengame',)
+    assert kwargs['request_id'] == switch_request_id
+    assert kwargs['payload']['expected_source'] == IDENTITY
+    assert manager._read_state()['status'] == 'completed'
+
+
+def test_replaying_restoring_hanjuku_fails_closed_when_terminal_generation_differs(
+        manager, tmp_path):
+    from docich.retro_corner import RetroCornerError
+
+    rotation_request_id, _ = _write_restoring_hanjuku_owner(
+        manager, tmp_path, terminal_generation=IDENTITY['generation'] + 1
+    )
+
+    with pytest.raises(RetroCornerError, match='terminal generation'):
+        manager.run_rotation(rotation_request_id)
+
+    manager.coordinator.switch.assert_not_called()
+    assert manager._read_state()['status'] == 'restoring'
+
+
+def test_replaying_restoring_hanjuku_fails_closed_when_durable_terminal_is_missing(
+        manager, tmp_path):
+    from docich.game_switch import atomic_write_json
+    from docich.naming import runtime_directory
+    from docich.retro_corner import RetroCornerError
+
+    rotation_request_id, _ = _write_restoring_hanjuku_owner(manager, tmp_path)
+    runtime = runtime_directory(manager.g.state_dir, IDENTITY['runtime_id'])
+    atomic_write_json(runtime / hanjuku_run.RUN_FILE, {
+        **IDENTITY, 'terminal_reason': None,
+    })
+
+    with pytest.raises(RetroCornerError, match='terminal evidence changed'):
+        manager.run_rotation(rotation_request_id)
+
+    manager.coordinator.switch.assert_not_called()
+    assert manager._read_state()['status'] == 'restoring'
+
+
 def test_corrupt_terminal_record_cannot_authorize_teardown(tmp_path):
     from docich.game_switch import atomic_write_json
     atomic_write_json(tmp_path/hanjuku_run.RUN_FILE,dict(IDENTITY,
@@ -248,7 +446,7 @@ def test_corner_observation_contention_retries_then_finishes_only_on_game_over(m
     from unittest.mock import Mock
     from docich.game_switch import DeadlineExceededError, GameSwitchBusyError
     from docich.naming import runtime_directory
-    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame'}
+    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame','bot_identity':dict(IDENTITY)}
     runtime=runtime_directory(manager.g.state_dir,IDENTITY['runtime_id'])
     runtime.mkdir(parents=True)
     error=DeadlineExceededError('busy') if busy_kind=='input' else GameSwitchBusyError('busy')
@@ -272,6 +470,9 @@ def test_corner_observation_contention_retries_then_finishes_only_on_game_over(m
     finish.assert_called_once()
     assert observe.call_count==2 and manager.store.canonical.load.call_count==2
     assert state['end_reason']=='game_over'
+    # #1085 L4: the chart review runs once on game over, before teardown.
+    assert finish.call_args.args[0]['chart_review']['file']=='hanjuku_chart_review.json'
+    assert (runtime/'hanjuku_chart_review.json').exists()
     retry=json.loads((runtime/'hanjuku_events.jsonl').read_text())
     assert retry['event']=='observation_retry' and 'terminal_reason' not in retry
 
@@ -281,7 +482,7 @@ def test_corner_never_restores_on_unverified_terminal_evidence(manager, monkeypa
     from types import SimpleNamespace
     from unittest.mock import Mock
     from docich.retro_corner import RetroCornerError
-    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame'}
+    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame','bot_identity':dict(IDENTITY)}
     manager.store.canonical.load=Mock(return_value=({'active':IDENTITY},False))
     monkeypatch.setattr('docich.agent.fence.shared_section',lambda root,fn:fn())
     monkeypatch.setattr('docich.adapters.make_adapter',lambda *a,**kw:SimpleNamespace(
@@ -311,7 +512,43 @@ def test_corner_unknown_observation_failure_is_not_silently_retried(manager, mon
         observe=Mock(side_effect=AdapterError('ownership unknown'))))
     monkeypatch.setattr(manager,'_rotation_stop_result',lambda:None)
     with pytest.raises(AdapterError,match='ownership unknown'):
-        manager._wait_hanjuku({'status':'active','game':'hanjuku-hero'})
+        manager._wait_hanjuku({'status':'active','game':'hanjuku-hero','bot_identity':dict(IDENTITY)})
+
+
+def test_a_presentation_still_starting_is_retried_within_a_bound(manager, monkeypatch):
+    """Issue #1280 (g433 20:22): one 'not ready' killed the manager on the first try."""
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from docich.naming import runtime_directory
+    from docich.retro_corner import PRESENTATION_NOT_READY, PRESENTATION_RETRY_LIMIT
+    import inspect
+    from docich.adapters import retroarch
+    assert PRESENTATION_NOT_READY in inspect.getsource(retroarch.RetroArchAdapter._source)
+    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame','bot_identity':dict(IDENTITY)}
+    runtime=runtime_directory(manager.g.state_dir,IDENTITY['runtime_id'])
+    runtime.mkdir(parents=True)
+    observe=Mock(side_effect=[AdapterError(PRESENTATION_NOT_READY)]*3+[SimpleNamespace(meta={'hanjuku':{
+        'phase':'title','terminal_reason':'game_over','actions_sent':5}})])
+    manager.store.canonical.load=Mock(return_value=({'active':IDENTITY},False))
+    monkeypatch.setattr('docich.agent.fence.shared_section',lambda root,fn:fn())
+    monkeypatch.setattr('docich.adapters.make_adapter',lambda *a,**kw:SimpleNamespace(observe=observe))
+    monkeypatch.setattr(manager,'_rotation_stop_result',lambda:None)
+    monkeypatch.setattr(manager,'_read_state',lambda:dict(state))
+    monkeypatch.setattr(manager,'_write_state',lambda update:state.update(update))
+    monkeypatch.setattr(manager,'_sleep',Mock())
+    monkeypatch.setattr(manager,'_finish_locked',Mock(return_value='restored'))
+    monkeypatch.setattr('docich.hanjuku_run.terminal',Mock(return_value={
+        'terminal_evidence':'title_return_after_gameplay','generation':IDENTITY['generation']}))
+    assert manager._wait_hanjuku(state)=='restored' and observe.call_count==4
+    reasons=[json.loads(line)['reason'] for line in (runtime/'hanjuku_events.jsonl').read_text().splitlines()
+             if json.loads(line).get('event')=='observation_retry']
+    assert reasons==['presentation_not_ready']*3
+    # A presenter that never becomes ready still fails closed after the bound.
+    observe=Mock(side_effect=AdapterError(PRESENTATION_NOT_READY))
+    monkeypatch.setattr('docich.adapters.make_adapter',lambda *a,**kw:SimpleNamespace(observe=observe))
+    with pytest.raises(AdapterError,match='not ready'):
+        manager._wait_hanjuku(dict(state))
+    assert observe.call_count==PRESENTATION_RETRY_LIMIT+1
 
 
 def test_optional_concert_exits_instead_of_selecting_the_same_track():
@@ -367,3 +604,190 @@ def test_red_curtain_merchant_exits_price_list_then_advances_farewell():
     # An unrelated/blank prompt still cancels; never blindly alternate A/B.
     assert decide(shop,state)[0][0]['buttons']==['b']
     assert decide(farewell,state)[0][0]['buttons']==['a']
+
+
+@pytest.mark.parametrize('previous', [None, 'sorengame'])
+def test_terminal_observation_cannot_restore_a_replaced_lease(manager, monkeypatch, previous):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from docich import game_switch
+    from docich.retro_corner import RetroCornerError
+    from test_coordinator import FakeAdapterFactory
+    factory = FakeAdapterFactory({'hanjuku-hero': {}, 'sorengame': {}})
+    manager.coordinator = game_switch.GameSwitchCoordinator(manager.store, factory)
+    assert manager.coordinator.start('hanjuku-hero').status == 'succeeded'
+    canonical, _ = manager.store.canonical.load()
+    active = canonical['active']
+    identity = {k: active[k] for k in ('game', 'runtime_id', 'generation', 'lease_id')}
+    state = {'status': 'active', 'game': 'hanjuku-hero', 'previous_game': previous,
+             'bot_identity': identity}
+    before = {k: list(v.runtime.events) for k, v in factory.adapters.items()}
+    def observe():
+        # The observation belongs to A, then another owner acquires this
+        # same game/runtime under a new lease before the corner can finish.
+        canonical['active']['lease_id'] = '22222222-2222-4222-8222-222222222222'
+        manager.store.canonical.save(canonical)
+        return SimpleNamespace(meta={'hanjuku': {'terminal_reason': 'game_over'}})
+    monkeypatch.setattr('docich.agent.fence.shared_section', lambda root, fn: fn())
+    monkeypatch.setattr('docich.adapters.make_adapter', lambda *a, **k: SimpleNamespace(observe=observe))
+    monkeypatch.setattr('docich.hanjuku_run.terminal', Mock(return_value={
+        'generation': active['generation'], 'terminal_evidence': 'verified-A'}))
+    monkeypatch.setattr(manager, '_rotation_stop_result', lambda: None)
+    monkeypatch.setattr(manager, '_read_state', lambda: dict(state))
+    monkeypatch.setattr(manager, '_write_state', lambda update: state.update(update))
+    monkeypatch.setattr(manager, '_active_game_reader', lambda: 'hanjuku-hero')
+    with pytest.raises(RetroCornerError, match='expected source runtime identity'):
+        manager._wait_hanjuku(state)
+    assert state['status'] == 'failed'
+    assert {k: v.runtime.events for k, v in factory.adapters.items()} == before
+    assert manager.store.canonical.load()[0]['active']['lease_id'] == '22222222-2222-4222-8222-222222222222'
+
+
+def test_sent_input_links_to_bound_decision_not_another_lease(tmp_path):
+    from types import SimpleNamespace
+    from docich.game_switch import atomic_write_json
+    trace = {**IDENTITY, 'decision_id': 'g1:1:7', 'frame_sha256': 'b' * 64}
+    atomic_write_json(tmp_path / 'hanjuku_run.json', {**IDENTITY, 'frame_sha256': 'a' * 64})
+    atomic_write_json(tmp_path / 'hanjuku_bot.json', {'decision_trace': trace})
+    action = SimpleNamespace(type='pad', buttons=['a'], hold_ms=100)
+    hanjuku_run.action_sent(tmp_path, IDENTITY, action)
+    record = json.loads((tmp_path / 'hanjuku_events.jsonl').read_text().splitlines()[-1])
+    assert record['decision_id'] == 'g1:1:7'
+    assert record['decision_frame_sha256'] == 'b' * 64
+    assert record['frame_sha256'] == 'a' * 64
+    atomic_write_json(tmp_path / 'hanjuku_bot.json', {'decision_trace': {**trace, 'lease_id': 'old'}})
+    hanjuku_run.action_sent(tmp_path, IDENTITY, action)
+    assert json.loads((tmp_path / 'hanjuku_events.jsonl').read_text().splitlines()[-1])['decision_id'] is None
+
+
+def test_bot_state_record_limit_allows_large_policy_memory_but_stays_bounded(tmp_path):
+    from docich.adapters.base import AdapterError
+    from docich.retroarch_boundary import read_record
+    state = {'decision_trace': {**IDENTITY}, 'policy': {'x': 'a' * (20 * 1024)}}
+    path = tmp_path / 'hanjuku_bot.json'
+    path.write_text(json.dumps(state), encoding='utf-8')
+    # g438 04:18: the policy memory passed 16 KiB after a long game and every
+    # observation failed to load it (no input, screen_stalled).
+    with pytest.raises(AdapterError):
+        read_record(path)
+    assert read_record(path, limit=256 * 1024) == state
+    path.write_text(json.dumps({'policy': {'x': 'a' * (300 * 1024)}}), encoding='utf-8')
+    with pytest.raises(AdapterError):
+        read_record(path, limit=256 * 1024)
+
+
+def test_action_sent_reads_the_bot_state_with_the_raised_limit(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from docich.game_switch import atomic_write_json
+    from docich import hanjuku_run as run
+    atomic_write_json(tmp_path / 'hanjuku_run.json', {**IDENTITY})
+    atomic_write_json(tmp_path / 'hanjuku_bot.json', {'decision_trace': {**IDENTITY}})
+    original, limits = run.read_record, {}
+    def spy(path, **kwargs):
+        limits[Path(path).name] = kwargs.get('limit')
+        return original(path, **kwargs)
+    monkeypatch.setattr(run, 'read_record', spy)
+    run.action_sent(tmp_path, IDENTITY, SimpleNamespace(type='pad', buttons=['a'], hold_ms=100))
+    assert limits['hanjuku_bot.json'] == 256 * 1024
+    assert limits['hanjuku_run.json'] is None      # the 16 KiB boundary default stands
+
+
+@pytest.mark.parametrize('queued', [False, True])
+def test_corner_binds_committed_start_before_first_observation(manager, monkeypatch, queued):
+    import uuid
+    from unittest.mock import Mock
+    from docich import game_switch
+    from docich.retro_corner import RetroCornerError
+    from test_coordinator import FakeAdapterFactory
+    factory = FakeAdapterFactory({'hanjuku-hero': {}})
+    manager.coordinator = game_switch.GameSwitchCoordinator(manager.store, factory)
+    monkeypatch.setattr(manager, '_validate_games', lambda *a: None)
+    monkeypatch.setattr(manager, '_announce_start_locked', lambda *a: None)
+    if queued:
+        request = str(uuid.uuid4())
+        manager.store.initialize()
+        with manager.store.transaction() as tx:
+            tx.enqueue_request(request, 'start', 'hanjuku-hero')
+        starting = {**manager._default_state(), 'status': 'starting', 'game': 'hanjuku-hero', 'previous_game': None,
+                    'switch_request_id': request}
+        state, pending = manager._resume_queued_start_locked(starting, manager._local_now())
+    else:
+        state, pending = manager._begin_locked(manager._local_now(), scheduled=False,
+                                               target_override='hanjuku-hero')
+    assert pending is None and state['status'] == 'active'
+    canonical, _ = manager.store.canonical.load()
+    expected = {k: canonical['active'][k] for k in ('game', 'runtime_id', 'generation', 'lease_id')}
+    assert state['bot_identity'] == expected == manager._read_state()['bot_identity']
+    # Another same-name lease replaces A before the first observation.
+    canonical['active']['lease_id'] = str(uuid.uuid4())
+    manager.store.canonical.save(canonical)
+    observe = Mock()
+    monkeypatch.setattr('docich.adapters.make_adapter', observe)
+    monkeypatch.setattr(manager, '_rotation_stop_result', lambda: None)
+    finish = Mock()
+    monkeypatch.setattr(manager, '_finish_locked', finish)
+    with pytest.raises(RetroCornerError, match='identity changed'):
+        manager._wait_hanjuku(state)
+    observe.assert_not_called()
+    finish.assert_not_called()
+
+
+def test_missing_start_identity_cannot_adopt_the_first_active_runtime(manager, monkeypatch):
+    from unittest.mock import Mock
+    from docich.retro_corner import RetroCornerError
+    observe = Mock()
+    monkeypatch.setattr('docich.adapters.make_adapter', observe)
+    with pytest.raises(RetroCornerError, match='identity missing'):
+        manager._wait_hanjuku({'status': 'active', 'game': 'hanjuku-hero'})
+    observe.assert_not_called()
+
+
+def test_blinking_two_image_screen_still_stalls(tmp_path):
+    """g358: a blinking hand alternated two digests, so 50 min of ignored B never stalled."""
+    a, b = frame(), frame((31,90,50))
+    for now in range(0,310,10):
+        result=hanjuku_run.observe(tmp_path,IDENTITY,b if now%70==10 else a,now=now,wall=1000+now)
+        assert result['terminal_reason'] is None
+    result=hanjuku_run.observe(tmp_path,IDENTITY,a,now=310,wall=1310)   # 300 s since b first appeared
+    assert result['terminal_reason']=='screen_stalled'
+
+
+def test_third_image_resets_two_image_stasis(tmp_path):
+    a, b, c = frame(), frame((31,90,50)), frame((32,90,50))
+    for now in range(0,290,10):
+        hanjuku_run.observe(tmp_path,IDENTITY,(a,b)[now//10%2],now=now,wall=1000+now)
+    result=hanjuku_run.observe(tmp_path,IDENTITY,c,now=290,wall=1290)
+    assert result['terminal_reason'] is None and result['unchanged_seconds']==0
+    result=hanjuku_run.observe(tmp_path,IDENTITY,a,now=300,wall=1300)
+    assert result['terminal_reason'] is None      # a fell out of the two recent images
+
+
+def test_game_over_writes_a_grounded_recap_candidate(tmp_path):
+    """Owner rule 2026-09-28: a game over narrates a recap of the run."""
+    title = title_frame()
+    for now in range(4):
+        hanjuku_run.observe(tmp_path, IDENTITY, title, now=now, wall=1000 + now)
+    run = hanjuku_run.observe(tmp_path, IDENTITY, frame(), now=4, wall=1004)
+    from docich.game_switch import atomic_write_json
+    atomic_write_json(tmp_path / hanjuku_run.RUN_FILE,
+                      {**run, 'name_entered': True, 'gameplay_seen': True})
+    (tmp_path / 'hanjuku_decisions.jsonl').write_text(
+        json.dumps({'event': 'decision', 'decision': 'month_seen', 'month': '1-5'},
+                   ensure_ascii=False) + '\n' +
+        json.dumps({'event': 'decision', 'decision': 'order_launched', 'chapter': 1},
+                   ensure_ascii=False) + '\n')
+    for now in (6, 7):
+        hanjuku_run.observe(tmp_path, IDENTITY, title, now=now, wall=1000 + now)
+    run = hanjuku_run.observe(tmp_path, IDENTITY, title, now=8, wall=1008)
+    assert run['terminal_reason'] == 'game_over'
+    lines = [json.loads(x) for x in (tmp_path / 'hanjuku_commentary.jsonl').read_text().splitlines()]
+    recap = [x for x in lines if x.get('terminal_recap')]
+    assert len(recap) == 1
+    item = recap[0]
+    assert item['key'] == 'game_over_recap' and item['seq'] == 1
+    assert item['game'] == IDENTITY['game'] and item['runtime_id'] == IDENTITY['runtime_id']
+    assert '第1章' in item['text'] and '1年5月' in item['text'] and '1回出撃' in item['text']
+    assert item['text'].startswith('ゲームオーバー。') and len(item['text']) <= 120
+    # The terminal latch returns the old state: never a second recap.
+    hanjuku_run.observe(tmp_path, IDENTITY, title, now=9, wall=1009)
+    assert len((tmp_path / 'hanjuku_commentary.jsonl').read_text().splitlines()) == 1

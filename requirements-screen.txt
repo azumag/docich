@@ -1,0 +1,2 @@
+# Optional image-context dependency; no model or production activation.
+Pillow==12.3.0

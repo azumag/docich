@@ -186,6 +186,9 @@ def load_nethack_corner_config(g: GlobalConfig) -> NethackCornerConfig:
 class NethackCornerManager(RetroCornerManager):
     """Fixed-game NetHack corner with isolated schedule and run history."""
 
+    # 独自の終了告知を finish 直後に呼ぶため、ベースの結果まとめ投稿は使わない。
+    announce_end_result = False
+
     def __init__(
         self,
         g: GlobalConfig,

@@ -219,3 +219,22 @@ class TestSorenOutputAdapter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRuntimeFencedAudio(unittest.TestCase):
+    def test_optional_fence_is_a_literal_fourth_argument_and_legacy_stays_three(self):
+        import json
+        import subprocess
+        from types import SimpleNamespace
+        identity = {'game': 'hanjuku-hero', 'runtime_id': 'g1-abcdef', 'generation': 1,
+                    'lease_id': 'lease', 'expires_at': 1234}
+        with mock.patch.object(soren_output, 'resolve_soren_root', return_value=Path('/soren')), \
+             mock.patch.object(subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as run:
+            soren_output.enqueue_audio_text(None, 'text', context='hanjuku_commentary', runtime_fence=identity)
+            cmd = run.call_args.args[0]
+            self.assertEqual(json.loads(cmd[-1]), identity)
+            self.assertIn('"$3"', cmd[2])
+            soren_output.enqueue_audio_text(None, 'other', context='soren91')
+            cmd = run.call_args.args[0]
+            self.assertEqual(cmd[-3:], ['other', 'soren91', ''])
+            self.assertNotIn('"$3"', cmd[2])

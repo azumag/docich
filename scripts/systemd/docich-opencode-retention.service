@@ -1,0 +1,13 @@
+[Unit]
+Description=Bounded OpenCode history retention independent of game progress
+
+[Service]
+Type=oneshot
+Environment=XDG_RUNTIME_DIR=%t
+WorkingDirectory=__DOCICH_ROOT__
+ExecStart=/bin/bash __DOCICH_ROOT__/ops/vm_actions/opencode_db_retention_now.sh --scheduled
+TimeoutStartSec=840
+KillMode=control-group
+SuccessExitStatus=75
+Nice=10
+IOSchedulingClass=idle

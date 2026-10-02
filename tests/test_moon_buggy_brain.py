@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,11 +13,11 @@ BRAIN = ROOT / "brains/moon-buggy/brain.py"
 PLAY = "score: 0  level: 1\n    __\n __/  \\__\n O      O\n###########    ###########"
 
 
-def run(raw, weights):
+def run(raw, weights, extra_env=None):
     proc = subprocess.run(
         [sys.executable, str(BRAIN)], input=raw, capture_output=True,
         text=True, timeout=15,
-        env={**os.environ, "DOCICH_BRAIN_WEIGHTS": str(weights)},
+        env={**os.environ, "DOCICH_BRAIN_WEIGHTS": str(weights), **(extra_env or {})},
     )
     assert proc.stderr == ""
     return proc.returncode, json.loads(proc.stdout)
@@ -65,6 +66,69 @@ def test_weight_hot_swap(tmp_path):
 def test_invalid_weights_fall_back(raw, tmp_path):
     (tmp_path / "weights.json").write_text(raw)
     assert decide(PLAY, tmp_path)[0]["keys"] == ["Space"]
+
+
+def test_ab_arm_uses_its_pinned_snapshot_instead_of_live_weights(tmp_path):
+    weights = tmp_path / "weights.json"
+    weights.write_text('{"laser_period":7}')
+    active = tmp_path / "active.json"
+    pinned = {"laser_period": 8}
+    digest = hashlib.sha256(
+        json.dumps(pinned, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    experiment_id = "12345678-1234-5678-1234-567812345678"
+    active.write_text(json.dumps({
+        "schema_version": 1,
+        "experiment_id": experiment_id,
+        "match_id": f"{experiment_id}:0",
+        "index": 0,
+        "arm": "A",
+        "weights": pinned,
+        "weights_sha256": digest,
+    }))
+    env = {
+        "DOCICH_MOON_BUGGY_AB_ACTIVE": str(active),
+        "DOCICH_MOON_BUGGY_AB_EXPERIMENT_ID": experiment_id,
+        "DOCICH_MOON_BUGGY_AB_MATCH_INDEX": "0",
+    }
+    proc = subprocess.run(
+        [sys.executable, str(BRAIN)],
+        input=json.dumps({"game": "moon-buggy", "text": PLAY.replace("score: 0", "score: 6")}),
+        capture_output=True, text=True, timeout=15,
+        env={**os.environ, "DOCICH_BRAIN_WEIGHTS": str(weights), **env},
+    )
+    assert proc.returncode == 0 and proc.stderr == ""
+    assert json.loads(proc.stdout)["actions"] == [{"type": "key", "keys": ["Space"]}]
+
+
+def test_ab_arm_with_wrong_arm_fails_closed(tmp_path):
+    experiment_id = "12345678-1234-5678-1234-567812345678"
+    active = tmp_path / "active.json"
+    pinned = {"laser_period": 8}
+    digest = hashlib.sha256(
+        json.dumps(pinned, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    active.write_text(json.dumps({
+        "schema_version": 1,
+        "experiment_id": experiment_id,
+        "match_id": f"{experiment_id}:0",
+        "index": 0,
+        "arm": "B",  # ABBA index 0 is A.
+        "weights": pinned,
+        "weights_sha256": digest,
+    }))
+    env = {
+        "DOCICH_MOON_BUGGY_AB_ACTIVE": str(active),
+        "DOCICH_MOON_BUGGY_AB_EXPERIMENT_ID": experiment_id,
+        "DOCICH_MOON_BUGGY_AB_MATCH_INDEX": "0",
+    }
+    proc = subprocess.run(
+        [sys.executable, str(BRAIN)], input=json.dumps({"game": "moon-buggy", "text": PLAY}),
+        capture_output=True, text=True, timeout=15,
+        env={**os.environ, **env},
+    )
+    assert proc.returncode == 0 and proc.stderr == ""
+    assert json.loads(proc.stdout)["actions"] == []
 
 
 def test_config_contract():

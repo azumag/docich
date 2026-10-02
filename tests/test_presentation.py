@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from docich.presentation import _parser, cell_aspect_scale, contain_filter
+from docich.presentation import _parser, cell_aspect_scale, contain_filter, tv_filter
 
 
 def _content_bbox(raw, width, height, threshold=200):
@@ -24,6 +24,26 @@ def _content_bbox(raw, width, height, threshold=200):
 
 @unittest.skipUnless(shutil.which('ffmpeg'), 'FFmpeg required')
 class PresentationPixels(unittest.TestCase):
+    def test_nearest_contain_preserves_small_source_aspect_and_all_edges(self):
+        # Odd native width must not be rounded down by a YUV test generator.
+        # Include a non-4:3 source to catch accidental fixed-TV stretching.
+        for width, height in [(299, 224), (300, 300)]:
+            with self.subTest(size=(width, height)):
+                raw = bytes((255, 255, 255)) * width * height
+                result = subprocess.run([
+                    'ffmpeg', '-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24',
+                    '-s', f'{width}x{height}', '-i', 'pipe:0',
+                    '-vf', contain_filter(960, 540, nearest=True), '-frames:v', '1',
+                    '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-',
+                ], input=raw, capture_output=True, check=True, timeout=20)
+                left, top, right, bottom = _content_bbox(result.stdout, 960, 540)
+                self.assertEqual((top, bottom), (0, 539))
+                self.assertAlmostEqual(right - left + 1, 540 * width / height, delta=1)
+                self.assertLessEqual(abs(left - (959 - right)), 1)
+                for x in (left - 1, right + 1):
+                    offset = (270 * 960 + x) * 3
+                    self.assertEqual(result.stdout[offset:offset + 3], b'\0\0\0')
+
     def test_all_four_edges_survive_and_padding_is_centered(self):
         for dimensions, left, top, width, height in [
             ('600x600', 210, 0, 540, 540), ('800x600', 120, 0, 720, 540),
@@ -63,6 +83,17 @@ class PresentationPixels(unittest.TestCase):
                     offset = (y * 960 + x) * 3
                     self.assertTrue(all(abs(v - expected) <= 2
                                         for v in result.stdout[offset:offset+3]))
+
+    def test_tv_fit_keeps_the_previous_4_3_picture_centred(self):
+        # Hanjuku: native 256x224 -> 720x540 (4:3, as the old 897x672 was),
+        # centred in the 960x540 viewport; never stretched to 16:9.
+        result = subprocess.run([
+            'ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'color=white:s=256x224',
+            '-vf', tv_filter(960, 540),
+            '-frames:v', '1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-',
+        ], capture_output=True, check=True, timeout=20)
+        self.assertEqual(len(result.stdout), 960 * 540 * 3)
+        self.assertEqual(_content_bbox(result.stdout, 960, 540), (120, 0, 839, 539))
 
     def test_cell_stretch_squares_tiles_without_changing_window_fit(self):
         # pacman4console の実寸: 29x32 cells (cell 11x21 px)、maze は (1,1) の 28x29 cells。
@@ -121,6 +152,14 @@ class CellAspectScaleTests(unittest.TestCase):
 
 
 class CellAspectOptionTests(unittest.TestCase):
+    def test_framerate_and_fit_default_to_the_existing_projection(self):
+        args = self._parse([])
+        self.assertEqual((args.framerate, args.fit), (15, 'contain'))
+        self.assertFalse(args.nearest)
+        self.assertTrue(self._parse(['--nearest']).nearest)
+        args = self._parse(['--framerate', '30', '--fit', 'tv'])
+        self.assertEqual((args.framerate, args.fit), (30, 'tv'))
+
     def _parse(self, extra):
         return _parser().parse_args([
             '--display', ':97', '--title', 't',

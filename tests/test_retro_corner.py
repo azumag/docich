@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,9 +20,11 @@ from docich.retro_corner import (  # noqa: E402
     RetroCornerConfig,
     RetroCornerError,
     RetroCornerManager,
+    describe_strategy_change,
     load_retro_corner_config,
     select_game,
 )
+from docich.game_switch import GameSwitchBusyError  # noqa: E402
 from docich.naming import runtime_names  # noqa: E402
 
 
@@ -181,10 +184,42 @@ class TestFailedRotationStartReconciliation(RetroCornerTestBase):
         self.assertEqual(mgr._read_state()["completed_at"], original_completed_at)
         self.assertEqual(coordinator.calls, [])
 
+    def test_quiesce_failed_receipt_terminalizes_the_rolled_back_failed_corner(self):
+        mgr, coordinator, request_id = self._setup_failed_start(
+            corner_status="failed", error_code="quiesce_failed")
+
+        self.assertTrue(mgr.reconcile_failed_rotation_start(request_id))
+
+        result = mgr._read_state()
+        self.assertEqual(result["status"], "interrupted")
+        self.assertEqual(result["end_reason"], "switch-terminal-before-corner-active")
+        self.assertEqual(result["rotation_request_id"], request_id)
+        self.assertIsNone(result["last_error"])
+        self.assertIsNone(result["last_error_code"])
+        self.assertEqual(coordinator.calls, [])
+
+    def test_readiness_timeout_receipt_terminalizes_the_rolled_back_failed_corner(self):
+        # A target that never became ready rolls back to the previous game
+        # exactly like the other known start errors; without this case the
+        # whole corner rotation latches forever and recover-failed refuses.
+        mgr, coordinator, request_id = self._setup_failed_start(
+            corner_status="failed", error_code="readiness_timeout")
+
+        self.assertTrue(mgr.reconcile_failed_rotation_start(request_id))
+
+        result = mgr._read_state()
+        self.assertEqual(result["status"], "interrupted")
+        self.assertEqual(result["end_reason"], "switch-terminal-before-corner-active")
+        self.assertEqual(result["rotation_request_id"], request_id)
+        self.assertIsNone(result["last_error"])
+        self.assertIsNone(result["last_error_code"])
+        self.assertEqual(coordinator.calls, [])
+
     def test_failed_corner_requires_known_matching_start_error_in_terminal_receipt(self):
         for state_error, receipt_error in (
             ("start_failed", "agent_start_failed"),
             ("recovery", "recovery"),
+            ("quiesce_failed", "start_failed"),
         ):
             with self.subTest(state_error=state_error, receipt_error=receipt_error):
                 mgr, _, request_id = self._setup_failed_start(
@@ -854,6 +889,248 @@ class TestRetroCornerFailedRecovery(RetroCornerTestBase):
         self.assertEqual(mgr.status()["status"], "failed")
 
 
+class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
+    """#1044: a manual start whose switch died in the boundary step.
+
+    The switch kept the outgoing runtime and reported ``quiesce_failed``, so no
+    canonical recovery is outstanding and no retry can succeed: replaying it
+    would re-enter the same failed round boundary.  ``recover-failed`` therefore
+    terminalizes the slot as ``interrupted`` — but only on the receipt's proof.
+    """
+
+    def _setup_quiesce_failed(self, *, error_code="quiesce_failed",
+                              receipt_error="quiesce_failed",
+                              canonical_patch=None, from_game="sorengame",
+                              receipt_status="failed", keep_receipt=True):
+        # Each sub-case starts from a clean state dir: a leaked canonical
+        # phase or receipt would decide the outcome instead of the case.
+        shutil.rmtree(self.g.state_dir, ignore_errors=True)
+        mgr, coordinator = self.manager(["sorengame"])
+        request_id = str(uuid.uuid4())
+        state = mgr._default_state()
+        state.update(
+            status="failed",
+            game="robots",
+            previous_game="sorengame",
+            rotation_request_id=request_id,
+            switch_request_id=request_id,
+            started_at=self.now_value.isoformat(),
+            completed_at=self.now_value.isoformat(),
+            last_error="Soren lifecycleが停止しました: cancelled",
+            last_error_code=error_code,
+        )
+        mgr._write_state(state)
+        canonical = mgr.store.initialize()
+        canonical.update(phase="ready", next_generation=2, operation=None,
+                         request_id=None, deadline_at=None,
+                         active=self._runtime("sorengame", 1))
+        mgr.store.canonical.save(canonical)
+        accepted = mgr.store.accept_request(request_id, "switch", "robots")
+        result = {
+            "request_id": request_id, "operation": "switch", "status": "failed",
+            "from_game": from_game, "to_game": "robots",
+            "generation": accepted.generation, "error_code": receipt_error,
+            "detail": "Soren lifecycleが停止しました: cancelled",
+        }
+        mgr.store.finish_request(request_id, receipt_status, result)
+        # The switch restored the outgoing runtime and left no candidate
+        # behind, exactly like the real quiesce failure it reproduces.
+        canonical, _ = mgr.store.canonical.load()
+        canonical.update(
+            phase="ready", next_generation=max(accepted.generation + 1, 8),
+            operation=None, request_id=None, deadline_at=None,
+            active=self._runtime("sorengame", 1), candidate=None,
+            previous=None, retiring=[], last_result=result,
+        )
+        if canonical_patch is not None:
+            canonical_patch(canonical)
+        mgr.store.canonical.save(canonical)
+        if not keep_receipt:
+            mgr.store.receipts.load = lambda _rid: None
+        return mgr, coordinator, request_id
+
+    @staticmethod
+    def _runtime(game, generation):
+        names = runtime_names(generation)
+        return {
+            "game": game, "adapter": "browser", "generation": generation,
+            "runtime_id": f"g{generation}-abcdef", "lease_id": str(uuid.uuid4()),
+            "game_window": names.game_window, "agent_window": names.agent_window,
+            "adapter_session": names.adapter_session,
+            "started_at": "2026-09-23T12:00:00Z",
+        }
+
+    def test_quiesce_failed_receipt_is_terminalized_as_interrupted(self):
+        mgr, coordinator, _request_id = self._setup_quiesce_failed()
+
+        result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(result.game, "robots")
+        self.assertEqual(result.previous_game, "sorengame")
+        self.assertIn("interrupted", result.detail)
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertEqual(state["end_reason"], "switch-terminal-before-corner-active")
+        self.assertIsNone(state["last_error"])
+        self.assertIsNone(state["last_error_code"])
+        self.assertNotIn("switch_status", state)
+        # the failed timestamp is the moment the slot really ended
+        self.assertEqual(state["completed_at"], self.now_value.isoformat())
+        # the switch is never replayed: that is the whole point of the path
+        self.assertEqual(coordinator.calls, [])
+
+    def test_busy_game_switch_writer_leaves_failed_slot_unchanged(self):
+        mgr, coordinator, _request_id = self._setup_quiesce_failed()
+        before = mgr._read_state()
+
+        with mgr.store.lock(exclusive=True):
+            result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "queued")
+        self.assertIn("lock", result.detail)
+        self.assertEqual(mgr._read_state(), before)
+        self.assertEqual(coordinator.calls, [])
+
+    def test_shared_store_lock_covers_canonical_check_through_corner_write(self):
+        mgr, coordinator, _request_id = self._setup_quiesce_failed()
+        original_write = mgr._write_state
+        writer_blocked_at_commit = []
+
+        def write_while_competing(state):
+            with self.assertRaises(GameSwitchBusyError):
+                with mgr.store.lock(exclusive=True):
+                    pass
+            writer_blocked_at_commit.append(True)
+            original_write(state)
+
+        with patch.object(mgr, "_write_state", side_effect=write_while_competing):
+            result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(writer_blocked_at_commit, [True])
+        self.assertEqual(mgr._read_state()["status"], "interrupted")
+        self.assertEqual(coordinator.calls, [])
+
+    def test_terminalized_slot_is_not_terminalized_twice(self):
+        mgr, coordinator, _request_id = self._setup_quiesce_failed()
+        mgr.recover_failed()
+        completed_at = mgr._read_state()["completed_at"]
+
+        result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "noop")
+        self.assertEqual(result.detail, "failed-slot-not-recoverable")
+        self.assertEqual(mgr._read_state()["completed_at"], completed_at)
+        self.assertEqual(coordinator.calls, [])
+
+    def test_live_draining_is_waited_out_instead_of_terminalized(self):
+        def patch(canonical):
+            canonical.update(phase="draining", operation="switch",
+                             request_id=str(uuid.uuid4()),
+                             deadline_at="2026-09-24T00:48:10Z")
+
+        mgr, coordinator, _request_id = self._setup_quiesce_failed(
+            canonical_patch=patch)
+
+        result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "queued")
+        self.assertEqual(mgr._read_state()["status"], "failed")
+        self.assertEqual(coordinator.calls, [])
+
+    def test_unfinished_switch_parts_keep_the_slot_failed(self):
+        cases = {
+            "candidate still in flight": (
+                lambda c: c.update(phase="starting", operation="switch",
+                                   request_id=str(uuid.uuid4()),
+                                   candidate=self._runtime("robots", 2)),
+                "queued"),
+            "previous runtime retained": (
+                lambda c: c.update(phase="rolling_back", operation="switch",
+                                   request_id=str(uuid.uuid4()),
+                                   previous=self._runtime("sorengame", 4)),
+                "queued"),
+            "retiring runtime pending": (
+                lambda c: c.update(retiring=[self._runtime("nethack", 3)]),
+                "failed"),
+            "canonical recovery outstanding": (
+                lambda c: c.update(phase="recovery_required"), "failed"),
+        }
+        for name, (patch, expected) in cases.items():
+            with self.subTest(case=name):
+                mgr, coordinator, _rid = self._setup_quiesce_failed(
+                    canonical_patch=patch)
+                result = mgr.recover_failed()
+                self.assertEqual(result.status, expected)
+                self.assertEqual(mgr._read_state()["status"], "failed")
+                self.assertEqual(coordinator.calls, [])
+
+    def test_canonical_owning_the_target_keeps_the_slot_failed(self):
+        mgr, coordinator, _rid = self._setup_quiesce_failed()
+        canonical, _missing = mgr.store.canonical.load()
+        canonical["active"]["game"] = "robots"
+        mgr.store.canonical.save(canonical)
+
+        result = mgr.recover_failed()
+
+        # The receipt says the switch failed, canonical says it owns the
+        # target: that disagreement is never resolved by rewriting the corner.
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(mgr._read_state()["status"], "failed")
+        self.assertEqual(coordinator.calls, [])
+
+    def test_only_the_exact_quiesce_failed_receipt_is_accepted(self):
+        cases = {
+            "receipt pruned": dict(keep_receipt=False),
+            "receipt error code differs": dict(receipt_error="start_failed"),
+            "receipt from_game differs": dict(from_game="nethack"),
+            "receipt is not terminal failed": dict(receipt_status="rolled_back"),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(case=name):
+                mgr, coordinator, _rid = self._setup_quiesce_failed(**kwargs)
+                result = mgr.recover_failed()
+                self.assertEqual(result.status, "noop")
+                self.assertEqual(mgr._read_state()["status"], "failed")
+                self.assertEqual(coordinator.calls, [])
+
+    def test_other_failed_error_codes_keep_the_existing_recovery_path(self):
+        mgr, coordinator, _rid = self._setup_quiesce_failed(
+            error_code="recovery_required", receipt_error="recovery_required")
+        mgr._target_reached = lambda state: True
+
+        result = mgr.recover_failed()
+
+        # recovery_required still replays the same game, exactly as before
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(coordinator.calls,
+                         [("switch", "robots"), ("switch", "sorengame")])
+        self.assertEqual(mgr.status()["status"], "completed")
+
+    def test_missing_switch_request_id_keeps_the_slot_failed(self):
+        mgr, coordinator, _rid = self._setup_quiesce_failed()
+        state = mgr._read_state()
+        state.pop("switch_request_id", None)
+        mgr._write_state(state)
+
+        result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "noop")
+        self.assertEqual(mgr._read_state()["status"], "failed")
+        self.assertEqual(coordinator.calls, [])
+
+    def test_the_timer_never_replays_or_terminalizes_the_slot_on_its_own(self):
+        # Only the owner-only operator step may settle this slot. An automatic
+        # retry would re-enter the same failed round boundary, and an automatic
+        # terminalization would clear a latch the operator still has to see.
+        mgr, coordinator, _rid = self._setup_quiesce_failed()
+        self.assertIsNone(mgr._retry_failed_tick(self.now_value))
+
+        self.assertEqual(mgr._read_state()["status"], "failed")
+        self.assertEqual(coordinator.calls, [])
+
+
 class TestRetroCornerLifecycle(RetroCornerTestBase):
     def test_restores_previous_game_after_duration(self):
         current = ["sorengame"]
@@ -1167,15 +1444,87 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
         )
         return mgr, coordinator
 
-    def test_start_posts_intro_and_strategy(self):
+    def test_start_posts_intro_then_end_result_summary(self):
         chats = []
         mgr, _ = self._manager_with_chat([None], chats.append)
         self.assertEqual(mgr.start().status, "completed")
-        self.assertEqual(len(chats), 1)
+        self.assertEqual(len(chats), 2)
         self.assertIn("レトロゲームコーナー", chats[0])
         self.assertIn("Robotsをお送りします", chats[0])
-        self.assertIn("最新戦略", chats[0])
+        self.assertIn("比較に使える同じゲームの過去戦略記録が見つからない", chats[0])
         self.assertTrue(mgr.status().get("announced"))
+        # 終了時は結果まとめが続けて投稿される (ゲーム名＋終了理由＋時間)。
+        self.assertIn("Robotsは", chats[1])
+        self.assertIn("予定時間になりましたので終了しました", chats[1])
+        self.assertIn("約1分間お楽しみいただきました", chats[1])
+        self.assertTrue(mgr.status().get("end_announced"))
+
+    def test_strategy_announcement_uses_game_scoped_history_and_all_value_types(self):
+        from docich.resolver import strategy_history_dir, strategy_path
+        from docich.resolver.robots import DEFAULT_STRATEGY
+
+        previous = dict(DEFAULT_STRATEGY)
+        previous["w_collision"] = 10.0
+        previous["teleport_when_trapped"] = True
+        current = dict(previous)
+        current["w_collision"] = 20.0
+        current["teleport_when_trapped"] = False
+
+        current_path = strategy_path(self.g.state_dir, "robots")
+        current_path.parent.mkdir(parents=True, exist_ok=True)
+        current_path.write_text(json.dumps(current), encoding="utf-8")
+
+        history_root = current_path.parent / "history"
+        history_root.mkdir(parents=True, exist_ok=True)
+        # Legacy unscoped and another game's newer entry must not be treated
+        # as the previous Robots strategy.
+        (history_root / "20990101.json").write_text(json.dumps(current), encoding="utf-8")
+        other_game = strategy_history_dir(self.g.state_dir, "bastet")
+        other_game.mkdir(parents=True, exist_ok=True)
+        (other_game / "20990102.json").write_text(json.dumps(current), encoding="utf-8")
+        own_history = strategy_history_dir(self.g.state_dir, "robots")
+        own_history.mkdir(parents=True, exist_ok=True)
+        (own_history / "20260101.json").write_text(json.dumps(previous), encoding="utf-8")
+
+        message = describe_strategy_change(self.g.state_dir, "robots")
+        self.assertIn("w_collision 10.0→20.0", message)
+        self.assertIn("teleport_when_trapped 有効→無効", message)
+        self.assertNotIn("前回と同じ戦略", message)
+
+    def test_unscoped_legacy_history_never_claims_same_strategy(self):
+        from docich.resolver import strategy_path
+        from docich.resolver.robots import DEFAULT_STRATEGY
+
+        current_path = strategy_path(self.g.state_dir, "robots")
+        current_path.parent.mkdir(parents=True, exist_ok=True)
+        current_path.write_text(json.dumps(DEFAULT_STRATEGY), encoding="utf-8")
+        legacy_history = current_path.parent / "history"
+        legacy_history.mkdir(parents=True, exist_ok=True)
+        (legacy_history / "20990101.json").write_text(
+            json.dumps(DEFAULT_STRATEGY), encoding="utf-8"
+        )
+
+        message = describe_strategy_change(self.g.state_dir, "robots")
+        self.assertIn("比較に使える同じゲームの過去戦略記録が見つからない", message)
+        self.assertNotIn("前回と同じ戦略", message)
+
+    def test_same_strategy_message_requires_matching_game_history(self):
+        from docich.resolver import strategy_history_dir, strategy_path
+        from docich.resolver.robots import DEFAULT_STRATEGY
+
+        current_path = strategy_path(self.g.state_dir, "robots")
+        current_path.parent.mkdir(parents=True, exist_ok=True)
+        current_path.write_text(json.dumps(DEFAULT_STRATEGY), encoding="utf-8")
+        own_history = strategy_history_dir(self.g.state_dir, "robots")
+        own_history.mkdir(parents=True, exist_ok=True)
+        (own_history / "20260101.json").write_text(
+            json.dumps(DEFAULT_STRATEGY), encoding="utf-8"
+        )
+
+        self.assertEqual(
+            describe_strategy_change(self.g.state_dir, "robots"),
+            "前回と同じ戦略でお送りします。",
+        )
 
     def test_announce_failure_does_not_fail_corner(self):
         def boom(text):
@@ -1191,11 +1540,110 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
         chats = []
         mgr, _ = self._manager_with_chat([None], chats.append)
         mgr.start()
+        self.assertEqual(len(chats), 2)
         mgr._locked_announce_again = None
         with mgr._locked():
             state = mgr._read_state()
             mgr._announce_start_locked(state)
-        self.assertEqual(len(chats), 1)
+            mgr._announce_end_result_locked(state, self.now_value)
+        self.assertEqual(len(chats), 2)
+
+    def test_end_announce_failure_does_not_fail_corner(self):
+        chats = []
+
+        def flaky(text):
+            if chats:  # 2投稿目の結果まとめだけ失敗させる
+                raise RuntimeError("chat down")
+            chats.append(text)
+
+        mgr, _ = self._manager_with_chat([None], flaky)
+        self.assertEqual(mgr.start().status, "completed")
+        state = mgr.status()
+        self.assertEqual(state.get("status"), "completed")
+        self.assertTrue(state.get("end_announced"))
+        self.assertIn("end_announce_error", state)
+
+    def test_end_result_labels_cover_every_reason(self):
+        mgr, _ = self._manager_with_chat([None], lambda text: None)
+        cases = {
+            None: "予定時間になりましたので終了しました",
+            "game_over": "ゲームオーバーになりました",
+            "screen_stalled": "画面停止で終了しました",
+            "manual_saved_stop": "セーブして終了しました",
+            "manual_forced_stop": "セーブ失敗で強制終了しました",
+            # 起動前の切替失敗は予定終了や game over と区別する (#1044)。
+            "switch-terminal-before-corner-active": "開始前の切り替えが失敗したため開始できませんでした",
+            # 未知コードは内部語彙を出さず既定文面に落とす。
+            "invented-reason": "終了しました",
+        }
+        for reason, clause in cases.items():
+            state: dict = {"game": "robots"}
+            if reason is not None:
+                state["end_reason"] = reason
+            text = mgr._end_result_text(state, self.now_value)
+            self.assertTrue(text.startswith("Robotsは"), reason)
+            self.assertIn(clause, text, reason)
+
+    def test_hanjuku_end_result_uses_grounded_run_numbers(self):
+        from docich.naming import runtime_directory
+
+        mgr, _ = self._manager_with_chat([None], lambda text: None)
+        identity = {
+            "game": "hanjuku-hero",
+            "runtime_id": "g1-abcdef",
+            "generation": 1,
+            "lease_id": "lease-hanjuku-test",
+        }
+        runtime_dir = runtime_directory(self.g.state_dir, identity["runtime_id"])
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        rows = [
+            {"event": "decision", "decision": "month_seen", "month": "2-7"},
+            {"event": "decision", "decision": "order_launched"},
+            {"event": "decision", "decision": "order_launched_unconfirmed"},
+            {"event": "decision", "decision": "discharge_general"},
+            {"event": "decision", "decision": "castle_owned_observed",
+             "resulting_event": "captured:ジョンリギ"},
+            {"event": "decision", "chapter": 3},
+        ]
+        (runtime_dir / "hanjuku_decisions.jsonl").write_text(
+            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+            encoding="utf-8",
+        )
+        (runtime_dir / "hanjuku_run.json").write_text(
+            json.dumps({**identity, "schema": 1, "battles_finished": 7}),
+            encoding="utf-8",
+        )
+        state: dict = {
+            "game": "hanjuku-hero",
+            "bot_identity": identity,
+            "end_reason": "manual_forced_stop",
+        }
+        # 数値は decision log / run state から算出 (recap と同内容)、
+        # 終了理由は末尾の一文。
+        self.assertEqual(
+            mgr._end_result_text(state, self.now_value),
+            "第3章まで進み、1城を獲得、1回出撃と7回戦闘を重ね、2年7月まで戦いました"
+            "（将軍の解雇1回）。セーブ失敗による強制終了で、今回の挑戦はここまでです。",
+        )
+        state["end_reason"] = "game_over"
+        self.assertTrue(
+            mgr._end_result_text(state, self.now_value).endswith(
+                "ゲームオーバーで、今回の挑戦はここまでです。"
+            )
+        )
+        # 開始前の切替失敗では、開始していないのに挑戦は終わったと
+        # 却没有できない (#1044)。
+        state["end_reason"] = "switch-terminal-before-corner-active"
+        self.assertTrue(
+            mgr._end_result_text(state, self.now_value).endswith(
+                "開始前の切り替えが失敗したため、今日は挑戦できませんでした。"
+            )
+        )
+        # 記録が読めない場合は generic 文面 (ゲーム名＋理由) へフォールバック。
+        fallback = mgr._end_result_text(
+            {"game": "hanjuku-hero", "end_reason": "game_over"}, self.now_value
+        )
+        self.assertIn("はゲームオーバーになりました", fallback)
 
 
 class TestRetroCornerTickGuard(RetroCornerTestBase):
@@ -1423,9 +1871,10 @@ class TestRetroCornerImproveWindow(RetroCornerTestBase):
         mgr.config = replace(mgr.config, improve_agents="test-agent")
         state = {
             "date": "2026-09-06",
-            "game": "nsnake",
+            "game": "moon-buggy",
             "started_at": "2026-09-06T12:00:00+09:00",
             "ends_at": "2026-09-06T12:20:00+09:00",
+            "rotation_request_id": "12345678-1234-5678-1234-567812345678",
         }
         captured = []
 
@@ -1445,3 +1894,4 @@ class TestRetroCornerImproveWindow(RetroCornerTestBase):
         end = datetime.fromisoformat(state["ends_at"]).timestamp()
         assert argv[argv.index("--started-at") + 1] == f"{start:.6f}"
         assert argv[argv.index("--ends-at") + 1] == f"{end:.6f}"
+        assert argv[argv.index("--request-id") + 1] == state["rotation_request_id"]

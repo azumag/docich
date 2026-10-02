@@ -13,8 +13,8 @@ from pathlib import Path
 
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 MAX_ENTRIES = 4096
-DEFAULT_MIN_AGE_SECONDS = 7 * 24 * 60 * 60
-DEFAULT_KEEP_UNREFERENCED = 8
+DEFAULT_MIN_AGE_SECONDS = 0
+DEFAULT_KEEP_UNREFERENCED = 2
 
 
 class UnsafeRetentionState(RuntimeError):

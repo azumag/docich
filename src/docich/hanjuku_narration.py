@@ -27,6 +27,7 @@ STATE = 'hanjuku_narration.json'
 TAIL_BYTES = 65536
 MAX_TEXT = 120
 RECENT = 32
+PLAN_MAX_AGE_S = 5
 _busy = threading.Event()
 
 
@@ -66,10 +67,57 @@ def _tail(path: Path) -> list[dict]:
     return out
 
 
-def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue):
+def _item_max_age(item, max_age):
+    return min(max_age, PLAN_MAX_AGE_S) if item.get('evidence_kind') == 'plan' else max_age
+
+
+def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age):
+    from .agent.fence import AgentFence, FenceLost, check_fence, read_canonical, shared_section
+    from .hanjuku_run import load
+    from .game_switch import GameSwitchBusyError
+
     status = 'enqueued'
+    max_age = _item_max_age(item, max_age)
+    identity = {k: item.get(k) for k in ('game', 'runtime_id', 'generation', 'lease_id')}
+
+    def deliver_active():
+        # Check briefly under the transition lock; never hold it across
+        # queue I/O. The consumer rechecks identity/expiry before playback.
+        if (identity['game'] != 'hanjuku-hero' or not identity['runtime_id']
+                or type(identity['generation']) is not int or not identity['lease_id']):
+            raise FenceLost('incomplete commentary identity')
+        if time.time() - item['at'] > max_age:
+            return 'skipped:stale'
+        canonical = read_canonical(g.state_dir)
+        check_fence(AgentFence(**identity), canonical.get('active'))
+        run = load(runtime_dir, identity)
+        if not run or ((run.get('terminal_reason') or run.get('terminal_candidate'))
+                       and not item.get('terminal_recap')):
+            return 'skipped:terminal'
+        if item.get('evidence_kind') == 'plan':
+            bot = read_record(runtime_dir / 'hanjuku_bot.json', limit=256 * 1024)
+            trace = bot.get('decision_trace') or {}
+            if (not isinstance(item.get('decision_id'), str) or not item['decision_id']
+                    or trace.get('decision_id') != item['decision_id']
+                    or any(trace.get(k) != v for k, v in identity.items())):
+                return 'skipped:plan_superseded'
+        return 'ready'
+
     try:
-        enqueue(g, item['text'], context='hanjuku:commentary', speaker=speaker)
+        status = shared_section(g.state_dir, deliver_active, timeout_s=0)
+        if status == 'ready':
+            # The game-over recap is a fixed statement of a finished run:
+            # deliver it without the runtime fence so the queue-side
+            # identity/expiry recheck cannot drop it during teardown.
+            fence = None if item.get('terminal_recap') else {
+                **identity, 'expires_at': item['at'] + max_age}
+            enqueue(g, item['text'], context='hanjuku_commentary', speaker=speaker,
+                    runtime_fence=fence)
+            status = 'enqueued'
+    except FenceLost:
+        status = 'skipped:fence_lost'
+    except GameSwitchBusyError:
+        status = 'skipped:switch_busy'
     except Exception:
         # No exception text: queue errors can carry private payloads.
         status = 'delivery_failed'
@@ -78,15 +126,20 @@ def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue):
     try:
         append_log(runtime_dir, 'hanjuku_narration', {
             'schema': 1, 'at': time.time(), 'seq': item['seq'], 'key': item.get('key'),
-            'status': status, 'text': item['text']})
+            'status': status, 'text': item['text'], **identity})
     except Exception:
         pass
 
 
 def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=None):
-    """Claim new candidates and start at most one enqueue. Never blocks on audio."""
+    """Claim new candidates and start at most one enqueue. Never blocks on audio.
+
+    At a terminal only the ``terminal_recap`` candidate (the game-over recap,
+    owner rule 2026-09-28) may be claimed; ordinary lines stay silent so a
+    dying run never narrates stale situations.
+    """
     cfg = settings(game)
-    if not cfg['enabled'] or terminal:
+    if not cfg['enabled']:
         return None
     now = time.time() if now is None else now
     lock_path = runtime_dir / 'hanjuku_narration.lock'
@@ -111,9 +164,11 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=No
             reason = None
             if not text:
                 reason = 'held'
+            elif terminal and not item.get('terminal_recap'):
+                reason = 'terminal'
             elif chosen is not None:
                 reason = 'superseded'
-            elif not isinstance(item.get('at'), (int, float)) or now - item['at'] > cfg['max_age_s']:
+            elif not isinstance(item.get('at'), (int, float)) or now - item['at'] > _item_max_age(item, cfg['max_age_s']):
                 reason = 'stale'
             elif len(text) > MAX_TEXT:
                 reason = 'too_long'
@@ -141,7 +196,7 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=No
             if enqueue is None:
                 from .trading.soren_output import enqueue_audio_text as enqueue
             try:
-                threading.Thread(target=_deliver, args=(g, runtime_dir, chosen, cfg['speaker'], enqueue),
+                threading.Thread(target=_deliver, args=(g, runtime_dir, chosen, cfg['speaker'], enqueue, cfg['max_age_s']),
                                  daemon=True, name='hanjuku-narration').start()
             except Exception:
                 _busy.clear()

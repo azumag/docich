@@ -99,6 +99,12 @@ If a comment contains game strategy advice, accept it sincerely. Output after th
 ===ADVICE===
 - For strategy advice, do not rebut, do not defend the current strategy, and do not ask a follow-up question. Treat it as something to save for strategy improvement.
 
+【Comment Reply Improvement Advice Output】
+If a comment contains comment reply improvement advice, output after the reply body:
+===COMMENT_ADVICE===
+(Summarize the comment reply improvement note in 1-3 lines. Include the commenter's name.)
+===COMMENT_ADVICE===
+
 【Codex/System Advice Output】
 If a comment contains Codex/system improvement advice about Codex operation, the improvement loop, monitoring, workers, dashboard/status displays, OBS overlays, classification, or feedback collection, output after the reply body:
 ===CODEX_ADVICE===

@@ -173,6 +173,21 @@ def _message_may_wrap(raw_lines: list[str], cols: int) -> bool:
     return bool(raw_lines[1].rstrip())
 
 
+def _more_marker_on_next_row(raw_lines: list[str], cols: int) -> bool:
+    """True when NetHack had to push ``--More--`` to row one.
+
+    TTY ``more()`` moves the marker to the next row once the cursor reaches
+    ``CO - 8``, so on an 80-column terminal a 72-column message is already
+    enough. Only a bare marker counts; anything else stays possible wrap text.
+    """
+    return (
+        len(raw_lines) >= 2
+        and cols >= len("--More--")
+        and len(raw_lines[0].rstrip()) >= cols - len("--More--")
+        and raw_lines[1].strip() == "--More--"
+    )
+
+
 def _prompt_kind(message: str, *, may_wrap: bool) -> str:
     # Only row zero is the unambiguous message region of the classic TTY.
     # In particular, armor '[' next to monsters 'y'/'n' in the map is NOT a
@@ -300,6 +315,15 @@ def normalize_tty(
         for condition in _CONDITIONS
         if re.search(rf"(?<![A-Za-z]){re.escape(condition.lower())}(?![A-Za-z])", status_lower)
     )
+    more_on_next_row = _more_marker_on_next_row(raw_lines, cols)
+    prompt = _prompt_kind(
+        message,
+        may_wrap=False if more_on_next_row else _message_may_wrap(raw_lines, cols),
+    )
+    # Preserve every top-row prompt signal before accepting the next-row marker.
+    if more_on_next_row and prompt == "none":
+        prompt = "more"
+
     return NethackObservation(
         raw_text=text,
         message=message,
@@ -308,5 +332,5 @@ def normalize_tty(
         player=player,
         vitals=_parse_vitals(status),
         conditions=conditions,
-        prompt=_prompt_kind(message, may_wrap=_message_may_wrap(raw_lines, cols)),
+        prompt=prompt,
     )

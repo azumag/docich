@@ -196,6 +196,9 @@ def load_soren91_corner_config(g: GlobalConfig) -> Soren91CornerConfig:
 class Soren91CornerManager(RetroCornerManager):
     """Scheduled Soren91 corner reusing the retro lifecycle (start/stop/restore)."""
 
+    # 独自の固定文終了告知を finish 直後に呼ぶため、ベースの結果まとめ投稿は使わない。
+    announce_end_result = False
+
     def __init__(
         self,
         g: GlobalConfig,

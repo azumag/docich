@@ -5,14 +5,10 @@
 # a dialog ("Try again!"), then the high-score table, then back to the menu;
 # one Enter advances each screen (same process continues).  Pane input only
 # reaches the FOREGROUND process, so the game runs in the foreground while
-# a background driver loop presses Enter on those screens.  In play the docich
-# [agent] command brain (brains/bastet/brain.py) drops the pieces and stays
-# silent on these screens.  Each final Score (0 included) is recorded for the
-# score stats panel (scorelog JSONL).
-#
-# Known limitation: a score high enough to enter the high-score table opens
-# a name-entry screen the driver does not fill (unattended play never
-# scores that high; a future bot must handle it).
+# a background driver loop advances those screens. In play the docich [agent]
+# command brain (brains/bastet/brain.py) plans placements from the colored
+# board and remains silent on dialogs. Each final Score (0 included) is
+# recorded for the score stats panel (scorelog JSONL).
 #
 # Shell portability: this file runs under /bin/sh (dash on Ubuntu), which
 # has no base#number arithmetic and exits a non-interactive shell on a
@@ -66,6 +62,7 @@ driver() {
   max_score=0
   seen_game=0
   matches=0
+  name_entry_pending=0
   while :; do
     sleep 2
     [ -n "$PANE" ] || continue
@@ -80,6 +77,18 @@ driver() {
     fi
     case "$text" in
       *"Score:"*) seen_game=1 ;;
+    esac
+    case "$text" in
+      *"Please enter your name"*)
+        if [ "$name_entry_pending" -eq 0 ]; then
+          name_entry_pending=1
+          tmux send-keys -t "$PANE" -l "Docich"
+          tmux send-keys -t "$PANE" Enter
+          sleep 2
+        fi
+        continue
+        ;;
+      *) name_entry_pending=0 ;;
     esac
     case "$text" in
       *"Try again!"*)

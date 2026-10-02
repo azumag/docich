@@ -13,10 +13,14 @@ from docich.adapters import cli_game  # noqa: E402
 
 
 class FakeTmux:
-    def __init__(self, *, existing_sessions: set | None = None, capture_return: str = "screen text"):
+    def __init__(
+        self, *, existing_sessions: set | None = None,
+        capture_return: str = "screen text", capture_colored_return: str = "",
+    ):
         self.calls: list[tuple] = []
         self.sessions = set(existing_sessions or ())
         self.capture_return = capture_return
+        self.capture_colored_return = capture_colored_return
 
     def has_session_named(self, session):
         self.calls.append(("has_session_named", session))
@@ -32,6 +36,10 @@ class FakeTmux:
     def capture_pane(self, session):
         self.calls.append(("capture_pane", session))
         return self.capture_return
+
+    def capture_pane_colored(self, session):
+        self.calls.append(("capture_pane_colored", session))
+        return self.capture_colored_return
 
     def send_keys(self, session, keys, literal=False):
         self.calls.append(("send_keys", session, list(keys), literal))
@@ -62,10 +70,10 @@ class CliAdapterTestBase(unittest.TestCase):
         self._env_patch.stop()
         self._tmpdir.cleanup()
 
-    def _make_ctx(self, *, cli_raw: dict, tmux=None) -> base.AdapterContext:
+    def _make_ctx(self, *, cli_raw: dict, tmux=None, game_name="nethack") -> base.AdapterContext:
         game = config.GameConfig(
-            name="nethack",
-            title="NetHack",
+            name=game_name,
+            title=game_name.title(),
             adapter="cli",
             raw={"cli": cli_raw},
             agent=config.GameAgentConfig(),
@@ -76,6 +84,36 @@ class CliAdapterTestBase(unittest.TestCase):
 
 
 class TestPrepare(CliAdapterTestBase):
+    def test_moon_buggy_launch_passes_only_whitelisted_ab_runtime_values(self):
+        game = config.GameConfig(
+            name="moon-buggy",
+            title="Moon Buggy",
+            adapter="cli",
+            raw={},
+            path=self.repo_root / "config" / "games" / "moon-buggy.toml",
+        )
+        values = {
+            "DOCICH_TARGET_MATCHES": "2",
+            "DOCICH_MOON_BUGGY_AB_STATE": "/runtime/moon_buggy_ab.json",
+            "DOCICH_MOON_BUGGY_AB_ACTIVE": "/runtime/moon_buggy_ab_active.json",
+            "DOCICH_MOON_BUGGY_AB_REQUEST": "12345678-1234-5678-1234-567812345678",
+            "DOCICH_UNLISTED_SECRET": "must-not-pass",
+        }
+        with mock.patch.dict("os.environ", values), mock.patch(
+            "docich.adapters.cli_game.procs.which", return_value="/usr/bin/env"
+        ):
+            command = cli_game._game_launch_command(
+                self.g, game, ["/bin/sh", "games/cli-wrappers/moon-buggy_docich.sh"]
+            )
+
+        assignments = set(command[1:])
+        self.assertIn(f"DOCICH_STATE_DIR={Path(self.g.state_dir).resolve()}", assignments)
+        for name in values:
+            if name == "DOCICH_UNLISTED_SECRET":
+                self.assertNotIn(f"{name}=must-not-pass", assignments)
+            else:
+                self.assertIn(f"{name}={values[name]}", assignments)
+
     def test_which_resolves_command_head_to_absolute_path(self):
         tmux = FakeTmux()
         ctx = self._make_ctx(cli_raw={"command": "nethack"}, tmux=tmux)
@@ -166,6 +204,26 @@ class TestObserve(CliAdapterTestBase):
         self.assertEqual(obs.text, "")
         self.assertIn("warning", obs.meta)
         self.assertIn("capture が空です", obs.meta["warning"])
+
+    def test_bastet_observation_preserves_colored_cells_and_strips_text(self):
+        styled = "\x1b[44m  \x1b[0mScore: 0"
+        tmux = FakeTmux(capture_return="plain fallback", capture_colored_return=styled)
+        ctx = self._make_ctx(cli_raw={"command": "bastet"}, tmux=tmux, game_name="bastet")
+        obs = cli_game.CliGameAdapter(ctx).observe()
+
+        self.assertEqual(obs.text, "  Score: 0")
+        self.assertEqual(obs.meta["bastet_color_text"], styled)
+        self.assertIn(("capture_pane_colored", "docich-game"), tmux.calls)
+        self.assertNotIn(("capture_pane", "docich-game"), tmux.calls)
+
+    def test_bastet_observation_falls_back_when_colored_capture_is_empty(self):
+        tmux = FakeTmux(capture_return="plain fallback")
+        ctx = self._make_ctx(cli_raw={"command": "bastet"}, tmux=tmux, game_name="bastet")
+        obs = cli_game.CliGameAdapter(ctx).observe()
+
+        self.assertEqual(obs.text, "plain fallback")
+        self.assertNotIn("bastet_color_text", obs.meta)
+        self.assertIn(("capture_pane", "docich-game"), tmux.calls)
 
 
 class TestAct(CliAdapterTestBase):

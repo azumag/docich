@@ -74,6 +74,61 @@ class RuntimeSummaryTests(unittest.TestCase):
         self.assertNotIn("SECRET_VALUE", summary)
         self.assertNotIn("hidden-worker", summary)
 
+    def test_full_window_all_failed_attribution_survives_recent_omission(self):
+        data = {
+            "status": "warn",
+            "workers": {},
+            "queues": {},
+            "ai": {
+                "all_failed_15m": 4,
+                "all_failed_components": {
+                    "radio_prepass": 1,
+                    "radio_main": 1,
+                    "news_spam_check": 0,
+                    "comment": 1,
+                    "improvement": 0,
+                    "other": 1,
+                },
+                "recent_events": [],
+                "recent_events_omitted": True,
+            },
+            "improvement": {},
+        }
+        _, summary = self.mod.summarize(data)
+        self.assertIn("ai_recent_events_omitted=1", summary)
+        self.assertIn("ai_recent_all_failed_sampled=0", summary)
+        self.assertIn("ai_all_failed_attribution_consistent=1", summary)
+        self.assertIn("ai_all_failed_component_radio_prepass=1", summary)
+        self.assertIn("ai_all_failed_component_radio_main=1", summary)
+        self.assertIn("ai_all_failed_component_comment=1", summary)
+        self.assertIn("ai_all_failed_component_other=1", summary)
+
+    def test_full_window_all_failed_attribution_fails_closed_on_mismatch(self):
+        data = {
+            "status": "warn",
+            "workers": {},
+            "queues": {},
+            "ai": {
+                "all_failed_15m": 3,
+                "all_failed_components": {
+                    "radio_prepass": 1,
+                    "radio_main": 0,
+                    "news_spam_check": 0,
+                    "comment": 1,
+                    "improvement": 0,
+                    "other": 0,
+                    "SECRET_DYNAMIC_BUCKET": 999,
+                },
+                "recent_events": [],
+            },
+            "improvement": {},
+        }
+        _, summary = self.mod.summarize(data)
+        self.assertIn("ai_all_failed_attribution_consistent=0", summary)
+        for component in self.mod.COMPONENTS:
+            self.assertIn(f"ai_all_failed_component_{component}=0", summary)
+        self.assertNotIn("SECRET_DYNAMIC_BUCKET", summary)
+
     def test_timeout_duration_uses_fixed_public_buckets_only(self):
         data = {
             "status": "warn",

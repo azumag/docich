@@ -172,3 +172,15 @@ def test_golden_regenerates_against_checked_out_legacy_on_linux(tmp_path):
     pinned["provenance"].pop("soviet_now_commit", None)
     pinned["provenance"].pop("platform", None)
     assert fresh == pinned
+
+
+def test_other_active_game_does_not_inherit_soren_live_board(tmp_path):
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'hanjuku-hero'},
+        'candidate': {'game': 'soren91'}}))
+    result = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main')
+    assert '半熟英雄' in result.game_state_context
+    assert 'snapshot_score=' not in result.game_state_context
+    assert 'next=type' not in result.game_state_context
+    assert '現在の戦闘・勝敗・操作の情報はこのメモにはありません' in result.game_state_context

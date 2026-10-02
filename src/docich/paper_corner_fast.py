@@ -1,12 +1,7 @@
-"""Production entrypoint for the content-driven PAPER corner.
+"""Production entrypoint for the eight-slot PAPER corner.
 
-The corner used to spread a pre-generated eight-segment script across a fixed
-duration with fixed narration intervals. It now generates the next segment one
-at a time and reads it as soon as it is ready, ending when the narrator has
-nothing new to say. The manager itself lives in :mod:`docich.paper_corner`; this
-module only keeps the historical production entrypoint used by ``bin/docich``
-and installs the finite deterministic fallback while the corner waits for the
-program boundary.
+The manager lives in :mod:`docich.paper_corner`. This entrypoint prewarms its
+deterministic fallback while the corner waits for the program boundary.
 """
 from __future__ import annotations
 
@@ -19,7 +14,7 @@ from .paper_corner import PaperCornerManager, ensure_trading_window
 
 
 class FastPaperCornerManager(PaperCornerManager):
-    """Scheduled PAPER corner that narrates as content is generated."""
+    """Scheduled PAPER corner with an offline fallback for every slot."""
 
     def _prewarm_script(self, state) -> None:
         # Waiting-phase hook (see base): installing the deterministic fallback

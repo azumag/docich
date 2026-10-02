@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -11,6 +12,10 @@ ROOT = Path(__file__).resolve().parents[3]
 HELPER = ROOT / "ops" / "vm_actions" / "restart_radio_worker.sh"
 
 
+@unittest.skipUnless(
+    sys.platform.startswith("linux"),
+    "restart helper identifies workers through the Linux /proc filesystem",
+)
 class RestartRadioWorkerTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()

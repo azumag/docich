@@ -4,27 +4,35 @@
 # ninvaders boots to a title screen ("Press SPACE to start") and returns
 # there by itself at game over (same process continues). Pane input only
 # reaches the FOREGROUND process, so the game runs in the foreground while
-# a background driver loop handles the title screen and a low-latency
-# deterministic baseline player. The baseline sweeps left/right while firing;
-# it is intentionally simple so the Soren improvement loop can replace it with
-# a better policy later without depending on an LLM for frame-level input.
+# a background driver loop handles the title screen and score log. In policy
+# mode a separate local player owns all in-match keys and loads the promoted
+# policy at each match boundary.
 # The final Score of each match is recorded for the score stats panel
 # (scorelog JSONL): the session max is flushed when the title screen reappears.
 #
-# Usage: ninvaders_docich.sh [brain]
-#   (no argument) the baseline sweep player below plays the match.
+# Usage: ninvaders_docich.sh [sweep|brain|policy]
+#   (no argument or sweep) the fixed baseline sweep player plays the match.
 #   brain         the docich [agent] command brain (brains/ninvaders/brain.py)
-#                 plays; this wrapper only starts matches and records scores, so
-#                 the two never send competing keys.
+#                 plays; this wrapper only starts matches and records scores.
+#   policy        the verified structural policy player plays the match.
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
+ROOT=$(CDPATH= cd "$SCRIPT_DIR/../.." && pwd)
 . "$SCRIPT_DIR/_run_with_driver.sh"
 SCORELOG="${NINVADERS_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/ninvaders.jsonl}"
 PANE="${TMUX_PANE:-}"
 NINVADERS_BIN="${NINVADERS_BIN:-/usr/games/ninvaders}"
 DRIVER_INTERVAL="${NINVADERS_DRIVER_INTERVAL:-0.35}"
 MAX_MATCHES="${NINVADERS_MAX_MATCHES:-${DOCICH_TARGET_MATCHES:-3}}"
+MODE="${1:-sweep}"
+STATE_DIR="${DOCICH_STATE_DIR:-$ROOT/run}"
+POLICY_DIR="${NINVADERS_POLICY_DIR:-$STATE_DIR/resolver/ninvaders}"
+PLAYER_LOG="${NINVADERS_PLAYER_LOG:-$STATE_DIR/logs/ninvaders-player.log}"
 SELFPLAY=1
-[ "${1:-}" = "brain" ] && SELFPLAY=0
+case "$MODE" in
+  sweep) ;;
+  brain|policy) SELFPLAY=0 ;;
+  *) echo "usage: ninvaders_docich.sh [sweep|brain|policy]" >&2; exit 2 ;;
+esac
 
 case "$MAX_MATCHES" in
   ''|*[!0-9]*|0*) echo "NINVADERS_MAX_MATCHES must be a positive integer" >&2; exit 2 ;;
@@ -42,6 +50,30 @@ driver() {
   matches=0
   direction=Right
   move_ticks=0
+  policy_pid=""
+  if [ "$MODE" = "policy" ] && [ -n "$PANE" ]; then
+    umask 077
+    mkdir -p "$(dirname "$PLAYER_LOG")" 2>/dev/null
+    if [ -d "$(dirname "$PLAYER_LOG")" ]; then
+      PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" \
+        python3 -m docich.ninvaders.player --pane "$PANE" --policy-dir "$POLICY_DIR" \
+        >>"$PLAYER_LOG" 2>&1 &
+      policy_pid=$!
+    fi
+  fi
+  stop_policy_player() {
+    [ -n "$policy_pid" ] || return 0
+    kill -TERM "$policy_pid" 2>/dev/null || true
+    waited=0
+    while [ "$waited" -lt 10 ] && _docich_wrapper_running "$policy_pid"; do
+      sleep 0.1
+      waited=$((waited + 1))
+    done
+    kill -KILL "$policy_pid" 2>/dev/null || true
+    wait "$policy_pid" 2>/dev/null || true
+    policy_pid=""
+  }
+  trap 'stop_policy_player; exit 0' HUP INT TERM
   while :; do
     sleep "$DRIVER_INTERVAL"
     [ -n "$PANE" ] || continue
@@ -82,6 +114,17 @@ driver() {
         ;;
       *"Level:"*)
         seen_game=1
+        if [ "$MODE" = "policy" ]; then
+          if [ -n "$policy_pid" ] && _docich_wrapper_running "$policy_pid"; then
+            continue
+          fi
+          if [ -n "$policy_pid" ]; then
+            wait "$policy_pid" 2>/dev/null || true
+            policy_pid=""
+          fi
+          # Keep play moving if the policy runner could not start or exited.
+          SELFPLAY=1
+        fi
         [ "$SELFPLAY" = "1" ] || continue
         # nInvaders controls are cursor left/right + SPACE. Repeated keypresses
         # give us a small, bounded low-latency player instead of merely starting

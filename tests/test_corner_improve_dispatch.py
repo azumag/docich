@@ -125,30 +125,63 @@ class TestDispatch(unittest.TestCase):
             live = tmp_path / "live-brain" / "nsnake" / "weights.json"
             self.assertEqual(json.loads(live.read_text(encoding="utf-8")), strategy)
 
-    def test_all_maxed_matches_fail_closed_and_keep(self):
+    def test_ninvaders_policy_uses_six_samples_and_skips_incomplete_incumbent(self):
         import tempfile
+        from unittest.mock import patch
+        from docich.ninvaders import arena, improve
 
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = _setup_completed(Path(tmp), "ninvaders", [30])
+            calls = []
 
-            def fake_run(**kwargs):
-                return {"game": "ninvaders",
-                        "matches": [{"score": 0, "turns": 3000, "maxed": True}],
-                        "mean_score": None}
+            def fake_eval(path, matches, **kwargs):
+                calls.append(matches)
+                items = [{"end": "title", "score": 0, "ticks": 1000,
+                          "policy": {"timeouts": 0, "errors": 0}}]
+                return {"summary": arena.summarize(items), "matches": items}
 
-            corner_improve.run_bot_matches = fake_run
-            try:
+            with patch.object(improve._arena, "evaluate", side_effect=fake_eval):
                 result = run_corner_improve(
                     _G(state_dir), game="ninvaders", date_str="2026-09-10", agents="a",
-                    llm=lambda prompt: '{"dodge_radius": 3}',
+                    llm=lambda prompt: (_ for _ in ()).throw(AssertionError("LLM must not run")),
                 )
-            finally:
-                corner_improve.run_bot_matches = __import__(
-                    "docich.resolver.bot_eval", fromlist=["run_bot_matches"]
-                ).run_bot_matches
-            self.assertEqual(result["status"], "kept")
-            self.assertFalse(result["promoted"])
-            self.assertEqual(result["candidate_played"], 0)
+            self.assertEqual(result["status"], "skipped")
+            self.assertEqual(result["reason_code"], "policy-incomplete")
+            self.assertEqual(calls, [6])
+
+    def test_ninvaders_structural_candidate_promotes_to_live_policy_store(self):
+        import tempfile
+        from unittest.mock import patch
+        from docich.ninvaders import arena, improve
+        from docich.ninvaders.sandbox import policy_sha
+        from docich.ninvaders.store import PolicyStore
+
+        candidate = "# CHANGE: track target motion\ndef decide(obs, state):\n    return ['Space']\n"
+        calls = []
+
+        def fake_eval(path, matches, parallel=1, max_seconds=1):
+            calls.append((matches, parallel, max_seconds))
+            score = 7000 if "track target motion" in Path(path).read_text(encoding="utf-8") else 5000
+            items = [{"end": "title", "score": score + i, "ticks": 900,
+                      "cause": "invasion", "last_frames": ["Score: 0005000"],
+                      "policy": {"timeouts": 0, "errors": 0}} for i in range(matches)]
+            return {"summary": arena.summarize(items), "matches": items}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = _setup_completed(Path(tmp), "ninvaders", [30])
+            with patch.object(improve._arena, "evaluate", side_effect=fake_eval):
+                result = run_corner_improve(
+                    _G(state_dir), game="ninvaders", date_str="2026-09-10", agents="a",
+                    llm=lambda prompt: f"```python\n{candidate}```",
+                )
+            self.assertEqual(result["status"], "promoted", result)
+            self.assertEqual(result["reason_code"], "policy-promoted")
+            self.assertEqual(result["phase"], "eval")
+            self.assertEqual(calls, [(improve.CORNER_EVAL_MATCHES,
+                                      improve.CORNER_EVAL_PARALLEL,
+                                      improve.CORNER_EVAL_MAX_SECONDS)] * 2)
+            store = PolicyStore(state_dir / "resolver" / "ninvaders")
+            self.assertEqual(store.current()["sha"], policy_sha(candidate))
 
     def test_bounded_nsnake_accepts_scored_maxed_matches(self):
         import tempfile
@@ -236,7 +269,7 @@ class TestLiveBrainHotSwap(unittest.TestCase):
     def test_promote_writes_candidate_weights_to_live_brain(self):
         import tempfile
 
-        for game, delta in (("nsnake", {"min_free": 6}), ("ninvaders", {"dodge_radius": 3})):
+        for game, delta in (("nsnake", {"min_free": 6}),):
             with self.subTest(game=game):
                 with tempfile.TemporaryDirectory() as tmp:
                     state_dir = _setup_completed(Path(tmp), game, [10, 20])
@@ -276,6 +309,42 @@ class TestLiveBrainHotSwap(unittest.TestCase):
                     for key, value in delta.items():
                         self.assertEqual(written[key], value)
 
+    def test_bastet_zero_weight_candidate_is_evaluated_and_promoted(self):
+        import tempfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = _setup_completed(Path(tmp), "bastet", [0, 0])
+            prompts = []
+            evaluated = []
+
+            def fake_run(**kwargs):
+                weights = json.loads(
+                    Path(kwargs["env"]["DOCICH_BRAIN_WEIGHTS"]).read_text()
+                )
+                evaluated.append(weights)
+                score = 100.0 if weights["hard_drop"] == 0 else 10.0
+                return {
+                    "game": "bastet",
+                    "matches": [{"score": int(score), "turns": 5, "maxed": False}],
+                    "mean_score": score,
+                }
+
+            with patch.object(corner_improve, "run_bot_matches", side_effect=fake_run):
+                result = run_corner_improve(
+                    _G(state_dir), game="bastet", date_str="2026-09-10", agents="a",
+                    llm=lambda prompt: prompts.append(prompt) or '{"hard_drop": 0}',
+                    margin_pct=10.0,
+                )
+
+            self.assertEqual(result["status"], "promoted", result)
+            self.assertEqual([weights["hard_drop"] for weights in evaluated], [1.0, 0])
+            self.assertIn("hard_drop は有限なJSON数値で 0.0 以上", prompts[0])
+            self.assertIn("1e+06 以下", prompts[0])
+            self.assertIn("ソフトドロップ", prompts[0])
+            live = self.brain / "bastet" / "weights.json"
+            self.assertEqual(json.loads(live.read_text(encoding="utf-8"))["hard_drop"], 0)
+
     def test_kept_does_not_touch_live_weights(self):
         import tempfile
 
@@ -300,44 +369,108 @@ class TestLiveBrainHotSwap(unittest.TestCase):
             self.assertEqual(result["status"], "kept")
             self.assertFalse((self.brain / "nsnake" / "weights.json").exists())
 
-    def test_bastet_zero_weight_candidate_is_evaluated_and_promoted(self):
+    def test_moon_buggy_stages_lower_headless_candidate_without_live_promotion(self):
         import tempfile
 
-        with tempfile.TemporaryDirectory() as tmp:
-            state_dir = _setup_completed(Path(tmp), "bastet", [0, 0])
-            prompts = []
-            evaluated = []
+        from docich import moon_buggy_ab
 
-            def fake_run(**kwargs):
-                weights = json.loads(
-                    Path(kwargs["env"]["DOCICH_BRAIN_WEIGHTS"]).read_text()
-                )
-                evaluated.append(weights)
-                score = 100.0 if weights["hard_drop"] == 0 else 10.0
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = _setup_completed(Path(tmp), "moon-buggy", [12, 20])
+
+            def evaluator(weights):
                 return {
-                    "game": "bastet",
-                    "matches": [{"score": int(score), "turns": 5, "maxed": False}],
-                    "mean_score": score,
+                    "mean_score": 100.0 if weights["laser_period"] == 7.0 else 10.0,
+                    "played": 2,
                 }
 
-            corner_improve.run_bot_matches = fake_run
-            try:
-                result = run_corner_improve(
-                    _G(state_dir), game="bastet", date_str="2026-09-10", agents="a",
-                    llm=lambda prompt: prompts.append(prompt) or '{"hard_drop": 0}',
-                    margin_pct=10.0,
-                )
-            finally:
-                corner_improve.run_bot_matches = __import__(
-                    "docich.resolver.bot_eval", fromlist=["run_bot_matches"]
-                ).run_bot_matches
+            result = run_corner_improve(
+                _G(state_dir), game="moon-buggy", date_str="2026-09-10", agents="a",
+                llm=lambda _prompt: '{"laser_period": 8.0}', evaluator=evaluator,
+                margin_pct=50.0,
+            )
+
+            self.assertEqual(result["status"], "ab-staged", result)
+            self.assertLess(result["candidate_mean"], result["baseline_mean"])
+            experiment = moon_buggy_ab.read_experiment(state_dir)
+            self.assertEqual(experiment["status"], "staged")
+            self.assertEqual(experiment["candidate"], {"laser_period": 8.0})
+            self.assertFalse((self.brain / "moon-buggy" / "weights.json").exists())
+
+    def test_moon_buggy_promotes_only_after_candidate_wins_live_abba(self):
+        import tempfile
+
+        from docich import moon_buggy_ab
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = _setup_completed(Path(tmp), "moon-buggy", [12, 20])
+            baseline = corner_improve._game_defaults("moon-buggy")
+            candidate = {**baseline, "laser_period": 8.0}
+            moon_buggy_ab.stage(
+                state_dir, baseline, candidate, source_date="2026-09-10",
+                headless_baseline_mean=100.0, headless_candidate_mean=10.0,
+            )
+            scorelog = state_dir / "scores" / "moon-buggy.jsonl"
+            request_id = "12345678-1234-5678-1234-567812345678"
+            for score in [10, 100, 90, 20]:
+                moon_buggy_ab.select_arm(state_dir, request_id=request_id)
+                moon_buggy_ab.record_score(state_dir, scorelog, score)
+
+            completed_at = moon_buggy_ab.read_experiment(state_dir)["completed_at"]
+            result = run_corner_improve(
+                _G(state_dir), game="moon-buggy", date_str="2026-09-10", agents="a",
+                window=(completed_at - 1, completed_at + 1),
+                rotation_request_id=request_id,
+            )
 
             self.assertEqual(result["status"], "promoted", result)
-            self.assertEqual([weights["hard_drop"] for weights in evaluated], [1.0, 0])
-            self.assertIn("0.0 は有効な候補", prompts[0])
-            self.assertIn("ソフトドロップ", prompts[0])
-            live = self.brain / "bastet" / "weights.json"
-            self.assertEqual(json.loads(live.read_text(encoding="utf-8"))["hard_drop"], 0)
+            self.assertEqual(result["ab_winner"], "B")
+            self.assertEqual(result["ab_baseline_mean"], 15.0)
+            self.assertEqual(result["ab_candidate_mean"], 95.0)
+            live = self.brain / "moon-buggy" / "weights.json"
+            self.assertEqual(json.loads(live.read_text()), candidate)
+            self.assertEqual(moon_buggy_ab.read_experiment(state_dir)["status"], "promoted")
+            self.assertEqual(
+                run_corner_improve(
+                    _G(state_dir), game="moon-buggy", date_str="2026-09-10", agents="a",
+                    window=(completed_at - 1, completed_at + 1),
+                    rotation_request_id=request_id,
+                    llm=lambda _prompt: '{"laser_period": 9.0}',
+                )["status"],
+                "promoted",
+            )
+            # The detached job for the ABBA corner must not stage a fresh
+            # candidate from the same four matches after automatic adoption.
+            self.assertEqual(moon_buggy_ab.read_experiment(state_dir)["status"], "promoted")
+
+    def test_moon_buggy_ab_does_not_overwrite_concurrent_strategy_change(self):
+        import tempfile
+
+        from docich import moon_buggy_ab
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = _setup_completed(Path(tmp), "moon-buggy", [12, 20])
+            baseline = corner_improve._game_defaults("moon-buggy")
+            candidate = {**baseline, "laser_period": 8.0}
+            moon_buggy_ab.stage(
+                state_dir, baseline, candidate, source_date="2026-09-10",
+                headless_baseline_mean=100.0, headless_candidate_mean=10.0,
+            )
+            scorelog = state_dir / "scores" / "moon-buggy.jsonl"
+            for score in [10, 100, 90]:
+                moon_buggy_ab.select_arm(state_dir)
+                moon_buggy_ab.record_score(state_dir, scorelog, score)
+            concurrent = {**baseline, "laser_period": 9.0}
+            strategy = state_dir / "resolver" / "moon-buggy_strategy.json"
+            strategy.parent.mkdir(parents=True, exist_ok=True)
+            strategy.write_text(json.dumps(concurrent), encoding="utf-8")
+            moon_buggy_ab.select_arm(state_dir)
+            result = moon_buggy_ab.record_score(state_dir, scorelog, 20)
+
+            self.assertEqual(result["status"], "kept")
+            self.assertEqual(result["reason_code"], "ab-baseline-changed")
+            self.assertEqual(moon_buggy_ab.read_experiment(state_dir)["status"], "kept")
+            self.assertEqual(json.loads(strategy.read_text()), concurrent)
+            self.assertFalse((self.brain / "moon-buggy" / "weights.json").exists())
 
     def test_gnurobots_promotion_does_not_write_bot_weights(self):
         import tempfile

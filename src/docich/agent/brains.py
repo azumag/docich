@@ -7,14 +7,16 @@ delegates to an external process (stateless, spawned fresh every cycle);
 from __future__ import annotations
 
 import json
+import hashlib
 import random
 import shlex
 import subprocess
 import sys
+import time
 from copy import deepcopy
 
 from .. import procs
-from ..actions import Action, ActionError, parse_actions
+from ..actions import Action, ActionError, extract_json, parse_actions
 from ..adapters import AdapterError, Observation
 from ..config import GameConfig, GlobalConfig
 
@@ -28,6 +30,7 @@ class CommandBrain:
         self.g = g
         self.game = game
         self.cmd = self._resolve_command(game.agent.command)
+        self.observation_interval_ms = None
 
     @staticmethod
     def _resolve_command(command) -> list[str]:
@@ -38,9 +41,40 @@ class CommandBrain:
         raise AdapterError("[agent] brain='command' には command の設定が必要です")
 
     def decide(self, obs: Observation) -> list[Action]:
+        # Never carry a fast cadence across an error or a non-melee response.
+        self.observation_interval_ms = None
+        env_extra = None
+        if self.game.name == "moon-buggy":
+            from ..moon_buggy_ab import MoonBuggyABError, active_path, read_experiment
+
+            selected_path = ""
+            experiment_id = ""
+            match_index = ""
+            try:
+                experiment = read_experiment(self.g.state_dir)
+            except MoonBuggyABError:
+                # A malformed pending experiment must fail closed in the brain.
+                selected_path = str(active_path(self.g.state_dir))
+            else:
+                if experiment and experiment["status"] == "running":
+                    selected_path = str(active_path(self.g.state_dir))
+                    experiment_id = experiment["experiment_id"]
+                    match_index = str(len(experiment["results"]))
+                elif experiment is None:
+                    # If the state record disappears while a snapshot remains,
+                    # do not silently fall back to mutable live weights.
+                    active = active_path(self.g.state_dir)
+                    if active.is_symlink() or active.exists():
+                        selected_path = str(active)
+            env_extra = {
+                "DOCICH_MOON_BUGGY_AB_ACTIVE": selected_path,
+                "DOCICH_MOON_BUGGY_AB_EXPERIMENT_ID": experiment_id,
+                "DOCICH_MOON_BUGGY_AB_MATCH_INDEX": match_index,
+            }
         try:
             result = procs.run(
                 self.cmd,
+                env_extra=env_extra,
                 timeout=self.g.agent.brain_timeout_s,
                 input=obs.to_json(),
                 # tmux セッションの cwd に依存せず、brain の相対パス参照
@@ -63,7 +97,13 @@ class CommandBrain:
             return []
 
         try:
-            return parse_actions(result.stdout)
+            actions = parse_actions(result.stdout)
+            if self.game.name == "hanjuku-hero" and self.game.raw.get("hanjuku", {}).get("script_bot") is True:
+                payload = json.loads(extract_json(result.stdout))
+                interval = payload.get("observation_interval_ms") if isinstance(payload, dict) else None
+                if type(interval) is int and interval in (500, 1500):
+                    self.observation_interval_ms = interval
+            return actions
         except ActionError as exc:
             print(
                 f"docich: 警告: brain の出力を解析できませんでした ({self.game.name}): {exc}",
@@ -121,12 +161,24 @@ class NethackPolicyBrain:
         self.progress = NethackProgressResolver()
         self.last_progress_decision = None
         self._action_plan = None
+        self._progress_trace_plan = None
+        self._progress_trace_error_logged = False
+        self._last_progress_hold = None
+        self._last_progress_hold_at = 0.0
         self._action_validated = False
         self._startup_checkpoint = None
         self.last_decision = None
         self.last_shadow = None
         self.last_advisory = None
         self.last_candidate_shadow = None
+        self.progress_store = None
+        try:
+            from ..nethack_run import NethackRunStore
+
+            self.progress_store = NethackRunStore.from_global(g)
+        except Exception:
+            # Progress evidence is optional and must never block game control.
+            self.progress_store = None
         from ..nethack_narration import NethackNarrator, enabled_flag, runtime_table
         from ..nethack_startup import NethackStartup
 
@@ -167,6 +219,11 @@ class NethackPolicyBrain:
         production_actions = list(self.last_progress_decision.actions)
         if production_actions:
             self._action_plan = (normalized, deepcopy(production_actions), deepcopy(resolved))
+            self._progress_trace_plan = (normalized, decision, resolved)
+        else:
+            self._record_progress_sample(
+                normalized, decision, resolved, phase="hold", key=None
+            )
         try:
             self.narrator.consider(normalized, decision)
         except Exception:
@@ -215,6 +272,42 @@ class NethackPolicyBrain:
             )
         return production_actions
 
+    def _record_progress_sample(self, obs, decision, resolved, *, phase: str, key: str | None) -> None:
+        """Persist bounded, public turn telemetry; raw terminal text stays transient."""
+        if self.progress_store is None:
+            return
+        now = time.time()
+        frame_hash = hashlib.sha256(obs.raw_text.encode("utf-8", "replace")).hexdigest()
+        map_hash = hashlib.sha256("\n".join(obs.map_rows).encode("utf-8", "replace")).hexdigest()
+        if phase == "hold":
+            fingerprint = (obs.vitals.turn, decision.intent, resolved.intent, frame_hash)
+            if fingerprint == self._last_progress_hold and now - self._last_progress_hold_at < 30.0:
+                return
+            self._last_progress_hold = fingerprint
+            self._last_progress_hold_at = now
+        sample = {
+            "ts": now,
+            "phase": phase,
+            "turn": obs.vitals.turn,
+            "depth": obs.vitals.dungeon_level,
+            "hp": obs.vitals.hp,
+            "hp_max": obs.vitals.hp_max,
+            "conditions": list(obs.conditions),
+            "prompt": obs.prompt,
+            "player": list(obs.player) if obs.player is not None else None,
+            "intent": decision.intent,
+            "resolved_intent": resolved.intent,
+            "key": key,
+            "frame_hash": frame_hash,
+            "map_hash": map_hash,
+        }
+        try:
+            self.progress_store.append_progress_sample(sample)
+        except Exception:
+            if not self._progress_trace_error_logged:
+                self._progress_trace_error_logged = True
+                print("[nethack-progress] trace_write=failed", file=sys.stderr)
+
     def validate_action(self, action: Action, fresh: Observation, *, canonical=None) -> bool:
         """Called by the loop inside its send lock, with a fresh TTY capture.
 
@@ -223,7 +316,6 @@ class NethackPolicyBrain:
         is not compared. No progress memory is mutated on rejection.
         """
         from ..nethack_observation import normalize_tty
-        from ..nethack_progress import assert_production_safe
 
         self._action_validated = False
         if self._action_plan is None or fresh.game != "nethack" or fresh.adapter != "cli" or fresh.text is None:
@@ -248,7 +340,7 @@ class NethackPolicyBrain:
             ):
                 return False
         if decision is not None:
-            assert_production_safe(decision, current)
+            self.progress.assert_action_safe(decision, current, self.policy.explorer)
         # Startup has its own reviewed answers; exact-frame equality applies
         # there too, without passing gameplay y/n semantics to the startup gate.
         self._action_validated = True
@@ -263,6 +355,16 @@ class NethackPolicyBrain:
             raise RuntimeError("NetHack action changed after validation")
         if decision is not None:
             self.progress.sent(decision, planned_obs)
+        trace_plan = self._progress_trace_plan
+        if trace_plan is not None and decision is not None:
+            trace_obs, policy_decision, resolved = trace_plan
+            self._record_progress_sample(
+                trace_obs,
+                policy_decision,
+                resolved,
+                phase="sent",
+                key=action.text if action.type == "text" else None,
+            )
         self._startup_checkpoint = None
         self.discard_action_plan()
 
@@ -273,6 +375,7 @@ class NethackPolicyBrain:
             self.startup.__dict__.update(self._startup_checkpoint)
         self._startup_checkpoint = None
         self._action_plan = None
+        self._progress_trace_plan = None
         self._action_validated = False
 
 

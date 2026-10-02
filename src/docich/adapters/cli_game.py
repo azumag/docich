@@ -26,7 +26,7 @@ from ..game_switch import (
 )
 from ..naming import NameValidationError, validate_tmux_name
 from ..presentation import cell_aspect_scale
-from ..tmux import OwnershipMismatchError, Tmux, TmuxOwnership
+from ..tmux import OwnershipMismatchError, Tmux, TmuxOwnership, eval_server_name
 from ..xkit import XKit
 from ..resolver.lease import activity_lock
 from .base import Adapter, AdapterError, Observation
@@ -47,6 +47,7 @@ ROUND_BOUNDARY_PROMPT = "another game?"
 ROUND_BOUNDARY_SCORE_RE = re.compile(r"score:\s*([0-9,]+)", re.IGNORECASE)
 ROUND_BOUNDARY_TAIL_LINES = 15
 ROUND_BOUNDARY_RESULT_FILENAME = "round_boundary_result.json"
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|[\x0e\x0f]")
 
 
 # --- shared [cli] table helpers --------------------------------------------
@@ -66,6 +67,30 @@ def cli_command_list(game) -> list[str]:
     if isinstance(command, list) and command:
         return [str(c) for c in command]
     raise AdapterError("[cli] に command が設定されていません")
+
+
+def _game_launch_command(g, game, command: list[str]) -> list[str]:
+    """Pass fixed runtime paths through tmux to CLI wrappers that need them."""
+    if game.name not in {"ninvaders", "moon-buggy"}:
+        return command
+    env_bin = procs.which("env")
+    if not env_bin:
+        if game.name == "ninvaders":
+            raise AdapterError("NInvaders の状態パスを渡す env コマンドが見つかりません")
+        raise AdapterError("Moon Buggyの状態パスを渡す env コマンドが見つかりません")
+    values = {"DOCICH_STATE_DIR": str(Path(g.state_dir).resolve())}
+    if game.name == "moon-buggy":
+        for name in (
+            "DOCICH_TARGET_MATCHES",
+            "MOONBUGGY_MAX_MATCHES",
+            "DOCICH_MOON_BUGGY_AB_STATE",
+            "DOCICH_MOON_BUGGY_AB_ACTIVE",
+            "DOCICH_MOON_BUGGY_AB_REQUEST",
+        ):
+            if name in os.environ:
+                values[name] = os.environ[name]
+    assignments = [f"{name}={value}" for name, value in values.items()]
+    return [env_bin, *assignments, *command]
 
 
 def cli_cols(game) -> int:
@@ -192,7 +217,9 @@ class CliGameAdapter(Adapter):
             raise AdapterError(
                 f"コマンドが見つかりません: {cmd[0]} (PATH を確認してください。/usr/games も探索します)"
             )
-        resolved_cmd = [resolved, *cmd[1:]]
+        resolved_cmd = _game_launch_command(
+            self.ctx.g, self.ctx.game, [resolved, *cmd[1:]]
+        )
         session = self._session()
 
         if not self.ctx.tmux.has_session_named(session):
@@ -211,8 +238,21 @@ class CliGameAdapter(Adapter):
 
     def observe(self) -> Observation:
         self._check_fence()
-        text = self.ctx.tmux.capture_pane(self._session())
         meta = {}
+        session = self._session()
+        if self.ctx.game.name == "bastet":
+            capture_colored = getattr(self.ctx.tmux, "capture_pane_colored", None)
+            colored = capture_colored(session) if callable(capture_colored) else ""
+            if colored:
+                # Bastet draws every occupied square as two colored spaces.
+                # Keep the styled capture for its brain and remove control
+                # sequences from the ordinary text used for status checks.
+                meta["bastet_color_text"] = colored
+                text = ANSI_ESCAPE_RE.sub("", colored)
+            else:
+                text = self.ctx.tmux.capture_pane(session)
+        else:
+            text = self.ctx.tmux.capture_pane(session)
         if text == "":
             meta["warning"] = "capture が空です (セッション停止の可能性)"
         return Observation(
@@ -261,7 +301,7 @@ class CliCoordinatorAdapter:
 
     name = "cli"
 
-    def __init__(self, g, game, spec: RuntimeSpec):
+    def __init__(self, g, game, spec: RuntimeSpec, *, eval_tmux=None):
         self.g = g
         self.game = game
         self.spec = spec
@@ -269,6 +309,9 @@ class CliCoordinatorAdapter:
         # ("docich") only reaches docich-game-gN via tmux prefix matching,
         # which breaks the moment any other docich-* session exists.
         self.tmux = Tmux(self.spec.adapter_session)
+        # resolver/bot_eval sessions live on the private evaluation server
+        # (Issue #1280), so the cleanup watch must look there.
+        self.eval_tmux = eval_tmux or Tmux(server=eval_server_name())
         self.agent_enabled = game.agent.enabled
         self.requires_round_boundary = game.lifecycle.require_round_boundary
         self.round_boundary_timeout_s = game.lifecycle.boundary_timeout_s
@@ -329,7 +372,7 @@ class CliCoordinatorAdapter:
             raise AdapterError(
                 f"コマンドが見つかりません: {cmd[0]} (PATH を確認してください。/usr/games も探索します)"
             )
-        return [resolved, *cmd[1:]]
+        return _game_launch_command(self.g, self.game, [resolved, *cmd[1:]])
 
     def _xterm_bin(self) -> str:
         resolved = procs.which("xterm")
@@ -532,7 +575,7 @@ class CliCoordinatorAdapter:
                 if not isinstance(sessions,list) or any(not isinstance(s,str) or not s.startswith(f"evalr-{pid}-") for s in sessions):
                     raise AdapterError("resolver改善sessionの所有情報が不正です")
                 for session in sessions:
-                    if self.tmux.session_target_exists(session,strict=True) and not cmdline.exists():
+                    if self.eval_tmux.session_target_exists(session,strict=True) and not cmdline.exists():
                         raise AdapterError("resolver改善daemon消滅後も評価sessionが残っています")
                 if not cmdline.exists(): marker.unlink();break
                 raw=cmdline.read_bytes().replace(b"\0",b" ").decode("utf-8",errors="replace")

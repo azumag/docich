@@ -1,0 +1,11 @@
+[Unit]
+Description=Run NetHack strategy retrospective once daily
+
+[Timer]
+OnCalendar=*-*-* 05:10:00 Asia/Tokyo
+Persistent=true
+AccuracySec=1min
+Unit=docich-nethack-daily-improve.service
+
+[Install]
+WantedBy=timers.target
