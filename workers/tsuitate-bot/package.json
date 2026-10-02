@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.js",
+    "test:workerd": "node test/workerd-integration.mjs",
     "dev": "wrangler dev"
   },
   "devDependencies": {
