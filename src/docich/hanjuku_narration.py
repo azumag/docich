@@ -158,6 +158,11 @@ def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age, *
         status = 'skipped:generation_mismatch' if terminal else 'skipped:fence_lost'
     except GameSwitchBusyError:
         status = 'skipped:switch_busy'
+    except (TypeError, ValueError, RuntimeError):
+        # A corrupt durable outbox receipt or invalid terminal payload will
+        # not heal on retry. Keep its failure on this run, but do not let it
+        # hold later, unrelated audio producers.
+        status = 'delivery_failed_permanent' if terminal else 'delivery_failed'
     except Exception:
         # No exception text: queue errors can carry private payloads.
         status = 'delivery_failed'
@@ -167,7 +172,9 @@ def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age, *
     try:
         append_log(runtime_dir, 'hanjuku_narration', {
             'schema': 1, 'at': time.time(), 'seq': item['seq'], 'key': item.get('key'),
-            'status': status, 'text': item['text'], **identity})
+            'status': status, 'text': item['text'],
+            **({'delivery_key': _terminal_delivery_key(identity)} if terminal else {}),
+            **identity})
     except Exception:
         pass
     return status
@@ -254,8 +261,9 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=No
                 for key in ('game', 'runtime_id', 'generation', 'lease_id')
             }) if candidate else None
             prior = terminal_done.get(delivery_key) if delivery_key else None
-            if candidate and prior not in {'enqueued', 'skipped:generation_mismatch',
-                                           'skipped:too_long'}:
+            if candidate and not (isinstance(prior, str) and prior in {
+                    'enqueued', 'skipped:generation_mismatch', 'skipped:too_long',
+                    'delivery_failed_permanent'}):
                 text = candidate.get('text')
                 if not isinstance(text, str) or not text.strip() or len(text) > TERMINAL_MAX_TEXT:
                     status = 'skipped:too_long'
@@ -301,7 +309,7 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=No
                             except Exception:
                                 pass
                     elif status in {'enqueued', 'skipped:generation_mismatch',
-                                    'skipped:too_long'}:
+                                    'skipped:too_long', 'delivery_failed_permanent'}:
                         terminal_done[delivery_key] = status
                         terminal_speakers.pop(delivery_key, None)
             atomic_write_json(runtime_dir / STATE, state)
@@ -339,20 +347,99 @@ def terminal_delivery_pending(runtime_dir: Path, identity: dict) -> bool:
         return False
     state = read_record(runtime_dir / STATE) or {}
     deliveries = state.get(TERMINAL_DELIVERIES_KEY)
-    if not isinstance(deliveries, dict):
-        return True
-    status = deliveries.get(_terminal_delivery_key(identity))
-    return status not in {'enqueued', 'skipped:generation_mismatch', 'skipped:too_long'}
+    delivery_key = _terminal_delivery_key(identity)
+    status = deliveries.get(delivery_key) if isinstance(deliveries, dict) else None
+    for record in _tail_any(runtime_dir / 'hanjuku_narration.jsonl'):
+        if record.get('delivery_key') == delivery_key:
+            status = record.get('status')
+    return not (isinstance(status, str) and status in {
+        'enqueued', 'skipped:generation_mismatch', 'skipped:too_long',
+        'delivery_failed_permanent',
+    })
+
+
+def _record_terminal_delivery(runtime_dir: Path, delivery_key: str, status: str,
+                              *, identity: dict | None = None, candidate: dict | None = None,
+                              speaker: str = '') -> None:
+    """Best-effort state receipt plus a durable narration-log outcome.
+
+    The immutable recap candidate and validated terminal run record remain the
+    recovery source if another observer currently owns the narration lock.
+    The outbox itself deduplicates by ``delivery_key`` after a publish/crash.
+    """
+    state_path = runtime_dir / STATE
+    lock_path = runtime_dir / 'hanjuku_narration.lock'
+    if not lock_path.is_symlink() and not state_path.is_symlink():
+        fd = None
+        locked = False
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+            except OSError:
+                pass
+            if locked:
+                try:
+                    state = read_record(state_path) or {}
+                except Exception:
+                    state = {}
+                deliveries = state.get(TERMINAL_DELIVERIES_KEY)
+                if not isinstance(deliveries, dict):
+                    deliveries = {}
+                    state[TERMINAL_DELIVERIES_KEY] = deliveries
+                speakers = state.get(TERMINAL_SPEAKERS_KEY)
+                if not isinstance(speakers, dict):
+                    speakers = {}
+                    state[TERMINAL_SPEAKERS_KEY] = speakers
+                current = deliveries.get(delivery_key)
+                final = {'enqueued', 'skipped:generation_mismatch', 'skipped:too_long',
+                         'delivery_failed_permanent'}
+                if not isinstance(current, str) or current not in final:
+                    deliveries[delivery_key] = status
+                    if status == 'pending' and speaker:
+                        speakers[delivery_key] = speaker
+                    elif status in final:
+                        speakers.pop(delivery_key, None)
+                    atomic_write_json(state_path, state)
+        except Exception:
+            pass
+        finally:
+            if fd is not None:
+                if locked:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    except OSError:
+                        pass
+                os.close(fd)
+
+    record = {
+        'schema': 1, 'at': time.time(), 'status': status,
+        'delivery_key': delivery_key,
+    }
+    if candidate:
+        record.update(seq=candidate.get('seq'), key=candidate.get('key'), text=candidate.get('text'))
+    if identity:
+        record.update(identity)
+    try:
+        append_log(runtime_dir, 'hanjuku_narration', record)
+        log_path = runtime_dir / 'hanjuku_narration.jsonl'
+        if not log_path.is_symlink():
+            with log_path.open('ab') as stream:
+                os.fsync(stream.fileno())
+    except Exception:
+        pass
 
 
 def retry_pending_terminal_deliveries(g, *, exclude_key: str = '') -> bool:
-    """Drain durable terminal handoffs before a later audio item is enqueued.
+    """Drain validated terminal candidates before a later audio item.
 
-    The frozen candidate and its validated run receipt live in the existing
-    runtime narration files. A pending status is committed under the run's
-    narration lock only after the active identity and terminal evidence were
-    checked. This lets corner lifecycle finish without waiting on audio while
-    preserving the old result's position ahead of future shared-queue audio.
+    Candidates and terminal evidence are already durable in the run logs. Do
+    not require the narration state lock to discover or enqueue them: a lock
+    collision must not lose a recap when its corner changes generation. The
+    shared outbox receipt deduplicates concurrent attempts. Invalid candidates
+    are recorded as permanent failures and do not block unrelated audio; a
+    valid recap with a transient outbox failure keeps its queue position.
     """
     state_dir = getattr(g, 'state_dir', None)
     if not state_dir:
@@ -361,108 +448,138 @@ def retry_pending_terminal_deliveries(g, *, exclude_key: str = '') -> bool:
     if runtime_root.is_symlink() or not runtime_root.is_dir():
         return True
 
+    final_statuses = {'enqueued', 'skipped:generation_mismatch', 'skipped:too_long',
+                      'delivery_failed_permanent'}
+    def is_final(status):
+        return isinstance(status, str) and status in final_statuses
+
+    candidates_by_key = {}
+    state_by_runtime = {}
+    orphaned = []
+    for runtime_dir in sorted(runtime_root.iterdir()):
+        if runtime_dir.is_symlink() or not runtime_dir.is_dir():
+            continue
+        state_path = runtime_dir / STATE
+        try:
+            state = {} if state_path.is_symlink() else (read_record(state_path) or {})
+        except Exception:
+            # A bad mutable receipt must not hide an intact immutable recap.
+            state = {}
+        state_by_runtime[runtime_dir] = state
+        deliveries = state.get(TERMINAL_DELIVERIES_KEY)
+        if not isinstance(deliveries, dict):
+            deliveries = {}
+        logs = _tail_any(runtime_dir / 'hanjuku_narration.jsonl')
+        log_statuses = {}
+        for entry in logs:
+            key = entry.get('delivery_key')
+            if isinstance(key, str):
+                log_statuses[key] = entry.get('status')
+        speakers = state.get(TERMINAL_SPEAKERS_KEY)
+        if not isinstance(speakers, dict):
+            speakers = {}
+        commentary_path = runtime_dir / 'hanjuku_commentary.jsonl'
+        for candidate in _tail(commentary_path):
+            if not candidate.get('terminal_recap'):
+                continue
+            identity = {key: candidate.get(key)
+                        for key in ('game', 'runtime_id', 'generation', 'lease_id')}
+            delivery_key = _terminal_delivery_key(identity)
+            if delivery_key == exclude_key:
+                continue
+            state_status = deliveries.get(delivery_key)
+            log_status = log_statuses.get(delivery_key)
+            status = (state_status if is_final(state_status)
+                      else log_status if is_final(log_status)
+                      else state_status or log_status)
+            if is_final(status):
+                continue
+            # Commentary is append-only; later entries for the same run are
+            # the freshest frozen candidate and retain their original order.
+            candidates_by_key[delivery_key] = (runtime_dir, candidate, speakers.get(delivery_key, ''))
+        for delivery_key, status in deliveries.items():
+            if (isinstance(delivery_key, str) and delivery_key != exclude_key
+                    and not is_final(status)
+                    and delivery_key not in candidates_by_key):
+                orphaned.append((runtime_dir, delivery_key))
+
+    for runtime_dir, delivery_key in orphaned:
+        _record_terminal_delivery(runtime_dir, delivery_key, 'delivery_failed_permanent')
+
+    if not candidates_by_key:
+        return True
+
+    verified = []
+    from .hanjuku_run import terminal as terminal_evidence
+    for delivery_key, (runtime_dir, candidate, speaker) in candidates_by_key.items():
+        identity = {key: candidate.get(key)
+                    for key in ('game', 'runtime_id', 'generation', 'lease_id')}
+        deliveries = state_by_runtime[runtime_dir].get(TERMINAL_DELIVERIES_KEY)
+        status = deliveries.get(delivery_key) if isinstance(deliveries, dict) else None
+        if status == 'delivery_failed_permanent':
+            continue
+        valid_identity = (
+            identity.get('game') == 'hanjuku-hero'
+            and identity.get('runtime_id') == runtime_dir.name
+            and type(identity.get('generation')) is int
+            and isinstance(identity.get('lease_id'), str) and bool(identity['lease_id'])
+        )
+        text = candidate.get('text')
+        timestamp = candidate.get('at')
+        if (not valid_identity or not isinstance(text, str) or not text.strip()
+                or len(text) > TERMINAL_MAX_TEXT
+                or type(timestamp) not in (int, float) or not math.isfinite(timestamp)):
+            final = 'skipped:too_long' if isinstance(text, str) and len(text) > TERMINAL_MAX_TEXT else 'delivery_failed_permanent'
+            _record_terminal_delivery(runtime_dir, delivery_key, final,
+                                      identity=identity, candidate=candidate)
+            continue
+        try:
+            evidence = terminal_evidence(runtime_dir, identity)
+        except Exception:
+            _record_terminal_delivery(runtime_dir, delivery_key, 'delivery_failed_permanent',
+                                      identity=identity, candidate=candidate)
+            continue
+        if not evidence or evidence.get('terminal_reason') != 'game_over':
+            # The candidate is durable but not yet authorized by a complete
+            # terminal latch. A later observer can revisit it after evidence
+            # becomes complete; meanwhile unrelated audio may proceed.
+            _record_terminal_delivery(runtime_dir, delivery_key, 'skipped:terminal_unconfirmed',
+                                      identity=identity, candidate=candidate)
+            continue
+        _record_terminal_delivery(runtime_dir, delivery_key, 'pending', identity=identity,
+                                  candidate=candidate, speaker=str(speaker or ''))
+        verified.append((runtime_dir, delivery_key, candidate, identity, str(speaker or '')))
+
+    if not verified:
+        return True
+    verified.sort(key=lambda item: (item[2]['at'], item[2]['seq']))
     try:
         from . import webui
         from .trading.soren_output import resolve_soren_root
-        from .hanjuku_run import load
         soren_root = resolve_soren_root(g)
     except Exception:
         return False
 
-    for state_path in sorted(runtime_root.glob('*/' + STATE)):
-        runtime_dir = state_path.parent
-        if runtime_dir.is_symlink() or state_path.is_symlink():
-            continue
-        state = read_record(state_path) or {}
-        deliveries = state.get(TERMINAL_DELIVERIES_KEY)
-        if not isinstance(deliveries, dict):
-            continue
-        pending = [key for key, status in deliveries.items()
-                   if status == 'pending' and key != exclude_key]
-        if not pending:
-            continue
-
-        lock_path = runtime_dir / 'hanjuku_narration.lock'
-        if lock_path.is_symlink():
-            return False
+    for runtime_dir, delivery_key, candidate, identity, speaker in verified:
         try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        except OSError:
-            return False
-        try:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
+            result = webui._enqueue_audio_text(
+                soren_root, candidate['text'], 'hanjuku_terminal',
+                speaker=speaker, delivery_key=delivery_key,
+            )
+            if not isinstance(result, dict) or result.get('ok') is not True:
+                _record_terminal_delivery(runtime_dir, delivery_key, 'pending',
+                                          identity=identity, candidate=candidate, speaker=speaker)
                 return False
-            state = read_record(state_path) or {}
-            deliveries = state.get(TERMINAL_DELIVERIES_KEY)
-            speakers = state.get(TERMINAL_SPEAKERS_KEY)
-            if not isinstance(deliveries, dict):
-                continue
-            if not isinstance(speakers, dict):
-                speakers = {}
-                state[TERMINAL_SPEAKERS_KEY] = speakers
-            pending = [key for key, status in deliveries.items()
-                       if status == 'pending' and key != exclude_key]
-            if not pending:
-                continue
-
-            candidates = [item for item in _tail(runtime_dir / 'hanjuku_commentary.jsonl')
-                          if item.get('terminal_recap')]
-            for delivery_key in pending:
-                candidate = next((item for item in reversed(candidates)
-                                  if _terminal_delivery_key({
-                                      key: item.get(key)
-                                      for key in ('game', 'runtime_id', 'generation', 'lease_id')
-                                  }) == delivery_key), None)
-                if candidate is None:
-                    return False
-                identity = {key: candidate.get(key)
-                            for key in ('game', 'runtime_id', 'generation', 'lease_id')}
-                text = candidate.get('text')
-                if (not isinstance(text, str) or not text.strip()
-                        or len(text) > TERMINAL_MAX_TEXT):
-                    return False
-                try:
-                    run = load(runtime_dir, identity)
-                except Exception:
-                    return False
-                if not run or run.get('terminal_reason') != 'game_over':
-                    return False
-                try:
-                    result = webui._enqueue_audio_text(
-                        soren_root, text, 'hanjuku_terminal',
-                        speaker=str(speakers.get(delivery_key, '') or ''),
-                        delivery_key=delivery_key,
-                    )
-                    if not isinstance(result, dict) or result.get('ok') is not True:
-                        return False
-                except Exception:
-                    # Preserve this result and block later audio from
-                    # overtaking it. The game/corner has already completed.
-                    return False
-
-                deliveries[delivery_key] = 'enqueued'
-                speakers.pop(delivery_key, None)
-                try:
-                    atomic_write_json(state_path, state)
-                except Exception:
-                    # The outbox receipt already committed. Retrying the same
-                    # key after a crash reconciles without a second queue item.
-                    pass
-                try:
-                    append_log(runtime_dir, 'hanjuku_narration', {
-                        'schema': 1, 'at': time.time(), 'seq': candidate.get('seq'),
-                        'key': candidate.get('key'), 'status': 'enqueued', 'text': text,
-                        **identity,
-                    })
-                except Exception:
-                    pass
-        finally:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            finally:
-                os.close(fd)
+        except (TypeError, ValueError, RuntimeError):
+            _record_terminal_delivery(runtime_dir, delivery_key, 'delivery_failed_permanent',
+                                      identity=identity, candidate=candidate)
+            continue
+        except Exception:
+            _record_terminal_delivery(runtime_dir, delivery_key, 'pending',
+                                      identity=identity, candidate=candidate, speaker=speaker)
+            return False
+        _record_terminal_delivery(runtime_dir, delivery_key, 'enqueued',
+                                  identity=identity, candidate=candidate)
     return True
 
 

@@ -2712,6 +2712,14 @@ def test_terminal_delivery_retries_failed_outbox_with_same_run_key(tmp_path, mon
     assert [record['status'] for record in log] == ['delivery_failed', 'enqueued']
 
 
+def _confirmed_hanjuku_terminal(identity):
+    return {
+        **identity, 'terminal_reason': 'game_over', 'frame_sha256': 'a' * 64,
+        'name_entered': True, 'gameplay_seen': True, 'phase': 'title',
+        'title_count': 3, 'title_since': 1.0, 'observed_monotonic': 3.0,
+    }
+
+
 def test_terminal_retry_exhaustion_drains_before_later_audio_after_generation_switch(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from docich.game_switch import atomic_write_json
@@ -2722,8 +2730,7 @@ def test_terminal_retry_exhaustion_drains_before_later_audio_after_generation_sw
     runtime_dir = state_dir / 'runtimes' / identity['runtime_id']
     state_dir.mkdir()
     runtime_dir.mkdir(parents=True)
-    atomic_write_json(runtime_dir / 'hanjuku_run.json',
-                      {**identity, 'terminal_reason': 'game_over'})
+    atomic_write_json(runtime_dir / 'hanjuku_run.json', _confirmed_hanjuku_terminal(identity))
     monkeypatch.setattr('docich.agent.fence.read_canonical', lambda _: {'active': identity})
     monkeypatch.setattr(hanjuku_narration.time, 'sleep', lambda _seconds: None)
     attempts = []
@@ -2761,7 +2768,175 @@ def test_terminal_retry_exhaustion_drains_before_later_audio_after_generation_sw
     log = [json.loads(line) for line in
            (runtime_dir / 'hanjuku_narration.jsonl').read_text().splitlines()]
     assert [record['status'] for record in log] == [
-        'delivery_failed', 'delivery_failed', 'delivery_failed', 'enqueued']
+        'delivery_failed', 'delivery_failed', 'delivery_failed', 'pending', 'enqueued']
+
+
+def test_terminal_candidate_survives_narration_lock_contention_and_generation_switch(tmp_path, monkeypatch):
+    import fcntl
+    import os
+    from types import SimpleNamespace
+    from docich.game_switch import atomic_write_json
+
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g19-lock-busy',
+                'generation': 19, 'lease_id': 'lease-19'}
+    state_dir = tmp_path / 'state'
+    runtime_dir = state_dir / 'runtimes' / identity['runtime_id']
+    state_dir.mkdir()
+    runtime_dir.mkdir(parents=True)
+    atomic_write_json(runtime_dir / 'hanjuku_run.json', _confirmed_hanjuku_terminal(identity))
+    write_candidates(runtime_dir, [{
+        'seq': 1, 'at': time.time(), 'key': 'game_over_recap',
+        'text': 'ロック競合後も残る終了記録です。', 'terminal_recap': True, **identity,
+    }])
+    lock_path = runtime_dir / 'hanjuku_narration.lock'
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        selected = hanjuku_narration.consider(
+            SimpleNamespace(state_dir=state_dir), Game(), runtime_dir, terminal=True,
+        )
+        assert selected is None
+        assert not (runtime_dir / hanjuku_narration.STATE).exists()
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+    active = {**identity, 'generation': 20, 'runtime_id': 'g20-next', 'lease_id': 'lease-20'}
+    monkeypatch.setattr('docich.agent.fence.read_canonical', lambda _: {'active': active})
+    monkeypatch.setattr('docich.trading.soren_output.resolve_soren_root', lambda _g: tmp_path / 'soren')
+    queued = []
+    monkeypatch.setattr(
+        'docich.webui._enqueue_audio_text',
+        lambda root, text, source, speaker='', *, delivery_key='':
+        queued.append((text, source, delivery_key)) or {'ok': True},
+    )
+    g = SimpleNamespace(state_dir=state_dir)
+    assert hanjuku_narration.retry_pending_terminal_deliveries(g)
+    assert queued == [(
+        'ロック競合後も残る終了記録です。', 'hanjuku_terminal',
+        hanjuku_narration._terminal_delivery_key(identity),
+    )]
+    assert not hanjuku_narration.terminal_delivery_pending(runtime_dir, identity)
+
+
+def test_corrupt_terminal_receipt_is_recorded_without_blocking_paper_audio(tmp_path, monkeypatch):
+    import hashlib
+    import subprocess
+    from types import SimpleNamespace
+    from docich import webui
+    from docich.game_switch import atomic_write_json
+    from docich.trading import soren_output
+
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g20-bad-receipt',
+                'generation': 20, 'lease_id': 'lease-20'}
+    state_dir = tmp_path / 'state'
+    runtime_dir = state_dir / 'runtimes' / identity['runtime_id']
+    soren_root = tmp_path / 'soren'
+    queue = soren_root / 'queue'
+    runtime_dir.mkdir(parents=True)
+    atomic_write_json(runtime_dir / 'hanjuku_run.json', _confirmed_hanjuku_terminal(identity))
+    write_candidates(runtime_dir, [{
+        'seq': 1, 'at': time.time(), 'key': 'game_over_recap',
+        'text': '終了結果の固定レシートです。', 'terminal_recap': True, **identity,
+    }])
+    delivery_key = hanjuku_narration._terminal_delivery_key(identity)
+    atomic_write_json(runtime_dir / hanjuku_narration.STATE, {
+        hanjuku_narration.TERMINAL_DELIVERIES_KEY: {delivery_key: 'pending'},
+    })
+    monkeypatch.setenv('COMMENT_QUEUE_DIR', str(queue))
+    receipt_key = hashlib.sha256(f'hanjuku_terminal\0{delivery_key}'.encode()).hexdigest()
+    marker = webui._comment_audio_delivery_dir(soren_root) / receipt_key
+    marker.mkdir(parents=True)
+    (marker / 'receipt.json').write_text('{}', encoding='utf-8')
+    (marker / 'payload').write_text('終了結果の固定レシートです。\n', encoding='utf-8')
+    monkeypatch.setattr('docich.trading.soren_output.resolve_soren_root', lambda _g: soren_root)
+    run_calls = []
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **k:
+                        run_calls.append((a, k)) or SimpleNamespace(returncode=0, stderr=''))
+    g = SimpleNamespace(state_dir=state_dir, repo_root=tmp_path,
+                        webui=SimpleNamespace(soren_root=str(soren_root)))
+
+    soren_output.enqueue_audio_text(g, 'PAPERの通常通知', context='crypto_paper')
+
+    state = json.loads((runtime_dir / hanjuku_narration.STATE).read_text())
+    assert state[hanjuku_narration.TERMINAL_DELIVERIES_KEY][delivery_key] == 'delivery_failed_permanent'
+    log = [json.loads(line) for line in
+           (runtime_dir / 'hanjuku_narration.jsonl').read_text().splitlines()]
+    assert any(record.get('status') == 'delivery_failed_permanent'
+               and record.get('delivery_key') == delivery_key for record in log)
+    assert len(run_calls) == 1
+
+
+def test_missing_terminal_candidate_is_recorded_without_blocking_paper_audio(tmp_path, monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+    from docich.game_switch import atomic_write_json
+    from docich.trading import soren_output
+
+    runtime_dir = tmp_path / 'state' / 'runtimes' / 'g22-missing-candidate'
+    delivery_key = 'hanjuku-terminal:missing-candidate'
+    runtime_dir.mkdir(parents=True)
+    atomic_write_json(runtime_dir / hanjuku_narration.STATE, {
+        hanjuku_narration.TERMINAL_DELIVERIES_KEY: {delivery_key: 'pending'},
+    })
+    monkeypatch.setattr('docich.trading.soren_output.resolve_soren_root', lambda _g: tmp_path / 'soren')
+    run_calls = []
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **k:
+                        run_calls.append((a, k)) or SimpleNamespace(returncode=0, stderr=''))
+    g = SimpleNamespace(state_dir=runtime_dir.parents[1], repo_root=tmp_path,
+                        webui=SimpleNamespace(soren_root=str(tmp_path / 'soren')))
+
+    soren_output.enqueue_audio_text(g, 'PAPERの通常通知', context='crypto_paper')
+
+    state = json.loads((runtime_dir / hanjuku_narration.STATE).read_text())
+    assert state[hanjuku_narration.TERMINAL_DELIVERIES_KEY][delivery_key] == 'delivery_failed_permanent'
+    log = [json.loads(line) for line in
+           (runtime_dir / 'hanjuku_narration.jsonl').read_text().splitlines()]
+    assert log[-1]['delivery_key'] == delivery_key
+    assert log[-1]['status'] == 'delivery_failed_permanent'
+    assert len(run_calls) == 1
+
+
+def test_transient_terminal_outbox_lock_preserves_order_then_retries(tmp_path, monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+    from docich.game_switch import atomic_write_json
+    from docich.trading import soren_output
+
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g21-transient-lock',
+                'generation': 21, 'lease_id': 'lease-21'}
+    state_dir = tmp_path / 'state'
+    runtime_dir = state_dir / 'runtimes' / identity['runtime_id']
+    soren_root = tmp_path / 'soren'
+    runtime_dir.mkdir(parents=True)
+    atomic_write_json(runtime_dir / 'hanjuku_run.json', _confirmed_hanjuku_terminal(identity))
+    write_candidates(runtime_dir, [{
+        'seq': 1, 'at': time.time(), 'key': 'game_over_recap',
+        'text': '競合解消後に届ける結果です。', 'terminal_recap': True, **identity,
+    }])
+    delivery_key = hanjuku_narration._terminal_delivery_key(identity)
+    atomic_write_json(runtime_dir / hanjuku_narration.STATE, {
+        hanjuku_narration.TERMINAL_DELIVERIES_KEY: {delivery_key: 'pending'},
+    })
+    monkeypatch.setattr('docich.trading.soren_output.resolve_soren_root', lambda _g: soren_root)
+    monkeypatch.setattr('docich.webui._enqueue_audio_text',
+                        lambda *a, **k: (_ for _ in ()).throw(BlockingIOError('receipt lock busy')))
+    run_calls = []
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **k:
+                        run_calls.append((a, k)) or SimpleNamespace(returncode=0, stderr=''))
+    g = SimpleNamespace(state_dir=state_dir, repo_root=tmp_path,
+                        webui=SimpleNamespace(soren_root=str(soren_root)))
+
+    with pytest.raises(soren_output.SorenOutputError):
+        soren_output.enqueue_audio_text(g, '次のopening', context='crypto_paper')
+    assert not run_calls
+    assert hanjuku_narration.terminal_delivery_pending(runtime_dir, identity)
+
+    monkeypatch.setattr('docich.webui._enqueue_audio_text',
+                        lambda *a, **k: {'ok': True, 'dedup': False})
+    soren_output.enqueue_audio_text(g, '次のopening', context='crypto_paper')
+    assert len(run_calls) == 1
+    assert not hanjuku_narration.terminal_delivery_pending(runtime_dir, identity)
 
 
 def test_terminal_candidate_waits_for_confirmed_ending_then_retries(tmp_path, monkeypatch):
