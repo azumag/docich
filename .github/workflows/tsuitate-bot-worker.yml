@@ -31,7 +31,7 @@ jobs:
       - name: Install Cloudflare CLI and local runtime dependencies
         run: npm install --no-audit --no-fund
       - name: Build Cloudflare Worker without deploying
-        run: cf build
+        run: ./node_modules/.bin/cf build
       - name: Run protocol fixtures and local workerd integration checks
         run: |
           node --version
