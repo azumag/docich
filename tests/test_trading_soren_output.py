@@ -238,3 +238,20 @@ class TestRuntimeFencedAudio(unittest.TestCase):
             cmd = run.call_args.args[0]
             self.assertEqual(cmd[-3:], ['other', 'soren91', ''])
             self.assertNotIn('"$3"', cmd[2])
+
+    def test_later_audio_does_not_overtake_a_pending_terminal_recap(self):
+        import subprocess
+        from types import SimpleNamespace
+
+        events = []
+        g = SimpleNamespace(state_dir=Path("/state"), repo_root=Path("/repo"))
+        with mock.patch(
+            "docich.hanjuku_narration.retry_pending_terminal_deliveries",
+            side_effect=lambda _g, **_kwargs: events.append("terminal-drain") or False,
+        ), mock.patch.object(soren_output, "resolve_soren_root", return_value=Path("/soren")), \
+             mock.patch.object(subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
+            with self.assertRaises(soren_output.SorenOutputError):
+                soren_output.enqueue_audio_text(g, "次の音声", context="crypto_paper")
+
+        self.assertEqual(events, ["terminal-drain"])
+        run.assert_not_called()

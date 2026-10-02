@@ -1618,17 +1618,20 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
             "bot_identity": identity,
             "end_reason": "manual_forced_stop",
         }
-        # 数値は decision log / run state から算出 (recap と同内容)、
-        # 終了理由は末尾の一文。
-        self.assertEqual(
-            mgr._end_result_text(state, self.now_value),
-            "第3章まで進み、1城を獲得、1回出撃と7回戦闘を重ね、2年7月まで戦いました"
-            "（将軍の解雇1回）。セーブ失敗による強制終了で、今回の挑戦はここまでです。",
-        )
+        # Progress remains grounded in the decision log/run state and the
+        # closing still reflects the actual corner end reason.
+        result = mgr._end_result_text(state, self.now_value)
+        self.assertIn("第3章まで", result)
+        self.assertIn("2年7月まで", result)
+        self.assertIn("出撃1回", result)
+        self.assertIn("戦闘7回", result)
+        self.assertIn("1城の獲得記録", result)
+        self.assertIn("将軍の解雇1回", result)
+        self.assertTrue(result.endswith("セーブ失敗による強制終了で、今回の挑戦はここまでです。"))
         state["end_reason"] = "game_over"
         self.assertTrue(
             mgr._end_result_text(state, self.now_value).endswith(
-                "ゲームオーバーで、今回の挑戦はここまでです。"
+                "タイトル画面への復帰を確認し、今回の挑戦はここまでです。"
             )
         )
         # 開始前の切替失敗では、開始していないのに挑戦は終わったと
@@ -1643,7 +1646,159 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
         fallback = mgr._end_result_text(
             {"game": "hanjuku-hero", "end_reason": "game_over"}, self.now_value
         )
-        self.assertIn("はゲームオーバーになりました", fallback)
+        self.assertIn("タイトル画面への復帰を確認しました", fallback)
+
+
+class TestHanjukuTerminalDelivery(RetroCornerTestBase):
+    def test_corner_finishes_after_retry_exhaustion_with_durable_pending_handoff(self):
+        from contextlib import nullcontext
+        import time
+        from docich import hanjuku_narration
+        from docich.naming import runtime_directory
+
+        identity = {
+            "game": "hanjuku-hero", "runtime_id": "g17-a1b2c3",
+            "generation": 17, "lease_id": "lease-terminal-retry",
+        }
+        mgr, _ = self.manager(["hanjuku-hero"], sleep=lambda _seconds: None)
+        mgr.store.canonical.load = lambda: ({"active": identity}, 0)
+        mgr._rotation_stop_result = lambda: None
+        mgr._locked = lambda: nullcontext()
+        mgr._read_state = lambda: {"status": "active", "game": "hanjuku-hero"}
+        mgr._write_state = lambda _state: None
+        finished = []
+        mgr._finish_locked = lambda state, completed_at: (
+            finished.append(state) or SimpleNamespace(status="completed")
+        )
+
+        runtime_dir = runtime_directory(self.g.state_dir, identity["runtime_id"])
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        recap = {
+            "schema": 1, "seq": 1, "at": time.time(), "key": "game_over_recap",
+            "text": "タイトル画面への復帰までの記録です。", "terminal_recap": True,
+            **identity,
+        }
+        (runtime_dir / "hanjuku_commentary.jsonl").write_text(
+            json.dumps(recap, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+
+        delivered = []
+        outcomes = iter(["delivery_failed", "delivery_failed", "delivery_failed"])
+
+        def deliver(_g, _runtime_dir, item, _speaker, _enqueue, _max_age, *,
+                    terminal=False, before_publish=None):
+            self.assertTrue(terminal)
+            self.assertIsNotNone(before_publish)
+            before_publish()
+            delivered.append((item["text"], hanjuku_narration._terminal_delivery_key(identity)))
+            return next(outcomes)
+
+        observed = []
+
+        class Adapter:
+            def observe(self):
+                observed.append(True)
+                return SimpleNamespace(meta={"hanjuku": {"terminal_reason": "game_over"}})
+
+        game = SimpleNamespace(raw={"hanjuku": {"narration": {"enabled": True}}})
+        with (
+            patch("docich.adapters.make_adapter", return_value=Adapter()),
+            patch("docich.agent.fence.shared_section", side_effect=lambda _path, operation: operation()),
+            patch("docich.retro_corner.load_game", return_value=game),
+            patch.object(hanjuku_narration, "_deliver", side_effect=deliver),
+            patch.object(hanjuku_narration.time, "sleep", lambda _seconds: None),
+            patch("docich.hanjuku_predictions.tick", return_value=None),
+            patch("docich.hanjuku_run.event", return_value=None),
+            patch("docich.hanjuku_run.runtime_identity", return_value=identity),
+            patch("docich.hanjuku_run.terminal", return_value={
+                "terminal_reason": "game_over", "terminal_evidence": "title-return",
+                "generation": identity["generation"],
+            }),
+            patch("docich.hanjuku_chart_review.review", return_value={}),
+        ):
+            result = mgr._wait_hanjuku({"bot_identity": identity, "bot_runtime_id": identity["runtime_id"]})
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(len(delivered), 3)
+        self.assertEqual(len({key for _text, key in delivered}), 1)
+        self.assertEqual(len(finished), 1)
+        self.assertTrue(hanjuku_narration.terminal_delivery_pending(runtime_dir, identity))
+        narration_state = json.loads((runtime_dir / "hanjuku_narration.json").read_text())
+        delivery_key = hanjuku_narration._terminal_delivery_key(identity)
+        self.assertEqual(narration_state[hanjuku_narration.TERMINAL_DELIVERIES_KEY][delivery_key], "pending")
+
+    def test_disabled_narration_does_not_hold_confirmed_game_over(self):
+        from contextlib import nullcontext
+        import time
+        from docich import hanjuku_narration
+        from docich.naming import runtime_directory
+
+        identity = {
+            "game": "hanjuku-hero", "runtime_id": "g18-b4c5d6",
+            "generation": 18, "lease_id": "lease-disabled-narration",
+        }
+        mgr, _ = self.manager(["hanjuku-hero"], sleep=lambda _seconds: None)
+        mgr.store.canonical.load = lambda: ({"active": identity}, 0)
+        mgr._rotation_stop_result = lambda: None
+        mgr._locked = lambda: nullcontext()
+        mgr._read_state = lambda: {"status": "active", "game": "hanjuku-hero"}
+        mgr._write_state = lambda _state: None
+        finished = []
+        mgr._finish_locked = lambda state, completed_at: (
+            finished.append(state) or SimpleNamespace(status="completed")
+        )
+
+        runtime_dir = runtime_directory(self.g.state_dir, identity["runtime_id"])
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        recap = {
+            "schema": 1, "seq": 1, "at": time.time(), "key": "game_over_recap",
+            "text": "タイトル画面への復帰までの記録です。", "terminal_recap": True,
+            **identity,
+        }
+        (runtime_dir / "hanjuku_commentary.jsonl").write_text(
+            json.dumps(recap, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+
+        observed = []
+
+        class Adapter:
+            def observe(self):
+                observed.append(True)
+                return SimpleNamespace(meta={"hanjuku": {"terminal_reason": "game_over"}})
+
+        game = SimpleNamespace(raw={"hanjuku": {"narration": {"enabled": False}}})
+        with (
+            patch("docich.adapters.make_adapter", return_value=Adapter()),
+            patch("docich.agent.fence.shared_section", side_effect=lambda _path, operation: operation()),
+            patch("docich.retro_corner.load_game", return_value=game),
+            patch("docich.hanjuku_predictions.tick", return_value=None),
+            patch("docich.hanjuku_run.event", return_value=None),
+            patch("docich.hanjuku_run.runtime_identity", return_value=identity),
+            patch("docich.hanjuku_run.terminal", return_value={
+                "terminal_reason": "game_over", "terminal_evidence": "title-return",
+                "generation": identity["generation"],
+            }),
+            patch("docich.hanjuku_chart_review.review", return_value={}),
+        ):
+            result = mgr._wait_hanjuku({"bot_identity": identity, "bot_runtime_id": identity["runtime_id"]})
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(len(finished), 1)
+        narration_state = json.loads((runtime_dir / "hanjuku_narration.json").read_text())
+        delivery_key = hanjuku_narration._terminal_delivery_key(identity)
+        self.assertEqual(
+            narration_state[hanjuku_narration.TERMINAL_DELIVERIES_KEY][delivery_key],
+            "disabled",
+        )
+        queued = []
+        with (
+            patch("docich.trading.soren_output.resolve_soren_root", return_value=self.g.repo_root),
+            patch("docich.webui._enqueue_audio_text", side_effect=lambda *a, **k: queued.append((a, k))),
+        ):
+            self.assertTrue(hanjuku_narration.retry_pending_terminal_deliveries(self.g))
+        self.assertEqual(queued, [])
 
 
 class TestRetroCornerTickGuard(RetroCornerTestBase):
