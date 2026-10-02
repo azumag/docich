@@ -1663,7 +1663,8 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha):
     """Read one bounded private journal row; emit only its fixed projection."""
     result = _stream_title_sync_empty("absent")
     path = Path(soren) / "tmp" / "state" / "stream_title_sync.jsonl"
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+             | getattr(os, "O_NONBLOCK", 0))
     try:
         fd = os.open(path, flags)
     except FileNotFoundError:

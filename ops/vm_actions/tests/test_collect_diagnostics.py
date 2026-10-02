@@ -1911,6 +1911,11 @@ class StreamTitleSyncProjectionTests(CollectorFixture):
         result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
         self.assertEqual(result["record_status"], "malformed")
 
+        path.unlink()
+        os.mkfifo(path, 0o600)
+        result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
+        self.assertEqual(result["record_status"], "unreadable")
+
     def test_non_private_journal_is_not_read(self):
         module = load_collector()
         path = self.write_stream_title_sync()

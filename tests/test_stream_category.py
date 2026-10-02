@@ -416,10 +416,6 @@ class TestSpawnMechanics(StreamCategoryTestBase):
                 announce_stream_game(self.g, "nethack")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class StreamTitleSyncSkipObservationTests(StreamCategoryTestBase):
     def test_missing_category_records_fixed_skip_reason(self):
         with mock.patch("docich.stream_category._record_title_sync_skip") as record:
@@ -464,3 +460,7 @@ class StreamTitleSyncSkipObservationTests(StreamCategoryTestBase):
         run.reset_mock()
         _record_title_sync_skip(self.g, "PRIVATE-TITLE")
         run.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()
