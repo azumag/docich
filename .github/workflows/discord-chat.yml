@@ -1,0 +1,36 @@
+name: Discord chat contracts
+
+on:
+  pull_request:
+    paths:
+      - 'src/docich/discord_chat.py'
+      - 'tests/test_discord_chat.py'
+      - 'requirements-discord.txt'
+      - '.github/workflows/discord-chat.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/docich/discord_chat.py'
+      - 'tests/test_discord_chat.py'
+      - 'requirements-discord.txt'
+      - '.github/workflows/discord-chat.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: discord-chat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Install test and optional Discord SDK dependencies
+        run: python3 -m pip install -r requirements-test.txt -r requirements-discord.txt
+      - name: Offline conversation and real SDK construction contracts
+        run: PYTHONPATH=src python3 -m pytest -q tests/test_discord_chat.py
