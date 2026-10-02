@@ -11,7 +11,8 @@ and the alias leaked out:
 - g436 21:33: a defense of アルマムーン read as "only the next chapter has it" and
   advanced a chapter 1 game to chapter 2 cells (v44-v60).
 - g550 frame-034 (the 築城 confirmation) reads
-  「…アルマムーン2キカンドン1…どのしろをぞうちくなさいますか?」.
+  「2ねん2のつき70Gアルマムーン2キカンドン1てきにんしゃはゼウスしょうぐんです
+  などのしろをぞうちくなさいますか?」.
 
 The alias also reached the viewers: the narration said 「どうし将軍をほんじょうから
 キカンドン城へ」 while the screen said アルマムーン, and chapter 1 sortie after sortie

@@ -54,7 +54,7 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
 # Expected on-screen castle labels per chapter (gcgx + charts). Navigation
 # still requires CASTLES; this list documents names for measurement and
 # order encoding. Chapter 1's home castle is アルマムーン on screen too
-# (gcgx 第1話 城情報; g550 frame-034 「アルマムーン…のしろをぞうちくなさいますか?」).
+# (gcgx 第1話 城情報; g550 frame-034 「アルマムーン2キカンドン1…などのしろをぞうちくなさいますか?」).
 CASTLE_NAMES: dict[int, tuple[str, ...]] = {
     1: ('アルマムーン', 'キカンドン', 'ナキューメラ', 'ジョンリギ',
         'ゴーメン', 'スペンソニア', 'カストーラ', 'けっかい'),
@@ -109,7 +109,7 @@ BOSS_CASTLES: dict[int, str] = {
 # writes アルマムーン: gcgx 第1話 城情報 lists アルマムーン as the castle holding
 # 主人公・ゼウス・ヴィーナス・ココット (ほんじょう/本城: 0 hits in the whole page),
 # g436 21:19 read 「アルマムーンじょうステータス」, and g550 frame-034 reads
-# 「アルマムーン…のしろをぞうちくなさいますか?」. The mismatch reached the
+# 「アルマムーン2キカンドン1…などのしろをぞうちくなさいますか?」. The mismatch reached the
 # narration (「どうし将軍をほんじょうから…」) and the chapter detector.
 # Runtime state written before the rename still carries the old label.
 LEGACY_CASTLE_LABELS: dict[str, str] = {'ほんじょう': 'アルマムーン'}
