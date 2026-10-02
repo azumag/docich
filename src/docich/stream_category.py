@@ -21,6 +21,9 @@ from .procs import user_bus_env
 
 SCRIPT_NAME = "update_stream_game.sh"
 LOG_NAME = "stream-game.log"
+TITLE_SYNC_SKIP_REASONS = frozenset({
+    "category_not_configured", "updater_missing", "dispatch_failed",
+})
 
 # ``paper-view`` is a synthetic program view, not a game in ``config/games``.
 # Use Twitch's technology category instead of leaving the category of the game
@@ -172,6 +175,30 @@ def _spawn(argv: list[str], *, cwd: Path, log_path: Path) -> None:
         raise StreamCategoryError(f"{SCRIPT_NAME} を起動できません: {exc}") from exc
 
 
+def _record_title_sync_skip(g: GlobalConfig, reason: str) -> None:
+    """Best-effort fixed-reason event for the owner-only Soren journal."""
+    if reason not in TITLE_SYNC_SKIP_REASONS:
+        return
+    try:
+        root = script_path(g).parent
+        helper = root / "lib" / "stream_title_sync.py"
+        if not helper.is_file():
+            return
+        subprocess.run(
+            [sys.executable, str(helper), "--record-skip", reason],
+            cwd=str(root),
+            env={"PATH": "/usr/bin:/bin"},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        # Diagnostics must never affect a committed game/category transition.
+        return
+
+
 def _announce_explicit_category(
     g: GlobalConfig,
     *,
@@ -190,16 +217,21 @@ def _announce_explicit_category(
         raise StreamCategoryError("TwitchカテゴリIDが不正です")
     script = script_path(g)
     if not script.is_file() or not os.access(script, os.X_OK):
+        _record_title_sync_skip(g, "updater_missing")
         raise StreamCategoryError(f"{SCRIPT_NAME} が見つかりません: {script}")
     argv = [str(script), "--category-id", category_id.strip()]
     if category_name:
         argv.extend(["--category-name", str(category_name)])
     argv.extend(viewer_title_args("paper-view", g))
-    (spawn or _spawn)(
-        argv,
-        cwd=script.parent,
-        log_path=Path(g.state_dir) / "logs" / LOG_NAME,
-    )
+    try:
+        (spawn or _spawn)(
+            argv,
+            cwd=script.parent,
+            log_path=Path(g.state_dir) / "logs" / LOG_NAME,
+        )
+    except Exception:
+        _record_title_sync_skip(g, "dispatch_failed")
+        raise
     return True
 
 
@@ -215,9 +247,11 @@ def announce_stream_game(g: GlobalConfig, game: str, *, spawn=None) -> bool:
     except NameValidationError as exc:
         raise StreamCategoryError(f"ゲーム名が不正です: {exc}") from exc
     if twitch_category(g, game) is None:
+        _record_title_sync_skip(g, "category_not_configured")
         return False
     script = script_path(g)
     if not script.is_file() or not os.access(script, os.X_OK):
+        _record_title_sync_skip(g, "updater_missing")
         raise StreamCategoryError(f"{SCRIPT_NAME} が見つかりません: {script}")
     argv = [
         str(script),
@@ -227,11 +261,15 @@ def announce_stream_game(g: GlobalConfig, game: str, *, spawn=None) -> bool:
         str(Path(g.games_dir).resolve()),
         *viewer_title_args(game, g),
     ]
-    (spawn or _spawn)(
-        argv,
-        cwd=script.parent,
-        log_path=Path(g.state_dir) / "logs" / LOG_NAME,
-    )
+    try:
+        (spawn or _spawn)(
+            argv,
+            cwd=script.parent,
+            log_path=Path(g.state_dir) / "logs" / LOG_NAME,
+        )
+    except Exception:
+        _record_title_sync_skip(g, "dispatch_failed")
+        raise
     return True
 
 

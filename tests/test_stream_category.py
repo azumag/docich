@@ -418,3 +418,49 @@ class TestSpawnMechanics(StreamCategoryTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StreamTitleSyncSkipObservationTests(StreamCategoryTestBase):
+    def test_missing_category_records_fixed_skip_reason(self):
+        with mock.patch("docich.stream_category._record_title_sync_skip") as record:
+            self.assertFalse(announce_stream_game(self.g, "plain", spawn=self._recorder))
+        record.assert_called_once_with(self.g, "category_not_configured")
+        self.assertEqual(self.spawned, [])
+
+    def test_missing_updater_records_fixed_skip_reason(self):
+        with mock.patch("docich.stream_category._record_title_sync_skip") as record:
+            with self.assertRaises(StreamCategoryError):
+                announce_stream_game(self.g, "nethack", spawn=self._recorder)
+        record.assert_called_once_with(self.g, "updater_missing")
+        self.assertEqual(self.spawned, [])
+
+    def test_dispatch_failure_records_fixed_skip_reason_and_preserves_error(self):
+        self._install_script()
+        failure = StreamCategoryError("dispatch failed")
+        with mock.patch("docich.stream_category._record_title_sync_skip") as record:
+            with mock.patch("docich.stream_category._spawn", side_effect=failure):
+                with self.assertRaisesRegex(StreamCategoryError, "dispatch failed"):
+                    announce_stream_game(self.g, "nethack")
+        record.assert_called_once_with(self.g, "dispatch_failed")
+
+    def test_recorder_uses_fixed_cli_reason_and_minimal_environment(self):
+        from docich.stream_category import _record_title_sync_skip
+
+        helper = self.soren / "lib" / "stream_title_sync.py"
+        helper.parent.mkdir()
+        helper.write_text("# test helper\\n", encoding="utf-8")
+        with mock.patch("docich.stream_category.subprocess.run") as run:
+            _record_title_sync_skip(self.g, "dispatch_failed")
+        argv = run.call_args.args[0]
+        kwargs = run.call_args.kwargs
+        self.assertEqual(argv, [sys.executable, str(helper), "--record-skip", "dispatch_failed"])
+        self.assertEqual(kwargs["cwd"], str(self.soren))
+        self.assertEqual(kwargs["env"], {"PATH": "/usr/bin:/bin"})
+        self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertIs(kwargs["stdout"], subprocess.DEVNULL)
+        self.assertIs(kwargs["stderr"], subprocess.DEVNULL)
+        self.assertEqual(kwargs["timeout"], 2)
+        self.assertFalse(kwargs["check"])
+        run.reset_mock()
+        _record_title_sync_skip(self.g, "PRIVATE-TITLE")
+        run.assert_not_called()

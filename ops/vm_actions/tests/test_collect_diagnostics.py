@@ -1807,3 +1807,114 @@ def test_corner_rotation_timer_projection_detects_wrong_target():
         assert result['legacy_timer_alias'] is True
         assert result['legacy_timer_target'] == 'docich-corner-rotation.service'
         assert result['legacy_alias_pair_valid'] is False
+
+
+class StreamTitleSyncProjectionTests(CollectorFixture):
+    def write_stream_title_sync(self, *, occurred_at=None, event="result",
+                                skip_reason="none", youtube="updated",
+                                kick="not_live", run_soren_sha="a" * 40,
+                                extra=None):
+        row = {
+            "occurred_at": occurred_at or time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.now)
+            ),
+            "event": event,
+            "skip_reason": skip_reason,
+            "youtube": youtube,
+            "kick": kick,
+            "soviet_sha": run_soren_sha,
+        }
+        if extra:
+            row.update(extra)
+        path = self.soren / "tmp" / "state" / "stream_title_sync.jsonl"
+        path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+        path.chmod(0o600)
+        return path
+
+    def test_fresh_result_projects_only_fixed_outcomes_and_matching_sha(self):
+        module = load_collector()
+        self.write_stream_title_sync(run_soren_sha="a" * 40)
+        result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
+        self.assertEqual(result["record_status"], "fresh")
+        self.assertEqual(result["event"], "result")
+        self.assertEqual(result["run_soren_sha"], "a" * 40)
+        self.assertTrue(result["same_soren_sha"])
+        self.assertEqual(result["youtube"], "updated")
+        self.assertEqual(result["kick"], "not_live")
+        self.assertNotIn("title", result)
+        self.assertNotIn("token", json.dumps(result).lower())
+
+    def test_category_only_skip_projects_fixed_reason_with_platforms_not_run(self):
+        module = load_collector()
+        self.write_stream_title_sync(
+            event="skipped", skip_reason="category_only",
+            youtube="not_run", kick="not_run", run_soren_sha="b" * 40,
+        )
+        result = module._collect_stream_title_sync(self.soren, self.now, "b" * 40)
+        self.assertEqual(result["record_status"], "fresh")
+        self.assertEqual(result["skip_reason"], "category_only")
+        self.assertEqual(result["youtube"], "not_run")
+        self.assertEqual(result["kick"], "not_run")
+
+    def test_stale_or_mismatched_records_never_project_platform_outcomes(self):
+        module = load_collector()
+        old = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.now - 901))
+        self.write_stream_title_sync(occurred_at=old, run_soren_sha="c" * 40)
+        stale = module._collect_stream_title_sync(self.soren, self.now, "c" * 40)
+        self.assertEqual(stale["record_status"], "stale")
+        self.assertEqual(stale["youtube"], "unknown")
+        self.assertEqual(stale["kick"], "unknown")
+
+        self.write_stream_title_sync(run_soren_sha="c" * 40)
+        mismatch = module._collect_stream_title_sync(self.soren, self.now, "d" * 40)
+        self.assertEqual(mismatch["record_status"], "source_mismatch")
+        self.assertFalse(mismatch["same_soren_sha"])
+        self.assertEqual(mismatch["youtube"], "unknown")
+        self.assertEqual(mismatch["kick"], "unknown")
+
+    def test_extra_fields_and_unknown_outcomes_are_rejected_without_echo(self):
+        module = load_collector()
+        self.write_stream_title_sync(
+            extra={"title": "PRIVATE-TITLE-DO-NOT-EMIT"}
+        )
+        result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
+        self.assertEqual(result["record_status"], "malformed")
+        self.assertNotIn("PRIVATE-TITLE-DO-NOT-EMIT", json.dumps(result))
+
+        self.write_stream_title_sync(youtube="PRIVATE API BODY")
+        result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
+        self.assertEqual(result["record_status"], "malformed")
+        self.assertNotIn("PRIVATE API BODY", json.dumps(result))
+
+    def test_untrusted_file_shapes_are_fixed_statuses_only(self):
+        module = load_collector()
+        path = self.soren / "tmp" / "state" / "stream_title_sync.jsonl"
+        self.assertEqual(
+            module._collect_stream_title_sync(self.soren, self.now, "a" * 40)["record_status"],
+            "absent",
+        )
+        outside = Path(self.tmp.name) / "private-title"
+        outside.write_text("PRIVATE-TITLE-DO-NOT-EMIT")
+        path.symlink_to(outside)
+        result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
+        self.assertEqual(result["record_status"], "unreadable")
+        self.assertNotIn("PRIVATE-TITLE-DO-NOT-EMIT", json.dumps(result))
+
+        path.unlink()
+        path.write_text("x" * (32 * 1024 + 1), encoding="utf-8")
+        path.chmod(0o600)
+        result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
+        self.assertEqual(result["record_status"], "oversized")
+
+        path.write_text('{"partial":true}', encoding="utf-8")
+        path.chmod(0o600)
+        result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
+        self.assertEqual(result["record_status"], "malformed")
+
+    def test_non_private_journal_is_not_read(self):
+        module = load_collector()
+        path = self.write_stream_title_sync()
+        path.chmod(0o644)
+        result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
+        self.assertEqual(result["record_status"], "unreadable")
+        self.assertEqual(result["youtube"], "unknown")
