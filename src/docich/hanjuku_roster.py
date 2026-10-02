@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 MAX_GENERALS = 32
+# hanjuku_house._names_at reads the name column at y=39..151 in steps of 16,
+# so the roster shows this many names at once. A page shorter than this ends
+# on screen and cannot hide a further entry.
+VISIBLE_NAME_ROWS = 8
 # SFC ID0..127 canonical char.csv: candidate wage is not known before payment.
 MAX_RECRUIT_WAGE = 15
 FRESH_TICKS = 400
@@ -165,9 +169,16 @@ def roles(raw):
 
 def invalidate(mem):
     mem.pop('recruit_roster', None)
+    mem.pop('roster_survey_scope', None)
     mem['recruit_roster_recheck'] = True
     if mem.get('house'):
         mem['house']['roster_invalidated'] = True
+
+
+def surveyed(mem):
+    """A completed walk of the current chapter/month roster already exists."""
+    scope = mem.get('roster_survey_scope')
+    return (mem.get('month') is not None and scope == [mem.get('chapter'), mem.get('month')])
 
 
 def begin(mem, state):
@@ -217,7 +228,14 @@ def page(mem, names):
 
 def complete(mem, state):
     receipt = fresh(mem)
-    if (receipt and not state.get('roster_invalidated') and state.get('roster_wrapped')
+    # Measured roster: Down on the final row never wraps the cursor
+    # (tests/test_hanjuku_recruit_roster.py::_month_roster), so the wrap is
+    # not the only proof of a full walk. Reading every listed name on a page
+    # that ends on screen proves there is no further entry; a page still
+    # filling the last row keeps the conservative wrap proof only.
+    whole_page = receipt is not None and len(receipt['names']) < VISIBLE_NAME_ROWS
+    if (receipt and not state.get('roster_invalidated')
+            and (state.get('roster_wrapped') or whole_page)
             and receipt['tick'] == state.get('roster_started')
             and set(receipt['names']) == set(state.get('seen') or ())):
         receipt['complete'] = True
@@ -228,6 +246,7 @@ def complete(mem, state):
         if pending and set(pending) <= set(receipt['names']):
             mem.pop('recruit_payroll_pending', None)
         mem['recruit_roster_recheck'] = False
+        mem['roster_survey_scope'] = [receipt.get('chapter'), receipt.get('month')]
         return True
     mem['recruit_roster_recheck'] = True
     return False
