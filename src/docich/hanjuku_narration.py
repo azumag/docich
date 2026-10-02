@@ -1,11 +1,12 @@
-"""Hanjuku commentary delivery: a non-blocking side channel to the audio queue.
+"""Deliver Hanjuku commentary and durable run-end recaps to the audio queue.
 
-The bot writes candidate lines to the runtime's ``hanjuku_commentary.jsonl``.
-Whichever long-lived process observes the runtime next (agent or corner
-monitor) claims new candidates under a non-blocking file lock and enqueues at
-most one line on a daemon thread through the existing Soren audio queue. It
-never restarts or plays audio itself, never retries, and keeps no backlog:
-stale, repeated or too-frequent lines are skipped and logged.
+Ordinary candidates in ``hanjuku_commentary.jsonl`` remain an opportunistic,
+non-blocking side channel: the observer claims them under a non-blocking file
+lock, enqueues at most one line on a daemon thread, and skips stale, repeated,
+or too-frequent lines. Terminal recaps instead persist a run-scoped handoff in
+the existing narration state before bounded outbox attempts; later audio
+producers retry that handoff ahead of newer audio. This module never plays or
+restarts audio itself.
 """
 from __future__ import annotations
 
@@ -173,11 +174,12 @@ def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age, *
 
 
 def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=None):
-    """Claim new candidates and start at most one enqueue. Never blocks on audio.
+    """Claim ordinary lines asynchronously and hand off a terminal recap.
 
     At a terminal only the ``terminal_recap`` candidate (the game-over recap,
     owner rule 2026-09-28) may be claimed; ordinary lines stay silent so a
-    dying run never narrates stale situations.
+    dying run never narrates stale situations. Its pending receipt is committed
+    before at most three nonblocking terminal outbox attempts.
     """
     cfg = settings(game)
     if not cfg['enabled']:
