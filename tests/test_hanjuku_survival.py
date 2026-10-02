@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest
 from docich import hanjuku_policy as p
-from docich.hanjuku_screen import Battle, Screen
+from docich.hanjuku_screen import Battle, Screen, parse
 from docich.hanjuku_font import TextLine
 from docich.hanjuku_bot import decide
 from test_hanjuku_chart_bot import Canvas
@@ -211,6 +211,21 @@ def command_frame(enabled=(0,1,2), cursor=0):
     return c.frame()
 
 
+def disabled_box_frame(rows, knight_at=None):
+    """The two-row box drawn with disabled (grey) rows, optionally with its knight."""
+    c = Canvas()
+    for y, label in rows:
+        c.text(176, y, label, color=(106, 105, 106))
+    if knight_at is not None:
+        for y in range(knight_at - 8, knight_at + 8):
+            for x in range(152, 166):
+                c.put(x, y, (230, 105, 74))
+    return c.frame()
+
+
+DEFENSE_BOX = ((192, 'たまごをつかう'), (208, 'きりふだ'))
+
+
 def test_all_disabled_commands_scroll_to_hidden_okunote_without_selecting_grey_rows():
     from docich.hanjuku_screen import parse
     c = Canvas()
@@ -231,6 +246,49 @@ def test_all_disabled_commands_scroll_to_hidden_okunote_without_selecting_grey_r
     actions,state=decide(c.frame(),state)
     assert actions==[p.pad('a')]
     assert any(r['decision']=='battle_okunote_select' for r in state['_records'])
+
+
+def test_disabled_two_row_item_box_reads_as_a_battle_menu():
+    # Measured g534 07:51 castle defense: with no たいきゃく row the box is
+    # the two-row one, one row lower, and every row is disabled grey. It used
+    # to read 'unknown', so the bot answered an open rescue menu with a blind
+    # A and never recorded that no rescue exists. Over that 3.8 s episode
+    # どうし fell 40 -> 22 while ロックフォール only went 57 -> 49.
+    screen = parse(disabled_box_frame(DEFENSE_BOX, knight_at=192))
+    assert screen.kind == 'battle_menu'
+    assert screen.disabled_item_box and screen.menu_cursor == 192
+    assert not screen.hidden_battle_commands   # no たいきゃく: never okunote scroll
+    assert screen.text == ''                   # disabled rows are not selectable labels
+
+
+def test_disabled_item_box_still_needs_its_knight_cursor():
+    # Same contract as the three-row box: grey rows alone are not a menu.
+    screen = parse(disabled_box_frame(DEFENSE_BOX))
+    assert not screen.disabled_item_box
+    assert screen.kind == 'unknown'
+
+
+def test_three_row_disabled_box_keeps_the_okunote_scroll():
+    screen = parse(disabled_box_frame(((176, 'たまごをつかう'), (192, 'きりふだ'),
+                                       (208, 'たいきゃく')), knight_at=176))
+    assert screen.hidden_battle_commands
+    assert not screen.disabled_item_box
+    assert screen.kind == 'battle_menu'
+
+
+def test_disabled_defense_box_closes_the_survival_menu_in_one_observation():
+    mem = memory(39, 57)
+    mem['battle'].update(side='defense')
+    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+    actions, state = decide(disabled_box_frame(DEFENSE_BOX, knight_at=192), {'policy': mem})
+    assert state['screen_kind'] == 'battle_menu'
+    # One observation closes the exhausted menu: no blind re-open, and no
+    # down-scroll toward an okunote row this box does not have.
+    assert actions == [p.pad('b')]
+    assert mem['battle']['survival']['exhausted']
+    assert any(r['decision'] == 'battle_survival_unavailable' for r in state['_records'])
+    # Exhausted rescue: the next complete panel goes straight back to melee.
+    assert p.battle_step(battle(mem), mem)[0] == p.pad('a', 3)
 
 
 @pytest.mark.parametrize('labels,winner', [
