@@ -161,7 +161,9 @@ jobs:
       - name: Install test dependencies
         run: python3 -m pip install -r requirements-test.txt
       - name: WebUI mutation guard and authz audit contract
-        run: python3 -m pytest -q tests/test_webui.py
+        run: python3 -m pytest -q tests/test_webui.py tests/test_webui_resources.py tests/test_opencode_go_free_chain.py
+      - name: WebUI resource manifest matches reviewed HTML and defaults
+        run: python3 ops/build_webui_resources.py --check
 
   comment-regressions:
     runs-on: ubuntu-24.04

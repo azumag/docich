@@ -14,13 +14,13 @@ set -euo pipefail
 #     explicitly instead of relying on an ambient value.
 #   - "Unit is active" is not enough to call this done: the operation succeeds
 #     only when the HTML served on the configured local port is byte-identical
-#     to the deployed `INDEX_HTML`.
+#     to the deployed resource HTML (legacy `INDEX_HTML`).
 #   - Output goes to the VM-private exec log. The exit code is the only signal
 #     that reaches the workflow step log; keep these stable:
-#       0   unit reconciled/restarted, active, served HTML == deployed INDEX_HTML
+#       0   unit reconciled/restarted, active, served HTML == deployed resource HTML
 #       10  systemctl restart failed
 #       11  unit not active within the bounded wait
-#       12  deployed INDEX_HTML unreadable, or ExecStart runs another root
+#       12  deployed resource HTML unreadable, or ExecStart runs another root
 #       13  local webui not reachable on the configured port within the wait
 #       14  served HTML stale while ExecStart runs the production root
 #       15  reviewed unit template could not be rendered/installed/reloaded
@@ -121,14 +121,32 @@ hosts = ["127.0.0.1", "localhost"]
 if bind and bind not in hosts and bind not in ("0.0.0.0", "::", "[::]"):
     hosts.append(bind)
 
+from pathlib import Path
+import json
+resources = Path("src/docich/webui_resources")
 try:
-    text = open("src/docich/webui.py", encoding="utf-8").read()
-except OSError:
+    if resources.exists():
+        with (resources / "index.html").open("rb") as stream:
+            html = stream.read(1_000_001)
+        with (resources / "manifest.json").open("rb") as stream:
+            manifest_bytes = stream.read(4097)
+        if len(html) > 1_000_000 or len(manifest_bytes) > 4096:
+            sys.exit(12)
+        manifest = json.loads(manifest_bytes)
+        digest = hashlib.sha256(html)
+        if manifest.get("schema") != 1 or manifest.get("files", {}).get("index.html") != digest.hexdigest():
+            sys.exit(12)
+        expected = digest.digest()
+    else:
+        # Compatibility for older deployments during the loader's initial rollout.
+        with open("src/docich/webui.py", encoding="utf-8") as stream:
+            text = stream.read(4_000_001)
+        match = re.search(r'INDEX_HTML = r"""(.*?)"""', text, re.S)
+        if len(text) > 4_000_000 or not match:
+            sys.exit(12)
+        expected = hashlib.sha256(match.group(1).encode("utf-8")).digest()
+except (OSError, ValueError, TypeError, AttributeError):
     sys.exit(12)
-match = re.search(r'INDEX_HTML = r"""(.*?)"""', text, re.S)
-if not match:
-    sys.exit(12)
-expected = hashlib.sha256(match.group(1).encode("utf-8")).digest()
 
 deadline = time.monotonic() + 6.0
 while True:
@@ -178,7 +196,7 @@ sys.exit(12)
 PY
     ;;
   *)
-    echo "deployed INDEX_HTML is unreadable" >&2
+    echo "deployed resource HTML is unreadable" >&2
     exit 12
     ;;
 esac

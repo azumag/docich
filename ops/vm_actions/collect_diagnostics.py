@@ -3030,7 +3030,23 @@ def _webui_unit_dir():
 
 
 def _webui_deployed_index_digest():
-    """sha256 of INDEX_HTML in the deployed src/docich/webui.py, or None."""
+    """Digest of the deployed resource HTML (legacy inline source if absent)."""
+    resources = PROD_ROOT / "src" / "docich" / "webui_resources"
+    if resources.exists():
+        try:
+            with (resources / "index.html").open("rb") as stream:
+                html = stream.read(WEBUI_MAX_HTML_BYTES + 1)
+            with (resources / "manifest.json").open("rb") as stream:
+                manifest_bytes = stream.read(4097)
+            if len(html) > WEBUI_MAX_HTML_BYTES or len(manifest_bytes) > 4096:
+                return None
+            manifest = json.loads(manifest_bytes)
+            digest = hashlib.sha256(html)
+            if manifest.get("schema") != 1 or manifest.get("files", {}).get("index.html") != digest.hexdigest():
+                return None
+            return digest.digest()
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None
     path = PROD_ROOT / "src" / "docich" / "webui.py"
     try:
         if path.stat().st_size > WEBUI_SOURCE_MAX_BYTES:

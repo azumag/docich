@@ -142,6 +142,29 @@ soviet_now側の全on-air出力guardが適用されています。
 設定探索順は `--config`、`$DOCICH_CONFIG`、
 `config/docich.toml` です。
 
+### WebUIの画面・候補更新
+
+WebUIのHTML・inline JS/CSSは `src/docich/webui_resources/index.html`、表示用の
+既定値・モデル候補は同ディレクトリの `defaults.json` で管理します。編集後に
+`python3 ops/build_webui_resources.py` を実行し、生成された `manifest.json` も
+一緒にレビュー・配布してください。CIでは `--check` で整合性を検証します。
+
+初回のloader導入とbackend APIのPythonコード変更はWebUIの再起動が必要です。
+導入後のresource更新は同じプロセスの次のGETで読み込まれ、画面再読込で反映します。
+mtimeに依存せず有界なファイルの内容ハッシュを照合し、内容が同じなら再解析しません。
+欠落・読取失敗・サイズ超過・不正JSON/値・HTMLの構造不備・manifest不一致では
+HTMLと既定値の最後の正常snapshotを保持します。初回起動に正常版がなければ起動を拒否します。
+`GET /api/health` と `/api/config` の認証済み応答の `resources` に
+`status`（`current` / `last_good`）、採用版の `revision`、固定の `error` を返します。
+HTML応答は `Cache-Control: no-store` と `X-Docich-Resources` を返します。
+HTMLの構造検証は切断等の検知で、JSの意味・構文検証はレビューとテストで行います。
+
+この読込は.envを書き換えません。保存済みchainの順序・paused・overrideが優先され、
+候補パレットは従来どおりdefault/effective/valueの集合です。候補に追加されたモデルを
+保存済みchainへ入れるには画面で明示的に追加・保存します。workerの実効設定変更や
+`/api/reload` のradio/chat向けSIGUSR1とは別の仕組みです。認証・Host/Origin/CSRFと
+backendの処理はresourceから変更できません。
+
 ### 暗号資産 paper trading（初期基盤）
 
 `trading` は通常ゲームの lifecycle とは独立した paper-only の取引基盤です。

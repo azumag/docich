@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import stat
 import subprocess
@@ -184,6 +186,21 @@ class RestartWebuiTests(unittest.TestCase):
             any("ActiveState,SubState,MainPID,ExecMainStartTimestamp" in c for c in calls)
         )
         self.assertFalse(any("--property=ExecStart" in c for c in calls))
+
+    def test_resource_html_matching_deployment_succeeds(self):
+        resources = self.prod / "src/docich/webui_resources"
+        resources.mkdir()
+        html = self.served.read_bytes()
+        (resources / "index.html").write_bytes(html)
+        (resources / "manifest.json").write_text(json.dumps({
+            "schema": 1, "files": {"index.html": hashlib.sha256(html).hexdigest()}
+        }))
+        # No inline Python HTML is needed after the loader migration.
+        (self.prod / "src/docich/webui.py").write_text("# backend only\n")
+        result = self.run_helper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (resources / "index.html").write_bytes(html + b"stale")
+        self.assertEqual(self.run_helper().returncode, 12)
 
     def test_sets_xdg_runtime_dir_for_sessionless_exec(self):
         p = self.run_helper()
