@@ -117,15 +117,16 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
 3. catalogのweather行に`audio_enabled=true`を明示した場合だけ、既存の共有comment queueへ送る。
    原稿は`weather.narration(view)`の13 literal lineをその順で使い、出典・対象日・地点別発表時刻・
    全11地点report digestをitem requestへ保持する。LLMや独自予測を使わない。
-4. producerは現行`soviet_now` main `6e0247263bba3663e83e74caaeddd4cd26cfe555` の
-   `lib/weather_audio_consumer.py`をpinして使う。item keyは実行UUIDとordinalから作り、
+4. producerはconsumer変更PR [#558](https://github.com/azumag/soviet_now/pull/558) のhead
+   `3794a6661c4396c647f38d6b789fc42a91df9458` をsubmoduleでpinして
+   `lib/weather_audio_consumer.py`を使う。item keyは実行UUIDとordinalから作り、
    完全requestをweather owner stateへ先に保存する。最大1項目だけqueueへ置き、再開時は先に
    durable receiptを照会する。同じitemのretryは同一payload/keyに限定し、consumerの永続冪等性に
    任せる。itemが`played`になるまで次のordinalをenqueueしない。
-5. shared consumerがowned playerの全chunkを確認した`played` receiptを全13 itemで返した場合だけ、
-   音声全体を`completed`と記録する。`rejected`/`interrupted`で後続itemを送らない。
-   手動停止・表示期限・GameSwitch遷移では保留中の1 itemだけを既存consumerの`interrupt`で終端化し、
-   再生中のowned playerがqueueから消えるまでGameSwitch復帰を開始しない。他cornerの音声には触れない。
+5. terminal receiptだけではowned player停止完了を意味しない。pinned consumerのdurable
+   `player_stop_confirmed` ackが確認できるまでGameSwitch復帰を進めず、owner再開後も同じackを照会する。
+   queue filenameの消失だけを停止証明に使わない。全chunkを確認した`played` receiptを全13 itemで返した場合だけ
+   音声全体を`completed`と記録する。`rejected`/`interrupted`で後続itemを送らない。他cornerの音声には触れない。
 6. snapshotの有効性は適格性判定、GameSwitch preflight/readiness、放送中の表示再検証で
    確認する。取得失敗は休止とし、鮮度期限が来たらGameSwitchで復帰する。
    合成adapterによる境界待ち、開始rollback、終了後復帰、operator移動のfenceをオフラインで検証した。
@@ -136,7 +137,7 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
 
 - Producer/lifecycle回帰は387 passed、13 deselected、10 subtests passed。13件のloopback HTTP testsはこのsandboxの`PermissionError: [Errno 1] Operation not permitted`でbindできず、CIで確認する。
 - 追加した`tests/test_weather_corner.py`, `tests/test_weather_audio_contract.py`, `tests/test_soren_weather_audio.py`のfocused runは60 passed。
-- Pinned `soviet_now` consumer suiteは20 passed。temporary queue/GameSwitchとdummy playerを使い、実TTS/audio workerを呼ばない。
+- Pinned `soviet_now` consumer suiteは22 passed、3 subtests passed。temporary queue/GameSwitchとdummy playerを使い、実TTS/audio workerを呼ばない。
 - Pinned consumerに対するisolated CLI smokeでenqueue/get/interruptを確認し、`queued` → `queued` → `rejected`を得た。queueは一時ディレクトリで、audio worker/TTSは起動していない。
 - Python compileと`git diff --check`は成功。
 - 現行JMA全国11地点一括取得、実VM、実OBS、実音声、実GameSwitch復帰は未実測。

@@ -69,7 +69,7 @@ class SharedWeatherAudioPort(Protocol):
         """Return that item's queued/terminal receipt, if it exists."""
 
     def interrupt_weather_audio(self, item_key: str) -> Mapping[str, object] | None:
-        """Terminally reject/interrupt one item using the consumer's own fence."""
+        """Interrupt one item and return only after the consumer confirms quiescence."""
 
 
 def item_idempotency_key(execution_id: str, item_index: int) -> str:

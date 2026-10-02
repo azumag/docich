@@ -8,6 +8,7 @@ on:
       - 'src/docich/weather_corner.py'
       - 'src/docich/weather_audio.py'
       - 'src/docich/soren_weather_audio.py'
+      - 'games/soviet_now'
       - 'src/docich/corner_catalog.py'
       - 'src/docich/corner_adapters.py'
       - 'src/docich/corner_boundary.py'
@@ -34,6 +35,7 @@ on:
       - 'src/docich/weather_corner.py'
       - 'src/docich/weather_audio.py'
       - 'src/docich/soren_weather_audio.py'
+      - 'games/soviet_now'
       - 'src/docich/corner_catalog.py'
       - 'src/docich/corner_adapters.py'
       - 'src/docich/corner_boundary.py'
@@ -67,12 +69,14 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          submodules: true
           persist-credentials: false
       - name: Install existing test dependencies
         run: python3 -m pip install -r requirements-test.txt
       - name: Forecast, lifecycle, and GameSwitch contracts
         env:
           PYTHONPATH: src
+          SOVIET_NOW_ROOT: ${{ github.workspace }}/games/soviet_now
         run: python3 -m pytest -q tests/test_weather.py tests/test_weather_program.py tests/test_weather_corner.py tests/test_weather_audio_contract.py tests/test_soren_weather_audio.py tests/test_corner_rotation.py tests/test_corner_rotation_execution.py tests/test_game_switch.py tests/test_round_boundary.py
       - name: Compile and check entrypoint
         run: |

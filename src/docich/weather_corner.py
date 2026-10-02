@@ -362,7 +362,7 @@ class WeatherCornerManager:
             return None
         if (not isinstance(delivery, dict)
                 or delivery.get("execution_id") != state.get("rotation_request_id")
-                or delivery.get("status") not in {"running", "completed", "stopped", "failed"}
+                or delivery.get("status") not in {"running", "stopping", "completed", "stopped", "failed"}
                 or type(delivery.get("next_index")) is not int):
             raise WeatherCornerError("weather audio delivery state is invalid")
         next_index = delivery["next_index"]
@@ -395,6 +395,8 @@ class WeatherCornerManager:
                 raise WeatherCornerError("weather audio request plan mixes forecasts")
         if delivery["status"] == "running" and next_index >= len(requests):
             raise WeatherCornerError("weather audio completion state is invalid")
+        if delivery["status"] == "stopping" and next_index >= len(requests):
+            raise WeatherCornerError("weather audio stop state is invalid")
         if delivery["status"] == "completed" and next_index != len(requests):
             raise WeatherCornerError("weather audio completion state is invalid")
         return delivery
@@ -437,21 +439,21 @@ class WeatherCornerManager:
 
     def _stop_audio_delivery(self, state, reason):
         delivery = self._validate_audio_delivery(state)
-        if delivery is None or delivery["status"] != "running":
+        if delivery is None or delivery["status"] in {"completed", "stopped", "failed"}:
             return
         if self.audio_port is None:
             raise WeatherCornerError("weather audio consumer is unavailable during cancellation")
         index = delivery["next_index"]
         request = delivery["requests"][index]
+        if delivery["status"] == "running":
+            delivery.update(status="stopping", stop_reason=reason, stop_requested_at=self.clock())
+            self._save(state)
+        else:
+            reason = delivery.get("stop_reason", reason)
         try:
-            receipt = self.audio_port.get_weather_audio_receipt(request["item_key"])
+            receipt = self.audio_port.interrupt_weather_audio(request["item_key"])
             if receipt is not None:
                 receipt = validate_weather_audio_receipt(request, receipt)
-                if receipt["status"] == "queued":
-                    receipt = self.audio_port.interrupt_weather_audio(request["item_key"])
-                    if receipt is None:
-                        raise WeatherAudioError("weather item cancellation returned no receipt")
-                    receipt = validate_weather_audio_receipt(request, receipt)
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             raise WeatherCornerError("weather audio item termination is unconfirmed") from exc
         if receipt is not None and receipt["status"] == "played":
@@ -459,9 +461,12 @@ class WeatherCornerManager:
             if delivery["next_index"] == len(delivery["requests"]):
                 delivery.update(status="completed", completed_at=self.clock())
             else:
-                delivery.update(status="stopped", reason=reason)
+                delivery.update(
+                    status="stopped", reason=reason,
+                    quiescence_confirmed_at=self.clock(),
+                )
         else:
-            delivery.update(status="stopped", reason=reason)
+            delivery.update(status="stopped", reason=reason, quiescence_confirmed_at=self.clock())
         self._save(state)
 
     def _advance_audio_delivery(self, state):
@@ -470,6 +475,9 @@ class WeatherCornerManager:
                 self._stop_audio_delivery(state, "audio-disabled")
             return
         delivery = self._prepare_audio_delivery(state)
+        if delivery["status"] == "stopping":
+            self._stop_audio_delivery(state, delivery.get("stop_reason", "resume-stop"))
+            return
         if delivery["status"] != "running":
             return
         index = delivery["next_index"]
@@ -482,8 +490,7 @@ class WeatherCornerManager:
             try:
                 request = validate_weather_audio_request(request, now=self.clock())
             except WeatherAudioError:
-                delivery.update(status="stopped", reason="forecast-expired")
-                self._save(state)
+                self._stop_audio_delivery(state, "forecast-expired")
                 return
             try:
                 receipt = self.audio_port.enqueue_weather_audio(request)
@@ -504,6 +511,14 @@ class WeatherCornerManager:
             if delivery["next_index"] == len(delivery["requests"]):
                 delivery.update(status="completed", completed_at=self.clock())
             self._save(state)
+            return
+        if receipt["status"] in {"rejected", "interrupted"}:
+            delivery.update(
+                status="stopping", stop_reason=f"{receipt['status']}:{receipt['reason']}",
+                stop_requested_at=self.clock(),
+            )
+            self._save(state)
+            self._stop_audio_delivery(state, delivery["stop_reason"])
             return
         delivery.update(status="stopped", reason=f"{receipt['status']}:{receipt['reason']}")
         self._save(state)

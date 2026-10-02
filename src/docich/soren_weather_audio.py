@@ -124,36 +124,56 @@ class SorenWeatherAudioPort:
             raise SharedWeatherAudioError("shared weather item location is ambiguous")
         return candidates[0]
 
+    def _get_quiescence(self, item_key: str) -> dict[str, object]:
+        result = self._run_json("quiescence", item_key)
+        if (not isinstance(result, dict)
+                or type(result.get("schema_version")) is not int
+                or result.get("schema_version") != 1
+                or result.get("item_key") != item_key
+                or type(result.get("quiescent")) is not bool):
+            raise SharedWeatherAudioError("shared consumer returned invalid quiescence state")
+        receipt = result.get("receipt")
+        if receipt is not None and (
+            not isinstance(receipt, dict) or receipt.get("item_key") != item_key
+        ):
+            raise SharedWeatherAudioError("shared consumer quiescence receipt is invalid")
+        return result
+
     def interrupt_weather_audio(self, item_key: str) -> Mapping[str, object] | None:
-        """Interrupt exactly one weather item, then wait for an owned player to exit."""
+        """Cancel one item and require the consumer's durable player-stop acknowledgement."""
         receipt = self.get_weather_audio_receipt(item_key)
-        if receipt is None or receipt.get("status") != "queued":
-            return receipt
-        target = self._target_for_key(item_key)
-        if target is None:
-            # The worker may have completed between get and path lookup.
-            receipt = self.get_weather_audio_receipt(item_key)
-            if receipt is None or receipt.get("status") == "queued":
-                raise SharedWeatherAudioError("queued weather item has no cancellable consumer target")
-            return receipt
+        if receipt is not None and receipt.get("status") == "queued":
+            target = self._target_for_key(item_key)
+            if target is None:
+                receipt = self.get_weather_audio_receipt(item_key)
+                if receipt is None or receipt.get("status") == "queued":
+                    raise SharedWeatherAudioError("queued weather item has no cancellable consumer target")
+            else:
+                try:
+                    result = self._run_json("interrupt", str(target))
+                except SharedWeatherAudioError:
+                    # The consumer may have persisted interruption before its
+                    # response was lost. The durable quiescence query below is
+                    # authoritative and is safe to repeat after owner restart.
+                    pass
+                else:
+                    if not isinstance(result, dict) or result.get("item_key") != item_key:
+                        raise SharedWeatherAudioError("shared weather consumer returned an invalid interrupt receipt")
 
-        result = self._run_json("interrupt", str(target))
-        if not isinstance(result, dict) or result.get("item_key") != item_key:
-            raise SharedWeatherAudioError("shared weather consumer returned an invalid interrupt receipt")
-        if result.get("status") == "queued":
-            raise SharedWeatherAudioError("shared weather consumer did not terminate the item")
-
-        queue = self._shared_queue()
-        playing = queue / (_TARGET_RE.fullmatch(target.name).group(0).rsplit(".", 1)[0] + ".playing")
         deadline = self.monotonic() + self.interrupt_wait_s
-        while playing.exists() or playing.is_symlink():
-            if playing.is_symlink():
-                raise SharedWeatherAudioError("weather player target became unsafe")
+        while True:
+            state = self._get_quiescence(item_key)
+            current = state["receipt"]
+            if state["quiescent"]:
+                return current
+            if current is not None and current.get("status") == "queued":
+                target = self._target_for_key(item_key)
+                if target is None:
+                    raise SharedWeatherAudioError("queued weather item has no cancellable consumer target")
+                try:
+                    self._run_json("interrupt", str(target))
+                except SharedWeatherAudioError:
+                    pass
             if self.monotonic() >= deadline:
-                raise SharedWeatherAudioError("owned weather player did not stop within the bound")
+                raise SharedWeatherAudioError("consumer has not confirmed owned-player quiescence")
             self.sleep(min(0.05, max(0.0, deadline - self.monotonic())))
-
-        final = self.get_weather_audio_receipt(item_key)
-        if final is None or final.get("status") == "queued":
-            raise SharedWeatherAudioError("weather item termination is not durable")
-        return final

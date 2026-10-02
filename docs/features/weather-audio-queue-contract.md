@@ -6,9 +6,10 @@
 
 ## 使用する既存consumer API
 
-docich mainがpinする`soviet_now` `6e0247263bba3663e83e74caaeddd4cd26cfe555` にweather専用の
+このPRはconsumer変更PR [#558](https://github.com/azumag/soviet_now/pull/558) のhead
+`3794a6661c4396c647f38d6b789fc42a91df9458` をsubmoduleでpinし、weather専用の
 `lib/weather_audio_consumer.py` がある。旧`enqueue_audio_text`/本文MD5 dedup/Hanjuku-only fenceは流用しない。
-producerは`enqueue`, `get`, `interrupt` CLIだけを呼び、consumerのweather-specific durable receiptと既存
+producerは`enqueue`, `get`, `interrupt`, `quiescence` CLIを呼び、consumerのweather-specific durable receiptと既存
 `_play_comment_queue` / `say_enqueue.sh` owned player boundaryを使う。Hanjuku・他コメントの動作は変更しない。
 
 ## docich側の値契約
@@ -31,7 +32,7 @@ requestの現在時刻検証は既存weather契約に合わせ、JST上の今日
 1. weather catalog rowの`audio_enabled`は省略時false。audio-off cornerは既存表示/GameSwitch動作のみ実行し、consumer processも呼ばない。
 2. audio-on後、GameSwitch start receiptで確定した同一weather runtime identityと新鮮なsnapshotから13 requestを作り、完全payloadをowner stateへ保存してからitem 00をenqueueする。文面は`weather.narration(view)`のliteral lineそのもの。
 3. 各poll/restartで保存済みitemの`get`を先に呼ぶ。receiptがあればenqueueを繰り返さず検証する。見つからずforecastがまだ有効な場合だけ同じkey・完全に同じpayloadでretryする。consumer側のper-key durable idempotencyが二重publishを防ぐ。
-4. `played`後にだけ次ordinalへ進み、`rejected`/`interrupted`後はそこで止める。manual stop、snapshot expiry、GameSwitch transition時は1 pending itemのみ既存`interrupt`で終端化する。再生中`.playing` targetがqueueから消えたことをbounded waitで確認してからGameSwitch restoreを始める。unknown/failed terminationではrestoreを進めない。
+4. `played`後にだけ次ordinalへ進み、`rejected`/`interrupted`後はそこで止める。manual stop、snapshot expiry、GameSwitch transition時は1 pending itemのみ既存`interrupt`で終端化する。terminal receiptとは別に、pinned consumerのdurable `player_stop_confirmed` ackを照会し、ackがない間は再開後もGameSwitch restoreを進めない。queue filename消失だけをplayer停止の証拠にしない。
 5. 受理済み`queued`は再生完了を意味しない。13 receiptすべてがconsumerから`played`になって初めてdelivery stateが`completed`となる。全itemがcornerのduration/forecast expiry前に終わらない場合は残りを送らずstopped/incompleteのまま終える。
 
 一度に存在するweather queue itemは最大1件。cancel-by-key CLIのないconsumer版に合わせ、adapterはexecution UUID/ordinalに一致するconsumerの規定filenameだけを特定して既存`interrupt` commandへ渡す。helper自身もfilename、sidecar、request digestを再検証するため、別sourceや別itemには操作しない。

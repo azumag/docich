@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -222,6 +224,42 @@ class FakeWeatherAudioPort:
         self.receipts[item_key] = receipt
 
 
+def _pinned_soren_root():
+    configured = os.environ.get("SOVIET_NOW_ROOT")
+    candidates = [Path(configured).expanduser() if configured else None,
+                  ROOT / "games" / "soviet_now"]
+    for candidate in candidates:
+        if candidate is not None and (candidate / "lib" / "weather_audio_consumer.py").is_file():
+            return candidate.resolve()
+    pytest.skip("pinned soviet_now submodule is not available in this checkout")
+
+
+def _gated_real_consumer_wrapper(tmp_path):
+    wrapper = tmp_path / "soren-wrapper" / "lib" / "weather_audio_consumer.py"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text(
+        "import importlib.util, os, sys, time\n"
+        "from pathlib import Path\n"
+        "spec = importlib.util.spec_from_file_location('weather_audio_consumer', os.environ['WEATHER_HELPER_PATH'])\n"
+        "consumer = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(consumer)\n"
+        "monitor = consumer._monitor_runtime_matches\n"
+        "def gated_monitor(canonical, request):\n"
+        "    ready = Path(os.environ['WEATHER_MONITOR_READY'])\n"
+        "    if not ready.exists():\n"
+        "        ready.write_text('ready')\n"
+        "        release = Path(os.environ['WEATHER_MONITOR_RELEASE'])\n"
+        "        deadline = time.monotonic() + 10\n"
+        "        while not release.exists() and time.monotonic() < deadline:\n"
+        "            time.sleep(0.005)\n"
+        "    return monitor(canonical, request)\n"
+        "consumer._monitor_runtime_matches = gated_monitor\n"
+        "raise SystemExit(consumer.main(sys.argv[1:]))\n",
+        encoding="utf-8",
+    )
+    return wrapper
+
+
 def test_weather_catalog_is_disabled_by_default_and_requires_bounded_duration(tmp_path):
     config = tmp_path / "config.toml"
     config.write_text('[corner_rotation]\ncorners=[{id="weather",adapter="weather",game="weather-view"}]\n')
@@ -373,6 +411,133 @@ def test_weather_audio_stops_after_any_non_played_terminal_receipt(
     assert state["audio_delivery"]["status"] == "stopped"
     assert state["audio_delivery"]["reason"] == f"{status}:{reason}"
     assert len(port.enqueued) == 1
+
+
+def test_restore_waits_for_pinned_consumer_stop_ack_after_lost_response_and_resume(
+    tmp_path, monkeypatch,
+):
+    import datetime as dt
+    import docich.weather_corner as weather_corner
+    from docich.soren_weather_audio import SharedWeatherAudioError, SorenWeatherAudioPort
+
+    soren_root = _pinned_soren_root()
+    helper = soren_root / "lib" / "weather_audio_consumer.py"
+    wrapper = _gated_real_consumer_wrapper(tmp_path)
+    queue = tmp_path / "shared-queue"
+    queue.mkdir()
+    fixed = dt.datetime.fromtimestamp(time.time(), dt.timezone.utc).timestamp()
+    g, now, _factory, store, switch = _setup(
+        tmp_path, clock=fixed, boundary_generation=None,
+    )
+    forecast = _weather_audio_view(now[0])
+    monkeypatch.setattr(weather_corner, "read_view", lambda _path, clock=None: forecast)
+    ready = tmp_path / "consumer-monitor-ready"
+    release = tmp_path / "consumer-monitor-release"
+    monkeypatch.setenv("WEATHER_HELPER_PATH", str(helper))
+    monkeypatch.setenv("WEATHER_MONITOR_READY", str(ready))
+    monkeypatch.setenv("WEATHER_MONITOR_RELEASE", str(release))
+    port = SorenWeatherAudioPort(
+        wrapper.parent.parent, g.state_dir, queue_dir=queue,
+        timeout_s=2, interrupt_wait_s=0.12,
+        clock=lambda: now[0],
+    )
+    manager = WeatherCornerManager(
+        g, duration_minutes=1, coordinator=switch, audio_enabled=True,
+        audio_port=port, clock=lambda: now[0],
+    )
+    request_id = str(uuid.uuid4())
+    state = manager._new_state({"request_id": request_id, "selected_at": now[0]})
+    manager._save(state)
+    assert manager._dispatch_start(state) is None
+    delivery = manager._prepare_audio_delivery(state)
+    request = delivery["requests"][0]
+    queued = port.enqueue_weather_audio(request)
+    assert queued["status"] == "queued"
+    item_path = next(queue.glob("*_00_weather_audio_item.txt"))
+    playing_path = item_path.with_suffix(".playing")
+    item_path.rename(playing_path)
+
+    context_path = Path(g.state_dir) / "game_switch.json"
+    helper_env = {
+        **os.environ,
+        "SOREN_ACTIVE_GAME_CONTEXT_FILE": str(context_path),
+        "COMMENT_QUEUE_DIR": str(queue),
+        "ELOOP_LIB_DIR": str(soren_root),
+    }
+    plan = subprocess.run(
+        [sys.executable, str(helper), "plan", "--queue-dir", str(queue),
+         str(playing_path), "1"],
+        cwd=tmp_path, env=helper_env, capture_output=True, text=True,
+    )
+    assert plan.returncode == 0, plan.stderr
+    dummy = tmp_path / "long_lived_dummy.py"
+    dummy.write_text(
+        "import pathlib, sys, time\n"
+        "pathlib.Path(sys.argv[1]).write_text('started')\n"
+        "time.sleep(20)\n",
+        encoding="utf-8",
+    )
+    sentinel = tmp_path / "dummy-player-started"
+    player = subprocess.Popen(
+        [sys.executable, str(wrapper), "play", "--queue-dir", str(queue),
+         str(playing_path), "--", sys.executable, str(dummy), str(sentinel)],
+        cwd=tmp_path, env=helper_env | {
+            "WEATHER_HELPER_PATH": str(helper),
+            "WEATHER_MONITOR_READY": str(ready),
+            "WEATHER_MONITOR_RELEASE": str(release),
+        }, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    deadline = time.monotonic() + 3
+    try:
+        while (not sentinel.exists() or not ready.exists()) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert sentinel.exists() and ready.exists(), "pinned helper did not reach the gated player monitor"
+
+        real_run = port._run_json
+        lost_response = [False]
+
+        def lose_first_interrupt_response(operation, *args):
+            result = real_run(operation, *args)
+            if operation == "interrupt" and not lost_response[0]:
+                lost_response[0] = True
+                raise SharedWeatherAudioError("simulated lost interrupt response")
+            return result
+
+        port._run_json = lose_first_interrupt_response
+        with pytest.raises(WeatherCornerError, match="termination is unconfirmed"):
+            manager._restore(state, end_reason="manual")
+        assert lost_response[0]
+        persisted = manager._read_state()
+        assert persisted["audio_delivery"]["status"] == "stopping"
+        receipt = port.get_weather_audio_receipt(request["item_key"])
+        assert receipt["status"] == "interrupted"
+        assert port._get_quiescence(request["item_key"])["quiescent"] is False
+        assert player.poll() is None and not Path(str(sentinel) + ".completed").exists()
+        canonical, _missing = store.canonical.load()
+        assert canonical["active"]["game"] == "weather-view"
+        assert canonical["active"]["runtime_id"] == state["weather_runtime_identity"]["runtime_id"]
+
+        release.write_text("release", encoding="utf-8")
+        stdout, stderr = player.communicate(timeout=5)
+        assert player.returncode == 74, stderr or stdout
+        assert port._get_quiescence(request["item_key"])["quiescent"] is True
+
+        resumed = WeatherCornerManager(
+            g, duration_minutes=1, coordinator=switch, audio_enabled=True,
+            audio_port=port, clock=lambda: now[0],
+        )
+        resumed_state = resumed._read_state()
+        assert resumed_state["audio_delivery"]["status"] == "stopping"
+        assert resumed._restore(resumed_state, end_reason="manual") == "completed"
+        final = resumed._read_state()
+        assert final["audio_delivery"]["status"] == "stopped"
+        canonical, _missing = store.canonical.load()
+        assert canonical["phase"] == "ready" and canonical["active"]["game"] == "robots"
+    finally:
+        release.write_text("release", encoding="utf-8")
+        if player.poll() is None:
+            player.terminate()
+            player.communicate(timeout=5)
 
 
 def test_weather_runtime_does_not_publish_an_unreviewed_stream_title(tmp_path, monkeypatch):
