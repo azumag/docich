@@ -26,7 +26,7 @@ npm run test:workerd
 
 `test:workerd`は`wrangler.runtime.toml`のtest-only Workerを`wrangler dev --local`で起動し、同じ要求の同時送信、同じrequestIdの別本文競合、storage書込み例外後のSQLite transaction rollback、timeout応答後のlate commit再送を検証します。runtimeが設定compatibility dateに未対応なら、起動エラーに表示された最新対応日へテスト実行中だけ上書きし、その日付を出力します。テスト状態は一時ディレクトリへ保存して終了時に削除し、Cloudflareアカウントやリソースにはアクセスしません。この設定はローカル専用で、deployしないでください。
 
-この検証環境のWrangler 4.119.0/workerdは設定日付`2026-09-21`を拒否し、対応可能な最新日として`2026-08-08`を返しました。4つのworkerd fixtureはその日付を使ったローカルSQLite runtimeで成功しています。したがって、設定日付でのruntime動作と本番環境での動作は未検証です。
+この検証環境のグローバルWrangler 4.119.0/workerdは設定日付`2026-09-21`を拒否し、対応可能な最新日として`2026-08-08`を返しました。ローカルではその日付へoverrideして4つのfixtureが成功しています。一方、GitHub Actionsは通常のnpm installで得たWranglerを使い、overrideなしで設定日付`2026-09-21`のまま4つすべて成功しました。ローカルにあるruntimeとnpm取得版の差はこのように確認できましたが、本番Cloudflare環境の動作は未検証です。
 
 ローカルWorkerを起動する場合はWranglerをインストールし、`wrangler.toml` の `BOT_ID` を手元のBot IDへ置き換えます。`.dev.vars` を作成し、ローカル用の `WEBHOOK_SECRET` を自分で設定してから起動してください。
 
