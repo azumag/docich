@@ -2595,7 +2595,8 @@ def test_recap_body_is_shared_by_chat_summary(tmp_path):
     assert body == '記録では第4章までの経過が確認できます。'
     # Voice and chat use the same recorded story; voice adds its game-over ending.
     assert summarize_recap(tmp_path, {}) == (
-        'game_over_recap', f'{body}ゲームオーバー表示で、今回の挑戦はここまでです。')
+        'game_over_recap', f'{body}タイトル画面への復帰を確認し、今回の挑戦はここまでです。')
+    assert 'ゲームオーバー表示' not in summarize_recap(tmp_path, {})[1]
 
 
 def test_narration_delivers_only_the_game_over_recap_at_terminal(tmp_path, monkeypatch):
@@ -2709,6 +2710,50 @@ def test_terminal_delivery_retries_failed_outbox_with_same_run_key(tmp_path, mon
     log = [json.loads(line) for line in
            (runtime_dir / 'hanjuku_narration.jsonl').read_text().splitlines()]
     assert [record['status'] for record in log] == ['delivery_failed', 'enqueued']
+
+
+def test_terminal_retry_exhaustion_remains_pending_for_next_observation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from docich.game_switch import atomic_write_json
+
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g16-exhausted',
+                'generation': 16, 'lease_id': 'lease-16'}
+    state_dir = tmp_path / 'state'
+    runtime_dir = tmp_path / 'runtime'
+    state_dir.mkdir()
+    runtime_dir.mkdir()
+    atomic_write_json(runtime_dir / 'hanjuku_run.json',
+                      {**identity, 'terminal_reason': 'game_over'})
+    monkeypatch.setattr('docich.agent.fence.read_canonical', lambda _: {'active': identity})
+    monkeypatch.setattr(hanjuku_narration.time, 'sleep', lambda _seconds: None)
+    attempts = []
+
+    def flaky_enqueue(_g, _text, **kwargs):
+        attempts.append(kwargs['delivery_key'])
+        if len(attempts) <= 3:
+            raise OSError('outbox unavailable during bounded retries')
+
+    write_candidates(runtime_dir, [{
+        'seq': 1, 'at': time.time(), 'key': 'game_over_recap',
+        'text': '固定された終了の記録です。', 'terminal_recap': True, **identity,
+    }])
+    g = SimpleNamespace(state_dir=state_dir)
+
+    hanjuku_narration.consider(g, Game(), runtime_dir, terminal=True,
+                               enqueue=flaky_enqueue)
+    assert len(attempts) == 3
+    assert len(set(attempts)) == 1
+    assert hanjuku_narration.terminal_delivery_pending(runtime_dir, identity)
+
+    # A later observer keeps the same frozen candidate and run receipt key.
+    hanjuku_narration.consider(g, Game(), runtime_dir, terminal=True,
+                               enqueue=flaky_enqueue)
+    assert attempts[3] == attempts[0]
+    assert not hanjuku_narration.terminal_delivery_pending(runtime_dir, identity)
+    log = [json.loads(line) for line in
+           (runtime_dir / 'hanjuku_narration.jsonl').read_text().splitlines()]
+    assert [record['status'] for record in log] == [
+        'delivery_failed', 'delivery_failed', 'delivery_failed', 'enqueued']
 
 
 def test_terminal_candidate_waits_for_confirmed_ending_then_retries(tmp_path, monkeypatch):

@@ -377,7 +377,7 @@ _END_CLAUSE = {
 # 終了理由を末尾に置く (音声 recap と同内容、owner rule 2026-09-28)。
 _END_HANJUKU_CLOSING = {
     None: "今回の挑戦はここまでです。",
-    "game_over": "ゲームオーバーで、今回の挑戦はここまでです。",
+    "game_over": "タイトル画面への復帰を確認し、今回の挑戦はここまでです。",
     "screen_stalled": "画面停止のため、今回の挑戦はここまでです。",
     "manual_saved_stop": "セーブして、今回の挑戦はここまでです。",
     "manual_forced_stop": "セーブ失敗による強制終了で、今回の挑戦はここまでです。",
@@ -616,7 +616,10 @@ class RetroCornerManager:
             title = load_game(self.g, title).title
         except Exception:
             pass
-        clause = _END_CLAUSE.get(reason, _END_CLAUSE_DEFAULT)
+        if game == "hanjuku-hero" and reason == "game_over":
+            clause = "タイトル画面への復帰を確認しました"
+        else:
+            clause = _END_CLAUSE.get(reason, _END_CLAUSE_DEFAULT)
         minutes = self._played_minutes(state, completed_at)
         duration = (
             f"。約{minutes}分間お楽しみいただきました" if minutes is not None else ""
@@ -1919,6 +1922,7 @@ class RetroCornerManager:
             not_ready = 0
             run = observation.meta.get('hanjuku') or {}
             runtime_dir = runtime_directory(self.g.state_dir, active['runtime_id'])
+            terminal_handoff_pending = False
             try:
                 from . import hanjuku_narration
                 # Terminal narration is published after observe releases the
@@ -1927,8 +1931,30 @@ class RetroCornerManager:
                 hanjuku_narration.consider(
                     self.g, hanjuku_game, runtime_dir,
                     terminal=bool(run.get('terminal_reason') or run.get('terminal_candidate')))
+                if run.get('terminal_reason') == 'game_over':
+                    terminal_handoff_pending = hanjuku_narration.terminal_delivery_pending(
+                        runtime_dir, owned_identity)
             except Exception:
+                # A confirmed terminal run must not advance while its frozen
+                # recap has not reached the durable shared outbox. The next
+                # observation retries the same candidate and receipt key.
+                try:
+                    from . import hanjuku_narration
+                    terminal_handoff_pending = (
+                        run.get('terminal_reason') == 'game_over'
+                        and hanjuku_narration.terminal_delivery_pending(
+                            runtime_dir, owned_identity)
+                    )
+                except Exception:
+                    terminal_handoff_pending = False
                 print('[hanjuku-narration] status=consider_failed', file=sys.stderr)
+            if terminal_handoff_pending:
+                event(runtime_dir, {
+                    'event': 'terminal_audio_handoff_retry', 'at': time.time(),
+                    'reason': 'durable_outbox_pending',
+                })
+                self._sleep(2.)
+                continue
             # Network side channel runs only AFTER shared_section has released
             # the input gate. It re-verifies durable terminal evidence itself.
             from .hanjuku_predictions import tick as prediction_tick

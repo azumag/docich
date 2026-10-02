@@ -299,6 +299,29 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=No
         os.close(fd)
 
 
+def terminal_delivery_pending(runtime_dir: Path, identity: dict) -> bool:
+    """Whether this confirmed run still needs its frozen recap handed off.
+
+    A bounded in-call retry can exhaust while the shared receipt lock or
+    outbox is temporarily unavailable. Keep the terminal candidate eligible
+    for the next observation so the corner cannot enqueue its next opening
+    ahead of an undelivered result.
+    """
+    candidate = next((item for item in reversed(
+        _tail(runtime_dir / 'hanjuku_commentary.jsonl'))
+        if item.get('terminal_recap')
+        and all(item.get(key) == identity.get(key)
+                for key in ('game', 'runtime_id', 'generation', 'lease_id'))), None)
+    if candidate is None:
+        return False
+    state = read_record(runtime_dir / STATE) or {}
+    deliveries = state.get(TERMINAL_DELIVERIES_KEY)
+    if not isinstance(deliveries, dict):
+        return True
+    status = deliveries.get(_terminal_delivery_key(identity))
+    return status not in {'enqueued', 'skipped:generation_mismatch', 'skipped:too_long'}
+
+
 def delivery_summary(runtime_dir: Path) -> dict:
     """Counts of narration outcomes for this runtime (no text)."""
     counts = {}

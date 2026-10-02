@@ -390,4 +390,4 @@ def summarize_recap(runtime_dir, run_state) -> tuple[str, str]:
     run state); nothing is invented, per the module contract.
     """
     return ('game_over_recap',
-            f'{recap_body(runtime_dir, run_state)}ゲームオーバー表示で、今回の挑戦はここまでです。')
+            f'{recap_body(runtime_dir, run_state)}タイトル画面への復帰を確認し、今回の挑戦はここまでです。')

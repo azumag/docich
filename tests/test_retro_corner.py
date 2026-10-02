@@ -1631,7 +1631,7 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
         state["end_reason"] = "game_over"
         self.assertTrue(
             mgr._end_result_text(state, self.now_value).endswith(
-                "ゲームオーバーで、今回の挑戦はここまでです。"
+                "タイトル画面への復帰を確認し、今回の挑戦はここまでです。"
             )
         )
         # 開始前の切替失敗では、開始していないのに挑戦は終わったと
@@ -1646,7 +1646,80 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
         fallback = mgr._end_result_text(
             {"game": "hanjuku-hero", "end_reason": "game_over"}, self.now_value
         )
-        self.assertIn("はゲームオーバーになりました", fallback)
+        self.assertIn("タイトル画面への復帰を確認しました", fallback)
+
+
+class TestHanjukuTerminalDelivery(RetroCornerTestBase):
+    def test_corner_waits_after_bounded_outbox_retries_until_receipt_is_committed(self):
+        from contextlib import nullcontext
+        import time
+        from docich import hanjuku_narration
+        from docich.naming import runtime_directory
+
+        identity = {
+            "game": "hanjuku-hero", "runtime_id": "g17-a1b2c3",
+            "generation": 17, "lease_id": "lease-terminal-retry",
+        }
+        mgr, _ = self.manager(["hanjuku-hero"], sleep=lambda _seconds: None)
+        mgr.store.canonical.load = lambda: ({"active": identity}, 0)
+        mgr._rotation_stop_result = lambda: None
+        mgr._locked = lambda: nullcontext()
+        mgr._read_state = lambda: {"status": "active", "game": "hanjuku-hero"}
+        mgr._write_state = lambda _state: None
+        finished = []
+        mgr._finish_locked = lambda state, completed_at: (
+            finished.append(state) or SimpleNamespace(status="completed")
+        )
+
+        runtime_dir = runtime_directory(self.g.state_dir, identity["runtime_id"])
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        recap = {
+            "schema": 1, "seq": 1, "at": time.time(), "key": "game_over_recap",
+            "text": "タイトル画面への復帰までの記録です。", "terminal_recap": True,
+            **identity,
+        }
+        (runtime_dir / "hanjuku_commentary.jsonl").write_text(
+            json.dumps(recap, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+
+        delivered = []
+        outcomes = iter(["delivery_failed", "delivery_failed", "delivery_failed", "enqueued"])
+
+        def deliver(_g, _runtime_dir, item, _speaker, _enqueue, _max_age, *, terminal=False):
+            self.assertTrue(terminal)
+            delivered.append((item["text"], hanjuku_narration._terminal_delivery_key(identity)))
+            return next(outcomes)
+
+        observed = []
+
+        class Adapter:
+            def observe(self):
+                observed.append(True)
+                return SimpleNamespace(meta={"hanjuku": {"terminal_reason": "game_over"}})
+
+        game = SimpleNamespace(raw={"hanjuku": {"narration": {"enabled": True}}})
+        with (
+            patch("docich.adapters.make_adapter", return_value=Adapter()),
+            patch("docich.agent.fence.shared_section", side_effect=lambda _path, operation: operation()),
+            patch("docich.retro_corner.load_game", return_value=game),
+            patch.object(hanjuku_narration, "_deliver", side_effect=deliver),
+            patch.object(hanjuku_narration.time, "sleep", lambda _seconds: None),
+            patch("docich.hanjuku_predictions.tick", return_value=None),
+            patch("docich.hanjuku_run.event", return_value=None),
+            patch("docich.hanjuku_run.runtime_identity", return_value=identity),
+            patch("docich.hanjuku_run.terminal", return_value={
+                "terminal_reason": "game_over", "terminal_evidence": "title-return",
+                "generation": identity["generation"],
+            }),
+            patch("docich.hanjuku_chart_review.review", return_value={}),
+        ):
+            result = mgr._wait_hanjuku({"bot_identity": identity, "bot_runtime_id": identity["runtime_id"]})
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(len(observed), 2)
+        self.assertEqual(len(delivered), 4)  # 3 failed attempts, then the same run is retried
+        self.assertEqual(len({key for _text, key in delivered}), 1)
+        self.assertEqual(len(finished), 1)
 
 
 class TestRetroCornerTickGuard(RetroCornerTestBase):
