@@ -1826,7 +1826,8 @@ class StreamTitleSyncProjectionTests(CollectorFixture):
         }
         if extra:
             row.update(extra)
-        path = self.soren / "tmp" / "state" / "stream_title_sync.jsonl"
+        path = self.soren / "tmp" / "state" / "stream_title_sync" / "events.jsonl"
+        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         path.write_text(json.dumps(row) + "\n", encoding="utf-8")
         path.chmod(0o600)
         return path
@@ -1888,13 +1889,14 @@ class StreamTitleSyncProjectionTests(CollectorFixture):
 
     def test_untrusted_file_shapes_are_fixed_statuses_only(self):
         module = load_collector()
-        path = self.soren / "tmp" / "state" / "stream_title_sync.jsonl"
+        path = self.soren / "tmp" / "state" / "stream_title_sync" / "events.jsonl"
         self.assertEqual(
             module._collect_stream_title_sync(self.soren, self.now, "a" * 40)["record_status"],
             "absent",
         )
         outside = Path(self.tmp.name) / "private-title"
         outside.write_text("PRIVATE-TITLE-DO-NOT-EMIT")
+        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         path.symlink_to(outside)
         result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
         self.assertEqual(result["record_status"], "unreadable")
@@ -1915,6 +1917,47 @@ class StreamTitleSyncProjectionTests(CollectorFixture):
         os.mkfifo(path, 0o600)
         result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
         self.assertEqual(result["record_status"], "unreadable")
+
+    def test_parent_directory_symlinks_are_rejected(self):
+        module = load_collector()
+        outside = Path(self.tmp.name) / "outside"
+        event_dir = outside / "state" / "stream_title_sync"
+        event_dir.mkdir(parents=True)
+        event_dir.chmod(0o700)
+        row = {
+            "occurred_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.now)),
+            "event": "result",
+            "skip_reason": "none",
+            "youtube": "updated",
+            "kick": "updated",
+            "soviet_sha": "a" * 40,
+        }
+        (event_dir / "events.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+        (event_dir / "events.jsonl").chmod(0o600)
+
+        tmp_dir = self.soren / "tmp"
+        saved_tmp = self.soren / "tmp.saved"
+        tmp_dir.rename(saved_tmp)
+        tmp_dir.symlink_to(outside, target_is_directory=True)
+        try:
+            result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
+            self.assertEqual(result["record_status"], "unreadable")
+            self.assertEqual(result["youtube"], "unknown")
+        finally:
+            tmp_dir.unlink()
+            saved_tmp.rename(tmp_dir)
+
+        state_dir = self.soren / "tmp" / "state"
+        saved_state = self.soren / "tmp" / "state.saved"
+        state_dir.rename(saved_state)
+        state_dir.symlink_to(outside / "state", target_is_directory=True)
+        try:
+            result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
+            self.assertEqual(result["record_status"], "unreadable")
+            self.assertEqual(result["youtube"], "unknown")
+        finally:
+            state_dir.unlink()
+            saved_state.rename(state_dir)
 
     def test_non_private_journal_is_not_read(self):
         module = load_collector()

@@ -371,12 +371,13 @@ diagnostics で直接確認できる。`tmux -L <server> list-sessions` は read
 
 ## YouTube / Kick title sync の read-only 投影
 
-`stream_title_sync` は Soren の `tmp/state/stream_title_sync.jsonl` を最大32KiBだけ読み、
-最新レコードの厳密な項目・固定enum・時刻・SHAを検証する。出力するのは時刻、年齢、
-記録イベント、実行時Soren SHAと現在のgitlink SHA一致、固定skip reason、YouTube/Kickの
-固定結果enumだけ。追加フィールド、不正enum、symlink、owner-onlyでないファイル、過大・
-不完全・古い記録は結果を公開せず固定状態として返す。新しい状態項目はdiagnosticの
-overall severityに影響しない。
+`stream_title_sync` は Soren の `tmp/state/stream_title_sync/events.jsonl` を最大32KiBだけ読み、
+親の`tmp` / `state` / 専用journal directoryと末尾ファイルの各segmentをdirfd + nofollowで開き、
+専用directory・regular fileのowner/mode、最大32KiB、最新レコードの厳密schema・固定enum・
+時刻・SHAを検証する。出力するのは時刻、年齢、記録イベント、実行時Soren SHAと現在の
+gitlink SHA一致、固定skip reason、YouTube/Kickの固定結果enumだけ。追加フィールド、
+不正enum、親/末尾symlink、owner-onlyでないdirectory/file、過大・不完全・古い記録は結果を
+公開せず固定状態として返す。新しい状態項目はdiagnosticのoverall severityに影響しない。
 
 `event=skipped` は `skip_reason` が示す早期終了を表し、両platformは `not_run`。
 `event=started` のままならhelper開始後に結果行が残らなかった状態。

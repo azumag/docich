@@ -1660,18 +1660,53 @@ def _stream_title_sync_unique_object(pairs):
 
 
 def _collect_stream_title_sync(soren, now, expected_soren_sha):
-    """Read one bounded private journal row; emit only its fixed projection."""
+    """Read one bounded private journal row without following parent symlinks."""
     result = _stream_title_sync_empty("absent")
-    path = Path(soren) / "tmp" / "state" / "stream_title_sync.jsonl"
-    flags = (os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-             | getattr(os, "O_NONBLOCK", 0))
+    dir_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    file_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    dir_fds = []
+    fd = None
     try:
-        fd = os.open(path, flags)
+        current_fd = os.open(soren, dir_flags)
+        dir_fds.append(current_fd)
+        info = os.fstat(current_fd)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+            result["record_status"] = "unreadable"
+            return result
+        for name, private in (("tmp", False), ("state", False), ("stream_title_sync", True)):
+            current_fd = os.open(name, dir_flags, dir_fd=current_fd)
+            dir_fds.append(current_fd)
+            info = os.fstat(current_fd)
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.getuid()
+                or (private and info.st_mode & 0o077)
+            ):
+                result["record_status"] = "unreadable"
+                return result
+        fd = os.open("events.jsonl", file_flags, dir_fd=current_fd)
     except FileNotFoundError:
         return result
     except OSError:
         result["record_status"] = "unreadable"
         return result
+    finally:
+        for dir_fd in reversed(dir_fds):
+            try:
+                os.close(dir_fd)
+            except OSError:
+                pass
+
     try:
         info = os.fstat(fd)
         if (
@@ -1783,7 +1818,6 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha):
     result["youtube"] = youtube
     result["kick"] = kick
     return result
-
 
 
 def _collect_meta(soren, now):
