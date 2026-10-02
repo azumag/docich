@@ -44,4 +44,4 @@ npm run dev:cf
 - `BOT_ID` は差し替え用placeholder、`WEBHOOK_SECRET` は値を含まないSecret binding宣言です。実値をソース、ログ、Issue、PRへ書かないでください。ローカル値はGit管理外の`.dev.vars`、将来の本番Secretは別途ユーザーが設定します。
 - 実Cloudflareリソースの作成、デプロイ、Secret設定、サイト `https://tsuitateviewer.web.app/` へのBot登録、実対局はまだ行っていません。
 
-この構成ではCloudflareの実アカウントへ接続せずに fixture とローカルworkerd統合テストを実行できます。Cfの `build` はWrangler 4.136以降を要求します。この検証環境には4.119.0しかなく、npmレジストリ接続も名前解決エラーだったため、Cf buildの成功は未確認です。Cf/ Wrangler依存をインストール後、ローカルで `cf build` を確認してください。
+この構成ではCloudflareの実アカウントへ接続せず、fixtureとローカルworkerd統合テストを実行できます。ローカルの `cf build` は、環境のWrangler 4.119.0が必要な4.136.0未満で、npmレジストリも名前解決できず未検証です。一方、PR #1550のコード・設定commit `fda7ff4` は [Cloudflare Worker CI run 37054256586](https://github.com/azumag/docich/actions/runs/37054256586) で依存のインストール、`cf build`、fixture、workerd統合テストが成功しました。このrunのbuildログは `Build complete` を示しますが、生成物はartifactとして保存されていません。`test/cloudflare-config.test.js` は `GameState` のSQLite exportとself `GAME_STATE` bindingの設定形を検証し、Worker entrypointのexportテストも通過していますが、ビルド後bundleそのものは直接確認していません。4つのworkerd統合テストは `wrangler.runtime.toml` のtest-only Worker/configで実行し、Cf buildの生成物は使用しません。CIのbuild成功はCloudflareへのdeployや実アカウント上の動作を示すものではありません。
