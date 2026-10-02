@@ -70,6 +70,8 @@ _BROWSER_NAMES = (
     "/snap/bin/chromium",
 )
 _POLL_INTERVAL_S = 0.5
+MANIFEST_REFRESH_INTERVAL_S = 1.0
+MAX_PROCESS_GROUP_MEMBERS = 128
 # Give cold Chromium startup time under Xvfb. The parent presentation process
 # must outlive this wait so it can observe either the browser or TTY fallback.
 BROWSER_WINDOW_WAIT_S = 20.0
@@ -119,6 +121,7 @@ def _proc_identity(pid: int) -> dict[str, int | str] | None:
     try:
         fields = raw[raw.rfind(")") + 2 :].split()
         return {
+            "pid": pid,
             "state": fields[0],
             "pgid": int(fields[2]),
             "sid": int(fields[3]),
@@ -157,14 +160,16 @@ def stop_manifest_process_group(
     pgid: int,
     *,
     deadline: float,
+    saved_members: object = None,
     cancel=None,
 ) -> bool:
     """Stop one manifest-owned private group after revalidating its identity.
 
     Each browser/TTY child starts a new session, so its PID, PGID and SID are
     the same. A current PID with a different start time is a recycled PID and
-    is never signalled. If its leader exited but members remain, their PGID
-    and SID still identify the isolated session recorded by the manifest.
+    is never signalled. If its leader exited, at least one current live member
+    must still match a PID/start-time/PGID/SID identity saved while the group
+    leader was owned. A same-numbered replacement group alone is not proof.
     """
     if (
         type(pid) is not int or pid <= 1
@@ -194,9 +199,32 @@ def stop_manifest_process_group(
                 and root.get("pgid") == pgid
                 and root.get("sid") == pgid
             )
-        # A missing leader is safe only while the saved isolated group still
-        # has members. If the whole group is gone, there is nothing to signal.
-        return bool(group)
+        if (
+            not isinstance(saved_members, list)
+            or not 1 <= len(saved_members) <= MAX_PROCESS_GROUP_MEMBERS
+        ):
+            return False
+        saved = set()
+        for member in saved_members:
+            if not isinstance(member, dict):
+                return False
+            member_pid = member.get("pid")
+            member_start_ticks = member.get("start_ticks")
+            if (
+                type(member_pid) is not int or member_pid <= 1
+                or type(member_start_ticks) is not int or member_start_ticks <= 0
+                or member.get("pgid") != pgid
+                or member.get("sid") != pgid
+            ):
+                return False
+            saved.add((member_pid, member_start_ticks))
+        # The snapshot must include the original leader, then at least one
+        # current live process must match a saved identity from this group.
+        return (pid, start_ticks) in saved and any(
+            member.get("state") != "Z"
+            and (member.get("pid"), member.get("start_ticks")) in saved
+            for member in group
+        )
 
     remaining = running_members()
     if remaining is None:
@@ -353,8 +381,10 @@ class NethackTilesSupervisor:
         self._tty: subprocess.Popen | None = None
         self._browser_start_ticks: int | None = None
         self._browser_pgid: int | None = None
+        self._browser_members: list[dict[str, int]] = []
         self._tty_start_ticks: int | None = None
         self._tty_pgid: int | None = None
+        self._tty_members: list[dict[str, int]] = []
         self._profile_path = self.runtime_dir / "nethack-tiles-profile"
         self._presentation_epoch = f"p-{uuid4().hex}"
         self._previous_manifest = _load_json(self.manifest_path)
@@ -368,6 +398,8 @@ class NethackTilesSupervisor:
         self._write_manifest()
 
     def _write_manifest(self, *, cleanup_complete: bool = False) -> None:
+        self._refresh_process_members(browser=True)
+        self._refresh_process_members(browser=False)
         payload: dict[str, object] = {
             "schema_version": MANIFEST_SCHEMA_VERSION,
             "status": self._status,
@@ -383,14 +415,93 @@ class NethackTilesSupervisor:
             "browser_pid": self._browser.pid if self._browser is not None else None,
             "browser_start_ticks": self._browser_start_ticks,
             "browser_pgid": self._browser_pgid,
+            "browser_members": self._manifest_members(self._browser, self._browser_members),
             "tty_pid": self._tty.pid if self._tty is not None else None,
             "tty_start_ticks": self._tty_start_ticks,
             "tty_pgid": self._tty_pgid,
+            "tty_members": self._manifest_members(self._tty, self._tty_members),
             "reason": self._reason if self._reason in FAILURE_REASONS else None,
             "updated_at": time.time(),
             "cleanup_complete": cleanup_complete,
         }
         atomic_write_json(self.manifest_path, payload)
+
+    @staticmethod
+    def _manifest_members(
+        process: subprocess.Popen | None,
+        members: list[dict[str, int]],
+    ) -> list[dict[str, int]] | None:
+        return members if process is not None else None
+
+    def _refresh_process_members(self, *, browser: bool) -> None:
+        process = self._browser if browser else self._tty
+        pgid = self._browser_pgid if browser else self._tty_pgid
+        start_ticks = self._browser_start_ticks if browser else self._tty_start_ticks
+        if process is None or pgid is None:
+            return
+        current = _proc_group_members(pgid)
+        if current is None:
+            return
+        identities = self._browser_members if browser else self._tty_members
+        seen = {(member["pid"], member["start_ticks"]) for member in identities}
+        root = _proc_identity(process.pid)
+        if root is not None:
+            if not (
+                root
+                and root.get("start_ticks") == start_ticks
+                and root.get("pgid") == pgid
+                and root.get("sid") == pgid
+            ):
+                return
+        elif not any(
+            member.get("state") != "Z"
+            and (member.get("pid"), member.get("start_ticks")) in seen
+            for member in current
+        ):
+            # Do not learn identities from a same-numbered replacement group
+            # after both the owned leader and every previously seen member
+            # have disappeared.
+            return
+        for member in current:
+            member_pid = member.get("pid")
+            member_start_ticks = member.get("start_ticks")
+            if type(member_pid) is not int or type(member_start_ticks) is not int:
+                continue
+            key = (member_pid, member_start_ticks)
+            if key not in seen:
+                identities.append(
+                    {
+                        "pid": member_pid,
+                        "start_ticks": member_start_ticks,
+                        "pgid": pgid,
+                        "sid": pgid,
+                    }
+                )
+                seen.add(key)
+        if type(start_ticks) is int and start_ticks > 0:
+            root = {
+                "pid": process.pid,
+                "start_ticks": start_ticks,
+                "pgid": pgid,
+                "sid": pgid,
+            }
+            root_key = (process.pid, start_ticks)
+            if root_key not in seen:
+                identities.insert(0, root)
+        if len(identities) > MAX_PROCESS_GROUP_MEMBERS:
+            root_key = (process.pid, start_ticks)
+            root = next(
+                (
+                    member
+                    for member in identities
+                    if (member["pid"], member["start_ticks"]) == root_key
+                ),
+                None,
+            )
+            recent = [member for member in identities if member is not root]
+            identities[:] = ([root] if root is not None else []) + recent[
+                -(MAX_PROCESS_GROUP_MEMBERS - 1):
+            ]
 
     def _record_process_identity(self, process: subprocess.Popen, *, browser: bool) -> None:
         start_ticks = _proc_start_ticks(process.pid)
@@ -401,17 +512,23 @@ class NethackTilesSupervisor:
         if browser:
             self._browser_start_ticks = start_ticks
             self._browser_pgid = pgid
+            self._browser_members = []
+            self._refresh_process_members(browser=True)
         else:
             self._tty_start_ticks = start_ticks
             self._tty_pgid = pgid
+            self._tty_members = []
+            self._refresh_process_members(browser=False)
 
     def _clear_process_identity(self, *, browser: bool) -> None:
         if browser:
             self._browser_start_ticks = None
             self._browser_pgid = None
+            self._browser_members = []
         else:
             self._tty_start_ticks = None
             self._tty_pgid = None
+            self._tty_members = []
 
     def _load_state(self) -> dict[str, object]:
         store = GameSwitchStore(self.state_dir)
@@ -771,6 +888,7 @@ class NethackTilesSupervisor:
 
     def run(self) -> int:
         result = 0
+        manifest_refresh_at = self._clock() + MANIFEST_REFRESH_INTERVAL_S
         try:
             try:
                 self._start_frame_service()
@@ -783,18 +901,19 @@ class NethackTilesSupervisor:
                     result = 1
             while not self._stop.wait(_POLL_INTERVAL_S):
                 reason = self._failure_reason()
-                if reason is None:
-                    continue
-                if self._status == "tiles_active":
+                if reason is not None and self._status == "tiles_active":
                     if not self._fallback(reason):
                         result = 1
                         break
-                    continue
-                self._status = "failed"
-                self._reason = reason
-                self._write_manifest()
-                result = 1
-                break
+                elif reason is not None:
+                    self._status = "failed"
+                    self._reason = reason
+                    self._write_manifest()
+                    result = 1
+                    break
+                if self._clock() >= manifest_refresh_at:
+                    self._write_manifest()
+                    manifest_refresh_at = self._clock() + MANIFEST_REFRESH_INTERVAL_S
         except Exception:
             self._status = "failed"
             self._reason = "startup_failed"

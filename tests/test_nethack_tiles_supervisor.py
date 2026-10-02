@@ -302,6 +302,167 @@ class NethackTilesSupervisorTests(unittest.TestCase):
             )
             killpg.assert_not_called()
 
+    def test_manifest_group_rejects_reused_session_when_leader_is_gone(self):
+        saved_members = [
+            {"pid": 34567, "start_ticks": 100, "pgid": 34567, "sid": 34567},
+            {"pid": 34568, "start_ticks": 200, "pgid": 34567, "sid": 34567},
+        ]
+        replacement_member = {
+            "pid": 34569,
+            "state": "S",
+            "start_ticks": 300,
+            "pgid": 34567,
+            "sid": 34567,
+        }
+        with (
+            mock.patch("docich.nethack_tiles_supervisor._proc_identity", return_value=None),
+            mock.patch(
+                "docich.nethack_tiles_supervisor._proc_group_members",
+                side_effect=[[replacement_member], [replacement_member]],
+            ),
+            mock.patch("docich.nethack_tiles_supervisor.os.killpg") as killpg,
+        ):
+            from docich.nethack_tiles_supervisor import stop_manifest_process_group
+
+            self.assertFalse(
+                stop_manifest_process_group(
+                    34567,
+                    100,
+                    34567,
+                    deadline=time.monotonic() + 1,
+                    saved_members=saved_members,
+                )
+            )
+            killpg.assert_not_called()
+
+    def test_manifest_group_continues_only_for_a_saved_live_member(self):
+        saved_members = [
+            {"pid": 34567, "start_ticks": 100, "pgid": 34567, "sid": 34567},
+            {"pid": 34568, "start_ticks": 200, "pgid": 34567, "sid": 34567},
+        ]
+        saved_child = {
+            "pid": 34568,
+            "state": "S",
+            "start_ticks": 200,
+            "pgid": 34567,
+            "sid": 34567,
+        }
+        with (
+            mock.patch("docich.nethack_tiles_supervisor._proc_identity", return_value=None),
+            mock.patch(
+                "docich.nethack_tiles_supervisor._proc_group_members",
+                side_effect=[[saved_child], [saved_child], []],
+            ),
+            mock.patch("docich.nethack_tiles_supervisor.os.killpg") as killpg,
+        ):
+            from docich.nethack_tiles_supervisor import stop_manifest_process_group
+
+            self.assertTrue(
+                stop_manifest_process_group(
+                    34567,
+                    100,
+                    34567,
+                    deadline=time.monotonic() + 1,
+                    saved_members=saved_members,
+                )
+            )
+            killpg.assert_called_once_with(34567, signal.SIGTERM)
+
+    def test_manifest_refresh_does_not_adopt_a_reused_group(self):
+        supervisor = self.supervisor()
+        browser = _FakeProcess()
+        supervisor._browser = browser
+        supervisor._browser_start_ticks = 100
+        supervisor._browser_pgid = browser.pid
+        original_members = [
+            {"pid": browser.pid, "start_ticks": 100, "pgid": browser.pid, "sid": browser.pid},
+            {"pid": browser.pid + 1, "start_ticks": 200, "pgid": browser.pid, "sid": browser.pid},
+        ]
+        supervisor._browser_members = list(original_members)
+        replacement_member = {
+            "pid": browser.pid + 2,
+            "state": "S",
+            "start_ticks": 300,
+            "pgid": browser.pid,
+            "sid": browser.pid,
+        }
+        with (
+            mock.patch("docich.nethack_tiles_supervisor._proc_identity", return_value=None),
+            mock.patch(
+                "docich.nethack_tiles_supervisor._proc_group_members",
+                return_value=[replacement_member],
+            ),
+        ):
+            supervisor._refresh_process_members(browser=True)
+        self.assertEqual(supervisor._browser_members, original_members)
+
+    def test_manifest_refresh_extends_only_a_proven_surviving_group(self):
+        supervisor = self.supervisor()
+        browser = _FakeProcess()
+        supervisor._browser = browser
+        supervisor._browser_start_ticks = 100
+        supervisor._browser_pgid = browser.pid
+        saved_member = {
+            "pid": browser.pid + 1,
+            "start_ticks": 200,
+            "pgid": browser.pid,
+            "sid": browser.pid,
+        }
+        supervisor._browser_members = [
+            {"pid": browser.pid, "start_ticks": 100, "pgid": browser.pid, "sid": browser.pid},
+            saved_member,
+        ]
+        current = [
+            {"pid": browser.pid + 1, "state": "S", **saved_member},
+            {
+                "pid": browser.pid + 2,
+                "state": "S",
+                "start_ticks": 300,
+                "pgid": browser.pid,
+                "sid": browser.pid,
+            },
+        ]
+        with (
+            mock.patch("docich.nethack_tiles_supervisor._proc_identity", return_value=None),
+            mock.patch(
+                "docich.nethack_tiles_supervisor._proc_group_members", return_value=current
+            ),
+        ):
+            supervisor._refresh_process_members(browser=True)
+        self.assertEqual(len(supervisor._browser_members), 3)
+        self.assertEqual(supervisor._browser_members[-1]["pid"], browser.pid + 2)
+
+    def test_manifest_persists_owned_group_member_identities(self):
+        if not Path("/proc").is_dir():
+            self.skipTest("manifest process-group identities require procfs")
+        supervisor = self.supervisor()
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            supervisor._browser = process
+            supervisor._record_process_identity(process, browser=True)
+            supervisor._write_manifest()
+            record = json.loads(supervisor.manifest_path.read_text(encoding="utf-8"))
+            self.assertIn(
+                {
+                    "pid": process.pid,
+                    "start_ticks": supervisor._browser_start_ticks,
+                    "pgid": process.pid,
+                    "sid": process.pid,
+                },
+                record["browser_members"],
+            )
+        finally:
+            NethackTilesSupervisor._stop_process(process)
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=3)
+
     def test_owned_process_group_cleanup_is_bounded(self):
         process = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(30)"],

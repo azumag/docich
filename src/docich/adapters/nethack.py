@@ -490,8 +490,9 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             pid = manifest.get(f"{prefix}_pid")
             start_ticks = manifest.get(f"{prefix}_start_ticks")
             pgid = manifest.get(f"{prefix}_pgid")
+            saved_members = manifest.get(f"{prefix}_members")
             if pid is None:
-                if start_ticks is not None or pgid is not None:
+                if start_ticks is not None or pgid is not None or saved_members is not None:
                     raise AdapterError("NetHack tiles child processの所有情報が不整合です")
                 continue
             self._check_active(deadline, cancel)
@@ -500,6 +501,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
                 start_ticks,
                 pgid,
                 deadline=deadline,
+                saved_members=saved_members,
                 cancel=cancel,
             ):
                 self._check_active(deadline, cancel)
@@ -507,6 +509,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             manifest[f"{prefix}_pid"] = None
             manifest[f"{prefix}_start_ticks"] = None
             manifest[f"{prefix}_pgid"] = None
+            manifest[f"{prefix}_members"] = None
             changed = True
         if changed:
             manifest["status"] = "cleanup_failed"

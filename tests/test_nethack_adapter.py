@@ -343,6 +343,9 @@ class TestNethackCoordinatorAdapter(unittest.TestCase):
             "browser_pid": 12345,
             "browser_start_ticks": 9876,
             "browser_pgid": 12345,
+            "browser_members": [
+                {"pid": 12345, "start_ticks": 9876, "pgid": 12345, "sid": 12345}
+            ],
             "tty_pid": None,
             "tty_start_ticks": None,
             "tty_pgid": None,
@@ -365,6 +368,9 @@ class TestNethackCoordinatorAdapter(unittest.TestCase):
             9876,
             12345,
             deadline=mock.ANY,
+            saved_members=[
+                {"pid": 12345, "start_ticks": 9876, "pgid": 12345, "sid": 12345}
+            ],
             cancel=None,
         )
         recovered = json.loads(adapter._tiles_manifest_path().read_text(encoding="utf-8"))
