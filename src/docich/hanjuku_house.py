@@ -205,6 +205,24 @@ def _field_budget(mem, scope):
     return field_count, bool(monthly)
 
 
+def _survey_work(mem, p):
+    """Repairs and payroll income are what another roster walk would add.
+
+    The free monthly read records broken eggs and full wages but never leaves
+    the monthly menu, so it cannot dispatch a repair or refresh a payroll
+    receipt. Those two jobs, and only those, justify a second walk.
+    """
+    month = mem.get('month')
+    if any(info.get('broken') and info.get('month') == month
+           for info in (mem.get('house_eggs') or {}).values()):
+        return True
+    if p._recruit_shortage(mem) is None:
+        return False
+    owned = sorted(p._owned(mem))
+    return any(receipts.economics(mem, [p.STATUS_NAMES.get(c, c)]) is None
+               for c in owned)
+
+
 def _observe_status(screen, mem):
     info = general_status(screen)
     if info:
@@ -340,8 +358,9 @@ def step(screen, mem, frame):
             if (p._egg_recovery_targets(mem)
                     and (mem.get('shop') or {}).get('egg') not in ('done', 'skipped', 'not_needed')):
                 return None  # existing recovery/reserve ordering precedes the free survey
-            if (p._recruit_sufficient(mem) or (receipts.fresh(mem)
-                    and receipts.fresh(mem).get('complete'))):
+            if (p._recruit_sufficient(mem) or receipts.surveyed(mem)
+                    or (receipts.fresh(mem)
+                        and receipts.fresh(mem).get('complete'))):
                 return None
             attempts = mem.get('recruit_month_scan_attempts') or {}
             scope = [mem.get('chapter'), mem.get('month')]
@@ -365,7 +384,9 @@ def step(screen, mem, frame):
                 or (not monthly and any(mem.get(k) for k in ('active', 'recall', 'y_jump', 'sortie_attempt', 'month_sub', 'battle')))
                 or (not monthly and tick - int(field_tick) < SCAN_INTERVAL)
                 or (not monthly and field_count >= 2)
-                or (not monthly and field_month == mem.get('month') and not mem.get('recruit_roster_recheck'))):
+                or (not monthly and field_month == mem.get('month') and not mem.get('recruit_roster_recheck'))
+                or (not monthly and receipts.surveyed(mem) and not _survey_work(mem, p)
+                    and not mem.get('recruit_roster_recheck'))):
             return None
         state = mem['house'] = {'phase': ('month_open' if monthly and move != 'here' else 'open_roster'),
                                 'age': 0, 'total': 0,
@@ -513,7 +534,9 @@ def step(screen, mem, frame):
         if state['age'] in (3, 6):
             return [p.pad('down')]
         if state['age'] >= 9:
-            state['roster_wrapped'] = False  # unchanged cursor is not a complete scan
+            # The unchanged cursor alone proves nothing; complete() accepts it
+            # only when every listed name was read on a page ending on screen.
+            state['roster_wrapped'] = False
             _phase(state, 'leave_roster')
             return [p.pad('b')]
         return []
