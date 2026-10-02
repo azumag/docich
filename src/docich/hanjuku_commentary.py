@@ -204,7 +204,10 @@ _MAX_DECISIONS = 200000
 
 
 def _decisions(runtime_dir):
-    for name in ('hanjuku_decisions.jsonl', 'hanjuku_decisions.previous.jsonl'):
+    # append_log rotates the active file into .previous before opening a new
+    # active file. Read in that same order so a terminal story does not put
+    # the latest run segment before its earlier events.
+    for name in ('hanjuku_decisions.previous.jsonl', 'hanjuku_decisions.jsonl'):
         path = Path(runtime_dir) / name
         if not path.exists() or path.is_symlink():
             continue
@@ -220,51 +223,164 @@ def _decisions(runtime_dir):
                     yield item
 
 
-def recap_body(runtime_dir, run_state) -> str:
-    """The grounded numbers clause of a run summary.
+def _story_label(value):
+    """A short, single-line label copied from a decision record."""
+    if not isinstance(value, str):
+        return None
+    value = ' '.join(value.split())
+    if not value or len(value) > 48 or any(ord(char) < 32 for char in value):
+        return None
+    return value
 
-    Shared by the voice game-over recap (``summarize_recap``) and the
-    end-of-corner chat summary (retro_corner). Looks back over this run's own
-    decision log and run state: the story (how far the chapters went) and the
-    actions (sorties, battles, captures, dismissals). Every number is read
-    from the run's records; nothing is invented, per the module contract.
+
+def _battle_result_sentence(rec):
+    result = {'win': '勝利', 'loss': '敗北'}.get(rec.get('outcome'))
+    enemy = _story_label(rec.get('enemy'))
+    castle = _story_label(rec.get('castle'))
+    if result is None:
+        return None
+    opponent = f'{enemy}との' if enemy else ''
+    place = f'{castle}城で' if castle else ''
+    # A battle win is not evidence that a castle changed hands. Ownership is
+    # described separately from this battle-only record.
+    return f'{place}{opponent}戦闘は{result}と記録されています。'
+
+
+def _ownership_events(rec):
+    kind = rec.get('decision')
+    events = rec.get('resulting_event')
+    if isinstance(events, str):
+        events = [events]
+    if not isinstance(events, list):
+        events = []
+    if kind == 'castle_owned_observed' and not events:
+        events = [f"captured:{rec.get('castle', '')}"]
+    elif kind == 'castle_lost_observed' and not events:
+        events = [f"lost:{rec.get('castle', '')}"]
+    for event in events:
+        if not isinstance(event, str):
+            continue
+        event_type, sep, castle = event.partition(':')
+        label = _story_label(castle)
+        if not sep or not label or event_type not in {'captured', 'lost'}:
+            continue
+        if kind == 'castle_lost_observed' or event_type == 'lost':
+            yield ('lost', label)
+        else:
+            yield ('captured', label)
+
+
+def recap_body(runtime_dir, run_state) -> str:
+    """A short chronological story grounded in this run's own records.
+
+    The first recorded order is stated as a plan; only ``order_launched`` is
+    stated as an actual sortie. Battle outcomes and observed castle ownership
+    remain separate facts. The same deterministic text feeds chat and voice.
     """
-    chapter, captured, launches, discharged, months = 1, set(), 0, 0, []
-    for rec in _decisions(runtime_dir):
-        ch = rec.get('chapter')
-        if type(ch) is int and 1 <= ch <= 99:
-            chapter = max(chapter, ch)
-        kind = rec.get('decision')
-        if kind == 'order_launched':
-            launches += 1
-        elif kind == 'discharge_general':
-            discharged += 1
-        elif kind == 'month_seen':
-            key = rec.get('month')
-            if isinstance(key, str) and '-' in key:
-                year, month = key.split('-', 1)
-                if year.isdigit() and month.isdigit():
-                    months.append((int(year), int(month)))
-        elif kind in ('castle_owned_observed', 'world_map_owners'):
-            events = rec.get('resulting_event')
-            if isinstance(events, str):
-                events = [events]
-            for event in events or ():
-                if isinstance(event, str) and event.startswith('captured:'):
-                    captured.add(event.split(':', 1)[1])
-    try:
-        battles = int((run_state or {}).get('battles_finished') or 0)
-    except (TypeError, ValueError):
-        battles = 0
-    label = None
+    records = list(_decisions(runtime_dir))
+    if not records:
+        return '今回の挑戦では、確認できる出来事の記録が残っていません。'
+
+    chapters = [rec['chapter'] for rec in records
+                if type(rec.get('chapter')) is int and 1 <= rec['chapter'] <= 99]
+    months = []
+    for rec in records:
+        key = rec.get('month') if rec.get('decision') == 'month_seen' else None
+        if isinstance(key, str) and re.fullmatch(r'[1-9][0-9]?-(?:[1-9]|1[0-2])', key):
+            year, month = key.split('-', 1)
+            months.append((int(year), int(month)))
+
+    chapter = max(chapters) if chapters else None
+    month_label = None
     if months:
         year, month = max(months)
-        label = f'{year}年{month}月'
-    text = f'第{chapter}章まで進み、{len(captured)}城を獲得、{launches}回出撃と{battles}回戦闘を重ね、'
-    text += f'{label}まで戦いました' if label else '進軍を続けました'
+        month_label = f'{year}年{month}月'
+    launches = sum(rec.get('decision') == 'order_launched' for rec in records)
+    discharged = sum(rec.get('decision') == 'discharge_general' for rec in records)
+    captured = set()
+    for rec in records:
+        for event_kind, castle in _ownership_events(rec):
+            if event_kind == 'captured':
+                captured.add(castle)
+
+    story = []
+    plan = next((rec for rec in records if rec.get('decision') == 'order_start'
+                 and _story_label(rec.get('general')) and _story_label(rec.get('target'))), None)
+    if plan:
+        story.append(
+            f"作戦記録には、{_story_label(plan.get('general'))}将軍を"
+            f"{_story_label(plan.get('target'))}城へ向かわせる予定が残っています。"
+        )
+
+    events = []
+    for index, rec in enumerate(records):
+        kind = rec.get('decision')
+        if kind == 'order_launched':
+            general = _story_label(rec.get('general'))
+            target = _story_label(rec.get('target'))
+            if general and target:
+                events.append((index, f'{general}将軍の{target}城への出撃が確認されました。'))
+        elif kind == 'battle_result':
+            sentence = _battle_result_sentence(rec)
+            if sentence:
+                events.append((index, sentence))
+        elif kind in {'castle_owned_observed', 'castle_lost_observed', 'world_map_owners'}:
+            for event_kind, castle in _ownership_events(rec):
+                if event_kind == 'captured':
+                    sentence = f'{castle}城を自軍が保持していることを観測で確認しました。'
+                else:
+                    sentence = f'{castle}城の失陥が観測で確認されました。'
+                events.append((index, sentence))
+
+    # Retain the first actual sortie plus the latest battle and ownership
+    # observations. Fill any remaining slot with the latest recorded event.
+    # This keeps the story chronological and gives it a concrete turning
+    # point without reading every menu action aloud.
+    if len(events) > 3:
+        selected = []
+        first_sortie = next((event for event in events
+                             if '出撃が確認されました。' in event[1]), None)
+        latest_battle = next((event for event in reversed(events)
+                              if '戦闘は' in event[1]), None)
+        latest_ownership = next((event for event in reversed(events)
+                                 if '城を自軍が保持' in event[1]
+                                 or '城の失陥' in event[1]), None)
+        for event in (first_sortie, latest_battle, latest_ownership):
+            if event is not None and event not in selected:
+                selected.append(event)
+        if len(selected) < 3:
+            for event in reversed(events):
+                if event not in selected:
+                    selected.append(event)
+                if len(selected) == 3:
+                    break
+        events = sorted(selected, key=lambda event: event[0])
+    story.extend(sentence for _index, sentence in events)
+
+    try:
+        battles = (run_state or {}).get('battles_finished')
+    except AttributeError:
+        battles = None
+    if type(battles) is not int or battles < 0:
+        battles = None
+    progress = []
+    if chapter is not None:
+        progress.append(f'第{chapter}章まで')
+    if month_label:
+        progress.append(f'{month_label}まで')
+    if launches:
+        progress.append(f'出撃{launches}回')
+    if battles is not None:
+        progress.append(f'戦闘{battles}回')
+    if captured:
+        progress.append(f'{len(captured)}城の獲得記録')
     if discharged:
-        text += f'（将軍の解雇{discharged}回）'
-    return text
+        progress.append(f'将軍の解雇{discharged}回')
+    if progress:
+        story.append('記録では' + '、'.join(progress) + 'の経過が確認できます。')
+    elif not story:
+        return '今回の挑戦では、確認できる出来事の記録が残っていません。'
+    return ''.join(story)
 
 
 def summarize_recap(runtime_dir, run_state) -> tuple[str, str]:
@@ -273,4 +389,5 @@ def summarize_recap(runtime_dir, run_state) -> tuple[str, str]:
     The numbers all come from ``recap_body`` (this run's own decision log and
     run state); nothing is invented, per the module contract.
     """
-    return 'game_over_recap', f'ゲームオーバー。{recap_body(runtime_dir, run_state)}。今回の挑戦はここまでです。'
+    return ('game_over_recap',
+            f'{recap_body(runtime_dir, run_state)}タイトル画面への復帰を確認し、今回の挑戦はここまでです。')

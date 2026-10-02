@@ -786,8 +786,10 @@ def test_game_over_writes_a_grounded_recap_candidate(tmp_path):
     item = recap[0]
     assert item['key'] == 'game_over_recap' and item['seq'] == 1
     assert item['game'] == IDENTITY['game'] and item['runtime_id'] == IDENTITY['runtime_id']
-    assert '第1章' in item['text'] and '1年5月' in item['text'] and '1回出撃' in item['text']
-    assert item['text'].startswith('ゲームオーバー。') and len(item['text']) <= 120
+    assert '第1章' in item['text'] and '1年5月' in item['text'] and '出撃1回' in item['text']
+    assert item['text'].startswith('記録では')
+    assert item['text'].endswith('今回の挑戦はここまでです。')
+    assert len(item['text']) <= 1000
     # The terminal latch returns the old state: never a second recap.
     hanjuku_run.observe(tmp_path, IDENTITY, title, now=9, wall=1009)
     assert len((tmp_path / 'hanjuku_commentary.jsonl').read_text().splitlines()) == 1

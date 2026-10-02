@@ -15,6 +15,10 @@ class SorenOutputError(RuntimeError):
     """Raised when an existing Soren viewer-output queue cannot accept output."""
 
 
+class HanjukuTerminalPendingError(SorenOutputError):
+    """A validated earlier recap must enter the shared queue before new audio."""
+
+
 # Narration personas: the stream's two AI personalities take turns hosting
 # the PAPER corner. Chuka (中華AI) speaks in the worker's default voice;
 # Meriken (メリケンAI) uses the Soren91 voice. Exactly one persona hosts an
@@ -160,10 +164,21 @@ def send_overlay(g: GlobalConfig, payload: dict[str, object]) -> None:
         raise SorenOutputError("Soren overlay queue delivery failed") from exc
 
 
+def _retry_pending_hanjuku_terminal(g: GlobalConfig, *, exclude_key: str = "") -> None:
+    """Drain validated terminal recaps before publishing later audio."""
+    from ..hanjuku_narration import retry_pending_terminal_deliveries
+
+    if not retry_pending_terminal_deliveries(g, exclude_key=exclude_key):
+        raise HanjukuTerminalPendingError(
+            "A prior Hanjuku terminal recap is still pending in the audio outbox"
+        )
+
+
 def enqueue_speech(g: GlobalConfig, text: str, *, event_id: str = "") -> None:
     # Reuse the same production Soren comment-audio queue used by Web UI.  The
     # paper event id is a durable sink-side dedupe key so a crash after enqueue
     # but before notification ACK cannot cause a later replay.
+    _retry_pending_hanjuku_terminal(g)
     speech_text = _paper_corner_speech_text(text, event_id)
     root = resolve_soren_root(g)
     speaker = ""
@@ -224,6 +239,7 @@ def enqueue_audio_text(
 
     if not text or not text.strip():
         raise SorenOutputError("empty audio text")
+    _retry_pending_hanjuku_terminal(g)
     root = resolve_soren_root(g)
     command = ["bash", "-c",
                'source lib/outbound_queue.sh && enqueue_audio_text "$0" "$1" "$2"',
@@ -246,3 +262,30 @@ def enqueue_audio_text(
         raise SorenOutputError(
             f"Soren audio queue rejected notification: {(proc.stderr or '').strip()[:200]}"
         )
+
+
+def enqueue_hanjuku_terminal(
+    g: GlobalConfig, text: str, *, context: str = "hanjuku_terminal",
+    speaker: str = "", delivery_key: str,
+) -> dict[str, object]:
+    """Publish a fixed Hanjuku end recap through the durable shared outbox.
+
+    Ordinary Hanjuku narration remains on the fenced shell queue. The terminal
+    snapshot instead gets a run-scoped receipt because its source run may be
+    torn down as soon as the recap is queued.
+    """
+    if context != "hanjuku_terminal" or not delivery_key.startswith("hanjuku-terminal:"):
+        raise SorenOutputError("Hanjuku terminal delivery key is invalid")
+    _retry_pending_hanjuku_terminal(g, exclude_key=delivery_key)
+    root = resolve_soren_root(g)
+    try:
+        from .. import webui
+        result = webui._enqueue_audio_text(
+            root, text, "hanjuku_terminal", speaker=speaker,
+            delivery_key=delivery_key,
+        )
+    except Exception as exc:
+        raise SorenOutputError("Hanjuku terminal audio queue delivery failed") from exc
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise SorenOutputError("Hanjuku terminal audio queue rejected recap")
+    return result

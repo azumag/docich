@@ -377,7 +377,7 @@ _END_CLAUSE = {
 # 終了理由を末尾に置く (音声 recap と同内容、owner rule 2026-09-28)。
 _END_HANJUKU_CLOSING = {
     None: "今回の挑戦はここまでです。",
-    "game_over": "ゲームオーバーで、今回の挑戦はここまでです。",
+    "game_over": "タイトル画面への復帰を確認し、今回の挑戦はここまでです。",
     "screen_stalled": "画面停止のため、今回の挑戦はここまでです。",
     "manual_saved_stop": "セーブして、今回の挑戦はここまでです。",
     "manual_forced_stop": "セーブ失敗による強制終了で、今回の挑戦はここまでです。",
@@ -616,7 +616,10 @@ class RetroCornerManager:
             title = load_game(self.g, title).title
         except Exception:
             pass
-        clause = _END_CLAUSE.get(reason, _END_CLAUSE_DEFAULT)
+        if game == "hanjuku-hero" and reason == "game_over":
+            clause = "タイトル画面への復帰を確認しました"
+        else:
+            clause = _END_CLAUSE.get(reason, _END_CLAUSE_DEFAULT)
         minutes = self._played_minutes(state, completed_at)
         duration = (
             f"。約{minutes}分間お楽しみいただきました" if minutes is not None else ""
@@ -1887,7 +1890,8 @@ class RetroCornerManager:
             owned_runtime = active.get('runtime_id')
             fence = AgentFence(game=active['game'], runtime_id=active['runtime_id'],
                                generation=active['generation'], lease_id=active['lease_id'])
-            adapter = make_adapter(self.g, load_game(self.g, 'hanjuku-hero'), fence=fence)
+            hanjuku_game = load_game(self.g, 'hanjuku-hero')
+            adapter = make_adapter(self.g, hanjuku_game, fence=fence)
             try:
                 observation = shared_section(self.g.state_dir, adapter.observe)
             except (DeadlineExceededError, GameSwitchBusyError):
@@ -1917,6 +1921,17 @@ class RetroCornerManager:
                 continue
             not_ready = 0
             run = observation.meta.get('hanjuku') or {}
+            runtime_dir = runtime_directory(self.g.state_dir, active['runtime_id'])
+            try:
+                from . import hanjuku_narration
+                # Terminal narration is published after observe releases the
+                # shared switch lock and before _finish_locked can start the
+                # next corner. Ordinary narration keeps its asynchronous path.
+                hanjuku_narration.consider(
+                    self.g, hanjuku_game, runtime_dir,
+                    terminal=bool(run.get('terminal_reason') or run.get('terminal_candidate')))
+            except Exception:
+                print('[hanjuku-narration] status=consider_failed', file=sys.stderr)
             # Network side channel runs only AFTER shared_section has released
             # the input gate. It re-verifies durable terminal evidence itself.
             from .hanjuku_predictions import tick as prediction_tick
@@ -1947,7 +1962,6 @@ class RetroCornerManager:
                 try:
                     from .hanjuku_narration import delivery_summary
                     from .retroarch_boundary import read_record
-                    runtime_dir = runtime_directory(self.g.state_dir, active['runtime_id'])
                     latest['narration'] = delivery_summary(runtime_dir)
                     audio = read_record(runtime_dir / 'audio_volume.json')
                     streams = audio.get('streams') if isinstance(audio.get('streams'), list) else []
