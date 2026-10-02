@@ -141,6 +141,87 @@ def _weather_adapter(g, corner, switch, now, sleep):
     return adapter
 
 
+def _weather_audio_view(now):
+    from datetime import datetime
+    from docich import weather
+
+    target = datetime.fromtimestamp(now, weather.JST).date().isoformat()
+    issued = datetime.fromtimestamp(now - 60, weather.JST).isoformat()
+    return {
+        "schema_version": 1,
+        "date": target,
+        "generated_at": now - 1,
+        "expires_at": now + 300,
+        "server_now": now - 1,
+        "attribution": weather.ATTRIBUTION,
+        "source_url": weather.SOURCE,
+        "terms_url": weather.TERMS,
+        "cities": [
+            {
+                "city": city.name,
+                "area_code": city.area,
+                "station": city.station,
+                "office": city.office,
+                "date": target,
+                "issued_at": issued,
+                "weather": "晴れ",
+                "high_c": 22,
+                "low_c": 15,
+                "pops": [
+                    {"start": start, "end": start + 6, "percent": None}
+                    for start in (0, 6, 12, 18)
+                ],
+                "source_url": f"{weather.SOURCE}#area_type=offices&area_code={city.office}",
+            }
+            for city in weather.CITIES
+        ],
+    }
+
+
+class FakeWeatherAudioPort:
+    def __init__(self, clock, *, auto_play=False):
+        from docich.weather_audio import build_weather_audio_receipt
+
+        self.clock = clock
+        self.auto_play = auto_play
+        self.receipts = {}
+        self.enqueued = []
+        self.interrupted = []
+        self._build_receipt = build_weather_audio_receipt
+
+    def _receipt(self, request, status, reason=None):
+        return self._build_receipt(
+            request, status=status, recorded_at=self.clock(), reason=reason,
+        )
+
+    def enqueue_weather_audio(self, request):
+        self.enqueued.append(dict(request))
+        status = "played" if self.auto_play else "queued"
+        receipt = self._receipt(request, status)
+        self.receipts[request["item_key"]] = receipt
+        return receipt
+
+    def get_weather_audio_receipt(self, item_key):
+        return self.receipts.get(item_key)
+
+    def interrupt_weather_audio(self, item_key):
+        self.interrupted.append(item_key)
+        request = next(item for item in self.enqueued if item["item_key"] == item_key)
+        receipt = self._receipt(request, "rejected", "player_rejected")
+        self.receipts[item_key] = receipt
+        return receipt
+
+    def finish(self, item_key, status="played"):
+        request = next(item for item in self.enqueued if item["item_key"] == item_key)
+        reason = None
+        if status == "rejected":
+            reason = "player_rejected"
+        elif status == "interrupted":
+            reason = "playback_interrupted"
+        receipt = self._receipt(request, status, reason)
+        self.receipts[item_key] = receipt
+
+
 def test_weather_catalog_is_disabled_by_default_and_requires_bounded_duration(tmp_path):
     config = tmp_path / "config.toml"
     config.write_text('[corner_rotation]\ncorners=[{id="weather",adapter="weather",game="weather-view"}]\n')
@@ -148,6 +229,13 @@ def test_weather_catalog_is_disabled_by_default_and_requires_bounded_duration(tm
     assert len(catalog) == 1
     assert catalog[0].enabled is False
     assert catalog[0].duration_minutes is None
+    assert catalog[0].audio_enabled is False
+
+    config.write_text(
+        '[corner_rotation]\ncorners=[{id="weather",adapter="weather",game="weather-view",'
+        'audio_enabled=true}]\n'
+    )
+    assert load_catalog(load_global(tmp_path, config))[0].audio_enabled is True
 
     config.write_text('[corner_rotation]\ncorners=[{id="weather",adapter="weather",game="weather-view",enabled=true}]\n')
     with pytest.raises(CornerCatalogError, match="duration_minutes"):
@@ -161,6 +249,130 @@ def test_weather_catalog_is_disabled_by_default_and_requires_bounded_duration(tm
         )
         with pytest.raises(CornerCatalogError, match="weather"):
             load_catalog(load_global(tmp_path, config))
+
+    config.write_text(
+        '[corner_rotation]\ncorners=[{id="weather",adapter="weather",game="weather-view",'
+        'audio_enabled="yes"}]\n'
+    )
+    with pytest.raises(CornerCatalogError):
+        load_catalog(load_global(tmp_path, config))
+
+    config.write_text(
+        '[corner_rotation]\ncorners=[{id="normal",adapter="game",game="robots",'
+        'audio_enabled=true}]\n'
+    )
+    with pytest.raises(CornerCatalogError, match="weather adapter"):
+        load_catalog(load_global(tmp_path, config))
+
+
+def test_weather_audio_sends_one_item_at_a_time_and_reuses_receipt_after_restart(tmp_path, monkeypatch):
+    import datetime as dt
+    import docich.weather_corner as weather_corner
+
+    fixed = dt.datetime(2026, 10, 2, 12, tzinfo=dt.timezone.utc).timestamp()
+    g, now, _factory, store, switch = _setup(tmp_path, clock=fixed, boundary_generation=None)
+    forecast = _weather_audio_view(now[0])
+    monkeypatch.setattr(weather_corner, "read_view", lambda _path, clock=None: forecast)
+    port = FakeWeatherAudioPort(lambda: now[0])
+    manager = WeatherCornerManager(
+        g, duration_minutes=1, coordinator=switch, audio_enabled=True,
+        audio_port=port, clock=lambda: now[0],
+    )
+    request_id = str(uuid.uuid4())
+    state = manager._new_state({"request_id": request_id, "selected_at": now[0]})
+    manager._save(state)
+    assert manager._dispatch_start(state) is None
+
+    manager._advance_audio_delivery(state)
+    first = port.enqueued[0]
+    assert first["item_index"] == 0
+    assert len(port.enqueued) == 1
+
+    # A restarted owner first reads the durable receipt and does not enqueue
+    # the same item a second time.
+    resumed = WeatherCornerManager(
+        g, duration_minutes=1, coordinator=switch, audio_enabled=True,
+        audio_port=port, clock=lambda: now[0],
+    )
+    resumed_state = resumed._read_state()
+    resumed._advance_audio_delivery(resumed_state)
+    assert len(port.enqueued) == 1
+
+    port.finish(first["item_key"])
+    resumed._advance_audio_delivery(resumed_state)
+    assert resumed_state["audio_delivery"]["next_index"] == 1
+    resumed._advance_audio_delivery(resumed_state)
+    assert [item["item_index"] for item in port.enqueued] == [0, 1]
+
+    # Manual restore interrupts just the current weather item before asking
+    # GameSwitch to restore the previous runtime.
+    assert resumed._restore(resumed_state, end_reason="manual") == "completed"
+    final_state = resumed._read_state()
+    assert final_state["audio_delivery"]["status"] == "stopped"
+    assert port.interrupted == [port.enqueued[1]["item_key"]]
+    final, _ = store.canonical.load()
+    assert final["phase"] == "ready" and final["active"]["game"] == "robots"
+
+
+def test_weather_audio_marks_complete_only_after_all_thirteen_played_receipts(tmp_path, monkeypatch):
+    import datetime as dt
+    import docich.weather_corner as weather_corner
+
+    fixed = dt.datetime(2026, 10, 2, 12, tzinfo=dt.timezone.utc).timestamp()
+    g, now, _factory, _store, _switch = _setup(tmp_path, clock=fixed, boundary_generation=None)
+    forecast = _weather_audio_view(now[0])
+    monkeypatch.setattr(weather_corner, "read_view", lambda _path, clock=None: forecast)
+    port = FakeWeatherAudioPort(lambda: now[0], auto_play=True)
+    manager = WeatherCornerManager(
+        g, duration_minutes=1, audio_enabled=True, audio_port=port,
+        clock=lambda: now[0],
+    )
+    state = {
+        "rotation_request_id": str(uuid.uuid4()),
+        "weather_runtime_identity": {
+            "game": "weather-view", "runtime_id": "g2-a1b2c3d4",
+            "generation": 2, "lease_id": str(uuid.uuid4()),
+        },
+    }
+    for _ in range(13):
+        manager._advance_audio_delivery(state)
+    assert [item["item_index"] for item in port.enqueued] == list(range(13))
+    assert state["audio_delivery"]["status"] == "completed"
+    assert state["audio_delivery"]["next_index"] == 13
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [("rejected", "player_rejected"), ("interrupted", "playback_interrupted")],
+)
+def test_weather_audio_stops_after_any_non_played_terminal_receipt(
+    tmp_path, monkeypatch, status, reason,
+):
+    import datetime as dt
+    import docich.weather_corner as weather_corner
+
+    fixed = dt.datetime(2026, 10, 2, 12, tzinfo=dt.timezone.utc).timestamp()
+    g, now, _factory, _store, _switch = _setup(tmp_path, clock=fixed, boundary_generation=None)
+    forecast = _weather_audio_view(now[0])
+    monkeypatch.setattr(weather_corner, "read_view", lambda _path, clock=None: forecast)
+    port = FakeWeatherAudioPort(lambda: now[0])
+    manager = WeatherCornerManager(
+        g, duration_minutes=1, audio_enabled=True, audio_port=port,
+        clock=lambda: now[0],
+    )
+    state = {
+        "rotation_request_id": str(uuid.uuid4()),
+        "weather_runtime_identity": {
+            "game": "weather-view", "runtime_id": "g2-a1b2c3d4",
+            "generation": 2, "lease_id": str(uuid.uuid4()),
+        },
+    }
+    manager._advance_audio_delivery(state)
+    port.finish(port.enqueued[0]["item_key"], status)
+    manager._advance_audio_delivery(state)
+    assert state["audio_delivery"]["status"] == "stopped"
+    assert state["audio_delivery"]["reason"] == f"{status}:{reason}"
+    assert len(port.enqueued) == 1
 
 
 def test_weather_runtime_does_not_publish_an_unreviewed_stream_title(tmp_path, monkeypatch):

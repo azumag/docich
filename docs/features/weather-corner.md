@@ -5,27 +5,22 @@
 全国11地点の公式予報取得、厳格な正規化、定型原稿生成、出典付き960×540画面、
 読み取り専用loopbackサーバーを実装した。weather用adapterとowner stateを共通corner
 catalog/rotationへ接続し、既存program slot、GameSwitchのゲーム境界待ち、runtime cleanup、
-rollback、実行終了後の元のゲームへの復帰も実装した。weatherをcatalogへ追加する場合は
-明示的に`enabled=true`と1〜14分の`duration_minutes`が必要で、省略時は無効になる。
-既存の本番profile/catalog、配信encoder、音声worker、OBSや実GameSwitch状態は変更しない。
-コードをマージしても放送は始まらない。
+rollback、実行終了後の元のゲームへの復帰も実装した。既存の共有audio consumerへのproducer
+接続も追加したが、weather catalogの`audio_enabled`は省略時も`false`であり、表示cornerとは
+別にopt-inしない限り音声をqueueへ送らない。
 
-**既存音声queueへの送信・冪等性・再生完了確認は未実装のため、音声は送らない。**
-weather専用のrequest/receipt schemaと純粋なvalidation、dummy queue/playerの契約テストは
-別スライスで追加したが、天気producer・共有queue・audio workerには接続していない。
-本PRは配信運用まで完成したコーナーではない。production catalogへの登録、現行データの
-全国確認、非本番の実runtime開始・復帰確認、Ready化も行っていない。専用HTTPサーバーを
-本番配信へ直接つないで既存の境界を迂回しない。
-
+本PRは配信運用まで完成したコーナーではない。production catalog/profile、配信encoder、
+音声worker、OBSや実GameSwitch状態は変更しない。productionへの登録、現行データの全国確認、
+非本番の実runtime開始・復帰確認は未実施。コードをマージしてもweather放送や読み上げは
+有効化されない。
 `weather-view` は合成GameSwitch runtime adapterとして実装した。
-既に公開済みのsnapshotだけをloopbackで表示し、`runtime_id` と `generation` をserverへ渡し、
-`lease_id`を含めた3つのidentityを応答でも照合する。既存の960×540 presentationとGameSwitch
+既に公開済みのsnapshotだけをloopbackで表示し、`game` / `runtime_id` / `generation` / `lease_id`の
+4項目をserverへ渡して応答でも照合する。既存の960×540 presentationとGameSwitch
 所有プロセスの終了処理を使い、start直前のfreshnessと起動後の同一runtime応答を検証する。
 共通corner managerはこのviewを通してのみ起動する。adapter実装は登録済みだが、production
 catalogにはweather行がなく、行を追加する場合も明示的なenabled設定と期間指定が必要。
 weather-view用のTwitch category/title mappingは追加せず、合成view起動時にstream titleも更新しない。
-復帰先の実ゲームについてはGameSwitchの既存commit hookを使う。fetch・音声送信・独立timerを行わず、
-単独では起動しない。
+復帰先の実ゲームについてはGameSwitchの既存commit hookを使う。単独では起動しない。
 
 ## 権利・出典・予報業務の境界
 
@@ -113,37 +108,36 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
 
 1. 共通corner catalog/adapter、owner state、既存program slotへの登録は実装済み。
    weather行の省略時は無効、enabled時は`duration_minutes` 1〜14が必須。
+   `audio_enabled`も省略時falseとし、表示のopt-inから読み上げを独立させる。
    期間は上限で、snapshotの15分鮮度期限が先に来ればそこで復帰する。独立timerはない。
 2. GameSwitchの`game` / `runtime_id` / `generation` / `lease_id`を使って開始と復帰をfenceする。
    開始時は旧ゲームの宣言済みラウンド境界を待ち、終了時はweather runtimeの同一identityを
    `expected_source`に指定する。operatorが別runtimeへ切替済みなら、それを停止・上書きせず
    weather ownerを中断扱いにする。960×540・既存presentation viewportとowned child cleanupを使う。
-3. 音声は既存の共有queueを使う設計とし、出典・対象日・発表時刻を保持する。
-   冪等キー、runtime fence、再生完了確認を実装し、終了後に古い原稿を再生しない。
-   他コーナーの音声を削除・停止しない。
-   現行docich mainがpinする`soviet_now` `860e363c` の`enqueue_audio_text` runtime fenceは
-   `hanjuku_commentary` 専用であり、weatherからは安全に使えない。generic runtime fence、
-   冪等キー、再生完了receiptを共有queue側で確認するまでは、weather音声を送らない。
-   `docs/features/weather-audio-queue-contract.md` と
-   `src/docich/weather_audio.py` はconsumer拡張用の値契約のみを定義し、shared queue接続の
-   実装済みを意味しない。
-4. snapshotの有効性は適格性判定、GameSwitch preflight/readiness、放送中の表示再検証で
+3. catalogのweather行に`audio_enabled=true`を明示した場合だけ、既存の共有comment queueへ送る。
+   原稿は`weather.narration(view)`の13 literal lineをその順で使い、出典・対象日・地点別発表時刻・
+   全11地点report digestをitem requestへ保持する。LLMや独自予測を使わない。
+4. producerは現行`soviet_now` main `6e0247263bba3663e83e74caaeddd4cd26cfe555` の
+   `lib/weather_audio_consumer.py`をpinして使う。item keyは実行UUIDとordinalから作り、
+   完全requestをweather owner stateへ先に保存する。最大1項目だけqueueへ置き、再開時は先に
+   durable receiptを照会する。同じitemのretryは同一payload/keyに限定し、consumerの永続冪等性に
+   任せる。itemが`played`になるまで次のordinalをenqueueしない。
+5. shared consumerがowned playerの全chunkを確認した`played` receiptを全13 itemで返した場合だけ、
+   音声全体を`completed`と記録する。`rejected`/`interrupted`で後続itemを送らない。
+   手動停止・表示期限・GameSwitch遷移では保留中の1 itemだけを既存consumerの`interrupt`で終端化し、
+   再生中のowned playerがqueueから消えるまでGameSwitch復帰を開始しない。他cornerの音声には触れない。
+6. snapshotの有効性は適格性判定、GameSwitch preflight/readiness、放送中の表示再検証で
    確認する。取得失敗は休止とし、鮮度期限が来たらGameSwitchで復帰する。
    合成adapterによる境界待ち、開始rollback、終了後復帰、operator移動のfenceをオフラインで検証した。
-5. 独立レビュー、CI、全11地点の現行データ確認、非本番の開始/終了実測を完了してから
-   ready化・本番有効化を判断する。未実施の項目を成功扱いしない。
+7. production有効化の前に独立レビュー、CI、全11地点の現行データ確認、非本番の
+   開始/終了実測を完了する。未実施の項目を成功扱いしない。
 
 ## 検証記録
 
-- ローカル：`PYTHONPATH=src pytest -q tests/test_weather.py tests/test_weather_program.py tests/test_weather_corner.py tests/test_corner_rotation.py tests/test_corner_rotation_execution.py tests/test_game_switch.py tests/test_round_boundary.py`、346 passed・10 subtests passed。
-  合成adapterで旧ゲームの境界待ち、共有program slot保持、期限後restore、start失敗rollback、
-  operator移動とgeneration/runtime/lease不一致時の非上書きを検証する。VMや実game processは起動しない。
-- Pythonコンパイルとshell構文確認。
-- Chromiumで合成データを注入して960×540、両ページ、JS例外なし、取得失敗後の非表示を確認。
-  この環境ではChromiumからloopback URLへの直接アクセスが管理ポリシーで拒否されたため、
-  HTTPはstdlibクライアントで別途試験。実HTTPからブラウザーまでのE2Eとは区別する。
-- 現行の気象庁JSONの全国11地点一括取得、実VM、実OBS、音声、GameSwitch復帰は未実測。
-- `weather-view` のpreflight/readinessは合成snapshotとmocked GameSwitch runtimeで検証する。
-  実ブラウザー・実VM・GameSwitchの実start/復帰を確認したことにはならない。
-- GitHubの非本番作業のみ。owner checkout固有のgitignored `handoff.md`、運用メモリ、
-  VM作業中バナー・音声は利用できず未操作。本書とPR本文に未確認事項を残す。
+- Producer/lifecycle回帰は387 passed、13 deselected、10 subtests passed。13件のloopback HTTP testsはこのsandboxの`PermissionError: [Errno 1] Operation not permitted`でbindできず、CIで確認する。
+- 追加した`tests/test_weather_corner.py`, `tests/test_weather_audio_contract.py`, `tests/test_soren_weather_audio.py`のfocused runは60 passed。
+- Pinned `soviet_now` consumer suiteは20 passed。temporary queue/GameSwitchとdummy playerを使い、実TTS/audio workerを呼ばない。
+- Pinned consumerに対するisolated CLI smokeでenqueue/get/interruptを確認し、`queued` → `queued` → `rejected`を得た。queueは一時ディレクトリで、audio worker/TTSは起動していない。
+- Python compileと`git diff --check`は成功。
+- 現行JMA全国11地点一括取得、実VM、実OBS、実音声、実GameSwitch復帰は未実測。
+- owner checkout固有のgitignored `handoff.md`、運用メモリ、VM作業中バナー・音声はこの実行環境では利用できず、確認・操作していない。

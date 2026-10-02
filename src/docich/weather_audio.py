@@ -1,9 +1,9 @@
-"""Pure contract for a future weather-to-shared-audio queue adapter.
+"""Pure contract for the weather-to-shared-audio queue adapter.
 
 This module validates request and receipt values only. It does not publish to
-the Soren comment queue, create a local spool, start a player, or connect the
-weather corner to an audio worker. A validated ``played`` receipt shape does
-not prove that any real player completed playback.
+the Soren comment queue, create a local spool, or start a player. A validated
+``played`` receipt shape does not prove that a real player completed playback;
+only the pinned shared consumer can provide that evidence.
 """
 from __future__ import annotations
 
@@ -60,13 +60,16 @@ class WeatherAudioError(ValueError):
 
 
 class SharedWeatherAudioPort(Protocol):
-    """Required future extension; no production implementation is registered."""
+    """One-item operations supported by the existing shared consumer."""
 
     def enqueue_weather_audio(self, request: Mapping[str, object]) -> Mapping[str, object]:
         """Return a validated per-item receipt without content-based dedup."""
 
     def get_weather_audio_receipt(self, item_key: str) -> Mapping[str, object] | None:
         """Return that item's queued/terminal receipt, if it exists."""
+
+    def interrupt_weather_audio(self, item_key: str) -> Mapping[str, object] | None:
+        """Terminally reject/interrupt one item using the consumer's own fence."""
 
 
 def item_idempotency_key(execution_id: str, item_index: int) -> str:
@@ -395,7 +398,7 @@ def build_weather_audio_receipt(
     request: Mapping[str, object], *, status: str,
     recorded_at: int | float, reason: str | None = None,
 ) -> dict[str, object]:
-    """Build the future consumer's receipt shape; this does not prove playback."""
+    """Build a contract receipt fixture; this does not prove actual playback."""
     item = _validate_request(request, now=None)
     if not isinstance(status, str) or status not in RECEIPT_STATUSES:
         raise WeatherAudioError("weather audio receipt status is invalid")
