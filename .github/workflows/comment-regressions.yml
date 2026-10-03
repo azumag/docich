@@ -67,7 +67,9 @@ jobs:
             --soren-path 'kick_chat.sh' \
             --soren-path 'lib/comment_viewer_memory.py' \
             --soren-path 'broadcast/comment.sh' \
-            --soren-path 'broadcast/comment_lib.sh')"
+            --soren-path 'broadcast/comment_lib.sh' \
+            --soren-path 'broadcast/comment_runtime_policy.sh' \
+            --soren-path 'eloop_lib.sh')"
           [[ "$run" == true || "$run" == false ]]
           echo "run=$run" >> "$GITHUB_OUTPUT"
 
