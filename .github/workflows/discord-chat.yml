@@ -46,6 +46,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install test and optional Discord SDK dependencies
         run: python3 -m pip install -r requirements-test.txt -r requirements-discord.txt
       - name: Offline persistence, conversation and real SDK construction contracts
@@ -58,5 +59,6 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Build and verify isolated Docker contracts without external APIs
         run: python3 containers/discord-chat/verify.py

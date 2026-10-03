@@ -84,3 +84,96 @@ PYTHONPATH=src python3 -m pytest -q tests/test_discord_chat.py tests/test_discor
 既存の配信・ゲーム・Soren gitlink・音声・モデル設定・本番workflowは変更しない。共通LLM dispatcherのCLI経路やフォールバックも使用しない。本番常駐化に必要なruntime registry/manifest、worker health、queue registry、structured telemetry、diagnostics、予算上限、owner停止操作、canonical deploymentは別の統合段階に残る。現段階を本番稼働済み・production readyとは扱わない。
 
 参考: Discord Gateway/Intents https://docs.discord.com/developers/events/gateway 、discord.py https://discordpy.readthedocs.io/en/stable/ 。
+
+## Dockerでの独立運用
+
+Docker EngineとCompose v2（Dockerfile固有のignoreとmulti-stage build対応）が必要。ホストへpip/venvを導入せず、次のオフライン検証を実行する。実Discord/外部LLMへ接続せず、模擬secret・ループバックHTTP・専用一時volumeだけを使う。Docker daemonや既存サービスの設定は変更しない。
+
+```sh
+python3 containers/discord-chat/verify.py
+```
+
+公式Python `3.12.15-slim-bookworm` をDockerfile記載のmanifest digestへ固定する。runtimeにはDiscord専用依存・Bot/記憶ソース・正本ペルソナ・volume保守スクリプトだけをCOPYし、pytestと模擬データは別test stageに置く。Dockerfile固有のexact-path allowlistでGit、handoff、env、DB、ログ、他サービスのコードをcontextから除外する。検証ではLinuxのSQLite 3.35以上、flock、discord.py、正本ペルソナのSHA-256一致、runtimeのテスト依存/データ不在も確認する。
+
+### 設定・ビルド・確認
+
+`containers/discord-chat/settings.env.example` をリポジトリ外の所有者専用設定ファイルへコピーする。Bot、サーバー、1〜8チャンネル、APIベースURL、モデルは所有者の指定値を設定する。APIキーが不要ならkey overlayを使わない。secret値は設定ファイルへ書かず、所有者の安全な手段で外部ファイルへ保存する。
+
+Linuxではsecretファイルを実行UID/GID `65532:65532` が読める所有権・`0400`（親ディレクトリもアクセス可能）で準備する。Composeのfile secretはbind mountであり、Composeのuid/mode指定で変換されるとは仮定しない。Docker Desktopの共有ファイル権限も実環境で下の`--check`により確認する。読めなければ所有者が専用ファイルの所有権を調整し、root実行やworld-readable化はしない。シンボリックリンク、非regular file、worldアクセス、不正ASCII/空/4096バイト超を拒否し、エラーにpathや値を表示しない。既存のTOKEN/API_KEY環境変数方式は維持し、非空の値と_FILEの併用はエラーとする。
+
+```sh
+# 実際のリポジトリ外の設定pathへ置き換える。
+SETTINGS=/absolute/private/discord-settings.env
+cp containers/discord-chat/settings.env.example "$SETTINGS"
+chmod 600 "$SETTINGS"
+# 所有者が設定を編集し、外部secretファイルを準備してから続ける。
+# APIキーが必要な場合だけ配列にoverlayを追加する。
+DC=(docker compose --env-file "$SETTINGS" -p docich-discord -f compose.discord-chat.yml)
+# DC+=(-f compose.discord-chat-api-key.yml)
+DC+=(--profile discord-chat)
+"${DC[@]}" build discord-chat
+# ネットワーク/DB書込みなしの設定・ペルソナ・secret読取確認。
+"${DC[@]}" run --rm -T --no-deps discord-chat --check
+```
+
+上の配列例はbash/zsh用。`--check`はDiscord接続・API認証・保存先権限を証明しない。設定には`/chat/completions`を含めない。コンテナの`127.0.0.1`はホストを指さない。外部HTTPS、別コンテナ、ホスト、Tailscaleのどの経路を使うか所有者が明示し、コンテナから届くURLを設定する。私設HTTPを許可する場合だけ`DOCICH_DISCORD_ALLOW_HTTP=1`。ホストAPIのbind範囲、daemon、firewallをこの手順で変更しない。
+
+### 明示起動・停止・更新
+
+非本番環境の接続先と利用範囲を承認した後だけ、設定ファイルの`DOCICH_DISCORD_ENABLED`と`DOCICH_ALLOW_REAL_AI`を両方`1`にする。既定は両方`0`、profile指定が必要、restart policyは`no`。既存配信Composeとは独立している。
+
+```sh
+"${DC[@]}" up -d --no-build discord-chat
+"${DC[@]}" ps discord-chat
+# 固定イベント/エラーだけを確認し、SDK DEBUGやenv/config/inspect全文を出さない。
+"${DC[@]}" logs --tail 30 discord-chat
+"${DC[@]}" stop discord-chat
+"${DC[@]}" start discord-chat
+# 更新前に停止・バックアップし、旧イメージを保持する。
+docker image tag docich-discord-chat:local docich-discord-chat:rollback
+"${DC[@]}" stop discord-chat
+"${DC[@]}" build discord-chat
+"${DC[@]}" up -d --no-build --force-recreate discord-chat
+# ロールバック（同じ記憶volumeを維持）。
+"${DC[@]}" stop discord-chat
+docker image tag docich-discord-chat:rollback docich-discord-chat:local
+"${DC[@]}" up -d --no-build --force-recreate discord-chat
+# コンテナ/networkの撤去でもvolumeは保持する。
+"${DC[@]}" down
+```
+
+タグ操作例はサンプルの`DOCICH_DISCORD_IMAGE=docich-discord-chat:local`を使う場合。別タグを設定した場合は同じタグへ読み替える。ペルソナ更新も再ビルド・再作成で反映する。通常の停止・更新・撤去で`down -v`やvolume pruneは実行しない。
+
+SIGTERM/SIGINTで新規受付を停止し、待機中会話をcancelし、実行中同期HTTPスレッドをjoinしてからSQLiteとDiscordをcloseする。送信は10秒、Compose停止猶予は90秒。HTTPの45秒はソケットタイムアウトであり総時間上限ではなく、低速な応答等で90秒を超える場合の強制停止まで安全終了は保証しない。クラッシュ後のpending/sendingは再起動時に本文を消してfailed化し、メッセージIDは二重送信防止用に保持する。外部APIとのexactly-onceは保証しない。
+
+### 記憶のバックアップ・復元
+
+固定project名`docich-discord`の専用named volumeは`docich-discord_memory`。初回にイメージ内の専用ディレクトリの所有権が空volumeへ継承され、ディレクトリ0700、DB/lock/journal等0600、UID/GID 65532で使用する。不明な既存データの再帰chownや初期化はしない。
+
+Botを停止し、リポジトリ外のバックアップを作る。SQLite backup APIと専用flockを使い、DB本文を画面やartifactへ出さない。backupのstdoutだけがbinary DBで、restoreは新規の空volumeだけ受け付ける。
+
+```sh
+"${DC[@]}" stop discord-chat
+umask 077
+BACKUP=/absolute/private/discord-memory.sqlite3
+MAINT=(docker run --rm -i --network none --read-only --cap-drop ALL
+  --security-opt no-new-privileges:true --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m)
+"${MAINT[@]}" --mount type=volume,source=docich-discord_memory,target=/var/lib/docich-discord \
+  --entrypoint python docich-discord-chat:local /opt/docich/volume.py backup > "$BACKUP"
+# 必ず新しい名前を使い、既存volumeへ復元しない。
+docker volume create docich-discord_memory-restored
+"${MAINT[@]}" --mount type=volume,source=docich-discord_memory-restored,target=/var/lib/docich-discord \
+  --entrypoint python docich-discord-chat:local /opt/docich/volume.py restore < "$BACKUP"
+```
+
+保守コマンドの終了コードを確認し、成功したbackupだけを保存する。復元を採用する際は所有者が外部Compose overrideで`volumes.memory.name: docich-discord_memory-restored`を指定し、`DC`へそのファイルを追加して再作成する。元volumeは検証・ロールバックまで保持する。バックアップも平文なので所有者がアクセスと保持期間を管理する。
+
+`@Bot 記憶を削除`は本人・当該チャンネルの本文/名前/索引だけを消し、処理済みIDを保持する。volume全削除は全参加者・全チャンネルの記憶とIDを失う別操作であり、通常手順には含めない。既存バックアップとLLM提供者の記録はBotの削除操作で消えない。
+
+### 隔離の範囲と受入確認
+
+非root固定UID/GID、read-only rootfs、全capability削除、no-new-privileges、Docker標準seccomp、init、16MiBのnoexec/nosuid/nodev tmpfsを使用する。記憶volume全体とtmpfsだけがアプリの書込み先で、secretはread-only。上限はメモリ/swap合計256MiB、CPU 0.5、PID 64、ログ1MiB×3。host network/PID/IPC、privileged、device、Docker/SSH socket、ホストhome/既存運用ディレクトリは使わず、ポートも公開しない。
+
+専用bridgeは他サービスから分離するが、Discordと指定APIへの外向き通信を可能にするため、LAN/インターネットへのegress allowlistは適用していない。Dockerは完全なVM隔離ではない。ホスト側egress制御、Rootless Dockerの新規導入、productionのruntime/health/diagnostics/control-plane統合は別作業。
+
+オフライン検証は空volume・再作成後の想起・スコープ分離/削除・二重起動拒否・適用隔離・HTTP処理中SIGTERMと待機キュー・整合backup/restoreまで確認する。通常CIで外部APIを呼ばない。実Discord/LLM往復、実権限、品質、料金、実運用での停止/復元は未確認であり、所有者指定の非本番ホスト、Bot Token、サーバー/チャンネル、API URL/必要ならキー、モデル、利用範囲が必要。
