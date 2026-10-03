@@ -191,7 +191,7 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.send.assert_awaited_once()
         row = self.memory.db.execute(
             "SELECT guild_id,channel_id FROM conversations WHERE message_id='101'").fetchone()
-        self.assertEqual(tuple(row), (2, 999))
+        self.assertEqual(tuple(row), ("2", "999"))
 
     async def test_prior_conversation_is_used_after_conversation_object_replacement(self):
         await self.core.handle(event(content="猫の名前はタマ"), self.send)
@@ -445,7 +445,7 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         msg.reply.assert_awaited_once()
         row = self.memory.db.execute(
             "SELECT guild_id,channel_id FROM conversations WHERE message_id='101'").fetchone()
-        self.assertEqual(tuple(row), (2, 999))
+        self.assertEqual(tuple(row), ("2", "999"))
 
     async def test_raw_delete_bulk_and_content_edit_handlers_keep_scope(self):
         with patch.object(chat.Conversation, "forget") as forget:
