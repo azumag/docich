@@ -1,11 +1,11 @@
 {
-  "output_sha256": "6950e2ea21912586e904c5d7f4e310e36bb18248c93ac496302a9c0468af6dab",
+  "output_sha256": "4fc702be2d851f4440f802c98f2d53c4c9e2d7ee9756400c874ae364212107f1",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "d4b43aa676bfcf6e4ced531ca42cf98c0679453185d9d1fc8436dcf263712e04",
+  "source_sha256": "02ac751bdd7245a6701d0fef8fc44ece11b63d774889ef369dfa091b6475f8fe",
   "topics": [
+    "半熟英雄の余白カードを正規配備し、自然起動での受入れ待ち",
     "VM CPU削減のSoren修正をmain統合、正規配備を準備",
-    "半熟英雄の実測余白カードを実装し、親の配備を準備",
-    "VM CPU削減の第1段階をローカル実装・検証（本番未反映）"
+    "半熟英雄の実測余白カードを実装し、親の配備を準備"
   ]
 }
