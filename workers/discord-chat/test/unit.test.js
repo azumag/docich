@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   GATEWAY_INTENTS,
+  DiscordSendError,
   gatewaySocketUrl,
   isAddressedMessage,
   isFatalGatewayClose,
@@ -14,6 +15,12 @@ import { DiscordBot } from "../src/bot.js";
 
 test("Durable Object runtime module is importable", () => {
   assert.equal(typeof DiscordBot, "function");
+});
+
+test("Discord send errors expose only a numeric HTTP status", () => {
+  const error = new DiscordSendError(403);
+  assert.equal(error.message, "discord_send_failed");
+  assert.equal(error.status, 403);
 });
 
 test("gateway intent surface is guild messages plus message content only", () => {
@@ -47,7 +54,7 @@ test("Workers AI backend sends the canonical conversation shape without tools", 
         return { choices: [{ message: { content: "<think>hidden</think>こんにちは" } }] };
       },
     },
-    WORKERS_AI_MODEL: "@cf/zai-org/glm-4.7-flash",
+    WORKERS_AI_MODEL: "@cf/deepseek-ai/deepseek-v4-flash-0731",
     DOCICH_PERSONA: "canonical persona",
   };
   const result = await generateReply(env, [], {
@@ -60,7 +67,7 @@ test("Workers AI backend sends the canonical conversation shape without tools", 
     referenceId: null,
   });
   assert.equal(result, "こんにちは");
-  assert.equal(call.model, "@cf/zai-org/glm-4.7-flash");
+  assert.equal(call.model, "@cf/deepseek-ai/deepseek-v4-flash-0731");
   assert.equal(call.input.tool_choice, "none");
   assert.equal(call.input.max_tokens, 500);
   assert.equal(call.input.messages[0].role, "system");
