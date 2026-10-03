@@ -16,6 +16,7 @@ on:
       - 'src/docich/adapters/__init__.py'
       - 'src/docich/adapters/weather_program.py'
       - 'tests/test_weather.py'
+      - 'tests/fixtures/weather_view/**'
       - 'tests/test_weather_program.py'
       - 'tests/test_weather_corner.py'
       - 'tests/test_weather_audio_contract.py'
@@ -43,6 +44,7 @@ on:
       - 'src/docich/adapters/__init__.py'
       - 'src/docich/adapters/weather_program.py'
       - 'tests/test_weather.py'
+      - 'tests/fixtures/weather_view/**'
       - 'tests/test_weather_program.py'
       - 'tests/test_weather_corner.py'
       - 'tests/test_weather_audio_contract.py'
@@ -73,6 +75,8 @@ jobs:
           persist-credentials: false
       - name: Install existing test dependencies
         run: python3 -m pip install -r requirements-test.txt
+      - name: Require Node for DOM-free UI regression tests
+        run: node --version
       - name: Forecast, lifecycle, and GameSwitch contracts
         env:
           PYTHONPATH: src
