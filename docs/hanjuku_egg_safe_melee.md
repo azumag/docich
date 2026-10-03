@@ -37,6 +37,24 @@
 
 `enemy_egg_dropped` が真の時だけ `_melee_step` の `safe` が成立し、`power_mash`（A 3 frames + release 50 ms を4回＝12 A frames）へ移る。reason に「敵の卵を落として召喚を封じたため、青ゲージをA連打で消費して押し込む」を追記し `enemy_egg_dropped` を `battle_melee` に残す。`_unarmed_clash_risk` も同フラグで外す。**青バーそのものの画素検出は未実装**（実機計測待ち）で、現状は卵の脅威が消えた局面だけを予測で全力A連打する。これと出撃時の dropper 携行拡張は follow-up Issue に分離する。
 
+## 自軍卵の温存（兵士数も判定、2026-10-03）
+
+オーナー依頼「たまごつかわなくても勝てそうな相手にもガンガン使っていてもったいない」。確認済みの前提は **判定＝HPだけでなく兵士数も見る／兵士数の読み取り＝戦闘中の兵士スプライト計測**。
+
+`_own_egg_needed(mem, battle, general_reading)` が `egg_battle_step` の先頭で要る/不要を決め、`mem['egg_needed']` に保持する。**次の3条件すべて**が成り立つ時だけ卵を温存する（片でも欠ければ従来どおり `use_egg`、fail-closed）。
+
+1. 強い将軍ではない（`_strong_enemy`、shogun.html の評・ボスは恒 True）。
+2. 白兵の合戦力が敵の **7割超**。合戦力 = `HP + 10×兵士`（gcgx battle.html「兵士は1人ずつHP10を持っている」）。兵士は**両側が整数で読めた時だけ**加算し、片側欠ければ HP 比較へ退ける（`rule='soldier_force' / 'hp_only'`）。
+3. 自軍のHPが **最大の7割超**（`general_reading=(hp, max)`、`ally_wounded`）。30/82 のように自軍が大破していれば敵将軍の絶対値HPが低くても温存しない。読み取れない時も温存しない。
+
+- **比較対象は敵将軍（`battle['enemy_hp']`）**。召喚モンスターHPは含めない（実測149〜240に対し自軍最大82で、温存が一度も成立せず課題が消えるため）。`tests/test_hanjuku_survival.py` の「monster HP is not the enemy general's」と同じ方針。
+- **兵士スプライト計測**（`hanjuku_screen._field_soldiers`）: `SOLDIER_BAND=(0,40,256,150)` の背景上位4色を**完全一致**（tolerance なし）で除き、8連結BFS。**上端・左端・右端のみ**エッジ除外（下端はボックスに切られる兵士を残すため除外しない）。1体ぶん＝面積55..260かつ bbox 26x26以内。側ごとに面積261..900 かつ 60x60以内の成分（＝重なり）が出たら**その側を `None`** にして判定側へ渡さない。返り値は `(味方, 敵)`＝**左/右**で、HPパネル（敵が左）と**左右反転**する。誤差は ±1〜2 体で、7割基準には30%の余裕がある。スプライト色は将軍・兵種・アニメで変化し両側に出るため、**側の判定には位置（centroid x < 128）だけ**を使う。
+- 読み取りは `screen.battle is not None` のフレームのみ（`egg_battle_menu` / `monster_menu` では `_battle()` が `None`＝上書き禁止、直近の通常戦闘フレーム値を保持）。実測で `_field_soldiers` 本体 ≈11.7ms。
+- **途中昇格は一方向**: 温存中に条件を崩すと `mem['egg_action']` を `use_egg` へ切り替え `egg_battle_use_egg` を記録。回復しても `attack` へは戻さない。
+- **g460 の退却ゲート**: 温存中（`egg_needed=False`）は先に白兵で戦い、退却を試さない。卵が必要で札も卵も無い局面だけ従来どおり B（1戦闘1回、防衛戦不可）。
+- 既存の「HPが敵の7割超なら温存」単独では、30/82 が敵29を上回るため**大破中でも卵を温存する**結果になる。オーナー確認（2026-10-03）で**条件3を追加して解消**し、`test_fierce_preserves_available_egg_cards_and_requires_known_cursor` を含む既存テストは意図的な変更なし。
+- 検証: 合成Canvasの編隊描画（`tests/test_hanjuku_egg_hold.py` 全11件）と実機フレーム12枚（味方6・敵1など、`egg_battle_menu` は計測しない）。実機での連続運用成績は未検証。
+
 ## ログと検証の境界
 
 各通常白兵判断の新しい `battle_melee` decisionに `egg_risk_flags`、`melee_control_mode`、`chapter`、`enemy`、`enemy_hp`、`ally_hp`、`a_frames_sent` を追加する。schema 1と既存のdecisionは維持する。

@@ -3786,6 +3786,11 @@ def battle_step(screen: Screen, mem):
     cur['away'] = 0
     cur.pop('okunote_flow', None)  # the command finished; a later use is a new attempt
     cur['enemy_hp'], cur['ally_hp'] = b.enemy_hp, b.ally_hp
+    # フィールドの兵士スプライト (味方が左・敵が右)。召喚戦の独立判断が
+    # HPだけでなく兵士数も見るため、直近の白兵フレームの読み取りを保持する。
+    # 読めない側は None のまま渡し、判定側で HP のみへ退ける。
+    if getattr(screen, 'field_soldiers', None) is not None:
+        cur['ally_soldiers'], cur['enemy_soldiers'] = screen.field_soldiers
     if b.enemy_hp is not None and cur.get('start_enemy_hp') is not None and b.enemy_hp < cur['start_enemy_hp']:
         cur['clashed'] = True
     if (_boss_tactics_allowed(mem, cur) and type(b.ally_hp) is int
@@ -6633,6 +6638,60 @@ def _egg_general_reading(screen, mem, battle):
     return rows[0].hp, full
 
 
+def _own_egg_needed(mem, battle, general_reading=None):
+    """自軍のたまごを使うべきかを、HPと兵士数で判定する。返り値は (要るか, 証拠)。
+
+    正典 (docs/hanjuku_script_bot.md ⑥) は「HP不利かつチャートに切り札指示
+    なし → use_egg」。合戦力は gcgx battle.html「兵士は1人ずつHP10を持っている」
+    に従い HP + 10×兵士で比べ、兵士が読めない戦闘では HP だけで判定する。
+    加えて自軍のHPが最大の7割を超えていること（`general_reading`）も要る。
+    オーナー確認 (2026-10-03): 30/82 のように自軍が大破していれば、敵将軍の
+    絶対値HPが低くても勝てそうにはならず卵を使う。読み取れない時も温存しない。
+    強い将軍 (shogun.html の評・ボス) は常に要る。HP不明でも要る (従来どおり)。
+    """
+    evidence = {'strong_general': None, 'strong_rule': None, 'ally_hp': None,
+                'ally_max_hp': None,
+                'enemy_hp': None, 'ally_soldiers': None, 'enemy_soldiers': None,
+                'ally_force': None, 'enemy_force': None, 'healthy': None,
+                'ratio_tenths': BEHIND_EGG_RATIO_TENTHS, 'rule': 'unknown_battle'}
+    if not isinstance(battle, dict):
+        return True, evidence
+    strong, strong_evidence = _strong_enemy(mem, battle)
+    reading = general_reading if isinstance(general_reading, (tuple, list)) else None
+    healthy = (bool(reading) and len(reading) == 2
+               and type(reading[0]) is int and type(reading[1]) is int and reading[1] > 0
+               and reading[0] * 10 > reading[1] * BEHIND_EGG_RATIO_TENTHS)
+    ally_hp, enemy_hp = battle.get('ally_hp'), battle.get('enemy_hp')
+    ally_soldiers, enemy_soldiers = battle.get('ally_soldiers'), battle.get('enemy_soldiers')
+    # 片側だけ読めない戦闘では HP 比較へ退ける (推測で片方だけ加点しない)。
+    measured = type(ally_soldiers) is int and type(enemy_soldiers) is int
+    if type(ally_hp) is int and type(enemy_hp) is int and measured:
+        ally_force = ally_hp + 10 * max(0, ally_soldiers)
+        enemy_force = enemy_hp + 10 * max(0, enemy_soldiers)
+    else:
+        ally_force, enemy_force = ally_hp, enemy_hp
+    comfortable = (healthy and type(ally_force) is int and type(enemy_force) is int
+                   and ally_force * 10 > enemy_force * BEHIND_EGG_RATIO_TENTHS)
+    if not healthy:
+        rule = 'ally_wounded'    # 大破中は敵より上でも温存しない
+    elif measured:
+        rule = 'soldier_force'
+    else:
+        rule = 'hp_only'
+    return (strong or not comfortable), {
+        **strong_evidence,
+        'strong_rule': strong_evidence.get('rule'),
+        'strong_general': strong, 'ally_hp': ally_hp,
+        'ally_max_hp': reading[1] if isinstance(reading, (tuple, list)) and len(reading) == 2
+        and type(reading[1]) is int else None,
+        'enemy_hp': enemy_hp,
+        'ally_soldiers': ally_soldiers if measured else None,
+        'enemy_soldiers': enemy_soldiers if measured else None,
+        'ally_force': ally_force, 'enemy_force': enemy_force, 'healthy': healthy,
+        'ratio_tenths': BEHIND_EGG_RATIO_TENTHS, 'rule': rule,
+    }
+
+
 def egg_battle_step(screen: Screen, mem):
     """Summoned-monster battle: a turn menu that waits for a command.
 
@@ -6645,25 +6704,33 @@ def egg_battle_step(screen: Screen, mem):
     if screen.kind != 'egg_battle_menu':
         mem.pop('egg_menu_stage', None)
         return [pad('a')]
+    # 将軍HPをこの召喚戦のメニュー行から最新化してから、勝てそうかを判定する。
+    battle = mem.get('battle') or {}
+    general_reading = _egg_general_reading(screen, mem, battle)
+    wants_egg, egg_evidence = _own_egg_needed(mem, battle, general_reading)
     if not mem.get('egg_battle'):
         mem['egg_battle'] = True
         exp = mem.get('_experience')
         key = experience.situation_key('egg_summon', mem)
-        action = experience.preferred(exp, key, default='use_egg', kind='egg_summon')
+        # ⑥の写像: HP不利ならたまご、勝てそうなら温存 (attack) から始める。
+        action = experience.preferred(exp, key, default='use_egg' if wants_egg else 'attack',
+                                      kind='egg_summon')
         mem['egg_action'] = action
         mem['egg_key'] = key
-        battle = mem.get('battle')
-        if isinstance(battle, dict):
+        mem['egg_needed'] = wants_egg
+        if mem.get('battle'):
             battle['independent'] = {'kind': 'egg_summon', 'key': key, 'action': action,
                                      'pattern': '⑥'}
             battle['egg_battle'] = True     # earlier retreat threshold (see _hero_retreat_needed)
         _record(mem, 'egg_battle', strategy_variant=f'egg_battle_{action}',
                 deviation_reason='チャート外: 敵の卵召喚戦',
                 expected_metric='召喚獣への対処と戦闘結果',
-                observed_metric={'experience_key': key}, source_pattern='⑥',
-                reason='チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）')
-    battle = mem.get('battle') or {}
-    general_reading = _egg_general_reading(screen, mem, battle)
+                observed_metric={'experience_key': key, 'egg_need': egg_evidence},
+                source_pattern='⑥',
+                reason=('チャートに召喚戦の指示がないための独自判断（原典戦術⑥、'
+                        '自軍が健在でHPと兵士が勝てそうならたまごを温存）'
+                        if not wants_egg else
+                        'チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）'))
     attack = mem.get('attack') or {}
     # g514: the hero was 34/90 against the boss's Hydra, with both planned
     # cards unused. Available eggs/cards must not bypass his retreat check.
@@ -6686,6 +6753,20 @@ def egg_battle_step(screen: Screen, mem):
                 observed_metric={'card': 'キャトルミュー'},
                 reason='実携行のレア札で召喚敵へ対処するため、通常コマンドへ一度戻る')
         return [pad('b')]
+    # 途中昇格: 温存していた (前回まで勝てていた) のに劣勢になったら、たまごを
+    # 使う判断へ切り替える。回復しても温存へは戻さない (一方向だけ)。
+    if mem.get('egg_needed') is False and wants_egg and mem.get('egg_action') == 'attack':
+        mem['egg_action'] = 'use_egg'
+        if isinstance(battle.get('independent'), dict):
+            battle['independent']['action'] = 'use_egg'
+        _record(mem, 'egg_battle', strategy_variant='egg_battle_use_egg',
+                deviation_reason='チャート外: 敵の卵召喚戦',
+                expected_metric='召喚獣への対処と戦闘結果',
+                observed_metric={'egg_need': egg_evidence}, source_pattern='⑥',
+                reason=('温存していたが、自軍のHPが最大の7割以下になるか、'
+                        'HPと兵士の合戦力が敵の7割を下回ったため途中でたまごを'
+                        '使う判断へ切り替える'))
+    mem['egg_needed'] = wants_egg
     action = mem.get('egg_action', 'use_egg')
     if action == 'use_egg' and 'たまごをつかう' not in screen.text:
         # A spent egg greys the row out and drops it from OCR (mirrors
@@ -6707,7 +6788,10 @@ def egg_battle_step(screen: Screen, mem):
         # g498: B did not leave the turn menu, yet the next observation
         # immediately chose A and Venus lost. Require a bounded return flow,
         # and actually request retreat if the normal command menu is reached.
-        if not cards_left and battle.get('side') != 'defense':
+        # g460 安全弁は「卵か札か退却のどれもない」局面だけ。勝てそうなので
+        # たまごを温存している間は、まず白兵で戦う (退却しない)。
+        if (not cards_left and battle.get('side') != 'defense'
+                and (wants_egg or 'たまごをつかう' not in screen.text)):
             attempts = int(battle.get('egg_retreat_attempts') or 0)
             battle['egg_retreat_needed'] = True
             battle['egg_retreat_tried'] = True  # legacy hotloaded state
