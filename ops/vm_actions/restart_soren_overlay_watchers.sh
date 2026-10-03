@@ -49,19 +49,24 @@ matches_script() {
   [[ "$cmdline" == *"$script watch"* ]]
 }
 
-for i in "${!names[@]}"; do
+restart_watcher() {
+  local i="$1" name script output marker pid_file old_pid new_pid candidate rendered before_render
   name="${names[$i]}"
   script="${scripts[$i]}"
   output="$root/${outputs[$i]}"
   marker="${markers[$i]}"
   pid_file="$root/tmp/state/$name.pid"
 
-  old_pid="$(read_pid "$pid_file")"
-  matches_script "$old_pid" "$script"
+  before_render="$(stat -c '%y:%i' "$output" 2>/dev/null || true)"
+  old_pid="$(read_pid "$pid_file" 2>/dev/null || true)"
 
   # Only the reviewed overlay watch loop is replaced. start_all.sh remains the
   # sole owner of respawn and launches the newly deployed script.
-  kill -TERM "$old_pid"
+  if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
+    # A live PID with a different identity must never be killed.
+    matches_script "$old_pid" "$script" || return 1
+    kill -TERM "$old_pid" || return 1
+  fi
 
   new_pid=""
   for _ in $(seq 1 160); do
@@ -72,17 +77,29 @@ for i in "${!names[@]}"; do
       break
     fi
   done
-  [[ -n "$new_pid" ]]
+  [[ -n "$new_pid" ]] || return 1
+  if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
+    return 1
+  fi
 
   # Do not accept process replacement alone: require one fresh render from the
   # new layout so OBS/browser sources cannot keep showing the old terminal UI.
   rendered=0
   for _ in $(seq 1 80); do
     sleep 0.25
-    if [[ -r "$output" ]] && grep -Fq "$marker" "$output"; then
+    if [[ -r "$output" ]] \
+      && [[ "$(stat -c '%y:%i' "$output" 2>/dev/null || true)" != "$before_render" ]] \
+      && grep -Fq "$marker" "$output"; then
       rendered=1
       break
     fi
   done
   [[ "$rendered" -eq 1 ]]
+}
+
+# Attempt both standalone surfaces even if one watcher cannot be replaced.
+failed=0
+for i in "${!names[@]}"; do
+  restart_watcher "$i" || failed=1
 done
+exit "$failed"

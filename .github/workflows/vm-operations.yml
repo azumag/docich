@@ -572,8 +572,9 @@ jobs:
           set -euo pipefail
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          git -C candidate cat-file -e "$BEFORE_SHA^{commit}"
-          if git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- games/soviet_now; then
+          if [[ "$BEFORE_SHA" != 0000000000000000000000000000000000000000 ]] \
+            && git -C candidate cat-file -e "$BEFORE_SHA^{commit}" \
+            && git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- games/soviet_now; then
             exit 0
           fi
 
