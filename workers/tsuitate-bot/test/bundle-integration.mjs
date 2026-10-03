@@ -29,12 +29,12 @@ assert.equal(typeof bundle.default.fetch, "function");
 console.log("PASS actual Cf manifest, GameState export, SQLite storage and GAME_STATE self-binding");
 console.log(`Cf emitted entrypoint SHA-256: ${createHash("sha256").update(await readFile(entrypoint)).digest("hex")}`);
 
-const modules = await Promise.all(Object.entries(config.manifest.modules).filter(([, v]) => v.type !== "sourcemap")
+const modules = Object.fromEntries(await Promise.all(Object.entries(config.manifest.modules).filter(([, v]) => v.type !== "sourcemap")
   .map(async ([name, info]) => {
     assert.equal(info.type, "esm", "this prototype expects only emitted ES modules");
-    return { type: "ESModule", path: join(bundleDir, name), contents: await readFile(join(bundleDir, name), "utf8") };
-  }));
-assert.ok(modules.some((module) => module.path === entrypoint));
+    return [name, { type: info.type, contents: await readFile(join(bundleDir, name), "utf8") }];
+  })));
+assert.ok(modules[config.manifest.mainModule]);
 const fixture = async (name) => JSON.parse(await readFile(join(root, `test/fixtures/${name}-request.json`), "utf8"));
 const initial = await fixture("initial");
 const delta = await fixture("incremental");
@@ -49,27 +49,30 @@ const runtimes = new Set();
 
 async function start(faults = false) {
   let runtimeModules = modules;
+  let mainModule = config.manifest.mainModule;
   if (faults) {
     const wrapper = (await readFile(join(root, "test/bundle-fault-worker.js"), "utf8"))
       .replace("__CF_ENTRYPOINT__", config.manifest.mainModule);
-    runtimeModules = [{ type: "ESModule", path: join(bundleDir, "__bundle_test_wrapper.js"), contents: wrapper }, ...modules];
-  } else {
-    runtimeModules = [...modules].sort((a, b) => (a.path === entrypoint ? -1 : b.path === entrypoint ? 1 : 0));
+    mainModule = "__bundle_test_wrapper.js";
+    runtimeModules = { ...modules, [mainModule]: { type: "esm", contents: wrapper } };
   }
+  const { manifest: unusedManifest, ...workerConfig } = config;
+  const persistence = join(temp, faults ? "fault-state" : "plain-state");
   const runtime = new Miniflare({
-    name: config.name,
-    modules: runtimeModules,
-    modulesRoot: bundleDir,
-    compatibilityDate: config.compatibilityDate,
     host: "127.0.0.1", port: 0, cf: false,
-    bindings: { BOT_ID: botId, WEBHOOK_SECRET: secret },
-    durableObjects: {
-      GAME_STATE: { className: config.env.GAME_STATE.exportName,
-        scriptName: config.env.GAME_STATE.worker,
-        useSQLite: config.exports.GameState.storage === "sqlite" },
-    },
-    durableObjectsPersist: join(temp, faults ? "fault-state" : "plain-state"),
-    outboundService() { throw new Error("Network access is forbidden in bundle tests"); },
+    telemetry: { enabled: false }, logRequests: false,
+    resourcePersistencePath: persistence,
+    isolatedResourcePersistencePath: persistence,
+    workers: [{
+      config: { ...workerConfig,
+        env: { ...config.env, BOT_ID: { type: "text", value: botId },
+          WEBHOOK_SECRET: { type: "text", value: secret } },
+        manifest: { mainModule, modulesRoot: bundleDir, modules: runtimeModules },
+      },
+      dev: { rootPath: root, unsafeRegisterWorker: false,
+        outboundService: { type: "fetcher", handler() { throw new Error("Network access is forbidden in bundle tests"); } },
+      },
+    }],
   });
   runtimes.add(runtime);
   await runtime.ready;
@@ -99,6 +102,19 @@ async function inspect(runtime, gameId) {
 }
 
 try {
+  let cancelled = false;
+  const bodyStarted = Date.now();
+  const stalledBody = new Request("http://localhost/webhook", { method: "POST", duplex: "half",
+    headers: { "content-type": "application/json", "X-Tsuitate-Bot-Id": botId,
+      "X-Tsuitate-Timestamp": String(Math.floor(Date.now() / 1000)) },
+    body: new ReadableStream({ cancel() { cancelled = true; } }),
+  });
+  const bodyTimeout = await bundle.default.fetch(stalledBody, { BOT_ID: botId, WEBHOOK_SECRET: secret });
+  assert.equal(bodyTimeout.status, 503);
+  assert.deepEqual(await bodyTimeout.json(), { error: "request_timeout" });
+  assert.ok(cancelled);
+  assert.ok(Date.now() - bodyStarted >= 6500 && Date.now() - bodyStarted < 9500);
+  console.log("PASS emitted handler direct Node test: production 7-second streaming-body timeout and cancellation");
   let runtime = await start();
   const auth = payload("bundle-auth");
   const raw = JSON.stringify(auth, null, 2);
