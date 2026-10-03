@@ -1467,15 +1467,19 @@ def _apply_world_flags(mem, flags):
     captured = mem.setdefault('captured', [])
     changed = []
     home_owner = flags.get(home)
-    if home_owner == 'enemy' and not mem.get('home_lost'):
+    if home_owner == 'enemy':
         # g407 03:53: the home castle flew an enemy flag while every sortie
         # still treated it as ours and fell back to it.
+        # A successful retake can also put home in captured. Remove that old
+        # receipt even when a hotloaded state already has home_lost=True.
+        mem['captured'] = captured = [c for c in captured if c != home]
+        if not mem.get('home_lost'):
+            changed.append(('lost', home))
         mem['home_lost'] = True
         lost = mem.setdefault('lost', [])
         if home not in lost:
             lost.insert(0, home)
         (mem.get('garrison') or {}).pop(home, None)
-        changed.append(('lost', home))
     elif home_owner == 'own' and mem.get('home_lost'):
         mem['home_lost'] = False
         mem['lost'] = [c for c in mem.get('lost') or [] if c != home]
@@ -6482,53 +6486,107 @@ def yes_no_step(screen: Screen, mem):
 # (odoru7094 のイベントデータ / gcgx event.html) なので常に非選択。
 # 読めない時 (オーナー 2026-10-03) は保留せず、どちらかを1回だけ決めて選ぶ。
 # 観測ごとに反転して動かないので、Aで確定するまで同じ選択を保つ。
+def _summer_bonus_rows(screen):
+    return [(x, line.y, key) for line in screen.lines for x, word in line.spans()
+            for key, variants in SUMMER_BONUS_CHOICES.items()
+            if any(word.startswith(v) for v in variants)]
+
+
+def summer_bonus_continue(screen: Screen, mem):
+    """Keep a known choice episode through partial text or cursor loss."""
+    if screen.kind == 'summer_bonus':
+        return True
+    plan = mem.get('summer_bonus_plan')
+    old_choice = mem.get('summer_bonus_choice') in ('vacation', 'bonus')
+    if not isinstance(plan, dict):
+        plan = None
+    if not plan and not old_choice:
+        return False
+    rows = _summer_bonus_rows(screen)
+    same_menu = (any([x, y] in plan.get('rows', []) for x, y, _ in rows)
+                 if plan else bool(rows))
+    if screen.kind in ('text', 'unknown'):
+        # Post-choice dialogue from the SFC text block 0D2AAF:
+        # https://www.yumesaki-hoshi.jp/analysis/sfc/hanjyuku/
+        # Label disappearance alone is not evidence that A was applied.
+        messages = {'vacation': ('ひゃっほ', 'バカザンス', 'へいしのはんぶんは', 'かえってはこなかった'),
+                    'bonus': ('さすがは', 'ふとっぱら', 'たたかいますとも', 'しょじきんがはんぶんに')}
+        flat = ''.join(screen.text.split())
+        response_seen = (plan and plan.get('confirmation_planned') and not same_menu
+                         and any(t in flat for t in messages.get(plan.get('target'), ())))
+        if response_seen:
+            screen.kind = 'summer_bonus_message'
+            _record(mem, 'summer_bonus_message', target=plan['target'],
+                    reason='夏イベントの選択後に出る固有の応答文を読んだため会話を進める')
+        elif plan or old_choice:
+            return True
+    # A different recognized screen or the observed post-choice response ends
+    # the episode. Do not carry its target into another year's event.
+    mem.pop('summer_bonus_plan', None)
+    mem.pop('summer_bonus_choice', None)
+    return False
+
+
 def summer_bonus_step(screen: Screen, mem):
-    gold = (screen.header or {}).get('gold')
-    if type(gold) is not int:
-        gold = mem.get('gold')
-    soldiers = mem.get('soldiers_seen')
-    flat = screen.text.replace(' ', '')
-    visible = {key for key, variants in SUMMER_BONUS_CHOICES.items()
-               if any(v in flat for v in variants)}
-    readable = type(gold) is int and gold >= 0 and type(soldiers) is int and soldiers >= 0
-    metric = {'gold': gold, 'soldiers': soldiers,
-              'soldiers_seen_month': mem.get('soldiers_seen_key'),
-              'visible': sorted(visible),
-              'selection': 'min_loss' if readable else 'random'}
-    if readable:
-        # 同数なら損失は同じ。片側でも読めない時点で最小損失は決められない。
-        target = 'vacation' if soldiers <= gold else 'bonus'
-        mem.pop('summer_bonus_choice', None)
-        reason = (f'兵士{soldiers}人と所持金{gold}Gを比較し、損失の小さい'
-                  + ('兵士半減のバカンス' if target == 'vacation' else 'お金半減のボーナス')
-                  + 'を選び、まとめて解雇は選ばない')
-    else:
-        target = mem.get('summer_bonus_choice')
-        if target not in ('vacation', 'bonus'):
-            target = random.choice(('vacation', 'bonus'))
-            mem['summer_bonus_choice'] = target
-        reason = ('兵士数か所持金が読めないため、'
-                  + ('兵士半減のバカンス' if target == 'vacation' else 'お金半減のボーナス')
-                  + 'をどちらかとして選び、まとめて解雇は選ばない')
+    rows = _summer_bonus_rows(screen)
+    visible = {key for _, _, key in rows}
+    plan = mem.get('summer_bonus_plan')
+    if not isinstance(plan, dict) or plan.get('target') not in ('vacation', 'bonus'):
+        gold = (screen.header or {}).get('gold')
+        if type(gold) is not int:
+            gold = mem.get('gold')
+        soldiers = mem.get('soldiers_seen')
+        # A saved month is not proof of this event's date. Without a header,
+        # even two matching saved keys can both belong to last month/year.
+        current_month = _month_key(screen.header)
+        soldiers_current = (current_month is not None
+                            and (screen.header or {}).get('month') == 8
+                            and mem.get('soldiers_seen_key') == current_month)
+        readable = (type(gold) is int and gold >= 0 and type(soldiers) is int
+                    and soldiers >= 0 and soldiers_current)
+        target = mem.get('summer_bonus_choice')   # pending v129 random choice
+        if readable and target not in ('vacation', 'bonus'):
+            target = 'vacation' if soldiers <= gold else 'bonus'
+            selection = 'min_loss'
+            reason = (f'兵士{soldiers}人と所持金{gold}Gを比較し、損失の小さい'
+                      + ('兵士半減のバカンス' if target == 'vacation' else 'お金半減のボーナス')
+                      + 'を選び、まとめて解雇は選ばない')
+        else:
+            if target not in ('vacation', 'bonus'):
+                target = random.choice(('vacation', 'bonus'))
+            selection = 'random'
+            reason = ('当月の比較値が揃わない時に決めた'
+                      + ('兵士半減のバカンス' if target == 'vacation' else 'お金半減のボーナス')
+                      + 'を保ち、まとめて解雇は選ばない')
+        plan = {'target': target, 'reason': reason, 'confirmation_planned': False,
+                'rows': [[x, y] for x, y, _ in rows],
+                'metric': {'gold': gold, 'soldiers': soldiers,
+                           'soldiers_seen_month': mem.get('soldiers_seen_key'),
+                           'current_month': current_month, 'soldiers_current': soldiers_current,
+                           'selection': selection}}
+        mem['summer_bonus_plan'] = plan
+        mem['summer_bonus_choice'] = target
+    target = plan['target']
+    metric = {**plan['metric'], 'visible': sorted(visible)}
     move = None
     if target in visible:
         for variant in SUMMER_BONUS_CHOICES[target]:
             move = menu_to(screen, variant, exact=False)
             if move:
                 break
-    if move is None:
-        # 選択位置が読めず移動できない。保留するとイベントが止まるので、
-        # 従来どおりそのまま確認する。
-        mem.pop('summer_bonus_choice', None)
-        _record(mem, 'prompt', choice=target, prompt=screen.text[-40:],
-                strategy_variant='summer_bonus_no_cursor',
-                reason='夏バテ（バカンス）の選択位置が読めないため移動せず既定の確認操作を送る',
-                observed_metric={**metric, 'hand_visible': screen.hand is not None})
-        return [pad('a')]
     if move == 'here':
-        mem.pop('summer_bonus_choice', None)
+        plan['confirmation_planned'] = True
+    if move is None:
+        # Move once, then read the next frame. Neither menu wrapping nor a
+        # cancellation behavior is assumed, and an unseen row is never accepted.
+        _record(mem, 'prompt', choice=None, target=target, prompt=screen.text[-40:],
+                strategy_variant='summer_bonus_no_cursor',
+                reason='夏バテの選択位置が読めないため上を1回押して再観測し、確認できるまで確定しない',
+                observed_metric={**metric, 'hand_visible': screen.hand is not None})
+        return [pad('up')]
+    if move == 'here':
         _record(mem, 'prompt', choice=target, prompt=screen.text[-40:],
-                strategy_variant=f'summer_bonus_{target}', reason=reason,
+                strategy_variant=f'summer_bonus_{target}', reason=plan['reason'],
                 observed_metric=metric)
         return [pad('a')]
     return [move]

@@ -35,8 +35,17 @@ def _near(pixel, color, tolerance=10):
     return all(abs(a - b) <= tolerance for a, b in zip(pixel, color))
 
 
-def find_hand(frame: Frame):
-    """Bounding box of the orange pointing-hand menu cursor, or None."""
+def find_hand(frame: Frame, *, option_positions=None):
+    """Unique orange hand, optionally aligned with known menu option positions.
+
+    Filter whole components rather than cropping: cutting a large orange sprite
+    at a menu boundary must not make it look like a hand.
+    """
+    def at_option(box):
+        return option_positions is None or any(
+            0 <= x - box[2] <= 48 and abs(y - (box[1] + 6)) <= 2
+            for x, y in option_positions)
+
     points = set()
     rgb, width = frame.rgb, frame.width
     for y in range(frame.height):
@@ -52,7 +61,8 @@ def find_hand(frame: Frame):
     # The hand is 18-20 px wide; a wider spread means two orange objects.
     x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
     if x1 - x0 <= 26 and y1 - y0 <= 18:
-        return x0, y0, x1, y1
+        box = x0, y0, x1, y1
+        return box if at_option(box) else None
     # g478: the merchant's orange sprite shares the cursor palette. A
     # global box merges both objects and loses the hand. Keep only a unique
     # connected component of the measured hand size; ambiguity still holds.
@@ -73,7 +83,8 @@ def find_hand(frame: Frame):
             continue
         xs, ys = zip(*component)
         box = min(xs), min(ys), max(xs), max(ys)
-        if 12 <= box[2] - box[0] <= 26 and 8 <= box[3] - box[1] <= 18:
+        if (12 <= box[2] - box[0] <= 26 and 8 <= box[3] - box[1] <= 18
+                and at_option(box)):
             candidates.append(box)
     return candidates[0] if len(candidates) == 1 else None
 
@@ -573,6 +584,14 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         white = row_masks(frame, lambda r, g, b: min(r, g, b) > 200)
         screen.cursor = _free_cursor(white, frame)
     screen.kind = classify_text(screen)
+    if screen.kind == 'summer_bonus' and screen.hand is None:
+        # An orange event sprite can make the global hand ambiguous. Only a
+        # unique whole hand aligned with an actual choice may recover it.
+        positions = [(x, line.y) for line in lines for x, word in line.spans()
+                     if any(word.startswith(v) for variants in SUMMER_BONUS_CHOICES.values()
+                            for v in variants)]
+        screen.hand = find_hand(frame, option_positions=positions)
+        screen.selected = _selected(lines, screen.hand)
     if screen.kind == 'unknown' and is_world_map(frame):
         screen.kind = 'world_map'
     return screen
@@ -597,7 +616,7 @@ def is_world_map(frame: Frame) -> bool:
 SUMMER_BONUS_CHOICES = {
     'vacation': ('バカンス', 'ばかんす'),
     'bonus': ('ボーナス', 'ぼーなす', 'ぼなす', 'ぼーナス'),
-    'discharge': ('まとめて解雇', 'まとめてかいほう'),
+    'discharge': ('まとめて解雇', 'まとめてかいこ', 'まとめてかいほう'),
 }
 
 
