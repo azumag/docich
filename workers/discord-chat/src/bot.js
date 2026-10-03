@@ -360,6 +360,7 @@ export class DiscordBot {
     if (typeof message.content !== "string") return;
     const botId = this.botUserId || await this.state.storage.get("bot_user_id");
     if (!botId || !isAddressedMessage(message, botId)) return;
+    safeLog(this.env, "mention_received");
     const timestamp = Date.parse(message.timestamp);
     if (!Number.isFinite(timestamp)) return;
     const ageSeconds = (Date.now() - timestamp) / 1000;
