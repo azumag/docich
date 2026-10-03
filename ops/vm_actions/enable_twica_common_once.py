@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
 import sys
+import time
+import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
@@ -38,6 +42,8 @@ EXIT = {
     "operation_failed": 50,
     "unexpected_install_root": 50,
     "unit_drift": 51,
+    "shared_overlay_restart_unavailable": 52,
+    "shared_overlay_health_not_ready": 53,
 }
 
 
@@ -90,6 +96,81 @@ def _select_shared_only(clients: list[dict], runtime_snapshot: dict) -> bool:
     raise ActivationBlocked("legacy_guards_not_ready")
 
 
+
+SHARED_OVERLAY_UNIT = "soren-shared-overlay.service"
+SHARED_OVERLAY_HEALTH = "http://127.0.0.1:8092/healthz"
+
+
+def _shared_overlay_health_ready() -> bool:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(SHARED_OVERLAY_HEALTH, timeout=2) as response:
+            raw = response.read(8193)
+    except (OSError, urllib.error.URLError):
+        return False
+    if len(raw) > 8192:
+        return False
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        return False
+    return (
+        isinstance(data, dict)
+        and data.get("ready") is True
+        and data.get("browserReady") is True
+        and data.get("layoutReady") is True
+        and data.get("overlayReady") is True
+    )
+
+
+def _restart_shared_overlay() -> None:
+    command = ["sudo", "-n", "systemctl", "restart", SHARED_OVERLAY_UNIT]
+    try:
+        result = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ActivationBlocked("shared_overlay_restart_unavailable") from exc
+    if result.returncode != 0:
+        raise ActivationBlocked("shared_overlay_restart_unavailable")
+    deadline = time.monotonic() + 25
+    while time.monotonic() < deadline:
+        active = subprocess.run(
+            ["systemctl", "is-active", "--quiet", SHARED_OVERLAY_UNIT],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+        if active.returncode == 0 and _shared_overlay_health_ready():
+            return
+        time.sleep(0.25)
+    raise ActivationBlocked("shared_overlay_health_not_ready")
+
+
+def _select_after_optional_shared_refresh(directory: Path, runtime_snapshot: dict) -> bool:
+    try:
+        return _select_shared_only(legacy_clients(directory), runtime_snapshot)
+    except ActivationBlocked as exc:
+        if str(exc) != "legacy_guards_not_ready":
+            raise
+    _restart_shared_overlay()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            return _select_shared_only(legacy_clients(directory), runtime_snapshot)
+        except ActivationBlocked as exc:
+            if str(exc) != "legacy_guards_not_ready":
+                raise
+        time.sleep(0.2)
+    raise ActivationBlocked("legacy_guards_not_ready")
+
 def _healthy(data: dict) -> bool:
     return (
         data.get("owner") == "common"
@@ -107,7 +188,8 @@ def main() -> int:
         _ops.install()
         directory = state_directory()
         g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
-        shared_only = _select_shared_only(legacy_clients(directory), collect_status(g))
+        runtime_snapshot = collect_status(g)
+        shared_only = _select_after_optional_shared_refresh(directory, runtime_snapshot)
         _ops.arm_stream(True, shared_only=shared_only)
         _ops.transfer(
             directory,
