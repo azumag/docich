@@ -78,8 +78,7 @@ async def probe(phase):
     worker = threading.Thread(target=server.serve_forever)
     worker.start()
     env = dict(os.environ)
-    env.update(DOCICH_DISCORD_GUILD_ID='1', DOCICH_DISCORD_CHANNEL_IDS='10,11',
-               DOCICH_DISCORD_LLM_BASE_URL=f'http://127.0.0.1:{server.server_port}/v1',
+    env.update(DOCICH_DISCORD_LLM_BASE_URL=f'http://127.0.0.1:{server.server_port}/v1',
                DOCICH_DISCORD_LLM_MODEL='synthetic-model')
     settings = chat.Settings.from_env(env)  # Actually read Compose-mounted secret as nonroot.
     client = chat.make_client(settings)
