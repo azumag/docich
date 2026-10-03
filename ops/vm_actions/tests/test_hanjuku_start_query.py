@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 AUTH = ROOT / "ops/vm_actions/authorize_hanjuku_start_query.py"
 WORKFLOW = ROOT / ".github/workflows/hanjuku-start-query.yml"
+START_SCRIPT = ROOT / "ops/vm_actions/start_hanjuku_corner.sh"
 
 
 def load_auth():
@@ -133,6 +134,18 @@ class HanjukuStartQueryWorkflowTests(unittest.TestCase):
         self.assertIn('"exec docich production $SHA"', text)
         self.assertNotIn("workflow_dispatch:", text)
         self.assertNotIn("INPUT_OPERATION", text)
+
+    def test_start_script_waits_for_the_durable_queue_result(self):
+        text = START_SCRIPT.read_text(encoding="utf-8")
+        syntax = subprocess.run(
+            ["bash", "-n", str(START_SCRIPT)], text=True, capture_output=True, check=False
+        )
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
+        self.assertNotIn("systemd-run", text)
+        queue_call = '"$DOCICH_HANJUKU_PYTHON" -m docich.hanjuku_corner >/dev/null'
+        self.assertIn(queue_call, text)
+        self.assertNotIn(queue_call + " &", text)
+        self.assertLess(text.index(queue_call), text.index("queued Hanjuku"))
 
 
 if __name__ == "__main__":
