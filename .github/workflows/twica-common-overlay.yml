@@ -1,0 +1,62 @@
+name: TwiCa common overlay contracts
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/twica-common*.yml'
+      - 'bin/docich-twica-*'
+      - 'deploy/twica-common/**'
+      - 'ops/vm_actions/twica_common.py'
+      - 'ops/vm_actions/twica_common_registry.json'
+      - 'requirements-twica-overlay.txt'
+      - 'src/docich/twica_*.py'
+      - 'tests/*twica*'
+      - 'games/soviet_now'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/twica-common*.yml'
+      - 'bin/docich-twica-*'
+      - 'deploy/twica-common/**'
+      - 'ops/vm_actions/twica_common.py'
+      - 'ops/vm_actions/twica_common_registry.json'
+      - 'requirements-twica-overlay.txt'
+      - 'src/docich/twica_*.py'
+      - 'tests/*twica*'
+      - 'games/soviet_now'
+
+permissions:
+  contents: read
+concurrency:
+  group: twica-common-overlay-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Check out exact reviewed Soren integration
+        run: git submodule update --init --depth 1 -- games/soviet_now
+      - name: Install isolated test dependencies
+        run: |
+          python3 -m venv .ci-twica-venv
+          .ci-twica-venv/bin/python -m pip install -r requirements-test.txt -r requirements-twica-overlay.txt
+          .ci-twica-venv/bin/python -m playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg xvfb
+      - name: Unit, real Chromium, actual X11 stacking and FFmpeg output
+        env:
+          PYTHONPATH: src
+          DOCICH_TWICA_BROWSER_TESTS: '1'
+          DOCICH_TWICA_NETWORK_TESTS: '1'
+        run: |
+          .ci-twica-venv/bin/python -m pytest -q tests/test_twica_*.py
+          node --test games/soviet_now/tests/test_twica_legacy_owner.mjs
+          bash -n bin/docich-twica-common
+          sh -n bin/docich-twica-ffmpeg
+          bash -n games/soviet_now/direct_stream.sh

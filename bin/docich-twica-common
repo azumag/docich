@@ -1,0 +1,12 @@
+#!/bin/bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOREN_ROOT="${SOREN_ROOT:-/home/ubuntu/soren}"
+# Existing operator-owned configuration. Never print or copy its credentials.
+if [ -f "${SOREN_ENV_FILE:-$SOREN_ROOT/.env}" ]; then
+  set -a
+  source "${SOREN_ENV_FILE:-$SOREN_ROOT/.env}"
+  set +a
+fi
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "$ROOT/run/twica-env/bin/python" -m docich.twica_service
