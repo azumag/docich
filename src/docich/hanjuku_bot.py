@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v129-battle-card-progress'
+BOT_VERSION = 'hanjuku-chart-v130-summer-cursor-evidence'
 
 # Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
 # frozen and the bot has planned no input for more than this many observations,
@@ -222,6 +222,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     updated.pop('_records',None)
     updated.pop('_experience',None)
     screen=parse(frame,phase=phase)
+    if policy.summer_bonus_continue(screen,mem):
+        screen.kind='summer_bonus'
     policy.observe_events(screen,mem)
     policy.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     kind=screen.kind
@@ -362,6 +364,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=policy.gift_step(screen,mem)
     elif kind=='summer_bonus':
         actions=policy.summer_bonus_step(screen,mem)
+    elif kind=='summer_bonus_message':
+        actions=[pad('a')]
     elif kind=='yes_no':
         actions=policy.yes_no_step(screen,mem)
     elif kind in {'castle_info','sealed_castle','main_menu'}:
@@ -401,7 +405,10 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     else:
         streak=1
     if not actions and streak>NO_INPUT_HOLD_MAX:
-        actions=legacy_actions(frame,phase,updated)
+        # Even this last-resort path must not confirm an unread summer option:
+        # the cursor may be on the mass-dismissal row. Reobserve after one move.
+        actions=([pad('up')] if kind=='summer_bonus'
+                 else legacy_actions(frame,phase,updated))
         if not actions:
             if phase=='field':
                 if kind in {'unknown','map'}:

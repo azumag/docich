@@ -2702,7 +2702,9 @@ def _project_corner_state(data):
         "battles_finished": _bounded_int(data.get("battles_finished")),
         "screen_unchanged_seconds": _finite_number(data.get("screen_unchanged_seconds")),
         "bot_version": (data.get("bot_version") if data.get("bot_version") in {
-            "hanjuku-script-v1", "hanjuku-chart-v2"} else None),
+            "hanjuku-script-v1", "hanjuku-chart-v2",
+            "hanjuku-chart-v129-battle-card-progress",
+            "hanjuku-chart-v130-summer-cursor-evidence"} else None),
         "bot_chart": _project_bot_chart(data.get("bot_chart")),
         "narration": _project_counts(data.get("narration"),
                                      ("enqueued", "delivery_failed", "skipped")),
