@@ -80,6 +80,7 @@ try {
   const health = await fetch(runtime.baseUrl + "/production-health");
   assert.equal(health.status, 200);
   assert.deepEqual(await health.json(), {
+    configured: false,
     connected: false,
     ready: false,
     pending: 0,
