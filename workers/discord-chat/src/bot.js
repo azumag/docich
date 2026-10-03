@@ -354,6 +354,7 @@ export class DiscordBot {
   }
 
   async #acceptMessage(message) {
+    safeLog(this.env, "message_create_received");
     if (!message?.guild_id || !message?.channel_id || !message?.id) return;
     if (message.author?.bot || message.webhook_id) return;
     if (![0, 19].includes(Number(message.type ?? 0))) return;
