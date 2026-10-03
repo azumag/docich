@@ -47,6 +47,8 @@ npm run dev:cf
 
 - `cloudflare.config.ts` をCfのプロジェクト設定とし、`GameState` のSQLite Durable Object exportと `GAME_STATE` bindingを宣言します。Cf移行時に生成した `wrangler.config.ts` では型生成を無効にしています。旧 `wrangler.toml` はテスト用設定として保持します。
 - version preview URLは `worker.previewUrls: false` を明示します。固定版Cfの実生成設定にもfalseが残ることを `test:bundle` で検証します。通常の `workers.dev` 公開URLを無効にする設定ではありません。互換日付は `2026-09-08` です。設定値は `test:workerd` と `test:bundle` がそれぞれruntimeとCf生成物で確認します。[Cf公式設定](https://developers.cloudflare.com/cf/projects/cloudflare-config/)
+- `observability.logs` はWorkers Logsへの永続化を有効にし、各 `/webhook` 応答についてallowlist済みの構造化イベントを1件出力します。イベントにはHTTP status、固定error code、elapsed、Worker version ID、strategy version、検証済みの現在局面と返したCSA手を必要に応じて含めます。通常のinvocation logsは無効にし、本文、署名、認証header、IP、任意のraw errorは記録しません。相手のlastMoveは規定のmask表現だけを記録します。新しいDB、Logpush先、Workerリソースは作成しません。
+- Cloudflareの現行Workers Logs料金表ではFree枠は200,000 events/day・3日保持、Paid枠は20 million events/month込み・7日保持で、超過分は課金対象です。2026-12-01から料金体系がCloudflare Observability pricingへ移行予定です。1 webhookにつき1イベントを保存する設定のため、実際のアカウント利用量は配備後に確認してください。[料金と保持期間](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)
 - production設定の `BOT_ID` は登録済みID `:DoCiAI` です。test-only runtimeの `wrangler.runtime.toml` はfixture ID `fixture-bot-id` を維持します。`WEBHOOK_SECRET` は値を含まないSecret binding宣言です。秘密値をソースやログに出力しないでください。ローカル値はGit管理外の `.dev.vars` に設定します。
 
 この構成のテストはCloudflareアカウントへ接続せず、fixturesとローカルworkerdを使います。Cloudflare上のbuild/deploy checkやruntimeリクエストの成功とは区別してください。

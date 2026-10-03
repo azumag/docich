@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import worker, { GameState, handleWebhook } from "../src/index.js";
 import { chooseObservedMove, parseVisibleSfen } from "../src/bot.js";
 import { MAX_BODY_BYTES } from "../src/protocol.js";
@@ -13,6 +13,9 @@ const incrementalFixture = JSON.parse(readFileSync(new URL("incremental-request.
 const foulFixture = JSON.parse(readFileSync(new URL("foul-request.json", FIXTURE_DIR), "utf8"));
 const relayDropFixture = JSON.parse(readFileSync(new URL("relay-drop-request.json", FIXTURE_DIR), "utf8"));
 const encoder = new TextEncoder();
+const originalConsoleLog = console.log;
+console.log = () => {};
+after(() => { console.log = originalConsoleLog; });
 
 class MemoryStorage {
   constructor() {
@@ -54,7 +57,23 @@ function stateBinding() {
 }
 
 function env(binding = stateBinding()) {
-  return { BOT_ID, WEBHOOK_SECRET: SECRET, GAME_STATE: binding };
+  return {
+    BOT_ID,
+    WEBHOOK_SECRET: SECRET,
+    GAME_STATE: binding,
+    CF_VERSION_METADATA: { id: "version-fixture-123", tag: "test", timestamp: "2026-10-03T00:00:00.000Z" },
+  };
+}
+
+async function captureDiagnosticLogs(callback) {
+  const records = [];
+  const original = console.log;
+  console.log = (value) => records.push(value);
+  try {
+    return { result: await callback(), records };
+  } finally {
+    console.log = original;
+  }
 }
 
 async function sha256Hex(bytes) {
@@ -89,6 +108,7 @@ async function post(payload, options = {}) {
   return handleWebhook(request, options.env ?? env(options.binding), {
     nowSeconds: options.nowSeconds ?? 1_000_000,
     rpcBudgetMs: options.rpcBudgetMs,
+    requestBudgetMs: options.requestBudgetMs,
   });
 }
 
@@ -110,6 +130,130 @@ test("initial request fixture returns a deterministic CSA-shaped move", async ()
   assert.equal(response.status, 200);
   const { move } = await responseJson(response);
   assert.match(move, /^\+[1-9]{4}(?:FU|KY|KE|GI|KI|KA|HI|TO|NY|NK|NG|UM|RY)$/);
+});
+
+test("structured diagnostic captures only the initial masked position and emitted move", async () => {
+  const { result: response, records } = await captureDiagnosticLogs(() => post(initialFixture));
+  assert.equal(response.status, 200);
+  assert.equal(records.length, 1);
+  const [event] = records;
+  const { move } = await responseJson(response);
+  assert.equal(event.event, "tsuitate_webhook");
+  assert.equal(event.status, 200);
+  assert.equal(event.errorCode, null);
+  assert.equal(event.gameId, initialFixture.gameId);
+  assert.equal(event.color, "b");
+  assert.equal(event.seat, 0);
+  assert.equal(event.ply, 0);
+  assert.equal(event.observation.sfen, initialFixture.positions["0"].sfen);
+  assert.deepEqual(event.observation.fouls, initialFixture.positions["0"].fouls);
+  assert.equal(event.issuedMove, move);
+  assert.equal(event.strategyVersion, "observed-sfen-heuristic-v1");
+  assert.equal(event.codeVersion, "version-fixture-123");
+  assert.equal(Number.isInteger(event.elapsedMs), true);
+  assert.equal(Object.hasOwn(event, "positions"), false);
+  assert.equal(Object.hasOwn(event, "headers"), false);
+  assert.equal(Object.hasOwn(event, "ip"), false);
+  assert.equal(JSON.stringify(event).includes(SECRET), false);
+});
+
+test("first white turn at ply 1 records the masked opponent opening only", async () => {
+  const whiteFirstTurn = {
+    requestId: "diagnostic-white-opening",
+    gameId: "diagnostic-white-opening",
+    color: "w",
+    number: 0,
+    ply: 1,
+    positions: {
+      "0": { sfen: "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/9/9/9 b - 1" },
+      "1": {
+        sfen: "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/9/9/9 w - 2",
+        lastMove: "+0000ZZ",
+        lastInfo: 0,
+        fouls: { b: 0, w: 0 },
+        times: { b: 300, w: 300 },
+        byoyomiActive: { b: false, w: false },
+      },
+    },
+    game: { type: "ついたて", requiredPlayers: { b: 1, w: 1 } },
+  };
+  const { result: response, records } = await captureDiagnosticLogs(() => post(whiteFirstTurn));
+  assert.equal(response.status, 200);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].ply, 1);
+  assert.equal(records[0].color, "w");
+  assert.equal(records[0].observation.sfen, whiteFirstTurn.positions["1"].sfen);
+  assert.equal(records[0].observation.lastMove, "+0000ZZ");
+  assert.match(records[0].issuedMove, /^-/);
+
+  const unmasked = structuredClone(whiteFirstTurn);
+  unmasked.requestId = "diagnostic-unmasked-opponent";
+  unmasked.positions["1"].lastMove = "+7776FU";
+  const maskedResult = await captureDiagnosticLogs(() => post(unmasked));
+  assert.equal(maskedResult.result.status, 200);
+  assert.equal(Object.hasOwn(maskedResult.records[0].observation, "lastMove"), false);
+});
+
+test("diagnostics distinguish authentication, configuration, validation, state timeout and request timeout", async () => {
+  const authBody = JSON.stringify({ ...initialFixture, marker: "raw-body-marker" });
+  const authRequest = await signedRequest(authBody, { botId: "wrong-bot-id" });
+  authRequest.headers.set("X-Diagnostic-Marker", "header-marker");
+  authRequest.headers.set("CF-Connecting-IP", "203.0.113.88");
+  const auth = await captureDiagnosticLogs(() => handleWebhook(authRequest, env(), { nowSeconds: 1_000_000 }));
+  assert.equal(auth.result.status, 401);
+  assert.equal(auth.records[0].errorCode, "authentication_failed");
+  const authLog = JSON.stringify(auth.records[0]);
+  for (const marker of [SECRET, "raw-body-marker", "header-marker", "203.0.113.88", "X-Tsuitate-Signature"]) {
+    assert.equal(authLog.includes(marker), false);
+  }
+
+  const missingSecretEnv = {
+    BOT_ID,
+    GAME_STATE: stateBinding(),
+    CF_VERSION_METADATA: { id: "version-fixture-config" },
+  };
+  const config = await captureDiagnosticLogs(() => post(initialFixture, { env: missingSecretEnv }));
+  assert.equal(config.result.status, 503);
+  assert.equal(config.records[0].errorCode, "webhook_not_configured");
+
+  const unsupported = structuredClone(initialFixture);
+  unsupported.game.type = "ついたて5五";
+  const validation = await captureDiagnosticLogs(() => post(unsupported));
+  assert.equal(validation.result.status, 422);
+  assert.equal(validation.records[0].errorCode, "unsupported_game_type");
+  assert.equal(validation.records[0].gameId, unsupported.gameId);
+
+  const hangingBinding = {
+    idFromName: (name) => name,
+    get: () => ({ fetch: () => new Promise(() => {}) }),
+  };
+  const stateTimeout = await captureDiagnosticLogs(() => post(initialFixture, {
+    binding: hangingBinding,
+    rpcBudgetMs: 2,
+  }));
+  assert.equal(stateTimeout.result.status, 503);
+  assert.equal(stateTimeout.records[0].errorCode, "state_timeout");
+  assert.equal(stateTimeout.records[0].ply, 0);
+
+  const stalledBody = new ReadableStream({ start() {} });
+  const requestTimeoutRequest = new Request("https://worker.test/webhook", {
+    method: "POST",
+    duplex: "half",
+    headers: {
+      "content-type": "application/json",
+      "X-Tsuitate-Bot-Id": BOT_ID,
+      "X-Tsuitate-Timestamp": "1000000",
+      "X-Tsuitate-Signature": `sha256=${"0".repeat(64)}`,
+      "x-amz-content-sha256": "0".repeat(64),
+    },
+    body: stalledBody,
+  });
+  const requestTimeout = await captureDiagnosticLogs(() => handleWebhook(requestTimeoutRequest, env(), {
+    nowSeconds: 1_000_000,
+    requestBudgetMs: 2,
+  }));
+  assert.equal(requestTimeout.result.status, 503);
+  assert.equal(requestTimeout.records[0].errorCode, "request_timeout");
 });
 
 test("incremental fixture appends every expected position and answers", async () => {
