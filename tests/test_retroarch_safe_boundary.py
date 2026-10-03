@@ -492,10 +492,12 @@ def test_scripted_hanjuku_small_render_keeps_aspect_and_contains_at_broadcast_ra
     assert command[command.index('--framerate') + 1] == '30'
     assert '--fit' not in command  # default contain preserves the source aspect
     assert command.index('--nearest') < command.index('--')
+    assert command[command.index('--align') + 1] == 'left'
 
 
 def test_other_retroarch_games_keep_the_3x_contain_projection(adapter):
     command = adapter._game_command()
     assert '--framerate' not in command and '--fit' not in command and '--nearest' not in command
+    assert '--align' not in command
     lines = retroarch_cfg_lines(adapter.g, adapter.game, adapter._cfg_path(), adapter._network_port())
     assert 'video_scale = "3.0"' in lines and 'video_force_aspect = "true"' in lines

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import random
 import re
+import time
 from dataclasses import asdict
 
 from . import hanjuku_chart as chart
@@ -2869,6 +2870,8 @@ def _observe_garrison(screen, mem, order):
     if present is None or not castle:
         return
     garrison = mem.setdefault('garrison', {})
+    # Display-only evidence: decisions never consult this wall-clock field.
+    mem.setdefault('garrison_observed_at', {})[castle] = time.time()
     mem['general_location_unknown'] = [g for g in mem.get('general_location_unknown') or ()
                                        if g not in present or not _general_visible(screen, g)]
     verification = mem.get('recruit_verification') or {}
@@ -2888,6 +2891,10 @@ def _observe_garrison(screen, mem, order):
 def _garrison_move(mem, general, source=None, target=None):
     """A general left ``source`` and/or now holds ``target`` (known lists only)."""
     garrison = mem.setdefault('garrison', {})
+    # Movement-derived roster changes are not new observations.
+    observed = mem.setdefault('garrison_observed_at', {})
+    observed.pop(source, None)
+    observed.pop(target, None)
     if source and garrison.get(source) is not None:
         garrison[source] = [g for g in garrison[source] if g != general]
     if target and general:
@@ -3743,6 +3750,7 @@ def _card_battle_reading(screen, cur, mem=None):
     if mem is not None:
         mem['egg_battle'] = False
     cur['enemy_hp'], cur['ally_hp'] = b.enemy_hp, b.ally_hp
+    cur['hp_observed_at'] = time.time()
     counts = getattr(screen, 'field_soldiers', None)
     if not isinstance(counts, (tuple, list)) or len(counts) != 2:
         counts = (None, None)

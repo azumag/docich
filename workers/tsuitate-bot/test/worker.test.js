@@ -256,6 +256,35 @@ test("diagnostics distinguish authentication, configuration, validation, state t
   assert.equal(requestTimeout.records[0].errorCode, "request_timeout");
 });
 
+test("invalid_position diagnostics expose only the fixed field, index and value type", async () => {
+  const malformed = structuredClone(initialFixture);
+  malformed.requestId = "validation-diagnostic-request";
+  malformed.gameId = "validation-diagnostic-game";
+  malformed.ply = 1;
+  malformed.positions["1"] = {
+    ...structuredClone(initialFixture.positions["0"]),
+    lastInfo: "position-value-marker",
+  };
+  const rawBody = JSON.stringify(malformed);
+  const { result, records } = await captureDiagnosticLogs(() => post(malformed));
+
+  assert.equal(result.status, 400);
+  const responseBody = await responseJson(result);
+  assert.deepEqual(responseBody, { error: "invalid_position" });
+  assert.equal(records.length, 1);
+  const [event] = records;
+  assert.equal(event.errorCode, "invalid_position");
+  assert.equal(event.validationFailureStage, "last_info");
+  assert.equal(event.positionIndex, 1);
+  assert.equal(event.fieldType, "string");
+  assert.equal(Object.hasOwn(responseBody, "validationFailureStage"), false);
+
+  const serialized = JSON.stringify(event);
+  for (const forbidden of [SECRET, BOT_ID, rawBody, "position-value-marker", "lastInfo"]) {
+    assert.equal(serialized.includes(forbidden), false, "diagnostic included " + forbidden);
+  }
+});
+
 test("authentication failures log only fixed auth stages and preserve the HTTP error contract", async (t) => {
   const rawBody = JSON.stringify({ ...initialFixture, marker: "raw-body-marker" });
   const cases = [
@@ -436,14 +465,26 @@ test("incremental fixture appends every expected position and answers", async ()
   assert.equal(object.state.storage.values.get("position:b:0:2").wasPromotion, false);
 });
 
-test("lastCapture is optional and uses an unpromoted USI piece-kind code", async () => {
+test("lastCapture accepts documented CSA codes and existing USI codes", async () => {
   const binding = stateBinding();
   assert.equal((await post(initialFixture, { binding })).status, 200);
   assert.equal((await post(incrementalFixture, { binding })).status, 200);
   assert.equal(binding.objects.get(incrementalFixture.gameId).state.storage.values
     .get("position:b:0:2").lastCapture, "P");
 
-  for (const lastCapture of ["FU", "+P", "", null, "p"]) {
+  const csaInitial = structuredClone(initialFixture);
+  csaInitial.gameId = "csa-capture-demo";
+  csaInitial.requestId = "csa-capture-demo:0:b:0";
+  assert.equal((await post(csaInitial, { binding })).status, 200);
+  const csaCapture = structuredClone(incrementalFixture);
+  csaCapture.gameId = csaInitial.gameId;
+  csaCapture.requestId = "csa-capture-demo:2:b:0";
+  csaCapture.positions["2"].lastCapture = "FU";
+  assert.equal((await post(csaCapture, { binding })).status, 200);
+  assert.equal(binding.objects.get(csaInitial.gameId).state.storage.values
+    .get("position:b:0:2").lastCapture, "FU");
+
+  for (const lastCapture of ["+P", "", null, "p", "fu", "FU!", "not-a-piece-marker"]) {
     const malformed = structuredClone(incrementalFixture);
     malformed.requestId = "invalid-capture:" + String(lastCapture);
     malformed.positions["2"].lastCapture = lastCapture;
@@ -458,6 +499,38 @@ test("lastCapture is optional and uses an unpromoted USI piece-kind code", async
   assert.equal((await post(noCapture, { binding })).status, 200);
   assert.equal(Object.hasOwn(binding.objects.get(noCapture.gameId).state.storage.values
     .get("position:b:0:0"), "lastCapture"), false);
+});
+
+test("rejected lastCapture strings log only fixed value classes", async () => {
+  const cases = [
+    ["", "empty_string"],
+    ["fu", "lowercase_piece_code"],
+    ["private-value-marker", "other_string"],
+  ];
+  for (const [value, valueClass] of cases) {
+    const malformed = structuredClone(initialFixture);
+    malformed.gameId = "capture-class-" + valueClass;
+    malformed.requestId = "capture-class-" + valueClass + ":0:b:0";
+    malformed.positions["0"].lastCapture = value;
+    const rawBody = JSON.stringify(malformed);
+    const { result, records } = await captureDiagnosticLogs(() => post(malformed));
+
+    assert.equal(result.status, 400);
+    const responseBody = await responseJson(result);
+    assert.deepEqual(responseBody, { error: "invalid_position" });
+    assert.equal(records.length, 1);
+    const [event] = records;
+    assert.equal(event.validationFailureStage, "last_capture");
+    assert.equal(event.positionIndex, 0);
+    assert.equal(event.fieldType, "string");
+    assert.equal(event.validationFailureValueClass, valueClass);
+    assert.equal(Object.hasOwn(responseBody, "validationFailureValueClass"), false);
+
+    const serialized = JSON.stringify(event);
+    for (const forbidden of [SECRET, BOT_ID, rawBody, value]) {
+      if (forbidden) assert.equal(serialized.includes(forbidden), false, "diagnostic included a private value");
+    }
+  }
 });
 
 test("same request ID and exact body returns the persisted response after DO recreation", async () => {
@@ -769,3 +842,5 @@ test("only an observed own piece is selected and king movement is not guessed", 
   assert.notEqual(source.type, "K");
   assert.notEqual(destination?.owner, "b");
 });
+
+

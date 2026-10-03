@@ -1,6 +1,8 @@
 import { chooseObservedMove } from "./bot.js";
 import {
   MAX_BODY_BYTES,
+  POSITION_VALIDATION_STAGES,
+  POSITION_VALUE_CLASSES,
   ProtocolFault,
   extractRequestIdentity,
   isRecord,
@@ -29,6 +31,7 @@ const AUTH_FAILURE_STAGES = new Set([
   "body_hash_missing", "body_hash_format", "body_hash_mismatch",
   "signature_missing", "signature_format", "signature_mismatch",
 ]);
+const POSITION_FIELD_TYPES = new Set(["undefined", "null", "array", "object", "string", "number", "boolean"]);
 const CSA_MOVE = /^[+-](?:(?:[1-9]{4}(?:FU|KY|KE|GI|KI|KA|HI|OU|TO|NY|NK|NG|UM|RY))|(?:00[1-9]{2}(?:FU|KY|KE|GI|KI|KA|HI))|(?:0000TORYO))$/;
 const MASKED_OPPONENT_MOVE = /^[+-](?:0000ZZ|00[1-9]{2}ZZ)$/;
 const BOT_ID_FORMAT = /^[A-Za-z0-9:][A-Za-z0-9._:-]{0,63}$/;
@@ -70,8 +73,21 @@ function captureValidatedDiagnosticContext(value, diagnostics) {
     diagnostics.ply = payload.ply;
     diagnostics.gameType = payload.game?.type;
     diagnostics.observation = safeDiagnosticObservation(payload.positions[String(payload.ply)], payload.color);
-  } catch {
-    // Invalid/untrusted fields are omitted; the fixed response error is logged separately.
+  } catch (error) {
+    if (error instanceof ProtocolFault && error.code === "invalid_position"
+        && POSITION_VALIDATION_STAGES.includes(error.validationFailureStage)
+        && Number.isSafeInteger(error.positionIndex)
+        && error.positionIndex >= 0 && error.positionIndex <= 10000
+        && POSITION_FIELD_TYPES.has(error.fieldType)) {
+      diagnostics.validationFailureStage = error.validationFailureStage;
+      diagnostics.positionIndex = error.positionIndex;
+      diagnostics.fieldType = error.fieldType;
+      if (error.validationFailureStage === "last_capture"
+          && error.fieldType === "string"
+          && POSITION_VALUE_CLASSES.includes(error.validationFailureValueClass)) {
+        diagnostics.validationFailureValueClass = error.validationFailureValueClass;
+      }
+    }
   }
 }
 
@@ -90,6 +106,20 @@ function recordWebhookDiagnostic(env, diagnostics, status, elapsedMs) {
   }
   if (AUTH_FAILURE_STAGES.has(diagnostics.authFailureStage)) {
     event.authFailureStage = diagnostics.authFailureStage;
+  }
+  if (diagnostics.errorCode === "invalid_position"
+      && POSITION_VALIDATION_STAGES.includes(diagnostics.validationFailureStage)
+      && Number.isSafeInteger(diagnostics.positionIndex)
+      && diagnostics.positionIndex >= 0 && diagnostics.positionIndex <= 10000
+      && POSITION_FIELD_TYPES.has(diagnostics.fieldType)) {
+    event.validationFailureStage = diagnostics.validationFailureStage;
+    event.positionIndex = diagnostics.positionIndex;
+    event.fieldType = diagnostics.fieldType;
+    if (diagnostics.validationFailureStage === "last_capture"
+        && diagnostics.fieldType === "string"
+        && POSITION_VALUE_CLASSES.includes(diagnostics.validationFailureValueClass)) {
+      event.validationFailureValueClass = diagnostics.validationFailureValueClass;
+    }
   }
   try {
     // Only this fixed, allowlisted object is persisted by Workers Logs. Never pass request/env/error objects.
@@ -505,3 +535,5 @@ export class GameState {
 export default {
   fetch: handleWebhook,
 };
+
+

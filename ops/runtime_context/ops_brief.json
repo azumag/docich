@@ -1,11 +1,11 @@
 {
-  "output_sha256": "03f24adc63a1ea45be449fa72c4049bc398fb58ab3ded3cc5ad5fa4626e65e7f",
+  "output_sha256": "91385315e567db868a91c38ac5ea0e51838ae293cf57c9c480d62029653695c0",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "644694fbafcb692494965670da45a4f3e8dca10330158c99d9d4d7b7c4a54d28",
+  "source_sha256": "fe6b33736b6dc4b05f28160a415539a2dc0f5e78a1d7cdab44dfdec888f5e958",
   "topics": [
-    "半熟英雄の詳細を読みやすいカードに変更し、次期レイアウトを登録",
-    "ステータス表示の余白・半熟英雄の詳細・固定名称を改善して本番確認",
-    "ステータス表示のパネルと左端アクセントを削除して本番確認"
+    "VM CPU削減を正規配備し、fork減少と配信継続を実測",
+    "半熟英雄の余白カードを正規配備し、自然起動での受入れ待ち",
+    "VM CPU削減のSoren修正をmain統合、正規配備を準備"
   ]
 }

@@ -86,7 +86,9 @@ def _cell_aspect(value: str) -> float:
 
 
 def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0,
-                   nearest: bool = False) -> str:
+                   nearest: bool = False, align: str = 'center') -> str:
+    if align not in ('center', 'left'):
+        raise ValueError('invalid contain alignment')
     filters = []
     if cell_stretch != 1.0:
         # 端末セルを正方形として見せるための水平補正。等倍 (既定) では従来と
@@ -96,9 +98,27 @@ def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0,
         filters.append(f"scale=iw*{cell_stretch:g}:ih:flags=neighbor")
     filters.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease"
                    + (":flags=neighbor" if nearest else ""))
-    filters.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
+    x = '0' if align == 'left' else '(ow-iw)/2'
+    filters.append(f"pad={width}:{height}:{x}:(oh-ih)/2:color=black")
     filters.append("setsar=1")
     return ",".join(filters)
+
+
+def measured_contain_size(native_width, native_height, width, height):
+    """Measure the actual RGB scaling pipeline, including FFmpeg rounding."""
+    result = subprocess.run([
+        'ffmpeg', '-v', 'info', '-f', 'rawvideo', '-pix_fmt', 'bgra',
+        '-s', f'{native_width}x{native_height}', '-i', 'pipe:0',
+        '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease:flags=neighbor,showinfo',
+        '-frames:v', '1', '-f', 'null', '-',
+    ], input=bytes(native_width * native_height * 4), capture_output=True, check=True, timeout=10)
+    sizes = re.findall(rb'\bs:(\d+)x(\d+)\b', result.stderr)
+    if len(sizes) != 1:
+        raise RuntimeError('contain measurement unavailable')
+    w, h = map(int, sizes[0])
+    if not (0 < w <= width and 0 < h <= height):
+        raise RuntimeError('contain measurement outside viewport')
+    return w, h
 
 
 def tv_filter(width: int, height: int) -> str:
@@ -170,6 +190,7 @@ def _parser() -> argparse.ArgumentParser:
     # exact named window changes; never restart repeatedly against one failed
     # window.
     parser.add_argument('--rebind-window', action='store_true')
+    parser.add_argument('--align', choices=('center', 'left'), default='center')
     parser.add_argument('--runtime-state')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     return parser
@@ -302,7 +323,10 @@ def main(argv=None) -> int:
             raise RuntimeError('native game viewer did not appear')
         output_env = dict(os.environ, DISPLAY=args.display)
 
+        projection = {}
+
         def start_projection(window_id):
+            nonlocal projection
             geometry = subprocess.check_output(
                 ['xdotool', 'getwindowgeometry', '--shell', window_id],
                 env=source_env, text=True, timeout=2)
@@ -313,23 +337,34 @@ def main(argv=None) -> int:
             cell_note = '' if args.cell_stretch is None else f' cell-stretch={args.cell_stretch:g}'
             print(f'native={width}x{height} output={args.width}x{args.height} fit={args.fit}'
                   f' fps={args.framerate}{cell_note}', flush=True)
+            player_width = args.width
+            video_filter = (tv_filter(args.width, args.height) if args.fit == 'tv'
+                            else contain_filter(args.width, args.height,
+                                                cell_stretch=args.cell_stretch or 1.0,
+                                                nearest=args.nearest, align=args.align))
+            if args.align == 'left':
+                if args.fit != 'contain' or args.cell_stretch not in (None, 1.0):
+                    raise RuntimeError('left projection requires native contain')
+                player_width, content_height = measured_contain_size(width, height, args.width, args.height)
+                # Remove only black padding from the projection window, exposing
+                # the shared browser behind it. Native capture/input stay intact.
+                video_filter += f',crop={player_width}:{args.height}:0:0:exact=1'
+                projection = {'align': 'left', 'viewport': [args.x, args.y, args.width, args.height],
+                              'content': [0, (args.height-content_height)//2, player_width, content_height]}
             process = launch([
                 'ffplay', '-loglevel', 'warning', '-nostats', '-an', '-sn',
                 '-f', 'x11grab', '-framerate', str(args.framerate), '-draw_mouse', '0',
                 '-window_id', window_id, '-video_size', f'{width}x{height}',
                 '-i', f':{number}',
-                '-vf', (tv_filter(args.width, args.height) if args.fit == 'tv'
-                        else contain_filter(args.width, args.height,
-                                            cell_stretch=args.cell_stretch or 1.0,
-                                            nearest=args.nearest)),
+                '-vf', video_filter,
                 '-noborder', '-window_title', args.title,
                 '-left', str(args.x), '-top', str(args.y),
-                '-x', str(args.width), '-y', str(args.height),
+                '-x', str(player_width), '-y', str(args.height),
             ], env=output_env)
             return process, width, height
 
         player, width, height = start_projection(window)
-        _write_state(args.runtime_state, status='ready', display=f':{number}',
+        _write_state(args.runtime_state, status='ready', projection=projection, display=f':{number}',
                      window=window, width=width, height=height,
                      groups=[child.pid for child in children])
         # In the runtime-tracked RetroArch path, loss of the projection alone
@@ -386,7 +421,7 @@ def main(argv=None) -> int:
                         projection_failed = False
                         projection_failed_at = None
                         if args.runtime_state:
-                            _write_state(args.runtime_state, status='ready',
+                            _write_state(args.runtime_state, status='ready', projection=projection,
                                          display=f':{number}', window=window,
                                          width=width, height=height,
                                          groups=[child.pid for child in children])

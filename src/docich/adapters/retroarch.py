@@ -471,7 +471,7 @@ class RetroArchCoordinatorAdapter:
                 '--x', str(d.viewport_x), '--y', str(d.viewport_y),
                 '--width', str(d.viewport_width), '--height', str(d.viewport_height),
                 '--window-pattern', '^RetroArch',
-                *(['--framerate', '30', '--nearest'] if scripted_hanjuku(self.game) else []),
+                *(['--framerate', '30', '--nearest', '--align', 'left'] if scripted_hanjuku(self.game) else []),
                 '--runtime-state', str(self._presentation_path()),
                 *(['--audio-sink', audio_sink] if audio_enabled else []),
                 *(['--audio-volume-percent', str(volume)] if audio_enabled and volume is not None else []),
@@ -537,6 +537,9 @@ class RetroArchCoordinatorAdapter:
             raise AdapterError("safe RetroArch requires a private contained presentation")
         resolve_rom(self.g, self.game)
         resolve_core(self.game)
+        from ..hanjuku_run import enabled as scripted_hanjuku
+        if self._contained() and scripted_hanjuku(self.game) and procs.which("ffmpeg") is None:
+            raise AdapterError("コマンドが見つかりません: ffmpeg")
         for binary in ("dbus-run-session", "retroarch", *(("Xvfb", "ffplay", "xdotool")
                                                         if self._contained() else ())):
             if procs.which(binary) is None:
