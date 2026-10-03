@@ -13,7 +13,7 @@ const output = await readBuildOutput(root); // Missing/malformed build output fa
 const built = output.workers.default;
 const { config, bundleDir } = built;
 assert.equal(config.name, "docich-tsuitate-bot");
-assert.equal(config.compatibilityDate, "2026-09-21");
+assert.equal(config.compatibilityDate, "2026-09-08");
 assert.equal(config.previewUrls, false, "the pinned Cf build must preserve disabled version preview URLs");
 assert.deepEqual(config.exports.GameState, { type: "durable-object", storage: "sqlite" });
 assert.deepEqual(config.env.GAME_STATE, {

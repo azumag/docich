@@ -12,6 +12,8 @@ const workerDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
 const secret = "test-only-not-a-deployable-secret";
 const botId = "fixture-bot-id";
 const initialFixture = JSON.parse(await readFile(join(workerDirectory, "test/fixtures/initial-request.json"), "utf8"));
+const runtimeConfig = await readFile(join(workerDirectory, "wrangler.runtime.toml"), "utf8");
+assert.match(runtimeConfig, /^compatibility_date = "2026-09-08"$/m);
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -33,7 +35,7 @@ async function stopProcess(child) {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 }
 
-async function startRuntime(compatibilityDateOverride = null) {
+async function startRuntime() {
   const tempDirectory = await mkdtemp(join(tmpdir(), "tsuitate-workerd-"));
   const port = await availablePort();
   const args = [
@@ -43,8 +45,6 @@ async function startRuntime(compatibilityDateOverride = null) {
     "--var", `WEBHOOK_SECRET:${secret}`,
     "--show-interactive-dev-session=false", "--log-level", "error",
   ];
-  if (compatibilityDateOverride) args.push("--compatibility-date", compatibilityDateOverride);
-
   const child = spawn("wrangler", args, {
     cwd: workerDirectory,
     env: {
@@ -68,7 +68,7 @@ async function startRuntime(compatibilityDateOverride = null) {
       try {
         const health = await fetch(`${baseUrl}/__runtime_test/health`, { signal: AbortSignal.timeout(500) });
         if (health.status === 200 && await health.text() === "ok") {
-          return { child, baseUrl, tempDirectory, output: () => output, compatibilityDateOverride };
+          return { child, baseUrl, tempDirectory, output: () => output };
         }
       } catch {
         // Wrangler may need several seconds to start the local workerd runtime.
@@ -80,22 +80,6 @@ async function startRuntime(compatibilityDateOverride = null) {
     await stopProcess(child);
     await rm(tempDirectory, { recursive: true, force: true });
     throw error;
-  }
-}
-
-async function startWithAvailableCompatibilityDate() {
-  try {
-    const runtime = await startRuntime();
-    console.log("workerd compatibility date: wrangler.runtime.toml default (2026-09-21)");
-    return runtime;
-  } catch (error) {
-    const output = String(error?.message ?? error);
-    const supported = /newest date supported by this server binary is [\"']?(\d{4}-\d{2}-\d{2})/.exec(output)?.[1];
-    if (!supported) throw error;
-    console.log(`local workerd does not support 2026-09-21; retrying with its reported latest date ${supported}`);
-    const runtime = await startRuntime(supported);
-    console.log(`workerd compatibility date override: ${supported}`);
-    return runtime;
   }
 }
 
@@ -184,7 +168,8 @@ async function testLateCommitRetry(baseUrl) {
 
 let runtime;
 try {
-  runtime = await startWithAvailableCompatibilityDate();
+  runtime = await startRuntime();
+  console.log("workerd compatibility date: wrangler.runtime.toml (2026-09-08), no CLI override");
   await testConcurrentSameRequest(runtime.baseUrl);
   await testConcurrentChangedBody(runtime.baseUrl);
   await testStorageRollback(runtime.baseUrl);

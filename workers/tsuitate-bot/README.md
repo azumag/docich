@@ -29,9 +29,9 @@ npm run test:workerd
 npm run test:bundle
 ```
 
-`test:workerd`は`wrangler.runtime.toml`のtest-only Workerを`wrangler dev --local`で起動し、同じ要求の同時送信、同じrequestIdの別本文競合、storage書込み例外後のSQLite transaction rollback、timeout応答後のlate commit再送を検証します。runtimeが設定compatibility dateに未対応なら、起動エラーに表示された最新対応日へテスト実行中だけ上書きし、その日付を出力します。テスト状態は一時ディレクトリへ保存して終了時に削除し、Cloudflareアカウントやリソースにはアクセスしません。この設定はローカル専用で、deployしないでください。
+`test:workerd`は`wrangler.runtime.toml`に設定した`2026-09-08`をCLIで上書きせずに使い、同じ要求の同時送信、同じrequestIdの別本文競合、storage書込み例外後のSQLite transaction rollback、timeout応答後のlate commit再送を検証します。設定日のruntimeを起動できない場合はテストを失敗させます。テスト状態は一時ディレクトリへ保存して終了時に削除し、Cloudflareアカウントやリソースにはアクセスしません。この設定はローカル専用で、deployしないでください。
 
-GitHub Actionsは依存関係をインストールし、設定に記録した `2026-09-21` のままCf buildとローカル検証を実行します。全体テストは通常のnpm installで取得したWranglerを使います。異なるWrangler/workerd版では互換日付の扱いが変わることがあるため、runtimeを更新する場合はoverrideなしで再検証してください。
+本番用Cloudflare設定とtest-onlyの両Wrangler設定は `2026-09-08` を使います。GitHub Actionsは依存関係をインストールし、この日付のままCf build、`test:workerd`、生成bundle検証を実行します。`test:bundle`はCfの実生成設定から日付を読み、overrideせずにbundleを検証します。
 
 Cloudflare CLIでWorkerをローカル起動する場合は、`.dev.vars` にローカル専用の `BOT_ID` と `WEBHOOK_SECRET` を設定し、次を実行します。値はコードへ書かず、このファイルをGitへ追加しないでください。
 
@@ -46,7 +46,7 @@ npm run dev:cf
 ## Cloudflare設定
 
 - `cloudflare.config.ts` をCfのプロジェクト設定とし、`GameState` のSQLite Durable Object exportと `GAME_STATE` bindingを宣言します。Cf移行時に生成した `wrangler.config.ts` では型生成を無効にしています。旧 `wrangler.toml` はテスト用設定として保持します。
-- version preview URLは `worker.previewUrls: false` を明示します。固定版Cfの実生成設定にもfalseが残ることを `test:bundle` で検証します。通常の `workers.dev` 公開URLを無効にする設定ではありません。互換日付は `2026-09-21` です。実配備では配備先との互換日付の一致も確認してください。[Cf公式設定](https://developers.cloudflare.com/cf/projects/cloudflare-config/)
+- version preview URLは `worker.previewUrls: false` を明示します。固定版Cfの実生成設定にもfalseが残ることを `test:bundle` で検証します。通常の `workers.dev` 公開URLを無効にする設定ではありません。互換日付は `2026-09-08` です。設定値は `test:workerd` と `test:bundle` がそれぞれruntimeとCf生成物で確認します。[Cf公式設定](https://developers.cloudflare.com/cf/projects/cloudflare-config/)
 - `BOT_ID` はplaceholderで、`WEBHOOK_SECRET` は値を含まないSecret binding宣言です。実運用では有効なBot IDと署名Secretが必要です。秘密値をソースやログに出力しないでください。ローカル値はGit管理外の `.dev.vars` に設定します。
 
 この構成のテストはCloudflareアカウントへ接続せず、fixturesとローカルworkerdを使います。Cloudflare上のbuild/deploy checkやruntimeリクエストの成功とは区別してください。
