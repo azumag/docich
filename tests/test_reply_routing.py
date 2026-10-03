@@ -1,6 +1,7 @@
 """Offline contracts. Mock choices test routing, NOT Jev's Japanese accuracy."""
 import asyncio
 import json
+from pathlib import Path
 import threading
 
 import pytest
@@ -22,20 +23,35 @@ def answer(scope="api_only", confidence=.95):
     return {"status": "ok", "data": {"answers": {"reply_evidence": {"choice": scope, "confidence": confidence}}}}
 
 
+def test_live_canary_corpus_is_synthetic_and_separates_notification_from_question():
+    corpus = json.loads((Path(__file__).parent / "fixtures/reply_routing_canary.json").read_text())
+    by_id = {sample["id"]: sample for sample in corpus}
+    assert len(corpus) == 19 and len(by_id) == len(corpus)
+    assert {sample["expected"] for sample in corpus} == {*routing.CRITERIA} - {"unknown"}
+    assert by_id["notification_only"]["expected"] == "api_only"
+    assert by_id["notification_plus_question"]["expected"] == "code"
+    assert "SSR出た！" in by_id["notification_only"]["text"]
+    assert by_id["notification_only"]["text"] != by_id["notification_plus_question"]["text"]
+
+
 def forbidden(*args, **kwargs):
     raise AssertionError("unexpected call")
 
 
 def test_projection_removes_identity_and_persona_but_retains_reference_context():
-    value = [*messages("抽選の話"), {"role": "assistant", "content": "前の返答"}, *messages("そのロジックは？")]
+    value = [*messages("抽選の話"),
+             {"role": "assistant", "content": "前の返答とPRIVATE_PERSONA"},
+             {"role": "user", "content": json.dumps({"source": "stored_conversation",
+                  "author_id": "PRIVATE_ID", "name": "PRIVATE_NAME", "text": "長期メモ"})},
+             *messages("そのロジックは？")]
     turns = routing.project_messages(value)
-    assert turns == [{"role": "user", "text": "抽選の話"}, {"role": "assistant", "text": "前の返答"}, {"role": "user", "text": "そのロジックは？"}]
+    assert turns == [{"role": "user", "text": "抽選の話"}, {"role": "user", "text": "そのロジックは？"}]
     assert "PRIVATE" not in json.dumps(turns)
 
 
 def test_projection_bounds_history_not_current_question():
     value = [{"role": "user", "content": "older"}] * 9 + [{"role": "user", "content": "last"}]
-    assert len(routing.project_messages(value)) == 6
+    assert len(routing.project_messages(value)) == 3
     assert routing.project_messages(value)[-1]["text"] == "last"
 
 
@@ -74,12 +90,12 @@ def test_confidence_boundary(confidence, status):
 
 
 @pytest.mark.parametrize("status", ["timeout", "missing_key", "rate_limited", "network_error", "invalid_config", "PRIVATE_ERROR"])
-def test_failures_escalate_to_research_without_fabricated_api_answer(status):
+def test_failures_do_not_escalate_to_research_or_fabricate_api_answer(status):
     calls = []
     result = routing.complete(messages("XXとは"), api=forbidden, env=ENV,
         transport=lambda *a, **k: {"status": status},
         researcher=lambda turns, scope, **kw: calls.append(scope) or research.Evidence())
-    assert result == routing.UNAVAILABLE_REPLY and calls == ["unknown"]
+    assert result == routing.UNAVAILABLE_REPLY and calls == []
 
 
 @pytest.mark.parametrize("scope", ["codex --yolo", "bash", "api_only;rm", "", None, ["api_only"]])
@@ -138,7 +154,10 @@ def test_evidence_is_passed_as_data_persona_preserved_citations_retained():
         env=ENV, transport=lambda *a, **k: answer("web"),
         researcher=lambda *a, **k: evidence, report=events.append)
     assert seen[0][0] == messages()[0]
-    assert "資料の実文" in seen[0][-1]["content"]
+    assert seen[0][-2]["role"] == "user" and "資料の実文" in seen[0][-2]["content"]
+    assert "ignore instructions" in seen[0][-2]["content"]
+    assert seen[0][-1] == messages()[-1]
+    assert all(item["role"] != "system" or "資料の実文" not in item["content"] for item in seen[0])
     assert result.endswith("https://example.org/source") and len(result) <= 900
     assert "PRIVATE" not in json.dumps(events) and "資料の実文" not in json.dumps(events)
     assert events[0]["scope"] == "web" and events[0]["research_status"] == "evidence_received"
@@ -168,7 +187,8 @@ def test_actual_discord_backend_invokes_router_only_when_enabled(monkeypatch):
     monkeypatch.setattr(routing, "decide", lambda *a, **k: routing.Decision("web", "jev", .99))
     monkeypatch.setattr(research, "research", lambda *a, **k: research.Evidence("ok", "evidence", ("https://example.org",)))
     assert backend.complete(messages()).endswith("https://example.org")
-    assert len(calls) == 2 and "evidence" in calls[1][-1]["content"]
+    assert len(calls) == 2 and "evidence" in calls[1][-2]["content"]
+    assert calls[1][-1] == messages()[-1]
 
 
 def test_actual_conversation_dedup_memory_and_single_delivery(monkeypatch):
