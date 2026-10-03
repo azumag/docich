@@ -61,11 +61,15 @@ jobs:
         run: python3 -m pip install -r requirements-test.txt -r requirements-discord.txt
       - name: Install bubblewrap for the negative isolation canary
         run: |
-          if ! command -v bwrap >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends bubblewrap
-          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap apparmor-profiles apparmor-utils
+          profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+          test -f "$profile"
+          sudo install -m 0644 "$profile" /etc/apparmor.d/bwrap-userns-restrict
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
       - name: Offline persistence, conversation and real SDK construction contracts
+        env:
+          DOCICH_REQUIRE_BWRAP_PROBE: "1"
         run: PYTHONPATH=src python3 -m pytest -q tests/test_discord_chat.py tests/test_discord_memory.py tests/test_reply_routing.py tests/test_reply_research.py
 
   docker-contracts:
