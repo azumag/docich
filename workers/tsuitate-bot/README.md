@@ -47,7 +47,7 @@ npm run dev:cf
 
 - `cloudflare.config.ts` をCfのプロジェクト設定とし、`GameState` のSQLite Durable Object exportと `GAME_STATE` bindingを宣言します。Cf移行時に生成した `wrangler.config.ts` では型生成を無効にしています。旧 `wrangler.toml` はテスト用設定として保持します。
 - version preview URLは `worker.previewUrls: false` を明示します。固定版Cfの実生成設定にもfalseが残ることを `test:bundle` で検証します。通常の `workers.dev` 公開URLを無効にする設定ではありません。互換日付は `2026-09-08` です。設定値は `test:workerd` と `test:bundle` がそれぞれruntimeとCf生成物で確認します。[Cf公式設定](https://developers.cloudflare.com/cf/projects/cloudflare-config/)
-- `BOT_ID` はplaceholderで、`WEBHOOK_SECRET` は値を含まないSecret binding宣言です。実運用では有効なBot IDと署名Secretが必要です。秘密値をソースやログに出力しないでください。ローカル値はGit管理外の `.dev.vars` に設定します。
+- production設定の `BOT_ID` は登録済みID `:DoCiAI` です。test-only runtimeの `wrangler.runtime.toml` はfixture ID `fixture-bot-id` を維持します。`WEBHOOK_SECRET` は値を含まないSecret binding宣言です。秘密値をソースやログに出力しないでください。ローカル値はGit管理外の `.dev.vars` に設定します。
 
 この構成のテストはCloudflareアカウントへ接続せず、fixturesとローカルworkerdを使います。Cloudflare上のbuild/deploy checkやruntimeリクエストの成功とは区別してください。
 

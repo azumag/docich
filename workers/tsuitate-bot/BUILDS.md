@@ -26,7 +26,7 @@ Workers Builds root directory and commands are configured in Cloudflare, not by 
 
 ## Runtime configuration
 
-`BOT_ID` in source remains a placeholder and `WEBHOOK_SECRET` is declared as a secret binding without a value. Live requests require a matching Bot ID and HMAC secret. Local values belong in the ignored `.dev.vars` file. Secret values must not be added to source, fixture logs, or build output.
+Production `BOT_ID` is the registered identifier `:DoCiAI`; the test-only `wrangler.runtime.toml` keeps the fixture ID `fixture-bot-id`. Live requests require a matching Bot ID and HMAC secret. Local values belong in the ignored `.dev.vars` file. Secret values must not be added to source, fixture logs, or build output.
 
 ## Verification
 

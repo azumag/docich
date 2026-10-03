@@ -10,7 +10,7 @@ export default defineConfig({
       GameState: exports.durableObject({ storage: "sqlite" }),
     },
     env: {
-      BOT_ID: bindings.text("replace-with-tsuitate-bot-id"),
+      BOT_ID: bindings.text(":DoCiAI"),
       GAME_STATE: bindings.durableObject({
         worker: "docich-tsuitate-bot",
         exportName: "GameState",
