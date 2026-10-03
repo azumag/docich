@@ -4,6 +4,7 @@ import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import { readBuildOutput } from "@cloudflare/build-output-utils";
 import { Miniflare } from "miniflare";
 
@@ -12,6 +13,24 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const output = await readBuildOutput(root); // Missing/malformed build output fails; never build from src here.
 const built = output.workers.default;
 const { config, bundleDir } = built;
+// Use Cf's actual prebuilt-deploy normalization and upload serializer, rather
+// than checking only the pre-conversion builder object.
+const require = createRequire(import.meta.url);
+const cfDist = join(dirname(require.resolve("cf/package.json")), "dist");
+const { i: convertBuildOutput } = await import(pathToFileURL(join(cfDist, "build-BKPVP5ip.mjs")));
+const { x: getBindings } = await import(pathToFileURL(join(cfDist, "dist-CYFkGHYv.mjs")));
+const { t: createWorkerUploadForm } = await import(pathToFileURL(join(cfDist, "chunk-KKDV4JPS-D3kwd1Nq.mjs")));
+const { wranglerConfig } = convertBuildOutput(built, output.rootConfig);
+assert.deepEqual(wranglerConfig.durable_objects.bindings, [{ name: "GAME_STATE", class_name: "GameState" }]);
+const uploadForm = createWorkerUploadForm({
+  main: { name: "index.js", type: "esm", content: "export default {}" },
+  exports: wranglerConfig.exports, keepSecrets: true,
+}, getBindings(wranglerConfig), { unsafe: wranglerConfig.unsafe });
+const uploadMetadata = JSON.parse(uploadForm.get("metadata"));
+assert.deepEqual(uploadMetadata.bindings.find(b => b.name === "GAME_STATE"),
+  { name: "GAME_STATE", type: "durable_object_namespace", class_name: "GameState" });
+assert.deepEqual(uploadMetadata.keep_bindings, ["secret_text", "secret_key"]);
+assert.equal(Object.hasOwn(uploadMetadata, "durable_objects"), false);
 assert.equal(config.name, "docich-tsuitate-bot");
 assert.equal(config.compatibilityDate, "2026-09-08");
 assert.equal(config.previewUrls, false, "the pinned Cf build must preserve disabled version preview URLs");

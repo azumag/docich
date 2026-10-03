@@ -30,4 +30,6 @@ Production `BOT_ID` remains the existing identifier `DoCiAI`; the test-only `wra
 
 ## Verification
 
+Installation applies a version- and source-hash-checked compatibility patch to Cf beta.12's `@cloudflare/config@0.23.0` dependency. It omits `script_name` only for Durable Object bindings whose target equals the configured Worker name. The prebuilt deploy command uses this same converter; strict comparison remains enabled. Install scripts must be enabled. The offline regression calls Cf's actual prebuilt normalizer, remote-diff comparator and multipart serializer, including negative checks for a different class or external Worker. It also reproduces why the former `unsafe.metadata.durable_objects` override failed. These tests use synthetic remote configuration and perform no API requests.
+
 The Worker Actions job runs `cf build`, Node fixtures, test-only workerd integration checks, and tests against the actual Cf-generated bundle. The bundle test checks its manifest, `previewUrls`, SQLite Durable Object export, `GAME_STATE` binding, HMAC behavior, history transactions, and timeouts. `test:workerd` uses `wrangler.runtime.toml` for local SQLite transaction tests. Neither test path deploys the Worker or calls Cloudflare APIs. The Cf Build Output reader is a beta interface; rerun these checks when updating the pinned Cf CLI.

@@ -6,6 +6,8 @@
     "node": ">=22.18.0"
   },
   "scripts": {
+    "postinstall": "node scripts/patch-cf-self-binding.mjs",
+    "prebuild:cf": "node scripts/patch-cf-self-binding.mjs",
     "test": "node --test test/*.test.js",
     "test:workerd": "node test/workerd-integration.mjs",
     "test:bundle": "node test/bundle-integration.mjs",
