@@ -494,7 +494,7 @@ runtimeの `audio_volume.json` に記録する。
 
 公開リポジトリでは汎用の`VM operations / exec`は拒否される。
 ownerは`Corner rotation operator`の`start-hanjuku`と`confirm=production`を使用する。
-protected mainとVMのSHA一致を検証し、ゲーム・コマンド・unitを入力できない固定scriptだけを送る。
+protected mainとVMのSHA一致を検証し、ゲーム・コマンド・unitを入力できない固定scriptだけを送る。\nChatGPTのGitHub接続で新規workflow dispatchを利用できない場合は、固定Issue #1657へ\n完全一致の`/hanjuku-start production`をownerが投稿する。専用workflowは同じowner・protected/current main・\nproduction SHA一致を再検証し、同じ固定scriptだけを引数なしで実行する。任意ゲームや任意commandは受け付けない。
 `docich-hanjuku-corner.service`が共通coordinator経由で起動し、現在試合の境界・pause・cooldownを守る。
 要求の受理とゲームの実起動は別であり、`retro_corner.json`と世代別botログで実起動を確認する。
 他のコーナーが稼働中の場合に強制停止したり、cooldown/stateを削除したりしない。
