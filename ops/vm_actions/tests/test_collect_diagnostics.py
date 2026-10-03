@@ -2043,6 +2043,57 @@ class StreamTitleSyncProjectionTests(CollectorFixture):
         self.assertEqual(result["youtube"], "unknown")
         self.assertEqual(result["kick"], "unknown")
 
+    def test_id_presence_is_strict_boolean_and_only_fresh_reviewed_rows_project(self):
+        module = load_collector()
+        fields = ("youtube_stream_id_present", "kick_broadcaster_id_present")
+        expected_code = {"expected_update_stream_game_sha256": "b" * 64,
+                         "expected_stream_title_sync_sha256": "d" * 64}
+        def collect():
+            # Collector IDs must never substitute for the helper record.
+            with mock.patch.dict(os.environ, {"YOUTUBE_BROADCAST_STREAM_ID": "COLLECTOR-ID", "KICK_BROADCASTER_USER_ID": "COLLECTOR-ID"}):
+                return module._collect_stream_title_sync(self.soren, self.now, "a" * 40, expected_code)
+        def write(extra=None, **kwargs):
+            self.write_stream_title_sync(call_condition="normal", updater_sha="b" * 64, helper_sha="d" * 64, extra=extra, **kwargs)
+        for youtube in (True, False):
+            for kick in (True, False):
+                write(dict(zip(fields, (youtube, kick))))
+                result = collect()
+                self.assertEqual(result["record_status"], "fresh")
+                self.assertIs(result[fields[0]], youtube)
+                self.assertIs(result[fields[1]], kick)
+                self.assertNotIn("COLLECTOR-ID", json.dumps(result))
+        for value in (None, 0, 1, "false", "SYNTHETIC-ID", [], {}):
+            for field in fields:
+                with self.subTest(value_type=type(value).__name__, field=field):
+                    row = dict.fromkeys(fields, True)
+                    row[field] = value
+                    write(row)
+                    result = collect()
+                    self.assertEqual(result["record_status"], "malformed")
+                    self.assertTrue(all(result[f] is None for f in fields))
+                    self.assertNotIn("SYNTHETIC-ID", json.dumps(result))
+        for extra in (None, {fields[0]: True}):
+            write(extra)
+            result = collect()
+            self.assertEqual(result["record_status"], "fresh" if extra is None else "malformed")
+            self.assertTrue(all(result[f] is None for f in fields))
+        self.write_stream_title_sync()  # Original legacy schema.
+        self.assertTrue(all(collect()[f] is None for f in fields))
+        for delta, status in ((-901, "stale"), (301, "future")):
+            write(dict.fromkeys(fields, True), occurred_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.now + delta)))
+            result = collect()
+            self.assertEqual(result["record_status"], status)
+            self.assertTrue(all(result[f] is None for f in fields))
+        write(dict.fromkeys(fields, True))
+        expected_code["expected_stream_title_sync_sha256"] = "e" * 64
+        result = collect()
+        self.assertEqual(result["record_status"], "source_mismatch")
+        self.assertTrue(all(result[f] is None for f in fields))
+        expected_code.clear()
+        result = collect()
+        self.assertEqual(result["record_status"], "source_unavailable")
+        self.assertTrue(all(result[f] is None for f in fields))
+
     def test_missing_journal_destination_reports_only_fixed_component_states(self):
         module = load_collector()
         result = module._collect_stream_title_sync(self.soren, self.now, "a" * 40)
