@@ -256,6 +256,35 @@ test("diagnostics distinguish authentication, configuration, validation, state t
   assert.equal(requestTimeout.records[0].errorCode, "request_timeout");
 });
 
+test("invalid_position diagnostics expose only the fixed field, index and value type", async () => {
+  const malformed = structuredClone(initialFixture);
+  malformed.requestId = "validation-diagnostic-request";
+  malformed.gameId = "validation-diagnostic-game";
+  malformed.ply = 1;
+  malformed.positions["1"] = {
+    ...structuredClone(initialFixture.positions["0"]),
+    lastInfo: "position-value-marker",
+  };
+  const rawBody = JSON.stringify(malformed);
+  const { result, records } = await captureDiagnosticLogs(() => post(malformed));
+
+  assert.equal(result.status, 400);
+  const responseBody = await responseJson(result);
+  assert.deepEqual(responseBody, { error: "invalid_position" });
+  assert.equal(records.length, 1);
+  const [event] = records;
+  assert.equal(event.errorCode, "invalid_position");
+  assert.equal(event.validationFailureStage, "last_info");
+  assert.equal(event.positionIndex, 1);
+  assert.equal(event.fieldType, "string");
+  assert.equal(Object.hasOwn(responseBody, "validationFailureStage"), false);
+
+  const serialized = JSON.stringify(event);
+  for (const forbidden of [SECRET, BOT_ID, rawBody, "position-value-marker", "lastInfo"]) {
+    assert.equal(serialized.includes(forbidden), false, "diagnostic included " + forbidden);
+  }
+});
+
 test("authentication failures log only fixed auth stages and preserve the HTTP error contract", async (t) => {
   const rawBody = JSON.stringify({ ...initialFixture, marker: "raw-body-marker" });
   const cases = [
@@ -769,3 +798,4 @@ test("only an observed own piece is selected and king movement is not guessed", 
   assert.notEqual(source.type, "K");
   assert.notEqual(destination?.owner, "b");
 });
+
