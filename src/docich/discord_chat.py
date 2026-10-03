@@ -94,6 +94,8 @@ class Settings:
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Settings:
         prefix = "DOCICH_DISCORD_"
+        if any(env.get(prefix + name, "").strip() for name in ("GUILD_ID", "CHANNEL_IDS")):
+            raise ChatError("guild/channel allowlists are no longer supported")
         base = env.get(prefix + "LLM_BASE_URL", "").strip().rstrip("/")
         try:
             url = urlsplit(base)
