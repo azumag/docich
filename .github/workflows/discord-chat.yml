@@ -10,6 +10,11 @@ on:
       - 'tests/test_discord_memory.py'
       - 'requirements-discord.txt'
       - '.github/workflows/discord-chat.yml'
+      - 'containers/discord-chat/**'
+      - 'compose.discord-chat*.yml'
+      - 'tests/test_discord_container.py'
+      - 'tests/discord_container_probe.py'
+      - 'requirements-test.txt'
   push:
     branches: [main]
     paths:
@@ -20,6 +25,11 @@ on:
       - 'tests/test_discord_memory.py'
       - 'requirements-discord.txt'
       - '.github/workflows/discord-chat.yml'
+      - 'containers/discord-chat/**'
+      - 'compose.discord-chat*.yml'
+      - 'tests/test_discord_container.py'
+      - 'tests/discord_container_probe.py'
+      - 'requirements-test.txt'
 
 permissions:
   contents: read
@@ -40,3 +50,13 @@ jobs:
         run: python3 -m pip install -r requirements-test.txt -r requirements-discord.txt
       - name: Offline persistence, conversation and real SDK construction contracts
         run: PYTHONPATH=src python3 -m pytest -q tests/test_discord_chat.py tests/test_discord_memory.py
+
+  docker-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Build and verify isolated Docker contracts without external APIs
+        run: python3 containers/discord-chat/verify.py

@@ -1,0 +1,51 @@
+name: docich-discord
+services:
+  discord-chat:
+    profiles: [discord-chat]
+    image: ${DOCICH_DISCORD_IMAGE:-docich-discord-chat:local}
+    build:
+      context: .
+      dockerfile: containers/discord-chat/Dockerfile
+      target: runtime
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    init: true
+    restart: "no"
+    stop_signal: SIGTERM
+    stop_grace_period: 90s
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    shm_size: 1m
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+    environment:
+      DOCICH_DISCORD_ENABLED: ${DOCICH_DISCORD_ENABLED:-0}
+      DOCICH_ALLOW_REAL_AI: ${DOCICH_ALLOW_REAL_AI:-0}
+      DOCICH_DISCORD_GUILD_ID: ${DOCICH_DISCORD_GUILD_ID:-}
+      DOCICH_DISCORD_CHANNEL_IDS: ${DOCICH_DISCORD_CHANNEL_IDS:-}
+      DOCICH_DISCORD_LLM_BASE_URL: ${DOCICH_DISCORD_LLM_BASE_URL:-}
+      DOCICH_DISCORD_LLM_MODEL: ${DOCICH_DISCORD_LLM_MODEL:-}
+      DOCICH_DISCORD_ALLOW_HTTP: ${DOCICH_DISCORD_ALLOW_HTTP:-0}
+      DOCICH_DISCORD_TOKEN_FILE: /run/secrets/discord_token
+      DOCICH_DISCORD_MEMORY_DIR: /var/lib/docich-discord
+    secrets: [discord_token]
+    volumes:
+      - memory:/var/lib/docich-discord
+    networks: [discord]
+secrets:
+  discord_token:
+    file: ${DOCICH_DISCORD_TOKEN_SECRET_PATH:?Set an absolute external token file path}
+volumes:
+  memory:
+networks:
+  discord:
+    driver: bridge

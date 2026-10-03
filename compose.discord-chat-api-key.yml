@@ -1,0 +1,9 @@
+# Add only when the explicitly selected API requires a key.
+services:
+  discord-chat:
+    environment:
+      DOCICH_DISCORD_LLM_API_KEY_FILE: /run/secrets/llm_api_key
+    secrets: [llm_api_key]
+secrets:
+  llm_api_key:
+    file: ${DOCICH_DISCORD_LLM_API_KEY_SECRET_PATH:?Set an absolute external API key file path}
