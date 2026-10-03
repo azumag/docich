@@ -1,5 +1,7 @@
 # 衝立将棋 Cloudflare Webhook Bot prototype
 
+Cloudflare側の自動build/配備は [Workers Builds設定案](BUILDS.md) にまとめています。接続は未有効化で、GitHub Actionsの配備workflowは追加していません。対象ディレクトリ限定のwatch pathsにはCloudflare側の例外があるため、有効化前に本人の確認が必要です。
+
 `/webhook` に届くTsuitate Bot向けJSON POSTを検証し、観測できた局面からCSA形式の指し手を返すCloudflare Workersプロトタイプです。既存のオフライン基礎 [`docs/tsuitate-protocol.md`](../../docs/tsuitate-protocol.md) と `src/docich/tsuitate_protocol.py` は変更せず、独立したWorkerとして配置しています。
 
 ## 対応範囲

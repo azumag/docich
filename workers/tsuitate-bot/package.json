@@ -9,7 +9,8 @@
     "test": "node --test test/*.test.js",
     "test:workerd": "node test/workerd-integration.mjs",
     "test:bundle": "node test/bundle-integration.mjs",
-    "dev:cf": "cf dev --local --persist-to .wrangler/cf-local"
+    "dev:cf": "cf dev --local --persist-to .wrangler/cf-local",
+    "build:cf": "cf build && npm test && npm run test:workerd && npm run test:bundle"
   },
   "devDependencies": {
     "@cloudflare/build-output-utils": "0.8.5",
