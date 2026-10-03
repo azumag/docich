@@ -178,7 +178,11 @@ def test_risk_or_unknown_enemy_avoids_assist_pulses_until_resources_are_checked(
 @pytest.mark.parametrize('side', ['defense', None])
 def test_defense_override_and_unknown_context_cannot_grant_normal_type_two_mash(side):
     mem = memory(side=side)
-    assert enter(panel('キッシュ'), mem) == []
+    assert enter(panel('キッシュ'), mem) == ([policy.pad('b')] if side == 'defense' else [])
+    if side == 'defense':
+        # The override also requires a resource check before contact. Once
+        # melee is reached it still cannot grant the ordinary type-2 mash.
+        assert policy._melee_step(mem, mem['battle']) == []
     flags = mem['_records'][-1]['egg_risk_flags']
     assert flags['clash_position'] is (True if side == 'defense' else None)
     assert flags['wall_mod4'] is (False if side == 'defense' else None)
@@ -190,7 +194,8 @@ def test_captured_castle_context_applies_defense_override():
     mem = memory()
     mem['attack']['castle'] = 'キカンドン'
     mem['captured'] = ['キカンドン']
-    assert enter(panel('キッシュ'), mem) == []
+    assert enter(panel('キッシュ'), mem) == [policy.pad('b')]
+    assert policy._melee_step(mem, mem['battle']) == []
     assert mem['_records'][-1]['egg_risk_flags']['clash_position'] is True
 
 

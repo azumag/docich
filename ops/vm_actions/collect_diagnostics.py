@@ -2704,7 +2704,8 @@ def _project_corner_state(data):
         "bot_version": (data.get("bot_version") if data.get("bot_version") in {
             "hanjuku-script-v1", "hanjuku-chart-v2",
             "hanjuku-chart-v129-battle-card-progress",
-            "hanjuku-chart-v130-summer-cursor-evidence"} else None),
+            "hanjuku-chart-v130-summer-cursor-evidence",
+            "hanjuku-chart-v131-defense-month-economy"} else None),
         "bot_chart": _project_bot_chart(data.get("bot_chart")),
         "narration": _project_counts(data.get("narration"),
                                      ("enqueued", "delivery_failed", "skipped")),
