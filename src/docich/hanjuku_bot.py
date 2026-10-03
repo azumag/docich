@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v130-summer-cursor-evidence'
+BOT_VERSION = 'hanjuku-chart-v131-defense-month-economy'
 
 # Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
 # frozen and the bot has planned no input for more than this many observations,
@@ -279,9 +279,13 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # general; the old house route must not resume afterwards.
     if mem.get('house') and mem.get('recall'):
         hanjuku_house.step(screen, mem, frame)
-    actions = (policy.camp_recall_step(screen, mem, frame) if recall_dialog
-               else policy.month_sub_step(screen, mem) if mem.get('month_sub') and (kind != 'month_menu' or recruit_dialog)
-               else None)
+    # A planned summon-preemption must not become a blind A on an unfinished
+    # command menu, or be replaced by an old monthly/house transaction.
+    actions = policy.defender_egg_pending_step(screen, mem)
+    if actions is None:
+        actions = (policy.camp_recall_step(screen, mem, frame) if recall_dialog
+                   else policy.month_sub_step(screen, mem) if mem.get('month_sub') and (kind != 'month_menu' or recruit_dialog)
+                   else None)
     # No house phase expects a red-curtain screen (concert/merchant backdrop):
     # every branch answers such a text frame with [] or B, which advances
     # neither the event nor input. On an outbound repair that starved the trip

@@ -55,6 +55,42 @@ def test_card_flow_does_not_speed_up_field_or_resolved_battle():
     assert entry.observation_interval_ms(state) == 1500
 
 
+@pytest.mark.parametrize('stage', ['opening', 'menu', 'selected'])
+@pytest.mark.parametrize('kind', ['unknown', 'text', 'battle_menu', 'battle_menu_pending', 'okunote_menu'])
+def test_defender_egg_preemption_keeps_short_feedback_through_its_actual_menus(stage, kind):
+    state = melee_state()
+    state['screen_kind'] = kind
+    state['policy']['battle']['okunote_egg_preempt'] = {'stage': stage}
+    assert entry.observation_interval_ms(state) == 500
+    state['policy']['battle']['okunote_egg_preempt']['exhausted'] = True
+    assert entry.observation_interval_ms(state) == 1500
+
+
+@pytest.mark.parametrize('kind', ['map', 'egg_battle_menu', 'monster_menu'])
+def test_defender_preemption_does_not_change_other_screen_cadence(kind):
+    state = melee_state()
+    state['screen_kind'] = kind
+    state['policy']['battle']['okunote_egg_preempt'] = {'stage': 'opening'}
+    assert entry.observation_interval_ms(state) == 1500
+
+
+def test_an_unacknowledged_menu_close_keeps_short_feedback_only_while_alive():
+    state = melee_state()
+    state['screen_kind'] = 'unknown'
+    state['policy']['battle']['okunote_egg_preempt'] = {
+        'stage': 'unavailable', 'exhausted': True, 'close_pending': True}
+    assert entry.observation_interval_ms(state) == 500
+    state['policy']['battle']['ally_hp'] = 0
+    assert entry.observation_interval_ms(state) == 1500
+
+
+def test_completed_preemption_does_not_keep_later_text_on_fast_feedback():
+    state = melee_state()
+    state['screen_kind'] = 'text'
+    state['policy']['battle']['okunote_egg_preempt'] = {'stage': 'completed', 'selected': True}
+    assert entry.observation_interval_ms(state) == 1500
+
+
 @pytest.mark.parametrize('name,scripted,interval,expected', [
     ('hanjuku-hero', True, 500, 500), ('hanjuku-hero', True, 1500, 1500),
     ('hanjuku-hero', True, 0, None), ('hanjuku-hero', True, True, None),

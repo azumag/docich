@@ -1304,7 +1304,9 @@ def test_a_chikujou_sub_stays_tracked_until_the_flow_leaves_the_month_menu():
     assert policy._finish_month_sub(paid, mem, {'chikujou': 'opened'}) is True
     assert 'month_sub' not in mem
     assert decisions(mem, 'chikujou')[0]['observed_metric']['gold_after'] == 75
-    assert decisions(mem, 'chikujou')[0]['deviation_reason'] is None
+    assert decisions(mem, 'chikujou')[0]['observed_metric']['payment_verified'] is True
+    assert decisions(mem, 'chikujou')[0]['observed_metric']['upgrade_verified'] is False
+    assert decisions(mem, 'chikujou')[0]['deviation_reason'] == 'result_not_observed'
     # A menu the game never leaves cannot hold the month forever.
     stalled = {'chapter': 1, '_records': [],
                'month_sub': {'kind': 'chikujou', 'gold_before': 80, 'presses': 0, 'left_menu': False}}
@@ -1398,8 +1400,9 @@ def test_recall_picker_never_confirms_enemy_or_unread_flag(monkeypatch):
 
 def test_chikujou_refused_home_tries_staffed_castle_without_false_payment(monkeypatch):
     from docich.hanjuku_screen import Screen as S
-    mem = {'chapter': 1, '_records': [], 'garrison': {'ジョンリギ': ['ココット'], 'ゴーメン': []}}
-    sub = {'kind': 'chikujou', 'chosen': 'アルマムーン', 'gold_before': 96, 'quoted_cost': 5}
+    mem = {'chapter': 1, '_records': [], 'captured': ['ジョンリギ'],
+           'garrison': {'ジョンリギ': ['ココット'], 'ゴーメン': []}}
+    sub = {'kind': 'chikujou', 'chosen': 'アルマムーン', 'gold_before': 96}
     labels = []
     def menu(screen, label):
         labels.append(label)
@@ -1422,7 +1425,8 @@ def test_chikujou_refused_home_tries_staffed_castle_without_false_payment(monkey
 
 def test_chikujou_refused_home_can_confirm_fresh_alternative(monkeypatch):
     from docich.hanjuku_screen import Screen as S
-    mem = {'chapter': 1, '_records': [], 'garrison': {'ジョンリギ': ['ココット']}}
+    mem = {'chapter': 1, '_records': [], 'captured': ['ジョンリギ'],
+           'garrison': {'ジョンリギ': ['ココット']}}
     sub = {'kind': 'chikujou', 'chosen': 'アルマムーン', 'gold_before': 96}
     monkeypatch.setattr(policy, 'menu_to', lambda screen, label: 'here')
     refused = S(lines=[], hand=None, kind='text', header=None,
@@ -1448,5 +1452,4 @@ def test_chikujou_refusal_without_alternative_or_selection_exits(monkeypatch):
         sub = {'kind': 'chikujou', 'chosen': chosen}
         assert policy._chikujou_step(refused, mem, sub) == [policy.pad('b')]
         assert sub['declined']
-
 
