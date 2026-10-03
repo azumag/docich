@@ -5,7 +5,10 @@ on:
     branches: [main]
     paths-ignore:
       - 'workers/tsuitate-bot/**'
-      - '.github/workflows/tsuitate-bot-worker.yml'
+      - '.github/workflows/**'
+      - 'tests/**'
+      - 'docs/**'
+      - 'README.md'
   workflow_dispatch:
     inputs:
       operation:
