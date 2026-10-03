@@ -1,0 +1,173 @@
+name: Hanjuku start query
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: retro-corner-operator-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  start:
+    permissions:
+      contents: read
+      issues: write
+    if: >-
+      github.actor_id == 9018513 &&
+      github.triggering_actor == 'azumag' &&
+      github.event.issue.number == 1657 &&
+      github.event.comment.user.id == 9018513 &&
+      github.event.comment.body == '/hanjuku-start production'
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted start code from event main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+          submodules: false
+
+      - name: Authorize fixed owner command
+        id: auth
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_ACTOR_ID: ${{ github.actor_id }}
+          GITHUB_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          GITHUB_SHA: ${{ github.sha }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          COMMENT_AUTHOR_ID: ${{ github.event.comment.user.id }}
+        run: python3 control/ops/vm_actions/authorize_hanjuku_start_query.py
+
+      - name: Require the event to remain current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git -C control rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [[ "$current" == "$GITHUB_SHA" ]]
+          umask 077
+          install -m 700 -d "$RUNNER_TEMP/hanjuku-start/ssh"
+
+      - name: Configure pinned SSH transport
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          work="$RUNNER_TEMP/hanjuku-start"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$work/ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$work/ssh/known_hosts"
+          chmod 600 "$work/ssh/"*
+          printf 'HANJUKU_SSH_PORT=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Require production to equal event SHA
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/hanjuku-start"
+          ssh_args=(-F /dev/null -T -p "$HANJUKU_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
+          current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [[ "$current" == "$SHA" ]]
+          status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
+          python3 - "$status_json" "$SHA" <<'PY'
+          import json, sys
+          data = json.loads(sys.argv[1])
+          if data.get("status") != "configured" or data.get("sha") != sys.argv[2]:
+              raise SystemExit("production is not exactly the event SHA")
+          PY
+
+      - name: Queue only Hanjuku through the common coordinator
+        id: start
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/hanjuku-start"
+          ssh_args=(-F /dev/null -T -p "$HANJUKU_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
+          set +e
+          (ulimit -f 16; timeout --kill-after=5s 120s \
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" \
+              "exec docich production $SHA") \
+            < control/ops/vm_actions/start_hanjuku_corner.sh \
+            > "$work/start.stdout" 2> "$work/start.stderr"
+          rc=$?
+          set -e
+          if (( rc != 0 )); then
+            echo '::error::Hanjuku start request rejected or unavailable'
+            exit 1
+          fi
+          rm -f "$work/start.stdout" "$work/start.stderr"
+
+      - name: Return fixed result metadata to the control Issue
+        if: ${{ always() && steps.auth.outcome == 'success' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_SHA: ${{ github.sha }}
+          START_OUTCOME: ${{ steps.start.outcome }}
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$RUNNER_TEMP/hanjuku-start"
+          install -m 700 -d "$work"
+          python3 - "$SOURCE_COMMENT_ID" "$RUN_ID" "$RUN_ATTEMPT" "$RUN_SHA" "$START_OUTCOME" > "$work/reply.json" <<'PY'
+          import json, re, sys
+          comment_id, run_id, attempt, sha, outcome = sys.argv[1:]
+          if not (comment_id.isdigit() and run_id.isdigit() and attempt.isdigit()
+                  and re.fullmatch(r"[0-9a-f]{40}", sha)
+                  and outcome in {"success", "failure", "cancelled", "skipped"}):
+              raise SystemExit("invalid fixed reply metadata")
+          body = "\n".join((
+              f"Request: https://github.com/azumag/docich/issues/1657#issuecomment-{comment_id}",
+              f"Run: https://github.com/azumag/docich/actions/runs/{run_id}",
+              f"Attempt: {attempt}",
+              f"SHA: {sha}",
+              f"Result: {outcome}",
+          ))
+          json.dump({"body": body}, sys.stdout, separators=(",", ":"))
+          PY
+          gh api --method POST repos/azumag/docich/issues/1657/comments \
+            --input "$work/reply.json" > /dev/null
+
+      - name: Clear runner staging
+        if: ${{ always() }}
+        shell: bash
+        run: rm -rf -- "$RUNNER_TEMP/hanjuku-start"
