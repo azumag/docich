@@ -15,6 +15,14 @@ export const OPCODE = Object.freeze({
 
 const FATAL_CLOSE_CODES = new Set([4004, 4010, 4011, 4012, 4013, 4014]);
 
+export class DiscordSendError extends Error {
+  constructor(status) {
+    super("discord_send_failed");
+    this.name = "DiscordSendError";
+    this.status = Number(status);
+  }
+}
+
 export function gatewaySocketUrl(base) {
   const url = new URL(base || GATEWAY_URL);
   url.searchParams.set("v", String(GATEWAY_VERSION));
@@ -60,8 +68,8 @@ export async function sendDiscordReply(token, event, text) {
       flags: 4,
     }),
   });
-  if (!response.ok) throw new Error("discord_send_failed");
+  if (!response.ok) throw new DiscordSendError(response.status);
   const body = await response.json();
-  if (!body || typeof body.id !== "string") throw new Error("discord_send_invalid_response");
+  if (!body || typeof body.id !== "string") throw new DiscordSendError(0);
   return body.id;
 }
