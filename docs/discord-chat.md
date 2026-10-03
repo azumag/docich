@@ -83,7 +83,19 @@ PYTHONPATH=src python3 -m pytest -q tests/test_discord_chat.py tests/test_discor
 
 参考: Discord Gateway/Intents https://docs.discord.com/developers/events/gateway 、discord.py https://discordpy.readthedocs.io/en/stable/ 。
 
-## Dockerでの独立運用
+## Cloudflareでの実運用
+
+Cloudflare版は `workers/discord-chat/` に置く。Workerの1分CronがsingletonのSQLite-backed Durable Objectを起動し、Durable ObjectがDiscord Gatewayのoutbound WebSocket、heartbeat/ACK、session resume、メンション処理、長期記憶を担当する。LLMはWorkers AI bindingを直接利用するため、外部LLMのURL/APIキーは不要。Discord Bot TokenだけをCloudflare Secretとして管理する。
+
+既定Workers AIモデルは `@cf/zai-org/glm-4.7-flash`。モデル名はCloudflare設定のbindingで差し替えられる。canonical personaはこの文書と同じrepoの `src/docich/comment/prompts/comment_persona_main.md` をbuild時に直接読み込み、別コピーを正本にしない。
+
+記憶・メンション・DM除外・guild/channel/user分離・削除・重複防止の仕様はPython版と揃える。Gateway session ID、sequence、resume URLもDurable Object storageへ保存し、切断やObject再生成時は可能ならRESUMEする。認証失敗やdisallowed intent等のfatal closeは15分cooldownしてIDENTIFY連打を避ける。
+
+実装・build・secret設定・Cloudflare Workers Buildsの手順は `workers/discord-chat/README.md` と `workers/discord-chat/BUILDS.md` を正本とする。公開HTTPはsanitizedな `GET /healthz` だけで、会話本文、Discord ID、Token、promptは返さない。
+
+既存Python/Docker版はCloudflare実運用の受入が済むまでreference implementation / ローカルfallbackとして残す。Cloudflareへdeployしただけでは実Discord往復・Workers AI品質・長時間Gateway維持を確認したことにはしない。
+
+## Dockerでの独立運用（reference / fallback）
 
 Docker EngineとCompose v2（Dockerfile固有のignoreとmulti-stage build対応）が必要。ホストへpip/venvを導入せず、次のオフライン検証を実行する。実Discord/外部LLMへ接続せず、模擬secret・ループバックHTTP・専用一時volumeだけを使う。Docker daemonや既存サービスの設定は変更しない。
 
