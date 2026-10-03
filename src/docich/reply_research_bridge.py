@@ -23,11 +23,11 @@ def _bring_loopback_up() -> None:
         raise OSError("linux_required")
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         request = bytearray(struct.pack("16sH22s", b"lo", 0, b""))
-        response = fcntl.ioctl(sock.fileno(), 0x8913, request)  # SIOCGIFFLAGS
-        flags = struct.unpack_from("H", response, 16)[0]
+        fcntl.ioctl(sock.fileno(), 0x8913, request, True)  # SIOCGIFFLAGS mutates ifreq.
+        flags = struct.unpack_from("H", request, 16)[0]
         if not flags & 0x1:  # IFF_UP
             struct.pack_into("H", request, 16, flags | 0x1)
-            fcntl.ioctl(sock.fileno(), 0x8914, request)  # SIOCSIFFLAGS
+            fcntl.ioctl(sock.fileno(), 0x8914, request, True)  # SIOCSIFFLAGS
 
 
 def _drop_capabilities() -> None:
