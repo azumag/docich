@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -140,15 +141,18 @@ def _restart_shared_overlay() -> None:
         raise ActivationBlocked("shared_overlay_restart_unavailable")
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
-        active = subprocess.run(
-            ["systemctl", "is-active", "--quiet", SHARED_OVERLAY_UNIT],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-            check=False,
-        )
-        if active.returncode == 0 and _shared_overlay_health_ready():
+        try:
+            active = subprocess.run(
+                ["systemctl", "is-active", "--quiet", SHARED_OVERLAY_UNIT],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            active = None
+        if active is not None and active.returncode == 0 and _shared_overlay_health_ready():
             return
         time.sleep(0.25)
     raise ActivationBlocked("shared_overlay_health_not_ready")
