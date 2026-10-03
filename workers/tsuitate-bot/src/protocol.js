@@ -4,6 +4,14 @@ export const SUPPORTED_GAME_TYPES = new Set(["ついたて"]);
 export const MAX_BODY_BYTES = 256 * 1024;
 
 const USI_PIECE = /^[PLNSGBRK]$/;
+const CSA_CAPTURE_PIECE = /^(?:FU|KY|KE|GI|KI|KA|HI|OU|TO|NY|NK|NG|UM|RY)$/;
+const LOWERCASE_CAPTURE_PIECES = new Set([
+  "p", "l", "n", "s", "g", "b", "r", "k",
+  "fu", "ky", "ke", "gi", "ki", "ka", "hi", "ou", "to", "ny", "nk", "ng", "um", "ry",
+]);
+export const POSITION_VALUE_CLASSES = Object.freeze([
+  "empty_string", "lowercase_piece_code", "other_string",
+]);
 export const POSITION_VALIDATION_STAGES = Object.freeze([
   "position_record", "sfen", "last_move", "last_info", "last_capture", "was_promotion",
   "fouls", "fouls_b", "fouls_w", "times", "times_b", "times_w",
@@ -30,6 +38,11 @@ export class ProtocolFault extends Error {
       this.validationFailureStage = details.validationFailureStage;
       this.positionIndex = details.positionIndex;
       this.fieldType = details.fieldType;
+      if (details.validationFailureStage === "last_capture"
+          && details.fieldType === "string"
+          && POSITION_VALUE_CLASSES.includes(details.validationFailureValueClass)) {
+        this.validationFailureValueClass = details.validationFailureValueClass;
+      }
     }
   }
 }
@@ -42,11 +55,14 @@ function typeCategory(value) {
 }
 
 function invalidPosition(stage, positionIndex, value) {
-  return new ProtocolFault(400, "invalid_position", {
-    validationFailureStage: stage,
-    positionIndex,
-    fieldType: typeCategory(value),
-  });
+  const fieldType = typeCategory(value);
+  const details = { validationFailureStage: stage, positionIndex, fieldType };
+  if (stage === "last_capture" && typeof value === "string") {
+    details.validationFailureValueClass = value === ""
+      ? "empty_string"
+      : (LOWERCASE_CAPTURE_PIECES.has(value) ? "lowercase_piece_code" : "other_string");
+  }
+  return new ProtocolFault(400, "invalid_position", details);
 }
 
 function record(value) {
@@ -113,7 +129,8 @@ function parsePosition(value, positionIndex) {
     normalized.lastInfo = value.lastInfo;
   }
   if (value.lastCapture !== undefined) {
-    if (typeof value.lastCapture !== "string" || !USI_PIECE.test(value.lastCapture)) {
+    if (typeof value.lastCapture !== "string"
+        || (!USI_PIECE.test(value.lastCapture) && !CSA_CAPTURE_PIECE.test(value.lastCapture))) {
       throw invalidPosition("last_capture", positionIndex, value.lastCapture);
     }
     normalized.lastCapture = value.lastCapture;
@@ -232,4 +249,5 @@ export function parseCurrentTurn(payload) {
 export function isRecord(value) {
   return record(value);
 }
+
 
