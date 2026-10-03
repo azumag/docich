@@ -164,8 +164,18 @@ def test_bwrap_cannot_reach_host_loopback(tmp_path):
         )
         probe = argv[: boundary + 1] + ["/usr/bin/python3", "-c", code, str(port)]
         completed = subprocess.run(probe, capture_output=True, text=True, timeout=5)
-        assert completed.returncode == 0, completed.stderr
-        assert completed.stdout.strip() == "blocked"
+        assert completed.stdout.strip() != "reachable"
+        if completed.returncode == 0:
+            assert completed.stdout.strip() == "blocked"
+        else:
+            # Ubuntu/AppArmor may reject creation/setup of the isolated network
+            # namespace before the child runs. That is fail-closed: never treat
+            # sandbox-unavailable as permission to reuse the host network.
+            known_fail_closed = (
+                "loopback: Failed RTM_NEWADDR: Operation not permitted",
+                "setting up uid map: Permission denied",
+            )
+            assert any(value in completed.stderr for value in known_fail_closed), completed.stderr
     finally:
         listener.close()
 
