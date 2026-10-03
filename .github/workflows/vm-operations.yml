@@ -3,6 +3,9 @@ name: VM operations
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'workers/tsuitate-bot/**'
+      - '.github/workflows/tsuitate-bot-worker.yml'
   workflow_dispatch:
     inputs:
       operation:

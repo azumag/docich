@@ -3,6 +3,8 @@ on:
   pull_request:
     paths:
       - 'src/docich/**'
+      - '!src/docich/discord_chat.py'
+      - '!src/docich/discord_memory.py'
       - 'brains/hanjuku/**'
       - 'config/games/hanjuku-hero.toml'
       - 'tests/test_hanjuku*.py'
@@ -16,6 +18,8 @@ on:
     branches: [main]
     paths:
       - 'src/docich/**'
+      - '!src/docich/discord_chat.py'
+      - '!src/docich/discord_memory.py'
       - 'brains/hanjuku/**'
       - 'config/games/hanjuku-hero.toml'
       - 'tests/test_hanjuku*.py'
@@ -27,6 +31,11 @@ on:
       - '.github/workflows/hanjuku-predictions-ci.yml'
 permissions:
   contents: read
+
+concurrency:
+  group: hanjuku-predictions-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   prediction-regressions:
     runs-on: ubuntu-latest

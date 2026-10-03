@@ -2,8 +2,34 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore:
+      - 'workers/tsuitate-bot/**'
+      - '.github/workflows/tsuitate-bot-worker.yml'
+      - 'src/docich/discord_chat.py'
+      - 'src/docich/discord_memory.py'
+      - 'tests/test_discord_chat.py'
+      - 'tests/test_discord_memory.py'
+      - 'requirements-discord.txt'
+      - 'containers/discord-chat/**'
+      - 'compose.discord-chat*.yml'
+      - 'tests/test_discord_container.py'
+      - 'tests/discord_container_probe.py'
+      - '.github/workflows/discord-chat.yml'
   push:
     branches: [main]
+    paths-ignore:
+      - 'workers/tsuitate-bot/**'
+      - '.github/workflows/tsuitate-bot-worker.yml'
+      - 'src/docich/discord_chat.py'
+      - 'src/docich/discord_memory.py'
+      - 'tests/test_discord_chat.py'
+      - 'tests/test_discord_memory.py'
+      - 'requirements-discord.txt'
+      - 'containers/discord-chat/**'
+      - 'compose.discord-chat*.yml'
+      - 'tests/test_discord_container.py'
+      - 'tests/discord_container_probe.py'
+      - '.github/workflows/discord-chat.yml'
 
 permissions:
   contents: read
