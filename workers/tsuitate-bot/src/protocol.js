@@ -3,7 +3,7 @@
 export const SUPPORTED_GAME_TYPES = new Set(["ついたて"]);
 export const MAX_BODY_BYTES = 256 * 1024;
 
-const CSA_PIECE = /^(?:FU|KY|KE|GI|KI|KA|HI)$/;
+const USI_PIECE = /^[PLNSGBRK]$/;
 const CSA_MOVE = /^[+-](?:[1-9]{4}(?:FU|KY|KE|GI|KI|KA|HI|OU|TO|NY|NK|NG|UM|RY)|00[1-9]{2}(?:FU|KY|KE|GI|KI|KA|HI)|00(?:00|[1-9]{2})ZZ|0000TORYO)$/;
 
 export class ProtocolFault extends Error {
@@ -76,7 +76,7 @@ function parsePosition(value) {
     normalized.lastInfo = value.lastInfo;
   }
   if (value.lastCapture !== undefined) {
-    if (typeof value.lastCapture !== "string" || !CSA_PIECE.test(value.lastCapture)) throw new ProtocolFault(400, "invalid_position");
+    if (typeof value.lastCapture !== "string" || !USI_PIECE.test(value.lastCapture)) throw new ProtocolFault(400, "invalid_position");
     normalized.lastCapture = value.lastCapture;
   }
   if (value.wasPromotion !== undefined) {
