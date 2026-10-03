@@ -48,6 +48,8 @@ class TwicaCommonEnableEpochTests(unittest.TestCase):
         self.assertIn("_select_shared_only", python)
         self.assertIn("collect_status", python)
         self.assertIn("arm_stream(True, shared_only=shared_only)", python)
+        self.assertIn('["sudo", "-n", "systemctl", "restart", SHARED_OVERLAY_UNIT]', python)
+        self.assertIn("SHARED_OVERLAY_HEALTH", python)
 
     def test_workflow_enable_is_push_production_epoch_gated(self):
         text = WORKFLOW.read_text(encoding="utf-8")
@@ -61,9 +63,11 @@ class TwicaCommonEnableEpochTests(unittest.TestCase):
         self.assertIn("github.event_name == 'push'", block)
         self.assertIn("steps.auth.outputs.target == 'production'", block)
         self.assertIn("shared_only_evidence_unavailable", block)
+        self.assertIn("shared_overlay_restart_unavailable", block)
+        self.assertIn("shared_overlay_health_not_ready", block)
 
-    def test_epoch_is_second_attempt(self):
-        self.assertEqual(EPOCH.read_text(encoding="utf-8"), "2\n")
+    def test_epoch_is_third_attempt(self):
+        self.assertEqual(EPOCH.read_text(encoding="utf-8"), "3\n")
 
     def test_both_live_guards_use_normal_activation(self):
         clients = [{"role": "game"}, {"role": "shared"}]
@@ -95,6 +99,28 @@ class TwicaCommonEnableEpochTests(unittest.TestCase):
                     twica_enable._select_shared_only(clients, snapshot)
         finally:
             twica_enable.fresh = original
+
+
+    def test_missing_legacy_guard_refreshes_shared_then_uses_shared_only(self):
+        sequence = [[], [{"role": "shared"}]]
+        original_fresh = twica_enable.fresh
+        original_clients = twica_enable.legacy_clients
+        original_restart = twica_enable._restart_shared_overlay
+        twica_enable.fresh = lambda _: True
+        twica_enable.legacy_clients = lambda _: sequence.pop(0)
+        restarted = []
+        twica_enable._restart_shared_overlay = lambda: restarted.append(True)
+        try:
+            self.assertTrue(
+                twica_enable._select_after_optional_shared_refresh(
+                    Path("/unused"), runtime_snapshot("nethack")
+                )
+            )
+            self.assertEqual(restarted, [True])
+        finally:
+            twica_enable.fresh = original_fresh
+            twica_enable.legacy_clients = original_clients
+            twica_enable._restart_shared_overlay = original_restart
 
 
 if __name__ == "__main__":
