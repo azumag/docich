@@ -3808,9 +3808,9 @@ def battle_step(screen: Screen, mem):
             # after a resolution the chart cannot follow up on.
             cur['card_flow'] = None
         return []
-    # 卵落札の選択後に敵HPが下がり、まだ生き残っているなら敵は卵を落とした。
-    # 以後の召喚不能として扱ってもよい（落としていない卵は無いと言い切らない）。
-    _egg_drop_confirm(mem, cur)
+    # Card selection and subsequent damage do not prove that the card hit:
+    # the A input may not have reached the game, and melee also lowers HP.
+    _observe_egg_drop_candidate(mem, cur)
     retreat = _hero_retreat_open(mem, cur)
     if retreat is not None:
         return retreat
@@ -3896,8 +3896,6 @@ def battle_step(screen: Screen, mem):
             drop_evidence = _egg_drop_evidence(cur, tactic['card'])
             if drop_evidence and not drop_evidence['drops']:
                 drop_evidence = None
-            if drop_evidence:
-                _watch_egg_drop(cur, tactic['card'], b.enemy_hp, drop_evidence)
             _record(mem, 'battle_card', **_battle_labels(cur), card=tactic['card'], enemy=b.enemy,
                     enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, reason=note,
                     expected_metric='選択後の実使用告知と敵HP減少',
@@ -3937,6 +3935,8 @@ def battle_step(screen: Screen, mem):
 
 CARD_OPEN_ATTEMPTS = 2        # initial chart opening plus one bounded retry
 CARD_MENU_OPEN_RETRIES = 4    # B repeats while the command menu has not opened yet
+CARD_LIST_CURSOR_LIMIT = 10  # same finite list budget as survival selections
+CARD_ANNOUNCE_LIMIT = 6      # shared by chart and survival confirmation waits
 MELEE_HOLD_LIMIT = 8          # egg-safe holds in one fight before melee proceeds
 # A hold that bleeds the general past this share of the fight's opening HP
 # stops before the count bound (g530 09:52 defense: 90 -> 81 by the 7th hold,
@@ -3987,10 +3987,10 @@ def _melee_step(mem, cur):
     # An unbounded hold is a passive death: after the bound the melee proceeds
     # for the rest of the fight even at the clash egg risk (the rescue already
     # had its chances).
-    # 敵の卵が落ちた（召喚不能）戦闘だけ、激突判定があっても青ゲージの A 連打を
-    # 消費して押し込む。卵が落ちていない卵持ち敵では相変わらず保持する。
-    egg_dropped = cur.get('enemy_egg_dropped') is True
-    safe = (egg_dropped or triggers.has_egg is False or triggers.clash_position is False
+    # There is no calibrated egg-loss receipt yet. A selected dropper plus
+    # lower HP is only a candidate, including True flags saved by older bots.
+    # The existing HP/count budgets still end a passive hold boundedly.
+    safe = (triggers.has_egg is False or triggers.clash_position is False
             or charted or forced)
     cur['melee_forced'] = forced
     cur['melee_holds'] = 0 if safe else holds + 1
@@ -4001,12 +4001,11 @@ def _melee_step(mem, cur):
     _record(mem, 'battle_melee', **_battle_labels(cur),
             enemy=cur.get('enemy'), enemy_hp=cur.get('enemy_hp'), ally_hp=cur.get('ally_hp'),
             egg_risk_flags=asdict(triggers), melee_control_mode=mode,
-            enemy_egg_dropped=egg_dropped,
+            enemy_egg_dropped=None,
+            enemy_egg_drop_expected=cur.get('enemy_egg_drop_expected') is True,
             a_frames_sent=POWER_TAPS * 3 if safe else 0,
             hold_hp_budget=hp_budget, hold_hp_bled=hp_bled,
             reason=('チャートのぶつかり合いに向けて押し込む' if charted
-                    else '敵の卵を落として召喚を封じたため、青ゲージをA連打で消費して押し込む'
-                    if egg_dropped
                     else '保持中のHP劣化が予算に達したため押し込む' if hold_cut
                     else '卵の激突リスクの保留上限に達したため押し込む' if holds >= MELEE_HOLD_LIMIT
                     else '保持の打ち切り後はこの戦闘を通しで押し込む' if forced
@@ -4149,7 +4148,7 @@ def _egg_drop_tactics(mem, cur, enemy, plan=None):
     """卵を落とせる携行札を開幕に使う戦術 (チャートがこの札を指していない時だけ)。"""
     plan = _egg_plan(mem, cur) if plan is None else plan
     card = plan.get('dropper')
-    if not card or cur.get('enemy_egg_dropped'):
+    if not card:
         return []
     return [{'enemy': enemy, 'card': card, 'open': True, 'step': cur.get('step'),
              'tactic_id': f"eggdrop:{cur.get('step')}:{card}", 'egg_drop_only': True,
@@ -4158,38 +4157,49 @@ def _egg_drop_tactics(mem, cur, enemy, plan=None):
 
 
 def _watch_egg_drop(cur, card, hp, evidence):
-    """この札が命中すれば敵が卵を落とす、と判定できる時だけ監視を始める。"""
+    """Track an egg-loss candidate only after selecting its measured row."""
+    cur.pop('egg_drop_watch', None)
     if evidence and evidence.get('drops'):
         cur['egg_drop_watch'] = {'card': card, 'hp': hp, 'value': evidence['value'],
                                  'threshold': evidence['threshold'],
-                                 'max_hp_sum': evidence['max_hp_sum']}
+                                 'max_hp_sum': evidence['max_hp_sum'],
+                                 'evidence_version': 2}
 
 
-def _egg_drop_confirm(mem, cur):
-    """選択後の敵HP低下を、卵を落とした根拠にする。
+def _observe_egg_drop_candidate(mem, cur):
+    """Keep selection/damage evidence without declaring the enemy disarmed.
 
-    実使用告知は未校正のまま (``fast_chain`` と同じ水準の証拠)。卵が落ちたと言える
-    のは、卵落札が選択されたあとに敵HPが下がり、まだ生き残っている時だけ。
-    HP 0 (倒れた) や根拠がない戦闘では、落ちていない卵を無いと言い切らない。
+    A damage decrease can be melee, a failed selection, or an earlier hit.
+    Unlike a bounded chart follow-up, skipping all egg-risk checks requires
+    an actual egg-loss receipt. No such screen signature is calibrated yet.
     """
+    if cur.pop('enemy_egg_dropped', None) is True:
+        cur['enemy_egg_drop_expected'] = True
+        _record(mem, 'battle_egg_drop_invalidated', **_battle_labels(cur),
+                observed_metric={'previous_inferred_egg_drop': True,
+                                 'egg_drop_confirmation': 'unclassified'},
+                reason='旧版の選択とHP低下だけによる卵落確定を取り消し、敵召喚への警戒を戻す')
     watch = cur.get('egg_drop_watch')
-    if not watch or cur.get('enemy_egg_dropped'):
+    if not watch:
+        return
+    if watch.get('evidence_version') != 2:
+        cur.pop('egg_drop_watch', None)  # old watchers started before selection
         return
     hp, at_open = cur.get('enemy_hp'), watch.get('hp')
     if type(hp) is not int or hp <= 0 or type(at_open) is not int or hp >= at_open:
         return
     if watch['card'] not in (cur.get('cards_selected') or []):
         return                      # 札一覧の選択に達していない＝使用の根拠がない
-    cur['enemy_egg_dropped'] = True
+    cur['enemy_egg_drop_expected'] = True
     cur.pop('egg_drop_watch', None)
-    _record(mem, 'battle_egg_dropped', **_battle_labels(cur), card=watch['card'],
+    _record(mem, 'battle_egg_drop_unconfirmed', **_battle_labels(cur), card=watch['card'],
             enemy=cur.get('enemy'), enemy_hp=hp, ally_hp=cur.get('ally_hp'),
             egg_drop={'value': watch['value'], 'threshold': watch['threshold'],
                       'max_hp_sum': watch['max_hp_sum']},
-            expected_metric='卵落札の命中後、敵は卵を落として以後召喚を使えなくなる',
+            expected_metric='卵落札が実際に命中すれば召喚を封じる。実使用と卵落は未確認',
             observed_metric={'enemy_hp': hp, 'hp_at_card': at_open,
-                             'selected': watch['card'] in (cur.get('cards_selected') or [])},
-            reason='卵落が最大HP合計の余りを超える切り札の選択後、敵HPの低下を実測')
+                             'selected': True, 'egg_drop_confirmation': 'unclassified'},
+            reason='卵落札の選択後にHP低下を観測したが、白兵ダメージと区別できないため召喚不能とは扱わない')
 
 
 def _rescue_card(candidates, cur):
@@ -4223,7 +4233,6 @@ GENERAL_CRITICAL_RETREAT_HP = 12
 def _unarmed_clash_risk(cur):
     """Check resources before a non-boss egg clash, rather than idle into it."""
     if (cur.get('planned_cards')
-            or cur.get('enemy_egg_dropped')       # 卵は既に落ち、召喚の心配はない
             or cur.get('enemy') in chart.BOSSES.values()):
         return False
     triggers = enemy_egg_triggers(cur.get('enemy'))
@@ -4478,9 +4487,7 @@ def _survival_card_list(screen, mem, cur, flow, names):
     cur['card_consumption_complete'] = False
     cur.setdefault('cards_selected', []).append(card)
     egg_drop = _egg_drop_evidence(cur, card)
-    if egg_drop and egg_drop['drops']:
-        # 救済で選んだ卵落札も、命中すれば敵の卵は落ちる。同じ根拠で監視を始める。
-        _watch_egg_drop(cur, card, cur.get('enemy_hp'), egg_drop)
+    _watch_egg_drop(cur, card, cur.get('enemy_hp'), egg_drop)
     _record(mem, 'battle_card_selected', **_battle_labels(cur), card=card,
             expected_metric='実使用告知と卵落' if egg_drop and egg_drop['drops'] else '実使用告知',
             observed_metric={'listed_cards': names, 'listed_count': counts[card],
@@ -4748,21 +4755,30 @@ def card_list_step(screen: Screen, mem):
                     resulting_event='card_not_selected', reason='切り札を携行していないため白兵を継続')
             cur['card_flow'] = None
             return [pad('b'), pad('b')]
-        index = names.index(flow['card'])
+        # The list may retain its cursor after a failed/partial input. Never
+        # assume row zero or send a multi-key selection from an old image.
+        move = _battle_menu_to(screen, flow['card'])
+        flow['cursor_ticks'] = int(flow.get('cursor_ticks', 0)) + 1
+        if move != 'here':
+            if flow['cursor_ticks'] > CARD_LIST_CURSOR_LIMIT:
+                _card_use_unclassified(mem, cur, '切り札のカーソルを確認できるまでの上限に達したため一覧を閉じる')
+                return [pad('b')]
+            return [move] if move else []
         flow['stage'] = 'announce'
         flow['selection_planned'] = True
         cur['card_consumption_complete'] = False
         cur.setdefault('cards_selected', []).append(flow['card'])
+        _watch_egg_drop(cur, flow['card'], cur.get('enemy_hp'),
+                        _egg_drop_evidence(cur, flow['card']))
         _record(mem, 'battle_card_selected', **_battle_labels(cur), card=flow['card'],
                 expected_metric='実使用告知', observed_metric={'listed_cards': names},
                 resulting_event='selection_planned_not_yet_confirmed', reason='切り札選択入力を予定。消費は未確定')
-        return [pad('down')] * index + [pad('a')]
+        return [pad('a')]
     if flow['stage'] == 'announce' and flow.get('selection_planned'):
-        if flow.get('survival'):
-            flow['announce_ticks'] = flow.get('announce_ticks', 0) + 1
-            if flow['announce_ticks'] > 6:
-                _card_use_unclassified(mem, cur, '切り札の告知待ち上限に達したため選択画面から戻る')
-                return [pad('b')]
+        flow['announce_ticks'] = flow.get('announce_ticks', 0) + 1
+        if flow['announce_ticks'] > CARD_ANNOUNCE_LIMIT:
+            _card_use_unclassified(mem, cur, '切り札の告知待ち上限に達したため選択画面から戻る')
+            return [pad('b')]
         # No live frame/parser signature has calibrated a use receipt yet.
         # Keep capturing this flow, but never unlock after_card from guessed text.
         cur['card_consumption_complete'] = False
