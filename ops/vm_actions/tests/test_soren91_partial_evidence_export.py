@@ -212,6 +212,31 @@ class PartialEvidenceExportTests(unittest.TestCase):
         self.assertIs(history_meta["sessionAttributed"], False)
         self.assertEqual({path: path.read_bytes() for path in before}, before)
 
+    def test_schema_two_projects_only_numeric_arena_and_hud_fields(self):
+        _, _, calibration = self.write_partial()
+        arena = {"left": 1, "right": 2, "top": 0.25, "bottom": 1.5, "width": 1, "height": 1.25}
+        hud = {"top": 0, "bottom": 0.25}
+        self.rewrite_json(calibration, lambda c: c.update(
+            coordinateSchema=2,
+            arena={**arena, "private": "do-not-export"},
+            hud={**hud, "url": "do-not-export"},
+        ))
+        _, _, files = self.read_bundle()
+        projected = json.loads(files["partial/game_0009/calibration.json"])
+        self.assertEqual(projected["coordinateSchema"], 2)
+        self.assertEqual(projected["arena"], arena)
+        self.assertEqual(projected["hud"], hud)
+        self.assertNotIn(b"do-not-export", b"".join(files.values()))
+        for update in (
+            {"coordinateSchema": True}, {"coordinateSchema": "private-value"},
+            {"coordinateSchema": 3}, {"arena": {**arena, "top": float("nan")}},
+            {"hud": {**hud, "bottom": "private-value"}},
+        ):
+            with self.subTest(update=update):
+                value = json.loads(calibration.read_text())
+                value.update(update)
+                self.assertIsNone(self.mod._project_calibration(json.dumps(value).encode()))
+
     def test_completed_and_partial_have_separate_game_identities(self):
         self.write_partial()
         summary = self.runtime / "tmp" / "summaries" / "game_0008.json"

@@ -295,7 +295,7 @@ def _timestamp_ms(value: object) -> int | None:
 
 
 def _project_calibration(data: bytes) -> dict | None:
-    """Only the current fixed numeric schema, two method enums and an ISO date."""
+    """Only fixed numeric geometry, known schema/method enums and an ISO date."""
     try:
         value = json.loads(data)
     except (ValueError, UnicodeDecodeError, RecursionError):
@@ -309,6 +309,14 @@ def _project_calibration(data: bytes) -> dict | None:
         "dropArea": ("pixelLeft", "pixelRight"),
     }
     projected: dict = {}
+    if "coordinateSchema" in value:
+        if type(value["coordinateSchema"]) is not int or value["coordinateSchema"] != 2:
+            return None
+        projected["coordinateSchema"] = 2
+        groups.update({
+            "arena": ("left", "right", "top", "bottom", "width", "height"),
+            "hud": ("top", "bottom"),
+        })
     for group, keys in groups.items():
         source = value.get(group)
         if not isinstance(source, dict):
