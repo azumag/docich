@@ -44,3 +44,19 @@ assert.equal(unpatched.split(original).length, 2, "Expected exactly one Durable 
 const patched = unpatched.replace(original, replacement);
 if (source !== patched) await writeFile(entrypoint, patched);
 console.log("Cf self-binding compatibility patch verified (beta.12 / config 0.23.0)");
+
+// Cf's API-to-config mapper must not synthesize own undefined optional DO keys.
+// Its validator rejects such keys locally, while its diff engine treats them as
+// different from absent keys remotely. Preserve every explicit target/environment.
+const remoteEntrypoint = join(dirname(cfPackagePath), "dist/dist-CYFkGHYv.mjs");
+const remoteOriginal = "{name:t.name,class_name:t.class_name,script_name:t.script_name,environment:t.environment}";
+const remoteReplacement = "{name:t.name,class_name:t.class_name,...t.script_name===void 0?{}:{script_name:t.script_name},...t.environment===void 0?{}:{environment:t.environment}}";
+const remoteSource = await readFile(remoteEntrypoint, "utf8");
+const remotePristine = remoteSource.includes(remoteReplacement)
+  ? remoteSource.replace(remoteReplacement, remoteOriginal) : remoteSource;
+assert.equal(hash(remotePristine), "f695897b2f55004257db1321ab279c33d6036e9a53f1509198400ed373233417",
+  "Unexpected Cf remote mapper distribution; refusing to patch");
+assert.equal(remotePristine.split(remoteOriginal).length, 2, "Expected exactly one remote DO binding mapper");
+const remotePatched = remotePristine.replace(remoteOriginal, remoteReplacement);
+if (remoteSource !== remotePatched) await writeFile(remoteEntrypoint, remotePatched);
+console.log("Cf remote DO optional-key normalization patch verified (beta.12)");
