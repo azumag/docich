@@ -355,12 +355,31 @@ export class DiscordBot {
 
   async #acceptMessage(message) {
     safeLog(this.env, "message_create_received");
-    if (!message?.guild_id || !message?.channel_id || !message?.id) return;
-    if (message.author?.bot || message.webhook_id) return;
-    if (![0, 19].includes(Number(message.type ?? 0))) return;
-    if (typeof message.content !== "string") return;
+    if (!message?.guild_id || !message?.channel_id || !message?.id) {
+      safeLog(this.env, "message_ignored_missing_scope");
+      return;
+    }
+    if (message.author?.bot || message.webhook_id) {
+      safeLog(this.env, "message_ignored_automated");
+      return;
+    }
+    if (![0, 19].includes(Number(message.type ?? 0))) {
+      safeLog(this.env, "message_ignored_type");
+      return;
+    }
+    if (typeof message.content !== "string") {
+      safeLog(this.env, "message_ignored_content");
+      return;
+    }
     const botId = this.botUserId || await this.state.storage.get("bot_user_id");
-    if (!botId || !isAddressedMessage(message, botId)) return;
+    if (!botId) {
+      safeLog(this.env, "message_ignored_missing_bot_id");
+      return;
+    }
+    if (!isAddressedMessage(message, botId)) {
+      safeLog(this.env, "message_ignored_no_mention");
+      return;
+    }
     safeLog(this.env, "mention_received");
     const timestamp = Date.parse(message.timestamp);
     if (!Number.isFinite(timestamp)) return;
