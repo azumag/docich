@@ -16,7 +16,7 @@ Observed sources (all read-only):
   - tmp/state/improve_state.json, improve lock/monitor/retry/gate markers
   - deployed git HEADs (docich + intended soviet_now gitlink)
   - one bounded owner-only Soren stream-title journal, projected to fixed enums,
-    UTC time and SHA only; title and integrated stream-log bodies are never read
+    UTC time, SHA and two nonsecret ID presence booleans only; title and integrated stream-log bodies are never read
   - fixed, known temporary shared-object filename families under /tmp plus
     same-user /proc maps/fd references; only bounded counts/bytes/booleans are
     emitted, never filenames, PIDs, mappings or file contents
@@ -1642,6 +1642,9 @@ STREAM_TITLE_SYNC_RECORD_FIELDS = frozenset({
     "occurred_at", "event", "skip_reason", "youtube", "kick", "execution_head",
     "call_condition", "update_stream_game_sha256", "stream_title_sync_sha256",
 })
+STREAM_TITLE_SYNC_ID_PRESENCE_FIELDS = frozenset({
+    "youtube_stream_id_present", "kick_broadcaster_id_present",
+})
 STREAM_TITLE_SYNC_SHA_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 
@@ -1658,6 +1661,8 @@ def _stream_title_sync_empty(record_status):
         "same_execution_head_as_gitlink": None,
         "runtime_code_matches_gitlink": None,
         "call_condition": "unknown",
+        "youtube_stream_id_present": None,
+        "kick_broadcaster_id_present": None,
         "update_stream_game_sha256": None,
         "stream_title_sync_sha256": None,
         "skip_reason": "unknown",
@@ -1918,7 +1923,10 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha, expected_code=Non
 
     row_fields = set(row)
     is_legacy = row_fields == STREAM_TITLE_SYNC_LEGACY_RECORD_FIELDS
-    if not is_legacy and row_fields != STREAM_TITLE_SYNC_RECORD_FIELDS:
+    has_id_presence = row_fields == (
+        STREAM_TITLE_SYNC_RECORD_FIELDS | STREAM_TITLE_SYNC_ID_PRESENCE_FIELDS
+    )
+    if not is_legacy and not has_id_presence and row_fields != STREAM_TITLE_SYNC_RECORD_FIELDS:
         result["record_status"] = "malformed"
         return result
 
@@ -1967,6 +1975,9 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha, expected_code=Non
         )
         or not valid_source_sha256(updater_sha256)
         or not valid_source_sha256(helper_sha256)
+        or (has_id_presence and any(
+            type(row[field]) is not bool for field in STREAM_TITLE_SYNC_ID_PRESENCE_FIELDS
+        ))
     ):
         result["record_status"] = "malformed"
         return result
@@ -2071,6 +2082,9 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha, expected_code=Non
         return result
 
     result["record_status"] = "fresh"
+    if has_id_presence:
+        for field in STREAM_TITLE_SYNC_ID_PRESENCE_FIELDS:
+            result[field] = row[field]
     result["skip_reason"] = skip_reason
     result["youtube"] = youtube
     result["kick"] = kick

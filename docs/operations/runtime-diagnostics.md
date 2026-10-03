@@ -379,6 +379,15 @@ gitlink SHA一致、固定skip reason、YouTube/Kickの固定結果enumだけ。
 不正enum、親/末尾symlink、owner-onlyでないdirectory/file、過大・不完全・古い記録は結果を
 公開せず固定状態として返す。新しい状態項目はdiagnosticのoverall severityに影響しない。
 
+`youtube_stream_id_present` / `kick_broadcaster_id_present` はhelper実行時の
+`YOUTUBE_BROADCAST_STREAM_ID` / `KICK_BROADCASTER_USER_ID` が非空だったかだけを
+表す厳密なboolean。空文字・未設定はfalse、空白だけでも非空はtrue。ID値やcredentialの
+存在は記録・投影しない。collector自身の環境から補完しない。追加済みschemaは両項目を
+必須とし、従来の2schemaも受理するが未記録項目は`null`（unknown）。freshかつ現在の
+gitlinkに対応するsource fingerprintが一致する記録だけでbooleanを表示し、stale / future /
+malformed / source_unavailable / source_mismatchでは`null`を維持する。最大行512bytes、
+journal最大32KiBは維持する。存在だけではIDの正当性や認証・配信成功を証明しない。
+
 `event=skipped` は `skip_reason` が示す早期終了を表し、両platformは `not_run`。
 `event=started` のままならhelper開始後に結果行が残らなかった状態。
 `event=result` の `updated` はAPI read-backが依頼したtitleと一致したことを示すだけで、
