@@ -9,7 +9,7 @@ import {
   isFatalGatewayClose,
   stripBotMention,
 } from "../src/discord.js";
-import { cleanReply, generateReply } from "../src/llm.js";
+import { DISCORD_CONTEXT, cleanReply, generateReply } from "../src/llm.js";
 import { searchTerms } from "../src/memory.js";
 import { DiscordBot } from "../src/bot.js";
 
@@ -45,6 +45,12 @@ test("Japanese bigrams and normalized latin terms support durable recall", () =>
   assert.ok(terms.includes("cat"));
   assert.ok(terms.includes("猫の"));
   assert.ok(terms.includes("名前"));
+});
+
+test("Discord connection context requires polite desu-masu style", () => {
+  assert.match(DISCORD_CONTEXT, /です・ます調/);
+  assert.match(DISCORD_CONTEXT, /丁寧語/);
+  assert.match(DISCORD_CONTEXT, /〜です/);
 });
 
 test("Workers AI backend sends the canonical conversation shape without tools", async () => {
