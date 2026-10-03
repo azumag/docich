@@ -1,12 +1,13 @@
 """Synthetic deterministic bulletins; these are NOT live forecasts."""
 from copy import deepcopy
 from datetime import datetime, timedelta
+from html.parser import HTMLParser
 import json
 from pathlib import Path
 
 import pytest
 
-from docich import weather as w
+from docich import weather as w, weather_map_data as map_data
 
 NOW = datetime(2026, 9, 29, 6, tzinfo=w.JST).timestamp()
 TODAY = datetime.fromtimestamp(NOW, w.JST).date()
@@ -319,12 +320,54 @@ def test_readonly_status_does_not_fetch(tmp_path,capsys):
 
 def test_forecast_is_not_embedded_in_script_or_assigned_as_html():
     assert "innerHTML" not in v.HTML
-    assert "textContent=txt" in v.HTML
+    assert ".textContent" in v.HTML
     assert "performance.now()" in v.HTML
     assert "Math.min(remaining,5000)" in v.HTML
     assert "AbortSignal.timeout(2000)" in v.HTML
     assert "晴れ" not in v.HTML  # no fabricated default forecast
     assert "出典：" in v.HTML and "docichが編集" in v.HTML
+    assert "Natural Earth" in v.HTML and "Public Domain" in v.HTML
+    assert "__MAP_DATA__" not in v.HTML
+    assert "順送りズーム" in v.HTML and "全国表示" in v.HTML
+    assert "音声同期なし" in v.HTML and "読み上げ cue：未接続" in v.HTML
+    assert "@media(max-aspect-ratio:5/4)" in v.HTML
+    assert "fetch('/api/weather'" in v.HTML
+
+
+def test_weather_map_is_natural_earth_and_covers_all_forecast_points():
+    assert map_data.VIEWBOX == (1220, 960)
+    assert len(map_data.POLYGONS) == 109
+    assert set(map_data.CITY_POINTS) == {
+        "sapporo", "sendai", "tokyo", "niigata", "nagoya", "osaka",
+        "hiroshima", "takamatsu", "fukuoka", "kagoshima", "naha",
+    }
+    width, height = map_data.VIEWBOX
+    assert all(0 <= x <= width and 0 <= y <= height for x, y in map_data.CITY_POINTS.values())
+
+
+def test_weather_html_has_unique_ids_and_no_external_runtime_assets():
+    class Markup(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.ids = []
+            self.srcs = []
+            self.resources = []
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if "id" in attrs:
+                self.ids.append(attrs["id"])
+            if "src" in attrs:
+                self.srcs.append(attrs["src"])
+            if tag in {"img", "iframe", "video", "audio", "link"}:
+                self.resources.append(tag)
+
+    markup = Markup()
+    markup.feed(v.HTML)
+    assert len(markup.ids) == len(set(markup.ids))
+    assert not markup.srcs and not markup.resources
+    assert "const MAP_DATA={\"polygons\":" in v.HTML
+    assert v.HTML.count("fetch(") == 1
 
 
 @pytest.mark.parametrize("value",[0,80,65536,True,"8803"])

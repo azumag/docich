@@ -40,6 +40,17 @@ weather-view用のTwitch category/title mappingは追加せず、合成view起�
 フォントは実行ホストのシステムフォントを参照し、フォントファイルは配布しない。
 テストデータは合成データであり、実際の天気として表示・配信しない。
 
+地図画面は Natural Earth の Admin 0 – Countries 1:10m（日本）と
+Populated Places 1:10m の位置データを同梱し、画面用に簡略化したSVGとして描画する。
+同データはPublic Domain。市区町村・都道府県境界や航行に使える精度を示すものではなく、
+行政界を描き足さない。北海道・本州・四国・九州・沖縄を含む全国表示から、地方・代表都市へ
+選択ズームし、全国表示へ戻れる。配信向け960×540ではcontain表示、縦長端末は縦スクロールの
+レイアウトに切り替える。自動順送りは画面だけの操作で、読み上げ音声との同期は未接続。
+
+- [Natural Earth Admin 0 – Countries 1:10m](https://www.naturalearthdata.com/downloads/10m-cultural-vectors/10m-admin-0-countries/)
+- [Natural Earth Populated Places 1:10m](https://www.naturalearthdata.com/downloads/10m-cultural-vectors/10m-populated-places/)
+- [Natural Earth terms of use](https://www.naturalearthdata.com/about/terms-of-use/)
+
 気象庁が発表した予報の伝達・解説という範囲を維持する。
 数値予報の独自解析、地点補間、独自の降雨時刻・確率・警報生成、
 「雨の心配はない」等の入力にない判断はしない。原稿は定型でありLLMを呼ばない。
@@ -93,10 +104,13 @@ bin/docich-weather --state-dir /tmp/docich-weather-preview serve --port 8803
 CLIの `status` / `narration` は有効なsnapshotがなければ固定理由とexit 2を返す。
 `narration` は原稿のJSON出力であり、TTS queueへの送信ではない。
 
-画面は6地点/5地点の2ページを12秒間隔で切り替える。
+画面は同梱のNatural Earth日本地図と11地点の位置を表示し、地点選択・前後移動・
+全国表示・画面のみの自動順送りでクローズアップする。
 外部文字列をHTMLとして挿入せず、全て `textContent` で描画する。
 長すぎる原文を勝手に切って意味を変えず、表示枠に収まらない場合は休止する。
 描画は960×540を縦横比維持でcontainし、外側の配信枠は操作しない。
+縦長端末は地図と予報パネルを縦に並べる。音声consumerが再生開始cueを公開していないため、
+画面には「音声同期なし」と表示し、擬似cue時計は動かさない。
 
 `GET /api/weather` はraw予報を毎回再検証する。有効なら200、欠損・期限切れなら503。
 全応答を`no-store`とし、Host検証・CSPも設定する。
