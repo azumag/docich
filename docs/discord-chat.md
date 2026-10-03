@@ -6,7 +6,7 @@ LLMを文章生成APIとして呼び、Discordのメンションに返答する�
 
 ペルソナの正本は `src/docich/comment/prompts/comment_persona_main.md`。これを起動時に読み、systemメッセージの先頭へそのまま入れる。別の人格や一人称を設定・複製しない。Discord接続ではTwitch向けの返答をDiscord向けに適用し、実際には渡されていない配信映像・ゲームの現況や操作結果を捏造しないという接続条件だけを補う。正本が欠落・空・不正なら起動しない。正本の変更反映にはBotプロセスの通常の再起動が必要。
 
-`message.mentions` にBot自身が含まれる投稿だけがトリガー。メンションのないBot宛て返信・通常の雑談には応答せず、保存もしない。Botへの通知を伴う返信がDiscordのmentionsに含まれる場合は対象となる。Bot/Webhook/システム投稿、DM、許可外のサーバー・チャンネル、到着時点で120秒を超えた古いイベントは除外する。スレッドはそのIDを個別許可し、親チャンネルから許可を継承しない。
+`message.mentions` にBot自身が含まれる投稿だけがトリガー。メンションのないBot宛て返信・通常の雑談には応答せず、保存もしない。Botへの通知を伴う返信がDiscordのmentionsに含まれる場合は対象となる。Bot/Webhook/システム投稿、DM、到着時点で120秒を超えた古いイベントは除外する。Botが参加しているDiscordサーバーでは、通常チャンネル・スレッドを含めチャンネルIDによるallowlistを設けず、Botへのメンションが届く場所すべてで応答する。サーバー間の会話記憶は混ぜない。
 
 ## 長期記憶
 
@@ -40,8 +40,6 @@ LLMはChat Completions互換の `POST <LLM_BASE_URL>/chat/completions`。`model`
 
 | 環境変数 | 内容 |
 |---|---|
-| `DOCICH_DISCORD_GUILD_ID` | 対象サーバーID（必須） |
-| `DOCICH_DISCORD_CHANNEL_IDS` | チャンネルIDのカンマ区切り（必須、最大8件） |
 | `DOCICH_DISCORD_TOKEN` | Bot Token（必須、秘密） |
 | `DOCICH_DISCORD_LLM_BASE_URL` | APIベースURL（必須、例 `http://127.0.0.1:8080/v1`） |
 | `DOCICH_DISCORD_LLM_MODEL` | APIで使用するモデルID（必須） |
@@ -51,9 +49,9 @@ LLMはChat Completions互換の `POST <LLM_BASE_URL>/chat/completions`。`model`
 | `DOCICH_DISCORD_ENABLED` | Discordに接続するときだけ`1` |
 | `DOCICH_ALLOW_REAL_AI` | LLM利用の明示許可`1`。上の有効化と両方必要 |
 
-旧 `DOCICH_DISCORD_MODE=channel` と `DOCICH_DISCORD_PERSONA` は起動エラーにする。設定を削除し、メンションのみ・既存ペルソナに移行する。互換用の `MODE=mentions` だけは受け付ける。
+旧 `DOCICH_DISCORD_GUILD_ID` / `DOCICH_DISCORD_CHANNEL_IDS` はallowlistとしては使用せず、非空で残っていれば起動エラーにする。Botを参加させた全サーバー・全チャンネルでのメンション応答へ移行するため、これらの設定は削除する。旧 `DOCICH_DISCORD_MODE=channel` と `DOCICH_DISCORD_PERSONA` も起動エラーにし、互換用の `MODE=mentions` だけは受け付ける。
 
-Bot設定でMessage Content Intentを有効化し、対象チャンネルの閲覧・投稿・必要な履歴閲覧権限だけを与える。スレッドではスレッド投稿権限も必要。管理者・メンバー一覧・Presence・音声の権限は不要。
+Bot設定でMessage Content Intentを有効化し、参加させるサーバーでは閲覧・投稿・必要な履歴閲覧権限だけを与える。スレッドではスレッド投稿権限も必要。管理者・メンバー一覧・Presence・音声の権限は不要。意図しない第三者のサーバーへ導入されないよう、所有者運用ではDiscord Developer PortalのPublic BotをOFFにして、所有者が明示的に招待したサーバーだけに参加させる。
 
 参加者にはAI Botであること、メンション会話の永続保存、設定したLLM提供先へ過去の関連会話も送信されること、削除方法を知らせる。提供先の保持設定も確認する。Bot Token/APIキーをチャット・Git・Issue・Actions出力へ貼らない。SDKのDEBUGログも有効にしない。
 
@@ -97,7 +95,7 @@ python3 containers/discord-chat/verify.py
 
 ### 設定・ビルド・確認
 
-`containers/discord-chat/settings.env.example` をリポジトリ外の所有者専用設定ファイルへコピーする。Bot、サーバー、1〜8チャンネル、APIベースURL、モデルは所有者の指定値を設定する。APIキーが不要ならkey overlayを使わない。secret値は設定ファイルへ書かず、所有者の安全な手段で外部ファイルへ保存する。
+`containers/discord-chat/settings.env.example` をリポジトリ外の所有者専用設定ファイルへコピーする。Bot Token、APIベースURL、モデルは所有者の指定値を設定する。Guild/Channel IDは設定しない。APIキーが不要ならkey overlayを使わない。secret値は設定ファイルへ書かず、所有者の安全な手段で外部ファイルへ保存する。
 
 Linuxではsecretファイルを実行UID/GID `65532:65532` が読める所有権・`0400`（親ディレクトリもアクセス可能）で準備する。Composeのfile secretはbind mountであり、Composeのuid/mode指定で変換されるとは仮定しない。Docker Desktopの共有ファイル権限も実環境で下の`--check`により確認する。読めなければ所有者が専用ファイルの所有権を調整し、root実行やworld-readable化はしない。シンボリックリンク、非regular file、worldアクセス、不正ASCII/空/4096バイト超を拒否し、エラーにpathや値を表示しない。既存のTOKEN/API_KEY環境変数方式は維持し、非空の値と_FILEの併用はエラーとする。
 
@@ -176,4 +174,4 @@ docker volume create docich-discord_memory-restored
 
 専用bridgeは他サービスから分離するが、Discordと指定APIへの外向き通信を可能にするため、LAN/インターネットへのegress allowlistは適用していない。Dockerは完全なVM隔離ではない。ホスト側egress制御、Rootless Dockerの新規導入、productionのruntime/health/diagnostics/control-plane統合は別作業。
 
-オフライン検証は空volume・再作成後の想起・スコープ分離/削除・二重起動拒否・適用隔離・HTTP処理中SIGTERMと待機キュー・整合backup/restoreまで確認する。通常CIで外部APIを呼ばない。実Discord/LLM往復、実権限、品質、料金、実運用での停止/復元は未確認であり、所有者指定の非本番ホスト、Bot Token、サーバー/チャンネル、API URL/必要ならキー、モデル、利用範囲が必要。
+オフライン検証は空volume・再作成後の想起・スコープ分離/削除・二重起動拒否・適用隔離・HTTP処理中SIGTERMと待機キュー・整合backup/restoreまで確認する。通常CIで外部APIを呼ばない。実Discord/LLM往復、実権限、品質、料金、実運用での停止/復元は未確認であり、所有者指定の非本番ホスト、Bot Token、Botを招待したテスト用サーバー、API URL/必要ならキー、モデル、利用範囲が必要。

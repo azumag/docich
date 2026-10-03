@@ -87,7 +87,6 @@ def main():
         settings.write_text('\n'.join([
             'DOCICH_DISCORD_IMAGE=' + IMAGE, 'DOCICH_DISCORD_TOKEN_SECRET_PATH=' + str(tmp / 'token'),
             'DOCICH_DISCORD_LLM_API_KEY_SECRET_PATH=' + str(tmp / 'key'),
-            'DOCICH_DISCORD_GUILD_ID=1', 'DOCICH_DISCORD_CHANNEL_IDS=10,11',
             'DOCICH_DISCORD_LLM_BASE_URL=https://example.invalid/v1',
             'DOCICH_DISCORD_LLM_MODEL=synthetic-model', 'DOCICH_DISCORD_ENABLED=0', 'DOCICH_ALLOW_REAL_AI=0']))
         override = tmp / 'probe.json'
