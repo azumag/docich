@@ -1,1 +1,38 @@
-name: Reply routing acceptance canary\n\non:\n  push:\n    branches:\n      - feat/jev-reply-evidence-routing\n\npermissions:\n  contents: read\n\nconcurrency:\n  group: reply-routing-acceptance-${{ github.ref }}\n  cancel-in-progress: true\n\njobs:\n  live-jev:\n    if: ${{ github.repository == 'azumag/docich' }}\n    environment: vm-operations\n    runs-on: ubuntu-24.04\n    timeout-minutes: 5\n    steps:\n      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803\n        with:\n          ref: ${{ github.sha }}\n          persist-credentials: false\n          submodules: false\n      - name: Probe reply-evidence-v1 with fixed synthetic Japanese turns\n        env:\n          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}\n        run: |\n          set -euo pipefail\n          PYTHONPATH=src python3 -P scripts/reply_routing_live_canary.py | tee "$RUNNER_TEMP/reply-routing-canary.json"\n          {\n            echo '### reply-evidence-v1 live canary'\n            echo '~~~json'\n            cat "$RUNNER_TEMP/reply-routing-canary.json"\n            echo '~~~'\n          } >> "$GITHUB_STEP_SUMMARY"\n
+name: Reply routing acceptance canary
+
+on:
+  push:
+    branches:
+      - feat/jev-reply-evidence-routing
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reply-routing-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-jev:
+    if: ${{ github.repository == 'azumag/docich' }}
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          submodules: false
+      - name: Probe reply-evidence-v1 with fixed synthetic Japanese turns
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=src python3 -P scripts/reply_routing_live_canary.py | tee "$RUNNER_TEMP/reply-routing-canary.json"
+          {
+            echo '### reply-evidence-v1 live canary'
+            echo '~~~json'
+            cat "$RUNNER_TEMP/reply-routing-canary.json"
+            echo '~~~'
+          } >> "$GITHUB_STEP_SUMMARY"
