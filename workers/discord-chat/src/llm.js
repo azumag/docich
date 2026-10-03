@@ -39,19 +39,34 @@ export async function generateReply(env, history, event) {
       }),
     },
   ];
-  const result = await env.AI.run(model, {
-    messages,
-    stream: false,
-    max_tokens: 500,
-    tool_choice: "none",
-  });
-  const choice = result?.choices?.[0];
-  if (choice?.message?.tool_calls || choice?.message?.function_call
-      || ["tool_calls", "function_call"].includes(choice?.finish_reason)) {
-    throw new Error("model_tool_call_rejected");
+  async function runOnce(maxTokens) {
+    const result = await env.AI.run(model, {
+      messages,
+      stream: false,
+      max_tokens: maxTokens,
+      tool_choice: "none",
+    });
+    const choice = result?.choices?.[0];
+    if (choice?.message?.tool_calls || choice?.message?.function_call
+        || ["tool_calls", "function_call"].includes(choice?.finish_reason)) {
+      throw new Error("model_tool_call_rejected");
+    }
+    return {
+      content: choice?.message?.content ?? result?.response,
+      finishReason: choice?.finish_reason ?? null,
+    };
   }
-  const content = choice?.message?.content ?? result?.response;
-  return cleanReply(content);
+
+  const first = await runOnce(500);
+  try {
+    const reply = cleanReply(first.content);
+    if (first.finishReason !== "length") return reply;
+  } catch (error) {
+    if (!["invalid_model_reply", "empty_model_reply"].includes(error?.message)) throw error;
+  }
+
+  const retry = await runOnce(900);
+  return cleanReply(retry.content);
 }
 
 export { DISCORD_CONTEXT };

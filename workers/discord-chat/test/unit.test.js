@@ -98,6 +98,34 @@ test("Workers AI backend sends the canonical conversation shape without tools", 
   assert.equal(JSON.parse(call.input.messages.at(-1).content).text, "元気？");
 });
 
+test("Workers AI retries once with a larger budget after an empty length-limited reply", async () => {
+  const tokenBudgets = [];
+  const env = {
+    AI: {
+      async run(_model, input) {
+        tokenBudgets.push(input.max_tokens);
+        if (tokenBudgets.length === 1) {
+          return { choices: [{ message: { content: "" }, finish_reason: "length" }] };
+        }
+        return { choices: [{ message: { content: "こんにちは、同志。ご挨拶ありがとうございます。" }, finish_reason: "stop" }] };
+      },
+    },
+    WORKERS_AI_MODEL: "@cf/deepseek-ai/deepseek-v4-flash-0731",
+    DOCICH_PERSONA: "canonical persona",
+  };
+  const result = await generateReply(env, [], {
+    id: "101",
+    guildId: "1",
+    channelId: "10",
+    authorId: "7",
+    authorName: "話し手",
+    content: "hello",
+    referenceId: null,
+  });
+  assert.equal(result, "こんにちは、同志。ご挨拶ありがとうございます。");
+  assert.deepEqual(tokenBudgets, [500, 900]);
+});
+
 test("unsafe or empty model output is rejected and long output is bounded", () => {
   assert.throws(() => cleanReply("<analysis>private"), /empty_model_reply/);
   assert.throws(() => cleanReply(null), /invalid_model_reply/);
