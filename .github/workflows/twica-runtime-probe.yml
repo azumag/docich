@@ -1,0 +1,114 @@
+name: TwiCa runtime probe
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/twica-runtime-probe.yml'
+      - 'ops/vm_actions/probe_twica_runtime.py'
+      - 'ops/vm_actions/tests/test_twica_runtime_probe.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/twica-runtime-probe.yml'
+      - 'ops/vm_actions/probe_twica_runtime.py'
+      - 'ops/vm_actions/tests/test_twica_runtime_probe.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s ops/vm_actions/tests -p test_twica_runtime_probe.py -v
+  observe:
+    needs: contracts
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.repository == 'azumag/docich' && github.repository_id == '1327276249' &&
+      github.actor_id == '9018513' && github.triggering_actor == 'azumag' &&
+      github.ref == 'refs/heads/main' && github.ref_protected == true
+    environment: vm-operations
+    # Read-only observation must not hold the deployment lock while waiting
+    # for that deployment to finish. It cannot modify any runtime state.
+    concurrency:
+      group: twica-readonly-probe-${{ github.repository }}
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Observe exact deployed common input without restarts
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          sha="$(git rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          install -m 700 -d "$RUNNER_TEMP/twica-probe-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/twica-probe-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/twica-probe-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/twica-probe-ssh/"*
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/twica-probe-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/twica-probe-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2)
+          matched=0
+          for attempt in $(seq 1 20); do
+            current="$(git ls-remote --refs https://github.com/azumag/docich.git refs/heads/main | awk '{print $1}')"
+            [[ "$current" == "$sha" ]] || { echo '::error::Probe superseded by newer main'; exit 60; }
+            if ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $sha" |
+              python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("sha")==sys.argv[1] and d.get("status") in {"configured","deployed"} else 1)' "$sha"; then
+              matched=1
+              break
+            fi
+            sleep 3
+          done
+          [[ "$matched" == 1 ]] || { echo '::error::Exact deployed baseline unavailable'; exit 60; }
+          set +e
+          {
+            printf '%s\n' 'set -euo pipefail' 'cd /home/ubuntu/docich'
+            printf '[[ "$(git rev-parse HEAD)" == "%s" ]] || exit 60\n' "$sha"
+            printf '%s\n' 'git diff --quiet HEAD -- || exit 61' 'python3 ops/vm_actions/probe_twica_runtime.py'
+          } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $sha"
+          rc=$?
+          set -e
+          case "$rc" in
+            0) result=input_alpha_inside_compositor_region ;;
+            20) result=input_transparent_during_sample ;;
+            21) result=input_alpha_outside_compositor_region ;;
+            22) result=input_alpha_covers_full_viewport ;;
+            30) result=policy_unavailable_or_invalid ;;
+            31) result=owner_legacy ;;
+            32) result=owner_not_common ;;
+            33) result=pipeline_not_fresh_or_not_ready ;;
+            34) result=renderer_heartbeat_not_fresh ;;
+            35) result=renderer_not_active ;;
+            36) result=renderer_generation_mismatch ;;
+            37) result=native_encoder_not_owned_by_pipeline ;;
+            38) result=pipeline_not_owned_by_live_stream_runner ;;
+            39) result=native_compositor_not_present ;;
+            40) result=input_snapshot_missing ;;
+            41) result=input_snapshot_stale ;;
+            42) result=input_snapshot_invalid_or_inaccessible ;;
+            43) result=runtime_changed_during_sample ;;
+            60) result=deployment_changed ;;
+            61) result=tracked_drift ;;
+            *) result=probe_or_transport_unavailable ;;
+          esac
+          echo "TwiCa read-only probe: $result"
+          echo 'This is input/runtime evidence, not proof of card delivery or final stream visibility.'
+          case "$rc" in 0|20|21|22) exit 0 ;; *) exit 1 ;; esac
