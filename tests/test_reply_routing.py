@@ -115,6 +115,15 @@ def test_confidence_boundary(confidence, status):
     assert d.api_only == (status == "jev")
 
 
+@pytest.mark.parametrize("confidence,expected", [
+    (.80, True), (1, True), (.799, False), (None, False), (True, False),
+    ("0.95", False), (float("nan"), False), (float("inf"), False),
+    (1.01, False), (10 ** 400, False),
+])
+def test_api_only_property_enforces_valid_confidence(confidence, expected):
+    assert routing.Decision("api_only", "jev", confidence).api_only is expected
+
+
 @pytest.mark.parametrize("status", ["timeout", "missing_key", "rate_limited", "network_error", "invalid_config", "PRIVATE_ERROR"])
 def test_failures_do_not_escalate_to_research_or_fabricate_api_answer(status):
     calls = []

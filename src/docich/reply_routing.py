@@ -63,7 +63,11 @@ class Decision:
 
     @property
     def api_only(self) -> bool:
-        return self.scope == "api_only" and self.status == "jev"
+        confidence = self.confidence
+        return (self.scope == "api_only" and self.status == "jev"
+                and type(confidence) in (int, float)
+                and 0.80 <= confidence <= 1
+                and math.isfinite(confidence))
 
 
 def project_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
