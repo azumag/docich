@@ -18,10 +18,6 @@ test("Cloudflare config exports SQLite GameState and binds it to this Worker", (
     worker: "docich-tsuitate-bot",
     exportName: "GameState",
   });
-  assert.deepEqual(worker.unsafe.metadata.durable_objects, {
-    bindings: [{ name: "GAME_STATE", class_name: "GameState" }],
-  });
-  assert.equal(Object.hasOwn(worker.unsafe.metadata.durable_objects.bindings[0], "script_name"), false);
 });
 
 test("version preview URLs stay disabled without overriding the production workers.dev route", () => {

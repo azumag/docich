@@ -461,6 +461,7 @@ class WeatherCornerAdapter:
 
     def __init__(self, g, corner):
         from .weather_corner import WeatherCornerManager
+        from .weather_view import refresh_snapshot
 
         self.g, self.corner = g, corner
         audio_enabled = getattr(corner, "audio_enabled", False)
@@ -475,6 +476,7 @@ class WeatherCornerAdapter:
             duration_minutes=corner.duration_minutes,
             audio_enabled=audio_enabled,
             audio_port=audio_port,
+            forecast_refresh=refresh_snapshot if getattr(corner, "fetch_on_start", False) else None,
         )
         self.state_path = self.manager.state_path
 

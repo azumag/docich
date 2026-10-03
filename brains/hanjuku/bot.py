@@ -39,6 +39,7 @@ CHART_DECISIONS=frozenset({
 # Only records that explain this observation's planned input/hold may override
 # the active battle. Observation, migration and result records are not actions.
 INPUT_CONTEXT_DECISIONS=frozenset({
+    'battle_card_damage_rejected','battle_card_damage_replan','battle_card_damage_recheck',
     'battle_survival','battle_survival_select','battle_survival_unavailable',
     'egg_recover_select','egg_recover_confirm','egg_recover_skip',
     'battle_okunote_scroll','battle_okunote_select','battle_okunote_risk_declined',

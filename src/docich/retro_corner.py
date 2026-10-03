@@ -387,6 +387,42 @@ _END_HANJUKU_CLOSING = {
 _END_HANJUKU_CLOSING_DEFAULT = "今回の挑戦はここまでです。"
 _END_CLAUSE_DEFAULT = "終了しました"
 
+# The shared sender truncates Twitch at 430 UTF-8 bytes and its YouTube
+# mirror at 200. Include the part label in the smaller transport budget.
+_END_RESULT_CHAT_MAX_BYTES = 200
+
+
+def _end_result_chat_parts(text: str) -> list[str]:
+    """Keep the complete recap, preferring sentence boundaries within each post."""
+    if len(text.encode("utf-8")) <= _END_RESULT_CHAT_MAX_BYTES:
+        return [text] if text else []
+
+    prefix_bytes = len("[1/1] ")
+    while True:
+        budget = _END_RESULT_CHAT_MAX_BYTES - prefix_bytes
+        remaining = text
+        parts = []
+        while remaining:
+            part = remaining.encode("utf-8")[:budget].decode("utf-8", "ignore")
+            if len(part) < len(remaining):
+                end = max(part.rfind(mark) for mark in "。！？!?\n") + 1
+                if not end:
+                    end = max(part.rfind(mark) for mark in "、，, \t") + 1
+                if end:
+                    part = part[:end]
+            parts.append(part)
+            remaining = remaining[len(part):]
+
+        required = len(f"[{len(parts)}/{len(parts)}] ")
+        if required <= prefix_bytes:
+            break
+        # Re-split if the total needs another digit; the label must fit too.
+        prefix_bytes = required
+
+    # Distinct labels also prevent repeated passages from being deduplicated
+    # by the shared queue. Short results retain their original single post.
+    return [f"[{number}/{len(parts)}] {part}" for number, part in enumerate(parts, 1)]
+
 
 class RetroCornerManager:
     # 終了時の結果まとめチャット投稿。nethack/soren91 系サブコーナーは独自の
@@ -609,7 +645,7 @@ class RetroCornerManager:
                 closing = _END_HANJUKU_CLOSING.get(
                     reason, _END_HANJUKU_CLOSING_DEFAULT
                 )
-                return f"{body}。{closing}"
+                return f"{body}{closing}"
         game = state.get("game")
         title = game if isinstance(game, str) and game else "ゲーム"
         try:
@@ -636,7 +672,8 @@ class RetroCornerManager:
         if state.get("end_announced"):
             return
         try:
-            self._chat(self._end_result_text(state, completed_at))
+            for part in _end_result_chat_parts(self._end_result_text(state, completed_at)):
+                self._chat(part)
         except Exception as exc:
             state["end_announce_error"] = _safe_detail(exc)
         else:

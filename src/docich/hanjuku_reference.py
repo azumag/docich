@@ -501,12 +501,162 @@ MONSTER_HEAL_SKILLS: frozenset[str] = frozenset({'ふくらむ', 'ケアル'})
 # damage <= current_hp + 16.
 ENDURE_HEADROOM = 16
 
+# These four enemies have general panels but take the boss column of card
+# damage, without the allied-soldier bonus.  The chapter-9 chart names the
+# summoned ハデス, so chart.BOSSES is not a complete list of general bosses.
+# Sources: https://blog.livedoor.jp/hanjukueiyu/archives/1035528547.html
+#          https://gcgx.games/hanjuku/03.html and /09.html (soldiers: HP100)
+BOSS_GENERALS = frozenset({'クイーン', 'にせヒーロー', 'プリンス', 'せいめいたい'})
+GENERAL_SOLDIER_HP = 10
+GENERAL_BOSS_SOLDIER_HP = {'クイーン': 10, 'にせヒーロー': 10,
+                           'プリンス': 100, 'せいめいたい': 100}
+MAX_BATTLE_SOLDIERS = 6
+
 
 def endure_safe_kill_hp(card_damage: int) -> int:
     """Max enemy HP where ``card_damage`` still kills through 食いしばり."""
     # Need damage > hp + 16, i.e. hp <= damage - 17? Chart: ファバード100 →
     # kill at HP83 or less (84+ survives). 100 - 17 = 83. Yes.
     return card_damage - (ENDURE_HEADROOM + 1)
+
+
+def card_damage_estimate(card: str, *, target_kind: str,
+                         enemy_name: str | None = None, enemy_hp=None,
+                         ally_hp=None, ally_soldiers=None, enemy_soldiers=None) -> dict:
+    """Conservative single-card damage from the *current* battle observation.
+
+    Ordinary damage is absorbed by enemy soldiers before reaching the
+    general.  Their individual remaining HP is not visible: use the full HP
+    of every remaining soldier, never reduce it because a card was selected.
+    Unread allied/enemy counts use 0/6, respectively.  The caller must discard
+    stale observations rather than passing them as current counts or HP.
+
+    ``lethal=True`` means the conservative estimate is sufficient; False
+    means it does not prove a kill (damaged soldiers may absorb less).  None
+    means a required target/HP/effect is unknown.  This is a prediction, not
+    proof that a card was used, hit, killed, or dropped an egg.
+
+    Card formula and soldier absorption examples:
+    https://karzu.exblog.jp/24199919/ (battle/card section)
+    https://blog.livedoor.jp/hanjukueiyu/archives/1035528547.html
+    Special effects: https://gcgx.games/hanjuku/kirihuda.html
+    Boss/general exceptions: https://wikiwiki.jp/hjksfc/切り札
+    """
+    def current_hp(value):
+        return value if type(value) is int and 0 < value <= 9999 else None
+
+    def current_soldiers(value):
+        return value if type(value) is int and 0 <= value <= MAX_BATTLE_SOLDIERS else None
+
+    hp = current_hp(enemy_hp)
+    own_hp = current_hp(ally_hp)
+    own_count = current_soldiers(ally_soldiers)
+    enemy_count = current_soldiers(enemy_soldiers)
+    own_lower = own_count if own_count is not None else 0
+    enemy_upper = enemy_count if enemy_count is not None else MAX_BATTLE_SOLDIERS
+    basis = []
+    if own_count is None:
+        basis.append('unread_ally_soldiers_use_zero')
+    if enemy_count is None:
+        basis.append('unread_enemy_soldiers_use_six')
+    if hp is None:
+        basis.append('current_enemy_hp_unknown')
+    if target_kind == 'general' and enemy_name in BOSS_GENERALS:
+        target_kind = 'boss_general'
+        basis.append('general_boss_damage_column')
+    if (target_kind == 'general' and enemy_name not in GENERAL_STATS
+            or target_kind == 'boss_general' and enemy_name not in BOSS_GENERALS
+            or target_kind not in {'general', 'boss_general', 'egg_monster', 'boss_monster'}):
+        target_kind = 'unknown'
+
+    row = CARDS.get(card)
+    result = {'card': card, 'target_kind': target_kind,
+              'raw_damage_min': None, 'enemy_soldier_hp_upper': None,
+              'damage_lower_bound': None, 'remaining_hp_upper': None,
+              'lethal': None, 'effect_kind': 'unknown',
+              'self_harm': card in {'デッドガン', 'バグストーム', 'ファバード', 'ブラックホール'},
+              'ally_soldiers_lower': own_lower, 'enemy_soldiers_upper': enemy_upper,
+              'basis': basis}
+    if row is None or target_kind == 'unknown':
+        basis.append('unknown_card' if row is None else 'unknown_target')
+        return result
+
+    is_general = target_kind in {'general', 'boss_general'}
+    soldier_hp = (GENERAL_BOSS_SOLDIER_HP[enemy_name]
+                  if target_kind == 'boss_general' else GENERAL_SOLDIER_HP)
+    pool = enemy_upper * soldier_hp if is_general else 0
+    result['enemy_soldier_hp_upper'] = pool
+    if is_general:
+        basis.append('remaining_soldiers_at_full_hp')
+
+    effect = 'fixed'
+    if card == 'デッドガン':
+        result['effect_kind'] = 'mutual_annihilation'
+        basis.append('not_a_safe_single_target_kill')
+        return result
+    if card in {'クースカン', 'バグストーム'} and is_general:
+        result['effect_kind'] = ('half_enemy_hp' if card == 'クースカン' else 'half_both_hp')
+        # The bonus can apply before or after halving; omit it from the
+        # guaranteed amount.  Never infer a soldier-HP reduction in live state.
+        result['damage_lower_bound'] = hp // 2 if hp is not None else None
+        result['remaining_hp_upper'] = (hp + 1) // 2 if hp is not None else None
+        result['lethal'] = False if hp is not None else None
+        basis.append('half_hp_rounded_up_ignore_uncertain_bonus')
+        return result
+    if card == 'バルムンク' and target_kind == 'egg_monster':
+        result.update(effect_kind='instant_kill', damage_lower_bound=hp,
+                      remaining_hp_upper=0 if hp is not None else None,
+                      lethal=True if hp is not None else None)
+        basis.append('egg_monster_instant_kill_not_endure_damage')
+        return result
+    if card == 'ノリウツール':
+        effect = 'hp_scaled'
+        if target_kind == 'general':
+            raw = own_hp // 2 if own_hp is not None else None
+        elif target_kind == 'boss_general':
+            # Boss formula: 8 + one quarter of the user's current HP.
+            raw = 8 + own_hp // 4 if own_hp is not None else 8
+        else:
+            # Monster-type bosses lack a primary example establishing the
+            # HP-scaled addition.  Do not use it to promise a lethal hit.
+            raw = row['boss_damage' if target_kind == 'boss_monster' else 'monster_damage']
+        basis.append('current_ally_hp_scaling' if own_hp is not None else 'ally_hp_unknown')
+    else:
+        column = ('boss_damage' if target_kind in {'boss_general', 'boss_monster'}
+                  else 'monster_damage' if target_kind == 'egg_monster' else 'general_damage')
+        bonus = (own_lower * row['soldier_damage']
+                 if target_kind in {'general', 'egg_monster'} else 0)
+        raw = row[column] + bonus
+        basis.append('boss_damage_no_soldier_bonus' if target_kind in {'boss_general', 'boss_monster'}
+                     else 'base_plus_current_ally_soldiers')
+    if card == 'エンジェリン':
+        effect = 'heal'
+    elif card == 'シュプレボイス':
+        effect = 'retreat'
+    elif card in {'ファイアーボイス', 'ブラックホール'}:
+        effect = 'soldier_clear'
+        # Clear/damage order is not established: subtract the original pool.
+        basis.append('do_not_preapply_soldier_clear')
+    elif card == 'クースカン':
+        effect = 'damage_and_stun'
+    result.update(raw_damage_min=raw, effect_kind=effect)
+    if raw is None:
+        return result
+    damage = max(0, raw - pool)
+    if not is_general:
+        # Monster/boss monster food-endure is not a general-boss rule: the
+        # Prince chart kills HP25 + one HP25 soldier with exactly 50 damage.
+        if hp is None:
+            basis.append('endure_needs_current_hp')
+            return result
+        if hp <= damage <= hp + ENDURE_HEADROOM:
+            damage = hp - 1
+            basis.append('monster_endure_leaves_one_hp')
+    result['damage_lower_bound'] = damage
+    if hp is not None:
+        result['remaining_hp_upper'] = max(0, hp - damage)
+        result['lethal'] = damage >= hp
+    return result
 
 
 def enemy_egg_likely(card_ids: list[int]) -> bool:

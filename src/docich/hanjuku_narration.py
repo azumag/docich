@@ -496,6 +496,17 @@ def retry_pending_terminal_deliveries(g, *, exclude_key: str = '') -> bool:
     are recorded as permanent failures and do not block unrelated audio; a
     valid recap with a transient outbox failure keeps its queue position.
     """
+    # This path is also called by unrelated audio producers, after the old
+    # Hanjuku monitor may have exited. A live disable must stop durable fixed
+    # recaps here too; otherwise a pending old line can reappear on next enqueue.
+    try:
+        from .config import load_game
+        if not settings(load_game(g, 'hanjuku-hero'))['enabled']:
+            return True
+    except Exception:
+        # Unreadable config is not permission to resume retired fixed speech,
+        # and must not hold another producer's queue position.
+        return True
     state_dir = getattr(g, 'state_dir', None)
     if not state_dir:
         return True

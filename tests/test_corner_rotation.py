@@ -69,7 +69,7 @@ def test_flat_live_catalog_and_financial_boundary():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     catalog = load_catalog(g)
     assert {c.id for c in catalog} == {"ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
-                                     "nethack", "hanjuku-hero", "paper", "meriken"}
+                                     "nethack", "hanjuku-hero", "paper", "meriken", "weather"}
     assert all(c.live_eligible is False for c in catalog)
     assert next(c for c in catalog if c.id == "hanjuku-hero").enabled
     assert not any(c.id == "retro" for c in catalog)
@@ -77,14 +77,17 @@ def test_flat_live_catalog_and_financial_boundary():
     assert all(c.target_matches is None for c in catalog if c.id != "nsnake")
 
 
-def test_production_profile_marks_common_rotation_enabled_for_all_nine_corners():
+def test_production_profile_marks_common_rotation_enabled_for_all_ten_corners():
     from docich.corner_catalog import rotation_config
 
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     raw = rotation_config(g)
     assert raw["enabled"] is True
     catalog = load_catalog(g)
-    assert len(catalog) == 9
+    assert len(catalog) == 10
+    weather = next(c for c in catalog if c.id == "weather")
+    assert weather.enabled and weather.fetch_on_start
+    assert weather.duration_minutes == 1 and weather.audio_enabled is False
     paper = next(c for c in catalog if c.id == "paper")
     assert paper.enabled is True
     assert paper.live_eligible is False
@@ -171,7 +174,7 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
     monkeypatch.setattr("docich.adapters.retroarch.resolve_core", lambda *_: "/vm-only/core.so")
     manager = CornerRotationManager(g)
     eligible, excluded = manager._eligible()
-    assert len(eligible) == 9
+    assert len(eligible) == 10
     assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero"} <= set(eligible)
     assert excluded == {}
 
