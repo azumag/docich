@@ -113,7 +113,8 @@ jobs:
             --root-path '.github/workflows/weather-regressions.yml' \
             --root-path 'requirements-test.txt' \
             --root-path '.github/scripts/soren_gitlink_gate.py' \
-            --soren-path 'lib/weather_audio_consumer.py')"
+            --soren-path 'lib/weather_audio_consumer.py' \
+            --soren-path 'eloop_lib.sh')"
           [[ "$run" == true || "$run" == false ]]
           echo "run=$run" >> "$GITHUB_OUTPUT"
 
