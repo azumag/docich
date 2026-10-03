@@ -31,7 +31,6 @@ export default defineConfig({
         exportName: "DiscordBot",
       }),
       AI: bindings.ai(),
-      DISCORD_BOT_TOKEN: bindings.secret(),
       WORKERS_AI_MODEL: bindings.text("@cf/zai-org/glm-4.7-flash"),
       DOCICH_PERSONA: bindings.text(persona),
       CF_VERSION_METADATA: bindings.versionMetadata(),
