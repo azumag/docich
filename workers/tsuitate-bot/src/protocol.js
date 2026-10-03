@@ -128,7 +128,7 @@ function parsePosition(value, positionIndex) {
     if (!int(value.lastInfo, 0, 4)) throw invalidPosition("last_info", positionIndex, value.lastInfo);
     normalized.lastInfo = value.lastInfo;
   }
-  if (value.lastCapture !== undefined) {
+  if (value.lastCapture !== undefined && value.lastCapture !== "") {
     if (typeof value.lastCapture !== "string"
         || (!USI_PIECE.test(value.lastCapture) && !CSA_CAPTURE_PIECE.test(value.lastCapture))) {
       throw invalidPosition("last_capture", positionIndex, value.lastCapture);
