@@ -75,10 +75,16 @@ export class DiscordBot {
     }
   }
 
+  #configured() {
+    const token = this.env.DISCORD_BOT_TOKEN;
+    return typeof token === "string" && token.length >= 20 && !/\s/.test(token);
+  }
+
   async status() {
     const fatal = await this.state.storage.get("fatal_reason");
     const fatalUntil = Number(await this.state.storage.get("fatal_until") ?? 0);
     return {
+      configured: this.#configured(),
       connected: this.ws?.readyState === 1,
       ready: this.ready,
       pending: this.pendingCount,
@@ -87,6 +93,7 @@ export class DiscordBot {
   }
 
   async ensureConnected() {
+    if (!this.#configured()) return { status: "unconfigured" };
     const fatal = await this.state.storage.get("fatal_reason");
     const fatalUntil = Number(await this.state.storage.get("fatal_until") ?? 0);
     if (fatal && fatalUntil > Date.now()) {
