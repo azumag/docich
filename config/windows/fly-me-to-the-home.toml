@@ -1,0 +1,31 @@
+# Fly Me To The Home! (Steam app 2076670 / 体験版 2919910) の Windows ランナー設定。
+# docich.flyhome.settings.Settings の既定値と同じ内容を明示している。実機で違いが
+# 見つかった項目だけ書き換える (未知のキーはエラーになる)。docs/games/fly-me-to-the-home.md 参照。
+# config/games/ は Linux 配信基盤のゲーム定義なので、ここには置かない。
+
+use_demo = false
+window_titles = ["Fly Me To The Home"]  # 部分一致・大文字小文字無視。`windows` で実際のタイトルを確認
+exe_names = []                          # 例: ["FlyMeToTheHome.exe"] (doctor の exes を参照)
+native_width = 320                      # ゲームの内部解像度 (ストアのスクリーンショットから実測)
+native_height = 180
+aspect = [16, 9]
+tick_hz = 30.0
+capture_mode = "screen"                 # 黒画面しか取れない場合は "printwindow"
+input_mode = "sendinput"                # 前面以外へ送りたい場合の代替: "postmessage" (届くかは要確認)
+abort_vk = 0x7B                         # F12 で即停止
+retry_delay_s = 0.8
+run_dir = "run/flyhome"
+physics_file = "run/flyhome/physics.json"
+
+[keys]                                  # スキャンコード (Set 1)。ゲーム内の案内で確認済み
+left = 0x4B                             # ← 左ジェット
+right = 0x4D                            # → 右ジェット
+enter = 0x1C                            # リトライ / 決定
+escape = 0x01                           # マップへ戻る
+space = 0x39                            # クリア画面の追加操作 (内容は要確認)
+
+[hud]                                   # ゲーム描画領域を 0..1 に正規化した矩形 [x0, y0, x1, y1]
+level_text = [0.03, 0.0, 0.20, 0.07]
+timer = [0.73, 0.0, 1.0, 0.09]
+arrow_left = [0.862, 0.875, 0.918, 0.975]
+arrow_right = [0.928, 0.875, 0.984, 0.975]

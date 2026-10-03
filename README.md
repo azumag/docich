@@ -342,6 +342,7 @@ src/docich/                   config, adapters, agent, stream, captions, watchdo
 brains/hanjuku/               半熟英雄 LLM brain (claude-cli / api / fake)
 config/docich.toml            global safe defaults
 config/games/*.toml           per-game definitions
+config/windows/*.toml         Windows ローカル専用ランナーの設定 (配信基盤のゲーム定義ではない)
 games/roms/                   ROM 置き場 (gitignore。自己吸い出し品のみ)
 games/soviet_now/             submodule → azumag/soviet_now (sorengame 本体, main 追跡)
 games/hanjuku-sfc-speedrun/   submodule → azumag/hanjuku-sfc-speedrun (半熟英雄 RTA データ)
@@ -380,6 +381,7 @@ GitHub wiki のページ原稿は `wiki/` ディレクトリでバージョン�
 - [`docs/hanjuku_brain.md`](docs/hanjuku_brain.md): 半熟英雄 brain (LLM バックエンド・知識注入・検証)
 - [`docs/games/hanjuku-hero.md`](docs/games/hanjuku-hero.md) / [`docs/games/nethack.md`](docs/games/nethack.md) / [`docs/games/robots.md`](docs/games/robots.md): ゲーム別セットアップ
 - [`docs/games/sorengame.md`](docs/games/sorengame.md): Soren productionとの統合境界
+- [`docs/games/fly-me-to-the-home.md`](docs/games/fly-me-to-the-home.md): Steam「Fly Me To The Home!」の調査と Windows ローカル用ランナー (`python -m docich.flyhome`)
 - [`docs/oracle_arm_setup_guide.md`](docs/oracle_arm_setup_guide.md): Oracle A1 setup
 - [`docs/soren_linux_migration_plan.md`](docs/soren_linux_migration_plan.md): Soren移行の完了状況と将来gate
 - [`docs/twitch_closed_captions.md`](docs/twitch_closed_captions.md): native captions
