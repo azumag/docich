@@ -43,8 +43,13 @@ export function stripBotMention(content, botId) {
 }
 
 export function isAddressedMessage(message, botId) {
-  return Array.isArray(message?.mentions)
-    && message.mentions.some((user) => String(user?.id) === String(botId));
+  const id = String(botId);
+  if (Array.isArray(message?.mentions)
+      && message.mentions.some((user) => String(user?.id) === id)) {
+    return true;
+  }
+  const content = typeof message?.content === "string" ? message.content : "";
+  return content.includes("<@" + id + ">") || content.includes("<@!" + id + ">");
 }
 
 export async function sendDiscordReply(token, event, text) {

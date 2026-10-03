@@ -33,7 +33,9 @@ test("gateway intent surface is guild messages plus message content only", () =>
 test("mention matching remains explicit and strips only the bot mention", () => {
   const message = { mentions: [{ id: "99" }], content: "<@99> こんにちは" };
   assert.equal(isAddressedMessage(message, "99"), true);
-  assert.equal(isAddressedMessage({ mentions: [] }, "99"), false);
+  assert.equal(isAddressedMessage({ mentions: [], content: "<@99> fallback" }, "99"), true);
+  assert.equal(isAddressedMessage({ mentions: [], content: "<@!99> fallback" }, "99"), true);
+  assert.equal(isAddressedMessage({ mentions: [], content: "hello" }, "99"), false);
   assert.equal(stripBotMention(message.content, "99"), "こんにちは");
   assert.equal(stripBotMention("<@!99>", "99"), "（呼びかけ）");
 });
