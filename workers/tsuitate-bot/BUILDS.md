@@ -4,7 +4,7 @@ This directory contains the Worker source and Cloudflare project configuration. 
 
 ## Project settings
 
-The project root is `workers/tsuitate-bot`, the Worker name is `docich-tsuitate-bot`, and the configured compatibility date is `2026-09-21`. `cloudflare.config.ts` sets `worker.previewUrls` to `false`; the pinned Cf build output test asserts this value survives configuration. This controls version preview URLs and is separate from the `workers.dev` route. See [Cf project configuration](https://developers.cloudflare.com/cf/projects/cloudflare-config/).
+The project root is `workers/tsuitate-bot`, the Worker name is `docich-tsuitate-bot`, and the configured compatibility date is `2026-09-08`. `cloudflare.config.ts` sets `worker.previewUrls` to `false`; the pinned Cf build output test asserts this value and compatibility date survive configuration. This controls version preview URLs and is separate from the `workers.dev` route. See [Cf project configuration](https://developers.cloudflare.com/cf/projects/cloudflare-config/).
 
 The plan targets the `main` production branch and disables branch previews. It scopes ordinary build watch events to `workers/tsuitate-bot/*` with no excludes. Paths are repository-relative, including when a project root is set. Cloudflare's documented watch filter has bypass cases: pushes with zero changed files, at least 3000 changed files, or at least 20 commits can build regardless of the path match. These cases prevent a strict guarantee that every unrelated change is skipped. See [Build watch paths](https://developers.cloudflare.com/workers/ci-cd/builds/build-watch-paths/) and [Build branches](https://developers.cloudflare.com/workers/ci-cd/builds/build-branches/).
 

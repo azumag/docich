@@ -3,7 +3,7 @@ import { bindings, defineConfig, exports } from "cf/config";
 export default defineConfig({
   worker: {
     name: "docich-tsuitate-bot",
-    compatibilityDate: "2026-09-21",
+    compatibilityDate: "2026-09-08",
     previewUrls: false,
     entrypoint: "src/index.js",
     exports: {

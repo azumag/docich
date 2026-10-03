@@ -7,7 +7,7 @@ test("Cloudflare config exports SQLite GameState and binds it to this Worker", (
 
   assert.equal(worker.name, "docich-tsuitate-bot");
   assert.equal(worker.entrypoint, "src/index.js");
-  assert.equal(worker.compatibilityDate, "2026-09-21");
+  assert.equal(worker.compatibilityDate, "2026-09-08");
   assert.deepEqual(worker.exports.GameState, {
     type: "durable-object",
     storage: "sqlite",
