@@ -3711,12 +3711,288 @@ def _strong_card_tactics(mem, cur, enemy):
             for card in _strong_cards_carried(mem, cur)]
 
 
+def _card_battle_reading(screen, cur, mem=None):
+    """Refresh the inputs used by damage prediction, never soldier HP guesses.
+
+    A menu may still expose the ordinary battle panel.  Use that panel when
+    present; an unread ordinary frame invalidates previous counts.  A menu
+    without a panel retains the last battle HP, not a general's maximum HP.
+    Old hotloaded counts lack the current-reading marker and remain unknown.
+    """
+    b = screen.battle
+    if b is None and screen.kind != 'battle':
+        return
+    if (b is None or b.enemy != cur.get('enemy') or b.ally != cur.get('ally')
+            or any(type(hp) is not int or hp < 0 for hp in (b.enemy_hp, b.ally_hp))):
+        cur['card_hp_unread'] = True
+        cur['card_context_unclassified'] = True
+        cur['card_soldiers_current'] = False
+        return
+    previous = cur.get('enemy_hp')
+    maximum = general_max_hp(cur.get('enemy'))
+    if (cur.get('side') == 'defense' and type(previous) is int
+            and type(maximum) is int and 0 < b.enemy_hp < previous <= maximum):
+        # Preserve the v131 observation-delay margin even when the first
+        # lower HP panel is already behind an open card/command menu.
+        cur['defender_enemy_hp_drop'] = max(int(cur.get('defender_enemy_hp_drop') or 0),
+                                            previous - b.enemy_hp)
+    cur['card_hp_unread'] = False
+    cur['card_context_unclassified'] = False
+    cur['card_summon_observed'] = False
+    cur['egg_battle'] = False
+    if mem is not None:
+        mem['egg_battle'] = False
+    cur['enemy_hp'], cur['ally_hp'] = b.enemy_hp, b.ally_hp
+    counts = getattr(screen, 'field_soldiers', None)
+    if not isinstance(counts, (tuple, list)) or len(counts) != 2:
+        counts = (None, None)
+    cur['ally_soldiers'], cur['enemy_soldiers'] = counts
+    cur['card_soldiers_current'] = True
+
+
+def _card_damage_context(mem, cur):
+    """Prediction inputs and a bounded refusal key from current observations."""
+    enemy = cur.get('enemy')
+    summoned = bool(cur.get('egg_battle') or mem.get('egg_battle')
+                    or cur.get('card_summon_observed'))
+    if summoned:
+        # The saved ordinary enemy HP is not the summoned monster's HP.
+        # This gate only prevents a *future* summon; keep its damage unknown.
+        target = ('boss_monster' if (enemy in reference.BOSS_GENERALS
+                                    or enemy in chart.BOSSES.values() or enemy in reference.BOSS_HP)
+                  else 'egg_monster')
+    else:
+        target = 'boss_general' if enemy in reference.BOSS_GENERALS else 'general'
+    if (cur.get('card_context_unclassified')
+            or any(type(cur.get(key)) is int and cur[key] <= 0 for key in ('enemy_hp', 'ally_hp'))
+            or (summoned and cur.get('card_summon_observed') is not True)):
+        target = 'unknown'
+    fresh = cur.get('card_soldiers_current') is True and not summoned
+    hp_known = not cur.get('card_hp_unread') and not summoned
+    return {'target_kind': target, 'enemy_name': enemy,
+            'enemy_hp': cur.get('enemy_hp') if hp_known else None,
+            'ally_hp': cur.get('ally_hp') if hp_known else None,
+            'ally_soldiers': cur.get('ally_soldiers') if fresh else None,
+            'enemy_soldiers': cur.get('enemy_soldiers') if fresh else None}
+
+
+def _card_damage_key(mem, cur):
+    context = _card_damage_context(mem, cur)
+    return [cur.get('ally'), cur.get('side'), *context.values()]
+
+
+CARD_CONTROL_SETUP = frozenset({'クースカン', 'ブレイコウ'})
+
+
+def _card_damage_gate(mem, cur, card, *, listed_cards=None):
+    """A selection gate, separate from use, hit, kill and egg-loss receipts.
+
+    B may inspect a real inventory even when no kill can be proven.  The
+    final A needs a fresh evaluation with that inventory.  Merely carrying
+    another attack card never licenses a nonlethal attack into an enemy egg.
+    """
+    context = _card_damage_context(mem, cur)
+    estimate = reference.card_damage_estimate(card, **context)
+    side = cur.get('side')
+    triggers = enemy_egg_triggers(cur.get('enemy'), player_castle_defense=(
+        True if side == 'defense' else False if side == 'attack' else None))
+    summoned = bool(cur.get('egg_battle') or mem.get('egg_battle')
+                    or cur.get('card_summon_observed'))
+    boss = cur.get('enemy') in reference.BOSS_GENERALS
+    threat = True if boss else _egg_threat(triggers)
+    drop = _egg_drop_evidence(cur, card) if not summoned and not boss else None
+    result = {'allowed': False, 'needs_live_list': False, 'role': 'nonlethal_egg_risk',
+              'estimate': estimate, 'enemy_egg_threat': threat,
+              'egg_risk_flags': asdict(triggers), 'egg_drop': drop,
+              'listed_followups': []}
+    if (cur.get('card_context_unclassified')
+            or any(type(cur.get(key)) is int and cur[key] <= 0 for key in ('enemy_hp', 'ally_hp'))
+            or (summoned and cur.get('card_summon_observed') is not True)):
+        result['role'] = 'damage_or_egg_risk_unclassified'
+    elif summoned:
+        result.update(allowed=True, role='summon_already_observed')
+    elif estimate['lethal'] is True:
+        result.update(allowed=True, role='single_card_lethal')
+    elif card == 'エンジェリン':
+        result.update(allowed=True, role='healing_not_a_kill')
+    elif threat is False:
+        result.update(allowed=True, role='no_autonomous_egg_trigger')
+    elif drop and drop.get('drops'):
+        result.update(allowed=True, role='egg_drop_candidate_not_a_kill')
+    elif listed_cards is None:
+        result.update(needs_live_list=True, role='inspect_live_inventory_before_selection')
+    elif card in CARD_CONTROL_SETUP:
+        # A half/control setup is a conditional chain, not a proven kill.
+        # Follow-up cards must be on this screen.  Their actual final damage
+        # will be recomputed from the next observed HP/counts, never from the
+        # number of クースカン selections or from inferred soldier HP loss.
+        followups = []
+        for other in dict.fromkeys(listed_cards):
+            if other == card or other not in CARD_NAMES or other in CARD_CONTROL_SETUP:
+                continue
+            predicted = reference.card_damage_estimate(other, **context)
+            raw = predicted.get('raw_damage_min')
+            if (type(raw) is int and raw > 0
+                    and predicted['effect_kind'] not in ('heal', 'retreat', 'half_both_hp')
+                    and (not predicted['self_harm'] or other in (cur.get('planned_cards') or []))):
+                followups.append(other)
+        if followups:
+            result.update(allowed=True, role='observed_control_chain_not_a_kill',
+                          listed_followups=followups)
+        else:
+            result['role'] = 'control_has_no_observed_followup'
+    elif estimate['lethal'] is None:
+        result['role'] = 'damage_or_egg_risk_unclassified'
+    cur['card_assessment'] = {
+        'card': card, 'enemy_hp': context['enemy_hp'],
+        'ally_soldiers': context['ally_soldiers'], 'enemy_soldiers': context['enemy_soldiers'],
+        'target_kind': estimate['target_kind'], 'raw_damage_min': estimate['raw_damage_min'],
+        'enemy_soldier_hp_upper': estimate['enemy_soldier_hp_upper'],
+        'damage_lower_bound': estimate['damage_lower_bound'],
+        'remaining_hp_upper': estimate['remaining_hp_upper'], 'lethal': estimate['lethal'],
+        'egg_drop_fit': drop.get('drops') if drop else None,
+        'allowed': result['allowed'], 'reason': result['role']}
+    mem['last_card_assessment'] = {**cur['card_assessment'], 'tick': mem.get('tick')}
+    return result
+
+
+def _card_gate_refused(mem, cur, card, gate, *, listed_cards):
+    """Remember a refusal without consuming the card or looping B unchanged."""
+    signature = _card_damage_key(mem, cur)
+    refused = cur.setdefault('card_damage_refusals', {})
+    if refused.get(card) != signature:
+        _record(mem, 'battle_card_damage_rejected', **_battle_labels(cur), card=card,
+                expected_metric='敵兵士の吸収後も単発で倒せるか、独立した卵封じ・回復・連携根拠',
+                observed_metric={**gate, 'listed_cards': list(listed_cards)},
+                resulting_event='card_not_selected',
+                reason='単発で倒し切れる保証がなく、次の接触・壁判定で敵に召喚される危険があるため実一覧の代替手段を確認')
+    refused[card] = signature
+    cur['card_damage_rescue_needed'] = True
+    flow = cur.get('card_flow') or {}
+    tid = flow.get('tactic_id')
+    if flow.get('card') == card and tid in cur.get('tactics_done', []):
+        cur['tactics_done'].remove(tid)  # may reconsider after actual HP/counts change
+
+
+def _card_gate_alternatives(mem, cur, names, *, omit=None):
+    allowed = []
+    for candidate in SURVIVAL_CARDS:
+        if (candidate in names and candidate != omit
+                and candidate not in (cur.get('cards_selected') or [])):
+            gate = _card_damage_gate(mem, cur, candidate, listed_cards=names)
+            if gate['allowed']:
+                allowed.append(candidate)
+    return allowed
+
+
+def _card_healing_needed(cur):
+    maximum = general_max_hp('しゅじんこう' if cur.get('ally') == NAME else cur.get('ally'))
+    full = max((value for value in (maximum, cur.get('ref_ally_hp'), cur.get('start_ally_hp'))
+                if type(value) is int and value > 0), default=None)
+    hp = cur.get('ally_hp')
+    return type(hp) is not int or full is None or hp < full
+
+
+def _card_gate_choice(mem, cur, candidates, names):
+    """Healing when needed, proven lethal, drop candidate, then control chain."""
+    if not candidates:
+        return None
+    gates = {card: _card_damage_gate(mem, cur, card, listed_cards=names) for card in candidates}
+    if 'エンジェリン' in candidates and _card_healing_needed(cur):
+        choice = 'エンジェリン'
+    else:
+        choice = None
+        for role in ('single_card_lethal', 'egg_drop_candidate_not_a_kill',
+                     'observed_control_chain_not_a_kill'):
+            choices = [card for card in candidates if gates[card]['role'] == role]
+            if choices:
+                choice = _rescue_card(choices, cur)
+                break
+        if choice is None:
+            choice = _rescue_card(candidates, cur)
+    _card_damage_gate(mem, cur, choice, listed_cards=names)  # last assessment is the choice
+    return choice
+
+
+def _card_gate_close(mem, cur, names):
+    cur['card_flow'] = None
+    cur['card_damage_list_blocked'] = {'key': _card_damage_key(mem, cur), 'cards': list(names)}
+    rescue = _survival_state(mem, cur)
+    # These cards still exist; they are unsafe for this observation.  This
+    # flag only advances to a real egg/retreat.  It never proves おくのて exists.
+    rescue['cards_exhausted'] = True
+    rescue['cards_uncertain'] = False
+    return [pad('b')]
+
+
+def _card_damage_probe_exhausted(cur):
+    """Use the fight's existing count/HP budget, never a per-refusal reset."""
+    holds = max(int(cur.get('melee_holds') or 0), int(cur.get('card_damage_probe_ticks') or 0))
+    holds += int(cur.get('card_damage_rechecks') or 0)
+    hp, start = cur.get('ally_hp'), cur.get('start_ally_hp')
+    if type(hp) is not int or type(start) is not int or hp <= 0 or start <= 0:
+        return True
+    return (bool(cur.get('melee_forced')) or holds >= MELEE_HOLD_LIMIT
+            or start - hp >= max(MELEE_HP_HOLD_FLOOR, start // MELEE_HP_HOLD_DIVISOR))
+
+
+def _card_damage_recheck_resources(mem, cur):
+    """Changed readings can recheck withheld cards within the fight's budget.
+
+    Readable/unread soldier counts may oscillate without any game progress.
+    Charge each inventory recheck to the same budget as a short melee probe,
+    and grant the chart loop permission only for this accepted observation.
+    """
+    blocked = cur.get('card_damage_list_blocked')
+    if not blocked or not cur.get('card_damage_rescue_needed'):
+        return
+    signature = _card_damage_key(mem, cur)
+    if blocked.get('key') == signature:
+        return
+    exhausted = _card_damage_probe_exhausted(cur)
+    if exhausted:
+        # The count/HP budget stops further probing.  At that boundary a
+        # newly *observed* zero soldier count may already make a known real
+        # card lethal: permit one final inventory check, not another probe
+        # budget and not an A from the old list.
+        if cur.get('card_damage_final_recheck'):
+            return
+        names = blocked.get('cards') or []
+        finishing = False
+        for card in names:
+            gate = _card_damage_gate(mem, cur, card, listed_cards=names)
+            if (gate['allowed'] and (gate['role'] == 'single_card_lethal'
+                    or (gate['role'] == 'healing_not_a_kill' and _card_healing_needed(cur)))):
+                finishing = True
+                break
+        if not finishing:
+            return
+        cur['card_damage_final_recheck'] = True
+    else:
+        cur['card_damage_rechecks'] = int(cur.get('card_damage_rechecks') or 0) + 1
+    blocked['key'] = signature
+    cur['card_damage_recheck_key'] = signature
+    rescue = cur.get('survival')
+    if rescue:
+        rescue.update(cards_exhausted=False, exhausted=False, cards_checked=0,
+                      pending_opens=0, menu_ticks=0)
+    _record(mem, 'battle_card_damage_recheck', **_battle_labels(cur),
+            observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp'),
+                             'ally_soldiers': cur.get('ally_soldiers'),
+                             'enemy_soldiers': cur.get('enemy_soldiers'),
+                             'probe_ticks': cur.get('card_damage_probe_ticks', 0),
+                             'inventory_rechecks': cur.get('card_damage_rechecks', 0),
+                             'final_inventory_check': exhausted},
+            reason='HP・兵数の読取変化から保留した実在札を再確認。可読性の変化も戦闘通算の保持予算へ計上')
+
+
 def battle_step(screen: Screen, mem):
     b = screen.battle
     if (b is None or not b.enemy or not b.ally or UNKNOWN in b.enemy or UNKNOWN in b.ally
             or any(type(hp) is not int or hp < 0 for hp in (b.enemy_hp, b.ally_hp))):
         mem['battle_seen'] = None
         if mem.get('battle'):
+            _card_battle_reading(screen, mem['battle'], mem)
             mem['battle'].pop('successor_seen', None)
             mem['battle'].pop('entry_successor_seen', None)
         return []  # partial panel must not replace the last clear HP/context
@@ -3726,6 +4002,7 @@ def battle_step(screen: Screen, mem):
         cur.pop('defeat_owner', None)  # a later complete combat panel invalidates the post-combat flag
     if cur and (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
         if not (_entered_battle_successor(mem, cur, b) or _defender_successor(mem, cur, b)):
+            _card_battle_reading(screen, cur, mem)
             return []
         cur = None
     elif cur:
@@ -3798,21 +4075,7 @@ def battle_step(screen: Screen, mem):
         preempt_guard['stage'] = 'completed'
         preempt_guard.pop('close_pending', None)
         preempt_guard.pop('unread_ticks', None)
-    previous_enemy_hp = cur.get('enemy_hp')
-    enemy_max = general_max_hp(cur.get('enemy'))
-    if (cur.get('side') == 'defense' and type(previous_enemy_hp) is int
-            and type(enemy_max) is int and 0 < b.enemy_hp < previous_enemy_hp <= enemy_max):
-        # A whole observation interval can contain several hits. Keep the
-        # largest measured decrease for this fight; it is a margin, not a
-        # prediction that the next contact will deal the same damage.
-        cur['defender_enemy_hp_drop'] = max(int(cur.get('defender_enemy_hp_drop') or 0),
-                                            previous_enemy_hp - b.enemy_hp)
-    cur['enemy_hp'], cur['ally_hp'] = b.enemy_hp, b.ally_hp
-    # フィールドの兵士スプライト (味方が左・敵が右)。召喚戦の独立判断が
-    # HPだけでなく兵士数も見るため、直近の白兵フレームの読み取りを保持する。
-    # 読めない側は None のまま渡し、判定側で HP のみへ退ける。
-    if getattr(screen, 'field_soldiers', None) is not None:
-        cur['ally_soldiers'], cur['enemy_soldiers'] = screen.field_soldiers
+    _card_battle_reading(screen, cur, mem)
     if b.enemy_hp is not None and cur.get('start_enemy_hp') is not None and b.enemy_hp < cur['start_enemy_hp']:
         cur['clashed'] = True
     if (_boss_tactics_allowed(mem, cur) and type(b.ally_hp) is int
@@ -3831,6 +4094,7 @@ def battle_step(screen: Screen, mem):
     # Card selection and subsequent damage do not prove that the card hit:
     # the A input may not have reached the game, and melee also lowers HP.
     _observe_egg_drop_candidate(mem, cur)
+    _card_damage_recheck_resources(mem, cur)
     retreat = _hero_retreat_open(mem, cur)
     if retreat is not None:
         return retreat
@@ -3899,6 +4163,16 @@ def battle_step(screen: Screen, mem):
                or (tactic.get('after_clash') and cur.get('clashed'))
                or (tactic.get('after_card') and tactic['after_card'] in attempted))
         if due:
+            # A prior rejection may be retried only after the measured HP or
+            # soldier counts change.  A planned card is not proof that it can
+            # finish the enemy, and B is only an inventory inspection.
+            refused = (cur.get('card_damage_refusals') or {}).get(tactic['card'])
+            signature = _card_damage_key(mem, cur)
+            if refused is not None and (refused == signature
+                    or (cur.get('card_damage_rescue_needed') and cur.get('card_damage_list_blocked')
+                        and cur.get('card_damage_recheck_key') != signature)):
+                continue  # both chart and survival retries share the recheck budget
+            damage_gate = _card_damage_gate(mem, cur, tactic['card'])
             done.append(tid)
             chained_unconfirmed = (tactic.get('after_card')
                                    and tactic['after_card'] not in cur['cards_used']
@@ -3919,7 +4193,8 @@ def battle_step(screen: Screen, mem):
             _record(mem, 'battle_card', **_battle_labels(cur), card=tactic['card'], enemy=b.enemy,
                     enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, reason=note,
                     expected_metric='選択後の実使用告知と敵HP減少',
-                    observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
+                    observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp,
+                                     'card_damage_gate': damage_gate},
                     **({'strong_enemy': strong_evidence} if strong_evidence is not None else {}),
                     **({'egg_drop': drop_evidence,
                         'egg_plan': {key: egg_plan[key] for key in
@@ -3980,6 +4255,8 @@ def _charted_melee(mem, cur) -> bool:
     14:13: どうし 90 vs ガルバンゾー 30 held until the フットバース gate at
     enemy HP 24 was unreachable, and the hero died).
     """
+    if cur.get('card_damage_rescue_needed'):
+        return False  # a rejected finishing plan cannot justify unbounded chart pushing
     return any((t.get('after_clash') or t.get('when_hp_at_most') is not None)
                and t.get('enemy') in (None, cur.get('enemy'))
                and t.get('step') in (None, cur.get('step'))
@@ -3991,7 +4268,10 @@ def _melee_step(mem, cur):
     defense = True if side == 'defense' else False if side == 'attack' else None
     triggers = enemy_egg_triggers(cur.get('enemy'), player_castle_defense=defense)
     charted = _charted_melee(mem, cur)
-    holds = int(cur.get('melee_holds') or 0)
+    probing = cur.get('card_damage_rescue_needed') is True
+    probe_ticks = max(int(cur.get('melee_holds') or 0),
+                      int(cur.get('card_damage_probe_ticks') or 0) if probing else 0)
+    holds = probe_ticks + (int(cur.get('card_damage_rechecks') or 0) if probing else 0)
     # The count bound cannot see the bleed: hold reads that stay under
     # MELEE_HOLD_LIMIT can still spend most of the fight's opening HP.
     start_hp, hp = cur.get('start_ally_hp'), cur.get('ally_hp')
@@ -4007,6 +4287,7 @@ def _melee_step(mem, cur):
                 and not charted)
     forced = (bool(cur.get('melee_forced')) or holds >= MELEE_HOLD_LIMIT
               or hold_cut)
+    probe = probing and not forced
     # An unbounded hold is a passive death: after the bound the melee proceeds
     # for the rest of the fight even at the clash egg risk (the rescue already
     # had its chances).
@@ -4014,12 +4295,16 @@ def _melee_step(mem, cur):
     # lower HP is only a candidate, including True flags saved by older bots.
     # The existing HP/count budgets still end a passive hold boundedly.
     safe = (triggers.has_egg is False or triggers.clash_position is False
-            or charted or forced)
+            or charted or forced or probe)
     cur['melee_forced'] = forced
+    # A probe is in `safe`, so melee_holds stays zero.  Only probe_ticks is
+    # incremented below; inventory rechecks are not copied into either count.
     cur['melee_holds'] = 0 if safe else holds + 1
-    mode = 'power_mash' if safe else 'egg_safe_hold'
+    if probe:
+        cur['card_damage_probe_ticks'] = probe_ticks + 1
+    mode = 'card_damage_probe' if probe else 'power_mash' if safe else 'egg_safe_hold'
     egg_window = _defender_egg_window(mem, cur)
-    taps = 1 if egg_window and egg_window['short_burst'] else POWER_TAPS
+    taps = 1 if probe or egg_window and egg_window['short_burst'] else POWER_TAPS
     actions = _power_mash(mem, cur, taps=taps) if safe else []
     # Per returned action batch, not just the first use in a fight. These are
     # requested A frames; the executor's fence/delivery result remains separate.
@@ -4031,7 +4316,8 @@ def _melee_step(mem, cur):
             a_frames_sent=taps * 3 if safe else 0,
             **({'defender_egg_window': egg_window} if egg_window else {}),
             hold_hp_budget=hp_budget, hold_hp_bled=hp_bled,
-            reason=('チャートのぶつかり合いに向けて押し込む' if charted
+            reason=('札での撃破を未保証のため、保持予算内の短い入力で実HP・兵数を再観測' if probe
+                    else 'チャートのぶつかり合いに向けて押し込む' if charted
                     else '保持中のHP劣化が予算に達したため押し込む' if hold_cut
                     else '卵の激突リスクの保留上限に達したため押し込む' if holds >= MELEE_HOLD_LIMIT
                     else '保持の打ち切り後はこの戦闘を通しで押し込む' if forced
@@ -4087,6 +4373,8 @@ def _egg_drop_evidence(cur, card):
     ``ref_ally_hp``) and fails closed to the fixed priority when the general
     is unknown.
     """
+    if cur.get('enemy') in reference.BOSS_GENERALS:
+        return None  # normal-general egg-drop arithmetic is not boss evidence
     ally_max = cur.get('ref_ally_hp')
     if type(ally_max) is not int or ally_max <= 0:
         ally_name = 'しゅじんこう' if cur.get('ally') == NAME else cur.get('ally')
@@ -4110,8 +4398,10 @@ def _egg_threat(triggers):
         return None
     if triggers.has_egg is False:
         return False
-    return any(flag is True for flag in (triggers.clash_position,
-                                         triggers.wall_critical, triggers.wall_mod4))
+    flags = (triggers.clash_position, triggers.wall_critical, triggers.wall_mod4)
+    if any(flag is True for flag in flags):
+        return True
+    return None if any(flag is None for flag in flags) else False
 
 
 def _carried_kit(mem, cur):
@@ -4287,6 +4577,7 @@ def _survival_needed(cur):
                     and not cur.get('planned_cards') and cur.get('enemy') not in chart.BOSSES.values())
     return (hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 5 <= start * 2)
             or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS or behind_start
+            or cur.get('card_damage_rescue_needed') is True
             or _unarmed_clash_risk(cur))
 
 
@@ -4319,7 +4610,9 @@ def _hero_retreat_needed(cur):
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
     ref = (max(start, int(cur.get('ref_ally_hp') or 0)) if cur.get('ally') == NAME else start)
     rescue = cur.get('survival') or {}
-    if (_unarmed_clash_risk(cur) and rescue.get('exhausted')
+    if (((_unarmed_clash_risk(cur) and not cur.get('card_damage_rescue_needed'))
+         or (cur.get('card_damage_rescue_needed') and _card_damage_probe_exhausted(cur)))
+            and rescue.get('exhausted')
             and not rescue.get('cards_uncertain')):
         return True  # no observed rescue remains; retreat before the summon
     if cur.get('egg_battle'):
@@ -4495,6 +4788,7 @@ def _survival_card_list(screen, mem, cur, flow, names):
         if not names and flow['list_ticks'] <= 3:
             return []
         rescue['cards_exhausted'] = True
+        cur.pop('card_damage_list_blocked', None)  # absence/uncertain copies, not damage refusal
         cur['card_flow'] = None
         if flow['list_ticks'] > 10 and counts:
             rescue['cards_uncertain'] = True
@@ -4504,11 +4798,25 @@ def _survival_card_list(screen, mem, cur, flow, names):
                                      'counts_at_selection': dict(previous)},
                     reason='同名札が実一覧に残るが使用・枚数減少を確認できないため再決定を保留。救済手段なしとは断定しない')
         return [pad('b')]
-    card = _rescue_card(candidates, cur)
+    eligible = []
+    for candidate in candidates:
+        gate = _card_damage_gate(mem, cur, candidate, listed_cards=names)
+        if gate['allowed']:
+            eligible.append(candidate)
+        else:
+            _card_gate_refused(mem, cur, candidate, gate, listed_cards=names)
+    if not eligible:
+        return _card_gate_close(mem, cur, names)
+    card = _card_gate_choice(mem, cur, eligible, names)
     move = _battle_menu_to(screen, card)
     if move != 'here':
         return [move] if move else []
+    gate = _card_damage_gate(mem, cur, card, listed_cards=names)
+    if not gate['allowed']:
+        _card_gate_refused(mem, cur, card, gate, listed_cards=names)
+        return _card_gate_close(mem, cur, names)
     flow.update(card=card, stage='announce', selection_planned=True)
+    cur['card_damage_rescue_needed'] = False
     rescue['cards_attempted'].append(card)
     previous[card] = counts[card]
     rescue['cards_uncertain'] = False
@@ -4519,7 +4827,8 @@ def _survival_card_list(screen, mem, cur, flow, names):
     _record(mem, 'battle_card_selected', **_battle_labels(cur), card=card,
             expected_metric='実使用告知と卵落' if egg_drop and egg_drop['drops'] else '実使用告知',
             observed_metric={'listed_cards': names, 'listed_count': counts[card],
-                             'survival': True, 'egg_drop': egg_drop},
+                             'survival': True, 'egg_drop': egg_drop,
+                             'card_damage_gate': gate},
             resulting_event='selection_planned_not_yet_confirmed',
             reason=('HP低下で卵を落とせる切り札を選択。消費は未確定' if egg_drop and egg_drop['drops']
                     else 'HP低下に対処する切り札を選択。消費は未確定'))
@@ -4551,6 +4860,7 @@ def battle_menu_step(screen: Screen, mem):
     flow = cur.get('card_flow')
     if screen.kind != 'battle_menu':
         return []
+    _card_battle_reading(screen, cur, mem)
     # A newly readable resource invalidates the earlier all-disabled receipt
     # before a pending preemption can select an irreversible command.
     if any(w in BATTLE_MENU for _, _, w in _options(screen)):
@@ -4562,6 +4872,7 @@ def battle_menu_step(screen: Screen, mem):
             rescue.update(exhausted=False, menu_ticks=0, pending_opens=0)
             return _survival_menu(screen, mem, cur)
     if screen.hidden_battle_commands or screen.has('おくのて'):
+        cur.pop('card_damage_list_blocked', None)
         return okunote_step(screen, mem)
     retreat = _hero_retreat_menu(screen, mem, cur)
     if retreat is not None:
@@ -4898,6 +5209,7 @@ def card_list_step(screen: Screen, mem):
     """Keep card intention/selection separate from observed consumption."""
     _migrate_card_evidence(mem)
     cur = mem.get('battle') or {}
+    _card_battle_reading(screen, cur, mem)
     flow = cur.get('card_flow')
     if (_hero_retreat_needed(cur) and flow and flow.get('stage') == 'list'
             and not (cur.get('hero_retreat') or {}).get('unavailable')
@@ -4934,6 +5246,7 @@ def card_list_step(screen: Screen, mem):
                 cur['card_flow'] = None
                 return [pad('b'), pad('b')]
             cur.setdefault('cards_missing', []).append(flow['card'])
+            cur.pop('card_damage_list_blocked', None)
             if not cur.get('deviation_reason'):
                 cur['strategy_variant'] = 'chart_card_unavailable'
                 cur['deviation_reason'] = 'チャートで予定した切り札を携行していない'
@@ -4942,6 +5255,25 @@ def card_list_step(screen: Screen, mem):
                     resulting_event='card_not_selected', reason='切り札を携行していないため白兵を継続')
             cur['card_flow'] = None
             return [pad('b'), pad('b')]
+        gate = _card_damage_gate(mem, cur, flow['card'], listed_cards=names)
+        if not gate['allowed']:
+            rejected = flow['card']
+            _card_gate_refused(mem, cur, rejected, gate, listed_cards=names)
+            alternate = _card_gate_choice(mem, cur,
+                                          _card_gate_alternatives(mem, cur, names, omit=rejected), names)
+            if alternate is None:
+                # Keep the last assessment on the rejected chart card, not
+                # on a candidate inspected only to find a safe alternative.
+                _card_damage_gate(mem, cur, rejected, listed_cards=names)
+                return _card_gate_close(mem, cur, names)
+            flow.update(card=alternate,
+                        note='単発撃破を保証できない予定札を実一覧の安全な代替へ変更')
+            gate = _card_damage_gate(mem, cur, alternate, listed_cards=names)
+            _record(mem, 'battle_card_damage_replan', **_battle_labels(cur), card=alternate,
+                    observed_metric={'rejected_card': rejected, 'listed_cards': names,
+                                     'card_damage_gate': gate},
+                    resulting_event='replacement_not_yet_selected',
+                    reason='予定札の致死判定を満たさないため実一覧で根拠を満たす札へ移動')
         # The list may retain its cursor after a failed/partial input. Never
         # assume row zero or send a multi-key selection from an old image.
         move = _battle_menu_to(screen, flow['card'])
@@ -4953,12 +5285,14 @@ def card_list_step(screen: Screen, mem):
             return [move] if move else []
         flow['stage'] = 'announce'
         flow['selection_planned'] = True
+        cur['card_damage_rescue_needed'] = False
         cur['card_consumption_complete'] = False
         cur.setdefault('cards_selected', []).append(flow['card'])
         _watch_egg_drop(cur, flow['card'], cur.get('enemy_hp'),
                         _egg_drop_evidence(cur, flow['card']))
         _record(mem, 'battle_card_selected', **_battle_labels(cur), card=flow['card'],
-                expected_metric='実使用告知', observed_metric={'listed_cards': names},
+                expected_metric='実使用告知', observed_metric={'listed_cards': names,
+                                                           'card_damage_gate': gate},
                 resulting_event='selection_planned_not_yet_confirmed', reason='切り札選択入力を予定。消費は未確定')
         return [pad('a')]
     if flow['stage'] == 'announce' and flow.get('selection_planned'):
@@ -7300,6 +7634,9 @@ def egg_battle_step(screen: Screen, mem):
         return [pad('a')]
     # 将軍HPをこの召喚戦のメニュー行から最新化してから、勝てそうかを判定する。
     battle = mem.get('battle') or {}
+    if battle:
+        battle['card_summon_observed'] = True
+        battle['card_context_unclassified'] = False
     general_reading = _egg_general_reading(screen, mem, battle)
     wants_egg, egg_evidence = _own_egg_needed(mem, battle, general_reading)
     if not mem.get('egg_battle'):
@@ -7523,6 +7860,9 @@ def monster_menu_step(screen: Screen, mem):
                             'ally_hp': ally.hp if ally else None,
                             'enemy': enemy.name if enemy else None,
                             'enemy_hp': enemy.hp if enemy else None}
+    if mem.get('battle') and enemy and type(enemy.hp) is int and enemy.hp > 0:
+        mem['battle']['card_summon_observed'] = True
+        mem['battle']['card_context_unclassified'] = False
     owner = _monster_owner(skill_lines, ally, enemy)
     if owner == 'enemy':
         hold = int(mem.get('monster_menu_hold') or 0) + 1

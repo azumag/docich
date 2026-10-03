@@ -42,10 +42,10 @@ max_attempts = 2
 interim_jev = true
 interim_timeout_ms = 1500
 
-# 実況: botの決定記録から状況説明を作り、既存audio queueへ1件ずつ非同期enqueueする。
-# 半熟英雄プレイ中(このruntimeの観測中)だけ動く。同一key/同一文の連続・短間隔は抑止。
+# 固定文実況は反復を避けるため停止（owner 2026-10-04）。
+# 場面実況の生成・配信は別consumerで実装する。botの決定記録は継続して保存する。
 [hanjuku.narration]
-enabled = true
+enabled = false
 cooldown_s = 25
 max_age_s = 20
 speaker = ""
