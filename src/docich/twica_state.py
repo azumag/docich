@@ -76,7 +76,8 @@ def atomic_json(directory: Path, name: str, value: dict) -> None:
 
 def control(directory: Path) -> dict:
     raw = read_json(directory / 'control.json')
-    valid = (raw.get('schema') == SCHEMA and raw.get('owner') in OWNERS
+    valid = (raw.get('schema') == SCHEMA and isinstance(raw.get('owner'), str)
+             and raw['owner'] in OWNERS
              and isinstance(raw.get('generation'), str)
              and len(raw['generation']) == 32
              and all(c in '0123456789abcdef' for c in raw['generation']))

@@ -83,6 +83,54 @@ def test_prepare_idempotent_private_and_policy_not_reset(tmp_path):
     assert first['generation'] != common['generation']
 
 
+@pytest.mark.parametrize('owner', [[], {}, None, False, True, 0, 1, 1.5, '', 'unknown'])
+def test_invalid_owner_fails_closed_without_replacing_policy(tmp_path, owner):
+    directory = private_directory(tmp_path / 'control')
+    atomic_json(directory, 'control.json', {'schema': 1, 'owner': owner,
+                'generation': '0' * 32, 'pipeline_enabled': True})
+    path = directory / 'control.json'
+    before = path.read_bytes()
+    inode = path.stat().st_ino
+
+    assert control(directory) == {'schema': 1, 'owner': 'none',
+                                  'generation': '', 'invalid': True}
+    assert status(directory)['policy_valid'] is False
+    with pytest.raises(NotReady, match='^invalid_policy$'):
+        prepare(directory)
+    assert path.read_bytes() == before and path.stat().st_ino == inode
+    for destination in ('common', 'legacy'):
+        with pytest.raises(NotReady, match='^prepare_required$'):
+            transfer(directory, destination, idle_confirmed=True)
+        assert path.read_bytes() == before and path.stat().st_ino == inode
+
+
+@pytest.mark.parametrize('owner', [[], {}])
+def test_service_keeps_running_with_invalid_owner(tmp_path, owner):
+    async def scenario():
+        directory = private_directory(tmp_path / 'control')
+        atomic_json(directory, 'control.json', {'schema': 1, 'owner': owner,
+                    'generation': '0' * 32})
+        before = (directory / 'control.json').read_bytes()
+        stop = asyncio.Event()
+        async def preflight():
+            pass
+        async def runner(*args, **kwargs):
+            pytest.fail('invalid policy must not subscribe')
+        task = asyncio.create_task(serve(directory, 'https://example.test/overlay/x', stop,
+                                         runner=runner, preflight=preflight, tick_sec=.01))
+        try:
+            await asyncio.sleep(.03)
+            assert not task.done()
+            renderer = read_json(directory / 'renderer.json')
+            assert renderer['state'] == 'standby'
+            assert renderer['subscribed'] is False
+            assert (directory / 'control.json').read_bytes() == before
+        finally:
+            stop.set()
+            await task
+    asyncio.run(scenario())
+
+
 def test_invalid_or_missing_managed_control_stays_transparent(tmp_path, monkeypatch):
     directory = tmp_path/'control'
     frames = tmp_path/'frames'
