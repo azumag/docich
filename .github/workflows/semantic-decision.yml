@@ -17,6 +17,7 @@ on:
       - 'tests/fixtures/jev_direct_golden.json'
       - 'tests/test_jev_direct_golden.py'
       - 'games/soviet_now'
+      - '.github/scripts/soren_gitlink_gate.py'
       - 'requirements-test.txt'
       - '.github/workflows/semantic-decision.yml'
   push:
@@ -36,6 +37,7 @@ on:
       - 'tests/fixtures/jev_direct_golden.json'
       - 'tests/test_jev_direct_golden.py'
       - 'games/soviet_now'
+      - '.github/scripts/soren_gitlink_gate.py'
       - 'requirements-test.txt'
       - '.github/workflows/semantic-decision.yml'
 
@@ -43,7 +45,58 @@ permissions:
   contents: read
 
 jobs:
+  soren-gitlink-gate:
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          submodules: false
+      - name: Decide whether this integration is affected
+        id: decide
+        env:
+          BEFORE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          AFTER_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run="$(python3 .github/scripts/soren_gitlink_gate.py \
+            --before "$BEFORE_SHA" \
+            --after "$AFTER_SHA" \
+            --root-path 'src/docich/semantic_decision/**' \
+            --root-path 'src/docich/comment_classifier/**' \
+            --root-path 'bin/docich-comment-classify' \
+            --root-path 'tests/test_comment_classifier.py' \
+            --root-path 'tests/test_comment_classifier_screen.py' \
+            --root-path 'tests/test_comment_classifier_canary.py' \
+            --root-path '.github/workflows/jev-route-canary.yml' \
+            --root-path 'tests/fixtures/comment_classifier_heuristic_golden.json' \
+            --root-path 'src/docich/__init__.py' \
+            --root-path 'tests/test_semantic*.py' \
+            --root-path 'tests/fixtures/semantic_choice_direct.json' \
+            --root-path 'tests/fixtures/jev_direct_golden.json' \
+            --root-path 'tests/test_jev_direct_golden.py' \
+            --root-path 'requirements-test.txt' \
+            --root-path '.github/workflows/semantic-decision.yml' \
+            --root-path '.github/scripts/soren_gitlink_gate.py' \
+            --soren-path 'broadcast/comment.sh' \
+            --soren-path 'workers/chat_worker.sh' \
+            --soren-path 'start_all.sh' \
+            --soren-path 'eloop_lib.sh' \
+            --soren-path 'tests/test_comment_classifier_docich.py' \
+            --soren-path 'broadcast/comment_classifier_jev.sh' \
+            --soren-path 'lib/comment_classifier_jev.py' \
+            --soren-path 'lib/comment_classifier_jev_report.py' \
+            --soren-path 'prompts/comment_classifier.md')"
+          [[ "$run" == true || "$run" == false ]]
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
   semantic-contracts:
+    needs: soren-gitlink-gate
+    if: needs.soren-gitlink-gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

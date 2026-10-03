@@ -9,6 +9,7 @@ on:
       - 'src/docich/weather_audio.py'
       - 'src/docich/soren_weather_audio.py'
       - 'games/soviet_now'
+      - '.github/scripts/soren_gitlink_gate.py'
       - 'src/docich/corner_catalog.py'
       - 'src/docich/corner_adapters.py'
       - 'src/docich/corner_boundary.py'
@@ -37,6 +38,7 @@ on:
       - 'src/docich/weather_audio.py'
       - 'src/docich/soren_weather_audio.py'
       - 'games/soviet_now'
+      - '.github/scripts/soren_gitlink_gate.py'
       - 'src/docich/corner_catalog.py'
       - 'src/docich/corner_adapters.py'
       - 'src/docich/corner_boundary.py'
@@ -65,7 +67,60 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  soren-gitlink-gate:
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          submodules: false
+      - name: Decide whether this integration is affected
+        id: decide
+        env:
+          BEFORE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          AFTER_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run="$(python3 .github/scripts/soren_gitlink_gate.py \
+            --before "$BEFORE_SHA" \
+            --after "$AFTER_SHA" \
+            --root-path 'src/docich/weather.py' \
+            --root-path 'src/docich/weather_view.py' \
+            --root-path 'src/docich/weather_corner.py' \
+            --root-path 'src/docich/weather_audio.py' \
+            --root-path 'src/docich/soren_weather_audio.py' \
+            --root-path 'src/docich/corner_catalog.py' \
+            --root-path 'src/docich/corner_adapters.py' \
+            --root-path 'src/docich/corner_boundary.py' \
+            --root-path 'src/docich/game_switch.py' \
+            --root-path 'src/docich/adapters/__init__.py' \
+            --root-path 'src/docich/adapters/weather_program.py' \
+            --root-path 'tests/test_weather.py' \
+            --root-path 'tests/fixtures/weather_view/**' \
+            --root-path 'tests/test_weather_program.py' \
+            --root-path 'tests/test_weather_corner.py' \
+            --root-path 'tests/test_weather_audio_contract.py' \
+            --root-path 'tests/test_soren_weather_audio.py' \
+            --root-path 'tests/test_corner_rotation.py' \
+            --root-path 'tests/test_corner_rotation_execution.py' \
+            --root-path 'tests/test_game_switch.py' \
+            --root-path 'tests/test_round_boundary.py' \
+            --root-path 'bin/docich-weather' \
+            --root-path '.github/workflows/weather-regressions.yml' \
+            --root-path 'requirements-test.txt' \
+            --root-path '.github/scripts/soren_gitlink_gate.py' \
+            --soren-path 'lib/weather_audio_consumer.py' \
+            --soren-path 'eloop_lib.sh')"
+          [[ "$run" == true || "$run" == false ]]
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
   weather-relay:
+    needs: soren-gitlink-gate
+    if: needs.soren-gitlink-gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
