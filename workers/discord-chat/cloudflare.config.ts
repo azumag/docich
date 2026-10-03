@@ -13,7 +13,6 @@ export default defineConfig({
     compatibilityDate: "2026-10-03",
     previewUrls: false,
     observability: {
-      enabled: true,
       logs: {
         enabled: true,
         headSamplingRate: 1,
