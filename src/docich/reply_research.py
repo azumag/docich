@@ -1,7 +1,7 @@
 """Opt-in read-only Codex research in a mandatory Linux filesystem sandbox.
 
-No host HOME, repo checkout, .git, live logs, sockets, or conversation-bot
-credentials are mounted. A hash-pinned, owner-approved public-source manifest
+No host HOME, repo checkout, .git, live logs, sockets, conversation-bot
+credentials, or host network namespace are exposed. A hash-pinned, owner-approved public-source manifest
 is copied into the sandbox. Missing isolation/dependencies never launches a
 bare CLI. This is a research capability, never an action/repair capability.
 """
@@ -105,7 +105,7 @@ def snapshot(root: Path, target: Path, *, deadline: float) -> dict:
 
 def sandbox_argv(workspace: Path, model: str, bwrap: str, codex: str, scope: str = "unknown") -> list[str]:
     """Only immutable argv; no prompt, key, URL, or model-returned path here."""
-    args = [bwrap, "--unshare-all", "--share-net", "--die-with-parent", "--new-session",
+    args = [bwrap, "--unshare-all", "--die-with-parent", "--new-session",
             "--cap-drop", "ALL", "--ro-bind", "/usr", "/usr"]
     for directory in ("/bin", "/lib", "/lib64"):
         if Path(directory).exists():
