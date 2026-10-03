@@ -78,19 +78,27 @@ def observe() -> int:
     deadline = time.monotonic() + 90
     ended_since = None
     while time.monotonic() < deadline:
-        now_ns = time.monotonic_ns()
         current = probe.read_record(directory / 'pipeline.json')
         current_renderer = probe.read_record(directory / 'renderer.json')
-        if (probe.read_record(directory / 'control.json') != policy
-                or current.get('identity') != pipeline.get('identity')
-                or current.get('encoder_pid') != pipeline.get('encoder_pid')
-                or current_renderer.get('identity') != renderer.get('identity')
-                or not probe.fresh(current, now_ns)):
-            return 51  # An actual transition, not a diagnosis of either side.
+        current_policy = probe.read_record(directory / 'control.json')
+        health = probe.read_record(directory / 'browser-health.json')
+        # A producer may publish while these files are read. Compare against
+        # the clock AFTER reading, not an earlier sample-start timestamp.
+        # Actual future timestamps remain invalid in the existing fresh().
+        now_ns = time.monotonic_ns()
+        if current_policy != policy:
+            return 51  # Ownership policy changed or became unreadable.
+        if current.get('identity') != pipeline.get('identity'):
+            return 52  # Pipeline process changed or record became unreadable.
+        if current.get('encoder_pid') != pipeline.get('encoder_pid'):
+            return 53  # Native encoder changed or record became incomplete.
+        if current_renderer.get('identity') != renderer.get('identity'):
+            return 54  # Renderer process changed or record became unreadable.
+        if not probe.fresh(current, now_ns):
+            return 55  # Pipeline heartbeat is stale, invalid, or process dead.
         attempts = current_renderer.get('attempts', 0)
         if type(attempts) is int and type(baseline_attempts) is int and attempts > baseline_attempts:
             return 27  # The service had to replace its renderer during sampling.
-        health = probe.read_record(directory / 'browser-health.json')
         valid = (probe.fresh(health, now_ns) and probe.fresh(current_renderer, now_ns)
                  and health.get('identity') == current_renderer.get('identity')
                  and health.get('pid') == current_renderer.get('pid')
