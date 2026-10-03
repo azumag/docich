@@ -60,6 +60,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+          submodules: recursive
       - name: Install test requirements
         run: python3 -m pip install -r requirements-test.txt
       - name: Hanjuku offline regressions
