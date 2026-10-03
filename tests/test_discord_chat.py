@@ -20,7 +20,6 @@ from docich import discord_chat as chat
 from docich.discord_memory import MemoryStore
 
 ENV = {
-    "DOCICH_DISCORD_GUILD_ID": "1", "DOCICH_DISCORD_CHANNEL_IDS": "10,11",
     "DOCICH_DISCORD_LLM_BASE_URL": "https://example.invalid/v1",
     "DOCICH_DISCORD_LLM_MODEL": "test-model", "DOCICH_DISCORD_TOKEN": "test-bot-secret",
     "DOCICH_DISCORD_LLM_API_KEY": "test-llm-secret",
@@ -39,20 +38,14 @@ def event(**changes):
 class SettingsTests(unittest.TestCase):
     def test_valid_defaults_and_secret_repr(self):
         s = settings()
-        self.assertEqual(s.channel_ids, {10, 11})
         self.assertEqual(str(s.memory_dir), ENV["DOCICH_DISCORD_MEMORY_DIR"])
         self.assertNotIn("secret", repr(s))
 
-    def test_missing_and_invalid_ids_fail_closed(self):
-        for value in ("", "0", "-1", "1,", "*", "１", str(2**64)):
-            with self.subTest(value=value), self.assertRaises(chat.ChatError):
-                chat.Settings.from_env({**ENV, "DOCICH_DISCORD_CHANNEL_IDS": value})
-        with self.assertRaises(chat.ChatError):
-            chat.Settings.from_env({**ENV, "DOCICH_DISCORD_GUILD_ID": ""})
-
-    def test_channel_limit(self):
-        with self.assertRaises(chat.ChatError):
-            chat.Settings.from_env({**ENV, "DOCICH_DISCORD_CHANNEL_IDS": ",".join(map(str, range(1, 10)))})
+    def test_old_guild_and_channel_allowlists_fail_closed(self):
+        for key, value in (("GUILD_ID", "1"), ("CHANNEL_IDS", "10,11")):
+            with self.subTest(key=key), self.assertRaisesRegex(
+                    chat.ChatError, "^guild/channel allowlists are no longer supported$"):
+                chat.Settings.from_env({**ENV, "DOCICH_DISCORD_" + key: value})
 
     def test_url_rejects_credentials_fragments_and_unsafe_schemes(self):
         for value in ("file:///tmp/key", "https://user:key@example.invalid", "https://@example.invalid",
@@ -184,13 +177,21 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.memory.db.execute("SELECT state FROM conversations").fetchone()[0], "sent")
 
     async def test_disallowed_dm_bot_webhook_empty_stale_and_unmentioned_are_not_retained(self):
-        variants = [dict(guild_id=None), dict(guild_id=2), dict(channel_id=12), dict(addressed=False),
+        variants = [dict(guild_id=None), dict(addressed=False),
                     dict(author_is_bot=True), dict(webhook=True), dict(content="  "),
                     dict(age_seconds=121), dict(age_seconds=float("nan"))]
         for changes in variants:
             self.assertEqual(await self.core.handle(event(**changes), self.send), "ignored")
         self.assertEqual(self.memory.db.execute("SELECT COUNT(*) FROM conversations").fetchone()[0], 0)
         self.backend.complete.assert_not_called()
+
+    async def test_mentions_are_allowed_in_any_guild_and_channel(self):
+        self.assertEqual(await self.core.handle(
+            event(id=101, guild_id=2, channel_id=999), self.send), "replied")
+        self.send.assert_awaited_once()
+        row = self.memory.db.execute(
+            "SELECT guild_id,channel_id FROM conversations WHERE message_id='101'").fetchone()
+        self.assertEqual(tuple(row), (2, 999))
 
     async def test_prior_conversation_is_used_after_conversation_object_replacement(self):
         await self.core.handle(event(content="猫の名前はタマ"), self.send)
@@ -430,13 +431,21 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(msg.reply.call_args.args[0], chat.FORGOTTEN_REPLY)
         self.backend.complete.assert_not_called()
 
-    async def test_bots_webhooks_system_dm_disallowed_and_ordinary_posts_never_generate(self):
+    async def test_bots_webhooks_system_dm_and_ordinary_posts_never_generate(self):
         for change in (dict(author=NS(id=8, bot=True)), dict(webhook_id=8), dict(mentions=[]),
-                       dict(is_system=lambda: True), dict(guild=None), dict(channel=NS(id=12))):
+                       dict(is_system=lambda: True), dict(guild=None)):
             msg = fake_message(**change)
             await self.client.on_message(msg)
             msg.reply.assert_not_awaited()
         self.backend.complete.assert_not_called()
+
+    async def test_other_guild_and_channel_are_allowed(self):
+        msg = fake_message(id=101, guild=NS(id=2), channel=NS(id=999))
+        await self.client.on_message(msg)
+        msg.reply.assert_awaited_once()
+        row = self.memory.db.execute(
+            "SELECT guild_id,channel_id FROM conversations WHERE message_id='101'").fetchone()
+        self.assertEqual(tuple(row), (2, 999))
 
     async def test_raw_delete_bulk_and_content_edit_handlers_keep_scope(self):
         with patch.object(chat.Conversation, "forget") as forget:
