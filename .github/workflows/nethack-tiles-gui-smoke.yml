@@ -1,0 +1,70 @@
+name: NetHack tiles GUI smoke
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/nethack-tiles-gui-smoke.yml'
+      - 'src/docich/adapters/**'
+      - 'src/docich/config.py'
+      - 'src/docich/game_switch.py'
+      - 'src/docich/naming.py'
+      - 'src/docich/watchdog.py'
+      - 'src/docich/xkit.py'
+      - 'src/docich/nethack*.py'
+      - 'src/docich/tmux.py'
+      - 'src/docich/process_tree.py'
+      - 'src/docich/procs.py'
+      - 'tests/test_nethack_tiles_gui_smoke.py'
+      - 'requirements-test.txt'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/nethack-tiles-gui-smoke.yml'
+      - 'src/docich/adapters/**'
+      - 'src/docich/config.py'
+      - 'src/docich/game_switch.py'
+      - 'src/docich/naming.py'
+      - 'src/docich/watchdog.py'
+      - 'src/docich/xkit.py'
+      - 'src/docich/nethack*.py'
+      - 'src/docich/tmux.py'
+      - 'src/docich/process_tree.py'
+      - 'src/docich/procs.py'
+      - 'tests/test_nethack_tiles_gui_smoke.py'
+      - 'requirements-test.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nethack-tiles-gui-smoke-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  nethack-tiles-gui-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Install isolated X11 smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb
+      - name: Require a real Chromium-family browser
+        run: |
+          for name in google-chrome-stable google-chrome chromium chromium-browser; do
+            if command -v "$name" >/dev/null 2>&1; then
+              browser="$(command -v "$name")"
+              break
+            fi
+          done
+          test -n "${browser:-}" || { echo "Chromium-family browser is required" >&2; exit 1; }
+          printf 'Selected browser: %s\n' "$browser"
+          "$browser" --version
+          PYTHONPATH=src python3 -c 'from docich.nethack_tiles_supervisor import browser_binary; assert browser_binary(), "Chromium-family browser is required"'
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-test.txt
+      - name: Run isolated NetHack tile GUI smoke
+        run: PYTHONPATH=src python3 -m pytest -q tests/test_nethack_tiles_gui_smoke.py
