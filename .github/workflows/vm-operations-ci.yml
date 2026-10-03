@@ -11,7 +11,7 @@ on:
       - 'bin/**'
       - 'games/soviet_now'
       - 'requirements-test.txt'
-      - '.github/workflows/vm-operations-ci.yml'
+      - '.github/workflows/vm-operations*.yml'
   push:
     branches: [main]
     paths:
@@ -23,7 +23,7 @@ on:
       - 'bin/**'
       - 'games/soviet_now'
       - 'requirements-test.txt'
-      - '.github/workflows/vm-operations-ci.yml'
+      - '.github/workflows/vm-operations*.yml'
 
 permissions:
   contents: read
