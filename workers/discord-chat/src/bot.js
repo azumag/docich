@@ -9,6 +9,7 @@ import {
   validContext,
 } from "./memory.js";
 import {
+  DiscordSendError,
   GATEWAY_INTENTS,
   OPCODE,
   gatewaySocketUrl,
@@ -383,7 +384,6 @@ export class DiscordBot {
     this.pendingCount += 1;
     const task = this.queue
       .then(() => this.#processMention(event))
-      .catch(() => { safeLog(this.env, "reply_failed"); })
       .finally(() => { this.pendingCount -= 1; });
     this.queue = task.catch(() => {});
     this.state.waitUntil(task);
@@ -392,6 +392,7 @@ export class DiscordBot {
   async #processMention(event) {
     let seq = null;
     let attemptedSend = false;
+    let stage = "memory_begin";
     try {
       seq = beginConversation(this.sql, event);
       if (seq === null) return;
@@ -401,7 +402,9 @@ export class DiscordBot {
         await sendDiscordReply(this.#token(), event, FORGOTTEN_REPLY);
         return;
       }
+      stage = "memory_context";
       const context = memoryContext(this.sql, event, seq);
+      stage = "workers_ai";
       const reply = await generateReply(this.env, context.messages, event);
       if (!validContext(this.sql, seq, context)) {
         failConversation(this.sql, seq);
@@ -409,18 +412,26 @@ export class DiscordBot {
       }
       if (!markSending(this.sql, seq)) return;
       attemptedSend = true;
+      stage = "discord_send";
       const replyId = await sendDiscordReply(this.#token(), event, reply);
+      stage = "memory_finish";
       finishConversation(this.sql, seq, replyId, reply);
-    } catch {
+      safeLog(this.env, "reply_sent");
+    } catch (error) {
       if (seq !== null) failConversation(this.sql, seq);
+      let noticeDiscordStatus = null;
       if (!attemptedSend) {
         try {
           await sendDiscordReply(this.#token(), event, FAILURE_REPLY);
-        } catch {
-          // A failed error notice is deliberately not retried.
+        } catch (noticeError) {
+          if (noticeError instanceof DiscordSendError) noticeDiscordStatus = noticeError.status;
         }
       }
-      throw new Error("mention_processing_failed");
+      safeLog(this.env, "reply_failed", {
+        stage,
+        discordStatus: error instanceof DiscordSendError ? error.status : null,
+        noticeDiscordStatus,
+      });
     }
   }
 }
