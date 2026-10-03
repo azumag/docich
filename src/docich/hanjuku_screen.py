@@ -7,6 +7,7 @@ infers a value that is not on screen; missing features are ``None``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import collections
 import re
 
 from .hanjuku_font import TextLine, dark, joined, light, read_lines, row_masks
@@ -269,6 +270,8 @@ class Screen:
     menu_rows: list[TextLine] = field(default_factory=list)
     menu_cursor: int | None = None
     egg_rows: list[EggRow] = field(default_factory=list)
+    # (味方, 敵) の兵士数。読めない側は None、フィールド計測なしは全体で None。
+    field_soldiers: tuple[int | None, int | None] | None = None
     hidden_battle_commands: bool = False
     # The two-row item box with every row disabled (measured g534 07:51).
     disabled_item_box: bool = False
@@ -320,6 +323,83 @@ def _battle(frame: Frame) -> Battle | None:
                     and str(enemy_hp) == left[-1] and str(ally_hp) == right[-1]):
                 return Battle(left[0], enemy_hp, right[0], ally_hp)
     return None
+
+
+# 戦闘中の兵士を数える帯域。HPパネル (rect (0,160,256,200)) より上の
+# フィールドだけで、下端はボックス上辺 (y152〜) に切りられる兵士も数える。
+SOLDIER_BAND = (0, 40, 256, 150)
+# 1体ぶんの連結成分。gcgx battle.html「兵士は1人ずつHP10を持っている」に
+# 対応する実測サイズ (面積55..260、bbox 26x26以内)。
+SOLDIER_AREA = (55, 260)
+SOLDIER_BOX = (26, 26)
+# 2体以上が重なったとみなす成分。片側でも1つあればその側は計測をやめる。
+SOLDIER_MERGED_AREA = (261, 900)
+SOLDIER_MERGED_BOX = (60, 60)
+
+
+def _field_soldiers(frame: Frame) -> tuple[int | None, int | None] | None:
+    """フィールドに並ぶ兵士スプライトを数える。返り値は (味方, 敵)。
+
+    左右の割り当ては味方が左・敵が右で、HPパネル (敵が左) とは逆。実測:
+    どうし90 vs ロックフォール57 の新規戦で左6 (出撃確認のへいし6人と一致)、
+    どうし0 の敗戦フレームで左が空、ビシソワーズ0 の勝利フレームで右が空。
+    背景色 (上位4色) を完全一致で除いた連結成分のうち1体ぶんの寸法・面積に
+    収まるものだけを兵士と数え、側ごとに2体以上の重なりを見つけたらその側は
+    None (読めない=推測しない) にする。フィールド計測が要る戦闘フレームでの
+    み呼ばれる。
+    """
+    if frame.width < SOLDIER_BAND[2] or frame.height < SOLDIER_BAND[3]:
+        return None
+    x0, y0, x1, y1 = SOLDIER_BAND
+    rgb, stride = frame.rgb, frame.width * 3
+    span = (x1 - x0) * 3
+    tones = collections.Counter()
+    for y in range(y0, y1):
+        row = rgb[y * stride + x0 * 3: y * stride + x0 * 3 + span]
+        for i in range(0, span, 3):
+            tones[row[i:i + 3]] += 1
+    background = {tone for tone, _ in tones.most_common(4)}
+    mask = set()
+    for y in range(y0, y1):
+        row = rgb[y * stride + x0 * 3: y * stride + x0 * 3 + span]
+        for i in range(0, span, 3):
+            if row[i:i + 3] not in background:
+                mask.add((x0 + i // 3, y))
+    seen: set[tuple[int, int]] = set()
+    sides, merged = [0, 0], [0, 0]
+    for seed in mask:
+        if seed in seen:
+            continue
+        stack, cells = [seed], []
+        seen.add(seed)
+        while stack:
+            cx, cy = stack.pop()
+            cells.append((cx, cy))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    nxt = (cx + dx, cy + dy)
+                    if nxt in mask and nxt not in seen:
+                        seen.add(nxt)
+                        stack.append(nxt)
+        if len(cells) < SOLDIER_AREA[0]:
+            continue
+        xs = [c[0] for c in cells]
+        ys = [c[1] for c in cells]
+        # 上端・左右端に接する成分は壁や枠なので数えない。下端だけは
+        # ボックスに沿って切られる兵士を残すため除外しない。
+        if min(ys) <= y0 or min(xs) <= x0 or max(xs) >= x1 - 1:
+            continue
+        side = 0 if sum(xs) // len(cells) < (x0 + x1) // 2 else 1
+        width, height = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+        if (len(cells) > SOLDIER_AREA[1] or width > SOLDIER_BOX[0]
+                or height > SOLDIER_BOX[1]):
+            if (SOLDIER_AREA[1] < len(cells) <= SOLDIER_MERGED_AREA[1]
+                    and width <= SOLDIER_MERGED_BOX[0] and height <= SOLDIER_MERGED_BOX[1]
+                    and max(ys) < y1 - 1):
+                merged[side] += 1
+            continue
+        sides[side] += 1
+    return (None if merged[0] else sides[0], None if merged[1] else sides[1])
 
 
 def _menu_rows(lines: list[TextLine]) -> list[TextLine]:
@@ -454,6 +534,10 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
                          'year': int(year), 'month': int(month), 'gold': int(gold)}
     screen.selected = _selected(lines, hand)
     screen.battle = _battle(frame)
+    if screen.battle is not None:
+        # 召喚メニューのフレームでは _battle() は None (敵側は兵士ではなく
+        # 召喚獣なので上書きしない)。読み取りは直近の通常戦闘フレームのもの。
+        screen.field_soldiers = _field_soldiers(frame)
     screen.menu_rows = _menu_rows(lines)
     box_rows = _box_rows(screen.menu_rows)
     if not screen.menu_rows:
