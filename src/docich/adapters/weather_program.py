@@ -53,8 +53,8 @@ class WeatherProgramViewAdapter(ProgramViewAdapter):
         self.snapshot_path = self.weather_state_dir / "snapshot.json"
 
     def _game_command(self) -> list[str]:
-        # serve is read-only: the caller must explicitly publish a current
-        # snapshot before asking GameSwitch to start this runtime.
+        # serve is read-only: the corner publishes a validated snapshot before
+        # asking GameSwitch to start; direct starts still require a snapshot.
         return [
             _weather_bin(), "--state-dir", str(self.weather_state_dir), "serve",
             "--port", str(self.dashboard_port),
@@ -69,7 +69,7 @@ class WeatherProgramViewAdapter(ProgramViewAdapter):
             raise AdapterError("chromium が見つかりません (weather HTML view)")
         command = [
             browser,
-            f"--app=http://127.0.0.1:{self.dashboard_port}/",
+            f"--app=http://127.0.0.1:{self.dashboard_port}/broadcast",
             "--window-size=960,540",
             "--window-position=0,0",
             "--no-first-run",

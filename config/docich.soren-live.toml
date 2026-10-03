@@ -64,6 +64,8 @@ corners = [
   { id = "hanjuku-hero", adapter = "game", game = "hanjuku-hero" },
   { id = "paper", adapter = "paper", game = "paper-view", live_eligible = false },
   { id = "meriken", adapter = "meriken", game = "soren91" },
+  # 48秒で全国+11地点を一巡。取得は選択された枠だけ、音声cue同期は未接続。
+  { id = "weather", adapter = "weather", game = "weather-view", enabled = true, duration_minutes = 1, fetch_on_start = true, audio_enabled = false },
 ]
 
 [nethack_corner]

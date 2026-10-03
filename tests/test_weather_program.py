@@ -81,6 +81,7 @@ def test_weather_view_factory_is_generation_owned_and_uses_existing_viewport(tmp
     assert viewer[0] == sys.executable
     assert "--width" in viewer and viewer[viewer.index("--width") + 1] == "960"
     assert "--height" in viewer and viewer[viewer.index("--height") + 1] == "540"
+    assert "--app=http://127.0.0.1:8803/broadcast" in viewer
     assert "--window-size=960,540" in viewer
     assert spec.runtime_id in " ".join(viewer)
     assert "serve" not in viewer and "enqueue_audio_text" not in " ".join(viewer)

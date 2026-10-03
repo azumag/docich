@@ -872,3 +872,44 @@ def test_stop_keeps_queued_start_owner_until_game_switch_terminally_fences_it(tm
     assert final["phase"] == "ready"
     assert final["active"]["game"] == "nethack"
     assert not stop_path.exists()
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_selected_weather_fetches_once_before_switch_and_replay_never_fetches(tmp_path, monkeypatch, failure):
+    import docich.weather_corner as module
+    from docich.weather import WeatherError
+    g, now, factory, store, switch = _setup(tmp_path, boundary_generation=None)
+    original = store.canonical.load()[0]["active"]
+    calls = []
+    def refresh(path):
+        assert store.canonical.load()[0]["active"] == original
+        calls.append(path)
+        if failure:
+            raise WeatherError("fetch-failed")
+    monkeypatch.setattr("docich.weather_view.refresh_snapshot", refresh)
+    monkeypatch.setattr(module, "read_view", lambda *_args, **_kw: {"expires_at": now[0] + 900})
+    adapter = _weather_adapter(g, SimpleNamespace(duration_minutes=1, fetch_on_start=True),
+                               switch, now, lambda seconds: now.__setitem__(0, now[0] + seconds))
+    assert adapter.eligible() is True
+    assert calls == []  # Eligibility/status must never contact JMA.
+    request = {"request_id": str(uuid.uuid4())}
+    assert adapter.run(request) == "completed"
+    assert len(calls) == 1
+    assert adapter.run(request) == "completed"
+    assert len(calls) == 1
+    owner = json.loads(adapter.state_path.read_text())
+    if failure:
+        assert owner["end_reason"] == "forecast-fetch-failed-before-start"
+        assert store.canonical.load()[0]["active"] == original
+        assert not any(a.spec.game == "weather-view" for a in factory.adapters.values())
+    else:
+        assert owner["end_reason"] == "duration"
+        assert store.canonical.load()[0]["active"]["game"] == "robots"
+
+
+@pytest.mark.parametrize("adapter,game", [("weather", "weather-view"), ("game", "robots")])
+def test_fetch_on_start_requires_weather_and_boolean(tmp_path, adapter, game):
+    config = tmp_path / "config.toml"
+    config.write_text('[corner_rotation]\ncorners=[{id="weather",adapter="%s",game="%s",fetch_on_start="true"}]\n' % (adapter, game))
+    with pytest.raises(CornerCatalogError):
+        load_catalog(load_global(tmp_path, config))
