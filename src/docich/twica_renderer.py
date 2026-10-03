@@ -19,6 +19,8 @@ from urllib.parse import urlsplit
 
 from .twica_overlay import SnapshotPublisher, frame_size
 from .twica_checkpoint import read_checkpoint, save_checkpoint
+from .twica_browser_health import BrowserHealth
+from .twica_state import control
 
 TRANSPARENT_PAGE_STYLE = (
     'html,body{background:transparent !important;'
@@ -108,7 +110,7 @@ async def run_renderer(url: str, directory: Path, *, width: int = 1280,
                 ignore_default_args=['--mute-audio'],
                 args=['--autoplay-policy=no-user-gesture-required'],
             )
-            capture_task = stop_task = None
+            capture_task = stop_task = health_task = None
             try:
                 if checkpoint_directory is None:
                     page = await browser.new_page(
@@ -128,14 +130,20 @@ async def run_renderer(url: str, directory: Path, *, width: int = 1280,
                     )
                     page = await context.new_page()
 
-                network_failed = False
+                generation = control(checkpoint_directory).get('generation', '') if checkpoint_directory else ''
+                health = BrowserHealth(url, generation)
                 if hasattr(page, 'on'):
-                    def request_failed(request):
-                        nonlocal network_failed
-                        # Only the overlay event transport, never image/CDN failures.
-                        if '/api/overlay/' in request.url and '/events' in request.url:
-                            network_failed = True
-                    page.on('requestfailed', request_failed)
+                    health.attach(page)
+
+                async def health_loop():
+                    # Separate from capture pacing; diagnostic latency must not
+                    # starve fresh RGBA or reset a live subscription.
+                    while not stop.is_set():
+                        try:
+                            await health.sample(page, checkpoint_directory)
+                        except Exception:
+                            pass
+                        await asyncio.sleep(1)
 
                 async def capture_loop():
                     # No game-specific URL, no navigation on game-switch, no new queue.
@@ -149,8 +157,8 @@ async def run_renderer(url: str, directory: Path, *, width: int = 1280,
                     checkpoint_due = loop.time() + 1
                     while not stop.is_set():
                         tick = loop.time()
-                        if network_failed:
-                            raise RuntimeError('overlay transport unavailable')
+                        # A recoverable request failure must not close this page.
+                        # TwiCa's own controller owns HTTP/WS retries and its queue.
                         try:
                             captured = await capture_once(page, publisher)
                             failures = 0 if captured else failures + 1
@@ -173,17 +181,19 @@ async def run_renderer(url: str, directory: Path, *, width: int = 1280,
 
                 capture_task = asyncio.create_task(capture_loop())
                 stop_task = asyncio.create_task(stop.wait())
+                if checkpoint_directory is not None:
+                    health_task = asyncio.create_task(health_loop())
                 done, _pending = await asyncio.wait(
                     [capture_task, stop_task], return_when=asyncio.FIRST_COMPLETED,
                 )
                 if capture_task in done:
                     await capture_task  # Propagate failure; do not claim ready.
             finally:
-                for task in (capture_task, stop_task):
+                for task in (capture_task, stop_task, health_task):
                     if task is not None:
                         task.cancel()
                 await asyncio.gather(
-                    *(task for task in (capture_task, stop_task) if task is not None),
+                    *(task for task in (capture_task, stop_task, health_task) if task is not None),
                     return_exceptions=True,
                 )
                 publisher.clear()

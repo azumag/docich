@@ -1,0 +1,153 @@
+name: TwiCa browser recovery
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/twica-browser-recovery.yml'
+      - 'src/docich/twica_browser_health.py'
+      - 'src/docich/twica_renderer.py'
+      - 'ops/vm_actions/twica_browser_operator.py'
+      - 'ops/vm_actions/tests/test_twica_browser*.py'
+      - 'ops/vm_actions/twica_browser_refresh_epoch'
+  push:
+    branches: [main]
+    paths:
+      - 'ops/vm_actions/twica_browser_refresh_epoch'
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s ops/vm_actions/tests -p 'test_twica_browser*.py' -v
+  await-deploy:
+    needs: contracts
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.repository == 'azumag/docich' && github.repository_id == '1327276249' &&
+      github.actor_id == '9018513' && github.triggering_actor == 'azumag' &&
+      github.ref == 'refs/heads/main' && github.ref_protected == true
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Wait for exact deployment without holding the mutation lock
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          sha="$(git rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          install -m 700 -d "$RUNNER_TEMP/twica-browser-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/twica-browser-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/twica-browser-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/twica-browser-ssh/"*
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/twica-browser-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/twica-browser-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2)
+          for attempt in $(seq 1 40); do
+            current="$(git ls-remote --refs https://github.com/azumag/docich.git refs/heads/main | awk '{print $1}')"
+            [[ "$current" == "$sha" ]] || { echo '::error::Recovery superseded'; exit 1; }
+            if ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $sha" |
+              python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("sha")==sys.argv[1] and d.get("status") in {"configured","deployed"} else 1)' "$sha"; then
+              exit 0
+            fi
+            sleep 3
+          done
+          echo '::error::Exact deployed baseline unavailable'
+          exit 1
+  refresh-and-observe:
+    needs: await-deploy
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.repository == 'azumag/docich' && github.repository_id == '1327276249' &&
+      github.actor_id == '9018513' && github.triggering_actor == 'azumag' &&
+      github.ref == 'refs/heads/main' && github.ref_protected == true
+    concurrency:
+      group: vm-operations-${{ github.repository }}
+      cancel-in-progress: false
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Refresh only common renderer and inspect fixed browser categories
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          sha="$(git rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          install -m 700 -d "$RUNNER_TEMP/twica-browser-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/twica-browser-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/twica-browser-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/twica-browser-ssh/"*
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/twica-browser-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/twica-browser-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2)
+          current="$(git ls-remote --refs https://github.com/azumag/docich.git refs/heads/main | awk '{print $1}')"
+          [[ "$current" == "$sha" ]] || { echo '::error::Recovery superseded'; exit 1; }
+          invoke() {
+            {
+              printf '%s\n' 'set -euo pipefail' 'cd /home/ubuntu/docich'
+              printf '[[ "$(git rev-parse HEAD)" == "%s" ]] || exit 60\n' "$sha"
+              printf '%s\n' 'git diff --quiet HEAD -- || exit 61'
+              printf 'python3 ops/vm_actions/twica_browser_operator.py %s\n' "$1"
+            } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $sha"
+          }
+          invoke refresh
+          echo 'TwiCa renderer refreshed; common owner and native encoder identity unchanged.'
+          failed=0
+          for mode in transport dom errors; do
+            set +e
+            invoke "$mode"
+            rc=$?
+            set -e
+            case "$mode:$rc" in
+              transport:0) result=http_ok_and_socket_frames ;;
+              transport:10) result=page_redirected_or_unknown ;;
+              transport:11) result=http_auth_denied ;;
+              transport:12) result=http_rate_limited ;;
+              transport:13) result=http_server_error ;;
+              transport:14) result=http_other_error ;;
+              transport:15) result=network_request_failed ;;
+              transport:20) result=http_events_ok_without_socket_frames ;;
+              transport:21) result=socket_frames_without_http_events_evidence ;;
+              transport:22) result=config_only_no_events_evidence ;;
+              transport:23) result=no_transport_evidence ;;
+              dom:0) result=card_dom_visible_at_sample ;;
+              dom:30) result=card_dom_probe_unavailable ;;
+              dom:31) result=card_dom_present_but_hidden ;;
+              dom:32) result=card_dom_observed_since_reload ;;
+              dom:33) result=no_card_dom_observed_since_reload ;;
+              errors:0) result=no_script_errors_observed ;;
+              errors:40) result=script_errors_observed ;;
+              *) result=stale_invalid_or_unavailable_evidence; failed=1 ;;
+            esac
+            echo "TwiCa browser $mode: $result"
+          done
+          echo 'Browser/DOM evidence is not proof of viewer-visible delivery; an idle overlay may contain no card.'
+          exit "$failed"
