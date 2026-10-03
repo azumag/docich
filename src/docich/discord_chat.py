@@ -1,7 +1,8 @@
 """Opt-in Discord mentions, persistent conversations and the docich persona.
 
 Run with PYTHONPATH=src python -m docich.discord_chat --check before enabling.
-No broadcast, CLI agent, tool execution, autonomous posts or model fallback.
+Default: generation-only HTTP. Optional evidence routing uses an isolated
+read-only research capability; no broadcast control or autonomous posts.
 """
 from __future__ import annotations
 
@@ -148,12 +149,21 @@ def clean_reply(value: str) -> str:
 
 
 class ChatBackend:
-    """Generation-only Chat Completions HTTP. No CLI, tools, or fallback cost."""
+    """HTTP reply generation, optionally preceded by evidence-need routing."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
 
     def complete(self, messages: list[dict[str, str]]) -> str:
+        if os.environ.get("DOCICH_REPLY_ROUTING_ENABLED", "0") == "0":
+            return self._complete_api(messages)
+        from .reply_routing import complete
+        return complete(messages, api=self._complete_api, env=os.environ,
+                        report=lambda event: LOG.info(
+                            "discord_chat event=reply_route scope=%s decision=%s research=%s",
+                            event["scope"], event["decision_status"], event["research_status"]))
+
+    def _complete_api(self, messages: list[dict[str, str]]) -> str:
         s = self.settings
         body = json.dumps({"model": s.model, "messages": messages,
                            "stream": False, "max_tokens": 500}, ensure_ascii=False).encode()
