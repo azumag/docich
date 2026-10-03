@@ -1,12 +1,16 @@
-# Cloudflare Workers Builds 設定案（未有効化）
+# Cloudflare Workers Builds 設定と配備状況
 
-GitHub `azumag/docich` のmain更新をCloudflare Workers Buildsでbuild・配備するための準備です。GitHub Actionsには配備jobを追加しません。既存ActionsのWorkerテストを維持します。この文書と `builds-plan.json` は設定案であり、Cloudflareが自動読込する設定ファイルではありません。リポジトリのmergeだけではBuilds接続を作成・有効化しません。既存接続があれば対象ディレクトリのmergeで本番配備が発火する可能性があるので、merge直前にも接続を確認してください。
+GitHub `azumag/docich` のmain更新をCloudflare Workers Buildsでbuild・配備します。GitHub Actionsには配備jobを追加せず、既存ActionsのWorkerテストを維持します。本人がmain連携、root `workers/tsuitate-bot` を設定済みです。この文書と `builds-plan.json` はCloudflareが自動読込する設定ファイルではありません。**対象ディレクトリのPRをmainへmergeすると既存Buildsの本番配備が発火し得るため、親レビュー・merge判断へ引き継ぎます。**
+
+2026-10-03 12:27 UTCの本人提供Builds結果では、Cf build、Nodeテスト32件、test-only workerd4組、生成bundle検証が成功し、deployはstrict conflictでuploadを中止しました。差分はremote `compatibility_date=2026-10-03` に対するlocal `2026-09-21` と、remote `preview_urls=false` に対するlocal既定trueです。「Deploy complete」の表示だけでは成功とせず、upload abortedと非ゼロexitを失敗として扱います。本修正はlocal `previewUrls: false` を明示し、固定Cf beta.12の生成設定を検証します。互換日付は `2026-09-21` を維持し、管理画面側を同日に揃える操作は本人側の確認事項です。strictを外して強行しません。
+
+本人提供画像では公開URL `https://docich-tsuitate-bot.tsubasa-azumagakito.workers.dev` を確認しています。URLの存在とBOTコードの配備成功、署名付き対局応答の確認は別です。`previewUrls: false` はversionごとのpreview URLの設定であり、この通常公開URLやBuildsのbranch preview設定とは異なります。[Cf公式設定](https://developers.cloudflare.com/cf/projects/cloudflare-config/)
 
 ## 起動条件の制約と有効化gate
 
 要望はmainの `workers/tsuitate-bot/**` 更新だけでbuildし、それ以外ではbuild自体を起動しないことです。通常のpushではCloudflareのwatch pathsでこの範囲に絞れます。Cloudflareのワイルドカードは `*` が任意の文字列（階層を含む）に一致する仕様なので、GitHubのglobをそのまま転記せず、includeを `workers/tsuitate-bot/*` の1件にします。パスはリポジトリ基準で、root directoryを指定しても `src/*` に縮めません。excludeは空です。workflow、共通依存、他のWorker、repo rootの文書だけの更新をincludeへ足しません。[watch paths公式仕様](https://developers.cloudflare.com/workers/ci-cd/builds/build-watch-paths/)
 
-ただしCloudflareは **変更0件、変更3000ファイル以上、または20コミット以上のpush** でpath判定を迂回してbuildします。厳密な「対象外では例外なく起動しない」は標準のGit連携だけでは保証できません。build command内の変更判定では、すでに起動したbuildを止めるだけです。この差異を本人が確認し、例外を許容するか別方式を選ぶまで接続を有効化しません。起動範囲を広げる変更や独自のhookをこの準備へ追加していません。
+ただしCloudflareは **変更0件、変更3000ファイル以上、または20コミット以上のpush** でpath判定を迂回してbuildします。厳密な「対象外では例外なく起動しない」は標準のGit連携だけでは保証できません。build command内の変更判定では、すでに起動したbuildを止めるだけです。本人による接続設定後もこの制約は残ります。起動範囲を広げる変更や独自のhookは追加していません。
 
 ## 所有者が確認する設定値
 
@@ -27,9 +31,11 @@ production branchとpreview無効化はCloudflareのBranch controlで設定し�
 
 `build:cf` はpackage内の固定版Cf CLIでbuildし、Node fixtures、test-only workerd、実生成bundleのworkerd検証を順に行います。どの段階でも失敗したら非ゼロで終了し、Cloudflareのdeploy段階へ進ませません。deploy commandは同じ生成物を `--prebuilt` で使い、生成物にmodeを指定していないためdeployにもmodeを加えません。Secretファイルのupload引数、Wranglerへの代替配備、自動再試行は含めません。[Cf build/prebuilt仕様](https://developers.cloudflare.com/cf/projects/)
 
-CfはCIの `CLOUDFLARE_API_TOKEN` と `CLOUDFLARE_ACCOUNT_ID` を使えます。Workers Buildsのcustom deploy commandで上記コマンドを使用する案は、CfとBuildsそれぞれの仕様からの組合せであり、このWorkerのBuilds内での実行・結果検出は未検証です。最初の正規接続で、Worker名一致、アカウント選択、生成物のupload、source tagとActive Deploymentの一致を受入確認してください。[Cf CI仕様](https://developers.cloudflare.com/cf/ci/)
+CfはCIの `CLOUDFLARE_API_TOKEN` と `CLOUDFLARE_ACCOUNT_ID` を使えます。本人の実BuildsではCfのbuild/検証からdeployのstrict比較まで実行できましたが、upload成功とsource tag/Active Deploymentの一致は未確認です。現在の接続を新設し直さず、設定衝突解消後にそれらを受入確認します。[Cf CI仕様](https://developers.cloudflare.com/cf/ci/)
 
-## 正規接続と認証の確認手順（このPRでは実施しない）
+## 正規接続と認証の確認手順（接続初回の参考、この修正では実施しない）
+
+以下は接続準備時の手順です。本人が設定済みの現在の接続を再作成したり、新tokenを追加したりする指示ではありません。`BOT_ID` はplaceholderのまま、実IDは本人回答待ちです。現構成のtext bindingはソース値を配備するため、管理画面へ実IDを先に設定すると次の配備で衝突またはplaceholder上書きの可能性があります。固定版Cfのtext bindingはvalue必須で、管理画面の既存text値だけを保持する設定は未検証です。ID確定後に明示値をソースへ反映する方式を基本とし、管理画面値を保持する方式が必要なら別途仕様と生成物を検証して選びます。推測値で進めません。Secretを取得・表示・設定・送信せず、HMAC必須を維持します。
 
 1. 上記path例外と未検証事項について本人の判断を得ます。以前のMCP書込拒否はHTTP statusとCloudflare数値エラーコードが返らず、拒否元を特定できていません。別の認証を作ることで迂回しません。所有者が承認済みCloudflareアカウントと正規のWorkers Builds配備権限を確認します。
 2. Cloudflare dashboardで対象WorkerとBuilds接続の現状を確認します。2026-10-03の読み取りでは16 Workers中に対象名はありませんでした。新規WorkerのImportでは **Save and Deployが即配備を開始する** ため、設定の閲覧と実行を混同しません。Worker作成・Git連携・初回配備は別途所有者の承認段階です。[接続手順](https://developers.cloudflare.com/workers/ci-cd/builds/)
@@ -46,4 +52,4 @@ CfはCIの `CLOUDFLARE_API_TOKEN` と `CLOUDFLARE_ACCOUNT_ID` を使えます。
 
 build/test失敗は配備へ進まず、deploy失敗は成功扱いにせずbuild/version/Active Deploymentを確認します。deploy途中にリソースが作られた可能性も区別し、自動の再配備・削除・rollbackでSQLiteデータを変更しません。自動配備を止める場合は所有者が対象WorkerのBuilds接続を停止/Disconnectする正規操作を行います。既存VM配信や他Workerを操作しません。
 
-この準備ではCloudflareリソース作成、Builds接続・trigger作成、認証/token/Secrets追加、deploy commandの実行を行っていません。作業バナー・音声もVMアクセスを広げず未実施です。
+この修正ではCloudflareへの手動deploy・設定変更、接続再作成、認証/token/Secrets追加を行っていません。作業バナー・音声もVMアクセスを広げず未実施です。

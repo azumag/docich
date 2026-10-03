@@ -19,6 +19,11 @@ test("Cloudflare config exports SQLite GameState and binds it to this Worker", (
   });
 });
 
+test("version preview URLs stay disabled without overriding the production workers.dev route", () => {
+  assert.equal(cloudflareConfig.worker.previewUrls, false);
+  assert.equal(Object.hasOwn(cloudflareConfig.worker, "workersDev"), false);
+});
+
 test("Cloudflare config declares placeholders and a secret binding without values", () => {
   const { env } = cloudflareConfig.worker;
 

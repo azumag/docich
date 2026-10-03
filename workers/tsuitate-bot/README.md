@@ -1,6 +1,6 @@
 # 衝立将棋 Cloudflare Webhook Bot prototype
 
-Cloudflare側の自動build/配備は [Workers Builds設定案](BUILDS.md) にまとめています。接続は未有効化で、GitHub Actionsの配備workflowは追加していません。対象ディレクトリ限定のwatch pathsにはCloudflare側の例外があるため、有効化前に本人の確認が必要です。
+Cloudflare側の自動build/配備は [Workers Builds設定と配備状況](BUILDS.md) にまとめています。本人がGitHub main連携を設定済みで、2026-10-03の実Buildsではbuildとテストが成功しましたが、deployはstrict設定衝突でupload前に停止しました。GitHub Actionsの配備workflowは追加していません。watch pathsの例外と本番配備成功の確認は別に扱います。
 
 `/webhook` に届くTsuitate Bot向けJSON POSTを検証し、観測できた局面からCSA形式の指し手を返すCloudflare Workersプロトタイプです。既存のオフライン基礎 [`docs/tsuitate-protocol.md`](../../docs/tsuitate-protocol.md) と `src/docich/tsuitate_protocol.py` は変更せず、独立したWorkerとして配置しています。
 
@@ -46,8 +46,9 @@ npm run dev:cf
 ## Cloudflare設定
 
 - `cloudflare.config.ts` をCfの明示的なプロジェクト設定とし、`GameState` のSQLite Durable Object exportと `GAME_STATE` bindingを宣言します。Cf移行時に生成した `wrangler.config.ts` では型生成を無効にしています。旧 `wrangler.toml` はレビュー用に保持しており、Cloudflareリソースへは適用していません。
+- version preview URLは `worker.previewUrls: false` を明示します。固定版Cfの実生成設定にもfalseが残ることを `test:bundle` で検証します。通常の `workers.dev` 公開URLを無効にする設定ではありません。互換日付は検証済みの `2026-09-21` を維持し、管理画面側の一致を確認してからstrict配備を再評価します。[Cf公式設定](https://developers.cloudflare.com/cf/projects/cloudflare-config/)
 - `BOT_ID` は差し替え用placeholder、`WEBHOOK_SECRET` は値を含まないSecret binding宣言です。実値をソース、ログ、Issue、PRへ書かないでください。ローカル値はGit管理外の`.dev.vars`、将来の本番Secretは別途ユーザーが設定します。
-- 実Cloudflareリソースの作成、デプロイ、Secret設定、サイト `https://tsuitateviewer.web.app/` へのBot登録、実対局はまだ行っていません。
+- 本人がWorkerとBuilds連携を作成済みです。BOTコードの配備成功はstrict衝突で未確認です。実 `BOT_ID` は本人回答待ちで、対局用Secret設定、サイト `https://tsuitateviewer.web.app/` へのBot登録、実対局は別段階です。この修正からそれらを実施しません。
 
 この構成ではCloudflareの実アカウントへ接続せず、fixtureとローカルworkerd統合テストを実行できます。この実行環境のローカル `cf build` は、Wrangler 4.119.0が必要な4.136.0未満で、npmレジストリも名前解決できず未検証です。PR #1550のコード・設定commit `fda7ff4` は [Cloudflare Worker CI run 37054256586](https://github.com/azumag/docich/actions/runs/37054256586) で `cf build` と従来のテストが成功しましたが、その時点では生成bundleを実行していませんでした。
 

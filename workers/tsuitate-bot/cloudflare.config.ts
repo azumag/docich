@@ -4,6 +4,7 @@ export default defineConfig({
   worker: {
     name: "docich-tsuitate-bot",
     compatibilityDate: "2026-09-21",
+    previewUrls: false,
     entrypoint: "src/index.js",
     exports: {
       GameState: exports.durableObject({ storage: "sqlite" }),
