@@ -33,7 +33,7 @@ export default defineConfig({
         exportName: "DiscordBot",
       }),
       AI: bindings.ai(),
-      WORKERS_AI_MODEL: bindings.text("@cf/zai-org/glm-4.7-flash"),
+      WORKERS_AI_MODEL: bindings.text("@cf/deepseek-ai/deepseek-v4-flash-0731"),
       DOCICH_PERSONA: bindings.text(persona),
       CF_VERSION_METADATA: bindings.versionMetadata(),
     },

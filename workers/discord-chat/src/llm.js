@@ -22,7 +22,7 @@ export function cleanReply(value) {
 
 export async function generateReply(env, history, event) {
   if (!env.AI || typeof env.AI.run !== "function") throw new Error("workers_ai_unavailable");
-  const model = String(env.WORKERS_AI_MODEL || "@cf/zai-org/glm-4.7-flash");
+  const model = String(env.WORKERS_AI_MODEL || "@cf/deepseek-ai/deepseek-v4-flash-0731");
   const messages = [
     { role: "system", content: String(env.DOCICH_PERSONA) + "\n\n" + DISCORD_CONTEXT },
     ...history,
