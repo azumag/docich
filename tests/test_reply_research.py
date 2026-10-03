@@ -2,6 +2,9 @@
 import hashlib
 import json
 from pathlib import Path
+import shutil
+import socket
+import subprocess
 import sys
 import time
 
@@ -128,6 +131,7 @@ def test_invalid_json(tmp_path, raw):
 def test_sandbox_has_no_host_home_repo_socket_or_credential_argv(tmp_path):
     argv = r.sandbox_argv(tmp_path, "synthetic-model", "/usr/bin/bwrap", "/usr/bin/codex")
     assert "--unshare-all" in argv and "--cap-drop" in argv and "--die-with-parent" in argv
+    assert "--share-net" not in argv
     assert argv[argv.index("--sandbox") + 1] == "read-only"
     assert "--ignore-user-config" in argv and "--ignore-rules" in argv
     assert "--bind" not in argv and "--full-auto" not in argv and "--yolo" not in argv
@@ -135,6 +139,35 @@ def test_sandbox_has_no_host_home_repo_socket_or_credential_argv(tmp_path):
     mounts = [argv[i+1] for i, v in enumerate(argv) if v == "--ro-bind"]
     assert "/home" not in mounts and "/etc" not in mounts and "/var/run" not in mounts
     assert str(tmp_path) in mounts
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="bubblewrap isolation is Linux-only")
+def test_bwrap_cannot_reach_host_loopback(tmp_path):
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        pytest.skip("bubblewrap is not installed")
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        argv = r.sandbox_argv(tmp_path, "synthetic-model", bwrap, "/usr/bin/codex")
+        boundary = argv.index("--")
+        code = (
+            "import socket,sys; "
+            "s=socket.socket(); s.settimeout(0.5); "
+            "target=('127.0.0.1', int(sys.argv[1])); "
+            "\\ntry: s.connect(target)\\n"
+            "except OSError: print('blocked'); raise SystemExit(0)\\n"
+            "print('reachable'); raise SystemExit(7)"
+        )
+        probe = argv[: boundary + 1] + ["/usr/bin/python3", "-c", code, str(port)]
+        completed = subprocess.run(probe, capture_output=True, text=True, timeout=5)
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == "blocked"
+    finally:
+        listener.close()
 
 
 @pytest.mark.parametrize("env", [{}, {"DOCICH_REPLY_RESEARCH_ENABLED": "1"}])
