@@ -402,7 +402,7 @@ def test_public_api_proxy_rejects_loopback_private_link_local_and_ipv6_internal(
         (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1", 443, 0, 0)),
         (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:127.0.0.1", 443, 0, 0)),
     ]
-    monkeypatch.setattr(egress.socket, "getaddrinfo", lambda *a, **kw: candidates)
+    monkeypatch.setattr(egress, "_resolve_api_addresses", lambda: candidates)
     monkeypatch.setattr(egress.socket, "socket", lambda *a, **kw: pytest.fail("private address dialed"))
     assert egress._public_api_socket() is None
 
@@ -410,8 +410,8 @@ def test_public_api_proxy_rejects_loopback_private_link_local_and_ipv6_internal(
 def test_public_api_dial_uses_the_checked_ip_without_second_dns_lookup(monkeypatch):
     public = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
     lookups, dials = [], []
-    monkeypatch.setattr(egress.socket, "getaddrinfo",
-                        lambda host, port, **kw: lookups.append((host, port)) or [public])
+    monkeypatch.setattr(egress, "_resolve_api_addresses",
+                        lambda: lookups.append((egress.ALLOWED_HOST, egress.ALLOWED_PORT)) or [public])
 
     class FakeSocket:
         def __init__(self, family, socktype, proto):
@@ -445,6 +445,47 @@ def test_egress_socket_is_private_unix_only_and_rejects_redirect_authorities():
             finally:
                 client.close()
         assert not path.exists()
+
+
+def test_egress_exit_closes_idle_upstream_after_client_half_close(tmp_path, monkeypatch):
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Unix proxy listener acceptance runs in the Linux isolated test target")
+    upstream_peers = []
+
+    def fake_upstream(state):
+        upstream, peer = socket.socketpair()
+        upstream_peers.append(peer)
+        assert state.add(upstream)
+        return upstream
+
+    monkeypatch.setattr(egress, "_public_api_socket", fake_upstream)
+    path = tmp_path / "idle-egress.sock"
+    proxy = egress.EgressProxy(path)
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(1.0)
+    with proxy:
+        client.connect(str(path))
+        client.sendall(b"CONNECT api.openai.com:443 HTTP/1.1\r\nHost: api.openai.com:443\r\n\r\n")
+        assert b"200 Connection Established" in client.recv(256)
+        client.shutdown(socket.SHUT_WR)
+
+        # The peer gets EOF when the relay propagates the half-close. It remains
+        # idle waiting for a response until proxy context teardown cancels it.
+        peer = upstream_peers[0]
+        peer.settimeout(1.0)
+        assert peer.recv(1) == b""
+        assert proxy.server.active_connections
+
+    try:
+        assert proxy.server.active_connections == frozenset()
+        assert all(not thread.is_alive() for thread in proxy.server._threads)
+        peer.settimeout(1.0)
+        assert peer.recv(1) == b""
+    finally:
+        client.close()
+        for peer in upstream_peers:
+            peer.close()
+    assert not path.exists()
 
 
 def test_bridge_drops_namespace_capabilities_before_launch_and_passes_no_parent_secrets(monkeypatch):
