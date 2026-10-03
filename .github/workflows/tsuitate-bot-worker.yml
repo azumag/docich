@@ -37,3 +37,4 @@ jobs:
           node --version
           npm test
           npm run test:workerd
+          npm run test:bundle

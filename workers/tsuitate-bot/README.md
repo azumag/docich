@@ -20,8 +20,11 @@ Node.js 22.18以降、npm、Cloudflare CLI `cf` 1.0.0-beta.12を用意します�
 
 ```sh
 cd workers/tsuitate-bot
+npm install
+./node_modules/.bin/cf build
 npm test
 npm run test:workerd
+npm run test:bundle
 ```
 
 `test:workerd`は`wrangler.runtime.toml`のtest-only Workerを`wrangler dev --local`で起動し、同じ要求の同時送信、同じrequestIdの別本文競合、storage書込み例外後のSQLite transaction rollback、timeout応答後のlate commit再送を検証します。runtimeが設定compatibility dateに未対応なら、起動エラーに表示された最新対応日へテスト実行中だけ上書きし、その日付を出力します。テスト状態は一時ディレクトリへ保存して終了時に削除し、Cloudflareアカウントやリソースにはアクセスしません。この設定はローカル専用で、deployしないでください。
@@ -44,4 +47,8 @@ npm run dev:cf
 - `BOT_ID` は差し替え用placeholder、`WEBHOOK_SECRET` は値を含まないSecret binding宣言です。実値をソース、ログ、Issue、PRへ書かないでください。ローカル値はGit管理外の`.dev.vars`、将来の本番Secretは別途ユーザーが設定します。
 - 実Cloudflareリソースの作成、デプロイ、Secret設定、サイト `https://tsuitateviewer.web.app/` へのBot登録、実対局はまだ行っていません。
 
-この構成ではCloudflareの実アカウントへ接続せず、fixtureとローカルworkerd統合テストを実行できます。ローカルの `cf build` は、環境のWrangler 4.119.0が必要な4.136.0未満で、npmレジストリも名前解決できず未検証です。一方、PR #1550のコード・設定commit `fda7ff4` は [Cloudflare Worker CI run 37054256586](https://github.com/azumag/docich/actions/runs/37054256586) で依存のインストール、`cf build`、fixture、workerd統合テストが成功しました。このrunのbuildログは `Build complete` を示しますが、生成物はartifactとして保存されていません。`test/cloudflare-config.test.js` は `GameState` のSQLite exportとself `GAME_STATE` bindingの設定形を検証し、Worker entrypointのexportテストも通過していますが、ビルド後bundleそのものは直接確認していません。4つのworkerd統合テストは `wrangler.runtime.toml` のtest-only Worker/configで実行し、Cf buildの生成物は使用しません。CIのbuild成功はCloudflareへのdeployや実アカウント上の動作を示すものではありません。
+この構成ではCloudflareの実アカウントへ接続せず、fixtureとローカルworkerd統合テストを実行できます。この実行環境のローカル `cf build` は、Wrangler 4.119.0が必要な4.136.0未満で、npmレジストリも名前解決できず未検証です。PR #1550のコード・設定commit `fda7ff4` は [Cloudflare Worker CI run 37054256586](https://github.com/azumag/docich/actions/runs/37054256586) で `cf build` と従来のテストが成功しましたが、その時点では生成bundleを実行していませんでした。
+
+`test:bundle` は先に成功した `cf build` の実生成物を必須入力にします。固定版Cf CLIに同梱されたBuild Output readerでmanifestを読み、bundleから `GameState` とfetch handlerをimportし、SQLite exportと `GAME_STATE` のself-binding、値を持たないSecret宣言を検証します。同梱Miniflare/workerdへmanifestのES modules・compatibility date・DO bindingを渡し、生成bundleを変更せずraw-byte HMAC、署名なし・改竄・bodyhash不一致、5分の両側境界、再起動後のreceipt再送、同時要求の競合、差分履歴と反則後の指し手を検証します。テスト用のBot IDと既存fixtureのSecret値だけをローカルbindingへ渡し、外部fetchは拒否します。
+
+SQLite rollbackと2.5秒のRPC timeout後のlate commitは、生成bundleの `GameState` を継承するメモリ上のtest-only wrapperで故障注入します。実際のSQLite書込み拒否後に局面・session・receiptが残らないこと、再送で成功すること、遅延commitのreceiptが再利用されることを検証し、SQLが利用できることも確認します。このwrapperは生成物を書き換えず、配備しません。従来の4つの `test:workerd` は引き続き `wrangler.runtime.toml` のtest-only構成を使い、Cf生成物の検証とは別です。新しいテストではcompatibility dateのoverrideをしません。CfのBuild Output readerはbetaの内部APIなので、CLI固定版を更新する場合はこのテストも再検証してください。オフラインCIの成功はCloudflareへの配備や本人のSecret設定、サイト登録、実対局の完了を示しません。

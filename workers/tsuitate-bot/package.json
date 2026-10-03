@@ -8,6 +8,7 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "test:workerd": "node test/workerd-integration.mjs",
+    "test:bundle": "node test/bundle-integration.mjs",
     "dev:cf": "cf dev --local --persist-to .wrangler/cf-local"
   },
   "devDependencies": {
