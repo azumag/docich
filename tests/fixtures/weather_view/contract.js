@@ -69,6 +69,17 @@ const input=JSON.parse(fs.readFileSync(0,'utf8'));
   seed();const pending=[];fetchImpl=()=>new Promise(resolve=>pending.push(resolve));const older=run('poll()'),newer=run('poll()');pending[1]({ok:true,json:async()=>fixture});await newer;pending[0]({ok:false});await older;assert.equal(run('view!==null'),true);assert.equal(nodes.get('unavailable').hidden,true);
  }else if(scenario==='old_poll'){
   seed();const pending=[];fetchImpl=()=>new Promise(resolve=>pending.push(resolve));const older=run('poll()'),newer=run('poll()');pending[1]({ok:false});await newer;pending[0]({ok:true,json:async()=>fixture});await older;paused();
+ }else if(scenario==='broadcast_auto'){
+  fetchImpl=async()=>({ok:true,json:async()=>fixture});await run('poll()');
+  const id=run('tourTimer');assert(id);assert.equal(timers.get(id).ms,4000);
+  await run('poll()');assert.equal(run('tourTimer'),id); // Normal polling cannot restart the tour.
+  run('national()');await run('poll()');assert.equal(run('tourTimer'),0);
+ }else if(scenario.startsWith('broadcast_')){
+  seed(scenario==='broadcast_overflow'?0:null);run('startBroadcastTour()');
+  const tick=[...timers.values()].find(t=>t.ms===4000);assert(tick);
+  if(scenario==='broadcast_expiry'){now=5100;tick.fn();paused();}
+  else if(scenario==='broadcast_overflow'){tick.fn();paused();}
+  else {assert.equal(run('selected'),null);for(let i=0;i<11;i++){tick.fn();assert.equal(run('selected'),i);assert.equal(nodes.get('city-name').textContent,names[i]);}tick.fn();assert.equal(run('selected'),null);run('national()');assert.equal(run('tourTimer'),0);}
  }else throw Error('unknown scenario');
  console.log(scenario+': passed (mocked layout, no browser)');
 })().catch(error=>{console.error(error);process.exitCode=1;});
