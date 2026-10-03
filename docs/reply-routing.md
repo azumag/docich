@@ -72,7 +72,8 @@ Codexのnetwork namespaceは専用で、外部interfaceやdefault routeを持た
 proxyは`api.openai.com:443`以外を拒否し、DNS回答からglobal IPだけを選んでその解決済みIPへ直接接続する。再解決せず、TLSはCodex側でホスト名を検証する。別hostへのHTTP redirectは次のCONNECTで拒否される。
 DNS lookupは固定hostだけを処理する資格情報なし短命process内で行い、3秒でkill/reapする。各proxy handlerはclient/upstreamの両socketを登録し、終了時に両方をshutdown/closeして非daemon threadをjoinする。CONNECT/接続に5秒、relayの無通信に30秒、half-close後の応答待ちに2秒の上限を置く。
 namespace内loopbackを上げるためだけにCAP_NET_ADMINをbridgeへ一時付与し、bridgeはCodexを起動する前にeffective/permitted/inheritable/ambient capabilityを落とし`no_new_privs`を設定する。bwrapがこの構成を実際に許可しない場合は失敗扱いで、研究を開始しない。
-このegress bridgeとDNS/redirect拒否には合成negative testを追加したが、Linux/bwrap上の実受入は未確認。PRの既存`c9ceb203`で記録されたGitHub Actions Ubuntu 24.04 canaryはchildを起動し、host側の`127.0.0.1` listenerへ接続できないことを確認した。これはその時点のloopback負例だけを証明し、新bridge、RFC1918/link-local/host internal到達不可、Codex API通信を証明しない。
+固定CONNECT・non-global DNS・redirect拒否、idle upstream/half-close後のsocket/thread cleanupに合成negative testを追加した。GitHub Actions Ubuntu 24.04上のbubblewrap probeも実childを起動し、host `127.0.0.1` listenerに接続できないこと、子から見えるinterfaceが`lo`だけであること、CapEff/CapPrm/CapInhが0、`no_new_privs=1`であることを確認する。PR head `512da92f`の必須offline contract jobでこのprobeを含む168 testsが通過した。
+このcanaryはsandboxのhost-loopback遮断とchild capability状態を証明するが、外向きegress proxyの実通信、Web使用時のRFC1918/link-local/host-internal拒否、snapshot外のhost file/socket内容が子から見えないこと、Codex API通信と出典忠実性は証明しない。内部宛て拒否の合成testとsandbox mount/env assertionはあるが、これら全経路のLinux実機negative acceptanceは残る。
 従って `DOCICH_REPLY_RESEARCH_ENABLED` は引き続き本番offとし、配信コメントへのrouting接続もこの受入が終わるまで進めない。現在のDocker設定の権限を緩めない。
 
 コード調査は、運用者が公開可能と承認した**別ディレクトリのsnapshot**を使う。稼働中checkoutを直接渡さず、snapshotだけを`/workspace/source`へread-only mountする。bridgeとegress Unix socketは別々のread-only mountで渡す。
@@ -137,9 +138,10 @@ PYTHONPATH=src python3 -m pytest -q tests/test_reply_routing.py tests/test_reply
 ```
 
 CIと同じsuite `DOCICH_REQUIRE_BWRAP_PROBE=1 PYTHONPATH=src python3 -m pytest -q -rs tests/test_discord_chat.py tests/test_discord_memory.py tests/test_reply_routing.py tests/test_reply_research.py` はmacOSで **164 passed, 4 skipped, 34 subtests passed (1.04s)**。skipはDiscord SDK未導入、Linux/bwrap canary、Linux Unix-socket/egress-close tests。
-変更後の同suiteを既存 `docich-discord-chat:offline-verify-test` image (`sha256:87ebf148fdfbd4281a22dcc075e54e3e091e2a549604e7878bbe22c48171f1db`)内で、合成source/test bundleをstdinから展開して**host mount/secret/socketなし**で実行: `docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m --env DOCICH_ALLOW_REAL_AI=0`。Linux container結果 **167 passed, 1 skipped, 1 warning, 34 subtests passed (1.23s)**。新しいidle-upstream/half-close/proxy-exit regressionを含むUnix socket testが通過。唯一のskipはtest imageにbwrapがないためのLinux/bwrap canary。warningはtest SDKのPython 3.12 `audioop` deprecation。GitHub ActionsのUbuntu+bwrap実probeとDockerfile full verify/Compose testとは区別する。
+変更後の同suiteを既存 `docich-discord-chat:offline-verify-test` image (`sha256:87ebf148fdfbd4281a22dcc075e54e3e091e2a549604e7878bbe22c48171f1db`)内で、合成source/test bundleをstdinから展開して**host mount/secret/socketなし**で実行: `docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m --env DOCICH_ALLOW_REAL_AI=0`。Linux container結果 **167 passed, 1 skipped, 1 warning, 34 subtests passed (1.23s)**。新しいidle-upstream/half-close/proxy-exit regressionを含むUnix socket testが通過。唯一のskipはtest imageにbwrapがないためのLinux/bwrap canary。warningはtest SDKのPython 3.12 `audioop` deprecation。これはGitHub ActionsのUbuntu+bwrap probeとは別。
+GitHub Actionsのexact code head `512da92f`では `offline-contracts` **168 passed, 1 warning, 34 subtests passed (2.45s)**、Ubuntu 24.04 bubblewrap child probeを含み、`docker-contracts`、`python-syntax`、`soren-gitlink-gate`、`comment-regressions`も全てpass。warningはtest SDKのPython 3.12 `audioop` deprecation。Dockerfile full verify/Compose testは未実施。
 固定CONNECT authority、nonpublic IPv4/IPv6/metadata拒否、DNS解決後の同IP直結、Linux Unix socket mode、redirect host拒否、secret環境非継承、子起動前capability drop、idle upstream half-close時のsocket/thread cleanupをmock/合成negative testで固定する。bwrap実機 canaryは名前空間内loopback起動、host loopback拒否、interface分離、子のcapability/no_new_privsを検査し、GitHub Actionsでは必須child probeにする。
-Mockの成功をJEVの意味精度、Codex実機、network隔離、API課金、本番反映の成功と混同しない。JEVの実ラベル/latencyとLinux/bwrap実機受入は未実施。GitHub ActionsのこのHEAD上の結果はpush後に記録する。
+Mockの成功をJEVの意味精度、Codex/API実通信、Web egress全域の隔離、本番反映の成功と混同しない。JEVの実ラベル/confidence/latency、Codex API通信、内部endpoint拒否の全経路受入、本番反映は未実施。
 primary checkoutの `handoff.md` relevant sectionsを読了した。運用状態は変更していない。
 
 次の工程:
