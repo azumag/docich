@@ -25,6 +25,10 @@ assert.deepEqual(config.exports.GameState, { type: "durable-object", storage: "s
 assert.deepEqual(config.env.GAME_STATE, {
   type: "durable-object", worker: config.name, exportName: "GameState",
 });
+assert.deepEqual(config.unsafe.metadata.durable_objects, {
+  bindings: [{ name: "GAME_STATE", class_name: "GameState" }],
+});
+assert.equal(Object.hasOwn(config.unsafe.metadata.durable_objects.bindings[0], "script_name"), false);
 assert.equal(config.env.WEBHOOK_SECRET.type, "secret");
 assert.equal(Object.hasOwn(config.env.WEBHOOK_SECRET, "value"), false);
 assert.ok(bundleDir);

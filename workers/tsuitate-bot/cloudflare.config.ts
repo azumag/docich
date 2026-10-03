@@ -18,6 +18,13 @@ export default defineConfig({
     exports: {
       GameState: exports.durableObject({ storage: "sqlite" }),
     },
+    unsafe: {
+      metadata: {
+        durable_objects: {
+          bindings: [{ name: "GAME_STATE", class_name: "GameState" }],
+        },
+      },
+    },
     env: {
       BOT_ID: bindings.text("DoCiAI"),
       GAME_STATE: bindings.durableObject({
