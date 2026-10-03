@@ -3,8 +3,8 @@
 Scheduling and shared program-slot arbitration stay in corner_rotation and
 corner_adapters. GameSwitch owns boundary waits, runtime teardown, rollback,
 and restoration; this module persists the weather corner's request and full
-runtime identity, plus an opt-in shared-audio item plan. It never fetches a
-forecast or generates speech.
+runtime identity, plus an opt-in shared-audio item plan. An opt-in publisher
+refreshes the forecast before a new execution; this module never generates speech.
 """
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ class WeatherCornerManager:
     """Run one weather display under an existing GameSwitch/program slot."""
 
     def __init__(self, g, *, duration_minutes=None, coordinator=None,
-                 audio_enabled=False, audio_port=None,
+                 audio_enabled=False, audio_port=None, forecast_refresh=None,
                  clock=time.time, sleep=time.sleep, poll_s=1.0):
         if duration_minutes is not None and (
                 type(duration_minutes) is not int or not 1 <= duration_minutes <= 14):
@@ -91,6 +91,7 @@ class WeatherCornerManager:
         self.duration_minutes = duration_minutes
         self.audio_enabled = audio_enabled
         self.audio_port = audio_port
+        self.forecast_refresh = forecast_refresh
         self.clock, self.sleep, self.poll_s = clock, sleep, float(poll_s)
         self.path = Path(g.state_dir) / STATE_FILENAME
         self.state_path = self.path
@@ -119,6 +120,9 @@ class WeatherCornerManager:
     def eligible(self):
         if self.duration_minutes is None:
             return False
+        if self.forecast_refresh is not None:
+            # Fetch only once selected, never during eligibility/status polling.
+            return True
         try:
             read_view(self.snapshot_path)
         except (OSError, WeatherError):
@@ -738,6 +742,17 @@ class WeatherCornerManager:
         else:
             if state.get("status") not in {"idle", "completed", "interrupted"}:
                 raise WeatherCornerError("another weather execution owns the state")
+            if self.forecast_refresh is not None and not self._stop_requested():
+                try:
+                    self.forecast_refresh(self.snapshot_path.parent)
+                except (OSError, WeatherError):
+                    # No switch/queue was requested. Complete this reservation
+                    # without retrying stale data or blocking the other corners.
+                    self._save({"schema_version": 1, "game": WEATHER_VIEW_NAME,
+                                "status": "interrupted", "rotation_request_id": request_id,
+                                "completed_at": self.clock(),
+                                "end_reason": "forecast-fetch-failed-before-start"})
+                    return "completed"
             state = self._new_state({"request_id": request_id})
             if state is None:
                 return "queued"

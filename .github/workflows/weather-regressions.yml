@@ -3,6 +3,7 @@ name: Weather relay CI
 on:
   pull_request:
     paths:
+      - 'config/docich.soren-live.toml'
       - 'src/docich/weather.py'
       - 'src/docich/weather_view.py'
       - 'src/docich/weather_corner.py'
@@ -31,6 +32,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'config/docich.soren-live.toml'
       - 'src/docich/weather.py'
       - 'src/docich/weather_view.py'
       - 'src/docich/weather_corner.py'

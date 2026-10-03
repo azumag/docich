@@ -259,6 +259,9 @@ def test_readonly_server_and_literal_narration(tmp_path):
         assert "connect-src 'self'" in headers["Content-Security-Policy"]
         code,headers,raw=request(port,"/")
         assert code==200 and "気象庁" in raw.decode()
+        assert "const BROADCAST=false;" in raw.decode()
+        code,_,raw=request(port,"/broadcast")
+        assert code==200 and "const BROADCAST=true;" in raw.decode()
 
 
 def test_readonly_server_reports_the_game_switch_generation(tmp_path):
@@ -376,7 +379,7 @@ def test_weather_html_has_unique_ids_and_no_external_runtime_assets():
     "choose", "next", "previous", "region", "marker", "tour_start", "tour_tick",
     "national", "width_overflow", "resize", "expired_choose", "expired_next",
     "expired_national", "expired_tour", "expired_tour_stop", "all_locations", "lease_expiry",
-    "server_failure", "incomplete", "old_poll", "old_failure", "manual_stop",
+    "server_failure", "incomplete", "old_poll", "old_failure", "manual_stop", "broadcast_cycle", "broadcast_overflow", "broadcast_expiry", "broadcast_auto",
 ])
 def test_weather_ui_control_flow_without_browser(scenario):
     # No renderer: mocked layout forces overflow so each interaction must fail closed.
@@ -384,6 +387,8 @@ def test_weather_ui_control_flow_without_browser(scenario):
     if node is None:
         pytest.skip("Node.js unavailable for DOM-free UI control-flow tests")
     script = v.HTML.split("<script>", 1)[1].split("</script>", 1)[0]
+    if scenario == "broadcast_auto":
+        script = script.replace("const BROADCAST=false;", "const BROADCAST=true;")
     runner = Path(__file__).parent / "fixtures/weather_view/contract.js"
     result = subprocess.run(
         [node, str(runner)], input=json.dumps({"script": script, "scenario": scenario}),
@@ -400,3 +405,24 @@ def test_serve_has_fixed_loopback_and_validated_port(tmp_path,value):
 @pytest.mark.parametrize("value",["", "<script>", "../../secret", "x"*129])
 def test_runtime_id_validation(tmp_path,value):
     with pytest.raises(w.WeatherError):v.handler_for(tmp_path/"snapshot.json",value)
+
+
+def test_refresh_snapshot_rejects_bundle_before_publication(tmp_path, monkeypatch):
+    path = tmp_path / "snapshot.json"
+    w.write_json(path, bundle())
+    monkeypatch.setattr(v, "build_bundle", lambda *_args, **_kw: bundle())
+    monkeypatch.setattr(v.time, "time", lambda: NOW + w.CACHE_TTL)
+    with pytest.raises(w.WeatherError):
+        v.refresh_snapshot(tmp_path)
+    assert not path.exists()
+
+
+def test_refresh_snapshot_shares_nonblocking_lock(tmp_path):
+    import fcntl
+    path = tmp_path / "snapshot.json"
+    w.write_json(path, bundle())
+    with (tmp_path / ".fetch.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(BlockingIOError):
+            v.refresh_snapshot(tmp_path)
+    assert path.exists()  # Concurrent caller cannot invalidate the owner's data.

@@ -144,8 +144,10 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
 6. snapshotの有効性は適格性判定、GameSwitch preflight/readiness、放送中の表示再検証で
    確認する。取得失敗は休止とし、鮮度期限が来たらGameSwitchで復帰する。
    合成adapterによる境界待ち、開始rollback、終了後復帰、operator移動のfenceをオフラインで検証した。
-7. production有効化の前に独立レビュー、CI、全11地点の現行データ確認、非本番の
-   開始/終了実測を完了する。未実施の項目を成功扱いしない。
+7. 通常はproduction有効化前に独立レビュー、CI、現行データ・画面、非本番の開始/終了を確認する。
+   2026-10-03のowner指示「確認無しで本番に乗せてください。本番で確認します」により、
+   今回は事前の実画面・実lifecycle確認を省略し、PRレビューとCI後に正規配布する。
+   未実施の確認を成功扱いしない。
 
 ## 検証記録
 
@@ -155,3 +157,33 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
 - Python compileと`git diff --check`は成功。
 - 現行JMA全国11地点一括取得、実VM、実OBS、実音声、実GameSwitch復帰は未実測。
 - owner checkout固有のgitignored `handoff.md`、運用メモリ、VM作業中バナー・音声はこの実行環境では利用できず、確認・操作していない。
+
+
+## Production rotation登録（2026-10-03）
+
+`config/docich.soren-live.toml`の既存queue rotationへweatherを追加する。
+`duration_minutes=1`, `fetch_on_start=true`, `audio_enabled=false`。
+他cornerと同じrolling 24時間cooldown、共通program slot、GameSwitchのラウンド境界待ち・復帰を使う。
+独立timer、他ゲームの強制終了、配信基盤の再起動は追加しない。
+
+`fetch_on_start`はweather専用boolean、省略時false。trueならsnapshotなしでも選択候補となるが、
+適格性・status照会では通信しない。選択された新executionの実行時だけ、GameSwitch要求前に
+CLIと同じsingle-flight publisherを呼ぶ。固定JMA host/11 office、既存15分cache、最大45秒取得budgetを使い、
+取得中は旧ゲームを維持する。全11都市を鮮度検証してからatomic publicationする。
+取得・lock失敗は`interrupted / forecast-fetch-failed-before-start`としてreservationを完了し、
+ゲーム切替や音声送信をせず他cornerへ進む。同requestのterminal replay、starting/active/restoring再開では再取得しない。
+ゲームの境界待ち中にsnapshotが失効した場合は既存preflight/readinessが拒否し、既存rollback/reconcile経路で処理する。
+取得成功は実際の開始成功を保証しない。
+
+owned viewerは`/broadcast`を開き、初回の有効poll後、全国4秒→11地点各4秒→全国の48秒周期を自動開始する。
+1分は既存catalogで選べる最短枠で、この視覚巡回一巡に足りる。手動選択・全国戻り・停止、表示失効やoverflowで巡回を停止する。
+通常の`/`は手動7秒巡回を維持する。再pollは実行中の巡回をリセットしない。
+実ブラウザ描画・long text fit・配信frame・開始/終了/ゲーム復帰は未実測。
+
+音声は今回有効化しない。現行11都市取得の13項目原稿は625文字（最長73文字）。
+仮に6文字/秒でも読み上げだけで約104秒となり、TTS/queue待ちを含む所要は未実測なので1分で完了を保証できない。
+これは時間の推定で、音声再生証拠ではない。shared consumerには正確な開始cueがなく、画面は引き続き
+「音声cue未接続」と表示する。音声を有効にする場合は所要枠とcue契約を別途検証する。
+
+出典・編集表記は[気象庁利用規約](https://www.jma.go.jp/jma/kishou/info/coment.html)に従う既存表記を維持。
+地図は[Natural Earth Public Domain](https://www.naturalearthdata.com/about/terms-of-use/)の既存同梱データを維持する。

@@ -65,6 +65,7 @@ const EXPECTED=['札幌','仙台','東京','新潟','名古屋','大阪','広島
 const PLACES=[['sapporo','札幌','北海道',0],['sendai','仙台','東北',1],['tokyo','東京','関東',2],['niigata','新潟','北陸',3],['nagoya','名古屋','東海',4],['osaka','大阪','近畿',5],['hiroshima','広島','中国',6],['takamatsu','高松','四国',7],['fukuoka','福岡','九州',8],['kagoshima','鹿児島','九州',9],['naha','那覇','沖縄',10]];
 const REGIONS=[['北海道',0],['東北',1],['関東',2],['北陸',3],['東海',4],['近畿',5],['中国',6],['四国',7],['九州',8],['沖縄',10]];
 const map=document.getElementById('map'), unavailable=document.getElementById('unavailable');
+const BROADCAST=false;
 let until=0,view=null,selected=null,pollVersion=0,tourTimer=0,tourIndex=0,focusScale=2.3;
 function fit(){const el=document.getElementById('stage');if(matchMedia('(max-aspect-ratio:5/4)').matches){el.style.position='relative';el.style.transform='none';el.style.left='auto';el.style.top='auto';return;}const s=Math.min(innerWidth/960,innerHeight/540);el.style.position='absolute';el.style.transform=`scale(${s})`;el.style.left=`${(innerWidth-960*s)/2}px`;el.style.top=`${(innerHeight-540*s)/2}px`;}
 addEventListener('resize',()=>{fit();if(view)render();});fit();
@@ -104,9 +105,10 @@ function renderFocus(){const c=cityFor(selected);if(!c){document.getElementById(
 function national(){if(!view)return;clearTour();selected=null;render();}
 function advance(delta){if(!view)return;const index=selected===null?(delta>0?0:view.cities.length-1):(selected+delta+view.cities.length)%view.cities.length;choose(index,2.3);}
 function toggleTour(){if(!view)return;if(performance.now()>=until){hide();return;}if(tourTimer){clearTour();return;}tourIndex=selected===null?0:(selected+1)%view.cities.length;choose(tourIndex,2.3);if(!view)return;document.getElementById('tour').setAttribute('aria-pressed','true');document.getElementById('tour').textContent='順送り停止';document.getElementById('tour-state').textContent='7秒ごとに地点移動';tourTimer=setInterval(()=>{if(!view||performance.now()>=until){hide();return;}tourIndex=(tourIndex+1)%view.cities.length;selected=tourIndex;render();},7000);}
+function startBroadcastTour(){clearTour();let step=0;document.getElementById('tour').setAttribute('aria-pressed','true');document.getElementById('tour').textContent='順送り停止';document.getElementById('tour-state').textContent='4秒ごとに地点移動';tourTimer=setInterval(()=>{if(!view||performance.now()>=until){hide();return;}selected=step<view.cities.length?step:null;step=(step+1)%(view.cities.length+1);focusScale=2.3;render();},4000);}
 function render(){if(!view||performance.now()>=until){hide();return;}document.getElementById('date').textContent=view.date.replaceAll('-',' / ');setStatus('気象庁の発表を表示中');unavailable.hidden=true;renderFocus();renderCities();renderRegions();updateMap();const w=document.getElementById('weather-text');if(w.scrollHeight>w.clientHeight+1||w.scrollWidth>w.clientWidth+1)hide('予報文が画面内に収まらないため休止中');}
 function hideUntilReady(){hide('気象庁の予報を確認しています');}
-async function poll(){const version=++pollVersion,requested=performance.now();try{const response=await fetch('/api/weather',{cache:'no-store',signal:AbortSignal.timeout(2000)});if(!response.ok)throw Error('unavailable');const data=await response.json();if(version!==pollVersion)return;if(!validForecast(data))throw Error('invalid');const remaining=(data.expires_at-data.server_now)*1000-(performance.now()-requested);if(!Number.isFinite(remaining)||remaining<=0)throw Error('expired');view=data;until=performance.now()+Math.min(remaining,5000);render();}catch(_){if(version===pollVersion)hide();}}
+async function poll(){const version=++pollVersion,requested=performance.now();try{const response=await fetch('/api/weather',{cache:'no-store',signal:AbortSignal.timeout(2000)});if(!response.ok)throw Error('unavailable');const data=await response.json();if(version!==pollVersion)return;if(!validForecast(data))throw Error('invalid');const remaining=(data.expires_at-data.server_now)*1000-(performance.now()-requested);if(!Number.isFinite(remaining)||remaining<=0)throw Error('expired');const first=!view;view=data;until=performance.now()+Math.min(remaining,5000);render();if(first&&view&&BROADCAST)startBroadcastTour();}catch(_){if(version===pollVersion)hide();}}
 for(const [id,fn] of [['national',national],['previous',()=>advance(-1)],['next',()=>advance(1)],['tour',toggleTour]])document.getElementById(id).addEventListener('click',fn);
 setInterval(()=>{if(until&&performance.now()>=until)hide();},100);
 addEventListener('pageshow',()=>{hideUntilReady();poll();});addEventListener('visibilitychange',()=>{hideUntilReady();if(!document.hidden)poll();});setInterval(poll,2000);hideUntilReady();poll();
@@ -159,8 +161,9 @@ def handler_for(path: Path, runtime_id: str = "preview", *, generation=None,
             if self.headers.get("Host") not in {f"127.0.0.1:{port}", f"localhost:{port}"}:
                 self.reply(403, b"forbidden", "text/plain; charset=utf-8")
                 return
-            if self.path == "/":
-                self.reply(200, HTML.encode("utf-8"), "text/html; charset=utf-8")
+            if self.path in {"/", "/broadcast"}:
+                html = HTML.replace("const BROADCAST=false;", "const BROADCAST=true;") if self.path == "/broadcast" else HTML
+                self.reply(200, html.encode("utf-8"), "text/html; charset=utf-8")
                 return
             if self.path != "/api/weather":
                 self.reply(404, b"not found", "text/plain; charset=utf-8")
@@ -190,6 +193,20 @@ def serve(path: Path, *, port=DEFAULT_PORT, runtime_id="preview", generation=Non
         server.serve_forever(poll_interval=0.2)
 
 
+def refresh_snapshot(state_dir: Path, *, day="auto") -> dict:
+    """Publish only a fully validated bundle; share the CLI's single-flight lock."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = state_dir / "snapshot.json"
+    with (state_dir / ".fetch.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        path.unlink(missing_ok=True)
+        bundle = build_bundle(state_dir / "cache", day=day)
+        # Validate before publication, including elapsed network time.
+        project(bundle, now=time.time())
+        write_json(path, bundle)
+        return read_view(path)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="気象庁全国予報の取得・原稿・読み取り専用画面")
     parser.add_argument("--state-dir", type=Path, required=True, help="専用weather artifact/cacheディレクトリ")
@@ -207,15 +224,7 @@ def main(argv=None) -> int:
     path = args.state_dir / "snapshot.json"
     try:
         if args.command == "fetch":
-            # Invalidate publication first. A failed refresh must not replay the
-            # previous successful snapshot, including a still-fresh one.
-            args.state_dir.mkdir(parents=True, exist_ok=True)
-            with (args.state_dir / ".fetch.lock").open("a") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                path.unlink(missing_ok=True)
-                bundle = build_bundle(args.state_dir / "cache", day=args.day)
-                write_json(path, bundle)
-                data = read_view(path)
+            data = refresh_snapshot(args.state_dir, day=args.day)
             print(json.dumps({"ok": True, "date": data["date"], "cities": len(data["cities"]), "expires_at": data["expires_at"]}))
         elif args.command == "serve":
             serve(path, port=args.port, runtime_id=args.runtime_id,
