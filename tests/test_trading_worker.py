@@ -180,7 +180,7 @@ class TestPaperWorkerCycle(unittest.TestCase):
             g = _global(Path(tmp))
             gateway = FakeStrategyGateway()
             run_worker_cycle(g, gateway=gateway, cycle_index=1, now=NOW, observation_now_fn=lambda: NOW)
-            self.assertEqual(gateway.last_frame_args, ("5m", 24, NOW))
+            self.assertEqual(gateway.last_frame_args, ("5m", 25, NOW))
             cache = json.loads((g.state_dir / "trading" / "market_cache.json").read_text(encoding="utf-8"))
             history = cache["symbols"]["BTC/JPY"]["history"]
             self.assertEqual(len(history), 24)

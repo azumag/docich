@@ -19,6 +19,7 @@ from typing import Mapping, Sequence
 
 from .market_data import MarketFrame
 from .models import Opportunity, TradingValidationError, as_decimal
+from .paper import paper_execution_price
 
 D = Decimal
 EXPERIMENT_FILENAME = "paper_strategy_experiment.json"
@@ -38,7 +39,10 @@ _EVALUATION_HISTORY_KEYS = (
     "profit_factor",
     "max_realized_drawdown_pct",
     "ignored_unpaired_exits",
-    "promotion_ready",
+    "promotion_ready", "status", "reason_code", "evaluated_at",
+    "accounting_scope", "attribution_method", "inventory_complete", "open_position_count",
+    "self_entry_realized_pnl_jpy", "carry_in_realized_pnl_jpy",
+    "self_entry_closed_sells", "carry_in_closed_sells", "mixed_origin_closed_sells",
 )
 
 ENTRY_FEATURES = {
@@ -385,7 +389,11 @@ def _condition_met(value: Decimal, cond: Condition) -> bool:
 
 def _condition_context(cond: Condition, observed: Decimal) -> dict[str, object]:
     unit = "value"
-    if cond.feature.endswith("_bps") or cond.feature == "pnl_bps":
+    if cond.feature == "pnl_bps":
+        # Distinguish new fee-inclusive exit estimates from persisted historical
+        # signals, whose pnl_bps used the gross market price.
+        unit = "net_pnl_bps"
+    elif cond.feature.endswith("_bps"):
         unit = "bps"
     elif cond.feature == "rsi":
         unit = "rsi"
@@ -429,17 +437,27 @@ def _evaluate_rule(
 def _score_context(contexts: Sequence[Mapping[str, object]]) -> Decimal:
     if not contexts:
         return D("0.5")
-    margins: list[float] = []
+    margins: list[Decimal] = []
     for item in contexts:
         try:
-            obs = float(item["observed"])
-            threshold = float(item["threshold"])
-            denom = max(abs(threshold), 1.0)
-            margins.append(abs(obs - threshold) / denom)
+            obs = as_decimal(item["observed"], "observed")
+            threshold = as_decimal(item["threshold"], "threshold")
+            op = item["op"]
+            if op in {">=", ">"}:
+                margin = obs - threshold
+            elif op in {"<=", "<"}:
+                margin = threshold - obs
+            else:
+                continue
+            # An OR rule can retain unmatched conditions in its evidence.
+            # Their distance from a threshold must never increase its score.
+            if margin < 0 or (margin == 0 and op in {">", "<"}):
+                continue
+            denom = max(abs(threshold), D("1"))
+            margins.append(margin / denom)
         except (KeyError, TypeError, ValueError):
             pass
-    value = 0.5 if not margins else min(1.0, 0.5 + max(margins) / 2.0)
-    return D(str(value))
+    return D("0.5") if not margins else min(D("1"), D("0.5") + max(margins) / D("2"))
 
 
 def scan_experiment_entries(frames: Mapping[str, MarketFrame], spec: StrategyExperiment, *, now: float) -> ScanResult:
@@ -491,7 +509,10 @@ def scan_experiment_exits(
         average = as_decimal(entry[1], "average_price")
         if average <= 0:
             continue
-        pnl_bps = (frame.last_price / average - D("1")) * D("10000")
+        # Cost basis already includes the buy fee/slippage; include the sell
+        # leg here so a small apparent gain cannot become a loss on execution.
+        exit_price = paper_execution_price(frame.last_price, "sell")
+        pnl_bps = (exit_price / average - D("1")) * D("10000")
         hold_minutes = D(str(max(0.0, float(now) - float(entry[2])) / 60.0))
         for rule in spec.exit_rules:
             matched, conditions = _evaluate_rule(
@@ -567,7 +588,8 @@ def built_in_reason_context(
         if not isinstance(entry, (tuple, list)) or len(entry) < 3:
             return None
         average = as_decimal(entry[1], "average_price")
-        pnl_bps = (frame.last_price / average - D("1")) * D("10000")
+        exit_price = paper_execution_price(frame.last_price, "sell")
+        pnl_bps = (exit_price / average - D("1")) * D("10000")
         hold_minutes = D(str(max(0.0, float(now) - float(entry[2])) / 60.0))
         if code == "take_profit":
             cond = Condition("pnl_bps", ">=", take_profit * D("10000"))
@@ -617,54 +639,13 @@ def _ledger_rows(db_path: Path, *, since: float) -> list[tuple[str, str, str, De
     return result
 
 
-def evaluate_experiment(trading_dir, spec: StrategyExperiment, *, capital_jpy: object) -> dict[str, object]:
-    rows = _ledger_rows(Path(trading_dir) / "paper.sqlite3", since=spec.activated_at)
-    lots: dict[str, list[Decimal]] = {}
-    realized: list[Decimal] = []
-    cumulative = D("0")
-    peak = D("0")
-    max_drawdown = D("0")
-    for symbol, side, _strategy_id, amount, price, _filled_at in rows:
-        held, cost = lots.setdefault(symbol, [D("0"), D("0")])
-        if side == "buy":
-            lots[symbol][0] = held + amount
-            lots[symbol][1] = cost + amount * price
-            continue
-        if side != "sell" or held <= 0:
-            continue
-        sold = min(amount, held)
-        average = cost / held
-        pnl = sold * (price - average)
-        realized.append(pnl)
-        cumulative += pnl
-        peak = max(peak, cumulative)
-        max_drawdown = max(max_drawdown, peak - cumulative)
-        lots[symbol][0] = held - sold
-        lots[symbol][1] = max(D("0"), cost - average * sold)
-    gains = sum((x for x in realized if x > 0), D("0"))
-    losses = -sum((x for x in realized if x < 0), D("0"))
-    pf = None if losses == 0 else gains / losses
-    capital = as_decimal(capital_jpy, "capital_jpy")
-    dd_pct = D("0") if capital <= 0 else max_drawdown / capital * D("100")
-    wins = sum(1 for x in realized if x > 0)
-    count = len(realized)
-    return {
-        "schema_version": 1,
-        "experiment_id": spec.experiment_id,
-        "activated_at": spec.activated_at,
-        "closed_sells": count,
-        "wins": wins,
-        "win_rate": None if count == 0 else str(D(wins) / D(count)),
-        "realized_pnl_jpy": str(cumulative),
-        "profit_factor": None if pf is None else str(pf),
-        "max_realized_drawdown_pct": str(dd_pct),
-        "promotion_ready": bool(
-            count >= 20 and cumulative > 0 and pf is not None and pf >= D("1.20") and dd_pct <= D("10")
-        ),
-    }
+def evaluate_experiment(trading_dir, spec: StrategyExperiment, *, capital_jpy: object, now=None) -> dict[str, object]:
+    """Compatibility entrypoint for the canonical, provenance-aware evaluator."""
+    from .strategy_metrics import evaluate_strategy_experiment
+    return evaluate_strategy_experiment(trading_dir, spec, capital_jpy=capital_jpy, now=now)
 
 
-def _record_evaluation_history(trading_dir: Path, evaluation: Mapping[str, object]) -> None:
+def _record_evaluation_history(trading_dir: Path, evaluation: Mapping[str, object], spec: StrategyExperiment) -> None:
     """Upsert one bounded row per experiment so improvement can compare them.
 
     Best effort: the current-evaluation file is the primary record and a
@@ -677,10 +658,15 @@ def _record_evaluation_history(trading_dir: Path, evaluation: Mapping[str, objec
     for key in _EVALUATION_HISTORY_KEYS:
         if key in evaluation:
             entry[key] = evaluation[key]
+    # Keep the executable conditions next to their result. A version name and
+    # a P/L number alone cannot tell the next researcher which rule failed.
+    entry["experiment"] = experiment_to_payload(spec)
+    identity = (experiment_id, evaluation.get("activated_at", spec.activated_at))
     entries = [
         item for item in load_evaluation_history(trading_dir, limit=EVALUATION_HISTORY_MAX)
-        if item.get("experiment_id") != experiment_id
+        if (item.get("experiment_id"), item.get("activated_at", 0.0)) != identity
     ]
+    entry.setdefault("activated_at", spec.activated_at)
     entries.append(entry)
     try:
         _atomic_json(
@@ -713,7 +699,7 @@ def load_evaluation_history(trading_dir, *, limit: int = 6) -> list[dict[str, ob
 def persist_evaluation(trading_dir, evaluation: Mapping[str, object], spec: StrategyExperiment) -> None:
     target = Path(trading_dir)
     _atomic_json(target / EVALUATION_FILENAME, evaluation)
-    _record_evaluation_history(target, evaluation)
+    _record_evaluation_history(target, evaluation, spec)
     if evaluation.get("promotion_ready") is True:
         _atomic_json(
             target / PROMOTION_FILENAME,
