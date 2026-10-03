@@ -119,7 +119,14 @@ class HanjukuStartQueryWorkflowTests(unittest.TestCase):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("github.event.issue.number == 1657", text)
         self.assertIn("github.event.comment.body == '/hanjuku-start production'", text)
-        self.assertIn("group: retro-corner-operator-${{ github.repository }}", text)
+        workflow_preamble, jobs = text.split("\\njobs:\\n", 1)
+        self.assertNotIn("\\nconcurrency:\\n", workflow_preamble)
+        self.assertIn(
+            "\\n    concurrency:\\n"
+            "      group: retro-corner-operator-${{ github.repository }}\\n"
+            "      cancel-in-progress: false\\n",
+            jobs,
+        )
         self.assertIn("Require the event to remain current main", text)
         self.assertIn("Require production to equal event SHA", text)
         self.assertIn("< control/ops/vm_actions/start_hanjuku_corner.sh", text)
