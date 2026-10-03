@@ -56,17 +56,25 @@ APIの整形が出典を省いてもコード側で最大2件を付記し、Disc
 ## 調査の隔離と資料
 
 最初の実装はLinuxのbubblewrapとCodex CLI。OpenCodeアダプターは未実装。
-`--unshare-all`（API通信用networkのみ共有）で別のfilesystem/PID等のnamespaceを作り、OSの実行ファイル/ライブラリ、証明書/DNS設定と一時workspaceだけを渡す。
-ホストHOME、checkout、`.git`、Discord SQLite、VMログ、Docker socketはマウントしない。
+独立レビューで `--unshare-all --share-net` がホストnetwork namespaceを再共有していることを検出したため、`--share-net` は削除した。
+現在は `--unshare-all` でnetworkを含むnamespaceを分離し、OSの実行ファイル/ライブラリ、証明書/DNS設定と一時workspaceだけを渡す。
+ホストHOME、checkout、`.git`、Discord SQLite、VMログ、Docker socket、ホストnetwork namespaceは渡さない。
 Codexは `--sandbox read-only --ephemeral --ignore-user-config --ignore-rules`、自動承認なし、subagentなし。
 Codexのshell環境継承はnone。プロセス環境はPATH、LANG、**調査専用のCODEX_API_KEY**だけで、Discord/Twitch/他用途キーやproxyを引き継がない。
 キーと本文はargvへ入れない。本文は匿名一時ファイル経由のstdin、stdoutは上限256KiB、stderrは破棄、終了/失敗/timeout時にプロセス群をkillしてreapする。
 調査子プロセスは最大45秒。全体に元のAPI通信が続くため、45秒を返信全体の保証とはしない。
 
 **隔離を満たせない環境で裸のCodexへfallbackしない。** bubblewrap/Codex/認証/承認済み資料がなければ調査不可。
-モデルのプロンプトだけをread-onlyの保証とはしない。network共有はAPI接続のためであり、外向き通信のallowlistを実装したものではない。
-運用環境でCodexのread-only subprocess network制限と、ホストloopback/内部サービスへ到達・操作できないことを確認するまで有効化しない。
-より強いネットワーク分離・専用worker化は本番受入の設計課題として残す。現在のDocker設定の権限を緩めない。
+モデルのプロンプトだけをread-onlyの保証とはしない。
+
+network namespaceを分離した現在の形には安全な外向きegressがないため、CodexのAPI通信が成功するとは扱わない。
+公開Web/モデルAPIへだけ到達し、loopback・RFC1918・link-local・ホスト内部サービスを拒否するegress設計は未実装である。
+したがって `DOCICH_REPLY_RESEARCH_ENABLED` は引き続き本番offとし、配信コメントへのrouting接続もこの受入が終わるまで進めない。
+
+GitHub Actions Ubuntu 24.04 + bubblewrap 0.9.0でnegative canaryを実行したところ、
+child commandの起動前に `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で停止した。
+これはホストnetworkへfallbackせずfail-closedしていることは確認できるが、**利用可能な隔離環境でchildが起動し、loopback非到達のままCodex APIへ必要なegressだけ通ることの証明ではない**。
+本番受入では対応するhost policyまたは専用worker/egress brokerを用意し、同じcanaryを再実行する。現在のDocker設定の権限を緩めない。
 
 コード調査は、運用者が公開可能と承認した**別ディレクトリのsnapshot**を使う。稼働中checkoutを直接渡さない。
 `manifest.json`は以下の形式で、`files`に列挙したファイルだけをSHA-256照合して一時workspaceへコピーする。
@@ -119,13 +127,16 @@ PYTHONPATH=src python3 -m pytest -q tests/test_reply_routing.py tests/test_reply
 source subsetで新規86件成功。既存 `discord_chat.py` / `discord_memory.py` / routesはGit blob SHAを照合したものを使用した。
 API-only/調査分岐、同じ文面に異なるJEV判定を与えた際の従属、境界・失敗、入力/秘密情報非投影、source境界、出典偽装、実返信入口・dedup・削除中の送信抑止、ローカル子プロセスtimeout/output上限を検証。
 Mockの成功をJEVの意味精度、Codex実機、network隔離、API課金、本番反映の成功と混同しない。
+GitHub Actions上では実bubblewrap canaryを追加し、sandboxがhost networkへfallbackせずfail-closedすることを検証する。
+実JEV評価用の固定合成ケース（単純コメント、ガチャ反応、現在情報、ゲーム実装）も `scripts/reply_routing_live_canary.py` に固定した。
+feature branchからの実測では、repository secretは空で、`vm-operations` environmentを付けた実行は承認待ちとなったため、JEVの実ラベル・confidence・latencyはまだ未取得。未測定を成功扱いしない。
 既存Discord suiteと新規suiteを専用CI/Docker契約へ接続する。ローカルの完全checkout/全体suiteは取得環境の制約で未実施。
-primary checkoutの `handoff.md` は読めず、更新/ops_brief再生成も未実施。運用状態を変えていないためPRを作業引継ぎとする。独立レビューは未実施。
+primary checkoutの `handoff.md` は読めず、更新/ops_brief再生成も未実施。運用状態を変えていないためPRを作業引継ぎとする。
 
 次の工程:
-1. 独立レビュー、exact-head CI、合成会話による実JEV判定精度・遅延評価。
-2. 専用隔離環境でCodex event schema、読取/書込/ホストHOME/loopback/プロセス終了のnegative canary。未検証のまま本番enableしない。
-3. #829の配信コメント共通pipelineへ同じ判断器を接続。通知単独と「通知＋質問」の混在を区別し、可能なら既存JEV分類と同一requestへ統合する。
+1. owner承認済みの `vm-operations` environmentで `scripts/reply_routing_live_canary.py` を実行し、合成4ケースの実ラベル・confidence・latencyを取得する。
+2. safe egressを持つ専用隔離環境でCodex event schema、読取/書込/ホストHOME/loopback/内部サービス/プロセス終了のnegative canaryを再実行する。未検証のまま本番enableしない。
+3. 1と2が安全に通った後、#829の配信コメント共通pipelineへ同じ判断器を接続する。通知単独と「通知＋質問」の混在を区別し、可能なら既存JEV分類と同一requestへ統合する。
    legacy bridgeの失敗が通常OpenCode chainへ抜ける経路を塞ぎ、persona/画像/翻訳/guard/ackを維持する。単なるhelper追加やDiscord接続だけで配信側完了とはしない。
 4. 必要なら独立したread-only runtime evidence provider、OpenCode研究adapterを追加。JEVに実行権限を付与しない。
 
