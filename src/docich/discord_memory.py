@@ -110,6 +110,10 @@ class MemoryStore:
             """)
             self.db.execute(f"PRAGMA application_id={APPLICATION_ID}")
             self.db.execute("PRAGMA user_version=1")
+            # A prior crash may have happened before/after Discord accepted a
+            # send. Keep IDs as replay tombstones, never retry or recall them.
+            self.db.execute("""UPDATE conversations SET state='failed',content='',author_name='',reply=''
+                WHERE state IN ('pending','sending')""")
             self.db.commit()
         except Exception:
             self.close()

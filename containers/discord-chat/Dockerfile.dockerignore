@@ -1,0 +1,14 @@
+**
+!requirements-discord.txt
+!requirements-test.txt
+!src/docich/__init__.py
+!src/docich/discord_chat.py
+!src/docich/discord_memory.py
+!src/docich/comment/prompts/comment_persona_main.md
+!containers/discord-chat/Dockerfile
+!containers/discord-chat/Dockerfile.dockerignore
+!containers/discord-chat/volume.py
+!tests/test_discord_chat.py
+!tests/test_discord_memory.py
+!tests/test_discord_container.py
+!tests/discord_container_probe.py

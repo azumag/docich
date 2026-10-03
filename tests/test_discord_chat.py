@@ -358,7 +358,8 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await self.core.handle(event(id=101), self.send), "ignored")
         finally:
             release.set()
-        await task
+        with self.assertRaises(asyncio.CancelledError):
+            await task
         await closing
         self.assertFalse(self.core.tasks)
 

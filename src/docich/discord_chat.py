@@ -14,6 +14,8 @@ import logging
 import os
 from pathlib import Path
 import re
+import signal
+import stat
 import time
 from typing import Awaitable, Callable, Mapping
 from urllib.parse import urlsplit
@@ -41,6 +43,33 @@ FORGOTTEN_REPLY = "このチャンネルであなたと交わした会話の記�
 
 class ChatError(RuntimeError):
     """Only fixed, non-sensitive error descriptions cross this boundary."""
+
+
+def read_secret(env: Mapping[str, str], name: str) -> str:
+    value = env.get(name, "").strip()
+    filename = env.get(name + "_FILE", "").strip()
+    if value and filename:
+        raise ChatError("secret value and secret file are mutually exclusive")
+    if not filename:
+        return value
+    descriptor = None
+    try:
+        descriptor = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o007:
+            raise ValueError()
+        raw = os.read(descriptor, 4097)
+        if len(raw) > 4096:
+            raise ValueError()
+        value = raw.decode("ascii").removesuffix("\n").removesuffix("\r")
+        if not value or any(not 33 <= ord(c) <= 126 for c in value):
+            raise ValueError()
+        return value
+    except (OSError, UnicodeError, ValueError):
+        raise ChatError("secret file unavailable or invalid") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def load_persona() -> str:
@@ -89,12 +118,14 @@ class Settings:
             valid = False
         if not valid or any(ord(c) <= 32 for c in base):
             raise ChatError("invalid LLM base URL")
+        if url.path.rstrip("/").endswith("/chat/completions"):
+            raise ChatError("LLM base URL must not include /chat/completions")
         if (url.scheme == "http" and url.hostname not in {"localhost", "127.0.0.1", "::1"}
                 and env.get(prefix + "ALLOW_HTTP") != "1"):
             raise ChatError("non-loopback HTTP requires explicit ALLOW_HTTP=1")
         model = env.get(prefix + "LLM_MODEL", "").strip()
-        token = env.get(prefix + "TOKEN", "").strip()
-        key = env.get(prefix + "LLM_API_KEY", "").strip()
+        token = read_secret(env, prefix + "TOKEN")
+        key = read_secret(env, prefix + "LLM_API_KEY")
         if not model or len(model) > 256 or not token:
             raise ChatError("LLM model and bot token are required")
         if any(ord(c) < 32 or ord(c) == 127 for c in model + token + key):
@@ -191,9 +222,14 @@ class Conversation:
             self.memory.forget(guild_id, channel_id, message_ids=message_ids)
 
     async def close(self):
+        if self.closing:
+            return
         self.closing = True
-        # Do not close SQLite while a generation or its sending callback is alive.
-        await asyncio.gather(*tuple(self.tasks), return_exceptions=True)
+        tasks = tuple(self.tasks)
+        # Drop queued work; active synchronous HTTP must finish before DB close.
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def handle(self, event: Incoming, send: Callable[[str], Awaitable[int]]) -> str:
         if (self.closing or not self.allowed(event.guild_id, event.channel_id)
@@ -315,9 +351,9 @@ def make_client(settings: Settings, *, backend=None, memory=None, discord_module
                              age_seconds=age, reference_id=reference_id)
 
             async def send(text):
-                reply = await message.reply(text, mention_author=False,
-                                            allowed_mentions=discord.AllowedMentions.none(),
-                                            suppress_embeds=True)
+                reply = await asyncio.wait_for(message.reply(
+                    text, mention_author=False, allowed_mentions=discord.AllowedMentions.none(),
+                    suppress_embeds=True), timeout=10)
                 return reply.id
 
             await conversation.handle(event, send)
@@ -351,6 +387,28 @@ def make_client(settings: Settings, *, backend=None, memory=None, discord_module
         raise
 
 
+async def run_client(client, token: str):
+    """SIGTERM stops admission, joins HTTP work, closes SQLite, then Discord."""
+    loop = asyncio.get_running_loop()
+    stopping = asyncio.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stopping.set)
+    connected = asyncio.create_task(client.start(token))
+    stopped = asyncio.create_task(stopping.wait())
+    try:
+        done, _ = await asyncio.wait({connected, stopped}, return_when=asyncio.FIRST_COMPLETED)
+        if connected in done:
+            await connected
+    finally:
+        # Do not cancel close or detach its HTTP worker on repeated signals.
+        await client.close()
+        connected.cancel()
+        stopped.cancel()
+        await asyncio.gather(connected, stopped, return_exceptions=True)
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.remove_signal_handler(sig)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="validate configuration without networking")
@@ -364,7 +422,7 @@ def main(argv=None) -> int:
         if os.environ.get("DOCICH_DISCORD_ENABLED") != "1" or os.environ.get("DOCICH_ALLOW_REAL_AI") != "1":
             raise ChatError("both DOCICH_DISCORD_ENABLED=1 and DOCICH_ALLOW_REAL_AI=1 are required")
         client = make_client(settings)
-        client.run(settings.token, log_handler=None)
+        asyncio.run(run_client(client, settings.token))
     except (ChatError, MemoryStoreError) as exc:
         print(str(exc))
         return 2
