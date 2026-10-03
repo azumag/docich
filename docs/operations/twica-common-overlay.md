@@ -9,6 +9,7 @@
 
 - Sorenの`direct_stream.sh`は親側で準備済みのときだけ、FFmpeg executableを`bin/docich-twica-ffmpeg`に差し替える。元の`lib/direct_stream.py`は変更せず、再接続、状態、停止、字幕、音声同期、出力先を維持する。
 - アダプターは能力検査を元FFmpegへそのまま渡す。本エンコードにだけ独立FDのRGBA入力を追加する。stdinの`q`、stdoutのprogress、stderr、音声入力は奪わない。字幕フィルターは前景合成後へ移す。
+- 停止は既存ランナーの`q → SIGINT → SIGKILL`と猶予時間を維持する。native FFmpegの親である監視プロセスがアダプター専有pipeのEOFを監視し、SIGKILLされたアダプターに代わってnativeをkill・waitする。progressのEOFはnative回収後に到達し、`pipeline.json`の`encoder_pid`はnativeのPIDを保つ。
 - `docich-twica-common.service`は共通配信側が所有する。一つのブラウザページがTwiCaのイベント購読・キュー・演出・効果音を保持する。ゲームstateやpresenterの起動停止を参照しない。
 - カード元のviewportは配信と同じ大きさ。最終映像のXを幅の1/3だけ加算し、中心を5/6へ動かす。最終画素への丸めによる最大0.5px以外、Y・寸法・倍率を変えない。右サイドバー内への縮小で代用しない。
 - 白も黒も抜かず、RGBAのalphaを使用する。半透明演出、白いカードを維持する。OSのウィンドウ順序に依存せず、共有fullscreenを前面化しない。
@@ -18,7 +19,7 @@
 
 | 所有者 | 実装 | 状態 |
 |---|---|---|
-| 配信アダプター | `twica_ffmpeg.py` | `pipeline.json`、`pipeline.lock` |
+| 配信アダプター | `twica_ffmpeg.py`、`twica_encoder.py` | `pipeline.json`、`pipeline.lock` |
 | 共通レンダラー | `twica_service.py`、`twica_renderer.py` | `renderer.json`、`service.lock` |
 | RGBA受け渡し | `twica_overlay.py` | RAM上の`frame.rgba`、`publisher.lock` |
 | 所有権操作 | `twica_operator.py` | `control.json`、`operator.lock` |

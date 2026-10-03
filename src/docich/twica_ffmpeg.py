@@ -90,12 +90,28 @@ def run(real: str, argv: list[str], directory: Path) -> int:
     with exclusive(directory, 'pipeline.lock'):
         with OverlayPipe(OwnedReader(directory, width, height), fps) as feed:
             command = [real, *compose_args(argv, feed.read_fd, geometry)]
-            child = subprocess.Popen(command, pass_fds=(feed.read_fd,))
+            lifetime_read, lifetime_write = os.pipe()
+            pid_read, pid_write = os.pipe()
+            try:
+                child = subprocess.Popen(
+                    [sys.executable, '-m', 'docich.twica_encoder',
+                     str(lifetime_read), str(pid_write), str(feed.read_fd), *command],
+                    pass_fds=(lifetime_read, pid_write, feed.read_fd))
+            except BaseException:
+                os.close(lifetime_write)
+                os.close(pid_read)
+                raise
+            finally:
+                os.close(lifetime_read)
+                os.close(pid_write)
             previous = {}
             stop = threading.Event()
             def forward(signum, _frame):
                 if child.poll() is None:
-                    child.send_signal(signum)
+                    try:
+                        child.send_signal(signum)
+                    except ProcessLookupError:
+                        pass
             for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
                 previous[sig] = signal.signal(sig, forward)
             def report():
@@ -103,29 +119,31 @@ def run(real: str, argv: list[str], directory: Path) -> int:
                     try:
                         heartbeat(directory, 'pipeline.json', ready=feed.frames_sent >= 2 and child.poll() is None,
                                   width=width, height=height, fps=fps, frame_state=feed.state,
-                                  encoder_pid=child.pid, frames_sent=feed.frames_sent)
+                                  encoder_pid=encoder_pid, frames_sent=feed.frames_sent)
                     except (OSError, ValueError):
                         pass  # diagnostics IO cannot stop the encoder
             reporter = None
             try:
+                try:
+                    encoder_pid = int(os.read(pid_read, 32))
+                finally:
+                    os.close(pid_read)
                 feed.start()
                 reporter = threading.Thread(target=report, daemon=True, name='twica-pipeline-health')
                 reporter.start()
                 return_code = child.wait()
                 return return_code if return_code >= 0 else 128 - return_code
             finally:
+                # EOF survives SIGKILL, unlike a handler/finally in this wrapper.
+                # The guardian kills and waits for native before closing stdio.
+                os.close(lifetime_write)
                 stop.set()
                 if reporter:
                     reporter.join(timeout=2)
                 for sig, handler in previous.items():
                     signal.signal(sig, handler)
                 if child.poll() is None:
-                    child.terminate()
-                    try:
-                        child.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        child.kill()
-                        child.wait()
+                    child.wait()
                 try:
                     heartbeat(directory, 'pipeline.json', ready=False, frame_state='closed')
                 except (OSError, ValueError):
