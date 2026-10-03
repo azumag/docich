@@ -15,7 +15,6 @@ concurrency:
 jobs:
   live-jev:
     if: ${{ github.repository == 'azumag/docich' }}
-    environment: vm-operations
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
