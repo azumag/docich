@@ -23,7 +23,10 @@ export default {
           },
         });
       } catch {
-        return Response.json({ connected: false, ready: false, pending: 0, fatal: "unavailable" }, {
+        return Response.json({
+          configured: typeof env.DISCORD_BOT_TOKEN === "string" && env.DISCORD_BOT_TOKEN.length >= 20,
+          connected: false, ready: false, pending: 0, fatal: "unavailable",
+        }, {
           status: 503,
           headers: { "cache-control": "no-store" },
         });
