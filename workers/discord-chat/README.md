@@ -7,7 +7,7 @@ Discord Gatewayへ常時接続する会話BotのCloudflare実運用版です。W
 - Discord Gateway: Durable Objectのoutbound WebSocket
 - 再接続: heartbeat ACK監視 + session ID/sequence/resume URLの永続化 + DO alarm + 1分Cron
 - 記憶: Durable Object SQLite
-- LLM: Workers AI、既定 `@cf/zai-org/glm-4.7-flash`
+- LLM: Workers AI、既定 `@cf/deepseek-ai/deepseek-v4-flash-0731`
 - Persona: `src/docich/comment/prompts/comment_persona_main.md` を `cloudflare.config.ts` がbuild時に直接読み込む。複製しない
 - Secret: `DISCORD_BOT_TOKEN` のみ
 - Scope: Botが参加している全Guild/Channelの明示メンション。DM、Bot、Webhook、system messageは対象外
@@ -53,9 +53,9 @@ TokenをGit、Issue、PR、Actions output、Workers Logsへ出しません。
 
 ## Model
 
-既定モデルは `@cf/zai-org/glm-4.7-flash`。モデル変更は `cloudflare.config.ts` の `WORKERS_AI_MODEL` bindingだけを変更します。コードはWorkers AI native bindingのChat Completions形を使い、tool callは受理しません。
+既定モデルは `@cf/deepseek-ai/deepseek-v4-flash-0731`。モデル変更は `cloudflare.config.ts` の `WORKERS_AI_MODEL` bindingだけを変更します。コードはWorkers AI native bindingのChat Completions形を使い、tool callは受理しません。
 
-より高品質が必要なら `@cf/zai-org/glm-5.3-flash`、長い文脈や別特性が必要なら `@cf/deepseek-ai/deepseek-v4-flash-0731` 等へ切替可能です。モデルごとの課金条件はdeploy前にCloudflareの現行pricingで確認します。
+Cloudflare上の実プロンプト受入ではGLM-4.7-Flashが500 completion tokensをreasoningだけで使い切り本文を返さないケースを確認したため、会話Botの既定をDeepSeek V4 Flashへ変更しています。GLM-5.3-Flash等へ切替える場合も、canonical personaを含む実プロンプトで本文がtoken上限内に返ることを受入確認します。モデルごとの課金条件はdeploy前にCloudflareの現行pricingで確認します。
 
 ## Health
 
