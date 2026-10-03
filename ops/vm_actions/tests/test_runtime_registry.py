@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ops.vm_actions.runtime_registry import (
     DIAG_WINDOW_SEC,
+    HANJUKU_SCENE_ONESHOT,
     KNOWN_LANES,
     MAX_JSON_BYTES,
     QUEUE_STALE_SEC,
@@ -64,6 +65,18 @@ class RegistrySchemaTests(unittest.TestCase):
         self.assertLessEqual(MAX_JSON_BYTES, 65536)
         self.assertIn("radio", KNOWN_LANES)
         self.assertIn("comment", KNOWN_LANES)
+
+    def test_hanjuku_oneshot_manifest_matches_the_producer_contract(self):
+        import sys
+        sys.path.insert(0, str(ROOT / "src"))
+        from docich import hanjuku_scene
+
+        self.assertEqual(HANJUKU_SCENE_ONESHOT["producer_file"], hanjuku_scene.SCENE_FILE)
+        self.assertEqual(HANJUKU_SCENE_ONESHOT["worker_file"], hanjuku_scene.WORKER_FILE)
+        self.assertEqual(HANJUKU_SCENE_ONESHOT["lock_file"], hanjuku_scene.LOCK_FILE)
+        self.assertEqual(HANJUKU_SCENE_ONESHOT["log_file"], hanjuku_scene.LOG_NAME + ".jsonl")
+        self.assertIn(HANJUKU_SCENE_ONESHOT["queue_lane"], KNOWN_LANES)
+        self.assertNotIn("hanjuku_scene_worker", worker_names())
 
 
 def _parse_start_all_workers(text):

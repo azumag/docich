@@ -267,12 +267,47 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   限った queue_started / queue_completed / queue_failed / queue_unmatched_starts と、
   明示的な external_kill_markers / truncated_playback_suspected /
   partial_audio_retry_suppressed の件数を retro_corner.narration_playback に出す。
+  `queue_failed_fence_rejection` は、同じキュー項目の汎用失敗より前に
+  `say_enqueue` の固定「runtime fence失効」マーカーを観測した失敗件数。
+  重複マーカーは1件に数え、完了した項目や別項目のマーカーは流用しない。
+  残りは `queue_failed_unclassified` とし、2値の合計は `queue_failed` と一致する。
+  期限切れ・世代変更・終了・読取失敗の内訳はこのマーカーだけでは判定できない。
+  音声再生後の期限確認でも失敗になり得るため、失敗件数を無音件数とみなさない。
   実行中ログはメモリ内だけで解析し、本文・行・ファイル名・パス・tokenは返さない。
   固定ディレクトリをsymlinkなしで開き、通常ファイル以外や読取失敗は
-  status=unavailable と各値nullにする。tail_truncated=true は全ログではなく末尾の
-  観測であることを示す。queue_unmatched_starts は観測範囲で終端記録が見つからない数で、
+  status=unavailable と各値nullにする。tail_truncated=true はcollectorによる末尾制限を
+  示す。Sorenも上流でdebug.logを500行超から末尾200行へ切り詰めるため、falseでも
+  ラン全履歴とは限らず、開始数と完了・失敗数の合計が一致しないことがある。
+  開始前・claim直後の一部fence拒否には原因ログがなく、collectorだけでは分類できない。
+  queue_unmatched_starts は観測範囲で終端記録が見つからない数で、
   再生中またはログ切替でも起きるため、キャンセル確定数ではない。
   queue_completed も音声全体が聞こえた証明ではなく、リスナー側の実聴確認を代替しない。
+- Hanjuku場面実況: `retro_corner.scene_narration` は現在のcanonical runtimeを直接読み、
+  schema=1の `hanjuku_scene.json`（producer）、`hanjuku_scene_worker.json`（worker）、
+  `hanjuku_scene_commentary.jsonl`（event log）を別々に投影する。ゲーム・runtime・世代・leaseを
+  照合し、playing中で終端候補がないrunだけを対象とする。読み取り前後でcanonicalを再確認し、
+  切替があれば `status=identity_changed` と全component nullへ戻す。
+  JSONは各256KiB、logは末尾128KiB・2048行まで。全path要素でsymlinkを拒否し、通常ファイル
+  以外は読まない。facts・本文・event key・scene hash・lease・runtime名・パスは返さない。
+  producerはenabled・観測age・最新request seq/age・scope（scene/history）・期限内か・現在のsceneと一致するかだけ、
+  workerは固定status/reason/role・age・処理seq・固定counterだけを返す。roleは
+  BATCH_COMMENTARY_AGENTS/RADIO_AGENTS/AI_COMMON_AGENTSのいずれかで、モデル一覧は公開しない。
+  `request_matches_scene=false` は観測値であり、sourceの取得失敗を意味しない。
+  history scopeの完成事実はfieldへ移っても有効な場合があるため、scope・期限・worker結果と併せて読む。
+  epoch hashやsource_sceneの内容は返さない。
+  event enumはrequested/skipped/generate_started/generate_succeeded/generate_failed/
+  deliver_enqueued/deliver_failed。既知reasonごとの件数も別に集計し、自由形式reasonは返さない。
+  logはmatched/rejected件数、範囲制限、最新event/reason/age/seq・latency_ms・char_countを出す。
+  request確定前のskipはseqがnullのまま件数へ含める。workerの通常reason=noneは独立counterを
+  持たないためcounter列から除き、log側のreason別集計では記録されたnoneも数える。
+  logの件数は観測末尾の窓であり、workerの保存counterと同じ累計ではない。
+  source欠損・不正・identity不一致ではcomponentのread_status/statusをunavailableにし、
+  counterはnullに保つ。有効なworkerの空counterと読める空logだけを0件とする。
+  混在logでは確認できる行だけを数えてstatus=partialとし、全行不正なら件数をnullにする。
+  各ageはsource読取後の小数時刻で計算した保存記録の鮮度であり、古いworker値を現在進行中の証拠として扱わない。
+  前段の診断開始時刻は使わず、同じ秒の正常な更新を未来扱いしない。実際の未来時刻は不正として扱う。
+  deliver_enqueuedは既存音声キュー関数の正常終了で、実キュー作成・再生完了の受領記録ではない。
+  出力予算を超える場合は場面実況詳細をstatus=output_omittedへ置き換え、ゲーム戦況を優先する。
 - boundary: Soren `tmp/state/corner_boundary_improvement.json` /
   `corner_boundary_prediction.json` の `completed_at` と age のみ。コーナーの
   境界待ちの可否を判定できる。
@@ -419,6 +454,12 @@ key 名に `API_KEY` / `TOKEN` / `SECRET` / `STREAM_KEY` / `PASSWORD` /
 `ops/vm_actions/runtime_registry.py` が診断カバレッジの正本。
 worker 追加時はここへ 1 行（name / required / category / pid 特殊形）を足す。
 queue lane は lock dir スキャンで自動検出されるため登録不要（代表 lane のみ列挙）。
+
+半熟の場面実況は `HANJUKU_SCENE_ONESHOT` に module・runtime内のproducer/state/lock/log・
+診断key・既存radio laneを登録する。確認済みfactがある時だけ最大1件を処理するゲーム所属の
+短命processなので `start_all.sh` の常駐worker表へは追加しない。待機中にPIDが無いことは正常。
+healthは同じruntime/世代の `scene_narration` の鮮度と `generate_*` / `deliver_*` の進行で判断する。
+初回のlauncher receiptだけでworker journalが未完成の間は、workerのstatusは `unavailable` になる。
 
 CI は以下を検査する（`ops/vm_actions/tests/test_runtime_registry.py`）：
 

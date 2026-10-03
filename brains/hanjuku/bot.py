@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Token-free Hanjuku command bot: Observation JSON -> bounded pad actions.
 
-Writes the policy memory, structured decision records and commentary
-candidates into the generation's runtime directory. It never calls a model,
-provider, network or the audio queue; delivery is a separate side channel.
+Writes policy memory and observed scene facts into this generation's runtime.
+It may start one separately locked scene worker, but never waits for a model,
+provider, network or audio queue. Failed narration never changes game input.
 """
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ from docich.game_switch import atomic_write_json
 from docich import hanjuku_chart_adjust
 from docich import hanjuku_experience
 from docich.hanjuku_bot import BOT_VERSION, decide
-from docich.hanjuku_commentary import COMMENTARY_VERSION, SPOKEN, compose, evidence_kind
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_run import append_log
 from docich.retroarch_boundary import read_record
@@ -150,20 +149,13 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
             append_log(runtime,'hanjuku_chart_decisions',
                        chart_decision_summary(record,now=now,identity=identity,
                                               decision_id=decision_id))
-        if record.get('decision') not in SPOKEN:
-            continue
-        key,text=compose(record)
-        seq=int(state.get('commentary_seq',0))+1
-        state['commentary_seq']=seq
-        append_log(runtime,'hanjuku_commentary',{
-            'schema':1,'seq':seq,'at':now,'key':key,'text':text,
-            'commentary_version':COMMENTARY_VERSION,
-            'evidence_kind':evidence_kind(record), 'decision_id':decision_id,
-            'status':'candidate' if text else 'held',
-            'held_reason':None if text else '状況判定保留',
-            'decision':record.get('decision'),'chart_step':record.get('chart_step'),
-            'strategy_variant':record.get('strategy_variant'),'reason':record.get('reason'),
-            **identity})
+    # The fresh command process hot-loads the producer/worker launcher. No
+    # fixed template candidates are emitted, including as an AI fallback.
+    try:
+        from docich.hanjuku_scene import observe as observe_scene
+        observe_scene(ROOT, runtime, state, records, obs_meta)
+    except Exception:
+        print('hanjuku-bot: scene_commentary_unavailable', file=sys.stderr)
 
 
 def publish_adjust_request(runtime: Path, records: list, obs_meta: dict):

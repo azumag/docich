@@ -84,6 +84,38 @@ def _item_max_age(item, max_age):
     return min(max_age, PLAN_MAX_AGE_S) if item.get('evidence_kind') == 'plan' else max_age
 
 
+def deliver_scene(g, game, runtime_dir, snapshot, text):
+    """Deliver generated event commentary through the existing fenced sink.
+
+    Legacy template delivery may be disabled independently. The scene worker
+    supplies an original evidence timestamp; generation never renews its TTL.
+    Soren still owns playback and never cuts an already-speaking line for TTL.
+    """
+    from . import hanjuku_scene as scene
+    from .hanjuku_scene_worker import current, SceneError
+    from .trading.soren_output import enqueue_audio_text
+
+    cfg = scene.config(g.repo_root)
+    if not cfg['enabled']:
+        return 'skipped:disabled'
+    current(g, runtime_dir, snapshot)
+    request = snapshot['request']
+    item = {**{key: snapshot[key] for key in scene.KEYS}, 'seq': request['seq'],
+            'key': request['event_key'], 'text': text, 'at': request['at'],
+            'evidence_kind': 'observation'}
+
+    def enqueue(*args, **kwargs):
+        # This check is immediately before queue I/O, after the transition
+        # fence check in _deliver. It does not hold the game input lock.
+        if not scene.config(g.repo_root)['enabled']:
+            raise SceneError('disabled')
+        current(g, runtime_dir, snapshot)
+        return enqueue_audio_text(*args, **kwargs)
+
+    return _deliver(g, runtime_dir, item, settings(game)['speaker'], enqueue,
+                    min(cfg['max_age_s'], request['expires_at'] - request['at']))
+
+
 def _terminal_delivery_key(identity: dict) -> str:
     canonical = json.dumps(
         {key: identity.get(key) for key in ('game', 'runtime_id', 'generation', 'lease_id')},

@@ -58,18 +58,19 @@ def test_plan_age_and_current_decision_checked_before_enqueue(tmp_path, monkeypa
         assert calls[0]['runtime_fence']['expires_at'] == item['at']+(5 if plan else 20)
 
 
-def test_writer_tags_plan_and_links_actual_decision_identity(tmp_path):
+def test_writer_keeps_plan_identity_without_emitting_fixed_speech(tmp_path, monkeypatch):
     import importlib.util
     path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
     spec = importlib.util.spec_from_file_location('commentary_writer_evidence', path)
     writer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(writer)
+    monkeypatch.setattr('docich.hanjuku_scene.observe', lambda *args: None)
     identity = {'game':'hanjuku-hero','runtime_id':'g1-test','generation':1,'lease_id':'lease-1'}
     state = {'step':3,'screen_kind':'battle'}
     writer.persist(tmp_path,state,[{'decision':'battle_card','card':'クースカン',
                                   'enemy':'クイーン','enemy_hp':60}],
                    {'hanjuku':identity},actions=[],frame_sha256='a'*64)
-    item = json.loads((tmp_path/'hanjuku_commentary.jsonl').read_text())
-    assert item['evidence_kind'] == 'plan'
+    item = json.loads((tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()[-1])
+    assert item['decision'] == 'battle_card'
     assert item['decision_id'] == state['decision_trace']['decision_id']
-    assert '予定' in item['text']
+    assert not (tmp_path/'hanjuku_commentary.jsonl').exists()

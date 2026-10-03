@@ -59,6 +59,8 @@ class HanjukuNarrationDiagnosticsTests(unittest.TestCase):
             "queue_started": 3,
             "queue_completed": 1,
             "queue_failed": 1,
+            "queue_failed_fence_rejection": 0,
+            "queue_failed_unclassified": 1,
             "queue_unmatched_starts": 1,
             "external_kill_markers": 1,
             "truncated_playback_suspected": 1,
@@ -90,8 +92,54 @@ class HanjukuNarrationDiagnosticsTests(unittest.TestCase):
         file_output = self.module._collect_hanjuku_narration_playback(symlinked_file)
         self.assertEqual(file_output["status"], "unavailable")
         self.assertIsNone(file_output["queue_started"])
+        self.assertIsNone(file_output["queue_failed_fence_rejection"])
+        self.assertIsNone(file_output["queue_failed_unclassified"])
         self.assertNotIn("PRIVATE_SPEECH_TEXT", json.dumps(directory_output))
         self.assertNotIn("PRIVATE_SPEECH_TEXT", json.dumps(file_output))
+
+    def test_fence_failures_require_a_fixed_marker_for_the_same_failed_item(self):
+        soren = self.root / "soren"
+        path = self._log_path(soren)
+        rows = []
+
+        def queue(name, outcome):
+            rows.append(
+                f"[_play_comment_queue 12:00:00 PID=11] {outcome}: "
+                f"tmp/.comment_queue/{name}_hanjuku_commentary.playing"
+            )
+
+        def marker(name, *, label="hanjuku_commentary", prefix=""):
+            rows.append(
+                "[say_enqueue 12:00:00 PID=12/12] " + prefix
+                + "半熟英雄実況を破棄 (runtime fence失効) | "
+                + f"file=tmp/.comment_queue/{name}_hanjuku_commentary.playing "
+                + f"token=PRIVATE_TOKEN label={label}"
+            )
+
+        queue("a", "再生開始")
+        marker("a")
+        marker("a")
+        queue("a", "再生失敗")
+        marker("b")
+        queue("b", "再生完了")
+        queue("b", "再生開始")
+        queue("b", "再生失敗")
+        marker("c")  # The start may have been lost to upstream rotation.
+        queue("c", "再生失敗")
+        marker("d", label="hanjuku_commentary_other")
+        queue("d", "再生失敗")
+        marker("e", prefix="PRIVATE_SPEECH_TEXT ")
+        queue("e", "再生失敗")
+        marker("f")
+        queue("g", "再生失敗")
+        path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+        output = self.module._collect_hanjuku_narration_playback(soren)
+
+        self.assertEqual(output["queue_failed"], 6)
+        self.assertEqual(output["queue_failed_fence_rejection"], 2)
+        self.assertEqual(output["queue_failed_unclassified"], 4)
+        self.assertNotIn("PRIVATE", json.dumps(output))
 
     def test_playback_summary_bounds_large_log_tail(self):
         soren = self.root / "soren"
@@ -149,19 +197,24 @@ class HanjukuNarrationDiagnosticsTests(unittest.TestCase):
             mock.patch.object(self.module, "_collect_boundary", return_value={}),
             mock.patch.object(self.module, "_collect_ab", return_value={}),
             mock.patch.object(self.module, "_collect_soren_game", return_value={}),
+            mock.patch.object(self.module, "_collect_hanjuku_scene_narration",
+                              return_value={"status": "unavailable"}),
         )
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
             with mock.patch.object(self.module, "_collect_corner_files",
                                    side_effect=collect_hanjuku_state):
                 output = self.module._collect_programs(state_dir, soren, 0)
             playback = output["retro_corner"]["narration_playback"]
             self.assertEqual(playback["queue_started"], 1)
             self.assertEqual(playback["queue_unmatched_starts"], 1)
+            self.assertEqual(output["retro_corner"]["scene_narration"],
+                             {"status": "unavailable"})
 
             with mock.patch.object(self.module, "_collect_corner_files",
                                    side_effect=collect_mismatched_state):
                 mismatched = self.module._collect_programs(state_dir, soren, 0)
             self.assertNotIn("narration_playback", mismatched["retro_corner"])
+            self.assertNotIn("scene_narration", mismatched["retro_corner"])
 
 
 if __name__ == "__main__":

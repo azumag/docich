@@ -508,22 +508,25 @@ def test_battle_start_commentary_holds_when_either_hp_is_unknown(ally_hp, enemy_
     assert text is None
 
 
-def test_battle_start_unknown_hp_is_logged_as_held_commentary(tmp_path):
+def test_battle_start_unknown_hp_keeps_decision_but_creates_no_speech(tmp_path):
     import importlib.util
     path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
     spec = importlib.util.spec_from_file_location('hanjuku_commentary_hp_test', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.persist(tmp_path, {'step': 1, 'screen_kind': 'battle'}, [
+    runtime = tmp_path / 'g1-abc123'
+    runtime.mkdir()
+    module.persist(runtime, {'step': 1, 'screen_kind': 'battle'}, [
         {'decision': 'battle_start', 'ally': 'どうし', 'enemy': 'ミント',
-         'ally_hp': 90, 'enemy_hp': None, 'planned_cards': ['クースカン']},
-    ], {'hanjuku': {'game': 'hanjuku-hero', 'runtime_id': 'g1-test',
+         'ally_hp': 90, 'enemy_hp': None, 'planned_cards': ['クースカン'],
+         'observed_metric': {'ally_hp': 90, 'enemy_hp': None}},
+    ], {'hanjuku': {'game': 'hanjuku-hero', 'runtime_id': 'g1-abc123',
                    'generation': 1, 'lease_id': 'lease-1'}},
         actions=[], frame_sha256='a' * 64)
-    candidate = json.loads((tmp_path / 'hanjuku_commentary.jsonl').read_text())
-    assert candidate['text'] is None
-    assert candidate['status'] == 'held'
-    assert candidate['held_reason'] == '状況判定保留'
+    assert not (runtime / 'hanjuku_commentary.jsonl').exists()
+    assert json.loads((runtime / 'hanjuku_scene.json').read_text())['request'] is None
+    decision = json.loads((runtime / 'hanjuku_decisions.jsonl').read_text().splitlines()[-1])
+    assert decision['decision'] == 'battle_start' and decision['enemy_hp'] is None
 
 
 class Game:
@@ -1303,20 +1306,23 @@ def test_bot_records_plans_separately_from_sent_input_with_full_identity(tmp_pat
     spec = importlib.util.spec_from_file_location('hanjuku_bot_entry_trace_test', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g1-test', 'generation': 1, 'lease_id': 'lease-1'}
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g1-abc123', 'generation': 1, 'lease_id': 'lease-1'}
+    runtime = tmp_path / identity['runtime_id']
+    runtime.mkdir()
     state = {'step': 7, 'screen_kind': 'map', 'policy': {'active': '1-A1', 'variant': 'chart'}}
     actions = [{'type': 'pad', 'buttons': ['right'], 'hold_ms': 100}]
-    module.persist(tmp_path, state, [{'decision': 'order_start', 'chart_step': '1-A1',
+    module.persist(runtime, state, [{'decision': 'order_start', 'chart_step': '1-A1',
                    'general': 'どうし', 'source': 'アルマムーン', 'target': 'キカンドン', 'cards': [], 'reason': 'チャート順'}],
                    {'hanjuku': identity}, actions=actions, frame_sha256='b'*64)
-    plans = [json.loads(x) for x in (tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()]
+    plans = [json.loads(x) for x in (runtime/'hanjuku_decisions.jsonl').read_text().splitlines()]
     assert plans[0]['dispatch_status'] == 'planned_not_yet_sent'
     assert plans[0]['planned_actions'] == actions
     assert plans[0]['decision_id'] == plans[1]['decision_id'] == state['decision_trace']['decision_id']
     assert plans[1]['frame_sha256'] == 'b'*64
-    candidate = json.loads((tmp_path/'hanjuku_commentary.jsonl').read_text())
-    assert all(candidate[k] == v for k, v in identity.items())
-    assert not (tmp_path/'hanjuku_events.jsonl').exists()
+    assert all(plans[0][key] == value for key, value in identity.items())
+    assert not (runtime/'hanjuku_commentary.jsonl').exists()
+    assert json.loads((runtime/'hanjuku_scene.json').read_text())['request'] is None
+    assert not (runtime/'hanjuku_events.jsonl').exists()
 
 
 def test_name_confirmation_keeps_the_exact_decision_frame(tmp_path):
