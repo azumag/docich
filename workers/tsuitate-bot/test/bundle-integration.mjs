@@ -19,7 +19,7 @@ assert.deepEqual(config.observability, {
   enabled: true,
   logs: { enabled: true, headSamplingRate: 1, invocationLogs: false, persist: true },
 });
-assert.deepEqual(config.env.BOT_ID, { type: "text", value: ":DoCiAI" });
+assert.deepEqual(config.env.BOT_ID, { type: "text", value: "DoCiAI" });
 assert.deepEqual(config.env.CF_VERSION_METADATA, { type: "version-metadata" });
 assert.deepEqual(config.exports.GameState, { type: "durable-object", storage: "sqlite" });
 assert.deepEqual(config.env.GAME_STATE, {
