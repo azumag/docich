@@ -34,24 +34,20 @@ BotをPublicにする場合でも、招待URL自体を秘密境界にはしま�
 
 ## Deploy
 
-Cloudflare CLI `cf` を優先します。
-
-初回はBot Tokenをリポジトリ外の所有者専用ファイルへ置きます。
+Cloudflare CLI `cf` を優先します。コードはDiscord Tokenなしでも安全にdeployでき、その場合Gatewayには接続せず `configured:false` で待機します。
 
 ```sh
 cd workers/discord-chat
-umask 077
-cat > /absolute/private/discord-secrets.env <<'EOF'
-DISCORD_BOT_TOKEN=replace-locally
-EOF
-cf deploy --secrets-file /absolute/private/discord-secrets.env
+cf deploy
 ```
 
-`cf` で単独secret更新が必要な場合は現行CLIでは未対応のため、Worker名を明示してWranglerを使います。
+その後、Bot TokenだけをCloudflare Secretとして追加します。値はリポジトリやbuild変数へ置きません。
 
 ```sh
 npx wrangler secret put DISCORD_BOT_TOKEN --name docich-discord-chat
 ```
+
+Secret追加後は次の1分CronでGateway接続を開始します。単独secret更新は現行Cf CLIでは未対応のため、この操作だけWranglerを使います。
 
 TokenをGit、Issue、PR、Actions output、Workers Logsへ出しません。
 
@@ -66,7 +62,7 @@ TokenをGit、Issue、PR、Actions output、Workers Logsへ出しません。
 公開HTTPは `GET /healthz` のsanitized状態だけを返します。会話本文、Token、Guild/Channel/User ID、LLM promptは返しません。
 
 ```json
-{"connected":true,"ready":true,"pending":0,"fatal":null}
+{"configured":true,"connected":true,"ready":true,"pending":0,"fatal":null}
 ```
 
 fatal close（認証失敗、disallowed intents等）は15分のcooldownを記録し、その間は再IDENTIFYしません。cooldown後にだけ再試行するため、設定修正後は自動復帰でき、恒久fatal stateにもなりません。
