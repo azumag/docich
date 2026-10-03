@@ -1,0 +1,116 @@
+name: TwiCa common overlay operator
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        type: choice
+        options: [status, prepare, arm, activate, rollback, enable, restart-renderer]
+        default: status
+        required: true
+      confirm:
+        type: string
+        description: Type production for mutations
+        default: ''
+      confirm_stream_restart:
+        type: boolean
+        description: Permit ONE encoder reconnect for initial input arming (arm/enable only)
+        default: false
+      confirm_idle:
+        type: boolean
+        description: Confirm an idle TwiCa event boundary for ownership handoff
+        default: false
+      shared_only:
+        type: boolean
+        description: Only after verifying sorengame and its browser are stopped
+        default: false
+      legacy_role:
+        type: choice
+        options: [game, shared]
+        default: game
+
+permissions:
+  contents: read
+concurrency:
+  group: vm-operations-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    if: >-
+      github.repository == 'azumag/docich' &&
+      github.repository_id == '1327276249' &&
+      github.actor_id == '9018513' &&
+      github.triggering_actor == 'azumag' &&
+      github.ref == 'refs/heads/main' && github.ref_protected == true
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          persist-credentials: false
+          submodules: false
+      - name: Validate fixed operation and explicit confirmations
+        env:
+          OPERATION: ${{ inputs.operation }}
+          CONFIRM: ${{ inputs.confirm }}
+          RESTART: ${{ inputs.confirm_stream_restart }}
+          IDLE: ${{ inputs.confirm_idle }}
+          SHARED_ONLY: ${{ inputs.shared_only }}
+          LEGACY_ROLE: ${{ inputs.legacy_role }}
+        run: |
+          set -euo pipefail
+          case "$OPERATION" in status|prepare|arm|activate|rollback|enable|restart-renderer) ;; *) exit 2 ;; esac
+          [[ "$OPERATION" == status || "$CONFIRM" == production ]]
+          for value in "$RESTART" "$IDLE" "$SHARED_ONLY"; do [[ "$value" == true || "$value" == false ]]; done
+          [[ "$LEGACY_ROLE" == game || "$LEGACY_ROLE" == shared ]]
+          if [[ "$OPERATION" == arm || "$OPERATION" == enable ]]; then [[ "$RESTART" == true ]]; fi
+          if [[ "$OPERATION" == activate || "$OPERATION" == rollback || "$OPERATION" == enable ]]; then [[ "$IDLE" == true ]]; fi
+      - name: Run only the reviewed fixed helper through the existing gateway
+        env:
+          OPERATION: ${{ inputs.operation }}
+          RESTART: ${{ inputs.confirm_stream_restart }}
+          IDLE: ${{ inputs.confirm_idle }}
+          SHARED_ONLY: ${{ inputs.shared_only }}
+          LEGACY_ROLE: ${{ inputs.legacy_role }}
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          sha="$(git rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          current="$(git ls-remote --refs https://github.com/azumag/docich.git refs/heads/main | awk '{print $1}')"
+          [[ "$current" == "$sha" ]]
+          install -m 700 -d "$RUNNER_TEMP/twica-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/twica-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/twica-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/twica-ssh/"*
+          args=("$OPERATION" --legacy-role "$LEGACY_ROLE")
+          [[ "$OPERATION" == status ]] || args+=(--confirm-production)
+          [[ "$RESTART" == false ]] || args+=(--confirm-stream-restart)
+          [[ "$IDLE" == false ]] || args+=(--confirm-idle)
+          [[ "$SHARED_ONLY" == false ]] || args+=(--shared-only)
+          # Arguments above have fixed vocabularies. No arbitrary command input.
+          # The gateway keeps helper stdout/stderr on the VM as before.
+          {
+            printf '%s\n' 'set -euo pipefail' 'cd /home/ubuntu/docich'
+            printf '[[ "$(git rev-parse HEAD)" == "%s" ]]\n' "$sha"
+            printf '%s\n' 'git diff --quiet HEAD --'
+            printf 'python3 ops/vm_actions/twica_common.py'
+            printf ' %q' "${args[@]}"
+            printf '\n'
+          } | ssh -F /dev/null -T -p "$port" -i "$RUNNER_TEMP/twica-ssh/key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none \
+            -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$RUNNER_TEMP/twica-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null \
+            -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $sha"

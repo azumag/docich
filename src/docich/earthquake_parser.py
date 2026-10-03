@@ -180,6 +180,12 @@ def parse_jma_earthquake_xml(raw: bytes | bytearray | memoryview | str) -> JmaEa
     change stays visible to the update classifier, including a body revision
     that reuses the same EventID and Serial.
     """
+    return _parse_report_and_body(raw)[0]
+
+
+def _parse_report_and_body(
+    raw: bytes | bytearray | memoryview | str,
+) -> tuple[JmaEarthquakeReport, ET.Element | None]:
     if isinstance(raw, str):
         source = raw.encode("utf-8")
     elif isinstance(raw, (bytes, bytearray, memoryview)):
@@ -231,7 +237,7 @@ def parse_jma_earthquake_xml(raw: bytes | bytearray | memoryview | str) -> JmaEa
         else b""
     )
 
-    return JmaEarthquakeReport(
+    report = JmaEarthquakeReport(
         control_title=control_title,
         control_status=control_status,
         control_status_kind=_status_kind(control_status, control_title, title),
@@ -258,6 +264,7 @@ def parse_jma_earthquake_xml(raw: bytes | bytearray | memoryview | str) -> JmaEa
         body_sha256=sha256(body_bytes).hexdigest(),
         document_sha256=sha256(source).hexdigest(),
     )
+    return report, body
 
 
 def freshness(
@@ -314,3 +321,178 @@ def classify_update(previous: JmaEarthquakeReport, incoming: JmaEarthquakeReport
     ):
         return UpdateKind.STALE
     return UpdateKind.UPDATED
+
+
+class ObservedProduct(str, Enum):
+    INTENSITY_BULLETIN = "VXSE51"
+    EARTHQUAKE_INTENSITY = "VXSE53"
+
+
+class ObservationAvailability(str, Enum):
+    PRESENT = "present"
+    MISSING = "missing"
+    CANCELLED = "cancelled"
+    UNSUPPORTED = "unsupported"
+
+
+class IntensityState(str, Enum):
+    KNOWN = "known"
+    MISSING = "missing"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class ObservedIntensity:
+    """A literal MaxInt value; no numeric rank, inferred value, or threshold."""
+
+    raw: str | None
+    state: IntensityState
+
+    @property
+    def code(self) -> str | None:
+        return self.raw if self.state is IntensityState.KNOWN else None
+
+
+@dataclass(frozen=True)
+class ObservedArea:
+    code_type: str
+    code: str
+    name: str
+    max_intensity: ObservedIntensity
+    revise: str | None
+
+
+@dataclass(frozen=True)
+class ObservedPrefecture:
+    code_type: str
+    code: str
+    name: str
+    max_intensity: ObservedIntensity
+    revise: str | None
+    areas: tuple[ObservedArea, ...]
+
+
+@dataclass(frozen=True)
+class JmaObservedIntensity:
+    """Extracted observations with their full report provenance attached.
+
+    PRESENT describes XML structure, not eligibility for a normal alert.
+    Training/test/unknown status remains in ``report.control_status_kind``.
+    """
+
+    report: JmaEarthquakeReport
+    product: ObservedProduct | None
+    availability: ObservationAvailability
+    max_intensity: ObservedIntensity | None = None
+    prefectures: tuple[ObservedPrefecture, ...] = ()
+
+
+_OBSERVED_PRODUCTS: Final = {
+    ("震度速報", "震度速報", "震度速報"): ObservedProduct.INTENSITY_BULLETIN,
+    ("震源・震度に関する情報", "震源・震度情報", "地震情報"): ObservedProduct.EARTHQUAKE_INTENSITY,
+}
+_OBSERVED_VERSIONS: Final = frozenset({"1.0_0", "1.0_1"})
+_OBSERVED_CODES: Final = frozenset({"1", "2", "3", "4", "5-", "5+", "6-", "6+", "7"})
+_BULLETIN_CODES: Final = _OBSERVED_CODES - {"1", "2"}
+_OBSERVED_CODE_TYPES: Final = {
+    "Pref/Code": "地震情報／都道府県等",
+    "Pref/Area/Code": "地震情報／細分区域",
+}
+_SEISMOLOGY_NAMESPACE: Final = BODY_NAMESPACE_PREFIX + "seismology1/"
+
+
+def _observed_intensity(parent: ET.Element, product: ObservedProduct) -> ObservedIntensity:
+    value = _field(parent, "MaxInt")
+    if value is None:
+        return ObservedIntensity(None, IntensityState.MISSING)
+    codes = _BULLETIN_CODES if product is ObservedProduct.INTENSITY_BULLETIN else _OBSERVED_CODES
+    state = IntensityState.KNOWN if value in codes else IntensityState.UNKNOWN
+    return ObservedIntensity(value, state)
+
+
+def _validate_observation_code_types(observation: ET.Element) -> None:
+    definitions = _child(observation, "CodeDefine", required=True)
+    assert definitions is not None
+    for path, code_type in _OBSERVED_CODE_TYPES.items():
+        matches = [element for element in _children(definitions, "Type")
+                   if element.get("xpath") == path]
+        if len(matches) != 1 or _element_text(matches[0]) != code_type:
+            raise EarthquakeXmlError("unsupported-observation-code-definition")
+
+
+def _region_identity(element: ET.Element) -> tuple[str, str]:
+    code = _field(element, "Code", required=True)
+    name = _field(element, "Name", required=True)
+    assert code is not None and name is not None
+    return code, name
+
+
+def extract_jma_observed_intensity_xml(
+    raw: bytes | bytearray | memoryview | str,
+) -> JmaObservedIntensity:
+    """Extract Pref/Area observations for VXSE51 and near-earthquake VXSE53.
+
+    Product identity comes from Control/Head fields, never a filename.
+    Forecast, headline, city, and station values cannot fill missing MaxInt.
+    Cancellation returns no observation rows, even if an input retains them.
+    """
+    report, body = _parse_report_and_body(raw)
+    product = _OBSERVED_PRODUCTS.get((report.control_title, report.title, report.info_kind))
+    if report.is_cancellation:
+        return JmaObservedIntensity(report, product, ObservationAvailability.CANCELLED)
+    if (
+        product is None
+        or report.info_kind_version not in _OBSERVED_VERSIONS
+        or report.info_type not in {"発表", "訂正"}
+    ):
+        return JmaObservedIntensity(report, product, ObservationAvailability.UNSUPPORTED)
+    if body is not None and _namespace(body.tag) != _SEISMOLOGY_NAMESPACE:
+        raise EarthquakeXmlError("unsupported-observation-namespace")
+    intensity = _child(body, "Intensity")
+    observation = _child(intensity, "Observation")
+    if observation is None:
+        return JmaObservedIntensity(report, product, ObservationAvailability.MISSING)
+
+    _validate_observation_code_types(observation)
+    prefs = _children(observation, "Pref")
+    if not prefs:
+        raise EarthquakeXmlError("missing-observation-prefecture")
+    prefectures = []
+    pref_codes: set[str] = set()
+    area_codes: set[str] = set()
+    for pref in prefs:
+        pref_code, pref_name = _region_identity(pref)
+        if pref_code in pref_codes:
+            raise EarthquakeXmlError("duplicate-observation-prefecture")
+        pref_codes.add(pref_code)
+        area_elements = _children(pref, "Area")
+        if not area_elements:
+            raise EarthquakeXmlError("missing-observation-area")
+        areas = []
+        for area in area_elements:
+            area_code, area_name = _region_identity(area)
+            if area_code in area_codes:
+                raise EarthquakeXmlError("duplicate-observation-area")
+            area_codes.add(area_code)
+            areas.append(ObservedArea(
+                code_type=_OBSERVED_CODE_TYPES["Pref/Area/Code"],
+                code=area_code,
+                name=area_name,
+                max_intensity=_observed_intensity(area, product),
+                revise=_field(area, "Revise"),
+            ))
+        prefectures.append(ObservedPrefecture(
+            code_type=_OBSERVED_CODE_TYPES["Pref/Code"],
+            code=pref_code,
+            name=pref_name,
+            max_intensity=_observed_intensity(pref, product),
+            revise=_field(pref, "Revise"),
+            areas=tuple(areas),
+        ))
+    return JmaObservedIntensity(
+        report=report,
+        product=product,
+        availability=ObservationAvailability.PRESENT,
+        max_intensity=_observed_intensity(observation, product),
+        prefectures=tuple(prefectures),
+    )
