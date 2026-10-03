@@ -7,10 +7,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: retro-corner-operator-${{ github.repository }}
-  cancel-in-progress: false
-
 jobs:
   start:
     permissions:
@@ -22,6 +18,9 @@ jobs:
       github.event.issue.number == 1657 &&
       github.event.comment.user.id == 9018513 &&
       github.event.comment.body == '/hanjuku-start production'
+    concurrency:
+      group: retro-corner-operator-${{ github.repository }}
+      cancel-in-progress: false
     environment: vm-operations
     runs-on: ubuntu-24.04
     timeout-minutes: 10
