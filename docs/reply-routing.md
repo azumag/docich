@@ -71,10 +71,12 @@ network namespaceを分離した現在の形には安全な外向きegressがな
 公開Web/モデルAPIへだけ到達し、loopback・RFC1918・link-local・ホスト内部サービスを拒否するegress設計は未実装である。
 したがって `DOCICH_REPLY_RESEARCH_ENABLED` は引き続き本番offとし、配信コメントへのrouting接続もこの受入が終わるまで進めない。
 
-GitHub Actions Ubuntu 24.04 + bubblewrap 0.9.0でnegative canaryを実行したところ、
-child commandの起動前に `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で停止した。
-これはホストnetworkへfallbackせずfail-closedしていることは確認できるが、**利用可能な隔離環境でchildが起動し、loopback非到達のままCodex APIへ必要なegressだけ通ることの証明ではない**。
-本番受入では対応するhost policyまたは専用worker/egress brokerを用意し、同じcanaryを再実行する。現在のDocker設定の権限を緩めない。
+GitHub Actions Ubuntu 24.04では初回negative canaryがAppArmorにより
+`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` でchild起動前にfail-closedした。
+CIではhost-wideなuser-namespace制限を解除せず、Ubuntu提供の `bwrap-userns-restrict` AppArmor profileだけを読み込む。
+その上でbubblewrap childを実際に起動し、host側で待受中の `127.0.0.1` TCP listenerへ接続できないことを必須テストとして確認した。
+このcanaryはhost loopback非到達の実測であり、**Codex APIへ必要な安全なegressや、RFC1918/link-localを含む内部宛先拒否まで証明するものではない**。
+本番受入では専用worker/egress broker等で外向き経路を制限し、Codex event schemaと出典忠実性を含めて再検証する。現在のDocker設定の権限を緩めない。
 
 コード調査は、運用者が公開可能と承認した**別ディレクトリのsnapshot**を使う。稼働中checkoutを直接渡さない。
 `manifest.json`は以下の形式で、`files`に列挙したファイルだけをSHA-256照合して一時workspaceへコピーする。
