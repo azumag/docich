@@ -1,6 +1,7 @@
 """No real Codex/API calls. Process bounds use isolated local Python children."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import socket
@@ -168,9 +169,11 @@ def test_bwrap_cannot_reach_host_loopback(tmp_path):
         if completed.returncode == 0:
             assert completed.stdout.strip() == "blocked"
         else:
-            # Ubuntu/AppArmor may reject creation/setup of the isolated network
-            # namespace before the child runs. That is fail-closed: never treat
-            # sandbox-unavailable as permission to reuse the host network.
+            # Some Ubuntu/AppArmor hosts reject namespace setup before the child
+            # runs. That remains fail-closed, but CI configures a targeted bwrap
+            # profile and requires the probe child itself to run.
+            if os.environ.get("DOCICH_REQUIRE_BWRAP_PROBE") == "1":
+                pytest.fail(completed.stderr or "bubblewrap probe did not start")
             known_fail_closed = (
                 "loopback: Failed RTM_NEWADDR: Operation not permitted",
                 "setting up uid map: Permission denied",
