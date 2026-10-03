@@ -432,8 +432,32 @@ test("incremental fixture appends every expected position and answers", async ()
   assert.equal(await object.state.storage.values.get("session:b:0").lastPly, 2);
   assert.equal(object.state.storage.values.has("position:b:0:1"), true);
   assert.equal(object.state.storage.values.has("position:b:0:2"), true);
-  assert.equal(object.state.storage.values.get("position:b:0:2").lastCapture, "FU");
+  assert.equal(object.state.storage.values.get("position:b:0:2").lastCapture, "P");
   assert.equal(object.state.storage.values.get("position:b:0:2").wasPromotion, false);
+});
+
+test("lastCapture is optional and uses an unpromoted USI piece-kind code", async () => {
+  const binding = stateBinding();
+  assert.equal((await post(initialFixture, { binding })).status, 200);
+  assert.equal((await post(incrementalFixture, { binding })).status, 200);
+  assert.equal(binding.objects.get(incrementalFixture.gameId).state.storage.values
+    .get("position:b:0:2").lastCapture, "P");
+
+  for (const lastCapture of ["FU", "+P", "", null, "p"]) {
+    const malformed = structuredClone(incrementalFixture);
+    malformed.requestId = "invalid-capture:" + String(lastCapture);
+    malformed.positions["2"].lastCapture = lastCapture;
+    const response = await post(malformed, { binding });
+    assert.equal(response.status, 400, String(lastCapture));
+    assert.deepEqual(await responseJson(response), { error: "invalid_position" });
+  }
+
+  const noCapture = structuredClone(initialFixture);
+  noCapture.gameId = "optional-capture-demo";
+  noCapture.requestId = "optional-capture-demo:0:b:0";
+  assert.equal((await post(noCapture, { binding })).status, 200);
+  assert.equal(Object.hasOwn(binding.objects.get(noCapture.gameId).state.storage.values
+    .get("position:b:0:0"), "lastCapture"), false);
 });
 
 test("same request ID and exact body returns the persisted response after DO recreation", async () => {
