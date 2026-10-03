@@ -7,6 +7,8 @@ on:
       - 'ops/vm_actions/probe_twica_runtime.py'
       - 'ops/vm_actions/tests/test_twica_runtime_probe.py'
       - 'ops/vm_actions/tests/test_twica_runtime_workflow.py'
+      - 'ops/vm_actions/probe_twica_card_window.py'
+      - 'ops/vm_actions/tests/test_twica_card_window.py'
   push:
     branches: [main]
     paths:
@@ -14,6 +16,8 @@ on:
       - 'ops/vm_actions/probe_twica_runtime.py'
       - 'ops/vm_actions/tests/test_twica_runtime_probe.py'
       - 'ops/vm_actions/tests/test_twica_runtime_workflow.py'
+      - 'ops/vm_actions/probe_twica_card_window.py'
+      - 'ops/vm_actions/tests/test_twica_card_window.py'
   workflow_dispatch:
 
 permissions:
@@ -30,6 +34,7 @@ jobs:
       - run: |
           python3 -m unittest discover -s ops/vm_actions/tests -p test_twica_runtime_probe.py -v
           python3 -m unittest discover -s ops/vm_actions/tests -p test_twica_runtime_workflow.py -v
+          python3 -m unittest discover -s ops/vm_actions/tests -p test_twica_card_window.py -v
   observe:
     needs: contracts
     if: >-
@@ -133,4 +138,15 @@ jobs:
             if (( browser_rc >= 50 )); then browser_failed=1; fi
           done
           echo 'Late browser codes are defined by twica_browser_operator.classify; diagnostic success is not display success.'
+          echo 'TwiCa card-window observation started (passive, at most 90 seconds).'
+          set +e
+          {
+            printf '%s\n' 'set -euo pipefail' 'cd /home/ubuntu/docich'
+            printf '[[ "$(git rev-parse HEAD)" == "%s" ]] || exit 60\n' "$sha"
+            printf '%s\n' 'git diff --quiet HEAD -- || exit 61' 'python3 ops/vm_actions/probe_twica_card_window.py'
+          } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $sha"
+          window_rc=$?
+          set -e
+          echo "TwiCa correlated card-window exit_code=$window_rc"
+          if (( window_rc >= 50 )); then browser_failed=1; fi
           case "$rc" in 0|20|21|22) exit "$browser_failed" ;; *) exit 1 ;; esac
