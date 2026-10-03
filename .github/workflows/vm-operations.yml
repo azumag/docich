@@ -502,9 +502,14 @@ jobs:
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
           git -C candidate cat-file -e "$BEFORE_SHA^{commit}"
-          if git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- games/soviet_now; then
-            exit 0
+          refresh_required=0
+          if ! git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- games/soviet_now; then
+            refresh_required=1
           fi
+          if ! git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- ops/vm_actions/soren_inline_overlay_refresh_epoch; then
+            refresh_required=1
+          fi
+          [[ "$refresh_required" -eq 1 ]] || exit 0
 
           bash -n control/ops/vm_actions/refresh_soren_inline_overlay.sh
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
