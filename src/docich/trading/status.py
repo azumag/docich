@@ -19,7 +19,7 @@ _SIGNAL_SUMMARY_KEYS = {
 _WORKER_SUMMARY_KEYS = {
     "cycle_index", "last_success_at", "next_cycle_at", "frame_error_count",
     "arbitrage_candidate_count", "new_fill_count", "new_settlement_count",
-    "error_codes",
+    "error_codes", "experiment_status", "experiment_reason_code", "experiment_entries_allowed",
 }
 _MAX_SKIP_DETAILS = 16
 

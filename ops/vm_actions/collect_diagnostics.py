@@ -26,8 +26,10 @@ Observed sources (all read-only):
   - docich program/corner state under the production state_dir
     (game_switch.json, game-switch/requests/*.json, retro_corner.json, paper_corner.json,
     paper_corner_manual.json, trading/presentation.json,
-    trading/paper_improve_status.json): lifecycle statuses, timestamps and
-    counters only. Announcement/script bodies, prompts and log bodies are
+    trading/paper_improve_status.json, trading/paper_experiment_control.json,
+    trading/paper_strategy_evaluation.json): lifecycle statuses, timestamps,
+    counters and finite PAPER result totals only. Strategy identity, rules,
+    announcement/script bodies, prompts and log bodies are
     never read out. FIFO output is limited to queued count and the head's
     fixed operation/target/age fields.
   - while the retro corner is actively running Hanjuku Hero, a bounded tail
@@ -2290,6 +2292,28 @@ ROTATION_IMPROVE_REASON_CODES = frozenset({
     "ab-incomplete", "ab-adopted", "ab-rejected", "ab-stale", "ab-invalid",
     "ab-eval", "ab-state", "ab-baseline-changed", "unexpected",
 })
+# AiTextError.kind is normalized by docich.trading.ai_text before it enters
+# PAPER state. Do not expose arbitrary rc suffixes or exception text here.
+PAPER_IMPROVE_REASON_CODES = ROTATION_IMPROVE_REASON_CODES | frozenset({
+    "gate-disabled", "invalid-timeout", "invocation-error", "empty-output",
+    "timeout", "rate-limit", "queue-giveup", "gate-giveup", "provider-failed",
+    "invalid-output", "unknown",
+    "pending-exists", "baseline-changed", "candidate-invalid", "no-change",
+})
+PAPER_EXPERIMENT_STATUSES = frozenset({
+    "active", "draining", "waiting-candidate", "blocked", "legacy",
+})
+PAPER_EXPERIMENT_REASON_CODES = frozenset({
+    "invalid-active", "evaluation-unavailable", "control-invalid", "control-error",
+    "early-stop", "sample-complete", "max-age", "initial-experiment",
+    "collecting", "pending-activated", "no-experiment",
+})
+PAPER_IMPROVE_REASON_CODES |= PAPER_EXPERIMENT_REASON_CODES
+PAPER_EVALUATION_STATUSES = frozenset({"ok", "partial", "unavailable", "invalid"})
+PAPER_EVALUATION_REASON_CODES = frozenset({
+    "evaluated", "ledger_missing", "ledger_read_error", "ledger_invalid_row",
+    "ledger_incomplete_basis", "evaluation_invalid_clock", "evaluation_invalid_capital",
+})
 ROTATION_IMPROVE_PHASES = frozenset({"state", "llm", "eval", "unknown"})
 
 # Fixed latch taxonomy of `corner_rotation.json`'s `error_kind`. Keep in sync
@@ -2837,13 +2861,99 @@ def _collect_paper_improve_status(state_dir, now):
             "phase": _bounded_str(data.get("phase"), 32),
             "progress": progress,
             "detail": _bounded_str(data.get("detail"), 160),
-            "reason_code": _rotation_enum(data.get("reason_code"), ROTATION_IMPROVE_REASON_CODES),
+            "reason_code": _rotation_enum(data.get("reason_code"), PAPER_IMPROVE_REASON_CODES),
             "started_at": _bounded_time(data.get("started_at")),
             "updated_at": _bounded_time(data.get("updated_at")),
             "completed_at": _bounded_time(data.get("completed_at")),
             "changed": changed,
         }
     )
+    return entry
+
+
+def _paper_observed_number(value, *, decimal_string=False, nonnegative=False):
+    """Finite diagnostic numbers only; a string can contain no other text."""
+    if isinstance(value, str) and decimal_string:
+        if (len(value) > 64 or not re.fullmatch(
+                r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?", value)):
+            return None
+    elif type(value) not in (int, float):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or abs(number) > 9007199254740991:
+        return None
+    return None if nonnegative and number < 0 else number
+
+
+def _paper_observed_count(value):
+    return value if type(value) is int and 0 <= value <= 9007199254740991 else None
+
+
+def _collect_paper_experiment_evaluation(trading_dir, control, now):
+    path = trading_dir / "paper_strategy_evaluation.json"
+    present, readable, data = _load_state_file(path)
+    entry = {"present": present, "readable": readable, "age_sec": _file_age_sec(path, now)}
+    if not readable:
+        return entry
+    status = _rotation_enum(data.get("status"), PAPER_EVALUATION_STATUSES)
+    reason = _rotation_enum(data.get("reason_code"), PAPER_EVALUATION_REASON_CODES)
+    matches = None
+    if isinstance(control, dict) and isinstance(control.get("experiment_id"), str):
+        active_at = _paper_observed_number(control.get("activated_at"), nonnegative=True)
+        evaluated_activation = _paper_observed_number(data.get("activated_at"), nonnegative=True)
+        matches = bool(
+            control["experiment_id"]
+            and active_at is not None and evaluated_activation is not None
+            and control["experiment_id"] == data.get("experiment_id")
+            and control["activated_at"] == data.get("activated_at")
+        )
+    if matches is False:
+        # These separately atomic files can straddle an activation. Never
+        # label a different activation's results as the current experiment.
+        status, reason = "unavailable", "evaluation_identity_mismatch"
+    entry.update(
+        status=status, reason_code=reason, matches_active=matches,
+        evaluated_at=_paper_observed_number(data.get("evaluated_at"), nonnegative=True),
+    )
+    usable = status in {"ok", "partial"}
+    for key in (
+        "closed_sells", "self_entry_closed_sells", "carry_in_closed_sells",
+        "mixed_origin_closed_sells", "ignored_unpaired_exits", "open_position_count",
+    ):
+        entry[key] = _paper_observed_count(data.get(key)) if usable else None
+    for key in (
+        "realized_pnl_jpy", "self_entry_realized_pnl_jpy", "carry_in_realized_pnl_jpy",
+        "profit_factor", "max_realized_drawdown_pct",
+    ):
+        entry[key] = _paper_observed_number(
+            data.get(key), decimal_string=True,
+            nonnegative=key in {"profit_factor", "max_realized_drawdown_pct"},
+        ) if usable else None
+    for key in ("inventory_complete", "promotion_ready"):
+        entry[key] = data.get(key) if usable and isinstance(data.get(key), bool) else None
+    return entry
+
+
+def _collect_paper_experiment(state_dir, now):
+    """Observe periodic control independently of the end-of-corner AI job."""
+    trading_dir = Path(state_dir) / "trading"
+    path = trading_dir / "paper_experiment_control.json"
+    present, readable, data = _load_state_file(path)
+    entry = {"present": present, "readable": readable, "age_sec": _file_age_sec(path, now)}
+    if readable:
+        entry.update(
+            status=_rotation_enum(data.get("status"), PAPER_EXPERIMENT_STATUSES),
+            reason_code=_rotation_enum(data.get("reason_code"), PAPER_EXPERIMENT_REASON_CODES),
+            entries_allowed=data.get("entries_allowed") if isinstance(data.get("entries_allowed"), bool) else None,
+            pending_available=data.get("pending_available") if isinstance(data.get("pending_available"), bool) else None,
+            evaluation_status=_rotation_enum(data.get("evaluation_status"), PAPER_EVALUATION_STATUSES),
+            open_position_count=_paper_observed_count(data.get("open_position_count")),
+            updated_at=_paper_observed_number(data.get("updated_at"), nonnegative=True),
+        )
+    entry["evaluation"] = _collect_paper_experiment_evaluation(trading_dir, data if readable else None, now)
     return entry
 
 
@@ -3063,6 +3173,7 @@ def _collect_corner_files(state_dir, payload, now):
         )
     payload["presentation"] = entry
     payload["paper_improve"] = _collect_paper_improve_status(state_dir, now)
+    payload["paper_experiment"] = _collect_paper_experiment(state_dir, now)
     payload["rotation_evidence"] = _collect_rotation_evidence(state_dir)
 
 
@@ -3130,6 +3241,10 @@ def _collect_programs(state_dir, soren, now):
         "paper_corner_manual": {"present": False, "readable": False},
         "presentation": {"present": False, "readable": False},
         "paper_improve": {"present": False, "readable": False, "age_sec": -1},
+        "paper_experiment": {
+            "present": False, "readable": False, "age_sec": -1,
+            "evaluation": {"present": False, "readable": False, "age_sec": -1},
+        },
     }
     if state_dir.is_dir():
         _collect_corner_files(state_dir, payload, now)
