@@ -4,6 +4,13 @@
 !src/docich/__init__.py
 !src/docich/discord_chat.py
 !src/docich/discord_memory.py
+!src/docich/reply_routing.py
+!src/docich/reply_research.py
+!src/docich/semantic_decision/__init__.py
+!src/docich/semantic_decision/diagnostics.py
+!src/docich/semantic_decision/routes.py
+!src/docich/semantic_decision/transport.py
+!src/docich/semantic_decision/validator.py
 !src/docich/comment/prompts/comment_persona_main.md
 !containers/discord-chat/Dockerfile
 !containers/discord-chat/Dockerfile.dockerignore
@@ -12,3 +19,5 @@
 !tests/test_discord_memory.py
 !tests/test_discord_container.py
 !tests/discord_container_probe.py
+!tests/test_reply_routing.py
+!tests/test_reply_research.py
