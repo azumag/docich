@@ -15,6 +15,7 @@ const { config, bundleDir } = built;
 assert.equal(config.name, "docich-tsuitate-bot");
 assert.equal(config.compatibilityDate, "2026-09-08");
 assert.equal(config.previewUrls, false, "the pinned Cf build must preserve disabled version preview URLs");
+assert.deepEqual(config.env.BOT_ID, { type: "text", value: ":DoCiAI" });
 assert.deepEqual(config.exports.GameState, { type: "durable-object", storage: "sqlite" });
 assert.deepEqual(config.env.GAME_STATE, {
   type: "durable-object", worker: config.name, exportName: "GameState",
@@ -27,7 +28,7 @@ const entrypoint = join(bundleDir, config.manifest.mainModule);
 const bundle = await import(pathToFileURL(entrypoint));
 assert.equal(typeof bundle.GameState, "function");
 assert.equal(typeof bundle.default.fetch, "function");
-console.log("PASS actual Cf manifest, previewUrls=false, compatibility date, GameState export, SQLite storage and GAME_STATE self-binding");
+console.log("PASS actual Cf manifest, production Bot ID, previewUrls=false, compatibility date, GameState export, SQLite storage and GAME_STATE self-binding");
 console.log(`Cf emitted entrypoint SHA-256: ${createHash("sha256").update(await readFile(entrypoint)).digest("hex")}`);
 
 const modules = Object.fromEntries(await Promise.all(Object.entries(config.manifest.modules).filter(([, v]) => v.type !== "sourcemap")
