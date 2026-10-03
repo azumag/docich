@@ -465,12 +465,37 @@ test("incremental fixture appends every expected position and answers", async ()
   assert.equal(object.state.storage.values.get("position:b:0:2").wasPromotion, false);
 });
 
-test("lastCapture accepts documented CSA codes and existing USI codes", async () => {
+test("lastCapture accepts CSA and USI codes and normalizes empty no-capture values", async () => {
   const binding = stateBinding();
   assert.equal((await post(initialFixture, { binding })).status, 200);
   assert.equal((await post(incrementalFixture, { binding })).status, 200);
   assert.equal(binding.objects.get(incrementalFixture.gameId).state.storage.values
     .get("position:b:0:2").lastCapture, "P");
+
+  const emptyInitial = structuredClone(initialFixture);
+  emptyInitial.gameId = "empty-capture-initial";
+  emptyInitial.requestId = "empty-capture-initial:0:b:0";
+  emptyInitial.positions["0"].lastCapture = "";
+  const { result: emptyInitialResult, records: emptyInitialRecords } =
+    await captureDiagnosticLogs(() => post(emptyInitial, { binding }));
+  assert.equal(emptyInitialResult.status, 200);
+  const emptyInitialPosition = binding.objects.get(emptyInitial.gameId).state.storage.values
+    .get("position:b:0:0");
+  assert.equal(Object.hasOwn(emptyInitialPosition, "lastCapture"), false);
+  assert.equal(Object.hasOwn(emptyInitialRecords[0].observation, "lastCapture"), false);
+
+  const emptyDeltaInitial = structuredClone(initialFixture);
+  emptyDeltaInitial.gameId = "empty-capture-delta";
+  emptyDeltaInitial.requestId = "empty-capture-delta:0:b:0";
+  assert.equal((await post(emptyDeltaInitial, { binding })).status, 200);
+  const emptyDelta = structuredClone(incrementalFixture);
+  emptyDelta.gameId = emptyDeltaInitial.gameId;
+  emptyDelta.requestId = "empty-capture-delta:2:b:0";
+  emptyDelta.positions["1"].lastCapture = "";
+  assert.equal((await post(emptyDelta, { binding })).status, 200);
+  const emptyDeltaStorage = binding.objects.get(emptyDelta.gameId).state.storage.values;
+  assert.equal(Object.hasOwn(emptyDeltaStorage.get("position:b:0:1"), "lastCapture"), false);
+  assert.equal(emptyDeltaStorage.get("position:b:0:2").lastCapture, "P");
 
   const csaInitial = structuredClone(initialFixture);
   csaInitial.gameId = "csa-capture-demo";
@@ -484,7 +509,7 @@ test("lastCapture accepts documented CSA codes and existing USI codes", async ()
   assert.equal(binding.objects.get(csaInitial.gameId).state.storage.values
     .get("position:b:0:2").lastCapture, "FU");
 
-  for (const lastCapture of ["+P", "", null, "p", "fu", "FU!", "not-a-piece-marker"]) {
+  for (const lastCapture of ["+P", null, "p", "fu", "FU!", "not-a-piece-marker"]) {
     const malformed = structuredClone(incrementalFixture);
     malformed.requestId = "invalid-capture:" + String(lastCapture);
     malformed.positions["2"].lastCapture = lastCapture;
@@ -503,7 +528,6 @@ test("lastCapture accepts documented CSA codes and existing USI codes", async ()
 
 test("rejected lastCapture strings log only fixed value classes", async () => {
   const cases = [
-    ["", "empty_string"],
     ["fu", "lowercase_piece_code"],
     ["private-value-marker", "other_string"],
   ];
