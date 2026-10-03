@@ -6,12 +6,14 @@ on:
       - '.github/workflows/twica-runtime-probe.yml'
       - 'ops/vm_actions/probe_twica_runtime.py'
       - 'ops/vm_actions/tests/test_twica_runtime_probe.py'
+      - 'ops/vm_actions/tests/test_twica_runtime_workflow.py'
   push:
     branches: [main]
     paths:
       - '.github/workflows/twica-runtime-probe.yml'
       - 'ops/vm_actions/probe_twica_runtime.py'
       - 'ops/vm_actions/tests/test_twica_runtime_probe.py'
+      - 'ops/vm_actions/tests/test_twica_runtime_workflow.py'
   workflow_dispatch:
 
 permissions:
@@ -25,7 +27,9 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
-      - run: python3 -m unittest discover -s ops/vm_actions/tests -p test_twica_runtime_probe.py -v
+      - run: |
+          python3 -m unittest discover -s ops/vm_actions/tests -p test_twica_runtime_probe.py -v
+          python3 -m unittest discover -s ops/vm_actions/tests -p test_twica_runtime_workflow.py -v
   observe:
     needs: contracts
     if: >-
@@ -111,4 +115,22 @@ jobs:
           esac
           echo "TwiCa read-only probe: $result"
           echo 'This is input/runtime evidence, not proof of card delivery or final stream visibility.'
-          case "$rc" in 0|20|21|22) exit 0 ;; *) exit 1 ;; esac
+          # Observe the existing page AFTER a reported event; never reset its
+          # accumulated DOM/error evidence with a renderer refresh first.
+          browser_failed=0
+          for mode in transport dom errors; do
+            set +e
+            {
+              printf '%s\n' 'set -euo pipefail' 'cd /home/ubuntu/docich'
+              printf '[[ "$(git rev-parse HEAD)" == "%s" ]] || exit 60\n' "$sha"
+              printf '%s\n' 'git diff --quiet HEAD -- || exit 61'
+              printf 'python3 ops/vm_actions/twica_browser_operator.py %s\n' "$mode"
+            } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $sha"
+            browser_rc=$?
+            set -e
+            # Fixed exit codes only. No browser record, URL or payload output.
+            echo "TwiCa late browser $mode exit_code=$browser_rc"
+            if (( browser_rc >= 50 )); then browser_failed=1; fi
+          done
+          echo 'Late browser codes are defined by twica_browser_operator.classify; diagnostic success is not display success.'
+          case "$rc" in 0|20|21|22) exit "$browser_failed" ;; *) exit 1 ;; esac
