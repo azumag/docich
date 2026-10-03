@@ -2,11 +2,31 @@ name: PAPER strategy sandbox
 
 on:
   pull_request:
+    paths:
+      - 'src/docich/trading/free_strategy/**'
+      - 'containers/paper-strategy/**'
+      - 'tests/test_trading_free_strategy_sandbox.py'
+      - 'tests/test_trading_free_strategy_gvisor.py'
+      - 'tests/helpers/install_gvisor_ci.sh'
+      - 'requirements-test.txt'
+      - '.github/workflows/paper-strategy-sandbox.yml'
   push:
     branches: [main]
+    paths:
+      - 'src/docich/trading/free_strategy/**'
+      - 'containers/paper-strategy/**'
+      - 'tests/test_trading_free_strategy_sandbox.py'
+      - 'tests/test_trading_free_strategy_gvisor.py'
+      - 'tests/helpers/install_gvisor_ci.sh'
+      - 'requirements-test.txt'
+      - '.github/workflows/paper-strategy-sandbox.yml'
 
 permissions:
   contents: read
+
+concurrency:
+  group: paper-strategy-sandbox-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   gvisor-isolation:
