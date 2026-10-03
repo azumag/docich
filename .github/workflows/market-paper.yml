@@ -3,7 +3,8 @@ on:
   pull_request:
     paths:
       - 'src/docich/trading/markets/**'
-      - 'src/docich/adapters/**'
+      - 'src/docich/adapters/__init__.py'
+      - 'src/docich/adapters/program.py'
       - 'tests/test_market_paper*.py'
       - 'config/market-paper.toml'
       - 'bin/docich-market-paper'
@@ -13,10 +14,20 @@ on:
     branches: [main]
     paths:
       - 'src/docich/trading/markets/**'
+      - 'src/docich/adapters/__init__.py'
+      - 'src/docich/adapters/program.py'
       - 'tests/test_market_paper*.py'
+      - 'config/market-paper.toml'
+      - 'bin/docich-market-paper'
+      - 'scripts/systemd/docich-market-*'
       - '.github/workflows/market-paper.yml'
 permissions:
   contents: read
+
+concurrency:
+  group: market-paper-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   paper-contracts:
     runs-on: ubuntu-24.04

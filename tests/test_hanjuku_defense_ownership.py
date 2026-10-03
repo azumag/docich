@@ -125,3 +125,34 @@ def test_measured_all_owned_survives_defender_loss_and_keeps_real_boss_gate_read
     policy._apply_world_flags(mem, {c: 'own' for c in mem['captured']})
     finish(mem)
     assert policy._ready(order, mem)
+
+
+def test_recaptured_home_is_removed_again_when_a_new_enemy_flag_is_seen():
+    home = 'アルマムーン'
+    mem = {'chapter': 1, 'tick': 100, 'home_lost': True, 'lost': [home],
+           'captured': ['ジョンリギ', 'ゴーメン', 'カストーラ'], 'orders': {},
+           'garrison': {'ジョンリギ': ['ココット', 'ヴィーナス'],
+                        'カストーラ': ['ゼウス']},
+           'battle': {'away': 1, 'side': 'attack', 'castle': home,
+                      'ally': 'ゼウス', 'ally_hp': 60, 'enemy_hp': 0}}
+    policy.battle_end(mem, 'map')
+    assert home in mem['captured'] and home in policy._owned(mem)
+    policy._apply_world_flags(mem, {home: 'own'})
+    policy._apply_world_flags(mem, {home: 'enemy'})
+    assert home not in mem['captured'] and home not in policy._owned(mem)
+    assert mem['home_lost'] is True and home in mem['lost']
+    assert home not in mem['garrison']
+    assert any(o['target'] == home and o['purpose'] == 'retake'
+               for o in policy.interim_candidates(mem).values())
+
+
+def test_new_enemy_flag_repairs_a_hotloaded_home_receipt_without_counting_loss_twice():
+    home = 'アルマムーン'
+    mem = {'chapter': 1, 'home_lost': True, 'lost': [home],
+           'captured': ['ジョンリギ', home], 'garrison': {home: ['ゼウス']},
+           'tally': {'castle_losses': 1}}
+    for _ in range(2):
+        policy._apply_world_flags(mem, {home: 'enemy'})
+        assert mem['captured'] == ['ジョンリギ']
+        assert home not in policy._owned(mem) and home not in mem['garrison']
+        assert mem['lost'] == [home] and mem['tally']['castle_losses'] == 1

@@ -197,6 +197,14 @@ def _condition_reason(item: Mapping[str, object], *, reason_code: str = "") -> s
     threshold = _threshold_phrase(item)
     if feature == "pnl_bps":
         pct = _pct_from_bps(observed)
+        if item.get("unit") == "net_pnl_bps":
+            sign = "プラス" if pct >= 0 else "マイナス"
+            estimate = f"売却費用を含む推定損益率{sign}{_plain_number(abs(pct))}%"
+            if reason_code == "take_profit":
+                return f"{estimate}、利確基準{threshold}"
+            if reason_code == "stop_loss":
+                return f"{estimate}、損切り基準{_plain_number(abs(_pct_from_bps(item.get('threshold'))))}%以上"
+            return f"{estimate}、条件{threshold}"
         direction = "上昇" if pct >= 0 else "下落"
         if reason_code == "take_profit":
             return f"平均取得価格から{_plain_number(abs(pct))}%{direction}、利確基準{threshold}"

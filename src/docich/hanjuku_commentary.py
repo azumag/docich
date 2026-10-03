@@ -158,7 +158,7 @@ def compose(rec: dict) -> tuple[str, str | None]:
         variant = rec['strategy_variant']
         metric = rec.get('observed_metric') or {}
         if variant == 'summer_bonus_no_cursor':
-            return 'summer_bonus', '夏バテのイベントです。選択位置が読めないため、そのまま確認して進めます。'
+            return 'summer_bonus', '夏バテのイベントです。選択位置が読めないため、上へ動かして再確認します。'
         option = '兵士半減のバカンス' if variant == 'summer_bonus_vacation' else 'お金半減のボーナス'
         if metric.get('selection') == 'random':
             return 'summer_bonus', f'夏バテのイベントです。{option}を選びます。'

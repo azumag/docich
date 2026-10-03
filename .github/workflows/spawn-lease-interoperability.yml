@@ -1,0 +1,46 @@
+name: Spawn lease interoperability
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/spawn-lease-interoperability.yml'
+      - 'ops/hotfixes/apply_founding_policy_20260907.py'
+      - 'tests/test_founding_policy*.py'
+      - 'requirements-test.txt'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/spawn-lease-interoperability.yml'
+      - 'ops/hotfixes/apply_founding_policy_20260907.py'
+      - 'tests/test_founding_policy*.py'
+      - 'requirements-test.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spawn-lease-interoperability-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  spawn-lease-interoperability:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Check out reviewed Soren spawn protocol
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: azumag/soviet_now
+          ref: c025faae892168454512e7dc16b72ba6f22ea431
+          path: .ci-spawn-source
+          persist-credentials: false
+      - name: Real installer/runtime interoperability
+        env:
+          SOREN_SPAWN_SOURCE: ${{ github.workspace }}/.ci-spawn-source
+        run: python3 -m unittest discover -s tests -p 'test_founding_policy*.py'
+      - name: Real runtime regressions
+        working-directory: .ci-spawn-source
+        run: python3 -m unittest tests.test_spawn_guard_lease

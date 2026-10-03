@@ -2,11 +2,35 @@ name: VM operations CI
 
 on:
   pull_request:
+    paths:
+      - 'ops/**'
+      - 'deploy/**'
+      - 'containers/**'
+      - 'compose*.yml'
+      - 'config/**'
+      - 'bin/**'
+      - 'games/soviet_now'
+      - 'requirements-test.txt'
+      - '.github/workflows/vm-operations*.yml'
   push:
     branches: [main]
+    paths:
+      - 'ops/**'
+      - 'deploy/**'
+      - 'containers/**'
+      - 'compose*.yml'
+      - 'config/**'
+      - 'bin/**'
+      - 'games/soviet_now'
+      - 'requirements-test.txt'
+      - '.github/workflows/vm-operations*.yml'
 
 permissions:
   contents: read
+
+concurrency:
+  group: vm-operations-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   security-regressions:

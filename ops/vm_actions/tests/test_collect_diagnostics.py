@@ -343,6 +343,21 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state({'bot_chart':'SECRET'})['bot_chart'] is None
 
 
+def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
+    module = load_collector()
+    versions = ("hanjuku-script-v1", "hanjuku-chart-v2",
+                "hanjuku-chart-v129-battle-card-progress",
+                "hanjuku-chart-v130-summer-cursor-evidence",
+                "hanjuku-chart-v131-defense-month-economy")
+    for version in versions:
+        assert module._project_corner_state({'bot_version': version})['bot_version'] == version
+    for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',
+                    'hanjuku-chart-v999-unknown', versions[-1] + '-SECRET'):
+        output = module._project_corner_state({'bot_version': version})
+        assert output['bot_version'] is None
+        assert 'SECRET' not in json.dumps(output)
+
+
 def test_hanjuku_audio_and_narration_evidence_is_bounded():
     module=load_collector()
     state={'game':'hanjuku-hero','narration':{'enqueued':3,'skipped':9,'delivery_failed':0,'text':'SECRET'},

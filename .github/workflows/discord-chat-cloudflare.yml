@@ -1,0 +1,40 @@
+name: Discord Chat Cloudflare
+
+on:
+  pull_request:
+    paths:
+      - "workers/discord-chat/**"
+      - "src/docich/comment/prompts/comment_persona_main.md"
+      - ".github/workflows/discord-chat-cloudflare.yml"
+  push:
+    branches: [main]
+    paths:
+      - "workers/discord-chat/**"
+      - "src/docich/comment/prompts/comment_persona_main.md"
+      - ".github/workflows/discord-chat-cloudflare.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  worker-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    defaults:
+      run:
+        working-directory: workers/discord-chat
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - name: Install pinned Cloudflare build dependencies
+        run: npm install --no-audit --no-fund
+      - name: Build Cloudflare Worker without deploying
+        run: ./node_modules/.bin/cf build
+      - name: Run offline contracts
+        run: npm test
+      - name: Run SQLite Durable Object contracts in local workerd
+        run: npm run test:workerd

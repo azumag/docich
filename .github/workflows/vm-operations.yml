@@ -3,6 +3,9 @@ name: VM operations
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'workers/tsuitate-bot/**'
+      - '.github/workflows/tsuitate-bot-worker.yml'
   workflow_dispatch:
     inputs:
       operation:
@@ -463,6 +466,122 @@ jobs:
 
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           cat control/ops/vm_actions/restart_radio_worker.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Restart direct stream for reviewed overlay runtime epoch
+        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git -C candidate cat-file -e "$BEFORE_SHA^{commit}"
+          if git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- ops/vm_actions/direct_stream_overlay_restart_epoch; then
+            exit 0
+          fi
+
+          bash -n control/ops/vm_actions/restart_direct_stream_overlay.sh
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/restart_direct_stream_overlay.sh |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Enable common TwiCa foreground for reviewed runtime epoch
+        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git -C candidate cat-file -e "$BEFORE_SHA^{commit}"
+          if git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- ops/vm_actions/twica_common_enable_epoch; then
+            exit 0
+          fi
+
+          bash -n control/ops/vm_actions/enable_twica_common_once.sh
+          python3 -m py_compile control/ops/vm_actions/enable_twica_common_once.py
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          set +e
+          cat control/ops/vm_actions/enable_twica_common_once.sh |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+          rc=$?
+          set -e
+          case "$rc" in
+            0) ;;
+            41) echo "::error::TwiCa common enable blocked: renderer_not_ready" ;;
+            42) echo "::error::TwiCa common enable blocked: legacy_guards_not_ready" ;;
+            43) echo "::error::TwiCa common enable blocked: stream_intentionally_stopped" ;;
+            44) echo "::error::TwiCa common enable blocked: stream_supervisor_unverified" ;;
+            45) echo "::error::TwiCa common enable blocked: stream_input_not_ready_after_restart" ;;
+            46) echo "::error::TwiCa common enable blocked: handoff_timeout" ;;
+            47) echo "::error::TwiCa common enable blocked: post_activation_unhealthy" ;;
+            48) echo "::error::TwiCa common enable blocked: shared_only_evidence_unavailable" ;;
+            49) echo "::error::TwiCa common enable blocked: prepare_required" ;;
+            50) echo "::error::TwiCa common enable blocked: install_or_operation_failed" ;;
+            51) echo "::error::TwiCa common enable blocked: unit_drift" ;;
+            52) echo "::error::TwiCa common enable blocked: shared_overlay_restart_unavailable" ;;
+            53) echo "::error::TwiCa common enable blocked: shared_overlay_health_not_ready" ;;
+            *) echo "::error::TwiCa common enable failed: fixed category unavailable (rc=$rc)" ;;
+          esac
+          exit "$rc"
+
+      - name: Refresh active Soren91 GAME OPS rails after reviewed Soren update
+        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git -C candidate cat-file -e "$BEFORE_SHA^{commit}"
+          refresh_required=0
+          if ! git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- games/soviet_now; then
+            refresh_required=1
+          fi
+          if ! git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- ops/vm_actions/soren_inline_overlay_refresh_epoch; then
+            refresh_required=1
+          fi
+          [[ "$refresh_required" -eq 1 ]] || exit 0
+
+          bash -n control/ops/vm_actions/refresh_soren_inline_overlay.sh
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/refresh_soren_inline_overlay.sh |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Restart reviewed Soren status overlay watchers after Soren update
+        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$BEFORE_SHA" != 0000000000000000000000000000000000000000 ]] \
+            && git -C candidate cat-file -e "$BEFORE_SHA^{commit}" \
+            && git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- games/soviet_now; then
+            exit 0
+          fi
+
+          bash -n control/ops/vm_actions/restart_soren_overlay_watchers.sh
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/restart_soren_overlay_watchers.sh |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Restart docich webui systemd unit
         if: ${{ steps.auth.outputs.operation == 'restart_webui' }}

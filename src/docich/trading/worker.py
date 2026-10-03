@@ -11,6 +11,7 @@ from typing import Any
 from ..config import GlobalConfig
 from .arbitrage import TopOfBook, find_triangle_symbols, scan_triangular_arbitrage
 from .events import append_public_event, build_fill_event, build_settlement_event
+from .experiment_control import ExperimentStep, assess_experiment, experiment_key, experiment_lock
 from .freshness import (
     QUALITY_FRESH,
     MarketFreshness,
@@ -26,12 +27,13 @@ from .risk import CapitalPolicy, allocate_opportunities
 from .status import build_public_status, write_public_status
 from .settlement import settlement_observation_id, simulate_multileg_settlement
 from .strategies import scan_exit_opportunities, scan_opportunities, select_diversified_opportunities
-from .strategy_runtime import pop_reason_context
+from .strategy_runtime import get_active_experiment, pop_reason_context
+from .strategy_lab import MAX_LOOKBACK
 from .strategy_store import load_strategy_policy
 
 D = Decimal
 TIMEFRAME = "5m"
-HISTORY_LIMIT = 24
+HISTORY_LIMIT = MAX_LOOKBACK + 1  # A 24-period return/RSI needs 25 closes.
 BOOK_LIMIT = 20
 ARB_MIN_EDGE_BPS = D("10")
 ARB_PROBE_JPY = (D("1000"), D("3000"), D("10000"))
@@ -400,47 +402,94 @@ def run_worker_cycle(
                 ).payload()
         save_cache((state_dir / "market_cache.json"), market_cache)
 
-        # The improvement job may persist a tuned policy; load it once per
-        # cycle. Missing/corrupt file falls back to the built-in default,
-        # so behavior is unchanged until a policy is written.
-        policy = load_strategy_policy(state_dir)
-        candidates = tuple(scan_opportunities(frames, now=now, policy=policy)) + tuple(
-            scan_relative_value_opportunities(frames, markets, now=now)
-        )
-        cost_basis = ledger.position_cost_basis()
-        exit_opportunities = scan_exit_opportunities(frames, cost_basis, now=now)
-        exit_symbols = {opportunity.symbol for opportunity in exit_opportunities}
-        entries = tuple(
-            opportunity for opportunity in candidates if opportunity.symbol not in exit_symbols
-        )
-        selection = select_diversified_opportunities(entries, frames)
-        prices = {symbol: frame.last_price for symbol, frame in frames.items()}
-        capital = D(str(g.trading.paper_capital_jpy))
-        deployed_before = ledger.deployed_reference()
-        available_jpy = max(D("0"), capital - deployed_before)
-        allocation = allocate_opportunities(
-            exit_opportunities + selection.selected,
-            markets=markets,
-            prices=prices,
-            quote_to_reference={"JPY": D("1")},
-            available_quote={"JPY": available_jpy},
-            capital_reference=capital,
-            deployed_reference=deployed_before,
-            available_base=ledger.positions(),
-            policy=CapitalPolicy(),
-            now=now,
-        )
+        with experiment_lock(state_dir):
+            # The improvement job may persist a tuned policy; load it once per
+            # cycle. Missing/corrupt file falls back to the built-in default,
+            # so behavior is unchanged until a policy is written.
+            capital = D(str(g.trading.paper_capital_jpy))
+            # A candidate may have changed while public fetches were in flight.
+            # Attribute decisions to the local commit phase, not a timestamp
+            # preceding the newly activated experiment.
+            decision_now = max(float(now), float(observation_now_fn()))
+            try:
+                experiment_step = assess_experiment(state_dir, capital_jpy=capital, now=decision_now)
+            except Exception:
+                experiment_step = ExperimentStep(None, None, False, "blocked", "control-error")
+            policy = load_strategy_policy(state_dir)
+            planned_experiment_key = experiment_key(get_active_experiment())
+            candidates = tuple(scan_opportunities(frames, now=decision_now, policy=policy)) + tuple(
+                scan_relative_value_opportunities(frames, markets, now=decision_now)
+            )
+            if not experiment_step.entries_allowed:
+                candidates = ()
+            cost_basis = ledger.position_cost_basis()
+            # Missing experiment rules are not permission to use legacy exits.
+            # A readable strategy can still close holdings when only evaluation
+            # is unavailable; unknown strategy ownership needs recovery first.
+            unknown_exit_policy = get_active_experiment() is None and experiment_step.reason_code in {
+                "invalid-active", "control-invalid", "control-error",
+            }
+            exit_opportunities = () if unknown_exit_policy else scan_exit_opportunities(
+                frames, cost_basis, now=decision_now,
+            )
+            exit_symbols = {opportunity.symbol for opportunity in exit_opportunities}
+            entries = tuple(
+                opportunity for opportunity in candidates if opportunity.symbol not in exit_symbols
+            )
+            selection = select_diversified_opportunities(entries, frames)
+            prices = {symbol: frame.last_price for symbol, frame in frames.items()}
+            capital = D(str(g.trading.paper_capital_jpy))
+            deployed_before = ledger.deployed_reference()
+            available_jpy = max(D("0"), capital - deployed_before)
+            allocation = allocate_opportunities(
+                exit_opportunities + selection.selected,
+                markets=markets,
+                prices=prices,
+                quote_to_reference={"JPY": D("1")},
+                available_quote={"JPY": available_jpy},
+                capital_reference=capital,
+                deployed_reference=deployed_before,
+                available_base=ledger.positions(),
+                policy=CapitalPolicy(),
+                now=decision_now,
+            )
 
-        broker = PaperBroker(ledger)
-        new_fill_count = 0
-        for decision in allocation.decisions:
-            # The per-opportunity reason context is the allowlisted "why" of the
-            # order (observed signal vs threshold). Pop it once and persist it
-            # with the fill as well as the public event.
-            signal_context = pop_reason_context(decision.opportunity_id)
-            fill = broker.fill(decision, timestamp=now, signal_context=signal_context)
-            if append_public_event(event_path, build_fill_event(fill, reason_context=signal_context)):
-                new_fill_count += 1
+            broker = PaperBroker(ledger)
+            new_fill_count = 0
+            checked_entry_gate = False
+            # Realized losses become known on exits. Recheck before any buys,
+            # not after executing all orders precomputed for this cycle.
+            decisions = tuple(item for item in allocation.decisions if item.side == "sell") + tuple(
+                item for item in allocation.decisions if item.side != "sell"
+            )
+            for decision in decisions:
+                if decision.side == "buy":
+                    if not checked_entry_gate:
+                        try:
+                            experiment_step = assess_experiment(state_dir, capital_jpy=capital, now=decision_now)
+                        except Exception:
+                            experiment_step = ExperimentStep(None, None, False, "blocked", "control-error")
+                        checked_entry_gate = True
+                    if (not experiment_step.entries_allowed
+                            or experiment_key(experiment_step.active) != planned_experiment_key):
+                        pop_reason_context(decision.opportunity_id)
+                        continue
+                # The per-opportunity reason context is the allowlisted "why" of the
+                # order (observed signal vs threshold). Pop it once and persist it
+                # with the fill as well as the public event.
+                signal_context = pop_reason_context(decision.opportunity_id)
+                fill = broker.fill(decision, timestamp=decision_now, signal_context=signal_context)
+                if append_public_event(event_path, build_fill_event(fill, reason_context=signal_context)):
+                    new_fill_count += 1
+
+            # Re-evaluate committed fills in the same local critical section, so a
+            # loss gate is durable immediately and a flat account can use a queued
+            # candidate without waiting for another narration/LLM job.
+            if get_active_experiment() is not None or experiment_step.status != "legacy":
+                try:
+                    experiment_step = assess_experiment(state_dir, capital_jpy=capital, now=decision_now)
+                except Exception:
+                    experiment_step = ExperimentStep(None, None, False, "blocked", "control-error")
 
         errors: list[str] = []
         if frame_error_count:
@@ -462,6 +511,8 @@ def run_worker_cycle(
             errors.extend(arbitrage_errors)
         rejected_codes = [item.reason_code for item in selection.rejected]
         skipped_codes = rejected_codes + [item.reason_code for item in allocation.skipped]
+        if not experiment_step.entries_allowed:
+            skipped_codes.append("experiment_" + experiment_step.reason_code)
         # Two distinct success notions (documented, not a contradiction):
         # - last_success_at: last fully-clean cycle (no errors). Monitoring use.
         # - snapshot_generated_at: last cycle that delivered a successful
@@ -500,6 +551,11 @@ def run_worker_cycle(
             error_codes=errors,
             last_success_at=success_at,
         )
+        payload["worker_summary"].update({
+            "experiment_status": experiment_step.status,
+            "experiment_reason_code": experiment_step.reason_code,
+            "experiment_entries_allowed": experiment_step.entries_allowed,
+        })
         payload["heartbeat_at"] = float(now)
         payload["snapshot_seq"] = snapshot_seq
         payload["snapshot_generated_at"] = snapshot_generated

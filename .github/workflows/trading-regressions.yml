@@ -1,0 +1,138 @@
+name: Trading regressions
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/trading-regressions.yml'
+      - 'src/docich/trading/**'
+      - 'src/docich/paper_*.py'
+      - 'src/docich/overlay*.py'
+      - 'src/docich/webui.py'
+      - 'src/docich/config.py'
+      - 'src/docich/runtime_backend.py'
+      - 'src/docich/hanjuku_narration.py'
+      - 'tests/test_trading*.py'
+      - 'tests/test_paper*.py'
+      - 'tests/test_program_view*.py'
+      - 'tests/test_overlay*.py'
+      - 'tests/test_audio_delivery.py'
+      - 'containers/paper-strategy/**'
+      - 'config/market-paper.toml'
+      - 'games/soviet_now'
+      - '.github/scripts/soren_gitlink_gate.py'
+      - 'requirements-test.txt'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/trading-regressions.yml'
+      - 'src/docich/trading/**'
+      - 'src/docich/paper_*.py'
+      - 'src/docich/overlay*.py'
+      - 'src/docich/webui.py'
+      - 'src/docich/config.py'
+      - 'src/docich/runtime_backend.py'
+      - 'src/docich/hanjuku_narration.py'
+      - 'tests/test_trading*.py'
+      - 'tests/test_paper*.py'
+      - 'tests/test_program_view*.py'
+      - 'tests/test_overlay*.py'
+      - 'tests/test_audio_delivery.py'
+      - 'containers/paper-strategy/**'
+      - 'config/market-paper.toml'
+      - 'games/soviet_now'
+      - '.github/scripts/soren_gitlink_gate.py'
+      - 'requirements-test.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trading-regressions-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  soren-gitlink-gate:
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          submodules: false
+      - name: Decide whether trading integration is affected
+        id: decide
+        env:
+          BEFORE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          AFTER_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run="$(python3 .github/scripts/soren_gitlink_gate.py \
+            --before "$BEFORE_SHA" \
+            --after "$AFTER_SHA" \
+            --root-path '.github/workflows/trading-regressions.yml' \
+            --root-path 'src/docich/trading/**' \
+            --root-path 'src/docich/paper_*.py' \
+            --root-path 'src/docich/overlay*.py' \
+            --root-path 'src/docich/webui.py' \
+            --root-path 'src/docich/config.py' \
+            --root-path 'src/docich/runtime_backend.py' \
+            --root-path 'src/docich/hanjuku_narration.py' \
+            --root-path 'tests/test_trading*.py' \
+            --root-path 'tests/test_paper*.py' \
+            --root-path 'tests/test_program_view*.py' \
+            --root-path 'tests/test_overlay*.py' \
+            --root-path 'tests/test_audio_delivery.py' \
+            --root-path 'containers/paper-strategy/**' \
+            --root-path 'config/market-paper.toml' \
+            --root-path 'requirements-test.txt' \
+            --root-path '.github/scripts/soren_gitlink_gate.py' \
+            --soren-path 'overlay_notify.sh' \
+            --soren-path 'generate_event_overlay.py' \
+            --soren-path 'core/config.sh' \
+            --soren-path 'broadcast/comment.sh' \
+            --soren-path 'broadcast/comment_lib.sh')"
+          [[ "$run" == true || "$run" == false ]]
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+  trading-regressions:
+    needs: soren-gitlink-gate
+    if: needs.soren-gitlink-gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-test.txt
+      - name: Crypto trading contracts
+        run: >-
+          python3 -m pytest -q
+          tests/test_trading_risk.py tests/test_trading_paper.py
+          tests/test_trading_bitbank.py tests/test_trading_cli.py
+          tests/test_trading_market_data.py tests/test_trading_strategies.py
+          tests/test_trading_strategy_cli.py tests/test_trading_relative_value.py
+          tests/test_trading_arbitrage.py tests/test_trading_depth.py
+          tests/test_trading_depth_cli.py tests/test_trading_fee_model.py
+          tests/test_trading_multileg_settlement.py
+          tests/test_trading_settlement_ledger.py tests/test_trading_settlement_history_cli.py
+          tests/test_trading_events.py tests/test_trading_worker.py tests/test_trading_worker_lifecycle.py
+          tests/test_trading_presentation.py tests/test_trading_notifications.py
+          tests/test_trading_dashboard_snapshot.py tests/test_trading_dashboard_server.py
+          tests/test_trading_dashboard_activity_failover.py tests/test_trading_timeframe_chart.py
+          tests/test_program_view.py tests/test_program_view_browser_path.py
+          tests/test_trading_strategy_store.py tests/test_trading_strategy_lab.py tests/test_trading_strategy_metrics.py tests/test_trading_corner_script.py
+          tests/test_trading_experiment_control.py tests/test_trading_strategy_costs.py tests/test_trading_ai_text.py
+          tests/test_trading_corner_research.py tests/test_trading_paper_improve.py tests/test_paper_improve_retry.py
+          tests/test_paper_improve_lifecycle.py
+          tests/test_trading_free_strategy_accounting.py tests/test_trading_free_strategy_post_fill_drawdown.py
+          tests/test_trading_free_strategy_cli.py tests/test_trading_free_strategy_worker.py
+          tests/test_trading_free_strategy_dashboard.py tests/test_trading_free_strategy_terminal.py
+          tests/test_trading_free_strategy_state.py tests/test_trading_free_strategy_paused.py
+          tests/test_trading_free_strategy_entrypoint.py tests/test_trading_free_strategy_capacity.py
+          tests/test_trading_free_strategy_systemd.py
+          tests/test_trading_soren_output.py tests/test_overlay_queue.py tests/test_audio_delivery.py tests/test_overlay_interop.py

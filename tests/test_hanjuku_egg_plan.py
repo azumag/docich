@@ -5,8 +5,8 @@ owner 2026-10-03: 「全ての将軍と切り札のデータをちゃんと内�
 （ぶつかり合い時の青いバー→A連打で前進）も消費する」「切り札の『将軍戦ダメージ』は
 gcgx kirihuda.html と wikiwiki 切り札表（両者完全一致）に統一して全32札を埋める」。
 
-青バーそのものの画素検出は follow-up（実機計測待ち）。ここでは予測側:
-「卵の脅威が消えた局面だけ全力A連打」を検証する。
+青バーと卵落の直接観測は未校正。予測による札選びと、選択・HP低下だけでは
+敵を召喚不能と確定しないことを検証する。
 """
 from pathlib import Path
 import sys
@@ -140,8 +140,8 @@ def test_a_spare_dropper_opens_the_battle_to_force_the_egg_drop():
     assert record['egg_plan']['threat'] is True
     assert record['egg_plan']['deny_opening_egg'] is True
     assert record['reason'].startswith('携行札の卵落')
-    # 監視対象は選択前のHPで置かれ、まだ卵は落ちていない扱い。
-    assert state['battle']['egg_drop_watch']['card'] == 'ブラッキー'
+    # Bを開く予定だけでは選択後の監視を始めない。
+    assert 'egg_drop_watch' not in state['battle']
     assert not state['battle'].get('enemy_egg_dropped')
 
 
@@ -188,16 +188,15 @@ def _melee(enemy, egg_dropped):
             'clashed': True, 'planned_cards': [], 'enemy_egg_dropped': egg_dropped}
 
 
-def test_melee_spends_the_blue_gauge_once_the_egg_is_gone():
+def test_melee_does_not_treat_an_old_inferred_egg_drop_as_a_receipt():
     state = {'_records': [], 'chapter': 1, 'variant': 'chart'}
     actions = policy._melee_step(state, _melee('クミン', True))
-    assert sum(a.get('type') == 'pad' for a in actions) == policy.POWER_TAPS
+    assert actions == []
     record = state['_records'][-1]
     assert record['decision'] == 'battle_melee'
-    assert record['melee_control_mode'] == 'power_mash'
-    assert record['enemy_egg_dropped'] is True
-    assert record['a_frames_sent'] == policy.POWER_TAPS * 3
-    assert '青ゲージ' in record['reason']
+    assert record['melee_control_mode'] == 'egg_safe_hold'
+    assert record['enemy_egg_dropped'] is None
+    assert record['a_frames_sent'] == 0
 
 
 def test_melee_holds_against_an_enemy_that_still_has_its_egg():
@@ -207,32 +206,34 @@ def test_melee_holds_against_an_enemy_that_still_has_its_egg():
     assert actions == []
     record = state['_records'][-1]
     assert record['melee_control_mode'] == 'egg_safe_hold'
-    assert record['enemy_egg_dropped'] is False
+    assert record['enemy_egg_dropped'] is None
     assert record['egg_risk_flags']['clash_position'] is True
 
 
-def test_a_dropped_egg_ends_the_unarmed_clash_check():
+def test_an_inferred_egg_drop_does_not_skip_the_unarmed_clash_check():
     still_held = policy._unarmed_clash_risk(_melee('クミン', False))
     assert still_held is True
-    assert policy._unarmed_clash_risk(_melee('クミン', True)) is False
+    assert policy._unarmed_clash_risk(_melee('クミン', True)) is True
 
 
-def test_selected_dropper_with_a_measured_hp_drop_marks_the_egg_gone():
+def test_selected_dropper_with_a_measured_hp_drop_remains_unconfirmed():
     state = {'_records': [], 'chapter': 1, 'variant': 'chart', 'battle': {
         'enemy': 'クミン', 'ally': 'しゅじんこう', 'enemy_hp': 62, 'ally_hp': 80,
         'start_enemy_hp': 70, 'start_ally_hp': 80, 'ref_ally_hp': 90, 'step': '1-A1',
         'side': 'attack', 'castle': 'キカンドン', 'clashed': False, 'planned_cards': [], 'card_evidence_version': 1,
         'cards_used': [], 'cards_selected': ['イッテツーン'], 'cards_unclassified': [],
         'egg_drop_watch': {'card': 'イッテツーン', 'hp': 70, 'value': 8, 'threshold': 6,
-                           'max_hp_sum': 117}}}
+                           'max_hp_sum': 117, 'evidence_version': 2}}}
     view = screen('クミン', 62, 'しゅじんこう', 80)
     policy.battle_step(view, state)
-    assert state['battle']['enemy_egg_dropped'] is True
+    assert not state['battle'].get('enemy_egg_dropped')
+    assert state['battle']['enemy_egg_drop_expected'] is True
     assert 'egg_drop_watch' not in state['battle']
-    record = next(r for r in state['_records'] if r['decision'] == 'battle_egg_dropped')
+    record = next(r for r in state['_records'] if r['decision'] == 'battle_egg_drop_unconfirmed')
     assert record['card'] == 'イッテツーン'
     assert record['egg_drop'] == {'value': 8, 'threshold': 6, 'max_hp_sum': 117}
-    assert record['observed_metric'] == {'enemy_hp': 62, 'hp_at_card': 70, 'selected': True}
+    assert record['observed_metric'] == {'enemy_hp': 62, 'hp_at_card': 70, 'selected': True,
+                                        'egg_drop_confirmation': 'unclassified'}
 
 
 def test_no_claim_when_the_selected_dropper_never_moved_the_hp():
@@ -242,7 +243,7 @@ def test_no_claim_when_the_selected_dropper_never_moved_the_hp():
         'side': 'attack', 'castle': 'キカンドン', 'clashed': False, 'planned_cards': [], 'card_evidence_version': 1,
         'cards_used': [], 'cards_selected': ['イッテツーン'], 'cards_unclassified': [],
         'egg_drop_watch': {'card': 'イッテツーン', 'hp': 70, 'value': 8, 'threshold': 6,
-                           'max_hp_sum': 117}}}
+                           'max_hp_sum': 117, 'evidence_version': 2}}}
     policy.battle_step(screen('クミン', 70, 'しゅじんこう', 80), state)
     assert not state['battle'].get('enemy_egg_dropped')
     assert state['battle']['egg_drop_watch']['card'] == 'イッテツーン'
@@ -255,7 +256,7 @@ def test_no_claim_before_the_card_reaches_the_list_selection():
         'side': 'attack', 'castle': 'キカンドン', 'clashed': False, 'planned_cards': [], 'card_evidence_version': 1,
         'cards_used': [], 'cards_selected': [], 'cards_unclassified': [],
         'egg_drop_watch': {'card': 'イッテツーン', 'hp': 70, 'value': 8, 'threshold': 6,
-                           'max_hp_sum': 117}}}
+                           'max_hp_sum': 117, 'evidence_version': 2}}}
     policy.battle_step(screen('クミン', 62, 'しゅじんこう', 80), state)
     assert not state['battle'].get('enemy_egg_dropped')
 
@@ -268,4 +269,4 @@ def test_the_survival_rescue_picks_the_dropper_and_watches_it():
     policy._watch_egg_drop(cur, 'マグネガキン', cur['enemy_hp'],
                            policy._egg_drop_evidence(cur, 'マグネガキン'))
     assert cur['egg_drop_watch'] == {'card': 'マグネガキン', 'hp': 30, 'value': 8,
-                                     'threshold': 6, 'max_hp_sum': 117}
+                                     'threshold': 6, 'max_hp_sum': 117, 'evidence_version': 2}

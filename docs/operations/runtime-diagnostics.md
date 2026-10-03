@@ -249,6 +249,11 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   固定boolean `corner_paper_degraded` としてのみ要約する。state_dir は固定 config
   (`config/docich.soren-live.toml`) の `paths.state_dir` から解決し、
   production checkout 内に制約する。
+- Hanjukuの `retro_corner.bot_version` は固定許可値だけを表示する。従来の v1/v2 に加え、
+  `hanjuku-chart-v129-battle-card-progress` / `hanjuku-chart-v130-summer-cursor-evidence` /
+  `hanjuku-chart-v131-defense-month-economy` を許可する。
+  未知の値は `null` のままとし、prefix一致による任意文字列の公開はしない。この値はbot状態の
+  自己申告であり、表示だけで入力適用や勝率改善を実測したことにはならない。
 - Hanjuku実況再生: retro_corner が status=active / game=hanjuku-hero の場合だけ、
   Soren の tmp/.say_queue/debug.log 末尾を最大128KiB・2048行で読み、半熟英雄キューに
   限った queue_started / queue_completed / queue_failed / queue_unmatched_starts と、
