@@ -2,6 +2,7 @@ import { chooseObservedMove } from "./bot.js";
 import {
   MAX_BODY_BYTES,
   POSITION_VALIDATION_STAGES,
+  POSITION_VALUE_CLASSES,
   ProtocolFault,
   extractRequestIdentity,
   isRecord,
@@ -81,6 +82,11 @@ function captureValidatedDiagnosticContext(value, diagnostics) {
       diagnostics.validationFailureStage = error.validationFailureStage;
       diagnostics.positionIndex = error.positionIndex;
       diagnostics.fieldType = error.fieldType;
+      if (error.validationFailureStage === "last_capture"
+          && error.fieldType === "string"
+          && POSITION_VALUE_CLASSES.includes(error.validationFailureValueClass)) {
+        diagnostics.validationFailureValueClass = error.validationFailureValueClass;
+      }
     }
   }
 }
@@ -109,6 +115,11 @@ function recordWebhookDiagnostic(env, diagnostics, status, elapsedMs) {
     event.validationFailureStage = diagnostics.validationFailureStage;
     event.positionIndex = diagnostics.positionIndex;
     event.fieldType = diagnostics.fieldType;
+    if (diagnostics.validationFailureStage === "last_capture"
+        && diagnostics.fieldType === "string"
+        && POSITION_VALUE_CLASSES.includes(diagnostics.validationFailureValueClass)) {
+      event.validationFailureValueClass = diagnostics.validationFailureValueClass;
+    }
   }
   try {
     // Only this fixed, allowlisted object is persisted by Workers Logs. Never pass request/env/error objects.
@@ -524,4 +535,5 @@ export class GameState {
 export default {
   fetch: handleWebhook,
 };
+
 
