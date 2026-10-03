@@ -45,7 +45,7 @@ test("Cloudflare config sets the production Bot ID and keeps the secret binding 
 
   assert.deepEqual(env.BOT_ID, {
     type: "text",
-    value: ":DoCiAI",
+    value: "DoCiAI",
   });
   assert.equal(env.WEBHOOK_SECRET.type, "secret");
   assert.equal(Object.hasOwn(env.WEBHOOK_SECRET, "value"), false);
@@ -55,5 +55,5 @@ test("test-only runtime keeps its fixture Bot ID", async () => {
   const runtimeConfig = await readFile(new URL("../wrangler.runtime.toml", import.meta.url), "utf8");
 
   assert.match(runtimeConfig, /^BOT_ID = "fixture-bot-id"$/m);
-  assert.doesNotMatch(runtimeConfig, /:DoCiAI/);
+  assert.doesNotMatch(runtimeConfig, /DoCiAI/);
 });

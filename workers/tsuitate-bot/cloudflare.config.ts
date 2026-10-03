@@ -19,7 +19,7 @@ export default defineConfig({
       GameState: exports.durableObject({ storage: "sqlite" }),
     },
     env: {
-      BOT_ID: bindings.text(":DoCiAI"),
+      BOT_ID: bindings.text("DoCiAI"),
       GAME_STATE: bindings.durableObject({
         worker: "docich-tsuitate-bot",
         exportName: "GameState",
