@@ -6,7 +6,9 @@ import {
   DiscordSendError,
   gatewaySocketUrl,
   isAddressedMessage,
+  isAddressedRoleMessage,
   isFatalGatewayClose,
+  managedBotRoleId,
   stripBotMention,
 } from "../src/discord.js";
 import { DISCORD_CONTEXT, cleanReply, generateReply } from "../src/llm.js";
@@ -38,6 +40,19 @@ test("mention matching remains explicit and strips only the bot mention", () => 
   assert.equal(isAddressedMessage({ mentions: [], content: "hello" }, "99"), false);
   assert.equal(stripBotMention(message.content, "99"), "こんにちは");
   assert.equal(stripBotMention("<@!99>", "99"), "（呼びかけ）");
+});
+
+test("only the Discord-managed role for this bot is treated as addressed", () => {
+  const roles = [
+    { id: "100", name: "DoCiAI", managed: false, tags: {} },
+    { id: "200", name: "DoCiAI", managed: true, tags: { bot_id: "99" } },
+    { id: "300", name: "OtherBot", managed: true, tags: { bot_id: "77" } },
+  ];
+  assert.equal(managedBotRoleId(roles, "99"), "200");
+  assert.equal(managedBotRoleId(roles, "88"), null);
+  assert.equal(isAddressedRoleMessage({ mention_roles: ["200"], content: "<@&200> hello" }, "200"), true);
+  assert.equal(isAddressedRoleMessage({ mention_roles: ["100"], content: "<@&100> hello" }, "200"), false);
+  assert.equal(stripBotMention("<@&200> hello", "99", "200"), "hello");
 });
 
 test("Japanese bigrams and normalized latin terms support durable recall", () => {
