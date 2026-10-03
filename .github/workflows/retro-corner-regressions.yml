@@ -28,6 +28,7 @@ on:
       - 'src/docich/tsuitate_protocol.py'
       - 'src/docich/soren91*.py'
       - 'brains/**'
+      - 'scripts/hanjuku_scene_generate.sh'
       - 'config/games/**'
       - 'games/soviet_now'
       - '.github/scripts/soren_gitlink_gate.py'
@@ -89,6 +90,7 @@ on:
       - 'src/docich/tsuitate_protocol.py'
       - 'src/docich/soren91*.py'
       - 'brains/**'
+      - 'scripts/hanjuku_scene_generate.sh'
       - 'config/games/**'
       - 'games/soviet_now'
       - '.github/scripts/soren_gitlink_gate.py'
@@ -177,6 +179,7 @@ jobs:
             --root-path 'src/docich/tsuitate_protocol.py' \
             --root-path 'src/docich/soren91*.py' \
             --root-path 'brains/**' \
+            --root-path 'scripts/hanjuku_scene_generate.sh' \
             --root-path 'config/games/**' \
             --root-path 'tests/test_retro*.py' \
             --root-path 'tests/test_hanjuku*.py' \
@@ -229,6 +232,8 @@ jobs:
           tests/test_hanjuku_boss_events.py tests/test_hanjuku_sortie_evidence.py tests/test_hanjuku_sortie_interruption.py tests/test_hanjuku_chart_adjust.py tests/test_hanjuku_off_chart.py tests/test_hanjuku_castle_panel.py
           tests/test_hanjuku_house.py tests/test_hanjuku_recruit_roster.py tests/test_hanjuku_execution.py tests/test_hanjuku_cursor_components.py
           tests/test_hanjuku_loss_accounting.py
+          tests/test_hanjuku_scene_commentary.py tests/test_hanjuku_scene_process.py
+          tests/test_hanjuku_scene_dispatcher.py tests/test_hanjuku_fixed_narration_disabled.py
           tests/test_agent_loop.py tests/test_agent_fence.py tests/test_agent_action_lock.py
           tests/test_nethack_corner.py tests/test_nethack_corner_p5.py tests/test_nethack_corner_force_recover.py
           tests/test_nethack_run.py tests/test_nethack_run_recovery.py

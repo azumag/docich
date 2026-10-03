@@ -116,3 +116,17 @@ def default_pid_relpath(name):
 # Maintenance is a oneshot, not a supervised game worker or queue consumer.
 OPENCODE_RETENTION_TIMER = "docich-opencode-retention.timer"
 OPENCODE_RETENTION_MAX_AGE_SEC = 3 * 3600
+
+# Game-owned, bounded oneshot. It has no supervisor PID file and is expected
+# to be absent between verified facts. Health is its generation-bound journal,
+# not the required/optional supervised-worker liveness rule above.
+HANJUKU_SCENE_ONESHOT = {
+    "game": "hanjuku-hero",
+    "module": "docich.hanjuku_scene_worker",
+    "producer_file": "hanjuku_scene.json",
+    "worker_file": "hanjuku_scene_worker.json",
+    "lock_file": "hanjuku_scene_worker.lock",
+    "log_file": "hanjuku_scene_commentary.jsonl",
+    "diagnostics_key": "corners.retro_corner.scene_narration",
+    "queue_lane": "radio",
+}

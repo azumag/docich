@@ -35,6 +35,9 @@ Observed sources (all read-only):
   - while the retro corner is actively running Hanjuku Hero, a bounded tail
     of Soren's speech debug log is parsed in memory for Hanjuku-only queue
     outcome counters. No log lines, queue names or speech text are emitted.
+    Its current runtime's scene producer, worker and bounded event log are
+    separately projected to fixed enums, counts and ages; facts and scene
+    identities are never emitted.
   - a bounded, redacted tail (last lines only) of the NetHack agent's own log
     (state_dir/logs/agent.log, written by supervise.run_callable_loop) so a
     corner that reaches gameplay but never acts stays diagnosable. No
@@ -3261,6 +3264,7 @@ def _collect_programs(state_dir, soren, now):
             and isinstance(game_switch, dict)
             and game_switch.get("active_game") == "hanjuku-hero"):
         retro["narration_playback"] = _collect_hanjuku_narration_playback(soren)
+        retro["scene_narration"] = _collect_hanjuku_scene_narration(state_dir)
     payload["hanjuku_predictions"] = _collect_hanjuku_predictions(state_dir)
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
     payload["ab"] = _collect_ab(soren, now)
@@ -3273,6 +3277,10 @@ HANJUKU_PLAYBACK_LOG_MAX_LINES = 2048
 _HANJUKU_QUEUE_BASENAME_RE = re.compile(
     r"(?P<name>[^/\s]*_hanjuku(?:_commentary|:commentary)\.(?:txt|playing))(?=$|[\s),])"
 )
+_HANJUKU_FENCE_REJECTION_RE = re.compile(
+    r"^\[say_enqueue [^\]\r\n]+\] 半熟英雄実況を破棄 \(runtime fence失効\) \| "
+)
+_HANJUKU_SAY_LABEL_RE = re.compile(r"(?:^|\s)label=hanjuku_commentary(?:\s|$)")
 _HANJUKU_PLAYBACK_EMPTY = {
     "status": "unavailable",
     "sampled_bytes": None,
@@ -3281,6 +3289,8 @@ _HANJUKU_PLAYBACK_EMPTY = {
     "queue_started": None,
     "queue_completed": None,
     "queue_failed": None,
+    "queue_failed_fence_rejection": None,
+    "queue_failed_unclassified": None,
     "queue_unmatched_starts": None,
     "external_kill_markers": None,
     "truncated_playback_suspected": None,
@@ -3314,7 +3324,10 @@ def _collect_hanjuku_narration_playback(soren):
     Queue basenames are used only as in-memory correlation keys. A start with
     no matching terminal event is evidence of an incomplete observation, not
     proof of cancellation: it can also be the currently playing item or fall
-    across log rotation.
+    across log rotation. Soren also rotates this file upstream, so even an
+    untruncated collector sample is not a whole-run total. A fence rejection
+    is classified only when the same item's fixed marker precedes failure;
+    it does not distinguish expiry from identity or read failures.
     """
     result = dict(_HANJUKU_PLAYBACK_EMPTY)
     fd = None
@@ -3351,6 +3364,8 @@ def _collect_hanjuku_narration_playback(soren):
 
     active = {}
     started = completed = failed = 0
+    fence_rejected = set()
+    failed_fence_rejection = 0
     kill_markers = truncated_suspected = retry_suppressed = 0
     for line in lines:
         match = _HANJUKU_QUEUE_BASENAME_RE.search(line)
@@ -3361,19 +3376,25 @@ def _collect_hanjuku_narration_playback(soren):
             if "再生開始:" in line:
                 started += 1
                 active[identity] = active.get(identity, 0) + 1
+                fence_rejected.discard(identity)
             elif "再生完了:" in line:
                 completed += 1
+                fence_rejected.discard(identity)
                 if active.get(identity, 0) > 1:
                     active[identity] -= 1
                 else:
                     active.pop(identity, None)
             elif "再生失敗:" in line:
                 failed += 1
+                failed_fence_rejection += identity in fence_rejected
+                fence_rejected.discard(identity)
                 if active.get(identity, 0) > 1:
                     active[identity] -= 1
                 else:
                     active.pop(identity, None)
-        elif line.startswith("[say_enqueue ") and "label=hanjuku_commentary" in line:
+        elif line.startswith("[say_enqueue ") and _HANJUKU_SAY_LABEL_RE.search(line):
+            if _HANJUKU_FENCE_REJECTION_RE.match(line):
+                fence_rejected.add(identity)
             if "外部killフラグ検出" in line:
                 kill_markers += 1
             if "say途中切断の疑い" in line:
@@ -3389,12 +3410,252 @@ def _collect_hanjuku_narration_playback(soren):
         "queue_started": started,
         "queue_completed": completed,
         "queue_failed": failed,
+        "queue_failed_fence_rejection": failed_fence_rejection,
+        "queue_failed_unclassified": failed - failed_fence_rejection,
         "queue_unmatched_starts": sum(active.values()),
         "external_kill_markers": kill_markers,
         "truncated_playback_suspected": truncated_suspected,
         "partial_audio_retry_suppressed": retry_suppressed,
     })
     return result
+
+
+HANJUKU_SCENE_RECORD_MAX_BYTES = 256 * 1024
+HANJUKU_SCENE_LOG_MAX_BYTES = 128 * 1024
+HANJUKU_SCENE_LOG_MAX_LINES = 2048
+HANJUKU_SCENE_IDENTITY = ("game", "runtime_id", "generation", "lease_id")
+HANJUKU_SCENE_EVENTS = (
+    "requested", "skipped", "generate_started", "generate_succeeded",
+    "generate_failed", "deliver_enqueued", "deliver_failed",
+)
+HANJUKU_SCENE_REASONS = (
+    "disabled", "no_facts", "duplicate", "cooldown", "in_flight", "stale",
+    "scene_changed", "fence_lost", "unavailable", "invalid_output",
+    "generation_failed", "timeout", "queue_giveup", "gate_giveup",
+    "rate_limit", "backoff", "delivery_failed", "worker_error", "none",
+)
+HANJUKU_SCENE_ROLES = (
+    "BATCH_COMMENTARY_AGENTS", "RADIO_AGENTS", "AI_COMMON_AGENTS",
+)
+
+
+def _open_hanjuku_scene_source(path):
+    """Open a fixed runtime source without following any directory symlink."""
+    directory_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        parts = Path(path).absolute().parts[1:]
+        for part in parts[:-1]:
+            next_fd = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=directory_fd,
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        return os.open(
+            parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=directory_fd,
+        )
+    finally:
+        os.close(directory_fd)
+
+
+def _read_hanjuku_scene_record(path):
+    fd = _open_hanjuku_scene_source(path)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= HANJUKU_SCENE_RECORD_MAX_BYTES:
+            raise ValueError("invalid bounded record")
+        raw = os.read(fd, HANJUKU_SCENE_RECORD_MAX_BYTES + 1)
+        if len(raw) > HANJUKU_SCENE_RECORD_MAX_BYTES:
+            raise ValueError("record grew")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("not object")
+        return data
+    finally:
+        os.close(fd)
+
+
+def _hanjuku_scene_int(value, maximum=1_000_000_000):
+    return value if type(value) is int and 0 <= value <= maximum else None
+
+
+def _hanjuku_scene_latency(value):
+    if type(value) not in (int, float) or not 0 <= value <= 3_600_000 or not math.isfinite(value):
+        return None
+    return round(value, 3)
+
+
+def _hanjuku_scene_age(value, now):
+    if type(value) not in (int, float) or not 0 <= value <= now or not math.isfinite(value):
+        return None
+    return round(now - value, 3)
+
+
+def _hanjuku_scene_matches(data, active, *, schema=True):
+    return (
+        isinstance(data, dict)
+        and (not schema or type(data.get("schema")) is int and data["schema"] == 1)
+        and all(type(data.get(key)) is type(active[key]) and data.get(key) == active[key]
+                for key in HANJUKU_SCENE_IDENTITY)
+    )
+
+
+def _project_hanjuku_scene_record(path, active, now, *, producer=False):
+    if producer:
+        out = dict(read_status="unavailable", enabled=None, age_sec=None,
+                   request_present=None, request_seq=None, request_age_sec=None,
+                   request_scope=None, request_unexpired=None, request_matches_scene=None)
+    else:
+        out = dict(read_status="unavailable", status=None, reason=None, role=None,
+                   age_sec=None, last_request_seq=None, counters=None)
+    try:
+        data = _read_hanjuku_scene_record(path)
+        # main's timestamp predates other diagnostics and drops fractional
+        # seconds. Compare live records against a clock sampled after this read.
+        now = time.time() if now is None else now
+        if not _hanjuku_scene_matches(data, active):
+            return out
+        age = _hanjuku_scene_age(data.get("observed_at" if producer else "at"), now)
+        if age is None or producer and type(data.get("enabled")) is not bool:
+            return out
+        out.update(read_status="available", age_sec=age)
+        if producer:
+            request = data.get("request")
+            out.update(enabled=data["enabled"], request_present=isinstance(request, dict))
+            if isinstance(request, dict):
+                out["request_seq"] = _hanjuku_scene_int(request.get("seq"))
+                out["request_age_sec"] = _hanjuku_scene_age(request.get("at"), now)
+                scope = request.get("scope")
+                out["request_scope"] = scope if scope in ("history", "scene") else None
+                expiry = request.get("expires_at")
+                if type(expiry) in (int, float) and math.isfinite(expiry) and expiry >= 0:
+                    out["request_unexpired"] = now < expiry
+                current_scene = data.get("scene_id")
+                request_scene = request.get("scene_id")
+                if isinstance(current_scene, str) and current_scene and isinstance(request_scene, str) and request_scene:
+                    out["request_matches_scene"] = current_scene == request_scene
+        else:
+            out.update(
+                status=data.get("status") if data.get("status") in HANJUKU_SCENE_EVENTS else None,
+                reason=data.get("reason") if data.get("reason") in HANJUKU_SCENE_REASONS else None,
+                role=data.get("role") if data.get("role") in HANJUKU_SCENE_ROLES else None,
+                last_request_seq=_hanjuku_scene_int(data.get("last_request_seq")),
+            )
+            counts = data.get("counters")
+            if isinstance(counts, dict):
+                out["counters"] = {
+                    key: _hanjuku_scene_int(counts.get(key, 0))
+                    for key in (*HANJUKU_SCENE_EVENTS, *HANJUKU_SCENE_REASONS)
+                    if key != "none"
+                }
+        return out
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        return out
+
+
+def _collect_hanjuku_scene_log(path, active, now):
+    out = dict(status="unavailable", sampled_bytes=None, sampled_lines=None,
+               tail_truncated=None, matched_records=None, rejected_records=None,
+               unknown_reasons=None, event_counts=None, reason_counts=None,
+               last_event=None, last_reason=None, last_age_sec=None,
+               last_seq=None, last_latency_ms=None, last_char_count=None)
+    fd = None
+    try:
+        fd = _open_hanjuku_scene_source(path)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return out
+        offset = max(0, info.st_size - HANJUKU_SCENE_LOG_MAX_BYTES)
+        os.lseek(fd, offset, os.SEEK_SET)
+        raw = os.read(fd, HANJUKU_SCENE_LOG_MAX_BYTES + 1)
+        truncated = offset > 0 or len(raw) > HANJUKU_SCENE_LOG_MAX_BYTES
+        raw = raw[:HANJUKU_SCENE_LOG_MAX_BYTES]
+        if offset:
+            newline = raw.find(b"\n")
+            raw = raw[newline + 1:] if newline >= 0 else b""
+        lines = raw.decode("utf-8", errors="replace").splitlines()
+        if len(lines) > HANJUKU_SCENE_LOG_MAX_LINES:
+            lines = lines[-HANJUKU_SCENE_LOG_MAX_LINES:]
+            truncated = True
+    except (OSError, ValueError, TypeError):
+        return out
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+    now = time.time() if now is None else now
+    events = dict.fromkeys(HANJUKU_SCENE_EVENTS, 0)
+    reasons = dict.fromkeys(HANJUKU_SCENE_REASONS, 0)
+    matched = rejected = unknown_reasons = 0
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+            if not _hanjuku_scene_matches(row, active):
+                raise ValueError("unattributed event")
+            event = row.get("event")
+            age = _hanjuku_scene_age(row.get("at"), now)
+            seq = _hanjuku_scene_int(row.get("seq"))
+            if event not in events or age is None or seq is None and row.get("seq") is not None:
+                raise ValueError("invalid event")
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            rejected += 1
+            continue
+        matched += 1
+        events[event] += 1
+        reason = row.get("reason")
+        if isinstance(reason, str) and reason in reasons:
+            reasons[reason] += 1
+        else:
+            reason = None
+            unknown_reasons += 1
+        out.update(last_event=event, last_reason=reason, last_age_sec=age,
+                   last_seq=seq, last_latency_ms=_hanjuku_scene_latency(row.get("latency_ms")),
+                   last_char_count=_hanjuku_scene_int(row.get("char_count"), 10_000))
+    out.update(sampled_bytes=len(raw), sampled_lines=len(lines), tail_truncated=truncated,
+               matched_records=matched, rejected_records=rejected, unknown_reasons=unknown_reasons)
+    if matched or not rejected and (not truncated or lines):
+        out.update(status="partial" if rejected else "available", event_counts=events,
+                   reason_counts=reasons)
+    return out
+
+
+def _collect_hanjuku_scene_narration(state_dir, now=None):
+    """Current-runtime scene progress, never facts, text, hashes or identity tokens."""
+    empty = dict(status="unavailable", generation=None, producer=None, worker=None, log=None)
+    try:
+        if now is not None and (type(now) not in (int, float) or not math.isfinite(now) or now < 0):
+            return empty
+        root = Path(state_dir)
+        canonical = _read_hanjuku_scene_record(root / "game_switch.json")
+        active = canonical.get("active")
+        if (canonical.get("phase") != "ready" or not isinstance(active, dict)
+                or active.get("game") != "hanjuku-hero"
+                or _hanjuku_scene_int(active.get("generation")) is None
+                or not isinstance(active.get("runtime_id"), str)
+                or not re.fullmatch(r"g[0-9]+-[a-f0-9]{8}", active["runtime_id"])
+                or not isinstance(active.get("lease_id"), str) or not active["lease_id"]):
+            return empty
+        runtime = root / "runtimes" / active["runtime_id"]
+        run = _read_hanjuku_scene_record(runtime / "hanjuku_run.json")
+        if (not _hanjuku_scene_matches(run, active, schema=False)
+                or run.get("playing") is not True
+                or run.get("terminal_reason") or run.get("terminal_candidate")):
+            return empty
+        result = dict(
+            status="available", generation=active["generation"],
+            producer=_project_hanjuku_scene_record(runtime / "hanjuku_scene.json", active, now, producer=True),
+            worker=_project_hanjuku_scene_record(runtime / "hanjuku_scene_worker.json", active, now),
+            log=_collect_hanjuku_scene_log(runtime / "hanjuku_scene_commentary.jsonl", active, now),
+        )
+        again = _read_hanjuku_scene_record(root / "game_switch.json")
+        if again.get("phase") != "ready" or again.get("active") != active:
+            return {**empty, "status": "identity_changed"}
+        return result
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        return empty
 
 
 def _collect_soren_game(soren, now):
@@ -5107,6 +5368,14 @@ def _diagnostics_budget(payload):
             profile['games'] = []
             profile['slowest'] = []
             profile['representativeOmitted'] = True
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # Scene narration is optional detail; keep tactical game evidence ahead of
+    # its event histograms if the fixed diagnostics envelope is still full.
+    corners = payload.get("corners")
+    retro = corners.get("retro_corner") if isinstance(corners, dict) else None
+    if (len(text.encode("utf-8")) > MAX_JSON_BYTES and isinstance(retro, dict)
+            and "scene_narration" in retro):
+        retro["scene_narration"] = {"status": "output_omitted"}
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     # Keep current game evidence through the older detail reductions first.
     if len(text.encode("utf-8")) > MAX_JSON_BYTES and "hanjuku_tactical" in payload:

@@ -42,13 +42,23 @@ max_attempts = 2
 interim_jev = true
 interim_timeout_ms = 1500
 
-# 固定文実況は反復を避けるため停止（owner 2026-10-04）。
-# 場面実況の生成・配信は別consumerで実装する。botの決定記録は継続して保存する。
+# 固定テンプレート実況は停止。既存corner monitorが毎回設定を読むため稼働中も停止する。
+# speakerは下の場面実況にも共通。生成失敗時に固定文へ戻すことはしない。
 [hanjuku.narration]
 enabled = false
 cooldown_s = 25
 max_age_s = 20
 speaker = ""
+
+# 別consumerが確認済みのHP/兵数/結果/方針変更から短文を生成する（ゲーム入力は待たない）。
+# enabledは既存Soren実況roleによる生成への明示opt-in。モデル/秘密/共有queueは追加しない。
+# BATCH_COMMENTARY_AGENTS → RADIO_AGENTS → AI_COMMON_AGENTS の既存実効設定を使う。
+# 話す事実がない・同場面・失敗・期限切れは無音。生成時間で観測の期限を延長しない。
+[hanjuku.scene_commentary]
+enabled = true
+cooldown_s = 25
+max_age_s = 20
+generation_timeout_s = 15
 
 # unified live rotationへ登録済み。ROM/core/実行ファイルが揃った環境だけ抽選候補になる。
 # 実機プレイ・表示・終了後の復帰は、設定有効化と分けて検証する。
