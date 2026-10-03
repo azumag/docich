@@ -3,6 +3,8 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 from html.parser import HTMLParser
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -368,6 +370,26 @@ def test_weather_html_has_unique_ids_and_no_external_runtime_assets():
     assert not markup.srcs and not markup.resources
     assert "const MAP_DATA={\"polygons\":" in v.HTML
     assert v.HTML.count("fetch(") == 1
+
+
+@pytest.mark.parametrize("scenario", [
+    "choose", "next", "previous", "region", "marker", "tour_start", "tour_tick",
+    "national", "width_overflow", "resize", "expired_choose", "expired_next",
+    "expired_national", "expired_tour", "expired_tour_stop", "all_locations", "lease_expiry",
+    "server_failure", "incomplete", "old_poll", "old_failure", "manual_stop",
+])
+def test_weather_ui_control_flow_without_browser(scenario):
+    # No renderer: mocked layout forces overflow so each interaction must fail closed.
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js unavailable for DOM-free UI control-flow tests")
+    script = v.HTML.split("<script>", 1)[1].split("</script>", 1)[0]
+    runner = Path(__file__).parent / "fixtures/weather_view/contract.js"
+    result = subprocess.run(
+        [node, str(runner)], input=json.dumps({"script": script, "scenario": scenario}),
+        text=True, capture_output=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("value",[0,80,65536,True,"8803"])
