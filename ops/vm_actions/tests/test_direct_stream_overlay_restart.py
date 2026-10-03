@@ -47,6 +47,7 @@ class DirectStreamOverlayRestartTests(unittest.TestCase):
         self.assertIn(marker, text)
         block = text.split(marker, 1)[1].split("- name: Restart docich webui systemd unit", 1)[0]
         self.assertIn("games/soviet_now", block)
+        self.assertIn("soren_inline_overlay_refresh_epoch", block)
         self.assertIn("refresh_soren_inline_overlay.sh", block)
         self.assertIn("github.event_name == 'push'", block)
         self.assertIn("steps.auth.outputs.target == 'production'", block)
