@@ -13,29 +13,109 @@ Sources:
 """
 from __future__ import annotations
 
-# 切り札 basic stats (general damage / egg drop / price where measured).
-# IDs used by enemy-egg summon detection (sum of card IDs >= 48).
+# 切り札 basic stats: the whole gcgx kirihuda.html table (decimal ID 0..31).
+# Owner 2026-10-03: 「全ての将軍と切り札のデータをちゃんと内部でデータとして持って」
+# → 全32札を保持し、gcgx kirihuda.html と https://wikiwiki.jp/hjksfc/切り札
+# （両出典は全列一致を確認）に統一する。旧 general_damage の未使用10件は正典値へ置換。
+#   general_damage / monster_damage / boss_damage / soldier_damage
+#       = 将軍・エッグモンスター・ボスへのダメージ、自軍兵士1人あたりのダメージ増加量
+#   egg_drop = 卵落。`卵落 > 敵・味方将軍の最大HP合計 mod 16` で敵が卵を落とし、
+#              以後その敵は召喚を使えない (egg_drop_threshold / can_drop_egg)
+#   price     = 既存の実測価格はそのまま。未収録分は gcgx「入手場所(価格)」の先頭の
+#              購入価格。None は G での購入先が無い（イベント・宝箱のみ）
+#   effect    = gcgx「効果」列（空文字は効果なし）
+# 敵卵の開幕判定に使う ID は CARD_IDS / ALL_CARD_IDS (合計 >= 48)。
 CARDS: dict[str, dict] = {
-    'イッテツーン': {'general_damage': 10, 'price': 1},
-    'ダイチスイム': {'general_damage': 16, 'price': None},
-    'ブラッキー': {'general_damage': 18, 'price': None, 'egg_drop': True},
-    'フットバース': {'general_damage': 12, 'price': None},
-    'グリンボー': {'general_damage': 6, 'price': 6},
-    'ピッグローラー': {'general_damage': None, 'price': None},
-    'カンケリン': {'general_damage': None, 'price': None},
-    'ノリウツール': {'general_damage': 53, 'price': 18},
-    'クースカン': {'general_damage': 45, 'price': 24, 'egg_drop': True},
-    'ゼンマイン': {'general_damage': 50, 'price': 32},
-    'ミックミー': {'general_damage': None, 'price': 40},
-    'デッドガン': {'general_damage': None, 'price': None},
-    'ブレイコウ': {'general_damage': None, 'price': None},
-    'ブンシーン': {'general_damage': None, 'price': None},
-    'ファイアーボイス': {'general_damage': None, 'price': None},
-    'ファバード': {'general_damage': 100, 'price': 40, 'egg_drop': True},
-    'エンジェリン': {'general_damage': None, 'price': 32},
-    'マグネガキン': {'general_damage': 80, 'price': 34},
-    'ハリケーン': {'general_damage': None, 'price': 38},
+    'イッテツーン': {'id': 0, 'general_damage': 10, 'monster_damage': 32, 'boss_damage': 16,
+                     'soldier_damage': 0, 'egg_drop': 8, 'price': 1, 'effect': ''},
+    'ダイチスイム': {'id': 1, 'general_damage': 6, 'monster_damage': 22, 'boss_damage': 8,
+                     'soldier_damage': 3, 'egg_drop': 1, 'price': None, 'effect': ''},
+    'ブラッキー': {'id': 2, 'general_damage': 22, 'monster_damage': 50, 'boss_damage': 20,
+                   'soldier_damage': 0, 'egg_drop': 3, 'price': None, 'effect': ''},
+    'フットバース': {'id': 3, 'general_damage': 6, 'monster_damage': 48, 'boss_damage': 2,
+                     'soldier_damage': 3, 'egg_drop': 5, 'price': None,
+                     'effect': 'エグモン、ボスの防御力半減'},
+    'ダンスライン': {'id': 4, 'general_damage': 16, 'monster_damage': 5, 'boss_damage': 1,
+                     'soldier_damage': 3, 'egg_drop': 1, 'price': 5, 'effect': ''},
+    'グリンボー': {'id': 5, 'general_damage': 32, 'monster_damage': 46, 'boss_damage': 18,
+                   'soldier_damage': 1, 'egg_drop': 4, 'price': 6, 'effect': ''},
+    'カルゲンジー': {'id': 6, 'general_damage': 12, 'monster_damage': 6, 'boss_damage': 1,
+                     'soldier_damage': 5, 'egg_drop': 1, 'price': 8,
+                     'effect': 'エグモン、ボスの攻撃力半減'},
+    'ピッグローラー': {'id': 7, 'general_damage': 5, 'monster_damage': 38, 'boss_damage': 4,
+                       'soldier_damage': 5, 'egg_drop': 2, 'price': None, 'effect': ''},
+    'ラピニアール': {'id': 8, 'general_damage': 20, 'monster_damage': 48, 'boss_damage': 16,
+                     'soldier_damage': 3, 'egg_drop': 1, 'price': 12,
+                     'effect': 'エグモン、ボスの攻撃力半減'},
+    'カンケリン': {'id': 9, 'general_damage': 10, 'monster_damage': 50, 'boss_damage': 24,
+                   'soldier_damage': 1, 'egg_drop': 1, 'price': None, 'effect': ''},
+    'デッドガン': {'id': 10, 'general_damage': 0, 'monster_damage': 0, 'boss_damage': 0,
+                   'soldier_damage': 0, 'egg_drop': 0, 'price': None,
+                   'effect': '両軍全滅。城内戦で使用すると城Lvが1になる'},
+    'ノリウツール': {'id': 11, 'general_damage': 0, 'monster_damage': 8, 'boss_damage': 8,
+                     'soldier_damage': 0, 'egg_drop': 0, 'price': 18,
+                     'effect': '使用者の現在HPの半分ダメージ。めをまわしてる！の追加効果'},
+    'ブレイコウ': {'id': 12, 'general_damage': 0, 'monster_damage': 0, 'boss_damage': 0,
+                   'soldier_damage': 0, 'egg_drop': 0, 'price': None,
+                   'effect': 'てれている！！の追加効果'},
+    'クースカン': {'id': 13, 'general_damage': 0, 'monster_damage': 56, 'boss_damage': 20,
+                   'soldier_damage': 1, 'egg_drop': 0, 'price': 24,
+                   'effect': '敵軍の将軍、兵士のHP半減。きぜつしてる！！の追加効果'},
+    'ブンシーン': {'id': 14, 'general_damage': 7, 'monster_damage': 52, 'boss_damage': 32,
+                   'soldier_damage': 7, 'egg_drop': 3, 'price': None, 'effect': ''},
+    'ゼンマイン': {'id': 15, 'general_damage': 32, 'monster_damage': 96, 'boss_damage': 50,
+                   'soldier_damage': 0, 'egg_drop': 3, 'price': 32, 'effect': ''},
+    'バルムンク': {'id': 16, 'general_damage': 16, 'monster_damage': 255, 'boss_damage': 250,
+                   'soldier_damage': 0, 'egg_drop': 5, 'price': None,
+                   'effect': 'エッグモンスター即死'},
+    'ミックミー': {'id': 17, 'general_damage': 64, 'monster_damage': 7, 'boss_damage': 32,
+                   'soldier_damage': 0, 'egg_drop': 2, 'price': 40, 'effect': ''},
+    'ファイアーボイス': {'id': 18, 'general_damage': 16, 'monster_damage': 16, 'boss_damage': 7,
+                         'soldier_damage': 0, 'egg_drop': 4, 'price': None,
+                         'effect': '敵兵士全滅'},
+    'グルミー': {'id': 19, 'general_damage': 68, 'monster_damage': 96, 'boss_damage': 100,
+                 'soldier_damage': 4, 'egg_drop': 15, 'price': None,
+                 'effect': 'エグモン、ボスの攻撃力半減'},
+    'ブラックホール': {'id': 20, 'general_damage': 0, 'monster_damage': 0, 'boss_damage': 1,
+                       'soldier_damage': 0, 'egg_drop': 0, 'price': 52,
+                       'effect': '両軍の兵士全滅'},
+    'シュプレボイス': {'id': 21, 'general_damage': 0, 'monster_damage': 0, 'boss_damage': 0,
+                       'soldier_damage': 0, 'egg_drop': 0, 'price': None,
+                       'effect': '敵を退却させる'},
+    'エンジェリン': {'id': 22, 'general_damage': 0, 'monster_damage': 0, 'boss_damage': 0,
+                     'soldier_damage': 0, 'egg_drop': 0, 'price': 32,
+                     'effect': '将軍のHP全回復、エッグの残り使用回数を5回にする、兵士の回復・復活'},
+    'ころぼぐんだん': {'id': 23, 'general_damage': 1, 'monster_damage': 1, 'boss_damage': 1,
+                       'soldier_damage': 1, 'egg_drop': 12, 'price': 5, 'effect': ''},
+    'バグストーム': {'id': 24, 'general_damage': 0, 'monster_damage': 100, 'boss_damage': 50,
+                     'soldier_damage': 0, 'egg_drop': 0, 'price': None,
+                     'effect': '両軍の将軍、兵士のHP半減'},
+    'リューキーシ': {'id': 25, 'general_damage': 24, 'monster_damage': 96, 'boss_damage': 60,
+                     'soldier_damage': 12, 'egg_drop': 4, 'price': 68, 'effect': ''},
+    'ドデカヘー': {'id': 26, 'general_damage': 18, 'monster_damage': 18, 'boss_damage': 70,
+                   'soldier_damage': 18, 'egg_drop': 2, 'price': 72,
+                   'effect': 'エグモン、ボスの防御力半減'},
+    'マグネガキン': {'id': 27, 'general_damage': 48, 'monster_damage': 48, 'boss_damage': 80,
+                     'soldier_damage': 4, 'egg_drop': 8, 'price': 34,
+                     'effect': 'エグモン、ボスの攻撃力半減'},
+    'キャトルミュー': {'id': 28, 'general_damage': 224, 'monster_damage': 224, 'boss_damage': 90,
+                       'soldier_damage': 0, 'egg_drop': 0, 'price': None,
+                       'effect': 'せきかしてる！！の追加効果'},
+    'ビッグウェイブ': {'id': 29, 'general_damage': 64, 'monster_damage': 32, 'boss_damage': 100,
+                       'soldier_damage': 14, 'egg_drop': 0, 'price': 88, 'effect': ''},
+    'ハリケーン': {'id': 30, 'general_damage': 10, 'monster_damage': 240, 'boss_damage': 100,
+                   'soldier_damage': 10, 'egg_drop': 0, 'price': 38,
+                   'effect': 'めをまわしてる！の追加効果'},
+    'ファバード': {'id': 31, 'general_damage': 240, 'monster_damage': 240, 'boss_damage': 100,
+                   'soldier_damage': 20, 'egg_drop': 0, 'price': 40,
+                   'effect': 'もえている！！の追加効果。自軍の将軍、兵士のHP半減'},
 }
+
+# 卵落 values: CARDS が唯一の出典 (owner 2026-10-03: 全32札を保持)。既存19件の値は
+# gcgx card table (fetched 2026-09-29) と同一のまま。A card drops the enemy egg
+# when its 卵落 is strictly greater than the two generals' max-HP sum mod 16
+# (see egg_drop_threshold / can_drop_egg).
+EGG_DROP_VALUES: dict[str, int] = {name: card['egg_drop'] for name, card in CARDS.items()}
 
 # Actual zero-based No., not price or this module's supported-card order.
 # Local README examples + https://wikiwiki.jp/hjksfc/切り札 (No. column).
@@ -46,6 +126,42 @@ CARD_IDS: dict[str, int] = {
     'ブレイコウ': 12, 'ブンシーン': 14, 'ファイアーボイス': 18, 'ファバード': 31,
     'エンジェリン': 22, 'マグネガキン': 27, 'ハリケーン': 30,
 }
+# The whole gcgx kirihuda.html decimal ID table (0-31), for ID sums.
+ALL_CARD_IDS: dict[str, int] = {**CARD_IDS,
+    'ダンスライン': 4, 'カルゲンジー': 6, 'ラピニアール': 8, 'バルムンク': 16, 'グルミー': 19,
+    'ブラックホール': 20, 'シュプレボイス': 21, 'ころぼぐんだん': 23, 'バグストーム': 24,
+    'リューキーシ': 25, 'ドデカヘー': 26, 'キャトルミュー': 28, 'ビッグウェイブ': 29,
+}
+
+# Owner advice (2026-09-29, gcgx ai.html): the enemy uses its egg when the
+# battle's card IDs total 48 or more, so a sortie carries 47 or less, e.g.
+# クースカン+ミックミー×2 (47: クースカン then ミックミー wipes a general of
+# HP<=69 with his soldiers), クースカン+ビッグウェイブ+イッテツーン (42),
+# イッテツーン+グリンボー+ころぼぐんだん (28: cheap, ころぼぐんだん drops eggs
+# often), エンジェリン×2+イッテツーン (44: エンジェリン fully heals).
+RECOMMENDED_CARD_SETS = (
+    ('クースカン', 'ミックミー', 'ミックミー'),
+    ('クースカン', 'ビッグウェイブ', 'イッテツーン'),
+    ('イッテツーン', 'グリンボー', 'ころぼぐんだん'),
+    ('エンジェリン', 'エンジェリン', 'イッテツーン'),
+)
+
+# 強い切り札 (owner 2026-10-03: 「強い切り札を偶然手に入れている時などは、
+# 強い将軍とたたかうときに積極的に利用するようにして下さい」)。
+# gcgx kirihuda.html (fetched 2026-10-03) の将軍戦ダメージと効果から、強い将軍
+# を倒せる札だけを携行・開幕使用の対象にする。将軍戦48以上、または将軍のHPを
+# 半減させる効果を持つ札のみ: ミックミー64 / マグネガキン48 / クースカン(敵将軍・
+# 兵士のHP半減) / ノリウツール(使用者の現在HP半分をダメージ)。
+# 並びは使用優先順。ファバードは自軍も半減させる犠牲札のため対象外(救済の
+# SURVIVAL_CARDS も含まない)、キャトルミューはレアイベント札の専用経路、
+# エンジェリンは救済優先、デッドガン等の全滅/退却札は対象外。
+STRONG_CARDS = ('クースカン', 'ミックミー', 'マグネガキン', 'ノリウツール')
+
+# Castle level (wikiwiki.jp/hjksfc/城, 2026-09-29): the defender's egg monster
+# gains +level defense and speed (also egg vs general), a defending general's
+# charge speed +level, garrison capacity is level-1 (over it the AI sorties),
+# and a defender loses one level per general killed. No bonus at boss castles.
+CASTLE_LEVEL_DEFENSE_BONUS = True
 
 # Egg-drop formula: 卵落 > (敵・味方将軍の最大HP合計 mod 16).
 EGG_DROP_MOD = 16
@@ -86,6 +202,147 @@ BOSS_HP = {
     'ハードマン': 500,
     'ハードロボ': 1688,
 }
+
+# gcgx shogun.html 将軍一覧 (fetched 2026-10-03; SFC ID 0..127 の128名)。
+# owner 2026-10-03: 「ここを参考に、この評をハードコードしてしまって、値を照らし
+# 合わせよ。まずは戦闘の値とHPでわかる。補助的に卵補正、たまごのしゅるい、卵仕様
+# の思考パターンなどが参考になる」。
+# 値は (HP, 戦闘, 半熟レベル補正, エッグ種別, エッグ思考)。補正の一部は季節付き
+# ('春+1') のため文字列で保持する。エッグ種別の '－' は卵なし。
+# 照合は tests/test_hanjuku_strong_cards.py: HP は char.csv 由来の general_max_hp
+# と全127名、思考は hanjuku_egg_reference.GENERAL_EGGS の2列目と全128名が一致する。
+# gcgx が全角空白で書く 'ラ ターシュ' は char.csv の綴りに合わせた。
+GENERAL_STATS: dict[str, tuple[int, int, str, str, int]] = {
+    'しゅじんこう': (90, 14, '0', 'エラベル', 2),  # 0
+    'キャラウェイ': (40, 4, '0', '－', 2),  # 1
+    'クミン': (27, 2, '0', 'カラフル', 3),  # 2
+    'コリアンダー': (38, 7, '1', '－', 2),  # 3
+    'バジル': (40, 3, '1', '－', 2),  # 4
+    'ミント': (32, 10, '0', '－', 2),  # 5
+    'パプリカ': (34, 4, '-1', '－', 2),  # 6
+    'シナモン': (39, 6, '-2', '－', 2),  # 7
+    'ヘーゼル': (33, 4, '1', 'イビル', 3),  # 8
+    'ガルバンゾー': (30, 3, '-1', 'イビル', 3),  # 9
+    'ラズベリー': (45, 8, '0', '－', 3),  # 10
+    'ピスタチオ': (49, 8, '-2', '－', 2),  # 11
+    'マカデミア': (34, 4, '-1', '－', 2),  # 12
+    'カシュー': (39, 1, '0', 'イビル', 3),  # 13
+    'クランベリー': (51, 5, '-2', '－', 2),  # 14
+    'ガスパチョ': (37, 3, '0', 'スーパー', 3),  # 15
+    'ビシソワーズ': (27, 3, '1', 'ワンダー', 3),  # 16
+    'タピオカ': (50, 7, '0', '－', 2),  # 17
+    'キッシュ': (26, 5, '0', 'スーパー', 2),  # 18
+    'ロックフォール': (57, 9, '0', '－', 3),  # 19
+    'シェーブル': (27, 4, '2', 'ワンダー', 3),  # 20
+    'アマンディーヌ': (59, 9, '0', '－', 2),  # 21
+    'チコリ': (18, 3, '0', 'イビル', 3),  # 22
+    'ビーツ': (29, 9, '0', '－', 3),  # 23
+    'セルリアク': (32, 7, '-2', '－', 3),  # 24
+    'アンディーブ': (36, 8, '1', '－', 1),  # 25
+    'リーキ': (30, 9, '0', 'カラフル', 1),  # 26
+    'トレビス': (66, 6, '0', '－', 3),  # 27
+    'アルファルファ': (38, 5, '春+1', 'スーパー', 2),  # 28
+    'タルタル': (40, 9, '夏+1', '－', 1),  # 29
+    'ヘルメス': (63, 9, '0', '－', 1),  # 30
+    'リースリング': (37, 5, '0', '－', 3),  # 31
+    'デュオニソス': (54, 6, '-3', 'カラフル', 1),  # 32
+    'アルテミス': (49, 7, '3', 'ワンダー', 3),  # 33
+    'キャンディー': (26, 2, '0', 'いっぱつ', 3),  # 34
+    'シャルドネ': (56, 8, '-1', '－', 3),  # 35
+    'ソーピニヨン': (48, 10, '-2', 'イビル', 1),  # 36
+    'ピオーネ': (46, 2, '0', 'ワンダー', 3),  # 37
+    'ヘラ': (59, 10, '-1', '－', 1),  # 38
+    'セミヨン': (36, 5, '-2', 'カラフル', 3),  # 39
+    'ポワソン': (80, 9, '0', '－', 1),  # 40
+    'デーメーテール': (49, 10, '-3', '－', 1),  # 41
+    'ユイートル': (57, 8, '春-1', '－', 1),  # 42
+    'ヘパイストス': (49, 9, '-2', 'スーパー', 3),  # 43
+    'エシャロット': (46, 7, '1', 'ワンダー', 3),  # 44
+    'ミュスカデ': (57, 9, '0', '－', 1),  # 45
+    'アテナ': (66, 11, '-1', 'スーパー', 1),  # 46
+    'エピィ': (57, 9, '-2', 'スロット', 1),  # 47
+    'ポセイドン': (85, 15, '-3', '－', 1),  # 48
+    'ペコリーノ': (88, 9, '0', '－', 1),  # 49
+    'アポロン': (74, 14, '1', 'スーパー', 1),  # 50
+    'ジェラート': (49, 6, '0', 'ワンダー', 3),  # 51
+    'ミルフィーユ': (39, 6, '1', '－', 2),  # 52
+    'ヘスティア': (25, 9, '0', 'イビル', 2),  # 53
+    'キール': (65, 12, '-1', '－', 2),  # 54
+    'ライム': (69, 10, '-2', '－', 2),  # 55
+    'レモン': (27, 2, '2', 'ワンダー', 2),  # 56
+    'フェットチーネ': (67, 7, '夏+1', 'ワンダー', 2),  # 57
+    'バーミセリ': (89, 12, '0', '－', 2),  # 58
+    'カペリーニ': (63, 7, '0', '－', 2),  # 59
+    'ブカティーニ': (42, 8, '0', 'ワンダー', 2),  # 60
+    'ナストリーニ': (66, 8, '0', '－', 2),  # 61
+    'ラビオリ': (87, 8, '0', '－', 2),  # 62
+    'フェデリーニ': (8, 3, '-3', '－', 2),  # 63
+    'カシス': (73, 15, '0', 'いっぱつ', 2),  # 64
+    'グレナデン': (81, 7, '0', '－', 2),  # 65
+    'チキータ': (74, 15, '-2', 'いっぱつ', 2),  # 66
+    'ランプータン': (27, 4, '1', 'かぼちゃ', 2),  # 67
+    'ドリアン': (51, 7, '2', '－', 2),  # 68
+    'マスカット': (27, 9, '0', 'スーパー', 2),  # 69
+    'マンゴスチン': (85, 12, '0', '－', 3),  # 70
+    'バタール': (99, 13, '-2', '－', 2),  # 71
+    'バゲット': (37, 14, '0', 'スロット', 2),  # 72
+    'ブリオッシュ': (60, 10, '0', 'カラフル', 3),  # 73
+    'バトウラ': (55, 11, '2', '－', 2),  # 74
+    'ブレッツェル': (71, 11, '0', 'ワンダー', 2),  # 75
+    'マフィン': (15, 10, '-1', 'スロット', 2),  # 76
+    'ベーグル': (91, 10, '-2', '－', 2),  # 77
+    'ミモザ': (66, 12, '1', 'まねっこ', 0),  # 78
+    'ショコラ': (56, 11, '3', 'まねっこ', 0),  # 79
+    'プラリネ': (87, 13, '0', '－', 0),  # 80
+    'ブラマンジェ': (81, 10, '-1', '－', 0),  # 81
+    'シフォン': (62, 13, '-2', 'まねっこ', 0),  # 82
+    'シュゼット': (90, 13, '0', '－', 2),  # 83
+    'ブラウニー': (5, 1, '0', 'くさってる', 2),  # 84
+    'キャロット': (60, 12, '0', 'いっぱつ', 3),  # 85
+    'マサラ': (77, 11, '-1', '－', 2),  # 86
+    'バラクーダ': (76, 9, '-2', '－', 2),  # 87
+    'コンポート': (55, 10, '1', 'いっぱつ', 3),  # 88
+    'ギー': (71, 14, '2', '－', 2),  # 89
+    'グリッシーニ': (74, 15, '3', 'いっぱつ', 2),  # 90
+    'シュガー': (49, 12, '2', 'いっぱつ', 2),  # 91
+    'オレガノ': (65, 15, '0', 'イビル', 1),  # 92
+    'ジキタリス': (26, 11, '2', '－', 3),  # 93
+    'ローズマリー': (98, 14, '2', '－', 1),  # 94
+    'マーマレード': (74, 11, '-1', '－', 1),  # 95
+    'サフラン': (64, 12, '-2', 'カラフル', 1),  # 96
+    'アニス': (87, 12, '0', '－', 1),  # 97
+    'エストラゴン': (66, 14, '-2', 'スーパー', 1),  # 98
+    'エッジ': (99, 13, '0', '－', 2),  # 99
+    'リディア': (72, 15, '0', 'スーパー', 2),  # 100
+    'ガーラント': (97, 14, '1', '－', 2),  # 101
+    'カイン': (74, 15, '0', 'スーパー', 2),  # 102
+    'グレイ': (73, 14, '-1', 'カラフル', 2),  # 103
+    'レオンハルト': (71, 15, '1', 'エラベル', 2),  # 104
+    'フリオニール': (67, 15, '2', 'エラベル', 2),  # 105
+    'サムソー': (98, 12, '1', '－', 2),  # 106
+    'ハバティー': (54, 11, '2', 'キング', 2),  # 107
+    'マリボー': (66, 9, '0', 'まねっこ', 0),  # 108
+    'ラクレット': (36, 10, '-1', 'かどまつ', 2),  # 109
+    'エダム': (48, 12, '-2', 'ワンダー', 2),  # 110
+    'リゴット': (99, 11, '1', '－', 2),  # 111
+    'ブリー': (29, 11, '春-1', 'まねっこ', 0),  # 112
+    'マルガリータ': (72, 13, '夏-1', 'キング', 2),  # 113
+    'ジン': (97, 15, '秋-1', '－', 2),  # 114
+    'マラスキーノ': (74, 12, '-2', 'ワンダー', 2),  # 115
+    'アクアビット': (69, 14, '1', 'おそなえ', 2),  # 116
+    'ラ ターシュ': (69, 14, '2', 'ベビー', 2),  # 117
+    'バランタイン': (70, 13, '1', 'かぼちゃ', 2),  # 118
+    'カミュ': (73, 15, '3', 'サイバー', 2),  # 119
+    'クイーン': (70, 13, '0', 'スーパー', 3),  # 120
+    'プリンス': (100, 14, '0', 'スーパー', 3),  # 121
+    'にせヒーロー': (90, 14, '0', 'スーパー', 3),  # 122
+    'せいめいたい': (500, 9, '0', 'スーパー', 3),  # 123
+    'だいじん': (90, 14, '0', '－', 2),  # 124
+    'ココット': (24, 8, '3', 'カラフル', 3),  # 125
+    'ヴィーナス': (82, 12, '3', 'スーパー', 2),  # 126
+    'ゼウス': (85, 13, '0', 'ワンダー', 2),  # 127
+}
+
 
 # Summoned-monster skill tables (wikiwiki attack-data page, transcribed).
 # Each unit knows exactly two skills; MONSTER_EFFECT_SKILLS is the global set
@@ -260,3 +517,98 @@ def enemy_egg_likely(card_ids: list[int]) -> bool:
 def egg_drop_threshold(max_hp_sum: int) -> int:
     """Minimum 卵落 value required to drop an egg given combined max HPs."""
     return max_hp_sum % EGG_DROP_MOD + 1
+
+
+def egg_drop_value(card: str) -> int | None:
+    """The card's 卵落 value, or None when it is outside the measured table."""
+    return EGG_DROP_VALUES.get(card)
+
+
+def can_drop_egg(card: str, max_hp_sum: int) -> bool:
+    """True when this card's 卵落 exceeds the HP-sum remainder (gcgx rule).
+
+    ``卵落 > 敵・味方将軍の最大HP合計 mod 16`` drops the enemy's egg, which
+    makes its summons unusable for the rest of the battle.
+    """
+    value = EGG_DROP_VALUES.get(card)
+    return value is not None and value > max_hp_sum % EGG_DROP_MOD
+
+
+def egg_droppers(cards, max_hp_sum: int) -> list[str]:
+    """This kit's cards that drop this general's egg, strongest 卵落 first.
+
+    将軍 (最大HP合計) と切り札 (卵落) の組み合わせで候補を絞る。判明しない札は
+    候補にしない (fail-closed)。同値は ID の小さい札が先 (携行ID予算を守りやすい)。
+    """
+    return sorted((card for card in dict.fromkeys(cards) if can_drop_egg(card, max_hp_sum)),
+                  key=lambda card: (-EGG_DROP_VALUES[card], ALL_CARD_IDS.get(card, 99), card))
+
+
+# 強い将軍の主判定 (owner 2026-10-03: 「まずは戦闘の値とHPでわかる」)。
+STRONG_GENERAL_COMBAT_GAP = 3      # 敵の戦闘が味方をこの値以上上回る
+STRONG_GENERAL_HP_GAP = 20         # 敵の最大HPが味方をこの値以上上回る
+
+
+def general_strength(name: str | None):
+    """gcgx shogun.html の (HP, 戦闘, 補正, エッグ種別, 思考)。表に無ければ None。"""
+    return GENERAL_STATS.get(name) if name else None
+
+
+def strong_general(enemy: str | None, ally: str | None):
+    """「強い将軍」判定。返り値は (verdict, evidence)。
+
+    主判定は戦闘と最大HP (gcgx shogun.html)。敵が戦闘を3以上、または最大HPを20
+    以上上回る、あるいは戦闘・HPの両方で味方を上回れば強い。逆に味方が両方で
+    上回れば弱い。
+
+    どちらが優勢か割れた・同値のときは、owner の指名した補助値を
+    補正 → エッグ種別 → 思考 の順に見て決める。
+
+    verdict は bool または None。None はどちらかが表に無く判定不能 (後期ボス等)。
+    積極利用の根拠にはせず、evidence['rule'] == 'unknown' を記録する。
+    """
+    e = general_strength(enemy)
+    a = general_strength(ally)
+    evidence = {'rule': 'unknown', 'enemy': _strength_dict(enemy, e),
+                'ally': _strength_dict(ally, a)}
+    if e is None or a is None:
+        return None, evidence
+    e_hp, e_combat, e_bonus, e_egg, e_thought = e
+    a_hp, a_combat, a_bonus, a_egg, a_thought = a
+    if (e_combat - a_combat >= STRONG_GENERAL_COMBAT_GAP
+            or e_hp - a_hp >= STRONG_GENERAL_HP_GAP
+            or (e_combat > a_combat and e_hp > a_hp)):
+        rule = ('combat' if e_combat - a_combat >= STRONG_GENERAL_COMBAT_GAP
+                else 'hp' if e_hp - a_hp >= STRONG_GENERAL_HP_GAP else 'dominant')
+        evidence['rule'] = rule
+        return True, evidence
+    if (a_combat - e_combat >= STRONG_GENERAL_COMBAT_GAP
+            or a_hp - e_hp >= STRONG_GENERAL_HP_GAP
+            or (e_combat < a_combat and e_hp < a_hp)):
+        evidence['rule'] = 'weaker'
+        return False, evidence
+    # 主判定が割れた: owner の補助値を順に見る。
+    if _bonus_value(e_bonus) != _bonus_value(a_bonus):
+        evidence['rule'] = 'bonus'
+        return _bonus_value(e_bonus) > _bonus_value(a_bonus), evidence
+    if (e_egg != '－') != (a_egg != '－'):
+        evidence['rule'] = 'egg'
+        return e_egg != '－', evidence
+    evidence['rule'] = 'thought'
+    return e_thought >= a_thought, evidence
+
+
+def _bonus_value(raw: str) -> int:
+    """半熟レベル補正。季節付き ('春-1') も符号だけを取り出す。"""
+    digits = ''.join(ch for ch in raw if ch.isdigit())
+    if not digits:
+        return 0
+    return -int(digits) if '-' in raw else int(digits)
+
+
+def _strength_dict(name: str | None, row) -> dict | None:
+    if row is None:
+        return {'name': name}
+    hp, combat, bonus, egg, thought = row
+    return {'name': name, 'hp': hp, 'combat': combat, 'bonus': bonus,
+            'egg': egg, 'thought': thought}

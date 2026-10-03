@@ -15,7 +15,9 @@ productionの`nsnake`は1試合とし、開始以降のscorelog保存を確認�
 Moon Buggyに未評価の改善候補がある場合は、次の枠をABBAの4試合（途中終了なら残り試合）にし、
 各試合の開始時にbaseline/candidateの重みを固定する。scorelogには腕と重みSHA-256を残す。
 4試合後、各腕2試合の平均スコアが高い方を採り、同点はbaselineを維持する。候補は
-headless評価の点差だけでは棄却せず、比較が完了した改善ジョブでのみ昇格する。
+headless評価の点差だけでは棄却しない。4試合目のスコア記録後、candidateの平均が
+baselineを上回ればその場でstrategyとlive brainへ反映する。baselineが勝つか同点なら
+現行戦略を維持する。比較中にstrategyが別変更されていた場合も上書きしない。
 試合数を扱わないPAPER/メリケン/専用NetHack adapterへの指定と不正値は設定エラーとする。
 
 `corner_catalog.py` は登録検証、`corner_rotation.py` は選択・時刻・履歴・予約、
@@ -81,16 +83,29 @@ last_seen、pending、request UUID、結果をatomic writeする。
 
 ### latchとoperator復旧（`status=recovery_required`、#986）
 
-予約後の実行が例外で終了すると、ledgerは `status=recovery_required` /
-`reason=execution-or-state-unverified` / `error_kind=<固定enum>` とlatchされ、
-`tick()` は冒頭で即returnする。例外本文はstateに書かない（provider出力やcredentialを
-含み得るため）。latchは自動では解けないfail-closed契約で、次の自動開始も手動startも拒否する。
+予約後の実行が例外で終了した場合、まず当該requestのadapter state、同一requestのterminalな
+rollback receipt、復帰先のcanonical owner、残存資源を照合する。失敗したstartが一度もcornerを
+activeにせず、安全に元へ戻ったと全て確認できれば、corner stateを`interrupted`として予約を
+確定し、`recovery_required`へ移行しない。手動予約ではledgerに記録された`state_file`を使い、
+そのcorner固有の手動stateだけを照合する。例外本文はstateに書かない（provider出力やcredentialを
+含み得るため）。rollback証拠がない、cornerが実行中、所有権や資源解放が不明な場合は
+`status=recovery_required` / `reason=execution-or-state-unverified` / `error_kind=<固定enum>`で
+latchし、`tick()`は自動開始と手動startを拒否する。latchは自動では解けないfail-closed契約とする。
 
 復旧は固定operation `recover-failed`（`ops/vm_actions/recover_corner_rotation.sh`）だけ:
 
 1. `bin/docich --config ... corner-rotation recover` がlatchを解決する。
-   - adapter観測に同じrequestの**terminal**があれば、それを完了としてcommitする
+   - adapter観測に同じrequestの**terminal**があれば、それを確定する
      （request identity・history・cooldownを保ち、**二重起動しない**）。
+     失敗startのterminal rollback証拠が揃う場合は`interrupted`として確定する。
+     `rolled_back` でない `quiesce_failed`（試合終了境界の待機中にSorenの
+     lifecycleが停止したなど、canonical側の復旧対象が残らない失敗）は
+     `retro-corner-operator recover-failed` が `interrupted` として確定する
+     （#1044）。受領記録が `switch` / `status=failed` /
+     `error_code=quiesce_failed` / cornerが記録したのと同じ
+     `from_game`→`to_game` を証明し、かつcanonicalが別ゲームを所有したまま
+     静止している場合のみ確定する。**再実行はしない**（同じ切替の
+     drainingへ再入して同じ失敗を繰り返すため）。
      自動予約は `pending`、手動予約は `manual_pending` を同じ規則で解決し、
      手動のcompletedだけ `manual-completion` の履歴行を足す。
    - そのrequestが**一度も起動していない**自動予約なら、ledgerは `waiting`/`execution-pending`
@@ -350,3 +365,18 @@ read-only diagnostics に投影される。
   epochのrevert PRが必要。
 - 実機rollbackは未実施。受入は固定operationのreview/CIと、配線後のdeployでcanonical維持が
   継続することまで。
+
+### 半熟英雄の次枠手動予約
+
+固定operator `start-hanjuku` は `hanjuku_corner` から `queue_manual('hanjuku-hero')` を呼ぶ。
+現在のコーナーが実行lockを保持していても、独立した短時間lockで
+`state_dir/corner_manual_queue.json` に1件の予約をatomic writeする。
+同じ依頼の再送は同一request UUIDを返し、異なる依頼との競合は拒否する。
+共通timerは実行lockの下でinboxを `corner_rotation.json.queued_manual` へ保存した後に
+inboxを削除する。転送途中のcrashは同一UUIDで再開する。
+既存pending/manual_pendingとadapter資源が全て解放された後、自動選択より先に
+queued_manualをpendingへ移す。現在の枠・試合を中断せず、program-slotとgame-switchの
+境界契約も通常経路を通す。手動起動の既存方針に従いcooldownだけを無視する。
+無効化・利用者のpause・recovery latchは維持する。待機中にpauseされた予約は保持して待機する。
+追加workerはなく、既存timerが消費する1件の運用queueである。diagnosticsは予約有無のみを
+固定booleanで出し、UUIDや任意payloadは公開しない。配備でtimerを強制再起動しない。

@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import fcntl
 import json
+import math
 import os
 import re
 import uuid
@@ -22,6 +23,9 @@ from .config import GlobalConfig, load_game
 from .game_switch import atomic_write_json
 
 SCHEMA_VERSION = 1
+PROGRESS_SCHEMA_VERSION = 1
+MAX_PROGRESS_TRACE_BYTES = 2 * 1024 * 1024
+MAX_PROGRESS_LINE_BYTES = 4096
 ASCENDED_ACHIEVEMENT = 0x0100
 AMULET_ACHIEVEMENT = 0x0020
 TERMINAL_STATUSES = frozenset({"dead", "ascended", "ended", "ended_unknown"})
@@ -157,6 +161,7 @@ class NethackRunStore:
         self.settings = settings
         self.root = Path(g.state_dir) / "nethack"
         self.runs_dir = self.root / "runs"
+        self.progress_dir = self.root / "progress"
         self.meta_path = self.root / "meta.json"
         self.current_path = self.root / "current.json"
         self.lock_path = self.root / ".lock"
@@ -171,6 +176,118 @@ class NethackRunStore:
         os.chmod(self.root, 0o700)
         self.runs_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.runs_dir, 0o700)
+        self.progress_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.progress_dir, 0o700)
+
+    def append_progress_sample(self, sample: dict[str, object]) -> bool:
+        """Append one bounded public-state sample without taking the run lock.
+
+        The current pointer/run JSON are atomically replaced by lifecycle code,
+        so a best-effort read is enough here. Avoiding the shared run lock keeps
+        telemetry from waiting behind a save/finish transaction in the game
+        input path. A trace is deliberately capped and never stores raw TTY.
+        """
+        allowed = {
+            "ts", "phase", "turn", "depth", "hp", "hp_max", "conditions",
+            "prompt", "player", "intent", "resolved_intent", "key",
+            "frame_hash", "map_hash",
+        }
+        if set(sample) != allowed:
+            raise NethackRunError("progress sample fields are invalid")
+        phase = sample.get("phase")
+        if phase not in {"sent", "hold"}:
+            raise NethackRunError("progress sample phase is invalid")
+        for key in ("turn", "depth", "hp", "hp_max"):
+            value = sample.get(key)
+            if value is not None and (type(value) is not int or value < 0):
+                raise NethackRunError(f"progress sample {key} is invalid")
+        for key in ("intent", "resolved_intent"):
+            value = sample.get(key)
+            if not isinstance(value, str) or not value or len(value) > 64:
+                raise NethackRunError(f"progress sample {key} is invalid")
+        timestamp = sample.get("ts")
+        if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+            raise NethackRunError("progress sample timestamp is invalid")
+        try:
+            timestamp_value = float(timestamp)
+        except (OverflowError, ValueError) as exc:
+            raise NethackRunError("progress sample timestamp is invalid") from exc
+        if not math.isfinite(timestamp_value) or timestamp_value < 0:
+            raise NethackRunError("progress sample timestamp is invalid")
+        conditions = sample.get("conditions")
+        if (
+            not isinstance(conditions, list)
+            or len(conditions) > 20
+            or not all(isinstance(item, str) and len(item) <= 24 for item in conditions)
+        ):
+            raise NethackRunError("progress sample conditions are invalid")
+        prompt = sample.get("prompt")
+        if prompt not in {"none", "more", "yes_no", "direction", "selection", "text", "unknown"}:
+            raise NethackRunError("progress sample prompt is invalid")
+        player = sample.get("player")
+        if player is not None and (
+            not isinstance(player, list)
+            or len(player) != 2
+            or any(type(value) is not int or value < 0 for value in player)
+        ):
+            raise NethackRunError("progress sample player is invalid")
+        key = sample.get("key")
+        if key is not None and (not isinstance(key, str) or len(key) != 1):
+            raise NethackRunError("progress sample key is invalid")
+        for field in ("frame_hash", "map_hash"):
+            value = sample.get(field)
+            if (
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(ch not in "0123456789abcdef" for ch in value)
+            ):
+                raise NethackRunError(f"progress sample {field} is invalid")
+
+        try:
+            current = self._read_json(self.current_path)
+            run_id = current.get("run_id") if current else None
+            if not isinstance(run_id, str):
+                return False
+            run_path = self._run_path(run_id)
+            run = self._read_json(run_path)
+            if (
+                run is None
+                or run.get("run_id") != run_id
+                or run.get("status") != "active"
+            ):
+                return False
+            payload = {"schema_version": PROGRESS_SCHEMA_VERSION, **sample}
+            line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
+            if len(line) > MAX_PROGRESS_LINE_BYTES:
+                raise NethackRunError("progress sample exceeds line size limit")
+            self._ensure_private_dirs()
+            path = self.progress_dir / f"{run_id}.jsonl"
+            flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(path, flags, 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                size = os.fstat(fd).st_size
+                if size + len(line) > MAX_PROGRESS_TRACE_BYTES - 160:
+                    marker = json.dumps(
+                        {"schema_version": PROGRESS_SCHEMA_VERSION, "event": "truncated"},
+                        separators=(",", ":"),
+                    ).encode("ascii") + b"\n"
+                    if size + len(marker) <= MAX_PROGRESS_TRACE_BYTES:
+                        os.write(fd, marker)
+                    return False
+                written = os.write(fd, line)
+                if written != len(line):
+                    raise NethackRunError("progress sample write was incomplete")
+            finally:
+                os.close(fd)
+            return True
+        except BlockingIOError:
+            return False
+        except OSError as exc:
+            raise NethackRunError("progress sample could not be written") from exc
 
     @contextmanager
     def _locked(self) -> Iterator[None]:

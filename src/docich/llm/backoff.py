@@ -13,6 +13,10 @@ from .contracts import AgentSpec
 
 
 _SAFE_KEY_RE = re.compile(r"[^A-Za-z0-9._:-]+")
+_DEFAULT_RATE_LIMIT_BACKOFF_SEC = {
+    "opencode-go:longcat-2.5-preview-free": 86400,
+    "opencode-go:space-bunny-free": 86400,
+}
 
 
 def safe_key(value: str) -> str:
@@ -111,6 +115,9 @@ def model_backoff_seconds(
                 current = int(time.time() if now is None else now)
                 return min(configured, 86400 - current % 86400)
             return configured
+    default_for_agent = _DEFAULT_RATE_LIMIT_BACKOFF_SEC.get(spec.raw)
+    if default_for_agent is not None:
+        return default_for_agent
     name = "COMMENT_AGENT_BACKOFF_SEC" if label.startswith("COMMENT") else "RADIO_AGENT_BACKOFF_SEC"
     default = 18000 if label.startswith(("COMMENT", "RADIO")) else 600
     raw = env.get(name, str(default))

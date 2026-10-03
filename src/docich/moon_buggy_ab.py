@@ -145,6 +145,10 @@ def _validate_experiment(value: dict) -> dict:
         winner = "B" if means["B"] > means["A"] else "A"
         if (value.get("means") != means or value.get("winner") != winner):
             raise MoonBuggyABError("Moon Buggy A/B state is invalid")
+    reason_code = value.get("reason_code")
+    if (reason_code is not None
+            and (status != "kept" or reason_code != "ab-baseline-changed")):
+        raise MoonBuggyABError("Moon Buggy A/B state is invalid")
     return value
 
 
@@ -292,7 +296,7 @@ def _ensure_scorelog_match(path: Path, selected: dict, score: int) -> None:
 
 
 def record_score(state_dir, scorelog, score: int) -> dict:
-    """Durably associate one completed match score with its pinned arm."""
+    """Record one score, then resolve a completed ABBA block automatically."""
     if type(score) is not int or score < 0:
         raise MoonBuggyABError("invalid Moon Buggy A/B score")
     path = state_path(state_dir)
@@ -316,72 +320,92 @@ def record_score(state_dir, scorelog, score: int) -> dict:
                 "arm": last["arm"],
                 "weights_sha256": last["weights_sha256"],
             }
-            _ensure_scorelog_match(log, selected, score)
-            return experiment
-        if (type(selected.get("schema_version")) is not int
-                or selected.get("schema_version") != SCHEMA_VERSION
-                or not isinstance(selected.get("arm"), str)
-                or selected.get("arm") not in ARMS
-                or not isinstance(selected.get("experiment_id"), str)
-                or type(selected.get("index")) is not int
-                or not 0 <= selected["index"] < len(PATTERN)
-                or selected.get("match_id") != f"{selected.get('experiment_id')}:{selected.get('index')}"
-                or selected.get("weights_sha256") != weights_sha256(selected.get("weights"))):
-            raise MoonBuggyABError("Moon Buggy A/B active arm is invalid")
-        if experiment["experiment_id"] != selected["experiment_id"]:
-            raise MoonBuggyABError("Moon Buggy A/B active experiment changed")
-
-        index = selected["index"]
-        expected_arm = PATTERN[index]
-        if (selected["arm"] != expected_arm
-                or selected["weights_sha256"]
-                != experiment[f"{ARMS[expected_arm]}_sha256"]):
-            raise MoonBuggyABError("Moon Buggy A/B active arm is invalid")
-        results = list(experiment["results"])
-        if index < len(results):
-            result = results[index]
-            if result.get("match_id") != selected["match_id"] or result.get("score") != score:
-                raise MoonBuggyABError("Moon Buggy A/B match conflicts")
-        elif (index == len(results) and experiment["status"] == "running"
-              and index < len(PATTERN) and selected["arm"] == PATTERN[index]
-              and selected["weights_sha256"] == experiment[f"{ARMS[PATTERN[index]]}_sha256"]):
-            result = {
-                "index": index,
-                "match_id": selected["match_id"],
-                "arm": selected["arm"],
-                "weights_sha256": selected["weights_sha256"],
-                "score": score,
-                "ts": time.time(),
-            }
-            results.append(result)
-            experiment["results"] = results
-            if len(results) == len(PATTERN):
-                scores = {arm: [r["score"] for r in results if r["arm"] == arm] for arm in "AB"}
-                means = {arm: sum(scores[arm]) / len(scores[arm]) for arm in "AB"}
-                experiment.update(
-                    status="completed",
-                    means=means,
-                    winner="B" if means["B"] > means["A"] else "A",
-                    completed_at=time.time(),
-                )
-            atomic_write_json(path, experiment)
         else:
-            raise MoonBuggyABError("Moon Buggy A/B match order is invalid")
+            if (type(selected.get("schema_version")) is not int
+                    or selected.get("schema_version") != SCHEMA_VERSION
+                    or not isinstance(selected.get("arm"), str)
+                    or selected.get("arm") not in ARMS
+                    or not isinstance(selected.get("experiment_id"), str)
+                    or type(selected.get("index")) is not int
+                    or not 0 <= selected["index"] < len(PATTERN)
+                    or selected.get("match_id") != f"{selected.get('experiment_id')}:{selected.get('index')}"
+                    or selected.get("weights_sha256") != weights_sha256(selected.get("weights"))):
+                raise MoonBuggyABError("Moon Buggy A/B active arm is invalid")
+            if experiment["experiment_id"] != selected["experiment_id"]:
+                raise MoonBuggyABError("Moon Buggy A/B active experiment changed")
 
+            index = selected["index"]
+            expected_arm = PATTERN[index]
+            if (selected["arm"] != expected_arm
+                    or selected["weights_sha256"]
+                    != experiment[f"{ARMS[expected_arm]}_sha256"]):
+                raise MoonBuggyABError("Moon Buggy A/B active arm is invalid")
+            results = list(experiment["results"])
+            if index < len(results):
+                result = results[index]
+                if result.get("match_id") != selected["match_id"] or result.get("score") != score:
+                    raise MoonBuggyABError("Moon Buggy A/B match conflicts")
+            elif (index == len(results) and experiment["status"] == "running"
+                  and index < len(PATTERN) and selected["arm"] == PATTERN[index]
+                  and selected["weights_sha256"] == experiment[f"{ARMS[PATTERN[index]]}_sha256"]):
+                result = {
+                    "index": index,
+                    "match_id": selected["match_id"],
+                    "arm": selected["arm"],
+                    "weights_sha256": selected["weights_sha256"],
+                    "score": score,
+                    "ts": time.time(),
+                }
+                results.append(result)
+                experiment["results"] = results
+                if len(results) == len(PATTERN):
+                    scores = {arm: [r["score"] for r in results if r["arm"] == arm] for arm in "AB"}
+                    means = {arm: sum(scores[arm]) / len(scores[arm]) for arm in "AB"}
+                    experiment.update(
+                        status="completed",
+                        means=means,
+                        winner="B" if means["B"] > means["A"] else "A",
+                        completed_at=time.time(),
+                    )
+                atomic_write_json(path, experiment)
+
+    if experiment["status"] in {"completed", "promoted", "kept"}:
+        # Resolve outside the score-state lock because finish() takes that
+        # lock itself. The final score is not published to the corner scorelog
+        # until adoption succeeds, so corner teardown cannot race this write.
+        try:
+            from .corner_improve import finalize_moon_buggy_ab
+
+            finalize_moon_buggy_ab(state_dir)
+        except MoonBuggyABError:
+            raise
+        except Exception as exc:
+            raise MoonBuggyABError(
+                "Moon Buggy A/B winner could not be finalized"
+            ) from exc
+
+    # Publish score evidence and retire only this pinned snapshot after any
+    # final adoption. If a process stopped earlier, retrying the same result
+    # safely repeats both steps.
+    with _locked(path):
         _ensure_scorelog_match(log, selected, score)
-
         latest = _read_json(active)
         if latest and latest.get("match_id") == selected["match_id"]:
             try:
                 active.unlink()
             except FileNotFoundError:
                 pass
-        return experiment
+        persisted = _read_json(path)
+        if persisted is not None:
+            experiment = _validate_experiment(persisted)
+    return experiment
 
 
-def finish(state_dir, *, status: str) -> dict:
+def finish(state_dir, *, status: str, reason_code: str | None = None) -> dict:
     """Resolve a completed experiment after its winner was handled."""
     if status not in TERMINAL_STATUSES:
+        raise MoonBuggyABError("invalid Moon Buggy A/B result")
+    if reason_code not in {None, "ab-baseline-changed"} or (reason_code and status != "kept"):
         raise MoonBuggyABError("invalid Moon Buggy A/B result")
     path = state_path(state_dir)
     with _locked(path):
@@ -394,6 +418,8 @@ def finish(state_dir, *, status: str) -> dict:
         if experiment["status"] != "completed":
             raise MoonBuggyABError("Moon Buggy A/B experiment is not complete")
         experiment["status"] = status
+        if reason_code:
+            experiment["reason_code"] = reason_code
         experiment.pop("baseline", None)
         experiment.pop("candidate", None)
         atomic_write_json(path, experiment)

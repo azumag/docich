@@ -36,6 +36,9 @@ install -o root -g root -m 0644 "$source_dir/ops_brief.py" /usr/local/libexec/az
 install -o root -g root -m 0644 "$source_dir/projection_io.py" /usr/local/libexec/azumag-vm-ops/projection_io.py
 install -o root -g root -m 0755 "$gateway_source" /usr/local/libexec/azumag-vm-ops/gateway.py
 install -o root -g root -m 0755 "$source_dir/stage_repair.py" /usr/local/libexec/azumag-vm-ops/stage_repair.py
+for helper in gateway_entry.py hanjuku_evidence_gateway.py hanjuku_evidence.py; do
+  install -o root -g root -m 0644 "$source_dir/$helper" "/usr/local/libexec/azumag-vm-ops/$helper"
+done
 
 # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor by default.
 # Keep the host-wide restriction enabled and allow userns only for the operator-only
@@ -97,7 +100,7 @@ tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 grep -v ' github-vm-ops-actions$' "$authorized" > "$tmp" || true
 printf '%s %s %s github-vm-ops-actions\n' \
-  'restrict,command="/usr/bin/python3 /usr/local/libexec/azumag-vm-ops/gateway.py /etc/azumag-vm-ops.json"' \
+  'restrict,command="/usr/bin/python3 -I /usr/local/libexec/azumag-vm-ops/gateway_entry.py /etc/azumag-vm-ops.json"' \
   "$key_type" "$key_body" >> "$tmp"
 install -o "$ssh_user" -g "$group_name" -m 0600 "$tmp" "$authorized"
 

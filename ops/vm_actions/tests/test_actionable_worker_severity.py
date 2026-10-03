@@ -125,6 +125,7 @@ class ActionableWorkerSeverityTests(unittest.TestCase):
         (self.state / "orphan_overlay.pid").write_text("99999999\n")
         workers = self.collector._collect_workers(self.soren, 1)
         self.assertEqual(workers["unregistered_health"], {"alive": 0, "paused": 0, "stale_only": 1, "unknown": 0})
+        self.assertEqual(workers["unregistered_flags"], {"alive": 0, "stale": 1, "paused": 0})
         self.assertEqual(self.severity(workers), "ok")
 
     def test_alive_or_unknown_unregistered_remains_warn(self):
@@ -149,12 +150,15 @@ class ActionableWorkerSeverityTests(unittest.TestCase):
                 "unregistered": ["private-worker-name"],
                 "pause_ownership": {"lifecycle_owned": 1, "operator_owned": 0, "unknown": 0},
                 "unregistered_health": {"alive": 0, "paused": 0, "stale_only": 1, "unknown": 0},
+                "unregistered_flags": {"alive": 0, "stale": 1, "paused": 0},
             }
         }
         out = self.summarizer.summarize_worker_state(data)
         self.assertIn("pause_owner_lifecycle=1", out)
         self.assertIn("pause_owner_unknown=0", out)
+        self.assertIn("unregistered_stale=1", out)
         self.assertIn("unregistered_stale_only=1", out)
+        self.assertIn("unregistered_stale_category_other=1", out)
         self.assertNotIn("private-worker-name", out)
 
 

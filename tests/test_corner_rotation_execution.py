@@ -180,6 +180,37 @@ def test_game_adapter_inherits_global_match_target_when_omitted(tmp_path, config
     assert adapter.manager.config.target_matches == (configured or 3)
 
 
+def test_game_adapter_reconciles_only_the_reserved_manual_state_file(tmp_path, monkeypatch):
+    from docich import soren91_corner_manual
+
+    corner = Corner("meriken", "meriken", "soren91")
+    main_reconcile = Mock(return_value=False)
+    manual_reconcile = Mock(return_value=True)
+    adapter = GameCornerAdapter.__new__(GameCornerAdapter)
+    adapter.g = SimpleNamespace(state_dir=tmp_path)
+    adapter.corner = corner
+    adapter.manager = SimpleNamespace(
+        state_path=tmp_path / "soren91_corner.json",
+        reconcile_failed_rotation_start=main_reconcile,
+    )
+    manual_manager = SimpleNamespace(
+        state_path=tmp_path / "soren91_corner_manual.json",
+        reconcile_failed_rotation_start=manual_reconcile,
+    )
+    monkeypatch.setattr(
+        soren91_corner_manual, "ManualSoren91CornerManager", lambda _g: manual_manager
+    )
+
+    assert adapter.reconcile_failed_start(
+        "exact-request", state_file="soren91_corner_manual.json"
+    ) is True
+    manual_reconcile.assert_called_once_with("exact-request")
+    main_reconcile.assert_not_called()
+    assert adapter.reconcile_failed_start(
+        "other-request", state_file="../soren91_corner_manual.json"
+    ) is False
+
+
 def test_runtime_environment_uses_persisted_target_for_resumed_request(tmp_path, monkeypatch):
     from docich.config import load_global
 
@@ -285,11 +316,14 @@ def test_meriken_env_file_is_scoped_to_adapter_execution(tmp_path, monkeypatch):
     env_file.write_text(
         "SOREN91_MACOS_AGENT_BASE_URL='http://100.64.0.2:8787'\n"
         "SOREN91_LOCAL_AGENT_TOKEN=secret-token\n"
-        "export SOREN91_OCI_TAILSCALE_IP=100.64.0.3\n",
+        "export SOREN91_OCI_TAILSCALE_IP=100.64.0.3\n"
+        "SOREN91_WINDOWS_AGENT_BASE_URL=http://100.64.0.4:8787\n"
+        "SOREN91_WINDOWS_AGENT_TOKEN=windows-token\n"
+        "UNRELATED_SECRET=not-loaded\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("DOCICH_SOREN91_ENV_FILE", str(env_file))
-    for key in MerikenCornerAdapter.ENV_KEYS:
+    for key in (*MerikenCornerAdapter.ENV_KEYS, "UNRELATED_SECRET"):
         monkeypatch.delenv(key, raising=False)
 
     adapter = MerikenCornerAdapter.__new__(MerikenCornerAdapter)
@@ -297,6 +331,9 @@ def test_meriken_env_file_is_scoped_to_adapter_execution(tmp_path, monkeypatch):
         assert os.environ["SOREN91_MACOS_AGENT_BASE_URL"] == "http://100.64.0.2:8787"
         assert os.environ["SOREN91_LOCAL_AGENT_TOKEN"] == "secret-token"
         assert os.environ["SOREN91_OCI_TAILSCALE_IP"] == "100.64.0.3"
+        assert os.environ["SOREN91_WINDOWS_AGENT_BASE_URL"] == "http://100.64.0.4:8787"
+        assert os.environ["SOREN91_WINDOWS_AGENT_TOKEN"] == "windows-token"
+        assert "UNRELATED_SECRET" not in os.environ
     for key in MerikenCornerAdapter.ENV_KEYS:
         assert key not in os.environ
 

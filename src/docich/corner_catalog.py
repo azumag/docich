@@ -21,6 +21,11 @@ class Corner:
     live_eligible: bool = False
     # None inherits retro_corner.target_matches (legacy default: 3).
     target_matches: int | None = None
+    # Weather is an opt-in bounded program. Its duration is an upper bound;
+    # the published forecast's own freshness expiry can end it earlier.
+    duration_minutes: int | None = None
+    # Speech stays opt-in independently of the visual weather corner.
+    audio_enabled: bool = False
 
 
 # Dispatch policies. "interval" keeps the 24h/N cadence; "queue" fires the next
@@ -68,9 +73,16 @@ def load_catalog(g) -> tuple[Corner, ...]:
     result = []
     for row in rows:
         if not isinstance(row, dict) or set(row) - {
-            "id", "adapter", "game", "enabled", "paused", "live_eligible", "target_matches"
+            "id", "adapter", "game", "enabled", "paused", "live_eligible", "target_matches",
+            "duration_minutes", "audio_enabled",
         }:
             raise CornerCatalogError("invalid corner catalog entry")
+        row = dict(row)
+        if row.get("adapter") == "weather":
+            # A future config row cannot silently turn this view on just by
+            # naming the adapter. Enabling it requires an explicit duration.
+            row.setdefault("enabled", False)
+            row.setdefault("audio_enabled", False)
         try:
             item = Corner(**row)
             validate_game_name(item.id)
@@ -79,6 +91,18 @@ def load_catalog(g) -> tuple[Corner, ...]:
             raise CornerCatalogError("invalid corner identity") from exc
         if item.adapter not in ADAPTERS:
             raise CornerCatalogError("unsupported corner adapter")
+        if item.adapter == "weather":
+            if (item.id != "weather" or item.game != "weather-view"
+                    or item.duration_minutes is not None and (
+                        type(item.duration_minutes) is not int
+                        or not 1 <= item.duration_minutes <= 14
+                    ) or type(item.audio_enabled) is not bool
+                    or item.enabled and item.duration_minutes is None):
+                raise CornerCatalogError(
+                    "weather requires id=weather, game=weather-view, boolean audio_enabled, and duration_minutes 1-14 when enabled"
+                )
+        elif item.duration_minutes is not None or item.audio_enabled:
+            raise CornerCatalogError("duration_minutes and audio_enabled require weather adapter")
         if item.target_matches is not None and (
             item.adapter != "game" or type(item.target_matches) is not int
             or not 1 <= item.target_matches <= 100

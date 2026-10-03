@@ -29,6 +29,7 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   stdout 上限 64 KiB、最終 JSON 上限 49 KiB、文字列 500 字、list 100 件、深さ 8。
 - production exec の stdout 秘匿境界は不変。diagnostics 以外の経路で
   production の任意コマンド結果を Actions へ公開してはならない。
+- `stream_title_sync` は Soren の owner-only journal 1ファイルだけを読む。最大32KiB、最新行だけを許可schemaで検証し、現在の Soren gitlink SHA と一致し15分以内の記録に限って platform enum / skip reason を表示する。
 
 ## Output 契約
 
@@ -36,6 +37,10 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 {
   "status": "ok",
   "meta": {"generated_at": 0, "window_sec": 900, "docich_head": null, "soviet_head": null, ...},
+  "stream_title_sync": {"record_status": "fresh", "occurred_at": "2026-10-02T12:00:00Z",
+                        "age_sec": 30, "event": "result",
+                        "run_soren_sha": "<40-hex>", "same_soren_sha": true,
+                        "skip_reason": "none", "youtube": "updated", "kick": "not_live"},
   "tracked_drift": {"parent_tracked_dirty": 0, "owned_submodule_head_mismatch": 0,
                     "owned_submodule_tracked_dirty": 0,
                     "owned_submodule_missing_or_invalid": 0,
@@ -91,6 +96,25 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `status=failed` かつ `recovery_required=true` の場合だけ severity を `warn` にし、
   owner-only の固定 `recover-failed` 操作を許可する。`draining` / `recovery_required`
   のcanonical phaseは自動でリセットしない。
+- `corners.<id>.end_reason` は固定enumのみを出す。`interrupted` で
+  `switch-terminal-before-corner-active` の場合、その枠は**ゲーム切替が起動前に
+  terminal へ到達して中断した**ことを意味し（#1044）、他の中断と区別して読む。
+  通常の完了や停止で起きた中断ではないため、以降の `recover-failed` と
+  `corner-rotation recover` の2操作でのみ確定する。severity は変えない。
+- `pulse_sink_inputs` は PulseAudio の playback stream 状態を read-only で出す
+  （#968）。各要素は `index` / `sink` / `role` / `mute` / `corked` /
+  `volume_percent` / `player` の固定キーのみで、`player` は
+  `bridge-ffplay` / `retroarch` / `browser` / `speech-worker` /
+  `monitor-capture` / `stream-capture` / `other` の固定カテゴリに落とす。
+  `application.name` の生値・PID・module/client id・stream プロパティの平文は
+  **出さない**。`corked` は daemon が報告しない環境では `null`（= 未報告）で
+  「corked していない」とは言わない。`muted > 0` は BGM/SE が無音になり得る
+  状態だが、意図的な mute と区別できないため severity は変えない。
+  `readable=false` のときは「無音なし」ではなく **観測できなかった** として読む
+  （`reason` は `pactl_unavailable` / `pactl_failed` / `unbounded_output` /
+  `unparsable`）。gateway は `XDG_RUNTIME_DIR` を渡さないため、collector は
+  `/run/user/<uid>/pulse/native` が socket のときだけそこを明示する。
+  固定(owner-only)な mute 解除 operation は本 projection に含めない。
 - `game_switch_fifo` は `game-switch/requests` のreceiptを固定上限で読み、queued件数と
   FIFO先頭の operation/target/age だけを出す。request ID、payload、生成本文、秘密情報は
   出さない。malformed receiptやscan未完了は復旧せず、監視側で要対応として扱う。
@@ -116,7 +140,7 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 
 - common rotation: `corner_rotation.json` の固定projectionを
   `corners.corner_rotation`へ出す。status、slot、next_due_at、last_seen_at、
-  eligible_count、pending有無、および設定由来の `schedule_mode` / `cooldown_seconds`
+  eligible_count、pending有無、`queued_manual`（ledgerまたは固定inboxに手動予約があるboolean）、および設定由来の `schedule_mode` / `cooldown_seconds`
   のみ。seed・request payload・自由文は出さない。
   さらに、`error_kind`（`docich.corner_rotation.ERROR_KINDS` と同一の固定enum。
   例外本文はstateにもdiagnosticsにも書かない。欠落はnull、不正値は`unknown`。
@@ -128,6 +152,20 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `pending_owner_status`。request UUIDは固定stateとの照合にだけ使い出力には含めない。
   これで「まだ起動していない」「既に終了している」「実行中・corner側の復旧が要る」を
   証跡から区別できる（#986）。
+  自動予約とは別に `manual_pending`（bool）、`manual_pending_corner`（固定enum）、
+  `manual_pending_state_file`（固定8種のstate名、拡張子なし）、
+  `manual_pending_age_sec`（未観測/未来時刻は-1）、`manual_pending_owner`、
+  `manual_pending_owner_status` を出す。手動予約が指定した固定allowlist内のstateで
+  requestが一致した場合だけownerを報告する。別state内の一致を代用しない。
+  ownerは予約なし`absent`、指定state不在/別requestなら`none`、
+  不正予約・allowlist外・読取不可は`unknown`。request UUID・任意pathは公開しない。
+  `pending=false/pending_owner=absent`だけでは手動予約の不在を意味しない。
+  `manual-execution-pending`は手動executorのqueued/waiting/already-running返却、
+  `manual-request-needs-resume-or-recovery`はtimerによる未完了手動予約の保持を表す。
+  両者の変化や保持された`error_kind`だけで新しい実行失敗と断定しない。
+  queueモードの過去`next_due_at`やcanonical `ready`も枠の解放を証明しない。
+  `corners.retro_corner.status`と`corners.retro_corner.game_audio.status`は別物で、
+  `applied`は後者の音量適用結果。これらの診断値は復旧/再開の許可ではない。
   `recovery_required`は次cornerを停止する実行契約であり、診断自体は復旧操作をしない。
   `corners.corner_rotation_timer` は支配的なtimer unit名（移行後は
   `docich-corner-rotation.timer`）、active/enabled、旧名が正しいaliasかを示す
@@ -272,6 +310,90 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - Actions maskingで数値が`***`になった場合は欠測扱い。復元や推定をしない。
   フェーズ中央値を足して全体中央値と比較しない。
 
+## NetHack 日次結果・終了履歴の読み取り投影
+
+`nethack_history` は既存owner-only `diagnostics` のJSON（VM operations Actionsログ）で取得する。
+新しいtimer、公開Issueへの自動転載、artifact、production exec経路は追加しない。
+**この変更をmainへ統合しcanonical deployするまでは、新フィールドは実環境で使えない。**
+
+固定収集元はproduction設定から解決した `state_dir/nethack/daily-improvements/YYYY-MM-DD.json`
+と `state_dir/nethack/runs/<uuid>.json` のみ。候補catalog、raw progress JSONL、TTY、
+xlogfile、dump、advisory、lockは開かず、既に保存されたretrospectiveの数値集計だけを読む。
+run終了処理や日次処理を起動しない。owner境界・既存lock・稼働中ゲームに介入しない。
+
+- 各source最大128ディレクトリエントリ、各JSON最大64KiB。directory/fileは
+  dirfd相対openと`O_NOFOLLOW`で全階層のsymlinkを拒否、regular fileのみ。
+  schema v1のみを投影し、JSON不正・過大・リンク・非regular・日時不正は除外する。
+- 日次は観測した有効結果のうち生成日時の新しい7件。statusは`review_ready` /
+  `no_new_runs`、run_count、固定candidate category件数、`pending_canary_evaluation` /
+  `no_change` / `unknown`、policy_effect=none、automatic_promotion=falseのみ。
+  policy変更や自動昇格を示す不正なreportは受理しない。
+- 終了runは観測した有効結果のうち終了日時の新しい8件。`dead` / `ascended` /
+  `ended` / `ended_unknown`、expedition、score/turns/max_depth、開始・終了日時、
+  retrospective有無・生成日時、同種死因件数とprogressのsample/不正行/反復送信/turn/depth/
+  HP比率/phase集計だけ。run ID・death reason/signature・候補本文・path・hashは出さない。
+  同種死因件数や反復送信は観測パターンであり、失敗原因・改善効果の確定ではない。
+- `collected_at`、`generated_at` / `ended_at` / `started_at`、`file_mtime` はUTC epoch秒。
+  `ended_at` はproducerのroot `last_finished_at`（終了処理時刻）を投影する。
+  session内の`ended_at`やxlogの死亡時刻とは区別する。
+  日次`date`はproducer設定のローカル日付。日次結果が無い日は失敗・成功を推測しない。
+- 各sourceのstatusは`missing` / `unavailable` / `empty` / `ok` / `partial`。
+  `invalid_records`、`excluded_active`、`scanned_entries`、`scan_complete`と
+  `omitted_records`を返す。`scan_complete=false`なら全履歴・全体の最新記録を証明しない。
+  active/suspended等は結果から除外。nullable数値・`unknown`・progressの`missing`を0件の成功にしない。
+  retrospectiveが無ければprogressや同種死因は不明。bounded JSONに含まれる余分な自由文は
+  メモリ内のparseだけに留め、allowlist projectionで除去する。
+- collector全体の既存36KiB予算を超えた場合は古いrecordsから段階的に省略し、
+  各sourceの最新1件を残した状態で既存のAI詳細・worker詳細・Soren比較詳細の
+  縮退を適用する。それでも上限超過なら最新1件も省略する。実際に省略したsourceだけ
+  `output_omitted=true`と`omitted_records`に記録する。gatewayの49KiB上限・型・深さ・
+  secret-redactionは維持。複数ファイルの逐次観測であり原子的snapshotではない。
+  遠征・日次の一覧は互いに独立した観測なので、同じ終了runを二重加算しない。
+
+## tmux サーバ所有と resolver daemon の read-only 投影（#1286 follow-up）
+
+`tmux_servers` は本番コーナーが使う既定ソケット `docich` と評価ジョブ専用ソケット
+`docich-eval` の読取成否・セッション数・確認できた有無を投影する。
+セッション名は取得せず、`list-sessions -F 1` の固定マーカーだけを数える。
+出力は4KiBまでを検証し、不正な行、上限超過、timeout、実行失敗、非zero終了は
+`readable=false / present=null / session_count=null` とする。不在や0件に推測変換しない。
+正常終了した空出力だけが `readable=true / present=false / session_count=0` になる。
+旧 `sessions` フィールドは出力しない。各サーバの結果は独立している。
+#1284 で評価用 tmux を専用サーバへ隔離したが、分離はプロセスツリーからは直接観測できなかった。
+この投影で「eval セッションが `docich-eval` 上に作られ、本番 `docich` サーバに現れない」ことを
+diagnostics で直接確認できる。`tmux -L <server> list-sessions` は read-only（入力送信なし）。
+
+`resolver_daemon` は `docich-resolver-improve.service` と
+`docich-resolver-improve-gnurobots.service` の active / enabled 状態を投影する。
+これらの長命 daemon が稼働していると、次回再起動まで本番既定 tmux サーバを共有し続ける
+（#1284 の対象外経路）。`systemctl --user is-active` / `is-enabled` は read-only。
+
+
+## YouTube / Kick title sync の read-only 投影
+
+`stream_title_sync` は Soren の `tmp/state/stream_title_sync/events.jsonl` を最大32KiBだけ読み、
+親の`tmp` / `state` / 専用journal directoryと末尾ファイルの各segmentをdirfd + nofollowで開き、
+専用directory・regular fileのowner/mode、最大32KiB、最新レコードの厳密schema・固定enum・
+時刻・SHAを検証する。出力するのは時刻、年齢、記録イベント、実行時Soren SHAと現在の
+gitlink SHA一致、固定skip reason、YouTube/Kickの固定結果enumだけ。追加フィールド、
+不正enum、親/末尾symlink、owner-onlyでないdirectory/file、過大・不完全・古い記録は結果を
+公開せず固定状態として返す。新しい状態項目はdiagnosticのoverall severityに影響しない。
+
+`youtube_stream_id_present` / `kick_broadcaster_id_present` はhelper実行時の
+`YOUTUBE_BROADCAST_STREAM_ID` / `KICK_BROADCASTER_USER_ID` が非空だったかだけを
+表す厳密なboolean。空文字・未設定はfalse、空白だけでも非空はtrue。ID値やcredentialの
+存在は記録・投影しない。collector自身の環境から補完しない。追加済みschemaは両項目を
+必須とし、従来の2schemaも受理するが未記録項目は`null`（unknown）。freshかつ現在の
+gitlinkに対応するsource fingerprintが一致する記録だけでbooleanを表示し、stale / future /
+malformed / source_unavailable / source_mismatchでは`null`を維持する。最大行512bytes、
+journal最大32KiBは維持する。存在だけではIDの正当性や認証・配信成功を証明しない。
+
+`event=skipped` は `skip_reason` が示す早期終了を表し、両platformは `not_run`。
+`event=started` のままならhelper開始後に結果行が残らなかった状態。
+`event=result` の `updated` はAPI read-backが依頼したtitleと一致したことを示すだけで、
+視聴者に見える実表示は保証しない。Twitchのtitle/categoryはこのjournalへ保存しない。
+統合ログ `stream-game.log` / `stream_title_day.log` の読取り・出力もしない。
+
 ## 出さないもの
 
 secrets・token・raw environment・prompt 本文・生成本文・HTTP header・
@@ -325,6 +447,10 @@ commit SHA のみで、path・diff・bytes・raw exception を含めない。
 CPU 消費・wake-up・spawn 経路の短時間 baseline は diagnostics とは別の read-only
 profiler で取る。契約と実行方法は [cpu-profiling.md](cpu-profiling.md)（#970）。
 
+NetHack tiles の `nethack_tiles.json` はruntime固有のprivate ownership manifestである。
+diagnostics は active runtime と manifest のgeneration/ownership一致、固定status/mode/reason、
+更新からの経過秒、cleanup完了だけを投影する。PID、argv、profile path、例外本文は公開しない。
+
 ## Runtime 変更 checklist
 
 worker / queue / model / provider / fallback / runtime component を変えたら：
@@ -337,3 +463,21 @@ worker / queue / model / provider / fallback / runtime component を変えたら
 - [ ] regression tests（正常・停止・stale・重複・未登録・malformed・redact・bound）
 - [ ] secret-redaction（新規 field が出ていないか）
 - [ ] deploy 影響（collector はデプロイ済み main から動くこと）
+
+## OpenCode retention health
+
+`opencode_retention` は固定stateの `attempt` / `default` / `worker` と専用timerのactive/enabledを返す。
+statusは `running/completed/gate_timeout/disabled/deferred/failed`、reason/stageは固定enum、前後bytes・page数・削除件数・日時だけを許可する。
+最新attemptが失敗/延期/ロック待機切れ、3時間超stale、timer停止ならWARN。古いDB単位のcompletedを最新attemptの成功とみなさない。
+秘密・prompt・DB行の内容・例外本文は出力しない。DBファイルサイズと実際のroot空き容量は別に実測する。
+
+`docich-opencode-retention.timer` はゲームから独立した1時間毎のoneshot maintenanceで、supervisor worker / AI queueは追加しない。
+直近1日のOpenCode実行履歴を残す（認証・ゲーム結果・戦略履歴は別管理）。3日分で5GB級に再増加したため、#1337の回復後も1日保持を定期適用する。
+既存のdefault DB retention opt-outは維持する。timerはcanonical deployだけで導入し、ゲーム・配信・共通音声を再起動しない。
+status 75は未実行/延期であり、serviceの異常終了ループを避けてもdiagnosticsで成功には変換しない。
+
+回収は1GiBの空きを確保し、gate→SQLite EXCLUSIVE→transactional prune→checkpoint→private VACUUM INTO→transactional backup→checkpointを使う。
+各段の見込み容量と途中の空きを判定する。コピーのサイズを実測してから書き戻しを予算化する。ライブDB/WALをrename/unlinkしない。
+デプロイepoch=3の1回回収後はtimerが継続担当する。回収が失敗/延期ならcanonical runも非成功になり、`diagnostics`で段階・理由と容量を確認する。
+
+OpenCodeの `compact_storage` は `disk` / `memory` を区別する。圧縮コピーにtmpfsを利用した場合も、root空き1GiB・利用可能RAM4GiB（cgroup制限込み）を予約する。`insufficient_memory` / `memory_unknown` は成功ではなく延期で、次回の定期実行へ持ち越す。

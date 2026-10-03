@@ -20,6 +20,8 @@ import time
 
 from . import hanjuku_chart as chart
 from . import hanjuku_chart_adjust as adjust
+from . import hanjuku_reference as reference
+from .hanjuku_egg_reference import general_max_hp
 from .game_switch import atomic_write_json
 from .hanjuku_run import append_log
 from .retroarch_boundary import read_record
@@ -28,8 +30,8 @@ STATE = 'hanjuku_chart_worker.json'
 LOCK = 'hanjuku_chart_worker.lock'
 LABEL = 'RADIO:hanjuku-chart-adjust'
 DECISION_TAIL_BYTES = 131072
-RESULT_DECISIONS = frozenset({'order_launched', 'order_failed', 'order_retry', 'battle_result',
-                              'chart_adjust_applied', 'chart_interim_order'})
+RESULT_DECISIONS = frozenset({'order_launched', 'order_failed', 'order_retry', 'battle_start',
+                              'battle_result', 'chart_adjust_applied', 'chart_interim_order'})
 _busy = threading.Event()
 
 
@@ -47,9 +49,21 @@ def _recent_results(runtime_dir: Path, limit=24) -> list[dict]:
         except ValueError:
             continue
         if isinstance(item, dict) and item.get('decision') in RESULT_DECISIONS:
-            out.append({k: item.get(k) for k in ('decision', 'chart_step', 'general', 'ally', 'castle',
-                                                  'target', 'enemy', 'outcome', 'side')
-                        if item.get(k) is not None})
+            entry = {k: item.get(k) for k in ('decision', 'chart_step', 'general', 'ally', 'castle',
+                                              'target', 'enemy', 'outcome', 'side',
+                                              'enemy_hp', 'ally_hp')
+                     if item.get(k) is not None}
+            # The 卵落 rule needs max HP, which a wounded opening reading is
+            # not: add the fixed char.csv HP for names it knows.
+            for side in ('ally', 'enemy'):
+                name = entry.get(side)
+                if side == 'ally' and name == chart.HERO:
+                    name = 'しゅじんこう'
+                max_hp = general_max_hp(name)
+                if max_hp is not None:
+                    entry[f'{side}_max_hp'] = max_hp
+            if entry:
+                out.append(entry)
     return out[-limit:]
 
 
@@ -57,9 +71,13 @@ def build_prompt(request: dict, results: list[dict]) -> str:
     chapter = request.get('chapter') or 1
     base = [{k: (list(v) if isinstance(v, tuple) else v) for k, v in o.items()}
             for o in chart.all_orders(chapter)]
+    purchases = [{**plan, 'month': list(plan['month']),
+                  'cards': [list(card) for card in plan['cards']],
+                  'priority': [list(card) for card in plan.get('priority') or ()]}
+                 for plan in chart.purchases(chapter)]
     measured = sorted(chart.castles(chapter))
     allowed_castles = measured or sorted(chart.CASTLE_NAMES.get(chapter, ()))
-    example = {'orders': [{'step': 'J1', 'general': 'ココット', 'source': 'ほんじょう',
+    example = {'orders': [{'step': 'J1', 'general': 'ココット', 'source': 'アルマムーン',
                            'target': 'スペンソニア', 'cards': ['ダイチスイム'], 'after': None,
                            'note': '理由を短く'}],
                'purchases': {'month': [1, 8], 'cards': [['イッテツーン', 3]], 'soldiers': 20,
@@ -76,17 +94,44 @@ def build_prompt(request: dict, results: list[dict]) -> str:
         f'- 指示は1〜{adjust.MAX_ORDERS}件。step は英数字・_・- の12文字以内の一意な名前（例 J1, J2）。'
         '基準チャートのstep名は禁止。',
         f'- cards は1指示あたり最大{adjust.MAX_CARDS_PER_ORDER}枚。在庫は保証されないので必要な時だけ。',
-        '- after は null / ["captured", 城名] / ["all_captured"] のいずれか。',
+        '- 携行する cards は「現在の状況」の card_stock で在庫が1以上と実測された札だけにすること。'
+        'card_stock に無い札・在庫0の札は、そのプランの purchases で買う札を除いて cards に含めない'
+        '（card_stock が空または無い場合は携行在庫が不明なので cards は空にする）。'
+        '章に存在しない切り札を計画すると、出撃時に選べず保留と破棄になる。',
+        '- キャトルミューは火星人イベント限定で店では買えない。実在庫があれば1枚を優先活用する。'
+        '通常将軍を一撃で倒し、EMへ224ダメージと石化、ボスへ90ダメージ。ID28なので2枚携行は避ける。',
+        '- 基本戦術: 携行する切り札のID合計が48以上だと敵将軍がエッグを使う。cards のID合計は47以下にすること'
+        '（ID: ' + '、'.join(f'{n}={i}' for n, i in sorted(reference.ALL_CARD_IDS.items(), key=lambda kv: kv[1])
+                             if n in adjust.CARD_NAMES) + '）。'
+        '推奨の組: ' + ' / '.join('+'.join(s) for s in reference.RECOMMENDED_CARD_SETS
+                                 if all(c in adjust.CARD_NAMES for c in s)) + '。'
+        '48以上になる分はbotが実行時に外す。',
+        '- 基本戦術: 敵将軍が卵持ちのとき、切り札の卵落値 > (敵・味方将軍の最大HP合計 mod 16) なら'
+        '敵は卵を落とし、以後召喚を使えなくなる。卵落値: '
+        + '、'.join(f'{n}={v}' for n, v in sorted(reference.EGG_DROP_VALUES.items(),
+                                                  key=lambda kv: (-kv[1], kv[0]))) + '。'
+        '将軍を倒し切れない相手や召喚が脅威の場面では、会戦する将軍の最大HP合計から余りを計算し、'
+        '卵落値が上回る札を携行するとよい。開戦時HPは負傷していることがあるため使わず、'
+        '「直近の実績」の battle_start にある ally_max_hp / enemy_max_hp（固定最大HPの判明分）で計算すること。',
+        '- 基本戦術: 城レベルが高いほど防衛側のエッグモンスターの防御・速さと防衛将軍の突撃速度が上がる'
+        '（ボス城は補正なし）。定員は城Lv−1で、防衛側は将軍が倒されるたびに城レベルが1下がる。',
+        '- after は出撃の前に満たすべき状態で、null / ["captured", 城名] / ["all_captured"] のいずれか。'
+        '["captured", X] は「すでにXを奪取済み」の時だけ出撃する条件なので、'
+        'target が X の指示（攻略・奪回）に付けると条件は指示自身の結果待ちになり永遠に出撃できない。'
+        'いま奪う城の指示には必ず after: null を使うこと。',
         '- source は将軍を出す自軍の城。target は攻める城。general は将軍名。',
-        '- purchases は任意。month は [年, 月]（これから来る月初）。generals は新規登用人数（現状は記録のみ）。',
+        '- general は「駐留（garrison）」でその source にいると記録された将軍にすること。'
+        '別の城にいると記録された将軍・進軍中（en_route）の将軍・失った城（lost）からの出撃は実行できず破棄される。'
+        '駐留が記録されていない城は将軍不明として扱う。',
+        '- purchases は任意。month は [年, 月]（これから来る月初）。generals は新規登用人数（現状は記録のみ）。'
+        'cards は基準チャートの購入予定にある札か、card_stock で在庫を見たことのある札だけにすること。',
         '- 出力はJSONオブジェクト1つだけ。説明文やコードフェンスは不要。',
         '',
         '## 基準チャート（参考。書き換え不可）',
-        json.dumps(base, ensure_ascii=False),
+        json.dumps({'orders': base, 'purchases': purchases}, ensure_ascii=False),
         '',
         '## 現在の状況',
-        json.dumps({k: request.get(k) for k in ('chapter', 'off_chart_reason', 'captured',
-                                                 'orders', 'blocked', 'gold', 'month')},
+        json.dumps({k: request.get(k) for k in adjust.REQUEST_FIELDS if k != 'request_id'},
                    ensure_ascii=False),
         '',
         '## 直近の実績',
@@ -138,10 +183,13 @@ def _run(g, runtime_dir: Path, request: dict, cfg, generate, lock_fd=None):
         prompt = build_prompt(request, _recent_results(runtime_dir))
         output, agent = generate(g, cfg, prompt)
         current = read_record(runtime_dir / adjust.REQUEST_FILE) or {}
-        if current.get('request_id') != request['request_id']:
+        if (current.get('request_id') != request['request_id']
+                or current.get('request_digest') != request.get('request_digest')):
+            # The payload revision changed while generating: the answer may
+            # plan from stock/garrison facts that are no longer current.
             status = 'superseded'
         else:
-            adjust.save(runtime_dir, parse_output(output, request, agent or 'unknown'))
+            adjust.save(runtime_dir, parse_output(output, request, agent or 'unknown'), request)
     except ValueError:
         status = 'invalid_output'
     except RuntimeError as exc:
@@ -173,6 +221,9 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, generate=None, backg
     request = read_record(runtime_dir / adjust.REQUEST_FILE)
     if not request or not isinstance(request.get('request_id'), str):
         return None
+    # A payload published before the castle-label rename still names the old
+    # home castle; the prompt and its validation use the current chart labels.
+    chart.migrate_legacy_labels(request)
     lock_path = runtime_dir / LOCK
     if lock_path.is_symlink():
         return None
@@ -186,13 +237,17 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, generate=None, backg
         if _busy.is_set():
             return None
         adjusted = adjust.load(runtime_dir)
-        if adjusted and adjusted['request_id'] == request['request_id']:
+        if (adjusted and adjusted['request_id'] == request['request_id']
+                and adjusted.get('request_digest') == request.get('request_digest')):
             return None
         state = read_record(runtime_dir / STATE) or {}
-        attempts = state.get('attempts', 0) if state.get('request_id') == request['request_id'] else 0
+        same_revision = (state.get('request_id') == request['request_id']
+                         and state.get('request_digest') == request.get('request_digest'))
+        attempts = state.get('attempts', 0) if same_revision else 0
         if attempts >= cfg['max_attempts']:
             return None
         atomic_write_json(runtime_dir / STATE, {'request_id': request['request_id'],
+                                                'request_digest': request.get('request_digest'),
                                                 'attempts': attempts + 1, 'at': time.time()})
         _busy.set()
         generate = generate or _default_generate

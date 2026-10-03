@@ -3352,7 +3352,7 @@ class GameSwitchCoordinator:
                 acceptance,
                 deadline,
                 target=target,
-                error_code=ERROR_INVALID_GAME,
+                error_code=_failure_code(exc, ERROR_INVALID_GAME),
                 detail=_safe_detail(exc),
             )
         spec = replace(spec, adapter=adapter.name)

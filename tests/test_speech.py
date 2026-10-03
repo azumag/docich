@@ -75,6 +75,15 @@ class TestSanitize(SpeechBase):
         pairs = [("地政学的", "ちせいがくてき")]
         self.assertEqual(speech.sanitize_text("地政学的な話", pairs), "ちせいがくてきな話")
 
+    def test_hanjuku_title_pronunciation_is_speech_only(self):
+        source = "半熟英雄 ああ、世界よ半熟なれ…!!。英雄の活躍です。"
+        self.assertEqual(speech.sanitize_text(source, []),
+                         "半熟ヒーロー ああ、世界よ半熟なれ…!!。英雄の活躍です。")
+        self.assertIn("半熟英雄", source)
+        self.assertEqual(speech.sanitize_text("半熟ヒーロー", []), "半熟ヒーロー")
+        self.assertEqual(speech.sanitize_text("半熟英雄と地政学的", [("地政学的", "ちせいがくてき")]),
+                         "半熟ヒーローとちせいがくてき")
+
     def test_word_replace_file_loading(self):
         path = self.root / "config" / "voicevox_word_replace.txt"
         path.parent.mkdir(parents=True)

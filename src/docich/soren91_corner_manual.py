@@ -32,6 +32,9 @@ GAME_NAME = "soren91"
 class ManualSoren91CornerManager(RetroCornerManager):
     """Run the Soren91 corner immediately without affecting other slots."""
 
+    # soren91 は独自の文面体系。ベースのレトロ結果まとめを流さない。
+    announce_end_result = False
+
     def __init__(
         self,
         g: GlobalConfig,

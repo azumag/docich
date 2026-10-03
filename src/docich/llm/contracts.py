@@ -7,8 +7,10 @@ their short-lived transport details.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
+
+from .images import ImageAttachment
 
 
 class LlmError(RuntimeError):
@@ -54,6 +56,8 @@ class DispatchRequest:
     agents: tuple[AgentSpec, ...]
     timeout_sec: int | None = None
     validator: Validator | None = None
+    images: tuple[ImageAttachment, ...] = field(default=(), repr=False)
+    image_guard: Callable[[], bool] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,7 @@ class ProviderResult:
     output: str = ""
     failure_kind: str = ""
     detail: str = ""
+    images_sent: int = 0
 
 
 @dataclass(frozen=True)
@@ -77,6 +82,7 @@ class DispatchResult:
     attempted: int = 0
     skipped: int = 0
     detail: str = ""
+    images_sent: int = 0
 
     @property
     def ok(self) -> bool:

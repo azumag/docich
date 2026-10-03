@@ -41,7 +41,7 @@ def test_non_dict_json_returns_none():
 def _patch_dispatch(monkeypatch, result: DispatchResult):
     import docich.ai_generate as ai_generate
 
-    def _fake_dispatch(g, *, label, agents, prompt_text, timeout, timeout_sec):
+    def _fake_dispatch(g, *, label, agents, prompt_text, timeout, timeout_sec, env=None):
         return result
 
     monkeypatch.setattr(ai_generate, "run_prompt", _fake_dispatch)
@@ -90,3 +90,22 @@ def test_generate_text_success_returns_stripped_output(monkeypatch):
     monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
     _patch_dispatch(monkeypatch, DispatchResult(0, output="  hello  \n"))
     assert generate_text(None, label="RADIO:x", agents="a", prompt_text="p") == "hello"
+
+
+def test_generate_text_explicit_env_carries_gate_without_touching_process_env(monkeypatch):
+    import os
+    import docich.ai_generate as ai_generate
+
+    monkeypatch.delenv("DOCICH_ALLOW_REAL_AI", raising=False)
+    seen = {}
+
+    def _fake_dispatch(g, *, label, agents, prompt_text, timeout, timeout_sec, env=None):
+        seen["env"] = env
+        return DispatchResult(0, output="hello")
+
+    monkeypatch.setattr(ai_generate, "run_prompt", _fake_dispatch)
+
+    env = {**os.environ, "DOCICH_ALLOW_REAL_AI": "1"}
+    assert generate_text(None, label="RADIO:x", agents="a", prompt_text="p", env=env) == "hello"
+    assert seen["env"]["DOCICH_ALLOW_REAL_AI"] == "1"
+    assert "DOCICH_ALLOW_REAL_AI" not in os.environ

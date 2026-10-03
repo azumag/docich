@@ -72,6 +72,28 @@ def _nlist(mapping, name):
     return len(value) if isinstance(value, list) else 0
 
 
+def _fixed_component_counts(mapping, name, total):
+    """Return validated fixed-enum counts, failing closed on malformed input."""
+    value = mapping.get(name) if isinstance(mapping, dict) else None
+    if not isinstance(value, dict) or set(value) != set(COMPONENTS):
+        return False, Counter()
+    counts = Counter()
+    for component in COMPONENTS:
+        count = value.get(component)
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            return False, Counter()
+        counts[component] = count
+    expected = mapping.get(total) if isinstance(mapping, dict) else None
+    if (
+        not isinstance(expected, int)
+        or isinstance(expected, bool)
+        or expected < 0
+        or sum(counts.values()) != expected
+    ):
+        return False, Counter()
+    return True, counts
+
+
 def _fixed_status_is(mapping, allowed):
     """Return a boolean for an allowlisted lifecycle state without echoing it."""
     if not isinstance(mapping, dict):
@@ -258,6 +280,10 @@ def summarize(data):
     sampled = sum(cause_counts.values())
     sampled_queue_giveups = sum(queue_giveup_component_counts.values())
     sampled_all_failed = sum(all_failed_component_counts.values())
+    all_failed_attribution_consistent, full_all_failed_component_counts = _fixed_component_counts(
+        ai, "all_failed_components", "all_failed_15m"
+    )
+    recent_events_omitted = isinstance(ai, dict) and ai.get("recent_events_omitted") is True
     retro = corners.get("retro_corner") if isinstance(corners, dict) else None
     fifo = corners.get("game_switch_fifo") if isinstance(corners, dict) else None
     paper = corners.get("paper_corner") if isinstance(corners, dict) else None
@@ -336,6 +362,13 @@ def summarize(data):
     parts.append(f"ai_recent_all_failed_sampled={sampled_all_failed}")
     parts.extend(
         f"ai_recent_all_failed_component_{component}={all_failed_component_counts[component]}"
+        for component in COMPONENTS
+    )
+    parts.append(f"ai_recent_events_omitted={int(recent_events_omitted)}")
+    parts.append(f"ai_all_failed_attribution_consistent={int(all_failed_attribution_consistent)}")
+    parts.extend(
+        f"ai_all_failed_component_{component}="
+        f"{full_all_failed_component_counts[component] if all_failed_attribution_consistent else 0}"
         for component in COMPONENTS
     )
     parts.extend(

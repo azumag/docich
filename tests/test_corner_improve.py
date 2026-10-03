@@ -302,6 +302,35 @@ def test_parse_candidate_boundaries():
         assert 'k6' not in str(exc)
 
 
+@pytest.mark.parametrize(
+    'value',
+    ['true', 'false', 'NaN', 'Infinity', '-Infinity', '1e10000', str(10 ** 400)],
+)
+def test_parse_candidate_rejects_boolean_nonfinite_and_overflowing_integer(value):
+    with pytest.raises(CornerImproveError) as excinfo:
+        parse_candidate(f'{{"k": {value}}}', {'k'})
+    assert excinfo.value.code == 'llm-values'
+
+
+def test_parse_candidate_allows_zero_only_for_bastet_hard_drop():
+    defaults = bot_default_weights('bastet')
+    assert defaults == {'hard_drop': 1.0}
+    assert corner_improve.numeric_weights(defaults) == {'hard_drop'}
+
+    assert parse_candidate('{"hard_drop": 0}', {'hard_drop'}, game='bastet') == {
+        'hard_drop': 0,
+    }
+    with pytest.raises(CornerImproveError) as default_excinfo:
+        parse_candidate('{"hard_drop": 0}', {'hard_drop'})
+    assert default_excinfo.value.code == 'llm-values'
+    with pytest.raises(CornerImproveError) as other_game_excinfo:
+        parse_candidate('{"k": 0}', {'k'}, game='nsnake')
+    assert other_game_excinfo.value.code == 'llm-values'
+    with pytest.raises(CornerImproveError) as other_key_excinfo:
+        parse_candidate('{"k": 0}', {'k'}, game='bastet')
+    assert other_key_excinfo.value.code == 'llm-values'
+
+
 def test_already_running_is_skipped(tmp_path):
     import fcntl
 

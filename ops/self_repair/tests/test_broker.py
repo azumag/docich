@@ -2,6 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+from unittest import mock
 
 class BrokerTests(unittest.TestCase):
     def module(self):
@@ -24,6 +25,21 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(cfg['agent']['soren-self-repair']['permission'],{'*':'deny'})
         self.assertEqual(cfg['permission'],{'*':'deny'})
         self.assertNotIn('GITHUB_TOKEN',env)
+
+    def test_generate_uses_fixed_opencode_title_without_request_data(self):
+        b=self.module()
+        seen={}
+        def fake_run(command,**kwargs):
+            seen['command']=command
+            payload={'type':'text','part':{'text':'{"replacements":{}}'}}
+            return 0,json.dumps(payload)
+        request={'repair_kind':'viewer_audio-secret-label','files':{'external_game_audio.mjs':'source'}}
+        policy={'model':'opencode/test-model','opencode_home':'/home/ubuntu','timeout':30}
+        with mock.patch.object(b,'run_bounded',side_effect=fake_run):
+            self.assertEqual(b.generate(request,policy),{'replacements':{}})
+        self.assertIn('--title',seen['command'])
+        self.assertEqual(seen['command'][seen['command'].index('--title')+1],'docich:improvement')
+        self.assertNotIn(request['repair_kind'],seen['command'])
 
     def test_unknown_and_nested_error_events_rejected(self):
         b=self.module()

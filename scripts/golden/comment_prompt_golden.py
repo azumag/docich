@@ -82,6 +82,79 @@ def bash(script, sn, env=None, stdin=None, args=()):
     return result.stdout
 
 
+def bash_many(sn, calls, env=None):
+    """Run several legacy snippets in one bash process, loading eloop_lib once.
+
+    calls is a list of mappings with script (required) and optional env, args
+    and stdin. Each snippet runs in its own subshell, so state cannot leak into
+    the next one. Top-level env is visible while loading the legacy shim and is
+    re-exported after the load, exactly like bash(); per-call env is an
+    additional post-load override. Calls stop at the first nonzero status,
+    matching a sequential loop over bash().
+
+    stdout/stderr and return-code control data live in separate temp files.
+    This keeps arbitrary legacy stdout opaque while still paying for only one
+    bash process / one eloop_lib load.
+    """
+    base = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
+            "HOME": os.environ.get("HOME", "/tmp"), "ELOOP_LIB_DIR": str(sn)}
+    base.update(env or {})
+    lines = ["set --", "source ./eloop_lib.sh >/dev/null 2>&1; log(){ :; }",
+             "_docich_batch_errexit=0",
+             'case $- in *e*) _docich_batch_errexit=1;; esac',
+             "set +e"]
+    with tempfile.TemporaryDirectory(prefix="docich-bash-many-") as tmp:
+        tmp_path = Path(tmp)
+        result_paths = []
+        for i, call in enumerate(calls):
+            call_env = {**(env or {}), **(call.get("env") or {})}
+            reassert = "".join(f"export {name}={shlex.quote(value)}; "
+                               for name, value in call_env.items())
+            stdin = ""
+            if call.get("stdin") is not None:
+                payload = tmp_path / f"stdin-{i}"
+                payload.write_text(call["stdin"], encoding="utf-8")
+                stdin = f" < {shlex.quote(str(payload))}"
+            args = "".join(f" {shlex.quote(arg)}" for arg in call.get("args", ()))
+            stdout = tmp_path / f"stdout-{i}"
+            stderr = tmp_path / f"stderr-{i}"
+            rcfile = tmp_path / f"rc-{i}"
+            # Keep the snippet top-level, as in bash -c. A function wrapper
+            # changes return/local/FUNCNAME semantics. The batch parent has
+            # errexit disabled only so it can record a failing child status;
+            # each child restores the option state observed after the loader.
+            lines.append(
+                f'( [ "$_docich_batch_errexit" -eq 0 ] || set -e; '
+                f'{reassert}set --{args}; {call["script"]} ){stdin} '
+                f'>{shlex.quote(str(stdout))} 2>{shlex.quote(str(stderr))}'
+            )
+            lines.append("_docich_batch_rc=$?")
+            lines.append(f"printf '%s\\n' \"$_docich_batch_rc\" >{shlex.quote(str(rcfile))}")
+            # bash() raises immediately; do not run later legacy calls after a
+            # failure just because they share one shell process.
+            lines.append('if [ "$_docich_batch_rc" -ne 0 ]; then exit 0; fi')
+            result_paths.append((stdout, stderr, rcfile))
+        program = tmp_path / "batch.sh"
+        program.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # Keep $0 = "golden" and run from a file: Linux caps a single argv
+        # string (MAX_ARG_STRLEN), and the batch program outgrows it quickly.
+        result = subprocess.run(["bash", "-c", 'source "$1"', "golden", str(program)],
+                                cwd=sn, env=base, capture_output=True, text=True, timeout=300)
+        if result.returncode:
+            raise SystemExit(f"legacy batch failed: {result.stderr[-400:]}")
+        outputs = []
+        for i, call in enumerate(calls):
+            stdout, stderr, rcfile = result_paths[i]
+            if not rcfile.is_file():
+                raise SystemExit(f"legacy batch stopped before call {i}")
+            rc = int(rcfile.read_text(encoding="utf-8").strip())
+            if rc:
+                error = stderr.read_text(encoding="utf-8", errors="replace")
+                raise SystemExit(f"legacy call failed ({call['script'][:60]}): {error[-400:]}")
+            outputs.append((stdout.read_text(encoding="utf-8"), rc))
+    return outputs
+
+
 def inline_python(sn, start_marker, end_marker):
     """The verbatim python source of an inline block in generate_comment_response."""
     text = (sn / "broadcast/comment.sh").read_text(encoding="utf-8")

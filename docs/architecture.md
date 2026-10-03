@@ -31,6 +31,7 @@ docich は名前空間を分離して同居する:
 | PulseAudio | デーモン + 既定 sink (`soren_null`) | 同一デーモンに `docich_sink` を追加 | 共存運転では `set_default=false` を維持する。docich 配下のプロセスは `PULSE_SINK=docich_sink` 環境変数で個別ルーティング |
 | PulseAudio デーモン | 稼働中 | **既存デーモンを再利用** (`pactl info` が通れば起動しない) | 二重起動しない |
 | tmux | soren のセッション | セッション名 `docich` / `docich-game` | 名前分離。他セッションに触れない |
+| 評価用 tmux | — | 専用サーバ `docich-eval` (`tmux -L`) | 改善/evalの使い捨てセッションは本番サーバを共有しない。一時systemd unitのcgroup終了で本番サーバごと落ちる事故を防ぐ (Issue #1280) |
 | 配信 | custom FFmpegで本番配信中 | `stream.mode = "null"` が既定 | 明示設定なしでは配信しない (キー競合事故の防止) |
 | 字幕 | `/run/user/1001/docich/ffmpeg-cc.sock` を本番FFmpegが所有 | `$XDG_RUNTIME_DIR/docich/ffmpeg-cc.sock`、既定無効 | display/audio/streamと同様にproduction所有者を重複させない |
 | セットアップ | — | `setup_ubuntu_arm.sh` は **apt install と mkdir のみ** | 既存設定・サービスを変更しない |

@@ -22,13 +22,29 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import shutil
+import stat
+import sys
 import time
 from dataclasses import replace
 from pathlib import Path
 
 from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, atomic_write_json
+from ..nethack_tiles_supervisor import (
+    PRESENTATION_WINDOW_WAIT_S,
+    _proc_start_ticks,
+    presentation_window_pattern,
+    stop_manifest_process_group,
+)
+from ..xkit import XKit
 from .base import AdapterError
-from .cli_game import CliCoordinatorAdapter
+from .cli_game import (
+    CliCoordinatorAdapter,
+    cli_cols,
+    cli_font,
+    cli_font_size,
+    cli_rows,
+)
 
 DEFAULT_PLAYER_NAME = "docich"
 DEFAULT_SAVE_DIR = Path("/var/games/nethack/save")
@@ -67,6 +83,17 @@ PROMPT_CLASSES = frozenset(
 # Needed because "the birth window is gone" is only safe to act on together
 # with reviewed boundary evidence (#1015).
 BOUNDARY_OUTCOMES = frozenset({"suspended", "ended", "unknown"})
+TILES_MANIFEST_STATUSES = frozenset(
+    {
+        "starting",
+        "tiles_active",
+        "fallback_starting",
+        "fallback_tty",
+        "failed",
+        "stopped",
+        "cleanup_failed",
+    }
+)
 _PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,31}$")
 _SAVE_CONFIRMATION_RE = re.compile(r"really\s+save\?\s*\[yn\]", re.IGNORECASE)
 # The confirmation while it is still waiting for an answer: NetHack shows the
@@ -129,6 +156,68 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         lifecycle = replace(game.lifecycle, require_round_boundary=True)
         super().__init__(g, replace(game, lifecycle=lifecycle), spec)
         self.player_name, self.save_dir = self._load_nethack_settings(game)
+        self.presentation_mode = self._load_presentation_mode(game)
+
+    @staticmethod
+    def _load_presentation_mode(game) -> str:
+        raw = game.raw.get("nethack", {}) if isinstance(game.raw, dict) else {}
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, dict):
+            raise AdapterError("[nethack] はtableである必要があります")
+        presentation = raw.get("presentation", {})
+        if presentation is None:
+            presentation = {}
+        if not isinstance(presentation, dict):
+            raise AdapterError("[nethack.presentation] はtableである必要があります")
+        mode = presentation.get("mode", "tty")
+        if not isinstance(mode, str) or mode not in {"tty", "tiles"}:
+            raise AdapterError("nethack.presentation.mode は tty または tiles を指定してください")
+        return mode
+
+    def _tiles_manifest_path(self) -> Path:
+        return self.spec.runtime_dir / "nethack_tiles.json"
+
+    def _presentation_path(self) -> Path:
+        return self.spec.runtime_dir / "presentation.json"
+
+    def _tiles_manifest(self) -> dict:
+        path = self._tiles_manifest_path()
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {}
+        except OSError as exc:
+            raise AdapterError("NetHack tiles manifestを読めません") from exc
+        try:
+            value = json.loads(raw)
+        except ValueError as exc:
+            raise AdapterError("NetHack tiles manifestが不正です") from exc
+        if not isinstance(value, dict):
+            raise AdapterError("NetHack tiles manifestがobjectではありません")
+        return value
+
+    def _validate_tiles_manifest(self, value: dict) -> None:
+        if (
+            type(value.get("schema_version")) is not int
+            or value.get("schema_version") != 1
+            or type(value.get("generation")) is not int
+            or value.get("runtime_id") != self.spec.runtime_id
+            or value.get("generation") != self.spec.generation
+            or value.get("adapter_session") != self.spec.adapter_session
+            or value.get("game_window") != self.spec.game_window
+        ):
+            raise AdapterError("NetHack tiles manifest のruntime所有権が一致しません")
+        if (
+            not isinstance(value.get("status"), str)
+            or value.get("status") not in TILES_MANIFEST_STATUSES
+        ):
+            raise AdapterError("NetHack tiles manifest statusが不正です")
+        if (
+            not isinstance(value.get("mode"), str)
+            or value.get("mode") not in {"tiles", "tty"}
+        ):
+            raise AdapterError("NetHack tiles manifest modeが不正です")
 
     @staticmethod
     def _load_nethack_settings(game) -> tuple[str, Path]:
@@ -160,9 +249,60 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             raise AdapterError("NetHack corner はwizard/explore modeを使用できません")
         return [*command, "-u", self.player_name]
 
+    def _xterm_command(self) -> list[str]:
+        if self.presentation_mode != "tiles":
+            return super()._xterm_command()
+        display = self.g.display
+        if display.viewport_width <= 0 or display.viewport_height <= 0:
+            raise AdapterError("tiles presentation にはdisplay viewportが必要です")
+        window_title = f"docich-present-{self.spec.runtime_id}"
+        supervisor = Path(__file__).resolve().parents[1] / "nethack_tiles_supervisor.py"
+        presentation = Path(__file__).resolve().parents[1] / "presentation.py"
+        return [
+            sys.executable,
+            str(presentation),
+            "--display", display.name,
+            "--title", window_title,
+            "--x", str(display.viewport_x),
+            "--y", str(display.viewport_y),
+            "--width", str(display.viewport_width),
+            "--height", str(display.viewport_height),
+            "--viewer-wait-sec", str(int(PRESENTATION_WINDOW_WAIT_S)),
+            "--window-pattern", presentation_window_pattern(window_title),
+            "--rebind-window",
+            "--runtime-state", str(self._presentation_path()),
+            "--",
+            sys.executable,
+            str(supervisor),
+            "--state-dir", str(Path(self.g.state_dir).resolve()),
+            "--runtime-dir", str(self.spec.runtime_dir),
+            "--manifest", str(self._tiles_manifest_path()),
+            "--presentation-state", str(self._presentation_path()),
+            "--runtime-id", str(self.spec.runtime_id),
+            "--generation", str(self.spec.generation),
+            "--adapter-session", str(self.spec.adapter_session),
+            "--game-window", str(self.spec.game_window),
+            "--cols", str(cli_cols(self.game)),
+            "--rows", str(cli_rows(self.game)),
+            "--font", cli_font(self.game),
+            "--font-size", str(cli_font_size(self.game)),
+            "--window-title", window_title,
+        ]
+
     def preflight(self, deadline: float, cancel) -> None:
         super().preflight(deadline, cancel)
         self._check_active(deadline, cancel)
+        if self.presentation_mode == "tiles":
+            if self.g.display.viewport_width <= 0 or self.g.display.viewport_height <= 0:
+                raise AdapterError("tiles presentation にはdisplay viewportが必要です")
+            supervisor = Path(__file__).resolve().parents[1] / "nethack_tiles_supervisor.py"
+            if not supervisor.is_file():
+                raise AdapterError("NetHack tiles supervisor が見つかりません")
+            prior = self._tiles_manifest()
+            if prior:
+                self._validate_tiles_manifest(prior)
+                if prior.get("status") != "stopped" or prior.get("cleanup_complete") is not True:
+                    raise AdapterError("previous NetHack tiles child cleanupが未確認です")
         if not self.save_dir.is_dir():
             raise AdapterError(f"NetHack save directory がありません: {self.save_dir}")
         try:
@@ -194,6 +334,228 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
                 f"NetHack runtime process windowを一意に特定できません: {candidates}"
             )
         return f"{self.spec.adapter_session}:{candidates[0]}"
+
+    def readiness(self, deadline: float, cancel) -> None:
+        if self.presentation_mode != "tiles":
+            return super().readiness(deadline, cancel)
+        # Keep the existing game/session/ownership checks and require both the
+        # fixed outer presenter and this generation's supervisor handshake.
+        self._check_active(deadline, cancel)
+        if not self.tmux.session_target_exists(self.spec.adapter_session):
+            raise ReadinessTimeoutError("adapter sessionがありません")
+        self._verify_session_ownership()
+        game_target = self._game_window_target()
+        if not self.tmux.window_target_exists(game_target):
+            raise ReadinessTimeoutError("game windowがありません")
+        self._verify_window_ownership(game_target, "game")
+        states = self.tmux.pane_states_checked(self.spec.adapter_session)
+        if any(pane.dead for pane in states):
+            raise ReadinessTimeoutError("paneがdeadです")
+        self.tmux.capture_pane_checked(self.spec.adapter_session)
+        presenter = XKit(self.g.display.name)
+        pattern = presentation_window_pattern(f"docich-present-{self.spec.runtime_id}")
+        while True:
+            self._check_active(deadline, cancel)
+            if not self.tmux.session_target_exists(self.spec.adapter_session):
+                raise ReadinessTimeoutError("adapter sessionがありません")
+            self._verify_session_ownership()
+            self._verify_window_ownership(game_target, "game")
+            game_states = self.tmux.pane_states_checked(game_target)
+            if any(pane.dead for pane in game_states):
+                raise ReadinessTimeoutError("game window paneがdeadです")
+            manifest = self._tiles_manifest()
+            if manifest:
+                self._validate_tiles_manifest(manifest)
+                status = manifest.get("status")
+                if status in {"failed", "stopped", "cleanup_failed"}:
+                    raise ReadinessTimeoutError(f"NetHack tiles presentation is {status}")
+                if status in {"tiles_active", "fallback_tty"}:
+                    if status == "tiles_active" and (
+                        manifest.get("mode") != "tiles"
+                        or type(manifest.get("browser_pid")) is not int
+                        or type(manifest.get("frame_port")) is not int
+                        or not 1 <= manifest["frame_port"] <= 65535
+                    ):
+                        raise AdapterError("NetHack tiles readiness handshakeが不正です")
+                    if status == "fallback_tty" and (
+                        manifest.get("mode") != "tty"
+                        or type(manifest.get("tty_pid")) is not int
+                    ):
+                        raise AdapterError("NetHack TTY fallback handshakeが不正です")
+                    if presenter.find_window(pattern, timeout=0.1) is not None:
+                        return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ReadinessTimeoutError("NetHack tiles presentationの準備がタイムアウトしました")
+            if cancel is not None and cancel.wait(min(0.2, remaining)):
+                raise DeadlineExceededError("adapter call はcancelされました")
+            if cancel is None:
+                time.sleep(min(0.2, remaining))
+
+    def alive(self, deadline: float, cancel) -> bool:
+        if not super().alive(deadline, cancel):
+            return False
+        if self.presentation_mode != "tiles":
+            return True
+        target = self._game_window_target()
+        if not self.tmux.window_target_exists(target):
+            return False
+        self._verify_window_ownership(target, "game")
+        if any(pane.dead for pane in self.tmux.pane_states_checked(target)):
+            return False
+        manifest = self._tiles_manifest()
+        if not manifest:
+            return False
+        self._validate_tiles_manifest(manifest)
+        status = manifest.get("status")
+        if status == "tiles_active":
+            return (
+                manifest.get("mode") == "tiles"
+                and type(manifest.get("browser_pid")) is int
+                and type(manifest.get("frame_port")) is int
+                and 1 <= manifest["frame_port"] <= 65535
+            )
+        if status == "fallback_tty":
+            return manifest.get("mode") == "tty" and type(manifest.get("tty_pid")) is int
+        return False
+
+    def cleanup_runtime(self, deadline: float, cancel) -> None:
+        if self.presentation_mode != "tiles":
+            return super().cleanup_runtime(deadline, cancel)
+        prior = self._tiles_manifest()
+        if prior:
+            self._validate_tiles_manifest(prior)
+        super().cleanup_runtime(deadline, cancel)
+        while True:
+            self._check_active(deadline, cancel)
+            manifest = self._tiles_manifest()
+            presentation = self._read_presentation_state()
+            if not manifest:
+                if prior:
+                    raise AdapterError("NetHack tiles ownership manifestがcleanup中に消失しました")
+                if not presentation:
+                    return
+                if presentation.get("status") == "stopped":
+                    return
+            else:
+                self._validate_tiles_manifest(manifest)
+            if (
+                manifest.get("status") in {"stopped", "cleanup_failed"}
+                and manifest.get("cleanup_complete") is True
+                and manifest.get("browser_pid") is None
+                and manifest.get("tty_pid") is None
+                and presentation.get("status") == "stopped"
+            ):
+                return
+            if manifest and manifest.get("cleanup_complete") is not True:
+                owner_alive = self._tiles_supervisor_alive(manifest)
+                if owner_alive is False:
+                    manifest = self._resume_orphaned_tiles_cleanup(
+                        manifest, deadline=deadline, cancel=cancel
+                    )
+                    if presentation.get("status") == "stopped":
+                        self._finish_orphaned_tiles_cleanup(
+                            manifest, deadline=deadline, cancel=cancel
+                        )
+                        return
+            if time.monotonic() >= deadline:
+                raise ReadinessTimeoutError("NetHack tiles child cleanupが確認できません")
+            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+
+    def _tiles_supervisor_alive(self, manifest: dict) -> bool | None:
+        """Return liveness only when the manifest records a verifiable owner."""
+        owner_pid = manifest.get("owner_pid")
+        owner_start_ticks = manifest.get("owner_start_ticks")
+        if (
+            type(owner_pid) is not int or owner_pid <= 1
+            or type(owner_start_ticks) is not int or owner_start_ticks <= 0
+        ):
+            return None
+        return _proc_start_ticks(owner_pid) == owner_start_ticks
+
+    def _resume_orphaned_tiles_cleanup(
+        self,
+        manifest: dict,
+        *,
+        deadline: float,
+        cancel,
+    ) -> dict:
+        """Recover only browser/TTY groups pinned to this runtime and epoch."""
+        self._validate_tiles_manifest(manifest)
+        epoch = manifest.get("presentation_epoch")
+        if not isinstance(epoch, str) or re.fullmatch(r"p-[0-9a-f]{32}", epoch) is None:
+            raise AdapterError("NetHack tiles presentation epochを確認できません")
+        changed = False
+        for prefix in ("browser", "tty"):
+            pid = manifest.get(f"{prefix}_pid")
+            start_ticks = manifest.get(f"{prefix}_start_ticks")
+            pgid = manifest.get(f"{prefix}_pgid")
+            saved_members = manifest.get(f"{prefix}_members")
+            if pid is None:
+                if start_ticks is not None or pgid is not None or saved_members is not None:
+                    raise AdapterError("NetHack tiles child processの所有情報が不整合です")
+                continue
+            self._check_active(deadline, cancel)
+            if not stop_manifest_process_group(
+                pid,
+                start_ticks,
+                pgid,
+                deadline=deadline,
+                saved_members=saved_members,
+                cancel=cancel,
+            ):
+                self._check_active(deadline, cancel)
+                raise AdapterError("NetHack tiles child processの所有権を再確認できません")
+            manifest[f"{prefix}_pid"] = None
+            manifest[f"{prefix}_start_ticks"] = None
+            manifest[f"{prefix}_pgid"] = None
+            manifest[f"{prefix}_members"] = None
+            changed = True
+        if changed:
+            manifest["status"] = "cleanup_failed"
+            manifest["cleanup_complete"] = False
+            self._check_active(deadline, cancel)
+            atomic_write_json(self._tiles_manifest_path(), manifest)
+        return manifest
+
+    def _finish_orphaned_tiles_cleanup(
+        self,
+        manifest: dict,
+        *,
+        deadline: float,
+        cancel,
+    ) -> None:
+        """Publish complete only after both private groups and presenter stop."""
+        for prefix in ("browser", "tty"):
+            if manifest.get(f"{prefix}_pid") is not None:
+                raise AdapterError("NetHack tiles child process cleanupが未完了です")
+        profile = self.spec.runtime_dir / "nethack-tiles-profile"
+        try:
+            info = profile.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise AdapterError("NetHack tiles browser profile cleanupを確認できません") from exc
+        else:
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                raise AdapterError("NetHack tiles browser profileの所有パスが不正です")
+            try:
+                self._check_active(deadline, cancel)
+                shutil.rmtree(profile)
+            except OSError as exc:
+                raise AdapterError("NetHack tiles browser profile cleanupに失敗しました") from exc
+        manifest["frame_port"] = None
+        manifest["status"] = "stopped"
+        manifest["cleanup_complete"] = True
+        self._check_active(deadline, cancel)
+        atomic_write_json(self._tiles_manifest_path(), manifest)
+
+    def _read_presentation_state(self) -> dict:
+        try:
+            value = json.loads(self._presentation_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
 
     def _save_name_matches_player(self, name: str) -> bool:
         # Unix NetHack save files are named ``<uid><player>``; an optional

@@ -102,6 +102,48 @@ class ChainSummaryDiagnosticsTests(unittest.TestCase):
         self.assertEqual(len(ai["recent_events"]), self.collector.MAX_RECENT_EVENTS)
         self.assertTrue(all(event["event"] == "fail" for event in ai["recent_events"]))
 
+    def test_all_failed_components_survive_recent_event_truncation(self):
+        events = [
+            {
+                "ts": self.now,
+                "event": "all_failed",
+                "label": "RADIO:private:prepass",
+                "agent": "private:model",
+            },
+            {
+                "ts": self.now,
+                "event": "all_failed",
+                "label": "COMMENT:private",
+                "agent": "private:model",
+            },
+            {
+                "ts": self.now,
+                "event": "all_failed",
+                "label": "private-dynamic-component",
+                "agent": "private:model",
+            },
+        ]
+        for index in range(self.collector.MAX_RECENT_EVENTS + 5):
+            events.append(
+                {
+                    "ts": self.now,
+                    "event": "fail",
+                    "label": "RADIO:public:main",
+                    "agent": f"vercel:m{index}",
+                    "rc": "1",
+                    "error": "failure",
+                }
+            )
+        self.write_events(events)
+        ai = self.collector._collect_ai(self.soren, self.now)
+        self.assertEqual(ai["all_failed"], 3)
+        self.assertEqual(ai["all_failed_components"]["radio_prepass"], 1)
+        self.assertEqual(ai["all_failed_components"]["comment"], 1)
+        self.assertEqual(ai["all_failed_components"]["other"], 1)
+        self.assertEqual(sum(ai["all_failed_components"].values()), ai["all_failed"])
+        self.assertFalse(any(event["event"] == "all_failed" for event in ai["recent_events"]))
+        self.assertNotIn("private-dynamic-component", json.dumps(ai["all_failed_components"]))
+
     def test_public_runtime_summary_includes_fixed_chain_counters(self):
         severity, summary = attribution.render(
             {

@@ -35,10 +35,7 @@ def load_collector():
 
 
 def deployed_index_bytes():
-    text = (ROOT / "src" / "docich" / "webui.py").read_text(encoding="utf-8")
-    match = re.search(r'INDEX_HTML = r"""(.*?)"""', text, re.S)
-    assert match is not None, "INDEX_HTML missing from src/docich/webui.py"
-    return match.group(1).encode("utf-8")
+    return (ROOT / "src" / "docich" / "webui_resources" / "index.html").read_bytes()
 
 
 class _ServingHandler(BaseHTTPRequestHandler):

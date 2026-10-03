@@ -1,0 +1,28 @@
+{
+  "requestId": "game-demo:2:b:0",
+  "gameId": "game-demo",
+  "color": "b",
+  "number": 0,
+  "ply": 2,
+  "basePly": 0,
+  "positions": {
+    "1": {
+      "sfen": "9/9/9/9/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL w - 2",
+      "fouls": { "b": 9, "w": 9 },
+      "times": { "b": 294, "w": 300 },
+      "byoyomiActive": { "b": false, "w": false },
+      "lastMove": "+7776FU",
+      "lastInfo": 0
+    },
+    "2": {
+      "sfen": "9/9/9/9/9/9/PP1PPPPPP/1B5R1/LNSGKGSNL b - 3",
+      "fouls": { "b": 9, "w": 9 },
+      "times": { "b": 294, "w": 298 },
+      "byoyomiActive": { "b": false, "w": false },
+      "lastMove": "-0076ZZ",
+      "lastInfo": 0,
+      "lastCapture": "FU",
+      "wasPromotion": false
+    }
+  }
+}

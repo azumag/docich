@@ -23,11 +23,11 @@ def test_chapter_one_orders_are_fully_measured():
     assert chart.orders(1) == chart.CHAPTER_1_ORDERS
     for order in chart.orders(1):
         assert order['source'] in castles and order['target'] in castles
-    assert chart.home_castle(1) == 'ほんじょう'
+    assert chart.home_castle(1) == 'アルマムーン'
     assert chart.boss_castle(1) == 'けっかい'
 
 
-@pytest.mark.parametrize('chapter', list(range(2, 13)))
+@pytest.mark.parametrize('chapter', list(range(3, 13)))   # 2 measured 2026-09-28
 def test_unmeasured_chapters_gate_orders_and_unlock_after_castles(chapter):
     assert chart.castles(chapter) == {}
     assert chart.orders(chapter) == ()
@@ -77,7 +77,7 @@ def test_purchases_are_tuples_and_purchase_for_selects_month():
 
 
 def test_policy_off_chart_reason_for_unmeasured_chapter():
-    mem = {'chapter': 2, 'orders': {}, '_records': []}
+    mem = {'chapter': 3, 'orders': {}, '_records': []}
     policy.map_step(map_screen(), mem, None)
     rec = mem['_records'][-1]
     assert rec['decision'] == 'chart_adjust_request'
@@ -85,7 +85,7 @@ def test_policy_off_chart_reason_for_unmeasured_chapter():
 
 
 def test_interim_candidates_empty_without_measured_castles():
-    assert policy.interim_candidates({'chapter': 2, 'captured': []}) == {}
+    assert policy.interim_candidates({'chapter': 3, 'captured': []}) == {}
 
 
 def test_interim_candidates_use_home_and_boss_labels():
@@ -102,19 +102,16 @@ def test_interim_candidates_use_home_and_boss_labels():
         assert value['target'] not in set(mem['captured']) | {home}
 
 
-def test_ready_all_captured_excludes_home_and_boss():
+def test_ready_all_captured_excludes_home_and_boss(monkeypatch):
     chapter = 2
     planted = {name: (i, 0) for i, name in enumerate(chart.CASTLE_NAMES[chapter])}
-    chart.CASTLES[chapter] = planted
-    try:
-        home = chart.home_castle(chapter)
-        boss = chart.boss_castle(chapter)
-        order = {'after': ('all_captured',), 'source': home, 'target': boss}
-        non_boss = set(planted) - {home, boss}
-        assert not policy._ready(order, {'chapter': chapter, 'captured': set()})
-        assert policy._ready(order, {'chapter': chapter, 'captured': set(non_boss)})
-    finally:
-        chart.CASTLES.pop(chapter, None)
+    monkeypatch.setitem(chart.CASTLES, chapter, planted)     # chapter 2 is measured: restore it
+    home = chart.home_castle(chapter)
+    boss = chart.boss_castle(chapter)
+    order = {'after': ('all_captured',), 'source': home, 'target': boss}
+    non_boss = set(planted) - {home, boss}
+    assert not policy._ready(order, {'chapter': chapter, 'captured': set()})
+    assert policy._ready(order, {'chapter': chapter, 'captured': set(non_boss)})
 
 
 def test_reference_tables_and_endure_rule():
@@ -122,6 +119,14 @@ def test_reference_tables_and_endure_rule():
     assert ref.enemy_egg_likely([20, 20, 8])
     assert not ref.enemy_egg_likely([10, 10])
     assert ref.egg_drop_threshold(31) == 31 % 16 + 1
+    # 卵落 > HP合計 mod 16 drops the egg (gcgx); the local combo table's
+    # イッテツーン/グリンボー/ブラッキー thresholds 7/3/2 agree.
+    assert ref.egg_drop_value('イッテツーン') == 8
+    assert ref.can_drop_egg('イッテツーン', 16 * 3 + 7)
+    assert not ref.can_drop_egg('イッテツーン', 16 * 3 + 8)
+    assert ref.can_drop_egg('グリンボー', 16 * 3 + 3)
+    assert not ref.can_drop_egg('ブラッキー', 16 * 3 + 3)
+    assert not ref.can_drop_egg('クースカン', 0)          # 卵落0 never drops
     assert ref.CARD_IDS['ファバード'] == 31
     assert ref.MELEE_PATTERNS['⑥']['action'] == 'use_egg'
     assert ref.HALF_RAW_LEVEL_NEED[9] == 2000

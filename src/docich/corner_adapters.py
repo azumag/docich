@@ -164,8 +164,41 @@ class GameCornerAdapter:
     def run(self, request):
         return self.manager.run_rotation(request["request_id"], self.corner.game)
 
-    def reconcile_failed_start(self, request_id):
-        return self.manager.reconcile_failed_rotation_start(request_id)
+    def _manager_for_state_file(self, state_file):
+        """Return the manager that owns one fixed main or manual state file."""
+
+        if not isinstance(state_file, str) or Path(state_file).name != state_file:
+            return None
+        current = Path(self.state_path)
+        if state_file == current.name:
+            return self.manager
+        if state_file != f"{current.stem}_manual.json":
+            return None
+
+        adapter = self.corner.adapter
+        if adapter == "meriken":
+            from .soren91_corner_manual import ManualSoren91CornerManager
+
+            return ManualSoren91CornerManager(self.g)
+        if adapter == "nethack":
+            from .nethack_corner_manual import ManualNethackCornerManager
+
+            return ManualNethackCornerManager(self.g)
+        if adapter == "game":
+            from .retro_corner_manual import ManualRetroCornerManager
+
+            return ManualRetroCornerManager(self.g, game=self.corner.game)
+        return None
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        """Reconcile only the adapter state file named by its rotation owner."""
+
+        manager = self.manager if state_file is None else self._manager_for_state_file(state_file)
+        if manager is None:
+            return False
+        if state_file is not None and manager.state_path.name != state_file:
+            return False
+        return manager.reconcile_failed_rotation_start(request_id)
 
     def improvement_paths(self):
         root = Path(self.g.state_dir)
@@ -204,6 +237,8 @@ class MerikenCornerAdapter(GameCornerAdapter):
     ENV_KEYS = (
         "SOREN91_MACOS_AGENT_BASE_URL",
         "SOREN91_LOCAL_AGENT_TOKEN",
+        "SOREN91_WINDOWS_AGENT_BASE_URL",
+        "SOREN91_WINDOWS_AGENT_TOKEN",
         "SOREN91_OCI_TAILSCALE_IP",
     )
 
@@ -366,6 +401,7 @@ class RetiredCornerObserver:
     STATE_FILES = {
         "game": "retro_corner.json",
         "paper": "paper_corner.json",
+        "weather": "weather_corner.json",
         "meriken": "soren91_corner.json",
         "nethack": "nethack_corner.json",
     }
@@ -420,11 +456,52 @@ class RetiredCornerObserver:
         return True
 
 
+class WeatherCornerAdapter:
+    """Opt-in weather lifecycle through GameSwitch and the common program slot."""
+
+    def __init__(self, g, corner):
+        from .weather_corner import WeatherCornerManager
+
+        self.g, self.corner = g, corner
+        audio_enabled = getattr(corner, "audio_enabled", False)
+        audio_port = None
+        if audio_enabled:
+            from .soren_weather_audio import SorenWeatherAudioPort
+            from .trading.soren_output import resolve_soren_root
+
+            audio_port = SorenWeatherAudioPort(resolve_soren_root(g), g.state_dir)
+        self.manager = WeatherCornerManager(
+            g,
+            duration_minutes=corner.duration_minutes,
+            audio_enabled=audio_enabled,
+            audio_port=audio_port,
+        )
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
+
 ADAPTERS = {
     "game": GameCornerAdapter,
     "meriken": MerikenCornerAdapter,
     "paper": PaperCornerAdapter,
     "nethack": NethackCornerAdapter,
+    "weather": WeatherCornerAdapter,
 }
 
 

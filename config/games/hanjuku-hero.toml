@@ -36,7 +36,7 @@ script_bot = true
 # ラベルを1つ選ぶ。hold(見送り)は無い。失敗・低確信・候補外は最初の攻撃候補で必ず出撃。JEV確認は1状況あたり最大2回。
 [hanjuku.chart_adjust]
 enabled = true
-agents = "opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4-flash,opencode-go:muse-spark-1.3-contributor"
+agents = "opencode-go:longcat-2.5-preview-free,opencode-go:space-bunny-free,opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4-flash,opencode-go:muse-spark-1.3-contributor"
 timeout_s = 180
 max_attempts = 2
 interim_jev = true
@@ -66,3 +66,9 @@ requires = ["retroarch", "dbus-run-session", "python3"]
 category_id = "21236"
 category_name = "Hanjuku Hero: Aa Sekai yo Hanjuku Nare...!!"
 title_prefix = "[半熟英雄]"
+
+# 2026-09-30 owner-confirmed best: chapter 2 reached, chapter 1 cleared.
+[hanjuku.predictions]
+enabled = true
+seed_best_cleared = 1
+ending_window_seconds = 1800

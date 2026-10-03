@@ -550,6 +550,8 @@ def sanitize_text(text: str, replacements: list[tuple[str, str]]) -> str:
     """Remove crash-prone chars and apply the replacement dictionary."""
 
     text = text.replace("#", "").replace("＃", "")
+    # Spoken title requested by the owner; display/narration source stays intact.
+    text = text.replace("半熟英雄", "半熟ヒーロー")
     for from_word, to_word in replacements:
         text = text.replace(from_word, to_word)
     return text

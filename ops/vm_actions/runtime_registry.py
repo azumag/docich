@@ -112,3 +112,7 @@ def worker_entry(name):
 
 def default_pid_relpath(name):
     return f"tmp/state/{name}.pid"
+
+# Maintenance is a oneshot, not a supervised game worker or queue consumer.
+OPENCODE_RETENTION_TIMER = "docich-opencode-retention.timer"
+OPENCODE_RETENTION_MAX_AGE_SEC = 3 * 3600

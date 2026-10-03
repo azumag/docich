@@ -350,6 +350,64 @@ jobs:
         shell: bash
         run: exit 1
 
+      - name: Ensure OpenCode retention timer
+        if: ${{ steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/ensure_opencode_retention_timer.sh |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Detect one-time critical storage reclaim epoch
+        id: opencode_reclaim_epoch
+        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        shell: bash
+        env:
+          SHA: ${{ steps.candidate.outputs.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          run=0
+          if ! git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- ops/vm_actions/opencode_db_retention_reclaim_epoch; then
+            run=1
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - name: Run bounded storage reclaim before critical OpenCode VACUUM
+        if: ${{ steps.opencode_reclaim_epoch.outputs.run == '1' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          bash -n control/ops/vm_actions/storage_reclaim.sh
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          { printf 'APPLY=1\nVOICEVOX_ARCHIVE=0\nAIVIS_ENGINE=0\n'; cat control/ops/vm_actions/storage_reclaim.sh; } |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Retry gated OpenCode retention after bounded reclaim
+        if: ${{ steps.opencode_reclaim_epoch.outputs.run == '1' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          bash -n control/ops/vm_actions/opencode_db_retention_now.sh
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/opencode_db_retention_now.sh |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
       # Canonical deploy hook for the common corner rotation timer. Stage 1
       # keeps the legacy unit names active; the reviewed rename is gated by
       # ops/vm_actions/corner_rotation_timer_migration_epoch (absent = legacy).
@@ -365,6 +423,19 @@ jobs:
           set -euo pipefail
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           cat control/ops/vm_actions/ensure_corner_rotation_timer.sh |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Ensure NetHack daily improvement timer
+        if: ${{ steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/ensure_nethack_daily_improve_timer.sh |
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Restart radio worker after reviewed Soren runtime update

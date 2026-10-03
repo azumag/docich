@@ -23,6 +23,7 @@ import stat as statmod
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from .resolver import latest_strategy_snapshot, strategy_path
 from .resolver.improve import (
     _append_log,
@@ -85,6 +86,8 @@ class CornerImproveError(RuntimeError):
 # lifecycle; adding a game to only one of these lists silently disables its
 # improvement path.
 BOT_GAMES = bot_games()
+MIN_CANDIDATE_WEIGHT = 0.001
+MAX_CANDIDATE_WEIGHT = 1e6
 
 
 def numeric_weights(weights: dict) -> set[str]:
@@ -93,6 +96,11 @@ def numeric_weights(weights: dict) -> set[str]:
         key for key, value in weights.items()
         if isinstance(value, (int, float)) and not isinstance(value, bool)
     }
+
+
+def _minimum_candidate_weight(game: str, key: str) -> float:
+    """Bastet の hard_drop だけは 0 で soft drop を選べる。"""
+    return 0.0 if game == "bastet" and key == "hard_drop" else MIN_CANDIDATE_WEIGHT
 
 
 def _lane_path(state_dir) -> Path:
@@ -156,6 +164,117 @@ def _singleflight(state_dir, game: str):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     finally:
         handle.close()
+
+
+@contextmanager
+def _moon_buggy_ab_finalize_lock(state_dir):
+    """Serialize immediate score-path resolution with the corner job."""
+    path = Path(state_dir) / "locks" / "moon-buggy-ab-finalize.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _moon_buggy_ab_summary(experiment: dict) -> dict:
+    status = experiment["status"]
+    summary = {
+        "game": "moon-buggy",
+        "ab_pattern": "ABBA",
+        "ab_winner": experiment["winner"],
+        "ab_baseline_mean": experiment["means"]["A"],
+        "ab_candidate_mean": experiment["means"]["B"],
+        "ab_matches": len(experiment["results"]),
+        "promoted": status == "promoted",
+    }
+    reason_code = experiment.get("reason_code")
+    if reason_code:
+        summary.update(reason_code=reason_code, phase="state")
+    return {"status": status, **summary}
+
+
+def _moon_buggy_ab_completed_in_window(
+    experiment: dict, start_ts: float, end_ts: float
+) -> bool:
+    try:
+        completed_at = float(experiment.get("completed_at"))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return math.isfinite(completed_at) and start_ts <= completed_at <= end_ts
+
+
+def finalize_moon_buggy_ab(state_dir) -> dict:
+    """Adopt the winner of one complete Moon Buggy ABBA block immediately.
+
+    The separate lock keeps this small resolution independent of the shared
+    LLM/evaluation lane, while serializing it against the post-corner job.
+    """
+    from .moon_buggy_ab import (
+        MoonBuggyABError,
+        finish as finish_moon_buggy_ab,
+        read_experiment,
+        weights_sha256,
+    )
+
+    root = Path(state_dir)
+    with _moon_buggy_ab_finalize_lock(root):
+        try:
+            experiment = read_experiment(root)
+        except MoonBuggyABError as exc:
+            raise CornerImproveError(
+                "Moon Buggy A/B state is invalid", code="ab-state", phase="state"
+            ) from exc
+        if experiment is None:
+            raise CornerImproveError(
+                "Moon Buggy A/B state is missing", code="ab-state", phase="state"
+            )
+        if experiment["status"] in {"promoted", "kept"}:
+            return _moon_buggy_ab_summary(experiment)
+        if experiment["status"] != "completed":
+            raise CornerImproveError(
+                "Moon Buggy A/B block is incomplete", code="ab-pending", phase="state"
+            )
+
+        reason_code = None
+        if experiment["winner"] == "B":
+            s_file = strategy_path(root, "moon-buggy")
+            current = read_strategy_for_game("moon-buggy", s_file)
+            current_hash = weights_sha256(current)
+            if current_hash not in {
+                experiment["baseline_sha256"], experiment["candidate_sha256"]
+            }:
+                reason_code = "ab-baseline-changed"
+                finish_moon_buggy_ab(
+                    root, status="kept", reason_code=reason_code
+                )
+            else:
+                try:
+                    old_raw = json.loads(Path(s_file).read_text(encoding="utf-8"))
+                    old = old_raw if isinstance(old_raw, dict) else dict(current)
+                except (OSError, ValueError):
+                    old = dict(current)
+                # Reapplying is safe if an earlier attempt stopped after the
+                # strategy write but before the live brain or terminal state.
+                _promote(
+                    SimpleNamespace(state_dir=root), "moon-buggy", s_file,
+                    old, experiment["candidate"],
+                )
+                finish_moon_buggy_ab(root, status="promoted")
+        else:
+            finish_moon_buggy_ab(root, status="kept")
+
+        resolved = read_experiment(root)
+        summary = _moon_buggy_ab_summary(resolved)
+        if reason_code:
+            summary["reason_code"] = reason_code
+            summary["phase"] = "state"
+        _append_log(root, "moon-buggy", {
+            key: value for key, value in summary.items() if key != "status"
+        })
+        return summary
 
 
 def _safe_detail(value: BaseException | str) -> str:
@@ -494,6 +613,13 @@ def _run_pacman_ab_trial(g, *, path: Path, trial: dict, current: dict, date_str:
 
 def build_prompt(*, game: str, stats: dict, current: dict, previous: dict) -> str:
     basis = stats.get("basis", "live scorelog")
+    game_guidance = ""
+    if game == "bastet":
+        game_guidance = (
+            "\nBastet の tunable key は hard_drop のみです。hard_drop は有限なJSON数値で"
+            f" 0.0 以上 {MAX_CANDIDATE_WEIGHT:g} 以下にしてください。"
+            "0.5 以上で Enter によるハードドロップ、0.5 未満で Down によるソフトドロップです。\n"
+        )
     return f"""あなたはレトロゲームコーナーの戦略改善担当です。
 対象ゲーム: {game}
 今回コーナーの実戦成績: {stats['n']}試合、平均{stats['mean']:.1f}点、最高{stats['best']}点
@@ -505,11 +631,12 @@ def build_prompt(*, game: str, stats: dict, current: dict, previous: dict) -> st
 
 今回の成績を踏まえ、平均スコアを上げる方向に数値重みだけを調整した候補を
 1つ提案してください。キー構成は変えず、既存キーの数値のみ変更すること。
+各値は有限なJSON数値で、原則 {MIN_CANDIDATE_WEIGHT:g} 以上 {MAX_CANDIDATE_WEIGHT:g} 以下にしてください。{game_guidance}
 出力はJSONオブジェクト1つのみ。説明文は書かず、```jsonフェンスで囲むこと。
 """
 
 
-def parse_candidate(text: str, allowed_keys: set[str]) -> dict:
+def parse_candidate(text: str, allowed_keys: set[str], *, game: str | None = None) -> dict:
     """LLM出力から候補重みを取り出す。形式不正は CornerImproveError。"""
     match = JSON_FENCE_RE.search(text or "")
     payload = match.group(1) if match else (text or "")
@@ -538,7 +665,13 @@ def parse_candidate(text: str, allowed_keys: set[str]) -> dict:
                 f"重みは数値である必要があります: {key}",
                 code="llm-values", phase="llm",
             )
-        if not (0.001 <= float(value) <= 1e6):
+        try:
+            numeric_value = float(value)
+        except (OverflowError, ValueError):
+            numeric_value = float("inf")
+        minimum = _minimum_candidate_weight(game or "", key)
+        outside_range = not minimum <= numeric_value <= MAX_CANDIDATE_WEIGHT
+        if not math.isfinite(numeric_value) or outside_range:
             raise CornerImproveError(
                 f"重みが範囲外です: {key}={value}",
                 code="llm-values", phase="llm",
@@ -635,6 +768,7 @@ def run_corner_improve(
     llm=None,
     evaluator=None,
     window: tuple[float, float] | None = None,
+    rotation_request_id: str | None = None,
 ) -> dict:
     """指定日次コーナー終了後の改善を1回実行する。結果サマリ dict を返す。
 
@@ -665,6 +799,7 @@ def run_corner_improve(
                 g, status_path=status_path, started=started, game=game, date_str=date_str,
                 agents=agents, matches=matches, margin_pct=margin_pct, dry_run=dry_run,
                 llm=llm, evaluator=evaluator, window=window,
+                rotation_request_id=rotation_request_id,
             )
 
 
@@ -682,6 +817,7 @@ def _run_corner_improve_locked(
     llm,
     evaluator,
     window=None,
+    rotation_request_id: str | None = None,
 ) -> dict:
     from .game_switch import atomic_write_json
 
@@ -690,6 +826,7 @@ def _run_corner_improve_locked(
             g, game=game, date_str=date_str, agents=agents,
             matches=matches, margin_pct=margin_pct, dry_run=dry_run,
             llm=llm, evaluator=evaluator, window=window,
+            rotation_request_id=rotation_request_id,
         )
     except BaseException as exc:
         atomic_write_json(status_path, {
@@ -868,6 +1005,7 @@ def _run_corner_improve(
     llm=None,
     evaluator=None,
     window=None,
+    rotation_request_id: str | None = None,
 ) -> dict:
     if window is not None:
         # The spawner confirmed this run's window at completion; do not read
@@ -891,9 +1029,7 @@ def _run_corner_improve(
     if game == "moon-buggy":
         from .moon_buggy_ab import (
             MoonBuggyABError,
-            finish as finish_moon_buggy_ab,
             read_experiment,
-            weights_sha256,
         )
 
         try:
@@ -915,46 +1051,20 @@ def _run_corner_improve(
                 "reason_code": "ab-pending", "phase": "state",
             }
         if experiment and experiment["status"] == "completed":
-            winner = experiment["winner"]
-            means = experiment["means"]
-            promoted = False
-            reason_code = None
-            if winner == "B":
-                s_file = strategy_path(g.state_dir, game)
-                current = read_strategy_for_game(game, s_file)
-                current_hash = weights_sha256(current)
-                if current_hash not in {
-                    experiment["baseline_sha256"], experiment["candidate_sha256"]
-                }:
-                    reason_code = "ab-baseline-changed"
-                    finish_moon_buggy_ab(g.state_dir, status="kept")
-                else:
-                    try:
-                        old_raw = json.loads(Path(s_file).read_text(encoding="utf-8"))
-                        old = old_raw if isinstance(old_raw, dict) else dict(current)
-                    except (OSError, ValueError):
-                        old = dict(current)
-                    # Reapplying is safe if a previous run stopped between
-                    # writing the strategy file and updating the live brain.
-                    _promote(g, game, s_file, old, experiment["candidate"])
-                    finish_moon_buggy_ab(g.state_dir, status="promoted")
-                    promoted = True
-            else:
-                finish_moon_buggy_ab(g.state_dir, status="kept")
-            summary = {
-                "game": game,
-                "ab_pattern": "ABBA",
-                "ab_winner": winner,
-                "ab_baseline_mean": means["A"],
-                "ab_candidate_mean": means["B"],
-                "ab_matches": len(experiment["results"]),
-                "promoted": promoted,
-            }
-            if reason_code:
-                summary["reason_code"] = reason_code
-                summary["phase"] = "state"
-            _append_log(g.state_dir, game, summary)
-            return {"status": "promoted" if promoted else "kept", **summary}
+            return finalize_moon_buggy_ab(g.state_dir)
+        resolved_for_request = (
+            isinstance(rotation_request_id, str)
+            and bool(rotation_request_id)
+            and experiment
+            and experiment.get("rotation_request_id") == rotation_request_id
+        )
+        if (experiment and experiment["status"] in {"promoted", "kept"}
+                and (resolved_for_request
+                     or _moon_buggy_ab_completed_in_window(experiment, start_ts, end_ts))):
+            # record-score finalizes synchronously on the fourth result. The
+            # detached job for that same corner must not stage another
+            # candidate from the ABBA matches that just selected this winner.
+            return _moon_buggy_ab_summary(experiment)
 
     log_env = os.environ.get("GNUROBOTS_SCORELOG", "").strip()
     log_path = Path(log_env) if log_env else (Path(g.state_dir) / "scores" / f"{game}.jsonl")
@@ -1010,7 +1120,7 @@ def _run_corner_improve(
     llm = llm or (lambda text: _default_llm(g, agents=agents, prompt_text=text))
     try:
         raw_output = llm(prompt_text)
-        candidate_delta = parse_candidate(raw_output, proposable)
+        candidate_delta = parse_candidate(raw_output, proposable, game=game)
     except CornerImproveError:
         raise
     except Exception as exc:

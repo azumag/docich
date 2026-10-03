@@ -6,8 +6,10 @@ currently visible, known-safe terrain chosen by :mod:`nethack_exploration`.
 
 Production wait resolution is in nethack_progress: a bounded ordinary bump is
 now the last resort after visible escape, never a forced attack, and a
-turn-based wait is always the literal ``.`` command. Item use, doors, stair
-traversal and arbitrary prompt answers remain outside the surface.
+turn-based wait is always the literal ``.`` command. Item use, stair traversal
+and arbitrary prompt answers remain outside the surface. The production
+progress resolver handles visible adjacent doors through its own two-frame
+command contract.
 """
 from __future__ import annotations
 
@@ -328,7 +330,7 @@ def step_out_of_hold(decision: PolicyDecision, obs: NethackObservation, explorer
     ):
         return None
     step = explorer.plan_step(obs)
-    if step is None or not visible_safe_step(obs, step.key):
+    if step is None or not visible_safe_step(obs, step.key, getattr(explorer, "opened_doors", frozenset())):
         return None
     return Action(type="text", text=step.key)
 

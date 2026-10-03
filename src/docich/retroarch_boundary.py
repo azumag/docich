@@ -19,10 +19,10 @@ BOUNDARY_FILE = "retroarch_boundary.json"
 MANUAL_SAVE_FILE = "hanjuku_manual_save.json"
 
 
-def read_record(path: Path) -> dict:
+def read_record(path: Path, *, limit: int = 16384) -> dict:
     try:
         metadata = path.stat()
-        if path.is_symlink() or not path.is_file() or metadata.st_size > 16384:
+        if path.is_symlink() or not path.is_file() or metadata.st_size > limit:
             raise AdapterError("RetroArch runtime record is not a bounded regular record")
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:

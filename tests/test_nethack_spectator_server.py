@@ -39,6 +39,7 @@ class TestNethackSpectatorFrameServer(unittest.TestCase):
         self.server = NethackSpectatorFrameServer(
             snapshots=SnapshotStore(active_snapshot()),
             presentation_epoch="p-test-epoch",
+            window_title="docich-present-g3-deadbeef",
             stale_after_ms=1000,
             now_monotonic=lambda: self.now[0],
         )
@@ -62,6 +63,7 @@ class TestNethackSpectatorFrameServer(unittest.TestCase):
             self.assertIn("default-src 'none'", response.headers["Content-Security-Policy"])
         shell = body.decode("utf-8")
         self.assertIn("fetch('/frame'", shell)
+        self.assertIn("<title>docich-present-g3-deadbeef</title>", shell)
         self.assertIn("p-test-epoch", shell)
         self.assertNotIn("msg", shell)
 

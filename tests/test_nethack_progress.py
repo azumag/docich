@@ -7,7 +7,7 @@ import pytest
 from docich.actions import Action
 from docich.adapters.base import Observation
 from docich.agent.brains import NethackPolicyBrain
-from docich.nethack_exploration import DIRECTIONS, NethackExplorer
+from docich.nethack_exploration import DIRECTIONS, NethackExplorer, visible_safe_step
 from docich.nethack_observation import normalize_tty
 from docich.nethack_policy import (
     NethackLayeredPolicy,
@@ -309,6 +309,149 @@ def test_more_page_preserves_pending_contact_until_attack_confirmation():
     assert act(agent, frame({"h": "f"}, message="Really attack the cat? [yn] (n)")) == ["n"]
     # the rejected edge stays blocked: only a wait turn, never a repeat bump
     assert act(agent, frame({"h": "f"})) == ["."]
+
+
+def test_production_opens_an_adjacent_door_over_two_fresh_frames():
+    agent = brain()
+    door = (1, 41, 14)
+
+    assert act(agent, frame({"l": "+"})) == ["o"]
+    assert agent.last_progress_decision.intent == "open_door_start"
+
+    prompt = frame({"l": "+"}, message="In what direction? [hykulnjb]")
+    assert normalize_tty(prompt).prompt == "direction"
+    assert act(agent, prompt) == ["l"]
+    assert agent.last_progress_decision.intent == "open_door_direction"
+
+    opened = frame({"l": "-"}, message="The door opens.", turn=13)
+    assert act(agent, opened) == ["l"]
+    assert door in agent.policy.explorer.opened_doors
+    assert visible_safe_step(normalize_tty(opened), "l", agent.policy.explorer.opened_doors)
+
+
+def test_unchanged_capture_after_open_door_waits_for_delayed_direction_prompt():
+    agent = brain()
+    closed = frame({"l": "+"})
+    door = (1, 41, 14)
+    assert act(agent, closed) == ["o"]
+
+    for _ in range(4):
+        assert act(agent, closed) == []
+        assert agent.last_progress_decision.intent == "progress_blocked"
+        assert door not in agent.policy.explorer.failed_doors
+    assert "repeated unchanged captures" in agent.last_progress_decision.reason
+
+    prompt = frame({"l": "+"}, message="In what direction?")
+    assert act(agent, prompt) == ["l"]
+    assert agent.last_progress_decision.intent == "open_door_direction"
+
+
+def test_stale_closed_capture_after_direction_waits_for_fresh_door_result():
+    agent = brain()
+    closed = frame({"l": "+"})
+    door = (1, 41, 14)
+    assert act(agent, closed) == ["o"]
+    prompt = frame({"l": "+"}, message="In what direction?")
+    assert act(agent, prompt) == ["l"]
+
+    # A delayed capture may briefly replay the gameplay frame from before 'o'.
+    # Keep the result pending instead of poisoning this door as failed.
+    assert act(agent, closed) == []
+    assert agent.last_progress_decision.intent == "progress_blocked"
+    assert door not in agent.policy.explorer.failed_doors
+    assert agent.progress._door_result_pending is not None
+
+    opened = frame({"l": "-"}, message="The door opens.", turn=13)
+    assert act(agent, opened) == ["l"]
+    assert door in agent.policy.explorer.opened_doors
+    assert door not in agent.policy.explorer.failed_doors
+
+
+def test_more_after_open_door_direction_is_advanced_once_while_result_pending():
+    agent = brain()
+    closed = frame({"l": "+"})
+    door = (1, 41, 14)
+    assert act(agent, closed) == ["o"]
+    prompt = frame({"l": "+"}, message="In what direction?")
+    assert act(agent, prompt) == ["l"]
+
+    more = frame({"l": "-"}, message="The door opens. --More--", turn=13)
+    assert normalize_tty(more).prompt == "more"
+    assert act(agent, more) == [" "]
+    assert agent.progress._door_result_pending is not None
+    assert act(agent, more) == []
+    assert agent.progress._door_result_pending is not None
+
+    opened = frame({"l": "-"}, turn=13)
+    assert act(agent, opened) == ["l"]
+    assert door in agent.policy.explorer.opened_doors
+    assert door not in agent.policy.explorer.failed_doors
+
+
+def test_pending_door_more_prompt_is_advanced_only_once():
+    agent = brain()
+    assert act(agent, frame({"l": "+"})) == ["o"]
+    more = frame({"l": "+"}, message="A message appears. --More--")
+    assert act(agent, more) == [" "]
+    assert act(agent, more) == []
+    assert agent.last_progress_decision.intent == "progress_blocked"
+
+    prompt = frame({"l": "+"}, message="In what direction?")
+    assert act(agent, prompt) == ["l"]
+
+
+def test_locked_door_is_marked_failed_and_not_retried():
+    agent = brain()
+    door = (1, 41, 14)
+    assert act(agent, frame({"l": "+"})) == ["o"]
+    assert act(agent, frame({"l": "+"}, message="In what direction?")) == ["l"]
+
+    locked = frame({"l": "+"}, message="The door is locked.", turn=13)
+    assert "o" not in act(agent, locked)
+    assert door in agent.policy.explorer.failed_doors
+    assert "o" not in act(agent, frame({"l": "+"}, turn=14))
+
+
+@pytest.mark.parametrize(("hp", "condition"), [
+    ("8(16)", ""),
+    ("4(16)", "Hungry"),
+    ("4(16)", "Weak"),
+    ("4(16)", "Fainting"),
+])
+def test_door_opening_is_available_at_low_hp_and_food_emergency(hp, condition):
+    agent = brain()
+    assert act(agent, frame({"l": "+"}, hp=hp, condition=condition)) == ["o"]
+    assert agent.last_progress_decision.intent == "open_door_start"
+
+
+@pytest.mark.parametrize(("condition", "extra"), [
+    ("Sick", {}),
+    ("Fainted", {}),
+    ("Conf", {}),
+    ("", {"k": "d"}),
+])
+def test_door_opening_is_blocked_by_severe_status_impairment_or_contact(condition, extra):
+    agent = brain()
+    neighbors = {"l": "+", **extra}
+    actions = act(agent, frame(neighbors, condition=condition))
+    assert "o" not in actions
+    assert agent.last_progress_decision.intent != "open_door_start"
+
+
+def test_unmatched_direction_prompt_after_open_is_left_unanswered():
+    agent = brain()
+    assert act(agent, frame({"l": "+"})) == ["o"]
+    actions = act(agent, frame({"l": "+"}, message="In what direction do you want to attack?"))
+    assert actions == []
+    assert agent.last_progress_decision.intent == "progress_blocked"
+
+
+@pytest.mark.parametrize("glyph", ["-", "|", "−"])
+def test_open_door_glyph_is_passable_only_when_its_coordinate_was_verified(glyph):
+    obs = normalize_tty(frame({"l": glyph}))
+    door = (1, 41, 14)
+    assert not visible_safe_step(obs, "l")
+    assert visible_safe_step(obs, "l", {door})
 
 
 @pytest.mark.parametrize("key", ["Fh", "h.", "y\n", ">", "<", "o", "e", "q", "s", "\x1b"])
@@ -697,3 +840,24 @@ def test_full_width_banner_unlocks_the_explicit_wait_turn():
     agent = brain()
     assert act(agent, text) == ["."]
     assert agent.last_progress_decision.intent == "rest_turn"
+
+
+def test_welcome_banner_with_more_on_next_row_is_advanced():
+    # Production 2026-09-28 gen427 frame: the 79-column banner pushes
+    # `--More--` alone onto row one. It was classified as a wrapped question,
+    # the brain sent 0 actions for 10 minutes and the corner ended `stalled`.
+    text = "\n".join([
+        WELCOME79,
+        "--More--",
+        *[""] * 9,
+        "                      ---------",
+        "                      |!......|",
+        "                      |d@.....|",
+        "                      |.......+",
+        "                      ---------",
+        *[""] * 6,
+        "[Docich the Hatamoto           ] St:16 Dx:14 Co:18 In:11 Wi:9 Ch:7 Lawful",
+        "Dlvl:1 $:0 HP:15(15) Pw:2(2) AC:4 Xp:1",
+    ])
+    assert normalize_tty(text).prompt == "more"
+    assert act(brain(), text) == [" "]
