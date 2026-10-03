@@ -12,12 +12,82 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const RPC_BUDGET_MS = 2500;
 const REQUEST_BUDGET_MS = 7000;
+const STRATEGY_VERSION = "observed-sfen-heuristic-v1";
+const SAFE_ERROR_CODES = new Set([
+  "not_found", "method_not_allowed", "content_type_required", "webhook_not_configured",
+  "authentication_failed", "timestamp_out_of_range", "body_too_large", "request_timeout",
+  "invalid_json", "invalid_identity", "invalid_request", "invalid_color", "invalid_ply",
+  "invalid_positions", "invalid_game", "unsupported_game_type", "invalid_players", "invalid_seat",
+  "invalid_base_ply", "invalid_ply_range", "incomplete_positions", "unexpected_position_key",
+  "invalid_position", "invalid_sfen", "not_your_turn", "state_unavailable", "state_timeout",
+  "internal_error", "invalid_internal_request", "request_id_reused", "session_already_initialized",
+  "game_metadata_mismatch", "session_missing", "seat_mismatch", "base_ply_mismatch", "stale_ply",
+  "no_observed_move", "state_failure",
+]);
+const CSA_MOVE = /^[+-](?:(?:[1-9]{4}(?:FU|KY|KE|GI|KI|KA|HI|OU|TO|NY|NK|NG|UM|RY))|(?:00[1-9]{2}(?:FU|KY|KE|GI|KI|KA|HI))|(?:0000TORYO))$/;
+const MASKED_OPPONENT_MOVE = /^[+-](?:0000ZZ|00[1-9]{2}ZZ)$/;
 
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
   });
+}
+
+function safeDiagnosticObservation(position, color) {
+  if (!isRecord(position) || typeof position.sfen !== "string" || position.sfen.length > 160) return undefined;
+  const observation = { sfen: position.sfen };
+  if (typeof position.lastMove === "string") {
+    const ownSign = color === "b" ? "+" : "-";
+    const opponentSign = color === "b" ? "-" : "+";
+    if (position.lastMove.startsWith(ownSign)
+        || (position.lastMove.startsWith(opponentSign) && MASKED_OPPONENT_MOVE.test(position.lastMove))) {
+      observation.lastMove = position.lastMove;
+    }
+  }
+  if (Number.isInteger(position.lastInfo)) observation.lastInfo = position.lastInfo;
+  if (typeof position.lastCapture === "string") observation.lastCapture = position.lastCapture;
+  if (typeof position.wasPromotion === "boolean") observation.wasPromotion = position.wasPromotion;
+  for (const field of ["fouls", "times", "byoyomiActive"]) {
+    if (isRecord(position[field]) && Object.hasOwn(position[field], "b") && Object.hasOwn(position[field], "w")) {
+      observation[field] = { b: position[field].b, w: position[field].w };
+    }
+  }
+  return observation;
+}
+
+function captureValidatedDiagnosticContext(value, diagnostics) {
+  try {
+    const payload = validateWebhookPayload(value);
+    diagnostics.color = payload.color;
+    diagnostics.seat = payload.number;
+    diagnostics.ply = payload.ply;
+    diagnostics.gameType = payload.game?.type;
+    diagnostics.observation = safeDiagnosticObservation(payload.positions[String(payload.ply)], payload.color);
+  } catch {
+    // Invalid/untrusted fields are omitted; the fixed response error is logged separately.
+  }
+}
+
+function recordWebhookDiagnostic(env, diagnostics, status, elapsedMs) {
+  const versionId = env?.CF_VERSION_METADATA?.id;
+  const event = {
+    event: "tsuitate_webhook",
+    status,
+    errorCode: diagnostics.errorCode ?? null,
+    elapsedMs: Math.max(0, Math.round(elapsedMs)),
+    strategyVersion: STRATEGY_VERSION,
+    codeVersion: typeof versionId === "string" && versionId.length <= 64 ? versionId : "local",
+  };
+  for (const key of ["gameId", "color", "seat", "ply", "gameType", "observation", "issuedMove"]) {
+    if (diagnostics[key] !== undefined) event[key] = diagnostics[key];
+  }
+  try {
+    // Only this fixed, allowlisted object is persisted by Workers Logs. Never pass request/env/error objects.
+    console.log(event);
+  } catch {
+    // Diagnostic output must not change the webhook response.
+  }
 }
 
 function hexToBytes(hex) {
@@ -145,10 +215,13 @@ function withTimeout(promise, timeoutMs) {
 }
 
 /** Pure request handler exported for local fixture tests. */
-async function handleWebhookRequest(request, env, options, signal) {
+async function handleWebhookRequest(request, env, options, signal, diagnostics) {
   const url = new URL(request.url);
   if (url.pathname !== "/webhook") return jsonResponse(404, { error: "not_found" });
-  if (request.method !== "POST") return jsonResponse(405, { error: "method_not_allowed" });
+  if (request.method !== "POST") {
+    diagnostics.errorCode = "method_not_allowed";
+    return jsonResponse(405, { error: diagnostics.errorCode });
+  }
 
   try {
     const nowSeconds = options.nowSeconds ?? Math.floor(Date.now() / 1000);
@@ -160,6 +233,8 @@ async function handleWebhookRequest(request, env, options, signal) {
       throw new ProtocolFault(400, "invalid_json");
     }
     const identity = extractRequestIdentity(decoded);
+    diagnostics.gameId = identity.gameId;
+    captureValidatedDiagnosticContext(decoded, diagnostics);
 
     if (!env.GAME_STATE || typeof env.GAME_STATE.idFromName !== "function") {
       throw new ProtocolFault(503, "state_unavailable");
@@ -176,34 +251,62 @@ async function handleWebhookRequest(request, env, options, signal) {
       stub.fetch(internal),
       options.rpcBudgetMs ?? RPC_BUDGET_MS,
     );
-    if (result === null) return jsonResponse(503, { error: "state_timeout" });
-    return new Response(await result.text(), {
+    if (result === null) {
+      diagnostics.errorCode = "state_timeout";
+      return jsonResponse(503, { error: diagnostics.errorCode });
+    }
+    const responseText = await result.text();
+    let responseBody;
+    try { responseBody = JSON.parse(responseText); } catch { /* The public response is preserved below. */ }
+    if (result.status === 200 && typeof responseBody?.move === "string" && CSA_MOVE.test(responseBody.move)) {
+      diagnostics.issuedMove = responseBody.move;
+    } else if (responseBody && SAFE_ERROR_CODES.has(responseBody.error)) {
+      diagnostics.errorCode = responseBody.error;
+    } else if (result.status >= 400) {
+      diagnostics.errorCode = "internal_error";
+    }
+    return new Response(responseText, {
       status: result.status,
       headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
     });
   } catch (error) {
-    if (error instanceof ProtocolFault) return jsonResponse(error.status, { error: error.code });
-    // Deliberately do not log request data, signatures, secrets, or raw errors.
+    if (error instanceof ProtocolFault) {
+      diagnostics.errorCode = SAFE_ERROR_CODES.has(error.code) ? error.code : "internal_error";
+      return jsonResponse(error.status, { error: diagnostics.errorCode });
+    }
+    diagnostics.errorCode = "internal_error";
     return jsonResponse(500, { error: "internal_error" });
   }
 }
 
 /** Bound the complete fetch, including streaming body reads and state RPC. */
 export async function handleWebhook(request, env, options = {}) {
+  const startedAt = Date.now();
+  const diagnostics = {};
   const budgetMs = options.requestBudgetMs ?? REQUEST_BUDGET_MS;
   const controller = new AbortController();
   let timer;
-  const task = handleWebhookRequest(request, env, options, controller.signal);
+  const task = handleWebhookRequest(request, env, options, controller.signal, diagnostics);
   const timeout = new Promise((resolve) => {
     timer = setTimeout(() => {
       controller.abort();
+      diagnostics.errorCode = "request_timeout";
       resolve(jsonResponse(503, { error: "request_timeout" }));
     }, budgetMs);
   });
+  let response;
   try {
-    return await Promise.race([task, timeout]);
+    response = await Promise.race([task, timeout]);
+    return response;
+  } catch {
+    diagnostics.errorCode = "internal_error";
+    response = jsonResponse(500, { error: "internal_error" });
+    return response;
   } finally {
     clearTimeout(timer);
+    if (new URL(request.url).pathname === "/webhook" && response) {
+      recordWebhookDiagnostic(env, diagnostics, response.status, Date.now() - startedAt);
+    }
   }
 }
 

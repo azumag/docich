@@ -25,6 +25,21 @@ test("version preview URLs stay disabled without overriding the production worke
   assert.equal(Object.hasOwn(cloudflareConfig.worker, "workersDev"), false);
 });
 
+test("Workers Logs persist structured console events without invocation request metadata", () => {
+  assert.deepEqual(cloudflareConfig.worker.observability, {
+    enabled: true,
+    logs: {
+      enabled: true,
+      headSamplingRate: 1,
+      invocationLogs: false,
+      persist: true,
+    },
+  });
+  assert.deepEqual(cloudflareConfig.worker.env.CF_VERSION_METADATA, {
+    type: "version-metadata",
+  });
+});
+
 test("Cloudflare config sets the production Bot ID and keeps the secret binding value-less", () => {
   const { env } = cloudflareConfig.worker;
 
