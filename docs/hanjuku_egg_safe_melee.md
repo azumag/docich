@@ -6,8 +6,8 @@
 | 確認できた条件 | モード | 入力 |
 | --- | --- | --- |
 | 卵なし、または激突判定なし | `power_mash` | 従来の A 3 frames + release 50 ms を4回 |
-| 敵の卵を落として召喚不能になった（`enemy_egg_dropped`） | `power_mash` | 同上。ぶつかり合いの青ゲージのA連打を消費する |
-| 激突判定あり、敵不明、判定不明 | `egg_safe_hold` | なし |
+| 卵落札の選択後にHPが減少しただけ | 卵落は未確認 | 卵リスク判定を維持する |
+| 激突判定あり、敵不明、判定不明 | `egg_safe_hold` | 既存の8回・HP損耗予算まで。打切り後は押し込みを継続 |
 
 カードのdue判定、after_clash/after_card、使用確認待ち、低HP時の救命・どうしの退却は、この通常入力より先に処理する。クイーンへの初回A連打は止まるが、自然な衝突で敵HPが減れば従来のafter_clash切り札へ進む。自軍卵・エグモン戦の操作は変更しない。HP 0と欠けたパネルでは入力しない。
 
@@ -33,9 +33,11 @@
 
 `_egg_drop_tactics` は `*_tactics`（チャート）より**後**、`*_strong_card_tactics` より**前**に評価する。つまりチャートがその札を指す戦闘では卵ディニアル側は発火せず（`charted` 集合で除外、HPゲートと after_clash を壊さない）、チャートが持たない札だけを開幕に使う。tactic の `tactic_id` は `eggdrop:{step}:{card}`、`egg_drop_only=True`、`open=True`。
 
-落下の証拠は `fast_chain` と同じ水準で、**「選択済み ＋ 選択後の敵HP低下 ＋ 敵が生還」の3点**。`_watch_egg_drop`（選択前HPを記憶）→ `_egg_drop_confirm` → `battle_egg_dropped` → `cur['enemy_egg_dropped']=True`。HP 0（倒れた）や根拠がない戦闘では確定しない（fail-closed）。`_survival_card_list` が救済で卵落札を選ぶ時も同じ監視を始める。
+v129で卵落の証拠を訂正した。**札の選択予定と敵HP低下だけでは、札の命中・卵落は証明できない**。Bでメニューを開く前に白兵ダメージが入り、札選択後はHPが変わらないケースでも旧版は確定していた。A入力未達後の白兵ダメージも区別できない。
 
-`enemy_egg_dropped` が真の時だけ `_melee_step` の `safe` が成立し、`power_mash`（A 3 frames + release 50 ms を4回＝12 A frames）へ移る。reason に「敵の卵を落として召喚を封じたため、青ゲージをA連打で消費して押し込む」を追記し `enemy_egg_dropped` を `battle_melee` に残す。`_unarmed_clash_risk` も同フラグで外す。**青バーそのものの画素検出は未実装**（実機計測待ち）で、現状は卵の脅威が消えた局面だけを予測で全力A連打する。これと出撃時の dropper 携行拡張は follow-up Issue に分離する。
+`_watch_egg_drop` は通常・救済とも実カーソル上の札を選択する時にだけ開始する。選択後のHP低下は `_observe_egg_drop_candidate` が `battle_egg_drop_unconfirmed` / `enemy_egg_drop_expected` として記録し、召喚不能・使用確定には使わない。旧版の `enemy_egg_dropped=True` はホットロード後の戦闘観測で一度だけ取り消して記録する。旧フラグを渡しても白兵のリスク判定や救済確認は省略しない。
+
+卵なし・激突判定なし・チャートの押し込み、および既存の保留回数/HP損耗予算に従う `power_mash`（A 3 frames + release 50 msを4回）は維持する。未確認を理由に無期限保留へ戻さない。**卵落下の直接的な画面署名と青バーの画素検出は未校正**。実画像で校正した後に、卵消失を根拠とする安全な押し込みを接続する。出撃時のdropper携行拡張も引き続き未実装。
 
 ## 自軍卵の温存（兵士数も判定、2026-10-03）
 
