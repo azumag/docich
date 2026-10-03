@@ -24,6 +24,11 @@ const SAFE_ERROR_CODES = new Set([
   "game_metadata_mismatch", "session_missing", "seat_mismatch", "base_ply_mismatch", "stale_ply",
   "no_observed_move", "state_failure",
 ]);
+const AUTH_FAILURE_STAGES = new Set([
+  "bot_id_missing", "bot_id_mismatch", "timestamp_missing", "timestamp_format", "timestamp_out_of_range",
+  "body_hash_missing", "body_hash_format", "body_hash_mismatch",
+  "signature_missing", "signature_format", "signature_mismatch",
+]);
 const CSA_MOVE = /^[+-](?:(?:[1-9]{4}(?:FU|KY|KE|GI|KI|KA|HI|OU|TO|NY|NK|NG|UM|RY))|(?:00[1-9]{2}(?:FU|KY|KE|GI|KI|KA|HI))|(?:0000TORYO))$/;
 const MASKED_OPPONENT_MOVE = /^[+-](?:0000ZZ|00[1-9]{2}ZZ)$/;
 
@@ -81,6 +86,9 @@ function recordWebhookDiagnostic(env, diagnostics, status, elapsedMs) {
   };
   for (const key of ["gameId", "color", "seat", "ply", "gameType", "observation", "issuedMove"]) {
     if (diagnostics[key] !== undefined) event[key] = diagnostics[key];
+  }
+  if (AUTH_FAILURE_STAGES.has(diagnostics.authFailureStage)) {
+    event.authFailureStage = diagnostics.authFailureStage;
   }
   try {
     // Only this fixed, allowlisted object is persisted by Workers Logs. Never pass request/env/error objects.
@@ -154,7 +162,11 @@ async function readBoundedBody(request, signal) {
 }
 
 /** Validate all signed headers against the original request bytes. */
-export async function authenticateRequest(request, env, nowSeconds = Math.floor(Date.now() / 1000), signal) {
+export async function authenticateRequest(request, env, nowSeconds = Math.floor(Date.now() / 1000), signal, diagnostics) {
+  const rejectAuthentication = (stage, status = 401, code = "authentication_failed") => {
+    if (diagnostics && AUTH_FAILURE_STAGES.has(stage)) diagnostics.authFailureStage = stage;
+    throw new ProtocolFault(status, code);
+  };
   const contentType = request.headers.get("content-type") ?? "";
   if (!/^application\/json(?:\s*;|\s*$)/i.test(contentType)) throw new ProtocolFault(415, "content_type_required");
   if (typeof env.WEBHOOK_SECRET !== "string" || env.WEBHOOK_SECRET.length === 0
@@ -164,27 +176,32 @@ export async function authenticateRequest(request, env, nowSeconds = Math.floor(
   }
 
   const botId = request.headers.get("X-Tsuitate-Bot-Id");
-  if (!botId || botId !== env.BOT_ID) throw new ProtocolFault(401, "authentication_failed");
+  if (!botId) rejectAuthentication("bot_id_missing");
+  if (botId !== env.BOT_ID) rejectAuthentication("bot_id_mismatch");
 
   const timestampText = request.headers.get("X-Tsuitate-Timestamp") ?? "";
-  if (!/^\d{1,16}$/.test(timestampText)) throw new ProtocolFault(401, "authentication_failed");
+  if (!timestampText) rejectAuthentication("timestamp_missing");
+  if (!/^\d{1,16}$/.test(timestampText)) rejectAuthentication("timestamp_format");
   const timestamp = Number(timestampText);
   if (!Number.isSafeInteger(timestamp) || Math.abs(nowSeconds - timestamp) >= 300) {
-    throw new ProtocolFault(403, "timestamp_out_of_range");
+    rejectAuthentication("timestamp_out_of_range", 403, "timestamp_out_of_range");
   }
 
   const rawBody = await readBoundedBody(request, signal);
 
   const expectedBodyHash = request.headers.get("x-amz-content-sha256") ?? "";
-  const suppliedHash = /^[a-f0-9]{64}$/i.test(expectedBodyHash) ? hexToBytes(expectedBodyHash) : new Uint8Array();
+  if (!expectedBodyHash) rejectAuthentication("body_hash_missing");
+  if (!/^[a-f0-9]{64}$/i.test(expectedBodyHash)) rejectAuthentication("body_hash_format");
+  const suppliedHash = hexToBytes(expectedBodyHash);
   const actualHashHex = await digestHex(rawBody);
   if (!constantTimeBytesEqual(suppliedHash, hexToBytes(actualHashHex))) {
-    throw new ProtocolFault(401, "authentication_failed");
+    rejectAuthentication("body_hash_mismatch");
   }
 
   const signatureHeader = request.headers.get("X-Tsuitate-Signature") ?? "";
+  if (!signatureHeader) rejectAuthentication("signature_missing");
   const signatureMatch = /^sha256=([a-f0-9]{64})$/i.exec(signatureHeader);
-  if (!signatureMatch) throw new ProtocolFault(401, "authentication_failed");
+  if (!signatureMatch) rejectAuthentication("signature_format");
   const key = await crypto.subtle.importKey(
     "raw", encoder.encode(env.WEBHOOK_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["verify"],
   );
@@ -193,7 +210,7 @@ export async function authenticateRequest(request, env, nowSeconds = Math.floor(
   signedBytes.set(prefix);
   signedBytes.set(rawBody, prefix.byteLength);
   const valid = await crypto.subtle.verify("HMAC", key, hexToBytes(signatureMatch[1]), signedBytes);
-  if (!valid) throw new ProtocolFault(401, "authentication_failed");
+  if (!valid) rejectAuthentication("signature_mismatch");
 
   let bodyText;
   try {
@@ -225,7 +242,7 @@ async function handleWebhookRequest(request, env, options, signal, diagnostics) 
 
   try {
     const nowSeconds = options.nowSeconds ?? Math.floor(Date.now() / 1000);
-    const { bodyText, bodyHash } = await authenticateRequest(request, env, nowSeconds, signal);
+    const { bodyText, bodyHash } = await authenticateRequest(request, env, nowSeconds, signal, diagnostics);
     let decoded;
     try {
       decoded = JSON.parse(bodyText);

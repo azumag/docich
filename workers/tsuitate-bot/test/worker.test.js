@@ -202,6 +202,7 @@ test("diagnostics distinguish authentication, configuration, validation, state t
   const auth = await captureDiagnosticLogs(() => handleWebhook(authRequest, env(), { nowSeconds: 1_000_000 }));
   assert.equal(auth.result.status, 401);
   assert.equal(auth.records[0].errorCode, "authentication_failed");
+  assert.equal(auth.records[0].authFailureStage, "bot_id_mismatch");
   const authLog = JSON.stringify(auth.records[0]);
   for (const marker of [SECRET, "raw-body-marker", "header-marker", "203.0.113.88", "X-Tsuitate-Signature"]) {
     assert.equal(authLog.includes(marker), false);
@@ -254,6 +255,172 @@ test("diagnostics distinguish authentication, configuration, validation, state t
   }));
   assert.equal(requestTimeout.result.status, 503);
   assert.equal(requestTimeout.records[0].errorCode, "request_timeout");
+});
+
+test("authentication failures log only fixed auth stages and preserve the HTTP error contract", async (t) => {
+  const rawBody = JSON.stringify({ ...initialFixture, marker: "raw-body-marker" });
+  const cases = [
+    {
+      name: "missing Bot ID",
+      makeRequest: async () => {
+        const request = await signedRequest(rawBody);
+        request.headers.delete("X-Tsuitate-Bot-Id");
+        return request;
+      },
+      status: 401,
+      errorCode: "authentication_failed",
+      authFailureStage: "bot_id_missing",
+    },
+    {
+      name: "mismatched Bot ID",
+      makeRequest: async () => signedRequest(rawBody, { botId: "wrong-bot-marker" }),
+      status: 401,
+      errorCode: "authentication_failed",
+      authFailureStage: "bot_id_mismatch",
+    },
+    {
+      name: "missing timestamp",
+      makeRequest: async () => {
+        const request = await signedRequest(rawBody);
+        request.headers.delete("X-Tsuitate-Timestamp");
+        return request;
+      },
+      status: 401,
+      errorCode: "authentication_failed",
+      authFailureStage: "timestamp_missing",
+    },
+    {
+      name: "malformed timestamp",
+      makeRequest: async () => {
+        const request = await signedRequest(rawBody);
+        request.headers.set("X-Tsuitate-Timestamp", "bad-timestamp-marker");
+        return request;
+      },
+      status: 401,
+      errorCode: "authentication_failed",
+      authFailureStage: "timestamp_format",
+    },
+    {
+      name: "stale timestamp",
+      makeRequest: async () => signedRequest(rawBody, { timestamp: 1_000_300 }),
+      status: 403,
+      errorCode: "timestamp_out_of_range",
+      authFailureStage: "timestamp_out_of_range",
+    },
+    {
+      name: "missing body hash",
+      makeRequest: async () => {
+        const request = await signedRequest(rawBody);
+        request.headers.delete("x-amz-content-sha256");
+        return request;
+      },
+      status: 401,
+      errorCode: "authentication_failed",
+      authFailureStage: "body_hash_missing",
+    },
+    {
+      name: "malformed body hash",
+      makeRequest: async () => {
+        const request = await signedRequest(rawBody);
+        request.headers.set("x-amz-content-sha256", "bad-body-hash-marker");
+        return request;
+      },
+      status: 401,
+      errorCode: "authentication_failed",
+      authFailureStage: "body_hash_format",
+    },
+    {
+      name: "mismatched body hash",
+      makeRequest: async () => {
+        const correctHash = await sha256Hex(encoder.encode(rawBody));
+        const wrongHash = `${correctHash[0] === "0" ? "1" : "0"}${correctHash.slice(1)}`;
+        return signedRequest(rawBody, { bodyHash: wrongHash });
+      },
+      status: 401,
+      errorCode: "authentication_failed",
+      authFailureStage: "body_hash_mismatch",
+    },
+    {
+      name: "missing signature",
+      makeRequest: async () => {
+        const request = await signedRequest(rawBody);
+        request.headers.delete("X-Tsuitate-Signature");
+        return request;
+      },
+      status: 401,
+      errorCode: "authentication_failed",
+      authFailureStage: "signature_missing",
+    },
+    {
+      name: "malformed signature",
+      makeRequest: async () => {
+        const request = await signedRequest(rawBody);
+        request.headers.set("X-Tsuitate-Signature", "bad-signature-marker");
+        return request;
+      },
+      status: 401,
+      errorCode: "authentication_failed",
+      authFailureStage: "signature_format",
+    },
+    {
+      name: "mismatched signature",
+      makeRequest: async () => {
+        const request = await signedRequest(rawBody);
+        const signature = request.headers.get("X-Tsuitate-Signature").slice("sha256=".length);
+        const wrongSignature = `${signature[0] === "0" ? "1" : "0"}${signature.slice(1)}`;
+        request.headers.set("X-Tsuitate-Signature", `sha256=${wrongSignature}`);
+        return request;
+      },
+      status: 401,
+      errorCode: "authentication_failed",
+      authFailureStage: "signature_mismatch",
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const request = await scenario.makeRequest();
+      request.headers.set("X-Diagnostic-Marker", "header-marker");
+      request.headers.set("CF-Connecting-IP", "203.0.113.88");
+      const { result, records } = await captureDiagnosticLogs(() => handleWebhook(request, env(), {
+        nowSeconds: 1_000_000,
+      }));
+      assert.equal(result.status, scenario.status);
+      assert.deepEqual(await result.json(), { error: scenario.errorCode });
+      assert.equal(records.length, 1);
+      const [event] = records;
+      assert.equal(event.errorCode, scenario.errorCode);
+      assert.equal(event.authFailureStage, scenario.authFailureStage);
+      assert.deepEqual(Object.keys(event).sort(), [
+        "authFailureStage", "codeVersion", "elapsedMs", "errorCode", "event", "status", "strategyVersion",
+      ]);
+
+      const serialized = JSON.stringify(event);
+      const forbiddenValues = [
+        SECRET,
+        BOT_ID,
+        rawBody,
+        "raw-body-marker",
+        "wrong-bot-marker",
+        "bad-timestamp-marker",
+        "bad-body-hash-marker",
+        "bad-signature-marker",
+        "header-marker",
+        "203.0.113.88",
+        "X-Tsuitate-Bot-Id",
+        "X-Tsuitate-Timestamp",
+        "X-Tsuitate-Signature",
+        "x-amz-content-sha256",
+        request.headers.get("X-Tsuitate-Bot-Id"),
+        request.headers.get("X-Tsuitate-Timestamp"),
+        request.headers.get("X-Tsuitate-Signature"),
+        request.headers.get("x-amz-content-sha256"),
+      ].filter((value) => typeof value === "string" && value.length > 0);
+      for (const forbidden of forbiddenValues) {
+        assert.equal(serialized.includes(forbidden), false, `diagnostic included ${forbidden}`);
+      }
+    });
+  }
 });
 
 test("incremental fixture appends every expected position and answers", async () => {
