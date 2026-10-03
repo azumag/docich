@@ -407,7 +407,9 @@ export class DiscordBot {
     if (!isAddressedMessage(message, botId)) {
       safeLog(this.env, "message_ignored_no_mention", {
         mentionCount: Array.isArray(message.mentions) ? message.mentions.length : 0,
+        mentionRoleCount: Array.isArray(message.mention_roles) ? message.mention_roles.length : 0,
         contentHasAnyUserMention: /<@!?\d+>/.test(message.content),
+        contentHasAnyRoleMention: /<@&\d+>/.test(message.content),
       });
       return;
     }
