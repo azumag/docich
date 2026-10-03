@@ -62,6 +62,41 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
   再計画しない。読み取れる札名が無い一覧でも、開いた一覧（`card_flow.stage=list` の text 画面）は
   `battle_card_missing` として B で閉じ、A連打で停止しない（g452 07:14 ヴィーナス）。
 
+### 保留の廃止（入力0件の有限ゲート、v128）
+
+- owner方針（2026-10-03）: 「保留」は終状態にしない。保留したままでは画面が止まり、何も進まない。
+  フェード中やメニュー描画中の**有限回の待機は残す**が、上限を超えた後は必ず入力を出す。
+- 判定は `hanjuku_bot.decide()` 末尾の連続入力0件ストリーク。数えるのは
+  「policyが入力を出さなかった」かつ「フレームdigestが直近2種のいずれか」という観測だけで、
+  `NO_INPUT_HOLD_MAX = 100` を超えた時にフェーズ別の既定入力を送出する（`no_input_fallback`）。
+  digestが直近2種から外れた（フェード・アニメ・部隊の移動）観測は数え直し、policyが入力を
+  出した観測も0に戻す。2種の画像を「1つの未変化画面」とみなすのは `hanjuku_run.screen_stalled` と
+  同じ扱いで、カーソルが明滅するメニュー（g358）でゲートが発火しないのを防ぐ。
+- 上限の根拠: 既存の有限待機（`RECALL_LIMIT=90`、`EGG_RITUAL_LIMIT=64`、`RARE_SCAN_LIMIT=32`、
+  `RECRUIT_CANDIDATE_LIMIT=32`、`MONSTER_MENU_HOLD_LIMIT=30`、`house.STEP_LIMIT=24`）はすべて
+  これを下回るため切断しない。通常1500ms間隔で100観測＝150秒であり、
+  ランを終了させる `hanjuku_run.STALL_SECONDS=300` より先に手を出す。
+- 入力の選び方: まず既存の `legacy_actions`（フェーズ既定: 確認画面＝A、店＝B、タイトル＝START 等）を
+  適用する。それが空になる5フェーズだけ、次の鍵を使う。
+  - `field` かつ `unknown` / `map`: `select`。主人公の位置へカーソルを再中央化し（実測済みの挙動、
+    `map_step.select_focus` と同じ `nav_last` / `uncertain` の扱い）、画面を動かして nav を再アンカーさせる。
+    素のマップでAを押すと未知のセルで出撃メニューが開くため使わない。
+  - `field` かつ `map_target` / `world_map`: `b`（マップ表示の取消・退出）。
+  - `field` その他（フィールド上のテキスト表示など）: `a`（メッセージの確認）。
+  - `transition`: `a`。止まった暗転だけが対象で、フェードは描き変わるためこのゲートには来ない。
+  - `name`: `b`。削除だけを行い、未読の名前画面で入力・確定はしない（`name_confirm` を盲打しない既存方針を維持）。
+  - `field_menu` / `battle`: `b`。読めないメニュー・戦闘パネルは閉じる／取消／退く方向へ戻す。
+    `_hold_deploy`（出撃確認・将軍一覧・城メニュー等の長期保留）はこの `b` で解除される。
+- 記録は `no_input_fallback`（`phase` / `screen` / `observed_metric.frozen_observations` /
+  `frame_sha256`）。`SPOKEN` には入れない（待機と同様、記録するだけで実況しない）。
+  `INPUT_CONTEXT_DECISIONS` にも入れない（保留の説明を担った既存記録を、この機械的な追従入力で
+  上書きしない。`strategy_variant` / `deviation_reason` を既定値で潰さないため）。
+  `hanjuku_decisions.jsonl` の `action_plan.reason_decisions` と各行 `decision` に出る。
+- 検証は合成Canvasのみの `tests/test_hanjuku_no_input_gate.py`。100観測までは空を維持し、
+  101観測目でフェーズ別の鍵が出ること、描き変わる画面では発火しないこと、
+  既存の有限待機（敵モンスターメニュー30観測）を先取りしないことを確認する。
+  実機の `hanjuku_decisions.jsonl` での発火は未観測。
+
 ### 低HP時の救済
 
 - 読み取れた双方のHPが正で、味方HPが開始時の40%以下かつ敵より少ない、または味方HPが12以下なら、Bで戦闘メニューを開く。剣術の稽古（どうし・だいじん、開始90対90、出撃なし）は対象外。当該時点で実行条件を満たすチャート戦術は先に処理する。

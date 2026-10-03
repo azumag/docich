@@ -7,7 +7,20 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v127-fresh-castle-recheck'
+BOT_VERSION = 'hanjuku-chart-v128-no-input-fallback'
+
+# Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
+# frozen and the bot has planned no input for more than this many observations,
+# decide() sends the phase's default input instead of waiting forever.
+#
+# The bound sits above every finite wait the policy already resolves itself
+# (RECALL_LIMIT=90, EGG_RITUAL_LIMIT=64, RARE_SCAN_LIMIT=32,
+# RECRUIT_CANDIDATE_LIMIT=32, MONSTER_MENU_HOLD_LIMIT=30,
+# house.STEP_LIMIT=24), so no bounded step is cut short. At the normal 1.5 s
+# observation interval 100 observations is 150 s, well inside the 300 s
+# screen-stall terminal (hanjuku_run.STALL_SECONDS) that ends the run while
+# nothing is being pressed.
+NO_INPUT_HOLD_MAX = 100
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -371,6 +384,56 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
                                reason='状況判定保留: 文字・カーソル・戦闘表示を読めない画面')
         else:
             mem['held_phase']=None
+    # 保留の廃止: a screen that froze while we planned no input must not stay
+    # that way. The streak counts only observations whose frame digest is one of
+    # the two most recent distinct images -- the same evidence
+    # hanjuku_run.screen_stalled treats as one unchanged screen -- so a fade, an
+    # animation or marching units are never cut short, and a real policy input
+    # starts the count over. Past NO_INPUT_HOLD_MAX the phase's own default
+    # input is sent; the five phases whose reviewed default is deliberately
+    # empty get the key a player would reach for instead of another wait.
+    digest=frame.digest()
+    frozen=[d for d in (updated.get('no_input_frames') or []) if isinstance(d,str)][:2]
+    if actions:
+        streak=0
+    elif digest in frozen:
+        streak=int(updated.get('no_input_streak') or 0)+1
+    else:
+        streak=1
+    if not actions and streak>NO_INPUT_HOLD_MAX:
+        actions=legacy_actions(frame,phase,updated)
+        if not actions:
+            if phase=='field':
+                if kind in {'unknown','map'}:
+                    # A bare map the chart policy has no plan for: SELECT
+                    # recentres the cursor on the hero (measured), which moves
+                    # the screen and lets nav_step re-anchor. Mirrors the
+                    # bookkeeping map_step.select_focus does after that jump.
+                    actions=[pad('select')]
+                    mem['nav_last']=None
+                    mem['uncertain']=True
+                    mem['select_focus_tick']=int(mem.get('tick') or 0)
+                elif kind in {'map_target','world_map'}:
+                    actions=[pad('b')]      # leave or cancel an open map view
+                else:
+                    actions=[pad('a')]      # a message over the field: acknowledge
+            elif phase=='transition':
+                actions=[pad('a')]          # a dark scene that stopped moving, not a fade
+            elif phase=='name':
+                actions=[pad('b')]          # only the readable name policy may type or confirm
+            else:
+                actions=[pad('b')]          # field_menu / battle: close, cancel or back out
+        # Deliberately outside INPUT_CONTEXT_DECISIONS: the record that already
+        # explains the hold (situation_held, chart_adjust_request, ...) stays the
+        # input context, so strategy_variant and deviation_reason are not
+        # replaced by this mechanical follow-up. And outside SPOKEN, like every
+        # other wait: it is logged, not narrated.
+        policy._record(mem,'no_input_fallback',screen=kind,phase=phase,
+                       observed_metric={'frozen_observations':streak,'frame_sha256':digest},
+                       reason='同一画面で入力0件の観測が上限を超えたため、フェーズ別の既定入力で保留を解消する')
+        streak=0
+    updated['no_input_streak']=streak
+    updated['no_input_frames']=[digest]+[d for d in frozen if d!=digest][:1]
     updated['screen_kind']=kind
     mem.pop('_adjusted',None)
     mem.pop('_interim',None)

@@ -690,13 +690,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v127-fresh-castle-recheck'
+    assert state['bot_version'] == 'hanjuku-chart-v128-no-input-fallback'
     assert '_records' not in state['policy']
 
 
-def test_bot_version_marks_fresh_castle_recheck_release():
+def test_bot_version_marks_no_input_fallback_release():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v127-fresh-castle-recheck'
+    assert BOT_VERSION == 'hanjuku-chart-v128-no-input-fallback'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
