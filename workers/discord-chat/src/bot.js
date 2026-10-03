@@ -118,6 +118,18 @@ export class DiscordBot {
 
   async #connect() {
     const token = this.#token();
+    const identity = await this.#currentBotIdentity(token);
+    const storedBotId = await this.state.storage.get("bot_user_id");
+    if (storedBotId && String(storedBotId) !== identity.id) {
+      await this.#clearSession();
+    }
+    this.botUserId = identity.id;
+    await this.state.storage.put({
+      bot_user_id: identity.id,
+      bot_username: identity.username,
+    });
+    safeLog(this.env, "bot_identity_verified", { botUsername: identity.username });
+
     const sessionId = await this.state.storage.get("gateway_session_id");
     const resumeUrl = await this.state.storage.get("resume_gateway_url");
     let base = sessionId && resumeUrl ? resumeUrl : await this.#gatewayUrl(token);
@@ -137,6 +149,18 @@ export class DiscordBot {
       safeLog(this.env, "socket_error");
     });
     return { status: "connecting" };
+  }
+
+  async #currentBotIdentity(token) {
+    const response = await fetch("https://discord.com/api/v10/users/@me", {
+      headers: { authorization: "Bot " + token },
+    });
+    if (!response.ok) throw new Error("discord_identity_failed");
+    const body = await response.json();
+    if (!body || typeof body.id !== "string" || typeof body.username !== "string") {
+      throw new Error("discord_identity_invalid");
+    }
+    return { id: body.id, username: body.username };
   }
 
   async #gatewayUrl(token) {
@@ -291,6 +315,7 @@ export class DiscordBot {
       "resume_gateway_url",
       "gateway_seq",
       "bot_user_id",
+      "bot_username",
     ]);
     this.botUserId = null;
   }
@@ -317,10 +342,13 @@ export class DiscordBot {
         gateway_session_id: data.session_id,
         resume_gateway_url: data.resume_gateway_url,
         bot_user_id: data.user.id,
+        bot_username: typeof data.user.username === "string" ? data.user.username : "",
       });
       await this.state.storage.delete(["fatal_reason", "fatal_until"]);
       this.ready = true;
-      safeLog(this.env, "ready");
+      safeLog(this.env, "ready", {
+        botUsername: typeof data.user.username === "string" ? data.user.username : "",
+      });
       return;
     }
     if (type === "RESUMED") {
@@ -377,7 +405,10 @@ export class DiscordBot {
       return;
     }
     if (!isAddressedMessage(message, botId)) {
-      safeLog(this.env, "message_ignored_no_mention");
+      safeLog(this.env, "message_ignored_no_mention", {
+        mentionCount: Array.isArray(message.mentions) ? message.mentions.length : 0,
+        contentHasAnyUserMention: /<@!?\d+>/.test(message.content),
+      });
       return;
     }
     safeLog(this.env, "mention_received");
