@@ -110,7 +110,7 @@ async def run_renderer(url: str, directory: Path, *, width: int = 1280,
                 ignore_default_args=['--mute-audio'],
                 args=['--autoplay-policy=no-user-gesture-required'],
             )
-            capture_task = stop_task = health_task = None
+            capture_task = stop_task = health_task = checkpoint_task = None
             try:
                 if checkpoint_directory is None:
                     page = await browser.new_page(
@@ -145,6 +145,21 @@ async def run_renderer(url: str, directory: Path, *, width: int = 1280,
                             pass
                         await asyncio.sleep(1)
 
+                page_ready = asyncio.Event()
+
+                async def checkpoint_loop():
+                    # A slow storage/CDP round trip must not exhaust the frame
+                    # TTL. One serialized task owns saves; never spawn per tick.
+                    await page_ready.wait()
+                    while not stop.is_set():
+                        await asyncio.sleep(1)
+                        if stop.is_set():
+                            return
+                        try:
+                            await asyncio.wait_for(save_checkpoint(checkpoint_directory, url, page), timeout=1)
+                        except Exception:
+                            pass
+
                 async def capture_loop():
                     # No game-specific URL, no navigation on game-switch, no new queue.
                     if stop.is_set():
@@ -152,9 +167,9 @@ async def run_renderer(url: str, directory: Path, *, width: int = 1280,
                     response = await page.goto(url, wait_until='domcontentloaded', timeout=15000)
                     if response is None or not response.ok:
                         raise RuntimeError('overlay page unavailable')
+                    page_ready.set()
                     loop = asyncio.get_running_loop()
                     failures = 0
-                    checkpoint_due = loop.time() + 1
                     while not stop.is_set():
                         tick = loop.time()
                         # A recoverable request failure must not close this page.
@@ -165,35 +180,33 @@ async def run_renderer(url: str, directory: Path, *, width: int = 1280,
                             if report:
                                 report('active' if captured else 'degraded')
                         except Exception:
-                            publisher.clear()
+                            # Keep the last good capture only for its ORIGINAL
+                            # TTL. Never renew its timestamp or hold a card after
+                            # a successful transparent capture. The reader still
+                            # fails transparent on expiry; teardown clears it.
                             failures += 1
                             if report:
                                 report('degraded')
                         if page.is_closed() or failures >= 3:
                             raise RuntimeError('renderer capture unavailable') from None
-                        if checkpoint_directory is not None and loop.time() >= checkpoint_due:
-                            try:
-                                await asyncio.wait_for(save_checkpoint(checkpoint_directory, url, page), timeout=1)
-                            except Exception:
-                                pass
-                            checkpoint_due = loop.time() + 1
                         await asyncio.sleep(max(0.01, 1 / fps - (loop.time() - tick)))
 
                 capture_task = asyncio.create_task(capture_loop())
                 stop_task = asyncio.create_task(stop.wait())
                 if checkpoint_directory is not None:
                     health_task = asyncio.create_task(health_loop())
+                    checkpoint_task = asyncio.create_task(checkpoint_loop())
                 done, _pending = await asyncio.wait(
                     [capture_task, stop_task], return_when=asyncio.FIRST_COMPLETED,
                 )
                 if capture_task in done:
                     await capture_task  # Propagate failure; do not claim ready.
             finally:
-                for task in (capture_task, stop_task, health_task):
+                for task in (capture_task, stop_task, health_task, checkpoint_task):
                     if task is not None:
                         task.cancel()
                 await asyncio.gather(
-                    *(task for task in (capture_task, stop_task, health_task) if task is not None),
+                    *(task for task in (capture_task, stop_task, health_task, checkpoint_task) if task is not None),
                     return_exceptions=True,
                 )
                 publisher.clear()
