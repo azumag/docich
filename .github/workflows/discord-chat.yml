@@ -59,6 +59,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install test and optional Discord SDK dependencies
         run: python3 -m pip install -r requirements-test.txt -r requirements-discord.txt
+      - name: Install bubblewrap for the negative isolation canary
+        run: |
+          if ! command -v bwrap >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends bubblewrap
+          fi
       - name: Offline persistence, conversation and real SDK construction contracts
         run: PYTHONPATH=src python3 -m pytest -q tests/test_discord_chat.py tests/test_discord_memory.py tests/test_reply_routing.py tests/test_reply_research.py
 
