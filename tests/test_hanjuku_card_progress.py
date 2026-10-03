@@ -12,10 +12,13 @@ CARDS = ('イッテツーン', 'ブラッキー', 'グリンボー')
 
 
 def chart_card(card='ブラッキー'):
-    mem = memory(hp=40, enemy=26)
+    # Cursor/announcement tests need a legal target independent of the
+    # v132 damage gate: a current HP22 enemy with no remaining soldiers.
+    mem = memory(hp=40, enemy=22)
     mem['battle'].update(
         ally='バジル', enemy='クミン', start_ally_hp=40, start_enemy_hp=27,
         side='attack', cards_selected=[], cards_unclassified=[],
+        ally_soldiers=0, enemy_soldiers=0, card_soldiers_current=True,
         card_flow={'card': card, 'stage': 'list', 'tactic_id': 'test-card'},
         tactics_done=['test-card'])
     return mem
@@ -99,6 +102,7 @@ def test_hotloaded_announcement_without_a_counter_also_exits():
 def test_preselection_melee_damage_does_not_disarm_the_enemy():
     mem = chart_card('イッテツーン')
     cur = mem['battle']
+    cur['enemy_hp'] = 26
     # An older flow opened B at HP27, but the enemy reached HP26 before A.
     cur['egg_drop_watch'] = {'card': 'イッテツーン', 'hp': 27, 'value': 8,
                              'threshold': 4, 'max_hp_sum': 67}
@@ -112,6 +116,7 @@ def test_preselection_melee_damage_does_not_disarm_the_enemy():
 def test_postselection_damage_is_only_a_candidate_even_if_the_input_was_lost():
     mem = chart_card('イッテツーン')
     cur = mem['battle']
+    cur['enemy_hp'] = 26
     assert policy.card_list_step(menu(CARDS, selected=0, kind='text'), mem) == [policy.pad('a')]
     # No input_sent/consumption receipt exists. An ordinary hit still lowers HP.
     cur['enemy_hp'] = 25

@@ -2705,7 +2705,8 @@ def _project_corner_state(data):
             "hanjuku-script-v1", "hanjuku-chart-v2",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
-            "hanjuku-chart-v131-defense-month-economy"} else None),
+            "hanjuku-chart-v131-defense-month-economy",
+            "hanjuku-chart-v132-card-damage-gate"} else None),
         "bot_chart": _project_bot_chart(data.get("bot_chart")),
         "narration": _project_counts(data.get("narration"),
                                      ("enqueued", "delivery_failed", "skipped")),
@@ -4639,8 +4640,49 @@ def _read_hanjuku_record(path):
         os.close(fd)
 
 
+HANJUKU_DAMAGE_CARDS = frozenset({
+    'イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース', 'ダンスライン',
+    'グリンボー', 'カルゲンジー', 'ピッグローラー', 'ラピニアール', 'カンケリン',
+    'デッドガン', 'ノリウツール', 'ブレイコウ', 'クースカン', 'ブンシーン', 'ゼンマイン',
+    'バルムンク', 'ミックミー', 'ファイアーボイス', 'グルミー', 'ブラックホール',
+    'シュプレボイス', 'エンジェリン', 'ころぼぐんだん', 'バグストーム', 'リューキーシ',
+    'ドデカヘー', 'マグネガキン', 'キャトルミュー', 'ビッグウェイブ', 'ハリケーン', 'ファバード',
+})
+HANJUKU_DAMAGE_REASONS = frozenset({
+    'single_card_lethal', 'healing_not_a_kill', 'no_autonomous_egg_trigger',
+    'egg_drop_candidate_not_a_kill', 'observed_control_chain_not_a_kill',
+    'summon_already_observed', 'inspect_live_inventory_before_selection',
+    'control_has_no_observed_followup', 'nonlethal_egg_risk',
+    'damage_or_egg_risk_unclassified',
+})
+
+
+def _project_hanjuku_card_assessment(value, tick):
+    """One numerical prediction, not a card-use or victory receipt."""
+    if (not isinstance(value, dict) or type(tick) is not int or tick < 0
+            or type(value.get('tick')) is not int or not 0 <= value['tick'] <= tick):
+        return None
+    def bounded(value, upper):
+        return value if type(value) is int and 0 <= value <= upper else None
+    def enum(value, allowed):
+        return value if type(value) is str and value in allowed else None
+    out = {'prediction_only': True, 'age_ticks': bounded(tick-value['tick'], 10000000),
+           'card': enum(value.get('card'), HANJUKU_DAMAGE_CARDS),
+           'target_kind': enum(value.get('target_kind'), {
+               'general', 'boss_general', 'egg_monster', 'boss_monster', 'unknown'}),
+           'reason': enum(value.get('reason'), HANJUKU_DAMAGE_REASONS)}
+    for key in ('enemy_hp', 'raw_damage_min', 'enemy_soldier_hp_upper',
+                'damage_lower_bound', 'remaining_hp_upper'):
+        out[key] = bounded(value.get(key), 9999)
+    for key in ('ally_soldiers', 'enemy_soldiers'):
+        out[key] = bounded(value.get(key), 6)
+    for key in ('lethal', 'egg_drop_fit', 'allowed'):
+        out[key] = value.get(key) if type(value.get(key)) is bool else None
+    return out
+
+
 def _collect_hanjuku_tactical(state_dir, now):
-    """Only chapter-1 fixed castle labels, counts and flags from a fresh run.
+    """Chapter-1 fixed castle labels and last card prediction from a fresh run.
 
     These are the bot's recorded beliefs, not independently verified ownership
     or roster. An absent garrison record remains unknown rather than empty.
@@ -4671,8 +4713,16 @@ def _collect_hanjuku_tactical(state_dir, now):
         if not 0 <= age <= 30:
             return {**out, 'status': 'stale'}
         mem = bot.get('policy')
-        if not isinstance(mem, dict) or type(mem.get('chapter')) is not int or mem['chapter'] != 1:
+        if (not isinstance(mem, dict) or type(mem.get('chapter')) is not int
+                or not 1 <= mem['chapter'] <= 12):
             return {**out, 'status': 'unsupported_chapter'}
+        assessment = _project_hanjuku_card_assessment(mem.get('last_card_assessment'), mem.get('tick'))
+        if mem['chapter'] != 1:
+            again, _ = _read_hanjuku_record(root / 'game_switch.json')
+            if again.get('phase') != 'ready' or again.get('active') != active:
+                return {**out, 'status': 'identity_changed'}
+            return {**out, 'status': 'unsupported_chapter', 'chapter': mem['chapter'],
+                    'age_sec': int(age), 'last_card_assessment': assessment}
         captured = mem.get('captured', [])
         garrison = mem.get('garrison', {})
         sorties = mem.get('sorties', {})
@@ -4706,7 +4756,8 @@ def _collect_hanjuku_tactical(state_dir, now):
             return {**out, 'status': 'identity_changed'}
         out.update(status='ok', age_sec=int(age), chapter=1,
                    remaining_castles=[c for c in HANJUKU_TACTICAL_CASTLES[1:-1] if c not in captured],
-                   castles=rows, home_lost_record=mem.get('home_lost') is True)
+                   castles=rows, home_lost_record=mem.get('home_lost') is True,
+                   last_card_assessment=assessment)
         return out
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return out

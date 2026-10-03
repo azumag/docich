@@ -690,13 +690,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v131-defense-month-economy'
+    assert state['bot_version'] == 'hanjuku-chart-v132-card-damage-gate'
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_battle_card_progress_release():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v131-defense-month-economy'
+    assert BOT_VERSION == 'hanjuku-chart-v132-card-damage-gate'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -1059,7 +1059,8 @@ def test_missing_and_selected_cards_do_not_confirm_use_but_chain_the_charted_fol
     assert cur.get('card_flow') is None
     assert policy.battle_step(screen, mem)[0]['buttons'] == ['a']
     cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
-    policy.card_list_step(_card_screen(['クースカン']), mem)
+    # v132 permits the half-HP setup only with its real follow-up visible.
+    policy.card_list_step(_card_screen(['クースカン', 'ノリウツール']), mem)
     assert cur['cards_selected'] == ['クースカン'] and cur['cards_used'] == []
     # A one-card list, missing hand, wrong card, or incomplete text is no receipt.
     for candidate in (_card_screen(['クースカン']), _card_screen(['クースカン'], hand=False),
@@ -1083,7 +1084,7 @@ def test_uncalibrated_card_text_never_confirms_use_but_chains_the_charted_follow
     mem['stats'] = {'cards_used': 0, 'cards_confirmed': 0, 'card_evidence_version': 1,
                     'wins': 0, 'losses': 0, 'unclassified': 0}
     assert policy.summary(mem)['cards_used'] is None  # active flow, before selection
-    policy.card_list_step(_card_screen(['クースカン']), mem)
+    policy.card_list_step(_card_screen(['クースカン', 'ノリウツール']), mem)
     assert cur['card_consumption_complete'] is False
     assert policy.summary(mem)['cards_used'] is None  # selection planned, before next screen
     candidate = _card_screen(['クースカン'], announcement=statement, hand=False)
@@ -1113,6 +1114,11 @@ def test_retry_variant_survives_battle_card_and_result_records():
     mem, screen = _card_evidence_battle(retry=True)
     cur = mem['battle']
     cur['card_flow']['stage'] = 'list'
+    # Isolate the evidence/variant contract with an actually lethal target;
+    # the boss cannot be licensed by ordinary-general egg-drop arithmetic.
+    screen.battle.enemy_hp = 16
+    screen.field_soldiers = (0, 0)
+    policy._card_battle_reading(screen, cur, mem)
     policy.card_list_step(_card_screen(['イッテツーン']), mem)
     policy.card_list_step(_card_screen(['イッテツーン'], announcement='イッテツーンをつかった', hand=False), mem)
     cur['enemy_hp'] = 0
@@ -2713,6 +2719,7 @@ def test_terminal_delivery_retries_failed_outbox_with_same_run_key(tmp_path, mon
 
 
 def test_real_soren_wrapper_transient_lock_retries_after_generation_switch(tmp_path, monkeypatch):
+    monkeypatch.setattr('docich.config.load_game', lambda *a: Game())
     from types import SimpleNamespace
     from docich.game_switch import atomic_write_json
 
@@ -2766,6 +2773,7 @@ def _confirmed_hanjuku_terminal(identity):
 
 
 def test_terminal_retry_exhaustion_drains_before_later_audio_after_generation_switch(tmp_path, monkeypatch):
+    monkeypatch.setattr('docich.config.load_game', lambda *a: Game())
     from types import SimpleNamespace
     from docich.game_switch import atomic_write_json
 
@@ -2817,6 +2825,7 @@ def test_terminal_retry_exhaustion_drains_before_later_audio_after_generation_sw
 
 
 def test_terminal_candidate_survives_narration_lock_contention_and_generation_switch(tmp_path, monkeypatch):
+    monkeypatch.setattr('docich.config.load_game', lambda *a: Game())
     import fcntl
     import os
     from types import SimpleNamespace
@@ -2905,6 +2914,7 @@ def test_disabled_terminal_candidate_stays_silent_after_lock_contention_and_gene
 
 
 def test_corrupt_terminal_receipt_is_recorded_without_blocking_paper_audio(tmp_path, monkeypatch):
+    monkeypatch.setattr('docich.config.load_game', lambda *a: Game())
     import hashlib
     import subprocess
     from types import SimpleNamespace
@@ -2997,6 +3007,7 @@ def test_real_soren_wrapper_marks_corrupt_receipt_permanent_and_allows_paper_aud
 
 
 def test_missing_terminal_candidate_is_recorded_without_blocking_paper_audio(tmp_path, monkeypatch):
+    monkeypatch.setattr('docich.config.load_game', lambda *a: Game())
     import subprocess
     from types import SimpleNamespace
     from docich.game_switch import atomic_write_json
@@ -3027,6 +3038,7 @@ def test_missing_terminal_candidate_is_recorded_without_blocking_paper_audio(tmp
 
 
 def test_missing_candidate_without_mutable_receipt_is_detected_from_terminal_run(tmp_path, monkeypatch):
+    monkeypatch.setattr('docich.config.load_game', lambda *a: Game())
     import subprocess
     from types import SimpleNamespace
     from docich.game_switch import atomic_write_json
@@ -3054,6 +3066,7 @@ def test_missing_candidate_without_mutable_receipt_is_detected_from_terminal_run
 
 
 def test_transient_terminal_outbox_lock_preserves_order_then_retries(tmp_path, monkeypatch):
+    monkeypatch.setattr('docich.config.load_game', lambda *a: Game())
     import subprocess
     from types import SimpleNamespace
     from docich.game_switch import atomic_write_json
@@ -3315,7 +3328,7 @@ def test_selected_unconfirmed_card_still_spends_and_chains_once():
     tid = cur['card_flow']['tactic_id']
     cur['tactics_done'] = [tid]
     cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
-    policy.card_list_step(_card_screen(['クースカン']), mem)
+    policy.card_list_step(_card_screen(['クースカン', 'ノリウツール']), mem)
     policy._card_use_unclassified(mem, cur, '告知未確認')
     assert mem['kit_spent']['1-B1'] == ['クースカン']
     assert cur['cards_unclassified'] == ['クースカン']

@@ -62,7 +62,10 @@ def test_unsafe_name_changes_do_not_end_previous_battle(changes, observation):
     before = deepcopy(mem['battle'])
     assert policy.battle_step(observation, mem) == []
     assert policy.battle_step(observation, mem) == []
-    assert mem['battle'] == before
+    # The prior combat/ownership record stays intact. A mismatched panel now
+    # also invalidates its card inputs, so the old HP/egg state cannot select A.
+    assert mem['battle'] == {**before, 'card_context_unclassified': True,
+                             'card_hp_unread': True, 'card_soldiers_current': False}
     assert mem['captured'] == ['ジョンリギ'] and 'stats' not in mem
 
 

@@ -92,6 +92,14 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - 単発の rate-limit だけで critical にしない。rate-limit は件数のみ報告する。
 - queue waiter 数は lock 形式から観測できないため報告しない（不明は不明と扱う）。
 - 診断は stale lock を削除しない。観測のみ。
+- `hanjuku_tactical.last_card_assessment` はv132以降の最後の札判断を、一件の固定形式で示す。
+  `prediction_only=true`、判断からの `age_ticks`、固定32札の名前、対象種別、敵HP・双方の兵数、
+  総威力下限・敵兵士HP上限・将軍へ届く下限・残HP上限、`lethal` / `egg_drop_fit` / `allowed`
+  と固定の判断理由のみを返す。`lethal=false` は「下限で撃破を保証できない」であり、
+  実際の使用・卵落下・撃破の結果ではない。未知の値はnull、自由文・将軍名・入力列は出さない。
+  他の戦術情報と同じactive identity、30秒以内のbot記録、読取り前後の世代一致を確認する。
+  第2〜12話でもこの札判断は返せるが、城一覧は第1話のみのため `status=unsupported_chapter`
+  のままであり、後半の所有城を第1話の名前から推測しない。
 - `corners` はコーナー/番組のライフサイクル観測。`retro_corner` が
   `status=failed` かつ `recovery_required=true` の場合だけ severity を `warn` にし、
   owner-only の固定 `recover-failed` 操作を許可する。`draining` / `recovery_required`
