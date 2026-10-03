@@ -11,6 +11,12 @@ fi
 
 pid_file="$root/tmp/state/direct_stream.pid"
 
+backend="$(sed -n 's/^SOREN_STREAM_BACKEND=//p' "$root/.env" 2>/dev/null | tail -1 | tr -d '"' | tr -d "'")"
+if [[ "$backend" != "ffmpeg" ]]; then
+  # No live direct-stream process is expected on OBS/fullscreen profiles.
+  exit 0
+fi
+
 read_pid() {
   local pid=""
   [[ -r "$pid_file" ]] || return 1
