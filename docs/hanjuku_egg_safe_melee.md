@@ -6,6 +6,7 @@
 | 確認できた条件 | モード | 入力 |
 | --- | --- | --- |
 | 卵なし、または激突判定なし | `power_mash` | 従来の A 3 frames + release 50 ms を4回 |
+| 敵の卵を落として召喚不能になった（`enemy_egg_dropped`） | `power_mash` | 同上。ぶつかり合いの青ゲージのA連打を消費する |
 | 激突判定あり、敵不明、判定不明 | `egg_safe_hold` | なし |
 
 カードのdue判定、after_clash/after_card、使用確認待ち、低HP時の救命・どうしの退却は、この通常入力より先に処理する。クイーンへの初回A連打は止まるが、自然な衝突で敵HPが減れば従来のafter_clash切り札へ進む。自軍卵・エグモン戦の操作は変更しない。HP 0と欠けたパネルでは入力しない。
@@ -16,9 +17,25 @@
 - `hanjuku_egg_reference.py` は submodule `5e982942ec24fb559f58b29250560fd784e5ae5c` の `data/char.csv` からSFCのID 0〜127の卵有無・対将軍思考タイプを転記。128行とも[解析将軍表](https://triplequotation.web.fc2.com/Analyze/SFC_EggHero/EggGeneral.html)と一致することを確認した。SFC外の追加行は使わない。
 - [解析資料・敵将軍卵使用思考タイプ](https://triplequotation.web.fc2.com/Analyze/SFC_EggHero/EggHero.html#GS_EggAI)に従い、0型=判定なし、1型=開幕/壁瀕死/激突、2型=開幕/壁瀕死/壁4倍数、3型=全4判定。壁瀕死は壁ダメージ後の生存HPが話数+2以下。Phase 0では壁接触やダメージを推定しない。
 - 自軍城へ攻め込む敵は1型になる。`player_castle_defense` 引数でoverrideし、卵のない敵に卵を付与しない。policyは既存の攻防コンテキストを使用する。場所未分類なら通常/防衛の両方で一致する判定だけを既知とし、安全を推定しない。
-- `CARD_IDS` は[切り札表のNo.欄](https://wikiwiki.jp/hjksfc/切り札)の0始まり番号。ブラッキー2 + クースカン13 + ファバード31 = 46で、開幕閾値48未満。既存の対応19種類を訂正する。価格・配列順・ダメージ表は番号の根拠にしない。
+- `CARD_IDS` は[切り札表のNo.欄](https://wikiwiki.jp/hjksfc/切り札)の0始まり番号。ブラッキー2 + クースカン13 + ファバード31 = 46で、開幕閾値48未満。価格・配列順・ダメージ表は番号の根拠にしない。
+- `CARDS` は gcgx の [kirihuda](https://gcgx.games/hanjuku/kirihuda.html) と wikiwiki 切り札表が一致する**全32札**を保持する（owner 2026-10-03）。各件は `id` / `general_damage` / `monster_damage` / `boss_damage` / `soldier_damage` / `egg_drop` / `price` / `effect`。`EGG_DROP_VALUES` はそこから導出する。旧`CARDS` にあった将軍戦ダメージの未使用10件（ダイチスイム・ブラッキー・フットバース・グリンボー・ノリウツール・クースカン・ゼンマイン・ファバード・マグネガキン・ミックミー）は正典値へ置き換えた。
 
 これらはruntimeでネットワークやsubmoduleを読む実装ではない。`egg_risk_flags` は敵の**判定能力**であり、戦闘中の卵残数・卵落下・開幕の実所持カード合計を観測した結果ではない。使用済みだから安全という推測も行わない。
+
+## 卵ディニアル計画と青ゲージ（2026-10-03）
+
+将軍（最大HP）と切り札（卵落・将軍戦ダメージ・ID）を内部データとして組み合わせ、戦闘ごとに「卵を使わせない／落とさせる」方針を先に決める。`_egg_plan` は戦闘開始時に次の項目を算出し、**卵を使える能力（`threat`）が真の敵だけ** `battle_egg_plan` に記録する。
+
+- `carried` と `id_sum`: 実際の携行札（`card_override` / `rare_card_kit` / `strong_card_kit` を含む）とそのID合計。合計47以下で開幕卵を抑止する（`deny_opening_egg`）。
+- `max_hp_sum` と `threshold`: `general_max_hp(enemy) + ref_ally_hp`。`卵落 > max_hp_sum mod 16` の札だけを `droppers` とする。
+- `dropper`: 指揮できる**唯一**の卵落札。同値なら将軍戦ダメージが小さい札を選び、主力のダメージ札を温存する。
+- 出撃時の追加携行は**変更しない**（出撃時敵の最大HPが未判明のため `max_hp_sum` が算出できない）。
+
+`_egg_drop_tactics` は `*_tactics`（チャート）より**後**、`*_strong_card_tactics` より**前**に評価する。つまりチャートがその札を指す戦闘では卵ディニアル側は発火せず（`charted` 集合で除外、HPゲートと after_clash を壊さない）、チャートが持たない札だけを開幕に使う。tactic の `tactic_id` は `eggdrop:{step}:{card}`、`egg_drop_only=True`、`open=True`。
+
+落下の証拠は `fast_chain` と同じ水準で、**「選択済み ＋ 選択後の敵HP低下 ＋ 敵が生還」の3点**。`_watch_egg_drop`（選択前HPを記憶）→ `_egg_drop_confirm` → `battle_egg_dropped` → `cur['enemy_egg_dropped']=True`。HP 0（倒れた）や根拠がない戦闘では確定しない（fail-closed）。`_survival_card_list` が救済で卵落札を選ぶ時も同じ監視を始める。
+
+`enemy_egg_dropped` が真の時だけ `_melee_step` の `safe` が成立し、`power_mash`（A 3 frames + release 50 ms を4回＝12 A frames）へ移る。reason に「敵の卵を落として召喚を封じたため、青ゲージをA連打で消費して押し込む」を追記し `enemy_egg_dropped` を `battle_melee` に残す。`_unarmed_clash_risk` も同フラグで外す。**青バーそのものの画素検出は未実装**（実機計測待ち）で、現状は卵の脅威が消えた局面だけを予測で全力A連打する。これと出撃時の dropper 携行拡張は follow-up Issue に分離する。
 
 ## ログと検証の境界
 

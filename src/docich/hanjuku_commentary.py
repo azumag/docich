@@ -101,6 +101,10 @@ def compose(rec: dict) -> tuple[str, str | None]:
         else:
             why = f"敵の{rec['enemy']}の体力が{rec['enemy_hp']}まで下がったので、{rec['card']}を使う予定です。"
         return f"card:{rec.get('card')}:{rec.get('enemy')}", why
+    if kind == 'battle_egg_dropped':
+        return (f"egg_dropped:{rec.get('enemy')}:{rec.get('card')}",
+                f"{rec['enemy']}が{rec['card']}で卵を落としたので、"
+                f"以後の召喚は使えません。ぶつかり合いで前へ押します。")
     if kind == 'battle_result':
         outcome = rec.get('outcome')
         ally, enemy = rec.get('ally'), rec.get('enemy')
@@ -193,7 +197,8 @@ def compose(rec: dict) -> tuple[str, str | None]:
 # Decisions worth speaking. Menu steps and waits are logged, not narrated.
 SPOKEN = frozenset({
     'name_confirm', 'order_start', 'order_retry', 'order_source_changed', 'attack_observed',
-    'order_launched_unconfirmed', 'defense_observed', 'battle_start', 'battle_survival', 'battle_card', 'battle_result', 'month_plan', 'poor_harvest',
+    'order_launched_unconfirmed', 'defense_observed', 'battle_start', 'battle_survival', 'battle_card',
+    'battle_egg_dropped', 'battle_result', 'month_plan', 'poor_harvest',
     'prompt', 'situation_held', 'gift', 'egg_battle', 'order_substitute', 'independent_menu',
     'chart_adjust_request', 'chart_adjust_applied', 'chart_interim_order', 'chart_interim_hold',
     'castle_lost_observed', 'castle_owned_observed'})

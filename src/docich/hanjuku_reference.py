@@ -13,41 +13,109 @@ Sources:
 """
 from __future__ import annotations
 
-# 切り札 basic stats (general damage / egg drop / price where measured).
-# IDs used by enemy-egg summon detection (sum of card IDs >= 48).
+# 切り札 basic stats: the whole gcgx kirihuda.html table (decimal ID 0..31).
+# Owner 2026-10-03: 「全ての将軍と切り札のデータをちゃんと内部でデータとして持って」
+# → 全32札を保持し、gcgx kirihuda.html と https://wikiwiki.jp/hjksfc/切り札
+# （両出典は全列一致を確認）に統一する。旧 general_damage の未使用10件は正典値へ置換。
+#   general_damage / monster_damage / boss_damage / soldier_damage
+#       = 将軍・エッグモンスター・ボスへのダメージ、自軍兵士1人あたりのダメージ増加量
+#   egg_drop = 卵落。`卵落 > 敵・味方将軍の最大HP合計 mod 16` で敵が卵を落とし、
+#              以後その敵は召喚を使えない (egg_drop_threshold / can_drop_egg)
+#   price     = 既存の実測価格はそのまま。未収録分は gcgx「入手場所(価格)」の先頭の
+#              購入価格。None は G での購入先が無い（イベント・宝箱のみ）
+#   effect    = gcgx「効果」列（空文字は効果なし）
+# 敵卵の開幕判定に使う ID は CARD_IDS / ALL_CARD_IDS (合計 >= 48)。
 CARDS: dict[str, dict] = {
-    'イッテツーン': {'general_damage': 10, 'price': 1},
-    'ダイチスイム': {'general_damage': 16, 'price': None},
-    'ブラッキー': {'general_damage': 18, 'price': None, 'egg_drop': True},
-    'フットバース': {'general_damage': 12, 'price': None},
-    'グリンボー': {'general_damage': 6, 'price': 6},
-    'ピッグローラー': {'general_damage': None, 'price': None},
-    'カンケリン': {'general_damage': None, 'price': None},
-    'ノリウツール': {'general_damage': 53, 'price': 18},
-    'クースカン': {'general_damage': 45, 'price': 24, 'egg_drop': True},
-    'ゼンマイン': {'general_damage': 50, 'price': 32},
-    'ミックミー': {'general_damage': None, 'price': 40},
-    'デッドガン': {'general_damage': None, 'price': None},
-    'ブレイコウ': {'general_damage': None, 'price': None},
-    'ブンシーン': {'general_damage': None, 'price': None},
-    'ファイアーボイス': {'general_damage': None, 'price': None},
-    'ファバード': {'general_damage': 100, 'price': 40, 'egg_drop': True},
-    'エンジェリン': {'general_damage': None, 'price': 32},
-    'マグネガキン': {'general_damage': 80, 'price': 34},
-    'ハリケーン': {'general_damage': None, 'price': 38},
+    'イッテツーン': {'id': 0, 'general_damage': 10, 'monster_damage': 32, 'boss_damage': 16,
+                     'soldier_damage': 0, 'egg_drop': 8, 'price': 1, 'effect': ''},
+    'ダイチスイム': {'id': 1, 'general_damage': 6, 'monster_damage': 22, 'boss_damage': 8,
+                     'soldier_damage': 3, 'egg_drop': 1, 'price': None, 'effect': ''},
+    'ブラッキー': {'id': 2, 'general_damage': 22, 'monster_damage': 50, 'boss_damage': 20,
+                   'soldier_damage': 0, 'egg_drop': 3, 'price': None, 'effect': ''},
+    'フットバース': {'id': 3, 'general_damage': 6, 'monster_damage': 48, 'boss_damage': 2,
+                     'soldier_damage': 3, 'egg_drop': 5, 'price': None,
+                     'effect': 'エグモン、ボスの防御力半減'},
+    'ダンスライン': {'id': 4, 'general_damage': 16, 'monster_damage': 5, 'boss_damage': 1,
+                     'soldier_damage': 3, 'egg_drop': 1, 'price': 5, 'effect': ''},
+    'グリンボー': {'id': 5, 'general_damage': 32, 'monster_damage': 46, 'boss_damage': 18,
+                   'soldier_damage': 1, 'egg_drop': 4, 'price': 6, 'effect': ''},
+    'カルゲンジー': {'id': 6, 'general_damage': 12, 'monster_damage': 6, 'boss_damage': 1,
+                     'soldier_damage': 5, 'egg_drop': 1, 'price': 8,
+                     'effect': 'エグモン、ボスの攻撃力半減'},
+    'ピッグローラー': {'id': 7, 'general_damage': 5, 'monster_damage': 38, 'boss_damage': 4,
+                       'soldier_damage': 5, 'egg_drop': 2, 'price': None, 'effect': ''},
+    'ラピニアール': {'id': 8, 'general_damage': 20, 'monster_damage': 48, 'boss_damage': 16,
+                     'soldier_damage': 3, 'egg_drop': 1, 'price': 12,
+                     'effect': 'エグモン、ボスの攻撃力半減'},
+    'カンケリン': {'id': 9, 'general_damage': 10, 'monster_damage': 50, 'boss_damage': 24,
+                   'soldier_damage': 1, 'egg_drop': 1, 'price': None, 'effect': ''},
+    'デッドガン': {'id': 10, 'general_damage': 0, 'monster_damage': 0, 'boss_damage': 0,
+                   'soldier_damage': 0, 'egg_drop': 0, 'price': None,
+                   'effect': '両軍全滅。城内戦で使用すると城Lvが1になる'},
+    'ノリウツール': {'id': 11, 'general_damage': 0, 'monster_damage': 8, 'boss_damage': 8,
+                     'soldier_damage': 0, 'egg_drop': 0, 'price': 18,
+                     'effect': '使用者の現在HPの半分ダメージ。めをまわしてる！の追加効果'},
+    'ブレイコウ': {'id': 12, 'general_damage': 0, 'monster_damage': 0, 'boss_damage': 0,
+                   'soldier_damage': 0, 'egg_drop': 0, 'price': None,
+                   'effect': 'てれている！！の追加効果'},
+    'クースカン': {'id': 13, 'general_damage': 0, 'monster_damage': 56, 'boss_damage': 20,
+                   'soldier_damage': 1, 'egg_drop': 0, 'price': 24,
+                   'effect': '敵軍の将軍、兵士のHP半減。きぜつしてる！！の追加効果'},
+    'ブンシーン': {'id': 14, 'general_damage': 7, 'monster_damage': 52, 'boss_damage': 32,
+                   'soldier_damage': 7, 'egg_drop': 3, 'price': None, 'effect': ''},
+    'ゼンマイン': {'id': 15, 'general_damage': 32, 'monster_damage': 96, 'boss_damage': 50,
+                   'soldier_damage': 0, 'egg_drop': 3, 'price': 32, 'effect': ''},
+    'バルムンク': {'id': 16, 'general_damage': 16, 'monster_damage': 255, 'boss_damage': 250,
+                   'soldier_damage': 0, 'egg_drop': 5, 'price': None,
+                   'effect': 'エッグモンスター即死'},
+    'ミックミー': {'id': 17, 'general_damage': 64, 'monster_damage': 7, 'boss_damage': 32,
+                   'soldier_damage': 0, 'egg_drop': 2, 'price': 40, 'effect': ''},
+    'ファイアーボイス': {'id': 18, 'general_damage': 16, 'monster_damage': 16, 'boss_damage': 7,
+                         'soldier_damage': 0, 'egg_drop': 4, 'price': None,
+                         'effect': '敵兵士全滅'},
+    'グルミー': {'id': 19, 'general_damage': 68, 'monster_damage': 96, 'boss_damage': 100,
+                 'soldier_damage': 4, 'egg_drop': 15, 'price': None,
+                 'effect': 'エグモン、ボスの攻撃力半減'},
+    'ブラックホール': {'id': 20, 'general_damage': 0, 'monster_damage': 0, 'boss_damage': 1,
+                       'soldier_damage': 0, 'egg_drop': 0, 'price': 52,
+                       'effect': '両軍の兵士全滅'},
+    'シュプレボイス': {'id': 21, 'general_damage': 0, 'monster_damage': 0, 'boss_damage': 0,
+                       'soldier_damage': 0, 'egg_drop': 0, 'price': None,
+                       'effect': '敵を退却させる'},
+    'エンジェリン': {'id': 22, 'general_damage': 0, 'monster_damage': 0, 'boss_damage': 0,
+                     'soldier_damage': 0, 'egg_drop': 0, 'price': 32,
+                     'effect': '将軍のHP全回復、エッグの残り使用回数を5回にする、兵士の回復・復活'},
+    'ころぼぐんだん': {'id': 23, 'general_damage': 1, 'monster_damage': 1, 'boss_damage': 1,
+                       'soldier_damage': 1, 'egg_drop': 12, 'price': 5, 'effect': ''},
+    'バグストーム': {'id': 24, 'general_damage': 0, 'monster_damage': 100, 'boss_damage': 50,
+                     'soldier_damage': 0, 'egg_drop': 0, 'price': None,
+                     'effect': '両軍の将軍、兵士のHP半減'},
+    'リューキーシ': {'id': 25, 'general_damage': 24, 'monster_damage': 96, 'boss_damage': 60,
+                     'soldier_damage': 12, 'egg_drop': 4, 'price': 68, 'effect': ''},
+    'ドデカヘー': {'id': 26, 'general_damage': 18, 'monster_damage': 18, 'boss_damage': 70,
+                   'soldier_damage': 18, 'egg_drop': 2, 'price': 72,
+                   'effect': 'エグモン、ボスの防御力半減'},
+    'マグネガキン': {'id': 27, 'general_damage': 48, 'monster_damage': 48, 'boss_damage': 80,
+                     'soldier_damage': 4, 'egg_drop': 8, 'price': 34,
+                     'effect': 'エグモン、ボスの攻撃力半減'},
+    'キャトルミュー': {'id': 28, 'general_damage': 224, 'monster_damage': 224, 'boss_damage': 90,
+                       'soldier_damage': 0, 'egg_drop': 0, 'price': None,
+                       'effect': 'せきかしてる！！の追加効果'},
+    'ビッグウェイブ': {'id': 29, 'general_damage': 64, 'monster_damage': 32, 'boss_damage': 100,
+                       'soldier_damage': 14, 'egg_drop': 0, 'price': 88, 'effect': ''},
+    'ハリケーン': {'id': 30, 'general_damage': 10, 'monster_damage': 240, 'boss_damage': 100,
+                   'soldier_damage': 10, 'egg_drop': 0, 'price': 38,
+                   'effect': 'めをまわしてる！の追加効果'},
+    'ファバード': {'id': 31, 'general_damage': 240, 'monster_damage': 240, 'boss_damage': 100,
+                   'soldier_damage': 20, 'egg_drop': 0, 'price': 40,
+                   'effect': 'もえている！！の追加効果。自軍の将軍、兵士のHP半減'},
 }
 
-# 卵落 values (gcgx card table, fetched 2026-09-29; the local
-# egg-drop-table.md's 余り7/3/2 thresholds agree with 8/4/3). A card drops the
-# enemy egg when its 卵落 is strictly greater than the two generals' max-HP sum
-# mod 16 (see egg_drop_threshold / can_drop_egg).
-EGG_DROP_VALUES: dict[str, int] = {
-    'イッテツーン': 8, 'ダイチスイム': 1, 'ブラッキー': 3, 'フットバース': 5,
-    'グリンボー': 4, 'ピッグローラー': 2, 'カンケリン': 1, 'ノリウツール': 0,
-    'クースカン': 0, 'ゼンマイン': 3, 'ミックミー': 2, 'デッドガン': 0,
-    'ブレイコウ': 0, 'ブンシーン': 3, 'ファイアーボイス': 4, 'ファバード': 0,
-    'エンジェリン': 0, 'マグネガキン': 8, 'ハリケーン': 0,
-}
+# 卵落 values: CARDS が唯一の出典 (owner 2026-10-03: 全32札を保持)。既存19件の値は
+# gcgx card table (fetched 2026-09-29) と同一のまま。A card drops the enemy egg
+# when its 卵落 is strictly greater than the two generals' max-HP sum mod 16
+# (see egg_drop_threshold / can_drop_egg).
+EGG_DROP_VALUES: dict[str, int] = {name: card['egg_drop'] for name, card in CARDS.items()}
 
 # Actual zero-based No., not price or this module's supported-card order.
 # Local README examples + https://wikiwiki.jp/hjksfc/切り札 (No. column).
@@ -464,6 +532,16 @@ def can_drop_egg(card: str, max_hp_sum: int) -> bool:
     """
     value = EGG_DROP_VALUES.get(card)
     return value is not None and value > max_hp_sum % EGG_DROP_MOD
+
+
+def egg_droppers(cards, max_hp_sum: int) -> list[str]:
+    """This kit's cards that drop this general's egg, strongest 卵落 first.
+
+    将軍 (最大HP合計) と切り札 (卵落) の組み合わせで候補を絞る。判明しない札は
+    候補にしない (fail-closed)。同値は ID の小さい札が先 (携行ID予算を守りやすい)。
+    """
+    return sorted((card for card in dict.fromkeys(cards) if can_drop_egg(card, max_hp_sum)),
+                  key=lambda card: (-EGG_DROP_VALUES[card], ALL_CARD_IDS.get(card, 99), card))
 
 
 # 強い将軍の主判定 (owner 2026-10-03: 「まずは戦闘の値とHPでわかる」)。

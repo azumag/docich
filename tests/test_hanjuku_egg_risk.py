@@ -38,7 +38,9 @@ def test_actual_zero_based_card_numbers_and_opening_threshold():
     assert not reference.enemy_egg_likely([31, 15, 1])  # 47
     assert reference.enemy_egg_likely([31, 17])        # 48, two cards
     assert reference.enemy_egg_likely([31, 17, 1])
-    assert set(reference.CARD_IDS) == set(reference.CARDS)
+    assert set(reference.CARD_IDS) <= set(reference.CARDS)
+    # owner 2026-10-03: CARDS は gcgx/wikiwiki の全32札を保持する。
+    assert set(reference.CARDS) == set(reference.ALL_CARD_IDS)
 
 
 def test_static_sfc_roster_matches_local_canonical_source_when_available():

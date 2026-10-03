@@ -3771,6 +3771,16 @@ def battle_step(screen: Screen, mem):
                 enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, castle=cur['castle'],
                 reason='戦闘パネルの将軍名とHPを確認')
         _tally(mem, 'battles_started')
+        # 将軍 (最大HP) と携行切り札 (卵落・ID合計) の組み合わせで、この戦闘の
+        # 「卵を使わせない／落とさせる」方針を先に決めて記録する。卵を使える能力が
+        # ない・不明な敵では方針もないので記録しない (卵の有無自体は battle_melee の
+        # egg_risk_flags が毎回残す)。
+        egg_plan = _egg_plan(mem, cur)
+        if egg_plan['threat']:
+            _record(mem, 'battle_egg_plan', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
+                    expected_metric='携行ID47以下による開幕卵の抑止と、卵落札での卵の落下',
+                    observed_metric=egg_plan,
+                    reason='将軍の最大HPと携行切り札の卵落・ID合計から卵ディニアル方針を決定')
     if (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
         return []            # faded/partial panel: keep the last clear reading
     cur['away'] = 0
@@ -3791,6 +3801,9 @@ def battle_step(screen: Screen, mem):
             # after a resolution the chart cannot follow up on.
             cur['card_flow'] = None
         return []
+    # 卵落札の選択後に敵HPが下がり、まだ生き残っているなら敵は卵を落とした。
+    # 以後の召喚不能として扱ってもよい（落としていない卵は無いと言い切らない）。
+    _egg_drop_confirm(mem, cur)
     retreat = _hero_retreat_open(mem, cur)
     if retreat is not None:
         return retreat
@@ -3825,7 +3838,11 @@ def battle_step(screen: Screen, mem):
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
              for card in ([] if (mem.get('rare_card_kit') or {}).get(cur.get('step')) is not None
                           else mem.get('card_override', {}).get(cur.get('step')) or [])]
+    # 卵ディニアル札はチャートの戦術より後ろに置く（チャートが指す札・タイミングを
+    # 優先し、チャートが指していない携行札だけを開幕の卵落に使う）。
+    egg_plan = _egg_plan(mem, cur)
     tactics = [*extra, *_tactics(mem, cur.get('step')),
+               *_egg_drop_tactics(mem, cur, b.enemy, egg_plan),
                *_strong_card_tactics(mem, cur, b.enemy)]
     done = cur.setdefault('tactics_done', [])
     for index, tactic in enumerate(tactics):
@@ -3867,11 +3884,22 @@ def battle_step(screen: Screen, mem):
                     cur['deviation_reason'] = '前の切り札の実使用告知が未校正のため、選択記録を根拠に連続使用を継続'
             cur['card_flow'] = {'card': tactic['card'], 'stage': 'menu', 'note': note,
                                 'enemy_hp_at_open': b.enemy_hp, 'tactic_id': tid}
+            # 卵落が最大HP合計の余りを超える札は、命中すれば敵の卵を落とす。
+            # どの札が落ちさせても同じなので、チャート札も同じ根拠で監視する。
+            drop_evidence = _egg_drop_evidence(cur, tactic['card'])
+            if drop_evidence and not drop_evidence['drops']:
+                drop_evidence = None
+            if drop_evidence:
+                _watch_egg_drop(cur, tactic['card'], b.enemy_hp, drop_evidence)
             _record(mem, 'battle_card', **_battle_labels(cur), card=tactic['card'], enemy=b.enemy,
                     enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, reason=note,
                     expected_metric='選択後の実使用告知と敵HP減少',
                     observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
                     **({'strong_enemy': strong_evidence} if strong_evidence is not None else {}),
+                    **({'egg_drop': drop_evidence,
+                        'egg_plan': {key: egg_plan[key] for key in
+                                     ('threat', 'deny_opening_egg', 'id_sum', 'droppers')}}
+                       if drop_evidence else {}),
                     resulting_event='card_planned')
             return [pad('b')]
     if (_defender_last_resort(mem, cur)
@@ -3952,7 +3980,10 @@ def _melee_step(mem, cur):
     # An unbounded hold is a passive death: after the bound the melee proceeds
     # for the rest of the fight even at the clash egg risk (the rescue already
     # had its chances).
-    safe = (triggers.has_egg is False or triggers.clash_position is False
+    # 敵の卵が落ちた（召喚不能）戦闘だけ、激突判定があっても青ゲージの A 連打を
+    # 消費して押し込む。卵が落ちていない卵持ち敵では相変わらず保持する。
+    egg_dropped = cur.get('enemy_egg_dropped') is True
+    safe = (egg_dropped or triggers.has_egg is False or triggers.clash_position is False
             or charted or forced)
     cur['melee_forced'] = forced
     cur['melee_holds'] = 0 if safe else holds + 1
@@ -3963,9 +3994,12 @@ def _melee_step(mem, cur):
     _record(mem, 'battle_melee', **_battle_labels(cur),
             enemy=cur.get('enemy'), enemy_hp=cur.get('enemy_hp'), ally_hp=cur.get('ally_hp'),
             egg_risk_flags=asdict(triggers), melee_control_mode=mode,
+            enemy_egg_dropped=egg_dropped,
             a_frames_sent=POWER_TAPS * 3 if safe else 0,
             hold_hp_budget=hp_budget, hold_hp_bled=hp_bled,
             reason=('チャートのぶつかり合いに向けて押し込む' if charted
+                    else '敵の卵を落として召喚を封じたため、青ゲージをA連打で消費して押し込む'
+                    if egg_dropped
                     else '保持中のHP劣化が予算に達したため押し込む' if hold_cut
                     else '卵の激突リスクの保留上限に達したため押し込む' if holds >= MELEE_HOLD_LIMIT
                     else '保持の打ち切り後はこの戦闘を通しで押し込む' if forced
@@ -4008,6 +4042,8 @@ SURVIVAL_CARDS = ('エンジェリン', 'キャトルミュー', 'ミックミ�
                   'グリンボー', 'ゼンマイン', 'ブラッキー', 'ファイアーボイス',
                   'ハリケーン', 'ブンシーン', 'ピッグローラー', 'イッテツーン',
                   'カンケリン', 'フットバース', 'ダイチスイム', 'ノリウツール')
+# 実在庫の札が順位表に無くても ValueError にしない (全32札を表に持つようになったため)。
+SURVIVAL_RANK = {card: index for index, card in enumerate(SURVIVAL_CARDS)}
 
 
 def _egg_drop_evidence(cur, card):
@@ -4032,6 +4068,123 @@ def _egg_drop_evidence(cur, card):
             'max_hp_sum': total, 'drops': reference.can_drop_egg(card, total)}
 
 
+def _egg_threat(triggers):
+    """敵がこの戦闘で卵を使える能力か。未読は None (安全と推定しない)。
+
+    開幕の「携行ID合計 >= 48」判定は当方の携行が47以下なので起きない
+    (``_cap_card_ids``)。残るのは激突・壁の判定で、思考タイプ0の敵には無い。
+    """
+    if triggers.has_egg is None:
+        return None
+    if triggers.has_egg is False:
+        return False
+    return any(flag is True for flag in (triggers.clash_position,
+                                         triggers.wall_critical, triggers.wall_mod4))
+
+
+def _carried_kit(mem, cur):
+    """この戦闘で実際に携行している切り札。出撃注文が特定できない戦闘は None。"""
+    order = _order_for_step(mem, cur.get('step'))
+    return None if order is None else _deploy_cards(order, mem)
+
+
+def _egg_plan(mem, cur):
+    """将軍の最大HPと携行切り札の卵落を組み合わせた、この戦闘の卵ディニアル計画。
+
+    owner 2026-10-03: 「全ての将軍と切り札のデータをちゃんと内部でデータとして
+    持って、その組み合わせで卵を使わせないか、落とさせるようにたたかう」。
+    gcgx: 携行札のID合計が48以上だと敵が先に卵を使い、「卵落 > 敵・味方将軍の
+    最大HP合計 mod 16」で命中した札は敵の卵を落として以後の召喚を封じる。
+    将軍名・最大HP・携行が判明しない項目は fail-closed で None のまま残す。
+    """
+    enemy = cur.get('enemy')
+    side = cur.get('side')
+    defense = True if side == 'defense' else False if side == 'attack' else None
+    triggers = enemy_egg_triggers(enemy, player_castle_defense=defense)
+    kit = _carried_kit(mem, cur)
+    ids = None if kit is None else [CARD_IDS.get(card) for card in kit]
+    plan = {'threat': _egg_threat(triggers), 'has_egg': triggers.has_egg,
+            'kit_known': kit is not None, 'carried': list(kit or []),
+            'id_sum': None if ids is None or any(i is None for i in ids) else sum(ids),
+            'deny_opening_egg': None,
+            'max_hp_sum': None, 'threshold': None, 'droppers': [], 'dropper': None,
+            'egg_drop': None, 'triggers': asdict(triggers)}
+    if kit is None:
+        return plan
+    # 携行IDの合計が48以上だと敵が開幕で卵を使う (gcgx ai.html)。不明IDは失敗扱い。
+    plan['deny_opening_egg'] = plan['id_sum'] is not None and plan['id_sum'] < ENEMY_EGG_CARD_ID_SUM
+    evidence = {card: _egg_drop_evidence(cur, card) for card in kit}
+    known = next((evidence[card] for card in kit if evidence.get(card)), None)
+    if not known:
+        return plan
+    plan['max_hp_sum'] = known['max_hp_sum']
+    plan['threshold'] = known['threshold']
+    plan['droppers'] = reference.egg_droppers(kit, known['max_hp_sum'])
+    if not (plan['threat'] and plan['droppers']):
+        return plan
+    # チャートがこの札を指す戦闘はチャートのタイミングを優先し、指していない札だけを
+    # 開幕の卵ディニアルに回す (HPゲートや after_clash を壊さないため)。
+    charted = {t['card'] for t in _tactics(mem, cur.get('step'))
+               if t.get('step') in (None, cur.get('step')) and t['enemy'] in (None, enemy)}
+    free = [card for card in plan['droppers'] if card not in charted]
+    if not free:
+        return plan
+    # 卵落の強い札を先に、同値は将軍へのダメージが小さい札を (主力を温存)。
+    plan['dropper'] = min(free, key=lambda card: (
+        -reference.egg_drop_value(card),
+        reference.CARDS.get(card, {}).get('general_damage') or 0,
+        SURVIVAL_RANK.get(card, len(SURVIVAL_CARDS)), CARD_IDS.get(card, 99)))
+    plan['egg_drop'] = evidence.get(plan['dropper'])
+    return plan
+
+
+def _egg_drop_tactics(mem, cur, enemy, plan=None):
+    """卵を落とせる携行札を開幕に使う戦術 (チャートがこの札を指していない時だけ)。"""
+    plan = _egg_plan(mem, cur) if plan is None else plan
+    card = plan.get('dropper')
+    if not card or cur.get('enemy_egg_dropped'):
+        return []
+    return [{'enemy': enemy, 'card': card, 'open': True, 'step': cur.get('step'),
+             'tactic_id': f"eggdrop:{cur.get('step')}:{card}", 'egg_drop_only': True,
+             'note': ('携行札の卵落が敵味方将軍の最大HP合計の余りを超えるため開幕に使い、'
+                      '敵の卵を落として召喚を封じる')}]
+
+
+def _watch_egg_drop(cur, card, hp, evidence):
+    """この札が命中すれば敵が卵を落とす、と判定できる時だけ監視を始める。"""
+    if evidence and evidence.get('drops'):
+        cur['egg_drop_watch'] = {'card': card, 'hp': hp, 'value': evidence['value'],
+                                 'threshold': evidence['threshold'],
+                                 'max_hp_sum': evidence['max_hp_sum']}
+
+
+def _egg_drop_confirm(mem, cur):
+    """選択後の敵HP低下を、卵を落とした根拠にする。
+
+    実使用告知は未校正のまま (``fast_chain`` と同じ水準の証拠)。卵が落ちたと言える
+    のは、卵落札が選択されたあとに敵HPが下がり、まだ生き残っている時だけ。
+    HP 0 (倒れた) や根拠がない戦闘では、落ちていない卵を無いと言い切らない。
+    """
+    watch = cur.get('egg_drop_watch')
+    if not watch or cur.get('enemy_egg_dropped'):
+        return
+    hp, at_open = cur.get('enemy_hp'), watch.get('hp')
+    if type(hp) is not int or hp <= 0 or type(at_open) is not int or hp >= at_open:
+        return
+    if watch['card'] not in (cur.get('cards_selected') or []):
+        return                      # 札一覧の選択に達していない＝使用の根拠がない
+    cur['enemy_egg_dropped'] = True
+    cur.pop('egg_drop_watch', None)
+    _record(mem, 'battle_egg_dropped', **_battle_labels(cur), card=watch['card'],
+            enemy=cur.get('enemy'), enemy_hp=hp, ally_hp=cur.get('ally_hp'),
+            egg_drop={'value': watch['value'], 'threshold': watch['threshold'],
+                      'max_hp_sum': watch['max_hp_sum']},
+            expected_metric='卵落札の命中後、敵は卵を落として以後召喚を使えなくなる',
+            observed_metric={'enemy_hp': hp, 'hp_at_card': at_open,
+                             'selected': watch['card'] in (cur.get('cards_selected') or [])},
+            reason='卵落が最大HP合計の余りを超える切り札の選択後、敵HPの低下を実測')
+
+
 def _rescue_card(candidates, cur):
     """The rescue card: a visible heal first, else the best egg dropper.
 
@@ -4053,7 +4206,7 @@ def _rescue_card(candidates, cur):
     if not droppers:
         return candidates[0]
     return min(droppers, key=lambda card: (-reference.egg_drop_value(card),
-                                           SURVIVAL_CARDS.index(card)))
+                                           SURVIVAL_RANK.get(card, len(SURVIVAL_CARDS))))
 
 
 BEHIND_EGG_RATIO_TENTHS = 7    # ally HP at or below 70% of the enemy's: rescue (egg) now
@@ -4063,6 +4216,7 @@ GENERAL_CRITICAL_RETREAT_HP = 12
 def _unarmed_clash_risk(cur):
     """Check resources before a non-boss egg clash, rather than idle into it."""
     if (cur.get('planned_cards')
+            or cur.get('enemy_egg_dropped')       # 卵は既に落ち、召喚の心配はない
             or cur.get('enemy') in chart.BOSSES.values()):
         return False
     triggers = enemy_egg_triggers(cur.get('enemy'))
@@ -4317,6 +4471,9 @@ def _survival_card_list(screen, mem, cur, flow, names):
     cur['card_consumption_complete'] = False
     cur.setdefault('cards_selected', []).append(card)
     egg_drop = _egg_drop_evidence(cur, card)
+    if egg_drop and egg_drop['drops']:
+        # 救済で選んだ卵落札も、命中すれば敵の卵は落ちる。同じ根拠で監視を始める。
+        _watch_egg_drop(cur, card, cur.get('enemy_hp'), egg_drop)
     _record(mem, 'battle_card_selected', **_battle_labels(cur), card=card,
             expected_metric='実使用告知と卵落' if egg_drop and egg_drop['drops'] else '実使用告知',
             observed_metric={'listed_cards': names, 'listed_count': counts[card],
