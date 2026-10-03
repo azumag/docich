@@ -19,6 +19,9 @@ export default defineConfig({
         invocationLogs: false,
         persist: true,
       },
+      issues: {
+        enabled: false,
+      },
     },
     entrypoint: "src/index.js",
     exports: {
