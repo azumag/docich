@@ -14,7 +14,9 @@ import {
   OPCODE,
   gatewaySocketUrl,
   isAddressedMessage,
+  isAddressedRoleMessage,
   isFatalGatewayClose,
+  managedBotRoleId,
   sendDiscordReply,
   stripBotMention,
 } from "./discord.js";
@@ -53,6 +55,7 @@ export class DiscordBot {
     this.pendingCount = 0;
     this.queue = Promise.resolve();
     this.botUserId = null;
+    this.botRoleIds = new Map();
     initializeMemory(this.sql);
   }
 
@@ -161,6 +164,66 @@ export class DiscordBot {
       throw new Error("discord_identity_invalid");
     }
     return { id: body.id, username: body.username };
+  }
+
+  #botRoleCacheKey(guildId, botId) {
+    return String(botId) + ":" + String(guildId);
+  }
+
+  #botRoleStorageKey(guildId, botId) {
+    return "bot_role_id:" + String(botId) + ":" + String(guildId);
+  }
+
+  async #rememberManagedBotRole(guildId, botId, roles) {
+    const cacheKey = this.#botRoleCacheKey(guildId, botId);
+    const storageKey = this.#botRoleStorageKey(guildId, botId);
+    const roleId = managedBotRoleId(roles, botId);
+    if (!roleId) {
+      this.botRoleIds.delete(cacheKey);
+      await this.state.storage.delete(storageKey);
+      return null;
+    }
+    this.botRoleIds.set(cacheKey, roleId);
+    await this.state.storage.put(storageKey, roleId);
+    return roleId;
+  }
+
+  async #fetchManagedBotRole(guildId, botId) {
+    const response = await fetch(
+      "https://discord.com/api/v10/guilds/" + encodeURIComponent(String(guildId)) + "/roles",
+      { headers: { authorization: "Bot " + this.#token() } },
+    );
+    if (!response.ok) {
+      safeLog(this.env, "bot_role_lookup_failed", { discordStatus: response.status });
+      return null;
+    }
+    const roles = await response.json();
+    if (!Array.isArray(roles)) return null;
+    return this.#rememberManagedBotRole(guildId, botId, roles);
+  }
+
+  async #cachedManagedBotRole(guildId, botId) {
+    const cacheKey = this.#botRoleCacheKey(guildId, botId);
+    const memoryValue = this.botRoleIds.get(cacheKey);
+    if (memoryValue) return memoryValue;
+    const stored = await this.state.storage.get(this.#botRoleStorageKey(guildId, botId));
+    if (typeof stored === "string" && stored) {
+      this.botRoleIds.set(cacheKey, stored);
+      return stored;
+    }
+    return this.#fetchManagedBotRole(guildId, botId);
+  }
+
+  async #addressedManagedRole(message, botId) {
+    const hasRoleMention = (Array.isArray(message?.mention_roles) && message.mention_roles.length > 0)
+      || (typeof message?.content === "string" && /<@&\d+>/.test(message.content));
+    if (!hasRoleMention) return null;
+
+    let roleId = await this.#cachedManagedBotRole(message.guild_id, botId);
+    if (roleId && isAddressedRoleMessage(message, roleId)) return roleId;
+
+    roleId = await this.#fetchManagedBotRole(message.guild_id, botId);
+    return roleId && isAddressedRoleMessage(message, roleId) ? roleId : null;
   }
 
   async #gatewayUrl(token) {
@@ -357,6 +420,13 @@ export class DiscordBot {
       safeLog(this.env, "resumed");
       return;
     }
+    if (type === "GUILD_CREATE") {
+      const botId = this.botUserId || await this.state.storage.get("bot_user_id");
+      if (botId && data?.id && Array.isArray(data?.roles)) {
+        await this.#rememberManagedBotRole(data.id, botId, data.roles);
+      }
+      return;
+    }
     if (type === "MESSAGE_CREATE") {
       await this.#acceptMessage(data);
       return;
@@ -404,7 +474,9 @@ export class DiscordBot {
       safeLog(this.env, "message_ignored_missing_bot_id");
       return;
     }
-    if (!isAddressedMessage(message, botId)) {
+    const directAddressed = isAddressedMessage(message, botId);
+    const addressedRoleId = directAddressed ? null : await this.#addressedManagedRole(message, botId);
+    if (!directAddressed && !addressedRoleId) {
       safeLog(this.env, "message_ignored_no_mention", {
         mentionCount: Array.isArray(message.mentions) ? message.mentions.length : 0,
         mentionRoleCount: Array.isArray(message.mention_roles) ? message.mention_roles.length : 0,
@@ -413,7 +485,9 @@ export class DiscordBot {
       });
       return;
     }
-    safeLog(this.env, "mention_received");
+    safeLog(this.env, "mention_received", {
+      via: addressedRoleId ? "managed_role" : "bot_user",
+    });
     const timestamp = Date.parse(message.timestamp);
     if (!Number.isFinite(timestamp)) return;
     const ageSeconds = (Date.now() - timestamp) / 1000;
@@ -425,7 +499,7 @@ export class DiscordBot {
       channelId: message.channel_id,
       authorId: message.author?.id,
       authorName: message.member?.nick || message.author?.global_name || message.author?.username || "",
-      content: stripBotMention(message.content, botId),
+      content: stripBotMention(message.content, botId, addressedRoleId),
       referenceId: message.message_reference?.message_id ?? null,
       createdAt: timestamp / 1000,
     };
