@@ -34,12 +34,15 @@ export function isFatalGatewayClose(code) {
   return FATAL_CLOSE_CODES.has(Number(code));
 }
 
-export function stripBotMention(content, botId) {
+export function stripBotMention(content, botId, roleId = null) {
   const id = String(botId);
-  return String(content ?? "")
+  let text = String(content ?? "")
     .split("<@" + id + ">").join("")
-    .split("<@!" + id + ">").join("")
-    .trim() || "（呼びかけ）";
+    .split("<@!" + id + ">").join("");
+  if (roleId) {
+    text = text.split("<@&" + String(roleId) + ">").join("");
+  }
+  return text.trim() || "（呼びかけ）";
 }
 
 export function isAddressedMessage(message, botId) {
@@ -50,6 +53,26 @@ export function isAddressedMessage(message, botId) {
   }
   const content = typeof message?.content === "string" ? message.content : "";
   return content.includes("<@" + id + ">") || content.includes("<@!" + id + ">");
+}
+
+export function managedBotRoleId(roles, botId) {
+  const id = String(botId);
+  if (!Array.isArray(roles)) return null;
+  const role = roles.find((item) => item?.managed === true
+    && String(item?.tags?.bot_id ?? "") === id
+    && typeof item?.id === "string");
+  return role?.id ?? null;
+}
+
+export function isAddressedRoleMessage(message, roleId) {
+  if (!roleId) return false;
+  const id = String(roleId);
+  if (Array.isArray(message?.mention_roles)
+      && message.mention_roles.some((value) => String(value) === id)) {
+    return true;
+  }
+  const content = typeof message?.content === "string" ? message.content : "";
+  return content.includes("<@&" + id + ">");
 }
 
 export async function sendDiscordReply(token, event, text) {
