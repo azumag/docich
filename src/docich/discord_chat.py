@@ -83,16 +83,8 @@ def load_persona() -> str:
         raise ChatError("canonical docich persona unavailable") from None
 
 
-def _snowflake(value: str) -> int:
-    if not re.fullmatch(r"[1-9][0-9]{0,19}", value) or int(value) >= 2**64:
-        raise ChatError("invalid Discord ID")
-    return int(value)
-
-
 @dataclass(frozen=True)
 class Settings:
-    guild_id: int
-    channel_ids: frozenset[int]
     base_url: str
     model: str
     token: str = field(repr=False)
@@ -102,11 +94,6 @@ class Settings:
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Settings:
         prefix = "DOCICH_DISCORD_"
-        guild = _snowflake(env.get(prefix + "GUILD_ID", ""))
-        ids = env.get(prefix + "CHANNEL_IDS", "").split(",")
-        if not 1 <= len(ids) <= 8:
-            raise ChatError("configure 1 to 8 explicit channels")
-        channels = frozenset(_snowflake(item.strip()) for item in ids)
         base = env.get(prefix + "LLM_BASE_URL", "").strip().rstrip("/")
         try:
             url = urlsplit(base)
@@ -138,7 +125,7 @@ class Settings:
             raise ChatError("an absolute external MEMORY_DIR is required")
         if directory.resolve().is_relative_to(Path(__file__).resolve().parents[2]):
             raise ChatError("MEMORY_DIR must be outside the repository")
-        return cls(guild, channels, base, model, token, key, directory)
+        return cls(base, model, token, key, directory)
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -215,7 +202,9 @@ class Conversation:
         self.closing = False
 
     def allowed(self, guild_id: int | None, channel_id: int) -> bool:
-        return guild_id == self.settings.guild_id and channel_id in self.settings.channel_ids
+        # The bot may serve every guild/channel it has explicitly been installed into.
+        # DMs remain out of scope so persistent memory always has a guild boundary.
+        return guild_id is not None
 
     def forget(self, guild_id: int | None, channel_id: int, message_ids: set[int]) -> None:
         if self.allowed(guild_id, channel_id):
