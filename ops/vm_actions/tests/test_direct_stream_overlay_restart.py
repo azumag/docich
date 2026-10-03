@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 HELPER = ROOT / "ops/vm_actions/restart_direct_stream_overlay.sh"
 REFRESH_HELPER = ROOT / "ops/vm_actions/refresh_soren_inline_overlay.sh"
+WATCHER_HELPER = ROOT / "ops/vm_actions/restart_soren_overlay_watchers.sh"
 WORKFLOW = ROOT / ".github/workflows/vm-operations.yml"
 
 
@@ -49,6 +50,32 @@ class DirectStreamOverlayRestartTests(unittest.TestCase):
         self.assertIn("games/soviet_now", block)
         self.assertIn("soren_inline_overlay_refresh_epoch", block)
         self.assertIn("refresh_soren_inline_overlay.sh", block)
+        self.assertIn("github.event_name == 'push'", block)
+        self.assertIn("steps.auth.outputs.target == 'production'", block)
+
+    def test_overlay_watcher_helper_is_inert_when_watchers_are_disabled(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / ".env").write_text(
+                "SOREN_STATUS_OVERLAY_WATCHERS_ENABLED=0\n"
+                "SOREN_UNIFIED_OVERLAY_ENABLED=1\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                ["bash", str(WATCHER_HELPER), "--root", str(root)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_workflow_restarts_status_watchers_after_soren_gitlink_change(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        marker = "- name: Restart reviewed Soren status overlay watchers after Soren update"
+        self.assertIn(marker, text)
+        block = text.split(marker, 1)[1].split("- name: Restart docich webui systemd unit", 1)[0]
+        self.assertIn("games/soviet_now", block)
+        self.assertIn("restart_soren_overlay_watchers.sh", block)
         self.assertIn("github.event_name == 'push'", block)
         self.assertIn("steps.auth.outputs.target == 'production'", block)
 
