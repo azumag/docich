@@ -9,6 +9,7 @@ policy never invents a battle result, stage or amount.
 """
 from __future__ import annotations
 
+import random
 import re
 from dataclasses import asdict
 
@@ -18,7 +19,8 @@ from . import hanjuku_experience as experience
 from . import hanjuku_reference as reference
 from .hanjuku_egg_reference import enemy_egg_triggers, general_debut_chapter, general_max_hp
 from .hanjuku_font import UNKNOWN, TextLine
-from .hanjuku_screen import HEADER as HEADER_RE, OKUNOTE_CHOICES, Screen, castle_roofs, own_camps
+from .hanjuku_screen import (HEADER as HEADER_RE, OKUNOTE_CHOICES,
+                             SUMMER_BONUS_CHOICES, Screen, castle_roofs, own_camps)
 
 NAME = chart.HERO
 FPS = 60
@@ -6456,6 +6458,64 @@ def yes_no_step(screen: Screen, mem):
                                  **({'goninja': metric} if metric else {})},
                 reason='確認画面の選択位置を読めないため決定せず再観測')
     return [move] if move else []
+
+
+# 月イチイベント「8月バカンス」の選択 (オーナー決定 2026-10-03):
+# 「兵士はひとり1Gなので、兵士の数とお金の数の少ない方で選ぶ」。
+# バカンス＝兵士半減、ボーナス＝お金半減、まとめて解雇＝何も無いか兵士全滅
+# (odoru7094 のイベントデータ / gcgx event.html) なので常に非選択。
+# 読めない時 (オーナー 2026-10-03) は保留せず、どちらかを1回だけ決めて選ぶ。
+# 観測ごとに反転して動かないので、Aで確定するまで同じ選択を保つ。
+def summer_bonus_step(screen: Screen, mem):
+    gold = (screen.header or {}).get('gold')
+    if type(gold) is not int:
+        gold = mem.get('gold')
+    soldiers = mem.get('soldiers_seen')
+    flat = screen.text.replace(' ', '')
+    visible = {key for key, variants in SUMMER_BONUS_CHOICES.items()
+               if any(v in flat for v in variants)}
+    readable = type(gold) is int and gold >= 0 and type(soldiers) is int and soldiers >= 0
+    metric = {'gold': gold, 'soldiers': soldiers,
+              'soldiers_seen_month': mem.get('soldiers_seen_key'),
+              'visible': sorted(visible),
+              'selection': 'min_loss' if readable else 'random'}
+    if readable:
+        # 同数なら損失は同じ。片側でも読めない時点で最小損失は決められない。
+        target = 'vacation' if soldiers <= gold else 'bonus'
+        mem.pop('summer_bonus_choice', None)
+        reason = (f'兵士{soldiers}人と所持金{gold}Gを比較し、損失の小さい'
+                  + ('兵士半減のバカンス' if target == 'vacation' else 'お金半減のボーナス')
+                  + 'を選び、まとめて解雇は選ばない')
+    else:
+        target = mem.get('summer_bonus_choice')
+        if target not in ('vacation', 'bonus'):
+            target = random.choice(('vacation', 'bonus'))
+            mem['summer_bonus_choice'] = target
+        reason = ('兵士数か所持金が読めないため、'
+                  + ('兵士半減のバカンス' if target == 'vacation' else 'お金半減のボーナス')
+                  + 'をどちらかとして選び、まとめて解雇は選ばない')
+    move = None
+    if target in visible:
+        for variant in SUMMER_BONUS_CHOICES[target]:
+            move = menu_to(screen, variant, exact=False)
+            if move:
+                break
+    if move is None:
+        # 選択位置が読めず移動できない。保留するとイベントが止まるので、
+        # 従来どおりそのまま確認する。
+        mem.pop('summer_bonus_choice', None)
+        _record(mem, 'prompt', choice=target, prompt=screen.text[-40:],
+                strategy_variant='summer_bonus_no_cursor',
+                reason='夏バテ（バカンス）の選択位置が読めないため移動せず既定の確認操作を送る',
+                observed_metric={**metric, 'hand_visible': screen.hand is not None})
+        return [pad('a')]
+    if move == 'here':
+        mem.pop('summer_bonus_choice', None)
+        _record(mem, 'prompt', choice=target, prompt=screen.text[-40:],
+                strategy_variant=f'summer_bonus_{target}', reason=reason,
+                observed_metric=metric)
+        return [pad('a')]
+    return [move]
 
 
 def _repair_home_alias_failures(mem):

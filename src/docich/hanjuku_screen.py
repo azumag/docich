@@ -590,6 +590,24 @@ def is_world_map(frame: Frame) -> bool:
     return sea >= 1500
 
 
+# 月イチイベント「8月バカンス」(odoru7094 のイベントデータと gcgx event.html
+# が一致)。バカンス→兵士が半減、ボーナス→お金が半減、まとめて解雇→何も
+# ならないか兵士が全員いなくなる。画面実測は保存されていないので、正典の
+# 表記とそのひらがな読みを候補にし、2つとも読めた時だけこの画面と断定する。
+SUMMER_BONUS_CHOICES = {
+    'vacation': ('バカンス', 'ばかんす'),
+    'bonus': ('ボーナス', 'ぼーなす', 'ぼなす', 'ぼーナス'),
+    'discharge': ('まとめて解雇', 'まとめてかいほう'),
+}
+
+
+def summer_bonus_seen(text: str) -> bool:
+    """The 8月バカンス prompt: both outcome options legible, no more."""
+    flat = text.replace(' ', '')
+    return any(v in flat for v in SUMMER_BONUS_CHOICES['vacation']) and \
+        any(v in flat for v in SUMMER_BONUS_CHOICES['bonus'])
+
+
 def classify_text(s: Screen) -> str:
     t = s.text
     if t in ('いばらのとうをとりまいていたすべてのいばらがしょうめつしました!',
@@ -613,6 +631,10 @@ def classify_text(s: Screen) -> str:
         return 'shop_quantity'
     if 'かいあたえ' in t or 'ほしいな' in t or 'だからなんかかって' in t:
         return 'gift_request'
+    if summer_bonus_seen(t):
+        # 8月の月イチイベント (odoru7094 / gcgx event.html)。3択だが片方が
+        # 常に非選択なので yes_no とは別。free map cursor より先に見る。
+        return 'summer_bonus'
     if sum(1 for line in s.lines if PRICE.match(''.join(line.words(120, 256)))) >= 3:
         return 'shop_list'
     if 'しょうにん' in t and 'おしまい' in t:
