@@ -154,6 +154,17 @@ def compose(rec: dict) -> tuple[str, str | None]:
         return 'gift', f"おねだりです。チャートならリセットですが、一番安い{rec['item']}を{rec['price']}ゴールドで買って済ませます。"
     if kind == 'prompt' and rec.get('strategy_variant') == 'decline_extra_gift':
         return 'gift_extra', '追加のおねだりは、月一の買い物に備えて断ります。'
+    if kind == 'prompt' and (rec.get('strategy_variant') or '').startswith('summer_bonus_'):
+        variant = rec['strategy_variant']
+        metric = rec.get('observed_metric') or {}
+        if variant == 'summer_bonus_no_cursor':
+            return 'summer_bonus', '夏バテのイベントです。選択位置が読めないため、そのまま確認して進めます。'
+        option = '兵士半減のバカンス' if variant == 'summer_bonus_vacation' else 'お金半減のボーナス'
+        if metric.get('selection') == 'random':
+            return 'summer_bonus', f'夏バテのイベントです。{option}を選びます。'
+        return ('summer_bonus',
+                f'夏バテのイベントです。兵士{metric.get("soldiers")}人と所持金{metric.get("gold")}Gを比べて、'
+                f'損失の小さい{option}を選びます。')
     if kind == 'situation_held':
         return 'held', None
     if kind == 'chart_adjust_request':

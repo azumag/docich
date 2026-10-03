@@ -347,6 +347,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=policy.discharge_step(screen,mem)
     elif kind=='gift_request':
         actions=policy.gift_step(screen,mem)
+    elif kind=='summer_bonus':
+        actions=policy.summer_bonus_step(screen,mem)
     elif kind=='yes_no':
         actions=policy.yes_no_step(screen,mem)
     elif kind in {'castle_info','sealed_castle','main_menu'}:
