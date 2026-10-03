@@ -155,14 +155,19 @@ def test_bwrap_cannot_reach_host_loopback(tmp_path):
     try:
         argv = r.sandbox_argv(tmp_path, "synthetic-model", bwrap, "/usr/bin/codex")
         boundary = argv.index("--")
-        code = (
-            "import socket,sys; "
-            "s=socket.socket(); s.settimeout(0.5); "
-            "target=('127.0.0.1', int(sys.argv[1])); "
-            "\\ntry: s.connect(target)\\n"
-            "except OSError: print('blocked'); raise SystemExit(0)\\n"
-            "print('reachable'); raise SystemExit(7)"
-        )
+        code = """import socket
+import sys
+
+s = socket.socket()
+s.settimeout(0.5)
+try:
+    s.connect(("127.0.0.1", int(sys.argv[1])))
+except OSError:
+    print("blocked")
+    raise SystemExit(0)
+print("reachable")
+raise SystemExit(7)
+"""
         probe = argv[: boundary + 1] + ["/usr/bin/python3", "-c", code, str(port)]
         completed = subprocess.run(probe, capture_output=True, text=True, timeout=5)
         assert completed.stdout.strip() != "reachable"
