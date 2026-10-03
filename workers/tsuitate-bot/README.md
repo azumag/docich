@@ -1,6 +1,6 @@
 # 衝立将棋 Cloudflare Webhook Bot prototype
 
-Cloudflare側の自動build/配備は [Workers Builds設定案](BUILDS.md) にまとめています。接続は未有効化で、GitHub Actionsの配備workflowは追加していません。対象ディレクトリ限定のwatch pathsにはCloudflare側の例外があるため、有効化前に本人の確認が必要です。
+Cloudflare Workersのbuild設定と検証方法は [BUILDS.md](BUILDS.md) にまとめています。GitHub Actionsはbuildとテストを行い、配備は行いません。ローカルCIの成功はCloudflare上の配備・稼働を示しません。
 
 `/webhook` に届くTsuitate Bot向けJSON POSTを検証し、観測できた局面からCSA形式の指し手を返すCloudflare Workersプロトタイプです。既存のオフライン基礎 [`docs/tsuitate-protocol.md`](../../docs/tsuitate-protocol.md) と `src/docich/tsuitate_protocol.py` は変更せず、独立したWorkerとして配置しています。
 
@@ -31,9 +31,9 @@ npm run test:bundle
 
 `test:workerd`は`wrangler.runtime.toml`のtest-only Workerを`wrangler dev --local`で起動し、同じ要求の同時送信、同じrequestIdの別本文競合、storage書込み例外後のSQLite transaction rollback、timeout応答後のlate commit再送を検証します。runtimeが設定compatibility dateに未対応なら、起動エラーに表示された最新対応日へテスト実行中だけ上書きし、その日付を出力します。テスト状態は一時ディレクトリへ保存して終了時に削除し、Cloudflareアカウントやリソースにはアクセスしません。この設定はローカル専用で、deployしないでください。
 
-この検証環境のグローバルWrangler 4.119.0/workerdは設定日付`2026-09-21`を拒否し、対応可能な最新日として`2026-08-08`を返しました。ローカルではその日付へoverrideして4つのfixtureが成功しています。一方、GitHub Actionsは通常のnpm installで得たWranglerを使い、overrideなしで設定日付`2026-09-21`のまま4つすべて成功しました。ローカルにあるruntimeとnpm取得版の差はこのように確認できましたが、本番Cloudflare環境の動作は未検証です。
+GitHub Actionsは依存関係をインストールし、設定に記録した `2026-09-21` のままCf buildとローカル検証を実行します。全体テストは通常のnpm installで取得したWranglerを使います。異なるWrangler/workerd版では互換日付の扱いが変わることがあるため、runtimeを更新する場合はoverrideなしで再検証してください。
 
-Cloudflare CLIでWorkerをローカル起動する場合は、`.dev.vars` にローカル専用の `BOT_ID` と `WEBHOOK_SECRET` を自分で設定し、次を実行します。値はコードへ書かず、このファイルをGitへ追加しないでください。
+Cloudflare CLIでWorkerをローカル起動する場合は、`.dev.vars` にローカル専用の `BOT_ID` と `WEBHOOK_SECRET` を設定し、次を実行します。値はコードへ書かず、このファイルをGitへ追加しないでください。
 
 ```sh
 npm install
@@ -45,12 +45,12 @@ npm run dev:cf
 
 ## Cloudflare設定
 
-- `cloudflare.config.ts` をCfの明示的なプロジェクト設定とし、`GameState` のSQLite Durable Object exportと `GAME_STATE` bindingを宣言します。Cf移行時に生成した `wrangler.config.ts` では型生成を無効にしています。旧 `wrangler.toml` はレビュー用に保持しており、Cloudflareリソースへは適用していません。
-- `BOT_ID` は差し替え用placeholder、`WEBHOOK_SECRET` は値を含まないSecret binding宣言です。実値をソース、ログ、Issue、PRへ書かないでください。ローカル値はGit管理外の`.dev.vars`、将来の本番Secretは別途ユーザーが設定します。
-- 実Cloudflareリソースの作成、デプロイ、Secret設定、サイト `https://tsuitateviewer.web.app/` へのBot登録、実対局はまだ行っていません。
+- `cloudflare.config.ts` をCfのプロジェクト設定とし、`GameState` のSQLite Durable Object exportと `GAME_STATE` bindingを宣言します。Cf移行時に生成した `wrangler.config.ts` では型生成を無効にしています。旧 `wrangler.toml` はテスト用設定として保持します。
+- version preview URLは `worker.previewUrls: false` を明示します。固定版Cfの実生成設定にもfalseが残ることを `test:bundle` で検証します。通常の `workers.dev` 公開URLを無効にする設定ではありません。互換日付は `2026-09-21` です。実配備では配備先との互換日付の一致も確認してください。[Cf公式設定](https://developers.cloudflare.com/cf/projects/cloudflare-config/)
+- `BOT_ID` はplaceholderで、`WEBHOOK_SECRET` は値を含まないSecret binding宣言です。実運用では有効なBot IDと署名Secretが必要です。秘密値をソースやログに出力しないでください。ローカル値はGit管理外の `.dev.vars` に設定します。
 
-この構成ではCloudflareの実アカウントへ接続せず、fixtureとローカルworkerd統合テストを実行できます。この実行環境のローカル `cf build` は、Wrangler 4.119.0が必要な4.136.0未満で、npmレジストリも名前解決できず未検証です。PR #1550のコード・設定commit `fda7ff4` は [Cloudflare Worker CI run 37054256586](https://github.com/azumag/docich/actions/runs/37054256586) で `cf build` と従来のテストが成功しましたが、その時点では生成bundleを実行していませんでした。
+この構成のテストはCloudflareアカウントへ接続せず、fixturesとローカルworkerdを使います。Cloudflare上のbuild/deploy checkやruntimeリクエストの成功とは区別してください。
 
 `test:bundle` は先に成功した `cf build` の実生成物を必須入力にします。固定版Cf CLIと同じ版のBuild Output readerでmanifestを読み、bundleから `GameState` とfetch handlerをimportし、SQLite exportと `GAME_STATE` のself-binding、値を持たないSecret宣言を検証します。同版のMiniflare/workerdへmanifestのES modules・compatibility date・DO bindingを渡し、生成bundleを変更せずraw-byte HMAC、署名なし・改竄・bodyhash不一致、古い時刻の拒否、再起動後のreceipt再送、同時要求の競合、差分履歴と反則後の指し手を検証します。テスト用のBot IDと既存fixtureのSecret値だけをローカルbindingへ渡し、外部fetchは拒否します。5分の両側の厳密境界は生成exportをNode.jsで時刻固定して検証し、7秒の受信stream timeoutとcancelも生成fetch handlerをNode.jsで直接呼び出して確認します。
 
-SQLite rollbackと2.5秒のRPC timeout後のlate commitは、生成bundleの `GameState` を継承するメモリ上のtest-only wrapperで故障注入します。実際のSQLite書込み拒否後に局面・session・receiptが残らないこと、再送で成功すること、遅延commitのreceiptが再利用されることを検証し、SQLが利用できることも確認します。このwrapperは生成物を書き換えず、配備しません。従来の4つの `test:workerd` は引き続き `wrangler.runtime.toml` のtest-only構成を使い、Cf生成物の検証とは別です。新しいテストではcompatibility dateのoverrideをしません。CfのBuild Output readerはbetaの内部APIなので、CLI固定版を更新する場合はこのテストも再検証してください。オフラインCIの成功はCloudflareへの配備や本人のSecret設定、サイト登録、実対局の完了を示しません。
+SQLite rollbackと2.5秒のRPC timeout後のlate commitは、生成bundleの `GameState` を継承するメモリ上のtest-only wrapperで故障注入します。実際のSQLite書込み拒否後に局面・session・receiptが残らないこと、再送で成功すること、遅延commitのreceiptが再利用されることを検証し、SQLが利用できることも確認します。このwrapperは生成物を書き換えず、配備しません。従来の4つの `test:workerd` は `wrangler.runtime.toml` のtest-only構成を使い、Cf生成物の検証とは別です。新しいテストではcompatibility dateのoverrideをしません。CfのBuild Output readerはbetaの内部APIなので、Cf CLIを更新する場合はこのテストも再検証してください。
