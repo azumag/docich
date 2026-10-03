@@ -1,17 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { readFile, mkdtemp, rm } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { readBuildOutput } from "@cloudflare/build-output-utils";
+import { Miniflare } from "miniflare";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const require = createRequire(import.meta.url);
-// Use the reader and local runtime shipped with the pinned Cf CLI itself.
-const cfRequire = createRequire(require.resolve("cf/package.json"));
-const { readBuildOutput } = await import(pathToFileURL(cfRequire.resolve("@cloudflare/build-output-utils")));
-const { Miniflare } = cfRequire("miniflare");
+// Test dependencies match the versions shipped with the pinned Cf CLI itself.
 const output = await readBuildOutput(root); // Missing/malformed build output fails; never build from src here.
 const built = output.workers.default;
 const { config, bundleDir } = built;
@@ -30,6 +27,7 @@ const bundle = await import(pathToFileURL(entrypoint));
 assert.equal(typeof bundle.GameState, "function");
 assert.equal(typeof bundle.default.fetch, "function");
 console.log("PASS actual Cf manifest, GameState export, SQLite storage and GAME_STATE self-binding");
+console.log(`Cf emitted entrypoint SHA-256: ${createHash("sha256").update(await readFile(entrypoint)).digest("hex")}`);
 
 const modules = await Promise.all(Object.entries(config.manifest.modules).filter(([, v]) => v.type !== "sourcemap")
   .map(async ([name, info]) => {
