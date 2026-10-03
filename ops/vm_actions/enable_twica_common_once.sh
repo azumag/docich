@@ -7,7 +7,4 @@ if (( $# != 0 )); then
 fi
 
 cd /home/ubuntu/docich
-exec python3 ops/vm_actions/twica_common.py enable \
-  --confirm-production \
-  --confirm-stream-restart \
-  --confirm-idle
+exec python3 ops/vm_actions/enable_twica_common_once.py
