@@ -196,20 +196,19 @@ test("first white turn at ply 1 records the masked opponent opening only", async
 
 test("diagnostics distinguish authentication, configuration, validation, state timeout and request timeout", async () => {
   const authBody = JSON.stringify({ ...initialFixture, marker: "raw-body-marker" });
-  const authRequest = await signedRequest(authBody, { botId: "wrong-bot-id" });
+  const authRequest = await signedRequest(authBody, { signature: `sha256=${"0".repeat(64)}` });
   authRequest.headers.set("X-Diagnostic-Marker", "header-marker");
   authRequest.headers.set("CF-Connecting-IP", "203.0.113.88");
   const auth = await captureDiagnosticLogs(() => handleWebhook(authRequest, env(), { nowSeconds: 1_000_000 }));
   assert.equal(auth.result.status, 401);
   assert.equal(auth.records[0].errorCode, "authentication_failed");
-  assert.equal(auth.records[0].authFailureStage, "bot_id_mismatch");
+  assert.equal(auth.records[0].authFailureStage, "signature_mismatch");
   const authLog = JSON.stringify(auth.records[0]);
   for (const marker of [SECRET, "raw-body-marker", "header-marker", "203.0.113.88", "X-Tsuitate-Signature"]) {
     assert.equal(authLog.includes(marker), false);
   }
 
   const missingSecretEnv = {
-    BOT_ID,
     GAME_STATE: stateBinding(),
     CF_VERSION_METADATA: { id: "version-fixture-config" },
   };
@@ -272,11 +271,11 @@ test("authentication failures log only fixed auth stages and preserve the HTTP e
       authFailureStage: "bot_id_missing",
     },
     {
-      name: "mismatched Bot ID",
-      makeRequest: async () => signedRequest(rawBody, { botId: "wrong-bot-marker" }),
+      name: "malformed Bot ID",
+      makeRequest: async () => signedRequest(rawBody, { botId: "bad/bot-marker" }),
       status: 401,
       errorCode: "authentication_failed",
-      authFailureStage: "bot_id_mismatch",
+      authFailureStage: "bot_id_format",
     },
     {
       name: "missing timestamp",
@@ -401,7 +400,7 @@ test("authentication failures log only fixed auth stages and preserve the HTTP e
         BOT_ID,
         rawBody,
         "raw-body-marker",
-        "wrong-bot-marker",
+        "bad/bot-marker",
         "bad-timestamp-marker",
         "bad-body-hash-marker",
         "bad-signature-marker",
@@ -482,7 +481,7 @@ test("authenticated timestamps accept 299 seconds and reject the 300-second boun
   }
 });
 
-test("invalid HMAC, body digest, Bot ID, and tampered raw body fail closed", async () => {
+test("invalid HMAC, body digest, and tampered raw body fail closed", async () => {
   const raw = JSON.stringify(initialFixture);
   const valid = await signedRequest(raw);
   const wrongSignature = new Request(valid.url, {
@@ -495,14 +494,25 @@ test("invalid HMAC, body digest, Bot ID, and tampered raw body fail closed", asy
   const wrongHash = await signedRequest(raw, { bodyHash: "0".repeat(64) });
   assert.equal((await handleWebhook(wrongHash, env(), { nowSeconds: 1_000_000 })).status, 401);
 
-  const wrongBot = await signedRequest(raw, { botId: "other-bot" });
-  assert.equal((await handleWebhook(wrongBot, env(), { nowSeconds: 1_000_000 })).status, 401);
-
   const tampered = await signedRequest(`${raw} `);
   const tamperedHeaders = new Headers(tampered.headers);
   tamperedHeaders.set("X-Tsuitate-Signature", (await signedRequest(raw)).headers.get("X-Tsuitate-Signature"));
   const request = new Request(tampered.url, { method: "POST", headers: tamperedHeaders, body: `${raw} ` });
   assert.equal((await handleWebhook(request, env(), { nowSeconds: 1_000_000 })).status, 401);
+});
+
+test("valid request accepts the header Bot ID without a configured equality check", async () => {
+  const binding = stateBinding();
+  const response = await post(initialFixture, { botId: "DoCiAI", binding });
+  assert.equal(response.status, 200);
+  assert.deepEqual([...binding.objects.keys()], [initialFixture.gameId]);
+
+  const noConfiguredId = { ...env(stateBinding()) };
+  delete noConfiguredId.BOT_ID;
+  const request = await signedRequest(JSON.stringify({ ...initialFixture, requestId: "no-env-id" }), {
+    botId: ":DoCiAI",
+  });
+  assert.equal((await handleWebhook(request, noConfiguredId, { nowSeconds: 1_000_000 })).status, 200);
 });
 
 test("raw bytes, not reserialized JSON, are signed", async () => {

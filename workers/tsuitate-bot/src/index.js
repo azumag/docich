@@ -25,12 +25,13 @@ const SAFE_ERROR_CODES = new Set([
   "no_observed_move", "state_failure",
 ]);
 const AUTH_FAILURE_STAGES = new Set([
-  "bot_id_missing", "bot_id_mismatch", "timestamp_missing", "timestamp_format", "timestamp_out_of_range",
+  "bot_id_missing", "bot_id_format", "timestamp_missing", "timestamp_format", "timestamp_out_of_range",
   "body_hash_missing", "body_hash_format", "body_hash_mismatch",
   "signature_missing", "signature_format", "signature_mismatch",
 ]);
 const CSA_MOVE = /^[+-](?:(?:[1-9]{4}(?:FU|KY|KE|GI|KI|KA|HI|OU|TO|NY|NK|NG|UM|RY))|(?:00[1-9]{2}(?:FU|KY|KE|GI|KI|KA|HI))|(?:0000TORYO))$/;
 const MASKED_OPPONENT_MOVE = /^[+-](?:0000ZZ|00[1-9]{2}ZZ)$/;
+const BOT_ID_FORMAT = /^[A-Za-z0-9:][A-Za-z0-9._:-]{0,63}$/;
 
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), {
@@ -169,15 +170,13 @@ export async function authenticateRequest(request, env, nowSeconds = Math.floor(
   };
   const contentType = request.headers.get("content-type") ?? "";
   if (!/^application\/json(?:\s*;|\s*$)/i.test(contentType)) throw new ProtocolFault(415, "content_type_required");
-  if (typeof env.WEBHOOK_SECRET !== "string" || env.WEBHOOK_SECRET.length === 0
-      || typeof env.BOT_ID !== "string" || env.BOT_ID.length === 0
-      || env.BOT_ID === "replace-with-tsuitate-bot-id") {
+  if (typeof env.WEBHOOK_SECRET !== "string" || env.WEBHOOK_SECRET.length === 0) {
     throw new ProtocolFault(503, "webhook_not_configured");
   }
 
   const botId = request.headers.get("X-Tsuitate-Bot-Id");
   if (!botId) rejectAuthentication("bot_id_missing");
-  if (botId !== env.BOT_ID) rejectAuthentication("bot_id_mismatch");
+  if (!BOT_ID_FORMAT.test(botId)) rejectAuthentication("bot_id_format");
 
   const timestampText = request.headers.get("X-Tsuitate-Timestamp") ?? "";
   if (!timestampText) rejectAuthentication("timestamp_missing");
