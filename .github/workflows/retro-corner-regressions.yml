@@ -14,6 +14,11 @@ on:
       - 'src/docich/agent/**'
       - 'src/docich/config.py'
       - 'src/docich/game_switch.py'
+      - 'src/docich/watchdog.py'
+      - 'src/docich/actions.py'
+      - 'src/docich/state.py'
+      - 'src/docich/naming.py'
+      - 'src/docich/cli.py'
       - 'src/docich/tmux.py'
       - 'src/docich/procs.py'
       - 'src/docich/process_tree.py'
@@ -21,9 +26,11 @@ on:
       - 'src/docich/stream_category.py'
       - 'src/docich/stream_title_context.py'
       - 'src/docich/tsuitate_protocol.py'
+      - 'src/docich/soren91*.py'
       - 'brains/**'
       - 'config/games/**'
       - 'games/soviet_now'
+      - '.github/scripts/soren_gitlink_gate.py'
       - 'tests/test_retro*.py'
       - 'tests/test_hanjuku*.py'
       - 'tests/test_nethack*.py'
@@ -41,6 +48,14 @@ on:
       - 'tests/test_stream_category.py'
       - 'tests/test_stream_title_context.py'
       - 'tests/test_procs.py'
+      - 'tests/test_soren91*.py'
+      - 'tests/test_presentation*.py'
+      - 'tests/test_coordinator_adapter_retroarch.py'
+      - 'tests/test_game_switch*.py'
+      - 'tests/test_coordinator*.py'
+      - 'tests/test_cli_coordinator.py'
+      - 'tests/test_cli_adapter.py'
+      - 'tests/test_round_boundary.py'
       - 'tests/test_eval_tmux.py'
       - 'tests/test_failed_improvement_terminal_recovery_required.py'
       - 'tests/test_opencode_go_free_chain.py'
@@ -60,6 +75,11 @@ on:
       - 'src/docich/agent/**'
       - 'src/docich/config.py'
       - 'src/docich/game_switch.py'
+      - 'src/docich/watchdog.py'
+      - 'src/docich/actions.py'
+      - 'src/docich/state.py'
+      - 'src/docich/naming.py'
+      - 'src/docich/cli.py'
       - 'src/docich/tmux.py'
       - 'src/docich/procs.py'
       - 'src/docich/process_tree.py'
@@ -67,9 +87,11 @@ on:
       - 'src/docich/stream_category.py'
       - 'src/docich/stream_title_context.py'
       - 'src/docich/tsuitate_protocol.py'
+      - 'src/docich/soren91*.py'
       - 'brains/**'
       - 'config/games/**'
       - 'games/soviet_now'
+      - '.github/scripts/soren_gitlink_gate.py'
       - 'tests/test_retro*.py'
       - 'tests/test_hanjuku*.py'
       - 'tests/test_nethack*.py'
@@ -87,6 +109,14 @@ on:
       - 'tests/test_stream_category.py'
       - 'tests/test_stream_title_context.py'
       - 'tests/test_procs.py'
+      - 'tests/test_soren91*.py'
+      - 'tests/test_presentation*.py'
+      - 'tests/test_coordinator_adapter_retroarch.py'
+      - 'tests/test_game_switch*.py'
+      - 'tests/test_coordinator*.py'
+      - 'tests/test_cli_coordinator.py'
+      - 'tests/test_cli_adapter.py'
+      - 'tests/test_round_boundary.py'
       - 'tests/test_eval_tmux.py'
       - 'tests/test_failed_improvement_terminal_recovery_required.py'
       - 'tests/test_opencode_go_free_chain.py'
@@ -101,7 +131,83 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  soren-gitlink-gate:
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          submodules: false
+      - name: Decide whether retro integration is affected
+        id: decide
+        env:
+          BEFORE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          AFTER_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run="$(python3 .github/scripts/soren_gitlink_gate.py \
+            --before "$BEFORE_SHA" \
+            --after "$AFTER_SHA" \
+            --root-path '.github/workflows/retro-corner-regressions.yml' \
+            --root-path 'src/docich/retro*.py' \
+            --root-path 'src/docich/hanjuku*.py' \
+            --root-path 'src/docich/nethack*.py' \
+            --root-path 'src/docich/ninvaders/**' \
+            --root-path 'src/docich/paper_corner*.py' \
+            --root-path 'src/docich/corner*.py' \
+            --root-path 'src/docich/adapters/**' \
+            --root-path 'src/docich/agent/**' \
+            --root-path 'src/docich/config.py' \
+            --root-path 'src/docich/game_switch.py' \
+            --root-path 'src/docich/watchdog.py' \
+            --root-path 'src/docich/actions.py' \
+            --root-path 'src/docich/state.py' \
+            --root-path 'src/docich/naming.py' \
+            --root-path 'src/docich/cli.py' \
+            --root-path 'src/docich/tmux.py' \
+            --root-path 'src/docich/procs.py' \
+            --root-path 'src/docich/process_tree.py' \
+            --root-path 'src/docich/presentation.py' \
+            --root-path 'src/docich/stream_category.py' \
+            --root-path 'src/docich/stream_title_context.py' \
+            --root-path 'src/docich/tsuitate_protocol.py' \
+            --root-path 'src/docich/soren91*.py' \
+            --root-path 'brains/**' \
+            --root-path 'config/games/**' \
+            --root-path 'tests/test_retro*.py' \
+            --root-path 'tests/test_hanjuku*.py' \
+            --root-path 'tests/test_nethack*.py' \
+            --root-path 'tests/test_ninvaders*.py' \
+            --root-path 'tests/test_corner*.py' \
+            --root-path 'tests/test_agent*.py' \
+            --root-path 'tests/test_paper_corner*.py' \
+            --root-path 'tests/test_bastet*.py' \
+            --root-path 'tests/test_moon_buggy*.py' \
+            --root-path 'tests/test_pacman4console*.py' \
+            --root-path 'tests/test_nsnake*.py' \
+            --root-path 'tests/test_soren91*.py' \
+            --root-path 'tests/test_presentation*.py' \
+            --root-path 'tests/test_round_boundary.py' \
+            --root-path 'tests/test_cli_adapter.py' \
+            --root-path 'tests/test_cli_coordinator.py' \
+            --root-path 'tests/test_coordinator*.py' \
+            --root-path 'tests/test_game_switch*.py' \
+            --root-path 'requirements-test.txt' \
+            --root-path '.github/scripts/soren_gitlink_gate.py' \
+            --soren-path 'status_dashboard.py' \
+            --soren-path 'update_stream_game.sh' \
+            --soren-path 'start_all.sh' \
+            --soren-path 'strategy/**')"
+          [[ "$run" == true || "$run" == false ]]
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
   retro-corner-regressions:
+    needs: soren-gitlink-gate
+    if: needs.soren-gitlink-gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -156,8 +262,13 @@ jobs:
           tests/test_paper_corner_manual.py tests/test_paper_corner_chatter_schedule.py
           tests/test_config.py tests/test_robots_config.py tests/test_stream_category.py tests/test_stream_title_context.py
           tests/test_procs.py
-      - name: PAPER improve sidebar contract
-        run: node --test games/soviet_now/tests/test_paper_improve_sidebar.mjs
+      - name: RetroArch saved-boundary and native presentation contracts
+        run: >-
+          python3 -m pytest -q
+          tests/test_retroarch_safe_boundary.py tests/test_retroarch_adapter.py
+          tests/test_hanjuku_saved_stop.py
+          tests/test_coordinator_adapter_retroarch.py tests/test_retroarch_readiness_contract.py
+          tests/test_presentation.py tests/test_presentation_viewer_wait.py tests/test_presentation_script_volume.py
       - name: Transactional switch contract
         run: >-
           python3 -m pytest -q
@@ -167,6 +278,6 @@ jobs:
           tests/test_nethack_adapter.py tests/test_nethack_tiles_supervisor.py
           tests/test_nethack_save_confirmation.py
           tests/test_nethack_boundary_diag.py
-          tests/test_soren91_graceful_stop.py
+          tests/test_soren91_graceful_stop.py tests/test_soren91_adapter.py
       - name: Round-boundary contract
         run: python3 -m pytest -q tests/test_round_boundary.py
