@@ -4,14 +4,49 @@ export const SUPPORTED_GAME_TYPES = new Set(["ついたて"]);
 export const MAX_BODY_BYTES = 256 * 1024;
 
 const USI_PIECE = /^[PLNSGBRK]$/;
+export const POSITION_VALIDATION_STAGES = Object.freeze([
+  "position_record", "sfen", "last_move", "last_info", "last_capture", "was_promotion",
+  "fouls", "fouls_b", "fouls_w", "times", "times_b", "times_w",
+  "byoyomi_active", "byoyomi_active_b", "byoyomi_active_w",
+]);
+const POSITION_FIELD_TYPES = new Set(["undefined", "null", "array", "object", "string", "number", "boolean"]);
+const POSITION_PAIR_STAGES = {
+  fouls: { shape: "fouls", b: "fouls_b", w: "fouls_w" },
+  times: { shape: "times", b: "times_b", w: "times_w" },
+  byoyomiActive: { shape: "byoyomi_active", b: "byoyomi_active_b", w: "byoyomi_active_w" },
+};
 const CSA_MOVE = /^[+-](?:[1-9]{4}(?:FU|KY|KE|GI|KI|KA|HI|OU|TO|NY|NK|NG|UM|RY)|00[1-9]{2}(?:FU|KY|KE|GI|KI|KA|HI)|00(?:00|[1-9]{2})ZZ|0000TORYO)$/;
 
 export class ProtocolFault extends Error {
-  constructor(status, code) {
+  constructor(status, code, details = {}) {
     super(code);
     this.status = status;
     this.code = code;
+    if (code === "invalid_position"
+        && POSITION_VALIDATION_STAGES.includes(details.validationFailureStage)
+        && Number.isSafeInteger(details.positionIndex)
+        && details.positionIndex >= 0 && details.positionIndex <= 10000
+        && POSITION_FIELD_TYPES.has(details.fieldType)) {
+      this.validationFailureStage = details.validationFailureStage;
+      this.positionIndex = details.positionIndex;
+      this.fieldType = details.fieldType;
+    }
   }
+}
+
+function typeCategory(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  const type = typeof value;
+  return POSITION_FIELD_TYPES.has(type) ? type : "other";
+}
+
+function invalidPosition(stage, positionIndex, value) {
+  return new ProtocolFault(400, "invalid_position", {
+    validationFailureStage: stage,
+    positionIndex,
+    fieldType: typeCategory(value),
+  });
 }
 
 function record(value) {
@@ -60,41 +95,54 @@ function parseSfen(sfen) {
   return { turn: fields[1] };
 }
 
-function parsePosition(value) {
-  if (!record(value)) throw new ProtocolFault(400, "invalid_position");
+function parsePosition(value, positionIndex) {
+  if (!record(value)) throw invalidPosition("position_record", positionIndex, value);
   const normalized = {};
-  if (typeof value.sfen !== "string") throw new ProtocolFault(400, "invalid_position");
+  if (typeof value.sfen !== "string") throw invalidPosition("sfen", positionIndex, value.sfen);
   parseSfen(value.sfen);
   normalized.sfen = value.sfen;
 
   if (value.lastMove !== undefined) {
-    if (typeof value.lastMove !== "string" || !CSA_MOVE.test(value.lastMove)) throw new ProtocolFault(400, "invalid_position");
+    if (typeof value.lastMove !== "string" || !CSA_MOVE.test(value.lastMove)) {
+      throw invalidPosition("last_move", positionIndex, value.lastMove);
+    }
     normalized.lastMove = value.lastMove;
   }
   if (value.lastInfo !== undefined) {
-    if (!int(value.lastInfo, 0, 4)) throw new ProtocolFault(400, "invalid_position");
+    if (!int(value.lastInfo, 0, 4)) throw invalidPosition("last_info", positionIndex, value.lastInfo);
     normalized.lastInfo = value.lastInfo;
   }
   if (value.lastCapture !== undefined) {
-    if (typeof value.lastCapture !== "string" || !USI_PIECE.test(value.lastCapture)) throw new ProtocolFault(400, "invalid_position");
+    if (typeof value.lastCapture !== "string" || !USI_PIECE.test(value.lastCapture)) {
+      throw invalidPosition("last_capture", positionIndex, value.lastCapture);
+    }
     normalized.lastCapture = value.lastCapture;
   }
   if (value.wasPromotion !== undefined) {
-    if (typeof value.wasPromotion !== "boolean") throw new ProtocolFault(400, "invalid_position");
+    if (typeof value.wasPromotion !== "boolean") {
+      throw invalidPosition("was_promotion", positionIndex, value.wasPromotion);
+    }
     normalized.wasPromotion = value.wasPromotion;
   }
 
   for (const field of ["fouls", "times", "byoyomiActive"]) {
     if (value[field] === undefined) continue;
-    if (!record(value[field]) || !("b" in value[field]) || !("w" in value[field])) throw new ProtocolFault(400, "invalid_position");
+    if (!record(value[field])) throw invalidPosition(POSITION_PAIR_STAGES[field].shape, positionIndex, value[field]);
     const pair = {};
     for (const color of ["b", "w"]) {
-      const item = value[field][color];
-      if (field === "fouls" && !int(item, 0, 1000)) throw new ProtocolFault(400, "invalid_position");
-      if (field === "times" && (typeof item !== "number" || !Number.isFinite(item) || item < 0 || item > 86400)) {
-        throw new ProtocolFault(400, "invalid_position");
+      if (!(color in value[field])) {
+        throw invalidPosition(POSITION_PAIR_STAGES[field][color], positionIndex, undefined);
       }
-      if (field === "byoyomiActive" && typeof item !== "boolean") throw new ProtocolFault(400, "invalid_position");
+      const item = value[field][color];
+      if (field === "fouls" && !int(item, 0, 1000)) {
+        throw invalidPosition(POSITION_PAIR_STAGES[field][color], positionIndex, item);
+      }
+      if (field === "times" && (typeof item !== "number" || !Number.isFinite(item) || item < 0 || item > 86400)) {
+        throw invalidPosition(POSITION_PAIR_STAGES[field][color], positionIndex, item);
+      }
+      if (field === "byoyomiActive" && typeof item !== "boolean") {
+        throw invalidPosition(POSITION_PAIR_STAGES[field][color], positionIndex, item);
+      }
       pair[color] = item;
     }
     normalized[field] = pair;
@@ -148,7 +196,7 @@ export function validateWebhookPayload(value) {
   for (let index = expectedStart; index <= ply; index += 1) {
     const key = String(index);
     if (!Object.hasOwn(positions, key)) throw new ProtocolFault(400, "incomplete_positions");
-    normalizedPositions[key] = parsePosition(positions[key]);
+    normalizedPositions[key] = parsePosition(positions[key], index);
   }
   if (keys.some((key) => !/^(?:0|[1-9]\d*)$/.test(key) || Number(key) < expectedStart || Number(key) > ply)) {
     throw new ProtocolFault(400, "unexpected_position_key");
@@ -184,3 +232,4 @@ export function parseCurrentTurn(payload) {
 export function isRecord(value) {
   return record(value);
 }
+
