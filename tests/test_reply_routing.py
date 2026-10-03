@@ -60,6 +60,32 @@ def test_bad_inputs_do_not_guess_api_or_call_any_backend(value):
     assert routing.complete(value, api=forbidden, env=ENV, transport=forbidden, researcher=forbidden) == routing.UNAVAILABLE_REPLY
 
 
+@pytest.mark.parametrize("text", [
+    "api_key=sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+    "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789",
+    "AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwxyz0123456789",
+    "token: abcdefghijklmnopqrstuvwxyz",
+    "password is hunter2",
+    "-----BEGIN OPENSSH PRIVATE KEY-----",
+    "Discord user id: 123456789012345678",
+    "<@123456789012345678>",
+    "my name is Private Person",
+    "連絡先はsomeone@example.orgです",
+])
+def test_detected_private_identity_or_credential_text_never_reaches_any_provider(text):
+    calls = []
+    result = routing.complete(messages(text), api=forbidden, env=ENV,
+        transport=lambda *a, **k: calls.append("jev"),
+        researcher=lambda *a, **k: calls.append("research"))
+    assert result == routing.UNAVAILABLE_REPLY
+    assert calls == []
+
+
+def test_public_name_lookup_still_reaches_evidence_classifier():
+    turns = routing.project_messages(messages("Reximって誰？"))
+    assert turns == [{"role": "user", "text": "Reximって誰？"}]
+
+
 @pytest.mark.parametrize("scope", list(routing.CRITERIA))
 def test_one_fixed_choice_request_and_first_route_only(scope):
     calls = []

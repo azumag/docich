@@ -24,7 +24,8 @@
 ```
 
 調査完了と返答生成を分離し、Codexの人格が会話のpersonaを置き換えない。
-JEVにpersona/著者名/ユーザーID/メッセージID/永続記憶/assistant発言を渡さない。現在のuser本文と最大2件の同じ入力内にある過去user本文だけを渡し、見つからないreferentは`unknown`にする。
+JEVにpersona/著者名/ユーザーID/メッセージID/永続記憶/assistant発言を渡さない。現在のuser本文と最大2件の同じ入力内にある過去user本文だけを渡し、見つからないreferentは`unknown`にする。認識できるcredential形式、秘密値の明示代入、メール/Discord ID/self-name表現がその3件に含まれる場合はJEV・research・返信APIのいずれも呼ばず、固定保留にする。JEV本文にアプリ環境を展開せず、transportは選択済みJEV credentialだけを認証ヘッダーに使う。
+このローカル保留は一般的なcredential/identity形式を検出し、自由文の任意の秘密値を完全に検出するDLP機能ではない。任意の秘密値を含み得る文面について網羅的保護の受入は未完了。
 元のcategory分類の「本文限定」契約は変更しない。新purposeは `reply-evidence-v1`。
 
 ## 判断契約
@@ -137,9 +138,9 @@ Docker imageへPython部品は同梱するが、Codex/bubblewrapをインスト�
 PYTHONPATH=src python3 -m pytest -q tests/test_reply_routing.py tests/test_reply_research.py
 ```
 
-CIと同じsuite `DOCICH_REQUIRE_BWRAP_PROBE=1 PYTHONPATH=src python3 -m pytest -q -rs tests/test_discord_chat.py tests/test_discord_memory.py tests/test_reply_routing.py tests/test_reply_research.py` はmacOSで **164 passed, 4 skipped, 34 subtests passed (1.04s)**。skipはDiscord SDK未導入、Linux/bwrap canary、Linux Unix-socket/egress-close tests。
-変更後の同suiteを既存 `docich-discord-chat:offline-verify-test` image (`sha256:87ebf148fdfbd4281a22dcc075e54e3e091e2a549604e7878bbe22c48171f1db`)内で、合成source/test bundleをstdinから展開して**host mount/secret/socketなし**で実行: `docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m --env DOCICH_ALLOW_REAL_AI=0`。Linux container結果 **167 passed, 1 skipped, 1 warning, 34 subtests passed (1.23s)**。新しいidle-upstream/half-close/proxy-exit regressionを含むUnix socket testが通過。唯一のskipはtest imageにbwrapがないためのLinux/bwrap canary。warningはtest SDKのPython 3.12 `audioop` deprecation。これはGitHub ActionsのUbuntu+bwrap probeとは別。
-GitHub Actionsのexact code head `512da92f`では `offline-contracts` **168 passed, 1 warning, 34 subtests passed (2.45s)**、Ubuntu 24.04 bubblewrap child probeを含み、`docker-contracts`、`python-syntax`、`soren-gitlink-gate`、`comment-regressions`も全てpass。warningはtest SDKのPython 3.12 `audioop` deprecation。Dockerfile full verify/Compose testは未実施。
+CIと同じsuite `DOCICH_REQUIRE_BWRAP_PROBE=1 PYTHONPATH=src python3 -m pytest -q -rs tests/test_discord_chat.py tests/test_discord_memory.py tests/test_reply_routing.py tests/test_reply_research.py` はmacOSで **175 passed, 4 skipped, 34 subtests passed**。skipはDiscord SDK未導入、Linux/bwrap canary、Linux Unix-socket/egress-close tests。
+変更後の同suiteを既存 `docich-discord-chat:offline-verify-test` image (`sha256:87ebf148fdfbd4281a22dcc075e54e3e091e2a549604e7878bbe22c48171f1db`)内で、合成source/test bundleをstdinから展開して**host mount/secret/socketなし**で実行: `docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:rw,noexec,nosuid,size=128m --env DOCICH_ALLOW_REAL_AI=0`。Linux container結果 **178 passed, 1 skipped, 1 warning, 34 subtests passed**。新しいidle-upstream/half-close/proxy-exit regressionとprivate-input fail-closed testsが通過。唯一のskipはtest imageにbwrapがないためのLinux/bwrap canary。warningはtest SDKのPython 3.12 `audioop` deprecation。これはGitHub ActionsのUbuntu+bwrap probeとは別。
+private-input guard追加前のcode head `512da92f`では、GitHub Actions `offline-contracts` **168 passed, 1 warning, 34 subtests passed (2.45s)**。Ubuntu 24.04 bubblewrap child probeを含み、当時の5 checksは全てpass。warningはtest SDKのPython 3.12 `audioop` deprecation。最新privacy guardを含むexact-head CI結果はその後のpushで記録する。Dockerfile full verify/Compose testは未実施。
 固定CONNECT authority、nonpublic IPv4/IPv6/metadata拒否、DNS解決後の同IP直結、Linux Unix socket mode、redirect host拒否、secret環境非継承、子起動前capability drop、idle upstream half-close時のsocket/thread cleanupをmock/合成negative testで固定する。bwrap実機 canaryは名前空間内loopback起動、host loopback拒否、interface分離、子のcapability/no_new_privsを検査し、GitHub Actionsでは必須child probeにする。
 Mockの成功をJEVの意味精度、Codex/API実通信、Web egress全域の隔離、本番反映の成功と混同しない。JEVの実ラベル/confidence/latency、Codex API通信、内部endpoint拒否の全経路受入、本番反映は未実施。
 primary checkoutの `handoff.md` relevant sectionsを読了した。運用状態は変更していない。

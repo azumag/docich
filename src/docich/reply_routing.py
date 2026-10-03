@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
+import re
 import time
 from typing import Callable, Mapping
 
@@ -25,6 +26,33 @@ CRITERIA = {
     "unknown": "The referent or evidence needed is unclear. Do not guess that API-only is sufficient.",
 }
 SAFE_STATUSES = frozenset({"missing_key", "timeout", "rate_limited", "network_error", "server_error", "auth_error", "invalid_response", "invalid_config", "input_limit", "overloaded", "http_error"})
+_PRIVATE_INPUT_PATTERNS = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
+    # Explicit identity/secret fields and common credential formats. Once a
+    # marker matches, hold the whole route instead of forwarding a redacted
+    # substring alongside possibly related private context.
+    r"\b(?:api[ _-]?key|(?:aws[ _-]?)?secret[ _-]?access[ _-]?key|"
+    r"client[ _-]?secret|password|passwd|passphrase|secret|private[ _-]?key|authorization)\b"
+    r"\s*(?:=|:|\bis\b)\s*(?:bearer\s+)?[A-Za-z0-9_./~+\-=]{4,}",
+    r"\b(?:access|refresh|id)?[ _-]?token\b\s*[:=]\s*(?:bearer\s+)?[A-Za-z0-9_./~+\-=]{4,}",
+    r"-----BEGIN(?: [A-Z0-9]+)* (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
+    r"\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|"
+    r"github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{12,}|"
+    r"AIza[A-Za-z0-9_-]{30,}|AKIA[0-9A-Z]{16}|npm_[A-Za-z0-9]{30,})\b",
+    r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b",
+    r"\bBearer\s+[A-Za-z0-9._~+/-]{12,}={0,2}",
+    r"https?://[^\s/@:]+:[^\s/@]+@",
+    # Explicit Discord/user IDs and self-identification requests. Ordinary
+    # public names in questions remain available for evidence classification.
+    r"<@!?\d{5,}>",
+    r"\b(?:discord\s+)?(?:user|member|author)[ _-]*id\s*[:=]\s*\d{4,}\b",
+    r"\bmy\s+(?:full\s+)?(?:name|username|user\s*id|discord\s*id)\b",
+    r"(?:私の|自分の)(?:本名|名前|ユーザー名|ユーザーID|Discord\s*ID)",
+    r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![A-Za-z0-9.-])",
+))
+
+
+def _has_private_route_input(text: str) -> bool:
+    return any(pattern.search(text) for pattern in _PRIVATE_INPUT_PATTERNS)
 
 
 @dataclass(frozen=True)
@@ -43,8 +71,10 @@ def project_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
 
     Stored Discord recall and prior assistant replies are not needed to decide
     whether the current question needs evidence. Bounded inputs fail closed,
-    rather than truncating away the current turn. Unknown JSON envelopes are
-    not guessed or forwarded. Missing referents remain unknown to the rubric.
+    rather than truncating away the current turn. Recognizable private identity
+    and credential material also fails closed before any provider is called.
+    Unknown JSON envelopes are not guessed or forwarded. Missing referents
+    remain unknown to the rubric.
     """
     if not isinstance(messages, list) or not messages or len(messages) > 512:
         raise ValueError("input_limit")
@@ -78,6 +108,8 @@ def project_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
         raise ValueError("input_limit")
     if len(json.dumps(turns, ensure_ascii=False).encode("utf-8")) > 16384:
         raise ValueError("input_limit")
+    if any(_has_private_route_input(turn["text"]) for turn in turns):
+        raise ValueError("private_input")
     return turns
 
 
