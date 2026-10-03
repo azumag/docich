@@ -1,0 +1,125 @@
+name: Core regressions
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/core-regressions.yml'
+      - 'src/docich/**'
+      - '!src/docich/trading/**'
+      - '!src/docich/hanjuku*.py'
+      - '!src/docich/nethack*.py'
+      - '!src/docich/discord_chat.py'
+      - '!src/docich/discord_memory.py'
+      - '!src/docich/twica_*.py'
+      - '!src/docich/weather*.py'
+      - '!src/docich/comment/**'
+      - '!src/docich/comment_classifier/**'
+      - '!src/docich/semantic_decision/**'
+      - 'ops/hotfixes/**'
+      - 'tests/test_spoken_text_quality.py'
+      - 'tests/test_model_output_guard.py'
+      - 'tests/test_game_switch.py'
+      - 'tests/test_coordinator*.py'
+      - 'tests/test_cli_*.py'
+      - 'tests/test_soren91_*.py'
+      - 'tests/test_round_boundary.py'
+      - 'tests/test_retroarch*.py'
+      - 'tests/test_presentation*.py'
+      - 'tests/test_resolver.py'
+      - 'tests/test_soren_news_spam*.py'
+      - 'tests/test_broadcast_baseline.py'
+      - 'tests/test_improve_command_deploy.py'
+      - 'tests/test_analysis_contract_deploy.py'
+      - 'tests/test_shadow_once.py'
+      - 'tests/test_earthquake_parser.py'
+      - 'games/soviet_now'
+      - 'requirements-test.txt'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/core-regressions.yml'
+      - 'src/docich/**'
+      - '!src/docich/trading/**'
+      - '!src/docich/hanjuku*.py'
+      - '!src/docich/nethack*.py'
+      - '!src/docich/discord_chat.py'
+      - '!src/docich/discord_memory.py'
+      - '!src/docich/twica_*.py'
+      - '!src/docich/weather*.py'
+      - '!src/docich/comment/**'
+      - '!src/docich/comment_classifier/**'
+      - '!src/docich/semantic_decision/**'
+      - 'ops/hotfixes/**'
+      - 'tests/test_spoken_text_quality.py'
+      - 'tests/test_model_output_guard.py'
+      - 'tests/test_game_switch.py'
+      - 'tests/test_coordinator*.py'
+      - 'tests/test_cli_*.py'
+      - 'tests/test_soren91_*.py'
+      - 'tests/test_round_boundary.py'
+      - 'tests/test_retroarch*.py'
+      - 'tests/test_presentation*.py'
+      - 'tests/test_resolver.py'
+      - 'tests/test_soren_news_spam*.py'
+      - 'tests/test_broadcast_baseline.py'
+      - 'tests/test_improve_command_deploy.py'
+      - 'tests/test_analysis_contract_deploy.py'
+      - 'tests/test_shadow_once.py'
+      - 'tests/test_earthquake_parser.py'
+      - 'games/soviet_now'
+      - 'requirements-test.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-regressions-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  feature-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-test.txt
+      - name: Spoken text quality contracts
+        run: python3 -m pytest -q tests/test_spoken_text_quality.py tests/test_model_output_guard.py
+      - name: Transactional switch contract
+        run: >-
+          python3 -m pytest -q
+          tests/test_game_switch.py tests/test_coordinator.py tests/test_coordinator_source_fence.py
+          tests/test_coordinator_adapter.py tests/test_cli_coordinator.py
+          tests/test_cli_adapter.py
+          tests/test_soren91_graceful_stop.py
+          tests/test_soren91_adapter.py
+      - name: Round-boundary contract
+        run: python3 -m pytest -q tests/test_round_boundary.py
+      - name: RetroArch saved-boundary and native presentation contracts
+        run: >-
+          python3 -m pytest -q
+          tests/test_retroarch_safe_boundary.py tests/test_retroarch_adapter.py
+          tests/test_coordinator_adapter_retroarch.py tests/test_retroarch_readiness_contract.py
+          tests/test_presentation.py tests/test_presentation_viewer_wait.py tests/test_presentation_script_volume.py
+      - name: Robots resolver contract
+        run: python3 -m pytest -q tests/test_resolver.py
+      - name: Soren NEWS spam wait hotfix contract
+        run: python3 -m pytest -q tests/test_soren_news_spam_improve_wait_hotfix.py
+      - name: Soren NEWS spam queue-wait hotfix contract
+        run: python3 -m pytest -q tests/test_soren_news_spam_queue_wait_hotfix.py
+      - name: Broadcast and comment-classifier ownership contracts
+        run: |
+          python3 -m pytest -q tests/test_broadcast_baseline.py
+          python3 games/soviet_now/tests/test_comment_classifier_docich.py
+      - name: Improvement command deployment contract
+        run: python3 -m unittest discover -s tests -p test_improve_command_deploy.py
+      - name: Analysis contract deployment scope
+        run: python3 -m unittest discover -s tests -p test_analysis_contract_deploy.py
+      - name: Shadow single-cycle contract
+        run: python3 -m unittest tests.test_shadow_once
+      - name: JMA earthquake parser contract
+        run: PYTHONPATH=src python3 -m pytest -q tests/test_earthquake_parser.py

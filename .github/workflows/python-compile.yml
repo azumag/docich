@@ -1,0 +1,32 @@
+name: Python compile
+
+on:
+  pull_request:
+    paths:
+      - 'src/**/*.py'
+      - 'tests/**/*.py'
+      - '.github/workflows/python-compile.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**/*.py'
+      - 'tests/**/*.py'
+      - '.github/workflows/python-compile.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-compile-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Compile Python
+        run: python3 -m compileall -q src tests

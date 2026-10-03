@@ -536,7 +536,7 @@ def test_candidate_sidecar_cannot_replace_resolved_actions():
 
 def test_new_contract_suite_is_in_explicit_ci_list():
     from pathlib import Path
-    workflow = Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
+    workflow = Path(__file__).resolve().parents[1] / ".github/workflows/nethack-regressions.yml"
     assert "tests/test_nethack_progress.py" in workflow.read_text()
 
 
