@@ -161,6 +161,7 @@ def test_transition_multicast_private_ips_not_public(address):
 def test_research_scrubs_parent_credentials_no_auth_file_mount_and_cleans_workspace(monkeypatch,tmp_path):
     monkeypatch.setattr(r.sys, 'platform', 'linux')
     monkeypatch.setattr(r.shutil, 'which', lambda name,**kw: '/usr/bin/'+name)
+    monkeypatch.setattr(r, "_opencode_binary", lambda launcher: launcher)
     seen={}
     class Proxy:
         def __init__(self,path): seen['workspace']=Path(path).parent
@@ -183,6 +184,7 @@ def test_research_scrubs_parent_credentials_no_auth_file_mount_and_cleans_worksp
 def test_private_body_holds_before_engine_or_search(monkeypatch):
     monkeypatch.setattr(r.sys,'platform','linux')
     monkeypatch.setattr(r.shutil,'which',lambda name,**kw:'/usr/bin/'+name)
+    monkeypatch.setattr(r, "_opencode_binary", lambda launcher: launcher)
     monkeypatch.setattr(r,'_run',lambda *a:pytest.fail('engine'))
     env={'DOCICH_ALLOW_REAL_AI':'1','DOCICH_REPLY_RESEARCH_ENABLED':'1','DOCICH_REPLY_WEB_SEARCH_ENABLED':'1',
          'DOCICH_REPLY_OPENCODE_MODEL':'opencode/existing-model','DOCICH_REPLY_OPENCODE_API_KEY':'SYNTHETIC_ONLY'}
@@ -193,6 +195,7 @@ def test_private_body_holds_before_engine_or_search(monkeypatch):
 def test_discord_raw_and_projected_turns_both_reach_engine(monkeypatch, raw_field):
     monkeypatch.setattr(r.sys, "platform", "linux")
     monkeypatch.setattr(r.shutil, "which", lambda name, **kw: "/usr/bin/"+name)
+    monkeypatch.setattr(r, "_opencode_binary", lambda launcher: launcher)
     seen = []
     class Proxy:
         def __init__(self, path): pass
@@ -241,6 +244,7 @@ def test_question_requires_its_own_scope_kinds(tmp_path):
 def test_all_ten_stream_questions_reach_actual_research_controller(monkeypatch):
     monkeypatch.setattr(r.sys, "platform", "linux")
     monkeypatch.setattr(r.shutil, "which", lambda name, **kw: "/usr/bin/"+name)
+    monkeypatch.setattr(r, "_opencode_binary", lambda launcher: launcher)
     seen=[]
     class Proxy:
         def __init__(self, path): pass

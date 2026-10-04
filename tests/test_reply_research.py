@@ -118,6 +118,46 @@ def test_source_root_cannot_traverse_parent_components(tmp_path):
 
 
 
+@pytest.mark.parametrize("target, expected", [
+    ("/snap/opencode/215/bin/opencode", "/snap/opencode/215/bin/opencode"),
+    ("/tmp/opencode", None),
+    ("/snap/opencode/215/bin/other", None),
+])
+def test_snap_launcher_uses_fixed_revision_binary(monkeypatch, target, expected):
+    def resolve(path, **kwargs):
+        return Path(target if str(path) == "/snap/opencode/current/bin/opencode" else "/usr/bin/snap")
+    monkeypatch.setattr(Path, "resolve", resolve)
+    monkeypatch.setattr(Path, "stat", lambda path: type("Info", (), {"st_uid": 0, "st_mode": 0o100755})())
+    monkeypatch.setattr(Path, "is_file", lambda path: True)
+    monkeypatch.setattr(r.os, "access", lambda *args: True)
+    assert r._opencode_binary("/snap/bin/opencode") == expected
+    assert r._opencode_binary("/usr/bin/opencode") is None
+
+
+@pytest.mark.parametrize("uid, mode", [(1000, 0o100755), (0, 0o100777)])
+def test_snap_binary_rejects_user_owned_or_writable(monkeypatch, uid, mode):
+    monkeypatch.setattr(Path, "resolve", lambda path, **kwargs: Path(
+        "/usr/bin/snap" if str(path) == "/snap/bin/opencode" else "/snap/opencode/215/bin/opencode"))
+    monkeypatch.setattr(Path, "stat", lambda path: type("Info", (), {"st_uid": uid, "st_mode": mode})())
+    assert r._opencode_binary("/snap/bin/opencode") is None
+
+
+def test_snap_binary_missing_fails_closed(monkeypatch):
+    def missing(path, **kwargs):
+        raise FileNotFoundError
+    monkeypatch.setattr(Path, "resolve", missing)
+    assert r._opencode_binary("/snap/bin/opencode") is None
+
+
+def test_snap_sandbox_mounts_installed_binary_only(tmp_path):
+    argv = r.sandbox_argv(tmp_path, "opencode/synthetic-model", "/usr/bin/bwrap", "/snap/opencode/215/bin/opencode",
+                          bridge_script=tmp_path / "bridge.py", proxy_socket=tmp_path / "egress.sock")
+    mounts = [(argv[i+1], argv[i+2]) for i, value in enumerate(argv) if value == "--ro-bind"]
+    assert ("/snap/opencode", "/snap/opencode") in mounts
+    assert ("/snap", "/snap") not in mounts
+    assert "/usr/bin/snap" not in argv
+
+
 def test_sandbox_has_no_host_home_repo_socket_or_credential_argv(tmp_path):
     argv = r.sandbox_argv(tmp_path, "opencode/synthetic-model", "/usr/bin/bwrap", "/usr/bin/opencode",
                           bridge_script=tmp_path / "bridge.py", proxy_socket=tmp_path / "egress.sock")

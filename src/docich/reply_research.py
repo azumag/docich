@@ -202,6 +202,28 @@ def snapshot(root: Path, target: Path, *, deadline: float) -> dict:
         os.close(root_fd)
 
 
+def _opencode_binary(launcher: str) -> str | None:
+    """Resolve only the fixed installed CLI, never invoke the snap dispatcher."""
+    try:
+        binary = Path(launcher).resolve(strict=True)
+        if binary == Path("/usr/bin/snap"):
+            if launcher != "/snap/bin/opencode":
+                return None
+            binary = Path("/snap/opencode/current/bin/opencode").resolve(strict=True)
+            if not re.fullmatch(r"/snap/opencode/[0-9]+/bin/opencode", str(binary)):
+                return None
+            info = binary.stat()
+            if info.st_uid != 0 or info.st_mode & 0o022:
+                return None
+        elif not str(binary).startswith("/usr/"):
+            return None
+        if not binary.is_file() or not os.access(binary, os.X_OK):
+            return None
+        return str(binary)
+    except (OSError, RuntimeError):
+        return None
+
+
 def sandbox_argv(workspace: Path, model: str, bwrap: str, opencode: str, *,
                  bridge_script: Path, proxy_socket: Path,
                  python: str = "/usr/bin/python3") -> list[str]:
@@ -439,7 +461,8 @@ def research(turns, scope: str, *, env, timeout_sec: float = 45.0, comment_scope
     if not SAFE_MODEL.fullmatch(model) or not key or len(key) > 4096 or any(not 33 <= ord(c) <= 126 for c in key):
         return Evidence("authentication_unavailable")
     bwrap = shutil.which("bwrap", path="/usr/bin")
-    engine = shutil.which("opencode", path="/usr/local/bin:/usr/bin:/snap/bin")
+    launcher = shutil.which("opencode", path="/usr/local/bin:/usr/bin:/snap/bin")
+    engine = _opencode_binary(launcher) if launcher else None
     python = shutil.which("python3", path="/usr/local/bin:/usr/bin")
     if not all((bwrap, engine, python)):
         return Evidence("isolation_unavailable")
@@ -468,7 +491,7 @@ def research(turns, scope: str, *, env, timeout_sec: float = 45.0, comment_scope
             bridge = workspace / "bridge.py"
             bridge.write_text(Path(__file__).with_name("reply_research_bridge.py").read_text())
             socket_path = workspace / "egress.sock"
-            argv = sandbox_argv(workspace, model, bwrap, str(Path(engine).resolve()), bridge_script=bridge, proxy_socket=socket_path, python=python)
+            argv = sandbox_argv(workspace, model, bwrap, engine, bridge_script=bridge, proxy_socket=socket_path, python=python)
             # Only an explicitly selected existing research credential, never an auth.json/HOME mount.
             key_name = "OPENCODE_GO_API_KEY" if model.startswith("opencode-go/") else "OPENCODE_API_KEY"
             child_env = {"PATH": "/usr/local/bin:/usr/bin:/snap/bin:/bin", "LANG": "C.UTF-8", key_name: key}

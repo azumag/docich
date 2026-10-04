@@ -107,7 +107,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: azumag/soviet_now
-          ref: 187cc02e78bc60ca9e3310744a4f71391011ce39
+          ref: 0814a516b4f93e01fe3f7a66ad79ac90d01a7541
           path: _test_soren
           persist-credentials: false
       - run: |
