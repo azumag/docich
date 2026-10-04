@@ -17,10 +17,39 @@ rollback、実行終了後の元のゲームへの復帰も実装した。既存
 既に公開済みのsnapshotだけをloopbackで表示し、`game` / `runtime_id` / `generation` / `lease_id`の
 4項目をserverへ渡して応答でも照合する。既存の960×540 presentationとGameSwitch
 所有プロセスの終了処理を使い、start直前のfreshnessと起動後の同一runtime応答を検証する。
-共通corner managerはこのviewを通してのみ起動する。adapter実装は登録済みだが、production
-catalogにはweather行がなく、行を追加する場合も明示的なenabled設定と期間指定が必要。
+共通corner managerはこのviewを通してのみ起動する。weather行には明示的なenabled設定と
+期間指定が必要。
 weather-view用のTwitch category/title mappingは追加せず、合成view起動時にstream titleも更新しない。
 復帰先の実ゲームについてはGameSwitchの既存commit hookを使う。単独では起動しない。
+
+## WebUIでの開始予約・停止
+
+`POST /api/corners` の `start` / `stop` でweatherを選択できる。
+operator認証・CSRF・`confirm:true`は既存の手動操作と同じ条件で必須。
+開始は `CornerRotationManager.queue_manual("weather-view")` による永続予約であり、
+現在のコーナーが終了した後、ローテーションの次のtickで実行する。HTTP処理から
+GameSwitchやweather workerを起動せず、共通program slot・試合境界待ち・owner検証を使う。
+予約は重複しない。無効・休止・復旧待ち・別の手動予約・利用可能な予報がない状態は拒否する。
+手動予約は既存契約どおりcooldownだけを無視し、使用履歴には記録する。
+
+表示時間・`audio_enabled`・`fetch_on_start`はcatalogの設定を使い、表示時間の上書きは拒否する。
+現行のtracked live configは最大1分・開始時予報取得・音声無効。実VMでの開始・表示・復帰確認は
+コード検証とは別の運用確認になる。画面には予約先とweatherの実行状態を分けて表示し、
+予約UUIDや完全runtime identityは返さない。
+
+停止は `WeatherCornerManager.stop()` の永続stop要求を使う。実行ownerが要求を読み、
+既存の所有権検証を通して元のゲームへ復帰する。HTTP受付を復帰完了とは扱わない。
+まだweatherが開始していない予約の取消しは既存契約にないため、停止できるのは
+`starting` / `active` / `restoring` のweather実行。未開始のstopは409で返す。
+
+backendのPython変更はWebUIサービスの再起動が必要。正規deployでファイルが更新されても、
+既存プロセスのimport済みcatalog/adapterは更新されない。HTML一致の診断だけでは
+backendの反映を証明できない。owner承認後、配備済みの最新main SHAを指定して
+`vm-operations.yml` の `operation=restart_webui`、`target=production`、
+`ref=<配備済みmain SHA>`、`confirm=production` を使う。
+再起動後に認証済み `GET /api/corners` の `source`・`catalog_status`・catalog件数を確認する。
+`source`は `docich.soren-live.toml` / `run-soren-live`、`catalog_status`は `available` が期待値。
+このコード追加・回帰テストだけでは本番再起動やweather開始は行われない。
 
 ## 権利・出典・予報業務の境界
 
