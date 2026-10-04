@@ -1527,6 +1527,33 @@ class TestHttpHandlers(unittest.TestCase):
         body = json.dumps(data, ensure_ascii=False)
         self.assertNotIn("DO-NOT-PUBLISH", body)
 
+    def test_get_corners_distinguishes_catalog_load_error_without_leaking_details(self):
+        self._write_catalog_config()
+        from docich.corner_catalog import CornerCatalogError
+        with mock.patch("docich.corner_catalog.load_catalog",
+                        side_effect=CornerCatalogError("DO-NOT-LEAK config path")):
+            status, data = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["catalog"], [])
+        self.assertEqual(data["catalog_status"], "error")
+        self.assertEqual(data["catalog_error"], "invalid_configuration")
+        self.assertNotIn("DO-NOT-LEAK", json.dumps(data))
+
+    def test_get_corners_reports_valid_empty_catalog(self):
+        config_path = Path(self.g.config_path)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            '[corner_rotation]\n'
+            'enabled = true\n'
+            'corners = []\n',
+            encoding="utf-8",
+        )
+        status, data = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["catalog"], [])
+        self.assertEqual(data["catalog_status"], "empty")
+        self.assertIsNone(data["catalog_error"])
+
     def test_get_corners_reports_last_run_and_remaining_cooldown(self):
         self._write_catalog_config()
         now = time.time()
@@ -1552,7 +1579,9 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(res.status, 200)
         for marker in ('id="corners-catalog"', 'id="corners-summary"',
                        'id="corners-source-warn"', "使い方", "function updateCornerButtons",
-                       '"all-corners-cooling-down"', '"clock-gap-quarantine"'):
+                       '"all-corners-cooling-down"', '"clock-gap-quarantine"',
+                       "catalogStatus===\"error\"", "invalid_configuration:",
+                       "有効なコーナー定義がありません", "renderCornerCatalogMessage"):
             self.assertIn(marker, text)
 
     def test_post_corners_requires_confirm(self):

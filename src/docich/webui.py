@@ -1856,6 +1856,8 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
 
     state_dir = Path(g.state_dir)
     catalog: list[dict[str, Any]] = []
+    catalog_status = "empty"
+    catalog_error = None
     ledger = _load_json_file(state_dir / "corner_rotation.json")
     last_run = _rotation_last_runs(ledger)
     eligible_ids = set()
@@ -1869,7 +1871,8 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
         cooldown = None
     now = time.time()
     try:
-        for row in load_catalog(g):
+        rows = load_catalog(g)
+        for row in rows:
             last = last_run.get(row.id)
             until = (last + cooldown) if (last is not None and cooldown) else None
             catalog.append({
@@ -1884,8 +1887,21 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                 "cooldown_until": until if (until is not None and until > now) else None,
                 "state_file": _CORNER_STATE_FILE_BY_ADAPTER.get(row.adapter),
             })
+        catalog_status = "available" if catalog else "empty"
+    except OSError:
+        catalog = []
+        catalog_status = "error"
+        catalog_error = "configuration_unavailable"
+    except ValueError:
+        # TOML parse errors and validated-catalog errors are intentionally
+        # represented by a fixed code. Do not expose config paths or parser text.
+        catalog = []
+        catalog_status = "error"
+        catalog_error = "invalid_configuration"
     except Exception:
         catalog = []
+        catalog_status = "error"
+        catalog_error = "load_failed"
     corners: dict[str, dict[str, Any]] = {}
     for name in CORNER_MANUAL_STATE_FILES:
         raw = _load_json_file(state_dir / f"{name}.json")
@@ -1924,6 +1940,8 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
         "rotation": _rotation_view(g),
         "game_switch": _game_switch_view(g),
         "catalog": catalog,
+        "catalog_status": catalog_status,
+        "catalog_error": catalog_error,
         "corners": corners,
     }
 
