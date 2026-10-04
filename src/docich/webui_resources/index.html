@@ -160,6 +160,12 @@ input:checked+.slider:before{transform:translateX(20px)}
 </section>
 <!-- CORNERS -->
 <section id="tab-corners" style="display:none">
+<div class="card"><h2>衝立将棋 BOT</h2>
+<p class="desc">Cloudflareで1局だけ対局します。次の対局は終了後に手動で開始してください。</p>
+<p id="beta-status">未確認</p>
+<div class="actions"><button class="btn primary" id="beta-start" disabled>1局開始</button>
+<button class="btn" id="beta-stop" disabled>終了後停止</button>
+<button class="btn" id="beta-refresh">状態更新</button></div></div>
 <div class="card"><h2>コーナーローテーション</h2>
 <p class="desc">配信の「コーナー」（レトロゲーム・NetHack・PAPER・メリケン・天気）は、ローテーションが自動で1つずつ起動します。一度実行したコーナーは cooldown（既定24時間）が明けるまで自動では選ばれません。この画面は10秒ごとに自動更新されます。</p>
 <div id="corners-source-warn" class="help" style="display:none;color:var(--warn)"></div>
@@ -1957,7 +1963,35 @@ async function loadRenderer(){
   try{ renderRenderer(await api("/api/soren91/renderer")); }
   catch(e){ const out=document.getElementById("renderer-status"); if(out) out.textContent=String(e); }
 }
+let BETA_STATE=null, BETA_BUSY=false;
+function renderBetaStatus(data){
+  BETA_STATE=data;
+  const names={stopped:"停止",queued:"対局待ち",playing:"対局中",draining:"現局終了後に停止",finished:"終了",queue_timeout:"募集終了",paused:"確認が必要"};
+  $("#beta-status").textContent=(names[data.state]||"未確認")+(data.gameId?" / "+data.gameId:"")+(data.errorCode?" / "+data.errorCode:"");
+  $("#beta-start").disabled=BETA_BUSY||!data.readyForNextRun;
+  $("#beta-stop").disabled=BETA_BUSY||!["queued","playing","draining"].includes(data.state);
+  if(data.runId===sessionStorage.getItem("beta_pending_run")) sessionStorage.removeItem("beta_pending_run");
+}
+async function loadBetaStatus(){
+  if(BETA_BUSY) return;
+  try{ renderBetaStatus(await api("/api/tsuitate-beta")); }
+  catch(e){ $("#beta-status").textContent="接続設定または操作権限を確認してください。"; $("#beta-start").disabled=true; $("#beta-stop").disabled=true; }
+}
+async function betaControl(action){
+  if(BETA_BUSY||!window.confirm(action==="start"?"1局だけ対局を開始しますか？":"現局を完走して停止しますか？")) return;
+  let runId=BETA_STATE?.runId;
+  if(action==="start"){
+    runId=sessionStorage.getItem("beta_pending_run")||crypto.randomUUID();
+    sessionStorage.setItem("beta_pending_run",runId); // Non-secret id; reuse after ambiguous HTTP result.
+  }
+  if(!runId) return;
+  BETA_BUSY=true; $("#beta-start").disabled=true; $("#beta-stop").disabled=true;
+  try{ renderBetaStatus(await api("/api/tsuitate-beta",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action,runId,confirm:true})})); }
+  catch(e){ toast("操作結果を確認できません。状態更新後に同じ操作を再確認してください。"); }
+  finally{ BETA_BUSY=false; await loadBetaStatus(); }
+}
 async function loadCorners(){
+  loadBetaStatus();
   loadRenderer();
   try{
     renderCorners(await api("/api/corners"));
@@ -2795,6 +2829,9 @@ document.addEventListener("DOMContentLoaded",()=>{
   // corners (rotation view / one-off manual start-stop / latch recovery)
   const cRefresh=document.getElementById("corners-refresh");
   if(cRefresh) cRefresh.onclick=()=>loadCorners();
+  $("#beta-refresh").onclick=()=>loadBetaStatus();
+  $("#beta-start").onclick=()=>betaControl("start");
+  $("#beta-stop").onclick=()=>betaControl("stop");
   const rSave=document.getElementById("renderer-save");
   if(rSave) rSave.onclick=async()=>{
     const sel=document.getElementById("renderer-mode");

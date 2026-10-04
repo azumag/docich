@@ -25,23 +25,27 @@ Cloudflare Workersのbuild設定と検証方法は [BUILDS.md](BUILDS.md) にま
 
 ## 対応範囲
 
-### beta対局のDurable Object準備（未配備・未開始）
+### beta対局のowner操作（コードのみ・未配備）
 
-`src/arena/beta-arena.js` は既存の共通brainと `BetaSession` を使う、Socket.IOの常駐接続用DOです。productionの `src/index.js` / `cloudflare.config.ts` にはexport・binding・migrationを追加していません。このPRをbuildしてもBetaArenaは配備されず、実サービスへ接続しません。Webhookとbeta Socket.IOは別の入口です。
+WebUIの「コーナー」に状態更新・1局開始・終了後停止を追加しました。既存operator認証を使い、開始・停止は既存Host/Origin、JSON、CSRF、確認guardを通ります。read-only利用者は状態取得を含め拒否します。WebUI認証設定とloopback/Tailscale ACLが実運用でownerに限定されていることは、このローカル検証では確認していません。
 
-初期状態は `stopped` です。将来の内部owner controlがsingleton名 `beta:DoCiAI` のDOへ `start({runId})` / `stop()` / `status()` を呼ぶ設計で、HTTPの開始・停止URLはありません。既存owner-only VM gatewayはVM用であり、この操作の認証・公開経路はまだ用意していません。Webhookの `WEBHOOK_SECRET` を管理者権限として使いません。将来有効化する場合はowner認証経路を独立にレビューし、明示的な `BETA_ARENA_ENABLED="true"` とownerが設定する別secret `TSUITATE_BOT_TOKEN` が必要です。tokenはログ・checkpoint・対局記録へ保存しません。
+WebUIサーバーは専用HMACで固定 `POST /beta-control` へ `status` / `start` / `stop` だけを送ります。ブラウザへsecretを渡さず、任意URL・コマンド・対局数は受け付けません。Workerの `BETA_CONTROL_SECRET` とWebUIの `DOCICH_BETA_CONTROL_SECRET` は同じ専用値を参照し、未設定は拒否します。Webhookの `WEBHOOK_SECRET`、サイトの `TSUITATE_BOT_TOKEN`、WebUI operator/viewer tokenは流用しません。raw本文のHMAC-SHA256と300秒未満の時刻差を検証します。bodyは4 KiB・受信1秒、DO呼出し2.5秒、WebUI通信5秒に制限し、secret・署名・本文・rawエラーはログやブラウザへ返しません。
 
-この準備版はactor全体で開始予約を1回、対局を最大1局に固定します。queue待ちは開始予約から60秒で、退出ACKの確認に最大5秒、その後の遅延match通知待機に最大5秒（追加で合計最大10秒）を使います。同じrunIdの再送は同じ状態を返し、別runId、完了後の再開始、並行した開始、alarm重複から次局を募集しません。継続対局やreset APIはありません。stopは待機中ならqueueから退出し、対局中なら指し続けて結果保存後に停止します。進行中はenable flagを切り替えずstopを使ってください。
+初期状態は `stopped` です。singleton名 `beta:DoCiAI` に対し、**明示runごとに最大1局**を予約します。同じrunIdの再送・並行開始・重複alarmで再募集しません。次の新しいrunIdは前runの終局記録保存、socket終了、alarm削除が済んだ `readyForNextRun=true` の時だけ開始できます。終局後の自動反復はありません。古いrunIdのstart/stopは保存済みreceiptを返し、現在runを再開始・停止しません。paused・不明な状態では次局を開始せず、reset APIもありません。
 
-SQLite DO storageの `beta:meta` に開始予約・対局ID・世代・brain/profile・停止要求、`beta:checkpoint` に既存runnerの自分の観測と未確認着手、`beta:terminal` に正規化した終局記録を保存します。着手はcheckpoint保存後に送信し、古い世代の書込みを拒否します。値は1 MiB以下に制限し、保存失敗時は以前のcheckpointを保ち、次の入力を止めます。終局記録は同一内容を冪等に保存し、矛盾する結果は上書きしません。
+queue待ちは開始予約から60秒です。退出ACK確認に最大5秒、その後の遅延match通知待機に最大5秒を使います。stopは待機中なら退出し、対局中なら着手を続けて結果保存後に停止します。進行中はenable flagを切り替えずstopを使ってください。UIは曖昧な開始応答の再確認用に、秘密ではないrunIdをsessionStorageに保持します。
 
-20秒間隔のalarmは既知の対局IDだけを復元して `game:sync` します。cold restoreで対局IDが未保存なら `unknown_match_state` に停止し、サーバー側に対局がないとは判断せず、再募集もしません。warm reconnectでもID不明なら再joinを避けて退出を試みます。復元・通信断を経た対局は学習対象外です。保存済みbrain版が利用できない場合もcheckpointを保持して停止します。alarmは稼働保証ではなく、配備や障害による切断負けのリスクは残ります。
+SQLiteの `beta:meta` に現在run・対局ID・世代・brain/profile・停止要求、`beta:checkpoint` に自分の観測と未確認着手、`beta:terminal` に最新終局記録を保存します。`beta:record:<runId>` と `beta:run:<runId>` に各runの記録とreceiptを残し、`beta:game:<gameId>` で過去局への混線を拒否します。着手はcheckpoint保存後に送信し、古い世代の書込みを拒否します。値は1 MiB以下で、保存失敗時は以前のcheckpointを保持して停止します。記録は冪等に保存し、矛盾する結果は上書きしません。履歴の自動削除・容量保持方針は未実装です。
 
-Socket.IO 4.8.4の公開ブラウザ配布をnative WebSocket transportだけで使います。外向きWebSocketは[DOのhibernation対象外](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)で、常駐中はduration課金・quota消費があります。[現行料金](https://developers.cloudflare.com/durable-objects/platform/pricing/)では128 MB割当として、10分の接続は計算上76.8 GB-s相当です。実課金は丸め、plan、含有枠、他の使用量、requests/alarm/SQLite/logsにも依存します。アカウントの現plan・残量は未確認で、無料稼働を保証しません。plan変更は行っていません。
+20秒間隔のalarmは既知の対局IDだけを復元し `game:sync` します。cold restoreでID未保存なら `unknown_match_state` に停止し、対局がないとは推測せず再募集もしません。復元・通信断を経た対局は学習対象外です。保存済みbrain版が利用できない場合もcheckpointを保持します。配備や障害による切断負けのリスクは残ります。
 
-ローカル検証は `npm test` と `npm run test:beta-workerd` です。後者は一時directoryのSQLite DO、localhostのEngine.IO/Socket.IO fixture、明示的な非credential文字列だけを使います。workerdで初期停止、singleton、1回の募集、初回の空active通知、保存後の着手、stop、SQLite rollback、runtime再起動後のsync-only復元、終局保存・再起動後の再募集抑止を検証します。Miniflare v5のinline bundleでローカルの `scriptPath` 起動問題を回避します。旧 `durableObjectsPersist` は変換器で無視され、共有storage無効時は `isolatedResourcePersistencePath` も `resourcePersistencePath` で上書きされるため、保存rootを後者へ明示します。再起動前後のDO IDと保存済み未確認着手の一致を照合し、新規stateを復元成功と扱わないテストにしています。既存の正規化が `node:crypto` を使うため、このローカルtest-only構成は `nodejs_compat` を指定します。production側のflagは変更していません。
+Socket.IO 4.8.4の公開ブラウザ配布をnative WebSocket transportだけで使います。外向きWebSocketは[DOのhibernation対象外](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)で常駐中はduration課金・quota消費があります。アカウントの現plan・残量は未確認で、無料稼働を保証しません。plan変更は行っていません。
 
-実運用には、親の独立レビュー、owner認証controlの承認、production export/binding/compatibility設定のレビュー、plan/quota確認、ownerによるsecret設定、配備許可、既存Botのserver側対局・queue確認、改めて1局の実行許可が必要です。この変更では実DO/D1作成、secret生成・設定、配備、Bot登録、beta接続・実対局を行っていません。既存Webhookの設定・状態は維持します。
+`src/worker.js` が既存Webhookと認証controlを束ねます。`cloudflare.config.ts` はBetaArenaのSQLite export、`BETA_ARENA` binding、`nodejs_compat`、値なしsecretと `BETA_ARENA_ENABLED="false"` を宣言します。旧 `wrangler.toml` も同じbindingとmigration宣言を持ちます。**buildは実DOを作りませんが、将来deployするとnamespace/migrationを作成する変更です。** WebUIも `DOCICH_BETA_CONTROL_ENABLED="true"` がない限り通信しません。`DOCICH_BETA_CONTROL_URL` はこのWorker名のHTTPS workers.dev rootだけに限定し、redirect・ambient proxyは使いません。
+
+ローカル検証は `npm test` と `npm run test:beta-workerd`、repo rootから `python3 -m pytest -q tests/test_tsuitate_beta_control.py` です。一時SQLite・localhostのWebUI/Engine.IO/Socket.IO・明示fixture値だけでoperator→HMAC→DO、viewer/CSRF拒否、並行再送、手動2回目開始、旧run停止無効、rollback、sync-only復元、終局保存・再起動を確認します。Miniflare v5はinline bundleと `resourcePersistencePath` を使い、再起動前後のDO IDと未確認着手を照合します。
+
+実運用には親の独立レビュー、production変更・配備の承認、WebUIのowner境界とplan/quota確認、ownerによる別secret設定、既存Botの対局・queue確認、改めて1局の実行許可が必要です。main連動のWorkers Buildsがある環境ではmergeも配備に繋がり得るため、mergeを待機します。この変更で実DO/D1作成、secret生成・設定、配備、Bot登録、beta接続・実対局は行っていません。
 
 - 現在受け付けるのは通常の `ついたて` です。`ダーク`、`ついたて5五`、`ついたてリレー` は、モード固有ルールの根拠と検証fixtureが揃うまで `422 unsupported_game_type` で安全に拒否します。
 - 初回は手数0から `ply` まで、差分は `basePly + 1` から `ply` までを連番検証して保存します。差分の `basePly` は保持済みの最後の手数と完全一致する必要があります。
@@ -88,7 +92,7 @@ npm run dev:cf
 
 ## Cloudflare設定
 
-- `cloudflare.config.ts` をCfのプロジェクト設定とし、`GameState` のSQLite Durable Object exportと `GAME_STATE` bindingを宣言します。Cf移行時に生成した `wrangler.config.ts` では型生成を無効にしています。旧 `wrangler.toml` はテスト用設定として保持します。
+- `cloudflare.config.ts` をCfのプロジェクト設定とし、`GameState` / `BetaArena` のSQLite Durable Object exportと `GAME_STATE` / `BETA_ARENA` bindingを宣言します。Cf移行時に生成した `wrangler.config.ts` では型生成を無効にしています。旧 `wrangler.toml` はテスト用設定として保持します。
 - Cf beta.12の変換器は同一Workerを参照するDOにも`script_name`を付け、Dashboardの同一Worker表記とのstrict比較で競合します。`npm install`の`postinstall`と`npm run build:cf`の事前処理が、固定版`@cloudflare/config@0.23.0`のDO変換だけに互換パッチを適用します。参照先が設定のWorker名と等しい場合だけ`script_name`を省略し、外部Workerの参照とstrict判定は維持します。パッケージの版と配布ソースのSHA-256が想定と違う場合は停止します。依存更新時はこのパッチと回帰を再検証してください。npmのinstall scriptsを有効にする必要があります。 remote-config生成器のDO変換にも限定パッチを適用し、APIにない`script_name`・`environment`をown `undefined`キーとして追加しないようにします。明示された外部Worker名・environmentの値は維持します。
 - version preview URLは `worker.previewUrls: false` を明示します。固定版Cfの実生成設定にもfalseが残ることを `test:bundle` で検証します。通常の `workers.dev` 公開URLを無効にする設定ではありません。互換日付は `2026-09-08` です。設定値は `test:workerd` と `test:bundle` がそれぞれruntimeとCf生成物で確認します。[Cf公式設定](https://developers.cloudflare.com/cf/projects/cloudflare-config/)
 - `observability.logs` はWorkers Logsへの永続化を有効にし、`/webhook` と `/offline-review` の応答についてallowlist済みの構造化イベントを1件出力します。イベントにはHTTP status、固定error code、elapsed、Worker version ID、strategy version、検証済みの通常局面と返したCSA手を必要に応じて含めます。終局・reviewイベントにはevent種別と固定statusだけを記録し、game ID、Bot ID、本文、署名、`param`、プレイヤー名、IP、任意のraw errorは記録しません。相手のlastMoveは規定のmask表現だけを記録します。`invalid_position`の場合は固定されたvalidation stage、局面番号、失敗値の型分類だけを追加し、値自体は記録しません。無効な`lastCapture`文字列には`empty_string`、`lowercase_piece_code`、`other_string`の固定分類を加えます。新しいDB、Logpush先、Workerリソースは作成しません。

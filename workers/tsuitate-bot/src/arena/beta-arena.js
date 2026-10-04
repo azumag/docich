@@ -27,7 +27,7 @@ export class BetaArena extends DurableObject {
     }
     return this.controller.start(options);
   }
-  stop() { return this.controller.stop(); }
+  stop(options) { return this.controller.stop(options); }
   status() { return this.controller.status(); }
   alarm() { return this.controller.alarm(); }
   fetch() { return new Response("Not found", { status: 404 }); }

@@ -1,11 +1,13 @@
 name = "docich-tsuitate-bot"
-main = "src/index.js"
+main = "src/worker.js"
 compatibility_date = "2026-09-08"
+compatibility_flags = ["nodejs_compat"]
 
 [vars]
 # Replace this with the Bot ID from the Tsuitate site before configuring local
 # or hosted execution. The webhook secret is set separately with Wrangler.
 BOT_ID = "replace-with-tsuitate-bot-id"
+BETA_ARENA_ENABLED = "false"
 
 [[durable_objects.bindings]]
 name = "GAME_STATE"
@@ -14,3 +16,11 @@ class_name = "GameState"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["GameState"]
+
+[[durable_objects.bindings]]
+name = "BETA_ARENA"
+class_name = "BetaArena"
+
+[[migrations]]
+tag = "beta-arena-v1"
+new_sqlite_classes = ["BetaArena"]

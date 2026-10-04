@@ -19,6 +19,8 @@ State: soren_root = ELOOP_LIB_DIR 相当 (games/soviet_now or /home/ubuntu/soren
 """
 from __future__ import annotations
 
+from .tsuitate_beta_control import ControlError as BetaControlError, call_beta_control
+
 import datetime
 import hashlib
 import hmac
@@ -697,7 +699,7 @@ CSRF_TTL_SEC = 4 * 3600  # 4時間
 # (method, path) の組。フロントエンドは既存の window.confirm() ダイアログ
 # (streamAction/workerControl) または「保存」操作自体を再確認とみなし、
 # confirm:true を body に含める。
-CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config"), ("POST", "/api/corners")}
+CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config"), ("POST", "/api/corners"), ("POST", "/api/tsuitate-beta")}
 
 
 def _make_csrf_token(secret: bytes, ttl: int = CSRF_TTL_SEC, now: int | None = None) -> str:
@@ -3139,6 +3141,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/health":
                 status = self._handle_health()
+            elif path == "/api/tsuitate-beta":
+                status = self._handle_beta_control()
             elif path == "/api/csrf":
                 status = self._handle_get_csrf()
             elif path == "/api/config":
@@ -3278,6 +3282,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/backoffs/clear":
                 status = self._handle_clear_all_backoffs()
+            elif parsed.path == "/api/tsuitate-beta":
+                status = self._handle_beta_control(mutation=True)
             elif parsed.path == "/api/reload":
                 status = self._handle_reload()
             elif parsed.path == "/api/stream":
@@ -3312,6 +3318,38 @@ class _Handler(BaseHTTPRequestHandler):
             _log_request(self.soren_root, "POST", parsed.path, status, latency)
 
     # ---- handlers ----
+
+    def _handle_beta_control(self, mutation: bool = False) -> int:
+        if self._identity() != "operator":
+            self._send_error_json(403, "read_only", "operator identity required")
+            return 403
+        action, run_id = "status", None
+        if mutation:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 4096:
+                    raise ValueError
+                data = json.loads(self.rfile.read(length))
+                if not isinstance(data, dict) or set(data) - {"action", "runId", "confirm"}:
+                    raise ValueError
+            except (ValueError, TypeError):
+                self._send_error_json(400, "invalid_beta_operation")
+                return 400
+            if not _is_confirmed(data, self.headers):
+                self._send_error_json(428, "confirmation_required")
+                return 428
+            action, run_id = data.get("action"), data.get("runId")
+            if not isinstance(action, str) or action not in {"start", "stop"} or not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", run_id):
+                self._send_error_json(400, "invalid_beta_operation")
+                return 400
+        try:
+            result = call_beta_control(action, run_id, forbidden_secrets=(
+                _effective_token(self.g), _effective_read_only_token(self.g)))
+        except BetaControlError as error:
+            self._send_error_json(error.status, error.code)
+            return error.status
+        self._send_json(200, result)
+        return 200
 
     def _handle_get_csrf(self) -> int:
         """issue #42: mutation 用 CSRF token を発行する (認証は _check_auth と同じ)。
