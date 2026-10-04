@@ -59,13 +59,13 @@ function setup(t, options = {}) {
   return { socket, store, session, events };
 }
 
-async function begin(context) {
+async function begin(context, initialView = view()) {
   const { socket, session } = context;
   await flush(session);
   socket.ack("queue:join", { ok: true });
   socket.server("match:found", { gameId: "test-game", yourColor: "sente" });
   await flush(session);
-  socket.ack("game:sync", { state: view() });
+  socket.ack("game:sync", { state: initialView });
   await flush(session);
   assert.equal(socket.packets("game:move").length, 1);
 }
@@ -148,6 +148,47 @@ test("foul confirmation allows a different move, keeping previous attempts exclu
   assert.notEqual(moves[0].payload.usi, moves[1].payload.usi);
   assert.equal(context.session.record.decisions[0].feedback, "foul");
 });
+
+for (const restore of [false, true]) {
+test(`an error ACK preserves the untried promotion sibling after sync${restore ? " and restore" : ""}`, async (t) => {
+  const initial = view({ yourPieces: [{ square: "3i", role: "king" }, { square: "5c", role: "pawn" }] });
+  const context = setup(t, { profile: { ...LINEAR_PROFILE, exploration: 0 } });
+  await begin(context, initial);
+  assert.equal(context.socket.packets("game:move")[0].payload.usi, "5c5b+");
+  context.socket.ack("game:move", { ok: false, reason: "error", error: "fixture error" });
+  await flush(context.session);
+  assert.equal(context.session.record.decisions[0].feedback, "unknown");
+  const next = restore ? setup(t, { checkpoint: context.store.saves.at(-1).active }) : context;
+  if (restore) { context.session.close(); await flush(next.session); }
+  next.socket.ack("game:sync", { state: initial });
+  await flush(next.session);
+  assert.equal(next.socket.packets("game:move").at(-1).payload.usi, "5c5b");
+  assert.equal(next.session.gate.view.fouls.you, 0);
+  assert.equal(next.session.record.decisions[0].feedback, "unknown");
+  assert.deepEqual([...next.session.gate.attemptedMoves].sort(), ["5c5b", "5c5b+"]);
+});
+}
+
+for (const feedback of ["foul-ack", "foul-view"]) {
+test(`confirmed ${feedback} excludes the promotion sibling only for that position`, async (t) => {
+  const initial = view({ yourPieces: [{ square: "3i", role: "king" }, { square: "5c", role: "pawn" }] });
+  const context = setup(t, { profile: { ...LINEAR_PROFILE, exploration: 0 } });
+  await begin(context, initial);
+  assert.equal(context.socket.packets("game:move")[0].payload.usi, "5c5b+");
+  if (feedback === "foul-ack") context.socket.ack("game:move", { ok: false, reason: "foul", foulCount: 1 });
+  else context.socket.ack("game:move", undefined, -1, new Error("fixture timeout"));
+  await flush(context.session);
+  context.socket.ack("game:sync", { state: { ...initial, fouls: { you: 1, opponent: 0 } } });
+  await flush(context.session);
+  assert.equal(context.session.record.decisions[0].feedback, "foul");
+  assert.equal(context.socket.packets("game:move").at(-1).payload.usi, "3i4h");
+  context.socket.server("game:state", { ...initial, moveNumber: 3,
+    yourPieces: [{ square: "4h", role: "king" }, { square: "5c", role: "pawn" }],
+    fouls: { you: 1, opponent: 0 } });
+  await flush(context.session);
+  assert.equal(context.socket.packets("game:move").at(-1).payload.usi, "5c5b+");
+});
+}
 
 test("late foul ACK cannot overwrite acceptance proved by an advanced view", async (t) => {
   const context = setup(t);

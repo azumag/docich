@@ -189,17 +189,17 @@ function checkResponses(observation, candidates) {
 }
 
 /** Shorten a rejected ray using only current own geometry and foul feedback. */
-function shortRayRetries(observation, candidates, forbidden) {
+function shortRayRetries(observation, candidates, rejected, forbidden) {
   if (observation.inCheck !== false) return [];
   const kings = observation.pieces.filter((piece) => piece.role === "K");
   if (kings.length !== 1) return [];
   const king = kings[0].square;
   const forward = observation.color === "b" ? -1 : 1;
-  const rejectedPaths = new Set(candidates.filter((candidate) => forbidden.has(candidate.usi))
+  const rejectedPaths = new Set(candidates.filter((candidate) => rejected.has(candidate.usi))
     .map((candidate) => candidate.usi.replace(/\+$/, "")));
   const adjacent = new Set();
   for (const candidate of candidates) {
-    if (!forbidden.has(candidate.usi) || candidate.usi[1] === "*") continue;
+    if (!rejected.has(candidate.usi) || candidate.usi[1] === "*") continue;
     const from = candidate.usi.slice(0, 2); const to = candidate.usi.slice(2, 4);
     const dx = file(to) - file(from); const dy = rank(to) - rank(from);
     const distance = Math.max(Math.abs(dx), Math.abs(dy));
@@ -250,15 +250,18 @@ function hash(text) {
  * These candidates satisfy visible own-piece constraints only. Hidden blockers,
  * enemy attacks and pawn-drop mate remain the site's legality responsibility.
  */
-export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = "", recentMoves = [], forbiddenMoves = [] } = {}) {
+export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = "", recentMoves = [], forbiddenMoves = [], foulMoves = [] } = {}) {
   const observation = normalizeObservation(rawObservation);
   const selectedProfile = validateProfile(profile);
   if (!observation || observation.turn !== observation.color || observation.attemptBudget === 0 || !selectedProfile
       || typeof seed !== "string" || seed.length > 512 || !Array.isArray(forbiddenMoves)
-      || forbiddenMoves.length > 4096) return null;
+      || forbiddenMoves.length > 4096 || !Array.isArray(foulMoves) || foulMoves.length > 4096) return null;
   const recent = validRecentMoves(recentMoves);
-  const rejected = new Set(forbiddenMoves.filter((move) => typeof move === "string" && USI_MOVE.test(move)));
-  const forbidden = new Set(rejected);
+  // Attempts with an unknown/error ACK stay excluded without supplying legality
+  // evidence. Only confirmed fouls can rule out sibling moves or shorten rays.
+  const rejected = new Set(foulMoves.filter((move) => typeof move === "string" && USI_MOVE.test(move)));
+  const forbidden = new Set([...rejected,
+    ...forbiddenMoves.filter((move) => typeof move === "string" && USI_MOVE.test(move))]);
   const legacy = selectedProfile.policy === "legacy-v1";
   if (legacy && recent.length) forbidden.add(recent.at(-1));
   // Probe escapes only while another attempt can follow a foul. Otherwise rank
@@ -277,7 +280,7 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
   const escapes = prioritizeEscapes
     ? available.filter((candidate) => candidate.role === "K") : [];
   const responses = observation.inCheck === true ? checkResponses(observation, available) : available;
-  const retries = shortRayRetries(observation, generated, forbidden);
+  const retries = shortRayRetries(observation, generated, rejected, forbidden);
   // Preserve the existing fallback for incomplete own-king observations or
   // exhausted response candidates; geometry cannot prove mate or legality.
   const candidates = escapes.length ? escapes : retries.length ? retries : responses.length ? responses : available;
