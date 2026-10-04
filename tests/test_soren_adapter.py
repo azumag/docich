@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from docich.adapters.base import AdapterError
 from docich.adapters.soren import SorenCoordinatorAdapter
-from docich.game_switch import RuntimeSpec
+from docich.game_switch import DeadlineExceededError, RuntimeSpec
 
 
 class TestSorenCoordinatorAdapter(unittest.TestCase):
@@ -33,8 +33,8 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             adapter = self.make_adapter(Path(temp))
             outputs = [
-                {"ack": {"request_id": "req-1", "status": "accepted"}},
-                {"ack": {"request_id": "req-1", "status": "boundary"}},
+                self.boundary_payload("accepted"),
+                self.boundary_payload("boundary"),
             ]
             calls = []
             def fake_run(argv, **kwargs):
@@ -45,6 +45,123 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             self.assertIn("--generation", calls[0])
             self.assertEqual(calls[0][calls[0].index("--generation") + 1], "7")
             self.assertEqual(calls[0][calls[0].index("--request-id") + 1], "req-1")
+
+    @staticmethod
+    def boundary_payload(status, **changes):
+        identity = {"schema": 1, "request_id": "req-1", "game": "sorengame", "generation": 7,
+                    "deadline_epoch": 1893456000.25, "deadline_at": "2030-01-01T00:00:00.250Z"}
+        identity.update(changes)
+        return {"request": dict(identity), "ack": {**identity, "status": status}}
+
+    def run_boundary_script(self, adapter, script, cancel=None):
+        calls = []
+        def fake_run(argv, **kwargs):
+            command, rc, payload = script.pop(0)
+            self.assertEqual(argv[4], command)
+            calls.append(argv)
+            return SimpleNamespace(returncode=rc, stdout=json.dumps(payload), stderr="")
+        with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run), patch(
+            "docich.adapters.soren.time.sleep", return_value=None
+        ):
+            adapter.request_round_boundary("req-1", time.monotonic() + 30, cancel)
+        self.assertFalse(script)
+        return calls
+
+    def test_normal_boundary_actively_polls_without_game_bookkeeping(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            calls = self.run_boundary_script(adapter, [
+                ("request", 0, self.boundary_payload("accepted")),
+                ("status", 0, self.boundary_payload("accepted")),
+                ("boundary", 1, self.boundary_payload("waiting")),
+                ("status", 0, {**self.boundary_payload("waiting"), "next_generation": 99}),
+                ("boundary", 0, self.boundary_payload("boundary")),
+            ])
+            for argv in calls:
+                if argv[4] != "status":
+                    self.assertEqual(argv[argv.index("--request-id") + 1], "req-1")
+            self.assertEqual([argv[4] for argv in calls], ["request", "status", "boundary", "status", "boundary"])
+
+    def test_boundary_poll_rejects_changed_or_missing_receipt_identity(self):
+        for command in ("status", "boundary"):
+            for field, value in (("request_id", "other"), ("game", "robots"), ("generation", 8),
+                                 ("deadline_epoch", 1893456001.25), ("deadline_at", "2030-01-01T00:00:01Z"),
+                                 ("generation", True), ("operation", "player_change")):
+                with self.subTest(command=command, field=field), tempfile.TemporaryDirectory() as temp:
+                    adapter = self.make_adapter(Path(temp))
+                    changed = self.boundary_payload("boundary", **{field: value})
+                    script = [("request", 0, self.boundary_payload("accepted"))]
+                    if command == "boundary":
+                        script.append(("status", 0, self.boundary_payload("waiting")))
+                    script.append((command, 0, changed))
+                    with self.assertRaises(AdapterError):
+                        self.run_boundary_script(adapter, script)
+        for payload in ({}, {"ack": {"request_id": "req-1", "status": "boundary"}},
+                        {"request": self.boundary_payload("boundary")["request"], "ack": {}}):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as temp:
+                adapter = self.make_adapter(Path(temp))
+                with self.assertRaises(AdapterError):
+                    self.run_boundary_script(adapter, [("request", 0, self.boundary_payload("accepted")),
+                                                       ("status", 0, payload)])
+
+    def test_boundary_poll_rejects_failure_codes_and_terminal_or_fenced_status(self):
+        for command in ("status", "boundary"):
+            for status in ("failed", "timeout", "unsupported", "cancelled", "resumed", "stopping", "stop_requested", "prepared"):
+                with self.subTest(command=command, status=status), tempfile.TemporaryDirectory() as temp:
+                    adapter = self.make_adapter(Path(temp))
+                    script = [("request", 0, self.boundary_payload("accepted"))]
+                    if command == "boundary":
+                        script.append(("status", 0, self.boundary_payload("waiting")))
+                    script.append((command, 0, self.boundary_payload(status)))
+                    with self.assertRaises(AdapterError):
+                        self.run_boundary_script(adapter, script)
+        for rc in (2, 3, 4, 5, 79):
+            with self.subTest(rc=rc), tempfile.TemporaryDirectory() as temp:
+                adapter = self.make_adapter(Path(temp))
+                with self.assertRaises(AdapterError):
+                    self.run_boundary_script(adapter, [("request", 0, self.boundary_payload("accepted")),
+                        ("status", 0, self.boundary_payload("waiting")), ("boundary", rc, self.boundary_payload("boundary"))])
+
+    def test_boundary_poll_checks_cancellation_after_successful_boundary_response(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            cancelled = [False]
+            cancel = SimpleNamespace(is_set=lambda: cancelled[0])
+            def broker(*args):
+                cancelled[0] = True
+                return 0, self.boundary_payload("boundary")
+            with patch.object(adapter, "_status", return_value=self.boundary_payload("waiting")), patch.object(adapter, "_broker", side_effect=broker):
+                with self.assertRaises(DeadlineExceededError):
+                    adapter._wait_round_boundary(self.boundary_payload("accepted")["request"], time.monotonic() + 30, cancel)
+
+    def test_boundary_poll_rejects_inconsistent_request_and_ack_or_return_code(self):
+        variants = []
+        for side in ("request", "ack"):
+            payload = self.boundary_payload("boundary")
+            payload[side]["generation"] = 8
+            variants.append((0, payload))
+        variants.extend([(0, self.boundary_payload("waiting")), (1, self.boundary_payload("boundary"))])
+        for rc, payload in variants:
+            with self.subTest(rc=rc, payload=payload), tempfile.TemporaryDirectory() as temp:
+                adapter = self.make_adapter(Path(temp))
+                with self.assertRaises(AdapterError):
+                    self.run_boundary_script(adapter, [("request", 0, self.boundary_payload("accepted")),
+                        ("status", 0, self.boundary_payload("waiting")), ("boundary", rc, payload)])
+
+    def test_boundary_poll_checks_cancel_and_deadline_before_side_effect_free_command(self):
+        for cancel_set in (True, False):
+            with self.subTest(cancel=cancel_set), tempfile.TemporaryDirectory() as temp:
+                adapter = self.make_adapter(Path(temp))
+                calls = []
+                receipt = self.boundary_payload("accepted")
+                def status(*args):
+                    return receipt
+                cancel = SimpleNamespace(is_set=lambda: cancel_set)
+                with patch.object(adapter, "_status", side_effect=status), patch.object(adapter, "_broker", side_effect=lambda *args: calls.append(args)):
+                    # Enter the wait with a valid receipt, then a cancelled or expired call.
+                    with self.assertRaises(DeadlineExceededError):
+                        adapter._wait_round_boundary(receipt["request"], time.monotonic() - (1 if not cancel_set else -30), cancel)
+                self.assertEqual(calls, [])
 
     def test_reconfigure_player_commits_only_after_prepared_boundary(self):
         with tempfile.TemporaryDirectory() as temp:
