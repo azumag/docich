@@ -319,6 +319,78 @@ test("known rejected moves stay excluded even under full exploration", () => {
   assert.equal(chooseMove(state, { ...options, forbiddenMoves: ["5g5f", "9g9f"] }), null);
 });
 
+test("a visibly valid rejected move excludes both optional promotion variants", () => {
+  const mirror = (square) => `${10 - Number(square[0])}${String.fromCharCode(202 - square.charCodeAt(1))}`;
+  for (const color of ["b", "w"]) {
+    for (const [role, source, target] of [
+      ["P", "5c", "5b"], ["L", "5c", "5b"], ["N", "5e", "4c"],
+      ["S", "5c", "4b"], ["B", "5c", "3a"], ["R", "5c", "5b"],
+    ]) {
+      const from = color === "b" ? source : mirror(source);
+      const to = color === "b" ? target : mirror(target);
+      const path = from + to;
+      for (const inCheck of [false, true, null]) {
+        const state = observation([[from, role]], { color, turn: color, inCheck, attemptBudget: 1 });
+        assert.ok(featuresForMove(state, path));
+        assert.ok(featuresForMove(state, path + "+"));
+        for (const selectedProfile of [profile({}, { exploration: 0 }), profile({}, { exploration: 1 }),
+          ...(inCheck === true ? [LEGACY_PROFILE] : [])]) {
+          const original = chooseMove(state, { profile: selectedProfile });
+          for (const rejected of [path, path + "+"]) {
+            const choice = chooseMove(state, { profile: selectedProfile, seed: "promotion-feedback",
+              forbiddenMoves: [rejected], foulMoves: [rejected] });
+            assert.notEqual(choice?.usi.replace(/\+$/, ""), path);
+            assert.equal(choice?.candidateCount ?? 0, original.candidateCount - 2);
+          }
+        }
+      }
+    }
+  }
+});
+
+test("invalid promotion variants cannot exclude a visibly valid move", () => {
+  for (const [pieces, valid, invalid] of [
+    [[["5g", "P"]], "5g5f", "5g5f+"], // Promotion outside the zone.
+    [[["5b", "P"]], "5b5a+", "5b5a"], // Mandatory promotion.
+    [[["5c", "+P"]], "5c5b", "5c5b+"], // Already promoted.
+    [[["5c", "G"]], "5c5b", "5c5b+"], // Unpromotable role.
+  ]) {
+    const state = observation(pieces);
+    assert.ok(featuresForMove(state, valid));
+    assert.equal(featuresForMove(state, invalid), null);
+    for (const exploration of [0, 1]) {
+      const options = { profile: profile({}, { exploration }), seed: "invalid-promotion" };
+      assert.deepEqual(chooseMove(state, { ...options, forbiddenMoves: [invalid], foulMoves: [invalid] }), chooseMove(state, options));
+    }
+  }
+});
+
+test("legacy repetition avoidance does not treat an accepted move as foul feedback", () => {
+  const state = observation([["5c", "P"]], { inCheck: true, attemptBudget: 1 });
+  const choice = chooseMove(state, { profile: LEGACY_PROFILE, recentMoves: ["5c5b"] });
+  assert.equal(choice.usi, "5c5b+");
+  assert.equal(choice.candidateCount, 1);
+});
+
+test("unknown attempts exclude the exact move without learning a rejected path", () => {
+  const state = observation([["3i", "K"], ["5c", "P"]], { inCheck: false });
+  const options = { profile: { ...LINEAR_PROFILE, exploration: 0 }, forbiddenMoves: ["5c5b+"] };
+  const unknown = chooseMove(state, options);
+  assert.equal(unknown.usi, "5c5b");
+  assert.equal(unknown.candidateCount, 6);
+  const foul = chooseMove(state, { ...options, foulMoves: ["5c5b+"] });
+  assert.equal(foul.usi, "3i4h");
+  assert.equal(foul.candidateCount, 5);
+  assert.deepEqual(chooseMove(state, { profile: options.profile, foulMoves: ["5c5b+"] }), foul);
+
+  const ray = observation([["3i", "K"], ["8h", "B"]], { inCheck: false });
+  const rayOptions = { profile: options.profile, forbiddenMoves: ["8h1a+"] };
+  assert.notEqual(chooseMove(ray, rayOptions).usi, "8h7g");
+  assert.equal(chooseMove(ray, { ...rayOptions, foulMoves: ["8h1a+"] }).usi, "8h7g");
+  assert.notEqual(chooseMove(ray, { ...rayOptions, forbiddenMoves: ["8h1a+", "8h7g"],
+    foulMoves: ["8h1a+"] }).usi, "8h7g");
+});
+
 test("an ordinary rejected sliding move retries the adjacent square before another long path", () => {
   for (const [color, king, role, source, rejected, adjacent] of [
     ["b", "3i", "B", "8h", "8h1a+", "8h7g"], ["w", "7a", "B", "2b", "2b9i+", "2b3c"],
@@ -332,11 +404,11 @@ test("an ordinary rejected sliding move retries the adjacent square before anoth
     assert.ok(featuresForMove(state, rejected));
     for (const exploration of [0, 1]) {
       const choice = chooseMove(state, { profile: { ...LINEAR_PROFILE, exploration },
-        seed: "short-ray", forbiddenMoves: [rejected] });
+        seed: "short-ray", forbiddenMoves: [rejected], foulMoves: [rejected] });
       assert.equal(choice.usi, adjacent);
       assert.equal(choice.candidateCount, 1);
       assert.deepEqual(chooseMove({ ...state, opponentBoard: "hidden-marker", legalMoves: [] },
-        { profile: { ...LINEAR_PROFILE, exploration }, seed: "short-ray", forbiddenMoves: [rejected] }), choice);
+        { profile: { ...LINEAR_PROFILE, exploration }, seed: "short-ray", forbiddenMoves: [rejected], foulMoves: [rejected] }), choice);
     }
   }
 });
@@ -345,26 +417,26 @@ test("short-ray retry requires known no-check, one own king and a source away fr
   const state = observation([["3i", "K"], ["8h", "B"]], { inCheck: false, attemptBudget: 2 });
   const selectedProfile = { ...LINEAR_PROFILE, exploration: 0 };
   for (const inCheck of [null, true]) {
-    const choice = chooseMove({ ...state, inCheck }, { profile: selectedProfile, forbiddenMoves: ["8h1a+"] });
+    const choice = chooseMove({ ...state, inCheck }, { profile: selectedProfile, forbiddenMoves: ["8h1a+"], foulMoves: ["8h1a+"] });
     assert.notEqual(choice.usi, "8h7g");
     assert.ok(choice.candidateCount > 1);
     if (inCheck === true) assert.equal(choice.features.kingMove, 1);
   }
   const possiblePin = observation([["3i", "K"], ["3f", "R"]], { inCheck: false });
-  const pinnedChoice = chooseMove(possiblePin, { profile: selectedProfile, forbiddenMoves: ["3f9f"] });
+  const pinnedChoice = chooseMove(possiblePin, { profile: selectedProfile, forbiddenMoves: ["3f9f"], foulMoves: ["3f9f"] });
   assert.notEqual(pinnedChoice.usi, "3f4f");
   assert.ok(pinnedChoice.candidateCount > 1);
   const missingKing = observation([["8h", "B"]], { inCheck: false });
-  assert.ok(chooseMove(missingKing, { profile: selectedProfile, forbiddenMoves: ["8h1a+"] }).candidateCount > 1);
+  assert.ok(chooseMove(missingKing, { profile: selectedProfile, forbiddenMoves: ["8h1a+"], foulMoves: ["8h1a+"] }).candidateCount > 1);
 });
 
 test("invalid promotion feedback and exhausted short retries do not invent a new probe", () => {
   const state = observation([["3i", "K"], ["8h", "B"]], { inCheck: false });
   const selectedProfile = { ...LINEAR_PROFILE, exploration: 0 };
   assert.equal(featuresForMove(state, "8h6f+"), null); // Outside the promotion zone.
-  assert.deepEqual(chooseMove(state, { profile: selectedProfile, forbiddenMoves: ["8h6f+"] }),
+  assert.deepEqual(chooseMove(state, { profile: selectedProfile, forbiddenMoves: ["8h6f+"], foulMoves: ["8h6f+"] }),
     chooseMove(state, { profile: selectedProfile }));
-  const exhausted = chooseMove(state, { profile: selectedProfile, forbiddenMoves: ["8h1a+", "8h7g"] });
+  const exhausted = chooseMove(state, { profile: selectedProfile, forbiddenMoves: ["8h1a+", "8h7g"], foulMoves: ["8h1a+", "8h7g"] });
   assert.ok(!["8h1a+", "8h7g"].includes(exhausted.usi));
   assert.ok(exhausted.candidateCount > 1);
   for (const [color, king, source, rejected, shorter] of [
@@ -372,10 +444,10 @@ test("invalid promotion feedback and exhausted short retries do not invent a new
   ]) {
     const promotedZone = observation([[king, "K"], [source, "B"]], { color, turn: color, inCheck: false });
     assert.ok(featuresForMove(promotedZone, shorter + "+"));
-    const choice = chooseMove(promotedZone, { profile: selectedProfile, forbiddenMoves: [rejected, shorter] });
+    const choice = chooseMove(promotedZone, { profile: selectedProfile, forbiddenMoves: [rejected, shorter], foulMoves: [rejected, shorter] });
     assert.notEqual(choice.usi, shorter + "+");
     assert.ok(choice.candidateCount > 1);
   }
-  assert.deepEqual(chooseMove(state, { profile: LEGACY_PROFILE, forbiddenMoves: ["8h1a+"] }),
+  assert.deepEqual(chooseMove(state, { profile: LEGACY_PROFILE, forbiddenMoves: ["8h1a+"], foulMoves: ["8h1a+"] }),
     chooseMove(state, { profile: LEGACY_PROFILE }));
 });

@@ -22,7 +22,7 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 const RPC_BUDGET_MS = 2500;
 const REQUEST_BUDGET_MS = 7000;
 const SITE_ID = "tsuitateviewer.web.app";
-const REVIEWABLE_BRAIN_VERSIONS = new Set(["tsuitate-brain-v1", "tsuitate-brain-v2", "tsuitate-brain-v3", BRAIN_VERSION]);
+const REVIEWABLE_BRAIN_VERSIONS = new Set(["tsuitate-brain-v1", "tsuitate-brain-v2", "tsuitate-brain-v3", "tsuitate-brain-v4", BRAIN_VERSION]);
 const PROFILE_FEATURES = Object.freeze(["advance", "centrality", "promotion", "drop", "kingMove", "distance", "repeat"]);
 const SAFE_ERROR_CODES = new Set([
   "not_found", "method_not_allowed", "content_type_required", "webhook_not_configured",

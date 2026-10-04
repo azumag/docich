@@ -1304,7 +1304,7 @@ test("offline review classifies incomplete stored positions without making them 
   assert.equal(exported.trainingEligible, false);
 });
 
-for (const previous of ["tsuitate-brain-v1", "tsuitate-brain-v2", "tsuitate-brain-v3"]) {
+for (const previous of ["tsuitate-brain-v1", "tsuitate-brain-v2", "tsuitate-brain-v3", "tsuitate-brain-v4"]) {
 test(`${previous} sessions cannot change brain midgame but their terminal records remain reviewable`, async () => {
   const binding = stateBinding();
   assert.equal((await post(initialFixture, { binding })).status, 200);

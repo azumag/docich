@@ -65,6 +65,8 @@ SQLite-backed Durable Objectを保存先に使います。D1や外部DBは使い
 
 終局記録は通常の学習データと分離したoffline-only領域です。未照合Bot、複数seat、途中参加、履歴欠落、未知brain版、終局競合は分類して `trainingEligible: false` を維持します。`/offline-review` は同じraw-body HMACとBot IDで認証するread-onlyのPOST exportで、`{type:"offline_review_export",gameId,fromPly,limit}` を受け、`param` と最大100手ずつの可視局面を返します。`param` はopaqueな文字列として保存・返却し、解析・実行・ログ出力しません。livebrainや学習candidateへ自動で混ぜる経路はありません。記録の保持期間と容量上限はまだ設定していません。
 
+brain v5では、同じ局面で反則になった移動の成り／不成の双方が自分の観測上有効な候補なら、両方を次の試行から除外します。移動経路・行先の占有・自玉の安全性は共通です。成れない地点での成りや強制成りを省略した反則からは、有効なもう一方を除外しません。成功前の成り／不成は別候補のままなので、王手をかけるかどうかの違いは保持します。相手が着手した後へ反則による除外を持ち越しません。v4の終局記録はoffline reviewで保持し、対局途中のbrain差替えは拒否します。
+
 ## ローカル検証と起動
 
 Node.js 22.18以降、npm、Cloudflare CLI `cf` 1.0.0-beta.12を用意します。依存関係には `cf` と、CfのWorker build/runtime要件を満たすWrangler 4.136以降を宣言しています。`npm test`はNodeの`node:test`、`cf/config`の静的設定、Durable Objectの`MemoryStorage` mockを使います。mockは値をstagingしてcallback成功後にcommitし、transactionを直列化しますが、rollbackを検証するfault-injectionテストはありません。

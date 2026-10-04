@@ -387,9 +387,12 @@ export class BetaSession {
       return;
     }
     const recentMoves = this.record.decisions.filter((decision) => decision.feedback === "accepted").map((decision) => decision.usi).slice(-64);
+    const attempted = this.gate.attemptedMoves;
+    const foulMoves = this.record.decisions.filter((decision) => decision.feedback === "foul"
+      && decision.moveNumber === observation.moveNumber && attempted.has(decision.usi)).map((decision) => decision.usi);
     const choice = chooseMove(observation, {
       profile: this.profile, seed: `${this.gameId}:${observation.moveNumber}`,
-      recentMoves, forbiddenMoves: [...this.gate.attemptedMoves],
+      recentMoves, forbiddenMoves: [...attempted], foulMoves,
     });
     if (!choice) {
       this.resigning = true;
