@@ -3,12 +3,13 @@ import { test } from "node:test";
 import { BRAIN_VERSION, LINEAR_PROFILE } from "../src/brain/index.js";
 import { BetaSession } from "../src/arena/beta-session.js";
 import { DurableArenaController, QUEUE_WAIT_MS } from "../src/arena/durable-controller.js";
-import { DurableArenaStore, META_KEY, CHECKPOINT_KEY, RECORD_KEY } from "../src/arena/durable-store.js";
+import { DurableArenaStore, META_KEY, CHECKPOINT_KEY, RECORD_KEY, runKey, recordKey } from "../src/arena/durable-store.js";
 
 class Storage {
   constructor() { this.data = new Map(); this.alarm = null; this.tail = Promise.resolve(); this.failPut = false; }
   async get(key) { return structuredClone(this.data.get(key)); }
   async put(key, value) { if (this.failPut) throw new Error("fixture_storage_failure"); this.data.set(key, structuredClone(value)); }
+  async delete(key) { this.data.delete(key); }
   async setAlarm(value) { this.alarm = value; }
   async deleteAlarm() { this.alarm = null; }
   transaction(operation) {
@@ -229,4 +230,40 @@ test("status and structured logs exclude token, move, opponent and raw payload",
   for (const forbidden of ["fixture-only", "fixture-sensitive", "5g5f", "opponentPieces", "yourPieces"]) {
     assert.equal(publicData.includes(forbidden), false);
   }
+});
+
+test("explicit second run follows durable terminal/socket/alarm cleanup; old start/stop cannot affect it", async (t) => {
+  const c = setup(t); await begin(c);
+  const old = c.controller.session;
+  await new DurableArenaStore(c.storage, "fixture-run", 1).finish(terminal());
+  await assert.rejects(c.controller.start({ runId: "second" }), /run_locked/);
+  await c.controller.alarm(); assert.equal((await c.controller.status()).readyForNextRun, false);
+  // Closing the socket is necessary, but cleanup receipt must also commit.
+  old.close(); old.resolveDone({ status: "finished" }); await flush(c.controller);
+  assert.equal((await c.controller.status()).readyForNextRun, true); assert.equal(c.storage.alarm, null);
+  await Promise.all([c.controller.start({ runId: "second" }), c.controller.start({ runId: "second" })]);
+  await flush(c.controller);
+  assert.equal(c.sockets.length, 2); assert.equal(c.sockets[1].packets("queue:join").length, 1);
+  assert.equal((await c.storage.get(recordKey("fixture-run"))).completed, true);
+  assert.equal((await c.storage.get(runKey("fixture-run"))).state, "finished");
+  assert.equal((await c.controller.start({ runId: "fixture-run" })).state, "finished");
+  assert.equal((await c.controller.stop({ runId: "fixture-run" })).state, "finished");
+  assert.equal((await c.controller.status()).runId, "second");
+  assert.equal(c.controller.session.stopping, false); assert.equal(c.sockets.length, 2);
+  await assert.rejects(c.controller.start({ runId: "third" }), /run_locked/);
+  // A completed game notification from the prior run cannot be played again.
+  c.sockets[1].server("match:found", { gameId: "local-game", yourColor: "sente" }); await flush(c.controller);
+  assert.equal((await c.controller.status()).state, "paused");
+  assert.equal(c.sockets[1].packets("game:move").length, 0);
+});
+
+test("confirmed idle stop permits another explicit run; unknown pause does not", async (t) => {
+  const c = setup(t); await c.controller.start({ runId: "one" }); await flush(c.controller);
+  await c.controller.stop({ runId: "one" }); await flush(c.controller);
+  c.sockets[0].ack("queue:leave", { ok: true }); await flush(c.controller);
+  await c.scheduled.find((item) => item.milliseconds === 1).operation(); await flush(c.controller);
+  await c.controller.start({ runId: "two" }); await flush(c.controller);
+  assert.equal(c.sockets.length, 2);
+  await c.controller.pause("unknown_match_state");
+  await assert.rejects(c.controller.start({ runId: "three" }), /run_locked/);
 });

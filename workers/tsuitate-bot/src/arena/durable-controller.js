@@ -1,6 +1,6 @@
 import { BRAIN_VERSION, LINEAR_PROFILE } from "../brain/index.js";
 import { BetaSession } from "./beta-session.js";
-import { DurableArenaStore, META_KEY, CHECKPOINT_KEY } from "./durable-store.js";
+import { DurableArenaStore, META_KEY, CHECKPOINT_KEY, RECORD_KEY, runKey, recordKey } from "./durable-store.js";
 
 export const SINGLETON_NAME = "beta:DoCiAI";
 export const QUEUE_WAIT_MS = 60000;
@@ -12,7 +12,7 @@ const LOG_EVENTS = new Set(["connected", "queued", "matched", "disconnected", "c
   "invalid_move_ack", "resigning_no_candidate", "draining_current_game", "game_finished", "paused", "invalid_match_shape"]);
 
 function initial() { return { version: 1, state: "stopped", runId: null, generation: 0,
-  gameId: null, completedGames: 0, reservedGames: 0, stopRequested: false, errorCode: null }; }
+  gameId: null, completedGames: 0, reservedGames: 0, stopRequested: false, errorCode: null, settled: true }; }
 
 /** Internal control only. No HTTP authentication or production route is added. */
 export class DurableArenaController {
@@ -32,12 +32,24 @@ export class DurableArenaController {
 
   async read() { return await this.storage.get(META_KEY) ?? initial(); }
 
-  async status() {
-    const meta = await this.read();
+  snapshot(meta) {
     return { state: meta.state, runId: meta.runId, gameId: meta.gameId,
       completedGames: meta.completedGames, reservedGames: meta.reservedGames,
       maxGames: 1, queueWaitSeconds: 60, stopRequested: meta.stopRequested,
-      errorCode: meta.errorCode, brainVersion: meta.brainVersion ?? BRAIN_VERSION };
+      errorCode: meta.errorCode, brainVersion: meta.brainVersion ?? BRAIN_VERSION,
+      readyForNextRun: meta.settled === true && ["stopped", "queue_timeout", "finished"].includes(meta.state) };
+  }
+
+  async status() { return this.snapshot(await this.read()); }
+
+  async settle(tx, meta) {
+    // Only after the socket has closed / no session was restored. A terminal
+    // record alone is not sufficient to permit the next explicit run.
+    await tx.deleteAlarm();
+    await tx.put(CHECKPOINT_KEY, { version: 1, active: null });
+    const settled = { ...meta, settled: true };
+    await tx.put(META_KEY, settled);
+    await tx.put(runKey(meta.runId), this.snapshot(settled));
   }
 
   ready() {
@@ -54,17 +66,29 @@ export class DurableArenaController {
         throw new Error("invalid_start_options");
       }
       const existing = await this.read();
-      if (existing.runId) {
-        if (existing.runId !== options.runId) throw new Error("run_locked");
+      if (existing.runId === options.runId) {
         return this.status(); // Same request can never queue a second game.
       }
+      const previousReceipt = await this.storage.get(runKey(options.runId));
+      if (previousReceipt) return previousReceipt; // Even after many later runs.
+      if (!this.snapshot(existing).readyForNextRun || this.session) throw new Error("run_locked");
       this.ready();
-      const meta = { ...initial(), runId: options.runId, reservedGames: 1, generation: 1,
+      const meta = { ...initial(), runId: options.runId, reservedGames: 1, generation: existing.generation + 1, settled: false,
         state: "queued", brainVersion: BRAIN_VERSION, profile: LINEAR_PROFILE,
         queueDeadlineAt: this.now() + QUEUE_WAIT_MS };
       // Commit reservation before creating the socket or joining the queue.
       await this.storage.transaction(async (tx) => {
-        if ((await tx.get(META_KEY))?.runId) throw new Error("run_locked");
+        const current = await tx.get(META_KEY) ?? initial();
+        if (current.generation !== existing.generation || !this.snapshot(current).readyForNextRun) throw new Error("run_locked");
+        // Preserve the v1 single-run record before clearing the latest alias.
+        if (current.runId) {
+          const record = await tx.get(RECORD_KEY);
+          if (record) await tx.put(recordKey(current.runId), record);
+          if (record) await tx.put(`beta:game:${record.gameId}`, current.runId);
+          await tx.put(runKey(current.runId), this.snapshot(current));
+        }
+        await tx.delete(RECORD_KEY);
+        await tx.put(CHECKPOINT_KEY, { version: 1, active: null });
         await tx.put(META_KEY, meta);
         await tx.setAlarm(this.now() + ALARM_INTERVAL_MS);
       });
@@ -105,7 +129,8 @@ export class DurableArenaController {
             current.errorCode = result.status === "paused" ? result.code : null;
             await tx.put(META_KEY, current);
           }
-          await tx.deleteAlarm();
+          if (["finished", "stopped", "queue_timeout"].includes(current.state)) await this.settle(tx, current);
+          else await tx.deleteAlarm();
         });
       })).catch(() => this.serialize(async () => {
         const current = await this.read();
@@ -135,9 +160,14 @@ export class DurableArenaController {
     });
   }
 
-  stop() {
+  stop(options = null) {
     return this.serialize(async () => {
       const meta = await this.read();
+      if (options && options.runId !== meta.runId) {
+        const receipt = await this.storage.get(runKey(options.runId));
+        if (receipt) return receipt;
+        throw new Error("run_mismatch");
+      }
       if (!ACTIVE.has(meta.state)) return this.status();
       await this.storage.transaction(async (tx) => {
         const current = await tx.get(META_KEY);
@@ -155,13 +185,26 @@ export class DurableArenaController {
 
   async restore() {
     const meta = await this.read();
-    if (!ACTIVE.has(meta.state)) { await this.storage.deleteAlarm(); return; }
+    if (this.session && meta.state === "finished") {
+      await this.storage.setAlarm(this.now() + ALARM_INTERVAL_MS);
+      return; // session.done still owns socket cleanup / final checkpoint writes.
+    }
+    if (!ACTIVE.has(meta.state)) {
+      if (meta.state === "finished") {
+        // Recover a crash between terminal commit and session completion.
+        const record = await this.storage.get(RECORD_KEY);
+        if (!record?.completed || record.gameId !== meta.gameId) return this.pause("terminal_record_failure");
+        await this.storage.transaction((tx) => this.settle(tx, meta));
+      } else await this.storage.deleteAlarm();
+      return;
+    }
     if (this.session) { await this.storage.setAlarm(this.now() + ALARM_INTERVAL_MS); return; }
     const saved = await this.storage.get(CHECKPOINT_KEY);
     if (saved?.finishedRecord) {
       try {
         await new DurableArenaStore(this.storage, meta.runId, meta.generation).finish(saved.finishedRecord);
-        await this.storage.deleteAlarm();
+        const completed = await this.read();
+        await this.storage.transaction((tx) => this.settle(tx, completed));
       } catch { await this.pause("terminal_record_failure"); }
       return;
     }

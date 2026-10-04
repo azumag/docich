@@ -14,9 +14,11 @@ export default defineConfig({
         persist: true,
       },
     },
-    entrypoint: "src/index.js",
+    compatibilityFlags: ["nodejs_compat"],
+    entrypoint: "src/worker.js",
     exports: {
       GameState: exports.durableObject({ storage: "sqlite" }),
+      BetaArena: exports.durableObject({ storage: "sqlite" }),
     },
     env: {
       BOT_ID: bindings.text("DoCiAI"),
@@ -26,6 +28,10 @@ export default defineConfig({
       }),
       CF_VERSION_METADATA: bindings.versionMetadata(),
       WEBHOOK_SECRET: bindings.secret(),
+      BETA_CONTROL_SECRET: bindings.secret(),
+      TSUITATE_BOT_TOKEN: bindings.secret(),
+      BETA_ARENA_ENABLED: bindings.text("false"),
+      BETA_ARENA: bindings.durableObject({ worker: "docich-tsuitate-bot", exportName: "BetaArena" }),
     },
   },
 });

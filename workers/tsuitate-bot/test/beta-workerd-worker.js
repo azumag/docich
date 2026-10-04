@@ -3,6 +3,7 @@ import io from "socket.io-client/dist/socket.io.js";
 import { BetaArena } from "../src/arena/beta-arena.js";
 import { SINGLETON_NAME } from "../src/arena/durable-controller.js";
 import { META_KEY, CHECKPOINT_KEY, RECORD_KEY } from "../src/arena/durable-store.js";
+import { CONTROL_PATH, handleBetaControl } from "../src/arena/control.js";
 
 export class RuntimeBetaArena extends BetaArena {
   makeSocket() {
@@ -41,6 +42,7 @@ export class RuntimeBetaArena extends BetaArena {
 export default {
   async fetch(request, env) {
     const path = new URL(request.url).pathname;
+    if (path === CONTROL_PATH) return handleBetaControl(request, env);
     const name = path === "/wrong-singleton" ? "another-actor" : SINGLETON_NAME;
     const actor = env.BETA_ARENA.get(env.BETA_ARENA.idFromName(name));
     try {

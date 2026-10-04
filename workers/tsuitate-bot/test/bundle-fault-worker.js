@@ -1,6 +1,7 @@
 // Loaded only by bundle-integration.mjs, as an in-memory workerd module.
 // The harness replaces this import with the actual Cf manifest entrypoint.
 import worker, { GameState as BuiltGameState } from "./__CF_ENTRYPOINT__";
+export { BetaArena } from "./__CF_ENTRYPOINT__";
 
 export class GameState extends BuiltGameState {
   constructor(state) {
