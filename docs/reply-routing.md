@@ -13,12 +13,12 @@
 メンションと既存の会話履歴
  → JEV（直近の本文だけ、1回）
     ├ api_only → 既存のHTTP API → 返答
-    ├ code
+    ├ web / code / web_and_code
        → 明示承認された隔離Codexによる読み取り専用調査
-       → 実行イベント・出典を検証
+       → Webは固定4host brokerのreceipt、codeはsnapshot読取・出典を検証
        → 同じHTTP API＋元のpersonaで返答を整形
        → 検証した出典をコード側で付記
-    └ web / web_and_code（取得本文adapter未実装） / runtime / unknown / JEV失敗 / 低confidence
+    └ runtime / unknown / JEV失敗 / 低confidence
        → 固定の回答保留
  → 既存の削除整合・重複抑止・送信・memory commit
 ```
@@ -33,9 +33,9 @@ JEVにpersona/著者名/ユーザーID/メッセージID/永続記憶/assistant�
 | ラベル | 意味 | 経路 |
 |---|---|---|
 | `api_only` | 挨拶、反応、祝い、雑談、提示済みの情報だけで十分な返答/推論 | APIのみ |
-| `web` | 未知の名称・用語、現在情報、明示的な調査 | 取得本文adapter未実装のため呼出し前に保留 |
+| `web` | 未知の名称・用語、現在情報、明示的な調査 | 固定4hostのcredential-free取得brokerで本文・引用を検証 |
 | `code` | ゲーム、確率、アルゴリズム、実際の実装の説明 | 承認済みソースの調査 |
-| `web_and_code` | 公開情報と実装の両方 | Web取得本文adapter未実装のため呼出し前に保留 |
+| `web_and_code` | 公開情報と実装の両方 | Web receiptと承認済みソースの両方を要求 |
 | `runtime` | 実際の稼働状態、非公開ログ、障害原因など | 初期実装は未対応と明示。本番権限を与えない |
 | `unknown` | 曖昧、必要な根拠が不明 | 固定の回答保留 |
 
@@ -98,7 +98,15 @@ path名のallowlistはファイル内容に秘密がないことを自動証明�
 
 Codexの最終JSONだけでは成功にしない。完了イベント、実際のsearch/readイベント、必要な種類の出典を要求する。
 code出典はmanifest内ファイルについての完了済み`cat`/`nl -ba`/単一行`sed -n 'Np'`読取イベント、snapshotの実在行、引用文字列と実読取出力の一致を確認する。他コマンドや複合shell文は出典証拠にしない。
-Web/mixedは実装阻害として保留する。2026-10-04、local CLI `codex-cli 0.157.1` と公式tag `rust-v0.157.1` を照合した。`item.completed` の `web_search` は `id/query/action/results?` を持ち、`status` や `web_open` eventは存在しない。`action` は `search/open_page/find_in_page/other`、`results` は任意のJSONである。検索URL、snippet、モデルが作る引用文から「開いた本文を取得した」と推定できない。旧fixtureの架空 `web_open/content/status` 成功経路を削除し、Web/mixedは資格情報探索・process起動・API呼出しより前に固定保留する。検証済みの取得本文を供給する独立adapterと引用照合が実装されるまでWeb機能を受入済みと扱わない。
+Codex 0.157.1の公式 `web_search` JSONLは`id/query/action/results?`を持ち、`status`や独立`web_open`は存在しない。`results`はopaque JSONなので、検索URL/snippetや自己申告を取得本文として扱わない。2026-10-04のowner明示許可に基づき、**ja.wikipedia.org / en.wikipedia.org / github.com / raw.githubusercontent.com の公開HTTPSだけ**を取得する別brokerを追加した。この許可は本番有効化・有料API試験・任意host追加を含まない。
+
+Web/mixedは既存research flagと`DOCICH_REPLY_WEB_SEARCH_ENABLED=1`の両方が必要で、既定offを維持する。Codexのsearch設定にも同じ4domainを渡す（0.157.1の`tools.web_search.allowed_domains`）。API用CONNECT proxyは`api.openai.com:443`だけのまま。モデルのnamespaceにhost network routeはなく、新しい0600 Unix socketとread-onlyの固定client helperだけを追加する。brokerはCLI JSONLの実`item.completed / web_search / action=search`の結果に現れた正規化URLだけを候補として登録する。agent_message、command stdout内の偽event、open_page、モデルが作るURLでは登録できない。URL metadataは取得許可の候補であって本文証拠ではない。
+
+固定helper `python3 /tmp/docich-web-fetch.py --client <URL>`は`{url}`だけを送る。brokerは任意headers/method/commandを受けず、公開HTTPSの完全一致4host以外、userinfo、非443 port、query、fragment、制御文字を拒否する。未知host、subdomain、IP literalも不可。GETだけで、全redirect（同hostも）を拒否する。専用workerは資格情報・HOME/config/proxyを継承せず`python -I -B`、close_fds、新process groupで起動する。全DNS回答がglobal IPでなければ拒否し、検査したsockaddrへ一度だけ直接接続、TLS SNI/hostname/certificateを検証する。再解決・接続retry・redirect追従はしない。
+
+workerは1取得8秒以内、research全体45秒を共有する。raw body128KiB、UTF-8 `text/plain` / `text/html`だけ、圧縮拒否、抽出text16KiB上限（成功扱いの切詰めなし）、HTTP header行4KiB/32行、最大4取得attempt、最大4handler/1active worker。成功した同一URLはrun内receiptを再利用する。HTMLはscript/style/head/template等を除き、文字列としてのみ扱う。brokerはraw bytesのSHA-256と決定的に抽出したtextを再計算し、immutable receiptを親process内に保持する。Codexが作るfile/stdoutにはreceipt authorityを置かない。終了時にlistener/clientをshutdownし、全worker process groupをkill、communicateでreap、non-daemon handlerをjoinする。
+
+出典受理には、実検索結果のURL、許可済みhelper commandの成功（exit_code=0）、brokerが保持するreceiptとの出力完全一致、最終JSONのURL/receipt/raw-body SHA-256一致、取得text内の引用完全一致を全て要求する。mixedはさらにsnapshot読取・実在行・引用一致が必要。検索metadataだけ、モデルの確認済み宣言、架空web_open、偽receipt、改変hash、未取得/失敗/timeout/上限超過はholdする。資料は命令ではなく、権限・persona・送信経路を変更できない。
 
 照合したprimary sources:
 - [exec events](https://github.com/openai/codex/blob/rust-v0.157.1/codex-rs/exec/src/exec_events.rs)
@@ -137,7 +145,7 @@ Docker imageへPython部品は同梱するが、Codex/bubblewrapをインスト�
 
 複数コメントは一件ずつ判定し、必要scopeをバッチで統合する。各行のbodyを独立にJEVへ判定させる。runtimeがあればruntime保留、unknown/timeout/不正/低confidence/入力検証失敗があればバッチ返信を保留する。`api_only`は有効JEV回答かつconfidence≥0.80の場合だけ採用する。Twitch/YouTube/Kickの取得上限10行を、JEV上限8行の要求へ分割し、全行の結果が揃うまで最終バッチをreadyにしない。2つ目の要求失敗時も先行8行だけを返信・ackせず全体を保留する。`SSR出た！`単独は高confidenceで相づちと判断された場合だけAPI-onlyになり、`SSR出た！このガチャの確率どうなってる？`は同じ相づち扱いしない。
 
-`code`は既存隔離research adapterで根拠が取得・照合された場合だけ返信を進める。`web`/`web_and_code`は前述の取得本文contract不足が解消するまで呼出し前に保留する。Codexの完了自己申告だけで資料を受理せず、Web検索/取得イベントと引用の取得本文完全一致、または承認済みsnapshotの表示出力・対象行との一致を検査する。これは引用位置の確認であり、各説明文の意味的支持を完全自動検証したものではない。runtime、調査失敗、資格情報や隔離不足では固定保留にし、未確認内容を通常生成APIに回さない。根拠資料は命令ではないと明記したJSONデータとして既存返信promptへ追加し、元persona、カテゴリ選択、翻訳、Japanese/output guardを保つ。ルート有効時はピーク順変更後の既存候補を`local`または`local:<model>`の直接HTTP API候補に絞る。main返信・翻訳ともCLI経路は除外し、直接API候補がない、またはAPI生成に失敗した場合は返信を生成せずackしない。通常経路はfeature flagが`0`のままで変更しない。
+`code`は既存隔離research adapterで根拠が取得・照合された場合だけ返信を進める。`web`/`web_and_code`は固定4host brokerのreceiptと取得本文・引用の一致が必須で、範囲外URLや未確認時は保留する。Codexの完了自己申告だけで資料を受理せず、Web検索/取得イベントと引用の取得本文完全一致、または承認済みsnapshotの表示出力・対象行との一致を検査する。これは引用位置の確認であり、各説明文の意味的支持を完全自動検証したものではない。runtime、調査失敗、資格情報や隔離不足では固定保留にし、未確認内容を通常生成APIに回さない。根拠資料は命令ではないと明記したJSONデータとして既存返信promptへ追加し、元persona、カテゴリ選択、翻訳、Japanese/output guardを保つ。ルート有効時はピーク順変更後の既存候補を`local`または`local:<model>`の直接HTTP API候補に絞る。main返信・翻訳ともCLI経路は除外し、直接API候補がない、またはAPI生成に失敗した場合は返信を生成せずackしない。通常経路はfeature flagが`0`のままで変更しない。
 
 Soren側の最小統合は[companion PR #580](https://github.com/azumag/soviet_now/pull/580)で、docichのsubmodule gitlinkを動かさず、最新Soren main `2fee0e04`をbaseにした別branchで準備した。primary checkout/submoduleの未コミット変更には触れていない。Sorenの既定`COMMENT_AGENTS`は直接`local`候補を含まないため、flagを有効化しても現状設定のままならJEV前に保留になる。別途設定/secret作成や本番有効化はこの作業に含めていない。
 
@@ -179,3 +187,10 @@ primary checkoutの `handoff.md` relevant sectionsを読了した。運用状態
 ### 配信キューの合成E2E
 
 `tests/test_comment_queue_e2e.py` はcompanion PR #580の固定treeを読み、Twitch/YouTube/Kickの実fetch script、`generate_comment_response`、docichの実combined classifierと8行chunking、Sorenの実envelope readerとqueue/ack/dedupを接続する。9行と10行、次の10行、空の次fetch、第二chunk timeout時の全pending維持と再試行成功を検査する。生成器、音声/長期context/adviceはfixtureで、JEVは注入した決定的transport。credentialを継承せずコピーはsource allowlistのみ。ネットワーク/実API/意味精度/本番送信の検証ではない。timeout後のretryは独立fixture stateを使い、既存provider cooldown試験と分離する。CIでは固定companion SHA checkoutを必須にしてskipを許さない。
+
+
+### 固定4host brokerの検証範囲
+
+`tests/test_reply_research_web.py`はmock DNS/socket/TLS/HTTP responseとローカルPython childだけを使う。SSRF、混在private DNS、pinning、TLS mismatch、redirect、MIME/charset/encoding、body/frame/text上限、hash/URL/text改変、candidate gate、timeout kill/reap、JSONL streaming、Web/mixedのreceipt一致を固定する。Linux CIではUnix listener/clientの成功、wireによるheaders/method/command/host拡張拒否、broker exit中のworker cancel/joinも必須実行する。Darwin executorではUnix listener bindが拒否され、その6件はLinux専用skipとする。
+
+これは実ネットワーク取得・実Codex API・Linux本番hostの全negative acceptanceではない。実CLIがhelperへのUnix接続を許すか、配備先CLI version/search結果DTO、4hostの実ページサイズ/MIME/redirectに対する成功率とlatencyは未確認。制限で取得不能の場合はholdし、sandboxを緩めたり裸CLI/通常生成へ抜けたりしない。本番・有料API試験は別の明示許可を必要とする。

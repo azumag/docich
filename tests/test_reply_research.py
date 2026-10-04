@@ -544,12 +544,12 @@ def test_bridge_drops_namespace_capabilities_before_launch_and_passes_no_parent_
 
 
 @pytest.mark.parametrize("scope", ["web", "web_and_code"])
-def test_web_schema_blocker_holds_before_any_spawn(monkeypatch, scope):
+def test_web_disabled_holds_before_any_spawn(monkeypatch, scope):
     monkeypatch.setattr(r.sys, "platform", "linux")
     monkeypatch.setattr(r.shutil, "which", lambda *a, **kw: pytest.fail("binary discovery"))
     monkeypatch.setattr(r, "_run", lambda *a: pytest.fail("paid provider spawn"))
     env = {"DOCICH_ALLOW_REAL_AI": "1", "DOCICH_REPLY_RESEARCH_ENABLED": "1",
-           "DOCICH_REPLY_WEB_SEARCH_ENABLED": "1",
+           "DOCICH_REPLY_WEB_SEARCH_ENABLED": "0",
            "DOCICH_REPLY_CODEX_MODEL": "synthetic-model", "DOCICH_REPLY_CODEX_API_KEY": "SYNTHETIC"}
     assert not r.research([], scope, env=env).ok
 

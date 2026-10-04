@@ -573,3 +573,12 @@ def research(turns, scope: str, *, env, timeout_sec: float = 45.0) -> Evidence:
                                   web_receipts=broker.receipts if broker else None)
     except Exception:
         return Evidence()
+
+
+def test_worker_output_limit_kills_and_reaps(monkeypatch, tmp_path):
+    fixture_process(monkeypatch, code='import sys,time; sys.stdout.write("x"*300000);sys.stdout.flush();time.sleep(30)')
+    broker = w.WebBroker(tmp_path/'s',time.monotonic()+2)
+    broker.observe({'type':'item.completed','item':web_fixture()[2]})
+    start = time.monotonic()
+    assert broker.fetch(URL) is None and not broker._processes and not broker.receipts
+    assert time.monotonic()-start < 2
