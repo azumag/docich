@@ -135,6 +135,24 @@ class HanjukuStartQueryWorkflowTests(unittest.TestCase):
         self.assertNotIn("workflow_dispatch:", text)
         self.assertNotIn("INPUT_OPERATION", text)
 
+    def test_workflow_reports_only_fixed_queue_reason_codes(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        for reason in (
+            "rotation_disabled",
+            "recovery_required",
+            "clock_regressed",
+            "hanjuku_not_eligible",
+            "manual_queue_conflict",
+            "state_unavailable",
+            "config_invalid",
+            "queue_rejected",
+            "transport_failure",
+        ):
+            self.assertIn(reason, text)
+        self.assertIn('f"Reason: {reason}"', text)
+        self.assertNotIn("cat \"$work/start.stderr\"", text)
+        self.assertNotIn("cat \"$work/start.stdout\"", text)
+
     def test_start_script_waits_for_the_durable_queue_result(self):
         text = START_SCRIPT.read_text(encoding="utf-8")
         syntax = subprocess.run(

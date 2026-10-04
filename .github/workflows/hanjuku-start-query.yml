@@ -127,9 +127,38 @@ jobs:
           rc=$?
           set -e
           if (( rc != 0 )); then
-            echo '::error::Hanjuku start request rejected or unavailable'
+            reason="$(python3 - "$work/start.stdout" "$SHA" <<'PY'
+          import json, pathlib, sys
+          path, expected_sha = pathlib.Path(sys.argv[1]), sys.argv[2]
+          fixed = {
+              70: "rotation_disabled",
+              71: "recovery_required",
+              72: "clock_regressed",
+              73: "hanjuku_not_eligible",
+              74: "manual_queue_conflict",
+              75: "state_unavailable",
+              76: "config_invalid",
+              77: "queue_rejected",
+          }
+          reason = "transport_failure"
+          try:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              code = data.get("exit_code")
+              if (data.get("status") == "executed"
+                      and data.get("sha") == expected_sha
+                      and data.get("output") == "withheld"
+                      and type(code) is int):
+                  reason = fixed.get(code, "queue_rejected")
+          except (OSError, ValueError, TypeError):
+              pass
+          print(reason)
+          PY
+            )"
+            printf 'reason=%s\n' "$reason" >> "$GITHUB_OUTPUT"
+            echo "::error::Hanjuku start request rejected: $reason"
             exit 1
           fi
+          printf '%s\n' 'reason=queued' >> "$GITHUB_OUTPUT"
           rm -f "$work/start.stdout" "$work/start.stderr"
 
       - name: Return fixed result metadata to the control Issue
@@ -142,24 +171,35 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_SHA: ${{ github.sha }}
           START_OUTCOME: ${{ steps.start.outcome }}
+          START_REASON: ${{ steps.start.outputs.reason }}
         run: |
           set -euo pipefail
           umask 077
           work="$RUNNER_TEMP/hanjuku-start"
           install -m 700 -d "$work"
-          python3 - "$SOURCE_COMMENT_ID" "$RUN_ID" "$RUN_ATTEMPT" "$RUN_SHA" "$START_OUTCOME" > "$work/reply.json" <<'PY'
+          python3 - "$SOURCE_COMMENT_ID" "$RUN_ID" "$RUN_ATTEMPT" "$RUN_SHA" "$START_OUTCOME" "$START_REASON" > "$work/reply.json" <<'PY'
           import json, re, sys
-          comment_id, run_id, attempt, sha, outcome = sys.argv[1:]
+          comment_id, run_id, attempt, sha, outcome, reason = sys.argv[1:]
           if not (comment_id.isdigit() and run_id.isdigit() and attempt.isdigit()
                   and re.fullmatch(r"[0-9a-f]{40}", sha)
                   and outcome in {"success", "failure", "cancelled", "skipped"}):
               raise SystemExit("invalid fixed reply metadata")
+          allowed_reasons = {
+              "queued", "rotation_disabled", "recovery_required", "clock_regressed",
+              "hanjuku_not_eligible", "manual_queue_conflict", "state_unavailable",
+              "config_invalid", "queue_rejected", "transport_failure", "not_run",
+          }
+          if not reason:
+              reason = "not_run"
+          if reason not in allowed_reasons:
+              raise SystemExit("invalid fixed reply reason")
           body = "\n".join((
               f"Request: https://github.com/azumag/docich/issues/1657#issuecomment-{comment_id}",
               f"Run: https://github.com/azumag/docich/actions/runs/{run_id}",
               f"Attempt: {attempt}",
               f"SHA: {sha}",
               f"Result: {outcome}",
+              f"Reason: {reason}",
           ))
           json.dump({"body": body}, sys.stdout, separators=(",", ":"))
           PY
