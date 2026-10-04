@@ -20,6 +20,8 @@ from .game_switch import GameSwitchStore, atomic_write_json, validate_request_id
 JOURNAL = "soren_round_recovery.json"
 STAGES = ("prepared", "frozen", "paused", "saved", "stopped", "archived",
           "bridge_starting", "bridge_ready", "runner_starting", "completed")
+# game_switch._recover_draining_locked persists this literal after cancel_ok.
+DRAIN_RECOVERED_DETAIL = "試合終了境界のdeadlineが経過したため待機を取り消しました"
 IDENTITY = ("schema", "request_id", "game", "generation", "deadline_epoch", "deadline_at")
 
 
@@ -100,7 +102,7 @@ def prove_timeout(state_dir, canonical, rotation, retro, request, ack, now):
             or retro.get("status") != "failed" or retro.get("last_error_code") != "timeout"
             or retro.get("previous_game") != "sorengame"
             or retro.get("rotation_request_id") != rid or retro.get("switch_request_id") != rid
-            or target != "hanjuku"):
+            or target != "hanjuku-hero"):
         raise RecoveryRefused("failed reservation/receipt/active identity mismatch")
     corner = (rotation.get("known_corners") or {}).get(pending.get("corner"))
     if not isinstance(corner, dict) or corner.get("game") != target or corner.get("adapter") != "retro":
@@ -126,6 +128,13 @@ def prove_timeout(state_dir, canonical, rotation, retro, request, ack, now):
     if result.get("failure_phase") == "round_boundary":
         if result.get("retained_active") != active or result.get("boundary_cancelled") is not True:
             raise RecoveryRefused("retained active proof changed")
+    elif result.get("detail") == DRAIN_RECOVERED_DETAIL:
+        # Legacy receipt from the coordinator's explicit draining recovery. Its
+        # fixed detail is persisted only after the adapter acknowledged the
+        # cancel while keeping the active runtime; the cancelled lifecycle ack
+        # and the active generation above bind it to this exact request. The
+        # recover-path log row carries no request identity, so it cannot.
+        pass
     else:
         found = False
         try:

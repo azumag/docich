@@ -44,8 +44,7 @@ class LinuxRecoveryEffects:
                 # unrelated root daemon's cwd requires privileges we do not
                 # have and must not acquire. Its argv/birth can still protect
                 # known common workers without treating it as a game root.
-                cwd = (str((entry / "cwd").resolve(strict=True))
-                       if args and entry.stat().st_uid == os.getuid() else "")
+                cwd = self._cwd(entry) if args and entry.stat().st_uid == os.getuid() else ""
                 rows[int(entry.name)] = dict(pid=int(entry.name), birth=int(fields[19]),
                     ppid=int(fields[1]), state=fields[0], cwd=cwd, args=args)
             except FileNotFoundError:
@@ -53,6 +52,16 @@ class LinuxRecoveryEffects:
             except (OSError, ValueError, IndexError) as exc:
                 raise RecoveryRefused("process inventory incomplete") from exc
         return rows
+
+    @staticmethod
+    def _cwd(entry):
+        # A non-dumpable process (e.g. a sandboxed browser child) hides its cwd
+        # even from the same uid. It cannot be a game root; descendants are
+        # still attributed through ppid.
+        try:
+            return str((entry / "cwd").resolve(strict=True))
+        except PermissionError:
+            return ""
 
     @staticmethod
     def _names(row):

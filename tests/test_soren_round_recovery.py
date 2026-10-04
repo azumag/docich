@@ -71,9 +71,9 @@ def owned(tmp_path):
     done = dt.datetime.fromtimestamp(now - 100, dt.timezone.utc).isoformat()
     with store.transaction() as tx:
         tx.transition({"idle"}, "ready", updates={"active": active, "next_generation": 2})
-        accept = tx.accept_request(rid, "switch", "hanjuku")
+        accept = tx.accept_request(rid, "switch", "hanjuku-hero")
         result = dict(request_id=rid, operation="switch", status="failed", from_game="sorengame",
-                      to_game="hanjuku", generation=accept.generation, error_code="timeout", detail="boundary timeout",
+                      to_game="hanjuku-hero", generation=accept.generation, error_code="timeout", detail="boundary timeout",
                       failure_phase="round_boundary", retained_active=active, boundary_cancelled=True)
         tx.transition({"validating"}, "ready", updates={"operation": None, "request_id": None,
                        "last_result": result, "last_error": {"error_code": "timeout"}})
@@ -85,8 +85,8 @@ def owned(tmp_path):
     rotation = dict(schema_version=1, seed="fixture", slot=1, last_seen_at=now - 150,
                     next_due_at=now + 1000, last_slot_at=now - 150, history=[{"corner": "fixture", "at": now - 200}],
                     status="recovery_required", pending=dict(request_id=rid, phase="dispatched", corner="fixture",
-                    selected_at=now - 150), known_corners={"fixture": {"id": "fixture", "game": "hanjuku", "adapter": "retro"}})
-    retro = dict(status="failed", game="hanjuku", previous_game="sorengame", last_error_code="timeout",
+                    selected_at=now - 150), known_corners={"fixture": {"id": "fixture", "game": "hanjuku-hero", "adapter": "retro"}})
+    retro = dict(status="failed", game="hanjuku-hero", previous_game="sorengame", last_error_code="timeout",
                  rotation_request_id=rid, switch_request_id=rid, completed_at=done)
     atomic_write_json(state / "corner_rotation.json", rotation)
     atomic_write_json(state / "retro_corner.json", retro)
@@ -187,7 +187,7 @@ def test_legacy_requires_exact_boundary_event_not_timeout_text(owned):
     log = owned.state / "logs/game_switch.log"
     log.parent.mkdir(exist_ok=True)
     row = dict(event="round_boundary_failed", request_id=owned.rid, operation="switch", generation=2,
-               from_game="sorengame", to_game="hanjuku", phase="ready", result="failed", error_code="timeout",
+               from_game="sorengame", to_game="hanjuku-hero", phase="ready", result="failed", error_code="timeout",
                timestamp=dt.datetime.fromtimestamp(owned.now, dt.timezone.utc).isoformat())
     log.write_text(json.dumps(row) + "\n")
     assert owned.recovery.run()["status"] == "completed"
@@ -196,13 +196,13 @@ def test_legacy_requires_exact_boundary_event_not_timeout_text(owned):
 def test_hold_blocks_normal_coordinator_and_rotation_recovery(owned):
     owned.recovery.run()
     with pytest.raises(GameSwitchBusyError):
-        owned.store.accept_request(str(uuid.uuid4()), "switch", "hanjuku")
+        owned.store.accept_request(str(uuid.uuid4()), "switch", "hanjuku-hero")
     g = SimpleNamespace(state_dir=owned.state)
     manager = object.__new__(CornerRotationManager)
     manager.g = g
     assert manager.tick()["reason"] == "owned-soren-recovery-held"
     with pytest.raises(RotationError): manager.recover()
-    with pytest.raises(RotationError): manager.queue_manual("hanjuku")
+    with pytest.raises(RotationError): manager.queue_manual("hanjuku-hero")
 
 
 def test_identity_change_after_partial_stop_cannot_resume_or_launch(owned):
@@ -486,3 +486,55 @@ def test_fixed_entry_refuses_arguments_and_wrong_root(tmp_path):
         assert p.returncode != 0 and "fixed production root" in (p.stderr + p.stdout)
     assert subprocess.run(["bash", str(ops / "recover_soren_round.sh"), "x"], cwd=tmp_path).returncode == 64
     assert subprocess.run(["bash", str(ops / "recover_soren_round.sh")], cwd=tmp_path).returncode == 65
+
+
+def test_unreadable_cwd_is_not_a_root_and_does_not_abort_inventory(topo, monkeypatch):
+    real = Path.resolve
+
+    def resolve(self, *args, **kwargs):
+        if self.parent.name == "41" and self.name == "cwd":
+            raise PermissionError(13, "Permission denied")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    rows = topo.effects._rows()
+    assert rows[41]["cwd"] == "" and rows[20]["cwd"] == str(topo.root.resolve())
+    assert topo.effects.preflight()["roots"]["soren_loop.sh"]["pid"] == 20
+
+
+@pytest.mark.parametrize("detail,ok", [
+    ("試合終了境界のdeadlineが経過したため待機を取り消しました", True),
+    ("boundary timeout", False),
+])
+def test_legacy_drain_recovered_receipt_is_bound_by_its_persisted_detail(owned, detail, ok):
+    receipt = owned.store.receipts.load(owned.rid)
+    for key in ("failure_phase", "retained_active", "boundary_cancelled"):
+        receipt["result"].pop(key)
+    receipt["result"]["detail"] = detail
+    owned.store.receipts.save(receipt)
+    canonical = owned.store.canonical.load()[0]
+    canonical["last_result"] = receipt["result"]
+    owned.store.canonical.save(canonical)
+    if ok:
+        assert owned.recovery.run()["status"] == "completed"
+    else:
+        with pytest.raises(RecoveryRefused):
+            owned.recovery.run()
+        assert not owned.effects.calls
+
+
+def test_legacy_drain_detail_without_cancelled_ack_is_refused(owned):
+    receipt = owned.store.receipts.load(owned.rid)
+    for key in ("failure_phase", "retained_active", "boundary_cancelled"):
+        receipt["result"].pop(key)
+    receipt["result"]["detail"] = "試合終了境界のdeadlineが経過したため待機を取り消しました"
+    owned.store.receipts.save(receipt)
+    canonical = owned.store.canonical.load()[0]
+    canonical["last_result"] = receipt["result"]
+    owned.store.canonical.save(canonical)
+    ack = read_object(owned.life / "ack.json")
+    ack["status"] = "stopping"
+    atomic_write_json(owned.life / "ack.json", ack)
+    with pytest.raises(RecoveryRefused):
+        owned.recovery.run()
+    assert not owned.effects.calls
