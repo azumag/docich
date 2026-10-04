@@ -1,11 +1,11 @@
 {
-  "output_sha256": "91385315e567db868a91c38ac5ea0e51838ae293cf57c9c480d62029653695c0",
+  "output_sha256": "b4c248046e7de9bedea9a15a75ec7a7b4af795733e0313d17eabed88db4ed265",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "fe6b33736b6dc4b05f28160a415539a2dc0f5e78a1d7cdab44dfdec888f5e958",
+  "source_sha256": "5b2b66fa7697c318549cbf60a662a75a0eb0f8e946890a65df42de14f7fca51a",
   "topics": [
+    "Sorenの監視モニター風パネルを正規配備して実表示を確認",
     "VM CPU削減を正規配備し、fork減少と配信継続を実測",
-    "半熟英雄の余白カードを正規配備し、自然起動での受入れ待ち",
-    "VM CPU削減のSoren修正をmain統合、正規配備を準備"
+    "半熟英雄の余白カードを正規配備し、自然起動での受入れ待ち"
   ]
 }

@@ -1062,6 +1062,7 @@ class ProgramCornerStateTests(CollectorFixture):
         data = json.loads(proc.stdout)
         self.assertIn("corners", data)
         self.assertIn("game_switch", data["corners"])
+        self.assertIn("weather_corner", data["corners"])
         self.assertIn("state_dir_found", data["corners"])
         self.assertIn("boundary", data["corners"])
         self.assertIn("ab", data["corners"])
@@ -1488,6 +1489,324 @@ def test_manual_and_automatic_projection_do_not_hide_each_other(tmp_path):
     module._collect_corner_files(tmp_path, output, 100)
     assert output["corner_rotation"]["pending_owner"] == "retro_corner"
     assert output["corner_rotation"]["manual_pending_owner"] == "paper_corner_manual"
+
+
+def test_weather_pending_and_start_receipt_are_projected_without_request_identity(tmp_path):
+    module = load_collector()
+    request_id = "123e4567-e89b-52d3-a456-426614174000"
+    lease_id = "123e4567-e89b-42d3-a456-426614174001"
+    previous = {
+        "game": "sorengame", "runtime_id": "g41-abc123",
+        "generation": 41, "lease_id": lease_id,
+    }
+    weather = {
+        "game": "weather-view", "runtime_id": "g42-def456",
+        "generation": 42, "lease_id": "123e4567-e89b-42d3-a456-426614174002",
+    }
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "running", "pending": {
+            "corner": "weather", "phase": "dispatched", "selected_at": 100,
+            "request_id": request_id,
+        },
+    }))
+    (tmp_path / "weather_corner.json").write_text(json.dumps({
+        "status": "active", "rotation_request_id": request_id,
+        "start_request_id": request_id, "previous_game": "sorengame",
+        "previous_runtime_identity": previous,
+        "weather_runtime_identity": weather, "started_at": 200,
+        "forecast": "DO-NOT-PUBLISH-FORECAST", "audio_delivery": {
+            "body": "DO-NOT-PUBLISH-AUDIO", "request": "DO-NOT-PUBLISH-REQUEST",
+        },
+    }))
+    requests = tmp_path / "game-switch" / "requests"
+    requests.mkdir(parents=True)
+    (requests / f"{request_id}.json").write_text(json.dumps({
+        "request_id": request_id, "operation": "switch", "target": "weather-view",
+        "status": "succeeded", "generation": 42,
+        "updated_at": "2026-10-03T12:00:00Z", "payload_hash": "DO-NOT-PUBLISH-HASH",
+        "result": {
+            "request_id": request_id, "operation": "switch", "status": "succeeded",
+            "from_game": "sorengame", "to_game": "weather-view", "generation": 42,
+            "active_runtime": weather, "prompt": "DO-NOT-PUBLISH-PROMPT",
+        },
+    }))
+    before = {p.relative_to(tmp_path).as_posix(): p.read_bytes()
+              for p in tmp_path.rglob("*") if p.is_file()}
+    output = {}
+    with mock.patch.object(module, "_rotation_policy", return_value=(None, None)), \
+            mock.patch.object(module, "_collect_game_switch_fifo", return_value={"present": False}), \
+            mock.patch.object(module, "_collect_game_switch_watchdog", return_value={}), \
+            mock.patch.object(module, "_collect_corner_rotation_timer_alias", return_value={}):
+        module._collect_corner_files(tmp_path, output, 250)
+    owner = output["weather_corner"]
+    assert output["corner_rotation"]["pending_owner"] == "weather_corner"
+    assert owner["status"] == "active"
+    assert owner["rotation_request_matches_pending"] is True
+    assert owner["selection_kind"] == "automatic"
+    assert owner["start_request_matches_rotation"] is True
+    assert owner["start_receipt"]["status"] == "succeeded"
+    assert owner["start_receipt"]["result_matches_owner"] is True
+    assert owner["start_receipt"]["runtime_matches_owner"] is True
+    assert owner["start_receipt"]["generation_matches_owner"] is True
+    rendered = json.dumps(output)
+    for secret in (request_id, lease_id, "g41-abc123", "g42-def456", "DO-NOT-PUBLISH"):
+        assert secret not in rendered
+    assert before == {p.relative_to(tmp_path).as_posix(): p.read_bytes()
+                      for p in tmp_path.rglob("*") if p.is_file()}
+
+
+def test_weather_completion_matches_automatic_rotation_and_game_switch_restore(tmp_path):
+    module = load_collector()
+    start_id = "123e4567-e89b-52d3-a456-426614174010"
+    restore_id = "123e4567-e89b-42d3-a456-426614174011"
+    previous_lease = "123e4567-e89b-42d3-a456-426614174012"
+    weather_lease = "123e4567-e89b-42d3-a456-426614174013"
+    restored_lease = "123e4567-e89b-42d3-a456-426614174014"
+    previous = {
+        "game": "sorengame", "runtime_id": "g41-abc123",
+        "generation": 41, "lease_id": previous_lease,
+    }
+    weather = {
+        "game": "weather-view", "runtime_id": "g42-def456",
+        "generation": 42, "lease_id": weather_lease,
+    }
+    restored = {
+        "game": "sorengame", "runtime_id": "g43-789abc",
+        "generation": 43, "lease_id": restored_lease,
+    }
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "ready", "pending": None,
+        "last_result": {"corner": "weather", "request_id": start_id,
+                        "status": "completed", "at": 380},
+        "history": [{"corner": "weather", "at": 380, "source": "completion"}],
+    }))
+    (tmp_path / "weather_corner.json").write_text(json.dumps({
+        "status": "completed", "rotation_request_id": start_id,
+        "start_request_id": start_id, "restore_request_id": restore_id,
+        "previous_game": "sorengame", "previous_runtime_identity": previous,
+        "weather_runtime_identity": weather, "restored_runtime_identity": restored,
+        "requested_at": 100, "starting_at": 110, "started_at": 120,
+        "restore_requested_at": 360, "completed_at": 380, "end_reason": "duration",
+        "forecast": "DO-NOT-PUBLISH-FORECAST", "last_error": "SECRET-ERROR",
+        "audio_plan": {"text": "SECRET-AUDIO"},
+    }))
+    (tmp_path / "game_switch.json").write_text(json.dumps({
+        "phase": "ready", "active": restored,
+    }))
+    requests = tmp_path / "game-switch" / "requests"
+    requests.mkdir(parents=True)
+    (requests / f"{start_id}.json").write_text(json.dumps({
+        "request_id": start_id, "operation": "switch", "target": "weather-view",
+        "status": "succeeded", "generation": 42, "updated_at": "2026-10-03T12:02:00Z",
+        "result": {"request_id": start_id, "operation": "switch", "status": "succeeded",
+                   "from_game": "sorengame", "to_game": "weather-view", "generation": 42,
+                   "active_runtime": weather},
+    }))
+    (requests / f"{restore_id}.json").write_text(json.dumps({
+        "request_id": restore_id, "operation": "switch", "target": "sorengame",
+        "status": "succeeded", "generation": 43, "updated_at": "2026-10-03T12:06:20Z",
+        "result": {"request_id": restore_id, "operation": "switch", "status": "succeeded",
+                   "from_game": "weather-view", "to_game": "sorengame", "generation": 43,
+                   "active_runtime": restored},
+    }))
+    before = {p.relative_to(tmp_path).as_posix(): p.read_bytes()
+              for p in tmp_path.rglob("*") if p.is_file()}
+    output = {}
+    with mock.patch.object(module, "_rotation_policy", return_value=(None, None)), \
+            mock.patch.object(module, "_collect_game_switch_fifo", return_value={"present": False}), \
+            mock.patch.object(module, "_collect_game_switch_watchdog", return_value={}), \
+            mock.patch.object(module, "_collect_corner_rotation_timer_alias", return_value={}):
+        module._collect_corner_files(tmp_path, output, 400)
+    owner = output["weather_corner"]
+    assert owner["status"] == "completed"
+    assert owner["rotation_request_matches_last_result"] is True
+    assert owner["selection_kind"] == "automatic"
+    assert owner["rotation_result_status"] == "completed"
+    assert owner["end_reason"] == "duration"
+    assert owner["start_receipt"]["status"] == "succeeded"
+    assert owner["start_receipt"]["result_matches_owner"] is True
+    assert owner["start_receipt"]["runtime_matches_owner"] is True
+    assert owner["start_receipt"]["generation_matches_owner"] is True
+    assert owner["restore_receipt"]["status"] == "succeeded"
+    assert owner["restore_receipt"]["result_matches_owner"] is True
+    assert owner["restore_receipt"]["runtime_matches_owner"] is True
+    assert owner["restore_receipt"]["generation_matches_owner"] is True
+    assert owner["restored_runtime_matches_current"] is True
+    rendered = json.dumps(output)
+    for secret in (start_id, restore_id, previous_lease, weather_lease, restored_lease,
+                   "g41-abc123", "g42-def456", "g43-789abc", "DO-NOT-PUBLISH",
+                   "SECRET-ERROR", "SECRET-AUDIO"):
+        assert secret not in rendered
+    assert before == {p.relative_to(tmp_path).as_posix(): p.read_bytes()
+                      for p in tmp_path.rglob("*") if p.is_file()}
+
+
+def test_weather_invalid_request_identity_never_builds_receipt_path(tmp_path):
+    module = load_collector()
+    valid_rotation_id = "123e4567-e89b-42d3-a456-426614174020"
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "running", "pending": {"corner": "weather", "request_id": valid_rotation_id},
+    }))
+    (tmp_path / "weather_corner.json").write_text(json.dumps({
+        "status": "starting", "rotation_request_id": valid_rotation_id,
+        "start_request_id": "../outside-secret",
+    }))
+    calls = []
+    original = module._rotation_evidence_file
+    def recording_read(state_dir, relative):
+        calls.append(str(relative))
+        return original(state_dir, relative)
+    output = {}
+    with mock.patch.object(module, "_rotation_evidence_file", side_effect=recording_read), \
+            mock.patch.object(module, "_rotation_policy", return_value=(None, None)), \
+            mock.patch.object(module, "_collect_game_switch_fifo", return_value={"present": False}), \
+            mock.patch.object(module, "_collect_game_switch_watchdog", return_value={}), \
+            mock.patch.object(module, "_collect_corner_rotation_timer_alias", return_value={}):
+        module._collect_corner_files(tmp_path, output, 250)
+    assert not any("game-switch/requests/" in path for path in calls)
+    assert output["weather_corner"]["start_receipt"]["present"] is False
+    assert output["weather_corner"]["start_request_matches_rotation"] is None
+    assert "outside-secret" not in json.dumps(output)
+
+
+def test_weather_idle_start_and_restore_accept_only_literal_null_game_fields(tmp_path):
+    module = load_collector()
+    start_id = "123e4567-e89b-42d3-a456-426614174050"
+    restore_id = "123e4567-e89b-42d3-a456-426614174051"
+    weather = {
+        "game": "weather-view", "runtime_id": "g42-def456",
+        "generation": 42, "lease_id": "123e4567-e89b-42d3-a456-426614174052",
+    }
+    state = {
+        "previous_game": None,
+        "weather_runtime_identity": weather,
+        "restored_runtime_identity": None,
+    }
+    requests = tmp_path / "game-switch" / "requests"
+    requests.mkdir(parents=True)
+    (requests / f"{start_id}.json").write_text(json.dumps({
+        "request_id": start_id, "operation": "start", "target": "weather-view",
+        "status": "succeeded", "generation": 42,
+        "result": {
+            "request_id": start_id, "operation": "start", "status": "succeeded",
+            "from_game": None, "to_game": "weather-view", "generation": 42,
+            "active_runtime": weather,
+        },
+    }))
+    (requests / f"{restore_id}.json").write_text(json.dumps({
+        "request_id": restore_id, "operation": "stop", "target": None,
+        "status": "succeeded", "generation": 42,
+        "result": {
+            "request_id": restore_id, "operation": "stop", "status": "succeeded",
+            "from_game": "weather-view", "to_game": None, "generation": 42,
+            "active_runtime": None,
+        },
+    }))
+
+    start = module._weather_receipt_projection(tmp_path, start_id, "start", state)
+    restore = module._weather_receipt_projection(tmp_path, restore_id, "restore", state)
+    assert start["result_matches_owner"] is True
+    assert start["runtime_matches_owner"] is True
+    assert start["generation_matches_owner"] is True
+    assert restore["result_matches_owner"] is True
+    assert restore["runtime_matches_owner"] is True
+    assert restore["generation_matches_owner"] is True
+
+
+def test_weather_idle_restore_rejects_malformed_non_null_receipt_fields(tmp_path):
+    module = load_collector()
+    restore_id = "123e4567-e89b-42d3-a456-426614174060"
+    weather = {
+        "game": "weather-view", "runtime_id": "g42-def456",
+        "generation": 42, "lease_id": "123e4567-e89b-42d3-a456-426614174061",
+    }
+    state = {
+        "previous_game": None,
+        "weather_runtime_identity": weather,
+        "restored_runtime_identity": None,
+    }
+    requests = tmp_path / "game-switch" / "requests"
+    requests.mkdir(parents=True)
+    path = requests / f"{restore_id}.json"
+    base = {
+        "request_id": restore_id, "operation": "stop", "target": None,
+        "status": "succeeded", "generation": 42,
+        "result": {
+            "request_id": restore_id, "operation": "stop", "status": "succeeded",
+            "from_game": "weather-view", "to_game": None, "generation": 42,
+            "active_runtime": None,
+        },
+    }
+
+    malformed = "DO-NOT-PUBLISH malformed"
+    for location, field in (("receipt", "target"), ("result", "from_game"), ("result", "to_game")):
+        receipt = json.loads(json.dumps(base))
+        target = receipt if location == "receipt" else receipt["result"]
+        target[field] = malformed
+        path.write_text(json.dumps(receipt))
+        projection = module._weather_receipt_projection(
+            tmp_path, restore_id, "restore", state
+        )
+        assert projection["result_matches_owner"] is False
+        assert malformed not in json.dumps(projection)
+
+    receipt = json.loads(json.dumps(base))
+    receipt["result"]["active_runtime"] = {"malformed": malformed}
+    path.write_text(json.dumps(receipt))
+    projection = module._weather_receipt_projection(tmp_path, restore_id, "restore", state)
+    assert projection["result_matches_owner"] is True
+    assert projection["runtime_matches_owner"] is False
+    assert malformed not in json.dumps(projection)
+
+
+def test_weather_completed_selection_kind_uses_request_uuid_generation_contract(tmp_path):
+    module = load_collector()
+    automatic_id = "123e4567-e89b-52d3-a456-426614174040"
+    manual_id = "123e4567-e89b-42d3-a456-426614174041"
+    rotation = {"last_result": {"corner": "weather", "request_id": automatic_id,
+                                "status": "completed", "at": 100}}
+    (tmp_path / "weather_corner.json").write_text(json.dumps({
+        "status": "completed", "rotation_request_id": automatic_id,
+    }))
+    projection = module._weather_corner_projection(tmp_path, rotation, True)
+    assert projection["selection_kind"] == "automatic"
+    rotation["last_result"]["request_id"] = manual_id
+    (tmp_path / "weather_corner.json").write_text(json.dumps({
+        "status": "completed", "rotation_request_id": manual_id,
+    }))
+    projection = module._weather_corner_projection(tmp_path, rotation, True)
+    assert projection["selection_kind"] == "manual"
+
+
+def test_weather_receipt_symlink_is_reported_unreadable_without_following_target(tmp_path):
+    module = load_collector()
+    request_id = "123e4567-e89b-42d3-a456-426614174030"
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"secret": "DO-NOT-PUBLISH-SYMLINK-TARGET"}))
+    requests = tmp_path / "game-switch" / "requests"
+    requests.mkdir(parents=True)
+    (requests / f"{request_id}.json").symlink_to(outside)
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "running", "pending": {"corner": "weather", "request_id": request_id},
+    }))
+    (tmp_path / "weather_corner.json").write_text(json.dumps({
+        "status": "interrupted", "rotation_request_id": request_id,
+        "start_request_id": request_id, "previous_game": "sorengame",
+        "restore_request_id": "123e4567-e89b-42d3-a456-426614174031",
+        "end_reason": [], "switch_request_id": {"malformed": True},
+    }))
+    output = {}
+    with mock.patch.object(module, "_rotation_policy", return_value=(None, None)), \
+            mock.patch.object(module, "_collect_game_switch_fifo", return_value={"present": False}), \
+            mock.patch.object(module, "_collect_game_switch_watchdog", return_value={}), \
+            mock.patch.object(module, "_collect_corner_rotation_timer_alias", return_value={}):
+        module._collect_corner_files(tmp_path, output, 250)
+    owner = output["weather_corner"]
+    assert owner["start_receipt"]["present"] is True
+    assert owner["start_receipt"]["readable"] is False
+    assert owner["end_reason"] is None
+    assert owner["restore_receipt"]["present"] is False
+    assert "DO-NOT-PUBLISH-SYMLINK-TARGET" not in json.dumps(output)
 
 
 def test_rotation_error_kind_taxonomy_matches_the_durable_ledger():

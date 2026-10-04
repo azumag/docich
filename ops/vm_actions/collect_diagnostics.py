@@ -24,7 +24,7 @@ Observed sources (all read-only):
     logs/tmp/runtime caches, strategy archive, Git metadata, and VOICEVOX;
     scans are bounded, never follow symlinks, and emit no paths or filenames
   - docich program/corner state under the production state_dir
-    (game_switch.json, game-switch/requests/*.json, retro_corner.json, paper_corner.json,
+    (game_switch.json, game-switch/requests/*.json, weather_corner.json, retro_corner.json, paper_corner.json,
     paper_corner_manual.json, trading/presentation.json,
     trading/paper_improve_status.json, trading/paper_experiment_control.json,
     trading/paper_strategy_evaluation.json): lifecycle statuses, timestamps,
@@ -2260,6 +2260,7 @@ def _collect_tracked_drift(root):
 CORNER_STATE_FILES = {
     "corner_rotation": "corner_rotation.json",
     "game_switch": "game_switch.json",
+    "weather_corner": "weather_corner.json",
     "retro_corner": "retro_corner.json",
     "paper_corner": "paper_corner.json",
     "paper_corner_manual": "paper_corner_manual.json",
@@ -2273,6 +2274,10 @@ ROTATION_CORNER_FILES = (
     "retro_corner", "retro_corner_manual", "paper_corner", "paper_corner_manual",
     "soren91_corner", "soren91_corner_manual", "nethack_corner", "nethack_corner_manual",
 )
+# Automatic reservation ownership includes the weather manager. Keep the
+# separate manual-owner allowlist above unchanged: its state_file contract is
+# intentionally narrower and is not inferred from catalog input.
+ROTATION_PENDING_OWNER_FILES = (*ROTATION_CORNER_FILES, "weather_corner")
 ROTATION_IMPROVE_GAMES = (
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
     "pacman4console", "nethack", "hanjuku-hero", "soren91",
@@ -2332,6 +2337,295 @@ ROTATION_ERROR_KINDS = frozenset({
     "unexpected",
 })
 ROTATION_PENDING_PHASES = frozenset({"selected", "dispatched"})
+
+WEATHER_CORNER_STATUSES = frozenset({
+    "idle", "starting", "active", "restoring", "completed", "interrupted", "failed",
+})
+WEATHER_END_REASONS = frozenset({
+    "forecast-unavailable-before-start", "forecast-expires-before-start",
+    "forecast-fetch-failed-before-start", "operator-stopped-before-start",
+    "operator-moved-after-start", "operator-moved-during-weather",
+    "operator-moved-before-restore", "switch-terminal-before-corner-active",
+    "manual", "forecast-expired", "duration",
+})
+WEATHER_RECEIPT_STATUSES = frozenset({
+    "allocating", "accepted", "queued", "succeeded", "failed", "rolled_back",
+})
+WEATHER_RESULT_STATUSES = frozenset({"succeeded", "failed", "rolled_back"})
+WEATHER_OPERATIONS = frozenset({"start", "switch", "stop"})
+_WEATHER_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+_WEATHER_GAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_WEATHER_RUNTIME_RE = re.compile(r"^g([1-9][0-9]{0,11})-([a-f0-9]{6,32})$")
+
+
+def _weather_request_id(value):
+    """Return only canonical lowercase UUIDs for fixed receipt lookups."""
+    return value if isinstance(value, str) and _WEATHER_UUID_RE.fullmatch(value) else None
+
+
+def _weather_selection_kind(request_id):
+    """Rotation uses UUID5 for automatic picks and UUID4 for manual requests."""
+    request_id = _weather_request_id(request_id)
+    if request_id is None:
+        return "unknown"
+    return {"5": "automatic", "4": "manual"}.get(request_id[14], "unknown")
+
+
+def _weather_game(value):
+    return value if isinstance(value, str) and _WEATHER_GAME_RE.fullmatch(value) else None
+
+
+def _weather_identity(value):
+    """Validate the four-field runtime identity without returning it publicly."""
+    if not isinstance(value, dict):
+        return None
+    game = _weather_game(value.get("game"))
+    runtime_id = value.get("runtime_id")
+    generation = value.get("generation")
+    lease_id = _weather_request_id(value.get("lease_id"))
+    match = _WEATHER_RUNTIME_RE.fullmatch(runtime_id) if isinstance(runtime_id, str) else None
+    if (game is None or match is None or lease_id is None
+            or type(generation) is not int or generation < 1
+            or int(match.group(1)) != generation):
+        return None
+    return {
+        "game": game,
+        "runtime_id": runtime_id,
+        "generation": generation,
+        "lease_id": lease_id,
+    }
+
+
+def _weather_game_matches(value, expected):
+    """Match nullable game fields without treating malformed non-null values as null."""
+    return value is None if expected is None else _weather_game(value) == expected
+
+
+def _weather_receipt_projection(state_dir, request_id, stage, state):
+    """Project one owner-bound GameSwitch receipt from its validated fixed UUID path."""
+    out = {
+        "present": False, "readable": False, "status": "unknown",
+        "operation": "unknown", "updated_at": None, "result_status": "unknown",
+        "result_matches_owner": None, "runtime_matches_owner": None,
+        "generation_matches_owner": None,
+    }
+    request_id = _weather_request_id(request_id)
+    if request_id is None:
+        return out
+    present, readable, receipt = _rotation_evidence_file(
+        state_dir, f"game-switch/requests/{request_id}.json"
+    )
+    out.update(present=present, readable=readable)
+    if not readable:
+        return out
+
+    receipt_id = _weather_request_id(receipt.get("request_id"))
+    receipt_status = _rotation_enum(receipt.get("status"), WEATHER_RECEIPT_STATUSES)
+    operation = _rotation_enum(receipt.get("operation"), WEATHER_OPERATIONS)
+    out.update(
+        status=receipt_status,
+        operation=operation,
+        updated_at=_rotation_time(receipt.get("updated_at")),
+    )
+    if receipt_id != request_id:
+        out["result_matches_owner"] = False
+        out["runtime_matches_owner"] = False
+        out["generation_matches_owner"] = False
+        return out
+
+    previous_game_raw = state.get("previous_game")
+    previous_game = _weather_game(previous_game_raw)
+    previous_game_valid = previous_game_raw is None or previous_game is not None
+    expected_operation = ("start" if previous_game_raw is None else "switch") if stage == "start" else (
+        "stop" if previous_game_raw is None else "switch"
+    )
+    expected_target = "weather-view" if stage == "start" else previous_game
+    expected_from = previous_game if stage == "start" else "weather-view"
+    expected_to = "weather-view" if stage == "start" else previous_game
+    result = receipt.get("result")
+    if not isinstance(result, dict):
+        return out
+
+    result_id = _weather_request_id(result.get("request_id"))
+    result_status = _rotation_enum(result.get("status"), WEATHER_RESULT_STATUSES)
+    out["result_status"] = result_status
+    result_matches = (
+        result_id == request_id
+        and previous_game_valid
+        and operation == expected_operation
+        and _weather_game_matches(receipt.get("target"), expected_target)
+        and result.get("operation") == expected_operation
+        and _weather_game_matches(result.get("from_game"), expected_from)
+        and _weather_game_matches(result.get("to_game"), expected_to)
+    )
+    out["result_matches_owner"] = bool(result_matches)
+
+    result_runtime_raw = result.get("active_runtime")
+    result_runtime = _weather_identity(result_runtime_raw)
+    if stage == "start":
+        expected_runtime = (
+            _weather_identity(state.get("weather_runtime_identity"))
+            or _weather_identity(state.get("starting_runtime_identity"))
+        )
+    else:
+        expected_runtime = _weather_identity(state.get("restored_runtime_identity"))
+    if expected_runtime is not None:
+        out["runtime_matches_owner"] = result_runtime == expected_runtime
+    elif stage == "restore" and state.get("previous_game") is None and "restored_runtime_identity" in state:
+        out["runtime_matches_owner"] = result_runtime_raw is None
+    expected_generation_identity = expected_runtime
+    if stage == "restore" and state.get("previous_game") is None:
+        expected_generation_identity = _weather_identity(state.get("weather_runtime_identity"))
+    if expected_generation_identity is not None:
+        receipt_generation = receipt.get("generation")
+        result_generation = result.get("generation")
+        out["generation_matches_owner"] = bool(
+            type(receipt_generation) is int
+            and type(result_generation) is int
+            and receipt_generation == result_generation == expected_generation_identity["generation"]
+        )
+    return out
+
+
+def _weather_corner_projection(state_dir, rotation, rotation_readable):
+    """Read fixed weather owner state and prove only its reservation/receipt links."""
+    present, readable, state = _rotation_evidence_file(
+        state_dir, CORNER_STATE_FILES["weather_corner"]
+    )
+    out = {
+        "present": present, "readable": readable, "status": "unknown",
+        "rotation_request_matches_pending": None,
+        "rotation_request_matches_last_result": None,
+        "selection_kind": "unknown", "rotation_result_status": "unknown",
+        "rotation_result_at": None, "requested_at": None, "started_at": None,
+        "restore_requested_at": None, "completed_at": None, "end_reason": None,
+        "previous_game": None, "starting_runtime_present": False,
+        "weather_runtime_present": False, "restored_runtime_present": False,
+        "start_request_matches_rotation": None,
+        "start_receipt": {
+            "present": False, "readable": False, "status": "unknown",
+            "operation": "unknown", "updated_at": None, "result_status": "unknown",
+            "result_matches_owner": None, "runtime_matches_owner": None,
+            "generation_matches_owner": None,
+        },
+        "restore_receipt": {
+            "present": False, "readable": False, "status": "unknown",
+            "operation": "unknown", "updated_at": None, "result_status": "unknown",
+            "result_matches_owner": None, "runtime_matches_owner": None,
+            "generation_matches_owner": None,
+        },
+        "restored_runtime_matches_current": None,
+    }
+    if not readable:
+        return out
+
+    status = _rotation_enum(state.get("status"), WEATHER_CORNER_STATUSES)
+    owner_id = _weather_request_id(state.get("rotation_request_id"))
+    start_id = _weather_request_id(state.get("start_request_id"))
+    restore_id = _weather_request_id(state.get("restore_request_id"))
+    rotation = rotation if rotation_readable and isinstance(rotation, dict) else None
+    pending = rotation.get("pending") if rotation and isinstance(rotation.get("pending"), dict) else None
+    last = rotation.get("last_result") if rotation and isinstance(rotation.get("last_result"), dict) else None
+
+    pending_match = None
+    if rotation is not None and owner_id is not None:
+        pending_match = bool(
+            pending is not None
+            and pending.get("corner") == "weather"
+            and _weather_request_id(pending.get("request_id")) == owner_id
+        )
+    last_match = None
+    if rotation is not None and owner_id is not None:
+        last_match = bool(
+            last is not None
+            and last.get("corner") == "weather"
+            and _weather_request_id(last.get("request_id")) == owner_id
+        )
+    selection_kind = "unknown"
+    if pending_match:
+        source = pending.get("source")
+        selection_kind = (
+            "manual" if source == "manual" else
+            _weather_selection_kind(owner_id) if source is None else "unknown"
+        )
+    elif last_match:
+        selection_kind = _weather_selection_kind(owner_id)
+
+    rotation_result_status = "unknown"
+    rotation_result_at = None
+    if last_match:
+        rotation_result_status = _rotation_enum(
+            last.get("status"), {"completed", "failed", "queued", "waiting", "already-running"}
+        )
+        rotation_result_at = _rotation_time(last.get("at"))
+
+    out.update(
+        status=status,
+        rotation_request_matches_pending=pending_match,
+        rotation_request_matches_last_result=last_match,
+        selection_kind=selection_kind,
+        rotation_result_status=rotation_result_status,
+        rotation_result_at=rotation_result_at,
+        requested_at=_rotation_time(state.get("requested_at")),
+        started_at=_rotation_time(state.get("started_at")),
+        restore_requested_at=_rotation_time(state.get("restore_requested_at")),
+        completed_at=_rotation_time(state.get("completed_at")),
+        end_reason=(
+            state.get("end_reason")
+            if isinstance(state.get("end_reason"), str)
+            and state.get("end_reason") in WEATHER_END_REASONS else None
+        ),
+        previous_game=_weather_game(state.get("previous_game")),
+        starting_runtime_present=_weather_identity(state.get("starting_runtime_identity")) is not None,
+        weather_runtime_present=_weather_identity(state.get("weather_runtime_identity")) is not None,
+        restored_runtime_present=(
+            _weather_identity(state.get("restored_runtime_identity")) is not None
+            or (state.get("previous_game") is None and "restored_runtime_identity" in state
+                and state.get("restored_runtime_identity") is None)
+        ),
+        start_request_matches_rotation=(
+            start_id == owner_id if start_id is not None and owner_id is not None else None
+        ),
+    )
+    if start_id is not None and start_id == owner_id:
+        out["start_receipt"] = _weather_receipt_projection(
+            state_dir, start_id, "start", state
+        )
+    elif start_id is not None:
+        out["start_receipt"]["result_matches_owner"] = False
+        out["start_receipt"]["runtime_matches_owner"] = False
+    restore_is_owned = (
+        restore_id is not None
+        and (
+            (status == "restoring"
+             and _weather_request_id(state.get("switch_request_id")) == restore_id)
+            or (status in {"completed", "interrupted", "failed"}
+                and (state.get("switch_request_id") is None
+                     or _weather_request_id(state.get("switch_request_id")) == restore_id))
+        )
+    )
+    if restore_is_owned:
+        out["restore_receipt"] = _weather_receipt_projection(
+            state_dir, restore_id, "restore", state
+        )
+    _, current_readable, canonical = _rotation_evidence_file(
+        state_dir, CORNER_STATE_FILES["game_switch"]
+    )
+    current_active = canonical.get("active") if current_readable else None
+    current_identity = _weather_identity(current_active)
+    restored_identity = _weather_identity(state.get("restored_runtime_identity"))
+    if current_readable and status == "completed":
+        if state.get("previous_game") is None:
+            out["restored_runtime_matches_current"] = (
+                canonical.get("phase") == "idle" and current_active is None
+            )
+        elif restored_identity is not None:
+            out["restored_runtime_matches_current"] = current_identity == restored_identity
+        else:
+            out["restored_runtime_matches_current"] = False
+    return out
 
 
 def _rotation_evidence_file(state_dir, relative):
@@ -3031,7 +3325,7 @@ def _rotation_pending_projection(state_dir, data, now):
         out["pending_owner"] = "unknown"
         return out
     out["pending_owner"] = "none"
-    for name in ROTATION_CORNER_FILES:
+    for name in ROTATION_PENDING_OWNER_FILES:
         _, readable, raw = _rotation_evidence_file(state_dir, name + ".json")
         if not readable:
             # An unreadable fixed file may hold the owner; never report "none".
@@ -3097,6 +3391,7 @@ def _rotation_manual_pending_projection(state_dir, data, now):
 
 def _collect_corner_files(state_dir, payload, now):
     present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["corner_rotation"])
+    rotation_data = data if readable else None
     rotation = {"present": present, "readable": readable}
     if readable:
         # Fixed projection only: never emit seed, adapter errors or arbitrary
@@ -3152,6 +3447,9 @@ def _collect_corner_files(state_dir, payload, now):
             }
         )
     payload["game_switch"] = entry
+    payload["weather_corner"] = _weather_corner_projection(
+        state_dir, rotation_data, rotation_data is not None
+    )
     payload["game_switch_fifo"] = _collect_game_switch_fifo(state_dir, now)
     payload["game_switch_watchdog"] = _collect_game_switch_watchdog()
     payload["corner_rotation_timer_alias"] = _collect_corner_rotation_timer_alias()
@@ -3233,6 +3531,7 @@ def _collect_programs(state_dir, soren, now):
             "legacy_alias": legacy_alias,
         },
         "game_switch": {"present": False, "readable": False},
+        "weather_corner": {"present": False, "readable": False},
         "game_switch_fifo": {
             "present": False,
             "readable": False,
