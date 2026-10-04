@@ -242,7 +242,7 @@ class CornerRotationManager:
             for record in known.values():
                 if (not isinstance(record, dict)
                         or not isinstance(record.get("id"), str)
-                        or record.get("adapter") not in {"game", "paper", "meriken", "nethack"}
+                        or record.get("adapter") not in RetiredCornerObserver.STATE_FILES
                         or not isinstance(record.get("game"), str)):
                     raise RotationError("invalid known corner identity")
         if (state.get("status") == "running"

@@ -139,6 +139,18 @@ jobs:
               75: "state_unavailable",
               76: "config_invalid",
               77: "queue_rejected",
+              78: "rotation_adapter_state",
+              79: "rotation_adapter_timestamp",
+              80: "rotation_catalog_mismatch",
+              81: "rotation_execution_error",
+              82: "rotation_execution_unverified",
+              83: "rotation_invalid_state",
+              84: "rotation_unexpected",
+              85: "invalid_value",
+              86: "missing_key",
+              87: "type_mismatch",
+              88: "dependency_unavailable",
+              89: "adapter_failure",
           }
           reason = "transport_failure"
           try:
@@ -187,7 +199,12 @@ jobs:
           allowed_reasons = {
               "queued", "rotation_disabled", "recovery_required", "clock_regressed",
               "hanjuku_not_eligible", "manual_queue_conflict", "state_unavailable",
-              "config_invalid", "queue_rejected", "transport_failure", "not_run",
+              "config_invalid", "queue_rejected", "rotation_adapter_state",
+              "rotation_adapter_timestamp", "rotation_catalog_mismatch",
+              "rotation_execution_error", "rotation_execution_unverified",
+              "rotation_invalid_state", "rotation_unexpected", "invalid_value",
+              "missing_key", "type_mismatch", "dependency_unavailable",
+              "adapter_failure", "transport_failure", "not_run",
           }
           if not reason:
               reason = "not_run"
