@@ -44,9 +44,11 @@ GameSwitchやweather workerを起動せず、共通program slot・試合境界�
 
 backendのPython変更はWebUIサービスの再起動が必要。正規deployでファイルが更新されても、
 既存プロセスのimport済みcatalog/adapterは更新されない。HTML一致の診断だけでは
-backendの反映を証明できない。owner承認後、配備済みの最新main SHAを指定して
-`vm-operations.yml` の `operation=restart_webui`、`target=production`、
-`ref=<配備済みmain SHA>`、`confirm=production` を使う。
+backendの反映を証明できない。owner承認後、最新mainと同SHAの正規deploy成功を確認し、
+`vm-operations.yml` をworkflow ref `main`で実行する。入力は `operation=restart_webui`、
+`target=production`、`ref=main`、`confirm=production`。入力refへのSHA指定は
+`restart_webui must run from main`で拒否される。workflowの
+`Resolve immutable candidate SHA`とgateway結果の実resolved SHAを、配備成功のSHAと照合する。
 再起動後に認証済み `GET /api/corners` の `source`・`catalog_status`・catalog件数を確認する。
 `source`は `docich.soren-live.toml` / `run-soren-live`、`catalog_status`は `available` が期待値。
 このコード追加・回帰テストだけでは本番再起動やweather開始は行われない。
