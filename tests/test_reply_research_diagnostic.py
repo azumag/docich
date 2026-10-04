@@ -28,6 +28,27 @@ def test_http_metadata_never_includes_private_fields(status, category):
     assert 'PRIVATE' not in json.dumps(result)
 
 
+def test_official_provider_auth_error_without_http_status_drops_identity_and_message():
+    # OpenCode 907b3bc5 core/v1/session.ts: AuthError serializes this name/data.
+    event = {'type': 'error', 'error': {'name': 'ProviderAuthError', 'data': {
+        'providerID': 'SYNTHETIC_PRIVATE_PROVIDER', 'message': 'SYNTHETIC_PRIVATE_CREDENTIAL'}}}
+    assert structured_error(event) == {
+        'stage': 'cli_error_event', 'error_name': 'ProviderAuthError', 'category': 'model_auth'}
+
+
+def test_provider_auth_jsonl_metadata_survives_observer_rejection_without_content():
+    rows = []
+    event = {'type': 'error', 'error': {'name': 'ProviderAuthError', 'data': {
+        'providerID': 'SYNTHETIC_PRIVATE_PROVIDER', 'message': 'SYNTHETIC_PRIVATE_CREDENTIAL'}}}
+    def reject(event):
+        raise ValueError('unexpected_event')
+    with pytest.raises(ValueError, match='unexpected_event'):
+        local_run('print(' + repr(json.dumps(event)) + ')', rows, observer=reject)
+    assert {'stage': 'cli_error_event', 'error_name': 'ProviderAuthError', 'category': 'model_auth'} in rows
+    assert rows[-1]['stage'] == 'cli_reaped'
+    assert 'PRIVATE' not in json.dumps(rows)
+
+
 @pytest.mark.parametrize('error,category', [
     ({'name': 'APIError', 'data': {'code': 'ECONNRESET'}}, 'network_tls'),
     ({'name': 'NetworkError'}, 'network_tls'),

@@ -1,7 +1,7 @@
 """Optional research metadata projection. No content, identifiers or log sink."""
 
 ERROR_NAMES = frozenset({
-    "APIError", "AuthenticationError", "ConfigInvalidError", "ConfigJsonError",
+    "APIError", "AuthenticationError", "ProviderAuthError", "ConfigInvalidError", "ConfigJsonError",
     "ProviderModelNotFoundError", "ModelNotFoundError", "UnknownError",
     "ContextOverflowError", "TimeoutError", "NetworkError",
 })
@@ -70,7 +70,7 @@ def structured_error(event):
                        "http_status": data.get("statusCode"), "transport_code": data.get("code")})
     name = row.setdefault("error_name", "unrecognized")
     status = row.get("http_status")
-    if status in (401, 403) or name == "AuthenticationError":
+    if status in (401, 403) or name in {"AuthenticationError", "ProviderAuthError"}:
         category = "model_auth"
     elif status == 429:
         category = "rate_limit"
