@@ -112,7 +112,8 @@ def test_brain_advances_multiline_intro_pager_with_visible_player(startup_enable
         "|.........+ --More--",
         "|....@....|",
     ]
-    lines[22:] = ["Adventurer St:16 Dx:12", "Dlvl:1 HP:14(14) Pw:4(4) AC:4 Xp:1"]
+    lines[5] = "|.....[...|"
+    lines[22:] = ["[Adventurer ] St:16 Dx:12", "Dlvl:1 HP:14(14) Pw:4(4) AC:4 Xp:1"]
     captured = observation("\n".join(lines))
     actions = brain.decide(captured)
     assert [(a.type, a.text) for a in actions] == [("text", " ")]

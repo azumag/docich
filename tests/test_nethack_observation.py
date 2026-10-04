@@ -175,6 +175,37 @@ def test_partial_or_question_bearing_legacy_intro_holds(changed_row, value):
     assert normalize_tty(tty_layout(*page)).prompt != "more"
 
 
+@pytest.mark.parametrize("heading", [
+    "It is written in the Book of Example:", "A dungeon introduction.",
+])
+@pytest.mark.parametrize("question", [
+    "Really save", "Really attack the kitten", "What do you want to drink",
+    "Call a potion:", "Name an individual object:", "In what direction",
+    "Would you like to inspect", "Unknown menu:",
+])
+def test_lower_pager_does_not_answer_incomplete_page_inputs(heading, question):
+    obs = normalize_tty(tty_layout(
+        heading,
+        "After the Creation, Moloch begins this fixture story.",
+        "This fixture also names Marduk the Creator.",
+        question,
+        "--More--",
+    ))
+    assert obs.prompt == "unknown"
+
+
+def test_intro_page_input_checks_stop_at_its_pager_marker():
+    obs = normalize_tty(tty_layout(
+        "It is written in the Book of Example:",
+        "After the Creation, Moloch begins this fixture story.",
+        "This fixture also names Marduk the Creator.",
+        "|.........+ --More--",
+        "|....[.]..|",
+        "[Adventurer ] St:16 Dx:12",
+    ))
+    assert obs.prompt == "more"
+
+
 @pytest.mark.parametrize("location", ["status", "scrollback", "clipped_column"])
 def test_pager_outside_the_visible_pre_status_rows_is_ignored(location):
     lines = tty_layout("You see a room.").splitlines()
