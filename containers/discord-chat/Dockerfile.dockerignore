@@ -13,6 +13,7 @@
 !src/docich/comment_classifier/jev.py
 !src/docich/comment_classifier/screen.py
 !src/docich/comment_classifier/reply_route.py
+!scripts/comment_reply_routing_live_canary.py
 !src/docich/semantic_decision/__init__.py
 !src/docich/semantic_decision/diagnostics.py
 !src/docich/semantic_decision/routes.py
