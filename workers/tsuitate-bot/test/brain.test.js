@@ -187,15 +187,69 @@ test("viewer public lastInfo identifies check without disclosing the attacking s
   assert.equal(chooseWebhookDecision(options).decision.features.kingMove, 1);
 });
 
-test("final public attempt budget preserves linear ranking instead of probing a king", () => {
+test("checked fallback spends its last attempt on a possible capture instead of unrelated advance", () => {
+  for (const [color, king, gold, pawn, target, forwardTargets] of [
+    ["b", "5e", "6e", "8h", "6f", ["5d", "6d"]],
+    ["w", "5e", "4e", "2b", "4d", ["5f", "4f"]],
+  ]) {
+    const state = observation([[king, "K"], [gold, "G"], [pawn, "P"]],
+      { color, turn: color, inCheck: true, attemptBudget: 1 });
+    const escapes = ["4d", "4e", "4f", "5d", "5f", "6d", "6e", "6f"]
+      .map((to) => king + to).filter((usi) => featuresForMove(state, usi));
+    const forbiddenMoves = [...escapes, ...forwardTargets.map((to) => gold + to)];
+    for (const selectedProfile of [LEGACY_PROFILE, LINEAR_PROFILE]) {
+      for (const seed of ["response-a", "response-b", "response-c"]) {
+        const choice = chooseMove(state, { profile: selectedProfile, seed, forbiddenMoves });
+        assert.equal(choice.usi, gold + target);
+        assert.equal(choice.candidateCount, 1);
+        assert.deepEqual(chooseMove({ ...state, opponentBoard: "hidden-marker", legalMoves: [] },
+          { profile: selectedProfile, seed, forbiddenMoves }), choice);
+      }
+    }
+  }
+});
+
+test("check responses retain knight captures past an own piece for both colors", () => {
+  for (const [color, knight, blocker, pawn, target] of [
+    ["b", "3e", "4d", "9h", "4c"], ["w", "7e", "6f", "1b", "6g"],
+  ]) {
+    const state = observation([["5e", "K"], [knight, "N"], [blocker, "P"], [pawn, "P"]],
+      { color, turn: color, inCheck: true, attemptBudget: 1 });
+    const forbiddenMoves = ["4d", "4e", "4f", "5d", "5f", "6d", "6e", "6f"]
+      .map((to) => "5e" + to).concat([blocker + target, blocker + target + "+"]);
+    assert.equal(chooseMove(state, { profile: { ...LINEAR_PROFILE, exploration: 0 }, forbiddenMoves }).usi,
+      knight + target + "+");
+  }
+});
+
+test("check-response drops include blocks and knight origins but exclude rays behind own blockers", () => {
+  for (const [color, blocker, blocked, block, knightOrigin, unrelated] of [
+    ["b", "5d", "5c", "5f", "4c", "6g"], ["w", "5f", "5g", "5d", "6g", "4c"],
+  ]) {
+    const state = observation([["5e", "K"], [blocker, "P"]],
+      { color, turn: color, hand: { G: 1 }, inCheck: true, attemptBudget: 1 });
+    const forbiddenMoves = ["4d", "4e", "4f", "5d", "5f", "6d", "6e", "6f"].map((to) => "5e" + to);
+    const count = chooseMove(state, { forbiddenMoves }).candidateCount;
+    const responses = [];
+    for (let i = 0; i < count; i += 1) {
+      const choice = chooseMove(state, { forbiddenMoves });
+      responses.push(choice.usi); forbiddenMoves.push(choice.usi);
+    }
+    assert.ok(responses.includes("G*" + block));
+    assert.ok(responses.includes("G*" + knightOrigin));
+    assert.ok(!responses.includes("G*" + blocked));
+    assert.ok(!responses.includes("G*" + unrelated));
+  }
+});
+
+test("final public attempt budget ranks possible responses instead of probing a king", () => {
   const options = { sfen: "9/9/9/9/9/9/9/3P1G3/3LKL3 b - 1", color: "b",
     gameId: "final-attempt", ply: 0, inCheck: true, profile: { ...LINEAR_PROFILE, exploration: 0 } };
   assert.equal(chooseWebhookDecision({ ...options, attemptBudget: 1 }).move, "+4857KI");
   assert.equal(chooseWebhookDecision({ ...options, attemptBudget: 2 }).move, "+5958OU");
   assert.equal(chooseWebhookDecision(options).move, "+5958OU"); // Unknown budget is explicit null.
   assert.equal(chooseWebhookDecision({ ...options, attemptBudget: 0 }), null);
-  assert.deepEqual(chooseWebhookDecision({ ...options, profile: LEGACY_PROFILE, attemptBudget: 1 }),
-    chooseWebhookDecision({ ...options, inCheck: false, profile: LEGACY_PROFILE, attemptBudget: 1 }));
+  assert.ok(chooseWebhookDecision({ ...options, profile: LEGACY_PROFILE, attemptBudget: 1 }));
   for (const invalid of [-1, 1.5, 1002, "1", false]) {
     assert.equal(chooseWebhookDecision({ ...options, attemptBudget: invalid }), null);
   }
