@@ -331,9 +331,6 @@ class CornerRotationManager:
         ownership settles. Eligibility and pauses apply; cooldown is bypassed.
         Duplicate calls retain the same durable identity across the transfer.
         """
-        from .soren_round_recovery import recovery_held
-        if recovery_held(self.g.state_dir):
-            raise RotationError("owned Soren recovery retains the reservation", reason_code="recovery_required")
         if not rotation_enabled(self.g):
             raise RotationError(
                 "common corner rotation is disabled", reason_code="rotation_disabled"
@@ -504,9 +501,6 @@ class CornerRotationManager:
         )
 
     def tick(self):
-        from .soren_round_recovery import recovery_held
-        if recovery_held(self.g.state_dir):
-            return {"status": "recovery_required", "reason": "owned-soren-recovery-held"}
         # The common timer owns only retry/reconciliation, never new predictions.
         from .hanjuku_predictions import tick as prediction_tick
         prediction_tick(self.g)
@@ -755,9 +749,6 @@ class CornerRotationManager:
           manual case the corner's own manual stop/recover must run first;
           this method then observes that terminal state and commits it.
         """
-        from .soren_round_recovery import recovery_held
-        if recovery_held(self.g.state_dir):
-            raise RotationError("owned Soren recovery retains the reservation", reason_code="recovery_required")
         if not rotation_enabled(self.g):
             return {"status": "disabled"}
         with self.locked() as acquired:

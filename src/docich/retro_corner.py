@@ -2165,9 +2165,6 @@ class RetroCornerManager:
         the reservation.
         """
 
-        from .soren_round_recovery import recovery_held
-        if recovery_held(self.g.state_dir):
-            return CornerResult("failed", detail="owned Soren recovery retains the reservation")
         now = self._local_now()
         with self._locked():
             state = self._read_state()

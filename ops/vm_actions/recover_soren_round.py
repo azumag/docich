@@ -15,13 +15,13 @@ state = ROOT / "run-soren-live"
 soren = Path("/home/ubuntu/soren")
 try:
     result = OwnedRoundRecovery(state, soren, LinuxRecoveryEffects(soren, state)).run()
-    print("owned round interrupted; fresh game ready; rotation remains held; "
+    print("owned round interrupted; fresh game progress verified; no recovery hold; "
           f"common workers changed: {result.get('common_workers_changed')}")
 except RecoveryRefused as exc:
     # Refusal reasons are fixed literals without PIDs, argv or request ids.
-    print(f"owned Soren recovery refused or incomplete; retain hold: {exc}", file=sys.stderr)
+    print(f"owned Soren recovery refused or incomplete: {exc}", file=sys.stderr)
     raise SystemExit(1) from None
 except (OSError, ValueError, RuntimeError):
     # Other errors may carry paths or identifiers; keep them out of the output.
-    print("owned Soren recovery failed unexpectedly; retain hold", file=sys.stderr)
+    print("owned Soren recovery failed unexpectedly; no recovery hold", file=sys.stderr)
     raise SystemExit(1) from None
