@@ -22,7 +22,7 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const view = () => ({ gameId: "local-workerd-game", yourColor: "sente",
   yourPieces: [{ square: "5i", role: "king" }, { square: "5g", role: "pawn" }, { square: "2h", role: "rook" }],
   yourHand: {}, turn: "sente", moveNumber: 1,
-  clocks: { senteMs: 300000, goteMs: 300000, running: "sente", serverTime: 100 },
+  clocks: { senteMs: 300000, goteMs: 300000, running: ended ? null : "sente", serverTime: 100 },
   fouls: { you: 0, opponent: 0 }, youInCheck: false, opponentInCheck: false, status: ended ? "ended" : "playing" });
 const push = (peer, event, payload) => peer.send(`42${JSON.stringify([event, payload])}`);
 socketServer.on("connection", (peer) => {
@@ -66,9 +66,10 @@ try {
     bindings: {
       BETA_ARENA_ENABLED: enabled, TSUITATE_BOT_TOKEN: "fixture-only-not-a-credential",
       LOCAL_SOCKET_ORIGIN: `http://127.0.0.1:${server.address().port}` } }),
-    // v5's converter drops v4 durableObjectsPersist. Use the v5 persistence
-    // option explicitly, otherwise a restart test accidentally gets fresh state.
-    isolatedResourcePersistencePath: join(temporary, "state") });
+    // v5's converter drops v4 durableObjectsPersist. With shared storage off,
+    // v5 also replaces isolatedResourcePersistencePath with this root. Setting
+    // only the isolated option silently falls back to per-runtime temp state.
+    resourcePersistencePath: join(temporary, "state") });
   mf = new Miniflare(options("false"));
   assert.equal((await json("/status")).state, "stopped");
   assert.equal((await json("/start")).code, "arena_disabled"); assert.equal(connections, 0);
@@ -84,8 +85,14 @@ try {
   assert.equal(connections, 1);
   assert.equal(packets.filter((packet) => packet.event === "queue:join").length, 1);
   assert.equal((await json("/stop")).state, "draining");
+  const savedActorIds = await mf.listDurableObjectIds("RuntimeBetaArena");
+  assert.ok(savedActorIds.length > 0);
   // Cold actor restore from persisted SQLite: sync only; unknown move is held.
   await mf.dispose(); mf = new Miniflare(options("true"));
+  assert.deepEqual(await mf.listDurableObjectIds("RuntimeBetaArena"), savedActorIds);
+  assert.equal((await json("/status")).state, "draining");
+  assert.equal((await json("/evidence")).pendingPersisted, true);
+  assert.equal(connections, 1, "status/checkpoint reads must not reconnect");
   const restoredStatus = await json("/alarm");
   assert.equal(restoredStatus.state, "draining", "SQLite actor metadata must survive runtime restart");
   await until(() => connections === 2);
@@ -101,8 +108,13 @@ try {
   assert.equal(evidence.validForTraining, false);
   await json("/start"); await json("/alarm");
   assert.equal((await json("/status")).completedGames, 1); assert.equal(connections, 2);
+  await mf.dispose(); mf = new Miniflare(options("true"));
+  assert.equal((await json("/status")).state, "finished");
+  assert.equal((await json("/evidence")).recordSaved, true);
+  await json("/start"); await json("/alarm");
+  assert.equal(connections, 2, "finished SQLite state must never reconnect or recruit");
   console.log(JSON.stringify({ workerd: "passed", socketIoVersion: "4.8.4", initialStopped: true,
-    maxGames: 1, coldResume: true, terminalRecord: true, sqliteRollback: true,
+    maxGames: 1, coldResume: true, terminalRecord: true, terminalRestart: true, sqliteRollback: true,
     betaConnected: false, cloudflareResourceCreated: false }));
 } finally {
   if (mf) await mf.dispose();
