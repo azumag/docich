@@ -1304,13 +1304,14 @@ test("offline review classifies incomplete stored positions without making them 
   assert.equal(exported.trainingEligible, false);
 });
 
-test("v1 sessions cannot change brain midgame but their terminal records remain reviewable", async () => {
+for (const previous of ["tsuitate-brain-v1", "tsuitate-brain-v2"]) {
+test(`${previous} sessions cannot change brain midgame but their terminal records remain reviewable`, async () => {
   const binding = stateBinding();
   assert.equal((await post(initialFixture, { binding })).status, 200);
   const values = binding.objects.get(gameEndFixture.gameId).state.storage.values;
   const session = values.get("session:b:0");
-  session.brainVersion = "tsuitate-brain-v1";
-  session.brainVersions = ["tsuitate-brain-v1"];
+  session.brainVersion = previous;
+  session.brainVersions = [previous];
   const next = await post(incrementalFixture, { binding });
   assert.equal(next.status, 409);
   assert.deepEqual(await next.json(), { error: "brain_version_mismatch" });
@@ -1319,10 +1320,11 @@ test("v1 sessions cannot change brain midgame but their terminal records remain 
     fromPly: 0, limit: 3 }, { binding, path: "/offline-review" });
   assert.equal(exported.status, 200);
   const page = await exported.json();
-  assert.equal(page.archive.brainVersion, "tsuitate-brain-v1");
+  assert.equal(page.archive.brainVersion, previous);
   assert.equal(page.archive.reviewStatus, "offline_only_reviewable");
   assert.equal(page.trainingEligible, false);
 });
+}
 
 test("unmatched, ambiguous, late, mismatched, and unknown-strategy ends stay outside training", async () => {
   const cases = [
