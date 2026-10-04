@@ -1,10 +1,10 @@
 {
-  "output_sha256": "3028f816d20356c65f4c0fa80809ae5486edbd86549d8ac9ea1c83f8468e6d93",
+  "output_sha256": "e528c8a9ac7af4671e4ef8a4fe24dd3ee6aa601f746fd03561ffe055b75f68c2",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "a84cf89bb7d28395bcdc459e9130aea799b15e69d5c6f05c6c2ba88f1f7a78c8",
+  "source_sha256": "849c6349e09b1695a83936449a081d1b5145e68681b26ce87a6e47c94c4f6b8b",
   "topics": [
-    "コンソール5ゲームのステータス拡充をReady PR化（本番未変更）",
+    "コンソール5ゲームの表示をSorenへ統合、親参照を追随（本番未変更）",
     "天気WebUI手動操作を配備し、WebUI限定再起動を確認",
     "TwiCaの画素維持キャプチャを配備、VM全体のCPU飽和は残存"
   ]
