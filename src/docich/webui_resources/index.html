@@ -1963,8 +1963,13 @@ async function loadCorners(){
     renderCorners(await api("/api/corners"));
   }catch(e){
     const el=document.getElementById("corners-rotation");
-    if(el) el.textContent=String(e);
+    if(el) el.textContent="コーナー情報を取得できません。WebUI/API の接続を確認してください。";
+    renderCornerCatalogMessage("コーナー情報の取得に失敗しました。WebUI/API の接続を確認してください。");
   }
+}
+function renderCornerCatalogMessage(message){
+  const cat=document.getElementById("corners-catalog");
+  if(cat) cat.innerHTML=`<tr><td colspan="6" class="help">${esc(message)}</td></tr>`;
 }
 const ROT_STATUS_JA={ready:["準備完了","ok"],waiting:["待機中","ok"],running:["実行中","ok"],recovery_required:["要復旧（停止中）","bad"],unknown:["不明","warn"]};
 const ROT_REASON_JA={
@@ -2086,8 +2091,16 @@ function renderCorners(d){
   const catalog=Array.isArray(d.catalog)?d.catalog:[];
   const cat=document.getElementById("corners-catalog");
   if(cat){
-    if(!catalog.length){
-      cat.innerHTML='<tr><td colspan="6" class="help">カタログが空です（config にコーナーが定義されていません）</td></tr>';
+    const catalogStatus=d.catalog_status||(catalog.length?"available":"empty");
+    if(catalogStatus==="error"){
+      const errorMessages={
+        invalid_configuration:"コーナー設定を読み込めません。設定の書式または内容を確認してください。",
+        configuration_unavailable:"コーナー設定ファイルを読み込めません。ファイルの配置と権限を確認してください。",
+        load_failed:"コーナーカタログの読込に失敗しました。WebUI のログを確認してください。"
+      };
+      renderCornerCatalogMessage(errorMessages[d.catalog_error]||"コーナーカタログの読込に失敗しました。WebUI のログを確認してください。");
+    } else if(!catalog.length){
+      renderCornerCatalogMessage('有効なコーナー定義がありません（config の corner_rotation.corners を確認してください）。');
     } else {
       cat.innerHTML=catalog.map(c=>{
         let auto;

@@ -75,7 +75,7 @@ DNS lookupは固定hostだけを処理する資格情報なし短命process内�
 namespace内loopbackを上げるためだけにCAP_NET_ADMINをbridgeへ一時付与し、bridgeはCodexを起動する前にeffective/permitted/inheritable/ambient capabilityを落とし`no_new_privs`を設定する。bwrapがこの構成を実際に許可しない場合は失敗扱いで、研究を開始しない。
 固定CONNECT・non-global DNS・redirect拒否、idle upstream/half-close後のsocket/thread cleanupに合成negative testを追加した。GitHub Actions Ubuntu 24.04上のbubblewrap probeも実childを起動し、host `127.0.0.1` listenerに接続できないこと、子から見えるinterfaceが`lo`だけであること、CapEff/CapPrm/CapInhが0、`no_new_privs=1`であることを確認する。PR head `512da92f`の必須offline contract jobでこのprobeを含む168 testsが通過した。
 このcanaryはsandboxのhost-loopback遮断とchild capability状態を証明するが、外向きegress proxyの実通信、Web使用時のRFC1918/link-local/host-internal拒否、snapshot外のhost file/socket内容が子から見えないこと、Codex API通信と出典忠実性は証明しない。内部宛て拒否の合成testとsandbox mount/env assertionはあるが、これら全経路のLinux実機negative acceptanceは残る。
-従って `DOCICH_REPLY_RESEARCH_ENABLED` は引き続き本番offとし、配信コメントへのrouting接続もこの受入が終わるまで進めない。現在のDocker設定の権限を緩めない。
+`DOCICH_REPLY_RESEARCH_ENABLED`と配信routingのfeature flagは本番offのままにする。#829向けに分類・画像・翻訳・persona・safety guard・ack/replyの既存契約と共存するopt-in経路は実装したが、Linux実機のnegative acceptanceと実JEV合成canaryは未完了で、本番での有効化は受入・レビュー完了後に限る。現在のDocker設定の権限は緩めない。
 
 コード調査は、運用者が公開可能と承認した**別ディレクトリのsnapshot**を使う。稼働中checkoutを直接渡さず、snapshotだけを`/workspace/source`へread-only mountする。bridgeとegress Unix socketは別々のread-only mountで渡す。
 `manifest.json`は以下の形式で、`files`に列挙したファイルだけをSHA-256照合して一時workspaceへコピーする。
@@ -125,13 +125,13 @@ Docker imageへPython部品は同梱するが、Codex/bubblewrapをインスト�
 
 `tests/fixtures/reply_routing_canary.json` に依頼された19件の合成本文と期待scopeを固定する。新しい`scripts/comment_reply_routing_live_canary.py`は同じfixtureを最大8件のbatchへまとめ、各batchでcategory/evidenceを同時質問する。`--live`、`DOCICH_REPLY_CANARY_CONFIRM=I_HAVE_APPROVED_POSSIBLE_PROVIDER_COST`、`DOCICH_ALLOW_REAL_AI=1`、既存route専用keyが全て必要で、複数JEV route/fallback設定なら送信せず停止する。実行時は本文/ユーザー属性を出力せず、ID別scope/status/confidence/batch latency、accuracy/coverage/low-confidence率、平均・p95 batch latencyを記録する。provider failureで残りbatchを止める。今回は課金条件と資格情報の安全性を確認していないため起動しない。mock fixtureはJEV精度の実測ではない。
 
-#829の配信コメント経路へ専用`bin/docich-comment-reply-route`を接続した。既存category `c{i}`と根拠scope `e{i}`を同じJEV要求に含め、画像分類が有効なら`s{i}`も同じ要求に含めるため、通常は分類JEV呼出しを増やさない。コメント本文以外の表示名・persona・保存memory・assistant発言はJEVへ渡さず、認識したcredential/identity形式を含む本文は送信前に全体を保留する。
+#829の配信コメント経路へ専用`bin/docich-comment-reply-route`を接続した。既存category `c{i}`と根拠scope `e{i}`を同じJEV要求に含め、画像分類が有効なら`s{i}`も同じ要求に含めるため、通常は分類JEV呼出しを増やさない。コメント本文以外の表示名・persona・保存memory・assistant発言はJEVへ渡さず、表示名やローカル通知カテゴリを認証済み送信元の根拠にしない。認識したcredential/identity形式を含む行はJEVへ送らず、その行の証拠が欠けるためバッチ全体を保留する。
 
-複数コメントは一件ずつ判定し、必要scopeをバッチで統合する。runtimeがあればruntime保留、unknown/timeout/不正/低confidence/入力検証失敗があればバッチ返信を保留する。`api_only`は有効JEV回答かつconfidence≥0.80の場合だけ採用する。信頼済みsystem-user通知はローカル分類でJEVへ送らないが、JEV confidenceなしで`api_only`には採用せずroutingを保留する。視聴者の`SSR出た！`はJEVが高confidenceで相づちと判断した場合だけAPI-onlyになり、通知本文と視聴者の質問が別レコードなら質問側を別に判定する。例えば`SSR出た！このガチャの確率どうなってる？`を同じ相づち扱いしない。
+複数コメントは一件ずつ判定し、必要scopeをバッチで統合する。各行のbodyを独立にJEVへ判定させる。runtimeがあればruntime保留、unknown/timeout/不正/低confidence/入力検証失敗があればバッチ返信を保留する。`api_only`は有効JEV回答かつconfidence≥0.80の場合だけ採用する。Twitch/YouTube/Kickの取得上限10行を、JEV上限8行の要求へ分割し、全行の結果が揃うまで最終バッチをreadyにしない。2つ目の要求失敗時も先行8行だけを返信・ackせず全体を保留する。`SSR出た！`単独は高confidenceで相づちと判断された場合だけAPI-onlyになり、`SSR出た！このガチャの確率どうなってる？`は同じ相づち扱いしない。
 
 `web`/`code`/`web_and_code`は既存隔離research adapterで根拠が取得・照合された場合だけ返信を進める。Codexの完了自己申告だけで資料を受理せず、Web検索/取得イベントと引用の取得本文完全一致、または承認済みsnapshotの表示出力・対象行との一致を検査する。これは引用位置の確認であり、各説明文の意味的支持を完全自動検証したものではない。runtime、調査失敗、資格情報や隔離不足では固定保留にし、未確認内容を通常生成APIに回さない。根拠資料は命令ではないと明記したJSONデータとして既存返信promptへ追加し、元persona、カテゴリ選択、翻訳、Japanese/output guardを保つ。ルート有効時はピーク順変更後の既存候補を`local`または`local:<model>`の直接HTTP API候補に絞る。main返信・翻訳ともCLI経路は除外し、直接API候補がない、またはAPI生成に失敗した場合は返信を生成せずackしない。通常経路はfeature flagが`0`のままで変更しない。
 
-Soren側の最小統合はdocichのsubmodule gitlinkを動かさず、最新Soren main `2fee0e04`をbaseにした別branchで準備した。primary checkout/submoduleの未コミット変更には触れていない。Sorenの既定`COMMENT_AGENTS`は直接`local`候補を含まないため、flagを有効化しても現状設定のままならJEV前に保留になる。別途設定/secret作成や本番有効化はこの作業に含めていない。
+Soren側の最小統合は[companion PR #580](https://github.com/azumag/soviet_now/pull/580)で、docichのsubmodule gitlinkを動かさず、最新Soren main `2fee0e04`をbaseにした別branchで準備した。primary checkout/submoduleの未コミット変更には触れていない。Sorenの既定`COMMENT_AGENTS`は直接`local`候補を含まないため、flagを有効化しても現状設定のままならJEV前に保留になる。別途設定/secret作成や本番有効化はこの作業に含めていない。
 
 ## 検証と残件
 
@@ -141,14 +141,14 @@ DOCICH_REQUIRE_BWRAP_PROBE=1 PYTHONPATH=src python3 -m pytest -q -rs \
   tests/test_reply_research.py tests/test_comment_classifier.py
 ```
 
-この作業headのmacOSオフラインsuiteは **273 passed, 4 skipped, 34 subtests passed**。skipは任意Discord SDK未導入、Linux/bwrap canary、Linux Unix-socket/egress-close tests。Soren側のcomment-reply-quality CIと同じ7-module unittest suiteは **87 passed**。追加のscreen/runtime suiteは **25 passed, 10 subtests passed**、`bash tests/test_peak_hours_agent_order.sh`もpass。`bash -n`、Python compile、両worktreeの`git diff --check`もpass。
+現行差分のmacOSオフラインsuiteは **281 passed, 4 skipped, 34 subtests passed**。skipは任意Discord SDK未導入、Linux/bwrap canary、Linux Unix-socket/egress-close tests。Soren側の7-module unittest suiteは **89 passed**、screen/runtime suiteは **25 passed, 10 subtests passed**。peak-hours順序回帰、16件のshell回帰、shell syntax/Python compile、diff checkはpass。skipはLinux実機negative acceptanceの代用ではない。
 
-最新のcode-bearing commit `06c3d3db` に対するGitHub Actionsは全check pass。後続commitは検証結果の記録だけでruntime/sourceコードを変更していない。
+code-bearing commit `2538c7bf` に対する以下のGitHub Actionsはpassした。後続のコード変更と最新main追随後のCIは別途実行し、最終headの結果はPR本文に記録する。
 
-- [offline-contracts run 37178493744](https://github.com/azumag/docich/actions/runs/37178493744): **206 passed, 1 warning, 34 subtests**。Ubuntu+bwrap child probeを含む。
-- [docker-contracts run 37178493744](https://github.com/azumag/docich/actions/runs/37178493744): **228 passed, 1 skipped, 1 warning, 34 subtests**。runtime/test image buildとoffline backup/restore contractを含む。skipはtest imageにbwrapがないため、warningはPython `audioop` deprecation。
-- [semantic-contracts run 37178493893](https://github.com/azumag/docich/actions/runs/37178493893): semantic core **123 passed**、classifier/screen/canary **142 passed**。
-- [security-regressions run 37178493840](https://github.com/azumag/docich/actions/runs/37178493840)、[comment-regressions run 37178493806](https://github.com/azumag/docich/actions/runs/37178493806)、[prediction-regressions run 37178493783](https://github.com/azumag/docich/actions/runs/37178493783)、[python-syntax run 37178494073](https://github.com/azumag/docich/actions/runs/37178494073)もpass。
+- [offline-contracts run 37179020581](https://github.com/azumag/docich/actions/runs/37179020581): **207 passed, 1 warning, 34 subtests**。Ubuntu+bwrap child probeを含む。
+- [docker-contracts run 37179020581](https://github.com/azumag/docich/actions/runs/37179020581): **229 passed, 1 skipped, 1 warning, 34 subtests**。runtime/test image buildとoffline backup/restore contractを含む。skipはtest imageにbwrapがないため、warningはPython `audioop` deprecation。
+- [semantic-contracts run 37179020595](https://github.com/azumag/docich/actions/runs/37179020595): semantic core **123 passed**、classifier/screen/canary **142 passed**。
+- [security-regressions run 37179020578](https://github.com/azumag/docich/actions/runs/37179020578)、[comment-regressions run 37179020589](https://github.com/azumag/docich/actions/runs/37179020589)、[prediction-regressions run 37179020586](https://github.com/azumag/docich/actions/runs/37179020586)、[python-syntax run 37179020582](https://github.com/azumag/docich/actions/runs/37179020582)もpass。
 
 現実行hostはDarwinで`bwrap`なし。Docker CLIはあるがDocker daemon socketへのアクセスはpermission deniedで、ローカルcontainer suiteは実行できなかった。hostのsecurity/network設定やsocket権限は変えていない。従ってGitHubのbwrap child probeは通過したが、Linux実機でのegress経路全域、host HOME/DB/log/socket到達不可、Webからのhost loopback/internal service非到達を一連の実機環境で受入したとは主張しない。GitHub Docker contractもreply research sandboxの実機network受入を代替しない。
 

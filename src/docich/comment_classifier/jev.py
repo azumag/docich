@@ -280,20 +280,15 @@ def classify(rows, config, env, state_dir, *, transport=docich_transport):
     positions, candidates, request = [], [], None
     for i, row in enumerate(rows):
         if config.evidence_enabled:
-            if row['user'].casefold() in SYSTEM_USERS:
-                details[i].update(evidence_scope='api_only', evidence_status='local_notification',
+            # Display names and local heuristic categories are not source
+            # authentication. In evidence-routing mode, judge every body while
+            # projecting only comment text into the provider request.
+            if _has_private_route_input(row['comment']):
+                details[i].update(evidence_scope='unknown', evidence_status='private_input',
                                   evidence_confidence=None)
-            elif row['category'] in NOTIFICATIONS:
-                # A category label alone is not enough to treat untrusted text
-                # as a verified platform notification.
-                details[i].update(evidence_scope='unknown', evidence_status='protected_category',
-                                  evidence_confidence=None)
-        if _protected_notification(row):
+                continue
+        elif _protected_notification(row):
             details[i]['status'] = 'local_notification'
-            continue
-        if config.evidence_enabled and _has_private_route_input(row['comment']):
-            details[i].update(evidence_scope='unknown', evidence_status='private_input',
-                              evidence_confidence=None)
             continue
         if len(candidates) == MAX_COMMENTS:
             if config.evidence_enabled:

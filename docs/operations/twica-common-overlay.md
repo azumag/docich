@@ -91,3 +91,19 @@ CIは次を一つの変更として検証する。
 合成fixtureは本物の半熟英雄・Soren91・NetHackを起動したテストではない。TwiCa本番イベント、効果音が既存Pulse busで一度だけ流れること、実ゲームの連続進行、CPU/メモリ増分、長時間安定性は、許可された本番切替後の受入として別途実測する。ソース一致・CI成功・配備・ランタイム有効化・視聴側の確認は別々に記録する。
 
 ローカルのauthoring環境はHTTP navigationがブラウザの管理ポリシーで拒否されるため、`DOCICH_TWICA_NETWORK_TESTS=1`の2件はネットワーク利用可能なCIで必須実行する。管理ポリシーは解除しない。オフラインの実Chromium alphaと実X11/FFmpegテストはローカルでも実行する。
+
+### Lossless capture cost reduction
+
+The common renderer uses one persistent CDP session on its existing Chromium
+page. It sets the transparent page background once per document and requests
+viewport PNG with `optimizeForSpeed=true`, then keeps the existing RGBA decoder,
+atomic publisher and start-of-capture TTL. Resolution, frame cadence, alpha,
+animation playback, queue ownership and audio routing stay unchanged. Capture
+failure still clears the frame and follows the existing bounded recovery.
+
+`tools/benchmark_twica_capture.py --scenario blank|card --frames 60` compares the
+old general screenshot API and the dedicated capture on offline synthetic pages.
+It emits timings, CPU totals and pixel equivalence only; no production URL,
+subscription or saved image is used. Child CPU includes browser/driver startup
+and shutdown. Measure production component and host CPU separately: fixture
+latency reduction alone does not establish VM headroom.

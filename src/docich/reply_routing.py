@@ -31,7 +31,8 @@ _PRIVATE_INPUT_PATTERNS = tuple(re.compile(pattern, re.IGNORECASE) for pattern i
     # marker matches, hold the whole route instead of forwarding a redacted
     # substring alongside possibly related private context.
     r"\b(?:api[ _-]?key|(?:aws[ _-]?)?secret[ _-]?access[ _-]?key|"
-    r"client[ _-]?secret|password|passwd|passphrase|secret|private[ _-]?key|authorization)\b"
+    r"client[ _-]?secret|password|passwd|passphrase|secret|private[ _-]?key|"
+    r"authorization|token|access[ _-]?key|cookie|session(?:[ _-]?id)?)\b"
     # Accept quoted field names and quoted values (including JSON/YAML-like
     # input), so credentials do not evade the pre-provider hold merely by
     # adding serialization quotes around the assignment.

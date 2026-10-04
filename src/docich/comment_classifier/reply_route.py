@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import math
 import os
 from pathlib import Path
+import time
 from typing import Callable, Mapping
 
 from . import classify_file as classify_comments_file
@@ -17,6 +18,7 @@ from . import jev
 from ..reply_routing import CRITERIA, ENABLE_ENV
 
 RESEARCH_SCOPES = frozenset({"web", "code", "web_and_code"})
+MAX_ROUTING_BATCH_COMMENTS = 10  # Keep aligned with Twitch/YouTube/Kick fetch --limit 10.
 
 
 @dataclass(frozen=True)
@@ -43,8 +45,6 @@ def aggregate(rows: list[dict], details: list[dict] | None) -> BatchDecision:
         status = detail.get("evidence_status")
         scope = detail.get("evidence_scope")
         confidence = detail.get("evidence_confidence")
-        if status == "local_notification" and row.get("user", "").casefold() in jev.SYSTEM_USERS:
-            continue
         if (status != "jev" or scope not in CRITERIA
                 or type(confidence) not in (int, float) or not math.isfinite(confidence)
                 or confidence < 0.80 or confidence > 1):
@@ -78,10 +78,66 @@ def classify_file(path, *, env: Mapping[str, str] | None = None, transport=None,
     if env.get(ENABLE_ENV, "0") != "1" or env.get("DOCICH_ALLOW_REAL_AI") != "1":
         return _hold([], "routing_disabled")
     try:
-        rows, event = classify_comments_file(path, env=env, transport=transport)
+        rows, event = _classify_route_batch(path, env=env, transport=transport)
+    except ValueError as exc:
+        if str(exc) == "input_limit":
+            return _hold([], "input_limit")
+        return _hold([], "classifier_unavailable")
     except Exception:
         return _hold([], "classifier_unavailable")
     return _finish(rows, event, env=env, researcher=researcher)
+
+
+def _classify_route_batch(path, *, env, transport):
+    """Classify up to the stream fetch bound in MAX_COMMENTS-sized JEV chunks.
+
+    The entire batch is still held unless every row has a valid evidence
+    decision. Chunking is only a provider request boundary; it does not ack or
+    omit the unclassified tail from the final routing decision.
+    """
+    lines = jev.heuristic.read_comment_lines(Path(path))
+    if not 1 <= len(lines) <= MAX_ROUTING_BATCH_COMMENTS:
+        raise ValueError("input_limit")
+    expected_comments = [jev.heuristic.split_line(line)[1] for line in lines]
+    if (len(lines) <= jev.MAX_COMMENTS
+            or env.get("COMMENT_CLASSIFIER_BACKEND") != "jev"):
+        rows, event = classify_comments_file(path, env=env, transport=transport)
+        return _require_complete_classification(rows, event, expected_comments)
+
+    started = time.monotonic()
+    baseline = jev.heuristic.baseline(lines)
+    baseline_ms = (time.monotonic() - started) * 1000
+    outputs, details = [], []
+    for offset in range(0, len(baseline), jev.MAX_COMMENTS):
+        originals = baseline[offset:offset + jev.MAX_COMMENTS]
+        chunk = [dict(row, index=index) for index, row in enumerate(originals, 1)]
+        chunk_started = time.monotonic()
+        output, event = jev.run_jev(
+            chunk, env=env, heuristic_ms=baseline_ms, started=chunk_started,
+            transport=transport or jev.docich_transport)
+        chunk_details = event.get("rows") if isinstance(event, dict) else None
+        if (not isinstance(output, list) or len(output) != len(chunk)
+                or not isinstance(chunk_details, list) or len(chunk_details) != len(chunk)):
+            raise ValueError("invalid_result")
+        for local_index, (out_row, detail) in enumerate(zip(output, chunk_details), 1):
+            out_row["index"] = offset + local_index
+            outputs.append(out_row)
+            details.append(detail)
+    return _require_complete_classification(outputs, {"rows": details}, expected_comments)
+
+
+def _require_complete_classification(rows, event, expected_comments):
+    """Reject classifier output that omits, duplicates, or rewrites a source row."""
+    details = event.get("rows") if isinstance(event, dict) else None
+    expected_count = len(expected_comments)
+    if (not isinstance(rows, list) or len(rows) != expected_count
+            or not isinstance(details, list) or len(details) != expected_count):
+        raise ValueError("invalid_result")
+    for index, (row, comment) in enumerate(zip(rows, expected_comments), 1):
+        if (not isinstance(row, dict) or row.get("index") != index
+                or row.get("comment") != comment):
+            raise ValueError("invalid_result")
+    return rows, event
 
 
 def _hold(rows: list[dict], reason: str) -> dict:

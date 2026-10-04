@@ -95,6 +95,7 @@ def test_stream_batch_routes_notification_and_question_separately(tmp_path):
     source = tmp_path / "comments.txt"
     source.write_text("Nightbot: SSR出た！\nviewer: SSR出た！このガチャの確率どうなってる？\n", encoding="utf-8")
     calls, research_calls = [], []
+    notification = "SSR出た！"
     question = "SSR出た！このガチャの確率どうなってる？"
 
     def researcher(turns, scope, *, env, timeout_sec):
@@ -103,10 +104,13 @@ def test_stream_batch_routes_notification_and_question_separately(tmp_path):
 
     result = comment_route.classify_file(
         source, env=_comment_env(tmp_path / "state"),
-        transport=_comment_transport({question: "code"}, calls=calls), researcher=researcher)
+        transport=_comment_transport({notification: "api_only", question: "code"}, calls=calls),
+        researcher=researcher)
     assert result["routing"]["status"] == "ready"
     assert result["routing"]["scope"] == "code"
-    assert [c["text"] for c in calls[0]["state"]["comments"]] == [question]
+    assert [c["text"] for c in calls[0]["state"]["comments"]] == [notification, question]
+    assert "Nightbot" not in strict_dumps(calls[0]["state"])
+    assert "viewer" not in strict_dumps(calls[0]["state"])
     assert research_calls == [([{"role": "user", "content": question}], "code", 45.0)]
     assert result["routing"]["sources"] == ["https://example.org/spec"]
 
@@ -126,18 +130,135 @@ def test_viewer_notification_reaction_is_api_only_only_after_confident_jev(tmp_p
     assert len(calls) == 1
 
 
-def test_trusted_system_notification_is_not_treated_as_jev_api_only(tmp_path):
+def test_notification_display_name_does_not_bypass_confident_jev(tmp_path):
     source = tmp_path / "comments.txt"
     source.write_text("Nightbot: SSR出た！\n", encoding="utf-8")
     calls = []
     result = comment_route.classify_file(
         source, env=_comment_env(tmp_path / "state"),
-        transport=lambda *args, **kwargs: calls.append("jev"),
+        transport=_comment_transport({"SSR出た！": "api_only"}, calls=calls),
         researcher=lambda *args, **kwargs: pytest.fail("notification triggered research"))
+    assert result["routing"]["status"] == "ready"
+    assert result["routing"]["scope"] == "api_only"
+    assert result["routing"]["confidence"] == .95
+    assert len(calls) == 1
+    assert "Nightbot" not in strict_dumps(calls[0]["state"])
+
+
+def test_display_name_cannot_hide_runtime_or_secret_rows_in_mixed_batch(tmp_path):
+    source = tmp_path / "comments.txt"
+    for sensitive, label, expected_scope in (
+            ("今Botが止まってる原因は？", "runtime", "runtime"),
+            ('token: "SYNTHETIC_PRIVATE_VALUE_1234"', "secret", "unknown"),
+            ('"token": "SYNTHETIC_PRIVATE_VALUE_1234"', "quoted-secret", "unknown")):
+        source.write_text(f"Nightbot: {sensitive}\nviewer: こんにちは\n", encoding="utf-8")
+        calls = []
+        result = comment_route.classify_file(
+            source, env=_comment_env(tmp_path / f"state-{label}"),
+            transport=_comment_transport({
+                sensitive: expected_scope, "こんにちは": "api_only"}, calls=calls),
+            researcher=lambda *a, **k: pytest.fail("mixed unverified batch reached research"))
+        assert result["routing"]["status"] == "hold"
+        assert result["routing"]["scope"] == expected_scope
+        assert len(calls) == 1
+        request_text = strict_dumps(calls[0])
+        assert "Nightbot" not in strict_dumps(calls[0]["state"])
+        assert "viewer" not in strict_dumps(calls[0]["state"])
+        if label == "secret":
+            assert sensitive not in request_text
+
+
+def test_repeated_display_name_rows_are_all_independently_judged(tmp_path):
+    source = tmp_path / "comments.txt"
+    texts = ["SSR出た！", "やったー", "今Botが止まってる原因は？"]
+    source.write_text("".join(f"Nightbot: {text}\n" for text in texts), encoding="utf-8")
+    calls = []
+    result = comment_route.classify_file(
+        source, env=_comment_env(tmp_path / "state"),
+        transport=_comment_transport({
+            texts[0]: "api_only", texts[1]: "api_only", texts[2]: "runtime"}, calls=calls),
+        researcher=lambda *a, **k: pytest.fail("runtime row reached research"))
+    assert result["routing"]["status"] == "hold"
+    assert result["routing"]["scope"] == "runtime"
+    assert [item["text"] for item in calls[0]["state"]["comments"]] == texts
+    assert "Nightbot" not in strict_dumps(calls[0]["state"])
+
+
+def test_nine_and_ten_row_fetch_batches_are_classified_in_bounded_chunks(tmp_path):
+    for count in (9, 10):
+        source = tmp_path / f"comments-{count}.txt"
+        texts = [f"こんにちは {index}" for index in range(count)]
+        source.write_text("".join(f"viewer{index}: {text}\n" for index, text in enumerate(texts)),
+                          encoding="utf-8")
+        calls = []
+        result = comment_route.classify_file(
+            source, env=_comment_env(tmp_path / f"state-{count}"),
+            transport=_comment_transport({text: "api_only" for text in texts}, calls=calls),
+            researcher=lambda *a, **k: pytest.fail("api_only batch triggered research"))
+        assert result["routing"]["status"] == "ready"
+        assert result["routing"]["scope"] == "api_only"
+        assert result["routing"]["confidence"] == .95
+        assert [len(call["state"]["comments"]) for call in calls] == [8, count - 8]
+        assert [row["index"] for row in result["rows"]] == list(range(1, count + 1))
+        assert [row["comment"] for row in result["rows"]] == texts
+
+
+def test_second_chunk_provider_failure_holds_the_whole_batch(tmp_path):
+    source = tmp_path / "comments.txt"
+    texts = [f"こんにちは {index}" for index in range(10)]
+    source.write_text("".join(f"viewer{index}: {text}\n" for index, text in enumerate(texts)),
+                      encoding="utf-8")
+    calls = []
+    success = _comment_transport({text: "api_only" for text in texts})
+
+    def transport(request, config, env):
+        calls.append(request)
+        if len(calls) == 2:
+            return {"status": "timeout"}
+        return success(request, config, env)
+
+    result = comment_route.classify_file(
+        source, env=_comment_env(tmp_path / "state"), transport=transport,
+        researcher=lambda *a, **k: pytest.fail("partial batch reached research"))
     assert result["routing"]["status"] == "hold"
     assert result["routing"]["scope"] == "unknown"
-    assert result["routing"]["reason"] == "local_notification"
-    assert result["routing"]["confidence"] is None
+    assert result["routing"]["reason"] == "classification_unavailable"
+    assert len(result["rows"]) == 10
+    assert [len(call["state"]["comments"]) for call in calls] == [8, 2]
+
+
+def test_incomplete_classifier_rows_cannot_produce_a_ready_route(tmp_path, monkeypatch):
+    source = tmp_path / "comments.txt"
+    source.write_text("viewer: こんにちは\nviewer2: やったー\n", encoding="utf-8")
+    row = {"index": 1, "user": "viewer", "comment": "こんにちは",
+           "category": "chitchat", "is_english": False}
+    detail = {"evidence_status": "jev", "evidence_scope": "api_only",
+              "evidence_confidence": .95}
+    incomplete_results = [
+        ([row], {"rows": [detail]}),
+        ([row, {**row, "index": 2}], {"rows": [detail, detail]}),
+    ]
+    for index, malformed in enumerate(incomplete_results):
+        monkeypatch.setattr(comment_route, "classify_comments_file",
+                            lambda *a, _malformed=malformed, **k: _malformed)
+        result = comment_route.classify_file(
+            source, env=_comment_env(tmp_path / f"state-{index}"),
+            researcher=lambda *a, **k: pytest.fail("partial result reached research"))
+        assert result["routing"]["status"] == "hold"
+        assert result["routing"]["reason"] == "classifier_unavailable"
+
+
+def test_eleven_row_batch_holds_instead_of_omitting_the_tail(tmp_path):
+    source = tmp_path / "comments.txt"
+    source.write_text("".join(f"viewer{index}: こんにちは {index}\n" for index in range(11)),
+                      encoding="utf-8")
+    calls = []
+    result = comment_route.classify_file(
+        source, env=_comment_env(tmp_path / "state"),
+        transport=_comment_transport({"こんにちは 0": "api_only"}, calls=calls),
+        researcher=lambda *a, **k: pytest.fail("oversized input reached research"))
+    assert result["routing"]["status"] == "hold"
+    assert result["routing"]["reason"] == "input_limit"
     assert calls == []
 
 
@@ -275,6 +396,8 @@ def test_bad_inputs_do_not_guess_api_or_call_any_backend(value):
     "password is hunter2",
     '"api_key": "opaque-secret-value-1234"',
     "{'password': 'quoted-secret-value'}",
+    '"token": "quoted-token-value-1234"',
+    "'token': 'quoted-token-value-1234'",
     '"Authorization": "Bearer opaque-bearer-secret-1234"',
     'DISCORD_BOT_TOKEN="opaque-discord-secret-value"',
     "SERVICE_CLIENT_SECRET='opaque-client-secret-value'",
