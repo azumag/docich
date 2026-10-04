@@ -649,6 +649,13 @@ test("public replay fetch never sends a token and rejects non-JSON, oversized, o
     return new Response(null, { status: 302, headers: { location: "https://untrusted.test/" } });
   } }), null);
   assert.equal(redirects, 1);
+  for (const [status, contentType] of [[302, "application/json"], [503, "application/json"], [200, "text/html"]]) {
+    let cancelled = false;
+    const body = new ReadableStream({ cancel() { cancelled = true; } });
+    assert.equal(await fetchPublicResult("test-game", "b", { fetchImpl: async () =>
+      new Response(body, { status, headers: { "content-type": contentType } }) }), null);
+    assert.equal(cancelled, true); // Release the failed subrequest before retrying.
+  }
   assert.equal(await fetchPublicResult("test-game", "b", { fetchImpl: async () => new Response("<html>") }), null);
   assert.equal(await fetchPublicResult("test-game", "b", { fetchImpl: async () => Response.json({ changed: true }) }), null);
   assert.equal(await fetchPublicResult("test-game", "b", { fetchImpl: async () => new Response(" ".repeat(1048577), { headers: { "content-type": "application/json" } }) }), null);
