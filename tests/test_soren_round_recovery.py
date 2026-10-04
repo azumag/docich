@@ -315,6 +315,61 @@ def test_shared_worker_forked_after_preflight_still_refuses_before_detach(topo):
     assert (topo.root / "game_state.json").exists() and not topo.sent
 
 
+@pytest.mark.parametrize("state", ["MOVE", "GAMEOVER"])
+def test_live_board_changed_after_archive_refuses_without_detach_or_kill(topo, state):
+    recovery = recovery_for(topo)
+    topo.effects.archive(recovery)
+    path = topo.root / "game_state.json"
+    path.write_text(json.dumps(dict(recovery["inventory"]["board"], state=state, score=43)))
+    before = {p: p.read_bytes() for p in topo.root.rglob("*") if p.is_file()}
+    with pytest.raises(RecoveryRefused, match="live board changed"):
+        topo.effects.stop(recovery)
+    assert {p: p.read_bytes() for p in topo.root.rglob("*") if p.is_file()} == before
+    assert not topo.sent and not (topo.effects._archive_dir(recovery) / "retired").exists()
+
+
+@pytest.mark.parametrize("recreate", [False, True])
+def test_board_writer_during_detach_is_restored_without_kill(topo, monkeypatch, recreate):
+    recovery = recovery_for(topo)
+    topo.effects.archive(recovery)
+    path = topo.root / "game_state.json"
+    renamed = Path.rename
+    changed = '{"state":"MOVE","score":43,"pieces":[2]}'
+    with path.open("r+") as writer:
+        def rename(self, target):
+            result = renamed(self, target)
+            if self == path:
+                if recreate:
+                    path.write_text(changed)
+                else:
+                    writer.seek(0)
+                    writer.write(changed)
+                    writer.truncate()
+                    writer.flush()
+            return result
+        monkeypatch.setattr(Path, "rename", rename)
+        with pytest.raises(RecoveryRefused, match="live board changed"):
+            topo.effects.stop(recovery)
+    assert path.read_text() == changed and not topo.sent
+    assert (topo.root / "game_history/latest.jsonl").read_text() == '{"turn":1}\n'
+    assert (topo.root / "tmp/state/main_strategy_runner_active.json").exists()
+
+
+def test_target_changed_during_pin_is_refused_without_detach(topo, monkeypatch):
+    recovery = recovery_for(topo)
+    topo.effects.archive(recovery)
+    pin = topo.effects._pin
+    def replaced(row, **kwargs):
+        fd = pin(row, **kwargs)
+        if row["pid"] == 33:
+            (topo.fake.proc / "21/cmdline").write_bytes(b"bash\0audio_worker.sh\0")
+        return fd
+    monkeypatch.setattr(topo.effects, "_pin", replaced)
+    with pytest.raises(RecoveryRefused, match="shared worker"):
+        topo.effects.stop(recovery)
+    assert (topo.root / "game_state.json").exists() and not topo.sent
+
+
 def test_pid_reuse_is_never_signalled(topo):
     old = topo.effects.preflight()["roots"]["soren_loop.sh"]
     topo.fake.remove(20)
@@ -407,6 +462,7 @@ def test_real_pidfd_stops_bound_child_tree_and_leaves_supervisor_alive(tmp_path)
         child_pid = int((tmp_path / "child.pid").read_text())
         rows = effects._rows()
         (tmp_path / "game_state.json").write_text('{"state":"STOP"}')
+        os.utime(tmp_path / "game_state.json", (time.time() - 1200, time.time() - 1200))
         (tmp_path / "game_history").mkdir()
         (tmp_path / "game_history/latest.jsonl").write_text('{}\n')
         recovery = dict(recovery_id="linux", active={}, started_epoch=time.time(),

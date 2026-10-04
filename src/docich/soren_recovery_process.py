@@ -235,13 +235,23 @@ class LinuxRecoveryEffects:
             raise
         return os.fdopen(fd, "rb")
 
-    def stop(self, recovery):
+    def _verify_targets(self, recovery):
         self._operator_gates()
         rows = self._rows()
         roots, owned = self._tree(rows)
         current = {self._role(rows[p]): self._identity(rows[p]) for p in roots}
         if current != recovery["inventory"]["roots"] or len(roots) != len(current):
             raise RecoveryRefused("game roots changed before termination")
+        return rows, roots, owned
+
+    def _verify_stopped_board(self, recovery, path):
+        board = read_object(path)
+        if (board != recovery["inventory"]["board"] or board.get("state") not in {"STOP", "GAMEOVER"}
+                or self.clock() - path.stat().st_mtime < 600):
+            raise RecoveryRefused("live board changed before termination")
+
+    def stop(self, recovery):
+        rows, roots, owned = self._verify_targets(recovery)
         # Refresh descendants just before pinning. Vanished short-lived children
         # are harmless; every live target is bound before the first kill.
         recovery["inventory"]["processes"] = [self._identity(rows[p]) for p in sorted(owned)]
@@ -251,6 +261,8 @@ class LinuxRecoveryEffects:
                 fd = self._pin(self._identity(rows[pid]), missing=pid not in roots)
                 if fd is not None:
                     bound.append(pins.enter_context(fd))
+            self._verify_targets(recovery)
+            self._verify_stopped_board(recovery, self.root / "game_state.json")
             # Detach round-local names BEFORE killing, so immediate supervisor
             # respawn cannot have fresh files removed by a later cleanup.
             # Saved bytes are evidence. No lifecycle file or user gate is moved.
@@ -268,6 +280,13 @@ class LinuxRecoveryEffects:
                     retired.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                     path.rename(retired)
                     detached.append((path, retired))
+                # Check again at the irreversible boundary. A writer may have
+                # updated the moved file through an open fd or recreated the
+                # live name while the other round-local files were detached.
+                self._verify_targets(recovery)
+                self._verify_stopped_board(recovery, self._archive_dir(recovery) / "retired/game_state.json")
+                if (self.root / "game_state.json").exists():
+                    raise RecoveryRefused("live board changed before termination")
             except BaseException:
                 for path, retired in reversed(detached):
                     if not path.exists():

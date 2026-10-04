@@ -198,6 +198,8 @@ public guard を弱めたり、任意 command/argument を受けたりしませ�
 - canonical が sole active `sorengame`/`soren` の `ready` または `draining` でない、stop 操作中、
   または coordinator lock が使用中。
 - `game_state.json` が `STOP`/`GAMEOVER` でない、最終盤面変更から600秒未満、または未来のmtime。
+  保存後と最初のSIGKILL直前にも盤面・root・本人gateを再照合し、盤面/対象が変化したら
+  killせず拒否する。退避中の再書込/盤面再作成も検出し、退避した名前を空いている元の場所へ戻す。
 - ゲーム root（`bash soren_loop.sh`、`bash soviet_watchdog.sh`、`node soviet_local.mjs`、
   `python3 -u strategy_runner.py`）をcwdとargvで各1つに特定できない。
   同じroleの祖先を持つbash forkは子孫扱い。tmuxのbridgeは独立root扱い。
@@ -223,7 +225,8 @@ public guard を弱めたり、任意 command/argument を受けたりしませ�
 
 coordinator/rotation/retroの状態・receipt・予約、lifecycleのrequest/ack/control/resource、
 共通worker・配信・本人pause/stopは変更しません。freeze・専用pause・段階journalはありません。
-coordinator lockは呼出し中だけ保持し、成功/失敗/プロセス終了で解放します。
+coordinator lockは事前確認・保存・killまでの短い区間だけ保持し、成功/失敗/プロセス終了で解放します。
+最大120秒の進行確認pollは排他外で行い、既存draining driverのwriter再取得と境界ACK処理を妨げません。
 既存の `soren_round_recovery.json` も切替を止める条件から除去しました。
 完了後に新たな恒久holdを作りません。drainingは既存requestの境界ACK処理へ続きます。
 既存timeout予約をこの操作が再dispatch/recoverすることはありません。

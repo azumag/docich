@@ -1,7 +1,7 @@
 """Explicit game-only recovery: save evidence, kill the old tree, observe respawn.
 
 No coordinator/rotation/lifecycle records are changed. The coordinator lock is
-held only for this invocation; a crash releases it without a persistent hold.
+held through termination only; progress polling does not block the drain driver.
 """
 from __future__ import annotations
 
@@ -55,6 +55,8 @@ class OwnedRoundRecovery:
                 active=active, started_epoch=started, inventory=self.effects.preflight())
             self.effects.archive(recovery)
             self.effects.stop(recovery)
-            self.effects.verify_new(recovery)
-            return {"status": "completed", "result": "interrupted",
-                    "common_workers_changed": len(self.effects.common_changed(recovery))}
+        # The existing draining driver has a short writer reacquisition budget.
+        # Let it process its boundary ACK while we observe natural respawn.
+        self.effects.verify_new(recovery)
+        return {"status": "completed", "result": "interrupted",
+                "common_workers_changed": len(self.effects.common_changed(recovery))}

@@ -721,6 +721,67 @@ def test_boundary_wait_longer_than_reacquire_grace_succeeds():
             worker.join(2.0)
 
 
+def test_soren_recovery_progress_wait_does_not_block_existing_draining_driver(tmp_path):
+    from docich.soren_round_recovery import OwnedRoundRecovery
+
+    factory = BoundaryFactory()
+    def adapter_factory(spec):
+        adapter = factory(spec)
+        if spec.game == "sorengame":
+            adapter.name = "soren"
+        return adapter
+    store, coordinator = _coordinator(adapter_factory, tmp_path / "run", round_boundary_s=2.0)
+    coordinator.round_reacquire_timeout_s = 0.1
+    assert coordinator.start("sorengame").status == "succeeded"
+    assert store.canonical.load()[0]["active"]["adapter"] == "soren"
+    old = factory.adapters[("sorengame", 1)]
+    results, errors = [], []
+
+    def switch():
+        try:
+            results.append(coordinator.switch("robots"))
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=switch)
+    worker.start()
+    calls = []
+
+    class Effects:
+        def locked_effect(self, name):
+            calls.append(name)
+            with pytest.raises(game_switch.GameSwitchBusyError):
+                with store.lock(exclusive=True):
+                    pass
+
+        def preflight(self):
+            self.locked_effect("preflight")
+            return {}
+
+        def archive(self, recovery): self.locked_effect("archive")
+        def stop(self, recovery): self.locked_effect("stop")
+
+        def verify_new(self, recovery):
+            calls.append("verify_new")
+            # While a recovery could poll for 120 seconds, the old driver must
+            # finish within its much shorter reacquisition budget after ACK.
+            old.boundary_release.set()
+            worker.join(1.0)
+            assert not worker.is_alive() and not errors
+            assert results[0].status == "succeeded"
+
+        def common_changed(self, recovery): return []
+
+    try:
+        assert old.boundary_entered.wait(1.0)
+        assert OwnedRoundRecovery(store.state_dir, tmp_path / "soren", Effects()).run()["status"] == "completed"
+        assert calls == ["preflight", "archive", "stop", "verify_new"]
+        assert store.canonical.load()[0]["active"]["game"] == "robots"
+    finally:
+        old.boundary_release.set()
+        worker.join(2.0)
+
+
 def test_hung_boundary_cancel_is_short_and_keeps_input_unlocked():
     with tempfile.TemporaryDirectory() as tmp:
         factory = BoundaryFactory()
