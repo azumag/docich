@@ -62,7 +62,8 @@ def run(f, **kwargs):
 
 
 def snapshot(f):
-    return {p: p.read_bytes() for p in f.path.parent.rglob("*") if p.is_file()}
+    return {p: p.read_bytes() for root in (f.path.parent, f.soren)
+            for p in root.rglob("*") if p.is_file()}
 
 
 def test_check_is_read_only_apply_changes_only_cancel_fields(fixture):
@@ -83,7 +84,7 @@ def test_check_is_read_only_apply_changes_only_cancel_fields(fixture):
 
 
 @pytest.mark.parametrize("change,reason", [
-    ("no-receipt", "resources_unverified"), ("queued-receipt", "receipt_not_released"),
+    ("no-receipt", "receipt_unknown"), ("queued-receipt", "receipt_not_released"),
     ("accepted-receipt", "receipt_not_released"), ("cleanup", "receipt_not_released"),
     ("succeeded", "receipt_not_released"), ("runtime", "runtime_resources_present"),
     ("active", "target_active"), ("missing-canonical", "switch_not_stable"),
@@ -183,6 +184,84 @@ def test_cli_masks_unexpected_private_failure(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out) == {"status": "refused", "reason": "evidence_unverified"}
 
 
+@pytest.mark.parametrize("apply", [False, True])
+def test_missing_receipt_refuses_even_when_old_owner_stopped_and_other_terminal_runtime_live(fixture, apply):
+    f = fixture
+    f.store.receipts._path(f.receipt["request_id"]).unlink()
+    old_runtime = Path(f.receipt["runtime_dir"])
+    old_runtime.mkdir(parents=True)
+    (old_runtime / "presentation.json").write_text('{"status":"stopped"}')
+    (f.path.parent / "retro_corner.json").write_text(json.dumps({
+        "game": "hanjuku-hero", "status": "interrupted", "recovery_required": False,
+        "rotation_request_id": str(uuid.uuid4()), "bot_runtime_id": f.receipt["runtime_id"],
+        "bot_identity": {"game": "hanjuku-hero", "runtime_id": f.receipt["runtime_id"], "generation": 1}}))
+    other = dict(f.store.accept_request(str(uuid.uuid4()), "start", "hanjuku-hero").receipt)
+    other.update(status="failed", result={"request_id": other["request_id"],
+        "operation": "start", "status": "failed", "cleanup_pending": True})
+    f.store.receipts.save(other)
+    live = Path(other["runtime_dir"])
+    live.mkdir(parents=True)
+    (live / "presentation.json").write_text('{"status":"ready"}')
+    idle = _initial_state()
+    idle["next_generation"] = 3
+    f.store.canonical.save(idle)
+    before = snapshot(f)
+    expected = operator.hashlib.sha256(json.dumps(f.state["manual_pending"], sort_keys=True,
+                                                separators=(",", ":")).encode()).hexdigest()
+    with pytest.raises(operator.CancelRefused, match="receipt_unknown"):
+        run(f, apply=apply, expected=expected if apply else None)
+    assert snapshot(f) == before
+
+
+@pytest.mark.parametrize("source,reason", [("queue", "program_queue_unverified"),
+                                           ("registry", "program_owner_unverified")])
+@pytest.mark.parametrize("apply", [False, True])
+def test_empty_program_evidence_is_unknown_not_absent(fixture, source, reason, apply):
+    f = fixture
+    program = f.soren / "tmp/state"
+    if source == "queue":
+        path = program / "docich_program_queue/retro_corner_manual.json"
+        path.parent.mkdir()
+    else:
+        path = program / "docich_program_active.json"
+    path.write_text("{}")
+    before = snapshot(f)
+    expected = operator.hashlib.sha256(json.dumps(f.state["manual_pending"], sort_keys=True,
+                                                separators=(",", ":")).encode()).hexdigest()
+    with pytest.raises(operator.CancelRefused, match=reason):
+        run(f, apply=apply, expected=expected if apply else None)
+    assert snapshot(f) == before
+
+
+def test_traceable_terminal_request_with_other_queued_receipt_writes_only_ledger(fixture, monkeypatch):
+    f = fixture
+    other = dict(f.store.accept_request(str(uuid.uuid4()), "start", "hanjuku-hero").receipt)
+    other.update(status="queued", result=None)
+    f.store.receipts.save(other)
+    idle = _initial_state()
+    idle["next_generation"] = 3
+    f.store.canonical.save(idle)
+    before = snapshot(f)
+    writes = []
+    real_write = operator.atomic_write_json
+    def ledger_only(path, value):
+        writes.append(path)
+        assert path == f.path
+        real_write(path, value)
+    monkeypatch.setattr(operator, "atomic_write_json", ledger_only)
+    eligible = run(f)
+    assert eligible["status"] == "eligible"
+    assert snapshot(f) == before
+    assert run(f, apply=True, expected=eligible["fingerprint"])["status"] == "cancelled"
+    actual = json.loads(f.path.read_text())
+    assert actual["manual_pending"] is None
+    assert actual["queued_manual"] == f.state["queued_manual"]
+    assert actual["history"] == f.state["history"]
+    assert writes == [f.path]
+    assert {p: b for p, b in snapshot(f).items() if p != f.path} == {p: b for p, b in before.items() if p != f.path}
+    assert f.store.receipts.load(other["request_id"])["status"] == "queued"
+
+
 @pytest.mark.parametrize("change", ["released", "presenter-active", "window", "unknown", "queued-receipt"])
 def test_missing_receipt_needs_actual_last_owner_resource_release(fixture, change):
     f = fixture
@@ -202,12 +281,6 @@ def test_missing_receipt_needs_actual_last_owner_resource_release(fixture, chang
     idle["next_generation"] = 3
     f.store.canonical.save(idle)
     before = snapshot(f)
-    if change == "released":
-        result = run(f)
-        assert result["status"] == "eligible"
-        assert snapshot(f) == before
-        assert run(f, apply=True, expected=result["fingerprint"])["status"] == "cancelled"
-        assert json.loads(f.path.read_text())["queued_manual"] == f.state["queued_manual"]
-    else:
-        with pytest.raises(operator.CancelRefused): run(f)
-        assert snapshot(f) == before
+    with pytest.raises(operator.CancelRefused, match="receipt_unknown"):
+        run(f)
+    assert snapshot(f) == before

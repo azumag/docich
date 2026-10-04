@@ -93,9 +93,8 @@ def _released_runtime(state_dir, runtime_id, tmux):
 def cancel(g, *, expected=None, apply=False, tmux=None, now=time.time):
     """Recheck the exact reservation under all writer locks before one ledger write.
 
-    A missing receipt says nothing about historical execution. Cancellation
-    still requires present-state proof that no Hanjuku receipt is in progress
-    and the last fixed Hanjuku owner's resources have been released.
+    A missing receipt leaves this request's execution and resource ownership
+    unknown. Other requests or older owners cannot prove this request ended.
     """
     if apply and (not isinstance(expected, str) or not DIGEST.fullmatch(expected)):
         raise CancelRefused("expected_reservation_required")
@@ -112,8 +111,8 @@ def cancel(g, *, expected=None, apply=False, tmux=None, now=time.time):
             state_dir / "locks/game-switch.lock",
         ):
             held.enter_context(_existing_lock(path))
-        path = state_dir / "corner_rotation.json"
-        state = _object(path)
+        ledger_path = state_dir / "corner_rotation.json"
+        state = _object(ledger_path)
         request = state.get("manual_pending")
         if (state.get("schema_version") != 1 or state.get("status") != "waiting"
                 or state.get("reason") != "manual-request-needs-resume-or-recovery"
@@ -131,22 +130,20 @@ def cancel(g, *, expected=None, apply=False, tmux=None, now=time.time):
                                                 separators=(",", ":")).encode()).hexdigest()
         if apply and fingerprint != expected:
             raise CancelRefused("reservation_changed")
-        owners = []
         for name in OWNER_FILES:
             queue = _object(program / "docich_program_queue" / name, optional=True)
-            if queue and queue.get("status") not in {"done", "expired", "cancelled"}:
+            if queue is not None and queue.get("status") not in {"done", "expired", "cancelled"}:
                 raise CancelRefused("program_queue_unverified")
             owner = _object(state_dir / name, optional=True)
             if owner is None:
                 continue
-            owners.append(owner)
             if owner.get("status") not in TERMINAL_OWNER:
                 raise CancelRefused("owner_not_terminal")
             if owner.get("rotation_request_id") == request_id:
                 raise CancelRefused("owner_requires_reconciliation")
         # Fixed owner files only: a registry is never a caller-controlled path.
         registry = _object(program / "docich_program_active.json", optional=True)
-        if registry:
+        if registry is not None:
             registered = registry.get("owner_state")
             files = (*OWNER_FILES, "paper_corner.json", "paper_corner_manual.json",
                      "nethack_corner.json", "nethack_corner_manual.json",
@@ -167,42 +164,13 @@ def cancel(g, *, expected=None, apply=False, tmux=None, now=time.time):
         active = canonical.get("active")
         if active and active.get("game") == TARGET:
             raise CancelRefused("target_active")
-        _object(store.receipts._path(request_id), optional=True)
+        receipt_path = store.receipts._path(request_id)
+        _object(receipt_path, optional=True)
         receipt = store.receipts.load(request_id)
         if receipt is None:
-            # Inspect the existing durable receipt contract, never infer
-            # absence of execution from the current receipt's absence alone.
-            directory = store.receipts.directory
-            if directory.is_symlink():
-                raise CancelRefused("unsafe_state")
-            paths = list(directory.glob("*.json"))
-            if len(paths) > 4096:
-                raise CancelRefused("receipt_inventory_unverified")
-            for path in paths:
-                _object(path)
-                row = store.receipts.load(validate_request_id(path.stem))
-                if row is None:
-                    raise CancelRefused("receipt_inventory_unverified")
-                if row.get("target") == TARGET and row.get("status") not in {
-                        "succeeded", "failed", "rolled_back"}:
-                    raise CancelRefused("target_receipt_in_progress")
-            previous = [owner for owner in owners if owner.get("game") == TARGET]
-            if not previous:
-                raise CancelRefused("resources_unverified")
-            for owner in previous:
-                identity = owner.get("bot_identity")
-                if (not isinstance(identity, dict) or identity.get("game") != TARGET
-                        or identity.get("runtime_id") != owner.get("bot_runtime_id")
-                        or identity.get("generation") != runtime_id_generation(identity.get("runtime_id"))
-                        or identity.get("generation") >= canonical["next_generation"]
-                        or owner.get("recovery_required") is not False):
-                    raise CancelRefused("resources_unverified")
-                if active and active.get("runtime_id") == identity["runtime_id"]:
-                    raise CancelRefused("runtime_active")
-                _released_runtime(state_dir, identity.get("runtime_id"), tmux)
-        else:
-            result = receipt.get("result")
-            if (receipt.get("target") != TARGET
+            raise CancelRefused("receipt_unknown")
+        result = receipt.get("result")
+        if (receipt.get("target") != TARGET
                 or receipt.get("operation") not in {"start", "switch"}
                 or receipt.get("status") not in {"failed", "rolled_back"}
                 or not isinstance(result, dict) or result.get("request_id") != request_id
@@ -210,10 +178,10 @@ def cancel(g, *, expected=None, apply=False, tmux=None, now=time.time):
                 or result.get("operation") != receipt["operation"]
                 or result.get("cleanup_pending") is not False
                 or timestamp(receipt["updated_at"]) < selected):
-                raise CancelRefused("receipt_not_released")
-            if active and active.get("runtime_id") == receipt["runtime_id"]:
-                raise CancelRefused("runtime_active")
-            _released_runtime(state_dir, receipt["runtime_id"], tmux)
+            raise CancelRefused("receipt_not_released")
+        if active and active.get("runtime_id") == receipt["runtime_id"]:
+            raise CancelRefused("runtime_active")
+        _released_runtime(state_dir, receipt["runtime_id"], tmux)
         if not apply:
             return {"status": "eligible", "corner": TARGET, "fingerprint": fingerprint}
         # Retain the original request privately for audit. Queue, cooldown,
@@ -222,7 +190,7 @@ def cancel(g, *, expected=None, apply=False, tmux=None, now=time.time):
                                        "reason": "owner-approved-detached-reservation"}
         state.update(manual_pending=None, status="waiting",
                      reason="manual-request-cancelled", error_kind=None)
-        atomic_write_json(path, state)
+        atomic_write_json(ledger_path, state)
         return {"status": "cancelled", "corner": TARGET, "weather_queue_preserved": True}
 
 

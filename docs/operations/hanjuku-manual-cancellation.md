@@ -13,13 +13,13 @@
 判定結果は従来のVM非公開operation logに残る。
 
 rotation・両retro owner・共有program・game-switchの既存lockを非待機で保持して再照合する。
-要求に対応するreceiptがある場合は終了（failed / rolled_back、cleanup_pending=false）を必須とし、
+要求に対応する終了receipt（failed / rolled_back、cleanup_pending=false）を必須とし、
 canonicalのactive/candidate/previous/retiring、owner、program待機記録、
 当該runtimeのディレクトリ・ゲーム/agent window・adapter sessionの残存を確認する。
-読めない状態、進行中receipt、半熟active、資源残存、lock競合は拒否する。
+receipt欠落、読めない状態、進行中receipt、半熟active、資源残存、lock競合は拒否する。
 **ownerが見つからないことや古い時刻だけでは未実行と断定しない。**
-receiptが欠落した場合は既存receipt一覧に進行中の半熟要求がないことと、
-固定半熟ownerの最後のruntime identity・recovery_required=false・資源解放を追加確認する。
+receiptが欠落した場合は、別要求の終了receiptや古い固定ownerの資源解放を
+今回の要求が終了した証拠に代用せず拒否する。
 残存runtimeディレクトリは既存presenterのstopped記録（子process group解放済み）と
 ゲーム/agent window・adapter session不在が揃う場合だけ解放済みとする。
 不明な場合は履歴上の未実行を推測せず、取消を拒否する。
@@ -29,5 +29,5 @@ receiptが欠落した場合は既存receipt一覧に進行中の半熟要求が
 ゲーム停止、service再起動、復旧、即時tickは実行しない。
 次の通常timerが天気の予約を処理するため、適用後も自然dispatchと実行結果を別に検証する。
 
-今回の要求のreceiptがなく、固定ownerからの資源解放確認もできない場合は取消できない。
+今回の要求のreceiptがない場合は取消できない。
 その場合は予約を保持し、実行・資源所有を証明する診断を先に揃える。
