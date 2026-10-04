@@ -276,6 +276,66 @@ test("join rejection waits for active-game notification, and missing initial vie
   assert.equal(context.store.saves.at(-1).active.gameId, "test-game");
 });
 
+test("an idle active-game snapshot before the queue ACK does not discard an immediate match", async (t) => {
+  const context = setup(t);
+  await flush(context.session);
+  context.socket.server("game:active", { gameId: null });
+  await flush(context.session);
+  assert.equal(context.session.closed, false);
+  assert.equal(context.session.gameId, null);
+  assert.equal(context.store.saves.length, 0);
+  context.socket.server("match:found", { gameId: "test-game", yourColor: "gote" });
+  context.socket.ack("queue:join", { ok: true });
+  await flush(context.session);
+  context.socket.ack("game:sync", { state: view({ yourColor: "gote", turn: "gote", moveNumber: 2,
+    clocks: { ...view().clocks, running: "gote" } }) });
+  await flush(context.session);
+  assert.equal(context.socket.packets("queue:join").length, 1);
+  assert.equal(context.socket.packets("game:move").length, 1);
+  assert.equal(context.store.saves.at(-1).active.gameId, "test-game");
+  assert.equal(context.store.saves.at(-1).active.record.color, "w");
+});
+
+test("a late idle active-game snapshot preserves the known match and pending move", async (t) => {
+  const context = setup(t);
+  await begin(context);
+  const checkpoint = context.session.checkpoint();
+  context.socket.server("game:active", { gameId: null });
+  await flush(context.session);
+  assert.equal(context.session.closed, false);
+  assert.deepEqual(context.session.checkpoint(), checkpoint);
+  assert.equal(context.socket.packets("queue:join").length, 1);
+  assert.equal(context.socket.packets("game:move").length, 1);
+});
+
+test("invalid match diagnostics expose only source and field types", async (t) => {
+  const context = setup(t);
+  await flush(context.session);
+  context.socket.server("match:found", { gameId: null, yourColor: "gote",
+    token: "private-auth", opponent: { username: "private-player" } });
+  await flush(context.session);
+  assert.equal((await context.session.done).code, "invalid_match");
+  assert.equal(context.socket.packets("game:move").length, 0);
+  assert.equal(context.store.saves.length, 0);
+  assert.deepEqual(context.events.find(event => event.event === "invalid_match_shape"), {
+    event: "invalid_match_shape", source: "match:found", payloadType: "object",
+    gameIdType: "null", yourColorType: "string", stage: "game_id",
+  });
+  assert.equal(JSON.stringify(context.events).includes("private-auth"), false);
+  assert.equal(JSON.stringify(context.events).includes("private-player"), false);
+});
+
+test("a malformed active-game notification remains fail-closed", async (t) => {
+  const context = setup(t);
+  await flush(context.session);
+  context.socket.server("game:active", {});
+  await flush(context.session);
+  assert.equal((await context.session.done).code, "invalid_match");
+  assert.equal(context.socket.packets("game:move").length, 0);
+  assert.equal(context.store.saves.length, 0);
+  assert.equal(context.events.find(event => event.event === "invalid_match_shape")?.source, "game:active");
+});
+
 test("initial connection failure has a bounded lifetime and never logs raw errors", async (t) => {
   const socket = new Socket();
   socket.connect = () => socket.server("connect_error", new Error("tsb_do-not-log"));
