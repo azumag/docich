@@ -27,6 +27,7 @@ on:
       - 'src/docich/stream_title_context.py'
       - 'src/docich/tsuitate_protocol.py'
       - 'src/docich/soren91*.py'
+      - 'src/docich/soren_*recovery*.py'
       - 'brains/**'
       - 'scripts/hanjuku_scene_generate.sh'
       - 'config/games/**'
@@ -51,6 +52,7 @@ on:
       - 'tests/test_procs.py'
       - 'tests/test_soren91*.py'
       - 'tests/test_soren_adapter.py'
+      - 'tests/test_soren_round_recovery.py'
       - 'tests/test_presentation*.py'
       - 'tests/test_coordinator_adapter_retroarch.py'
       - 'tests/test_game_switch*.py'
@@ -90,6 +92,7 @@ on:
       - 'src/docich/stream_title_context.py'
       - 'src/docich/tsuitate_protocol.py'
       - 'src/docich/soren91*.py'
+      - 'src/docich/soren_*recovery*.py'
       - 'brains/**'
       - 'scripts/hanjuku_scene_generate.sh'
       - 'config/games/**'
@@ -114,6 +117,7 @@ on:
       - 'tests/test_procs.py'
       - 'tests/test_soren91*.py'
       - 'tests/test_soren_adapter.py'
+      - 'tests/test_soren_round_recovery.py'
       - 'tests/test_presentation*.py'
       - 'tests/test_coordinator_adapter_retroarch.py'
       - 'tests/test_game_switch*.py'
@@ -180,6 +184,7 @@ jobs:
             --root-path 'src/docich/stream_title_context.py' \
             --root-path 'src/docich/tsuitate_protocol.py' \
             --root-path 'src/docich/soren91*.py' \
+            --root-path 'src/docich/soren_*recovery*.py' \
             --root-path 'brains/**' \
             --root-path 'scripts/hanjuku_scene_generate.sh' \
             --root-path 'config/games/**' \
@@ -196,6 +201,7 @@ jobs:
             --root-path 'tests/test_nsnake*.py' \
             --root-path 'tests/test_soren91*.py' \
             --root-path 'tests/test_soren_adapter.py' \
+            --root-path 'tests/test_soren_round_recovery.py' \
             --root-path 'tests/test_presentation*.py' \
             --root-path 'tests/test_round_boundary.py' \
             --root-path 'tests/test_cli_adapter.py' \
@@ -287,5 +293,6 @@ jobs:
           tests/test_nethack_save_confirmation.py
           tests/test_nethack_boundary_diag.py
           tests/test_soren91_graceful_stop.py tests/test_soren91_adapter.py tests/test_soren_adapter.py
+          tests/test_soren_round_recovery.py
       - name: Round-boundary contract
         run: python3 -m pytest -q tests/test_round_boundary.py

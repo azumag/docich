@@ -173,4 +173,56 @@ runner の割り込み終了により試合loopが終了し、既存supervisor�
 再起動する場合があります。配信・共通workerには直接触れません。実行後は `diagnostics` の
 `corners.soren_game` で新しい試合と runner の進行を別途確認します。
 
+### `recover_soren_round`（保持された Soren 試合を打ち切って新しい試合へ戻す）
+
+`recover_soren_round / production / ref=main / confirm=production` は、通常 switch の
+試合終了境界が `timeout` で失敗し、**元の Soren active を保持したまま** 半熟予約が
+`recovery_required` に残った状態だけを対象にする、owner 専用の固定操作です。引数・任意コマンドは
+取りません。`recover_soren_game`（STOP した runner への SIGTERM）では進まない
+`GAMEOVER` 固着を対象にします。
+
+**許可条件（すべて満たさないと、何も変更せず拒否）**
+
+- 予約(rotation pending/dispatched)・switch receipt・retro owner・canonical active の
+  request_id/generation/game が一致し、receipt が `round_boundary` 段階の timeout と
+  保持された元 active を durable に証明している（旧 receipt は coordinator の
+  `round_boundary_failed` ログ行まで要求。`failed/timeout` の文字列だけでは許可しない）。
+- lifecycle の request/ack が同じ identity で `cancelled`、resource は未実行かつ可逆。
+- 盤面が `STOP`/`GAMEOVER` で 60 秒〜24 時間静止、runner マーカーの pid・起動時刻が
+  実プロセスと一致、ゲーム root(`soren_loop`/`soviet_watchdog`/`soviet_local`/`strategy_runner`)が
+  各 1 つで帰属不明のゲームプロセスが無い。target(半熟)の window/process が無い。
+- 既存の `soren_loop`/`soviet_watchdog` pause、`tmp/stop`、`tmp/improve.lock` が無い
+  （ユーザー設定は解除しない。improve.lock は supervisor のループ再生成を止めるため事前拒否）。
+- Linux pidfd が使える。
+
+**実行内容（段階 journal `run-soren-live/soren_round_recovery.json`、再実行で同じ identity から再開）**
+
+1. 排他 lock（rotation → retro → coordinator → lifecycle `broker.lock`）を取り、journal を書き、
+   canonical を `recovery_required` に固定する。
+2. ゲーム root と子孫だけを pidfd で SIGSTOP（共通 supervisor・配信・音声・overlay・improve/prediction は対象外）。
+3. `soren_loop`/`soviet_watchdog` に **この操作専用の pause** を置く（supervisor が復活させない）。
+4. 結果(`game_state.json`・`game_history/latest.jsonl`・runner 出力・lifecycle 記録・マーカー)を
+   `run-soren-live/soren-round-recovery/<request_id>/` に保存し、sha256 を journal へ固定する。
+   **強制打切りの結果は通常の完走成績・履歴へ混ぜない**。
+5. 凍結した旧ゲームツリーを SIGKILL（`cleanup_all` など共有後処理を走らせない）。保存済みの旧ファイルを削除。
+6. `broker.lock` を解放し、`soviet_watchdog` の pause を外す → supervisor が watchdog、続いて
+   bridge を再生成。新 bridge の観測 nonce(`game_id`)・新しい盤面で確認後、`soren_loop` の pause を
+   外す → 新 loop と新 runner（マーカー pid が新 runner と一致）を確認。
+7. journal を `completed` にし、canonical を `ready` へ戻す。
+
+**触らないもの・維持するもの**: rotation の pending/history/hold、半熟の再開・再dispatch、
+rotation service の再起動、共通 supervisor・配信・encoder・音声・overlay・improve/prediction worker、
+direct_overlay・HTML・DB・secret。完了後も journal が残るため **switch/rotation は保持されたまま**で、
+解除は別の reviewed な owner 手順（journal の扱いを含む）で行う。
+
+**途中失敗**: 常に fail-closed で hold と journal を残す。同じ操作の再実行は journal の
+identity が現状と一致する場合に限り、未完了の段階から再開する（完了済み段階の効果は繰り返さない）。
+予約・receipt・active が変わっていれば再開しない。`prepared` 以前に失敗した場合は旧ゲームの
+SIGSTOP が一部掛かったままのことがあるため、再実行して再開する。
+
+**盤面を復元できなくなる境界**: 手順 5（SIGKILL と旧ファイル削除）以降。保存したファイルは
+証拠であり、盤面そのものの復元は想定しない。手順 4 までは journal を残したまま再実行で再開できる。
+
+出力は PID・argv・実 request_id を含めず、結果は VM private log にのみ残ります。
+
 既存VMの `/home/ubuntu/docich` に tracked差分またはowned submodule差分がある場合、bootstrapは拒否します。VMとrepositoryのどちらを正とするか確認して差分を整理してからbaselineを登録してください。`/home/ubuntu/soren` はbootstrap時に丸ごとsourceへ戻しません。以後、gitlink変更時に変更対象pathだけ旧sourceとの一致を検証して投影するため、既存runtime stateは保持されます。driftを無視して上書きする経路は用意しません。
