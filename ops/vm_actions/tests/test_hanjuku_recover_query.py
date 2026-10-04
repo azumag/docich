@@ -177,3 +177,17 @@ def test_recovery_query_workflow_is_fixed_and_withholds_vm_output():
     )
     for marker in forbidden:
         assert marker not in text
+
+
+def test_recovery_script_noop_is_idempotent_second_stage_retry(tmp_path):
+    env, log = _fake_recovery_tree(tmp_path, retro_status="noop")
+    result = subprocess.run(
+        ["bash", str(SCRIPT)], env=env, text=True, capture_output=True
+    )
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert calls[1][-2:] == ["retro-corner", "recover-failed"]
+    assert calls[2][-2:] == ["corner-rotation", "recover"]
+    assert calls[3][-3:] == [
+        "--no-block", "restart", "docich-corner-rotation.service",
+    ]
