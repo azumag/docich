@@ -2009,7 +2009,7 @@ const ROT_STATUS_JA={ready:["準備完了","ok"],waiting:["待機中","ok"],runn
 const ROT_REASON_JA={
   "execution-pending":"予約済み。次の tick（1分以内）で起動します",
   "manual-execution-pending":"手動開始を実行中です",
-  "manual-request-needs-resume-or-recovery":"手動予約が残っています。同じコーナーを手動開始で再開するか、手動停止してください",
+  "manual-request-needs-resume-or-recovery":"未精算の手動要求のため待機中です。手動要求のコーナーと所有者の状態を確認してください",
   "other-corner-needs-finish-or-recovery":"別のコーナーが実行中か要復旧のため待っています",
   "recovery-retry":"復旧後の再試行待ちです",
   "manual-execution-unverified":"手動実行の結果を確認できず停止しました",
@@ -2022,7 +2022,7 @@ const ROT_REASON_JA={
   "clock-gap-quarantine":"長時間の停止を検知したため、安全のため一時待機しています",
   "clock-regressed":"時計の逆行を検知したため待機しています",
 };
-const CORNER_STATUS_JA={idle:"待機",waiting:"待機",starting:"開始中",active:"実行中",restoring:"復帰中",preparing:"準備中",recovery_required:"要復旧",failed:"失敗",completed:"完了",interrupted:"中断",expired:"期限切れ",running:"実行中"};
+const CORNER_STATUS_JA={idle:"待機",waiting:"待機",starting:"開始中",active:"実行中",restoring:"復帰中",preparing:"準備中",recovery_required:"要復旧",failed:"失敗",completed:"完了",interrupted:"中断",expired:"期限切れ",running:"実行中",unknown:"不明"};
 const CORNER_BUSY=new Set(["starting","active","restoring","preparing","waiting","recovery_required","failed"]);
 const CORNER_ACTIVE_STOP=new Set(["starting","active","restoring"]);
 const CORNER_END_REASON_JA={"manual_saved_stop":"セーブして終了","manual_forced_stop":"セーブ失敗・強制終了","switch-terminal-before-corner-active":"起動前の切替失敗で中断"};
@@ -2076,6 +2076,10 @@ function renderCorners(d){
   const r=d.rotation||{};
   const gsw=d.game_switch||{};
   const src=d.source||{};
+  const manual=r.manual_pending;
+  const manualOwnerText={matched:"所有者一致",missing:"所有者の記録なし",mismatch:"所有者不一致",unreadable:"所有者を読み取れません",unknown:"所有者未確認"};
+  const manualText=manual?`${manual.corner==="unknown"?"コーナー不明":manual.corner}（${jaStatus(manual.status)}・${manualOwnerText[manual.owner]||manualOwnerText.unknown}）`:"なし";
+  const blocked=r.reason==="manual-request-needs-resume-or-recovery";
   const warn=document.getElementById("corners-source-warn");
   if(warn){
     const msgs=[];
@@ -2092,8 +2096,9 @@ function renderCorners(d){
     const rows=[
       ["状態",`<span class="badge ${st[1]}">${esc(st[0])}</span>${r.reason?` <span class="help">${esc(ROT_REASON_JA[r.reason]||r.reason)}</span>`:""}`],
       ["配信中のゲーム",`${esc(gsw.active_game||"なし")}${gsw.phase&&gsw.phase!=="ready"&&gsw.phase!=="idle"?` <span class="badge warn">切替中: ${esc(gsw.phase)}</span>`:""}`],
-      ["予約/実行中",r.pending?`${esc(r.pending.corner||"-")}（${r.pending.phase==="dispatched"?"起動済み":"選択済み"}、${r.pending.age_sec!=null?esc(Math.round(r.pending.age_sec/60))+"分前":"-"}）`:"なし"],
-      ["手動の開始予約",r.queued_manual?`${esc(r.queued_manual.corner||"-")}（現在のコーナー終了後に開始）`:"なし"],
+      ["自動の選択/起動",r.pending?`${esc(r.pending.corner||"-")}（${r.pending.phase==="dispatched"?"起動要求済み":"選択済み"}、${r.pending.age_sec!=null?esc(Math.round(r.pending.age_sec/60))+"分前":"-"}）`:"なし"],
+      ["手動の開始予約",r.queued_manual?`${esc(r.queued_manual.corner||"-")}（${blocked?"未精算の手動要求があり開始待ち":"現在のコーナー終了後に開始"}）`:"なし"],
+      [blocked?"開始を待たせている手動要求":"手動の実行要求",esc(manualText)],
       ["方式",`${r.schedule_mode==="queue"?"キュー（空き次第つぎを起動）":r.schedule_mode==="interval"?"一定間隔":esc(r.schedule_mode||"-")} / cooldown ${r.cooldown_seconds!=null?Math.round(r.cooldown_seconds/3600)+"時間":"-"}`],
       ["自動選択できる数",`${r.eligible_count==null?"-":esc(r.eligible_count)} 件`],
       ["参照中の設定",`<span class="mono">${esc(src.config||"-")} / ${esc(src.state_dir||"-")}</span>`],
@@ -2104,6 +2109,7 @@ function renderCorners(d){
   if(adv){
     let t="";
     if(r.latch) t="⚠ ローテーションが安全のため停止しています。下の「コーナー状態ファイル」で要復旧/失敗のコーナーを確認し、そのコーナーを手動停止（または GitHub Actions の各 corner operator で recover）してから「ローテーション復旧」を押してください。";
+    else if(blocked) t=`開始予約は未精算の手動要求を待っています。${manualText}。ゲーム切替が準備完了でも、予約の起動完了ではありません。`;
     else if(gsw.phase&&!["ready","idle"].includes(gsw.phase)) t="ゲーム切替の途中です。完了するまで手動開始はできません。";
     adv.textContent=t;
     adv.style.color=r.latch?"var(--bad)":"";
@@ -2139,9 +2145,10 @@ function renderCorners(d){
     } else {
       cat.innerHTML=catalog.map(c=>{
         let auto;
-        if(!c.enabled) auto='<span class="badge">無効</span>';
+        if(r.queued_manual&&r.queued_manual.corner===c.id) auto='<span class="badge warn">開始予約済み</span>';
+        else if(!c.enabled) auto='<span class="badge">無効</span>';
         else if(c.paused) auto='<span class="badge warn">休止中</span>';
-        else if(r.pending&&r.pending.corner===c.id) auto='<span class="badge ok">実行中</span>';
+        else if(r.pending&&r.pending.corner===c.id) auto=`<span class="badge ok">${r.pending.phase==="dispatched"?"起動要求済み":"選択済み"}</span>`;
         else if(c.cooldown_until) auto='<span class="badge">cooldown中</span>';
         else if(c.eligible) auto='<span class="badge ok">候補</span>';
         else auto='<span class="badge warn">対象外</span>';
@@ -2207,11 +2214,11 @@ function updateCornerButtons(){
     const src=busy===m?"手動":"自動/ローテーション";
     hints.push(`${c.id} の${src}実行の記録が「${jaStatus(busy.status)}」です。先に手動停止してください。`);
   }
-  else if(r.pending) hints.push(`いまは ${r.pending.corner} を実行中です。手動開始すると、現在のコーナーが終わってから始まります。`);
+  else if(r.pending) hints.push(`${r.pending.corner} は${r.pending.phase==="dispatched"?"起動要求済み":"選択済み"}です。手動開始すると、現在のコーナーが終わってから始まります。`);
   if(queuedMode){
     hints.push(`天気は設定済みの最大${c.duration_minutes}分で表示します。予報の有効期限で早く終了する場合があります。`);
     if(!c.enabled||c.paused||r.enabled===false) hints.push("天気またはローテーションが無効・休止中のため予約できません。");
-    if(r.queued_manual) hints.push(`${r.queued_manual.corner} の開始予約が残っています。予約は実行中のコーナー終了後に処理されます。`);
+    if(r.queued_manual) hints.push(`${r.queued_manual.corner} の開始予約は受付済みです。${r.reason==="manual-request-needs-resume-or-recovery"?"未精算の手動要求があり開始待ちです。":"予約は実行中のコーナー終了後に処理されます。"}`);
   }
   const startBtn=document.getElementById("corners-start");
   const stopBtn=document.getElementById("corners-stop");
