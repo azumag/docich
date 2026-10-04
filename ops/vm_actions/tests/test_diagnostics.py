@@ -39,6 +39,7 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             "src/docich/corner_rotation.py",
             "src/docich/game_switch.py",
             "src/docich/hanjuku_manual_cancel.py",
+            "src/docich/hanjuku_manual_evidence.py",
             "src/docich/naming.py",
             "src/docich/tmux.py",
             "src/docich/procs.py",
@@ -168,7 +169,7 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
 
     def test_manual_receipt_resource_helpers_drift_is_refused_read_only(self):
-        for name in ("game_switch", "hanjuku_manual_cancel", "naming", "tmux", "procs"):
+        for name in ("game_switch", "hanjuku_manual_cancel", "hanjuku_manual_evidence", "naming", "tmux", "procs"):
             with self.subTest(module=name):
                 path = self.doc / "src" / "docich" / (name + ".py")
                 original = path.read_bytes()

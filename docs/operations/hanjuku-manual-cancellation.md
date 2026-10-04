@@ -46,3 +46,21 @@ canonical・owner・program待機記録・予約指紋を含む全条件は固�
 `operation=diagnostics, target=production, ref=main` で行う。
 receipt欠落のwaiting予約には既存 `recover-failed` のrecovery_required前提がなく、
 `recover-runtime` も現在の半熟ownerとcanonical identity一致が必要なため、証拠なしに代用しない。
+
+追加の `corner_rotation.manual_pending_evidence` は同じ固定予約のpositive記録だけを調べる。
+読取元は固定EventLog、当該UUIDのreceipt、両retro owner、canonicalだけ。
+EventLogは末尾を64KiB×最大16ページで読み、行サイズ64KiB、一致行256、runtime8件、
+全体2秒の予算で制限する。先頭打切り・行/一致行打切り・不正行・走査中変更・予算切れを明示し、
+`log.scan_complete` は保持されたファイルの当該snapshot全体を読めたことだけを表す。
+予約後の一致するrequested/accepted/queued/terminal記録と、そこから得たnumeric generationを返す。
+runtime/lease/request識別子、ログ本文、argv、env、ファイルパス、例外本文は返さない。
+同一generationの異なるruntimeやownerのlease矛盾は資源解放をunknownにする。
+保持上限後の矛盾も判定に反映し、ownerのbot_runtime_idとidentityのruntime_id不一致・欠落もinvalid/unknownとする。
+資源probeは検証されたruntimeだけに既存の読取専用チェックを使い、canonicalで追跡中なら解放扱いしない。
+tmuxは固定formatのwindow/session一覧だけを最大16KiB・各300msか残り予算で読み、失敗はunknownにする。
+
+EventLogはbest-effortで、receipt削除のtombstoneもないため、保持行の完走や一致行の欠落から
+未dispatch・全歴史世代網羅・全資源帰属を証明しない。`request_generation_coverage=unknown` と
+少なくとも1件の `resource_attribution_unknown` を残し、`all_resources_released=null`、
+`cancellation_authority=false` を維持する。観測できた全runtimeの解放がtrueでもこの不足は消えない。
+この投影は取消条件を追加・緩和せず、現在の終了receipt必須契約も変更しない。

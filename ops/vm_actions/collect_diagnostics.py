@@ -3627,6 +3627,7 @@ def _rotation_manual_pending_projection(state_dir, data, now):
     a matching request in a sibling file must not make it look resumable.
     This is evidence, never an instruction to resume or recover a corner.
     """
+    from docich.hanjuku_manual_evidence import project as manual_evidence
     out = {
         "manual_pending": isinstance(data.get("manual_pending"), dict),
         "manual_pending_corner": None,
@@ -3637,6 +3638,8 @@ def _rotation_manual_pending_projection(state_dir, data, now):
         "manual_pending_fingerprint": None,
         "manual_pending_receipt": _rotation_hanjuku_manual_receipt_projection(
             state_dir, data.get("manual_pending"), now),
+        "manual_pending_evidence": manual_evidence(
+            state_dir, data.get("manual_pending"), now, read_fixed=_rotation_evidence_file),
     }
     manual = data.get("manual_pending")
     if manual is None:
