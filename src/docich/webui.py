@@ -1689,6 +1689,10 @@ _CORNER_MANUAL_LAUNCHERS = {
 }
 # Weather uses the durable common queue; it has no detached one-off runner.
 _CORNER_QUEUED_MANUAL_ADAPTERS = frozenset({"weather"})
+_MANUAL_RESERVATION_CORNERS = frozenset({
+    "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
+    "pacman4console", "nethack", "hanjuku-hero", "soren91", "paper", "meriken",
+})
 # rotation / 自動起動が書く base state の停止経路（webui stop は manual だけを見ない）。
 # paper は専用 restore CLI が scheduled service を止めて表示を復帰するため、
 # bin/docich の paper-corner stop ではなく専用 launcher を使う。
@@ -1741,6 +1745,42 @@ def _view_time(value: Any) -> float | None:
     return None
 
 
+def _rotation_manual_view(g: GlobalConfig, raw: Any) -> dict[str, str] | None:
+    """Show the declared manual owner without exposing request IDs or paths."""
+    if not isinstance(raw, dict) or raw.get("manual_pending") is None:
+        return None
+    manual = raw["manual_pending"]
+    out = {"corner": "unknown", "owner": "unknown", "status": "unknown"}
+    if not isinstance(manual, dict):
+        return out
+    corner = manual.get("corner")
+    if isinstance(corner, str) and corner in _MANUAL_RESERVATION_CORNERS:
+        out["corner"] = corner
+    # Keep the existing diagnostics' narrower manual-owner file contract.
+    files = {name + ".json": name for name in CORNER_MANUAL_STATE_FILES
+             if name != "weather_corner"}
+    filename = manual.get("state_file")
+    name = files.get(filename) if isinstance(filename, str) else None
+    request_id = manual.get("request_id")
+    if name is None or not isinstance(request_id, str) or not request_id:
+        return out
+    path = Path(g.state_dir) / (name + ".json")
+    if not path.is_file():
+        out["owner"] = "missing"
+        return out
+    owner = _load_json_file(path)
+    if not isinstance(owner, dict):
+        out["owner"] = "unreadable"
+    elif owner.get("rotation_request_id") != request_id:
+        out["owner"] = "mismatch"
+    else:
+        out["owner"] = "matched"
+        status = owner.get("status")
+        if isinstance(status, str) and status in _CORNER_STATUS_ENUM:
+            out["status"] = status
+    return out
+
+
 def _rotation_view(g: GlobalConfig) -> dict[str, Any]:
     """Bounded, read-only projection of corner_rotation.json (#seed/uuid は出さない)."""
     from .corner_catalog import cooldown_seconds, rotation_config, rotation_enabled
@@ -1748,6 +1788,7 @@ def _rotation_view(g: GlobalConfig) -> dict[str, Any]:
     path = Path(g.state_dir) / "corner_rotation.json"
     raw = _load_json_file(path)
     out: dict[str, Any] = {"present": path.is_file(), "readable": isinstance(raw, dict)}
+    out["manual_pending"] = _rotation_manual_view(g, raw)
     inbox = _load_json_file(Path(g.state_dir) / "corner_manual_queue.json")
     queued = inbox if isinstance(inbox, dict) else (
         raw.get("queued_manual") if isinstance(raw, dict) else None)
