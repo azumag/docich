@@ -175,9 +175,9 @@ function checkResponses(observation, candidates) {
     if (candidate.role === "K") return true;
     const destination = candidate.usi.slice(2, 4);
     const dx = file(destination) - file(king); const dy = rank(destination) - rank(king);
-    // A checking knight can only be captured, not blocked. Its origin is two
-    // ranks in our forward direction; own pieces between do not obstruct it.
-    if (Math.abs(dx) === 1 && dy === 2 * forward) return true;
+    // A checking knight can only be captured by a move, not blocked by a drop.
+    // Its origin is two ranks forward; own pieces between do not obstruct it.
+    if (Math.abs(dx) === 1 && dy === 2 * forward) return candidate.usi[1] !== "*";
     if (dx !== 0 && dy !== 0 && Math.abs(dx) !== Math.abs(dy)) return false;
     const distance = Math.max(Math.abs(dx), Math.abs(dy));
     for (let step = 1; step < distance; step += 1) {

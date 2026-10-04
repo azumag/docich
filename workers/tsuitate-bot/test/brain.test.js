@@ -222,23 +222,41 @@ test("check responses retain knight captures past an own piece for both colors",
   }
 });
 
-test("check-response drops include blocks and knight origins but exclude rays behind own blockers", () => {
+test("last-attempt knight response captures instead of dropping beside its checking origin", () => {
+  for (const [color, pieces, target, seed] of [
+    ["b", [["5e", "K"], ["4d", "L"], ["4e", "S"], ["4f", "P"], ["5d", "P"],
+      ["5f", "G"], ["6d", "G"], ["6e", "S"], ["6f", "L"]], "4c", "1"],
+    ["w", [["5e", "K"], ["6f", "L"], ["6e", "S"], ["6d", "P"], ["5f", "P"],
+      ["5d", "G"], ["4f", "G"], ["4e", "S"], ["4d", "L"]], "6g", "0"],
+  ]) {
+    const state = observation(pieces, { color, turn: color, hand: { G: 1 }, inCheck: true, attemptBudget: 1 });
+    // No king escape is visible. A valid profile favouring drops must still
+    // distinguish capture of a checking knight from an ineffective drop.
+    const choice = chooseMove(state, { profile: profile({ drop: 1 }), seed });
+    assert.notEqual(choice.usi[1], "*");
+    assert.equal(choice.usi.slice(2, 4), target);
+  }
+});
+
+test("check-response drops include blocks but exclude knight origins and rays behind own blockers", () => {
   for (const [color, blocker, blocked, block, knightOrigin, unrelated] of [
     ["b", "5d", "5c", "5f", "4c", "6g"], ["w", "5f", "5g", "5d", "6g", "4c"],
   ]) {
     const state = observation([["5e", "K"], [blocker, "P"]],
-      { color, turn: color, hand: { G: 1 }, inCheck: true, attemptBudget: 1 });
-    const forbiddenMoves = ["4d", "4e", "4f", "5d", "5f", "6d", "6e", "6f"].map((to) => "5e" + to);
-    const count = chooseMove(state, { forbiddenMoves }).candidateCount;
-    const responses = [];
-    for (let i = 0; i < count; i += 1) {
-      const choice = chooseMove(state, { forbiddenMoves });
-      responses.push(choice.usi); forbiddenMoves.push(choice.usi);
+      { color, turn: color, hand: { P: 1, L: 1, N: 1, S: 1, G: 1, B: 1, R: 1 }, inCheck: true, attemptBudget: 1 });
+    for (const selectedProfile of [LEGACY_PROFILE, LINEAR_PROFILE]) {
+      const forbiddenMoves = ["4d", "4e", "4f", "5d", "5f", "6d", "6e", "6f"].map((to) => "5e" + to);
+      const count = chooseMove(state, { profile: selectedProfile, forbiddenMoves }).candidateCount;
+      const responses = [];
+      for (let i = 0; i < count; i += 1) {
+        const choice = chooseMove(state, { profile: selectedProfile, forbiddenMoves });
+        responses.push(choice.usi); forbiddenMoves.push(choice.usi);
+      }
+      assert.ok(responses.includes("G*" + block));
+      for (const role of "PLNSGBR") assert.ok(!responses.includes(role + "*" + knightOrigin));
+      assert.ok(!responses.includes("G*" + blocked));
+      assert.ok(!responses.includes("G*" + unrelated));
     }
-    assert.ok(responses.includes("G*" + block));
-    assert.ok(responses.includes("G*" + knightOrigin));
-    assert.ok(!responses.includes("G*" + blocked));
-    assert.ok(!responses.includes("G*" + unrelated));
   }
 });
 
