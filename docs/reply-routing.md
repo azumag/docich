@@ -143,7 +143,14 @@ DOCICH_REQUIRE_BWRAP_PROBE=1 PYTHONPATH=src python3 -m pytest -q -rs \
 
 この作業headのmacOSオフラインsuiteは **272 passed, 4 skipped, 34 subtests passed**。skipは任意Discord SDK未導入、Linux/bwrap canary、Linux Unix-socket/egress-close tests。Soren側のcomment-reply-quality CIと同じ7-module unittest suiteは **87 passed**。追加のscreen/runtime suiteは **25 passed, 10 subtests passed**、`bash tests/test_peak_hours_agent_order.sh`もpass。`bash -n`、Python compile、両worktreeの`git diff --check`もpass。
 
-前のPR headではGitHub Actions `offline-contracts`と既存container suiteがpassしていたが、この追加変更を含むheadのGitHub CI結果はpush後に確認する。現実行hostはDarwinで`bwrap`なし。Docker CLIはあるがDocker daemon socketへのアクセスはpermission deniedで、既存container suiteも実行できなかった。hostのsecurity/network設定やsocket権限は変えていない。従ってこの作業ではLinux/bwrapのhost-loopback拒否、egress経路全域、host HOME/DB/log/socket到達不可、timeout時の実子孫reapを実機受入したとは主張しない。
+最新PR head `06c3d3db` のGitHub Actionsは全check pass。
+
+- [offline-contracts run 37178493744](https://github.com/azumag/docich/actions/runs/37178493744): **206 passed, 1 warning, 34 subtests**。Ubuntu+bwrap child probeを含む。
+- [docker-contracts run 37178493744](https://github.com/azumag/docich/actions/runs/37178493744): **228 passed, 1 skipped, 1 warning, 34 subtests**。runtime/test image buildとoffline backup/restore contractを含む。skipはtest imageにbwrapがないため、warningはPython `audioop` deprecation。
+- [semantic-contracts run 37178493893](https://github.com/azumag/docich/actions/runs/37178493893): semantic core **123 passed**、classifier/screen/canary **142 passed**。
+- [security-regressions run 37178493840](https://github.com/azumag/docich/actions/runs/37178493840)、[comment-regressions run 37178493806](https://github.com/azumag/docich/actions/runs/37178493806)、[prediction-regressions run 37178493783](https://github.com/azumag/docich/actions/runs/37178493783)、[python-syntax run 37178494073](https://github.com/azumag/docich/actions/runs/37178494073)もpass。
+
+現実行hostはDarwinで`bwrap`なし。Docker CLIはあるがDocker daemon socketへのアクセスはpermission deniedで、ローカルcontainer suiteは実行できなかった。hostのsecurity/network設定やsocket権限は変えていない。従ってGitHubのbwrap child probeは通過したが、Linux実機でのegress経路全域、host HOME/DB/log/socket到達不可、Webからのhost loopback/internal service非到達を一連の実機環境で受入したとは主張しない。GitHub Docker contractもreply research sandboxの実機network受入を代替しない。
 
 固定CONNECT authority、nonpublic IPv4/IPv6/metadata拒否、DNS解決後の同IP直結、redirect拒否、専用key以外の環境非継承、子起動前capability drop、idle upstream half-close時のsocket/thread cleanupはmock/合成negative testsで固定する。これらはLinux実機negative acceptanceの代わりではない。JEVの実scope/confidence/latency、Codex API通信、host network/internal service拒否の全経路受入、本番反映は未実施。
 19件fixtureは `api_rewrite` に「さっきの説明もう少し短くして」を置くが、現状はflatなuser textで、直前assistant説明を含む会話形を再現しない。JEVへassistant本文を渡さない境界は維持する。API-only時の最終APIには元の会話履歴を渡し、直前回答は書き換え対象の文面として使うが、事実確認済み根拠として採用しない。このrewrite例でのJEV意味精度は未測定で、会話構造を含む追加canary/評価が残る。
