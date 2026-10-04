@@ -38,6 +38,10 @@ paper_capital_jpy = 10000
 notifications_enabled = true
 notification_speech_enabled = true
 
+# 新記録の確定だけを既存Twitchクリップキューへ渡す。資格情報はSorenが所有。
+[record_clips]
+enabled = true
+
 [rotation]
 games = []
 
