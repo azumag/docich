@@ -33,6 +33,21 @@ lock取得前に`records/pending/`へ確定スコア候補をatomic作成・fsyn
 Soren側のPRを先にレビュー・統合し、docich側でそのgitlinkを同期してから同時に正規配備する。
 未統合のfeature commitを本番へ直接配布しない。
 
+新イベントは`tmp/clip_queue/record_pending/record_<ID>.json`へ保存する。
+旧resident consumerのトップ階層`*.json`走査から不可視にし、対応consumerの稼働前は配送を保留する。
+ファイルの存在・PIDの大小・ディスク上の新版だけではconsumerの準備完了と判定しない。
+Sorenのclip handlerはchat専用の`lib/chat_clip_queue.sh`にあり、chat workerが既存の毎tick
+`eloop_lib.sh`再読込で関数を更新する。他workerではこのモジュールを読み込まない。
+workerのTERM・HUP、pause変更、ゲーム・encoderの操作は反映に必要ない。
+新版consumerは従来のトップ階層recordも同じreceiptで回収する。
+配送待ち時間を取得時刻へ上乗せしないため、更新時に20秒を超えた未作成イベントはHTTPなしで`expired`となる。
+旧パス・done・failed・receiptに同じIDが残る場合、outboxの再ACKから新パスへ複製しない。
+
+配備時は全対象ファイルとgitlinkを照合し、同じchat PID・起動tick、pause、他worker・encoderのidentityを
+前後で記録する。旧トップ階層recordがある場合は旧consumerに投入済みなので、隔離保証を遡って主張しない。
+実イベントのreceiptが作られていない場合は、hot reloadを合成検証済み／実機採用未確認と区別する。
+固定diagnosticsは現時点でrecord lane・receiptを出力しないため、その結果だけで生成完了を判断しない。
+
 Sorenは既存の`TWITCH_CLIP_TOKEN`（未設定時`TWITCH_BOT_TOKEN`）と`clips:edit`を使用する。
 新しい資格情報・scope・課金・サービスは追加しない。公開範囲は既存のTwitch公開クリップ＋チャットURLのみ。
 新記録クリップはBlueskyへ送らない（既存のソ連建国投稿だけ維持）。

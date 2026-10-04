@@ -18,7 +18,35 @@ IDENTITY = dict(game="hanjuku-hero", runtime_id="g1-abcdef", generation=1, lease
 
 
 def queue(root):
-    return list((root / "soren/tmp/clip_queue").glob("record_*.json"))
+    return list((root / "soren/tmp/clip_queue/record_pending").glob("record_*.json"))
+
+
+def test_record_is_invisible_to_legacy_consumer_and_keeps_capture_time(tmp_path):
+    confirm(tmp_path, 10)
+    confirm(tmp_path, 11, now=100)
+    assert not list((tmp_path / "soren/tmp/clip_queue").glob("*.json"))
+    event = json.loads(queue(tmp_path)[0].read_text())
+    assert event["created_at"] == 100
+    confirm(tmp_path, 11, now=999)
+    assert len(queue(tmp_path)) == 1
+    assert json.loads(queue(tmp_path)[0].read_text())["created_at"] == 100
+
+
+@pytest.mark.parametrize("location", ["", "done", "failed"])
+def test_recovered_outbox_does_not_duplicate_existing_old_queue_event(tmp_path, location):
+    confirm(tmp_path, 10)
+    confirm(tmp_path, 11)
+    event_path = queue(tmp_path)[0]
+    existing = tmp_path / "soren/tmp/clip_queue" / location / event_path.name
+    existing.parent.mkdir(exist_ok=True)
+    event_path.rename(existing)
+    ledger = tmp_path / "state/records/bastet_score.json"
+    state = json.loads(ledger.read_text())
+    state["outbox"][0]["enqueued"] = False
+    atomic_write_json(ledger, state)
+    confirm(tmp_path, 11)
+    assert existing.exists()
+    assert not queue(tmp_path)
 
 
 def confirm(root, value, **kwargs):
