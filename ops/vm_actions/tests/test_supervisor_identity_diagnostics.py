@@ -14,6 +14,25 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 
 
+def tracked_script_repo(tmp_path, script):
+    root = tmp_path / "tracked"
+    repo = root / "games/soviet_now"
+    repo.mkdir(parents=True)
+    (repo / "start_all.sh").write_bytes(script)
+    (repo / "update_stream_game.sh").write_bytes(b"# public updater\n")
+    (repo / "lib").mkdir()
+    (repo / "lib/stream_title_sync.py").write_bytes(b"# public title helper\n")
+    (repo / "README.md").write_text("unreviewed synthetic source")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    git = ["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null"]
+    subprocess.run(git + ["config", "user.name", "Test"], check=True)
+    subprocess.run(git + ["config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(git + ["add", "."], check=True)
+    subprocess.run(git + ["-c", "commit.gpgsign=false", "commit", "-qm", "reviewed script"], check=True)
+    sha = subprocess.check_output(git + ["rev-parse", "HEAD"], text=True).strip()
+    return root, repo, sha
+
+
 @pytest.fixture
 def fixture(tmp_path):
     spec = importlib.util.spec_from_file_location(
@@ -59,6 +78,66 @@ def test_matching_source_never_certifies_loaded_functions(fixture):
     for private in ["4242", "PRIVATE", str(fixture[1]), "/usr/bin/bash", "reviewed public script"]:
         assert private not in text
     assert len(text) < 1500
+
+
+def test_expected_hash_and_comparisons_use_real_git_helper(fixture, tmp_path):
+    _, soren, proc, expected = fixture
+    # Fresh module: the existing synthetic fixture's blob helper is stubbed.
+    spec = importlib.util.spec_from_file_location("git_identity", ROOT / "ops/vm_actions/collect_diagnostics.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    tracked, _, sha = tracked_script_repo(tmp_path, (soren / "start_all.sh").read_bytes())
+    with mock.patch.object(module, "PROD_ROOT", tracked), \
+            mock.patch.object(module, "_supervisor_unit_pid", return_value=4242):
+        result = module._collect_supervisor_identity(soren, sha, proc)
+    assert result["expected_script_sha256"] == expected
+    assert result["deployed_matches_expected"] is True
+    assert result["open_script_matches_expected"] is True
+    assert result["loaded_functions_status"] == "unverified"
+
+
+@pytest.mark.parametrize("relative_path", ["start_all.sh", "update_stream_game.sh", "lib/stream_title_sync.py"])
+def test_real_blob_reader_permits_only_fixed_public_sources(tmp_path, relative_path):
+    spec = importlib.util.spec_from_file_location("blob_identity", ROOT / "ops/vm_actions/collect_diagnostics.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _, repo, sha = tracked_script_repo(tmp_path, b"# reviewed script\n")
+    assert module._stream_title_sync_git_blob_sha256(repo, sha, relative_path) == hashlib.sha256(
+        (repo / relative_path).read_bytes()
+    ).hexdigest()
+
+
+@pytest.mark.parametrize("relative_path", ["README.md", ".env", "../start_all.sh", "/start_all.sh",
+                                          "tmp/state/start_all.pid", "lib/../start_all.sh"])
+def test_real_blob_reader_rejects_other_paths_before_git(tmp_path, relative_path):
+    spec = importlib.util.spec_from_file_location("blocked_blob_identity", ROOT / "ops/vm_actions/collect_diagnostics.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _, repo, sha = tracked_script_repo(tmp_path, b"# reviewed script\n")
+    with mock.patch.object(module.subprocess, "run", side_effect=AssertionError("unapproved Git read")):
+        assert module._stream_title_sync_git_blob_sha256(repo, sha, relative_path) is None
+
+
+@pytest.mark.parametrize("case", ["missing", "oversized"])
+def test_real_git_unknown_expected_source_keeps_comparisons_unknown(fixture, tmp_path, case):
+    _, soren, proc, _ = fixture
+    spec = importlib.util.spec_from_file_location("unknown_git_identity", ROOT / "ops/vm_actions/collect_diagnostics.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    content = b"x" * (512 * 1024 + 1) if case == "oversized" else b"# reviewed script\n"
+    tracked, repo, sha = tracked_script_repo(tmp_path, content)
+    if case == "missing":
+        git = ["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null"]
+        subprocess.run(git + ["rm", "-q", "start_all.sh"], check=True)
+        subprocess.run(git + ["-c", "commit.gpgsign=false", "commit", "-qm", "source missing"], check=True)
+        sha = subprocess.check_output(git + ["rev-parse", "HEAD"], text=True).strip()
+    with mock.patch.object(module, "PROD_ROOT", tracked), \
+            mock.patch.object(module, "_supervisor_unit_pid", return_value=4242):
+        result = module._collect_supervisor_identity(soren, sha, proc)
+    assert result["expected_script_sha256"] is None
+    assert result["deployed_matches_expected"] is None
+    assert result["open_script_matches_expected"] is None
+    assert result["loaded_functions_status"] == "unverified"
 
 
 def test_deleted_old_script_is_distinct_from_current_disk(fixture, tmp_path):
@@ -231,6 +310,7 @@ def test_live_linux_bash_retains_deleted_old_script(tmp_path):
     script = soren / "start_all.sh"
     old = b"identity_probe() { printf '%s\\n' OLD; }\nprintf 'READY\\n'\nread -r token\nidentity_probe\n"
     new = old.replace(b"OLD", b"NEW")
+    tracked, _, sha = tracked_script_repo(tmp_path, new)
     script.write_bytes(old)
     child = subprocess.Popen(["/bin/bash", str(script)], stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -244,10 +324,10 @@ def test_live_linux_bash_retains_deleted_old_script(tmp_path):
         replacement.write_bytes(new)
         os.replace(replacement, script)
         with mock.patch.object(module, "_supervisor_unit_pid", return_value=child.pid), \
-                mock.patch.object(module, "_stream_title_sync_git_blob_sha256",
-                                  return_value=hashlib.sha256(new).hexdigest()):
-            result = module._collect_supervisor_identity(soren, "a" * 40)
+                mock.patch.object(module, "PROD_ROOT", tracked):
+            result = module._collect_supervisor_identity(soren, sha)
         assert result["status"] == "observed"
+        assert result["expected_script_sha256"] == hashlib.sha256(new).hexdigest()
         assert result["identity_stable"] is True
         assert result["process_started_at"] is not None
         assert result["deployed_matches_expected"] is True

@@ -1745,7 +1745,7 @@ def _stream_title_sync_git_blob_sha256(repo, commit_sha, relative_path):
     if (
         not isinstance(commit_sha, str)
         or not re.fullmatch(r"[0-9a-f]{40}", commit_sha)
-        or relative_path not in {"update_stream_game.sh", "lib/stream_title_sync.py"}
+        or relative_path not in {"update_stream_game.sh", "lib/stream_title_sync.py", "start_all.sh"}
     ):
         return None
     try:
