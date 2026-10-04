@@ -81,8 +81,11 @@ Socket.IOの[到達保証](https://socket.io/docs/v4/delivery-guarantees/)と
 [オフライン送信](https://socket.io/docs/v4/client-offline-behavior/)を踏まえた制御です。
 
 同じ `--directory` を指定すると `checkpoint.json` の進行中対局を再開します。
-profileは保存したものを使い、途中で別のprofileへ切り替えません。brain実装の版が更新された
-場合は対局を継続し、混在した局を学習・成績比較から除外します。
+profileは保存したものを使い、途中で別のprofileへ切り替えません。保存したbrain実装の版が
+利用できない場合は `brain_version_unavailable` で停止します。元のbrain版、着手履歴、未確定の
+送信記録をcheckpointに保持し、`interrupted` として学習・通常勝敗から除外します。
+この状態で新しい対局には参加しません。旧実装を保持した環境へ戻すか、終局を確認してから
+記録の扱いを判断してください。
 
 1つのdirectoryは `runner.lock` で排他します。クラッシュ後にロックが残った場合は、当該runnerが
 停止していることと、記録内PIDが稼働していないことを確認してから、ロックファイルだけを取り除きます。
@@ -176,8 +179,12 @@ npm run train:brain -- report \
 設定が不正なら `503 invalid_brain_profile` とし、黙って別の戦略へ切り替えません。
 設定変更前から進行中の局と、保存済みの再送応答は旧profileのままです。
 
-この変更は設定・配備を自動で実行しません。既存Webhookに正式な終局通知契約がないため、
-Webhook側の成績を推測で学習データへ変換する経路も追加していません。
+Webhook側ではprofileを保存しますが、配備をまたいだbrain実装版の固定はまだ未対応です。
+この要件を満たすまで、この基盤変更を本番へ統合しないでください。
+
+この変更は設定・配備を自動で実行しません。新しいWebhook `game_end` の終局棋譜保存と
+改善用データへの接続は別の変更で対応します。この基盤だけではWebhook側の成績を
+学習データへ変換しません。
 現在の自動収集はbeta経路で行い、生成したbrain/profileを両経路で利用します。
 
 ## 検証と残る受入
