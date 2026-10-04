@@ -28,6 +28,7 @@ from .config import ConfigError, GlobalConfig, load_game, load_global
 from .game_switch import (
     ERROR_QUIESCE_FAILED,
     ERROR_RECOVERY_REQUIRED,
+    ERROR_TIMEOUT,
     GameSwitchBusyError,
     GameSwitchCoordinator,
     GameSwitchStore,
@@ -850,24 +851,29 @@ class RetroCornerManager:
             return False
 
     def _prelaunch_quiesce_failure_proved(self, state: dict[str, object]) -> bool:
-        """Prove a ``quiesce_failed`` slot never reached the corner (#1044).
+        """Prove a failed boundary wait never reached the corner (#1044, #1681).
 
         ``reconcile_failed_rotation_start`` only accepts a ``rolled_back``
-        receipt.  A switch that dies *inside* the boundary step keeps the
-        outgoing runtime and reports ``quiesce_failed``, so the corner is left
-        ``failed`` with no canonical path left to roll back and no retry that
-        can succeed: replaying the switch would only re-enter the same drain.
+        receipt. A switch that fails inside the boundary step can instead leave
+        the outgoing runtime active and finish its own receipt as ``failed``.
+        The legacy lifecycle-cancel path reports ``quiesce_failed``; the
+        request-wide deadline path reports ``timeout`` and may lose the error
+        code while the corner wraps a raw deadline exception.
 
         A receipt is accepted only when it proves all of the following about
         *this* request: it is a ``switch`` to the corner's target, it reached
-        the terminal ``failed`` status, and its own result carries
-        ``quiesce_failed`` for the very same ``from_game``/``to_game`` pair the
-        corner recorded.  Anything else — a missing, pruned, non-terminal or
-        differently-shaped receipt — leaves the ``failed`` state latched.
+        terminal ``failed``, and its own result carries one of those two
+        reviewed prelaunch codes for the exact ``from_game``/``to_game`` pair.
+        If the corner preserved an error code it must match the receipt. A
+        missing, pruned, non-terminal or differently-shaped receipt leaves the
+        ``failed`` state latched.
         """
 
+        state_error = state.get("last_error_code")
         if (state.get("status") != "failed"
-                or state.get("last_error_code") != ERROR_QUIESCE_FAILED):
+                or state_error not in {
+                    None, ERROR_QUIESCE_FAILED, ERROR_TIMEOUT,
+                }):
             return False
         target = state.get("game")
         previous = state.get("previous_game")
@@ -894,7 +900,11 @@ class RetroCornerManager:
             or result.get("request_id") != request_id
             or result.get("operation") != "switch"
             or result.get("status") != "failed"
-            or result.get("error_code") != ERROR_QUIESCE_FAILED
+            or result.get("error_code") not in {
+                ERROR_QUIESCE_FAILED, ERROR_TIMEOUT,
+            }
+            or (state_error is not None
+                and result.get("error_code") != state_error)
             or result.get("from_game") != previous
             or result.get("to_game") != target
         )
@@ -941,7 +951,9 @@ class RetroCornerManager:
         """
 
         if (state.get("status") != "failed"
-                or state.get("last_error_code") != ERROR_QUIESCE_FAILED):
+                or state.get("last_error_code") not in {
+                    None, ERROR_QUIESCE_FAILED, ERROR_TIMEOUT,
+                }):
             return None
         target = state.get("game")
         previous = state.get("previous_game")
@@ -2145,9 +2157,10 @@ class RetroCornerManager:
         recovered slot cannot cause a duplicate selection inside 24 hours.
 
         A slot whose game switch failed *before* the corner started
-        (``quiesce_failed``, #1044) is terminalized as ``interrupted`` instead
-        of being replayed: no canonical recovery is outstanding, and retrying
-        would re-enter the same failed round boundary.  This is the only step
+        (``quiesce_failed`` or request ``timeout``, #1044/#1681) is
+        terminalized as ``interrupted`` instead of being replayed: no
+        canonical recovery is outstanding, and retrying would re-enter the
+        same failed round boundary.  This is the only step
         that clears such a latch, and ``corner-rotation recover`` then commits
         the reservation.
         """

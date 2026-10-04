@@ -981,6 +981,24 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
         # the switch is never replayed: that is the whole point of the path
         self.assertEqual(coordinator.calls, [])
 
+    def test_timeout_receipt_with_missing_corner_code_is_terminalized(self):
+        mgr, coordinator, _request_id = self._setup_quiesce_failed(
+            error_code=None,
+            receipt_error="timeout",
+        )
+
+        result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "succeeded")
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertEqual(
+            state["end_reason"], "switch-terminal-before-corner-active"
+        )
+        self.assertIsNone(state["last_error"])
+        self.assertIsNone(state["last_error_code"])
+        self.assertEqual(coordinator.calls, [])
+
     def test_busy_game_switch_writer_leaves_failed_slot_unchanged(self):
         mgr, coordinator, _request_id = self._setup_quiesce_failed()
         before = mgr._read_state()
@@ -1085,6 +1103,12 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
         cases = {
             "receipt pruned": dict(keep_receipt=False),
             "receipt error code differs": dict(receipt_error="start_failed"),
+            "missing corner code does not allow an arbitrary receipt": dict(
+                error_code=None, receipt_error="start_failed"
+            ),
+            "preserved corner code must match timeout receipt": dict(
+                error_code="quiesce_failed", receipt_error="timeout"
+            ),
             "receipt from_game differs": dict(from_game="nethack"),
             "receipt is not terminal failed": dict(receipt_status="rolled_back"),
         }
