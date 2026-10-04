@@ -224,11 +224,24 @@ export class BetaSession {
 
   async onMatch(payload, generation, fromMatch) {
     if (generation !== this.gate.generation || !this.socket.connected) return;
-    if (!validBetaGameId(payload?.gameId)) return this.pause("invalid_match");
+    // game:active is an active-game snapshot, not a match notification. An
+    // explicit empty snapshot can race with queue ACK / match:found and must
+    // neither abort the queue nor clear a match already learned from a view.
+    if (!fromMatch && payload !== null && typeof payload === "object"
+        && !Array.isArray(payload) && payload.gameId === null) return;
+    const rejectMatch = (stage) => {
+      const type = (value) => value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+      // Never log raw values, arbitrary keys, credentials or opponent data.
+      this.log({ event: "invalid_match_shape", source: fromMatch ? "match:found" : "game:active",
+        payloadType: type(payload), gameIdType: type(payload?.gameId),
+        yourColorType: type(payload?.yourColor), stage });
+      return this.pause("invalid_match");
+    };
+    if (!validBetaGameId(payload?.gameId)) return rejectMatch("game_id");
     if (this.gameId && this.gameId !== payload.gameId) return this.pause("unexpected_game");
     const newGame = !this.gameId;
     this.gameId = payload.gameId;
-    if (fromMatch && !["sente", "gote"].includes(payload.yourColor)) return this.pause("invalid_match");
+    if (fromMatch && !["sente", "gote"].includes(payload.yourColor)) return rejectMatch("color");
     if (!this.record && fromMatch) this.newRecord(payload.yourColor, true);
     if (newGame) this.log({ event: "matched", gameId: this.gameId, profileId: this.profile.id });
     await this.persist();

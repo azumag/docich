@@ -76,6 +76,12 @@ Node runnerは任意の既存ホストで起動する独立プロセスです。
 - Socket.IOの着手再試行設定を使わず、接続がない間は送信しません。
 - 対局ごとに別のSocket接続を作り、前局の遅延イベントやACKを次局へ持ち込みません。
 - `state:null` は終局の証拠にしません。再同期や公開結果でも確認できなければpausedとして停止します。
+- `game:active` の `{gameId:null}` は空のsnapshotとして無視し、待機中のキューや
+  既知の対局を止めません。`match:found` の不正ID・色と、それ以外の不正なactive通知は停止します。
+  `invalid_match_shape` は通知元・既知fieldの型・拒否stageだけを記録し、値や任意keyは出しません。
+  `game:active` は公式botガイドに型定義がなく、公開ブラウザclientの補助通知と区別して扱います。
+  `paused` の `hasGame:false` やcheckpoint不在だけで、サーバーに未成立とは判断しません。
+  再実行前にサイトの既存局・待機状態・公開結果を確認してください。
 
 Socket.IOの[到達保証](https://socket.io/docs/v4/delivery-guarantees/)と
 [オフライン送信](https://socket.io/docs/v4/client-offline-behavior/)を踏まえた制御です。
