@@ -88,7 +88,9 @@ print(json.dumps({"control":{"returncode":control.returncode,"stdout":control.st
     assert "inner-tool-ran" not in value["nested"]["stdout"], value
     assert "bwrap" in value["nested"]["stderr"], value
     assert any(text in value["nested"]["stderr"] for text in
-               ("user namespace", "Operation not permitted", "Permission denied")), value
+               ("user namespace", "Operation not permitted", "Permission denied",
+                "max_*_namespaces exceeded (ENOSPC)")), value
     assert value["seccomp"]["returncode"] == 17, value
     assert json.loads(value["seccomp"]["stdout"]) == {"errno": errno.EPERM}, value
+    print("nested bwrap: " + value["nested"]["stderr"].strip())
     print("codex-0.157.1: outer helper succeeds; nested bwrap blocked; helper connect=EPERM")

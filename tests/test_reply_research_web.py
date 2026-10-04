@@ -225,8 +225,14 @@ def test_exited_worker_leader_does_not_leave_stdout_descendant(monkeypatch,tmp_p
         os.kill(pid,0)
     except ProcessLookupError:
         return
-    state=real_popen(['ps','-o','stat=','-p',str(pid)],stdout=subprocess.PIPE,
-                     text=True).communicate(timeout=2)[0].strip()
+    if sys.platform == 'linux':
+        try:
+            state=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[0]
+        except (FileNotFoundError,ProcessLookupError):
+            return
+    else:
+        state=real_popen(['ps','-o','stat=','-p',str(pid)],stdout=subprocess.PIPE,
+                         text=True).communicate(timeout=2)[0].strip()
     assert not state or state.startswith('Z'), 'stdout descendant survived cleanup'
 
 
