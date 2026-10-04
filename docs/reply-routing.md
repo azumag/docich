@@ -123,34 +123,37 @@ Docker imageへPython部品は同梱するが、Codex/bubblewrapをインスト�
 
 ## Canary と配信コメント統合
 
-`tests/fixtures/reply_routing_canary.json` に依頼された19件の合成本文と期待scopeを固定する。既存の`scripts/reply_routing_live_canary.py`は明示的な`--live`と`DOCICH_REPLY_CANARY_CONFIRM=I_HAVE_APPROVED_POSSIBLE_PROVIDER_COST`の両方がなければ送信しない。
-実行時は本文/ユーザー属性を出力せず、ID別scope・status・confidence・latency、全体accuracy/coverage/low-confidence件数/平均・p95 latencyを記録する。provider failureで残りの要求を止める。今は課金条件と資格情報の安全性が確認できないため起動しない。テストfixture/モックはJEV精度の実測ではない。
+`tests/fixtures/reply_routing_canary.json` に依頼された19件の合成本文と期待scopeを固定する。新しい`scripts/comment_reply_routing_live_canary.py`は同じfixtureを最大8件のbatchへまとめ、各batchでcategory/evidenceを同時質問する。`--live`、`DOCICH_REPLY_CANARY_CONFIRM=I_HAVE_APPROVED_POSSIBLE_PROVIDER_COST`、`DOCICH_ALLOW_REAL_AI=1`、既存route専用keyが全て必要で、複数JEV route/fallback設定なら送信せず停止する。実行時は本文/ユーザー属性を出力せず、ID別scope/status/confidence/batch latency、accuracy/coverage/low-confidence率、平均・p95 batch latencyを記録する。provider failureで残りbatchを止める。今回は課金条件と資格情報の安全性を確認していないため起動しない。mock fixtureはJEV精度の実測ではない。
 
-#829の配信経路はこのPRでは未接続。作業用worktreeでは`games/soviet_now` submoduleを初期化していない（このPRのgitlinkは`2bb57e6c04f235557c9e5e3376948b5f11d4d9b0`）。そのためlegacy `broadcast/comment.sh` / `lib/ai_generate.sh` の現在の呼出し・fallbackを実コードで確認できず、そこでAPI/provider失敗が通常CLI chainへ抜けないとも主張しない。primary checkoutの該当submoduleには別作業の未コミット変更があるため読取検証に使っていない。
+#829の配信コメント経路へ専用`bin/docich-comment-reply-route`を接続した。既存category `c{i}`と根拠scope `e{i}`を同じJEV要求に含め、画像分類が有効なら`s{i}`も同じ要求に含めるため、通常は分類JEV呼出しを増やさない。コメント本文以外の表示名・persona・保存memory・assistant発言はJEVへ渡さず、認識したcredential/identity形式を含む本文は送信前に全体を保留する。
 
-安全なPR-3e案は、各eligible commentのcategory `c{i}`とscreen `s{i}`にevidence scope `r{i}`を同じ`build_request`へ足してJEVのHTTP callを1回に保つこと。自動通知単独は既存`NOTIFICATIONS`保護のまま除外し、同じ本文に質問が続く場合は別の`r{i}`で質問範囲を判定する。API-onlyはconfidence≥0.80のみ。timeout/invalid/low-confidenceならその対象の返信を保留し、通常`ai_generate_list()`で穴埋めしない。runtimeは現在のscreen OCR/evidenceだけで代替せず保留する。
+複数コメントは一件ずつ判定し、必要scopeをバッチで統合する。runtimeがあればruntime保留、unknown/timeout/不正/低confidence/入力検証失敗があればバッチ返信を保留する。`api_only`は有効JEV回答かつconfidence≥0.80の場合だけ採用する。信頼済みsystem-user通知はローカル扱いにしJEVへ送らない。通知本文と視聴者の質問が別レコードなら質問側を別に判定し、例えば`SSR出た！`と`SSR出た！このガチャの確率どうなってる？`を同じ相づち扱いしない。
 
-根拠が検証できた場合だけ既存のprompt/persona・画像/context・translation・Japanese/safety guard・ack/retry/dedup/delete-suppression・単一送信契約へ資料として渡す。classificationとevidenceを同じrequestに入れる統合点は#829 PR-3e orchestrationが用意された後に設計し、今はlegacy shellやsoviet_now submoduleを変更しない。
+`web`/`code`/`web_and_code`は既存隔離research adapterで根拠が取得・照合された場合だけ返信を進める。Codexの完了自己申告だけで資料を受理せず、Web検索/取得イベントと引用の取得本文完全一致、または承認済みsnapshotの表示出力・対象行との一致を検査する。これは引用位置の確認であり、各説明文の意味的支持を完全自動検証したものではない。runtime、調査失敗、資格情報や隔離不足では固定保留にし、未確認内容を通常生成APIに回さない。根拠資料は命令ではないと明記したJSONデータとして既存返信promptへ追加し、元persona、カテゴリ選択、翻訳、Japanese/output guardを保つ。ルート有効時はピーク順変更後の既存候補を`local`または`local:<model>`の直接HTTP API候補に絞る。main返信・翻訳ともCLI経路は除外し、直接API候補がない、またはAPI生成に失敗した場合は返信を生成せずackしない。通常経路はfeature flagが`0`のままで変更しない。
+
+Soren側の最小統合はdocichのsubmodule gitlinkを動かさず、最新Soren main `2fee0e04`をbaseにした別branchで準備した。primary checkout/submoduleの未コミット変更には触れていない。Sorenの既定`COMMENT_AGENTS`は直接`local`候補を含まないため、flagを有効化しても現状設定のままならJEV前に保留になる。別途設定/secret作成や本番有効化はこの作業に含めていない。
 
 ## 検証と残件
 
 ```sh
-PYTHONPATH=src python3 -m pytest -q tests/test_reply_routing.py tests/test_reply_research.py
+DOCICH_REQUIRE_BWRAP_PROBE=1 PYTHONPATH=src python3 -m pytest -q -rs \
+  tests/test_discord_chat.py tests/test_discord_memory.py tests/test_reply_routing.py \
+  tests/test_reply_research.py tests/test_comment_classifier.py
 ```
 
-CIと同じsuite `DOCICH_REQUIRE_BWRAP_PROBE=1 PYTHONPATH=src python3 -m pytest -q -rs tests/test_discord_chat.py tests/test_discord_memory.py tests/test_reply_routing.py tests/test_reply_research.py` はmacOSで **185 passed, 4 skipped, 34 subtests passed**。skipはDiscord SDK未導入、Linux/bwrap canary、Linux Unix-socket/egress-close tests。
-変更後の同suiteを既存 `docich-discord-chat:offline-verify-test` image (`sha256:87ebf148fdfbd4281a22dcc075e54e3e091e2a549604e7878bbe22c48171f1db`)内で、合成source/test bundleをstdinから展開して**host mount/secret/socketなし**で実行: `docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:rw,noexec,nosuid,size=128m --env DOCICH_ALLOW_REAL_AI=0`。Linux container結果 **188 passed, 1 skipped, 1 warning, 34 subtests passed**。confidence-property境界、idle-upstream/half-close/proxy-exit、private-input fail-closed testsが通過。唯一のskipはtest imageにbwrapがないためのLinux/bwrap canary。warningはtest SDKのPython 3.12 `audioop` deprecation。これはGitHub ActionsのUbuntu+bwrap probeとは別。
-confidence-property追加前のcode head `50883532`では、GitHub Actions `offline-contracts` **179 passed, 1 warning, 34 subtests passed (2.63s)**。Ubuntu 24.04 bubblewrap child probeを含み、当時の5 checksは全てpass。confidence-propertyを含む最新code headのCIはpush後に確認する。warningはtest SDKのPython 3.12 `audioop` deprecation。Dockerfile full verify/Compose testは未実施。
-固定CONNECT authority、nonpublic IPv4/IPv6/metadata拒否、DNS解決後の同IP直結、Linux Unix socket mode、redirect host拒否、secret環境非継承、子起動前capability drop、idle upstream half-close時のsocket/thread cleanupをmock/合成negative testで固定する。bwrap実機 canaryは名前空間内loopback起動、host loopback拒否、interface分離、子のcapability/no_new_privsを検査し、GitHub Actionsでは必須child probeにする。
-Mockの成功をJEVの意味精度、Codex/API実通信、Web egress全域の隔離、本番反映の成功と混同しない。JEVの実ラベル/confidence/latency、Codex API通信、内部endpoint拒否の全経路受入、本番反映は未実施。
+この作業headのmacOSオフラインsuiteは **272 passed, 4 skipped, 34 subtests passed**。skipは任意Discord SDK未導入、Linux/bwrap canary、Linux Unix-socket/egress-close tests。Soren側のcomment-reply-quality CIと同じ7-module unittest suiteは **87 passed**。追加のscreen/runtime suiteは **25 passed, 10 subtests passed**、`bash tests/test_peak_hours_agent_order.sh`もpass。`bash -n`、Python compile、両worktreeの`git diff --check`もpass。
+
+前のPR headではGitHub Actions `offline-contracts`と既存container suiteがpassしていたが、この追加変更を含むheadのGitHub CI結果はpush後に確認する。現実行hostはDarwinで`bwrap`なし。Docker CLIはあるがDocker daemon socketへのアクセスはpermission deniedで、既存container suiteも実行できなかった。hostのsecurity/network設定やsocket権限は変えていない。従ってこの作業ではLinux/bwrapのhost-loopback拒否、egress経路全域、host HOME/DB/log/socket到達不可、timeout時の実子孫reapを実機受入したとは主張しない。
+
+固定CONNECT authority、nonpublic IPv4/IPv6/metadata拒否、DNS解決後の同IP直結、redirect拒否、専用key以外の環境非継承、子起動前capability drop、idle upstream half-close時のsocket/thread cleanupはmock/合成negative testsで固定する。これらはLinux実機negative acceptanceの代わりではない。JEVの実scope/confidence/latency、Codex API通信、host network/internal service拒否の全経路受入、本番反映は未実施。
 19件fixtureは `api_rewrite` に「さっきの説明もう少し短くして」を置くが、現状はflatなuser textで、直前assistant説明を含む会話形を再現しない。JEVへassistant本文を渡さない境界は維持する。API-only時の最終APIには元の会話履歴を渡し、直前回答は書き換え対象の文面として使うが、事実確認済み根拠として採用しない。このrewrite例でのJEV意味精度は未測定で、会話構造を含む追加canary/評価が残る。
-primary checkoutの `handoff.md` relevant sectionsを読了した。運用状態は変更していない。
+primary checkoutの `handoff.md` relevant sectionsを読了した。運用状態は変更していない。実JEV canaryは課金条件と既存認証の安全性をこの環境で確認できないため実行していない。合成fixtureを使うmockテストのaccuracyはJEV精度として扱わない。
 
 次の工程:
-1. 課金条件/既存key利用安全性を確認後、親の明示承認を得て合成JEV canaryを実行する。
-2. 専用Linux隔離環境でCodex event schema、read-only snapshot、host HOME/secret/socket/loopback/internal/network/timeout process-treeのnegative canaryを行う。未検証のまま本番enableしない。
-3. #829の正確なshell契約を安全なisolated sourceで確認してから、PR-3e orchestrationに同request evidence routingを接続する。API/provider failureを通常CLI chainへfail-openさせないテストを先に作る。
-4. 必要なら独立したread-only runtime evidence provider、OpenCode研究adapterを別途設計する。JEVに実行権限を付与しない。
+1. 課金条件/既存key利用安全性を確認し、親が受入未完了をReady阻害とするか判断した後にだけ、合成JEV canaryを実行する。
+2. 専用Linux/bwrap環境でhost HOME/secret/Discord DB/VM log/socket/他repo、host loopback/internal service、外向きegress policy、timeout process-tree reapのnegative acceptanceを行う。未検証のまま本番enableしない。
+3. Soren側の直接API候補設定は現在の既定値にない。変更せず、運用者の承認・別途設定前はroute flag offを維持する。
+4. 独立read-only runtime evidence providerとOpenCode research adapterは別途設計する。JEVに実行権限を付与しない。
 
 参考仕様（2026-10-04確認）: Codex CLI reference / configuration reference、Debian bubblewrap manpage。
 - https://developers.openai.com/codex/cli/reference/

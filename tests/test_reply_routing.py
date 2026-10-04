@@ -1,5 +1,6 @@
 """Offline contracts. Mock choices test routing, NOT Jev's Japanese accuracy."""
 import asyncio
+import importlib.util
 import json
 from pathlib import Path
 import threading
@@ -10,6 +11,9 @@ from docich import reply_routing as routing
 from docich import reply_research as research
 from docich import discord_chat as chat
 from docich.discord_memory import MemoryStore
+from docich.comment_classifier import jev as comment_jev
+from docich.comment_classifier import reply_route as comment_route
+from docich.semantic_decision.validator import dumps as strict_dumps
 
 ENV = {routing.ENABLE_ENV: "1", "DOCICH_ALLOW_REAL_AI": "1", "TYPESAFE_API_KEY": "SYNTHETIC_KEY"}
 
@@ -32,6 +36,194 @@ def test_live_canary_corpus_is_synthetic_and_separates_notification_from_questio
     assert by_id["notification_plus_question"]["expected"] == "code"
     assert "SSR出た！" in by_id["notification_only"]["text"]
     assert by_id["notification_only"]["text"] != by_id["notification_plus_question"]["text"]
+
+
+def _comment_choice_answer(criteria, choice, confidence=.95):
+    labels = list(criteria)
+    rest = (1 - confidence) / (len(labels) - 1)
+    return {"type": "choice", "choice": choice, "confidence": confidence,
+            "probabilities": {label: confidence if label == choice else rest for label in labels}}
+
+
+def _comment_transport(scope_for_text, *, confidence=.95, calls=None):
+    def transport(request, config, env):
+        if calls is not None:
+            calls.append(request)
+        comments = request["state"]["comments"]
+        answers = {}
+        for index, item in enumerate(comments, 1):
+            for key, question in request["questions"].items():
+                if not key.endswith(str(index)):
+                    continue
+                if key.startswith("c"):
+                    choice = "general_question"
+                elif key.startswith("e"):
+                    choice = scope_for_text[item["text"]]
+                else:
+                    choice = next(iter(question["criteria"]))
+                answers[key] = _comment_choice_answer(question["criteria"], choice, confidence)
+        return {"status": "ok", "data": {"model": request["model"], "usage": {
+            "input_tokens": 100, "output_tokens": 0}, "answers": answers}}
+    return transport
+
+
+def _comment_env(tmp_path):
+    return {"COMMENT_CLASSIFIER_BACKEND": "jev", routing.ENABLE_ENV: "1",
+            "COMMENT_CLASSIFIER_JEV_LOG_ENABLED": "0", "COMMENT_CLASSIFIER_JEV_STATE_DIR": str(tmp_path),
+            "TYPESAFE_API_KEY": "SYNTHETIC_KEY", "DOCICH_ALLOW_REAL_AI": "1"}
+
+
+def test_comment_evidence_question_is_combined_with_category_and_projects_body_only():
+    request = comment_jev.build_request([{
+        "index": 1, "user": "PRIVATE_NAME", "comment": "Reximって誰？",
+        "persona": "PRIVATE_PERSONA", "history": "PRIVATE_HISTORY", "user_id": "PRIVATE_ID"}],
+        "jev-1.13.0", evidence_enabled=True)
+    assert set(request["questions"]) == {"c1", "e1"}
+    assert request["state"] == {"comments": [{"index": 1, "text": "Reximって誰？"}]}
+    assert set(request["questions"]["e1"]["criteria"]) == set(routing.CRITERIA)
+    assert "PRIVATE" not in strict_dumps(request)
+    combined = comment_jev.build_request([{"index": 1, "user": "viewer", "comment": "画面は？"}],
+                                         "jev-1.13.0", screen_enabled=True, evidence_enabled=True)
+    assert set(combined["questions"]) == {"c1", "s1", "e1"}
+    with pytest.raises(ValueError, match="private_input"):
+        comment_jev.build_request([{"index": 1, "user": "viewer",
+                                   "comment": "token: abcdefghijklmnopqrstuvwxyz"}],
+                                 "jev-1.13.0", evidence_enabled=True)
+
+
+def test_stream_batch_routes_notification_and_question_separately(tmp_path):
+    source = tmp_path / "comments.txt"
+    source.write_text("Nightbot: SSR出た！\nviewer: SSR出た！このガチャの確率どうなってる？\n", encoding="utf-8")
+    calls, research_calls = [], []
+    question = "SSR出た！このガチャの確率どうなってる？"
+
+    def researcher(turns, scope, *, env, timeout_sec):
+        research_calls.append((turns, scope, timeout_sec))
+        return research.Evidence("ok", "合成証拠", ("https://example.org/spec",))
+
+    result = comment_route.classify_file(
+        source, env=_comment_env(tmp_path / "state"),
+        transport=_comment_transport({question: "code"}, calls=calls), researcher=researcher)
+    assert result["routing"]["status"] == "ready"
+    assert result["routing"]["scope"] == "code"
+    assert [c["text"] for c in calls[0]["state"]["comments"]] == [question]
+    assert research_calls == [([{"role": "user", "content": question}], "code", 45.0)]
+    assert result["routing"]["sources"] == ["https://example.org/spec"]
+
+
+def test_trusted_system_notification_is_locally_api_only_without_jev(tmp_path):
+    source = tmp_path / "comments.txt"
+    source.write_text("Nightbot: SSR出た！\n", encoding="utf-8")
+    calls = []
+    result = comment_route.classify_file(
+        source, env=_comment_env(tmp_path / "state"),
+        transport=lambda *args, **kwargs: calls.append("jev"),
+        researcher=lambda *args, **kwargs: pytest.fail("notification triggered research"))
+    assert result["routing"]["status"] == "ready"
+    assert result["routing"]["scope"] == "api_only"
+    assert result["routing"]["reason"] == "local_notification"
+    assert result["routing"]["confidence"] is None
+    assert calls == []
+
+
+def test_stream_research_failure_runtime_unknown_and_low_confidence_hold(tmp_path):
+    source = tmp_path / "comments.txt"
+    for text, scope, confidence, expected in (
+            ("今日のニュースは？", "web", .95, "research_unavailable"),
+            ("今Botが止まってる原因は？", "runtime", .95, "runtime_evidence_unavailable"),
+            ("これどう？", "unknown", .95, "scope_unknown"),
+            ("Reximって誰？", "web", .79, "classification_unavailable")):
+        source.write_text(f"viewer: {text}\n", encoding="utf-8")
+        researcher_calls = []
+        result = comment_route.classify_file(
+            source, env=_comment_env(tmp_path / (str(len(text)) + "state")),
+            transport=_comment_transport({text: scope}, confidence=confidence),
+            researcher=lambda *a, **k: researcher_calls.append(a) or research.Evidence())
+        assert result["routing"]["status"] == "hold"
+        assert result["routing"]["reason"] == expected
+        should_research = scope in {"web", "code", "web_and_code"} and confidence >= .8
+        assert bool(researcher_calls) == should_research
+
+
+@pytest.mark.parametrize("provider_result", [
+    {"status": "timeout"},
+    {"status": "invalid_response"},
+])
+def test_comment_provider_failures_never_become_api_only_or_start_research(tmp_path, provider_result):
+    source = tmp_path / "comments.txt"
+    source.write_text("viewer: こんにちは\n", encoding="utf-8")
+    calls, research_calls = [], []
+
+    def transport(request, config, env):
+        calls.append(request)
+        return provider_result
+
+    result = comment_route.classify_file(
+        source, env=_comment_env(tmp_path / "state"), transport=transport,
+        researcher=lambda *a, **k: research_calls.append(a) or research.Evidence())
+    assert result["routing"]["status"] == "hold"
+    assert result["routing"]["scope"] == "unknown"
+    assert len(calls) == 1 and research_calls == []
+
+
+def test_comment_route_does_not_contact_jev_when_feature_or_real_ai_gate_is_off(tmp_path):
+    source = tmp_path / "comments.txt"
+    source.write_text("viewer: こんにちは\n", encoding="utf-8")
+    for env in ({}, {routing.ENABLE_ENV: "1"}):
+        result = comment_route.classify_file(
+            source, env=env, transport=forbidden, researcher=forbidden)
+        assert result["routing"]["status"] == "hold"
+        assert result["routing"]["reason"] == "routing_disabled"
+
+
+@pytest.mark.parametrize("text", [
+    "api_key=sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+    "token: abcdefghijklmnopqrstuvwxyz",
+    "password is hunter2",
+    "someone@example.org",
+])
+def test_comment_classifier_blocks_private_input_before_jev(tmp_path, text):
+    source = tmp_path / "comments.txt"
+    source.write_text(f"viewer: {text}\n", encoding="utf-8")
+    calls = []
+    result = comment_route.classify_file(
+        source, env=_comment_env(tmp_path / "state"),
+        transport=_comment_transport({text: "web"}, calls=calls),
+        researcher=lambda *a, **k: pytest.fail("private input reached research"))
+    assert result["routing"]["status"] == "hold"
+    assert calls == []
+
+
+def test_grouped_comment_live_canary_prepares_one_combined_request_per_eight_cases(monkeypatch, capsys):
+    path = Path(__file__).resolve().parents[1] / "scripts/comment_reply_routing_live_canary.py"
+    spec = importlib.util.spec_from_file_location("comment_reply_live_canary", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("DOCICH_REPLY_CANARY_CONFIRM", module.CONFIRM)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "SYNTHETIC_KEY")
+    monkeypatch.setenv("DOCICH_JEV_ROUTE", "direct")
+    requests = []
+    expected_by_text = {row["text"]: row["expected"]
+                        for row in json.loads(module.CORPUS.read_text(encoding="utf-8"))}
+
+    def fake_classify(rows, config, env, state_dir):
+        request = comment_jev.build_request(rows, config.model, evidence_enabled=config.evidence_enabled)
+        requests.append(request)
+        details = [{"evidence_status": "jev", "evidence_scope": expected_by_text[row["comment"]],
+                    "evidence_confidence": .95} for row in rows]
+        return rows, {"status": "ok", "rows": details}
+
+    monkeypatch.setattr(module.jev, "classify", fake_classify)
+    assert module.main(["--live"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert [len(request["state"]["comments"]) for request in requests] == [8, 8, 3]
+    assert all(len(request["questions"]) == 2 * len(request["state"]["comments"])
+               and all(key.startswith(("c", "e")) for key in request["questions"])
+               for request in requests)
+    assert output["requests_attempted"] == 3
+    assert output["accuracy_on_available"] == 1
 
 
 def forbidden(*args, **kwargs):
@@ -66,6 +258,11 @@ def test_bad_inputs_do_not_guess_api_or_call_any_backend(value):
     "AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwxyz0123456789",
     "token: abcdefghijklmnopqrstuvwxyz",
     "password is hunter2",
+    '"api_key": "opaque-secret-value-1234"',
+    "{'password': 'quoted-secret-value'}",
+    '"Authorization": "Bearer opaque-bearer-secret-1234"',
+    'DISCORD_BOT_TOKEN="opaque-discord-secret-value"',
+    "SERVICE_CLIENT_SECRET='opaque-client-secret-value'",
     "-----BEGIN OPENSSH PRIVATE KEY-----",
     "Discord user id: 123456789012345678",
     "<@123456789012345678>",

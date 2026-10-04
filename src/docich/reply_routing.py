@@ -32,7 +32,16 @@ _PRIVATE_INPUT_PATTERNS = tuple(re.compile(pattern, re.IGNORECASE) for pattern i
     # substring alongside possibly related private context.
     r"\b(?:api[ _-]?key|(?:aws[ _-]?)?secret[ _-]?access[ _-]?key|"
     r"client[ _-]?secret|password|passwd|passphrase|secret|private[ _-]?key|authorization)\b"
-    r"\s*(?:=|:|\bis\b)\s*(?:bearer\s+)?[A-Za-z0-9_./~+\-=]{4,}",
+    # Accept quoted field names and quoted values (including JSON/YAML-like
+    # input), so credentials do not evade the pre-provider hold merely by
+    # adding serialization quotes around the assignment.
+    r"[\"']?\s*(?:=|:|\bis\b)\s*[\"']?\s*(?:bearer\s+)?[A-Za-z0-9_./~+\-=]{4,}",
+    # Also catch environment/config names such as DISCORD_BOT_TOKEN and
+    # SERVICE_CLIENT_SECRET when the opaque value itself has no known prefix.
+    r"\b[A-Za-z_][A-Za-z0-9_]*(?:api[ _-]?key|access[ _-]?token|refresh[ _-]?token|"
+    r"id[ _-]?token|auth(?:orization)?|token|secret|password|passwd|passphrase|"
+    r"private[ _-]?key|credentials?)\b[\"']?\s*[:=]\s*[\"']?"
+    r"(?:bearer\s+)?[A-Za-z0-9_./~+\-=]{4,}",
     r"\b(?:access|refresh|id)?[ _-]?token\b\s*[:=]\s*(?:bearer\s+)?[A-Za-z0-9_./~+\-=]{4,}",
     r"-----BEGIN(?: [A-Z0-9]+)* (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
     r"\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|"
