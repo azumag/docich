@@ -112,6 +112,112 @@ def test_more_marker_pushed_to_the_next_row_is_a_more_prompt():
     assert obs.player == (40, 14)
 
 
+@pytest.mark.parametrize("marker", ["--More--", "|.........+ --More--"])
+def test_multiline_pager_above_a_visible_map_is_more(marker):
+    obs = normalize_tty(tty_layout(
+        "An introduction is displayed over the dungeon.",
+        "The adventure begins after this page.",
+        "", marker,
+    ))
+    assert obs.prompt == "more"
+
+
+@pytest.mark.parametrize("message,expected", [
+    ("Really save? [yn] (n)", "yes_no"),
+    ("Really attack the kitten? [yn] (n)", "yes_no"),
+    ("What do you want to drink? [a-z or ?*]", "selection"),
+    ("In what direction?", "direction"),
+    ("Would you like to inspect", "unknown"),
+    ("x" * 79, "unknown"),
+])
+def test_lower_pager_does_not_override_a_question_or_wrapped_message(message, expected):
+    obs = normalize_tty(tty_layout(message, "continued text", "--More--"))
+    assert obs.prompt == expected
+
+
+@pytest.mark.parametrize("marker", [
+    "|.--More--.|", "x --More--", "--More-- y", "--More--?",
+    "|.[yn] --More--", "Read --More--",
+])
+def test_lower_prompt_vocabulary_is_not_a_pager(marker):
+    obs = normalize_tty(tty_layout("You see a room.", "", "", marker))
+    assert obs.prompt == "none"
+
+
+@pytest.mark.parametrize("deity", ["Example", "Example Name", "Example-Name"])
+def test_known_legacy_intro_heading_is_not_an_unknown_colon_prompt(deity):
+    obs = normalize_tty(tty_layout(
+        f"It is written in the Book of {deity}:",
+        "After the Creation, Moloch begins this fixture story.",
+        "This fixture also names Marduk the Creator.",
+        "|.........+ --More--",
+    ))
+    assert obs.prompt == "more"
+
+
+@pytest.mark.parametrize("changed_row,value", [
+    (0, "A different heading:"),
+    (0, "It is written in the Book of Example?"),
+    (0, "It is written in the Book of Example: [yn]"),
+    (1, "Unrecognized page body."),
+    (2, "Unrecognized page body."),
+    (2, "Marduk the Creator asks: continue? [yn]"),
+    (3, ""),
+])
+def test_partial_or_question_bearing_legacy_intro_holds(changed_row, value):
+    page = [
+        "It is written in the Book of Example:",
+        "After the Creation, Moloch begins this fixture story.",
+        "This fixture also names Marduk the Creator.",
+        "--More--",
+    ]
+    page[changed_row] = value
+    assert normalize_tty(tty_layout(*page)).prompt != "more"
+
+
+@pytest.mark.parametrize("heading", [
+    "It is written in the Book of Example:", "A dungeon introduction.",
+])
+@pytest.mark.parametrize("question", [
+    "Really save", "Really attack the kitten", "What do you want to drink",
+    "Call a potion:", "Name an individual object:", "In what direction",
+    "Would you like to inspect", "Unknown menu:",
+])
+def test_lower_pager_does_not_answer_incomplete_page_inputs(heading, question):
+    obs = normalize_tty(tty_layout(
+        heading,
+        "After the Creation, Moloch begins this fixture story.",
+        "This fixture also names Marduk the Creator.",
+        question,
+        "--More--",
+    ))
+    assert obs.prompt == "unknown"
+
+
+def test_intro_page_input_checks_stop_at_its_pager_marker():
+    obs = normalize_tty(tty_layout(
+        "It is written in the Book of Example:",
+        "After the Creation, Moloch begins this fixture story.",
+        "This fixture also names Marduk the Creator.",
+        "|.........+ --More--",
+        "|....[.]..|",
+        "[Adventurer ] St:16 Dx:12",
+    ))
+    assert obs.prompt == "more"
+
+
+@pytest.mark.parametrize("location", ["status", "scrollback", "clipped_column"])
+def test_pager_outside_the_visible_pre_status_rows_is_ignored(location):
+    lines = tty_layout("You see a room.").splitlines()
+    if location == "status":
+        lines[23] += " --More--"
+    elif location == "scrollback":
+        lines.append("--More--")
+    else:
+        lines[3] = " " * 80 + "--More--"
+    assert normalize_tty("\n".join(lines)).prompt == "none"
+
+
 @pytest.mark.parametrize("message", [
     "Really attack the " + "very " * 12 + "peaceful kitten? [yn] (n)",
     "Would you like to inspect " + "this unusual object " * 2 + "before continuing now",

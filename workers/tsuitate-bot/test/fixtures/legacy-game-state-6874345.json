@@ -1,0 +1,426 @@
+{
+  "sourceCommit": "68743456798c6088e66e9b343e7451037c1f55ef",
+  "sourceBlobs": {
+    "src/index.js": "438c8ab64c15bd95728b9d8b49fa43531672b608",
+    "src/protocol.js": "5e2d5e5f391d083daabc86d3698c50450e055a99",
+    "src/brain/index.js": "5aa63220b726f92774db6df5fc506d3053ba02cb",
+    "src/adapters/webhook.js": "3dbee937e57d433d16cc2efb2e6369cd18e8ecbb"
+  },
+  "upgradeCommit": "bc0f1ac2954a90e0567e198551ab1c2541be9b93",
+  "upgradeSourceBlobs": {
+    "src/index.js": "9c2f0f93909d51a73c3f70ad62f45c8c8d0905fc",
+    "src/protocol.js": "9f1dc1ad93c29fff559773f0d38b64b86bfb4295",
+    "src/brain/index.js": "5aa63220b726f92774db6df5fc506d3053ba02cb",
+    "src/adapters/webhook.js": "3dbee937e57d433d16cc2efb2e6369cd18e8ecbb"
+  },
+  "afterInitial": {
+    "rawBody": "{\"requestId\":\"game-demo:0:b:0\",\"gameId\":\"game-demo\",\"color\":\"b\",\"number\":0,\"ply\":0,\"positions\":{\"0\":{\"sfen\":\"9/9/9/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1\",\"fouls\":{\"b\":9,\"w\":9},\"times\":{\"b\":300,\"w\":300},\"byoyomiActive\":{\"b\":false,\"w\":false}}},\"game\":{\"type\":\"ついたて\",\"requiredPlayers\":{\"b\":1,\"w\":1}}}",
+    "response": {
+      "status": 200,
+      "body": {
+        "move": "+7968GI"
+      }
+    },
+    "entries": [
+      [
+        "position:b:0:0",
+        {
+          "sfen": "9/9/9/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+          "fouls": {
+            "b": 9,
+            "w": 9
+          },
+          "times": {
+            "b": 300,
+            "w": 300
+          },
+          "byoyomiActive": {
+            "b": false,
+            "w": false
+          }
+        }
+      ],
+      [
+        "game",
+        {
+          "type": "ついたて",
+          "requiredPlayers": {
+            "b": 1,
+            "w": 1
+          },
+          "brainProfile": {
+            "schemaVersion": 1,
+            "id": "observed-sfen-heuristic-v1",
+            "policy": "legacy-v1"
+          }
+        }
+      ],
+      [
+        "session:b:0",
+        {
+          "gameId": "game-demo",
+          "color": "b",
+          "number": 0,
+          "gameType": "ついたて",
+          "requiredPlayers": {
+            "b": 1,
+            "w": 1
+          },
+          "lastPly": 0,
+          "recentOwnMoves": [],
+          "lastIssuedMove": "+7968GI",
+          "brainProfile": {
+            "schemaVersion": 1,
+            "id": "observed-sfen-heuristic-v1",
+            "policy": "legacy-v1"
+          },
+          "lastDecision": {
+            "usi": "7i6h",
+            "features": {
+              "advance": 0.125,
+              "centrality": 0.75,
+              "promotion": 0,
+              "drop": 0,
+              "kingMove": 0,
+              "distance": 0.125,
+              "repeat": 0
+            },
+            "score": 0,
+            "brainVersion": "tsuitate-brain-v1",
+            "profileId": "observed-sfen-heuristic-v1",
+            "candidateCount": 23
+          },
+          "rejectedMoves": []
+        }
+      ],
+      [
+        "request:69fa6849e32c8e76ba1a972d7e7136630424bd905e6fcf07e3318bdc28103b16",
+        {
+          "requestId": "game-demo:0:b:0",
+          "bodyHash": "a30f053941834086d59ec44f106ca5d0b583bfcf3901a85f7e74ca4436f1a57a",
+          "status": 200,
+          "body": {
+            "move": "+7968GI"
+          },
+          "decision": {
+            "usi": "7i6h",
+            "features": {
+              "advance": 0.125,
+              "centrality": 0.75,
+              "promotion": 0,
+              "drop": 0,
+              "kingMove": 0,
+              "distance": 0.125,
+              "repeat": 0
+            },
+            "score": 0,
+            "brainVersion": "tsuitate-brain-v1",
+            "profileId": "observed-sfen-heuristic-v1",
+            "candidateCount": 23
+          }
+        }
+      ]
+    ]
+  },
+  "afterIncremental": {
+    "rawBody": "{\"requestId\":\"game-demo:2:b:0\",\"gameId\":\"game-demo\",\"color\":\"b\",\"number\":0,\"ply\":2,\"basePly\":0,\"positions\":{\"1\":{\"sfen\":\"9/9/9/9/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL w - 2\",\"fouls\":{\"b\":9,\"w\":9},\"times\":{\"b\":294,\"w\":300},\"byoyomiActive\":{\"b\":false,\"w\":false},\"lastMove\":\"+7776FU\",\"lastInfo\":0},\"2\":{\"sfen\":\"9/9/9/9/9/9/PP1PPPPPP/1B5R1/LNSGKGSNL b - 3\",\"fouls\":{\"b\":9,\"w\":9},\"times\":{\"b\":294,\"w\":298},\"byoyomiActive\":{\"b\":false,\"w\":false},\"lastMove\":\"-0076ZZ\",\"lastInfo\":0,\"lastCapture\":\"P\",\"wasPromotion\":false}}}",
+    "response": {
+      "status": 200,
+      "body": {
+        "move": "+6978KI"
+      }
+    },
+    "entries": [
+      [
+        "position:b:0:0",
+        {
+          "sfen": "9/9/9/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+          "fouls": {
+            "b": 9,
+            "w": 9
+          },
+          "times": {
+            "b": 300,
+            "w": 300
+          },
+          "byoyomiActive": {
+            "b": false,
+            "w": false
+          }
+        }
+      ],
+      [
+        "game",
+        {
+          "type": "ついたて",
+          "requiredPlayers": {
+            "b": 1,
+            "w": 1
+          },
+          "brainProfile": {
+            "schemaVersion": 1,
+            "id": "observed-sfen-heuristic-v1",
+            "policy": "legacy-v1"
+          }
+        }
+      ],
+      [
+        "session:b:0",
+        {
+          "gameId": "game-demo",
+          "color": "b",
+          "number": 0,
+          "gameType": "ついたて",
+          "requiredPlayers": {
+            "b": 1,
+            "w": 1
+          },
+          "lastPly": 2,
+          "recentOwnMoves": [
+            "+7776FU"
+          ],
+          "lastIssuedMove": "+6978KI",
+          "brainProfile": {
+            "schemaVersion": 1,
+            "id": "observed-sfen-heuristic-v1",
+            "policy": "legacy-v1"
+          },
+          "lastDecision": {
+            "usi": "6i7h",
+            "features": {
+              "advance": 0.125,
+              "centrality": 0.5,
+              "promotion": 0,
+              "drop": 0,
+              "kingMove": 0,
+              "distance": 0.125,
+              "repeat": 0
+            },
+            "score": 0,
+            "brainVersion": "tsuitate-brain-v1",
+            "profileId": "observed-sfen-heuristic-v1",
+            "candidateCount": 24
+          },
+          "rejectedMoves": []
+        }
+      ],
+      [
+        "request:69fa6849e32c8e76ba1a972d7e7136630424bd905e6fcf07e3318bdc28103b16",
+        {
+          "requestId": "game-demo:0:b:0",
+          "bodyHash": "a30f053941834086d59ec44f106ca5d0b583bfcf3901a85f7e74ca4436f1a57a",
+          "status": 200,
+          "body": {
+            "move": "+7968GI"
+          },
+          "decision": {
+            "usi": "7i6h",
+            "features": {
+              "advance": 0.125,
+              "centrality": 0.75,
+              "promotion": 0,
+              "drop": 0,
+              "kingMove": 0,
+              "distance": 0.125,
+              "repeat": 0
+            },
+            "score": 0,
+            "brainVersion": "tsuitate-brain-v1",
+            "profileId": "observed-sfen-heuristic-v1",
+            "candidateCount": 23
+          }
+        }
+      ],
+      [
+        "position:b:0:1",
+        {
+          "sfen": "9/9/9/9/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL w - 2",
+          "lastMove": "+7776FU",
+          "lastInfo": 0,
+          "fouls": {
+            "b": 9,
+            "w": 9
+          },
+          "times": {
+            "b": 294,
+            "w": 300
+          },
+          "byoyomiActive": {
+            "b": false,
+            "w": false
+          }
+        }
+      ],
+      [
+        "position:b:0:2",
+        {
+          "sfen": "9/9/9/9/9/9/PP1PPPPPP/1B5R1/LNSGKGSNL b - 3",
+          "lastMove": "-0076ZZ",
+          "lastInfo": 0,
+          "lastCapture": "P",
+          "wasPromotion": false,
+          "fouls": {
+            "b": 9,
+            "w": 9
+          },
+          "times": {
+            "b": 294,
+            "w": 298
+          },
+          "byoyomiActive": {
+            "b": false,
+            "w": false
+          }
+        }
+      ],
+      [
+        "request:7cca1b97728ddb9394484d431c5824595c463ed3e08c8c4beea18f5eee302262",
+        {
+          "requestId": "game-demo:2:b:0",
+          "bodyHash": "7f63154a1a269cb103904096956d9c03d811cf88d655e88d03b75e49021f3491",
+          "status": 200,
+          "body": {
+            "move": "+6978KI"
+          },
+          "decision": {
+            "usi": "6i7h",
+            "features": {
+              "advance": 0.125,
+              "centrality": 0.5,
+              "promotion": 0,
+              "drop": 0,
+              "kingMove": 0,
+              "distance": 0.125,
+              "repeat": 0
+            },
+            "score": 0,
+            "brainVersion": "tsuitate-brain-v1",
+            "profileId": "observed-sfen-heuristic-v1",
+            "candidateCount": 24
+          }
+        }
+      ]
+    ]
+  },
+  "afterDeniedUpgrade": {
+    "rawBody": "{\"requestId\":\"game-demo:2:b:0\",\"gameId\":\"game-demo\",\"color\":\"b\",\"number\":0,\"ply\":2,\"basePly\":0,\"positions\":{\"1\":{\"sfen\":\"9/9/9/9/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL w - 2\",\"fouls\":{\"b\":9,\"w\":9},\"times\":{\"b\":294,\"w\":300},\"byoyomiActive\":{\"b\":false,\"w\":false},\"lastMove\":\"+7776FU\",\"lastInfo\":0},\"2\":{\"sfen\":\"9/9/9/9/9/9/PP1PPPPPP/1B5R1/LNSGKGSNL b - 3\",\"fouls\":{\"b\":9,\"w\":9},\"times\":{\"b\":294,\"w\":298},\"byoyomiActive\":{\"b\":false,\"w\":false},\"lastMove\":\"-0076ZZ\",\"lastInfo\":0,\"lastCapture\":\"P\",\"wasPromotion\":false}}}",
+    "response": {
+      "status": 409,
+      "body": {
+        "error": "bot_identity_mismatch"
+      }
+    },
+    "entries": [
+      [
+        "position:b:0:0",
+        {
+          "sfen": "9/9/9/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+          "fouls": {
+            "b": 9,
+            "w": 9
+          },
+          "times": {
+            "b": 300,
+            "w": 300
+          },
+          "byoyomiActive": {
+            "b": false,
+            "w": false
+          }
+        }
+      ],
+      [
+        "game",
+        {
+          "type": "ついたて",
+          "requiredPlayers": {
+            "b": 1,
+            "w": 1
+          },
+          "brainProfile": {
+            "schemaVersion": 1,
+            "id": "observed-sfen-heuristic-v1",
+            "policy": "legacy-v1"
+          }
+        }
+      ],
+      [
+        "session:b:0",
+        {
+          "gameId": "game-demo",
+          "color": "b",
+          "number": 0,
+          "gameType": "ついたて",
+          "requiredPlayers": {
+            "b": 1,
+            "w": 1
+          },
+          "lastPly": 0,
+          "recentOwnMoves": [],
+          "lastIssuedMove": "+7968GI",
+          "brainProfile": {
+            "schemaVersion": 1,
+            "id": "observed-sfen-heuristic-v1",
+            "policy": "legacy-v1"
+          },
+          "lastDecision": {
+            "usi": "7i6h",
+            "features": {
+              "advance": 0.125,
+              "centrality": 0.75,
+              "promotion": 0,
+              "drop": 0,
+              "kingMove": 0,
+              "distance": 0.125,
+              "repeat": 0
+            },
+            "score": 0,
+            "brainVersion": "tsuitate-brain-v1",
+            "profileId": "observed-sfen-heuristic-v1",
+            "candidateCount": 23
+          },
+          "rejectedMoves": []
+        }
+      ],
+      [
+        "request:69fa6849e32c8e76ba1a972d7e7136630424bd905e6fcf07e3318bdc28103b16",
+        {
+          "requestId": "game-demo:0:b:0",
+          "bodyHash": "a30f053941834086d59ec44f106ca5d0b583bfcf3901a85f7e74ca4436f1a57a",
+          "status": 200,
+          "body": {
+            "move": "+7968GI"
+          },
+          "decision": {
+            "usi": "7i6h",
+            "features": {
+              "advance": 0.125,
+              "centrality": 0.75,
+              "promotion": 0,
+              "drop": 0,
+              "kingMove": 0,
+              "distance": 0.125,
+              "repeat": 0
+            },
+            "score": 0,
+            "brainVersion": "tsuitate-brain-v1",
+            "profileId": "observed-sfen-heuristic-v1",
+            "candidateCount": 23
+          }
+        }
+      ],
+      [
+        "request:7cca1b97728ddb9394484d431c5824595c463ed3e08c8c4beea18f5eee302262",
+        {
+          "requestId": "game-demo:2:b:0",
+          "bodyHash": "7f63154a1a269cb103904096956d9c03d811cf88d655e88d03b75e49021f3491",
+          "botIdHash": "7e778c300c3ba48467713c845c2a2af9caaeeb7a040e400c8f80831498306af7",
+          "status": 409,
+          "body": {
+            "error": "bot_identity_mismatch"
+          }
+        }
+      ]
+    ]
+  }
+}

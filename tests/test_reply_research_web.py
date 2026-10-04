@@ -3,6 +3,7 @@ import base64
 from email.message import Message
 import hashlib
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -196,6 +197,37 @@ def test_worker_timeout_or_output_limit_kills_reaps(monkeypatch,tmp_path,code,se
     start=time.monotonic()
     assert broker.fetch(URL) is None and not broker._processes and not broker.receipts
     assert time.monotonic()-start < 2
+
+
+def test_exited_worker_leader_does_not_leave_stdout_descendant(monkeypatch,tmp_path):
+    # A finite fixture also bounds a regression with the old poll()-guarded
+    # kill: it would return only when this child closes stdout 3 seconds later.
+    child = 'import time;time.sleep(3)'
+    pid_path = tmp_path/'child.pid'
+    code = ('import pathlib,subprocess,sys;'
+            f'p=subprocess.Popen([sys.executable,"-I","-c",{child!r}]);'
+            f'pathlib.Path({str(pid_path)!r}).write_text(str(p.pid))')
+    real_popen = subprocess.Popen
+    workers = []
+    def launch(argv,**kwargs):
+        proc = real_popen([sys.executable,'-I','-c',code],**kwargs)
+        workers.append(proc)
+        return proc
+    monkeypatch.setattr(w.subprocess,'Popen',launch)
+    broker=w.WebBroker(tmp_path/'s',time.monotonic()+.5); observe(broker)
+    started=time.monotonic()
+    assert broker.fetch(URL) is None
+    assert time.monotonic()-started < 1.5
+    assert workers[0].returncode == 0  # Leader exited normally before cleanup.
+    assert not broker._processes and not broker.receipts
+    pid=int(pid_path.read_text())
+    try:
+        os.kill(pid,0)
+    except ProcessLookupError:
+        return
+    state=real_popen(['ps','-o','stat=','-p',str(pid)],stdout=subprocess.PIPE,
+                     text=True).communicate(timeout=2)[0].strip()
+    assert not state or state.startswith('Z'), 'stdout descendant survived cleanup'
 
 
 @pytest.fixture

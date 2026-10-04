@@ -188,11 +188,13 @@ class Receipt:
 
 
 def _kill(proc):
-    if proc.poll() is None:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    # The leader may already have exited while its descendants retain stdout.
+    # start_new_session gives this worker its own group: always kill that group
+    # before draining the pipe, including successful/malformed leader exits.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 def _bounded_output(proc, deadline):

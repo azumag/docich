@@ -9,6 +9,8 @@
 未使用ヘルパーだけではなく、既存のメンション→会話履歴→返信→送信/記憶確定の入口に接続する。
 **配信のlegacy `broadcast/comment.sh` / `ai_generate.sh` の全呼出しを本変更で置換したとは扱わない。**
 
+**独立レビューで研究実行の阻害を確認した。** Codex 0.157.1の内側bwrapは必ずuser namespaceを作るため、外側の`--disable-userns`と両立しない。またread-only/restricted networkのseccompはAF_UNIXを含む`connect`を拒否し、現在の固定Web helperはbrokerへ直接接続できない。code/Web/mixedの実Codex受入は未完了で、本番flagはoff・PRはDraftを維持する。通常Python childのsandbox probeやbroker mock/wire testを、この入れ子実行の成功として扱わない。
+
 ```text
 メンションと既存の会話履歴
  → JEV（直近の本文だけ、1回）
@@ -106,6 +108,8 @@ Web/mixedは既存research flagと`DOCICH_REPLY_WEB_SEARCH_ENABLED=1`の両方�
 
 workerは1取得8秒以内、research全体45秒を共有する。raw body128KiB、UTF-8 `text/plain` / `text/html`だけ、圧縮拒否、抽出text16KiB上限（成功扱いの切詰めなし）、HTTP header行4KiB/32行、最大4取得attempt、最大4handler/1active worker。成功した同一URLはrun内receiptを再利用する。HTMLはscript/style/head/template等を除き、文字列としてのみ扱う。brokerはraw bytesのSHA-256と決定的に抽出したtextを再計算し、immutable receiptを親process内に保持する。Codexが作るfile/stdoutにはreceipt authorityを置かない。終了時にlistener/clientをshutdownし、全worker process groupをkill、communicateでreap、non-daemon handlerをjoinする。
 
+worker leaderがすでに正常終了していてもprocess groupへSIGKILLを送る。leaderの`poll()`だけでkillを省くと、stdoutを保持した同group子孫により後続`communicate()`が期限を超えて停止し得る。固定workerは現状子をspawnしないが、終了処理の契約として合成子孫fixtureを追加した。別sessionへ逃げた子孫の隔離をこのhost-side worker testで保証したとは扱わない。
+
 出典受理には、実検索結果のURL、許可済みhelper commandの成功（exit_code=0）、brokerが保持するreceiptとの出力完全一致、最終JSONのURL/receipt/raw-body SHA-256一致、取得text内の引用完全一致を全て要求する。mixedはさらにsnapshot読取・実在行・引用一致が必要。検索metadataだけ、モデルの確認済み宣言、架空web_open、偽receipt、改変hash、未取得/失敗/timeout/上限超過はholdする。資料は命令ではなく、権限・persona・送信経路を変更できない。
 
 照合したprimary sources:
@@ -193,4 +197,19 @@ primary checkoutの `handoff.md` relevant sectionsを読了した。運用状態
 
 `tests/test_reply_research_web.py`はmock DNS/socket/TLS/HTTP responseとローカルPython childだけを使う。SSRF、混在private DNS、pinning、TLS mismatch、redirect、MIME/charset/encoding、body/frame/text上限、hash/URL/text改変、candidate gate、timeout kill/reap、JSONL streaming、Web/mixedのreceipt一致を固定する。Linux CIではUnix listener/clientの成功、wireによるheaders/method/command/host拡張拒否、broker exit中のworker cancel/joinも必須実行する。Darwin executorではUnix listener bindが拒否され、その6件はLinux専用skipとする。
 
-これは実ネットワーク取得・実Codex API・Linux本番hostの全negative acceptanceではない。実CLIがhelperへのUnix接続を許すか、配備先CLI version/search結果DTO、4hostの実ページサイズ/MIME/redirectに対する成功率とlatencyは未確認。制限で取得不能の場合はholdし、sandboxを緩めたり裸CLI/通常生成へ抜けたりしない。本番・有料API試験は別の明示許可を必要とする。
+これは実ネットワーク取得・実Codex API・Linux本番hostの全negative acceptanceではない。配備先CLI version/search結果DTO、4hostの実ページサイズ/MIME/redirectに対する成功率とlatencyは未確認。制限で取得不能の場合はholdし、sandboxを緩めたり裸CLI/通常生成へ抜けたりしない。本番・有料API試験は別の明示許可を必要とする。
+
+### 実Codexのnested sandbox阻害と変更案
+
+`tests/test_reply_research_codex_sandbox.py`は公式releaseのCodex 0.157.1（SHA-256 `e98c1e8e028e8137fa2d2415c82ec58e7b3701a627e3554aace5b3ca31454af2`）を使用する。既存Ubuntu/bwrap CI内だけにbinaryを置き、production `sandbox_argv`とbridge/capability dropの中で、ローカル合成receiptのhelper成功をcontrolにする。その後、公開`codex sandbox linux`のread-only childが内側bwrapで起動不能になることと、公式helperのseccomp最終段だけを外側隔離内で実行した場合の実`client()`接続がEPERMになることを別々に検査する。後者の内部flagはseccomp原因の分離用であり、runtime fallbackではない。model/exec/API/key/外部ページ取得は使わない。CI必須時は依存不足をskipせず失敗にする。実測結果はexact-head CI確認後にPR本文へ残す。
+
+公式0.157.1はmanaged networkの`unix_sockets`で特定pathを許可できるが、それはHTTP proxyの`x-unix-socket`経由で制御される。現在のAF_UNIX直接接続に対するpath別seccomp例外ではない。候補設計は、親が固定したmanaged proxyでdomainをdenyし、brokerの1pathだけをallow、GET/HEAD/OPTIONS限定のlimited modeとすること。その場合もbroker/helperをHTTPに変更し、親proxyだけがbroker socketへ接続し、native search candidate・receipt・4host GET policyを保持する必要がある。`dangerously_allow_all_unix_sockets`やnetwork enabledは採用しない。
+
+さらに内側bwrapのために外側`--disable-userns`を解除する変更が必要となり、入れ子namespace作成を許す権限変更になる。これはまだ承認・実装していない。外側のsnapshot/mount/network/PID/capability/credential境界を維持した上でも、namespace作成とresource/process-treeの追加negative受入が必要。代案の内側sandbox除去/external profileはwrite/syscall保護を外側だけに寄せるため別の安全性判断となる。legacy Landlockは0.157.1がfilesystem-restricted executionを拒否するので現read-onlyの代替にできない。現在の権限範囲ではこれらの構成へ変更せず、親へ最小不足として報告する。
+
+公式実装:
+- [restricted seccompとAF_UNIX](https://github.com/openai/codex/blob/rust-v0.157.1/codex-rs/linux-sandbox/src/landlock.rs#L202)
+- [内側bwrapのuser/PID namespace](https://github.com/openai/codex/blob/rust-v0.157.1/codex-rs/linux-sandbox/src/bwrap.rs#L294)
+- [bwrap既定・fallbackなしとlegacy制限](https://github.com/openai/codex/blob/rust-v0.157.1/codex-rs/linux-sandbox/src/linux_run_main.rs)
+- [特定Unix socketのHTTP proxy routing](https://github.com/openai/codex/blob/rust-v0.157.1/codex-rs/network-proxy/src/http_proxy.rs#L578)
+- [公式設定schema](https://github.com/openai/codex/blob/rust-v0.157.1/codex-rs/core/config.schema.json)

@@ -14,6 +14,7 @@ on:
       - 'tests/test_reply_routing.py'
       - 'tests/test_reply_research.py'
       - 'tests/test_reply_research_web.py'
+      - 'tests/test_reply_research_codex_sandbox.py'
       - 'tests/test_comment_queue_e2e.py'
       - 'tests/fixtures/reply_routing_canary.json'
       - 'src/docich/comment/prompts/comment_persona_main.md'
@@ -40,6 +41,7 @@ on:
       - 'tests/test_reply_routing.py'
       - 'tests/test_reply_research.py'
       - 'tests/test_reply_research_web.py'
+      - 'tests/test_reply_research_codex_sandbox.py'
       - 'tests/test_comment_queue_e2e.py'
       - 'tests/fixtures/reply_routing_canary.json'
       - 'src/docich/comment/prompts/comment_persona_main.md'
@@ -79,6 +81,20 @@ jobs:
           test -f "$profile"
           sudo install -m 0644 "$profile" /etc/apparmor.d/bwrap-userns-restrict
           sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+      - name: Install hash-pinned Codex for credential-free nested sandbox reproduction
+        run: |
+          archive="$RUNNER_TEMP/codex-0.157.1.tar.gz"
+          curl --fail --location --retry 2 --max-time 90 \
+            https://github.com/openai/codex/releases/download/rust-v0.157.1/codex-x86_64-unknown-linux-musl.tar.gz \
+            --output "$archive"
+          echo "e98c1e8e028e8137fa2d2415c82ec58e7b3701a627e3554aace5b3ca31454af2  $archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP" codex-x86_64-unknown-linux-musl
+          sudo install -m 0755 "$RUNNER_TEMP/codex-x86_64-unknown-linux-musl" /usr/local/bin/docich-codex-probe
+      - name: Reproduce actual inner Codex sandbox blockers without model or API calls
+        env:
+          DOCICH_TEST_CODEX_BINARY: /usr/local/bin/docich-codex-probe
+          DOCICH_REQUIRE_CODEX_SANDBOX_PROBE: "1"
+        run: PYTHONPATH=src python3 -m pytest -q -s tests/test_reply_research_codex_sandbox.py
       - name: Offline persistence, conversation and real SDK construction contracts
         env:
           DOCICH_REQUIRE_BWRAP_PROBE: "1"

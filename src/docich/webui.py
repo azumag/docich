@@ -1665,6 +1665,7 @@ CORNER_RECOVER_TIMEOUT_SEC = 60
 CORNER_MANUAL_STATE_FILES = (
     "retro_corner", "retro_corner_manual", "paper_corner", "paper_corner_manual",
     "soren91_corner", "soren91_corner_manual", "nethack_corner", "nethack_corner_manual",
+    "weather_corner",
 )
 _ROTATION_STATUS_ENUM = frozenset({"ready", "waiting", "running", "recovery_required"})
 _ROTATION_ERROR_KIND_ENUM = frozenset({
@@ -1684,6 +1685,8 @@ _CORNER_MANUAL_LAUNCHERS = {
     "nethack": ("docich-nethack-corner-manual", True, False),
     "paper": ("docich-paper-corner-manual", False, False),
 }
+# Weather uses the durable common queue; it has no detached one-off runner.
+_CORNER_QUEUED_MANUAL_ADAPTERS = frozenset({"weather"})
 # rotation / 自動起動が書く base state の停止経路（webui stop は manual だけを見ない）。
 # paper は専用 restore CLI が scheduled service を止めて表示を復帰するため、
 # bin/docich の paper-corner stop ではなく専用 launcher を使う。
@@ -1743,6 +1746,16 @@ def _rotation_view(g: GlobalConfig) -> dict[str, Any]:
     path = Path(g.state_dir) / "corner_rotation.json"
     raw = _load_json_file(path)
     out: dict[str, Any] = {"present": path.is_file(), "readable": isinstance(raw, dict)}
+    inbox = _load_json_file(Path(g.state_dir) / "corner_manual_queue.json")
+    queued = inbox if isinstance(inbox, dict) else (
+        raw.get("queued_manual") if isinstance(raw, dict) else None)
+    out["queued_manual"] = None
+    if isinstance(queued, dict) and isinstance(queued.get("corner"), str):
+        selected = _view_time(queued.get("selected_at"))
+        out["queued_manual"] = {
+            "corner": _view_str(queued["corner"]),
+            "age_sec": max(0, int(time.time() - selected)) if selected else None,
+        }
     try:
         out["enabled"] = bool(rotation_enabled(g))
     except Exception:
@@ -1881,7 +1894,10 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                 "game": row.game,
                 "enabled": bool(row.enabled),
                 "paused": bool(row.paused),
-                "manual": row.adapter in _CORNER_MANUAL_LAUNCHERS,
+                "manual": (row.adapter in _CORNER_MANUAL_LAUNCHERS
+                           or row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS),
+                "manual_mode": "queue" if row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS else "runner",
+                "duration_minutes": row.duration_minutes,
                 "eligible": row.id in eligible_ids,
                 "last_run_at": last,
                 "cooldown_until": until if (until is not None and until > now) else None,
@@ -1951,6 +1967,7 @@ _CORNER_STATE_FILE_BY_ADAPTER = {
     "meriken": "soren91_corner",
     "nethack": "nethack_corner",
     "paper": "paper_corner",
+    "weather": "weather_corner",
 }
 
 
@@ -4231,7 +4248,7 @@ class _Handler(BaseHTTPRequestHandler):
         return 200
 
     def _handle_post_corners(self) -> int:
-        """One-off manual start/stop and the fixed latch recovery (issue #42 の
+        """Manual runner/queued weather actions and fixed latch recovery (issue #42 の
         dangerous action: confirm:true 必須)。rotation の cooldown/latch 契約は
         runner/CLI 側の既存 fail-closed に委譲する。"""
         body, err = self._read_body()
@@ -4295,6 +4312,14 @@ class _Handler(BaseHTTPRequestHandler):
                 "detail": detail,
             })
             return 200
+        corner_id = str(data.get("corner", "")).strip()
+        try:
+            row = _corner_catalog_row(self.g, corner_id)
+        except ValueError as exc:
+            self._send_error_json(400, "invalid_corner", str(exc))
+            return 400
+        if row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS:
+            return self._handle_weather_corner_action(row, action, data)
         duration = data.get("duration_minutes", CORNER_MANUAL_DURATION_DEFAULT)
         if isinstance(duration, bool) or not isinstance(duration, int):
             self._send_error_json(400, "invalid_duration", "duration_minutes must be an integer")
@@ -4305,7 +4330,6 @@ class _Handler(BaseHTTPRequestHandler):
                 f"duration_minutes must be {CORNER_MANUAL_DURATION_MIN}..{CORNER_MANUAL_DURATION_MAX}",
             )
             return 400
-        corner_id = str(data.get("corner", "")).strip()
         try:
             if action == "stop":
                 argv, meta = _corner_stop_argv(self.g, corner_id, duration)
@@ -4341,6 +4365,59 @@ class _Handler(BaseHTTPRequestHandler):
             "duration_minutes": duration if action == "start" else None,
             "pid": proc.pid,
             "log": f"tmp/logs/corner_manual_{meta['id']}.log",
+        })
+        return 200
+
+    def _handle_weather_corner_action(self, row, action: str, data: dict) -> int:
+        """Reserve weather or request its owned finish without starting a worker.
+
+        Start uses the catalog settings and existing eligibility/latch/inbox
+        gates. Stop leaves GameSwitch restoration to the running weather owner.
+        Neither HTTP operation ticks the scheduler or bypasses the program slot.
+        """
+        from .corner_rotation import CornerRotationManager, RotationError
+        from .corner_adapters import WeatherCornerAdapter
+        from .weather_corner import WeatherCornerError
+
+        if action == "start" and "duration_minutes" in data:
+            duration = data["duration_minutes"]
+            if type(duration) is not int or duration != row.duration_minutes:
+                self._send_error_json(400, "invalid_duration",
+                                      "天気の表示時間はカタログの設定を使用します")
+                return 400
+        try:
+            if action == "start":
+                outcome = CornerRotationManager(self.g).queue_manual(row.game)
+                status = outcome["status"]
+            else:
+                status = WeatherCornerAdapter(self.g, row).manager.stop()
+                if status == "not-active":
+                    self._send_error_json(409, "weather_not_active",
+                                          "天気は実行中ではありません。予約中は開始後に停止できます")
+                    return 409
+        except RotationError as exc:
+            reasons = {
+                "rotation_disabled": "ローテーションが無効です",
+                "recovery_required": "ローテーションの復旧が必要です",
+                "clock_regressed": "時計の逆行を検知しました",
+                "manual_queue_conflict": "別の手動予約が残っています",
+                "hanjuku_not_eligible": "天気が無効・休止中、または予報を利用できません",
+            }
+            self._send_error_json(409, "weather_manual_refused",
+                                  reasons.get(exc.reason_code, "コーナーの状態を確認できません"))
+            return 409
+        except (OSError, ValueError, WeatherCornerError):
+            self._send_error_json(409, "weather_manual_unavailable",
+                                  "天気の設定または所有者の状態を確認できません")
+            return 409
+        except Exception:
+            self._send_error_json(500, "weather_manual_failed", "天気の操作を完了できません")
+            return 500
+        self._send_json(200, {
+            "ok": True, "action": action, "status": status,
+            "corner": {"id": row.id, "adapter": row.adapter,
+                       "game": row.game, "target": "rotation"},
+            "duration_minutes": row.duration_minutes if action == "start" else None,
         })
         return 200
 
