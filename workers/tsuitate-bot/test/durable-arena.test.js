@@ -214,6 +214,52 @@ test("terminal crash window recovers the record locally once with no socket", as
   await cold.controller.start({ runId: "one" }); assert.equal(cold.sockets.length, 0);
 });
 
+test("delayed replay commits one receipt after null-sync exhaustion and socket/alarm cleanup", async (t) => {
+  let attempts = 0;
+  const c = setup(t, { resolveResult: async () => {
+    attempts += 1;
+    return attempts < 3 ? null : { ...terminal(), source: "public_replay" };
+  } });
+  const socket = await begin(c);
+  c.controller.session.syncExhausted = true;
+  socket.server("game:end", { gameId: "unrelated-game", fullBoard: "fixture-private" });
+  await flush(c.controller);
+  assert.equal((await c.controller.status()).readyForNextRun, false);
+  assert.equal(await c.storage.get(RECORD_KEY), undefined);
+  await assert.rejects(c.controller.start({ runId: "second" }), /run_locked/);
+  while (c.controller.session) {
+    const index = c.scheduled.findIndex((item) => item.milliseconds === 1500);
+    assert.ok(index >= 0);
+    const next = c.scheduled.splice(index, 1)[0];
+    await c.controller.session.enqueue(next.operation); await flush(c.controller);
+  }
+  assert.equal(attempts, 3);
+  assert.equal((await c.controller.status()).completedGames, 1);
+  assert.equal((await c.controller.status()).readyForNextRun, true);
+  assert.equal((await c.storage.get(recordKey("fixture-run"))).resultConfidence, "verified");
+  assert.equal((await c.storage.get(runKey("fixture-run"))).readyForNextRun, true);
+  assert.equal((await c.storage.get(CHECKPOINT_KEY)).active, null);
+  assert.equal(c.storage.alarm, null); assert.equal(socket.connected, false);
+  assert.equal(c.sockets.length, 1);
+  await c.controller.start({ runId: "fixture-run" }); await c.controller.alarm();
+  assert.equal(c.sockets.length, 1);
+  assert.equal(JSON.stringify([...c.storage.data.values()]).includes("fixture-private"), false);
+});
+
+test("terminal write failure retains recovery evidence and never releases the next-run guard", async (t) => {
+  const c = setup(t, { resolveResult: async () => ({ ...terminal(), source: "public_replay" }) });
+  const socket = await begin(c);
+  c.controller.session.store.finish = async () => { throw new Error("fixture_terminal_write_failure"); };
+  socket.server("game:end", {}); await flush(c.controller);
+  assert.equal((await c.controller.status()).state, "paused");
+  assert.equal((await c.controller.status()).completedGames, 0);
+  assert.equal((await c.controller.status()).readyForNextRun, false);
+  assert.equal(await c.storage.get(RECORD_KEY), undefined);
+  assert.equal((await c.storage.get(CHECKPOINT_KEY)).finishedRecord.completed, true);
+  assert.equal(socket.connected, false);
+  await assert.rejects(c.controller.start({ runId: "second" }), /run_locked/);
+});
+
 test("finished record dominates a remaining active checkpoint", async (t) => {
   const c = setup(t); await begin(c); c.controller.session.close();
   await new DurableArenaStore(c.storage, "fixture-run", 1).finish(terminal());

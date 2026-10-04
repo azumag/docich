@@ -4,6 +4,7 @@ import { BetaArena } from "../src/arena/beta-arena.js";
 import { SINGLETON_NAME } from "../src/arena/durable-controller.js";
 import { META_KEY, CHECKPOINT_KEY, RECORD_KEY } from "../src/arena/durable-store.js";
 import { CONTROL_PATH, handleBetaControl } from "../src/arena/control.js";
+import { fetchPublicResult } from "../src/adapters/beta-results.js";
 
 export class RuntimeBetaArena extends BetaArena {
   makeSocket() {
@@ -11,10 +12,12 @@ export class RuntimeBetaArena extends BetaArena {
       auth: { token: "fixture-only-not-a-credential" }, autoConnect: false,
       forceNew: true, multiplex: false, reconnection: false, timeout: 1000 });
   }
-  async resolveResult(gameId) {
-    if (!this.controller.session?.terminalSeen) return null;
-    return { gameId, outcome: "win", reason: "checkmate", source: "public_replay",
-      endedAt: new Date(Date.now() + 1000).toISOString() };
+  async resolveResult(gameId, color) {
+    return fetchPublicResult(gameId, color, { fetchImpl: (url, options) => {
+      const parsed = new URL(url);
+      if (parsed.origin !== "https://beta.tsuitate.info") throw new Error("fixture_origin_mismatch");
+      return fetch(this.env.LOCAL_SOCKET_ORIGIN + "/public-result" + parsed.pathname, options);
+    } });
   }
   async evidence() {
     const saved = await this.ctx.storage.get(CHECKPOINT_KEY);

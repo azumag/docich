@@ -57,14 +57,17 @@ export async function fetchPublicResult(gameId, color, { fetchImpl = fetch, time
   if (!validBetaGameId(gameId) || !["b", "w"].includes(color)) return null;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let reader;
+  let reader, body;
   try {
     const response = await fetchImpl(`${BETA_ORIGIN}/games/${encodeURIComponent(gameId)}/__data.json`, {
-      signal: controller.signal, redirect: "error", credentials: "omit",
+      // Use manual for the pinned workerd runtime. Reject redirect responses
+      // below; never follow them to a different origin or send credentials.
+      signal: controller.signal, redirect: "manual", credentials: "omit",
       headers: { accept: "application/json" },
     });
+    body = response.body;
     if (!response.ok || !/^application\/json\b/i.test(response.headers.get("content-type") ?? "")) return null;
-    reader = response.body?.getReader();
+    reader = body?.getReader();
     if (!reader) return null;
     const chunks = [];
     let total = 0;
@@ -84,5 +87,6 @@ export async function fetchPublicResult(gameId, color, { fetchImpl = fetch, time
   } finally {
     clearTimeout(timer);
     if (reader) { try { await reader.cancel(); } catch { /* already closed */ } }
+    else if (body) { try { await body.cancel(); } catch { /* rejected response */ } }
   }
 }
