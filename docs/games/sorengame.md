@@ -121,7 +121,8 @@ terminal failure・stop_requested/stoppingなどのfence到達は拒否する。
 
 live runnerの建国STOPはSoren [PR582](https://github.com/azumag/soviet_now/pull/582)の
 連続300秒・fresh observation・帰属確認とQuit直前の盤面gateに依存する。
-このadapter修正だけではその例外を有効にしない。PR582統合後に別途gitlinkを
-統合済みSoren SHAへ更新し、正規配備と本番受入を行う。このPRではgitlinkを変更しない。
+このadapterと対応Sorenコードを組み合わせて使う。gitlinkはPR581・583を含む
+累積mainにPR582を統合した `cf4797f05f57bcfb8aba3d403a53bd2fecd57311` を参照する。
+コード統合とは別に、正規配備と本番受入を行う。
 旧runner/bridgeは証跡を持たずfail-closedとなる。現在の試合の強制終了や
 確認用再起動は実装・CI検証の範囲外。
