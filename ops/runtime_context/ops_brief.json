@@ -2,7 +2,7 @@
   "output_sha256": "3028f816d20356c65f4c0fa80809ae5486edbd86549d8ac9ea1c83f8468e6d93",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "aedbbbd6e829c55b8aec1b228fe37ba16fb1ad080116dc30eae468efa830b6d2",
+  "source_sha256": "a84cf89bb7d28395bcdc459e9130aea799b15e69d5c6f05c6c2ba88f1f7a78c8",
   "topics": [
     "コンソール5ゲームのステータス拡充をReady PR化（本番未変更）",
     "天気WebUI手動操作を配備し、WebUI限定再起動を確認",
