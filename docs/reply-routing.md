@@ -143,7 +143,7 @@ DOCICH_REQUIRE_BWRAP_PROBE=1 PYTHONPATH=src python3 -m pytest -q -rs \
 
 この作業headのmacOSオフラインsuiteは **272 passed, 4 skipped, 34 subtests passed**。skipは任意Discord SDK未導入、Linux/bwrap canary、Linux Unix-socket/egress-close tests。Soren側のcomment-reply-quality CIと同じ7-module unittest suiteは **87 passed**。追加のscreen/runtime suiteは **25 passed, 10 subtests passed**、`bash tests/test_peak_hours_agent_order.sh`もpass。`bash -n`、Python compile、両worktreeの`git diff --check`もpass。
 
-最新PR head `06c3d3db` のGitHub Actionsは全check pass。
+最新のcode-bearing commit `06c3d3db` に対するGitHub Actionsは全check pass。後続commitは検証結果の記録だけでruntime/sourceコードを変更していない。
 
 - [offline-contracts run 37178493744](https://github.com/azumag/docich/actions/runs/37178493744): **206 passed, 1 warning, 34 subtests**。Ubuntu+bwrap child probeを含む。
 - [docker-contracts run 37178493744](https://github.com/azumag/docich/actions/runs/37178493744): **228 passed, 1 skipped, 1 warning, 34 subtests**。runtime/test image buildとoffline backup/restore contractを含む。skipはtest imageにbwrapがないため、warningはPython `audioop` deprecation。
