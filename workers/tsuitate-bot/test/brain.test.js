@@ -5,7 +5,7 @@ import {
   BRAIN_VERSION, LEGACY_PROFILE, LINEAR_PROFILE, chooseMove, featuresForMove,
   normalizeObservation, validateProfile,
 } from "../src/brain/index.js";
-import { csaToUsi, observationFromWebhook, usiToCsa } from "../src/adapters/webhook.js";
+import { attemptBudgetFromWebhook, checksFromLastMove, chooseWebhookDecision, csaToUsi, observationFromWebhook, usiToCsa } from "../src/adapters/webhook.js";
 
 function observation(pieces, options = {}) {
   return normalizeObservation({
@@ -41,7 +41,7 @@ test("normalization copies only the canonical own-view fields", () => {
     ruleset: "tsuitate-9x9", color: "b", turn: "b", moveNumber: 3,
     pieces: [{ square: "7g", role: "P" }, { square: "5i", role: "K" }],
     hand: { P: 1, L: 0, N: 0, S: 0, G: 0, B: 0, R: 0 },
-    inCheck: null, opponentInCheck: false,
+    inCheck: null, opponentInCheck: false, attemptBudget: null,
   });
   raw.pieces[1].role = "R";
   raw.hand.P = 18;
@@ -149,6 +149,61 @@ test("linear includes king and long-range moves while blocking own-piece paths",
   assert.ok(featuresForMove(observation([["5e", "+R"]]), "5e4d"));
   assert.equal(featuresForMove(observation([["5e", "+R"]]), "5e3c"), null);
   assert.ok(featuresForMove(observation([["5e", "N"], ["5d", "P"]]), "5e4c"));
+});
+
+test("public check probes king escapes before other moves in both policies and colors", () => {
+  for (const color of ["b", "w"]) for (const selectedProfile of [LEGACY_PROFILE, LINEAR_PROFILE]) {
+    const state = observation([["5e", "K"], ["8h", "P"]], { color, turn: color, inCheck: true });
+    const forbiddenMoves = [];
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const choice = chooseMove(state, { profile: selectedProfile, seed: String(attempt), forbiddenMoves });
+      assert.equal(choice.features.kingMove, 1);
+      assert.ok(!forbiddenMoves.includes(choice.usi));
+      forbiddenMoves.push(choice.usi);
+    }
+    // After every escape is rejected, blocks/captures remain available.
+    const fallback = chooseMove(state, { profile: selectedProfile, forbiddenMoves });
+    assert.equal(fallback.features.kingMove, 0);
+    assert.ok(!forbiddenMoves.includes(fallback.usi));
+    assert.deepEqual(chooseMove({ ...state, opponentBoard: "hidden-marker", legalMoves: [] },
+      { profile: selectedProfile, forbiddenMoves }), fallback);
+  }
+});
+
+test("viewer public lastInfo identifies check without disclosing the attacking square", () => {
+  for (const [color, own, opponent] of [["b", "+", "-"], ["w", "-", "+"]]) {
+    assert.deepEqual(checksFromLastMove({ lastMove: `${opponent}0000ZZ`, lastInfo: 3 }, color),
+      { inCheck: true, opponentInCheck: false });
+    assert.deepEqual(checksFromLastMove({ lastMove: `${own}0000ZZ`, lastInfo: 2 }, color),
+      { inCheck: true, opponentInCheck: null });
+    assert.deepEqual(checksFromLastMove({ lastMove: `${own}0000ZZ`, lastInfo: 1 }, color),
+      { inCheck: false, opponentInCheck: null });
+    assert.deepEqual(checksFromLastMove({ lastMove: `${own}0000ZZ`, lastInfo: 3 }, color),
+      { inCheck: false, opponentInCheck: true });
+  }
+  assert.deepEqual(checksFromLastMove({}, "b"), { inCheck: null, opponentInCheck: null });
+  const options = { sfen: "9/9/9/9/4K4/9/4P4/9/9 b - 1", color: "b", gameId: "check-fixture", ply: 1,
+    ...checksFromLastMove({ lastMove: "-0000ZZ", lastInfo: 3 }, "b") };
+  assert.equal(chooseWebhookDecision(options).decision.features.kingMove, 1);
+});
+
+test("final public attempt budget preserves linear ranking instead of probing a king", () => {
+  const options = { sfen: "9/9/9/9/9/9/9/3P1G3/3LKL3 b - 1", color: "b",
+    gameId: "final-attempt", ply: 0, inCheck: true, profile: { ...LINEAR_PROFILE, exploration: 0 } };
+  assert.equal(chooseWebhookDecision({ ...options, attemptBudget: 1 }).move, "+4857KI");
+  assert.equal(chooseWebhookDecision({ ...options, attemptBudget: 2 }).move, "+5958OU");
+  assert.equal(chooseWebhookDecision(options).move, "+5958OU"); // Unknown budget is explicit null.
+  assert.equal(chooseWebhookDecision({ ...options, attemptBudget: 0 }), null);
+  assert.deepEqual(chooseWebhookDecision({ ...options, profile: LEGACY_PROFILE, attemptBudget: 1 }),
+    chooseWebhookDecision({ ...options, inCheck: false, profile: LEGACY_PROFILE, attemptBudget: 1 }));
+  for (const invalid of [-1, 1.5, 1002, "1", false]) {
+    assert.equal(chooseWebhookDecision({ ...options, attemptBudget: invalid }), null);
+  }
+  assert.equal(attemptBudgetFromWebhook({ fouls: { b: 0, w: 9 } }, "b"), 1);
+  assert.equal(attemptBudgetFromWebhook({ fouls: { b: 0, w: 9 } }, "w"), 10);
+  assert.equal(attemptBudgetFromWebhook({}, "b"), null);
+  assert.equal(chooseWebhookDecision({ ...options,
+    attemptBudget: attemptBudgetFromWebhook({ fouls: { b: null } }, "b") }), null);
 });
 
 test("drops exclude nifu, occupied squares and dead-end ranks for both colors", () => {

@@ -40,7 +40,7 @@ export function parseVisibleSfen(sfen) {
 }
 
 /** Only own pieces and own hand cross the brain boundary, even if SFEN includes both sides. */
-export function observationFromWebhook({ sfen, color, inCheck = null, opponentInCheck = null }) {
+export function observationFromWebhook({ sfen, color, inCheck = null, opponentInCheck = null, attemptBudget = null }) {
   const parsed = parseVisibleSfen(sfen);
   if (!parsed || !["b", "w"].includes(color)) return null;
   const pieces = [...parsed.board].filter(([, piece]) => piece.owner === color)
@@ -54,7 +54,7 @@ export function observationFromWebhook({ sfen, color, inCheck = null, opponentIn
   }
   return normalizeObservation({
     ruleset: "tsuitate-9x9", color, turn: parsed.turn, moveNumber: parsed.moveNumber,
-    pieces, hand, inCheck, opponentInCheck,
+    pieces, hand, inCheck, opponentInCheck, attemptBudget,
   });
 }
 
@@ -87,8 +87,31 @@ export function csaToUsi(csa, rawObservation) {
   return `${source}${move[3]}${rankToUsi(move[4])}${resultRole === piece.role ? "" : "+"}`;
 }
 
-export function chooseWebhookDecision({ sfen, color, gameId, ply, recentOwnMoves = [], forbiddenMoves = [], profile = LEGACY_PROFILE }) {
-  const observation = observationFromWebhook({ sfen, color });
+/** Decode only the viewer's public last-move information, never enemy SFEN. */
+export function checksFromLastMove(position, color) {
+  const ownSign = color === "b" ? "+" : "-";
+  const sign = position?.lastMove?.[0];
+  const info = position?.lastInfo;
+  if (!["+", "-"].includes(sign) || ![0, 1, 2, 3].includes(info)) {
+    return { inCheck: null, opponentInCheck: null };
+  }
+  if (info === 0) return { inCheck: false, opponentInCheck: false };
+  const checked = info === 2 || info === 3;
+  const own = sign === ownSign;
+  return info === 3
+    ? { inCheck: own ? false : true, opponentInCheck: own ? true : false }
+    : { inCheck: own ? checked : null, opponentInCheck: own ? null : checked };
+}
+
+/** Viewer fouls are remaining allowances: zero still permits one final attempt. */
+export function attemptBudgetFromWebhook(position, color) {
+  const remaining = position?.fouls?.[color];
+  if (remaining === undefined) return null;
+  return Number.isInteger(remaining) && remaining >= 0 && remaining <= 1000 ? remaining + 1 : -1;
+}
+
+export function chooseWebhookDecision({ sfen, color, gameId, ply, inCheck = null, opponentInCheck = null, attemptBudget = null, recentOwnMoves = [], forbiddenMoves = [], profile = LEGACY_PROFILE }) {
+  const observation = observationFromWebhook({ sfen, color, inCheck, opponentInCheck, attemptBudget });
   if (!observation) return null;
   // Legacy considered only the last string, even if it cannot match a current candidate.
   const history = profile?.policy === "legacy-v1"

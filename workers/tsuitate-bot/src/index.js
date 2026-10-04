@@ -1,4 +1,4 @@
-import { chooseWebhookDecision } from "./adapters/webhook.js";
+import { attemptBudgetFromWebhook, checksFromLastMove, chooseWebhookDecision } from "./adapters/webhook.js";
 import {
   BRAIN_VERSION,
   LEGACY_PROFILE,
@@ -22,7 +22,7 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 const RPC_BUDGET_MS = 2500;
 const REQUEST_BUDGET_MS = 7000;
 const SITE_ID = "tsuitateviewer.web.app";
-const REVIEWABLE_BRAIN_VERSIONS = new Set([BRAIN_VERSION]);
+const REVIEWABLE_BRAIN_VERSIONS = new Set(["tsuitate-brain-v1", BRAIN_VERSION]);
 const PROFILE_FEATURES = Object.freeze(["advance", "centrality", "promotion", "drop", "kingMove", "distance", "repeat"]);
 const SAFE_ERROR_CODES = new Set([
   "not_found", "method_not_allowed", "content_type_required", "webhook_not_configured",
@@ -623,6 +623,8 @@ export class GameState {
     const recentOwnMoves = ownMovesFrom(positions, payload.color);
     const chosen = chooseWebhookDecision({
       sfen: currentPosition.sfen,
+      ...checksFromLastMove(currentPosition, payload.color),
+      attemptBudget: attemptBudgetFromWebhook(currentPosition, payload.color),
       color: payload.color,
       gameId: payload.gameId,
       ply: payload.ply,
@@ -688,13 +690,13 @@ export class GameState {
       ? [...new Set([...(current.rejectedMoves ?? []), foulledOwnMove])].slice(-64) : [];
     const chosen = chooseWebhookDecision({
       sfen: currentPosition.sfen,
+      ...checksFromLastMove(currentPosition, payload.color),
+      attemptBudget: attemptBudgetFromWebhook(currentPosition, payload.color),
       color: payload.color,
       gameId: payload.gameId,
       ply: payload.ply,
       recentOwnMoves,
-      // Preserve legacy selection; linear never revisits an earlier consecutive foul.
-      forbiddenMoves: profile.policy === "legacy-v1"
-        ? (foulledOwnMove ? [foulledOwnMove] : []) : rejectedMoves,
+      forbiddenMoves: rejectedMoves,
       profile,
     });
     if (!chosen) return result(422, { error: "no_observed_move" });
