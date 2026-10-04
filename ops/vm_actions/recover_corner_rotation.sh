@@ -7,16 +7,21 @@ set -euo pipefail
 # while the compatibility alias is not installed yet. Ambiguous or missing
 # states fail closed.
 #
-# Two phase-gated steps run in order (#986):
-#   1. `corner-rotation recover` resolves the durable rotation latch. It never
-#      edits the ledger by hand: a reservation that already ended is committed
-#      from its own adapter observation, one that never started is handed back
-#      to the normal tick path, and a still-running/corner-level failure stays
-#      latched and exits non-zero (nothing below runs in that case).
-#   2. the reviewed service unit is restarted so the very next tick retries the
-#      same recorded game through the normal game-switch/program-slot gates.
-# It never resets a live boundary and never restarts shared Soren/display/
-# audio/stream services, and never accepts an arbitrary unit name or command.
+# Three phase-gated steps run in order:
+#   1. The retro adapter settles only a prelaunch quiesce failure whose exact
+#      terminal receipt and stable canonical owner prove that Hanjuku never
+#      became active. Other games/states return noop; queued/failed refuses.
+#   2. corner-rotation recover commits the now-terminal adapter observation
+#      without dropping or replaying the recorded reservation.
+#   3. The reviewed service unit is restarted so the next normal tick can
+#      resume scheduling.
+# It never edits a ledger, resets a live boundary, accepts an arbitrary unit
+# or command, or restarts shared Soren/display/audio/stream services.
+
+if (( $# != 0 )); then
+  printf '%s\n' 'recover corner rotation accepts no arguments' >&2
+  exit 64
+fi
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 DOCICH_PROD_ROOT="${DOCICH_PROD_ROOT:-/home/ubuntu/docich}"
@@ -54,8 +59,39 @@ if [[ ! -x "$launcher" || ! -f "$config" ]]; then
   fail "reviewed docich launcher or config missing; refusing to recover" 25
 fi
 
-# Fail-closed latch resolution: a refusal stops here without touching the unit.
-"$launcher" --config "$config" corner-rotation recover
+set +e
+retro_json="$("$launcher" --config "$config" retro-corner recover-failed 2>/dev/null)"
+retro_rc=$?
+set -e
+if (( retro_rc != 0 )); then
+  fail "retro corner recovery rejected" 70
+fi
+set +e
+retro_status="$(python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except (TypeError, ValueError):
+    raise SystemExit(1)
+status = data.get("status") if isinstance(data, dict) else None
+if status not in {"succeeded", "noop", "queued", "failed"}:
+    raise SystemExit(1)
+print(status)
+' <<<"$retro_json")"
+parse_rc=$?
+set -e
+if (( parse_rc != 0 )); then
+  fail "retro corner recovery returned invalid status" 72
+fi
+case "$retro_status" in
+  succeeded|noop) ;;
+  queued) fail "retro corner recovery is not terminal yet" 70 ;;
+  *) fail "retro corner recovery rejected" 71 ;;
+esac
+
+if ! "$launcher" --config "$config" corner-rotation recover >/dev/null 2>&1; then
+  fail "corner rotation recovery rejected" 71
+fi
 
 systemctl --user --no-block restart "$unit"
 printf 'requested failed-slot recovery: %s\n' "$unit"
