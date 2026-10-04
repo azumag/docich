@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { after, test } from "node:test";
 import worker, { GameState, handleWebhook } from "../src/index.js";
 import { chooseObservedMove, parseVisibleSfen } from "../src/bot.js";
+import { BRAIN_VERSION, LEGACY_PROFILE, LINEAR_PROFILE } from "../src/brain/index.js";
 import { MAX_BODY_BYTES } from "../src/protocol.js";
 
 const SECRET = "test-only-not-a-deployable-secret";
@@ -44,13 +45,13 @@ class MemoryStorage {
   }
 }
 
-function stateBinding() {
+function stateBinding(stateEnv = {}) {
   const objects = new Map();
   return {
     objects,
     idFromName: (name) => name,
     get: (id) => {
-      if (!objects.has(id)) objects.set(id, new GameState({ storage: new MemoryStorage() }));
+      if (!objects.has(id)) objects.set(id, new GameState({ storage: new MemoryStorage() }, stateEnv));
       return { fetch: (request) => objects.get(id).fetch(request) };
     },
   };
@@ -149,6 +150,8 @@ test("structured diagnostic captures only the initial masked position and emitte
   assert.deepEqual(event.observation.fouls, initialFixture.positions["0"].fouls);
   assert.equal(event.issuedMove, move);
   assert.equal(event.strategyVersion, "observed-sfen-heuristic-v1");
+  assert.equal(event.profileId, LEGACY_PROFILE.id);
+  assert.equal(event.brainVersion, BRAIN_VERSION);
   assert.equal(event.codeVersion, "version-fixture-123");
   assert.equal(Number.isInteger(event.elapsedMs), true);
   assert.equal(Object.hasOwn(event, "positions"), false);
@@ -569,6 +572,124 @@ test("same request ID and exact body returns the persisted response after DO rec
   assert.deepEqual(await responseJson(retried), firstBody);
 });
 
+test("the configured brain is pinned for the game, retry receipt and recreated DO", async () => {
+  const configured = { ...LINEAR_PROFILE, id: "trained-at-game-start", exploration: 0 };
+  const stateEnv = { BRAIN_PROFILE_JSON: JSON.stringify(configured) };
+  const binding = stateBinding(stateEnv);
+  const first = await captureDiagnosticLogs(() => post(initialFixture, { binding }));
+  assert.equal(first.result.status, 200);
+  const firstBody = await first.result.json();
+  const storage = binding.objects.get(initialFixture.gameId).state.storage;
+  assert.deepEqual(storage.values.get("game").brainProfile, configured);
+  assert.deepEqual(storage.values.get("session:b:0").brainProfile, configured);
+  assert.equal(first.records[0].profileId, configured.id);
+
+  // A rollout with an invalid new profile must not change an already-started game.
+  stateEnv.BRAIN_PROFILE_JSON = "invalid-after-game-start";
+  binding.objects.set(initialFixture.gameId, new GameState({ storage }, stateEnv));
+  const retried = await captureDiagnosticLogs(() => post(initialFixture, { binding }));
+  assert.deepEqual(await retried.result.json(), firstBody);
+  assert.equal(retried.records[0].profileId, configured.id);
+  assert.equal(retried.records[0].brainVersion, BRAIN_VERSION);
+  const appended = await captureDiagnosticLogs(() => post(incrementalFixture, { binding }));
+  assert.equal(appended.result.status, 200);
+  assert.equal(appended.records[0].profileId, configured.id);
+  assert.equal(appended.records[0].strategyVersion, configured.id);
+  assert.equal(storage.values.get("session:b:0").lastDecision.profileId, configured.id);
+
+  // A second bot seat in the same ordinary game also uses the game-level pin.
+  const white = structuredClone(initialFixture);
+  white.requestId = "same-game-white-seat";
+  white.color = "w";
+  white.positions["0"].sfen = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/9/9/9 w - 1";
+  const otherSeat = await captureDiagnosticLogs(() => post(white, { binding }));
+  assert.equal(otherSeat.result.status, 200);
+  assert.equal(otherSeat.records[0].profileId, configured.id);
+  assert.deepEqual(storage.values.get("session:w:0").brainProfile, configured);
+});
+
+test("receipt diagnostics preserve the brain version that actually chose the move", async () => {
+  const binding = stateBinding();
+  assert.equal((await post(initialFixture, { binding })).status, 200);
+  const storage = binding.objects.get(initialFixture.gameId).state.storage;
+  const receipt = [...storage.values.entries()].find(([key]) => key.startsWith("request:"))[1];
+  receipt.decision.brainVersion = "tsuitate-brain-prior-version";
+  const retry = await captureDiagnosticLogs(() => post(initialFixture, { binding }));
+  assert.equal(retry.result.status, 200);
+  assert.equal(retry.records[0].brainVersion, "tsuitate-brain-prior-version");
+  assert.equal(retry.records[0].profileId, LEGACY_PROFILE.id);
+});
+
+test("an opted-in linear profile can issue CSA drops through the existing webhook interface", async () => {
+  const request = structuredClone(initialFixture);
+  request.positions["0"].sfen = "9/9/9/9/9/9/9/9/4K4 b R 1";
+  assert.equal((await post(request)).status, 422);
+  const binding = stateBinding({ BRAIN_PROFILE_JSON: JSON.stringify(LINEAR_PROFILE) });
+  const response = await post(request, { binding });
+  assert.equal(response.status, 200);
+  assert.match((await response.json()).move, /^\+00[1-9]{2}HI$/);
+});
+
+test("invalid configured profiles fail closed without logging configuration values", async () => {
+  for (const raw of [
+    "", "profile-secret-marker", null, {},
+    JSON.stringify({ ...LINEAR_PROFILE, id: "unsafe/profile-secret-marker" }),
+    JSON.stringify({ ...LINEAR_PROFILE, weights: { ...LINEAR_PROFILE.weights, drop: 11 } }),
+    JSON.stringify({ ...LINEAR_PROFILE, policy: "unknown-policy-secret-marker" }),
+  ]) {
+    const binding = stateBinding({ BRAIN_PROFILE_JSON: raw });
+    const rejected = await captureDiagnosticLogs(() => post(initialFixture, { binding }));
+    assert.equal(rejected.result.status, 503);
+    assert.deepEqual(await rejected.result.json(), { error: "invalid_brain_profile" });
+    assert.equal(rejected.records[0].errorCode, "invalid_brain_profile");
+    assert.equal(rejected.records[0].strategyVersion, null);
+    assert.equal(JSON.stringify(rejected.records).includes("secret-marker"), false);
+    assert.equal(binding.objects.get(initialFixture.gameId).state.storage.values.has("session:b:0"), false);
+  }
+});
+
+test("repairing an invalid profile lets the exact same request recover without caching its 503", async () => {
+  const stateEnv = { BRAIN_PROFILE_JSON: "invalid-profile" };
+  const binding = stateBinding(stateEnv);
+  assert.equal((await post(initialFixture, { binding })).status, 503);
+  const storage = binding.objects.get(initialFixture.gameId).state.storage;
+  assert.equal([...storage.values.keys()].some((key) => key.startsWith("request:")), false);
+  stateEnv.BRAIN_PROFILE_JSON = JSON.stringify(LEGACY_PROFILE);
+  const recovered = await post(initialFixture, { binding });
+  assert.equal(recovered.status, 200);
+  const body = await recovered.json();
+  stateEnv.BRAIN_PROFILE_JSON = "invalid-again";
+  assert.deepEqual(await (await post(initialFixture, { binding })).json(), body);
+});
+
+test("pre-profile sessions stay on legacy after deployment with a new default", async () => {
+  const binding = stateBinding();
+  assert.equal((await post(initialFixture, { binding })).status, 200);
+  const storage = binding.objects.get(initialFixture.gameId).state.storage;
+  const session = storage.values.get("session:b:0");
+  delete session.brainProfile;
+  delete session.lastDecision;
+  delete storage.values.get("game").brainProfile;
+  binding.objects.set(initialFixture.gameId, new GameState({ storage }, {
+    BRAIN_PROFILE_JSON: JSON.stringify(LINEAR_PROFILE),
+  }));
+  const next = await captureDiagnosticLogs(() => post(incrementalFixture, { binding }));
+  assert.equal(next.result.status, 200);
+  assert.equal(next.records[0].profileId, LEGACY_PROFILE.id);
+  assert.deepEqual(storage.values.get("session:b:0").brainProfile, LEGACY_PROFILE);
+});
+
+test("corrupted persisted profiles cannot silently fall back to another strategy", async () => {
+  const binding = stateBinding();
+  assert.equal((await post(initialFixture, { binding })).status, 200);
+  const storage = binding.objects.get(initialFixture.gameId).state.storage;
+  storage.values.get("session:b:0").brainProfile = { ...LINEAR_PROFILE, weights: {} };
+  const rejected = await post(incrementalFixture, { binding });
+  assert.equal(rejected.status, 503);
+  assert.deepEqual(await rejected.json(), { error: "invalid_brain_profile" });
+  assert.equal(storage.values.get("session:b:0").lastPly, 0);
+});
+
 test("same request ID with a different raw body is rejected without changing history", async () => {
   const binding = stateBinding();
   assert.equal((await post(initialFixture, { binding })).status, 200);
@@ -589,6 +710,25 @@ test("foul observation avoids repeating the just-rejected move", async () => {
   assert.equal(foul.status, 200);
   const nextMove = (await responseJson(foul)).move;
   assert.notEqual(nextMove, firstMove);
+});
+
+test("linear webhook keeps all consecutive rejected moves excluded", async () => {
+  const binding = stateBinding({ BRAIN_PROFILE_JSON: JSON.stringify({ ...LINEAR_PROFILE, exploration: 0 }) });
+  const initial = structuredClone(initialFixture);
+  initial.positions["0"].sfen = "9/9/9/9/9/9/P3P4/9/9 b - 1";
+  const first = await post(initial, { binding });
+  assert.equal((await first.json()).move, "+5756FU");
+  const rejection = structuredClone(foulFixture);
+  rejection.positions["1"].sfen = initial.positions["0"].sfen;
+  const second = await post(rejection, { binding });
+  assert.equal((await second.json()).move, "+9796FU");
+  const exhausted = {
+    ...rejection, requestId: "two-consecutive-fouls", basePly: 1, ply: 2,
+    positions: { "2": rejection.positions["1"] },
+  };
+  const third = await post(exhausted, { binding });
+  assert.equal(third.status, 422);
+  assert.deepEqual(await third.json(), { error: "no_observed_move" });
 });
 
 test("authenticated timestamps accept 299 seconds and reject the 300-second boundary", async () => {

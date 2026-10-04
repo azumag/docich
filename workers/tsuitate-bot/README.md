@@ -1,8 +1,25 @@
-# 衝立将棋 Cloudflare Webhook Bot prototype
+# 衝立将棋 BOT：共通brain・Webhook・beta対局
+
+思考処理を `src/brain/`、サイト固有の変換を `src/adapters/` に分離しています。
+既存のCloudflare Webhookに加え、[beta.tsuitate.infoのbot API](https://beta.tsuitate.info/bot-api)
+へ接続するNode.jsの反復対局runnerを追加しました。両方が同じbrainとprofile形式を使います。
+対局記録、brainだけの改善候補作成、実戦比較の手順は **[ARENA.md](ARENA.md)** を参照してください。
+
+| 責務 | 配置 |
+|---|---|
+| 共通観測、USI候補、評価関数、profile | `src/brain/index.js` |
+| 既存サイトのSFEN・CSA変換 | `src/adapters/webhook.js` |
+| betaのPlayerView変換・着手状態管理 | `src/adapters/beta.js` |
+| betaの対局・再接続・記録 | `src/arena/`、`scripts/play-beta.mjs` |
+| 記録の検証・候補更新・成績比較 | `src/training/`、`scripts/train-brain.mjs` |
+
+Webhookの既定は従来の `observed-sfen-heuristic-v1` です。`BRAIN_PROFILE_JSON` が設定されている
+場合だけ、検証済みprofileを**新しい対局**へ適用します。対局の途中や再送でprofileは変わりません。
+beta runnerは `linear-baseline-v1` を既定とし、`--profile` で同じprofile JSONを読みます。
 
 Cloudflare Workersのbuild設定と検証方法は [BUILDS.md](BUILDS.md) にまとめています。GitHub Actionsはbuildとテストを行い、配備は行いません。ローカルCIの成功はCloudflare上の配備・稼働を示しません。
 
-`/webhook` に届くTsuitate Bot向けJSON POSTを検証し、観測できた局面からCSA形式の指し手を返すCloudflare Workersプロトタイプです。既存のオフライン基礎 [`docs/tsuitate-protocol.md`](../../docs/tsuitate-protocol.md) と `src/docich/tsuitate_protocol.py` は変更せず、独立したWorkerとして配置しています。
+`/webhook` に届くTsuitate Bot向けJSON POSTを検証し、観測できた局面からCSA形式の指し手を返すCloudflare Workersプロトタイプです。既存のPythonオフライン基礎 [`docs/tsuitate-protocol.md`](../../docs/tsuitate-protocol.md) と `src/docich/tsuitate_protocol.py` は保持しています。Node.jsのbeta adapterは同じ安全契約を回帰テストで固定しています。
 
 ## 対応範囲
 
@@ -13,7 +30,7 @@ Cloudflare Workersのbuild設定と検証方法は [BUILDS.md](BUILDS.md) にま
 - HMAC-SHA256はJSON parseより先に受信raw bytesへ検証します。`X-Tsuitate-Bot-Id` は1〜64文字のASCII IDとして形式検証し、`X-Tsuitate-Timestamp` の差が300秒以上、署名、`x-amz-content-sha256` が合わないリクエストは拒否します。受信IDを固定の設定値と照合しません。本文・署名・secret・Bot IDをログへ出しません。
 - 本文は受信ストリームの段階で256 KiBに制限し、リクエスト全体は7秒で打ち切ります。状態Worker呼び出しは2.5秒で打ち切り、10秒の対局応答枠に余裕を残します。タイムアウト後に再送された同一リクエストは、DO側の保存済みレシートで処理されます。
 
-指し手は公開された自駒とSFENだけから決定的に選びます。王の移動と長距離駒の遠方移動は候補にせず、隠れた相手駒・王手・ピン・千日手を推定しません。それでも隠し盤面では経路上の駒や王手回避を完全には検証できないため、CSA形式の出力や合法手を保証する将棋エンジンではありません。候補を作れない場合は `422 no_observed_move` で失敗を明示します。
+既定のlegacy profileは公開された自駒とSFENだけから従来どおり決定的に選びます。王の移動と長距離駒の遠方移動は候補にせず、隠れた相手駒・王手・ピン・千日手を推定しません。linear profileでは王、長距離移動、持駒打ち、任意成りも候補にします。どちらも相手の非公開盤面を知らないため、完全な合法性はサーバーの審判が判定します。候補を作れない場合は `422 no_observed_move` で失敗を明示します。
 
 SQLite-backed Durable Objectを保存先に使います。D1や外部DBは使いません。局面は1手ごとのキー、requestIdレシートは対局中保持し、現在は自動削除しません。公開運用前に対局終了の識別と保存期間・容量上限を決める必要があります。
 

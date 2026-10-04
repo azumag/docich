@@ -1,4 +1,5 @@
-import { chooseObservedMove } from "./bot.js";
+import { chooseWebhookDecision } from "./adapters/webhook.js";
+import { LEGACY_PROFILE, validateProfile } from "./brain/index.js";
 import {
   MAX_BODY_BYTES,
   POSITION_VALIDATION_STAGES,
@@ -14,7 +15,6 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const RPC_BUDGET_MS = 2500;
 const REQUEST_BUDGET_MS = 7000;
-const STRATEGY_VERSION = "observed-sfen-heuristic-v1";
 const SAFE_ERROR_CODES = new Set([
   "not_found", "method_not_allowed", "content_type_required", "webhook_not_configured",
   "authentication_failed", "timestamp_out_of_range", "body_too_large", "request_timeout",
@@ -24,7 +24,7 @@ const SAFE_ERROR_CODES = new Set([
   "invalid_position", "invalid_sfen", "not_your_turn", "state_unavailable", "state_timeout",
   "internal_error", "invalid_internal_request", "request_id_reused", "session_already_initialized",
   "game_metadata_mismatch", "session_missing", "seat_mismatch", "base_ply_mismatch", "stale_ply",
-  "no_observed_move", "state_failure",
+  "no_observed_move", "state_failure", "invalid_brain_profile",
 ]);
 const AUTH_FAILURE_STAGES = new Set([
   "bot_id_missing", "bot_id_format", "timestamp_missing", "timestamp_format", "timestamp_out_of_range",
@@ -98,10 +98,10 @@ function recordWebhookDiagnostic(env, diagnostics, status, elapsedMs) {
     status,
     errorCode: diagnostics.errorCode ?? null,
     elapsedMs: Math.max(0, Math.round(elapsedMs)),
-    strategyVersion: STRATEGY_VERSION,
+    strategyVersion: diagnostics.profileId ?? null,
     codeVersion: typeof versionId === "string" && versionId.length <= 64 ? versionId : "local",
   };
-  for (const key of ["gameId", "color", "seat", "ply", "gameType", "observation", "issuedMove"]) {
+  for (const key of ["gameId", "color", "seat", "ply", "gameType", "observation", "issuedMove", "brainVersion", "profileId"]) {
     if (diagnostics[key] !== undefined) event[key] = diagnostics[key];
   }
   if (AUTH_FAILURE_STAGES.has(diagnostics.authFailureStage)) {
@@ -306,6 +306,15 @@ async function handleWebhookRequest(request, env, options, signal, diagnostics) 
     try { responseBody = JSON.parse(responseText); } catch { /* The public response is preserved below. */ }
     if (result.status === 200 && typeof responseBody?.move === "string" && CSA_MOVE.test(responseBody.move)) {
       diagnostics.issuedMove = responseBody.move;
+      // Read the profile actually pinned by the DO, not the current deployment's env.
+      const brainVersion = result.headers.get("x-tsuitate-brain-version");
+      const profileId = result.headers.get("x-tsuitate-profile-id");
+      if (typeof brainVersion === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(brainVersion)
+          && typeof profileId === "string"
+          && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(profileId)) {
+        diagnostics.brainVersion = brainVersion;
+        diagnostics.profileId = profileId;
+      }
     } else if (responseBody && SAFE_ERROR_CODES.has(responseBody.error)) {
       diagnostics.errorCode = responseBody.error;
     } else if (result.status >= 400) {
@@ -364,8 +373,8 @@ function ownMovesFrom(positions, color) {
     .slice(-64);
 }
 
-function result(status, body) {
-  return { status, body };
+function result(status, body, decision) {
+  return decision ? { status, body, decision } : { status, body };
 }
 
 function conflict(code) {
@@ -374,8 +383,9 @@ function conflict(code) {
 
 /** Cloudflare Durable Object. Per-seat serialization and one atomic transaction protect state. */
 export class GameState {
-  constructor(state) {
+  constructor(state, env = {}) {
     this.state = state;
+    this.env = env;
   }
 
   async fetch(request) {
@@ -408,7 +418,7 @@ export class GameState {
           if (oldReceipt.requestId !== identity.requestId || oldReceipt.bodyHash !== input.bodyHash) {
             return conflict("request_id_reused");
           }
-          return { status: oldReceipt.status, body: oldReceipt.body };
+          return result(oldReceipt.status, oldReceipt.body, oldReceipt.decision);
         }
 
         let payload;
@@ -443,7 +453,7 @@ export class GameState {
                 || game.requiredPlayers.w !== payload.game.requiredPlayers.w)) {
               outcome = conflict("game_metadata_mismatch");
             } else {
-              outcome = await this.#initialize(tx, payload, sessionKey, game === undefined);
+              outcome = await this.#initialize(tx, payload, sessionKey, game);
             }
           }
         } else if (!current) {
@@ -456,38 +466,60 @@ export class GameState {
           outcome = await this.#append(tx, payload, current, sessionKey);
         }
 
+        // A configuration failure has not selected a move or advanced state.
+        // Let the same request recover after its configuration is repaired.
+        if (outcome.status === 503 && outcome.body.error === "invalid_brain_profile") return outcome;
         await tx.put(receiptKey, {
           requestId: identity.requestId,
           bodyHash: input.bodyHash,
           status: outcome.status,
           body: outcome.body,
+          ...(outcome.decision ? { decision: outcome.decision } : {}),
         });
         return outcome;
       });
-      return jsonResponse(stored.status, stored.body);
+      const response = jsonResponse(stored.status, stored.body);
+      if (stored.decision) {
+        response.headers.set("x-tsuitate-brain-version", stored.decision.brainVersion);
+        response.headers.set("x-tsuitate-profile-id", stored.decision.profileId);
+      }
+      return response;
     } catch {
       // No raw exception is returned or logged; a transaction failure commits neither state nor receipt.
       return jsonResponse(500, { error: "state_failure" });
     }
   }
 
-  async #initialize(tx, payload, sessionKey, writeGameMetadata) {
+  #configuredProfile() {
+    if (this.env.BRAIN_PROFILE_JSON === undefined) return validateProfile(LEGACY_PROFILE);
+    const raw = this.env.BRAIN_PROFILE_JSON;
+    if (typeof raw !== "string" || raw.length > 8192) return null;
+    try { return validateProfile(JSON.parse(raw)); } catch { return null; }
+  }
+
+  async #initialize(tx, payload, sessionKey, game) {
+    // One profile for the whole game. Existing pre-profile games stay on legacy.
+    const profile = game === undefined ? this.#configuredProfile()
+      : validateProfile(Object.hasOwn(game, "brainProfile") ? game.brainProfile : LEGACY_PROFILE);
+    if (!profile) return result(503, { error: "invalid_brain_profile" });
     const positions = payload.positions;
     const currentPosition = positions[String(payload.ply)];
     const recentOwnMoves = ownMovesFrom(positions, payload.color);
-    const move = chooseObservedMove({
+    const chosen = chooseWebhookDecision({
       sfen: currentPosition.sfen,
       color: payload.color,
       gameId: payload.gameId,
       ply: payload.ply,
       recentOwnMoves,
+      profile,
     });
-    if (!move) return result(422, { error: "no_observed_move" });
+    if (!chosen) return result(422, { error: "no_observed_move" });
+    const { move, decision } = chosen;
     for (const [ply, position] of Object.entries(positions)) {
       await tx.put(`position:${payload.color}:${payload.number}:${ply}`, position);
     }
-    if (writeGameMetadata) {
-      await tx.put("game", { type: payload.game.type, requiredPlayers: payload.game.requiredPlayers });
+    if (game === undefined || !Object.hasOwn(game, "brainProfile")) {
+      await tx.put("game", { type: payload.game.type, requiredPlayers: payload.game.requiredPlayers, brainProfile: profile });
     }
     await tx.put(sessionKey, {
       gameId: payload.gameId,
@@ -498,11 +530,16 @@ export class GameState {
       lastPly: payload.ply,
       recentOwnMoves,
       lastIssuedMove: move,
+      brainProfile: profile,
+      lastDecision: decision,
+      rejectedMoves: [],
     });
-    return result(200, { move });
+    return result(200, { move }, decision);
   }
 
   async #append(tx, payload, current, sessionKey) {
+    const profile = validateProfile(Object.hasOwn(current, "brainProfile") ? current.brainProfile : LEGACY_PROFILE);
+    if (!profile) return result(503, { error: "invalid_brain_profile" });
     const currentPosition = payload.positions[String(payload.ply)];
     if (!currentPosition) return conflict("incomplete_positions");
     if (payload.ply <= current.lastPly) return conflict("stale_ply");
@@ -515,20 +552,29 @@ export class GameState {
       && (currentPosition.lastInfo === 1 || currentPosition.lastInfo === 2)
       ? current.lastIssuedMove
       : null;
-    const move = chooseObservedMove({
+    const rejectedMoves = foulledOwnMove
+      ? [...new Set([...(current.rejectedMoves ?? []), foulledOwnMove])].slice(-64) : [];
+    const chosen = chooseWebhookDecision({
       sfen: currentPosition.sfen,
       color: payload.color,
       gameId: payload.gameId,
       ply: payload.ply,
       recentOwnMoves,
-      forbiddenMoves: foulledOwnMove ? [foulledOwnMove] : [],
+      // Preserve legacy selection; linear never revisits an earlier consecutive foul.
+      forbiddenMoves: profile.policy === "legacy-v1"
+        ? (foulledOwnMove ? [foulledOwnMove] : []) : rejectedMoves,
+      profile,
     });
-    if (!move) return result(422, { error: "no_observed_move" });
+    if (!chosen) return result(422, { error: "no_observed_move" });
+    const { move, decision } = chosen;
     for (const [ply, position] of Object.entries(payload.positions)) {
       await tx.put(`position:${payload.color}:${payload.number}:${ply}`, position);
     }
-    await tx.put(sessionKey, { ...current, lastPly: payload.ply, recentOwnMoves, lastIssuedMove: move });
-    return result(200, { move });
+    await tx.put(sessionKey, {
+      ...current, lastPly: payload.ply, recentOwnMoves, lastIssuedMove: move,
+      brainProfile: profile, lastDecision: decision, rejectedMoves,
+    });
+    return result(200, { move }, decision);
   }
 }
 
