@@ -30,6 +30,8 @@ export default defineConfig({
       WEBHOOK_SECRET: bindings.secret(),
       BETA_CONTROL_SECRET: bindings.secret(),
       TSUITATE_BOT_TOKEN: bindings.secret(),
+      // Retain existing metadata; the runtime no longer reads this variable.
+      BETA_ARENA_ENABLED: bindings.text("false"),
       BETA_ARENA: bindings.durableObject({ worker: "docich-tsuitate-bot", exportName: "BetaArena" }),
     },
   },

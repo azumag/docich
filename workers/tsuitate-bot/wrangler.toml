@@ -7,6 +7,8 @@ compatibility_flags = ["nodejs_compat"]
 # Replace this with the Bot ID from the Tsuitate site before configuring local
 # or hosted execution. The webhook secret is set separately with Wrangler.
 BOT_ID = "replace-with-tsuitate-bot-id"
+# Retain existing metadata; the runtime no longer reads this variable.
+BETA_ARENA_ENABLED = "false"
 
 [[durable_objects.bindings]]
 name = "GAME_STATE"

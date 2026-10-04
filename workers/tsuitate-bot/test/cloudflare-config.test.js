@@ -52,7 +52,7 @@ test("Cloudflare config sets the production Bot ID and keeps the secret binding 
   for (const name of ["BETA_CONTROL_SECRET", "TSUITATE_BOT_TOKEN"]) {
     assert.equal(env[name].type, "secret"); assert.equal(Object.hasOwn(env[name], "value"), false);
   }
-  assert.equal(Object.hasOwn(env, "BETA_ARENA_ENABLED"), false);
+  assert.deepEqual(env.BETA_ARENA_ENABLED, { type: "text", value: "false" });
   assert.deepEqual(cloudflareConfig.worker.exports.BetaArena, { type: "durable-object", storage: "sqlite" });
   assert.deepEqual(env.BETA_ARENA, { type: "durable-object", worker: "docich-tsuitate-bot", exportName: "BetaArena" });
   assert.deepEqual(cloudflareConfig.worker.compatibilityFlags, ["nodejs_compat"]);
