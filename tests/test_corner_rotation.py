@@ -97,6 +97,44 @@ def test_production_profile_marks_common_rotation_enabled_for_all_ten_corners():
     }
 
 
+def test_weather_known_corner_round_trips_through_ledger(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[paths]\nstate_dir="run"\n')
+    g = load_global(tmp_path, path)
+    g.state_dir.mkdir(parents=True)
+    corner = Corner(
+        "weather",
+        "weather",
+        "weather-view",
+        duration_minutes=1,
+    )
+    manager = CornerRotationManager(
+        g,
+        clock=lambda: 1000.0,
+        seed="weather-ledger",
+        catalog=[corner],
+        adapter_factory=Adapter,
+        executor=Executor(),
+    )
+    saved = manager.load(1000.0)
+    manager._remember_catalog(saved)
+    manager.save(saved)
+
+    restarted = CornerRotationManager(
+        g,
+        clock=lambda: 1001.0,
+        seed="weather-ledger",
+        catalog=[corner],
+        adapter_factory=Adapter,
+        executor=Executor(),
+    )
+    assert restarted.load(1001.0)["known_corners"]["weather"] == {
+        "id": "weather",
+        "adapter": "weather",
+        "game": "weather-view",
+    }
+
+
 def test_common_rotation_tick_ignores_the_legacy_start_hour(tmp_path, monkeypatch):
     """Enabled common rotation owns selection; the legacy daily start_hour and
     mode must not make the legacy entry tick a no-op outside that hour."""
