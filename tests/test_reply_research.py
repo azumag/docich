@@ -353,7 +353,7 @@ def test_timeout_kills_descendant_process_group(tmp_path):
         if proc_stat.is_file():
             try:
                 raw = proc_stat.read_text()
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 # The child can exit between the existence check and open.
                 return
             state = raw.rsplit(")", 1)[1].split()[0]
