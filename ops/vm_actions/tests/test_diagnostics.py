@@ -102,6 +102,8 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             self.assertIn(section, diag)
         self.assertEqual(diag["workers"]["expected"] >= 10, True)
         self.assertEqual(diag["semantic_decision"], {"present": False, "readable": False})
+        self.assertEqual(diag["supervisor_identity"]["loaded_functions_status"], "unverified")
+        self.assertIsNone(diag["supervisor_identity"]["open_script_sha256"])
         self.assertEqual(self.snapshot(self.soren), before)
 
     def test_every_docich_module_the_collector_imports_is_drift_verified(self):
