@@ -693,13 +693,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v132-card-damage-gate'
+    assert state['bot_version'] == 'hanjuku-chart-v133-measured-egg-fee'
     assert '_records' not in state['policy']
 
 
-def test_bot_version_marks_battle_card_progress_release():
+def test_bot_version_marks_measured_egg_fee_release():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v132-card-damage-gate'
+    assert BOT_VERSION == 'hanjuku-chart-v133-measured-egg-fee'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -2168,7 +2168,8 @@ def test_full_recovery_moves_from_an_individual_egg_to_full_option():
 
 
 @pytest.mark.parametrize('gold,quote,selected,expected', [
-    (100,'2こで100Gになりまんな',True,'a'),
+    (130,'2こで100Gになりまんな',True,'a'),
+    (100,'2こで100Gになりまんな',True,'b'),   # 30G wage floor must survive the payment
     (99,'2こで100Gになりまんな',True,'b'),
     (100,'2こで100Gになりまんな',False,'b'),
     (100,'2こで50Gになりまんな',True,'b'),
