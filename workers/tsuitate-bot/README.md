@@ -39,6 +39,8 @@ SQLiteの `beta:meta` に現在run・対局ID・世代・brain/profile・停止�
 
 20秒間隔のalarmは既知の対局IDだけを復元し `game:sync` します。cold restoreでID未保存なら `unknown_match_state` に停止し、対局がないとは推測せず再募集もしません。復元・通信断を経た対局は学習対象外です。保存済みbrain版が利用できない場合もcheckpointを保持します。配備や障害による切断負けのリスクは残ります。
 
+終局結果は現在gameIdの公開棋譜と照合します。取得は `redirect: "manual"` を使い、3xxを拒否して別URLへ追従しません。`game:end`は結果照会のきっかけとして扱い、その原文から勝敗や隠し盤面を保存しません。空の同期応答が続いても、公開結果の照会は最大5回、間隔1.5秒・各取得5秒の枠を最後まで使います。通知の重複で間隔を短縮しません。結果未確定ならcheckpointを保持して停止し、終了済みPlayerViewを確認できた場合だけ勝敗不明の終局記録を保存します。既にpausedのrunはこの変更による自動復帰の対象になりません。
+
 Socket.IO 4.8.4の公開ブラウザ配布をnative WebSocket transportだけで使います。外向きWebSocketは[DOのhibernation対象外](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)で常駐中はduration課金・quota消費があります。アカウントの現plan・残量は未確認で、無料稼働を保証しません。plan変更は行っていません。
 
 `src/worker.js` が既存Webhookと認証controlを束ねます。`cloudflare.config.ts` はBetaArenaのSQLite export、`BETA_ARENA` binding、`nodejs_compat`、値なしsecretを宣言します。旧 `wrangler.toml` も同じbindingとmigration宣言を持ちます。旧plain変数の `BETA_ARENA_ENABLED="false"` 宣言は設定差分を作らないためmetadataに残しますが、runtimeは参照しません。buildは実DOを作りません。利用可否の環境変数は参照しません。以前の `BETA_ARENA_ENABLED` / `DOCICH_BETA_CONTROL_ENABLED` が残っていても値は無視し、認証済みの明示startでのみ募集します。Workerには既存の `BETA_CONTROL_SECRET` と `TSUITATE_BOT_TOKEN`、WebUIには同じ共有キーの `DOCICH_BETA_CONTROL_SECRET` と `DOCICH_BETA_CONTROL_URL` が必要です。URLはこのWorker名のHTTPS workers.dev rootだけに限定し、redirect・ambient proxyは使いません。secretやURL未設定・認証不正は引き続き拒否します。
