@@ -2,7 +2,7 @@
   "output_sha256": "6fe41ed3b5dbda660fa0c75ed9b4c8e91cf2ddfb7f5c6814b11418ec41e3c743",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "4ccfb9818ea1dc3e3b9a4f41e412c1d32013ca313ffc272ae415b045f1001b48",
+  "source_sha256": "1a5ccb00be184bcc392f6c56d50656b22611433939dffefecbc0847ac2ca3dd7",
   "topics": [
     "半熟英雄: 卵回復の見積もりを実測卵だけにし、支払へ賃金フロアを固定（v133）を配備",
     "「CIが恒常失敗」の切り分け（実測）／`/hanjuku-evidence` は gateway 未更新で未解決",
