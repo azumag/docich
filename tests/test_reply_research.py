@@ -351,7 +351,11 @@ def test_timeout_kills_descendant_process_group(tmp_path):
             return
         proc_stat = Path(f"/proc/{child_pid}/stat")
         if proc_stat.is_file():
-            raw = proc_stat.read_text()
+            try:
+                raw = proc_stat.read_text()
+            except FileNotFoundError:
+                # The child can exit between the existence check and open.
+                return
             state = raw.rsplit(")", 1)[1].split()[0]
         elif shutil.which("ps"):
             state = subprocess.run(["ps", "-o", "stat=", "-p", str(child_pid)],

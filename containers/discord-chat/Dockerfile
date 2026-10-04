@@ -22,6 +22,9 @@ FROM runtime AS test
 USER root
 COPY requirements-test.txt ./requirements-test.txt
 RUN python -m pip install --no-cache-dir -r requirements-test.txt
+COPY src/docich/comment_classifier/__init__.py src/docich/comment_classifier/heuristic.py \
+     src/docich/comment_classifier/jev.py src/docich/comment_classifier/screen.py \
+     src/docich/comment_classifier/reply_route.py ./src/docich/comment_classifier/
 COPY tests/test_discord_chat.py tests/test_discord_memory.py tests/test_discord_container.py ./tests/
 COPY tests/test_reply_routing.py tests/test_reply_research.py ./tests/
 COPY tests/fixtures/reply_routing_canary.json ./tests/fixtures/reply_routing_canary.json

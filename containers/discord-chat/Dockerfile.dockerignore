@@ -8,6 +8,11 @@
 !src/docich/reply_research.py
 !src/docich/reply_research_bridge.py
 !src/docich/reply_research_egress.py
+!src/docich/comment_classifier/__init__.py
+!src/docich/comment_classifier/heuristic.py
+!src/docich/comment_classifier/jev.py
+!src/docich/comment_classifier/screen.py
+!src/docich/comment_classifier/reply_route.py
 !src/docich/semantic_decision/__init__.py
 !src/docich/semantic_decision/diagnostics.py
 !src/docich/semantic_decision/routes.py
