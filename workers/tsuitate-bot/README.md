@@ -25,7 +25,7 @@ Cloudflare Workersのbuild設定と検証方法は [BUILDS.md](BUILDS.md) にま
 
 ## 対応範囲
 
-### beta対局のowner操作（コードのみ・未配備）
+### beta対局のowner操作
 
 WebUIの「コーナー」に状態更新・1局開始・終了後停止を追加しました。既存operator認証を使い、開始・停止は既存Host/Origin、JSON、CSRF、確認guardを通ります。read-only利用者は状態取得を含め拒否します。WebUI認証設定とloopback/Tailscale ACLが実運用でownerに限定されていることは、このローカル検証では確認していません。
 
@@ -33,7 +33,7 @@ WebUIサーバーは専用HMACで固定 `POST /beta-control` へ `status` / `sta
 
 初期状態は `stopped` です。singleton名 `beta:DoCiAI` に対し、**明示runごとに最大1局**を予約します。同じrunIdの再送・並行開始・重複alarmで再募集しません。次の新しいrunIdは前runの終局記録保存、socket終了、alarm削除が済んだ `readyForNextRun=true` の時だけ開始できます。終局後の自動反復はありません。古いrunIdのstart/stopは保存済みreceiptを返し、現在runを再開始・停止しません。paused・不明な状態では次局を開始せず、reset APIもありません。
 
-queue待ちは開始予約から60秒です。退出ACK確認に最大5秒、その後の遅延match通知待機に最大5秒を使います。stopは待機中なら退出し、対局中なら着手を続けて結果保存後に停止します。進行中はenable flagを切り替えずstopを使ってください。UIは曖昧な開始応答の再確認用に、秘密ではないrunIdをsessionStorageに保持します。
+queue待ちは開始予約から60秒です。退出ACK確認に最大5秒、その後の遅延match通知待機に最大5秒を使います。stopは待機中なら退出し、対局中なら着手を続けて結果保存後に停止します。停止にはこのstop操作を使ってください。UIは曖昧な開始応答の再確認用に、秘密ではないrunIdをsessionStorageに保持します。
 
 SQLiteの `beta:meta` に現在run・対局ID・世代・brain/profile・停止要求、`beta:checkpoint` に自分の観測と未確認着手、`beta:terminal` に最新終局記録を保存します。`beta:record:<runId>` と `beta:run:<runId>` に各runの記録とreceiptを残し、`beta:game:<gameId>` で過去局への混線を拒否します。着手はcheckpoint保存後に送信し、古い世代の書込みを拒否します。値は1 MiB以下で、保存失敗時は以前のcheckpointを保持して停止します。記録は冪等に保存し、矛盾する結果は上書きしません。履歴の自動削除・容量保持方針は未実装です。
 
@@ -41,11 +41,11 @@ SQLiteの `beta:meta` に現在run・対局ID・世代・brain/profile・停止�
 
 Socket.IO 4.8.4の公開ブラウザ配布をnative WebSocket transportだけで使います。外向きWebSocketは[DOのhibernation対象外](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)で常駐中はduration課金・quota消費があります。アカウントの現plan・残量は未確認で、無料稼働を保証しません。plan変更は行っていません。
 
-`src/worker.js` が既存Webhookと認証controlを束ねます。`cloudflare.config.ts` はBetaArenaのSQLite export、`BETA_ARENA` binding、`nodejs_compat`、値なしsecretと `BETA_ARENA_ENABLED="false"` を宣言します。旧 `wrangler.toml` も同じbindingとmigration宣言を持ちます。**buildは実DOを作りませんが、将来deployするとnamespace/migrationを作成する変更です。** WebUIも `DOCICH_BETA_CONTROL_ENABLED="true"` がない限り通信しません。`DOCICH_BETA_CONTROL_URL` はこのWorker名のHTTPS workers.dev rootだけに限定し、redirect・ambient proxyは使いません。
+`src/worker.js` が既存Webhookと認証controlを束ねます。`cloudflare.config.ts` はBetaArenaのSQLite export、`BETA_ARENA` binding、`nodejs_compat`、値なしsecretを宣言します。旧 `wrangler.toml` も同じbindingとmigration宣言を持ちます。buildは実DOを作りません。利用可否の環境変数は参照しません。以前の `BETA_ARENA_ENABLED` / `DOCICH_BETA_CONTROL_ENABLED` が残っていても値は無視し、認証済みの明示startでのみ募集します。Workerには既存の `BETA_CONTROL_SECRET` と `TSUITATE_BOT_TOKEN`、WebUIには同じ共有キーの `DOCICH_BETA_CONTROL_SECRET` と `DOCICH_BETA_CONTROL_URL` が必要です。URLはこのWorker名のHTTPS workers.dev rootだけに限定し、redirect・ambient proxyは使いません。secretやURL未設定・認証不正は引き続き拒否します。
 
 ローカル検証は `npm test` と `npm run test:beta-workerd`、repo rootから `python3 -m pytest -q tests/test_tsuitate_beta_control.py` です。一時SQLite・localhostのWebUI/Engine.IO/Socket.IO・明示fixture値だけでoperator→HMAC→DO、viewer/CSRF拒否、並行再送、手動2回目開始、旧run停止無効、rollback、sync-only復元、終局保存・再起動を確認します。Miniflare v5はinline bundleと `resourcePersistencePath` を使い、再起動前後のDO IDと未確認着手を照合します。
 
-実運用には親の独立レビュー、production変更・配備の承認、WebUIのowner境界とplan/quota確認、ownerによる別secret設定、既存Botの対局・queue確認、改めて1局の実行許可が必要です。main連動のWorkers Buildsがある環境ではmergeも配備に繋がり得るため、mergeを待機します。この変更で実DO/D1作成、secret生成・設定、配備、Bot登録、beta接続・実対局は行っていません。
+この変更は親の独立レビューとmerge・配備判断を待ちます。main連動のWorkers Buildsがある環境ではmergeも配備に繋がり得ます。既存secretを使い、新しい秘密は不要です。この変更の検証では実DO/D1作成、secret生成・設定、配備、Bot登録、beta接続・実対局を行っていません。
 
 - 現在受け付けるのは通常の `ついたて` です。`ダーク`、`ついたて5五`、`ついたてリレー` は、モード固有ルールの根拠と検証fixtureが揃うまで `422 unsupported_game_type` で安全に拒否します。
 - 初回は手数0から `ply` まで、差分は `basePly + 1` から `ply` までを連番検証して保存します。差分の `basePly` は保持済みの最後の手数と完全一致する必要があります。

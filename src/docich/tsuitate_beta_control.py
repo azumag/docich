@@ -14,7 +14,7 @@ import urllib.request
 PREFIX = b"beta-control-v1\nPOST\n/beta-control\n"
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 STATES = {"stopped", "queued", "playing", "draining", "finished", "queue_timeout", "paused"}
-ERRORS = {"arena_disabled", "token_not_configured", "run_locked", "run_mismatch", "control_not_configured",
+ERRORS = {"token_not_configured", "run_locked", "run_mismatch", "control_not_configured",
           "control_authentication_failed", "control_timeout", "control_unavailable"}
 
 
@@ -48,8 +48,6 @@ def signed_request(url: str, secret: str, action: str, run_id: str | None = None
 
 
 def call_beta_control(action: str, run_id: str | None = None, *, forbidden_secrets: tuple[str, ...] = ()) -> dict:
-    if os.environ.get("DOCICH_BETA_CONTROL_ENABLED") != "true":
-        raise ControlError("control_not_configured")
     secret = os.environ.get("DOCICH_BETA_CONTROL_SECRET", "")
     if not 32 <= len(secret.encode("utf-8")) <= 4096 or any(secret == value for value in forbidden_secrets if value):
         raise ControlError("control_not_configured")

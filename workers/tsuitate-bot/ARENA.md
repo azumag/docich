@@ -90,11 +90,11 @@ LLMによる戦略コード書き換えは、この変更には含めていま�
 - ランダムマッチを繰り返します。同一所有者のBOT同士、および所有者と自分のBOTは対戦しません。
 - 専用BOTとトークンは、人間アカウントのマイページ→BOT管理で作成します。
 
-## WebUIからの手動1局（未配備）
+## WebUIからの手動1局
 
 Worker版はWebUIの「1局開始」で、明示runごとに最大1局です。次の手動開始は終局記録保存・socket終了・alarm削除後だけ可能で、自動反復しません。同じrunIdの再送は再募集せず、旧runIdの停止も現runへ作用しません。不明・paused状態は次局を開始しません。待機中の停止は退出、対局中の停止は現局完走・保存後に停止します。
 
-既存operator/Host/Origin/CSRF/確認とWebUI→Worker専用HMACを通ります。Worker/WebUIとも既定disabled、認証未設定も拒否します。設定対象と保存先・ローカル検証は [README](README.md) を参照してください。export/binding/migrationはコード宣言のみで、実リソース作成・配備・secret設定・beta接続は行っていません。
+既存operator/Host/Origin/CSRF/確認とWebUI→Worker専用HMACを通ります。Worker/WebUIとも利用可否の環境変数は不要です。既存secretと固定Worker URLの設定は必要で、認証未設定は拒否します。起動・状態取得・復元だけでは募集せず、明示startで1局を予約します。設定対象と保存先・ローカル検証は [README](README.md) を参照してください。flagを除くこの変更では実リソース作成・配備・secret設定・beta接続は行いません。
 
 ## Node runnerの準備と対局
 

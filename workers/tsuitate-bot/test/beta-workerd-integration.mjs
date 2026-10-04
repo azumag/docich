@@ -69,13 +69,13 @@ try {
   // Miniflare v5 needs inline bundle plus resourcePersistencePath for SQLite
   // restart evidence; its v4 converter drops durableObjectsPersist.
   const script = await readFile(output, "utf8");
-  const options = (enabled) => ({ ...convertV4MiniflareOptions({ name: "beta-local-test-only", modules: true, script,
+  const options = (token = "fixture-only-not-a-credential") => ({ ...convertV4MiniflareOptions({ name: "beta-local-test-only", modules: true, script,
     compatibilityDate: "2026-09-08", compatibilityFlags: ["nodejs_compat"],
     durableObjects: { BETA_ARENA: { className: "RuntimeBetaArena", useSQLite: true } },
-    bindings: { BETA_ARENA_ENABLED: enabled, BETA_CONTROL_SECRET: "fixture-only-control-capability-not-credential",
-      TSUITATE_BOT_TOKEN: "fixture-only-not-a-credential", LOCAL_SOCKET_ORIGIN: localOrigin } }),
+    bindings: { BETA_CONTROL_SECRET: "fixture-only-control-capability-not-credential",
+      TSUITATE_BOT_TOKEN: token, LOCAL_SOCKET_ORIGIN: localOrigin } }),
     resourcePersistencePath: join(temporary, "state") });
-  mf = new Miniflare(options("false"));
+  mf = new Miniflare(options(""));
   assert.equal((await json("/status")).state, "stopped");
   assert.equal((await mf.dispatchFetch("http://local-only.test/beta-control", { method: "POST",
     headers: { "Content-Type": "application/json" }, body: '{"action":"start","runId":"one"}' })).status, 401);
@@ -98,11 +98,11 @@ try {
         headers: { ...headers, "X-CSRF-Token": csrf, ...override }, body: JSON.stringify({ action, runId, confirm: true }) });
     return { status: response.status, ...await response.json() };
   }
-  assert.equal((await owner("start", "local-fixture")).error, "arena_disabled");
+  assert.equal((await owner("start", "local-fixture")).error, "token_not_configured");
   assert.equal((await owner("start", "local-fixture", { Authorization: "Bearer fixture-only-viewer-not-credential" })).status, 403);
   assert.equal((await owner("start", "local-fixture", { "X-CSRF-Token": "" })).status, 403);
   assert.equal(connections, 0);
-  await mf.dispose(); mf = new Miniflare(options("true"));
+  await mf.dispose(); mf = new Miniflare(options());
   assert.equal((await json("/wrong-singleton")).code, "not_singleton");
   const starts = await Promise.all([owner("start", "local-fixture"), owner("start", "local-fixture")]);
   assert.ok(starts.every((result) => result.status === 200), JSON.stringify(starts));
@@ -113,7 +113,7 @@ try {
   await json("/alarm"); await json("/alarm"); assert.equal(connections, 1); assert.equal(queueJoins, 1);
   assert.equal((await owner("stop", "local-fixture")).state, "draining");
   const savedActorIds = await mf.listDurableObjectIds("RuntimeBetaArena"); assert.ok(savedActorIds.length > 0);
-  await mf.dispose(); mf = new Miniflare(options("true"));
+  await mf.dispose(); mf = new Miniflare(options());
   assert.deepEqual(await mf.listDurableObjectIds("RuntimeBetaArena"), savedActorIds);
   assert.equal((await owner()).state, "draining"); assert.equal(connections, 1);
   assert.equal((await json("/evidence")).pendingPersisted, true);
@@ -134,7 +134,7 @@ try {
   endedGames.add("local-workerd-game-2"); for (const peer of peers) push(peer, "game:state", view(peer.gameId));
   await until(async () => (await owner()).readyForNextRun === true);
   assert.equal((await json("/evidence")).recordSaved, true);
-  await mf.dispose(); mf = new Miniflare(options("true"));
+  await mf.dispose(); mf = new Miniflare(options());
   assert.equal((await owner()).state, "finished"); assert.equal((await json("/evidence")).recordSaved, true);
   await owner("start", "second-fixture"); await json("/alarm");
   assert.equal(queueJoins, 2); assert.equal(connections, 3);

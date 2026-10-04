@@ -53,7 +53,6 @@ export class DurableArenaController {
   }
 
   ready() {
-    if (this.env.BETA_ARENA_ENABLED !== "true") throw new Error("arena_disabled");
     if (typeof this.env.TSUITATE_BOT_TOKEN !== "string" || !this.env.TSUITATE_BOT_TOKEN.trim()
         || this.env.TSUITATE_BOT_TOKEN.length > 4096) throw new Error("token_not_configured");
   }
@@ -144,7 +143,7 @@ export class DurableArenaController {
     } catch (error) {
       this.session?.close();
       this.session = null;
-      const code = ["arena_disabled", "token_not_configured", "brain_version_unavailable"].includes(error.message)
+      const code = ["token_not_configured", "brain_version_unavailable"].includes(error.message)
         ? error.message : "session_failure";
       await this.pause(code);
     }

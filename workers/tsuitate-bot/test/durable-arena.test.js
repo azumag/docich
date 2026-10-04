@@ -56,7 +56,7 @@ function setup(t, overrides = {}) {
   const sockets = [], events = [], scheduled = [];
   const storage = overrides.storage ?? new Storage();
   const controller = new DurableArenaController({ storage,
-    env: { BETA_ARENA_ENABLED: "true", TSUITATE_BOT_TOKEN: "fixture-only-not-a-credential" },
+    env: { TSUITATE_BOT_TOKEN: "fixture-only-not-a-credential" },
     makeSocket: () => { const socket = new Socket(); sockets.push(socket); return socket; },
     makeSession: (options) => {
       const session = new BetaSession({ ...options, queueSettleMs: 1, pollMs: 60000 });
@@ -83,14 +83,25 @@ async function begin(context) {
   return socket;
 }
 
-test("fresh arena is stopped; disabled or missing token cannot reserve/connect", async (t) => {
-  for (const env of [{}, { BETA_ARENA_ENABLED: "true" }]) {
+test("fresh arena is stopped; missing or invalid token cannot reserve/connect", async (t) => {
+  for (const env of [{}, { TSUITATE_BOT_TOKEN: "" }, { TSUITATE_BOT_TOKEN: " " },
+    { TSUITATE_BOT_TOKEN: 123 }, { TSUITATE_BOT_TOKEN: "x".repeat(4097) }]) {
     const c = setup(t, { env });
     assert.equal((await c.controller.status()).state, "stopped");
     await c.controller.stop(); await c.controller.alarm();
-    await assert.rejects(c.controller.start({ runId: "one" }), /arena_disabled|token_not_configured/);
+    await assert.rejects(c.controller.start({ runId: "one" }), /token_not_configured/);
     assert.equal(c.sockets.length, 0); assert.equal(c.storage.data.size, 0); assert.equal(c.storage.alarm, null);
   }
+});
+
+test("stale false enable setting does not block an explicit run", async (t) => {
+  const c = setup(t, { env: { BETA_ARENA_ENABLED: "false", TSUITATE_BOT_TOKEN: "fixture-only-not-a-credential" } });
+  assert.equal((await c.controller.status()).state, "stopped");
+  await c.controller.alarm(); assert.equal(c.sockets.length, 0);
+  await c.controller.start({ runId: "one" }); await flush(c.controller);
+  assert.equal((await c.controller.status()).state, "queued");
+  assert.equal(c.sockets.length, 1); assert.equal(c.sockets[0].packets("queue:join").length, 1);
+  await assert.rejects(c.controller.start({ runId: "two" }), /run_locked/);
 });
 
 test("concurrent/repeated starts reserve before connecting and never open another run", async (t) => {

@@ -52,7 +52,7 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 // un-deployed BetaArena addition, which needs owner migration approval.
 const baselineWorker = structuredClone(cloudflareConfig.worker);
 delete baselineWorker.exports.BetaArena;
-for (const name of ["BETA_ARENA", "BETA_ARENA_ENABLED", "BETA_CONTROL_SECRET", "TSUITATE_BOT_TOKEN"]) delete baselineWorker.env[name];
+for (const name of ["BETA_ARENA", "BETA_CONTROL_SECRET", "TSUITATE_BOT_TOKEN"]) delete baselineWorker.env[name];
 function normalized(worker = baselineWorker) {
   return convertBuildOutput({
     config: { ...worker, manifest: { mainModule: "index.js" } },
@@ -128,16 +128,31 @@ test("strict comparison still detects changed class and external Worker; externa
   assert.equal(uploadMetadata(external).bindings.find(b => b.name === "GAME_STATE").script_name, "another-worker");
 });
 
-test("new arena upload declares SQLite export, self binding and disabled flag without any secret value", () => {
+test("arena upload keeps SQLite export and self binding without an enable flag or any secret value", () => {
   const local = normalized(cloudflareConfig.worker);
   const metadata = uploadMetadata(local);
   assert.deepEqual(metadata.exports.BetaArena, { type: "durable-object", storage: "sqlite" });
   assert.deepEqual(metadata.bindings.find(b => b.name === "BETA_ARENA"),
     { name: "BETA_ARENA", type: "durable_object_namespace", class_name: "BetaArena" });
-  assert.deepEqual(metadata.bindings.find(b => b.name === "BETA_ARENA_ENABLED"),
-    { name: "BETA_ARENA_ENABLED", type: "plain_text", text: "false" });
+  assert.equal(metadata.bindings.some(b => b.name === "BETA_ARENA_ENABLED"), false);
   assert.deepEqual(metadata.keep_bindings, ["secret_text", "secret_key"]);
   assert.equal(JSON.stringify(metadata).includes("BETA_CONTROL_SECRET"), false);
+});
+
+test("removing the legacy enable var preserves SQLite exports, bindings and secret retention", () => {
+  const previous = structuredClone(cloudflareConfig.worker);
+  previous.env.BETA_ARENA_ENABLED = { type: "text", value: "false" };
+  const oldConfig = normalized(previous), local = normalized(cloudflareConfig.worker);
+  const before = uploadMetadata(oldConfig), after = uploadMetadata(local);
+  assert.deepEqual(after.exports, before.exports);
+  assert.deepEqual(after.keep_bindings, before.keep_bindings);
+  assert.deepEqual(after.bindings, before.bindings.filter(b => b.name !== "BETA_ARENA_ENABLED"));
+  const comparison = getRemoteConfigDiff(oldConfig, local);
+  // Cf classifies any removed setting as destructive; this diff is only the
+  // obsolete plain var, never a storage/class deletion or secret replacement.
+  assert.equal(comparison.nonDestructive, false);
+  assert.match(comparison.diff.toString(), /BETA_ARENA_ENABLED/);
+  assert.doesNotMatch(comparison.diff.toString(), /durable_objects|exports|secret/);
 });
 
 test("absent optional keys reproduce the empty destructive diff", () => {
