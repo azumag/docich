@@ -4,6 +4,7 @@ import { after, test } from "node:test";
 import worker, { GameState, handleWebhook } from "../src/index.js";
 import { chooseObservedMove, parseVisibleSfen } from "../src/bot.js";
 import { BRAIN_VERSION, LEGACY_PROFILE, LINEAR_PROFILE } from "../src/brain/index.js";
+import { profileHash as trainingProfileHash } from "../src/training/index.js";
 import { MAX_BODY_BYTES } from "../src/protocol.js";
 
 const SECRET = "test-only-not-a-deployable-secret";
@@ -13,6 +14,7 @@ const initialFixture = JSON.parse(readFileSync(new URL("initial-request.json", F
 const incrementalFixture = JSON.parse(readFileSync(new URL("incremental-request.json", FIXTURE_DIR), "utf8"));
 const foulFixture = JSON.parse(readFileSync(new URL("foul-request.json", FIXTURE_DIR), "utf8"));
 const relayDropFixture = JSON.parse(readFileSync(new URL("relay-drop-request.json", FIXTURE_DIR), "utf8"));
+const gameEndFixture = JSON.parse(readFileSync(new URL("game-end-request.json", FIXTURE_DIR), "utf8"));
 const encoder = new TextEncoder();
 const originalConsoleLog = console.log;
 console.log = () => {};
@@ -45,13 +47,13 @@ class MemoryStorage {
   }
 }
 
-function stateBinding(stateEnv = {}) {
+function stateBinding(stateEnv = {}, storageFactory = () => new MemoryStorage()) {
   const objects = new Map();
   return {
     objects,
     idFromName: (name) => name,
     get: (id) => {
-      if (!objects.has(id)) objects.set(id, new GameState({ storage: new MemoryStorage() }, stateEnv));
+      if (!objects.has(id)) objects.set(id, new GameState({ storage: storageFactory() }, stateEnv));
       return { fetch: (request) => objects.get(id).fetch(request) };
     },
   };
@@ -100,7 +102,7 @@ async function signedRequest(bodyText, options = {}) {
     "X-Tsuitate-Signature": options.signature ?? `sha256=${signature}`,
     "x-amz-content-sha256": options.bodyHash ?? bodyHash,
   });
-  return new Request("https://worker.test/webhook", { method: "POST", headers, body: bodyText });
+  return new Request(`https://worker.test${options.path ?? "/webhook"}`, { method: "POST", headers, body: bodyText });
 }
 
 async function post(payload, options = {}) {
@@ -108,6 +110,7 @@ async function post(payload, options = {}) {
   const request = await signedRequest(raw, options);
   return handleWebhook(request, options.env ?? env(options.binding), {
     nowSeconds: options.nowSeconds ?? 1_000_000,
+    receivedAt: options.receivedAt,
     rpcBudgetMs: options.rpcBudgetMs,
     requestBudgetMs: options.requestBudgetMs,
   });
@@ -679,6 +682,39 @@ test("pre-profile sessions stay on legacy after deployment with a new default", 
   assert.deepEqual(storage.values.get("session:b:0").brainProfile, LEGACY_PROFILE);
 });
 
+test("an active webhook game refuses a different or mixed brain version and can retry after restoration", async () => {
+  const binding = stateBinding();
+  assert.equal((await post(initialFixture, { binding })).status, 200);
+  const storage = binding.objects.get(initialFixture.gameId).state.storage;
+  const session = storage.values.get("session:b:0");
+  session.brainVersion = "tsuitate-brain-previous";
+  session.brainVersions = ["tsuitate-brain-previous"];
+
+  const held = await post(incrementalFixture, { binding });
+  assert.equal(held.status, 409);
+  assert.deepEqual(await held.json(), { error: "brain_version_mismatch" });
+  assert.equal(storage.values.get("session:b:0").lastPly, 0);
+  assert.equal(storage.values.has("position:b:0:2"), false);
+  assert.equal([...storage.values.keys()].some((key) => key.startsWith("request:") && key.includes(incrementalFixture.requestId)), false);
+
+  session.brainVersion = BRAIN_VERSION;
+  session.brainVersions = [BRAIN_VERSION];
+  const recovered = await post(incrementalFixture, { binding });
+  assert.equal(recovered.status, 200);
+  assert.equal(storage.values.get("session:b:0").lastPly, incrementalFixture.ply);
+
+  storage.values.get("session:b:0").brainVersions = [BRAIN_VERSION, "tsuitate-brain-previous"];
+  const mixed = structuredClone(incrementalFixture);
+  mixed.requestId = `${incrementalFixture.requestId}:mixed-version`;
+  mixed.basePly = incrementalFixture.ply;
+  mixed.ply += 1;
+  mixed.positions = { [String(mixed.ply)]: structuredClone(incrementalFixture.positions[String(incrementalFixture.ply)]) };
+  const mixedHeld = await post(mixed, { binding });
+  assert.equal(mixedHeld.status, 409);
+  assert.deepEqual(await mixedHeld.json(), { error: "brain_version_mismatch" });
+  assert.equal(storage.values.get("session:b:0").lastPly, incrementalFixture.ply);
+});
+
 test("corrupted persisted profiles cannot silently fall back to another strategy", async () => {
   const binding = stateBinding();
   assert.equal((await post(initialFixture, { binding })).status, 200);
@@ -1007,4 +1043,241 @@ test("only an observed own piece is selected and king movement is not guessed", 
   assert.notEqual(destination?.owner, "b");
 });
 
+test("game_end is authenticated, durably archived, and acknowledged with a bodyless 204", async () => {
+  const binding = stateBinding({ BRAIN_PROFILE_JSON: JSON.stringify(LINEAR_PROFILE) });
+  assert.equal((await post(initialFixture, { binding })).status, 200);
+  const receivedAt = "2026-10-04T12:34:56.789Z";
+  const { result: response, records } = await captureDiagnosticLogs(() => post(gameEndFixture, {
+    binding, receivedAt,
+  }));
+  assert.equal(response.status, 204);
+  assert.equal(await response.text(), "");
+  assert.equal(response.headers.get("content-type"), null);
+  const botIdDigest = await sha256Hex(encoder.encode(BOT_ID));
+  const archive = binding.objects.get(gameEndFixture.gameId).state.storage.values.get(`terminal:${botIdDigest}`);
+  assert.equal(archive.kind, "tsuitate_terminal_review");
+  assert.equal(archive.site, "tsuitateviewer.web.app");
+  assert.equal(archive.selfColor, "b");
+  assert.equal(archive.selfSeat, 0);
+  assert.equal(archive.brainVersion, BRAIN_VERSION);
+  assert.equal(archive.profileHash, trainingProfileHash(LINEAR_PROFILE));
+  assert.equal(archive.workerVersion, "version-fixture-123");
+  assert.equal(archive.result, gameEndFixture.result);
+  assert.equal(archive.winner, gameEndFixture.winner);
+  assert.equal(archive.receivedAt, receivedAt);
+  assert.equal(archive.param, gameEndFixture.param);
+  assert.deepEqual(archive.positions, {
+    color: "b", seat: 0, fromPly: 0, throughPly: 0, expectedCount: 1, firstObservedPly: 0,
+  });
+  assert.equal(archive.reviewStatus, "offline_only_reviewable");
+  assert.equal(archive.trainingEligible, false);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].event, "tsuitate_game_end");
+  assert.equal(JSON.stringify(records).includes(gameEndFixture.param), false);
+  assert.equal(JSON.stringify(records).includes("Player%20One"), false);
+  assert.equal(JSON.stringify(records).includes(BOT_ID), false);
+});
 
+test("game_end validates its exact schema but preserves opaque result, winner, and param values", async () => {
+  const drawWithWinner = { ...gameEndFixture, result: "Draw", winner: "b" };
+  const accepted = await post(drawWithWinner);
+  assert.equal(accepted.status, 204);
+  for (const malformed of [
+    { ...gameEndFixture, unexpected: true },
+    { ...gameEndFixture, result: "Timeout" },
+    { ...gameEndFixture, winner: "draw" },
+    { ...gameEndFixture, param: 12 },
+  ]) {
+    const rejected = await post(malformed);
+    assert.equal(rejected.status, 400);
+    assert.deepEqual(await rejected.json(), { error: "invalid_game_end" });
+  }
+  const unknownType = await post({ ...gameEndFixture, type: "other_event" });
+  assert.equal(unknownType.status, 400);
+  assert.deepEqual(await unknownType.json(), { error: "unknown_webhook_type" });
+});
+
+test("same game_end body is idempotent and a conflicting terminal event is classified", async () => {
+  const binding = stateBinding();
+  assert.equal((await post(initialFixture, { binding })).status, 200);
+  assert.equal((await post(gameEndFixture, { binding })).status, 204);
+  assert.equal((await post(gameEndFixture, { binding })).status, 204);
+  const differentEnd = { ...gameEndFixture, result: "Resign", winner: null };
+  const conflict = await post(differentEnd, { binding });
+  assert.equal(conflict.status, 409);
+  assert.deepEqual(await conflict.json(), { error: "game_end_conflict" });
+  const botIdDigest = await sha256Hex(encoder.encode(BOT_ID));
+  const storage = binding.objects.get(gameEndFixture.gameId).state.storage.values;
+  const archive = storage.get(`terminal:${botIdDigest}`);
+  assert.equal(archive.duplicateCount, 1);
+  assert.equal(archive.conflictCount, 1);
+  assert.equal(archive.reviewStatus, "conflicting_terminal_event");
+  assert.equal(storage.get(`terminal-conflict:${botIdDigest}:${await sha256Hex(encoder.encode(JSON.stringify(differentEnd)))}`)
+    .result, "Resign");
+  assert.equal((await post(incrementalFixture, { binding })).status, 409);
+  assert.deepEqual(await (await post(incrementalFixture, { binding })).json(), { error: "game_already_ended" });
+});
+
+test("private offline review export is HMAC protected, read only, paginated, and excluded from training", async () => {
+  const binding = stateBinding();
+  assert.equal((await post(initialFixture, { binding })).status, 200);
+  assert.equal((await post(incrementalFixture, { binding })).status, 200);
+  assert.equal((await post(gameEndFixture, { binding })).status, 204);
+  const state = binding.objects.get(gameEndFixture.gameId).state.storage;
+  const before = [...state.values.keys()].sort();
+  const firstQuery = { type: "offline_review_export", gameId: gameEndFixture.gameId, fromPly: 0, limit: 1 };
+  const { result: first, records } = await captureDiagnosticLogs(() => post(firstQuery, {
+    binding, path: "/offline-review",
+  }));
+  assert.equal(first.status, 200);
+  const pageOne = await first.json();
+  assert.equal(pageOne.archive.param, gameEndFixture.param);
+  assert.equal(pageOne.trainingEligible, false);
+  assert.equal(pageOne.historyIntegrity, "complete");
+  assert.deepEqual(pageOne.positions.map(({ ply }) => ply), [0]);
+  assert.equal(pageOne.nextFromPly, 1);
+  assert.equal(Object.hasOwn(pageOne.archive, "bodyHash"), false);
+  assert.equal(Object.hasOwn(pageOne.archive, "botIdHash"), false);
+  const second = await post({ ...firstQuery, fromPly: 1, limit: 2 }, { binding, path: "/offline-review" });
+  assert.equal(second.status, 200);
+  const pageTwo = await second.json();
+  assert.deepEqual(pageTwo.positions.map(({ ply }) => ply), [1, 2]);
+  assert.equal(pageTwo.nextFromPly, null);
+  assert.deepEqual([...state.values.keys()].sort(), before);
+  assert.equal(records[0].event, "tsuitate_offline_review_export");
+  assert.equal(JSON.stringify(records).includes(gameEndFixture.param), false);
+
+  const denied = await post(firstQuery, { binding, path: "/offline-review", botId: "other-bot" });
+  assert.equal(denied.status, 404);
+  assert.deepEqual(await denied.json(), { error: "offline_review_not_found" });
+  const badSignature = await post(firstQuery, {
+    binding, path: "/offline-review", signature: `sha256=${"0".repeat(64)}`,
+  });
+  assert.equal(badSignature.status, 401);
+});
+
+test("offline review classifies incomplete stored positions without making them training data", async () => {
+  const binding = stateBinding();
+  assert.equal((await post(initialFixture, { binding })).status, 200);
+  assert.equal((await post(incrementalFixture, { binding })).status, 200);
+  const positions = binding.objects.get(gameEndFixture.gameId).state.storage.values;
+  positions.delete("position:b:0:1");
+  assert.equal((await post(gameEndFixture, { binding })).status, 204);
+  const query = { type: "offline_review_export", gameId: gameEndFixture.gameId, fromPly: 0, limit: 3 };
+  const response = await post(query, { binding, path: "/offline-review" });
+  assert.equal(response.status, 200);
+  const exported = await response.json();
+  assert.equal(exported.historyIntegrity, "incomplete");
+  assert.equal(exported.classification, "incomplete_history");
+  assert.equal(exported.trainingEligible, false);
+});
+
+test("unmatched, ambiguous, late, mismatched, and unknown-strategy ends stay outside training", async () => {
+  const cases = [
+    {
+      name: "unmatched bot",
+      setup: async (binding) => { assert.equal((await post(initialFixture, { binding })).status, 200); },
+      botId: "different-bot",
+      expected: "unmatched_bot",
+    },
+    {
+      name: "ambiguous seat",
+      setup: async (binding) => {
+        assert.equal((await post(initialFixture, { binding })).status, 200);
+        const white = structuredClone(initialFixture);
+        white.color = "w";
+        white.requestId = "game-demo:0:w:0";
+        white.positions["0"].sfen = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/9/9/9 w - 1";
+        assert.equal((await post(white, { binding })).status, 200);
+      },
+      expected: "ambiguous_self_seat",
+    },
+    {
+      name: "partial history",
+      setup: async (binding) => {
+        assert.equal((await post(initialFixture, { binding })).status, 200);
+        binding.objects.get(gameEndFixture.gameId).state.storage.values.get("session:b:0").firstObservedPly = 1;
+      },
+      expected: "partial_history",
+    },
+    {
+      name: "mismatched game id",
+      setup: async (binding) => {
+        assert.equal((await post(initialFixture, { binding })).status, 200);
+        binding.objects.get(gameEndFixture.gameId).state.storage.values.get("session:b:0").gameId = "other-game";
+      },
+      expected: "game_id_mismatch",
+    },
+    {
+      name: "unknown brain history",
+      setup: async (binding) => {
+        assert.equal((await post(initialFixture, { binding })).status, 200);
+        const session = binding.objects.get(gameEndFixture.gameId).state.storage.values.get("session:b:0");
+        delete session.brainVersions;
+        delete session.profileHashes;
+      },
+      expected: "unknown_strategy_version",
+    },
+  ];
+  for (const entry of cases) {
+    const binding = stateBinding();
+    await entry.setup(binding);
+    const ended = await post(gameEndFixture, { binding, botId: entry.botId ?? BOT_ID });
+    assert.equal(ended.status, 204, entry.name);
+    const botHash = await sha256Hex(encoder.encode(entry.botId ?? BOT_ID));
+    const archive = binding.objects.get(gameEndFixture.gameId).state.storage.values.get(`terminal:${botHash}`);
+    assert.equal(archive.reviewStatus, entry.expected, entry.name);
+    assert.equal(archive.trainingEligible, false, entry.name);
+  }
+});
+
+test("a different Bot ID cannot append to a seat or claim its terminal record", async () => {
+  const binding = stateBinding();
+  assert.equal((await post(initialFixture, { binding })).status, 200);
+  const crossed = await post(incrementalFixture, { binding, botId: "other-bot" });
+  assert.equal(crossed.status, 409);
+  assert.deepEqual(await crossed.json(), { error: "bot_identity_mismatch" });
+  assert.equal((await post(gameEndFixture, { binding, botId: "other-bot" })).status, 204);
+  const otherHash = await sha256Hex(encoder.encode("other-bot"));
+  assert.equal(binding.objects.get(gameEndFixture.gameId).state.storage.values
+    .get(`terminal:${otherHash}`).reviewStatus, "unmatched_bot");
+});
+
+test("game_end storage failures and RPC timeouts never return an acknowledgement", async () => {
+  class FailArchiveStorage extends MemoryStorage {
+    async transaction(callback) {
+      return super.transaction((tx) => callback({
+        get: tx.get,
+        delete: tx.delete,
+        put: async (key, value) => {
+          if (key.startsWith("terminal:")) throw new Error("private storage failure");
+          return tx.put(key, value);
+        },
+      }));
+    }
+  }
+  const brokenBinding = stateBinding({}, () => new FailArchiveStorage());
+  const failed = await post(gameEndFixture, { binding: brokenBinding });
+  assert.equal(failed.status, 500);
+  assert.deepEqual(await failed.json(), { error: "state_failure" });
+  const botHash = await sha256Hex(encoder.encode(BOT_ID));
+  assert.equal(brokenBinding.objects.get(gameEndFixture.gameId).state.storage.values.has(`terminal:${botHash}`), false);
+
+  const backing = stateBinding();
+  const hangingBinding = {
+    idFromName: backing.idFromName,
+    get(id) {
+      const stub = backing.get(id);
+      return { fetch(request) {
+        if (new URL(request.url).pathname === "/game-end") return new Promise(() => {});
+        return stub.fetch(request);
+      } };
+    },
+  };
+  const timedOut = await post(gameEndFixture, {
+    binding: hangingBinding, rpcBudgetMs: 2, requestBudgetMs: 100,
+  });
+  assert.equal(timedOut.status, 503);
+  assert.deepEqual(await timedOut.json(), { error: "state_timeout" });
+  assert.notEqual(timedOut.status, 204);
+});
