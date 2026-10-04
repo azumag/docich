@@ -191,7 +191,8 @@ def _more_marker_on_next_row(raw_lines: list[str], cols: int) -> bool:
 def _prompt_kind(message: str, *, may_wrap: bool) -> str:
     # Only row zero is the unambiguous message region of the classic TTY.
     # In particular, armor '[' next to monsters 'y'/'n' in the map is NOT a
-    # yes/no question. Never search the whole frame for prompt vocabulary.
+    # yes/no question. Lower pager rows reuse this only to reject input;
+    # they never authorize a question answer from map vocabulary.
     # Do not reconstruct or authorize wrapped save/attack confirmations.
     if may_wrap:
         return "unknown"
@@ -322,6 +323,37 @@ def normalize_tty(
     )
     # Preserve every top-row prompt signal before accepting the next-row marker.
     if more_on_next_row and prompt == "none":
+        prompt = "more"
+    # A multiline pager can overlay the dungeon after the startup gate has
+    # already seen a player and vitals. Its marker is below row one, sometimes
+    # beside the remaining wall/floor cells. Accept only a bare marker or one
+    # separated from those cells by a space, within the visible pre-status
+    # rows. Top-row questions and ambiguous wraps retain their precedence;
+    # arbitrary lower-row prose and map prompt vocabulary are not answers.
+    pager_end = min(status_indexes) if status_indexes else len(lines) - 2
+    marker_row = next((
+        index for index in range(2, pager_end)
+        if re.fullmatch(r"(?:[ .|+#-]* )?--More--", lines[index].strip())
+    ), None)
+    # The standard legacy intro heading ends in ':', which otherwise denotes
+    # an unknown input prompt. Recognize this one upstream dat/quest.lua page
+    # by its complete heading and creation-story anchors, not by punctuation
+    # alone. A question/selection anywhere in that page still blocks it.
+    # The page ends at its marker. The remaining dungeon/status glyphs below
+    # it are not prose (notably armor '[' and the player attribute heading).
+    intro_rows = lines[1:marker_row] if marker_row is not None else []
+    page_has_input = any(
+        _prompt_kind(row.strip(), may_wrap=False) != "none" for row in intro_rows
+    )
+    legacy_intro = (
+        re.fullmatch(r"It is written in the Book of [A-Za-z][A-Za-z '\-]{0,47}:", message.strip())
+        and any(re.match(r"\s*After the Creation,.*\bMoloch\b", row) for row in intro_rows)
+        and any("Marduk the Creator" in row for row in intro_rows)
+    )
+    if marker_row is not None and page_has_input and prompt == "none":
+        prompt = "unknown"
+    if (marker_row is not None and not page_has_input
+            and (prompt == "none" or (prompt == "unknown" and legacy_intro))):
         prompt = "more"
 
     return NethackObservation(
