@@ -181,7 +181,57 @@ def test_worker_timeout_or_output_limit_kills_reaps(monkeypatch,tmp_path,code,se
     assert time.monotonic()-start < 2
 
 
-def test_exited_worker_leader_does_not_leave_stdout_descendant(monkeypatch,tmp_path):
+def descendant_exited(pid, real_popen, timeout=1):
+    """Wait for absent/Z only; an X transition or any live state is not success."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        if sys.platform == 'linux':
+            try:
+                state = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[0]
+            except (FileNotFoundError, ProcessLookupError):
+                return True
+        else:
+            state = real_popen(['ps', '-o', 'stat=', '-p', str(pid)], stdout=subprocess.PIPE,
+                               text=True).communicate(timeout=2)[0].strip()
+        if not state or state.startswith('Z'):
+            return True
+        time.sleep(.01)
+    return False
+
+
+@pytest.mark.parametrize('state', ['R', 'S', 'D', 'T', 'I', 'X'])
+def test_descendant_probe_never_accepts_live_or_x_state(monkeypatch, state):
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    monkeypatch.setattr(os, 'kill', lambda *_: None)
+    monkeypatch.setattr(Path, 'read_text', lambda *_: f'1 (fixture) {state} 0')
+    clock = iter([0, 0, 2])
+    monkeypatch.setattr(time, 'monotonic', lambda: next(clock))
+    monkeypatch.setattr(time, 'sleep', lambda *_: None)
+    assert not descendant_exited(1, None)
+
+
+@pytest.mark.parametrize('terminal', ['absent', 'Z'])
+def test_descendant_probe_waits_through_x_until_absent_or_z(monkeypatch, terminal):
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    calls = []
+    def exists(*_):
+        calls.append(True)
+        if terminal == 'absent' and len(calls) == 2:
+            raise ProcessLookupError
+    monkeypatch.setattr(os, 'kill', exists)
+    states = iter(['X', terminal])
+    monkeypatch.setattr(Path, 'read_text', lambda *_: f'1 (fixture) {next(states)} 0')
+    monkeypatch.setattr(time, 'sleep', lambda *_: None)
+    assert descendant_exited(1, None)
+    assert len(calls) == 2  # X alone was not accepted.
+
+
+@pytest.mark.parametrize('_repeat', range(5))
+def test_exited_worker_leader_does_not_leave_stdout_descendant(monkeypatch,tmp_path,_repeat):
     # A finite fixture also bounds a regression with the old poll()-guarded
     # kill: it would return only when this child closes stdout 3 seconds later.
     child = 'import time;time.sleep(3)'
@@ -202,20 +252,7 @@ def test_exited_worker_leader_does_not_leave_stdout_descendant(monkeypatch,tmp_p
     assert time.monotonic()-started < 1.5
     assert workers[0].returncode == 0  # Leader exited normally before cleanup.
     assert not broker._processes and not broker.receipts
-    pid=int(pid_path.read_text())
-    try:
-        os.kill(pid,0)
-    except ProcessLookupError:
-        return
-    if sys.platform == 'linux':
-        try:
-            state=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[0]
-        except (FileNotFoundError,ProcessLookupError):
-            return
-    else:
-        state=real_popen(['ps','-o','stat=','-p',str(pid)],stdout=subprocess.PIPE,
-                         text=True).communicate(timeout=2)[0].strip()
-    assert not state or state.startswith('Z'), 'stdout descendant survived cleanup'
+    assert descendant_exited(int(pid_path.read_text()), real_popen), 'stdout descendant survived cleanup'
 
 
 @pytest.fixture
