@@ -212,7 +212,8 @@ def decide(turns, *, env: Mapping[str, str], transport=None) -> Decision:
 
 
 def complete(messages, *, api: Callable, env: Mapping[str, str], transport=None,
-             researcher=None, clock=time.monotonic, report: Callable | None = None) -> str:
+             researcher=None, bounded_api=None, clock=time.monotonic,
+             report: Callable | None = None) -> str:
     """The connected caller's only generation entry; no CLI fallback from API.
 
     Research returns supporting material, then the SAME API/persona produces
@@ -225,6 +226,7 @@ def complete(messages, *, api: Callable, env: Mapping[str, str], transport=None,
     if flag != "1" or env.get("DOCICH_ALLOW_REAL_AI") != "1":
         return UNAVAILABLE_REPLY
     started = clock()
+    deadline = started + 45.0
     try:
         turns = project_messages(messages)
     except (ValueError, UnicodeError):
@@ -251,7 +253,9 @@ def complete(messages, *, api: Callable, env: Mapping[str, str], transport=None,
         if decision.scope == "runtime":
             event["research_status"] = "runtime_unavailable"
             return RUNTIME_REPLY
-        budget = min(45.0, max(0.0, 47.0 - (clock() - started)))
+        budget = max(0.0, deadline - clock())
+        if budget <= 0:
+            return UNAVAILABLE_REPLY
         evidence = researcher(turns, decision.scope, env=env, timeout_sec=budget)
         if not evidence.ok:
             event["research_status"] = "unavailable"
@@ -271,7 +275,12 @@ def complete(messages, *, api: Callable, env: Mapping[str, str], transport=None,
         # Keep evidence in a user message before the original final question;
         # research output must not become a later system instruction or replace
         # the canonical persona supplied by the existing caller.
-        answer = api([*messages[:-1], note, messages[-1]])
+        remaining = deadline - clock()
+        if remaining <= 0:
+            return UNAVAILABLE_REPLY
+        answer_messages = [*messages[:-1], note, messages[-1]]
+        answer = (bounded_api(answer_messages, remaining) if bounded_api is not None
+                  else api(answer_messages))
         limit = 880 - len(citations)
         body = answer if len(answer) <= limit else answer[:limit - 1].rstrip() + "…"
         return body + citations

@@ -12,6 +12,7 @@ on:
       - 'tests/test_llm_providers.py'
       - 'tests/test_llm_provider_rate_limit_outputs.py'
       - 'src/docich/reply_research.py'
+      - 'src/docich/reply_research_api.py'
       - 'src/docich/reply_research_bridge.py'
       - 'src/docich/reply_research_egress.py'
       - 'src/docich/reply_research_web.py'
@@ -19,6 +20,7 @@ on:
       - 'src/docich/semantic_decision/**'
       - 'tests/test_reply_routing.py'
       - 'tests/test_reply_research.py'
+      - 'tests/test_reply_research_api.py'
       - 'tests/test_reply_research_web.py'
       - 'tests/test_reply_research_opencode.py'
       - 'tests/test_reply_research_diagnostic.py'
@@ -46,6 +48,7 @@ on:
       - 'tests/test_llm_providers.py'
       - 'tests/test_llm_provider_rate_limit_outputs.py'
       - 'src/docich/reply_research.py'
+      - 'src/docich/reply_research_api.py'
       - 'src/docich/reply_research_bridge.py'
       - 'src/docich/reply_research_egress.py'
       - 'src/docich/reply_research_web.py'
@@ -53,6 +56,7 @@ on:
       - 'src/docich/semantic_decision/**'
       - 'tests/test_reply_routing.py'
       - 'tests/test_reply_research.py'
+      - 'tests/test_reply_research_api.py'
       - 'tests/test_reply_research_web.py'
       - 'tests/test_reply_research_opencode.py'
       - 'tests/test_reply_research_diagnostic.py'
@@ -98,7 +102,7 @@ jobs:
       - name: Offline persistence, conversation and real SDK construction contracts
         env:
           DOCICH_REQUIRE_BWRAP_PROBE: "1"
-        run: PYTHONPATH=src python3 -m pytest -q tests/test_discord_chat.py tests/test_discord_memory.py tests/test_reply_routing.py tests/test_reply_research.py tests/test_reply_research_web.py tests/test_reply_research_opencode.py tests/test_reply_research_diagnostic.py tests/test_ai_generate.py tests/test_llm_providers.py tests/test_llm_provider_rate_limit_outputs.py
+        run: PYTHONPATH=src python3 -m pytest -q tests/test_discord_chat.py tests/test_discord_memory.py tests/test_reply_routing.py tests/test_reply_research.py tests/test_reply_research_api.py tests/test_reply_research_web.py tests/test_reply_research_opencode.py tests/test_reply_research_diagnostic.py tests/test_ai_generate.py tests/test_llm_providers.py tests/test_llm_provider_rate_limit_outputs.py
 
   comment-queue-e2e:
     runs-on: ubuntu-24.04

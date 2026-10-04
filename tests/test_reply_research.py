@@ -177,7 +177,8 @@ def test_sandbox_has_no_host_home_repo_socket_or_credential_argv(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="bubblewrap isolation is Linux-only")
-def test_bwrap_cannot_reach_host_loopback(tmp_path):
+@pytest.mark.parametrize("native", [False, True])
+def test_bwrap_cannot_reach_host_loopback(tmp_path, native):
     bwrap = shutil.which("bwrap")
     if not bwrap:
         pytest.skip("bubblewrap is not installed")
@@ -199,7 +200,7 @@ def test_bwrap_cannot_reach_host_loopback(tmp_path):
         (private_root / name).write_text("SYNTHETIC_NOT_SECRET")
     try:
         argv = r.sandbox_argv(workspace, "opencode/synthetic-model", bwrap, "/usr/bin/opencode",
-                              bridge_script=bridge_script, proxy_socket=proxy_socket)
+                              bridge_script=bridge_script, proxy_socket=proxy_socket, api=native)
         boundary = argv.index("--")
         code = """import socket
 import json
@@ -210,6 +211,28 @@ assert not Path(sys.argv[2]).exists()
 assert not Path("/workspace/source").exists()
 assert not Path("/var/run/docker.sock").exists()
 assert not any(name in os.environ for name in ("DISCORD_TOKEN", "TYPESAFE_API_KEY", "AWS_SECRET_ACCESS_KEY", "CODEX_API_KEY"))
+
+if Path("/tmp/native/docich").is_dir():
+    # Exact public modules execute inside the real namespace; HTTP is synthetic.
+    sys.path.insert(0, "/tmp/native")
+    from docich import discord_chat as chat, reply_research_api as native
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def read(self, limit):
+            return json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": '{"action":"clarify"}'}}],
+                               "usage": {"completion_tokens": 10}}).encode()
+    class Opener:
+        def open(self, request, timeout):
+            assert request.full_url == native.BASE_URL + "/chat/completions"
+            assert json.loads(request.data)["max_tokens"] == 256
+            return Response()
+    chat.build_opener = lambda *handlers: Opener()
+    os.environ["OPENCODE_GO_API_KEY"] = "SYNTHETIC_RESEARCH_ONLY"
+    os.environ["DOCICH_RESEARCH_PROXY"] = os.environ["HTTPS_PROXY"]
+    raw = native.worker("proposal", {"prompt": "synthetic", "timeout": 1, "session": "a" * 32})
+    event = json.loads(raw.splitlines()[0])
+    assert json.loads(event["part"]["text"]) == {"action": "clarify"}
 
 names = [name for _, name in socket.if_nameindex()]
 if names != ["lo"]:
@@ -511,6 +534,16 @@ def test_bridge_drops_namespace_capabilities_before_launch_and_passes_no_parent_
     assert set(config["permission"].values()) == {"deny"}
     assert {"*", "bash", "edit", "task", "read", "webfetch", "websearch"} <= set(config["permission"])
     assert config["snapshot"] is False and config["autoupdate"] is False
+
+    # Native mode gives only the selected research key to the actual fixed
+    # worker. Ambient sibling-provider keys and CLI configuration do not pass.
+    monkeypatch.setattr(bridge.sys, "argv", ["bridge.py", "/usr/bin/python3", "-I", "-B",
+                         "/tmp/native/docich/reply_research_api.py", "proposal"])
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "SYNTHETIC_GO")
+    assert bridge.main() == 0
+    assert set(captured["env"]) == {"PATH", "LANG", "HOME", "DOCICH_RESEARCH_PROXY", "OPENCODE_GO_API_KEY"}
+    assert captured["env"]["OPENCODE_GO_API_KEY"] == "SYNTHETIC_GO"
+    assert captured["env"]["DOCICH_RESEARCH_PROXY"] == "http://127.0.0.1:45678"
 
 
 @pytest.mark.parametrize("scope", ["web", "web_and_code"])

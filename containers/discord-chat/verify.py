@@ -57,7 +57,7 @@ def main():
                  'from pathlib import Path; import importlib.util; '
                  'assert importlib.util.find_spec("pytest") is None; '
                  'assert not Path("/opt/docich/tests").exists(); '
-                 'assert sorted(p.name for p in Path("/opt/docich/src/docich").iterdir()) == ["__init__.py","comment","discord_chat.py","discord_memory.py","reply_research.py","reply_research_bridge.py","reply_research_diagnostic.py","reply_research_egress.py","reply_research_web.py","reply_routing.py","semantic_decision"]; '
+                 'assert sorted(p.name for p in Path("/opt/docich/src/docich").iterdir()) == ["__init__.py","comment","discord_chat.py","discord_memory.py","reply_research.py","reply_research_api.py","reply_research_bridge.py","reply_research_diagnostic.py","reply_research_egress.py","reply_research_web.py","reply_routing.py","semantic_decision"]; '
                  'assert sorted(p.name for p in Path("/opt/docich/src/docich/semantic_decision").iterdir()) == ["__init__.py","diagnostics.py","routes.py","transport.py","validator.py"]; '
                  'assert not Path("/opt/docich/.git").exists(); '
                  'assert not Path("/opt/docich/handoff.md").exists()'])

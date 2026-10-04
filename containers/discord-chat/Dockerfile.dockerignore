@@ -6,6 +6,7 @@
 !src/docich/discord_memory.py
 !src/docich/reply_routing.py
 !src/docich/reply_research.py
+!src/docich/reply_research_api.py
 !src/docich/reply_research_bridge.py
 !src/docich/reply_research_egress.py
 !src/docich/reply_research_web.py
@@ -32,6 +33,7 @@
 !tests/discord_container_probe.py
 !tests/test_reply_routing.py
 !tests/test_reply_research.py
+!tests/test_reply_research_api.py
 !tests/test_reply_research_web.py
 !tests/test_reply_research_diagnostic.py
 !tests/fixtures/reply_routing_canary.json

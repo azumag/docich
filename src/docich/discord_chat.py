@@ -46,6 +46,20 @@ class ChatError(RuntimeError):
     """Only fixed, non-sensitive error descriptions cross this boundary."""
 
 
+def strict_json(raw):
+    """Reject duplicate fields/non-finite constants at native HTTP boundaries."""
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("invalid_json")
+            result[key] = value
+        return result
+    def constant(_):
+        raise ValueError("invalid_json")
+    return json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
+
+
 def read_secret(env: Mapping[str, str], name: str) -> str:
     value = env.get(name, "").strip()
     filename = env.get(name + "_FILE", "").strip()
@@ -159,30 +173,69 @@ class ChatBackend:
             return self._complete_api(messages)
         from .reply_routing import complete
         return complete(messages, api=self._complete_api, env=os.environ,
+                        bounded_api=self._complete_with_deadline,
                         report=lambda event: LOG.info(
                             "discord_chat event=reply_route scope=%s decision=%s research=%s",
                             event["scope"], event["decision_status"], event["research_status"]))
 
-    def _complete_api(self, messages: list[dict[str, str]]) -> str:
+    def _complete_with_deadline(self, messages, remaining):
+        from .reply_research_api import answer_once
+        return answer_once(self.settings, messages, remaining)
+
+    def _complete_api(self, messages: list[dict[str, str]], *, max_tokens=500,
+                      timeout_sec=45, proxy_url=None, strict_proposal=False,
+                      session_id=None) -> str:
         s = self.settings
+        if (type(max_tokens) is not int or not 1 <= max_tokens <= 500
+                or type(timeout_sec) not in (int, float)
+                or not 0 < timeout_sec <= 45):
+            raise ChatError("LLM request failed")
+        # Only the fixed namespace bridge may supply this explicit proxy. The
+        # regular conversation API still ignores all ambient proxy settings.
+        if proxy_url is not None and (not isinstance(proxy_url, str)
+                or not re.fullmatch(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}", proxy_url)
+                or int(proxy_url.rsplit(":", 1)[1]) > 65535):
+            raise ChatError("LLM request failed")
+        if session_id is not None and (not isinstance(session_id, str) or not re.fullmatch(r"[a-f0-9]{32}", session_id)):
+            raise ChatError("LLM request failed")
         body = json.dumps({"model": s.model, "messages": messages,
-                           "stream": False, "max_tokens": 500}, ensure_ascii=False).encode()
+                           "stream": False, "max_tokens": max_tokens}, ensure_ascii=False).encode()
+        if strict_proposal and len(body) > 16384:
+            raise ChatError("LLM request failed")
         headers = {"Content-Type": "application/json"}
         if s.api_key:
             headers["Authorization"] = "Bearer " + s.api_key
+        if session_id is not None:
+            headers.update({"User-Agent": "docich-research/1.0",
+                            "x-opencode-session": session_id})
         request = Request(s.base_url + "/chat/completions", data=body,
                           headers=headers, method="POST")
         try:
-            with build_opener(ProxyHandler({}), _NoRedirect()).open(request, timeout=45) as response:
+            proxy = {"https": proxy_url} if proxy_url else {}
+            with build_opener(ProxyHandler(proxy), _NoRedirect()).open(request, timeout=timeout_sec) as response:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
             if len(raw) > MAX_RESPONSE_BYTES:
                 raise ValueError("oversized response")
-            result = json.loads(raw)
+            result = strict_json(raw) if strict_proposal else json.loads(raw)
+            if strict_proposal and (type(result) is not dict or type(result.get("choices")) is not list
+                                    or len(result["choices"]) != 1):
+                raise ValueError("invalid research response")
             choice = result["choices"][0]
             message = choice["message"]
             if (message.get("tool_calls") is not None or message.get("function_call") is not None
                     or choice.get("finish_reason") in {"tool_calls", "function_call"}):
                 raise ValueError("tool result is not a chat reply")
+            if strict_proposal:
+                usage = result.get("usage", {})
+                content = message["content"]
+                if (choice.get("finish_reason") != "stop" or not isinstance(content, str)
+                        or len(content.encode("utf-8")) > 8192
+                        or type(usage) is not dict
+                        or type(usage.get("completion_tokens")) is not int
+                        or not 0 <= usage["completion_tokens"] <= max_tokens
+                        or type(strict_json(content)) is not dict):
+                    raise ValueError("invalid research proposal")
+                return content  # Never truncate a structured proposal.
             return clean_reply(message["content"])
         except Exception:
             raise ChatError("LLM request failed") from None

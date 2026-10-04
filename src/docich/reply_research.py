@@ -227,7 +227,7 @@ def _opencode_binary(launcher: str) -> str | None:
 
 def sandbox_argv(workspace: Path, model: str, bwrap: str, opencode: str, *,
                  bridge_script: Path, proxy_socket: Path,
-                 python: str = "/usr/bin/python3") -> list[str]:
+                 python: str = "/usr/bin/python3", api: bool = False) -> list[str]:
     """Fixed text-only OpenCode inside mandatory outer filesystem/network isolation.
 
     The engine sees no source checkout or retrieval socket. It proposes bounded
@@ -254,9 +254,16 @@ def sandbox_argv(workspace: Path, model: str, bwrap: str, opencode: str, *,
              "--dir", "/workspace", "--chdir", "/workspace",
              "--ro-bind", str(bridge_script), "/tmp/docich-research-bridge.py",
              "--ro-bind", str(proxy_socket), "/tmp/.docich-egress.sock",
-             "--setenv", "HOME", "/home/research",
-             "--", python, "/tmp/docich-research-bridge.py", opencode,
-             "run", "--format", "json", "--agent", "docich-evidence", "--model", model]
+             "--setenv", "HOME", "/home/research"]
+    if api:
+        from .reply_research_api import PUBLIC_MODULES
+        args += ["--dir", "/tmp/native", "--dir", "/tmp/native/docich"]
+        for name in PUBLIC_MODULES:
+            args += ["--ro-bind", str(Path(__file__).with_name(name)), "/tmp/native/docich/" + name]
+        command = [python, "-I", "-B", "/tmp/native/docich/reply_research_api.py", "proposal"]
+    else:
+        command = [opencode, "run", "--format", "json", "--agent", "docich-evidence", "--model", model]
+    args += ["--", python, "/tmp/docich-research-bridge.py", *command]
     return args
 
 
@@ -297,7 +304,7 @@ def _run(argv, prompt: bytes, env: dict[str, str], timeout: float, *, observer=N
             raise
         output = bytearray()
         pending_events = bytearray()
-        deadline = time.monotonic() + timeout
+        deadline = started + timeout
         try:
             note("cli_running")
             with selectors.DefaultSelector() as selector:
@@ -507,10 +514,18 @@ def research(turns, scope: str, *, env, timeout_sec: float = 45.0, comment_scope
     model, key = env.get("DOCICH_REPLY_OPENCODE_MODEL", ""), env.get("DOCICH_REPLY_OPENCODE_API_KEY", "")
     if not SAFE_MODEL.fullmatch(model) or not key or len(key) > 4096 or any(not 33 <= ord(c) <= 126 for c in key):
         return Evidence("authentication_unavailable")
+    transport = env.get("DOCICH_REPLY_RESEARCH_TRANSPORT", "cli")
+    if transport not in {"cli", "api"}:
+        return Evidence("research_unavailable")
+    native = transport == "api"
+    if native:
+        from .reply_research_api import registered
+        if not registered(env):
+            return Evidence("research_unavailable")
     bwrap = shutil.which("bwrap", path="/usr/bin")
-    launcher = shutil.which("opencode", path="/usr/local/bin:/usr/bin:/snap/bin")
-    engine = _opencode_binary(launcher) if launcher else None
     python = shutil.which("python3", path="/usr/local/bin:/usr/bin")
+    launcher = None if native else shutil.which("opencode", path="/usr/local/bin:/usr/bin:/snap/bin")
+    engine = python if native else _opencode_binary(launcher) if launcher else None
     if not all((bwrap, engine, python)):
         return Evidence("isolation_unavailable")
     from .reply_routing import project_messages, project_research_batch
@@ -538,7 +553,7 @@ def research(turns, scope: str, *, env, timeout_sec: float = 45.0, comment_scope
             bridge = workspace / "bridge.py"
             bridge.write_text(Path(__file__).with_name("reply_research_bridge.py").read_text())
             socket_path = workspace / "egress.sock"
-            argv = sandbox_argv(workspace, model, bwrap, engine, bridge_script=bridge, proxy_socket=socket_path, python=python)
+            argv = sandbox_argv(workspace, model, bwrap, engine, bridge_script=bridge, proxy_socket=socket_path, python=python, api=native)
             # Only an explicitly selected existing research credential, never an auth.json/HOME mount.
             key_name = "OPENCODE_GO_API_KEY" if model.startswith("opencode-go/") else "OPENCODE_API_KEY"
             child_env = {"PATH": "/usr/local/bin:/usr/bin:/snap/bin:/bin", "LANG": "C.UTF-8", key_name: key}
@@ -546,9 +561,13 @@ def research(turns, scope: str, *, env, timeout_sec: float = 45.0, comment_scope
                 broker = WebBroker(workspace / "web-unused.sock", deadline)
                 # Preserve the existing four-argument runner contract when diagnostics are off.
                 run_options = {"diagnostic": diagnostic} if diagnostic is not None else {}
+                model_call = lambda prompt, remaining: _run(argv, prompt.encode(), child_env, remaining, **run_options)
+                if native:
+                    from .reply_research_api import model_call as native_model_call
+                    model_call = native_model_call(argv, child_env, deadline=deadline, runner=_run, diagnostic=diagnostic)
                 return coordinate(turns, scope, source=source, manifest=manifest, broker=broker,
                                   searcher=search_public, deadline=deadline, comment_scopes=comment_scopes,
                                   diagnostic=diagnostic,
-                                  model_call=lambda prompt, remaining: _run(argv, prompt.encode(), child_env, remaining, **run_options))
+                                  model_call=model_call)
     except Exception:
         return Evidence("research_unavailable")

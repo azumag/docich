@@ -172,6 +172,10 @@ def main() -> int:
         "NO_PROXY": "",
         "no_proxy": "",
     }
+    if sys.argv[2:] == ["-I", "-B", "/tmp/native/docich/reply_research_api.py", "proposal"]:
+        env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
+               "HOME": "/home/research", "DOCICH_RESEARCH_PROXY": proxy,
+               "OPENCODE_GO_API_KEY": os.environ.get("OPENCODE_GO_API_KEY", "")}
     thread = threading.Thread(target=server.serve_forever,
                               name="docich-research-loopback", daemon=True)
     thread.start()

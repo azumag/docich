@@ -763,6 +763,7 @@ def test_actual_discord_backend_invokes_router_only_when_enabled(monkeypatch):
     backend = chat.ChatBackend(chat.Settings("https://example.invalid/v1", "synthetic", "SYNTHETIC_TOKEN"))
     calls = []
     monkeypatch.setattr(backend, "_complete_api", lambda m: calls.append(m) or "api")
+    monkeypatch.setattr(backend, "_complete_with_deadline", lambda m, remaining: calls.append(m) or "api")
     monkeypatch.delenv(routing.ENABLE_ENV, raising=False)
     monkeypatch.setattr(routing, "decide", forbidden)
     assert backend.complete(messages()) == "api"
@@ -818,6 +819,7 @@ def test_deletion_during_research_suppresses_delivery(monkeypatch):
     settings = chat.Settings("https://example.invalid/v1", "synthetic", "SYNTHETIC_TOKEN")
     backend = chat.ChatBackend(settings)
     monkeypatch.setattr(backend, "_complete_api", lambda m: "reply")
+    monkeypatch.setattr(backend, "_complete_with_deadline", lambda m, remaining: "reply")
     async def run():
         memory = MemoryStore(None)
         conversation = chat.Conversation(settings, backend, memory)

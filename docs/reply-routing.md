@@ -32,11 +32,25 @@ operatorが既存の調査用認証を `DOCICH_REPLY_OPENCODE_API_KEY`、既存�
 
 OpenCodeは全tool denyの固定 `docich-evidence` agentで、JSON提案だけ返す。bash、edit/write、subagent、skill、任意MCP/pluginを許可しない。builtin websearch/webfetch/readも実行させない。許可される提案は検索語、検索結果候補URL、manifest内ファイルと行範囲、引用選択、確認質問の固定schema。実処理は親controllerが検証後に行う。JSONLのtool lifecycle/error/未完了/重複keyを拒否する。
 
-親controllerは最大8 model rounds、異なる検索2回、本文取得4件、コード読取4回（各80行）、全体45秒。モデルのnotes/「確認済」自己申告は採用しない。成功には親が取得した本文receipt/hash/完全一致引用、またはmanifest hash/実読取行/引用一致を要求する。mixedは両種類が必要。一方のみ確認できた場合は検証済み引用だけをpartialとして保ち、不足を明示する。
+親controllerは最大8 model rounds、異なる検索2回、本文取得4件、コード読取4回（各80行）。Discordの研究分岐は分類開始から研究・最終回答まで45秒の共通deadlineを使い、最終回答も残時間で監督する。API-only分岐の既存動作は維持する。モデルのnotes/「確認済」自己申告は採用しない。成功には親が取得した本文receipt/hash/完全一致引用、またはmanifest hash/実読取行/引用一致を要求する。mixedは両種類が必要。一方のみ確認できた場合は検証済み引用だけをpartialとして保ち、不足を明示する。
+
+## 登録済Goのnative HTTP transport（2026-10-05、opt-in）
+
+`DOCICH_REPLY_RESEARCH_TRANSPORT=api` は既存 `ChatBackend._complete_api` を共用する固定Python workerを、同じbwrap/network namespace/CONNECT bridge内で実行する。unsetは既存`cli`、未知値はfail-closed。CLI不在でもAPI transportは使えるが、bwrap/Pythonの欠落時は裸HTTP workerへfallbackしない。
+
+初期対応は `DOCICH_REPLY_OPENCODE_MODEL=opencode-go/deepseek-v4.1-flash` かつ有効なoperatorの`AI_COMMON_AGENTS`にliteral `opencode-go:deepseek-v4.1-flash` が登録されている場合だけ。未解決chainや他model/providerは拒否する。接続先は固定Go `https://opencode.ai/zen/go/v1/chat/completions`。明示選択された既存research keyだけを渡し、auth.json/HOME/秘密設定を探索しない。新model登録、設定変更、新credentialsはない。
+
+各proposalは送信前に1回枠を予約し、1研究につき最大8 POST、retry/fallback0、`max_tokens=256`、JSON request16KiB/response64KiB/content8KiB。finish_reason=stop、非tool、出力usage上限、重複key/NaN拒否後に既存proposal parserへ接続する。truthful User-Agentとrun内で一定のランダムsessionを使う。CLI側の内部retryをこの8 POST保証に含めない。
+
+namespaceには公開worker/chat/memory/packageの4ファイルだけをread-onlyで追加mountする。snapshot/checkout/DB/persona/host設定は追加mountしない。親controllerが検索・本文取得・コード行読取とreceipt/引用照合を行う契約は維持する。最終回答は同じoperator設定のAPI・元のpersona/messagesで1回だけ実行し、残時間でkill+reapするprivate workerへ渡す。Discord token・memory path・研究key・ambient proxyを回答workerへ継承しない。一般の注入callback利用者はbounded callbackを渡した場合に限り最終回答の壁時計上限を強制できる。
+
+合成fixtureは実`ChatBackend.complete → routing → research(api) → native HTTP → coordinate → broker receipt → quote verification → bounded answer`の接続、invalid body hash/引用/receipt/command/provider失敗時の回答抑止、送信前cap、同じsession、persona保全を検証する。HTTP/model/JEVとbwrap実行をfixtureにしたこの接続検査は意味精度・実provider・本番隔離の成功受入ではない。別のlocalhost HTTP fixtureは実回答workerの1 POST・timeout・終了/reap・限定環境を検査する。Ubuntu CIでは両transportの実bwrap negative probeとnative公開modulesのnamespace内実行を必須にする。
+
+先の本人承認済みGo単発疎通は1 POST/HTTP200/入力34・出力15tokens、API1665ms、reply OKだった。これは直接APIのみで、検索・JEV・persona返信のE2Eではない。承認枠は消費済みで今回の追加有料callは0。IANA公式登録の短い本文を合成fixtureへ使い、RFC broker拒否を回避する検証条件変更は行っていない。実IANA本文取得と有料E2Eは未実施。配信companionのGo API生成対応・rolloutは独立範囲で、この接続だけで配信全体完了にしない。
 
 ## 広いWebの安全条件
 
-旧4host allowlistを撤廃。検索は公式OpenCodeと同じ既存Exa hosted MCPの固定 `https://mcp.exa.ai/mcp` に、認証なし・固定 `web_search_exa` requestを送る。新しい検索キー、有料契約、Google scrapingは追加しない。未確認の契約条件・料金を無料と断言しない。実呼び出しは未実施。
+旧4host allowlistを撤廃。検索は公式OpenCodeと同じ既存Exa hosted MCPの固定 `https://mcp.exa.ai/mcp` に、認証なし・固定 `web_search_exa` requestを送る。新しい検索キー、有料契約、Google scrapingは追加しない。未確認の契約条件・料金を無料と断言しない。後続のkeyless公開preflightは検索1回・RFC本文GET1回で候補を取得したが、本文brokerは拒否しreceiptは得られなかった。拒否原因は旧診断から確定できず、上限・SSRF・charset等の検証を緩和しない。
 
 検索結果は候補選択だけで、snippetを本文根拠にしない。モデルが勝手に提案したURLは検索候補登録なしでは取得不可。本文workerはcredential-freeで固定GETのみ。HTTPS443、認証userinfoなし、秘密queryなし、control/backslashなし。全DNS回答がglobalであることを検査し、multicast/reserved/IPv4-mapped/6to4/Teredoを除外。検査したsockaddrへ直接接続し再解決しない。TLS hostname/証明書を検証、redirectは追わない。
 
