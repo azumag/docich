@@ -112,6 +112,50 @@ def test_more_marker_pushed_to_the_next_row_is_a_more_prompt():
     assert obs.player == (40, 14)
 
 
+@pytest.mark.parametrize("marker", ["--More--", "|.........+ --More--"])
+def test_multiline_pager_above_a_visible_map_is_more(marker):
+    obs = normalize_tty(tty_layout(
+        "An introduction is displayed over the dungeon.",
+        "The adventure begins after this page.",
+        "", marker,
+    ))
+    assert obs.prompt == "more"
+
+
+@pytest.mark.parametrize("message,expected", [
+    ("Really save? [yn] (n)", "yes_no"),
+    ("Really attack the kitten? [yn] (n)", "yes_no"),
+    ("What do you want to drink? [a-z or ?*]", "selection"),
+    ("In what direction?", "direction"),
+    ("Would you like to inspect", "unknown"),
+    ("x" * 79, "unknown"),
+])
+def test_lower_pager_does_not_override_a_question_or_wrapped_message(message, expected):
+    obs = normalize_tty(tty_layout(message, "continued text", "--More--"))
+    assert obs.prompt == expected
+
+
+@pytest.mark.parametrize("marker", [
+    "|.--More--.|", "x --More--", "--More-- y", "--More--?",
+    "|.[yn] --More--", "Read --More--",
+])
+def test_lower_prompt_vocabulary_is_not_a_pager(marker):
+    obs = normalize_tty(tty_layout("You see a room.", "", "", marker))
+    assert obs.prompt == "none"
+
+
+@pytest.mark.parametrize("location", ["status", "scrollback", "clipped_column"])
+def test_pager_outside_the_visible_pre_status_rows_is_ignored(location):
+    lines = tty_layout("You see a room.").splitlines()
+    if location == "status":
+        lines[23] += " --More--"
+    elif location == "scrollback":
+        lines.append("--More--")
+    else:
+        lines[3] = " " * 80 + "--More--"
+    assert normalize_tty("\n".join(lines)).prompt == "none"
+
+
 @pytest.mark.parametrize("message", [
     "Really attack the " + "very " * 12 + "peaceful kitten? [yn] (n)",
     "Would you like to inspect " + "this unusual object " * 2 + "before continuing now",

@@ -323,6 +323,18 @@ def normalize_tty(
     # Preserve every top-row prompt signal before accepting the next-row marker.
     if more_on_next_row and prompt == "none":
         prompt = "more"
+    # A multiline pager can overlay the dungeon after the startup gate has
+    # already seen a player and vitals. Its marker is below row one, sometimes
+    # beside the remaining wall/floor cells. Accept only a bare marker or one
+    # separated from those cells by a space, within the visible pre-status
+    # rows. Top-row questions and ambiguous wraps retain their precedence;
+    # arbitrary lower-row prose and map prompt vocabulary are not answers.
+    pager_end = min(status_indexes) if status_indexes else len(lines) - 2
+    if prompt == "none" and any(
+        re.fullmatch(r"(?:[ .|+#-]* )?--More--", line.strip())
+        for line in lines[2:pager_end]
+    ):
+        prompt = "more"
 
     return NethackObservation(
         raw_text=text,
