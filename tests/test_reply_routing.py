@@ -113,6 +113,47 @@ def test_discord_canary_stops_at_first_overload_without_retry(monkeypatch,capsys
     result=json.loads(capsys.readouterr().out)
     assert len(calls)==result["requests_attempted"]==1 and result["status"]=="overloaded"
     assert result["rubric"]==routing.RUBRIC_VERSION and result["low_confidence_rate"]==0
+    assert result["terminal_failure"] == "overloaded"
+    assert result["requests_succeeded"] == result["cases_measured"] == 0
+
+
+@pytest.mark.parametrize("failure", ["overloaded", "timeout", "invalid_response"])
+def test_discord_canary_last_case_failure_is_incomplete(monkeypatch, capsys, failure):
+    module = _discord_canary_module()
+    monkeypatch.setenv("DOCICH_REPLY_CANARY_CONFIRM", module.CONFIRM)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    monkeypatch.setenv("DOCICH_JEV_ROUTE", "direct")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "SYNTHETIC_KEY")
+    corpus = json.loads(module.CORPUS.read_text())
+    decisions = iter([routing.Decision(row["expected"], "jev", .95) for row in corpus[:-1]]
+                     + [routing.Decision(status=failure)])
+    calls = []
+    def fake_decide(*args, **kwargs):
+        calls.append(1)
+        return next(decisions)
+    monkeypatch.setattr(module, "decide", fake_decide)
+    assert module.main(["--live"]) == 2
+    output = json.loads(capsys.readouterr().out)
+    assert len(calls) == output["requests_attempted"] == 19
+    assert output["requests_succeeded"] == output["cases_measured"] == 18
+    assert output["status"] == output["terminal_failure"] == failure
+    assert output["results"][-1]["status"] == failure
+
+
+@pytest.mark.parametrize("status", ["jev", "low_confidence"])
+def test_discord_canary_completed_measurement_counts_low_confidence(monkeypatch, capsys, status):
+    module = _discord_canary_module()
+    monkeypatch.setenv("DOCICH_REPLY_CANARY_CONFIRM", module.CONFIRM)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    monkeypatch.setenv("DOCICH_JEV_ROUTE", "direct")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "SYNTHETIC_KEY")
+    monkeypatch.setattr(module, "decide", lambda *a, **k: routing.Decision(
+        "api_only" if status == "jev" else None, status, .95 if status == "jev" else .4))
+    assert module.main(["--live"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "complete" and output["terminal_failure"] is None
+    assert output["requests_attempted"] == output["requests_succeeded"] == output["cases_measured"] == 19
+    assert output["low_confidence_rate"] == (1 if status == "low_confidence" else 0)
 
 
 @pytest.mark.parametrize("sample", SOURCE_CONTRASTS["cases"], ids=lambda sample: sample["id"])
@@ -479,7 +520,60 @@ def test_grouped_comment_live_canary_prepares_one_combined_request_per_eight_cas
                and all(key.startswith(("c", "e")) for key in request["questions"])
                for request in requests)
     assert output["requests_attempted"] == 3
+    assert output["requests_succeeded"] == 3
+    assert output["cases_attempted"] == output["cases_measured"] == 19
+    assert output["status"] == "complete" and output["terminal_failure"] is None
     assert output["accuracy_on_available"] == 1
+
+
+@pytest.mark.parametrize("failed_batch", [1, 3])
+@pytest.mark.parametrize("failure", ["overloaded", "timeout", "invalid_response"])
+def test_grouped_canary_terminal_batch_failure_is_incomplete(monkeypatch, capsys, failed_batch, failure):
+    path = Path(__file__).resolve().parents[1] / "scripts/comment_reply_routing_live_canary.py"
+    spec = importlib.util.spec_from_file_location("comment_canary_failure", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("DOCICH_REPLY_CANARY_CONFIRM", module.CONFIRM)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    monkeypatch.setenv("DOCICH_JEV_ROUTE", "direct")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "SYNTHETIC_KEY")
+    batches = []
+    def fake_classify(rows, config, env, state_dir):
+        batches.append(len(rows))
+        details = [{"evidence_status": "low_confidence", "evidence_scope": None,
+                    "evidence_confidence": .4} for row in rows]
+        return rows, {"status": failure if len(batches) == failed_batch else "ok", "rows": details}
+    monkeypatch.setattr(module.jev, "classify", fake_classify)
+    assert module.main(["--live"]) == 2
+    output = json.loads(capsys.readouterr().out)
+    measured = 0 if failed_batch == 1 else 16
+    assert batches == ([8] if failed_batch == 1 else [8, 8, 3])
+    assert output["status"] == output["terminal_failure"] == failure
+    assert output["requests_attempted"] == failed_batch
+    assert output["requests_succeeded"] == failed_batch - 1
+    assert output["cases_measured"] == measured
+    assert output["cases_attempted"] == sum(batches)
+    assert all(row["status"] == failure for row in output["results"][measured:])
+
+
+def test_grouped_canary_low_confidence_is_a_completed_measurement(monkeypatch, capsys):
+    path = Path(__file__).resolve().parents[1] / "scripts/comment_reply_routing_live_canary.py"
+    spec = importlib.util.spec_from_file_location("comment_canary_low_confidence", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("DOCICH_REPLY_CANARY_CONFIRM", module.CONFIRM)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    monkeypatch.setenv("DOCICH_JEV_ROUTE", "direct")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "SYNTHETIC_KEY")
+    monkeypatch.setattr(module.jev, "classify", lambda rows, *a: (rows, {"status": "ok", "rows": [
+        {"evidence_status": "low_confidence", "evidence_scope": None, "evidence_confidence": .4}
+        for row in rows]}))
+    assert module.main(["--live"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "complete" and output["terminal_failure"] is None
+    assert output["requests_attempted"] == output["requests_succeeded"] == 3
+    assert output["cases_attempted"] == output["cases_measured"] == 19
+    assert output["coverage"] == 0 and output["low_confidence_rate"] == 1
 
 
 def forbidden(*args, **kwargs):

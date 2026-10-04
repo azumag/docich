@@ -19,10 +19,6 @@ from docich.semantic_decision.routes import parse_route_chain, resolve_route
 
 CORPUS = Path(__file__).resolve().parents[1] / "tests/fixtures/reply_routing_canary.json"
 CONFIRM = "I_HAVE_APPROVED_POSSIBLE_PROVIDER_COST"
-PROVIDER_FAILURES = frozenset({
-    "missing_key", "timeout", "rate_limited", "network_error", "server_error",
-    "auth_error", "invalid_response", "invalid_config", "http_error", "overloaded",
-})
 
 
 def percentile95(values: list[float]) -> float | None:
@@ -57,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
 
     corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
     rows, latencies = [], []
+    requests_succeeded, terminal_failure = 0, None
     for sample in corpus:
         started = time.perf_counter()
         decision = decide([{"role": "user", "text": sample["text"]}], env=env)
@@ -67,15 +64,22 @@ def main(argv: list[str] | None = None) -> int:
                      "status": decision.status, "confidence": decision.confidence,
                      "latency_ms": elapsed,
                      "correct": decision.status == "jev" and decision.scope == sample["expected"]})
-        if decision.status in PROVIDER_FAILURES:
+        if decision.status in {"jev", "low_confidence"}:
+            requests_succeeded += 1
+        else:
+            terminal_failure = decision.status
             break  # Avoid repeating a provider/configuration failure across the corpus.
 
     answered = [row for row in rows if row["status"] == "jev"]
+    complete = terminal_failure is None and len(rows) == len(corpus)
     output = {
-        "status": "complete" if len(rows) == len(corpus) else rows[-1]["status"],
+        "status": "complete" if complete else (terminal_failure or "unavailable"),
+        "terminal_failure": terminal_failure,
         "rubric": RUBRIC_VERSION,
         "corpus_count": len(corpus),
         "requests_attempted": len(rows),
+        "requests_succeeded": requests_succeeded,
+        "cases_measured": requests_succeeded,
         "coverage": round(len(answered) / len(rows), 4) if rows else 0,
         "accuracy_answered": round(sum(row["correct"] for row in answered) / len(answered), 4) if answered else None,
         "exact_match_all": round(sum(row["correct"] for row in rows) / len(corpus), 4) if corpus else None,
@@ -86,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         "results": rows,
     }
     print(json.dumps(output, ensure_ascii=False, sort_keys=True))
-    return 0 if len(rows) == len(corpus) else 2
+    return 0 if complete else 2
 
 
 if __name__ == "__main__":

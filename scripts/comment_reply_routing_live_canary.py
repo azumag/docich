@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
 
     corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
     outcomes, latencies = [], []
+    requests_succeeded, cases_measured, terminal_failure = 0, 0, None
     with tempfile.TemporaryDirectory(prefix="docich-comment-canary-") as state:
         for start in range(0, len(corpus), jev.MAX_COMMENTS):
             batch = corpus[start:start + jev.MAX_COMMENTS]
@@ -79,6 +80,12 @@ def main(argv: list[str] | None = None) -> int:
                 details = event.get("rows", [])
             except Exception:
                 elapsed, status, details = round((time.perf_counter() - started) * 1000, 3), "invalid_response", []
+            if status == "ok":
+                requests_succeeded += 1
+                cases_measured += len(batch)
+            else:
+                terminal_failure = status if status in FAILURES else "invalid_response"
+                status, details = terminal_failure, []
             latencies.append(elapsed)
             for index, sample in enumerate(batch):
                 detail = details[index] if index < len(details) and isinstance(details[index], dict) else {}
@@ -90,18 +97,22 @@ def main(argv: list[str] | None = None) -> int:
                                  "scope": scope, "status": decision_status,
                                  "confidence": confidence, "batch_latency_ms": elapsed,
                                  "correct": bool(answered and scope == sample["expected"])})
-            if status in FAILURES:
+            if terminal_failure is not None:
                 break
 
     answered = [row for row in outcomes if row["status"] == "jev" and row["scope"] is not None]
     count = len(outcomes)
+    complete = terminal_failure is None and count == len(corpus)
     output = {
-        "status": "complete" if count == len(corpus) else (outcomes[-1]["status"] if outcomes else "unavailable"),
+        "status": "complete" if complete else (terminal_failure or "unavailable"),
+        "terminal_failure": terminal_failure,
         "rubric": RUBRIC_VERSION,
         "combined_request": True,
         "corpus_count": len(corpus),
-        "cases_measured": count,
+        "cases_measured": cases_measured,
+        "cases_attempted": count,
         "requests_attempted": len(latencies),
+        "requests_succeeded": requests_succeeded,
         "coverage": round(len(answered) / count, 4) if count else 0,
         "accuracy_on_available": round(sum(row["correct"] for row in answered) / len(answered), 4) if answered else None,
         "exact_match_all": round(sum(row["correct"] for row in outcomes) / len(corpus), 4) if corpus else None,
@@ -112,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         "results": outcomes,
     }
     print(json.dumps(output, ensure_ascii=False, sort_keys=True))
-    return 0 if count == len(corpus) else 2
+    return 0 if complete else 2
 
 
 if __name__ == "__main__":

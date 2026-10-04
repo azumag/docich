@@ -62,6 +62,8 @@ OpenCodeの外向き経路はnamespace内loopbackの固定CONNECT bridgeだけ�
 
 ### 承認済みv1 canaryと低confidenceの分析
 
+canaryの`complete`/exit 0は全requestの正常応答を条件にする。最終個別ケースや最終combined batchのprovider失敗でも、その失敗を`terminal_failure`に保持してexit 2となり、retryしない。`requests_attempted`と`requests_succeeded`を区別し、`cases_measured`には正常応答したケースだけを数える。低confidenceは測定済みとして数えるが、coverage/意味精度の成功には数えない。
+
 [秘密・identityなし測定記録](evidence/reply-routing-canary-2026-10-04.json) はHEAD c2849616 / reply-evidence-v1で、合成19個別＋8/8/3combinedの3、計22 POSTを一度だけ実施した結果。全POST正常応答、retry/fallbackなし。公開単価でのusage-basedモデル料金概算は$0.00124593（input29,665 tokens）。請求書や残高を照合した値ではない。22回枠は消費済みで再測定しない。
 
 Discordは有効10/19・正解9/10・低confidence9/19、mean332.782ms/p95464.460ms。combinedは有効15/19すべて正解・低confidence4/19、mean421.264ms/p95440.259ms/batch。低confidenceはholdされ、API-onlyやresearchへ昇格していない。
