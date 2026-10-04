@@ -144,6 +144,37 @@ def test_lower_prompt_vocabulary_is_not_a_pager(marker):
     assert obs.prompt == "none"
 
 
+@pytest.mark.parametrize("deity", ["Example", "Example Name", "Example-Name"])
+def test_known_legacy_intro_heading_is_not_an_unknown_colon_prompt(deity):
+    obs = normalize_tty(tty_layout(
+        f"It is written in the Book of {deity}:",
+        "After the Creation, Moloch begins this fixture story.",
+        "This fixture also names Marduk the Creator.",
+        "|.........+ --More--",
+    ))
+    assert obs.prompt == "more"
+
+
+@pytest.mark.parametrize("changed_row,value", [
+    (0, "A different heading:"),
+    (0, "It is written in the Book of Example?"),
+    (0, "It is written in the Book of Example: [yn]"),
+    (1, "Unrecognized page body."),
+    (2, "Unrecognized page body."),
+    (2, "Marduk the Creator asks: continue? [yn]"),
+    (3, ""),
+])
+def test_partial_or_question_bearing_legacy_intro_holds(changed_row, value):
+    page = [
+        "It is written in the Book of Example:",
+        "After the Creation, Moloch begins this fixture story.",
+        "This fixture also names Marduk the Creator.",
+        "--More--",
+    ]
+    page[changed_row] = value
+    assert normalize_tty(tty_layout(*page)).prompt != "more"
+
+
 @pytest.mark.parametrize("location", ["status", "scrollback", "clipped_column"])
 def test_pager_outside_the_visible_pre_status_rows_is_ignored(location):
     lines = tty_layout("You see a room.").splitlines()

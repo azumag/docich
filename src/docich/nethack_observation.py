@@ -330,10 +330,22 @@ def normalize_tty(
     # rows. Top-row questions and ambiguous wraps retain their precedence;
     # arbitrary lower-row prose and map prompt vocabulary are not answers.
     pager_end = min(status_indexes) if status_indexes else len(lines) - 2
-    if prompt == "none" and any(
+    lower_more = any(
         re.fullmatch(r"(?:[ .|+#-]* )?--More--", line.strip())
         for line in lines[2:pager_end]
-    ):
+    )
+    # The standard legacy intro heading ends in ':', which otherwise denotes
+    # an unknown input prompt. Recognize this one upstream dat/quest.lua page
+    # by its complete heading and creation-story anchors, not by punctuation
+    # alone. A question/selection anywhere in that page still blocks it.
+    intro_rows = lines[1:pager_end]
+    legacy_intro = (
+        re.fullmatch(r"It is written in the Book of [A-Za-z][A-Za-z '\-]{0,47}:", message.strip())
+        and any(re.match(r"\s*After the Creation,.*\bMoloch\b", row) for row in intro_rows)
+        and any("Marduk the Creator" in row for row in intro_rows)
+        and not any("?" in row or "[" in row or "]" in row for row in intro_rows)
+    )
+    if lower_more and (prompt == "none" or (prompt == "unknown" and legacy_intro)):
         prompt = "more"
 
     return NethackObservation(

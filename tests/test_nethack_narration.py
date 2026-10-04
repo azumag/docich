@@ -96,14 +96,19 @@ def test_intro_more_with_status_lines_is_advanced():
 
 
 @pytest.mark.parametrize("startup_enabled", [True, False])
-def test_brain_advances_multiline_intro_pager_with_visible_player(startup_enabled):
+@pytest.mark.parametrize("heading", [
+    "An introduction is displayed over the dungeon.",
+    "It is written in the Book of Example:",
+])
+def test_brain_advances_multiline_intro_pager_with_visible_player(startup_enabled, heading):
     configured = game(startup={"enabled": startup_enabled})
     configured.raw["cli"]["rows"] = 24
     brain = build_brain(SimpleNamespace(), configured)
     lines = [""] * 24
-    lines[:4] = [
-        "An introduction is displayed over the dungeon.",
-        "The adventure begins after this page.",
+    lines[:5] = [
+        heading,
+        "After the Creation, Moloch begins this fixture story.",
+        "This fixture also names Marduk the Creator.",
         "|.........+ --More--",
         "|....@....|",
     ]
