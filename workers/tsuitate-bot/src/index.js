@@ -36,6 +36,7 @@ const SAFE_ERROR_CODES = new Set([
   "no_observed_move", "state_failure", "invalid_brain_profile", "invalid_game_end",
   "invalid_offline_review_export", "offline_review_not_found", "game_end_conflict",
   "game_already_ended", "bot_identity_mismatch", "unknown_webhook_type", "brain_version_mismatch",
+  "legacy_identity_unverified",
 ]);
 const AUTH_FAILURE_STAGES = new Set([
   "bot_id_missing", "bot_id_format", "timestamp_missing", "timestamp_format", "timestamp_out_of_range",
@@ -512,8 +513,16 @@ export class GameState {
           if (oldReceipt.requestId !== identity.requestId || oldReceipt.bodyHash !== input.bodyHash) {
             return conflict("request_id_reused");
           }
-          if (oldReceipt.botIdHash !== input.botIdHash) return conflict("request_id_reused");
-          return result(oldReceipt.status, oldReceipt.body, oldReceipt.decision);
+          // bc0f1ac cached ownership refusals although they selected no move. Recheck the seat,
+          // so a verified repair or the legitimate owner can retry the identical request.
+          if (oldReceipt.status !== 409 || oldReceipt.body?.error !== "bot_identity_mismatch") {
+            // Old receipts contain no authenticated owner. Preserve them until ownership is verified.
+            if (typeof oldReceipt.botIdHash !== "string" || !/^[a-f0-9]{64}$/.test(oldReceipt.botIdHash)) {
+              return conflict("legacy_identity_unverified");
+            }
+            if (oldReceipt.botIdHash !== input.botIdHash) return conflict("request_id_reused");
+            return result(oldReceipt.status, oldReceipt.body, oldReceipt.decision);
+          }
         }
 
         let payload;
@@ -539,6 +548,10 @@ export class GameState {
 
         const sessionKey = `session:${payload.color}:${payload.number}`;
         const current = await tx.get(sessionKey);
+        // Never let the first caller claim a legacy seat or reserve a rejected request ID.
+        if (current && (typeof current.botIdHash !== "string" || !/^[a-f0-9]{64}$/.test(current.botIdHash))) {
+          return conflict("legacy_identity_unverified");
+        }
         if (await tx.get(`terminal:${input.botIdHash}`)) {
           outcome = conflict("game_already_ended");
         } else if (payload.game) {
@@ -566,10 +579,11 @@ export class GameState {
           outcome = await this.#append(tx, payload, current, sessionKey, input.botIdHash);
         }
 
-        // A configuration failure has not selected a move or advanced state.
-        // Let the same request recover after its configuration is repaired.
+        // Configuration or ownership refusal has not selected a move or advanced state.
+        // Preserve retries after verified repair, including the legitimate owner's same request ID.
         if ((outcome.status === 503 && outcome.body.error === "invalid_brain_profile")
-            || outcome.body.error === "brain_version_mismatch") return outcome;
+            || outcome.body.error === "brain_version_mismatch"
+            || outcome.body.error === "bot_identity_mismatch") return outcome;
         await tx.put(receiptKey, {
           requestId: identity.requestId,
           bodyHash: input.bodyHash,

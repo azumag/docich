@@ -15,6 +15,7 @@ const incrementalFixture = JSON.parse(readFileSync(new URL("incremental-request.
 const foulFixture = JSON.parse(readFileSync(new URL("foul-request.json", FIXTURE_DIR), "utf8"));
 const relayDropFixture = JSON.parse(readFileSync(new URL("relay-drop-request.json", FIXTURE_DIR), "utf8"));
 const gameEndFixture = JSON.parse(readFileSync(new URL("game-end-request.json", FIXTURE_DIR), "utf8"));
+const legacyStateFixture = JSON.parse(readFileSync(new URL("legacy-game-state-6874345.json", FIXTURE_DIR), "utf8"));
 const encoder = new TextEncoder();
 const originalConsoleLog = console.log;
 console.log = () => {};
@@ -665,7 +666,99 @@ test("repairing an invalid profile lets the exact same request recover without c
   assert.deepEqual(await (await post(initialFixture, { binding })).json(), body);
 });
 
-test("pre-profile sessions stay on legacy after deployment with a new default", async () => {
+test("real 6874345 receipts fail closed without inferring a Bot ID or mutating persisted state", async () => {
+  assert.equal(legacyStateFixture.sourceCommit, "68743456798c6088e66e9b343e7451037c1f55ef");
+  for (const snapshot of [legacyStateFixture.afterInitial, legacyStateFixture.afterIncremental]) {
+    const storage = new MemoryStorage();
+    storage.values = new Map(structuredClone(snapshot.entries));
+    const binding = stateBinding({}, () => storage);
+    const payload = JSON.parse(snapshot.rawBody);
+    assert.equal(snapshot.response.status, 200, "the real old Worker accepted this request");
+    assert.equal(Object.hasOwn(storage.values.get("session:b:0"), "botIdHash"), false);
+    for (const botId of [BOT_ID, "another-authenticated-bot"]) {
+      const held = await captureDiagnosticLogs(() => post(payload, { binding, botId, raw: snapshot.rawBody }));
+      assert.equal(held.result.status, 409);
+      assert.deepEqual(await held.result.json(), { error: "legacy_identity_unverified" });
+      assert.equal(held.records[0].errorCode, "legacy_identity_unverified");
+      assert.deepEqual([...storage.values.entries()], snapshot.entries);
+    }
+    const changed = structuredClone(payload);
+    changed.positions[String(payload.ply)].times.b -= 1;
+    const conflict = await post(changed, { binding });
+    assert.equal(conflict.status, 409);
+    assert.deepEqual(await conflict.json(), { error: "request_id_reused" });
+    assert.deepEqual([...storage.values.entries()], snapshot.entries);
+  }
+});
+
+test("real 6874345 sessions refuse deltas and replacement initial requests without reserving their IDs", async () => {
+  const snapshot = legacyStateFixture.afterInitial;
+  const storage = new MemoryStorage();
+  storage.values = new Map(structuredClone(snapshot.entries));
+  const binding = stateBinding({}, () => storage);
+  const replacement = { ...initialFixture, requestId: `${initialFixture.requestId}:replacement` };
+  for (const payload of [incrementalFixture, replacement]) {
+    for (const botId of [BOT_ID, "another-authenticated-bot"]) {
+      const held = await post(payload, { binding, botId });
+      assert.equal(held.status, 409);
+      assert.deepEqual(await held.json(), { error: "legacy_identity_unverified" });
+      assert.deepEqual([...storage.values.entries()], snapshot.entries);
+    }
+  }
+});
+
+test("legacy refusals allow the identical requests to recover after an explicitly verified local state repair", async () => {
+  // The real bc0f1ac class already persisted an erroneous ownership refusal on this old state.
+  const snapshot = legacyStateFixture.afterDeniedUpgrade;
+  const storage = new MemoryStorage();
+  storage.values = new Map(structuredClone(snapshot.entries));
+  const binding = stateBinding({}, () => storage);
+  const held = await post(incrementalFixture, { binding });
+  assert.equal(held.status, 409);
+  assert.deepEqual(await held.json(), { error: "legacy_identity_unverified" });
+  assert.deepEqual([...storage.values.entries()], snapshot.entries);
+
+  // Test-only trusted repair; the Worker must never derive ownership from the incoming header.
+  const botIdHash = await sha256Hex(encoder.encode(BOT_ID));
+  const receiptKey = `request:${await sha256Hex(encoder.encode(initialFixture.requestId))}`;
+  const session = storage.values.get("session:b:0");
+  const verifiedProfileHash = await trainingProfileHash(session.brainProfile);
+  await storage.transaction(async (tx) => {
+    await tx.put("session:b:0", {
+      ...session, botIdHash, brainVersion: BRAIN_VERSION, brainVersions: [BRAIN_VERSION],
+      profileHashes: [verifiedProfileHash], firstObservedPly: 0,
+    });
+    await tx.put(receiptKey, { ...await tx.get(receiptKey), botIdHash });
+  });
+  const original = legacyStateFixture.afterInitial;
+  const replay = await post(initialFixture, { binding, raw: original.rawBody });
+  assert.equal(replay.status, original.response.status);
+  assert.deepEqual(await replay.json(), original.response.body);
+  const recovered = await post(incrementalFixture, { binding });
+  assert.equal(recovered.status, 200);
+  const move = await recovered.json();
+  assert.deepEqual(await (await post(incrementalFixture, { binding })).json(), move);
+  assert.equal(storage.values.get("session:b:0").lastPly, incrementalFixture.ply);
+  const wrongBotReplay = await post(initialFixture, { binding, botId: "another-authenticated-bot", raw: original.rawBody });
+  assert.equal(wrongBotReplay.status, 409);
+  assert.deepEqual(await wrongBotReplay.json(), { error: "request_id_reused" });
+});
+
+test("a wrong Bot ID cannot reserve a new request ID against its verified seat owner", async () => {
+  const binding = stateBinding();
+  assert.equal((await post(initialFixture, { binding })).status, 200);
+  const storage = binding.objects.get(initialFixture.gameId).state.storage;
+  const before = structuredClone([...storage.values.entries()]);
+  const crossed = await post(incrementalFixture, { binding, botId: "another-authenticated-bot" });
+  assert.equal(crossed.status, 409);
+  assert.deepEqual(await crossed.json(), { error: "bot_identity_mismatch" });
+  assert.deepEqual([...storage.values.entries()], before);
+  const legitimate = await post(incrementalFixture, { binding });
+  assert.equal(legitimate.status, 200);
+  assert.equal(storage.values.get("session:b:0").botIdHash, await sha256Hex(encoder.encode(BOT_ID)));
+});
+
+test("same-version sessions missing a profile stay on legacy after a new default", async () => {
   const binding = stateBinding();
   assert.equal((await post(initialFixture, { binding })).status, 200);
   const storage = binding.objects.get(initialFixture.gameId).state.storage;

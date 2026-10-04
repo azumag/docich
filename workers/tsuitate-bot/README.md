@@ -28,6 +28,7 @@ Cloudflare Workersのbuild設定と検証方法は [BUILDS.md](BUILDS.md) にま
 - 現在受け付けるのは通常の `ついたて` です。`ダーク`、`ついたて5五`、`ついたてリレー` は、モード固有ルールの根拠と検証fixtureが揃うまで `422 unsupported_game_type` で安全に拒否します。
 - 初回は手数0から `ply` まで、差分は `basePly + 1` から `ply` までを連番検証して保存します。差分の `basePly` は保持済みの最後の手数と完全一致する必要があります。
 - Durable Objectのトランザクションで局面履歴、進行位置、直近の指し手、requestIdの応答レシートを一括更新します。同じrequestIdと同じraw本文なら同じ応答を返し、本文が変わっていれば `409` を返します。
+- 旧版 `6874345` のreceipt/sessionには所有Bot情報がありません。このstateの再送・差分・再初期化は `409 legacy_identity_unverified` とし、元の履歴とreceiptを保存したまま新しいreceiptも作りません。受信headerから旧所有Botを推測・割当しません。所有情報が検証済みのsessionへの別Bot要求もreceiptを作らず、正しいBotによる同じrequestIdの再送を妨げません。旧stateの所有情報を確認する移行はこのPRの範囲外です。`bc0f1ac` が保存済みの `bot_identity_mismatch` 拒否receiptは、同じ本文・requestIdの再送で現在のsession所有情報を再検証します。成功receiptや本文不一致の保護は維持します。
 - 任意の `lastCapture` は、Webhook仕様のCSA駒種（例: `FU`）と既存Rustエンジンのwire表現である大文字一文字のSFEN/USI駒種（`P`、`L`、`N`、`S`、`G`、`B`、`R`、`K`）を受け付けます。どちらも固定した駒種コードだけに限定し、省略または空文字列は捕獲なしとして正規化後に省きます。
 - HMAC-SHA256はJSON parseより先に受信raw bytesへ検証します。`X-Tsuitate-Bot-Id` は1〜64文字のASCII IDとして形式検証し、`X-Tsuitate-Timestamp` の差が300秒以上、署名、`x-amz-content-sha256` が合わないリクエストは拒否します。受信IDを固定の設定値と照合しません。本文・署名・secret・Bot IDをログへ出しません。
 - 本文は受信ストリームの段階で256 KiBに制限し、リクエスト全体は7秒で打ち切ります。状態Worker呼び出しは2.5秒で打ち切り、10秒の対局応答枠に余裕を残します。タイムアウト後に再送された同一リクエストは、DO側の保存済みレシートで処理されます。
@@ -52,6 +53,8 @@ npm run test:bundle
 ```
 
 `test:workerd`は`wrangler.runtime.toml`に設定した`2026-09-08`をCLIで上書きせずに使い、同じ要求の同時送信、同じrequestIdの別本文競合、storage書込み例外後のSQLite transaction rollback、timeout応答後のlate commit再送、終局記録と署名付きoffline exportを検証します。設定日のruntimeを起動できない場合はテストを失敗させます。テスト状態は一時ディレクトリへ保存して終了時に削除し、Cloudflareアカウントやリソースにはアクセスしません。この設定はローカル専用で、deployしないでください。
+
+旧state回帰の `test/fixtures/legacy-game-state-6874345.json` は、新形式からfieldを削除したものではなく、commit `68743456798c6088e66e9b343e7451037c1f55ef` の実Workerで初回・差分を処理した保存snapshotです。さらに `bc0f1ac` の実Workerがその旧stateへ拒否receiptを保存する不具合snapshotも含みます。再生成には両commitのWorker sourceを別のローカルdirectoryへ取得し、`node test/fixtures/generate-legacy-state.mjs <6874345-worker-source> <bc0f1ac-worker-source>` を使います。generatorは各版が依存する4つのsource blob SHAを照合し、旧版の再送が200・同一応答であることと、旧版から `bc0f1ac` への移行失敗を確認します。CIは保存済みfixtureを新版へ読み込んで検証し、ネットワークや本番DB移行を使いません。
 
 本番用Cloudflare設定とtest-onlyの両Wrangler設定は `2026-09-08` を使います。GitHub Actionsは依存関係をインストールし、この日付のままCf build、`test:workerd`、生成bundle検証を実行します。`test:bundle`はCfの実生成設定から日付を読み、overrideせずにbundleを検証します。
 
