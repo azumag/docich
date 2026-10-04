@@ -21,6 +21,12 @@ from .hanjuku_manual_cancel import (
 from .trading.soren_output import resolve_soren_root
 
 
+def _serialized(value):
+    # Dict equality equates JSON true/1 and integer/float values. Approval
+    # fingerprints and every snapshot must preserve those type distinctions.
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+
+
 def release(g, *, expected, apply=False, now=time.time):
     """Compare the approved reservation and recheck current owners under locks.
 
@@ -36,13 +42,14 @@ def release(g, *, expected, apply=False, now=time.time):
 
     def observe(path, *, optional=False):
         value = _object(path, optional=optional)
+        serialized = _serialized(value)
         if path in snapshots:
             # A registry can refer to an owner already read above. Preserve
             # its first observation, including absence, and reject drift now.
-            if snapshots[path][0] != value:
+            if snapshots[path][0] != serialized:
                 raise CancelRefused("context_changed")
         else:
-            snapshots[path] = (value, optional)
+            snapshots[path] = (serialized, optional)
         return value
 
     with ExitStack() as held:
@@ -72,9 +79,7 @@ def release(g, *, expected, apply=False, now=time.time):
         released_at = timestamp(now())
         if released_at < selected:
             raise CancelRefused("clock_regressed")
-        fingerprint = hashlib.sha256(json.dumps(
-            request, sort_keys=True, separators=(",", ":"), allow_nan=False,
-        ).encode()).hexdigest()
+        fingerprint = hashlib.sha256(_serialized(request)).hexdigest()
         # Includes selected_at and every reservation field, not just its UUID.
         if fingerprint != expected:
             raise CancelRefused("reservation_changed")
@@ -123,8 +128,14 @@ def release(g, *, expected, apply=False, now=time.time):
         # Recheck every observation immediately before the one atomic write.
         # Cooperating writers use the locks above; changes from another writer
         # still refuse instead of overwriting another reservation or owner.
-        for path, (value, optional) in snapshots.items():
-            if _object(path, optional=optional) != value:
+        for path, (serialized, optional) in snapshots.items():
+            value = _object(path, optional=optional)
+            if path == ledger_path:
+                current_request = value.get("manual_pending")
+                if (not isinstance(current_request, dict)
+                        or hashlib.sha256(_serialized(current_request)).hexdigest() != expected):
+                    raise CancelRefused("reservation_changed")
+            if _serialized(value) != serialized:
                 raise CancelRefused("context_changed")
         result = {"status": "admin-released" if apply else "admin-eligible",
                   "corner": TARGET, "weather_queue_preserved": True,

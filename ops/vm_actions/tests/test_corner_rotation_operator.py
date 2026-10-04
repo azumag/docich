@@ -22,6 +22,33 @@ LEGACY_REF = (
 
 
 class CornerRotationAuthorizeTests(unittest.TestCase):
+    def test_admin_script_excludes_untracked_cwd_package(self):
+        import os
+        import sys
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for package in (root / "src/docich", root / "docich"):
+                package.mkdir(parents=True)
+                (package / "__init__.py").touch()
+            (root / "src/docich/hanjuku_manual_admin_release.py").write_text('print("TRUSTED_TRACKED_MODULE")\n')
+            (root / "docich/hanjuku_manual_admin_release.py").write_text('print("UNTRACKED_CWD_SHADOW")\n')
+            (root / "config").mkdir()
+            (root / "config/docich.soren-live.toml").touch()
+            binaries = root / "bin"
+            binaries.mkdir()
+            (binaries / "python3").symlink_to(sys.executable)
+            git = binaries / "git"
+            git.write_text('#!/bin/bash\ncase "$*" in *rev-parse*) printf "%s\\n" "$ADMIN_RELEASE_SHA" ;; *status*) : ;; esac\n')
+            git.chmod(0o755)
+            env = {**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+                   "DOCICH_PROD_ROOT": str(root), "ADMIN_RELEASE_SHA": "b" * 40,
+                   "ADMIN_RELEASE_EXPECTED": "a" * 64, "ADMIN_RELEASE_MODE": "release"}
+            result = subprocess.run(["bash", str(ROOT / "ops/vm_actions/admin_release_hanjuku_manual.sh")],
+                                    cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "TRUSTED_TRACKED_MODULE\n")
+
     def test_administrative_release_requires_canonical_owner_and_exact_target(self):
         for operation in ("check-admin-release-hanjuku", "admin-release-hanjuku"):
             self.assertEqual(self.run_auth(INPUT_OPERATION=operation, INPUT_EXPECTED_RESERVATION="a" * 64).returncode, 0)
@@ -49,7 +76,7 @@ class CornerRotationAuthorizeTests(unittest.TestCase):
             (root / "src/docich/hanjuku_manual_admin_release.py").touch()
             (root / "config/docich.soren-live.toml").touch()
             python = root / "python3"
-            python.write_text(f'#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
+            python.write_text(f'#!{sys.executable}\nimport json,os,sys\nif sys.argv[1:3] == ["-I", "-c"]: sys.exit(int(os.environ.get("VERSION_PROBE_EXIT", "0")))\nprint(json.dumps(sys.argv[1:]))\n')
             python.chmod(0o755)
             git = root / "git"
             git.write_text('#!/bin/bash\ncase "$*" in *rev-parse*) printf "%s\\n" "${VM_HEAD:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}" ;; *status*) printf "%s" "${VM_DIRTY:-}" ;; esac\n')
@@ -59,7 +86,7 @@ class CornerRotationAuthorizeTests(unittest.TestCase):
                 result = subprocess.run(["bash", str(script)], env={**env, "ADMIN_RELEASE_MODE": mode,
                     "ADMIN_RELEASE_EXPECTED": "a" * 64}, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(json.loads(result.stdout), ["-B", "-m", "docich.hanjuku_manual_admin_release", mode, "--expected", "a" * 64])
+                self.assertEqual(json.loads(result.stdout), ["-B", "-P", "-m", "docich.hanjuku_manual_admin_release", mode, "--expected", "a" * 64])
             for mode, expected, args in (("", "a" * 64, []), ("release;id", "a" * 64, []),
                                          ("release", "", []), ("check", "a" * 64 + ";id", []),
                                          ("release", "a" * 64, ["other-game"])):
@@ -72,6 +99,11 @@ class CornerRotationAuthorizeTests(unittest.TestCase):
                     "ADMIN_RELEASE_EXPECTED": "a" * 64, **changed}, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 25)
                 self.assertEqual(result.stdout, "")
+            unsupported = subprocess.run(["bash", str(script)], env={**env,
+                "ADMIN_RELEASE_MODE": "release", "ADMIN_RELEASE_EXPECTED": "a" * 64,
+                "VERSION_PROBE_EXIT": "25"}, capture_output=True, text=True)
+            self.assertEqual(unsupported.returncode, 25)
+            self.assertEqual(unsupported.stdout, "")
 
     def test_cancel_script_has_only_fixed_argv_and_rejects_injection(self):
         import os

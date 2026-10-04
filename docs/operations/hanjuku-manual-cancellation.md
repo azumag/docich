@@ -99,6 +99,8 @@ EventLogはbest-effortで、receipt削除のtombstoneもないため、保持行
 任意パス・shell・ゲーム入力は受け付けない。既存gatewayのexec搬送は固定reviewed scriptのみ使用する。
 workflowのstatus照合に加え、gateway deployment lock内の固定scriptでもVM HEADとtracked cleanを照合する。
 VM helperの非ゼロexit・SHA不一致はworkflowも失敗とし、原記録を公開しない。
+新admin scriptだけPython 3.11以上をisolated probeで必須確認し、safe-path `-P` でmoduleを起動する。
+PYTHONPATHは配布済みsrcに固定し、untrackedなCWDのdocich packageを読み込まない。非対応版へfallbackしない。
 
 全writer lockを非待機で保持し、waiting理由・automatic pending不在・weather予約保持、
 両retro ownerが不在または別要求のterminalであること、program待機/active owner、
@@ -106,6 +108,8 @@ VM helperの非ゼロexit・SHA不一致はworkflowも失敗とし、原記録�
 新receipt、予約指紋の変化、live/matching owner、lock競合、読取不能、書込前のsnapshot変化は拒否する。
 同じownerをregistry経由で再読する場合も、最初のsnapshot（欠落を含む）を保持する。
 重複再観測時の変更・ファイル生成はその場で拒否し、新しいsnapshotで置き換えない。
+全snapshotは `true` と `1`、`10` と `10.0` を区別するcanonical JSONで照合し、最終ledger再読でも
+manual予約全体の指紋を承認済みexpectedに再照合する。Python dict equalityで一致と見なさない。
 checkはEventLog再走査・資源probe・state作成を行わない。
 
 releaseはrotation ledgerをatomic置換し、対象 `manual_pending` だけを解除する。

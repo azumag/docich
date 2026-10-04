@@ -17,4 +17,7 @@ root="${DOCICH_PROD_ROOT:-/home/ubuntu/docich}"
 [[ "$(git -C "$root" -c core.hooksPath=/dev/null rev-parse HEAD)" == "$sha" ]] || exit 25
 [[ -z "$(git -C "$root" -c core.hooksPath=/dev/null status --porcelain --untracked-files=no --ignore-submodules=all)" ]] || exit 25
 export PYTHONPATH="$root/src"
-exec python3 -B -m docich.hanjuku_manual_admin_release "$mode" --expected "$expected"
+# The version probe itself is isolated from CWD/PYTHONPATH. Unsupported Python
+# fails before loading the operator; never fall back to unsafe module lookup.
+python3 -I -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 25)'
+exec python3 -B -P -m docich.hanjuku_manual_admin_release "$mode" --expected "$expected"

@@ -224,6 +224,101 @@ def test_unchanged_registry_duplicate_keeps_original_snapshot(detached, filename
         assert snapshot(f) == before
 
 
+@pytest.mark.parametrize("field,first,changed", [("extra", 1, True), ("selected_at", 10, 10.0)])
+@pytest.mark.parametrize("apply", [False, True])
+def test_final_read_rechecks_reservation_fingerprint_with_json_types(
+        detached, monkeypatch, field, first, changed, apply):
+    f = detached
+    f.state["manual_pending"][field] = first
+    f.expected = digest(f.state["manual_pending"])
+    f.path.write_text(json.dumps(f.state))
+    original = admin._object
+    calls = 0
+    changed_bytes = None
+
+    def competing_read(path, **kwargs):
+        nonlocal calls, changed_bytes
+        if path == f.path:
+            calls += 1
+            if calls == 2:
+                value = original(path, **kwargs)
+                value["manual_pending"][field] = changed
+                # Python equality accepts these changes, but the approval
+                # fingerprint does not. Preserve the competing ledger write.
+                assert value["manual_pending"] == f.state["manual_pending"]
+                assert digest(value["manual_pending"]) != f.expected
+                path.write_text(json.dumps(value))
+                changed_bytes = path.read_bytes()
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(admin, "_object", competing_read)
+    with pytest.raises(admin.CancelRefused, match="reservation_changed"):
+        run(f, apply=apply)
+    assert calls == 2 and f.path.read_bytes() == changed_bytes
+    assert "manual_admin_releases" not in json.loads(f.path.read_text())
+
+
+@pytest.mark.parametrize("filename", ["retro_corner.json", "retro_corner_manual.json"])
+@pytest.mark.parametrize("first,changed", [(1, True), (10, 10.0)])
+@pytest.mark.parametrize("registry_duplicate", [False, True])
+def test_owner_snapshot_type_changes_refuse_even_when_python_equal(
+        detached, monkeypatch, filename, first, changed, registry_duplicate):
+    f = detached
+    path = f.path.parent / filename
+    owner = {"status": "completed", "game": "nsnake",
+             "rotation_request_id": str(uuid.uuid4()), "extra": first}
+    path.write_text(json.dumps(owner))
+    if registry_duplicate:
+        registry = f.soren / "tmp/state/docich_program_active.json"
+        registry.write_text(json.dumps({"owner_state": str(path)}))
+    before = snapshot(f)
+    original = admin._object
+    calls = 0
+
+    def competing_read(p, **kwargs):
+        nonlocal calls
+        if p == path:
+            calls += 1
+            if calls == 2:
+                path.write_text(json.dumps({**owner, "extra": changed}))
+                assert json.loads(path.read_text()) == owner
+        return original(p, **kwargs)
+
+    monkeypatch.setattr(admin, "_object", competing_read)
+    with pytest.raises(admin.CancelRefused, match="context_changed"):
+        run(f, apply=True)
+    assert calls == 2 and f.path.read_bytes() == before[f.path]
+    assert {p: b for p, b in snapshot(f).items() if p != path} == {
+        p: b for p, b in before.items() if p != path}
+
+
+@pytest.mark.parametrize("first,changed", [(1, True), (10, 10.0)])
+def test_canonical_snapshot_distinguishes_json_types(detached, monkeypatch, first, changed):
+    f = detached
+    path = f.store.canonical.path
+    value = admin._object(path)
+    value["extra"] = first
+    path.write_text(json.dumps(value))
+    before = snapshot(f)
+    original = admin._object
+    calls = 0
+    def competing_read(p, **kwargs):
+        nonlocal calls
+        if p == path:
+            calls += 1
+            if calls == 2:
+                path.write_text(json.dumps({**value, "extra": changed}))
+                assert json.loads(path.read_text()) == value
+        return original(p, **kwargs)
+    monkeypatch.setattr(admin, "_object", competing_read)
+    with pytest.raises(admin.CancelRefused, match="context_changed"):
+        run(f, apply=True)
+    assert calls == 2 and f.path.read_bytes() == before[f.path]
+    assert json.loads(path.read_text())["extra"] == changed
+    assert {p: b for p, b in snapshot(f).items() if p != path} == {
+        p: b for p, b in before.items() if p != path}
+
+
 @pytest.mark.parametrize("lock", ["corner-rotation", "retro-corner", "retro-corner-manual", "game-switch", "program"])
 def test_lock_contention_refuses_and_releases_prior_locks(detached, lock):
     import fcntl
