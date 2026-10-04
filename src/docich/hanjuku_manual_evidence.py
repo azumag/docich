@@ -194,6 +194,8 @@ def project(state_dir, manual, now, *, read_fixed):
     state_dir = Path(state_dir)
     deadline = time.monotonic() + BUDGET_SECONDS
     runtimes = {}
+    generation_conflicts = set()
+    invalid_owner_runtimes = set()
     leases = {}
 
     def add(value, generation):
@@ -201,6 +203,10 @@ def project(state_dir, manual, now, *, read_fixed):
         if runtime is None:
             out["invalid_matching_records"] += 1
             return
+        # Compare against retained identities before the output cap discards
+        # this runtime. The conflict set is bounded by retained generations.
+        if any(g == generation and r != runtime for g, r in runtimes):
+            generation_conflicts.add(generation)
         key = (generation, runtime)
         if key in runtimes:
             return
@@ -257,7 +263,6 @@ def project(state_dir, manual, now, *, read_fixed):
             out["invalid_matching_records"] += 1
             continue
         terminal = isinstance(owner.get("status"), str) and owner["status"] in TERMINAL
-        out["terminal_owners"] += int(terminal)
         identity = owner.get("bot_identity")
         if identity is None:
             identity = owner.get("runtime_identity")
@@ -266,9 +271,18 @@ def project(state_dir, manual, now, *, read_fixed):
                 or not isinstance(lease, str) or not UUID.fullmatch(lease)):
             out["invalid_matching_records"] += 1
             continue
+        if owner.get("bot_runtime_id") != identity.get("runtime_id"):
+            out["invalid_matching_records"] += 1
+            # At most two IDs per fixed owner. Remember both sides so an
+            # inconsistent binding cannot certify either retained runtime.
+            for value in (owner.get("bot_runtime_id"), identity.get("runtime_id")):
+                if isinstance(value, str) and RUNTIME.fullmatch(value):
+                    invalid_owner_runtimes.add(value)
+            continue
         add(identity.get("runtime_id"), identity.get("generation"))
         if _runtime(identity.get("runtime_id"), identity.get("generation")) is None:
             continue
+        out["terminal_owners"] += int(terminal)
         key = (identity.get("generation"), identity.get("runtime_id"))
         if key in runtimes:
             runtimes[key]["owner_terminal"] = terminal and runtimes[key]["owner_terminal"] is not False
@@ -277,11 +291,11 @@ def project(state_dir, manual, now, *, read_fixed):
                 runtimes[key]["owner_identity_conflict"] = True
             leases[key] = lease
     _, canonical_readable, canonical = read_fixed(state_dir, "game_switch.json")
-    counts = {}
-    for generation, _ in runtimes:
-        counts[generation] = counts.get(generation, 0) + 1
     for (generation, runtime), entry in sorted(runtimes.items()):
-        entry.update(generation_conflict=counts[generation] > 1,
+        if runtime in invalid_owner_runtimes:
+            entry.update(owner_identity_conflict=True, owner_terminal=None,
+                         lease_identity_observed=False)
+        entry.update(generation_conflict=generation in generation_conflicts,
                      canonical_tracks=None, resources_released=None)
         if canonical_readable:
             retired = canonical.get("retiring")
@@ -308,7 +322,8 @@ def project(state_dir, manual, now, *, read_fixed):
                     entry["resources_released"] = False
             except Exception:
                 pass
-        elif entry["canonical_tracks"] is True:
+        elif (entry["canonical_tracks"] is True and not entry["generation_conflict"]
+              and not entry["owner_identity_conflict"]):
             entry["resources_released"] = False
         out["generations"].append(entry)
     # The one mandatory unknown represents missing historical coverage. Never

@@ -55,6 +55,7 @@ EventLogは末尾を64KiB×最大16ページで読み、行サイズ64KiB、一�
 予約後の一致するrequested/accepted/queued/terminal記録と、そこから得たnumeric generationを返す。
 runtime/lease/request識別子、ログ本文、argv、env、ファイルパス、例外本文は返さない。
 同一generationの異なるruntimeやownerのlease矛盾は資源解放をunknownにする。
+保持上限後の矛盾も判定に反映し、ownerのbot_runtime_idとidentityのruntime_id不一致・欠落もinvalid/unknownとする。
 資源probeは検証されたruntimeだけに既存の読取専用チェックを使い、canonicalで追跡中なら解放扱いしない。
 tmuxは固定formatのwindow/session一覧だけを最大16KiB・各300msか残り予算で読み、失敗はunknownにする。
 

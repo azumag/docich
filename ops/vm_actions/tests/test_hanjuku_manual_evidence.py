@@ -125,6 +125,33 @@ class ManualPositiveEvidenceTests(unittest.TestCase):
         self.assertTrue(out["log"]["record_truncated"])
         self.assertFalse(out["log"]["scan_complete"])
 
+    def test_ninth_runtime_conflict_marks_retained_generation_unknown(self):
+        rows = [self.row(generation=n, runtime_id=f"g{n}-abcdef") for n in range(1, 9)]
+        for source in ("log", "owner"):
+            with self.subTest(source=source):
+                self.log(*rows, *([self.row(runtime_id="g1-fedcba")] if source == "log" else []))
+                if source == "owner":
+                    self.write("retro_corner_manual.json", {
+                        "rotation_request_id": RID, "game": "hanjuku-hero", "status": "completed",
+                        "bot_runtime_id": "g1-fedcba",
+                        "bot_identity": {"game": "hanjuku-hero", "generation": 1,
+                                         "runtime_id": "g1-fedcba", "lease_id": LEASE}})
+                before = self.snapshot()
+                with mock.patch.object(evidence, "_released_runtime") as probe:
+                    out = self.project()
+                self.assertEqual(len(out["generations"]), 8)
+                self.assertTrue(out["generations_truncated"])
+                first = out["generations"][0]
+                self.assertEqual(first["generation"], 1)
+                self.assertTrue(first["generation_conflict"])
+                self.assertIsNone(first["resources_released"])
+                self.assertTrue(all(row["resources_released"] for row in out["generations"][1:]))
+                self.assertNotIn("g1-abcdef", [call.args[1] for call in probe.call_args_list])
+                self.assertIsNone(out["all_resources_released"])
+                self.assertFalse(out["cancellation_authority"])
+                self.assertGreater(out["resource_attribution_unknown"], 0)
+                self.assertEqual(self.snapshot(), before)
+
     def test_unsafe_identity_foreign_future_and_malformed_shapes_do_not_probe(self):
         self.log(self.row(request_id=OTHER), self.row(timestamp="1970-01-01T00:04:00Z"),
                  self.row(operation=[]), self.row(result=[]), self.row(runtime_id="../private"),
@@ -219,6 +246,7 @@ class ManualPositiveEvidenceTests(unittest.TestCase):
     def test_owner_terminal_lease_attribution_is_bound_to_exact_request(self):
         self.log(self.row())
         owner = {"rotation_request_id": RID, "game": "hanjuku-hero", "status": "completed",
+                 "bot_runtime_id": "g1-abcdef",
                  "bot_identity": {"game": "hanjuku-hero", "generation": 1,
                                   "runtime_id": "g1-abcdef", "lease_id": LEASE}}
         self.write("retro_corner_manual.json", owner)
@@ -235,6 +263,41 @@ class ManualPositiveEvidenceTests(unittest.TestCase):
             out = self.project()
         probe.assert_not_called()
         self.assertTrue(out["generations"][0]["owner_identity_conflict"])
+
+    def test_owner_runtime_binding_mismatch_is_invalid_and_unknown(self):
+        self.log(self.row(), self.row(generation=2, runtime_id="g2-abcdef"))
+        for filename in evidence.OWNER_FILES:
+            for bot_runtime in ("g1-fedcba", "g2-abcdef", None):
+                with self.subTest(filename=filename, bot_runtime=bot_runtime):
+                    for name in evidence.OWNER_FILES:
+                        (self.state / name).unlink(missing_ok=True)
+                    self.write(filename, {
+                        "rotation_request_id": RID, "game": "hanjuku-hero", "status": "completed",
+                        "bot_runtime_id": bot_runtime,
+                        "bot_identity": {"game": "hanjuku-hero", "generation": 1,
+                                         "runtime_id": "g1-abcdef", "lease_id": LEASE}})
+                    before = self.snapshot()
+                    with mock.patch.object(evidence, "_released_runtime") as probe:
+                        out = self.project()
+                    self.assertGreater(out["invalid_matching_records"], 0)
+                    self.assertEqual(out["terminal_owners"], 0)
+                    first = out["generations"][0]
+                    self.assertTrue(first["owner_identity_conflict"])
+                    self.assertIsNone(first["owner_terminal"])
+                    self.assertFalse(first["lease_identity_observed"])
+                    self.assertIsNone(first["resources_released"])
+                    self.assertNotIn("g1-abcdef", [call.args[1] for call in probe.call_args_list])
+                    if bot_runtime == "g2-abcdef":
+                        self.assertTrue(out["generations"][1]["owner_identity_conflict"])
+                        self.assertIsNone(out["generations"][1]["resources_released"])
+                    self.assertIsNone(out["all_resources_released"])
+                    self.assertFalse(out["cancellation_authority"])
+                    self.assertEqual(self.snapshot(), before)
+        self.write("game_switch.json", {"phase": "ready", "active": {
+            "generation": 1, "runtime_id": "g1-abcdef"}, "retiring": []})
+        out = self.project()
+        self.assertTrue(out["generations"][0]["canonical_tracks"])
+        self.assertIsNone(out["generations"][0]["resources_released"])
 
     def test_exact_valid_receipt_is_positive_identity_not_historical_coverage(self):
         from docich.game_switch import GameSwitchStore
