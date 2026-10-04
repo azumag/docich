@@ -344,6 +344,8 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   配備済み `start_all.sh`、gitlinkの期待blob、Bashの固定script FD 255の
   SHA-256を別々に返す。FDは同じ固定script path（削除済みinodeも含む）だけを
   許可し、512KiB上限・regular file・所有user・変更検査を行う。
+  root/tmp/state、procのPID/fdディレクトリはno-followで開き、proc handleを保持して
+  相対readを行う。PID再利用時に別processのFDを読むことはなく、再照合不一致は不明になる。
   PID、start ticks、proc comm、FDのpath/inode、argv、環境変数、本文は出力しない。
   取得前後にunit/PID/start ticks/pidfileを再照合し、変化・終了ならprocess証跡を
   捨てて `identity_changed` とする。欠測・unsafe・FDなしは不明として返す。
@@ -352,6 +354,10 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   同じPIDのexecがあり得るため、`loaded_functions_status` は常に `unverified`。
   `status=observed` もsource証跡の取得だけを意味する。既存shellの起動時attestationは
   存在せず、この診断は追加書込・signal・reload・休止変更を行わない。
+  FDが期待hashと異なる場合は `reason=open_script_differs_expected` として旧source保持等を
+  積極的に示すが、未知のsourceを特定の旧commitやloaded関数の版と断定しない。
+  停止なしの確実なreload経路がない間は、効果測定を自然の次回supervisor起動まで待つ。
+  この診断を理由にhotpatch・kill・service restartで適用を強制しない。
 - webui: `docich-webui.service` の固定 projection と「配信 UI がデプロイ済み UI と一致するか」の観測。
   `unit_file`（unit ファイル有無）、`unit_active` / `unit_enabled`（`systemctl --user is-active /
   is-enabled`）、`main_pid` / `n_restarts`（`systemctl --user show`、再起動ループの検出用）、

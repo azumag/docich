@@ -2098,11 +2098,17 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha, expected_code=Non
     return result
 
 
-def _supervisor_read(path, limit):
+def _supervisor_directory(path, dir_fd=None):
+    flags = (os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+             | getattr(os, "O_CLOEXEC", 0))
+    return os.open(path, flags, dir_fd=dir_fd)
+
+
+def _supervisor_read(path, limit, dir_fd=None):
     """Bounded regular-file read; never follow a state/metadata symlink."""
     flags = (os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
              | getattr(os, "O_CLOEXEC", 0))
-    fd = os.open(path, flags)
+    fd = os.open(path, flags, dir_fd=dir_fd)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ValueError("unsafe metadata")
@@ -2130,11 +2136,10 @@ def _supervisor_unit_pid():
     return None
 
 
-def _supervisor_process_start(proc_root, pid):
-    directory = proc_root / str(pid)
-    if directory.stat().st_uid != os.getuid():
+def _supervisor_process_start(proc_root, pid, process_fd):
+    if os.fstat(process_fd).st_uid != os.getuid():
         raise ValueError("foreign process")
-    data = _supervisor_read(directory / "stat", 4096)
+    data = _supervisor_read("stat", 4096, dir_fd=process_fd)
     # comm can itself contain ')' or whitespace; never emit it.
     if not data.startswith(str(pid).encode() + b" ("):
         raise ValueError("invalid process")
@@ -2147,7 +2152,7 @@ def _supervisor_process_start(proc_root, pid):
     return ticks
 
 
-def _supervisor_script_fingerprint(path, expected_fd_target=None):
+def _supervisor_script_fingerprint(path, expected_fd_target=None, dir_fd=None):
     """Hash only fixed start_all.sh or Bash's validated script FD 255.
 
     Opening a Linux /proc FD creates a separate read description: do not seek
@@ -2157,10 +2162,10 @@ def _supervisor_script_fingerprint(path, expected_fd_target=None):
     if expected_fd_target is None:
         flags |= getattr(os, "O_NOFOLLOW", 0)
     else:
-        target = os.readlink(path)
+        target = os.readlink(path, dir_fd=dir_fd)
         if target not in (expected_fd_target, expected_fd_target + " (deleted)"):
             raise ValueError("unexpected script descriptor")
-    fd = os.open(path, flags)
+    fd = os.open(path, flags, dir_fd=dir_fd)
     try:
         before = os.fstat(fd)
         if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
@@ -2169,13 +2174,13 @@ def _supervisor_script_fingerprint(path, expected_fd_target=None):
         signature = lambda info: (info.st_dev, info.st_ino, info.st_size,
                                   info.st_mtime_ns, info.st_ctime_ns)
         if expected_fd_target is not None and (
-                os.readlink(path) != target
-                or signature(before) != signature(os.stat(path))):
+                os.readlink(path, dir_fd=dir_fd) != target
+                or signature(before) != signature(os.stat(path, dir_fd=dir_fd))):
             raise ValueError("descriptor changed")
         digest = hashlib.sha256()
         total = 0
         while True:
-            chunk = os.read(fd, 64 * 1024)
+            chunk = os.read(fd, min(64 * 1024, 512 * 1024 + 1 - total))
             if not chunk:
                 break
             total += len(chunk)
@@ -2183,9 +2188,10 @@ def _supervisor_script_fingerprint(path, expected_fd_target=None):
                 raise ValueError("oversized script")
             digest.update(chunk)
         if (signature(before) != signature(os.fstat(fd))
-                or signature(before) != signature(os.stat(path, follow_symlinks=expected_fd_target is not None))):
+                or signature(before) != signature(os.stat(path, dir_fd=dir_fd,
+                    follow_symlinks=expected_fd_target is not None))):
             raise ValueError("script changed")
-        if expected_fd_target is not None and os.readlink(path) != target:
+        if expected_fd_target is not None and os.readlink(path, dir_fd=dir_fd) != target:
             raise ValueError("descriptor changed")
         return digest.hexdigest(), int(before.st_mtime), int(before.st_ctime)
     finally:
@@ -2200,7 +2206,6 @@ def _collect_supervisor_identity(soren, expected_sha, proc_root=Path("/proc")):
     without changing process start time. No signal or runtime write is used.
     """
     source = Path(soren).absolute() / "start_all.sh"
-    pidfile = Path(soren) / "tmp/state/start_all.pid"
     expected = _stream_title_sync_git_blob_sha256(
         PROD_ROOT / "games/soviet_now", expected_sha, "start_all.sh"
     )
@@ -2213,16 +2218,24 @@ def _collect_supervisor_identity(soren, expected_sha, proc_root=Path("/proc")):
         "identity_stable": None, "process_started_at": None,
         "deployed_script_mtime": None, "deployed_script_ctime": None,
     }
+    handles = []
+    def pin(path, dir_fd=None):
+        fd = _supervisor_directory(path, dir_fd)
+        handles.append(fd)
+        return fd
     try:
-        digest, mtime, ctime = _supervisor_script_fingerprint(source)
-        result.update(deployed_script_sha256=digest, deployed_script_mtime=mtime,
-                      deployed_script_ctime=ctime)
-        if expected:
-            result["deployed_matches_expected"] = digest == expected
-    except (OSError, ValueError):
-        pass
-    try:
-        value = _supervisor_read(pidfile, 32).strip()
+        root_fd = pin(soren)
+        try:
+            digest, mtime, ctime = _supervisor_script_fingerprint("start_all.sh", dir_fd=root_fd)
+            result.update(deployed_script_sha256=digest, deployed_script_mtime=mtime,
+                          deployed_script_ctime=ctime)
+            if expected:
+                result["deployed_matches_expected"] = digest == expected
+        except (OSError, ValueError):
+            pass
+        tmp_fd = pin("tmp", root_fd)
+        state_fd = pin("state", tmp_fd)
+        value = _supervisor_read("start_all.pid", 32, dir_fd=state_fd).strip()
         if not re.fullmatch(rb"[1-9][0-9]{0,9}", value):
             return result
         pid = int(value)
@@ -2235,8 +2248,11 @@ def _collect_supervisor_identity(soren, expected_sha, proc_root=Path("/proc")):
             result["reason"] = "unit_pid_mismatch"
             return result
         result["reason"] = "process_unavailable"
-        started = _supervisor_process_start(proc_root, pid)
-        executable = os.readlink(proc_root / str(pid) / "exe")
+        # A held /proc/PID directory cannot turn into a recycled PID's
+        # directory. All process reads below are relative to this handle.
+        process_fd = pin(proc_root / str(pid))
+        started = _supervisor_process_start(proc_root, pid, process_fd)
+        executable = os.readlink("exe", dir_fd=process_fd)
         if Path(executable).name != "bash":
             result["reason"] = "not_bash"
             return result
@@ -2249,16 +2265,25 @@ def _collect_supervisor_identity(soren, expected_sha, proc_root=Path("/proc")):
             pass
         result["reason"] = "script_fd_unavailable"
         try:
+            script_dir_fd = pin("fd", process_fd)
             digest, _, _ = _supervisor_script_fingerprint(
-                proc_root / str(pid) / "fd/255", str(source)
+                "255", str(source), dir_fd=script_dir_fd
             )
             result["open_script_sha256"] = digest
         except (OSError, ValueError):
             pass
         try:
-            stable = (_supervisor_process_start(proc_root, pid) == started
-                      and _supervisor_read(pidfile, 32).strip() == value
+            current_fd = pin(proc_root / str(pid))
+            stable = (_supervisor_process_start(proc_root, pid, process_fd) == started
+                      and _supervisor_process_start(proc_root, pid, current_fd) == started
+                      and os.fstat(process_fd).st_ino == os.fstat(current_fd).st_ino
+                      and os.readlink("exe", dir_fd=process_fd) == executable
+                      and _supervisor_read("start_all.pid", 32, dir_fd=state_fd).strip() == value
                       and _supervisor_unit_pid() == pid)
+            if stable and result["open_script_sha256"] is not None:
+                stable = (_supervisor_script_fingerprint(
+                    "255", str(source), dir_fd=script_dir_fd
+                )[0] == result["open_script_sha256"])
         except (OSError, ValueError):
             stable = False
         if not stable:
@@ -2270,8 +2295,13 @@ def _collect_supervisor_identity(soren, expected_sha, proc_root=Path("/proc")):
             result.update(status="observed", reason="source_evidence_only")
             if expected:
                 result["open_script_matches_expected"] = result["open_script_sha256"] == expected
+                if not result["open_script_matches_expected"]:
+                    result["reason"] = "open_script_differs_expected"
     except (OSError, ValueError):
         pass
+    finally:
+        for fd in reversed(handles):
+            os.close(fd)
     return result
 
 

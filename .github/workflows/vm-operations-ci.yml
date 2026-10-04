@@ -45,7 +45,13 @@ jobs:
         with:
           persist-credentials: false
           submodules: false
+      - name: Install fixed test requirements
+        run: python3 -m pip install -r requirements-test.txt
       - run: python3 -m unittest discover -s ops/vm_actions/tests -v
+      - name: Fixed supervisor identity (Linux proc and local Bash only)
+        env:
+          PYTHONPATH: src
+        run: python3 -m pytest -ra -v ops/vm_actions/tests/test_supervisor_identity_diagnostics.py
       - name: Validate parent-owned operations brief (private handoff stays local)
         run: python3 ops/vm_actions/ops_brief.py check-artifact
       - run: python3 -m unittest discover -s ops/self_repair/tests -v

@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import selectors
 from pathlib import Path
 from unittest import mock
 
@@ -68,13 +69,15 @@ def test_deleted_old_script_is_distinct_from_current_disk(fixture, tmp_path):
     descriptor.unlink()
     descriptor.symlink_to(old)
     real_readlink = module.os.readlink
-    def readlink(path):
-        return str(soren / "start_all.sh") + " (deleted)" if Path(path) == descriptor else real_readlink(path)
+    def readlink(path, dir_fd=None):
+        return (str(soren / "start_all.sh") + " (deleted)" if path == "255"
+                else real_readlink(path, dir_fd=dir_fd))
     with mock.patch.object(module.os, "readlink", side_effect=readlink):
         result = collect(fixture)
     assert result["deployed_script_sha256"] == expected
     assert result["open_script_sha256"] == hashlib.sha256(old.read_bytes()).hexdigest()
     assert result["open_script_matches_expected"] is False
+    assert result["reason"] == "open_script_differs_expected"
     assert result["loaded_functions_status"] == "unverified"
 
 
@@ -110,7 +113,7 @@ def test_identity_change_discards_process_evidence(fixture, change):
     module, soren, proc, _ = fixture
     original = module._supervisor_process_start
     calls = 0
-    def start(root, pid):
+    def start(root, pid, process_fd):
         nonlocal calls
         calls += 1
         if calls == 2:
@@ -120,7 +123,7 @@ def test_identity_change_discards_process_evidence(fixture, change):
                 (soren / "tmp/state/start_all.pid").write_text("4243\n")
             if change == "exit":
                 raise FileNotFoundError("PRIVATE disappearance")
-        return original(root, pid)
+        return original(root, pid, process_fd)
     with mock.patch.object(module, "_supervisor_process_start", side_effect=start):
         if change == "unit":
             with mock.patch.object(module, "_supervisor_unit_pid", side_effect=[4242, 4243]):
@@ -182,6 +185,26 @@ def test_script_mutation_during_hash_is_rejected(fixture):
             module._supervisor_script_fingerprint(script)
 
 
+def test_source_growth_never_reads_past_fixed_limit_plus_sentinel(fixture):
+    module, soren, _, _ = fixture
+    script = soren / "start_all.sh"
+    script.write_bytes(b"x" * (512 * 1024))
+    read = module.os.read
+    total = 0
+    def grow(fd, length):
+        nonlocal total
+        data = read(fd, length)
+        if total == 0:
+            with script.open("ab") as target:
+                target.write(b"x" * (512 * 1024))
+        total += len(data)
+        return data
+    with mock.patch.object(module.os, "read", side_effect=grow):
+        with pytest.raises(ValueError):
+            module._supervisor_script_fingerprint(script)
+    assert total <= 512 * 1024 + 1
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="requires Linux /proc; synthetic fixtures cover other hosts")
 def test_proc_fd_hash_does_not_move_original_file_offset(fixture):
     module, soren, _, expected = fixture
@@ -196,6 +219,88 @@ def test_proc_fd_hash_does_not_move_original_file_offset(fixture):
         assert os.lseek(fd, 0, os.SEEK_CUR) == 5
     finally:
         os.close(fd)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires a live Linux Bash /proc entry")
+def test_live_linux_bash_retains_deleted_old_script(tmp_path):
+    spec = importlib.util.spec_from_file_location("live_identity", ROOT / "ops/vm_actions/collect_diagnostics.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    soren = tmp_path / "runtime"
+    (soren / "tmp/state").mkdir(parents=True)
+    script = soren / "start_all.sh"
+    old = b"identity_probe() { printf '%s\\n' OLD; }\nprintf 'READY\\n'\nread -r token\nidentity_probe\n"
+    new = old.replace(b"OLD", b"NEW")
+    script.write_bytes(old)
+    child = subprocess.Popen(["/bin/bash", str(script)], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(child.stdout, selectors.EVENT_READ)
+            assert selector.select(timeout=3), "local Bash did not become ready"
+        assert child.stdout.readline() == b"READY\n"
+        (soren / "tmp/state/start_all.pid").write_text(str(child.pid))
+        replacement = soren / "replacement"
+        replacement.write_bytes(new)
+        os.replace(replacement, script)
+        with mock.patch.object(module, "_supervisor_unit_pid", return_value=child.pid), \
+                mock.patch.object(module, "_stream_title_sync_git_blob_sha256",
+                                  return_value=hashlib.sha256(new).hexdigest()):
+            result = module._collect_supervisor_identity(soren, "a" * 40)
+        assert result["status"] == "observed"
+        assert result["identity_stable"] is True
+        assert result["process_started_at"] is not None
+        assert result["deployed_matches_expected"] is True
+        assert result["open_script_sha256"] == hashlib.sha256(old).hexdigest()
+        assert result["reason"] == "open_script_differs_expected"
+        assert result["loaded_functions_status"] == "unverified"
+        output, _ = child.communicate(input=b"continue\n", timeout=3)
+        assert output == b"OLD\n"
+    finally:
+        if child.poll() is None:
+            child.terminate()  # only this test's local fixture process
+            child.communicate(timeout=3)
+
+
+def test_pid_reuse_never_redirects_fd_read_to_replacement_process(fixture):
+    module, soren, proc, _ = fixture
+    original_start = module._supervisor_process_start
+    original_fingerprint = module._supervisor_script_fingerprint
+    changed = False
+    def start(root, pid, process_fd):
+        nonlocal changed
+        ticks = original_start(root, pid, process_fd)
+        if not changed:
+            changed = True
+            (proc / "4242").rename(proc / "retired")
+            (proc / "4242/fd").mkdir(parents=True)
+            (proc / "4242/exe").symlink_to("/usr/bin/bash")
+            data = (proc / "retired/stat").read_text().replace("1000", "2000")
+            (proc / "4242/stat").write_text(data)
+            (proc / "4242/fd/255").symlink_to(soren / "start_all.sh")
+        return ticks
+    def fingerprint(path, expected_fd_target=None, dir_fd=None):
+        if path == "255":
+            assert os.fstat(dir_fd).st_ino == (proc / "retired/fd").stat().st_ino
+        return original_fingerprint(path, expected_fd_target, dir_fd)
+    with mock.patch.object(module, "_supervisor_process_start", side_effect=start), \
+            mock.patch.object(module, "_supervisor_script_fingerprint", side_effect=fingerprint):
+        result = collect(fixture)
+    assert result["reason"] == "identity_changed"
+    assert result["open_script_sha256"] is None
+
+
+@pytest.mark.parametrize("directory", ["tmp", "state", "process", "fd"])
+def test_directory_symlinks_are_not_followed(fixture, directory):
+    _, soren, proc, _ = fixture
+    path = {"tmp": soren / "tmp", "state": soren / "tmp/state",
+            "process": proc / "4242", "fd": proc / "4242/fd"}[directory]
+    moved = path.with_name(path.name + "-moved")
+    path.rename(moved)
+    path.symlink_to(moved, target_is_directory=True)
+    result = collect(fixture)
+    assert result["status"] == "unavailable"
+    assert result["open_script_sha256"] is None
 
 
 @pytest.mark.parametrize("case", ["missing", "foreign_target", "fifo", "oversized"])
@@ -244,6 +349,19 @@ def test_unit_query_has_only_fixed_mainpid_property(fixture):
         assert real._supervisor_unit_pid() == 4242
     assert run.call_args.args[0] == ["systemctl", "show", "soren-runtime.service", "--property=MainPID", "--value"]
     assert run.call_args.kwargs["timeout"] == 2
+
+
+@pytest.mark.parametrize("failure", ["timeout", "missing", "failed", "zero", "garbage", "oversized"])
+def test_fixed_unit_query_failures_return_unknown(failure):
+    spec = importlib.util.spec_from_file_location("failed_identity", ROOT / "ops/vm_actions/collect_diagnostics.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    output = {"zero": b"0", "garbage": b"PRIVATE arguments", "oversized": b"1" * 1000}.get(failure, b"4242")
+    error = (subprocess.TimeoutExpired("systemctl", 2) if failure == "timeout"
+             else FileNotFoundError("PRIVATE") if failure == "missing" else None)
+    with mock.patch.object(module.subprocess, "run", side_effect=error,
+                           return_value=mock.Mock(returncode=1 if failure == "failed" else 0, stdout=output)):
+        assert module._supervisor_unit_pid() is None
 
 
 @pytest.mark.parametrize("case", ["zombie", "foreign_user", "not_bash", "bad_stat", "missing_boot"])
