@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import re
 import subprocess
 import time
@@ -114,6 +115,58 @@ class SorenCoordinatorAdapter:
             self._check(deadline, cancel)
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
+    @staticmethod
+    def _round_boundary_identity(record: dict) -> tuple:
+        # Ordinary switches use the immutable broker receipt, never an allocated
+        # next_generation or a later reconstructed deadline.
+        if (type(record.get("schema")) is not int or record["schema"] != 1
+                or not isinstance(record.get("request_id"), str) or not record["request_id"]
+                or not isinstance(record.get("game"), str) or not record["game"]
+                or type(record.get("generation")) is not int or record["generation"] < 1
+                or type(record.get("deadline_epoch")) not in (int, float)
+                or not math.isfinite(record["deadline_epoch"]) or record["deadline_epoch"] <= 0
+                or not isinstance(record.get("deadline_at"), str) or not record["deadline_at"]
+                or record.get("operation") is not None):
+            raise AdapterError("Soren lifecycle boundary receipt identityが不正です")
+        return tuple(record[key] for key in
+                     ("schema", "request_id", "game", "generation", "deadline_epoch", "deadline_at"))
+
+    def _checked_round_boundary_ack(self, payload: dict, receipt: dict) -> dict:
+        request = payload.get("request")
+        ack = self._ack(payload)
+        identity = self._round_boundary_identity(receipt)
+        if (not isinstance(request, dict) or self._round_boundary_identity(request) != identity
+                or self._round_boundary_identity(ack) != identity):
+            raise AdapterError("Soren lifecycle boundary request identityが変化しました")
+        return ack
+
+    def _wait_round_boundary(self, receipt: dict, deadline: float, cancel) -> None:
+        """Poll the broker without input, stop, or a new request/generation.
+
+        A runner waiting for MOVE after founding STOP cannot reach its normal
+        post-game boundary poll. The coordinator drives the same broker check;
+        only the broker decides whether its fresh evidence permits a boundary.
+        """
+        while True:
+            self._check(deadline, cancel)
+            ack = self._checked_round_boundary_ack(self._status(deadline, cancel), receipt)
+            status = ack.get("status")
+            if status == "boundary":
+                self._check(deadline, cancel)
+                return
+            if status not in {"accepted", "waiting"}:
+                raise AdapterError("Soren lifecycle boundaryを待機できない状態です")
+
+            self._check(deadline, cancel)
+            rc, payload = self._broker("boundary", receipt["request_id"], deadline, cancel)
+            ack = self._checked_round_boundary_ack(payload, receipt)
+            self._check(deadline, cancel)
+            if rc == 0 and ack.get("status") == "boundary":
+                return
+            if rc != 1 or ack.get("status") != "waiting":
+                raise AdapterError("Soren lifecycle boundaryを確定できません")
+            time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+
     def _wait_player_change_prepared(self, request_id: str, deadline: float, cancel) -> None:
         """Drive the side-effect-free boundary poll for a player transaction.
 
@@ -161,7 +214,13 @@ class SorenCoordinatorAdapter:
         )
         if rc != 0 or self._ack(payload).get("request_id") != request_id:
             raise AdapterError("Soren lifecycle boundary要求を受理できません")
-        self._wait_status(request_id, {"boundary"}, deadline, cancel)
+        receipt = payload.get("request")
+        if not isinstance(receipt, dict):
+            raise AdapterError("Soren lifecycle boundary receiptがありません")
+        self._checked_round_boundary_ack(payload, receipt)
+        if receipt["game"] != self.spec.game or receipt["generation"] != self.spec.generation:
+            raise AdapterError("Soren lifecycle boundary receiptのgame/generationが変化しました")
+        self._wait_round_boundary(dict(receipt), deadline, cancel)
 
     def reconfigure_player(
         self,

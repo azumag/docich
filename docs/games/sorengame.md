@@ -107,3 +107,21 @@ Until every gate passes, the safe topology is:
 soviet_now production :99 / soren_null / live FFmpeg
 docich rehearsal      :98 / docich_sink / stream.mode=null
 ```
+
+## Coordinator boundary polling
+
+通常switchの `SorenCoordinatorAdapter.request_round_boundary()` はrequest受理後、
+`status` が accepted/waiting の間、同じrequest IDでbrokerの `boundary` を呼び、waiting応答後は最大1秒待って再pollする。
+受理時のrequest receipt（schema、request ID、game、generation、deadline epoch/at）を
+以後のrequest/ACK両方と照合する。`next_generation` はこの照合に使わない。
+RC0 + boundaryだけを完了、RC1 + waitingだけを継続とし、欠落・identity変更・
+terminal failure・stop_requested/stoppingなどのfence到達は拒否する。
+呼出し側のmonotonic deadline/cancelも各コマンド前後に維持する。
+このpollはゲーム入力、stop、restart、cancel、finishを実行しない。
+
+live runnerの建国STOPはSoren [PR582](https://github.com/azumag/soviet_now/pull/582)の
+連続300秒・fresh observation・帰属確認とQuit直前の盤面gateに依存する。
+このadapter修正だけではその例外を有効にしない。PR582統合後に別途gitlinkを
+統合済みSoren SHAへ更新し、正規配備と本番受入を行う。このPRではgitlinkを変更しない。
+旧runner/bridgeは証跡を持たずfail-closedとなる。現在の試合の強制終了や
+確認用再起動は実装・CI検証の範囲外。
