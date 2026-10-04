@@ -1,5 +1,5 @@
 /** Site-independent, visible-information-only Tsuitate move selection. */
-export const BRAIN_VERSION = "tsuitate-brain-v1";
+export const BRAIN_VERSION = "tsuitate-brain-v2";
 const ROLES = new Set(["P", "L", "N", "S", "G", "B", "R", "K", "+P", "+L", "+N", "+S", "+B", "+R"]);
 const HAND_ROLES = ["P", "L", "N", "S", "G", "B", "R"];
 const HAND_LIMITS = { P: 18, L: 4, N: 4, S: 4, G: 4, B: 2, R: 2 };
@@ -205,7 +205,13 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
   const forbidden = new Set(forbiddenMoves.filter((move) => typeof move === "string" && USI_MOVE.test(move)));
   const legacy = selectedProfile.policy === "legacy-v1";
   if (legacy && recent.length) forbidden.add(recent.at(-1));
-  const candidates = candidatesFor(observation, legacy).filter((candidate) => !forbidden.has(candidate.usi));
+  // A public check signal makes king escapes worth probing first. We still do
+  // not know enemy attacks: the referee can reject these, then we try the rest.
+  const available = candidatesFor(observation, legacy && observation.inCheck !== true)
+    .filter((candidate) => !forbidden.has(candidate.usi));
+  const escapes = observation.inCheck === true
+    ? available.filter((candidate) => candidate.role === "K") : [];
+  const candidates = escapes.length ? escapes : available;
   if (!candidates.length) return null;
   const scored = candidates.map((candidate) => {
     const values = features(observation, candidate, recent);

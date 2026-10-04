@@ -5,7 +5,7 @@ import {
   BRAIN_VERSION, LEGACY_PROFILE, LINEAR_PROFILE, chooseMove, featuresForMove,
   normalizeObservation, validateProfile,
 } from "../src/brain/index.js";
-import { csaToUsi, observationFromWebhook, usiToCsa } from "../src/adapters/webhook.js";
+import { checksFromLastMove, chooseWebhookDecision, csaToUsi, observationFromWebhook, usiToCsa } from "../src/adapters/webhook.js";
 
 function observation(pieces, options = {}) {
   return normalizeObservation({
@@ -149,6 +149,42 @@ test("linear includes king and long-range moves while blocking own-piece paths",
   assert.ok(featuresForMove(observation([["5e", "+R"]]), "5e4d"));
   assert.equal(featuresForMove(observation([["5e", "+R"]]), "5e3c"), null);
   assert.ok(featuresForMove(observation([["5e", "N"], ["5d", "P"]]), "5e4c"));
+});
+
+test("public check probes king escapes before other moves in both policies and colors", () => {
+  for (const color of ["b", "w"]) for (const selectedProfile of [LEGACY_PROFILE, LINEAR_PROFILE]) {
+    const state = observation([["5e", "K"], ["8h", "P"]], { color, turn: color, inCheck: true });
+    const forbiddenMoves = [];
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const choice = chooseMove(state, { profile: selectedProfile, seed: String(attempt), forbiddenMoves });
+      assert.equal(choice.features.kingMove, 1);
+      assert.ok(!forbiddenMoves.includes(choice.usi));
+      forbiddenMoves.push(choice.usi);
+    }
+    // After every escape is rejected, blocks/captures remain available.
+    const fallback = chooseMove(state, { profile: selectedProfile, forbiddenMoves });
+    assert.equal(fallback.features.kingMove, 0);
+    assert.ok(!forbiddenMoves.includes(fallback.usi));
+    assert.deepEqual(chooseMove({ ...state, opponentBoard: "hidden-marker", legalMoves: [] },
+      { profile: selectedProfile, forbiddenMoves }), fallback);
+  }
+});
+
+test("viewer public lastInfo identifies check without disclosing the attacking square", () => {
+  for (const [color, own, opponent] of [["b", "+", "-"], ["w", "-", "+"]]) {
+    assert.deepEqual(checksFromLastMove({ lastMove: `${opponent}0000ZZ`, lastInfo: 3 }, color),
+      { inCheck: true, opponentInCheck: false });
+    assert.deepEqual(checksFromLastMove({ lastMove: `${own}0000ZZ`, lastInfo: 2 }, color),
+      { inCheck: true, opponentInCheck: null });
+    assert.deepEqual(checksFromLastMove({ lastMove: `${own}0000ZZ`, lastInfo: 1 }, color),
+      { inCheck: false, opponentInCheck: null });
+    assert.deepEqual(checksFromLastMove({ lastMove: `${own}0000ZZ`, lastInfo: 3 }, color),
+      { inCheck: false, opponentInCheck: true });
+  }
+  assert.deepEqual(checksFromLastMove({}, "b"), { inCheck: null, opponentInCheck: null });
+  const options = { sfen: "9/9/9/9/4K4/9/4P4/9/9 b - 1", color: "b", gameId: "check-fixture", ply: 1,
+    ...checksFromLastMove({ lastMove: "-0000ZZ", lastInfo: 3 }, "b") };
+  assert.equal(chooseWebhookDecision(options).decision.features.kingMove, 1);
 });
 
 test("drops exclude nifu, occupied squares and dead-end ranks for both colors", () => {

@@ -87,8 +87,24 @@ export function csaToUsi(csa, rawObservation) {
   return `${source}${move[3]}${rankToUsi(move[4])}${resultRole === piece.role ? "" : "+"}`;
 }
 
-export function chooseWebhookDecision({ sfen, color, gameId, ply, recentOwnMoves = [], forbiddenMoves = [], profile = LEGACY_PROFILE }) {
-  const observation = observationFromWebhook({ sfen, color });
+/** Decode only the viewer's public last-move information, never enemy SFEN. */
+export function checksFromLastMove(position, color) {
+  const ownSign = color === "b" ? "+" : "-";
+  const sign = position?.lastMove?.[0];
+  const info = position?.lastInfo;
+  if (!["+", "-"].includes(sign) || ![0, 1, 2, 3].includes(info)) {
+    return { inCheck: null, opponentInCheck: null };
+  }
+  if (info === 0) return { inCheck: false, opponentInCheck: false };
+  const checked = info === 2 || info === 3;
+  const own = sign === ownSign;
+  return info === 3
+    ? { inCheck: own ? false : true, opponentInCheck: own ? true : false }
+    : { inCheck: own ? checked : null, opponentInCheck: own ? null : checked };
+}
+
+export function chooseWebhookDecision({ sfen, color, gameId, ply, inCheck = null, opponentInCheck = null, recentOwnMoves = [], forbiddenMoves = [], profile = LEGACY_PROFILE }) {
+  const observation = observationFromWebhook({ sfen, color, inCheck, opponentInCheck });
   if (!observation) return null;
   // Legacy considered only the last string, even if it cannot match a current candidate.
   const history = profile?.policy === "legacy-v1"
