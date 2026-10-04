@@ -14,7 +14,7 @@ const LOG_EVENTS = new Set(["connected", "queued", "matched", "disconnected", "c
 function initial() { return { version: 1, state: "stopped", runId: null, generation: 0,
   gameId: null, completedGames: 0, reservedGames: 0, stopRequested: false, errorCode: null, settled: true }; }
 
-/** Internal control only. No HTTP authentication or production route is added. */
+/** Fixed singleton operations; the Worker entrypoint authenticates its caller. */
 export class DurableArenaController {
   constructor({ storage, env, waitUntil = () => {}, makeSocket,
     makeSession = (options) => new BetaSession(options), resolveResult,
