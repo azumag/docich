@@ -3,7 +3,8 @@ import { SINGLETON_NAME } from "./durable-controller.js";
 export const CONTROL_PATH = "/beta-control";
 export const CONTROL_PREFIX = "beta-control-v1\nPOST\n/beta-control\n";
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const SAFE_CODES = new Set(["token_not_configured", "run_locked", "run_mismatch", "invalid_start_options"]);
+const SAFE_CODES = new Set(["token_not_configured", "run_locked", "run_mismatch", "invalid_start_options",
+  "recovery_not_available", "recovery_checkpoint_invalid", "terminal_result_unavailable"]);
 const json = (status, body) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 
 async function boundedBody(request) {
@@ -58,7 +59,7 @@ export async function handleBetaControl(request, env, now = Date.now()) {
     if (!await crypto.subtle.verify("HMAC", key, bytes, signed)) return json(401, { error: "control_authentication_failed" });
     const payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
     if (!payload || typeof payload !== "object" || Array.isArray(payload)
-        || !["status", "start", "stop"].includes(payload.action)
+        || !["status", "start", "stop", "reconcile"].includes(payload.action)
         || Object.keys(payload).some((key) => !["action", "runId"].includes(key))
         || (payload.action === "status" ? Object.hasOwn(payload, "runId") : typeof payload.runId !== "string" || !ID.test(payload.runId))) {
       return json(400, { error: "invalid_control_request" });
@@ -70,6 +71,7 @@ export async function handleBetaControl(request, env, now = Date.now()) {
   } catch (error) {
     const code = error?.message;
     if (SAFE_CODES.has(code)) return json(409, { error: code });
+    if (code === "terminal_storage_failure") return json(503, { error: code });
     if (code === "body_too_large") return json(413, { error: code });
     if (code === "control_timeout") return json(504, { error: code });
     if (error instanceof SyntaxError || error instanceof TypeError) return json(400, { error: "invalid_control_request" });

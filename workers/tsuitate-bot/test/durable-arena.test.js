@@ -324,3 +324,127 @@ test("confirmed idle stop permits another explicit run; unknown pause does not",
   await c.controller.pause("unknown_match_state");
   await assert.rejects(c.controller.start({ runId: "three" }), /run_locked/);
 });
+
+async function pausedTerminal(t, options = {}) {
+  const c = setup(t, options); const socket = await begin(c);
+  const session = c.controller.session;
+  await session.enqueue(() => session.pause("terminal_unconfirmed")); await flush(c.controller);
+  assert.equal((await c.controller.status()).state, "paused");
+  assert.equal(socket.connected, false);
+  return c;
+}
+
+const publicTerminal = () => ({ ...terminal(), outcome: "loss", reason: "foul_limit", source: "public_replay" });
+
+test("paused terminal reconciliation preserves observations and atomically saves one receipt without a socket", async (t) => {
+  let lookups = 0;
+  const c = await pausedTerminal(t, { resolveResult: async (gameId, color, options) => {
+    lookups++; assert.equal(gameId, "local-game"); assert.equal(color, "b");
+    assert.equal(options.timeoutMs, 1500); return publicTerminal();
+  } });
+  const saved = await c.storage.get(CHECKPOINT_KEY);
+  assert.ok(saved.active.gate.pending);
+  const results = await Promise.all([c.controller.reconcile({ runId: "fixture-run" }), c.controller.reconcile({ runId: "fixture-run" })]);
+  assert.ok(results.every((result) => result.readyForNextRun && result.completedGames === 1));
+  assert.equal(lookups, 1); assert.equal(c.sockets.length, 1); assert.equal(c.storage.alarm, null);
+  const record = await c.storage.get(recordKey("fixture-run"));
+  assert.equal(record.outcome, "loss"); assert.equal(record.reason, "foul_limit");
+  assert.equal(record.resultConfidence, "verified"); assert.equal(record.validForTraining, false);
+  assert.deepEqual(record.decisions, saved.active.record.decisions);
+  assert.equal((await c.storage.get(runKey("fixture-run"))).readyForNextRun, true);
+  assert.equal((await c.storage.get(CHECKPOINT_KEY)).active, null);
+  await c.controller.alarm(); await c.controller.reconcile({ runId: "fixture-run" });
+  assert.equal(lookups, 1); assert.equal(c.sockets.length, 1);
+  await c.controller.start({ runId: "second" });
+  await assert.rejects(c.controller.reconcile({ runId: "fixture-run" }), /run_mismatch/);
+  assert.equal((await c.controller.status()).runId, "second");
+});
+
+test("reconciliation refuses active, unrelated pauses, malformed checkpoints and caller overrides", async (t) => {
+  let lookups = 0;
+  const resolveResult = async () => { lookups++; return publicTerminal(); };
+  const active = setup(t, { resolveResult }); await begin(active);
+  await assert.rejects(active.controller.reconcile({ runId: "fixture-run" }), /recovery_not_available/);
+  for (const mutate of [
+    async (c) => { const meta = await c.storage.get(META_KEY); await c.storage.put(META_KEY, { ...meta, errorCode: "storage_failure" }); },
+    async (c) => c.storage.delete(CHECKPOINT_KEY),
+    async (c) => { const s = await c.storage.get(CHECKPOINT_KEY); s.active.record.brainVersion = "unrelated-brain"; await c.storage.put(CHECKPOINT_KEY, s); },
+    async (c) => { const s = await c.storage.get(CHECKPOINT_KEY); s.active.gameId = "unrelated-game"; await c.storage.put(CHECKPOINT_KEY, s); },
+    async (c) => { const s = await c.storage.get(CHECKPOINT_KEY); s.active.pendingIndex = 100; await c.storage.put(CHECKPOINT_KEY, s); },
+  ]) {
+    const c = await pausedTerminal(t, { resolveResult }); await mutate(c);
+    const before = structuredClone(c.storage.data);
+    await assert.rejects(c.controller.reconcile({ runId: "fixture-run" }), /recovery_(not_available|checkpoint_invalid)/);
+    assert.deepEqual(c.storage.data, before); assert.equal(c.sockets.length, 1);
+  }
+  const c = await pausedTerminal(t, { resolveResult });
+  for (const options of [{ runId: "other" }, { runId: "fixture-run", gameId: "override" },
+    { runId: "fixture-run", generation: 10 }, { runId: "fixture-run", outcome: "win" }]) {
+    await assert.rejects(c.controller.reconcile(options), /run_mismatch|invalid_start_options/);
+  }
+  assert.equal(lookups, 0);
+});
+
+test("reconciliation retains a historical brain's observations and attribution; only the next run uses the current brain", async (t) => {
+  const c = await pausedTerminal(t, { resolveResult: async () => publicTerminal() });
+  const meta = await c.storage.get(META_KEY), saved = await c.storage.get(CHECKPOINT_KEY);
+  meta.brainVersion = "tsuitate-brain-v2"; saved.active.record.brainVersion = meta.brainVersion;
+  await c.storage.put(META_KEY, meta); await c.storage.put(CHECKPOINT_KEY, saved);
+  assert.equal((await c.controller.reconcile({ runId: "fixture-run" })).brainVersion, "tsuitate-brain-v2");
+  const record = await c.storage.get(recordKey("fixture-run"));
+  assert.equal(record.brainVersion, "tsuitate-brain-v2");
+  assert.deepEqual(record.decisions, saved.active.record.decisions);
+  assert.deepEqual(record.profile, saved.active.record.profile);
+  assert.equal(c.sockets.length, 1);
+  await c.controller.start({ runId: "next-brain" });
+  assert.equal((await c.controller.status()).brainVersion, BRAIN_VERSION);
+});
+
+test("unavailable, wrong-game or unverified terminal results leave the pending checkpoint intact", async (t) => {
+  for (const result of [null, { ...publicTerminal(), gameId: "unrelated-game" },
+    { ...publicTerminal(), source: "unknown" }, { ...publicTerminal(), endedAt: "invalid-date" }]) {
+    const c = await pausedTerminal(t, { resolveResult: async () => result });
+    const before = structuredClone(c.storage.data);
+    await assert.rejects(c.controller.reconcile({ runId: "fixture-run" }), /terminal_result_unavailable/);
+    assert.deepEqual(c.storage.data, before);
+    await assert.rejects(c.controller.start({ runId: "second" }), /run_locked/);
+  }
+});
+
+test("a timed-out reconciliation cannot commit a late result", { timeout: 3000 }, async (t) => {
+  let resolve;
+  const c = await pausedTerminal(t, { resolveResult: () => new Promise((done) => { resolve = done; }) });
+  const before = structuredClone(c.storage.data);
+  await assert.rejects(c.controller.reconcile({ runId: "fixture-run" }), /terminal_result_unavailable/);
+  resolve(publicTerminal()); await flush(c.controller);
+  assert.deepEqual(c.storage.data, before); assert.equal(c.sockets.length, 1);
+});
+
+test("reconciliation rolls back all terminal and cleanup writes on storage failure, then permits identical retry", async (t) => {
+  const c = await pausedTerminal(t, { resolveResult: async () => publicTerminal() });
+  const before = structuredClone(c.storage.data);
+  const settle = c.controller.settle;
+  c.controller.settle = async (tx, meta) => { await settle.call(c.controller, tx, meta); throw new Error("fixture_after_cleanup_failure"); };
+  await assert.rejects(c.controller.reconcile({ runId: "fixture-run" }), /terminal_storage_failure/);
+  assert.deepEqual(c.storage.data, before);
+  assert.equal((await c.controller.status()).readyForNextRun, false);
+  c.controller.settle = settle;
+  assert.equal((await c.controller.reconcile({ runId: "fixture-run" })).readyForNextRun, true);
+});
+
+test("generation, checkpoint or game-owner changes fence a pending reconciliation", async (t) => {
+  for (const change of ["generation", "checkpoint", "owner"]) {
+    let resolve, called;
+    const started = new Promise((done) => { called = done; });
+    const c = await pausedTerminal(t, { resolveResult: () => { called(); return new Promise((done) => { resolve = done; }); } });
+    const pending = c.controller.reconcile({ runId: "fixture-run" }); await started;
+    if (change === "generation") {
+      const meta = await c.storage.get(META_KEY); await c.storage.put(META_KEY, { ...meta, generation: meta.generation + 1 });
+    } else if (change === "checkpoint") {
+      const s = await c.storage.get(CHECKPOINT_KEY); s.active.record.historyComplete = false; await c.storage.put(CHECKPOINT_KEY, s);
+    } else await c.storage.put("beta:game:local-game", "unrelated-run");
+    const before = structuredClone(c.storage.data); resolve(publicTerminal());
+    await assert.rejects(pending, /terminal_storage_failure|recovery_checkpoint_invalid/);
+    assert.deepEqual(c.storage.data, before);
+  }
+});

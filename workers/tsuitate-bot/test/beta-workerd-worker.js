@@ -12,8 +12,8 @@ export class RuntimeBetaArena extends BetaArena {
       auth: { token: "fixture-only-not-a-credential" }, autoConnect: false,
       forceNew: true, multiplex: false, reconnection: false, timeout: 1000 });
   }
-  async resolveResult(gameId, color) {
-    return fetchPublicResult(gameId, color, { fetchImpl: (url, options) => {
+  async resolveResult(gameId, color, options = {}) {
+    return fetchPublicResult(gameId, color, { ...options, fetchImpl: (url, options) => {
       const parsed = new URL(url);
       if (parsed.origin !== "https://beta.tsuitate.info") throw new Error("fixture_origin_mismatch");
       return fetch(this.env.LOCAL_SOCKET_ORIGIN + "/public-result" + parsed.pathname, options);
@@ -27,9 +27,39 @@ export class RuntimeBetaArena extends BetaArena {
       recordSaved: Boolean(record?.completed),
       communicationInterrupted: record?.communicationInterrupted ?? saved?.active?.record?.communicationInterrupted,
       validForTraining: record?.validForTraining,
+      brainVersion: record?.brainVersion ?? saved?.active?.record?.brainVersion,
       decisions: record?.decisions.length ?? saved?.active?.record?.decisions.length ?? 0 };
   }
   alarmFixture() { return this.alarm(); }
+  async pauseTerminalFixture() {
+    const session = this.controller.session;
+    await session.enqueue(() => session.pause("terminal_unconfirmed"));
+    await this.controller.tail;
+    // A synthetic v2 checkpoint under the current runtime: recovery must keep
+    // its attribution and must never restore the live brain/socket.
+    await this.ctx.storage.transaction(async (tx) => {
+      const meta = await tx.get(META_KEY), saved = await tx.get(CHECKPOINT_KEY);
+      meta.brainVersion = "tsuitate-brain-v2";
+      saved.active.record.brainVersion = meta.brainVersion;
+      await tx.put(META_KEY, meta); await tx.put(CHECKPOINT_KEY, saved);
+    });
+    return this.controller.status();
+  }
+  async recoveryRollbackFixture() {
+    const settle = this.controller.settle;
+    try {
+      this.controller.settle = async (tx, meta) => {
+        await settle.call(this.controller, tx, meta);
+        throw new Error("fixture_terminal_cleanup_rollback");
+      };
+      await this.controller.reconcile({ runId: "recovery-fixture" });
+      return { rolledBack: false };
+    } catch {
+      const saved = await this.ctx.storage.get(CHECKPOINT_KEY);
+      return { rolledBack: (await this.controller.status()).state === "paused"
+        && !(await this.ctx.storage.get(RECORD_KEY)) && Boolean(saved?.active?.gate.pending) };
+    } finally { this.controller.settle = settle; }
+  }
   async rollbackFixture() {
     const prior = await this.ctx.storage.get(META_KEY);
     try {
@@ -55,6 +85,8 @@ export default {
       if (path === "/alarm") { await actor.alarmFixture(); return Response.json(await actor.status()); }
       if (path === "/evidence") return Response.json(await actor.evidence());
       if (path === "/rollback") return Response.json(await actor.rollbackFixture());
+      if (path === "/pause-terminal") return Response.json(await actor.pauseTerminalFixture());
+      if (path === "/recovery-rollback") return Response.json(await actor.recoveryRollbackFixture());
       return actor.fetch(request);
     } catch (error) {
       if (["token_not_configured", "not_singleton"].includes(error.message)) {

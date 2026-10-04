@@ -29,6 +29,10 @@ class TestBridge(unittest.TestCase):
         expected = hmac.new(SECRET.encode(), control.PREFIX + b"1791100000." + request.data, hashlib.sha256).hexdigest()
         self.assertEqual(dict(request.header_items())["X-beta-control-signature"], "sha256=" + expected)
         self.assertEqual(dict(request.header_items())["User-agent"], "docich-beta-control/1.0")
+        recovery = control.signed_request(ENV["DOCICH_BETA_CONTROL_URL"], SECRET, "reconcile", "one", now=1791100000)
+        self.assertEqual(recovery.data, b'{"action":"reconcile","runId":"one"}')
+        expected = hmac.new(SECRET.encode(), control.PREFIX + b"1791100000." + recovery.data, hashlib.sha256).hexdigest()
+        self.assertEqual(dict(recovery.header_items())["X-beta-control-signature"], "sha256=" + expected)
         for action, run in [("deploy", None), ("start", "../x"), ("stop", None)]:
             with self.assertRaises(control.ControlError):
                 control.signed_request("https://local-only.test", SECRET, action, run)
@@ -107,6 +111,8 @@ class TestWebUiGate(unittest.TestCase):
             self.assertEqual(self.request("GET")[0], 200)
             self.assertEqual(bridge.call_args.args, ("status", None))
             self.assertEqual(bridge.call_args.kwargs["forbidden_secrets"], (OPERATOR, VIEWER))
+            self.assertEqual(self.request(payload={"action": "reconcile", "runId": "one", "confirm": True})[0], 200)
+            self.assertEqual(bridge.call_args.args, ("reconcile", "one"))
 
     def test_unauthenticated_viewer_csrf_origin_host_and_confirmation_rejected_before_bridge(self):
         good = {"action": "start", "runId": "one", "confirm": True}
@@ -114,7 +120,9 @@ class TestWebUiGate(unittest.TestCase):
                  ({"X-CSRF-Token": ""}, 403), ({"Origin": "https://evil.example"}, 403),
                  ({"Host": "evil.example"}, 400), ({"Content-Type": "text/plain"}, 415)]
         with mock.patch.object(webui, "call_beta_control") as bridge:
-            for headers, expected in cases: self.assertEqual(self.request(payload=good, headers=headers)[0], expected)
+            for action in ("start", "reconcile"):
+                for headers, expected in cases: self.assertEqual(self.request(payload={**good, "action": action}, headers=headers)[0], expected)
+            self.assertEqual(self.request(payload={"action": "reconcile", "runId": "one"})[0], 428)
             self.assertEqual(self.request(payload={"action": "start", "runId": "one"})[0], 428)
             self.assertEqual(self.request("GET", headers={"Authorization": "Bearer " + VIEWER})[0], 403)
             for payload in [{**good, "action": "deploy"}, {**good, "url": "https://evil.example"}, {**good, "maxGames": 2}]:

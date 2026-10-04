@@ -3380,7 +3380,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_error_json(428, "confirmation_required")
                 return 428
             action, run_id = data.get("action"), data.get("runId")
-            if not isinstance(action, str) or action not in {"start", "stop"} or not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", run_id):
+            if not isinstance(action, str) or action not in {"start", "stop", "reconcile"} or not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", run_id):
                 self._send_error_json(400, "invalid_beta_operation")
                 return 400
         try:

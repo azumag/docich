@@ -155,10 +155,33 @@ try {
   assert.equal((await owner()).state, "finished"); assert.equal((await json("/evidence")).recordSaved, true);
   await owner("start", "second-fixture"); await json("/alarm");
   assert.equal(queueJoins, 2); assert.equal(connections, 3);
+  await owner("start", "recovery-fixture");
+  await until(() => queueJoins === 3 && packets.filter((packet) => packet.event === "game:move").length === 3);
+  assert.equal((await json("/pause-terminal")).state, "paused");
+  assert.equal((await owner("start", "blocked-fixture")).error, "run_locked");
+  assert.equal((await owner("reconcile", "recovery-fixture", { Authorization: "Bearer fixture-only-viewer-not-credential" })).status, 403);
+  assert.equal((await owner("reconcile", "recovery-fixture", { "X-CSRF-Token": "" })).status, 403);
+  assert.equal((await owner("reconcile", "recovery-fixture")).error, "terminal_result_unavailable");
+  assert.equal((await json("/evidence")).pendingPersisted, true);
+  assert.equal((await json("/evidence")).recordSaved, false);
+  endedGames.add("local-workerd-game-3");
+  assert.equal((await json("/recovery-rollback")).rolledBack, true);
+  const recovered = await Promise.all([owner("reconcile", "recovery-fixture"), owner("reconcile", "recovery-fixture")]);
+  assert.ok(recovered.every((result) => result.status === 200 && result.readyForNextRun
+    && result.completedGames === 1 && result.brainVersion === "tsuitate-brain-v2"));
+  assert.equal(resultLookups.get("local-workerd-game-3"), 3);
+  assert.equal(queueJoins, 3); assert.equal(connections, 4);
+  assert.equal((await json("/evidence")).recordSaved, true);
+  assert.equal((await json("/evidence")).validForTraining, false);
+  assert.equal((await json("/evidence")).brainVersion, "tsuitate-brain-v2");
+  await mf.dispose(); mf = new Miniflare(options());
+  assert.equal((await owner("reconcile", "recovery-fixture")).readyForNextRun, true);
+  assert.equal(queueJoins, 3); assert.equal(connections, 4);
   console.log(JSON.stringify({ workerd: "passed", ownerWebUi: true, serviceHmac: true,
-    viewerAndCsrfDenied: true, initialStopped: true, manualRuns: 2, maxGamesPerRun: 1,
+    viewerAndCsrfDenied: true, initialStopped: true, manualRuns: 3, maxGamesPerRun: 1,
     coldResume: true, noDuplicateRecruitment: true, terminalRestart: true, sqliteRollback: true,
     delayedReplayWithNullSync: true,
+    pausedTerminalReconciled: true, recoveryRollback: true, recoveryRestartIdempotent: true,
     betaConnected: false, cloudflareResourceCreated: false }));
 } finally {
   if (python && python.exitCode === null) { python.kill("SIGTERM"); await once(python, "exit"); }

@@ -29,7 +29,7 @@ Cloudflare Workersのbuild設定と検証方法は [BUILDS.md](BUILDS.md) にま
 
 WebUIの「コーナー」に状態更新・1局開始・終了後停止を追加しました。既存operator認証を使い、開始・停止は既存Host/Origin、JSON、CSRF、確認guardを通ります。read-only利用者は状態取得を含め拒否します。WebUI認証設定とloopback/Tailscale ACLが実運用でownerに限定されていることは、このローカル検証では確認していません。
 
-WebUIサーバーは専用HMACで固定 `POST /beta-control` へ `status` / `start` / `stop` だけを送ります。ブラウザへsecretを渡さず、任意URL・コマンド・対局数は受け付けません。Workerの `BETA_CONTROL_SECRET` とWebUIの `DOCICH_BETA_CONTROL_SECRET` は同じ専用値を参照し、未設定は拒否します。Webhookの `WEBHOOK_SECRET`、サイトの `TSUITATE_BOT_TOKEN`、WebUI operator/viewer tokenは流用しません。raw本文のHMAC-SHA256と300秒未満の時刻差を検証します。bodyは4 KiB・受信1秒、DO呼出し2.5秒、WebUI通信5秒に制限し、secret・署名・本文・rawエラーはログやブラウザへ返しません。
+WebUIサーバーは専用HMACで固定 `POST /beta-control` へ `status` / `start` / `stop` / `reconcile` だけを送ります。ブラウザへsecretを渡さず、任意URL・コマンド・対局数は受け付けません。Workerの `BETA_CONTROL_SECRET` とWebUIの `DOCICH_BETA_CONTROL_SECRET` は同じ専用値を参照し、未設定は拒否します。Webhookの `WEBHOOK_SECRET`、サイトの `TSUITATE_BOT_TOKEN`、WebUI operator/viewer tokenは流用しません。raw本文のHMAC-SHA256と300秒未満の時刻差を検証します。bodyは4 KiB・受信1秒、DO呼出し2.5秒、WebUI通信5秒に制限し、secret・署名・本文・rawエラーはログやブラウザへ返しません。
 
 初期状態は `stopped` です。singleton名 `beta:DoCiAI` に対し、**明示runごとに最大1局**を予約します。同じrunIdの再送・並行開始・重複alarmで再募集しません。次の新しいrunIdは前runの終局記録保存、socket終了、alarm削除が済んだ `readyForNextRun=true` の時だけ開始できます。終局後の自動反復はありません。古いrunIdのstart/stopは保存済みreceiptを返し、現在runを再開始・停止しません。paused・不明な状態では次局を開始せず、reset APIもありません。
 
@@ -39,7 +39,9 @@ SQLiteの `beta:meta` に現在run・対局ID・世代・brain/profile・停止�
 
 20秒間隔のalarmは既知の対局IDだけを復元し `game:sync` します。cold restoreでID未保存なら `unknown_match_state` に停止し、対局がないとは推測せず再募集もしません。復元・通信断を経た対局は学習対象外です。保存済みbrain版が利用できない場合もcheckpointを保持します。配備や障害による切断負けのリスクは残ります。
 
-終局結果は現在gameIdの公開棋譜と照合します。取得は `redirect: "manual"` を使い、3xxを拒否して別URLへ追従しません。`game:end`は結果照会のきっかけとして扱い、その原文から勝敗や隠し盤面を保存しません。空の同期応答が続いても、公開結果の照会は最大5回、間隔1.5秒・各取得5秒の枠を最後まで使います。通知の重複で間隔を短縮しません。結果未確定ならcheckpointを保持して停止し、終了済みPlayerViewを確認できた場合だけ勝敗不明の終局記録を保存します。既にpausedのrunはこの変更による自動復帰の対象になりません。
+終局結果は現在gameIdの公開棋譜と照合します。取得は `redirect: "manual"` を使い、3xxを拒否して別URLへ追従しません。`game:end`は結果照会のきっかけとして扱い、その原文から勝敗や隠し盤面を保存しません。空の同期応答が続いても、公開結果の照会は最大5回、間隔1.5秒・各取得5秒の枠を最後まで使います。通知の重複で間隔を短縮しません。結果未確定ならcheckpointを保持して停止し、終了済みPlayerViewを確認できた場合だけ勝敗不明の終局記録を保存します。既にpausedのrunへ自動照会・自動復帰はしません。
+
+ownerが明示する `reconcile` は、同じrunIdの `paused / terminal_unconfirmed`、未保存の同じgameId・世代・checkpointだけを扱います。既存operator APIへ `{"action":"reconcile","runId":"fixture-run","confirm":true}` をPOSTすると、同じHost/Origin/CSRF guardと専用サービスHMACを通ります。画面の開始ボタンはこの操作を兼ねません。公開棋譜を1回・1.5秒で取得し、結果・日時・gameIdを検証します。終局記録、run receipt、checkpoint終了、alarm削除は1つのSQLite transactionで保存し、成功後だけ `readyForNextRun=true` にします。照会中に世代やcheckpointが変わった場合、結果未確定、保存失敗では元のpendingと観測を保持します。再送は保存済み結果を返し、Socket接続・募集・着手はしません。保存元のbrain版・profile・観測・着手履歴を保持し、v2局の回復でも実行中のv3へ置換しません。回復した観測は勝敗確定後も学習対象外です。次の明示startだけが実行中のbrain版を使います。秘密や結果本文を入力へ渡す操作、記録の削除、状態resetはありません。
 
 Socket.IO 4.8.4の公開ブラウザ配布をnative WebSocket transportだけで使います。外向きWebSocketは[DOのhibernation対象外](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)で常駐中はduration課金・quota消費があります。アカウントの現plan・残量は未確認で、無料稼働を保証しません。plan変更は行っていません。
 
