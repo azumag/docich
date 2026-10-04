@@ -290,11 +290,21 @@ def test_vercel_resolved_alias_requires_review_not_synthesis():
         assert t.request_once(req, route="vercel", env=KEYS)["status"] == "invalid_response"
 
 
-def test_main_thread_requirement_is_fail_closed():
-    with patch.object(t.subprocess, "Popen") as spawn, ThreadPoolExecutor(1) as executor:
-        result = executor.submit(t.request_once, example()[0], env=KEYS).result()
-    assert result["status"] != "ok"
-    spawn.assert_not_called()
+def test_threaded_request_runs_one_real_child_without_mutating_signal_handlers():
+    request, response = example()
+    original = subprocess.Popen
+    workers = []
+    def spawn(argv, **kwargs):
+        assert argv[2] == str(Path(t.__file__).resolve())
+        child = original([sys.executable, "-I", "-c", "import sys; sys.stdout.buffer.write(" + repr(worker_reply(response)) + ")"], **kwargs)
+        workers.append(child)
+        return child
+    before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+    with patch.object(t.subprocess, "Popen", side_effect=spawn), ThreadPoolExecutor(1) as executor:
+        result = executor.submit(t.request_once, request, env=KEYS).result()
+    assert result["status"] == "ok" and result["meta"]["retry_count"] == 0
+    assert len(workers) == 1 and workers[0].poll() is not None
+    assert {s: signal.getsignal(s) for s in before} == before
 
 
 def test_isolated_worker_bootstrap_without_game_or_key():
@@ -307,7 +317,8 @@ def test_isolated_worker_bootstrap_without_game_or_key():
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group contract")
 @pytest.mark.parametrize("phase", ["dns", "connect", "body"])
-def test_stalled_network_phase_is_bounded_and_child_reaped(phase, tmp_path):
+@pytest.mark.parametrize("threaded", [False, True])
+def test_stalled_network_phase_is_bounded_and_child_reaped(phase, tmp_path, threaded):
     marker = tmp_path / "entered"
     code = f'''
 import sys, socket, time
@@ -346,7 +357,11 @@ t._http_worker(request, 'direct', 1.5, {{'TYPESAFE_API_KEY': 'synthetic'}})
     before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
     started = time.monotonic()
     with patch.object(t.subprocess, "Popen", side_effect=capture), pytest.raises(subprocess.TimeoutExpired):
-        t._bounded_process([sys.executable, "-I", "-c", code], data=b"", timeout=.6, env={"LANG": "C.UTF-8"})
+        if threaded:
+            with ThreadPoolExecutor(1) as executor:
+                executor.submit(t._bounded_process, [sys.executable, "-I", "-c", code], data=b"", timeout=.6, env={"LANG": "C.UTF-8"}).result()
+        else:
+            t._bounded_process([sys.executable, "-I", "-c", code], data=b"", timeout=.6, env={"LANG": "C.UTF-8"})
     assert marker.read_text() == phase
     assert time.monotonic() - started < 2
     assert processes[0].poll() is not None

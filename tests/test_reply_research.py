@@ -383,6 +383,7 @@ def test_egress_bridges_allow_only_fixed_api_authority(raw_request):
 
 
 @pytest.mark.parametrize("raw_request", [
+    b"CONNECT opencode.ai:443 HTTP/1.0\r\n\r\n",
     b"CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\n\r\n",
     b"CONNECT opencode.ai:444 HTTP/1.1\r\nHost: opencode.ai:444\r\n\r\n",
     b"CONNECT opencode.ai:443 HTTP/1.1\r\nHost: opencode.ai:443\r\nHost: opencode.ai:443\r\n\r\n",

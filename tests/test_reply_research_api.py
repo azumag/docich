@@ -1,18 +1,54 @@
 """Synthetic native HTTP fixtures only; never use real keys or public network."""
 from contextlib import nullcontext
+import asyncio
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import socket
+import ssl
 from pathlib import Path
 import sys
 import threading
+import tempfile
 import time
 
 import pytest
 from docich import discord_chat as chat, reply_research as r
 from docich import reply_research_api as api, reply_research_bridge as bridge
 from docich import reply_research_web as web, reply_routing as routing
+from docich.discord_memory import MemoryStore
+from docich.semantic_decision import transport as jev_transport
+from docich import reply_research_egress as egress
+
+
+def jev_http_fixture(marker=None):
+    """Actual isolated JEV worker; only its HTTP response is synthetic."""
+    return '''
+import json,runpy,sys,time,urllib.request
+from pathlib import Path
+class Response:
+    status = 200
+    def __enter__(self): return self
+    def __exit__(self, *_): pass
+    def read(self, n): return self.raw
+class Opener:
+    def open(self, request, timeout):
+        assert request.full_url == 'https://api.typesafe.ai/v1/systemone'
+        assert request.get_header('Authorization') == 'Bearer SYNTHETIC_KEY'
+        value = json.loads(request.data)
+        assert value['state']['turns'] == [{'role':'user','text':'IANA HTTP 429の名称は？'}]
+        if MARKER:
+            Path(MARKER).write_text('synthetic HTTP entered')
+            time.sleep(10)
+        data = {'model':'jev-1.13.0','usage':{'input_tokens':10,'output_tokens':0},
+                'answers': {'reply_evidence': {'type':'choice','choice':'web','confidence':.99,
+                    'probabilities': {key: float(key=='web') for key in value['questions']['reply_evidence']['criteria']}}}}
+        response=Response(); response.raw=json.dumps(data).encode(); return response
+urllib.request.build_opener=lambda *handlers: Opener()
+sys.argv=[WORKER,'--http-worker','direct','1.5']
+runpy.run_path(WORKER,run_name='__main__')
+'''.replace('MARKER', repr(str(marker) if marker else None)).replace('WORKER', repr(str(Path(jev_transport.__file__).resolve())))
 
 ENV = {"DOCICH_ALLOW_REAL_AI": "1", "DOCICH_REPLY_RESEARCH_ENABLED": "1",
        "DOCICH_REPLY_WEB_SEARCH_ENABLED": "1", "DOCICH_REPLY_RESEARCH_TRANSPORT": "api",
@@ -36,6 +72,10 @@ def native_response(monkeypatch, proposal, *, finish="stop", tokens=20, proxy=Tr
     def build(*handlers):
         assert handlers[0].proxies == ({"https": "http://127.0.0.1:45678"} if proxy else {})
         assert isinstance(handlers[1], chat._NoRedirect)
+        if proxy:
+            assert isinstance(handlers[2], chat._ResearchHTTPSHandler)
+        else:
+            assert len(handlers) == 2
         return Opener()
     monkeypatch.setattr(chat, "build_opener", build)
     monkeypatch.setenv("OPENCODE_GO_API_KEY", "SYNTHETIC_RESEARCH")
@@ -128,12 +168,12 @@ def test_production_native_research_path_mints_receipt_from_broker(monkeypatch, 
     digest = hashlib.sha256(body).hexdigest()
     import base64
     fetched = []
-    proposals, posts, final_posts, evidence = [], [], [], []
+    proposals, posts, final_posts, evidence, jev_workers = [], [], [], [], []
     def run(argv, incoming, env, remaining, **kw):
         if argv[-1] == "answer":
             assert set(env) == {"PATH", "LANG", "DOCICH_ANSWER_API_KEY"}
             payload = json.loads(incoming)
-            assert payload["messages"][0] == {"role": "system", "content": "canonical synthetic persona"}
+            assert payload["messages"][0] == {"role": "system", "content": "canonical synthetic persona\n\n" + chat.DISCORD_CONTEXT}
             assert "429 Too Many Requests" in payload["messages"][-2]["content"]
             requests = native_response(monkeypatch, "synthetic persona answer", proxy=False)
             final_posts.append(requests)
@@ -164,6 +204,13 @@ def test_production_native_research_path_mints_receipt_from_broker(monkeypatch, 
     monkeypatch.setattr(r, "search_public", lambda query, timeout: [url])
     original_popen = web.subprocess.Popen
     def spawn(argv, **kwargs):
+        if argv[2] == str(Path(jev_transport.__file__).resolve()):
+            assert argv[3] == "--http-worker"
+            assert kwargs["env"] == {"TYPESAFE_API_KEY": "SYNTHETIC_KEY", "LANG": "C.UTF-8"}
+            assert threading.current_thread() is not threading.main_thread()
+            child = original_popen([sys.executable, "-I", "-c", jev_http_fixture()], **kwargs)
+            jev_workers.append(child)
+            return child
         assert argv[4] == "--fetch" and kwargs["start_new_session"]
         assert not any("KEY" in name for name in kwargs["env"])
         fetched.append(argv[4])
@@ -178,14 +225,23 @@ def test_production_native_research_path_mints_receipt_from_broker(monkeypatch, 
     def collect(*args, **kwargs):
         item = original_research(*args, **kwargs); evidence.append(item); return item
     monkeypatch.setattr(r, "research", collect)
-    for name, value in {**ENV, "DOCICH_REPLY_ROUTING_ENABLED": "1"}.items(): monkeypatch.setenv(name, value)
-    def decide(turns, **kwargs):
-        assert turns == [{"role": "user", "text": "IANA HTTP 429の名称は？"}]
-        return routing.Decision("web", "jev", .99)
-    monkeypatch.setattr(routing, "decide", decide)
+    for name, value in {**ENV, "DOCICH_REPLY_ROUTING_ENABLED": "1", "TYPESAFE_API_KEY": "SYNTHETIC_KEY"}.items(): monkeypatch.setenv(name, value)
+    monkeypatch.setattr(chat, "load_persona", lambda: "canonical synthetic persona")
     backend = chat.ChatBackend(chat.Settings("https://example.invalid/v1", "synthetic", "DISCORD_NOT_INHERITED"))
-    result = backend.complete([{"role": "system", "content": "canonical synthetic persona"},
-                               {"role": "user", "content": "IANA HTTP 429の名称は？"}])
+    async def handle():
+        store = MemoryStore(None); conversation = chat.Conversation(backend.settings, backend, store)
+        sent = []
+        async def send(text): sent.append(text); return 99
+        try:
+            event = chat.Incoming(1, 2, 3, 4, "PRIVATE_NAME", "IANA HTTP 429の名称は？", addressed=True)
+            assert await conversation.handle(event, send) == "replied"
+            assert await conversation.handle(event, send) == "duplicate"
+            assert len(sent) == 1
+            return sent[0]
+        finally:
+            await conversation.close(); store.close()
+    result = asyncio.run(handle())
+    assert len(jev_workers) == 1 and jev_workers[0].poll() is not None
     if failure:
         assert not evidence[0].ok and not evidence[0].notes and not evidence[0].sources
         assert not final_posts and not result.startswith("synthetic persona answer")
@@ -254,3 +310,92 @@ def test_research_and_answer_share_remaining_wall_deadline():
         transport=lambda *a, **k: {"status": "ok", "data": {"answers": {
             "reply_evidence": {"choice": "web", "confidence": .99}}}}, researcher=researcher)
     assert budgets == [43., 1.] and result.startswith("reply")
+
+
+def test_handle_shutdown_joins_threaded_jev_timeout_and_reaps(monkeypatch, tmp_path):
+    marker = tmp_path / "jev-entered"
+    original = jev_transport.subprocess.Popen
+    workers, sent = [], []
+    def spawn(argv, **kwargs):
+        assert argv[2] == str(Path(jev_transport.__file__).resolve())
+        assert threading.current_thread() is not threading.main_thread()
+        child = original([sys.executable, "-I", "-c", jev_http_fixture(marker)], **kwargs)
+        workers.append(child); return child
+    monkeypatch.setattr(jev_transport.subprocess, "Popen", spawn)
+    for name, value in {"DOCICH_REPLY_ROUTING_ENABLED": "1", "DOCICH_ALLOW_REAL_AI": "1", "TYPESAFE_API_KEY": "SYNTHETIC_KEY"}.items(): monkeypatch.setenv(name, value)
+    monkeypatch.setattr(chat, "load_persona", lambda: "canonical fixture")
+    monkeypatch.setattr(r, "research", lambda *a, **k: pytest.fail("research after timeout"))
+    backend = chat.ChatBackend(chat.Settings("https://example.invalid/v1", "synthetic", "NOT_INHERITED"))
+    monkeypatch.setattr(backend, "_complete_api", lambda *a, **k: pytest.fail("API after timeout"))
+    async def handle():
+        store = MemoryStore(None); conversation = chat.Conversation(backend.settings, backend, store)
+        async def send(text): sent.append(text); return 99
+        task = asyncio.create_task(conversation.handle(chat.Incoming(1, 2, 3, 4, "private", "IANA HTTP 429の名称は？", addressed=True), send))
+        try:
+            for _ in range(200):
+                if marker.exists(): break
+                await asyncio.sleep(.005)
+            assert marker.exists()
+            close = asyncio.create_task(conversation.close())
+            task.cancel(); task.cancel()
+            await asyncio.sleep(.03)
+            assert not close.done() and workers[0].poll() is None
+            await asyncio.wait_for(close, 3)
+            assert task.cancelled() and not sent
+            assert store.db.execute("select state from conversations").fetchone()[0] == "failed"
+        finally:
+            await conversation.close(); store.close()
+    asyncio.run(handle())
+    assert len(workers) == 1 and workers[0].poll() is not None
+
+
+@pytest.mark.parametrize("legacy_defaults", [False, True])
+def test_native_connect_handshake_passes_real_no_key_bridge(monkeypatch, legacy_defaults):
+    """Only localhost/Unix fixtures; no TLS/provider/POST or credentials."""
+    directory = tempfile.TemporaryDirectory(prefix="docich-connect-", dir="/tmp")
+    socket_path = Path(directory.name) / "egress.sock"
+    observed, errors = [], []
+    upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    upstream.bind(str(socket_path)); upstream.listen(1); upstream.settimeout(3)
+    def accept():
+        try:
+            conn, _ = upstream.accept()
+            with conn:
+                conn.settimeout(3)
+                headers = bridge._read_headers(conn)
+                observed.append(headers)
+                assert egress.allowed_connect(headers)
+                conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                assert conn.recv(1) == b""  # No TLS/POST enters the fixture.
+        except Exception as error: errors.append(error)
+    thread = threading.Thread(target=accept); thread.start()
+    monkeypatch.setattr(bridge, "SOCKET_PATH", str(socket_path))
+    server = bridge._LoopbackServer(("127.0.0.1", 0), bridge._Handler)
+    serving = threading.Thread(target=server.serve_forever); serving.start()
+    connection = chat._ResearchHTTPSConnection("127.0.0.1", server.server_address[1], timeout=2)
+    if legacy_defaults:
+        connection._http_vsn = 10; connection._http_vsn_str = "HTTP/1.0"
+    connection.set_tunnel("opencode.ai", 443)
+    tls_hosts = []
+    # Native connect performs its real socket+tunnel steps; only TLS wrap is a
+    # fixture because the upstream is credential-free and no provider is called.
+    context = ssl.create_default_context()
+    assert context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED
+    context.wrap_socket = lambda sock, **kwargs: tls_hosts.append(kwargs["server_hostname"]) or sock
+    connection._context = context
+    try:
+        connection.connect()
+        assert tls_hosts == ["opencode.ai"]
+    finally:
+        connection.close(); server.shutdown(); server.server_close(); serving.join()
+        thread.join(4); upstream.close(); directory.cleanup()
+    assert not thread.is_alive() and not errors
+    assert observed == [b"CONNECT opencode.ai:443 HTTP/1.1\r\nHost: opencode.ai:443\r\n\r\n"]
+
+
+@pytest.mark.parametrize("host,headers", [("127.0.0.1", {}), ("internal.invalid", {}),
+    ("opencode.ai", {"Proxy-Authorization": "SYNTHETIC"}), ("opencode.ai", {"Host": "internal.invalid:443"})])
+def test_native_connect_rejects_authority_and_header_expansion(host, headers):
+    connection = chat._ResearchHTTPSConnection("127.0.0.1", 1)
+    connection.set_tunnel(host, 443, headers=headers)
+    with pytest.raises(OSError): connection._tunnel()  # Rejects before any socket/send.

@@ -84,11 +84,17 @@ jobs:
   offline-contracts:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    strategy:
+      matrix:
+        python: ['3.11', '3.12']
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ matrix.python }}
       - name: Install test and optional Discord SDK dependencies
         run: python3 -m pip install -r requirements-test.txt -r requirements-discord.txt
       - name: Install bubblewrap for the negative isolation canary

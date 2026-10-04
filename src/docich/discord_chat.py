@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import http.client
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
@@ -20,7 +21,7 @@ import stat
 import time
 from typing import Awaitable, Callable, Mapping
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
 from .discord_memory import MemoryStore, MemoryStoreError
 
@@ -150,6 +151,41 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
+class _ResearchHTTPSConnection(http.client.HTTPSConnection):
+    def _tunnel(self):
+        """Canonical CONNECT independent of Python 3.11's HTTP/1.0 default.
+
+        Keep the bridge/egress authority and strict header contract unchanged;
+        no request credentials or user-controlled headers enter this handshake.
+        """
+        if self._tunnel_host != "opencode.ai" or self._tunnel_port != 443:
+            raise OSError("invalid research authority")
+        if any(name.casefold() != "host" or value != "opencode.ai:443"
+               for name, value in self._tunnel_headers.items()):
+            raise OSError("invalid research tunnel headers")
+        self.send(b"CONNECT opencode.ai:443 HTTP/1.1\r\nHost: opencode.ai:443\r\n\r\n")
+        response = self.response_class(self.sock, method="CONNECT")
+        try:
+            _, code, _ = response._read_status()
+            total = 0
+            while True:
+                line = response.fp.readline(8193)
+                total += len(line)
+                if total > 8192 or not line:
+                    raise OSError("invalid research tunnel response")
+                if line == b"\r\n":
+                    break
+            if code != 200:
+                raise OSError("research tunnel rejected")
+        finally:
+            response.close()
+
+
+class _ResearchHTTPSHandler(HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(_ResearchHTTPSConnection, request, context=self._context)
+
+
 def clean_reply(value: str) -> str:
     if not isinstance(value, str):
         raise ChatError("invalid model reply")
@@ -212,7 +248,10 @@ class ChatBackend:
                           headers=headers, method="POST")
         try:
             proxy = {"https": proxy_url} if proxy_url else {}
-            with build_opener(ProxyHandler(proxy), _NoRedirect()).open(request, timeout=timeout_sec) as response:
+            handlers = [ProxyHandler(proxy), _NoRedirect()]
+            if proxy_url is not None:
+                handlers.append(_ResearchHTTPSHandler())
+            with build_opener(*handlers).open(request, timeout=timeout_sec) as response:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
             if len(raw) > MAX_RESPONSE_BYTES:
                 raise ValueError("oversized response")
