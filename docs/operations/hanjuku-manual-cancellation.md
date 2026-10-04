@@ -84,3 +84,40 @@ EventLogはbest-effortで、receipt削除のtombstoneもないため、保持行
 完走しても証拠不足なら予約を保持し、行政的な解除は別承認scopeの判断とする。
 対象予約だけの解除は直接配信を停止しないが、未帰属資源・遅延処理の不確実性と後続timerのdispatchが残る。
 帰属不能資源を解消する別保守では現在ゲームや配信の停止が必要になり得るが、停止だけで欠落receiptや過去履歴は復元されない。
+
+## 別承認による管理的解除
+
+`check-admin-release-hanjuku` / `admin-release-hanjuku` は終了receiptに基づく取消とは別の管理操作。
+固定診断でも要求の実行・全資源帰属を証明できず、対応receiptが欠落した予約について、
+オーナーが「過去の実行・資源はunknownのまま、この対象予約だけ解除する」と明示承認した場合だけ使う。
+通常の `cancel-hanjuku` のreceipt必須条件、診断の `cancellation_authority=false` は変更しない。
+
+親の独立レビュー・CI・protected mainへの統合・正規配布後、同じcanonical operatorを使う。
+両操作で `confirm=production` と、承認対象の `manual_pending_fingerprint` を
+`expected_reservation` に指定する。指紋はUUID・selected_atを含む予約全体を束縛する。
+まずcheckを実行し、成功した対象に対してreleaseを一度だけ実行する。結果はVM非公開operation logに残る。
+任意パス・shell・ゲーム入力は受け付けない。既存gatewayのexec搬送は固定reviewed scriptのみ使用する。
+workflowのstatus照合に加え、gateway deployment lock内の固定scriptでもVM HEADとtracked cleanを照合する。
+VM helperの非ゼロexit・SHA不一致はworkflowも失敗とし、原記録を公開しない。
+新admin scriptだけPython 3.11以上をisolated probeで必須確認し、safe-path `-P` でmoduleを起動する。
+PYTHONPATHは配布済みsrcに固定し、untrackedなCWDのdocich packageを読み込まない。非対応版へfallbackしない。
+
+全writer lockを非待機で保持し、waiting理由・automatic pending不在・weather予約保持、
+両retro ownerが不在または別要求のterminalであること、program待機/active owner、
+安定canonicalで半熟active/candidate/previous/retiringがないこと、対象receiptの欠落を再確認する。
+新receipt、予約指紋の変化、live/matching owner、lock競合、読取不能、書込前のsnapshot変化は拒否する。
+同じownerをregistry経由で再読する場合も、最初のsnapshot（欠落を含む）を保持する。
+重複再観測時の変更・ファイル生成はその場で拒否し、新しいsnapshotで置き換えない。
+全snapshotは `true` と `1`、`10` と `10.0` を区別するcanonical JSONで照合し、最終ledger再読でも
+manual予約全体の指紋を承認済みexpectedに再照合する。Python dict equalityで一致と見なさない。
+checkはEventLog再走査・資源probe・state作成を行わない。
+
+releaseはrotation ledgerをatomic置換し、対象 `manual_pending` だけを解除する。
+待機理由を `manual-request-admin-released`、error_kindをnullにし、元の予約・時刻・管理解除理由と
+historical coverage/資源帰属unknownを追記audit `manual_admin_releases` に保持する。
+既存history・cooldown・weather/他予約・receipt・owner・canonical・runtime・ユーザー休止は変更しない。
+receiptの捏造やfailed/successへの書換、cancel/recoveryの代用、tick・start・kill・service再起動は行わない。
+二度目は同じ予約がないため拒否し、自動retryはしない。書込後のtimeout等で結果不明なら再実行せず診断する。
+
+解除後は通常timerによるweatherの自然dispatch、対応receiptとowner終了、元ゲームへの復元を
+別途read-only診断で確認する。ledger解除の成功だけでweather開始・終了・復元済みとはしない。

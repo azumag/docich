@@ -22,6 +22,89 @@ LEGACY_REF = (
 
 
 class CornerRotationAuthorizeTests(unittest.TestCase):
+    def test_admin_script_excludes_untracked_cwd_package(self):
+        import os
+        import sys
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for package in (root / "src/docich", root / "docich"):
+                package.mkdir(parents=True)
+                (package / "__init__.py").touch()
+            (root / "src/docich/hanjuku_manual_admin_release.py").write_text('print("TRUSTED_TRACKED_MODULE")\n')
+            (root / "docich/hanjuku_manual_admin_release.py").write_text('print("UNTRACKED_CWD_SHADOW")\n')
+            (root / "config").mkdir()
+            (root / "config/docich.soren-live.toml").touch()
+            binaries = root / "bin"
+            binaries.mkdir()
+            (binaries / "python3").symlink_to(sys.executable)
+            git = binaries / "git"
+            git.write_text('#!/bin/bash\ncase "$*" in *rev-parse*) printf "%s\\n" "$ADMIN_RELEASE_SHA" ;; *status*) : ;; esac\n')
+            git.chmod(0o755)
+            env = {**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+                   "DOCICH_PROD_ROOT": str(root), "ADMIN_RELEASE_SHA": "b" * 40,
+                   "ADMIN_RELEASE_EXPECTED": "a" * 64, "ADMIN_RELEASE_MODE": "release"}
+            result = subprocess.run(["bash", str(ROOT / "ops/vm_actions/admin_release_hanjuku_manual.sh")],
+                                    cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "TRUSTED_TRACKED_MODULE\n")
+
+    def test_administrative_release_requires_canonical_owner_and_exact_target(self):
+        for operation in ("check-admin-release-hanjuku", "admin-release-hanjuku"):
+            self.assertEqual(self.run_auth(INPUT_OPERATION=operation, INPUT_EXPECTED_RESERVATION="a" * 64).returncode, 0)
+            for changes in (
+                {"INPUT_EXPECTED_RESERVATION": ""},
+                {"INPUT_EXPECTED_RESERVATION": "a" * 64 + ";id"},
+                {"INPUT_EXPECTED_RESERVATION": "a" * 64, "GITHUB_WORKFLOW_REF": LEGACY_REF},
+                {"INPUT_EXPECTED_RESERVATION": "a" * 64, "INPUT_CONFIRM": ""},
+                {"INPUT_EXPECTED_RESERVATION": "a" * 64, "GITHUB_ACTOR_ID": "42"},
+                {"INPUT_EXPECTED_RESERVATION": "a" * 64, "GITHUB_REF_PROTECTED": "false"},
+            ):
+                with self.subTest(operation=operation, changes=changes):
+                    self.assertNotEqual(self.run_auth(INPUT_OPERATION=operation, **changes).returncode, 0)
+            self.assertNotEqual(self.run_auth(INPUT_OPERATION=operation + ";id", INPUT_EXPECTED_RESERVATION="a" * 64).returncode, 0)
+
+    def test_admin_script_uses_only_fixed_argv(self):
+        import os
+        import sys
+        import tempfile
+        script = ROOT / "ops/vm_actions/admin_release_hanjuku_manual.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src/docich").mkdir(parents=True)
+            (root / "config").mkdir()
+            (root / "src/docich/hanjuku_manual_admin_release.py").touch()
+            (root / "config/docich.soren-live.toml").touch()
+            python = root / "python3"
+            python.write_text(f'#!{sys.executable}\nimport json,os,sys\nif sys.argv[1:3] == ["-I", "-c"]: sys.exit(int(os.environ.get("VERSION_PROBE_EXIT", "0")))\nprint(json.dumps(sys.argv[1:]))\n')
+            python.chmod(0o755)
+            git = root / "git"
+            git.write_text('#!/bin/bash\ncase "$*" in *rev-parse*) printf "%s\\n" "${VM_HEAD:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}" ;; *status*) printf "%s" "${VM_DIRTY:-}" ;; esac\n')
+            git.chmod(0o755)
+            env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"], "DOCICH_PROD_ROOT": str(root), "ADMIN_RELEASE_SHA": "b" * 40}
+            for mode in ("check", "release"):
+                result = subprocess.run(["bash", str(script)], env={**env, "ADMIN_RELEASE_MODE": mode,
+                    "ADMIN_RELEASE_EXPECTED": "a" * 64}, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), ["-B", "-P", "-m", "docich.hanjuku_manual_admin_release", mode, "--expected", "a" * 64])
+            for mode, expected, args in (("", "a" * 64, []), ("release;id", "a" * 64, []),
+                                         ("release", "", []), ("check", "a" * 64 + ";id", []),
+                                         ("release", "a" * 64, ["other-game"])):
+                result = subprocess.run(["bash", str(script), *args], env={**env, "ADMIN_RELEASE_MODE": mode,
+                    "ADMIN_RELEASE_EXPECTED": expected}, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 64)
+                self.assertEqual(result.stdout, "")
+            for changed in ({"VM_HEAD": "c" * 40}, {"VM_DIRTY": " M tracked.py"}):
+                result = subprocess.run(["bash", str(script)], env={**env, "ADMIN_RELEASE_MODE": "release",
+                    "ADMIN_RELEASE_EXPECTED": "a" * 64, **changed}, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 25)
+                self.assertEqual(result.stdout, "")
+            unsupported = subprocess.run(["bash", str(script)], env={**env,
+                "ADMIN_RELEASE_MODE": "release", "ADMIN_RELEASE_EXPECTED": "a" * 64,
+                "VERSION_PROBE_EXIT": "25"}, capture_output=True, text=True)
+            self.assertEqual(unsupported.returncode, 25)
+            self.assertEqual(unsupported.stdout, "")
+
     def test_cancel_script_has_only_fixed_argv_and_rejects_injection(self):
         import os
         import tempfile
@@ -218,7 +301,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
         for required in (
-            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, recover-runtime, check-cancel-hanjuku, cancel-hanjuku]",
+            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku]",
             "github.actor_id == 9018513",
             "github.triggering_actor == 'azumag'",
             "github.ref_protected == true",
@@ -230,6 +313,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
             "control/ops/vm_actions/rollback_corner_rotation_timer.sh",
             "control/ops/vm_actions/start_hanjuku_corner.sh",
             "control/ops/vm_actions/recover_hanjuku_runtime.sh",
+            "control/ops/vm_actions/admin_release_hanjuku_manual.sh",
             "Recover only the failed corner rotation slot",
             "Restart only the corner rotation service",
             "Roll back only the corner rotation timer",
@@ -247,6 +331,43 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
         self.assertNotIn("inputs.command", text)
         self.assertNotIn("event.issue.body", text)
         self.assertNotIn("pull_request_target", text)
+
+    def test_admin_workflow_propagates_private_helper_refusal(self):
+        import os
+        import tempfile
+        import textwrap
+        text = WF.read_text(encoding="utf-8")
+        step = text.split("      - name: Check or administratively release", 1)[1].split("      - name:", 1)[0]
+        shell = "set -euo pipefail\n" + textwrap.dedent(step.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            helper = root / "control/ops/vm_actions/admin_release_hanjuku_manual.sh"
+            helper.parent.mkdir(parents=True)
+            helper.write_text("# fixed helper fixture\n")
+            ssh = root / "ssh"
+            ssh.write_text('#!/bin/bash\ncat >/dev/null\nprintf "%s\\n" "$GATEWAY_RESULT"\n')
+            ssh.chmod(0o755)
+            env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                "EXPECTED": "a" * 64, "VM_SSH_USER": "operator", "VM_SSH_HOST": "fixture.invalid",
+                "SHA": "b" * 40, "RUNNER_TEMP": str(root), "port": "22"}
+            for operation in ("check-admin-release-hanjuku", "admin-release-hanjuku"):
+                for gateway in ({"status": "executed", "exit_code": 0},
+                                {"status": "executed", "exit_code": 1},
+                                {"status": "executed", "exit_code": False},
+                                {"status": "rejected", "exit_code": 0},
+                                {"status": "executed", "exit_code": 0, "sha": "c" * 40}):
+                    gateway.setdefault("sha", "b" * 40)
+                    result = subprocess.run(["bash", "-c", shell], cwd=root, env={**env,
+                        "OPERATION": operation, "GATEWAY_RESULT": json.dumps(gateway)}, capture_output=True, text=True)
+                    ok = gateway["status"] == "executed" and gateway["sha"] == env["SHA"] and type(gateway["exit_code"]) is int and gateway["exit_code"] == 0
+                    with self.subTest(operation=operation, gateway=gateway):
+                        self.assertEqual(result.returncode == 0, ok, result.stderr)
+                        if ok:
+                            public = json.loads(result.stdout)
+                            self.assertEqual(public["status"], "admin-eligible" if operation.startswith("check-") else "admin-released")
+                            self.assertIs(public["cancellation_authority"], False)
+                        else:
+                            self.assertEqual(result.stdout, "")
 
     def test_new_and_legacy_workflows_serialize_on_the_same_concurrency_group(self):
         group = "group: retro-corner-operator-${{ github.repository }}"
