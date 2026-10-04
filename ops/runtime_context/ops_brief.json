@@ -1,11 +1,11 @@
 {
-  "output_sha256": "4c8addcebd10edd9074094521880abed60800684b8784ce880697155b3789eb0",
+  "output_sha256": "6fe41ed3b5dbda660fa0c75ed9b4c8e91cf2ddfb7f5c6814b11418ec41e3c743",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "7ab880a7c2a81cba5a4d4f5b06c149a2d5cb38751cdfc21011919c9018900b38",
+  "source_sha256": "4ccfb9818ea1dc3e3b9a4f41e412c1d32013ca313ffc272ae415b045f1001b48",
   "topics": [
-    "天気WebUI手動操作を配備し、WebUI限定再起動を確認",
-    "TwiCaの画素維持キャプチャを配備、VM全体のCPU飽和は残存",
-    "TwiCaのPNG取得を画素維持で軽量化し、正規配備を準備"
+    "半熟英雄: 卵回復の見積もりを実測卵だけにし、支払へ賃金フロアを固定（v133）を配備",
+    "「CIが恒常失敗」の切り分け（実測）／`/hanjuku-evidence` は gateway 未更新で未解決",
+    "半熟英雄: 「保留」（入力0件の無限待機）を有限ゲートで廃止（v128）を配備"
   ]
 }
