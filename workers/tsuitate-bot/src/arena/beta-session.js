@@ -11,7 +11,8 @@ const isoNow = () => new Date().toISOString();
 export class BetaSession {
   constructor({ socket, store, profile, checkpoint = null, resolveResult = fetchPublicResult,
     log = () => {}, ackMs = 5000, queueWaitMs = 120000, retryMs = 1500, pollMs = 10000,
-    queueSettleMs = 5000, connectDeadlineMs = 65000, disconnectDeadlineMs = 65000 }) {
+    queueSettleMs = 5000, connectDeadlineMs = 65000, disconnectDeadlineMs = 65000,
+    queueDeadlineAt = null, allowQueueRejoin = true }) {
     this.socket = socket;
     this.store = store;
     this.profile = validateProfile(profile);
@@ -25,6 +26,8 @@ export class BetaSession {
     this.queueSettleMs = queueSettleMs;
     this.connectDeadlineMs = connectDeadlineMs;
     this.disconnectDeadlineMs = disconnectDeadlineMs;
+    this.queueDeadlineAt = queueDeadlineAt;
+    this.allowQueueRejoin = allowQueueRejoin;
     this.gate = new MoveGate();
     this.gameId = null;
     this.record = null;
@@ -170,6 +173,7 @@ export class BetaSession {
   }
 
   async onConnect() {
+    const reconnecting = this.everConnected;
     if (this.everConnected && this.gameId) {
       this.markCommunicationInterrupted();
       await this.persist();
@@ -180,7 +184,10 @@ export class BetaSession {
     this.log({ event: "connected", resuming: Boolean(this.gameId) });
     if (this.gameId) { this.sync(generation); return; }
     this.gate.acceptView(null, generation, { synchronized: true });
-    if (this.stopping) { await this.leaveQueue(); return; }
+    const remaining = this.queueDeadlineAt === null ? this.queueWaitMs : Math.max(0, this.queueDeadlineAt - Date.now());
+    if (this.stopping || remaining === 0 || (reconnecting && !this.allowQueueRejoin)) {
+      await this.drain(); return;
+    }
     // The server enforces one active game. A rejected join is not evidence that
     // an existing match has ended; game:active or an on-disk checkpoint resumes it.
     this.emitAck("queue:join", null, (error, ack) => {
@@ -195,7 +202,7 @@ export class BetaSession {
     const epoch = this.socketEpoch;
     this.later(async () => {
       if (epoch === this.socketEpoch && this.socket.connected && !this.gameId) await this.drain();
-    }, this.queueWaitMs);
+    }, remaining);
   }
 
   markCommunicationInterrupted() {

@@ -25,6 +25,24 @@ Cloudflare Workersのbuild設定と検証方法は [BUILDS.md](BUILDS.md) にま
 
 ## 対応範囲
 
+### beta対局のDurable Object準備（未配備・未開始）
+
+`src/arena/beta-arena.js` は既存の共通brainと `BetaSession` を使う、Socket.IOの常駐接続用DOです。productionの `src/index.js` / `cloudflare.config.ts` にはexport・binding・migrationを追加していません。このPRをbuildしてもBetaArenaは配備されず、実サービスへ接続しません。Webhookとbeta Socket.IOは別の入口です。
+
+初期状態は `stopped` です。将来の内部owner controlがsingleton名 `beta:DoCiAI` のDOへ `start({runId})` / `stop()` / `status()` を呼ぶ設計で、HTTPの開始・停止URLはありません。既存owner-only VM gatewayはVM用であり、この操作の認証・公開経路はまだ用意していません。Webhookの `WEBHOOK_SECRET` を管理者権限として使いません。将来有効化する場合はowner認証経路を独立にレビューし、明示的な `BETA_ARENA_ENABLED="true"` とownerが設定する別secret `TSUITATE_BOT_TOKEN` が必要です。tokenはログ・checkpoint・対局記録へ保存しません。
+
+この準備版はactor全体で開始予約を1回、対局を最大1局に固定します。queue待ちは開始予約から60秒で、ACK確認・通知競合の待機にはさらに最大5秒を使います。同じrunIdの再送は同じ状態を返し、別runId、完了後の再開始、並行した開始、alarm重複から次局を募集しません。継続対局やreset APIはありません。stopは待機中ならqueueから退出し、対局中なら指し続けて結果保存後に停止します。進行中はenable flagを切り替えずstopを使ってください。
+
+SQLite DO storageの `beta:meta` に開始予約・対局ID・世代・brain/profile・停止要求、`beta:checkpoint` に既存runnerの自分の観測と未確認着手、`beta:terminal` に正規化した終局記録を保存します。着手はcheckpoint保存後に送信し、古い世代の書込みを拒否します。値は1 MiB以下に制限し、保存失敗時は以前のcheckpointを保ち、次の入力を止めます。終局記録は同一内容を冪等に保存し、矛盾する結果は上書きしません。
+
+20秒間隔のalarmは既知の対局IDだけを復元して `game:sync` します。cold restoreで対局IDが未保存なら `unknown_match_state` に停止し、サーバー側に対局がないとは判断せず、再募集もしません。warm reconnectでもID不明なら再joinを避けて退出を試みます。復元・通信断を経た対局は学習対象外です。保存済みbrain版が利用できない場合もcheckpointを保持して停止します。alarmは稼働保証ではなく、配備や障害による切断負けのリスクは残ります。
+
+Socket.IO 4.8.4の公開ブラウザ配布をnative WebSocket transportだけで使います。外向きWebSocketは[DOのhibernation対象外](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)で、常駐中はduration課金・quota消費があります。[現行料金](https://developers.cloudflare.com/durable-objects/platform/pricing/)では128 MB割当として、10分の接続は計算上76.8 GB-s相当です。実課金は丸め、plan、含有枠、他の使用量、requests/alarm/SQLite/logsにも依存します。アカウントの現plan・残量は未確認で、無料稼働を保証しません。plan変更は行っていません。
+
+ローカル検証は `npm test` と `npm run test:beta-workerd` です。後者は一時directoryのSQLite DO、localhostのEngine.IO/Socket.IO fixture、明示的な非credential文字列だけを使います。workerdで初期停止、singleton、1回の募集、初回の空active通知、保存後の着手、stop、SQLite rollbackまで確認しました。runtime再起動後の保存領域引継ぎは未解決で、cold restore・終局保存の統合テストはまだ成功していません。Miniflare v5のinline bundleで `scriptPath` 起動問題を回避できましたが、旧persist optionが無視されるため `isolatedResourcePersistencePath` の扱いをさらに確認する必要があります。既存の正規化が `node:crypto` を使うため、このローカルtest-only構成は `nodejs_compat` を指定します。production側のflagは変更していません。
+
+実運用には、親の独立レビュー、owner認証controlの承認、production export/binding/compatibility設定のレビュー、plan/quota確認、ownerによるsecret設定、配備許可、既存Botのserver側対局・queue確認、改めて1局の実行許可が必要です。この変更では実DO/D1作成、secret生成・設定、配備、Bot登録、beta接続・実対局を行っていません。既存Webhookの設定・状態は維持します。
+
 - 現在受け付けるのは通常の `ついたて` です。`ダーク`、`ついたて5五`、`ついたてリレー` は、モード固有ルールの根拠と検証fixtureが揃うまで `422 unsupported_game_type` で安全に拒否します。
 - 初回は手数0から `ply` まで、差分は `basePly + 1` から `ply` までを連番検証して保存します。差分の `basePly` は保持済みの最後の手数と完全一致する必要があります。
 - Durable Objectのトランザクションで局面履歴、進行位置、直近の指し手、requestIdの応答レシートを一括更新します。同じrequestIdと同じraw本文なら同じ応答を返し、本文が変わっていれば `409` を返します。
