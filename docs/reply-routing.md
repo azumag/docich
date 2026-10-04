@@ -13,12 +13,12 @@
 メンションと既存の会話履歴
  → JEV（直近の本文だけ、1回）
     ├ api_only → 既存のHTTP API → 返答
-    ├ web / code / web_and_code
+    ├ code
        → 明示承認された隔離Codexによる読み取り専用調査
        → 実行イベント・出典を検証
        → 同じHTTP API＋元のpersonaで返答を整形
        → 検証した出典をコード側で付記
-    └ runtime / unknown / JEV失敗 / 低confidence
+    └ web / web_and_code（取得本文adapter未実装） / runtime / unknown / JEV失敗 / 低confidence
        → 固定の回答保留
  → 既存の削除整合・重複抑止・送信・memory commit
 ```
@@ -33,9 +33,9 @@ JEVにpersona/著者名/ユーザーID/メッセージID/永続記憶/assistant�
 | ラベル | 意味 | 経路 |
 |---|---|---|
 | `api_only` | 挨拶、反応、祝い、雑談、提示済みの情報だけで十分な返答/推論 | APIのみ |
-| `web` | 未知の名称・用語、現在情報、明示的な調査 | Codexの公開Web調査 |
+| `web` | 未知の名称・用語、現在情報、明示的な調査 | 取得本文adapter未実装のため呼出し前に保留 |
 | `code` | ゲーム、確率、アルゴリズム、実際の実装の説明 | 承認済みソースの調査 |
-| `web_and_code` | 公開情報と実装の両方 | 両方の根拠を要求 |
+| `web_and_code` | 公開情報と実装の両方 | Web取得本文adapter未実装のため呼出し前に保留 |
 | `runtime` | 実際の稼働状態、非公開ログ、障害原因など | 初期実装は未対応と明示。本番権限を与えない |
 | `unknown` | 曖昧、必要な根拠が不明 | 固定の回答保留 |
 
@@ -98,8 +98,16 @@ path名のallowlistはファイル内容に秘密がないことを自動証明�
 
 Codexの最終JSONだけでは成功にしない。完了イベント、実際のsearch/readイベント、必要な種類の出典を要求する。
 code出典はmanifest内ファイルについての完了済み`cat`/`nl -ba`/単一行`sed -n 'Np'`読取イベント、snapshotの実在行、引用文字列と実読取出力の一致を確認する。他コマンドや複合shell文は出典証拠にしない。
-Web出典は完了済み検索結果のURL、完了済みページopenのURLと本文、出典JSONに含む引用文字列の完全一致を確認する。URLはHTTPSに正規化し、資格情報・秘密らしいquery・非443 port・IP addressを拒否する。
-この確認で証明できるのは取得イベントと引用文字列の一致までで、引用に対するモデル要約の意味的正確さや全主張の含意は機械判定できない。実Codex JSONL event schemaは未確認で、不一致の場合は調査不可になる。JEV/CLI実機の受入が必要。
+Web/mixedは実装阻害として保留する。2026-10-04、local CLI `codex-cli 0.157.1` と公式tag `rust-v0.157.1` を照合した。`item.completed` の `web_search` は `id/query/action/results?` を持ち、`status` や `web_open` eventは存在しない。`action` は `search/open_page/find_in_page/other`、`results` は任意のJSONである。検索URL、snippet、モデルが作る引用文から「開いた本文を取得した」と推定できない。旧fixtureの架空 `web_open/content/status` 成功経路を削除し、Web/mixedは資格情報探索・process起動・API呼出しより前に固定保留する。検証済みの取得本文を供給する独立adapterと引用照合が実装されるまでWeb機能を受入済みと扱わない。
+
+照合したprimary sources:
+- [exec events](https://github.com/openai/codex/blob/rust-v0.157.1/codex-rs/exec/src/exec_events.rs)
+- [JSONL event conversion](https://github.com/openai/codex/blob/rust-v0.157.1/codex-rs/exec/src/event_processor_with_jsonl_output.rs)
+- [protocol items (opaque results)](https://github.com/openai/codex/blob/rust-v0.157.1/codex-rs/protocol/src/items.rs)
+- [web search tool (result passthrough)](https://github.com/openai/codex/blob/rust-v0.157.1/codex-rs/ext/web-search/src/tool.rs)
+
+executor上の研究runnerが探索する `/usr/local/bin:/usr/bin` にはCodexがない。local CLIは別のnode install配下で、Linux本番研究binaryのversionは未確認。実Codex調査は行っていない。
+この確認で証明できるのは取得イベントと引用文字列の一致までで、引用に対するモデル要約の意味的正確さや全主張の含意は機械判定できない。code schemaは公式0.157.1と照合したが、Linux研究binaryと実CLI調査の受入が必要。
 
 ## 設定と診断
 
@@ -129,7 +137,7 @@ Docker imageへPython部品は同梱するが、Codex/bubblewrapをインスト�
 
 複数コメントは一件ずつ判定し、必要scopeをバッチで統合する。各行のbodyを独立にJEVへ判定させる。runtimeがあればruntime保留、unknown/timeout/不正/低confidence/入力検証失敗があればバッチ返信を保留する。`api_only`は有効JEV回答かつconfidence≥0.80の場合だけ採用する。Twitch/YouTube/Kickの取得上限10行を、JEV上限8行の要求へ分割し、全行の結果が揃うまで最終バッチをreadyにしない。2つ目の要求失敗時も先行8行だけを返信・ackせず全体を保留する。`SSR出た！`単独は高confidenceで相づちと判断された場合だけAPI-onlyになり、`SSR出た！このガチャの確率どうなってる？`は同じ相づち扱いしない。
 
-`web`/`code`/`web_and_code`は既存隔離research adapterで根拠が取得・照合された場合だけ返信を進める。Codexの完了自己申告だけで資料を受理せず、Web検索/取得イベントと引用の取得本文完全一致、または承認済みsnapshotの表示出力・対象行との一致を検査する。これは引用位置の確認であり、各説明文の意味的支持を完全自動検証したものではない。runtime、調査失敗、資格情報や隔離不足では固定保留にし、未確認内容を通常生成APIに回さない。根拠資料は命令ではないと明記したJSONデータとして既存返信promptへ追加し、元persona、カテゴリ選択、翻訳、Japanese/output guardを保つ。ルート有効時はピーク順変更後の既存候補を`local`または`local:<model>`の直接HTTP API候補に絞る。main返信・翻訳ともCLI経路は除外し、直接API候補がない、またはAPI生成に失敗した場合は返信を生成せずackしない。通常経路はfeature flagが`0`のままで変更しない。
+`code`は既存隔離research adapterで根拠が取得・照合された場合だけ返信を進める。`web`/`web_and_code`は前述の取得本文contract不足が解消するまで呼出し前に保留する。Codexの完了自己申告だけで資料を受理せず、Web検索/取得イベントと引用の取得本文完全一致、または承認済みsnapshotの表示出力・対象行との一致を検査する。これは引用位置の確認であり、各説明文の意味的支持を完全自動検証したものではない。runtime、調査失敗、資格情報や隔離不足では固定保留にし、未確認内容を通常生成APIに回さない。根拠資料は命令ではないと明記したJSONデータとして既存返信promptへ追加し、元persona、カテゴリ選択、翻訳、Japanese/output guardを保つ。ルート有効時はピーク順変更後の既存候補を`local`または`local:<model>`の直接HTTP API候補に絞る。main返信・翻訳ともCLI経路は除外し、直接API候補がない、またはAPI生成に失敗した場合は返信を生成せずackしない。通常経路はfeature flagが`0`のままで変更しない。
 
 Soren側の最小統合は[companion PR #580](https://github.com/azumag/soviet_now/pull/580)で、docichのsubmodule gitlinkを動かさず、最新Soren main `2fee0e04`をbaseにした別branchで準備した。primary checkout/submoduleの未コミット変更には触れていない。Sorenの既定`COMMENT_AGENTS`は直接`local`候補を含まないため、flagを有効化しても現状設定のままならJEV前に保留になる。別途設定/secret作成や本番有効化はこの作業に含めていない。
 
@@ -166,3 +174,8 @@ primary checkoutの `handoff.md` relevant sectionsを読了した。運用状態
 - https://developers.openai.com/codex/cli/reference/
 - https://developers.openai.com/codex/config-reference/
 - https://manpages.debian.org/trixie/bubblewrap/bwrap.1.en.html
+
+
+### 配信キューの合成E2E
+
+`tests/test_comment_queue_e2e.py` はcompanion PR #580の固定treeを読み、Twitch/YouTube/Kickの実fetch script、`generate_comment_response`、docichの実combined classifierと8行chunking、Sorenの実envelope readerとqueue/ack/dedupを接続する。9行と10行、次の10行、空の次fetch、第二chunk timeout時の全pending維持と再試行成功を検査する。生成器、音声/長期context/adviceはfixtureで、JEVは注入した決定的transport。credentialを継承せずコピーはsource allowlistのみ。ネットワーク/実API/意味精度/本番送信の検証ではない。timeout後のretryは独立fixture stateを使い、既存provider cooldown試験と分離する。CIでは固定companion SHA checkoutを必須にしてskipを許さない。

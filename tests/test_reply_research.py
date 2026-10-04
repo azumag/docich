@@ -37,10 +37,15 @@ def transcript(sources, tools=(), notes="確認した根拠", finished=True):
 
 WEB = {"kind": "web", "ref": "https://example.org/source", "quote": "確認した資料"}
 CODE = {"kind": "code", "ref": "logic.py", "line": 1, "quote": "answer = 42"}
-SEARCH = {"type": "web_search", "status": "completed", "query": "example",
-          "results": [{"url": "https://example.org/source"}]}
-OPEN = {"type": "web_open", "status": "completed", "url": "https://example.org/source",
-        "content": "確認した資料"}
+# Official rust-v0.157.1 exec_events.rs / protocol models.rs shape.
+# results are opaque JSON; even URL/snippet/body-like values do not establish
+# a trusted page retrieval contract. Never use these as a success fixture.
+SEARCH = {"id": "search-1", "type": "web_search", "query": "example",
+          "action": {"type": "search", "query": "example"},
+          "results": [{"url": "https://example.org/source", "snippet": "確認した資料"}]}
+OPEN = {"id": "open-1", "type": "web_search", "query": "https://example.org/source",
+        "action": {"type": "open_page", "url": "https://example.org/source"},
+        "results": [{"url": "https://example.org/source", "content": "確認した資料"}]}
 READ = {"type": "command_execution", "status": "completed", "command": "cat source/logic.py",
         "exit_code": 0, "aggregated_output": "answer = 42"}
 
@@ -100,8 +105,8 @@ def test_web_needs_observed_search_not_model_claim(tmp_path):
         r.parse_evidence(transcript([WEB]), "web", tmp_path, None)
     with pytest.raises(ValueError, match="unverified"):
         r.parse_evidence(transcript([WEB], [SEARCH]), "web", tmp_path, None)
-    value = r.parse_evidence(transcript([WEB], [SEARCH, OPEN]), "web", tmp_path, None)
-    assert value.ok and value.sources == (WEB["ref"],)
+    with pytest.raises(ValueError, match="unverified"):
+        r.parse_evidence(transcript([WEB], [SEARCH, OPEN]), "web", tmp_path, None)
 
 
 def test_web_quote_must_match_opened_content(tmp_path):
@@ -110,9 +115,10 @@ def test_web_quote_must_match_opened_content(tmp_path):
                          "web", tmp_path, None)
 
 
-def test_failed_search_is_not_evidence(tmp_path):
+@pytest.mark.parametrize("results", [None, [], [{"url": WEB["ref"]}], [{"url": WEB["ref"], "snippet": WEB["quote"]}]])
+def test_opaque_or_absent_search_results_are_not_page_evidence(tmp_path, results):
     with pytest.raises(ValueError, match="unverified"):
-        r.parse_evidence(transcript([WEB], [{**SEARCH, "status": "failed"}, OPEN]), "web", tmp_path, None)
+        r.parse_evidence(transcript([WEB], [{**SEARCH, "results": results}, OPEN]), "web", tmp_path, None)
 
 
 def test_code_requires_exact_snapshot_quote_and_successful_read(tmp_path):
@@ -141,8 +147,9 @@ def test_unsupported_or_compound_commands_cannot_prove_a_code_read(command):
 def test_mixed_scope_requires_both_sources(tmp_path):
     root, dest, manifest = source(tmp_path)
     r.snapshot(root, dest, deadline=time.monotonic() + 10)
-    assert not r.parse_evidence(transcript([WEB], [SEARCH, OPEN]), "web_and_code", dest, manifest).ok
-    assert r.parse_evidence(transcript([WEB, CODE], [SEARCH, OPEN, READ]), "web_and_code", dest, manifest).ok
+    assert not r.parse_evidence(transcript([CODE], [READ]), "web_and_code", dest, manifest).ok
+    with pytest.raises(ValueError, match="unverified"):
+        r.parse_evidence(transcript([WEB, CODE], [SEARCH, OPEN, READ]), "web_and_code", dest, manifest)
 
 
 @pytest.mark.parametrize("ref", ["file:///etc/passwd", "https://user:password@example.org", "https://example.org/\nsecret", "http://example.org", "not-a-url"])
@@ -278,7 +285,8 @@ def test_unconfigured_never_spawns(monkeypatch, env):
     assert not r.research([], "web", env=env).ok
 
 
-def test_spawn_gets_only_dedicated_credentials_and_workspace_is_removed(monkeypatch):
+def test_spawn_gets_only_dedicated_credentials_and_workspace_is_removed(monkeypatch, tmp_path):
+    root, _, _ = source(tmp_path)
     monkeypatch.setattr(r.sys, "platform", "linux")
     monkeypatch.setattr(r.shutil, "which", lambda name, **kw: "/usr/bin/" + name)
     calls = []
@@ -286,7 +294,7 @@ def test_spawn_gets_only_dedicated_credentials_and_workspace_is_removed(monkeypa
         snapshot_dir = Path(argv[argv.index("/workspace/source") - 1])
         calls.append((argv, prompt, env, timeout, snapshot_dir))
         assert snapshot_dir.exists()
-        return transcript([WEB], [SEARCH, OPEN])
+        return transcript([CODE], [READ])
     monkeypatch.setattr(r, "_run", fake_run)
     class FakeEgressProxy:
         def __init__(self, _):
@@ -301,8 +309,9 @@ def test_spawn_gets_only_dedicated_credentials_and_workspace_is_removed(monkeypa
            "DOCICH_REPLY_CODEX_API_KEY": "SYNTHETIC_RESEARCH_ONLY", "DISCORD_TOKEN": "PRIVATE_DISCORD",
            "GITHUB_TOKEN": "PRIVATE_GITHUB", "AWS_ACCESS_KEY_ID": "PRIVATE_AWS",
            "OPENAI_API_KEY": "PRIVATE_OPENAI", "DOCKER_HOST": "PRIVATE_DOCKER",
-           "HOME": "/private", "HTTPS_PROXY": "PRIVATE_PROXY"}
-    assert r.research([{"role": "user", "text": "XXとは"}], "web", env=env).ok
+           "HOME": "/private", "HTTPS_PROXY": "PRIVATE_PROXY",
+           "DOCICH_REPLY_SOURCE_APPROVED": "1", "DOCICH_REPLY_SOURCE_DIR": str(root)}
+    assert r.research([{"role": "user", "text": "この実装は"}], "code", env=env).ok
     argv, prompt, child_env, timeout, snapshot_dir = calls[0]
     assert set(child_env) == {"PATH", "LANG", "CODEX_API_KEY"}
     assert "PRIVATE" not in json.dumps((argv, child_env))
@@ -369,8 +378,10 @@ def test_timeout_kills_descendant_process_group(tmp_path):
 
 
 def test_plain_progress_does_not_replace_final_evidence(tmp_path):
+    root, dest, manifest = source(tmp_path)
+    r.snapshot(root, dest, deadline=time.monotonic() + 10)
     progress = json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "I will look up the sources."}}).encode()
-    assert r.parse_evidence(progress + b"\n" + transcript([WEB], [SEARCH, OPEN]), "web", tmp_path, None).ok
+    assert r.parse_evidence(progress + b"\n" + transcript([CODE], [READ]), "code", dest, manifest).ok
     argv = r.sandbox_argv(tmp_path, "synthetic", "/usr/bin/bwrap", "/usr/bin/codex",
                           bridge_script=tmp_path / "bridge.py", proxy_socket=tmp_path / "egress.sock")
     assert 'web_search="disabled"' in argv
@@ -530,3 +541,20 @@ def test_bridge_drops_namespace_capabilities_before_launch_and_passes_no_parent_
                                     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy",
                                     "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"}
     assert "PRIVATE" not in json.dumps(captured)
+
+
+@pytest.mark.parametrize("scope", ["web", "web_and_code"])
+def test_web_schema_blocker_holds_before_any_spawn(monkeypatch, scope):
+    monkeypatch.setattr(r.sys, "platform", "linux")
+    monkeypatch.setattr(r.shutil, "which", lambda *a, **kw: pytest.fail("binary discovery"))
+    monkeypatch.setattr(r, "_run", lambda *a: pytest.fail("paid provider spawn"))
+    env = {"DOCICH_ALLOW_REAL_AI": "1", "DOCICH_REPLY_RESEARCH_ENABLED": "1",
+           "DOCICH_REPLY_WEB_SEARCH_ENABLED": "1",
+           "DOCICH_REPLY_CODEX_MODEL": "synthetic-model", "DOCICH_REPLY_CODEX_API_KEY": "SYNTHETIC"}
+    assert not r.research([], scope, env=env).ok
+
+
+def test_invented_web_open_event_is_not_evidence(tmp_path):
+    invented = {"type": "web_open", "status": "completed", "url": WEB["ref"], "content": WEB["quote"]}
+    with pytest.raises(ValueError, match="unverified"):
+        r.parse_evidence(transcript([WEB], [SEARCH, invented]), "web", tmp_path, None)

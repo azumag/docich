@@ -12,6 +12,7 @@ on:
       - 'src/docich/semantic_decision/**'
       - 'tests/test_reply_routing.py'
       - 'tests/test_reply_research.py'
+      - 'tests/test_comment_queue_e2e.py'
       - 'tests/fixtures/reply_routing_canary.json'
       - 'src/docich/comment/prompts/comment_persona_main.md'
       - 'tests/test_discord_chat.py'
@@ -35,6 +36,7 @@ on:
       - 'src/docich/semantic_decision/**'
       - 'tests/test_reply_routing.py'
       - 'tests/test_reply_research.py'
+      - 'tests/test_comment_queue_e2e.py'
       - 'tests/fixtures/reply_routing_canary.json'
       - 'src/docich/comment/prompts/comment_persona_main.md'
       - 'tests/test_discord_chat.py'
@@ -77,6 +79,30 @@ jobs:
         env:
           DOCICH_REQUIRE_BWRAP_PROBE: "1"
         run: PYTHONPATH=src python3 -m pytest -q tests/test_discord_chat.py tests/test_discord_memory.py tests/test_reply_routing.py tests/test_reply_research.py
+
+  comment-queue-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: azumag/soviet_now
+          ref: 2f7258dd9c42946c4db8fd86222d4c4d176486b5
+          path: _test_soren
+          persist-credentials: false
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gettext-base jq
+          python3 -m pip install -r requirements-test.txt
+      - name: Repeated fixture fetch, combined JEV chunks, queue and ack (no APIs)
+        env:
+          DOCICH_REQUIRE_QUEUE_E2E: "1"
+          DOCICH_SOREN_TEST_ROOT: ${{ github.workspace }}/_test_soren
+        run: PYTHONPATH=src python3 -m pytest -q tests/test_comment_queue_e2e.py
 
   docker-contracts:
     runs-on: ubuntu-24.04
