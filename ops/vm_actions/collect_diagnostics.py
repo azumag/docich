@@ -15,6 +15,8 @@ Observed sources (all read-only):
   - tmp/state/ai_stats/YYYYMMDD.jsonl structured telemetry
   - tmp/state/improve_state.json, improve lock/monitor/retry/gate markers
   - deployed git HEADs (docich + intended soviet_now gitlink)
+  - fixed Soren supervisor unit/pidfile/start-time and public script/FD-255
+    fingerprints only; these do not attest already-defined Bash functions
   - one bounded owner-only Soren stream-title journal, projected to fixed enums,
     UTC time, SHA and two nonsecret ID presence booleans only; title and integrated stream-log bodies are never read
   - fixed, known temporary shared-object filename families under /tmp plus
@@ -2093,6 +2095,183 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha, expected_code=Non
     result["skip_reason"] = skip_reason
     result["youtube"] = youtube
     result["kick"] = kick
+    return result
+
+
+def _supervisor_read(path, limit):
+    """Bounded regular-file read; never follow a state/metadata symlink."""
+    flags = (os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+             | getattr(os, "O_CLOEXEC", 0))
+    fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("unsafe metadata")
+        with os.fdopen(fd, "rb", closefd=False) as source:
+            data = source.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError("oversized metadata")
+        return data
+    finally:
+        os.close(fd)
+
+
+def _supervisor_unit_pid():
+    """One fixed system-scope property, not ExecStart/argv/environment."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", "soren-runtime.service", "--property=MainPID", "--value"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2, check=False,
+        )
+        value = result.stdout.strip()
+        if result.returncode == 0 and re.fullmatch(rb"[1-9][0-9]{0,9}", value):
+            return int(value)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _supervisor_process_start(proc_root, pid):
+    directory = proc_root / str(pid)
+    if directory.stat().st_uid != os.getuid():
+        raise ValueError("foreign process")
+    data = _supervisor_read(directory / "stat", 4096)
+    # comm can itself contain ')' or whitespace; never emit it.
+    if not data.startswith(str(pid).encode() + b" ("):
+        raise ValueError("invalid process")
+    fields = data[data.rfind(b")") + 2:].split()
+    if len(fields) < 20 or fields[0] not in (b"R", b"S", b"D", b"T", b"t", b"I"):
+        raise ValueError("inactive process")
+    if not re.fullmatch(rb"[1-9][0-9]{0,19}", fields[19]):
+        raise ValueError("invalid process start")
+    ticks = int(fields[19])
+    return ticks
+
+
+def _supervisor_script_fingerprint(path, expected_fd_target=None):
+    """Hash only fixed start_all.sh or Bash's validated script FD 255.
+
+    Opening a Linux /proc FD creates a separate read description: do not seek
+    or read the target process's descriptor itself. Never scan other FDs.
+    """
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    if expected_fd_target is None:
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    else:
+        target = os.readlink(path)
+        if target not in (expected_fd_target, expected_fd_target + " (deleted)"):
+            raise ValueError("unexpected script descriptor")
+    fd = os.open(path, flags)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                or before.st_size <= 0 or before.st_size > 512 * 1024):
+            raise ValueError("unsafe script")
+        signature = lambda info: (info.st_dev, info.st_ino, info.st_size,
+                                  info.st_mtime_ns, info.st_ctime_ns)
+        if expected_fd_target is not None and (
+                os.readlink(path) != target
+                or signature(before) != signature(os.stat(path))):
+            raise ValueError("descriptor changed")
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(fd, 64 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 512 * 1024:
+                raise ValueError("oversized script")
+            digest.update(chunk)
+        if (signature(before) != signature(os.fstat(fd))
+                or signature(before) != signature(os.stat(path, follow_symlinks=expected_fd_target is not None))):
+            raise ValueError("script changed")
+        if expected_fd_target is not None and os.readlink(path) != target:
+            raise ValueError("descriptor changed")
+        return digest.hexdigest(), int(before.st_mtime), int(before.st_ctime)
+    finally:
+        os.close(fd)
+
+
+def _collect_supervisor_identity(soren, expected_sha, proc_root=Path("/proc")):
+    """Source/age evidence only: never certify already-defined Bash functions.
+
+    PID/start ticks stay internal for race detection. A matching disk/held-FD
+    hash does not prove function memory, and a same-PID exec can reload code
+    without changing process start time. No signal or runtime write is used.
+    """
+    source = Path(soren).absolute() / "start_all.sh"
+    pidfile = Path(soren) / "tmp/state/start_all.pid"
+    expected = _stream_title_sync_git_blob_sha256(
+        PROD_ROOT / "games/soviet_now", expected_sha, "start_all.sh"
+    )
+    result = {
+        "status": "unavailable", "reason": "pidfile_unavailable",
+        "loaded_functions_status": "unverified",
+        "expected_script_sha256": expected, "deployed_script_sha256": None,
+        "open_script_sha256": None, "deployed_matches_expected": None,
+        "open_script_matches_expected": None, "pidfile_matches_unit": None,
+        "identity_stable": None, "process_started_at": None,
+        "deployed_script_mtime": None, "deployed_script_ctime": None,
+    }
+    try:
+        digest, mtime, ctime = _supervisor_script_fingerprint(source)
+        result.update(deployed_script_sha256=digest, deployed_script_mtime=mtime,
+                      deployed_script_ctime=ctime)
+        if expected:
+            result["deployed_matches_expected"] = digest == expected
+    except (OSError, ValueError):
+        pass
+    try:
+        value = _supervisor_read(pidfile, 32).strip()
+        if not re.fullmatch(rb"[1-9][0-9]{0,9}", value):
+            return result
+        pid = int(value)
+        unit_pid = _supervisor_unit_pid()
+        if unit_pid is None:
+            result["reason"] = "unit_unavailable"
+            return result
+        result["pidfile_matches_unit"] = pid == unit_pid
+        if pid != unit_pid:
+            result["reason"] = "unit_pid_mismatch"
+            return result
+        result["reason"] = "process_unavailable"
+        started = _supervisor_process_start(proc_root, pid)
+        executable = os.readlink(proc_root / str(pid) / "exe")
+        if Path(executable).name != "bash":
+            result["reason"] = "not_bash"
+            return result
+        try:
+            boot = re.search(rb"(?m)^btime ([0-9]{1,12})$", _supervisor_read(proc_root / "stat", 512 * 1024))
+            hz = os.sysconf("SC_CLK_TCK")
+            if boot and hz > 0:
+                result["process_started_at"] = int(int(boot[1]) + started / hz)
+        except (OSError, ValueError):
+            pass
+        result["reason"] = "script_fd_unavailable"
+        try:
+            digest, _, _ = _supervisor_script_fingerprint(
+                proc_root / str(pid) / "fd/255", str(source)
+            )
+            result["open_script_sha256"] = digest
+        except (OSError, ValueError):
+            pass
+        try:
+            stable = (_supervisor_process_start(proc_root, pid) == started
+                      and _supervisor_read(pidfile, 32).strip() == value
+                      and _supervisor_unit_pid() == pid)
+        except (OSError, ValueError):
+            stable = False
+        if not stable:
+            result.update(reason="identity_changed", identity_stable=False,
+                          process_started_at=None, open_script_sha256=None)
+            return result
+        result["identity_stable"] = True
+        if result["open_script_sha256"] is not None:
+            result.update(status="observed", reason="source_evidence_only")
+            if expected:
+                result["open_script_matches_expected"] = result["open_script_sha256"] == expected
+    except (OSError, ValueError):
+        pass
     return result
 
 
@@ -5898,6 +6077,7 @@ def main(argv):
         ),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
         "workers": workers,
+        "supervisor_identity": _collect_supervisor_identity(soren, meta.get("soren_gitlink_sha")),
         "semantic_decision": _collect_semantic_decision(workers),
         "queues": {**queues, "queue_giveups_15m": ai["queue_giveups"]},
         "ai": {
