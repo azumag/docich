@@ -61,6 +61,7 @@ jobs:
           ops/vm_actions/stage_repair.py
           ops/vm_actions/collect_diagnostics.py
           ops/vm_actions/recover_soren_game.py
+          ops/vm_actions/recover_soren_round.py
           ops/vm_actions/runtime_registry.py
           ops/vm_actions/nethack_canary_production_smoke.py
           ops/self_repair/worker.py
@@ -86,6 +87,7 @@ jobs:
           ops/vm_actions/request_nethack_canary_smoke.sh
           ops/vm_actions/restart_webui.sh
           ops/vm_actions/recover_soren_game.sh
+          ops/vm_actions/recover_soren_round.sh
           ops/vm_actions/storage_reclaim.sh
           ops/vm_actions/opencode_db_retention_now.sh
           ops/vm_actions/ensure_opencode_retention_timer.sh

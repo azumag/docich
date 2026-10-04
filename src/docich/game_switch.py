@@ -921,6 +921,9 @@ class GameSwitchStore:
         crash_hook: CrashHook | None = None,
     ) -> RequestAcceptance:
         self._require_exclusive_lock(lock)
+        from .soren_round_recovery import recovery_held
+        if recovery_held(self.state_dir):
+            raise GameSwitchBusyError("owned Soren round recovery retains the owner/rotation hold")
         request_id = validate_request_id(request_id)
         operation, target = validate_request(operation, target)
         request_payload = copy.deepcopy(dict(payload or {}))
@@ -3257,6 +3260,9 @@ class GameSwitchCoordinator:
             "generation": acceptance.generation,
             "error_code": error_code,
             "detail": detail,
+            "failure_phase": "round_boundary",
+            "retained_active": copy.deepcopy(dict(old_active)),
+            "boundary_cancelled": bool(cancel_boundary),
         }
         tx.transition(
             {"draining"},
@@ -4408,6 +4414,9 @@ class GameSwitchCoordinator:
             "generation": receipt.get("generation"),
             "error_code": ERROR_TIMEOUT,
             "detail": "試合終了境界のdeadlineが経過したため待機を取り消しました",
+            "failure_phase": "round_boundary",
+            "retained_active": copy.deepcopy(active),
+            "boundary_cancelled": True,
         }
         tx.transition(
             {"draining"},
@@ -4444,6 +4453,9 @@ class GameSwitchCoordinator:
         deadline: float,
         abandon_program_view: bool = False,
     ) -> SwitchResult:
+        from .soren_round_recovery import recovery_held
+        if recovery_held(self.store.state_dir):
+            raise GameSwitchBusyError("owned Soren round recovery requires its fixed resume path")
         state = self.store.canonical.initialize()
         phase = state["phase"]
         warnings: list[str] = []
