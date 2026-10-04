@@ -146,6 +146,18 @@ class HanjukuStartQueryWorkflowTests(unittest.TestCase):
             "state_unavailable",
             "config_invalid",
             "queue_rejected",
+            "rotation_adapter_state",
+            "rotation_adapter_timestamp",
+            "rotation_catalog_mismatch",
+            "rotation_execution_error",
+            "rotation_execution_unverified",
+            "rotation_invalid_state",
+            "rotation_unexpected",
+            "invalid_value",
+            "missing_key",
+            "type_mismatch",
+            "dependency_unavailable",
+            "adapter_failure",
             "transport_failure",
         ):
             self.assertIn(reason, text)
