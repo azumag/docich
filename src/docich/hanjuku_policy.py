@@ -5807,13 +5807,31 @@ def _egg_row(screen):
     return general, egg, uses
 
 
-def _egg_recovery_targets(mem):
+def _depleted_eggs(mem):
     # Ordinary eggs recover to four, while one-shot/king eggs hold only one.
     types = mem.get('egg_types') or {}
     counts = mem.get('egg_uses') or {}
-    targets = {name for name, uses in counts.items()
-               if type(uses) is int and 0 <= uses < (
-                   1 if types.get(name) in {'いっぱつエッグ', 'キングエッグ'} else 4)}
+    return {name for name, uses in counts.items()
+            if type(uses) is int and 0 <= uses < (
+                1 if types.get(name) in {'いっぱつエッグ', 'キングエッグ'} else 4)}
+
+
+def _egg_measured_cost(mem):
+    """Price one recovery per egg whose count was actually read below full.
+
+    This is the price the month menu gates on: a recheck name is a question,
+    not a debt, and pricing it there would refuse a check the game may quote at
+    nothing (g574 2-9: one unread name priced 50G against 55G on hand, the
+    screen was never opened; 3-2: two names priced 100G, the quote was 50G).
+    The monthly hold in ``_extras_reserve`` stays an upper bound and the quote
+    screen keeps its own wage floor, so opening cheap can never pay less than
+    the reservation.
+    """
+    return EGG_RECOVER_COST * len(_depleted_eggs(mem))
+
+
+def _egg_recovery_targets(mem):
+    targets = _depleted_eggs(mem)
     # An attempted summon makes the sortie count stale. Check the recovery
     # screen; this flag is not proof of consumption and never decrements stock.
     targets.update(mem.get('egg_recheck') or [])
@@ -5834,6 +5852,11 @@ def _extras_reserve(mem, header):
     summon came, the hero's egg was spent and he died -> game over).
     """
     targets = _egg_recovery_targets(mem)
+    # The hold is an upper bound (recheck names included): it is money kept
+    # from the soldiers and released in full once the real quote is paid, so a
+    # possibly consumed egg must still own its fifty (a stale full sortie count
+    # after an attempted summon). The gate that opens the screen prices the
+    # measured eggs only - see _egg_estimate.
     cost = EGG_RECOVER_COST * len(targets)
     gold = (header or {}).get('gold')
     # Owner (2026-09-29): 兵士の数を確認せず卵回復した - the army is read on the
@@ -5878,7 +5901,7 @@ def _refresh_egg_priority(mem, shop, header):
                 observed_metric={'soldiers': count, 'gold': (header or {}).get('gold'),
                                  'targets': targets, 'soldiers_planned': shop.get('soldiers')},
                 reason='当月の兵士が50人以上と実読できたため、保存済みの購入計画を卵回復優先へ変更')
-    shop['egg_cost'] = EGG_RECOVER_COST * len(targets)
+    shop['egg_cost'] = _egg_measured_cost(mem)
     reserve, _ = _extras_reserve(mem, header)
     shop['reserve'] = max(shop.get('reserve', 0), reserve)
 
@@ -6047,8 +6070,8 @@ def _prioritise_recruit(mem, shop, gold):
 
 def _plan_extras(mem, shop, reserve, recruit):
     shop['reserve'] = reserve
-    egg_cost = EGG_RECOVER_COST * len(_egg_recovery_targets(mem))
-    shop['egg'] = 'pending' if reserve else ('check' if egg_cost else None)
+    egg_cost = _egg_measured_cost(mem)
+    shop['egg'] = 'pending' if reserve else ('check' if _egg_recovery_targets(mem) else None)
     shop['egg_cost'] = egg_cost
     shop['recruit'] = 'check' if recruit else None
     shop['chikujou'] = 'check'
@@ -6059,6 +6082,7 @@ def _plan_extras(mem, shop, reserve, recruit):
                 strategy_variant=shop.get('variant', 'chart'),
                 observed_metric={'egg_uses': dict(mem.get('egg_uses') or {})},
                 plan={'egg_recover': bool(reserve), 'egg_recover_budget': reserve,
+                      'egg_recover_estimate': egg_cost,
                       'egg_recover_targets': _egg_recovery_targets(mem),
                       'recruit_if_left': RECRUIT_COST if recruit else None,
                       'recruit_before_soldiers': bool(shop.get('recruit_priority')),
@@ -6355,6 +6379,16 @@ def month_step(screen: Screen, mem):
     return [move] if move else []
 
 
+def _egg_estimate(shop):
+    """What the month menu may gate on: measured eggs, never a recheck guess.
+
+    Zero is a real estimate (only unread recheck names remain) and must not
+    fall back to a fee the game has not asked for; the quote screen carries its
+    own wage floor, so an optimistic estimate can open but never underpay.
+    """
+    return shop['egg_cost'] if type(shop.get('egg_cost')) is int else EGG_RECOVER_COST
+
+
 def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
     """Recruit before soldiers when short; otherwise keep the old extras order."""
     if not shop:
@@ -6367,15 +6401,16 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
         if (recruit_only and sub != 'recruit') or (egg_only and sub != 'egg'):
             continue
         if sub == 'egg' and shop.get('egg_priority'):
-            # Saved egg counts can overestimate the fee; inspect the actual
-            # quote when at least one recovery plus the reserves is affordable.
-            cost = EGG_RECOVER_COST
+            # Before the refill the screen's own quote is the only exact
+            # price: one recovery's fee is the probe (g498: estimate 150G,
+            # quote 50G), and an unread recheck name probes at nothing.
+            cost = min(_egg_estimate(shop), EGG_RECOVER_COST)
         status = shop.get(sub)
         if status not in ('pending', 'check'):
             continue
         if sub == 'egg' and status == 'check':
             # After the soldiers: recover the eggs only from what is left.
-            cost = shop.get('egg_cost') or EGG_RECOVER_COST
+            cost = _egg_estimate(shop)
             if type(gold) is not int or gold < cost + WAGE_RESERVE + shop.get('hero_repair_reserve', 0):
                 shop[sub] = 'skipped'
                 _record(mem, 'egg_recover_skip', month=shop.get('key'), gold=gold,
@@ -6461,6 +6496,9 @@ def _chikujou_reserve(mem, shop):
     def amount(value):
         return value if type(value) is int and value > 0 else 0
 
+    # Optional building yields to the worst case: the estimate is a lower
+    # bound (measured counts only), while an unread recheck name may still
+    # turn into a real quote next month.
     egg = (0 if shop.get('egg') in ('done', 'not_needed') else
            max(amount(shop.get('reserve')), amount(shop.get('egg_cost')),
                EGG_RECOVER_COST * len(_egg_recovery_targets(mem))))
@@ -6927,8 +6965,10 @@ def _egg_recovery_step(screen, mem, sub):
                 or int(quote[1]) <= 0 or int(quote[2]) != int(quote[1]) * EGG_RECOVER_COST
                 or type(gold) is not int or gold < int(quote[2])
                 + (mem.get('shop') or {}).get('hero_repair_reserve', 0)
-                + (WAGE_RESERVE if (mem.get('shop') or {}).get('hero_repair_reserve')
-                   or (mem.get('shop') or {}).get('egg_priority') else 0)):
+                # Owner (2026-09-28): 賃金リザーブは守る - the estimate that
+                # opened this screen is only a lower bound, so the floor is
+                # checked against the real quote, not the reservation.
+                + WAGE_RESERVE):
             sub['aborted'] = True
             _record(mem, 'egg_recover_skip', observed_metric={'gold': gold, 'quote_read': bool(quote)},
                     reason='全回復の選択・費用・所持金を確認できないか、費用が足りないため戻る')

@@ -349,7 +349,8 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                 "hanjuku-chart-v129-battle-card-progress",
                 "hanjuku-chart-v130-summer-cursor-evidence",
                 "hanjuku-chart-v131-defense-month-economy",
-                "hanjuku-chart-v132-card-damage-gate")
+                "hanjuku-chart-v132-card-damage-gate",
+                "hanjuku-chart-v133-measured-egg-fee")
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',
