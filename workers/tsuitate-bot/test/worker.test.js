@@ -889,6 +889,16 @@ test("viewer check and consecutive foul feedback reach the shared brain", async 
   }
 });
 
+test("viewer remaining fouls zero keeps the linear block ahead of a king probe", async () => {
+  const binding = stateBinding({ BRAIN_PROFILE_JSON: JSON.stringify({ ...LINEAR_PROFILE, exploration: 0 }) });
+  const initial = structuredClone(initialFixture);
+  initial.positions["0"] = { sfen: "9/9/9/9/9/9/9/3P1G3/3LKL3 b - 1",
+    lastMove: "-0000ZZ", lastInfo: 3, fouls: { b: 0, w: 9 } };
+  const reply = await post(initial, { binding });
+  assert.equal(reply.status, 200);
+  assert.equal((await reply.json()).move, "+4857KI");
+});
+
 test("authenticated timestamps accept 299 seconds and reject the 300-second boundary", async () => {
   for (const delta of [-299, 299]) {
     const accepted = await post(initialFixture, { timestamp: 1_000_000 + delta, nowSeconds: 1_000_000 });

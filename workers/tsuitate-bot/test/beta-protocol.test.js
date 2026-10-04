@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { MoveGate, ProtocolError, parsePlayerView, toBrainObservation } from "../src/adapters/beta.js";
+import { chooseMove, LINEAR_PROFILE } from "../src/brain/index.js";
 
 function view(changes = {}) {
   return {
@@ -77,6 +78,19 @@ test("beta conversion maps promoted roles and both colors without hidden-board l
     assert.doesNotMatch(JSON.stringify(observation), /gameId|clock|foul|opponentPieces|yourColor/);
   }
   assert.equal(toBrainObservation(view({ yourColor: "unknown" })), null);
+});
+
+test("beta used-foul counts convert to the final attempt budget without opponent data", () => {
+  const raw = view({ youInCheck: true, fouls: { you: 9, opponent: 0 }, yourHand: {},
+    yourPieces: [{ square: "5i", role: "king" }, { square: "4h", role: "gold" },
+      { square: "4i", role: "lance" }, { square: "6h", role: "pawn" }, { square: "6i", role: "lance" }] });
+  const observation = toBrainObservation(raw);
+  assert.equal(observation.attemptBudget, 1);
+  assert.equal(chooseMove(observation, { profile: { ...LINEAR_PROFILE, exploration: 0 } }).usi, "4h5g");
+  assert.equal(toBrainObservation({ ...raw, fouls: { you: 0, opponent: 10 } }).attemptBudget, 10);
+  const exhausted = toBrainObservation({ ...raw, fouls: { you: 10, opponent: 0 } });
+  assert.equal(exhausted.attemptBudget, 0);
+  assert.equal(chooseMove(exhausted), null);
 });
 
 test("malformed known fields cannot become playable observations", () => {

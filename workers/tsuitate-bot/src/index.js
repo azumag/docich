@@ -1,4 +1,4 @@
-import { checksFromLastMove, chooseWebhookDecision } from "./adapters/webhook.js";
+import { attemptBudgetFromWebhook, checksFromLastMove, chooseWebhookDecision } from "./adapters/webhook.js";
 import {
   BRAIN_VERSION,
   LEGACY_PROFILE,
@@ -624,6 +624,7 @@ export class GameState {
     const chosen = chooseWebhookDecision({
       sfen: currentPosition.sfen,
       ...checksFromLastMove(currentPosition, payload.color),
+      attemptBudget: attemptBudgetFromWebhook(currentPosition, payload.color),
       color: payload.color,
       gameId: payload.gameId,
       ply: payload.ply,
@@ -690,6 +691,7 @@ export class GameState {
     const chosen = chooseWebhookDecision({
       sfen: currentPosition.sfen,
       ...checksFromLastMove(currentPosition, payload.color),
+      attemptBudget: attemptBudgetFromWebhook(currentPosition, payload.color),
       color: payload.color,
       gameId: payload.gameId,
       ply: payload.ply,

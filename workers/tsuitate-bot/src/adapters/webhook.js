@@ -40,7 +40,7 @@ export function parseVisibleSfen(sfen) {
 }
 
 /** Only own pieces and own hand cross the brain boundary, even if SFEN includes both sides. */
-export function observationFromWebhook({ sfen, color, inCheck = null, opponentInCheck = null }) {
+export function observationFromWebhook({ sfen, color, inCheck = null, opponentInCheck = null, attemptBudget = null }) {
   const parsed = parseVisibleSfen(sfen);
   if (!parsed || !["b", "w"].includes(color)) return null;
   const pieces = [...parsed.board].filter(([, piece]) => piece.owner === color)
@@ -54,7 +54,7 @@ export function observationFromWebhook({ sfen, color, inCheck = null, opponentIn
   }
   return normalizeObservation({
     ruleset: "tsuitate-9x9", color, turn: parsed.turn, moveNumber: parsed.moveNumber,
-    pieces, hand, inCheck, opponentInCheck,
+    pieces, hand, inCheck, opponentInCheck, attemptBudget,
   });
 }
 
@@ -103,8 +103,15 @@ export function checksFromLastMove(position, color) {
     : { inCheck: own ? checked : null, opponentInCheck: own ? null : checked };
 }
 
-export function chooseWebhookDecision({ sfen, color, gameId, ply, inCheck = null, opponentInCheck = null, recentOwnMoves = [], forbiddenMoves = [], profile = LEGACY_PROFILE }) {
-  const observation = observationFromWebhook({ sfen, color, inCheck, opponentInCheck });
+/** Viewer fouls are remaining allowances: zero still permits one final attempt. */
+export function attemptBudgetFromWebhook(position, color) {
+  const remaining = position?.fouls?.[color];
+  if (remaining === undefined) return null;
+  return Number.isInteger(remaining) && remaining >= 0 && remaining <= 1000 ? remaining + 1 : -1;
+}
+
+export function chooseWebhookDecision({ sfen, color, gameId, ply, inCheck = null, opponentInCheck = null, attemptBudget = null, recentOwnMoves = [], forbiddenMoves = [], profile = LEGACY_PROFILE }) {
+  const observation = observationFromWebhook({ sfen, color, inCheck, opponentInCheck, attemptBudget });
   if (!observation) return null;
   // Legacy considered only the last string, even if it cannot match a current candidate.
   const history = profile?.policy === "legacy-v1"

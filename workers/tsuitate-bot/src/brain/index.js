@@ -81,9 +81,12 @@ export function normalizeObservation(raw) {
     if (value !== null && typeof value !== "boolean") return null;
     checks[name] = value;
   }
+  const attemptBudget = raw.attemptBudget ?? null;
+  if (attemptBudget !== null && (!Number.isSafeInteger(attemptBudget)
+      || attemptBudget < 0 || attemptBudget > 1001)) return null;
   return {
     ruleset: "tsuitate-9x9", color: raw.color, turn: raw.turn,
-    moveNumber: raw.moveNumber, pieces, hand, ...checks,
+    moveNumber: raw.moveNumber, pieces, hand, ...checks, attemptBudget,
   };
 }
 
@@ -198,18 +201,20 @@ function hash(text) {
 export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = "", recentMoves = [], forbiddenMoves = [] } = {}) {
   const observation = normalizeObservation(rawObservation);
   const selectedProfile = validateProfile(profile);
-  if (!observation || observation.turn !== observation.color || !selectedProfile
+  if (!observation || observation.turn !== observation.color || observation.attemptBudget === 0 || !selectedProfile
       || typeof seed !== "string" || seed.length > 512 || !Array.isArray(forbiddenMoves)
       || forbiddenMoves.length > 4096) return null;
   const recent = validRecentMoves(recentMoves);
   const forbidden = new Set(forbiddenMoves.filter((move) => typeof move === "string" && USI_MOVE.test(move)));
   const legacy = selectedProfile.policy === "legacy-v1";
   if (legacy && recent.length) forbidden.add(recent.at(-1));
-  // A public check signal makes king escapes worth probing first. We still do
-  // not know enemy attacks: the referee can reject these, then we try the rest.
-  const available = candidatesFor(observation, legacy && observation.inCheck !== true)
+  // Probe escapes only while another attempt can follow a foul. On the final
+  // attempt use the profile's ordinary candidates/ranking, including blocks.
+  const prioritizeEscapes = observation.inCheck === true
+    && (observation.attemptBudget === null || observation.attemptBudget > 1);
+  const available = candidatesFor(observation, legacy && !prioritizeEscapes)
     .filter((candidate) => !forbidden.has(candidate.usi));
-  const escapes = observation.inCheck === true
+  const escapes = prioritizeEscapes
     ? available.filter((candidate) => candidate.role === "K") : [];
   const candidates = escapes.length ? escapes : available;
   if (!candidates.length) return null;

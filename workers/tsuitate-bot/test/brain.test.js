@@ -5,7 +5,7 @@ import {
   BRAIN_VERSION, LEGACY_PROFILE, LINEAR_PROFILE, chooseMove, featuresForMove,
   normalizeObservation, validateProfile,
 } from "../src/brain/index.js";
-import { checksFromLastMove, chooseWebhookDecision, csaToUsi, observationFromWebhook, usiToCsa } from "../src/adapters/webhook.js";
+import { attemptBudgetFromWebhook, checksFromLastMove, chooseWebhookDecision, csaToUsi, observationFromWebhook, usiToCsa } from "../src/adapters/webhook.js";
 
 function observation(pieces, options = {}) {
   return normalizeObservation({
@@ -41,7 +41,7 @@ test("normalization copies only the canonical own-view fields", () => {
     ruleset: "tsuitate-9x9", color: "b", turn: "b", moveNumber: 3,
     pieces: [{ square: "7g", role: "P" }, { square: "5i", role: "K" }],
     hand: { P: 1, L: 0, N: 0, S: 0, G: 0, B: 0, R: 0 },
-    inCheck: null, opponentInCheck: false,
+    inCheck: null, opponentInCheck: false, attemptBudget: null,
   });
   raw.pieces[1].role = "R";
   raw.hand.P = 18;
@@ -185,6 +185,25 @@ test("viewer public lastInfo identifies check without disclosing the attacking s
   const options = { sfen: "9/9/9/9/4K4/9/4P4/9/9 b - 1", color: "b", gameId: "check-fixture", ply: 1,
     ...checksFromLastMove({ lastMove: "-0000ZZ", lastInfo: 3 }, "b") };
   assert.equal(chooseWebhookDecision(options).decision.features.kingMove, 1);
+});
+
+test("final public attempt budget preserves linear ranking instead of probing a king", () => {
+  const options = { sfen: "9/9/9/9/9/9/9/3P1G3/3LKL3 b - 1", color: "b",
+    gameId: "final-attempt", ply: 0, inCheck: true, profile: { ...LINEAR_PROFILE, exploration: 0 } };
+  assert.equal(chooseWebhookDecision({ ...options, attemptBudget: 1 }).move, "+4857KI");
+  assert.equal(chooseWebhookDecision({ ...options, attemptBudget: 2 }).move, "+5958OU");
+  assert.equal(chooseWebhookDecision(options).move, "+5958OU"); // Unknown budget is explicit null.
+  assert.equal(chooseWebhookDecision({ ...options, attemptBudget: 0 }), null);
+  assert.deepEqual(chooseWebhookDecision({ ...options, profile: LEGACY_PROFILE, attemptBudget: 1 }),
+    chooseWebhookDecision({ ...options, inCheck: false, profile: LEGACY_PROFILE, attemptBudget: 1 }));
+  for (const invalid of [-1, 1.5, 1002, "1", false]) {
+    assert.equal(chooseWebhookDecision({ ...options, attemptBudget: invalid }), null);
+  }
+  assert.equal(attemptBudgetFromWebhook({ fouls: { b: 0, w: 9 } }, "b"), 1);
+  assert.equal(attemptBudgetFromWebhook({ fouls: { b: 0, w: 9 } }, "w"), 10);
+  assert.equal(attemptBudgetFromWebhook({}, "b"), null);
+  assert.equal(chooseWebhookDecision({ ...options,
+    attemptBudget: attemptBudgetFromWebhook({ fouls: { b: null } }, "b") }), null);
 });
 
 test("drops exclude nifu, occupied squares and dead-end ranks for both colors", () => {
