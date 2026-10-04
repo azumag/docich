@@ -250,6 +250,22 @@ class AuthorizeTests(unittest.TestCase):
         self.assertEqual(p.returncode,0,p.stderr)
         data=json.loads(p.stdout); self.assertEqual((data['operation'],data['target'],data['ref']),('deploy','production','a'*40))
 
+    def test_owned_round_recovery_requires_separate_fixed_owner_confirmation(self):
+        for overrides in (
+            dict(INPUT_TARGET="preview"), dict(INPUT_REF="feature"), dict(INPUT_CONFIRM=""),
+            dict(GITHUB_ACTOR="collab", GITHUB_ACTOR_ID="42"),
+        ):
+            values = dict(INPUT_OPERATION="recover_soren_round", INPUT_TARGET="production",
+                          INPUT_REF="main", INPUT_CONFIRM="production")
+            values.update(overrides)
+            self.assertNotEqual(self.run_auth(**values).returncode, 0)
+        p = self.run_auth(GITHUB_REPOSITORY_PRIVATE="false", INPUT_OPERATION="recover_soren_round",
+                          INPUT_TARGET="production", INPUT_REF="main", INPUT_CONFIRM="production")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        step = WF.read_text().split("Recover only the held Soren round after explicit confirmation", 1)[1].split("- name:", 1)[0]
+        self.assertIn("cat control/ops/vm_actions/recover_soren_round.sh | ssh", step)
+        self.assertNotIn("VM_COMMAND", step)
+
 
 class GatewayTests(unittest.TestCase):
     def test_gateway_accepts_docich_only_config_and_rejects_soviet_now(self):

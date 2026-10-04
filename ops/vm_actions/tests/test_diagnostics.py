@@ -274,7 +274,7 @@ class DiagnosticsWorkflowTests(unittest.TestCase):
         self.assertIn(
             "options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, "
             "configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, reclaim, rebaseline, "
-            "market_paper, restart_webui, recover_soren_game]", text
+            "market_paper, restart_webui, recover_soren_game, recover_soren_round]", text
         )
         self.assertIn("Query read-only runtime diagnostics", text)
         self.assertIn('"diagnostics docich production $SHA"', text)
