@@ -56,6 +56,9 @@ OpenCodeの外向き経路はnamespace内loopbackの固定CONNECT bridgeだけ�
 
 このDarwin executorのLinux/bwrap受入は未実施。GitHub Ubuntu CIではcredential-free外側bwrap negative probeを必須にする。旧Codex binary/probeのdownload・実行をCIから削除した。実OpenCode＋model fixtureの受入は追加確認が必要で、実API費用を伴うcanary/本番有効化は親の別承認を必要とする。
 
-VM限定棚卸し: 既存owner SSH経路でPATH、固定インストール候補、snap/npm package、プロセス名、Codex名systemd unitを確認。対象なし。起動設定には旧参照が残るが、production tracked filesの直接変更・共有worker再起動は行っていない。秘密/認証ファイル/プロセス引数/保存履歴は未読・未削除。Macの開発ツールは変更しない。
+VM棚卸し結果・運用影響はprivateな親引継ぎで扱い、公開文書には記録しない。
 
 参考: [OpenCode tools](https://opencode.ai/docs/tools/)、[permissions](https://opencode.ai/docs/permissions/)、[config merge](https://opencode.ai/docs/config/)、[official MCP search transport](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/mcp-websearch.ts)。仕様は実機の版と一致確認が必要。
+
+
+配信batchはDiscordの直近3turnと別契約で、最大10件の調査対象を欠落なく投影する。全対象について必要なscopeの実取得引用の対応を検証し、不足があるbatchをreadyにしない。固定終端はplatform/batch単位で投入・再生dedupし、異なるbatchの同本文を抑止しない。claim拒否だけでackせずpendingを保つ。legacy bug dispatcherとstrategy Codex分岐は起動不可。podcast経路は明示オーナー例外として対象外にし、機能を保持する。

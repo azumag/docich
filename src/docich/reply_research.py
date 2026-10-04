@@ -39,6 +39,7 @@ class Evidence:
     status: str = "unavailable"
     notes: str = field(default="", repr=False)
     sources: tuple[str, ...] = ()
+    covered_questions: tuple[int, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -310,15 +311,21 @@ def parse_proposal(raw: bytes) -> dict:
     return proposal
 
 
-def verify_quotes(refs, receipts, source, manifest, reads) -> Evidence:
+def verify_quotes(refs, receipts, source, manifest, reads, comment_scopes=None) -> Evidence:
     """Parent receipts/actual code reads establish provenance, never model claims."""
-    if type(refs) is not list or not 1 <= len(refs) <= 4:
+    if type(refs) is not list or not 1 <= len(refs) <= (20 if comment_scopes else 4):
         raise ValueError("invalid_sources")
     notes, urls, kinds = [], [], set()
+    question_kinds = {}
     for ref in refs:
         if type(ref) is not dict or not isinstance(ref.get("quote"), str) or not 1 <= len(ref["quote"]) <= 1024:
             raise ValueError("invalid_quote")
         quote, kind = ref["quote"], ref.get("kind")
+        question = ref.get("question")
+        if comment_scopes:
+            if type(question) is not int or not 1 <= question <= len(comment_scopes):
+                raise ValueError("invalid_question")
+            question_kinds.setdefault(question, set()).add(kind)
         if kind == "web":
             rec = receipts.get(ref.get("receipt"))
             if (not isinstance(rec, Receipt) or quote not in rec.text
@@ -338,11 +345,13 @@ def verify_quotes(refs, receipts, source, manifest, reads) -> Evidence:
         else:
             raise ValueError("source_unverified")
         kinds.add(kind); urls.append(url)
-        notes.append(f"取得資料 {url}\n完全一致引用: {quote}")
-    return Evidence("ok", "\n".join(notes), tuple(dict.fromkeys(urls)))
+        notes.append(f"{f'質問{question}: ' if comment_scopes else ''}取得資料 {url}\n完全一致引用: {quote}")
+    coverage = tuple(index for index, scope in enumerate(comment_scopes or (), 1)
+                     if ({"web", "code"} if scope == "web_and_code" else {scope}) <= question_kinds.get(index, set()))
+    return Evidence("ok", "\n".join(notes), tuple(dict.fromkeys(urls)), coverage)
 
 
-def coordinate(turns, scope, *, source, manifest, model_call, broker, searcher, deadline):
+def coordinate(turns, scope, *, source, manifest, model_call, broker, searcher, deadline, comment_scopes=None):
     """One finite research run: change queries/material, then answer or explain gaps."""
     history, reads, queries, fetches, code_reads = [], {}, set(), set(), 0
     receipts = {}
@@ -355,9 +364,9 @@ def coordinate(turns, scope, *, source, manifest, model_call, broker, searcher, 
                   "JSONだけ返す。actionは search(query)、fetch(url)、read(path,start,end)、"
                   "answer(sources)、clarify の一つ。sourcesはkind/ref/quoteと、webはreceipt/sha256、"
                   "codeはlineを持つ。検索snippetは根拠でない。不足なら別検索・資料を試す。"
-                  "確認した引用だけ選び、未取得を確認済としない。\n" +
+                  "確認した引用だけ選び、未取得を確認済としない。配信batchのsourcesは各質問の1-based question番号も必須。全質問の必要な種類の根拠を選ぶ。\n" +
                   json.dumps({"scope": scope, "turns": turns, "files": sorted((manifest or {}).get("files", {})),
-                              "observations": history}, ensure_ascii=False))
+                              "question_scopes": comment_scopes, "observations": history}, ensure_ascii=False))
         try:
             action = parse_proposal(model_call(prompt, deadline - time.monotonic()))
             kind = action.get("action")
@@ -398,12 +407,12 @@ def coordinate(turns, scope, *, source, manifest, model_call, broker, searcher, 
                     reason = "source_limit"; break
                 history.append({"path": name, "text": text})
             elif kind == "answer":
-                last = verify_quotes(action.get("sources"), receipts, source, manifest, reads)
+                last = verify_quotes(action.get("sources"), receipts, source, manifest, reads, comment_scopes)
                 required = {"web", "code"} if scope == "web_and_code" else {scope}
                 present = {ref["kind"] for ref in action["sources"]}
-                if required <= present:
+                if required <= present and (not comment_scopes or len(last.covered_questions) == len(comment_scopes)):
                     return last
-                reason = "missing_source_kind"
+                reason = "missing_question_evidence" if comment_scopes and len(last.covered_questions) != len(comment_scopes) else "missing_source_kind"
                 history.append({"status": reason}); continue
             elif kind == "clarify":
                 return Evidence("clarify")
@@ -413,11 +422,11 @@ def coordinate(turns, scope, *, source, manifest, model_call, broker, searcher, 
             reason = "research_unavailable"; break
     # Only verified references survive a partial run. Never use free model notes.
     if last.ok:
-        return Evidence("partial", last.notes + "\n不足: 必要な種類の資料を上限内に確認できませんでした。", last.sources)
+        return Evidence("partial", last.notes + "\n不足: 必要な種類の資料を上限内に確認できませんでした。", last.sources, last.covered_questions)
     return Evidence(reason)
 
 
-def research(turns, scope: str, *, env, timeout_sec: float = 45.0) -> Evidence:
+def research(turns, scope: str, *, env, timeout_sec: float = 45.0, comment_scopes=None) -> Evidence:
     if (scope not in SCOPES or env.get("DOCICH_REPLY_RESEARCH_ENABLED") != "1"
             or env.get("DOCICH_ALLOW_REAL_AI") != "1" or sys.platform != "linux"
             or type(timeout_sec) not in (int, float) or not math.isfinite(timeout_sec)
@@ -434,10 +443,18 @@ def research(turns, scope: str, *, env, timeout_sec: float = 45.0) -> Evidence:
     python = shutil.which("python3", path="/usr/local/bin:/usr/bin")
     if not all((bwrap, engine, python)):
         return Evidence("isolation_unavailable")
-    from .reply_routing import project_messages
+    from .reply_routing import project_messages, project_research_batch
     try:
-        turns = project_messages(turns)
-    except (ValueError, UnicodeError):
+        if comment_scopes is not None:
+            if (not isinstance(comment_scopes, (tuple, list)) or len(comment_scopes) != len(turns)
+                    or any(value not in SCOPES for value in comment_scopes)):
+                raise ValueError("input_limit")
+            turns = project_research_batch(turns)
+        else:
+            # Native Discord caller already supplies projected role/text turns.
+            turns = project_messages([{**turn, "content": turn.get("content", turn.get("text"))}
+                                      for turn in turns])
+    except (ValueError, UnicodeError, TypeError, AttributeError):
         return Evidence("private_or_invalid_input")
     deadline = time.monotonic() + timeout_sec
     try:
@@ -458,7 +475,7 @@ def research(turns, scope: str, *, env, timeout_sec: float = 45.0) -> Evidence:
             with EgressProxy(socket_path):
                 broker = WebBroker(workspace / "web-unused.sock", deadline)
                 return coordinate(turns, scope, source=source, manifest=manifest, broker=broker,
-                                  searcher=search_public, deadline=deadline,
+                                  searcher=search_public, deadline=deadline, comment_scopes=comment_scopes,
                                   model_call=lambda prompt, remaining: _run(argv, prompt.encode(), child_env, remaining))
     except Exception:
         return Evidence("research_unavailable")

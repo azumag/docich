@@ -30,7 +30,7 @@ def ref():
     return {'kind': 'web', 'ref': URL, 'receipt': rec.receipt, 'sha256': rec.sha256, 'quote': '一次資料で確認した事実。'}
 
 
-def run(actions, tmp_path, *, scope='web', search=None, manifest=None):
+def run(actions, tmp_path, *, scope='web', search=None, manifest=None, comment_scopes=None):
     observed = []
     def model(prompt, remaining):
         observed.append(json.loads(prompt.split('\n', 1)[1]))
@@ -42,7 +42,7 @@ def run(actions, tmp_path, *, scope='web', search=None, manifest=None):
     return r.coordinate([{'role':'user','content':'今日のニュースは？'}], scope,
                         source=tmp_path, manifest=manifest, model_call=model,
                         broker=broker, searcher=search or (lambda *a: [URL]),
-                        deadline=time.monotonic()+5), observed
+                        deadline=time.monotonic()+5, comment_scopes=comment_scopes), observed
 
 
 def test_wide_public_search_fetch_and_quote_evidence(tmp_path):
@@ -187,3 +187,70 @@ def test_private_body_holds_before_engine_or_search(monkeypatch):
     env={'DOCICH_ALLOW_REAL_AI':'1','DOCICH_REPLY_RESEARCH_ENABLED':'1','DOCICH_REPLY_WEB_SEARCH_ENABLED':'1',
          'DOCICH_REPLY_OPENCODE_MODEL':'opencode/existing-model','DOCICH_REPLY_OPENCODE_API_KEY':'SYNTHETIC_ONLY'}
     assert r.research([{'role':'user','content':'secret: abcdefghijkl'}],'web',env=env).status=='private_or_invalid_input'
+
+
+@pytest.mark.parametrize("raw_field", ["content", "text"])
+def test_discord_raw_and_projected_turns_both_reach_engine(monkeypatch, raw_field):
+    monkeypatch.setattr(r.sys, "platform", "linux")
+    monkeypatch.setattr(r.shutil, "which", lambda name, **kw: "/usr/bin/"+name)
+    seen = []
+    class Proxy:
+        def __init__(self, path): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+    monkeypatch.setattr(r, "EgressProxy", Proxy)
+    monkeypatch.setattr(r, "_run", lambda argv,prompt,env,t: seen.append(prompt) or proposal({"action":"clarify"}))
+    env={"DOCICH_ALLOW_REAL_AI":"1","DOCICH_REPLY_RESEARCH_ENABLED":"1","DOCICH_REPLY_WEB_SEARCH_ENABLED":"1",
+         "DOCICH_REPLY_OPENCODE_MODEL":"opencode/synthetic", "DOCICH_REPLY_OPENCODE_API_KEY":"SYNTHETIC_ONLY"}
+    assert r.research([{"role":"user",raw_field:"現在の公開仕様は？"}], "web", env=env).status == "clarify"
+    assert seen
+
+
+def test_stream_projection_preserves_all_ten_questions_and_validates_first(monkeypatch):
+    from docich.reply_routing import project_research_batch
+    turns=[{"role":"user","content":f"質問{i}","user":"PRIVATE_NAME"} for i in range(1,11)]
+    assert [v["text"] for v in project_research_batch(turns)] == [f"質問{i}" for i in range(1,11)]
+    assert "PRIVATE_NAME" not in json.dumps(project_research_batch(turns))
+    turns[0]["content"]="secret: abcdefghijkl"
+    with pytest.raises(ValueError, match="private_input"):
+        project_research_batch(turns)
+    with pytest.raises(ValueError, match="input_limit"):
+        project_research_batch([{"role":"user","content":"x"*4096}]*10)
+
+
+def test_stream_verified_quotes_must_cover_every_question(tmp_path):
+    scopes=("web",)*10
+    sources=[{**ref(),"question":i} for i in range(1,11)]
+    result,prompts=run([{"action":"search","query":"仕様"},{"action":"fetch","url":URL},
+                       {"action":"answer","sources":sources}],tmp_path,comment_scopes=scopes)
+    assert result.status == "ok" and result.covered_questions == tuple(range(1,11))
+    partial,_=run([{"action":"search","query":"仕様"},{"action":"fetch","url":URL},
+                   {"action":"answer","sources":sources[-3:]},{"action":"search","query":"仕様"}],
+                  tmp_path,comment_scopes=scopes)
+    assert partial.status == "partial" and partial.covered_questions == (8,9,10)
+    for change in ({"question":0},{"question":True},{"question":11},{"quote":"未取得自己申告"}):
+        with pytest.raises(ValueError):
+            r.verify_quotes([{**sources[0], **change}], {receipt().receipt:receipt()}, tmp_path,None,{},scopes)
+
+
+def test_question_requires_its_own_scope_kinds(tmp_path):
+    result=r.verify_quotes([{**ref(),"question":1}],{receipt().receipt:receipt()},tmp_path,None,{},("web","code"))
+    assert result.covered_questions == (1,)
+
+
+def test_all_ten_stream_questions_reach_actual_research_controller(monkeypatch):
+    monkeypatch.setattr(r.sys, "platform", "linux")
+    monkeypatch.setattr(r.shutil, "which", lambda name, **kw: "/usr/bin/"+name)
+    seen=[]
+    class Proxy:
+        def __init__(self, path): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+    monkeypatch.setattr(r, "EgressProxy", Proxy)
+    monkeypatch.setattr(r, "_run", lambda argv,prompt,env,t: seen.append(json.loads(prompt.split(b"\n",1)[1])) or proposal({"action":"clarify"}))
+    env={"DOCICH_ALLOW_REAL_AI":"1","DOCICH_REPLY_RESEARCH_ENABLED":"1","DOCICH_REPLY_WEB_SEARCH_ENABLED":"1",
+         "DOCICH_REPLY_OPENCODE_MODEL":"opencode/synthetic", "DOCICH_REPLY_OPENCODE_API_KEY":"SYNTHETIC_ONLY"}
+    turns=[{"role":"user","content":f"質問{i}"} for i in range(1,11)]
+    assert r.research(turns,"web",env=env,comment_scopes=("web",)*10).status == "clarify"
+    assert [item["text"] for item in seen[0]["turns"]] == [f"質問{i}" for i in range(1,11)]
+    assert seen[0]["question_scopes"] == ["web"]*10

@@ -98,9 +98,9 @@ def test_stream_batch_routes_notification_and_question_separately(tmp_path):
     notification = "SSR出た！"
     question = "SSR出た！このガチャの確率どうなってる？"
 
-    def researcher(turns, scope, *, env, timeout_sec):
+    def researcher(turns, scope, *, env, timeout_sec, comment_scopes):
         research_calls.append((turns, scope, timeout_sec))
-        return research.Evidence("ok", "合成証拠", ("https://example.org/spec",))
+        return research.Evidence("ok", "合成証拠", ("https://example.org/spec",), (1,))
 
     result = comment_route.classify_file(
         source, env=_comment_env(tmp_path / "state"),
@@ -620,3 +620,19 @@ def test_deletion_during_research_suppresses_delivery(monkeypatch):
             await conversation.close()
             memory.close()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("coverage,status", [((8,9,10),"hold"),(tuple(range(1,11)),"ready")])
+def test_stream_full_research_batch_requires_verified_coverage(tmp_path,coverage,status):
+    texts=[f"公開仕様の質問{i}" for i in range(1,11)]
+    source=tmp_path/"comments.txt"
+    source.write_text("".join(f"viewer{i}: {text}\n" for i,text in enumerate(texts)))
+    seen=[]
+    def researcher(turns, scope, **kw):
+        seen.append((turns,kw["comment_scopes"]))
+        return research.Evidence("ok", "取得引用", ("https://example.org/spec",),coverage)
+    result=comment_route.classify_file(source,env=_comment_env(tmp_path/"state"),
+        transport=_comment_transport({text:"web" for text in texts}), researcher=researcher)
+    assert result["routing"]["status"] == status
+    assert [turn["content"] for turn in seen[0][0]] == texts
+    assert seen[0][1] == ("web",)*10

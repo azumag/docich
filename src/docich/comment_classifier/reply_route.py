@@ -171,10 +171,13 @@ def _finish(rows, event, *, env, researcher):
             from ..reply_research import research as researcher
         evidence = researcher(
             [{"role": "user", "content": text} for text in decision.research_comments],
-            decision.scope, env=env, timeout_sec=45.0)
+            decision.scope, env=env, timeout_sec=45.0,
+            comment_scopes=tuple(detail["evidence_scope"] for detail in details
+                                 if detail["evidence_scope"] in RESEARCH_SCOPES))
     except Exception:
         evidence = None
-    if evidence is None or not getattr(evidence, "ok", False):
+    if (evidence is None or not getattr(evidence, "ok", False)
+            or getattr(evidence, "covered_questions", ()) != tuple(range(1, len(decision.research_comments) + 1))):
         result = _hold(rows, "scope_unknown" if getattr(evidence, "status", "") == "clarify" else "research_unavailable")
         result["routing"].update(scope=decision.scope, research_status="unavailable")
         return result

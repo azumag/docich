@@ -24,7 +24,7 @@ base = Path.cwd()
 calls = []
 def transport(request, config, env):
     calls.append(request)
-    if (base / 'phase').read_text().strip() in {'fail', 'deliveryfail'} and len(calls) == 2:
+    if (base / 'phase').read_text().strip() == 'failall' or ((base / 'phase').read_text().strip() in {'fail', 'deliveryfail'} and len(calls) == 2):
         return {'status': 'timeout'}
     answers = {}
     for key, question in request['questions'].items():
@@ -49,6 +49,7 @@ print(json.dumps(result))
 
 HARNESS = r'''
 source broadcast/comment.sh
+source lib/outbound_queue.sh
 log(){ printf '%s\n' "$*" >&2; }
 # No real context, voice, diagnosis, advice, provider or network dependencies.
 for helper in _radio_past_topics_block _build_comment_game_context \
@@ -110,7 +111,7 @@ done
 '''
 
 @pytest.mark.parametrize("platform", ["twitch", "youtube", "kick"])
-@pytest.mark.parametrize("first_count,fail", [(9, False), (10, False), (10, True), (10, "delivery")])
+@pytest.mark.parametrize("first_count,fail", [(9, False), (10, False), (10, True), (10, "delivery"), (10, "both")])
 def test_repeated_real_fetch_route_queue_ack(tmp_path, platform, first_count, fail):
     if not SOREN:
         if os.environ.get("DOCICH_REQUIRE_QUEUE_E2E") == "1":
@@ -119,7 +120,7 @@ def test_repeated_real_fetch_route_queue_ack(tmp_path, platform, first_count, fa
     companion = Path(SOREN)
     # Copy only these public source files, never .env/.git/host configuration.
     files = ["broadcast/comment.sh", "lib/comment_reply_route.py", "lib/comment_viewer_memory.py",
-             "lib/curl_secure.sh", "twitch_chat.sh", "youtube_chat.sh", "kick_chat.sh",
+             "lib/curl_secure.sh", "lib/outbound_queue.sh", "twitch_chat.sh", "youtube_chat.sh", "kick_chat.sh",
              "prompts/comment_template.md", "prompts/comment_persona_main.md"]
     for name in files:
         dest = tmp_path / name
@@ -162,9 +163,19 @@ def test_repeated_real_fetch_route_queue_ack(tmp_path, platform, first_count, fa
         with (chat / "raw.log").open('a') as f: f.write(rows(9, 10))
         run(["ok", "ok"], "1")
     else:
-        run(["deliveryfail", "ok", "ok", "ok"] if fail == "delivery" else ["fail", "ok", "ok", "ok"] if fail else ["ok", "ok", "ok"])
+        run(["failall", "failall", "ok"] if fail == "both" else ["deliveryfail", "ok", "ok", "ok"] if fail == "delivery" else ["fail", "ok", "ok", "ok"] if fail else ["ok", "ok", "ok"])
     states = [json.loads(l) for l in (tmp_path / "states.jsonl").read_text().splitlines()]
     calls = [json.loads(l) for l in (tmp_path / "calls.jsonl").read_text().splitlines()]
+    if fail == 'both':
+        assert [len(state['pending']) for state in states] == [10, 0, 0]
+        assert [state['queue'] for state in states] == [1, 2, 2]
+        assert all(not state['generated'] for state in states)
+        queued = sorted((tmp_path/'tmp/.comment_queue').glob('comment_*.txt'))
+        assert len(queued) == 2 and queued[0].read_text() == queued[1].read_text()
+        assert len(list((tmp_path/'tmp/.comment_queue/audio_dedup').iterdir())) == 2
+        assert len(calls) == 2
+        assert not (tmp_path/'forbidden-calls').exists()
+        return
     if fail == 'delivery':
         # Failed delivery keeps pending; retry reuses terminal cache, no JEV call.
         assert [len(state['pending']) for state in states] == [20, 10, 0, 0]

@@ -142,6 +142,25 @@ def project_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
     return turns
 
 
+
+def project_research_batch(messages):
+    """All stream research questions, bounded and private; never a Discord tail."""
+    if not isinstance(messages, list) or not 1 <= len(messages) <= 10:
+        raise ValueError("input_limit")
+    turns = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "user":
+            raise ValueError("input_limit")
+        text = message.get("content")
+        if not isinstance(text, str) or not text.strip() or len(text.encode()) > 4096:
+            raise ValueError("input_limit")
+        if _has_private_route_input(text):
+            raise ValueError("private_input")
+        turns.append({"role": "user", "text": text})
+    if len(json.dumps(turns, ensure_ascii=False).encode()) > 16384:
+        raise ValueError("input_limit")
+    return turns
+
 def decide(turns, *, env: Mapping[str, str], transport=None) -> Decision:
     """One request, <=1.5 seconds, no silent secondary-provider spend."""
     if env.get("DOCICH_ALLOW_REAL_AI") != "1":
