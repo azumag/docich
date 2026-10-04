@@ -62,6 +62,18 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   "corners": {"state_dir_found": true,
               "game_switch": {"present": true, "phase": "ready", "active_game": "sorengame",
                               "last_status": "succeeded", "last_error_code": null, ...},
+              "weather_corner": {"present": true, "status": "completed",
+                                 "selection_kind": "automatic",
+                                 "rotation_request_matches_last_result": true,
+                                 "started_at": 1790942400, "completed_at": 1790942580,
+                                 "start_receipt": {"status": "succeeded",
+                                                   "result_matches_owner": true,
+                                                   "runtime_matches_owner": true,
+                                                   "generation_matches_owner": true},
+                                 "restore_receipt": {"status": "succeeded",
+                                                     "result_matches_owner": true,
+                                                     "runtime_matches_owner": true,
+                                                     "generation_matches_owner": true}, ...},
               "soren_game": {"present": true, "readable": true, "state": "MOVE",
                              "age_sec": 2, "founding_seen": false,
                              "make_soren_count": 0, "game_count": 12,
@@ -155,7 +167,7 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   直近のlatch分類として次にlatchし直すまで残る）と、予約（`pending`）が在る限り
   （latch中かどうかを問わず）次を足す:
   `pending_corner`、`pending_phase`（`selected`/`dispatched`/`unknown`）、
-  `pending_age_sec`（-1は不明）、`pending_owner`（固定8種のcorner stateのうち
+  `pending_age_sec`（-1は不明）、`pending_owner`（固定9種のcorner stateのうち
   同じrequestを記録したstate名。該当なし`none`、読取不可`unknown`、予約なし`absent`）、
   `pending_owner_status`。request UUIDは固定stateとの照合にだけ使い出力には含めない。
   これで「まだ起動していない」「既に終了している」「実行中・corner側の復旧が要る」を
@@ -178,6 +190,16 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `corners.corner_rotation_timer` は支配的なtimer unit名（移行後は
   `docich-corner-rotation.timer`）、active/enabled、旧名が正しいaliasかを示す
   bounded boolean `legacy_alias` のみを出す。unit path・alias target・state pathは出さない。
+
+- `corners.weather_corner` は固定 `weather_corner.json` からstatus、request/start/restore/completion時刻、
+  固定enumの終了理由、前のgame名、およびrotation予約/完了記録とのrequest一致booleanだけを出す。
+  開始・復元GameSwitch receiptはweather ownerが保持するcanonical UUIDと一致するときだけ、
+  その固定UUIDのreceiptファイルを一件ずつbounded/no-followで読む。出力するのはstatus・operation・
+  時刻・ownerとのresult/runtime/generation一致booleanのみ。request UUID、runtime ID、lease ID、
+  forecast、音声queueや本文、payload、自由文エラー、パスは出さない。`restored_runtime_matches_current`
+  は保存された復元identityと現在のGameSwitch canonical identityの一致を示す。後続の切替後にfalseでも、
+  保存されたrestore receiptが成功している事実は変わらない。読み取りは順次行うため単一snapshotではない。
+  projectionは観測のみで、corner予約・GameSwitch・runtimeを操作しない。
 
 - rotation 待機の補助証跡: `corners.rotation_evidence` に固定8種の
   corner state（retro/PAPER/Soren91/NetHackの通常・manual）と固定10種の
