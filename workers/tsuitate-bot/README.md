@@ -31,7 +31,7 @@ Cloudflare Workersのbuild設定と検証方法は [BUILDS.md](BUILDS.md) にま
 
 初期状態は `stopped` です。将来の内部owner controlがsingleton名 `beta:DoCiAI` のDOへ `start({runId})` / `stop()` / `status()` を呼ぶ設計で、HTTPの開始・停止URLはありません。既存owner-only VM gatewayはVM用であり、この操作の認証・公開経路はまだ用意していません。Webhookの `WEBHOOK_SECRET` を管理者権限として使いません。将来有効化する場合はowner認証経路を独立にレビューし、明示的な `BETA_ARENA_ENABLED="true"` とownerが設定する別secret `TSUITATE_BOT_TOKEN` が必要です。tokenはログ・checkpoint・対局記録へ保存しません。
 
-この準備版はactor全体で開始予約を1回、対局を最大1局に固定します。queue待ちは開始予約から60秒で、ACK確認・通知競合の待機にはさらに最大5秒を使います。同じrunIdの再送は同じ状態を返し、別runId、完了後の再開始、並行した開始、alarm重複から次局を募集しません。継続対局やreset APIはありません。stopは待機中ならqueueから退出し、対局中なら指し続けて結果保存後に停止します。進行中はenable flagを切り替えずstopを使ってください。
+この準備版はactor全体で開始予約を1回、対局を最大1局に固定します。queue待ちは開始予約から60秒で、退出ACKの確認に最大5秒、その後の遅延match通知待機に最大5秒（追加で合計最大10秒）を使います。同じrunIdの再送は同じ状態を返し、別runId、完了後の再開始、並行した開始、alarm重複から次局を募集しません。継続対局やreset APIはありません。stopは待機中ならqueueから退出し、対局中なら指し続けて結果保存後に停止します。進行中はenable flagを切り替えずstopを使ってください。
 
 SQLite DO storageの `beta:meta` に開始予約・対局ID・世代・brain/profile・停止要求、`beta:checkpoint` に既存runnerの自分の観測と未確認着手、`beta:terminal` に正規化した終局記録を保存します。着手はcheckpoint保存後に送信し、古い世代の書込みを拒否します。値は1 MiB以下に制限し、保存失敗時は以前のcheckpointを保ち、次の入力を止めます。終局記録は同一内容を冪等に保存し、矛盾する結果は上書きしません。
 
