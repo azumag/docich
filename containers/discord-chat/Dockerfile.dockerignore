@@ -9,6 +9,7 @@
 !src/docich/reply_research_bridge.py
 !src/docich/reply_research_egress.py
 !src/docich/reply_research_web.py
+!src/docich/reply_research_diagnostic.py
 !src/docich/comment_classifier/__init__.py
 !src/docich/comment_classifier/heuristic.py
 !src/docich/comment_classifier/jev.py
@@ -32,6 +33,7 @@
 !tests/test_reply_routing.py
 !tests/test_reply_research.py
 !tests/test_reply_research_web.py
+!tests/test_reply_research_diagnostic.py
 !tests/fixtures/reply_routing_canary.json
 !tests/fixtures/reply_evidence_source_contrasts.json
 !docs/evidence/reply-routing-canary-2026-10-04.json
