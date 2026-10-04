@@ -104,6 +104,8 @@ VM helperの非ゼロexit・SHA不一致はworkflowも失敗とし、原記録�
 両retro ownerが不在または別要求のterminalであること、program待機/active owner、
 安定canonicalで半熟active/candidate/previous/retiringがないこと、対象receiptの欠落を再確認する。
 新receipt、予約指紋の変化、live/matching owner、lock競合、読取不能、書込前のsnapshot変化は拒否する。
+同じownerをregistry経由で再読する場合も、最初のsnapshot（欠落を含む）を保持する。
+重複再観測時の変更・ファイル生成はその場で拒否し、新しいsnapshotで置き換えない。
 checkはEventLog再走査・資源probe・state作成を行わない。
 
 releaseはrotation ledgerをatomic置換し、対象 `manual_pending` だけを解除する。

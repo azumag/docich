@@ -163,6 +163,67 @@ def test_prewrite_snapshot_change_is_preserved(detached, monkeypatch, filename):
     assert json.loads(f.path.read_text())["manual_pending"] is not None
 
 
+@pytest.mark.parametrize("filename", ["retro_corner.json", "retro_corner_manual.json"])
+@pytest.mark.parametrize("initially_present", [False, True])
+@pytest.mark.parametrize("apply", [False, True])
+def test_registry_duplicate_rejects_owner_change_or_creation_immediately(
+        detached, monkeypatch, filename, initially_present, apply):
+    f = detached
+    owner_path = f.path.parent / filename
+    if initially_present:
+        owner_path.write_text(json.dumps({"status": "completed", "game": "hanjuku-hero",
+                                         "rotation_request_id": str(uuid.uuid4())}))
+    registry_path = f.soren / "tmp/state/docich_program_active.json"
+    registry_path.write_text(json.dumps({"owner_state": str(owner_path)}))
+    before = snapshot(f)
+    original_read = admin._object
+    original_write = admin.atomic_write_json
+    calls = writes = 0
+    concurrent_owner = {"status": "active", "game": "nsnake",
+                        "rotation_request_id": str(uuid.uuid4())}
+
+    def competing_read(path, **kwargs):
+        nonlocal calls
+        if path == owner_path:
+            calls += 1
+            if calls == 2:
+                owner_path.write_text(json.dumps(concurrent_owner))
+        return original_read(path, **kwargs)
+
+    def counted_write(*args, **kwargs):
+        nonlocal writes
+        writes += 1
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(admin, "_object", competing_read)
+    monkeypatch.setattr(admin, "atomic_write_json", counted_write)
+    with pytest.raises(admin.CancelRefused, match="context_changed"):
+        run(f, apply=apply)
+    assert calls == 2 and writes == 0
+    assert json.loads(owner_path.read_text()) == concurrent_owner
+    assert f.path.read_bytes() == before[f.path]
+    assert {p: b for p, b in snapshot(f).items() if p != owner_path} == {
+        p: b for p, b in before.items() if p != owner_path}
+
+
+@pytest.mark.parametrize("filename", ["retro_corner.json", "retro_corner_manual.json"])
+@pytest.mark.parametrize("apply", [False, True])
+def test_unchanged_registry_duplicate_keeps_original_snapshot(detached, filename, apply):
+    f = detached
+    owner_path = f.path.parent / filename
+    owner_path.write_text(json.dumps({"status": "completed", "game": "nsnake",
+                                     "rotation_request_id": str(uuid.uuid4())}))
+    registry_path = f.soren / "tmp/state/docich_program_active.json"
+    registry_path.write_text(json.dumps({"owner_state": str(owner_path)}))
+    before = snapshot(f)
+    result = run(f, apply=apply)
+    assert result["status"] == ("admin-released" if apply else "admin-eligible")
+    assert {p: b for p, b in snapshot(f).items() if p != f.path} == {
+        p: b for p, b in before.items() if p != f.path}
+    if not apply:
+        assert snapshot(f) == before
+
+
 @pytest.mark.parametrize("lock", ["corner-rotation", "retro-corner", "retro-corner-manual", "game-switch", "program"])
 def test_lock_contention_refuses_and_releases_prior_locks(detached, lock):
     import fcntl

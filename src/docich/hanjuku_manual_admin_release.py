@@ -36,7 +36,13 @@ def release(g, *, expected, apply=False, now=time.time):
 
     def observe(path, *, optional=False):
         value = _object(path, optional=optional)
-        snapshots[path] = (value, optional)
+        if path in snapshots:
+            # A registry can refer to an owner already read above. Preserve
+            # its first observation, including absence, and reject drift now.
+            if snapshots[path][0] != value:
+                raise CancelRefused("context_changed")
+        else:
+            snapshots[path] = (value, optional)
         return value
 
     with ExitStack() as held:
