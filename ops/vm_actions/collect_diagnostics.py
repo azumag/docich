@@ -3339,6 +3339,77 @@ def _rotation_pending_projection(state_dir, data, now):
     return out
 
 
+def _rotation_hanjuku_manual_receipt_projection(state_dir, manual, now):
+    """Observe only this fixed manual reservation's UUID receipt, without IDs.
+
+    Missing output means not observed; present=false means the fixed lookup
+    found no file in this snapshot. Neither proves historical non-execution.
+    This is read-only evidence and never authorizes cancellation or recovery.
+    """
+    out = {"observed": False, "present": None, "readable": None,
+           "status": "unknown", "operation": "unknown",
+           "request_matches": None, "target_matches": None,
+           "terminal_result_matches": None, "cleanup_pending": None,
+           "updated_after_selection": None, "runtime_identity_valid": None,
+           "runtime_resources_released": None}
+    if (not isinstance(manual, dict) or manual.get("corner") != "hanjuku-hero"
+            or manual.get("state_file") != "retro_corner_manual.json"):
+        return out
+    request_id = _weather_request_id(manual.get("request_id"))
+    selected = _rotation_time(manual.get("selected_at"))
+    if request_id is None or selected is None or selected > now:
+        return out
+    present, readable, receipt = _rotation_evidence_file(
+        state_dir, f"game-switch/requests/{request_id}.json")
+    out.update(observed=True, present=present, readable=readable)
+    if not readable:
+        return out
+    status = _rotation_enum(receipt.get("status"), WEATHER_RECEIPT_STATUSES)
+    operation = _rotation_enum(receipt.get("operation"), WEATHER_OPERATIONS)
+    matches = receipt.get("request_id") == request_id
+    target_matches = receipt.get("target") == "hanjuku-hero"
+    out.update(status=status, operation=operation, request_matches=matches,
+               target_matches=target_matches)
+    updated = _rotation_time(receipt.get("updated_at"))
+    if updated is not None:
+        out["updated_after_selection"] = updated >= selected
+    result = receipt.get("result")
+    if isinstance(result, dict):
+        if status in WEATHER_RESULT_STATUSES:
+            out["terminal_result_matches"] = bool(
+                matches and target_matches and operation in {"start", "switch"}
+                and result.get("request_id") == request_id
+                and result.get("status") == status
+                and result.get("operation") == operation)
+        if isinstance(result.get("cleanup_pending"), bool):
+            out["cleanup_pending"] = result["cleanup_pending"]
+    if (not out["terminal_result_matches"] or not target_matches
+            or out["cleanup_pending"] is not False):
+        return out
+    # Reuse the operator's validated runtime and read-only release contract.
+    # No canonical/owner decision or cancellation authority comes from this
+    # unlocked snapshot; the operator rechecks everything under writer locks.
+    from docich.game_switch import validate_receipt
+    from docich.hanjuku_manual_cancel import CancelRefused, _ProbeTmux, _released_runtime
+    try:
+        validate_receipt(receipt, state_dir, expected_request_id=request_id)
+        runtime = state_dir / "runtimes" / receipt["runtime_id"]
+        if any(parent.is_symlink() for parent in (runtime, *runtime.parents)):
+            out["runtime_identity_valid"] = False
+            return out
+        out["runtime_identity_valid"] = True
+        _released_runtime(state_dir, receipt["runtime_id"], _ProbeTmux())
+        out["runtime_resources_released"] = True
+    except CancelRefused as exc:
+        if str(exc) == "runtime_resources_present":
+            out["runtime_resources_released"] = False
+    except Exception:
+        # Invalid identity or a failed/timed-out probe stays unknown. Never
+        # expose validation messages, tmux output, identifiers or paths.
+        pass
+    return out
+
+
 def _rotation_manual_pending_projection(state_dir, data, now):
     """Observe the manual reservation separately from automatic ``pending``.
 
@@ -3354,6 +3425,9 @@ def _rotation_manual_pending_projection(state_dir, data, now):
         "manual_pending_age_sec": -1,
         "manual_pending_owner": "absent",
         "manual_pending_owner_status": "unknown",
+        "manual_pending_fingerprint": None,
+        "manual_pending_receipt": _rotation_hanjuku_manual_receipt_projection(
+            state_dir, data.get("manual_pending"), now),
     }
     manual = data.get("manual_pending")
     if manual is None:
@@ -3372,6 +3446,15 @@ def _rotation_manual_pending_projection(state_dir, data, now):
     filename = manual.get("state_file")
     name = files.get(filename) if isinstance(filename, str) else None
     request_id = manual.get("request_id")
+    # An opaque compare-and-cancel token, never the request identity itself.
+    # Only this fixed Hanjuku owner is cancellable by the owner operator.
+    if (manual.get("corner") == "hanjuku-hero"
+            and filename == "retro_corner_manual.json"
+            and selected is not None and selected <= now
+            and isinstance(request_id, str)
+            and re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", request_id)):
+        out["manual_pending_fingerprint"] = hashlib.sha256(json.dumps(
+            manual, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     if name is None:
         return out
     out["manual_pending_state_file"] = name
