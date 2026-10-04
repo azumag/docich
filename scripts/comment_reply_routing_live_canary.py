@@ -18,14 +18,14 @@ import tempfile
 import time
 
 from docich.comment_classifier import heuristic, jev
-from docich.reply_routing import ENABLE_ENV
+from docich.reply_routing import ENABLE_ENV, RUBRIC_VERSION
 from docich.semantic_decision.routes import resolve_route
 
 CORPUS = Path(__file__).resolve().parents[1] / "tests/fixtures/reply_routing_canary.json"
 CONFIRM = "I_HAVE_APPROVED_POSSIBLE_PROVIDER_COST"
 FAILURES = frozenset({"missing_key", "timeout", "rate_limited", "network_error",
                       "server_error", "auth_error", "invalid_response", "invalid_config",
-                      "http_error", "state_unavailable", "busy", "input_limit"})
+                      "http_error", "overloaded", "state_unavailable", "busy", "input_limit"})
 
 
 def percentile95(values: list[float]) -> float | None:
@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     count = len(outcomes)
     output = {
         "status": "complete" if count == len(corpus) else (outcomes[-1]["status"] if outcomes else "unavailable"),
-        "rubric": "reply-evidence-v1",
+        "rubric": RUBRIC_VERSION,
         "combined_request": True,
         "corpus_count": len(corpus),
         "cases_measured": count,

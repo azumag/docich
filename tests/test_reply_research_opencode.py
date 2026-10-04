@@ -30,7 +30,7 @@ def ref():
     return {'kind': 'web', 'ref': URL, 'receipt': rec.receipt, 'sha256': rec.sha256, 'quote': '一次資料で確認した事実。'}
 
 
-def run(actions, tmp_path, *, scope='web', search=None, manifest=None, comment_scopes=None):
+def run(actions, tmp_path, *, scope='web', search=None, manifest=None, comment_scopes=None, turns=None):
     observed = []
     def model(prompt, remaining):
         observed.append(json.loads(prompt.split('\n', 1)[1]))
@@ -39,7 +39,7 @@ def run(actions, tmp_path, *, scope='web', search=None, manifest=None, comment_s
     def fetch(url):
         return receipt() if url in broker._candidates else None
     broker.fetch = fetch
-    return r.coordinate([{'role':'user','content':'今日のニュースは？'}], scope,
+    return r.coordinate(turns or [{'role':'user','content':'今日のニュースは？'}], scope,
                         source=tmp_path, manifest=manifest, model_call=model,
                         broker=broker, searcher=search or (lambda *a: [URL]),
                         deadline=time.monotonic()+5, comment_scopes=comment_scopes), observed
@@ -90,6 +90,23 @@ def test_code_requires_parent_read_exact_hash_line_quote(tmp_path):
     result,_=run([{'action':'read','path':'logic.py','start':1,'end':1},
                   {'action':'answer','sources':[source]}],tmp_path,scope='code',manifest=manifest)
     assert result.ok and '#L1' in result.sources[0]
+
+
+def test_recorded_mixed_question_requires_both_source_receipts(tmp_path):
+    observed = json.loads((Path(__file__).parent/'fixtures/reply_evidence_source_contrasts.json').read_text())["observed_regression"]
+    turns = [{"role":"user","content":observed["text"]}]
+    data=b'retry_limit = 3\n';(tmp_path/'logic.py').write_bytes(data)
+    manifest={'repo':'azumag/docich','revision':'a'*40,'files':{'logic.py':hashlib.sha256(data).hexdigest()}}
+    code={'kind':'code','ref':'logic.py','line':1,'quote':'retry_limit = 3'}
+    incomplete,_=run([{'action':'read','path':'logic.py','start':1,'end':1},
+                      {'action':'answer','sources':[code]}],tmp_path,
+                     scope=observed['expected'],manifest=manifest,turns=turns)
+    assert incomplete.status == 'partial' and '不足' in incomplete.notes
+    complete,_=run([{'action':'search','query':'公開規約'}, {'action':'fetch','url':URL},
+                    {'action':'read','path':'logic.py','start':1,'end':1},
+                    {'action':'answer','sources':[ref(),code]}],tmp_path,
+                   scope=observed['expected'],manifest=manifest,turns=turns)
+    assert complete.status == 'ok' and len(complete.sources)==2
 
 
 @pytest.mark.parametrize('action',[{'action':'read','path':'/etc/passwd','start':1,'end':1},

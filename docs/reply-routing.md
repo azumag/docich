@@ -10,6 +10,14 @@
 
 JEVの固定scopeは `api_only / web / code / web_and_code / runtime / unknown`。質問の長さやキーワード数ではなく、正確に答えるため会話外の根拠が必要かを判定する。API-onlyには有効なJEV結果と有限confidence ≥ .80が必要。分類と画像分類・カテゴリ判定は既存combined requestへまとめる。
 
+### reply-evidence-v2（意味精度は未実測）
+
+public facts・project implementation・現在のlive/private観測の必要性を独立に判断し、その和集合でscopeを選ぶ。Webだけならweb、実装だけならcode、公開規則との実装比較や適合確認にはweb_and_code、現在の観測が必要ならruntime。code/web候補は必要な根拠がその一種類だけの場合を表す。Discordと配信combinedは同じ候補定義・説明を使う。
+
+対象の名前が省略されても必要な根拠の種類が明らかなら、その種類を保つ。必要な種類自体が分からなければunknown。会話の書き換え依頼は、privacy投影に過去assistant本文がないことだけを理由に外部事実の確認へ変えない。過去assistantの主張を確認済み事実として採用する許可ではない。
+
+v1の実測で「公式仕様とdocichの実装は一致してる？」がconfidence .88でcodeに分類された。観測した誤判定をfixtureへ保存し、codeのみ/webのみ/両方/曖昧を各3件、合わせて12対照ケースを追加した。mockは送信rubric・選択後の経路・mixedの両種類の引用要件を検査し、v2のJEV精度を証明しない。閾値.80は維持する。
+
 JEVへ渡すのは直近のuser本文だけ。persona、表示名、userID、過去assistant発言、不要な長期記憶、環境は投影から除く。既知credential/明示secret assignment/identityパターンはprovider前にfail-closedする。これは任意の機密文字列を完全に検知するDLPの保証ではない。
 
 分類timeout/低confidence/invalid/provider failureをAPI-onlyに変換せず、調査CLIへの昇格理由にも使わない。unknownは固定の対象確認質問、runtimeは現在の観測がなく確認できない説明を返す。ソースから現在のVM・配信状態を推測しない。
@@ -51,6 +59,18 @@ OpenCodeの外向き経路はnamespace内loopbackの固定CONNECT bridgeだけ�
 同じbatchの検証済みroute envelopeをprivate既存stateへ原子的にcacheし、後の配送失敗で分類・調査をやり直さない。配信コード上のholdは未確認自由生成の禁止を意味し、silent pendingの無限調査retryを意味しない。配送障害そのものは既存queue運用の対象で、無条件ack/ユーザーメッセージ破棄をしない。
 
 ## 検証の区別と残件
+
+### 承認済みv1 canaryと低confidenceの分析
+
+[秘密・identityなし測定記録](evidence/reply-routing-canary-2026-10-04.json) はHEAD c2849616 / reply-evidence-v1で、合成19個別＋8/8/3combinedの3、計22 POSTを一度だけ実施した結果。全POST正常応答、retry/fallbackなし。公開単価でのusage-basedモデル料金概算は$0.00124593（input29,665 tokens）。請求書や残高を照合した値ではない。22回枠は消費済みで再測定しない。
+
+Discordは有効10/19・正解9/10・低confidence9/19、mean332.782ms/p95464.460ms。combinedは有効15/19すべて正解・低confidence4/19、mean421.264ms/p95440.259ms/batch。低confidenceはholdされ、API-onlyやresearchへ昇格していない。
+
+Discordの低confidenceはreaction/rewrite、伏字や参照先がないWeb質問、卵条件、mixed比較、現在の配信、通知＋質問にまたがる。combinedでは通知2件・料金・通知＋質問だった。同文SSR通知2件もcombinedではconfidence .54/.34で、閾値を下げる根拠にはしない。
+
+v1の広いcode定義・短いmixed定義の競合と、「missing referentならunknown」と会話書き換えとの衝突を原因候補としてv2で整理した。batch内の他質問やcategory/evidence同時評価の影響も候補だが、この一回の観測だけでは原因を確定できない。低confidenceの候補label/確率分布は既存canary出力に保存されておらず、推測で補わない。v2の実モデル改善は未確認でDraftを維持する。
+
+再canaryの最小案は、観測したmixed事例＋12対照の13個別と、同じ13件を8/5に分けるcombined2、計15 POST。新しい承認枠・料金/context/入力上限を確認してから別途実行する。OpenCode/Exa/本番APIは含まない。
 
 合成テストはルーティング・取得照合・SSRF拒否・上限・process cleanup・実queue/ackを検査する。JEVの意味精度、実OpenCodeのmodel/API通信、Exaの実結果schema、ニュース取得成功率、実Linux hostの全negative受入を証明しない。
 

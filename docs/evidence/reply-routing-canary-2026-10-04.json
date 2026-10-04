@@ -1,0 +1,582 @@
+{
+  "schema": 1,
+  "source_head": "c2849616986a86c951896f6e36f618d85e7be508",
+  "status": "complete",
+  "route": "direct",
+  "model": "jev-1.13.0",
+  "post_attempts_upper_bound": 22,
+  "max_post_count": 22,
+  "budget_usd": "0.10",
+  "conservative_max_model_price_usd": "0.060555264",
+  "known_input_tokens": 29665,
+  "unknown_usage_attempts": 0,
+  "known_model_price_usd": "0.00124593",
+  "remaining_budget_lower_bound_usd": "0.09875407",
+  "price_basis": "official input $0.042/M; output free; model token estimate, not invoice",
+  "attempts": [
+    {
+      "input_tokens": 682,
+      "json_bytes": 1772,
+      "latency_ms": 361.403,
+      "ordinal": 1,
+      "output_tokens": 66,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 685,
+      "json_bytes": 1769,
+      "latency_ms": 280.043,
+      "ordinal": 2,
+      "output_tokens": 66,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 685,
+      "json_bytes": 1769,
+      "latency_ms": 339.199,
+      "ordinal": 3,
+      "output_tokens": 66,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 688,
+      "json_bytes": 1778,
+      "latency_ms": 263.178,
+      "ordinal": 4,
+      "output_tokens": 66,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 696,
+      "json_bytes": 1802,
+      "latency_ms": 292.532,
+      "ordinal": 5,
+      "output_tokens": 65,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 688,
+      "json_bytes": 1774,
+      "latency_ms": 316.028,
+      "ordinal": 6,
+      "output_tokens": 65,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 686,
+      "json_bytes": 1771,
+      "latency_ms": 353.182,
+      "ordinal": 7,
+      "output_tokens": 65,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 693,
+      "json_bytes": 1793,
+      "latency_ms": 453.682,
+      "ordinal": 8,
+      "output_tokens": 65,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 692,
+      "json_bytes": 1790,
+      "latency_ms": 300.466,
+      "ordinal": 9,
+      "output_tokens": 65,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 699,
+      "json_bytes": 1811,
+      "latency_ms": 286.514,
+      "ordinal": 10,
+      "output_tokens": 65,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 700,
+      "json_bytes": 1811,
+      "latency_ms": 288.642,
+      "ordinal": 11,
+      "output_tokens": 65,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 696,
+      "json_bytes": 1806,
+      "latency_ms": 240.811,
+      "ordinal": 12,
+      "output_tokens": 65,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 698,
+      "json_bytes": 1808,
+      "latency_ms": 292.917,
+      "ordinal": 13,
+      "output_tokens": 65,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 704,
+      "json_bytes": 1826,
+      "latency_ms": 311.324,
+      "ordinal": 14,
+      "output_tokens": 67,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 693,
+      "json_bytes": 1793,
+      "latency_ms": 324.411,
+      "ordinal": 15,
+      "output_tokens": 65,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 693,
+      "json_bytes": 1793,
+      "latency_ms": 433.478,
+      "ordinal": 16,
+      "output_tokens": 65,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 691,
+      "json_bytes": 1786,
+      "latency_ms": 293.039,
+      "ordinal": 17,
+      "output_tokens": 65,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 685,
+      "json_bytes": 1769,
+      "latency_ms": 264.654,
+      "ordinal": 18,
+      "output_tokens": 66,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 700,
+      "json_bytes": 1814,
+      "latency_ms": 293.705,
+      "ordinal": 19,
+      "output_tokens": 65,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 6847,
+      "json_bytes": 24903,
+      "latency_ms": 379.423,
+      "ordinal": 20,
+      "output_tokens": 1525,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 6919,
+      "json_bytes": 25113,
+      "latency_ms": 396.398,
+      "ordinal": 21,
+      "output_tokens": 1520,
+      "status": "ok"
+    },
+    {
+      "input_tokens": 2745,
+      "json_bytes": 9409,
+      "latency_ms": 391.1,
+      "ordinal": 22,
+      "output_tokens": 569,
+      "status": "ok"
+    }
+  ],
+  "discord": {
+    "accuracy_answered": 0.9,
+    "corpus_count": 19,
+    "coverage": 0.5263,
+    "exact_match_all": 0.4737,
+    "low_confidence_count": 9,
+    "mean_latency_ms": 332.782,
+    "p95_latency_ms": 464.46,
+    "requests_attempted": 19,
+    "results": [
+      {
+        "confidence": 0.98,
+        "correct": true,
+        "expected": "api_only",
+        "id": "api_greeting",
+        "latency_ms": 400.718,
+        "scope": "api_only",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.94,
+        "correct": true,
+        "expected": "api_only",
+        "id": "api_notification",
+        "latency_ms": 301.629,
+        "scope": "api_only",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.87,
+        "correct": true,
+        "expected": "api_only",
+        "id": "api_celebration",
+        "latency_ms": 376.134,
+        "scope": "api_only",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.6,
+        "correct": false,
+        "expected": "api_only",
+        "id": "api_reaction",
+        "latency_ms": 271.331,
+        "scope": null,
+        "status": "low_confidence"
+      },
+      {
+        "confidence": 0.42,
+        "correct": false,
+        "expected": "api_only",
+        "id": "api_rewrite",
+        "latency_ms": 307.705,
+        "scope": null,
+        "status": "low_confidence"
+      },
+      {
+        "confidence": 0.97,
+        "correct": true,
+        "expected": "web",
+        "id": "web_person",
+        "latency_ms": 346.07,
+        "scope": "web",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.52,
+        "correct": false,
+        "expected": "web",
+        "id": "web_term",
+        "latency_ms": 377.477,
+        "scope": null,
+        "status": "low_confidence"
+      },
+      {
+        "confidence": 0.42,
+        "correct": false,
+        "expected": "web",
+        "id": "web_news",
+        "latency_ms": 464.46,
+        "scope": null,
+        "status": "low_confidence"
+      },
+      {
+        "confidence": 0.38,
+        "correct": false,
+        "expected": "web",
+        "id": "web_price",
+        "latency_ms": 308.147,
+        "scope": null,
+        "status": "low_confidence"
+      },
+      {
+        "confidence": 0.97,
+        "correct": true,
+        "expected": "code",
+        "id": "code_gacha",
+        "latency_ms": 298.155,
+        "scope": "code",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.64,
+        "correct": false,
+        "expected": "code",
+        "id": "code_egg",
+        "latency_ms": 294.436,
+        "scope": null,
+        "status": "low_confidence"
+      },
+      {
+        "confidence": 0.8,
+        "correct": true,
+        "expected": "code",
+        "id": "code_variable",
+        "latency_ms": 246.427,
+        "scope": "code",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.88,
+        "correct": false,
+        "expected": "web_and_code",
+        "id": "mixed_spec_impl",
+        "latency_ms": 299.985,
+        "scope": "code",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.76,
+        "correct": false,
+        "expected": "web_and_code",
+        "id": "mixed_compare",
+        "latency_ms": 319.766,
+        "scope": null,
+        "status": "low_confidence"
+      },
+      {
+        "confidence": 0.94,
+        "correct": true,
+        "expected": "runtime",
+        "id": "runtime_bot",
+        "latency_ms": 334.415,
+        "scope": "runtime",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.78,
+        "correct": false,
+        "expected": "runtime",
+        "id": "runtime_stream",
+        "latency_ms": 461.744,
+        "scope": null,
+        "status": "low_confidence"
+      },
+      {
+        "confidence": 0.97,
+        "correct": true,
+        "expected": "runtime",
+        "id": "runtime_vm_log",
+        "latency_ms": 300.843,
+        "scope": "runtime",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.93,
+        "correct": true,
+        "expected": "api_only",
+        "id": "notification_only",
+        "latency_ms": 305.5,
+        "scope": "api_only",
+        "status": "jev"
+      },
+      {
+        "confidence": 0.5,
+        "correct": false,
+        "expected": "code",
+        "id": "notification_plus_question",
+        "latency_ms": 307.909,
+        "scope": null,
+        "status": "low_confidence"
+      }
+    ],
+    "rubric": "reply-evidence-v1",
+    "status": "complete",
+    "low_confidence_rate": 0.4737
+  },
+  "stream": {
+    "accuracy_on_available": 1.0,
+    "cases_measured": 19,
+    "combined_request": true,
+    "corpus_count": 19,
+    "coverage": 0.7895,
+    "exact_match_all": 0.7895,
+    "low_confidence_count": 4,
+    "low_confidence_rate": 0.2105,
+    "mean_batch_latency_ms": 421.264,
+    "p95_batch_latency_ms": 440.259,
+    "requests_attempted": 3,
+    "results": [
+      {
+        "batch_latency_ms": 423.59,
+        "confidence": 0.99,
+        "correct": true,
+        "expected": "api_only",
+        "id": "api_greeting",
+        "scope": "api_only",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 423.59,
+        "confidence": 0.54,
+        "correct": false,
+        "expected": "api_only",
+        "id": "api_notification",
+        "scope": null,
+        "status": "low_confidence"
+      },
+      {
+        "batch_latency_ms": 423.59,
+        "confidence": 0.99,
+        "correct": true,
+        "expected": "api_only",
+        "id": "api_celebration",
+        "scope": "api_only",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 423.59,
+        "confidence": 0.99,
+        "correct": true,
+        "expected": "api_only",
+        "id": "api_reaction",
+        "scope": "api_only",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 423.59,
+        "confidence": 0.91,
+        "correct": true,
+        "expected": "api_only",
+        "id": "api_rewrite",
+        "scope": "api_only",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 423.59,
+        "confidence": 0.9,
+        "correct": true,
+        "expected": "web",
+        "id": "web_person",
+        "scope": "web",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 423.59,
+        "confidence": 0.9,
+        "correct": true,
+        "expected": "web",
+        "id": "web_term",
+        "scope": "web",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 423.59,
+        "confidence": 0.94,
+        "correct": true,
+        "expected": "web",
+        "id": "web_news",
+        "scope": "web",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 440.259,
+        "confidence": 0.72,
+        "correct": false,
+        "expected": "web",
+        "id": "web_price",
+        "scope": null,
+        "status": "low_confidence"
+      },
+      {
+        "batch_latency_ms": 440.259,
+        "confidence": 0.94,
+        "correct": true,
+        "expected": "code",
+        "id": "code_gacha",
+        "scope": "code",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 440.259,
+        "confidence": 0.9,
+        "correct": true,
+        "expected": "code",
+        "id": "code_egg",
+        "scope": "code",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 440.259,
+        "confidence": 0.89,
+        "correct": true,
+        "expected": "code",
+        "id": "code_variable",
+        "scope": "code",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 440.259,
+        "confidence": 0.94,
+        "correct": true,
+        "expected": "web_and_code",
+        "id": "mixed_spec_impl",
+        "scope": "web_and_code",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 440.259,
+        "confidence": 0.97,
+        "correct": true,
+        "expected": "web_and_code",
+        "id": "mixed_compare",
+        "scope": "web_and_code",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 440.259,
+        "confidence": 1.0,
+        "correct": true,
+        "expected": "runtime",
+        "id": "runtime_bot",
+        "scope": "runtime",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 440.259,
+        "confidence": 0.93,
+        "correct": true,
+        "expected": "runtime",
+        "id": "runtime_stream",
+        "scope": "runtime",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 399.942,
+        "confidence": 0.93,
+        "correct": true,
+        "expected": "runtime",
+        "id": "runtime_vm_log",
+        "scope": "runtime",
+        "status": "jev"
+      },
+      {
+        "batch_latency_ms": 399.942,
+        "confidence": 0.34,
+        "correct": false,
+        "expected": "api_only",
+        "id": "notification_only",
+        "scope": null,
+        "status": "low_confidence"
+      },
+      {
+        "batch_latency_ms": 399.942,
+        "confidence": 0.43,
+        "correct": false,
+        "expected": "code",
+        "id": "notification_plus_question",
+        "scope": null,
+        "status": "low_confidence"
+      }
+    ],
+    "rubric": "reply-evidence-v1",
+    "status": "complete"
+  },
+  "actual_successful_posts": 22,
+  "retry_count": 0,
+  "fallback_used": false,
+  "production_configuration_changed": false,
+  "real_user_messages_sent": false,
+  "credential_values_disclosed": false,
+  "measurement_date": "2026-10-04",
+  "notes": [
+    "One approved synthetic run. No repeat; 22 request slots exhausted.",
+    "Confidence threshold .80. Coverage and exact-match-all include low-confidence holds.",
+    "Usage-based cost is a model price estimate, not an invoice or account-balance check.",
+    "Discord high-confidence mismatch: mixed_spec_impl expected web_and_code, selected code at .88.",
+    "This measures classification only; OpenCode, Exa, research completeness and final replies were not exercised."
+  ]
+}

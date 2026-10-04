@@ -14,14 +14,14 @@ from pathlib import Path
 import statistics
 import time
 
-from docich.reply_routing import decide
+from docich.reply_routing import RUBRIC_VERSION, decide
 from docich.semantic_decision.routes import parse_route_chain, resolve_route
 
 CORPUS = Path(__file__).resolve().parents[1] / "tests/fixtures/reply_routing_canary.json"
 CONFIRM = "I_HAVE_APPROVED_POSSIBLE_PROVIDER_COST"
 PROVIDER_FAILURES = frozenset({
     "missing_key", "timeout", "rate_limited", "network_error", "server_error",
-    "auth_error", "invalid_response", "invalid_config", "http_error",
+    "auth_error", "invalid_response", "invalid_config", "http_error", "overloaded",
 })
 
 
@@ -44,7 +44,10 @@ def main(argv: list[str] | None = None) -> int:
     if env.get("DOCICH_ALLOW_REAL_AI") != "1":
         parser.error("DOCICH_ALLOW_REAL_AI=1 is required")
     try:
-        route = parse_route_chain(env.get("DOCICH_JEV_ROUTE", "direct"))[0]
+        chain = parse_route_chain(env.get("DOCICH_JEV_ROUTE", "direct"))
+        if len(chain) != 1:
+            parser.error("set one existing Jev API route; canary refuses configured route failover")
+        route = chain[0]
         key_present = bool(env.get(resolve_route(route).credential_env))
     except Exception:
         key_present = False
@@ -70,13 +73,14 @@ def main(argv: list[str] | None = None) -> int:
     answered = [row for row in rows if row["status"] == "jev"]
     output = {
         "status": "complete" if len(rows) == len(corpus) else rows[-1]["status"],
-        "rubric": "reply-evidence-v1",
+        "rubric": RUBRIC_VERSION,
         "corpus_count": len(corpus),
         "requests_attempted": len(rows),
         "coverage": round(len(answered) / len(rows), 4) if rows else 0,
         "accuracy_answered": round(sum(row["correct"] for row in answered) / len(answered), 4) if answered else None,
         "exact_match_all": round(sum(row["correct"] for row in rows) / len(corpus), 4) if corpus else None,
         "low_confidence_count": sum(row["status"] == "low_confidence" for row in rows),
+        "low_confidence_rate": round(sum(row["status"] == "low_confidence" for row in rows) / len(rows), 4) if rows else 0,
         "mean_latency_ms": round(statistics.mean(latencies), 3) if latencies else None,
         "p95_latency_ms": percentile95(latencies),
         "results": rows,

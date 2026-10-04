@@ -16,6 +16,7 @@ from docich.comment_classifier import reply_route as comment_route
 from docich.semantic_decision.validator import dumps as strict_dumps
 
 ENV = {routing.ENABLE_ENV: "1", "DOCICH_ALLOW_REAL_AI": "1", "TYPESAFE_API_KEY": "SYNTHETIC_KEY"}
+SOURCE_CONTRASTS = json.loads((Path(__file__).parent / "fixtures/reply_evidence_source_contrasts.json").read_text())
 
 
 def messages(text="SSR出た！"):
@@ -36,6 +37,125 @@ def test_live_canary_corpus_is_synthetic_and_separates_notification_from_questio
     assert by_id["notification_plus_question"]["expected"] == "code"
     assert "SSR出た！" in by_id["notification_only"]["text"]
     assert by_id["notification_only"]["text"] != by_id["notification_plus_question"]["text"]
+
+
+def test_recorded_high_confidence_mixed_regression_remains_an_observed_failure():
+    observed = SOURCE_CONTRASTS["observed_regression"]
+    assert observed["recorded_rubric"] == "reply-evidence-v1"
+    assert observed["recorded_confidence"] == .88
+    assert observed["recorded_choice"] == "code" and observed["expected"] == "web_and_code"
+    assert set(observed["required_sources"]) == {"web", "code"}
+    # The recorded response was structurally valid. Offline mocks cannot turn
+    # this historical mistake into evidence that the changed model rubric works.
+    old = routing.decide(routing.project_messages(messages(observed["text"])), env=ENV,
+                         transport=lambda *a, **k: answer(observed["recorded_choice"], .88))
+    assert old.scope == "code" and old.status == "jev"
+
+
+def test_recorded_v1_canary_is_not_claimed_as_v2_accuracy():
+    record = json.loads((Path(__file__).resolve().parents[1]/"docs/evidence/reply-routing-canary-2026-10-04.json").read_text())
+    assert record["discord"]["rubric"] == record["stream"]["rubric"] == "reply-evidence-v1"
+    assert routing.RUBRIC_VERSION == "reply-evidence-v2"
+    assert record["actual_successful_posts"] == record["max_post_count"] == 22
+    assert record["retry_count"] == 0 and not record["fallback_used"]
+    assert all(attempt["status"] == "ok" for attempt in record["attempts"])
+    mismatch = next(row for row in record["discord"]["results"] if row["id"] == "mixed_spec_impl")
+    assert mismatch["scope"] == "code" and mismatch["confidence"] == .88 and not mismatch["correct"]
+
+
+def test_combined_canary_eight_cases_still_fit_one_request():
+    from docich.comment_classifier import heuristic
+    corpus = json.loads((Path(__file__).parent/"fixtures/reply_routing_canary.json").read_text())
+    for start in range(0,len(corpus),8):
+        rows = heuristic.baseline([f"case-{start+i+1}: {sample['text']}" for i,sample in enumerate(corpus[start:start+8])])
+        request = comment_jev.build_request(rows,"jev-1.13.0",evidence_enabled=True)
+        assert len(request["state"]["comments"]) == len(rows)
+        assert len(strict_dumps(request).encode()) <= comment_jev.MAX_REQUEST_BYTES
+        assert set(request["questions"]) == {f"{kind}{index}" for index in range(1,len(rows)+1) for kind in ("c","e")}
+
+
+def test_combined_event_names_evidence_rubric_without_changing_category_rubric(tmp_path):
+    rows=[{"index":1,"user":"fixture","comment":"公開規約と実装の差分は？","category":"general_question","is_english":False}]
+    _,event=comment_jev.classify(rows,comment_jev.Config(evidence_enabled=True),ENV,tmp_path,
+                                transport=_comment_transport({rows[0]["comment"]:"web_and_code"}))
+    assert event["rubric_version"] == "comment-body-v1"
+    assert event["evidence_rubric_version"] == routing.RUBRIC_VERSION
+
+
+def _discord_canary_module():
+    path=Path(__file__).resolve().parents[1]/"scripts/reply_routing_live_canary.py"
+    spec=importlib.util.spec_from_file_location("discord_live_canary_contract",path)
+    module=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_discord_canary_refuses_chain_before_any_classification(monkeypatch):
+    module=_discord_canary_module()
+    monkeypatch.setenv("DOCICH_REPLY_CANARY_CONFIRM",module.CONFIRM)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI","1")
+    monkeypatch.setenv("DOCICH_JEV_ROUTE","direct,vercel")
+    monkeypatch.setattr(module,"decide",lambda *a,**k:pytest.fail("classification before single-route guard"))
+    with pytest.raises(SystemExit) as error:
+        module.main(["--live"])
+    assert error.value.code == 2
+
+
+def test_discord_canary_stops_at_first_overload_without_retry(monkeypatch,capsys):
+    module=_discord_canary_module()
+    monkeypatch.setenv("DOCICH_REPLY_CANARY_CONFIRM",module.CONFIRM)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI","1")
+    monkeypatch.setenv("DOCICH_JEV_ROUTE","direct")
+    monkeypatch.setenv("TYPESAFE_API_KEY","SYNTHETIC_NOT_REAL")
+    calls=[]
+    monkeypatch.setattr(module,"decide",lambda *a,**k:calls.append(1) or routing.Decision(status="overloaded"))
+    assert module.main(["--live"]) == 2
+    result=json.loads(capsys.readouterr().out)
+    assert len(calls)==result["requests_attempted"]==1 and result["status"]=="overloaded"
+    assert result["rubric"]==routing.RUBRIC_VERSION and result["low_confidence_rate"]==0
+
+
+@pytest.mark.parametrize("sample", SOURCE_CONTRASTS["cases"], ids=lambda sample: sample["id"])
+def test_source_contrasts_share_semantic_rubric_and_route_contract(sample):
+    expected_sources = {"web": {"web"}, "code": {"code"}, "web_and_code": {"web", "code"}, "unknown": None}
+    assert (set(sample["required_sources"]) if sample["required_sources"] is not None else None) == expected_sources[sample["expected"]]
+    requests = []
+    def mock(request, **kwargs):
+        requests.append(request)
+        return answer(sample["expected"])
+    turns = [{"role": "user", "text": sample["text"]}]
+    decision = routing.decide(turns, env=ENV, transport=mock)
+    assert decision.scope == sample["expected"] and decision.status == "jev"
+    assert not decision.api_only
+    discord = requests[0]["questions"]["reply_evidence"]
+    combined = comment_jev.build_request([{"comment": sample["text"]}], "jev-1.13.0", evidence_enabled=True)["questions"]["e1"]
+    assert discord["criteria"] == combined["criteria"] == routing.CRITERIA
+    assert routing.EVIDENCE_INSTRUCTIONS in discord["instructions"]
+    assert routing.EVIDENCE_INSTRUCTIONS in combined["instructions"]
+    assert "public plus implementation means web_and_code" in routing.EVIDENCE_INSTRUCTIONS
+    assert "Only actual project-source" in discord["criteria"]["code"]
+    assert "Only external public-source" in discord["criteria"]["web"]
+    assert "Each side needs its own evidence" in discord["criteria"]["web_and_code"]
+    # The classifier receives the unchanged question. No lexical override or
+    # example-specific route selector is introduced in the production path.
+    assert requests[0]["state"]["turns"] == turns
+    assert sample["text"] not in routing.EVIDENCE_INSTRUCTIONS
+    research_calls = []
+    result = routing.complete(messages(sample["text"]), env=ENV,
+        api=lambda *a: pytest.fail("external/unknown contrast reached API-only"),
+        transport=lambda *a, **k: answer(sample["expected"]),
+        researcher=lambda turns, scope, **kw: research_calls.append(scope) or research.Evidence())
+    assert research_calls == ([] if sample["expected"] == "unknown" else [sample["expected"]])
+    assert result == (routing.CLARIFY_REPLY if sample["expected"] == "unknown" else routing.UNAVAILABLE_REPLY)
+
+
+@pytest.mark.parametrize("scope", ["web", "code", "web_and_code", "unknown"])
+def test_source_contrast_low_confidence_never_researches_or_becomes_api(scope):
+    calls = []
+    result = routing.complete(messages("公開資料と実装を確認して。"), env=ENV,
+        api=lambda *a: calls.append("api"), researcher=lambda *a, **k: calls.append("research"),
+        transport=lambda *a, **k: answer(scope, .799))
+    assert result == routing.UNAVAILABLE_REPLY and calls == []
 
 
 def _comment_choice_answer(criteria, choice, confidence=.95):
