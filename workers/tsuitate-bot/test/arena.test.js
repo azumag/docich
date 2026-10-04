@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { hostname } from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -359,6 +362,127 @@ test("same brain revision resumes with its pinned profile", async (t) => {
   assert.equal(restored.socket.packets("game:sync").length, 1);
 });
 
+test("disconnect and reconnect remain excluded even when the final timeout or checkmate is verified", async (t) => {
+  for (const reason of ["timeout", "checkmate"]) {
+    const raw = replay("test-game", reason === "timeout" ? "gote_win" : "sente_win");
+    raw.nodes[0].data[4] = reason;
+    const result = parsePublicResult(raw, "test-game", "b");
+    const context = setup(t, { resolveResult: async () => result });
+    await begin(context);
+    context.socket.ack("game:move", { ok: true });
+    await flush(context.session);
+    context.socket.disconnect();
+    await flush(context.session);
+    const checkpoint = context.store.saves.at(-1).active;
+    assert.equal(checkpoint.record.communicationInterrupted, true);
+    assert.equal(checkpoint.record.validForTraining, false);
+    context.socket.connect();
+    await flush(context.session);
+    context.socket.ack("game:sync", { state: advancedView(context.socket) });
+    await flush(context.session);
+    context.socket.server("game:end", {});
+    await flush(context.session);
+    const finished = (await context.session.done).record;
+    assert.equal(finished.outcome, result.outcome);
+    assert.equal(finished.reason, reason);
+    assert.equal(finished.historyComplete, true);
+    assert.equal(finished.resultSource, "public_replay");
+    assert.equal(finished.resultConfidence, "verified");
+    assert.equal(finished.communicationInterrupted, true);
+    assert.equal(finished.validForTraining, false);
+    assert.equal(report([finished]).totals.aborted, 1);
+    assert.equal(report([finished]).totals.completed, 0);
+  }
+});
+
+test("an uninterrupted verified result is eligible; restoring its active checkpoint is not", async (t) => {
+  const result = parsePublicResult(replay(), "test-game", "b");
+  const context = setup(t, { resolveResult: async () => result });
+  await begin(context);
+  context.socket.ack("game:move", { ok: true });
+  await flush(context.session);
+  const checkpoint = context.store.saves.at(-1).active;
+  const restored = setup(t, { checkpoint, resolveResult: async () => result });
+  await flush(restored.session);
+  restored.socket.server("game:end", {});
+  await flush(restored.session);
+  assert.equal((await restored.session.done).record.validForTraining, false);
+  context.socket.server("game:end", {});
+  await flush(context.session);
+  const finished = (await context.session.done).record;
+  assert.equal(finished.validForTraining, true);
+  assert.equal(report([finished]).totals.completed, 1);
+});
+
+test("a reconnect cannot erase the disconnect fact while the session queue is blocked", async (t) => {
+  const result = parsePublicResult(replay(), "test-game", "b");
+  const context = setup(t, { resolveResult: async () => result });
+  await begin(context);
+  let unblock;
+  context.session.enqueue(() => new Promise((resolve) => { unblock = resolve; }));
+  await Promise.resolve();
+  context.socket.disconnect();
+  context.socket.connect();
+  assert.equal(context.session.record.communicationInterrupted, true);
+  unblock();
+  await flush(context.session);
+  assert.equal(context.events.filter((event) => event.event === "disconnected").length, 0);
+  assert.equal(context.events.filter((event) => event.event === "connected").length, 2);
+  assert.equal(context.store.saves.at(-1).active.record.communicationInterrupted, true);
+  context.socket.server("game:end", {});
+  await flush(context.session);
+  const finished = (await context.session.done).record;
+  assert.equal(finished.outcome, result.outcome);
+  assert.equal(finished.reason, result.reason);
+  assert.equal(finished.communicationInterrupted, true);
+  assert.equal(finished.validForTraining, false);
+  assert.equal(report([finished]).totals.completed, 0);
+});
+
+test("old queue timeout cannot drain a reconnected socket", async (t) => {
+  const context = setup(t);
+  const scheduled = [];
+  context.session.later = (operation, delay) => { scheduled.push({ operation, delay }); };
+  await flush(context.session);
+  const first = scheduled.find((item) => item.delay === context.session.queueWaitMs);
+  assert.ok(first);
+  context.socket.disconnect();
+  await flush(context.session);
+  await first.operation();
+  assert.equal(context.session.stopping, false);
+  context.socket.connect();
+  await flush(context.session);
+  await first.operation();
+  assert.equal(context.session.stopping, false);
+  assert.equal(context.socket.packets("queue:leave").length, 0);
+  await scheduled.filter((item) => item.delay === context.session.queueWaitMs).at(-1).operation();
+  assert.equal(context.session.stopping, true);
+  assert.equal(context.socket.packets("queue:leave").length, 1);
+});
+
+test("a parsed view outside brain hand limits resyncs without poisoning the current board", async (t) => {
+  const context = setup(t);
+  await flush(context.session);
+  context.socket.server("match:found", { gameId: "test-game", yourColor: "sente" });
+  await flush(context.session);
+  context.socket.ack("game:sync", { state: view({ yourHand: { lance: 5 } }) });
+  await flush(context.session);
+  assert.equal(context.session.closed, false);
+  assert.equal(context.session.gate.needsSync, true);
+  assert.equal(context.session.gate.view, null);
+  assert.equal(context.socket.packets("game:move").length, 0);
+  context.socket.ack("game:sync", { state: view() });
+  await flush(context.session);
+  assert.equal(context.socket.packets("game:move").length, 1);
+  // Also defend the decision boundary if an old checkpoint contains such a view.
+  context.session.gate.pending = null;
+  context.session.gate.view = view({ yourHand: { lance: 5 } });
+  context.session.gate.needsSync = false;
+  await context.session.maybeMove();
+  assert.equal(context.session.gate.needsSync, true);
+  assert.equal(context.socket.packets("game:move").length, 1);
+});
+
 function replay(gameId = "test-game", result = "sente_win") {
   return { type: "data", nodes: [{ type: "data", data: [
     { game: 1 }, { id: 2, result: 3, reason: 4, startedAt: 5, endedAt: 6, finalSfen: 7 },
@@ -410,4 +534,65 @@ test("durable store excludes concurrent writers, deduplicates terminal games and
   const lines = (await readFile(join(directory, "games.jsonl"), "utf8")).trim().split("\n");
   assert.equal(lines.length, 1);
   await assert.rejects(store.finish({ ...record, outcome: "loss" }), /conflicting_game_record/);
+});
+
+test("dead owner lock is recovered once; living or ambiguous owners remain protected", { timeout: 5000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "tsuitate-lock-"));
+  const moduleUrl = new URL("../src/arena/store.js", import.meta.url).href;
+  const child = spawn(process.execPath, ["--input-type=module", "-e",
+    `import {ArenaStore} from ${JSON.stringify(moduleUrl)}; const s=new ArenaStore(${JSON.stringify(directory)}); await s.acquire(); console.log('ready'); setInterval(()=>{},1000);`]);
+  const [ready] = await once(child.stdout, "data");
+  assert.equal(String(ready).trim(), "ready");
+  t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await rm(directory, { recursive: true, force: true }); });
+  await assert.rejects(new ArenaStore(directory).acquire(), /runner_locked/);
+  await writeFile(join(directory, "checkpoint.json"), '{"pending":"preserve"}');
+  const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
+  const stores = [new ArenaStore(directory), new ArenaStore(directory)];
+  const results = await Promise.allSettled(stores.map((store) => store.acquire()));
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter((result) => result.status === "rejected")[0].reason.message, "runner_locked");
+  const winner = stores.find((store) => store.locked);
+  assert.deepEqual(await winner.load(), { pending: "preserve" });
+  await winner.release();
+  for (const owner of [
+    { pid: process.pid, hostname: hostname(), lockId: "reused-or-live-pid", createdAt: "1900-01-01" },
+    { pid: child.pid, hostname: "another-host", lockId: "foreign-host" },
+    { pid: child.pid, lockId: "legacy-lock" },
+  ]) {
+    const text = JSON.stringify(owner);
+    await writeFile(join(directory, "runner.lock"), text);
+    await assert.rejects(new ArenaStore(directory).acquire(), /runner_locked/);
+    assert.equal(await readFile(join(directory, "runner.lock"), "utf8"), text);
+  }
+  await rm(join(directory, "runner.lock"));
+  await writeFile(join(directory, "runner.lock.guard"), "");
+  await assert.rejects(new ArenaStore(directory).acquire(), /runner_locked/);
+});
+
+test("later verified result upgrades only an unknown game and preserves its evidence", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "tsuitate-result-"));
+  const store = new ArenaStore(directory); await store.acquire();
+  t.after(async () => { await store.release(); await rm(directory, { recursive: true, force: true }); });
+  const unknown = { schemaVersion: 1, kind: "tsuitate_game", site: "beta.tsuitate.info", ruleset: "tsuitate-9x9",
+    rulesKey: "beta-300+3-f10", gameId: "test-game", color: "b", startedAt: "2026-10-03T00:00:00.000Z",
+    endedAt: "2026-10-03T00:05:00.000Z", brainVersion: BRAIN_VERSION, profile: LINEAR_PROFILE,
+    decisions: [], completed: true, historyComplete: false, outcome: "unknown", reason: "unknown" };
+  await store.finish(unknown);
+  for (const resolve of [async () => null, async () => { throw new Error("unavailable"); },
+    async () => parsePublicResult(replay("another-game"), "another-game", "b"),
+    async () => ({ ...parsePublicResult(replay(), "test-game", "b"), source: "unverified" })]) {
+    assert.equal(await store.refreshUnknownResults(resolve), 0);
+  }
+  const resolve = async (id, color) => parsePublicResult(replay(id), id, color);
+  const results = await Promise.all([store.refreshUnknownResults(resolve), store.refreshUnknownResults(resolve)]);
+  assert.deepEqual(results, [1, 0]);
+  const dataset = JSON.parse((await readFile(join(directory, "games.jsonl"), "utf8")).trim());
+  assert.equal(dataset.outcome, "win");
+  assert.equal(dataset.reason, "checkmate");
+  assert.equal(dataset.historyComplete, false);
+  assert.equal(dataset.brainVersion, unknown.brainVersion);
+  assert.deepEqual(dataset.decisions, unknown.decisions);
+  assert.equal(report([dataset]).totals.incompleteHistory, 1);
+  assert.equal(await store.refreshUnknownResults(async () => parsePublicResult(replay(), "test-game", "w")), 0);
+  await assert.rejects(store.finish({ ...dataset, outcome: "loss" }), /conflicting_game_record/);
 });

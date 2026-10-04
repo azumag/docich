@@ -24,7 +24,9 @@ function game(id, { file = 5, color = "b", feedback = "accepted", ...overrides }
     startedAt: "2026-10-03T00:00:00Z", endedAt: "2026-10-03T00:10:00Z", brainVersion: "brain-v1",
     profile: BASE,
     decisions: [{ moveNumber: 1, observation: observation({ file, color }), usi: `${file}${color === "b" ? "g" : "c"}${file}${color === "b" ? "f" : "d"}`, score: 0, features: { centrality: 9999 }, feedback }],
-    historyComplete: true, completed: true, outcome: "win", reason: "checkmate", ...overrides,
+    historyComplete: true, completed: true, outcome: "win", reason: "checkmate",
+    communicationInterrupted: false, resultSource: "public_replay", resultConfidence: "verified", validForTraining: true,
+    ...overrides,
   };
 }
 
@@ -95,6 +97,33 @@ test("unknown termination evidence changes neither candidate weights nor trainin
   assert.equal(combined.provenance.trainingGames, baseline.provenance.trainingGames);
   assert.equal(combined.provenance.excludedRecords, unknown.length);
   assert.throws(() => trainCandidate(unknown, BASE), { message: "insufficient_training_games" });
+});
+
+test("interrupted or unverified known results preserve outcomes but cannot train or count as ordinary wins", () => {
+  const known = outcomeTraining();
+  const invalid = partitionGames("training", 12, { prefix: "interrupted", communicationInterrupted: true });
+  const before = trainCandidate(known, BASE);
+  const after = trainCandidate([...known, ...invalid], BASE);
+  assert.deepEqual(after.profile, before.profile);
+  assert.equal(after.provenance.trainingFingerprint, before.provenance.trainingFingerprint);
+  for (const communicationInterrupted of [true, null]) {
+    const record = normalizeGameRecord(game("interrupted", { communicationInterrupted, validForTraining: true }));
+    assert.equal(record.outcome, "win");
+    assert.equal(record.validForTraining, false);
+    const counts = report([record]).totals;
+    assert.equal(counts.completed, 0);
+    assert.equal(counts[communicationInterrupted === true ? "aborted" : "unverifiedResult"], 1);
+  }
+  const legacy = game("legacy-evidence");
+  for (const key of ["communicationInterrupted", "resultSource", "resultConfidence", "validForTraining"]) delete legacy[key];
+  const normalized = normalizeGameRecord(legacy);
+  assert.equal(normalized.outcome, "win");
+  assert.equal(normalized.communicationInterrupted, null);
+  assert.equal(normalized.validForTraining, false);
+  assert.equal(report([normalized]).totals.unverifiedResult, 1);
+  const unverified = normalizeGameRecord(game("unverified", { resultSource: "unknown", resultConfidence: "unknown" }));
+  assert.equal(unverified.validForTraining, false);
+  assert.equal(report([unverified]).totals.unverifiedResult, 1);
 });
 
 test("actual beta game IDs may start with a hyphen or underscore", () => {

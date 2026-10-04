@@ -60,6 +60,15 @@ export function normalizeGameRecord(raw) {
   const profile = validateProfile(raw.profile);
   if (!profile || typeof raw.completed !== "boolean" || !OUTCOMES.has(raw.outcome) || !GAME_REASONS.includes(raw.reason)) return null;
   if (raw.historyComplete !== undefined && typeof raw.historyComplete !== "boolean") return null;
+  if (raw.communicationInterrupted !== undefined && raw.communicationInterrupted !== null
+      && typeof raw.communicationInterrupted !== "boolean") return null;
+  if (raw.validForTraining !== undefined && typeof raw.validForTraining !== "boolean") return null;
+  const resultSource = raw.resultSource ?? "unknown";
+  const resultConfidence = raw.resultConfidence ?? "unknown";
+  if (!["public_replay", "webhook_game_end", "unknown"].includes(resultSource)
+      || !["verified", "unknown"].includes(resultConfidence)
+      || (resultSource === "unknown" && resultConfidence !== "unknown")) return null;
+  const communicationInterrupted = raw.communicationInterrupted ?? null;
   if (!raw.completed && raw.outcome !== "unknown") return null;
   if (!Array.isArray(raw.decisions) || raw.decisions.length > MAX_DECISIONS) return null;
   const decisions = [];
@@ -95,6 +104,10 @@ export function normalizeGameRecord(raw) {
     rulesKey: raw.rulesKey, gameId: raw.gameId, color: raw.color, startedAt, endedAt,
     brainVersion: raw.brainVersion, profile, profileHash: profileHash(profile), decisions,
     historyComplete: raw.historyComplete === true, completed: raw.completed, outcome: raw.outcome, reason: raw.reason,
+    communicationInterrupted, resultSource, resultConfidence,
+    validForTraining: raw.validForTraining === true && raw.completed && raw.historyComplete === true
+      && communicationInterrupted === false && raw.outcome !== "unknown" && raw.reason !== "unknown"
+      && !ABORT_REASONS.has(raw.reason) && resultSource !== "unknown" && resultConfidence === "verified",
   };
 }
 
@@ -153,9 +166,10 @@ export function splitDataset(rawRecords, options = {}) {
 }
 
 function classification(record) {
-  if (!record.completed || ABORT_REASONS.has(record.reason)) return "aborted";
+  if (!record.completed || ABORT_REASONS.has(record.reason) || record.communicationInterrupted === true) return "aborted";
   if (record.outcome === "unknown" || record.reason === "unknown") return "unknown";
-  return record.historyComplete ? "completed" : "incompleteHistory";
+  if (!record.historyComplete) return "incompleteHistory";
+  return record.validForTraining ? "completed" : "unverifiedResult";
 }
 
 function contextKey(record) {
@@ -163,7 +177,7 @@ function contextKey(record) {
 }
 
 function emptyCounts() {
-  return { recorded: 0, completed: 0, wins: 0, losses: 0, draws: 0, aborted: 0, unknown: 0, incompleteHistory: 0, decisions: 0, acceptedMoves: 0, fouls: 0, unknownFeedback: 0, completedFouls: 0, reasonCounts: {} };
+  return { recorded: 0, completed: 0, wins: 0, losses: 0, draws: 0, aborted: 0, unknown: 0, incompleteHistory: 0, unverifiedResult: 0, decisions: 0, acceptedMoves: 0, fouls: 0, unknownFeedback: 0, completedFouls: 0, reasonCounts: {} };
 }
 
 function addCounts(counts, record) {

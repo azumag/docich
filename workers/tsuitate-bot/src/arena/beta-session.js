@@ -47,6 +47,7 @@ export class BetaSession {
     this.everConnected = false;
     this.resignSentEpoch = null;
     this.brainVersionMismatch = false;
+    this.communicationInterrupted = false;
     if (checkpoint) this.restore(checkpoint);
     this.done = new Promise((resolve) => { this.resolveDone = resolve; });
   }
@@ -68,6 +69,12 @@ export class BetaSession {
     if (this.gate.view && this.gate.view.gameId !== saved.gameId) throw new Error("invalid_checkpoint");
     this.gameId = saved.gameId;
     this.record = record;
+    this.communicationInterrupted = true;
+    if (record) {
+      // A process restore cannot prove an uninterrupted observation history.
+      record.communicationInterrupted = true;
+      record.validForTraining = false;
+    }
     if (record && record.brainVersion !== BRAIN_VERSION) {
       // Keep the original attribution and checkpoint. Without that implementation
       // we cannot continue this match or treat it as ordinary training evidence.
@@ -128,7 +135,17 @@ export class BetaSession {
     };
     this.socket.on("connect", connected);
     this.listeners.push(["connect", connected]);
-    this.listen("disconnect", (_reason, generation) => this.onDisconnect(generation));
+    const disconnected = () => {
+      // Capture the transport fact immediately: reconnect may invalidate the
+      // queued handler while a durable write is still blocking session.tail.
+      if (!this.closed) this.markCommunicationInterrupted();
+      const epoch = this.socketEpoch;
+      void this.enqueue(() => {
+        if (epoch === this.socketEpoch) return this.onDisconnect(this.gate.generation);
+      });
+    };
+    this.socket.on("disconnect", disconnected);
+    this.listeners.push(["disconnect", disconnected]);
     this.listen("connect_error", (error) => {
       // Never log transport errors; they can contain URLs or credential data.
       if (error?.message === "unauthorized") return this.pause("authentication_failed");
@@ -153,6 +170,10 @@ export class BetaSession {
   }
 
   async onConnect() {
+    if (this.everConnected && this.gameId) {
+      this.markCommunicationInterrupted();
+      await this.persist();
+    }
     this.everConnected = true;
     const generation = this.gate.newConnection();
     this.syncPending = null;
@@ -171,12 +192,24 @@ export class BetaSession {
       }
       this.log({ event: "queued" });
     });
-    this.later(async () => { if (!this.gameId) await this.drain(); }, this.queueWaitMs);
+    const epoch = this.socketEpoch;
+    this.later(async () => {
+      if (epoch === this.socketEpoch && this.socket.connected && !this.gameId) await this.drain();
+    }, this.queueWaitMs);
+  }
+
+  markCommunicationInterrupted() {
+    if (this.gameId) this.communicationInterrupted = true;
+    if (this.record) {
+      this.record.communicationInterrupted = true;
+      this.record.validForTraining = false;
+    }
   }
 
   async onDisconnect(generation) {
     this.gate.disconnect(generation);
     this.syncPending = null;
+    this.markCommunicationInterrupted();
     await this.persist();
     this.log({ event: "disconnected", hasGame: Boolean(this.gameId) });
     const epoch = this.socketEpoch;
@@ -208,6 +241,8 @@ export class BetaSession {
       gameId: this.gameId, color: color === "sente" ? "b" : "w", startedAt: isoNow(), endedAt: isoNow(),
       brainVersion: BRAIN_VERSION, profile: this.profile, decisions: [], historyComplete,
       completed: false, outcome: "unknown", reason: "unknown",
+      communicationInterrupted: this.communicationInterrupted, resultSource: "unknown", resultConfidence: "unknown",
+      validForTraining: false,
     };
   }
 
@@ -271,6 +306,12 @@ export class BetaSession {
       this.sync(generation);
       return;
     }
+    if (!toBrainObservation(view)) {
+      this.gate.needsSync = true;
+      this.log({ event: "invalid_observation" });
+      this.sync(generation);
+      return;
+    }
     if (this.gameId && view.gameId !== this.gameId) return;
     if (!validBetaGameId(view.gameId)) return this.pause("invalid_match");
     if (!this.gameId) {
@@ -318,6 +359,12 @@ export class BetaSession {
     if (!this.gate.canMove) return;
     const epoch = this.socketEpoch;
     const observation = toBrainObservation(this.gate.view);
+    if (!observation) {
+      this.gate.needsSync = true;
+      this.log({ event: "invalid_observation" });
+      this.sync();
+      return;
+    }
     const recentMoves = this.record.decisions.filter((decision) => decision.feedback === "accepted").map((decision) => decision.usi).slice(-64);
     const choice = chooseMove(observation, {
       profile: this.profile, seed: `${this.gameId}:${observation.moveNumber}`,
@@ -388,7 +435,9 @@ export class BetaSession {
   async finish(result) {
     const record = normalizeGameRecord({ ...this.record, completed: true,
       outcome: result.outcome, reason: result.reason, endedAt: result.endedAt,
-      startedAt: result.startedAt ?? this.record.startedAt });
+      startedAt: result.startedAt ?? this.record.startedAt,
+      resultSource: result.source === "public_replay" ? "public_replay" : "unknown",
+      resultConfidence: result.source === "public_replay" ? "verified" : "unknown", validForTraining: true });
     if (!record) throw new Error("invalid_game_record");
     await this.store.save({ version: 1, finishedRecord: record });
     await this.store.finish(record);

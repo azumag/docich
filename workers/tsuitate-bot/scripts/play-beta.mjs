@@ -2,7 +2,7 @@ import { randomInt } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { LINEAR_PROFILE, validateProfile } from "../src/brain/index.js";
-import { BETA_ORIGIN } from "../src/adapters/beta-results.js";
+import { BETA_ORIGIN, fetchPublicResult } from "../src/adapters/beta-results.js";
 import { ArenaStore } from "../src/arena/store.js";
 import { BetaSession } from "../src/arena/beta-session.js";
 
@@ -79,6 +79,8 @@ export async function main(argv = process.argv.slice(2)) {
       await store.save({ version: 1, active: null });
       saved = null;
     }
+    // Resume an active game first; archive lookups must not consume its clock.
+    if (!saved?.active) await store.refreshUnknownResults(fetchPublicResult);
     for (let count = 0; count < options.games && !stopping; count += 1) {
       const profile = profiles[randomInt(profiles.length)];
       // A fresh connection for each new match prevents an unscoped old push or
