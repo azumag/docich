@@ -24,6 +24,7 @@ import tempfile
 import time
 
 from .reply_research_egress import EgressProxy
+from .reply_research_diagnostic import REASONS, emit, structured_error
 from .reply_research_web import WebBroker, Receipt, canonical_url, search_public
 
 LIMIT = 262144
@@ -259,19 +260,46 @@ def sandbox_argv(workspace: Path, model: str, bwrap: str, opencode: str, *,
     return args
 
 
-def _run(argv, prompt: bytes, env: dict[str, str], timeout: float, *, observer=None) -> bytes:
+def _run(argv, prompt: bytes, env: dict[str, str], timeout: float, *, observer=None, diagnostic=None) -> bytes:
     """Bounded output/deadline, kill AND reap the namespace on every outcome."""
+    started = time.monotonic()
+
+    def note(stage, **fields):
+        emit(diagnostic, {"stage": stage, "elapsed_ms": round((time.monotonic() - started) * 1000), **fields})
+
+    def observe_line(line):
+        try:
+            event = _json(line)
+        except (ValueError, UnicodeError, RecursionError):
+            note("cli_stdout", reason="invalid_json")
+            if observer is not None:
+                raise
+            return  # Diagnostic-only parsing never changes the original result.
+        if diagnostic is not None:
+            row = structured_error(event)
+            if row is not None:
+                emit(diagnostic, row)
+        if observer is not None:
+            observer(event)
+
     if timeout <= 0:
+        note("cli_failure", reason="timeout")
         raise ValueError("timeout")
+    note("cli_spawn")
     with tempfile.TemporaryFile() as incoming:
         incoming.write(prompt)
         incoming.seek(0)
-        proc = subprocess.Popen(argv, stdin=incoming, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, env=env, start_new_session=True)
+        try:
+            proc = subprocess.Popen(argv, stdin=incoming, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, env=env, start_new_session=True)
+        except OSError:
+            note("cli_failure", reason="spawn_failed")
+            raise
         output = bytearray()
         pending_events = bytearray()
         deadline = time.monotonic() + timeout
         try:
+            note("cli_running")
             with selectors.DefaultSelector() as selector:
                 selector.register(proc.stdout, selectors.EVENT_READ)
                 while selector.get_map():
@@ -286,17 +314,28 @@ def _run(argv, prompt: bytes, env: dict[str, str], timeout: float, *, observer=N
                             output.extend(data)
                             if len(output) > LIMIT:
                                 raise ValueError("output_limit")
-                            if observer is not None:
+                            if observer is not None or diagnostic is not None:
                                 pending_events.extend(data)
                                 while b"\n" in pending_events:
                                     line, _, tail = pending_events.partition(b"\n")
                                     pending_events = bytearray(tail)
-                                    observer(_json(line))
-            if observer is not None and pending_events:
-                observer(_json(pending_events))
-            if proc.wait(timeout=max(.01, deadline - time.monotonic())) != 0:
+                                    observe_line(line)
+            if pending_events:
+                observe_line(pending_events)
+            returncode = proc.wait(timeout=max(.01, deadline - time.monotonic()))
+            note("cli_exit", returncode=returncode)
+            if returncode != 0:
                 raise ValueError("provider_failed")
             return bytes(output)
+        except Exception as error:
+            reason = "unclassified_failure"
+            if isinstance(error, subprocess.TimeoutExpired):
+                reason = "timeout"
+            elif (type(error) is ValueError and len(error.args) == 1
+                  and type(error.args[0]) is str and error.args[0] in REASONS):
+                reason = error.args[0]
+            note("cli_failure", reason=reason)
+            raise
         finally:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
@@ -304,6 +343,7 @@ def _run(argv, prompt: bytes, env: dict[str, str], timeout: float, *, observer=N
                 pass
             proc.wait()
             proc.stdout.close()
+            note("cli_reaped", returncode=proc.returncode)
 
 
 
@@ -373,7 +413,7 @@ def verify_quotes(refs, receipts, source, manifest, reads, comment_scopes=None) 
     return Evidence("ok", "\n".join(notes), tuple(dict.fromkeys(urls)), coverage)
 
 
-def coordinate(turns, scope, *, source, manifest, model_call, broker, searcher, deadline, comment_scopes=None):
+def coordinate(turns, scope, *, source, manifest, model_call, broker, searcher, deadline, comment_scopes=None, diagnostic=None):
     """One finite research run: change queries/material, then answer or explain gaps."""
     history, reads, queries, fetches, code_reads = [], {}, set(), set(), 0
     receipts = {}
@@ -390,7 +430,14 @@ def coordinate(turns, scope, *, source, manifest, model_call, broker, searcher, 
                   json.dumps({"scope": scope, "turns": turns, "files": sorted((manifest or {}).get("files", {})),
                               "question_scopes": comment_scopes, "observations": history}, ensure_ascii=False))
         try:
-            action = parse_proposal(model_call(prompt, deadline - time.monotonic()))
+            emit(diagnostic, {"stage": "model_call"})
+            raw = model_call(prompt, deadline - time.monotonic())
+            try:
+                action = parse_proposal(raw)
+            except Exception:
+                emit(diagnostic, {"stage": "model_proposal", "reason": "invalid_proposal"})
+                raise
+            emit(diagnostic, {"stage": "model_proposal"})
             kind = action.get("action")
             if kind == "search" and scope in {"web", "web_and_code"}:
                 query = action.get("query")
@@ -448,7 +495,7 @@ def coordinate(turns, scope, *, source, manifest, model_call, broker, searcher, 
     return Evidence(reason)
 
 
-def research(turns, scope: str, *, env, timeout_sec: float = 45.0, comment_scopes=None) -> Evidence:
+def research(turns, scope: str, *, env, timeout_sec: float = 45.0, comment_scopes=None, diagnostic=None) -> Evidence:
     if (scope not in SCOPES or env.get("DOCICH_REPLY_RESEARCH_ENABLED") != "1"
             or env.get("DOCICH_ALLOW_REAL_AI") != "1" or sys.platform != "linux"
             or type(timeout_sec) not in (int, float) or not math.isfinite(timeout_sec)
@@ -497,8 +544,11 @@ def research(turns, scope: str, *, env, timeout_sec: float = 45.0, comment_scope
             child_env = {"PATH": "/usr/local/bin:/usr/bin:/snap/bin:/bin", "LANG": "C.UTF-8", key_name: key}
             with EgressProxy(socket_path):
                 broker = WebBroker(workspace / "web-unused.sock", deadline)
+                # Preserve the existing four-argument runner contract when diagnostics are off.
+                run_options = {"diagnostic": diagnostic} if diagnostic is not None else {}
                 return coordinate(turns, scope, source=source, manifest=manifest, broker=broker,
                                   searcher=search_public, deadline=deadline, comment_scopes=comment_scopes,
-                                  model_call=lambda prompt, remaining: _run(argv, prompt.encode(), child_env, remaining))
+                                  diagnostic=diagnostic,
+                                  model_call=lambda prompt, remaining: _run(argv, prompt.encode(), child_env, remaining, **run_options))
     except Exception:
         return Evidence("research_unavailable")

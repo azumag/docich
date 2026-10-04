@@ -88,6 +88,14 @@ mean/p95 latencyは個別363.141/625.637 ms、combined batch519.012/570.148 ms�
 
 VM棚卸し結果・運用影響はprivateな親引継ぎで扱い、公開文書には記録しない。
 
+### 任意のresearch診断
+
+`research(..., diagnostic=callback)` は、CLI spawn/running/exit/reaped、model呼出し境界とproposal検証、固定failure理由を任意callbackへ渡す。providerのJSONL errorは既知のerror名・HTTP status整数・transport code・固定分類だけを投影し、observerが拒否する前にも分類を保存できる。終了コード・経過msは上限付き整数で、prompt・argv・環境・PID・stderr・生成文・message/body/header/path/URLは含めない。providerの自己申告は診断metadataであり、HTTP POSTの実測や引用取得の証明ではない。
+
+既定ではcallbackも永続logもない。診断だけのJSONL解析は返り値を変えず、callback失敗も既存の失敗時結果・kill/reapを変えない。proposal不正は内側の固定理由を残し、最終結果は従来どおり`research_unavailable`とする。資格情報・sandbox・egress/model/source allowlist・API fallback・personaの変更はない。単体テストはローカル合成Python子プロセスだけを使用する。
+
+先に承認された無料モデル→検索→返信の一回は`research_unavailable`で終了し、CLI起動1回、観測model step開始/終了0、検索/本文取得/返信/JEV呼出し0だった。実model HTTP POST回数は未測定。旧記録にstderr・終了コード・失敗stageがなく、原因は復元できない。今回の診断追加は再実行の承認を含まず、実CLI/model/search/reply/JEVは追加実行していない。実検索・最終返信の成功受入は残件で、Draftを維持する。
+
 参考: [OpenCode tools](https://opencode.ai/docs/tools/)、[permissions](https://opencode.ai/docs/permissions/)、[config merge](https://opencode.ai/docs/config/)、[official MCP search transport](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/mcp-websearch.ts)。仕様は実機の版と一致確認が必要。
 
 

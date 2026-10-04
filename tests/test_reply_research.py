@@ -308,7 +308,8 @@ def test_bounded_local_process_timeout_and_output_limit():
         r._run([sys.executable, "-c", f"print('x'*{r.LIMIT+1})"], b"", {}, 3)
 
 
-def test_timeout_kills_descendant_process_group(tmp_path):
+@pytest.mark.parametrize("diagnostics", [False, True])
+def test_timeout_kills_descendant_process_group(tmp_path, diagnostics):
     pid_path = tmp_path / "child.pid"
     child_code = "import time; time.sleep(30)"
     parent_code = (
@@ -316,8 +317,11 @@ def test_timeout_kills_descendant_process_group(tmp_path):
         f"p=subprocess.Popen([sys.executable,'-c',{child_code!r}]); "
         f"pathlib.Path({str(pid_path)!r}).write_text(str(p.pid)); time.sleep(30)"
     )
+    def broken_sink(row):
+        raise RuntimeError("synthetic sink failure")
+    options = {"diagnostic": broken_sink} if diagnostics else {}
     with pytest.raises(ValueError, match="timeout"):
-        r._run([sys.executable, "-c", parent_code], b"", {}, .25)
+        r._run([sys.executable, "-c", parent_code], b"", {}, .25, **options)
     child_pid = int(pid_path.read_text())
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
