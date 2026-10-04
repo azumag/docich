@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from .config import ConfigError, load_global
@@ -17,14 +18,16 @@ def start():
 
 
 ROTATION_FAILURE_EXIT = {
-    'common corner rotation is disabled': 70,
-    'corner recovery required before manual reservation': 71,
-    'clock regressed': 72,
-    'no unique eligible manual corner': 73,
-    'another manual corner is already queued': 74,
-    'invalid manual queue inbox': 75,
-    'conflicting manual queue ownership': 74,
+    'rotation_disabled': 70,
+    'recovery_required': 71,
+    'clock_regressed': 72,
+    'hanjuku_not_eligible': 73,
+    'manual_queue_conflict': 74,
+    'state_unavailable': 75,
+    'config_invalid': 76,
+    'queue_rejected': 77,
 }
+EXIT_FAILURE_REASON = {value: key for key, value in ROTATION_FAILURE_EXIT.items()}
 
 
 def _fixed_failure_exit(exc):
@@ -32,7 +35,8 @@ def _fixed_failure_exit(exc):
     from .corner_rotation import RotationError
 
     if isinstance(exc, RotationError):
-        return ROTATION_FAILURE_EXIT.get(str(exc), 77)
+        reason = getattr(exc, 'reason_code', None)
+        return ROTATION_FAILURE_EXIT.get(reason, 77)
     if isinstance(exc, OSError):
         return 75
     if isinstance(exc, ConfigError):
@@ -45,7 +49,11 @@ def main(argv=None):
     try:
         result = start()
     except Exception as exc:
-        return _fixed_failure_exit(exc)
+        exit_code = _fixed_failure_exit(exc)
+        # stderr is retained only in the owner-only VM operation log. Keep it
+        # fixed and secret-free; never include the exception text or path.
+        print(f'hanjuku_queue_failure={EXIT_FAILURE_REASON[exit_code]}', file=sys.stderr)
+        return exit_code
     print(result)
     return 0 if result['status'] in {'completed', 'queued', 'waiting'} else 77
 

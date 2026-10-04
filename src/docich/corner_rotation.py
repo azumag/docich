@@ -48,10 +48,11 @@ class RotationError(RuntimeError):
 
     kind = "invalid-state"
 
-    def __init__(self, message, *, kind=None):
+    def __init__(self, message, *, kind=None, reason_code=None):
         super().__init__(message)
         if kind is not None and kind in ERROR_KINDS:
             self.kind = kind
+        self.reason_code = reason_code
 
 
 def _error_kind(exc):
@@ -301,7 +302,9 @@ class CornerRotationManager:
             return None
         request = json.loads(self._manual_queue_path.read_text())
         if (not isinstance(request, dict) or not isinstance(request.get("corner"), str)):
-            raise RotationError("invalid manual queue inbox")
+            raise RotationError(
+                "invalid manual queue inbox", reason_code="state_unavailable"
+            )
         uuid.UUID(request["request_id"])
         timestamp(request["selected_at"])
         return request
@@ -313,7 +316,10 @@ class CornerRotationManager:
                 return
             current = state.get("queued_manual")
             if current is not None and current != request:
-                raise RotationError("conflicting manual queue ownership")
+                raise RotationError(
+                    "conflicting manual queue ownership",
+                    reason_code="manual_queue_conflict",
+                )
             state["queued_manual"] = request
             self.save(state)  # durable transfer before removing the inbox
             self._manual_queue_path.unlink()
@@ -326,18 +332,25 @@ class CornerRotationManager:
         Duplicate calls retain the same durable identity across the transfer.
         """
         if not rotation_enabled(self.g):
-            raise RotationError("common corner rotation is disabled")
+            raise RotationError(
+                "common corner rotation is disabled", reason_code="rotation_disabled"
+            )
         with self._manual_queue_lock():
             now = timestamp(self.clock())
             state = self.load(now)  # atomic ledger read; never edit execution state
             if state["status"] == "recovery_required":
-                raise RotationError("corner recovery required before manual reservation")
+                raise RotationError(
+                    "corner recovery required before manual reservation",
+                    reason_code="recovery_required",
+                )
             if now < state["last_seen_at"]:
-                raise RotationError("clock regressed")
+                raise RotationError("clock regressed", reason_code="clock_regressed")
             eligible, _ = self._eligible()
             choices = [c.id for c in self.catalog if c.game == game and c.id in eligible]
             if len(choices) != 1:
-                raise RotationError("no unique eligible manual corner")
+                raise RotationError(
+                    "no unique eligible manual corner", reason_code="hanjuku_not_eligible"
+                )
             chosen = choices[0]
             queued = self._read_manual_queue() or state.get("queued_manual")
             pending = state.get("manual_pending") or state.get("pending") or {}
@@ -346,7 +359,10 @@ class CornerRotationManager:
                 queued = pending
             if queued is not None:
                 if queued["corner"] != chosen:
-                    raise RotationError("another manual corner is already queued")
+                    raise RotationError(
+                        "another manual corner is already queued",
+                        reason_code="manual_queue_conflict",
+                    )
             else:
                 queued = dict(corner=chosen, selected_at=now, request_id=str(uuid.uuid4()))
                 atomic_write_json(self._manual_queue_path, queued)

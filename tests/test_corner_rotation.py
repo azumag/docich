@@ -1999,8 +1999,9 @@ def test_manual_queue_respects_pause_and_refuses_conflicting_request(setup):
     _, _, _, executor, make = setup
     manager = make()
     manager.queue_manual('nsnake')
-    with pytest.raises(RotationError, match='already queued'):
+    with pytest.raises(RotationError, match='already queued') as caught:
         manager.queue_manual('paper-view')
+    assert caught.value.reason_code == 'manual_queue_conflict'
     manager.adapters['retro'].available = False
     assert manager.tick()['reason'] == 'queued-manual-disabled-or-paused'
     assert executor.calls == []
@@ -2013,8 +2014,9 @@ def test_manual_queue_does_not_clear_recovery_latch(setup):
     initial = manager.load(clock[0])
     initial.update(status='recovery_required', reason='execution-unverified')
     manager.save(initial)
-    with pytest.raises(RotationError, match='recovery required'):
+    with pytest.raises(RotationError, match='recovery required') as caught:
         manager.queue_manual('nsnake')
+    assert caught.value.reason_code == 'recovery_required'
     assert state(manager)['status'] == 'recovery_required'
     assert executor.calls == []
 

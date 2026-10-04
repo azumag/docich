@@ -1,4 +1,6 @@
+import io
 import unittest
+from contextlib import redirect_stderr
 from unittest import mock
 
 from docich import hanjuku_corner
@@ -9,20 +11,26 @@ from docich.corner_rotation import RotationError
 class HanjukuCornerFixedFailureTests(unittest.TestCase):
     def test_rotation_failures_use_fixed_exit_codes(self):
         cases = {
-            "common corner rotation is disabled": 70,
-            "corner recovery required before manual reservation": 71,
-            "clock regressed": 72,
-            "no unique eligible manual corner": 73,
-            "another manual corner is already queued": 74,
-            "invalid manual queue inbox": 75,
-            "conflicting manual queue ownership": 74,
-            "new internal detail that must stay private": 77,
+            "rotation_disabled": 70,
+            "recovery_required": 71,
+            "clock_regressed": 72,
+            "hanjuku_not_eligible": 73,
+            "manual_queue_conflict": 74,
+            "state_unavailable": 75,
+            "unknown_future_code": 77,
         }
-        for detail, expected in cases.items():
-            with self.subTest(detail=detail), mock.patch.object(
-                hanjuku_corner, "start", side_effect=RotationError(detail)
-            ):
+        for reason_code, expected in cases.items():
+            error = RotationError("private runtime detail", reason_code=reason_code)
+            stderr = io.StringIO()
+            with self.subTest(reason_code=reason_code), mock.patch.object(
+                hanjuku_corner, "start", side_effect=error
+            ), redirect_stderr(stderr):
                 self.assertEqual(hanjuku_corner.main([]), expected)
+            self.assertNotIn("private runtime detail", stderr.getvalue())
+            self.assertEqual(
+                stderr.getvalue(),
+                f"hanjuku_queue_failure={hanjuku_corner.EXIT_FAILURE_REASON[expected]}\n",
+            )
 
     def test_non_rotation_failures_use_fixed_exit_codes(self):
         cases = (
@@ -31,10 +39,16 @@ class HanjukuCornerFixedFailureTests(unittest.TestCase):
             (RuntimeError("provider response must not escape"), 77),
         )
         for failure, expected in cases:
+            stderr = io.StringIO()
             with self.subTest(failure=type(failure).__name__), mock.patch.object(
                 hanjuku_corner, "start", side_effect=failure
-            ):
+            ), redirect_stderr(stderr):
                 self.assertEqual(hanjuku_corner.main([]), expected)
+            self.assertNotIn(str(failure), stderr.getvalue())
+            self.assertEqual(
+                stderr.getvalue(),
+                f"hanjuku_queue_failure={hanjuku_corner.EXIT_FAILURE_REASON[expected]}\n",
+            )
 
     def test_success_keeps_queue_contract(self):
         with mock.patch.object(
