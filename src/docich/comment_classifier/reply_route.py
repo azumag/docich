@@ -44,7 +44,6 @@ def aggregate(rows: list[dict], details: list[dict] | None) -> BatchDecision:
         scope = detail.get("evidence_scope")
         confidence = detail.get("evidence_confidence")
         if status == "local_notification" and row.get("user", "").casefold() in jev.SYSTEM_USERS:
-            scopes.append("api_only")
             continue
         if (status != "jev" or scope not in CRITERIA
                 or type(confidence) not in (int, float) or not math.isfinite(confidence)
@@ -62,14 +61,13 @@ def aggregate(rows: list[dict], details: list[dict] | None) -> BatchDecision:
     if pending:
         return BatchDecision("hold", "unknown", "classification_unavailable")
     if not scopes:
-        return BatchDecision("hold", "unknown", "empty_result")
+        return BatchDecision("hold", "unknown", "local_notification" if rows else "empty_result")
     if "unknown" in scopes:
         return BatchDecision("hold", "unknown", "scope_unknown")
     need_web = "web" in scopes or "web_and_code" in scopes
     need_code = "code" in scopes or "web_and_code" in scopes
     scope = "web_and_code" if need_web and need_code else "web" if need_web else "code" if need_code else "api_only"
-    reason = "jev" if confidences else "local_notification"
-    return BatchDecision("ready", scope, reason, min(confidences) if confidences else None,
+    return BatchDecision("ready", scope, "jev", min(confidences) if confidences else None,
                          tuple(research_comments))
 
 

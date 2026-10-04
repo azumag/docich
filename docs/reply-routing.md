@@ -127,7 +127,7 @@ Docker imageへPython部品は同梱するが、Codex/bubblewrapをインスト�
 
 #829の配信コメント経路へ専用`bin/docich-comment-reply-route`を接続した。既存category `c{i}`と根拠scope `e{i}`を同じJEV要求に含め、画像分類が有効なら`s{i}`も同じ要求に含めるため、通常は分類JEV呼出しを増やさない。コメント本文以外の表示名・persona・保存memory・assistant発言はJEVへ渡さず、認識したcredential/identity形式を含む本文は送信前に全体を保留する。
 
-複数コメントは一件ずつ判定し、必要scopeをバッチで統合する。runtimeがあればruntime保留、unknown/timeout/不正/低confidence/入力検証失敗があればバッチ返信を保留する。`api_only`は有効JEV回答かつconfidence≥0.80の場合だけ採用する。信頼済みsystem-user通知はローカル扱いにしJEVへ送らない。通知本文と視聴者の質問が別レコードなら質問側を別に判定し、例えば`SSR出た！`と`SSR出た！このガチャの確率どうなってる？`を同じ相づち扱いしない。
+複数コメントは一件ずつ判定し、必要scopeをバッチで統合する。runtimeがあればruntime保留、unknown/timeout/不正/低confidence/入力検証失敗があればバッチ返信を保留する。`api_only`は有効JEV回答かつconfidence≥0.80の場合だけ採用する。信頼済みsystem-user通知はローカル分類でJEVへ送らないが、JEV confidenceなしで`api_only`には採用せずroutingを保留する。視聴者の`SSR出た！`はJEVが高confidenceで相づちと判断した場合だけAPI-onlyになり、通知本文と視聴者の質問が別レコードなら質問側を別に判定する。例えば`SSR出た！このガチャの確率どうなってる？`を同じ相づち扱いしない。
 
 `web`/`code`/`web_and_code`は既存隔離research adapterで根拠が取得・照合された場合だけ返信を進める。Codexの完了自己申告だけで資料を受理せず、Web検索/取得イベントと引用の取得本文完全一致、または承認済みsnapshotの表示出力・対象行との一致を検査する。これは引用位置の確認であり、各説明文の意味的支持を完全自動検証したものではない。runtime、調査失敗、資格情報や隔離不足では固定保留にし、未確認内容を通常生成APIに回さない。根拠資料は命令ではないと明記したJSONデータとして既存返信promptへ追加し、元persona、カテゴリ選択、翻訳、Japanese/output guardを保つ。ルート有効時はピーク順変更後の既存候補を`local`または`local:<model>`の直接HTTP API候補に絞る。main返信・翻訳ともCLI経路は除外し、直接API候補がない、またはAPI生成に失敗した場合は返信を生成せずackしない。通常経路はfeature flagが`0`のままで変更しない。
 
@@ -141,7 +141,7 @@ DOCICH_REQUIRE_BWRAP_PROBE=1 PYTHONPATH=src python3 -m pytest -q -rs \
   tests/test_reply_research.py tests/test_comment_classifier.py
 ```
 
-この作業headのmacOSオフラインsuiteは **272 passed, 4 skipped, 34 subtests passed**。skipは任意Discord SDK未導入、Linux/bwrap canary、Linux Unix-socket/egress-close tests。Soren側のcomment-reply-quality CIと同じ7-module unittest suiteは **87 passed**。追加のscreen/runtime suiteは **25 passed, 10 subtests passed**、`bash tests/test_peak_hours_agent_order.sh`もpass。`bash -n`、Python compile、両worktreeの`git diff --check`もpass。
+この作業headのmacOSオフラインsuiteは **273 passed, 4 skipped, 34 subtests passed**。skipは任意Discord SDK未導入、Linux/bwrap canary、Linux Unix-socket/egress-close tests。Soren側のcomment-reply-quality CIと同じ7-module unittest suiteは **87 passed**。追加のscreen/runtime suiteは **25 passed, 10 subtests passed**、`bash tests/test_peak_hours_agent_order.sh`もpass。`bash -n`、Python compile、両worktreeの`git diff --check`もpass。
 
 最新のcode-bearing commit `06c3d3db` に対するGitHub Actionsは全check pass。後続commitは検証結果の記録だけでruntime/sourceコードを変更していない。
 

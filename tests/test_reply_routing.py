@@ -111,7 +111,22 @@ def test_stream_batch_routes_notification_and_question_separately(tmp_path):
     assert result["routing"]["sources"] == ["https://example.org/spec"]
 
 
-def test_trusted_system_notification_is_locally_api_only_without_jev(tmp_path):
+def test_viewer_notification_reaction_is_api_only_only_after_confident_jev(tmp_path):
+    source = tmp_path / "comments.txt"
+    text = "SSR出た！"
+    source.write_text(f"viewer: {text}\n", encoding="utf-8")
+    calls = []
+    result = comment_route.classify_file(
+        source, env=_comment_env(tmp_path / "state"),
+        transport=_comment_transport({text: "api_only"}, calls=calls),
+        researcher=lambda *args, **kwargs: pytest.fail("api_only reaction triggered research"))
+    assert result["routing"]["status"] == "ready"
+    assert result["routing"]["scope"] == "api_only"
+    assert result["routing"]["confidence"] == .95
+    assert len(calls) == 1
+
+
+def test_trusted_system_notification_is_not_treated_as_jev_api_only(tmp_path):
     source = tmp_path / "comments.txt"
     source.write_text("Nightbot: SSR出た！\n", encoding="utf-8")
     calls = []
@@ -119,8 +134,8 @@ def test_trusted_system_notification_is_locally_api_only_without_jev(tmp_path):
         source, env=_comment_env(tmp_path / "state"),
         transport=lambda *args, **kwargs: calls.append("jev"),
         researcher=lambda *args, **kwargs: pytest.fail("notification triggered research"))
-    assert result["routing"]["status"] == "ready"
-    assert result["routing"]["scope"] == "api_only"
+    assert result["routing"]["status"] == "hold"
+    assert result["routing"]["scope"] == "unknown"
     assert result["routing"]["reason"] == "local_notification"
     assert result["routing"]["confidence"] is None
     assert calls == []
