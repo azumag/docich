@@ -54,7 +54,7 @@ export default {
       if (path === "/rollback") return Response.json(await actor.rollbackFixture());
       return actor.fetch(request);
     } catch (error) {
-      if (["arena_disabled", "token_not_configured", "not_singleton"].includes(error.message)) {
+      if (["token_not_configured", "not_singleton"].includes(error.message)) {
         return Response.json({ code: error.message }, { status: 409 });
       }
       throw error;
