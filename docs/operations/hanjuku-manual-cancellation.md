@@ -31,3 +31,18 @@ receiptが欠落した場合は、別要求の終了receiptや古い固定owner�
 
 今回の要求のreceiptがない場合は取消できない。
 その場合は予約を保持し、実行・資源所有を証明する診断を先に揃える。
+
+正規read-only diagnosticsの `corner_rotation.manual_pending_receipt` は、
+固定半熟予約のUUIDに対応するreceiptだけを読み、有無・読取可否・固定status/operation・
+要求/対象/終了result一致・cleanup_pending・予約後の更新かをenum/booleanで返す。
+終了result一致とcleanup_pending=falseの場合だけ既存operatorと同じruntime検証と
+資源解放確認を行い、`runtime_identity_valid` / `runtime_resources_released` を返す。
+識別子、runtimeパス、receipt本文、tmux出力、例外本文は公開しない。
+`observed=false`・項目欠落は未観測、`observed=true, present=false` は今回の読取時点の欠落であり、
+過去の未実行を意味しない。読取不能・不正identity・probe失敗は資源解放をunknown/nullにする。
+`runtime_resources_released=true` もlockを保持しないスナップショットなので取消許可ではない。
+canonical・owner・program待機記録・予約指紋を含む全条件は固定operatorがlock内で再確認する。
+診断の準備はレビュー済mainを正規配備した後に `vm-operations` の
+`operation=diagnostics, target=production, ref=main` で行う。
+receipt欠落のwaiting予約には既存 `recover-failed` のrecovery_required前提がなく、
+`recover-runtime` も現在の半熟ownerとcanonical identity一致が必要なため、証拠なしに代用しない。
