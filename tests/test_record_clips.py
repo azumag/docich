@@ -25,7 +25,7 @@ def confirm(root, value, **kwargs):
     return clips.confirm(root / "state", root / "soren", game=kwargs.pop("game", "bastet"),
                          metric=kwargs.pop("metric", "score"), value=value,
                          run_id=kwargs.pop("run_id", "test-run"),
-                         sequence=kwargs.pop("sequence", str(value)), now=100, **kwargs)
+                         sequence=kwargs.pop("sequence", str(value)), now=kwargs.pop("now", 100), **kwargs)
 
 
 @pytest.mark.parametrize("game", sorted(clips.SCORE_GAMES))
@@ -121,6 +121,74 @@ def test_busy_lock_never_blocks_game(tmp_path):
         assert confirm(tmp_path, 10) == {"status": "busy"}
 
 
+def test_busy_completed_record_survives_history_seed_on_restart(tmp_path):
+    confirm(tmp_path, 10)
+    lock = tmp_path / "state/records/bastet_score.lock"
+    log = tmp_path / "scores.jsonl"
+    log.write_text(json.dumps(dict(game="bastet", source="wrapper", score=11)) + "\n")
+    with lock.open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        assert confirm(tmp_path, 11)["status"] == "busy"
+        assert not queue(tmp_path)
+    clips.seed_score(tmp_path / "state", tmp_path / "soren", "bastet", log, "restart")
+    assert len(queue(tmp_path)) == 1
+    event = json.loads(queue(tmp_path)[0].read_text())
+    assert event["record"] == dict(game="bastet", metric="score", value=11, previous=10)
+    assert event["created_at"] == 100  # deferred evidence must not become fresh
+    clips.seed_score(tmp_path / "state", tmp_path / "soren", "bastet", log, "restart-again")
+    assert len(queue(tmp_path)) == 1
+
+
+def test_busy_replay_retains_original_time_and_distinct_updates(tmp_path):
+    confirm(tmp_path, 10)
+    lock = tmp_path / "state/records/bastet_score.lock"
+    with lock.open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        confirm(tmp_path, 11)
+        confirm(tmp_path, 11, now=200)
+        confirm(tmp_path, 12, now=101)
+        pending = list((tmp_path / "state/records/pending/bastet_score").glob("*.json"))
+        assert len(pending) == 2
+        assert all("test-run" not in p.read_text() for p in pending)
+    confirm(tmp_path, 0, now=201)
+    events = sorted((json.loads(p.read_text()) for p in queue(tmp_path)), key=lambda e: e["record"]["value"])
+    assert [(e["record"]["value"], e["record"]["previous"], e["created_at"]) for e in events] == [
+        (11, 10, 100), (12, 11, 101)]
+    assert not list((tmp_path / "state/records/pending/bastet_score").glob("*.json"))
+
+
+def test_busy_first_values_still_seed_once_then_confirm(tmp_path):
+    lock = tmp_path / "state/records/bastet_score.lock"
+    lock.parent.mkdir(parents=True)
+    with lock.open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        confirm(tmp_path, 10)
+        confirm(tmp_path, 11)
+    assert confirm(tmp_path, 0, now=101)["best"] == 11
+    assert len(queue(tmp_path)) == 1
+    assert json.loads(queue(tmp_path)[0].read_text())["record"]["previous"] == 10
+
+
+def test_crash_after_ledger_commit_before_pending_cleanup_is_idempotent(tmp_path, monkeypatch):
+    confirm(tmp_path, 10)
+    unlink = Path.unlink
+
+    def crash_on_pending(path, *args, **kwargs):
+        if path.parent.name == "bastet_score" and path.suffix == ".json":
+            raise OSError("synthetic crash before cleanup")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", crash_on_pending)
+    with pytest.raises(OSError, match="synthetic crash"):
+        confirm(tmp_path, 11)
+    assert json.loads((tmp_path / "state/records/bastet_score.json").read_text())["best"] == 11
+    assert not queue(tmp_path)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    confirm(tmp_path, 11, now=200)
+    assert len(queue(tmp_path)) == 1
+    assert json.loads(queue(tmp_path)[0].read_text())["created_at"] == 100
+
+
 def test_hanjuku_verified_chapter_evidence_and_previous_best(tmp_path, monkeypatch):
     g = replace(load_global(ROOT, ROOT / "config/docich.soren-live.toml"), state_dir=tmp_path / "state")
     monkeypatch.setattr("docich.trading.soren_output.resolve_soren_root", lambda _: tmp_path / "soren")
@@ -142,7 +210,8 @@ def test_hanjuku_verified_chapter_evidence_and_previous_best(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("game", sorted(clips.SCORE_GAMES))
-def test_real_wrapper_record_hook_reuses_history_without_network(tmp_path, game):
+@pytest.mark.parametrize("busy", [False, True])
+def test_real_wrapper_record_hook_reuses_history_without_network(tmp_path, game, busy):
     # Execute the real record function only, never its driver/game lifecycle.
     text = (ROOT / f"games/cli-wrappers/{game}_docich.sh").read_text()
     function = re.search(r"(?ms)^record_score\(\) \{.*?^\}", text).group()
@@ -160,9 +229,19 @@ record_score '{'Score 11' if game == 'nsnake' else '11'}'
     env = {**os.environ, "DOCICH_STATE_DIR": str(tmp_path / "state"),
            "DOCICH_RECORD_CLIPS": "1", "DOCICH_CLIP_SOREN_ROOT": str(tmp_path / "soren"),
            "DOCICH_CLIP_RUN_ID": "synthetic-run"}
-    result = subprocess.run(["sh", "-c", script], env=env, capture_output=True, text=True, timeout=5)
+    lock = tmp_path / f"state/records/{game}_score.lock"
+    lock.parent.mkdir(parents=True)
+    with lock.open("a") as handle:
+        if busy:
+            confirm(tmp_path, 10, game=game)
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        result = subprocess.run(["sh", "-c", script], env=env, capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stderr
+    if busy:
+        assert not queue(tmp_path)
+        clips.seed_score(tmp_path / "state", tmp_path / "soren", game, log, "restart")
     assert len(queue(tmp_path)) == 1
+    assert json.loads(queue(tmp_path)[0].read_text())["record"]["previous"] == 10
 
 
 def test_adapter_only_enables_live_config_and_excludes_ab(tmp_path, monkeypatch):
