@@ -70,11 +70,19 @@ Discordは有効10/19・正解9/10・低confidence9/19、mean332.782ms/p95464.46
 
 Discordの低confidenceはreaction/rewrite、伏字や参照先がないWeb質問、卵条件、mixed比較、現在の配信、通知＋質問にまたがる。combinedでは通知2件・料金・通知＋質問だった。同文SSR通知2件もcombinedではconfidence .54/.34で、閾値を下げる根拠にはしない。
 
-v1の広いcode定義・短いmixed定義の競合と、「missing referentならunknown」と会話書き換えとの衝突を原因候補としてv2で整理した。batch内の他質問やcategory/evidence同時評価の影響も候補だが、この一回の観測だけでは原因を確定できない。低confidenceの候補label/確率分布は既存canary出力に保存されておらず、推測で補わない。v2の実モデル改善は未確認でDraftを維持する。
+v1の広いcode定義・短いmixed定義の競合と、「missing referentならunknown」と会話書き換えとの衝突を原因候補としてv2で整理した。batch内の他質問やcategory/evidence同時評価の影響も候補だが、この一回の観測だけでは原因を確定できない。v1低confidenceの候補label/確率分布は当時のcanary出力に保存されておらず、推測で補わない。
 
-再canaryの最小案は、観測したmixed事例＋12対照の13個別と、同じ13件を8/5に分けるcombined2、計15 POST。新しい承認枠・料金/context/入力上限を確認してから別途実行する。OpenCode/Exa/本番APIは含まない。
+### 承認済みv2の13ケースcanary
 
-合成テストはルーティング・取得照合・SSRF拒否・上限・process cleanup・実queue/ackを検査する。JEVの意味精度、実OpenCodeのmodel/API通信、Exaの実結果schema、ニュース取得成功率、実Linux hostの全negative受入を証明しない。
+[合成測定記録](evidence/reply-routing-canary-v2-2026-10-04.json) はcode HEAD `f4c39ec6` / `reply-evidence-v2`。旧22枠と別の15 POST・$0.05承認枠で、観測mixed事例＋12対照の13個別と同13件8/5combined2を一度だけ実施した。単一direct / `jev-1.13.0`、15/15正常応答、retry/fallback/再実行0、残POST枠0。送信JSON最大31,343 bytes（上限32,768）、受信上限131,072 bytesを維持した。実会話/PII・研究・最終生成は含まない。
+
+観測mixed事例は個別`web_and_code/.92`、combined`web_and_code/.98`となり、この一回では旧`code/.88`誤判定を再現しなかった。個別は12/13有効・有効分12/12正解・低confidence1/13（7.69%）、combinedは13/13有効・13/13正解・低confidence0。個別Webhook質問だけraw choice `web` / confidence .64（probabilities web .70 / unknown .16 / code .10 / mixed .04）でhold。閾値.80を維持しAPI-only/研究へ昇格しない。生の候補・confidence・確率分布をtransport検証後の形で記録した。
+
+mean/p95 latencyは個別363.141/625.637 ms、combined batch519.012/570.148 ms。入力22,988 tokensのモデル料金概算は$0.000965496、事前保守見積は$0.04128768。公式入力$0.042/百万・出力無料に基づき、請求額・残高との照合ではない。
+
+これは選んだ13ケースの一回の観測であり、元の19件やSSR通知、API/runtimeケースをv2で再測定した結果ではない。分布が異なるv1/v2全件率を改善率として比較しない。反復時の安定性、実会話分布、実OpenCode/Exa、最終回答、production全negative受入は未確認でDraftを維持する。
+
+オフライン合成テストはルーティング・取得照合・SSRF拒否・上限・process cleanup・実queue/ackを検査する。JEVの意味精度、実OpenCodeのmodel/API通信、Exaの実結果schema、ニュース取得成功率、実Linux hostの全negative受入を証明しない。
 
 このDarwin executorのLinux/bwrap受入は未実施。GitHub Ubuntu CIではcredential-free外側bwrap negative probeを必須にする。旧Codex binary/probeのdownload・実行をCIから削除した。実OpenCode＋model fixtureの受入は追加確認が必要で、実API費用を伴うcanary/本番有効化は親の別承認を必要とする。
 
