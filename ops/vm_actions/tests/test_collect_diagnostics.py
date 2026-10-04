@@ -1447,6 +1447,19 @@ def test_manual_projection_requires_exact_declared_owner(tmp_path):
     assert project()["manual_pending_owner"] == "unknown"
 
 
+def test_manual_hanjuku_fingerprint_matches_operator_without_identity_output(tmp_path):
+    import hashlib
+    module = load_collector()
+    request = {"corner": "hanjuku-hero", "state_file": "retro_corner_manual.json",
+               "selected_at": 100, "request_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}
+    result = module._rotation_manual_pending_projection(tmp_path, {"manual_pending": request}, 200)
+    assert result["manual_pending_fingerprint"] == hashlib.sha256(json.dumps(
+        request, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assert request["request_id"] not in json.dumps(result)
+    request["corner"] = "nsnake"
+    assert module._rotation_manual_pending_projection(tmp_path, {"manual_pending": request}, 200)["manual_pending_fingerprint"] is None
+
+
 def test_manual_projection_rejects_arbitrary_paths_and_free_text(tmp_path):
     module = load_collector()
     for invalid in ("DO-NOT-PUBLISH", [], 3):

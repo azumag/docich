@@ -3354,6 +3354,7 @@ def _rotation_manual_pending_projection(state_dir, data, now):
         "manual_pending_age_sec": -1,
         "manual_pending_owner": "absent",
         "manual_pending_owner_status": "unknown",
+        "manual_pending_fingerprint": None,
     }
     manual = data.get("manual_pending")
     if manual is None:
@@ -3372,6 +3373,15 @@ def _rotation_manual_pending_projection(state_dir, data, now):
     filename = manual.get("state_file")
     name = files.get(filename) if isinstance(filename, str) else None
     request_id = manual.get("request_id")
+    # An opaque compare-and-cancel token, never the request identity itself.
+    # Only this fixed Hanjuku owner is cancellable by the owner operator.
+    if (manual.get("corner") == "hanjuku-hero"
+            and filename == "retro_corner_manual.json"
+            and selected is not None and selected <= now
+            and isinstance(request_id, str)
+            and re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", request_id)):
+        out["manual_pending_fingerprint"] = hashlib.sha256(json.dumps(
+            manual, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     if name is None:
         return out
     out["manual_pending_state_file"] = name
