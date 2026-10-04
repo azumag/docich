@@ -319,6 +319,59 @@ test("known rejected moves stay excluded even under full exploration", () => {
   assert.equal(chooseMove(state, { ...options, forbiddenMoves: ["5g5f", "9g9f"] }), null);
 });
 
+test("a visibly valid rejected move excludes both optional promotion variants", () => {
+  const mirror = (square) => `${10 - Number(square[0])}${String.fromCharCode(202 - square.charCodeAt(1))}`;
+  for (const color of ["b", "w"]) {
+    for (const [role, source, target] of [
+      ["P", "5c", "5b"], ["L", "5c", "5b"], ["N", "5e", "4c"],
+      ["S", "5c", "4b"], ["B", "5c", "3a"], ["R", "5c", "5b"],
+    ]) {
+      const from = color === "b" ? source : mirror(source);
+      const to = color === "b" ? target : mirror(target);
+      const path = from + to;
+      for (const inCheck of [false, true, null]) {
+        const state = observation([[from, role]], { color, turn: color, inCheck, attemptBudget: 1 });
+        assert.ok(featuresForMove(state, path));
+        assert.ok(featuresForMove(state, path + "+"));
+        for (const selectedProfile of [profile({}, { exploration: 0 }), profile({}, { exploration: 1 }),
+          ...(inCheck === true ? [LEGACY_PROFILE] : [])]) {
+          const original = chooseMove(state, { profile: selectedProfile });
+          for (const rejected of [path, path + "+"]) {
+            const choice = chooseMove(state, { profile: selectedProfile, seed: "promotion-feedback",
+              forbiddenMoves: [rejected] });
+            assert.notEqual(choice?.usi.replace(/\+$/, ""), path);
+            assert.equal(choice?.candidateCount ?? 0, original.candidateCount - 2);
+          }
+        }
+      }
+    }
+  }
+});
+
+test("invalid promotion variants cannot exclude a visibly valid move", () => {
+  for (const [pieces, valid, invalid] of [
+    [[["5g", "P"]], "5g5f", "5g5f+"], // Promotion outside the zone.
+    [[["5b", "P"]], "5b5a+", "5b5a"], // Mandatory promotion.
+    [[["5c", "+P"]], "5c5b", "5c5b+"], // Already promoted.
+    [[["5c", "G"]], "5c5b", "5c5b+"], // Unpromotable role.
+  ]) {
+    const state = observation(pieces);
+    assert.ok(featuresForMove(state, valid));
+    assert.equal(featuresForMove(state, invalid), null);
+    for (const exploration of [0, 1]) {
+      const options = { profile: profile({}, { exploration }), seed: "invalid-promotion" };
+      assert.deepEqual(chooseMove(state, { ...options, forbiddenMoves: [invalid] }), chooseMove(state, options));
+    }
+  }
+});
+
+test("legacy repetition avoidance does not treat an accepted move as foul feedback", () => {
+  const state = observation([["5c", "P"]], { inCheck: true, attemptBudget: 1 });
+  const choice = chooseMove(state, { profile: LEGACY_PROFILE, recentMoves: ["5c5b"] });
+  assert.equal(choice.usi, "5c5b+");
+  assert.equal(choice.candidateCount, 1);
+});
+
 test("an ordinary rejected sliding move retries the adjacent square before another long path", () => {
   for (const [color, king, role, source, rejected, adjacent] of [
     ["b", "3i", "B", "8h", "8h1a+", "8h7g"], ["w", "7a", "B", "2b", "2b9i+", "2b3c"],

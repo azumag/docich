@@ -1,5 +1,5 @@
 /** Site-independent, visible-information-only Tsuitate move selection. */
-export const BRAIN_VERSION = "tsuitate-brain-v4";
+export const BRAIN_VERSION = "tsuitate-brain-v5";
 const ROLES = new Set(["P", "L", "N", "S", "G", "B", "R", "K", "+P", "+L", "+N", "+S", "+B", "+R"]);
 const HAND_ROLES = ["P", "L", "N", "S", "G", "B", "R"];
 const HAND_LIMITS = { P: 18, L: 4, N: 4, S: 4, G: 4, B: 2, R: 2 };
@@ -257,7 +257,8 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
       || typeof seed !== "string" || seed.length > 512 || !Array.isArray(forbiddenMoves)
       || forbiddenMoves.length > 4096) return null;
   const recent = validRecentMoves(recentMoves);
-  const forbidden = new Set(forbiddenMoves.filter((move) => typeof move === "string" && USI_MOVE.test(move)));
+  const rejected = new Set(forbiddenMoves.filter((move) => typeof move === "string" && USI_MOVE.test(move)));
+  const forbidden = new Set(rejected);
   const legacy = selectedProfile.policy === "legacy-v1";
   if (legacy && recent.length) forbidden.add(recent.at(-1));
   // Probe escapes only while another attempt can follow a foul. Otherwise rank
@@ -265,7 +266,14 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
   const prioritizeEscapes = observation.inCheck === true
     && (observation.attemptBudget === null || observation.attemptBudget > 1);
   const generated = candidatesFor(observation, legacy && observation.inCheck !== true);
-  const available = generated.filter((candidate) => !forbidden.has(candidate.usi));
+  // Both visibly valid promotion variants have the same path, destination
+  // occupancy and own-king safety. A foul on either rules out that path here.
+  // Invalid variants (outside-zone or missing mandatory promotion) establish
+  // nothing about the valid move and must not exclude it.
+  const rejectedPaths = new Set(generated.filter((candidate) => rejected.has(candidate.usi))
+    .map((candidate) => candidate.usi.replace(/\+$/, "")));
+  const available = generated.filter((candidate) => !forbidden.has(candidate.usi)
+    && !rejectedPaths.has(candidate.usi.replace(/\+$/, "")));
   const escapes = prioritizeEscapes
     ? available.filter((candidate) => candidate.role === "K") : [];
   const responses = observation.inCheck === true ? checkResponses(observation, available) : available;
