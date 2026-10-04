@@ -1983,6 +1983,8 @@ class RetroCornerManager:
                 print('[hanjuku-narration] status=consider_failed', file=sys.stderr)
             # Network side channel runs only AFTER shared_section has released
             # the input gate. It re-verifies durable terminal evidence itself.
+            from .record_clips import consider_hanjuku
+            consider_hanjuku(self.g, owned_identity)
             from .hanjuku_predictions import tick as prediction_tick
             prediction = prediction_tick(self.g, owned_identity)
             with self._locked():

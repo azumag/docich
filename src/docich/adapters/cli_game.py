@@ -71,7 +71,7 @@ def cli_command_list(game) -> list[str]:
 
 def _game_launch_command(g, game, command: list[str]) -> list[str]:
     """Pass fixed runtime paths through tmux to CLI wrappers that need them."""
-    if game.name not in {"ninvaders", "moon-buggy"}:
+    if game.name not in {"ninvaders", "moon-buggy", "bastet", "nsnake", "pacman4console"}:
         return command
     env_bin = procs.which("env")
     if not env_bin:
@@ -89,6 +89,12 @@ def _game_launch_command(g, game, command: list[str]) -> list[str]:
         ):
             if name in os.environ:
                 values[name] = os.environ[name]
+    from ..record_clips import enabled
+    if enabled(g) and not os.environ.get("DOCICH_MOON_BUGGY_AB_STATE"):
+        import uuid
+        from ..trading.soren_output import resolve_soren_root
+        values.update(DOCICH_RECORD_CLIPS="1", DOCICH_CLIP_RUN_ID=uuid.uuid4().hex,
+                      DOCICH_CLIP_SOREN_ROOT=str(resolve_soren_root(g)))
     assignments = [f"{name}={value}" for name, value in values.items()]
     return [env_bin, *assignments, *command]
 

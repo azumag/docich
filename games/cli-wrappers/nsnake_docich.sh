@@ -13,7 +13,7 @@
 # completed rounds it holds the result screen until the coordinator returns.
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 . "$SCRIPT_DIR/_run_with_driver.sh"
-SCORELOG="${NSNAKE_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/nsnake.jsonl}"
+SCORELOG="${NSNAKE_SCORELOG:-${DOCICH_STATE_DIR:-/home/ubuntu/docich/run-soren-live}/scores/nsnake.jsonl}"
 PANE="${TMUX_PANE:-}"
 NSNAKE_BIN="${NSNAKE_BIN:-/usr/games/nsnake}"
 DRIVER_INTERVAL="${NSNAKE_DRIVER_INTERVAL:-2}"
@@ -34,7 +34,8 @@ record_score() {
   score="$(printf '%s' "$score" | sed 's/^0*//')"
   [ -n "$score" ] || score=0
   mkdir -p "$(dirname "$SCORELOG")" 2>/dev/null || return 1
-  printf '{"ts":%s,"game":"nsnake","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$score" >>"$SCORELOG" 2>/dev/null
+  printf '{"ts":%s,"game":"nsnake","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$score" >>"$SCORELOG" 2>/dev/null || return $?
+  docich_wrapper_record_clip nsnake "$score"
 }
 
 # Keep separate inputs readable by nSnake's input loop. Never continue a
@@ -126,6 +127,7 @@ driver() {
   done
 }
 
+docich_wrapper_seed_clips nsnake
 driver </dev/null &
 DRIVER=$!
 docich_wrapper_run_with_driver "$DRIVER" "$NSNAKE_BIN"

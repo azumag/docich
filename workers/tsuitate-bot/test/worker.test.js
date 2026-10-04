@@ -841,23 +841,62 @@ test("foul observation avoids repeating the just-rejected move", async () => {
   assert.notEqual(nextMove, firstMove);
 });
 
-test("linear webhook keeps all consecutive rejected moves excluded", async () => {
+test("both webhook policies keep all consecutive rejected moves excluded", async () => {
+  for (const profile of [LEGACY_PROFILE, { ...LINEAR_PROFILE, exploration: 0 }]) {
+    const binding = stateBinding({ BRAIN_PROFILE_JSON: JSON.stringify(profile) });
+    const initial = structuredClone(initialFixture);
+    initial.positions["0"].sfen = "9/9/9/9/9/9/P3P4/9/9 b - 1";
+    const first = await post(initial, { binding });
+    const firstMove = (await first.json()).move;
+    assert.ok(["+5756FU", "+9796FU"].includes(firstMove));
+    const rejection = structuredClone(foulFixture);
+    rejection.positions["1"].sfen = initial.positions["0"].sfen;
+    const second = await post(rejection, { binding });
+    assert.notEqual((await second.json()).move, firstMove);
+    const exhausted = {
+      ...rejection, requestId: "two-consecutive-fouls", basePly: 1, ply: 2,
+      positions: { "2": rejection.positions["1"] },
+    };
+    const third = await post(exhausted, { binding });
+    assert.equal(third.status, 422);
+    assert.deepEqual(await third.json(), { error: "no_observed_move" });
+  }
+});
+
+test("viewer check and consecutive foul feedback reach the shared brain", async () => {
+  for (const color of ["b", "w"]) {
+    const binding = stateBinding();
+    const own = color === "b" ? "+" : "-";
+    const initial = structuredClone(initialFixture);
+    initial.color = color;
+    initial.positions["0"] = {
+      sfen: color === "b" ? "9/9/9/9/4K4/9/4P4/9/9 b - 1" : "9/9/9/9/4k4/9/4p4/9/9 w - 1",
+      lastMove: `${own === "+" ? "-" : "+"}0000ZZ`, lastInfo: 3, fouls: { b: 9, w: 9 },
+    };
+    let reply = await post(initial, { binding });
+    const attempts = [];
+    for (let ply = 1; ply <= 8; ply += 1) {
+      const move = (await reply.json()).move;
+      assert.ok(move.endsWith("OU"));
+      assert.ok(!attempts.includes(move));
+      attempts.push(move);
+      reply = await post({ ...initial, requestId: `check-${color}-${ply}`, basePly: ply - 1, ply,
+        game: undefined, positions: { [ply]: { ...initial.positions["0"], lastMove: move, lastInfo: 2,
+          fouls: { ...initial.positions["0"].fouls, [color]: 9 - ply } } } }, { binding });
+      assert.equal(reply.status, 200);
+    }
+    assert.ok(!(await reply.json()).move.endsWith("OU"));
+  }
+});
+
+test("viewer remaining fouls zero keeps the linear block ahead of a king probe", async () => {
   const binding = stateBinding({ BRAIN_PROFILE_JSON: JSON.stringify({ ...LINEAR_PROFILE, exploration: 0 }) });
   const initial = structuredClone(initialFixture);
-  initial.positions["0"].sfen = "9/9/9/9/9/9/P3P4/9/9 b - 1";
-  const first = await post(initial, { binding });
-  assert.equal((await first.json()).move, "+5756FU");
-  const rejection = structuredClone(foulFixture);
-  rejection.positions["1"].sfen = initial.positions["0"].sfen;
-  const second = await post(rejection, { binding });
-  assert.equal((await second.json()).move, "+9796FU");
-  const exhausted = {
-    ...rejection, requestId: "two-consecutive-fouls", basePly: 1, ply: 2,
-    positions: { "2": rejection.positions["1"] },
-  };
-  const third = await post(exhausted, { binding });
-  assert.equal(third.status, 422);
-  assert.deepEqual(await third.json(), { error: "no_observed_move" });
+  initial.positions["0"] = { sfen: "9/9/9/9/9/9/9/3P1G3/3LKL3 b - 1",
+    lastMove: "-0000ZZ", lastInfo: 3, fouls: { b: 0, w: 9 } };
+  const reply = await post(initial, { binding });
+  assert.equal(reply.status, 200);
+  assert.equal((await reply.json()).move, "+4857KI");
 });
 
 test("authenticated timestamps accept 299 seconds and reject the 300-second boundary", async () => {
@@ -1264,6 +1303,28 @@ test("offline review classifies incomplete stored positions without making them 
   assert.equal(exported.classification, "incomplete_history");
   assert.equal(exported.trainingEligible, false);
 });
+
+for (const previous of ["tsuitate-brain-v1", "tsuitate-brain-v2"]) {
+test(`${previous} sessions cannot change brain midgame but their terminal records remain reviewable`, async () => {
+  const binding = stateBinding();
+  assert.equal((await post(initialFixture, { binding })).status, 200);
+  const values = binding.objects.get(gameEndFixture.gameId).state.storage.values;
+  const session = values.get("session:b:0");
+  session.brainVersion = previous;
+  session.brainVersions = [previous];
+  const next = await post(incrementalFixture, { binding });
+  assert.equal(next.status, 409);
+  assert.deepEqual(await next.json(), { error: "brain_version_mismatch" });
+  assert.equal((await post(gameEndFixture, { binding })).status, 204);
+  const exported = await post({ type: "offline_review_export", gameId: gameEndFixture.gameId,
+    fromPly: 0, limit: 3 }, { binding, path: "/offline-review" });
+  assert.equal(exported.status, 200);
+  const page = await exported.json();
+  assert.equal(page.archive.brainVersion, previous);
+  assert.equal(page.archive.reviewStatus, "offline_only_reviewable");
+  assert.equal(page.trainingEligible, false);
+});
+}
 
 test("unmatched, ambiguous, late, mismatched, and unknown-strategy ends stay outside training", async () => {
   const cases = [

@@ -4,7 +4,7 @@ import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createRequire } from "node:module";
+import { createRequire, registerHooks } from "node:module";
 import { readBuildOutput } from "@cloudflare/build-output-utils";
 import { Miniflare } from "miniflare";
 
@@ -21,7 +21,7 @@ const { i: convertBuildOutput } = await import(pathToFileURL(join(cfDist, "build
 const { x: getBindings } = await import(pathToFileURL(join(cfDist, "dist-CYFkGHYv.mjs")));
 const { t: createWorkerUploadForm } = await import(pathToFileURL(join(cfDist, "chunk-KKDV4JPS-D3kwd1Nq.mjs")));
 const { wranglerConfig } = convertBuildOutput(built, output.rootConfig);
-assert.deepEqual(wranglerConfig.durable_objects.bindings, [{ name: "GAME_STATE", class_name: "GameState" }]);
+assert.deepEqual(wranglerConfig.durable_objects.bindings, [{ name: "GAME_STATE", class_name: "GameState" }, { name: "BETA_ARENA", class_name: "BetaArena" }]);
 const uploadForm = createWorkerUploadForm({
   main: { name: "index.js", type: "esm", content: "export default {}" },
   exports: wranglerConfig.exports, keepSecrets: true,
@@ -49,7 +49,14 @@ assert.equal(Object.hasOwn(config.env.WEBHOOK_SECRET, "value"), false);
 assert.ok(bundleDir);
 assert.ok(config.manifest?.mainModule);
 const entrypoint = join(bundleDir, config.manifest.mainModule);
-const bundle = await import(pathToFileURL(entrypoint));
+// Only this direct Node streaming-body check needs a stand-in for the workerd
+// base class. All DO persistence/auth/socket checks below use real workerd.
+const hook = registerHooks({ resolve(specifier, context, nextResolve) {
+  return specifier === "cloudflare:workers" ? { shortCircuit: true,
+    url: "data:text/javascript,export class DurableObject { constructor(ctx,env){this.ctx=ctx;this.env=env;} }" } : nextResolve(specifier, context);
+} });
+let bundle;
+try { bundle = await import(pathToFileURL(entrypoint)); } finally { hook.deregister(); }
 assert.equal(typeof bundle.GameState, "function");
 assert.equal(typeof bundle.default.fetch, "function");
 console.log("PASS actual Cf manifest, structured Workers Logs settings, version metadata, production Bot ID, previewUrls=false, compatibility date and GameState bindings");
@@ -78,7 +85,7 @@ async function start(faults = false) {
   let mainModule = config.manifest.mainModule;
   if (faults) {
     const wrapper = (await readFile(join(root, "test/bundle-fault-worker.js"), "utf8"))
-      .replace("__CF_ENTRYPOINT__", config.manifest.mainModule);
+      .replaceAll("__CF_ENTRYPOINT__", config.manifest.mainModule);
     mainModule = "__bundle_test_wrapper.js";
     runtimeModules = { ...modules, [mainModule]: { type: "esm", contents: wrapper } };
   }

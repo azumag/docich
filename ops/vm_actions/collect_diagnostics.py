@@ -15,6 +15,8 @@ Observed sources (all read-only):
   - tmp/state/ai_stats/YYYYMMDD.jsonl structured telemetry
   - tmp/state/improve_state.json, improve lock/monitor/retry/gate markers
   - deployed git HEADs (docich + intended soviet_now gitlink)
+  - fixed Soren supervisor unit/pidfile/start-time and public script/FD-255
+    fingerprints only; these do not attest already-defined Bash functions
   - one bounded owner-only Soren stream-title journal, projected to fixed enums,
     UTC time, SHA and two nonsecret ID presence booleans only; title and integrated stream-log bodies are never read
   - fixed, known temporary shared-object filename families under /tmp plus
@@ -1743,7 +1745,7 @@ def _stream_title_sync_git_blob_sha256(repo, commit_sha, relative_path):
     if (
         not isinstance(commit_sha, str)
         or not re.fullmatch(r"[0-9a-f]{40}", commit_sha)
-        or relative_path not in {"update_stream_game.sh", "lib/stream_title_sync.py"}
+        or relative_path not in {"update_stream_game.sh", "lib/stream_title_sync.py", "start_all.sh"}
     ):
         return None
     try:
@@ -2093,6 +2095,213 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha, expected_code=Non
     result["skip_reason"] = skip_reason
     result["youtube"] = youtube
     result["kick"] = kick
+    return result
+
+
+def _supervisor_directory(path, dir_fd=None):
+    flags = (os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+             | getattr(os, "O_CLOEXEC", 0))
+    return os.open(path, flags, dir_fd=dir_fd)
+
+
+def _supervisor_read(path, limit, dir_fd=None):
+    """Bounded regular-file read; never follow a state/metadata symlink."""
+    flags = (os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+             | getattr(os, "O_CLOEXEC", 0))
+    fd = os.open(path, flags, dir_fd=dir_fd)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("unsafe metadata")
+        with os.fdopen(fd, "rb", closefd=False) as source:
+            data = source.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError("oversized metadata")
+        return data
+    finally:
+        os.close(fd)
+
+
+def _supervisor_unit_pid():
+    """One fixed system-scope property, not ExecStart/argv/environment."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", "soren-runtime.service", "--property=MainPID", "--value"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2, check=False,
+        )
+        value = result.stdout.strip()
+        if result.returncode == 0 and re.fullmatch(rb"[1-9][0-9]{0,9}", value):
+            return int(value)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _supervisor_process_start(proc_root, pid, process_fd):
+    if os.fstat(process_fd).st_uid != os.getuid():
+        raise ValueError("foreign process")
+    data = _supervisor_read("stat", 4096, dir_fd=process_fd)
+    # comm can itself contain ')' or whitespace; never emit it.
+    if not data.startswith(str(pid).encode() + b" ("):
+        raise ValueError("invalid process")
+    fields = data[data.rfind(b")") + 2:].split()
+    if len(fields) < 20 or fields[0] not in (b"R", b"S", b"D", b"T", b"t", b"I"):
+        raise ValueError("inactive process")
+    if not re.fullmatch(rb"[1-9][0-9]{0,19}", fields[19]):
+        raise ValueError("invalid process start")
+    ticks = int(fields[19])
+    return ticks
+
+
+def _supervisor_script_fingerprint(path, expected_fd_target=None, dir_fd=None):
+    """Hash only fixed start_all.sh or Bash's validated script FD 255.
+
+    Opening a Linux /proc FD creates a separate read description: do not seek
+    or read the target process's descriptor itself. Never scan other FDs.
+    """
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    if expected_fd_target is None:
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    else:
+        target = os.readlink(path, dir_fd=dir_fd)
+        if target not in (expected_fd_target, expected_fd_target + " (deleted)"):
+            raise ValueError("unexpected script descriptor")
+    fd = os.open(path, flags, dir_fd=dir_fd)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                or before.st_size <= 0 or before.st_size > 512 * 1024):
+            raise ValueError("unsafe script")
+        signature = lambda info: (info.st_dev, info.st_ino, info.st_size,
+                                  info.st_mtime_ns, info.st_ctime_ns)
+        if expected_fd_target is not None and (
+                os.readlink(path, dir_fd=dir_fd) != target
+                or signature(before) != signature(os.stat(path, dir_fd=dir_fd))):
+            raise ValueError("descriptor changed")
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(fd, min(64 * 1024, 512 * 1024 + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 512 * 1024:
+                raise ValueError("oversized script")
+            digest.update(chunk)
+        if (signature(before) != signature(os.fstat(fd))
+                or signature(before) != signature(os.stat(path, dir_fd=dir_fd,
+                    follow_symlinks=expected_fd_target is not None))):
+            raise ValueError("script changed")
+        if expected_fd_target is not None and os.readlink(path, dir_fd=dir_fd) != target:
+            raise ValueError("descriptor changed")
+        return digest.hexdigest(), int(before.st_mtime), int(before.st_ctime)
+    finally:
+        os.close(fd)
+
+
+def _collect_supervisor_identity(soren, expected_sha, proc_root=Path("/proc")):
+    """Source/age evidence only: never certify already-defined Bash functions.
+
+    PID/start ticks stay internal for race detection. A matching disk/held-FD
+    hash does not prove function memory, and a same-PID exec can reload code
+    without changing process start time. No signal or runtime write is used.
+    """
+    source = Path(soren).absolute() / "start_all.sh"
+    expected = _stream_title_sync_git_blob_sha256(
+        PROD_ROOT / "games/soviet_now", expected_sha, "start_all.sh"
+    )
+    result = {
+        "status": "unavailable", "reason": "pidfile_unavailable",
+        "loaded_functions_status": "unverified",
+        "expected_script_sha256": expected, "deployed_script_sha256": None,
+        "open_script_sha256": None, "deployed_matches_expected": None,
+        "open_script_matches_expected": None, "pidfile_matches_unit": None,
+        "identity_stable": None, "process_started_at": None,
+        "deployed_script_mtime": None, "deployed_script_ctime": None,
+    }
+    handles = []
+    def pin(path, dir_fd=None):
+        fd = _supervisor_directory(path, dir_fd)
+        handles.append(fd)
+        return fd
+    try:
+        root_fd = pin(soren)
+        try:
+            digest, mtime, ctime = _supervisor_script_fingerprint("start_all.sh", dir_fd=root_fd)
+            result.update(deployed_script_sha256=digest, deployed_script_mtime=mtime,
+                          deployed_script_ctime=ctime)
+            if expected:
+                result["deployed_matches_expected"] = digest == expected
+        except (OSError, ValueError):
+            pass
+        tmp_fd = pin("tmp", root_fd)
+        state_fd = pin("state", tmp_fd)
+        value = _supervisor_read("start_all.pid", 32, dir_fd=state_fd).strip()
+        if not re.fullmatch(rb"[1-9][0-9]{0,9}", value):
+            return result
+        pid = int(value)
+        unit_pid = _supervisor_unit_pid()
+        if unit_pid is None:
+            result["reason"] = "unit_unavailable"
+            return result
+        result["pidfile_matches_unit"] = pid == unit_pid
+        if pid != unit_pid:
+            result["reason"] = "unit_pid_mismatch"
+            return result
+        result["reason"] = "process_unavailable"
+        # A held /proc/PID directory cannot turn into a recycled PID's
+        # directory. All process reads below are relative to this handle.
+        process_fd = pin(proc_root / str(pid))
+        started = _supervisor_process_start(proc_root, pid, process_fd)
+        executable = os.readlink("exe", dir_fd=process_fd)
+        if Path(executable).name != "bash":
+            result["reason"] = "not_bash"
+            return result
+        try:
+            boot = re.search(rb"(?m)^btime ([0-9]{1,12})$", _supervisor_read(proc_root / "stat", 512 * 1024))
+            hz = os.sysconf("SC_CLK_TCK")
+            if boot and hz > 0:
+                result["process_started_at"] = int(int(boot[1]) + started / hz)
+        except (OSError, ValueError):
+            pass
+        result["reason"] = "script_fd_unavailable"
+        try:
+            script_dir_fd = pin("fd", process_fd)
+            digest, _, _ = _supervisor_script_fingerprint(
+                "255", str(source), dir_fd=script_dir_fd
+            )
+            result["open_script_sha256"] = digest
+        except (OSError, ValueError):
+            pass
+        try:
+            current_fd = pin(proc_root / str(pid))
+            stable = (_supervisor_process_start(proc_root, pid, process_fd) == started
+                      and _supervisor_process_start(proc_root, pid, current_fd) == started
+                      and os.fstat(process_fd).st_ino == os.fstat(current_fd).st_ino
+                      and os.readlink("exe", dir_fd=process_fd) == executable
+                      and _supervisor_read("start_all.pid", 32, dir_fd=state_fd).strip() == value
+                      and _supervisor_unit_pid() == pid)
+            if stable and result["open_script_sha256"] is not None:
+                stable = (_supervisor_script_fingerprint(
+                    "255", str(source), dir_fd=script_dir_fd
+                )[0] == result["open_script_sha256"])
+        except (OSError, ValueError):
+            stable = False
+        if not stable:
+            result.update(reason="identity_changed", identity_stable=False,
+                          process_started_at=None, open_script_sha256=None)
+            return result
+        result["identity_stable"] = True
+        if result["open_script_sha256"] is not None:
+            result.update(status="observed", reason="source_evidence_only")
+            if expected:
+                result["open_script_matches_expected"] = result["open_script_sha256"] == expected
+                if not result["open_script_matches_expected"]:
+                    result["reason"] = "open_script_differs_expected"
+    except (OSError, ValueError):
+        pass
+    finally:
+        for fd in reversed(handles):
+            os.close(fd)
     return result
 
 
@@ -3339,6 +3548,77 @@ def _rotation_pending_projection(state_dir, data, now):
     return out
 
 
+def _rotation_hanjuku_manual_receipt_projection(state_dir, manual, now):
+    """Observe only this fixed manual reservation's UUID receipt, without IDs.
+
+    Missing output means not observed; present=false means the fixed lookup
+    found no file in this snapshot. Neither proves historical non-execution.
+    This is read-only evidence and never authorizes cancellation or recovery.
+    """
+    out = {"observed": False, "present": None, "readable": None,
+           "status": "unknown", "operation": "unknown",
+           "request_matches": None, "target_matches": None,
+           "terminal_result_matches": None, "cleanup_pending": None,
+           "updated_after_selection": None, "runtime_identity_valid": None,
+           "runtime_resources_released": None}
+    if (not isinstance(manual, dict) or manual.get("corner") != "hanjuku-hero"
+            or manual.get("state_file") != "retro_corner_manual.json"):
+        return out
+    request_id = _weather_request_id(manual.get("request_id"))
+    selected = _rotation_time(manual.get("selected_at"))
+    if request_id is None or selected is None or selected > now:
+        return out
+    present, readable, receipt = _rotation_evidence_file(
+        state_dir, f"game-switch/requests/{request_id}.json")
+    out.update(observed=True, present=present, readable=readable)
+    if not readable:
+        return out
+    status = _rotation_enum(receipt.get("status"), WEATHER_RECEIPT_STATUSES)
+    operation = _rotation_enum(receipt.get("operation"), WEATHER_OPERATIONS)
+    matches = receipt.get("request_id") == request_id
+    target_matches = receipt.get("target") == "hanjuku-hero"
+    out.update(status=status, operation=operation, request_matches=matches,
+               target_matches=target_matches)
+    updated = _rotation_time(receipt.get("updated_at"))
+    if updated is not None:
+        out["updated_after_selection"] = updated >= selected
+    result = receipt.get("result")
+    if isinstance(result, dict):
+        if status in WEATHER_RESULT_STATUSES:
+            out["terminal_result_matches"] = bool(
+                matches and target_matches and operation in {"start", "switch"}
+                and result.get("request_id") == request_id
+                and result.get("status") == status
+                and result.get("operation") == operation)
+        if isinstance(result.get("cleanup_pending"), bool):
+            out["cleanup_pending"] = result["cleanup_pending"]
+    if (not out["terminal_result_matches"] or not target_matches
+            or out["cleanup_pending"] is not False):
+        return out
+    # Reuse the operator's validated runtime and read-only release contract.
+    # No canonical/owner decision or cancellation authority comes from this
+    # unlocked snapshot; the operator rechecks everything under writer locks.
+    from docich.game_switch import validate_receipt
+    from docich.hanjuku_manual_cancel import CancelRefused, _ProbeTmux, _released_runtime
+    try:
+        validate_receipt(receipt, state_dir, expected_request_id=request_id)
+        runtime = state_dir / "runtimes" / receipt["runtime_id"]
+        if any(parent.is_symlink() for parent in (runtime, *runtime.parents)):
+            out["runtime_identity_valid"] = False
+            return out
+        out["runtime_identity_valid"] = True
+        _released_runtime(state_dir, receipt["runtime_id"], _ProbeTmux())
+        out["runtime_resources_released"] = True
+    except CancelRefused as exc:
+        if str(exc) == "runtime_resources_present":
+            out["runtime_resources_released"] = False
+    except Exception:
+        # Invalid identity or a failed/timed-out probe stays unknown. Never
+        # expose validation messages, tmux output, identifiers or paths.
+        pass
+    return out
+
+
 def _rotation_manual_pending_projection(state_dir, data, now):
     """Observe the manual reservation separately from automatic ``pending``.
 
@@ -3347,6 +3627,7 @@ def _rotation_manual_pending_projection(state_dir, data, now):
     a matching request in a sibling file must not make it look resumable.
     This is evidence, never an instruction to resume or recover a corner.
     """
+    from docich.hanjuku_manual_evidence import project as manual_evidence
     out = {
         "manual_pending": isinstance(data.get("manual_pending"), dict),
         "manual_pending_corner": None,
@@ -3354,6 +3635,11 @@ def _rotation_manual_pending_projection(state_dir, data, now):
         "manual_pending_age_sec": -1,
         "manual_pending_owner": "absent",
         "manual_pending_owner_status": "unknown",
+        "manual_pending_fingerprint": None,
+        "manual_pending_receipt": _rotation_hanjuku_manual_receipt_projection(
+            state_dir, data.get("manual_pending"), now),
+        "manual_pending_evidence": manual_evidence(
+            state_dir, data.get("manual_pending"), now, read_fixed=_rotation_evidence_file),
     }
     manual = data.get("manual_pending")
     if manual is None:
@@ -3372,6 +3658,15 @@ def _rotation_manual_pending_projection(state_dir, data, now):
     filename = manual.get("state_file")
     name = files.get(filename) if isinstance(filename, str) else None
     request_id = manual.get("request_id")
+    # An opaque compare-and-cancel token, never the request identity itself.
+    # Only this fixed Hanjuku owner is cancellable by the owner operator.
+    if (manual.get("corner") == "hanjuku-hero"
+            and filename == "retro_corner_manual.json"
+            and selected is not None and selected <= now
+            and isinstance(request_id, str)
+            and re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", request_id)):
+        out["manual_pending_fingerprint"] = hashlib.sha256(json.dumps(
+            manual, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     if name is None:
         return out
     out["manual_pending_state_file"] = name
@@ -5815,6 +6110,7 @@ def main(argv):
         ),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
         "workers": workers,
+        "supervisor_identity": _collect_supervisor_identity(soren, meta.get("soren_gitlink_sha")),
         "semantic_decision": _collect_semantic_decision(workers),
         "queues": {**queues, "queue_giveups_15m": ai["queue_giveups"]},
         "ai": {

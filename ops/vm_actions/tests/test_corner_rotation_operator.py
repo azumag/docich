@@ -22,6 +22,41 @@ LEGACY_REF = (
 
 
 class CornerRotationAuthorizeTests(unittest.TestCase):
+    def test_cancel_script_has_only_fixed_argv_and_rejects_injection(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src/docich").mkdir(parents=True)
+            (root / "config").mkdir()
+            (root / "src/docich/hanjuku_manual_cancel.py").touch()
+            (root / "config/docich.soren-live.toml").touch()
+            python = root / "python3"
+            # Use the interpreter by absolute path to avoid the fake binary recursing.
+            import sys
+            python.write_text(f'#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
+            python.chmod(0o755)
+            script = ROOT / "ops/vm_actions/cancel_hanjuku_manual.sh"
+            env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"], "DOCICH_PROD_ROOT": str(root)}
+            for mode, expected, suffix in (("check", "", ["check"]), ("apply", "a" * 64, ["apply", "--expected", "a" * 64])):
+                result = subprocess.run(["bash", str(script)], env={**env, "CANCEL_MODE": mode, "CANCEL_EXPECTED": expected}, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), ["-B", "-m", "docich.hanjuku_manual_cancel", *suffix])
+            for changes in ({"CANCEL_MODE": "apply", "CANCEL_EXPECTED": "a" * 64 + ";id"}, {"CANCEL_MODE": "check;id"}):
+                result = subprocess.run(["bash", str(script)], env={**env, **changes}, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 64)
+                self.assertEqual(result.stdout, "")
+    def test_cancel_requires_canonical_owner_and_exact_fingerprint(self):
+        self.assertEqual(self.run_auth(INPUT_OPERATION="check-cancel-hanjuku").returncode, 0)
+        self.assertEqual(self.run_auth(INPUT_OPERATION="cancel-hanjuku", INPUT_EXPECTED_RESERVATION="a" * 64).returncode, 0)
+        for changes in (
+            {"INPUT_EXPECTED_RESERVATION": ""},
+            {"INPUT_EXPECTED_RESERVATION": "a" * 64 + ";id"},
+            {"INPUT_EXPECTED_RESERVATION": "a" * 64, "GITHUB_WORKFLOW_REF": LEGACY_REF},
+            {"INPUT_EXPECTED_RESERVATION": "a" * 64, "INPUT_CONFIRM": ""},
+        ):
+            self.assertNotEqual(self.run_auth(INPUT_OPERATION="cancel-hanjuku", **changes).returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="check-cancel-hanjuku", INPUT_EXPECTED_RESERVATION="a" * 64).returncode, 0)
     def run_auth(self, auth=AUTH, **overrides):
         env = {
             "GITHUB_REPOSITORY": "azumag/docich",
@@ -183,7 +218,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
         for required in (
-            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, recover-runtime]",
+            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, recover-runtime, check-cancel-hanjuku, cancel-hanjuku]",
             "github.actor_id == 9018513",
             "github.triggering_actor == 'azumag'",
             "github.ref_protected == true",

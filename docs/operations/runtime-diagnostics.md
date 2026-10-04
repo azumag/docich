@@ -338,6 +338,26 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   hash・env 文字列・戦略本文は読まない・出さない。A/B 中は improvement
   boundary が保留されるため、コーナー遅延の直接原因になる。
 - meta: デプロイ済み docich HEAD と soviet_now gitlink（検証用。secret ではない）。
+- `supervisor_identity`: 固定system unit `soren-runtime.service` のMainPIDと
+  `tmp/state/start_all.pid` が一致し、同じuserの生存中Bashである場合だけ、
+  `/proc` の開始ticks＋boot時刻から `process_started_at` を観測する。
+  配備済み `start_all.sh`、gitlinkの期待blob、Bashの固定script FD 255の
+  SHA-256を別々に返す。FDは同じ固定script path（削除済みinodeも含む）だけを
+  許可し、512KiB上限・regular file・所有user・変更検査を行う。
+  root/tmp/state、procのPID/fdディレクトリはno-followで開き、proc handleを保持して
+  相対readを行う。PID再利用時に別processのFDを読むことはなく、再照合不一致は不明になる。
+  PID、start ticks、proc comm、FDのpath/inode、argv、環境変数、本文は出力しない。
+  取得前後にunit/PID/start ticks/pidfileを再照合し、変化・終了ならprocess証跡を
+  捨てて `identity_changed` とする。欠測・unsafe・FDなしは不明として返す。
+  `deployed_script_mtime/ctime` は配備fileの時刻であり、deploy完了時刻や起動時hashではない。
+  **hash一致・開始時刻だけでは既に定義済みのBash関数を証明しない**。in-place更新や
+  同じPIDのexecがあり得るため、`loaded_functions_status` は常に `unverified`。
+  `status=observed` もsource証跡の取得だけを意味する。既存shellの起動時attestationは
+  存在せず、この診断は追加書込・signal・reload・休止変更を行わない。
+  FDが期待hashと異なる場合は `reason=open_script_differs_expected` として旧source保持等を
+  積極的に示すが、未知のsourceを特定の旧commitやloaded関数の版と断定しない。
+  停止なしの確実なreload経路がない間は、効果測定を自然の次回supervisor起動まで待つ。
+  この診断を理由にhotpatch・kill・service restartで適用を強制しない。
 - webui: `docich-webui.service` の固定 projection と「配信 UI がデプロイ済み UI と一致するか」の観測。
   `unit_file`（unit ファイル有無）、`unit_active` / `unit_enabled`（`systemctl --user is-active /
   is-enabled`）、`main_pid` / `n_restarts`（`systemctl --user show`、再起動ループの検出用）、

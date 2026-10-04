@@ -37,6 +37,12 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             "src/docich/runtime_backend.py",
             "src/docich/pulse_volume.py",
             "src/docich/corner_rotation.py",
+            "src/docich/game_switch.py",
+            "src/docich/hanjuku_manual_cancel.py",
+            "src/docich/hanjuku_manual_evidence.py",
+            "src/docich/naming.py",
+            "src/docich/tmux.py",
+            "src/docich/procs.py",
             "src/docich/__init__.py",
             "src/docich/semantic_decision/__init__.py",
             "src/docich/semantic_decision/diagnostics.py",
@@ -97,6 +103,8 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             self.assertIn(section, diag)
         self.assertEqual(diag["workers"]["expected"] >= 10, True)
         self.assertEqual(diag["semantic_decision"], {"present": False, "readable": False})
+        self.assertEqual(diag["supervisor_identity"]["loaded_functions_status"], "unverified")
+        self.assertIsNone(diag["supervisor_identity"]["open_script_sha256"])
         self.assertEqual(self.snapshot(self.soren), before)
 
     def test_every_docich_module_the_collector_imports_is_drift_verified(self):
@@ -159,6 +167,21 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         (self.doc / "ops" / "vm_actions" / "collect_diagnostics.py").unlink()
         proc = self.call(f"diagnostics docich production {'b' * 40}")
         self.assertNotEqual(proc.returncode, 0)
+
+    def test_manual_receipt_resource_helpers_drift_is_refused_read_only(self):
+        for name in ("game_switch", "hanjuku_manual_cancel", "hanjuku_manual_evidence", "naming", "tmux", "procs"):
+            with self.subTest(module=name):
+                path = self.doc / "src" / "docich" / (name + ".py")
+                original = path.read_bytes()
+                before = self.snapshot(self.soren)
+                try:
+                    path.write_bytes(original + b"\n# unreviewed helper drift\n")
+                    proc = self.call(f"diagnostics docich production {'b' * 40}")
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("VM operation rejected", proc.stderr.decode())
+                    self.assertEqual(self.snapshot(self.soren), before)
+                finally:
+                    path.write_bytes(original)
 
     def test_secrets_never_reach_actions_output(self):
         stats = self.soren / "tmp" / "state" / "ai_stats"
