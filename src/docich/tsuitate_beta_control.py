@@ -44,6 +44,7 @@ def signed_request(url: str, secret: str, action: str, run_id: str | None = None
     return urllib.request.Request(url + "/beta-control", data=raw, method="POST", headers={
         "Content-Type": "application/json", "X-Beta-Control-Timestamp": timestamp,
         "X-Beta-Control-Signature": "sha256=" + signature,
+        "User-Agent": "docich-beta-control/1.0",
     })
 
 
