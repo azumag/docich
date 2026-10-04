@@ -1448,6 +1448,128 @@ class TestHttpHandlers(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _write_weather_catalog_config(self, *, enabled=True, paused=False, rotation=True):
+        path = Path(self.g.config_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '[corner_rotation]\n'
+            f'enabled = {str(rotation).lower()}\n'
+            'schedule_mode = "queue"\n'
+            'corners = [{id = "weather", adapter = "weather", game = "weather-view", '
+            f'enabled = {str(enabled).lower()}, paused = {str(paused).lower()}, '
+            'duration_minutes = 1, fetch_on_start = true, audio_enabled = false}]\n',
+            encoding="utf-8",
+        )
+
+    def test_weather_manual_start_reserves_without_dispatch_and_is_idempotent(self):
+        self._write_weather_catalog_config()
+        pending = {"corner": "nsnake", "phase": "dispatched",
+                   "selected_at": time.time() - 120,
+                   "request_id": "11111111-1111-4111-8111-111111111111"}
+        self._write_rotation_state(status="running", pending=pending)
+        ledger_path = Path(self.g.state_dir) / "corner_rotation.json"
+        before = ledger_path.read_bytes()
+        with mock.patch("docich.webui.subprocess.Popen") as popen, \
+                mock.patch("docich.weather_corner.WeatherCornerManager.run_rotation") as run:
+            first, data = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "weather", "confirm": True})
+            inbox = Path(self.g.state_dir) / "corner_manual_queue.json"
+            owner = inbox.read_bytes()
+            second, replay = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "weather", "confirm": True})
+        self.assertEqual((first, second), (200, 200), (data, replay))
+        self.assertEqual(data["status"], "queued")
+        self.assertEqual(data["duration_minutes"], 1)
+        self.assertEqual(data["corner"]["target"], "rotation")
+        self.assertEqual(inbox.read_bytes(), owner)
+        self.assertEqual(ledger_path.read_bytes(), before)
+        self.assertNotIn("request_id", data)
+        popen.assert_not_called()
+        run.assert_not_called()
+        status, view = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, view)
+        self.assertEqual(view["rotation"]["queued_manual"]["corner"], "weather")
+        self.assertNotIn(json.loads(owner)["request_id"], json.dumps(view))
+        self.assertEqual(view["catalog"][0]["manual_mode"], "queue")
+        self.assertTrue(view["catalog"][0]["manual"])
+
+    def test_weather_manual_start_respects_disabled_paused_and_recovery_gates(self):
+        for options in ({"enabled": False}, {"paused": True}, {"rotation": False}, {}):
+            with self.subTest(options=options):
+                self._write_weather_catalog_config(**options)
+                self._write_rotation_state(status="recovery_required" if not options else "ready",
+                                           pending=None)
+                status, data = self._request("POST", "/api/corners", {
+                    "action": "start", "corner": "weather", "confirm": True})
+                self.assertEqual(status, 409, data)
+                self.assertFalse((Path(self.g.state_dir) / "corner_manual_queue.json").exists())
+
+    def test_weather_manual_start_rejects_conflicting_queue_and_duration_override(self):
+        self._write_weather_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+        inbox = Path(self.g.state_dir) / "corner_manual_queue.json"
+        inbox.write_text(json.dumps({"corner": "paper", "selected_at": time.time(),
+                                    "request_id": "11111111-1111-4111-8111-111111111111"}))
+        before = inbox.read_bytes()
+        status, data = self._request("POST", "/api/corners", {
+            "action": "start", "corner": "weather", "confirm": True})
+        self.assertEqual(status, 409, data)
+        for duration in (True, 0, 5, 15):
+            with self.subTest(duration=duration):
+                status, data = self._request("POST", "/api/corners", {
+                    "action": "start", "corner": "weather", "duration_minutes": duration,
+                    "confirm": True})
+                self.assertEqual(status, 400, data)
+        self.assertEqual(inbox.read_bytes(), before)
+
+    def test_weather_manual_stop_requests_owned_finish_while_rotation_lock_is_busy(self):
+        from docich.corner_rotation import CornerRotationManager, STOP_REQUEST_DIR
+        self._write_weather_catalog_config()
+        run_dir = Path(self.g.state_dir)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        state = run_dir / "weather_corner.json"
+        state.write_text(json.dumps({"schema_version": 1, "status": "active",
+                                     "game": "weather-view"}))
+        before = state.read_bytes()
+        with CornerRotationManager(self.g).locked() as acquired, \
+                mock.patch("docich.game_switch.GameSwitchCoordinator.switch") as switch, \
+                mock.patch("docich.webui.subprocess.Popen") as popen:
+            self.assertTrue(acquired)
+            status, data = self._request("POST", "/api/corners", {
+                "action": "stop", "corner": "weather", "confirm": True})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["status"], "queued")
+        marker = json.loads((run_dir / STOP_REQUEST_DIR / state.name).read_text())
+        self.assertEqual(marker["state_file"], state.name)
+        self.assertEqual(state.read_bytes(), before)
+        switch.assert_not_called()
+        popen.assert_not_called()
+        _, view = self._request("GET", "/api/corners")
+        self.assertEqual(view["catalog"][0]["state_file"], "weather_corner")
+        self.assertEqual(view["corners"]["weather_corner"]["status"], "active")
+
+    def test_weather_manual_stop_before_start_is_not_reported_as_stopped(self):
+        self._write_weather_catalog_config()
+        status, data = self._request("POST", "/api/corners", {
+            "action": "stop", "corner": "weather", "confirm": True})
+        self.assertEqual(status, 409, data)
+        self.assertEqual(data["error"], "weather_not_active")
+
+    def test_weather_manual_start_requires_confirmation_and_operator_identity(self):
+        self._write_weather_catalog_config()
+        status, data = self._request("POST", "/api/corners", {
+            "action": "start", "corner": "weather"})
+        self.assertEqual(status, 428, data)
+        self.g.webui.read_only_token = "viewer-secret"
+        try:
+            status, data = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "weather", "confirm": True},
+                headers={"Authorization": "Bearer viewer-secret"})
+            self.assertEqual(status, 403, data)
+        finally:
+            self.g.webui.read_only_token = ""
+        self.assertFalse((Path(self.g.state_dir) / "corner_manual_queue.json").exists())
+
     def test_soren91_renderer_mode_roundtrip_without_secrets(self):
         env_file = self.repo_root / "soren91.env"
         env_file.write_text(
