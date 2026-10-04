@@ -1,11 +1,11 @@
 {
-  "output_sha256": "6fe41ed3b5dbda660fa0c75ed9b4c8e91cf2ddfb7f5c6814b11418ec41e3c743",
+  "output_sha256": "716c400b3762d2775de8fa4447bc8a11d60bdddf6b41af9e897ff5c91ff1e902",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "4967c32283a9de0ddd0cffe2e59f3e211d77e2588ee4e4ed1f94636b0b32f6c0",
+  "source_sha256": "96aa5fcce40cdbd32e6b1c742ed826cf6dc0ff22e2093366d831a0cf1d92f4db",
   "topics": [
+    "Soren「GAMEOVERのまま進まない」固定復旧 `recover_soren_round` を Ready （未merge・本番未実…",
     "半熟英雄: 卵回復の見積もりを実測卵だけにし、支払へ賃金フロアを固定（v133）を配備",
-    "「CIが恒常失敗」の切り分け（実測）／`/hanjuku-evidence` は gateway 未更新で未解決",
-    "半熟英雄: 「保留」（入力0件の無限待機）を有限ゲートで廃止（v128）を配備"
+    "「CIが恒常失敗」の切り分け（実測）／`/hanjuku-evidence` は gateway 未更新で未解決"
   ]
 }
