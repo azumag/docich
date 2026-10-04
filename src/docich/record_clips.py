@@ -78,8 +78,14 @@ def _publish(state, soren_root):
             continue
         event = item["event"]
         receipt = queue / "receipts" / (event["event_id"] + ".json")
-        target = queue / ("record_" + event["event_id"] + ".json")
-        if not receipt.exists() and not target.exists():
+        name = "record_" + event["event_id"] + ".json"
+        # A resident pre-record chat shell consumes every top-level *.json.
+        # Keep new events invisible until the compatible handler reads this
+        # namespace; no PID, credentials or service operation is required.
+        target = queue / "record_pending" / name
+        existing = (receipt, target, queue / name, queue / "done" / name,
+                    queue / "failed" / name)
+        if not any(path.exists() for path in existing):
             atomic_write_json(target, event)
         item["enqueued"] = True
     # Only undelivered events need repeated local publication. Best is never
