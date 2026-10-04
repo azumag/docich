@@ -60,7 +60,9 @@ export async function fetchPublicResult(gameId, color, { fetchImpl = fetch, time
   let reader;
   try {
     const response = await fetchImpl(`${BETA_ORIGIN}/games/${encodeURIComponent(gameId)}/__data.json`, {
-      signal: controller.signal, redirect: "error", credentials: "omit",
+      // Use manual for the pinned workerd runtime. Reject redirect responses
+      // below; never follow them to a different origin or send credentials.
+      signal: controller.signal, redirect: "manual", credentials: "omit",
       headers: { accept: "application/json" },
     });
     if (!response.ok || !/^application\/json\b/i.test(response.headers.get("content-type") ?? "")) return null;

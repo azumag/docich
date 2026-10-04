@@ -356,16 +356,86 @@ test("an ended checkpoint with an unavailable public result becomes one unknown 
     context.session.gate.generation, { synchronized: true });
   context.session.terminalSeen = true;
   const restored = setup(t, { checkpoint: context.session.checkpoint() });
+  const scheduled = [];
+  restored.session.later = (operation) => { scheduled.push(operation); };
   await flush(restored.session);
   for (let count = 0; count < 5; count += 1) {
     restored.socket.ack("game:sync", { state: null });
     await flush(restored.session);
     if (count < 4) restored.session.sync();
   }
+  while (!restored.session.closed) {
+    const next = scheduled.shift(); assert.ok(next);
+    await restored.session.enqueue(next); await flush(restored.session);
+  }
   assert.equal((await restored.session.done).status, "finished");
   assert.equal(restored.store.records.length, 1);
   assert.equal(restored.store.records[0].completed, true);
   assert.equal(restored.store.records[0].outcome, "unknown");
+});
+
+test("exhausted null syncs wait for the bounded replay retries before pausing", async (t) => {
+  let resolveFirst, attempts = 0;
+  const context = setup(t, { resolveResult: async (gameId) => {
+    attempts += 1;
+    if (attempts === 1) return new Promise((resolve) => { resolveFirst = resolve; });
+    if (attempts < 3) return null;
+    return { gameId, outcome: "loss", reason: "foul_limit", source: "public_replay",
+      endedAt: new Date(Date.now() + 1000).toISOString() };
+  } });
+  const scheduled = [];
+  context.session.later = (operation, milliseconds) => { scheduled.push({ operation, milliseconds }); };
+  await begin(context);
+  context.socket.server("game:end", { gameId: "unrelated-game", token: "fixture-private" });
+  await flush(context.session);
+  for (let count = 0; count < 5; count += 1) {
+    context.socket.ack("game:sync", { state: null });
+    await flush(context.session);
+    if (count < 4) context.session.sync();
+  }
+  assert.equal(attempts, 1);
+  resolveFirst(null); await flush(context.session);
+  assert.equal(context.session.closed, false);
+  assert.equal(context.session.terminalSeen, false);
+  assert.equal(context.store.records.length, 0);
+  // Duplicate pushes cannot bypass the scheduled retry's backoff.
+  context.socket.server("game:end", {}); await flush(context.session);
+  assert.equal(attempts, 1);
+  while (!context.session.closed) {
+    const next = scheduled.shift(); assert.ok(next);
+    await context.session.enqueue(next.operation); await flush(context.session);
+  }
+  assert.equal(attempts, 3);
+  assert.equal((await context.session.done).status, "finished");
+  assert.equal(context.store.records.length, 1);
+  assert.equal(context.store.records[0].outcome, "loss");
+  assert.equal(context.store.records[0].resultConfidence, "verified");
+  assert.equal(context.socket.connected, false);
+  assert.equal(context.socket.packets("queue:join").length, 1);
+  assert.equal(JSON.stringify(context.store.saves).includes("fixture-private"), false);
+});
+
+test("five unavailable or mismatched replay results preserve an unresolved checkpoint", async (t) => {
+  for (const result of [null, { gameId: "unrelated-game", outcome: "loss", reason: "timeout" }]) {
+    let attempts = 0;
+    const context = setup(t, { resolveResult: async () => { attempts += 1; return result; } });
+    const scheduled = [];
+    context.session.later = (operation) => { scheduled.push(operation); };
+    await begin(context);
+    context.session.syncExhausted = true;
+    context.socket.server("game:end", { result: "gote_win", gameId: "unrelated-game" });
+    await flush(context.session);
+    assert.equal(context.session.closed, false);
+    while (!context.session.closed) {
+      const next = scheduled.shift(); assert.ok(next);
+      await context.session.enqueue(next); await flush(context.session);
+    }
+    assert.equal(attempts, 5);
+    assert.equal((await context.session.done).code, "terminal_unconfirmed");
+    assert.equal(context.store.records.length, 0);
+    assert.equal(context.store.saves.at(-1).active.record.completed, false);
+    assert.equal(context.socket.packets("queue:join").length, 1);
+  }
 });
 
 test("a disconnect before the first PlayerView pauses with its game checkpoint intact", async (t) => {
@@ -571,8 +641,14 @@ test("public replay fetch never sends a token and rejects non-JSON, oversized, o
   } });
   assert.equal(result.outcome, "win");
   assert.equal(seen.options.credentials, "omit");
-  assert.equal(seen.options.redirect, "error");
+  assert.equal(seen.options.redirect, "manual");
   assert.deepEqual(seen.options.headers, { accept: "application/json" });
+  let redirects = 0;
+  assert.equal(await fetchPublicResult("test-game", "b", { fetchImpl: async (_url, options) => {
+    redirects += 1; assert.equal(options.redirect, "manual");
+    return new Response(null, { status: 302, headers: { location: "https://untrusted.test/" } });
+  } }), null);
+  assert.equal(redirects, 1);
   assert.equal(await fetchPublicResult("test-game", "b", { fetchImpl: async () => new Response("<html>") }), null);
   assert.equal(await fetchPublicResult("test-game", "b", { fetchImpl: async () => Response.json({ changed: true }) }), null);
   assert.equal(await fetchPublicResult("test-game", "b", { fetchImpl: async () => new Response(" ".repeat(1048577), { headers: { "content-type": "application/json" } }) }), null);

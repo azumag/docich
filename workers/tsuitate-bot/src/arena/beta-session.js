@@ -39,6 +39,7 @@ export class BetaSession {
     this.syncPending = null;
     this.syncSequence = 0;
     this.resultBusy = false;
+    this.resultRetryPending = false;
     this.resultAttempts = 0;
     this.nullSyncs = 0;
     this.failedSyncs = 0;
@@ -430,7 +431,7 @@ export class BetaSession {
   }
 
   requestResult() {
-    if (this.resultBusy || !this.record || this.closed) return;
+    if (this.resultBusy || this.resultRetryPending || !this.record || this.closed) return;
     this.resultBusy = true;
     const gameId = this.gameId;
     const color = this.record.color;
@@ -442,12 +443,18 @@ export class BetaSession {
         return;
       }
       this.resultAttempts += 1;
-      if (this.syncExhausted) {
-        if (this.terminalSeen) await this.finish({ outcome: "unknown", reason: "unknown", endedAt: isoNow() });
-        else await this.pause("terminal_unconfirmed");
-      } else if (this.resultAttempts < 5) this.later(() => this.requestResult(), this.retryMs);
+      // An empty sync is not a terminal fact, and its retry budget is separate
+      // from publication of the replay. Let every bounded lookup settle before
+      // pausing; repeated pushes must not bypass the retry backoff.
+      if (this.resultAttempts < 5) {
+        this.resultRetryPending = true;
+        this.later(() => {
+          this.resultRetryPending = false;
+          this.requestResult();
+        }, this.retryMs);
+      }
       else if (this.terminalSeen) await this.finish({ outcome: "unknown", reason: "unknown", endedAt: isoNow() });
-      else if (!this.socket.connected) await this.pause("terminal_unconfirmed");
+      else if (this.syncExhausted || !this.socket.connected) await this.pause("terminal_unconfirmed");
       else { this.resultAttempts = 0; this.sync(); }
     })).catch(() => this.enqueue(() => { this.resultBusy = false; return this.pause("result_unavailable"); }));
   }
