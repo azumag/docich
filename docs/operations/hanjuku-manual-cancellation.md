@@ -50,7 +50,7 @@ receipt欠落のwaiting予約には既存 `recover-failed` のrecovery_required�
 追加の `corner_rotation.manual_pending_evidence` は同じ固定予約のpositive記録だけを調べる。
 読取元は固定EventLog、当該UUIDのreceipt、両retro owner、canonicalだけ。
 開始時に対象予約のfingerprint・selected_at、確認終点、ログidentityと初期サイズSを固定し、
-EventLogの先頭から `[0,S)` を64KiB×最大256ページ・16MiB・全体10秒で一度走査する。
+EventLogの先頭から `[0,S)` を64KiB×最大256ページ・16MiB・論理処理予算10秒で一度走査する。
 Sがbyte/page上限を超える場合は読み始めず終了する。追記を追いかけず、開き直し・自動再試行はしない。
 行サイズ64KiB、一致行256、runtime8件の上限を保持し、上限到達でログ走査を終了する。
 `log.initial_size_bytes` / `required_pages` / `pages` / `bytes_read` / `eof_reached` / `end_reason` を返す。
@@ -59,6 +59,14 @@ EOF、size/page/line/match/generation上限、partial record、不正行、sourc
 ページ前後に固定ledgerの予約fingerprintとログのidentity・size・mtime/ctimeを再照合する。
 置換・縮小・追記等の変更や予約の変更/読取不能、時間切れは終了し、資源判定をunknownへ戻す。
 `checkpoint_status` は固定enumで再照合結果を示し、fingerprintの元データやログidentityは返さない。
+一度検出したcheckpoint不一致・読取不能・予算切れは保持し、その呼出内でstableへ戻さず資源probeを止める。
+ログ未完走やruntime保持上限では、未読行の矛盾を排除する独立証明がないため各世代の資源解放もunknownとする。
+`eof_reached` はbyte境界への到達だけを表し、行評価・checkpoint検証を含む `scan_complete` と区別する。
+10秒はmonotonic clockに基づく協調的な処理予算で、metadata後のread直前にも再検査する。
+予算切れを検出した後は追加stat・資源probeを行わない。一度開始した同期regular-file I/Oは
+O_NONBLOCKでも期限内の中断を保証しないため、wall clockのhard deadlineが10秒という保証ではない。
+既存gatewayのcollector subprocess timeoutは別途60秒、workflow上限は20分。
+通常のhung collectorは上位60秒timeoutで失敗扱いとなる。新しいprocess envelopeは導入しない。
 対象時刻は固定selected_atから確認終点までだが、行の時刻順を仮定した早期終了はしない。
 運用取得は独立レビュー・正規配布後の一回に限定し、上限や変更で未完了なら再実行・上限追加せず保守判断へ進む。
 予約後の一致するrequested/accepted/queued/terminal記録と、そこから得たnumeric generationを返す。

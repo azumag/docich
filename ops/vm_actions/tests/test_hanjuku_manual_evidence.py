@@ -253,6 +253,82 @@ class ManualPositiveEvidenceTests(unittest.TestCase):
         self.assertNotIn("PRIVATE_LOG_ERROR", json.dumps(out))
         self.assertFalse(out["cancellation_authority"])
 
+    def test_transient_owner_phase_checkpoint_failure_remains_latched(self):
+        self.log(self.row())
+        original = self.read
+        checks = 0
+        def read(state, relative):
+            nonlocal checks
+            if relative == "corner_rotation.json":
+                checks += 1
+                if checks == 7:
+                    return True, False, None
+            return original(state, relative)
+        with mock.patch.object(evidence, "_released_runtime") as resources:
+            out = evidence.project(self.state, self.manual, 200, read_fixed=read)
+        self.assertEqual(out["checkpoint_status"], "reservation_unavailable")
+        self.assertEqual(checks, 7)
+        self.assertEqual(out["log"]["end_reason"], "reservation_unavailable")
+        self.assertFalse(out["log"]["scan_complete"])
+        self.assertTrue(out["log"]["eof_reached"])
+        self.assertTrue(all(row["resources_released"] is None for row in out["generations"]))
+        resources.assert_not_called()
+        self.assertIsNone(out["all_resources_released"])
+        self.assertFalse(out["cancellation_authority"])
+
+    def test_unread_conflict_beyond_generation_limit_cannot_certify_retained_runtime(self):
+        self.log(*[self.row(generation=n, runtime_id=f"g{n}-abcdef") for n in range(1, 10)],
+                 self.row(runtime_id="g1-fedcba"))
+        with mock.patch.object(evidence, "_released_runtime") as resources:
+            out = self.project()
+        self.assertEqual(out["log"]["end_reason"], "generation_limit")
+        self.assertEqual(out["log"]["matching_records"], 9)
+        self.assertEqual(len(out["generations"]), 8)
+        self.assertTrue(out["generations_truncated"])
+        self.assertTrue(out["log"]["eof_reached"])
+        self.assertFalse(out["log"]["scan_complete"])
+        # The tenth record was not evaluated: do not invent a conflict, but
+        # incomplete coverage must prevent a release certificate for g1.
+        self.assertFalse(out["generations"][0]["generation_conflict"])
+        self.assertTrue(all(row["resources_released"] is None for row in out["generations"]))
+        resources.assert_not_called()
+        self.assertIsNone(out["all_resources_released"])
+        self.assertFalse(out["cancellation_authority"])
+
+    def test_metadata_exhaustion_prevents_read_and_further_stat(self):
+        path = self.log(self.row())
+        original_open, original_stat, original_fstat = evidence._open_fixed, evidence.os.stat, evidence.os.fstat
+        clock, reads, extra_stat = [0], [], []
+        opened_log = False
+        def opened(path):
+            nonlocal opened_log
+            handle, meta = original_open(path)
+            opened_log = True
+            return MutatingReader(handle, lambda: reads.append(True)), meta
+        def stat(path_arg, *args, **kwargs):
+            if clock[0] >= 10:
+                extra_stat.append("stat")
+            result = original_stat(path_arg, *args, **kwargs)
+            if opened_log and str(path_arg) == str(path):
+                clock[0] = 11
+            return result
+        def fstat(fd):
+            if clock[0] >= 10:
+                extra_stat.append("fstat")
+            return original_fstat(fd)
+        with mock.patch.object(evidence.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(evidence, "_open_fixed", side_effect=opened), \
+                mock.patch.object(evidence.os, "stat", side_effect=stat), \
+                mock.patch.object(evidence.os, "fstat", side_effect=fstat):
+            out = self.project()
+        self.assertEqual(reads, [])
+        self.assertEqual(extra_stat, [])
+        self.assertEqual(out["log"]["pages"], 0)
+        self.assertEqual(out["log"]["bytes_read"], 0)
+        self.assertEqual(out["log"]["end_reason"], "budget_exhausted")
+        self.assertTrue(out["resource_budget_exhausted"])
+        self.assertIsNone(out["log"]["changed_during_scan"])
+
     def test_total_deadline_stops_pages_and_invalidates_late_resource_proof(self):
         self.log(self.row(), self.row(generation=2, runtime_id="g2-fedcba"))
         clock = [0]
@@ -313,7 +389,7 @@ class ManualPositiveEvidenceTests(unittest.TestCase):
                 self.assertEqual(first["generation"], 1)
                 self.assertTrue(first["generation_conflict"])
                 self.assertIsNone(first["resources_released"])
-                self.assertTrue(all(row["resources_released"] for row in out["generations"][1:]))
+                self.assertTrue(all(row["resources_released"] is None for row in out["generations"][1:]))
                 self.assertNotIn("g1-abcdef", [call.args[1] for call in probe.call_args_list])
                 self.assertIsNone(out["all_resources_released"])
                 self.assertFalse(out["cancellation_authority"])

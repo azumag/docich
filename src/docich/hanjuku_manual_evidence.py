@@ -23,7 +23,7 @@ MAX_SCAN_BYTES = 16 * 1024 * 1024
 MAX_LINE_BYTES = 65536
 MAX_MATCHES = 256
 MAX_RUNTIMES = 8
-BUDGET_SECONDS = 10
+BUDGET_SECONDS = 10  # Cooperative processing budget, not an interruptible I/O deadline.
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 RUNTIME = re.compile(r"g([1-9][0-9]{0,11})-[a-f0-9]{6,32}\Z")
 OWNER_FILES = ("retro_corner_manual.json", "retro_corner.json")
@@ -117,12 +117,22 @@ def _log_records(state_dir, request_id, deadline, observe, checkpoint):
         out.update(initial_size_bytes=size, required_pages=required)
 
         def source_reason():
+            if time.monotonic() >= deadline:
+                return "budget_exhausted"
             try:
                 current = os.stat(state_dir / "logs/game_switch.log", follow_symlinks=False)
+                if time.monotonic() >= deadline:
+                    return "budget_exhausted"
                 opened = os.fstat(handle.fileno())
                 path = state_dir / "logs/game_switch.log"
-                if (any(p.is_symlink() for p in (path, *path.parents))
-                        or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)):
+                for part in (path, *path.parents):
+                    if time.monotonic() >= deadline:
+                        return "budget_exhausted"
+                    if part.is_symlink():
+                        return "source_replaced"
+                if time.monotonic() >= deadline:
+                    return "budget_exhausted"
+                if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
                     return "source_replaced"
                 if current.st_size < size or opened.st_size < size:
                     return "source_shrunk"
@@ -142,6 +152,8 @@ def _log_records(state_dir, request_id, deadline, observe, checkpoint):
             if reason:
                 break
             reason = checkpoint() or source_reason()
+            if not reason and time.monotonic() >= deadline:
+                reason = "budget_exhausted"
             if reason:
                 break
             try:
@@ -191,7 +203,7 @@ def _log_records(state_dir, request_id, deadline, observe, checkpoint):
             reason = "partial_record"
         source = source_reason()
         reason = checkpoint() or source or reason
-        out["changed_during_scan"] = source is not None
+        out["changed_during_scan"] = None if source == "budget_exhausted" else source is not None
         out["budget_exhausted"] = reason == "budget_exhausted"
         out["eof_reached"] = handle.tell() == size
         out["end_reason"] = reason or ("malformed_records" if out["malformed_records"] else "eof")
@@ -237,6 +249,7 @@ def project(state_dir, manual, now, *, read_fixed):
         return out
 
     def checkpoint():
+        nonlocal stop_reason
         reason = stop_reason
         if reason:
             out["checkpoint_status"] = reason
@@ -254,6 +267,8 @@ def project(state_dir, manual, now, *, read_fixed):
                 reason = "reservation_unavailable"
             if time.monotonic() >= deadline:
                 reason = "budget_exhausted"
+        if reason:
+            stop_reason = reason
         out["checkpoint_status"] = reason or "stable"
         return reason
 
@@ -307,7 +322,7 @@ def project(state_dir, manual, now, *, read_fixed):
                       "end_reason": "source_unavailable", "initial_size_bytes": None,
                       "required_pages": None, "pages": None, "bytes_read": None}
     reason = out["log"].get("end_reason", "")
-    if reason.startswith(("source_", "reservation_")) or reason == "budget_exhausted":
+    if not stop_reason and (reason.startswith(("source_", "reservation_")) or reason == "budget_exhausted"):
         stop_reason = reason
     _, readable, receipt = (read_fixed(state_dir, f"game-switch/requests/{rid}.json")
                             if not checkpoint() else (False, False, {}))
@@ -365,6 +380,7 @@ def project(state_dir, manual, now, *, read_fixed):
             leases[key] = lease
     _, canonical_readable, canonical = (read_fixed(state_dir, "game_switch.json")
                                         if not checkpoint() else (False, False, {}))
+    coverage_complete = out["log"].get("scan_complete") is True and not out["generations_truncated"]
     for (generation, runtime), entry in sorted(runtimes.items()):
         if runtime in invalid_owner_runtimes:
             entry.update(owner_identity_conflict=True, owner_terminal=None,
@@ -384,7 +400,7 @@ def project(state_dir, manual, now, *, read_fixed):
                 entry["canonical_tracks"] = any(
                     v and (v.get("runtime_id") == runtime or v.get("generation") == generation)
                     for v in identities)
-        if (entry["canonical_tracks"] is False and not entry["generation_conflict"]
+        if (coverage_complete and entry["canonical_tracks"] is False and not entry["generation_conflict"]
                 and not entry["owner_identity_conflict"]):
             try:
                 path = state_dir / "runtimes" / runtime
@@ -397,7 +413,7 @@ def project(state_dir, manual, now, *, read_fixed):
                     entry["resources_released"] = False
             except Exception:
                 pass
-        elif (entry["canonical_tracks"] is True and not entry["generation_conflict"]
+        elif (coverage_complete and entry["canonical_tracks"] is True and not entry["generation_conflict"]
               and not entry["owner_identity_conflict"]):
             entry["resources_released"] = False
         out["generations"].append(entry)
