@@ -110,37 +110,7 @@ def _retry_wait(env: dict[str, str]) -> float:
 
 
 def _codex(spec: AgentSpec, request: DispatchRequest, timeout: float, env: dict[str, str]) -> ProviderResult:
-    binary = env.get("CODEX_BIN", "codex")
-    model = spec.model or env.get("CODEX_MODEL", "amd-token-factory-deepseek-v4-flash")
-    with tempfile.TemporaryDirectory(prefix="docich-llm-codex-") as tmp:
-        output_file = Path(tmp) / "output.txt"
-        command = [
-            binary,
-            "exec",
-            "--skip-git-repo-check",
-            "-m",
-            model,
-            "-o",
-            str(output_file),
-            request.prompt,
-        ]
-        rc, stdout, stderr = _process(command, timeout=timeout, env=env)
-        if rc != 0:
-            return _failed(rc, stderr)
-        try:
-            output = output_file.read_text(encoding="utf-8")
-        except OSError:
-            output = stdout
-        output = _clean_model_output(output)
-        if not output:
-            return ProviderResult(1, failure_kind="empty_output", detail="empty_output")
-        if _rate_limited(output):
-            return ProviderResult(79, failure_kind="rate_limit", detail="rate_limit")
-        if PROVIDER_ERROR_RE.search(output):
-            return ProviderResult(1, failure_kind="provider_failed", detail="provider_error")
-        if len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
-            return ProviderResult(1, failure_kind="output_too_large", detail="output_too_large")
-        return ProviderResult(0, output=output)
+    return ProviderResult(1, failure_kind="provider_removed", detail="provider_removed")
 
 
 def _opencode_model(spec: AgentSpec) -> str:
@@ -175,7 +145,7 @@ def _opencode(spec: AgentSpec, request: DispatchRequest, timeout: float, env: di
         "/snap/bin/opencode" if Path("/snap/bin/opencode").is_file() else "opencode"
     )
     base_command = [binary, "run", "--title", _opencode_session_title(request.label)]
-    if spec.provider in {"vercel", "amd"}:
+    if spec.provider in {"opencode", "opencode-go", "vercel", "amd", "openrouter"}:
         role = "soren-research" if "RESEARCH" in request.label.upper() or "PREPASS" in request.label.upper() else "soren-lite"
         base_command += ["--agent", role]
     base_command += ["--model", _opencode_model(spec), request.prompt]

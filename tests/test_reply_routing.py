@@ -514,7 +514,7 @@ def test_api_failure_never_starts_research():
 
 def test_runtime_not_substituted_with_source_or_live_permissions():
     assert routing.complete(messages(), api=forbidden, env=ENV,
-        transport=lambda *a, **k: answer("runtime"), researcher=forbidden) == routing.UNAVAILABLE_REPLY
+        transport=lambda *a, **k: answer("runtime"), researcher=forbidden) == routing.RUNTIME_REPLY
 
 
 def test_evidence_is_passed_as_data_persona_preserved_citations_retained():

@@ -48,7 +48,7 @@ class TestNativeAiGenerate(unittest.TestCase):
                     ai_generate.run_ai(
                         None,
                         label="COMMENT",
-                        agents="codex",
+                        agents="opencode:fixture",
                         prompt_file=prompt,
                     )
             self.assertIn("DOCICH_ALLOW_REAL_AI", str(ctx.exception))
@@ -59,7 +59,7 @@ class TestNativeAiGenerate(unittest.TestCase):
                 ai_generate.run_prompt(
                     None,
                     label="COMMENT:test",
-                    agents="codex",
+                    agents="opencode:fixture",
                     prompt_text="private prompt",
                     env={},
                 )
@@ -98,14 +98,14 @@ class TestNativeAiGenerate(unittest.TestCase):
 
             def provider(spec, request, timeout, provider_env):
                 calls.append((spec.raw, request.label, timeout))
-                if spec.raw == "codex:first":
+                if spec.raw == "opencode:first":
                     return ProviderResult(1, failure_kind="provider_failed")
                 return ProviderResult(0, output="answer")
 
             request = DispatchRequest(
                 label="COMMENT:test",
                 prompt="private prompt must not be persisted",
-                agents=parse_agents("codex:first,local", env),
+                agents=parse_agents("opencode:first,local", env),
             )
             last_agent = root / "last_agent"
             failure_kind = root / "failure_kind"
@@ -118,7 +118,7 @@ class TestNativeAiGenerate(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.output, "answer")
             self.assertEqual(result.last_agent, "local")
-            self.assertEqual([item[0] for item in calls], ["codex:first", "local"])
+            self.assertEqual([item[0] for item in calls], ["opencode:first", "local"])
             self.assertEqual(last_agent.read_text(encoding="utf-8").strip(), "local")
             self.assertEqual(failure_kind.read_text(encoding="utf-8"), "")
             telemetry = (root / "stats").glob("*.jsonl")
@@ -139,20 +139,20 @@ class TestNativeAiGenerate(unittest.TestCase):
             request = DispatchRequest(
                 label="COMMENT:test",
                 prompt="prompt",
-                agents=parse_agents("codex:first,local", env),
+                agents=parse_agents("opencode:first,local", env),
             )
             first_calls = []
 
             def first_provider(spec, request, timeout, provider_env):
                 first_calls.append(spec.raw)
-                if spec.raw == "codex:first":
+                if spec.raw == "opencode:first":
                     return ProviderResult(79, failure_kind="rate_limit")
                 return ProviderResult(0, output="fallback")
 
             first = Dispatcher(env=env, provider_caller=first_provider).dispatch(request)
             self.assertEqual(first.returncode, 0)
             self.assertEqual(first.last_agent, "local")
-            self.assertEqual(first_calls, ["codex:first", "local"])
+            self.assertEqual(first_calls, ["opencode:first", "local"])
 
             second_calls = []
 
@@ -194,19 +194,19 @@ class TestNativeAiGenerate(unittest.TestCase):
 
             def provider(spec, request, timeout, provider_env):
                 calls.append(spec.raw)
-                return ProviderResult(0, output="bad" if spec.raw == "codex:first" else "good")
+                return ProviderResult(0, output="bad" if spec.raw == "opencode:first" else "good")
 
             request = DispatchRequest(
                 label="RADIO:test",
                 prompt="prompt",
-                agents=parse_agents("codex:first,local", env),
+                agents=parse_agents("opencode:first,local", env),
                 validator=lambda output: output == "good",
             )
             result = Dispatcher(env=env, provider_caller=provider).dispatch(request)
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.output, "good")
-            self.assertEqual(calls, ["codex:first", "local"])
-            self.assertFalse((root / "backoff" / "codex:first").exists())
+            self.assertEqual(calls, ["opencode:first", "local"])
+            self.assertFalse((root / "backoff" / "opencode:first").exists())
 
     def test_dispatch_reclamps_provider_timeout_after_lock_wait(self):
         with tempfile.TemporaryDirectory() as tmp:

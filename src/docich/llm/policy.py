@@ -59,6 +59,8 @@ def parse_agents(raw: str, env: dict[str, str] | None = None) -> tuple[AgentSpec
     specs = []
     for part in parts:
         spec = _parse_one(part)
+        if spec.provider == "codex":
+            raise LlmError("COMMENT/RADIOではCodex providerを使用できません")
         # Bare legacy names resolve to the same operator-selected defaults as
         # the shell dispatcher.  Environment values are still constrained to
         # the same safe model alphabet before they become argv/telemetry.

@@ -1,8 +1,8 @@
-"""Credential-free, four-host text retrieval and trusted per-run receipts.
+"""Credential-free, public HTTPS text retrieval and trusted per-run receipts.
 
 Only the broker opens external sockets. Its short-lived worker has no inherited
 credentials/config/proxies, pins DNS answers, verifies TLS and rejects redirects.
-The sandbox receives this file read-only as a fixed Unix-socket client helper;
+Only the parent coordinator requests retrieval;
 receipt authority stays in the broker, never in model stdout or writable files.
 """
 from __future__ import annotations
@@ -39,25 +39,44 @@ FETCH_TIMEOUT = 8.0
 
 
 def canonical_url(value: str) -> str | None:
+    """Public candidate syntax only. The worker separately validates ALL DNS IPs."""
     if (not isinstance(value, str) or not 1 <= len(value) <= 512
-            or any(ord(c) < 33 or ord(c) == 127 for c in value) or '\\' in value):
+            or any(ord(c) < 33 or ord(c) == 127 for c in value) or "\\" in value):
         return None
     try:
-        p = urlsplit(value)
-        if (p.scheme != 'https' or p.hostname not in HOSTS or p.username or p.password
-                or p.port not in (None, 443) or p.query or p.fragment
-                or p.netloc not in {p.hostname, p.hostname + ':443'}):
+        p = urlsplit(value); host = p.hostname
+        if (p.scheme != "https" or not host or p.username or p.password
+                or p.port not in (None, 443) or p.fragment or host.endswith(".")):
             return None
-        path = p.path or '/'
-        if (re.search(r'%(?![0-9a-fA-F]{2})', path)
-                or any(ord(c) < 33 or ord(c) == 127 or c == '\\' for c in unquote(path))):
+        host = host.encode("idna").decode("ascii").lower()
+        if ("." not in host or len(host) > 253 or not re.fullmatch(r"[a-z0-9.-]+", host)
+                or any(not label or len(label) > 63 or label.startswith("-") or label.endswith("-") for label in host.split("."))
+                or host.endswith((".localhost", ".local", ".internal", ".home", ".lan"))):
             return None
-        path = quote(path, safe="/%:,@!()*+=-._~")
-        path = re.sub(r'%[0-9a-fA-F]{2}', lambda m: m[0].upper(), path)
-        result = urlunsplit(('https', p.hostname, path, '', ''))
+        try:
+            ipaddress.ip_address(host); return None
+        except ValueError:
+            pass
+        from urllib.parse import parse_qsl
+        private = {"token", "key", "api_key", "apikey", "access_token", "authorization", "secret", "password", "session", "sessionid", "signature", "sig", "cookie"}
+        if any(key.lower() in private for key, _ in parse_qsl(p.query, keep_blank_values=True)):
+            return None
+        if (re.search(r"%(?![0-9a-fA-F]{2})", value)
+                or any(ord(c) < 33 or ord(c) == 127 or c == "\\" for c in unquote(p.path + p.query))):
+            return None
+        path = quote(p.path or "/", safe="/%:,@!()*+=-._~")
+        query = quote(p.query, safe="%=&/:,@!()*+-._~")
+        result = urlunsplit(("https", host, path, query, ""))
         return result if len(result) <= 512 else None
-    except ValueError:
+    except (ValueError, UnicodeError):
         return None
+
+
+def public_address(value):
+    ip = ipaddress.ip_address(value)
+    return (ip.is_global and not ip.is_multicast and not ip.is_reserved
+            and not getattr(ip, "ipv4_mapped", None) and not getattr(ip, "sixtofour", None)
+            and not getattr(ip, "teredo", None))
 
 
 class _HTMLText(HTMLParser):
@@ -119,7 +138,7 @@ def fetch_worker(url: str, timeout: float) -> dict:
     for family, kind, proto, _, address in answers:
         ip = ipaddress.ip_address(address[0])
         if (family not in {socket.AF_INET, socket.AF_INET6} or kind != socket.SOCK_STREAM
-                or not ip.is_global or address[1] != 443
+                or not public_address(ip) or address[1] != 443
                 or (family == socket.AF_INET6 and (len(address) != 4 or address[3] != 0))):
             raise ValueError('nonpublic_dns')
     # The validated sockaddr is used directly, never re-resolved on connection.
@@ -135,7 +154,7 @@ def fetch_worker(url: str, timeout: float) -> dict:
         raw.connect(address)
         raw.settimeout(_remaining(deadline))
         with context.wrap_socket(raw, server_hostname=p.hostname) as conn:
-            target = p.path or '/'
+            target = (p.path or '/') + ('?' + p.query if p.query else '')
             conn.settimeout(_remaining(deadline))
             conn.sendall((f'GET {target} HTTP/1.1\r\nHost: {p.hostname}\r\n'
                           'User-Agent: docich-public-evidence/1\r\n'
@@ -173,6 +192,93 @@ def fetch_worker(url: str, timeout: float) -> dict:
             return {'url': url, 'content_type': types[0],
                     'body_b64': base64.b64encode(body).decode('ascii'),
                     'sha256': hashlib.sha256(body).hexdigest(), 'text': text}
+
+
+def search_worker(query: str, timeout: float) -> dict:
+    """Runs only in a bounded, credential-free child. Never uses urlopen/proxy."""
+    url = "https://mcp.exa.ai/mcp"
+    if not isinstance(query, str) or not 1 <= len(query) <= 256 or any(ord(c) < 32 for c in query):
+        raise ValueError("query")
+    if url is None or not 0 < timeout <= FETCH_TIMEOUT:
+        raise ValueError('url')
+    p = urlsplit(url)
+    deadline = time.monotonic() + timeout
+    answers = socket.getaddrinfo(p.hostname, 443, type=socket.SOCK_STREAM)
+    if not 1 <= len(answers) <= 64:
+        raise ValueError('dns')
+    for family, kind, proto, _, address in answers:
+        ip = ipaddress.ip_address(address[0])
+        if (family not in {socket.AF_INET, socket.AF_INET6} or kind != socket.SOCK_STREAM
+                or not public_address(ip) or address[1] != 443
+                or (family == socket.AF_INET6 and (len(address) != 4 or address[3] != 0))):
+            raise ValueError('nonpublic_dns')
+    # The validated sockaddr is used directly, never re-resolved on connection.
+    family, kind, proto, _, address = answers[0]
+    context = ssl.create_default_context()
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    # This process owns these stdlib limits; nothing changes in the host process.
+    http.client._MAXLINE = 4096
+    http.client._MAXHEADERS = 32
+    with socket.socket(family, kind, proto) as raw:
+        raw.settimeout(min(3.0, _remaining(deadline)))
+        raw.connect(address)
+        raw.settimeout(_remaining(deadline))
+        with context.wrap_socket(raw, server_hostname=p.hostname) as conn:
+            target = (p.path or '/') + ('?' + p.query if p.query else '')
+            conn.settimeout(_remaining(deadline))
+            payload = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                                  'params': {'name': 'web_search_exa', 'arguments': {'query': query,
+                                             'type': 'fast', 'numResults': 8, 'livecrawl': 'preferred',
+                                             'contextMaxCharacters': 5000}}}).encode()
+            conn.sendall((f'POST /mcp HTTP/1.1\r\nHost: {p.hostname}\r\n'
+                          'User-Agent: docich-public-evidence/1\r\n'
+                          'Accept: application/json, text/event-stream\r\nContent-Type: application/json\r\n'
+                          f'Content-Length: {len(payload)}\r\nAccept-Encoding: identity\r\n'
+                          'Connection: close\r\n\r\n').encode('ascii') + payload)
+            response = http.client.HTTPResponse(conn)
+            response.begin()
+            if response.status != 200:
+                raise ValueError('http_status')  # All redirects denied, including same-host.
+            if response.getheader('Content-Encoding', 'identity').lower() != 'identity':
+                raise ValueError('encoding')
+            types = response.headers.get_all('Content-Type', [])
+            lengths = response.headers.get_all('Content-Length', [])
+            transfers = response.headers.get_all('Transfer-Encoding', [])
+            if (len(types) != 1 or len(lengths) > 1 or len(transfers) > 1
+                    or (lengths and transfers)
+                    or (transfers and transfers[0].lower() != 'chunked')):
+                raise ValueError('headers')
+            if lengths and (not lengths[0].isascii() or not lengths[0].isdigit()
+                            or int(lengths[0]) > MAX_BODY):
+                raise ValueError('body_limit')
+            chunks, total = [], 0
+            while True:
+                conn.settimeout(_remaining(deadline))
+                chunk = response.read1(min(8192, MAX_BODY + 1 - total))
+                if not chunk:
+                    break
+                chunks.append(chunk); total += len(chunk)
+                if total > MAX_BODY:
+                    raise ValueError('body_limit')
+            body = b''.join(chunks)
+            if lengths and len(body) != int(lengths[0]):
+                raise ValueError('incomplete_body')
+            raw = body.decode("utf-8")
+            messages = [raw] if raw.lstrip().startswith("{") else [line[6:] for line in raw.splitlines() if line.startswith("data: ")]
+            urls = []
+            for message in messages:
+                value = json.loads(message)
+                result = value.get("result") if type(value) is dict else None
+                if type(result) is not dict or result.get("isError"):
+                    raise ValueError("search_unavailable")
+                for item in result.get("content", [])[:8]:
+                    if type(item) is dict and item.get("type") == "text" and isinstance(item.get("text"), str):
+                        for match in re.findall(r"https://[^\s<>\"']+", item["text"]):
+                            candidate = canonical_url(match.rstrip("),.;"))
+                            if candidate and candidate not in urls:
+                                urls.append(candidate)
+            return {"urls": urls[:8]}
 
 
 @dataclass(frozen=True)
@@ -242,24 +348,12 @@ class WebBroker:
         with self._lock:
             return dict(self._receipts)
 
-    def observe(self, event):
-        """Only the parent CLI JSONL reader calls this, never the socket client.
-
-        Metadata authorizes a candidate GET; it is not body/quote evidence.
-        """
-        if type(event) is not dict:
-            return
-        item = event.get('item')
-        action = item.get('action') if type(item) is dict else None
-        if (event.get('type') != 'item.completed' or type(item) is not dict
-                or item.get('type') != 'web_search' or type(action) is not dict
-                or action.get('type') != 'search' or not isinstance(item.get('query'), str)
-                or not item['query'].strip() or type(item.get('results')) is not list):
-            return
+    def authorize(self, urls):
+        """Called only with successful parent search results; not exposed over wire."""
         with self._lock:
-            for result in item['results'][:64]:
-                url = canonical_url(result.get('url')) if type(result) is dict else None
-                if url and len(self._candidates) < 64:
+            for value in urls[:8]:
+                url = canonical_url(value)
+                if url and len(self._candidates) < 16:
                     self._candidates.add(url)
 
     def fetch(self, url):
@@ -316,93 +410,38 @@ class WebBroker:
                     self._processes.discard(proc)
             self._gate.release()
 
-    def __enter__(self):
-        from .reply_research_egress import _UnixProxyServer, _ConnectionState
-        import socketserver
-        broker = self
-        class Handler(socketserver.BaseRequestHandler):
-            def handle(self):
-                state = _ConnectionState(self.request)
-                if not self.server.register_connection(state):
-                    state.close(); return
-                try:
-                    self.request.settimeout(min(2.0, _remaining(broker.deadline)))
-                    request = json.loads(_read_line(self.request, 2048))
-                    if type(request) is not dict or set(request) != {'url'}:
-                        raise ValueError('request')
-                    receipt = broker.fetch(request['url'])
-                    value = receipt.wire() if receipt else {'status': 'unavailable'}
-                    self.request.settimeout(min(2.0, _remaining(broker.deadline)))
-                    self.request.sendall(json.dumps(value, ensure_ascii=False).encode() + b'\n')
-                except (OSError, ValueError, TypeError):
-                    pass
-                finally:
-                    state.close(); self.server.unregister_connection(state)
-        if self.path.exists() or self.path.is_symlink():
-            raise ValueError('socket_exists')
-        class LimitedServer(_UnixProxyServer):
-            slots = threading.BoundedSemaphore(4)
-            def process_request(self, request, address):
-                if not self.slots.acquire(blocking=False):
-                    request.close(); return
-                try:
-                    super().process_request(request, address)
-                except Exception:
-                    self.slots.release(); raise
-            def process_request_thread(self, request, address):
-                try:
-                    super().process_request_thread(request, address)
-                finally:
-                    self.slots.release()
-        self.server = LimitedServer(str(self.path), Handler)
-        try:
-            os.chmod(self.path, 0o600, follow_symlinks=False)
-            self.thread = threading.Thread(target=self.server.serve_forever,
-                                           kwargs={'poll_interval': .05}, daemon=True)
-            self.thread.start()
-        except Exception:
-            self.server.server_close()
-            self.path.unlink(missing_ok=True)
-            raise
-        return self
 
-    def __exit__(self, *_):
-        with self._lock:
-            self._closing = True
-            for proc in tuple(self._processes):
-                _kill(proc)
-        self.server.stop_active_connections()
-        self.server.shutdown(); self.server.server_close()
-        self.thread.join(timeout=1)
-        self.path.unlink(missing_ok=True)
-
-
-def client(url):
-    if canonical_url(url) is None:
-        raise ValueError('url')
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-        conn.settimeout(FETCH_TIMEOUT + 2)
-        conn.connect(SOCKET)
-        conn.sendall(json.dumps({'url': url}).encode() + b'\n')
-        value = json.loads(_read_line(conn, MAX_REPLY))
-        if type(value) is not dict or value.get('status') != 'ok':
-            raise ValueError('unavailable')
-        return value
+def search_public(query, timeout):
+    from .reply_routing import _has_private_route_input
+    if not isinstance(query, str) or _has_private_route_input(query) or not 0 < timeout <= FETCH_TIMEOUT:
+        return []
+    proc = subprocess.Popen([sys.executable, '-I', '-B', str(Path(__file__).resolve()), '--search', query, str(timeout)],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'},
+                            close_fds=True, start_new_session=True)
+    try:
+        raw = _bounded_output(proc, time.monotonic() + timeout)
+        if proc.returncode != 0:
+            return []
+        value = json.loads(raw)
+        return value['urls'] if type(value) is dict and type(value.get('urls')) is list else []
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return []
+    finally:
+        _kill(proc); proc.communicate()
 
 
 def main():
     try:
         if len(sys.argv) == 4 and sys.argv[1] == '--fetch':
             value = fetch_worker(sys.argv[2], float(sys.argv[3]))
-        elif len(sys.argv) == 3 and sys.argv[1] == '--client':
-            value = client(sys.argv[2])
+        elif len(sys.argv) == 4 and sys.argv[1] == '--search':
+            value = search_worker(sys.argv[2], float(sys.argv[3]))
         else:
             return 2
-        print(json.dumps(value, ensure_ascii=False))
-        return 0
+        print(json.dumps(value, ensure_ascii=False)); return 0
     except Exception:
-        print('{"status":"unavailable"}')
-        return 1
+        print('{"status":"unavailable"}'); return 1
 
 
 if __name__ == '__main__':

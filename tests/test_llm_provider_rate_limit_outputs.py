@@ -20,28 +20,6 @@ def _script(root: Path, body: str) -> Path:
     return path
 
 
-def test_codex_success_body_rate_limit_is_rc_79(tmp_path):
-    script = _script(
-        tmp_path,
-        """
-import pathlib, sys
-args = sys.argv[1:]
-out = pathlib.Path(args[args.index('-o') + 1])
-out.write_text('Error: rate limit exceeded', encoding='utf-8')
-""",
-    )
-    spec = parse_agents("codex:fixture")[0]
-    result = call_agent(
-        spec,
-        _request(spec),
-        timeout=5,
-        env={"CODEX_BIN": str(script)},
-    )
-
-    assert result.returncode == 79
-    assert result.failure_kind == "rate_limit"
-    assert result.detail == "rate_limit"
-
 
 def test_opencode_success_stdout_rate_limit_is_rc_79(tmp_path):
     script = _script(tmp_path, "print('429 Too Many Requests')\n")

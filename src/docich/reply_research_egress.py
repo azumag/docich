@@ -1,8 +1,8 @@
-"""A private Unix-socket egress bridge for the read-only Codex namespace.
+"""A private Unix-socket egress bridge for the read-only OpenCode namespace.
 
 The child network namespace has no route to the host or container network. Its
 only network path is a loopback HTTP CONNECT listener which relays through the
-single Unix socket created here. This side accepts only api.openai.com:443 and
+single Unix socket created here. This side accepts only opencode.ai:443 and
 pins each connection to a globally routable DNS answer before connecting.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 
-ALLOWED_HOST = "api.openai.com"
+ALLOWED_HOST = "opencode.ai"
 ALLOWED_PORT = 443
 MAX_HEADERS = 8192
 CONNECT_TIMEOUT_SEC = 5.0
@@ -32,7 +32,7 @@ MAX_DNS_OUTPUT = 8192
 
 _DNS_SCRIPT = """import json, socket
 try:
-    rows = socket.getaddrinfo('api.openai.com', 443, type=socket.SOCK_STREAM)
+    rows = socket.getaddrinfo('opencode.ai', 443, type=socket.SOCK_STREAM)
     out = [[family, socktype, proto, address]
            for family, socktype, proto, _canon, address in rows[:64]]
     print(json.dumps(out, separators=(',', ':')))

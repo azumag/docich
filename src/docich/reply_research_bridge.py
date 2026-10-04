@@ -13,7 +13,7 @@ import sys
 import threading
 
 SOCKET_PATH = "/tmp/.docich-egress.sock"
-ALLOWED_AUTHORITY = "api.openai.com:443"
+ALLOWED_AUTHORITY = "opencode.ai:443"
 MAX_HEADERS = 8192
 
 
@@ -31,7 +31,7 @@ def _bring_loopback_up() -> None:
 
 
 def _drop_capabilities() -> None:
-    """Drop the bridge's namespace-only NET_ADMIN before launching Codex."""
+    """Drop the bridge's namespace-only NET_ADMIN before launching OpenCode."""
     libc = ctypes.CDLL(None, use_errno=True)
     capset = libc.capset
     capset.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
@@ -150,8 +150,19 @@ def main() -> int:
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "HOME": "/home/research",
-        "CODEX_HOME": "/home/research/.codex",
-        "CODEX_API_KEY": os.environ.get("CODEX_API_KEY", ""),
+                "OPENCODE_API_KEY": os.environ.get("OPENCODE_API_KEY", ""),
+        "OPENCODE_GO_API_KEY": os.environ.get("OPENCODE_GO_API_KEY", ""),
+        "XDG_CONFIG_HOME": "/home/research/config",
+        "XDG_DATA_HOME": "/home/research/data",
+        "XDG_STATE_HOME": "/home/research/state",
+        "XDG_CACHE_HOME": "/home/research/cache",
+        "OPENCODE_DISABLE_PROJECT_CONFIG": "true",
+        "OPENCODE_DISABLE_CLAUDE_CODE": "true",
+        "OPENCODE_CONFIG_CONTENT": __import__("json").dumps({
+            "permission": {"*": "deny"}, "instructions": [], "share": "disabled",
+            "snapshot": False, "autoupdate": False, "plugin": [], "mcp": {},
+            "agent": {"docich-evidence": {"mode": "primary", "permission": {"*": "deny"}, "steps": 1}},
+        }),
         "HTTP_PROXY": proxy,
         "HTTPS_PROXY": proxy,
         "ALL_PROXY": proxy,

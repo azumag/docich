@@ -175,7 +175,7 @@ def _finish(rows, event, *, env, researcher):
     except Exception:
         evidence = None
     if evidence is None or not getattr(evidence, "ok", False):
-        result = _hold(rows, "research_unavailable")
+        result = _hold(rows, "scope_unknown" if getattr(evidence, "status", "") == "clarify" else "research_unavailable")
         result["routing"].update(scope=decision.scope, research_status="unavailable")
         return result
     notes = getattr(evidence, "notes", "")
@@ -183,10 +183,10 @@ def _finish(rows, event, *, env, researcher):
     if (not isinstance(notes, str) or not notes.strip() or len(notes.encode("utf-8")) > 8192
             or not isinstance(sources, (tuple, list)) or not 1 <= len(sources) <= 4
             or any(not isinstance(source, str) or len(source) > 512 for source in sources)):
-        result = _hold(rows, "research_unavailable")
+        result = _hold(rows, "scope_unknown" if getattr(evidence, "status", "") == "clarify" else "research_unavailable")
         result["routing"].update(scope=decision.scope, research_status="unavailable")
         return result
-    routing.update(research_status="ok", notes=notes, sources=list(sources))
+    routing.update(research_status=getattr(evidence, "status", "ok"), notes=notes, sources=list(sources))
     return {"schema_version": 1, "rows": rows, "routing": routing}
 
 

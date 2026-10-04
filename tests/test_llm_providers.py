@@ -22,27 +22,14 @@ def _script(root: Path, body: str) -> Path:
     return path
 
 
-def test_codex_uses_fixed_argv_and_strips_reasoning(tmp_path):
-    args_file = tmp_path / "args.json"
-    script = _script(
-        tmp_path,
-        """
-import json, os, pathlib, sys
-args = sys.argv[1:]
-pathlib.Path(os.environ['ARGS_FILE']).write_text(json.dumps(args), encoding='utf-8')
-out = pathlib.Path(args[args.index('-o') + 1])
-out.write_text('<analysis>private reasoning</analysis><final>answer</final>', encoding='utf-8')
-""",
-    )
-    spec = parse_agents("codex:fixture")[0]
-    env = {"CODEX_BIN": str(script), "ARGS_FILE": str(args_file)}
-    result = call_agent(spec, _request(spec), timeout=5, env=env)
-
-    assert result.returncode == 0
-    assert result.output == "answer"
-    args = json.loads(args_file.read_text(encoding="utf-8"))
-    assert args[:4] == ["exec", "--skip-git-repo-check", "-m", "fixture"]
-    assert args[-1] == "safe prompt"
+def test_codex_spec_is_rejected_before_any_process():
+    import pytest
+    from docich.llm.contracts import AgentSpec, LlmError
+    with pytest.raises(LlmError): parse_agents("codex:fixture")
+    spec = AgentSpec(raw="codex:fixture", provider="codex", model="fixture")
+    with mock.patch("docich.llm.providers._process") as process:
+        assert call_agent(spec, _request(spec), timeout=5, env={}).failure_kind == "provider_removed"
+        process.assert_not_called()
 
 
 def test_opencode_retries_transient_failure_but_returns_clean_output(tmp_path):

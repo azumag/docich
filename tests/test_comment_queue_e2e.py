@@ -166,13 +166,18 @@ def test_repeated_real_fetch_route_queue_ack(tmp_path, platform, first_count, fa
     states = [json.loads(l) for l in (tmp_path / "states.jsonl").read_text().splitlines()]
     calls = [json.loads(l) for l in (tmp_path / "calls.jsonl").read_text().splitlines()]
     if fail:
-        assert len(states[0]['pending']) == 20
-        assert states[0]['generated'] == [] and states[0]['queue'] == 0
+        # The failed classification now emits one bounded terminal explanation,
+        # acknowledges exactly its ten rows, and never retries their JEV request.
+        assert [len(state['pending']) for state in states] == [10, 0, 0, 0]
+        assert [state['queue'] for state in states] == [1, 2, 2, 2]
+        assert [len(state['generated']) for state in states] == [0, 1, 1, 1]
+        assert len(calls) == 2
         assert calls[0]['result']['routing']['status'] == 'hold'
+        assert calls[1]['result']['routing']['status'] == 'ready'
         assert [len(r['state']['comments']) for r in calls[0]['requests']] == [8, 2]
-        # Retry must classify the exact same first ten bodies, then ack once.
-        assert [r['state'] for r in calls[0]['requests']] == [r['state'] for r in calls[1]['requests']]
-        states, calls = states[1:], calls[1:]
+        assert [row.split('\t')[0] for row in states[0]['pending']] == [f'id=msg-{n}' for n in range(10, 20)]
+        assert not (tmp_path / 'forbidden-calls').exists()
+        return
     assert [len(state['pending']) for state in states] == [10 if first_count == 10 else 0, 0, 0]
     if first_count == 10:
         assert [row.split('\t')[0] for row in states[0]['pending']] == [f'id=msg-{n}' for n in range(10, 20)]
