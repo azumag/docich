@@ -6,6 +6,8 @@
     "node": ">=22.18.0"
   },
   "scripts": {
+    "play:beta": "node scripts/play-beta.mjs",
+    "train:brain": "node scripts/train-brain.mjs",
     "postinstall": "node scripts/patch-cf-self-binding.mjs",
     "prebuild:cf": "node scripts/patch-cf-self-binding.mjs",
     "test": "node --test test/*.test.js",
@@ -13,6 +15,9 @@
     "test:bundle": "node test/bundle-integration.mjs",
     "dev:cf": "cf dev --local --persist-to .wrangler/cf-local",
     "build:cf": "cf build && npm test && npm run test:workerd && npm run test:bundle"
+  },
+  "dependencies": {
+    "socket.io-client": "4.8.4"
   },
   "devDependencies": {
     "@cloudflare/build-output-utils": "0.8.5",

@@ -24,6 +24,9 @@ const POSITION_PAIR_STAGES = {
   byoyomiActive: { shape: "byoyomi_active", b: "byoyomi_active_b", w: "byoyomi_active_w" },
 };
 const CSA_MOVE = /^[+-](?:[1-9]{4}(?:FU|KY|KE|GI|KI|KA|HI|OU|TO|NY|NK|NG|UM|RY)|00[1-9]{2}(?:FU|KY|KE|GI|KI|KA|HI)|00(?:00|[1-9]{2})ZZ|0000TORYO)$/;
+const GAME_END_RESULTS = new Set(["Checkmate", "LossByFoul", "Draw", "Resign", "TimeUp", "WinByTry"]);
+const GAME_END_KEYS = ["gameId", "param", "result", "type", "winner"];
+const OFFLINE_REVIEW_KEYS = ["fromPly", "gameId", "limit", "type"];
 
 export class ProtocolFault extends Error {
   constructor(status, code, details = {}) {
@@ -246,8 +249,30 @@ export function parseCurrentTurn(payload) {
   return current;
 }
 
+/** Validate the terminal event without interpreting, normalizing, or executing its kifu. */
+export function validateGameEndPayload(value) {
+  if (!record(value) || Object.keys(value).sort().join("\n") !== GAME_END_KEYS.join("\n")) {
+    throw new ProtocolFault(400, "invalid_game_end");
+  }
+  if (value.type !== "game_end" || !visibleId(value.gameId, 128)
+      || typeof value.param !== "string" || !GAME_END_RESULTS.has(value.result)
+      || !(value.winner === "b" || value.winner === "w" || value.winner === null)) {
+    throw new ProtocolFault(400, "invalid_game_end");
+  }
+  return { type: "game_end", gameId: value.gameId, param: value.param, result: value.result, winner: value.winner };
+}
+
+/** Private export query; callers must also pass the existing raw-body HMAC check. */
+export function validateOfflineReviewPayload(value) {
+  if (!record(value) || Object.keys(value).sort().join("\n") !== OFFLINE_REVIEW_KEYS.join("\n")
+      || value.type !== "offline_review_export" || !visibleId(value.gameId, 128)
+      || !int(value.fromPly, 0, 10000) || !int(value.limit, 1, 100)) {
+    throw new ProtocolFault(400, "invalid_offline_review_export");
+  }
+  return { type: value.type, gameId: value.gameId, fromPly: value.fromPly, limit: value.limit };
+}
+
 export function isRecord(value) {
   return record(value);
 }
-
 
