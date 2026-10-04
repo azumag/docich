@@ -28,6 +28,27 @@ class AbsentTmux:
         return False
 
 
+class MutatingReader:
+    def __init__(self, handle, mutate):
+        self.handle, self.mutate = handle, mutate
+
+    def __getattr__(self, name):
+        return getattr(self.handle, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return self.handle.__exit__(*args)
+
+    def read(self, size):
+        raw = self.handle.read(size)
+        if self.mutate:
+            mutate, self.mutate = self.mutate, None
+            mutate()
+        return raw
+
+
 class ManualPositiveEvidenceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -39,6 +60,7 @@ class ManualPositiveEvidenceTests(unittest.TestCase):
         self.read = module._rotation_evidence_file
         self.manual = {"corner": "hanjuku-hero", "state_file": "retro_corner_manual.json",
                        "request_id": RID, "selected_at": 100}
+        self.write("corner_rotation.json", {"manual_pending": self.manual})
         self.write("game_switch.json", {"phase": "ready", "active": None,
                                       "previous": None, "candidate": None, "retiring": []})
 
@@ -96,15 +118,161 @@ class ManualPositiveEvidenceTests(unittest.TestCase):
         self.assertTrue(out["log"]["scan_complete"])
         self.assertEqual(len(out["generations"]), 2)
 
-    def test_prefix_cutoff_never_claims_older_generations_covered(self):
+    def test_page_limit_stops_without_tail_fallback_or_retry(self):
         self.log(self.row(), *[self.row(request_id=OTHER) for _ in range(12)],
                  self.row(generation=2, runtime_id="g2-fedcba"))
         with mock.patch.object(evidence, "PAGE_BYTES", 512), mock.patch.object(evidence, "MAX_PAGES", 1):
             out = self.project()
-        self.assertTrue(out["log"]["prefix_truncated"])
+        self.assertEqual(out["log"]["end_reason"], "page_limit")
+        self.assertEqual(out["log"]["pages"], 0)
+        self.assertEqual(out["log"]["bytes_read"], 0)
+        self.assertGreater(out["log"]["required_pages"], 1)
         self.assertFalse(out["log"]["scan_complete"])
-        self.assertEqual([r["generation"] for r in out["generations"]], [2])
+        self.assertEqual(out["generations"], [])
         self.assertGreater(out["resource_attribution_unknown"], 0)
+
+    def test_scan_finds_positive_prefix_beyond_old_tail_and_stops_at_initial_eof(self):
+        path = self.log(self.row(), *[self.row(request_id=OTHER) for _ in range(6000)],
+                        self.row(generation=2, runtime_id="g2-fedcba"))
+        size = path.stat().st_size
+        self.assertGreater(size, 1024 * 1024)
+        before = self.snapshot()
+        original = evidence._open_fixed
+        with mock.patch.object(evidence, "_open_fixed", wraps=original) as opened:
+            out = self.project()
+        opened.assert_called_once()
+        self.assertEqual(out["log"]["initial_size_bytes"], size)
+        self.assertEqual(out["log"]["required_pages"], (size + 65535) // 65536)
+        self.assertEqual(out["log"]["pages"], out["log"]["required_pages"])
+        self.assertEqual(out["log"]["bytes_read"], size)
+        self.assertEqual(out["log"]["end_reason"], "eof")
+        self.assertTrue(out["log"]["scan_complete"])
+        self.assertEqual([r["generation"] for r in out["generations"]], [1, 2])
+        self.assertEqual(out["checkpoint_status"], "stable")
+        self.assertEqual(out["request_generation_coverage"], "unknown")
+        self.assertIsNone(out["all_resources_released"])
+        self.assertFalse(out["cancellation_authority"])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_complete_zero_matches_and_time_window_never_prove_unused(self):
+        self.log(self.row(request_id=OTHER))
+        out = self.project()
+        self.assertTrue(out["log"]["scan_complete"])
+        self.assertEqual(out["log"]["matching_records"], 0)
+        self.assertFalse(out["receipt_created_seen"])
+        self.assertEqual(out["resource_attribution_unknown"], 1)
+        self.assertIsNone(out["all_resources_released"])
+        self.assertFalse(out["cancellation_authority"])
+        self.log(self.row(timestamp="1970-01-01T00:01:30Z"),
+                 self.row(generation=2, runtime_id="g2-fedcba"),
+                 self.row(timestamp="1970-01-01T00:04:00Z", generation=3, runtime_id="g3-abcdef"))
+        self.assertEqual([r["generation"] for r in self.project()["generations"]], [2])
+
+    def test_byte_limit_refuses_before_read_without_expanding_or_retrying(self):
+        path = self.log(self.row())
+        with mock.patch.object(evidence, "MAX_SCAN_BYTES", path.stat().st_size - 1), \
+                mock.patch.object(evidence, "_open_fixed", wraps=evidence._open_fixed) as opened:
+            out = self.project()
+        opened.assert_called_once()
+        self.assertEqual(out["log"]["end_reason"], "size_limit")
+        self.assertEqual(out["log"]["bytes_read"], 0)
+        self.assertEqual(out["log"]["pages"], 0)
+        self.assertFalse(out["log"]["scan_complete"])
+
+    def test_source_replacement_shrink_and_append_stop_without_new_snapshot(self):
+        original = evidence._open_fixed
+        for kind in ("source_replaced", "source_shrunk", "source_changed"):
+            with self.subTest(kind=kind):
+                path = self.log(self.row(), self.row(generation=2, runtime_id="g2-fedcba"))
+                size = path.stat().st_size
+                def mutate():
+                    if kind == "source_replaced":
+                        path.unlink()
+                        self.log(self.row(request_id=OTHER))
+                    elif kind == "source_shrunk":
+                        path.write_bytes(b"")
+                    else:
+                        with path.open("ab") as handle:
+                            handle.write(json.dumps(self.row(generation=3, runtime_id="g3-abcdef")).encode() + b"\n")
+                def opened(path):
+                    handle, meta = original(path)
+                    return MutatingReader(handle, mutate), meta
+                with mock.patch.object(evidence, "_open_fixed", side_effect=opened) as opening, \
+                        mock.patch.object(evidence, "_released_runtime") as resources:
+                    out = self.project()
+                opening.assert_called_once()
+                resources.assert_not_called()
+                self.assertEqual(out["log"]["end_reason"], kind)
+                self.assertTrue(out["log"]["changed_during_scan"])
+                self.assertEqual(out["log"]["initial_size_bytes"], size)
+                self.assertLessEqual(out["log"]["bytes_read"], size)
+                self.assertFalse(out["log"]["scan_complete"])
+                self.assertTrue(all(r["resources_released"] is None for r in out["generations"]))
+
+    def test_reservation_fingerprint_change_stops_and_never_retargets_request(self):
+        self.log(self.row(), self.row(generation=2, runtime_id="g2-fedcba"))
+        original = self.read
+        for changed in ({"request_id": OTHER}, {"selected_at": 101}, {"other_field": True}):
+            with self.subTest(changed=changed):
+                self.write("corner_rotation.json", {"manual_pending": self.manual})
+                calls = 0
+                def read(state, relative):
+                    nonlocal calls
+                    result = original(state, relative)
+                    if relative == "corner_rotation.json":
+                        calls += 1
+                        if calls == 2:
+                            self.write(relative, {"manual_pending": {**self.manual, **changed}})
+                    return result
+                with mock.patch.object(evidence, "_released_runtime") as resources:
+                    out = evidence.project(self.state, self.manual, 200, read_fixed=read)
+                resources.assert_not_called()
+                self.assertEqual(out["checkpoint_status"], "reservation_changed")
+                self.assertEqual(out["log"]["end_reason"], "reservation_changed")
+                self.assertFalse(out["log"]["scan_complete"])
+                self.assertFalse(out["cancellation_authority"])
+
+    def test_read_failure_is_unknown_without_private_error_or_retry(self):
+        path = self.log(self.row())
+        size = path.stat().st_size
+        original = evidence._open_fixed
+        def mutate():
+            raise OSError("PRIVATE_LOG_ERROR")
+        def opened(path):
+            handle, meta = original(path)
+            return MutatingReader(handle, mutate), meta
+        with mock.patch.object(evidence, "_open_fixed", side_effect=opened) as opening, \
+                mock.patch.object(evidence, "_released_runtime") as resources:
+            out = self.project()
+        opening.assert_called_once()
+        resources.assert_not_called()
+        self.assertEqual(out["log"]["end_reason"], "source_unavailable")
+        self.assertEqual(out["log"]["initial_size_bytes"], size)
+        self.assertEqual(out["log"]["pages"], 0)
+        self.assertFalse(out["log"]["readable"])
+        self.assertNotIn("PRIVATE_LOG_ERROR", json.dumps(out))
+        self.assertFalse(out["cancellation_authority"])
+
+    def test_total_deadline_stops_pages_and_invalidates_late_resource_proof(self):
+        self.log(self.row(), self.row(generation=2, runtime_id="g2-fedcba"))
+        clock = [0]
+        original = evidence._open_fixed
+        def opened(path):
+            handle, meta = original(path)
+            return MutatingReader(handle, lambda: clock.__setitem__(0, 11)), meta
+        with mock.patch.object(evidence.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(evidence, "_open_fixed", side_effect=opened) as opening:
+            out = self.project()
+        opening.assert_called_once()
+        self.assertEqual(out["log"]["end_reason"], "budget_exhausted")
+        self.assertEqual(out["log"]["pages"], 1)
+        self.assertTrue(out["resource_budget_exhausted"])
+        clock[0] = 0
+        with mock.patch.object(evidence.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(evidence, "_released_runtime", side_effect=lambda *args: clock.__setitem__(0, 11)):
+            out = self.project()
+        self.assertTrue(all(r["resources_released"] is None for r in out["generations"]))
+        self.assertEqual(out["checkpoint_status"], "budget_exhausted")
 
     def test_generations_and_matching_rows_have_independent_limits(self):
         self.log(*[self.row(generation=n, runtime_id=f"g{n}-abcdef") for n in range(1, 12)])
@@ -185,11 +353,13 @@ class ManualPositiveEvidenceTests(unittest.TestCase):
     def test_file_change_during_scan_and_resource_deadline_are_unknown(self):
         path = self.log(self.row())
         original = evidence.os.fstat
+        log_inode = path.stat().st_ino
         calls = 0
         def changed(fd):
             nonlocal calls
-            calls += 1
-            if calls == 2:
+            if original(fd).st_ino == log_inode:
+                calls += 1
+            if original(fd).st_ino == log_inode and calls == 2:
                 with path.open("ab") as handle:
                     handle.write(b"{}\n")
             return original(fd)

@@ -49,9 +49,18 @@ receipt欠落のwaiting予約には既存 `recover-failed` のrecovery_required�
 
 追加の `corner_rotation.manual_pending_evidence` は同じ固定予約のpositive記録だけを調べる。
 読取元は固定EventLog、当該UUIDのreceipt、両retro owner、canonicalだけ。
-EventLogは末尾を64KiB×最大16ページで読み、行サイズ64KiB、一致行256、runtime8件、
-全体2秒の予算で制限する。先頭打切り・行/一致行打切り・不正行・走査中変更・予算切れを明示し、
+開始時に対象予約のfingerprint・selected_at、確認終点、ログidentityと初期サイズSを固定し、
+EventLogの先頭から `[0,S)` を64KiB×最大256ページ・16MiB・全体10秒で一度走査する。
+Sがbyte/page上限を超える場合は読み始めず終了する。追記を追いかけず、開き直し・自動再試行はしない。
+行サイズ64KiB、一致行256、runtime8件の上限を保持し、上限到達でログ走査を終了する。
+`log.initial_size_bytes` / `required_pages` / `pages` / `bytes_read` / `eof_reached` / `end_reason` を返す。
+EOF、size/page/line/match/generation上限、partial record、不正行、source変更、予約変更、予算切れを区別し、
 `log.scan_complete` は保持されたファイルの当該snapshot全体を読めたことだけを表す。
+ページ前後に固定ledgerの予約fingerprintとログのidentity・size・mtime/ctimeを再照合する。
+置換・縮小・追記等の変更や予約の変更/読取不能、時間切れは終了し、資源判定をunknownへ戻す。
+`checkpoint_status` は固定enumで再照合結果を示し、fingerprintの元データやログidentityは返さない。
+対象時刻は固定selected_atから確認終点までだが、行の時刻順を仮定した早期終了はしない。
+運用取得は独立レビュー・正規配布後の一回に限定し、上限や変更で未完了なら再実行・上限追加せず保守判断へ進む。
 予約後の一致するrequested/accepted/queued/terminal記録と、そこから得たnumeric generationを返す。
 runtime/lease/request識別子、ログ本文、argv、env、ファイルパス、例外本文は返さない。
 同一generationの異なるruntimeやownerのlease矛盾は資源解放をunknownにする。
@@ -64,3 +73,6 @@ EventLogはbest-effortで、receipt削除のtombstoneもないため、保持行
 少なくとも1件の `resource_attribution_unknown` を残し、`all_resources_released=null`、
 `cancellation_authority=false` を維持する。観測できた全runtimeの解放がtrueでもこの不足は消えない。
 この投影は取消条件を追加・緩和せず、現在の終了receipt必須契約も変更しない。
+完走しても証拠不足なら予約を保持し、行政的な解除は別承認scopeの判断とする。
+対象予約だけの解除は直接配信を停止しないが、未帰属資源・遅延処理の不確実性と後続timerのdispatchが残る。
+帰属不能資源を解消する別保守では現在ゲームや配信の停止が必要になり得るが、停止だけで欠落receiptや過去履歴は復元されない。
