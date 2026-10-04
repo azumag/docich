@@ -28,6 +28,7 @@ class TestBridge(unittest.TestCase):
         self.assertEqual(request.data, b'{"action":"start","runId":"one"}')
         expected = hmac.new(SECRET.encode(), control.PREFIX + b"1791100000." + request.data, hashlib.sha256).hexdigest()
         self.assertEqual(dict(request.header_items())["X-beta-control-signature"], "sha256=" + expected)
+        self.assertEqual(dict(request.header_items())["User-agent"], "docich-beta-control/1.0")
         for action, run in [("deploy", None), ("start", "../x"), ("stop", None)]:
             with self.assertRaises(control.ControlError):
                 control.signed_request("https://local-only.test", SECRET, action, run)

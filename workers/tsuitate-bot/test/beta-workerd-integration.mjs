@@ -17,6 +17,7 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const temporary = await mkdtemp(join(tmpdir(), "tsuitate-beta-workerd-"));
 let mf, python, pythonError = "", connections = 0, queueJoins = 0;
 const peers = new Set(), packets = [], endedGames = new Set();
+const nullSyncGames = new Set(), resultLookups = new Map();
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 const view = (gameId) => ({ gameId, yourColor: "sente",
   yourPieces: [{ square: "5i", role: "king" }, { square: "5g", role: "pawn" }, { square: "2h", role: "rook" }],
@@ -26,6 +27,20 @@ const view = (gameId) => ({ gameId, yourColor: "sente",
   status: endedGames.has(gameId) ? "ended" : "playing" });
 const server = createServer(async (incoming, outgoing) => {
   try {
+    const replay = /^\/public-result\/games\/(local-workerd-game-\d+)\/__data\.json$/.exec(incoming.url);
+    if (incoming.method === "GET" && replay) {
+      const gameId = replay[1], attempts = (resultLookups.get(gameId) ?? 0) + 1;
+      resultLookups.set(gameId, attempts);
+      if (!endedGames.has(gameId) || (nullSyncGames.has(gameId) && attempts < 3)) {
+        outgoing.writeHead(503); outgoing.end(); return;
+      }
+      outgoing.writeHead(200, { "content-type": "application/json" });
+      outgoing.end(JSON.stringify({ type: "data", nodes: [{ type: "data", data: [
+        { game: 1 }, { id: 2, result: 3, reason: 4, startedAt: 5, endedAt: 6 },
+        gameId, "sente_win", "checkmate", ["Date", "2026-10-03T00:00:00.000Z"],
+        ["Date", new Date(Date.now() + 1000).toISOString()],
+      ] }] })); return;
+    }
     const chunks = []; for await (const chunk of incoming) chunks.push(chunk);
     const response = await mf.dispatchFetch("http://local-only.test/beta-control", {
       method: incoming.method, headers: incoming.headers, body: Buffer.concat(chunks) });
@@ -49,7 +64,7 @@ socketServer.on("connection", (peer) => {
       peer.gameId = `local-workerd-game-${++queueJoins}`;
       push(peer, "game:active", { gameId: null }); ack({ ok: true });
       push(peer, "match:found", { gameId: peer.gameId, yourColor: "sente" });
-    } else if (event === "game:sync") ack({ state: view(payload.gameId) });
+    } else if (event === "game:sync") ack({ state: nullSyncGames.has(payload.gameId) ? null : view(payload.gameId) });
     else if (event === "game:move" || event === "queue:leave") ack({ ok: true });
   });
 });
@@ -131,9 +146,11 @@ try {
   await owner("start", "local-fixture"); await owner("stop", "local-fixture");
   assert.equal((await owner()).runId, "second-fixture"); assert.equal((await owner()).stopRequested, false);
   assert.equal((await owner("start", "third-fixture")).error, "run_locked");
-  endedGames.add("local-workerd-game-2"); for (const peer of peers) push(peer, "game:state", view(peer.gameId));
+  endedGames.add("local-workerd-game-2"); nullSyncGames.add("local-workerd-game-2");
+  for (const peer of peers) push(peer, "game:end", { gameId: "unrelated-game", fullBoard: "fixture-private" });
   await until(async () => (await owner()).readyForNextRun === true);
   assert.equal((await json("/evidence")).recordSaved, true);
+  assert.equal(resultLookups.get("local-workerd-game-2"), 3);
   await mf.dispose(); mf = new Miniflare(options());
   assert.equal((await owner()).state, "finished"); assert.equal((await json("/evidence")).recordSaved, true);
   await owner("start", "second-fixture"); await json("/alarm");
@@ -141,6 +158,7 @@ try {
   console.log(JSON.stringify({ workerd: "passed", ownerWebUi: true, serviceHmac: true,
     viewerAndCsrfDenied: true, initialStopped: true, manualRuns: 2, maxGamesPerRun: 1,
     coldResume: true, noDuplicateRecruitment: true, terminalRestart: true, sqliteRollback: true,
+    delayedReplayWithNullSync: true,
     betaConnected: false, cloudflareResourceCreated: false }));
 } finally {
   if (python && python.exitCode === null) { python.kill("SIGTERM"); await once(python, "exit"); }
