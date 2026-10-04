@@ -1602,6 +1602,66 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertNotIn("mac-secret-token", json.dumps(data))
         self.assertNotIn("100.64.0.2", json.dumps(data))
 
+    def test_get_corners_keeps_queued_weather_separate_from_missing_manual_owner(self):
+        self._write_weather_catalog_config()
+        self._write_rotation_state(status="waiting", pending=None,
+            reason="manual-request-needs-resume-or-recovery",
+            manual_pending={"corner": "hanjuku-hero", "state_file": "retro_corner_manual.json",
+                            "request_id": "PRIVATE-OWNER", "body": "PRIVATE-BODY"},
+            queued_manual={"corner": "weather", "selected_at": time.time(),
+                           "request_id": "PRIVATE-QUEUE"})
+        run = Path(self.g.state_dir)
+        # A sibling state must not attest ownership of the declared file.
+        (run / "retro_corner.json").write_text(json.dumps({
+            "rotation_request_id": "PRIVATE-OWNER", "status": "active"}))
+        ledger = run / "corner_rotation.json"
+        before = ledger.read_bytes()
+        status, data = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, data)
+        self.assertIsNone(data["rotation"]["pending"])
+        self.assertEqual(data["rotation"]["queued_manual"]["corner"], "weather")
+        self.assertEqual(data["rotation"]["manual_pending"], {
+            "corner": "hanjuku-hero", "owner": "missing", "status": "unknown"})
+        self.assertFalse(data["rotation"]["can_recover"])
+        self.assertEqual(ledger.read_bytes(), before)
+        for secret in ("PRIVATE-OWNER", "PRIVATE-QUEUE", "PRIVATE-BODY"):
+            self.assertNotIn(secret, json.dumps(data))
+
+    def test_get_corners_manual_owner_requires_exact_declared_identity_and_fixed_status(self):
+        self._write_weather_catalog_config()
+        self._write_rotation_state(status="waiting", pending=None,
+            manual_pending={"corner": "hanjuku-hero", "state_file": "retro_corner_manual.json",
+                            "request_id": "PRIVATE-OWNER"})
+        owner = Path(self.g.state_dir) / "retro_corner_manual.json"
+        for request, state, expected_owner, expected_status in (
+                ("OTHER-OWNER", "active", "mismatch", "unknown"),
+                ("PRIVATE-OWNER", "failed", "matched", "failed"),
+                ("PRIVATE-OWNER", "active", "matched", "active"),
+                ("PRIVATE-OWNER", "PRIVATE-ERROR-TEXT", "matched", "unknown")):
+            with self.subTest(state=state):
+                owner.write_text(json.dumps({"rotation_request_id": request, "status": state}))
+                status, data = self._request("GET", "/api/corners")
+                self.assertEqual(status, 200, data)
+                self.assertEqual(data["rotation"]["manual_pending"], {
+                    "corner": "hanjuku-hero", "owner": expected_owner, "status": expected_status})
+                self.assertNotIn("PRIVATE-", json.dumps(data))
+        owner.write_text("{")
+        _, data = self._request("GET", "/api/corners")
+        self.assertEqual(data["rotation"]["manual_pending"]["owner"], "unreadable")
+
+    def test_get_corners_manual_projection_never_reads_an_input_path(self):
+        self._write_weather_catalog_config()
+        self._write_rotation_state(status="waiting", pending=None,
+            manual_pending={"corner": "PRIVATE-CORNER", "state_file": "../PRIVATE-FILE",
+                            "request_id": "PRIVATE-OWNER"})
+        with mock.patch.object(webui, "_load_json_file", wraps=webui._load_json_file) as read:
+            status, data = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["rotation"]["manual_pending"], {
+            "corner": "unknown", "owner": "unknown", "status": "unknown"})
+        self.assertFalse(any("PRIVATE-FILE" in str(call.args[0]) for call in read.call_args_list))
+        self.assertNotIn("PRIVATE-", json.dumps(data))
+
     def test_get_corners_is_bounded_read_only_projection(self):
         self._write_catalog_config()
         self._write_rotation_state()
@@ -2439,6 +2499,62 @@ class TestRunWebuiUnsafeConfigGuard(unittest.TestCase):
             finally:
                 server.shutdown()
                 server.server_close()
+
+
+class TestCornerReservationDisplay(unittest.TestCase):
+    def _render(self, rotation, *, weather_status="completed"):
+        source = webui.INDEX_HTML.split("const ROT_STATUS_JA=", 1)[1].split(
+            "async function cornerAction", 1)[0]
+        data = {"rotation": rotation, "game_switch": {"phase": "ready", "active_game": "sorengame"},
+                "catalog_status": "available", "catalog": [
+                    {"id": "weather", "game": "weather-view", "adapter": "weather",
+                     "manual": True, "manual_mode": "queue", "enabled": True, "paused": False,
+                     "duration_minutes": 1, "state_file": "weather_corner", "eligible": True}],
+                "corners": {"weather_corner": {"present": True, "status": weather_status}}}
+        script = '''
+const elements={};
+const document={getElementById(id){return elements[id]||(elements[id]={value:id==='corners-select'?'weather':'',innerHTML:'',textContent:'',style:{},querySelectorAll(){return []}})}};
+const esc=x=>String(x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtTime=x=>x?String(x):'-';
+''' + "const ROT_STATUS_JA=" + source + "\nrenderCorners(" + json.dumps(data) + ''');
+const out={};for(const id of ['corners-summary','corners-catalog','corners-advice','corners-hint','corners-start','corners-stop','corners-recover','corners-duration'])out[id]=elements[id];
+process.stdout.write(JSON.stringify(out));
+'''
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_queued_weather_and_blocking_owner_are_visible_while_switch_is_ready(self):
+        out = self._render({"status": "waiting", "reason": "manual-request-needs-resume-or-recovery",
+                            "queued_manual": {"corner": "weather"}, "pending": None,
+                            "manual_pending": {"corner": "hanjuku-hero", "owner": "missing", "status": "unknown"}})
+        self.assertIn("開始予約済み", out["corners-catalog"]["innerHTML"])
+        summary = out["corners-summary"]["innerHTML"]
+        self.assertIn("開始を待たせている手動要求", summary)
+        self.assertIn("hanjuku-hero（不明・所有者の記録なし）", summary)
+        self.assertIn("未精算の手動要求があり開始待ち", summary)
+        self.assertIn("起動完了ではありません", out["corners-advice"]["textContent"])
+        self.assertTrue(out["corners-start"]["disabled"])
+        self.assertTrue(out["corners-stop"]["disabled"])
+        self.assertTrue(out["corners-recover"]["disabled"])
+        self.assertTrue(out["corners-duration"]["disabled"])
+
+    def test_selected_and_dispatched_are_distinct_from_ready_and_queued(self):
+        for phase, label in (("selected", "選択済み"), ("dispatched", "起動要求済み")):
+            with self.subTest(phase=phase):
+                out = self._render({"status": "running", "pending": {"corner": "weather", "phase": phase}})
+                self.assertIn(label, out["corners-catalog"]["innerHTML"])
+                self.assertNotIn("開始予約済み", out["corners-catalog"]["innerHTML"])
+        out = self._render({"status": "ready", "pending": None, "queued_manual": None})
+        self.assertNotIn("開始予約済み", out["corners-catalog"]["innerHTML"])
+        self.assertNotIn("起動要求済み", out["corners-catalog"]["innerHTML"])
+
+    def test_matched_failed_owner_and_existing_latch_guard_remain_visible(self):
+        out = self._render({"status": "recovery_required", "latch": True, "can_recover": True,
+                            "manual_pending": {"corner": "paper", "owner": "matched", "status": "failed"}})
+        self.assertIn("paper（失敗・所有者一致）", out["corners-summary"]["innerHTML"])
+        self.assertTrue(out["corners-start"]["disabled"])
+        self.assertFalse(out["corners-recover"]["disabled"])
 
 
 class TestPredictionWorkerDisplay(unittest.TestCase):
