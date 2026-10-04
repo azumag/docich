@@ -28,6 +28,12 @@ export class BetaArena extends DurableObject {
     return this.controller.start(options);
   }
   stop(options) { return this.controller.stop(options); }
+  reconcile(options) {
+    if (!this.env.BETA_ARENA || this.ctx.id.toString() !== this.env.BETA_ARENA.idFromName(SINGLETON_NAME).toString()) {
+      throw new Error("not_singleton");
+    }
+    return this.controller.reconcile(options);
+  }
   status() { return this.controller.status(); }
   alarm() { return this.controller.alarm(); }
   fetch() { return new Response("Not found", { status: 404 }); }

@@ -15,7 +15,8 @@ PREFIX = b"beta-control-v1\nPOST\n/beta-control\n"
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 STATES = {"stopped", "queued", "playing", "draining", "finished", "queue_timeout", "paused"}
 ERRORS = {"token_not_configured", "run_locked", "run_mismatch", "control_not_configured",
-          "control_authentication_failed", "control_timeout", "control_unavailable"}
+          "control_authentication_failed", "control_timeout", "control_unavailable", "terminal_unconfirmed",
+          "recovery_not_available", "recovery_checkpoint_invalid", "terminal_result_unavailable", "terminal_storage_failure"}
 
 
 class ControlError(Exception):
@@ -32,7 +33,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def signed_request(url: str, secret: str, action: str, run_id: str | None = None,
                    now: int | None = None) -> urllib.request.Request:
     """Only an allowlisted operation, fixed path and method enter the MAC."""
-    if not isinstance(action, str) or action not in {"status", "start", "stop"} or (action != "status" and
+    if not isinstance(action, str) or action not in {"status", "start", "stop", "reconcile"} or (action != "status" and
             (not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id))):
         raise ControlError("invalid_beta_operation", 400)
     payload = {"action": action}

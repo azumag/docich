@@ -15,7 +15,7 @@ function request(payload, options = {}) {
 }
 function setup() {
   const calls = [];
-  const actor = Object.fromEntries(["status", "start", "stop"].map((action) => [action, async (options) => {
+  const actor = Object.fromEntries(["status", "start", "stop", "reconcile"].map((action) => [action, async (options) => {
     calls.push({ action, options }); return { state: "stopped" };
   }]));
   return { calls, actor, env: { BETA_CONTROL_SECRET: secret, BETA_ARENA: {
@@ -24,11 +24,11 @@ function setup() {
 
 test("only dedicated raw-body HMAC admits fixed singleton operations", async () => {
   const c = setup();
-  for (const action of ["status", "start", "stop"]) {
+  for (const action of ["status", "start", "stop", "reconcile"]) {
     const payload = action === "status" ? { action } : { action, runId: "fixture-run" };
     assert.equal((await handleBetaControl(request(payload), c.env, now)).status, 200);
   }
-  assert.deepEqual(c.calls.map((x) => x.action), ["status", "start", "stop"]);
+  assert.deepEqual(c.calls.map((x) => x.action), ["status", "start", "stop", "reconcile"]);
   assert.deepEqual(c.calls[2].options, { runId: "fixture-run" });
   const raw = ' { "action" : "status" } ';
   assert.equal((await handleBetaControl(request(null, { raw }), c.env, now)).status, 200);
@@ -53,7 +53,9 @@ test("clock boundary, tampering and arbitrary commands fail before any actor ope
   c.calls.length = 0;
   for (const offset of [-300, 300]) assert.equal((await handleBetaControl(request({ action: "status" }, { timestamp: now / 1000 + offset }), c.env, now)).status, 401);
   for (const payload of [{ action: "deploy" }, { action: "start" }, { action: "stop", runId: 1 },
-    { action: "start", runId: "one", maxGames: 2 }, { action: "status", runId: "one" }]) {
+    { action: "start", runId: "one", maxGames: 2 }, { action: "status", runId: "one" },
+    { action: "reconcile" }, { action: "reconcile", runId: "one", gameId: "override" },
+    { action: "reconcile", runId: "one", generation: 2 }, { action: "reconcile", runId: "one", outcome: "win" }]) {
     assert.equal((await handleBetaControl(request(payload), c.env, now)).status, 400);
   }
   const valid = request({ action: "status" });

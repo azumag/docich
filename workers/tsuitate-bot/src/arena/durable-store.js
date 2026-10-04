@@ -46,18 +46,21 @@ export class DurableArenaStore {
     });
   }
 
-  async finish(raw) {
+  async finish(raw, { guard, finalize } = {}) {
     const record = normalizeGameRecord(raw);
     if (!record?.completed || record.site !== "beta.tsuitate.info") throw new Error("invalid_game_record");
     bounded(record);
     await this.transaction(async (tx, meta) => {
+      if (guard) await guard(tx, meta);
       if (meta.gameId && record.gameId !== meta.gameId) throw new Error("unexpected_game");
       const prior = await tx.get(recordKey(this.runId));
       if (prior && JSON.stringify(prior) !== JSON.stringify(record)) throw new Error("conflicting_game_record");
       await tx.put(RECORD_KEY, record);
       await tx.put(recordKey(this.runId), record);
       await tx.put(`beta:game:${record.gameId}`, this.runId);
-      await tx.put(META_KEY, { ...meta, gameId: record.gameId, state: "finished", completedGames: 1, errorCode: null });
+      const finished = { ...meta, gameId: record.gameId, state: "finished", completedGames: 1, errorCode: null };
+      await tx.put(META_KEY, finished);
+      if (finalize) await finalize(tx, finished);
     });
   }
 }
