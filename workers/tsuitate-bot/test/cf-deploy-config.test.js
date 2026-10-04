@@ -128,7 +128,7 @@ test("strict comparison still detects changed class and external Worker; externa
   assert.equal(uploadMetadata(external).bindings.find(b => b.name === "GAME_STATE").script_name, "another-worker");
 });
 
-test("new arena upload declares SQLite export, self binding and disabled flag without any secret value", () => {
+test("arena upload keeps SQLite export, self binding and legacy metadata without any secret value", () => {
   const local = normalized(cloudflareConfig.worker);
   const metadata = uploadMetadata(local);
   assert.deepEqual(metadata.exports.BetaArena, { type: "durable-object", storage: "sqlite" });
@@ -138,6 +138,19 @@ test("new arena upload declares SQLite export, self binding and disabled flag wi
     { name: "BETA_ARENA_ENABLED", type: "plain_text", text: "false" });
   assert.deepEqual(metadata.keep_bindings, ["secret_text", "secret_key"]);
   assert.equal(JSON.stringify(metadata).includes("BETA_CONTROL_SECRET"), false);
+});
+
+test("ignoring the legacy enable var leaves prebuilt settings, SQLite and secrets identical", () => {
+  const previous = structuredClone(cloudflareConfig.worker);
+  previous.env.BETA_ARENA_ENABLED = { type: "text", value: "false" };
+  const oldConfig = normalized(previous), local = normalized(cloudflareConfig.worker);
+  const before = uploadMetadata(oldConfig), after = uploadMetadata(local);
+  assert.deepEqual(after.exports, before.exports);
+  assert.deepEqual(after.keep_bindings, before.keep_bindings);
+  assert.deepEqual(after.bindings, before.bindings);
+  const comparison = getRemoteConfigDiff(oldConfig, local);
+  assert.equal(comparison.nonDestructive, true);
+  assert.deepEqual(JSON.parse(comparison.diff.toString()), {});
 });
 
 test("absent optional keys reproduce the empty destructive diff", () => {

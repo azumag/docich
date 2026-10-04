@@ -25,8 +25,7 @@ class LocalOpener:
 
 
 control.urllib.request.build_opener = lambda *_args: LocalOpener()
-os.environ.update(DOCICH_BETA_CONTROL_ENABLED="true",
-                  DOCICH_BETA_CONTROL_SECRET="fixture-only-control-capability-not-credential",
+os.environ.update(DOCICH_BETA_CONTROL_SECRET="fixture-only-control-capability-not-credential",
                   DOCICH_BETA_CONTROL_URL="https://docich-tsuitate-bot.fixture-only.workers.dev")
 with tempfile.TemporaryDirectory() as directory:
     g = config.load_global(Path(directory))

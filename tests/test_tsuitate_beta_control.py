@@ -18,7 +18,7 @@ from docich import config, webui, tsuitate_beta_control as control
 SECRET = "fixture-only-control-capability-not-credential"
 OPERATOR = "fixture-only-operator-not-credential"
 VIEWER = "fixture-only-viewer-not-credential"
-ENV = {"DOCICH_BETA_CONTROL_ENABLED": "true", "DOCICH_BETA_CONTROL_SECRET": SECRET,
+ENV = {"DOCICH_BETA_CONTROL_SECRET": SECRET,
        "DOCICH_BETA_CONTROL_URL": "https://docich-tsuitate-bot.fixture-only.workers.dev"}
 
 
@@ -32,8 +32,8 @@ class TestBridge(unittest.TestCase):
             with self.assertRaises(control.ControlError):
                 control.signed_request("https://local-only.test", SECRET, action, run)
 
-    def test_disabled_missing_reused_or_invalid_origin_never_sends(self):
-        for override in [{"DOCICH_BETA_CONTROL_ENABLED": "false"}, {"DOCICH_BETA_CONTROL_SECRET": ""},
+    def test_missing_reused_or_invalid_origin_never_sends(self):
+        for override in [{"DOCICH_BETA_CONTROL_SECRET": ""},
                          {"DOCICH_BETA_CONTROL_URL": "http://127.0.0.1"},
                          {"DOCICH_BETA_CONTROL_URL": "https://docich-tsuitate-bot.fixture-only.workers.dev:bad"},
                          {"DOCICH_BETA_CONTROL_URL": ENV["DOCICH_BETA_CONTROL_URL"] + "/redirect"}]:
@@ -42,6 +42,19 @@ class TestBridge(unittest.TestCase):
                 opener.assert_not_called()
         with mock.patch.dict(os.environ, ENV):
             with self.assertRaises(control.ControlError): control.call_beta_control("status", forbidden_secrets=(SECRET,))
+
+    def test_configured_bridge_ignores_absent_or_stale_false_enable_setting(self):
+        status = {"state": "stopped", "runId": None, "gameId": None, "brainVersion": "tsuitate-brain-v2",
+                  "completedGames": 0, "reservedGames": 0, "stopRequested": False, "readyForNextRun": True}
+        class Response(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *_): self.close()
+        for override in [{}, {"DOCICH_BETA_CONTROL_ENABLED": "false"}]:
+            with self.subTest(override=override), mock.patch.dict(os.environ, {**ENV, **override}, clear=True):
+                opener = mock.Mock(); opener.open.return_value = Response(json.dumps(status).encode())
+                with mock.patch.object(control.urllib.request, "build_opener", return_value=opener):
+                    self.assertEqual(control.call_beta_control("start", "one")["state"], "stopped")
+                self.assertEqual(json.loads(opener.open.call_args.args[0].data), {"action": "start", "runId": "one"})
 
     def test_response_projection_and_no_redirect_or_raw_error(self):
         status = {"state": "stopped", "runId": None, "gameId": None, "brainVersion": "tsuitate-brain-v1",
@@ -108,7 +121,7 @@ class TestWebUiGate(unittest.TestCase):
             bridge.assert_not_called()
 
     def test_unconfigured_bridge_returns_fixed_error(self):
-        with mock.patch.dict(os.environ, {"DOCICH_BETA_CONTROL_ENABLED": "false"}):
+        with mock.patch.dict(os.environ, {"DOCICH_BETA_CONTROL_SECRET": ""}, clear=True):
             self.assertEqual(self.request("GET"), (503, {"error": "control_not_configured"}))
 
 

@@ -3,7 +3,7 @@ import { SINGLETON_NAME } from "./durable-controller.js";
 export const CONTROL_PATH = "/beta-control";
 export const CONTROL_PREFIX = "beta-control-v1\nPOST\n/beta-control\n";
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const SAFE_CODES = new Set(["arena_disabled", "token_not_configured", "run_locked", "run_mismatch", "invalid_start_options"]);
+const SAFE_CODES = new Set(["token_not_configured", "run_locked", "run_mismatch", "invalid_start_options"]);
 const json = (status, body) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 
 async function boundedBody(request) {
