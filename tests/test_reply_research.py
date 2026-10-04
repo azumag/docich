@@ -464,7 +464,8 @@ def test_bridge_drops_namespace_capabilities_before_launch_and_passes_no_parent_
                                     "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"}
     assert "PRIVATE" not in json.dumps(captured)
     config = json.loads(captured["env"]["OPENCODE_CONFIG_CONTENT"])
-    assert config["permission"] == {"*": "deny"}
+    assert set(config["permission"].values()) == {"deny"}
+    assert {"*", "bash", "edit", "task", "read", "webfetch", "websearch"} <= set(config["permission"])
     assert config["snapshot"] is False and config["autoupdate"] is False
 
 

@@ -7,7 +7,6 @@ bare CLI. This is a research capability, never an action/repair capability.
 """
 from __future__ import annotations
 
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -16,7 +15,6 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import selectors
-import shlex
 import shutil
 import signal
 import stat
@@ -24,7 +22,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from .reply_research_egress import EgressProxy
 from .reply_research_web import WebBroker, Receipt, canonical_url, search_public

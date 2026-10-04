@@ -26,22 +26,6 @@ def worker_value(body=BODY, mime='text/plain; charset=utf-8'):
             'sha256':hashlib.sha256(body).hexdigest(), 'text':w.extract_text(body,mime)}
 
 
-def web_fixture():
-    rec = w.Receipt(URL,'a'*32,hashlib.sha256(BODY).hexdigest(),hashlib.sha256(TEXT.encode()).hexdigest(),TEXT)
-    ref = {'kind':'web','ref':URL,'quote':'確認した資料','receipt':rec.receipt,'sha256':rec.sha256}
-    search = {'type':'web_search','id':'s1','query':'docich','action':{'type':'search','query':'docich'},'results':[{'url':URL}]}
-    read = {'type':'command_execution','status':'completed','exit_code':0,
-            'command':f'python3 {w.HELPER} --client {URL}','aggregated_output':json.dumps(rec.wire())}
-    return rec,ref,search,read
-
-
-def transcript(refs,tools):
-    events = [{'type':'item.completed','item':item} for item in tools]
-    events += [{'type':'item.completed','item':{'type':'agent_message','text':json.dumps(
-        {'status':'ok','notes':'根拠を確認した。','sources':refs})}}, {'type':'turn.completed'}]
-    return b'\n'.join(json.dumps(event).encode() for event in events)
-
-
 def observe(broker, urls=None):
     broker.authorize(urls or [URL])
 

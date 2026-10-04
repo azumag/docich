@@ -24,7 +24,7 @@ base = Path.cwd()
 calls = []
 def transport(request, config, env):
     calls.append(request)
-    if (base / 'phase').read_text().strip() == 'fail' and len(calls) == 2:
+    if (base / 'phase').read_text().strip() in {'fail', 'deliveryfail'} and len(calls) == 2:
         return {'status': 'timeout'}
     answers = {}
     for key, question in request['questions'].items():
@@ -66,7 +66,7 @@ _broadcast_host_mode(){ printf main; }
 _peak_priority_agent_list(){ printf '%s' "$1"; }
 _sanitize_comment_prompt_context(){ cat; }
 _format_comment_batch_context(){ cat; }
-_comment_guard_japanese_text(){ printf '%s' "$1"; }
+_comment_guard_japanese_text(){ [ "$(cat phase)" != deliveryfail ] || return 1; printf '%s' "$1"; }
 _clean_comment_talk(){ printf '%s' "$1"; }
 _sanitize_onair_text(){ cat; }
 _normalize_radio_tone(){ cat; }
@@ -110,7 +110,7 @@ done
 '''
 
 @pytest.mark.parametrize("platform", ["twitch", "youtube", "kick"])
-@pytest.mark.parametrize("first_count,fail", [(9, False), (10, False), (10, True)])
+@pytest.mark.parametrize("first_count,fail", [(9, False), (10, False), (10, True), (10, "delivery")])
 def test_repeated_real_fetch_route_queue_ack(tmp_path, platform, first_count, fail):
     if not SOREN:
         if os.environ.get("DOCICH_REQUIRE_QUEUE_E2E") == "1":
@@ -162,9 +162,21 @@ def test_repeated_real_fetch_route_queue_ack(tmp_path, platform, first_count, fa
         with (chat / "raw.log").open('a') as f: f.write(rows(9, 10))
         run(["ok", "ok"], "1")
     else:
-        run(["fail", "ok", "ok", "ok"] if fail else ["ok", "ok", "ok"])
+        run(["deliveryfail", "ok", "ok", "ok"] if fail == "delivery" else ["fail", "ok", "ok", "ok"] if fail else ["ok", "ok", "ok"])
     states = [json.loads(l) for l in (tmp_path / "states.jsonl").read_text().splitlines()]
     calls = [json.loads(l) for l in (tmp_path / "calls.jsonl").read_text().splitlines()]
+    if fail == 'delivery':
+        # Failed delivery keeps pending; retry reuses terminal cache, no JEV call.
+        assert [len(state['pending']) for state in states] == [20, 10, 0, 0]
+        assert [state['queue'] for state in states] == [0, 1, 2, 2]
+        assert [len(state['generated']) for state in states] == [0, 0, 1, 1]
+        assert len(calls) == 2
+        assert [call['cycle'] for call in calls] == ['1', '3']
+        assert calls[0]['result']['routing']['status'] == 'hold'
+        assert calls[1]['result']['routing']['status'] == 'ready'
+        assert not list((tmp_path/'tmp/state/comment_route_cache').glob('*.json'))
+        assert not (tmp_path/'forbidden-calls').exists()
+        return
     if fail:
         # The failed classification now emits one bounded terminal explanation,
         # acknowledges exactly its ten rows, and never retries their JEV request.

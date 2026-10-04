@@ -28,9 +28,6 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 import re
 import uuid
 
-HOSTS = frozenset({'ja.wikipedia.org', 'en.wikipedia.org', 'github.com', 'raw.githubusercontent.com'})
-SOCKET = '/tmp/.docich-web-fetch.sock'
-HELPER = '/tmp/docich-web-fetch.py'
 MAX_BODY = 131072
 MAX_TEXT = 16384
 MAX_REPLY = 65536
