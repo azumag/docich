@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import io
 import json
 import os
@@ -26,6 +27,55 @@ TRANSPARENT_PAGE_STYLE = (
     'html,body{background:transparent !important;'
     'background-color:transparent !important;}'
 )
+
+TRANSPARENT_PAGE_INIT = """(() => {
+  const install = () => {
+    let style = document.getElementById('docich-transparent-capture');
+    const parent = document.head || document.documentElement;
+    if (!style) {
+      style = document.createElement('style');
+      style.id = 'docich-transparent-capture';
+      style.textContent = %s;
+    }
+    if (style.parentNode !== parent || parent.lastChild !== style) parent.appendChild(style);
+  };
+  const ready = () => {
+    install();
+    // Preserve the screenshot policy if the app replaces its head or adds CSS.
+    new MutationObserver(install).observe(document.documentElement, {childList:true, subtree:true});
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', ready, {once:true});
+  } else ready();
+})()""" % json.dumps(TRANSPARENT_PAGE_STYLE)
+
+
+class ChromiumCapture:
+    """Lossless viewport capture on the existing page; no new subscription.
+
+    Playwright's general screenshot path inserts/removes style, waits for font
+    readiness and compresses PNG each frame. This dedicated Chromium page has
+    a fixed CSS viewport at device scale 1. Install its transparent background
+    once, keep animations running, and prioritize PNG encoding speed.
+    """
+    def __init__(self, session):
+        self.session = session
+
+    @classmethod
+    async def create(cls, page):
+        session = await page.context.new_cdp_session(page)
+        await page.add_init_script(TRANSPARENT_PAGE_INIT)
+        await page.evaluate(TRANSPARENT_PAGE_INIT)
+        await session.send('Emulation.setDefaultBackgroundColorOverride', {
+            'color': {'r': 0, 'g': 0, 'b': 0, 'a': 0},
+        })
+        return cls(session)
+
+    async def capture(self, timeout_ms):
+        result = await asyncio.wait_for(self.session.send('Page.captureScreenshot', {
+            'format': 'png', 'captureBeyondViewport': False, 'optimizeForSpeed': True,
+        }), timeout=timeout_ms / 1000)
+        return base64.b64decode(result['data'], validate=True)
 
 
 def validate_url(value: str) -> str:
@@ -58,10 +108,11 @@ def decode_screenshot(png: bytes, width: int, height: int) -> bytes:
 
 
 async def capture_once(page, publisher: SnapshotPublisher, *,
-                       clock=time.monotonic_ns, ttl_ms: int = 1000) -> bool:
+                       clock=time.monotonic_ns, ttl_ms: int = 1000,
+                       capture: ChromiumCapture | None = None) -> bool:
     # Timestamp the START, not the end, of a possibly slow browser operation.
     started = clock()
-    png = await page.screenshot(
+    png = await capture.capture(ttl_ms) if capture else await page.screenshot(
         type='png', full_page=False, omit_background=True,
         animations='allow', scale='css', style=TRANSPARENT_PAGE_STYLE,
         timeout=ttl_ms,
@@ -135,6 +186,8 @@ async def run_renderer(url: str, directory: Path, *, width: int = 1280,
                 if hasattr(page, 'on'):
                     health.attach(page)
 
+                capture = await ChromiumCapture.create(page)
+
                 async def health_loop():
                     # Separate from capture pacing; diagnostic latency must not
                     # starve fresh RGBA or reset a live subscription.
@@ -160,7 +213,7 @@ async def run_renderer(url: str, directory: Path, *, width: int = 1280,
                         # A recoverable request failure must not close this page.
                         # TwiCa's own controller owns HTTP/WS retries and its queue.
                         try:
-                            captured = await capture_once(page, publisher)
+                            captured = await capture_once(page, publisher, capture=capture)
                             failures = 0 if captured else failures + 1
                             if report:
                                 report('active' if captured else 'degraded')

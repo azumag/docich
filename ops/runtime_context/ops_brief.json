@@ -1,11 +1,11 @@
 {
-  "output_sha256": "b4c248046e7de9bedea9a15a75ec7a7b4af795733e0313d17eabed88db4ed265",
+  "output_sha256": "168a366234522ffc1d3ccd8ec59910ac24ec88f37b09469b4d876691b85bd4df",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "5b2b66fa7697c318549cbf60a662a75a0eb0f8e946890a65df42de14f7fca51a",
+  "source_sha256": "da89d95b176d04d501d941a136684fbfa2b2e07c48b024b51aef254c78e3098d",
   "topics": [
+    "TwiCaのPNG取得を画素維持で軽量化し、正規配備を準備",
     "Sorenの監視モニター風パネルを正規配備して実表示を確認",
-    "VM CPU削減を正規配備し、fork減少と配信継続を実測",
-    "半熟英雄の余白カードを正規配備し、自然起動での受入れ待ち"
+    "VM CPU削減を正規配備し、fork減少と配信継続を実測"
   ]
 }
