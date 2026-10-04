@@ -17,7 +17,11 @@ try:
     result = OwnedRoundRecovery(state, soren, LinuxRecoveryEffects(soren, state)).run()
     print("owned round interrupted; fresh game ready; rotation remains held; "
           f"common workers changed: {result.get('common_workers_changed')}")
-except (RecoveryRefused, OSError, ValueError, RuntimeError) as exc:
-    # No process argv, source files or live identifiers are returned publicly.
-    print("owned Soren recovery refused or incomplete; retain hold", file=sys.stderr)
+except RecoveryRefused as exc:
+    # Refusal reasons are fixed literals without PIDs, argv or request ids.
+    print(f"owned Soren recovery refused or incomplete; retain hold: {exc}", file=sys.stderr)
+    raise SystemExit(1) from None
+except (OSError, ValueError, RuntimeError):
+    # Other errors may carry paths or identifiers; keep them out of the output.
+    print("owned Soren recovery failed unexpectedly; retain hold", file=sys.stderr)
     raise SystemExit(1) from None
