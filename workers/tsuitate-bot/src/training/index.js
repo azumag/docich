@@ -154,7 +154,7 @@ export function splitDataset(rawRecords, options = {}) {
 
 function classification(record) {
   if (!record.completed || ABORT_REASONS.has(record.reason)) return "aborted";
-  if (record.outcome === "unknown") return "unknown";
+  if (record.outcome === "unknown" || record.reason === "unknown") return "unknown";
   return record.historyComplete ? "completed" : "incompleteHistory";
 }
 

@@ -46,6 +46,7 @@ export class BetaSession {
     this.socketEpoch = 0;
     this.everConnected = false;
     this.resignSentEpoch = null;
+    this.brainVersionMismatch = false;
     if (checkpoint) this.restore(checkpoint);
     this.done = new Promise((resolve) => { this.resolveDone = resolve; });
   }
@@ -68,10 +69,11 @@ export class BetaSession {
     this.gameId = saved.gameId;
     this.record = record;
     if (record && record.brainVersion !== BRAIN_VERSION) {
-      // A resumed match can finish with the new implementation, but cannot be
-      // evidence for either version's playing strength.
-      record.brainVersion = "mixed-brain-revisions";
+      // Keep the original attribution and checkpoint. Without that implementation
+      // we cannot continue this match or treat it as ordinary training evidence.
+      this.brainVersionMismatch = true;
       record.historyComplete = false;
+      record.reason = "interrupted";
     }
     this.profile = record?.profile ?? this.profile;
     this.pendingIndex = saved.pendingIndex;
@@ -113,6 +115,13 @@ export class BetaSession {
   }
 
   start() {
+    if (this.brainVersionMismatch) {
+      void this.enqueue(async () => {
+        await this.persist();
+        await this.pause("brain_version_unavailable");
+      });
+      return this.done;
+    }
     const connected = () => {
       const epoch = ++this.socketEpoch;
       void this.enqueue(() => { if (epoch === this.socketEpoch) return this.onConnect(); });
@@ -339,7 +348,7 @@ export class BetaSession {
         this.log({ event: "move_ack_unknown" });
       } else {
         let valid = true;
-        try { this.gate.acknowledge(intent, ack); }
+        try { valid = this.gate.acknowledge(intent, ack); }
         catch { valid = false; this.gate.timeout(intent); this.log({ event: "invalid_move_ack" }); }
         if (valid && ack?.ok === true) this.record.decisions[decisionIndex].feedback = "accepted";
         else if (valid && ack?.ok === false && ack.reason === "foul" && Number.isInteger(ack.foulCount)

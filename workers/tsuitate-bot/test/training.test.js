@@ -72,6 +72,31 @@ test("malformed records fail closed without leaking raw values", () => {
   assert.throws(() => parseDataset("SENSITIVE_FIXTURE"), { message: "invalid_dataset_json" });
 });
 
+test("unknown termination reasons remain unknown even with a known outcome", () => {
+  const records = ["win", "loss", "draw"].map((outcome) => game(`unknown-${outcome}`, { outcome, reason: "unknown" }));
+  const summary = report(records);
+  assert.equal(summary.totals.unknown, 3);
+  assert.equal(summary.totals.completed, 0);
+  assert.equal(summary.totals.wins + summary.totals.losses + summary.totals.draws, 0);
+  assert.equal(summary.groups[0].winRate, null);
+  // Known outcome/reason pairs retain the existing canonical contract.
+  for (const reason of ["normal", "checkmate", "stalemate", "resign", "timeout", "foul_limit", "repetition", "draw"]) {
+    assert.equal(report([game(`known-${reason}`, { reason })]).totals.completed, 1);
+  }
+});
+
+test("unknown termination evidence changes neither candidate weights nor training provenance", () => {
+  const known = outcomeTraining();
+  const unknown = partitionGames("training", 12, { prefix: "unknown-end", reason: "unknown", feedback: "foul" });
+  const baseline = trainCandidate(known, BASE);
+  const combined = trainCandidate([...known, ...unknown], BASE);
+  assert.deepEqual(combined.profile, baseline.profile);
+  assert.equal(combined.provenance.trainingFingerprint, baseline.provenance.trainingFingerprint);
+  assert.equal(combined.provenance.trainingGames, baseline.provenance.trainingGames);
+  assert.equal(combined.provenance.excludedRecords, unknown.length);
+  assert.throws(() => trainCandidate(unknown, BASE), { message: "insufficient_training_games" });
+});
+
 test("actual beta game IDs may start with a hyphen or underscore", () => {
   for (const id of ["-YgIx2UjAvkD", "_game-fixture"]) {
     const normalized = normalizeGameRecord(game(id));

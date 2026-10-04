@@ -7,6 +7,7 @@ import { BRAIN_VERSION, LINEAR_PROFILE } from "../src/brain/index.js";
 import { BetaSession } from "../src/arena/beta-session.js";
 import { ArenaStore } from "../src/arena/store.js";
 import { parsePublicResult, fetchPublicResult } from "../src/adapters/beta-results.js";
+import { report } from "../src/training/index.js";
 
 class Socket {
   constructor() { this.handlers = new Map(); this.sent = []; this.connected = false; }
@@ -143,6 +144,33 @@ test("foul confirmation allows a different move, keeping previous attempts exclu
   assert.equal(moves.length, 2);
   assert.notEqual(moves[0].payload.usi, moves[1].payload.usi);
   assert.equal(context.session.record.decisions[0].feedback, "foul");
+});
+
+test("late foul ACK cannot overwrite acceptance proved by an advanced view", async (t) => {
+  const context = setup(t);
+  await begin(context);
+  context.socket.server("game:state", advancedView(context.socket));
+  await flush(context.session);
+  const pending = context.session.gate.pending;
+  assert.equal(context.session.record.decisions[0].feedback, "accepted");
+  context.socket.ack("game:move", { ok: false, reason: "foul", foulCount: 1 }, 0);
+  await flush(context.session);
+  assert.equal(context.session.record.decisions[0].feedback, "accepted");
+  assert.equal(context.store.saves.at(-1).active.record.decisions[0].feedback, "accepted");
+  assert.equal(context.session.gate.pending, pending);
+  assert.equal(context.socket.packets("game:move").length, 2);
+});
+
+test("duplicate ACK cannot overwrite confirmed foul feedback", async (t) => {
+  const context = setup(t);
+  await begin(context);
+  context.socket.ack("game:move", { ok: false, reason: "foul", foulCount: 1 });
+  await flush(context.session);
+  context.socket.ack("game:move", { ok: true });
+  await flush(context.session);
+  assert.equal(context.session.record.decisions[0].feedback, "foul");
+  assert.equal(context.store.saves.at(-1).active.record.decisions[0].feedback, "foul");
+  assert.equal(context.socket.packets("game:move").length, 1);
 });
 
 test("a timed-out move remains unresolved after same-view sync, reconnect and process restore", async (t) => {
@@ -289,15 +317,46 @@ test("a disconnect before the first PlayerView pauses with its game checkpoint i
   assert.equal(context.store.saves.at(-1).active.gameId, "test-game");
 });
 
-test("resuming after a brain implementation change excludes the mixed-history match", async (t) => {
+test("unavailable pinned brain preserves an aborted checkpoint without connecting or playing", { timeout: 1000 }, async (t) => {
   const context = setup(t);
   await begin(context);
   const checkpoint = structuredClone(context.store.saves.at(-1).active);
   checkpoint.record.brainVersion = "previous-brain";
   const restored = setup(t, { checkpoint });
+  const result = await restored.session.done;
   assert.notEqual(BRAIN_VERSION, "previous-brain");
+  assert.equal(result.status, "paused");
+  assert.equal(result.code, "brain_version_unavailable");
+  assert.equal(restored.socket.sent.length, 0);
+  assert.equal(restored.session.everConnected, false);
+  assert.equal(restored.store.records.length, 0);
   assert.equal(restored.session.record.historyComplete, false);
-  assert.equal(restored.session.record.brainVersion, "mixed-brain-revisions");
+  assert.equal(restored.session.record.brainVersion, "previous-brain");
+  const saved = restored.store.saves.at(-1).active;
+  assert.equal(saved.record.reason, "interrupted");
+  assert.equal(saved.record.completed, false);
+  assert.equal(saved.record.outcome, "unknown");
+  assert.deepEqual(saved.gate.pending, checkpoint.gate.pending);
+  assert.deepEqual(saved.record.decisions, checkpoint.record.decisions);
+  assert.equal(report([saved.record]).totals.aborted, 1);
+  // Restarting the runner again cannot clear the interrupted match and join a new one.
+  const again = setup(t, { checkpoint: saved });
+  assert.equal((await again.session.done).code, "brain_version_unavailable");
+  assert.equal(again.socket.sent.length, 0);
+});
+
+test("same brain revision resumes with its pinned profile", async (t) => {
+  const context = setup(t);
+  await begin(context);
+  const checkpoint = structuredClone(context.store.saves.at(-1).active);
+  const alternative = { ...LINEAR_PROFILE, id: "next-game-profile", exploration: 0.5 };
+  const restored = setup(t, { checkpoint, profile: alternative });
+  await flush(restored.session);
+  assert.equal(restored.session.everConnected, true);
+  assert.equal(restored.session.closed, false);
+  assert.deepEqual(restored.session.profile, checkpoint.record.profile);
+  assert.equal(restored.socket.packets("queue:join").length, 0);
+  assert.equal(restored.socket.packets("game:sync").length, 1);
 });
 
 function replay(gameId = "test-game", result = "sente_win") {
