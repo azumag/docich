@@ -27,8 +27,11 @@ COPY src/docich/comment_classifier/__init__.py src/docich/comment_classifier/heu
      src/docich/comment_classifier/jev.py src/docich/comment_classifier/screen.py \
      src/docich/comment_classifier/reply_route.py ./src/docich/comment_classifier/
 COPY scripts/comment_reply_routing_live_canary.py ./scripts/comment_reply_routing_live_canary.py
+COPY scripts/reply_routing_live_canary.py ./scripts/reply_routing_live_canary.py
 COPY tests/test_discord_chat.py tests/test_discord_memory.py tests/test_discord_container.py ./tests/
 COPY tests/test_reply_routing.py tests/test_reply_research.py tests/test_reply_research_web.py ./tests/
 COPY tests/fixtures/reply_routing_canary.json ./tests/fixtures/reply_routing_canary.json
+COPY tests/fixtures/reply_evidence_source_contrasts.json ./tests/fixtures/reply_evidence_source_contrasts.json
+COPY docs/evidence/reply-routing-canary-2026-10-04.json ./docs/evidence/reply-routing-canary-2026-10-04.json
 USER 65532:65532
 ENTRYPOINT ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--basetemp=/tmp/discord-pytest", "tests"]

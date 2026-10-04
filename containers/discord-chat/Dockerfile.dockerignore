@@ -15,6 +15,7 @@
 !src/docich/comment_classifier/screen.py
 !src/docich/comment_classifier/reply_route.py
 !scripts/comment_reply_routing_live_canary.py
+!scripts/reply_routing_live_canary.py
 !src/docich/semantic_decision/__init__.py
 !src/docich/semantic_decision/diagnostics.py
 !src/docich/semantic_decision/routes.py
@@ -32,3 +33,5 @@
 !tests/test_reply_research.py
 !tests/test_reply_research_web.py
 !tests/fixtures/reply_routing_canary.json
+!tests/fixtures/reply_evidence_source_contrasts.json
+!docs/evidence/reply-routing-canary-2026-10-04.json
