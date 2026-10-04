@@ -1986,7 +1986,7 @@ async function betaControl(action){
   }
   if(!runId) return;
   BETA_BUSY=true; $("#beta-start").disabled=true; $("#beta-stop").disabled=true;
-  try{ renderBetaStatus(await api("/api/tsuitate-beta",{method:"POST",body:JSON.stringify({action,runId,confirm:true})})); }
+  try{ renderBetaStatus(await api("/api/tsuitate-beta",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action,runId,confirm:true})})); }
   catch(e){ toast("操作結果を確認できません。状態更新後に同じ操作を再確認してください。"); }
   finally{ BETA_BUSY=false; await loadBetaStatus(); }
 }
