@@ -19,6 +19,7 @@ from docich.twica_overlay import (
     ffmpeg_input_args, ffmpeg_overlay_filter, frame_size, private_directory,
 )
 from docich.twica_renderer import capture_once, decode_screenshot, run_renderer, validate_url
+from docich.twica_renderer import ChromiumCapture
 
 
 @pytest.mark.parametrize('width,height', [(0, 1), (-1, 1), (True, 1), (1.0, 1), (3841, 2160)])
@@ -206,6 +207,37 @@ def test_capture_does_not_fast_forward_animations_and_rejects_slow_capture(tmp_p
         assert not publisher.path.exists()
 
 
+def test_fast_capture_preserves_rgba_and_expiry(tmp_path):
+    import base64
+    class Session:
+        async def send(self, method, options):
+            assert method == 'Page.captureScreenshot'
+            assert options == {'format': 'png', 'captureBeyondViewport': False,
+                               'optimizeForSpeed': True}
+            return {'data': base64.b64encode(png_bytes()).decode('ascii')}
+    capture = ChromiumCapture(Session())
+    with SnapshotPublisher(tmp_path / 'overlay', 2, 1) as publisher:
+        stamps = iter([1_000_000_000, 1_050_000_000])
+        assert asyncio.run(capture_once(None, publisher, capture=capture,
+                                       clock=lambda: next(stamps)))
+        reader = SnapshotReader(tmp_path / 'overlay', 2, 1)
+        assert reader.read(1_060_000_000) == bytes([2, 3, 4, 0, 255, 255, 255, 128])
+        stamps = iter([2_000_000_000, 3_000_000_000])
+        assert not asyncio.run(capture_once(None, publisher, capture=capture,
+                                           clock=lambda: next(stamps)))
+        assert not publisher.path.exists()
+
+
+def test_fast_capture_timeout_is_bounded():
+    async def scenario():
+        class Session:
+            async def send(self, *args):
+                await asyncio.Event().wait()
+        with pytest.raises(TimeoutError):
+            await ChromiumCapture(Session()).capture(10)
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('url', ['file:///overlay/x', 'javascript:alert(1)',
                                  'https://user:secret@example.test/overlay/x',
                                  'http://example.test/overlay/x', 'https://example.test/login'])
@@ -218,15 +250,29 @@ def test_renderer_has_one_page_one_navigation_and_cleans_up(tmp_path):
     async def scenario():
         stop = asyncio.Event()
         calls = []
+        class Session:
+            async def send(self, method, options):
+                if method != 'Page.captureScreenshot':
+                    return {}
+                import base64
+                calls.append('frame')
+                if calls.count('frame') == 3:
+                    stop.set()
+                return {'data': base64.b64encode(png_bytes()).decode('ascii')}
+        class Context:
+            async def new_cdp_session(self, page):
+                return Session()
         class Page:
+            context = Context()
+            async def add_init_script(self, script):
+                pass
+            async def evaluate(self, script):
+                pass
             async def goto(self, url, **kwargs):
                 calls.append('goto')
                 return SimpleNamespace(ok=True)
             async def screenshot(self, **kwargs):
-                calls.append('frame')
-                if calls.count('frame') == 3:
-                    stop.set()
-                return png_bytes()
+                pytest.fail('renderer must use its persistent CDP capture')
             def is_closed(self):
                 return False
         class Browser:
