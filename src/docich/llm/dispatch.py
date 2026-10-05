@@ -15,6 +15,7 @@ from .contracts import AgentSpec, DispatchRequest, DispatchResult, LlmError, Pro
 from .images import image_capable, validate_images
 from .locks import FileLock, LockTimeout
 from .policy import (
+    DIRECT_CHAT_PROVIDERS,
     MAX_PROMPT_BYTES,
     SAFE_AGENT_RE,
     SUPPORTED_PROVIDERS,
@@ -173,8 +174,16 @@ def _request_checks(request: DispatchRequest, env: dict[str, str]) -> None:
             parsed = parse_agents(spec.raw, env)
         except LlmError as exc:
             raise LlmError("agents のprovider/model policyに違反しています") from exc
-        if parsed[0].provider != spec.provider:
+        if (parsed[0].provider != spec.provider
+                or (spec.provider in DIRECT_CHAT_PROVIDERS and parsed[0].model != spec.model)):
             raise LlmError("agents のprovider/modelが一致しません")
+    if any(spec.provider in DIRECT_CHAT_PROVIDERS for spec in request.agents):
+        # Validate the whole chain too; manually constructed typed requests may
+        # otherwise evade parse_agents' no-CLI direct-chat fallback boundary.
+        parse_agents(",".join(spec.raw for spec in request.agents), env)
+        if (not request.label.startswith("COMMENT")
+                or any(word in request.label.upper() for word in ("RESEARCH", "PREPASS"))):
+            raise LlmError("direct chat はCOMMENT会話生成だけに限定されます")
     if request.validator is not None and not callable(request.validator):
         raise LlmError("validator は呼び出し可能である必要があります")
 
@@ -272,6 +281,10 @@ class Dispatcher:
             if budget <= 0:
                 raise LlmError("overall timeout は正の数である必要があります")
             deadline = time.monotonic() + budget
+        if any(spec.provider in DIRECT_CHAT_PROVIDERS for spec in request.agents):
+            # One shared budget includes queues and explicit fallback attempts.
+            direct_deadline = time.monotonic() + 45.
+            deadline = direct_deadline if deadline is None else min(deadline, direct_deadline)
         if not _radio_improve_gate(request, self.env, deadline):
             _write_sidecar(failure_kind_file, "gate_giveup")
             record(self.telemetry_dir, event="failure", label=request.label, returncode=91, failure_kind="gate_giveup")

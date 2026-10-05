@@ -1,0 +1,20 @@
+{
+  "measurement": "credential_free_public_retrieval_component",
+  "date": "2026-10-05",
+  "synthetic_question": "HTTP 429 Too Many Requestsは何を意味する？",
+  "environment": "Darwin local isolated Python children, native production search/fetch/broker/quote verification",
+  "public_search_endpoint": "https://mcp.exa.ai/mcp",
+  "keyless_mode_reference": "https://exa.ai/docs/get-started/exa-mcp",
+  "calls_total": {"search": 3, "body_get": 4, "jev": 0, "research_model": 0, "persona_reply": 0},
+  "credentials_in_children": false,
+  "new_credentials": false,
+  "ssh": false,
+  "production_changes": false,
+  "attempts": [
+    {"search_calls": 0, "body_get_calls": 1, "url": "https://www.rfc-editor.org/rfc/rfc6585.txt", "status": "rejected", "reason": "text_limit", "direct_worker_diagnosis_only": true},
+    {"search_calls": 1, "body_get_calls": 1, "candidate_count": 6, "official_candidate_count": 2, "receipt_received": false, "reason": "not_recorded_before_diagnostic_fix", "elapsed_ms": 2127, "remaining_workers": 0},
+    {"search_calls": 1, "body_get_calls": 1, "url": "https://www.iana.org/assignments/http-status-codes/http-status-codes.txt", "candidate_count": 6, "official_candidate_count": 2, "receipt_received": false, "reason": "encoding", "elapsed_ms": 699, "remaining_workers": 0},
+    {"search_calls": 1, "body_get_calls": 1, "url": "https://www.rfc-editor.org/rfc/rfc6585.html", "candidate_count": 1, "official_candidate_count": 1, "receipt_received": true, "body_sha256": "423d8b867e8f2d4b15ee37d3aaa370ff7ece430aae50690440e4934987bce348", "text_sha256": "bc6c56828438a6a64503ca97357964b8d7cb2d7da539fce1a62ed5c82c00e190", "text_bytes": 15017, "exact_429_quote": true, "quote_verified": true, "corrupt_hash_rejected": true, "elapsed_ms": 1131, "remaining_workers": 0}
+  ],
+  "limits": ["No model calls or generated answer", "Not provider-inclusive E2E acceptance", "No Linux/bwrap host acceptance in this measurement", "Historical RFC preflight failure reason cannot be reconstructed", "Preserves compression rejection, MIME, DNS/SSRF, TLS, byte caps, timeout and kill/reap"]
+}

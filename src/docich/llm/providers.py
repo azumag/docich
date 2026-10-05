@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -15,6 +16,7 @@ from urllib.request import ProxyHandler, Request, build_opener, HTTPRedirectHand
 
 from .contracts import AgentSpec, DispatchRequest, ProviderResult
 from .images import image_capable, user_content, validate_images
+from .policy import DIRECT_CHAT_PROVIDERS
 
 
 RATE_LIMIT_RE = re.compile(
@@ -110,37 +112,7 @@ def _retry_wait(env: dict[str, str]) -> float:
 
 
 def _codex(spec: AgentSpec, request: DispatchRequest, timeout: float, env: dict[str, str]) -> ProviderResult:
-    binary = env.get("CODEX_BIN", "codex")
-    model = spec.model or env.get("CODEX_MODEL", "amd-token-factory-deepseek-v4-flash")
-    with tempfile.TemporaryDirectory(prefix="docich-llm-codex-") as tmp:
-        output_file = Path(tmp) / "output.txt"
-        command = [
-            binary,
-            "exec",
-            "--skip-git-repo-check",
-            "-m",
-            model,
-            "-o",
-            str(output_file),
-            request.prompt,
-        ]
-        rc, stdout, stderr = _process(command, timeout=timeout, env=env)
-        if rc != 0:
-            return _failed(rc, stderr)
-        try:
-            output = output_file.read_text(encoding="utf-8")
-        except OSError:
-            output = stdout
-        output = _clean_model_output(output)
-        if not output:
-            return ProviderResult(1, failure_kind="empty_output", detail="empty_output")
-        if _rate_limited(output):
-            return ProviderResult(79, failure_kind="rate_limit", detail="rate_limit")
-        if PROVIDER_ERROR_RE.search(output):
-            return ProviderResult(1, failure_kind="provider_failed", detail="provider_error")
-        if len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
-            return ProviderResult(1, failure_kind="output_too_large", detail="output_too_large")
-        return ProviderResult(0, output=output)
+    return ProviderResult(1, failure_kind="provider_removed", detail="provider_removed")
 
 
 def _opencode_model(spec: AgentSpec) -> str:
@@ -175,7 +147,7 @@ def _opencode(spec: AgentSpec, request: DispatchRequest, timeout: float, env: di
         "/snap/bin/opencode" if Path("/snap/bin/opencode").is_file() else "opencode"
     )
     base_command = [binary, "run", "--title", _opencode_session_title(request.label)]
-    if spec.provider in {"vercel", "amd"}:
+    if spec.provider in {"opencode", "opencode-go", "vercel", "amd", "openrouter"}:
         role = "soren-research" if "RESEARCH" in request.label.upper() or "PREPASS" in request.label.upper() else "soren-lite"
         base_command += ["--agent", role]
     base_command += ["--model", _opencode_model(spec), request.prompt]
@@ -267,6 +239,55 @@ def _local(spec: AgentSpec, request: DispatchRequest, timeout: float, env: dict[
     return ProviderResult(0, output=output, images_sent=len(request.images))
 
 
+def _direct_chat(spec: AgentSpec, request: DispatchRequest, timeout: float,
+                 env: dict[str, str]) -> ProviderResult:
+    """Explicit direct-chat specs never start OpenCode or invent a fallback.
+
+    Research/Radio remain separate. The request's ordered agents, if any, are
+    still the operator's explicit application-level fallback policy.
+    """
+    from ..discord_chat import ChatRateLimit, Settings, direct_chat_options, read_secret
+    from ..reply_research_api import answer_once
+    if (not request.label.startswith("COMMENT")
+            or any(word in request.label.upper() for word in ("RESEARCH", "PREPASS"))):
+        return ProviderResult(2, failure_kind="invalid_provider", detail="chat_only")
+    if spec.raw != f"{spec.provider}:{spec.model}":
+        return ProviderResult(2, failure_kind="invalid_provider", detail="invalid_provider")
+    profile = spec.provider.removesuffix("-api")
+    try:
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout")
+        key_name = {"openrouter": "OPENROUTER_API_KEY", "vercel": "AI_GATEWAY_API_KEY",
+                    "cloudflare": "CLOUDFLARE_API_TOKEN"}[profile]
+        if profile == "cloudflare":
+            account = env.get("DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID", "")
+            base = f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1"
+            model = "@" + spec.model if spec.model and spec.model.startswith("cf/") else ""
+            upstream = billing = ""
+        else:
+            base = {"openrouter": "https://openrouter.ai/api/v1",
+                    "vercel": "https://ai-gateway.vercel.sh/v1"}[profile]
+            model = spec.model or ""
+            upstream = env.get("DOCICH_CHAT_" + profile.upper() + "_UPSTREAM", "")
+            billing = env.get("DOCICH_CHAT_" + profile.upper() + "_BILLING_MODE", "")
+        settings = Settings(base_url=base, model=model, token="",
+                            api_key=read_secret(env, key_name), provider=profile,
+                            upstream=upstream, billing_mode=billing)
+        direct_chat_options(settings)  # Fail before worker/key transmission.
+        output = answer_once(settings, [{"role": "user", "content": request.prompt}],
+                             min(float(timeout), 45.), raw_reply=True)
+    except ChatRateLimit:
+        return ProviderResult(79, failure_kind="rate_limit", detail="rate_limit")
+    except Exception:
+        return ProviderResult(1, failure_kind="provider_failed", detail="direct_chat_failed")
+    output = _clean_model_output(output)
+    if not output:
+        return ProviderResult(1, failure_kind="empty_output", detail="empty_output")
+    # A valid reply may discuss HTTP 429/auth errors; only transport signals
+    # classify provider failure. Never infer quota from generated prose.
+    return ProviderResult(0, output=output)
+
+
 def call_agent(
     spec: AgentSpec,
     request: DispatchRequest,
@@ -287,6 +308,8 @@ def call_agent(
             fresh = False
         if fresh is not True:
             return ProviderResult(1, failure_kind="image_context_expired")
+    if spec.provider in DIRECT_CHAT_PROVIDERS:
+        return _direct_chat(spec, request, timeout, env)
     if spec.provider == "codex":
         return _codex(spec, request, timeout, env)
     if spec.provider in {"amd", "openrouter", "opencode", "opencode-go", "vercel"}:

@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "purpose": "Offline source-requirement contracts, not measured model accuracy.",
+  "observed_regression": {
+    "text": "公式仕様とdocichの実装は一致してる？",
+    "expected": "web_and_code",
+    "required_sources": ["web", "code"],
+    "recorded_choice": "code",
+    "recorded_confidence": 0.88,
+    "recorded_rubric": "reply-evidence-v1",
+    "recorded_source_head": "c2849616986a86c951896f6e36f618d85e7be508"
+  },
+  "cases": [
+    {"id": "code_named_spec_constant", "text": "このrepoで公式仕様という名前の定数はどこから参照される？", "expected": "code", "required_sources": ["code"]},
+    {"id": "code_retry_count", "text": "この実装のリトライ回数をコードから教えて。", "expected": "code", "required_sources": ["code"]},
+    {"id": "code_draw_function", "text": "配列から抽選対象を選ぶ処理を、このrepositoryの実装から説明して。", "expected": "code", "required_sources": ["code"]},
+    {"id": "web_http_spec", "text": "HTTPの公式仕様で429レスポンスは何を意味する？", "expected": "web", "required_sources": ["web"]},
+    {"id": "web_webhook_rule", "text": "公式ドキュメントに書かれたWebhookの再送条件を調べて。", "expected": "web", "required_sources": ["web"]},
+    {"id": "web_public_price", "text": "このサービスの現在の公開料金表を確認して。", "expected": "web", "required_sources": ["web"]},
+    {"id": "mixed_retry_conformance", "text": "公開APIのリトライ規約と、このclientの再試行処理が合うか調べて。", "expected": "web_and_code", "required_sources": ["web", "code"]},
+    {"id": "mixed_timeout_comparison", "text": "provider docsで推奨するtimeoutと、docichが設定する秒数を比較して。", "expected": "web_and_code", "required_sources": ["web", "code"]},
+    {"id": "mixed_draw_difference", "text": "公開されている抽選確率と、ローカルdraw関数の計算結果に差異はある？", "expected": "web_and_code", "required_sources": ["web", "code"]},
+    {"id": "unknown_correctness", "text": "それは合ってる？", "expected": "unknown", "required_sources": null},
+    {"id": "unknown_comparison", "text": "こっちとあっちの違いは？", "expected": "unknown", "required_sources": null},
+    {"id": "unknown_previous", "text": "前の件を確認して。", "expected": "unknown", "required_sources": null}
+  ]
+}
