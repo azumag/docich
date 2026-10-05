@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from docich import hanjuku_manual_admin_release as admin
 from docich import hanjuku_manual_cancel as cancellation
+from docich import hanjuku_admin_result as reporting
 from test_hanjuku_manual_cancel import fixture, snapshot
 from test_game_switch import _runtime
 
@@ -345,8 +346,67 @@ def test_cli_withholds_unexpected_private_failure(monkeypatch, capsys):
     monkeypatch.setattr(admin, "load_global", lambda *args: None)
     def fail(*args, **kwargs): raise RuntimeError("PRIVATE_TOKEN /private/runtime")
     monkeypatch.setattr(admin, "release", fail)
-    assert admin.main(["release", "--expected", "a" * 64]) == 1
+    assert admin.main(["release", "--expected", "a" * 64]) == admin.REFUSAL_CODES["evidence_unverified"]
     assert json.loads(capsys.readouterr().out) == {"status": "refused", "reason": "evidence_unverified"}
+
+
+@pytest.mark.parametrize("mode", ["check", "release"])
+@pytest.mark.parametrize("reason,code", list(reporting.REFUSAL_CODES.items()))
+def test_cli_refusals_survive_private_gateway_as_fixed_enum(monkeypatch, capsys, mode, reason, code):
+    monkeypatch.setattr(admin, "load_global", lambda *args: None)
+    def fail(*args, **kwargs):
+        raise admin.CancelRefused(reason)
+    monkeypatch.setattr(admin, "release", fail)
+    assert admin.main([mode, "--expected", "a" * 64]) == code
+    assert json.loads(capsys.readouterr().out) == {"status": "refused", "reason": reason}
+    raw = json.dumps({"status": "executed", "sha": "b" * 40,
+                      "exit_code": code, "output": "withheld",
+                      "private": "PRIVATE_TOKEN /private/runtime " + "a" * 64})
+    public, rc = reporting.public_result(raw, mode, "b" * 40, code)
+    assert rc != 0 and public["status"] == "refused" and public["reason"] == reason
+    assert set(public) == {"status", "reason", "corner", "cancellation_authority"}
+    assert public["cancellation_authority"] is False
+
+
+@pytest.mark.parametrize("mode", ["check", "release"])
+def test_unknown_exception_reason_is_never_exported(monkeypatch, capsys, mode):
+    monkeypatch.setattr(admin, "load_global", lambda *args: None)
+    def fail(*args, **kwargs):
+        raise admin.CancelRefused("PRIVATE_TOKEN /private/runtime " + "a" * 64)
+    monkeypatch.setattr(admin, "release", fail)
+    assert admin.main([mode, "--expected", "a" * 64]) == reporting.REFUSAL_CODES["evidence_unverified"]
+    assert json.loads(capsys.readouterr().out) == {"status": "refused", "reason": "evidence_unverified"}
+
+
+@pytest.mark.parametrize("raw", ["", "PRIVATE_TOKEN /private/runtime", "[]", "null", "42",
+    '{"status":"executed","status":"rejected"}',
+    json.dumps({"status": "executed", "sha": "b" * 40, "output": "withheld", "exit_code": False}),
+    json.dumps({"status": "executed", "sha": "b" * 40, "output": "withheld", "exit_code": 0.0}),
+    json.dumps({"status": "executed", "sha": "b" * 40, "output": "withheld", "exit_code": -1}),
+    json.dumps({"status": "executed", "sha": "b" * 40, "output": "PRIVATE_TOKEN", "exit_code": 0}),
+])
+def test_unverified_gateway_result_is_fixed_failure(raw):
+    public, rc = reporting.public_result(raw, "check", "b" * 40, 0)
+    assert rc != 0 and public == {"status": "refused", "reason": "gateway_result_unverified",
+                                "corner": "hanjuku-hero", "cancellation_authority": False}
+
+
+def test_wire_codes_cover_actual_guards_and_do_not_collide():
+    import ast
+    # Shared readers/locks also raise fixed refusals. A new guard must receive
+    # a reviewed code rather than silently losing its reason in the gateway.
+    sources = [Path(admin.__file__).read_text()]
+    tree = ast.parse(Path(cancellation.__file__).read_text())
+    sources.extend(ast.get_source_segment(Path(cancellation.__file__).read_text(), node)
+                   for node in tree.body if isinstance(node, ast.FunctionDef)
+                   and node.name in {"_object", "_existing_lock"})
+    reasons = {node.args[0].value for source in sources for node in ast.walk(ast.parse(source))
+               if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+               and node.func.id == "CancelRefused" and node.args
+               and isinstance(node.args[0], ast.Constant)}
+    assert reasons <= reporting.REFUSAL_CODES.keys()
+    assert len(set(reporting.REFUSAL_CODES.values())) == len(reporting.REFUSAL_CODES)
+    assert all(0 < code < 255 and code not in {25, 64} for code in reporting.REFUSAL_CODES.values())
 
 
 @pytest.mark.parametrize("filename", ["retro_corner.json", "game_switch.json", "corner_rotation.json"])

@@ -14,6 +14,8 @@ import os
 import re
 import sys
 
+from corner_rotation_input import read_expected
+
 OWNER = "azumag"
 OWNER_ID = "9018513"
 REPOSITORY = "azumag/docich"
@@ -70,7 +72,10 @@ def main() -> None:
 
     if operation in CANONICAL_ONLY_OPERATIONS and env.get("GITHUB_WORKFLOW_REF") != f"{REPOSITORY}/{WORKFLOWS[0]}@refs/heads/main":
         fail("Hanjuku recovery requires the canonical operator workflow")
-    expected = env.get("INPUT_EXPECTED_RESERVATION", "")
+    try:
+        expected = read_expected(env)
+    except ValueError:
+        fail("reservation input unavailable")
     if operation in {"cancel-hanjuku", "check-admin-release-hanjuku", "admin-release-hanjuku"} and not re.fullmatch(r"[0-9a-f]{64}", expected):
         fail("reviewed reservation fingerprint required")
     if operation == "check-cancel-hanjuku" and expected:

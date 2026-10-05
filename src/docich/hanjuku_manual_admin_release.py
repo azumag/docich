@@ -13,6 +13,7 @@ from pathlib import Path
 import time
 
 from .config import load_global
+from .hanjuku_admin_result import REFUSAL_CODES
 from .corner_rotation import timestamp
 from .game_switch import GameSwitchStore, atomic_write_json, validate_request_id, validate_state
 from .hanjuku_manual_cancel import (
@@ -170,11 +171,12 @@ def main(argv=None):
         g = load_global(root, root / "config/docich.soren-live.toml")
         result = release(g, expected=args.expected, apply=args.operation == "release")
     except CancelRefused as exc:
-        result = {"status": "refused", "reason": str(exc)}
+        reason = str(exc)
+        result = {"status": "refused", "reason": reason if reason in REFUSAL_CODES else "evidence_unverified"}
     except Exception:
         result = {"status": "refused", "reason": "evidence_unverified"}
     print(json.dumps(result, separators=(",", ":")))
-    return 0 if result["status"] in {"admin-eligible", "admin-released"} else 1
+    return 0 if result["status"] in {"admin-eligible", "admin-released"} else REFUSAL_CODES[result["reason"]]
 
 
 if __name__ == "__main__":
