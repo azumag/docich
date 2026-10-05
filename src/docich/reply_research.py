@@ -566,8 +566,9 @@ def research(turns, scope: str, *, env, timeout_sec: float = 45.0, comment_scope
                 if native:
                     from .reply_research_api import model_call as native_model_call
                     model_call = native_model_call(argv, child_env, deadline=deadline, runner=_run, diagnostic=diagnostic)
+                searcher = lambda query, timeout: search_public(query, timeout, env=env)
                 return coordinate(turns, scope, source=source, manifest=manifest, broker=broker,
-                                  searcher=search_public, deadline=deadline, comment_scopes=comment_scopes,
+                                  searcher=searcher, deadline=deadline, comment_scopes=comment_scopes,
                                   diagnostic=diagnostic,
                                   model_call=model_call)
     except Exception:
