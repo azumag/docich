@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -128,6 +129,7 @@ class CpuProfileDiagnosticsTests(unittest.TestCase):
 
 class CpuProfileOperationContractTests(unittest.TestCase):
     def test_helper_is_fixed_readonly_profile(self):
+        subprocess.run(["bash", "-n", str(HELPER)], check=True)
         text = HELPER.read_text(encoding="utf-8")
         self.assertIn("[[ \"$#\" -eq 0 ]]", text)
         self.assertIn("profile_cpu.py sample", text)
