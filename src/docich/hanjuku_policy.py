@@ -7238,9 +7238,19 @@ def discharge_step(screen: Screen, mem):
 
 
 # The general-trade event (花いちもんめ) must always be declined (owner rule
-# 2026-09-28). 'トレード' is the measured question word; the song title is a
-# belt-and-braces match for a variant scene.
-TRADE_DECLINE_TOKENS = ('トレード', 'はないちもんめ', 'いちもんめ')
+# 2026-09-28). 'トレード' is the measured question word, but OCR can drop that
+# noun while still reading the surrounding "将軍同士" / "イキのいいの" wording.
+# Treat those trade-specific fragments as sufficient evidence too, so a partial
+# read fails closed instead of falling through to the generic accept rule.
+TRADE_DECLINE_TOKENS = (
+    'トレード', 'はないちもんめ', 'いちもんめ',
+    'しょうぐんどうし', '将軍同士', 'イキのいいの', 'いきのいいの',
+)
+
+
+def _is_general_trade_prompt(text: str) -> bool:
+    flat = ''.join(text.split())
+    return any(tok in flat for tok in TRADE_DECLINE_TOKENS)
 
 
 def _goninja_budget(mem, header):
@@ -7297,7 +7307,7 @@ def yes_no_step(screen: Screen, mem):
         # needs shielding from the offer.
         choice, reason = 'うむッ!', '一騎打ちは青ゲージを消費する前提で受ける'
         variant = 'accept_duel'
-    elif any(tok in text for tok in TRADE_DECLINE_TOKENS):
+    elif _is_general_trade_prompt(text):
         # Owner rule (2026-09-28): the general trade (花いちもんめ) almost
         # always offers an unfair deal (odoru7094: ろくでもないのしか手に
         # 入らないのでやってはいけない), so decline it. Measured question
