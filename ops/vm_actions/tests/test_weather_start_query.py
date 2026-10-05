@@ -156,6 +156,7 @@ class WeatherStartQueryWorkflowTests(unittest.TestCase):
         self.assertIn('corners.get("soren_game")', text)
         self.assertIn('soren_state in {"MOVE", "DROP", "WAITING"}', text)
         self.assertIn('0 <= soren_age <= 30', text)
+        self.assertIn('switch.get("phase") == "ready"', text)
         self.assertIn('runner_alive is True', text)
         self.assertIn('"$soren_resumed" == true', text)
         self.assertNotIn('"requests"', text)
