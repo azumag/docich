@@ -105,6 +105,7 @@ class PaperCornerManager:
         # Optional AI narration/improvement delegation. Empty means fallback-only
         # narration or no improvement job (end of corner).
         self.script_agents = self._optional_agents(raw, 'script_agents')
+        self.direct_script_agents = self._optional_agents(raw, 'direct_script_agents')
         self.improve_agents = self._optional_agents(raw, 'improve_agents')
         script_timeout = raw.get('script_timeout_s', 180)
         if type(script_timeout) is not int or not 1 <= script_timeout <= 1800:
@@ -462,8 +463,18 @@ class PaperCornerManager:
         state['fallback_segments'] = prepared
         self.save(state)
 
+    def _script_agents_for_dispatch(self, env: Mapping[str, str] | None = None) -> str:
+        effective = os.environ if env is None else env
+        flag = effective.get('DOCICH_PAPER_SCRIPT_DIRECT_ENABLED', '0')
+        if flag == '1':
+            return self.direct_script_agents
+        if flag == '0':
+            return self.script_agents
+        # Invalid opt-in never silently starts either paid or CLI-backed work.
+        return ''
+
     def _ai_narration_enabled(self) -> bool:
-        return bool(self.script_agents)
+        return bool(self._script_agents_for_dispatch())
 
     @staticmethod
     def _covered_topics(state) -> list:
@@ -524,11 +535,12 @@ class PaperCornerManager:
         from .trading.corner_script import SEGMENT_KEYS, generate_next_narration
 
         slot = SEGMENT_KEYS[index - 1]
-        if not self._ai_narration_enabled():
+        dispatch_env = dict(os.environ)
+        agents = self._script_agents_for_dispatch(dispatch_env)
+        if not agents:
             return self._fallback_item(index, fallback_text)
 
         last_reason = 'generation-failed'
-        dispatch_env = dict(os.environ)
         dispatch_env['DOCICH_ALLOW_REAL_AI'] = '1'
         for _ in range(NARRATION_AI_RETRIES):
             if cancel is not None and cancel.is_set():
@@ -538,7 +550,7 @@ class PaperCornerManager:
                 result = generate_next_narration(
                     self.g,
                     trading_dir=self.trading_dir,
-                    agents=self.script_agents,
+                    agents=agents,
                     timeout=self.script_timeout,
                     covered=covered,
                     target_key=slot,
