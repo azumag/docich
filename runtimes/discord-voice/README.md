@@ -163,6 +163,55 @@ The Cloudflare conversation Worker now also exposes authenticated `POST /voice/c
 
 Stage budgets are bounded independently: LLM 10 seconds, TTS 30 seconds, playback 35 seconds and post-playback memory commit 5 seconds. This slice still does not add automatic VOICEVOX failover/retry, multi-user simultaneous-turn policy, a Windows service installer, or the required credentialed 30-minute acceptance run.
 
+## Credentialed Windows acceptance
+
+`acceptance-windows.ps1` is the owner-only bootstrap for real VC acceptance. It never writes Discord/Cloudflare credentials or the voice bridge secret to the repository or acceptance log. Transcript/reply debug flags are forced off.
+
+Before running it, set these values only in the current PowerShell process:
+
+```powershell
+$env:DOCICH_DISCORD_TOKEN = "<Discord Bot token>"
+$env:DOCICH_DISCORD_VOICE_GUILD_ID = "<guild snowflake>"
+$env:DOCICH_DISCORD_VOICE_CHANNEL_ID = "<voice channel snowflake>"
+$env:DOCICH_DISCORD_VOICE_RECEIVE_USER_ID = "<your user snowflake>"
+
+$env:DOCICH_DISCORD_VOICE_CF_ACCOUNT_ID = "<Cloudflare account id>"
+$env:DOCICH_DISCORD_VOICE_CF_API_TOKEN = "<Workers AI token>"
+
+$env:VOICEVOX_URLS = "http://127.0.0.1:50021"
+$env:VOICEVOX_MAX_CHARS = "200"
+```
+
+If `DOCICH_DISCORD_VOICE_CHAT_TOKEN` is not already present, the bootstrap generates a random process-local bridge secret and pipes it directly to `wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN --name docich-discord-chat`. The secret value is not passed as a command-line argument or written to the log. Wrangler must already be authenticated for the owner account. The Cloudflare secret remains configured after the run; a later bootstrap without a local copy simply rotates it to a new random value.
+
+For an intentional same-host VOICEVOX Engine:
+
+```powershell
+cd runtimes/discord-voice
+.\acceptance-windows.ps1 -AllowLoopbackVoicevox
+```
+
+The bootstrap verifies the authenticated `/voice/reply` boundary, probes VOICEVOX `/version`, installs pinned dependencies, runs `check:live`, and then launches `acceptance-runner.mjs`. Press Ctrl+C once for a graceful stop. The runner timestamps only the existing sanitized JSON events and prints a final `voice_acceptance_summary`.
+
+A short one-turn acceptance should include at least one successful chain through `stt_completed -> llm_completed -> tts_completed -> playback_completed -> memory_commit_completed`. For barge-in, speak while the Bot is playing and require `playback_interrupted`:
+
+```powershell
+.\acceptance-windows.ps1 -AllowLoopbackVoicevox -RequireInterrupt
+```
+
+For a timed 30-minute acceptance, the runner can stop itself gracefully:
+
+```powershell
+.\acceptance-windows.ps1 `
+  -AllowLoopbackVoicevox `
+  -StopAfterMinutes 30 `
+  -MinMinutes 30
+```
+
+Add `-RequireInterrupt` and/or `-RequireReconnect` only when that run intentionally exercises those conditions. A reconnect-gated run must cause at least one recoverable Discord Voice disconnect so that `voice_rejoined` is observed.
+
+Acceptance logs are written under `runtimes/discord-voice/acceptance-logs/` by default and are gitignored. The analyzer fails closed if it sees malformed lines, provider/stage failures, or the private debug events `stt_debug_transcript` / `llm_debug_reply`.
+
 The Bot needs only the permissions required to see the configured server/channel and **Connect / Speak** in that voice channel. Message Content, member-list and Presence privileged intents are not used by this live process. The Windows CI job installs the same pinned dependencies and executes `check:live` plus the offline contracts without any Discord credentials.
 
 Slice 1 provides DAVE-capable VC join/outbound playback, Slice 2 adds opt-in one-speaker receive/STT, Slice 3 connects the canonical DoCiAI conversation core, and Slice 4 connects VOICEVOX playback plus post-playback memory acknowledgement. Offline contracts still do **not** prove a real credentialed Discord/Workers AI/VOICEVOX round trip, real latency/audio quality, reconnect durability, multi-user attribution or the 30-minute acceptance test.
