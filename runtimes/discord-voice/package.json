@@ -8,7 +8,8 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "check:live": "node live.mjs --check",
-    "start:live": "node live.mjs --live"
+    "start:live": "node live.mjs --live",
+    "test:live-contracts": "node --test live-runtime.test.mjs"
   },
   "dependencies": {
     "@discordjs/voice": "0.19.2",
