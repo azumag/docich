@@ -58,13 +58,14 @@ export async function checkLiveDependencies() {
   emit({ event: 'live_voice_check_ok', daveCapable: true, opus: true, rawPcm: true });
 }
 
-async function resolveVoiceChannel(client, config) {
+async function resolveVoiceChannel(client, config, isStopping = () => false) {
   let guild;
   try {
     guild = await client.guilds.fetch(config.guildId);
   } catch {
     throw new LiveVoiceError('guild_unavailable');
   }
+  if (isStopping()) return null;
 
   let channel;
   try {
@@ -72,6 +73,7 @@ async function resolveVoiceChannel(client, config) {
   } catch {
     throw new LiveVoiceError('channel_unavailable');
   }
+  if (isStopping()) return null;
 
   if (!channel || channel.type !== ChannelType.GuildVoice) {
     throw new LiveVoiceError('channel_not_voice');
@@ -84,6 +86,7 @@ async function resolveVoiceChannel(client, config) {
     } catch {
       throw new LiveVoiceError('bot_member_unavailable');
     }
+    if (isStopping()) return null;
   }
 
   const permissions = channel.permissionsFor(member);
@@ -97,14 +100,24 @@ async function resolveVoiceChannel(client, config) {
   return { guild, channel };
 }
 
-async function playTestTone(connection) {
+async function playTestTone(connection, isStopping = () => false) {
+  if (isStopping()) return;
+
   const player = createAudioPlayer();
   const subscription = connection.subscribe(player);
   if (!subscription) throw new LiveVoiceError('voice_subscription_failed');
+  if (isStopping()) {
+    player.stop(true);
+    return;
+  }
 
   player.play(buildTestResource());
   try {
     await entersState(player, AudioPlayerStatus.Playing, 5_000);
+    if (isStopping()) {
+      player.stop(true);
+      return;
+    }
     await entersState(player, AudioPlayerStatus.Idle, 5_000);
   } catch {
     player.stop(true);
@@ -112,11 +125,34 @@ async function playTestTone(connection) {
   }
 }
 
-export async function runLiveVoice(env = process.env) {
+function defaultRuntimeOps() {
+  return {
+    createClient: () =>
+      new Client({
+        intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+      }),
+    waitClientReady,
+    resolveVoiceChannel,
+    joinVoice: ({ guild, channel }) =>
+      joinVoiceChannel({
+        guildId: guild.id,
+        channelId: channel.id,
+        adapterCreator: guild.voiceAdapterCreator,
+        selfDeaf: true,
+        selfMute: false,
+      }),
+    waitVoiceReady: (connection) =>
+      entersState(connection, VoiceConnectionStatus.Ready, 30_000),
+    playTestTone,
+    signalTarget: process,
+  };
+}
+
+export async function runLiveVoice(env = process.env, runtimeOps = {}) {
   const config = loadLiveVoiceConfig(env);
-  const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
-  });
+  const ops = { ...defaultRuntimeOps(), ...runtimeOps };
+  const signalTarget = ops.signalTarget;
+  const client = ops.createClient();
 
   let connection = null;
   let stopping = false;
@@ -129,38 +165,72 @@ export async function runLiveVoice(env = process.env) {
   const fatalSignal = new Promise((resolve) => {
     fatalResolve = resolve;
   });
+  const STOPPED = Symbol('stopped');
 
-  const requestStop = () => stopResolve?.({ kind: 'signal' });
+  const requestStop = () => {
+    if (stopping) return;
+    stopping = true;
+    stopResolve?.({ kind: 'signal' });
+  };
   const failRuntime = (code) => {
     if (!stopping) fatalResolve?.({ kind: 'fatal', code });
   };
+  const awaitStage = async (stage) => {
+    if (stopping) return STOPPED;
+    const settled = Promise.resolve(stage).then(
+      (value) => ({ kind: 'value', value }),
+      (error) => ({ kind: 'error', error }),
+    );
+    const result = await Promise.race([settled, stopSignal]);
+    if (result?.kind === 'signal') return STOPPED;
+    if (result?.kind === 'error') throw result.error;
+    return result.value;
+  };
+  const stoppedAfter = (value) => value === STOPPED || stopping;
 
   const onClientError = () => emit({ event: 'discord_gateway_error' });
   client.on(Events.Error, onClientError);
-  process.once('SIGINT', requestStop);
-  process.once('SIGTERM', requestStop);
+  signalTarget.once('SIGINT', requestStop);
+  signalTarget.once('SIGTERM', requestStop);
 
   try {
-    const ready = waitClientReady(client);
-    // If login itself fails, the pre-registered Ready waiter must not become
-    // an unhandled timeout later. It is still awaited on the successful path.
-    ready.catch(() => {});
+    const ready = ops.waitClientReady(client);
+    // If login or shutdown wins first, the pre-registered Ready waiter may settle
+    // later. Always observe it so a late timeout/rejection is not unhandled.
+    Promise.resolve(ready).catch(() => {});
+
+    let loginResult;
     try {
-      await client.login(config.token);
+      loginResult = await awaitStage(client.login(config.token));
     } catch {
+      if (stopping) return 0;
       throw new LiveVoiceError('discord_login_failed');
     }
-    await ready;
+    if (stoppedAfter(loginResult)) return 0;
 
-    const { guild, channel } = await resolveVoiceChannel(client, config);
+    let readyResult;
+    try {
+      readyResult = await awaitStage(ready);
+    } catch (error) {
+      if (stopping) return 0;
+      throw error;
+    }
+    if (stoppedAfter(readyResult)) return 0;
 
-    connection = joinVoiceChannel({
-      guildId: guild.id,
-      channelId: channel.id,
-      adapterCreator: guild.voiceAdapterCreator,
-      selfDeaf: true,
-      selfMute: false,
-    });
+    let resolved;
+    try {
+      resolved = await awaitStage(
+        ops.resolveVoiceChannel(client, config, () => stopping),
+      );
+    } catch (error) {
+      if (stopping) return 0;
+      throw error;
+    }
+    if (stoppedAfter(resolved) || !resolved) return 0;
+
+    const { guild, channel } = resolved;
+    if (stopping) return 0;
+    connection = ops.joinVoice({ guild, channel, config });
 
     connection.on('error', () => emit({ event: 'voice_transport_error' }));
 
@@ -174,6 +244,7 @@ export async function runLiveVoice(env = process.env) {
             entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
             entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
           ]);
+          if (stopping) return;
           emit({ event: 'voice_recovering' });
           return;
         } catch {
@@ -190,12 +261,14 @@ export async function runLiveVoice(env = process.env) {
           if (accepted) {
             try {
               await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+              if (stopping) return;
               emit({ event: 'voice_rejoined' });
               return;
             } catch {
               // Bounded retry below.
             }
           }
+          if (stopping) return;
           await delay(attempt * 1_000);
         }
 
@@ -205,16 +278,28 @@ export async function runLiveVoice(env = process.env) {
       });
     });
 
+    let voiceReadyResult;
     try {
-      await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+      voiceReadyResult = await awaitStage(ops.waitVoiceReady(connection));
     } catch {
+      if (stopping) return 0;
       throw new LiveVoiceError('voice_connect_timeout');
     }
+    if (stoppedAfter(voiceReadyResult)) return 0;
 
     emit({ event: 'voice_connected', selfDeaf: true, daveCapable: true });
 
     if (config.playTestTone) {
-      await playTestTone(connection);
+      let toneResult;
+      try {
+        toneResult = await awaitStage(
+          ops.playTestTone(connection, () => stopping),
+        );
+      } catch (error) {
+        if (stopping) return 0;
+        throw error;
+      }
+      if (stoppedAfter(toneResult)) return 0;
       emit({ event: 'voice_test_tone_completed' });
     }
 
@@ -226,8 +311,8 @@ export async function runLiveVoice(env = process.env) {
     return 0;
   } finally {
     stopping = true;
-    process.off('SIGINT', requestStop);
-    process.off('SIGTERM', requestStop);
+    signalTarget.off('SIGINT', requestStop);
+    signalTarget.off('SIGTERM', requestStop);
     client.off(Events.Error, onClientError);
 
     if (connection && connection.state.status !== VoiceConnectionStatus.Destroyed) {
