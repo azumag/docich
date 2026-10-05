@@ -73,6 +73,57 @@ def test_check_read_only_release_preserves_everything_else_and_unknown(detached)
     assert snapshot(f) == before_retry
 
 
+@pytest.mark.parametrize("statuses", [
+    ("error", None),
+    (None, "error"),
+    ("error", "error"),
+    ("done", "error"),
+])
+@pytest.mark.parametrize("apply", [False, True])
+def test_stale_error_program_queue_requires_full_revalidation_and_is_never_rewritten(
+        detached, statuses, apply):
+    f = detached
+    queue_dir = f.soren / "tmp/state/docich_program_queue"
+    queue_dir.mkdir(parents=True)
+    for name, status in zip(cancellation.OWNER_FILES, statuses):
+        if status is not None:
+            (queue_dir / name).write_text(json.dumps(
+                {"status": status, "private_payload": "PRIVATE_QUEUE_HISTORY"}))
+    before = snapshot(f)
+    result = run(f, apply=apply)
+    assert result["status"] == ("admin-released" if apply else "admin-eligible")
+    after = snapshot(f)
+    # Administrative release never edits historical program-queue records.
+    assert {p: b for p, b in after.items() if p != f.path} == {
+        p: b for p, b in before.items() if p != f.path}
+    if not apply:
+        assert after == before
+        return
+    updated = json.loads(f.path.read_text())
+    assert updated["manual_pending"] is None
+    assert updated["queued_manual"] == f.state["queued_manual"]
+    assert updated["history"] == f.state["history"]
+    audit = updated["manual_admin_releases"][-1]
+    assert audit["program_queue_error_observed"] is True
+    assert audit["resource_attribution_unknown"] is True
+    assert audit["all_resources_released"] is None
+    assert audit["cancellation_authority"] is False
+
+
+@pytest.mark.parametrize("filename", cancellation.OWNER_FILES)
+@pytest.mark.parametrize("status", ["waiting", "waiting_turn", "waiting_boundary", "running", "unknown"])
+@pytest.mark.parametrize("apply", [False, True])
+def test_live_or_unknown_program_queue_still_refuses(detached, filename, status, apply):
+    f = detached
+    queue_dir = f.soren / "tmp/state/docich_program_queue"
+    queue_dir.mkdir(parents=True)
+    (queue_dir / filename).write_text(json.dumps({"status": status}))
+    before = snapshot(f)
+    with pytest.raises(admin.CancelRefused, match="program_queue_unverified"):
+        run(f, apply=apply)
+    assert snapshot(f) == before
+
+
 @pytest.mark.parametrize("field,value", [("request_id", str(uuid.uuid4())), ("selected_at", 11),
                                          ("extra", "new-payload")])
 @pytest.mark.parametrize("apply", [False, True])
@@ -97,11 +148,18 @@ def test_changed_reservation_including_selected_at_refuses(detached, field, valu
     ("clock", "clock_regressed"), ("audit-invalid", "invalid_admin_audit"),
     ("audit-duplicate", "already_admin_released"),
 ])
+@pytest.mark.parametrize("with_stale_error_queue", [False, True])
 @pytest.mark.parametrize("apply", [False, True])
-def test_current_evidence_changes_refuse_without_mutation(detached, change, reason, apply):
+def test_current_evidence_changes_refuse_without_mutation(
+        detached, change, reason, apply, with_stale_error_queue):
     f = detached
     owner_path = f.path.parent / "retro_corner_manual.json"
     program = f.soren / "tmp/state"
+    if with_stale_error_queue and not change.startswith("program-"):
+        queue_dir = program / "docich_program_queue"
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        for name in cancellation.OWNER_FILES:
+            (queue_dir / name).write_text('{"status":"error"}')
     if change == "new-receipt":
         f.store.receipts.save(f.receipt)
     elif change.startswith("owner-"):
@@ -321,9 +379,15 @@ def test_canonical_snapshot_distinguishes_json_types(detached, monkeypatch, firs
 
 
 @pytest.mark.parametrize("lock", ["corner-rotation", "retro-corner", "retro-corner-manual", "game-switch", "program"])
-def test_lock_contention_refuses_and_releases_prior_locks(detached, lock):
+@pytest.mark.parametrize("with_stale_error_queue", [False, True])
+def test_lock_contention_refuses_and_releases_prior_locks(detached, lock, with_stale_error_queue):
     import fcntl
     f = detached
+    if with_stale_error_queue:
+        queue_dir = f.soren / "tmp/state/docich_program_queue"
+        queue_dir.mkdir(parents=True)
+        for name in cancellation.OWNER_FILES:
+            (queue_dir / name).write_text('{"status":"error"}')
     path = f.soren / "tmp/state/docich_program.lock" if lock == "program" else f.path.parent / f"locks/{lock}.lock"
     before = snapshot(f)
     with path.open("rb") as handle:
