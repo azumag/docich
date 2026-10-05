@@ -75,6 +75,7 @@ export function attachLiveSttReceiver({
   stt,
   emit = () => {},
   debugTranscript = false,
+  onTranscript = null,
   createDecoder = defaultDecoder,
   subscribeOptions = Object.freeze({
     end: Object.freeze({
@@ -93,6 +94,7 @@ export function attachLiveSttReceiver({
     !/^[1-9][0-9]{0,19}$/.test(targetUserId) ||
     typeof stt?.transcribe !== 'function' ||
     typeof emit !== 'function' ||
+    (onTranscript !== null && typeof onTranscript !== 'function') ||
     typeof createDecoder !== 'function'
   ) {
     throw new TypeError('invalid_live_receive_config');
@@ -120,25 +122,44 @@ export function attachLiveSttReceiver({
     sttActive = state;
 
     void (async () => {
-      safeEmit({ event: 'stt_started' });
-      const timeout = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
-      timeout.unref?.();
       try {
-        const transcript = await stt.transcribe(state.pcm, {
-          format: PCM,
-          signal: controller.signal,
-        });
+        safeEmit({ event: 'stt_started' });
+        const timeout = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
+        timeout.unref?.();
+
+        let transcript;
+        try {
+          transcript = await stt.transcribe(state.pcm, {
+            format: PCM,
+            signal: controller.signal,
+          });
+        } catch {
+          safeEmit({
+            event: controller.signal.aborted ? 'stt_cancelled' : 'stt_failed',
+          });
+          return;
+        } finally {
+          clearTimeout(timeout);
+          erase(state.pcm);
+          state.pcm = null;
+        }
+
         if (controller.signal.aborted || stopped) return;
         safeEmit({ event: 'stt_completed' });
         if (debugTranscript) {
           safeEmit({ event: 'stt_debug_transcript', transcript });
         }
-      } catch {
-        safeEmit({
-          event: controller.signal.aborted ? 'stt_cancelled' : 'stt_failed',
-        });
+
+        if (onTranscript) {
+          try {
+            await onTranscript(transcript, { signal: controller.signal });
+          } catch {
+            if (!controller.signal.aborted && !stopped) {
+              safeEmit({ event: 'conversation_callback_failed' });
+            }
+          }
+        }
       } finally {
-        clearTimeout(timeout);
         erase(state.pcm);
         controller.abort();
         if (sttActive === state) sttActive = null;
