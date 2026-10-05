@@ -1,11 +1,11 @@
 {
-  "output_sha256": "63cdddfd58b78e07b9816c43953b9b28805460fa062b121514e2d44eb89f1987",
+  "output_sha256": "8e05551cf10505821023191eceb4c82f63888f0f65858231a963232996eb8fb5",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "e3d67e912caa1188c7f559f7dc325dbf0301efc28942667115482aeb4c70bafb",
+  "source_sha256": "2f0a319cef0b6c3a9126d34ae131198f87cfffb792677f8534a3ff9d1ee6d144",
   "topics": [
+    "Discord音声TTSの外部VOICEVOX境界を合成fixtureで検証（実接続・本番未反映）",
     "Discord音声会話の合成PCMプロトタイプ（実接続・本番未反映）",
-    "AI自作ゲームの鍵・スイッチ・出口を非本番の合成fixtureで試作（本番未反映）",
-    "PAPERコーナーの人格と声をメリケンへ固定（共通rotation経路も修正、本番未反映）"
+    "AI自作ゲームの鍵・スイッチ・出口を非本番の合成fixtureで試作（本番未反映）"
   ]
 }
