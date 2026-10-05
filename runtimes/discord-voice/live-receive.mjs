@@ -7,7 +7,6 @@ const MAX_UTTERANCE_SAMPLES = PCM.sampleRate * 10;
 const MIN_VOICED_SAMPLES = Math.round((PCM.sampleRate * 100) / 1000);
 const SPEECH_THRESHOLD = 500;
 const STT_TIMEOUT_MS = 10_000;
-const CONVERSATION_TIMEOUT_MS = 10_000;
 const MAX_PENDING_STT = 1;
 
 const erase = (value) => {
@@ -77,6 +76,7 @@ export function attachLiveSttReceiver({
   emit = () => {},
   debugTranscript = false,
   onTranscript = null,
+  onTargetSpeechStart = null,
   createDecoder = defaultDecoder,
   subscribeOptions = Object.freeze({
     end: Object.freeze({
@@ -96,6 +96,7 @@ export function attachLiveSttReceiver({
     typeof stt?.transcribe !== 'function' ||
     typeof emit !== 'function' ||
     (onTranscript !== null && typeof onTranscript !== 'function') ||
+    (onTargetSpeechStart !== null && typeof onTargetSpeechStart !== 'function') ||
     typeof createDecoder !== 'function'
   ) {
     throw new TypeError('invalid_live_receive_config');
@@ -148,17 +149,10 @@ export function attachLiveSttReceiver({
         }
 
         if (onTranscript && !controller.signal.aborted && !stopped) {
-          const conversationTimeout = setTimeout(
-            () => controller.abort(),
-            CONVERSATION_TIMEOUT_MS,
-          );
-          conversationTimeout.unref?.();
           try {
             await onTranscript(transcript, { signal: controller.signal });
           } catch {
             // The trusted transcript handler owns sanitized stage diagnostics.
-          } finally {
-            clearTimeout(conversationTimeout);
           }
         }
       } finally {
@@ -279,6 +273,13 @@ export function attachLiveSttReceiver({
   };
 
   const onSpeakingStart = (userId) => {
+    if (userId === targetUserId && onTargetSpeechStart) {
+      try {
+        onTargetSpeechStart();
+      } catch {
+        // Barge-in notification must not prevent capture.
+      }
+    }
     void capture(userId);
   };
   receiver.speaking.on('start', onSpeakingStart);

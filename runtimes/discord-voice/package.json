@@ -9,7 +9,7 @@
     "test": "node --test test/*.test.mjs",
     "check:live": "node live.mjs --check",
     "start:live": "node live.mjs --live",
-    "test:live-contracts": "node --test live-runtime.test.mjs cloudflare-stt.test.mjs cloudflare-conversation.test.mjs live-receive.test.mjs"
+    "test:live-contracts": "node --test live-runtime.test.mjs cloudflare-stt.test.mjs cloudflare-conversation.test.mjs live-receive.test.mjs live-voicevox.test.mjs live-playback.test.mjs"
   },
   "dependencies": {
     "@discordjs/voice": "0.19.2",

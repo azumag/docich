@@ -20,7 +20,8 @@ const scope = () => ({
 
 test('conversation config requires HTTPS fixed voice reply path and secret token', () => {
   const config = loadCloudflareConversationConfig(env());
-  assert.equal(config.url, 'https://discord-chat.example/voice/reply');
+  assert.equal(config.replyUrl, 'https://discord-chat.example/voice/reply');
+  assert.equal(config.commitUrl, 'https://discord-chat.example/voice/commit');
   assert.equal(config.token, 'x'.repeat(48));
 
   assert.throws(
@@ -73,6 +74,100 @@ test('conversation client sends scoped transcript and returns only reply text', 
     turnId: 'fixture-turn-1',
     transcript: 'こんにちは',
   });
+});
+
+test('generate exposes turn id and commit posts only after caller acknowledgement', async () => {
+  const seen = [];
+  const client = new CloudflareConversationClient({
+    env: env(),
+    turnIdFactory: () => 'fixture-turn-commit',
+    request: async (request) => {
+      seen.push(request);
+      if (request.url.endsWith('/voice/reply')) {
+        return {
+          status: 200,
+          body: new TextEncoder().encode(JSON.stringify({ reply: '音声で返す本文です。' })),
+        };
+      }
+      return {
+        status: 200,
+        body: new TextEncoder().encode(JSON.stringify({ status: 'committed' })),
+      };
+    },
+  });
+
+  const controller = new AbortController();
+  const generated = await client.generate(' こんにちは ', {
+    ...scope(),
+    signal: controller.signal,
+  });
+  assert.deepEqual(generated, {
+    turnId: 'fixture-turn-commit',
+    reply: '音声で返す本文です。',
+  });
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].url, 'https://discord-chat.example/voice/reply');
+
+  const status = await client.commit({
+    turnId: generated.turnId,
+    transcript: ' こんにちは ',
+    reply: generated.reply,
+  }, {
+    ...scope(),
+    signal: controller.signal,
+  });
+
+  assert.equal(status, 'committed');
+  assert.equal(seen.length, 2);
+  assert.equal(seen[1].url, 'https://discord-chat.example/voice/commit');
+  assert.deepEqual(JSON.parse(seen[1].body), {
+    ...scope(),
+    turnId: 'fixture-turn-commit',
+    transcript: 'こんにちは',
+    reply: '音声で返す本文です。',
+  });
+});
+
+test('commit treats duplicate acknowledgement as success and sanitizes commit failures', async () => {
+  let mode = 'duplicate';
+  const client = new CloudflareConversationClient({
+    env: env(),
+    request: async (request) => {
+      if (request.url.endsWith('/voice/commit')) {
+        if (mode === 'duplicate') {
+          return {
+            status: 200,
+            body: new TextEncoder().encode(JSON.stringify({ status: 'already_committed' })),
+          };
+        }
+        return {
+          status: 409,
+          body: new TextEncoder().encode('EXAMPLE_PRIVATE_COMMIT_CONFLICT'),
+        };
+      }
+      throw new Error('unexpected request');
+    },
+  });
+  const controller = new AbortController();
+  const turn = {
+    turnId: 'fixture-duplicate',
+    transcript: 'こんにちは',
+    reply: '返答です',
+  };
+
+  assert.equal(
+    await client.commit(turn, { ...scope(), signal: controller.signal }),
+    'already_committed',
+  );
+
+  mode = 'conflict';
+  await assert.rejects(
+    client.commit(turn, { ...scope(), signal: controller.signal }),
+    (error) =>
+      error instanceof CloudflareConversationError &&
+      error.code === 'conversation_commit_failed' &&
+      !error.message.includes('EXAMPLE_PRIVATE_COMMIT_CONFLICT'),
+  );
 });
 
 test('conversation client sanitizes provider errors and private response text', async () => {

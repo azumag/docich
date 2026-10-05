@@ -14,7 +14,7 @@ import {
 import { DISCORD_CONTEXT, cleanReply, generateReply } from "../src/llm.js";
 import { searchTerms } from "../src/memory.js";
 import { DiscordBot } from "../src/bot.js";
-import { handleVoiceReply } from "../src/index.js";
+import { handleVoiceCommit, handleVoiceReply } from "../src/index.js";
 
 test("Durable Object runtime module is importable", () => {
   assert.equal(typeof DiscordBot, "function");
@@ -84,7 +84,9 @@ test("public voice reply bridge requires a separate secret and strips it before 
         return {
           async fetch(request) {
             seen.push(request);
-            return Response.json({ reply: "fixture" });
+            return new URL(request.url).pathname === "/voice/commit"
+              ? Response.json({ status: "committed" })
+              : Response.json({ reply: "fixture" });
           },
         };
       },
@@ -121,6 +123,29 @@ test("public voice reply bridge requires a separate secret and strips it before 
   assert.equal(new URL(seen[0].url).pathname, "/voice/reply");
   assert.equal(seen[0].headers.get("authorization"), null);
   assert.equal(await seen[0].text(), requestBody);
+
+  const commitBody = JSON.stringify({
+    guildId: "1",
+    channelId: "10",
+    userId: "7",
+    turnId: "fixture-turn",
+    transcript: "こんにちは",
+    reply: "fixture",
+  });
+  const commit = await handleVoiceCommit(new Request("https://worker.example/voice/commit", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer " + secret,
+      "content-type": "application/json",
+    },
+    body: commitBody,
+  }), env);
+  assert.equal(commit.status, 200);
+  assert.deepEqual(await commit.json(), { status: "committed" });
+  assert.equal(seen.length, 2);
+  assert.equal(new URL(seen[1].url).pathname, "/voice/commit");
+  assert.equal(seen[1].headers.get("authorization"), null);
+  assert.equal(await seen[1].text(), commitBody);
 });
 
 test("voice reply bridge is absent when the secret is not configured", async () => {

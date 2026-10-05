@@ -49,6 +49,12 @@ export function loadLiveVoiceConfig(env = process.env) {
   );
   if (conversationEnabled && !receiveEnabled) fail('invalid_config');
 
+  const ttsEnabled = boolFlag(
+    env.DOCICH_DISCORD_VOICE_TTS_ENABLED,
+    false,
+  );
+  if (ttsEnabled && !conversationEnabled) fail('invalid_config');
+
   return Object.freeze({
     token,
     guildId,
@@ -59,6 +65,11 @@ export function loadLiveVoiceConfig(env = process.env) {
     transcriptDebug: boolFlag(env.DOCICH_DISCORD_VOICE_TRANSCRIPT_DEBUG, false),
     conversationEnabled,
     replyDebug: boolFlag(env.DOCICH_DISCORD_VOICE_REPLY_DEBUG, false),
+    ttsEnabled,
+    voicevoxAllowLoopback: boolFlag(
+      env.DOCICH_DISCORD_VOICE_VOICEVOX_ALLOW_LOOPBACK,
+      false,
+    ),
   });
 }
 
