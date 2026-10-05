@@ -328,7 +328,7 @@ class CornerRotationManager:
                 now = timestamp(self.clock())
             trigger_at = request.get("trigger_at")
             if trigger_at is not None and now < timestamp(trigger_at):
-                return False
+                return request
             current = state.get("queued_manual")
             if current is not None and current != request:
                 raise RotationError(
@@ -338,7 +338,7 @@ class CornerRotationManager:
             state["queued_manual"] = request
             self.save(state)  # durable transfer before removing the inbox
             self._manual_queue_path.unlink()
-            return True
+            return None
 
     def queue_manual(self, game, *, trigger_at=None):
         """Queue one owner request, optionally with a not-before trigger.
@@ -598,7 +598,7 @@ class CornerRotationManager:
             self._remember_catalog(state)
             if state["status"] == "recovery_required":
                 return {"status": "recovery_required", "reason": state.get("reason")}
-            self._import_manual_queue(state, now)
+            future_manual = self._import_manual_queue(state, now)
             if now < state["last_seen_at"]:
                 return self._wait(state, "clock-regressed")
             if now - state["last_seen_at"] > DAY:
@@ -707,11 +707,32 @@ class CornerRotationManager:
                         r["corner"] for r in state["history"]
                         if r["at"] > now - self.cooldown_seconds
                     }
-                    candidates = [c for c in eligible if c not in recent]
+                    # A future manual schedule reserves only its own corner:
+                    # automatic rotation may keep using every other eligible
+                    # corner, but must not pre-run the scheduled corner itself.
+                    reserved_corner = (
+                        future_manual.get("corner")
+                        if isinstance(future_manual, dict) else None
+                    )
+                    candidates = [
+                        c for c in eligible
+                        if c not in recent and c != reserved_corner
+                    ]
                     if not candidates:
-                        cooldown_due = self._cooldown_due_at(state["history"], eligible, now)
-                        if cooldown_due is not None:
-                            state["next_due_at"] = cooldown_due
+                        cooldown_due = self._cooldown_due_at(
+                            state["history"],
+                            [c for c in eligible if c != reserved_corner],
+                            now,
+                        )
+                        trigger_due = None
+                        if isinstance(future_manual, dict):
+                            trigger_due = timestamp(future_manual["trigger_at"])
+                        deadlines = [d for d in (cooldown_due, trigger_due) if d is not None]
+                        if deadlines:
+                            state["next_due_at"] = min(deadlines)
+                        if trigger_due is not None and (
+                                cooldown_due is None or trigger_due <= cooldown_due):
+                            return self._wait(state, "scheduled-manual-not-due")
                         return self._wait(state, "all-corners-cooling-down")
                     # Seeded independent random ranking is stable across restart
                     # and catalog order, without persisting interpreter RNG state.
