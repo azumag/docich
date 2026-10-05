@@ -228,6 +228,10 @@ class AuthorizeTests(unittest.TestCase):
         # arbitrary exec の入力 ($VM_COMMAND) を webui 再起動へ流用しない
         step = workflow.split("Restart docich webui systemd unit", 1)[1].split("- name:", 1)[0]
         self.assertNotIn("VM_COMMAND", step)
+        self.assertIn("github.event_name == 'push'", step)
+        self.assertIn("steps.auth.outputs.operation == 'deploy'", step)
+        self.assertIn("src/docich ops/runtime_context/webui_restart_epoch", step)
+        self.assertIn('git -C candidate diff --quiet "$BEFORE_SHA" "$SHA"', step)
 
     def test_recover_soren_game_is_fixed_production_operation(self):
         for target, ref, confirm in (("preview", "main", "production"),
