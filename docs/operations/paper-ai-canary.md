@@ -32,6 +32,8 @@ Model output is never printed or persisted. Successful output contains only
 status, source count, whether an asset background was verified, the fixed model
 identifier, output character count and SHA-256.
 
+The generated prompt is capped at 16 KiB before the direct provider is called; an oversized canary fails without starting inference.
+
 ## Dry run
 
 Dry-run is the default and performs no network or provider call:
