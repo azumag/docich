@@ -350,10 +350,6 @@ class TsuitateCornerManager:
             or identity.get("game") != VIEW_NAME
         ):
             raise TsuitateCornerError("tsuitate runtime owner identity is missing")
-        if state.get("beta_started") is not True:
-            pending = self._ensure_beta_started(state)
-            if pending is not None:
-                return pending
         while True:
             canonical = self._canonical()
             if canonical is None:
@@ -378,6 +374,29 @@ class TsuitateCornerManager:
                 raise TsuitateCornerError("tsuitate runtime ownership is in an unsafe switch phase")
 
             should_stop = self._stop_requested() or state.get("view_lost") is True
+
+            # A start response may have been ambiguous. Always observe the
+            # singleton before deciding whether this corner owns a beta run.
+            # In particular, a stop/view-loss request must never manufacture a
+            # new match merely so that it can be stopped immediately afterward.
+            if state.get("beta_started") is not True:
+                status = self._control_status(state)
+                if status is None:
+                    return "queued"
+                if status.get("runId") == state.get("rotation_request_id"):
+                    state["beta_started"] = True
+                    self._save(state)
+                elif should_stop:
+                    if state.get("view_lost") is True:
+                        return self._mark_interrupted(
+                            state, state.get("end_reason", "operator-moved-during-tsuitate")
+                        )
+                    return self._restore(state, end_reason="manual")
+                else:
+                    pending = self._ensure_beta_started(state)
+                    if pending is not None:
+                        return pending
+
             if should_stop and not self._request_beta_stop(state):
                 return "queued"
 
