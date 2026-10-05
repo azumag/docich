@@ -2729,6 +2729,9 @@ WEATHER_RECEIPT_STATUSES = frozenset({
 })
 WEATHER_RESULT_STATUSES = frozenset({"succeeded", "failed", "rolled_back"})
 WEATHER_OPERATIONS = frozenset({"start", "switch", "stop"})
+WEATHER_AUDIO_DELIVERY_STATUSES = frozenset({
+    "running", "stopping", "completed", "stopped", "failed",
+})
 _WEATHER_UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
@@ -2893,6 +2896,9 @@ def _weather_corner_projection(state_dir, rotation, rotation_readable):
             "generation_matches_owner": None,
         },
         "restored_runtime_matches_current": None,
+        "audio_delivery_present": False,
+        "audio_delivery_status": "unknown",
+        "audio_next_index": None,
     }
     if not readable:
         return out
@@ -2929,6 +2935,16 @@ def _weather_corner_projection(state_dir, rotation, rotation_readable):
     elif last_match:
         selection_kind = _weather_selection_kind(owner_id)
 
+    delivery = state.get("audio_delivery")
+    audio_delivery_present = isinstance(delivery, dict)
+    audio_delivery_status = (
+        _rotation_enum(delivery.get("status"), WEATHER_AUDIO_DELIVERY_STATUSES)
+        if audio_delivery_present else "unknown"
+    )
+    audio_next_index = delivery.get("next_index") if audio_delivery_present else None
+    if type(audio_next_index) is not int or not 0 <= audio_next_index <= 13:
+        audio_next_index = None
+
     rotation_result_status = "unknown"
     rotation_result_at = None
     if last_match:
@@ -2961,6 +2977,9 @@ def _weather_corner_projection(state_dir, rotation, rotation_readable):
             or (state.get("previous_game") is None and "restored_runtime_identity" in state
                 and state.get("restored_runtime_identity") is None)
         ),
+        audio_delivery_present=audio_delivery_present,
+        audio_delivery_status=audio_delivery_status,
+        audio_next_index=audio_next_index,
         start_request_matches_rotation=(
             start_id == owner_id if start_id is not None and owner_id is not None else None
         ),

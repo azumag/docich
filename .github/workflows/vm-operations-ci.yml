@@ -64,6 +64,7 @@ jobs:
           ops/vm_actions/authorize.py
           ops/vm_actions/authorize_nethack_corner.py
           ops/vm_actions/authorize_hanjuku_admin_query.py
+          ops/vm_actions/authorize_weather_start_query.py
           ops/vm_actions/gateway.py
           ops/vm_actions/stage_repair.py
           ops/vm_actions/collect_diagnostics.py
@@ -95,6 +96,7 @@ jobs:
           ops/vm_actions/restart_webui.sh
           ops/vm_actions/recover_soren_game.sh
           ops/vm_actions/recover_soren_round.sh
+          ops/vm_actions/start_weather_corner.sh
           ops/vm_actions/storage_reclaim.sh
           ops/vm_actions/opencode_db_retention_now.sh
           ops/vm_actions/ensure_opencode_retention_timer.sh
