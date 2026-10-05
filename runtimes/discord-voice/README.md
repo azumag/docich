@@ -117,7 +117,27 @@ With receive enabled, the voice connection uses `selfDeaf: false`, but the runti
 
 Completed utterances are sent to Cloudflare Workers AI `@cf/openai/whisper-large-v3-turbo` with Japanese transcription and provider-side VAD enabled. The REST payload is bounded but necessarily contains a transient JavaScript representation of the WAV bytes; no raw audio file is written. Runtime-owned PCM/WAV/response byte buffers are cleared after use where JavaScript exposes writable byte storage. Provider transport, billing, and remote retention remain governed by Cloudflare; this runtime does not claim remote erasure.
 
-Normal logs contain only fixed lifecycle events such as `utterance_started`, `utterance_finished`, `stt_started`, `stt_completed`, and fixed failure/cancellation events. They do not include Guild/Channel/User IDs or transcript text. For a temporary owner-only acceptance session, transcript output can be explicitly enabled with `DOCICH_DISCORD_VOICE_TRANSCRIPT_DEBUG=1`; leave it unset for normal operation. Slice 2 does not yet pass the transcript into the DoCiAI conversation core or synthesize a reply. Those remain Slice 3/4 work.
+Normal logs contain only fixed lifecycle events such as `utterance_started`, `utterance_finished`, `stt_started`, `stt_completed`, and fixed failure/cancellation events. They do not include Guild/Channel/User IDs or transcript text. For a temporary owner-only acceptance session, transcript output can be explicitly enabled with `DOCICH_DISCORD_VOICE_TRANSCRIPT_DEBUG=1`; leave it unset for normal operation. Slice 2 alone does not pass the transcript into the DoCiAI conversation core or synthesize a reply.
+
+### Slice 3: existing DoCiAI conversation core
+
+Slice 3 can explicitly forward the completed STT transcript to the existing Cloudflare Discord Chat Worker. The Worker keeps the canonical persona, Workers AI binding and SQLite-backed text memory; the Windows process does not copy those stores locally.
+
+First add a separate random secret to the Cloudflare Worker. Do not reuse the Discord Bot token or Workers AI token.
+
+```powershell
+# Run the corresponding Cloudflare secret command from a trusted shell first.
+$env:DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED = "1"
+$env:DOCICH_DISCORD_VOICE_CHAT_URL = "https://<worker-host>/voice/reply"
+$env:DOCICH_DISCORD_VOICE_CHAT_TOKEN = "<voice bridge secret>"
+npm run start:live
+```
+
+Conversation mode is fail-closed unless receive mode is also enabled. The Worker endpoint accepts only HTTPS client calls with the separate Bearer secret, forwards the request internally to the existing singleton Durable Object, and returns only the generated reply. Normal diagnostics emit fixed `llm_started / llm_completed / llm_failed / llm_cancelled` events and never include the transcript, reply, IDs or token. For a temporary owner-only acceptance session, `DOCICH_DISCORD_VOICE_REPLY_DEBUG=1` can expose the generated reply on stdout; leave it unset normally.
+
+The voice request reads existing text-memory history for the same full `guild + channel + user` scope and rechecks recalled sources after model generation so a concurrent delete suppresses the reply. This slice intentionally does **not** persist the new voice turn. Delivery acknowledgement does not exist until TTS + Discord playback are connected, so saving the turn now would create remembered replies that were never spoken. There is no automatic request retry in this slice.
+
+Slice 3 still does not synthesize or play the generated reply. Real VOICEVOX playback, playback-ack memory commit, live barge-in, multi-user handling and the 30-minute acceptance test remain later work.
 
 The Bot needs only the permissions required to see the configured server/channel and **Connect / Speak** in that voice channel. Message Content, member-list and Presence privileged intents are not used by this live process. The Windows CI job installs the same pinned dependencies and executes `check:live` plus the offline contracts without any Discord credentials.
 
