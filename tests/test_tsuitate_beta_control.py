@@ -94,6 +94,12 @@ class TestBridge(unittest.TestCase):
         self.assertNotIn("rawCheckpoint", result["playerView"])
         self.assertNotIn("private", result["playerView"]["yourPieces"][0])
         self.assertEqual(opener.open.call_args.kwargs["timeout"], 5)
+
+        malformed = dict(status, playerView={**status["playerView"], "moveNumber": 0})
+        opener.open.return_value = Response(json.dumps(malformed).encode())
+        with mock.patch.dict(os.environ, ENV), mock.patch.object(control.urllib.request, "build_opener", return_value=opener):
+            degraded = control.call_beta_control("status")
+        self.assertIsNone(degraded["playerView"])
         with self.assertRaises(control.ControlError): control.NoRedirect().redirect_request(None, None, None, None, None, None)
         opener.open.side_effect = RuntimeError("fixture-private-URL-token")
         with mock.patch.dict(os.environ, ENV), mock.patch.object(control.urllib.request, "build_opener", return_value=opener):
