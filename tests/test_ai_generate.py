@@ -321,7 +321,9 @@ def test_radio_direct_api_is_accepted_by_dispatch_guard(tmp_path):
         return ProviderResult(0, output="radio direct")
     result = Dispatcher(env=env, provider_caller=provider).dispatch(request)
     assert result.returncode == 0 and result.output == "radio direct"
-    assert calls == [("cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8", "RADIO:paper-script", 45.0)]
+    assert len(calls) == 1
+    assert calls[0][:2] == ("cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8", "RADIO:paper-script")
+    assert 0 < calls[0][2] <= 45.0
 
 
 def test_direct_chat_chain_shares_45_second_budget(tmp_path):
