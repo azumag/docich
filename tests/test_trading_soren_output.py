@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import datetime as dt
+import os
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -10,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import config  # noqa: E402
 from docich.trading import soren_output  # noqa: E402
+from docich.meriken_voice import MERIKEN_SPEAKER_DEFAULT, resolve_meriken_speaker  # noqa: E402
 
 
 class TestSorenOutputAdapter(unittest.TestCase):
@@ -131,16 +135,30 @@ class TestSorenOutputAdapter(unittest.TestCase):
             "paper-corner:2026-09-17:switch-notice",
         ]
         personas = {soren_output.pick_paper_persona(key) for key in keys}
-        self.assertEqual(len(personas), 1, personas)
+        self.assertEqual(personas, {"meriken"})
 
-    def test_persona_pick_covers_both_voices_across_different_corners(self):
-        # Persona varies by corner identity (scope+date), so different dates
-        # (production) or different manual-run uuids still cover both voices.
-        seen = {
-            soren_output.pick_paper_persona(f"paper-corner:2026-09-{day:02d}:script:1")
-            for day in range(1, 29)
-        }
-        self.assertEqual(seen, {"chuka", "meriken"})
+    def test_every_date_and_all_eight_slots_use_meriken_in_every_paper_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = config.load_global(Path(tmp))
+            with mock.patch.dict(os.environ, {}, clear=True), \
+                 mock.patch("docich.trading.soren_output._retry_pending_hanjuku_terminal"), \
+                 mock.patch("docich.webui._enqueue_audio_text", return_value={"ok": True}) as enqueue:
+                # Include a leap year's every date, both edges of the year,
+                # fresh manual identities, all slots and exact retry/replay.
+                for day in range(366):
+                    date = dt.date(2028, 1, 1) + dt.timedelta(days=day)
+                    for scope, owner in (("paper-corner", ""),
+                                         (f"paper-corner-manual-{day:012x}", ""),
+                                         (f"paper-corner-operator-{day:012x}", ""),
+                                         (f"corner-rotation:{day:012x}", "paper")):
+                        for slot in range(1, 9):
+                            key = f"{scope}:{date}:script:{slot}"
+                            self.assertEqual(soren_output.pick_paper_persona(key, corner_owner=owner), "meriken")
+                            for _ in range(2):
+                                soren_output.enqueue_speech(g, "本文", event_id=key, corner_owner=owner)
+                                self.assertEqual(enqueue.call_args.kwargs["speaker"], "14")
+                                self.assertEqual(enqueue.call_args.kwargs["delivery_key"], key)
+                                self.assertEqual(enqueue.call_args.args[1], "本文")
 
     def test_speech_text_has_no_fixed_persona_preamble(self):
         """Both personas used to open with one of a 3-line canned quip pool,
@@ -161,60 +179,98 @@ class TestSorenOutputAdapter(unittest.TestCase):
             spoken = soren_output._paper_corner_speech_text(body, key)
             self.assertEqual(spoken, body)
 
-    def test_speech_text_is_identical_across_corners_with_different_personas(self):
-        # Two corners that land on different personas must still speak the
-        # same body text identically -- no per-persona prefix.
+    def test_speech_text_is_identical_across_dates_and_scopes(self):
         body = "損益を見ます。"
-        meriken_key = None
-        chuka_key = None
-        for day in range(1, 29):
-            key = f"paper-corner:2026-09-{day:02d}:script:3"
-            persona = soren_output.pick_paper_persona(key)
-            if persona == "meriken" and meriken_key is None:
-                meriken_key = key
-            elif persona == "chuka" and chuka_key is None:
-                chuka_key = key
-            if meriken_key and chuka_key:
-                break
-        self.assertIsNotNone(meriken_key)
-        self.assertIsNotNone(chuka_key)
-        self.assertEqual(
-            soren_output._paper_corner_speech_text(body, meriken_key),
-            soren_output._paper_corner_speech_text(body, chuka_key),
-        )
+        for key in ("paper-corner:2026-09-01:script:3",
+                    "paper-corner:2026-10-05:script:3",
+                    "paper-corner-manual-abcdef123456:2026-10-05:script:3",
+                    "paper-corner-operator-abcdef123456:2026-10-05:script:3"):
+            self.assertEqual(soren_output._paper_corner_speech_text(body, key), body)
 
-    def test_meriken_delivery_uses_soren91_voice_and_chuka_uses_default(self):
-        def key_for(persona):
-            # Persona is now fixed per corner (scope+date), so vary the date
-            # to find one corner hosted by each voice.
-            for day in range(1, 29):
-                key = f"paper-corner:2026-09-{day:02d}:probe:0"
-                if soren_output.pick_paper_persona(key) == persona:
-                    return key
-            raise AssertionError(f"no {persona} key found")
-
-        meriken_key = key_for("meriken")
-        chuka_key = key_for("chuka")
+    def test_paper_delivery_uses_soren91_override_for_opening_and_notices(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / ".env").write_text("SOREN91_VOICEVOX_SPEAKER=14\n", encoding="utf-8")
+            (root / ".env").write_text("SOREN91_VOICEVOX_SPEAKER=24\n", encoding="utf-8")
             g = config.load_global(root)
-            with mock.patch.object(soren_output, "resolve_soren_root", return_value=root), \
+            with mock.patch.dict(os.environ, {}, clear=True), \
+                 mock.patch.object(soren_output, "resolve_soren_root", return_value=root), \
                  mock.patch("docich.webui._enqueue_audio_text", return_value={"ok": True}) as enqueue:
-                soren_output.enqueue_speech(g, "本文", event_id=meriken_key)
-                _, kwargs = enqueue.call_args
-                self.assertEqual(kwargs.get("speaker"), "14")
-                self.assertEqual(enqueue.call_args.args[1], "本文")
-            with mock.patch.object(soren_output, "resolve_soren_root", return_value=root), \
+                for scope in ("paper-corner", "paper-corner-manual-abcd", "paper-corner-operator-abcd"):
+                    for suffix in ("opening", "switch-notice", "closing", "ai:1"):
+                        key = f"{scope}:2026-10-05:{suffix}"
+                        soren_output.enqueue_speech(g, "本文", event_id=key)
+                        self.assertEqual(enqueue.call_args.kwargs["speaker"], "24")
+                        self.assertEqual(enqueue.call_args.kwargs["delivery_key"], key)
+                        self.assertEqual(enqueue.call_args.args[1], "本文")
+
+    def test_non_paper_deliveries_keep_their_text_and_default_voice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = config.load_global(Path(tmp))
+            with mock.patch("docich.trading.soren_output.resolve_meriken_speaker") as resolve, \
                  mock.patch("docich.webui._enqueue_audio_text", return_value={"ok": True}) as enqueue:
-                soren_output.enqueue_speech(g, "本文", event_id=chuka_key)
-                _, kwargs = enqueue.call_args
-                self.assertEqual(kwargs.get("speaker"), "")
+                for key in ("", "fill:event-a", "arbitrage:event-a", "stocks:report", "fx:report",
+                            "soren91:announce", "weather:opening", "paper-worker:report", "paper-cornerish:x"):
+                    soren_output.enqueue_speech(g, "結論からお伝えしますと、本文です。", event_id=key)
+                    self.assertEqual(enqueue.call_args.kwargs["speaker"], "")
+                    self.assertEqual(enqueue.call_args.kwargs["delivery_key"], key)
+                    self.assertEqual(enqueue.call_args.args[1], "結論からお伝えしますと、本文です。")
+            resolve.assert_not_called()
 
     def test_meriken_voice_falls_back_when_env_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.assertEqual(soren_output._meriken_speaker_id(root), "46")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(resolve_meriken_speaker(config.load_global(root), root), "14")
+
+    def test_meriken_voice_override_precedence_and_invalid_values(self):
+        cases = (
+            (" 24 ", "46", "voicevox_speaker = 14", "24"),
+            ("bad value", "'46'", "voicevox_speaker = 14", "46"),
+            ("", "46 # runtime override", "voicevox_speaker = 14", "46"),
+            ("", "", "voicevox_speaker = 24", "24"),
+            ("$(secret)", "bad value", "voicevox_speaker = 24", "24"),
+            ("a" * 65, "bad;value", "voicevox_speaker = true", "14"),
+            ("\ninvalid value", "", 'voicevox_speaker = "bad value"', "14"),
+            ("", "", "voicevox_speaker = []", "14"),
+            ("not-a-style", "14.0", "voicevox_speaker = -1", "14"),
+            ("-1", "None", "voicevox_speaker = 24", "24"),
+            ("", "", "voicevox_speaker = 0", "0"),
+        )
+        for process, dotenv, game, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                games = root / "config/games"
+                games.mkdir(parents=True)
+                (games / "soren91.toml").write_text(
+                    '[game]\nname = "soren91"\ntitle = "Soren91"\nadapter = "soren91"\n'
+                    '[soren91]\n' + game + '\n', encoding="utf-8",
+                )
+                (root / ".env").write_text("SOREN91_VOICEVOX_SPEAKER=" + dotenv + "\n", encoding="utf-8")
+                with mock.patch.dict(os.environ, {"SOREN91_VOICEVOX_SPEAKER": process}, clear=True):
+                    self.assertEqual(resolve_meriken_speaker(config.load_global(root), root), expected)
+
+    def test_meriken_voice_handles_unreadable_or_malformed_sources(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=True):
+            root = Path(tmp)
+            g = config.load_global(root)
+            with mock.patch("docich.webui._read_dotenv_dict", side_effect=OSError("private value")), \
+                 mock.patch("docich.meriken_voice.load_game", side_effect=ValueError("private value")):
+                self.assertEqual(resolve_meriken_speaker(g, root), "14")
+
+    def test_public_meriken_default_matches_soren91_game_config(self):
+        path = Path(__file__).resolve().parents[1] / "config/games/soren91.toml"
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(str(raw["soren91"]["voicevox_speaker"]), MERIKEN_SPEAKER_DEFAULT)
+
+
+def test_invalid_meriken_overrides_and_errors_are_not_logged(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("SOREN91_VOICEVOX_SPEAKER", "synthetic-private-value")
+    (tmp_path / ".env").write_text("SOREN91_VOICEVOX_SPEAKER=synthetic-private-value\n", encoding="utf-8")
+    g = config.load_global(tmp_path)
+    with mock.patch("docich.meriken_voice.load_game", side_effect=ValueError("synthetic-private-value")):
+        assert resolve_meriken_speaker(g, tmp_path) == "14"
+    output = capsys.readouterr()
+    assert output.out == output.err == ""
 
 
 if __name__ == "__main__":

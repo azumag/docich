@@ -21,7 +21,7 @@ from .overlay_queue import OVERLAY_BODY_LIMIT
 from .procs import user_bus_env
 from .tmux import Tmux
 from .trading.presentation import write_presentation
-from .trading.soren_output import send_overlay, enqueue_speech
+from .trading.soren_output import send_overlay, enqueue_paper_corner_speech
 
 # Each fixed slot gets a bounded generation attempt before its own fallback.
 NARRATION_AI_RETRIES = 2
@@ -91,7 +91,7 @@ def _safe_detail(value: BaseException | str) -> str:
 
 
 class PaperCornerManager:
-    def __init__(self, g, *, clock=time.time, sleep=time.sleep, overlay=send_overlay, speech=enqueue_speech,
+    def __init__(self, g, *, clock=time.time, sleep=time.sleep, overlay=send_overlay, speech=enqueue_paper_corner_speech,
                  coordinator=None, spawn=None, stream_game=None, stream_paper=None):
         self.g, self.clock, self.sleep = g, clock, sleep
         self.overlay, self.speech = overlay, speech
