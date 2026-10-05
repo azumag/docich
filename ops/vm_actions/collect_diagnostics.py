@@ -473,8 +473,10 @@ def _cpu_profile_label(value):
     if not isinstance(value, str) or not 1 <= len(value) <= 64:
         return None
     if value in {
-        "retroarch", "x_server", "xdotool", "audio_server", "browser",
-        "kernel", "shell", "python", "other", "profiler",
+        "retroarch", "x_server", "xdotool", "x_capture_tool", "x_query_tool",
+        "audio_server", "audio_cli", "media_player", "browser", "obs", "tmux",
+        "node", "sshd", "tailscale", "container_runtime", "curl", "git", "sleep",
+        "inotifywait", "jq", "kernel", "shell", "python", "other", "profiler",
     }:
         return value
     if re.fullmatch(r"ffmpeg:(?:capture|stream|x11grab|other)", value):
