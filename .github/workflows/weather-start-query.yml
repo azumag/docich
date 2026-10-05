@@ -316,27 +316,31 @@ jobs:
           )))
           PY
                 )"
-                IFS='|' read -r status selection audio index end restored_now game loop_now soren_state_now soren_age_now soren_resumed_now <<<"$projection"
-                audio_status="$audio"
-                active_game="$game"
-                soren_loop="$loop_now"
-                soren_state="$soren_state_now"
-                soren_age="$soren_age_now"
-                soren_resumed="$soren_resumed_now"
-                if (( index > max_index )); then max_index="$index"; fi
-                if [[ "$selection" == manual && ( "$status" == starting || "$status" == active || "$status" == restoring ) ]]; then
-                  seen_active=true
-                fi
-                if [[ "$seen_active" == true && ( "$status" == completed || "$status" == interrupted || "$status" == failed ) ]]; then
-                  terminal="$status"
-                  end_reason="$end"
-                  restored="$restored_now"
-                fi
-                # A restored Soren frame is not enough: keep observing until
-                # the required loop/runner are alive and game_state is fresh.
-                if [[ "$terminal" != not_observed && "$restored" == true ]]; then
-                  if [[ "$active_game" != sorengame || "$soren_resumed" == true ]]; then
-                    break
+                # Rejected envelopes have no projection. Preserve the last
+                # verified observation and keep the common deadline/sleep path.
+                if [[ -n "$projection" ]]; then
+                  IFS='|' read -r status selection audio index end restored_now game loop_now soren_state_now soren_age_now soren_resumed_now <<<"$projection"
+                  audio_status="$audio"
+                  active_game="$game"
+                  soren_loop="$loop_now"
+                  soren_state="$soren_state_now"
+                  soren_age="$soren_age_now"
+                  soren_resumed="$soren_resumed_now"
+                  if (( index > max_index )); then max_index="$index"; fi
+                  if [[ "$selection" == manual && ( "$status" == starting || "$status" == active || "$status" == restoring ) ]]; then
+                    seen_active=true
+                  fi
+                  if [[ "$seen_active" == true && ( "$status" == completed || "$status" == interrupted || "$status" == failed ) ]]; then
+                    terminal="$status"
+                    end_reason="$end"
+                    restored="$restored_now"
+                  fi
+                  # A restored Soren frame is not enough: keep observing until
+                  # the required loop/runner are alive and game_state is fresh.
+                  if [[ "$terminal" != not_observed && "$restored" == true ]]; then
+                    if [[ "$active_game" != sorengame || "$soren_resumed" == true ]]; then
+                      break
+                    fi
                   fi
                 fi
               fi
@@ -447,3 +451,4 @@ jobs:
         if: ${{ always() }}
         shell: bash
         run: rm -rf -- "$RUNNER_TEMP/weather-start"
+

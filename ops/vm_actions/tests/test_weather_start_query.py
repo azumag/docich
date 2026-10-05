@@ -264,6 +264,148 @@ class WeatherStartQueryWorkflowTests(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "124")
         self.assertLess(elapsed, 3.0)
 
+    @staticmethod
+    def _weather_observation(status, game, *, runner_alive=False):
+        return {
+            "status": "diagnosed",
+            "sha": "a" * 40,
+            "diagnostics": {
+                "corners": {
+                    "weather_corner": {
+                        "status": status,
+                        "selection_kind": "manual",
+                        "audio_delivery_status": (
+                            "completed" if status == "completed" else "running"
+                        ),
+                        "audio_next_index": 4,
+                        "end_reason": "completed" if status == "completed" else "none",
+                        "restored_runtime_matches_current": status == "completed",
+                    },
+                    "game_switch": {"phase": "ready", "active_game": game},
+                    "soren_game": {
+                        "state": "WAITING",
+                        "age_sec": 3,
+                        "runner_alive": runner_alive,
+                    },
+                },
+                "workers": {
+                    "details": {"soren_loop": {"alive": True, "paused": False}}
+                },
+            },
+        }
+
+    def _run_observation_sequence(self, responses, *, seconds_per_poll):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        start = text.index("      - name: Observe Weather execution and audio progress")
+        start = text.index("        run: |\n", start) + len("        run: |\n")
+        end = text.index("\n      - name:", start)
+        shell = textwrap.dedent(text[start:end])
+        self.assertIn("observe_deadline=$((SECONDS + 1080))", shell)
+        self.assertIn("sleep_for=5", shell)
+        # Poll ordering uses a deterministic clock, so runner load cannot make
+        # the three-response preservation fixture expire before its last poll.
+        # The separate blocking-child test exercises real timeout behavior.
+        shell = "\n".join((
+            "fixture_seconds=0",
+            "sleep() {",
+            '  (( "$1" > 0 )) || return 1',
+            f"  fixture_seconds=$((fixture_seconds + {seconds_per_poll}))",
+            "}",
+            shell.replace("SECONDS", "fixture_seconds"),
+        ))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            bindir = work / "bin"
+            bindir.mkdir()
+            git = bindir / "git"
+            git.write_text(
+                "#!/bin/sh\n"
+                'case "$3" in\n'
+                '  ls-remote) printf "%s\\trefs/heads/main\\n" "$FIXTURE_SHA";;\n'
+                '  rev-parse) printf "%s\\n" "$FIXTURE_SHA";;\n'
+                "  fetch|cat-file|merge-base) exit 0;;\n"
+                "  *) exit 1;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            ssh = bindir / "ssh"
+            ssh.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, pathlib, sys\n"
+                'work = pathlib.Path(os.environ["FIXTURE_DIR"])\n'
+                'sha = os.environ["FIXTURE_SHA"]\n'
+                "command = sys.argv[-1]\n"
+                'if command == f"status docich production {sha}":\n'
+                '    print(json.dumps({"status": "configured", "sha": sha}))\n'
+                "else:\n"
+                '    assert command == f"diagnostics docich production {sha}"\n'
+                '    count_path = work / "calls"\n'
+                "    count = int(count_path.read_text()) if count_path.exists() else 0\n"
+                '    responses = json.loads((work / "responses.json").read_text())\n'
+                "    count_path.write_text(str(count + 1))\n"
+                "    print(json.dumps(responses[min(count, len(responses) - 1)]))\n",
+                encoding="utf-8",
+            )
+            git.chmod(0o755)
+            ssh.chmod(0o755)
+            (work / "responses.json").write_text(json.dumps(responses), encoding="utf-8")
+            output = work / "outputs"
+            env = dict(
+                os.environ,
+                PATH=str(bindir) + os.pathsep + os.environ["PATH"],
+                FIXTURE_DIR=str(work),
+                FIXTURE_SHA="a" * 40,
+                RUNNER_TEMP=str(work),
+                WEATHER_SSH_PORT="22",
+                VM_SSH_USER="fixture",
+                VM_SSH_HOST="fixture.invalid",
+                GITHUB_OUTPUT=str(output),
+            )
+            result = subprocess.run(
+                ["bash", "-c", shell], env=env, text=True,
+                capture_output=True, check=False, timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            fields = dict(
+                line.split("=", 1)
+                for line in output.read_text(encoding="utf-8").splitlines()
+            )
+            calls = int((work / "calls").read_text(encoding="utf-8"))
+            return fields, calls
+
+    def test_rejected_poll_preserves_observation_until_deadline(self):
+        responses = [
+            self._weather_observation("active", "weather-view"),
+            self._weather_observation("completed", "sorengame"),
+            {"status": "diagnosed", "sha": "b" * 40, "diagnostics": {}},
+        ]
+        fields, calls = self._run_observation_sequence(responses, seconds_per_poll=360)
+        self.assertEqual(calls, 3)
+        self.assertEqual(fields["seen_active"], "true")
+        self.assertEqual(fields["max_index"], "4")
+        self.assertEqual(fields["terminal"], "completed")
+        self.assertEqual(fields["restored"], "true")
+        self.assertEqual(fields["audio_status"], "completed")
+        self.assertEqual(fields["active_game"], "sorengame")
+        self.assertEqual(fields["soren_loop"], "alive")
+        self.assertEqual(fields["soren_state"], "WAITING")
+        self.assertEqual(fields["soren_age"], "3")
+        self.assertEqual(fields["soren_resumed"], "false")
+
+    def test_rejected_poll_waits_for_next_verified_soren_resume(self):
+        responses = [
+            self._weather_observation("active", "weather-view"),
+            self._weather_observation("completed", "sorengame"),
+            {"status": "diagnosed", "sha": "b" * 40, "diagnostics": {}},
+            self._weather_observation("completed", "sorengame", runner_alive=True),
+        ]
+        fields, calls = self._run_observation_sequence(responses, seconds_per_poll=240)
+        self.assertEqual(calls, 4)
+        self.assertEqual(fields["audio_status"], "completed")
+        self.assertEqual(fields["active_game"], "sorengame")
+        self.assertEqual(fields["soren_resumed"], "true")
+
     def test_start_script_and_module_have_only_fixed_weather_target(self):
         script = START_SCRIPT.read_text(encoding="utf-8")
         module = START_MODULE.read_text(encoding="utf-8")
