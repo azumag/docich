@@ -459,6 +459,7 @@ def test_improve_direct_chain_is_shared_by_parent_and_child(tmp_path):
 
 @pytest.mark.parametrize('direct_agents', ['', 'opencode:legacy', 'local:fixture'])
 def test_improve_direct_enable_rejects_missing_or_non_direct_chain(tmp_path, direct_agents):
+    from docich.trading.cli import TradingCliError
     g = setup(tmp_path)
     cfg = tmp_path / 'config.toml'
     cfg.write_text(cfg.read_text().replace(
@@ -468,7 +469,7 @@ def test_improve_direct_enable_rejects_missing_or_non_direct_chain(tmp_path, dir
         f'improve_direct_agents = "{direct_agents}"\n'
         'enabled = true'))
     g = load_global(tmp_path, cfg)
-    with pytest.raises(Exception):
+    with pytest.raises(TradingCliError):
         manager(g)
 
 
