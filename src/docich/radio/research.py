@@ -69,8 +69,9 @@ def _project_topic(topic: str) -> str:
     if not isinstance(topic, str):
         raise ValueError("input_limit")
     value = " ".join(topic.split())
-    if (not value or len(value.encode("utf-8")) > MAX_TOPIC_BYTES
-            or _has_private_route_input(value)):
+    if not value or len(value.encode("utf-8")) > MAX_TOPIC_BYTES:
+        raise ValueError("input_limit")
+    if _has_private_route_input(value):
         raise ValueError("private_or_invalid_input")
     return value
 
