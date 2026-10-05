@@ -335,8 +335,9 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
   `chart_adjust_request` を記録して runtime 配下の `hanjuku_chart_adjust_request.json` を atomic に更新する（#1085）。
   - L1 非同期調整: 観測プロセス（agent/corner監視）が `hanjuku_chart_worker.consider()` で要求を
     非ブロッキングlock下に取り、daemon thread で1件だけ `ai_generate.run_prompt`
-    （`[hanjuku.chart_adjust].agents`、label `RADIO:hanjuku-chart-adjust`）へ状況・基準チャート（ordersと章の購入予定）・
+    （通常は `[hanjuku.chart_adjust].agents`、label `RADIO:hanjuku-chart-adjust`）へ状況・基準チャート（ordersと章の購入予定）・
     直近実績を渡す。状況には `card_stock`（出撃切り札一覧で実測した在庫）を含め、prompt は
+    `direct_enabled=false` が既定で、true時だけ `direct_agents` のexplicit `openrouter-api / vercel-api / cloudflare-api` chainへ切り替える。空/non-direct chainは生成前に拒否し、既存agentsを暗黙変換しない。
     在庫に無い札を携行させず、卵落値と「卵落 > 最大HP合計 mod 16」の規則で卵を落とせる札を選ばせる。
     要求 payload の revision（`request_digest`、在庫・所持金・失った城などbotの interim 出撃では
     変わらない観測値のハッシュ）を request/adjusted 両ファイルに持ち、生成中に revision が変わった

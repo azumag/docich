@@ -462,6 +462,41 @@ def test_worker_rejects_bad_output_and_bounds_attempts(tmp_path):
     assert [e['status'] for e in events if e['event'] == 'adjust_worker'] == ['invalid_output'] * 2
 
 
+def test_chart_adjust_direct_chain_is_explicit_opt_in():
+    cfg = adjust.settings({
+        'enabled': True,
+        'agents': 'opencode:legacy',
+        'direct_enabled': True,
+        'direct_agents': 'cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8',
+    })
+    assert cfg['enabled'] is True
+    assert cfg['direct_enabled'] is True
+    assert cfg['agents'] == 'cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8'
+
+
+@pytest.mark.parametrize('direct_agents', ['', 'opencode:legacy', 'local:fixture'])
+def test_chart_adjust_direct_chain_rejects_missing_or_non_direct(direct_agents):
+    with pytest.raises(ValueError):
+        adjust.settings({
+            'enabled': True,
+            'agents': 'opencode:legacy',
+            'direct_enabled': True,
+            'direct_agents': direct_agents,
+        })
+
+
+def test_chart_adjust_direct_off_keeps_legacy_chain():
+    cfg = adjust.settings({
+        'enabled': True,
+        'agents': 'opencode:legacy',
+        'direct_enabled': False,
+        'direct_agents': 'cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8',
+    })
+    assert cfg['enabled'] is True
+    assert cfg['direct_enabled'] is False
+    assert cfg['agents'] == 'opencode:legacy'
+
+
 def test_worker_disabled_without_agents_or_on_terminal(tmp_path):
     from docich import hanjuku_chart_worker as worker
     _requested(tmp_path)

@@ -41,14 +41,29 @@ def settings(raw) -> dict:
     raw = raw if isinstance(raw, dict) else {}
     enabled = raw.get('enabled', False)
     agents = raw.get('agents', '')
+    direct_enabled = raw.get('direct_enabled', False)
+    direct_agents = raw.get('direct_agents', '')
     timeout = raw.get('timeout_s', 180)
     attempts = raw.get('max_attempts', 2)
     interim = raw.get('interim_jev', False)
     interim_timeout = raw.get('interim_timeout_ms', 1500)
-    if type(enabled) is not bool or type(interim) is not bool:
-        raise ValueError('hanjuku.chart_adjust.enabled/interim_jev must be boolean')
+    if type(enabled) is not bool or type(interim) is not bool or type(direct_enabled) is not bool:
+        raise ValueError('hanjuku.chart_adjust enabled/interim_jev/direct_enabled must be boolean')
     if not isinstance(agents, str) or len(agents) > 1024:
         raise ValueError('invalid hanjuku.chart_adjust.agents')
+    if not isinstance(direct_agents, str) or len(direct_agents) > 1024:
+        raise ValueError('invalid hanjuku.chart_adjust.direct_agents')
+    if direct_enabled:
+        if not direct_agents.strip():
+            raise ValueError('hanjuku.chart_adjust.direct_agents is required when direct_enabled')
+        from .llm.policy import DIRECT_CHAT_PROVIDERS, parse_agents
+        try:
+            specs = parse_agents(direct_agents.strip())
+        except Exception as exc:
+            raise ValueError('invalid hanjuku.chart_adjust.direct_agents') from exc
+        if any(spec.provider not in DIRECT_CHAT_PROVIDERS for spec in specs):
+            raise ValueError('hanjuku.chart_adjust.direct_agents must use explicit *-api providers')
+        agents = direct_agents.strip()
     if type(timeout) is not int or not 30 <= timeout <= 600:
         raise ValueError('hanjuku.chart_adjust.timeout_s must be 30..600')
     if type(attempts) is not int or not 1 <= attempts <= 3:
@@ -56,6 +71,7 @@ def settings(raw) -> dict:
     if type(interim_timeout) is not int or not 50 <= interim_timeout <= 5000:
         raise ValueError('hanjuku.chart_adjust.interim_timeout_ms must be 50..5000')
     return {'enabled': enabled and bool(agents.strip()), 'agents': agents.strip(),
+            'direct_enabled': direct_enabled,
             'timeout_s': timeout, 'max_attempts': attempts,
             'interim_jev': interim, 'interim_timeout_ms': interim_timeout}
 
