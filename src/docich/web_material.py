@@ -37,7 +37,7 @@ class VerifiedWebMaterial:
     excerpt: str
     query_indexes: tuple[int, ...] = ()
 
-    def wire(self) -> dict[str, str]:
+    def wire(self) -> dict[str, object]:
         return {
             "url": self.url,
             "body_sha256": self.body_sha256,
@@ -184,7 +184,10 @@ def collect_verified_web_material(
         if not candidates:
             return VerifiedWebBundle("unavailable", (), tuple(used))
 
-        active_broker.authorize(candidates)
+        try:
+            active_broker.authorize(candidates)
+        except Exception:
+            return VerifiedWebBundle("unavailable", (), tuple(used))
         items: list[VerifiedWebMaterial] = []
         fetch_attempts = 0
         for url in candidates:
