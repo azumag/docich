@@ -424,6 +424,12 @@ fresh-start/lifecycle復帰の途中またはsupervisor再起動待ちを疑う�
 超えて最終metadataを書けないためである。deadline到達時はその時点のbounded観測値を書き出して終了し、
 workflow timeoutによる強制cancelに依存しない。
 
+またmain更新が連続する環境では、productionが最新mainへdeployされるまでの短い遅延を
+「観測不能」と扱わない。各pollでproductionの実HEADをstatusから取得し、runnerが取得した
+protected mainの直近128コミット内の祖先であることを `cat-file` と
+`merge-base --is-ancestor` で検証できた場合だけ、その実HEADを指定してdiagnosticsを読む。
+main系譜外・深さ上限外・statusがconfigured以外なら従来どおりfail-closedでそのpollを捨てる。
+
 ### 手動コーナーの時刻指定予約（#1759）
 
 WebUI の手動操作は即時開始に加えて、1回限りの `trigger_at` を持つ
