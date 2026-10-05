@@ -363,12 +363,37 @@ class CornerRotationManager:
                         "invalid scheduled manual trigger",
                         reason_code="invalid_scheduled_time",
                     ) from exc
-                if requested_trigger < now:
-                    raise RotationError(
-                        "scheduled manual trigger is in the past",
-                        reason_code="scheduled_time_past",
-                    )
             state = self.load(now)  # atomic ledger read; never edit execution state
+
+            # A retry of the exact scheduled reservation is read-only and
+            # idempotent even after its trigger becomes due. Check this before
+            # rejecting newly-created schedules in the past (#1759 review).
+            all_choices = [c.id for c in self.catalog if c.game == game]
+            if requested_trigger is not None and len(all_choices) == 1:
+                chosen_existing = all_choices[0]
+                existing = self._read_manual_queue() or state.get("queued_manual")
+                pending_existing = state.get("pending")
+                if (existing is None and isinstance(pending_existing, dict)
+                        and pending_existing.get("source") == "manual"):
+                    existing = pending_existing
+                if isinstance(existing, dict):
+                    existing_trigger = existing.get("trigger_at")
+                    if existing_trigger is not None:
+                        existing_trigger = timestamp(existing_trigger)
+                    if (existing.get("corner") == chosen_existing
+                            and existing_trigger == requested_trigger):
+                        return {
+                            "status": "scheduled",
+                            "corner": chosen_existing,
+                            "request_id": existing["request_id"],
+                            "trigger_at": requested_trigger,
+                        }
+
+            if requested_trigger is not None and requested_trigger < now:
+                raise RotationError(
+                    "scheduled manual trigger is in the past",
+                    reason_code="scheduled_time_past",
+                )
             if state["status"] == "recovery_required":
                 raise RotationError(
                     "corner recovery required before manual reservation",
