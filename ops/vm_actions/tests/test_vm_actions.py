@@ -199,6 +199,54 @@ class AuthorizeTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode,0,p.stderr)
 
+    def test_paper_ai_canary_requires_production_main_and_confirmation(self):
+        for target, ref, confirm in (
+            ("preview", "main", "production"),
+            ("production", "feature", "production"),
+            ("production", "main", ""),
+        ):
+            p = self.run_auth(
+                INPUT_OPERATION="paper_ai_canary",
+                INPUT_TARGET=target,
+                INPUT_REF=ref,
+                INPUT_CONFIRM=confirm,
+            )
+            self.assertNotEqual(p.returncode, 0)
+        p = self.run_auth(
+            GITHUB_REPOSITORY_PRIVATE="false",
+            INPUT_OPERATION="paper_ai_canary",
+            INPUT_TARGET="production",
+            INPUT_REF="main",
+            INPUT_CONFIRM="production",
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_paper_ai_canary_workflow_uses_only_fixed_reviewed_helper(self):
+        workflow = WF.read_text(encoding="utf-8")
+        marker = "Run one-shot PAPER Web Search and direct-AI canary"
+        self.assertIn(marker, workflow)
+        block = workflow.split(marker, 1)[1].split("- name:", 1)[0]
+        self.assertIn("steps.auth.outputs.operation == 'paper_ai_canary'", block)
+        self.assertIn("cat control/ops/vm_actions/run_paper_ai_canary.sh", block)
+        self.assertIn("EXPECTED_SHA=%s", block)
+        self.assertIn('"exec docich production $SHA"', block)
+        self.assertNotIn("VM_COMMAND", block)
+        self.assertNotIn("inputs.command", block)
+        self.assertIn(">/dev/null", block)
+
+    def test_paper_ai_canary_runner_is_fixed_nonpublishing_cli(self):
+        runner = (ROOT / "ops/vm_actions/run_paper_ai_canary.sh").read_text(encoding="utf-8")
+        self.assertIn('root="/home/ubuntu/docich"', runner)
+        self.assertIn('soren_root="/home/ubuntu/soren"', runner)
+        self.assertIn('[[ "$head" == "$EXPECTED_SHA" ]]', runner)
+        self.assertIn('status --porcelain --untracked-files=no --ignore-submodules=all', runner)
+        self.assertIn('. "$env_file"', runner)
+        self.assertIn('DOCICH_ALLOW_REAL_AI=1', runner)
+        self.assertIn('paper-ai-canary --execute', runner)
+        for forbidden in ("curl ", "wget ", "sudo ", "systemctl ", "tmux ", "kill ", "rm -", "VM_COMMAND"):
+            self.assertNotIn(forbidden, runner)
+        self.assertLess(len(runner.encode("utf-8")), 16384)
+
     def test_restart_webui_requires_production_main_and_confirmation(self):
         p=self.run_auth(INPUT_OPERATION='restart_webui',INPUT_TARGET='preview',INPUT_REF='main',INPUT_CONFIRM='production')
         self.assertNotEqual(p.returncode,0)
