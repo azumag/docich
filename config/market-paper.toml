@@ -55,6 +55,10 @@ max_spread_bps = "10"
 # Empty inherits [paper_corner].improve_agents from the selected docich profile.
 # Configure a Chinese-model route for the Chinese-AI show before deployment.
 agents = ""
+# Explicit direct API path. Disabled means agents/profile inheritance above is
+# unchanged. Enabling requires a non-empty chain made only of *-api providers.
+direct_enabled = false
+direct_agents = ""
 
 [news]
 # Operator-approved HTTPS RSS sources. Empty means no fabricated news and no
