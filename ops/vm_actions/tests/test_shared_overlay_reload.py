@@ -1,4 +1,5 @@
-from unittest.mock import patch
+import io
+from unittest.mock import Mock, patch, sentinel
 import unittest
 from ops.vm_actions import reload_shared_overlay as mod
 
@@ -10,6 +11,30 @@ class SharedOverlayReloadTests(unittest.TestCase):
             receipt=mod.reload_shared_overlay()
         assert receipt['continuity']==before
         assert run.call_args.args[0]==['sudo','-n','systemctl','restart','soren-shared-overlay.service']
+
+
+    def test_ready_uses_proxy_free_loopback_probe(self):
+        opener = Mock()
+        opener.open.side_effect = [
+            io.BytesIO(b'{"ready":true}'),
+            io.BytesIO(b'{"gameGapEnabled":true}'),
+        ]
+        with patch.object(mod.urllib.request, 'ProxyHandler', return_value=sentinel.no_proxy) as proxy, \
+                patch.object(mod.urllib.request, 'build_opener', return_value=opener) as build:
+            self.assertTrue(mod.ready())
+        proxy.assert_called_once_with({})
+        build.assert_called_once_with(sentinel.no_proxy)
+        self.assertEqual(
+            [call.args for call in opener.open.call_args_list],
+            [
+                ('http://127.0.0.1:8092/healthz',),
+                ('http://127.0.0.1:8092/__soren_overlay/broadcast/state',),
+            ],
+        )
+        self.assertEqual(
+            [call.kwargs for call in opener.open.call_args_list],
+            [{'timeout': 2}, {'timeout': 2}],
+        )
 
 
     def test_changed_encoder_is_never_reported_as_success(self):
