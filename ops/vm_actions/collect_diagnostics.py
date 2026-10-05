@@ -135,6 +135,12 @@ KNOWN_INFRA_PIDFILES = _REG.KNOWN_INFRA_PIDFILES
 MAX_COMPONENTS = _REG.MAX_COMPONENTS
 MAX_ERROR_PREVIEW_LEN = _REG.MAX_ERROR_PREVIEW_LEN
 MAX_JSON_BYTES = _REG.MAX_JSON_BYTES
+# The gateway reads this document over SSH with a 64 KiB stdout cap and then
+# re-serializes it under a 48 KiB cap after adding its own metadata; exceeding
+# either fails the whole diagnostics operation closed. Detail reductions aim at
+# the softer MAX_JSON_BYTES target, and only the last-resort reductions below
+# fall back to this hard ceiling.
+HARD_JSON_BYTES = 56 * 1024
 MAX_JSONL_SCAN_BYTES = _REG.MAX_JSONL_SCAN_BYTES
 MAX_JSONL_SCAN_LINES = _REG.MAX_JSONL_SCAN_LINES
 MAX_RECENT_EVENTS = _REG.MAX_RECENT_EVENTS
@@ -6509,12 +6515,14 @@ def _diagnostics_budget(payload):
         payload["pulse_sink_inputs"] = {
             key: value for key, value in pulse.items() if key != 'streams'
         } | {'streams': [], 'truncated': True, 'output_omitted': True}
-    # The repeated-operation projection is the very last detail to go. It is
-    # bounded well under 1 KiB, and it is the only evidence that separates
+    # The repeated-operation projection deliberately survives the soft budget.
+    # It is bounded well under 1 KiB and is the only evidence that separates
     # "corner alive and looping" from "corner progressing" -- the chart
-    # counters and the stall watchdog stay quiet in that state.
+    # counters and the stall watchdog stay quiet in that state. It is dropped
+    # only against the gateway's hard ceiling, where keeping it would fail the
+    # whole diagnostics operation instead of one field.
     text = _nethack_history_budget(payload)
-    if (len(text.encode("utf-8")) > MAX_JSON_BYTES and isinstance(retro, dict)
+    if (len(text.encode("utf-8")) > HARD_JSON_BYTES and isinstance(retro, dict)
             and "decision_plans" in retro):
         retro["decision_plans"] = {"status": "output_omitted"}
     return _nethack_history_budget(payload)

@@ -362,15 +362,17 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   窓は観測末尾でありコーナー全体の履歴ではない。`tail_truncated` はcollectorの末尾制限を示す。
   外部lease・不正行は件数だけ数えて `status=partial`、全行不正なら集計をnullのまま `unavailable` にする。
   有効なplan行が無い場合は集計をnullに保つ（0件の正常を意味しない）。
-  出力予算超過時は本projectionを**最後に**status=output_omittedへ置き換える
-  （1KiB未満で固定・自動利用無く、「進んでいるcornerか同じ操作のループか」だけを区別できる唯一の証拠のため）。
+  本projectionは固定の出力予算（36KiB）を超えても保持する。1KiB未満で固定・
+  自動利用無く、「進んでいるcornerか同じ操作のループか」だけを区別できる唯一の
+  証拠のため。gatewayのhard上限（stdout 64KiB / sanitize後48KiB）に近づく場合
+  のみstatus=output_omittedへ置き換える（`HARD_JSON_BYTES` = 56KiB）。
 - 出力予算とcpu_profile: 固定envelope（`runtime_registry.MAX_JSON_BYTES` = 36KiB）は
   gatewayの48KiB sanitize後capより小さい値で、24KiBのSoren91 evidence chunkが
   base64/JSON展開後も収まる量を確保する。本番の通常payloadはこの上限を超えるため、
   予算超過時は `ai.recent_events`・`workers.details`・`ai.anomalous_components`・
   `cpu_profile`の行・Soren91のgroup・`scene_narration`・`hanjuku_tactical`・
-  `pulse_sink_inputs`・`decision_plans` の順に削る（最後は繰り返し操作のprojection）。
-  残る最大要素が `cpu_profile` なので、
+  `pulse_sink_inputs` の順に削る。`decision_plans` はこの soft 予算では削らず、
+  gatewayのhard上限時のみ削る。残る最大要素が `cpu_profile` なので、
   ゲーム証拠より**前**に `components`/`spawns` を先頭10行へ縮める
   （producerはbusiest順に並べるので先頭が重い行）。omitted行数は
   `components_omitted`/`spawns_omitted` として残し、既存 `components_truncated` は
