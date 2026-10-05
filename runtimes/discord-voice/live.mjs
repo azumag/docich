@@ -23,6 +23,9 @@ import {
 import { CloudflareConversationClient } from './cloudflare-conversation.mjs';
 import { CloudflareWhisperSTT } from './cloudflare-stt.mjs';
 import { attachLiveSttReceiver } from './live-receive.mjs';
+import { createLivePlayback } from './live-playback.mjs';
+import { createLiveVoicevoxTTS } from './live-voicevox.mjs';
+import { PCM } from './runtime.mjs';
 import { LiveVoiceError, loadLiveVoiceConfig, makeStereoTestTone } from './live-support.mjs';
 
 const emit = (record) => process.stdout.write(JSON.stringify(record) + '\n');
@@ -148,6 +151,11 @@ function defaultRuntimeOps() {
       entersState(connection, VoiceConnectionStatus.Ready, 30_000),
     createStt: (env) => new CloudflareWhisperSTT({ env }),
     createConversation: (env) => new CloudflareConversationClient({ env }),
+    createTts: (env, config) =>
+      createLiveVoicevoxTTS(env, {
+        allowLoopback: config.voicevoxAllowLoopback,
+      }),
+    createPlayback: (connection) => createLivePlayback(connection),
     attachReceiver: (options) => attachLiveSttReceiver(options),
     playTestTone,
     signalTarget: process,
@@ -162,10 +170,13 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
   const conversation = config.conversationEnabled
     ? ops.createConversation(env)
     : null;
+  const tts = config.ttsEnabled ? ops.createTts(env, config) : null;
   const client = ops.createClient();
 
   let connection = null;
   let liveReceiver = null;
+  let livePlayback = null;
+  let activeTurn = null;
   let stopping = false;
   let recovering = false;
   let stopResolve;
@@ -198,6 +209,21 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
     return result.value;
   };
   const stoppedAfter = (value) => value === STOPPED || stopping;
+  const runBoundedStage = async (parentSignal, timeoutMs, operation) => {
+    const controller = new AbortController();
+    const onParentAbort = () => controller.abort();
+    parentSignal.addEventListener('abort', onParentAbort, { once: true });
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer.unref?.();
+    try {
+      parentSignal.throwIfAborted();
+      return await operation(controller.signal);
+    } finally {
+      clearTimeout(timer);
+      parentSignal.removeEventListener('abort', onParentAbort);
+      controller.abort();
+    }
+  };
 
   const onClientError = () => emit({ event: 'discord_gateway_error' });
   client.on(Events.Error, onClientError);
@@ -305,45 +331,6 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
       receiveEnabled: config.receiveEnabled,
     });
 
-    if (config.receiveEnabled) {
-      const onTranscript = conversation
-        ? async (transcript, { signal }) => {
-            emit({ event: 'llm_started' });
-            try {
-              const reply = await conversation.reply(transcript, {
-                guildId: config.guildId,
-                channelId: config.channelId,
-                userId: config.receiveUserId,
-                signal,
-              });
-              if (signal.aborted || stopping) {
-                emit({ event: 'llm_cancelled' });
-                return;
-              }
-              emit({ event: 'llm_completed' });
-              if (config.replyDebug) {
-                emit({ event: 'llm_debug_reply', reply });
-              }
-            } catch {
-              emit({
-                event: signal.aborted || stopping ? 'llm_cancelled' : 'llm_failed',
-              });
-            }
-          }
-        : null;
-
-      liveReceiver = ops.attachReceiver({
-        connection,
-        targetUserId: config.receiveUserId,
-        stt,
-        emit,
-        debugTranscript: config.transcriptDebug,
-        onTranscript,
-      });
-      emit({ event: 'voice_receive_enabled' });
-      if (conversation) emit({ event: 'voice_conversation_enabled' });
-    }
-
     if (config.playTestTone) {
       let toneResult;
       try {
@@ -356,6 +343,178 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
       }
       if (stoppedAfter(toneResult)) return 0;
       emit({ event: 'voice_test_tone_completed' });
+    }
+
+    if (config.ttsEnabled) {
+      livePlayback = ops.createPlayback(connection);
+      emit({ event: 'voice_tts_enabled' });
+    }
+
+    if (config.receiveEnabled) {
+      const scope = Object.freeze({
+        guildId: config.guildId,
+        channelId: config.channelId,
+        userId: config.receiveUserId,
+      });
+
+      const onTranscript = conversation
+        ? async (transcript, { signal }) => {
+            const turnController = new AbortController();
+            const onParentAbort = () => turnController.abort();
+            signal.addEventListener('abort', onParentAbort, { once: true });
+            const turn = { controller: turnController, interrupted: false };
+            activeTurn = turn;
+
+            let generated;
+            try {
+              emit({ event: 'llm_started' });
+              try {
+                generated = await runBoundedStage(
+                  turnController.signal,
+                  10_000,
+                  (stageSignal) =>
+                    conversation.generate(transcript, {
+                      ...scope,
+                      signal: stageSignal,
+                    }),
+                );
+                if (turnController.signal.aborted || stopping) {
+                  emit({ event: 'llm_cancelled' });
+                  return;
+                }
+                emit({ event: 'llm_completed' });
+                if (config.replyDebug) {
+                  emit({ event: 'llm_debug_reply', reply: generated.reply });
+                }
+              } catch {
+                emit({
+                  event: turnController.signal.aborted || stopping
+                    ? 'llm_cancelled'
+                    : 'llm_failed',
+                });
+                return;
+              }
+
+              if (!tts || !livePlayback) return;
+
+              let pcm;
+              try {
+                emit({ event: 'tts_started' });
+                pcm = await runBoundedStage(
+                  turnController.signal,
+                  30_000,
+                  (stageSignal) =>
+                    tts.synthesize(generated.reply, {
+                      format: PCM,
+                      scope,
+                      signal: stageSignal,
+                    }),
+                );
+                if (turnController.signal.aborted || stopping) {
+                  emit({ event: 'tts_cancelled' });
+                  return;
+                }
+                emit({ event: 'tts_completed' });
+
+                emit({ event: 'playback_started' });
+                await runBoundedStage(
+                  turnController.signal,
+                  35_000,
+                  (stageSignal) =>
+                    livePlayback.play(pcm, { signal: stageSignal }),
+                );
+                if (turnController.signal.aborted || stopping) {
+                  emit({
+                    event: turn.interrupted
+                      ? 'playback_interrupted'
+                      : 'playback_cancelled',
+                  });
+                  return;
+                }
+                emit({ event: 'playback_completed' });
+              } catch {
+                const interrupted = turn.interrupted;
+                const cancelled = turnController.signal.aborted || stopping;
+                if (pcm) {
+                  try {
+                    Int16Array.prototype.fill.call(pcm, 0);
+                  } catch {
+                    // Returned PCM ownership cleanup is best-effort.
+                  }
+                }
+                if (!generated) return;
+                if (cancelled && interrupted) {
+                  emit({ event: 'playback_interrupted' });
+                } else if (cancelled) {
+                  emit({ event: 'turn_cancelled' });
+                } else {
+                  emit({ event: pcm ? 'playback_failed' : 'tts_failed' });
+                }
+                return;
+              } finally {
+                if (pcm) {
+                  try {
+                    Int16Array.prototype.fill.call(pcm, 0);
+                  } catch {
+                    // Returned PCM ownership cleanup is best-effort.
+                  }
+                }
+              }
+
+              if (activeTurn === turn) activeTurn = null;
+
+              try {
+                emit({ event: 'memory_commit_started' });
+                await runBoundedStage(
+                  signal,
+                  5_000,
+                  (stageSignal) =>
+                    conversation.commit(
+                      {
+                        turnId: generated.turnId,
+                        transcript,
+                        reply: generated.reply,
+                      },
+                      { ...scope, signal: stageSignal },
+                    ),
+                );
+                emit({ event: 'memory_commit_completed' });
+              } catch {
+                emit({
+                  event: signal.aborted || stopping
+                    ? 'memory_commit_cancelled'
+                    : 'memory_commit_failed',
+                });
+              }
+            } finally {
+              signal.removeEventListener('abort', onParentAbort);
+              turnController.abort();
+              if (activeTurn === turn) activeTurn = null;
+            }
+          }
+        : null;
+
+      const onTargetSpeechStart = config.ttsEnabled
+        ? () => {
+            if (activeTurn && !activeTurn.controller.signal.aborted) {
+              activeTurn.interrupted = true;
+              activeTurn.controller.abort();
+              emit({ event: 'turn_interrupted' });
+            }
+          }
+        : null;
+
+      liveReceiver = ops.attachReceiver({
+        connection,
+        targetUserId: config.receiveUserId,
+        stt,
+        emit,
+        debugTranscript: config.transcriptDebug,
+        onTranscript,
+        onTargetSpeechStart,
+      });
+      emit({ event: 'voice_receive_enabled' });
+      if (conversation) emit({ event: 'voice_conversation_enabled' });
     }
 
     const result = await Promise.race([stopSignal, fatalSignal]);
@@ -372,6 +531,14 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
 
     try {
       liveReceiver?.stop();
+    } catch {
+      // Fixed shutdown path.
+    }
+    if (activeTurn && !activeTurn.controller.signal.aborted) {
+      activeTurn.controller.abort();
+    }
+    try {
+      livePlayback?.close();
     } catch {
       // Fixed shutdown path.
     }
