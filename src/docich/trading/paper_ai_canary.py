@@ -155,7 +155,9 @@ def run_once(
             )
     except PaperAiCanaryError:
         raise
-    except (AiTextError, OSError, ValueError, TypeError) as exc:
+    except Exception as exc:
+        # Never surface provider/network exception text through the operator CLI
+        # or the VM operations gateway.
         raise PaperAiCanaryError("paper AI canary execution failed") from exc
 
     def pairs(items):
