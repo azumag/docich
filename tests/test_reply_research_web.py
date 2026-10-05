@@ -350,6 +350,25 @@ def test_tls_validation_failure_prevents_request(monkeypatch):
     assert not any(item[0]=='request' for item in trace)
 
 
+def test_collect_verified_public_returns_only_broker_receipts(monkeypatch):
+    receipt = w.Receipt(URL, "r"*32, hashlib.sha256(BODY).hexdigest(),
+                        hashlib.sha256(TEXT.encode()).hexdigest(), TEXT)
+    seen = {}
+    class Broker:
+        def __init__(self, *args, **kwargs):
+            pass
+        def authorize(self, urls):
+            seen["authorized"] = list(urls)
+        def fetch(self, url):
+            seen.setdefault("fetched", []).append(url)
+            return receipt
+    monkeypatch.setattr(w, "WebBroker", Broker)
+    monkeypatch.setattr(w, "search_public", lambda query, timeout, env=None: [URL])
+    rows = w.collect_verified_public("公開仕様", env={}, timeout_sec=2, limit=1)
+    assert rows == (receipt,)
+    assert seen == {"authorized": [URL], "fetched": [URL]}
+
+
 def test_broker_fetch_budget_and_cache(monkeypatch,tmp_path):
     seen=fixture_process(monkeypatch); broker=w.WebBroker(tmp_path/'s',time.monotonic()+5)
     urls=[URL+f'/{n}' for n in range(5)]; observe(broker,urls)
