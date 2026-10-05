@@ -261,6 +261,7 @@ jobs:
           runner_alive = soren.get("runner_alive")
           soren_ready = (
               game == "sorengame"
+              and switch.get("phase") == "ready"
               and loop_status == "alive"
               and runner_alive is True
               and soren_state in {"MOVE", "DROP", "WAITING"}
