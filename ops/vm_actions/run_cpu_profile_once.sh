@@ -19,7 +19,7 @@ python3 ops/vm_actions/profile_cpu.py sample \
   --scenario latest-main \
   --warmup 5 \
   --duration 60 \
-  --interval 1 \
+  --interval 0.5 \
   --json >"$tmp"
 
 python3 - "$tmp" <<'PY'
