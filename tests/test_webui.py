@@ -2637,6 +2637,31 @@ process.stdout.write(JSON.stringify(out));
         self.assertTrue(out["corners-recover"]["disabled"])
         self.assertTrue(out["corners-duration"]["disabled"])
 
+    def test_scheduled_manual_reservation_shows_trigger_and_due_state(self):
+        waiting = self._render({
+            "status": "waiting", "reason": "scheduled-manual-not-due",
+            "queued_manual": {
+                "corner": "weather", "scheduled": True,
+                "trigger_at": 2000000000, "due": False,
+                "blocked_reason": "scheduled-manual-not-due",
+            },
+            "pending": None,
+        })
+        self.assertIn("予定", waiting["corners-summary"]["innerHTML"])
+        self.assertIn("時刻予約", waiting["corners-catalog"]["innerHTML"])
+
+        due = self._render({
+            "status": "waiting",
+            "queued_manual": {
+                "corner": "weather", "scheduled": True,
+                "trigger_at": 100, "due": True,
+                "blocked_reason": "waiting-for-slot",
+            },
+            "pending": None,
+        })
+        self.assertIn("時刻到達済み", due["corners-summary"]["innerHTML"])
+        self.assertIn("時刻到達・空き待ち", due["corners-catalog"]["innerHTML"])
+
     def test_selected_and_dispatched_are_distinct_from_ready_and_queued(self):
         for phase, label in (("selected", "選択済み"), ("dispatched", "起動要求済み")):
             with self.subTest(phase=phase):
