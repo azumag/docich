@@ -352,15 +352,28 @@ def test_decline_the_general_trade_prompt():
     rec = mem['_records'][-1]
     assert rec['strategy_variant'] == 'decline_general_trade'
     assert rec['choice'] == 'いかんッ!'
-    # An unclassified prompt still proceeds by default.
+
+    # OCR may lose the literal "トレード" token while still reading the
+    # exchange wording. That partial read must fail closed to いかんッ!.
     c3 = Canvas()
-    c3.text(24, 183, 'たまごを つかいますか?')
+    c3.text(24, 151, 'そちらのヴィーナスしょうぐんと')
+    c3.text(24, 167, 'わがぐんのイキのいいのとではどーだ?')
     c3.text(184, 183, 'うむッ!')
     c3.text(184, 199, 'いかんッ!')
     c3.hand(162, 177)
     mem3 = {'_records': []}
-    assert policy.yes_no_step(parse(c3.frame()), mem3)[0]['buttons'] == ['a']
-    assert mem3['_records'][-1]['strategy_variant'] == 'unclassified_prompt'
+    assert policy.yes_no_step(parse(c3.frame()), mem3)[0]['buttons'] == ['down']
+    assert mem3['_records'] == []
+
+    # An unrelated unclassified prompt still proceeds by default.
+    c4 = Canvas()
+    c4.text(24, 183, 'たまごを つかいますか?')
+    c4.text(184, 183, 'うむッ!')
+    c4.text(184, 199, 'いかんッ!')
+    c4.hand(162, 177)
+    mem4 = {'_records': []}
+    assert policy.yes_no_step(parse(c4.frame()), mem4)[0]['buttons'] == ['a']
+    assert mem4['_records'][-1]['strategy_variant'] == 'unclassified_prompt'
 
 
 def _goninja_offer(gold, hand_y=177):
