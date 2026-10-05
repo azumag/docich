@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 import json
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -20,6 +21,12 @@ _WORKER_SUMMARY_KEYS = {
     "cycle_index", "last_success_at", "next_cycle_at", "frame_error_count",
     "arbitrage_candidate_count", "new_fill_count", "new_settlement_count",
     "error_codes", "experiment_status", "experiment_reason_code", "experiment_entries_allowed",
+}
+
+_PERFORMANCE_COUNT_KEYS = {"position_count", "priced_positions", "valued_positions"}
+_PERFORMANCE_MONEY_KEYS = {
+    "realized_total_jpy", "today_realized_pnl_jpy", "unrealized_pnl_jpy",
+    "cumulative_pnl_jpy", "equity_jpy",
 }
 _MAX_SKIP_DETAILS = 16
 
@@ -68,6 +75,34 @@ def signal_context_payload(value: object) -> dict[str, object] | None:
         if conditions:
             result["conditions"] = conditions
     return result or None
+
+
+def performance_summary_payload(value: object) -> dict[str, object]:
+    """Allowlisted, scalar-only PAPER performance facts for public status."""
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, object] = {}
+    raw_as_of = value.get("as_of")
+    if isinstance(raw_as_of, (int, float)) and not isinstance(raw_as_of, bool):
+        as_of = float(raw_as_of)
+        if math.isfinite(as_of):
+            result["as_of"] = as_of
+    if type(value.get("complete")) is bool:
+        result["complete"] = value["complete"]
+    for key in _PERFORMANCE_COUNT_KEYS:
+        raw = value.get(key)
+        if type(raw) is int and raw >= 0:
+            result[key] = raw
+    for key in _PERFORMANCE_MONEY_KEYS:
+        raw = value.get(key)
+        if raw is None:
+            result[key] = None
+            continue
+        try:
+            result[key] = _decimal_text(raw)
+        except (ArithmeticError, TypeError, ValueError):
+            result[key] = None
+    return result
 
 
 def _fill_payload(fill: PaperFill) -> dict[str, object]:
@@ -142,6 +177,7 @@ def build_public_status(
     snapshot_generated_at: float | None = None,
     market_freshness: Mapping[str, Mapping[str, object]] | None = None,
     coverage: Mapping[str, object] | None = None,
+    performance_summary: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     symbols = sorted({str(symbol).strip() for symbol in eligible_symbols if str(symbol).strip()})
     positions = {
@@ -183,6 +219,7 @@ def build_public_status(
             if isinstance(entry, Mapping)
         },
         "coverage": dict(coverage or {}),
+        "performance_summary": performance_summary_payload(performance_summary),
     }
 
 
