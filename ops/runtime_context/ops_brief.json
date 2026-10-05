@@ -2,7 +2,7 @@
   "output_sha256": "a94e152f66478a8ef03715c4b6677a264be0b64429b0ec2c64f0a0775e2c9fc6",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "eaa2a8c4a23476ec6a67c09706a9b94bd07aee2f33aa4b4149b6643c3d863514",
+  "source_sha256": "f3513c30123507a02056d8024deba313fd12a5338ddf98f1aa22f9a3e992258e",
   "topics": [
     "AI自作ゲームの鍵・スイッチ・出口を非本番の合成fixtureで試作（本番未反映）",
     "PAPERコーナーの人格と声をメリケンへ固定（共通rotation経路も修正、本番未反映）",
