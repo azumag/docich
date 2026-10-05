@@ -184,11 +184,11 @@ def test_generate_text_separate_budget_reaches_fallback_after_two_timeouts(monke
     env, calls = _controlled_chain(monkeypatch, tmp_path, succeed_third=True)
     output = generate_text(
         None, label="RADIO:paper-improve",
-        agents="codex:first,codex:second,codex:third", prompt_text="p",
+        agents="local:first,local:second,local:third", prompt_text="p",
         timeout=180, overall_timeout_s=660, env=env,
     )
     assert output == "fallback answer"
-    assert calls == [("codex:first", 180.0), ("codex:second", 180.0), ("codex:third", 180.0)]
+    assert calls == [("local:first", 180.0), ("local:second", 180.0), ("local:third", 180.0)]
 
 
 def test_generate_text_total_budget_still_bounds_the_whole_chain(monkeypatch, tmp_path):
@@ -196,10 +196,10 @@ def test_generate_text_total_budget_still_bounds_the_whole_chain(monkeypatch, tm
     with pytest.raises(AiTextError) as raised:
         generate_text(
             None, label="RADIO:paper-improve",
-            agents="codex:first,codex:second,codex:third,codex:fourth", prompt_text="p",
+            agents="local:first,local:second,local:third,local:fourth", prompt_text="p",
             timeout=180, overall_timeout_s=400, env=env,
         )
-    assert calls == [("codex:first", 180.0), ("codex:second", 180.0), ("codex:third", 40.0)]
+    assert calls == [("local:first", 180.0), ("local:second", 180.0), ("local:third", 40.0)]
     assert raised.value.kind == "rc-124:timeout"
     assert ai_failure_reason_code(raised.value.kind) == "timeout"
 

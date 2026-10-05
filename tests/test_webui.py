@@ -1493,6 +1493,104 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(view["catalog"][0]["manual_mode"], "queue")
         self.assertTrue(view["catalog"][0]["manual"])
 
+    def test_weather_manual_schedule_roundtrip_and_cancel(self):
+        self._write_weather_catalog_config()
+        self._write_rotation_state(status="ready", pending=None, reason=None)
+        trigger = time.time() + 600
+        status, data = self._request("POST", "/api/corners", {
+            "action": "schedule", "corner": "weather",
+            "trigger_at": trigger, "confirm": True})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["status"], "scheduled")
+        self.assertEqual(data["corner"]["target"], "rotation")
+        self.assertAlmostEqual(data["trigger_at"], trigger, places=3)
+        self.assertNotIn("request_id", data)
+
+        inbox = Path(self.g.state_dir) / "corner_manual_queue.json"
+        raw = json.loads(inbox.read_text())
+        self.assertEqual(raw["corner"], "weather")
+        self.assertAlmostEqual(raw["trigger_at"], trigger, places=3)
+        private_request = raw["request_id"]
+
+        status, view = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, view)
+        queued = view["rotation"]["queued_manual"]
+        self.assertEqual(queued["corner"], "weather")
+        self.assertTrue(queued["scheduled"])
+        self.assertFalse(queued["due"])
+        self.assertEqual(queued["blocked_reason"], "scheduled-manual-not-due")
+        self.assertAlmostEqual(queued["trigger_at"], trigger, places=3)
+        self.assertNotIn(private_request, json.dumps(view))
+
+        status, cancelled = self._request("POST", "/api/corners", {
+            "action": "cancel-schedule", "corner": "weather", "confirm": True})
+        self.assertEqual(status, 200, cancelled)
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertFalse(inbox.exists())
+
+    def test_runner_corner_schedule_uses_rotation_queue_without_spawning(self):
+        self._write_catalog_config()
+        trigger = time.time() + 900
+
+        class FakeManager:
+            def queue_manual(self, game, *, trigger_at=None):
+                self.game = game
+                self.trigger_at = trigger_at
+                return {
+                    "status": "scheduled", "corner": "nsnake",
+                    "request_id": "PRIVATE-REQUEST", "trigger_at": trigger_at,
+                }
+
+            def cancel_scheduled_manual(self, game):
+                raise AssertionError("not called")
+
+        fake = FakeManager()
+        with mock.patch("docich.corner_rotation.CornerRotationManager",
+                        return_value=fake), \
+                mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request("POST", "/api/corners", {
+                "action": "schedule", "corner": "nsnake",
+                "trigger_at": trigger, "confirm": True})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(fake.game, "nsnake")
+        self.assertAlmostEqual(fake.trigger_at, trigger, places=3)
+        self.assertEqual(data["status"], "scheduled")
+        self.assertNotIn("request_id", data)
+        self.assertNotIn("PRIVATE-REQUEST", json.dumps(data))
+        popen.assert_not_called()
+
+    def test_manual_schedule_rejects_missing_past_and_naive_trigger(self):
+        self._write_weather_catalog_config()
+        self._write_rotation_state(status="ready", pending=None, reason=None)
+        for body, expected_status in (
+            ({"action": "schedule", "corner": "weather", "confirm": True}, 400),
+            ({"action": "schedule", "corner": "weather",
+              "trigger_at": time.time() - 1, "confirm": True}, 409),
+            ({"action": "schedule", "corner": "weather",
+              "trigger_at": "2026-10-06T21:30:00", "confirm": True}, 400),
+        ):
+            with self.subTest(body=body):
+                status, data = self._request("POST", "/api/corners", body)
+                self.assertEqual(status, expected_status, data)
+                self.assertFalse(
+                    (Path(self.g.state_dir) / "corner_manual_queue.json").exists()
+                )
+
+    def test_index_contains_corner_schedule_controls(self):
+        self.client.request("GET", "/")
+        res = self.client.getresponse()
+        body = res.read().decode("utf-8")
+        self.assertEqual(res.status, 200)
+        for marker in (
+            'id="corners-schedule-at"',
+            'id="corners-schedule"',
+            'id="corners-cancel-schedule"',
+            'action:"schedule"',
+            'action:"cancel-schedule"',
+            '"scheduled-manual-not-due"',
+        ):
+            self.assertIn(marker, body)
+
     def test_weather_manual_start_respects_disabled_paused_and_recovery_gates(self):
         for options in ({"enabled": False}, {"paused": True}, {"rotation": False}, {}):
             with self.subTest(options=options):
@@ -2538,6 +2636,31 @@ process.stdout.write(JSON.stringify(out));
         self.assertTrue(out["corners-stop"]["disabled"])
         self.assertTrue(out["corners-recover"]["disabled"])
         self.assertTrue(out["corners-duration"]["disabled"])
+
+    def test_scheduled_manual_reservation_shows_trigger_and_due_state(self):
+        waiting = self._render({
+            "status": "waiting", "reason": "scheduled-manual-not-due",
+            "queued_manual": {
+                "corner": "weather", "scheduled": True,
+                "trigger_at": 2000000000, "due": False,
+                "blocked_reason": "scheduled-manual-not-due",
+            },
+            "pending": None,
+        })
+        self.assertIn("予定", waiting["corners-summary"]["innerHTML"])
+        self.assertIn("時刻予約", waiting["corners-catalog"]["innerHTML"])
+
+        due = self._render({
+            "status": "waiting",
+            "queued_manual": {
+                "corner": "weather", "scheduled": True,
+                "trigger_at": 100, "due": True,
+                "blocked_reason": "waiting-for-slot",
+            },
+            "pending": None,
+        })
+        self.assertIn("時刻到達済み", due["corners-summary"]["innerHTML"])
+        self.assertIn("時刻到達・空き待ち", due["corners-catalog"]["innerHTML"])
 
     def test_selected_and_dispatched_are_distinct_from_ready_and_queued(self):
         for phase, label in (("selected", "選択済み"), ("dispatched", "起動要求済み")):
