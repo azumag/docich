@@ -68,6 +68,23 @@ def test_collects_only_verified_body_receipts_and_dedupes_candidates():
     assert "snippet" not in json.dumps(wire)
 
 
+def test_broker_authorization_failure_returns_unavailable_without_fetch():
+    class BrokenBroker(Broker):
+        def authorize(self, urls):
+            raise RuntimeError("synthetic broker failure")
+
+    broker = BrokenBroker({URL1: _receipt()})
+    result = m.collect_verified_web_material(
+        ["公開仕様"],
+        env={},
+        searcher=lambda *args: [URL1],
+        broker=broker,
+    )
+    assert result.status == "unavailable"
+    assert result.items == ()
+    assert broker.fetched == []
+
+
 def test_forged_text_hash_is_not_material():
     rec = _receipt()
     forged = Receipt(rec.url, rec.receipt, rec.sha256, "0" * 64, rec.text)
