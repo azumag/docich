@@ -80,6 +80,11 @@ class CpuProfileDiagnosticsTests(unittest.TestCase):
                     "component": "ffmpeg:stream",
                     "cpu_pct": 42.0,
                 },
+                {
+                    "component": "tail",
+                    "cpu_pct": 1.5,
+                    "cmdline": "tail --token=secret",
+                },
             ],
             "spawns": [
                 {"component": "ffmpeg:capture", "spawner": "worker:chat_worker", "count": 7},
@@ -95,7 +100,10 @@ class CpuProfileDiagnosticsTests(unittest.TestCase):
         self.assertEqual(out["age_sec"], 5)
         self.assertEqual(out["meta"]["scenario"], "latest-main")
         self.assertEqual(out["host"]["forks_per_sec"], 20)
-        self.assertEqual([x["component"] for x in out["components"]], ["browser", "ffmpeg:stream"])
+        self.assertEqual(
+            [x["component"] for x in out["components"]],
+            ["browser", "ffmpeg:stream", "tail"],
+        )
         self.assertEqual(out["spawns"], [
             {"component": "ffmpeg:capture", "spawner": "worker:chat_worker", "count": 7}
         ])
@@ -135,7 +143,7 @@ class CpuProfileOperationContractTests(unittest.TestCase):
         self.assertIn("profile_cpu.py sample", text)
         self.assertIn("--scenario latest-main", text)
         self.assertIn("--duration 60", text)
-        self.assertIn("--interval 1", text)
+        self.assertIn("--interval 0.5", text)
         self.assertIn("/tmp/docich-cpu-profile-latest.json", text)
         for forbidden in ("sudo ", " kill ", "renice", "systemctl"):
             self.assertNotIn(forbidden, text)
