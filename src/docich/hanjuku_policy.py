@@ -7840,6 +7840,10 @@ _KANA_FOLD = str.maketrans(
 # window (g344 kept the same menu for 31 s) and far below the 300 s stasis
 # limit, yet bounded so a stuck screen cannot freeze the corner.
 MONSTER_MENU_HOLD_LIMIT = 30
+# Battle HP is represented on screen and throughout the policy as a four-digit
+# value capped at 9999.  Balloon Finch's owner-directed tactic depends on the
+# actual cap, not on the largest HP value observed so far in this battle.
+BALLOON_FINCH_MAX_HP = 9999
 
 
 def _fold_skill(text: str) -> str:
@@ -7956,30 +7960,43 @@ def monster_menu_step(screen: Screen, mem):
                      and len(skill_lines) == 2
                      and {_fold_skill(first), _fold_skill(second)}
                      == _MONSTER_SKILLS['ウゴカザル'])
+        balloon_cycle = (owner == 'ally' and ally is not None
+                         and ally.name == 'バルーンフィンチ'
+                         and _fold_skill(first) == _fold_skill('ふくらむ')
+                         and _fold_skill(second) == _fold_skill('シャウト'))
         heal_first = bool(second) and _monster_heal(first) and not _monster_heal(second)
         default = 'skill1'
         if damage_second:
             default = 'skill2'
+        elif balloon_cycle:
+            # Owner rule 2026-10-06: Balloon Finch must inflate all the way to
+            # the actual HP cap before shouting.  A seen-so-far maximum is not
+            # enough: ふくらむ doubles HP, so intermediate values (384, 768,
+            # ...) must keep choosing skill1.  After シャウト halves our HP,
+            # the same rule naturally sends it back to ふくらむ.
+            default = ('skill1' if type(ally_hp) is not int
+                       or ally_hp < BALLOON_FINCH_MAX_HP else 'skill2')
         elif heal_first:
-            # バルーンフィンチ: ふくらむ→シャウト (owner 2026-09-29). Inflate to
-            # the tracked max first (the first turn heals so a damaged summon
-            # reaches it), then shout while at max; damage re-enables the heal.
-            # The old "heal at full forever" loop (g407: ふくらむ x71) stays
-            # impossible because a full HP attacks instead.
+            # Generic heal-first monsters still use the best HP observed in
+            # this menu session as their recovery target.
             seen = mem.get('monster_ally_max_hp')
             if type(ally_hp) is not int:
                 default = 'skill1'
             elif behind or (type(seen) is int and ally_hp < seen):
-                default = 'skill1'      # hurt: inflate back to the tracked max
+                default = 'skill1'
             else:
-                default = 'skill2'      # at max (or ahead): shout
+                default = 'skill2'
             if type(ally_hp) is int:
                 mem['monster_ally_max_hp'] = max(int(seen or 0), ally_hp)
         elif behind and len(skill_lines) >= 2 and _monster_effectful(second):
             default = 'skill2'
         exp = mem.get('_experience')
         key = experience.situation_key('monster_menu', mem)
-        action = ('retreat' if retreat or powerless else 'skill2' if damage_second
+        # Balloon Finch is an explicit owner tactic, not an exploratory choice:
+        # do not let generic retreat heuristics or learned experience replace
+        # ふくらむ before cap / シャウト at cap.
+        action = (default if balloon_cycle else
+                  'retreat' if retreat or powerless else 'skill2' if damage_second
                   else experience.preferred(exp, key, default=default, kind='monster_menu'))
         mem['monster_menu_choice'] = action
         mem['monster_menu_choice_key'] = key
@@ -7991,6 +8008,14 @@ def monster_menu_step(screen: Screen, mem):
             label = 'たまごに もどれ'
             why = ('両技に攻撃性能がない召喚獣のため、無効な攻撃を繰り返さず戻す'
                    if powerless else '味方HPが敵の半分以下なので撤退して見守る')
+        elif balloon_cycle:
+            if action == 'skill2':
+                label = second
+                why = f'HPが上限{BALLOON_FINCH_MAX_HP}なので「シャウト」で相手を削る'
+            else:
+                label = first
+                why = (f'HPが{ally_hp}で上限{BALLOON_FINCH_MAX_HP}未満なので'
+                       '「ふくらむ」で最大まで戻す')
         elif action == 'skill2' and len(skill_lines) >= 2:
             label = second
             why = ('敵召喚獣には低確率の即死より4回攻撃を優先する' if damage_second else
@@ -7998,7 +8023,7 @@ def monster_menu_step(screen: Screen, mem):
                    if heal_first and not behind else '味方が劣勢で効果付きの2技目')
         else:
             label, why = first, '先手を取れる1技目を続ける'
-        if action != default and action != 'retreat':
+        if not balloon_cycle and action != default and action != 'retreat':
             why = f'過去の結果に基づく経験の選択（既定 {default}）'
         _record(mem, 'monster_menu_choice',
                 strategy_variant=f'monster_menu_{action}',
@@ -8006,6 +8031,7 @@ def monster_menu_step(screen: Screen, mem):
                 expected_metric='召喚獣ターンの選択と戦闘結果',
                 observed_metric={'action': action, 'owner': owner, 'menu': list(menu_key),
                                  'ally_hp': ally_hp, 'enemy_hp': enemy_hp,
+                                 'target_hp': BALLOON_FINCH_MAX_HP if balloon_cycle else None,
                                  'experience_key': key},
                 reason=f'召喚獣の技メニューで「{label}」を選択: {why}')
     action = mem.get('monster_menu_choice')
