@@ -20,16 +20,14 @@ import tempfile
 import time
 from typing import Callable, Mapping
 
-from .ai_text import AiTextError, extract_json_object, generate_text
+from .ai_text import AiTextError, generate_text
 from .corner_research import prepare_research_context
 
 CANARY_AGENT = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
 CANARY_LABEL = "RADIO:paper-canary"
 _ACCOUNT_RE = re.compile(r"^[A-Fa-f0-9]{32}$")
-_REQUIRED_SECRET_KEYS = (
-    "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN",
-    "CLOUDFLARE_API_TOKEN",
-)
+_SEARCH_SECRET_KEY = "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN"
+_DIRECT_SECRET_KEY = "CLOUDFLARE_API_TOKEN"
 
 
 class PaperAiCanaryError(RuntimeError):
@@ -40,12 +38,13 @@ def readiness(env: Mapping[str, str]) -> dict[str, object]:
     """Secret-free capability projection; never returns credential values."""
     search_account = str(env.get("DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID", "") or "")
     ai_account = str(env.get("DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID", "") or "")
+    direct_secret = bool(env.get(_DIRECT_SECRET_KEY)) ^ bool(env.get(_DIRECT_SECRET_KEY + "_FILE"))
     return {
         "real_ai_allowed": env.get("DOCICH_ALLOW_REAL_AI") == "1",
         "search_account_configured": bool(_ACCOUNT_RE.fullmatch(search_account)),
-        "search_credential_present": bool(env.get(_REQUIRED_SECRET_KEYS[0])),
+        "search_credential_present": bool(env.get(_SEARCH_SECRET_KEY)),
         "direct_account_configured": bool(_ACCOUNT_RE.fullmatch(ai_account)),
-        "direct_credential_present": bool(env.get(_REQUIRED_SECRET_KEYS[1])),
+        "direct_credential_present": direct_secret,
         "search_backend": "cloudflare",
         "research_backend": "websearch",
         "direct_agent": CANARY_AGENT,
@@ -159,7 +158,22 @@ def run_once(
     except (AiTextError, OSError, ValueError, TypeError) as exc:
         raise PaperAiCanaryError("paper AI canary execution failed") from exc
 
-    data = extract_json_object(raw)
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = value
+        return result
+
+    try:
+        data = json.loads(
+            raw,
+            object_pairs_hook=pairs,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("nonfinite")),
+        )
+    except (ValueError, TypeError):
+        raise PaperAiCanaryError("paper AI canary output contract failed") from None
     if (not isinstance(data, dict) or set(data) != {"summary"}
             or not isinstance(data.get("summary"), str)):
         raise PaperAiCanaryError("paper AI canary output contract failed")
