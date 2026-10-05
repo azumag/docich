@@ -69,6 +69,18 @@ export async function runAcceptance(
   let timer = null;
   let stopping = false;
 
+  const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    signalTarget.emit('SIGINT');
+  };
+
+  const armStopTimer = () => {
+    if (options.stopAfterMinutes === null || timer !== null) return;
+    timer = setTimeout(stop, options.stopAfterMinutes * 60_000);
+    timer.unref?.();
+  };
+
   const emitRecord = (record) => {
     const raw = jsonLine(record);
     appendFileSync(
@@ -77,12 +89,7 @@ export async function runAcceptance(
       { encoding: 'utf8', mode: 0o600 },
     );
     process.stdout.write(raw + '\n');
-  };
-
-  const stop = () => {
-    if (stopping) return;
-    stopping = true;
-    signalTarget.emit('SIGINT');
+    if (record?.event === 'voice_connected') armStopTimer();
   };
 
   const onSigint = () => stop();
@@ -90,18 +97,23 @@ export async function runAcceptance(
   signalSource.once('SIGINT', onSigint);
   signalSource.once('SIGTERM', onSigterm);
 
-  if (options.stopAfterMinutes !== null) {
-    timer = setTimeout(stop, options.stopAfterMinutes * 60_000);
-    timer.unref?.();
-  }
-
   let runtimeCode = 2;
   try {
-    runtimeCode = await runVoice(env, {
-      signalTarget,
-      emit: emitRecord,
-      emitError: (code) => emitRecord({ event: 'live_voice_error', code }),
-    });
+    try {
+      runtimeCode = await runVoice(env, {
+        signalTarget,
+        emit: emitRecord,
+        emitError: (code) => emitRecord({ event: 'live_voice_error', code }),
+      });
+    } catch (error) {
+      const code =
+        typeof error?.code === 'string' &&
+        /^[a-z0-9_]{1,64}$/.test(error.code)
+          ? error.code
+          : 'live_runtime_failed';
+      emitRecord({ event: 'live_voice_error', code });
+      runtimeCode = 2;
+    }
   } finally {
     if (timer) clearTimeout(timer);
     signalSource.off('SIGINT', onSigint);
@@ -128,6 +140,7 @@ export async function runAcceptance(
     failureCount: final.failureCount,
     malformed: final.malformed,
     durationSeconds: Math.round(final.durationSeconds),
+    completedChains: final.completedChains,
     counts: final.counts,
   }) + '\n');
 
