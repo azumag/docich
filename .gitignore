@@ -18,3 +18,6 @@ games/roms/*
 # 運用正本はdocichルートのこのローカルファイルだけ。サブモジュール/VMへ複製しない。
 # 公開用の見出し投影だけを ops/runtime_context/ops_brief.json として親で追跡する。
 /handoff.md
+
+# Local Discord Voice acceptance logs are sanitized but remain machine-local.
+/runtimes/discord-voice/acceptance-logs/
