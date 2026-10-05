@@ -348,6 +348,33 @@ test("capture evidence recaptures at a fresh square before the advancing score p
   assert.match(chooseMove({ ...fresh, inCheck: true }, options).usi, /^5i[4-6][hi]$/);
 });
 
+test("capture evidence stops a ray beyond the proven square but keeps the capture itself", () => {
+  // 証拠マスは必ず相手駒で塞がれているので、その先への長い手は反則確定だ。
+  // ただし同じマスへの着手は捕獲として成立するので、到達手だけは候補に残す。
+  const plain = observation([["5i", "R"]]);
+  assert.ok(featuresForMove(plain, "5i5a"));
+  const evidenced = observation([["5i", "R"]], { knownEnemies: [{ square: "5e", age: 4 }] });
+  assert.ok(featuresForMove(evidenced, "5i5e"));
+  assert.ok(featuresForMove(evidenced, "5i5f"));
+  assert.equal(featuresForMove(evidenced, "5i5d"), null);
+  assert.equal(featuresForMove(evidenced, "5i5a"), null);
+  assert.equal(featuresForMove(evidenced, "5i5a+"), null);
+  // 別ファイルの証拠はこの射線に影響しない。
+  assert.ok(featuresForMove(observation([["5i", "R"]], { knownEnemies: [{ square: "9e", age: 4 }] }), "5i5a"));
+});
+
+test("a long move across unseen squares is ordered below a short safe move", () => {
+  // 道中のマスを何も把握できない長い飛車の手は、線形スコアでは最上位でも
+  // 未知の遮断リスクで下げる。合法/違法の判定はサーバの仕事なので手は残る。
+  const state = observation([["1h", "+R"], ["5g", "P"]]);
+  const options = { profile: { ...LINEAR_PROFILE, exploration: 0 }, seed: "path-risk" };
+  assert.ok(featuresForMove(state, "1h1a"));
+  assert.equal(chooseMove(state, options).usi, "5g5f");
+  // 短い手は道中の未知マスを持たないので減点されない。
+  assert.ok(featuresForMove(state, "1h1g"));
+  assert.ok(featuresForMove(state, "5g5f"));
+});
+
 test("capture evidence outside the own-view contract fails closed", () => {
   const base = observation([["5g", "P"]]);
   assert.deepEqual(normalizeObservation({ ...base, knownEnemies: [] }).knownEnemies, []);

@@ -1,5 +1,5 @@
 /** Site-independent, visible-information-only Tsuitate move selection. */
-export const BRAIN_VERSION = "tsuitate-brain-v7";
+export const BRAIN_VERSION = "tsuitate-brain-v8";
 const ROLES = new Set(["P", "L", "N", "S", "G", "B", "R", "K", "+P", "+L", "+N", "+S", "+B", "+R"]);
 const HAND_ROLES = ["P", "L", "N", "S", "G", "B", "R"];
 const HAND_LIMITS = { P: 18, L: 4, N: 4, S: 4, G: 4, B: 2, R: 2 };
@@ -7,6 +7,9 @@ const HAND_LIMITS = { P: 18, L: 4, N: 4, S: 4, G: 4, B: 2, R: 2 };
 // holds an opponent piece. `age` counts our turns since that observation.
 const KNOWN_ENEMY_LIMIT = 40;
 const RECAPTURE_AGE_LIMIT = 2;
+// A long move crosses squares we cannot see, so it can be blocked and foul.
+// This only lowers the ordering score; it never claims a move is legal or not.
+const PATH_RISK_WEIGHT = 0.25;
 const FEATURE_NAMES = ["advance", "centrality", "promotion", "drop", "kingMove", "distance", "repeat"];
 const SQUARE = /^[1-9][a-i]$/;
 const USI_MOVE = /^(?:[1-9][a-i][1-9][a-i]\+?|[PLNSGBR]\*[1-9][a-i])$/;
@@ -162,6 +165,9 @@ function candidatesFor(observation, legacy) {
         const x = sourceFile + dx * step; const y = sourceRank + dy * step;
         if (!inBounds(x, y) || occupied.has(square(x, y))) break;
         append(x, y);
+        // 証拠のある相手駒のマスは、その先へは通れない。そのマス自体への
+        // 着手は捕獲として成立するので到達してから射線を止める。
+        if (knownEnemy.has(square(x, y))) break;
       }
     }
   }
@@ -283,6 +289,31 @@ function validRecentMoves(raw) {
   return Array.isArray(raw) ? raw.slice(-64).filter((move) => typeof move === "string" && USI_MOVE.test(move)) : [];
 }
 
+/**
+ * How many squares we cannot account for lie strictly between source and
+ * destination. Own pieces and capture evidence are known; every other square on
+ * the ray may hide an opponent piece, which would make the move a blocked foul.
+ * This is a score penalty for ordering only, not a legality decision: the trial
+ * still goes to the server, which owns the board.
+ */
+function pathRisk(observation, candidate) {
+  if (candidate.usi[1] === "*") return 0;
+  const from = candidate.usi.slice(0, 2);
+  const to = candidate.usi.slice(2, 4);
+  const dx = file(to) - file(from);
+  const dy = rank(to) - rank(from);
+  if ((dx === 0 && dy === 0) || (dx !== 0 && dy !== 0 && Math.abs(dx) !== Math.abs(dy))) return 0;
+  const distance = Math.max(Math.abs(dx), Math.abs(dy));
+  if (distance < 2) return 0;
+  const occupied = new Set(observation.pieces.map((piece) => piece.square));
+  let unknown = 0;
+  for (let step = 1; step < distance; step += 1) {
+    const crossing = square(file(from) + Math.sign(dx) * step, rank(from) + Math.sign(dy) * step);
+    if (!occupied.has(crossing)) unknown += 1;
+  }
+  return unknown * PATH_RISK_WEIGHT;
+}
+
 function features(observation, candidate, recentMoves) {
   const drop = candidate.usi[1] === "*";
   const from = candidate.usi.slice(0, 2); const to = candidate.usi.slice(2, 4);
@@ -362,7 +393,9 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
   if (!candidates.length) return null;
   const scored = candidates.map((candidate) => {
     const values = features(observation, candidate, recent);
-    const score = legacy ? 0 : FEATURE_NAMES.reduce((sum, name) => sum + values[name] * selectedProfile.weights[name], 0);
+    const score = legacy ? 0
+      : FEATURE_NAMES.reduce((sum, name) => sum + values[name] * selectedProfile.weights[name], 0)
+        - pathRisk(observation, candidate);
     return { usi: candidate.usi, role: candidate.role, features: values, score, priority: 0 };
   });
   // 王手中は玉の脱出候補を露出度の低い順に試す。特徴量スコアは前進を
