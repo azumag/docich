@@ -241,16 +241,17 @@ def _local(spec: AgentSpec, request: DispatchRequest, timeout: float, env: dict[
 
 def _direct_chat(spec: AgentSpec, request: DispatchRequest, timeout: float,
                  env: dict[str, str]) -> ProviderResult:
-    """Explicit direct-chat specs never start OpenCode or invent a fallback.
+    """Explicit direct API specs never start OpenCode or invent a fallback.
 
-    Research/Radio remain separate. The request's ordered agents, if any, are
-    still the operator's explicit application-level fallback policy.
+    Normal COMMENT/RADIO generation is allowed; RESEARCH/PREPASS remain
+    separate. The request's ordered agents, if any, are still the operator's
+    explicit application-level fallback policy.
     """
     from ..discord_chat import ChatRateLimit, Settings, direct_chat_options, read_secret
     from ..reply_research_api import answer_once
-    if (not request.label.startswith("COMMENT")
+    if (not request.label.startswith(("COMMENT", "RADIO"))
             or any(word in request.label.upper() for word in ("RESEARCH", "PREPASS"))):
-        return ProviderResult(2, failure_kind="invalid_provider", detail="chat_only")
+        return ProviderResult(2, failure_kind="invalid_provider", detail="generation_only")
     if spec.raw != f"{spec.provider}:{spec.model}":
         return ProviderResult(2, failure_kind="invalid_provider", detail="invalid_provider")
     profile = spec.provider.removesuffix("-api")
