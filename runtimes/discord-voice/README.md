@@ -121,15 +121,15 @@ Normal logs contain only fixed lifecycle events such as `utterance_started`, `ut
 
 The Bot needs only the permissions required to see the configured server/channel and **Connect / Speak** in that voice channel. Message Content, member-list and Presence privileged intents are not used by this live process. The Windows CI job installs the same pinned dependencies and executes `check:live` plus the offline contracts without any Discord credentials.
 
-This is still only Slice 1 of #1628. A successful test tone proves DAVE-capable VC join and outbound audio on the selected Windows host; it does **not** prove inbound audio, STT, VOICEVOX, conversation memory, barge-in, multi-user attribution or the 30-minute acceptance test.
+Slice 1 provides DAVE-capable VC join/outbound playback, and this Slice 2 adds an opt-in one-speaker receive/STT path. Offline contracts still do **not** prove a real Discord inbound-audio session, real Workers AI credentials/latency, VOICEVOX conversation replies, shared memory, live barge-in, multi-user attribution or the 30-minute acceptance test.
 
 ## Future live boundary
 
 Discord voice uses a separate UDP connection for receiving/transmitting voice data and requires DAVE E2EE support for voice calls starting March 1, 2026. [Discord voice connection documentation](https://docs.discord.com/developers/topics/voice-connections). Workers `node:dgram` is an importable non-functional stub, so importing a UDP package does not make a Workers voice transport operational. [Cloudflare Node.js compatibility](https://developers.cloudflare.com/workers/runtime-apis/nodejs/#non-functional-stub-modules).
 
-The Windows Slice 1 bootstrap now delegates Voice Gateway/UDP, DAVE and outbound Opus transport to the pinned Discord libraries, but keeps inbound audio disabled. A later slice still needs authenticated speaker attribution, voice receive/Opus decode, real VAD/STT, participant-consent policy, VOICEVOX transport, cancellation/cleanup acceptance and safe conversation-core integration. The existing public `/healthz` is not a conversation API. This slice does not deploy a host, register a Windows service, alter the current text Worker, or enable recording.
+The Windows live bootstrap delegates Voice Gateway/UDP, DAVE and outbound Opus transport to the pinned Discord libraries. Inbound audio stays disabled by default; Slice 2 can explicitly undeafen and subscribe to one configured user, decode Opus, and invoke the bounded Whisper boundary. A later slice still needs production-grade VAD acceptance, participant-consent UX, VOICEVOX transport, safe conversation-core integration, shared-memory policy and live barge-in/multi-user acceptance. The existing public `/healthz` is not a conversation API. This slice does not deploy a host, register a Windows service, alter the current text Worker, or enable recording.
 
-Issue #1628's VC join, real Japanese STT, canonical-persona response, Discord TTS, reconnect and 30-minute live acceptance criteria remain open. Passing these offline contracts demonstrates the coordinator slice only.
+Issue #1628 still requires credentialed real-VC acceptance for join/receive/Japanese STT, canonical-persona response, Discord TTS, reconnect and the 30-minute live test. Passing these contracts demonstrates code boundaries and deterministic failure behavior, not those live acceptance criteria.
 
 
 ## Separate injected VOICEVOX boundary (offline tested)
