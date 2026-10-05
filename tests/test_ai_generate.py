@@ -307,6 +307,23 @@ if __name__ == "__main__":
     unittest.main()
 
 
+def test_radio_direct_api_is_accepted_by_dispatch_guard(tmp_path):
+    env = {"DOCICH_LLM_STATE_DIR": str(tmp_path), "AI_GENERATION_QUEUE_ENABLED": "0",
+           "DOCICH_LLM_TELEMETRY": "0"}
+    request = DispatchRequest(
+        label="RADIO:paper-script",
+        prompt="synthetic",
+        agents=parse_agents("cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8", env),
+    )
+    calls = []
+    def provider(spec, request, timeout, provider_env):
+        calls.append((spec.raw, request.label, timeout))
+        return ProviderResult(0, output="radio direct")
+    result = Dispatcher(env=env, provider_caller=provider).dispatch(request)
+    assert result.returncode == 0 and result.output == "radio direct"
+    assert calls == [("cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8", "RADIO:paper-script", 45.0)]
+
+
 def test_direct_chat_chain_shares_45_second_budget(tmp_path):
     env = {"DOCICH_LLM_STATE_DIR": str(tmp_path), "AI_GENERATION_QUEUE_ENABLED": "0",
            "DOCICH_LLM_TELEMETRY": "0"}
