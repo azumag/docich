@@ -328,6 +328,13 @@ def test_search_public_unknown_backend_or_bad_cloudflare_config_never_spawns(mon
         "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID": "bad",
         "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN": "TOKEN",
     }) == []
+    assert w.search_public("公開仕様", 1, env={
+        "DOCICH_REPLY_WEB_SEARCH_BACKEND": "cloudflare",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID": "c"*32,
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN": "TOKEN",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_GATEWAY_ID": "gateway.with.period",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_BYOK_ALIAS": "key.name",
+    }) == []
 
 
 @pytest.mark.parametrize('url',['https://official.example/release?version=2','https://www.bbc.com/news/example','https://news.example.jp/story'])
