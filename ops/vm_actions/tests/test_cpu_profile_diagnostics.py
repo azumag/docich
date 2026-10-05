@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -160,6 +161,76 @@ class CpuProfileOperationContractTests(unittest.TestCase):
         self.assertIn('profile.get("status") != "ok"', text)
         self.assertIn('(data.get("diagnostics") or {}).get("cpu_profile")', text)
         self.assertNotIn("profile_cpu.py sample --scenario", text)
+
+
+class CpuProfileBudgetTests(unittest.TestCase):
+    """Output-pressure reduction keeps the busiest rows and counts the rest."""
+
+    def payload(self, components, spawns):
+        return {
+            "cpu_profile": {"status": "stale", "components_truncated": 0,
+                            "components": components, "spawns": spawns},
+            "corners": {"retro_corner": {"decision_plans": {"status": "available"},
+                                         "scene_narration": {"status": "available"}}},
+            "hanjuku_tactical": {"status": "ok"},
+            "ai": {"recent_events": [], "anomalous_components": {}},
+            "workers": {"details": {}},
+            "nethack_history": {"daily": {"records": []},
+                                "completed_runs": {"records": []}},
+            "soren91_drop_profile": {"profileStatus": "missing"},
+            "pulse_sink_inputs": {"streams": []},
+        }
+
+    def rows(self, count, offset=0):
+        return [{"component": f"worker-{index}", "cpu_pct": 10.0 - index,
+                 "processes": index + offset} for index in range(count)]
+
+    def spawn_rows(self, count):
+        return [{"component": "worker", "spawner": "poll_worker", "count": count - index}
+                for index in range(count)]
+
+    def test_a_small_envelope_never_touches_the_profile(self):
+        payload = self.payload(self.rows(12), self.spawn_rows(12))
+        before = json.dumps(payload, sort_keys=True)
+        with mock.patch.object(collector, "MAX_JSON_BYTES", len(before) + 64):
+            text = collector._diagnostics_budget(payload)
+        self.assertEqual(len(payload["cpu_profile"]["components"]), 12)
+        self.assertNotIn("components_omitted", text)
+        self.assertNotIn("spawns_omitted", text)
+
+    def test_a_full_envelope_keeps_the_busiest_rows_and_counts_the_rest(self):
+        payload = self.payload(self.rows(30), self.spawn_rows(30))
+        with mock.patch.object(collector, "MAX_JSON_BYTES", 10):
+            text = collector._diagnostics_budget(payload)
+        profile = payload["cpu_profile"]
+        self.assertEqual(len(profile["components"]), collector.CPU_PROFILE_BUDGET_COMPONENTS)
+        self.assertEqual(len(profile["spawns"]), collector.CPU_PROFILE_BUDGET_SPAWNS)
+        self.assertEqual(profile["components_omitted"], 20)
+        self.assertEqual(profile["spawns_omitted"], 20)
+        # The producer orders busiest-first: the head rows must be the ones kept.
+        self.assertEqual(profile["components"][0]["component"], "worker-0")
+        self.assertEqual(profile["spawns"][0]["count"], 30)
+        # The existing contract's truncation counter is not overwritten.
+        self.assertEqual(profile["components_truncated"], 0)
+        self.assertIn("decision_plans", text)
+
+    def test_a_missing_or_short_profile_is_left_alone(self):
+        payload = self.payload(self.rows(3), self.spawn_rows(3))
+        with mock.patch.object(collector, "MAX_JSON_BYTES", 10):
+            collector._diagnostics_budget(payload)
+        self.assertNotIn("components_omitted", payload["cpu_profile"])
+        self.assertNotIn("spawns_omitted", payload["cpu_profile"])
+        payload = self.payload("PRIVATE_ROWS", {"PRIVATE_ROWS": 1})
+        with mock.patch.object(collector, "MAX_JSON_BYTES", 10):
+            collector._diagnostics_budget(payload)
+        # Only bounded lists of projected rows are truncated; an unexpected
+        # shape is left untouched rather than inspected or rewritten.
+        self.assertEqual(payload["cpu_profile"]["components"], "PRIVATE_ROWS")
+        self.assertEqual(payload["cpu_profile"]["spawns"], {"PRIVATE_ROWS": 1})
+        self.assertNotIn("components_omitted", payload["cpu_profile"])
+        self.assertNotIn("spawns_omitted", payload["cpu_profile"])
+        payload = {"corners": {}}
+        self.assertIs(collector._cpu_profile_budget(payload), payload)
 
 
 if __name__ == "__main__":
