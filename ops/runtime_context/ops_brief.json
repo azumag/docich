@@ -1,11 +1,11 @@
 {
-  "output_sha256": "ffa26dd93d41937b1653fd09584d14bbabc94114acd4fd83a4865ba6ccde91c9",
+  "output_sha256": "47e2ce7880bcbc89c9a2b8e8deb8539c8dfbf8d0b8599d7cbce62a6b3cecd400",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "f3b2bb5d735c0fe9f9c168f6ccd1d61e393e7b0a9285921bf16e1ccadce84b0c",
+  "source_sha256": "d9a252142e48fcdd5a6392c9721dab1a359c3e372846b9fb3894b90020648a10",
   "topics": [
+    "半熟の固定program queue診断を追加（本番未実行）",
     "半熟admin checkの固定拒否enumをReady PRでレビュー（本番未実行）",
-    "Discordの内部応答生成を文字送信から分離（実音声・本番未接続）",
-    "Discord音声TTSの外部VOICEVOX境界を合成fixtureで検証（実接続・本番未反映）"
+    "Discordの内部応答生成を文字送信から分離（実音声・本番未接続）"
   ]
 }
