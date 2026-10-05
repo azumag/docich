@@ -1,4 +1,4 @@
-/** Offline contracts only; no transport/provider implementations or credentials. */
+/** Offline-tested boundaries only; no built-in network transport or credentials. */
 export interface Scope { readonly guildId: string; readonly channelId: string; readonly userId: string; }
 export interface Context { readonly signal: AbortSignal; }
 export interface PCMFormat { readonly sampleRate: 48000; readonly channels: 1; readonly frameMs: 20; readonly samples: 960; }
@@ -21,6 +21,22 @@ export interface FakeTTS {
   readonly kind: 'fake';
   synthesize(reply: string, context: Context & { format: PCMFormat }): Promise<Int16Array>;
 }
+/** Standalone injectable boundary; NOT accepted by fake-only VoiceRuntime. */
+export interface VoicevoxHttpRequest {
+  readonly url: string;
+  readonly method: 'POST';
+  readonly headers: Readonly<{ 'Content-Type': 'application/json' }>;
+  readonly body: string;
+  readonly signal: AbortSignal;
+  /** Transport must enforce this while reading, before unbounded allocation. */
+  readonly maxBytes: number;
+}
+export interface InjectedVoicevoxAdapter {
+  readonly kind: 'voicevox-injected';
+  synthesize(reply: string, context: Context & { format: PCMFormat; scope: Scope }): Promise<Int16Array>;
+}
+/** Returned bytes transfer ownership to adapter, including after cancellation. */
+export type VoicevoxRequest = (request: VoicevoxHttpRequest) => Promise<{ status: number; body: Uint8Array }>;
 export interface Activation extends Scope {
   readonly session: number;
   readonly turnId: string;
