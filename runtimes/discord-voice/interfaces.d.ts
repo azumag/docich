@@ -19,7 +19,7 @@ export interface FakeConversation {
 }
 export interface FakeTTS {
   readonly kind: 'fake';
-  synthesize(reply: string, context: Context & { format: PCMFormat }): Promise<Int16Array>;
+  synthesize(reply: string, context: Context & { format: PCMFormat; scope: Scope }): Promise<Int16Array>;
 }
 /** Standalone injectable boundary; NOT accepted by fake-only VoiceRuntime. */
 export interface VoicevoxHttpRequest {
