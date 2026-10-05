@@ -1,10 +1,11 @@
 """Bounded public research inputs for the PAPER crypto corner.
 
-This module is deliberately read-only with respect to exchanges: it searches
-public Google News RSS feeds and Wikipedia, selects one actually-held asset,
-and persists a small allowlisted research record for narration and the later
-strategy-improvement pass. No exchange credentials or order endpoints exist
-here.
+This module is deliberately read-only with respect to exchanges. The default
+path searches public Google News RSS feeds and Wikipedia. An explicit opt-in
+can instead reuse docich's bounded public Web Search + verified-body broker.
+Both paths select one actually-held asset and persist a small allowlisted
+research record for narration and the later strategy-improvement pass. No
+exchange credentials or order endpoints exist here.
 """
 from __future__ import annotations
 
@@ -271,6 +272,94 @@ def _asset_news(name: str, fetcher: Callable[[str], str], seen: set[str]) -> lis
         return []
 
 
+def _web_title(text: str, url: str) -> str:
+    """Derive a bounded label from fetched body text, never from search snippets."""
+    cleaned = _clean_text(text, 300)
+    if cleaned:
+        match = re.search(r"[。！？!?]\s|[.]\s", cleaned)
+        title = cleaned[:match.end()].strip() if match else cleaned[:180].strip()
+        if title:
+            return title[:300]
+    try:
+        return (urllib.parse.urlsplit(url).hostname or "public-web")[:120]
+    except ValueError:
+        return "public-web"
+
+
+def _web_row(receipt) -> dict[str, object] | None:
+    url = str(getattr(receipt, "url", "") or "")
+    text = str(getattr(receipt, "text", "") or "")
+    if not url or not text:
+        return None
+    try:
+        source = urllib.parse.urlsplit(url).hostname or ""
+    except ValueError:
+        source = ""
+    title = _web_title(text, url)
+    if not title:
+        return None
+    return {
+        "title": title,
+        "url": url[:700],
+        "source": source[:120],
+        "published_at": None,
+        "summary": _clean_text(text, MAX_SUMMARY_CHARS),
+        "key": _title_key(title),
+        "evidence_sha256": str(getattr(receipt, "sha256", "") or "")[:64],
+    }
+
+
+def _prepare_websearch_inputs(
+    *,
+    name: str,
+    seen: set[str],
+    searcher,
+    broker,
+    deadline: float,
+) -> tuple[list[dict[str, object]], str, list[dict[str, object]]]:
+    """Build PAPER research DTOs from fetched bodies, not search snippets."""
+    queries = [("general", "暗号資産 ビットコイン イーサリアム 規制 ETF 最新ニュース")]
+    if name:
+        queries.append(("asset", f"{name} cryptocurrency technology history latest news"))
+
+    buckets: dict[str, list[str]] = {"general": [], "asset": []}
+    all_urls: list[str] = []
+    for kind, query in queries:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            candidates = searcher(query, min(8.0, remaining))
+        except Exception:
+            candidates = []
+        for value in candidates[:8]:
+            url = str(value or "")
+            if not url or url in all_urls:
+                continue
+            all_urls.append(url)
+            buckets[kind].append(url)
+    broker.authorize(all_urls)
+
+    rows: dict[str, dict[str, object]] = {}
+    for url in all_urls:
+        if len(rows) >= 4 or time.monotonic() >= deadline:
+            break
+        try:
+            receipt = broker.fetch(url)
+        except Exception:
+            receipt = None
+        row = _web_row(receipt)
+        if row is not None:
+            rows[url] = row
+
+    general_rows = [rows[url] for url in buckets["general"] if url in rows]
+    asset_rows = [rows[url] for url in buckets["asset"] if url in rows]
+    news_items = _merge_news([general_rows], seen, min(MAX_NEWS_ITEMS, 4))
+    related = _merge_news([asset_rows], seen, MAX_ASSET_NEWS) if name else []
+    background = _clean_text(asset_rows[0].get("summary"), MAX_BACKGROUND_CHARS) if asset_rows else ""
+    return news_items, background, related
+
+
 def _history(trading_dir: Path) -> dict:
     data = _read_json(trading_dir / HISTORY_FILENAME)
     news_keys = data.get("news_keys") if isinstance(data.get("news_keys"), list) else []
@@ -301,6 +390,9 @@ def prepare_research_context(
     now: float | None = None,
     fetcher: Callable[[str], str] | None = None,
     chooser=None,
+    env: Mapping[str, str] | None = None,
+    web_searcher=None,
+    web_broker=None,
 ) -> dict:
     """Search public crypto news and select one held asset with deduped angle."""
     target = Path(trading_dir)
@@ -311,18 +403,38 @@ def prepare_research_context(
         return existing
 
     fetch = fetcher or _http_get
+    effective_env = os.environ if env is None else env
+    backend = effective_env.get("DOCICH_PAPER_RESEARCH_BACKEND", "legacy")
+    if backend not in {"legacy", "websearch"}:
+        raise ValueError("invalid paper research backend")
+
     history = _history(target)
     seen = set(history["news_keys"])
     held = _held_symbols(target)
     symbol, angle, angle_label = _select_asset(held, history, chooser)
     name = _asset_name(symbol) if symbol else ""
 
-    news_items = _fetch_crypto_news(fetch, seen)
-    background = _wikipedia_background(name, fetch) if symbol else ""
-    related = _asset_news(name, fetch, seen) if symbol else []
+    if backend == "websearch":
+        deadline = time.monotonic() + 20.0
+        broker = web_broker
+        searcher = web_searcher
+        if broker is None or searcher is None:
+            from ..reply_research_web import WebBroker, search_public
+            broker = WebBroker(target / ".paper-web-unused.sock", deadline)
+            searcher = lambda query, timeout: search_public(query, timeout, env=effective_env)
+        news_items, background, related = _prepare_websearch_inputs(
+            name=name, seen=seen, searcher=searcher, broker=broker, deadline=deadline
+        )
+        research_backend = "websearch_verified_body"
+    else:
+        news_items = _fetch_crypto_news(fetch, seen)
+        background = _wikipedia_background(name, fetch) if symbol else ""
+        related = _asset_news(name, fetch, seen) if symbol else []
+        research_backend = "google_news_wikipedia"
     payload = {
         "schema_version": 1,
         "status": "prepared",
+        "research_backend": research_backend,
         "date": date,
         "generated_at": moment,
         "news_items": news_items,
