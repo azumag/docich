@@ -20,6 +20,7 @@ import {
   PermissionFlagsBits,
 } from 'discord.js';
 
+import { CloudflareConversationClient } from './cloudflare-conversation.mjs';
 import { CloudflareWhisperSTT } from './cloudflare-stt.mjs';
 import { attachLiveSttReceiver } from './live-receive.mjs';
 import { LiveVoiceError, loadLiveVoiceConfig, makeStereoTestTone } from './live-support.mjs';
@@ -146,6 +147,7 @@ function defaultRuntimeOps() {
     waitVoiceReady: (connection) =>
       entersState(connection, VoiceConnectionStatus.Ready, 30_000),
     createStt: (env) => new CloudflareWhisperSTT({ env }),
+    createConversation: (env) => new CloudflareConversationClient({ env }),
     attachReceiver: (options) => attachLiveSttReceiver(options),
     playTestTone,
     signalTarget: process,
@@ -157,6 +159,9 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
   const ops = { ...defaultRuntimeOps(), ...runtimeOps };
   const signalTarget = ops.signalTarget;
   const stt = config.receiveEnabled ? ops.createStt(env) : null;
+  const conversation = config.conversationEnabled
+    ? ops.createConversation(env)
+    : null;
   const client = ops.createClient();
 
   let connection = null;
@@ -301,14 +306,42 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
     });
 
     if (config.receiveEnabled) {
+      const onTranscript = conversation
+        ? async (transcript, { signal }) => {
+            emit({ event: 'llm_started' });
+            try {
+              const reply = await conversation.reply(transcript, {
+                guildId: config.guildId,
+                channelId: config.channelId,
+                userId: config.receiveUserId,
+                signal,
+              });
+              if (signal.aborted || stopping) {
+                emit({ event: 'llm_cancelled' });
+                return;
+              }
+              emit({ event: 'llm_completed' });
+              if (config.replyDebug) {
+                emit({ event: 'llm_debug_reply', reply });
+              }
+            } catch {
+              emit({
+                event: signal.aborted || stopping ? 'llm_cancelled' : 'llm_failed',
+              });
+            }
+          }
+        : null;
+
       liveReceiver = ops.attachReceiver({
         connection,
         targetUserId: config.receiveUserId,
         stt,
         emit,
         debugTranscript: config.transcriptDebug,
+        onTranscript,
       });
       emit({ event: 'voice_receive_enabled' });
+      if (conversation) emit({ event: 'voice_conversation_enabled' });
     }
 
     if (config.playTestTone) {
