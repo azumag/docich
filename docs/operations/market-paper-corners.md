@@ -89,6 +89,7 @@ practice価格を入力し、約定はdocich内のローカル台帳にのみ生
 結果固定時に一意なjobを作る。`news.rss_urls`へ承認済みHTTPS RSSを設定し、見出し・公開時刻・取得時刻を記録する。
 ニュース欠損／未来時刻／AI未設定では改善しない。エラーは最大3回のbackoff再試行で、全文や資格情報はログへ出さない。
 `ai.agents`は既存のAIディスパッチ識別子。空の場合は選択profileの`paper_corner.improve_agents`を参照する。
+`ai.direct_enabled=false` が既定で、この場合の挙動は従来どおり。`true` の場合だけ `ai.direct_agents` を使い、全要素が明示的な `openrouter-api / vercel-api / cloudflare-api` でなければ提案開始前に拒否する。CLI/OpenCode chainを暗黙にdirect化せず、direct/CLIを同一fallback chainにも混在させない。
 「中華AI」として運用する前に、この経路を実際に利用可能な中国系モデルへ設定・実測すること。
 本変更はモデル契約や既存の配信モデルを勝手に変更しない。
 
