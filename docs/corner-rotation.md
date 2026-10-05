@@ -412,9 +412,12 @@ weatherのrestore成功で `game_switch.active_game=sorengame` になっても�
 fresh-start/lifecycle復帰の途中またはsupervisor再起動待ちを疑う。
 画面復帰直後だけを見てpause markerを削除したり、共有runtime全体を再起動したりしない。
 
-今回の実測では自然復帰したため、現時点ではweather restore自体の失敗とは扱わない。
-ただし同じ状態が継続する場合は、weather完了後の受入条件に「sorengame canonical ready」に加えて
-「soren_loop alive / ゲーム進行再開」を追加して別途回帰化する。
+今回の実測では自然復帰したため、weather restore自体の失敗とは扱わない。
+一方、同じ見かけの停止を受入成功として見逃さないよう、Weatherの本番観測はterminal/restoreだけで
+終了せず、復帰先が `sorengame` の場合は `soren_loop` alive、main strategy runner alive、
+`game_state` が `MOVE|DROP|WAITING` かつ30秒以内に更新されていることまで確認する。
+この条件を満たすまでは `Soren resumed=false` として観測を継続する。復帰先がSoren以外なら
+この追加条件は `not_applicable` とする。共有runtimeの再起動やpause marker変更は行わない。
 
 ### 手動コーナーの時刻指定予約（#1759）
 
