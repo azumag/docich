@@ -370,6 +370,56 @@ def test_target_changed_during_pin_is_refused_without_detach(topo, monkeypatch):
     assert (topo.root / "game_state.json").exists() and not topo.sent
 
 
+@pytest.mark.parametrize("stage", ["pin", "detach"])
+@pytest.mark.parametrize("spawn", [False, True])
+def test_owned_child_growth_after_pin_refuses_without_kill(topo, monkeypatch, stage, spawn):
+    recovery = recovery_for(topo)
+    topo.effects.archive(recovery)
+    before = {name: (topo.root / name).read_bytes() for name in recovery["files"]}
+    original = topo.effects._pin if stage == "pin" else Path.rename
+    triggered = False
+
+    def add_child():
+        nonlocal triggered
+        assert not triggered
+        triggered = True
+        if spawn:
+            topo.fake.add(60, 31, ["chrome", "--type=renderer"], age=1)
+
+    if stage == "pin":
+        def pin(row, **kwargs):
+            fd = original(row, **kwargs)
+            if row["pid"] == 33:
+                add_child()
+            return fd
+        monkeypatch.setattr(topo.effects, "_pin", pin)
+    else:
+        def rename(path, target):
+            result = original(path, target)
+            if path == topo.root / "game_state.json":
+                add_child()
+            return result
+        monkeypatch.setattr(Path, "rename", rename)
+
+    if spawn:
+        with pytest.raises(RecoveryRefused, match="game process tree changed"):
+            topo.effects.stop(recovery)
+        assert not topo.sent
+        assert {name: (topo.root / name).read_bytes() for name in before} == before
+        assert (topo.fake.proc / "60").exists()
+        assert {r["pid"] for r in recovery["inventory"]["processes"]} == {20, 21, 22, 30, 31, 32, 33}
+        assert not list((topo.effects._archive_dir(recovery) / "retired").rglob("*.json"))
+    else:
+        topo.effects.stop(recovery)
+        assert {pid for pid, sig in topo.sent} == {20, 21, 22, 30, 31, 32, 33}
+        assert topo.effects._old_gone(recovery)
+        assert not (topo.root / "game_state.json").exists()
+    assert triggered
+    assert (topo.fake.proc / "10").exists() and (topo.fake.proc / "40").exists()
+    for name, digest in recovery["files"].items():
+        assert hashlib.sha256((topo.effects._archive_dir(recovery) / name).read_bytes()).hexdigest() == digest
+
+
 def test_pid_reuse_is_never_signalled(topo):
     old = topo.effects.preflight()["roots"]["soren_loop.sh"]
     topo.fake.remove(20)
