@@ -9,7 +9,11 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from docich import config
-from docich.nethack_daily_improve import run_daily_improvement
+from docich.nethack_daily_improve import (
+    NethackDailyImproveError,
+    _load_config,
+    run_daily_improvement,
+)
 from docich.nethack_run import PROGRESS_SCHEMA_VERSION
 
 
@@ -102,6 +106,39 @@ class DailyImproveTests(unittest.TestCase):
             }
             lines.append(json.dumps(item) + "\n")
         (progress / f"{run['run_id']}.jsonl").write_text("".join(lines), encoding="utf-8")
+
+    def test_direct_daily_improve_chain_is_explicit_opt_in(self) -> None:
+        path = self.root / "config" / "docich.toml"
+        text = path.read_text(encoding="utf-8").replace(
+            'daily_improvement_timezone = "Asia/Tokyo"\n',
+            'daily_improvement_timezone = "Asia/Tokyo"\n'
+            'daily_improvement_direct_enabled = true\n'
+            'daily_improvement_direct_agents = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"\n',
+        )
+        path.write_text(text, encoding="utf-8")
+        g = config.load_global(self.root)
+        resolved = _load_config(g)
+        self.assertEqual(
+            resolved.agents,
+            "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8",
+        )
+
+    def test_direct_daily_improve_rejects_non_direct_chain(self) -> None:
+        path = self.root / "config" / "docich.toml"
+        text = path.read_text(encoding="utf-8").replace(
+            'daily_improvement_timezone = "Asia/Tokyo"\n',
+            'daily_improvement_timezone = "Asia/Tokyo"\n'
+            'daily_improvement_direct_enabled = true\n'
+            'daily_improvement_direct_agents = "opencode:legacy"\n',
+        )
+        path.write_text(text, encoding="utf-8")
+        g = config.load_global(self.root)
+        with self.assertRaises(NethackDailyImproveError):
+            _load_config(g)
+
+    def test_direct_daily_improve_off_keeps_legacy_inheritance(self) -> None:
+        resolved = _load_config(self.g)
+        self.assertEqual(resolved.agents, "provider:model")
 
     def test_daily_candidate_uses_sanitized_result_and_trace_then_waits_for_canary(self) -> None:
         run = self.make_run()
