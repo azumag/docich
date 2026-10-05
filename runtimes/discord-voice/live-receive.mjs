@@ -7,6 +7,7 @@ const MAX_UTTERANCE_SAMPLES = PCM.sampleRate * 10;
 const MIN_VOICED_SAMPLES = Math.round((PCM.sampleRate * 100) / 1000);
 const SPEECH_THRESHOLD = 500;
 const STT_TIMEOUT_MS = 10_000;
+const MAX_PENDING_STT = 1;
 
 const erase = (value) => {
   if (!ArrayBuffer.isView(value)) return;
@@ -38,10 +39,7 @@ function defaultDecoder() {
 }
 
 export function stereoPcm16ToMono(decoded) {
-  if (
-    !(decoded instanceof Uint8Array) &&
-    !Buffer.isBuffer(decoded)
-  ) {
+  if (!(decoded instanceof Uint8Array)) {
     throw new TypeError('invalid_decoded_audio');
   }
   if (!decoded.byteLength || decoded.byteLength % 4 !== 0) {
@@ -101,7 +99,9 @@ export function attachLiveSttReceiver({
   }
 
   let stopped = false;
-  let active = null;
+  let captureActive = null;
+  let sttActive = null;
+  const sttQueue = [];
 
   const safeEmit = (record) => {
     try {
@@ -111,8 +111,58 @@ export function attachLiveSttReceiver({
     }
   };
 
+  const drainStt = () => {
+    if (stopped || sttActive || sttQueue.length === 0) return;
+
+    const item = sttQueue.shift();
+    const controller = new AbortController();
+    const state = { controller, pcm: item.pcm };
+    sttActive = state;
+
+    void (async () => {
+      safeEmit({ event: 'stt_started' });
+      const timeout = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
+      timeout.unref?.();
+      try {
+        const transcript = await stt.transcribe(state.pcm, {
+          format: PCM,
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted || stopped) return;
+        safeEmit({ event: 'stt_completed' });
+        if (debugTranscript) {
+          safeEmit({ event: 'stt_debug_transcript', transcript });
+        }
+      } catch {
+        safeEmit({
+          event: controller.signal.aborted ? 'stt_cancelled' : 'stt_failed',
+        });
+      } finally {
+        clearTimeout(timeout);
+        erase(state.pcm);
+        controller.abort();
+        if (sttActive === state) sttActive = null;
+        drainStt();
+      }
+    })();
+  };
+
+  const enqueueStt = (pcm) => {
+    if (stopped) {
+      erase(pcm);
+      return;
+    }
+    if (sttActive && sttQueue.length >= MAX_PENDING_STT) {
+      erase(pcm);
+      safeEmit({ event: 'stt_queue_full' });
+      return;
+    }
+    sttQueue.push({ pcm });
+    drainStt();
+  };
+
   const capture = async (userId) => {
-    if (stopped || active || userId !== targetUserId) return;
+    if (stopped || captureActive || userId !== targetUserId) return;
 
     const controller = new AbortController();
     let decoder;
@@ -138,7 +188,7 @@ export function attachLiveSttReceiver({
       samples: 0,
       voiced: 0,
     };
-    active = state;
+    captureActive = state;
     safeEmit({ event: 'utterance_started' });
 
     try {
@@ -182,28 +232,7 @@ export function attachLiveSttReceiver({
       state.chunks = [];
 
       safeEmit({ event: 'utterance_finished' });
-      safeEmit({ event: 'stt_started' });
-
-      const timeout = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
-      timeout.unref?.();
-      try {
-        const transcript = await stt.transcribe(pcm, {
-          format: PCM,
-          signal: controller.signal,
-        });
-        if (controller.signal.aborted || stopped) return;
-        safeEmit({ event: 'stt_completed' });
-        if (debugTranscript) {
-          safeEmit({ event: 'stt_debug_transcript', transcript });
-        }
-      } catch {
-        safeEmit({
-          event: controller.signal.aborted ? 'stt_cancelled' : 'stt_failed',
-        });
-      } finally {
-        clearTimeout(timeout);
-        erase(pcm);
-      }
+      enqueueStt(pcm);
     } catch {
       if (!controller.signal.aborted && !stopped) {
         safeEmit({ event: 'voice_receive_failed' });
@@ -222,7 +251,7 @@ export function attachLiveSttReceiver({
       }
       for (const chunk of state.chunks) erase(chunk);
       state.chunks = [];
-      if (active === state) active = null;
+      if (captureActive === state) captureActive = null;
     }
   };
 
@@ -236,19 +265,26 @@ export function attachLiveSttReceiver({
       if (stopped) return;
       stopped = true;
       receiver.speaking.off('start', onSpeakingStart);
-      if (active) {
-        active.controller.abort();
+
+      if (captureActive) {
+        captureActive.controller.abort();
         try {
-          active.stream.destroy?.();
+          captureActive.stream.destroy?.();
         } catch {
           // Fixed cleanup path.
         }
       }
+
+      sttActive?.controller.abort();
+      for (const item of sttQueue.splice(0)) erase(item.pcm);
     },
     status() {
       return Object.freeze({
         enabled: !stopped,
-        active: Boolean(active),
+        active: Boolean(captureActive || sttActive),
+        capturing: Boolean(captureActive),
+        transcribing: Boolean(sttActive),
+        queued: sttQueue.length,
       });
     },
   });
