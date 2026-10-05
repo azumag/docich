@@ -197,6 +197,8 @@ routing有効時のAPI-onlyも分類からの残り45秒をbounded callbackへ�
 新specは通常のCOMMENT/RADIO生成で利用できる。RESEARCH/PREPASSは引き続き拒否し、検索・コード調査の権限境界へdirect生成specを流用しない。RADIO側もagent chainへ`*-api:`を明示した場合だけdirect APIを使い、既存の`opencode:`/`opencode-go:`設定を暗黙変換しない。
 
 PAPER暗号資産コーナーは `[paper_corner] script_direct_enabled` を既定falseとし、false時は従来の `script_agents` をそのまま使う。trueにする場合は `script_direct_agents` が必須で、全要素が `openrouter-api / vercel-api / cloudflare-api` のexplicit direct providerでなければ起動前に拒否する。これによりコードを先に配布しても既存RADIOのprovider chainは変わらず、production切替とcredential受入を別operationに分離できる。
+
+終了後のPAPER戦略改善も同じ段階導入とし、`improve_direct_enabled=false` が既定。true時は `improve_direct_agents` が必須でexplicit direct providerのみを受理する。親cornerと `paper-improve` 子CLIは同じ設定resolverを使い、親が選んだeffective chainを `--agents` で子へ明示渡しする。したがって、親の起動判定と子のprovider選択が異なる設定を参照しない。改善出力は既存どおり宣言的なPAPER戦略候補だけで、生成コード・live権限・資金上限変更は許可しない。
 画像provider allowlistは拡張しない。明示chain内の次候補はbounded direct APIに限定し、
 既存local/CLI chainとの混在は送信前に拒否する。fallback候補を環境やモデル回答から作らない。typed requestでもrawのmodelと
 実HTTP modelが一致しなければ、鍵解決/worker/telemetry前に拒否する。
