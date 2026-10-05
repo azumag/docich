@@ -2722,7 +2722,7 @@ WEATHER_END_REASONS = frozenset({
     "forecast-fetch-failed-before-start", "operator-stopped-before-start",
     "operator-moved-after-start", "operator-moved-during-weather",
     "operator-moved-before-restore", "switch-terminal-before-corner-active",
-    "manual", "forecast-expired", "duration",
+    "manual", "forecast-expired", "duration", "audio-completed", "audio-unavailable",
 })
 WEATHER_RECEIPT_STATUSES = frozenset({
     "allocating", "accepted", "queued", "succeeded", "failed", "rolled_back",
