@@ -107,6 +107,46 @@ def test_tsuitate_view_preflight_requires_ready_beta_owner(tmp_path, monkeypatch
         adapter.preflight(time.monotonic() + 5, None)
 
 
+def _settled_result(**overrides):
+    value = {"outcome": "win", "reason": "checkmate", "endedAt": "2026-10-06T00:05:00.000Z",
+             "moveNumber": 9, "resultConfidence": "verified"}
+    value.update(overrides)
+    return value
+
+
+def test_broadcast_view_shows_the_settled_result_but_never_a_live_one(monkeypatch):
+    monkeypatch.setattr(
+        tsuitate_view, "call_beta_control",
+        lambda *_: {**_status(state="playing", runId="fixture-run", reservedGames=1),
+                    "gameResult": _settled_result()},
+    )
+    # A result attached to a live match is withheld: the Worker's settled-only
+    # rule is re-checked here so a drifted control response cannot leak it.
+    live = tsuitate_view.status_projection("g4-a1b2c3d4", 4, "lease-fixture")
+    assert live["ok"] is True and live["gameResult"] is None
+
+    monkeypatch.setattr(
+        tsuitate_view, "call_beta_control",
+        lambda *_: {**_status(state="finished", runId="fixture-run", completedGames=1,
+                               reservedGames=1, readyForNextRun=True),
+                    "gameResult": _settled_result()},
+    )
+    finished = tsuitate_view.status_projection("g4-a1b2c3d4", 4, "lease-fixture")
+    assert finished["gameResult"] == _settled_result()
+    assert "result" in tsuitate_view.HTML and "rv-outcome" in tsuitate_view.HTML
+    assert "AIの勝ち" in tsuitate_view.HTML and "詰み" in tsuitate_view.HTML
+    for forbidden in ["yourPieces", "yourHand", "decisions", "usi", "opponentPieces"]:
+        assert forbidden not in tsuitate_view.HTML
+
+    monkeypatch.setattr(
+        tsuitate_view, "call_beta_control",
+        lambda *_: {**_status(state="finished", runId="fixture-run", readyForNextRun=True),
+                    "gameResult": {"outcome": "victory"}},
+    )
+    malformed = tsuitate_view.status_projection("g4-a1b2c3d4", 4, "lease-fixture")
+    assert malformed["ok"] is True and malformed["gameResult"] is None
+
+
 def test_broadcast_projection_drops_unreviewed_remote_fields(monkeypatch):
     monkeypatch.setattr(
         tsuitate_view,

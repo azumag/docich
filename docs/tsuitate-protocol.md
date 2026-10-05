@@ -22,6 +22,27 @@ Node.js版の共通brain・beta Socket.IO adapter・反復対局・結果から�
 - 終局を受信していない状態で「対局なし」を終局と推測しない
 - 切替要求は将来の参加だけを止め、現在の対局の入力を止めない
 
+## 終局結果の表示境界
+
+`tsuitate_beta_control.project_game_result` は **対局終了後だけ** 公開する勝敗・終局理由だけを
+allowlist から組み立てます。`outcome`（Bot視点）/ `reason` / `endedAt` / Botが観測した最終手数 /
+結果の確度のみ。着手・盤面・持ち駒・相手情報は含みません。
+
+- 値が壊れている場合は結果全体を `None` に落とします。stop / reconcile / lifecycle status は
+  結果表示に依存しないため、表示の不備が対局を止めません（`playerView` と同じ方針）。
+- `tsuitate_view` はさらに `state == "finished"` を再確認してから broadcast します。対局中は
+  どこにも勝敗が出ません。
+- `tsuitate_corner` は自身の runId が一致し `finished` のときだけ結果をコーナー状態へ保存します。
+  別 run の結果は混入しません。
+
+## コーナーの有界終了
+
+`TsuitateCornerManager` は beta が active になってから `max_match_seconds`（既定1800秒）を超えると、
+手動停止と同じ `stop` を1回だけ要求します。新規の終了経路は作らず、終局確認と元画面への復帰は
+従来どおりです。経過時刻は `beta_active_since` として永続化するので、再起動で対局時間が伸びません。
+`paused`（終局未確定）は従来どおり握り潰さず、operator の reconcile まで次のコーナーを待たせます。
+timeout で生在对局を強制終了することはありません。
+
 ## このPythonモジュール単体に含まれないもの
 
 USI の検証は構文のみで、合法手・勝率を保証しません。

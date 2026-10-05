@@ -20,6 +20,18 @@ ERRORS = {"token_not_configured", "run_locked", "run_mismatch", "control_not_con
           "recovery_not_available", "recovery_checkpoint_invalid", "terminal_result_unavailable", "terminal_storage_failure"}
 
 PLAYER_COLORS = {"sente", "gote"}
+# Post-game public facts only, mirroring the Worker's own vocabulary. These are
+# what a viewer may learn once the match is over; they are never projected
+# while the game is live, and no move list or board position is included.
+GAME_OUTCOMES = {"win", "loss", "draw", "unknown"}
+GAME_REASONS = {
+    "normal", "checkmate", "stalemate", "resign", "timeout", "foul_limit",
+    "repetition", "draw", "aborted", "disconnect", "transport_error",
+    "protocol_error", "storage_error", "interrupted", "no_move", "unknown",
+}
+GAME_CONFIDENCE = {"verified", "unknown"}
+GAME_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z\Z")
+MAX_GAME_MOVES = 100000
 PLAYER_ROLES = {
     "pawn", "lance", "knight", "silver", "gold", "bishop", "rook", "king",
     "tokin", "promotedlance", "promotedknight", "promotedsilver", "horse", "dragon",
@@ -136,6 +148,41 @@ def project_player_view(raw) -> dict | None:
     }
 
 
+def project_game_result(raw) -> dict | None:
+    """Rebuild the settled post-game summary, or ``None`` when absent.
+
+    Only the reviewed public fields survive. Any unknown key, wrong type or
+    out-of-range number drops the whole projection instead of being forwarded,
+    and a caller's lifecycle status never depends on this succeeding.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ControlError("control_unavailable")
+    outcome = raw.get("outcome")
+    reason = raw.get("reason")
+    ended_at = raw.get("endedAt")
+    move_number = raw.get("moveNumber")
+    confidence = raw.get("resultConfidence")
+    if (
+        outcome not in GAME_OUTCOMES
+        or reason not in GAME_REASONS
+        or not isinstance(ended_at, str)
+        or not GAME_TIME.fullmatch(ended_at)
+        or type(move_number) is not int
+        or not 0 <= move_number <= MAX_GAME_MOVES
+        or confidence not in GAME_CONFIDENCE
+    ):
+        raise ControlError("control_unavailable")
+    return {
+        "outcome": outcome,
+        "reason": reason,
+        "endedAt": ended_at,
+        "moveNumber": move_number,
+        "resultConfidence": confidence,
+    }
+
+
 def signed_request(url: str, secret: str, action: str, run_id: str | None = None,
                    now: int | None = None) -> urllib.request.Request:
     """Only an allowlisted operation, fixed path and method enter the MAC."""
@@ -204,6 +251,12 @@ def call_beta_control(action: str, run_id: str | None = None, *, forbidden_secre
                 # PlayerView is display-only. A malformed optional projection
                 # must never block lifecycle status, stop, or explicit recovery.
                 result["playerView"] = None
+            try:
+                result["gameResult"] = project_game_result(data.get("terminalResult"))
+            except ControlError:
+                # Same rule as PlayerView: an unusable result is display-only and
+                # must not stop, reconcile or the terminal state transition.
+                result["gameResult"] = None
         result.update(maxGames=1, queueWaitSeconds=60,
                       errorCode=data.get("errorCode") if data.get("errorCode") in ERRORS else None)
         return result

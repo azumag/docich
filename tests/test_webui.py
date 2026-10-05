@@ -1531,6 +1531,38 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(view["catalog"][0]["manual_mode"], "queue")
         self.assertFalse(view["catalog"][0]["eligible"])
 
+    def test_tsuitate_corner_view_reports_end_reason_and_settled_result(self):
+        self._write_tsuitate_catalog_config()
+        state_dir = Path(self.g.state_dir)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "tsuitate_corner.json").write_text(json.dumps({
+            "schema_version": 1, "game": "tsuitate-view", "status": "completed",
+            "end_reason": "game-completed", "completed_at": time.time(),
+            "beta_result": {"outcome": "win", "reason": "checkmate",
+                            "endedAt": "2026-10-06T00:05:00.000Z", "moveNumber": 9,
+                            "resultConfidence": "verified"},
+        }), encoding="utf-8")
+        status, view = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, view)
+        entry = view["corners"]["tsuitate_corner"]
+        self.assertEqual(entry["end_reason"], "game-completed")
+        self.assertEqual(entry["game_result"]["outcome"], "win")
+        self.assertEqual(entry["game_result"]["moveNumber"], 9)
+
+        # A record the projection cannot vouch for exposes neither the label nor
+        # any part of the payload.
+        (state_dir / "tsuitate_corner.json").write_text(json.dumps({
+            "schema_version": 1, "game": "tsuitate-view", "status": "completed",
+            "end_reason": "match-timeout",
+            "beta_result": {"outcome": "victory", "yourPieces": [{"square": "5i"}]},
+        }), encoding="utf-8")
+        status, view = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, view)
+        entry = view["corners"]["tsuitate_corner"]
+        self.assertEqual(entry["end_reason"], "match-timeout")
+        self.assertIsNone(entry["game_result"])
+        self.assertNotIn("yourPieces", json.dumps(view))
+
     def test_tsuitate_manual_stop_before_start_uses_specific_error(self):
         self._write_tsuitate_catalog_config()
         with mock.patch("docich.tsuitate_corner.TsuitateCornerManager.eligible",

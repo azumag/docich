@@ -172,6 +172,49 @@ def test_corner_end_reason_reports_the_prelaunch_switch_terminal_vocabulary():
     assert unknown['end_reason'] is None
 
 
+def test_tsuitate_end_reason_and_settled_result_survive_diagnostics():
+    # The corner is manual-only, so diagnostics is the only place an operator can
+    # read why a match ended. Dropping the tsuitate vocabulary or the settled
+    # result would leave every production run indistinguishable.
+    module=load_collector()
+    result={'outcome':'win','reason':'checkmate','resultConfidence':'verified',
+            'moveNumber':9,'endedAt':'2026-10-06T00:05:00.000Z'}
+    for reason in ('game-completed','queue-timeout','beta-stopped','manual','match-timeout',
+                   'operator-moved-during-tsuitate','operator-moved-after-start',
+                   'operator-moved-before-restore','operator-stopped-before-start'):
+        output=module._project_corner_state(
+            {'status':'completed','game':'tsuitate-view','end_reason':reason,'beta_result':result})
+        assert output['end_reason']==reason
+        assert output['game_result']==result
+    # Nothing outside the vocabulary is published, and a result that cannot be
+    # vouched for is dropped whole rather than partially echoed.
+    for bad in [
+        {'outcome':'victory','reason':'checkmate','resultConfidence':'verified','moveNumber':9,
+         'endedAt':'2026-10-06T00:05:00.000Z'},
+        {'outcome':'win','reason':'opponent-blamed-the-bot','resultConfidence':'verified',
+         'moveNumber':9,'endedAt':'2026-10-06T00:05:00.000Z'},
+        {'outcome':'win','reason':'checkmate','resultConfidence':'public_replay','moveNumber':9,
+         'endedAt':'2026-10-06T00:05:00.000Z'},
+        {'outcome':'win','reason':'checkmate','resultConfidence':'verified','moveNumber':-1,
+         'endedAt':'2026-10-06T00:05:00.000Z'},
+        {'outcome':'win','reason':'checkmate','resultConfidence':'verified','moveNumber':9,
+         'endedAt':'yesterday'},
+    ]:
+        assert module._project_corner_state(
+            {'status':'completed','game':'tsuitate-view','end_reason':'game-completed',
+             'beta_result':bad})['game_result'] is None
+    assert module._project_corner_state(
+        {'status':'completed','end_reason':'SECRET-END-REASON','beta_result':result})['end_reason'] is None
+    # Extra keys are dropped rather than forwarded, so board/decision content
+    # written by a future change cannot reach diagnostics through this field.
+    extras=module._project_corner_state(
+        {'status':'completed','game':'tsuitate-view','end_reason':'game-completed',
+         'beta_result':{**result,'yourPieces':[{'square':'5i'}],'rawCheckpoint':'SECRET'}})
+    assert extras['game_result']==result
+    assert 'SECRET' not in json.dumps(extras)
+    assert 'yourPieces' not in extras['game_result']
+
+
 PULSE_SINK_INPUTS = (
     'Sink Input #41\n'
     '\tDriver: protocol-native.c\n'

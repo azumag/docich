@@ -32,6 +32,11 @@ ROLLBACK_ERROR_CODES = frozenset({
 })
 BETA_ACTIVE = frozenset({"queued", "playing", "draining"})
 BETA_TERMINAL = frozenset({"stopped", "finished", "queue_timeout"})
+# A single match must never hold the shared program slot forever. The queue
+# wait and the connect/disconnect deadlines live in the Worker; this bound
+# covers the match itself, which the remote site controls.
+DEFAULT_MAX_MATCH_SECONDS = 1800.0
+MAX_MATCH_SECONDS_LIMIT = 24 * 3600.0
 
 
 class TsuitateCornerError(RuntimeError):
@@ -66,9 +71,14 @@ def _stable(canonical):
 
 class TsuitateCornerManager:
     def __init__(self, g, *, coordinator=None, control=None,
-                 clock=time.time, sleep=time.sleep, poll_s=1.0):
+                 clock=time.time, sleep=time.sleep, poll_s=1.0,
+                 max_match_seconds=DEFAULT_MAX_MATCH_SECONDS):
         self.g = g
         self.clock, self.sleep, self.poll_s = clock, sleep, float(poll_s)
+        if (type(max_match_seconds) not in (int, float)
+                or not 0 < float(max_match_seconds) <= MAX_MATCH_SECONDS_LIMIT):
+            raise TsuitateCornerError("tsuitate max match seconds is out of range")
+        self.max_match_seconds = float(max_match_seconds)
         self.path = Path(g.state_dir) / STATE_FILENAME
         self.state_path = self.path
         self.store = GameSwitchStore(g.state_dir)
@@ -290,6 +300,16 @@ class TsuitateCornerManager:
                     "stopRequested", "readyForNextRun"):
             state["beta_" + key] = status.get(key)
         state["beta_run_matches"] = status.get("runId") == state.get("rotation_request_id")
+        # Keep only the settled post-game summary, and only for the run this
+        # corner owns. A result belonging to another run never reaches state.
+        if state["beta_run_matches"] is True and status.get("state") == "finished":
+            result = status.get("gameResult")
+            if isinstance(result, dict):
+                state["beta_result"] = {
+                    key: result[key] for key in
+                    ("outcome", "reason", "endedAt", "moveNumber", "resultConfidence")
+                    if key in result
+                }
         state.pop("last_error_code", None)
         self._save(state)
         return status
@@ -341,6 +361,20 @@ class TsuitateCornerManager:
         state.update(beta_stop_requested=True, beta_stop_requested_at=self.clock())
         self._save(state)
         return True
+
+    def _match_deadline_expired(self, state):
+        """Whether this run has held the shared slot past the match bound.
+
+        The first observation of an active beta run starts the clock, so a view
+        switch or queue wait never consumes the match's own budget. The stamp is
+        durable, so a restart cannot silently extend a corner's lifetime.
+        """
+        since = state.get("beta_active_since")
+        if not isinstance(since, (int, float)) or isinstance(since, bool):
+            since = self.clock()
+            state["beta_active_since"] = since
+            self._save(state)
+        return self.clock() - since >= self.max_match_seconds
 
     def _wait_and_restore(self, state):
         identity = state.get("view_runtime_identity")
@@ -415,6 +449,16 @@ class TsuitateCornerManager:
                 # corner remains busy and no next corner starts.
                 return "queued"
             if beta_state in BETA_ACTIVE:
+                if self._match_deadline_expired(state):
+                    # Reuse the reviewed stop path rather than a new exit: the
+                    # current game is drained to a terminal result first, and the
+                    # restore below is unchanged.
+                    if state.get("beta_timeout_requested") is not True:
+                        state.update(beta_timeout_requested=True,
+                                     beta_timeout_requested_at=self.clock())
+                        self._save(state)
+                    if not self._request_beta_stop(state):
+                        return "queued"
                 self.sleep(self.poll_s)
                 continue
             if beta_state not in BETA_TERMINAL:
@@ -423,7 +467,11 @@ class TsuitateCornerManager:
             reason = {
                 "finished": "game-completed",
                 "queue_timeout": "queue-timeout",
-                "stopped": "manual" if should_stop else "beta-stopped",
+                # An explicit operator stop is the more useful diagnosis, so it
+                # wins over the deadline that may have run alongside it.
+                "stopped": ("manual" if should_stop
+                            else "match-timeout" if state.get("beta_timeout_requested") is True
+                            else "beta-stopped"),
             }[beta_state]
             if state.get("view_lost") is True:
                 return self._mark_interrupted(state, state.get("end_reason", "operator-moved"))

@@ -133,6 +133,59 @@ class TestBridge(unittest.TestCase):
                 control.project_player_view(bad)
 
 
+    def test_game_result_projection_is_a_closed_public_allowlist(self):
+        valid = {"outcome": "win", "reason": "checkmate", "endedAt": "2026-10-06T00:05:00.000Z",
+                 "moveNumber": 9, "resultConfidence": "verified"}
+        self.assertEqual(control.project_game_result(valid), valid)
+        self.assertIsNone(control.project_game_result(None))
+        for bad in [
+            {},
+            {**valid, "outcome": "victory"},
+            {**valid, "reason": "because-the-opponent-blamed-us"},
+            {**valid, "endedAt": "2026-10-06 00:05:00"},
+            {**valid, "endedAt": "2026-10-06T00:05:00+09:00"},
+            {**valid, "moveNumber": -1},
+            {**valid, "moveNumber": True},
+            {**valid, "moveNumber": 100001},
+            {**valid, "moveNumber": "9"},
+            {**valid, "resultConfidence": "public_replay"},
+            {**valid, "endedAt": ""},
+        ]:
+            with self.assertRaisesRegex(control.ControlError, "^control_unavailable$"):
+                control.project_game_result(bad)
+        # Unknown keys are dropped rather than forwarded, matching PlayerView.
+        self.assertEqual(
+            control.project_game_result({**valid, "decisions": [{"usi": "2h2g"}], "raw": "x"}),
+            valid,
+        )
+
+    def test_status_projects_the_settled_result_and_start_stop_do_not(self):
+        result = {"outcome": "loss", "reason": "resign", "endedAt": "2026-10-06T00:05:00.000Z",
+                  "moveNumber": 41, "resultConfidence": "verified"}
+        status = {"state": "finished", "runId": "one", "gameId": "game-one",
+                  "brainVersion": "tsuitate-brain-v9", "completedGames": 1, "reservedGames": 1,
+                  "stopRequested": False, "readyForNextRun": True, "terminalResult": result,
+                  "playerView": None}
+
+        class Response(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *_): self.close()
+
+        opener = mock.Mock(); opener.open.return_value = Response(json.dumps(status).encode())
+        with mock.patch.dict(os.environ, ENV), mock.patch.object(control.urllib.request, "build_opener", return_value=opener):
+            self.assertEqual(control.call_beta_control("status")["gameResult"], result)
+        # Start/stop replies carry no result, so a lifecycle command cannot be
+        # influenced by a display-only field.
+        for action, run in (("start", "one"), ("stop", "one"), ("reconcile", "one")):
+            opener.open.return_value = Response(json.dumps(status).encode())
+            with mock.patch.dict(os.environ, ENV), mock.patch.object(control.urllib.request, "build_opener", return_value=opener):
+                self.assertNotIn("gameResult", control.call_beta_control(action, run))
+        # A malformed optional result degrades to null without failing status.
+        opener.open.return_value = Response(json.dumps({**status, "terminalResult": {"outcome": "win"}}).encode())
+        with mock.patch.dict(os.environ, ENV), mock.patch.object(control.urllib.request, "build_opener", return_value=opener):
+            self.assertIsNone(control.call_beta_control("status")["gameResult"])
+
+
 class TestWebUiGate(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

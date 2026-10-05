@@ -44,6 +44,13 @@ docich側HMAC bridgeでも同じshapeを再検証します。PlayerViewは表示
 対局相手から利用できないこと、または十分な配信遅延をシステムとして保証する別設計を先に必要とします。
 なお、構造化運用ログにはPlayerView・自駒・持ち駒を追加せず、従来どおり固定イベント名だけを記録します。
 
+**終局後の勝敗・終局理由は `status` の `terminalResult` として公開します。** 対象は `state="finished"` かつ
+`completedGames=1` で、その run の `gameId` と一致する `normalizeGameRecord` を通った終局記録だけです。
+含めるのは `outcome`（Bot視点）/ `reason` / `endedAt` / Botが観測した最終手数 / 結果の確度だけです。
+**着手・decisions・observation・自駒・持ち駒・棋譜は含みません。** 対局中は常に `null` で、勝敗は
+終局前に公開されません。`status` 以外の応答（start / stop / reconcile）と保存済みrun receiptは
+`snapshot()` の形のままなので、receipt replayの応答形は変わりません。
+
 初期状態は `stopped` です。singleton名 `beta:DoCiAI` に対し、**明示runごとに最大1局**を予約します。同じrunIdの再送・並行開始・重複alarmで再募集しません。次の新しいrunIdは前runの終局記録保存、socket終了、alarm削除が済んだ `readyForNextRun=true` の時だけ開始できます。終局後の自動反復はありません。古いrunIdのstart/stopは保存済みreceiptを返し、現在runを再開始・停止しません。paused・不明な状態では次局を開始せず、reset APIもありません。
 
 queue待ちは開始予約から60秒です。退出ACK確認に最大5秒、その後の遅延match通知待機に最大5秒を使います。stopは待機中なら退出し、対局中なら着手を続けて結果保存後に停止します。停止にはこのstop操作を使ってください。UIは曖昧な開始応答の再確認用に、秘密ではないrunIdをsessionStorageに保持します。

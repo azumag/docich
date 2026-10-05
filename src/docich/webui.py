@@ -19,7 +19,11 @@ State: soren_root = ELOOP_LIB_DIR 相当 (games/soviet_now or /home/ubuntu/soren
 """
 from __future__ import annotations
 
-from .tsuitate_beta_control import ControlError as BetaControlError, call_beta_control
+from .tsuitate_beta_control import (
+    ControlError as BetaControlError,
+    call_beta_control,
+    project_game_result,
+)
 
 import datetime
 import hashlib
@@ -1727,6 +1731,20 @@ def _view_int(value: Any) -> int | None:
     return value
 
 
+def _view_game_result(value: Any) -> dict[str, Any] | None:
+    """Public post-game summary for the UI, rebuilt from a fixed allowlist.
+
+    Owner PlayerView, board pieces and any decision history never enter the
+    corner state, so this only ever echoes the settled result vocabulary.
+    """
+    if value is None:
+        return None
+    try:
+        return project_game_result(value)
+    except BetaControlError:
+        return None
+
+
 def _view_time(value: Any) -> float | None:
     """Epoch seconds for the UI. ISO strings go through the reviewed parser."""
     if isinstance(value, bool):
@@ -2002,10 +2020,13 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                             {"game_over", "screen_stalled", "manual_saved_stop",
                              "manual_forced_stop",
                              "switch-terminal-before-corner-active", "game-completed",
-                             "queue-timeout", "beta-stopped",
+                             "queue-timeout", "beta-stopped", "manual", "match-timeout",
                              "operator-moved-during-tsuitate",
-                             "operator-moved-before-restore"} else None),
+                             "operator-moved-after-start",
+                             "operator-moved-before-restore",
+                             "operator-stopped-before-start"} else None),
                 last_error_code=_view_str(raw.get("last_error_code")),
+                game_result=_view_game_result(raw.get("beta_result")),
             )
         corners[name] = entry
     return {
