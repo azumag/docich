@@ -1,4 +1,4 @@
-name: Discord voice offline contracts
+name: Discord voice contracts
 
 on:
   pull_request:
@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: discord-voice-offline-${{ github.ref }}
+  group: discord-voice-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -30,7 +30,31 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22.18.0'
-      - name: Synthetic PCM and fake providers only (no installation or deployment)
+      - name: Synthetic PCM and fake providers only
         run: node --test runtimes/discord-voice/test/*.test.mjs
       - name: Existing text Worker offline regression
         run: node --test workers/discord-chat/test/*.test.js
+
+  voice-live-bootstrap-windows:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.18.0'
+      - name: Install pinned Discord voice dependencies
+        working-directory: runtimes/discord-voice
+        run: npm install --no-audit --no-fund
+      - name: Verify DAVE, Opus and raw PCM bootstrap without Discord login
+        working-directory: runtimes/discord-voice
+        run: npm run check:live
+      - name: Run live startup shutdown contracts on Windows
+        working-directory: runtimes/discord-voice
+        run: npm run test:live-contracts
+      - name: Run voice contracts on Windows
+        working-directory: runtimes/discord-voice
+        run: npm test

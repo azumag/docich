@@ -1,0 +1,19 @@
+{
+  "name": "@docich/discord-voice-runtime",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check:live": "node live.mjs --check",
+    "start:live": "node live.mjs --live",
+    "test:live-contracts": "node --test live-runtime.test.mjs"
+  },
+  "dependencies": {
+    "@discordjs/voice": "0.19.2",
+    "discord.js": "14.27.0",
+    "opusscript": "0.0.8"
+  }
+}
