@@ -9,7 +9,7 @@ Discord Gatewayへ常時接続する会話BotのCloudflare実運用版です。W
 - 記憶: Durable Object SQLite
 - LLM: Workers AI、既定 `@cf/deepseek-ai/deepseek-v4-flash-0731`
 - Persona: `src/docich/comment/prompts/comment_persona_main.md` を `cloudflare.config.ts` がbuild時に直接読み込む。複製しない
-- Secret: `DISCORD_BOT_TOKEN` のみ
+- Secret: `DISCORD_BOT_TOKEN`。音声会話bridgeを有効化する場合のみ、別の `DISCORD_VOICE_INTERNAL_TOKEN` も使用
 - Scope: Botが参加している全Guild/Channelの明示メンション。DM、Bot、Webhook、system messageは対象外
 
 記憶は `guild_id + channel_id + author_id` で分離し、直近6往復と入力に関連する古い4往復を使用します。`@Bot 記憶を削除` は本人の当該チャンネル記憶を本文ごと削除し、重複配信防止用IDだけを残します。
@@ -56,6 +56,20 @@ TokenをGit、Issue、PR、Actions output、Workers Logsへ出しません。
 既定モデルは `@cf/deepseek-ai/deepseek-v4-flash-0731`。モデル変更は `cloudflare.config.ts` の `WORKERS_AI_MODEL` bindingだけを変更します。コードはWorkers AI native bindingのChat Completions形を使い、tool callは受理しません。
 
 Cloudflare上の実プロンプト受入ではGLM-4.7-Flashが500 completion tokensをreasoningだけで使い切り本文を返さないケースを確認したため、会話Botの既定をDeepSeek V4 Flashへ変更しています。GLM-5.3-Flash等へ切替える場合も、canonical personaを含む実プロンプトで本文がtoken上限内に返ることを受入確認します。モデルごとの課金条件はdeploy前にCloudflareの現行pricingで確認します。
+
+## Voice conversation bridge (Slice 3)
+
+Windows上のDiscord Voice runtimeから、STT済み本文だけをこのWorkerへ渡して既存のpersona / Workers AI / SQLite記憶を再利用するため、`POST /voice/reply` を追加しています。通常のDiscord Bot Tokenとは分離した `DISCORD_VOICE_INTERNAL_TOKEN` のBearer認証が必須で、secret未設定時はendpoint自体を404として扱います。
+
+Cloudflare側では十分長いランダム値をsecretとして登録します。
+
+```sh
+npx wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN --name docich-discord-chat
+```
+
+Windows runtime側には同じ値を `DOCICH_DISCORD_VOICE_CHAT_TOKEN` として、WorkerのHTTPS endpointを `DOCICH_DISCORD_VOICE_CHAT_URL=https://<worker-host>/voice/reply` として設定します。Token、transcript、reply、Guild/Channel/User IDは通常ログへ出しません。
+
+このsliceでは既存テキスト会話の `guild + channel + user` 記憶を**読み取り**、生成中に参照元が削除された場合は返答を破棄します。一方、音声ターン自体はまだ永続記憶へ書き込みません。TTS/Discord再生の成功ACKより前に会話を保存しないための暫定境界です。音声ターンの記憶確定は、実VOICEVOX再生とdelivery ACKを接続する後続sliceで行います。
 
 ## Health
 
