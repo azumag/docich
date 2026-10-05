@@ -3807,6 +3807,41 @@ def _collect_hanjuku_predictions(state_dir):
             "next_poll_at": _finite_number(data.get("next_poll_at"))}
 
 
+RETRO_PROGRAM_QUEUE_FILES = {
+    "scheduled": "retro_corner.json",
+    "manual": "retro_corner_manual.json",
+}
+RETRO_PROGRAM_QUEUE_STATUSES = frozenset({
+    "waiting", "waiting_boundary", "waiting_turn", "running",
+    "done", "expired", "cancelled", "error",
+})
+
+
+def _collect_retro_program_queues(soren):
+    """Two fixed queue snapshots; no identifiers, paths or release authority."""
+    queues = {}
+    for kind, filename in RETRO_PROGRAM_QUEUE_FILES.items():
+        row = {"present": None, "readable": False, "status": "unknown"}
+        try:
+            # Reuse the collector's descriptor-relative, all-components
+            # no-follow reader and its regular-file/256 KiB bound.
+            record = _read_hanjuku_scene_record(
+                Path(soren) / "tmp/state/docich_program_queue" / filename
+            )
+        except FileNotFoundError:
+            row["present"] = False
+        except (ValueError, RecursionError):
+            row["present"] = True
+        except OSError:
+            # An unsafe or inaccessible path cannot prove leaf existence.
+            pass
+        else:
+            row.update(present=True, readable=True,
+                       status=_rotation_enum(record.get("status"), RETRO_PROGRAM_QUEUE_STATUSES))
+        queues[kind] = row
+    return queues
+
+
 def _collect_programs(state_dir, soren, now):
     """Sanitized corner/program lifecycle plus boundary and A/B wait state.
 
@@ -3862,6 +3897,7 @@ def _collect_programs(state_dir, soren, now):
         retro["scene_narration"] = _collect_hanjuku_scene_narration(state_dir)
     payload["hanjuku_predictions"] = _collect_hanjuku_predictions(state_dir)
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
+    payload["retro_program_queues"] = _collect_retro_program_queues(soren)
     payload["ab"] = _collect_ab(soren, now)
     payload["soren_game"] = _collect_soren_game(soren, now)
     return payload

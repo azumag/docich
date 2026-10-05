@@ -201,6 +201,14 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   保存されたrestore receiptが成功している事実は変わらない。読み取りは順次行うため単一snapshotではない。
   projectionは観測のみで、corner予約・GameSwitch・runtimeを操作しない。
 
+- `corners.retro_program_queues` は既存Soren rootの固定2 queueを、種類`scheduled`/`manual`と
+  `present`・`readable`・`status`だけへ投影する。`present=false`は読取時の欠落、`null`は
+  symlink/アクセス不成立など存在を確認できない場合。存在する不正JSON・非object・非regular・
+  上限超過は`present=true/readable=false`。読取成立でもstatus欠落・不正型・未知値は`unknown`。
+  既知statusは`waiting/waiting_boundary/waiting_turn/running/done/expired/cancelled/error`のみ。
+  既存の全経路no-follow・regular file・256 KiB上限readerを使い、queueの一覧走査やlock取得・
+  state作成・cleanupはしない。本文・パス・識別子・時刻・自由文例外は出さない。
+  2ファイルは独立snapshotであり、対象要求との一致や取消/管理解除の適格性を証明しない。
 - rotation 待機の補助証跡: `corners.rotation_evidence` に固定8種の
   corner state（retro/PAPER/Soren91/NetHackの通常・manual）と固定10種の
   改善結果（9ゲーム＋PAPER）を出す。状態enum、ゲームenum、完了時刻、
