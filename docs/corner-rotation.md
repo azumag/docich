@@ -416,6 +416,32 @@ fresh-start/lifecycle復帰の途中またはsupervisor再起動待ちを疑う�
 ただし同じ状態が継続する場合は、weather完了後の受入条件に「sorengame canonical ready」に加えて
 「soren_loop alive / ゲーム進行再開」を追加して別途回帰化する。
 
+### 手動コーナーの時刻指定予約（#1759）
+
+WebUI の手動操作は即時開始に加えて、1回限りの `trigger_at` を持つ
+**not-before予約**を作れる。指定時刻に現在のcornerを割り込ませる機能ではない。
+`trigger_at` より前は対象cornerを開始せず、到達後に既存の
+program slot / GameSwitch / owner / pause / recovery gateを通って、最初の安全な空き枠で開始する。
+
+予約は既存 `corner_manual_queue.json` の単一ownerモデルを使う。
+`trigger_at` はtimezone付きISO日時または有限なepoch秒として受け付け、
+保存時はepoch秒へ正規化する。欠落は従来の即時manual予約として扱う。
+過去時刻は誤操作防止のため拒否する。時刻前の予約は独立inboxに保持するため、
+自動rotation全体を止めない。ただし同じcornerを予定前に自動実行してしまうと
+予約直前の二重利用になるので、予約対象cornerだけは自動候補から外し、
+他のeligible cornerは通常どおり発火できる。
+
+通常timerが時刻到達を検出すると、同じrequest UUIDのまま
+`queued_manual` → `pending(source=manual)` へatomicに移す。
+そこから先は既存manual予約と同じでcooldownだけを無視し、disabled / paused /
+recovery latch / busy ownershipは迂回しない。停止中に指定時刻を過ぎても、
+復帰後の最初の正常tickで同じ予約を1回だけ処理する。
+
+予約取消は、まだ独立inboxにあるscheduled requestだけに許可する。
+dueになってledgerへ移った後は取消とのraceを作らず、既存のstop/recovery経路へ委譲する。
+同じcorner・同じtriggerの再送は同一requestとして冪等、別corner・別triggerとの
+単一queue競合は拒否する。
+
 ### 半熟英雄の次枠手動予約
 
 固定operator `start-hanjuku` は `hanjuku_corner` から `queue_manual('hanjuku-hero')` を呼ぶ。
