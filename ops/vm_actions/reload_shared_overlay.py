@@ -51,9 +51,14 @@ def snapshot():
 
 def ready():
     port = int(os.environ.get('SOREN_SHARED_OVERLAY_PORT', '8092'))
-    with urllib.request.urlopen(f'http://127.0.0.1:{port}/healthz', timeout=2) as response:
+    # This is a loopback-only control-plane probe.  reload_shared_overlay.sh
+    # sources the Soren environment first, so never inherit an ambient HTTP
+    # proxy for 127.0.0.1.  The TwiCa shared-overlay health helper uses the same
+    # no-proxy boundary.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(f'http://127.0.0.1:{port}/healthz', timeout=2) as response:
         health = json.load(response)
-    with urllib.request.urlopen(f'http://127.0.0.1:{port}/__soren_overlay/broadcast/state', timeout=2) as response:
+    with opener.open(f'http://127.0.0.1:{port}/__soren_overlay/broadcast/state', timeout=2) as response:
         state = json.load(response)
     return health.get('ready') is True and state.get('gameGapEnabled') is True
 
