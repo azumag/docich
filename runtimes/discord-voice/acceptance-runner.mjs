@@ -141,6 +141,7 @@ export async function runAcceptance(
     malformed: final.malformed,
     durationSeconds: Math.round(final.durationSeconds),
     completedChains: final.completedChains,
+    unresolvedDisconnect: final.unresolvedDisconnect,
     counts: final.counts,
   }) + '\n');
 
