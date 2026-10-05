@@ -198,3 +198,33 @@ test('stop aborts an in-flight STT and detaches speaking listener', async () => 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(fixture.subscriptions.length, before);
 });
+
+
+test('subscription failure is contained as a fixed receive failure event', async () => {
+  const events = [];
+  const speaking = new EventEmitter();
+  const receiver = attachLiveSttReceiver({
+    connection: {
+      receiver: {
+        speaking,
+        subscribe() {
+          throw new Error('private Discord receive failure');
+        },
+      },
+    },
+    targetUserId: TARGET,
+    stt: {
+      async transcribe() {
+        return 'unused';
+      },
+    },
+    emit: (event) => events.push(event),
+    createDecoder: decoderFactory,
+  });
+
+  speaking.emit('start', TARGET);
+  await waitFor(() => events.some((event) => event.event === 'voice_receive_failed'));
+
+  assert.deepEqual(events, [{ event: 'voice_receive_failed' }]);
+  receiver.stop();
+});
