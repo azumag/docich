@@ -137,17 +137,41 @@ Conversation mode is fail-closed unless receive mode is also enabled. The Worker
 
 The voice request reads existing text-memory history for the same full `guild + channel + user` scope and rechecks recalled sources after model generation so a concurrent delete suppresses the reply. This slice intentionally does **not** persist the new voice turn. Delivery acknowledgement does not exist until TTS + Discord playback are connected, so saving the turn now would create remembered replies that were never spoken. There is no automatic request retry in this slice.
 
-Slice 3 still does not synthesize or play the generated reply. Real VOICEVOX playback, playback-ack memory commit, live barge-in, multi-user handling and the 30-minute acceptance test remain later work.
+### Slice 4: VOICEVOX + Discord playback + delivery memory
+
+Slice 4 explicitly connects the generated reply to the existing VOICEVOX HTTP contract and then to Discord raw PCM playback. Enable it only after Slice 2/3 settings are present:
+
+```powershell
+$env:DOCICH_DISCORD_VOICE_TTS_ENABLED = "1"
+
+# Existing VOICEVOX settings are reused.
+$env:VOICEVOX_URLS = "http://127.0.0.1:50021"
+$env:VOICEVOX_MAX_CHARS = "200"
+
+# Loopback remains denied by default. Set this only when the Voice runtime and
+# the trusted VOICEVOX Engine intentionally run on the same Windows host.
+$env:DOCICH_DISCORD_VOICE_VOICEVOX_ALLOW_LOOPBACK = "1"
+
+npm run start:live
+```
+
+Without the loopback opt-in, the existing non-local `VOICEVOX_URLS` policy remains in force. The runtime performs the canonical two POSTs (`audio_query` then `synthesis`), accepts only bounded PCM16 WAV, converts it to 48kHz mono PCM, duplicates it to Discord's stereo raw PCM and plays it through the already joined Voice connection. The response PCM and temporary stereo playback buffer are cleared after the turn where writable memory remains accessible.
+
+A target-user speaking event during LLM/TTS/playback aborts the active output turn. During playback this emits `playback_interrupted` and the interrupted turn is **not** committed to memory. Process stop similarly cancels the current stage.
+
+The Cloudflare conversation Worker now also exposes authenticated `POST /voice/commit`. The Windows runtime calls it only after Discord playback completes successfully. The commit is idempotent for the same turn/content; an acknowledgement retry cannot create a duplicate, while the same turn ID with different content is rejected. TTS failure, playback failure, barge-in and cancellation make no commit call, so unheard replies do not become remembered conversations.
+
+Stage budgets are bounded independently: LLM 10 seconds, TTS 30 seconds, playback 35 seconds and post-playback memory commit 5 seconds. This slice still does not add automatic VOICEVOX failover/retry, multi-user simultaneous-turn policy, a Windows service installer, or the required credentialed 30-minute acceptance run.
 
 The Bot needs only the permissions required to see the configured server/channel and **Connect / Speak** in that voice channel. Message Content, member-list and Presence privileged intents are not used by this live process. The Windows CI job installs the same pinned dependencies and executes `check:live` plus the offline contracts without any Discord credentials.
 
-Slice 1 provides DAVE-capable VC join/outbound playback, and this Slice 2 adds an opt-in one-speaker receive/STT path. Offline contracts still do **not** prove a real Discord inbound-audio session, real Workers AI credentials/latency, VOICEVOX conversation replies, shared memory, live barge-in, multi-user attribution or the 30-minute acceptance test.
+Slice 1 provides DAVE-capable VC join/outbound playback, Slice 2 adds opt-in one-speaker receive/STT, Slice 3 connects the canonical DoCiAI conversation core, and Slice 4 connects VOICEVOX playback plus post-playback memory acknowledgement. Offline contracts still do **not** prove a real credentialed Discord/Workers AI/VOICEVOX round trip, real latency/audio quality, reconnect durability, multi-user attribution or the 30-minute acceptance test.
 
 ## Future live boundary
 
 Discord voice uses a separate UDP connection for receiving/transmitting voice data and requires DAVE E2EE support for voice calls starting March 1, 2026. [Discord voice connection documentation](https://docs.discord.com/developers/topics/voice-connections). Workers `node:dgram` is an importable non-functional stub, so importing a UDP package does not make a Workers voice transport operational. [Cloudflare Node.js compatibility](https://developers.cloudflare.com/workers/runtime-apis/nodejs/#non-functional-stub-modules).
 
-The Windows live bootstrap delegates Voice Gateway/UDP, DAVE and outbound Opus transport to the pinned Discord libraries. Inbound audio stays disabled by default; Slice 2 can explicitly undeafen and subscribe to one configured user, decode Opus, and invoke the bounded Whisper boundary. A later slice still needs production-grade VAD acceptance, participant-consent UX, VOICEVOX transport, safe conversation-core integration, shared-memory policy and live barge-in/multi-user acceptance. The existing public `/healthz` is not a conversation API. This slice does not deploy a host, register a Windows service, alter the current text Worker, or enable recording.
+The Windows live bootstrap delegates Voice Gateway/UDP, DAVE and outbound Opus transport to the pinned Discord libraries. Inbound audio stays disabled by default; Slice 2 can explicitly undeafen and subscribe to one configured user, decode Opus, and invoke the bounded Whisper boundary. Slices 3/4 now provide the authenticated conversation/VOICEVOX/playback path and single-speaker barge-in cancellation. Production-grade VAD/consent UX, multi-user turn policy, host/service deployment, reconnect/long-run acceptance and real audio-quality verification remain. The existing public `/healthz` is not a conversation API, and no recording archive is enabled.
 
 Issue #1628 still requires credentialed real-VC acceptance for join/receive/Japanese STT, canonical-persona response, Discord TTS, reconnect and the 30-minute live test. Passing these contracts demonstrates code boundaries and deterministic failure behavior, not those live acceptance criteria.
 
@@ -156,9 +180,9 @@ Issue #1628 still requires credentialed real-VC acceptance for join/receive/Japa
 
 `voicevox.mjs` reuses the HTTP protocol of canonical `src/docich/speech.py:195,646` and the external endpoint choice in Soren `say_enqueue.sh` / `voicevox_tts.sh`. The existing path is two synchronous HTTP responses, not an asynchronous callback service: POST `/audio_query?text=...&speaker=...`, then POST `/synthesis?speaker=...` with the query JSON to receive WAV. [Official engine API](https://voicevox.github.io/voicevox_engine/api/). No callback schema, new service, engine, library, retry queue or VM-local synthesis is introduced.
 
-`new InjectedVoicevoxTTS({env, selectedURL, request})` requires an explicit settings snapshot and an injected transport. It does not read `process.env`, `.env`, secret files or shared state and provides no default `fetch` or executable entry point. `kind: 'voicevox-injected'` keeps it outside the coordinator's fake-only fence. The conversation core, Discord transport and real TTS remain unconnected.
+`new InjectedVoicevoxTTS({env, selectedURL, request, allowLocal?})` requires an explicit settings snapshot and an injected transport. It does not read `process.env`, `.env`, secret files or shared state and provides no default `fetch` or executable entry point. `kind: 'voicevox-injected'` keeps the generic adapter outside the coordinator's fake-only fence. `live-voicevox.mjs` supplies the bounded real HTTP transport only for the explicit live entry point; the offline coordinator remains synthetic-only.
 
-Configuration mirrors the existing public names: `VOICEVOX_URLS` is a comma/whitespace ordered chain; `selectedURL` is an optional endpoint chosen by the trusted existing chooser and must belong to that chain. Otherwise the first external endpoint is selected. Explicit loopback/unspecified entries are excluded, including local fallback in a shared chain; an empty external chain fails closed. Legacy implicit localhost defaults are intentionally not inherited. Credentials in URLs, paths, query strings and fragments are rejected. These syntax checks do not prove DNS resolution, Windows/Mac ownership or deployment authorization; a future real transport must restrict trusted configured destinations, redirects and actual network access. This adapter never probes `/version` or changes shared endpoint locks/backoff/readiness.
+Configuration mirrors the existing public names: `VOICEVOX_URLS` is a comma/whitespace ordered chain; `selectedURL` is an optional endpoint chosen by the trusted existing chooser and must belong to that chain. Otherwise the first external endpoint is selected. Explicit loopback/unspecified entries are excluded by default, including local fallback in a shared chain; an empty external chain fails closed. The live Windows wrapper can opt into loopback only with the separate `DOCICH_DISCORD_VOICE_VOICEVOX_ALLOW_LOOPBACK=1` setting. Legacy implicit localhost defaults are intentionally not inherited. Credentials in URLs, paths, query strings and fragments are rejected. These syntax checks do not prove DNS resolution, Windows/Mac ownership or deployment authorization; a future real transport must restrict trusted configured destinations, redirects and actual network access. This adapter never probes `/version` or changes shared endpoint locks/backoff/readiness.
 
 `VOICEVOX_SPEAKER` defaults to canonical public style 3; the trusted caller must supply the selected persona style (no persona selection here). `VOICEVOX_TIMEOUT` defaults to 30 seconds, with a stricter **total** budget across both requests (0.001–30 seconds), and parent cancellation can shorten it. `VOICEVOX_MAX_CHARS` defaults to canonical 200, bounded to 900: longer text fails rather than invoking the canonical chunk/file/pronunciation pipeline. `VOICEVOX_PITCH` is added to the returned pitch, while `VOICEVOX_TEMPO` and `VOICEVOX_INTONATION` set speed/intonation, matching canonical semantics within bounded values. Query output is requested as 48kHz mono. No alternate endpoint or retry follows a request failure; retry ownership and shared queue coordination must be selected before live integration, especially after ambiguous synthesis completion.
 
