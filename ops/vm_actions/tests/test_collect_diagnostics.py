@@ -60,6 +60,67 @@ def test_rotation_projection_never_emits_seed_or_request_text(tmp_path):
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
+def test_rotation_projection_reports_scheduled_manual_without_request_identity(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting",
+        "slot": 4,
+        "last_seen_at": 100,
+        "next_due_at": 200,
+        "eligible": ["weather"],
+        "queued_manual": {
+            "corner": "weather",
+            "selected_at": 90,
+            "trigger_at": 200,
+            "request_id": "DO-NOT-PUBLISH-REQUEST",
+            "private": "DO-NOT-PUBLISH-BODY",
+        },
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rotation = output["corner_rotation"]
+    assert rotation["queued_manual"] is True
+    assert rotation["scheduled_manual"] is True
+    assert rotation["scheduled_manual_corner"] == "weather"
+    assert rotation["scheduled_manual_trigger_at"] == 200
+    assert rotation["scheduled_manual_due"] is False
+    assert rotation["scheduled_manual_overdue_sec"] is None
+    assert rotation["scheduled_manual_blocked_reason"] == "not_due"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_rotation_projection_reports_overdue_inbox_waiting_for_slot(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "running",
+        "slot": 5,
+        "last_seen_at": 100,
+        "next_due_at": 100,
+        "eligible": ["weather", "nsnake"],
+        "pending": {
+            "corner": "nsnake", "phase": "dispatched",
+            "selected_at": 80, "request_id": "PRIVATE-AUTO",
+        },
+    }))
+    (tmp_path / "corner_manual_queue.json").write_text(json.dumps({
+        "corner": "weather",
+        "selected_at": 70,
+        "trigger_at": 90,
+        "request_id": "DO-NOT-PUBLISH-SCHEDULE",
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rotation = output["corner_rotation"]
+    assert rotation["queued_manual"] is True
+    assert rotation["scheduled_manual"] is True
+    assert rotation["scheduled_manual_corner"] == "weather"
+    assert rotation["scheduled_manual_trigger_at"] == 90
+    assert rotation["scheduled_manual_due"] is True
+    assert rotation["scheduled_manual_overdue_sec"] == 10
+    assert rotation["scheduled_manual_blocked_reason"] == "waiting_slot"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
 def test_corner_match_target_projection_is_bounded_and_does_not_change_n(tmp_path):
     module = load_collector()
     for value in (1, 3, 100, 0, 101, True, "SECRET-TARGET", None):
