@@ -426,7 +426,7 @@ def test_weather_html_has_unique_ids_and_no_external_runtime_assets():
     assert len(markup.ids) == len(set(markup.ids))
     assert not markup.srcs and not markup.resources
     assert "const MAP_DATA={\"polygons\":" in v.HTML
-    assert v.HTML.count("fetch(") == 1
+    assert v.HTML.count("fetch(") == 2
 
 
 @pytest.mark.parametrize("scenario", [
@@ -441,7 +441,7 @@ def test_weather_ui_control_flow_without_browser(scenario):
     if node is None:
         pytest.skip("Node.js unavailable for DOM-free UI control-flow tests")
     script = v.HTML.split("<script>", 1)[1].split("</script>", 1)[0]
-    if scenario == "broadcast_auto":
+    if scenario.startswith("broadcast_"):
         script = script.replace("const BROADCAST=false;", "const BROADCAST=true;")
     runner = Path(__file__).parent / "fixtures/weather_view/contract.js"
     result = subprocess.run(
