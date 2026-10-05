@@ -36,30 +36,41 @@ function erase(value) {
   }
 }
 
+function validScope({ guildId, channelId, userId, signal } = {}) {
+  return (
+    validSnowflake(guildId) &&
+    validSnowflake(channelId) &&
+    validSnowflake(userId) &&
+    signal instanceof AbortSignal
+  );
+}
+
 export function loadCloudflareConversationConfig(env = process.env) {
   const rawUrl = env.DOCICH_DISCORD_VOICE_CHAT_URL;
   const token = env.DOCICH_DISCORD_VOICE_CHAT_TOKEN;
   if (typeof rawUrl !== 'string' || !validToken(token)) fail('invalid_conversation_config');
 
-  let url;
+  let replyUrl;
   try {
-    url = new URL(rawUrl);
+    replyUrl = new URL(rawUrl);
   } catch {
     fail('invalid_conversation_config');
   }
   if (
-    url.protocol !== 'https:' ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    url.pathname !== '/voice/reply'
+    replyUrl.protocol !== 'https:' ||
+    replyUrl.username ||
+    replyUrl.password ||
+    replyUrl.search ||
+    replyUrl.hash ||
+    replyUrl.pathname !== '/voice/reply'
   ) {
     fail('invalid_conversation_config');
   }
 
+  const commitUrl = new URL('/voice/commit', replyUrl);
   return Object.freeze({
-    url: url.toString(),
+    replyUrl: replyUrl.toString(),
+    commitUrl: commitUrl.toString(),
     token,
   });
 }
@@ -135,39 +146,18 @@ export class CloudflareConversationClient {
     this.#turnIdFactory = turnIdFactory;
   }
 
-  async reply(transcript, { guildId, channelId, userId, signal } = {}) {
-    if (
-      typeof transcript !== 'string' ||
-      !transcript.trim() ||
-      transcript.length > 2000 ||
-      !validSnowflake(guildId) ||
-      !validSnowflake(channelId) ||
-      !validSnowflake(userId) ||
-      !(signal instanceof AbortSignal)
-    ) {
-      fail('invalid_conversation_context');
-    }
-
+  async #post(url, payload, signal, errorCode = 'conversation_failed') {
     let responseBytes;
     try {
       signal.throwIfAborted();
-      const turnId = String(this.#turnIdFactory());
-      if (!TURN_ID.test(turnId)) fail('conversation_failed');
-
       const response = await this.#request(Object.freeze({
-        url: this.#config.url,
+        url,
         method: 'POST',
         headers: Object.freeze({
           Authorization: `Bearer ${this.#config.token}`,
           'Content-Type': 'application/json',
         }),
-        body: JSON.stringify({
-          guildId,
-          channelId,
-          userId,
-          turnId,
-          transcript: transcript.trim(),
-        }),
+        body: JSON.stringify(payload),
         signal,
         maxBytes: MAX_RESPONSE_BYTES,
       }));
@@ -182,30 +172,97 @@ export class CloudflareConversationClient {
         !responseBytes.length ||
         responseBytes.length > MAX_RESPONSE_BYTES
       ) {
-        fail('conversation_failed');
+        throw new CloudflareConversationError(errorCode);
       }
 
-      const parsed = JSON.parse(
+      return JSON.parse(
         new TextDecoder('utf-8', { fatal: true }).decode(responseBytes),
       );
-      const reply = parsed?.reply;
-      if (
-        typeof reply !== 'string' ||
-        !reply.trim() ||
-        reply.length > MAX_REPLY_CHARS
-      ) {
-        fail('conversation_failed');
-      }
-      return reply.trim();
     } catch (error) {
       const code = signal.aborted
         ? 'conversation_cancelled'
         : error instanceof CloudflareConversationError
           ? error.code
-          : 'conversation_failed';
+          : errorCode;
       throw new CloudflareConversationError(code);
     } finally {
       erase(responseBytes);
     }
+  }
+
+  async generate(transcript, { guildId, channelId, userId, signal } = {}) {
+    if (
+      typeof transcript !== 'string' ||
+      !transcript.trim() ||
+      transcript.length > 2000 ||
+      !validScope({ guildId, channelId, userId, signal })
+    ) {
+      fail('invalid_conversation_context');
+    }
+
+    const turnId = String(this.#turnIdFactory());
+    if (!TURN_ID.test(turnId)) fail('conversation_failed');
+
+    const parsed = await this.#post(
+      this.#config.replyUrl,
+      {
+        guildId,
+        channelId,
+        userId,
+        turnId,
+        transcript: transcript.trim(),
+      },
+      signal,
+    );
+    const reply = parsed?.reply;
+    if (
+      typeof reply !== 'string' ||
+      !reply.trim() ||
+      reply.length > MAX_REPLY_CHARS
+    ) {
+      fail('conversation_failed');
+    }
+    return Object.freeze({ turnId, reply: reply.trim() });
+  }
+
+  async reply(transcript, context = {}) {
+    return (await this.generate(transcript, context)).reply;
+  }
+
+  async commit(
+    { turnId, transcript, reply } = {},
+    { guildId, channelId, userId, signal } = {},
+  ) {
+    if (
+      typeof turnId !== 'string' ||
+      !TURN_ID.test(turnId) ||
+      typeof transcript !== 'string' ||
+      !transcript.trim() ||
+      transcript.length > 2000 ||
+      typeof reply !== 'string' ||
+      !reply.trim() ||
+      reply.length > MAX_REPLY_CHARS ||
+      !validScope({ guildId, channelId, userId, signal })
+    ) {
+      fail('invalid_conversation_context');
+    }
+
+    const parsed = await this.#post(
+      this.#config.commitUrl,
+      {
+        guildId,
+        channelId,
+        userId,
+        turnId,
+        transcript: transcript.trim(),
+        reply: reply.trim(),
+      },
+      signal,
+      'conversation_commit_failed',
+    );
+    if (!['committed', 'already_committed'].includes(parsed?.status)) {
+      fail('conversation_commit_failed');
+    }
+    return parsed.status;
   }
 }
