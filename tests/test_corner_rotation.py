@@ -87,7 +87,7 @@ def test_production_profile_marks_common_rotation_enabled_for_all_ten_corners():
     assert len(catalog) == 10
     weather = next(c for c in catalog if c.id == "weather")
     assert weather.enabled and weather.fetch_on_start
-    assert weather.duration_minutes == 1 and weather.audio_enabled is False
+    assert weather.duration_minutes == 4 and weather.audio_enabled is True
     paper = next(c for c in catalog if c.id == "paper")
     assert paper.enabled is True
     assert paper.live_eligible is False
