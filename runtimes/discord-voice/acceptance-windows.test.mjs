@@ -7,6 +7,13 @@ const source = readFileSync(
   'utf8',
 );
 
+test('Windows acceptance bootstrap requires PowerShell 7 and no personal worker URL default', () => {
+  assert.match(source, /^#requires -Version 7\.0/m);
+  assert.match(source, /DOCICH_DISCORD_VOICE_WORKER_BASE_URL/);
+  assert.doesNotMatch(source, /tsubasa-azumagakito\.workers\.dev/i);
+  assert.match(source, /\[switch\]\$ProvisionBridgeSecret/);
+});
+
 test('Windows acceptance bootstrap keeps private debug output disabled', () => {
   assert.match(
     source,
