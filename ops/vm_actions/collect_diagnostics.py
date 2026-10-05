@@ -2637,6 +2637,7 @@ CORNER_STATE_FILES = {
     "corner_rotation": "corner_rotation.json",
     "game_switch": "game_switch.json",
     "weather_corner": "weather_corner.json",
+    "tsuitate_corner": "tsuitate_corner.json",
     "retro_corner": "retro_corner.json",
     "paper_corner": "paper_corner.json",
     "paper_corner_manual": "paper_corner_manual.json",
@@ -2653,7 +2654,7 @@ ROTATION_CORNER_FILES = (
 # Automatic reservation ownership includes the weather manager. Keep the
 # separate manual-owner allowlist above unchanged: its state_file contract is
 # intentionally narrower and is not inferred from catalog input.
-ROTATION_PENDING_OWNER_FILES = (*ROTATION_CORNER_FILES, "weather_corner")
+ROTATION_PENDING_OWNER_FILES = (*ROTATION_CORNER_FILES, "weather_corner", "tsuitate_corner")
 ROTATION_IMPROVE_GAMES = (
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
     "pacman4console", "nethack", "hanjuku-hero", "soren91",
@@ -3923,6 +3924,7 @@ def _collect_corner_files(state_dir, payload, now):
         "paper_corner_manual",
         "nethack_corner",
         "nethack_corner_manual",
+        "tsuitate_corner",
     ):
         present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
         entry = {"present": present, "readable": readable}
