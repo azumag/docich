@@ -111,6 +111,39 @@ test('live conversation is opt-in and requires receive mode', () => {
   assert.equal(enabled.replyDebug, true);
 });
 
+test('live TTS is opt-in, requires conversation mode, and loopback stays explicit', () => {
+  const disabled = loadLiveVoiceConfig(baseEnv());
+  assert.equal(disabled.ttsEnabled, false);
+  assert.equal(disabled.voicevoxAllowLoopback, false);
+
+  assert.throws(
+    () => loadLiveVoiceConfig({
+      ...baseEnv(),
+      DOCICH_DISCORD_VOICE_TTS_ENABLED: '1',
+    }),
+    (error) => error instanceof LiveVoiceError && error.code === 'invalid_config',
+  );
+
+  const enabled = loadLiveVoiceConfig({
+    ...baseEnv(),
+    DOCICH_DISCORD_VOICE_RECEIVE_ENABLED: '1',
+    DOCICH_DISCORD_VOICE_RECEIVE_USER_ID: '323456789012345678',
+    DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED: '1',
+    DOCICH_DISCORD_VOICE_TTS_ENABLED: '1',
+    DOCICH_DISCORD_VOICE_VOICEVOX_ALLOW_LOOPBACK: '1',
+  });
+  assert.equal(enabled.ttsEnabled, true);
+  assert.equal(enabled.voicevoxAllowLoopback, true);
+
+  assert.throws(
+    () => loadLiveVoiceConfig({
+      ...baseEnv(),
+      DOCICH_DISCORD_VOICE_VOICEVOX_ALLOW_LOOPBACK: 'yes',
+    }),
+    (error) => error instanceof LiveVoiceError && error.code === 'invalid_config',
+  );
+});
+
 test('transcript debug requires an explicit boolean flag', () => {
   const enabled = loadLiveVoiceConfig({
     ...baseEnv(),
