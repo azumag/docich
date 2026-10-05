@@ -217,7 +217,7 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
     eligible, excluded = manager._eligible()
     assert len(eligible) == 10
     assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero"} <= set(eligible)
-    assert excluded == {}
+    assert excluded == {"tsuitate": "manual-only"}
 
 
 def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):
