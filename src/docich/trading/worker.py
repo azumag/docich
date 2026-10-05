@@ -22,6 +22,7 @@ from .market_cache import load_cache, prune_cache, save_cache, store_frames
 from .market_data import MarketFrame
 from .notifications import deliver_pending_notifications
 from .paper import PaperBroker
+from .performance import build_performance
 from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
 from .status import build_public_status, write_public_status
@@ -137,7 +138,46 @@ def _heartbeat_payload(
         snapshot_generated_at=generated,
         market_freshness=freshness,
         coverage=coverage,
+        performance_summary=_preserved_summary(previous, "performance_summary") or None,
     )
+
+
+def _cache_prices(cache: dict[str, dict[str, object]]) -> dict[str, object]:
+    """Last known public closes for display valuation; never used for trading."""
+    prices: dict[str, object] = {}
+    for symbol, entry in cache.items():
+        if not isinstance(entry, dict):
+            continue
+        raw = entry.get("last_close")
+        try:
+            price = D(str(raw))
+        except (ArithmeticError, TypeError, ValueError):
+            continue
+        if price.is_finite() and price > 0:
+            prices[str(symbol)] = str(raw)
+    return prices
+
+
+def _performance_summary(
+    g: GlobalConfig,
+    ledger: PaperLedger,
+    market_cache: dict[str, dict[str, object]],
+    *,
+    now: float,
+    fallback: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Read-only performance calculation; failures keep the last safe summary."""
+    try:
+        return build_performance(
+            g.state_dir / "trading" / "paper.sqlite3",
+            capital_reference=D(str(g.trading.paper_capital_jpy)),
+            positions=ledger.positions(),
+            prices=_cache_prices(market_cache),
+            now=now,
+            market_cache_path=g.state_dir / "trading" / "market_cache.json",
+        )
+    except Exception:
+        return dict(fallback or {})
 
 
 def _rotation_order(symbols: list[str], cycle_index: int) -> list[str]:
@@ -171,6 +211,7 @@ def _status_payload(
     new_settlement_count: int = 0,
     error_codes=(),
     last_success_at: float | None = None,
+    performance_summary=None,
 ):
     capital = D(str(g.trading.paper_capital_jpy))
     if signal_summary is None:
@@ -203,6 +244,7 @@ def _status_payload(
         skipped_reason_codes=list(skipped_reason_codes),
         signal_summary=signal_summary,
         worker_summary=worker_summary,
+        performance_summary=performance_summary,
     )
 
 
@@ -337,6 +379,7 @@ def run_worker_cycle(
                 signal_summary=_preserved_summary(previous, "signal_summary") or None,
                 worker_summary=prev_worker_summary,
                 error_codes=("market_discovery_error",), last_success_at=last_success_at,
+                performance_summary=_preserved_summary(previous, "performance_summary") or None,
             )
             _carry_snapshot(payload, prev_seq, prev_generated, prev_freshness, prev_coverage)
             payload["heartbeat_at"] = float(now)
@@ -550,6 +593,13 @@ def run_worker_cycle(
             new_settlement_count=new_settlement_count,
             error_codes=errors,
             last_success_at=success_at,
+            performance_summary=_performance_summary(
+                g,
+                ledger,
+                market_cache,
+                now=now,
+                fallback=_preserved_summary(previous, "performance_summary"),
+            ),
         )
         payload["worker_summary"].update({
             "experiment_status": experiment_step.status,
@@ -596,6 +646,7 @@ def _write_cycle_failure_status(
             worker_summary=prev_worker_summary,
             error_codes=("worker_cycle_error",),
             last_success_at=last_success_at,
+            performance_summary=_preserved_summary(previous, "performance_summary") or None,
         )
         _carry_snapshot(payload, seq, generated, freshness, {})
         payload["heartbeat_at"] = float(now)

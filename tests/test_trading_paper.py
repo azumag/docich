@@ -132,6 +132,50 @@ class TestPublicTradingStatus(unittest.TestCase):
         self.assertNotIn("api_key", blob.lower())
         self.assertNotIn("must-not-leak", blob)
 
+    def test_performance_summary_is_scalar_allowlisted(self):
+        payload = build_public_status(
+            worker_state="paper_worker_idle", last_cycle_at=123.0,
+            eligible_symbols=["BTC/JPY"], capital_reference=D("10000"),
+            deployed_reference=D("3000"), open_positions={"BTC/JPY": D("0.01")},
+            recent_fills=[], skipped_reason_codes=[],
+            performance_summary={
+                "as_of": 123.0,
+                "complete": True,
+                "position_count": 1,
+                "priced_positions": 1,
+                "valued_positions": 1,
+                "realized_total_jpy": "120.5",
+                "today_realized_pnl_jpy": "20",
+                "unrealized_pnl_jpy": "-5.5",
+                "cumulative_pnl_jpy": "115",
+                "equity_jpy": "10115",
+                "theoretical_benchmark": {"secret": "must-not-leak"},
+                "positions": [{"symbol": "BTC/JPY", "avg_cost": "must-not-leak"}],
+                "api_key": "must-not-leak",
+            },
+        )
+        summary = payload["performance_summary"]
+        self.assertEqual(
+            summary,
+            {
+                "as_of": 123.0,
+                "complete": True,
+                "position_count": 1,
+                "priced_positions": 1,
+                "valued_positions": 1,
+                "realized_total_jpy": "120.5",
+                "today_realized_pnl_jpy": "20",
+                "unrealized_pnl_jpy": "-5.5",
+                "cumulative_pnl_jpy": "115",
+                "equity_jpy": "10115",
+            },
+        )
+        blob = json.dumps(payload, sort_keys=True)
+        self.assertNotIn("theoretical_benchmark", blob)
+        self.assertNotIn("avg_cost", blob)
+        self.assertNotIn("api_key", blob)
+        self.assertNotIn("must-not-leak", blob)
+
     def test_worker_summary_is_allowlisted(self):
         payload = build_public_status(
             worker_state="paper_worker_idle", last_cycle_at=123.0,
