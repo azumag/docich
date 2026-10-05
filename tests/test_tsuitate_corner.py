@@ -175,6 +175,35 @@ def test_manual_stop_requests_beta_stop_before_restore(tmp_path, monkeypatch):
     assert seen == ["manual"]
 
 
+def test_manual_stop_before_beta_start_does_not_start_match(tmp_path, monkeypatch):
+    g = _global(tmp_path)
+    state, identity = _active_state()
+    state["beta_started"] = False
+    calls = []
+
+    def control(action, run_id=None):
+        calls.append((action, run_id))
+        if action == "status":
+            return _status()
+        raise AssertionError(f"unexpected beta action: {action}")
+
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=control, sleep=lambda *_: None
+    )
+    manager._save(state)
+    monkeypatch.setattr(manager, "_canonical", lambda: _canonical(identity))
+    monkeypatch.setattr(manager, "_stop_requested", lambda: True)
+    restored = []
+    monkeypatch.setattr(
+        manager, "_restore",
+        lambda current, *, end_reason: restored.append(end_reason) or "completed",
+    )
+
+    assert manager._wait_and_restore(state) == "completed"
+    assert restored == ["manual"]
+    assert calls == [("status", None)]
+
+
 def test_rotation_adapter_loads_only_beta_control_env(tmp_path, monkeypatch):
     home = tmp_path / "home"
     env_file = home / ".config" / "docich" / "webui.env"
