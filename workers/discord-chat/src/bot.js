@@ -20,6 +20,11 @@ import {
   stripBotMention,
 } from "./discord.js";
 import { generateConversationReply } from "./conversation.js";
+import {
+  VoiceBridgeError,
+  generateVoicePreviewReply,
+  validateVoiceBridgeInput,
+} from "./voice-bridge.js";
 
 const FAILURE_REPLY = "今は返答を作れませんでした。少し後でもう一度メンションしてください。";
 const BUSY_REPLY = "今は返答待ちが多いため、少し後でもう一度メンションしてください。";
@@ -66,6 +71,29 @@ export class DiscordBot {
     }
     if (request.method === "GET" && url.pathname === "/status") {
       return Response.json(await this.status());
+    }
+    if (request.method === "POST" && url.pathname === "/voice/reply") {
+      let input;
+      try {
+        input = validateVoiceBridgeInput(await request.json());
+      } catch {
+        return Response.json({ error: "voice_bridge_invalid_request" }, {
+          status: 400,
+          headers: { "cache-control": "no-store" },
+        });
+      }
+      if (this.pendingCount >= MAX_PENDING) {
+        return Response.json({ error: "voice_bridge_busy" }, {
+          status: 429,
+          headers: { "cache-control": "no-store" },
+        });
+      }
+      this.pendingCount += 1;
+      const task = this.queue
+        .then(() => this.#processVoicePreview(input))
+        .finally(() => { this.pendingCount -= 1; });
+      this.queue = task.catch(() => {});
+      return task;
     }
     return new Response("not found", { status: 404 });
   }
@@ -514,6 +542,32 @@ export class DiscordBot {
       .finally(() => { this.pendingCount -= 1; });
     this.queue = task.catch(() => {});
     this.state.waitUntil(task);
+  }
+
+  async #processVoicePreview(input) {
+    let stage = "memory_context";
+    try {
+      const result = await generateVoicePreviewReply(
+        this.env,
+        this.sql,
+        input,
+        (nextStage) => { stage = nextStage; },
+      );
+      safeLog(this.env, "voice_reply_generated");
+      return Response.json(result, {
+        headers: { "cache-control": "no-store" },
+      });
+    } catch (error) {
+      const contextChanged = error instanceof VoiceBridgeError
+        && error.code === "voice_context_changed";
+      safeLog(this.env, "voice_reply_failed", { stage });
+      return Response.json({
+        error: contextChanged ? "voice_context_changed" : "voice_reply_failed",
+      }, {
+        status: contextChanged ? 409 : 503,
+        headers: { "cache-control": "no-store" },
+      });
+    }
   }
 
   async #processMention(event) {
