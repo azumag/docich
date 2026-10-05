@@ -1461,6 +1461,19 @@ class TestHttpHandlers(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _write_tsuitate_catalog_config(self, *, enabled=True, paused=False, rotation=True):
+        path = Path(self.g.config_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '[corner_rotation]\n'
+            f'enabled = {str(rotation).lower()}\n'
+            'schedule_mode = "queue"\n'
+            'corners = [{id = "tsuitate", adapter = "tsuitate", game = "tsuitate-view", '
+            f'enabled = {str(enabled).lower()}, paused = {str(paused).lower()}, '
+            'manual_only = true}]\n',
+            encoding="utf-8",
+        )
+
     def test_weather_manual_start_reserves_without_dispatch_and_is_idempotent(self):
         self._write_weather_catalog_config()
         pending = {"corner": "nsnake", "phase": "dispatched",
@@ -1492,6 +1505,40 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertNotIn(json.loads(owner)["request_id"], json.dumps(view))
         self.assertEqual(view["catalog"][0]["manual_mode"], "queue")
         self.assertTrue(view["catalog"][0]["manual"])
+
+    def test_tsuitate_manual_start_uses_common_queue_and_stays_manual_only(self):
+        self._write_tsuitate_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+        with mock.patch("docich.tsuitate_corner.TsuitateCornerManager.eligible",
+                        return_value=True), \
+                mock.patch("docich.tsuitate_corner.TsuitateCornerManager.run_rotation") as run, \
+                mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "tsuitate", "confirm": True})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["status"], "queued")
+        self.assertIsNone(data["duration_minutes"])
+        self.assertEqual(data["corner"], {
+            "id": "tsuitate", "adapter": "tsuitate",
+            "game": "tsuitate-view", "target": "rotation",
+        })
+        run.assert_not_called()
+        popen.assert_not_called()
+        status, view = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, view)
+        self.assertEqual(view["rotation"]["queued_manual"]["corner"], "tsuitate")
+        self.assertTrue(view["catalog"][0]["manual_only"])
+        self.assertEqual(view["catalog"][0]["manual_mode"], "queue")
+        self.assertFalse(view["catalog"][0]["eligible"])
+
+    def test_tsuitate_manual_stop_before_start_uses_specific_error(self):
+        self._write_tsuitate_catalog_config()
+        with mock.patch("docich.tsuitate_corner.TsuitateCornerManager.eligible",
+                        return_value=True):
+            status, data = self._request("POST", "/api/corners", {
+                "action": "stop", "corner": "tsuitate", "confirm": True})
+        self.assertEqual(status, 409, data)
+        self.assertEqual(data["error"], "tsuitate_not_active")
 
     def test_weather_manual_start_respects_disabled_paused_and_recovery_gates(self):
         for options in ({"enabled": False}, {"paused": True}, {"rotation": False}, {}):
