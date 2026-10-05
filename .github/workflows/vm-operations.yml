@@ -678,6 +678,50 @@ jobs:
           echo "status=$status" >> "$GITHUB_OUTPUT"
           echo "Moomoo JP read-only provider probe: $status"
 
+      - name: Run one-shot production CPU profile for reviewed epoch
+        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+          # This is an explicit one-shot epoch. Ordinary pushes must not add
+          # another 65-second profiling window to the production VM.
+          if [[ "$BEFORE_SHA" == 0000000000000000000000000000000000000000 ]] \
+            || ! git -C candidate cat-file -e "$BEFORE_SHA^{commit}" \
+            || git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- ops/runtime_context/cpu_profile_epoch; then
+            exit 0
+          fi
+
+          bash -n control/ops/vm_actions/run_cpu_profile_once.sh
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+
+          # Production exec output remains VM-private. The helper accepts no
+          # arguments and only writes the bounded report to a fixed /tmp path.
+          cat control/ops/vm_actions/run_cpu_profile_once.sh | \
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" >/dev/null
+
+          # Return only the collector's fixed allowlisted projection, never
+          # the raw report or any /proc command line.
+          ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA" | \
+            python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          profile = (data.get("diagnostics") or {}).get("cpu_profile")
+          if not isinstance(profile, dict) or profile.get("status") != "ok":
+              raise SystemExit("fresh cpu_profile missing from diagnostics")
+          age = profile.get("age_sec")
+          if type(age) is not int or not 0 <= age <= 180:
+              raise SystemExit("cpu_profile freshness check failed")
+          print(json.dumps(profile, sort_keys=True, ensure_ascii=True))
+          '
+
       - name: Adopt reviewed production baseline
         if: ${{ steps.auth.outputs.operation == 'bootstrap' }}
         shell: bash
