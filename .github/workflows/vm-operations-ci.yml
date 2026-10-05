@@ -55,6 +55,8 @@ jobs:
       - name: Validate parent-owned operations brief (private handoff stays local)
         run: python3 ops/vm_actions/ops_brief.py check-artifact
       - run: python3 -m unittest discover -s ops/self_repair/tests -v
+      - name: Broadcast audio-path priority keeper
+        run: python3 -m unittest discover -s ops/audio_priority/tests -v
       - name: macOS Soren91 agent service contracts
         run: python3 -m unittest discover -s ops/local/tests -v
       - name: External VM monitor watchdog contracts

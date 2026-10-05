@@ -1,0 +1,28 @@
+[Unit]
+Description=Keep the broadcast audio path (RetroArch, encoder, PulseAudio, TwiCa feeder) at high CPU priority
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+# 他ユーザーの優先度を上げ得る唯一の権限だけを与える(rootでは動かさない)。
+AmbientCapabilities=CAP_SYS_NICE
+CapabilityBoundingSet=CAP_SYS_NICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ExecStart=/usr/bin/python3 /usr/local/libexec/azumag-vm-ops/audio_priority/priority.py --uid 1001 --nice -10 --interval 5
+Restart=always
+RestartSec=5
+# 自身は軽量(5秒ごとの/proc走査)。監視対象より先にCPUを奪わないよう通常優先度のまま。
+CPUQuota=10%
+UMask=0077
