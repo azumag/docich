@@ -20,6 +20,8 @@ import {
   PermissionFlagsBits,
 } from 'discord.js';
 
+import { CloudflareWhisperSTT } from './cloudflare-stt.mjs';
+import { attachLiveSttReceiver } from './live-receive.mjs';
 import { LiveVoiceError, loadLiveVoiceConfig, makeStereoTestTone } from './live-support.mjs';
 
 const emit = (record) => process.stdout.write(JSON.stringify(record) + '\n');
@@ -133,16 +135,18 @@ function defaultRuntimeOps() {
       }),
     waitClientReady,
     resolveVoiceChannel,
-    joinVoice: ({ guild, channel }) =>
+    joinVoice: ({ guild, channel, config }) =>
       joinVoiceChannel({
         guildId: guild.id,
         channelId: channel.id,
         adapterCreator: guild.voiceAdapterCreator,
-        selfDeaf: true,
+        selfDeaf: !config.receiveEnabled,
         selfMute: false,
       }),
     waitVoiceReady: (connection) =>
       entersState(connection, VoiceConnectionStatus.Ready, 30_000),
+    createStt: (env) => new CloudflareWhisperSTT({ env }),
+    attachReceiver: (options) => attachLiveSttReceiver(options),
     playTestTone,
     signalTarget: process,
   };
@@ -152,9 +156,11 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
   const config = loadLiveVoiceConfig(env);
   const ops = { ...defaultRuntimeOps(), ...runtimeOps };
   const signalTarget = ops.signalTarget;
+  const stt = config.receiveEnabled ? ops.createStt(env) : null;
   const client = ops.createClient();
 
   let connection = null;
+  let liveReceiver = null;
   let stopping = false;
   let recovering = false;
   let stopResolve;
@@ -255,7 +261,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
           emit({ event: 'voice_rejoin_attempt', attempt });
           const accepted = connection.rejoin({
             channelId: config.channelId,
-            selfDeaf: true,
+            selfDeaf: !config.receiveEnabled,
             selfMute: false,
           });
           if (accepted) {
@@ -287,7 +293,23 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
     }
     if (stoppedAfter(voiceReadyResult)) return 0;
 
-    emit({ event: 'voice_connected', selfDeaf: true, daveCapable: true });
+    emit({
+      event: 'voice_connected',
+      selfDeaf: !config.receiveEnabled,
+      daveCapable: true,
+      receiveEnabled: config.receiveEnabled,
+    });
+
+    if (config.receiveEnabled) {
+      liveReceiver = ops.attachReceiver({
+        connection,
+        targetUserId: config.receiveUserId,
+        stt,
+        emit,
+        debugTranscript: config.transcriptDebug,
+      });
+      emit({ event: 'voice_receive_enabled' });
+    }
 
     if (config.playTestTone) {
       let toneResult;
@@ -314,6 +336,12 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
     signalTarget.off('SIGINT', requestStop);
     signalTarget.off('SIGTERM', requestStop);
     client.off(Events.Error, onClientError);
+
+    try {
+      liveReceiver?.stop();
+    } catch {
+      // Fixed shutdown path.
+    }
 
     if (connection && connection.state.status !== VoiceConnectionStatus.Destroyed) {
       try {
