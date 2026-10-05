@@ -235,13 +235,15 @@ class LinuxRecoveryEffects:
             raise
         return os.fdopen(fd, "rb")
 
-    def _verify_targets(self, recovery):
+    def _verify_targets(self, recovery, *, bound=None):
         self._operator_gates()
         rows = self._rows()
         roots, owned = self._tree(rows)
         current = {self._role(rows[p]): self._identity(rows[p]) for p in roots}
         if current != recovery["inventory"]["roots"] or len(roots) != len(current):
             raise RecoveryRefused("game roots changed before termination")
+        if bound is not None and any((p, rows[p]["birth"]) not in bound for p in owned):
+            raise RecoveryRefused("game process tree changed before termination")
         return rows, roots, owned
 
     def _verify_stopped_board(self, recovery, path):
@@ -257,11 +259,16 @@ class LinuxRecoveryEffects:
         recovery["inventory"]["processes"] = [self._identity(rows[p]) for p in sorted(owned)]
         with ExitStack() as pins:
             bound = []
+            bound_identities = set()
             for pid in sorted(owned, key=lambda p: (p not in roots, p)):
                 fd = self._pin(self._identity(rows[pid]), missing=pid not in roots)
                 if fd is not None:
                     bound.append(pins.enter_context(fd))
-            self._verify_targets(recovery)
+                    bound_identities.add((pid, rows[pid]["birth"]))
+            # A parent can fork while pidfds are being opened. Refuse targets
+            # outside the pinned identities; vanished short-lived children are
+            # harmless and never expand the kill set.
+            self._verify_targets(recovery, bound=bound_identities)
             self._verify_stopped_board(recovery, self.root / "game_state.json")
             # Detach round-local names BEFORE killing, so immediate supervisor
             # respawn cannot have fresh files removed by a later cleanup.
@@ -283,7 +290,7 @@ class LinuxRecoveryEffects:
                 # Check again at the irreversible boundary. A writer may have
                 # updated the moved file through an open fd or recreated the
                 # live name while the other round-local files were detached.
-                self._verify_targets(recovery)
+                self._verify_targets(recovery, bound=bound_identities)
                 self._verify_stopped_board(recovery, self._archive_dir(recovery) / "retired/game_state.json")
                 if (self.root / "game_state.json").exists():
                     raise RecoveryRefused("live board changed before termination")
