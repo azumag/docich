@@ -69,7 +69,7 @@ def test_flat_live_catalog_and_financial_boundary():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     catalog = load_catalog(g)
     assert {c.id for c in catalog} == {"ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
-                                     "nethack", "hanjuku-hero", "paper", "meriken", "weather"}
+                                     "nethack", "hanjuku-hero", "paper", "meriken", "weather", "tsuitate"}
     assert all(c.live_eligible is False for c in catalog)
     assert next(c for c in catalog if c.id == "hanjuku-hero").enabled
     assert not any(c.id == "retro" for c in catalog)
@@ -77,23 +77,26 @@ def test_flat_live_catalog_and_financial_boundary():
     assert all(c.target_matches is None for c in catalog if c.id != "nsnake")
 
 
-def test_production_profile_marks_common_rotation_enabled_for_all_ten_corners():
+def test_production_profile_marks_common_rotation_enabled_with_manual_tsuitate():
     from docich.corner_catalog import rotation_config
 
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     raw = rotation_config(g)
     assert raw["enabled"] is True
     catalog = load_catalog(g)
-    assert len(catalog) == 10
+    assert len(catalog) == 11
     weather = next(c for c in catalog if c.id == "weather")
     assert weather.enabled and weather.fetch_on_start
     assert weather.duration_minutes == 4 and weather.audio_enabled is True
     paper = next(c for c in catalog if c.id == "paper")
     assert paper.enabled is True
     assert paper.live_eligible is False
+    tsuitate = next(c for c in catalog if c.id == "tsuitate")
+    assert tsuitate.enabled is True and tsuitate.manual_only is True
+    assert tsuitate.game == "tsuitate-view"
     assert {c.id for c in catalog} >= {
         "ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
-        "hanjuku-hero", "nethack", "paper", "meriken",
+        "hanjuku-hero", "nethack", "paper", "meriken", "tsuitate",
     }
 
 
@@ -214,7 +217,7 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
     eligible, excluded = manager._eligible()
     assert len(eligible) == 10
     assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero"} <= set(eligible)
-    assert excluded == {}
+    assert excluded == {"tsuitate": "manual-only"}
 
 
 def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):
@@ -1991,6 +1994,21 @@ def test_manual_start_still_refuses_disabled_corners_and_latches(setup, monkeypa
     executor.result = "completed"
     with pytest.raises(RotationError, match="pending corner must finish"):
         corner_rotation.run_manual(g, manager, ["paper-view"])
+
+
+def test_manual_only_corner_is_excluded_from_auto_but_can_be_queued(setup):
+    _, _, _, executor, make = setup
+    manual = Corner("tsuitate", "tsuitate", "tsuitate-view", manual_only=True)
+    auto = Corner("retro", "game", "nsnake")
+    manager = make([manual, auto])
+    eligible, excluded = manager._eligible()
+    assert eligible == ["retro"]
+    assert excluded["tsuitate"] == "manual-only"
+    queued = manager.queue_manual("tsuitate-view")
+    assert queued["corner"] == "tsuitate"
+    result = manager.tick()
+    assert result["corner"] == "tsuitate"
+    assert executor.calls[-1]["source"] == "manual"
 
 
 def test_manual_queue_survives_restart_and_precedes_cooldown(setup):

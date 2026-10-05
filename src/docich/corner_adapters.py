@@ -402,6 +402,7 @@ class RetiredCornerObserver:
         "game": "retro_corner.json",
         "paper": "paper_corner.json",
         "weather": "weather_corner.json",
+        "tsuitate": "tsuitate_corner.json",
         "meriken": "soren91_corner.json",
         "nethack": "nethack_corner.json",
     }
@@ -456,6 +457,101 @@ class RetiredCornerObserver:
         return True
 
 
+class TsuitateCornerAdapter:
+    """One beta.tsuitate.info match through the shared program slot."""
+
+    CONTROL_KEYS = ("DOCICH_BETA_CONTROL_SECRET", "DOCICH_BETA_CONTROL_URL")
+    FORBIDDEN_SECRET_KEYS = ("DOCICH_WEBUI_TOKEN", "DOCICH_WEBUI_READONLY_TOKEN")
+
+    def __init__(self, g, corner):
+        from .tsuitate_corner import TsuitateCornerManager
+        from .tsuitate_view import VIEW_NAME
+
+        if corner.game != VIEW_NAME or corner.live_eligible is not False:
+            raise CornerExecutionError("Tsuitate identity/safety contract mismatch")
+        self.g, self.corner = g, corner
+        self.manager = TsuitateCornerManager(g)
+        self.state_path = self.manager.state_path
+
+    @staticmethod
+    def _read_env_file(path):
+        values = {}
+        try:
+            lines = Path(path).read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            raise CornerExecutionError("Tsuitate制御情報ファイルを読めません") from exc
+        allowed = set(TsuitateCornerAdapter.CONTROL_KEYS + TsuitateCornerAdapter.FORBIDDEN_SECRET_KEYS)
+        for line_number, line in enumerate(lines, 1):
+            raw = line.strip()
+            if not raw or raw.startswith("#"):
+                continue
+            if raw.startswith("export "):
+                raw = raw[7:].lstrip()
+            key, separator, value = raw.partition("=")
+            if not separator or key not in allowed:
+                continue
+            value = value.strip()
+            if value[:1] in {"'", '"'}:
+                if len(value) < 2 or value[-1] != value[0]:
+                    raise CornerExecutionError(
+                        f"Tsuitate制御情報ファイルの引用符が不正です (line {line_number})"
+                    )
+                value = value[1:-1]
+            if not value:
+                continue
+            values[key] = value
+        return values
+
+    @contextmanager
+    def runtime_environment(self, request=None):
+        """Expose only the beta-control capability during this corner.
+
+        The common rotation service deliberately does not inherit webui.env.
+        Read the existing owner-only file but export only the two reviewed
+        beta-control keys; WebUI operator/viewer tokens never enter the corner
+        process environment.
+        """
+        path = Path.home() / ".config" / "docich" / "webui.env"
+        values = self._read_env_file(path) if path.is_file() else {}
+        controls = {key: value for key, value in values.items() if key in self.CONTROL_KEYS}
+        secret = controls.get("DOCICH_BETA_CONTROL_SECRET") or os.environ.get("DOCICH_BETA_CONTROL_SECRET")
+        forbidden = {
+            values.get(key) or os.environ.get(key)
+            for key in self.FORBIDDEN_SECRET_KEYS
+        }
+        if secret and secret in {value for value in forbidden if value}:
+            raise CornerExecutionError("Tsuitate control secret must not reuse WebUI credentials")
+        missing = object()
+        previous = {key: os.environ.get(key, missing) for key in controls}
+        os.environ.update(controls)
+        try:
+            yield
+        finally:
+            for key, value in previous.items():
+                if value is missing:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def eligible(self):
+        with self.runtime_environment():
+            return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
+
 class WeatherCornerAdapter:
     """Opt-in weather lifecycle through GameSwitch and the common program slot."""
 
@@ -504,6 +600,7 @@ ADAPTERS = {
     "paper": PaperCornerAdapter,
     "nethack": NethackCornerAdapter,
     "weather": WeatherCornerAdapter,
+    "tsuitate": TsuitateCornerAdapter,
 }
 
 

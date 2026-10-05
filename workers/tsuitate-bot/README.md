@@ -47,6 +47,13 @@ Socket.IO 4.8.4の公開ブラウザ配布をnative WebSocket transportだけで
 
 `src/worker.js` が既存Webhookと認証controlを束ねます。`cloudflare.config.ts` はBetaArenaのSQLite export、`BETA_ARENA` binding、`nodejs_compat`、値なしsecretを宣言します。旧 `wrangler.toml` も同じbindingとmigration宣言を持ちます。旧plain変数の `BETA_ARENA_ENABLED="false"` 宣言は設定差分を作らないためmetadataに残しますが、runtimeは参照しません。buildは実DOを作りません。利用可否の環境変数は参照しません。以前の `BETA_ARENA_ENABLED` / `DOCICH_BETA_CONTROL_ENABLED` が残っていても値は無視し、認証済みの明示startでのみ募集します。Workerには既存の `BETA_CONTROL_SECRET` と `TSUITATE_BOT_TOKEN`、WebUIには同じ共有キーの `DOCICH_BETA_CONTROL_SECRET` と `DOCICH_BETA_CONTROL_URL` が必要です。URLはこのWorker名のHTTPS workers.dev rootだけに限定し、redirect・ambient proxyは使いません。secretやURL未設定・認証不正は引き続き拒否します。
 
+共通コーナーローテーションから衝立将棋を起動する場合も、新しいcredentialは増やしません。
+`docich-corner-rotation.service` 自体には `webui.env` を継承させず、Tsuitate adapterが
+`~/.config/docich/webui.env` を読み、`DOCICH_BETA_CONTROL_SECRET` と
+`DOCICH_BETA_CONTROL_URL` の2項目だけを適格性確認・1局実行のスコープへ渡します。
+`DOCICH_WEBUI_TOKEN` / `DOCICH_WEBUI_READONLY_TOKEN` その他の値は子コーナー環境へ
+exportせず、control secretとの再利用を検出した場合はfail-closedにします。
+
 ローカル検証は `npm test` と `npm run test:beta-workerd`、repo rootから `python3 -m pytest -q tests/test_tsuitate_beta_control.py` です。一時SQLite・localhostのWebUI/Engine.IO/Socket.IO・明示fixture値だけでoperator→HMAC→DO、viewer/CSRF拒否、並行再送、手動2回目開始、旧run停止無効、rollback、sync-only復元、終局保存・再起動を確認します。Miniflare v5はinline bundleと `resourcePersistencePath` を使い、再起動前後のDO IDと未確認着手を照合します。
 
 この変更は親の独立レビューとmerge・配備判断を待ちます。main連動のWorkers Buildsがある環境ではmergeも配備に繋がり得ます。既存secretを使い、新しい秘密は不要です。この変更の検証では実DO/D1作成、secret生成・設定、配備、Bot登録、beta接続・実対局を行っていません。

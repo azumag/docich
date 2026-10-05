@@ -401,7 +401,7 @@ class CornerRotationManager:
                 )
             if now < state["last_seen_at"]:
                 raise RotationError("clock regressed", reason_code="clock_regressed")
-            eligible, _ = self._eligible()
+            eligible, _ = self._eligible(include_manual_only=True)
             choices = [c.id for c in self.catalog if c.game == game and c.id in eligible]
             if len(choices) != 1:
                 raise RotationError(
@@ -534,11 +534,14 @@ class CornerRotationManager:
                         state["history"].append(dict(corner=history_id, at=stamp, source="execution"))
         return busy
 
-    def _eligible(self):
+    def _eligible(self, *, include_manual_only=False):
         result, excluded = [], {}
         for corner in sorted(self.catalog, key=lambda c: c.id):
             if not corner.enabled or corner.paused or (Path(self.g.state_dir) / "corners" / f"{corner.id}.paused").exists():
                 excluded[corner.id] = "disabled-or-paused"
+                continue
+            if corner.manual_only and not include_manual_only:
+                excluded[corner.id] = "manual-only"
                 continue
             try:
                 available = self.adapters[corner.id].eligible()
@@ -692,6 +695,7 @@ class CornerRotationManager:
                     self.save(state)
                     return outcome
                 eligible, excluded = self._eligible()
+                manual_eligible, _ = self._eligible(include_manual_only=True)
                 interval = DAY / len(eligible) if eligible else None
                 state.update(
                     eligible=eligible, excluded=excluded,
@@ -709,7 +713,7 @@ class CornerRotationManager:
                 if pending is None and queued is not None and queued_due:
                     if queued["corner"] not in self.adapters:
                         raise RotationError("queued manual corner removed", kind="catalog-mismatch")
-                    if queued["corner"] not in eligible:
+                    if queued["corner"] not in manual_eligible:
                         return self._wait(state, "queued-manual-disabled-or-paused")
                     pending = dict(queued, phase="selected", source="manual")
                     state["pending"] = pending
@@ -777,10 +781,11 @@ class CornerRotationManager:
                 adapter = self.adapters[pending["corner"]]
                 owned = any(raw.get("rotation_request_id") == pending["request_id"]
                             for raw in adapter.observations())
-                if pending["corner"] not in eligible and not owned:
+                pending_eligible = manual_eligible if pending.get("source") == "manual" else eligible
+                if pending["corner"] not in pending_eligible and not owned:
                     return self._wait(state, "selected-corner-disabled-or-paused")
                 if pending["phase"] == "selected":
-                    if pending["corner"] not in eligible:
+                    if pending["corner"] not in pending_eligible:
                         return self._wait(state, "selected-corner-disabled-or-paused")
                     # Re-check cooldown after importing concurrent/manual activity.
                     if pending.get("source") != "manual" and any(
