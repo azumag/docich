@@ -471,7 +471,7 @@ class RetroArchCoordinatorAdapter:
                 '--x', str(d.viewport_x), '--y', str(d.viewport_y),
                 '--width', str(d.viewport_width), '--height', str(d.viewport_height),
                 '--window-pattern', '^RetroArch',
-                *(['--framerate', '30', '--nearest', '--align', 'left'] if scripted_hanjuku(self.game) else []),
+                *(['--framerate', '30', '--nearest', '--align', 'right'] if scripted_hanjuku(self.game) else []),
                 '--runtime-state', str(self._presentation_path()),
                 *(['--audio-sink', audio_sink] if audio_enabled else []),
                 *(['--audio-volume-percent', str(volume)] if audio_enabled and volume is not None else []),
