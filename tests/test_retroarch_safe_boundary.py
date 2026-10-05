@@ -468,6 +468,7 @@ def test_presenter_tracks_child_groups_and_private_window_without_resizing(tmp_p
     monkeypatch.setattr(presentation.subprocess, 'Popen', launch)
     monkeypatch.setattr(presentation.subprocess, 'run', Mock(return_value=Mock(returncode=0, stdout='987\n')))
     monkeypatch.setattr(presentation.subprocess, 'check_output', Mock(return_value='WIDTH=896\nHEIGHT=672\n'))
+    monkeypatch.setattr(presentation, 'measured_contain_size', Mock(return_value=(720, 540)))
     monkeypatch.setattr(presentation.os, 'killpg', killpg)
     monkeypatch.setattr(presentation.signal, 'signal', Mock())
     monkeypatch.setattr(presentation.time, 'sleep', Mock())
@@ -476,14 +477,22 @@ def test_presenter_tracks_child_groups_and_private_window_without_resizing(tmp_p
     state = tmp_path / 'presentation.json'
     presentation.main(['--display', ':98', '--title', 'test', '--x', '0', '--y', '90',
                       '--width', '960', '--height', '540', '--window-pattern', '^RetroArch',
-                      '--runtime-state', str(state), '--', 'dbus-run-session', '--', 'retroarch'])
+                      '--align', 'right', '--runtime-state', str(state), '--',
+                      'dbus-run-session', '--', 'retroarch'])
     assert read_record(state) == {'status': 'stopped'}
     assert [call.kwargs['status'] for call in writes.call_args_list] == [
         'ready', 'presentation_failed', 'stopped']
     assert commands[1] == ['dbus-run-session', '--', 'retroarch']
     assert environments[1]['DISPLAY'] == ':123'
     assert environments[2]['DISPLAY'] == ':98'
+    ready = writes.call_args_list[0].kwargs
+    assert ready['projection'] == {
+        'align': 'right', 'viewport': [0, 90, 960, 540], 'content': [240, 0, 720, 540]}
     assert commands[2][commands[2].index('-video_size') + 1] == '896x672'
+    assert commands[2][commands[2].index('-left') + 1] == '240'
+    video_filter = commands[2][commands[2].index('-vf') + 1]
+    assert 'pad=960:540:ow-iw:(oh-ih)/2:color=black' in video_filter
+    assert video_filter.endswith(',crop=720:540:240:0:exact=1')
     assert set(pid for pid, sig in signals if sig) == {40000, 40001, 40002}
 
 
