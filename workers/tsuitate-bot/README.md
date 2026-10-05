@@ -31,6 +31,12 @@ WebUIの「コーナー」に状態更新・1局開始・終了後停止を追�
 
 WebUIサーバーは専用HMACで固定 `POST /beta-control` へ `status` / `start` / `stop` / `reconcile` だけを送ります。ブラウザへsecretを渡さず、任意URL・コマンド・対局数は受け付けません。Workerの `BETA_CONTROL_SECRET` とWebUIの `DOCICH_BETA_CONTROL_SECRET` は同じ専用値を参照し、未設定は拒否します。Webhookの `WEBHOOK_SECRET`、サイトの `TSUITATE_BOT_TOKEN`、WebUI operator/viewer tokenは流用しません。raw本文のHMAC-SHA256と300秒未満の時刻差を検証します。bodyは4 KiB・受信1秒、DO呼出し2.5秒、WebUI通信5秒に制限し、secret・署名・本文・rawエラーはログやブラウザへ返しません。
 
+`status` は現在runのcheckpointと同一gameIdであることを確認したうえで、Bot自身が受信済みの
+PlayerViewだけを `playerView` として投影します。含めるのは自駒・自持ち駒・手番・手数・時計・
+反則回数・王手フラグ・playing/endedだけです。相手の隠し駒、raw checkpoint、公開棋譜から得た
+盤面は返しません。checkpointが不正・別game・終局cleanup済みなら `playerView=null` です。
+docich側HMAC bridgeでも同じshapeを再検証してから配信画面へ渡します。
+
 初期状態は `stopped` です。singleton名 `beta:DoCiAI` に対し、**明示runごとに最大1局**を予約します。同じrunIdの再送・並行開始・重複alarmで再募集しません。次の新しいrunIdは前runの終局記録保存、socket終了、alarm削除が済んだ `readyForNextRun=true` の時だけ開始できます。終局後の自動反復はありません。古いrunIdのstart/stopは保存済みreceiptを返し、現在runを再開始・停止しません。paused・不明な状態では次局を開始せず、reset APIもありません。
 
 queue待ちは開始予約から60秒です。退出ACK確認に最大5秒、その後の遅延match通知待機に最大5秒を使います。stopは待機中なら退出し、対局中なら着手を続けて結果保存後に停止します。停止にはこのstop操作を使ってください。UIは曖昧な開始応答の再確認用に、秘密ではないrunIdをsessionStorageに保持します。
