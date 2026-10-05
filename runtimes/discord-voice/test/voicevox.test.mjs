@@ -151,6 +151,22 @@ test('provider secrets/messages/causes, hostile exception fields and logger rema
     });
   }
 });
+test('provider message getters are read once; changing values and unexpected types stay private', async () => {
+  const secret = 'EXAMPLE_PRIVATE_PROVIDER_TOKEN_URL';
+  for (const initial of ['tts_failed', 'invalid_wav', secret, undefined, null, 17, 17n, Symbol(secret), {},
+    { toString() { throw new Error(secret); } }, new String('tts_failed')]) {
+    let reads = 0;
+    const error = Object.defineProperty(new VoicevoxContractError('tts_failed'), 'message', {
+      get() { return ++reads === 1 ? initial : secret; },
+    });
+    const f = fake({ request: async () => { throw error; } });
+    await assert.rejects(f.adapter.synthesize('fixture', context()), (e) => {
+      assert.equal(e.message, initial === 'invalid_wav' ? 'invalid_wav' : 'tts_failed');
+      assert.equal(reads, 1); assert.equal(e.cause, undefined);
+      assert.ok(!String(e.stack).includes(secret)); return true;
+    });
+  }
+});
 test('real adapter stays outside fake-only coordinator fence', () => {
   const adapter = fake().adapter;
   assert.equal(adapter.kind, 'voicevox-injected');

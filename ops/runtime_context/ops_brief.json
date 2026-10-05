@@ -2,7 +2,7 @@
   "output_sha256": "8e05551cf10505821023191eceb4c82f63888f0f65858231a963232996eb8fb5",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "0d01558a2ea8e4f76c8affa6f4af2b50cd68d6ed0d2178413e9541b9f994a43a",
+  "source_sha256": "2f0a319cef0b6c3a9126d34ae131198f87cfffb792677f8534a3ff9d1ee6d144",
   "topics": [
     "Discord音声TTSの外部VOICEVOX境界を合成fixtureで検証（実接続・本番未反映）",
     "Discord音声会話の合成PCMプロトタイプ（実接続・本番未反映）",

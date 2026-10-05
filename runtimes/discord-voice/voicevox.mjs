@@ -165,8 +165,11 @@ export class InjectedVoicevoxTTS {
       // No provider message, request text, URL, scope or cause leaves this boundary.
       let code = 'tts_failed';
       try {
-        if (error instanceof VoicevoxContractError &&
-          ['invalid_context', 'invalid_text', 'invalid_wav', 'tts_cancelled', 'tts_failed'].includes(error.message)) code = error.message;
+        if (error instanceof VoicevoxContractError) {
+          const message = error.message;
+          if (typeof message === 'string' &&
+            ['invalid_context', 'invalid_text', 'invalid_wav', 'tts_cancelled', 'tts_failed'].includes(message)) code = message;
+        }
       } catch { /* hostile exception getters remain private */ }
       throw new VoicevoxContractError(code);
     } finally {
