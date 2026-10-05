@@ -197,7 +197,13 @@ def call_beta_control(action: str, run_id: str | None = None, *, forbidden_secre
             if type(data.get(field)) is not bool:
                 raise ControlError("control_unavailable")
             result[field] = data[field]
-        result["playerView"] = project_player_view(data.get("playerView"))
+        if action == "status":
+            try:
+                result["playerView"] = project_player_view(data.get("playerView"))
+            except ControlError:
+                # PlayerView is display-only. A malformed optional projection
+                # must never block lifecycle status, stop, or explicit recovery.
+                result["playerView"] = None
         result.update(maxGames=1, queueWaitSeconds=60,
                       errorCode=data.get("errorCode") if data.get("errorCode") in ERRORS else None)
         return result
