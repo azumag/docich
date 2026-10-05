@@ -133,6 +133,7 @@ jobs:
               raise SystemExit("fixed admin evidence unavailable")
           fingerprint = rotation.get("manual_pending_fingerprint")
           receipt = rotation.get("manual_pending_receipt")
+          expected_fingerprint_digest = "44c3402fab23d8cf05c7f0a9c3c2442b14a49aa56f96b236e6ef503cb9cdecab"
           manual_q = queues.get("manual")
           scheduled_q = queues.get("scheduled")
           if not (
@@ -149,6 +150,8 @@ jobs:
               and game_switch.get("active_game") != "hanjuku-hero"
               and fifo.get("queued_count") == 0
               and re.fullmatch(r"[0-9a-f]{64}", fingerprint or "")
+              and __import__("hashlib").sha256(
+                  fingerprint.encode("ascii")).hexdigest() == expected_fingerprint_digest
           ):
               raise SystemExit("fixed admin evidence does not match the reviewed stuck shape")
           pathlib.Path(sys.argv[2]).write_text(fingerprint + "\n", encoding="ascii")
@@ -166,6 +169,8 @@ jobs:
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/hanjuku-admin"
+          current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [[ "$current" == "$SHA" ]]
           EXPECTED="$(cat "$work/expected")"
           [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]]
           [[ "$MODE" == check || "$MODE" == release ]]
