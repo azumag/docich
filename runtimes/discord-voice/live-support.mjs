@@ -43,6 +43,12 @@ export function loadLiveVoiceConfig(env = process.env) {
   const receiveUserId = env.DOCICH_DISCORD_VOICE_RECEIVE_USER_ID;
   if (receiveEnabled && !validSnowflake(receiveUserId)) fail('invalid_config');
 
+  const conversationEnabled = boolFlag(
+    env.DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED,
+    false,
+  );
+  if (conversationEnabled && !receiveEnabled) fail('invalid_config');
+
   return Object.freeze({
     token,
     guildId,
@@ -51,6 +57,8 @@ export function loadLiveVoiceConfig(env = process.env) {
     receiveEnabled,
     receiveUserId: receiveEnabled ? receiveUserId : null,
     transcriptDebug: boolFlag(env.DOCICH_DISCORD_VOICE_TRANSCRIPT_DEBUG, false),
+    conversationEnabled,
+    replyDebug: boolFlag(env.DOCICH_DISCORD_VOICE_REPLY_DEBUG, false),
   });
 }
 

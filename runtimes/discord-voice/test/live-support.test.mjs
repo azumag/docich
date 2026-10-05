@@ -87,6 +87,30 @@ test('live receive is fail-closed and requires an explicit target user', () => {
   assert.equal(enabled.transcriptDebug, false);
 });
 
+test('live conversation is opt-in and requires receive mode', () => {
+  const disabled = loadLiveVoiceConfig(baseEnv());
+  assert.equal(disabled.conversationEnabled, false);
+  assert.equal(disabled.replyDebug, false);
+
+  assert.throws(
+    () => loadLiveVoiceConfig({
+      ...baseEnv(),
+      DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED: '1',
+    }),
+    (error) => error instanceof LiveVoiceError && error.code === 'invalid_config',
+  );
+
+  const enabled = loadLiveVoiceConfig({
+    ...baseEnv(),
+    DOCICH_DISCORD_VOICE_RECEIVE_ENABLED: '1',
+    DOCICH_DISCORD_VOICE_RECEIVE_USER_ID: '323456789012345678',
+    DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED: '1',
+    DOCICH_DISCORD_VOICE_REPLY_DEBUG: '1',
+  });
+  assert.equal(enabled.conversationEnabled, true);
+  assert.equal(enabled.replyDebug, true);
+});
+
 test('transcript debug requires an explicit boolean flag', () => {
   const enabled = loadLiveVoiceConfig({
     ...baseEnv(),

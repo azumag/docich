@@ -7,6 +7,7 @@ const MAX_UTTERANCE_SAMPLES = PCM.sampleRate * 10;
 const MIN_VOICED_SAMPLES = Math.round((PCM.sampleRate * 100) / 1000);
 const SPEECH_THRESHOLD = 500;
 const STT_TIMEOUT_MS = 10_000;
+const CONVERSATION_TIMEOUT_MS = 10_000;
 const MAX_PENDING_STT = 1;
 
 const erase = (value) => {
@@ -75,6 +76,7 @@ export function attachLiveSttReceiver({
   stt,
   emit = () => {},
   debugTranscript = false,
+  onTranscript = null,
   createDecoder = defaultDecoder,
   subscribeOptions = Object.freeze({
     end: Object.freeze({
@@ -93,6 +95,7 @@ export function attachLiveSttReceiver({
     !/^[1-9][0-9]{0,19}$/.test(targetUserId) ||
     typeof stt?.transcribe !== 'function' ||
     typeof emit !== 'function' ||
+    (onTranscript !== null && typeof onTranscript !== 'function') ||
     typeof createDecoder !== 'function'
   ) {
     throw new TypeError('invalid_live_receive_config');
@@ -120,25 +123,45 @@ export function attachLiveSttReceiver({
     sttActive = state;
 
     void (async () => {
-      safeEmit({ event: 'stt_started' });
-      const timeout = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
-      timeout.unref?.();
       try {
-        const transcript = await stt.transcribe(state.pcm, {
-          format: PCM,
-          signal: controller.signal,
-        });
-        if (controller.signal.aborted || stopped) return;
-        safeEmit({ event: 'stt_completed' });
-        if (debugTranscript) {
-          safeEmit({ event: 'stt_debug_transcript', transcript });
+        safeEmit({ event: 'stt_started' });
+        let transcript;
+        const sttTimeout = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
+        sttTimeout.unref?.();
+        try {
+          transcript = await stt.transcribe(state.pcm, {
+            format: PCM,
+            signal: controller.signal,
+          });
+          if (controller.signal.aborted || stopped) return;
+          safeEmit({ event: 'stt_completed' });
+          if (debugTranscript) {
+            safeEmit({ event: 'stt_debug_transcript', transcript });
+          }
+        } catch {
+          safeEmit({
+            event: controller.signal.aborted ? 'stt_cancelled' : 'stt_failed',
+          });
+          return;
+        } finally {
+          clearTimeout(sttTimeout);
         }
-      } catch {
-        safeEmit({
-          event: controller.signal.aborted ? 'stt_cancelled' : 'stt_failed',
-        });
+
+        if (onTranscript && !controller.signal.aborted && !stopped) {
+          const conversationTimeout = setTimeout(
+            () => controller.abort(),
+            CONVERSATION_TIMEOUT_MS,
+          );
+          conversationTimeout.unref?.();
+          try {
+            await onTranscript(transcript, { signal: controller.signal });
+          } catch {
+            // The trusted transcript handler owns sanitized stage diagnostics.
+          } finally {
+            clearTimeout(conversationTimeout);
+          }
+        }
       } finally {
-        clearTimeout(timeout);
         erase(state.pcm);
         controller.abort();
         if (sttActive === state) sttActive = null;

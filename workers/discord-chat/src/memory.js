@@ -149,15 +149,18 @@ export function memoryContext(sql, event, beforeSeq) {
   return { messages, sources: rows.map((row) => row.seq) };
 }
 
-export function validContext(sql, currentSeq, context) {
-  if (!isActive(sql, currentSeq)) return false;
-  if (!context.sources.length) return true;
+export function validMemorySources(sql, context) {
+  if (!Array.isArray(context?.sources) || !context.sources.length) return true;
   const placeholders = context.sources.map(() => "?").join(",");
   const row = sql.exec(
     `SELECT COUNT(*) AS count FROM conversations WHERE state='sent' AND seq IN (${placeholders})`,
     ...context.sources,
   ).one();
   return Number(row.count) === context.sources.length;
+}
+
+export function validContext(sql, currentSeq, context) {
+  return isActive(sql, currentSeq) && validMemorySources(sql, context);
 }
 
 export function forgetScope(sql, guildId, channelId, { messageIds = [], authorId = null } = {}) {

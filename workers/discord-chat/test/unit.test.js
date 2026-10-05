@@ -14,6 +14,7 @@ import {
 import { DISCORD_CONTEXT, cleanReply, generateReply } from "../src/llm.js";
 import { searchTerms } from "../src/memory.js";
 import { DiscordBot } from "../src/bot.js";
+import { handleVoiceReply } from "../src/index.js";
 
 test("Durable Object runtime module is importable", () => {
   assert.equal(typeof DiscordBot, "function");
@@ -66,6 +67,77 @@ test("Discord connection context requires polite desu-masu style", () => {
   assert.match(DISCORD_CONTEXT, /です・ます調/);
   assert.match(DISCORD_CONTEXT, /丁寧語/);
   assert.match(DISCORD_CONTEXT, /〜です/);
+});
+
+test("public voice reply bridge requires a separate secret and strips it before the Durable Object", async () => {
+  const secret = "s".repeat(48);
+  const seen = [];
+  const env = {
+    DISCORD_VOICE_INTERNAL_TOKEN: secret,
+    DISCORD_BOT: {
+      idFromName(name) {
+        assert.equal(name, "singleton");
+        return "fixture-id";
+      },
+      get(id) {
+        assert.equal(id, "fixture-id");
+        return {
+          async fetch(request) {
+            seen.push(request);
+            return Response.json({ reply: "fixture" });
+          },
+        };
+      },
+    },
+  };
+
+  const unauthorized = await handleVoiceReply(new Request("https://worker.example/voice/reply", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  }), env);
+  assert.equal(unauthorized.status, 401);
+  assert.equal(seen.length, 0);
+
+  const requestBody = JSON.stringify({
+    guildId: "1",
+    channelId: "10",
+    userId: "7",
+    turnId: "fixture-turn",
+    transcript: "こんにちは",
+  });
+  const response = await handleVoiceReply(new Request("https://worker.example/voice/reply", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer " + secret,
+      "content-type": "application/json",
+    },
+    body: requestBody,
+  }), env);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { reply: "fixture" });
+  assert.equal(seen.length, 1);
+  assert.equal(new URL(seen[0].url).pathname, "/voice/reply");
+  assert.equal(seen[0].headers.get("authorization"), null);
+  assert.equal(await seen[0].text(), requestBody);
+});
+
+test("voice reply bridge is absent when the secret is not configured", async () => {
+  const response = await handleVoiceReply(new Request("https://worker.example/voice/reply", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer " + "s".repeat(48),
+      "content-type": "application/json",
+    },
+    body: "{}",
+  }), {
+    DISCORD_BOT: {
+      idFromName() { throw new Error("must not route"); },
+      get() { throw new Error("must not route"); },
+    },
+  });
+  assert.equal(response.status, 404);
 });
 
 test("Workers AI backend sends the canonical conversation shape without tools", async () => {

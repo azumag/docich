@@ -65,6 +65,7 @@ test('stereo PCM16 is downmixed to mono without changing sample rate', () => {
 test('only the configured speaker is subscribed and normal logs never contain transcript', async () => {
   const events = [];
   const seen = [];
+  const handled = [];
   const fixture = fakeConnection((userId) =>
     userId === TARGET
       ? Array.from({ length: 6 }, () => stereoChunk(2000))
@@ -83,6 +84,10 @@ test('only the configured speaker is subscribed and normal logs never contain tr
     targetUserId: TARGET,
     stt,
     emit: (event) => events.push(event),
+    onTranscript: async (transcript, { signal }) => {
+      signal.throwIfAborted();
+      handled.push(transcript);
+    },
     createDecoder: decoderFactory,
   });
 
@@ -92,11 +97,13 @@ test('only the configured speaker is subscribed and normal logs never contain tr
 
   fixture.connection.receiver.speaking.emit('start', TARGET);
   await waitFor(() => events.some((event) => event.event === 'stt_completed'));
+  await waitFor(() => handled.length === 1);
 
   assert.equal(fixture.subscriptions.length, 1);
   assert.equal(fixture.subscriptions[0].userId, TARGET);
   assert.equal(seen.length, 1);
   assert.equal(seen[0].length, 960 * 6);
+  assert.deepEqual(handled, ['秘密の文字起こし本文']);
   assert.ok(events.some((event) => event.event === 'utterance_started'));
   assert.ok(events.some((event) => event.event === 'utterance_finished'));
   assert.ok(events.some((event) => event.event === 'stt_started'));
@@ -160,6 +167,44 @@ test('explicit transcript debug is opt-in', async () => {
   const debug = events.find((event) => event.event === 'stt_debug_transcript');
   assert.equal(debug.transcript, '明示デバッグだけに出る本文');
   receiver.stop();
+});
+
+test('stop aborts an in-flight transcript handler', async () => {
+  const events = [];
+  let handlerAborted = false;
+  const fixture = fakeConnection(() =>
+    Array.from({ length: 6 }, () => stereoChunk(2000)),
+  );
+  const receiver = attachLiveSttReceiver({
+    connection: fixture.connection,
+    targetUserId: TARGET,
+    stt: {
+      async transcribe() {
+        return '会話処理へ渡す本文';
+      },
+    },
+    emit: (event) => events.push(event),
+    onTranscript: (_transcript, { signal }) =>
+      new Promise((resolve) => {
+        const onAbort = () => {
+          handlerAborted = true;
+          resolve();
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      }),
+    createDecoder: decoderFactory,
+  });
+
+  fixture.connection.receiver.speaking.emit('start', TARGET);
+  await waitFor(() => events.some((event) => event.event === 'stt_completed'));
+  receiver.stop();
+  await waitFor(() => handlerAborted);
+
+  assert.equal(
+    events.some((event) => JSON.stringify(event).includes('会話処理へ渡す本文')),
+    false,
+  );
 });
 
 test('stop aborts an in-flight STT and detaches speaking listener', async () => {
