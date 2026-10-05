@@ -149,6 +149,15 @@ class TestPaperWorkerCycle(unittest.TestCase):
             status = json.loads((g.state_dir / "trading" / "status.json").read_text(encoding="utf-8"))
             self.assertEqual(status["worker_state"], "paper_worker_degraded")
             self.assertEqual(status["worker_summary"]["frame_error_count"], 1)
+            performance = status["performance_summary"]
+            self.assertEqual(performance["as_of"], NOW)
+            self.assertTrue(performance["complete"])
+            self.assertGreaterEqual(performance["position_count"], 1)
+            self.assertEqual(performance["position_count"], performance["valued_positions"])
+            self.assertIsNotNone(performance["equity_jpy"])
+            self.assertIsNotNone(performance["cumulative_pnl_jpy"])
+            self.assertNotIn("theoretical_benchmark", performance)
+            self.assertNotIn("positions", performance)
             self.assertNotIn("public history unavailable", json.dumps(status))
 
     def test_replaying_same_frames_does_not_duplicate_fill_event(self):
