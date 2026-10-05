@@ -33,7 +33,7 @@ requestの現在時刻検証は既存weather契約に合わせ、JST上の今日
 2. audio-on後、GameSwitch start receiptで確定した同一weather runtime identityと新鮮なsnapshotから13 requestを作り、完全payloadをowner stateへ保存してからitem 00をenqueueする。文面は`weather.narration(view)`のliteral lineそのもの。
 3. 各poll/restartで保存済みitemの`get`を先に呼ぶ。receiptがあればenqueueを繰り返さず検証する。見つからずforecastがまだ有効な場合だけ同じkey・完全に同じpayloadでretryする。consumer側のper-key durable idempotencyが二重publishを防ぐ。
 4. `played`後にだけ次ordinalへ進み、`rejected`/`interrupted`後はそこで止める。manual stop、snapshot expiry、GameSwitch transition時は1 pending itemのみ既存`interrupt`で終端化する。terminal receiptとは別に、pinned consumerのdurable `player_stop_confirmed` ackを照会し、ackがない間は再開後もGameSwitch restoreを進めない。queue filename消失だけをplayer停止の証拠にしない。
-5. 受理済み`queued`は再生完了を意味しない。13 receiptすべてがconsumerから`played`になって初めてdelivery stateが`completed`となる。全itemがcornerのduration/forecast expiry前に終わらない場合は残りを送らずstopped/incompleteのまま終える。
+5. 受理済み`queued`は再生完了を意味しない。13 receiptすべてがconsumerから`played`になって初めてdelivery stateが`completed`となる。owned viewerはruntime identity一致を確認した固定cue endpointから、このdeliveryの`next_index`だけを読み、0=全国導入、1〜11=各地点、12=全国まとめとして表示を同期する。`next_index`は`played`後だけ進むため、固定秒数で次地点へ移らない。13項目完了時はcornerを`audio-completed`で即復帰し、確認済みterminal failureは`audio-unavailable`で復帰する。duration/forecast expiryは上限として残る。
 
 一度に存在するweather queue itemは最大1件。cancel-by-key CLIのないconsumer版に合わせ、adapterはexecution UUID/ordinalに一致するconsumerの規定filenameだけを特定して既存`interrupt` commandへ渡す。helper自身もfilename、sidecar、request digestを再検証するため、別sourceや別itemには操作しない。
 
