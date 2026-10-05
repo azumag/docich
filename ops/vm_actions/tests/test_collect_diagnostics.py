@@ -1661,6 +1661,7 @@ def test_weather_pending_and_start_receipt_are_projected_without_request_identit
         "previous_runtime_identity": previous,
         "weather_runtime_identity": weather, "started_at": 200,
         "forecast": "DO-NOT-PUBLISH-FORECAST", "audio_delivery": {
+            "status": "running", "next_index": 6,
             "body": "DO-NOT-PUBLISH-AUDIO", "request": "DO-NOT-PUBLISH-REQUEST",
         },
     }))
@@ -1694,6 +1695,9 @@ def test_weather_pending_and_start_receipt_are_projected_without_request_identit
     assert owner["start_receipt"]["result_matches_owner"] is True
     assert owner["start_receipt"]["runtime_matches_owner"] is True
     assert owner["start_receipt"]["generation_matches_owner"] is True
+    assert owner["audio_delivery_present"] is True
+    assert owner["audio_delivery_status"] == "running"
+    assert owner["audio_next_index"] == 6
     rendered = json.dumps(output)
     for secret in (request_id, lease_id, "g41-abc123", "g42-def456", "DO-NOT-PUBLISH"):
         assert secret not in rendered
@@ -1735,6 +1739,10 @@ def test_weather_completion_matches_automatic_rotation_and_game_switch_restore(t
         "restore_requested_at": 360, "completed_at": 380, "end_reason": "duration",
         "forecast": "DO-NOT-PUBLISH-FORECAST", "last_error": "SECRET-ERROR",
         "audio_plan": {"text": "SECRET-AUDIO"},
+        "audio_delivery": {
+            "status": "completed", "next_index": 13,
+            "requests": [{"text": "SECRET-AUDIO-REQUEST"}],
+        },
     }))
     (tmp_path / "game_switch.json").write_text(json.dumps({
         "phase": "ready", "active": restored,
@@ -1778,10 +1786,13 @@ def test_weather_completion_matches_automatic_rotation_and_game_switch_restore(t
     assert owner["restore_receipt"]["runtime_matches_owner"] is True
     assert owner["restore_receipt"]["generation_matches_owner"] is True
     assert owner["restored_runtime_matches_current"] is True
+    assert owner["audio_delivery_present"] is True
+    assert owner["audio_delivery_status"] == "completed"
+    assert owner["audio_next_index"] == 13
     rendered = json.dumps(output)
     for secret in (start_id, restore_id, previous_lease, weather_lease, restored_lease,
                    "g41-abc123", "g42-def456", "g43-789abc", "DO-NOT-PUBLISH",
-                   "SECRET-ERROR", "SECRET-AUDIO"):
+                   "SECRET-ERROR", "SECRET-AUDIO", "SECRET-AUDIO-REQUEST"):
         assert secret not in rendered
     assert before == {p.relative_to(tmp_path).as_posix(): p.read_bytes()
                       for p in tmp_path.rglob("*") if p.is_file()}
