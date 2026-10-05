@@ -1,7 +1,7 @@
 import { BRAIN_VERSION, LINEAR_PROFILE, validateProfile } from "../brain/index.js";
 import { MoveGate, parsePlayerView } from "../adapters/beta.js";
 import { validBetaGameId } from "../adapters/beta-results.js";
-import { normalizeGameRecord } from "../training/index.js";
+import { GAME_REASONS, normalizeGameRecord } from "../training/index.js";
 import { BetaSession } from "./beta-session.js";
 import { DurableArenaStore, META_KEY, CHECKPOINT_KEY, RECORD_KEY, runKey, recordKey } from "./durable-store.js";
 
@@ -39,6 +39,29 @@ function playerViewProjection(meta, checkpoint) {
   }
 }
 
+/**
+ * Post-game public result only. A match that is not settled into `finished` has
+ * no result to project, so the owner and the broadcast view see nothing until
+ * the terminal record for exactly this run's game exists. Moves, decisions,
+ * observations and the Bot's own board never enter this projection.
+ */
+function terminalResultProjection(meta, record) {
+  if (meta?.state !== "finished" || meta.completedGames !== 1) return null;
+  if (!validBetaGameId(meta.gameId)) return null;
+  const normalized = normalizeGameRecord(record);
+  if (!normalized?.completed || normalized.gameId !== meta.gameId) return null;
+  if (!GAME_REASONS.includes(normalized.reason)) return null;
+  return {
+    outcome: normalized.outcome,
+    reason: normalized.reason,
+    endedAt: normalized.endedAt,
+    // The Bot's own last observed ply. The public replay owns the full game,
+    // so this is deliberately the Bot-visible count, not the opponent's.
+    moveNumber: normalized.decisions.reduce((max, entry) => Math.max(max, entry.moveNumber), 0),
+    resultConfidence: normalized.resultConfidence,
+  };
+}
+
 /** Fixed singleton operations; the Worker entrypoint authenticates its caller. */
 export class DurableArenaController {
   constructor({ storage, env, waitUntil = () => {}, makeSocket,
@@ -69,7 +92,11 @@ export class DurableArenaController {
     return this.storage.transaction(async (tx) => {
       const meta = await tx.get(META_KEY) ?? initial();
       const checkpoint = await tx.get(CHECKPOINT_KEY);
-      return { ...this.snapshot(meta), playerView: playerViewProjection(meta, checkpoint) };
+      const record = await tx.get(RECORD_KEY);
+      // Only `status` carries the terminal result. Persisted run receipts stay
+      // byte-identical so a replayed start/stop response cannot change shape.
+      return { ...this.snapshot(meta), playerView: playerViewProjection(meta, checkpoint),
+        terminalResult: terminalResultProjection(meta, record) };
     });
   }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BRAIN_VERSION, LINEAR_PROFILE } from "../src/brain/index.js";
+import { BRAIN_VERSION, LINEAR_PROFILE, normalizeObservation } from "../src/brain/index.js";
 import { BetaSession } from "../src/arena/beta-session.js";
 import { DurableArenaController, QUEUE_WAIT_MS } from "../src/arena/durable-controller.js";
 import { DurableArenaStore, META_KEY, CHECKPOINT_KEY, RECORD_KEY, runKey, recordKey } from "../src/arena/durable-store.js";
@@ -45,11 +45,21 @@ function view(overrides = {}) {
   fouls: { you: 0, opponent: 0 }, youInCheck: false, opponentInCheck: false, status: "playing", ...overrides };
 }
 
-function terminal() {
+function terminal(overrides = {}) {
   return { schemaVersion: 1, kind: "tsuitate_game", site: "beta.tsuitate.info", ruleset: "tsuitate-9x9",
     rulesKey: "beta-300+3-f10", gameId: "local-game", color: "b", startedAt: "2026-10-03T00:00:00.000Z",
     endedAt: "2026-10-03T00:05:00.000Z", brainVersion: BRAIN_VERSION, profile: LINEAR_PROFILE,
-    decisions: [], completed: true, historyComplete: true, outcome: "win", reason: "checkmate" };
+    decisions: [], completed: true, historyComplete: true, outcome: "win", reason: "checkmate",
+    resultSource: "public_replay", resultConfidence: "verified", ...overrides };
+}
+
+/** One accepted Bot decision, built from a real own-view observation. */
+function decision(moveNumber) {
+  const observation = normalizeObservation({ ruleset: "tsuitate-9x9", color: "b", turn: "b",
+    moveNumber, pieces: [{ square: "5i", role: "K" }, { square: "2h", role: "R" }], hand: {},
+    inCheck: false, opponentInCheck: false });
+  return { moveNumber, observation, usi: "2h2g", features: { advance: 0, centrality: 0,
+    promotion: 0, drop: 0, kingMove: 0, distance: 0, repeat: 0 }, score: 0, feedback: "accepted" };
 }
 
 function setup(t, overrides = {}) {
@@ -327,6 +337,58 @@ test("owner status exposes only validated own view while structured logs stay ob
   for (const forbidden of ["fixture-only", "fixture-sensitive", "5g5f", "opponentPieces", "yourPieces", "yourHand"]) {
     assert.equal(logData.includes(forbidden), false);
   }
+});
+
+test("status exposes the settled public result and never a board, decision or unreviewed field", async (t) => {
+  const c = setup(t); await begin(c);
+  assert.equal((await c.controller.status()).terminalResult, null, "no result while playing");
+
+  const store = new DurableArenaStore(c.storage, "fixture-run", 1);
+  await store.finish(terminal({ decisions: [decision(7), decision(9)] }));
+  const finished = await c.controller.status();
+  assert.deepEqual(finished.terminalResult, {
+    outcome: "win", reason: "checkmate", endedAt: "2026-10-03T00:05:00.000Z",
+    moveNumber: 9, resultConfidence: "verified",
+  });
+  // The whole status must stay free of the record's private content. The own
+  // PlayerView is a separate, already reviewed projection and is allowed.
+  for (const forbidden of ["decisions", "observation", "profile",
+    "pending", "attemptedMoves", "rawCheckpoint"]) {
+    assert.equal(JSON.stringify(finished).includes(forbidden), false, forbidden);
+  }
+  for (const forbidden of ["decisions", "observation", "pieces", "hand", "profile",
+    "features", "score", "usi", "rulesKey"]) {
+    assert.equal(JSON.stringify(finished.terminalResult).includes(forbidden), false, forbidden);
+  }
+  // An unknown outcome stays inside the allowlist instead of inventing a result.
+  await c.storage.put(RECORD_KEY, terminal({ decisions: [], outcome: "unknown", reason: "unknown",
+    resultSource: "unknown", resultConfidence: "unknown" }));
+  assert.deepEqual((await c.controller.status()).terminalResult, {
+    outcome: "unknown", reason: "unknown", endedAt: "2026-10-03T00:05:00.000Z",
+    moveNumber: 0, resultConfidence: "unknown",
+  });
+  // A record from another game, or an incomplete one, is never projected.
+  for (const stored of [terminal({ gameId: "other-game" }), terminal({ completed: false })]) {
+    await c.storage.put(RECORD_KEY, stored);
+    assert.equal((await c.controller.status()).terminalResult, null);
+  }
+  await c.storage.put(RECORD_KEY, terminal({ gameId: "other-game" }));
+  await c.storage.put(META_KEY, { ...(await c.storage.get(META_KEY)), gameId: "local-game" });
+  assert.equal((await c.controller.status()).terminalResult, null, "mismatched game id");
+});
+
+test("a paused or unconfirmed run never reports a result, and receipts keep the old shape", async (t) => {
+  const c = setup(t); await begin(c);
+  const store = new DurableArenaStore(c.storage, "fixture-run", 1);
+  await store.finish(terminal());
+  await c.storage.put(META_KEY, { ...(await c.storage.get(META_KEY)), state: "paused", settled: false });
+  assert.equal((await c.controller.status()).terminalResult, null, "paused must not publish a result");
+
+  // Replayed start/stop responses are the persisted snapshot, which never gained
+  // the terminal projection, so a stored receipt cannot leak or change shape.
+  const receipt = c.controller.snapshot(await c.storage.get(META_KEY));
+  assert.equal("terminalResult" in receipt, false);
+  assert.equal("playerView" in receipt, false);
 });
 
 test("explicit second run follows durable terminal/socket/alarm cleanup; old start/stop cannot affect it", async (t) => {

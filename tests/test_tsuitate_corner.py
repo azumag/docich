@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from docich.corner_adapters import CornerExecutionError, TsuitateCornerAdapter
 from docich.corner_catalog import Corner
 from docich.tsuitate_beta_control import ControlError
-from docich.tsuitate_corner import TsuitateCornerManager
+from docich.tsuitate_corner import TsuitateCornerError, TsuitateCornerManager
 from docich.tsuitate_view import VIEW_NAME
 
 
@@ -66,6 +66,13 @@ def _canonical(identity):
         "previous": None,
         "retiring": [],
     }
+
+
+def _settled_result(**overrides):
+    value = {"outcome": "win", "reason": "checkmate", "endedAt": "2026-10-06T00:05:00.000Z",
+             "moveNumber": 9, "resultConfidence": "verified"}
+    value.update(overrides)
+    return value
 
 
 def test_eligible_requires_ready_singleton(tmp_path):
@@ -202,6 +209,155 @@ def test_manual_stop_before_beta_start_does_not_start_match(tmp_path, monkeypatc
     assert manager._wait_and_restore(state) == "completed"
     assert restored == ["manual"]
     assert calls == [("status", None)]
+
+
+def test_finished_match_records_the_settled_result_for_this_run(tmp_path, monkeypatch):
+    g = _global(tmp_path)
+    state, identity = _active_state()
+    manager = TsuitateCornerManager(
+        g, coordinator=object(),
+        control=lambda *_: _status("finished", runId=REQ, completedGames=1, reservedGames=1,
+                                  readyForNextRun=True, gameResult=_settled_result()),
+        sleep=lambda *_: None,
+    )
+    manager._save(state)
+    monkeypatch.setattr(manager, "_canonical", lambda: _canonical(identity))
+    monkeypatch.setattr(manager, "_restore", lambda *_a, **_k: "completed")
+
+    assert manager._wait_and_restore(state) == "completed"
+    saved = json.loads(manager.path.read_text())
+    assert saved["beta_result"] == _settled_result()
+    assert "yourPieces" not in saved["beta_result"]
+
+
+@pytest.mark.parametrize("run_id,beta_state", [(None, "finished"), (REQ, "playing"), (REQ, "stopped")])
+def test_result_is_not_recorded_without_a_settled_owned_match(tmp_path, run_id, beta_state):
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    manager = TsuitateCornerManager(
+        g, coordinator=object(),
+        control=lambda *_: _status(beta_state, runId=run_id,
+                                   completedGames=1 if beta_state == "finished" else 0,
+                                   reservedGames=1, readyForNextRun=beta_state == "finished",
+                                   gameResult=_settled_result()),
+    )
+    manager._save(state)
+
+    assert manager._control_status(state) is not None
+    assert json.loads(manager.path.read_text()).get("beta_result") is None
+
+
+def test_result_from_another_run_fails_closed_without_recording_it(tmp_path, monkeypatch):
+    g = _global(tmp_path)
+    state, identity = _active_state()
+    manager = TsuitateCornerManager(
+        g, coordinator=object(),
+        control=lambda *_: _status("finished", runId="other-run", completedGames=1,
+                                   reservedGames=1, readyForNextRun=True,
+                                   gameResult=_settled_result()),
+        sleep=lambda *_: None,
+    )
+    manager._save(state)
+    monkeypatch.setattr(manager, "_canonical", lambda: _canonical(identity))
+
+    with pytest.raises(TsuitateCornerError, match="another run"):
+        manager._wait_and_restore(state)
+    assert json.loads(manager.path.read_text()).get("beta_result") is None
+
+
+def test_match_deadline_stops_once_then_restores_with_its_own_reason(tmp_path, monkeypatch):
+    g = _global(tmp_path)
+    state, identity = _active_state()
+    clock = {"now": 1000.0}
+    calls = []
+    responses = iter([
+        _status("playing", runId=REQ, reservedGames=1, readyForNextRun=False),
+        _status("draining", runId=REQ, reservedGames=1, readyForNextRun=False),
+        _status("stopped", runId=REQ, reservedGames=1, readyForNextRun=True),
+    ])
+
+    def control(action, run_id=None):
+        calls.append((action, run_id))
+        if action == "stop":
+            return _status("draining", runId=REQ, reservedGames=1, readyForNextRun=False)
+        return next(responses)
+
+    manager = TsuitateCornerManager(g, coordinator=object(), control=control,
+                                    sleep=lambda *_: clock.__setitem__("now", clock["now"] + 60),
+                                    poll_s=1.0, max_match_seconds=60)
+    manager.clock = lambda: clock["now"]
+    manager._save(state)
+    monkeypatch.setattr(manager, "_canonical", lambda: _canonical(identity))
+    monkeypatch.setattr(manager, "_stop_requested", lambda: False)
+    seen = []
+    monkeypatch.setattr(manager, "_restore",
+                        lambda _s, *, end_reason: seen.append(end_reason) or "completed")
+
+    # The bound is measured from the first active observation, so the very first
+    # tick cannot already be expired.
+    assert manager._wait_and_restore(state) == "completed"
+    assert seen == ["match-timeout"]
+    assert [action for action, _ in calls].count("stop") == 1
+    saved = json.loads(manager.path.read_text())
+    assert saved["beta_timeout_requested"] is True
+    assert saved["beta_active_since"] == 1000.0
+
+
+def test_operator_stop_wins_over_the_deadline_in_the_end_reason(tmp_path, monkeypatch):
+    g = _global(tmp_path)
+    state, identity = _active_state()
+    state["beta_timeout_requested"] = True
+    state["beta_active_since"] = 0.0
+    clock = {"now": 100_000.0}
+    responses = iter([
+        _status("playing", runId=REQ, reservedGames=1, readyForNextRun=False),
+        _status("stopped", runId=REQ, reservedGames=1, readyForNextRun=True),
+    ])
+
+    def control(action, run_id=None):
+        if action == "stop":
+            return _status("draining", runId=REQ, reservedGames=1, readyForNextRun=False)
+        return next(responses)
+
+    manager = TsuitateCornerManager(g, coordinator=object(), control=control,
+                                    sleep=lambda *_: None, max_match_seconds=60)
+    manager.clock = lambda: clock["now"]
+    manager._save(state)
+    monkeypatch.setattr(manager, "_canonical", lambda: _canonical(identity))
+    monkeypatch.setattr(manager, "_stop_requested", lambda: True)
+    seen = []
+    monkeypatch.setattr(manager, "_restore",
+                        lambda _s, *, end_reason: seen.append(end_reason) or "completed")
+
+    assert manager._wait_and_restore(state) == "completed"
+    assert seen == ["manual"]
+
+
+def test_match_deadline_never_expires_before_the_match_is_active(tmp_path, monkeypatch):
+    g = _global(tmp_path)
+    state, identity = _active_state()
+    manager = TsuitateCornerManager(g, coordinator=object(),
+                                    control=lambda *_: _status("stopped", runId=REQ,
+                                                                reservedGames=1, readyForNextRun=True),
+                                    sleep=lambda *_: None, max_match_seconds=1)
+    manager.clock = lambda: 10_000.0
+    manager._save(state)
+    monkeypatch.setattr(manager, "_canonical", lambda: _canonical(identity))
+    monkeypatch.setattr(manager, "_stop_requested", lambda: False)
+    monkeypatch.setattr(manager, "_restore", lambda *_a, **_k: "completed")
+
+    assert manager._wait_and_restore(state) == "completed"
+    saved = json.loads(manager.path.read_text())
+    assert saved.get("beta_timeout_requested") is None
+    assert saved.get("beta_active_since") is None
+
+
+def test_out_of_range_max_match_seconds_is_rejected(tmp_path):
+    g = _global(tmp_path)
+    for bad in [0, -1, float("nan"), float("inf"), 86401, "600", True]:
+        with pytest.raises(TsuitateCornerError, match="out of range"):
+            TsuitateCornerManager(g, coordinator=object(), control=lambda *_: _status(),
+                                  max_match_seconds=bad)
 
 
 def test_rotation_adapter_loads_only_beta_control_env(tmp_path, monkeypatch):

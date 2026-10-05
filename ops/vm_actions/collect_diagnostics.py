@@ -3407,7 +3407,13 @@ def _project_corner_state(data):
         "end_reason": (data.get("end_reason") if data.get("end_reason")
                        in {"game_over", "screen_stalled", "manual_saved_stop",
                            "manual_forced_stop",
-                           "switch-terminal-before-corner-active"} else None),
+                           "switch-terminal-before-corner-active", "game-completed",
+                           "queue-timeout", "beta-stopped", "manual", "match-timeout",
+                           "operator-moved-during-tsuitate",
+                           "operator-moved-after-start",
+                           "operator-moved-before-restore",
+                           "operator-stopped-before-start"} else None),
+        "game_result": _project_game_result(data.get("beta_result")),
         "bot_phase": (data.get("bot_phase") if data.get("bot_phase") in {
             "transition", "name", "dialogue", "shop", "field", "field_menu",
             "battle_intro", "battle", "title_or_intro", "title", "month_menu", "concert", "event"} else None),
@@ -3433,6 +3439,34 @@ def _project_counts(value, keys):
     if not isinstance(value, dict):
         return None
     return {key: _bounded_int(value.get(key)) for key in keys}
+
+
+_GAME_OUTCOMES = frozenset({"win", "loss", "draw", "unknown"})
+_GAME_REASONS = frozenset({
+    "normal", "checkmate", "stalemate", "resign", "timeout", "foul_limit", "repetition",
+    "draw", "aborted", "disconnect", "transport_error", "protocol_error", "storage_error",
+    "interrupted", "no_move", "unknown"})
+_GAME_CONFIDENCE = frozenset({"verified", "unknown"})
+_GAME_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z\Z")
+
+
+def _project_game_result(value):
+    """Settled Tsuitate result, enum by enum. Anything unexpected drops to null."""
+    if not isinstance(value, dict):
+        return None
+    outcome = value.get("outcome")
+    reason = value.get("reason")
+    confidence = value.get("resultConfidence")
+    moves = value.get("moveNumber")
+    ended = value.get("endedAt")
+    if (outcome not in _GAME_OUTCOMES or reason not in _GAME_REASONS
+            or confidence not in _GAME_CONFIDENCE
+            or isinstance(moves, bool) or not isinstance(moves, int)
+            or not 0 <= moves <= 100000
+            or not isinstance(ended, str) or not _GAME_TIME.fullmatch(ended)):
+        return None
+    return {"outcome": outcome, "reason": reason, "resultConfidence": confidence,
+            "moveNumber": moves, "endedAt": ended}
 
 
 _SINK = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
