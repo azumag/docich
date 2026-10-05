@@ -275,6 +275,19 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None,
 
 def build_prompt(facts: Mapping[str, object]) -> str:
     facts_json = json.dumps(dict(facts), ensure_ascii=False, sort_keys=True)
+    research = facts.get("research") if isinstance(facts.get("research"), Mapping) else {}
+    if research.get("research_backend") == "websearch_verified_body":
+        research_note = (
+            "- research.news_items はWeb Searchで候補を見つけた後、docichがHTTPS本文を取得し、"
+            "receipt/hash検証した本文抜粋です。titleは検索snippetではなく取得本文から付けた短いラベルで、"
+            "published_atがnullの場合は公開時刻を推測しないでください。summaryにない事実を補わず、"
+            "取得済みの件数だけを扱ってください。\n"
+        )
+    else:
+        research_note = (
+            "- research.news_items はGoogle News RSSから取得した見出し・媒体・時刻・RSS要約です。記事全文ではありません。"
+            "見出しだけで断定せず、複数項目の共通点や相違点を見て、事実とあなたの推測を言い分けてください。\n"
+        )
     return (
         "あなたはPAPER暗号資産コーナーのラジオMC兼リサーチャーです。数字の読み上げ係ではありません。\n"
         f"{_PAPER_MERIKEN_PERSONA}"
@@ -283,11 +296,10 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "存在しない数値・銘柄・ニュース・因果関係は絶対に作らないでください。\n"
         f"{facts_json}\n\n"
         "【ニュースの扱い】\n"
-        "- research.news_items はGoogle News RSSから取得した見出し・媒体・時刻・RSS要約です。記事全文ではありません。"
-        "見出しだけで断定せず、複数項目の共通点や相違点を見て、事実とあなたの推測を言い分けてください。\n"
+        f"{research_note}"
         "- **見出しの文言をそのまま読み上げず、媒体名も口に出さないでください。** 「『見出し』（媒体）」という紹介は禁止です。"
         "見出しから読み取れる内容（規制・資金動向・価格変動・技術など）を自分の言葉で説明してください。\n"
-        "- **1件で済ませず、重要そうなものを5〜6件選び**、それぞれ『何が起きたか』→『市場やBOTにどう効き得るか』→"
+        "- **取得済みの重要な項目をできるだけ複数扱い**、最大5〜6件を目安に、それぞれ『何が起きたか』→『市場やBOTにどう効き得るか』→"
         "『実際に何を観測すべきか』の順で、他の項目と関連づけながら具体的に掘り下げます。"
         "価格が動いた理由をニュースだけで決めつけないでください。\n"
         "- research.asset があれば、そのsymbolは実際にPAPERで現在保有中です。指定されたangle_labelを中心に、"
@@ -887,7 +899,7 @@ def generate_corner_script(
     research_context: dict = {}
     if real_ai:
         try:
-            research_context = prepare_research_context(target, now=moment)
+            research_context = prepare_research_context(target, now=moment, env=os.environ)
         except Exception:
             # Network/public-research failures are commentary degradation only.
             research_context = {}
@@ -1156,7 +1168,7 @@ def generate_next_narration(
 
     research_context: dict = {}
     try:
-        research_context = prepare_research_context(target, now=moment)
+        research_context = prepare_research_context(target, now=moment, env=effective_env)
     except Exception:
         research_context = {}
     tf_context: Mapping[str, object] = timeframe_facts if isinstance(timeframe_facts, Mapping) else {}
