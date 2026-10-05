@@ -2100,7 +2100,7 @@ def test_scheduled_manual_reserves_only_its_corner_before_trigger(setup):
     # Automatic rotation keeps running, but never pre-runs the reserved corner.
     first = manager.tick()
     assert first["status"] == "ready"
-    assert executor.calls[0]["source"] != "manual"
+    assert executor.calls[0].get("source") != "manual"
     assert executor.calls[0]["corner"] != "retro"
     assert manager._manual_queue_path.exists()
 
