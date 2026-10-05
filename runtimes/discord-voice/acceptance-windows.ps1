@@ -1,5 +1,5 @@
-param(
-  [string]$WorkerBaseUrl = "https://docich-discord-chat.tsubasa-azumagakito.workers.dev",
+#requires -Version 7.0\n\nparam(
+  [string]$WorkerBaseUrl = $env:DOCICH_DISCORD_VOICE_WORKER_BASE_URL,
   [string]$LogPath = "",
   [double]$MinMinutes = 0,
   [double]$StopAfterMinutes = 0,
@@ -7,7 +7,7 @@ param(
   [switch]$RequireReconnect,
   [switch]$AllowLoopbackVoicevox,
   [switch]$SkipInstall,
-  [switch]$NoProvisionBridgeSecret
+  [switch]$ProvisionBridgeSecret
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,6 +59,9 @@ foreach ($name in $required) {
   [void](Require-Env $name)
 }
 
+if ([string]::IsNullOrWhiteSpace($WorkerBaseUrl)) {
+  throw "Set DOCICH_DISCORD_VOICE_WORKER_BASE_URL or pass -WorkerBaseUrl."
+}
 $workerRoot = $WorkerBaseUrl.TrimEnd("/")
 if (-not $workerRoot.StartsWith("https://")) {
   throw "WorkerBaseUrl must be HTTPS."
@@ -95,11 +98,7 @@ $generatedSecret = $null
 $originalChatToken = [Environment]::GetEnvironmentVariable("DOCICH_DISCORD_VOICE_CHAT_TOKEN", "Process")
 
 try {
-  if ([string]::IsNullOrWhiteSpace($originalChatToken)) {
-    if ($NoProvisionBridgeSecret) {
-      throw "DOCICH_DISCORD_VOICE_CHAT_TOKEN is unset and -NoProvisionBridgeSecret was specified."
-    }
-
+  if ($ProvisionBridgeSecret) {
     $generatedSecret = New-BridgeSecret
     $env:DOCICH_DISCORD_VOICE_CHAT_TOKEN = $generatedSecret
 
@@ -117,6 +116,9 @@ try {
     finally {
       Pop-Location
     }
+  }
+  elseif ([string]::IsNullOrWhiteSpace($originalChatToken)) {
+    throw "Set DOCICH_DISCORD_VOICE_CHAT_TOKEN or re-run with -ProvisionBridgeSecret."
   }
 
   $chatToken = Require-Env "DOCICH_DISCORD_VOICE_CHAT_TOKEN"
@@ -174,7 +176,12 @@ try {
 }
 finally {
   if ($null -ne $generatedSecret) {
-    $env:DOCICH_DISCORD_VOICE_CHAT_TOKEN = $null
+    if ([string]::IsNullOrWhiteSpace($originalChatToken)) {
+      $env:DOCICH_DISCORD_VOICE_CHAT_TOKEN = $null
+    }
+    else {
+      $env:DOCICH_DISCORD_VOICE_CHAT_TOKEN = $originalChatToken
+    }
     $generatedSecret = $null
     [System.GC]::Collect()
   }
