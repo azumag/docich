@@ -100,6 +100,10 @@ class TestBridge(unittest.TestCase):
         with mock.patch.dict(os.environ, ENV), mock.patch.object(control.urllib.request, "build_opener", return_value=opener):
             degraded = control.call_beta_control("status")
         self.assertIsNone(degraded["playerView"])
+        opener.open.return_value = Response(json.dumps(malformed).encode())
+        with mock.patch.dict(os.environ, ENV), mock.patch.object(control.urllib.request, "build_opener", return_value=opener):
+            stopped = control.call_beta_control("stop", "one")
+        self.assertNotIn("playerView", stopped)
         with self.assertRaises(control.ControlError): control.NoRedirect().redirect_request(None, None, None, None, None, None)
         opener.open.side_effect = RuntimeError("fixture-private-URL-token")
         with mock.patch.dict(os.environ, ENV), mock.patch.object(control.urllib.request, "build_opener", return_value=opener):
