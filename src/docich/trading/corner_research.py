@@ -34,6 +34,8 @@ MAX_SUMMARY_CHARS = 600
 MAX_BACKGROUND_CHARS = 1800
 MAX_HISTORY_NEWS = 120
 MAX_HISTORY_ASSETS = 12
+MAX_VERIFIED_WEB_ITEMS = 4
+MAX_VERIFIED_WEB_EXCERPT_CHARS = 1200
 
 ASSET_ANGLES = (
     ("origin_history", "誕生の経緯や歴史的なエピソード"),
@@ -287,6 +289,38 @@ def _history(trading_dir: Path) -> dict:
     }
 
 
+def _verified_web_material(name: str, env: Mapping[str, str]) -> list[dict[str, str]]:
+    """Collect bounded full-page evidence through the shared public Web broker."""
+    from ..reply_research_web import collect_verified_public
+
+    queries = [
+        ("market", "暗号資産 ビットコイン イーサリアム 規制 ETF 市場 最新"),
+    ]
+    if name:
+        queries.append(("asset", f"{name} 暗号資産 技術 歴史 採用 ニュース"))
+
+    rows: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for kind, query in queries:
+        receipts = collect_verified_public(query, env=env, timeout_sec=12.0, limit=2)
+        for receipt in receipts:
+            if receipt.url in seen_urls:
+                continue
+            seen_urls.add(receipt.url)
+            excerpt = _clean_text(receipt.text, MAX_VERIFIED_WEB_EXCERPT_CHARS)
+            if not excerpt:
+                continue
+            rows.append({
+                "kind": kind,
+                "url": receipt.url,
+                "sha256": receipt.sha256,
+                "excerpt": excerpt,
+            })
+            if len(rows) >= MAX_VERIFIED_WEB_ITEMS:
+                return rows
+    return rows
+
+
 def load_research_result(trading_dir) -> dict:
     """Return the bounded persisted research record, or {} when absent/corrupt."""
     data = _read_json(Path(trading_dir) / RESEARCH_FILENAME)
@@ -301,13 +335,18 @@ def prepare_research_context(
     now: float | None = None,
     fetcher: Callable[[str], str] | None = None,
     chooser=None,
+    env: Mapping[str, str] | None = None,
 ) -> dict:
-    """Search public crypto news and select one held asset with deduped angle."""
+    """Search public crypto material using the selected bounded backend."""
     target = Path(trading_dir)
     moment = time.time() if now is None else float(now)
     date = _jst_date(moment)
+    effective_env = os.environ if env is None else env
+    backend = str(effective_env.get("DOCICH_PAPER_RESEARCH_BACKEND", "legacy") or "legacy").strip()
+    if backend not in {"legacy", "verified_web"}:
+        raise ValueError("invalid paper research backend")
     existing = load_research_result(target)
-    if existing.get("date") == date:
+    if existing.get("date") == date and existing.get("backend", "legacy") == backend:
         return existing
 
     fetch = fetcher or _http_get
@@ -317,12 +356,20 @@ def prepare_research_context(
     symbol, angle, angle_label = _select_asset(held, history, chooser)
     name = _asset_name(symbol) if symbol else ""
 
-    news_items = _fetch_crypto_news(fetch, seen)
-    background = _wikipedia_background(name, fetch) if symbol else ""
-    related = _asset_news(name, fetch, seen) if symbol else []
+    if backend == "verified_web":
+        news_items = []
+        background = ""
+        related = []
+        verified_web = _verified_web_material(name, effective_env)
+    else:
+        news_items = _fetch_crypto_news(fetch, seen)
+        background = _wikipedia_background(name, fetch) if symbol else ""
+        related = _asset_news(name, fetch, seen) if symbol else []
+        verified_web = []
     payload = {
         "schema_version": 1,
         "status": "prepared",
+        "backend": backend,
         "date": date,
         "generated_at": moment,
         "news_items": news_items,
@@ -335,6 +382,7 @@ def prepare_research_context(
             "background": background,
             "news_items": related,
         } if symbol else {},
+        "verified_web": verified_web,
         "asset_spotlight": "",
         "improvement_hints": [],
     }
