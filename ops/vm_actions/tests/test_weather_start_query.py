@@ -145,6 +145,8 @@ class WeatherStartQueryWorkflowTests(unittest.TestCase):
 
     def test_workflow_reports_only_bounded_weather_progress(self):
         text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("Queue result:", text)
+        self.assertNotIn('f"Result: {outcome}"', text)
         for field in (
             "Weather active observed:", "Audio max next_index:", "Terminal:",
             "End reason:", "Audio status:", "Restored:", "Active game after observation:",
