@@ -1793,11 +1793,28 @@ def _rotation_view(g: GlobalConfig) -> dict[str, Any]:
     queued = inbox if isinstance(inbox, dict) else (
         raw.get("queued_manual") if isinstance(raw, dict) else None)
     out["queued_manual"] = None
+    now = time.time()
     if isinstance(queued, dict) and isinstance(queued.get("corner"), str):
         selected = _view_time(queued.get("selected_at"))
+        trigger = _view_time(queued.get("trigger_at"))
+        scheduled = trigger is not None
+        due = (now >= trigger) if scheduled else None
+        blocked_reason = None
+        if scheduled and not due:
+            blocked_reason = "scheduled-manual-not-due"
+        elif scheduled and isinstance(raw, dict) and (
+                isinstance(raw.get("pending"), dict)
+                or isinstance(raw.get("manual_pending"), dict)):
+            blocked_reason = "waiting-for-slot"
         out["queued_manual"] = {
             "corner": _view_str(queued["corner"]),
-            "age_sec": max(0, int(time.time() - selected)) if selected else None,
+            "age_sec": max(0, int(now - selected)) if selected else None,
+            "scheduled": scheduled,
+            "trigger_at": trigger,
+            "due": due,
+            "overdue_sec": (min(7 * 86400, max(0, int(now - trigger)))
+                            if scheduled and due else None),
+            "blocked_reason": blocked_reason,
         }
     try:
         out["enabled"] = bool(rotation_enabled(g))
@@ -4345,8 +4362,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(428, "confirmation_required", "corner操作には confirm:true が必要です")
             return 428
         action = str(data.get("action", "")).strip().lower()
-        if action not in ("start", "stop", "recover"):
-            self._send_error_json(400, "invalid_action", "action must be start, stop or recover")
+        if action not in ("start", "stop", "recover", "schedule", "cancel-schedule"):
+            self._send_error_json(
+                400, "invalid_action",
+                "action must be start, stop, recover, schedule or cancel-schedule",
+            )
             return 400
         if action == "recover":
             argv = _rotation_recover_argv(self.g)
@@ -4397,6 +4417,8 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_error_json(400, "invalid_corner", str(exc))
             return 400
+        if action in ("schedule", "cancel-schedule"):
+            return self._handle_scheduled_corner_action(row, action, data)
         if row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS:
             return self._handle_weather_corner_action(row, action, data)
         duration = data.get("duration_minutes", CORNER_MANUAL_DURATION_DEFAULT)
@@ -4444,6 +4466,64 @@ class _Handler(BaseHTTPRequestHandler):
             "duration_minutes": duration if action == "start" else None,
             "pid": proc.pid,
             "log": f"tmp/logs/corner_manual_{meta['id']}.log",
+        })
+        return 200
+
+    def _handle_scheduled_corner_action(self, row, action: str, data: dict) -> int:
+        """Create/cancel one durable not-before manual reservation (#1759)."""
+        from .corner_rotation import CornerRotationManager, RotationError
+
+        if (row.adapter not in _CORNER_MANUAL_LAUNCHERS
+                and row.adapter not in _CORNER_QUEUED_MANUAL_ADAPTERS):
+            self._send_error_json(400, "manual_schedule_unsupported",
+                                  "このコーナーは手動予約に対応していません")
+            return 400
+        manager = CornerRotationManager(self.g)
+        try:
+            if action == "schedule":
+                if "trigger_at" not in data:
+                    self._send_error_json(400, "invalid_trigger_at",
+                                          "trigger_at が必要です")
+                    return 400
+                outcome = manager.queue_manual(
+                    row.game, trigger_at=data.get("trigger_at")
+                )
+            else:
+                outcome = manager.cancel_scheduled_manual(row.game)
+        except RotationError as exc:
+            reasons = {
+                "rotation_disabled": "ローテーションが無効です",
+                "recovery_required": "ローテーションの復旧が必要です",
+                "clock_regressed": "時計の逆行を検知しました",
+                "manual_queue_conflict": "別の手動予約、または異なる時刻の予約が残っています",
+                "hanjuku_not_eligible": "コーナーが無効・休止中、または利用できません",
+                "invalid_scheduled_time": "指定時刻はタイムゾーン付きISO日時またはepoch秒で指定してください",
+                "scheduled_time_past": "過去の時刻は予約できません",
+                "scheduled_request_missing": "取り消せる時刻指定予約がありません",
+                "scheduled_request_imported": "予約は開始処理へ移ったため、予約取消では止められません",
+                "state_unavailable": "予約状態を読み取れません",
+            }
+            code = 409 if exc.reason_code not in {"invalid_scheduled_time"} else 400
+            self._send_error_json(
+                code, "manual_schedule_refused",
+                reasons.get(exc.reason_code, "コーナー予約の状態を確認できません"),
+            )
+            return code
+        except (OSError, ValueError):
+            self._send_error_json(409, "manual_schedule_unavailable",
+                                  "コーナー予約の状態を確認できません")
+            return 409
+        except Exception:
+            self._send_error_json(500, "manual_schedule_failed",
+                                  "コーナー予約を完了できません")
+            return 500
+        self._send_json(200, {
+            "ok": True,
+            "action": action,
+            "status": outcome.get("status"),
+            "trigger_at": outcome.get("trigger_at"),
+            "corner": {"id": row.id, "adapter": row.adapter,
+                       "game": row.game, "target": "rotation"},
         })
         return 200
 
