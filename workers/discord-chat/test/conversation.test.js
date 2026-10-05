@@ -135,6 +135,84 @@ test("generation core returns deletion recheck sources without committing or del
   assert.equal(validContext(sql, seq, generated.context), false);
   assert.equal(before.at(-1).state, "pending"); assert.equal(rows(sql).at(-1).state, "pending");
 });
+test("internal voice reply reuses canonical memory read-only and does not persist the voice turn", async (t) => {
+  let input;
+  const f = await botFixture(t, async (_model, value) => {
+    input = value;
+    return completion("タマです");
+  });
+  seed(f.sql);
+  const before = rows(f.sql).length;
+
+  const response = await f.bot.fetch(new Request("https://discord-bot.internal/voice/reply", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      guildId: "1",
+      channelId: "10",
+      userId: "7",
+      turnId: "voice-fixture-1",
+      transcript: "猫の名前は？",
+    }),
+  }));
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { reply: "タマです" });
+  assert.equal(rows(f.sql).length, before);
+  assert.ok(input.messages.some((message) => message.content.includes("猫の名前はタマ")));
+  assert.equal(f.logs.at(-1).status, "voice_reply_generated");
+});
+
+test("internal voice reply discards generation when recalled memory is deleted during the model call", async (t) => {
+  const pending = deferred();
+  const f = await botFixture(t, async () => pending.promise);
+  seed(f.sql);
+
+  const responsePromise = f.bot.fetch(new Request("https://discord-bot.internal/voice/reply", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      guildId: "1",
+      channelId: "10",
+      userId: "7",
+      turnId: "voice-fixture-delete",
+      transcript: "猫の名前は？",
+    }),
+  }));
+
+  await tick();
+  forgetScope(f.sql, "1", "10", { messageIds: ["seed"] });
+  pending.resolve(completion("古い記憶からの返答"));
+  const response = await responsePromise;
+
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), { error: "context_changed" });
+  assert.equal(rows(f.sql).length, 1);
+  assert.equal(rows(f.sql)[0].state, "deleted");
+});
+
+test("internal voice reply rejects malformed scope before invoking the model", async (t) => {
+  let calls = 0;
+  const f = await botFixture(t, async () => {
+    calls += 1;
+    return completion("unused");
+  });
+  const response = await f.bot.fetch(new Request("https://discord-bot.internal/voice/reply", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      guildId: "bad",
+      channelId: "10",
+      userId: "7",
+      turnId: "voice-fixture-invalid",
+      transcript: "こんにちは",
+    }),
+  }));
+  assert.equal(response.status, 400);
+  assert.equal(calls, 0);
+  assert.equal(rows(f.sql).length, 0);
+});
+
 test("fake voice caller uses same persona/core with its own limits; text 901 characters remains intact", async (t) => {
   const sql = sqlite(t); initializeMemory(sql); seed(sql);
   for (const [id, guildId, historyPresent] of [["voice-one", "1", true], ["voice-other", "2", false]]) {
