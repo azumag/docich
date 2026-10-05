@@ -199,6 +199,8 @@ def realign(root: Path = ROOT) -> dict[str, object]:
     new_x = vx + gap
     _move(output_display, window_id, new_x, vy)
     moved = True
+    updated = None
+    state_written = False
     try:
         if _geometry(output_display, window_id) != {
                 "X": new_x, "Y": vy, "WIDTH": cw, "HEIGHT": vh}:
@@ -220,6 +222,7 @@ def realign(root: Path = ROOT) -> dict[str, object]:
         updated["projection"] = updated_projection
         try:
             _atomic_json(state_path, updated)
+            state_written = True
         except OSError:
             raise RealignError(EXIT_WRITE_FAILED)
 
@@ -228,6 +231,13 @@ def realign(root: Path = ROOT) -> dict[str, object]:
             raise RealignError(EXIT_WRITE_FAILED)
         return {"status": "realigned", "runtime_id": runtime_id, "gap_width": gap}
     except Exception:
+        if state_written and updated is not None:
+            try:
+                current, _ = _read_json(state_path)
+                if current == updated:
+                    _atomic_json(state_path, state)
+            except Exception:
+                pass
         if moved:
             try:
                 _move(output_display, window_id, expected_x, vy)
