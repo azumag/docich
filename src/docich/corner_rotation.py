@@ -278,6 +278,8 @@ class CornerRotationManager:
                 raise RotationError("invalid queued manual request")
             uuid.UUID(queued["request_id"])
             timestamp(queued["selected_at"])
+            if queued.get("trigger_at") is not None:
+                timestamp(queued["trigger_at"])
         return state
 
     @contextmanager
@@ -307,13 +309,26 @@ class CornerRotationManager:
             )
         uuid.UUID(request["request_id"])
         timestamp(request["selected_at"])
+        if request.get("trigger_at") is not None:
+            timestamp(request["trigger_at"])
         return request
 
-    def _import_manual_queue(self, state):
+    def _import_manual_queue(self, state, now=None):
+        """Transfer a due manual inbox into the rotation ledger.
+
+        Future scheduled requests intentionally remain in the independent inbox
+        so they neither block automatic rotation nor require the execution lock
+        to cancel. The same inbox lock makes due-transfer vs cancellation atomic.
+        """
         with self._manual_queue_lock():
             request = self._read_manual_queue()
             if request is None:
-                return
+                return False
+            if now is None:
+                now = timestamp(self.clock())
+            trigger_at = request.get("trigger_at")
+            if trigger_at is not None and now < timestamp(trigger_at):
+                return False
             current = state.get("queued_manual")
             if current is not None and current != request:
                 raise RotationError(
@@ -323,13 +338,15 @@ class CornerRotationManager:
             state["queued_manual"] = request
             self.save(state)  # durable transfer before removing the inbox
             self._manual_queue_path.unlink()
+            return True
 
-    def queue_manual(self, game):
-        """Queue one owner request even while the current corner holds its lock.
+    def queue_manual(self, game, *, trigger_at=None):
+        """Queue one owner request, optionally with a not-before trigger.
 
-        The timer imports this inbox and consumes it only after existing corner
-        ownership settles. Eligibility and pauses apply; cooldown is bypassed.
-        Duplicate calls retain the same durable identity across the transfer.
+        Immediate requests preserve the existing behavior. A future trigger is
+        durable but stays in the tiny inbox until due, so automatic rotation
+        continues normally before that time. Eligibility and pauses apply at
+        reservation and again at dispatch; cooldown is bypassed.
         """
         if not rotation_enabled(self.g):
             raise RotationError(
@@ -337,6 +354,20 @@ class CornerRotationManager:
             )
         with self._manual_queue_lock():
             now = timestamp(self.clock())
+            requested_trigger = None
+            if trigger_at is not None:
+                try:
+                    requested_trigger = timestamp(trigger_at)
+                except RotationError as exc:
+                    raise RotationError(
+                        "invalid scheduled manual trigger",
+                        reason_code="invalid_scheduled_time",
+                    ) from exc
+                if requested_trigger < now:
+                    raise RotationError(
+                        "scheduled manual trigger is in the past",
+                        reason_code="scheduled_time_past",
+                    )
             state = self.load(now)  # atomic ledger read; never edit execution state
             if state["status"] == "recovery_required":
                 raise RotationError(
@@ -358,15 +389,68 @@ class CornerRotationManager:
                                    or pending.get("corner") == chosen):
                 queued = pending
             if queued is not None:
-                if queued["corner"] != chosen:
+                existing_trigger = queued.get("trigger_at")
+                if existing_trigger is not None:
+                    existing_trigger = timestamp(existing_trigger)
+                if queued["corner"] != chosen or existing_trigger != requested_trigger:
                     raise RotationError(
-                        "another manual corner is already queued",
+                        "another manual corner or schedule is already queued",
                         reason_code="manual_queue_conflict",
                     )
             else:
                 queued = dict(corner=chosen, selected_at=now, request_id=str(uuid.uuid4()))
+                if requested_trigger is not None:
+                    queued["trigger_at"] = requested_trigger
                 atomic_write_json(self._manual_queue_path, queued)
-            return {"status": "queued", "corner": chosen, "request_id": queued["request_id"]}
+            result = {"status": ("scheduled" if requested_trigger is not None
+                                  and requested_trigger > now else "queued"),
+                      "corner": chosen, "request_id": queued["request_id"]}
+            if requested_trigger is not None:
+                result["trigger_at"] = requested_trigger
+            return result
+
+    def cancel_scheduled_manual(self, game):
+        """Cancel only a still-in-inbox scheduled request.
+
+        Once the timer has atomically imported a due request into the ledger,
+        cancellation must not race its execution. The normal stop/recovery path
+        owns it from that point onward.
+        """
+        if not rotation_enabled(self.g):
+            raise RotationError(
+                "common corner rotation is disabled", reason_code="rotation_disabled"
+            )
+        with self._manual_queue_lock():
+            now = timestamp(self.clock())
+            state = self.load(now)
+            choices = [c.id for c in self.catalog if c.game == game]
+            if len(choices) != 1:
+                raise RotationError(
+                    "scheduled manual corner is unavailable",
+                    reason_code="scheduled_request_missing",
+                )
+            chosen = choices[0]
+            request = self._read_manual_queue()
+            if request is None:
+                imported = state.get("queued_manual")
+                if (isinstance(imported, dict) and imported.get("corner") == chosen
+                        and imported.get("trigger_at") is not None):
+                    raise RotationError(
+                        "scheduled manual request was already imported",
+                        reason_code="scheduled_request_imported",
+                    )
+                raise RotationError(
+                    "scheduled manual request is not queued",
+                    reason_code="scheduled_request_missing",
+                )
+            if request.get("corner") != chosen or request.get("trigger_at") is None:
+                raise RotationError(
+                    "scheduled manual request does not match",
+                    reason_code="scheduled_request_missing",
+                )
+            self._manual_queue_path.unlink()
+            return {"status": "cancelled", "corner": chosen,
+                    "trigger_at": timestamp(request["trigger_at"])}
 
     def _remember_catalog(self, state):
         known = state.setdefault("known_corners", {})
@@ -514,7 +598,7 @@ class CornerRotationManager:
             self._remember_catalog(state)
             if state["status"] == "recovery_required":
                 return {"status": "recovery_required", "reason": state.get("reason")}
-            self._import_manual_queue(state)
+            self._import_manual_queue(state, now)
             if now < state["last_seen_at"]:
                 return self._wait(state, "clock-regressed")
             if now - state["last_seen_at"] > DAY:
@@ -593,7 +677,10 @@ class CornerRotationManager:
                 if busy:
                     return self._wait(state, "other-corner-needs-finish-or-recovery")
                 queued = state.get("queued_manual")
-                if pending is None and queued is not None:
+                queued_due = True
+                if queued is not None and queued.get("trigger_at") is not None:
+                    queued_due = now >= timestamp(queued["trigger_at"])
+                if pending is None and queued is not None and queued_due:
                     if queued["corner"] not in self.adapters:
                         raise RotationError("queued manual corner removed", kind="catalog-mismatch")
                     if queued["corner"] not in eligible:
