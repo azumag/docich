@@ -287,12 +287,13 @@ def _web_title(text: str, url: str) -> str:
         return "public-web"
 
 
-def _web_row(receipt) -> dict[str, object] | None:
-    url = str(getattr(receipt, "url", "") or "")
-    text = str(getattr(receipt, "text", "") or "")
-    text_sha256 = str(getattr(receipt, "text_sha256", "") or "")
-    if (not url or not text or len(text_sha256) != 64
-            or hashlib.sha256(text.encode()).hexdigest() != text_sha256):
+def _web_row(material) -> dict[str, object] | None:
+    url = str(getattr(material, "url", "") or "")
+    text = str(getattr(material, "excerpt", "") or "")
+    excerpt_sha = str(getattr(material, "excerpt_sha256", "") or "")
+    body_sha = str(getattr(material, "body_sha256", "") or "")
+    if (not url or not text or len(excerpt_sha) != 64 or len(body_sha) != 64
+            or hashlib.sha256(text.encode()).hexdigest() != excerpt_sha):
         return None
     try:
         source = urllib.parse.urlsplit(url).hostname or ""
@@ -308,7 +309,7 @@ def _web_row(receipt) -> dict[str, object] | None:
         "published_at": None,
         "summary": _clean_text(text, MAX_SUMMARY_CHARS),
         "key": _title_key(title),
-        "evidence_sha256": str(getattr(receipt, "sha256", "") or "")[:64],
+        "evidence_sha256": body_sha,
     }
 
 
@@ -316,47 +317,39 @@ def _prepare_websearch_inputs(
     *,
     name: str,
     seen: set[str],
-    searcher,
-    broker,
-    deadline: float,
+    env: Mapping[str, str],
+    searcher=None,
+    broker=None,
 ) -> tuple[list[dict[str, object]], str, list[dict[str, object]]]:
-    """Build PAPER research DTOs from fetched bodies, not search snippets."""
-    queries = [("general", "暗号資産 ビットコイン イーサリアム 規制 ETF 最新ニュース")]
+    """Build PAPER DTOs through the shared verified-Web material adapter."""
+    from ..web_material import collect_verified_web_material
+
+    queries = ["暗号資産 ビットコイン イーサリアム 規制 ETF 最新ニュース"]
+    asset_index = None
     if name:
-        queries.append(("asset", f"{name} cryptocurrency technology history latest news"))
+        asset_index = len(queries)
+        queries.append(f"{name} cryptocurrency technology history latest news")
 
-    buckets: dict[str, list[str]] = {"general": [], "asset": []}
-    all_urls: list[str] = []
-    for kind, query in queries:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        try:
-            candidates = searcher(query, min(8.0, remaining))
-        except Exception:
-            candidates = []
-        for value in candidates[:8]:
-            url = str(value or "")
-            if not url or url in all_urls:
-                continue
-            all_urls.append(url)
-            buckets[kind].append(url)
-    broker.authorize(all_urls)
+    bundle = collect_verified_web_material(
+        queries,
+        env=env,
+        timeout_sec=20.0,
+        max_sources=4,
+        searcher=searcher,
+        broker=broker,
+    )
+    general_rows = []
+    asset_rows = []
+    for material in bundle.items:
+        row = _web_row(material)
+        if row is None:
+            continue
+        indexes = set(getattr(material, "query_indexes", ()))
+        if 0 in indexes:
+            general_rows.append(row)
+        if asset_index is not None and asset_index in indexes:
+            asset_rows.append(row)
 
-    rows: dict[str, dict[str, object]] = {}
-    for url in all_urls:
-        if len(rows) >= 4 or time.monotonic() >= deadline:
-            break
-        try:
-            receipt = broker.fetch(url)
-        except Exception:
-            receipt = None
-        row = _web_row(receipt)
-        if row is not None:
-            rows[url] = row
-
-    general_rows = [rows[url] for url in buckets["general"] if url in rows]
-    asset_rows = [rows[url] for url in buckets["asset"] if url in rows]
     news_items = _merge_news([general_rows], seen, min(MAX_NEWS_ITEMS, 4))
     related = _merge_news([asset_rows], seen, MAX_ASSET_NEWS) if name else []
     background = _clean_text(asset_rows[0].get("summary"), MAX_BACKGROUND_CHARS) if asset_rows else ""
@@ -418,15 +411,12 @@ def prepare_research_context(
     name = _asset_name(symbol) if symbol else ""
 
     if backend == "websearch":
-        deadline = time.monotonic() + 20.0
-        broker = web_broker
-        searcher = web_searcher
-        if broker is None or searcher is None:
-            from ..reply_research_web import WebBroker, search_public
-            broker = WebBroker(target / ".paper-web-unused.sock", deadline)
-            searcher = lambda query, timeout: search_public(query, timeout, env=effective_env)
         news_items, background, related = _prepare_websearch_inputs(
-            name=name, seen=seen, searcher=searcher, broker=broker, deadline=deadline
+            name=name,
+            seen=seen,
+            env=effective_env,
+            searcher=web_searcher,
+            broker=web_broker,
         )
         research_backend = "websearch_verified_body"
     else:
