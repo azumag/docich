@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -211,6 +212,7 @@ class HanjukuAdminQueryWorkflowTests(unittest.TestCase):
             self.text.index("- name: Verify release left the blocker state"):
             self.text.index("- name: Return fixed result metadata")
         ]
+        self.assertIn("id: verify_release", verify)
         self.assertIn("steps.admin.outputs.result == 'admin-released'", verify)
         self.assertIn('"diagnostics docich production $SHA"', verify)
         self.assertIn('rotation.get("manual_pending") is not False', verify)
@@ -228,7 +230,116 @@ class HanjukuAdminQueryWorkflowTests(unittest.TestCase):
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, reply)
-        self.assertIn('f"Reason: {result}"', reply)
+        self.assertIn("VERIFY_OUTCOME: ${{ steps.verify_release.outcome }}", reply)
+        self.assertIn('"$ADMIN_RESULT" "$VERIFY_OUTCOME"', reply)
+        self.assertIn('f"Reason: {reason}"', reply)
+
+
+class HanjukuAdminQueryReplyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        reply = text[text.index("- name: Return fixed result metadata"):
+                     text.index("- name: Clear runner staging")]
+        cls.script = textwrap.dedent(reply.split("        run: |\n", 1)[1])
+
+    def reply(self, mode, outcome, result, verify, **overrides):
+        # Execute the actual reply step with a local fake gh; no gateway or network.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            gh = work / "gh"
+            gh.write_text(
+                "#!/bin/sh\nset -eu\n"
+                'test "$1" = api && test "$2" = --method && test "$3" = POST\n'
+                'test "$4" = repos/azumag/docich/issues/1752/comments\n'
+                'test "$5" = --input && test "$#" = 6\n'
+                'cp -- "$6" "$CAPTURE_REPLY"\n', encoding="utf-8",
+            )
+            gh.chmod(0o700)
+            capture = work / "captured.json"
+            env = dict(os.environ, PATH=f"{work}:{os.environ['PATH']}",
+                       RUNNER_TEMP=tmp, CAPTURE_REPLY=str(capture),
+                       SOURCE_COMMENT_ID="123", RUN_ID="456", RUN_ATTEMPT="1",
+                       RUN_SHA="a" * 40, MODE=mode, ADMIN_OUTCOME=outcome,
+                       ADMIN_RESULT=result, VERIFY_OUTCOME=verify)
+            env.update(overrides)
+            completed = subprocess.run(
+                ["bash", "-c", self.script], env=env, text=True,
+                capture_output=True, check=False,
+            )
+            if completed.returncode:
+                return completed, None
+            body = json.loads(capture.read_text(encoding="utf-8"))["body"]
+            self.assertEqual(completed.stdout, "")
+            self.assertEqual(completed.stderr, "")
+            return completed, body
+
+    def test_check_success_needs_no_release_postcondition(self):
+        completed, body = self.reply("check", "success", "admin-eligible", "skipped")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("Result: success\nReason: admin-eligible\n", body)
+        self.assertIn("Release execution: not_requested\nPostcondition: not_applicable", body)
+
+    def test_release_success_requires_postcondition_success(self):
+        completed, body = self.reply("release", "success", "admin-released", "success")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("Result: success\nReason: post_release_verified\n", body)
+        self.assertIn("Release execution: admin-released\nPostcondition: success", body)
+        self.assertNotIn("Next:", body)
+
+    def test_release_verification_failure_cancellation_skip_and_unknown(self):
+        for verify, overall, reason in (
+            ("failure", "failure", "failed"),
+            ("cancelled", "cancelled", "cancelled"),
+            ("skipped", "unverified", "skipped"),
+            ("", "unverified", "unknown"),
+            ("unexpected-private-diagnostics", "unverified", "unknown"),
+        ):
+            with self.subTest(verify=verify):
+                completed, body = self.reply("release", "success", "admin-released", verify)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertIn(f"Result: {overall}\nReason: post_release_verification_{reason}\n", body)
+                self.assertIn("Admin result: admin-released\nRelease execution: admin-released\n", body)
+                self.assertIn("do not retry release based on this reply", body)
+                self.assertNotIn("Result: success", body)
+                self.assertNotIn("unexpected-private-diagnostics", body)
+
+    def test_refused_or_unconfirmed_execution_never_reports_success(self):
+        for outcome, result in (
+            ("failure", "busy"), ("cancelled", ""), ("skipped", ""),
+            ("", ""), ("private-output", "private-output"),
+            ("success", "private-output"), ("success", ""),
+            ("success", "admin-eligible"),
+        ):
+            with self.subTest(outcome=outcome, result=result):
+                completed, body = self.reply("release", outcome, result, "success")
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertNotIn("Result: success", body)
+                self.assertIn("Release execution: not_confirmed", body)
+                self.assertNotIn("private-output", body)
+
+    def test_late_admin_failure_retains_release_without_overall_success(self):
+        for outcome in ("failure", "cancelled", "skipped", ""):
+            with self.subTest(outcome=outcome):
+                completed, body = self.reply("release", outcome, "admin-released", "success")
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertNotIn("Result: success", body)
+                self.assertIn("Reason: admin_execution_unverified", body)
+                self.assertIn("Release execution: admin-released", body)
+                self.assertIn("do not retry release based on this reply", body)
+
+    def test_wrong_mode_and_invalid_metadata_are_fail_closed(self):
+        completed, body = self.reply("check", "success", "admin-released", "success")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("Result: unverified\nReason: admin_result_unverified", body)
+        for overrides in ({"RUN_SHA": "private-output"}, {"SOURCE_COMMENT_ID": "private-output"},
+                          {"RUN_ID": "private-output"}, {"RUN_ATTEMPT": "private-output"},
+                          {"MODE": "private-output"}):
+            with self.subTest(overrides=overrides):
+                completed, body = self.reply("release", "success", "admin-released", "success", **overrides)
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIsNone(body)
+                self.assertNotIn("private-output", completed.stderr)
 
 
 if __name__ == "__main__":
