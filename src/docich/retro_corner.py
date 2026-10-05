@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .adapters import make_coordinator_adapter
 from .config import ConfigError, GlobalConfig, load_game, load_global
 from .game_switch import (
+    DEFAULT_REQUEST_TIMEOUT_S,
     ERROR_QUIESCE_FAILED,
     ERROR_RECOVERY_REQUIRED,
     ERROR_TIMEOUT,
@@ -1119,12 +1120,48 @@ class RetroCornerManager:
             and self._canonical_phase() == "failed"
         )
 
+    def _transition_to_start(
+        self,
+        current: str | None,
+        target: str,
+        *,
+        request_id: str,
+        timeout_s: float,
+    ):
+        """Bound retro startup without breaking older fixed-corner overrides."""
+
+        method = self._transition_to
+        try:
+            parameters = tuple(inspect.signature(method).parameters.values())
+            accepts_kwargs = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+            accepts_timeout_s = accepts_kwargs or any(
+                parameter.name == "timeout_s" for parameter in parameters
+            )
+            accepts_boundary_cap = accepts_kwargs or any(
+                parameter.name == "allow_boundary_timeout_extension"
+                for parameter in parameters
+            )
+        except (TypeError, ValueError):
+            accepts_timeout_s = True
+            accepts_boundary_cap = True
+        kwargs = {"request_id": request_id}
+        if accepts_timeout_s:
+            kwargs["timeout_s"] = timeout_s
+        if accepts_boundary_cap:
+            kwargs["allow_boundary_timeout_extension"] = False
+        return method(current, target, **kwargs)
+
     def _transition_once(
         self,
         current: str | None,
         target: str,
         *,
         request_id: str | None = None,
+        timeout_s: float | None = None,
+        allow_boundary_timeout_extension: bool = True,
     ):
         """Execute one transition attempt, without implicit recovery."""
 
@@ -1139,12 +1176,20 @@ class RetroCornerManager:
             recorded_operation = receipt.get("operation")
             if recorded_operation == "switch":
                 result = self._invoke_coordinator(
-                    self.coordinator.switch, target, request_id=request_id
+                    self.coordinator.switch,
+                    target,
+                    request_id=request_id,
+                    timeout_s=timeout_s,
+                    allow_boundary_timeout_extension=allow_boundary_timeout_extension,
                 )
                 action = f"{current}->{target} switch"
             elif recorded_operation == "start":
                 result = self._invoke_coordinator(
-                    self.coordinator.start, target, request_id=request_id
+                    self.coordinator.start,
+                    target,
+                    request_id=request_id,
+                    timeout_s=timeout_s,
+                    allow_boundary_timeout_extension=allow_boundary_timeout_extension,
                 )
                 action = f"{target} start"
             else:
@@ -1156,12 +1201,20 @@ class RetroCornerManager:
             return result
         if current is None:
             result = self._invoke_coordinator(
-                self.coordinator.start, target, request_id=request_id
+                self.coordinator.start,
+                target,
+                request_id=request_id,
+                timeout_s=timeout_s,
+                allow_boundary_timeout_extension=allow_boundary_timeout_extension,
             )
             action = f"{target} start"
         else:
             result = self._invoke_coordinator(
-                self.coordinator.switch, target, request_id=request_id
+                self.coordinator.switch,
+                target,
+                request_id=request_id,
+                timeout_s=timeout_s,
+                allow_boundary_timeout_extension=allow_boundary_timeout_extension,
             )
             action = f"{current}->{target} switch"
         if getattr(result, "status", None) in PENDING_SWITCH_STATUSES:
@@ -1176,37 +1229,76 @@ class RetroCornerManager:
         target: str,
         *,
         request_id: str | None = None,
+        timeout_s: float | None = None,
+        allow_boundary_timeout_extension: bool = True,
     ):
         """Transition once, then recover/retry only a canonical failed state."""
 
         try:
-            return self._transition_once(current, target, request_id=request_id)
+            return self._transition_once(
+                current,
+                target,
+                request_id=request_id,
+                timeout_s=timeout_s,
+                allow_boundary_timeout_extension=allow_boundary_timeout_extension,
+            )
         except RetroCornerTransitionError as exc:
             if not self._transition_recovery_allowed(exc):
                 raise
             recovered = self._recover_canonical_failure()
             if getattr(recovered, "status", None) != "succeeded":
                 raise
-            return self._transition_once(current, target, request_id=request_id)
+            return self._transition_once(
+                current,
+                target,
+                request_id=request_id,
+                timeout_s=timeout_s,
+                allow_boundary_timeout_extension=allow_boundary_timeout_extension,
+            )
 
     @staticmethod
-    def _invoke_coordinator(method, target=None, *, request_id: str | None = None, expected_source=None):
-        """Call old test doubles and current coordinators with one request ID."""
+    def _invoke_coordinator(
+        method,
+        target=None,
+        *,
+        request_id: str | None = None,
+        expected_source=None,
+        timeout_s: float | None = None,
+        allow_boundary_timeout_extension: bool = True,
+    ):
+        """Call old test doubles and current coordinators with one bounded request."""
 
         try:
-            parameters = inspect.signature(method).parameters.values()
-            accepts_request_id = any(
-                parameter.name == "request_id"
-                or parameter.kind is inspect.Parameter.VAR_KEYWORD
+            parameters = tuple(inspect.signature(method).parameters.values())
+            accepts_kwargs = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+            accepts_request_id = accepts_kwargs or any(
+                parameter.name == "request_id" for parameter in parameters
+            )
+            accepts_timeout_s = accepts_kwargs or any(
+                parameter.name == "timeout_s" for parameter in parameters
+            )
+            accepts_boundary_cap = accepts_kwargs or any(
+                parameter.name == "allow_boundary_timeout_extension"
                 for parameter in parameters
             )
         except (TypeError, ValueError):
             accepts_request_id = True
+            accepts_timeout_s = True
+            accepts_boundary_cap = True
         kwargs = (
             {"request_id": request_id}
             if request_id is not None and accepts_request_id
             else {}
         )
+        if timeout_s is not None and accepts_timeout_s:
+            kwargs["timeout_s"] = timeout_s
+        if accepts_boundary_cap:
+            kwargs["allow_boundary_timeout_extension"] = (
+                allow_boundary_timeout_extension
+            )
         if expected_source is not None:
             # Never silently drop the fence for an older coordinator/test double.
             kwargs["payload"] = {"expected_source": expected_source}
@@ -1556,6 +1648,256 @@ class RetroCornerManager:
             value = value.replace(tzinfo=self.tz)
         return value.astimezone(self.tz)
 
+    def _remaining_start_timeout_s(
+        self, state: dict[str, object], now: dt.datetime
+    ) -> float | None:
+        """Bound startup by both the coordinator default and the saved slot."""
+
+        configured = getattr(
+            self.coordinator, "default_timeout_s", DEFAULT_REQUEST_TIMEOUT_S
+        )
+        try:
+            default_timeout_s = float(configured)
+        except (TypeError, ValueError):
+            default_timeout_s = DEFAULT_REQUEST_TIMEOUT_S
+        if default_timeout_s <= 0:
+            default_timeout_s = DEFAULT_REQUEST_TIMEOUT_S
+
+        # Pre-deadline states written by older releases did not always carry
+        # ends_at. Keep those resumable, but never enlarge the coordinator's
+        # existing request-wide cap.
+        ends_at = self._parse_ends_at(state)
+        if ends_at is None:
+            return default_timeout_s
+        remaining = (ends_at - now).total_seconds()
+        if remaining <= 0:
+            return None
+        return min(remaining, default_timeout_s)
+
+    @staticmethod
+    def _succeeded_start_receipt_matches_active(
+        canonical: dict[str, object],
+        receipt: dict[str, object],
+        *,
+        request_id: str,
+        target: str,
+    ) -> bool:
+        """Prove an exact terminal start before reconnecting the corner."""
+
+        result = receipt.get("result")
+        identity = result.get("active_runtime") if isinstance(result, dict) else None
+        active = canonical.get("active")
+        keys = ("game", "runtime_id", "generation", "lease_id")
+        return bool(
+            canonical.get("phase") == "ready"
+            and canonical.get("request_id") is None
+            and isinstance(active, dict)
+            and isinstance(identity, dict)
+            and all(active.get(key) == identity.get(key) for key in keys)
+            and identity.get("game") == target
+            and type(identity.get("generation")) is int
+            and identity["generation"] >= 1
+            and all(
+                isinstance(identity.get(key), str) and identity[key]
+                for key in ("runtime_id", "lease_id")
+            )
+            and receipt.get("request_id") == request_id
+            and receipt.get("status") == "succeeded"
+            and receipt.get("target") == target
+            and receipt.get("operation") in {"start", "switch"}
+            and receipt.get("runtime_id") == identity.get("runtime_id")
+            and receipt.get("generation") == identity.get("generation")
+            and result.get("request_id") == request_id
+            and result.get("status") == "succeeded"
+            and result.get("to_game") == target
+        )
+
+    @staticmethod
+    def _terminal_start_receipt_matches_inactive(
+        canonical: dict[str, object],
+        receipt: dict[str, object],
+        *,
+        request_id: str,
+        target: str,
+        previous: str | None,
+    ) -> bool:
+        """Prove an exact failed start left no target runtime in flight."""
+
+        result = receipt.get("result")
+        active = canonical.get("active")
+        status = receipt.get("status")
+        operation = receipt.get("operation")
+        if (
+            canonical.get("phase") not in {"idle", "ready"}
+            or canonical.get("request_id") is not None
+            or canonical.get("candidate") is not None
+            or canonical.get("previous") is not None
+            or canonical.get("retiring")
+            or not isinstance(result, dict)
+            or status not in {"failed", "rolled_back"}
+            or operation not in {"start", "switch"}
+            or receipt.get("request_id") != request_id
+            or receipt.get("target") != target
+            or result.get("request_id") != request_id
+            or result.get("operation") != operation
+            or result.get("status") != status
+            or result.get("from_game") != previous
+            or result.get("to_game") != target
+            or type(result.get("generation")) is not int
+            or result.get("generation") != receipt.get("generation")
+            or (result.get("cleanup_pending") is not None
+                and result.get("cleanup_pending") is not False)
+        ):
+            return False
+        if previous is None:
+            if active is not None or operation != "start":
+                return False
+        elif (
+            not isinstance(active, dict)
+            or active.get("game") != previous
+            or operation != "switch"
+        ):
+            return False
+        if status == "failed":
+            return result.get("error_code") in {
+                ERROR_QUIESCE_FAILED,
+                ERROR_TIMEOUT,
+            }
+        restored_generation = result.get("restored_generation")
+        return bool(
+            type(restored_generation) is int
+            and restored_generation >= 1
+            and isinstance(active, dict)
+            and type(active.get("generation")) is int
+            and active["generation"] >= restored_generation
+        )
+
+    def _expire_queued_start_locked(
+        self,
+        state: dict[str, object],
+        now: dt.datetime,
+        *,
+        request_id: str,
+        target: str,
+        previous: str | None,
+    ) -> tuple[dict[str, object], CornerResult | None]:
+        """Reconcile a committed start, or cancel only an unclaimed queue entry."""
+
+        try:
+            with self.store.transaction(blocking=False) as transaction:
+                canonical = self.store.canonical.initialize()
+                receipt = self.store.receipts.load(request_id)
+                if canonical.get("request_id") == request_id:
+                    return state, CornerResult(
+                        "queued",
+                        game=target,
+                        previous_game=previous,
+                        detail="期限切れ後もgame switchが処理中のため終端を待ちます",
+                    )
+                if (
+                    isinstance(receipt, dict)
+                    and self._succeeded_start_receipt_matches_active(
+                        canonical,
+                        receipt,
+                        request_id=request_id,
+                        target=target,
+                    )
+                ):
+                    # The coordinator already committed this exact runtime.
+                    # Reconnect the corner without replaying the terminal
+                    # request or mutating its immutable receipt.
+                    self._bind_hanjuku_start(state, receipt)
+                    state.pop("switch_request_id", None)
+                    state.pop("switch_status", None)
+                    state.update(
+                        status="active",
+                        started_at=now.isoformat(),
+                        ends_at=(
+                            now + dt.timedelta(minutes=self.config.duration_minutes)
+                        ).isoformat(),
+                        last_error=None,
+                        last_error_code=None,
+                    )
+                    self._write_state(state)
+                    return state, None
+                if (
+                    isinstance(receipt, dict)
+                    and self._terminal_start_receipt_matches_inactive(
+                        canonical,
+                        receipt,
+                        request_id=request_id,
+                        target=target,
+                        previous=previous,
+                    )
+                ):
+                    # An independent FIFO driver or crash recovery already
+                    # finished this exact request without ever publishing the
+                    # target runtime.  Commit the corner-side terminal state
+                    # under the same game-switch lock so a later slot can
+                    # proceed; never replay or rewrite the terminal receipt.
+                    state.pop("switch_status", None)
+                    state.update(
+                        status="interrupted",
+                        completed_at=now.isoformat(),
+                        end_reason="switch-terminal-before-corner-active",
+                        last_error=None,
+                        last_error_code=None,
+                    )
+                    self._write_state(state)
+                    return state, CornerResult(
+                        "interrupted",
+                        game=target,
+                        previous_game=previous,
+                        detail="terminal game switch never made the corner active",
+                    )
+                if (
+                    not isinstance(receipt, dict)
+                    or receipt.get("request_id") != request_id
+                    or receipt.get("status") != "queued"
+                    or receipt.get("target") != target
+                    or receipt.get("operation") not in {"start", "switch"}
+                ):
+                    return state, CornerResult(
+                        "queued",
+                        game=target,
+                        previous_game=previous,
+                        detail="期限切れrequestの安全な取消条件を確認できません",
+                    )
+                result = {
+                    "request_id": request_id,
+                    "operation": receipt["operation"],
+                    "status": "failed",
+                    "from_game": previous,
+                    "to_game": target,
+                    "generation": receipt.get("generation"),
+                    "error_code": ERROR_TIMEOUT,
+                    "detail": "retro corner start deadline expired before claim",
+                }
+                transaction.finish_request(request_id, "failed", result)
+        except GameSwitchBusyError:
+            return state, CornerResult(
+                "queued",
+                game=target,
+                previous_game=previous,
+                detail="期限切れrequestの取消中にgame switch lockが使用中です",
+            )
+
+        state.pop("switch_status", None)
+        state.update(
+            status="interrupted",
+            completed_at=now.isoformat(),
+            end_reason="start-deadline-expired",
+            last_error=None,
+            last_error_code=None,
+        )
+        self._write_state(state)
+        return state, CornerResult(
+            "interrupted",
+            game=target,
+            previous_game=previous,
+            detail="retro corner start deadline expired before claim",
+        )
+
     def _reconcile_stale_locked(self, now: dt.datetime) -> None:
         state = self._read_state()
         if state.get("status") != "active":
@@ -1573,7 +1915,11 @@ class RetroCornerManager:
             return
         # Bind the identity committed by THIS start, never whichever runtime
         # happens to be active at the monitor's first observation.
-        receipt = getattr(transition, 'receipt', None)
+        receipt = (
+            transition
+            if isinstance(transition, dict)
+            else getattr(transition, 'receipt', None)
+        )
         result = receipt.get('result') if isinstance(receipt, dict) else None
         identity = result.get('active_runtime') if isinstance(result, dict) else None
         keys = ('game', 'runtime_id', 'generation', 'lease_id')
@@ -1706,10 +2052,11 @@ class RetroCornerManager:
             state.update(extra_state)
         self._write_state(state)
         try:
-            transition = self._transition_to(
+            transition = self._transition_to_start(
                 previous,
                 target,
                 request_id=state["switch_request_id"],
+                timeout_s=self._remaining_start_timeout_s(state, now),
             )
             if getattr(transition, "status", None) in PENDING_SWITCH_STATUSES:
                 state["switch_status"] = getattr(transition, "status", "queued")
@@ -1754,11 +2101,21 @@ class RetroCornerManager:
             return None, None
         if previous is not None and not isinstance(previous, str):
             previous = None
+        timeout_s = self._remaining_start_timeout_s(state, now)
+        if timeout_s is None:
+            return self._expire_queued_start_locked(
+                state,
+                now,
+                request_id=request_id,
+                target=target,
+                previous=previous,
+            )
         try:
-            transition = self._transition_to(
+            transition = self._transition_to_start(
                 previous,
                 target,
                 request_id=request_id,
+                timeout_s=timeout_s,
             )
             if getattr(transition, "status", None) in PENDING_SWITCH_STATUSES:
                 state["switch_status"] = getattr(transition, "status", "queued")
