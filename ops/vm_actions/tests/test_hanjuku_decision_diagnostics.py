@@ -330,7 +330,7 @@ class HanjukuDecisionDiagnosticsTests(unittest.TestCase):
             output = self.module._collect_programs(self.root, self.root, 100)
         self.assertNotIn("decision_plans", output["retro_corner"])
 
-    def test_repeat_detail_is_the_last_thing_the_output_budget_drops(self):
+    def test_repeat_detail_survives_the_soft_budget_but_not_the_hard_ceiling(self):
         def payload(projection):
             return {
                 "corners": {"retro_corner": {"decision_plans": projection}},
@@ -348,12 +348,15 @@ class HanjukuDecisionDiagnosticsTests(unittest.TestCase):
                                           "signatures": [{"screen_kind": "month_menu",
                                                           "buttons": ["b"]}]}}
         size = len(self.module._diagnostics_budget(payload(projection)).encode())
-        with mock.patch.object(self.module, "MAX_JSON_BYTES", size):
+        # A full soft budget drops other optional detail, not this projection.
+        with mock.patch.object(self.module, "MAX_JSON_BYTES", size - 64):
             kept = payload(projection)
             self.module._diagnostics_budget(kept)
         self.assertEqual(kept["corners"]["retro_corner"]["decision_plans"], projection)
-        self.assertEqual(kept["hanjuku_tactical"]["status"], "ok")
-        with mock.patch.object(self.module, "MAX_JSON_BYTES", size - 64):
+        self.assertEqual(kept["hanjuku_tactical"]["status"], "output_omitted")
+        # Approaching the gateway's hard ceiling would fail the whole operation,
+        # so this field is dropped instead.
+        with mock.patch.object(self.module, "HARD_JSON_BYTES", size - 64):
             dropped = payload(projection)
             self.module._diagnostics_budget(dropped)
         self.assertEqual(dropped["corners"]["retro_corner"]["decision_plans"],
