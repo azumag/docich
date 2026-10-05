@@ -11,7 +11,7 @@ const ROLE_TO_USI = Object.freeze({
   horse: "+B", dragon: "+R",
 });
 const HAND_ROLES = Object.freeze(["pawn", "lance", "knight", "silver", "gold", "bishop", "rook"]);
-const SQUARE = /^[1-9][a-i]$/;
+export const SQUARE = /^[1-9][a-i]$/;
 const MOVE = /^(?:[1-9][a-i][1-9][a-i]\+?|[PLNSGBR]\*[1-9][a-i])$/;
 
 export class ProtocolError extends Error {

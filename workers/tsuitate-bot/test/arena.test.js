@@ -105,6 +105,22 @@ test("capture evidence comes only from our own view and our own accepted moves",
   assert.deepEqual(session.captureEvidence(current), []);
 });
 
+test("a rejected drop square is carried as occupied evidence for later turns", (t) => {
+  const session = new BetaSession({ socket: new Socket(), store: new Store(), profile: LINEAR_PROFILE });
+  t.after(() => session.close());
+  const foul = (moveNumber, usi) => ({ moveNumber, usi, feedback: "foul" });
+  // 3手前の打ちは 5e が占められていて拒否された。以後も占められている限り、
+  // 再び打てば必ず反則予算を食うので証拠として持ち越す。
+  session.record = { decisions: [foul(3, "P*5e")] };
+  assert.deepEqual(session.captureEvidence(view({ moveNumber: 7, yourPieces: [{ square: "5i", role: "king" }] })),
+    [{ square: "5e", age: 2 }]);
+  // 現在は自分の駒が乗っているなら、相手駒の証拠としては使わない。
+  assert.deepEqual(session.captureEvidence(view({ moveNumber: 7, yourPieces: [{ square: "5e", role: "pawn" }] })), []);
+  // 移動の反則は「そのマスが占められている」ことを示さないので持ち越さない。
+  session.record = { decisions: [foul(3, "5d5e"), { moveNumber: "3", usi: "P*5f", feedback: "foul" }] };
+  assert.deepEqual(session.captureEvidence(view({ moveNumber: 7, yourPieces: [{ square: "5i", role: "king" }] })), []);
+});
+
 test("runner persists the pending move before emitting, and duplicate views do not send twice", async (t) => {
   const context = setup(t);
   context.socket.onSend = (packet) => {

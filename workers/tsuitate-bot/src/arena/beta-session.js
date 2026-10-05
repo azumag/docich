@@ -1,5 +1,5 @@
 import { BRAIN_VERSION, chooseMove, validateProfile } from "../brain/index.js";
-import { MoveGate, parsePlayerView, toBrainObservation } from "../adapters/beta.js";
+import { MoveGate, SQUARE, parsePlayerView, toBrainObservation } from "../adapters/beta.js";
 import { fetchPublicResult, validBetaGameId } from "../adapters/beta-results.js";
 import { normalizeGameRecord } from "../training/index.js";
 
@@ -400,6 +400,25 @@ export class BetaSession {
     for (const [square, lostAt] of discovered) {
       if (observed.has(square)) continue;
       evidence.push({ square, age: Math.max(0, Math.floor((view.moveNumber - lostAt) / 2)) });
+    }
+    // 自分の打駒が反則になったマスは、拒否されたその手番に占められていたという事実。
+    // 占められたままの確率が高く、再び打てば必ず反則予算を1つ食うので持ち越す。
+    // 現在は自分の駒が乗っているなら対象外（その場合は捕獲経路が別途示す）。
+    const carried = new Map();
+    for (const decision of this.record.decisions) {
+      if (decision.feedback !== "foul" || typeof decision.usi !== "string"
+          || decision.usi.length < 4 || decision.usi[1] !== "*"
+          || !Number.isInteger(decision.moveNumber)) continue;
+      const square = decision.usi.slice(2, 4);
+      if (!SQUARE.test(square) || observed.has(square)) continue;
+      const age = Math.max(0, Math.floor((view.moveNumber - decision.moveNumber) / 2));
+      if (!carried.has(square) || age < carried.get(square)) carried.set(square, age);
+    }
+    for (const [square, age] of carried) {
+      const existing = evidence.find((item) => item.square === square);
+      if (existing && age >= existing.age) continue;
+      if (existing) evidence.splice(evidence.indexOf(existing), 1);
+      evidence.push({ square, age });
     }
     return evidence.sort((a, b) => a.age - b.age).slice(0, 40);
   }
