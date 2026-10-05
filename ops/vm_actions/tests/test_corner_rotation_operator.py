@@ -345,29 +345,45 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
             helper.parent.mkdir(parents=True)
             helper.write_text("# fixed helper fixture\n")
             ssh = root / "ssh"
-            ssh.write_text('#!/bin/bash\ncat >/dev/null\nprintf "%s\\n" "$GATEWAY_RESULT"\n')
+            ssh.write_text('#!/bin/bash\ncat >/dev/null\nprintf "%s\\n" "$GATEWAY_RESULT"\nprintf "PRIVATE_TOKEN /private/runtime\\n" >&2\nexit "${GATEWAY_RC:-0}"\n')
             ssh.chmod(0o755)
             env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
                 "EXPECTED": "a" * 64, "VM_SSH_USER": "operator", "VM_SSH_HOST": "fixture.invalid",
                 "SHA": "b" * 40, "RUNNER_TEMP": str(root), "port": "22"}
+            reporter = root / "control/src/docich/hanjuku_admin_result.py"
+            reporter.parent.mkdir(parents=True)
+            reporter.write_bytes((ROOT / "src/docich/hanjuku_admin_result.py").read_bytes())
+            cases = [
+                ({"status": "executed", "exit_code": 0}, 0, None),
+                ({"status": "executed", "exit_code": 81}, 81, "expected_reservation_required"),
+                ({"status": "executed", "exit_code": 101}, 101, "busy"),
+                ({"status": "executed", "exit_code": 1}, 1, "helper_failed"),
+                ({"status": "executed", "exit_code": 25}, 25, "helper_preflight_failed"),
+                ({"status": "executed", "exit_code": False}, 0, "gateway_result_unverified"),
+                ({"status": "rejected", "exit_code": 0}, 0, "gateway_result_unverified"),
+                ({"status": "executed", "exit_code": 0, "sha": "c" * 40}, 0, "gateway_result_unverified"),
+                ({"status": "executed", "exit_code": 0}, 255, "gateway_result_unverified"),
+                ({"status": "executed", "exit_code": 81}, 0, "gateway_result_unverified"),
+            ]
             for operation in ("check-admin-release-hanjuku", "admin-release-hanjuku"):
-                for gateway in ({"status": "executed", "exit_code": 0},
-                                {"status": "executed", "exit_code": 1},
-                                {"status": "executed", "exit_code": False},
-                                {"status": "rejected", "exit_code": 0},
-                                {"status": "executed", "exit_code": 0, "sha": "c" * 40}):
+                for gateway, gateway_rc, reason in cases:
                     gateway.setdefault("sha", "b" * 40)
+                    gateway["output"] = "withheld"
+                    gateway["private"] = "PRIVATE_TOKEN /private/runtime " + env["EXPECTED"]
                     result = subprocess.run(["bash", "-c", shell], cwd=root, env={**env,
-                        "OPERATION": operation, "GATEWAY_RESULT": json.dumps(gateway)}, capture_output=True, text=True)
-                    ok = gateway["status"] == "executed" and gateway["sha"] == env["SHA"] and type(gateway["exit_code"]) is int and gateway["exit_code"] == 0
-                    with self.subTest(operation=operation, gateway=gateway):
-                        self.assertEqual(result.returncode == 0, ok, result.stderr)
-                        if ok:
-                            public = json.loads(result.stdout)
-                            self.assertEqual(public["status"], "admin-eligible" if operation.startswith("check-") else "admin-released")
-                            self.assertIs(public["cancellation_authority"], False)
-                        else:
-                            self.assertEqual(result.stdout, "")
+                        "OPERATION": operation, "GATEWAY_RESULT": json.dumps(gateway),
+                        "GATEWAY_RC": str(gateway_rc)}, capture_output=True, text=True)
+                    with self.subTest(operation=operation, gateway=gateway, rc=gateway_rc):
+                        self.assertEqual(result.returncode == 0, reason is None, result.stderr)
+                        public = json.loads(result.stdout)
+                        self.assertIs(public["cancellation_authority"], False)
+                        self.assertEqual(public["status"], "refused" if reason else
+                            "admin-eligible" if operation.startswith("check-") else "admin-released")
+                        if reason:
+                            self.assertEqual(public["reason"], reason)
+                        self.assertEqual(result.stderr, "")
+                        for private in ("PRIVATE_TOKEN", "/private/runtime", env["EXPECTED"], env["SHA"]):
+                            self.assertNotIn(private, result.stdout + result.stderr)
 
     def test_new_and_legacy_workflows_serialize_on_the_same_concurrency_group(self):
         group = "group: retro-corner-operator-${{ github.repository }}"
