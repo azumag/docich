@@ -1,7 +1,10 @@
 import importlib.util
+import json
 import os
 import subprocess
 import tempfile
+import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -130,8 +133,17 @@ class WeatherStartQueryWorkflowTests(unittest.TestCase):
         self.assertIn("< control/ops/vm_actions/start_weather_corner.sh", text)
         self.assertIn('"exec docich production $SHA"', text)
         self.assertIn('"status docich production $current"', text)
-        self.assertIn('"diagnostics docich production $current"', text)
+        self.assertIn('"diagnostics docich production $production_sha"', text)
+        self.assertIn("run_with_deadline git -C control ls-remote", text)
+        self.assertIn("run_with_deadline git -C control fetch", text)
+        self.assertIn('status_json="$(run_with_deadline ssh', text)
+        self.assertIn('diagnostics_json="$(run_with_deadline ssh', text)
         self.assertIn("ls-remote --exit-code origin refs/heads/main", text)
+        self.assertIn("--depth=128", text)
+        self.assertIn("refs/heads/main:refs/remotes/origin/main", text)
+        self.assertIn('data.get("status") == "configured"', text)
+        self.assertIn("merge-base --is-ancestor", text)
+        self.assertIn('cat-file -e "$production_sha^{commit}"', text)
         self.assertNotIn("workflow_dispatch:", text)
         self.assertNotIn("INPUT_OPERATION", text)
         self.assertNotIn('echo "$diagnostics_json"', text)
@@ -140,6 +152,8 @@ class WeatherStartQueryWorkflowTests(unittest.TestCase):
 
     def test_workflow_reports_only_bounded_weather_progress(self):
         text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("Queue result:", text)
+        self.assertNotIn('f"Result: {outcome}"', text)
         for field in (
             "Weather active observed:", "Audio max next_index:", "Terminal:",
             "End reason:", "Audio status:", "Restored:", "Active game after observation:",
@@ -148,7 +162,16 @@ class WeatherStartQueryWorkflowTests(unittest.TestCase):
         ):
             self.assertIn(field, text)
         self.assertIn('0 <= index <= 13', text)
-        self.assertIn("seq 1 216", text)
+        self.assertNotIn("seq 1 216", text)
+        self.assertIn("observe_deadline=$((SECONDS + 1080))", text)
+        self.assertIn("while (( SECONDS < observe_deadline )); do", text)
+        self.assertIn("timeout --kill-after=1s", text)
+        self.assertIn("remaining=$((observe_deadline - SECONDS))", text)
+        self.assertIn('sleep "$sleep_for"', text)
+        self.assertIn('"$diagnostics_json" "$production_sha"', text)
+        self.assertIn('root.get("status") != "diagnosed"', text)
+        self.assertIn('root.get("sha") != expected_sha', text)
+        self.assertIn('root.get("diagnostics")', text)
         self.assertIn("timeout-minutes: 25", text)
         self.assertIn('"audio_delivery_status"', text)
         self.assertIn('"audio_next_index"', text)
@@ -161,6 +184,85 @@ class WeatherStartQueryWorkflowTests(unittest.TestCase):
         self.assertIn('"$soren_resumed" == true', text)
         self.assertNotIn('"requests"', text)
         self.assertNotIn('"item_key"', text)
+
+    def test_workflow_unwraps_verified_diagnostics_envelope(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        marker = 'projection="$(python3 - "$diagnostics_json" "$production_sha" <<\'PY\'\n'
+        self.assertIn(marker, text)
+        script = textwrap.dedent(
+            text.split(marker, 1)[1].split("\n          PY\n", 1)[0]
+        )
+        sha = "a" * 40
+        diagnostics = {
+            "corners": {
+                "weather_corner": {
+                    "status": "active",
+                    "selection_kind": "manual",
+                    "audio_delivery_status": "running",
+                    "audio_next_index": 4,
+                    "end_reason": None,
+                    "restored_runtime_matches_current": False,
+                },
+                "game_switch": {"phase": "ready", "active_game": "weather-view"},
+                "soren_game": {
+                    "state": "WAITING",
+                    "age_sec": 3,
+                    "runner_alive": True,
+                },
+            },
+            "workers": {"details": {"soren_loop": {"alive": True, "paused": False}}},
+        }
+        envelope = {"status": "diagnosed", "sha": sha, "diagnostics": diagnostics}
+        result = subprocess.run(
+            ["python3", "-c", script, json.dumps(envelope), sha],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        fields = result.stdout.strip().split("|")
+        self.assertEqual(fields[:4], ["active", "manual", "running", "4"])
+        self.assertEqual(fields[6], "weather-view")
+        self.assertEqual(fields[10], "not_applicable")
+
+        wrong_sha = subprocess.run(
+            ["python3", "-c", script, json.dumps(envelope), "b" * 40],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(wrong_sha.returncode, 0, wrong_sha.stderr)
+        self.assertEqual(wrong_sha.stdout, "")
+
+    def test_deadline_wrapper_actually_bounds_a_blocking_child(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        start = text.index("          run_with_deadline() {")
+        end = text.index("\n          while (( SECONDS < observe_deadline )); do", start)
+        function = textwrap.dedent(text[start:end])
+        shell = "\n".join(
+            (
+                "set -euo pipefail",
+                "observe_deadline=$((SECONDS + 1))",
+                function,
+                "set +e",
+                "run_with_deadline python3 -c 'import time; time.sleep(5)'",
+                "rc=$?",
+                "set -e",
+                'printf "%s\\n" "$rc"',
+            )
+        )
+        started = time.monotonic()
+        result = subprocess.run(
+            ["bash", "-c", shell],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=4,
+        )
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "124")
+        self.assertLess(elapsed, 3.0)
 
     def test_start_script_and_module_have_only_fixed_weather_target(self):
         script = START_SCRIPT.read_text(encoding="utf-8")

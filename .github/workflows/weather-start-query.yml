@@ -196,23 +196,62 @@ jobs:
           soren_state=unknown
           soren_age=-1
           soren_resumed=unknown
-          for _ in $(seq 1 216); do
-            current="$(git -C control ls-remote --exit-code origin refs/heads/main 2>/dev/null | cut -f1 || true)"
-            if [[ "$current" =~ ^[0-9a-f]{40}$ ]] &&
-               status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $current" 2>/dev/null)" &&
-               python3 - "$status_json" "$current" <<'PY'
-          import json, sys
+          # Use a wall-clock deadline, not a fixed iteration count: network
+          # time for ls-remote/SSH/diagnostics must not expand the intended
+          # 18-minute observation window past the 25-minute job timeout.
+          observe_deadline=$((SECONDS + 1080))
+          verified_main=
+          run_with_deadline() {
+            local remaining=$((observe_deadline - SECONDS))
+            (( remaining > 0 )) || return 124
+            timeout --kill-after=1s "${remaining}s" "$@"
+          }
+          while (( SECONDS < observe_deadline )); do
+            current="$(run_with_deadline git -C control ls-remote --exit-code origin refs/heads/main 2>/dev/null | cut -f1 || true)"
+            if [[ "$current" =~ ^[0-9a-f]{40}$ ]]; then
+              # Production can legitimately trail a rapidly advancing main by
+              # one or more reviewed deploys. Refresh a bounded protected-main
+              # ancestry window whenever the tip changes, then trust only a
+              # configured production HEAD proven to be inside that lineage.
+              if [[ "$verified_main" != "$current" ]]; then
+                if run_with_deadline git -C control fetch --no-tags --force --depth=128 origin \
+                    "refs/heads/main:refs/remotes/origin/main" >/dev/null 2>&1 &&
+                   [[ "$(git -C control rev-parse refs/remotes/origin/main 2>/dev/null || true)" == "$current" ]]; then
+                  verified_main="$current"
+                else
+                  verified_main=
+                fi
+              fi
+              production_sha=
+              if [[ "$verified_main" == "$current" ]] &&
+                 status_json="$(run_with_deadline ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $current" 2>/dev/null)"; then
+                production_sha="$(python3 - "$status_json" <<'PY'
+          import json, re, sys
           try:
               data = json.loads(sys.argv[1])
           except (TypeError, ValueError):
-              raise SystemExit(1)
-          raise SystemExit(0 if data.get("status") == "configured" and data.get("sha") == sys.argv[2] else 1)
+              raise SystemExit(0)
+          sha = data.get("sha")
+          if data.get("status") == "configured" and isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha):
+              print(sha)
           PY
-            then
-              if diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $current" 2>/dev/null)"; then
-                projection="$(python3 - "$diagnostics_json" <<'PY'
+                )"
+              fi
+              if [[ "$production_sha" =~ ^[0-9a-f]{40}$ ]] &&
+                 git -C control cat-file -e "$production_sha^{commit}" 2>/dev/null &&
+                 git -C control merge-base --is-ancestor "$production_sha" refs/remotes/origin/main &&
+                 diagnostics_json="$(run_with_deadline ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $production_sha" 2>/dev/null)"; then
+                projection="$(python3 - "$diagnostics_json" "$production_sha" <<'PY'
           import json, sys
-          data = json.loads(sys.argv[1])
+          root = json.loads(sys.argv[1])
+          expected_sha = sys.argv[2]
+          if not isinstance(root, dict):
+              raise SystemExit(0)
+          if root.get("status") != "diagnosed" or root.get("sha") != expected_sha:
+              raise SystemExit(0)
+          data = root.get("diagnostics")
+          if not isinstance(data, dict):
+              raise SystemExit(0)
           corners = data.get("corners") if isinstance(data, dict) else {}
           corners = corners if isinstance(corners, dict) else {}
           weather = corners.get("weather_corner")
@@ -302,7 +341,13 @@ jobs:
                 fi
               fi
             fi
-            sleep 5
+            remaining=$((observe_deadline - SECONDS))
+            (( remaining > 0 )) || break
+            sleep_for=5
+            if (( remaining < sleep_for )); then
+              sleep_for=$remaining
+            fi
+            sleep "$sleep_for"
           done
           {
             echo "seen_active=$seen_active"
@@ -379,7 +424,7 @@ jobs:
               f"Run: https://github.com/azumag/docich/actions/runs/{run_id}",
               f"Attempt: {attempt}",
               f"SHA: {sha}",
-              f"Result: {outcome}",
+              f"Queue result: {outcome}",
               f"Reason: {reason}",
               f"Weather active observed: {seen_active or 'unknown'}",
               f"Audio max next_index: {max_index or '-1'}",
