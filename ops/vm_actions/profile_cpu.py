@@ -145,7 +145,7 @@ EXECUTABLES = {
     "xargs": "xargs",
 }
 PYTHON_RE = re.compile(r"^python(\d+(\.\d+)?)?$")
-SHELLS = {"bash", "sh", "dash"}
+SHELLS = {"bash", "sh", "dash", "zsh"}
 GENERIC = ("other", "python", "shell")
 
 
