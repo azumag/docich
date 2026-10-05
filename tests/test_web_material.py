@@ -57,6 +57,8 @@ def test_collects_only_verified_body_receipts_and_dedupes_candidates():
     assert result.ok
     assert result.status == "ok"
     assert [item.url for item in result.items] == [URL1, URL2]
+    assert result.items[0].query_indexes == (0, 1)
+    assert result.items[1].query_indexes == (0, 1)
     assert broker.authorized == [URL1, URL2]
     assert broker.fetched == [URL1, URL2]
     assert len(searches) == 2
