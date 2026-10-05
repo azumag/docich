@@ -163,6 +163,84 @@ test("internal voice reply reuses canonical memory read-only and does not persis
   assert.equal(f.logs.at(-1).status, "voice_reply_generated");
 });
 
+test("voice playback commit persists only after explicit ack and is idempotent", async (t) => {
+  const f = await botFixture(t, async () => completion("音声で返します"));
+  const turn = {
+    guildId: "1",
+    channelId: "10",
+    userId: "7",
+    turnId: "voice-playback-fixture",
+    transcript: "こんにちは",
+  };
+
+  const generated = await f.bot.fetch(new Request("https://discord-bot.internal/voice/reply", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(turn),
+  }));
+  assert.equal(generated.status, 200);
+  assert.deepEqual(await generated.json(), { reply: "音声で返します" });
+  assert.equal(rows(f.sql).length, 0);
+
+  const commitBody = { ...turn, reply: "音声で返します" };
+  const first = await f.bot.fetch(new Request("https://discord-bot.internal/voice/commit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(commitBody),
+  }));
+  assert.equal(first.status, 200);
+  assert.deepEqual(await first.json(), { status: "committed" });
+
+  const stored = rows(f.sql);
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].state, "sent");
+  assert.equal(stored[0].message_id, "voice:" + turn.turnId);
+  assert.equal(stored[0].reply_id, "voice-playback:" + turn.turnId);
+  assert.equal(stored[0].content, "こんにちは");
+  assert.equal(stored[0].reply, "音声で返します");
+
+  const duplicate = await f.bot.fetch(new Request("https://discord-bot.internal/voice/commit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(commitBody),
+  }));
+  assert.equal(duplicate.status, 200);
+  assert.deepEqual(await duplicate.json(), { status: "already_committed" });
+  assert.equal(rows(f.sql).length, 1);
+
+  const conflict = await f.bot.fetch(new Request("https://discord-bot.internal/voice/commit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...commitBody, reply: "別の返答" }),
+  }));
+  assert.equal(conflict.status, 409);
+  assert.deepEqual(await conflict.json(), { error: "commit_conflict" });
+  assert.equal(rows(f.sql).length, 1);
+});
+
+test("malformed voice commit never creates memory", async (t) => {
+  let calls = 0;
+  const f = await botFixture(t, async () => {
+    calls += 1;
+    return completion("unused");
+  });
+  const response = await f.bot.fetch(new Request("https://discord-bot.internal/voice/commit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      guildId: "1",
+      channelId: "10",
+      userId: "7",
+      turnId: "bad commit with spaces",
+      transcript: "こんにちは",
+      reply: "返答",
+    }),
+  }));
+  assert.equal(response.status, 400);
+  assert.equal(calls, 0);
+  assert.equal(rows(f.sql).length, 0);
+});
+
 test("internal voice reply discards generation when recalled memory is deleted during the model call", async (t) => {
   const pending = deferred();
   const f = await botFixture(t, async () => pending.promise);
