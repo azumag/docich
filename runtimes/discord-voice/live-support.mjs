@@ -39,11 +39,18 @@ export function loadLiveVoiceConfig(env = process.env) {
     fail('invalid_config');
   }
 
+  const receiveEnabled = boolFlag(env.DOCICH_DISCORD_VOICE_RECEIVE_ENABLED, false);
+  const receiveUserId = env.DOCICH_DISCORD_VOICE_RECEIVE_USER_ID;
+  if (receiveEnabled && !validSnowflake(receiveUserId)) fail('invalid_config');
+
   return Object.freeze({
     token,
     guildId,
     channelId,
     playTestTone: boolFlag(env.DOCICH_DISCORD_VOICE_TEST_TONE, false),
+    receiveEnabled,
+    receiveUserId: receiveEnabled ? receiveUserId : null,
+    transcriptDebug: boolFlag(env.DOCICH_DISCORD_VOICE_TRANSCRIPT_DEBUG, false),
   });
 }
 

@@ -61,3 +61,46 @@ test('test tone rejects unsafe or accidental large settings', () => {
     (error) => error instanceof LiveVoiceError && error.code === 'invalid_tone_config',
   );
 });
+
+
+test('live receive is fail-closed and requires an explicit target user', () => {
+  const disabled = loadLiveVoiceConfig(baseEnv());
+  assert.equal(disabled.receiveEnabled, false);
+  assert.equal(disabled.receiveUserId, null);
+  assert.equal(disabled.transcriptDebug, false);
+
+  assert.throws(
+    () => loadLiveVoiceConfig({
+      ...baseEnv(),
+      DOCICH_DISCORD_VOICE_RECEIVE_ENABLED: '1',
+    }),
+    (error) => error instanceof LiveVoiceError && error.code === 'invalid_config',
+  );
+
+  const enabled = loadLiveVoiceConfig({
+    ...baseEnv(),
+    DOCICH_DISCORD_VOICE_RECEIVE_ENABLED: '1',
+    DOCICH_DISCORD_VOICE_RECEIVE_USER_ID: '323456789012345678',
+  });
+  assert.equal(enabled.receiveEnabled, true);
+  assert.equal(enabled.receiveUserId, '323456789012345678');
+  assert.equal(enabled.transcriptDebug, false);
+});
+
+test('transcript debug requires an explicit boolean flag', () => {
+  const enabled = loadLiveVoiceConfig({
+    ...baseEnv(),
+    DOCICH_DISCORD_VOICE_RECEIVE_ENABLED: '1',
+    DOCICH_DISCORD_VOICE_RECEIVE_USER_ID: '323456789012345678',
+    DOCICH_DISCORD_VOICE_TRANSCRIPT_DEBUG: '1',
+  });
+  assert.equal(enabled.transcriptDebug, true);
+
+  assert.throws(
+    () => loadLiveVoiceConfig({
+      ...baseEnv(),
+      DOCICH_DISCORD_VOICE_TRANSCRIPT_DEBUG: 'yes',
+    }),
+    (error) => error instanceof LiveVoiceError && error.code === 'invalid_config',
+  );
+});
