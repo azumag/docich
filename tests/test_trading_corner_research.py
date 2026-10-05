@@ -158,6 +158,36 @@ def test_prepare_research_websearch_uses_verified_bodies_not_search_snippets(tmp
     assert "Google News RSSから取得した見出し" not in prompt
 
 
+def test_websearch_rejects_forged_receipt_text_hash(tmp_path):
+    _write_status(tmp_path, {"BTC/JPY": "0.01"})
+    url = "https://news.example/forged"
+
+    class Receipt:
+        def __init__(self):
+            self.url = url
+            self.text = "本文"
+            self.sha256 = "a" * 64
+            self.text_sha256 = "b" * 64
+
+    class Broker:
+        def authorize(self, urls):
+            pass
+        def fetch(self, value):
+            return Receipt()
+
+    context = prepare_research_context(
+        tmp_path,
+        now=NOW,
+        chooser=_first,
+        env={"DOCICH_PAPER_RESEARCH_BACKEND": "websearch"},
+        web_searcher=lambda query, timeout: [url],
+        web_broker=Broker(),
+    )
+    assert context["news_items"] == []
+    assert context["asset"]["news_items"] == []
+    assert context["asset"]["background"] == ""
+
+
 def test_invalid_paper_research_backend_fails_before_network(tmp_path):
     _write_status(tmp_path)
     try:
