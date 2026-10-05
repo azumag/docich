@@ -62,7 +62,10 @@ export class OfflineVoiceApp {
       if (seq === null) fail('duplicate_turn');
       state.turns++; state.pending = { seq, context: null, reply: null };
       const generated = await generateConversationReply({ DOCICH_PERSONA: this.#persona,
-        AI: { run: (model, input) => fixtures.model(model, input, { signal }) } }, state.sql, event, seq);
+        AI: { run: (model, input) => {
+          this.#check(state, signal);
+          return fixtures.model(model, input, { signal });
+        } } }, state.sql, event, seq);
       this.#check(state, signal);
       if (!validContext(state.sql, seq, generated.context)) fail('session_cancelled');
       // Explicit application policy: no hidden truncation of the text core's 901-character contract.

@@ -8,6 +8,30 @@ import { command } from '../cli.mjs';
 const channel = { guildId: '1', channelId: '2' };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+
+for (const reply of [{ content: '', finish_reason: 'stop' }, { content: 'partial', finish_reason: 'length' }]) {
+  test(`leave prevents a model retry after a late ${reply.finish_reason} response`, async (t) => {
+    const blocked = deferred();
+    let calls = 0;
+    const f = await fixture(t, { model: async () => {
+      calls++;
+      if (calls === 1) return blocked.promise;
+      return { choices: [{ message: { content: 'retry result' }, finish_reason: 'stop' }] };
+    } });
+    f.utterance('cancelled');
+    await tick();
+    assert.equal(calls, 1);
+    await f.app.leave();
+    blocked.resolve({ choices: [{ message: { content: reply.content }, finish_reason: reply.finish_reason }] });
+    await tick();
+    assert.equal(calls, 1);
+    assert.equal(f.app.status().joined, false);
+    assert.equal(f.app.status().remembered, 0);
+    assert.equal(f.http.length, 0);
+    assert.equal(f.pcm.length, 0);
+  });
+}
+
 async function fixture(t, overrides = {}, options = {}) {
   const events = [], inputs = [], http = [], pcm = [];
   const base = offlineFixtures();
