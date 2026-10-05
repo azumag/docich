@@ -25,6 +25,7 @@ import ssl
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 import re
@@ -565,6 +566,48 @@ class WebBroker:
             if proc is not None and reason is not None:
                 from .reply_research_diagnostic import emit
                 emit(self._diagnostic, {'stage': 'web_fetch', 'web_reason': reason})
+
+
+def collect_verified_public(query, *, env, timeout_sec=20.0, limit=3, diagnostic=None):
+    """Return broker-verified public-page receipts for one fixed search query.
+
+    This is a neutral material primitive for conversation/radio consumers.
+    Search results only authorize candidate URLs; every returned item has passed
+    the same credential-free fetch, body hash and text hash checks as WebBroker.
+    """
+    from .reply_routing import _has_private_route_input
+    if (not isinstance(query, str) or _has_private_route_input(query)
+            or type(timeout_sec) not in (int, float) or not 0 < timeout_sec <= 30
+            or type(limit) is not int or not 1 <= limit <= 4):
+        return ()
+    query = " ".join(query.split())
+    if not 1 <= len(query) <= 256 or any(ord(c) < 32 for c in query):
+        return ()
+    deadline = time.monotonic() + float(timeout_sec)
+    try:
+        with tempfile.TemporaryDirectory(prefix="docich-web-material-") as directory:
+            options = {"diagnostic": diagnostic} if diagnostic is not None else {}
+            broker = WebBroker(Path(directory) / "web-unused.sock", deadline, **options)
+            candidates = search_public(
+                query, min(FETCH_TIMEOUT, max(0.01, deadline - time.monotonic())), env=env
+            )
+            urls = []
+            for value in candidates[:8]:
+                url = canonical_url(value)
+                if url and url not in urls:
+                    urls.append(url)
+            broker.authorize(urls)
+            receipts = []
+            for url in urls:
+                if len(receipts) >= limit or time.monotonic() >= deadline:
+                    break
+                rec = broker.fetch(url)
+                if (isinstance(rec, Receipt)
+                        and hashlib.sha256(rec.text.encode()).hexdigest() == rec.text_sha256):
+                    receipts.append(rec)
+            return tuple(receipts)
+    except Exception:
+        return ()
 
 
 def search_public(query, timeout, *, env=None):
