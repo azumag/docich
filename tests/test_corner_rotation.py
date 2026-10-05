@@ -2088,6 +2088,142 @@ def test_manual_queue_transfer_replay_is_idempotent(setup):
     assert executor.calls[0]['request_id'] == request['request_id']
 
 
+def test_scheduled_manual_reserves_only_its_corner_before_trigger(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    trigger = clock[0] + 600
+    scheduled = manager.queue_manual("nsnake", trigger_at=trigger)
+    assert scheduled["status"] == "scheduled"
+    assert scheduled["trigger_at"] == trigger
+    assert manager._manual_queue_path.exists()
+
+    # Automatic rotation keeps running, but never pre-runs the reserved corner.
+    first = manager.tick()
+    assert first["status"] == "ready"
+    assert executor.calls[0]["source"] != "manual"
+    assert executor.calls[0]["corner"] != "retro"
+    assert manager._manual_queue_path.exists()
+
+    clock[0] = trigger
+    second = make().tick()
+    assert second == {"status": "ready", "corner": "retro", "result": "completed"}
+    assert executor.calls[-1]["source"] == "manual"
+    assert executor.calls[-1]["request_id"] == scheduled["request_id"]
+    assert executor.calls[-1]["trigger_at"] == trigger
+    assert not manager._manual_queue_path.exists()
+
+
+def test_scheduled_manual_is_the_next_due_when_no_other_auto_corner_exists(setup):
+    _, clock, catalog, executor, make = setup
+    manager = make([catalog[0]])
+    trigger = clock[0] + 300
+    manager.queue_manual("nsnake", trigger_at=trigger)
+
+    outcome = manager.tick()
+
+    assert outcome == {"status": "waiting", "reason": "scheduled-manual-not-due"}
+    assert state(manager)["next_due_at"] == trigger
+    assert executor.calls == []
+    assert manager._manual_queue_path.exists()
+
+
+def test_scheduled_manual_overdue_after_downtime_fires_once(setup):
+    _, clock, catalog, executor, make = setup
+    manager = make([catalog[0]])
+    trigger = clock[0] + 60
+    scheduled = manager.queue_manual("nsnake", trigger_at=trigger)
+    clock[0] += 3600
+
+    assert make().tick() == {"status": "ready", "corner": "retro", "result": "completed"}
+    assert [c["request_id"] for c in executor.calls].count(scheduled["request_id"]) == 1
+
+    # Same wall clock / next tick cannot replay the consumed request.
+    make().tick()
+    assert [c["request_id"] for c in executor.calls].count(scheduled["request_id"]) == 1
+
+
+def test_scheduled_manual_duplicate_is_idempotent_but_time_change_conflicts(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    trigger = clock[0] + 600
+    first = manager.queue_manual("nsnake", trigger_at=trigger)
+    assert manager.queue_manual("nsnake", trigger_at=trigger) == first
+
+    with pytest.raises(RotationError, match="schedule is already queued") as changed:
+        manager.queue_manual("nsnake", trigger_at=trigger + 60)
+    assert changed.value.reason_code == "manual_queue_conflict"
+
+    with pytest.raises(RotationError, match="schedule is already queued") as immediate:
+        manager.queue_manual("nsnake")
+    assert immediate.value.reason_code == "manual_queue_conflict"
+    assert executor.calls == []
+
+
+def test_scheduled_manual_can_be_cancelled_until_atomic_due_import(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    trigger = clock[0] + 600
+    manager.queue_manual("nsnake", trigger_at=trigger)
+
+    cancelled = manager.cancel_scheduled_manual("nsnake")
+    assert cancelled == {"status": "cancelled", "corner": "retro", "trigger_at": trigger}
+    assert not manager._manual_queue_path.exists()
+    with pytest.raises(RotationError, match="not queued") as missing:
+        manager.cancel_scheduled_manual("nsnake")
+    assert missing.value.reason_code == "scheduled_request_missing"
+    assert executor.calls == []
+
+
+def test_scheduled_manual_due_import_is_no_longer_cancellable(setup):
+    _, clock, _, _, make = setup
+    manager = make()
+    trigger = clock[0] + 60
+    manager.queue_manual("nsnake", trigger_at=trigger)
+    clock[0] = trigger
+    ledger = manager.load(clock[0])
+    assert manager._import_manual_queue(ledger, clock[0]) is None
+    assert ledger["queued_manual"]["trigger_at"] == trigger
+
+    with pytest.raises(RotationError, match="already imported") as imported:
+        manager.cancel_scheduled_manual("nsnake")
+    assert imported.value.reason_code == "scheduled_request_imported"
+
+
+def test_scheduled_manual_rejects_past_and_timezone_naive_trigger(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    with pytest.raises(RotationError, match="in the past") as past:
+        manager.queue_manual("nsnake", trigger_at=clock[0] - 1)
+    assert past.value.reason_code == "scheduled_time_past"
+
+    with pytest.raises(RotationError, match="invalid scheduled") as naive:
+        manager.queue_manual("nsnake", trigger_at="2026-10-06T21:30:00")
+    assert naive.value.reason_code == "invalid_scheduled_time"
+
+    # Offset-aware input is normalized to an epoch before persistence.
+    aware = manager.queue_manual("nsnake", trigger_at="2030-01-01T00:00:00+09:00")
+    raw = json.loads(manager._manual_queue_path.read_text())
+    assert type(raw["trigger_at"]) is float
+    assert aware["trigger_at"] == raw["trigger_at"]
+    assert executor.calls == []
+
+
+def test_scheduled_manual_rechecks_eligibility_when_due(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    trigger = clock[0] + 60
+    manager.queue_manual("nsnake", trigger_at=trigger)
+    clock[0] = trigger
+    manager.adapters["retro"].available = False
+
+    outcome = manager.tick()
+
+    assert outcome == {"status": "waiting", "reason": "queued-manual-disabled-or-paused"}
+    assert state(manager)["queued_manual"]["corner"] == "retro"
+    assert state(manager)["queued_manual"]["trigger_at"] == trigger
+    assert executor.calls == []
+
+
 @pytest.mark.parametrize('manual', [False, True])
 def test_manual_queue_deduplicates_existing_same_corner_reservation(setup, manual):
     _, clock, _, executor, make = setup
