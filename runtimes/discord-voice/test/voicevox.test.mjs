@@ -39,6 +39,14 @@ test('existing explicit endpoint selection, speaker and timeout snapshot; no pro
   assert.equal(voicevoxConfig(env).speaker, 3); assert.equal(voicevoxConfig(env).timeoutMs, 30000);
   assert.equal(voicevoxConfig({ ...env, VOICEVOX_URLS: `${env.VOICEVOX_URLS},http://127.0.0.1:50021` }).endpoint, 'http://windows.example:50021');
   assert.throws(() => voicevoxConfig(env, 'http://127.0.0.1:50021'), /invalid_config/);
+  assert.equal(
+    voicevoxConfig(
+      { VOICEVOX_URLS: 'http://127.0.0.1:50021' },
+      undefined,
+      { allowLocal: true },
+    ).endpoint,
+    'http://127.0.0.1:50021',
+  );
 });
 for (const bad of [undefined, '', 'http://localhost:50021', 'http://127.1:50021', 'http://[::1]:50021',
   'http://0.0.0.0:50021', 'http://user:secret@windows.example', 'ftp://windows.example',
