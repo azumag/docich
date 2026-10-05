@@ -228,3 +228,33 @@ test('subscription failure is contained as a fixed receive failure event', async
   assert.deepEqual(events, [{ event: 'voice_receive_failed' }]);
   receiver.stop();
 });
+
+
+test('utterance above the 10 second bound is dropped before STT', async () => {
+  const events = [];
+  let sttCalls = 0;
+  const fixture = fakeConnection(() =>
+    Array.from({ length: 501 }, () => stereoChunk(2000)),
+  );
+  const receiver = attachLiveSttReceiver({
+    connection: fixture.connection,
+    targetUserId: TARGET,
+    stt: {
+      async transcribe() {
+        sttCalls += 1;
+        return 'unused';
+      },
+    },
+    emit: (event) => events.push(event),
+    createDecoder: decoderFactory,
+  });
+
+  fixture.connection.receiver.speaking.emit('start', TARGET);
+  await waitFor(() =>
+    events.some((event) => event.event === 'utterance_too_long'),
+  );
+
+  assert.equal(sttCalls, 0);
+  assert.equal(events.some((event) => event.event === 'stt_started'), false);
+  receiver.stop();
+});
