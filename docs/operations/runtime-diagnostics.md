@@ -190,6 +190,10 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `corners.corner_rotation_timer` は支配的なtimer unit名（移行後は
   `docich-corner-rotation.timer`）、active/enabled、旧名が正しいaliasかを示す
   bounded boolean `legacy_alias` のみを出す。unit path・alias target・state pathは出さない。
+  時刻指定manual予約がある場合は、UUIDや任意payloadを出さずに
+  `scheduled_manual`、固定corner名、`scheduled_manual_trigger_at`、`scheduled_manual_due`、
+  7日で上限化したoverdue秒、固定 `scheduled_manual_blocked_reason`（`not_due` /
+  `waiting_slot`）だけを追加投影する。独立inboxに残る時刻前予約も同じ投影へ含める。
 
 - `corners.weather_corner` は固定 `weather_corner.json` からstatus、request/start/restore/completion時刻、
   固定enumの終了理由、前のgame名、およびrotation予約/完了記録とのrequest一致booleanだけを出す。
