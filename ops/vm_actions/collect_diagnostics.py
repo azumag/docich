@@ -3860,6 +3860,25 @@ def _collect_corner_files(state_dir, payload, now):
         # Fixed projection only: never emit seed, adapter errors or arbitrary
         # request payloads. Queued ownership remains local for operator recovery.
         status = data.get("status")
+        inbox_present, inbox_readable, inbox_data = _load_state_file(
+            state_dir / "corner_manual_queue.json"
+        )
+        queued_record = data.get("queued_manual")
+        if not isinstance(queued_record, dict) and inbox_readable:
+            queued_record = inbox_data
+        trigger_at = (
+            _bounded_time(queued_record.get("trigger_at"))
+            if isinstance(queued_record, dict) else None
+        )
+        scheduled_manual = trigger_at is not None
+        scheduled_due = now >= trigger_at if scheduled_manual else None
+        scheduled_blocked_reason = None
+        if scheduled_manual and not scheduled_due:
+            scheduled_blocked_reason = "not_due"
+        elif scheduled_manual and (
+                isinstance(data.get("pending"), dict)
+                or isinstance(data.get("manual_pending"), dict)):
+            scheduled_blocked_reason = "waiting_slot"
         rotation.update(
             status=status if status in {"ready", "waiting", "running", "recovery_required"} else "unknown",
             reason=_bounded_str(data.get("reason"), 64),
@@ -3870,8 +3889,19 @@ def _collect_corner_files(state_dir, payload, now):
             slot=_bounded_int(data.get("slot")),
             eligible_count=len(data["eligible"]) if isinstance(data.get("eligible"), list) else None,
             pending=isinstance(data.get("pending"), dict),
-            queued_manual=(isinstance(data.get("queued_manual"), dict)
-                           or (state_dir / "corner_manual_queue.json").is_file()),
+            queued_manual=(isinstance(data.get("queued_manual"), dict) or inbox_present),
+            scheduled_manual=scheduled_manual,
+            scheduled_manual_corner=(
+                _bounded_str(queued_record.get("corner"), 64)
+                if scheduled_manual and isinstance(queued_record, dict) else None
+            ),
+            scheduled_manual_trigger_at=trigger_at,
+            scheduled_manual_due=scheduled_due,
+            scheduled_manual_overdue_sec=(
+                min(7 * 86400, max(0, int(now - trigger_at)))
+                if scheduled_manual and scheduled_due else None
+            ),
+            scheduled_manual_blocked_reason=scheduled_blocked_reason,
             error_kind=_rotation_error_kind(data.get("error_kind")),
         )
         rotation.update(_rotation_pending_projection(state_dir, data, now))
