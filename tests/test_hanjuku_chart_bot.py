@@ -356,7 +356,7 @@ def test_decline_the_general_trade_prompt():
     # OCR may lose the literal "トレード" token while still reading the
     # exchange wording. That partial read must fail closed to いかんッ!.
     c3 = Canvas()
-    c3.text(24, 151, 'そちらのヴィーナスしょうぐんと')
+    c3.text(24, 151, 'そちらのゼウスしょうぐんと')
     c3.text(24, 167, 'わがぐんのイキのいいのとではどーだ?')
     c3.text(184, 183, 'うむッ!')
     c3.text(184, 199, 'いかんッ!')
