@@ -4,6 +4,9 @@ import { pathToFileURL } from 'node:url';
 const KNOWN_EVENTS = new Set([
   'live_voice_check_ok',
   'voice_connected',
+  'discord_gateway_error',
+  'voice_transport_error',
+  'voice_receive_failed',
   'voice_disconnected',
   'voice_recovering',
   'voice_rejoin_attempt',
@@ -46,7 +49,11 @@ const KNOWN_EVENTS = new Set([
 
 const FAILURE_EVENTS = new Set([
   'live_voice_error',
+  'discord_gateway_error',
+  'voice_transport_error',
+  'voice_receive_failed',
   'stt_failed',
+  'stt_queue_full',
   'llm_failed',
   'tts_failed',
   'playback_failed',
