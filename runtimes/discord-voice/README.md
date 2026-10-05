@@ -167,7 +167,7 @@ Stage budgets are bounded independently: LLM 10 seconds, TTS 30 seconds, playbac
 
 `acceptance-windows.ps1` is the owner-only bootstrap for real VC acceptance. It never writes Discord/Cloudflare credentials or the voice bridge secret to the repository or acceptance log. Transcript/reply debug flags are forced off.
 
-Before running it, set these values only in the current PowerShell process:
+PowerShell 7+ (`pwsh`) is required. Before running it, set these values only in the current PowerShell process:
 
 ```powershell
 $env:DOCICH_DISCORD_TOKEN = "<Discord Bot token>"
@@ -178,17 +178,19 @@ $env:DOCICH_DISCORD_VOICE_RECEIVE_USER_ID = "<your user snowflake>"
 $env:DOCICH_DISCORD_VOICE_CF_ACCOUNT_ID = "<Cloudflare account id>"
 $env:DOCICH_DISCORD_VOICE_CF_API_TOKEN = "<Workers AI token>"
 
+$env:DOCICH_DISCORD_VOICE_WORKER_BASE_URL = "https://<worker-host>"
+
 $env:VOICEVOX_URLS = "http://127.0.0.1:50021"
 $env:VOICEVOX_MAX_CHARS = "200"
 ```
 
-If `DOCICH_DISCORD_VOICE_CHAT_TOKEN` is not already present, the bootstrap generates a random process-local bridge secret and pipes it directly to `wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN --name docich-discord-chat`. The secret value is not passed as a command-line argument or written to the log. Wrangler must already be authenticated for the owner account. The Cloudflare secret remains configured after the run; a later bootstrap without a local copy simply rotates it to a new random value.
+Bridge secret mutation is explicit. Either set an existing `DOCICH_DISCORD_VOICE_CHAT_TOKEN` in the current process, or pass `-ProvisionBridgeSecret`. With that switch, the bootstrap generates a random process-local secret and pipes it directly to the pinned local Wrangler using `wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN --name docich-discord-chat`. The secret value is not passed as a command-line argument or written to the log. Wrangler must already be authenticated for the owner account. The Cloudflare secret remains configured after the run; a later rotation again requires `-ProvisionBridgeSecret`.
 
 For an intentional same-host VOICEVOX Engine:
 
 ```powershell
 cd runtimes/discord-voice
-.\acceptance-windows.ps1 -AllowLoopbackVoicevox
+.\acceptance-windows.ps1 -AllowLoopbackVoicevox -ProvisionBridgeSecret
 ```
 
 The bootstrap verifies the authenticated `/voice/reply` boundary, probes VOICEVOX `/version`, installs pinned dependencies, runs `check:live`, and then launches `acceptance-runner.mjs`. Press Ctrl+C once for a graceful stop. The runner timestamps only the existing sanitized JSON events and prints a final `voice_acceptance_summary`.
@@ -196,14 +198,15 @@ The bootstrap verifies the authenticated `/voice/reply` boundary, probes VOICEVO
 A short one-turn acceptance should include at least one successful chain through `stt_completed -> llm_completed -> tts_completed -> playback_completed -> memory_commit_completed`. For barge-in, speak while the Bot is playing and require `playback_interrupted`:
 
 ```powershell
-.\acceptance-windows.ps1 -AllowLoopbackVoicevox -RequireInterrupt
+.\acceptance-windows.ps1 -AllowLoopbackVoicevox -ProvisionBridgeSecret -RequireInterrupt
 ```
 
-For a timed 30-minute acceptance, the runner can stop itself gracefully:
+For a timed 30-minute acceptance, the runner starts its timer only after `voice_connected`, then stops itself gracefully after the requested connected-session duration:
 
 ```powershell
 .\acceptance-windows.ps1 `
   -AllowLoopbackVoicevox `
+  -ProvisionBridgeSecret `
   -StopAfterMinutes 30 `
   -MinMinutes 30
 ```
