@@ -419,6 +419,11 @@ fresh-start/lifecycle復帰の途中またはsupervisor再起動待ちを疑う�
 この条件を満たすまでは `Soren resumed=false` として観測を継続する。復帰先がSoren以外なら
 この追加条件は `not_applicable` とする。共有runtimeの再起動やpause marker変更は行わない。
 
+本番観測窓は「216回poll」のような回数指定ではなく、開始から18分のwall-clock deadlineで区切る。
+`ls-remote` / SSH / diagnosticsの所要時間をpoll回数へ上乗せすると、GitHub Actionsの25分上限を
+超えて最終metadataを書けないためである。deadline到達時はその時点のbounded観測値を書き出して終了し、
+workflow timeoutによる強制cancelに依存しない。
+
 ### 手動コーナーの時刻指定予約（#1759）
 
 WebUI の手動操作は即時開始に加えて、1回限りの `trigger_at` を持つ
