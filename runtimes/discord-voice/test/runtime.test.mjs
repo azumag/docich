@@ -311,3 +311,64 @@ test('draining is serialized across users even when several utterances finish to
   assert.equal(f.fake.sttInputs.length, 2);
   assert.equal(f.fake.plays.length, 2);
 });
+
+for (const invalid of ['detached', 'throwing-fill-object']) {
+  test('invalid TTS ' + invalid + ' cannot poison idle/queue or prevent the next turn', async (t) => {
+    const f = await fixture(t, { limits: { ...limits, maxQueue: 1 } });
+    const original = f.fake.tts.synthesize;
+    f.fake.tts.synthesize = async () => {
+      if (invalid === 'throwing-fill-object') return { get fill() { throw new Error('private cleanup exception'); } };
+      const pcm = new Int16Array(960).fill(1234);
+      structuredClone(pcm.buffer, { transfer: [pcm.buffer] });
+      return pcm;
+    };
+    assert.equal(f.utterance('invalid-' + invalid), 'queued');
+    await assert.doesNotReject(f.runtime.idle());
+    assert.equal(f.runtime.status().pending, 0);
+    assert.equal(f.runtime.status().phase, 'idle');
+    assert.equal(f.fake.plays.length, 0);
+    f.fake.tts.synthesize = original;
+    assert.equal(f.utterance('recovered-' + invalid), 'queued');
+    await f.runtime.idle();
+    assert.equal(f.fake.plays.length, 1);
+    await f.runtime.disconnect();
+    assert.equal(f.runtime.status().pending, 0);
+  });
+}
+
+test('accessible typed-array audio is zeroed even when adapter overrides fill', async (t) => {
+  const f = await fixture(t);
+  const pcm = new Int16Array(960).fill(1234);
+  pcm.fill = () => { throw new Error('private overridden method'); };
+  f.fake.tts.synthesize = async () => pcm;
+  f.utterance('overridden-fill');
+  await assert.doesNotReject(f.runtime.idle());
+  assert.equal(pcm.every((value) => value === 0), true);
+  assert.equal(f.runtime.status().pending, 0);
+});
+
+test('late detached TTS result is safely discarded without an unhandled rejection', async (t) => {
+  const f = await fixture(t), blocker = gate();
+  const pcm = new Int16Array(960).fill(1234);
+  structuredClone(pcm.buffer, { transfer: [pcm.buffer] });
+  f.fake.tts.synthesize = async () => { await blocker.promise; return pcm; };
+  f.utterance('late-detached'); await tick();
+  assert.equal(f.runtime.status().phase, 'tts');
+  await f.runtime.disconnect(); blocker.release(); await tick();
+  assert.equal(f.fake.plays.length, 0);
+  assert.equal(f.runtime.status().pending, 0);
+});
+
+test('STT cannot poison cleanup by detaching its owned PCM input', async (t) => {
+  const f = await fixture(t), original = f.fake.stt.transcribe;
+  f.fake.stt.transcribe = async (pcm) => {
+    structuredClone(pcm.buffer, { transfer: [pcm.buffer] });
+    throw new Error('synthetic bad STT');
+  };
+  f.utterance('detached-input');
+  await assert.doesNotReject(f.runtime.idle());
+  assert.equal(f.runtime.status().pending, 0);
+  f.fake.stt.transcribe = original;
+  f.utterance('valid-input'); await f.runtime.idle();
+  assert.equal(f.fake.plays.length, 1);
+});

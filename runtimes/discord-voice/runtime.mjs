@@ -22,10 +22,20 @@ function scopeOf(input) {
   return Object.freeze({ guildId: input.guildId, channelId: input.channelId, userId: input.userId });
 }
 const keyOf = (scope) => JSON.stringify([scope.guildId, scope.channelId, scope.userId]);
+function zeroPCM(value) {
+  if (!ArrayBuffer.isView(value)) return;
+  try {
+    // Use the intrinsic: an adapter must not override cleanup with a getter/method.
+    Int16Array.prototype.fill.call(value, 0);
+  } catch {
+    // Detached/non-typed views have no writable samples through this handle.
+    // Their owner must clear any transferred destination; cleanup must still release the turn.
+  }
+}
 function scrub(turn) {
-  for (const frame of turn.frames ?? []) frame.fill(0);
+  for (const frame of turn.frames ?? []) zeroPCM(frame);
   turn.frames = [];
-  turn.pcm?.fill(0);
+  zeroPCM(turn.pcm);
   turn.pcm = null;
 }
 
@@ -194,7 +204,7 @@ export class VoiceRuntime {
       // Late adapter results are never allowed to continue the pipeline.
       const pending = Promise.resolve().then(() => { signal.throwIfAborted(); return operation(); }).then((result) => {
         if (signal.aborted) {
-          if (result instanceof Int16Array) result.fill(0);
+          zeroPCM(result);
           throw new VoiceContractError('turn_cancelled');
         }
         return result;
@@ -237,7 +247,7 @@ export class VoiceRuntime {
       } catch {
         this.#event(controller.signal.aborted ? 'turn_cancelled' : active.phase + '_failed');
       } finally {
-        controller.abort(); scrub(turn); scrub(active); output?.fill?.(0);
+        controller.abort(); scrub(turn); scrub(active); zeroPCM(output);
         if (active.phase === 'playback') this.#stopPlayback();
         this.#active = null;
       }
