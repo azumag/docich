@@ -52,6 +52,7 @@ const FAILURE_EVENTS = new Set([
   'discord_gateway_error',
   'voice_transport_error',
   'voice_receive_failed',
+  'utterance_too_long',
   'stt_failed',
   'stt_queue_full',
   'llm_failed',
@@ -71,10 +72,12 @@ export function summarizeAcceptanceLines(lines, {
   requireReconnect = false,
 } = {}) {
   const counts = Object.create(null);
-  let firstTimestamp = null;
+  let connectedTimestamp = null;
   let lastTimestamp = null;
   let malformed = 0;
   let privateDebugEvents = 0;
+  let chainState = 0;
+  let completedChains = 0;
 
   for (const rawLine of lines) {
     const line = String(rawLine ?? '').trimEnd();
@@ -105,8 +108,40 @@ export function summarizeAcceptanceLines(lines, {
       continue;
     }
 
-    if (firstTimestamp === null || timestamp < firstTimestamp) firstTimestamp = timestamp;
+    if (record.event === 'voice_connected' && connectedTimestamp === null) {
+      connectedTimestamp = timestamp;
+    }
     if (lastTimestamp === null || timestamp > lastTimestamp) lastTimestamp = timestamp;
+
+    if (record.event === 'utterance_started') {
+      chainState = 0;
+    } else if (record.event === 'stt_completed') {
+      chainState = 1;
+    } else if (record.event === 'llm_completed' && chainState === 1) {
+      chainState = 2;
+    } else if (record.event === 'tts_completed' && chainState === 2) {
+      chainState = 3;
+    } else if (record.event === 'playback_completed' && chainState === 3) {
+      chainState = 4;
+    } else if (record.event === 'memory_commit_completed' && chainState === 4) {
+      completedChains += 1;
+      chainState = 0;
+    } else if ([
+      'stt_cancelled',
+      'stt_failed',
+      'llm_cancelled',
+      'llm_failed',
+      'tts_cancelled',
+      'tts_failed',
+      'playback_cancelled',
+      'playback_interrupted',
+      'playback_failed',
+      'turn_interrupted',
+      'memory_commit_cancelled',
+      'memory_commit_failed',
+    ].includes(record.event)) {
+      chainState = 0;
+    }
 
     if (KNOWN_EVENTS.has(record.event)) {
       counts[record.event] = (counts[record.event] ?? 0) + 1;
@@ -117,17 +152,13 @@ export function summarizeAcceptanceLines(lines, {
   }
 
   const durationSeconds =
-    firstTimestamp !== null && lastTimestamp !== null
-      ? Math.max(0, (lastTimestamp - firstTimestamp) / 1000)
+    connectedTimestamp !== null && lastTimestamp !== null
+      ? Math.max(0, (lastTimestamp - connectedTimestamp) / 1000)
       : 0;
 
   const oneTurn =
     (counts.voice_connected ?? 0) >= 1 &&
-    (counts.stt_completed ?? 0) >= 1 &&
-    (counts.llm_completed ?? 0) >= 1 &&
-    (counts.tts_completed ?? 0) >= 1 &&
-    (counts.playback_completed ?? 0) >= 1 &&
-    (counts.memory_commit_completed ?? 0) >= 1;
+    completedChains >= 1;
 
   const interruptOk =
     !requireInterrupt || (counts.playback_interrupted ?? 0) >= 1;
@@ -159,6 +190,7 @@ export function summarizeAcceptanceLines(lines, {
     failureCount,
     malformed,
     durationSeconds,
+    completedChains,
     counts: Object.freeze({ ...counts }),
   });
 }
@@ -212,6 +244,7 @@ export async function main(args = process.argv.slice(2)) {
       failureCount: result.failureCount,
       malformed: result.malformed,
       durationSeconds: Math.round(result.durationSeconds),
+      completedChains: result.completedChains,
       counts: result.counts,
     }) + '\n');
     return result.passed ? 0 : 1;
