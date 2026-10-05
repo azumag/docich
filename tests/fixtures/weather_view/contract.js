@@ -70,16 +70,18 @@ const input=JSON.parse(fs.readFileSync(0,'utf8'));
  }else if(scenario==='old_poll'){
   seed();const pending=[];fetchImpl=()=>new Promise(resolve=>pending.push(resolve));const older=run('poll()'),newer=run('poll()');pending[1]({ok:false});await newer;pending[0]({ok:true,json:async()=>fixture});await older;paused();
  }else if(scenario==='broadcast_auto'){
-  let cue={ok:true,status:'running',item_index:0};
+  let cue={ok:true,status:'running',item_index:1};
   fetchImpl=async url=>url==='/api/weather-cue'
     ?({status:200,ok:true,json:async()=>cue})
     :({status:200,ok:true,json:async()=>fixture});
-  await run('poll()');await run('pollCue()');
+  await run('poll()');
+  await new Promise(resolve=>setTimeout(resolve,0)); // Flush startBroadcastSync()'s unawaited initial cue poll.
   assert.equal(run('tourTimer'),0);assert.equal(nodes.get('tour').attrs['aria-pressed'],'true');
   assert([...timers.values()].some(t=>t.ms===250));
-  cue={ok:true,status:'running',item_index:1};await run('pollCue()');
   assert.equal(run('selected'),0);assert.equal(nodes.get('city-name').textContent,names[0]);
-  await run('poll()');assert.equal(run('selected'),0); // Forecast polling cannot advance the focus.
+  cue={ok:true,status:'running',item_index:2};await run('pollCue()');
+  assert.equal(run('selected'),1);assert.equal(nodes.get('city-name').textContent,names[1]);
+  await run('poll()');assert.equal(run('selected'),1); // Forecast polling cannot advance the focus.
  }else if(scenario.startsWith('broadcast_')){
   seed(scenario==='broadcast_overflow'?0:null);run('startBroadcastSync()');
   assert.equal(run('tourTimer'),0);assert(![...timers.values()].some(t=>t.ms===4000));
