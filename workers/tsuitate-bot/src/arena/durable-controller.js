@@ -1,5 +1,5 @@
 import { BRAIN_VERSION, LINEAR_PROFILE, validateProfile } from "../brain/index.js";
-import { MoveGate } from "../adapters/beta.js";
+import { MoveGate, parsePlayerView } from "../adapters/beta.js";
 import { validBetaGameId } from "../adapters/beta-results.js";
 import { normalizeGameRecord } from "../training/index.js";
 import { BetaSession } from "./beta-session.js";
@@ -16,6 +16,28 @@ const LOG_EVENTS = new Set(["connected", "queued", "matched", "disconnected", "c
 
 function initial() { return { version: 1, state: "stopped", runId: null, generation: 0,
   gameId: null, completedGames: 0, reservedGames: 0, stopRequested: false, errorCode: null, settled: true }; }
+
+function playerViewProjection(meta, checkpoint) {
+  if (!validBetaGameId(meta?.gameId) || checkpoint?.active?.gameId !== meta.gameId) return null;
+  try {
+    const view = parsePlayerView(checkpoint.active?.gate?.view);
+    if (view.gameId !== meta.gameId) return null;
+    return {
+      yourColor: view.yourColor,
+      yourPieces: view.yourPieces.map(({ square, role }) => ({ square, role })),
+      yourHand: { ...view.yourHand },
+      turn: view.turn,
+      moveNumber: view.moveNumber,
+      clocks: { ...view.clocks },
+      fouls: { ...view.fouls },
+      youInCheck: view.youInCheck,
+      opponentInCheck: view.opponentInCheck,
+      status: view.status,
+    };
+  } catch {
+    return null;
+  }
+}
 
 /** Fixed singleton operations; the Worker entrypoint authenticates its caller. */
 export class DurableArenaController {
@@ -43,7 +65,13 @@ export class DurableArenaController {
       readyForNextRun: meta.settled === true && ["stopped", "queue_timeout", "finished"].includes(meta.state) };
   }
 
-  async status() { return this.snapshot(await this.read()); }
+  async status() {
+    return this.storage.transaction(async (tx) => {
+      const meta = await tx.get(META_KEY) ?? initial();
+      const checkpoint = await tx.get(CHECKPOINT_KEY);
+      return { ...this.snapshot(meta), playerView: playerViewProjection(meta, checkpoint) };
+    });
+  }
 
   reconcile(options) {
     return this.serialize(async () => {

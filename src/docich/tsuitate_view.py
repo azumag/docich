@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from pathlib import Path
 
-from .tsuitate_beta_control import ControlError, call_beta_control
+from .tsuitate_beta_control import ControlError, call_beta_control, project_player_view
 
 DEFAULT_PORT = 8804
 VIEW_NAME = "tsuitate-view"
@@ -20,28 +20,42 @@ HTML = """<!doctype html><html lang="ja"><meta charset="utf-8">
 <title>AI衝立将棋</title>
 <style>
 html,body{margin:0;background:#101317;color:#f4f5f7;font-family:system-ui,-apple-system,sans-serif}
-main{width:960px;height:540px;box-sizing:border-box;padding:38px 48px;background:linear-gradient(135deg,#151a20,#0d1014)}
-h1{font-size:42px;margin:0 0 8px}.sub{color:#aeb7c2;font-size:18px}
-.state{font-size:54px;font-weight:800;margin:70px 0 18px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 32px;font-size:22px}
-.k{color:#9da8b5}.v{font-weight:650}.note{margin-top:60px;color:#9da8b5;font-size:18px}
-.bad{color:#ffb1b1}
+main{width:960px;height:540px;box-sizing:border-box;padding:28px 38px;display:grid;grid-template-columns:430px 1fr;gap:42px;background:linear-gradient(135deg,#151a20,#0d1014)}
+h1{font-size:38px;line-height:1.05;margin:0 0 7px}.sub{color:#aeb7c2;font-size:16px;margin-bottom:18px}
+.fog{width:400px;height:400px;box-sizing:border-box;border:2px solid #64583f;background:repeating-linear-gradient(0deg,rgba(215,190,137,.07) 0,rgba(215,190,137,.07) 43px,rgba(215,190,137,.18) 44px),repeating-linear-gradient(90deg,rgba(215,190,137,.07) 0,rgba(215,190,137,.07) 43px,rgba(215,190,137,.18) 44px);display:flex;align-items:center;justify-content:center;text-align:center;padding:42px;color:#d6c7a8;font-size:24px;font-weight:750;line-height:1.5}
+.state{font-size:38px;font-weight:800;line-height:1.15;margin:8px 0 24px}.bad{color:#ffb1b1}.wait{color:#c5cbd3}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px 22px;font-size:20px}.wide{grid-column:1/-1}.k{color:#98a3af;font-size:14px}.v{font-weight:650;line-height:1.35}
+.panel{border-top:1px solid #2a3038;padding-top:16px;margin-top:20px}.note{margin-top:18px;color:#98a3af;font-size:14px;line-height:1.55}
 </style>
-<main><h1>AI衝立将棋</h1><div class="sub">相手の駒はAIにも見えていません</div>
-<div id="state" class="state">接続確認中…</div>
-<div class="grid"><div><span class="k">Brain</span><br><span id="brain" class="v">-</span></div>
-<div><span class="k">対局</span><br><span id="game" class="v">-</span></div>
-<div><span class="k">予約局数</span><br><span id="reserved" class="v">-</span></div>
-<div><span class="k">完了局数</span><br><span id="completed" class="v">-</span></div></div>
-<div class="note">1コーナー1局。終局後は自動で元のゲームへ戻ります。</div></main>
+<main>
+<section><h1>AI衝立将棋</h1><div class="sub">公開配信向け spectator view</div><div class="fog">対局中の駒配置・持ち駒は<br>公平性のため配信しません</div></section>
+<section>
+<div id="state" class="state wait">接続確認中…</div>
+<div class="grid">
+<div><span class="k">Brain</span><br><span id="brain" class="v">-</span></div>
+<div><span class="k">手数</span><br><span id="move" class="v">-</span></div>
+<div><span class="k">AIの先後</span><br><span id="color" class="v">-</span></div>
+<div><span class="k">手番</span><br><span id="turn" class="v">-</span></div>
+<div class="wide"><span class="k">時計（取得時点）</span><br><span id="clocks" class="v">-</span></div>
+</div>
+<div class="panel"><span class="k">対局状態</span><br><span id="game" class="v">-</span></div>
+<div class="note">owner側ではBot自身のPlayerViewを検証済みHMAC statusとして保持できますが、このbroadcast viewには駒配置・持ち駒・raw checkpoint・公開棋譜由来の盤面を渡しません。</div>
+</section>
+</main>
 <script>
 const labels={stopped:"待機中",queued:"対戦相手を待っています",playing:"対局中",draining:"終局後に停止します",finished:"対局終了",queue_timeout:"対戦相手が見つかりませんでした",paused:"結果確認待ち"};
-async function refresh(){try{const r=await fetch("/api/tsuitate",{cache:"no-store"});const d=await r.json();
- const el=document.getElementById("state");el.textContent=d.ok?(labels[d.state]||"状態確認中"):"制御接続を確認できません";el.className="state"+(d.ok?"":" bad");
- document.getElementById("brain").textContent=d.brainVersion||"-";
- document.getElementById("game").textContent=d.gameActive?"進行中":(d.readyForNextRun?"次局開始可":"待機");
- document.getElementById("reserved").textContent=String(d.reservedGames??"-");
- document.getElementById("completed").textContent=String(d.completedGames??"-");
-}catch(e){document.getElementById("state").textContent="状態取得待ち";}}
+const colorLabel={sente:"先手",gote:"後手"};
+function clock(ms){if(typeof ms!=="number")return "-";const sec=Math.max(0,Math.floor(ms/1000)),m=Math.floor(sec/60),s=sec%60;return m+":"+String(s).padStart(2,"0");}
+function apply(d){
+ const state=document.getElementById("state");state.textContent=d.ok?(labels[d.state]||"状態確認中"):"制御接続を確認できません";state.className="state "+(d.ok?"":"bad");
+ document.getElementById("brain").textContent=d.brainVersion||"-";document.getElementById("game").textContent=d.gameActive?"進行中":(d.readyForNextRun?"次局開始可":"待機");
+ const v=d.spectatorView||null;
+ document.getElementById("move").textContent=v?String(v.moveNumber):"-";
+ document.getElementById("color").textContent=v?(colorLabel[v.yourColor]||v.yourColor):"-";
+ document.getElementById("turn").textContent=v?(colorLabel[v.turn]||v.turn):"-";
+ document.getElementById("clocks").textContent=v?("先手 "+clock(v.clocks.senteMs)+" / 後手 "+clock(v.clocks.goteMs)):"-";
+}
+async function refresh(){try{const r=await fetch("/api/tsuitate",{cache:"no-store"});apply(await r.json());}catch(e){apply({ok:false});}}
 refresh();setInterval(refresh,1000);
 </script></html>"""
 
@@ -56,6 +70,19 @@ def status_projection(runtime_id: str, generation: int, lease_id: str) -> dict:
         status = call_beta_control("status")
     except ControlError as exc:
         return {**base, "ok": False, "error": exc.code}
+    try:
+        player_view = project_player_view(status.get("playerView"))
+    except ControlError:
+        player_view = None
+    spectator_view = None
+    if player_view is not None:
+        spectator_view = {
+            "yourColor": player_view["yourColor"],
+            "turn": player_view["turn"],
+            "moveNumber": player_view["moveNumber"],
+            "clocks": player_view["clocks"],
+            "status": player_view["status"],
+        }
     return {
         **base,
         "ok": True,
@@ -66,6 +93,7 @@ def status_projection(runtime_id: str, generation: int, lease_id: str) -> dict:
         "stopRequested": status["stopRequested"],
         "readyForNextRun": status["readyForNextRun"],
         "gameActive": status["state"] in {"playing", "draining"},
+        "spectatorView": spectator_view,
     }
 
 

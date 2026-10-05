@@ -115,6 +115,16 @@ def test_broadcast_projection_drops_unreviewed_remote_fields(monkeypatch):
             **_status(state="playing", runId="fixture-run", reservedGames=1),
             "token": "do-not-leak",
             "opponentPieces": [{"square": "5e"}],
+            "playerView": {
+                "yourColor": "sente",
+                "yourPieces": [{"square": "5i", "role": "king", "private": "drop"}],
+                "yourHand": {"pawn": 1},
+                "turn": "sente", "moveNumber": 9,
+                "clocks": {"senteMs": 1000, "goteMs": 2000, "running": "sente", "serverTime": 3000},
+                "fouls": {"you": 1, "opponent": 2},
+                "youInCheck": False, "opponentInCheck": True, "status": "playing",
+                "opponentPieces": [{"square": "5a", "role": "king"}],
+            },
         },
     )
     data = tsuitate_view.status_projection("g4-a1b2c3d4", 4, "lease-fixture")
@@ -124,6 +134,16 @@ def test_broadcast_projection_drops_unreviewed_remote_fields(monkeypatch):
     assert "token" not in data
     assert "opponentPieces" not in data
     assert "runId" not in data
+    assert "playerView" not in data
+    assert data["spectatorView"] == {
+        "yourColor": "sente", "turn": "sente", "moveNumber": 9,
+        "clocks": {"senteMs": 1000, "goteMs": 2000, "running": "sente", "serverTime": 3000},
+        "status": "playing",
+    }
+    assert "yourPieces" not in data["spectatorView"]
+    assert "yourHand" not in data["spectatorView"]
+    assert "opponentPieces" not in tsuitate_view.HTML
+    assert "公平性のため配信しません" in tsuitate_view.HTML
 
 
 def test_tsuitate_readiness_requires_exact_runtime_identity(tmp_path, monkeypatch):

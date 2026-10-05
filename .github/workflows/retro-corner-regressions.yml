@@ -26,6 +26,10 @@ on:
       - 'src/docich/stream_category.py'
       - 'src/docich/stream_title_context.py'
       - 'src/docich/tsuitate_protocol.py'
+      - 'src/docich/tsuitate_corner.py'
+      - 'src/docich/tsuitate_beta_control.py'
+      - 'src/docich/tsuitate_view.py'
+      - 'src/docich/adapters/tsuitate_program.py'
       - 'src/docich/soren91*.py'
       - 'src/docich/meriken_voice.py'
       - 'src/docich/soren_*recovery*.py'
@@ -65,6 +69,8 @@ on:
       - 'tests/test_failed_improvement_terminal_recovery_required.py'
       - 'tests/test_opencode_go_free_chain.py'
       - 'tests/test_tsuitate_protocol.py'
+      - 'tests/test_tsuitate_corner.py'
+      - 'tests/test_tsuitate_program.py'
       - 'requirements-test.txt'
   push:
     branches: [main]
@@ -92,6 +98,10 @@ on:
       - 'src/docich/stream_category.py'
       - 'src/docich/stream_title_context.py'
       - 'src/docich/tsuitate_protocol.py'
+      - 'src/docich/tsuitate_corner.py'
+      - 'src/docich/tsuitate_beta_control.py'
+      - 'src/docich/tsuitate_view.py'
+      - 'src/docich/adapters/tsuitate_program.py'
       - 'src/docich/soren91*.py'
       - 'src/docich/meriken_voice.py'
       - 'src/docich/soren_*recovery*.py'
@@ -131,6 +141,8 @@ on:
       - 'tests/test_failed_improvement_terminal_recovery_required.py'
       - 'tests/test_opencode_go_free_chain.py'
       - 'tests/test_tsuitate_protocol.py'
+      - 'tests/test_tsuitate_corner.py'
+      - 'tests/test_tsuitate_program.py'
       - 'requirements-test.txt'
 
 permissions:
@@ -185,6 +197,10 @@ jobs:
             --root-path 'src/docich/stream_category.py' \
             --root-path 'src/docich/stream_title_context.py' \
             --root-path 'src/docich/tsuitate_protocol.py' \
+            --root-path 'src/docich/tsuitate_corner.py' \
+            --root-path 'src/docich/tsuitate_beta_control.py' \
+            --root-path 'src/docich/tsuitate_view.py' \
+            --root-path 'src/docich/adapters/tsuitate_program.py' \
             --root-path 'src/docich/soren91*.py' \
             --root-path 'src/docich/meriken_voice.py' \
             --root-path 'src/docich/soren_*recovery*.py' \
@@ -196,6 +212,8 @@ jobs:
             --root-path 'tests/test_nethack*.py' \
             --root-path 'tests/test_ninvaders*.py' \
             --root-path 'tests/test_corner*.py' \
+            --root-path 'tests/test_tsuitate_corner.py' \
+            --root-path 'tests/test_tsuitate_program.py' \
             --root-path 'tests/test_agent*.py' \
             --root-path 'tests/test_paper_corner*.py' \
             --root-path 'tests/test_bastet*.py' \
@@ -269,7 +287,7 @@ jobs:
           tests/test_corner_boundary.py tests/test_paper_corner.py
           tests/test_opencode_go_free_chain.py
           tests/test_retro_daily_schedule.py tests/test_corner_improve.py
-          tests/test_tsuitate_protocol.py
+          tests/test_tsuitate_protocol.py tests/test_tsuitate_corner.py tests/test_tsuitate_program.py
           tests/test_corner_improve_dispatch.py tests/test_retro_command_brains.py
           tests/test_retro_wrapper_limits.py tests/test_retro_wrapper_real_panes.py
           tests/test_bastet_brain.py tests/test_moon_buggy_brain.py

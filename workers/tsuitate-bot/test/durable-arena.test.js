@@ -94,6 +94,37 @@ test("fresh arena is stopped; missing or invalid token cannot reserve/connect", 
   }
 });
 
+test("status projects only the current bot-visible PlayerView", async (t) => {
+  const c = setup(t);
+  assert.equal((await c.controller.status()).playerView, null);
+  await begin(c);
+  const status = await c.controller.status();
+  assert.deepEqual(status.playerView, {
+    yourColor: "sente",
+    yourPieces: [{ square: "2h", role: "rook" }, { square: "5g", role: "pawn" }, { square: "5i", role: "king" }],
+    yourHand: {},
+    turn: "sente",
+    moveNumber: 1,
+    clocks: { senteMs: 300000, goteMs: 300000, running: "sente", serverTime: 100 },
+    fouls: { you: 0, opponent: 0 },
+    youInCheck: false,
+    opponentInCheck: false,
+    status: "playing",
+  });
+  const saved = await c.storage.get(CHECKPOINT_KEY);
+  saved.active.gate.view.opponentPieces = [{ square: "5a", role: "king" }];
+  saved.active.gate.view.privateToken = "fixture-sensitive";
+  await c.storage.put(CHECKPOINT_KEY, saved);
+  const projected = await c.controller.status();
+  assert.equal(JSON.stringify(projected).includes("opponentPieces"), false);
+  assert.equal(JSON.stringify(projected).includes("fixture-sensitive"), false);
+
+  const mismatched = await c.storage.get(CHECKPOINT_KEY);
+  mismatched.active.gameId = "other-game";
+  await c.storage.put(CHECKPOINT_KEY, mismatched);
+  assert.equal((await c.controller.status()).playerView, null);
+});
+
 test("stale false enable setting does not block an explicit run", async (t) => {
   const c = setup(t, { env: { BETA_ARENA_ENABLED: "false", TSUITATE_BOT_TOKEN: "fixture-only-not-a-credential" } });
   assert.equal((await c.controller.status()).state, "stopped");
@@ -279,13 +310,22 @@ test("record size and storage failures preserve the previous checkpoint", async 
   assert.deepEqual(await c.storage.get(CHECKPOINT_KEY), prior);
 });
 
-test("status and structured logs exclude token, move, opponent and raw payload", async (t) => {
+test("owner status exposes only validated own view while structured logs stay observation-free", async (t) => {
   const c = setup(t); await begin(c);
   c.controller.safeLog({ event: "move_sent", usi: "5g5f", token: "fixture-sensitive" });
   c.controller.safeLog({ event: "connected", token: "fixture-sensitive", opponentPieces: [1] });
-  const publicData = JSON.stringify([await c.controller.status(), c.events]);
-  for (const forbidden of ["fixture-only", "fixture-sensitive", "5g5f", "opponentPieces", "yourPieces"]) {
-    assert.equal(publicData.includes(forbidden), false);
+
+  const status = await c.controller.status();
+  const statusData = JSON.stringify(status);
+  assert.ok(status.playerView);
+  assert.ok(status.playerView.yourPieces.length > 0);
+  for (const forbidden of ["fixture-only", "fixture-sensitive", "5g5f", "opponentPieces", "pending", "attemptedMoves"]) {
+    assert.equal(statusData.includes(forbidden), false);
+  }
+
+  const logData = JSON.stringify(c.events);
+  for (const forbidden of ["fixture-only", "fixture-sensitive", "5g5f", "opponentPieces", "yourPieces", "yourHand"]) {
+    assert.equal(logData.includes(forbidden), false);
   }
 });
 
