@@ -179,7 +179,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 </div>
 <div class="card"><h2>手動操作</h2>
 <p class="desc">使い方:<br/>
-① <b>手動開始</b>: コーナーと分数を選んで1回だけ実行します。天気は現在のコーナー終了後に開始する予約で、表示時間は設定済みの分数です。予約中は開始後に停止できます。実行中はローテーションの自動起動が待機します。<br/>
+① <b>手動開始</b>: コーナーと分数を選んで1回だけ実行します。天気・衝立将棋は共通キューへ予約し、現在のコーナー終了後に開始します。衝立将棋は1局だけ対戦します。予約中は開始後に停止できます。実行中はローテーションの自動起動が待機します。<br/>
 ② <b>手動停止</b>: 手動開始・ローテーション自動起動のどちらで動いているコーナーでも、停止可能な状態なら途中で終わらせ、元のゲームへ戻します。<br/>
 ③ <b>ローテーション復旧</b>: 状態が「要復旧」で止まったときだけ押せます。先に該当コーナーの停止/復旧を済ませてください。</p>
 <div class="row"><div><label>コーナー</label><select id="corners-select"></select></div>
@@ -2148,6 +2148,7 @@ function renderCorners(d){
         if(r.queued_manual&&r.queued_manual.corner===c.id) auto='<span class="badge warn">開始予約済み</span>';
         else if(!c.enabled) auto='<span class="badge">無効</span>';
         else if(c.paused) auto='<span class="badge warn">休止中</span>';
+        else if(c.manual_only) auto='<span class="badge">手動専用</span>';
         else if(r.pending&&r.pending.corner===c.id) auto=`<span class="badge ok">${r.pending.phase==="dispatched"?"起動要求済み":"選択済み"}</span>`;
         else if(c.cooldown_until) auto='<span class="badge">cooldown中</span>';
         else if(c.eligible) auto='<span class="badge ok">候補</span>';
@@ -2168,7 +2169,7 @@ function renderCorners(d){
     const keep=sel.value;
     const manual=catalog.filter(c=>c.manual);
     sel.innerHTML=manual.length
-      ? manual.map(c=>`<option value="${esc(c.id)}">${esc(c.id)}（${esc(c.game)}）${c.enabled?"":" [無効]"}</option>`).join("")
+      ? manual.map(c=>`<option value="${esc(c.id)}">${esc(c.id)}（${esc(c.game)}）${c.manual_only?" [手動専用]":""}${c.enabled?"":" [無効]"}</option>`).join("")
       : '<option value="">（手動実行できるコーナーがありません）</option>';
     if(keep && manual.some(c=>c.id===keep)) sel.value=keep;
     sel.onchange=updateCornerButtons;
@@ -2205,7 +2206,7 @@ function updateCornerButtons(){
   const durationInput=document.getElementById("corners-duration");
   if(durationInput){
     durationInput.disabled=queuedMode;
-    if(queuedMode) durationInput.value=c.duration_minutes;
+    if(queuedMode&&c&&c.duration_minutes!=null) durationInput.value=c.duration_minutes;
   }
   if(!c) hints.push("手動実行できるコーナーを選んでください。");
   else if(r.latch) hints.push("ローテーションが要復旧のため、手動開始できません。");
@@ -2216,8 +2217,9 @@ function updateCornerButtons(){
   }
   else if(r.pending) hints.push(`${r.pending.corner} は${r.pending.phase==="dispatched"?"起動要求済み":"選択済み"}です。手動開始すると、現在のコーナーが終わってから始まります。`);
   if(queuedMode){
-    hints.push(`天気は設定済みの最大${c.duration_minutes}分で表示します。予報の有効期限で早く終了する場合があります。`);
-    if(!c.enabled||c.paused||r.enabled===false) hints.push("天気またはローテーションが無効・休止中のため予約できません。");
+    if(c.adapter==="weather") hints.push(`天気は設定済みの最大${c.duration_minutes}分で表示します。予報の有効期限で早く終了する場合があります。`);
+    else if(c.adapter==="tsuitate") hints.push("衝立将棋は1局だけ対戦し、終局後に元の画面へ戻ります。結果未確定時はreconcileまで次のコーナーを待たせます。");
+    if(!c.enabled||c.paused||r.enabled===false) hints.push("コーナーまたはローテーションが無効・休止中のため予約できません。");
     if(r.queued_manual) hints.push(`${r.queued_manual.corner} の開始予約は受付済みです。${r.reason==="manual-request-needs-resume-or-recovery"?"未精算の手動要求があり開始待ちです。":"予約は実行中のコーナー終了後に処理されます。"}`);
   }
   const startBtn=document.getElementById("corners-start");
@@ -2238,9 +2240,14 @@ async function cornerAction(payload, confirmText){
     if(msg){
       let t;
       if(r.action==="recover") t=r.ok?"復旧しました。次の tick（1分以内）でローテーションが再開します。":`復旧できませんでした（exit ${r.exit_code==null?"-":r.exit_code}）。先に要復旧のコーナーを停止/復旧してください。${r.detail?" 詳細: "+r.detail:""}`;
-      else if(r.corner&&r.corner.target==="rotation") t=r.action==="start"
-        ? `天気の開始を予約しました（最大${r.duration_minutes}分）。現在のコーナー終了後、次の tick で開始します。`
-        : "天気の停止を要求しました。実行中の天気が元のゲームへ復帰するまで状態欄で確認してください。";
+      else if(r.corner&&r.corner.target==="rotation") {
+        const name=r.corner.adapter==="tsuitate"?"衝立将棋":"天気";
+        t=r.action==="start"
+          ? (r.corner.adapter==="tsuitate"
+              ? "衝立将棋1局の開始を予約しました。現在のコーナー終了後、次の tick で開始します。"
+              : `天気の開始を予約しました（最大${r.duration_minutes}分）。現在のコーナー終了後、次の tick で開始します。`)
+          : `${name}の停止を要求しました。元のゲームへ復帰するまで状態欄で確認してください。`;
+      }
       else {
         const target=r.corner&&r.corner.target==="base"?"自動実行":"手動実行";
         t=`${r.action==="start"?"手動開始":"手動停止"}を受け付けました（${r.corner&&r.corner.id||"-"}・${target}）。進行と完了はこの画面の状態欄をご確認ください。ログ: ${r.log||"-"}`;
@@ -2855,8 +2862,10 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(!corner){ toast("コーナーを選択してください"); return; }
     const row=CORNERS_DATA&&(CORNERS_DATA.catalog||[]).find(c=>c.id===corner);
     if(row&&row.manual_mode==="queue"){
-      cornerAction({action:"start",corner},
-        `天気を開始予約しますか？（現在のコーナー終了後・最大${row.duration_minutes}分・音声と予報取得は設定に従います）`);
+      const text=row.adapter==="tsuitate"
+        ? "衝立将棋を1局開始予約しますか？（現在のコーナー終了後に開始し、終局後は元画面へ復帰します）"
+        : `天気を開始予約しますか？（現在のコーナー終了後・最大${row.duration_minutes}分・音声と予報取得は設定に従います）`;
+      cornerAction({action:"start",corner},text);
       return;
     }
     const minutes=Number(dur&&dur.value?dur.value:5);
