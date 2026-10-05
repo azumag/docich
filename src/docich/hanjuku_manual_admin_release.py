@@ -84,10 +84,19 @@ def release(g, *, expected, apply=False, now=time.time):
         # Includes selected_at and every reservation field, not just its UUID.
         if fingerprint != expected:
             raise CancelRefused("reservation_changed")
+        stale_program_queue_error = False
         for name in OWNER_FILES:
             queue = observe(program / "docich_program_queue" / name, optional=True)
-            if queue is not None and queue.get("status") not in {"done", "expired", "cancelled"}:
-                raise CancelRefused("program_queue_unverified")
+            if queue is not None:
+                queue_status = queue.get("status")
+                if queue_status == "error":
+                    # An error queue is historical uncertainty, not proof that
+                    # the slot is still live. Keep it read-only and continue
+                    # through every owner/registry/canonical/receipt guard
+                    # below while holding the shared writer locks (#1752).
+                    stale_program_queue_error = True
+                elif queue_status not in {"done", "expired", "cancelled"}:
+                    raise CancelRefused("program_queue_unverified")
             owner = observe(state_dir / name, optional=True)
             if owner is not None:
                 if owner.get("status") not in TERMINAL_OWNER:
@@ -145,13 +154,18 @@ def release(g, *, expected, apply=False, now=time.time):
         if not apply:
             return result
         updated = dict(state)
-        updated["manual_admin_releases"] = [*audit, {
+        audit_row = {
             "reservation": request, "at": released_at,
             "reason": "owner-approved-admin-release-with-unknown-history",
             "receipt_present": False, "request_generation_coverage": "unknown",
             "resource_attribution_unknown": True, "all_resources_released": None,
             "cancellation_authority": False,
-        }]
+        }
+        if stale_program_queue_error:
+            # Preserve why this release needed the stricter locked recheck
+            # without rewriting or certifying the historical queue records.
+            audit_row["program_queue_error_observed"] = True
+        updated["manual_admin_releases"] = [*audit, audit_row]
         updated.update(manual_pending=None, status="waiting",
                        reason="manual-request-admin-released", error_kind=None)
         if len(json.dumps(updated, ensure_ascii=False, sort_keys=True,
