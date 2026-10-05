@@ -29,7 +29,7 @@ MAX_SOURCES = 4
 MAX_QUERY_CHARS = 256
 MAX_EXCERPT_BYTES = 8192
 MAX_ALLOWED_HOSTS = 16
-_HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
+_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 @dataclass(frozen=True)
@@ -104,8 +104,9 @@ def _allowed_hosts(values: Sequence[str] | None) -> tuple[str, ...]:
         if not isinstance(value, str):
             raise ValueError("invalid_hosts")
         host = value.strip().lower()
-        if (not host or len(host) > 253 or host.startswith(".") or host.endswith(".")
-                or ".." in host or not _HOST_RE.fullmatch(host)):
+        labels = host.split(".")
+        if (len(labels) < 2 or len(host) > 253
+                or any(not _HOST_LABEL_RE.fullmatch(label) for label in labels)):
             raise ValueError("invalid_hosts")
         if host not in result:
             result.append(host)
