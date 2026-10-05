@@ -130,3 +130,15 @@ HANJUKU_SCENE_ONESHOT = {
     "diagnostics_key": "corners.retro_corner.scene_narration",
     "queue_lane": "radio",
 }
+
+# Read-only per-runtime evidence file, not a worker, lock or queue: the current
+# Hanjuku runtime's own bounded decision tail. It exists so a corner that keeps
+# answering with the same input (no chart-counter movement, no stall while the
+# cursor blinks) is observable without an ad-hoc owner shell.
+HANJUKU_DECISION_EVIDENCE = {
+    "game": "hanjuku-hero",
+    "module": "brains.hanjuku.bot",
+    "log_file": "hanjuku_decisions.jsonl",
+    "diagnostics_key": "corners.retro_corner.decision_plans",
+    "queue_lane": None,
+}

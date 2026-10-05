@@ -343,6 +343,26 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   前段の診断開始時刻は使わず、同じ秒の正常な更新を未来扱いしない。実際の未来時刻は不正として扱う。
   deliver_enqueuedは既存音声キュー関数の正常終了で、実キュー作成・再生完了の受領記録ではない。
   出力予算を超える場合は場面実況詳細をstatus=output_omittedへ置き換え、ゲーム戦況を優先する。
+- Hanjuku操作の繰り返し: `retro_corner.decision_plans` は同じgate（status=active /
+  game=hanjuku-hero かつ game_switch.active_game=hanjuku-hero）で、現在のcanonical runtimeの
+  `hanjuku_decisions.jsonl` を末尾128KiB・1024行で読み、identity（game/runtime/世代/lease）と
+  schema=1・event・atを照合した `action_plan` 行だけを集計する。chartのcounterは購入・戦闘・月だけで
+  進むため、同じ入力を返し続けていても動かず、カーソルが点滅する限りstall判定も発火しない。
+  このprojectionは繰り返している操作そのものを返す:
+  固定screen kind語彙（`hanjuku_screen.classify_text` と `screen.kind` のリテラル上書きが所有。
+  テストがソースから再導出するので、追加されたkindは`other`に閉じる）、許可リストのpadボタン名
+  （a/b/x/y/l/r/up/down/left/right/start/select、未知は`other`）、件数、age、
+  そして末尾で繰り返している単位 `trailing_repeat`（`period`=1で単一操作の連打、2〜4で
+  交互/周期的なフォールバック、`null`は末尾で繰り返していない）。
+  `top_signature` は窓内で最多の署名、`screen_kind_counts`/`button_counts`/`distinct_signatures`/
+  `distinct_screen_kinds` は窓（最新128 plan）の内訳、`window_plans` は集計した窓、`plan_records` は
+  末尾範囲内で照合したplan行数、`last_plan_age_sec` は最新planの保存 age。
+  decision理由・chart step・将軍/城名・frame/decision hash・runtime名・hold_ms・log本文は読まない。
+  読み取り前後でcanonicalを再確認し、切替があれば `status=identity_changed` と全値nullへ戻す。
+  窓は観測末尾でありコーナー全体の履歴ではない。`tail_truncated` はcollectorの末尾制限を示す。
+  外部lease・不正行は件数だけ数えて `status=partial`、全行不正なら集計をnullのまま `unavailable` にする。
+  有効なplan行が無い場合は集計をnullに保つ（0件の正常を意味しない）。
+  出力予算を超える場合は本projectionをstatus=output_omittedへ置き換える。
 - boundary: Soren `tmp/state/corner_boundary_improvement.json` /
   `corner_boundary_prediction.json` の `completed_at` と age のみ。コーナーの
   境界待ちの可否を判定できる。

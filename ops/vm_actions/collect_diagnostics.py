@@ -40,6 +40,12 @@ Observed sources (all read-only):
     Its current runtime's scene producer, worker and bounded event log are
     separately projected to fixed enums, counts and ages; facts and scene
     identities are never emitted.
+  - while the retro corner is actively running Hanjuku Hero, a bounded tail of
+    that runtime's own decision log, projected in memory to the fixed
+    screen-kind vocabulary, allowlisted pad button names, counts, ages and the
+    trailing identical-signature run, so a corner that keeps repeating one
+    operation stays diagnosable. Reasons, chart steps, names, hashes, runtime
+    identifiers and log bodies are never read out.
   - a bounded, redacted tail (last lines only) of the NetHack agent's own log
     (state_dir/logs/agent.log, written by supervise.run_callable_loop) so a
     corner that reaches gameplay but never acts stays diagnosable. No
@@ -4118,6 +4124,7 @@ def _collect_programs(state_dir, soren, now):
             and game_switch.get("active_game") == "hanjuku-hero"):
         retro["narration_playback"] = _collect_hanjuku_narration_playback(soren)
         retro["scene_narration"] = _collect_hanjuku_scene_narration(state_dir)
+        retro["decision_plans"] = _collect_hanjuku_decision_plans(state_dir)
     payload["hanjuku_predictions"] = _collect_hanjuku_predictions(state_dir)
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
     payload["retro_program_queues"] = _collect_retro_program_queues(soren)
@@ -4476,6 +4483,24 @@ def _collect_hanjuku_scene_log(path, active, now):
     return out
 
 
+def _hanjuku_active_runtime(root):
+    """Resolve the current Hanjuku runtime identity from the canonical switch record.
+
+    The identity (game/runtime_id/generation/lease_id) is used only to match
+    records and to resolve one runtime directory. It is never emitted.
+    """
+    canonical = _read_hanjuku_scene_record(Path(root) / "game_switch.json")
+    active = canonical.get("active")
+    if (canonical.get("phase") != "ready" or not isinstance(active, dict)
+            or active.get("game") != "hanjuku-hero"
+            or _hanjuku_scene_int(active.get("generation")) is None
+            or not isinstance(active.get("runtime_id"), str)
+            or not re.fullmatch(r"g[0-9]+-[a-f0-9]{8}", active["runtime_id"])
+            or not isinstance(active.get("lease_id"), str) or not active["lease_id"]):
+        return None, None
+    return active, Path(root) / "runtimes" / active["runtime_id"]
+
+
 def _collect_hanjuku_scene_narration(state_dir, now=None):
     """Current-runtime scene progress, never facts, text, hashes or identity tokens."""
     empty = dict(status="unavailable", generation=None, producer=None, worker=None, log=None)
@@ -4483,16 +4508,9 @@ def _collect_hanjuku_scene_narration(state_dir, now=None):
         if now is not None and (type(now) not in (int, float) or not math.isfinite(now) or now < 0):
             return empty
         root = Path(state_dir)
-        canonical = _read_hanjuku_scene_record(root / "game_switch.json")
-        active = canonical.get("active")
-        if (canonical.get("phase") != "ready" or not isinstance(active, dict)
-                or active.get("game") != "hanjuku-hero"
-                or _hanjuku_scene_int(active.get("generation")) is None
-                or not isinstance(active.get("runtime_id"), str)
-                or not re.fullmatch(r"g[0-9]+-[a-f0-9]{8}", active["runtime_id"])
-                or not isinstance(active.get("lease_id"), str) or not active["lease_id"]):
+        active, runtime = _hanjuku_active_runtime(root)
+        if active is None:
             return empty
-        runtime = root / "runtimes" / active["runtime_id"]
         run = _read_hanjuku_scene_record(runtime / "hanjuku_run.json")
         if (not _hanjuku_scene_matches(run, active, schema=False)
                 or run.get("playing") is not True
@@ -4508,6 +4526,223 @@ def _collect_hanjuku_scene_narration(state_dir, now=None):
         if again.get("phase") != "ready" or again.get("active") != active:
             return {**empty, "status": "identity_changed"}
         return result
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        return empty
+
+
+HANJUKU_DECISION_LOG_MAX_BYTES = 128 * 1024
+HANJUKU_DECISION_LOG_MAX_LINES = 1024
+# Bounded window of the newest planned-action records the aggregate covers.
+HANJUKU_DECISION_WINDOW_PLANS = 128
+HANJUKU_DECISION_MAX_ACTIONS = 4
+HANJUKU_DECISION_MAX_BUTTONS = 4
+HANJUKU_DECISION_TOP_KINDS = 6
+HANJUKU_DECISION_MAX_PERIOD = 4
+HANJUKU_DECISION_EVENTS = ("action_plan", "decision")
+# Owned by hanjuku_screen.classify_text plus the literal screen.kind overrides
+# in hanjuku_screen.parse, hanjuku_bot and hanjuku_policy.
+# tests/test_hanjuku_decision_diagnostics.py re-derives that vocabulary from
+# source, so a new kind fails closed as "other" instead of being emitted.
+HANJUKU_DECISION_SCREEN_KINDS = frozenset({
+    "attack_started", "barrier_removed", "battle", "battle_menu",
+    "battle_menu_pending", "boss_attack_started", "card_select", "castle_info",
+    "castle_menu", "defense_started", "discharge_menu", "egg_battle_menu",
+    "egg_choice_menu", "general_list", "gift_request", "main_menu", "map",
+    "map_target", "monster_menu", "month_menu", "name_entry", "okunote_menu",
+    "sealed_castle", "shop_exit_confirm", "shop_list", "shop_quantity",
+    "shop_quantity_prompt", "sortie_confirm", "summer_bonus",
+    "summer_bonus_message", "text", "unknown", "world_map", "yes_no",
+})
+# Pad buttons the reviewed policy can emit; anything else becomes "other".
+HANJUKU_DECISION_BUTTONS = frozenset({
+    "a", "b", "x", "y", "l", "r", "up", "down", "left", "right", "start",
+    "select",
+})
+
+
+def _hanjuku_decision_buttons(value):
+    """Normalize planned actions to allowlisted button names.
+
+    An empty list is a real plan that sends nothing; None means the shape was
+    not a bounded list of pad actions and must not be reported as an operation.
+    """
+    if not isinstance(value, list) or len(value) > HANJUKU_DECISION_MAX_ACTIONS:
+        return None
+    out = []
+    for action in value:
+        if not isinstance(action, dict) or action.get("type") != "pad":
+            return None
+        names = action.get("buttons")
+        if not isinstance(names, list) or not names or len(names) > HANJUKU_DECISION_MAX_BUTTONS:
+            return None
+        for name in names:
+            if not isinstance(name, str):
+                return None
+            out.append(name if name in HANJUKU_DECISION_BUTTONS else "other")
+    return out
+
+
+def _hanjuku_decision_signature(kind, buttons):
+    return {"screen_kind": kind, "buttons": buttons}
+
+
+def _hanjuku_decision_tail(window):
+    """Trailing whole repetitions of the newest short signature unit.
+
+    A blind confirm/cancel fallback alternates two different plans, so a plain
+    "same plan N times" counter would miss it. Period 1 covers one plan pressed
+    over and over, period 2-4 the alternating cycles, and period null means the
+    runtime is not repeating at the tail of the sampled window.
+    """
+    best = None
+    for period in range(1, HANJUKU_DECISION_MAX_PERIOD + 1):
+        if len(window) < 2 * period:
+            continue
+        unit = window[-period:]
+        repeats = 0
+        while (len(window) >= (repeats + 1) * period
+               and window[-(repeats + 1) * period:len(window) - repeats * period] == unit):
+            repeats += 1
+        if repeats < 2:
+            continue
+        covered = period * repeats
+        if best is None or covered > best[0] * best[1]:
+            best = (period, repeats, unit)
+    if best is None:
+        kind, buttons = window[-1]
+        return {"period": None, "repeats": 1,
+                "signatures": [_hanjuku_decision_signature(
+                    kind, None if buttons is None else list(buttons))]}
+    period, repeats, unit = best
+    return {"period": period, "repeats": repeats,
+            "signatures": [_hanjuku_decision_signature(
+                kind, None if buttons is None else list(buttons))
+                for kind, buttons in unit]}
+
+
+def _collect_hanjuku_decision_plans(state_dir, now=None):
+    """Bounded repeat evidence for the current runtime's planned pad actions.
+
+    A corner that keeps answering with the same input is invisible in the
+    chart counters (they only move on purchases, battles and months) and never
+    trips the stall watchdog while the cursor keeps blinking. This projects the
+    repeated operation itself: the fixed screen-kind vocabulary, allowlisted
+    button names, counts, ages and the trailing repeating signature unit.
+
+    Decision reasons, chart steps, general/castle names, frame or decision
+    hashes, runtime identifiers, planned hold times and log bodies are never
+    read out or emitted.
+    """
+    empty = dict(status="unavailable", sampled_bytes=None, sampled_lines=None,
+                 tail_truncated=None, matched_records=None, rejected_records=None,
+                 plan_records=None, window_plans=None, distinct_signatures=None,
+                 distinct_screen_kinds=None, screen_kind_counts=None,
+                 button_counts=None, top_signature=None, trailing_repeat=None,
+                 last_plan_age_sec=None)
+    try:
+        if now is not None and (type(now) not in (int, float) or not math.isfinite(now) or now < 0):
+            return empty
+        root = Path(state_dir)
+        active, runtime = _hanjuku_active_runtime(root)
+        if active is None:
+            return empty
+        run = _read_hanjuku_scene_record(runtime / "hanjuku_run.json")
+        if (not _hanjuku_scene_matches(run, active, schema=False)
+                or run.get("playing") is not True
+                or run.get("terminal_reason") or run.get("terminal_candidate")):
+            return empty
+        fd = _open_hanjuku_scene_source(runtime / "hanjuku_decisions.jsonl")
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                return empty
+            offset = max(0, info.st_size - HANJUKU_DECISION_LOG_MAX_BYTES)
+            os.lseek(fd, offset, os.SEEK_SET)
+            raw = os.read(fd, HANJUKU_DECISION_LOG_MAX_BYTES + 1)
+            truncated = offset > 0 or len(raw) > HANJUKU_DECISION_LOG_MAX_BYTES
+            raw = raw[:HANJUKU_DECISION_LOG_MAX_BYTES]
+            if offset:
+                newline = raw.find(b"\n")
+                raw = raw[newline + 1:] if newline >= 0 else b""
+            lines = raw.decode("utf-8", errors="replace").splitlines()
+            if len(lines) > HANJUKU_DECISION_LOG_MAX_LINES:
+                lines = lines[-HANJUKU_DECISION_LOG_MAX_LINES:]
+                truncated = True
+        finally:
+            os.close(fd)
+        sampled_bytes, sampled_lines = len(raw), len(lines)
+        if not lines:
+            return {**empty, "sampled_bytes": sampled_bytes,
+                    "sampled_lines": sampled_lines, "tail_truncated": truncated}
+        # Compare live records against a clock sampled after this read: main's
+        # timestamp predates the other collectors and drops fractional seconds.
+        clock = time.time() if now is None else now
+        matched = rejected = 0
+        signatures = []
+        last_plan_age = None
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                if not _hanjuku_scene_matches(row, active):
+                    raise ValueError("unattributed event")
+                event = row.get("event")
+                if event not in HANJUKU_DECISION_EVENTS:
+                    raise ValueError("invalid event")
+                age = _hanjuku_scene_age(row.get("at"), clock)
+                if age is None:
+                    raise ValueError("invalid event age")
+            except (ValueError, TypeError, OverflowError, RecursionError):
+                rejected += 1
+                continue
+            matched += 1
+            if event != "action_plan":
+                continue
+            kind = row.get("screen_kind")
+            if not isinstance(kind, str) or kind not in HANJUKU_DECISION_SCREEN_KINDS:
+                kind = "other"
+            buttons = _hanjuku_decision_buttons(row.get("planned_actions"))
+            last_plan_age = age if last_plan_age is None else min(last_plan_age, age)
+            signatures.append((kind, None if buttons is None else tuple(buttons)))
+        out = dict(status="unavailable", sampled_bytes=sampled_bytes,
+                   sampled_lines=sampled_lines, tail_truncated=truncated,
+                   matched_records=matched, rejected_records=rejected,
+                   plan_records=len(signatures), window_plans=None,
+                   distinct_signatures=None, distinct_screen_kinds=None,
+                   screen_kind_counts=None, button_counts=None,
+                   top_signature=None, trailing_repeat=None,
+                   last_plan_age_sec=last_plan_age)
+        if not signatures:
+            return out if rejected else {**out, "status": "available"}
+        window = signatures[-HANJUKU_DECISION_WINDOW_PLANS:]
+        kinds, buttons_seen, repeats = {}, {}, {}
+        for signature in window:
+            kind, buttons = signature
+            kinds[kind] = kinds.get(kind, 0) + 1
+            for name in (buttons or ()):
+                buttons_seen[name] = buttons_seen.get(name, 0) + 1
+            repeats[signature] = repeats.get(signature, 0) + 1
+        ranked = sorted(repeats.items(), key=lambda item: (-item[1], item[0]))
+        top_kind, top_buttons = ranked[0][0]
+        out.update(
+            status="partial" if rejected else "available",
+            window_plans=len(window), distinct_signatures=len(repeats),
+            distinct_screen_kinds=len(kinds),
+            screen_kind_counts=dict(sorted(
+                sorted(kinds.items(), key=lambda item: (-item[1], item[0]))
+                [:HANJUKU_DECISION_TOP_KINDS])),
+            button_counts={name: buttons_seen.get(name, 0)
+                           for name in sorted(HANJUKU_DECISION_BUTTONS | {"other"})},
+            top_signature={**_hanjuku_decision_signature(
+                top_kind, None if top_buttons is None else list(top_buttons)),
+                "count": ranked[0][1]},
+            trailing_repeat=_hanjuku_decision_tail(window),
+        )
+        again = _read_hanjuku_scene_record(root / "game_switch.json")
+        if again.get("phase") != "ready" or again.get("active") != active:
+            return {**empty, "status": "identity_changed"}
+        return out
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return empty
 
@@ -6230,6 +6465,12 @@ def _diagnostics_budget(payload):
     if (len(text.encode("utf-8")) > MAX_JSON_BYTES and isinstance(retro, dict)
             and "scene_narration" in retro):
         retro["scene_narration"] = {"status": "output_omitted"}
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # The repeated-operation projection is the same class of optional detail:
+    # drop it before the current game's tactical evidence is reduced.
+    if (len(text.encode("utf-8")) > MAX_JSON_BYTES and isinstance(retro, dict)
+            and "decision_plans" in retro):
+        retro["decision_plans"] = {"status": "output_omitted"}
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     # Keep current game evidence through the older detail reductions first.
     if len(text.encode("utf-8")) > MAX_JSON_BYTES and "hanjuku_tactical" in payload:
