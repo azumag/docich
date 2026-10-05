@@ -16,8 +16,10 @@ import hashlib
 import math
 from pathlib import Path
 import tempfile
+import re
 import time
 from typing import Callable, Mapping, Sequence
+from urllib.parse import urlsplit
 
 from .reply_research_web import WebBroker, Receipt, canonical_url, search_public
 from .reply_routing import _has_private_route_input
@@ -26,6 +28,8 @@ MAX_QUERIES = 3
 MAX_SOURCES = 4
 MAX_QUERY_CHARS = 256
 MAX_EXCERPT_BYTES = 8192
+MAX_ALLOWED_HOSTS = 16
+_HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,34 @@ def _queries(values: Sequence[str]) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _allowed_hosts(values: Sequence[str] | None) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    if not isinstance(values, (list, tuple)) or not 1 <= len(values) <= MAX_ALLOWED_HOSTS:
+        raise ValueError("invalid_hosts")
+    result: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            raise ValueError("invalid_hosts")
+        host = value.strip().lower()
+        if (not host or len(host) > 253 or host.startswith(".") or host.endswith(".")
+                or ".." in host or not _HOST_RE.fullmatch(host)):
+            raise ValueError("invalid_hosts")
+        if host not in result:
+            result.append(host)
+    return tuple(result)
+
+
+def _host_allowed(url: str, allowed: tuple[str, ...]) -> bool:
+    if not allowed:
+        return True
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return any(host == base or host.endswith("." + base) for base in allowed)
+
+
 def _excerpt(text: str) -> str:
     if not isinstance(text, str) or not text:
         raise ValueError("invalid_receipt")
@@ -135,6 +167,7 @@ def collect_verified_web_material(
     env: Mapping[str, str],
     timeout_sec: float = 20.0,
     max_sources: int = MAX_SOURCES,
+    allowed_hosts: Sequence[str] | None = None,
     searcher: Callable[[str, float], Sequence[str]] | None = None,
     broker=None,
     clock: Callable[[], float] = time.monotonic,
@@ -153,6 +186,7 @@ def collect_verified_web_material(
         raise ValueError("invalid_limit")
     if not isinstance(env, Mapping):
         raise ValueError("invalid_env")
+    hosts = _allowed_hosts(allowed_hosts)
 
     deadline = clock() + float(timeout_sec)
     search = searcher or (lambda query, timeout: search_public(query, timeout, env=env))
@@ -174,7 +208,7 @@ def collect_verified_web_material(
                 continue
             for value in found[:8]:
                 url = canonical_url(value)
-                if not url:
+                if not url or not _host_allowed(url, hosts):
                     continue
                 if url not in candidate_queries and len(candidates) < 16:
                     candidates.append(url)
