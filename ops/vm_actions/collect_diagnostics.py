@@ -455,8 +455,8 @@ def _collect_storage_breakdown(
 
 CPU_PROFILE_REPORT = Path("/tmp/docich-cpu-profile-latest.json")
 CPU_PROFILE_MAX_BYTES = 32768
-CPU_PROFILE_MAX_COMPONENTS = 20
-CPU_PROFILE_MAX_SPAWNS = 20
+CPU_PROFILE_MAX_COMPONENTS = 30
+CPU_PROFILE_MAX_SPAWNS = 30
 CPU_PROFILE_FRESH_SEC = 900
 
 
@@ -476,7 +476,12 @@ def _cpu_profile_label(value):
         "retroarch", "x_server", "xdotool", "x_capture_tool", "x_query_tool",
         "audio_server", "audio_cli", "media_player", "browser", "obs", "tmux",
         "node", "sshd", "tailscale", "container_runtime", "curl", "git", "sleep",
-        "inotifywait", "jq", "kernel", "shell", "python", "other", "profiler",
+        "inotifywait", "jq", "cat", "grep", "sed", "awk", "tail", "head",
+        "cut", "tr", "wc", "date", "stat", "ps", "pgrep", "find", "sort",
+        "readlink", "realpath", "basename", "dirname", "tee", "touch", "rm",
+        "mv", "mkdir", "chmod", "cmp", "env", "nice", "timeout", "cksum",
+        "sha256sum", "mktemp", "flock", "xargs",
+        "kernel", "shell", "python", "other", "profiler",
     }:
         return value
     if re.fullmatch(r"ffmpeg:(?:capture|stream|x11grab|other)", value):
