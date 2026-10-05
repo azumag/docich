@@ -52,6 +52,21 @@ jobs:
       - name: Verify DAVE, Opus and raw PCM bootstrap without Discord login
         working-directory: runtimes/discord-voice
         run: npm run check:live
+      - name: Parse Windows acceptance bootstrap
+        working-directory: runtimes/discord-voice
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "./acceptance-windows.ps1"),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
       - name: Run live startup shutdown contracts on Windows
         working-directory: runtimes/discord-voice
         run: npm run test:live-contracts
