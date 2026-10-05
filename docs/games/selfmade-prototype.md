@@ -20,6 +20,24 @@ RuleSpecの全フィールドと型は `Rules.parse` を正本とし、fixture�
 
 `check_proposal` は将来の隔離IPC向けの純粋一致検査。生成側のWIN/success/位置や所持品変更を勝利証拠に使わない。現時点では生成側との通信を行わず、生成描画も合成しない。すべての重要entityを信頼側だけが描画する。
 
+## runner / IPC の純粋準備契約
+
+`selfmade_contract.py` は実行に接続しない独立した準備契約（`CONTRACT_VERSION=1`）を持つ。既存artifact schema/engine/judge版、`image_digest=None` のfixture、`FixtureSession` は変更しない。適合するreportを作っても実行許可やOS隔離の証拠にはならず、`start_generated` は引き続き常に拒否する。
+
+`validate_preflight` は将来の信頼側collectorのreportについて、版と明示されたimmutable `sha256:` image digest、OS隔離、非root、networkなし、capabilityなし、bundle read-only、host HOME/資格情報/Docker socket非露出、host fallbackなしを厳密検査する。CPU1000 millicores、RAM256MiB、process16、出力16MiBはIssueの初期上限案と一致する整数値のみ。tmpは正の明示上限を必須とし、未決定の実サイズやsandbox製品を選ばない。これはreportの型・契約一致検査だけで、collector、実mount、OS資源制限、遮断probeは未実装。ゲーム/providerの自己申告をreportの根拠にしてはならない。
+
+`parse_input` は既存の1KiB以内・4項目solver入力を状態更新なしで検査し、immutableな値を返す。frame/連続seq/buttons/ticksの既存契約を維持し、受理時のseq更新は呼出し側の責任とする。
+
+`parse_proposal` の内部準備envelopeは `version/seq/tick/state` の4項目。seqは信頼側が受理済みのsolver入力batchを指し、そのbatchの各tickで同じseqを使える。信頼側が与える現在seqと独立計算済みtick/stateに完全一致する場合だけ、生成JSONへの参照ではなく元のimmutableな信頼側Stateを返す。未知項目、重複キー、非有限値、偽WIN、所持品/位置/ゲート等の書換え、不正seq/tickは拒否する。これはlive wire ABIの採用ではなくpure fixture用の版付き準備契約。channelのartifact identity、framing、生成guest APIは別途設計・検証する。
+
+`OutputBudget` はsession全体の生成出力16MiBを数える。将来のtransportはstdout/stderr・診断・framing・描画を同じbudgetへ、保存やparseより前に算入する必要がある。拒否/不正JSONも算入し、超過後は継続を拒否する。JSONのdecode前には呼出し側が明示した `max_message_bytes` も検査する。Issueはこのper-message上限を定めていないためruntime既定値を新設せず、選定を残件とする。現helperはstreamの読取り・buffer上限・process強制終了を実装しない。
+
+追加回帰はstdlibだけで実行できる。合成report、入力/提案、総出力とmessage境界を検査し、process/network起動口をテスト中に禁止したまま既存fixtureの信頼側replayも確認する。これらの成功は実OS隔離・生成実行・実AI生成/攻略の成功を示さない。
+
+```sh
+PYTHONPATH=src python3 -m unittest discover -s tests -p test_selfmade_contract.py -v
+```
+
 ## fail-closed と未完範囲
 
 `start_generated(path)` は常にsandbox_violationを返す。隔離環境を用意していないため、生成コードのimport/eval/子プロセス起動/host fallbackは存在しない。無限loop/crash/外部アクセスのsourceを渡す回帰も起動前に拒否する。OSによるnetwork/HOME/秘密/Docker socket遮断、資源上限・実子プロセスkill/reapを実測したという主張ではない。
