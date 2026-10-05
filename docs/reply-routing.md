@@ -132,3 +132,127 @@ Web本文workerの失敗も `web_fetch` / `web_reason` の固定enumだけを、
 
 
 配信batchはDiscordの直近3turnと別契約で、最大10件の調査対象を欠落なく投影する。全対象について必要なscopeの実取得引用の対応を検証し、不足があるbatchをreadyにしない。固定終端はplatform/batch単位で投入・再生dedupし、異なるbatchの同本文を抑止しない。claim拒否だけでackせずpendingを保つ。legacy bug dispatcherとstrategy Codex分岐は起動不可。podcast経路は明示オーナー例外として対象外にし、機能を保持する。
+
+## 会話用direct API profile（追加実装、既定off）
+
+軽い会話・資料取得後のpersona回答と、資料を集めるresearch modelを分離する。
+有料モデルもoperatorが明示選択できる設計とし、旧「無料保証まで追加不可」の
+無料profile検討はその条件下の履歴として残す。料金表の検証を課金上限とは扱わない。
+この追加実装だけで既存model登録・鍵・本番設定・companion配信のlocal-only
+候補filterを変更しない。研究のGo/opencode.ai固定namespace、最大8提案、receipt/
+hash/引用照合、confidence .80は変更しない。
+
+Discordでは `DOCICH_DISCORD_LLM_PROVIDER` を `compatible`（従来の既定）/
+`openrouter`/`vercel`/`cloudflare` から明示する。named profileは固定HTTPS base、
+単一model、既存の明示API keyが必要。modelは具体IDの固定allowlistで、
+OpenRouter/Vercelは`openai/gpt-4.1-nano`/`openai/gpt-6-luna`、
+Cloudflareは`@cf/qwen/qwen3-30b-a3b-fp8`/
+`@cf/meta/llama-3.1-8b-instruct-fp8-fast`だけを受理する。
+`:online`等のvariant、`vmc/...` virtual model、自動router、未知IDはPOST前拒否。
+OpenRouterのonline variantはweb pluginを有効化し、Vercel virtual modelはrequestの
+provider/fallback制限を上書きし得るため、safe alphabetだけには依存しない。
+OpenRouter/Vercelは
+`DOCICH_DISCORD_LLM_UPSTREAM` に単一provider slugを設定する。
+自動router、model fallback配列、追加upstream候補は生成しない。
+
+- OpenRouter base: `https://openrouter.ai/api/v1`。`provider.only`/`order`を同じ
+  singletonへ固定し、`allow_fallbacks=false`、`require_parameters=true`を送信する。
+- Vercel base: `https://ai-gateway.vercel.sh/v1`。OpenAI互換RESTの
+  `providerOptions.gateway.only`へsingletonを送る。`order`だけには依存しない。
+- Cloudflare Workers AI base: `https://api.cloudflare.com/client/v4/accounts/<32hex-account-id>/ai/v1`。
+  `@cf/...`の単一model、`options.rejectIfBusy=true`。Cloudflare AI Gatewayや
+  第三者providerへ切り替えない。
+
+OpenRouter/Vercelのnamed profileは
+`DOCICH_DISCORD_LLM_BILLING_MODE=credits_only`も必要。この値はoperatorによる
+「BYOK未設定でGateway creditsのみ使用」の宣言であり、account設定の検査や
+請求上限の強制ではない。OpenRouter BYOKはshared capacityへ、Vercel BYOKは
+system credentialsへfallbackしてcreditsを消費できる。BYOK accountをこのprofile
+へ渡さない。宣言だけで実accountがBYOKなしになったとは主張しない。
+
+named profileのPOSTは入力JSON32KiB/受信64KiB/出力500tokens、retry0。
+重複JSON key、複数choices、tool result、finish_reason!=stop、欠落/超過usageを
+拒否し、打ち切られたstructured outputを配信へ通さない。HTTP429は固定rate-limit
+信号に投影し、本文/headers/例外を返さない。ambient proxy/redirectは使わない。
+回答workerの環境は選択済み回答keyとPATH/LANGだけで、bot token・memory path・
+research keyを継承しない。named profileはrouting無効時も最大45秒のprocess deadline。
+routing有効時のAPI-onlyも分類からの残り45秒をbounded callbackへ渡す。
+
+共通native dispatcherのopt-in名は次のとおり。既存`openrouter:`/`vercel:`は
+従来OpenCode CLIのまま、同名を暗黙にHTTPへ変更しない。
+
+- `openrouter-api:openai/gpt-4.1-nano`:
+  既存`OPENROUTER_API_KEY`またはその`_FILE`、
+  `DOCICH_CHAT_OPENROUTER_UPSTREAM=openai`、
+  `DOCICH_CHAT_OPENROUTER_BILLING_MODE=credits_only`
+- `vercel-api:openai/gpt-4.1-nano`:
+  既存`AI_GATEWAY_API_KEY`またはその`_FILE`、
+  `DOCICH_CHAT_VERCEL_UPSTREAM=openai`、
+  `DOCICH_CHAT_VERCEL_BILLING_MODE=credits_only`
+- `cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8`:
+  既存`CLOUDFLARE_API_TOKEN`またはその`_FILE`、
+  `DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID=<32hex>`。
+  safe agent alphabet上の`cf/...`を固定HTTP modelの`@cf/...`へ投影する。
+
+新specはCOMMENTの会話生成のみで、RADIO/RESEARCH/PREPASSは拒否する。
+画像provider allowlistは拡張しない。明示chain内の次候補はbounded direct APIに限定し、
+既存local/CLI chainとの混在は送信前に拒否する。fallback候補を環境やモデル回答から作らない。typed requestでもrawのmodelと
+実HTTP modelが一致しなければ、鍵解決/worker/telemetry前に拒否する。
+単一specのprovider失敗でOpenCodeを開始しない。新direct specを含むnative chainは
+queue待機と明示direct API fallback全体で45秒を共用し、callerの短い上限も保持する。
+queue sleepは残りdeadlineとmax_waitへclampする。既存local単体/legacy chainの
+HTTP socket timeoutを壁時計停止へ変更したとは主張しない。
+既存queue/backoff/secret-free
+telemetryを共用し、新worker/service/persistent stateは追加しない。
+
+### 公開料金比較（2026-10-05確認、実call未実施）
+
+USD/100万tokensの公開単価。Gatewayのprovider差、変更、cache、reasoning、
+funding/plan/add-on料金に注意し、model固定だけで総額保証にしない。
+
+- OpenRouter/Vercel GPT-4.1 nano: 入力$0.10/出力$0.40。
+  非reasoningの初期比較候補。日本語品質・latencyは未測定。
+- OpenRouter/Vercel GPT-6 Luna: 入力$0.10/出力$0.50。
+  reasoning tokensも費用になり得るため、単価だけでnanoより有利としない。
+- Workers AI Qwen3-30B-A3B fp8: 入力$0.0509/出力$0.335（料金表は入力$0.051に丸め）。
+  reasoning対応で、日本語品質・latency・実usageは未測定。
+- OpenRouterの通常funding feeは5.5%、非crypto最低$0.80。
+  Vercelはtoken markup0だがpayment processing/add-on費用は別。
+- Vercelの月$5 free creditsは対象modelの一部だけで、credits購入後は月無料枠が終了。
+  Workers AIは10,000Neurons/日が無料、超過はWorkers Paidが必要で$0.011/1,000Neurons。
+  Workers Paidのaccount最低料金は$5/月。無料枠を全provider共通の保証にしない。
+
+公開単価で入力2,000/output250tokensならnano約$0.000300、Luna約$0.000325、
+Qwen3約$0.000186。これは追加reasoning・fees・plan料金を含まない比較用計算で、
+請求測定ではない。実canaryにはprovider/model/upstream、総額/回数上限の別判断が必要。
+新credential作成、account/BYOK設定、credits購入、production enableは行っていない。
+
+公式根拠:
+[OpenRouter routing](https://openrouter.ai/docs/guides/routing/provider-selection)、
+[OpenRouter online variant](https://openrouter.ai/docs/guides/routing/model-variants/online)、
+[Vercel virtual model precedence](https://vercel.com/docs/ai-gateway/models-and-providers/virtual-models)、
+[OpenRouter nano](https://openrouter.ai/openai/gpt-4.1-nano)、
+[OpenRouter Luna](https://openrouter.ai/openai/gpt-6-luna)、
+[OpenRouter pricing](https://openrouter.ai/pricing)、
+[OpenRouter funding fees](https://openrouter.ai/blog/announcements/simplifying-our-platform-fee/)、
+[OpenRouter BYOK](https://openrouter.ai/docs/guides/overview/auth/byok)、
+[Vercel OpenAI REST](https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions)、
+[Vercel provider filtering](https://vercel.com/docs/ai-gateway/models-and-providers/provider-filtering-and-ordering)、
+[Vercel pricing](https://vercel.com/docs/ai-gateway/pricing)、
+[Vercel nano](https://vercel.com/ai-gateway/models/gpt-4.1-nano)、
+[Vercel Luna](https://vercel.com/ai-gateway/models/gpt-6-luna)、
+[Vercel BYOK](https://vercel.com/docs/ai-gateway/authentication-and-byok/byok)、
+[Workers AI OpenAI compatibility](https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/)、
+[Workers AI Qwen3](https://developers.cloudflare.com/workers-ai/models/qwen3-30b-a3b-fp8/)、
+[Workers AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/)、
+[Workers plan pricing](https://developers.cloudflare.com/workers/platform/pricing/)。
+
+### Runtime変更checklist
+
+このopt-in追加は既存native dispatch/Discord回答workerを共用する。
+runtime registry/manifest・worker health・queue registryには新service/lane/stateがなく、
+production登録変更は不要。structured telemetryは既存provider specと固定failure enum、
+429は既存backoffを共用し、秘密/本文/例外fieldを増やさない。diagnosticsは既存
+configuration presenceとworker結果の範囲であり、account請求状態や実model受入を
+証明しない。公開synthetic regressionで設定拒否・payload固定・打切/429・deadline・
+worker環境・CLI抑止・persona保全を検査する。本番配備/再起動は別のrelease gate。

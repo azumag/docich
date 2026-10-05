@@ -785,6 +785,7 @@ def test_actual_conversation_dedup_memory_and_single_delivery(monkeypatch):
     backend = chat.ChatBackend(settings)
     calls = []
     monkeypatch.setattr(backend, "_complete_api", lambda m: calls.append(m) or "おめでとうございます。")
+    monkeypatch.setattr(backend, "_complete_with_deadline", lambda m, remaining: calls.append(m) or "おめでとうございます。")
     async def run():
         memory = MemoryStore(None)
         conversation = chat.Conversation(settings, backend, memory)

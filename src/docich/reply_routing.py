@@ -236,7 +236,10 @@ def complete(messages, *, api: Callable, env: Mapping[str, str], transport=None,
              "decision_status": decision.status, "research_status": "not_requested"}
     try:
         if decision.api_only:
-            return api(messages)
+            remaining = deadline - clock()
+            if remaining <= 0:
+                return UNAVAILABLE_REPLY
+            return bounded_api(messages, remaining) if bounded_api is not None else api(messages)
         # A provider outage or an unusable/low-confidence classifier result is
         # not evidence that a second provider should be started. Likewise, an
         # explicit unknown label is not a request for an unbounded research run.

@@ -1,8 +1,8 @@
 # Discord voice: offline turn coordinator (#1628)
 
-This is the synthetic, offline foundation for [Issue #1628](https://github.com/azumag/docich/issues/1628). It is not a working Discord voice Bot or a deployable service. Importing the module does nothing. There are no credentials, built-in network clients, file writers, startup command, new permissions, provider dependencies, Docker image or deployment hooks. The separate injected VOICEVOX boundary below is tested offline. Only adapters with `kind: 'fake'` are accepted in this slice.
+This is the synthetic, offline foundation for [Issue #1628](https://github.com/azumag/docich/issues/1628). It is not a working Discord voice Bot or a deployable service. Importing the module does nothing. There are no credentials, built-in network clients, file writers, new permissions, provider dependencies, Docker image or deployment hooks. An explicit offline CLI now composes the coordinator, internal conversation core and injected VOICEVOX boundary with synthetic providers. The separate injected VOICEVOX boundary below is tested offline. Only adapters with `kind: 'fake'` are accepted in this slice.
 
-The current text Bot remains in `workers/discord-chat`: Workers AI, canonical persona and SQLite Durable Object memory, with public HTTP limited to `/healthz`. This slice does not import or change that Bot, its intents, model, prompt, memory or endpoint. The conversation adapter is a future integration boundary; the tests use fixed synthetic replies and transient scoped history, not the real persona/LLM or a shared long-term memory database.
+The current text Bot remains in `workers/discord-chat`: Workers AI, canonical persona and SQLite Durable Object memory, with public HTTP limited to `/healthz`. This slice does not import or change that Bot, its intents, model, prompt, memory or endpoint. The offline application reuses the internal conversation core and canonical public persona with synthetic AI only. The tests exercise fixed replies and transient scoped history; real persona/LLM behavior and a shared long-term memory database remain unaccepted.
 
 ## Run the offline contracts
 
@@ -64,7 +64,7 @@ While playback is active, speech from an **already explicitly activated** human 
 - Transport: `connect(channel, {signal})`, `play(pcm, {format, signal})`, synchronous idempotent `stop()` / `disconnect()`.
 - STT: `transcribe(pcm, {format, scope, signal})` returns a transcript.
 - Conversation: `reply({scope, turnId, transcript}, {signal})` returns text.
-- TTS: `synthesize(reply, {format, signal})` returns owned `Int16Array` PCM.
+- TTS: `synthesize(reply, {format, scope, signal})` returns owned `Int16Array` PCM.
 
 Every asynchronous operation must honor `AbortSignal`. Transport `stop()` must synchronously stop emitting playback; `disconnect()` must stop admission. The coordinator races deadlines/cancellation, observes failures without printing adapter exceptions, and ignores late results. A late returned accessible TTS buffer is also zeroed using the typed-array intrinsic. Detached/invalid views and overridden cleanup methods cannot poison the turn queue. A transferred buffer destination is no longer accessible through the detached handle; its adapter owner must erase that destination. The runtime does not claim to erase inaccessible transferred memory. This protects subsequent stages from stale output; it cannot force an external provider to stop billing or prove that an uncooperative adapter has released its own resources. A future live adapter therefore requires independent cancellation/cleanup and DAVE/transport acceptance tests before removing the fake-only fence.
 
@@ -98,3 +98,37 @@ The injected `request({url, method, headers, body, signal, maxBytes})` resolves 
 WAV conversion accepts bounded little-endian RIFF/WAVE with one 16-byte PCM `fmt ` and one `data` chunk, signed PCM16, mono/stereo, 24kHz or 48kHz, at most 30 seconds. Chunk padding, RIFF length, byte rate, alignment, duplicates and data sizes are checked; unsupported formats fail closed. Stereo is averaged, 24kHz is linearly interpolated to 48kHz (last sample held), and trailing zero padding reaches a 960-sample/20ms frame. Output is a separately owned `Int16Array`. This deterministic narrow converter is not a general codec/resampler or a real audio-quality acceptance result.
 
 No logger is provided. Public exceptions have fixed codes and no provider cause, reply, scope, endpoint, credential or exception message. Text/query strings in transient JS/transport memory cannot be reliably erased; the trusted transport must not log URLs (query contains text), body, headers, raw exceptions or provider bytes. Tests use generated WAV/JSON, injected transport only, and cover type/size/format limits, conversion samples, cancellation, total deadline, late bytes, concurrency and fixed private-error handling. No actual endpoint, VC, recording, external synthesis, billing, installation, permissions or deployment is exercised.
+
+
+## Start the composed offline runtime
+
+Node.js 22.18+ (built-in SQLite); no dependency installation:
+
+```sh
+node runtimes/discord-voice/cli.mjs --offline --demo
+node runtimes/discord-voice/cli.mjs --offline
+```
+
+The demo runs two full join/activation/receive-end/core/VOICEVOX-WAV/playback/leave sessions and exits. Interactive mode consumes one JSON control command per stdin line:
+
+```jsonl
+{"command":"join","guildId":"1","channelId":"2"}
+{"command":"activate","userId":"3","turnId":"fixture-1","receive":true,"respond":true}
+{"command":"receive","userId":"3","frames":6}
+{"command":"end","userId":"3"}
+{"command":"idle"}
+{"command":"cancel","userId":"3"}
+{"command":"leave"}
+```
+
+`status` is also available. `receive` generates fixed 48kHz PCM in RAM, never reads a microphone/file/audio payload. `end` adds 400ms synthetic silence; explicit activation remains mandatory, response defaults off, and a completed utterance consumes activation. `cancel` revokes the user's capture/queued/active turn. Commands can be sent without `idle` to exercise cancellation while a turn runs. `idle` waits for the current pipeline. `leave` aborts and closes the session; another explicit `join` reconnects with fresh activation and no old memory. EOF, SIGINT and SIGTERM call leave and do not reopen a session.
+
+`app.mjs` composes the existing coordinator, `workers/discord-chat/src/conversation.js`/`llm.js` and `voicevox.mjs`. The CLI loads the canonical public persona file once, with no copied prompt. STT and model responses are fixed synthetic fixtures. VOICEVOX uses the existing two-POST/WAV contract against an injected **fake** request function; `windows.example` is fixture configuration, not a contacted server. The wrapper's fake kind describes that entire synthetic transport composition; it does not enable real providers or relax the coordinator's live fence. Playback is an in-memory acknowledgement, with no speaker/Discord/audio worker output. The actual text Bot/Workers AI/DO/token/config remain untouched.
+
+Session memory uses a new `:memory:` SQLite database per join, with the existing memory schema/core/recall/scope functions. It is entirely separate from text Durable Object storage. Successful synthetic playback acknowledges the turn before remembering it; generation/TTS/playback failure or cancellation clears failed content and never becomes recalled history. Only the same guild/channel/user recalls that session's replies. At most 64 admitted conversation turns are stored per session (failures also count); additional turns fail until leave/rejoin. Leave closes the database and drops pending/sequence state. There is no transcript/audio file, persistent DB, shared text-memory mapping or recording. Temporary JS strings and an uncooperative injected fixture's retained references cannot be securely erased; runtime-owned PCM/accessible late HTTP bytes are cleared by existing ownership rules.
+
+Application voice policy explicitly rejects a generated reply above **200 characters** to match the selected TTS default; the shared text core still keeps its 901-character contract. Nothing silently clips/splits the answer. The coordinator's default 5-second stage budget (10-second cap) is passed as the TTS total budget too, rather than silently accepting a 30-second TTS operation inside a shorter stage. Actual speech duration, STT/LLM latency, longer response handling and audio quality have not been accepted with real providers.
+
+Only fixed event names, command names, result codes and bounded status counters appear on stdout. Raw controls/IDs, persona, transcript/reply, URLs, provider messages and credentials are not printed. Unknown keys (including raw audio/endpoint/credential fields) and malformed commands are rejected with fixed codes. Controls are local fixture commands, not a public/authenticated API or an authorization grant.
+
+Missing/unknown mode, `--live`, endpoint options or missing/invalid persona fail startup with a fixed code. There is no live configuration/credential loader, remote auth endpoint, Discord SDK, socket, login, VC join, recording, external STT/LLM/TTS or host deployment. Running this CLI demonstrates the composed synthetic runtime only. Live transport/STT/auth selection, participant consent, Windows/Mac access, provider cancellation, persistent retention and deployment remain separately approved integration work.

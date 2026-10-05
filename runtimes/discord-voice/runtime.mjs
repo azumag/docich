@@ -235,7 +235,7 @@ export class VoiceRuntime {
         if (typeof reply !== 'string' || !reply.trim() || reply.length > 900) throw new VoiceContractError('invalid_reply');
         this.#event('llm_completed'); active.phase = 'tts'; this.#event('tts_started');
         output = await this.#step(() => this.#adapters.tts.synthesize(reply,
-          { format: PCM, signal: controller.signal }), controller);
+          { format: PCM, scope: turn.scope, signal: controller.signal }), controller);
         if (!(output instanceof Int16Array) || !output.length || output.length % PCM.samples ||
           output.length > this.#limits.maxPlaybackMs / PCM.frameMs * PCM.samples) throw new VoiceContractError('invalid_audio');
         this.#event('tts_completed');

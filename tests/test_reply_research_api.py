@@ -399,3 +399,94 @@ def test_native_connect_rejects_authority_and_header_expansion(host, headers):
     connection = chat._ResearchHTTPSConnection("127.0.0.1", 1)
     connection.set_tunnel(host, 443, headers=headers)
     with pytest.raises(OSError): connection._tunnel()  # Rejects before any socket/send.
+
+
+def test_api_only_and_classifier_share_wall_budget():
+    messages = [{"role": "user", "content": "hello"}]
+    budgets = []
+    clock = iter((100., 103.)).__next__
+    result = routing.complete(messages, api=lambda _: pytest.fail("unbounded final chat"),
+        bounded_api=lambda values, remaining: (budgets.append((values, remaining)) or "reply"),
+        env={"DOCICH_REPLY_ROUTING_ENABLED": "1", "DOCICH_ALLOW_REAL_AI": "1"}, clock=clock,
+        transport=lambda *a, **k: {"status": "ok", "data": {"answers": {
+            "reply_evidence": {"choice": "api_only", "confidence": .99}}}},
+        researcher=lambda *a, **k: pytest.fail("research on API-only"))
+    assert result == "reply" and budgets == [(messages, 42.)]
+
+
+def test_answer_worker_carries_profile_not_ambient_credentials(monkeypatch):
+    settings = chat.Settings("https://openrouter.ai/api/v1", "openai/gpt-4.1-nano", "PRIVATE_BOT",
+                             "SYNTHETIC_KEY", provider="openrouter", upstream="openai", billing_mode="credits_only")
+    calls = []
+    def runner(argv, raw, env, timeout):
+        payload = json.loads(raw)
+        calls.append(payload)
+        assert set(env) == {"PATH", "LANG", "DOCICH_ANSWER_API_KEY"}
+        assert env["DOCICH_ANSWER_API_KEY"] == "SYNTHETIC_KEY"
+        assert b"PRIVATE_BOT" not in raw and b"SYNTHETIC_KEY" not in raw
+        assert payload["provider"] == "openrouter" and payload["upstream"] == "openai"
+        assert payload["billing_mode"] == "credits_only" and payload["raw_reply"] is False
+        assert argv[-1] == "answer" and 0 < timeout <= 3
+        return b'{"reply":"synthetic"}'
+    monkeypatch.setattr(r, "_run", runner)
+    assert api.answer_once(settings, [{"role": "system", "content": "persona"}], 3) == "synthetic"
+    assert len(calls) == 1
+    monkeypatch.setattr(r, "_run", lambda *a, **k: b'{"error":"rate_limit"}')
+    with pytest.raises(chat.ChatRateLimit): api.answer_once(settings, [], 3)
+
+
+def test_api_only_exhausted_classifier_budget_does_not_post():
+    result = routing.complete([{"role": "user", "content": "hello"}],
+        api=lambda _: pytest.fail("late API"), bounded_api=lambda *a: pytest.fail("late worker"),
+        env={"DOCICH_REPLY_ROUTING_ENABLED": "1", "DOCICH_ALLOW_REAL_AI": "1"},
+        clock=iter((100., 146.)).__next__,
+        transport=lambda *a, **k: {"status": "ok", "data": {"answers": {
+            "reply_evidence": {"choice": "api_only", "confidence": .99}}}})
+    assert result == routing.UNAVAILABLE_REPLY
+
+
+@pytest.mark.parametrize("slow", [False, True])
+def test_real_named_answer_worker_only_http_is_synthetic(monkeypatch, slow):
+    """Actual parent/worker/deadline/reap; no real socket or provider calls."""
+    script = r'''
+import json,os,runpy,sys,time,urllib.request
+assert set(os.environ) <= {'PATH','LANG','DOCICH_ANSWER_API_KEY','LC_CTYPE'}
+assert os.environ['DOCICH_ANSWER_API_KEY']=='SYNTHETIC_KEY'
+class Response:
+    def __enter__(self): return self
+    def __exit__(self,*a): pass
+    def read(self,n):
+        if SLOW: time.sleep(20)
+        assert n==65537
+        return json.dumps({'choices':[{'finish_reason':'stop','message':{'content':'synthetic direct'}}],
+                           'usage':{'completion_tokens':10}}).encode()
+class Opener:
+    def open(self,req,timeout):
+        value=json.loads(req.data)
+        assert req.full_url=='https://openrouter.ai/api/v1/chat/completions'
+        assert req.get_header('Authorization')=='Bearer SYNTHETIC_KEY'
+        assert value=={'model':'openai/gpt-4.1-nano','messages':[{'role':'system','content':'canonical persona'}],
+                       'stream':False,'max_tokens':500,'provider':{'only':['openai'],'order':['openai'],
+                       'allow_fallbacks':False,'require_parameters':True}}
+        return Response()
+urllib.request.build_opener=lambda *a: Opener()
+sys.argv=[WORKER,'answer']
+runpy.run_path(WORKER,run_name='__main__')
+'''.replace('SLOW', repr(slow)).replace('WORKER', repr(str(Path(api.__file__).resolve())))
+    popen = r.subprocess.Popen
+    workers = []
+    def spawn(argv, **kwargs):
+        assert argv[-1] == "answer" and set(kwargs["env"]) == {"PATH", "LANG", "DOCICH_ANSWER_API_KEY"}
+        process = popen([sys.executable, "-I", "-B", "-c", script], **kwargs)
+        workers.append(process); return process
+    monkeypatch.setattr(r.subprocess, "Popen", spawn)
+    settings = chat.Settings("https://openrouter.ai/api/v1", "openai/gpt-4.1-nano", "BOT_MUST_NOT_INHERIT",
+        "SYNTHETIC_KEY", provider="openrouter", upstream="openai", billing_mode="credits_only")
+    started = time.monotonic()
+    if slow:
+        with pytest.raises(chat.ChatError):
+            api.answer_once(settings, [{"role": "system", "content": "canonical persona"}], .3)
+        assert time.monotonic() - started < 1.5
+    else:
+        assert api.answer_once(settings, [{"role": "system", "content": "canonical persona"}], 3) == "synthetic direct"
+    assert len(workers) == 1 and workers[0].poll() is not None

@@ -305,3 +305,73 @@ class TestNativeAiGenerate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_direct_chat_chain_shares_45_second_budget(tmp_path):
+    env = {"DOCICH_LLM_STATE_DIR": str(tmp_path), "AI_GENERATION_QUEUE_ENABLED": "0",
+           "DOCICH_LLM_TELEMETRY": "0"}
+    request = DispatchRequest(label="COMMENT:direct", prompt="synthetic",
+        agents=parse_agents("openrouter-api:openai/gpt-4.1-nano,vercel-api:openai/gpt-4.1-nano", env))
+    clock = [100.]
+    budgets = []
+    def provider(spec, request, timeout, provider_env):
+        budgets.append(timeout)
+        if spec.provider == "openrouter-api":
+            clock[0] += 30.
+            return ProviderResult(1, failure_kind="provider_failed")
+        return ProviderResult(0, output="second direct")
+    with mock.patch.object(dispatch_module.time, "monotonic", side_effect=lambda: clock[0]):
+        result = Dispatcher(env=env, provider_caller=provider).dispatch(request)
+    assert result.returncode == 0 and budgets == [45., 15.]
+
+
+def test_typed_direct_chat_request_cannot_add_cli_fallback(tmp_path):
+    from docich.llm.contracts import AgentSpec, LlmError
+    import pytest
+    env = {"DOCICH_LLM_STATE_DIR": str(tmp_path), "AI_GENERATION_QUEUE_ENABLED": "0"}
+    request = DispatchRequest(label="COMMENT:direct", prompt="synthetic", agents=(
+        AgentSpec("openrouter-api:openai/gpt-4.1-nano", "openrouter-api", "openai/gpt-4.1-nano"),
+        AgentSpec("opencode:fixture", "opencode", "fixture")))
+    provider = mock.Mock()
+    with pytest.raises(LlmError): Dispatcher(env=env, provider_caller=provider).dispatch(request)
+    provider.assert_not_called()
+
+
+def test_typed_direct_chat_request_cannot_add_unbounded_local(tmp_path):
+    from docich.llm.contracts import AgentSpec, LlmError
+    import pytest
+    env = {"DOCICH_LLM_STATE_DIR": str(tmp_path), "AI_GENERATION_QUEUE_ENABLED": "0"}
+    request = DispatchRequest(label="COMMENT:direct", prompt="synthetic", agents=(
+        AgentSpec("openrouter-api:openai/gpt-4.1-nano", "openrouter-api", "openai/gpt-4.1-nano"),
+        AgentSpec("local:fixture", "local", "fixture")))
+    provider = mock.Mock()
+    with pytest.raises(LlmError): Dispatcher(env=env, provider_caller=provider).dispatch(request)
+    provider.assert_not_called()
+
+
+def test_queue_sleep_clamps_to_remaining_deadline_and_max_wait(tmp_path):
+    import docich.llm.locks as locks_module
+    import pytest
+    for deadline, max_wait, expected in ((.05, 0, .05), (None, 1, 1.)):
+        path = tmp_path / str(max_wait)
+        path.mkdir()
+        clock, sleeps = [0.], []
+        def sleep(value):
+            sleeps.append(value); clock[0] += value
+        lock = locks_module.FileLock(path, label="COMMENT:direct", wait_sec=60., max_wait_sec=max_wait)
+        with mock.patch.object(locks_module.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(locks_module.time, "sleep", side_effect=sleep), \
+                mock.patch.object(lock, "_reap_stale"):
+            with pytest.raises(locks_module.LockTimeout): lock.acquire(deadline=deadline)
+        assert sleeps == [expected] and clock[0] == expected and path.exists()
+
+
+def test_typed_direct_model_must_match_declared_agent(tmp_path):
+    from docich.llm.contracts import AgentSpec, LlmError
+    import pytest
+    env = {"DOCICH_LLM_STATE_DIR": str(tmp_path), "AI_GENERATION_QUEUE_ENABLED": "0"}
+    request = DispatchRequest(label="COMMENT:direct", prompt="synthetic", agents=(
+        AgentSpec("openrouter-api:openai/gpt-4.1-nano", "openrouter-api", "openai/gpt-6-luna"),))
+    provider = mock.Mock()
+    with pytest.raises(LlmError): Dispatcher(env=env, provider_caller=provider).dispatch(request)
+    provider.assert_not_called()

@@ -47,15 +47,17 @@ def model_call(argv, env, *, deadline, runner, diagnostic=None):
     return call
 
 
-def answer_once(settings, messages, remaining):
+def answer_once(settings, messages, remaining, *, raw_reply=False):
     """One unchanged persona API request, forcibly bounded by its caller."""
-    from .discord_chat import ChatError, strict_json
+    from .discord_chat import ChatError, ChatRateLimit, strict_json
     from .reply_research import _run
     if type(remaining) not in (int, float) or not math.isfinite(remaining) or not 0 < remaining <= 45:
         raise ChatError("LLM request failed")
     started = time.monotonic()
     payload = json.dumps({"base": settings.base_url, "model": settings.model,
-                          "messages": messages, "timeout": remaining}, ensure_ascii=False).encode()
+                          "messages": messages, "timeout": remaining,
+                          "provider": settings.provider, "upstream": settings.upstream,
+                          "billing_mode": settings.billing_mode, "raw_reply": raw_reply}, ensure_ascii=False).encode()
     # No Discord token, memory path, ambient credentials or proxy environment.
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
            "DOCICH_ANSWER_API_KEY": settings.api_key}
@@ -63,15 +65,19 @@ def answer_once(settings, messages, remaining):
         raw = _run([sys.executable, "-I", "-B", str(Path(__file__).resolve()), "answer"],
                    payload, env, remaining - (time.monotonic() - started))
         value = strict_json(raw)
+        if value == {"error": "rate_limit"}:
+            raise ChatRateLimit("LLM rate limited")
         if type(value) is not dict or set(value) != {"reply"} or type(value["reply"]) is not str:
             raise ValueError("invalid_response")
         return value["reply"]
+    except ChatRateLimit:
+        raise
     except Exception:
         raise ChatError("LLM request failed") from None
 
 
 def worker(mode, payload):
-    from .discord_chat import ChatBackend, Settings
+    from .discord_chat import ChatBackend, ChatRateLimit, Settings
     timeout = payload["timeout"]
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 45:
         raise ValueError("timeout")
@@ -89,11 +95,17 @@ def worker(mode, payload):
             {"type": "text", "part": {"type": "text", "text": text}},
             {"type": "step_finish", "part": {"type": "step-finish", "reason": "stop"}}))
     if mode == "answer":
-        if set(payload) != {"base", "model", "messages", "timeout"}:
+        if (set(payload) != {"base", "model", "messages", "timeout", "provider", "upstream",
+                            "billing_mode", "raw_reply"} or type(payload["raw_reply"]) is not bool):
             raise ValueError("invalid_request")
         settings = Settings(base_url=payload["base"], model=payload["model"], token="",
-                            api_key=os.environ["DOCICH_ANSWER_API_KEY"])
-        text = ChatBackend(settings)._complete_api(payload["messages"], timeout_sec=timeout)
+                            api_key=os.environ["DOCICH_ANSWER_API_KEY"], provider=payload["provider"],
+                            upstream=payload["upstream"], billing_mode=payload["billing_mode"])
+        try:
+            text = ChatBackend(settings)._complete_api(payload["messages"], timeout_sec=timeout,
+                                                      raw_reply=payload["raw_reply"])
+        except ChatRateLimit:
+            return b'{"error":"rate_limit"}'
         return json.dumps({"reply": text}, ensure_ascii=False).encode()
     raise ValueError("invalid_mode")
 

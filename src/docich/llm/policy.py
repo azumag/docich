@@ -15,10 +15,14 @@ SUPPORTED_PROVIDERS = {
     "codex",
     "local",
     "openrouter",
+    "openrouter-api",
+    "vercel-api",
+    "cloudflare-api",
     "opencode",
     "opencode-go",
     "vercel",
 }
+DIRECT_CHAT_PROVIDERS = frozenset({"openrouter-api", "vercel-api", "cloudflare-api"})
 RETIRED_PROVIDER_RE = re.compile(r"(^|[:/])minimax([:/-]|$)", re.IGNORECASE)
 MAX_PROMPT_BYTES = 1024 * 1024
 
@@ -80,6 +84,9 @@ def parse_agents(raw: str, env: dict[str, str] | None = None) -> tuple[AgentSpec
     specs = tuple(specs)
     if not specs:
         raise LlmError("agents は空にできません")
+    if (any(spec.provider in DIRECT_CHAT_PROVIDERS for spec in specs)
+            and any(spec.provider not in DIRECT_CHAT_PROVIDERS for spec in specs)):
+        raise LlmError("direct chat のfallbackは明示したbounded direct APIだけに限定されます")
     return specs
 
 

@@ -162,3 +162,92 @@ def test_local_adapter_posts_fixed_openai_compatible_schema_without_proxy():
     assert payload["messages"] == [{"role": "user", "content": "safe prompt"}]
     assert payload["stream"] is False
     assert opener.request.full_url == "http://127.0.0.1:11434/v1/chat/completions"
+
+
+def test_direct_chat_specs_preserve_legacy_cli_and_use_explicit_profiles():
+    from docich import discord_chat as chat
+    for provider, model, key, extra in [
+        ("openrouter", "openai/gpt-4.1-nano", "OPENROUTER_API_KEY", {
+            "DOCICH_CHAT_OPENROUTER_UPSTREAM": "openai", "DOCICH_CHAT_OPENROUTER_BILLING_MODE": "credits_only"}),
+        ("vercel", "openai/gpt-4.1-nano", "AI_GATEWAY_API_KEY", {
+            "DOCICH_CHAT_VERCEL_UPSTREAM": "openai", "DOCICH_CHAT_VERCEL_BILLING_MODE": "credits_only"}),
+        ("cloudflare", "cf/qwen/qwen3-30b-a3b-fp8", "CLOUDFLARE_API_TOKEN", {
+            "DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID": "a" * 32}),
+    ]:
+        spec = parse_agents(provider + "-api:" + model)[0]
+        long_json = '{"reply": "' + "長文" * 600 + '"}'
+        with mock.patch("docich.reply_research_api.answer_once", return_value=long_json) as answer, \
+                mock.patch("docich.llm.providers._process") as cli:
+            result = call_agent(spec, _request(spec), timeout=90, env={key: "SYNTHETIC_KEY", **extra})
+            assert result.returncode == 0 and result.output == long_json
+            args = answer.call_args.args
+            assert args[0].provider == provider
+            assert args[0].token == "" and args[0].memory_dir is None
+            assert args[0].model == ("@" + model if provider == "cloudflare" else model)
+            assert args[1] == [{"role": "user", "content": "safe prompt"}]
+            assert args[2] == 45 and answer.call_args.kwargs == {"raw_reply": True}
+            assert answer.call_count == 1
+            cli.assert_not_called()
+        for label in ("RADIO:test", "COMMENT:RESEARCH", "COMMENT:PREPASS"):
+            with mock.patch("docich.reply_research_api.answer_once") as answer:
+                request = DispatchRequest(label=label, prompt="safe", agents=(spec,))
+                assert call_agent(spec, request, timeout=5, env={key: "SYNTHETIC_KEY", **extra}).returncode != 0
+                answer.assert_not_called()
+    legacy = parse_agents("openrouter:fixture")[0]
+    with mock.patch("docich.llm.providers._process", return_value=(0, "legacy", "")) as cli:
+        assert call_agent(legacy, _request(legacy), timeout=5, env={"OPENCODE_ABORT_RETRY": "0"}).output == "legacy"
+        assert "--model" in cli.call_args.args[0]
+
+
+def test_direct_chat_configuration_failure_and_rate_limit_never_start_cli():
+    from docich.discord_chat import ChatRateLimit
+    spec = parse_agents("openrouter-api:openai/gpt-4.1-nano")[0]
+    env = {"OPENROUTER_API_KEY": "SYNTHETIC_KEY", "DOCICH_CHAT_OPENROUTER_UPSTREAM": "openai",
+           "DOCICH_CHAT_OPENROUTER_BILLING_MODE": "credits_only"}
+    with mock.patch("docich.reply_research_api.answer_once") as answer, mock.patch("docich.llm.providers._process") as cli:
+        for extra in ({"OPENROUTER_API_KEY": ""}, {"DOCICH_CHAT_OPENROUTER_UPSTREAM": ""},
+                      {"DOCICH_CHAT_OPENROUTER_BILLING_MODE": ""}):
+            assert call_agent(spec, _request(spec), timeout=5, env={**env, **extra}).returncode != 0
+        answer.assert_not_called(); cli.assert_not_called()
+    with mock.patch("docich.reply_research_api.answer_once", side_effect=ChatRateLimit("LLM rate limited")) as answer, \
+            mock.patch("docich.llm.providers._process") as cli:
+        result = call_agent(spec, _request(spec), timeout=5, env=env)
+        assert result.returncode == 79 and result.failure_kind == "rate_limit"
+        assert answer.call_count == 1; cli.assert_not_called()
+    import pytest
+    from docich.llm.contracts import LlmError
+    with pytest.raises(LlmError):
+        parse_agents("openrouter-api:openai/gpt-4.1-nano,opencode:fixture")
+    with pytest.raises(LlmError):
+        parse_agents("openrouter-api:openai/gpt-4.1-nano,local:fixture")
+    assert len(parse_agents("openrouter-api:openai/gpt-4.1-nano,vercel-api:openai/gpt-4.1-nano")) == 2
+
+
+def test_direct_chat_valid_reply_about_429_is_not_a_rate_limit():
+    spec = parse_agents("openrouter-api:openai/gpt-4.1-nano")[0]
+    env = {"OPENROUTER_API_KEY": "SYNTHETIC_KEY", "DOCICH_CHAT_OPENROUTER_UPSTREAM": "openai",
+           "DOCICH_CHAT_OPENROUTER_BILLING_MODE": "credits_only"}
+    text = "HTTP 429 means too many requests; unauthorized means the API key is invalid."
+    with mock.patch("docich.reply_research_api.answer_once", return_value=text):
+        result = call_agent(spec, _request(spec), timeout=5, env=env)
+    assert result.returncode == 0 and result.output == text
+
+
+def test_direct_model_variants_and_virtual_models_fail_before_worker():
+    cases = [("openrouter-api:openai/gpt-4.1-nano:online", "OPENROUTER_API_KEY", {
+                 "DOCICH_CHAT_OPENROUTER_UPSTREAM": "openai", "DOCICH_CHAT_OPENROUTER_BILLING_MODE": "credits_only"}),
+             ("vercel-api:vmc/abc-123", "AI_GATEWAY_API_KEY", {
+                 "DOCICH_CHAT_VERCEL_UPSTREAM": "openai", "DOCICH_CHAT_VERCEL_BILLING_MODE": "credits_only"})]
+    for raw, key, extra in cases:
+        spec = parse_agents(raw)[0]
+        with mock.patch("docich.reply_research_api.answer_once") as answer, mock.patch("docich.llm.providers._process") as cli:
+            assert call_agent(spec, _request(spec), timeout=5, env={key: "SYNTHETIC_KEY", **extra}).returncode != 0
+            answer.assert_not_called(); cli.assert_not_called()
+
+
+def test_direct_adapter_model_must_match_agent_before_key_or_worker():
+    from docich.llm.contracts import AgentSpec
+    spec = AgentSpec("openrouter-api:openai/gpt-4.1-nano", "openrouter-api", "openai/gpt-6-luna")
+    with mock.patch("docich.discord_chat.read_secret") as key, mock.patch("docich.reply_research_api.answer_once") as answer:
+        assert call_agent(spec, _request(spec), timeout=5, env={}).returncode != 0
+        key.assert_not_called(); answer.assert_not_called()
