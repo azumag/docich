@@ -45,18 +45,34 @@ class ManualProbeTests(unittest.TestCase):
             self.assertTrue(calls[0][1]["start_new_session"])
             self.assertTrue(calls[0][1]["close_fds"])
 
-    def test_launch_fails_when_runner_exits_immediately(self):
+    def test_launch_accepts_immediate_zero_exit_as_durable_queue(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_cwd = Path.cwd()
             try:
                 import os
                 os.chdir(root)
-                with self.assertRaisesRegex(RuntimeError, "manual_probe_exited_immediately"):
+                MODULE.launch(
+                    root=root,
+                    log_path=root / "probe.log",
+                    popen=lambda *_a, **_k: FakeProc(0),
+                    sleep=lambda _s: None,
+                )
+            finally:
+                os.chdir(old_cwd)
+
+    def test_launch_rejects_immediate_nonzero_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(root)
+                with self.assertRaisesRegex(RuntimeError, "manual_probe_exited_with_error"):
                     MODULE.launch(
                         root=root,
                         log_path=root / "probe.log",
-                        popen=lambda *_a, **_k: FakeProc(1),
+                        popen=lambda *_a, **_k: FakeProc(2),
                         sleep=lambda _s: None,
                     )
             finally:

@@ -39,8 +39,12 @@ def launch(*, root: Path = ROOT, log_path: Path = LOG,
             close_fds=True,
         )
     sleep(1.0)
-    if proc.poll() is not None:
-        raise RuntimeError("manual_probe_exited_immediately")
+    returncode = proc.poll()
+    # With common rotation enabled, a successful manual request may be durably
+    # queued and the CLI can exit 0 immediately. Only a non-zero early exit is
+    # a dispatch failure; an exit-0 request is already owned by rotation state.
+    if returncode is not None and returncode != 0:
+        raise RuntimeError("manual_probe_exited_with_error")
 
 
 def main() -> int:
