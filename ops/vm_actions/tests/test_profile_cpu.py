@@ -74,6 +74,8 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(c(["/usr/bin/grep", SECRET, "/tmp/x"], "grep"), "grep")
         self.assertEqual(c(["/usr/bin/stat", "/tmp/" + SECRET], "stat"), "stat")
         self.assertEqual(c(["/opt/weird/" + SECRET], "weird"), "other")
+        self.assertEqual(c(None, "tail"), "tail")
+        self.assertEqual(c(None, "mawk"), "awk")
         self.assertEqual(c(None, "x"), "other")
 
     def test_untrusted_tokens_never_become_labels(self):
