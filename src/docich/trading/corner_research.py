@@ -1,10 +1,11 @@
 """Bounded public research inputs for the PAPER crypto corner.
 
-This module is deliberately read-only with respect to exchanges: it searches
-public Google News RSS feeds and Wikipedia, selects one actually-held asset,
-and persists a small allowlisted research record for narration and the later
-strategy-improvement pass. No exchange credentials or order endpoints exist
-here.
+This module is deliberately read-only with respect to exchanges. The legacy
+backend searches public Google News RSS feeds and Wikipedia. The opt-in
+``verified_web`` backend reuses docich's shared public Web search + credential-
+free body broker and persists only bounded, hash-verified excerpts. Both select
+one actually-held asset and keep exchange credentials/order endpoints out of
+the research path.
 """
 from __future__ import annotations
 
