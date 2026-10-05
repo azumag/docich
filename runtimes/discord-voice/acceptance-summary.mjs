@@ -78,6 +78,7 @@ export function summarizeAcceptanceLines(lines, {
   let privateDebugEvents = 0;
   let chainState = 0;
   let completedChains = 0;
+  let disconnectPending = false;
 
   for (const rawLine of lines) {
     const line = String(rawLine ?? '').trimEnd();
@@ -110,6 +111,14 @@ export function summarizeAcceptanceLines(lines, {
 
     if (record.event === 'voice_connected' && connectedTimestamp === null) {
       connectedTimestamp = timestamp;
+    }
+    if (record.event === 'voice_disconnected') {
+      disconnectPending = true;
+    } else if (
+      record.event === 'voice_recovering' ||
+      record.event === 'voice_rejoined'
+    ) {
+      disconnectPending = false;
     }
     if (lastTimestamp === null || timestamp > lastTimestamp) lastTimestamp = timestamp;
 
@@ -165,10 +174,12 @@ export function summarizeAcceptanceLines(lines, {
   const reconnectOk =
     !requireReconnect || (counts.voice_rejoined ?? 0) >= 1;
   const durationOk = durationSeconds >= Number(minMinutes) * 60;
-  const failureCount = [...FAILURE_EVENTS].reduce(
-    (total, event) => total + (counts[event] ?? 0),
-    0,
-  );
+  const unresolvedDisconnect = disconnectPending;
+  const failureCount =
+    [...FAILURE_EVENTS].reduce(
+      (total, event) => total + (counts[event] ?? 0),
+      0,
+    ) + (unresolvedDisconnect ? 1 : 0);
   const privacyOk = privateDebugEvents === 0;
 
   const passed =
@@ -191,6 +202,7 @@ export function summarizeAcceptanceLines(lines, {
     malformed,
     durationSeconds,
     completedChains,
+    unresolvedDisconnect,
     counts: Object.freeze({ ...counts }),
   });
 }
@@ -245,6 +257,7 @@ export async function main(args = process.argv.slice(2)) {
       malformed: result.malformed,
       durationSeconds: Math.round(result.durationSeconds),
       completedChains: result.completedChains,
+      unresolvedDisconnect: result.unresolvedDisconnect,
       counts: result.counts,
     }) + '\n');
     return result.passed ? 0 : 1;
