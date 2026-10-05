@@ -116,6 +116,38 @@ test('only the configured speaker is subscribed and normal logs never contain tr
   receiver.stop();
 });
 
+test('target speech hook fires only for the selected user and never blocks capture', async () => {
+  const fixture = fakeConnection(() =>
+    Array.from({ length: 6 }, () => stereoChunk(2000)),
+  );
+  let hookCalls = 0;
+  const receiver = attachLiveSttReceiver({
+    connection: fixture.connection,
+    targetUserId: TARGET,
+    stt: {
+      async transcribe() {
+        return 'fixture';
+      },
+    },
+    onTargetSpeechStart: () => {
+      hookCalls += 1;
+      if (hookCalls === 1) throw new Error('fixture hook failure');
+    },
+    createDecoder: decoderFactory,
+  });
+
+  fixture.connection.receiver.speaking.emit('start', OTHER);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(hookCalls, 0);
+  assert.equal(fixture.subscriptions.length, 0);
+
+  fixture.connection.receiver.speaking.emit('start', TARGET);
+  await waitFor(() => fixture.subscriptions.length === 1);
+  assert.equal(hookCalls, 1);
+
+  receiver.stop();
+});
+
 test('short noise is discarded before STT', async () => {
   const events = [];
   let sttCalls = 0;
