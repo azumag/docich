@@ -390,6 +390,78 @@ def test_weather_audio_marks_complete_only_after_all_thirteen_played_receipts(tm
     assert state["audio_delivery"]["next_index"] == 13
 
 
+def test_weather_corner_focus_sequence_finishes_as_soon_as_all_audio_is_played(
+    tmp_path, monkeypatch,
+):
+    import datetime as dt
+    import docich.weather_corner as weather_corner
+
+    fixed = dt.datetime(2026, 10, 2, 12, tzinfo=dt.timezone.utc).timestamp()
+    g, now, _factory, _store, switch = _setup(
+        tmp_path, duration=4, clock=fixed, boundary_generation=None,
+    )
+    forecast = _weather_audio_view(now[0])
+    monkeypatch.setattr(weather_corner, "read_view", lambda _path, clock=None: forecast)
+    port = FakeWeatherAudioPort(lambda: now[0], auto_play=True)
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    manager = WeatherCornerManager(
+        g, duration_minutes=4, coordinator=switch, audio_enabled=True,
+        audio_port=port, clock=lambda: now[0], sleep=sleep, poll_s=0.25,
+    )
+    request_id = str(uuid.uuid4())
+    state = manager._new_state({"request_id": request_id, "selected_at": now[0]})
+    manager._save(state)
+    assert manager._dispatch_start(state) is None
+    started = now[0]
+
+    assert manager._wait_and_restore(state) == "completed"
+
+    final = manager._read_state()
+    assert [item["item_index"] for item in port.enqueued] == list(range(13))
+    assert final["audio_delivery"]["status"] == "completed"
+    assert final["audio_delivery"]["next_index"] == 13
+    assert final["end_reason"] == "audio-completed"
+    assert now[0] - started < 4 * 60
+
+
+def test_weather_corner_restores_after_terminal_audio_failure_without_deadlock(
+    tmp_path, monkeypatch,
+):
+    import datetime as dt
+    import docich.weather_corner as weather_corner
+
+    fixed = dt.datetime(2026, 10, 2, 12, tzinfo=dt.timezone.utc).timestamp()
+    g, now, _factory, _store, switch = _setup(
+        tmp_path, duration=4, clock=fixed, boundary_generation=None,
+    )
+    forecast = _weather_audio_view(now[0])
+    monkeypatch.setattr(weather_corner, "read_view", lambda _path, clock=None: forecast)
+    port = FakeWeatherAudioPort(lambda: now[0])
+    manager = WeatherCornerManager(
+        g, duration_minutes=4, coordinator=switch, audio_enabled=True,
+        audio_port=port, clock=lambda: now[0], sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        poll_s=0.25,
+    )
+    request_id = str(uuid.uuid4())
+    state = manager._new_state({"request_id": request_id, "selected_at": now[0]})
+    manager._save(state)
+    assert manager._dispatch_start(state) is None
+
+    delivery = manager._prepare_audio_delivery(state)
+    queued = port.enqueue_weather_audio(delivery["requests"][0])
+    assert queued["status"] == "queued"
+    port.finish(delivery["requests"][0]["item_key"], "rejected")
+
+    assert manager._wait_and_restore(state) == "completed"
+    final = manager._read_state()
+    assert final["audio_delivery"]["status"] == "stopped"
+    assert final["end_reason"] == "audio-unavailable"
+    assert len(port.enqueued) == 1
+
+
 @pytest.mark.parametrize(
     ("status", "reason"),
     [("rejected", "player_rejected"), ("interrupted", "playback_interrupted")],

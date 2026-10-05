@@ -226,9 +226,11 @@ from docich import weather_view as v
 
 
 @contextmanager
-def serving(path, *, clock=lambda: NOW, runtime_id="preview", generation=None, lease_id=None):
+def serving(path, *, clock=lambda: NOW, runtime_id="preview", generation=None, lease_id=None,
+            cue_path=None):
     server = ThreadingHTTPServer(("127.0.0.1", 0), v.handler_for(
-        path, runtime_id, generation=generation, lease_id=lease_id, clock=clock))
+        path, runtime_id, generation=generation, lease_id=lease_id,
+        cue_path=cue_path, clock=clock))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     try:
@@ -262,6 +264,55 @@ def test_readonly_server_and_literal_narration(tmp_path):
         assert "const BROADCAST=false;" in raw.decode()
         code,_,raw=request(port,"/broadcast")
         assert code==200 and "const BROADCAST=true;" in raw.decode()
+
+
+def test_broadcast_cue_exposes_only_runtime_bound_audio_ordinal(tmp_path):
+    path = tmp_path / "weather" / "snapshot.json"
+    path.parent.mkdir()
+    w.write_json(path, bundle())
+    cue_path = tmp_path / "weather_corner.json"
+    lease_id = "01234567-89ab-4cde-8123-456789abcdef"
+    identity = {
+        "game": "weather-view",
+        "runtime_id": "g4-a1b2c3d4",
+        "generation": 4,
+        "lease_id": lease_id,
+    }
+    state = {
+        "schema_version": 1,
+        "status": "active",
+        "weather_runtime_identity": identity,
+        "audio_delivery": {
+            "status": "running",
+            "next_index": 3,
+        },
+    }
+    cue_path.write_text(json.dumps(state), encoding="utf-8")
+    with serving(
+        path, runtime_id=identity["runtime_id"], generation=identity["generation"],
+        lease_id=lease_id, cue_path=cue_path,
+    ) as port:
+        code, _, raw = request(port, "/api/weather-cue")
+        data = json.loads(raw)
+        assert code == 200
+        assert data == {"ok": True, "status": "running", "item_index": 3}
+        assert identity["runtime_id"].encode() not in raw
+        assert lease_id.encode() not in raw
+        assert b"requests" not in raw and b"text" not in raw
+
+        state["audio_delivery"].update(status="completed", next_index=13)
+        cue_path.write_text(json.dumps(state), encoding="utf-8")
+        code, _, raw = request(port, "/api/weather-cue")
+        assert code == 200
+        assert json.loads(raw) == {
+            "ok": True, "status": "completed", "item_index": 12,
+        }
+
+        state["weather_runtime_identity"] = {**identity, "runtime_id": "g5-other"}
+        cue_path.write_text(json.dumps(state), encoding="utf-8")
+        code, _, raw = request(port, "/api/weather-cue")
+        assert code == 503
+        assert json.loads(raw) == {"ok": False, "reason": "cue-unavailable"}
 
 
 def test_readonly_server_reports_the_game_switch_generation(tmp_path):
@@ -334,9 +385,12 @@ def test_forecast_is_not_embedded_in_script_or_assigned_as_html():
     assert "Natural Earth" in v.HTML and "Public Domain" in v.HTML
     assert "__MAP_DATA__" not in v.HTML
     assert "順送りズーム" in v.HTML and "全国表示" in v.HTML
-    assert "音声同期なし" in v.HTML and "読み上げ cue：未接続" in v.HTML
+    assert "音声同期" in v.HTML and "読み上げ cue：再生完了同期" in v.HTML
     assert "@media(max-aspect-ratio:5/4)" in v.HTML
     assert "fetch('/api/weather'" in v.HTML
+    assert "fetch('/api/weather-cue'" in v.HTML
+    assert "startBroadcastTour" not in v.HTML
+    assert "startBroadcastSync" in v.HTML
 
 
 def test_weather_map_is_natural_earth_and_covers_all_forecast_points():
@@ -372,7 +426,7 @@ def test_weather_html_has_unique_ids_and_no_external_runtime_assets():
     assert len(markup.ids) == len(set(markup.ids))
     assert not markup.srcs and not markup.resources
     assert "const MAP_DATA={\"polygons\":" in v.HTML
-    assert v.HTML.count("fetch(") == 1
+    assert v.HTML.count("fetch(") == 2
 
 
 @pytest.mark.parametrize("scenario", [
@@ -387,7 +441,7 @@ def test_weather_ui_control_flow_without_browser(scenario):
     if node is None:
         pytest.skip("Node.js unavailable for DOM-free UI control-flow tests")
     script = v.HTML.split("<script>", 1)[1].split("</script>", 1)[0]
-    if scenario == "broadcast_auto":
+    if scenario.startswith("broadcast_"):
         script = script.replace("const BROADCAST=false;", "const BROADCAST=true;")
     runner = Path(__file__).parent / "fixtures/weather_view/contract.js"
     result = subprocess.run(

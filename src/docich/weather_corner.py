@@ -578,6 +578,12 @@ class WeatherCornerManager:
             if remaining <= 0:
                 return self._restore(state)
             self._advance_audio_delivery(state)
+            if self.audio_enabled:
+                delivery = self._validate_audio_delivery(state)
+                if delivery is not None and delivery["status"] == "completed":
+                    return self._restore(state, end_reason="audio-completed")
+                if delivery is not None and delivery["status"] in {"failed", "stopped"}:
+                    return self._restore(state, end_reason="audio-unavailable")
             self.sleep(min(self.poll_s, remaining))
 
     def _restore_receipt_finished(self, state, canonical):

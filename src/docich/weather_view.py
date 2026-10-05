@@ -22,6 +22,7 @@ from .weather import (
 from .weather_map_data import CITY_LABELS, CITY_POINTS, POLYGONS, VIEWBOX
 
 DEFAULT_PORT = 8803
+CUE_MAX_BYTES = 64 * 1024
 
 _MAP_DATA = json.dumps({"polygons": POLYGONS, "points": CITY_POINTS, "labels": CITY_LABELS, "viewbox": VIEWBOX}, separators=(",", ":")).replace("<", "\\u003c")
 
@@ -41,8 +42,8 @@ header{height:43px;display:flex;align-items:center;justify-content:space-between
 @media(max-aspect-ratio:5/4){html,body{height:auto;min-height:100%;overflow:auto}#stage{position:relative;width:100%;height:auto;min-height:100vh;padding:13px 12px 10px;overflow:visible}header{height:auto;min-height:45px;gap:8px}.eyebrow{font-size:7px;margin-right:5px}.headline small{display:none}h1{font-size:21px}.head-right{gap:4px;flex-wrap:wrap;justify-content:flex-end}.tag{font-size:8px;padding:4px 6px}.date{font-size:11px}#status-line{font-size:9px}#content{height:auto;grid-template-columns:minmax(0,1fr);gap:9px}.map-panel{min-height:min(88vw,390px)}.map-svg{height:min(72vw,345px);max-width:100%}.info-panel{min-height:395px;padding:10px}.region-btn{font-size:9px;padding:6px 2px}.city-btn{height:28px;font-size:10px}.control-btn{height:30px;font-size:10px}.weather-summary{height:78px}.weather-text{font-size:13px}#footer{position:relative;left:auto;right:auto;bottom:auto;display:grid;margin:10px 3px 0;font-size:9px;line-height:14px}#footer .warning{text-align:left}#unavailable{font-size:16px}}
 </style>
 <div id="stage">
-<header><div class="headline"><span class="eyebrow">WEATHER / JAPAN</span><h1>全国の天気予報</h1><small>代表11地点</small></div><div class="head-right"><span class="tag">表示試作</span><span class="tag">音声同期なし</span><div id="date" class="date">気象庁発表</div></div></header>
-<div id="status-line"><span><i class="status-dot"></i><span id="state">予報を確認中</span></span><span class="sync-note">時刻：日本時間 ／ 読み上げ cue：未接続</span></div>
+<header><div class="headline"><span class="eyebrow">WEATHER / JAPAN</span><h1>全国の天気予報</h1><small>代表11地点</small></div><div class="head-right"><span class="tag">表示試作</span><span class="tag">音声同期</span><div id="date" class="date">気象庁発表</div></div></header>
+<div id="status-line"><span><i class="status-dot"></i><span id="state">予報を確認中</span></span><span class="sync-note">時刻：日本時間 ／ 読み上げ cue：再生完了同期</span></div>
 <main id="content">
 <section class="panel map-panel" aria-label="日本地図">
 <div class="panel-head"><span class="section-name">JAPAN / FORECAST MAP</span><span class="map-help">都市を選ぶと地図が拡大します</span></div>
@@ -66,7 +67,7 @@ const PLACES=[['sapporo','札幌','北海道',0],['sendai','仙台','東北',1],
 const REGIONS=[['北海道',0],['東北',1],['関東',2],['北陸',3],['東海',4],['近畿',5],['中国',6],['四国',7],['九州',8],['沖縄',10]];
 const map=document.getElementById('map'), unavailable=document.getElementById('unavailable');
 const BROADCAST=false;
-let until=0,view=null,selected=null,pollVersion=0,tourTimer=0,tourIndex=0,focusScale=2.3;
+let until=0,view=null,selected=null,pollVersion=0,cuePollVersion=0,cueBusy=false,tourTimer=0,tourIndex=0,focusScale=2.3;
 function fit(){const el=document.getElementById('stage');if(matchMedia('(max-aspect-ratio:5/4)').matches){el.style.position='relative';el.style.transform='none';el.style.left='auto';el.style.top='auto';return;}const s=Math.min(innerWidth/960,innerHeight/540);el.style.position='absolute';el.style.transform=`scale(${s})`;el.style.left=`${(innerWidth-960*s)/2}px`;el.style.top=`${(innerHeight-540*s)/2}px`;}
 addEventListener('resize',()=>{fit();if(view)render();});fit();
 function svg(tag,attrs={}){const n=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [key,value] of Object.entries(attrs))n.setAttribute(key,String(value));return n;}
@@ -105,12 +106,26 @@ function renderFocus(){const c=cityFor(selected);if(!c){document.getElementById(
 function national(){if(!view)return;clearTour();selected=null;render();}
 function advance(delta){if(!view)return;const index=selected===null?(delta>0?0:view.cities.length-1):(selected+delta+view.cities.length)%view.cities.length;choose(index,2.3);}
 function toggleTour(){if(!view)return;if(performance.now()>=until){hide();return;}if(tourTimer){clearTour();return;}tourIndex=selected===null?0:(selected+1)%view.cities.length;choose(tourIndex,2.3);if(!view)return;document.getElementById('tour').setAttribute('aria-pressed','true');document.getElementById('tour').textContent='順送り停止';document.getElementById('tour-state').textContent='7秒ごとに地点移動';tourTimer=setInterval(()=>{if(!view||performance.now()>=until){hide();return;}tourIndex=(tourIndex+1)%view.cities.length;selected=tourIndex;render();},7000);}
-function startBroadcastTour(){clearTour();let step=0;document.getElementById('tour').setAttribute('aria-pressed','true');document.getElementById('tour').textContent='順送り停止';document.getElementById('tour-state').textContent='4秒ごとに地点移動';tourTimer=setInterval(()=>{if(!view||performance.now()>=until){hide();return;}selected=step<view.cities.length?step:null;step=(step+1)%(view.cities.length+1);focusScale=2.3;render();},4000);}
+function cueSelection(itemIndex){return itemIndex>=1&&itemIndex<=11?itemIndex-1:null;}
+function applyBroadcastCue(data){
+ if(!BROADCAST||!view||!data||data.ok!==true||!Number.isInteger(data.item_index)||data.item_index<0||data.item_index>12)return;
+ const target=cueSelection(data.item_index);
+ if(selected!==target){selected=target;focusScale=2.3;render();}
+ const label=target===null?(data.item_index===0?'全国予報を読み上げ中':'まとめを読み上げ中'):`${PLACES[target][1]}を読み上げ中`;
+ setStatus(data.status==='completed'?'音声解説が完了しました':label);
+ document.getElementById('tour-state').textContent=data.status==='completed'?'音声解説完了':'音声完了に合わせて地点移動';
+}
+async function pollCue(){
+ if(!BROADCAST||!view||cueBusy||performance.now()>=until)return;
+ cueBusy=true;const version=++cuePollVersion;
+ try{const response=await fetch('/api/weather-cue',{cache:'no-store',signal:AbortSignal.timeout(700)});if(response.status===503)return;if(!response.ok)throw Error('cue-unavailable');const data=await response.json();if(version!==cuePollVersion)return;applyBroadcastCue(data);}catch(_){}finally{cueBusy=false;}
+}
+function startBroadcastSync(){clearTour();document.getElementById('tour').setAttribute('aria-pressed','true');document.getElementById('tour').textContent='音声同期中';document.getElementById('tour-state').textContent='音声完了に合わせて地点移動';pollCue();}
 function render(){if(!view||performance.now()>=until){hide();return;}document.getElementById('date').textContent=view.date.replaceAll('-',' / ');setStatus('気象庁の発表を表示中');unavailable.hidden=true;renderFocus();renderCities();renderRegions();updateMap();const w=document.getElementById('weather-text');if(w.scrollHeight>w.clientHeight+1||w.scrollWidth>w.clientWidth+1)hide('予報文が画面内に収まらないため休止中');}
 function hideUntilReady(){hide('気象庁の予報を確認しています');}
-async function poll(){const version=++pollVersion,requested=performance.now();try{const response=await fetch('/api/weather',{cache:'no-store',signal:AbortSignal.timeout(2000)});if(!response.ok)throw Error('unavailable');const data=await response.json();if(version!==pollVersion)return;if(!validForecast(data))throw Error('invalid');const remaining=(data.expires_at-data.server_now)*1000-(performance.now()-requested);if(!Number.isFinite(remaining)||remaining<=0)throw Error('expired');const first=!view;view=data;until=performance.now()+Math.min(remaining,5000);render();if(first&&view&&BROADCAST)startBroadcastTour();}catch(_){if(version===pollVersion)hide();}}
+async function poll(){const version=++pollVersion,requested=performance.now();try{const response=await fetch('/api/weather',{cache:'no-store',signal:AbortSignal.timeout(2000)});if(!response.ok)throw Error('unavailable');const data=await response.json();if(version!==pollVersion)return;if(!validForecast(data))throw Error('invalid');const remaining=(data.expires_at-data.server_now)*1000-(performance.now()-requested);if(!Number.isFinite(remaining)||remaining<=0)throw Error('expired');const first=!view;view=data;until=performance.now()+Math.min(remaining,5000);render();if(first&&view&&BROADCAST)startBroadcastSync();}catch(_){if(version===pollVersion)hide();}}
 for(const [id,fn] of [['national',national],['previous',()=>advance(-1)],['next',()=>advance(1)],['tour',toggleTour]])document.getElementById(id).addEventListener('click',fn);
-setInterval(()=>{if(until&&performance.now()>=until)hide();},100);
+setInterval(()=>{if(until&&performance.now()>=until)hide();},100);setInterval(()=>{if(BROADCAST&&view)pollCue();},250);
 addEventListener('pageshow',()=>{hideUntilReady();poll();});addEventListener('visibilitychange',()=>{hideUntilReady();if(!document.hidden)poll();});setInterval(poll,2000);hideUntilReady();poll();
 </script></html>
 '''
@@ -125,8 +140,50 @@ def read_view(path: Path, *, clock=time.time) -> dict:
     return project(decode(raw, limit=MAX_BUNDLE_BYTES), now=clock())
 
 
+
+def read_presentation_cue(path: Path, *, runtime_id: str, generation, lease_id) -> dict:
+    """Return only the runtime-bound ordinal needed to synchronize the map."""
+    if type(generation) is not int or generation < 1 or not isinstance(lease_id, str):
+        raise WeatherError("weather-cue-runtime-unavailable")
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(CUE_MAX_BYTES + 1)
+    except OSError as exc:
+        raise WeatherError("weather-cue-unavailable") from exc
+    if len(raw) > CUE_MAX_BYTES:
+        raise WeatherError("weather-cue-invalid")
+    try:
+        state = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise WeatherError("weather-cue-invalid") from exc
+    expected = {
+        "game": "weather-view", "runtime_id": runtime_id,
+        "generation": generation, "lease_id": lease_id,
+    }
+    if (not isinstance(state, dict) or state.get("schema_version") != 1
+            or state.get("status") != "active"
+            or state.get("weather_runtime_identity") != expected):
+        raise WeatherError("weather-cue-owner-mismatch")
+    delivery = state.get("audio_delivery")
+    if delivery is None:
+        return {"ok": True, "status": "waiting", "item_index": 0}
+    if not isinstance(delivery, dict):
+        raise WeatherError("weather-cue-invalid")
+    status = delivery.get("status")
+    next_index = delivery.get("next_index")
+    if status not in {"running", "stopping", "completed", "stopped", "failed"}:
+        raise WeatherError("weather-cue-invalid")
+    if type(next_index) is not int or not 0 <= next_index <= 13:
+        raise WeatherError("weather-cue-invalid")
+    if status in {"running", "stopping"} and next_index >= 13:
+        raise WeatherError("weather-cue-invalid")
+    if status == "completed" and next_index != 13:
+        raise WeatherError("weather-cue-invalid")
+    return {"ok": True, "status": status, "item_index": min(next_index, 12)}
+
+
 def handler_for(path: Path, runtime_id: str = "preview", *, generation=None,
-                lease_id=None, clock=time.time):
+                lease_id=None, cue_path: Path | None = None, clock=time.time):
     if not isinstance(runtime_id, str) or re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", runtime_id) is None:
         raise WeatherError("invalid-runtime-id")
     if generation is not None and (type(generation) is not int or generation < 1):
@@ -165,6 +222,20 @@ def handler_for(path: Path, runtime_id: str = "preview", *, generation=None,
                 html = HTML.replace("const BROADCAST=false;", "const BROADCAST=true;") if self.path == "/broadcast" else HTML
                 self.reply(200, html.encode("utf-8"), "text/html; charset=utf-8")
                 return
+            if self.path == "/api/weather-cue":
+                if cue_path is None:
+                    data, status = {"ok": False, "reason": "cue-unavailable"}, 503
+                else:
+                    try:
+                        data = read_presentation_cue(
+                            cue_path, runtime_id=runtime_id, generation=generation,
+                            lease_id=lease_id,
+                        )
+                        status = 200
+                    except (OSError, WeatherError):
+                        data, status = {"ok": False, "reason": "cue-unavailable"}, 503
+                self.reply(status, json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8"), "application/json; charset=utf-8")
+                return
             if self.path != "/api/weather":
                 self.reply(404, b"not found", "text/plain; charset=utf-8")
                 return
@@ -188,7 +259,8 @@ def serve(path: Path, *, port=DEFAULT_PORT, runtime_id="preview", generation=Non
     # No --host switch: the listener can never bind publicly by configuration.
     with ThreadingHTTPServer(
         ("127.0.0.1", port),
-        handler_for(path, runtime_id, generation=generation, lease_id=lease_id),
+        handler_for(path, runtime_id, generation=generation, lease_id=lease_id,
+                    cue_path=path.parent.parent / "weather_corner.json"),
     ) as server:
         server.serve_forever(poll_interval=0.2)
 
