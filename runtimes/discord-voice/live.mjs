@@ -28,8 +28,9 @@ import { createLiveVoicevoxTTS } from './live-voicevox.mjs';
 import { PCM } from './runtime.mjs';
 import { LiveVoiceError, loadLiveVoiceConfig, makeStereoTestTone } from './live-support.mjs';
 
-const emit = (record) => process.stdout.write(JSON.stringify(record) + '\n');
-const emitError = (code) =>
+const defaultEmit = (record) =>
+  process.stdout.write(JSON.stringify(record) + '\n');
+const defaultEmitError = (code) =>
   process.stderr.write(JSON.stringify({ event: 'live_voice_error', code }) + '\n');
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -61,7 +62,7 @@ export async function checkLiveDependencies() {
   }
   const resource = buildTestResource();
   if (!resource?.playStream) throw new LiveVoiceError('opus_unavailable');
-  emit({ event: 'live_voice_check_ok', daveCapable: true, opus: true, rawPcm: true });
+  defaultEmit({ event: 'live_voice_check_ok', daveCapable: true, opus: true, rawPcm: true });
 }
 
 async function resolveVoiceChannel(client, config, isStopping = () => false) {
@@ -165,6 +166,12 @@ function defaultRuntimeOps() {
 export async function runLiveVoice(env = process.env, runtimeOps = {}) {
   const config = loadLiveVoiceConfig(env);
   const ops = { ...defaultRuntimeOps(), ...runtimeOps };
+  const emit =
+    typeof runtimeOps.emit === 'function' ? runtimeOps.emit : defaultEmit;
+  const emitError =
+    typeof runtimeOps.emitError === 'function'
+      ? runtimeOps.emitError
+      : defaultEmitError;
   const signalTarget = ops.signalTarget;
   const stt = config.receiveEnabled ? ops.createStt(env) : null;
   const conversation = config.conversationEnabled
@@ -572,10 +579,12 @@ export async function main(args = process.argv.slice(2)) {
     if (args.length === 1 && args[0] === '--live') {
       return await runLiveVoice();
     }
-    emitError('invalid_mode');
+    defaultEmitError('invalid_mode');
     return 2;
   } catch (error) {
-    emitError(error instanceof LiveVoiceError ? error.code : 'live_runtime_failed');
+    defaultEmitError(
+      error instanceof LiveVoiceError ? error.code : 'live_runtime_failed',
+    );
     return 2;
   }
 }
