@@ -69,7 +69,9 @@ npx wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN --name docich-discord-chat
 
 Windows runtime側には同じ値を `DOCICH_DISCORD_VOICE_CHAT_TOKEN` として、WorkerのHTTPS endpointを `DOCICH_DISCORD_VOICE_CHAT_URL=https://<worker-host>/voice/reply` として設定します。Token、transcript、reply、Guild/Channel/User IDは通常ログへ出しません。
 
-このsliceでは既存テキスト会話の `guild + channel + user` 記憶を**読み取り**、生成中に参照元が削除された場合は返答を破棄します。一方、音声ターン自体はまだ永続記憶へ書き込みません。TTS/Discord再生の成功ACKより前に会話を保存しないための暫定境界です。音声ターンの記憶確定は、実VOICEVOX再生とdelivery ACKを接続する後続sliceで行います。
+`POST /voice/reply` は既存テキスト会話の `guild + channel + user` 記憶を**読み取り**、生成中に参照元が削除された場合は返答を破棄します。この生成requestだけでは音声ターンを永続化しません。
+
+Slice 4では、Windows runtimeがVOICEVOX合成とDiscord再生に成功した後だけ、同じBearer secretで `POST /voice/commit` を呼びます。commit時に初めて `voice:<turnId>` の会話を `sent` として保存し、reply IDは `voice-playback:<turnId>` として固定します。同一turn/contentのACK再送は `already_committed` として成功し、同じturnIdでtranscript/reply/scopeが変わった場合は409で拒否します。TTS失敗、再生失敗、barge-in、取消ではcommit request自体を送らないため、聞こえなかった返答は記憶されません。
 
 ## Health
 
@@ -92,4 +94,4 @@ fatal close（認証失敗、disallowed intents等）は15分のcooldownを記�
 
 呼出側がadmission/認証・dedupと`beginConversation`を担当します。生成後は`validContext`で現在入力/想起元の削除を再確認し、実送信前に`markSending`、成功して返信IDを得てから`finishConversation`、失敗時に`failConversation`を実行する既存契約を維持してください。生成関数だけでは送信・保存完了になりません。文字側の忘却command、失敗通知、queue、送信ackと診断は引き続き`bot.js`が所有します。
 
-将来の音声呼出側は900字/選択TTSの既定200字の制限、coordinatorのstage既定5秒/cap10秒とTTSの最大total30秒、取消・scope・配信完了/保存方針を明示的に適用する必要があります。この関数で暗黙に短縮/切断/期限変更しません。新しい音声adapter、公開HTTP/認証入口、STT通信は接続していません。fake音声callerテストは同一coreの想起/scope分離、901字保持と適用側の明示拒否を確認するだけで、実会話Botの完成を示しません。
+音声live runtimeは選択TTSの既定200字制限、LLM/TTS/playback/commitの個別deadline、barge-in取消、scope、再生成功後だけの保存方針を明示的に適用します。この生成関数自体は暗黙に短縮/切断/期限変更/保存を行いません。fake音声callerテストは引き続きoffline境界を検証し、実VC・実VOICEVOX・長時間品質の受入を示すものではありません。
