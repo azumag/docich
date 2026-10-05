@@ -172,7 +172,7 @@ test('JSONL control input stays sanitized and EOF always leaves and clears memor
   const result = await cli(['--offline'], lines); assert.equal(result.code, 0);
   assert.ok(!result.out.includes('EXAMPLE_PRIVATE')); assert.match(result.out, /session_closed/);
 });
-test('SIGTERM during synthetic capture leaves once and does not restart', { timeout: 10000 }, async (t) => {
+test('SIGTERM during synthetic capture leaves once and does not restart', { timeout: 10000, skip: process.platform === 'win32' ? 'POSIX SIGTERM semantics' : false }, async (t) => {
   const child = spawn(process.execPath, [fileURLToPath(new URL('../cli.mjs', import.meta.url)), '--offline'], { stdio: ['pipe', 'pipe', 'pipe'] });
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
   let output = '', signalled = false;
