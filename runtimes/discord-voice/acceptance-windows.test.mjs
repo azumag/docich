@@ -28,11 +28,11 @@ test('Windows acceptance bootstrap keeps private debug output disabled', () => {
 test('Windows acceptance bootstrap provisions bridge secret without command-line value or persistence', () => {
   assert.match(
     source,
-    /npx --no-install wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN --name docich-discord-chat/,
+    /node_modules\/\.bin\/wrangler\.cmd/,
   );
   assert.match(
     source,
-    /\$generatedSecret\s*\|\s*& npx --no-install wrangler secret put/,
+    /\$generatedSecret\s*\|\s*& \$wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN --name docich-discord-chat/,
   );
   assert.match(
     source,
@@ -50,7 +50,7 @@ test('Windows acceptance bootstrap uses pinned Worker dependencies before secret
     'npm install --no-package-lock --no-audit --no-fund',
   );
   const secret = source.indexOf(
-    'npx --no-install wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN',
+    '$generatedSecret | & $wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN',
   );
   assert.ok(install >= 0);
   assert.ok(secret > install);
