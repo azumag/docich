@@ -52,6 +52,7 @@ Socket.IO 4.8.4の公開ブラウザ配布をnative WebSocket transportだけで
 この変更は親の独立レビューとmerge・配備判断を待ちます。main連動のWorkers Buildsがある環境ではmergeも配備に繋がり得ます。既存secretを使い、新しい秘密は不要です。この変更の検証では実DO/D1作成、secret生成・設定、配備、Bot登録、beta接続・実対局を行っていません。
 
 - 現在受け付けるのは通常の `ついたて` です。`ダーク`、`ついたて5五`、`ついたてリレー` は、モード固有ルールの根拠と検証fixtureが揃うまで `422 unsupported_game_type` で安全に拒否します。
+- 手番要求はトップレベルの `type: "your_turn"` を受け付けます。[公式Botガイドの公開サンプル](https://tsuitateviewer.web.app/assets/Bot-xyMZs8Yh.js)は初回・差分ともこの値を指定しています。従来のtype省略要求も保持し、それ以外の値・大文字小文字や階層の異なるイベントを手番として推測しません。終局の `game_end` とprivate exportは既存の専用処理へ送ります。
 - 初回は手数0から `ply` まで、差分は `basePly + 1` から `ply` までを連番検証して保存します。差分の `basePly` は保持済みの最後の手数と完全一致する必要があります。
 - Durable Objectのトランザクションで局面履歴、進行位置、直近の指し手、requestIdの応答レシートを一括更新します。同じrequestIdと同じraw本文なら同じ応答を返し、本文が変わっていれば `409` を返します。
 - 旧版 `6874345` のreceipt/sessionには所有Bot情報がありません。このstateの再送・差分・再初期化は `409 legacy_identity_unverified` とし、元の履歴とreceiptを保存したまま新しいreceiptも作りません。受信headerから旧所有Botを推測・割当しません。所有情報が検証済みのsessionへの別Bot要求もreceiptを作らず、正しいBotによる同じrequestIdの再送を妨げません。旧stateの所有情報を確認する移行はこのPRの範囲外です。`bc0f1ac` が保存済みの `bot_identity_mismatch` 拒否receiptは、同じ本文・requestIdの再送で現在のsession所有情報を再検証します。成功receiptや本文不一致の保護は維持します。

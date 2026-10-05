@@ -44,7 +44,7 @@ const AUTH_FAILURE_STAGES = new Set([
   "signature_missing", "signature_format", "signature_mismatch",
 ]);
 const POSITION_FIELD_TYPES = new Set(["undefined", "null", "array", "object", "string", "number", "boolean"]);
-const KNOWN_WEBHOOK_TYPES = new Set(["game_end", "offline_review_export"]);
+const KNOWN_WEBHOOK_TYPES = new Set(["your_turn", "game_end", "offline_review_export"]);
 const CSA_MOVE = /^[+-](?:(?:[1-9]{4}(?:FU|KY|KE|GI|KI|KA|HI|OU|TO|NY|NK|NG|UM|RY))|(?:00[1-9]{2}(?:FU|KY|KE|GI|KI|KA|HI))|(?:0000TORYO))$/;
 const MASKED_OPPONENT_MOVE = /^[+-](?:0000ZZ|00[1-9]{2}ZZ)$/;
 const BOT_ID_FORMAT = /^[A-Za-z0-9:][A-Za-z0-9._:-]{0,63}$/;
@@ -357,7 +357,7 @@ async function handleWebhookRequest(request, env, options, signal, diagnostics) 
           && env.CF_VERSION_METADATA.id.length <= 64 ? env.CF_VERSION_METADATA.id : "local",
       };
     } else {
-      if (isRecord(decoded) && Object.hasOwn(decoded, "type")) {
+      if (isRecord(decoded) && Object.hasOwn(decoded, "type") && decoded.type !== "your_turn") {
         throw new ProtocolFault(400, "unknown_webhook_type");
       }
       const identity = extractRequestIdentity(decoded);
