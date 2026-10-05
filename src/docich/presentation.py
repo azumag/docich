@@ -87,7 +87,7 @@ def _cell_aspect(value: str) -> float:
 
 def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0,
                    nearest: bool = False, align: str = 'center') -> str:
-    if align not in ('center', 'left'):
+    if align not in ('center', 'left', 'right'):
         raise ValueError('invalid contain alignment')
     filters = []
     if cell_stretch != 1.0:
@@ -98,7 +98,7 @@ def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0,
         filters.append(f"scale=iw*{cell_stretch:g}:ih:flags=neighbor")
     filters.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease"
                    + (":flags=neighbor" if nearest else ""))
-    x = '0' if align == 'left' else '(ow-iw)/2'
+    x = '0' if align == 'left' else '(ow-iw)' if align == 'right' else '(ow-iw)/2'
     filters.append(f"pad={width}:{height}:{x}:(oh-ih)/2:color=black")
     filters.append("setsar=1")
     return ",".join(filters)
@@ -190,7 +190,7 @@ def _parser() -> argparse.ArgumentParser:
     # exact named window changes; never restart repeatedly against one failed
     # window.
     parser.add_argument('--rebind-window', action='store_true')
-    parser.add_argument('--align', choices=('center', 'left'), default='center')
+    parser.add_argument('--align', choices=('center', 'left', 'right'), default='center')
     parser.add_argument('--runtime-state')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     return parser
@@ -338,19 +338,26 @@ def main(argv=None) -> int:
             print(f'native={width}x{height} output={args.width}x{args.height} fit={args.fit}'
                   f' fps={args.framerate}{cell_note}', flush=True)
             player_width = args.width
+            player_left = args.x
             video_filter = (tv_filter(args.width, args.height) if args.fit == 'tv'
                             else contain_filter(args.width, args.height,
                                                 cell_stretch=args.cell_stretch or 1.0,
                                                 nearest=args.nearest, align=args.align))
-            if args.align == 'left':
+            if args.align in ('left', 'right'):
                 if args.fit != 'contain' or args.cell_stretch not in (None, 1.0):
-                    raise RuntimeError('left projection requires native contain')
+                    raise RuntimeError('edge projection requires native contain')
                 player_width, content_height = measured_contain_size(width, height, args.width, args.height)
-                # Remove only black padding from the projection window, exposing
-                # the shared browser behind it. Native capture/input stay intact.
-                video_filter += f',crop={player_width}:{args.height}:0:0:exact=1'
-                projection = {'align': 'left', 'viewport': [args.x, args.y, args.width, args.height],
-                              'content': [0, (args.height-content_height)//2, player_width, content_height]}
+                gap_width = args.width - player_width
+                crop_x = 0 if args.align == 'left' else gap_width
+                content_x = 0 if args.align == 'left' else gap_width
+                player_left = args.x + content_x
+                # Remove only measured horizontal black padding from the
+                # projection window, exposing the shared browser behind it.
+                # Native capture/input coordinates remain unchanged.
+                video_filter += f',crop={player_width}:{args.height}:{crop_x}:0:exact=1'
+                projection = {'align': args.align, 'viewport': [args.x, args.y, args.width, args.height],
+                              'content': [content_x, (args.height-content_height)//2,
+                                          player_width, content_height]}
             process = launch([
                 'ffplay', '-loglevel', 'warning', '-nostats', '-an', '-sn',
                 '-f', 'x11grab', '-framerate', str(args.framerate), '-draw_mouse', '0',
@@ -358,7 +365,7 @@ def main(argv=None) -> int:
                 '-i', f':{number}',
                 '-vf', video_filter,
                 '-noborder', '-window_title', args.title,
-                '-left', str(args.x), '-top', str(args.y),
+                '-left', str(player_left), '-top', str(args.y),
                 '-x', str(player_width), '-y', str(args.height),
             ], env=output_env)
             return process, width, height
