@@ -204,12 +204,25 @@ test('receive mode creates STT before login, attaches after voice ready, and sto
   connection.rejoin = () => true;
 
   const stt = { transcribe: async () => 'fixture' };
+  const conversation = {
+    async reply(transcript, context) {
+      assert.equal(transcript, 'fixture transcript');
+      assert.equal(context.guildId, receiveEnv.DOCICH_DISCORD_VOICE_GUILD_ID);
+      assert.equal(context.channelId, receiveEnv.DOCICH_DISCORD_VOICE_CHANNEL_ID);
+      assert.equal(context.userId, receiveEnv.DOCICH_DISCORD_VOICE_RECEIVE_USER_ID);
+      context.signal.throwIfAborted();
+      trace.push('conversation_reply');
+      return 'fixture reply';
+    },
+  };
   let receiverStops = 0;
+  let transcriptHandler = null;
   const receiveEnv = {
     ...env(),
     DOCICH_DISCORD_VOICE_TEST_TONE: '0',
     DOCICH_DISCORD_VOICE_RECEIVE_ENABLED: '1',
     DOCICH_DISCORD_VOICE_RECEIVE_USER_ID: '323456789012345678',
+    DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED: '1',
   };
 
   const running = runLiveVoice(receiveEnv, {
@@ -217,6 +230,10 @@ test('receive mode creates STT before login, attaches after voice ready, and sto
     createStt: () => {
       trace.push('create_stt');
       return stt;
+    },
+    createConversation: () => {
+      trace.push('create_conversation');
+      return conversation;
     },
     createClient: () => new FakeClient(),
     waitClientReady: async () => {
@@ -233,10 +250,12 @@ test('receive mode creates STT before login, attaches after voice ready, and sto
     waitVoiceReady: async () => {
       trace.push('voice_ready');
     },
-    attachReceiver: ({ targetUserId, stt: receivedStt, debugTranscript }) => {
+    attachReceiver: ({ targetUserId, stt: receivedStt, debugTranscript, onTranscript }) => {
       assert.equal(targetUserId, receiveEnv.DOCICH_DISCORD_VOICE_RECEIVE_USER_ID);
       assert.equal(receivedStt, stt);
       assert.equal(debugTranscript, false);
+      assert.equal(typeof onTranscript, 'function');
+      transcriptHandler = onTranscript;
       trace.push('receiver_attached');
       return {
         stop() {
@@ -249,8 +268,13 @@ test('receive mode creates STT before login, attaches after voice ready, and sto
 
   await waitFor(() => trace.includes('receiver_attached'));
   assert.ok(trace.indexOf('create_stt') < trace.indexOf('login'));
+  assert.ok(trace.indexOf('create_conversation') < trace.indexOf('login'));
   assert.ok(trace.indexOf('voice_ready') < trace.indexOf('receiver_attached'));
   assert.ok(trace.includes('join_receive'));
+
+  const transcriptController = new AbortController();
+  await transcriptHandler('fixture transcript', { signal: transcriptController.signal });
+  assert.ok(trace.includes('conversation_reply'));
 
   signalTarget.emit('SIGINT');
   assert.equal(await running, 0);
