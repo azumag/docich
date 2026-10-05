@@ -502,6 +502,63 @@ def coordinate(turns, scope, *, source, manifest, model_call, broker, searcher, 
     return Evidence(reason)
 
 
+def direct_web_research(turns, *, broker, searcher, deadline) -> Evidence:
+    """One search + up to three verified source excerpts, without a research model.
+
+    Search output only authorizes candidate URLs. Every excerpt comes from a
+    WebBroker receipt and is passed through the same exact-quote verifier used
+    by model-coordinated research. This initial direct path is intentionally
+    single-conversation only; batched comment scopes keep the existing path.
+    """
+    if (not isinstance(turns, list) or not turns or time.monotonic() >= deadline):
+        return Evidence("research_unavailable")
+    last = turns[-1]
+    query = last.get("text") if isinstance(last, dict) else None
+    if not isinstance(query, str):
+        return Evidence("research_unavailable")
+    query = " ".join(query.split())
+    if not 1 <= len(query) <= 256 or any(ord(c) < 32 for c in query):
+        return Evidence("input_limit")
+
+    candidates = searcher(query, min(8.0, max(0.0, deadline - time.monotonic())))
+    urls = []
+    for value in candidates[:8]:
+        url = canonical_url(value)
+        if url and url not in urls:
+            urls.append(url)
+    if not urls:
+        return Evidence("research_unavailable")
+    broker.authorize(urls)
+
+    receipts = {}
+    refs = []
+    for url in urls:
+        if len(refs) >= 3 or time.monotonic() >= deadline:
+            break
+        rec = broker.fetch(url)
+        if not isinstance(rec, Receipt):
+            continue
+        if hashlib.sha256(rec.text.encode()).hexdigest() != rec.text_sha256:
+            continue
+        quote = rec.text[:1024]
+        if not quote:
+            continue
+        receipts[rec.receipt] = rec
+        refs.append({
+            "kind": "web",
+            "ref": rec.url,
+            "receipt": rec.receipt,
+            "sha256": rec.sha256,
+            "quote": quote,
+        })
+    if not refs:
+        return Evidence("research_unavailable")
+    try:
+        return verify_quotes(refs, receipts, Path("."), None, {})
+    except Exception:
+        return Evidence("research_unavailable")
+
+
 def research(turns, scope: str, *, env, timeout_sec: float = 45.0, comment_scopes=None, diagnostic=None) -> Evidence:
     if (scope not in SCOPES or env.get("DOCICH_REPLY_RESEARCH_ENABLED") != "1"
             or env.get("DOCICH_ALLOW_REAL_AI") != "1" or sys.platform != "linux"
@@ -511,6 +568,34 @@ def research(turns, scope: str, *, env, timeout_sec: float = 45.0, comment_scope
     web = scope in {"web", "web_and_code"}
     if web and env.get("DOCICH_REPLY_WEB_SEARCH_ENABLED") != "1":
         return Evidence("web_disabled")
+
+    from .reply_routing import project_messages, project_research_batch
+    try:
+        if comment_scopes is not None:
+            if (not isinstance(comment_scopes, (tuple, list)) or len(comment_scopes) != len(turns)
+                    or any(value not in SCOPES for value in comment_scopes)):
+                raise ValueError("input_limit")
+            turns = project_research_batch(turns)
+        else:
+            # Native Discord caller already supplies projected role/text turns.
+            turns = project_messages([{**turn, "content": turn.get("content", turn.get("text"))}
+                                      for turn in turns])
+    except (ValueError, UnicodeError, TypeError, AttributeError):
+        return Evidence("private_or_invalid_input")
+
+    deadline = time.monotonic() + timeout_sec
+    direct_web = (scope == "web" and comment_scopes is None
+                  and env.get("DOCICH_REPLY_WEB_DIRECT_ENABLED") == "1")
+    if direct_web:
+        try:
+            with tempfile.TemporaryDirectory(prefix="docich-web-direct-") as directory:
+                broker_options = {"diagnostic": diagnostic} if diagnostic is not None else {}
+                broker = WebBroker(Path(directory) / "web-unused.sock", deadline, **broker_options)
+                searcher = lambda query, timeout: search_public(query, timeout, env=env)
+                return direct_web_research(turns, broker=broker, searcher=searcher, deadline=deadline)
+        except Exception:
+            return Evidence("research_unavailable")
+
     model, key = env.get("DOCICH_REPLY_OPENCODE_MODEL", ""), env.get("DOCICH_REPLY_OPENCODE_API_KEY", "")
     if not SAFE_MODEL.fullmatch(model) or not key or len(key) > 4096 or any(not 33 <= ord(c) <= 126 for c in key):
         return Evidence("authentication_unavailable")
@@ -528,20 +613,6 @@ def research(turns, scope: str, *, env, timeout_sec: float = 45.0, comment_scope
     engine = python if native else _opencode_binary(launcher) if launcher else None
     if not all((bwrap, engine, python)):
         return Evidence("isolation_unavailable")
-    from .reply_routing import project_messages, project_research_batch
-    try:
-        if comment_scopes is not None:
-            if (not isinstance(comment_scopes, (tuple, list)) or len(comment_scopes) != len(turns)
-                    or any(value not in SCOPES for value in comment_scopes)):
-                raise ValueError("input_limit")
-            turns = project_research_batch(turns)
-        else:
-            # Native Discord caller already supplies projected role/text turns.
-            turns = project_messages([{**turn, "content": turn.get("content", turn.get("text"))}
-                                      for turn in turns])
-    except (ValueError, UnicodeError, TypeError, AttributeError):
-        return Evidence("private_or_invalid_input")
-    deadline = time.monotonic() + timeout_sec
     try:
         with tempfile.TemporaryDirectory(prefix="docich-research-") as directory:
             workspace = Path(directory); source = workspace / "source"; source.mkdir()
