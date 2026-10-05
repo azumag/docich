@@ -70,3 +70,12 @@ fatal close（認証失敗、disallowed intents等）は15分のcooldownを記�
 ## Migration boundary
 
 既存 `src/docich/discord_chat.py` / Docker版はreference implementationとローカルフォールバックとして残します。Cloudflare版の実運用確認が済むまでは既存版を削除しません。実Discord往復、実Workers AI品質、実課金、Cloudflare上のWebSocket長期維持はdeploy後の受入項目です。
+
+
+## 内部応答生成の再利用境界
+
+`src/conversation.js` の `generateConversationReply(env, sql, event, seq, setStage?)` は、既に登録された会話のscope記憶contextを取得し、既存 `llm.js` のpersona/Workers AI処理を呼び、`{reply, context}` を返す内部関数です。`setStage` は信頼側の診断stage更新だけを行い、未指定なら何もしません。人格、モデル、prompt、retry、tool拒否、文字側の最大901字契約を変更しません。
+
+呼出側がadmission/認証・dedupと`beginConversation`を担当します。生成後は`validContext`で現在入力/想起元の削除を再確認し、実送信前に`markSending`、成功して返信IDを得てから`finishConversation`、失敗時に`failConversation`を実行する既存契約を維持してください。生成関数だけでは送信・保存完了になりません。文字側の忘却command、失敗通知、queue、送信ackと診断は引き続き`bot.js`が所有します。
+
+将来の音声呼出側は900字/選択TTSの既定200字の制限、coordinatorのstage既定5秒/cap10秒とTTSの最大total30秒、取消・scope・配信完了/保存方針を明示的に適用する必要があります。この関数で暗黙に短縮/切断/期限変更しません。新しい音声adapter、公開HTTP/認証入口、STT通信は接続していません。fake音声callerテストは同一coreの想起/scope分離、901字保持と適用側の明示拒否を確認するだけで、実会話Botの完成を示しません。
