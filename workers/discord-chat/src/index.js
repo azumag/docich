@@ -1,4 +1,10 @@
 import { DiscordBot } from "./bot.js";
+import {
+  VoiceBridgeError,
+  authorizeVoiceBridge,
+  readVoiceBridgeJson,
+  validateVoiceBridgeInput,
+} from "./voice-bridge.js";
 
 const OBJECT_NAME = "singleton";
 
@@ -12,6 +18,43 @@ export { DiscordBot };
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/internal/voice/reply") {
+      try {
+        if (!await authorizeVoiceBridge(request, env)) {
+          return Response.json({ error: "voice_bridge_unauthorized" }, {
+            status: 401,
+            headers: { "cache-control": "no-store" },
+          });
+        }
+        const input = validateVoiceBridgeInput(await readVoiceBridgeJson(request));
+        const response = await botStub(env).fetch(new Request(
+          "https://discord-bot.internal/voice/reply",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        ));
+        return new Response(response.body, {
+          status: response.status,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+          },
+        });
+      } catch (error) {
+        if (error instanceof VoiceBridgeError) {
+          return Response.json({ error: error.code }, {
+            status: error.status,
+            headers: { "cache-control": "no-store" },
+          });
+        }
+        return Response.json({ error: "voice_bridge_unavailable" }, {
+          status: 503,
+          headers: { "cache-control": "no-store" },
+        });
+      }
+    }
     if (request.method === "GET" && url.pathname === "/healthz") {
       try {
         const response = await botStub(env).fetch("https://discord-bot.internal/status");
