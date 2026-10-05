@@ -55,7 +55,7 @@ export async function checkLiveDependencies() {
   }
   const resource = buildTestResource();
   if (!resource?.playStream) throw new LiveVoiceError('opus_unavailable');
-  emit({ event: 'live_voice_check_ok', dave: true, opus: true, rawPcm: true });
+  emit({ event: 'live_voice_check_ok', daveCapable: true, opus: true, rawPcm: true });
 }
 
 async function resolveVoiceChannel(client, config) {
@@ -142,6 +142,9 @@ export async function runLiveVoice(env = process.env) {
 
   try {
     const ready = waitClientReady(client);
+    // If login itself fails, the pre-registered Ready waiter must not become
+    // an unhandled timeout later. It is still awaited on the successful path.
+    ready.catch(() => {});
     try {
       await client.login(config.token);
     } catch {
@@ -208,7 +211,7 @@ export async function runLiveVoice(env = process.env) {
       throw new LiveVoiceError('voice_connect_timeout');
     }
 
-    emit({ event: 'voice_connected', selfDeaf: true, dave: true });
+    emit({ event: 'voice_connected', selfDeaf: true, daveCapable: true });
 
     if (config.playTestTone) {
       await playTestTone(connection);
