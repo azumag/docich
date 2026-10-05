@@ -22,11 +22,14 @@ function Require-Env([string]$Name) {
 }
 
 function New-BridgeSecret {
-  $bytes = [System.Security.Cryptography.RandomNumberGenerator]::GetBytes(48)
+  $bytes = New-Object byte[] 48
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
   try {
+    $rng.GetBytes($bytes)
     return ([Convert]::ToBase64String($bytes)).TrimEnd("=").Replace("+", "-").Replace("/", "_")
   }
   finally {
+    $rng.Dispose()
     [Array]::Clear($bytes, 0, $bytes.Length)
   }
 }
@@ -108,7 +111,11 @@ try {
       if ($LASTEXITCODE -ne 0) {
         throw "Failed to install pinned Discord Worker dependencies."
       }
-      $generatedSecret | & npx --no-install wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN --name docich-discord-chat
+      $wrangler = Join-Path $workerDir "node_modules/.bin/wrangler.cmd"
+      if (-not (Test-Path -LiteralPath $wrangler)) {
+        throw "Pinned Wrangler binary was not installed."
+      }
+      $generatedSecret | & $wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN --name docich-discord-chat
       if ($LASTEXITCODE -ne 0) {
         throw "Failed to provision DISCORD_VOICE_INTERNAL_TOKEN."
       }
