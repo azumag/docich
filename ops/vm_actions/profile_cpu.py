@@ -286,7 +286,10 @@ def list_pids(proc_root):
 def classify(argv, comm):
     """Map a process to a fixed/validated component label."""
     if argv is None:
-        return "other"
+        # Very short-lived processes can vanish after /proc/<pid>/stat was read
+        # but before cmdline. The stat comm is already captured; only use it
+        # when it maps to the same fixed non-sensitive executable allowlist.
+        return EXECUTABLES.get(comm, "other")
     if not argv:
         return "kernel"
     exe = os.path.basename(argv[0])
