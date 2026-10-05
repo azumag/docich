@@ -398,6 +398,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
               if (!tts || !livePlayback) return;
 
               let pcm;
+              let outputStage = 'tts';
               try {
                 emit({ event: 'tts_started' });
                 pcm = await runBoundedStage(
@@ -416,6 +417,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
                 }
                 emit({ event: 'tts_completed' });
 
+                outputStage = 'playback';
                 emit({ event: 'playback_started' });
                 await runBoundedStage(
                   turnController.signal,
@@ -443,12 +445,18 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
                   }
                 }
                 if (!generated) return;
-                if (cancelled && interrupted) {
+                if (cancelled && interrupted && outputStage === 'playback') {
                   emit({ event: 'playback_interrupted' });
+                } else if (cancelled && outputStage === 'tts') {
+                  emit({ event: 'tts_cancelled' });
                 } else if (cancelled) {
-                  emit({ event: 'turn_cancelled' });
+                  emit({ event: 'playback_cancelled' });
                 } else {
-                  emit({ event: pcm ? 'playback_failed' : 'tts_failed' });
+                  emit({
+                    event: outputStage === 'playback'
+                      ? 'playback_failed'
+                      : 'tts_failed',
+                  });
                 }
                 return;
               } finally {
