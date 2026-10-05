@@ -85,6 +85,49 @@ def test_broker_authorization_failure_returns_unavailable_without_fetch():
     assert broker.fetched == []
 
 
+def test_optional_host_allowlist_accepts_exact_and_subdomain_only():
+    sub = "https://sub.example.com/c"
+    blocked = "https://example.org/no"
+    broker = Broker({
+        URL1: _receipt(URL1, "exact"),
+        sub: _receipt(sub, "subdomain"),
+        blocked: _receipt(blocked, "blocked"),
+    })
+    result = m.collect_verified_web_material(
+        ["公式資料"],
+        env={},
+        allowed_hosts=["example.com"],
+        searcher=lambda *args: [URL1, sub, blocked],
+        broker=broker,
+    )
+    assert result.ok
+    assert [item.url for item in result.items] == [URL1, sub]
+    assert blocked not in broker.authorized
+    assert blocked not in broker.fetched
+
+
+@pytest.mark.parametrize("hosts", [
+    ["localhost"],
+    ["-bad.example.com"],
+    ["bad-.example.com"],
+    ["bad..example.com"],
+    ["example.com."] ,
+    ["x.example"] * 17,
+    [123],
+])
+def test_invalid_host_allowlist_holds_before_search(hosts):
+    called = []
+    with pytest.raises(ValueError, match="invalid_hosts"):
+        m.collect_verified_web_material(
+            ["query"],
+            env={},
+            allowed_hosts=hosts,
+            searcher=lambda *args: called.append(True) or [],
+            broker=Broker({}),
+        )
+    assert called == []
+
+
 def test_forged_text_hash_is_not_material():
     rec = _receipt()
     forged = Receipt(rec.url, rec.receipt, rec.sha256, "0" * 64, rec.text)
