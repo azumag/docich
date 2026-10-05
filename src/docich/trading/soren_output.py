@@ -1,12 +1,11 @@
 """Narrow adapters from paper notifications to existing Soren viewer queues."""
 from __future__ import annotations
 
-import hashlib
 import json
-import re
 from pathlib import Path
 
 from ..config import ConfigError, GlobalConfig, load_game
+from ..meriken_voice import resolve_meriken_speaker
 from ..overlay_queue import append_event, regenerate_overlay
 from .narration_style import strip_leading_preamble
 
@@ -19,22 +18,10 @@ class HanjukuTerminalPendingError(SorenOutputError):
     """A validated earlier recap must enter the shared queue before new audio."""
 
 
-# Narration personas: the stream's two AI personalities take turns hosting
-# the PAPER corner. Chuka (中華AI) speaks in the worker's default voice;
-# Meriken (メリケンAI) uses the Soren91 voice. Exactly one persona hosts an
-# entire corner run (decided once, effectively at random, when the corner
-# starts) rather than switching mid-corner segment to segment; a listener
-# hearing both voices alternate within the same 10/30-minute corner read as
-# a bug, not a feature. The pick is a deterministic hash of the corner's
-# fixed identity (delivery scope + date, i.e. every event_id up to and
-# including the date segment) rather than the full per-segment delivery key:
-# stable across every segment and retry within one corner, but still varies
-# across different corners (different dates, or a fresh manual-run uuid).
+# Every scheduled/manual/operator PAPER corner is hosted by Meriken.
+# Ordinary trading notifications retain the shared worker's default voice.
 PAPER_PERSONA_CHUKA = "chuka"
 PAPER_PERSONA_MERIKEN = "meriken"
-PAPER_PERSONAS = (PAPER_PERSONA_CHUKA, PAPER_PERSONA_MERIKEN)
-
-_MERIKEN_VOICE_FALLBACK = "46"
 
 # Matches both the daily corner's fixed scope ("paper-corner:...") and any
 # operator/manual test run's per-invocation scope ("paper-corner-manual-
@@ -49,36 +36,9 @@ def _is_paper_corner_delivery(event_id: str) -> bool:
     return scope == "paper-corner" or scope.startswith("paper-corner-")
 
 
-def _corner_identity(event_id: str) -> str:
-    """The part of a delivery key shared by every segment of one corner run.
-
-    ``event_id`` is ``{delivery_scope}:{date}:{key}`` (e.g.
-    ``paper-corner:2026-09-18:script:3`` or
-    ``paper-corner-manual-<uuid>:2026-09-18:opening``); the first two
-    colon-separated parts (scope + date) identify one corner run and are
-    shared by every segment/retry inside it, unlike ``key`` itself.
-    """
-    parts = str(event_id or "").split(":")
-    return ":".join(parts[:2]) if len(parts) >= 2 else str(event_id or "")
-
-
 def pick_paper_persona(event_id: str) -> str:
-    """Deterministically pick the one persona hosting this corner run."""
-    digest = hashlib.sha256(_corner_identity(event_id).encode("utf-8")).hexdigest()
-    return PAPER_PERSONAS[int(digest, 16) % len(PAPER_PERSONAS)]
-
-
-def _meriken_speaker_id(soren_root: Path) -> str:
-    """Meriken voice id from the Soren runtime env (production-tuned value)."""
-    try:
-        from .. import webui
-
-        raw = (webui._read_dotenv_dict(soren_root).get("SOREN91_VOICEVOX_SPEAKER", "") or "").strip()
-        if re.fullmatch(r"[A-Za-z0-9._:-]{1,64}", raw or ""):
-            return str(raw)
-    except Exception:
-        pass
-    return _MERIKEN_VOICE_FALLBACK
+    """Keep PAPER on Meriken regardless of run date, scope, segment or retry."""
+    return PAPER_PERSONA_MERIKEN if _is_paper_corner_delivery(event_id) else PAPER_PERSONA_CHUKA
 
 
 _PAPER_CORNER_INTRO = "PAPER・暗号資産の模擬売買コーナーです。"
@@ -182,8 +142,8 @@ def enqueue_speech(g: GlobalConfig, text: str, *, event_id: str = "") -> None:
     speech_text = _paper_corner_speech_text(text, event_id)
     root = resolve_soren_root(g)
     speaker = ""
-    if pick_paper_persona(event_id) == PAPER_PERSONA_MERIKEN and _is_paper_corner_delivery(event_id):
-        speaker = _meriken_speaker_id(root)
+    if pick_paper_persona(event_id) == PAPER_PERSONA_MERIKEN:
+        speaker = resolve_meriken_speaker(g, root)
     try:
         from .. import webui
         result = webui._enqueue_audio_text(

@@ -117,6 +117,26 @@ def test_delivery_speaker_sidecar_selects_voice_without_breaking_dedupe(tmp_path
         webui._enqueue_audio_text(tmp_path, "他ソース", "webui_test", delivery_key="other-source")
 
 
+def test_paper_scopes_replay_all_slots_with_meriken_sidecar_without_duplicate_audio(tmp_path, monkeypatch):
+    from docich import config
+    from docich.trading import soren_output
+
+    monkeypatch.delenv("SOREN91_VOICEVOX_SPEAKER", raising=False)
+    monkeypatch.setattr(soren_output, "resolve_soren_root", lambda _g: tmp_path)
+    g = config.load_global(tmp_path)
+    scopes = ("paper-corner", "paper-corner-manual-abcdef123456", "paper-corner-operator-abcdef123456")
+    for scope in scopes:
+        for slot in range(1, 9):
+            key = f"{scope}:2026-10-05:script:{slot}"
+            soren_output.enqueue_speech(g, "損益を確認します。", event_id=key)
+            soren_output.enqueue_speech(g, "損益を確認します。", event_id=key)
+    queue = tmp_path / "tmp/.comment_queue"
+    audio = list(queue.glob("comment_announce_*.txt"))
+    assert len(audio) == 24
+    assert {path.read_text(encoding="utf-8").strip() for path in audio} == {"損益を確認します。"}
+    assert all(Path(str(path) + ".speaker").read_text(encoding="utf-8") == "14" for path in audio)
+
+
 def test_hanjuku_terminal_has_a_dedicated_durable_source_and_nonblocking_lock(tmp_path):
     import fcntl
 

@@ -9,6 +9,8 @@ on:
       - 'src/docich/overlay*.py'
       - 'src/docich/webui.py'
       - 'src/docich/config.py'
+      - 'src/docich/meriken_voice.py'
+      - 'src/docich/soren91_corner.py'
       - 'src/docich/runtime_backend.py'
       - 'src/docich/hanjuku_narration.py'
       - 'tests/test_trading*.py'
@@ -16,6 +18,7 @@ on:
       - 'tests/test_program_view*.py'
       - 'tests/test_overlay*.py'
       - 'tests/test_audio_delivery.py'
+      - 'tests/test_soren91_corner.py'
       - 'containers/paper-strategy/**'
       - 'config/market-paper.toml'
       - 'games/soviet_now'
@@ -30,6 +33,8 @@ on:
       - 'src/docich/overlay*.py'
       - 'src/docich/webui.py'
       - 'src/docich/config.py'
+      - 'src/docich/meriken_voice.py'
+      - 'src/docich/soren91_corner.py'
       - 'src/docich/runtime_backend.py'
       - 'src/docich/hanjuku_narration.py'
       - 'tests/test_trading*.py'
@@ -37,6 +42,7 @@ on:
       - 'tests/test_program_view*.py'
       - 'tests/test_overlay*.py'
       - 'tests/test_audio_delivery.py'
+      - 'tests/test_soren91_corner.py'
       - 'containers/paper-strategy/**'
       - 'config/market-paper.toml'
       - 'games/soviet_now'
@@ -78,6 +84,8 @@ jobs:
             --root-path 'src/docich/overlay*.py' \
             --root-path 'src/docich/webui.py' \
             --root-path 'src/docich/config.py' \
+            --root-path 'src/docich/meriken_voice.py' \
+            --root-path 'src/docich/soren91_corner.py' \
             --root-path 'src/docich/runtime_backend.py' \
             --root-path 'src/docich/hanjuku_narration.py' \
             --root-path 'tests/test_trading*.py' \
@@ -85,6 +93,7 @@ jobs:
             --root-path 'tests/test_program_view*.py' \
             --root-path 'tests/test_overlay*.py' \
             --root-path 'tests/test_audio_delivery.py' \
+            --root-path 'tests/test_soren91_corner.py' \
             --root-path 'containers/paper-strategy/**' \
             --root-path 'config/market-paper.toml' \
             --root-path 'requirements-test.txt' \
@@ -136,3 +145,4 @@ jobs:
           tests/test_trading_free_strategy_entrypoint.py tests/test_trading_free_strategy_capacity.py
           tests/test_trading_free_strategy_systemd.py
           tests/test_trading_soren_output.py tests/test_overlay_queue.py tests/test_audio_delivery.py tests/test_overlay_interop.py
+          tests/test_soren91_corner.py

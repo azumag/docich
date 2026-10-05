@@ -1,11 +1,11 @@
 {
-  "output_sha256": "716c400b3762d2775de8fa4447bc8a11d60bdddf6b41af9e897ff5c91ff1e902",
+  "output_sha256": "50da31e5b9dd78cf9b23372490b8874f96a5ff08cf1c28800a0cfeada5f28de9",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "96aa5fcce40cdbd32e6b1c742ed826cf6dc0ff22e2093366d831a0cf1d92f4db",
+  "source_sha256": "13034e021acc5caf6710609e0bc90fe555b24e8699639b334d11d32ce25456fd",
   "topics": [
+    "PAPERコーナーの人格と声をメリケンへ固定（実装・ローカル検証、本番未反映）",
     "Soren「GAMEOVERのまま進まない」固定復旧 `recover_soren_round` を Ready （未merge・本番未実…",
-    "半熟英雄: 卵回復の見積もりを実測卵だけにし、支払へ賃金フロアを固定（v133）を配備",
-    "「CIが恒常失敗」の切り分け（実測）／`/hanjuku-evidence` は gateway 未更新で未解決"
+    "半熟英雄: 卵回復の見積もりを実測卵だけにし、支払へ賃金フロアを固定（v133）を配備"
   ]
 }

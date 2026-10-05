@@ -27,6 +27,7 @@ on:
       - 'src/docich/stream_title_context.py'
       - 'src/docich/tsuitate_protocol.py'
       - 'src/docich/soren91*.py'
+      - 'src/docich/meriken_voice.py'
       - 'src/docich/soren_*recovery*.py'
       - 'brains/**'
       - 'scripts/hanjuku_scene_generate.sh'
@@ -92,6 +93,7 @@ on:
       - 'src/docich/stream_title_context.py'
       - 'src/docich/tsuitate_protocol.py'
       - 'src/docich/soren91*.py'
+      - 'src/docich/meriken_voice.py'
       - 'src/docich/soren_*recovery*.py'
       - 'brains/**'
       - 'scripts/hanjuku_scene_generate.sh'
@@ -184,6 +186,7 @@ jobs:
             --root-path 'src/docich/stream_title_context.py' \
             --root-path 'src/docich/tsuitate_protocol.py' \
             --root-path 'src/docich/soren91*.py' \
+            --root-path 'src/docich/meriken_voice.py' \
             --root-path 'src/docich/soren_*recovery*.py' \
             --root-path 'brains/**' \
             --root-path 'scripts/hanjuku_scene_generate.sh' \
