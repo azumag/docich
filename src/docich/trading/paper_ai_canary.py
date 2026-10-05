@@ -25,6 +25,7 @@ from .corner_research import prepare_research_context
 
 CANARY_AGENT = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
 CANARY_LABEL = "RADIO:paper-canary"
+CANARY_PROMPT_MAX_BYTES = 16384
 _ACCOUNT_RE = re.compile(r"^[A-Fa-f0-9]{32}$")
 _SEARCH_SECRET_KEY = "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN"
 _DIRECT_SECRET_KEY = "CLOUDFLARE_API_TOKEN"
@@ -144,11 +145,14 @@ def run_once(
             if source_count < 1 and not asset_background:
                 raise PaperAiCanaryError("paper web research returned no verified public body")
 
+            prompt = _prompt(research)
+            if len(prompt.encode("utf-8")) > CANARY_PROMPT_MAX_BYTES:
+                raise PaperAiCanaryError("paper AI canary prompt limit exceeded")
             raw = generator(
                 g,
                 label=CANARY_LABEL,
                 agents=CANARY_AGENT,
-                prompt_text=_prompt(research),
+                prompt_text=prompt,
                 timeout=45,
                 overall_timeout_s=45,
                 env=effective,
