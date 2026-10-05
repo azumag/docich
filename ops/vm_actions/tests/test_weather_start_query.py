@@ -148,7 +148,9 @@ class WeatherStartQueryWorkflowTests(unittest.TestCase):
         ):
             self.assertIn(field, text)
         self.assertIn('0 <= index <= 13', text)
-        self.assertIn("seq 1 216", text)
+        self.assertNotIn("seq 1 216", text)
+        self.assertIn("observe_deadline=$((SECONDS + 1080))", text)
+        self.assertIn("while (( SECONDS < observe_deadline )); do", text)
         self.assertIn("timeout-minutes: 25", text)
         self.assertIn('"audio_delivery_status"', text)
         self.assertIn('"audio_next_index"', text)
