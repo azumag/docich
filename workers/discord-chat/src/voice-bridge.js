@@ -169,12 +169,18 @@ export function validateVoiceBridgeInput(value) {
   }
 
   const transcript = value.transcript.trim();
-  if (
-    !transcript ||
-    transcript.length > MAX_TRANSCRIPT_CHARS ||
-    new TextEncoder().encode(transcript).byteLength > MAX_TRANSCRIPT_BYTES
-  ) {
-    fail("voice_bridge_invalid_request", 400);
+  let transcriptBytes;
+  try {
+    transcriptBytes = new TextEncoder().encode(transcript);
+    if (
+      !transcript ||
+      transcript.length > MAX_TRANSCRIPT_CHARS ||
+      transcriptBytes.byteLength > MAX_TRANSCRIPT_BYTES
+    ) {
+      fail("voice_bridge_invalid_request", 400);
+    }
+  } finally {
+    erase(transcriptBytes);
   }
 
   return Object.freeze({
