@@ -77,6 +77,9 @@ corners = [
 enabled = false
 daily_improvement = true
 daily_improvement_timezone = "Asia/Tokyo"
+# direct proposer は別受入。false時は既存retro_corner.improve_agents継承を維持。
+daily_improvement_direct_enabled = false
+daily_improvement_direct_agents = ""
 
 # docich側canonicalがidleなら、終了時はstopして背景のSorenへ自然に戻る。
 [retro_corner]
