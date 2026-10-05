@@ -105,6 +105,17 @@ class PaperCornerManager:
         # Optional AI narration/improvement delegation. Empty means fallback-only
         # narration or no improvement job (end of corner).
         self.script_agents = self._optional_agents(raw, 'script_agents')
+        self.script_direct_agents = self._optional_agents(raw, 'script_direct_agents')
+        self.script_direct_enabled = raw.get('script_direct_enabled', False)
+        if type(self.script_direct_enabled) is not bool:
+            raise ValueError('invalid paper corner script_direct_enabled')
+        if self.script_direct_enabled:
+            if not self.script_direct_agents:
+                raise ValueError('paper corner direct script agents are required when enabled')
+            from .llm.policy import DIRECT_CHAT_PROVIDERS, parse_agents
+            specs = parse_agents(self.script_direct_agents)
+            if any(spec.provider not in DIRECT_CHAT_PROVIDERS for spec in specs):
+                raise ValueError('paper corner direct script agents must use explicit *-api providers')
         self.improve_agents = self._optional_agents(raw, 'improve_agents')
         script_timeout = raw.get('script_timeout_s', 180)
         if type(script_timeout) is not int or not 1 <= script_timeout <= 1800:
@@ -462,8 +473,13 @@ class PaperCornerManager:
         state['fallback_segments'] = prepared
         self.save(state)
 
+    def _narration_agents(self) -> str:
+        if self.script_direct_enabled:
+            return self.script_direct_agents
+        return self.script_agents
+
     def _ai_narration_enabled(self) -> bool:
-        return bool(self.script_agents)
+        return bool(self._narration_agents())
 
     @staticmethod
     def _covered_topics(state) -> list:
@@ -538,7 +554,7 @@ class PaperCornerManager:
                 result = generate_next_narration(
                     self.g,
                     trading_dir=self.trading_dir,
-                    agents=self.script_agents,
+                    agents=self._narration_agents(),
                     timeout=self.script_timeout,
                     covered=covered,
                     target_key=slot,
