@@ -23,7 +23,7 @@ jobs:
       cancel-in-progress: false
     environment: vm-operations
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 25
     steps:
       - name: Checkout trusted start code from event main
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -192,9 +192,21 @@ jobs:
           restored=unknown
           audio_status=unknown
           active_game=unknown
-          for _ in $(seq 1 96); do
-            if diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA" 2>/dev/null)"; then
-              projection="$(python3 - "$diagnostics_json" <<'PY'
+          for _ in $(seq 1 216); do
+            current="$(git -C control ls-remote --exit-code origin refs/heads/main 2>/dev/null | cut -f1 || true)"
+            if [[ "$current" =~ ^[0-9a-f]{40}$ ]] &&
+               status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $current" 2>/dev/null)" &&
+               python3 - "$status_json" "$current" <<'PY'
+          import json, sys
+          try:
+              data = json.loads(sys.argv[1])
+          except (TypeError, ValueError):
+              raise SystemExit(1)
+          raise SystemExit(0 if data.get("status") == "configured" and data.get("sha") == sys.argv[2] else 1)
+          PY
+            then
+              if diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $current" 2>/dev/null)"; then
+                projection="$(python3 - "$diagnostics_json" <<'PY'
           import json, sys
           data = json.loads(sys.argv[1])
           corners = data.get("corners") if isinstance(data, dict) else {}
@@ -222,19 +234,20 @@ jobs:
           game = game if isinstance(game, str) and game else "none"
           print("|".join((status, selection, audio, str(index), end, restored, game)))
           PY
-              )"
-              IFS='|' read -r status selection audio index end restored_now game <<<"$projection"
-              audio_status="$audio"
-              active_game="$game"
-              if (( index > max_index )); then max_index="$index"; fi
-              if [[ "$selection" == manual && ( "$status" == starting || "$status" == active || "$status" == restoring ) ]]; then
-                seen_active=true
-              fi
-              if [[ "$seen_active" == true && ( "$status" == completed || "$status" == interrupted || "$status" == failed ) ]]; then
-                terminal="$status"
-                end_reason="$end"
-                restored="$restored_now"
-                break
+                )"
+                IFS='|' read -r status selection audio index end restored_now game <<<"$projection"
+                audio_status="$audio"
+                active_game="$game"
+                if (( index > max_index )); then max_index="$index"; fi
+                if [[ "$selection" == manual && ( "$status" == starting || "$status" == active || "$status" == restoring ) ]]; then
+                  seen_active=true
+                fi
+                if [[ "$seen_active" == true && ( "$status" == completed || "$status" == interrupted || "$status" == failed ) ]]; then
+                  terminal="$status"
+                  end_reason="$end"
+                  restored="$restored_now"
+                  break
+                fi
               fi
             fi
             sleep 5
