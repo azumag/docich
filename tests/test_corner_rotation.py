@@ -2149,6 +2149,10 @@ def test_scheduled_manual_duplicate_is_idempotent_but_time_change_conflicts(setu
     first = manager.queue_manual("nsnake", trigger_at=trigger)
     assert manager.queue_manual("nsnake", trigger_at=trigger) == first
 
+    # Exact retries remain idempotent after the not-before time has arrived.
+    clock[0] = trigger + 1
+    assert manager.queue_manual("nsnake", trigger_at=trigger) == first
+
     with pytest.raises(RotationError, match="schedule is already queued") as changed:
         manager.queue_manual("nsnake", trigger_at=trigger + 60)
     assert changed.value.reason_code == "manual_queue_conflict"
