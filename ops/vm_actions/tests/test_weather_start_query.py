@@ -143,6 +143,8 @@ class WeatherStartQueryWorkflowTests(unittest.TestCase):
         for field in (
             "Weather active observed:", "Audio max next_index:", "Terminal:",
             "End reason:", "Audio status:", "Restored:", "Active game after observation:",
+            "Soren loop after restore:", "Soren game state:",
+            "Soren game state age sec:", "Soren resumed:",
         ):
             self.assertIn(field, text)
         self.assertIn('0 <= index <= 13', text)
@@ -150,6 +152,12 @@ class WeatherStartQueryWorkflowTests(unittest.TestCase):
         self.assertIn("timeout-minutes: 25", text)
         self.assertIn('"audio_delivery_status"', text)
         self.assertIn('"audio_next_index"', text)
+        self.assertIn('details.get("soren_loop")', text)
+        self.assertIn('corners.get("soren_game")', text)
+        self.assertIn('soren_state in {"MOVE", "DROP", "WAITING"}', text)
+        self.assertIn('0 <= soren_age <= 30', text)
+        self.assertIn('runner_alive is True', text)
+        self.assertIn('"$soren_resumed" == true', text)
         self.assertNotIn('"requests"', text)
         self.assertNotIn('"item_key"', text)
 
