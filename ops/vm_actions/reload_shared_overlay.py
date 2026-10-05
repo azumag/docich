@@ -11,6 +11,21 @@ ROOT = Path('/home/ubuntu/soren')
 DOCICH_STATE = Path('/home/ubuntu/docich/run-soren-live')
 UNIT = 'soren-shared-overlay.service'
 
+EXIT_HEALTH_UNREACHABLE = 20
+EXIT_BROWSER_NOT_READY = 21
+EXIT_WINDOW_NOT_READY = 22
+EXIT_LAYOUT_NOT_READY = 23
+EXIT_OVERLAY_NOT_READY = 24
+EXIT_HEALTH_NOT_READY = 25
+EXIT_GAME_GAP_DISABLED = 26
+EXIT_STATE_UNREACHABLE = 27
+
+
+class ReadinessTimeout(RuntimeError):
+    def __init__(self, exit_code):
+        super().__init__('shared overlay not ready')
+        self.exit_code = exit_code
+
 
 def _read(path):
     if path.is_symlink() or path.stat().st_size > 262144:
@@ -49,13 +64,42 @@ def snapshot():
             'audio': _process(audio), 'active': active, 'game_processes': groups}
 
 
-def ready():
+def _url_json(url):
+    with urllib.request.urlopen(url, timeout=2) as response:
+        value = json.load(response)
+    if not isinstance(value, dict):
+        raise ValueError('invalid json object')
+    return value
+
+
+def readiness():
+    """Return only a fixed readiness class; never expose service/body details."""
     port = int(os.environ.get('SOREN_SHARED_OVERLAY_PORT', '8092'))
-    with urllib.request.urlopen(f'http://127.0.0.1:{port}/healthz', timeout=2) as response:
-        health = json.load(response)
-    with urllib.request.urlopen(f'http://127.0.0.1:{port}/__soren_overlay/broadcast/state', timeout=2) as response:
-        state = json.load(response)
-    return health.get('ready') is True and state.get('gameGapEnabled') is True
+    try:
+        health = _url_json(f'http://127.0.0.1:{port}/healthz')
+    except (OSError, ValueError, TimeoutError):
+        return False, EXIT_HEALTH_UNREACHABLE
+    if health.get('browserReady') is not True:
+        return False, EXIT_BROWSER_NOT_READY
+    if health.get('windowReady') is not True:
+        return False, EXIT_WINDOW_NOT_READY
+    if health.get('layoutReady') is not True:
+        return False, EXIT_LAYOUT_NOT_READY
+    if health.get('overlayReady') is not True:
+        return False, EXIT_OVERLAY_NOT_READY
+    if health.get('ready') is not True:
+        return False, EXIT_HEALTH_NOT_READY
+    try:
+        state = _url_json(f'http://127.0.0.1:{port}/__soren_overlay/broadcast/state')
+    except (OSError, ValueError, TimeoutError):
+        return False, EXIT_STATE_UNREACHABLE
+    if state.get('gameGapEnabled') is not True:
+        return False, EXIT_GAME_GAP_DISABLED
+    return True, 0
+
+
+def ready():
+    return readiness()[0]
 
 
 def reload_shared_overlay(*, timeout=45):
@@ -63,18 +107,17 @@ def reload_shared_overlay(*, timeout=45):
     subprocess.run(['sudo', '-n', 'systemctl', 'restart', UNIT], check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
     deadline = time.monotonic() + timeout
+    last_exit_code = EXIT_HEALTH_UNREACHABLE
     while time.monotonic() < deadline:
         if snapshot() != before:
             raise RuntimeError('protected process or active game changed')
-        try:
-            if ready():
-                if snapshot() != before:
-                    raise RuntimeError('protected process or active game changed')
-                return {'status': 'reloaded', 'continuity': before}
-        except (OSError, ValueError):
-            pass
+        ok, last_exit_code = readiness()
+        if ok:
+            if snapshot() != before:
+                raise RuntimeError('protected process or active game changed')
+            return {'status': 'reloaded', 'continuity': before}
         time.sleep(.25)
-    raise RuntimeError('shared overlay not ready')
+    raise ReadinessTimeout(last_exit_code)
 
 
 if __name__ == '__main__':
@@ -85,6 +128,10 @@ if __name__ == '__main__':
         temporary.write_text(json.dumps(receipt, separators=(',', ':')) + '\n')
         os.replace(temporary, path)
         print('{"status":"reloaded","protected_processes":"maintained"}')
+    except ReadinessTimeout as exc:
+        # Numeric code is the only production diagnostic surfaced through the
+        # fixed VM gateway; no service output, URL body, path, PID, or exception
+        # text crosses the boundary.
+        raise SystemExit(exc.exit_code)
     except Exception:
-        # Fixed category only; do not print service output or exception payloads.
-        raise SystemExit('shared overlay reload or continuity verification failed')
+        raise SystemExit(1)
