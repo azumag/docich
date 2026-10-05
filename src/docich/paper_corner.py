@@ -116,7 +116,10 @@ class PaperCornerManager:
             specs = parse_agents(self.script_direct_agents)
             if any(spec.provider not in DIRECT_CHAT_PROVIDERS for spec in specs):
                 raise ValueError('paper corner direct script agents must use explicit *-api providers')
-        self.improve_agents = self._optional_agents(raw, 'improve_agents')
+        # Improvement agent resolution is shared with the child CLI so the
+        # parent spawn decision and the child provider chain cannot drift.
+        from .trading.cli import _paper_corner_improve_agents
+        self.improve_agents = _paper_corner_improve_agents(g)
         script_timeout = raw.get('script_timeout_s', 180)
         if type(script_timeout) is not int or not 1 <= script_timeout <= 1800:
             raise ValueError('invalid paper corner script timeout')
@@ -751,7 +754,7 @@ class PaperCornerManager:
         log_path = self.g.state_dir / 'logs' / f'paper-corner-improve-{date_str}.log'
         argv = [
             sys.executable, '-m', 'docich', '--config', str(self.g.config_path),
-            'trading', 'paper-improve', '--date', date_str,
+            'trading', 'paper-improve', '--date', date_str, '--agents', agents,
         ]
         try:
             self._spawn(argv, log_path)
