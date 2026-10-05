@@ -99,7 +99,7 @@ $env:DOCICH_DISCORD_VOICE_TEST_TONE = "1"
 npm run start:live
 ```
 
-`DOCICH_DISCORD_VOICE_TEST_TONE=1` is optional and defaults to off. When enabled, the Bot plays one short generated tone after the connection reaches Ready. It then remains connected until Ctrl+C/SIGTERM. Resumable Discord voice disconnects are left to the library; a stable disconnect gets at most three bounded explicit rejoin attempts before the process exits. No IDs, token, endpoint, Discord error body, transcript or audio are written to stdout/stderr.
+`DOCICH_DISCORD_VOICE_TEST_TONE=1` is optional and defaults to off. When enabled, the Bot plays one short generated tone after the connection reaches Ready. It then remains connected until Ctrl+C (SIGINT); SIGTERM is also handled where the host provides POSIX-style SIGTERM semantics. Resumable Discord voice disconnects are left to the library; a stable disconnect gets at most three bounded explicit rejoin attempts before the process exits. No IDs, token, endpoint, Discord error body, transcript or audio are written to stdout/stderr.
 
 The Bot needs only the permissions required to see the configured server/channel and **Connect / Speak** in that voice channel. Message Content, member-list and Presence privileged intents are not used by this live process. The Windows CI job installs the same pinned dependencies and executes `check:live` plus the offline contracts without any Discord credentials.
 
