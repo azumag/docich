@@ -157,11 +157,103 @@ test("structured diagnostic captures only the initial masked position and emitte
   assert.equal(event.profileId, LEGACY_PROFILE.id);
   assert.equal(event.brainVersion, BRAIN_VERSION);
   assert.equal(event.codeVersion, "version-fixture-123");
+  assert.equal(event.dispatchStage, "dispatch");
+  assert.equal(event.typePresent, false);
+  assert.equal(event.typeKind, "missing");
+  assert.equal(event.typeClass, "absent");
   assert.equal(Number.isInteger(event.elapsedMs), true);
   assert.equal(Object.hasOwn(event, "positions"), false);
   assert.equal(Object.hasOwn(event, "headers"), false);
   assert.equal(Object.hasOwn(event, "ip"), false);
   assert.equal(JSON.stringify(event).includes(SECRET), false);
+});
+
+test("unrecognized types reject the first and incremental callback without invoking the DO", async (t) => {
+  const cases = [
+    ["string", "synthetic_other_event", "unknown"],
+    ["string", "fixture-secret-type-value", "unknown"],
+    ["string", SECRET, "unknown"],
+    ["string", "offline_review_export", "offline_review_export"],
+    ["null", null, "unknown"],
+    ["object", { privateMarker: "fixture-secret-type-value" }, "unknown"],
+    ["array", ["fixture-secret-type-value"], "unknown"],
+    ["number", 17, "unknown"],
+    ["boolean", false, "unknown"],
+  ];
+  for (const [phase, fixture] of [["initial", initialFixture], ["incremental", incrementalFixture]]) {
+    for (const [kind, type, classification] of cases) {
+      await t.test(`${phase} ${kind} ${classification}`, async () => {
+        let calls = 0;
+        const binding = {
+          idFromName() { calls += 1; throw new Error("DO must not be invoked"); },
+          get() { calls += 1; throw new Error("DO must not be invoked"); },
+        };
+        const payload = { ...structuredClone(fixture), type, privateMarker: "fixture-private-payload" };
+        const { result: response, records } = await captureDiagnosticLogs(() => post(payload, { binding }));
+        assert.equal(response.status, 400);
+        assert.deepEqual(await response.json(), { error: "unknown_webhook_type" });
+        assert.equal(calls, 0);
+        assert.equal(records.length, 1);
+        const event = records[0];
+        assert.equal(event.dispatchStage, "dispatch");
+        assert.equal(event.typePresent, true);
+        assert.equal(event.typeKind, kind);
+        assert.equal(event.typeClass, classification);
+        assert.equal(event.errorCode, "unknown_webhook_type");
+        assert.deepEqual(Object.keys(event).sort(), [
+          "codeVersion", "dispatchStage", "elapsedMs", "errorCode", "event", "status",
+          "strategyVersion", "typeClass", "typeKind", "typePresent",
+        ].sort());
+        const serialized = JSON.stringify(event);
+        for (const privateValue of [SECRET, BOT_ID, fixture.gameId, fixture.requestId,
+          "synthetic_other_event", "fixture-secret-type-value", "fixture-private-payload"]) {
+          assert.equal(serialized.includes(privateValue), false);
+        }
+      });
+    }
+  }
+});
+
+test("a typed incremental rejection leaves the initialized session and receipts untouched", async () => {
+  const binding = stateBinding();
+  assert.equal((await post(initialFixture, { binding })).status, 200);
+  const storage = binding.objects.get(initialFixture.gameId).state.storage;
+  const before = structuredClone(storage.values);
+  let calls = 0;
+  const guarded = {
+    idFromName() { calls += 1; throw new Error("DO must not be invoked"); },
+    get() { calls += 1; throw new Error("DO must not be invoked"); },
+  };
+  const rejected = await post({ ...incrementalFixture, type: "fixture-secret-type-value" }, { binding: guarded });
+  assert.equal(rejected.status, 400);
+  assert.deepEqual(await rejected.json(), { error: "unknown_webhook_type" });
+  assert.equal(calls, 0);
+  assert.deepEqual(storage.values, before);
+  // The identical untyped delta can still be applied after the rejection.
+  const accepted = await captureDiagnosticLogs(() => post(incrementalFixture, { binding }));
+  assert.equal(accepted.result.status, 200);
+  assert.equal(accepted.records[0].typePresent, false);
+  assert.equal(accepted.records[0].typeKind, "missing");
+  assert.equal(accepted.records[0].typeClass, "absent");
+  assert.equal(storage.values.get("session:b:0").lastPly, incrementalFixture.ply);
+});
+
+test("dispatch classification is absent until authentication and JSON parsing succeed", async () => {
+  const forbidden = ["dispatchStage", "typePresent", "typeKind", "typeClass"];
+  for (const options of [
+    { signature: `sha256=${"0".repeat(64)}` },
+    { raw: '{"type":"fixture-secret-type-value"' },
+  ]) {
+    let calls = 0;
+    const binding = { idFromName() { calls += 1; }, get() { calls += 1; } };
+    const { result: response, records } = await captureDiagnosticLogs(() => post(initialFixture, { ...options, binding }));
+    assert.equal(response.status, options.signature ? 401 : 400);
+    assert.deepEqual(await response.json(), { error: options.signature ? "authentication_failed" : "invalid_json" });
+    assert.equal(calls, 0);
+    assert.equal(records.length, 1);
+    for (const field of forbidden) assert.equal(Object.hasOwn(records[0], field), false);
+    assert.equal(JSON.stringify(records).includes("fixture-secret-type-value"), false);
+  }
 });
 
 test("first white turn at ply 1 records the masked opponent opening only", async () => {
@@ -1205,6 +1297,10 @@ test("game_end is authenticated, durably archived, and acknowledged with a bodyl
   assert.equal(archive.trainingEligible, false);
   assert.equal(records.length, 1);
   assert.equal(records[0].event, "tsuitate_game_end");
+  assert.equal(records[0].dispatchStage, "dispatch");
+  assert.equal(records[0].typePresent, true);
+  assert.equal(records[0].typeKind, "string");
+  assert.equal(records[0].typeClass, "game_end");
   assert.equal(JSON.stringify(records).includes(gameEndFixture.param), false);
   assert.equal(JSON.stringify(records).includes("Player%20One"), false);
   assert.equal(JSON.stringify(records).includes(BOT_ID), false);
@@ -1277,6 +1373,10 @@ test("private offline review export is HMAC protected, read only, paginated, and
   assert.equal(pageTwo.nextFromPly, null);
   assert.deepEqual([...state.values.keys()].sort(), before);
   assert.equal(records[0].event, "tsuitate_offline_review_export");
+  assert.equal(records[0].dispatchStage, "dispatch");
+  assert.equal(records[0].typePresent, true);
+  assert.equal(records[0].typeKind, "string");
+  assert.equal(records[0].typeClass, "offline_review_export");
   assert.equal(JSON.stringify(records).includes(gameEndFixture.param), false);
 
   const denied = await post(firstQuery, { binding, path: "/offline-review", botId: "other-bot" });
