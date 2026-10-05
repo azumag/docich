@@ -201,7 +201,7 @@ def test_production_native_research_path_mints_receipt_from_broker(monkeypatch, 
     # WebBroker's fetch transport starts one fixed private worker. Its body/hash
     # validation and parent receipt allocation remain production code.
     monkeypatch.setattr(r, "_run", run)
-    monkeypatch.setattr(r, "search_public", lambda query, timeout: [url])
+    monkeypatch.setattr(r, "search_public", lambda query, timeout, env=None: [url])
     original_popen = web.subprocess.Popen
     def spawn(argv, **kwargs):
         if argv[2] == str(Path(jev_transport.__file__).resolve()):

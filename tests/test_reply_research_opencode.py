@@ -1,6 +1,8 @@
 """OpenCode/controller contracts with synthetic observations; no API calls."""
 import hashlib
 import json
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -163,6 +165,90 @@ def test_search_endpoint_is_fixed_unauthenticated_post(monkeypatch):
     request=next(item[1] for item in trace if item[0]=='request')
     assert request.startswith(b'POST /mcp HTTP/1.1') and b'Host: mcp.exa.ai' in request
     assert b'Authorization' not in request and b'web_search_exa' in request
+
+
+@pytest.mark.parametrize("envelope", ["direct", "cloudflare"])
+def test_cloudflare_search_endpoint_is_fixed_and_returns_candidate_urls_only(monkeypatch, envelope):
+    from test_reply_research_web import fake_network, FakeResponse
+    items = [{"url": URL, "title": "synthetic", "description": "Snippet not evidence"}]
+    value = {"items": items, "metadata": {"requestId": "synthetic"}} if envelope == "direct" else {
+        "success": True, "result": {"items": items},
+    }
+    body = json.dumps(value).encode()
+    trace,_ = fake_network(monkeypatch, FakeResponse(
+        body=body, headers=[("Content-Type","application/json"),("Content-Length",str(len(body)))]))
+    result = w.cloudflare_search_worker(
+        "合成ニュース検索", 1,
+        account_id="a"*32,
+        api_token="SYNTHETIC_TOKEN",
+        gateway_id="default",
+        provider="ceramic",
+    )
+    assert result == {"urls": [URL]}
+    request = next(item[1] for item in trace if item[0] == "request")
+    assert request.startswith(
+        b"POST /client/v4/accounts/" + b"a"*32 + b"/ai/websearch/ HTTP/1.1\r\n")
+    assert b"Host: api.cloudflare.com\r\n" in request
+    assert b"Authorization: Bearer SYNTHETIC_TOKEN\r\n" in request
+    payload = json.loads(request.split(b"\r\n\r\n", 1)[1])
+    assert payload == {
+        "query": "合成ニュース検索",
+        "provider": "ceramic",
+        "limit": 8,
+        "options": {"gateway": {"id": "default"}},
+    }
+    assert "description" not in result and "title" not in result
+
+
+def test_search_public_cloudflare_child_gets_only_selected_search_secret(monkeypatch):
+    real_popen = subprocess.Popen
+    seen = {}
+    def launch(argv, **kwargs):
+        seen["argv"] = list(argv)
+        seen["env"] = dict(kwargs["env"])
+        return real_popen(
+            [sys.executable, "-I", "-c", 'import json;print(json.dumps({"urls":[]}))'],
+            **kwargs,
+        )
+    monkeypatch.setattr(w.subprocess, "Popen", launch)
+    env = {
+        "DOCICH_REPLY_WEB_SEARCH_BACKEND": "cloudflare",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID": "b"*32,
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN": "SEARCH_ONLY_TOKEN",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_GATEWAY_ID": "default",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_PROVIDER": "ceramic",
+        "DISCORD_TOKEN": "PRIVATE_DISCORD",
+        "OPENCODE_API_KEY": "PRIVATE_OPENCODE",
+        "HTTPS_PROXY": "http://private.invalid",
+    }
+    assert w.search_public("公開仕様", 1, env=env) == []
+    assert seen["argv"][4] == "--search-cloudflare"
+    assert set(seen["env"]) == {
+        "PATH", "LANG", "LC_ALL",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_GATEWAY_ID",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_PROVIDER",
+    }
+    assert seen["env"]["DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN"] == "SEARCH_ONLY_TOKEN"
+    assert "PRIVATE" not in json.dumps(seen["env"])
+
+
+def test_search_public_unknown_backend_or_bad_cloudflare_config_never_spawns(monkeypatch):
+    monkeypatch.setattr(w.subprocess, "Popen", lambda *a, **k: pytest.fail("spawn"))
+    assert w.search_public("公開仕様", 1, env={"DOCICH_REPLY_WEB_SEARCH_BACKEND": "unknown"}) == []
+    assert w.search_public("公開仕様", 1, env={
+        "DOCICH_REPLY_WEB_SEARCH_BACKEND": "cloudflare",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID": "bad",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN": "TOKEN",
+    }) == []
+    assert w.search_public("公開仕様", 1, env={
+        "DOCICH_REPLY_WEB_SEARCH_BACKEND": "cloudflare",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID": "c"*32,
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN": "TOKEN",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_GATEWAY_ID": "gateway.with.period",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_BYOK_ALIAS": "key.name",
+    }) == []
 
 
 @pytest.mark.parametrize('url',['https://official.example/release?version=2','https://www.bbc.com/news/example','https://news.example.jp/story'])
