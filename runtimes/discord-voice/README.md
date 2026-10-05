@@ -101,6 +101,24 @@ npm run start:live
 
 `DOCICH_DISCORD_VOICE_TEST_TONE=1` is optional and defaults to off. When enabled, the Bot plays one short generated tone after the connection reaches Ready. It then remains connected until Ctrl+C (SIGINT); SIGTERM is also handled where the host provides POSIX-style SIGTERM semantics. Resumable Discord voice disconnects are left to the library; a stable disconnect gets at most three bounded explicit rejoin attempts before the process exits. No IDs, token, endpoint, Discord error body, transcript or audio are written to stdout/stderr.
 
+### Slice 2: one-speaker receive + Cloudflare Whisper
+
+Inbound audio remains **off by default**. To test Slice 2, explicitly select one Discord user and supply a Workers AI REST credential in the current process:
+
+```powershell
+$env:DOCICH_DISCORD_VOICE_RECEIVE_ENABLED = "1"
+$env:DOCICH_DISCORD_VOICE_RECEIVE_USER_ID = "<target user snowflake>"
+$env:DOCICH_DISCORD_VOICE_CF_ACCOUNT_ID = "<Cloudflare account id>"
+$env:DOCICH_DISCORD_VOICE_CF_API_TOKEN = "<Workers AI token>"
+npm run start:live
+```
+
+With receive enabled, the voice connection uses `selfDeaf: false`, but the runtime subscribes only to the explicitly selected user. A speaking event from any other user is ignored without opening an audio subscription. The selected user's Opus packets are decoded in RAM to 48 kHz mono PCM16, bounded to 10 seconds, and a short RMS gate rejects less than 100 ms of voiced audio before any provider call. The receive stream ends after Discord voice reports 700 ms of silence.
+
+Completed utterances are sent to Cloudflare Workers AI `@cf/openai/whisper-large-v3-turbo` with Japanese transcription and provider-side VAD enabled. The REST payload is bounded but necessarily contains a transient JavaScript representation of the WAV bytes; no raw audio file is written. Runtime-owned PCM/WAV/response byte buffers are cleared after use where JavaScript exposes writable byte storage. Provider transport, billing, and remote retention remain governed by Cloudflare; this runtime does not claim remote erasure.
+
+Normal logs contain only fixed lifecycle events such as `utterance_started`, `utterance_finished`, `stt_started`, `stt_completed`, and fixed failure/cancellation events. They do not include Guild/Channel/User IDs or transcript text. For a temporary owner-only acceptance session, transcript output can be explicitly enabled with `DOCICH_DISCORD_VOICE_TRANSCRIPT_DEBUG=1`; leave it unset for normal operation. Slice 2 does not yet pass the transcript into the DoCiAI conversation core or synthesize a reply. Those remain Slice 3/4 work.
+
 The Bot needs only the permissions required to see the configured server/channel and **Connect / Speak** in that voice channel. Message Content, member-list and Presence privileged intents are not used by this live process. The Windows CI job installs the same pinned dependencies and executes `check:live` plus the offline contracts without any Discord credentials.
 
 This is still only Slice 1 of #1628. A successful test tone proves DAVE-capable VC join and outbound audio on the selected Windows host; it does **not** prove inbound audio, STT, VOICEVOX, conversation memory, barge-in, multi-user attribution or the 30-minute acceptance test.
