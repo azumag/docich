@@ -22,7 +22,7 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 const RPC_BUDGET_MS = 2500;
 const REQUEST_BUDGET_MS = 7000;
 const SITE_ID = "tsuitateviewer.web.app";
-const REVIEWABLE_BRAIN_VERSIONS = new Set(["tsuitate-brain-v1", "tsuitate-brain-v2", "tsuitate-brain-v3", BRAIN_VERSION]);
+const REVIEWABLE_BRAIN_VERSIONS = new Set(["tsuitate-brain-v1", "tsuitate-brain-v2", "tsuitate-brain-v3", "tsuitate-brain-v4", BRAIN_VERSION]);
 const PROFILE_FEATURES = Object.freeze(["advance", "centrality", "promotion", "drop", "kingMove", "distance", "repeat"]);
 const SAFE_ERROR_CODES = new Set([
   "not_found", "method_not_allowed", "content_type_required", "webhook_not_configured",
@@ -44,6 +44,7 @@ const AUTH_FAILURE_STAGES = new Set([
   "signature_missing", "signature_format", "signature_mismatch",
 ]);
 const POSITION_FIELD_TYPES = new Set(["undefined", "null", "array", "object", "string", "number", "boolean"]);
+const KNOWN_WEBHOOK_TYPES = new Set(["game_end", "offline_review_export"]);
 const CSA_MOVE = /^[+-](?:(?:[1-9]{4}(?:FU|KY|KE|GI|KI|KA|HI|OU|TO|NY|NK|NG|UM|RY))|(?:00[1-9]{2}(?:FU|KY|KE|GI|KI|KA|HI))|(?:0000TORYO))$/;
 const MASKED_OPPONENT_MOVE = /^[+-](?:0000ZZ|00[1-9]{2}ZZ)$/;
 const BOT_ID_FORMAT = /^[A-Za-z0-9:][A-Za-z0-9._:-]{0,63}$/;
@@ -107,6 +108,18 @@ function captureValidatedDiagnosticContext(value, diagnostics) {
   }
 }
 
+function captureDispatchDiagnostic(value, diagnostics) {
+  // Authenticated JSON only. Never retain an arbitrary type value or payload.
+  const present = isRecord(value) && Object.hasOwn(value, "type");
+  const type = present ? value.type : undefined;
+  diagnostics.dispatchStage = "dispatch";
+  diagnostics.typePresent = present;
+  diagnostics.typeKind = !present ? "missing" : type === null ? "null"
+    : Array.isArray(type) ? "array" : typeof type;
+  diagnostics.typeClass = !present ? "absent"
+    : typeof type === "string" && KNOWN_WEBHOOK_TYPES.has(type) ? type : "unknown";
+}
+
 function recordWebhookDiagnostic(env, diagnostics, status, elapsedMs) {
   const versionId = env?.CF_VERSION_METADATA?.id;
   const event = {
@@ -117,6 +130,11 @@ function recordWebhookDiagnostic(env, diagnostics, status, elapsedMs) {
     strategyVersion: diagnostics.profileId ?? null,
     codeVersion: typeof versionId === "string" && versionId.length <= 64 ? versionId : "local",
   };
+  if (diagnostics.dispatchStage === "dispatch") {
+    for (const key of ["dispatchStage", "typePresent", "typeKind", "typeClass"]) {
+      event[key] = diagnostics[key];
+    }
+  }
   if (diagnostics.kind === "move") {
     for (const key of ["gameId", "color", "seat", "ply", "gameType", "observation", "issuedMove", "brainVersion", "profileId"]) {
       if (diagnostics[key] !== undefined) event[key] = diagnostics[key];
@@ -310,6 +328,7 @@ async function handleWebhookRequest(request, env, options, signal, diagnostics) 
     } catch {
       throw new ProtocolFault(400, "invalid_json");
     }
+    captureDispatchDiagnostic(decoded, diagnostics);
 
     const botId = request.headers.get("X-Tsuitate-Bot-Id");
     const botIdHash = await digestHex(encoder.encode(botId));

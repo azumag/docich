@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import math
 import os
@@ -17,11 +18,12 @@ from .game_switch import validate_receipt
 from .tmux import Tmux
 
 PAGE_BYTES = 65536
-MAX_PAGES = 16
+MAX_PAGES = 256
+MAX_SCAN_BYTES = 16 * 1024 * 1024
 MAX_LINE_BYTES = 65536
 MAX_MATCHES = 256
 MAX_RUNTIMES = 8
-BUDGET_SECONDS = 2
+BUDGET_SECONDS = 10  # Cooperative processing budget, not an interruptible I/O deadline.
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 RUNTIME = re.compile(r"g([1-9][0-9]{0,11})-[a-f0-9]{6,32}\Z")
 OWNER_FILES = ("retro_corner_manual.json", "retro_corner.json")
@@ -88,46 +90,93 @@ def _runtime(value, generation):
                      and int(match.group(1)) == generation) else None
 
 
-def _log_records(state_dir, request_id, deadline, observe):
+def _log_records(state_dir, request_id, deadline, observe, checkpoint):
     out = {"present": None, "readable": False, "pages": 0,
            "scan_complete": False, "prefix_truncated": False,
            "record_truncated": False, "matches_truncated": False,
            "changed_during_scan": None, "budget_exhausted": False,
-           "malformed_records": 0, "matching_records": 0}
+           "malformed_records": 0, "matching_records": 0,
+           "initial_size_bytes": None, "required_pages": None, "bytes_read": 0,
+           "eof_reached": False, "end_reason": "unavailable"}
+    reason = checkpoint()
+    if reason:
+        out.update(end_reason=reason, budget_exhausted=reason == "budget_exhausted")
+        return out
     try:
         handle, before = _open_fixed(state_dir / "logs/game_switch.log")
     except FileNotFoundError:
         out["present"] = False
+        out["end_reason"] = "missing"
         return out
     except OSError:
         return out
     out.update(present=True, readable=True)
     with handle:
-        start = max(0, before.st_size - PAGE_BYTES * MAX_PAGES)
-        out["prefix_truncated"] = start > 0
-        handle.seek(start)
-        pending = b""
-        discard = start > 0
-        for _ in range(MAX_PAGES):
+        size = before.st_size
+        required = (size + PAGE_BYTES - 1) // PAGE_BYTES
+        out.update(initial_size_bytes=size, required_pages=required)
+
+        def source_reason():
             if time.monotonic() >= deadline:
-                out["budget_exhausted"] = True
+                return "budget_exhausted"
+            try:
+                current = os.stat(state_dir / "logs/game_switch.log", follow_symlinks=False)
+                if time.monotonic() >= deadline:
+                    return "budget_exhausted"
+                opened = os.fstat(handle.fileno())
+                path = state_dir / "logs/game_switch.log"
+                for part in (path, *path.parents):
+                    if time.monotonic() >= deadline:
+                        return "budget_exhausted"
+                    if part.is_symlink():
+                        return "source_replaced"
+                if time.monotonic() >= deadline:
+                    return "budget_exhausted"
+                if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
+                    return "source_replaced"
+                if current.st_size < size or opened.st_size < size:
+                    return "source_shrunk"
+                if ((opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
+                        != (size, before.st_mtime_ns, before.st_ctime_ns)
+                        or (current.st_size, current.st_mtime_ns, current.st_ctime_ns)
+                        != (size, before.st_mtime_ns, before.st_ctime_ns)):
+                    return "source_changed"
+            except OSError:
+                return "source_unavailable"
+            return None
+
+        reason = "size_limit" if size > MAX_SCAN_BYTES else "page_limit" if required > MAX_PAGES else None
+        pending = b""
+        # One handle, one initial byte range, no restart or following appends.
+        for _ in range(min(required, MAX_PAGES)):
+            if reason:
                 break
-            block = handle.read(min(PAGE_BYTES, before.st_size - handle.tell()))
+            reason = checkpoint() or source_reason()
+            if not reason and time.monotonic() >= deadline:
+                reason = "budget_exhausted"
+            if reason:
+                break
+            try:
+                block = handle.read(min(PAGE_BYTES, size - handle.tell()))
+            except OSError:
+                out["readable"] = False
+                reason = "source_unavailable"
+                break
             if not block:
+                reason = "unexpected_eof"
                 break
             out["pages"] += 1
+            out["bytes_read"] += len(block)
             parts = (pending + block).split(b"\n")
             pending = parts.pop()
             for raw in parts:
-                if discard:
-                    discard = False
-                    continue
                 if time.monotonic() >= deadline:
-                    out["budget_exhausted"] = True
+                    reason = "budget_exhausted"
                     break
                 if len(raw) > MAX_LINE_BYTES:
                     out["record_truncated"] = True
-                    continue
+                    reason = "line_limit"
+                    break
                 try:
                     row = json.loads(raw)
                     if not isinstance(row, dict):
@@ -137,34 +186,29 @@ def _log_records(state_dir, request_id, deadline, observe):
                     continue
                 if row.get("request_id") != request_id:
                     continue
-                out["matching_records"] += 1
-                if out["matching_records"] > MAX_MATCHES:
+                if out["matching_records"] >= MAX_MATCHES:
                     out["matches_truncated"] = True
-                    continue
-                observe(row)
-            if out["budget_exhausted"]:
-                break
+                    reason = "match_limit"
+                    break
+                out["matching_records"] += 1
+                reason = observe(row)
+                if reason:
+                    break
+            reason = checkpoint() or source_reason() or reason
             if len(pending) > MAX_LINE_BYTES:
-                pending = b""
-                discard = True
                 out["record_truncated"] = True
-        if pending or discard:
-            # Partial final writes/overlong lines are not usable records.
+                reason = reason or "line_limit"
+        if not reason and pending:
             out["record_truncated"] = True
-        after = os.fstat(handle.fileno())
-        try:
-            current = os.stat(state_dir / "logs/game_switch.log", follow_symlinks=False)
-            log_path = state_dir / "logs/game_switch.log"
-            changed = (any(p.is_symlink() for p in (log_path, *log_path.parents))
-                       or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)
-                       or (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns))
-        except OSError:
-            changed = True
-        out["changed_during_scan"] = changed
+            reason = "partial_record"
+        source = source_reason()
+        reason = checkpoint() or source or reason
+        out["changed_during_scan"] = None if source == "budget_exhausted" else source is not None
+        out["budget_exhausted"] = reason == "budget_exhausted"
+        out["eof_reached"] = handle.tell() == size
+        out["end_reason"] = reason or ("malformed_records" if out["malformed_records"] else "eof")
         out["scan_complete"] = bool(
-            start == 0 and handle.tell() == before.st_size and not changed
-            and not out["budget_exhausted"] and not out["record_truncated"]
-            and not out["matches_truncated"] and not out["malformed_records"])
+            out["end_reason"] == "eof" and out["eof_reached"])
     return out
 
 
@@ -181,7 +225,8 @@ def project(state_dir, manual, now, *, read_fixed):
            "matching_owners": 0, "terminal_owners": 0, "owner_read_unknown": 0,
            "generations_truncated": False, "generations": [], "log": None,
            "request_generation_coverage": "unknown", "resource_attribution_unknown": 1,
-           "all_resources_released": None, "cancellation_authority": False}
+           "all_resources_released": None, "cancellation_authority": False,
+           "checkpoint_status": "unobserved"}
     if (not isinstance(manual, dict) or manual.get("corner") != "hanjuku-hero"
             or manual.get("state_file") != "retro_corner_manual.json"):
         return out
@@ -193,6 +238,40 @@ def project(state_dir, manual, now, *, read_fixed):
     out["observed"] = True
     state_dir = Path(state_dir)
     deadline = time.monotonic() + BUDGET_SECONDS
+    stop_reason = None
+    def fingerprint(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                         allow_nan=False).encode()).digest()
+    try:
+        expected = fingerprint(manual)
+    except (ValueError, TypeError, OverflowError):
+        out["checkpoint_status"] = "invalid_checkpoint"
+        return out
+
+    def checkpoint():
+        nonlocal stop_reason
+        reason = stop_reason
+        if reason:
+            out["checkpoint_status"] = reason
+            return reason
+        if time.monotonic() >= deadline:
+            reason = "budget_exhausted"
+        else:
+            try:
+                _, readable, ledger = read_fixed(state_dir, "corner_rotation.json")
+                if not readable or not isinstance(ledger.get("manual_pending"), dict):
+                    reason = "reservation_unavailable"
+                elif fingerprint(ledger["manual_pending"]) != expected:
+                    reason = "reservation_changed"
+            except (OSError, ValueError, TypeError, RecursionError):
+                reason = "reservation_unavailable"
+            if time.monotonic() >= deadline:
+                reason = "budget_exhausted"
+        if reason:
+            stop_reason = reason
+        out["checkpoint_status"] = reason or "stable"
+        return reason
+
     runtimes = {}
     generation_conflicts = set()
     invalid_owner_runtimes = set()
@@ -234,12 +313,19 @@ def project(state_dir, manual, now, *, read_fixed):
         out["terminal_cleanup_clear_seen"] |= terminal and row.get("cleanup_pending") is False
         if row.get("runtime_id") is not None or row.get("generation") is not None:
             add(row.get("runtime_id"), row.get("generation"))
+        return "generation_limit" if out["generations_truncated"] else None
 
     try:
-        out["log"] = _log_records(state_dir, rid, deadline, observe)
+        out["log"] = _log_records(state_dir, rid, deadline, observe, checkpoint)
     except (OSError, ValueError):
-        out["log"] = {"readable": False, "scan_complete": False, "status": "unavailable"}
-    _, readable, receipt = read_fixed(state_dir, f"game-switch/requests/{rid}.json")
+        out["log"] = {"readable": False, "scan_complete": False,
+                      "end_reason": "source_unavailable", "initial_size_bytes": None,
+                      "required_pages": None, "pages": None, "bytes_read": None}
+    reason = out["log"].get("end_reason", "")
+    if not stop_reason and (reason.startswith(("source_", "reservation_")) or reason == "budget_exhausted"):
+        stop_reason = reason
+    _, readable, receipt = (read_fixed(state_dir, f"game-switch/requests/{rid}.json")
+                            if not checkpoint() else (False, False, {}))
     if readable and receipt.get("request_id") == rid:
         try:
             validate_receipt(receipt, state_dir, expected_request_id=rid)
@@ -253,6 +339,8 @@ def project(state_dir, manual, now, *, read_fixed):
             out["receipt_created_seen"] = True
             add(receipt.get("runtime_id"), receipt.get("generation"))
     for filename in OWNER_FILES:
+        if checkpoint():
+            break
         present, readable, owner = read_fixed(state_dir, filename)
         if present and not readable:
             out["owner_read_unknown"] += 1
@@ -290,14 +378,17 @@ def project(state_dir, manual, now, *, read_fixed):
             if key in leases and leases[key] != lease:
                 runtimes[key]["owner_identity_conflict"] = True
             leases[key] = lease
-    _, canonical_readable, canonical = read_fixed(state_dir, "game_switch.json")
+    _, canonical_readable, canonical = (read_fixed(state_dir, "game_switch.json")
+                                        if not checkpoint() else (False, False, {}))
+    coverage_complete = out["log"].get("scan_complete") is True and not out["generations_truncated"]
     for (generation, runtime), entry in sorted(runtimes.items()):
         if runtime in invalid_owner_runtimes:
             entry.update(owner_identity_conflict=True, owner_terminal=None,
                          lease_identity_observed=False)
         entry.update(generation_conflict=generation in generation_conflicts,
                      canonical_tracks=None, resources_released=None)
-        if canonical_readable:
+        stable = checkpoint() is None
+        if stable and canonical_readable:
             retired = canonical.get("retiring")
             identities = [canonical.get(k) for k in ("active", "candidate", "previous")]
             if isinstance(retired, list):
@@ -309,7 +400,7 @@ def project(state_dir, manual, now, *, read_fixed):
                 entry["canonical_tracks"] = any(
                     v and (v.get("runtime_id") == runtime or v.get("generation") == generation)
                     for v in identities)
-        if (entry["canonical_tracks"] is False and not entry["generation_conflict"]
+        if (coverage_complete and entry["canonical_tracks"] is False and not entry["generation_conflict"]
                 and not entry["owner_identity_conflict"]):
             try:
                 path = state_dir / "runtimes" / runtime
@@ -322,10 +413,17 @@ def project(state_dir, manual, now, *, read_fixed):
                     entry["resources_released"] = False
             except Exception:
                 pass
-        elif (entry["canonical_tracks"] is True and not entry["generation_conflict"]
+        elif (coverage_complete and entry["canonical_tracks"] is True and not entry["generation_conflict"]
               and not entry["owner_identity_conflict"]):
             entry["resources_released"] = False
         out["generations"].append(entry)
+    reason = checkpoint()
+    if reason:
+        out["log"].update(end_reason=reason, scan_complete=False,
+                          budget_exhausted=reason == "budget_exhausted")
+        for entry in out["generations"]:
+            entry.update(resources_released=None, canonical_tracks=None,
+                         owner_terminal=None, lease_identity_observed=False)
     # The one mandatory unknown represents missing historical coverage. Never
     # report zero merely because every *observed* runtime looks released.
     out["resource_attribution_unknown"] += (

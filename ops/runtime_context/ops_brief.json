@@ -1,11 +1,11 @@
 {
-  "output_sha256": "716c400b3762d2775de8fa4447bc8a11d60bdddf6b41af9e897ff5c91ff1e902",
+  "output_sha256": "8e05551cf10505821023191eceb4c82f63888f0f65858231a963232996eb8fb5",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "96aa5fcce40cdbd32e6b1c742ed826cf6dc0ff22e2093366d831a0cf1d92f4db",
+  "source_sha256": "2f0a319cef0b6c3a9126d34ae131198f87cfffb792677f8534a3ff9d1ee6d144",
   "topics": [
-    "Soren「GAMEOVERのまま進まない」固定復旧 `recover_soren_round` を Ready （未merge・本番未実…",
-    "半熟英雄: 卵回復の見積もりを実測卵だけにし、支払へ賃金フロアを固定（v133）を配備",
-    "「CIが恒常失敗」の切り分け（実測）／`/hanjuku-evidence` は gateway 未更新で未解決"
+    "Discord音声TTSの外部VOICEVOX境界を合成fixtureで検証（実接続・本番未反映）",
+    "Discord音声会話の合成PCMプロトタイプ（実接続・本番未反映）",
+    "AI自作ゲームの鍵・スイッチ・出口を非本番の合成fixtureで試作（本番未反映）"
   ]
 }

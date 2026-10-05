@@ -116,10 +116,12 @@ export function chooseWebhookDecision({ sfen, color, gameId, ply, inCheck = null
   // Legacy considered only the last string, even if it cannot match a current candidate.
   const history = profile?.policy === "legacy-v1"
     ? recentOwnMoves.filter((move) => typeof move === "string").slice(-1) : recentOwnMoves;
+  // The viewer caller supplies confirmed same-position foul attempts here.
+  const rejected = forbiddenMoves.map((move) => csaToUsi(move, observation)).filter(Boolean);
   const decision = chooseMove(observation, {
     profile, seed: `${gameId}:${ply}`,
     recentMoves: history.map((move) => csaToUsi(move, observation)).filter(Boolean),
-    forbiddenMoves: forbiddenMoves.map((move) => csaToUsi(move, observation)).filter(Boolean),
+    forbiddenMoves: rejected, foulMoves: rejected,
   });
   if (!decision) return null;
   const move = usiToCsa(decision.usi, observation);
