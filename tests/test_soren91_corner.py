@@ -1,10 +1,12 @@
 import fcntl
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -391,6 +393,25 @@ class TestSoren91CornerLifecycle(Soren91CornerTestBase):
 
 
 class TestSoren91CornerAnnounce(Soren91CornerTestBase):
+    def test_notice_and_paper_use_the_same_meriken_override_and_default(self):
+        from docich.trading import soren_output
+
+        (self.root / ".env").write_text("SOREN91_VOICEVOX_SPEAKER=46\n", encoding="utf-8")
+        for process, expected in (("24", "24"), ("bad value", "46"), ("", "46")):
+            with self.subTest(expected=expected), \
+                 mock.patch.dict(os.environ, {"SOREN91_VOICEVOX_SPEAKER": process}, clear=True), \
+                 mock.patch("docich.soren91_corner.resolve_soren_root", return_value=self.root), \
+                 mock.patch.object(soren_output, "resolve_soren_root", return_value=self.root), \
+                 mock.patch("docich.soren91_corner.enqueue_audio_text") as announce, \
+                 mock.patch("docich.webui._enqueue_audio_text", return_value={"ok": True}) as paper:
+                mgr, _ = self.manager([None])
+                mgr._voice(ANNOUNCE_TEXT)
+                soren_output.enqueue_speech(self.g, "本文", event_id="paper-corner:2026-10-05:script:1")
+                self.assertEqual(mgr.voicevox_speaker, expected)
+                self.assertEqual(announce.call_args.kwargs["speaker"], expected)
+                self.assertEqual(paper.call_args.kwargs["speaker"], expected)
+                self.assertEqual(announce.call_args.kwargs["context"], "soren91:announce")
+
     def test_announce_is_viewer_facing_fixed_text(self):
         current = [None]
         mgr, _ = self.manager(current)
