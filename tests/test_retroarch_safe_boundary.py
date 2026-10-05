@@ -499,7 +499,7 @@ def test_scripted_hanjuku_small_render_keeps_aspect_and_contains_at_broadcast_ra
     assert command[command.index('--framerate') + 1] == '30'
     assert '--fit' not in command  # default contain preserves the source aspect
     assert command.index('--nearest') < command.index('--')
-    assert command[command.index('--align') + 1] == 'left'
+    assert command[command.index('--align') + 1] == 'right'
 
 
 def test_other_retroarch_games_keep_the_3x_contain_projection(adapter):
