@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import stat
@@ -93,6 +94,113 @@ def test_prepare_research_uses_public_news_and_only_held_asset(tmp_path):
     assert "2009" in context["asset"]["background"]
     path = tmp_path / RESEARCH_FILENAME
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_prepare_research_websearch_uses_verified_bodies_not_search_snippets(tmp_path):
+    _write_status(tmp_path, {"BTC/JPY": "0.01"})
+    general_url = "https://news.example/crypto"
+    asset_url = "https://docs.example/bitcoin"
+
+    class Receipt:
+        def __init__(self, url, text):
+            self.url = url
+            self.text = text
+            self.sha256 = hashlib.sha256(text.encode()).hexdigest()
+            self.text_sha256 = self.sha256
+
+    receipts = {
+        general_url: Receipt(
+            general_url,
+            "暗号資産市場ではETF資金フローと規制議論が続いている。価格だけでなく流動性の確認が必要だ。",
+        ),
+        asset_url: Receipt(
+            asset_url,
+            "Bitcoinは分散型ネットワークとして設計され、供給ルールと検証方式が特徴である。最近の利用動向も議論されている。",
+        ),
+    }
+    observed = {"queries": [], "authorized": [], "fetched": []}
+
+    def searcher(query, timeout):
+        observed["queries"].append(query)
+        assert 0 < timeout <= 8
+        return [asset_url] if "Bitcoin" in query else [general_url]
+
+    class Broker:
+        def authorize(self, urls):
+            observed["authorized"].extend(urls)
+        def fetch(self, url):
+            observed["fetched"].append(url)
+            return receipts[url]
+
+    context = prepare_research_context(
+        tmp_path,
+        now=NOW,
+        chooser=_first,
+        env={"DOCICH_PAPER_RESEARCH_BACKEND": "websearch"},
+        web_searcher=searcher,
+        web_broker=Broker(),
+        fetcher=lambda url: (_ for _ in ()).throw(AssertionError("legacy fetch used")),
+    )
+    assert context["research_backend"] == "websearch_verified_body"
+    assert context["news_items"][0]["url"] == general_url
+    assert "ETF資金フロー" in context["news_items"][0]["summary"]
+    assert "検索snippet" not in context["news_items"][0]["summary"]
+    assert context["asset"]["symbol"] == "BTC/JPY"
+    assert "分散型ネットワーク" in context["asset"]["background"]
+    assert context["asset"]["news_items"][0]["url"] == asset_url
+    assert set(observed["authorized"]) == {general_url, asset_url}
+    assert set(observed["fetched"]) == {general_url, asset_url}
+
+    facts = build_facts(tmp_path, now=NOW + 1)
+    prompt = build_prompt(facts)
+    assert "Web Searchで候補を見つけた後" in prompt
+    assert "receipt/hash検証した本文抜粋" in prompt
+    assert "Google News RSSから取得した見出し" not in prompt
+
+
+def test_websearch_rejects_forged_receipt_text_hash(tmp_path):
+    _write_status(tmp_path, {"BTC/JPY": "0.01"})
+    url = "https://news.example/forged"
+
+    class Receipt:
+        def __init__(self):
+            self.url = url
+            self.text = "本文"
+            self.sha256 = "a" * 64
+            self.text_sha256 = "b" * 64
+
+    class Broker:
+        def authorize(self, urls):
+            pass
+        def fetch(self, value):
+            return Receipt()
+
+    context = prepare_research_context(
+        tmp_path,
+        now=NOW,
+        chooser=_first,
+        env={"DOCICH_PAPER_RESEARCH_BACKEND": "websearch"},
+        web_searcher=lambda query, timeout: [url],
+        web_broker=Broker(),
+    )
+    assert context["news_items"] == []
+    assert context["asset"]["news_items"] == []
+    assert context["asset"]["background"] == ""
+
+
+def test_invalid_paper_research_backend_fails_before_network(tmp_path):
+    _write_status(tmp_path)
+    try:
+        prepare_research_context(
+            tmp_path,
+            now=NOW,
+            env={"DOCICH_PAPER_RESEARCH_BACKEND": "unknown"},
+            fetcher=lambda url: (_ for _ in ()).throw(AssertionError("network")),
+        )
+    except ValueError as exc:
+        assert "backend" in str(exc)
+    else:
+        raise AssertionError("invalid backend was accepted")
 
 
 def test_finalize_persists_analysis_hints_and_private_history(tmp_path):
