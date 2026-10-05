@@ -35,15 +35,16 @@ class Coordinator:
         return Result()
 
 
-def _manager(tmp_path, *, script_agents="", clock=lambda: 1000.0, sleep=lambda s: None):
+def _manager(tmp_path, *, script_agents="", direct_script_agents="", clock=lambda: 1000.0, sleep=lambda s: None):
     cfg = tmp_path / "config.toml"
     agents_line = f'script_agents = "{script_agents}"\n' if script_agents else ""
+    direct_line = f'direct_script_agents = "{direct_script_agents}"\n' if direct_script_agents else ""
     cfg.write_text(
         '[paths]\nstate_dir = "run"\n'
         "[trading]\npaper_worker_enabled = true\nnotifications_enabled = true\n"
         "notification_speech_enabled = true\n"
         f'[webui]\nsoren_root = "{tmp_path}/soren"\n'
-        "[paper_corner]\nenabled = true\nstart_hour = 22\n" + agents_line,
+        "[paper_corner]\nenabled = true\nstart_hour = 22\n" + agents_line + direct_line,
         encoding="utf-8",
     )
     g = load_global(tmp_path, cfg)
@@ -60,6 +61,53 @@ def _manager(tmp_path, *, script_agents="", clock=lambda: 1000.0, sleep=lambda s
     mgr._stream_paper = lambda: None
     mgr._stream_game = lambda game: None
     return mgr, coord
+
+
+def test_direct_script_flag_selects_separate_direct_only_chain(tmp_path, monkeypatch):
+    from docich.trading import corner_script
+
+    mgr, _coord = _manager(
+        tmp_path,
+        script_agents="opencode:legacy",
+        direct_script_agents="cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8",
+    )
+    calls = []
+    monkeypatch.setenv("DOCICH_PAPER_SCRIPT_DIRECT_ENABLED", "1")
+
+    def generate(*args, **kwargs):
+        calls.append(kwargs)
+        return {"status": "item", "topic": "相場", "text": "direct台本です。"}
+
+    monkeypatch.setattr(corner_script, "generate_next_narration", generate)
+    item = mgr._generate_narration_text(1, [], "fallback")
+    assert item["source"] == "ai"
+    assert len(calls) == 1
+    assert calls[0]["agents"] == "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
+    assert calls[0]["env"]["DOCICH_ALLOW_REAL_AI"] == "1"
+
+    monkeypatch.setenv("DOCICH_PAPER_SCRIPT_DIRECT_ENABLED", "0")
+    calls.clear()
+    item = mgr._generate_narration_text(1, [], "fallback")
+    assert item["source"] == "ai"
+    assert calls[0]["agents"] == "opencode:legacy"
+
+
+def test_invalid_direct_script_flag_falls_back_without_ai(tmp_path, monkeypatch):
+    from docich.trading import corner_script
+
+    mgr, _coord = _manager(
+        tmp_path,
+        script_agents="opencode:legacy",
+        direct_script_agents="cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8",
+    )
+    monkeypatch.setenv("DOCICH_PAPER_SCRIPT_DIRECT_ENABLED", "invalid")
+    monkeypatch.setattr(
+        corner_script, "generate_next_narration",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("AI called")),
+    )
+    item = mgr._generate_narration_text(1, [], "fallback")
+    assert item["source"] == "fallback"
+    assert item["text"] == "fallback"
 
 
 def test_prewarm_installs_the_finite_fallback_once(tmp_path):
