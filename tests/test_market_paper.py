@@ -251,6 +251,44 @@ class PaperTests(unittest.TestCase):
         profile.write_text("[paper_corner]\nimprove_agents = ''\n")
         return Runtime(SimpleNamespace(state_dir=self.root / "run", config_path=profile), market, settings)
 
+    def test_market_improvement_direct_chain_is_explicit_opt_in(self):
+        r = self.runtime()
+        try:
+            r.settings["ai"] = {
+                "direct_enabled": True,
+                "direct_agents": "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8",
+                "agents": "opencode:legacy",
+            }
+            self.assertEqual(
+                r._improve_agents(),
+                "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8",
+            )
+        finally:
+            r.book.close()
+
+    def test_market_improvement_direct_off_keeps_legacy_chain(self):
+        r = self.runtime()
+        try:
+            r.settings["ai"] = {
+                "direct_enabled": False,
+                "direct_agents": "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8",
+                "agents": "opencode:legacy",
+            }
+            self.assertEqual(r._improve_agents(), "opencode:legacy")
+        finally:
+            r.book.close()
+
+    def test_market_improvement_direct_rejects_missing_or_non_direct_chain(self):
+        for agents in ("", "opencode:legacy", "local:fixture"):
+            with self.subTest(agents=agents):
+                r = self.runtime()
+                try:
+                    r.settings["ai"] = {"direct_enabled": True, "direct_agents": agents}
+                    with self.assertRaises(ValueError):
+                        r._improve_agents()
+                finally:
+                    r.book.close()
+
     def test_stock_entries_require_fresh_presentation_lease(self):
         r = self.runtime()
         try:
