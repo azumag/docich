@@ -59,6 +59,9 @@ Required capabilities:
 
 The Web Search token is intentionally separate from the direct generation
 credential. The canary does not copy one credential into the other namespace.
+The canary pins Web Search to provider `ceramic` and gateway id `default`;
+a stored BYOK alias or alternate search provider is ignored for this acceptance
+probe.
 
 The fixed direct model is
 `cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8`. The CLI does not accept an
@@ -103,10 +106,13 @@ gh workflow run "VM operations" --repo azumag/docich --ref main \
 The workflow sends only `ops/vm_actions/run_paper_ai_canary.sh` from trusted
 main to the existing production exec gateway. The helper rejects arguments,
 requires the production checkout HEAD to equal the immutable workflow SHA,
-requires tracked files to be clean, sources only the fixed
-`/home/ubuntu/soren/.env`, and invokes the fixed CLI above. Gateway production
-exec keeps the canary stdout/stderr in its private mode-0600 VM log and the
-workflow suppresses remote stdout.
+requires tracked files to be clean, reads only the fixed
+`/home/ubuntu/soren/.env`, then rebuilds the process environment from scratch
+with `env -i`. Only the Web Search account/token, Workers AI account/token
+(or token-file path), fixed PATH/LANG/PYTHONPATH and the real-AI gate survive
+into docich; Discord/OpenCode/other-provider credentials and ambient proxy
+variables do not. Gateway production exec keeps the canary stdout/stderr in its
+private mode-0600 VM log and the workflow suppresses remote stdout.
 
 The operation does not install or create credentials. Missing Cloudflare search
 or direct-AI capability therefore fails closed. Installing/rotating those
