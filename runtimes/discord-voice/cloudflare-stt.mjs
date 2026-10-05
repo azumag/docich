@@ -132,6 +132,7 @@ export async function cloudflareFetchRequest({
   for (const chunk of chunks) {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
+    erase(chunk);
   }
   return { status: response.status, body: bytes };
 }
