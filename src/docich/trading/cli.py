@@ -116,7 +116,7 @@ def _state_dir(
 
 
 def _paper_corner_improve_agents(g: GlobalConfig) -> str:
-    """Read [paper_corner].improve_agents (raw; not part of GlobalConfig)."""
+    """Resolve the PAPER improvement chain with an explicit direct-API opt-in."""
     try:
         import tomllib
         data = tomllib.loads(Path(g.config_path).read_text(encoding="utf-8"))
@@ -125,8 +125,34 @@ def _paper_corner_improve_agents(g: GlobalConfig) -> str:
     section = data.get("paper_corner") if isinstance(data, dict) else None
     if not isinstance(section, dict):
         return ""
+
+    direct_enabled = section.get("improve_direct_enabled", False)
+    if type(direct_enabled) is not bool:
+        raise TradingCliError("paper_corner.improve_direct_enabled must be boolean")
+    if direct_enabled:
+        value = section.get("improve_direct_agents", "")
+        if not isinstance(value, str) or not value.strip():
+            raise TradingCliError(
+                "paper_corner.improve_direct_agents is required when direct improvement is enabled"
+            )
+        agents = value.strip()
+        from ..llm.policy import DIRECT_CHAT_PROVIDERS, parse_agents
+        try:
+            specs = parse_agents(agents)
+        except Exception as exc:
+            raise TradingCliError("paper_corner.improve_direct_agents is invalid") from exc
+        if any(spec.provider not in DIRECT_CHAT_PROVIDERS for spec in specs):
+            raise TradingCliError(
+                "paper_corner.improve_direct_agents must use explicit *-api providers"
+            )
+        return agents
+
     value = section.get("improve_agents", "")
-    return value.strip() if isinstance(value, str) else ""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise TradingCliError("paper_corner.improve_agents must be a string")
+    return value.strip()
 
 
 def _json_print(payload: Mapping[str, Any]) -> None:
