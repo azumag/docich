@@ -44,6 +44,14 @@ docichは既存PulseAudioを再利用しますが、既定sinkは変更しませ
 viewer専用定義で、Sorenの `start_all.sh` は呼びません。詳しくは
 [`docs/games/sorengame.md`](docs/games/sorengame.md) を参照してください。
 
+### Soren固定復旧の結果判定
+
+`recover_soren_round` の現在の `pidfd_snapshot` 方式は、捕捉済み旧PIDの終了と新ゲームの進行を観測しても、最終inventory後にforkされた全旧子孫の終了を証明できません。そのためJSON結果は `status=incomplete`、`reason=descendant_exit_unproved`、`descendant_exit=unproved` とし、CLIは非0で終了します。画面進行や帰属不明profile候補0件だけで `completed` へ昇格しません。
+
+`captured_old_targets_gone`、`fresh_game_progress_observed`、`supervisor_unchanged` は狭義の観測結果です。`unattributed_profile_candidates` は新rootの祖先関係へ帰属できない専用profile候補の件数で、旧残存の確定ではありません。profileなしの孤児は検出できず、読取失敗等の未観測は `null` です。JSONにはPID・argv・path・request ID・生例外を含めません。
+
+これは完了の誤報を防ぐ判定変更で、fork防止や追加強制終了ではありません。既存supervisorの自然再生成を継続し、追加kill・freeze・pause・復旧journalは導入しません。配備成功と本番の復旧受入は別です。実行条件は [`ops/vm_actions/README.md`](ops/vm_actions/README.md) を参照してください。
+
 ## クイックスタート
 
 対象は Ubuntu 24.04 (arm64/amd64)、Python 3.11以上です。

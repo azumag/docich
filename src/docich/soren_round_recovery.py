@@ -28,6 +28,23 @@ def read_object(path):
     return value
 
 
+def incomplete_result(evidence=None, *, common_workers_changed=None, reason="descendant_exit_unproved"):
+    """Fixed, public-safe schema; unobserved facts are null, never success."""
+    evidence = evidence if isinstance(evidence, dict) else {}
+    if type(reason) is not str or reason not in {"descendant_exit_unproved", "recovery_refused", "unexpected_failure"}:
+        reason = "descendant_exit_unproved"
+    result = dict(status="incomplete", reason=reason, descendant_exit="unproved",
+                  containment="pidfd_snapshot")
+    for name in ("captured_old_targets_gone", "fresh_game_progress_observed", "supervisor_unchanged"):
+        value = evidence.get(name)
+        result[name] = value if type(value) is bool else None
+    candidates = evidence.get("unattributed_profile_candidates")
+    result["unattributed_profile_candidates"] = candidates if type(candidates) is int and candidates >= 0 else None
+    result["common_workers_changed"] = (common_workers_changed
+        if type(common_workers_changed) is int and common_workers_changed >= 0 else None)
+    return result
+
+
 class OwnedRoundRecovery:
     def __init__(self, state_dir, root, effects, *, clock=time.time):
         self.state_dir, self.root = Path(state_dir), Path(root)
@@ -57,6 +74,11 @@ class OwnedRoundRecovery:
             self.effects.stop(recovery)
         # The existing draining driver has a short writer reacquisition budget.
         # Let it process its boundary ACK while we observe natural respawn.
-        self.effects.verify_new(recovery)
-        return {"status": "completed", "result": "interrupted",
-                "common_workers_changed": len(self.effects.common_changed(recovery))}
+        evidence = self.effects.verify_new(recovery)
+        try:
+            changed = len(self.effects.common_changed(recovery))
+        except (RecoveryRefused, OSError, ValueError):
+            changed = None
+        # The current snapshot method has no whole-descendant exit proof,
+        # even when captured targets are gone and the fresh board progresses.
+        return incomplete_result(evidence, common_workers_changed=changed)
