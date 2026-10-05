@@ -177,9 +177,12 @@ def collect_verified_web_material(
 
         active_broker.authorize(candidates)
         items: list[VerifiedWebMaterial] = []
+        fetch_attempts = 0
         for url in candidates:
-            if len(items) >= max_sources or clock() >= deadline:
+            if (len(items) >= max_sources or fetch_attempts >= MAX_SOURCES
+                    or clock() >= deadline):
                 break
+            fetch_attempts += 1
             try:
                 item = _material(active_broker.fetch(url))
             except Exception:
