@@ -196,7 +196,11 @@ jobs:
           soren_state=unknown
           soren_age=-1
           soren_resumed=unknown
-          for _ in $(seq 1 216); do
+          # Use a wall-clock deadline, not a fixed iteration count: network
+          # time for ls-remote/SSH/diagnostics must not expand the intended
+          # 18-minute observation window past the 25-minute job timeout.
+          observe_deadline=$((SECONDS + 1080))
+          while (( SECONDS < observe_deadline )); do
             current="$(git -C control ls-remote --exit-code origin refs/heads/main 2>/dev/null | cut -f1 || true)"
             if [[ "$current" =~ ^[0-9a-f]{40}$ ]] &&
                status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $current" 2>/dev/null)" &&
