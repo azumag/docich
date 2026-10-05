@@ -165,6 +165,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <p id="beta-status">未確認</p>
 <div class="actions"><button class="btn primary" id="beta-start" disabled>1局開始</button>
 <button class="btn" id="beta-stop" disabled>終了後停止</button>
+<button class="btn" id="beta-reconcile" disabled>終局結果を再確認</button>
 <button class="btn" id="beta-refresh">状態更新</button></div></div>
 <div class="card"><h2>コーナーローテーション</h2>
 <p class="desc">配信の「コーナー」（レトロゲーム・NetHack・PAPER・メリケン・天気）は、ローテーションが自動で1つずつ起動します。一度実行したコーナーは cooldown（既定24時間）が明けるまで自動では選ばれません。この画面は10秒ごとに自動更新されます。</p>
@@ -1970,6 +1971,7 @@ function renderBetaStatus(data){
   $("#beta-status").textContent=(names[data.state]||"未確認")+(data.gameId?" / "+data.gameId:"")+(data.errorCode?" / "+data.errorCode:"");
   $("#beta-start").disabled=BETA_BUSY||!data.readyForNextRun;
   $("#beta-stop").disabled=BETA_BUSY||!["queued","playing","draining"].includes(data.state);
+  $("#beta-reconcile").disabled=BETA_BUSY||data.state!=="paused"||data.errorCode!=="terminal_unconfirmed"||!data.runId;
   if(data.runId===sessionStorage.getItem("beta_pending_run")) sessionStorage.removeItem("beta_pending_run");
 }
 async function loadBetaStatus(){
@@ -1978,7 +1980,10 @@ async function loadBetaStatus(){
   catch(e){ $("#beta-status").textContent="接続設定または操作権限を確認してください。"; $("#beta-start").disabled=true; $("#beta-stop").disabled=true; }
 }
 async function betaControl(action){
-  if(BETA_BUSY||!window.confirm(action==="start"?"1局だけ対局を開始しますか？":"現局を完走して停止しますか？")) return;
+  const confirmText=action==="start"?"1局だけ対局を開始しますか？"
+    :action==="reconcile"?"未確定の終局結果を公開棋譜で再確認しますか？"
+    :"現局を完走して停止しますか？";
+  if(BETA_BUSY||!window.confirm(confirmText)) return;
   let runId=BETA_STATE?.runId;
   if(action==="start"){
     runId=sessionStorage.getItem("beta_pending_run")||crypto.randomUUID();
@@ -2872,6 +2877,8 @@ document.addEventListener("DOMContentLoaded",()=>{
     cornerAction({action:"start",corner,duration_minutes:minutes},
       `コーナー ${corner} を手動開始しますか？（one-off runner・${minutes}分・確認ダイアログはこの画面だけ）`);
   };
+  const betaReconcile=document.getElementById("beta-reconcile");
+  if(betaReconcile) betaReconcile.onclick=()=>betaControl("reconcile");
   const cStop=document.getElementById("corners-stop");
   if(cStop) cStop.onclick=()=>{
     const sel=document.getElementById("corners-select");
