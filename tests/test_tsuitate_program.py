@@ -134,12 +134,16 @@ def test_broadcast_projection_drops_unreviewed_remote_fields(monkeypatch):
     assert "token" not in data
     assert "opponentPieces" not in data
     assert "runId" not in data
-    assert data["playerView"]["moveNumber"] == 9
-    assert data["playerView"]["yourPieces"] == [{"square": "5i", "role": "king"}]
-    assert "opponentPieces" not in data["playerView"]
-    assert "private" not in data["playerView"]["yourPieces"][0]
+    assert "playerView" not in data
+    assert data["spectatorView"] == {
+        "yourColor": "sente", "turn": "sente", "moveNumber": 9,
+        "clocks": {"senteMs": 1000, "goteMs": 2000, "running": "sente", "serverTime": 3000},
+        "status": "playing",
+    }
+    assert "yourPieces" not in data["spectatorView"]
+    assert "yourHand" not in data["spectatorView"]
     assert "opponentPieces" not in tsuitate_view.HTML
-    assert "公開棋譜から復元した盤面は表示しません" in tsuitate_view.HTML
+    assert "公平性のため配信しません" in tsuitate_view.HTML
 
 
 def test_tsuitate_readiness_requires_exact_runtime_identity(tmp_path, monkeypatch):
