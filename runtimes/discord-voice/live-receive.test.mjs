@@ -258,3 +258,50 @@ test('utterance above the 10 second bound is dropped before STT', async () => {
   assert.equal(events.some((event) => event.event === 'stt_started'), false);
   receiver.stop();
 });
+
+
+test('a new utterance is captured while the previous STT call is still running', async () => {
+  const events = [];
+  const fixture = fakeConnection(() =>
+    Array.from({ length: 6 }, () => stereoChunk(2000)),
+  );
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  let sttCalls = 0;
+  const receiver = attachLiveSttReceiver({
+    connection: fixture.connection,
+    targetUserId: TARGET,
+    stt: {
+      async transcribe(_pcm, { signal }) {
+        signal.throwIfAborted();
+        sttCalls += 1;
+        if (sttCalls === 1) await firstGate;
+        signal.throwIfAborted();
+        return `fixture-${sttCalls}`;
+      },
+    },
+    emit: (event) => events.push(event),
+    createDecoder: decoderFactory,
+  });
+
+  fixture.connection.receiver.speaking.emit('start', TARGET);
+  await waitFor(() =>
+    events.filter((event) => event.event === 'stt_started').length === 1,
+  );
+
+  fixture.connection.receiver.speaking.emit('start', TARGET);
+  await waitFor(() => fixture.subscriptions.length === 2);
+  await waitFor(() =>
+    events.filter((event) => event.event === 'utterance_finished').length === 2,
+  );
+  assert.equal(sttCalls, 1);
+
+  releaseFirst();
+  await waitFor(() =>
+    events.filter((event) => event.event === 'stt_completed').length === 2,
+  );
+  assert.equal(sttCalls, 2);
+  receiver.stop();
+});
