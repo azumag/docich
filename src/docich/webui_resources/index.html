@@ -2877,7 +2877,7 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("#beta-refresh").onclick=()=>loadBetaStatus();
   $("#beta-start").onclick=()=>betaControl("start");
   $("#beta-stop").onclick=()=>betaControl("stop");
-  const betaReconcile=document.getElementById("beta-reconcile");
+  const betaReconcile=$("#beta-reconcile");
   if(betaReconcile) betaReconcile.onclick=()=>betaControl("reconcile");
   const rSave=document.getElementById("renderer-save");
   if(rSave) rSave.onclick=async()=>{
