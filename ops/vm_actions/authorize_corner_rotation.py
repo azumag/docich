@@ -15,6 +15,7 @@ import re
 import sys
 
 from corner_rotation_input import read_expected
+from hanjuku_queue_admin_input import read_plan
 
 OWNER = "azumag"
 OWNER_ID = "9018513"
@@ -29,9 +30,11 @@ ALLOWED_OPERATIONS = {
     "recover-runtime",
     "check-cancel-hanjuku", "cancel-hanjuku",
     "check-admin-release-hanjuku", "admin-release-hanjuku",
+    "check-admin-cancel-retro-queues", "admin-cancel-retro-queues",
 }
 CANONICAL_ONLY_OPERATIONS = {"start-hanjuku", "recover-runtime", "check-cancel-hanjuku", "cancel-hanjuku",
-                             "check-admin-release-hanjuku", "admin-release-hanjuku"}
+                             "check-admin-release-hanjuku", "admin-release-hanjuku",
+                             "check-admin-cancel-retro-queues", "admin-cancel-retro-queues"}
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 
 
@@ -80,6 +83,19 @@ def main() -> None:
         fail("reviewed reservation fingerprint required")
     if operation == "check-cancel-hanjuku" and expected:
         fail("check accepts no reservation input")
+
+    if operation in {"check-admin-cancel-retro-queues", "admin-cancel-retro-queues"}:
+        try:
+            handle, acknowledgement = read_plan(env)
+        except ValueError:
+            fail("queue admin input unavailable")
+        if expected:
+            fail("queue admin accepts no reservation fingerprint")
+        if operation == "check-admin-cancel-retro-queues":
+            if handle or acknowledgement != "not-acknowledged":
+                fail("queue admin check accepts no execution approval")
+        elif not handle or acknowledgement != "acknowledged":
+            fail("queue admin execution acknowledgement required")
 
     result = {"operation": operation, "target": "production", "ref": "main"}
     output = env.get("GITHUB_OUTPUT")

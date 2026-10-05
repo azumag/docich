@@ -8,12 +8,23 @@ on:
         required: true
         default: restart-service
         type: choice
-        options: [restart-service, recover-failed, rollback-timer, start-hanjuku, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku]
+        options: [restart-service, recover-failed, rollback-timer, start-hanjuku, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-admin-cancel-retro-queues, admin-cancel-retro-queues]
       expected_reservation:
         description: Reviewed reservation fingerprint (cancel or separately approved administrative release)
         required: false
         default: ''
         type: string
+      plan_handle:
+        description: Public check run ID-attempt for the one-use queue admin plan (never a context fingerprint)
+        required: false
+        default: ''
+        type: string
+      unknown_resources:
+        description: Separately approved administrative queue cancellation accepts unknown historical resource release
+        required: false
+        default: not-acknowledged
+        type: choice
+        options: [not-acknowledged, acknowledged]
       confirm:
         description: Type production
         required: true
@@ -168,6 +179,49 @@ jobs:
             gateway_rc=$?
           fi
           python3 -I control/src/docich/hanjuku_admin_result.py "$gateway_result" "$mode" "$SHA" "$gateway_rc"
+
+      - name: Prepare or execute only the one-use fixed two-queue administrative plan
+        if: steps.auth.outputs.operation == 'check-admin-cancel-retro-queues' || steps.auth.outputs.operation == 'admin-cancel-retro-queues'
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          OPERATION: ${{ steps.auth.outputs.operation }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          ACTOR_ID: ${{ github.actor_id }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          REF: ${{ github.ref }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          HANDLE="$(python3 -I control/ops/vm_actions/hanjuku_queue_admin_input.py handle)"
+          ACK="$(python3 -I control/ops/vm_actions/hanjuku_queue_admin_input.py acknowledgement)"
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$REPOSITORY" == azumag/docich && "$REPOSITORY_ID" == 1327276249 && "$ACTOR_ID" == 9018513 ]]
+          [[ "$WORKFLOW_REF" == azumag/docich/.github/workflows/corner-rotation-operator.yml@refs/heads/main && "$REF" == refs/heads/main ]]
+          [[ "$RUN_ID" =~ ^[1-9][0-9]{0,19}$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]{0,3}$ ]]
+          mode=check
+          if [[ "$OPERATION" == admin-cancel-retro-queues ]]; then
+            [[ "$HANDLE" =~ ^[1-9][0-9]{0,19}-[1-9][0-9]{0,3}$ && "$ACK" == acknowledged ]]
+            mode=execute
+          else
+            [[ "$OPERATION" == check-admin-cancel-retro-queues && -z "$HANDLE" && "$ACK" == not-acknowledged ]]
+          fi
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          remote_main="$(git -C control -c core.hooksPath=/dev/null ls-remote origin refs/heads/main | awk '{print $1}')"
+          [[ "$remote_main" == "$SHA" ]]
+          if gateway_result="$(
+            { printf 'QUEUE_ADMIN_MODE=%s\nQUEUE_ADMIN_SHA=%s\nQUEUE_ADMIN_HANDLE=%s\nQUEUE_ADMIN_ACK=%s\nQUEUE_ADMIN_REPOSITORY=%s\nQUEUE_ADMIN_REPOSITORY_ID=%s\nQUEUE_ADMIN_ACTOR_ID=%s\nQUEUE_ADMIN_WORKFLOW_REF=%s\nQUEUE_ADMIN_REF=%s\nQUEUE_ADMIN_RUN_ID=%s\nQUEUE_ADMIN_RUN_ATTEMPT=%s\n' "$mode" "$SHA" "$HANDLE" "$ACK" "$REPOSITORY" "$REPOSITORY_ID" "$ACTOR_ID" "$WORKFLOW_REF" "$REF" "$RUN_ID" "$RUN_ATTEMPT"; cat control/ops/vm_actions/admin_cancel_hanjuku_queues.sh; } |
+              ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" 2>/dev/null
+          )"; then
+            gateway_rc=0
+          else
+            gateway_rc=$?
+          fi
+          python3 -I control/ops/vm_actions/hanjuku_queue_admin_result.py "$gateway_result" "$mode" "$SHA" "$gateway_rc"
 
       - name: Recover only the failed corner rotation slot
         if: steps.auth.outputs.operation == 'recover-failed'
