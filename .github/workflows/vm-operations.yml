@@ -652,14 +652,29 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Restart docich webui systemd unit
-        if: ${{ steps.auth.outputs.operation == 'restart_webui' }}
+        if: ${{ steps.auth.outputs.operation == 'restart_webui' || (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
           VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
           SHA: ${{ steps.candidate.outputs.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
+          # Push deploys restart WebUI only when its Python/resources (or the
+          # explicit restart epoch) changed. A missing/zero before SHA fails
+          # open to the safe fixed restart instead of leaving stale imports.
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+            if [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]] \
+              && [[ "$BEFORE_SHA" != 0000000000000000000000000000000000000000 ]] \
+              && git -C candidate cat-file -e "$BEFORE_SHA^{commit}" \
+              && git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- \
+                   src/docich ops/runtime_context/webui_restart_epoch; then
+              exit 0
+            fi
+          fi
           # The helper is a fixed reviewed script from the trusted main checkout.
           # It runs only `systemctl --user` (no root/sudo) on the fixed unit
           # docich-webui.service and fails closed unless the unit is active
