@@ -105,6 +105,47 @@ export function finishConversation(sql, seq, replyId, reply) {
   return true;
 }
 
+export function commitDeliveredConversation(sql, event, replyId, reply) {
+  const messageId = String(event.id);
+  const guildId = String(event.guildId);
+  const channelId = String(event.channelId);
+  const authorId = String(event.authorId);
+  const content = String(event.content ?? "").slice(0, 2000);
+  const normalizedReplyId = String(replyId);
+  const normalizedReply = String(reply);
+
+  const existing = sql.exec(
+    "SELECT seq,guild_id,channel_id,author_id,content,state,reply_id,reply FROM conversations WHERE message_id=?",
+    messageId,
+  ).toArray();
+  if (existing.length) {
+    const row = existing[0];
+    const same =
+      row.state === "sent" &&
+      row.guild_id === guildId &&
+      row.channel_id === channelId &&
+      row.author_id === authorId &&
+      row.content === content &&
+      row.reply_id === normalizedReplyId &&
+      row.reply === normalizedReply;
+    return Object.freeze({
+      status: same ? "already_committed" : "conflict",
+      seq: Number(row.seq),
+    });
+  }
+
+  const seq = beginConversation(sql, event);
+  if (seq === null || !markSending(sql, seq)) {
+    if (seq !== null) failConversation(sql, seq);
+    return Object.freeze({ status: "conflict", seq: seq === null ? null : Number(seq) });
+  }
+  if (!finishConversation(sql, seq, normalizedReplyId, normalizedReply)) {
+    failConversation(sql, seq);
+    return Object.freeze({ status: "conflict", seq: Number(seq) });
+  }
+  return Object.freeze({ status: "committed", seq: Number(seq) });
+}
+
 export function memoryContext(sql, event, beforeSeq) {
   const scope = [String(event.guildId), String(event.channelId), String(event.authorId)];
   const recent = sql.exec(`
