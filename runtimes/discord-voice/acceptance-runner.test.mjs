@@ -75,3 +75,76 @@ test('runtime failure makes acceptance fail even with successful lifecycle event
 
   assert.equal(code, 1);
 });
+
+
+test('timed acceptance starts its stop timer only after voice_connected', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'docich-voice-accept-'));
+  const log = join(dir, 'acceptance.jsonl');
+  let connected = false;
+  let stoppedBeforeConnected = false;
+
+  const code = await runAcceptance({
+    log,
+    minMinutes: 0,
+    requireInterrupt: false,
+    requireReconnect: false,
+    stopAfterMinutes: 0.0001,
+  }, {
+    signalSource: new EventEmitter(),
+    runVoice: async (_env, ops) => {
+      const stopped = new Promise((resolve) => {
+        ops.signalTarget.once('SIGINT', () => {
+          if (!connected) stoppedBeforeConnected = true;
+          resolve();
+        });
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      connected = true;
+      for (const event of [
+        'voice_connected',
+        'stt_completed',
+        'llm_completed',
+        'tts_completed',
+        'playback_completed',
+        'memory_commit_completed',
+      ]) {
+        ops.emit({ event });
+      }
+
+      await stopped;
+      ops.emit({ event: 'voice_stopped' });
+      return 0;
+    },
+  });
+
+  assert.equal(stoppedBeforeConnected, false);
+  assert.equal(code, 0);
+});
+
+test('runtime exceptions are sanitized into the acceptance log and still produce a summary', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'docich-voice-accept-'));
+  const log = join(dir, 'acceptance.jsonl');
+  const error = Object.assign(new Error('EXAMPLE_PRIVATE_RUNTIME_DETAIL'), {
+    code: 'invalid_config',
+  });
+
+  const code = await runAcceptance({
+    log,
+    minMinutes: 0,
+    requireInterrupt: false,
+    requireReconnect: false,
+    stopAfterMinutes: null,
+  }, {
+    signalSource: new EventEmitter(),
+    runVoice: async () => {
+      throw error;
+    },
+  });
+
+  assert.equal(code, 1);
+  const content = readFileSync(log, 'utf8');
+  assert.match(content, /"event":"live_voice_error"/);
+  assert.match(content, /"code":"invalid_config"/);
+  assert.doesNotMatch(content, /EXAMPLE_PRIVATE_RUNTIME_DETAIL/);
+});
