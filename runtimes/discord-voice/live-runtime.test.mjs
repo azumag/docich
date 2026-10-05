@@ -205,14 +205,14 @@ test('receive mode creates STT before login, attaches after voice ready, and sto
 
   const stt = { transcribe: async () => 'fixture' };
   const conversation = {
-    async reply(transcript, context) {
+    async generate(transcript, context) {
       assert.equal(transcript, 'fixture transcript');
       assert.equal(context.guildId, receiveEnv.DOCICH_DISCORD_VOICE_GUILD_ID);
       assert.equal(context.channelId, receiveEnv.DOCICH_DISCORD_VOICE_CHANNEL_ID);
       assert.equal(context.userId, receiveEnv.DOCICH_DISCORD_VOICE_RECEIVE_USER_ID);
       context.signal.throwIfAborted();
-      trace.push('conversation_reply');
-      return 'fixture reply';
+      trace.push('conversation_generate');
+      return { turnId: 'fixture-turn', reply: 'fixture reply' };
     },
   };
   let receiverStops = 0;
@@ -250,11 +250,18 @@ test('receive mode creates STT before login, attaches after voice ready, and sto
     waitVoiceReady: async () => {
       trace.push('voice_ready');
     },
-    attachReceiver: ({ targetUserId, stt: receivedStt, debugTranscript, onTranscript }) => {
+    attachReceiver: ({
+      targetUserId,
+      stt: receivedStt,
+      debugTranscript,
+      onTranscript,
+      onTargetSpeechStart,
+    }) => {
       assert.equal(targetUserId, receiveEnv.DOCICH_DISCORD_VOICE_RECEIVE_USER_ID);
       assert.equal(receivedStt, stt);
       assert.equal(debugTranscript, false);
       assert.equal(typeof onTranscript, 'function');
+      assert.equal(onTargetSpeechStart, null);
       transcriptHandler = onTranscript;
       trace.push('receiver_attached');
       return {
@@ -274,10 +281,211 @@ test('receive mode creates STT before login, attaches after voice ready, and sto
 
   const transcriptController = new AbortController();
   await transcriptHandler('fixture transcript', { signal: transcriptController.signal });
-  assert.ok(trace.includes('conversation_reply'));
+  assert.ok(trace.includes('conversation_generate'));
 
   signalTarget.emit('SIGINT');
   assert.equal(await running, 0);
   assert.equal(receiverStops, 1);
   assert.ok(trace.indexOf('receiver_stopped') < trace.indexOf('connection_destroy'));
+});
+
+
+test('TTS mode commits memory only after successful playback', async () => {
+  const trace = [];
+  const signalTarget = new EventEmitter();
+  let transcriptHandler = null;
+  let pcmReference = null;
+
+  class FakeClient extends EventEmitter {
+    async login() {
+      trace.push('login');
+      return 'ok';
+    }
+    destroy() {
+      trace.push('client_destroy');
+    }
+  }
+
+  const connection = new EventEmitter();
+  connection.state = { status: VoiceConnectionStatus.Ready };
+  connection.destroy = () => {
+    connection.state.status = VoiceConnectionStatus.Destroyed;
+    trace.push('connection_destroy');
+  };
+  connection.rejoin = () => true;
+
+  const liveEnv = {
+    ...env(),
+    DOCICH_DISCORD_VOICE_TEST_TONE: '0',
+    DOCICH_DISCORD_VOICE_RECEIVE_ENABLED: '1',
+    DOCICH_DISCORD_VOICE_RECEIVE_USER_ID: '323456789012345678',
+    DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED: '1',
+    DOCICH_DISCORD_VOICE_TTS_ENABLED: '1',
+  };
+
+  const running = runLiveVoice(liveEnv, {
+    signalTarget,
+    createStt: () => ({ transcribe: async () => 'fixture' }),
+    createConversation: () => ({
+      async generate(transcript, context) {
+        trace.push('generate');
+        assert.equal(transcript, 'fixture transcript');
+        context.signal.throwIfAborted();
+        return { turnId: 'turn-success', reply: '返答です' };
+      },
+      async commit(turn, context) {
+        trace.push('commit');
+        assert.deepEqual(turn, {
+          turnId: 'turn-success',
+          transcript: 'fixture transcript',
+          reply: '返答です',
+        });
+        context.signal.throwIfAborted();
+        return 'committed';
+      },
+    }),
+    createTts: () => ({
+      async synthesize(reply, context) {
+        trace.push('tts');
+        assert.equal(reply, '返答です');
+        context.signal.throwIfAborted();
+        pcmReference = new Int16Array(960).fill(1500);
+        return pcmReference;
+      },
+    }),
+    createPlayback: () => ({
+      async play(pcm, { signal }) {
+        trace.push('playback');
+        assert.equal(pcm, pcmReference);
+        signal.throwIfAborted();
+      },
+      close() {
+        trace.push('playback_close');
+      },
+    }),
+    createClient: () => new FakeClient(),
+    waitClientReady: async () => {},
+    resolveVoiceChannel: async () => ({
+      guild: { id: liveEnv.DOCICH_DISCORD_VOICE_GUILD_ID },
+      channel: { id: liveEnv.DOCICH_DISCORD_VOICE_CHANNEL_ID },
+    }),
+    joinVoice: () => connection,
+    waitVoiceReady: async () => {},
+    attachReceiver: ({ onTranscript, onTargetSpeechStart }) => {
+      assert.equal(typeof onTranscript, 'function');
+      assert.equal(typeof onTargetSpeechStart, 'function');
+      transcriptHandler = onTranscript;
+      trace.push('receiver_attached');
+      return {
+        stop() {
+          trace.push('receiver_stopped');
+        },
+      };
+    },
+  });
+
+  await waitFor(() => trace.includes('receiver_attached'));
+  await transcriptHandler('fixture transcript', {
+    signal: new AbortController().signal,
+  });
+
+  assert.ok(trace.indexOf('generate') < trace.indexOf('tts'));
+  assert.ok(trace.indexOf('tts') < trace.indexOf('playback'));
+  assert.ok(trace.indexOf('playback') < trace.indexOf('commit'));
+  assert.ok(pcmReference.every((sample) => sample === 0));
+
+  signalTarget.emit('SIGINT');
+  assert.equal(await running, 0);
+  assert.ok(trace.indexOf('playback_close') < trace.indexOf('connection_destroy'));
+});
+
+test('barge-in during playback cancels output and never commits memory', async () => {
+  const trace = [];
+  const signalTarget = new EventEmitter();
+  let transcriptHandler = null;
+  let speechHandler = null;
+  let playbackStarted = false;
+  let commitCalls = 0;
+
+  class FakeClient extends EventEmitter {
+    async login() {
+      return 'ok';
+    }
+    destroy() {}
+  }
+
+  const connection = new EventEmitter();
+  connection.state = { status: VoiceConnectionStatus.Ready };
+  connection.destroy = () => {
+    connection.state.status = VoiceConnectionStatus.Destroyed;
+  };
+  connection.rejoin = () => true;
+
+  const liveEnv = {
+    ...env(),
+    DOCICH_DISCORD_VOICE_TEST_TONE: '0',
+    DOCICH_DISCORD_VOICE_RECEIVE_ENABLED: '1',
+    DOCICH_DISCORD_VOICE_RECEIVE_USER_ID: '323456789012345678',
+    DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED: '1',
+    DOCICH_DISCORD_VOICE_TTS_ENABLED: '1',
+  };
+
+  const running = runLiveVoice(liveEnv, {
+    signalTarget,
+    createStt: () => ({ transcribe: async () => 'fixture' }),
+    createConversation: () => ({
+      async generate(_transcript, { signal }) {
+        signal.throwIfAborted();
+        return { turnId: 'turn-interrupt', reply: '長めの返答です' };
+      },
+      async commit() {
+        commitCalls += 1;
+        return 'committed';
+      },
+    }),
+    createTts: () => ({
+      async synthesize(_reply, { signal }) {
+        signal.throwIfAborted();
+        return new Int16Array(960).fill(1000);
+      },
+    }),
+    createPlayback: () => ({
+      play(_pcm, { signal }) {
+        playbackStarted = true;
+        trace.push('playback_started_fixture');
+        return new Promise((resolve, reject) => {
+          const onAbort = () => reject(new Error('fixture playback aborted'));
+          if (signal.aborted) onAbort();
+          else signal.addEventListener('abort', onAbort, { once: true });
+        });
+      },
+      close() {},
+    }),
+    createClient: () => new FakeClient(),
+    waitClientReady: async () => {},
+    resolveVoiceChannel: async () => ({
+      guild: { id: liveEnv.DOCICH_DISCORD_VOICE_GUILD_ID },
+      channel: { id: liveEnv.DOCICH_DISCORD_VOICE_CHANNEL_ID },
+    }),
+    joinVoice: () => connection,
+    waitVoiceReady: async () => {},
+    attachReceiver: ({ onTranscript, onTargetSpeechStart }) => {
+      transcriptHandler = onTranscript;
+      speechHandler = onTargetSpeechStart;
+      return { stop() {} };
+    },
+  });
+
+  await waitFor(() => transcriptHandler !== null && speechHandler !== null);
+  const turn = transcriptHandler('fixture transcript', {
+    signal: new AbortController().signal,
+  });
+  await waitFor(() => playbackStarted);
+  speechHandler();
+  await turn;
+
+  assert.equal(commitCalls, 0);
+
+  signalTarget.emit('SIGINT');
+  assert.equal(await running, 0);
 });
