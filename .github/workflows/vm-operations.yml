@@ -557,6 +557,47 @@ jobs:
           cat control/ops/vm_actions/reload_shared_overlay.sh |
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
+      - name: Realign active Hanjuku projection for reviewed runtime epoch
+        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git -C candidate cat-file -e "$BEFORE_SHA^{commit}"
+          if git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- ops/vm_actions/hanjuku_presentation_realign_epoch; then
+            exit 0
+          fi
+
+          bash -n control/ops/vm_actions/realign_hanjuku_presentation.sh
+          python3 -m py_compile control/ops/vm_actions/realign_hanjuku_presentation.py
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          set +e
+          cat control/ops/vm_actions/realign_hanjuku_presentation.sh |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+          rc=$?
+          set -e
+          case "$rc" in
+            0) ;;
+            20) echo "::notice::Hanjuku live realign skipped: target_not_active" ;;
+            21) echo "::error::Hanjuku live realign blocked: invalid_runtime_state" ;;
+            22) echo "::error::Hanjuku live realign blocked: unsupported_old_alignment" ;;
+            23) echo "::error::Hanjuku live realign blocked: projection_window_unavailable" ;;
+            24) echo "::error::Hanjuku live realign blocked: projection_geometry_mismatch" ;;
+            25) echo "::error::Hanjuku live realign blocked: runtime_changed_during_realign" ;;
+            26) echo "::error::Hanjuku live realign blocked: window_move_failed" ;;
+            27) echo "::error::Hanjuku live realign blocked: state_write_failed" ;;
+            *) echo "::error::Hanjuku live realign blocked: unexpected_exit_$rc" ;;
+          esac
+          if (( rc != 0 && rc != 20 )); then
+            exit "$rc"
+          fi
+
       - name: Enable common TwiCa foreground for reviewed runtime epoch
         if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
         shell: bash
