@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
+import hashlib
 import html
 import json
 import os
@@ -289,7 +290,9 @@ def _web_title(text: str, url: str) -> str:
 def _web_row(receipt) -> dict[str, object] | None:
     url = str(getattr(receipt, "url", "") or "")
     text = str(getattr(receipt, "text", "") or "")
-    if not url or not text:
+    text_sha256 = str(getattr(receipt, "text_sha256", "") or "")
+    if (not url or not text or len(text_sha256) != 64
+            or hashlib.sha256(text.encode()).hexdigest() != text_sha256):
         return None
     try:
         source = urllib.parse.urlsplit(url).hostname or ""
