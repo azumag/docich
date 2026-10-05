@@ -463,6 +463,10 @@ CPU_PROFILE_REPORT = Path("/tmp/docich-cpu-profile-latest.json")
 CPU_PROFILE_MAX_BYTES = 32768
 CPU_PROFILE_MAX_COMPONENTS = 30
 CPU_PROFILE_MAX_SPAWNS = 30
+# Output-pressure caps. The producer already orders both lists busiest-first,
+# so only the tail is dropped, and the omitted counts stay visible.
+CPU_PROFILE_BUDGET_COMPONENTS = 10
+CPU_PROFILE_BUDGET_SPAWNS = 10
 CPU_PROFILE_FRESH_SEC = 900
 
 
@@ -6437,6 +6441,27 @@ def _nethack_history_budget(payload, *, keep_latest=False):
     return text
 
 
+def _cpu_profile_budget(payload):
+    """Keep the busiest profiler rows when the fixed envelope is still full.
+
+    The profiler report is the largest optional section left after the worker
+    and AI reductions, and it is already ordered busiest-first by the
+    producer, so dropping its tail frees room for the current game's evidence
+    instead of forcing it into ``output_omitted``. The dropped row counts stay
+    visible: an omitted row is never reported as absent.
+    """
+    profile = payload.get("cpu_profile")
+    if not isinstance(profile, dict):
+        return payload
+    for key, limit in (("components", CPU_PROFILE_BUDGET_COMPONENTS),
+                       ("spawns", CPU_PROFILE_BUDGET_SPAWNS)):
+        rows = profile.get(key)
+        if isinstance(rows, list) and len(rows) > limit:
+            profile[f"{key}_omitted"] = len(rows) - limit
+            profile[key] = rows[:limit]
+    return payload
+
+
 def _diagnostics_budget(payload):
     """Keep latest history through existing detail reductions, then bound it."""
     text = _nethack_history_budget(payload, keep_latest=True)
@@ -6448,6 +6473,12 @@ def _diagnostics_budget(payload):
         if len(text.encode("utf-8")) > MAX_JSON_BYTES:
             payload["ai"]["anomalous_components"] = {}
             text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # The profiler lists are the largest optional section left. Reducing them
+    # before any game evidence keeps a full envelope from pushing the current
+    # corner's read-only projections into output_omitted.
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        payload = _cpu_profile_budget(payload)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         profile = payload["soren91_drop_profile"]
         if profile.get('profileStatus') == 'ok':

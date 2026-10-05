@@ -363,6 +363,18 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   外部lease・不正行は件数だけ数えて `status=partial`、全行不正なら集計をnullのまま `unavailable` にする。
   有効なplan行が無い場合は集計をnullに保つ（0件の正常を意味しない）。
   出力予算を超える場合は本projectionをstatus=output_omittedへ置き換える。
+- 出力予算とcpu_profile: 固定envelope（`runtime_registry.MAX_JSON_BYTES` = 36KiB）は
+  gatewayの48KiB sanitize後capより小さい値で、24KiBのSoren91 evidence chunkが
+  base64/JSON展開後も収まる量を確保する。本番の通常payloadはこの上限を超えるため、
+  予算超過時は `ai.recent_events`・`workers.details`・`ai.anomalous_components`・
+  Soren91のgroup・`scene_narration`・`decision_plans`・`hanjuku_tactical`・
+  `pulse_sink_inputs` の順に削る。残る最大要素が `cpu_profile` なので、
+  ゲーム証拠より**前**に `components`/`spawns` を先頭10行へ縮める
+  （producerはbusiest順に並べるので先頭が重い行）。omitted行数は
+  `components_omitted`/`spawns_omitted` として残し、既存 `components_truncated` は
+  書き換えない。縮めても収まらない場合の最終形は budget を超えるが、
+  gatewayのstdout 64KiB・sanitize後48KiB capが仍然として最終防御となる。
+  profileは既に上限（各30行）付きであり、この縮小は出力圧時のみ効く。
 - boundary: Soren `tmp/state/corner_boundary_improvement.json` /
   `corner_boundary_prediction.json` の `completed_at` と age のみ。コーナーの
   境界待ちの可否を判定できる。
