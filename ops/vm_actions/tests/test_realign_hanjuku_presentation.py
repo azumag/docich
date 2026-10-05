@@ -107,15 +107,18 @@ class HanjukuPresentationRealignTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, mod.EXIT_WRITE_FAILED)
         self.assertEqual(calls[-1], (":99", "555", 0, 90))
 
-    def test_production_hook_is_epoch_gated(self):
+    def test_production_hook_retries_idempotent_realign_after_every_deploy(self):
         from pathlib import Path
         workflow = (Path(__file__).resolve().parents[3] / ".github/workflows/vm-operations.yml").read_text()
         block = workflow.split(
-            "- name: Realign active Hanjuku projection for reviewed runtime epoch", 1
+            "- name: Realign active Hanjuku projection after production deploy", 1
         )[1].split("- name:", 1)[0]
-        self.assertIn("hanjuku_presentation_realign_epoch", block)
+        self.assertNotIn("BEFORE_SHA", block)
+        self.assertNotIn("hanjuku_presentation_realign_epoch", block)
         self.assertIn("realign_hanjuku_presentation.sh", block)
         self.assertIn("realign_hanjuku_presentation.py", block)
+        self.assertIn("steps.deploy_initial.outcome == 'success'", block)
+        self.assertIn("steps.deploy_retry.outcome == 'success'", block)
 
     def test_runtime_change_after_move_rolls_window_back_and_keeps_state(self):
         original = self.presentation.read_bytes()
