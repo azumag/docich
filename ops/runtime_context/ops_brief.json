@@ -2,7 +2,7 @@
   "output_sha256": "50da31e5b9dd78cf9b23372490b8874f96a5ff08cf1c28800a0cfeada5f28de9",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "13034e021acc5caf6710609e0bc90fe555b24e8699639b334d11d32ce25456fd",
+  "source_sha256": "134b1192ae2e7d05fb515da01ae91d7146f6a2fd91b72ef9c8677e812e7e4cf9",
   "topics": [
     "PAPERコーナーの人格と声をメリケンへ固定（実装・ローカル検証、本番未反映）",
     "Soren「GAMEOVERのまま進まない」固定復旧 `recover_soren_round` を Ready （未merge・本番未実…",
