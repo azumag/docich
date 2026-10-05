@@ -32,6 +32,92 @@ def ref():
     return {'kind': 'web', 'ref': URL, 'receipt': rec.receipt, 'sha256': rec.sha256, 'quote': '一次資料で確認した事実。'}
 
 
+def test_direct_web_research_uses_broker_receipts_and_exact_quote_verifier(tmp_path):
+    rec = receipt()
+    class Broker:
+        def __init__(self):
+            self.authorized = []
+        def authorize(self, urls):
+            self.authorized.extend(urls)
+        def fetch(self, url):
+            assert url == URL
+            return rec
+    broker = Broker()
+    result = r.direct_web_research(
+        [{"role": "user", "text": "Cloudflare Web Search APIとは？"}],
+        broker=broker,
+        searcher=lambda query, timeout: [URL],
+        deadline=time.monotonic() + 5,
+    )
+    assert result.ok
+    assert result.sources == (URL,)
+    assert "完全一致引用" in result.notes
+    assert TEXT in result.notes
+    assert broker.authorized == [URL]
+
+
+def test_direct_web_research_query_limit_holds_before_search():
+    called = []
+    result = r.direct_web_research(
+        [{"role": "user", "text": "x" * 257}],
+        broker=object(),
+        searcher=lambda *args: called.append(args) or [],
+        deadline=time.monotonic() + 5,
+    )
+    assert result.status == "input_limit"
+    assert called == []
+
+
+def test_research_direct_web_needs_no_opencode_or_bwrap(monkeypatch):
+    monkeypatch.setattr(r.sys, "platform", "linux")
+    monkeypatch.setattr(r.shutil, "which", lambda *a, **kw: pytest.fail("binary discovery"))
+    monkeypatch.setattr(r, "_run", lambda *a, **kw: pytest.fail("research model"))
+    rec = receipt()
+
+    class Broker:
+        def __init__(self, *args, **kwargs):
+            self.urls = []
+        def authorize(self, urls):
+            self.urls.extend(urls)
+        def fetch(self, url):
+            assert url == URL
+            return rec
+
+    monkeypatch.setattr(r, "WebBroker", Broker)
+    monkeypatch.setattr(r, "search_public", lambda query, timeout, env=None: [URL])
+    env = {
+        "DOCICH_ALLOW_REAL_AI": "1",
+        "DOCICH_REPLY_RESEARCH_ENABLED": "1",
+        "DOCICH_REPLY_WEB_SEARCH_ENABLED": "1",
+        "DOCICH_REPLY_WEB_DIRECT_ENABLED": "1",
+    }
+    result = r.research(
+        [{"role": "user", "content": "Cloudflare Web Search APIとは？"}],
+        "web",
+        env=env,
+    )
+    assert result.ok
+    assert result.sources == (URL,)
+    assert "完全一致引用" in result.notes
+
+
+def test_direct_web_flag_does_not_bypass_model_for_code_or_batch(monkeypatch):
+    monkeypatch.setattr(r.sys, "platform", "linux")
+    env = {
+        "DOCICH_ALLOW_REAL_AI": "1",
+        "DOCICH_REPLY_RESEARCH_ENABLED": "1",
+        "DOCICH_REPLY_WEB_SEARCH_ENABLED": "1",
+        "DOCICH_REPLY_WEB_DIRECT_ENABLED": "1",
+    }
+    assert r.research(
+        [{"role": "user", "content": "実装は？"}], "code", env=env
+    ).status == "authentication_unavailable"
+    assert r.research(
+        [{"role": "user", "content": "公開仕様は？"}], "web", env=env,
+        comment_scopes=["web"],
+    ).status == "authentication_unavailable"
+
+
 def run(actions, tmp_path, *, scope='web', search=None, manifest=None, comment_scopes=None, turns=None):
     observed = []
     def model(prompt, remaining):
