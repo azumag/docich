@@ -31,7 +31,7 @@ function botStub(env) {
   return env.DISCORD_BOT.get(id);
 }
 
-async function handleVoiceReply(request, env) {
+async function handleVoiceRequest(request, env, internalPath) {
   const expected = env.DISCORD_VOICE_INTERNAL_TOKEN;
   if (!validVoiceToken(expected)) return new Response("not found", { status: 404 });
 
@@ -62,7 +62,7 @@ async function handleVoiceReply(request, env) {
 
   try {
     const response = await botStub(env).fetch(new Request(
-      "https://discord-bot.internal/voice/reply",
+      "https://discord-bot.internal" + internalPath,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -81,13 +81,24 @@ async function handleVoiceReply(request, env) {
   }
 }
 
-export { DiscordBot, handleVoiceReply };
+async function handleVoiceReply(request, env) {
+  return handleVoiceRequest(request, env, "/voice/reply");
+}
+
+async function handleVoiceCommit(request, env) {
+  return handleVoiceRequest(request, env, "/voice/commit");
+}
+
+export { DiscordBot, handleVoiceReply, handleVoiceCommit };
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/voice/reply") {
       return handleVoiceReply(request, env);
+    }
+    if (request.method === "POST" && url.pathname === "/voice/commit") {
+      return handleVoiceCommit(request, env);
     }
     if (request.method === "GET" && url.pathname === "/healthz") {
       try {
