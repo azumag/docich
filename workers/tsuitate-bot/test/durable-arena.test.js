@@ -310,13 +310,22 @@ test("record size and storage failures preserve the previous checkpoint", async 
   assert.deepEqual(await c.storage.get(CHECKPOINT_KEY), prior);
 });
 
-test("status and structured logs exclude token, move, opponent and raw payload", async (t) => {
+test("owner status exposes only validated own view while structured logs stay observation-free", async (t) => {
   const c = setup(t); await begin(c);
   c.controller.safeLog({ event: "move_sent", usi: "5g5f", token: "fixture-sensitive" });
   c.controller.safeLog({ event: "connected", token: "fixture-sensitive", opponentPieces: [1] });
-  const publicData = JSON.stringify([await c.controller.status(), c.events]);
-  for (const forbidden of ["fixture-only", "fixture-sensitive", "5g5f", "opponentPieces", "yourPieces"]) {
-    assert.equal(publicData.includes(forbidden), false);
+
+  const status = await c.controller.status();
+  const statusData = JSON.stringify(status);
+  assert.ok(status.playerView);
+  assert.ok(status.playerView.yourPieces.length > 0);
+  for (const forbidden of ["fixture-only", "fixture-sensitive", "5g5f", "opponentPieces", "pending", "attemptedMoves"]) {
+    assert.equal(statusData.includes(forbidden), false);
+  }
+
+  const logData = JSON.stringify(c.events);
+  for (const forbidden of ["fixture-only", "fixture-sensitive", "5g5f", "opponentPieces", "yourPieces", "yourHand"]) {
+    assert.equal(logData.includes(forbidden), false);
   }
 });
 
