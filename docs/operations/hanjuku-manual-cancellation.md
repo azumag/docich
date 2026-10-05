@@ -99,6 +99,11 @@ EventLogはbest-effortで、receipt削除のtombstoneもないため、保持行
 任意パス・shell・ゲーム入力は受け付けない。既存gatewayのexec搬送は固定reviewed scriptのみ使用する。
 workflowのstatus照合に加え、gateway deployment lock内の固定scriptでもVM HEADとtracked cleanを照合する。
 VM helperの非ゼロexit・SHA不一致はworkflowも失敗とし、原記録を公開しない。
+予約指紋はActionsの開始時headerへ露出する`env`やworkflow式へ展開しない。
+認可と固定operatorはrunnerの既存`GITHUB_EVENT_PATH`から同じ入力を読み、operatorはquotedな
+shell captureからVM stdinへ渡す。`GITHUB_ENV`・step output・診断JSONへ保存しない。
+認可のowner/main/confirm/固定operationと64桁指紋の条件は維持し、イベント欠落・不正型は固定理由で拒否する。
+これは今後の受渡しの修正であり、過去runの公開ログが消えたことやGitHub全体の入力保管を保証しない。
 拒否時はhelperが固定enumを専用の非ゼロ終了コード（81〜103）で伝え、既存gatewayの
 `exit_code` envelopeをworkflowがSSH終了コードと照合して表示する。SSHが非ゼロでも結果を読んでから
 失敗にする。出力はstatus・reason・corner・cancellation_authorityだけで、指紋・原stdout・例外文・

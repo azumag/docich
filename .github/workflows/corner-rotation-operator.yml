@@ -66,7 +66,6 @@ jobs:
           GITHUB_SHA: ${{ github.sha }}
           INPUT_OPERATION: ${{ inputs.operation }}
           INPUT_CONFIRM: ${{ inputs.confirm }}
-          INPUT_EXPECTED_RESERVATION: ${{ inputs.expected_reservation }}
         run: python3 control/ops/vm_actions/authorize_corner_rotation.py >/dev/null
 
       - name: Resolve immutable current-main SHA
@@ -127,9 +126,9 @@ jobs:
           VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
           SHA: ${{ steps.candidate.outputs.sha }}
           OPERATION: ${{ steps.auth.outputs.operation }}
-          EXPECTED: ${{ inputs.expected_reservation }}
         run: |
           set -euo pipefail
+          EXPECTED="$(python3 -I control/ops/vm_actions/corner_rotation_input.py)"
           mode=check
           if [[ "$OPERATION" == cancel-hanjuku ]]; then
             [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]]
@@ -149,9 +148,9 @@ jobs:
           VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
           SHA: ${{ steps.candidate.outputs.sha }}
           OPERATION: ${{ steps.auth.outputs.operation }}
-          EXPECTED: ${{ inputs.expected_reservation }}
         run: |
           set -euo pipefail
+          EXPECTED="$(python3 -I control/ops/vm_actions/corner_rotation_input.py)"
           [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]]
           mode=check
           if [[ "$OPERATION" == admin-release-hanjuku ]]; then
