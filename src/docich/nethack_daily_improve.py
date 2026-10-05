@@ -72,11 +72,31 @@ def _load_config(g: GlobalConfig) -> DailyImproveConfig:
         raise NethackDailyImproveError("[nethack_corner] must be a table")
     enabled = section.get("daily_improvement", False)
     timezone = section.get("daily_improvement_timezone", "Asia/Tokyo")
-    agents = section.get("daily_improvement_agents", section.get("improve_agents", ""))
-    if not agents:
-        retro = raw.get("retro_corner", {})
-        if isinstance(retro, dict):
-            agents = retro.get("improve_agents", "")
+    direct_enabled = section.get("daily_improvement_direct_enabled", False)
+    if type(direct_enabled) is not bool:
+        raise NethackDailyImproveError("daily_improvement_direct_enabled must be boolean")
+    if direct_enabled:
+        agents = section.get("daily_improvement_direct_agents", "")
+        if not isinstance(agents, str) or not agents.strip():
+            raise NethackDailyImproveError(
+                "daily_improvement_direct_agents is required when direct improvement is enabled"
+            )
+        from .llm.policy import DIRECT_CHAT_PROVIDERS, parse_agents
+        try:
+            specs = parse_agents(agents.strip())
+        except Exception as exc:
+            raise NethackDailyImproveError("daily improvement direct agents are invalid") from exc
+        if any(spec.provider not in DIRECT_CHAT_PROVIDERS for spec in specs):
+            raise NethackDailyImproveError(
+                "daily improvement direct agents must use explicit *-api providers"
+            )
+        agents = agents.strip()
+    else:
+        agents = section.get("daily_improvement_agents", section.get("improve_agents", ""))
+        if not agents:
+            retro = raw.get("retro_corner", {})
+            if isinstance(retro, dict):
+                agents = retro.get("improve_agents", "")
     max_runs = section.get("daily_improvement_max_runs", MAX_RUNS_PER_DAY)
     if type(enabled) is not bool:
         raise NethackDailyImproveError("nethack_corner.daily_improvement must be boolean")
