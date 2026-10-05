@@ -68,6 +68,8 @@ corners = [
   { id = "hanjuku-hero", adapter = "game", game = "hanjuku-hero" },
   { id = "paper", adapter = "paper", game = "paper-view", live_eligible = false },
   { id = "meriken", adapter = "meriken", game = "soren91" },
+  # beta.tsuitate.info の1局owner。手動検証が済むまで自動抽選には入れない。
+  { id = "tsuitate", adapter = "tsuitate", game = "tsuitate-view", manual_only = true },
   # 音声の再生完了receiptに合わせて全国→11地点→全国を進行。4分は安全上限で、完了時は即復帰。
   { id = "weather", adapter = "weather", game = "weather-view", enabled = true, duration_minutes = 4, fetch_on_start = true, audio_enabled = true },
 ]
