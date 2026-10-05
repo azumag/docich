@@ -1,0 +1,19 @@
+{
+  "artifact_id": "synthetic-key-switch-v1",
+  "versions": {
+    "schema": 1,
+    "engine": "key-switch-v1",
+    "judge": "key-switch-v1"
+  },
+  "seed": 7,
+  "tick_hz": 20,
+  "controls": "Arrow keys; 1 cell / 4 ticks. K=key, S=switch, E=exit, P=player. Collect K and touch S, then reach E. Green gates are open.",
+  "goal": "alive+key+switch+exit",
+  "max_ticks": 2400,
+  "dependencies": [],
+  "image_digest": null,
+  "files": {
+    "game.mjs": "d5d62f792509930acc1f14d6720bf0fcd2b3015118c131148569895010dd8f16",
+    "rules.json": "257a170f565c1afc52b6a631249d2b3905403fea80c3dcd16f88a21aba77c514"
+  }
+}

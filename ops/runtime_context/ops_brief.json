@@ -1,11 +1,11 @@
 {
-  "output_sha256": "a94e152f66478a8ef03715c4b6677a264be0b64429b0ec2c64f0a0775e2c9fc6",
+  "output_sha256": "63cdddfd58b78e07b9816c43953b9b28805460fa062b121514e2d44eb89f1987",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "eaa2a8c4a23476ec6a67c09706a9b94bd07aee2f33aa4b4149b6643c3d863514",
+  "source_sha256": "9f42eec670a2a7b07ad6224d5a611aab5cd9eff7ceb6a766a4eb9faadc342789",
   "topics": [
+    "Discord音声会話の合成PCMプロトタイプ（実接続・本番未反映）",
     "AI自作ゲームの鍵・スイッチ・出口を非本番の合成fixtureで試作（本番未反映）",
-    "PAPERコーナーの人格と声をメリケンへ固定（共通rotation経路も修正、本番未反映）",
-    "Soren「GAMEOVERのまま進まない」固定復旧 `recover_soren_round` を Ready （未merge・本番未実…"
+    "PAPERコーナーの人格と声をメリケンへ固定（共通rotation経路も修正、本番未反映）"
   ]
 }
