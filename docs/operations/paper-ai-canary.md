@@ -51,7 +51,7 @@ Real execution additionally requires `--execute` and
 Required capabilities:
 
 - `DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID`
-- `DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN`
+- `DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN` — use a dedicated Cloudflare API token with Account > Workers AI > Read and Account > AI Gateway > Read
 - `DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID`
 - exactly one of `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_API_TOKEN_FILE`
 
