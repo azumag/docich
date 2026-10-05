@@ -23,6 +23,42 @@ test('successful one-turn acceptance passes without optional requirements', () =
   assert.equal(result.privacyOk, true);
 });
 
+test('one-turn acceptance requires one contiguous successful chain', () => {
+  const result = summarizeAcceptanceLines([
+    line(0, 'voice_connected'),
+    line(1, 'utterance_started'),
+    line(2, 'stt_completed'),
+    line(3, 'llm_completed'),
+    line(4, 'utterance_started'),
+    line(5, 'tts_completed'),
+    line(6, 'playback_completed'),
+    line(7, 'memory_commit_completed'),
+  ]);
+
+  assert.equal(result.oneTurn, false);
+  assert.equal(result.completedChains, 0);
+  assert.equal(result.passed, false);
+});
+
+test('duration starts at voice_connected rather than earlier bootstrap events', () => {
+  const result = summarizeAcceptanceLines([
+    line(0, 'live_voice_check_ok'),
+    line(2, 'voice_connected'),
+    line(3, 'stt_completed'),
+    line(4, 'llm_completed'),
+    line(5, 'tts_completed'),
+    line(6, 'playback_completed'),
+    line(7, 'memory_commit_completed'),
+    line(8, 'voice_stopped'),
+  ], {
+    minMinutes: 0.1,
+  });
+
+  assert.equal(result.durationSeconds, 6);
+  assert.equal(result.durationOk, true);
+  assert.equal(result.passed, true);
+});
+
 test('optional interruption, reconnect and duration gates are enforced', () => {
   const base = [
     line(0, 'voice_connected'),
