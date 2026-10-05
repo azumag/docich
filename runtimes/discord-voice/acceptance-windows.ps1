@@ -105,7 +105,11 @@ try {
 
     Push-Location $workerDir
     try {
-      $generatedSecret | & npx wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN --name docich-discord-chat
+      & npm install --no-package-lock --no-audit --no-fund
+      if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install pinned Discord Worker dependencies."
+      }
+      $generatedSecret | & npx --no-install wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN --name docich-discord-chat
       if ($LASTEXITCODE -ne 0) {
         throw "Failed to provision DISCORD_VOICE_INTERNAL_TOKEN."
       }
