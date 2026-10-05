@@ -17,7 +17,7 @@ function number(env, key, fallback, min, max, integer = false) {
   if (!Number.isFinite(value) || value < min || value > max || (integer && !Number.isSafeInteger(value))) fail('invalid_config');
   return value;
 }
-function remoteURL(raw, skipLocal = false) {
+function remoteURL(raw, skipLocal = false, allowLocal = false) {
   try {
     const url = new URL(raw);
     const host = url.hostname.toLowerCase();
@@ -25,6 +25,7 @@ function remoteURL(raw, skipLocal = false) {
       url.search || url.hash || url.pathname !== '/') fail('invalid_config');
     if (host === 'localhost' || host.endsWith('.localhost') || host === '[::1]' || host === '[::]' ||
       /^\[::ffff:(7f[0-9a-f]{2}:|0:0\])/.test(host) || /^127\./.test(host) || host === '0.0.0.0') {
+      if (allowLocal) return url.origin;
       if (skipLocal) return null;
       fail('invalid_config');
     }
@@ -36,12 +37,12 @@ function remoteURL(raw, skipLocal = false) {
  * selectedURL must belong to VOICEVOX_URLS (shared chooser selection), or first wins.
  * No implicit VM-local defaults, persisted backoff, locks or synthesis retries.
  */
-export function voicevoxConfig(env, selectedURL) {
+export function voicevoxConfig(env, selectedURL, { allowLocal = false } = {}) {
   try {
     const urls = [...new Set(String(env.VOICEVOX_URLS ?? '').split(/[,\s]+/).filter(Boolean)
-      .map((url) => remoteURL(url, true)).filter(Boolean))];
+      .map((url) => remoteURL(url, true, allowLocal)).filter(Boolean))];
     if (!urls.length || urls.length > 8) fail('invalid_config');
-    const endpoint = selectedURL === undefined ? urls[0] : remoteURL(selectedURL);
+    const endpoint = selectedURL === undefined ? urls[0] : remoteURL(selectedURL, false, allowLocal);
     if (!urls.includes(endpoint)) fail('invalid_config');
     return Object.freeze({ endpoint,
       speaker: number(env, 'VOICEVOX_SPEAKER', 3, 0, 2 ** 31 - 1, true),
@@ -102,8 +103,8 @@ export function wavToPCM(bytes) {
 export class InjectedVoicevoxTTS {
   get kind() { return 'voicevox-injected'; }
   #config; #request;
-  constructor({ env, selectedURL, request }) {
-    this.#config = voicevoxConfig(env, selectedURL);
+  constructor({ env, selectedURL, request, allowLocal = false }) {
+    this.#config = voicevoxConfig(env, selectedURL, { allowLocal });
     if (typeof request !== 'function') fail('invalid_config');
     this.#request = request;
   }
