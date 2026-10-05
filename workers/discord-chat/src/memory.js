@@ -149,15 +149,21 @@ export function memoryContext(sql, event, beforeSeq) {
   return { messages, sources: rows.map((row) => row.seq) };
 }
 
-export function validContext(sql, currentSeq, context) {
-  if (!isActive(sql, currentSeq)) return false;
+export function validSources(sql, context) {
+  if (!context || !Array.isArray(context.sources)) return false;
   if (!context.sources.length) return true;
-  const placeholders = context.sources.map(() => "?").join(",");
+  if (!context.sources.every((seq) => Number.isSafeInteger(seq) && seq > 0)) return false;
+  const unique = [...new Set(context.sources)];
+  const placeholders = unique.map(() => "?").join(",");
   const row = sql.exec(
     `SELECT COUNT(*) AS count FROM conversations WHERE state='sent' AND seq IN (${placeholders})`,
-    ...context.sources,
+    ...unique,
   ).one();
-  return Number(row.count) === context.sources.length;
+  return Number(row.count) === unique.length;
+}
+
+export function validContext(sql, currentSeq, context) {
+  return isActive(sql, currentSeq) && validSources(sql, context);
 }
 
 export function forgetScope(sql, guildId, channelId, { messageIds = [], authorId = null } = {}) {
