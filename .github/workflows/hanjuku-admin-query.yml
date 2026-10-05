@@ -1,0 +1,262 @@
+name: Hanjuku admin query
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  operate:
+    permissions:
+      contents: read
+      issues: write
+    if: >-
+      github.actor_id == 9018513 &&
+      github.triggering_actor == 'azumag' &&
+      github.event.issue.number == 1752 &&
+      github.event.comment.user.id == 9018513 &&
+      (github.event.comment.body == '/hanjuku-admin-check production' ||
+       github.event.comment.body == '/hanjuku-admin-release production')
+    concurrency:
+      group: retro-corner-operator-${{ github.repository }}
+      cancel-in-progress: false
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted admin code from event main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+          submodules: false
+
+      - name: Authorize fixed owner admin command
+        id: auth
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_ACTOR_ID: ${{ github.actor_id }}
+          GITHUB_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          GITHUB_SHA: ${{ github.sha }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          COMMENT_AUTHOR_ID: ${{ github.event.comment.user.id }}
+        run: python3 control/ops/vm_actions/authorize_hanjuku_admin_query.py
+
+      - name: Require the event to remain current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git -C control rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [[ "$current" == "$GITHUB_SHA" ]]
+          umask 077
+          install -m 700 -d "$RUNNER_TEMP/hanjuku-admin/ssh"
+
+      - name: Configure pinned SSH transport
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          work="$RUNNER_TEMP/hanjuku-admin"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$work/ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$work/ssh/known_hosts"
+          chmod 600 "$work/ssh/"*
+          printf 'HANJUKU_SSH_PORT=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Require production to equal event SHA
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/hanjuku-admin"
+          ssh_args=(-F /dev/null -T -p "$HANJUKU_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
+          current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [[ "$current" == "$SHA" ]]
+          status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
+          python3 - "$status_json" "$SHA" <<'PY'
+          import json, sys
+          data = json.loads(sys.argv[1])
+          if data.get("status") != "configured" or data.get("sha") != sys.argv[2]:
+              raise SystemExit("production is not exactly the event SHA")
+          PY
+
+      - name: Read only the fixed stuck-reservation fingerprint
+        id: evidence
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/hanjuku-admin"
+          ssh_args=(-F /dev/null -T -p "$HANJUKU_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
+          diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA")"
+          python3 - "$diagnostics_json" "$work/expected" <<'PY'
+          import json, pathlib, re, sys
+          data = json.loads(sys.argv[1])
+          diagnostics = data.get("diagnostics") if isinstance(data, dict) else None
+          corners = diagnostics.get("corners") if isinstance(diagnostics, dict) else None
+          rotation = corners.get("corner_rotation") if isinstance(corners, dict) else None
+          queues = corners.get("retro_program_queues") if isinstance(corners, dict) else None
+          game_switch = corners.get("game_switch") if isinstance(corners, dict) else None
+          fifo = corners.get("game_switch_fifo") if isinstance(corners, dict) else None
+          if not all(isinstance(x, dict) for x in (rotation, queues, game_switch, fifo)):
+              raise SystemExit("fixed admin evidence unavailable")
+          fingerprint = rotation.get("manual_pending_fingerprint")
+          receipt = rotation.get("manual_pending_receipt")
+          manual_q = queues.get("manual")
+          scheduled_q = queues.get("scheduled")
+          if not (
+              rotation.get("status") == "waiting"
+              and rotation.get("reason") == "manual-request-needs-resume-or-recovery"
+              and rotation.get("manual_pending") is True
+              and rotation.get("manual_pending_corner") == "hanjuku-hero"
+              and rotation.get("manual_pending_owner") == "none"
+              and rotation.get("queued_manual") is True
+              and isinstance(receipt, dict) and receipt.get("present") is False
+              and isinstance(manual_q, dict) and manual_q.get("status") == "error"
+              and isinstance(scheduled_q, dict) and scheduled_q.get("status") == "error"
+              and game_switch.get("phase") in {"idle", "ready"}
+              and game_switch.get("active_game") != "hanjuku-hero"
+              and fifo.get("queued_count") == 0
+              and re.fullmatch(r"[0-9a-f]{64}", fingerprint or "")
+          ):
+              raise SystemExit("fixed admin evidence does not match the reviewed stuck shape")
+          pathlib.Path(sys.argv[2]).write_text(fingerprint + "\n", encoding="ascii")
+          PY
+          chmod 600 "$work/expected"
+
+      - name: Check or release only that exact reservation
+        id: admin
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+          MODE: ${{ steps.auth.outputs.mode }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/hanjuku-admin"
+          EXPECTED="$(cat "$work/expected")"
+          [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$MODE" == check || "$MODE" == release ]]
+          ssh_args=(-F /dev/null -T -p "$HANJUKU_SSH_PORT" -i "$work/ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=20)
+          if gateway_result="$(
+            { printf 'ADMIN_RELEASE_MODE=%s\nADMIN_RELEASE_EXPECTED=%s\nADMIN_RELEASE_SHA=%s\n' "$MODE" "$EXPECTED" "$SHA"; cat control/ops/vm_actions/admin_release_hanjuku_manual.sh; } |
+              ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" 2>/dev/null
+          )"; then
+            gateway_rc=0
+          else
+            gateway_rc=$?
+          fi
+          set +e
+          python3 -I control/src/docich/hanjuku_admin_result.py "$gateway_result" "$MODE" "$SHA" "$gateway_rc" > "$work/public.json"
+          public_rc=$?
+          set -e
+          result="$(python3 - "$work/public.json" <<'PY'
+          import json, sys
+          data=json.load(open(sys.argv[1], encoding="utf-8"))
+          status=data.get("status")
+          if status in {"admin-eligible", "admin-released"}:
+              print(status)
+          elif status == "refused" and isinstance(data.get("reason"), str):
+              print(data["reason"])
+          else:
+              raise SystemExit("invalid fixed public result")
+          PY
+          )"
+          printf 'result=%s\n' "$result" >> "$GITHUB_OUTPUT"
+          if (( public_rc != 0 )); then
+            echo "::error::Hanjuku admin request refused: $result"
+            exit 1
+          fi
+
+      - name: Return fixed result metadata to the control Issue
+        if: ${{ always() && steps.auth.outcome == 'success' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_SHA: ${{ github.sha }}
+          MODE: ${{ steps.auth.outputs.mode }}
+          ADMIN_OUTCOME: ${{ steps.admin.outcome }}
+          ADMIN_RESULT: ${{ steps.admin.outputs.result }}
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$RUNNER_TEMP/hanjuku-admin"
+          install -m 700 -d "$work"
+          python3 - "$SOURCE_COMMENT_ID" "$RUN_ID" "$RUN_ATTEMPT" "$RUN_SHA" "$MODE" "$ADMIN_OUTCOME" "$ADMIN_RESULT" > "$work/reply.json" <<'PY'
+          import json, re, sys
+          comment_id, run_id, attempt, sha, mode, outcome, result = sys.argv[1:]
+          if not (comment_id.isdigit() and run_id.isdigit() and attempt.isdigit()
+                  and re.fullmatch(r"[0-9a-f]{40}", sha)
+                  and mode in {"check", "release"}
+                  and outcome in {"success", "failure", "cancelled", "skipped"}):
+              raise SystemExit("invalid fixed reply metadata")
+          allowed = {
+              "admin-eligible", "admin-released",
+              "expected_reservation_required", "reservation_not_in_scope",
+              "clock_regressed", "reservation_changed", "context_changed",
+              "program_queue_unverified", "owner_not_terminal",
+              "owner_requires_reconciliation", "program_owner_unverified",
+              "switch_not_stable", "target_active", "receipt_now_present",
+              "invalid_admin_audit", "already_admin_released", "admin_audit_limit",
+              "unsafe_state", "missing_evidence", "unreadable_evidence",
+              "invalid_evidence", "unsafe_lock", "busy", "lock_unavailable",
+              "evidence_unverified", "gateway_result_unverified",
+              "helper_preflight_failed", "helper_arguments_invalid", "helper_failed",
+              "not_run",
+          }
+          if not result:
+              result = "not_run"
+          if result not in allowed:
+              raise SystemExit("invalid fixed reply result")
+          body = "\n".join((
+              f"Request: https://github.com/azumag/docich/issues/1752#issuecomment-{comment_id}",
+              f"Run: https://github.com/azumag/docich/actions/runs/{run_id}",
+              f"Attempt: {attempt}",
+              f"SHA: {sha}",
+              f"Mode: {mode}",
+              f"Result: {outcome}",
+              f"Reason: {result}",
+          ))
+          json.dump({"body": body}, sys.stdout, separators=(",", ":"))
+          PY
+          gh api --method POST repos/azumag/docich/issues/1752/comments             --input "$work/reply.json" > /dev/null
+
+      - name: Clear runner staging
+        if: ${{ always() }}
+        shell: bash
+        run: rm -rf -- "$RUNNER_TEMP/hanjuku-admin"
