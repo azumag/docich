@@ -379,9 +379,15 @@ def test_canonical_snapshot_distinguishes_json_types(detached, monkeypatch, firs
 
 
 @pytest.mark.parametrize("lock", ["corner-rotation", "retro-corner", "retro-corner-manual", "game-switch", "program"])
-def test_lock_contention_refuses_and_releases_prior_locks(detached, lock):
+@pytest.mark.parametrize("with_stale_error_queue", [False, True])
+def test_lock_contention_refuses_and_releases_prior_locks(detached, lock, with_stale_error_queue):
     import fcntl
     f = detached
+    if with_stale_error_queue:
+        queue_dir = f.soren / "tmp/state/docich_program_queue"
+        queue_dir.mkdir(parents=True)
+        for name in cancellation.OWNER_FILES:
+            (queue_dir / name).write_text('{"status":"error"}')
     path = f.soren / "tmp/state/docich_program.lock" if lock == "program" else f.path.parent / f"locks/{lock}.lock"
     before = snapshot(f)
     with path.open("rb") as handle:
