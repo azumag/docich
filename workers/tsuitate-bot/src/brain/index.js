@@ -1,5 +1,5 @@
 /** Site-independent, visible-information-only Tsuitate move selection. */
-export const BRAIN_VERSION = "tsuitate-brain-v5";
+export const BRAIN_VERSION = "tsuitate-brain-v6";
 const ROLES = new Set(["P", "L", "N", "S", "G", "B", "R", "K", "+P", "+L", "+N", "+S", "+B", "+R"]);
 const HAND_ROLES = ["P", "L", "N", "S", "G", "B", "R"];
 const HAND_LIMITS = { P: 18, L: 4, N: 4, S: 4, G: 4, B: 2, R: 2 };
@@ -188,6 +188,51 @@ function checkResponses(observation, candidates) {
   });
 }
 
+/**
+ * Visible-only exposure of a possible king escape: how many unknown squares
+ * have an unobstructed line to the destination. Own pieces block and never
+ * count as attackers, and no enemy piece is assumed. Unknown squares on our
+ * own king's rays count double: the check must come from one of them, so they
+ * are the most plausible hidden attackers. This orders candidates only; it
+ * never claims a destination is legal.
+ */
+function escapeExposure(observation, king, destination) {
+  const own = new Set(observation.pieces.map((piece) => piece.square));
+  const tf = file(destination);
+  const tr = rank(destination);
+  const kf = file(king);
+  const kr = rank(king);
+  const weight = (key) => {
+    const dx = file(key) - kf;
+    const dy = rank(key) - kr;
+    if (dx !== 0 && dy !== 0 && Math.abs(dx) !== Math.abs(dy)) return 1;
+    const distance = Math.max(Math.abs(dx), Math.abs(dy));
+    for (let step = 1; step < distance; step += 1) {
+      if (own.has(square(kf + Math.sign(dx) * step, kr + Math.sign(dy) * step))) return 1;
+    }
+    return 2;
+  };
+  let count = 0;
+  for (const [dx, dy] of [...ORTHOGONALS, ...DIAGONALS]) {
+    let x = tf;
+    let y = tr;
+    for (let step = 1; step <= 8; step += 1) {
+      x += dx;
+      y += dy;
+      if (!inBounds(x, y)) break;
+      const key = square(x, y);
+      if (own.has(key)) break;
+      count += weight(key);
+    }
+  }
+  for (const [dx, dy] of [...ORTHOGONALS, ...DIAGONALS, [-1, -2], [1, -2], [-1, 2], [1, 2]]) {
+    const x = tf + dx;
+    const y = tr + dy;
+    if (inBounds(x, y) && !own.has(square(x, y))) count += weight(square(x, y));
+  }
+  return count;
+}
+
 /** Shorten a rejected ray using only current own geometry and foul feedback. */
 function shortRayRetries(observation, candidates, rejected, forbidden) {
   if (observation.inCheck !== false) return [];
@@ -288,18 +333,31 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
   const scored = candidates.map((candidate) => {
     const values = features(observation, candidate, recent);
     const score = legacy ? 0 : FEATURE_NAMES.reduce((sum, name) => sum + values[name] * selectedProfile.weights[name], 0);
-    return { usi: candidate.usi, features: values, score };
+    return { usi: candidate.usi, role: candidate.role, features: values, score, priority: 0 };
   });
+  // 王手中は玉の脱出候補を露出度の低い順に試す。特徴量スコアは前進を
+  // 好むため、そのままでは隠れた駒の多い方向へ玉を運び反則になる。
+  if (observation.inCheck === true && prioritizeEscapes) {
+    const king = observation.pieces.find((piece) => piece.role === "K");
+    if (king) {
+      scored.filter((candidate) => candidate.role === "K")
+        .map((candidate) => ({ candidate, exposure: escapeExposure(observation, king.square, candidate.usi.slice(2, 4)) }))
+        .sort((a, b) => a.exposure - b.exposure || b.candidate.score - a.candidate.score)
+        .forEach((entry, index) => { entry.candidate.priority = -index; });
+    }
+  }
+  const topPriority = Math.max(...scored.map((candidate) => candidate.priority));
+  const pool = scored.filter((candidate) => candidate.priority === topPriority);
   let selected;
   if (legacy || hash(`${seed}:explore`) / 2 ** 32 < selectedProfile.exploration) {
-    selected = scored[hash(seed) % scored.length];
+    selected = pool[hash(seed) % pool.length];
   } else {
-    const maximum = Math.max(...scored.map((candidate) => candidate.score));
-    const best = scored.filter((candidate) => candidate.score === maximum);
+    const maximum = Math.max(...pool.map((candidate) => candidate.score));
+    const best = pool.filter((candidate) => candidate.score === maximum);
     selected = best[hash(seed) % best.length];
   }
   return {
-    ...selected, brainVersion: BRAIN_VERSION, profileId: selectedProfile.id,
-    candidateCount: candidates.length,
+    usi: selected.usi, features: selected.features, score: selected.score,
+    brainVersion: BRAIN_VERSION, profileId: selectedProfile.id, candidateCount: candidates.length,
   };
 }

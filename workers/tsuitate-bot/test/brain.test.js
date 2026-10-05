@@ -170,6 +170,28 @@ test("public check probes king escapes before other moves in both policies and c
   }
 });
 
+test("check escapes probe sheltered squares before the advancing score preference", () => {
+  // 玉5eと自駒4枚。線形スコアは前進して中央に寄る5e5dを最良とするが、そこは
+  // 未知マスからの攻撃経路が最も多い。王手の応答では、自駒に守られた露出の低い
+  // 行き先を先に試す。自駒は遮蔽として数え、相手駒の位置は推測しない。
+  for (const [color, pieces, first, second, quiet] of [
+    ["b", [["5e", "K"], ["4g", "S"], ["5g", "P"], ["7e", "P"], ["3e", "G"]], "5e4f", "5e5f", "5g5f"],
+    ["w", [["5e", "K"], ["6c", "S"], ["5c", "P"], ["3e", "P"], ["7e", "G"]], "5e6d", "5e5d", "5c5d"],
+  ]) {
+    const options = { profile: { ...LINEAR_PROFILE, exploration: 0 }, seed: "exposure" };
+    const checked = observation(pieces, { color, turn: color, inCheck: true });
+    const choice = chooseMove(checked, options);
+    assert.equal(choice.usi, first);
+    assert.equal(choice.features.kingMove, 1);
+    const retry = chooseMove(checked, { ...options, forbiddenMoves: [choice.usi], foulMoves: [choice.usi] });
+    assert.equal(retry.usi, second);
+    // 王手が確定していない局面と、残り1試行の最終手では従来の評価順を保つ。
+    for (const patch of [{ inCheck: null }, { inCheck: false }, { inCheck: true, attemptBudget: 1 }]) {
+      assert.equal(chooseMove(observation(pieces, { color, turn: color, ...patch }), options).usi, quiet);
+    }
+  }
+});
+
 test("viewer public lastInfo identifies check without disclosing the attacking square", () => {
   for (const [color, own, opponent] of [["b", "+", "-"], ["w", "-", "+"]]) {
     assert.deepEqual(checksFromLastMove({ lastMove: `${opponent}0000ZZ`, lastInfo: 3 }, color),
