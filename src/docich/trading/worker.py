@@ -202,6 +202,8 @@ def _status_payload(
     rejected_count: int = 0,
     strategy_ids=(),
     candidate_reason_codes=(),
+    candidate_symbols=(),
+    selected_symbols=(),
     skipped_reason_codes=(),
     signal_summary=None,
     worker_summary=None,
@@ -221,6 +223,8 @@ def _status_payload(
             "rejected_count": rejected_count,
             "strategy_ids": sorted(set(strategy_ids)),
             "candidate_reason_codes": sorted(set(candidate_reason_codes)),
+            "candidate_symbols": sorted(set(candidate_symbols)),
+            "selected_symbols": sorted(set(selected_symbols)),
         }
     if worker_summary is None:
         worker_summary = {
@@ -586,6 +590,8 @@ def run_worker_cycle(
             rejected_count=len(selection.rejected),
             strategy_ids=[item.strategy_id for item in candidates],
             candidate_reason_codes=[item.reason_code for item in candidates],
+            candidate_symbols=[item.symbol for item in candidates],
+            selected_symbols=[item.symbol for item in selection.selected],
             skipped_reason_codes=skipped_codes,
             frame_error_count=frame_error_count,
             arbitrage_candidate_count=arbitrage_candidate_count,
