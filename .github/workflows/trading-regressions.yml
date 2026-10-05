@@ -137,7 +137,7 @@ jobs:
           tests/test_trading_strategy_store.py tests/test_trading_strategy_lab.py tests/test_trading_strategy_metrics.py tests/test_trading_corner_script.py
           tests/test_trading_experiment_control.py tests/test_trading_strategy_costs.py tests/test_trading_ai_text.py
           tests/test_trading_corner_research.py tests/test_trading_paper_improve.py tests/test_paper_improve_retry.py
-          tests/test_paper_improve_lifecycle.py
+          tests/test_paper_improve_lifecycle.py tests/test_paper_ai_canary.py
           tests/test_trading_free_strategy_accounting.py tests/test_trading_free_strategy_post_fill_drawdown.py
           tests/test_trading_free_strategy_cli.py tests/test_trading_free_strategy_worker.py
           tests/test_trading_free_strategy_dashboard.py tests/test_trading_free_strategy_terminal.py
