@@ -16,6 +16,7 @@ from docich.trading.corner_research import (  # noqa: E402
     prepare_research_context,
 )
 from docich.trading.corner_script import build_facts, build_prompt  # noqa: E402
+from docich.reply_research_web import Receipt as WebReceipt  # noqa: E402
 from docich.trading.paper_improve import build_improve_prompt  # noqa: E402
 
 NOW = 1_800_000_000.0
@@ -101,19 +102,16 @@ def test_prepare_research_websearch_uses_verified_bodies_not_search_snippets(tmp
     general_url = "https://news.example/crypto"
     asset_url = "https://docs.example/bitcoin"
 
-    class Receipt:
-        def __init__(self, url, text):
-            self.url = url
-            self.text = text
-            self.sha256 = hashlib.sha256(text.encode()).hexdigest()
-            self.text_sha256 = self.sha256
+    def receipt(url, text):
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        return WebReceipt(url, "a" * 32, digest, digest, text)
 
     receipts = {
-        general_url: Receipt(
+        general_url: receipt(
             general_url,
             "暗号資産市場ではETF資金フローと規制議論が続いている。価格だけでなく流動性の確認が必要だ。",
         ),
-        asset_url: Receipt(
+        asset_url: receipt(
             asset_url,
             "Bitcoinは分散型ネットワークとして設計され、供給ルールと検証方式が特徴である。最近の利用動向も議論されている。",
         ),
@@ -162,18 +160,13 @@ def test_websearch_rejects_forged_receipt_text_hash(tmp_path):
     _write_status(tmp_path, {"BTC/JPY": "0.01"})
     url = "https://news.example/forged"
 
-    class Receipt:
-        def __init__(self):
-            self.url = url
-            self.text = "本文"
-            self.sha256 = "a" * 64
-            self.text_sha256 = "b" * 64
+    forged = WebReceipt(url, "b" * 32, "a" * 64, "b" * 64, "本文")
 
     class Broker:
         def authorize(self, urls):
             pass
         def fetch(self, value):
-            return Receipt()
+            return forged
 
     context = prepare_research_context(
         tmp_path,
