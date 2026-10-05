@@ -91,9 +91,11 @@ def release(g, *, expected, apply=False, now=time.time):
                 queue_status = queue.get("status")
                 if queue_status == "error":
                     # An error queue is historical uncertainty, not proof that
-                    # the slot is still live. Keep it read-only and continue
-                    # through every owner/registry/canonical/receipt guard
-                    # below while holding the shared writer locks (#1752).
+                    # the slot is still live. The non-blocking exclusive
+                    # docich_program.lock was already acquired above, so a
+                    # currently held program slot cannot reach this branch.
+                    # Keep the record read-only and continue through every
+                    # owner/registry/canonical/receipt guard below (#1752).
                     stale_program_queue_error = True
                 elif queue_status not in {"done", "expired", "cancelled"}:
                     raise CancelRefused("program_queue_unverified")
