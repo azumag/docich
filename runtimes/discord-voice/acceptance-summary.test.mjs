@@ -91,6 +91,29 @@ test('optional interruption, reconnect and duration gates are enforced', () => {
   assert.equal(passed.passed, true);
 });
 
+test('an unresolved voice disconnect fails acceptance while recovery clears it', () => {
+  const base = [
+    line(0, 'voice_connected'),
+    line(1, 'stt_completed'),
+    line(2, 'llm_completed'),
+    line(3, 'tts_completed'),
+    line(4, 'playback_completed'),
+    line(5, 'memory_commit_completed'),
+    line(6, 'voice_disconnected'),
+  ];
+
+  const failed = summarizeAcceptanceLines(base);
+  assert.equal(failed.unresolvedDisconnect, true);
+  assert.equal(failed.passed, false);
+
+  const recovered = summarizeAcceptanceLines([
+    ...base,
+    line(7, 'voice_rejoined'),
+  ]);
+  assert.equal(recovered.unresolvedDisconnect, false);
+  assert.equal(recovered.passed, true);
+});
+
 test('debug content, failures and malformed lines fail closed', () => {
   const result = summarizeAcceptanceLines([
     line(0, 'voice_connected'),
