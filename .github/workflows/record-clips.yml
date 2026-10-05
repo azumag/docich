@@ -1,0 +1,20 @@
+name: Corner record clips
+on:
+  pull_request:
+    paths: ['src/docich/record_clips.py', 'src/docich/adapters/cli_game.py', 'src/docich/retro_corner.py', 'games/cli-wrappers/**', 'config/docich.soren-live.toml', 'tests/test_record_clips.py', '.github/workflows/record-clips.yml']
+  push:
+    branches: [main]
+    paths: ['src/docich/record_clips.py', 'src/docich/adapters/cli_game.py', 'src/docich/retro_corner.py', 'games/cli-wrappers/**', 'config/docich.soren-live.toml', 'tests/test_record_clips.py', '.github/workflows/record-clips.yml']
+permissions:
+  contents: read
+jobs:
+  record-clips:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - run: python3 -m pip install -r requirements-test.txt
+      - run: PYTHONPATH=src python3 -m pytest -q tests/test_record_clips.py tests/test_cli_adapter.py tests/test_retro_wrapper_limits.py tests/test_ninvaders_wrapper.py
+      - run: sh -n games/cli-wrappers/_run_with_driver.sh games/cli-wrappers/*_docich.sh

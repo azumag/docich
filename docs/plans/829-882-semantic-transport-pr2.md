@@ -41,8 +41,12 @@ credential is the selected key in a fresh environment, never argv or stdin.
 The child uses `python -I`, the reviewed worker file, TLS verification, no proxy,
 no redirect and zero retries. Its response is capped at 131072 bytes. One absolute
 wall budget covers serialisation, process acquisition, DNS, connect and body read.
-TERM/INT cancellation kills the detached process group and reaps the direct child.
-POSIX/main-thread operation is explicit; unsupported contexts fail before spawning.
+TERM/INT cancellation in main-thread callers kills the detached process group
+and reaps the direct child. PR1648 extends POSIX support to owned worker threads:
+they leave the main event loop's signal handlers untouched, retain the absolute
+child deadline, and kill/reap on every exit. Consumers must join those threads
+on cancellation, as Discord's shielded generation/shutdown path does. Non-POSIX
+contexts still fail before spawning.
 
 Choice validation is per request question/criteria, not a copied comment rubric.
 It rejects duplicate JSON keys, nonfinite/bool numbers, missing/unknown answer IDs,

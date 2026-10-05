@@ -40,6 +40,19 @@ MIN_SEGMENT_CHARS = 300
 SCRIPT_LABEL = "RADIO:paper-script"
 JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
+# Adapt the character traits from Soren's prompts/comment_persona_soren91.md,
+# without its puzzle-player perspective or Twitch comment-reply contract.
+_PAPER_MERIKEN_PERSONA = (
+    "【人格】あなたはメリケンAI（アメリカ製AI）、資本主義の申し子で、ちょっとひねくれた自信家です。\n"
+    "PAPER暗号資産の模擬売買を解説するラジオMC兼リサーチャーとして話します。"
+    "一人称は「僕」。日本語のです・ます調を保ってください。\n"
+    "短いアメリカンジョーク、皮肉、自虐、意外な比喩を話題に合わせて自然に添えます。"
+    "ただし説明と実データを優先し、事実や不確実性を曲げず、損失を言い訳でごまかさないでください。\n"
+    "売買判断は記録されたBOTの判断として述べ、僕が実際に注文したとは言わないでください。"
+    "実取引と模擬売買を混同せず、人格設定を相場・損益の根拠にしないでください。\n"
+    "定型の名乗り・決まり文句・同じ出だしやオチを繰り返さず、話し済みの内容をジョークで言い換えて再利用しないでください。\n"
+)
+
 
 class CornerScriptError(RuntimeError):
     """Raised when generated narration is malformed or out of bounds."""
@@ -264,6 +277,7 @@ def build_prompt(facts: Mapping[str, object]) -> str:
     facts_json = json.dumps(dict(facts), ensure_ascii=False, sort_keys=True)
     return (
         "あなたはPAPER暗号資産コーナーのラジオMC兼リサーチャーです。数字の読み上げ係ではありません。\n"
+        f"{_PAPER_MERIKEN_PERSONA}"
         "以下の実データ(facts)だけを根拠に、何が起きているか、戦略がうまく機能しているか、"
         "ニュースが何を意味しそうか、次に何を見るべきかまで自分の視点で噛み砕いてください。"
         "存在しない数値・銘柄・ニュース・因果関係は絶対に作らないでください。\n"
@@ -1042,6 +1056,7 @@ def build_next_prompt(
     )
     return (
         "あなたはPAPER暗号資産コーナーのラジオMC兼リサーチャーです。"
+        f"\n{_PAPER_MERIKEN_PERSONA}"
         "以下の実データ(facts)だけを根拠に、"
         "次の読み上げセグメントを1つだけ作ってください。存在しない数値・銘柄・ニュース・因果関係は絶対に作らないでください。\n"
         f"{facts_json}\n\n"

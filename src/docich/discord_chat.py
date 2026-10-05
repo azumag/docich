@@ -1,12 +1,14 @@
 """Opt-in Discord mentions, persistent conversations and the docich persona.
 
 Run with PYTHONPATH=src python -m docich.discord_chat --check before enabling.
-No broadcast, CLI agent, tool execution, autonomous posts or model fallback.
+Default: generation-only HTTP. Optional evidence routing uses an isolated
+read-only research capability; no broadcast control or autonomous posts.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import http.client
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
@@ -19,13 +21,22 @@ import stat
 import time
 from typing import Awaitable, Callable, Mapping
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+from urllib.error import HTTPError
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
 from .discord_memory import MemoryStore, MemoryStoreError
 
 LOG = logging.getLogger(__name__)
 MAX_RESPONSE_BYTES = 65536
 MAX_PENDING = 32
+# Concrete chat model IDs only. Gateway router/virtual/variant IDs can enable
+# tools or override request-level provider/fallback restrictions.
+DIRECT_CHAT_MODELS = {
+    "openrouter": frozenset({"openai/gpt-4.1-nano", "openai/gpt-6-luna"}),
+    "vercel": frozenset({"openai/gpt-4.1-nano", "openai/gpt-6-luna"}),
+    "cloudflare": frozenset({"@cf/qwen/qwen3-30b-a3b-fp8",
+                             "@cf/meta/llama-3.1-8b-instruct-fp8-fast"}),
+}
 PERSONA_PATH = Path(__file__).with_name("comment") / "prompts" / "comment_persona_main.md"
 DISCORD_CONTEXT = """以下は今回の接続環境です。上のペルソナの人格・一人称・ユーモアに従い、
 Twitchコメントへの返事をDiscordのメンションへの返事として行ってください。
@@ -43,6 +54,24 @@ FORGOTTEN_REPLY = "このチャンネルであなたと交わした会話の記�
 
 class ChatError(RuntimeError):
     """Only fixed, non-sensitive error descriptions cross this boundary."""
+
+
+class ChatRateLimit(ChatError):
+    """Fixed rate-limit signal; no provider body/headers cross the boundary."""
+
+
+def strict_json(raw):
+    """Reject duplicate fields/non-finite constants at native HTTP boundaries."""
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("invalid_json")
+            result[key] = value
+        return result
+    def constant(_):
+        raise ValueError("invalid_json")
+    return json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
 
 
 def read_secret(env: Mapping[str, str], name: str) -> str:
@@ -90,6 +119,9 @@ class Settings:
     token: str = field(repr=False)
     api_key: str = field(default="", repr=False)
     memory_dir: Path | None = None
+    provider: str = "compatible"
+    upstream: str = ""
+    billing_mode: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Settings:
@@ -127,12 +159,97 @@ class Settings:
             raise ChatError("an absolute external MEMORY_DIR is required")
         if directory.resolve().is_relative_to(Path(__file__).resolve().parents[2]):
             raise ChatError("MEMORY_DIR must be outside the repository")
-        return cls(base, model, token, key, directory)
+        settings = cls(base, model, token, key, directory,
+                       env.get(prefix + "LLM_PROVIDER", "compatible").strip(),
+                       env.get(prefix + "LLM_UPSTREAM", "").strip(),
+                       env.get(prefix + "LLM_BILLING_MODE", "").strip())
+        direct_chat_options(settings)
+        return settings
+
+
+def direct_chat_options(settings: Settings) -> dict:
+    """Operator-only direct chat profiles; no provider/model fallback list.
+
+    Legacy compatible endpoints retain their existing behavior. Named gateways
+    require a single explicit upstream and their canonical HTTPS endpoint.
+    This is routing policy, not a dollar budget or an account billing audit.
+    """
+    provider, upstream = settings.provider, settings.upstream
+    if provider == "compatible":
+        if upstream or settings.billing_mode:
+            raise ChatError("invalid direct chat profile")
+        return {}
+    if (provider not in {"openrouter", "vercel", "cloudflare"}
+            or not isinstance(settings.api_key, str) or not 0 < len(settings.api_key) <= 4096
+            or any(not 33 <= ord(c) <= 126 for c in settings.api_key)
+            or not isinstance(settings.model, str)):
+        raise ChatError("invalid direct chat profile")
+    if settings.model not in DIRECT_CHAT_MODELS[provider]:
+        raise ChatError("unregistered direct chat model")
+    if provider == "cloudflare":
+        if (upstream or settings.billing_mode
+                or not re.fullmatch(r"https://api\.cloudflare\.com/client/v4/accounts/[a-f0-9]{32}/ai/v1", settings.base_url)
+                or not re.fullmatch(r"@cf/[A-Za-z0-9._/-]{1,240}", settings.model)):
+            raise ChatError("invalid direct chat profile")
+        return {"options": {"rejectIfBusy": True}}
+    base = {"openrouter": "https://openrouter.ai/api/v1",
+            "vercel": "https://ai-gateway.vercel.sh/v1"}[provider]
+    if (settings.base_url != base
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,63}", upstream)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", settings.model)
+            or settings.model in {"auto", "openrouter/auto", "openrouter/free"}):
+        raise ChatError("invalid direct chat profile")
+    if provider == "openrouter":
+        if settings.billing_mode != "credits_only":
+            raise ChatError("OpenRouter direct chat requires credits-only billing")
+        return {"provider": {"only": [upstream], "order": [upstream],
+                             "allow_fallbacks": False, "require_parameters": True}}
+    # Vercel BYOK can fall through to system credentials and spend credits.
+    # The operator must declare a credits-only account without configured BYOK.
+    # No request option is claimed to enforce or verify that account state.
+    if settings.billing_mode != "credits_only":
+        raise ChatError("Vercel direct chat requires credits-only billing")
+    return {"providerOptions": {"gateway": {"only": [upstream]}}}
 
 
 class _NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+class _ResearchHTTPSConnection(http.client.HTTPSConnection):
+    def _tunnel(self):
+        """Canonical CONNECT independent of Python 3.11's HTTP/1.0 default.
+
+        Keep the bridge/egress authority and strict header contract unchanged;
+        no request credentials or user-controlled headers enter this handshake.
+        """
+        if self._tunnel_host != "opencode.ai" or self._tunnel_port != 443:
+            raise OSError("invalid research authority")
+        if any(name.casefold() != "host" or value != "opencode.ai:443"
+               for name, value in self._tunnel_headers.items()):
+            raise OSError("invalid research tunnel headers")
+        self.send(b"CONNECT opencode.ai:443 HTTP/1.1\r\nHost: opencode.ai:443\r\n\r\n")
+        response = self.response_class(self.sock, method="CONNECT")
+        try:
+            _, code, _ = response._read_status()
+            total = 0
+            while True:
+                line = response.fp.readline(8193)
+                total += len(line)
+                if total > 8192 or not line:
+                    raise OSError("invalid research tunnel response")
+                if line == b"\r\n":
+                    break
+            if code != 200:
+                raise OSError("research tunnel rejected")
+        finally:
+            response.close()
+
+
+class _ResearchHTTPSHandler(HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(_ResearchHTTPSConnection, request, context=self._context)
 
 
 def clean_reply(value: str) -> str:
@@ -148,32 +265,106 @@ def clean_reply(value: str) -> str:
 
 
 class ChatBackend:
-    """Generation-only Chat Completions HTTP. No CLI, tools, or fallback cost."""
+    """HTTP reply generation, optionally preceded by evidence-need routing."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
 
     def complete(self, messages: list[dict[str, str]]) -> str:
+        if os.environ.get("DOCICH_REPLY_ROUTING_ENABLED", "0") == "0":
+            return (self._complete_with_deadline(messages, 45.) if self.settings.provider != "compatible"
+                    else self._complete_api(messages))
+        from .reply_routing import complete
+        return complete(messages, api=self._complete_api, env=os.environ,
+                        bounded_api=self._complete_with_deadline,
+                        report=lambda event: LOG.info(
+                            "discord_chat event=reply_route scope=%s decision=%s research=%s",
+                            event["scope"], event["decision_status"], event["research_status"]))
+
+    def _complete_with_deadline(self, messages, remaining):
+        from .reply_research_api import answer_once
+        return answer_once(self.settings, messages, remaining)
+
+    def _complete_api(self, messages: list[dict[str, str]], *, max_tokens=500,
+                      timeout_sec=45, proxy_url=None, strict_proposal=False,
+                      session_id=None, raw_reply=False) -> str:
         s = self.settings
+        if (type(max_tokens) is not int or not 1 <= max_tokens <= 500
+                or type(timeout_sec) not in (int, float)
+                or not 0 < timeout_sec <= 45):
+            raise ChatError("LLM request failed")
+        # Only the fixed namespace bridge may supply this explicit proxy. The
+        # regular conversation API still ignores all ambient proxy settings.
+        if proxy_url is not None and (not isinstance(proxy_url, str)
+                or not re.fullmatch(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}", proxy_url)
+                or int(proxy_url.rsplit(":", 1)[1]) > 65535):
+            raise ChatError("LLM request failed")
+        if session_id is not None and (not isinstance(session_id, str) or not re.fullmatch(r"[a-f0-9]{32}", session_id)):
+            raise ChatError("LLM request failed")
+        options = direct_chat_options(s)
+        if (options and (proxy_url is not None or strict_proposal or session_id is not None)):
+            raise ChatError("LLM request failed")
         body = json.dumps({"model": s.model, "messages": messages,
-                           "stream": False, "max_tokens": 500}, ensure_ascii=False).encode()
+                           "stream": False, "max_tokens": max_tokens, **options}, ensure_ascii=False).encode()
+        if (strict_proposal and len(body) > 16384) or (s.provider != "compatible" and len(body) > 32768):
+            raise ChatError("LLM request failed")
         headers = {"Content-Type": "application/json"}
         if s.api_key:
             headers["Authorization"] = "Bearer " + s.api_key
+        if session_id is not None:
+            headers.update({"User-Agent": "docich-research/1.0",
+                            "x-opencode-session": session_id})
         request = Request(s.base_url + "/chat/completions", data=body,
                           headers=headers, method="POST")
         try:
-            with build_opener(ProxyHandler({}), _NoRedirect()).open(request, timeout=45) as response:
+            proxy = {"https": proxy_url} if proxy_url else {}
+            handlers = [ProxyHandler(proxy), _NoRedirect()]
+            if proxy_url is not None:
+                handlers.append(_ResearchHTTPSHandler())
+            with build_opener(*handlers).open(request, timeout=timeout_sec) as response:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
             if len(raw) > MAX_RESPONSE_BYTES:
                 raise ValueError("oversized response")
-            result = json.loads(raw)
+            result = strict_json(raw) if strict_proposal or s.provider != "compatible" else json.loads(raw)
+            if strict_proposal and (type(result) is not dict or type(result.get("choices")) is not list
+                                    or len(result["choices"]) != 1):
+                raise ValueError("invalid research response")
+            if s.provider != "compatible":
+                usage = result.get("usage", {})
+                if (type(result.get("choices")) is not list or len(result["choices"]) != 1
+                        or result["choices"][0].get("finish_reason") != "stop"
+                        or type(usage) is not dict
+                        or type(usage.get("completion_tokens")) is not int
+                        or not 0 <= usage["completion_tokens"] <= max_tokens):
+                    raise ValueError("invalid chat response")
             choice = result["choices"][0]
             message = choice["message"]
             if (message.get("tool_calls") is not None or message.get("function_call") is not None
                     or choice.get("finish_reason") in {"tool_calls", "function_call"}):
                 raise ValueError("tool result is not a chat reply")
+            if strict_proposal:
+                usage = result.get("usage", {})
+                content = message["content"]
+                if (choice.get("finish_reason") != "stop" or not isinstance(content, str)
+                        or len(content.encode("utf-8")) > 8192
+                        or type(usage) is not dict
+                        or type(usage.get("completion_tokens")) is not int
+                        or not 0 <= usage["completion_tokens"] <= max_tokens
+                        or type(strict_json(content)) is not dict):
+                    raise ValueError("invalid research proposal")
+                return content  # Never truncate a structured proposal.
+            if raw_reply:
+                content = message["content"]
+                if not isinstance(content, str) or not content.strip():
+                    raise ValueError("invalid chat response")
+                return content  # Preserve caller-owned structured reply payloads.
             return clean_reply(message["content"])
+        except HTTPError as exc:
+            limited = s.provider != "compatible" and exc.code == 429
+            exc.close()
+            if limited:
+                raise ChatRateLimit("LLM rate limited") from None
+            raise ChatError("LLM request failed") from None
         except Exception:
             raise ChatError("LLM request failed") from None
 

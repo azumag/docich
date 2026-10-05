@@ -1,5 +1,5 @@
 /** Site-independent, visible-information-only Tsuitate move selection. */
-export const BRAIN_VERSION = "tsuitate-brain-v1";
+export const BRAIN_VERSION = "tsuitate-brain-v5";
 const ROLES = new Set(["P", "L", "N", "S", "G", "B", "R", "K", "+P", "+L", "+N", "+S", "+B", "+R"]);
 const HAND_ROLES = ["P", "L", "N", "S", "G", "B", "R"];
 const HAND_LIMITS = { P: 18, L: 4, N: 4, S: 4, G: 4, B: 2, R: 2 };
@@ -81,9 +81,12 @@ export function normalizeObservation(raw) {
     if (value !== null && typeof value !== "boolean") return null;
     checks[name] = value;
   }
+  const attemptBudget = raw.attemptBudget ?? null;
+  if (attemptBudget !== null && (!Number.isSafeInteger(attemptBudget)
+      || attemptBudget < 0 || attemptBudget > 1001)) return null;
   return {
     ruleset: "tsuitate-9x9", color: raw.color, turn: raw.turn,
-    moveNumber: raw.moveNumber, pieces, hand, ...checks,
+    moveNumber: raw.moveNumber, pieces, hand, ...checks, attemptBudget,
   };
 }
 
@@ -161,6 +164,58 @@ function candidatesFor(observation, legacy) {
   return candidates;
 }
 
+/** Necessary check-response geometry, not evidence of an enemy or a legal move. */
+function checkResponses(observation, candidates) {
+  const kings = observation.pieces.filter((piece) => piece.role === "K");
+  if (kings.length !== 1) return candidates;
+  const king = kings[0].square;
+  const occupied = new Set(observation.pieces.map((piece) => piece.square));
+  const forward = observation.color === "b" ? -1 : 1;
+  return candidates.filter((candidate) => {
+    if (candidate.role === "K") return true;
+    const destination = candidate.usi.slice(2, 4);
+    const dx = file(destination) - file(king); const dy = rank(destination) - rank(king);
+    // A checking knight can only be captured by a move, not blocked by a drop.
+    // Its origin is two ranks forward; own pieces between do not obstruct it.
+    if (Math.abs(dx) === 1 && dy === 2 * forward) return candidate.usi[1] !== "*";
+    if (dx !== 0 && dy !== 0 && Math.abs(dx) !== Math.abs(dy)) return false;
+    const distance = Math.max(Math.abs(dx), Math.abs(dy));
+    for (let step = 1; step < distance; step += 1) {
+      if (occupied.has(square(file(king) + Math.sign(dx) * step,
+        rank(king) + Math.sign(dy) * step))) return false;
+    }
+    return true;
+  });
+}
+
+/** Shorten a rejected ray using only current own geometry and foul feedback. */
+function shortRayRetries(observation, candidates, rejected, forbidden) {
+  if (observation.inCheck !== false) return [];
+  const kings = observation.pieces.filter((piece) => piece.role === "K");
+  if (kings.length !== 1) return [];
+  const king = kings[0].square;
+  const forward = observation.color === "b" ? -1 : 1;
+  const rejectedPaths = new Set(candidates.filter((candidate) => rejected.has(candidate.usi))
+    .map((candidate) => candidate.usi.replace(/\+$/, "")));
+  const adjacent = new Set();
+  for (const candidate of candidates) {
+    if (!rejected.has(candidate.usi) || candidate.usi[1] === "*") continue;
+    const from = candidate.usi.slice(0, 2); const to = candidate.usi.slice(2, 4);
+    const dx = file(to) - file(from); const dy = rank(to) - rank(from);
+    const distance = Math.max(Math.abs(dx), Math.abs(dy));
+    if (distance < 2 || !movement(candidate.role, forward, false).rays
+      .some(([x, y]) => dx === x * distance && dy === y * distance)) continue;
+    // A source on a king ray may be shielding a hidden attacker. Do not
+    // prescribe another move of that piece based on a possible blocker alone.
+    const kingDx = file(from) - file(king); const kingDy = rank(from) - rank(king);
+    if (kingDx === 0 || kingDy === 0 || Math.abs(kingDx) === Math.abs(kingDy)) continue;
+    const shorter = from + square(file(from) + Math.sign(dx), rank(from) + Math.sign(dy));
+    if (!rejectedPaths.has(shorter)) adjacent.add(shorter);
+  }
+  return candidates.filter((candidate) => !forbidden.has(candidate.usi)
+    && adjacent.has(candidate.usi.replace(/\+$/, "")));
+}
+
 function validRecentMoves(raw) {
   return Array.isArray(raw) ? raw.slice(-64).filter((move) => typeof move === "string" && USI_MOVE.test(move)) : [];
 }
@@ -195,17 +250,40 @@ function hash(text) {
  * These candidates satisfy visible own-piece constraints only. Hidden blockers,
  * enemy attacks and pawn-drop mate remain the site's legality responsibility.
  */
-export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = "", recentMoves = [], forbiddenMoves = [] } = {}) {
+export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = "", recentMoves = [], forbiddenMoves = [], foulMoves = [] } = {}) {
   const observation = normalizeObservation(rawObservation);
   const selectedProfile = validateProfile(profile);
-  if (!observation || observation.turn !== observation.color || !selectedProfile
+  if (!observation || observation.turn !== observation.color || observation.attemptBudget === 0 || !selectedProfile
       || typeof seed !== "string" || seed.length > 512 || !Array.isArray(forbiddenMoves)
-      || forbiddenMoves.length > 4096) return null;
+      || forbiddenMoves.length > 4096 || !Array.isArray(foulMoves) || foulMoves.length > 4096) return null;
   const recent = validRecentMoves(recentMoves);
-  const forbidden = new Set(forbiddenMoves.filter((move) => typeof move === "string" && USI_MOVE.test(move)));
+  // Attempts with an unknown/error ACK stay excluded without supplying legality
+  // evidence. Only confirmed fouls can rule out sibling moves or shorten rays.
+  const rejected = new Set(foulMoves.filter((move) => typeof move === "string" && USI_MOVE.test(move)));
+  const forbidden = new Set([...rejected,
+    ...forbiddenMoves.filter((move) => typeof move === "string" && USI_MOVE.test(move))]);
   const legacy = selectedProfile.policy === "legacy-v1";
   if (legacy && recent.length) forbidden.add(recent.at(-1));
-  const candidates = candidatesFor(observation, legacy).filter((candidate) => !forbidden.has(candidate.usi));
+  // Probe escapes only while another attempt can follow a foul. Otherwise rank
+  // possible blocks/captures and king moves, not unrelated attacking advances.
+  const prioritizeEscapes = observation.inCheck === true
+    && (observation.attemptBudget === null || observation.attemptBudget > 1);
+  const generated = candidatesFor(observation, legacy && observation.inCheck !== true);
+  // Both visibly valid promotion variants have the same path, destination
+  // occupancy and own-king safety. A foul on either rules out that path here.
+  // Invalid variants (outside-zone or missing mandatory promotion) establish
+  // nothing about the valid move and must not exclude it.
+  const rejectedPaths = new Set(generated.filter((candidate) => rejected.has(candidate.usi))
+    .map((candidate) => candidate.usi.replace(/\+$/, "")));
+  const available = generated.filter((candidate) => !forbidden.has(candidate.usi)
+    && !rejectedPaths.has(candidate.usi.replace(/\+$/, "")));
+  const escapes = prioritizeEscapes
+    ? available.filter((candidate) => candidate.role === "K") : [];
+  const responses = observation.inCheck === true ? checkResponses(observation, available) : available;
+  const retries = shortRayRetries(observation, generated, rejected, forbidden);
+  // Preserve the existing fallback for incomplete own-king observations or
+  // exhausted response candidates; geometry cannot prove mate or legality.
+  const candidates = escapes.length ? escapes : retries.length ? retries : responses.length ? responses : available;
   if (!candidates.length) return null;
   const scored = candidates.map((candidate) => {
     const values = features(observation, candidate, recent);

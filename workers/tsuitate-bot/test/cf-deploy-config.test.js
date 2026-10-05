@@ -48,7 +48,12 @@ const { u: constructWranglerConfig, x: getBindings } = await import(pathToFileUR
 const { t: createWorkerUploadForm } = await import(pathToFileURL(join(dist, "chunk-KKDV4JPS-D3kwd1Nq.mjs")));
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
-function normalized(worker = cloudflareConfig.worker) {
+// Existing deployed GameState regression stays separate from the deliberately
+// un-deployed BetaArena addition, which needs owner migration approval.
+const baselineWorker = structuredClone(cloudflareConfig.worker);
+delete baselineWorker.exports.BetaArena;
+for (const name of ["BETA_ARENA", "BETA_ARENA_ENABLED", "BETA_CONTROL_SECRET", "TSUITATE_BOT_TOKEN"]) delete baselineWorker.env[name];
+function normalized(worker = baselineWorker) {
   return convertBuildOutput({
     config: { ...worker, manifest: { mainModule: "index.js" } },
     configPath: join(root, "cloudflare.config.ts"), bundleDir: join(root, "src"),
@@ -111,7 +116,7 @@ test("strict comparison still detects changed class and external Worker; externa
     { ...selfBinding, script_name: "another-worker" }, { ...selfBinding, environment: "different-environment" }]) {
     assert.equal(getRemoteConfigDiff(remoteFromApi(local, { ...apiSelfBinding, ...binding }), local).nonDestructive, false);
   }
-  const externalWorker = structuredClone(cloudflareConfig.worker);
+  const externalWorker = structuredClone(baselineWorker);
   externalWorker.env.GAME_STATE.worker = "another-worker";
   const external = normalized(externalWorker);
   assert.equal(external.durable_objects.bindings[0].script_name, "another-worker");
@@ -121,6 +126,31 @@ test("strict comparison still detects changed class and external Worker; externa
   const environmentRemote = remoteFromApi(local, { ...apiSelfBinding, environment: "different-environment" });
   assert.equal(environmentRemote.durable_objects.bindings[0].environment, "different-environment");
   assert.equal(uploadMetadata(external).bindings.find(b => b.name === "GAME_STATE").script_name, "another-worker");
+});
+
+test("arena upload keeps SQLite export, self binding and legacy metadata without any secret value", () => {
+  const local = normalized(cloudflareConfig.worker);
+  const metadata = uploadMetadata(local);
+  assert.deepEqual(metadata.exports.BetaArena, { type: "durable-object", storage: "sqlite" });
+  assert.deepEqual(metadata.bindings.find(b => b.name === "BETA_ARENA"),
+    { name: "BETA_ARENA", type: "durable_object_namespace", class_name: "BetaArena" });
+  assert.deepEqual(metadata.bindings.find(b => b.name === "BETA_ARENA_ENABLED"),
+    { name: "BETA_ARENA_ENABLED", type: "plain_text", text: "false" });
+  assert.deepEqual(metadata.keep_bindings, ["secret_text", "secret_key"]);
+  assert.equal(JSON.stringify(metadata).includes("BETA_CONTROL_SECRET"), false);
+});
+
+test("ignoring the legacy enable var leaves prebuilt settings, SQLite and secrets identical", () => {
+  const previous = structuredClone(cloudflareConfig.worker);
+  previous.env.BETA_ARENA_ENABLED = { type: "text", value: "false" };
+  const oldConfig = normalized(previous), local = normalized(cloudflareConfig.worker);
+  const before = uploadMetadata(oldConfig), after = uploadMetadata(local);
+  assert.deepEqual(after.exports, before.exports);
+  assert.deepEqual(after.keep_bindings, before.keep_bindings);
+  assert.deepEqual(after.bindings, before.bindings);
+  const comparison = getRemoteConfigDiff(oldConfig, local);
+  assert.equal(comparison.nonDestructive, true);
+  assert.deepEqual(JSON.parse(comparison.diff.toString()), {});
 });
 
 test("absent optional keys reproduce the empty destructive diff", () => {

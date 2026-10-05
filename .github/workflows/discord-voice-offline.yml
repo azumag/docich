@@ -1,0 +1,36 @@
+name: Discord voice offline contracts
+
+on:
+  pull_request:
+    paths:
+      - 'runtimes/discord-voice/**'
+      - '.github/workflows/discord-voice-offline.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'runtimes/discord-voice/**'
+      - '.github/workflows/discord-voice-offline.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: discord-voice-offline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  voice-offline-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.18.0'
+      - name: Synthetic PCM and fake providers only (no installation or deployment)
+        run: node --test runtimes/discord-voice/test/*.test.mjs
+      - name: Existing text Worker offline regression
+        run: node --test workers/discord-chat/test/*.test.js

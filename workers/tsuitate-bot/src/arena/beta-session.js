@@ -11,7 +11,8 @@ const isoNow = () => new Date().toISOString();
 export class BetaSession {
   constructor({ socket, store, profile, checkpoint = null, resolveResult = fetchPublicResult,
     log = () => {}, ackMs = 5000, queueWaitMs = 120000, retryMs = 1500, pollMs = 10000,
-    queueSettleMs = 5000, connectDeadlineMs = 65000, disconnectDeadlineMs = 65000 }) {
+    queueSettleMs = 5000, connectDeadlineMs = 65000, disconnectDeadlineMs = 65000,
+    queueDeadlineAt = null, allowQueueRejoin = true }) {
     this.socket = socket;
     this.store = store;
     this.profile = validateProfile(profile);
@@ -25,6 +26,8 @@ export class BetaSession {
     this.queueSettleMs = queueSettleMs;
     this.connectDeadlineMs = connectDeadlineMs;
     this.disconnectDeadlineMs = disconnectDeadlineMs;
+    this.queueDeadlineAt = queueDeadlineAt;
+    this.allowQueueRejoin = allowQueueRejoin;
     this.gate = new MoveGate();
     this.gameId = null;
     this.record = null;
@@ -36,6 +39,7 @@ export class BetaSession {
     this.syncPending = null;
     this.syncSequence = 0;
     this.resultBusy = false;
+    this.resultRetryPending = false;
     this.resultAttempts = 0;
     this.nullSyncs = 0;
     this.failedSyncs = 0;
@@ -170,6 +174,7 @@ export class BetaSession {
   }
 
   async onConnect() {
+    const reconnecting = this.everConnected;
     if (this.everConnected && this.gameId) {
       this.markCommunicationInterrupted();
       await this.persist();
@@ -180,7 +185,10 @@ export class BetaSession {
     this.log({ event: "connected", resuming: Boolean(this.gameId) });
     if (this.gameId) { this.sync(generation); return; }
     this.gate.acceptView(null, generation, { synchronized: true });
-    if (this.stopping) { await this.leaveQueue(); return; }
+    const remaining = this.queueDeadlineAt === null ? this.queueWaitMs : Math.max(0, this.queueDeadlineAt - Date.now());
+    if (this.stopping || remaining === 0 || (reconnecting && !this.allowQueueRejoin)) {
+      await this.drain(); return;
+    }
     // The server enforces one active game. A rejected join is not evidence that
     // an existing match has ended; game:active or an on-disk checkpoint resumes it.
     this.emitAck("queue:join", null, (error, ack) => {
@@ -195,7 +203,7 @@ export class BetaSession {
     const epoch = this.socketEpoch;
     this.later(async () => {
       if (epoch === this.socketEpoch && this.socket.connected && !this.gameId) await this.drain();
-    }, this.queueWaitMs);
+    }, remaining);
   }
 
   markCommunicationInterrupted() {
@@ -379,9 +387,12 @@ export class BetaSession {
       return;
     }
     const recentMoves = this.record.decisions.filter((decision) => decision.feedback === "accepted").map((decision) => decision.usi).slice(-64);
+    const attempted = this.gate.attemptedMoves;
+    const foulMoves = this.record.decisions.filter((decision) => decision.feedback === "foul"
+      && decision.moveNumber === observation.moveNumber && attempted.has(decision.usi)).map((decision) => decision.usi);
     const choice = chooseMove(observation, {
       profile: this.profile, seed: `${this.gameId}:${observation.moveNumber}`,
-      recentMoves, forbiddenMoves: [...this.gate.attemptedMoves],
+      recentMoves, forbiddenMoves: [...attempted], foulMoves,
     });
     if (!choice) {
       this.resigning = true;
@@ -423,7 +434,7 @@ export class BetaSession {
   }
 
   requestResult() {
-    if (this.resultBusy || !this.record || this.closed) return;
+    if (this.resultBusy || this.resultRetryPending || !this.record || this.closed) return;
     this.resultBusy = true;
     const gameId = this.gameId;
     const color = this.record.color;
@@ -435,12 +446,18 @@ export class BetaSession {
         return;
       }
       this.resultAttempts += 1;
-      if (this.syncExhausted) {
-        if (this.terminalSeen) await this.finish({ outcome: "unknown", reason: "unknown", endedAt: isoNow() });
-        else await this.pause("terminal_unconfirmed");
-      } else if (this.resultAttempts < 5) this.later(() => this.requestResult(), this.retryMs);
+      // An empty sync is not a terminal fact, and its retry budget is separate
+      // from publication of the replay. Let every bounded lookup settle before
+      // pausing; repeated pushes must not bypass the retry backoff.
+      if (this.resultAttempts < 5) {
+        this.resultRetryPending = true;
+        this.later(() => {
+          this.resultRetryPending = false;
+          this.requestResult();
+        }, this.retryMs);
+      }
       else if (this.terminalSeen) await this.finish({ outcome: "unknown", reason: "unknown", endedAt: isoNow() });
-      else if (!this.socket.connected) await this.pause("terminal_unconfirmed");
+      else if (this.syncExhausted || !this.socket.connected) await this.pause("terminal_unconfirmed");
       else { this.resultAttempts = 0; this.sync(); }
     })).catch(() => this.enqueue(() => { this.resultBusy = false; return this.pause("result_unavailable"); }));
   }

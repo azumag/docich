@@ -1447,6 +1447,151 @@ def test_manual_projection_requires_exact_declared_owner(tmp_path):
     assert project()["manual_pending_owner"] == "unknown"
 
 
+def test_manual_hanjuku_fingerprint_matches_operator_without_identity_output(tmp_path):
+    import hashlib
+    module = load_collector()
+    request = {"corner": "hanjuku-hero", "state_file": "retro_corner_manual.json",
+               "selected_at": 100, "request_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}
+    result = module._rotation_manual_pending_projection(tmp_path, {"manual_pending": request}, 200)
+    assert result["manual_pending_fingerprint"] == hashlib.sha256(json.dumps(
+        request, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assert request["request_id"] not in json.dumps(result)
+    request["corner"] = "nsnake"
+    assert module._rotation_manual_pending_projection(tmp_path, {"manual_pending": request}, 200)["manual_pending_fingerprint"] is None
+
+
+def test_fixed_hanjuku_manual_receipt_observation_is_read_only_and_identity_free(tmp_path):
+    module = load_collector()
+    request_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    manual = {"corner": "hanjuku-hero", "state_file": "retro_corner_manual.json",
+              "selected_at": 100, "request_id": request_id}
+    project = lambda: module._rotation_manual_pending_projection(tmp_path, {"manual_pending": manual}, 200)["manual_pending_receipt"]
+    missing = project()
+    assert missing["observed"] is True
+    assert missing["present"] is False and missing["readable"] is False
+    path = tmp_path / f"game-switch/requests/{request_id}.json"
+    path.parent.mkdir(parents=True)
+    receipt = {"request_id": request_id, "target": "hanjuku-hero", "operation": "start",
+               "status": "failed", "result": {"request_id": request_id,
+                   "operation": "start", "status": "failed", "cleanup_pending": False},
+               "detail": "PRIVATE_BODY", "runtime_dir": "/private/runtime"}
+    path.write_text(json.dumps(receipt))
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    output = project()
+    assert output == {"observed": True, "present": True, "readable": True,
+                      "status": "failed", "operation": "start", "request_matches": True,
+                      "target_matches": True, "terminal_result_matches": True,
+                      "cleanup_pending": False, "updated_after_selection": None,
+                      "runtime_identity_valid": None, "runtime_resources_released": None}
+    assert all(value not in json.dumps(output) for value in (request_id, "PRIVATE_BODY", "/private/runtime"))
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    for status in ("allocating", "accepted", "queued"):
+        receipt.update(status=status, result=None)
+        path.write_text(json.dumps(receipt))
+        output = project()
+        assert output["status"] == status and output["terminal_result_matches"] is None
+
+
+def test_fixed_hanjuku_receipt_mismatch_corruption_and_symlink_stay_unknown(tmp_path):
+    module = load_collector()
+    request_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    manual = {"corner": "hanjuku-hero", "state_file": "retro_corner_manual.json",
+              "selected_at": 100, "request_id": request_id}
+    project = lambda: module._rotation_hanjuku_manual_receipt_projection(tmp_path, manual, 200)
+    path = tmp_path / f"game-switch/requests/{request_id}.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"request_id":"different", "target":"nsnake", "status":"PRIVATE_STATUS", "operation":"PRIVATE_OPERATION"}')
+    output = project()
+    assert output["request_matches"] is False and output["target_matches"] is False
+    assert output["status"] == output["operation"] == "unknown"
+    assert "PRIVATE" not in json.dumps(output)
+    path.write_text("{")
+    assert project()["present"] is True and project()["readable"] is False
+    path.unlink()
+    outside = tmp_path / "private.json"
+    outside.write_text('{"status":"PRIVATE_STATUS"}')
+    path.symlink_to(outside)
+    assert project()["present"] is True and project()["readable"] is False
+    assert "PRIVATE_STATUS" not in json.dumps(project())
+
+
+def test_fixed_hanjuku_receipt_lookup_rejects_arbitrary_identity_or_owner(tmp_path):
+    module = load_collector()
+    valid = {"corner": "hanjuku-hero", "state_file": "retro_corner_manual.json",
+             "selected_at": 100, "request_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}
+    for change in ({"request_id": "../private"}, {"request_id": []}, {"corner": "nsnake"},
+                   {"state_file": "../private.json"}, {"selected_at": 300}):
+        with mock.patch.object(module, "_rotation_evidence_file") as read:
+            output = module._rotation_hanjuku_manual_receipt_projection(tmp_path, {**valid, **change}, 200)
+        read.assert_not_called()
+        assert output["observed"] is False and output["present"] is None
+
+
+def test_fixed_hanjuku_receipt_resources_use_exact_read_only_operator_contract(tmp_path):
+    from docich.game_switch import GameSwitchStore
+    from docich import hanjuku_manual_cancel as operator
+    module = load_collector()
+    store = GameSwitchStore(tmp_path)
+    store.initialize()
+    request_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    receipt = dict(store.accept_request(request_id, "start", "hanjuku-hero").receipt)
+    receipt.update(status="failed", result={"request_id": request_id, "operation": "start",
+                                           "status": "failed", "cleanup_pending": False})
+    store.receipts.save(receipt)
+    path = store.receipts._path(request_id)
+    manual = {"corner": "hanjuku-hero", "state_file": "retro_corner_manual.json",
+              "request_id": request_id, "selected_at": 100}
+    project = lambda: module._rotation_hanjuku_manual_receipt_projection(tmp_path, manual, time.time())
+    tmux = mock.Mock()
+    tmux.window_target_exists.return_value = False
+    tmux.session_target_exists.return_value = False
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    with mock.patch.object(operator, "_ProbeTmux", return_value=tmux):
+        output = project()
+    assert output["runtime_identity_valid"] is True
+    assert output["runtime_resources_released"] is True
+    assert output["updated_after_selection"] is True
+    assert all(value not in json.dumps(output) for value in
+               (request_id, receipt["runtime_id"], receipt["runtime_dir"]))
+    assert all(call.kwargs == {"strict": True} for call in tmux.method_calls)
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    runtime = Path(receipt["runtime_dir"])
+    runtime.mkdir(parents=True)
+    presentation = runtime / "presentation.json"
+    for status, expected in (("ready", False), ("stopped", True)):
+        presentation.write_text(json.dumps({"status": status, "detail": "PRIVATE_RESOURCE"}))
+        with mock.patch.object(operator, "_ProbeTmux", return_value=tmux):
+            assert project()["runtime_resources_released"] is expected
+    for method in (tmux.window_target_exists, tmux.session_target_exists):
+        method.return_value = True
+        with mock.patch.object(operator, "_ProbeTmux", return_value=tmux):
+            assert project()["runtime_resources_released"] is False
+        method.return_value = False
+    tmux.window_target_exists.side_effect = TimeoutError("PRIVATE_ERROR")
+    with mock.patch.object(operator, "_ProbeTmux", return_value=tmux):
+        unknown = project()
+    assert unknown["runtime_resources_released"] is None
+    assert "PRIVATE" not in json.dumps(unknown)
+    for change in ({"runtime_dir": "/private/runtime"}, {"generation": True},
+                   {"runtime_id": "../private"}, {"game_window": "private-window"}):
+        path.write_text(json.dumps({**receipt, **change}))
+        with mock.patch.object(operator, "_ProbeTmux") as probe:
+            assert project()["runtime_resources_released"] is None
+        probe.assert_not_called()
+    path.write_text(json.dumps(receipt))
+    presentation.unlink()
+    presentation.symlink_to(path)
+    with mock.patch.object(operator, "_ProbeTmux", return_value=tmux):
+        assert project()["runtime_resources_released"] is None
+    for change in ({"status": "queued", "result": None},
+                   {"result": {**receipt["result"], "cleanup_pending": True}},
+                   {"request_id": "different"}):
+        path.write_text(json.dumps({**receipt, **change}))
+        with mock.patch.object(operator, "_ProbeTmux") as probe:
+            assert project()["runtime_resources_released"] is None
+        probe.assert_not_called()
+
+
 def test_manual_projection_rejects_arbitrary_paths_and_free_text(tmp_path):
     module = load_collector()
     for invalid in ("DO-NOT-PUBLISH", [], 3):

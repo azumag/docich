@@ -39,12 +39,18 @@ class FileLock:
                 if self.path.is_file() or self.path.is_symlink():
                     raise LockTimeout(self.label)
                 self._reap_stale()
-                elapsed = time.monotonic() - started
+                now = time.monotonic()
+                elapsed = now - started
                 if (self.max_wait_sec and elapsed >= self.max_wait_sec) or (
-                    deadline is not None and time.monotonic() >= deadline
+                    deadline is not None and now >= deadline
                 ):
                     raise LockTimeout(self.label)
-                time.sleep(self.wait_sec)
+                wait = self.wait_sec
+                if deadline is not None:
+                    wait = min(wait, deadline - now)
+                if self.max_wait_sec:
+                    wait = min(wait, self.max_wait_sec - elapsed)
+                time.sleep(wait)
                 continue
             owner = self.path / "owner"
             owner.write_text(

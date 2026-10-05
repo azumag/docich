@@ -493,3 +493,104 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DirectProfileTests(unittest.TestCase):
+    def profile(self, provider="openrouter", **changes):
+        values = dict(provider=provider, model="openai/gpt-4.1-nano", upstream="openai",
+                      billing_mode="credits_only", api_key="SYNTHETIC_KEY",
+                      base_url={"openrouter": "https://openrouter.ai/api/v1",
+                                "vercel": "https://ai-gateway.vercel.sh/v1"}.get(provider, ""))
+        return settings(**{**values, **changes})
+
+    def test_named_profiles_are_explicit_and_fail_before_post(self):
+        valid = self.profile()
+        self.assertEqual(chat.direct_chat_options(valid), {"provider": {
+            "only": ["openai"], "order": ["openai"], "allow_fallbacks": False, "require_parameters": True}})
+        self.assertEqual(chat.direct_chat_options(self.profile("vercel")), {
+            "providerOptions": {"gateway": {"only": ["openai"]}}})
+        cf = self.profile("cloudflare", upstream="", billing_mode="", model="@cf/qwen/qwen3-30b-a3b-fp8",
+                          base_url="https://api.cloudflare.com/client/v4/accounts/" + "a" * 32 + "/ai/v1")
+        self.assertEqual(chat.direct_chat_options(cf), {"options": {"rejectIfBusy": True}})
+        invalid = [dict(provider="unknown"), dict(upstream=""), dict(upstream="openai,azure"),
+                   dict(base_url="http://openrouter.ai/api/v1"), dict(base_url="https://evil.invalid/v1"),
+                   dict(model="openrouter/auto"), dict(model="openrouter/free"), dict(model="a,b"),
+                   dict(model="openai/gpt-4.1-nano:online"), dict(model="openrouter/auto:online"),
+                   dict(model="vmc/abc-123"), dict(model="openai/unknown"),
+                   dict(api_key=""), dict(api_key="key\n"), dict(api_key="x" * 4097), dict(billing_mode=""),
+                   dict(billing_mode="byok")]
+        for changes in invalid:
+            with self.subTest(changes=changes), patch.object(chat, "build_opener") as opener:
+                with self.assertRaises(chat.ChatError):
+                    chat.ChatBackend(self.profile(**changes))._complete_api([])
+                opener.assert_not_called()
+        with self.assertRaises(chat.ChatError):
+            chat.direct_chat_options(replace(cf, base_url=cf.base_url + "?secret=bad"))
+        with self.assertRaises(chat.ChatError):
+            chat.direct_chat_options(replace(cf, upstream="openai"))
+        for model in ("vmc/abc-123", "openai/gpt-4.1-nano:online", "openai/unknown"):
+            with patch.object(chat, "build_opener") as opener:
+                with self.assertRaises(chat.ChatError):
+                    chat.ChatBackend(self.profile("vercel", model=model))._complete_api([])
+                opener.assert_not_called()
+
+    def test_env_profile_and_billing_declaration_are_required(self):
+        env = {**ENV, "DOCICH_DISCORD_LLM_BASE_URL": "https://openrouter.ai/api/v1",
+               "DOCICH_DISCORD_LLM_MODEL": "openai/gpt-4.1-nano",
+               "DOCICH_DISCORD_LLM_PROVIDER": "openrouter", "DOCICH_DISCORD_LLM_UPSTREAM": "openai",
+               "DOCICH_DISCORD_LLM_BILLING_MODE": "credits_only"}
+        self.assertEqual(chat.Settings.from_env(env).provider, "openrouter")
+        for key in ("DOCICH_DISCORD_LLM_UPSTREAM", "DOCICH_DISCORD_LLM_BILLING_MODE", "DOCICH_DISCORD_LLM_API_KEY"):
+            with self.subTest(key=key), self.assertRaises(chat.ChatError):
+                chat.Settings.from_env({**env, key: ""})
+
+    def test_provider_payload_and_strict_single_response(self):
+        for provider in ("openrouter", "vercel"):
+            s = self.profile(provider)
+            backend = chat.ChatBackend(s)
+            payload = {"choices": [{"finish_reason": "stop", "message": {"content": "reply"}}],
+                       "usage": {"completion_tokens": 10}}
+            response = Mock(__enter__=Mock(), __exit__=Mock(return_value=False))
+            response.__enter__.return_value = response
+            response.read.return_value = json.dumps(payload).encode()
+            opener = Mock(open=Mock(return_value=response))
+            with patch.object(chat, "build_opener", return_value=opener) as build:
+                self.assertEqual(backend._complete_api([{"role": "system", "content": "persona"}]), "reply")
+            req = opener.open.call_args.args[0]
+            body = json.loads(req.data)
+            self.assertEqual(body, {"model": s.model, "messages": [{"role": "system", "content": "persona"}],
+                                    "stream": False, "max_tokens": 500, **chat.direct_chat_options(s)})
+            self.assertEqual(build.call_args.args[0].proxies, {})
+            self.assertIsInstance(build.call_args.args[1], chat._NoRedirect)
+            self.assertEqual(opener.open.call_count, 1)
+            for bad in [dict(payload, choices=payload["choices"] * 2),
+                        dict(payload, choices=[{"finish_reason": "length", "message": {"content": "partial"}}]),
+                        dict(payload, usage={"completion_tokens": 501}), dict(payload, usage={})]:
+                response.read.return_value = json.dumps(bad).encode()
+                with patch.object(chat, "build_opener", return_value=opener), self.assertRaises(chat.ChatError):
+                    backend._complete_api([])
+            response.read.return_value = b'{"choices":[],"choices":[]}'
+            with patch.object(chat, "build_opener", return_value=opener), self.assertRaises(chat.ChatError):
+                backend._complete_api([])
+
+    def test_named_profile_limits_no_research_proxy_and_no_bare_api(self):
+        backend = chat.ChatBackend(self.profile())
+        with patch.object(chat, "build_opener") as opener:
+            for kwargs in (dict(proxy_url="http://127.0.0.1:3456"), dict(strict_proposal=True),
+                           dict(session_id="a" * 32)):
+                with self.assertRaises(chat.ChatError): backend._complete_api([], **kwargs)
+            with self.assertRaises(chat.ChatError):
+                backend._complete_api([{"role": "user", "content": "x" * 32769}])
+            opener.assert_not_called()
+        with patch.dict(chat.os.environ, {"DOCICH_REPLY_ROUTING_ENABLED": "0"}, clear=True):
+            with patch.object(backend, "_complete_with_deadline", return_value="reply") as bounded:
+                self.assertEqual(backend.complete([]), "reply")
+                bounded.assert_called_once_with([], 45.)
+
+    def test_429_is_fixed_and_body_is_not_read(self):
+        from urllib.error import HTTPError
+        error = HTTPError(self.profile().base_url, 429, "PRIVATE", {}, io.BytesIO(b"SECRET_PROVIDER_BODY"))
+        with patch.object(chat, "build_opener", return_value=Mock(open=Mock(side_effect=error))):
+            with self.assertRaisesRegex(chat.ChatRateLimit, "^LLM rate limited$"):
+                chat.ChatBackend(self.profile())._complete_api([])
+        self.assertTrue(error.fp.closed)

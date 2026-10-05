@@ -1,0 +1,21 @@
+[
+  {"id":"api_greeting","expected":"api_only","text":"こんにちは"},
+  {"id":"api_notification","expected":"api_only","text":"SSR出た！"},
+  {"id":"api_celebration","expected":"api_only","text":"やったー"},
+  {"id":"api_reaction","expected":"api_only","text":"それはすごいね"},
+  {"id":"api_rewrite","expected":"api_only","text":"さっきの説明もう少し短くして。"},
+  {"id":"web_person","expected":"web","text":"Reximって誰？"},
+  {"id":"web_term","expected":"web","text":"XXって何？"},
+  {"id":"web_news","expected":"web","text":"今日の○○のニュースは？"},
+  {"id":"web_price","expected":"web","text":"このサービス今いくら？"},
+  {"id":"code_gacha","expected":"code","text":"このゲームのガチャの抽選ロジックは？"},
+  {"id":"code_egg","expected":"code","text":"半熟英雄Botはどういう条件で卵を使う？"},
+  {"id":"code_variable","expected":"code","text":"show-status-gの値ってどこから来てる？"},
+  {"id":"mixed_spec_impl","expected":"web_and_code","text":"公式仕様とdocichの実装は一致してる？"},
+  {"id":"mixed_compare","expected":"web_and_code","text":"外部仕様を調べて、この実装との差分を確認して。"},
+  {"id":"runtime_bot","expected":"runtime","text":"今Botが止まってる原因は？"},
+  {"id":"runtime_stream","expected":"runtime","text":"いま配信で何が起きてる？"},
+  {"id":"runtime_vm_log","expected":"runtime","text":"現在のVMログを見て。"},
+  {"id":"notification_only","expected":"api_only","text":"SSR出た！"},
+  {"id":"notification_plus_question","expected":"code","text":"SSR出た！このガチャの確率どうなってる？"}
+]

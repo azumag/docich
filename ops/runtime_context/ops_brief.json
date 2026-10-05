@@ -1,11 +1,11 @@
 {
-  "output_sha256": "716c400b3762d2775de8fa4447bc8a11d60bdddf6b41af9e897ff5c91ff1e902",
+  "output_sha256": "8af5c9d59a55404db606e713ef9106cfa55aedb570f015e214a7939f060d13c2",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "96aa5fcce40cdbd32e6b1c742ed826cf6dc0ff22e2093366d831a0cf1d92f4db",
+  "source_sha256": "3c73f50a540b37664411bff02ba8fc28c19e4728bb301969a38e8fcb27ef1f48",
   "topics": [
-    "Soren「GAMEOVERのまま進まない」固定復旧 `recover_soren_round` を Ready （未merge・本番未実…",
-    "半熟英雄: 卵回復の見積もりを実測卵だけにし、支払へ賃金フロアを固定（v133）を配備",
-    "「CIが恒常失敗」の切り分け（実測）／`/hanjuku-evidence` は gateway 未更新で未解決"
+    "Discord音声runtimeをCLIから合成providerで通す（実接続・配備なし）",
+    "半熟の固定program queue診断を追加（本番未実行）",
+    "半熟admin checkの固定拒否enumをReady PRでレビュー（本番未実行）"
   ]
 }

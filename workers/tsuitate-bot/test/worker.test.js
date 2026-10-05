@@ -157,11 +157,190 @@ test("structured diagnostic captures only the initial masked position and emitte
   assert.equal(event.profileId, LEGACY_PROFILE.id);
   assert.equal(event.brainVersion, BRAIN_VERSION);
   assert.equal(event.codeVersion, "version-fixture-123");
+  assert.equal(event.dispatchStage, "dispatch");
+  assert.equal(event.typePresent, false);
+  assert.equal(event.typeKind, "missing");
+  assert.equal(event.typeClass, "absent");
   assert.equal(Number.isInteger(event.elapsedMs), true);
   assert.equal(Object.hasOwn(event, "positions"), false);
   assert.equal(Object.hasOwn(event, "headers"), false);
   assert.equal(Object.hasOwn(event, "ip"), false);
   assert.equal(JSON.stringify(event).includes(SECRET), false);
+});
+
+test("unrecognized types reject the first and incremental callback without invoking the DO", async (t) => {
+  const cases = [
+    ["string", "synthetic_other_event", "unknown"],
+    ["string", "fixture-secret-type-value", "unknown"],
+    ["string", SECRET, "unknown"],
+    ["string", "offline_review_export", "offline_review_export"],
+    ["null", null, "unknown"],
+    ["object", { privateMarker: "fixture-secret-type-value" }, "unknown"],
+    ["array", ["fixture-secret-type-value"], "unknown"],
+    ["number", 17, "unknown"],
+    ["boolean", false, "unknown"],
+  ];
+  for (const [phase, fixture] of [["initial", initialFixture], ["incremental", incrementalFixture]]) {
+    for (const [kind, type, classification] of cases) {
+      await t.test(`${phase} ${kind} ${classification}`, async () => {
+        let calls = 0;
+        const binding = {
+          idFromName() { calls += 1; throw new Error("DO must not be invoked"); },
+          get() { calls += 1; throw new Error("DO must not be invoked"); },
+        };
+        const payload = { ...structuredClone(fixture), type, privateMarker: "fixture-private-payload" };
+        const { result: response, records } = await captureDiagnosticLogs(() => post(payload, { binding }));
+        assert.equal(response.status, 400);
+        assert.deepEqual(await response.json(), { error: "unknown_webhook_type" });
+        assert.equal(calls, 0);
+        assert.equal(records.length, 1);
+        const event = records[0];
+        assert.equal(event.dispatchStage, "dispatch");
+        assert.equal(event.typePresent, true);
+        assert.equal(event.typeKind, kind);
+        assert.equal(event.typeClass, classification);
+        assert.equal(event.errorCode, "unknown_webhook_type");
+        assert.deepEqual(Object.keys(event).sort(), [
+          "codeVersion", "dispatchStage", "elapsedMs", "errorCode", "event", "status",
+          "strategyVersion", "typeClass", "typeKind", "typePresent",
+        ].sort());
+        const serialized = JSON.stringify(event);
+        for (const privateValue of [SECRET, BOT_ID, fixture.gameId, fixture.requestId,
+          "synthetic_other_event", "fixture-secret-type-value", "fixture-private-payload"]) {
+          assert.equal(serialized.includes(privateValue), false);
+        }
+      });
+    }
+  }
+});
+
+test("a typed incremental rejection leaves the initialized session and receipts untouched", async () => {
+  const binding = stateBinding();
+  assert.equal((await post(initialFixture, { binding })).status, 200);
+  const storage = binding.objects.get(initialFixture.gameId).state.storage;
+  const before = structuredClone(storage.values);
+  let calls = 0;
+  const guarded = {
+    idFromName() { calls += 1; throw new Error("DO must not be invoked"); },
+    get() { calls += 1; throw new Error("DO must not be invoked"); },
+  };
+  const rejected = await post({ ...incrementalFixture, type: "fixture-secret-type-value" }, { binding: guarded });
+  assert.equal(rejected.status, 400);
+  assert.deepEqual(await rejected.json(), { error: "unknown_webhook_type" });
+  assert.equal(calls, 0);
+  assert.deepEqual(storage.values, before);
+  // The identical untyped delta can still be applied after the rejection.
+  const accepted = await captureDiagnosticLogs(() => post(incrementalFixture, { binding }));
+  assert.equal(accepted.result.status, 200);
+  assert.equal(accepted.records[0].typePresent, false);
+  assert.equal(accepted.records[0].typeKind, "missing");
+  assert.equal(accepted.records[0].typeClass, "absent");
+  assert.equal(storage.values.get("session:b:0").lastPly, incrementalFixture.ply);
+});
+
+test("dispatch classification is absent until authentication and JSON parsing succeed", async () => {
+  const forbidden = ["dispatchStage", "typePresent", "typeKind", "typeClass"];
+  for (const options of [
+    { signature: `sha256=${"0".repeat(64)}` },
+    { raw: '{"type":"fixture-secret-type-value"' },
+  ]) {
+    let calls = 0;
+    const binding = { idFromName() { calls += 1; }, get() { calls += 1; } };
+    const { result: response, records } = await captureDiagnosticLogs(() => post(initialFixture, { ...options, binding }));
+    assert.equal(response.status, options.signature ? 401 : 400);
+    assert.deepEqual(await response.json(), { error: options.signature ? "authentication_failed" : "invalid_json" });
+    assert.equal(calls, 0);
+    assert.equal(records.length, 1);
+    for (const field of forbidden) assert.equal(Object.hasOwn(records[0], field), false);
+    assert.equal(JSON.stringify(records).includes("fixture-secret-type-value"), false);
+  }
+});
+
+test("the documented your_turn envelope uses the same initial, delta and foul processing", async () => {
+  const legacy = stateBinding();
+  const typed = stateBinding();
+  for (const fixture of [initialFixture, incrementalFixture]) {
+    const reference = await post(fixture, { binding: legacy });
+    const { result: response, records } = await captureDiagnosticLogs(() => post({
+      ...structuredClone(fixture), type: "your_turn",
+    }, { binding: typed }));
+    assert.equal(reference.status, 200);
+    assert.equal(response.status, reference.status);
+    assert.deepEqual([...response.headers], [...reference.headers]);
+    assert.deepEqual(await response.json(), await reference.json());
+    assert.equal(records.length, 1);
+    assert.equal(records[0].typePresent, true);
+    assert.equal(records[0].typeKind, "string");
+    assert.equal(records[0].typeClass, "your_turn");
+    assert.equal(records[0].errorCode, null);
+    const legacyState = legacy.objects.get(fixture.gameId).state.storage.values;
+    const typedState = typed.objects.get(fixture.gameId).state.storage.values;
+    // Signed body hashes differ; the resulting game/session/observations do not.
+    for (const [key, value] of legacyState) {
+      if (!key.startsWith("request:")) assert.deepEqual(typedState.get(key), value);
+    }
+  }
+
+  const foulLegacy = stateBinding();
+  const foulTyped = stateBinding();
+  await post(initialFixture, { binding: foulLegacy });
+  await post({ ...initialFixture, type: "your_turn" }, { binding: foulTyped });
+  const reference = await post(foulFixture, { binding: foulLegacy });
+  const response = await post({ ...foulFixture, type: "your_turn" }, { binding: foulTyped });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), await reference.json());
+});
+
+test("your_turn keeps raw-byte authentication, duplicate receipts and basePly fencing", async () => {
+  const binding = stateBinding();
+  const initial = { ...initialFixture, type: "your_turn" };
+  const delta = { ...incrementalFixture, type: "your_turn" };
+  const invalidSignature = await post(initial, { binding, signature: `sha256=${"0".repeat(64)}` });
+  assert.equal(invalidSignature.status, 401);
+  assert.equal(binding.objects.size, 0);
+  const [first, duplicate] = await Promise.all([post(initial, { binding }), post(initial, { binding })]);
+  assert.equal(first.status, 200);
+  assert.equal(duplicate.status, 200);
+  assert.deepEqual(await first.json(), await duplicate.json());
+  // Adding/removing the event marker is still a distinct authenticated raw body.
+  const changedBody = await post(initialFixture, { binding });
+  assert.equal(changedBody.status, 409);
+  assert.deepEqual(await changedBody.json(), { error: "request_id_reused" });
+  const before = structuredClone(binding.objects.get(initial.gameId).state.storage.values.get("session:b:0"));
+  const wrongBase = await post({ ...delta, requestId: "typed-wrong-base", basePly: 1,
+    positions: { "2": delta.positions["2"] },
+  }, { binding });
+  assert.equal(wrongBase.status, 409);
+  assert.deepEqual(await wrongBase.json(), { error: "base_ply_mismatch" });
+  assert.deepEqual(binding.objects.get(initial.gameId).state.storage.values.get("session:b:0"), before);
+  assert.equal((await post(delta, { binding })).status, 200);
+});
+
+test("your_turn is exact and does not bypass turn validation or accept other event spellings", async () => {
+  let calls = 0;
+  const neverState = {
+    idFromName() { calls += 1; throw new Error("DO must not be invoked"); },
+    get() { calls += 1; throw new Error("DO must not be invoked"); },
+  };
+  for (const type of ["YOUR_TURN", "Your_Turn", "your_turn ", " your_turn", "game:state", "game:end", "move", "turn"]) {
+    const response = await post({ ...initialFixture, type }, { binding: neverState });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "unknown_webhook_type" });
+  }
+  assert.equal(calls, 0);
+  const malformed = await post({ type: "your_turn" });
+  assert.equal(malformed.status, 400);
+  assert.deepEqual(await malformed.json(), { error: "invalid_identity" });
+  const nested = await post({ payload: { ...initialFixture, type: "your_turn" } }, { binding: neverState });
+  assert.equal(nested.status, 400);
+  assert.deepEqual(await nested.json(), { error: "invalid_identity" });
+  assert.equal(calls, 0);
+  const unsupported = structuredClone(initialFixture);
+  unsupported.type = "your_turn";
+  unsupported.game.type = "ついたて5五";
+  const response = await post(unsupported);
+  assert.equal(response.status, 422);
+  assert.deepEqual(await response.json(), { error: "unsupported_game_type" });
 });
 
 test("first white turn at ply 1 records the masked opponent opening only", async () => {
@@ -841,23 +1020,62 @@ test("foul observation avoids repeating the just-rejected move", async () => {
   assert.notEqual(nextMove, firstMove);
 });
 
-test("linear webhook keeps all consecutive rejected moves excluded", async () => {
+test("both webhook policies keep all consecutive rejected moves excluded", async () => {
+  for (const profile of [LEGACY_PROFILE, { ...LINEAR_PROFILE, exploration: 0 }]) {
+    const binding = stateBinding({ BRAIN_PROFILE_JSON: JSON.stringify(profile) });
+    const initial = structuredClone(initialFixture);
+    initial.positions["0"].sfen = "9/9/9/9/9/9/P3P4/9/9 b - 1";
+    const first = await post(initial, { binding });
+    const firstMove = (await first.json()).move;
+    assert.ok(["+5756FU", "+9796FU"].includes(firstMove));
+    const rejection = structuredClone(foulFixture);
+    rejection.positions["1"].sfen = initial.positions["0"].sfen;
+    const second = await post(rejection, { binding });
+    assert.notEqual((await second.json()).move, firstMove);
+    const exhausted = {
+      ...rejection, requestId: "two-consecutive-fouls", basePly: 1, ply: 2,
+      positions: { "2": rejection.positions["1"] },
+    };
+    const third = await post(exhausted, { binding });
+    assert.equal(third.status, 422);
+    assert.deepEqual(await third.json(), { error: "no_observed_move" });
+  }
+});
+
+test("viewer check and consecutive foul feedback reach the shared brain", async () => {
+  for (const color of ["b", "w"]) {
+    const binding = stateBinding();
+    const own = color === "b" ? "+" : "-";
+    const initial = structuredClone(initialFixture);
+    initial.color = color;
+    initial.positions["0"] = {
+      sfen: color === "b" ? "9/9/9/9/4K4/9/4P4/9/9 b - 1" : "9/9/9/9/4k4/9/4p4/9/9 w - 1",
+      lastMove: `${own === "+" ? "-" : "+"}0000ZZ`, lastInfo: 3, fouls: { b: 9, w: 9 },
+    };
+    let reply = await post(initial, { binding });
+    const attempts = [];
+    for (let ply = 1; ply <= 8; ply += 1) {
+      const move = (await reply.json()).move;
+      assert.ok(move.endsWith("OU"));
+      assert.ok(!attempts.includes(move));
+      attempts.push(move);
+      reply = await post({ ...initial, requestId: `check-${color}-${ply}`, basePly: ply - 1, ply,
+        game: undefined, positions: { [ply]: { ...initial.positions["0"], lastMove: move, lastInfo: 2,
+          fouls: { ...initial.positions["0"].fouls, [color]: 9 - ply } } } }, { binding });
+      assert.equal(reply.status, 200);
+    }
+    assert.ok(!(await reply.json()).move.endsWith("OU"));
+  }
+});
+
+test("viewer remaining fouls zero keeps the linear block ahead of a king probe", async () => {
   const binding = stateBinding({ BRAIN_PROFILE_JSON: JSON.stringify({ ...LINEAR_PROFILE, exploration: 0 }) });
   const initial = structuredClone(initialFixture);
-  initial.positions["0"].sfen = "9/9/9/9/9/9/P3P4/9/9 b - 1";
-  const first = await post(initial, { binding });
-  assert.equal((await first.json()).move, "+5756FU");
-  const rejection = structuredClone(foulFixture);
-  rejection.positions["1"].sfen = initial.positions["0"].sfen;
-  const second = await post(rejection, { binding });
-  assert.equal((await second.json()).move, "+9796FU");
-  const exhausted = {
-    ...rejection, requestId: "two-consecutive-fouls", basePly: 1, ply: 2,
-    positions: { "2": rejection.positions["1"] },
-  };
-  const third = await post(exhausted, { binding });
-  assert.equal(third.status, 422);
-  assert.deepEqual(await third.json(), { error: "no_observed_move" });
+  initial.positions["0"] = { sfen: "9/9/9/9/9/9/9/3P1G3/3LKL3 b - 1",
+    lastMove: "-0000ZZ", lastInfo: 3, fouls: { b: 0, w: 9 } };
+  const reply = await post(initial, { binding });
+  assert.equal(reply.status, 200);
+  assert.equal((await reply.json()).move, "+4857KI");
 });
 
 test("authenticated timestamps accept 299 seconds and reject the 300-second boundary", async () => {
@@ -1166,6 +1384,10 @@ test("game_end is authenticated, durably archived, and acknowledged with a bodyl
   assert.equal(archive.trainingEligible, false);
   assert.equal(records.length, 1);
   assert.equal(records[0].event, "tsuitate_game_end");
+  assert.equal(records[0].dispatchStage, "dispatch");
+  assert.equal(records[0].typePresent, true);
+  assert.equal(records[0].typeKind, "string");
+  assert.equal(records[0].typeClass, "game_end");
   assert.equal(JSON.stringify(records).includes(gameEndFixture.param), false);
   assert.equal(JSON.stringify(records).includes("Player%20One"), false);
   assert.equal(JSON.stringify(records).includes(BOT_ID), false);
@@ -1238,6 +1460,10 @@ test("private offline review export is HMAC protected, read only, paginated, and
   assert.equal(pageTwo.nextFromPly, null);
   assert.deepEqual([...state.values.keys()].sort(), before);
   assert.equal(records[0].event, "tsuitate_offline_review_export");
+  assert.equal(records[0].dispatchStage, "dispatch");
+  assert.equal(records[0].typePresent, true);
+  assert.equal(records[0].typeKind, "string");
+  assert.equal(records[0].typeClass, "offline_review_export");
   assert.equal(JSON.stringify(records).includes(gameEndFixture.param), false);
 
   const denied = await post(firstQuery, { binding, path: "/offline-review", botId: "other-bot" });
@@ -1264,6 +1490,28 @@ test("offline review classifies incomplete stored positions without making them 
   assert.equal(exported.classification, "incomplete_history");
   assert.equal(exported.trainingEligible, false);
 });
+
+for (const previous of ["tsuitate-brain-v1", "tsuitate-brain-v2", "tsuitate-brain-v3", "tsuitate-brain-v4"]) {
+test(`${previous} sessions cannot change brain midgame but their terminal records remain reviewable`, async () => {
+  const binding = stateBinding();
+  assert.equal((await post(initialFixture, { binding })).status, 200);
+  const values = binding.objects.get(gameEndFixture.gameId).state.storage.values;
+  const session = values.get("session:b:0");
+  session.brainVersion = previous;
+  session.brainVersions = [previous];
+  const next = await post(incrementalFixture, { binding });
+  assert.equal(next.status, 409);
+  assert.deepEqual(await next.json(), { error: "brain_version_mismatch" });
+  assert.equal((await post(gameEndFixture, { binding })).status, 204);
+  const exported = await post({ type: "offline_review_export", gameId: gameEndFixture.gameId,
+    fromPly: 0, limit: 3 }, { binding, path: "/offline-review" });
+  assert.equal(exported.status, 200);
+  const page = await exported.json();
+  assert.equal(page.archive.brainVersion, previous);
+  assert.equal(page.archive.reviewStatus, "offline_only_reviewable");
+  assert.equal(page.trainingEligible, false);
+});
+}
 
 test("unmatched, ambiguous, late, mismatched, and unknown-strategy ends stay outside training", async () => {
   const cases = [

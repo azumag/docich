@@ -156,6 +156,8 @@ export function toBrainObservation(raw) {
       color: view.yourColor === "sente" ? "b" : "w",
       turn: view.turn === "sente" ? "b" : "w",
       moveNumber: view.moveNumber,
+      // Beta counts used fouls; the tenth rejected attempt ends the game.
+      attemptBudget: 10 - view.fouls.you,
       pieces: view.yourPieces.map(({ square, role }) => ({ square, role: ROLE_TO_USI[role] })),
       hand: Object.fromEntries(Object.entries(view.yourHand).map(([role, count]) => [ROLE_TO_USI[role], count])),
       inCheck: view.youInCheck,
