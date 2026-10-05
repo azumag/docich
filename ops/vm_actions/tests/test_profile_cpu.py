@@ -69,6 +69,10 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(c(["bash", "/home/ubuntu/soren/radio_worker.sh"], "bash"), "sh:radio_worker.sh")
         self.assertEqual(c(["bash", "-c", "echo " + SECRET], "bash"), "shell")
         self.assertEqual(c(["python3", "-c", "print(1)"], "python3"), "python")
+        self.assertEqual(c(["/usr/bin/tail", "-n", "1", "/tmp/" + SECRET], "tail"), "tail")
+        self.assertEqual(c(["/usr/bin/mawk", "{print $1}", "/tmp/" + SECRET], "mawk"), "awk")
+        self.assertEqual(c(["/usr/bin/grep", SECRET, "/tmp/x"], "grep"), "grep")
+        self.assertEqual(c(["/usr/bin/stat", "/tmp/" + SECRET], "stat"), "stat")
         self.assertEqual(c(["/opt/weird/" + SECRET], "weird"), "other")
         self.assertEqual(c(None, "x"), "other")
 
