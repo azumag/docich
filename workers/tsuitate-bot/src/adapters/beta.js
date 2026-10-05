@@ -147,11 +147,29 @@ export function parsePlayerView(raw) {
   });
 }
 
+/**
+ * Own-view capture evidence only: the square where one of our own pieces was
+ * taken, plus the age in our turns since that observation. Evidence is
+ * optional, so anything outside the own-view contract is dropped instead of
+ * invalidating the board we can already see.
+ */
+function sanitizeKnownEnemies(raw) {
+  if (!Array.isArray(raw)) return [];
+  const freshest = new Map();
+  for (const item of raw) {
+    if (item === null || typeof item !== "object" || Array.isArray(item)
+        || typeof item.square !== "string" || !SQUARE.test(item.square)
+        || !Number.isSafeInteger(item.age) || item.age < 0 || item.age > 999) continue;
+    if (!freshest.has(item.square) || item.age < freshest.get(item.square)) freshest.set(item.square, item.age);
+  }
+  return [...freshest].slice(0, 40).map(([square, age]) => ({ square, age }));
+}
+
 /** Use only the current player's observation, never a full terminal board. */
-export function toBrainObservation(raw) {
+export function toBrainObservation(raw, knownEnemies = []) {
   try {
     const view = parsePlayerView(raw);
-    return normalizeObservation({
+    const ownView = {
       ruleset: "tsuitate-9x9",
       color: view.yourColor === "sente" ? "b" : "w",
       turn: view.turn === "sente" ? "b" : "w",
@@ -162,7 +180,9 @@ export function toBrainObservation(raw) {
       hand: Object.fromEntries(Object.entries(view.yourHand).map(([role, count]) => [ROLE_TO_USI[role], count])),
       inCheck: view.youInCheck,
       opponentInCheck: view.opponentInCheck,
-    });
+    };
+    return normalizeObservation({ ...ownView, knownEnemies: sanitizeKnownEnemies(knownEnemies) })
+      ?? normalizeObservation(ownView);
   } catch (error) {
     if (error instanceof ProtocolError) return null;
     throw error;
