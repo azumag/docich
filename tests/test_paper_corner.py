@@ -426,9 +426,67 @@ def test_improve_job_spawns_after_restore_when_configured(tmp_path):
     assert len(spawned) == 1
     argv, log_path = spawned[0]
     assert 'paper-improve' in argv and '--date' in argv and '2026-09-08' in argv
+    assert argv[argv.index('--agents') + 1] == 'opencode:x'
     assert str(log_path).endswith('paper-corner-improve-2026-09-08.log')
     state = json.loads(mgr.path.read_text())
     assert state['improve_job']['spawned'] is True
+
+
+def test_improve_direct_chain_is_shared_by_parent_and_child(tmp_path):
+    from docich.trading.cli import _paper_corner_improve_agents
+
+    g = setup(tmp_path)
+    cfg = tmp_path / 'config.toml'
+    cfg.write_text(cfg.read_text().replace(
+        '[paper_corner]\nenabled = true',
+        '[paper_corner]\n'
+        'improve_agents = "opencode:legacy"\n'
+        'improve_direct_enabled = true\n'
+        'improve_direct_agents = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"\n'
+        'enabled = true'))
+    g = load_global(tmp_path, cfg)
+    spawned = []
+    mgr = manager(g, spawn=lambda argv, log: spawned.append((argv, log)))
+    assert mgr.improve_agents == _paper_corner_improve_agents(g)
+    assert mgr.improve_agents == 'cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8'
+    state = {'date': '2026-09-19'}
+    mgr._spawn_improve_once(state)
+    assert len(spawned) == 1
+    argv, _ = spawned[0]
+    assert argv[argv.index('--agents') + 1] == mgr.improve_agents
+    assert state['improve_job']['spawned'] is True
+
+
+@pytest.mark.parametrize('direct_agents', ['', 'opencode:legacy', 'local:fixture'])
+def test_improve_direct_enable_rejects_missing_or_non_direct_chain(tmp_path, direct_agents):
+    g = setup(tmp_path)
+    cfg = tmp_path / 'config.toml'
+    cfg.write_text(cfg.read_text().replace(
+        '[paper_corner]\nenabled = true',
+        '[paper_corner]\n'
+        'improve_direct_enabled = true\n'
+        f'improve_direct_agents = "{direct_agents}"\n'
+        'enabled = true'))
+    g = load_global(tmp_path, cfg)
+    with pytest.raises(Exception):
+        manager(g)
+
+
+def test_improve_direct_off_keeps_legacy_chain(tmp_path):
+    from docich.trading.cli import _paper_corner_improve_agents
+
+    g = setup(tmp_path)
+    cfg = tmp_path / 'config.toml'
+    cfg.write_text(cfg.read_text().replace(
+        '[paper_corner]\nenabled = true',
+        '[paper_corner]\n'
+        'improve_agents = "opencode:legacy"\n'
+        'improve_direct_enabled = false\n'
+        'improve_direct_agents = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"\n'
+        'enabled = true'))
+    g = load_global(tmp_path, cfg)
+    assert _paper_corner_improve_agents(g) == 'opencode:legacy'
+    assert manager(g).improve_agents == 'opencode:legacy'
 
 
 def test_improve_job_not_spawned_when_unconfigured(tmp_path):
