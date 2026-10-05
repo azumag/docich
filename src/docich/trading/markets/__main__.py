@@ -179,16 +179,44 @@ class Runtime:
             write_json(self.root / "health.json", result)
             return result
 
+    def _improve_agents(self) -> str:
+        """Resolve the bounded proposal model chain without implicit direct conversion."""
+        raw_ai = self.settings.get("ai", {})
+        if not isinstance(raw_ai, dict):
+            raise ValueError("ai settings must be a table")
+        direct_enabled = raw_ai.get("direct_enabled", False)
+        if type(direct_enabled) is not bool:
+            raise ValueError("ai.direct_enabled must be a boolean")
+        if direct_enabled:
+            raw = raw_ai.get("direct_agents", "")
+            if not isinstance(raw, str) or not raw.strip():
+                raise ValueError("ai.direct_agents is required when direct_enabled")
+            from ...llm.policy import DIRECT_CHAT_PROVIDERS, parse_agents
+            agents = raw.strip()
+            specs = parse_agents(agents)
+            if any(spec.provider not in DIRECT_CHAT_PROVIDERS for spec in specs):
+                raise ValueError("ai.direct_agents must use explicit *-api providers")
+            return agents
+
+        agents = raw_ai.get("agents", "")
+        if not isinstance(agents, str):
+            raise ValueError("ai.agents must be a string")
+        agents = agents.strip()
+        if agents:
+            return agents
+        profile = tomllib.loads(self.g.config_path.read_text())
+        inherited = profile.get("paper_corner", {}).get("improve_agents", "")
+        if not isinstance(inherited, str):
+            raise ValueError("paper_corner.improve_agents must be a string")
+        return inherited.strip()
+
     def improve(self, *, now: float) -> dict:
         if not self.config.get("enabled", False):
             return {"status": "disabled"}
         with guard(self.root / "improve.lock"):
             news = read_news(self.settings.get("news", {}).get("rss_urls", []), now)
             write_json(self.root / "news.json", {"as_of": now, "items": news, "status": "ok" if news else "unavailable"})
-            agents = self.settings.get("ai", {}).get("agents", "")
-            if not agents:
-                profile = tomllib.loads(self.g.config_path.read_text())
-                agents = profile.get("paper_corner", {}).get("improve_agents", "")
+            agents = self._improve_agents()
             result = propose(self.book, self.root, self.g, agents=agents, news=news, now=now)
             write_json(self.root / "improvement-status.json", {**result, "as_of": now})
             if self.market == "stocks":
