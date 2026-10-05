@@ -13,6 +13,7 @@ from collections.abc import Mapping
 
 from ..reply_routing import _has_private_route_input
 from ..semantic_decision.routes import parse_route_chain, resolve_route
+from .contracts import MaterialQuery, WebMaterial
 
 
 RUBRIC_VERSION = "radio-evidence-v1"
@@ -94,6 +95,18 @@ def build_request(topic: str, model: str) -> dict:
     return request
 
 
+@dataclass(frozen=True)
+class ResearchResult:
+    status: str
+    scope: str
+    confidence: float | None = None
+    materials: tuple[WebMaterial, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+
 def decide(topic: str, *, env: Mapping[str, str], transport=None) -> Decision:
     """Make one bounded semantic choice; never retry or start another provider."""
     if not isinstance(env, Mapping):
@@ -133,3 +146,42 @@ def decide(topic: str, *, env: Mapping[str, str], transport=None) -> Decision:
                         else "invalid_config")
     except Exception:
         return Decision(status="invalid_response")
+
+
+def plan_and_collect(
+    topic: str,
+    queries,
+    *,
+    env: Mapping[str, str],
+    transport=None,
+    material_collector=None,
+) -> ResearchResult:
+    """Apply JEV evidence routing, then execute only the reviewed Web material path.
+
+    Search queries are trusted caller-owned MaterialQuery values. JEV never
+    creates or edits them. api_only performs zero Web collection; uncertain or
+    failed decisions hold instead of guessing or starting OpenCode.
+    """
+    decision = decide(topic, env=env, transport=transport)
+    if not decision.accepted:
+        return ResearchResult(
+            decision.status, decision.scope, decision.confidence, ()
+        )
+    if decision.scope == "api_only":
+        return ResearchResult("ok", "api_only", decision.confidence, ())
+    if decision.scope != "web":
+        return ResearchResult("invalid_response", decision.scope, decision.confidence, ())
+
+    if (not isinstance(queries, (tuple, list)) or not queries
+            or any(not isinstance(item, MaterialQuery) for item in queries)):
+        return ResearchResult("invalid_material_plan", "web", decision.confidence, ())
+    if material_collector is None:
+        from .material import collect_public_web_material
+        material_collector = collect_public_web_material
+    try:
+        materials = tuple(material_collector(tuple(queries), env=env))
+    except Exception:
+        return ResearchResult("material_unavailable", "web", decision.confidence, ())
+    if not materials or any(not isinstance(item, WebMaterial) for item in materials):
+        return ResearchResult("material_unavailable", "web", decision.confidence, ())
+    return ResearchResult("ok", "web", decision.confidence, materials)
