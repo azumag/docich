@@ -55,8 +55,9 @@ def project_player_view(raw) -> dict | None:
     turn = raw.get("turn")
     status = raw.get("status")
     move_number = raw.get("moveNumber")
-    if (your_color not in PLAYER_COLORS or turn not in PLAYER_COLORS
-            or status not in {"playing", "ended"}
+    if (not isinstance(your_color, str) or your_color not in PLAYER_COLORS
+            or not isinstance(turn, str) or turn not in PLAYER_COLORS
+            or not isinstance(status, str) or status not in {"playing", "ended"}
             or type(move_number) is not int or move_number < 1):
         raise ControlError("control_unavailable")
 
@@ -70,14 +71,14 @@ def project_player_view(raw) -> dict | None:
             raise ControlError("control_unavailable")
         square, role = piece.get("square"), piece.get("role")
         if (not isinstance(square, str) or not PLAYER_SQUARE.fullmatch(square)
-                or role not in PLAYER_ROLES or square in seen):
+                or not isinstance(role, str) or role not in PLAYER_ROLES or square in seen):
             raise ControlError("control_unavailable")
         seen.add(square)
         pieces.append({"square": square, "role": role})
 
     hand_raw = raw.get("yourHand")
     if (not isinstance(hand_raw, dict)
-            or any(key not in PLAYER_HAND_ROLES for key in hand_raw)):
+            or any(not isinstance(key, str) or key not in PLAYER_HAND_ROLES for key in hand_raw)):
         raise ControlError("control_unavailable")
     hand = {}
     total = len(pieces)
@@ -94,7 +95,7 @@ def project_player_view(raw) -> dict | None:
     if not isinstance(clocks_raw, dict):
         raise ControlError("control_unavailable")
     running = clocks_raw.get("running")
-    if running not in PLAYER_COLORS | {None}:
+    if running is not None and (not isinstance(running, str) or running not in PLAYER_COLORS):
         raise ControlError("control_unavailable")
     if ((status == "playing" and running != turn)
             or (status == "ended" and running is not None)):
