@@ -52,6 +52,9 @@ jobs:
       - name: Verify DAVE, Opus and raw PCM bootstrap without Discord login
         working-directory: runtimes/discord-voice
         run: npm run check:live
+      - name: Run live startup shutdown contracts on Windows
+        working-directory: runtimes/discord-voice
+        run: npm run test:live-contracts
       - name: Run voice contracts on Windows
         working-directory: runtimes/discord-voice
         run: npm test
