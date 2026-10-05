@@ -404,7 +404,7 @@ jobs:
               f"Run: https://github.com/azumag/docich/actions/runs/{run_id}",
               f"Attempt: {attempt}",
               f"SHA: {sha}",
-              f"Result: {outcome}",
+              f"Queue result: {outcome}",
               f"Reason: {reason}",
               f"Weather active observed: {seen_active or 'unknown'}",
               f"Audio max next_index: {max_index or '-1'}",
