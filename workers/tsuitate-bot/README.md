@@ -42,6 +42,7 @@ docich側HMAC bridgeでも同じshapeを再検証します。PlayerViewは表示
 とって隠し情報で、対戦相手が配信を閲覧できる可能性を排除できないためです。broadcast APIへ渡すのは
 先後・手番・手数・取得時点の時計などの spectator-safe subsetだけです。将来PlayerViewを映像へ出す場合は、
 対局相手から利用できないこと、または十分な配信遅延をシステムとして保証する別設計を先に必要とします。
+なお、構造化運用ログにはPlayerView・自駒・持ち駒を追加せず、従来どおり固定イベント名だけを記録します。
 
 初期状態は `stopped` です。singleton名 `beta:DoCiAI` に対し、**明示runごとに最大1局**を予約します。同じrunIdの再送・並行開始・重複alarmで再募集しません。次の新しいrunIdは前runの終局記録保存、socket終了、alarm削除が済んだ `readyForNextRun=true` の時だけ開始できます。終局後の自動反復はありません。古いrunIdのstart/stopは保存済みreceiptを返し、現在runを再開始・停止しません。paused・不明な状態では次局を開始せず、reset APIもありません。
 
