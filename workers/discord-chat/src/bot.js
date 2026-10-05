@@ -6,6 +6,7 @@ import {
   initializeMemory,
   markSending,
   validContext,
+  validMemorySources,
 } from "./memory.js";
 import {
   DiscordSendError,
@@ -26,6 +27,11 @@ const BUSY_REPLY = "今は返答待ちが多いため、少し後でもう一度
 const FORGOTTEN_REPLY = "このチャンネルであなたと交わした会話の記憶を削除しました。";
 const MAX_PENDING = 32;
 const RESET_SESSION_CLOSE_CODES = new Set([1000, 1001, 4003, 4005, 4007, 4009]);
+const VOICE_TURN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+const validSnowflake = (value) =>
+  typeof value === "string" &&
+  /^[1-9][0-9]{0,19}$/.test(value) &&
+  BigInt(value) < 2n ** 64n;
 
 function safeLog(env, status, extra = {}) {
   try {
@@ -67,7 +73,81 @@ export class DiscordBot {
     if (request.method === "GET" && url.pathname === "/status") {
       return Response.json(await this.status());
     }
+    if (request.method === "POST" && url.pathname === "/voice/reply") {
+      return this.#voiceReply(request);
+    }
     return new Response("not found", { status: 404 });
+  }
+
+  async #voiceReply(request) {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json({ error: "invalid_request" }, {
+        status: 400,
+        headers: { "cache-control": "no-store" },
+      });
+    }
+
+    const allowedKeys = new Set(["guildId", "channelId", "userId", "turnId", "transcript"]);
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body) ||
+      Object.keys(body).some((key) => !allowedKeys.has(key)) ||
+      !validSnowflake(body.guildId) ||
+      !validSnowflake(body.channelId) ||
+      !validSnowflake(body.userId) ||
+      typeof body.turnId !== "string" ||
+      !VOICE_TURN_ID.test(body.turnId) ||
+      typeof body.transcript !== "string" ||
+      !body.transcript.trim() ||
+      body.transcript.length > 2000
+    ) {
+      return Response.json({ error: "invalid_request" }, {
+        status: 400,
+        headers: { "cache-control": "no-store" },
+      });
+    }
+
+    const event = {
+      id: "voice:" + body.turnId,
+      guildId: body.guildId,
+      channelId: body.channelId,
+      authorId: body.userId,
+      authorName: "音声ユーザー",
+      content: body.transcript.trim(),
+      referenceId: null,
+      createdAt: Date.now() / 1000,
+    };
+
+    let stage = "memory_context";
+    try {
+      const { reply, context } = await generateConversationReply(
+        this.env,
+        this.sql,
+        event,
+        Number.MAX_SAFE_INTEGER,
+        (nextStage) => { stage = nextStage; },
+      );
+      if (!validMemorySources(this.sql, context)) {
+        return Response.json({ error: "context_changed" }, {
+          status: 409,
+          headers: { "cache-control": "no-store" },
+        });
+      }
+      safeLog(this.env, "voice_reply_generated");
+      return Response.json({ reply }, {
+        headers: { "cache-control": "no-store" },
+      });
+    } catch {
+      safeLog(this.env, "voice_reply_failed", { stage });
+      return Response.json({ error: "unavailable" }, {
+        status: 503,
+        headers: { "cache-control": "no-store" },
+      });
+    }
   }
 
   async alarm() {
