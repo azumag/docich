@@ -368,6 +368,42 @@ export class BetaSession {
     await this.maybeMove();
   }
 
+  /**
+   * Squares our own view lost without our own move: an opponent piece now
+   * stands where one of our pieces stood. Derived only from our own past view
+   * plus our own accepted moves — never from a terminal board or an opponent
+   * view. `age` counts our turns since that loss.
+   */
+  captureEvidence(view) {
+    if (!view || !Array.isArray(view.yourPieces) || !this.record || !Array.isArray(this.record.decisions)) return [];
+    const observed = new Set(view.yourPieces.map((piece) => piece.square));
+    if (!observed.size) return [];
+    const accepted = this.record.decisions.filter((decision) => decision.feedback === "accepted");
+    const discovered = new Map();
+    for (let index = 0; index < accepted.length; index += 1) {
+      const decision = accepted[index];
+      const pieces = decision.observation?.pieces;
+      if (!Array.isArray(pieces) || typeof decision.usi !== "string" || decision.usi.length < 4) continue;
+      // Our squares after that accepted move: the mover left its origin and a
+      // drop arrived from hand, so only a later view can prove a capture.
+      const after = new Set(pieces.map((piece) => piece.square));
+      if (decision.usi[1] === "*") after.add(decision.usi.slice(2, 4));
+      else { after.delete(decision.usi.slice(0, 2)); after.add(decision.usi.slice(2, 4)); }
+      const next = accepted[index + 1]?.observation;
+      const nextPieces = next?.pieces ?? view.yourPieces;
+      const nextNumber = next?.moveNumber ?? view.moveNumber;
+      if (nextNumber <= decision.moveNumber) continue;
+      const survivors = new Set(nextPieces.map((piece) => piece.square));
+      for (const square of after) if (!survivors.has(square)) discovered.set(square, nextNumber);
+    }
+    const evidence = [];
+    for (const [square, lostAt] of discovered) {
+      if (observed.has(square)) continue;
+      evidence.push({ square, age: Math.max(0, Math.floor((view.moveNumber - lostAt) / 2)) });
+    }
+    return evidence.sort((a, b) => a.age - b.age).slice(0, 40);
+  }
+
   async maybeMove() {
     if (this.closed || !this.socket.connected) return;
     if (this.resigning) {
@@ -379,7 +415,7 @@ export class BetaSession {
     }
     if (!this.gate.canMove) return;
     const epoch = this.socketEpoch;
-    const observation = toBrainObservation(this.gate.view);
+    const observation = toBrainObservation(this.gate.view, this.captureEvidence(this.gate.view));
     if (!observation) {
       this.gate.needsSync = true;
       this.log({ event: "invalid_observation" });

@@ -64,6 +64,8 @@ Socket.IO 4.8.4の公開ブラウザ配布をnative WebSocket transportだけで
 
 brain v6では、王手で玉の候補を試す時に限り、行き先を自駒で攻撃線が遮られた未知マスを除いた「露出度」が少ない順に並べ替えます。自玉の縦・横・斜め線上に残る未知マスは王手元である可能性が高いため2倍に数えます。これは候補の並べ替えだけで、相手駒の位置・種類・合法性は推測しません。玉の候補を使い切った後の合駒・捕獲段階、王手が未知または無い局面、最後の1試行は従来の評価順を保ちます。
 
+brain v7では、自駒が自分の手番以外に消えたマスを「相手駒が乗っている」という観測 `knownEnemies` として使い、同じマスへの打ちを候補から外し、観測から自分の手番数が2以内なら王手でない時に限りそのマスへの移動をスコアより先に候補として採ります。打ちは必ず反則になる事実だけ、移動は相手駒か空きで反則にならない事実だけを使い、駒の種類・利き・合法性は推測しません。王手中はv6の玉脱出順を優先します。証拠は自駒の視点の差分からsessionが作り、記録のないsession・webhook路は空配列でv6と同一の挙動になります。
+
 SQLite-backed Durable Objectを保存先に使います。D1や外部DBは使いません。局面は1手ごとのキー、requestIdレシートは対局中保持し、現在は自動削除しません。`/webhook` の `game_end` は署名済みの `{type,gameId,param,result,winner}` だけを受け付けます。終局通知とBot IDごとの重複・競合状態を同じDO transactionへ書き、commit後だけ空bodyの `204` を返します。記録にはサイト、実際のbrain版・profile hash、自己色・seat、結果、受信時刻、`param` の原文を含み、局面はそのBotの検証済み履歴を参照します。
 
 終局記録は通常の学習データと分離したoffline-only領域です。未照合Bot、複数seat、途中参加、履歴欠落、未知brain版、終局競合は分類して `trainingEligible: false` を維持します。`/offline-review` は同じraw-body HMACとBot IDで認証するread-onlyのPOST exportで、`{type:"offline_review_export",gameId,fromPly,limit}` を受け、`param` と最大100手ずつの可視局面を返します。`param` はopaqueな文字列として保存・返却し、解析・実行・ログ出力しません。livebrainや学習candidateへ自動で混ぜる経路はありません。記録の保持期間と容量上限はまだ設定していません。

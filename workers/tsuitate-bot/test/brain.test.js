@@ -41,7 +41,7 @@ test("normalization copies only the canonical own-view fields", () => {
     ruleset: "tsuitate-9x9", color: "b", turn: "b", moveNumber: 3,
     pieces: [{ square: "7g", role: "P" }, { square: "5i", role: "K" }],
     hand: { P: 1, L: 0, N: 0, S: 0, G: 0, B: 0, R: 0 },
-    inCheck: null, opponentInCheck: false, attemptBudget: null,
+    inCheck: null, opponentInCheck: false, attemptBudget: null, knownEnemies: [],
   });
   raw.pieces[1].role = "R";
   raw.hand.P = 18;
@@ -316,6 +316,51 @@ test("drops exclude nifu, occupied squares and dead-end ranks for both colors", 
   const handOnly = observation([], { hand: { R: 1 } });
   assert.match(chooseMove(handOnly).usi, /^R\*/);
   assert.equal(chooseMove(handOnly, { profile: LEGACY_PROFILE }), null);
+});
+
+test("capture evidence blocks a drop onto a proven occupied square and keeps moves", () => {
+  // 自駒が自分の手番以外に消えたマスは相手駒の位置という事実。そこへの打ちは
+  // 必ず反則になるので候補から外し、同じマスへの移動（捕獲）は候補のまま。
+  const options = { profile: { ...LINEAR_PROFILE, exploration: 0 }, seed: "capture-evidence" };
+  const plain = observation([["7g", "P"]], { hand: { P: 1 } });
+  assert.ok(featuresForMove(plain, "P*5e"));
+  const evidenced = observation([["7g", "P"]], { hand: { P: 1 }, knownEnemies: [{ square: "5e", age: 4 }] });
+  assert.equal(featuresForMove(evidenced, "P*5e"), null);
+  assert.equal(chooseMove(plain, options).candidateCount - chooseMove(evidenced, options).candidateCount, 1);
+  const mover = observation([["5i", "K"], ["5d", "G"]], { knownEnemies: [{ square: "5e", age: 4 }] });
+  assert.ok(featuresForMove(mover, "5d5e"));
+});
+
+test("capture evidence recaptures at a fresh square before the advancing score preference", () => {
+  // 金5dからの5eへの後退は線形スコアでは最悪級だが、証拠の新しいマスでは
+  // 相手駒が乗っている（または空きで反則にならない）ので最優先される。
+  const options = { profile: { ...LINEAR_PROFILE, exploration: 0 }, seed: "recapture" };
+  const pieces = [["5i", "K"], ["5d", "G"]];
+  assert.equal(chooseMove(observation(pieces), options).usi, "5d5c");
+  const fresh = observation(pieces, { knownEnemies: [{ square: "5e", age: 0 }] });
+  assert.equal(chooseMove(fresh, options).usi, "5d5e");
+  assert.equal(chooseMove(observation(pieces, { knownEnemies: [{ square: "5e", age: 2 }] }), options).usi, "5d5e");
+  // 古い証拠は打ちの遮断だけに使い、手順の選好には使わない。
+  assert.equal(chooseMove(observation(pieces, { knownEnemies: [{ square: "5e", age: 3 }] }), options).usi, "5d5c");
+  // 王手中はv6の玉脱出順を保つ。捕獲の選好を挟まない。
+  assert.equal(chooseMove({ ...fresh, inCheck: true }, options).usi,
+    chooseMove({ ...observation(pieces), inCheck: true }, options).usi);
+  assert.match(chooseMove({ ...fresh, inCheck: true }, options).usi, /^5i[4-6][hi]$/);
+});
+
+test("capture evidence outside the own-view contract fails closed", () => {
+  const base = observation([["5g", "P"]]);
+  assert.deepEqual(normalizeObservation({ ...base, knownEnemies: [] }).knownEnemies, []);
+  assert.deepEqual(normalizeObservation({ ...base, knownEnemies: [{ square: "5e", age: 2 }, { square: "5e", age: 0 }] }).knownEnemies,
+    [{ square: "5e", age: 0 }]);
+  assert.equal(normalizeObservation({ ...base, knownEnemies: [{ square: "5i", age: 1 }] }).knownEnemies.length, 1);
+  for (const patch of [
+    { knownEnemies: "5e" }, { knownEnemies: [null] }, { knownEnemies: [{}] },
+    { knownEnemies: [{ square: "5z", age: 0 }] }, { knownEnemies: [{ square: "5e" }] },
+    { knownEnemies: [{ square: "5e", age: -1 }] }, { knownEnemies: [{ square: "5e", age: 1.5 }] },
+    { knownEnemies: [{ square: "5e", age: "fresh" }] },
+    { knownEnemies: new Array(41).fill({ square: "5e", age: 0 }) },
+  ]) assert.equal(normalizeObservation({ ...base, ...patch }), null);
 });
 
 test("profiles change the same observation's choice without an interface change", () => {

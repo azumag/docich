@@ -80,6 +80,29 @@ test("beta conversion maps promoted roles and both colors without hidden-board l
   assert.equal(toBrainObservation(view({ yourColor: "unknown" })), null);
 });
 
+test("capture evidence reaches the own view only after its own contract is enforced", () => {
+  const raw = view({ yourPieces: [{ square: "5i", role: "king" }] });
+  assert.deepEqual(toBrainObservation(raw).knownEnemies, []);
+  const projected = toBrainObservation(raw, [
+    { square: "5e", age: 3 }, { square: "5e", age: 0 }, { square: "3c", age: 2 },
+    { square: "5z", age: 0 }, { square: "4a", age: -1 }, { square: "9c", age: "2" },
+    "5b", null, { square: "5e" },
+  ]);
+  assert.deepEqual(projected.knownEnemies, [{ square: "5e", age: 0 }, { square: "3c", age: 2 }]);
+  assert.doesNotMatch(JSON.stringify(projected), /tsb_|opponentPieces|username|secret|clocks/);
+  const squares = [];
+  for (let file = 1; file <= 9 && squares.length < 50; file += 1) {
+    for (const rank of "abcdefghi") {
+      squares.push(`${file}${rank}`);
+      if (squares.length === 50) break;
+    }
+  }
+  // Evidence stays optional: oversize or malformed input is trimmed, never a
+  // reason to reject the board we can already see.
+  assert.equal(toBrainObservation(raw, squares.map((square) => ({ square, age: 1 }))).knownEnemies.length, 40);
+  assert.equal(toBrainObservation(raw, "5e").knownEnemies.length, 0);
+});
+
 test("beta used-foul counts convert to the final attempt budget without opponent data", () => {
   const raw = view({ youInCheck: true, fouls: { you: 9, opponent: 0 }, yourHand: {},
     yourPieces: [{ square: "5i", role: "king" }, { square: "4h", role: "gold" },

@@ -1,8 +1,12 @@
 /** Site-independent, visible-information-only Tsuitate move selection. */
-export const BRAIN_VERSION = "tsuitate-brain-v6";
+export const BRAIN_VERSION = "tsuitate-brain-v7";
 const ROLES = new Set(["P", "L", "N", "S", "G", "B", "R", "K", "+P", "+L", "+N", "+S", "+B", "+R"]);
 const HAND_ROLES = ["P", "L", "N", "S", "G", "B", "R"];
 const HAND_LIMITS = { P: 18, L: 4, N: 4, S: 4, G: 4, B: 2, R: 2 };
+// Own-view capture evidence: a square our own piece left without our move now
+// holds an opponent piece. `age` counts our turns since that observation.
+const KNOWN_ENEMY_LIMIT = 40;
+const RECAPTURE_AGE_LIMIT = 2;
 const FEATURE_NAMES = ["advance", "centrality", "promotion", "drop", "kingMove", "distance", "repeat"];
 const SQUARE = /^[1-9][a-i]$/;
 const USI_MOVE = /^(?:[1-9][a-i][1-9][a-i]\+?|[PLNSGBR]\*[1-9][a-i])$/;
@@ -84,9 +88,20 @@ export function normalizeObservation(raw) {
   const attemptBudget = raw.attemptBudget ?? null;
   if (attemptBudget !== null && (!Number.isSafeInteger(attemptBudget)
       || attemptBudget < 0 || attemptBudget > 1001)) return null;
+  const knownEnemies = [];
+  if (Object.hasOwn(raw, "knownEnemies")) {
+    if (!Array.isArray(raw.knownEnemies) || raw.knownEnemies.length > KNOWN_ENEMY_LIMIT) return null;
+    const freshest = new Map();
+    for (const item of raw.knownEnemies) {
+      if (!record(item) || typeof item.square !== "string" || !SQUARE.test(item.square)
+          || !Number.isSafeInteger(item.age) || item.age < 0 || item.age > 999) return null;
+      if (!freshest.has(item.square) || item.age < freshest.get(item.square)) freshest.set(item.square, item.age);
+    }
+    for (const [key, age] of freshest) knownEnemies.push({ square: key, age });
+  }
   return {
     ruleset: "tsuitate-9x9", color: raw.color, turn: raw.turn,
-    moveNumber: raw.moveNumber, pieces, hand, ...checks, attemptBudget,
+    moveNumber: raw.moveNumber, pieces, hand, ...checks, attemptBudget, knownEnemies,
   };
 }
 
@@ -118,6 +133,9 @@ function movement(role, forward, legacy) {
 
 function candidatesFor(observation, legacy) {
   const occupied = new Set(observation.pieces.map((piece) => piece.square));
+  // Capture evidence marks occupied squares: a drop there is a certain foul, so
+  // it never enters the candidate set. Moves keep every own-piece candidate.
+  const knownEnemy = new Set(observation.knownEnemies.map((item) => item.square));
   const forward = observation.color === "b" ? -1 : 1;
   const pieces = [...observation.pieces].sort((a, b) => Math.abs(file(a.square) - 5) - Math.abs(file(b.square) - 5)
     || rank(a.square) - rank(b.square) || file(b.square) - file(a.square));
@@ -154,7 +172,7 @@ function candidatesFor(observation, legacy) {
       for (let y = 1; y <= 9; y += 1) {
         for (let x = 9; x >= 1; x -= 1) {
           const destination = square(x, y);
-          if (occupied.has(destination) || mustPromote(observation.color, role, y)
+          if (occupied.has(destination) || knownEnemy.has(destination) || mustPromote(observation.color, role, y)
               || (role === "P" && pawnFiles.has(x))) continue;
           candidates.push({ usi: `${role}*${destination}`, role });
         }
@@ -326,9 +344,21 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
     ? available.filter((candidate) => candidate.role === "K") : [];
   const responses = observation.inCheck === true ? checkResponses(observation, available) : available;
   const retries = shortRayRetries(observation, generated, rejected, forbidden);
+  // Capture evidence outranks the ray-shortening heuristic: an own piece that
+  // vanished without our move proves an opponent piece on that square, so a
+  // move there recaptures it (or reaches an empty square without a foul) while
+  // a drop there would foul. Never act on it during check: a recapture that
+  // fails to resolve the check is a certain foul, and the king escape is not.
+  const recaptureAge = new Map(observation.knownEnemies.map((item) => [item.square, item.age]));
+  const recaptures = observation.inCheck === true ? [] : available.filter((candidate) => {
+    if (candidate.usi[1] === "*") return false;
+    const age = recaptureAge.get(candidate.usi.slice(2, 4));
+    return age !== undefined && age <= RECAPTURE_AGE_LIMIT;
+  });
   // Preserve the existing fallback for incomplete own-king observations or
   // exhausted response candidates; geometry cannot prove mate or legality.
-  const candidates = escapes.length ? escapes : retries.length ? retries : responses.length ? responses : available;
+  const candidates = recaptures.length ? recaptures
+    : escapes.length ? escapes : retries.length ? retries : responses.length ? responses : available;
   if (!candidates.length) return null;
   const scored = candidates.map((candidate) => {
     const values = features(observation, candidate, recent);

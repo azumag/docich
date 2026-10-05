@@ -79,6 +79,32 @@ function advancedView(socket, number = 3) {
   return moved;
 }
 
+test("capture evidence comes only from our own view and our own accepted moves", (t) => {
+  const session = new BetaSession({ socket: new Socket(), store: new Store(), profile: LINEAR_PROFILE });
+  t.after(() => session.close());
+  const decision = (moveNumber, usi, pieces) => ({
+    moveNumber, usi, feedback: "accepted", observation: { moveNumber, pieces },
+  });
+  session.record = { decisions: [
+    decision(1, "5g5f", [{ square: "5i", role: "K" }, { square: "5g", role: "P" }, { square: "7h", role: "B" }]),
+    decision(3, "5i5h", [{ square: "5i", role: "K" }, { square: "5f", role: "P" }, { square: "7h", role: "B" }]),
+    decision(5, "7h8i", [{ square: "5f", role: "P" }, { square: "7h", role: "B" }]),
+  ] };
+  const current = view({ moveNumber: 7, yourPieces: [{ square: "8i", role: "bishop" }] });
+  // 5f は相手の手で取られた（age 0）。5h は2手前に取られ、玉の出発点 5g は
+  // 自分の着手なので証拠にしない。どちらも現在の自駒でなければ残る。
+  assert.deepEqual(session.captureEvidence(current), [{ square: "5f", age: 0 }, { square: "5h", age: 1 }]);
+  assert.equal(session.captureEvidence(current).some((item) => item.square === "5g"), false);
+  const recaptured = view({ moveNumber: 7, yourPieces: [{ square: "5f", role: "pawn" }, { square: "8i", role: "bishop" }] });
+  assert.deepEqual(session.captureEvidence(recaptured), [{ square: "5h", age: 1 }]);
+  for (const decisions of [[], [decision(1, "5g5f", [{ square: "5g", role: "P" }])]]) {
+    session.record = { decisions: decisions.map((item) => ({ ...item, feedback: "foul" })) };
+    assert.deepEqual(session.captureEvidence(current), []);
+  }
+  session.record = null;
+  assert.deepEqual(session.captureEvidence(current), []);
+});
+
 test("runner persists the pending move before emitting, and duplicate views do not send twice", async (t) => {
   const context = setup(t);
   context.socket.onSend = (packet) => {
