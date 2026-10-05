@@ -115,8 +115,21 @@ export function attachLiveSttReceiver({
     if (stopped || active || userId !== targetUserId) return;
 
     const controller = new AbortController();
-    const decoder = createDecoder();
-    const stream = receiver.subscribe(userId, subscribeOptions);
+    let decoder;
+    let stream;
+    try {
+      decoder = createDecoder();
+      stream = receiver.subscribe(userId, subscribeOptions);
+    } catch {
+      try {
+        decoder?.close?.();
+      } catch {
+        // Fixed cleanup path.
+      }
+      safeEmit({ event: 'voice_receive_failed' });
+      return;
+    }
+
     const state = {
       controller,
       decoder,
