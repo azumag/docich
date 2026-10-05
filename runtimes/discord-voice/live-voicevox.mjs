@@ -95,7 +95,6 @@ export function createLiveVoicevoxTTS(
   try {
     return new InjectedVoicevoxTTS({
       env,
-      selectedURL: env.VOICEVOX_ACTIVE_URL || undefined,
       request,
       allowLocal: allowLoopback,
     });
