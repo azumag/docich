@@ -48,6 +48,14 @@ namespaceには公開worker/chat/memory/packageの4ファイルだけをread-onl
 
 先の本人承認済みGo単発疎通は1 POST/HTTP200/入力34・出力15tokens、API1665ms、reply OKだった。これは直接APIのみで、検索・JEV・persona返信のE2Eではない。承認枠は消費済みで今回の追加有料callは0。IANA公式登録の短い本文を合成fixtureへ使い、RFC broker拒否を回避する検証条件変更は行っていない。実IANA本文取得と有料E2Eは未実施。配信companionのGo API生成対応・rolloutは独立範囲で、この接続だけで配信全体完了にしない。
 
+### 無料Zen profileの追加前に必要な判断（2026-10-05）
+
+[公式Zen文書](https://opencode.ai/docs/zen/)はBig Pickleを期間限定無料とし、model ID `big-pickle`、OpenCode ID `opencode/big-pickle`、endpoint `https://opencode.ai/zen/v1/chat/completions` を公開している。通常dispatcherへの登録時の表記は `opencode:big-pickle`（現在のtracked chainへの追加は未実施）。ただし確認済みの匿名models APIはID等だけで料金フィールドがなく、送信時の上限額0をprovider側で強制するrequest契約は未確認。固定model名、過去の無料表、モデル自身の無料宣言を課金防止の証拠にしない。
+
+「無料保証できなければ選択不可」の条件では、現native APIのGo専用allowlistによるBig Pickle拒否を維持する。無料profileの追加・実call・既存登録や認証の変更はまだ行っていない。再試行や有料fallbackも追加しない。追加前に、providerの課金拒否契約を確認するか、直前の公式料金表の厳密検証を採用する場合の保証範囲を親担当が決定する必要がある。料金表の直前検証は取得失敗/不明/有料化を拒否できても、表示更新と実請求の競合を防ぐtransaction上限額ではない。
+
+最小案はoperatorだけが選択する単一固定profile、選択済み既存research keyだけのchild環境、公式無料確認失敗時のPOST前拒否。model出力からprofile/command/tool/egressを選べないこと、45秒の共通deadline、送信前の回数予約、256出力tokens、receipt/hash/引用照合、既存persona回答を維持する。Clef、無料JEV経路、最終persona APIのprovider変更は別設計とし、この調査では実装しない。準備記録は [reply-free-profile-readiness-2026-10-05.json](evidence/reply-free-profile-readiness-2026-10-05.json)。
+
 ## 広いWebの安全条件
 
 独立レビューのP1/P2に対応し、Discordの実`Conversation.handle → asyncio.to_thread → decide/request_once`経路を合成JEV HTTP workerで検証する。threaded transportはmain loopのsignal handlerを変更せず、同じdeadline/selected-key-only環境と全終了時のkill/reapを維持し、Discordがcancel/shutdown時にthreadをjoinする。main-thread transportのTERM/INT cleanup契約も維持する。
