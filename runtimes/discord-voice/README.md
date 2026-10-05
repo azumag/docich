@@ -1,6 +1,6 @@
 # Discord voice: offline turn coordinator (#1628)
 
-This is the synthetic, offline foundation for [Issue #1628](https://github.com/azumag/docich/issues/1628). It is not a working Discord voice Bot or a deployable service. Importing the module does nothing. There are no credentials, built-in network clients, file writers, new permissions, provider dependencies, Docker image or deployment hooks. An explicit offline CLI now composes the coordinator, internal conversation core and injected VOICEVOX boundary with synthetic providers. The separate injected VOICEVOX boundary below is tested offline. Only adapters with `kind: 'fake'` are accepted in this slice.
+This directory contains the synthetic/offline foundation for [Issue #1628](https://github.com/azumag/docich/issues/1628) plus a separately gated **live Discord join/playback bootstrap** for temporary Windows operation. The offline coordinator remains fake-only and does not receive network audio. The live bootstrap only logs into Discord, joins one explicitly configured Guild Voice channel with DAVE-capable `@discordjs/voice`, optionally plays a bounded generated PCM test tone, and stays connected until shutdown. It does not receive or record audio, run STT, call the conversation core, invoke TTS, or deploy itself as a service.
 
 The current text Bot remains in `workers/discord-chat`: Workers AI, canonical persona and SQLite Durable Object memory, with public HTTP limited to `/healthz`. This slice does not import or change that Bot, its intents, model, prompt, memory or endpoint. The offline application reuses the internal conversation core and canonical public persona with synthetic AI only. The tests exercise fixed replies and transient scoped history; real persona/LLM behavior and a shared long-term memory database remain unaccepted.
 
@@ -72,11 +72,44 @@ The runtime owns copies of inbound PCM and clears them on completion, rejection,
 
 `status()` reports only mode, fake session state, phase and bounded counts. `connected: true` means **fake session open**, not Discord connected. Event logging passes only a fixed `{event}` record, never IDs, audio, transcript, prompt, tokens or exception text. There is no built-in console logger. Events include session open/close, utterance start/finish/drop, queue full, STT/LLM/TTS/playback stages and cancellation/interruption. Logging failure cannot alter runtime behavior. No endpoint or production health/diagnostics registry is added.
 
+## Temporary Windows live host: join + playback slice
+
+For the current temporary host, use a local Windows machine rather than the production VM. Discord requires DAVE-capable clients/apps for normal voice channels from March 2026, so this slice uses pinned `@discordjs/voice 0.19.2` instead of implementing Discord Voice UDP/DAVE directly. It also uses `discord.js 14.27.0` only for Gateway/Guild voice state integration and `opusscript 0.0.8` for Opus encoding. FFmpeg is not required because the test path feeds 48 kHz signed PCM16 stereo directly.
+
+The live host deliberately starts **self-deafened**. Discord therefore does not provide inbound user audio to this slice. That keeps participant audio outside the process until the later STT/consent slice explicitly changes the receive policy. The existing text Bot can continue separately; this process requests only the `Guilds` and `GuildVoiceStates` Gateway intents and does not read messages.
+
+Install dependencies in the voice runtime directory:
+
+```powershell
+cd runtimes/discord-voice
+npm install
+npm run check:live
+```
+
+`check:live` performs no Discord login. It verifies that the pinned voice package loads, AES-256-GCM is available, the DAVE-capable stack can initialize, and the raw PCM/Opus pipeline can be constructed.
+
+For an actual test server/channel, set the values only in the current PowerShell process. Do not put the token in Git, Issue/PR text, shell history, or command-line arguments.
+
+```powershell
+$env:DOCICH_DISCORD_VOICE_ENABLED = "1"
+$env:DOCICH_DISCORD_TOKEN = "<set privately>"
+$env:DOCICH_DISCORD_VOICE_GUILD_ID = "<guild snowflake>"
+$env:DOCICH_DISCORD_VOICE_CHANNEL_ID = "<voice-channel snowflake>"
+$env:DOCICH_DISCORD_VOICE_TEST_TONE = "1"
+npm run start:live
+```
+
+`DOCICH_DISCORD_VOICE_TEST_TONE=1` is optional and defaults to off. When enabled, the Bot plays one short generated tone after the connection reaches Ready. It then remains connected until Ctrl+C/SIGTERM. Resumable Discord voice disconnects are left to the library; a stable disconnect gets at most three bounded explicit rejoin attempts before the process exits. No IDs, token, endpoint, Discord error body, transcript or audio are written to stdout/stderr.
+
+The Bot needs only the permissions required to see the configured server/channel and **Connect / Speak** in that voice channel. Message Content, member-list and Presence privileged intents are not used by this live process. The Windows CI job installs the same pinned dependencies and executes `check:live` plus the offline contracts without any Discord credentials.
+
+This is still only Slice 1 of #1628. A successful test tone proves DAVE-capable VC join and outbound audio on the selected Windows host; it does **not** prove inbound audio, STT, VOICEVOX, conversation memory, barge-in, multi-user attribution or the 30-minute acceptance test.
+
 ## Future live boundary
 
 Discord voice uses a separate UDP connection for receiving/transmitting voice data and requires DAVE E2EE support for voice calls starting March 1, 2026. [Discord voice connection documentation](https://docs.discord.com/developers/topics/voice-connections). Workers `node:dgram` is an importable non-functional stub, so importing a UDP package does not make a Workers voice transport operational. [Cloudflare Node.js compatibility](https://developers.cloudflare.com/workers/runtime-apis/nodejs/#non-functional-stub-modules).
 
-A later separately approved long-lived runtime can implement Voice Gateway/UDP, authenticated speaker attribution, DAVE, Opus decode/encode and transport cleanup at the transport boundary. STT/TTS choices, fees, host, privileges, activation UX, memory sharing and a safe authenticated conversation-core integration must be selected before any live integration. The existing public `/healthz` is not a conversation API. This PR does not resurrect the old Python/Docker Bot for production, install voice libraries/FFmpeg, add Gateway intents, deploy a host or alter the current text Worker.
+The Windows Slice 1 bootstrap now delegates Voice Gateway/UDP, DAVE and outbound Opus transport to the pinned Discord libraries, but keeps inbound audio disabled. A later slice still needs authenticated speaker attribution, voice receive/Opus decode, real VAD/STT, participant-consent policy, VOICEVOX transport, cancellation/cleanup acceptance and safe conversation-core integration. The existing public `/healthz` is not a conversation API. This slice does not deploy a host, register a Windows service, alter the current text Worker, or enable recording.
 
 Issue #1628's VC join, real Japanese STT, canonical-persona response, Discord TTS, reconnect and 30-minute live acceptance criteria remain open. Passing these offline contracts demonstrates the coordinator slice only.
 
@@ -131,4 +164,4 @@ Application voice policy explicitly rejects a generated reply above **200 charac
 
 Only fixed event names, command names, result codes and bounded status counters appear on stdout. Raw controls/IDs, persona, transcript/reply, URLs, provider messages and credentials are not printed. Unknown keys (including raw audio/endpoint/credential fields) and malformed commands are rejected with fixed codes. Controls are local fixture commands, not a public/authenticated API or an authorization grant.
 
-Missing/unknown mode, `--live`, endpoint options or missing/invalid persona fail startup with a fixed code. There is no live configuration/credential loader, remote auth endpoint, Discord SDK, socket, login, VC join, recording, external STT/LLM/TTS or host deployment. Running this CLI demonstrates the composed synthetic runtime only. Live transport/STT/auth selection, participant consent, Windows/Mac access, provider cancellation, persistent retention and deployment remain separately approved integration work.
+Missing/unknown mode or endpoint options still fail the **offline** CLI with a fixed code; `cli.mjs` remains synthetic-only. Live Discord join/playback is intentionally a separate `live.mjs` entry point with an explicit enable flag and environment-only credentials. It does not expose a remote auth endpoint and still has no recording, external STT/LLM/TTS, persistent voice memory or automatic host deployment.
