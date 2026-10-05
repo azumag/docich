@@ -65,11 +65,12 @@ test('debug content, failures and malformed lines fail closed', () => {
     line(5, 'memory_commit_completed'),
     line(6, 'llm_debug_reply', { reply: 'private' }),
     line(7, 'playback_failed'),
+    line(8, 'voice_transport_error'),
     'not-a-valid-log-line',
   ]);
 
   assert.equal(result.passed, false);
   assert.equal(result.privacyOk, false);
-  assert.equal(result.failureCount, 1);
+  assert.equal(result.failureCount, 2);
   assert.equal(result.malformed, 1);
 });
