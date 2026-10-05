@@ -14,7 +14,7 @@ from .models import PaperFill, as_decimal
 
 _SIGNAL_SUMMARY_KEYS = {
     "candidate_count", "selected_count", "rejected_count",
-    "strategy_ids", "candidate_reason_codes",
+    "strategy_ids", "candidate_reason_codes", "candidate_symbols", "selected_symbols",
 }
 
 _WORKER_SUMMARY_KEYS = {

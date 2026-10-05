@@ -125,10 +125,18 @@ class TestPublicTradingStatus(unittest.TestCase):
             worker_state="idle", last_cycle_at=123.0, eligible_symbols=["BTC/JPY"],
             capital_reference=D("100000"), deployed_reference=D("0"), open_positions={},
             recent_fills=[], skipped_reason_codes=[],
-            signal_summary={"candidate_count": 1, "strategy_ids": ["momentum-v1"], "api_key": "must-not-leak"},
+            signal_summary={
+                "candidate_count": 1,
+                "strategy_ids": ["momentum-v1"],
+                "candidate_symbols": ["BTC/JPY"],
+                "selected_symbols": ["BTC/JPY"],
+                "api_key": "must-not-leak",
+            },
         )
         blob = json.dumps(payload, sort_keys=True)
         self.assertEqual(payload["signal_summary"]["candidate_count"], 1)
+        self.assertEqual(payload["signal_summary"]["candidate_symbols"], ["BTC/JPY"])
+        self.assertEqual(payload["signal_summary"]["selected_symbols"], ["BTC/JPY"])
         self.assertNotIn("api_key", blob.lower())
         self.assertNotIn("must-not-leak", blob)
 

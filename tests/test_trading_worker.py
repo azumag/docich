@@ -149,6 +149,10 @@ class TestPaperWorkerCycle(unittest.TestCase):
             status = json.loads((g.state_dir / "trading" / "status.json").read_text(encoding="utf-8"))
             self.assertEqual(status["worker_state"], "paper_worker_degraded")
             self.assertEqual(status["worker_summary"]["frame_error_count"], 1)
+            self.assertEqual(status["signal_summary"]["candidate_symbols"], ["BTC/JPY"])
+            self.assertEqual(status["signal_summary"]["selected_symbols"], ["BTC/JPY"])
+            self.assertNotIn("ETH/JPY", status["signal_summary"]["candidate_symbols"])
+            self.assertNotIn("SOL/JPY", status["signal_summary"]["candidate_symbols"])
             performance = status["performance_summary"]
             self.assertEqual(performance["as_of"], NOW)
             self.assertTrue(performance["complete"])
