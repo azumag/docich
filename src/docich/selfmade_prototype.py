@@ -20,6 +20,7 @@ VERSIONS = {"schema": 1, "engine": "key-switch-v1", "judge": "key-switch-v1"}
 MAX_BUNDLE = 256 * 1024
 MAX_TICKS = 2400
 WALL_SECONDS = 240
+REPLAY_SECONDS = 30
 CONTROLS = "Arrow keys; 1 cell / 4 ticks. K=key, S=switch, E=exit, P=player. Collect K and touch S, then reach E. Green gates are open."
 BUTTONS = {"UP": (0, -1), "DOWN": (0, 1), "LEFT": (-1, 0), "RIGHT": (1, 0)}
 
@@ -333,12 +334,16 @@ class FixtureSession:
                 "execution": "trusted_synthetic_fixture"}
 
     def expire_wall(self):
-        if self.result is None and self.clock() - self.started >= WALL_SECONDS:
+        # candidate_win closes play; its snapshot belongs to the separate replay
+        # phase. Neither the play watchdog nor a late input may change that result.
+        if self.result is not None or self.state.candidate_win:
+            return True
+        if self.clock() - self.started >= WALL_SECONDS:
             self._finish("timeout", "wall_limit")
         return self.result is not None
 
     def submit(self, raw: bytes):
-        if self.expire_wall() or self.state.candidate_win:
+        if self.expire_wall():
             return False
         try:
             _require(type(raw) is bytes and len(raw) <= 1024, "input_limit")
@@ -390,9 +395,10 @@ class FixtureSession:
         return self.result
 
 
-def verify_replay(root, artifact, evidence):
+def verify_replay(root, artifact, evidence, *, clock=time.monotonic):
     """Fresh pure trusted engine; not a claim of isolated generated-code replay."""
     try:
+        deadline = clock() + REPLAY_SECONDS
         _fields(evidence, ("artifact", "versions", "seed", "inputs", "hashes", "cutoff_tick", "reason"))
         _require(evidence["artifact"] == artifact.identity and
                  _encode(evidence["versions"]) == _encode(VERSIONS) and
@@ -401,6 +407,7 @@ def verify_replay(root, artifact, evidence):
                  and type(evidence["hashes"]) is list, "replay_mismatch")
         replay = FixtureSession(root, artifact, clock=lambda: 0)
         for record in evidence["inputs"]:
+            _require(clock() < deadline, "replay_mismatch")
             _require(replay.result is None and not replay.state.candidate_win, "replay_mismatch")
             _require(type(record) is dict and type(record.get("accepted")) is bool, "replay_mismatch")
             _integer(record.get("start_tick"), 0, MAX_TICKS)
@@ -422,6 +429,7 @@ def verify_replay(root, artifact, evidence):
                  and reason == replay.evidence()["reason"]
                  and (replay.state.candidate_win or replay.result is not None), "replay_mismatch")
         artifact.check(root)
+        _require(clock() < deadline, "replay_mismatch")
         return True
     except (Rejected, TypeError, ValueError, KeyError, IndexError):
         return False

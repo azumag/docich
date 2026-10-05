@@ -16,7 +16,7 @@ RuleSpecの全フィールドと型は `Rules.parse` を正本とし、fixture�
 
 `FixtureSession.observation()` はPNG・frame_id・操作説明・残りtickだけを返す。制作artifact/内部State/証拠は攻略観測に含めない。`submit(bytes)` の契約は1KiB以内の厳密JSON、`frame_id/seq/buttons/ticks` の4項目のみ。seqは1から連続、buttonsは空配列かUP/DOWN/LEFT/RIGHT一個、ticksは整数1〜60。未知項目・重複JSONキー・古いframe・重複seq・bool/小数・巨大入力は状態を進めず拒否し、3連続拒否でinvalid_input。拒否後の正常入力で連続拒否数を戻す。任意のhost Python objectへのアクセスを防ぐsandbox APIではない。
 
-`transition` だけが毎tick状態を更新する。候補勝利後は入力を受けず、`verify()` が新しい信頼側engineで受理入力を再生し、artifact/seed/版・全tick hash・勝利tickを照合してverified_winにする。拒否入力は適用せず、受理/拒否と開始tickを記録し、拒否理由は別の固定診断コードにする。timeout/取消/invalid_inputもcutoff tickまで再現する。wall上限240秒は呼出し時のmonotonic clockで確認し、無応答時はcontrollerが `expire_wall()` を呼ぶ。wall時間そのものはreplayせず、保存したcutoffと理由を使う。証拠は信頼側controllerの記録を前提とし、任意に差替えられたログの署名/永続化は未実装。
+`transition` だけが毎tick状態を更新する。候補勝利時点で攻略入力と攻略wall watchdogを閉じ、期限後のwatchdog/後着入力でも候補snapshotを変更しない。`verify()` が新しい信頼側engineで受理入力を再生し、artifact/seed/版・全tick hash・勝利tickを照合してverified_winにする。replayは開始時点から独立した30秒のmonotonic clock上限を持ち、超過はreplay_mismatchで未検証にする。拒否入力は適用せず、受理/拒否と開始tickを記録し、拒否理由は別の固定診断コードにする。timeout/取消/invalid_inputもcutoff tickまで再現する。攻略wall上限240秒は呼出し時のmonotonic clockで確認し、無応答時はcontrollerが `expire_wall()` を呼ぶ。wall時間そのものはreplayせず、保存したcutoffと理由を使う。証拠は信頼側controllerの記録を前提とし、任意に差替えられたログの署名/永続化は未実装。
 
 `check_proposal` は将来の隔離IPC向けの純粋一致検査。生成側のWIN/success/位置や所持品変更を勝利証拠に使わない。現時点では生成側との通信を行わず、生成描画も合成しない。すべての重要entityを信頼側だけが描画する。
 

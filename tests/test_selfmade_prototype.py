@@ -146,6 +146,35 @@ def test_wall_cutoff_and_cancel_are_reproducible(bundle):
     assert cancelled.verify() == "not_cleared"
 
 
+@pytest.mark.parametrize("late_input", [False, True])
+def test_candidate_win_closes_play_wall_watchdog_and_ignores_late_input(bundle, late_input):
+    now = [0]
+    s = session(bundle, clock=lambda: now[0])
+    now[0] = p.WALL_SECONDS - 1
+    win(s)
+    before = s.evidence()
+    now[0] = p.WALL_SECONDS + 100
+    if late_input:
+        assert not s.submit(encode(request(s)))
+    else:
+        assert s.expire_wall()  # Play is closed while the separate replay is pending.
+    assert s.result is None and s.reason is None
+    assert s.evidence() == before and s.corner.owner
+    assert s.verify() == "verified_win"
+    assert s.reason == "candidate_win" and s.evidence()["reason"] == s.reason
+    assert s.report()["success"] and len(s.corner.events) == 4
+
+
+def test_replay_has_a_fresh_separate_wall_budget(bundle, monkeypatch):
+    s = win(session(bundle))
+    assert p.verify_replay(bundle, s.artifact, s.evidence(), clock=lambda: 1000)
+    replay_clock = iter((1000, 1000, 1000 + p.REPLAY_SECONDS))
+    assert not p.verify_replay(bundle, s.artifact, s.evidence(), clock=lambda: next(replay_clock))
+    monkeypatch.setattr(p, "REPLAY_SECONDS", 0)
+    assert s.verify() == "replay_mismatch"
+    assert not s.report()["success"] and s.corner.previous_visible
+
+
 def test_win_on_limit_tick_precedes_timeout(bundle):
     s = session(bundle)
     for _ in range(39):
