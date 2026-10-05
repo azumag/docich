@@ -1,5 +1,6 @@
 import {
   beginConversation,
+  commitDeliveredConversation,
   failConversation,
   finishConversation,
   forgetScope,
@@ -77,6 +78,9 @@ export class DiscordBot {
     }
     if (request.method === "POST" && url.pathname === "/voice/reply") {
       return this.#voiceReply(request);
+    }
+    if (request.method === "POST" && url.pathname === "/voice/commit") {
+      return this.#voiceCommit(request);
     }
     return new Response("not found", { status: 404 });
   }
@@ -164,6 +168,75 @@ export class DiscordBot {
     } finally {
       this.voicePendingCount -= 1;
     }
+  }
+
+  async #voiceCommit(request) {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json({ error: "invalid_request" }, {
+        status: 400,
+        headers: { "cache-control": "no-store" },
+      });
+    }
+
+    const allowedKeys = new Set([
+      "guildId", "channelId", "userId", "turnId", "transcript", "reply",
+    ]);
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body) ||
+      Object.keys(body).some((key) => !allowedKeys.has(key)) ||
+      !validSnowflake(body.guildId) ||
+      !validSnowflake(body.channelId) ||
+      !validSnowflake(body.userId) ||
+      typeof body.turnId !== "string" ||
+      !VOICE_TURN_ID.test(body.turnId) ||
+      typeof body.transcript !== "string" ||
+      !body.transcript.trim() ||
+      body.transcript.length > 2000 ||
+      typeof body.reply !== "string" ||
+      !body.reply.trim() ||
+      body.reply.length > 901
+    ) {
+      return Response.json({ error: "invalid_request" }, {
+        status: 400,
+        headers: { "cache-control": "no-store" },
+      });
+    }
+
+    const event = {
+      id: "voice:" + body.turnId,
+      guildId: body.guildId,
+      channelId: body.channelId,
+      authorId: body.userId,
+      authorName: "音声ユーザー",
+      content: body.transcript.trim(),
+      referenceId: null,
+      createdAt: Date.now() / 1000,
+    };
+    const result = commitDeliveredConversation(
+      this.sql,
+      event,
+      "voice-playback:" + body.turnId,
+      body.reply.trim(),
+    );
+    if (result.status === "conflict") {
+      safeLog(this.env, "voice_memory_conflict");
+      return Response.json({ error: "commit_conflict" }, {
+        status: 409,
+        headers: { "cache-control": "no-store" },
+      });
+    }
+
+    safeLog(this.env, "voice_memory_committed", {
+      duplicate: result.status === "already_committed",
+    });
+    return Response.json({ status: result.status }, {
+      headers: { "cache-control": "no-store" },
+    });
   }
 
   async alarm() {
