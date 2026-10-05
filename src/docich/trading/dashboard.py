@@ -107,6 +107,56 @@ def _fills(snapshot: Mapping[str, object]) -> list[dict]:
     return [fill for fill in fills if isinstance(fill, dict)][:3]
 
 
+def _signal_symbol_states(snapshot: Mapping[str, object]) -> list[dict[str, str]]:
+    """Per-eligible-symbol PAPER decision state from public status only."""
+    raw_eligible = snapshot.get("eligible_symbols")
+    eligible = (
+        [str(symbol) for symbol in raw_eligible if str(symbol).strip()]
+        if isinstance(raw_eligible, list)
+        else []
+    )
+    summary = snapshot.get("signal_summary")
+    summary = summary if isinstance(summary, dict) else {}
+
+    def symbol_set(key: str) -> set[str]:
+        raw = summary.get(key)
+        return (
+            {str(symbol) for symbol in raw if str(symbol).strip()}
+            if isinstance(raw, list)
+            else set()
+        )
+
+    candidates = symbol_set("candidate_symbols")
+    selected = symbol_set("selected_symbols")
+    rejected: dict[str, str] = {}
+    raw_skipped = snapshot.get("skipped_decisions")
+    if isinstance(raw_skipped, list):
+        for item in raw_skipped:
+            if not isinstance(item, Mapping):
+                continue
+            symbol = str(item.get("symbol") or "").strip()
+            reason = str(item.get("reason_code") or "").strip()
+            if symbol and reason and symbol not in rejected:
+                rejected[symbol] = reason
+
+    rows: list[dict[str, str]] = []
+    for symbol in sorted(set(eligible)):
+        if symbol in rejected:
+            state = "rejected_after_signal"
+            reason = rejected[symbol]
+        elif symbol in selected:
+            state = "selected"
+            reason = ""
+        elif symbol in candidates:
+            state = "candidate"
+            reason = ""
+        else:
+            state = "no_signal"
+            reason = ""
+        rows.append({"symbol": symbol, "state": state, "reason_code": reason})
+    return rows
+
+
 def _fresh_count(snapshot: Mapping[str, object]) -> tuple[int, int]:
     freshness = snapshot.get("market_freshness")
     if not isinstance(freshness, dict):
@@ -240,6 +290,21 @@ def _render(snapshot: Mapping, closes: Mapping, *, now: float, remaining_s: floa
         if isinstance(codes, list):
             reasons = [str(code) for code in codes[:3]]
     lines.append(_fit(f"BOT判断 候補{candidates}件" + (f" 主因:{','.join(_reason_ja(code) for code in reasons)}" if reasons else "（条件未達・見送り）"), COLS))
+    state_labels = {
+        "no_signal": "シグナルなし",
+        "candidate": "候補",
+        "selected": "採用",
+        "rejected_after_signal": "候補後却下",
+    }
+    symbol_states = _signal_symbol_states(snapshot)
+    if symbol_states:
+        for row in symbol_states[:4]:
+            detail = state_labels.get(row["state"], row["state"])
+            if row.get("reason_code"):
+                detail += f"({_reason_ja(row['reason_code'])})"
+            lines.append(_fit(f"  {row['symbol']}: {detail}", COLS))
+        if len(symbol_states) > 4:
+            lines.append(_fit(f"  …ほか{len(symbol_states) - 4}市場", COLS))
     skipped_codes: list[str] = []
     skipped_raw = snapshot.get("skipped_reason_codes")
     if isinstance(skipped_raw, list):
