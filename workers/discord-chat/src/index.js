@@ -1,7 +1,7 @@
 import { DiscordBot } from "./bot.js";
 
 const OBJECT_NAME = "singleton";
-const VOICE_MAX_BODY_BYTES = 8192;
+const VOICE_MAX_BODY_BYTES = 16_384;
 
 const validVoiceToken = (value) =>
   typeof value === "string" &&
