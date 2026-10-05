@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { OfflineVoiceApp } from '../app.mjs';
 import { offlineFixtures, syntheticWav } from '../offline-fixtures.mjs';
 import { command } from '../cli.mjs';
@@ -152,7 +153,7 @@ test('commands reject unknown/private payload and configuration without calling 
 });
 function cli(args, input = '') {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [new URL('../cli.mjs', import.meta.url).pathname, ...args], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [fileURLToPath(new URL('../cli.mjs', import.meta.url)), ...args], { stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '', err = ''; child.stdout.on('data', (b) => { out += b; }); child.stderr.on('data', (b) => { err += b; });
     child.on('error', reject); child.on('exit', (code) => resolve({ code, out, err })); child.stdin.end(input);
   });
@@ -172,7 +173,7 @@ test('JSONL control input stays sanitized and EOF always leaves and clears memor
   assert.ok(!result.out.includes('EXAMPLE_PRIVATE')); assert.match(result.out, /session_closed/);
 });
 test('SIGTERM during synthetic capture leaves once and does not restart', { timeout: 10000 }, async (t) => {
-  const child = spawn(process.execPath, [new URL('../cli.mjs', import.meta.url).pathname, '--offline'], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../cli.mjs', import.meta.url)), '--offline'], { stdio: ['pipe', 'pipe', 'pipe'] });
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
   let output = '', signalled = false;
   const exited = new Promise((resolve, reject) => {
