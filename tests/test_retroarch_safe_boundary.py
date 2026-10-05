@@ -496,7 +496,7 @@ def test_scripted_hanjuku_small_render_keeps_aspect_and_contains_at_broadcast_ra
     assert sum(line.startswith('video_scale =') for line in lines) == 1
     assert 'video_smooth = "false"' in lines
     command = adapter._game_command()
-    assert command[command.index('--framerate') + 1] == '30'
+    assert command[command.index('--framerate') + 1] == '15'  # ミラーは放送30fpsの半分(各フレーム2回)で、30fpsはCPU飽和の一因だった
     assert '--fit' not in command  # default contain preserves the source aspect
     assert command.index('--nearest') < command.index('--')
     assert command[command.index('--align') + 1] == 'right'
