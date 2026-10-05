@@ -124,6 +124,9 @@ def test_run_once_uses_temporary_state_and_returns_hash_not_model_text():
     assert observed["status"]["open_positions"] == {"BTC/JPY": "0.01"}
     assert observed["research_env"]["DOCICH_PAPER_RESEARCH_BACKEND"] == "websearch"
     assert observed["research_env"]["DOCICH_REPLY_WEB_SEARCH_BACKEND"] == "cloudflare"
+    assert observed["research_env"]["DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_PROVIDER"] == "ceramic"
+    assert observed["research_env"]["DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_GATEWAY_ID"] == "default"
+    assert "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_BYOK_ALIAS" not in observed["research_env"]
     assert observed["label"] == "RADIO:paper-canary"
     assert observed["agents"] == c.CANARY_AGENT
     assert observed["timeout"] == observed["overall"] == 45
