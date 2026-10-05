@@ -69,9 +69,9 @@ const modules = Object.fromEntries(await Promise.all(Object.entries(config.manif
   })));
 assert.ok(modules[config.manifest.mainModule]);
 const fixture = async (name) => JSON.parse(await readFile(join(root, `test/fixtures/${name}-request.json`), "utf8"));
-const initial = await fixture("initial");
-const delta = await fixture("incremental");
-const foul = await fixture("foul");
+const initial = { ...await fixture("initial"), type: "your_turn" };
+const delta = { ...await fixture("incremental"), type: "your_turn" };
+const foul = { ...await fixture("foul"), type: "your_turn" };
 const secret = "test-only-not-a-deployable-secret"; // Existing fixture value, never uploaded.
 const botId = "fixture-bot-id";
 const temp = await mkdtemp(join(tmpdir(), "tsuitate-built-bundle-"));

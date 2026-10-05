@@ -256,6 +256,93 @@ test("dispatch classification is absent until authentication and JSON parsing su
   }
 });
 
+test("the documented your_turn envelope uses the same initial, delta and foul processing", async () => {
+  const legacy = stateBinding();
+  const typed = stateBinding();
+  for (const fixture of [initialFixture, incrementalFixture]) {
+    const reference = await post(fixture, { binding: legacy });
+    const { result: response, records } = await captureDiagnosticLogs(() => post({
+      ...structuredClone(fixture), type: "your_turn",
+    }, { binding: typed }));
+    assert.equal(reference.status, 200);
+    assert.equal(response.status, reference.status);
+    assert.deepEqual([...response.headers], [...reference.headers]);
+    assert.deepEqual(await response.json(), await reference.json());
+    assert.equal(records.length, 1);
+    assert.equal(records[0].typePresent, true);
+    assert.equal(records[0].typeKind, "string");
+    assert.equal(records[0].typeClass, "your_turn");
+    assert.equal(records[0].errorCode, null);
+    const legacyState = legacy.objects.get(fixture.gameId).state.storage.values;
+    const typedState = typed.objects.get(fixture.gameId).state.storage.values;
+    // Signed body hashes differ; the resulting game/session/observations do not.
+    for (const [key, value] of legacyState) {
+      if (!key.startsWith("request:")) assert.deepEqual(typedState.get(key), value);
+    }
+  }
+
+  const foulLegacy = stateBinding();
+  const foulTyped = stateBinding();
+  await post(initialFixture, { binding: foulLegacy });
+  await post({ ...initialFixture, type: "your_turn" }, { binding: foulTyped });
+  const reference = await post(foulFixture, { binding: foulLegacy });
+  const response = await post({ ...foulFixture, type: "your_turn" }, { binding: foulTyped });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), await reference.json());
+});
+
+test("your_turn keeps raw-byte authentication, duplicate receipts and basePly fencing", async () => {
+  const binding = stateBinding();
+  const initial = { ...initialFixture, type: "your_turn" };
+  const delta = { ...incrementalFixture, type: "your_turn" };
+  const invalidSignature = await post(initial, { binding, signature: `sha256=${"0".repeat(64)}` });
+  assert.equal(invalidSignature.status, 401);
+  assert.equal(binding.objects.size, 0);
+  const [first, duplicate] = await Promise.all([post(initial, { binding }), post(initial, { binding })]);
+  assert.equal(first.status, 200);
+  assert.equal(duplicate.status, 200);
+  assert.deepEqual(await first.json(), await duplicate.json());
+  // Adding/removing the event marker is still a distinct authenticated raw body.
+  const changedBody = await post(initialFixture, { binding });
+  assert.equal(changedBody.status, 409);
+  assert.deepEqual(await changedBody.json(), { error: "request_id_reused" });
+  const before = structuredClone(binding.objects.get(initial.gameId).state.storage.values.get("session:b:0"));
+  const wrongBase = await post({ ...delta, requestId: "typed-wrong-base", basePly: 1,
+    positions: { "2": delta.positions["2"] },
+  }, { binding });
+  assert.equal(wrongBase.status, 409);
+  assert.deepEqual(await wrongBase.json(), { error: "base_ply_mismatch" });
+  assert.deepEqual(binding.objects.get(initial.gameId).state.storage.values.get("session:b:0"), before);
+  assert.equal((await post(delta, { binding })).status, 200);
+});
+
+test("your_turn is exact and does not bypass turn validation or accept other event spellings", async () => {
+  let calls = 0;
+  const neverState = {
+    idFromName() { calls += 1; throw new Error("DO must not be invoked"); },
+    get() { calls += 1; throw new Error("DO must not be invoked"); },
+  };
+  for (const type of ["YOUR_TURN", "Your_Turn", "your_turn ", " your_turn", "game:state", "game:end", "move", "turn"]) {
+    const response = await post({ ...initialFixture, type }, { binding: neverState });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "unknown_webhook_type" });
+  }
+  assert.equal(calls, 0);
+  const malformed = await post({ type: "your_turn" });
+  assert.equal(malformed.status, 400);
+  assert.deepEqual(await malformed.json(), { error: "invalid_identity" });
+  const nested = await post({ payload: { ...initialFixture, type: "your_turn" } }, { binding: neverState });
+  assert.equal(nested.status, 400);
+  assert.deepEqual(await nested.json(), { error: "invalid_identity" });
+  assert.equal(calls, 0);
+  const unsupported = structuredClone(initialFixture);
+  unsupported.type = "your_turn";
+  unsupported.game.type = "ついたて5五";
+  const response = await post(unsupported);
+  assert.equal(response.status, 422);
+  assert.deepEqual(await response.json(), { error: "unsupported_game_type" });
+});
+
 test("first white turn at ply 1 records the masked opponent opening only", async () => {
   const whiteFirstTurn = {
     requestId: "diagnostic-white-opening",
