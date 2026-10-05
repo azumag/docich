@@ -330,19 +330,33 @@ class HanjukuDecisionDiagnosticsTests(unittest.TestCase):
             output = self.module._collect_programs(self.root, self.root, 100)
         self.assertNotIn("decision_plans", output["retro_corner"])
 
-    def test_repeat_detail_is_omitted_before_tactical_evidence_at_output_limit(self):
-        payload = {
-            "corners": {"retro_corner": {"decision_plans": {"large": "x" * 2000}}},
-            "hanjuku_tactical": {"status": "ok", "chapter": 1},
-            "nethack_history": {"daily": {"records": []}, "completed_runs": {"records": []}},
-            "ai": {"recent_events": [], "anomalous_components": {}},
-            "workers": {"details": {}}, "soren91_drop_profile": {"profileStatus": "missing"},
-        }
-        with mock.patch.object(self.module, "MAX_JSON_BYTES", 600):
-            text = self.module._diagnostics_budget(payload)
-        self.assertLessEqual(len(text.encode()), 600)
-        self.assertEqual(payload["hanjuku_tactical"]["status"], "ok")
-        self.assertEqual(payload["corners"]["retro_corner"]["decision_plans"],
+    def test_repeat_detail_is_the_last_thing_the_output_budget_drops(self):
+        def payload(projection):
+            return {
+                "corners": {"retro_corner": {"decision_plans": projection}},
+                "hanjuku_tactical": {"status": "ok", "chapter": 1},
+                "nethack_history": {"daily": {"records": []},
+                                    "completed_runs": {"records": []}},
+                "ai": {"recent_events": [], "anomalous_components": {}},
+                "workers": {"details": {}},
+                "soren91_drop_profile": {"profileStatus": "missing"},
+                "pulse_sink_inputs": {"streams": []},
+            }
+
+        projection = {"status": "available", "window_plans": 128,
+                      "trailing_repeat": {"period": 1, "repeats": 128,
+                                          "signatures": [{"screen_kind": "month_menu",
+                                                          "buttons": ["b"]}]}}
+        size = len(self.module._diagnostics_budget(payload(projection)).encode())
+        with mock.patch.object(self.module, "MAX_JSON_BYTES", size):
+            kept = payload(projection)
+            self.module._diagnostics_budget(kept)
+        self.assertEqual(kept["corners"]["retro_corner"]["decision_plans"], projection)
+        self.assertEqual(kept["hanjuku_tactical"]["status"], "ok")
+        with mock.patch.object(self.module, "MAX_JSON_BYTES", size - 64):
+            dropped = payload(projection)
+            self.module._diagnostics_budget(dropped)
+        self.assertEqual(dropped["corners"]["retro_corner"]["decision_plans"],
                          {"status": "output_omitted"})
 
     def test_screen_kind_allowlist_covers_the_runtime_vocabulary(self):

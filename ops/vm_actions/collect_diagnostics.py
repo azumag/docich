@@ -6497,12 +6497,6 @@ def _diagnostics_budget(payload):
             and "scene_narration" in retro):
         retro["scene_narration"] = {"status": "output_omitted"}
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-    # The repeated-operation projection is the same class of optional detail:
-    # drop it before the current game's tactical evidence is reduced.
-    if (len(text.encode("utf-8")) > MAX_JSON_BYTES and isinstance(retro, dict)
-            and "decision_plans" in retro):
-        retro["decision_plans"] = {"status": "output_omitted"}
-        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     # Keep current game evidence through the older detail reductions first.
     if len(text.encode("utf-8")) > MAX_JSON_BYTES and "hanjuku_tactical" in payload:
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
@@ -6515,6 +6509,14 @@ def _diagnostics_budget(payload):
         payload["pulse_sink_inputs"] = {
             key: value for key, value in pulse.items() if key != 'streams'
         } | {'streams': [], 'truncated': True, 'output_omitted': True}
+    # The repeated-operation projection is the very last detail to go. It is
+    # bounded well under 1 KiB, and it is the only evidence that separates
+    # "corner alive and looping" from "corner progressing" -- the chart
+    # counters and the stall watchdog stay quiet in that state.
+    text = _nethack_history_budget(payload)
+    if (len(text.encode("utf-8")) > MAX_JSON_BYTES and isinstance(retro, dict)
+            and "decision_plans" in retro):
+        retro["decision_plans"] = {"status": "output_omitted"}
     return _nethack_history_budget(payload)
 
 
