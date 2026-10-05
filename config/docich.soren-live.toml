@@ -68,8 +68,6 @@ corners = [
   { id = "hanjuku-hero", adapter = "game", game = "hanjuku-hero" },
   { id = "paper", adapter = "paper", game = "paper-view", live_eligible = false },
   { id = "meriken", adapter = "meriken", game = "soren91" },
-  # beta.tsuitate.info の1局owner。手動検証が済むまで自動抽選には入れない。
-  { id = "tsuitate", adapter = "tsuitate", game = "tsuitate-view", manual_only = true },
   # 音声の再生完了receiptに合わせて全国→11地点→全国を進行。4分は安全上限で、完了時は即復帰。
   { id = "weather", adapter = "weather", game = "weather-view", enabled = true, duration_minutes = 4, fetch_on_start = true, audio_enabled = true },
 ]
@@ -121,6 +119,9 @@ dashboard_port = 8799
 # (tick 内で DOCICH_ALLOW_REAL_AI=1 を付与して実実行する)。失敗時は
 # 決定論的フォールバック文面を読み上げるためコーナーは止まらない。
 script_agents = "opencode:muse-spark-1.3-contributor-free,opencode-go:longcat-2.5-preview-free,opencode-go:space-bunny-free,opencode-go:muse-spark-1.3-contributor,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash"
+# DOCICH_PAPER_SCRIPT_DIRECT_ENABLED=1 のときだけ使うdirect-only候補。
+# 未設定/0では上の既存script_agentsを維持する。本番flagはこのPRでは変更しない。
+direct_script_agents = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
 script_timeout_s = 240
 # 終了後の戦略パラメータ改善の委任先。非空で改善ジョブを切り離し起動する。
 improve_agents = "opencode-go:longcat-2.5-preview-free,opencode-go:space-bunny-free,opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4-flash,opencode-go:muse-spark-1.3-contributor"
