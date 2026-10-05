@@ -200,8 +200,10 @@ PAUSED応答形式は [RetroArch v1.18.0 command.c](https://github.com/libretro/
 viewport経路のRetroArchはwindowed / 標準 `video_scale=3.0` / coreのaspect維持 / overscan crop無効。
 ゲームwindowを配信枠へresizeせず、private Xvfb上の実window寸法を取得して全体をx11grabする。
 dbus-run-sessionの子がwindowを持つため、private display内でRetroArchの唯一のwindowを検査する。
-既存のffplay presenterが映像だけを縦横比維持・黒余白・中央配置する。
-正方形は540×540＋左右210px、4:3は720×540＋左右120px。encoder・共通display・音声busは操作しない。
+既存のffplay presenterが映像だけを縦横比維持でcontainする。通常は黒余白・中央配置だが、
+script botの半熟英雄だけIssue #1789に従って映像を右寄せし、測定した左余白を共有overlayへ露出する。
+元ゲームwindow・映像比率・表示寸法・AI観測・入力座標は変えない。詳細は
+`docs/operations/hanjuku-gap-layout.md`。encoder・共通display・音声busは操作しない。
 AI観測は同じprivate window全体、入力は同じprivate display/windowへ向け、配信座標へ変換しない。
 
 `presentation.json` は `starting → ready → stopped`（異常時 `presentation_failed` / `cleanup_failed`）を記録する。
