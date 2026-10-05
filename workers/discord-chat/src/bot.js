@@ -5,7 +5,6 @@ import {
   forgetScope,
   initializeMemory,
   markSending,
-  memoryContext,
   validContext,
 } from "./memory.js";
 import {
@@ -20,7 +19,7 @@ import {
   sendDiscordReply,
   stripBotMention,
 } from "./discord.js";
-import { generateReply } from "./llm.js";
+import { generateConversationReply } from "./conversation.js";
 
 const FAILURE_REPLY = "今は返答を作れませんでした。少し後でもう一度メンションしてください。";
 const BUSY_REPLY = "今は返答待ちが多いため、少し後でもう一度メンションしてください。";
@@ -530,10 +529,9 @@ export class DiscordBot {
         await sendDiscordReply(this.#token(), event, FORGOTTEN_REPLY);
         return;
       }
-      stage = "memory_context";
-      const context = memoryContext(this.sql, event, seq);
-      stage = "workers_ai";
-      const reply = await generateReply(this.env, context.messages, event);
+      const { reply, context } = await generateConversationReply(
+        this.env, this.sql, event, seq, (nextStage) => { stage = nextStage; },
+      );
       if (!validContext(this.sql, seq, context)) {
         failConversation(this.sql, seq);
         return;
