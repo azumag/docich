@@ -113,12 +113,7 @@ def test_direct_script_chain_off_keeps_legacy_agents(tmp_path, monkeypatch):
         script_direct_agents="cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8",
     )
     seen = {}
-    monkeypatch.setattr(
-        corner_script, "generate_next_narration",
-        lambda *args, **kwargs: seen.setdefault("agents", kwargs["agents"])
-        or {"status": "item", "topic": "相場", "text": "本文です。"},
-    )
-    # setdefault returns the stored string, so use a small explicit helper instead.
+
     def fake_next(*args, **kwargs):
         seen["agents"] = kwargs["agents"]
         return {"status": "item", "topic": "相場", "text": "本文です."}
