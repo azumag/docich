@@ -117,6 +117,9 @@ def run_once(
     effective["DOCICH_PAPER_RESEARCH_BACKEND"] = "websearch"
     effective["DOCICH_REPLY_WEB_SEARCH_BACKEND"] = "cloudflare"
     effective["DOCICH_REPLY_WEB_SEARCH_ENABLED"] = "1"
+    effective["DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_PROVIDER"] = "ceramic"
+    effective["DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_GATEWAY_ID"] = "default"
+    effective.pop("DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_BYOK_ALIAS", None)
 
     researcher = researcher or prepare_research_context
     generator = generator or generate_text
