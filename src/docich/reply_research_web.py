@@ -38,7 +38,8 @@ FETCH_TIMEOUT = 8.0
 SEARCH_BACKENDS = frozenset({"exa", "cloudflare"})
 CLOUDFLARE_SEARCH_PROVIDERS = frozenset({"ceramic", "exa", "linkup"})
 _CF_ACCOUNT_RE = re.compile(r"^[A-Fa-f0-9]{32}$")
-_CF_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_CF_GATEWAY_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_CF_BYOK_ALIAS_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 WEB_FAILURE_REASONS = frozenset({
     'url', 'dns', 'nonpublic_dns', 'deadline', 'http_status', 'encoding',
     'headers', 'body_limit', 'incomplete_body', 'mime', 'charset', 'body',
@@ -316,10 +317,10 @@ def cloudflare_search_worker(
     if (not isinstance(account_id, str) or not _CF_ACCOUNT_RE.fullmatch(account_id)
             or not isinstance(api_token, str) or not 1 <= len(api_token) <= 4096
             or any(not 33 <= ord(c) <= 126 for c in api_token)
-            or not isinstance(gateway_id, str) or not _CF_ID_RE.fullmatch(gateway_id)
+            or not isinstance(gateway_id, str) or not _CF_GATEWAY_ID_RE.fullmatch(gateway_id)
             or provider not in CLOUDFLARE_SEARCH_PROVIDERS
             or (byok_alias and (not isinstance(byok_alias, str)
-                                or not _CF_ID_RE.fullmatch(byok_alias)))):
+                                or not _CF_BYOK_ALIAS_RE.fullmatch(byok_alias)))):
         raise ValueError("search_unavailable")
     if type(timeout) not in (int, float) or not 0 < timeout <= FETCH_TIMEOUT:
         raise ValueError("url")
@@ -585,9 +586,9 @@ def search_public(query, timeout, *, env=None):
         if (not _CF_ACCOUNT_RE.fullmatch(account or "")
                 or not isinstance(token, str) or not 1 <= len(token) <= 4096
                 or any(not 33 <= ord(c) <= 126 for c in token)
-                or not _CF_ID_RE.fullmatch(gateway or "")
+                or not _CF_GATEWAY_ID_RE.fullmatch(gateway or "")
                 or provider not in CLOUDFLARE_SEARCH_PROVIDERS
-                or (byok and not _CF_ID_RE.fullmatch(byok))):
+                or (byok and not _CF_BYOK_ALIAS_RE.fullmatch(byok))):
             return []
         mode = '--search-cloudflare'
         child_env.update({
