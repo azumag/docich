@@ -4474,7 +4474,8 @@ class _Handler(BaseHTTPRequestHandler):
             else:
                 status = adapter_type(self.g, row).manager.stop()
                 if status == "not-active":
-                    self._send_error_json(409, "corner_not_active",
+                    code = "weather_not_active" if row.adapter == "weather" else "tsuitate_not_active"
+                    self._send_error_json(409, code,
                                           f"{label}は実行中ではありません。予約中は開始後に停止できます")
                     return 409
         except RotationError as exc:
@@ -4485,15 +4486,18 @@ class _Handler(BaseHTTPRequestHandler):
                 "manual_queue_conflict": "別の手動予約が残っています",
                 "hanjuku_not_eligible": f"{label}が無効・休止中、または現在利用できません",
             }
-            self._send_error_json(409, "queued_corner_manual_refused",
+            code = "weather_manual_refused" if row.adapter == "weather" else "tsuitate_manual_refused"
+            self._send_error_json(409, code,
                                   reasons.get(exc.reason_code, "コーナーの状態を確認できません"))
             return 409
         except (OSError, ValueError, WeatherCornerError, TsuitateCornerError):
-            self._send_error_json(409, "queued_corner_manual_unavailable",
+            code = "weather_manual_unavailable" if row.adapter == "weather" else "tsuitate_manual_unavailable"
+            self._send_error_json(409, code,
                                   f"{label}の設定または所有者の状態を確認できません")
             return 409
         except Exception:
-            self._send_error_json(500, "queued_corner_manual_failed",
+            code = "weather_manual_failed" if row.adapter == "weather" else "tsuitate_manual_failed"
+            self._send_error_json(500, code,
                                   f"{label}の操作を完了できません")
             return 500
         self._send_json(200, {
