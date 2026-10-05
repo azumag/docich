@@ -50,8 +50,8 @@ Each returned item comes from a `reply_research_web.WebBroker` receipt. The
 adapter rechecks the receipt's full fetched-text SHA-256, derives a bounded
 excerpt, hashes that excerpt separately, and keeps the original body/text hashes.
 
-`query_indexes` contains only the zero-based indexes of the caller-supplied
-queries that discovered the URL. It is provenance for material grouping, not a
+`query_indexes` contains only the zero-based indexes of the normalized,
+deduplicated `queries_used` entries that discovered the URL. It is provenance for material grouping, not a
 semantic label or permission. For example PAPER uses it to distinguish its
 general-market query from its held-asset query while sharing one four-fetch
 budget.
