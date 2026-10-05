@@ -48,6 +48,33 @@ class PresentationPixels(unittest.TestCase):
                 for x,y in [(0,top+ch//2),(cw-1,top+ch//2),(cw//2,top),(cw//2,top+ch-1)]:
                     self.assertEqual(outputs[1][(y*cw+x)*3:(y*cw+x)*3+3],bytes((255,0,0)))
 
+    def test_measured_right_projection_removes_only_left_black_padding(self):
+        for w, h in [(299, 224), (300, 300), (1200, 400)]:
+            with self.subTest(native=(w,h)):
+                cw, ch = measured_contain_size(w, h, 960, 540)
+                self.assertEqual((cw, ch), ((721, 540) if w == 299 else (540, 540) if w == 300 else (960, 320)))
+                raw = bytearray(bytes((255, 255, 255, 255)) * w * h)
+                for y in range(h):
+                    for x in range(w):
+                        if x < 3 or x >= w-3 or y < 3 or y >= h-3:
+                            offset=(y*w+x)*4;raw[offset:offset+4]=bytes((0,0,255,255))
+                crop_x = 960 - cw
+                outputs=[]
+                for crop in ('', f',crop={cw}:540:{crop_x}:0:exact=1'):
+                    out=subprocess.run(['ffmpeg','-v','error','-f','rawvideo','-pix_fmt','bgra',
+                        '-s',f'{w}x{h}','-i','pipe:0','-vf',contain_filter(960,540,nearest=True,align='right')+crop,
+                        '-frames:v','1','-pix_fmt','rgb24','-f','rawvideo','-'],
+                        input=raw,capture_output=True,check=True,timeout=20).stdout
+                    outputs.append(out)
+                expected = b''.join(
+                    outputs[0][(y*960+crop_x)*3:(y*960+crop_x+cw)*3]
+                    for y in range(540)
+                )
+                self.assertEqual(outputs[1], expected)
+                top=(540-ch)//2
+                for x,y in [(0,top+ch//2),(cw-1,top+ch//2),(cw//2,top),(cw//2,top+ch-1)]:
+                    self.assertEqual(outputs[1][(y*cw+x)*3:(y*cw+x)*3+3],bytes((255,0,0)))
+
     def test_nearest_contain_preserves_small_source_aspect_and_all_edges(self):
         # Odd native width must not be rounded down by a YUV test generator.
         # Include a non-4:3 source to catch accidental fixed-TV stretching.
@@ -151,6 +178,11 @@ class PresentationPixels(unittest.TestCase):
             'pad=960:540:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1',
         )
         self.assertEqual(
+            contain_filter(960, 540, nearest=True, align='right'),
+            'scale=960:540:force_original_aspect_ratio=decrease:flags=neighbor,'
+            'pad=960:540:ow-iw:(oh-ih)/2:color=black,setsar=1',
+        )
+        self.assertEqual(
             contain_filter(960, 540, cell_stretch=2.0),
             'scale=iw*2:ih:flags=neighbor,'
             'scale=960:540:force_original_aspect_ratio=decrease,'
@@ -196,6 +228,9 @@ class CellAspectOptionTests(unittest.TestCase):
 
     def test_default_keeps_native_filter(self):
         self.assertIsNone(self._parse([]).cell_stretch)
+
+    def test_right_alignment_option_parses(self):
+        self.assertEqual(self._parse(['--align', 'right']).align, 'right')
 
     def test_invalid_value_rejected(self):
         with self.assertRaises(SystemExit):
