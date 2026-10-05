@@ -123,18 +123,18 @@ export async function cloudflareFetchRequest({
       }
       chunks.push(value);
     }
+
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { status: response.status, body: bytes };
   } finally {
+    for (const chunk of chunks) erase(chunk);
     reader.releaseLock?.();
   }
-
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-    erase(chunk);
-  }
-  return { status: response.status, body: bytes };
 }
 
 export class CloudflareWhisperSTT {
