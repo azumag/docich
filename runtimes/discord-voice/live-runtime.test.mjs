@@ -179,3 +179,81 @@ for (const scenario of cases) {
     }
   });
 }
+
+
+test('receive mode creates STT before login, attaches after voice ready, and stops once', async () => {
+  const trace = [];
+  const signalTarget = new EventEmitter();
+
+  class FakeClient extends EventEmitter {
+    async login() {
+      trace.push('login');
+      return 'ok';
+    }
+    destroy() {
+      trace.push('client_destroy');
+    }
+  }
+
+  const connection = new EventEmitter();
+  connection.state = { status: VoiceConnectionStatus.Ready };
+  connection.destroy = () => {
+    connection.state.status = VoiceConnectionStatus.Destroyed;
+    trace.push('connection_destroy');
+  };
+  connection.rejoin = () => true;
+
+  const stt = { transcribe: async () => 'fixture' };
+  let receiverStops = 0;
+  const receiveEnv = {
+    ...env(),
+    DOCICH_DISCORD_VOICE_TEST_TONE: '0',
+    DOCICH_DISCORD_VOICE_RECEIVE_ENABLED: '1',
+    DOCICH_DISCORD_VOICE_RECEIVE_USER_ID: '323456789012345678',
+  };
+
+  const running = runLiveVoice(receiveEnv, {
+    signalTarget,
+    createStt: () => {
+      trace.push('create_stt');
+      return stt;
+    },
+    createClient: () => new FakeClient(),
+    waitClientReady: async () => {
+      trace.push('client_ready');
+    },
+    resolveVoiceChannel: async () => ({
+      guild: { id: receiveEnv.DOCICH_DISCORD_VOICE_GUILD_ID },
+      channel: { id: receiveEnv.DOCICH_DISCORD_VOICE_CHANNEL_ID },
+    }),
+    joinVoice: ({ config }) => {
+      trace.push(config.receiveEnabled ? 'join_receive' : 'join_deaf');
+      return connection;
+    },
+    waitVoiceReady: async () => {
+      trace.push('voice_ready');
+    },
+    attachReceiver: ({ targetUserId, stt: receivedStt, debugTranscript }) => {
+      assert.equal(targetUserId, receiveEnv.DOCICH_DISCORD_VOICE_RECEIVE_USER_ID);
+      assert.equal(receivedStt, stt);
+      assert.equal(debugTranscript, false);
+      trace.push('receiver_attached');
+      return {
+        stop() {
+          receiverStops += 1;
+          trace.push('receiver_stopped');
+        },
+      };
+    },
+  });
+
+  await waitFor(() => trace.includes('receiver_attached'));
+  assert.ok(trace.indexOf('create_stt') < trace.indexOf('login'));
+  assert.ok(trace.indexOf('voice_ready') < trace.indexOf('receiver_attached'));
+  assert.ok(trace.includes('join_receive'));
+
+  signalTarget.emit('SIGINT');
+  assert.equal(await running, 0);
+  assert.equal(receiverStops, 1);
+  assert.ok(trace.indexOf('receiver_stopped') < trace.indexOf('connection_destroy'));
+});
