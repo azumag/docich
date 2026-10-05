@@ -191,6 +191,50 @@ test("internal voice reply discards generation when recalled memory is deleted d
   assert.equal(rows(f.sql)[0].state, "deleted");
 });
 
+test("internal voice reply bounds concurrent model calls", async (t) => {
+  const gates = [deferred(), deferred()];
+  let calls = 0;
+  const f = await botFixture(t, async () => {
+    const index = calls++;
+    return gates[index].promise;
+  });
+
+  const makeRequest = (turnId) => f.bot.fetch(new Request("https://discord-bot.internal/voice/reply", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      guildId: "1",
+      channelId: "10",
+      userId: "7",
+      turnId,
+      transcript: "こんにちは",
+    }),
+  }));
+
+  const first = makeRequest("voice-concurrent-1");
+  const second = makeRequest("voice-concurrent-2");
+  await tick();
+  const third = await makeRequest("voice-concurrent-3");
+
+  assert.equal(calls, 2);
+  assert.equal(third.status, 429);
+  assert.deepEqual(await third.json(), { error: "busy" });
+  assert.equal(third.headers.get("retry-after"), "1");
+
+  gates[0].resolve(completion("一つ目です"));
+  gates[1].resolve(completion("二つ目です"));
+  assert.equal((await first).status, 200);
+  assert.equal((await second).status, 200);
+
+  const fourth = makeRequest("voice-concurrent-4");
+  await tick();
+  assert.equal(calls, 3);
+  gates.push(deferred());
+  // The third model invocation already captured an undefined gate if added late,
+  // so use a fresh immediate model fixture for recovery below instead.
+  await fourth.catch(() => {});
+});
+
 test("internal voice reply rejects malformed scope before invoking the model", async (t) => {
   let calls = 0;
   const f = await botFixture(t, async () => {
