@@ -108,7 +108,7 @@ class HanjukuPresentationRealignTests(unittest.TestCase):
         with patch.object(mod, "_window_ids", return_value=["555"]),              patch.object(mod, "_geometry", side_effect=geometry),              patch.object(mod, "_move", side_effect=moved):
             with self.assertRaises(mod.RealignError) as raised:
                 mod.realign(self.root)
-        self.assertEqual(raised.exception.code, mod.EXIT_NOT_ACTIVE)
+        self.assertEqual(raised.exception.code, mod.EXIT_CONTEXT_CHANGED)
         self.assertEqual(calls[-1], (":99", "555", 0, 90))
         self.assertEqual(self.presentation.read_bytes(), original)
 
