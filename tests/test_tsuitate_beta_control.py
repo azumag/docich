@@ -62,9 +62,20 @@ class TestBridge(unittest.TestCase):
                 self.assertEqual(json.loads(opener.open.call_args.args[0].data), {"action": "start", "runId": "one"})
 
     def test_response_projection_and_no_redirect_or_raw_error(self):
-        status = {"state": "stopped", "runId": None, "gameId": None, "brainVersion": "tsuitate-brain-v1",
-                  "completedGames": 0, "reservedGames": 0, "stopRequested": False, "readyForNextRun": True,
-                  "token": "fixture-private", "opponentPieces": [1]}
+        status = {"state": "playing", "runId": "one", "gameId": "game-one", "brainVersion": "tsuitate-brain-v1",
+                  "completedGames": 0, "reservedGames": 1, "stopRequested": False, "readyForNextRun": False,
+                  "token": "fixture-private", "opponentPieces": [1],
+                  "playerView": {
+                      "yourColor": "sente",
+                      "yourPieces": [{"square": "5i", "role": "king", "private": "drop-me"}],
+                      "yourHand": {"pawn": 2},
+                      "turn": "sente", "moveNumber": 7,
+                      "clocks": {"senteMs": 123000, "goteMs": 125000, "running": "sente", "serverTime": 1000},
+                      "fouls": {"you": 1, "opponent": 2},
+                      "youInCheck": False, "opponentInCheck": True, "status": "playing",
+                      "opponentPieces": [{"square": "5a", "role": "king"}],
+                      "rawCheckpoint": "do-not-proxy",
+                  }}
         class Response(io.BytesIO):
             def __enter__(self): return self
             def __exit__(self, *_): self.close()
@@ -72,11 +83,41 @@ class TestBridge(unittest.TestCase):
         with mock.patch.dict(os.environ, ENV), mock.patch.object(control.urllib.request, "build_opener", return_value=opener):
             result = control.call_beta_control("status")
         self.assertNotIn("token", result); self.assertNotIn("opponentPieces", result)
+        self.assertEqual(result["playerView"], {
+            "yourColor": "sente", "yourPieces": [{"square": "5i", "role": "king"}],
+            "yourHand": {"pawn": 2}, "turn": "sente", "moveNumber": 7,
+            "clocks": {"senteMs": 123000, "goteMs": 125000, "running": "sente", "serverTime": 1000},
+            "fouls": {"you": 1, "opponent": 2}, "youInCheck": False,
+            "opponentInCheck": True, "status": "playing",
+        })
+        self.assertNotIn("opponentPieces", result["playerView"])
+        self.assertNotIn("rawCheckpoint", result["playerView"])
+        self.assertNotIn("private", result["playerView"]["yourPieces"][0])
         self.assertEqual(opener.open.call_args.kwargs["timeout"], 5)
         with self.assertRaises(control.ControlError): control.NoRedirect().redirect_request(None, None, None, None, None, None)
         opener.open.side_effect = RuntimeError("fixture-private-URL-token")
         with mock.patch.dict(os.environ, ENV), mock.patch.object(control.urllib.request, "build_opener", return_value=opener):
             with self.assertRaisesRegex(control.ControlError, "^control_unavailable$"): control.call_beta_control("status")
+
+
+    def test_player_view_rejects_malformed_known_fields(self):
+        valid = {
+            "yourColor": "sente", "yourPieces": [{"square": "5i", "role": "king"}],
+            "yourHand": {}, "turn": "sente", "moveNumber": 1,
+            "clocks": {"senteMs": 1, "goteMs": 1, "running": "sente", "serverTime": 1},
+            "fouls": {"you": 0, "opponent": 0}, "youInCheck": False,
+            "opponentInCheck": False, "status": "playing",
+        }
+        self.assertEqual(control.project_player_view(valid)["yourPieces"], [{"square": "5i", "role": "king"}])
+        for bad in [
+            {**valid, "yourPieces": [{"square": "5z", "role": "king"}]},
+            {**valid, "yourHand": {"king": 1}},
+            {**valid, "moveNumber": 0},
+            {**valid, "clocks": {**valid["clocks"], "running": "gote"}},
+            {**valid, "fouls": {"you": 11, "opponent": 0}},
+        ]:
+            with self.assertRaisesRegex(control.ControlError, "^control_unavailable$"):
+                control.project_player_view(bad)
 
 
 class TestWebUiGate(unittest.TestCase):
