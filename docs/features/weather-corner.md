@@ -192,7 +192,7 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
 ## Production rotation登録（2026-10-03）
 
 `config/docich.soren-live.toml`の既存queue rotationへweatherを追加する。
-`duration_minutes=1`, `fetch_on_start=true`, `audio_enabled=false`。
+`duration_minutes=4`, `fetch_on_start=true`, `audio_enabled=true`。4分は安全上限で、13項目の音声が完了すればその時点で復帰する。
 他cornerと同じrolling 24時間cooldown、共通program slot、GameSwitchのラウンド境界待ち・復帰を使う。
 独立timer、他ゲームの強制終了、配信基盤の再起動は追加しない。
 
@@ -205,15 +205,21 @@ CLIと同じsingle-flight publisherを呼ぶ。固定JMA host/11 office、既存
 ゲームの境界待ち中にsnapshotが失効した場合は既存preflight/readinessが拒否し、既存rollback/reconcile経路で処理する。
 取得成功は実際の開始成功を保証しない。
 
-owned viewerは`/broadcast`を開き、初回の有効poll後、全国4秒→11地点各4秒→全国の48秒周期を自動開始する。
-1分は既存catalogで選べる最短枠で、この視覚巡回一巡に足りる。手動選択・全国戻り・停止、表示失効やoverflowで巡回を停止する。
-通常の`/`は手動7秒巡回を維持する。再pollは実行中の巡回をリセットしない。
-実ブラウザ描画・long text fit・配信frame・開始/終了/ゲーム復帰は未実測。
+owned viewerは`/broadcast`を開き、固定タイマーではなくweather ownerの音声deliveryを表示cueとして使う。
+表示順は全国導入（item 0）→札幌〜那覇の11地点（item 1〜11）→全国のまとめ（item 12）。
+各地点では先に地図をその地点へフォーカスし、そのitemの音声再生完了receiptが`played`になるまで同じ地点を保持する。
+`played`後にownerの`next_index`だけが進み、次のscheduler pollで次itemをenqueueするため、その間にviewerが次地点へ移る。
+通常の`/`は従来どおり手動7秒巡回を維持する。
 
-音声は今回有効化しない。現行11都市取得の13項目原稿は625文字（最長73文字）。
-仮に6文字/秒でも読み上げだけで約104秒となり、TTS/queue待ちを含む所要は未実測なので1分で完了を保証できない。
-これは時間の推定で、音声再生証拠ではない。shared consumerには正確な開始cueがなく、画面は引き続き
-「音声cue未接続」と表示する。音声を有効にする場合は所要枠とcue契約を別途検証する。
+viewerの`GET /api/weather-cue`は固定の`weather_corner.json`だけをbounded readし、
+自身のruntime id / generation / leaseとownerの`weather_runtime_identity`が完全一致するactive実行だけを受理する。
+レスポンスは`status`と0〜12のitem ordinalだけで、runtime/lease id、音声本文、request payloadは返さない。
+viewerは250ms間隔でこのcueを確認するが、地点進行そのものはtimerではなくownerの`next_index`に従う。
+
+現行11都市の13項目原稿は長いためproduction枠の上限を4分へ広げる。
+13項目すべてが`played`なら`audio-completed`で即復帰し、確認済みのterminal audio failureなら
+`audio-unavailable`で復帰する。manual stop、forecast expiry、GameSwitch ownership transitionと4分上限は従来どおり安全境界として残す。
+実VMでのTTS所要、配信frame上のフォーカス切替、最後の音声から元画面へ戻る実測は別途受入確認する。
 
 出典・編集表記は[気象庁利用規約](https://www.jma.go.jp/jma/kishou/info/coment.html)に従う既存表記を維持。
 地図は[Natural Earth Public Domain](https://www.naturalearthdata.com/about/terms-of-use/)の既存同梱データを維持する。
