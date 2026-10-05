@@ -62,7 +62,9 @@ namespaceには公開worker/chat/memory/packageの4ファイルだけをread-onl
 
 Python 3.11のurllib既定CONNECT（HTTP/1.0/Hostなし）には依存せず、研究専用HTTPS handlerが固定`CONNECT opencode.ai:443 HTTP/1.1`と単一Hostだけを送る。bridge/egressの拒否条件を緩めない。private/他authority・追加認証headerを拒否し、CONNECT応答header8KiB上限・TLS証明書/hostname検証・既存wall deadlineを維持する。認証なしの実localhost→Unix bridge handshakeと、Python 3.11/3.12 Ubuntu CIで互換性を検査する。
 
-旧4host allowlistを撤廃。検索は公式OpenCodeと同じ既存Exa hosted MCPの固定 `https://mcp.exa.ai/mcp` に、認証なし・固定 `web_search_exa` requestを送る。新しい検索キー、有料契約、Google scrapingは追加しない。未確認の契約条件・料金を無料と断言しない。後続のkeyless公開preflightは検索1回・RFC本文GET1回で候補を取得したが、本文brokerは拒否しreceiptは得られなかった。拒否原因は旧診断から確定できず、上限・SSRF・charset等の検証を緩和しない。
+旧4host allowlistを撤廃。既定の検索backendは従来どおり、公式OpenCodeと同じ既存Exa hosted MCPの固定 `https://mcp.exa.ai/mcp` に認証なし・固定 `web_search_exa` requestを送る。新しい検索キー、有料契約、Google scrapingは既定経路へ追加しない。未確認の契約条件・料金を無料と断言しない。後続のkeyless公開preflightは検索1回・RFC本文GET1回で候補を取得したが、本文brokerは拒否しreceiptは得られなかった。拒否原因は旧診断から確定できず、上限・SSRF・charset等の検証を緩和しない。
+
+2026-10-06追加の `DOCICH_REPLY_WEB_SEARCH_BACKEND=cloudflare` は明示opt-inで、Cloudflare Web Search RESTの固定 `api.cloudflare.com/client/v4/accounts/<account>/ai/websearch/` だけを呼ぶ。providerは `ceramic/exa/linkup` のallowlist、limitは8、gateway/provider/account/credentialをモデル出力から選ばせない。検索childへ渡すのはpurpose-specificな `DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_*` 設定だけで、Discord token、OpenCode key、proxy等は継承しない。本文fetch workerは従来どおりcredential-free。Cloudflare backendを未設定・不正設定・失敗時に別providerやOpenCodeへ暗黙fallbackしない。production既定はExaのままで、この追加だけではCloudflareへの実call・課金・本番切替を行わない。
 
 検索結果は候補選択だけで、snippetを本文根拠にしない。モデルが勝手に提案したURLは検索候補登録なしでは取得不可。本文workerはcredential-freeで固定GETのみ。HTTPS443、認証userinfoなし、秘密queryなし、control/backslashなし。全DNS回答がglobalであることを検査し、multicast/reserved/IPv4-mapped/6to4/Teredoを除外。検査したsockaddrへ直接接続し再解決しない。TLS hostname/証明書を検証、redirectは追わない。
 
