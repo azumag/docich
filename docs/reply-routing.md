@@ -68,6 +68,12 @@ Python 3.11のurllib既定CONNECT（HTTP/1.0/Hostなし）には依存せず、�
 
 検索結果は候補選択だけで、snippetを本文根拠にしない。モデルが勝手に提案したURLは検索候補登録なしでは取得不可。本文workerはcredential-freeで固定GETのみ。HTTPS443、認証userinfoなし、秘密queryなし、control/backslashなし。全DNS回答がglobalであることを検査し、multicast/reserved/IPv4-mapped/6to4/Teredoを除外。検査したsockaddrへ直接接続し再解決しない。TLS hostname/証明書を検証、redirectは追わない。
 
+### Web-only direct evidence（opt-in）
+
+`DOCICH_REPLY_WEB_DIRECT_ENABLED=1` かつJEVが単発会話を `web` と判定した場合だけ、research model/OpenCodeを起動しない経路を使える。project済みの最後のuser本文を1回の検索queryとして使い、検索結果は従来どおりURL候補にしか使わない。上位候補を既存credential-free WebBrokerで最大3件取得し、各本文の先頭最大1024文字をbroker receiptのhashと既存 `verify_quotes()` の完全一致検査に通してからEvidenceへ入れる。したがって検索snippet/description、モデル自己申告、未取得URLを根拠へ昇格しない。
+
+初版は意味を黙って切り詰めないため、正規化後queryが256文字を超える場合は `input_limit` でholdする。検索/fetch失敗時にOpenCodeへ暗黙fallbackしない。配信batchの `comment_scopes`、`code`、`web_and_code` はこのdirect経路の対象外で、既存の隔離research pathを維持する。これにより、まず「公開Webだけで答えられる単発質問」のOpenCode依存だけを明示opt-inで外し、batch/RADIOへの拡張は別受入に分離する。
+
 workerはproxy/cookie/Authorization/親環境を継承せず、localhost/RFC1918/link-local/metadata/internal servicesに接続しない。MIMEはUTF-8 plain/html、本文128KiB、抽出text16KiB、1取得8秒。大きい記事、redirect、認証/paywall、PDF、他charset等は取得不可として別資料を試す。上限後は不足説明する。短命プロセスのtimeout/outputlimit/successすべてでprocess group kill＋reapする。search workerも同じDNS/TLS/deadline/環境境界を使う。
 
 ## 外側隔離
