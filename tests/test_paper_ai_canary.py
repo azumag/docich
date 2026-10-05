@@ -19,6 +19,15 @@ def _env():
     }
 
 
+def test_readiness_accepts_direct_secret_file_without_reading_it():
+    env = _env()
+    env.pop("CLOUDFLARE_API_TOKEN")
+    env["CLOUDFLARE_API_TOKEN_FILE"] = "/run/secrets/cloudflare"
+    result = c.readiness(env)
+    assert result["direct_credential_present"] is True
+    assert "/run/secrets" not in json.dumps(result)
+
+
 def test_readiness_is_secret_free():
     result = c.readiness(_env())
     encoded = json.dumps(result, sort_keys=True)
@@ -129,6 +138,9 @@ def test_run_once_uses_temporary_state_and_returns_hash_not_model_text():
         '{"summary":""}',
         '{"summary":"ok","extra":1}',
         '{"summary":1}',
+        'prefix {"summary":"ok"}',
+        '{"summary":"ok"} suffix',
+        '{"summary":"a","summary":"b"}',
     ],
 )
 def test_output_contract_fails_closed(raw):
