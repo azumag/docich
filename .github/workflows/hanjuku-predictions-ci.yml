@@ -102,3 +102,16 @@ jobs:
         run: |
           python3 -m pytest -q tests/test_hanjuku_predictions.py tests/test_hanjuku_script.py tests/test_hanjuku_chart_bot.py tests/test_hanjuku_sortie_evidence.py tests/test_hanjuku_card_damage.py tests/test_hanjuku_card_damage_gate.py tests/test_hanjuku_defender_succession.py tests/test_hanjuku_diagnostics.py tests/test_hanjuku_fixed_narration_disabled.py tests/test_retro_corner.py tests/test_corner_rotation.py ops/vm_actions/tests/test_collect_diagnostics.py ops/vm_actions/tests/test_diagnostics_projection_review.py ops/vm_actions/tests/test_hanjuku_narration_diagnostics.py
           python3 -m pytest -q ops/vm_actions/tests/test_hanjuku_scene_diagnostics.py
+      - name: Current-main Hanjuku quality acceptance (verification-only)
+        env:
+          PYTHONPATH: src
+        run: |
+          python3 -m pytest -q \
+            tests/test_hanjuku_card_damage_gate.py \
+            tests/test_hanjuku_defender_egg_preempt.py \
+            tests/test_hanjuku_egg_hold.py \
+            tests/test_hanjuku_boss_egg_preparation.py \
+            tests/test_hanjuku_soldier_receipts.py \
+            tests/test_hanjuku_scene_commentary.py \
+            tests/test_hanjuku_scene_process.py \
+            tests/test_hanjuku_scene_dispatcher.py
