@@ -558,7 +558,8 @@ def research(turns, scope: str, *, env, timeout_sec: float = 45.0, comment_scope
             key_name = "OPENCODE_GO_API_KEY" if model.startswith("opencode-go/") else "OPENCODE_API_KEY"
             child_env = {"PATH": "/usr/local/bin:/usr/bin:/snap/bin:/bin", "LANG": "C.UTF-8", key_name: key}
             with EgressProxy(socket_path):
-                broker = WebBroker(workspace / "web-unused.sock", deadline)
+                broker_options = {"diagnostic": diagnostic} if diagnostic is not None else {}
+                broker = WebBroker(workspace / "web-unused.sock", deadline, **broker_options)
                 # Preserve the existing four-argument runner contract when diagnostics are off.
                 run_options = {"diagnostic": diagnostic} if diagnostic is not None else {}
                 model_call = lambda prompt, remaining: _run(argv, prompt.encode(), child_env, remaining, **run_options)

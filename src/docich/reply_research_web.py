@@ -33,6 +33,21 @@ MAX_TEXT = 16384
 MAX_REPLY = 65536
 MAX_FETCHES = 4
 FETCH_TIMEOUT = 8.0
+WEB_FAILURE_REASONS = frozenset({
+    'url', 'dns', 'nonpublic_dns', 'deadline', 'http_status', 'encoding',
+    'headers', 'body_limit', 'incomplete_body', 'mime', 'charset', 'body',
+    'text_limit', 'worker_output_limit', 'transport_failure', 'invalid_worker',
+})
+
+
+def failure_reason(error):
+    """Never export exception text, URLs, headers or DNS addresses."""
+    if (type(error) is ValueError and len(error.args) == 1
+            and type(error.args[0]) is str and error.args[0] in WEB_FAILURE_REASONS):
+        return error.args[0]
+    if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
+        return 'deadline'
+    return 'transport_failure'
 
 
 def canonical_url(value: str) -> str | None:
@@ -330,8 +345,9 @@ def _read_line(conn, limit):
 
 
 class WebBroker:
-    def __init__(self, path: Path, deadline: float):
+    def __init__(self, path: Path, deadline: float, *, diagnostic=None):
         self.path, self.deadline = Path(path), deadline
+        self._diagnostic = diagnostic
         self._lock = threading.Lock()
         self._gate = threading.Lock()
         self._processes = set()
@@ -358,6 +374,7 @@ class WebBroker:
         if url is None or not self._gate.acquire(blocking=False):
             return None
         proc = None
+        reason = 'invalid_worker'
         try:
             with self._lock:
                 if self._closing or url not in self._candidates:
@@ -380,6 +397,15 @@ class WebBroker:
                     _kill(proc)
             output = _bounded_output(proc, min(self.deadline, time.monotonic() + timeout))
             if proc.returncode != 0 or len(output) > 262144:
+                # Failed workers can report only a fixed enum. It never creates
+                # a receipt, even if success fields appear beside the reason.
+                value = json.loads(output)
+                if (proc.returncode == 1 and type(value) is dict
+                        and set(value) == {'status', 'reason'}
+                        and value['status'] == 'unavailable'
+                        and type(value['reason']) is str
+                        and value['reason'] in WEB_FAILURE_REASONS):
+                    reason = value['reason']
                 return None
             value = json.loads(output)
             body = base64.b64decode(value['body_b64'], validate=True)
@@ -396,8 +422,10 @@ class WebBroker:
                 if self._closing:
                     return None
                 self._receipts[receipt.receipt] = receipt
+            reason = None
             return receipt
-        except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired):
+        except (OSError, ValueError, TypeError, KeyError, RecursionError, subprocess.TimeoutExpired) as error:
+            reason = failure_reason(error)
             return None
         finally:
             if proc is not None:
@@ -406,6 +434,9 @@ class WebBroker:
                 with self._lock:
                     self._processes.discard(proc)
             self._gate.release()
+            if proc is not None and reason is not None:
+                from .reply_research_diagnostic import emit
+                emit(self._diagnostic, {'stage': 'web_fetch', 'web_reason': reason})
 
 
 def search_public(query, timeout):
@@ -437,8 +468,8 @@ def main():
         else:
             return 2
         print(json.dumps(value, ensure_ascii=False)); return 0
-    except Exception:
-        print('{"status":"unavailable"}'); return 1
+    except Exception as error:
+        print(json.dumps({'status': 'unavailable', 'reason': failure_reason(error)})); return 1
 
 
 if __name__ == '__main__':

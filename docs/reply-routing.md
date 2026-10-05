@@ -108,6 +108,12 @@ VM棚卸し結果・運用影響はprivateな親引継ぎで扱い、公開文�
 
 ### 任意のresearch診断
 
+Web本文workerの失敗も `web_fetch` / `web_reason` の固定enumだけを、kill/reap完了後に任意callbackへ渡す。workerの非zero終了と理由コードは成功receiptにならず、余分な成功フィールド・未知理由・深すぎるJSONも拒否する。本文・URL・例外文字列は診断に含めない。本文16KiB・wire128KiB・MIME・圧縮拒否・SSRF・TLS・deadlineは維持する。
+
+[資格情報なし公開取得記録](evidence/reply-public-retrieval-2026-10-05.json)では、無料keyless Exa実検索の候補からRFC6585公式HTMLを実GETし、親brokerがbody/text hash照合後にreceiptを発行、429の完全一致引用を検証した。改変hashは拒否された。本文15,017 bytes、1131ms、残worker0。JEV・調査モデル・persona回答は呼んでおらず、providerを含むE2E受入ではない。
+
+同じ保護条件でRFC6585 txtは `text_limit`、IANA status registry txtは `encoding` として拒否された。サイズや圧縮の保護を緩めて成功扱いにはしない。旧RFC preflightには失敗理由が保存されていないため、当時と同じ原因だったとは断定できない。今回の公開取得は合計Exa3回・GET4回、model/JEV/回答0、新規認証/SSH/本番操作0。実JEV→登録済Go調査→persona回答の一件受入は追加課金許可が必要な残件でDraftを維持する。
+
 `research(..., diagnostic=callback)` は、CLI spawn/running/exit/reaped、model呼出し境界とproposal検証、固定failure理由を任意callbackへ渡す。providerのJSONL errorは既知のerror名・HTTP status整数・transport code・固定分類だけを投影し、observerが拒否する前にも分類を保存できる。終了コード・経過msは上限付き整数で、prompt・argv・環境・PID・stderr・生成文・message/body/header/path/URLは含めない。providerの自己申告は診断metadataであり、HTTP POSTの実測や引用取得の証明ではない。
 
 既定ではcallbackも永続logもない。診断だけのJSONL解析は返り値を変えず、callback失敗も既存の失敗時結果・kill/reapを変えない。proposal不正は内側の固定理由を残し、最終結果は従来どおり`research_unavailable`とする。資格情報・sandbox・egress/model/source allowlist・API fallback・personaの変更はない。単体テストはローカル合成Python子プロセスだけを使用する。

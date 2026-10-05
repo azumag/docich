@@ -170,6 +170,80 @@ def test_worker_receipt_corruption_holds(monkeypatch,tmp_path,change):
     assert broker.fetch(URL) is None and not broker.receipts and not broker._processes
 
 
+@pytest.mark.parametrize('reason', sorted(w.WEB_FAILURE_REASONS))
+def test_worker_failure_enum_reaches_metadata_after_reap(monkeypatch, tmp_path, reason):
+    rows = []
+    code = 'import json,sys;print(json.dumps('+repr({'status':'unavailable','reason':reason})+'));sys.exit(1)'
+    fixture_process(monkeypatch, code=code)
+    broker = w.WebBroker(tmp_path/'s', time.monotonic()+2, diagnostic=rows.append)
+    observe(broker)
+    assert broker.fetch(URL) is None
+    assert rows == [{'stage':'web_fetch','web_reason':reason}]
+    assert not broker.receipts and not broker._processes
+
+
+@pytest.mark.parametrize('payload', [
+    {'status':'unavailable','reason':'PRIVATE secret URL'},
+    {'status':'unavailable','reason':['text_limit']},
+    {'status':'unavailable','reason':'text_limit','text':'PRIVATE'},
+    worker_value(),
+])
+def test_failed_worker_cannot_forge_receipt_or_leak_reason(monkeypatch, tmp_path, payload):
+    rows = []
+    fixture_process(monkeypatch, code='import json,sys;print(json.dumps('+repr(payload)+'));sys.exit(1)')
+    broker = w.WebBroker(tmp_path/'s', time.monotonic()+2, diagnostic=rows.append)
+    observe(broker)
+    assert broker.fetch(URL) is None
+    assert rows == [{'stage':'web_fetch','web_reason':'invalid_worker'}]
+    assert not broker.receipts and not broker._processes
+
+
+@pytest.mark.parametrize('error,reason', [
+    (ValueError('text_limit'), 'text_limit'),
+    (ValueError('PRIVATE secret URL'), 'transport_failure'),
+    (OSError('PRIVATE secret URL'), 'transport_failure'),
+    (TimeoutError('PRIVATE secret URL'), 'deadline'),
+])
+def test_worker_main_emits_only_fixed_failure_enum(monkeypatch, capsys, error, reason):
+    monkeypatch.setattr(w.sys, 'argv', ['worker','--fetch',URL,'1'])
+    def fail(*args): raise error
+    monkeypatch.setattr(w, 'fetch_worker', fail)
+    assert w.main() == 1
+    assert json.loads(capsys.readouterr().out) == {'status':'unavailable','reason':reason}
+
+
+def test_broken_web_diagnostic_sink_cannot_prevent_reap(monkeypatch, tmp_path):
+    fixture_process(monkeypatch, code='import time;time.sleep(30)')
+    def broken(row):
+        assert row == {'stage':'web_fetch','web_reason':'deadline'}
+        raise RuntimeError('PRIVATE')
+    broker = w.WebBroker(tmp_path/'s', time.monotonic()+.1, diagnostic=broken)
+    observe(broker)
+    assert broker.fetch(URL) is None
+    assert not broker.receipts and not broker._processes
+
+
+def test_deep_failure_json_stays_unavailable_and_reaped(monkeypatch, tmp_path):
+    rows = []
+    fixture_process(monkeypatch, code='import sys;print("["*2000+"]"*2000);sys.exit(1)')
+    broker = w.WebBroker(tmp_path/'s', time.monotonic()+2, diagnostic=rows.append)
+    observe(broker)
+    assert broker.fetch(URL) is None
+    assert len(rows) == 1 and rows[0]['stage'] == 'web_fetch'
+    # Python versions differ in whether the decoder accepts this nesting.
+    assert rows[0]['web_reason'] in {'invalid_worker', 'transport_failure'}
+    assert not broker.receipts and not broker._processes
+
+
+def test_successful_receipt_adds_no_failure_metadata(monkeypatch, tmp_path):
+    rows = []
+    fixture_process(monkeypatch)
+    broker = w.WebBroker(tmp_path/'s', time.monotonic()+2, diagnostic=rows.append)
+    observe(broker)
+    assert broker.fetch(URL) and not rows
+    assert not broker._processes
+
+
 @pytest.mark.parametrize('code,seconds',[
     ('import time; time.sleep(30)',.1),
     ('import sys,time;sys.stdout.write("x"*300000);sys.stdout.flush();time.sleep(30)',2)])

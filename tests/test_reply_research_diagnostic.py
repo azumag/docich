@@ -10,6 +10,13 @@ from docich import reply_research as r
 from docich.reply_research_diagnostic import allowed_row, structured_error
 
 
+def test_web_diagnostic_projection_has_no_content_or_cross_stage_reason():
+    assert allowed_row({'stage':'web_fetch','web_reason':'text_limit','url':'PRIVATE',
+                        'body':'PRIVATE','exception':'PRIVATE'}) == {'stage':'web_fetch','web_reason':'text_limit'}
+    assert allowed_row({'stage':'web_fetch','web_reason':'PRIVATE'}) == {'stage':'web_fetch'}
+    assert allowed_row({'stage':'model_call','web_reason':'text_limit'}) == {'stage':'model_call'}
+
+
 def local_run(code, rows, *, observer=None, timeout=1):
     return r._run([sys.executable, '-c', code], b'SYNTHETIC_PRIVATE_PROMPT', {}, timeout,
                   observer=observer, diagnostic=rows.append)

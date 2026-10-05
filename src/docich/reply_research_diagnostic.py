@@ -1,4 +1,5 @@
 """Optional research metadata projection. No content, identifiers or log sink."""
+from .reply_research_web import WEB_FAILURE_REASONS
 
 ERROR_NAMES = frozenset({
     "APIError", "AuthenticationError", "ProviderAuthError", "ConfigInvalidError", "ConfigJsonError",
@@ -11,7 +12,7 @@ TRANSPORT_CODES = frozenset({
 })
 STAGES = frozenset({
     "cli_spawn", "cli_running", "cli_stdout", "cli_exit", "cli_failure",
-    "cli_reaped", "cli_error_event", "model_call", "model_proposal",
+    "cli_reaped", "cli_error_event", "model_call", "model_proposal", "web_fetch",
 })
 REASONS = frozenset({
     "invalid_json", "timeout", "output_limit", "provider_failed", "spawn_failed",
@@ -32,6 +33,10 @@ def allowed_row(row):
     if type(stage) is not str or stage not in STAGES:
         return None
     out = {"stage": stage}
+    if stage == 'web_fetch':
+        value = row.get('web_reason')
+        if type(value) is str and value in WEB_FAILURE_REASONS:
+            out['web_reason'] = value
     for key, low, high in (("elapsed_ms", 0, 100000), ("returncode", -128, 255),
                            ("http_status", 100, 599)):
         value = row.get(key)
