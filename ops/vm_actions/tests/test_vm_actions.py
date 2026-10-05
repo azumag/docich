@@ -238,11 +238,23 @@ class AuthorizeTests(unittest.TestCase):
         runner = (ROOT / "ops/vm_actions/run_paper_ai_canary.sh").read_text(encoding="utf-8")
         self.assertIn('root="/home/ubuntu/docich"', runner)
         self.assertIn('soren_root="/home/ubuntu/soren"', runner)
-        self.assertIn('[[ "$head" == "$EXPECTED_SHA" ]]', runner)
+        self.assertIn('readonly expected_sha="${EXPECTED_SHA:-}"', runner)
+        self.assertIn('[[ "$head" == "$expected_sha" ]]', runner)
         self.assertIn('status --porcelain --untracked-files=no --ignore-submodules=all', runner)
         self.assertIn('. "$env_file"', runner)
         self.assertIn('DOCICH_ALLOW_REAL_AI=1', runner)
         self.assertIn('paper-ai-canary --execute', runner)
+        self.assertIn('exec env -i', runner)
+        for allowed in (
+            'DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID',
+            'DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN',
+            'DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID',
+            'CLOUDFLARE_API_TOKEN',
+            'CLOUDFLARE_API_TOKEN_FILE',
+        ):
+            self.assertIn(allowed, runner)
+        for withheld in ('DISCORD_TOKEN', 'OPENCODE_API_KEY', 'OPENAI_API_KEY', 'AI_GATEWAY_API_KEY'):
+            self.assertNotIn(withheld, runner)
         for forbidden in ("curl ", "wget ", "sudo ", "systemctl ", "tmux ", "kill ", "rm -", "VM_COMMAND"):
             self.assertNotIn(forbidden, runner)
         self.assertLess(len(runner.encode("utf-8")), 16384)
