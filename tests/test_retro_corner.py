@@ -1157,6 +1157,307 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
 
 
 class TestRetroCornerLifecycle(RetroCornerTestBase):
+    def test_start_bounds_game_switch_by_the_saved_slot_deadline(self):
+        current = ["sorengame"]
+
+        class TimeoutCoordinator(FakeCoordinator):
+            def switch(
+                self,
+                game,
+                *,
+                request_id=None,
+                timeout_s=None,
+                allow_boundary_timeout_extension=True,
+            ):
+                self.calls.append(
+                    (
+                        "switch",
+                        game,
+                        request_id,
+                        timeout_s,
+                        allow_boundary_timeout_extension,
+                    )
+                )
+                self.current[0] = game
+                return SimpleNamespace(
+                    status="succeeded",
+                    request_id=request_id,
+                    error_code=None,
+                    detail=None,
+                )
+
+        coordinator = TimeoutCoordinator(current)
+        mgr, _ = self.manager(current)
+        mgr.coordinator = coordinator
+
+        result = mgr.start()
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(coordinator.calls[0][0:2], ("switch", "robots"))
+        self.assertAlmostEqual(coordinator.calls[0][3], 10 * 60)
+        self.assertIs(coordinator.calls[0][4], False)
+        # Restoring the previous game is a different operation and keeps its
+        # existing coordinator timeout contract.
+        self.assertEqual(coordinator.calls[1][0:2], ("switch", "sorengame"))
+        self.assertIsNone(coordinator.calls[1][3])
+        self.assertIs(coordinator.calls[1][4], True)
+
+    def test_queued_start_replay_uses_only_the_remaining_slot_time(self):
+        current = ["sorengame"]
+
+        class QueuedTimeoutCoordinator(FakeCoordinator):
+            def __init__(self, current):
+                super().__init__(current)
+                self.queue_once = True
+
+            def switch(
+                self,
+                game,
+                *,
+                request_id=None,
+                timeout_s=None,
+                allow_boundary_timeout_extension=True,
+            ):
+                self.calls.append(
+                    (
+                        "switch",
+                        game,
+                        request_id,
+                        timeout_s,
+                        allow_boundary_timeout_extension,
+                    )
+                )
+                if game == "robots" and self.queue_once:
+                    self.queue_once = False
+                    return SimpleNamespace(
+                        status="queued",
+                        request_id=request_id,
+                        error_code="queued",
+                        detail="queued",
+                    )
+                self.current[0] = game
+                return SimpleNamespace(
+                    status="succeeded",
+                    request_id=request_id,
+                    error_code=None,
+                    detail=None,
+                )
+
+        coordinator = QueuedTimeoutCoordinator(current)
+        mgr, _ = self.manager(current)
+        mgr.coordinator = coordinator
+
+        first = mgr.start()
+        self.assertEqual(first.status, "queued")
+        self.now_value += timedelta(minutes=55)
+        second = mgr.tick()
+
+        self.assertEqual(second.status, "completed")
+        self.assertEqual(coordinator.calls[0][0:2], ("switch", "robots"))
+        self.assertAlmostEqual(coordinator.calls[0][3], 10 * 60)
+        self.assertEqual(coordinator.calls[1][0:2], ("switch", "robots"))
+        self.assertAlmostEqual(coordinator.calls[1][3], 5 * 60)
+        self.assertIs(coordinator.calls[0][4], False)
+        self.assertIs(coordinator.calls[1][4], False)
+        self.assertEqual(coordinator.calls[0][2], coordinator.calls[1][2])
+
+    def test_expired_queued_start_is_cancelled_without_a_switch_call(self):
+        current = ["sorengame"]
+
+        class AlwaysQueuedCoordinator(FakeCoordinator):
+            def switch(self, game, *, request_id=None, timeout_s=None):
+                self.calls.append(("switch", game, request_id, timeout_s))
+                return SimpleNamespace(
+                    status="queued",
+                    request_id=request_id,
+                    error_code="queued",
+                    detail="queued",
+                )
+
+        coordinator = AlwaysQueuedCoordinator(current)
+        mgr, _ = self.manager(current)
+        mgr.coordinator = coordinator
+
+        first = mgr.start()
+        self.assertEqual(first.status, "queued")
+        state = mgr.status()
+        request_id = state["switch_request_id"]
+        mgr.store.initialize()
+        mgr.store.enqueue_request(request_id, "switch", "robots")
+
+        self.now_value += timedelta(minutes=61)
+        second = mgr.tick()
+
+        self.assertEqual(second.status, "interrupted")
+        self.assertEqual(len(coordinator.calls), 1)
+        self.assertEqual(mgr.status()["end_reason"], "start-deadline-expired")
+        receipt = mgr.store.receipts.load(request_id)
+        self.assertEqual(receipt["status"], "failed")
+        self.assertEqual(receipt["result"]["error_code"], "timeout")
+
+    def test_expired_start_reconciles_exact_succeeded_receipt_without_replay(self):
+        current = ["sorengame"]
+
+        class AlwaysQueuedCoordinator(FakeCoordinator):
+            def switch(self, game, *, request_id=None, timeout_s=None):
+                self.calls.append(("switch", game, request_id, timeout_s))
+                return SimpleNamespace(
+                    status="queued",
+                    request_id=request_id,
+                    error_code="queued",
+                    detail="queued",
+                )
+
+        coordinator = AlwaysQueuedCoordinator(current)
+        mgr, _ = self.manager(current)
+        mgr.coordinator = coordinator
+
+        first = mgr.start()
+        self.assertEqual(first.status, "queued")
+        state = mgr.status()
+        request_id = state["switch_request_id"]
+        mgr.store.initialize()
+        accepted = mgr.store.enqueue_request(request_id, "switch", "robots")
+        identity = {
+            "game": "robots",
+            "runtime_id": accepted.receipt["runtime_id"],
+            "generation": accepted.receipt["generation"],
+            "lease_id": str(uuid.uuid4()),
+        }
+        result = {
+            "request_id": request_id,
+            "operation": "switch",
+            "status": "succeeded",
+            "from_game": "sorengame",
+            "to_game": "robots",
+            "generation": identity["generation"],
+            "active_runtime": identity,
+            "error_code": None,
+            "detail": None,
+        }
+        canonical_active = {
+            **identity,
+            "adapter": "cli",
+            "runtime_dir": accepted.receipt["runtime_dir"],
+            "game_window": accepted.receipt["game_window"],
+            "agent_window": accepted.receipt["agent_window"],
+            "adapter_session": accepted.receipt["adapter_session"],
+            "started_at": self.now_value.isoformat(),
+        }
+        with mgr.store.transaction() as _transaction:
+            receipt = dict(mgr.store.receipts.load(request_id))
+            receipt["status"] = "succeeded"
+            receipt["result"] = result
+            mgr.store.receipts.save(receipt)
+            canonical = mgr.store.canonical.initialize()
+            canonical.update(
+                phase="ready",
+                operation=None,
+                request_id=None,
+                active=canonical_active,
+                candidate=None,
+                previous=None,
+                retiring=[],
+            )
+            mgr.store.canonical.save(canonical)
+        terminal_receipt = mgr.store.receipts.load(request_id)
+
+        self.now_value += timedelta(minutes=61)
+        mgr._wait_and_finish = lambda active: mgr._state_result(active)
+        second = mgr.tick()
+
+        self.assertEqual(second.status, "active")
+        self.assertEqual(len(coordinator.calls), 1)
+        self.assertEqual(mgr.status()["status"], "active")
+        self.assertEqual(mgr.store.receipts.load(request_id), terminal_receipt)
+        active = mgr.store.canonical.load()[0]["active"]
+        self.assertEqual(
+            {key: active[key] for key in identity},
+            identity,
+        )
+
+    def test_expired_start_reconciles_exact_unsuccessful_terminal_receipt(self):
+        for terminal_status in ("failed", "rolled_back"):
+            with self.subTest(terminal_status=terminal_status):
+                current = ["sorengame"]
+
+                class AlwaysQueuedCoordinator(FakeCoordinator):
+                    def switch(self, game, *, request_id=None, timeout_s=None):
+                        self.calls.append(("switch", game, request_id, timeout_s))
+                        return SimpleNamespace(
+                            status="queued",
+                            request_id=request_id,
+                            error_code="queued",
+                            detail="queued",
+                        )
+
+                coordinator = AlwaysQueuedCoordinator(current)
+                mgr, _ = self.manager(current)
+                mgr.coordinator = coordinator
+                self.assertEqual(mgr.start().status, "queued")
+                state = mgr.status()
+                request_id = state["switch_request_id"]
+
+                canonical = mgr.store.initialize()
+                names = runtime_names(1)
+                canonical.update(
+                    phase="ready",
+                    next_generation=2,
+                    operation=None,
+                    request_id=None,
+                    active={
+                        "game": "sorengame",
+                        "adapter": "browser",
+                        "generation": 1,
+                        "runtime_id": "g1-abcdef",
+                        "lease_id": str(uuid.uuid4()),
+                        "game_window": names.game_window,
+                        "agent_window": names.agent_window,
+                        "adapter_session": names.adapter_session,
+                        "started_at": self.now_value.isoformat(),
+                    },
+                    candidate=None,
+                    previous=None,
+                    retiring=[],
+                )
+                mgr.store.canonical.save(canonical)
+                queued = mgr.store.enqueue_request(
+                    request_id,
+                    "switch",
+                    "robots",
+                    allow_boundary_timeout_extension=False,
+                    hard_deadline_at="2000-01-01T00:00:00Z",
+                )
+                result = {
+                    "request_id": request_id,
+                    "operation": "switch",
+                    "status": terminal_status,
+                    "from_game": "sorengame",
+                    "to_game": "robots",
+                    "generation": queued.generation,
+                    "error_code": "timeout",
+                    "detail": "terminal before corner active",
+                }
+                if terminal_status == "rolled_back":
+                    result["restored_generation"] = 1
+                mgr.store.finish_request(request_id, terminal_status, result)
+                terminal_receipt = mgr.store.receipts.load(request_id)
+
+                self.now_value += timedelta(minutes=61)
+                tick = mgr.tick()
+
+                self.assertEqual(tick.status, "interrupted")
+                final = mgr.status()
+                self.assertEqual(final["status"], "interrupted")
+                self.assertEqual(
+                    final["end_reason"],
+                    "switch-terminal-before-corner-active",
+                )
+                self.assertEqual(
+                    mgr.store.receipts.load(request_id), terminal_receipt
+                )
+                self.assertEqual(len(coordinator.calls), 1)
+
     def test_restores_previous_game_after_duration(self):
         current = ["sorengame"]
         mgr, coordinator = self.manager(current)

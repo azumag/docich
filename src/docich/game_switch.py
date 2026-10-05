@@ -113,6 +113,22 @@ def _wall_deadline_expired(value: object) -> bool:
     return dt.datetime.now(dt.timezone.utc) >= deadline
 
 
+def _wall_deadline_remaining_s(value: object) -> float | None:
+    """Return seconds left on an optional validated wall-clock deadline."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise StateCorruptError("request receiptのhard deadlineが不正です")
+    try:
+        deadline = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise StateCorruptError("request receiptのhard deadlineが不正です") from exc
+    if deadline.tzinfo is None:
+        raise StateCorruptError("request receiptのhard deadlineにtimezoneがありません")
+    return (deadline.astimezone(dt.timezone.utc) - dt.datetime.now(dt.timezone.utc)).total_seconds()
+
+
 def _safe_detail(exc: BaseException) -> str:
     return str(exc).replace("\n", " ")[:240]
 
@@ -581,6 +597,14 @@ def validate_receipt(
         or any(ch not in "0123456789abcdef" for ch in payload_hash)
     ):
         raise StateCorruptError("request receiptのpayload hashが不正です")
+    boundary_extension = receipt.get("allow_boundary_timeout_extension")
+    if boundary_extension is not None and type(boundary_extension) is not bool:
+        raise StateCorruptError("request receiptのboundary timeout policyが不正です")
+    hard_deadline_at = receipt.get("hard_deadline_at")
+    if hard_deadline_at is not None:
+        _wall_deadline_remaining_s(hard_deadline_at)
+        if boundary_extension is not False:
+            raise StateCorruptError("request receiptのhard deadline policyが不正です")
     try:
         runtime_id = validate_runtime_id(receipt.get("runtime_id"))
         names = runtime_names(generation)
@@ -744,9 +768,18 @@ class GameSwitchTransaction:
         operation: str,
         target: str | None,
         payload: Mapping[str, object] | None = None,
+        *,
+        allow_boundary_timeout_extension: bool = True,
+        hard_deadline_at: str | None = None,
     ) -> RequestAcceptance:
         return self.store._enqueue_request_locked(
-            self.lock, request_id, operation, target, payload
+            self.lock,
+            request_id,
+            operation,
+            target,
+            payload,
+            allow_boundary_timeout_extension=allow_boundary_timeout_extension,
+            hard_deadline_at=hard_deadline_at,
         )
 
     def requeue_request(self, request_id: str) -> RequestAcceptance:
@@ -903,12 +936,36 @@ class GameSwitchStore:
         operation: str,
         target: str | None,
         payload: Mapping[str, object] | None = None,
+        *,
+        allow_boundary_timeout_extension: bool = True,
+        hard_deadline_at: str | None = None,
     ) -> RequestAcceptance:
+        if type(allow_boundary_timeout_extension) is not bool:
+            raise ValueError("allow_boundary_timeout_extension はboolである必要があります")
+        if hard_deadline_at is not None:
+            _wall_deadline_remaining_s(hard_deadline_at)
+            if allow_boundary_timeout_extension:
+                raise ValueError("hard_deadline_atにはboundary延長禁止が必要です")
+        request_payload = copy.deepcopy(dict(payload or {}))
         try:
             with self.transaction(blocking=False) as transaction:
-                return transaction.enqueue_request(request_id, operation, target, payload)
+                return transaction.enqueue_request(
+                    request_id,
+                    operation,
+                    target,
+                    request_payload,
+                    allow_boundary_timeout_extension=allow_boundary_timeout_extension,
+                    hard_deadline_at=hard_deadline_at,
+                )
         except GameSwitchBusyError:
-            return self.classify_request(request_id, operation, target, payload)
+            existing = self.receipts.load(request_id)
+            legacy_hash = _request_payload_hash(operation, target, request_payload)
+            if isinstance(existing, dict) and existing.get("payload_hash") == legacy_hash:
+                return self._classify_existing(existing, legacy_hash)
+            identity_payload = copy.deepcopy(request_payload)
+            if not allow_boundary_timeout_extension:
+                identity_payload["_allow_boundary_timeout_extension"] = False
+            return self.classify_request(request_id, operation, target, identity_payload)
 
     def _accept_request_locked(
         self,
@@ -987,6 +1044,29 @@ class GameSwitchStore:
                     raise GameSwitchBusyError("先行するゲーム切替要求がキューに残っています")
                 if canonical_request_id is not None or state.get("phase") not in {"idle", "ready"}:
                     raise GameSwitchBusyError("現在のゲーム切替が完了していません")
+                hard_deadline_at = existing.get("hard_deadline_at")
+                hard_remaining_s = _wall_deadline_remaining_s(hard_deadline_at)
+                if hard_remaining_s is not None and hard_remaining_s <= 0:
+                    active = state.get("active")
+                    result = {
+                        "request_id": request_id,
+                        "operation": operation,
+                        "status": "failed",
+                        "from_game": (
+                            active.get("game") if isinstance(active, dict) else None
+                        ),
+                        "to_game": target,
+                        "generation": existing.get("generation"),
+                        "error_code": ERROR_TIMEOUT,
+                        "detail": "FIFO requestのhard deadlineがclaim前に終了しました",
+                    }
+                    saved = self._finish_request_locked(
+                        lock, request_id, "failed", result
+                    )
+                    return replace(
+                        self._classify_existing(saved, payload_hash),
+                        status="failed",
+                    )
                 next_state = copy.deepcopy(state)
                 next_state.update(
                     {
@@ -995,6 +1075,11 @@ class GameSwitchStore:
                         "request_id": request_id,
                     }
                 )
+                if hard_deadline_at is not None:
+                    # Keep the durable absolute cap in canonical state in the
+                    # same transaction which claims the FIFO head.  A caller's
+                    # relative timeout must never move this boundary later.
+                    next_state["deadline_at"] = hard_deadline_at
                 self.canonical.save(next_state)
                 existing = dict(existing)
                 existing["status"] = "accepted"
@@ -1072,16 +1157,35 @@ class GameSwitchStore:
         operation: str,
         target: str | None,
         payload: Mapping[str, object] | None = None,
+        *,
+        allow_boundary_timeout_extension: bool = True,
+        hard_deadline_at: str | None = None,
     ) -> RequestAcceptance:
         """Durably append a request without claiming the canonical driver slot."""
 
         self._require_exclusive_lock(lock)
         request_id = validate_request_id(request_id)
         operation, target = validate_request(operation, target)
+        if type(allow_boundary_timeout_extension) is not bool:
+            raise ValueError("allow_boundary_timeout_extension はboolである必要があります")
+        if hard_deadline_at is not None:
+            _wall_deadline_remaining_s(hard_deadline_at)
+            if allow_boundary_timeout_extension:
+                raise ValueError("hard_deadline_atにはboundary延長禁止が必要です")
         request_payload = copy.deepcopy(dict(payload or {}))
-        payload_hash = _request_payload_hash(operation, target, request_payload)
         state = self.canonical.initialize()
         existing = self.receipts.load(request_id)
+        if existing is not None:
+            # A pre-policy receipt may legitimately have the old `{}` hash.
+            # Classify that exact identity before normalizing new capped
+            # requests; otherwise a non-head replay gains a marker and
+            # conflicts with its own durable receipt.
+            legacy_hash = _request_payload_hash(operation, target, request_payload)
+            if existing.get("payload_hash") == legacy_hash:
+                return self._classify_existing(existing, legacy_hash)
+        if not allow_boundary_timeout_extension:
+            request_payload["_allow_boundary_timeout_extension"] = False
+        payload_hash = _request_payload_hash(operation, target, request_payload)
         if existing is not None:
             return self._classify_existing(existing, payload_hash)
         if state.get("phase") in {"failed", "recovery_required"}:
@@ -1097,6 +1201,9 @@ class GameSwitchStore:
             "operation": operation,
             "target": target,
             "payload_hash": payload_hash,
+            # This fixed policy is the only executable attribute persisted for
+            # automatic FIFO replay. Arbitrary request payloads remain absent.
+            "allow_boundary_timeout_extension": allow_boundary_timeout_extension,
             "generation": generation,
             "runtime_id": runtime_id,
             "runtime_dir": str(runtime_dir),
@@ -1108,6 +1215,8 @@ class GameSwitchStore:
             "created_at": _utc_now(),
             "updated_at": _utc_now(),
         }
+        if hard_deadline_at is not None:
+            receipt["hard_deadline_at"] = hard_deadline_at
         receipt = self.receipts.save(receipt)
         next_state = copy.deepcopy(state)
         next_state["next_generation"] = generation + 1
@@ -1716,8 +1825,16 @@ class GameSwitchCoordinator:
         request_id: str | None = None,
         timeout_s: float | None = None,
         payload: Mapping[str, object] | None = None,
+        allow_boundary_timeout_extension: bool = True,
     ) -> SwitchResult:
-        return self._execute("start", game, request_id=request_id, timeout_s=timeout_s, payload=payload)
+        return self._execute(
+            "start",
+            game,
+            request_id=request_id,
+            timeout_s=timeout_s,
+            payload=payload,
+            allow_boundary_timeout_extension=allow_boundary_timeout_extension,
+        )
 
     def stop(
         self,
@@ -1735,8 +1852,16 @@ class GameSwitchCoordinator:
         request_id: str | None = None,
         timeout_s: float | None = None,
         payload: Mapping[str, object] | None = None,
+        allow_boundary_timeout_extension: bool = True,
     ) -> SwitchResult:
-        return self._execute("switch", target, request_id=request_id, timeout_s=timeout_s, payload=payload)
+        return self._execute(
+            "switch",
+            target,
+            request_id=request_id,
+            timeout_s=timeout_s,
+            payload=payload,
+            allow_boundary_timeout_extension=allow_boundary_timeout_extension,
+        )
 
     def restart(
         self,
@@ -1834,16 +1959,19 @@ class GameSwitchCoordinator:
     ) -> SwitchResult:
         """Claim and execute exactly the first durable FIFO request.
 
-        Queue receipts intentionally do not contain executable payloads, so
-        the automatic driver only replays the operations whose identity is
-        fully represented by the receipt (``start``, ``switch``, ``stop``, and
-        ``restart``).  An unsupported head is left untouched and reported as
-        recovery-required instead of skipping it and violating FIFO order.
+        Queue receipts intentionally do not contain executable payloads. They
+        retain only the validated boundary-timeout policy and absolute hard
+        deadline required to replay capped retro requests with the same
+        identity. The automatic driver
+        replays operations whose remaining identity is fully represented by
+        the receipt (``start``, ``switch``, ``stop``, and ``restart``). An
+        unsupported head is left untouched and reported as recovery-required
+        instead of skipping it and violating FIFO order.
         """
 
         self._log_reset("", "resume_fifo", None)
         try:
-            with self.store.transaction(blocking=False):
+            with self.store.transaction(blocking=False) as tx:
                 state = self.store.canonical.initialize()
                 phase = str(state.get("phase"))
                 active = state.get("active")
@@ -1880,6 +2008,25 @@ class GameSwitchCoordinator:
                         receipt=None,
                     )
                 head = copy.deepcopy(queued[0])
+                hard_remaining_s = _wall_deadline_remaining_s(
+                    head.get("hard_deadline_at")
+                )
+                if hard_remaining_s is not None and hard_remaining_s <= 0:
+                    request_id = str(head.get("request_id") or "")
+                    operation = str(head.get("operation") or "resume_fifo")
+                    target = head.get("target")
+                    result = {
+                        "request_id": request_id,
+                        "operation": operation,
+                        "status": "failed",
+                        "from_game": from_game if isinstance(from_game, str) else None,
+                        "to_game": target if isinstance(target, str) else None,
+                        "generation": head.get("generation"),
+                        "error_code": ERROR_TIMEOUT,
+                        "detail": "FIFO requestのhard deadlineがclaim前に終了しました",
+                    }
+                    saved = tx.finish_request(request_id, "failed", result)
+                    return _result_from_receipt(saved)
         except GameSwitchBusyError as exc:
             return SwitchResult(
                 request_id="",
@@ -1900,10 +2047,37 @@ class GameSwitchCoordinator:
         operation = str(head.get("operation") or "")
         target = head.get("target")
         timeout = timeout_s
+        hard_remaining_s = _wall_deadline_remaining_s(head.get("hard_deadline_at"))
+        if hard_remaining_s is not None:
+            requested_timeout = (
+                self.default_timeout_s if timeout is None else float(timeout)
+            )
+            # The wall deadline can pass after the protected FIFO snapshot
+            # but before this replay enters the claim transaction.  Never
+            # feed a now-negative relative timeout into ``_execute``: doing
+            # so raises before the exact queued head can reach the atomic
+            # hard-deadline check in ``_accept_request_locked``.  A smallest
+            # positive budget is only a transport to that check; the durable
+            # absolute deadline remains authoritative and an expired head is
+            # terminalized before adapter construction.
+            timeout = max(min(requested_timeout, hard_remaining_s), 1e-9)
+        allow_boundary_timeout_extension = head.get(
+            "allow_boundary_timeout_extension", True
+        )
         if operation == "start" and isinstance(target, str):
-            return self.start(target, request_id=request_id, timeout_s=timeout)
+            return self.start(
+                target,
+                request_id=request_id,
+                timeout_s=timeout,
+                allow_boundary_timeout_extension=allow_boundary_timeout_extension,
+            )
         if operation == "switch" and isinstance(target, str):
-            return self.switch(target, request_id=request_id, timeout_s=timeout)
+            return self.switch(
+                target,
+                request_id=request_id,
+                timeout_s=timeout,
+                allow_boundary_timeout_extension=allow_boundary_timeout_extension,
+            )
         if operation == "stop" and target is None:
             return self.stop(request_id=request_id, timeout_s=timeout)
         if operation == "restart" and isinstance(target, str):
@@ -2197,6 +2371,7 @@ class GameSwitchCoordinator:
         request_id: str | None = None,
         timeout_s: float | None = None,
         payload: Mapping[str, object] | None = None,
+        allow_boundary_timeout_extension: bool = True,
     ) -> SwitchResult:
         request_id = new_request_id() if request_id is None else validate_request_id(request_id)
         if operation == "restart":
@@ -2205,6 +2380,35 @@ class GameSwitchCoordinator:
             target = None  # resolved from the active runtime inside the lock
         else:
             operation, target = validate_request(operation, target)
+        if not allow_boundary_timeout_extension:
+            # The hard-cap policy is part of new request identity. A replay
+            # that drops it fails closed instead of silently re-enabling a
+            # game-specific round-boundary extension. Pre-deployment queued
+            # receipts did not carry this marker; honor their old identity
+            # while still applying the caller's hard cap during migration.
+            legacy_payload = dict(payload or {})
+            existing = self.store.receipts.load(request_id)
+            legacy_operation = operation
+            if (
+                isinstance(existing, dict)
+                and operation == "start"
+                and existing.get("operation") == "switch"
+                and existing.get("target") == target
+            ):
+                legacy_operation = "switch"
+            legacy_matches = bool(
+                isinstance(existing, dict)
+                and existing.get("target") == target
+                and existing.get("payload_hash")
+                == _request_payload_hash(legacy_operation, target, legacy_payload)
+            )
+            if legacy_matches:
+                payload = legacy_payload
+            else:
+                payload = {
+                    **legacy_payload,
+                    "_allow_boundary_timeout_extension": False,
+                }
         if operation == "rotate":
             # The rotation list selects the target, so it must be part of the
             # request identity: a resend with a different list is a conflict.
@@ -2212,6 +2416,8 @@ class GameSwitchCoordinator:
         timeout = float(timeout_s if timeout_s is not None else self.default_timeout_s)
         if timeout <= 0:
             raise ValueError("timeout_s は正の値である必要があります")
+        if type(allow_boundary_timeout_extension) is not bool:
+            raise ValueError("allow_boundary_timeout_extension はboolである必要があります")
         deadline = time.monotonic() + timeout
         deadline_at = (
             dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=timeout)
@@ -2229,6 +2435,7 @@ class GameSwitchCoordinator:
                     deadline,
                     deadline_at,
                     games=games,
+                    allow_boundary_timeout_extension=allow_boundary_timeout_extension,
                 )
         except GameSwitchBusyError:
             return self._classify_busy(request_id, operation, target, payload)
@@ -2337,6 +2544,7 @@ class GameSwitchCoordinator:
         deadline_at: str,
         *,
         games: list[str] | None = None,
+        allow_boundary_timeout_extension: bool = True,
     ) -> SwitchResult:
         state = self.store.canonical.initialize()
         active = state.get("active")
@@ -2370,7 +2578,15 @@ class GameSwitchCoordinator:
             # generic recovery path and stop the active runtime underneath
             # the boundary wait.
             return self._handle_draining_request_locked(
-                tx, state, request_id, operation, target, payload, deadline, deadline_at
+                tx,
+                state,
+                request_id,
+                operation,
+                target,
+                payload,
+                deadline,
+                deadline_at,
+                allow_boundary_timeout_extension=allow_boundary_timeout_extension,
             )
         # A request_id that was already accepted fixes its operation and
         # target.  The only caller-side alias the coordinator sanctions is
@@ -2389,12 +2605,30 @@ class GameSwitchCoordinator:
                     operation = "switch"
         queued = self.store.receipts.queued()
         if state["phase"] not in {"idle", "ready"} and existing is None:
-            acceptance = tx.enqueue_request(request_id, operation, target, payload)
+            acceptance = tx.enqueue_request(
+                request_id,
+                operation,
+                target,
+                payload,
+                allow_boundary_timeout_extension=allow_boundary_timeout_extension,
+                hard_deadline_at=(
+                    deadline_at if not allow_boundary_timeout_extension else None
+                ),
+            )
             return self._queued_result(acceptance.receipt, state)
         if queued and queued[0].get("request_id") != request_id:
             if existing is not None and existing.get("status") in TERMINAL_RECEIPT_STATUSES:
                 return _result_from_receipt(existing)
-            acceptance = tx.enqueue_request(request_id, operation, target, payload)
+            acceptance = tx.enqueue_request(
+                request_id,
+                operation,
+                target,
+                payload,
+                allow_boundary_timeout_extension=allow_boundary_timeout_extension,
+                hard_deadline_at=(
+                    deadline_at if not allow_boundary_timeout_extension else None
+                ),
+            )
             return self._queued_result(acceptance.receipt, state)
         if (
             existing is not None
@@ -2540,6 +2774,46 @@ class GameSwitchCoordinator:
             raise
         if acceptance.status in TERMINAL_RECEIPT_STATUSES:
             return _result_from_receipt(acceptance.receipt)
+        accepted_replay = acceptance.existing and not acceptance.claimed_from_queue
+        hard_deadline_at = acceptance.receipt.get("hard_deadline_at")
+        hard_remaining_s = _wall_deadline_remaining_s(hard_deadline_at)
+        if hard_remaining_s is not None and not accepted_replay:
+            if hard_remaining_s <= 0:
+                current, _migrated = self.store.canonical.load()
+                current_active = current.get("active")
+                result = {
+                    "request_id": request_id,
+                    "operation": operation,
+                    "status": "failed",
+                    "from_game": (
+                        current_active.get("game")
+                        if isinstance(current_active, dict)
+                        else None
+                    ),
+                    "to_game": target,
+                    "generation": acceptance.generation,
+                    "error_code": ERROR_TIMEOUT,
+                    "detail": "FIFO requestのhard deadlineがclaim直後に終了しました",
+                }
+                tx.transition(
+                    {"validating"},
+                    "ready" if isinstance(current_active, dict) else "idle",
+                    updates={
+                        "operation": None,
+                        "request_id": None,
+                        "deadline_at": None,
+                        "last_result": result,
+                        "last_error": {
+                            "error_code": ERROR_TIMEOUT,
+                            "detail": result["detail"],
+                        },
+                    },
+                    crash_hook=self.crash_hook,
+                )
+                saved = tx.finish_request(request_id, "failed", result)
+                return _result_from_receipt(saved)
+            deadline = min(deadline, time.monotonic() + hard_remaining_s)
+            deadline_at = str(hard_deadline_at)
         # Receipt conflict/FIFO/replay rules run first. The source check is
         # atomic with teardown under this exclusive lock, and stale queued
         # restores finish durably without touching the current runtime.
@@ -2564,7 +2838,7 @@ class GameSwitchCoordinator:
                     crash_hook=self.crash_hook)
                 saved = tx.finish_request(request_id, "failed", result)
                 return _result_from_receipt(saved)
-        if acceptance.existing and not acceptance.claimed_from_queue:
+        if accepted_replay:
             # The previous driver is provably dead (we hold the lock).
             # Converge fail-closed through the recovery path.
             recovered = self._recover_locked(tx, deadline=deadline)
@@ -2583,7 +2857,13 @@ class GameSwitchCoordinator:
         self._log("accepted", phase="validating")
         transition_target = rotate_target if rotate_target is not None else target
         return self._run_operation_locked(
-            tx, acceptance, operation, transition_target, deadline, deadline_at
+            tx,
+            acceptance,
+            operation,
+            transition_target,
+            deadline,
+            deadline_at,
+            allow_boundary_timeout_extension=allow_boundary_timeout_extension,
         )
 
     def _handle_draining_request_locked(
@@ -2596,6 +2876,8 @@ class GameSwitchCoordinator:
         payload: Mapping[str, object] | None,
         deadline: float,
         deadline_at: str,
+        *,
+        allow_boundary_timeout_extension: bool = True,
     ) -> SwitchResult:
         """Queue requests while an active runtime is awaiting a boundary.
 
@@ -2613,7 +2895,16 @@ class GameSwitchCoordinator:
                 raise StateCorruptError(
                     "draining canonical requestに対応するreceiptがありません"
                 )
-            acceptance = tx.enqueue_request(request_id, operation, target, payload)
+            acceptance = tx.enqueue_request(
+                request_id,
+                operation,
+                target,
+                payload,
+                allow_boundary_timeout_extension=allow_boundary_timeout_extension,
+                hard_deadline_at=(
+                    deadline_at if not allow_boundary_timeout_extension else None
+                ),
+            )
             queued = self._queued_result(acceptance.receipt, state)
             self._log_update(
                 request_id=request_id,
@@ -2646,6 +2937,7 @@ class GameSwitchCoordinator:
                         payload,
                         deadline,
                         deadline_at,
+                        allow_boundary_timeout_extension=allow_boundary_timeout_extension,
                     )
             return queued
 
@@ -2719,6 +3011,7 @@ class GameSwitchCoordinator:
                         payload,
                         deadline,
                         deadline_at,
+                        allow_boundary_timeout_extension=allow_boundary_timeout_extension,
                     )
             if existing.get("status") == QUEUED_RECEIPT_STATUS:
                 return self._queued_result(existing, state)
@@ -2772,13 +3065,21 @@ class GameSwitchCoordinator:
         target: str | None,
         deadline: float,
         deadline_at: str,
+        *,
+        allow_boundary_timeout_extension: bool = True,
     ) -> SwitchResult:
         try:
             if operation == "stop":
                 return self._stop_locked(tx, acceptance, deadline, deadline_at)
             if operation in {"start", "switch", "restart", "rotate"}:
                 return self._switch_locked(
-                    tx, acceptance, operation, target, deadline, deadline_at
+                    tx,
+                    acceptance,
+                    operation,
+                    target,
+                    deadline,
+                    deadline_at,
+                    allow_boundary_timeout_extension=allow_boundary_timeout_extension,
                 )
             raise InvalidTransitionError(f"coordinatorは operation {operation} を実行できません")
         except StateCorruptError:
@@ -2974,6 +3275,8 @@ class GameSwitchCoordinator:
         old_active: Mapping[str, object],
         acceptance: RequestAcceptance,
         deadline: float,
+        *,
+        allow_timeout_extension: bool = True,
     ) -> float:
         """Wait for a game boundary with the writer lock released.
 
@@ -3012,7 +3315,7 @@ class GameSwitchCoordinator:
         # stop/start/readiness steps (a hung candidate must roll back within
         # the ordinary budget, not hold the writer for the boundary window).
         remaining_before_wait = max(deadline - time.monotonic(), 0.0)
-        if override_s is not None:
+        if override_s is not None and allow_timeout_extension:
             extended = time.monotonic() + override_s
             if extended > wait_deadline:
                 wait_deadline = extended
@@ -3343,6 +3646,8 @@ class GameSwitchCoordinator:
         target: str,
         deadline: float,
         deadline_at: str,
+        *,
+        allow_boundary_timeout_extension: bool = True,
     ) -> SwitchResult:
         state, _migrated = self.store.canonical.load()
         old_active = state.get("active")
@@ -3408,7 +3713,12 @@ class GameSwitchCoordinator:
                 self._log("drain_started", phase="draining")
                 try:
                     deadline = self._await_round_boundary_locked(
-                        tx, old_adapter, old_active, acceptance, deadline
+                        tx,
+                        old_adapter,
+                        old_active,
+                        acceptance,
+                        deadline,
+                        allow_timeout_extension=allow_boundary_timeout_extension,
                     )
                 except RoundBoundaryStateChangedError:
                     # A concurrent recovery may have terminally cancelled an

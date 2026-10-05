@@ -9,6 +9,7 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -234,6 +235,56 @@ def test_boundary_timeout_override_extends_request_deadline():
         assert not worker.is_alive()
         assert result_box[0].status == "succeeded"
         assert time.monotonic() - started > 0.6
+
+
+def test_boundary_timeout_override_respects_explicit_hard_cap():
+    """Retro startup can forbid a game override from extending its slot."""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory(boundary_timeout_s=3.0)
+        store, coordinator = _coordinator(factory, state_dir)
+        assert coordinator.start("nethack").status == "succeeded"
+        old = factory.adapters[("nethack", 1)]
+        request_id = str(uuid.uuid4())
+        result_box = []
+
+        started = time.monotonic()
+        worker = threading.Thread(
+            target=lambda: result_box.append(
+                coordinator.switch(
+                    "robots",
+                    request_id=request_id,
+                    timeout_s=0.4,
+                    allow_boundary_timeout_extension=False,
+                )
+            )
+        )
+        worker.start()
+        state = _wait_for_phase(store, "draining")
+        assert old.boundary_entered.wait(1.0)
+
+        import datetime as _dt
+
+        canonical_deadline = _dt.datetime.fromisoformat(
+            state["deadline_at"].replace("Z", "+00:00")
+        )
+        observed_at = _dt.datetime.now(_dt.timezone.utc)
+        # The old game's 3s override must not replace the explicit 0.4s cap.
+        assert canonical_deadline <= observed_at + _dt.timedelta(seconds=0.6)
+
+        worker.join(2.0)
+        assert not worker.is_alive()
+        assert result_box[0].status == "failed"
+        assert result_box[0].error_code == game_switch.ERROR_TIMEOUT
+        assert time.monotonic() - started < 2.0
+        receipt = store.receipts.load(request_id)
+        assert receipt["status"] == "failed"
+        final, _ = store.canonical.load()
+        assert final["phase"] == "ready"
+        assert final["active"]["game"] == "nethack"
+        assert old.runtime.alive
+
 
 
 class HangingReadinessAdapter(BoundaryAdapter):
@@ -727,6 +778,297 @@ def test_fifo_maintenance_recovers_expired_drain_and_starts_only_queue_head(monk
         assert state["active"]["game"] == "hanjuku"
         assert store.receipts.load(queued.request_id)["status"] == "succeeded"
         assert store.receipts.load(queued_second.request_id)["status"] == "queued"
+
+
+def test_fifo_maintenance_preserves_queued_boundary_hard_cap():
+    """The independent FIFO driver must replay a capped request exactly."""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory(boundary_timeout_s=3.0)
+        store, coordinator = _coordinator(factory, state_dir)
+        assert coordinator.start("nethack").status == "succeeded"
+        old = factory.adapters[("nethack", 1)]
+
+        owner_result = []
+        owner_worker = threading.Thread(
+            target=lambda: owner_result.append(
+                coordinator.switch("robots", timeout_s=2.0)
+            )
+        )
+        owner_worker.start()
+        _wait_for_phase(store, "draining")
+        assert old.boundary_entered.wait(1.0)
+
+        capped_id = str(uuid.uuid4())
+        capped = coordinator.switch(
+            "hanjuku",
+            request_id=capped_id,
+            timeout_s=1.0,
+            allow_boundary_timeout_extension=False,
+        )
+        following = coordinator.switch("nethack", request_id=str(uuid.uuid4()))
+        assert capped.status == following.status == "queued"
+        capped_receipt = store.receipts.load(capped_id)
+        assert capped_receipt["allow_boundary_timeout_extension"] is False
+        assert isinstance(capped_receipt["hard_deadline_at"], str)
+
+        old.boundary_release.set()
+        owner_worker.join(3.0)
+        assert not owner_worker.is_alive()
+        assert owner_result[0].status == "succeeded"
+        assert store.canonical.load()[0]["active"]["game"] == "robots"
+
+        started = time.monotonic()
+        maintained = coordinator.maintain_fifo()
+        elapsed = time.monotonic() - started
+        assert maintained.request_id == capped_id
+        assert maintained.status == "failed"
+        assert maintained.error_code == game_switch.ERROR_TIMEOUT
+        assert elapsed < 2.0
+        assert store.receipts.load(capped_id)["status"] == "failed"
+        assert [item["request_id"] for item in store.receipts.queued()] == [
+            following.request_id
+        ]
+
+        # Timeout cancellation releases the robots boundary. The following
+        # uncapped request can therefore advance on the next FIFO tick. If
+        # the hard deadline elapsed before claim, release that test boundary
+        # explicitly; no capped adapter call is expected in that case.
+        factory.adapters[("robots", owner_result[0].generation)].boundary_release.set()
+        resumed = coordinator.maintain_fifo(timeout_s=1.0)
+        assert resumed.request_id == following.request_id
+        assert resumed.status == "succeeded"
+        assert store.receipts.load(following.request_id)["status"] == "succeeded"
+        assert store.receipts.queued() == []
+        assert store.canonical.load()[0]["active"]["game"] == "nethack"
+
+
+def test_expired_capped_fifo_head_is_terminal_without_adapter_call():
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        started = coordinator.start("robots")
+        assert started.status == "succeeded"
+
+        expired_id = str(uuid.uuid4())
+        store.enqueue_request(
+            expired_id,
+            "switch",
+            "hanjuku",
+            allow_boundary_timeout_extension=False,
+            hard_deadline_at="2000-01-01T00:00:00Z",
+        )
+        following = store.enqueue_request(
+            str(uuid.uuid4()), "switch", "nethack"
+        )
+        adapters_before = set(factory.adapters)
+
+        result = coordinator.maintain_fifo()
+
+        assert result.request_id == expired_id
+        assert result.status == "failed"
+        assert result.error_code == game_switch.ERROR_TIMEOUT
+        assert set(factory.adapters) == adapters_before
+        assert store.receipts.load(expired_id)["status"] == "failed"
+        assert [item["request_id"] for item in store.receipts.queued()] == [
+            following.request_id
+        ]
+
+        factory.adapters[("robots", started.generation)].boundary_release.set()
+        resumed = coordinator.maintain_fifo(timeout_s=1.0)
+        assert resumed.request_id == following.request_id
+        assert resumed.status == "succeeded"
+        assert store.receipts.queued() == []
+
+
+def test_capped_fifo_deadline_expiring_between_snapshot_and_claim_is_terminal():
+    """The claim transaction must recheck the durable absolute deadline."""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        started = coordinator.start("robots")
+        assert started.status == "succeeded"
+
+        import datetime as _dt
+
+        request_id = str(uuid.uuid4())
+        hard_deadline_at = (
+            _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(seconds=0.1)
+        ).isoformat().replace("+00:00", "Z")
+        store.enqueue_request(
+            request_id,
+            "switch",
+            "hanjuku",
+            allow_boundary_timeout_extension=False,
+            hard_deadline_at=hard_deadline_at,
+        )
+        following = store.enqueue_request(
+            str(uuid.uuid4()), "switch", "nethack"
+        )
+        adapters_before = set(factory.adapters)
+        original_remaining = game_switch._wall_deadline_remaining_s
+        resume_checks = 0
+
+        def cross_after_snapshot(value):
+            nonlocal resume_checks
+            callers = {
+                frame.function for frame in __import__("inspect").stack()[1:8]
+            }
+            if "resume_queued" in callers:
+                resume_checks += 1
+                if resume_checks == 1:
+                    # The protected snapshot still observes a live budget.
+                    return 0.1
+            return original_remaining(value)
+
+        # The stored deadline is already expired by the time the unprotected
+        # relative budget is recomputed.  The replay must still enter the
+        # exact-head claim path rather than raising on a negative timeout.
+        receipt = store.receipts.load(request_id)
+        receipt["hard_deadline_at"] = "2000-01-01T00:00:00Z"
+        store.receipts.save(receipt)
+        with patch.object(
+            game_switch,
+            "_wall_deadline_remaining_s",
+            side_effect=cross_after_snapshot,
+        ):
+            result = coordinator.maintain_fifo()
+
+        assert result.request_id == request_id
+        assert result.status == "failed"
+        assert result.error_code == game_switch.ERROR_TIMEOUT
+        assert set(factory.adapters) == adapters_before
+        assert store.receipts.load(request_id)["status"] == "failed"
+        assert [item["request_id"] for item in store.receipts.queued()] == [
+            following.request_id
+        ]
+        assert resume_checks >= 2
+
+
+def test_direct_replay_cannot_replace_expired_capped_fifo_deadline():
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        assert coordinator.start("robots").status == "succeeded"
+
+        request_id = str(uuid.uuid4())
+        store.enqueue_request(
+            request_id,
+            "switch",
+            "hanjuku",
+            allow_boundary_timeout_extension=False,
+            hard_deadline_at="2000-01-01T00:00:00Z",
+        )
+        adapters_before = set(factory.adapters)
+
+        result = coordinator.switch(
+            "hanjuku",
+            request_id=request_id,
+            timeout_s=10.0,
+            allow_boundary_timeout_extension=False,
+        )
+
+        assert result.request_id == request_id
+        assert result.status == "failed"
+        assert result.error_code == game_switch.ERROR_TIMEOUT
+        assert set(factory.adapters) == adapters_before
+        receipt = store.receipts.load(request_id)
+        assert receipt["status"] == "failed"
+        assert receipt["hard_deadline_at"] == "2000-01-01T00:00:00Z"
+
+
+def test_capped_fifo_claim_keeps_canonical_deadline_at_or_before_saved_cap():
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        started = coordinator.start("robots")
+        assert started.status == "succeeded"
+
+        import datetime as _dt
+
+        request_id = str(uuid.uuid4())
+        hard_deadline_at = (
+            _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(seconds=3.0)
+        ).isoformat().replace("+00:00", "Z")
+        store.enqueue_request(
+            request_id,
+            "switch",
+            "hanjuku",
+            allow_boundary_timeout_extension=False,
+            hard_deadline_at=hard_deadline_at,
+        )
+        result_box = []
+        worker = threading.Thread(
+            target=lambda: result_box.append(
+                coordinator.switch(
+                    "hanjuku",
+                    request_id=request_id,
+                    timeout_s=10.0,
+                    allow_boundary_timeout_extension=False,
+                )
+            )
+        )
+        worker.start()
+        old = factory.adapters[("robots", started.generation)]
+        assert old.boundary_entered.wait(1.0)
+        state, _migrated = store.canonical.load()
+        saved_deadline = _dt.datetime.fromisoformat(
+            hard_deadline_at.replace("Z", "+00:00")
+        )
+        canonical_deadline = _dt.datetime.fromisoformat(
+            str(state["deadline_at"]).replace("Z", "+00:00")
+        )
+        assert canonical_deadline <= saved_deadline
+
+        old.boundary_release.set()
+        worker.join(4.0)
+        assert not worker.is_alive()
+        assert result_box[0].status == "succeeded"
+
+
+def test_old_non_head_capped_replay_keeps_legacy_identity_and_fifo_order():
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        started = coordinator.start("robots")
+        assert started.status == "succeeded"
+
+        first = store.enqueue_request(str(uuid.uuid4()), "switch", "nethack")
+        second = store.enqueue_request(str(uuid.uuid4()), "switch", "hanjuku")
+        for queued in (first, second):
+            receipt = store.receipts.load(queued.request_id)
+            receipt.pop("allow_boundary_timeout_extension", None)
+            receipt.pop("hard_deadline_at", None)
+            store.receipts.save(receipt)
+
+        replay = coordinator.switch(
+            "hanjuku",
+            request_id=second.request_id,
+            timeout_s=1.0,
+            allow_boundary_timeout_extension=False,
+        )
+        assert replay.status == "queued"
+        assert [item["request_id"] for item in store.receipts.queued()] == [
+            first.request_id,
+            second.request_id,
+        ]
+
+        factory.adapters[("robots", started.generation)].boundary_release.set()
+        first_result = coordinator.maintain_fifo(timeout_s=1.0)
+        assert first_result.request_id == first.request_id
+        assert first_result.status == "succeeded"
+        factory.adapters[("nethack", first_result.generation)].boundary_release.set()
+        second_result = coordinator.maintain_fifo(timeout_s=1.0)
+        assert second_result.request_id == second.request_id
+        assert second_result.status == "succeeded"
+        assert store.receipts.queued() == []
 
 
 def test_boundary_wait_longer_than_reacquire_grace_succeeds():
