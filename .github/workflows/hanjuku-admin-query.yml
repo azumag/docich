@@ -205,6 +205,7 @@ jobs:
           fi
 
       - name: Verify release left the blocker state
+        id: verify_release
         if: ${{ steps.admin.outputs.result == 'admin-released' }}
         shell: bash
         env:
@@ -244,18 +245,18 @@ jobs:
           MODE: ${{ steps.auth.outputs.mode }}
           ADMIN_OUTCOME: ${{ steps.admin.outcome }}
           ADMIN_RESULT: ${{ steps.admin.outputs.result }}
+          VERIFY_OUTCOME: ${{ steps.verify_release.outcome }}
         run: |
           set -euo pipefail
           umask 077
           work="$RUNNER_TEMP/hanjuku-admin"
           install -m 700 -d "$work"
-          python3 - "$SOURCE_COMMENT_ID" "$RUN_ID" "$RUN_ATTEMPT" "$RUN_SHA" "$MODE" "$ADMIN_OUTCOME" "$ADMIN_RESULT" > "$work/reply.json" <<'PY'
+          python3 - "$SOURCE_COMMENT_ID" "$RUN_ID" "$RUN_ATTEMPT" "$RUN_SHA" "$MODE" "$ADMIN_OUTCOME" "$ADMIN_RESULT" "$VERIFY_OUTCOME" > "$work/reply.json" <<'PY'
           import json, re, sys
-          comment_id, run_id, attempt, sha, mode, outcome, result = sys.argv[1:]
+          comment_id, run_id, attempt, sha, mode, outcome, result, verify = sys.argv[1:]
           if not (comment_id.isdigit() and run_id.isdigit() and attempt.isdigit()
                   and re.fullmatch(r"[0-9a-f]{40}", sha)
-                  and mode in {"check", "release"}
-                  and outcome in {"success", "failure", "cancelled", "skipped"}):
+                  and mode in {"check", "release"}):
               raise SystemExit("invalid fixed reply metadata")
           allowed = {
               "admin-eligible", "admin-released",
@@ -274,16 +275,48 @@ jobs:
           if not result:
               result = "not_run"
           if result not in allowed:
-              raise SystemExit("invalid fixed reply result")
+              result = "admin_result_unverified"
+          outcomes = {"success", "failure", "cancelled", "skipped"}
+          outcome = outcome if outcome in outcomes else "unknown"
+          verify = verify if verify in outcomes else "unknown"
+          release = "not_requested" if mode == "check" else "not_confirmed"
+          postcondition = "not_applicable" if mode == "check" else verify
+          overall = outcome if outcome != "unknown" else "unverified"
+          reason = result
+          expected = "admin-eligible" if mode == "check" else "admin-released"
+          if mode == "release" and result == "admin-released":
+              # Retain the confirmed helper result even if later verification fails.
+              release = "admin-released"
+          if result == expected and outcome == "success":
+              if mode == "release":
+                  overall, reason = {
+                      "success": ("success", "post_release_verified"),
+                      "failure": ("failure", "post_release_verification_failed"),
+                      "cancelled": ("cancelled", "post_release_verification_cancelled"),
+                      "skipped": ("unverified", "post_release_verification_skipped"),
+                      "unknown": ("unverified", "post_release_verification_unknown"),
+                  }[verify]
+          elif result in {"admin-eligible", "admin-released"}:
+              reason = "admin_execution_unverified" if result == expected else "admin_result_unverified"
+              if outcome == "success":
+                  overall = "unverified"
+          elif outcome == "success":
+              overall, reason = "unverified", "admin_result_unverified"
           body = "\n".join((
               f"Request: https://github.com/azumag/docich/issues/1752#issuecomment-{comment_id}",
               f"Run: https://github.com/azumag/docich/actions/runs/{run_id}",
               f"Attempt: {attempt}",
               f"SHA: {sha}",
               f"Mode: {mode}",
-              f"Result: {outcome}",
-              f"Reason: {result}",
+              f"Result: {overall}",
+              f"Reason: {reason}",
+              f"Admin outcome: {outcome}",
+              f"Admin result: {result}",
+              f"Release execution: {release}",
+              f"Postcondition: {postcondition}",
           ))
+          if mode == "release" and overall != "success":
+              body += "\nNext: read-only diagnostics; do not retry release based on this reply."
           json.dump({"body": body}, sys.stdout, separators=(",", ":"))
           PY
           gh api --method POST repos/azumag/docich/issues/1752/comments \
