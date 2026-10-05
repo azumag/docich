@@ -402,6 +402,7 @@ class RetiredCornerObserver:
         "game": "retro_corner.json",
         "paper": "paper_corner.json",
         "weather": "weather_corner.json",
+        "tsuitate": "tsuitate_corner.json",
         "meriken": "soren91_corner.json",
         "nethack": "nethack_corner.json",
     }
@@ -456,6 +457,37 @@ class RetiredCornerObserver:
         return True
 
 
+class TsuitateCornerAdapter:
+    """One beta.tsuitate.info match through the shared program slot."""
+
+    def __init__(self, g, corner):
+        from .tsuitate_corner import TsuitateCornerManager
+        from .tsuitate_view import VIEW_NAME
+
+        if corner.game != VIEW_NAME or corner.live_eligible is not False:
+            raise CornerExecutionError("Tsuitate identity/safety contract mismatch")
+        self.g, self.corner = g, corner
+        self.manager = TsuitateCornerManager(g)
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
+
 class WeatherCornerAdapter:
     """Opt-in weather lifecycle through GameSwitch and the common program slot."""
 
@@ -504,6 +536,7 @@ ADAPTERS = {
     "paper": PaperCornerAdapter,
     "nethack": NethackCornerAdapter,
     "weather": WeatherCornerAdapter,
+    "tsuitate": TsuitateCornerAdapter,
 }
 
 
