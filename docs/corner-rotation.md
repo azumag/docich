@@ -366,6 +366,56 @@ read-only diagnostics に投影される。
 - 実機rollbackは未実施。受入は固定operationのreview/CIと、配線後のdeployでcanonical維持が
   継続することまで。
 
+### 2026-10-06 本番運用メモ: 「待機中なのに始まらない」とweather復帰後のSoren
+
+#### 1. 半熟の残留 `manual_pending` が全rotationを塞いだケース
+
+本番WebUIが「待機中」のまま次cornerを開始しない場合、cooldownやtimer停止だけで判断しない。
+2026-10-06 JST の実例では、古い半熟英雄の手動予約が `manual_pending` に残り、
+次枠のweatherは `queued_manual` に入っていたが、rotationは
+`manual-request-needs-resume-or-recovery` で安全側に停止していた。
+
+初動では次を一緒に確認する。
+
+- `corner_rotation.manual_pending` / `manual_pending_corner`
+- `corner_rotation.queued_manual`
+- `corner_rotation.reason`
+- `retro_program_queues.manual/scheduled`
+- GameSwitch `phase` と FIFO queued/head
+- 対象corner owner / matching receipt
+
+今回の原因は、半熟の program queue に historical `error` が残り、既存admin releaseが
+`program_queue_unverified` でfail-closedしていたこと。PR #1754で、`error` を単純terminal扱いせず、
+共有program lockを含む全writer lock下で owner / registry / canonical / receipt / reservation fingerprintを
+再検証した場合だけ管理解除できるようにした。PR #1755で、Issue #1752の固定owner-only入口から
+check/releaseできる運用経路を追加した。
+
+本番では check run `37338975002` が `admin-eligible`、その後のrelease run
+`37339075733` が `admin-released`。同runのread-only postconditionでも
+`manual_pending=false` と旧blocker reasonからの脱出を確認した。weather予約は保持し、
+その後通常timerから自然dispatchした。
+
+**運用上の注意:** ledgerやqueueファイルを手編集・削除しない。結果不明時にreleaseを連打しない。
+まずread-only診断→固定check→eligible時だけ1回releaseの順にする。
+
+#### 2. weather終了後、sorengame画面は戻ったが一時的にゲームが進まなかったケース
+
+weatherのrestore成功で `game_switch.active_game=sorengame` になっても、Sorenのゲームloopが
+同時刻に完全復帰済みとは限らない。今回、画面はsorengameへ戻った直後にゲーム進行が止まって見えた。
+直後のVM runtime monitor（run `37340396532`）では
+`required_down_loop=1`、`paused_loop=0`、pause ownership 0件、
+`corner_game_switch_busy=1` だった。その後は手動介入なしでゲーム進行が自然復帰した。
+
+したがって「画面がsorengameへ戻った」ことと「Soren loopが再稼働した」ことは別に確認する。
+再発時は、まず `required_down_loop`、lifecycle state、GameSwitch phase、
+`soren_loop.paused` の有無/ownershipをread-onlyで確認する。pause markerが無いのにloopだけdownなら、
+fresh-start/lifecycle復帰の途中またはsupervisor再起動待ちを疑う。
+画面復帰直後だけを見てpause markerを削除したり、共有runtime全体を再起動したりしない。
+
+今回の実測では自然復帰したため、現時点ではweather restore自体の失敗とは扱わない。
+ただし同じ状態が継続する場合は、weather完了後の受入条件に「sorengame canonical ready」に加えて
+「soren_loop alive / ゲーム進行再開」を追加して別途回帰化する。
+
 ### 半熟英雄の次枠手動予約
 
 固定operator `start-hanjuku` は `hanjuku_corner` から `queue_manual('hanjuku-hero')` を呼ぶ。
