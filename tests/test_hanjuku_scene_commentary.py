@@ -1,3 +1,4 @@
+# Verification-only trigger for current-main Hanjuku quality acceptance; no runtime behavior change.
 """Scene narration is evidence-bound, asynchronous and silent on failure."""
 from __future__ import annotations
 
