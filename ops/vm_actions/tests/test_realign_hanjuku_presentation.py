@@ -92,6 +92,31 @@ class HanjukuPresentationRealignTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, mod.EXIT_GEOMETRY_MISMATCH)
         move.assert_not_called()
 
+    def test_state_write_failure_rolls_window_back(self):
+        geometry = [
+            {"X": 0, "Y": 90, "WIDTH": 721, "HEIGHT": 540},
+            {"X": 239, "Y": 90, "WIDTH": 721, "HEIGHT": 540},
+        ]
+        calls = []
+        with patch.object(mod, "_window_ids", return_value=["555"]), \
+             patch.object(mod, "_geometry", side_effect=geometry), \
+             patch.object(mod, "_move", side_effect=lambda d, w, x, y: calls.append((d, w, x, y))), \
+             patch.object(mod, "_atomic_json", side_effect=OSError("write")):
+            with self.assertRaises(mod.RealignError) as raised:
+                mod.realign(self.root)
+        self.assertEqual(raised.exception.code, mod.EXIT_WRITE_FAILED)
+        self.assertEqual(calls[-1], (":99", "555", 0, 90))
+
+    def test_production_hook_is_epoch_gated(self):
+        from pathlib import Path
+        workflow = (Path(__file__).resolve().parents[3] / ".github/workflows/vm-operations.yml").read_text()
+        block = workflow.split(
+            "- name: Realign active Hanjuku projection for reviewed runtime epoch", 1
+        )[1].split("- name:", 1)[0]
+        self.assertIn("hanjuku_presentation_realign_epoch", block)
+        self.assertIn("realign_hanjuku_presentation.sh", block)
+        self.assertIn("realign_hanjuku_presentation.py", block)
+
     def test_runtime_change_after_move_rolls_window_back_and_keeps_state(self):
         original = self.presentation.read_bytes()
         geometry = [
