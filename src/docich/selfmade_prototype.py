@@ -46,6 +46,8 @@ def _json(data: bytes):
     try:
         return json.loads(data.decode("utf-8", "strict"), object_pairs_hook=pairs,
                           parse_constant=nonfinite)
+    except Rejected:
+        raise
     except (ValueError, UnicodeError, RecursionError) as exc:
         raise Rejected("invalid_json") from exc
 

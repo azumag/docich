@@ -2,7 +2,7 @@
   "output_sha256": "63cdddfd58b78e07b9816c43953b9b28805460fa062b121514e2d44eb89f1987",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "6f31c875926d8b64083708501e27c76ca73601de64e8b7ffac359868052872f2",
+  "source_sha256": "9f42eec670a2a7b07ad6224d5a611aab5cd9eff7ceb6a766a4eb9faadc342789",
   "topics": [
     "Discord音声会話の合成PCMプロトタイプ（実接続・本番未反映）",
     "AI自作ゲームの鍵・スイッチ・出口を非本番の合成fixtureで試作（本番未反映）",

@@ -113,6 +113,16 @@ def test_malformed_and_three_rejections_restore(bundle, raw):
     assert s.corner.previous_visible and len(s.corner.events) == 4
 
 
+@pytest.mark.parametrize("raw,reason", [
+    (b'{"seq":1,"seq":1}', "duplicate_field"), (b'{"ticks":NaN}', "nonfinite"),
+])
+def test_specific_parser_refusal_codes_are_preserved(bundle, raw, reason):
+    s = session(bundle)
+    before = p.state_hash(s.state)
+    assert not s.submit(raw)
+    assert s.refusals == [reason] and p.state_hash(s.state) == before and s.seq == 0
+
+
 def test_stale_frame_and_duplicate_seq(bundle):
     s = session(bundle)
     old = request(s)
