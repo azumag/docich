@@ -201,15 +201,21 @@ jobs:
           # 18-minute observation window past the 25-minute job timeout.
           observe_deadline=$((SECONDS + 1080))
           verified_main=
+          run_with_deadline() {
+            local remaining=$((observe_deadline - SECONDS))
+            (( remaining > 0 )) || return 124
+            timeout --kill-after=1s "${remaining}s" "$@"
+          }
           while (( SECONDS < observe_deadline )); do
-            current="$(git -C control ls-remote --exit-code origin refs/heads/main 2>/dev/null | cut -f1 || true)"
+            current="$(run_with_deadline git -C control ls-remote --exit-code origin refs/heads/main 2>/dev/null | cut -f1 || true)"
             if [[ "$current" =~ ^[0-9a-f]{40}$ ]]; then
               # Production can legitimately trail a rapidly advancing main by
               # one or more reviewed deploys. Refresh a bounded protected-main
               # ancestry window whenever the tip changes, then trust only a
               # configured production HEAD proven to be inside that lineage.
               if [[ "$verified_main" != "$current" ]]; then
-                if git -C control fetch --no-tags --force --depth=128 origin                     "refs/heads/main:refs/remotes/origin/main" >/dev/null 2>&1 &&
+                if run_with_deadline git -C control fetch --no-tags --force --depth=128 origin \
+                    "refs/heads/main:refs/remotes/origin/main" >/dev/null 2>&1 &&
                    [[ "$(git -C control rev-parse refs/remotes/origin/main 2>/dev/null || true)" == "$current" ]]; then
                   verified_main="$current"
                 else
@@ -218,7 +224,7 @@ jobs:
               fi
               production_sha=
               if [[ "$verified_main" == "$current" ]] &&
-                 status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $current" 2>/dev/null)"; then
+                 status_json="$(run_with_deadline ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $current" 2>/dev/null)"; then
                 production_sha="$(python3 - "$status_json" <<'PY'
           import json, re, sys
           try:
@@ -234,10 +240,18 @@ jobs:
               if [[ "$production_sha" =~ ^[0-9a-f]{40}$ ]] &&
                  git -C control cat-file -e "$production_sha^{commit}" 2>/dev/null &&
                  git -C control merge-base --is-ancestor "$production_sha" refs/remotes/origin/main &&
-                 diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $production_sha" 2>/dev/null)"; then
-                projection="$(python3 - "$diagnostics_json" <<'PY'
+                 diagnostics_json="$(run_with_deadline ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $production_sha" 2>/dev/null)"; then
+                projection="$(python3 - "$diagnostics_json" "$production_sha" <<'PY'
           import json, sys
-          data = json.loads(sys.argv[1])
+          root = json.loads(sys.argv[1])
+          expected_sha = sys.argv[2]
+          if not isinstance(root, dict):
+              raise SystemExit(0)
+          if root.get("status") != "diagnosed" or root.get("sha") != expected_sha:
+              raise SystemExit(0)
+          data = root.get("diagnostics")
+          if not isinstance(data, dict):
+              raise SystemExit(0)
           corners = data.get("corners") if isinstance(data, dict) else {}
           corners = corners if isinstance(corners, dict) else {}
           weather = corners.get("weather_corner")
@@ -327,7 +341,13 @@ jobs:
                 fi
               fi
             fi
-            sleep 5
+            remaining=$((observe_deadline - SECONDS))
+            (( remaining > 0 )) || break
+            sleep_for=5
+            if (( remaining < sleep_for )); then
+              sleep_for=$remaining
+            fi
+            sleep "$sleep_for"
           done
           {
             echo "seen_active=$seen_active"
