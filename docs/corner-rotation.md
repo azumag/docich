@@ -420,15 +420,20 @@ fresh-start/lifecycle復帰の途中またはsupervisor再起動待ちを疑う�
 この追加条件は `not_applicable` とする。共有runtimeの再起動やpause marker変更は行わない。
 
 本番観測窓は「216回poll」のような回数指定ではなく、開始から18分のwall-clock deadlineで区切る。
-`ls-remote` / SSH / diagnosticsの所要時間をpoll回数へ上乗せすると、GitHub Actionsの25分上限を
-超えて最終metadataを書けないためである。deadline到達時はその時点のbounded観測値を書き出して終了し、
-workflow timeoutによる強制cancelに依存しない。
+`ls-remote` / `fetch` / SSH status / diagnosticsもそれぞれ、観測開始時に確定したdeadlineまでの
+残り秒数で `timeout --kill-after` を掛ける。loop先頭の時刻確認だけでは、最後のnetwork呼出しが
+詰まった場合にGitHub Actionsの25分上限を越え得るためである。各呼出し後とsleep前にも残り時間を確認し、
+deadline到達時はその時点のbounded観測値を書き出して終了する。workflow timeoutによる強制cancelに
+依存しない。
 
 またmain更新が連続する環境では、productionが最新mainへdeployされるまでの短い遅延を
 「観測不能」と扱わない。各pollでproductionの実HEADをstatusから取得し、runnerが取得した
 protected mainの直近128コミット内の祖先であることを `cat-file` と
 `merge-base --is-ancestor` で検証できた場合だけ、その実HEADを指定してdiagnosticsを読む。
-main系譜外・深さ上限外・statusがconfigured以外なら従来どおりfail-closedでそのpollを捨てる。
+diagnostics gatewayの応答は `{status, sha, diagnostics}` envelopeとして検証し、
+`status=diagnosed` かつ `sha` が要求したproduction HEADと一致する場合だけ
+`diagnostics` objectを投影する。main系譜外・深さ上限外・status不一致・SHA不一致・
+diagnostics欠落はfail-closedでそのpollを捨てる。
 
 ### 手動コーナーの時刻指定予約（#1759）
 
