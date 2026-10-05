@@ -4,6 +4,8 @@ import sys
 import threading
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.config import load_global
@@ -38,16 +40,20 @@ class Coordinator:
         return Result()
 
 
-def _manager(tmp_path, *, script_agents="fixture:agent", clock=lambda: 1000.0,
-             sleep=lambda seconds: None):
+def _manager(tmp_path, *, script_agents="fixture:agent", script_direct_enabled=False,
+             script_direct_agents="", clock=lambda: 1000.0, sleep=lambda seconds: None):
     cfg = tmp_path / "config.toml"
     agents_line = f'script_agents = "{script_agents}"\n' if script_agents else ""
+    direct_line = (
+        f'script_direct_enabled = {str(script_direct_enabled).lower()}\n'
+        + (f'script_direct_agents = "{script_direct_agents}"\n' if script_direct_agents else "")
+    )
     cfg.write_text(
         '[paths]\nstate_dir = "run"\n'
         "[trading]\npaper_worker_enabled = true\nnotifications_enabled = true\n"
         "notification_speech_enabled = true\n"
         f'[webui]\nsoren_root = "{tmp_path}/soren"\n'
-        "[paper_corner]\nenabled = true\nstart_hour = 22\n" + agents_line,
+        "[paper_corner]\nenabled = true\nstart_hour = 22\n" + agents_line + direct_line,
         encoding="utf-8",
     )
     g = load_global(tmp_path, cfg)
@@ -74,6 +80,62 @@ def _starting_state():
         "narration_schema": 2,
         "reports": {},
     }
+
+
+def test_direct_script_chain_is_explicit_opt_in_and_overrides_legacy_chain(tmp_path, monkeypatch):
+    from docich.trading import corner_script
+
+    mgr, _coord = _manager(
+        tmp_path,
+        script_agents="opencode:legacy",
+        script_direct_enabled=True,
+        script_direct_agents="cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8",
+    )
+    seen = {}
+
+    def fake_next(*args, **kwargs):
+        seen["agents"] = kwargs["agents"]
+        return {"status": "item", "topic": "相場", "text": "本文です。"}
+
+    monkeypatch.setattr(corner_script, "generate_next_narration", fake_next)
+    item = mgr._generate_narration_text(1, [], "fallback")
+    assert item["source"] == "ai"
+    assert seen["agents"] == "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
+
+
+def test_direct_script_chain_off_keeps_legacy_agents(tmp_path, monkeypatch):
+    from docich.trading import corner_script
+
+    mgr, _coord = _manager(
+        tmp_path,
+        script_agents="opencode:legacy",
+        script_direct_enabled=False,
+        script_direct_agents="cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8",
+    )
+    seen = {}
+    monkeypatch.setattr(
+        corner_script, "generate_next_narration",
+        lambda *args, **kwargs: seen.setdefault("agents", kwargs["agents"])
+        or {"status": "item", "topic": "相場", "text": "本文です。"},
+    )
+    # setdefault returns the stored string, so use a small explicit helper instead.
+    def fake_next(*args, **kwargs):
+        seen["agents"] = kwargs["agents"]
+        return {"status": "item", "topic": "相場", "text": "本文です."}
+    monkeypatch.setattr(corner_script, "generate_next_narration", fake_next)
+    mgr._generate_narration_text(1, [], "fallback")
+    assert seen["agents"] == "opencode:legacy"
+
+
+@pytest.mark.parametrize("direct_agents", ["", "opencode:legacy", "local:fixture"])
+def test_direct_script_enable_rejects_missing_or_non_direct_chain(tmp_path, direct_agents):
+    with pytest.raises(ValueError):
+        _manager(
+            tmp_path,
+            script_agents="opencode:legacy",
+            script_direct_enabled=True,
+            script_direct_agents=direct_agents,
+        )
 
 
 def test_next_slot_generation_runs_while_current_speech_is_playing(tmp_path, monkeypatch):
