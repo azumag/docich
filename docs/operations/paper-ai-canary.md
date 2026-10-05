@@ -85,6 +85,31 @@ A successful result is shaped like:
 
 The numeric example is illustrative, not a recorded live result.
 
+## Owner-only production canary
+
+For the production VM, do not use arbitrary `exec`. After this reviewed code is
+on protected main and deployed, use the fixed VM operation:
+
+```console
+gh workflow run "VM operations" --repo azumag/docich --ref main \
+  -f operation=paper_ai_canary \
+  -f target=production \
+  -f ref=main \
+  -f confirm=production
+```
+
+The workflow sends only `ops/vm_actions/run_paper_ai_canary.sh` from trusted
+main to the existing production exec gateway. The helper rejects arguments,
+requires the production checkout HEAD to equal the immutable workflow SHA,
+requires tracked files to be clean, sources only the fixed
+`/home/ubuntu/soren/.env`, and invokes the fixed CLI above. Gateway production
+exec keeps the canary stdout/stderr in its private mode-0600 VM log and the
+workflow suppresses remote stdout.
+
+The operation does not install or create credentials. Missing Cloudflare search
+or direct-AI capability therefore fails closed. Installing/rotating those
+credentials remains a separate owner action.
+
 ## Production enablement
 
 A successful canary is **not** permission to enable production. PAPER research
