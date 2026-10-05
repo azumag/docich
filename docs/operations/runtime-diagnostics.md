@@ -192,7 +192,8 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   bounded boolean `legacy_alias` のみを出す。unit path・alias target・state pathは出さない。
 
 - `corners.weather_corner` は固定 `weather_corner.json` からstatus、request/start/restore/completion時刻、
-  固定enumの終了理由、前のgame名、およびrotation予約/完了記録とのrequest一致booleanだけを出す。
+  固定enumの終了理由、前のgame名、rotation予約/完了記録とのrequest一致booleanに加え、
+  音声deliveryの固定statusと `next_index`（0〜13）だけを出す。音声本文・request payload・item keyは出さない。
   開始・復元GameSwitch receiptはweather ownerが保持するcanonical UUIDと一致するときだけ、
   その固定UUIDのreceiptファイルを一件ずつbounded/no-followで読む。出力するのはstatus・operation・
   時刻・ownerとのresult/runtime/generation一致booleanのみ。request UUID、runtime ID、lease ID、
