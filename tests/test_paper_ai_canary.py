@@ -131,6 +131,23 @@ def test_run_once_uses_temporary_state_and_returns_hash_not_model_text():
     assert not observed["target"].exists()
 
 
+def test_prompt_limit_holds_before_direct_generation():
+    research = lambda *a, **k: {
+        "research_backend": "websearch_verified_body",
+        "news_items": [{"summary": "x" * (c.CANARY_PROMPT_MAX_BYTES + 100)}],
+        "asset": {},
+    }
+    called = []
+    with pytest.raises(c.PaperAiCanaryError, match="prompt limit"):
+        c.run_once(
+            object(),
+            env=_env(),
+            researcher=research,
+            generator=lambda *a, **k: called.append(True) or '{"summary":"should not run"}',
+        )
+    assert called == []
+
+
 @pytest.mark.parametrize(
     "raw",
     [
