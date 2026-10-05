@@ -1,6 +1,8 @@
 """OpenCode/controller contracts with synthetic observations; no API calls."""
 import hashlib
 import json
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -28,6 +30,92 @@ def receipt():
 def ref():
     rec = receipt()
     return {'kind': 'web', 'ref': URL, 'receipt': rec.receipt, 'sha256': rec.sha256, 'quote': '一次資料で確認した事実。'}
+
+
+def test_direct_web_research_uses_broker_receipts_and_exact_quote_verifier(tmp_path):
+    rec = receipt()
+    class Broker:
+        def __init__(self):
+            self.authorized = []
+        def authorize(self, urls):
+            self.authorized.extend(urls)
+        def fetch(self, url):
+            assert url == URL
+            return rec
+    broker = Broker()
+    result = r.direct_web_research(
+        [{"role": "user", "text": "Cloudflare Web Search APIとは？"}],
+        broker=broker,
+        searcher=lambda query, timeout: [URL],
+        deadline=time.monotonic() + 5,
+    )
+    assert result.ok
+    assert result.sources == (URL,)
+    assert "完全一致引用" in result.notes
+    assert TEXT in result.notes
+    assert broker.authorized == [URL]
+
+
+def test_direct_web_research_query_limit_holds_before_search():
+    called = []
+    result = r.direct_web_research(
+        [{"role": "user", "text": "x" * 257}],
+        broker=object(),
+        searcher=lambda *args: called.append(args) or [],
+        deadline=time.monotonic() + 5,
+    )
+    assert result.status == "input_limit"
+    assert called == []
+
+
+def test_research_direct_web_needs_no_opencode_or_bwrap(monkeypatch):
+    monkeypatch.setattr(r.sys, "platform", "linux")
+    monkeypatch.setattr(r.shutil, "which", lambda *a, **kw: pytest.fail("binary discovery"))
+    monkeypatch.setattr(r, "_run", lambda *a, **kw: pytest.fail("research model"))
+    rec = receipt()
+
+    class Broker:
+        def __init__(self, *args, **kwargs):
+            self.urls = []
+        def authorize(self, urls):
+            self.urls.extend(urls)
+        def fetch(self, url):
+            assert url == URL
+            return rec
+
+    monkeypatch.setattr(r, "WebBroker", Broker)
+    monkeypatch.setattr(r, "search_public", lambda query, timeout, env=None: [URL])
+    env = {
+        "DOCICH_ALLOW_REAL_AI": "1",
+        "DOCICH_REPLY_RESEARCH_ENABLED": "1",
+        "DOCICH_REPLY_WEB_SEARCH_ENABLED": "1",
+        "DOCICH_REPLY_WEB_DIRECT_ENABLED": "1",
+    }
+    result = r.research(
+        [{"role": "user", "content": "Cloudflare Web Search APIとは？"}],
+        "web",
+        env=env,
+    )
+    assert result.ok
+    assert result.sources == (URL,)
+    assert "完全一致引用" in result.notes
+
+
+def test_direct_web_flag_does_not_bypass_model_for_code_or_batch(monkeypatch):
+    monkeypatch.setattr(r.sys, "platform", "linux")
+    env = {
+        "DOCICH_ALLOW_REAL_AI": "1",
+        "DOCICH_REPLY_RESEARCH_ENABLED": "1",
+        "DOCICH_REPLY_WEB_SEARCH_ENABLED": "1",
+        "DOCICH_REPLY_WEB_DIRECT_ENABLED": "1",
+    }
+    assert r.research(
+        [{"role": "user", "content": "実装は？"}], "code", env=env
+    ).status == "authentication_unavailable"
+    assert r.research(
+        [{"role": "user", "content": "公開仕様は？"}], "web", env=env,
+        comment_scopes=["web"],
+    ).status == "authentication_unavailable"
 
 
 def run(actions, tmp_path, *, scope='web', search=None, manifest=None, comment_scopes=None, turns=None):
@@ -163,6 +251,90 @@ def test_search_endpoint_is_fixed_unauthenticated_post(monkeypatch):
     request=next(item[1] for item in trace if item[0]=='request')
     assert request.startswith(b'POST /mcp HTTP/1.1') and b'Host: mcp.exa.ai' in request
     assert b'Authorization' not in request and b'web_search_exa' in request
+
+
+@pytest.mark.parametrize("envelope", ["direct", "cloudflare"])
+def test_cloudflare_search_endpoint_is_fixed_and_returns_candidate_urls_only(monkeypatch, envelope):
+    from test_reply_research_web import fake_network, FakeResponse
+    items = [{"url": URL, "title": "synthetic", "description": "Snippet not evidence"}]
+    value = {"items": items, "metadata": {"requestId": "synthetic"}} if envelope == "direct" else {
+        "success": True, "result": {"items": items},
+    }
+    body = json.dumps(value).encode()
+    trace,_ = fake_network(monkeypatch, FakeResponse(
+        body=body, headers=[("Content-Type","application/json"),("Content-Length",str(len(body)))]))
+    result = w.cloudflare_search_worker(
+        "合成ニュース検索", 1,
+        account_id="a"*32,
+        api_token="SYNTHETIC_TOKEN",
+        gateway_id="default",
+        provider="ceramic",
+    )
+    assert result == {"urls": [URL]}
+    request = next(item[1] for item in trace if item[0] == "request")
+    assert request.startswith(
+        b"POST /client/v4/accounts/" + b"a"*32 + b"/ai/websearch/ HTTP/1.1\r\n")
+    assert b"Host: api.cloudflare.com\r\n" in request
+    assert b"Authorization: Bearer SYNTHETIC_TOKEN\r\n" in request
+    payload = json.loads(request.split(b"\r\n\r\n", 1)[1])
+    assert payload == {
+        "query": "合成ニュース検索",
+        "provider": "ceramic",
+        "limit": 8,
+        "options": {"gateway": {"id": "default"}},
+    }
+    assert "description" not in result and "title" not in result
+
+
+def test_search_public_cloudflare_child_gets_only_selected_search_secret(monkeypatch):
+    real_popen = subprocess.Popen
+    seen = {}
+    def launch(argv, **kwargs):
+        seen["argv"] = list(argv)
+        seen["env"] = dict(kwargs["env"])
+        return real_popen(
+            [sys.executable, "-I", "-c", 'import json;print(json.dumps({"urls":[]}))'],
+            **kwargs,
+        )
+    monkeypatch.setattr(w.subprocess, "Popen", launch)
+    env = {
+        "DOCICH_REPLY_WEB_SEARCH_BACKEND": "cloudflare",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID": "b"*32,
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN": "SEARCH_ONLY_TOKEN",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_GATEWAY_ID": "default",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_PROVIDER": "ceramic",
+        "DISCORD_TOKEN": "PRIVATE_DISCORD",
+        "OPENCODE_API_KEY": "PRIVATE_OPENCODE",
+        "HTTPS_PROXY": "http://private.invalid",
+    }
+    assert w.search_public("公開仕様", 1, env=env) == []
+    assert seen["argv"][4] == "--search-cloudflare"
+    assert set(seen["env"]) == {
+        "PATH", "LANG", "LC_ALL",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_GATEWAY_ID",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_PROVIDER",
+    }
+    assert seen["env"]["DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN"] == "SEARCH_ONLY_TOKEN"
+    assert "PRIVATE" not in json.dumps(seen["env"])
+
+
+def test_search_public_unknown_backend_or_bad_cloudflare_config_never_spawns(monkeypatch):
+    monkeypatch.setattr(w.subprocess, "Popen", lambda *a, **k: pytest.fail("spawn"))
+    assert w.search_public("公開仕様", 1, env={"DOCICH_REPLY_WEB_SEARCH_BACKEND": "unknown"}) == []
+    assert w.search_public("公開仕様", 1, env={
+        "DOCICH_REPLY_WEB_SEARCH_BACKEND": "cloudflare",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID": "bad",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN": "TOKEN",
+    }) == []
+    assert w.search_public("公開仕様", 1, env={
+        "DOCICH_REPLY_WEB_SEARCH_BACKEND": "cloudflare",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID": "c"*32,
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN": "TOKEN",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_GATEWAY_ID": "gateway.with.period",
+        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_BYOK_ALIAS": "key.name",
+    }) == []
 
 
 @pytest.mark.parametrize('url',['https://official.example/release?version=2','https://www.bbc.com/news/example','https://news.example.jp/story'])

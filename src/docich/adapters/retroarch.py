@@ -31,6 +31,11 @@ from .base import Adapter, AdapterError, Observation
 
 WINDOW_PATTERN = "RetroArch"
 NETWORK_CMD_PORT = 55355
+# 半熟のミラー(ffplay x11grab)の取り込みfps。放送エンコーダは30fpsで、15は各フレームを
+# 2回表示するため割り切れて不揃いにならない。30fpsのミラーは本番VMで約40%のCPUを使い、
+# CPU飽和(PSI約70%)で音声のq overrunを起こしていた(docich#1811)。ミラーは表示専用で、
+# bot の画面認識は別経路(隔離ディスプレイ)なので認識には影響しない。
+HANJUKU_MIRROR_FRAMERATE = 15
 NETWORK_PORT_RANGE = 1000
 RA_READY_POLL_S = 0.5
 RA_READY_IO_TIMEOUT_S = 0.1
@@ -471,7 +476,7 @@ class RetroArchCoordinatorAdapter:
                 '--x', str(d.viewport_x), '--y', str(d.viewport_y),
                 '--width', str(d.viewport_width), '--height', str(d.viewport_height),
                 '--window-pattern', '^RetroArch',
-                *(['--framerate', '30', '--nearest', '--align', 'right'] if scripted_hanjuku(self.game) else []),
+                *(['--framerate', str(HANJUKU_MIRROR_FRAMERATE), '--nearest', '--align', 'right'] if scripted_hanjuku(self.game) else []),
                 '--runtime-state', str(self._presentation_path()),
                 *(['--audio-sink', audio_sink] if audio_enabled else []),
                 *(['--audio-volume-percent', str(volume)] if audio_enabled and volume is not None else []),

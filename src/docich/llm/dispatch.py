@@ -181,9 +181,9 @@ def _request_checks(request: DispatchRequest, env: dict[str, str]) -> None:
         # Validate the whole chain too; manually constructed typed requests may
         # otherwise evade parse_agents' no-CLI direct-chat fallback boundary.
         parse_agents(",".join(spec.raw for spec in request.agents), env)
-        if (not request.label.startswith("COMMENT")
+        if (not request.label.startswith(("COMMENT", "RADIO"))
                 or any(word in request.label.upper() for word in ("RESEARCH", "PREPASS"))):
-            raise LlmError("direct chat はCOMMENT会話生成だけに限定されます")
+            raise LlmError("direct API は通常のCOMMENT/RADIO生成だけに限定されます")
     if request.validator is not None and not callable(request.validator):
         raise LlmError("validator は呼び出し可能である必要があります")
 

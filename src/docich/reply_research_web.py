@@ -1,9 +1,11 @@
-"""Credential-free, public HTTPS text retrieval and trusted per-run receipts.
+"""Bounded public Web discovery, HTTPS text retrieval and trusted receipts.
 
-Only the broker opens external sockets. Its short-lived worker has no inherited
-credentials/config/proxies, pins DNS answers, verifies TLS and rejects redirects.
-Only the parent coordinator requests retrieval;
-receipt authority stays in the broker, never in model stdout or writable files.
+Fetched evidence stays credential-free: only the broker opens arbitrary public
+source URLs, with scrubbed workers, pinned DNS answers, verified TLS and no
+redirects. Search discovery is a separate capability. The default keyless Exa
+worker remains credential-free; an explicitly selected Cloudflare Web Search
+worker receives only its purpose-specific account/token and can contact only the
+fixed Cloudflare API endpoint. Search snippets never become evidence receipts.
 """
 from __future__ import annotations
 
@@ -33,6 +35,11 @@ MAX_TEXT = 16384
 MAX_REPLY = 65536
 MAX_FETCHES = 4
 FETCH_TIMEOUT = 8.0
+SEARCH_BACKENDS = frozenset({"exa", "cloudflare"})
+CLOUDFLARE_SEARCH_PROVIDERS = frozenset({"ceramic", "exa", "linkup"})
+_CF_ACCOUNT_RE = re.compile(r"^[A-Fa-f0-9]{32}$")
+_CF_GATEWAY_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_CF_BYOK_ALIAS_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 WEB_FAILURE_REASONS = frozenset({
     'url', 'dns', 'nonpublic_dns', 'deadline', 'http_status', 'encoding',
     'headers', 'body_limit', 'incomplete_body', 'mime', 'charset', 'body',
@@ -293,6 +300,127 @@ def search_worker(query: str, timeout: float) -> dict:
             return {"urls": urls[:8]}
 
 
+def cloudflare_search_worker(
+    query: str,
+    timeout: float,
+    *,
+    account_id: str,
+    api_token: str,
+    gateway_id: str = "default",
+    provider: str = "ceramic",
+    byok_alias: str = "",
+) -> dict:
+    """Fixed Cloudflare Web Search request; returns candidate URLs only."""
+    if (not isinstance(query, str) or not 1 <= len(query) <= 1024
+            or any(ord(c) < 32 for c in query)):
+        raise ValueError("query")
+    if (not isinstance(account_id, str) or not _CF_ACCOUNT_RE.fullmatch(account_id)
+            or not isinstance(api_token, str) or not 1 <= len(api_token) <= 4096
+            or any(not 33 <= ord(c) <= 126 for c in api_token)
+            or not isinstance(gateway_id, str) or not _CF_GATEWAY_ID_RE.fullmatch(gateway_id)
+            or provider not in CLOUDFLARE_SEARCH_PROVIDERS
+            or (byok_alias and (not isinstance(byok_alias, str)
+                                or not _CF_BYOK_ALIAS_RE.fullmatch(byok_alias)))):
+        raise ValueError("search_unavailable")
+    if type(timeout) not in (int, float) or not 0 < timeout <= FETCH_TIMEOUT:
+        raise ValueError("url")
+
+    host = "api.cloudflare.com"
+    deadline = time.monotonic() + timeout
+    answers = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    if not 1 <= len(answers) <= 64:
+        raise ValueError("dns")
+    for family, kind, proto, _, address in answers:
+        ip = ipaddress.ip_address(address[0])
+        if (family not in {socket.AF_INET, socket.AF_INET6} or kind != socket.SOCK_STREAM
+                or not public_address(ip) or address[1] != 443
+                or (family == socket.AF_INET6 and (len(address) != 4 or address[3] != 0))):
+            raise ValueError("nonpublic_dns")
+
+    family, kind, proto, _, address = answers[0]
+    context = ssl.create_default_context()
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    http.client._MAXLINE = 4096
+    http.client._MAXHEADERS = 32
+    body = {
+        "query": query,
+        "provider": provider,
+        "limit": 8,
+        "options": {"gateway": {"id": gateway_id}},
+    }
+    if byok_alias:
+        body["byokAlias"] = byok_alias
+    payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    path = f"/client/v4/accounts/{account_id}/ai/websearch/"
+
+    with socket.socket(family, kind, proto) as raw:
+        raw.settimeout(min(3.0, _remaining(deadline)))
+        raw.connect(address)
+        raw.settimeout(_remaining(deadline))
+        with context.wrap_socket(raw, server_hostname=host) as conn:
+            conn.settimeout(_remaining(deadline))
+            request = (
+                f"POST {path} HTTP/1.1\r\nHost: {host}\r\n"
+                "User-Agent: docich-public-evidence/1\r\n"
+                "Accept: application/json\r\nContent-Type: application/json\r\n"
+                f"Authorization: Bearer {api_token}\r\n"
+                f"Content-Length: {len(payload)}\r\nAccept-Encoding: identity\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode("ascii") + payload
+            conn.sendall(request)
+            response = http.client.HTTPResponse(conn)
+            response.begin()
+            if response.status != 200:
+                raise ValueError("http_status")
+            if response.getheader("Content-Encoding", "identity").lower() != "identity":
+                raise ValueError("encoding")
+            types = response.headers.get_all("Content-Type", [])
+            lengths = response.headers.get_all("Content-Length", [])
+            transfers = response.headers.get_all("Transfer-Encoding", [])
+            if (len(types) != 1 or len(lengths) > 1 or len(transfers) > 1
+                    or (lengths and transfers)
+                    or (transfers and transfers[0].lower() != "chunked")):
+                raise ValueError("headers")
+            media = types[0].split(";", 1)[0].strip().lower()
+            if media != "application/json":
+                raise ValueError("mime")
+            if lengths and (not lengths[0].isascii() or not lengths[0].isdigit()
+                            or int(lengths[0]) > MAX_BODY):
+                raise ValueError("body_limit")
+            chunks, total = [], 0
+            while True:
+                conn.settimeout(_remaining(deadline))
+                chunk = response.read1(min(8192, MAX_BODY + 1 - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > MAX_BODY:
+                    raise ValueError("body_limit")
+            raw_body = b"".join(chunks)
+            if lengths and len(raw_body) != int(lengths[0]):
+                raise ValueError("incomplete_body")
+            value = json.loads(raw_body.decode("utf-8"))
+            if type(value) is not dict:
+                raise ValueError("search_unavailable")
+            if type(value.get("items")) is list:
+                items = value["items"]
+            elif (value.get("success") is True and type(value.get("result")) is dict
+                  and type(value["result"].get("items")) is list):
+                items = value["result"]["items"]
+            else:
+                raise ValueError("search_unavailable")
+            urls = []
+            for item in items[:10]:
+                if type(item) is not dict:
+                    continue
+                candidate = canonical_url(item.get("url"))
+                if candidate and candidate not in urls:
+                    urls.append(candidate)
+            return {"urls": urls[:8]}
+
+
 @dataclass(frozen=True)
 class Receipt:
     url: str
@@ -439,14 +567,41 @@ class WebBroker:
                 emit(self._diagnostic, {'stage': 'web_fetch', 'web_reason': reason})
 
 
-def search_public(query, timeout):
+def search_public(query, timeout, *, env=None):
     from .reply_routing import _has_private_route_input
     if not isinstance(query, str) or _has_private_route_input(query) or not 0 < timeout <= FETCH_TIMEOUT:
         return []
-    proc = subprocess.Popen([sys.executable, '-I', '-B', str(Path(__file__).resolve()), '--search', query, str(timeout)],
+    effective = os.environ if env is None else env
+    backend = effective.get("DOCICH_REPLY_WEB_SEARCH_BACKEND", "exa")
+    if backend not in SEARCH_BACKENDS:
+        return []
+    child_env = {'PATH': os.defpath, 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'}
+    mode = '--search'
+    if backend == "cloudflare":
+        account = effective.get("DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID", "")
+        token = effective.get("DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN", "")
+        gateway = effective.get("DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_GATEWAY_ID", "default")
+        provider = effective.get("DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_PROVIDER", "ceramic")
+        byok = effective.get("DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_BYOK_ALIAS", "")
+        if (not _CF_ACCOUNT_RE.fullmatch(account or "")
+                or not isinstance(token, str) or not 1 <= len(token) <= 4096
+                or any(not 33 <= ord(c) <= 126 for c in token)
+                or not _CF_GATEWAY_ID_RE.fullmatch(gateway or "")
+                or provider not in CLOUDFLARE_SEARCH_PROVIDERS
+                or (byok and not _CF_BYOK_ALIAS_RE.fullmatch(byok))):
+            return []
+        mode = '--search-cloudflare'
+        child_env.update({
+            'DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID': account,
+            'DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN': token,
+            'DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_GATEWAY_ID': gateway,
+            'DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_PROVIDER': provider,
+        })
+        if byok:
+            child_env['DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_BYOK_ALIAS'] = byok
+    proc = subprocess.Popen([sys.executable, '-I', '-B', str(Path(__file__).resolve()), mode, query, str(timeout)],
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'},
-                            close_fds=True, start_new_session=True)
+                            env=child_env, close_fds=True, start_new_session=True)
     try:
         raw = _bounded_output(proc, time.monotonic() + timeout)
         if proc.returncode != 0:
@@ -465,6 +620,15 @@ def main():
             value = fetch_worker(sys.argv[2], float(sys.argv[3]))
         elif len(sys.argv) == 4 and sys.argv[1] == '--search':
             value = search_worker(sys.argv[2], float(sys.argv[3]))
+        elif len(sys.argv) == 4 and sys.argv[1] == '--search-cloudflare':
+            value = cloudflare_search_worker(
+                sys.argv[2], float(sys.argv[3]),
+                account_id=os.environ.get('DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID', ''),
+                api_token=os.environ.get('DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN', ''),
+                gateway_id=os.environ.get('DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_GATEWAY_ID', 'default'),
+                provider=os.environ.get('DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_PROVIDER', 'ceramic'),
+                byok_alias=os.environ.get('DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_BYOK_ALIAS', ''),
+            )
         else:
             return 2
         print(json.dumps(value, ensure_ascii=False)); return 0
