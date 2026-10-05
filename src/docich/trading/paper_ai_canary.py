@@ -20,7 +20,7 @@ import tempfile
 import time
 from typing import Callable, Mapping
 
-from .ai_text import AiTextError, generate_text
+from .ai_text import generate_text
 from .corner_research import prepare_research_context
 
 CANARY_AGENT = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
