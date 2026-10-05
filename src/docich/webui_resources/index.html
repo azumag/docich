@@ -180,12 +180,16 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div class="card"><h2>手動操作</h2>
 <p class="desc">使い方:<br/>
 ① <b>手動開始</b>: コーナーと分数を選んで1回だけ実行します。天気は現在のコーナー終了後に開始する予約で、表示時間は設定済みの分数です。予約中は開始後に停止できます。実行中はローテーションの自動起動が待機します。<br/>
-② <b>手動停止</b>: 手動開始・ローテーション自動起動のどちらで動いているコーナーでも、停止可能な状態なら途中で終わらせ、元のゲームへ戻します。<br/>
-③ <b>ローテーション復旧</b>: 状態が「要復旧」で止まったときだけ押せます。先に該当コーナーの停止/復旧を済ませてください。</p>
+② <b>時刻指定</b>: ブラウザのローカル日時で1回だけ予約します。指定時刻より前には開始せず、時刻到達後に安全な空き枠で開始します。指定したコーナー以外の自動ローテーションは時刻前も継続します。<br/>
+③ <b>手動停止</b>: 手動開始・ローテーション自動起動のどちらで動いているコーナーでも、停止可能な状態なら途中で終わらせ、元のゲームへ戻します。<br/>
+④ <b>ローテーション復旧</b>: 状態が「要復旧」で止まったときだけ押せます。先に該当コーナーの停止/復旧を済ませてください。</p>
 <div class="row"><div><label>コーナー</label><select id="corners-select"></select></div>
-<div><label>分数 (1-60、PAPER は無視)</label><input id="corners-duration" type="number" min="1" max="60" value="5"/></div></div>
+<div><label>分数 (1-60、PAPER は無視)</label><input id="corners-duration" type="number" min="1" max="60" value="5"/></div>
+<div><label>時刻指定（ローカル時刻）</label><input id="corners-schedule-at" type="datetime-local" step="60"/></div></div>
 <div class="actions">
 <button class="btn primary" id="corners-start">手動開始</button>
+<button class="btn" id="corners-schedule">時刻指定</button>
+<button class="btn" id="corners-cancel-schedule">予約取消</button>
 <button class="btn" id="corners-stop">手動停止</button>
 <button class="btn danger" id="corners-recover">ローテーション復旧</button>
 <button class="btn" id="corners-refresh">更新</button>
@@ -2080,6 +2084,11 @@ function renderCorners(d){
   const manualOwnerText={matched:"所有者一致",missing:"所有者の記録なし",mismatch:"所有者不一致",unreadable:"所有者を読み取れません",unknown:"所有者未確認"};
   const manualText=manual?`${manual.corner==="unknown"?"コーナー不明":manual.corner}（${jaStatus(manual.status)}・${manualOwnerText[manual.owner]||manualOwnerText.unknown}）`:"なし";
   const blocked=r.reason==="manual-request-needs-resume-or-recovery";
+  const queuedText=r.queued_manual
+    ? (r.queued_manual.scheduled
+      ? `${r.queued_manual.corner||"-"}（${r.queued_manual.due?"時刻到達済み・空き待ち":"予定 "+fmtTime(r.queued_manual.trigger_at)}）`
+      : `${r.queued_manual.corner||"-"}（${blocked?"未精算の手動要求があり開始待ち":"現在のコーナー終了後に開始"}）`)
+    : "なし";
   const warn=document.getElementById("corners-source-warn");
   if(warn){
     const msgs=[];
@@ -2097,7 +2106,7 @@ function renderCorners(d){
       ["状態",`<span class="badge ${st[1]}">${esc(st[0])}</span>${r.reason?` <span class="help">${esc(ROT_REASON_JA[r.reason]||r.reason)}</span>`:""}`],
       ["配信中のゲーム",`${esc(gsw.active_game||"なし")}${gsw.phase&&gsw.phase!=="ready"&&gsw.phase!=="idle"?` <span class="badge warn">切替中: ${esc(gsw.phase)}</span>`:""}`],
       ["自動の選択/起動",r.pending?`${esc(r.pending.corner||"-")}（${r.pending.phase==="dispatched"?"起動要求済み":"選択済み"}、${r.pending.age_sec!=null?esc(Math.round(r.pending.age_sec/60))+"分前":"-"}）`:"なし"],
-      ["手動の開始予約",r.queued_manual?`${esc(r.queued_manual.corner||"-")}（${blocked?"未精算の手動要求があり開始待ち":"現在のコーナー終了後に開始"}）`:"なし"],
+      ["手動の開始予約",esc(queuedText)],
       [blocked?"開始を待たせている手動要求":"手動の実行要求",esc(manualText)],
       ["方式",`${r.schedule_mode==="queue"?"キュー（空き次第つぎを起動）":r.schedule_mode==="interval"?"一定間隔":esc(r.schedule_mode||"-")} / cooldown ${r.cooldown_seconds!=null?Math.round(r.cooldown_seconds/3600)+"時間":"-"}`],
       ["自動選択できる数",`${r.eligible_count==null?"-":esc(r.eligible_count)} 件`],
@@ -2145,7 +2154,9 @@ function renderCorners(d){
     } else {
       cat.innerHTML=catalog.map(c=>{
         let auto;
-        if(r.queued_manual&&r.queued_manual.corner===c.id) auto='<span class="badge warn">開始予約済み</span>';
+        if(r.queued_manual&&r.queued_manual.corner===c.id) auto=r.queued_manual.scheduled
+          ? `<span class="badge warn">${r.queued_manual.due?"時刻到達・空き待ち":"時刻予約 "+esc(fmtTime(r.queued_manual.trigger_at))}</span>`
+          : '<span class="badge warn">開始予約済み</span>';
         else if(!c.enabled) auto='<span class="badge">無効</span>';
         else if(c.paused) auto='<span class="badge warn">休止中</span>';
         else if(r.pending&&r.pending.corner===c.id) auto=`<span class="badge ok">${r.pending.phase==="dispatched"?"起動要求済み":"選択済み"}</span>`;
@@ -2221,11 +2232,23 @@ function updateCornerButtons(){
     if(r.queued_manual) hints.push(`${r.queued_manual.corner} の開始予約は受付済みです。${r.reason==="manual-request-needs-resume-or-recovery"?"未精算の手動要求があり開始待ちです。":"予約は実行中のコーナー終了後に処理されます。"}`);
   }
   const startBtn=document.getElementById("corners-start");
+  const scheduleBtn=document.getElementById("corners-schedule");
+  const cancelScheduleBtn=document.getElementById("corners-cancel-schedule");
+  const scheduleInput=document.getElementById("corners-schedule-at");
   const stopBtn=document.getElementById("corners-stop");
   const recBtn=document.getElementById("corners-recover");
+  const scheduledHere=!!(c&&r.queued_manual&&r.queued_manual.scheduled&&r.queued_manual.corner===c.id);
+  const canSchedule=!!c && c.enabled && !c.paused && r.enabled!==false && !r.latch && !r.queued_manual;
   if(startBtn){ startBtn.disabled=!canStart; startBtn.textContent=queuedMode?"開始予約":"手動開始"; }
+  if(scheduleBtn) scheduleBtn.disabled=!canSchedule;
+  if(cancelScheduleBtn) cancelScheduleBtn.disabled=!scheduledHere;
+  if(scheduleInput) scheduleInput.disabled=!canSchedule;
   if(stopBtn) stopBtn.disabled=!(c&&stopTarget);
   if(recBtn) recBtn.disabled=!r.can_recover;
+  if(r.queued_manual&&r.queued_manual.scheduled){
+    const label=r.queued_manual.due?"指定時刻に到達済みで、安全な空き枠を待っています。":`${fmtTime(r.queued_manual.trigger_at)} 以降に1回だけ開始します。`;
+    hints.push(`${r.queued_manual.corner} の時刻指定予約: ${label}`);
+  }
   if(r.can_recover) hints.push("「ローテーション復旧」を押せます。");
   const h=document.getElementById("corners-hint"); if(h) h.textContent=hints.join(" ");
 }
@@ -2238,6 +2261,8 @@ async function cornerAction(payload, confirmText){
     if(msg){
       let t;
       if(r.action==="recover") t=r.ok?"復旧しました。次の tick（1分以内）でローテーションが再開します。":`復旧できませんでした（exit ${r.exit_code==null?"-":r.exit_code}）。先に要復旧のコーナーを停止/復旧してください。${r.detail?" 詳細: "+r.detail:""}`;
+      else if(r.action==="schedule") t=`${r.corner&&r.corner.id||"-"} を ${fmtTime(r.trigger_at)} 以降に1回だけ開始するよう予約しました。`;
+      else if(r.action==="cancel-schedule") t=`${r.corner&&r.corner.id||"-"} の時刻指定予約を取り消しました。`;
       else if(r.corner&&r.corner.target==="rotation") t=r.action==="start"
         ? `天気の開始を予約しました（最大${r.duration_minutes}分）。現在のコーナー終了後、次の tick で開始します。`
         : "天気の停止を要求しました。実行中の天気が元のゲームへ復帰するまで状態欄で確認してください。";
@@ -2862,6 +2887,29 @@ document.addEventListener("DOMContentLoaded",()=>{
     const minutes=Number(dur&&dur.value?dur.value:5);
     cornerAction({action:"start",corner,duration_minutes:minutes},
       `コーナー ${corner} を手動開始しますか？（one-off runner・${minutes}分・確認ダイアログはこの画面だけ）`);
+  };
+  const cSchedule=document.getElementById("corners-schedule");
+  if(cSchedule) cSchedule.onclick=()=>{
+    const sel=document.getElementById("corners-select");
+    const input=document.getElementById("corners-schedule-at");
+    const corner=sel?sel.value:"";
+    const raw=input?input.value:"";
+    if(!corner){ toast("コーナーを選択してください"); return; }
+    if(!raw){ toast("開始予定時刻を入力してください"); return; }
+    const when=new Date(raw);
+    const trigger=when.getTime()/1000;
+    if(!Number.isFinite(trigger)){ toast("開始予定時刻を解釈できません"); return; }
+    if(trigger<Date.now()/1000){ toast("過去の時刻は予約できません"); return; }
+    cornerAction({action:"schedule",corner,trigger_at:trigger},
+      `コーナー ${corner} を ${when.toLocaleString()} 以降の最初の安全な枠で開始しますか？`);
+  };
+  const cCancelSchedule=document.getElementById("corners-cancel-schedule");
+  if(cCancelSchedule) cCancelSchedule.onclick=()=>{
+    const sel=document.getElementById("corners-select");
+    const corner=sel?sel.value:"";
+    if(!corner){ toast("コーナーを選択してください"); return; }
+    cornerAction({action:"cancel-schedule",corner},
+      `コーナー ${corner} の時刻指定予約を取り消しますか？`);
   };
   const cStop=document.getElementById("corners-stop");
   if(cStop) cStop.onclick=()=>{
