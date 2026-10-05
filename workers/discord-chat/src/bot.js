@@ -26,6 +26,7 @@ const FAILURE_REPLY = "今は返答を作れませんでした。少し後でも
 const BUSY_REPLY = "今は返答待ちが多いため、少し後でもう一度メンションしてください。";
 const FORGOTTEN_REPLY = "このチャンネルであなたと交わした会話の記憶を削除しました。";
 const MAX_PENDING = 32;
+const MAX_VOICE_PENDING = 2;
 const RESET_SESSION_CLOSE_CODES = new Set([1000, 1001, 4003, 4005, 4007, 4009]);
 const VOICE_TURN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const validSnowflake = (value) =>
@@ -58,6 +59,7 @@ export class DiscordBot {
     this.heartbeatInterval = null;
     this.awaitingHeartbeatAck = false;
     this.pendingCount = 0;
+    this.voicePendingCount = 0;
     this.queue = Promise.resolve();
     this.botUserId = null;
     this.botRoleIds = new Map();
@@ -111,6 +113,17 @@ export class DiscordBot {
       });
     }
 
+    if (this.voicePendingCount >= MAX_VOICE_PENDING) {
+      safeLog(this.env, "voice_reply_busy");
+      return Response.json({ error: "busy" }, {
+        status: 429,
+        headers: {
+          "cache-control": "no-store",
+          "retry-after": "1",
+        },
+      });
+    }
+
     const event = {
       id: "voice:" + body.turnId,
       guildId: body.guildId,
@@ -122,6 +135,7 @@ export class DiscordBot {
       createdAt: Date.now() / 1000,
     };
 
+    this.voicePendingCount += 1;
     let stage = "memory_context";
     try {
       const { reply, context } = await generateConversationReply(
@@ -147,6 +161,8 @@ export class DiscordBot {
         status: 503,
         headers: { "cache-control": "no-store" },
       });
+    } finally {
+      this.voicePendingCount -= 1;
     }
   }
 
