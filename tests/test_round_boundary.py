@@ -1147,7 +1147,7 @@ def test_soren_recovery_progress_wait_does_not_block_existing_draining_driver(tm
 
     try:
         assert old.boundary_entered.wait(1.0)
-        assert OwnedRoundRecovery(store.state_dir, tmp_path / "soren", Effects()).run()["status"] == "completed"
+        assert OwnedRoundRecovery(store.state_dir, tmp_path / "soren", Effects()).run()["status"] == "incomplete"
         assert calls == ["preflight", "archive", "stop", "verify_new"]
         assert store.canonical.load()[0]["active"]["game"] == "robots"
     finally:

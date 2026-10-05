@@ -306,13 +306,14 @@ class LinuxRecoveryEffects:
                 except ProcessLookupError:
                     pass
 
-    def _old_gone(self, recovery):
-        rows = self._rows()
+    def _old_gone(self, recovery, *, rows=None):
+        # This proves only the captured identities, never the whole old tree.
+        rows = self._rows() if rows is None else rows
         return all(r["pid"] not in rows or rows[r["pid"]]["birth"] != r["birth"] or rows[r["pid"]]["state"] == "Z"
                    for r in recovery["inventory"]["processes"])
 
-    def _fresh_rows(self, recovery):
-        rows = self._rows()
+    def _fresh_rows(self, recovery, *, rows=None):
+        rows = self._rows() if rows is None else rows
         outer, roles = self._outer(rows)
         fresh = {}
         boot, ticks = self._boot(), os.sysconf("SC_CLK_TCK")
@@ -327,11 +328,39 @@ class LinuxRecoveryEffects:
             fresh[name] = row
         return fresh
 
+    def _unattributed_profile_candidates(self, rows, fresh):
+        # Only ancestry attributes a process to the new roots. An orphan
+        # crashpad may belong to either generation, so it remains a candidate.
+        attributed = {row["pid"] for row in fresh.values()}
+        while True:
+            added = {pid for pid, row in rows.items() if row["ppid"] in attributed} - attributed
+            if not added:
+                break
+            attributed |= added
+        return sum(pid not in attributed and row["state"] != "Z" and self._profile_owned(row)
+                   for pid, row in rows.items())
+
     def verify_new(self, recovery):
+        # Snapshot pidfds cannot prove termination of children forked after
+        # the last inventory. Return observations, not whole-tree readiness.
+        unknown = dict(captured_old_targets_gone=None, fresh_game_progress_observed=None,
+                       supervisor_unchanged=None, unattributed_profile_candidates=None)
+        evidence = unknown.copy()
         deadline = self.monotonic() + 120
         first_board = None
         while self.monotonic() < deadline:
-            fresh = self._fresh_rows(recovery)
+            try:
+                rows = self._rows()
+                fresh = self._fresh_rows(recovery, rows=rows)
+                captured_gone = self._old_gone(recovery, rows=rows)
+            except (RecoveryRefused, OSError, ValueError, StopIteration):
+                return unknown.copy()  # Unreadable inventory is not absence.
+            supervisor = recovery["inventory"]["supervisor"]
+            row = rows.get(supervisor["pid"])
+            evidence = dict(captured_old_targets_gone=captured_gone,
+                fresh_game_progress_observed=False if fresh is None else None,
+                supervisor_unchanged=row is not None and self._identity(row) == supervisor and row["state"] != "Z",
+                unattributed_profile_candidates=self._unattributed_profile_candidates(rows, fresh) if fresh else None)
             try:
                 state_path = self.root / "game_state.json"
                 board = read_object(state_path)
@@ -339,27 +368,27 @@ class LinuxRecoveryEffects:
                 updated = state_path.stat().st_mtime >= recovery["started_epoch"]
             except (RecoveryRefused, FileNotFoundError):
                 board, marker, updated = {}, {}, False
-            if fresh and self._old_gone(recovery) and updated and board.get("state") in {"MOVE", "DROP", "WAITING"}:
-                birth = self._boot() + fresh["strategy_runner.py"]["birth"] / os.sysconf("SC_CLK_TCK")
-                started = marker.get("started_at")
-                if (marker.get("pid") == fresh["strategy_runner.py"]["pid"] and type(started) is int
-                        and 0 <= started - birth <= 10):
-                    score = board.get("score")
-                    progress = type(score) in (int, float) and math.isfinite(score) and score > 0
-                    pieces = board.get("pieces")
-                    if isinstance(pieces, list):
-                        if first_board is None:
-                            first_board = pieces
-                        elif pieces != first_board:
-                            progress = True
-                    if progress:
-                        supervisor = recovery["inventory"]["supervisor"]
-                        row = self._rows().get(supervisor["pid"])
-                        if row is None or self._identity(row) != supervisor or row["state"] == "Z":
-                            raise RecoveryRefused("existing supervisor changed during recovery")
-                        return
+            else:
+                evidence["fresh_game_progress_observed"] = False
+                if fresh and updated and board.get("state") in {"MOVE", "DROP", "WAITING"}:
+                    birth = self._boot() + fresh["strategy_runner.py"]["birth"] / os.sysconf("SC_CLK_TCK")
+                    started = marker.get("started_at")
+                    if (marker.get("pid") == fresh["strategy_runner.py"]["pid"] and type(started) is int
+                            and 0 <= started - birth <= 10):
+                        score = board.get("score")
+                        progress = type(score) in (int, float) and math.isfinite(score) and score > 0
+                        pieces = board.get("pieces")
+                        if isinstance(pieces, list):
+                            if first_board is None:
+                                first_board = pieces
+                            elif pieces != first_board:
+                                progress = True
+                        evidence["fresh_game_progress_observed"] = progress
+            if (not evidence["supervisor_unchanged"]
+                    or captured_gone and evidence["fresh_game_progress_observed"]):
+                return evidence
             self.sleep(0.25)
-        raise RecoveryRefused("new game progress not proved within two minutes; no persistent hold")
+        return evidence
 
     def common_changed(self, recovery):
         rows = self._rows()

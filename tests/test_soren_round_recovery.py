@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.game_switch import GameSwitchStore, GameSwitchBusyError, atomic_write_json
 from docich.naming import runtime_names
-from docich.soren_round_recovery import OwnedRoundRecovery, RecoveryRefused, read_object
+from docich.soren_round_recovery import OwnedRoundRecovery, RecoveryRefused, read_object, incomplete_result
 from docich.soren_recovery_process import LinuxRecoveryEffects, ROOTS, FILES
 
 
@@ -36,7 +36,10 @@ class Effects:
         return {"roots": {}, "processes": [], "common": []}
     def archive(self, recovery): self.call("archive")
     def stop(self, recovery): self.call("stop")
-    def verify_new(self, recovery): self.call("verify_new")
+    def verify_new(self, recovery):
+        self.call("verify_new")
+        return dict(captured_old_targets_gone=True, fresh_game_progress_observed=True,
+                    supervisor_unchanged=True, unattributed_profile_candidates=0)
     def common_changed(self, recovery):
         self.call("common_changed")
         return []
@@ -75,7 +78,10 @@ def test_three_effects_preserve_all_control_records_and_do_not_create_hold(owned
         owned.store.canonical.transition({"ready"}, "draining", updates={"operation": "switch", "request_id": owned.rid,
             "round_boundary_deadline": dt.datetime.now(dt.timezone.utc).timestamp() + 3600})
     before = protected_bytes(owned)
-    assert owned.recovery.run() == {"status": "completed", "result": "interrupted", "common_workers_changed": 0}
+    assert owned.recovery.run() == dict(status="incomplete", reason="descendant_exit_unproved",
+        descendant_exit="unproved", containment="pidfd_snapshot", captured_old_targets_gone=True,
+        fresh_game_progress_observed=True, supervisor_unchanged=True,
+        unattributed_profile_candidates=0, common_workers_changed=0)
     assert owned.effects.calls == ["preflight", "archive", "stop", "verify_new", "common_changed"]
     assert protected_bytes(owned) == before
     assert not (owned.state / "soren_round_recovery.json").exists()
@@ -455,7 +461,8 @@ def replace_game(topo, recovery, *, marker_pid=122, score=106, pieces=None, old_
 def test_respawn_proves_new_root_births_marker_state_and_nonzero_score(topo):
     recovery = recovery_for(topo)
     replace_game(topo, recovery)
-    topo.effects.verify_new(recovery)
+    assert topo.effects.verify_new(recovery) == dict(captured_old_targets_gone=True,
+        fresh_game_progress_observed=True, supervisor_unchanged=True, unattributed_profile_candidates=0)
     assert topo.elapsed[0] == 0
     assert topo.effects.common_changed(recovery) == []
 
@@ -464,8 +471,9 @@ def test_respawn_proves_new_root_births_marker_state_and_nonzero_score(topo):
 def test_false_readiness_times_out_in_120_seconds_without_more_signals(topo, kwargs):
     recovery = recovery_for(topo)
     replace_game(topo, recovery, **kwargs)
-    with pytest.raises(RecoveryRefused, match="two minutes"):
-        topo.effects.verify_new(recovery)
+    evidence = topo.effects.verify_new(recovery)
+    assert evidence["fresh_game_progress_observed"] is False
+    assert evidence["captured_old_targets_gone"] is True
     assert topo.elapsed[0] == 120 and not topo.sent
 
 
@@ -484,13 +492,125 @@ def test_stale_game_state_and_supervisor_replacement_cannot_pass(topo):
     recovery = recovery_for(topo)
     replace_game(topo, recovery)
     os.utime(topo.root / "game_state.json", (CLOCK - 1000, CLOCK - 1000))
-    with pytest.raises(RecoveryRefused, match="two minutes"):
-        topo.effects.verify_new(recovery)
+    assert topo.effects.verify_new(recovery)["fresh_game_progress_observed"] is False
     os.utime(topo.root / "game_state.json", (CLOCK - 5, CLOCK - 5))
     topo.fake.remove(10)
     topo.fake.add(10, 1, ["bash", "./start_all.sh"], age=5)
-    with pytest.raises(RecoveryRefused, match="supervisor changed"):
-        topo.effects.verify_new(recovery)
+    assert topo.effects.verify_new(recovery)["supervisor_unchanged"] is False
+
+
+@pytest.mark.parametrize("profile", [False, True])
+def test_post_snapshot_orphan_cannot_complete_with_fresh_progress(topo, monkeypatch, capsys, profile):
+    store = GameSwitchStore(topo.effects.state_dir)
+    store.initialize()
+    names = runtime_names(1)
+    active = dict(game="sorengame", adapter="soren", generation=1, runtime_id="g1-1234abcd",
+                  lease_id=None, game_window=names.game_window, agent_window=names.agent_window,
+                  adapter_session=names.adapter_session, started_at="2026-10-04T08:00:00+00:00")
+    store.canonical.transition({"idle"}, "ready", updates={"active": active, "next_generation": 2})
+    life = topo.root / "tmp/state/game_lifecycle"
+    life.mkdir()
+    for name in ("request", "ack", "control", "game_resource", "player_capabilities", "player_state"):
+        atomic_write_json(life / (name + ".json"), {"request_id": "private-id", "status": "draining"})
+    atomic_write_json(topo.effects.state_dir / "corner_rotation.json", {"status": "running"})
+    before = {p: p.read_bytes() for base in (topo.effects.state_dir, life) for p in base.rglob("*.json")}
+    send = signal.pidfd_send_signal
+    def fork_at_first_signal(fd, sig):
+        if not topo.sent:
+            args = ["chrome", "--type=renderer"]
+            if profile:
+                args.append("--user-data-dir=" + str(topo.root / "tmp/soviet_local_chromium_profile"))
+            topo.fake.add(60, 31, args, age=0)
+        send(fd, sig)
+        if len(topo.sent) == 7:
+            stat = topo.fake.proc / "60/stat"
+            stat.write_text(stat.read_text().replace("(x) S 31 ", "(x) S 1 "))
+            replace_game(topo, None)
+    monkeypatch.setattr(signal, "pidfd_send_signal", fork_at_first_signal)
+    result = OwnedRoundRecovery(topo.effects.state_dir, topo.root, topo.effects, clock=lambda: CLOCK - 100).run()
+    assert result == dict(status="incomplete", reason="descendant_exit_unproved", descendant_exit="unproved",
+        containment="pidfd_snapshot", captured_old_targets_gone=True, fresh_game_progress_observed=True,
+        supervisor_unchanged=True, unattributed_profile_candidates=int(profile), common_workers_changed=0)
+    assert (topo.fake.proc / "60").exists()
+    assert len(topo.sent) == 7 and 60 not in {pid for pid, sig in topo.sent}
+    assert {p: p.read_bytes() for p in before} == before
+    assert not (topo.effects.state_dir / "soren_round_recovery.json").exists()
+    assert not list(topo.root.rglob("*.paused"))
+    with store.lock(exclusive=True):
+        pass
+    _assert_fixed_incomplete_entry(monkeypatch, capsys, result)
+    assert len(topo.sent) == 7
+
+
+@pytest.mark.parametrize("orphan", [False, True])
+def test_new_bridge_crashpad_is_candidate_only_when_unattributed(topo, orphan):
+    recovery = recovery_for(topo)
+    replace_game(topo, recovery)
+    topo.fake.add(132, 1 if orphan else 131,
+        ["chrome_crashpad_handler", "--database=" + str(topo.root / "tmp/soviet_local_chromium_profile/Crashpad")], age=1)
+    evidence = topo.effects.verify_new(recovery)
+    assert evidence["captured_old_targets_gone"] is True
+    assert evidence["fresh_game_progress_observed"] is True
+    assert evidence["unattributed_profile_candidates"] == int(orphan)
+    assert incomplete_result(evidence)["status"] == "incomplete"
+    assert not topo.sent
+
+
+@pytest.mark.parametrize("kind", ["live", "reused", "zombie"])
+def test_captured_identity_diagnostic_distinguishes_live_reuse_and_zombie(topo, kind):
+    recovery = recovery_for(topo)
+    replace_game(topo, recovery)
+    topo.fake.add(32, 1, ["chrome"], age=1 if kind == "reused" else 300, state="Z" if kind == "zombie" else "S")
+    evidence = topo.effects.verify_new(recovery)
+    assert evidence["captured_old_targets_gone"] is (kind != "live")
+    assert evidence["fresh_game_progress_observed"] is True
+    assert topo.elapsed[0] == (120 if kind == "live" else 0)
+    assert incomplete_result(evidence)["status"] == "incomplete"
+    assert not topo.sent
+
+
+def test_duplicate_fresh_root_cannot_prove_progress(topo):
+    recovery = recovery_for(topo)
+    replace_game(topo, recovery)
+    topo.fake.add(134, 1, ["node", "soviet_local.mjs"], age=1)
+    evidence = topo.effects.verify_new(recovery)
+    assert evidence["captured_old_targets_gone"] is True
+    assert evidence["fresh_game_progress_observed"] is False
+    assert evidence["unattributed_profile_candidates"] is None
+    assert not topo.sent
+
+
+def test_inventory_failure_reports_unknown_not_absent(topo, monkeypatch):
+    recovery = recovery_for(topo)
+    def unreadable():
+        raise RecoveryRefused("private pid argv path request_id")
+    monkeypatch.setattr(topo.effects, "_rows", unreadable)
+    assert all(value is None for value in topo.effects.verify_new(recovery).values())
+    assert not topo.sent
+
+
+def test_verification_uses_one_process_snapshot(topo, monkeypatch):
+    recovery = recovery_for(topo)
+    replace_game(topo, recovery)
+    rows = topo.effects._rows
+    calls = []
+    def inventory():
+        calls.append(1)
+        assert len(calls) == 1
+        return rows()
+    monkeypatch.setattr(topo.effects, "_rows", inventory)
+    assert topo.effects.verify_new(recovery)["fresh_game_progress_observed"] is True
+    assert len(calls) == 1
+
+
+def test_incomplete_schema_drops_untrusted_values_and_extra_fields():
+    result = incomplete_result(dict(captured_old_targets_gone="private-pid", fresh_game_progress_observed=1,
+        supervisor_unchanged="private-path", unattributed_profile_candidates=True, request_id="private-id"),
+        common_workers_changed="private-argv", reason="private-exception")
+    assert result["reason"] == "descendant_exit_unproved"
+    assert all(result[name] is None for name in ("captured_old_targets_gone", "fresh_game_progress_observed",
+        "supervisor_unchanged", "unattributed_profile_candidates", "common_workers_changed"))
+    assert "private" not in json.dumps(result)
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux") or not hasattr(os, "pidfd_open"),
@@ -555,3 +675,48 @@ def test_unexpected_error_output_does_not_publish_private_identity(monkeypatch, 
     with pytest.raises(SystemExit):
         runpy.run_path(str(Path(__file__).resolve().parents[1] / "ops/vm_actions/recover_soren_round.py"))
     assert capsys.readouterr().err == "owned Soren recovery failed unexpectedly; no recovery hold\n"
+
+
+def _assert_fixed_incomplete_entry(monkeypatch, capsys, result):
+    import docich.soren_round_recovery as recovery_module
+    monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: Path("/home/ubuntu/docich")))
+    monkeypatch.setattr(sys, "argv", ["recover_soren_round.py"])
+    real_resolve = Path.resolve
+    monkeypatch.setattr(Path, "resolve", lambda self, *args, **kwargs:
+        self if str(self) == "/home/ubuntu/docich" else real_resolve(self, *args, **kwargs))
+    class Incomplete:
+        def __init__(self, *args): pass
+        def run(self): return result
+    monkeypatch.setattr(recovery_module, "OwnedRoundRecovery", Incomplete)
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(Path(__file__).resolve().parents[1] / "ops/vm_actions/recover_soren_round.py"))
+    output = capsys.readouterr()
+    assert exit_info.value.code == 1
+    assert json.loads(output.out) == result and output.err == ""
+    assert "completed" not in output.out
+
+
+@pytest.mark.parametrize("progress", [None, False, True])
+def test_fixed_entry_emits_machine_incomplete_and_nonzero(monkeypatch, capsys, progress):
+    result = incomplete_result(dict(captured_old_targets_gone=True, fresh_game_progress_observed=progress,
+        supervisor_unchanged=True, unattributed_profile_candidates=0), common_workers_changed=0)
+    _assert_fixed_incomplete_entry(monkeypatch, capsys, result)
+
+
+def test_fixed_entry_refusal_does_not_publish_exception_details(monkeypatch, capsys):
+    import docich.soren_round_recovery as recovery_module
+    monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: Path("/home/ubuntu/docich")))
+    monkeypatch.setattr(sys, "argv", ["recover_soren_round.py"])
+    real_resolve = Path.resolve
+    monkeypatch.setattr(Path, "resolve", lambda self, *args, **kwargs:
+        self if str(self) == "/home/ubuntu/docich" else real_resolve(self, *args, **kwargs))
+    class Refused:
+        def __init__(self, *args): pass
+        def run(self): raise RecoveryRefused("private request_id pid argv path")
+    monkeypatch.setattr(recovery_module, "OwnedRoundRecovery", Refused)
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(Path(__file__).resolve().parents[1] / "ops/vm_actions/recover_soren_round.py"))
+    output = capsys.readouterr()
+    assert exit_info.value.code == 1
+    assert json.loads(output.out)["reason"] == "recovery_refused"
+    assert "private" not in output.out + output.err
