@@ -35,6 +35,7 @@ class VerifiedWebMaterial:
     text_sha256: str
     excerpt_sha256: str
     excerpt: str
+    query_indexes: tuple[int, ...] = ()
 
     def wire(self) -> dict[str, str]:
         return {
@@ -43,6 +44,7 @@ class VerifiedWebMaterial:
             "text_sha256": self.text_sha256,
             "excerpt_sha256": self.excerpt_sha256,
             "excerpt": self.excerpt,
+            "query_indexes": list(self.query_indexes),
         }
 
 
@@ -99,7 +101,7 @@ def _excerpt(text: str) -> str:
     return raw[:MAX_EXCERPT_BYTES].decode("utf-8", errors="ignore").rstrip()
 
 
-def _material(receipt: object) -> VerifiedWebMaterial | None:
+def _material(receipt: object, query_indexes: tuple[int, ...] = ()) -> VerifiedWebMaterial | None:
     if not isinstance(receipt, Receipt):
         return None
     url = canonical_url(receipt.url)
@@ -123,6 +125,7 @@ def _material(receipt: object) -> VerifiedWebMaterial | None:
         text_sha256=text_sha,
         excerpt_sha256=hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
         excerpt=excerpt,
+        query_indexes=query_indexes,
     )
 
 
@@ -156,8 +159,9 @@ def collect_verified_web_material(
 
     def run(active_broker) -> VerifiedWebBundle:
         candidates: list[str] = []
+        candidate_queries: dict[str, set[int]] = {}
         used: list[str] = []
-        for query in planned:
+        for query_index, query in enumerate(planned):
             remaining = deadline - clock()
             if remaining <= 0:
                 break
@@ -170,8 +174,13 @@ def collect_verified_web_material(
                 continue
             for value in found[:8]:
                 url = canonical_url(value)
-                if url and url not in candidates and len(candidates) < 16:
+                if not url:
+                    continue
+                if url not in candidate_queries and len(candidates) < 16:
                     candidates.append(url)
+                    candidate_queries[url] = set()
+                if url in candidate_queries:
+                    candidate_queries[url].add(query_index)
         if not candidates:
             return VerifiedWebBundle("unavailable", (), tuple(used))
 
@@ -184,7 +193,10 @@ def collect_verified_web_material(
                 break
             fetch_attempts += 1
             try:
-                item = _material(active_broker.fetch(url))
+                item = _material(
+                    active_broker.fetch(url),
+                    tuple(sorted(candidate_queries.get(url, ()))),
+                )
             except Exception:
                 item = None
             if item is not None and all(existing.url != item.url for existing in items):
