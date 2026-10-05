@@ -192,6 +192,10 @@ jobs:
           restored=unknown
           audio_status=unknown
           active_game=unknown
+          soren_loop=unknown
+          soren_state=unknown
+          soren_age=-1
+          soren_resumed=unknown
           for _ in $(seq 1 216); do
             current="$(git -C control ls-remote --exit-code origin refs/heads/main 2>/dev/null | cut -f1 || true)"
             if [[ "$current" =~ ^[0-9a-f]{40}$ ]] &&
@@ -215,6 +219,14 @@ jobs:
           weather = weather if isinstance(weather, dict) else {}
           switch = corners.get("game_switch")
           switch = switch if isinstance(switch, dict) else {}
+          workers = data.get("workers") if isinstance(data, dict) else {}
+          workers = workers if isinstance(workers, dict) else {}
+          details = workers.get("details")
+          details = details if isinstance(details, dict) else {}
+          loop = details.get("soren_loop")
+          loop = loop if isinstance(loop, dict) else {}
+          soren = corners.get("soren_game")
+          soren = soren if isinstance(soren, dict) else {}
           status = weather.get("status") if weather.get("status") in {
               "idle", "starting", "active", "restoring", "completed", "interrupted", "failed",
           } else "unknown"
@@ -232,12 +244,45 @@ jobs:
           restored = "true" if restored is True else "false" if restored is False else "unknown"
           game = switch.get("active_game")
           game = game if isinstance(game, str) and game else "none"
-          print("|".join((status, selection, audio, str(index), end, restored, game)))
+          if loop.get("paused") is True:
+              loop_status = "paused"
+          elif loop.get("alive") is True:
+              loop_status = "alive"
+          elif loop.get("alive") is False:
+              loop_status = "down"
+          else:
+              loop_status = "unknown"
+          soren_state = soren.get("state")
+          if soren_state not in {"MOVE", "DROP", "WAITING", "STOP", "GAMEOVER"}:
+              soren_state = "unknown"
+          soren_age = soren.get("age_sec")
+          if type(soren_age) is not int or not 0 <= soren_age <= 86400:
+              soren_age = -1
+          runner_alive = soren.get("runner_alive")
+          soren_ready = (
+              game == "sorengame"
+              and loop_status == "alive"
+              and runner_alive is True
+              and soren_state in {"MOVE", "DROP", "WAITING"}
+              and 0 <= soren_age <= 30
+          )
+          if game != "sorengame":
+              soren_resumed = "not_applicable"
+          else:
+              soren_resumed = "true" if soren_ready else "false"
+          print("|".join((
+              status, selection, audio, str(index), end, restored, game,
+              loop_status, soren_state, str(soren_age), soren_resumed,
+          )))
           PY
                 )"
-                IFS='|' read -r status selection audio index end restored_now game <<<"$projection"
+                IFS='|' read -r status selection audio index end restored_now game loop_now soren_state_now soren_age_now soren_resumed_now <<<"$projection"
                 audio_status="$audio"
                 active_game="$game"
+                soren_loop="$loop_now"
+                soren_state="$soren_state_now"
+                soren_age="$soren_age_now"
+                soren_resumed="$soren_resumed_now"
                 if (( index > max_index )); then max_index="$index"; fi
                 if [[ "$selection" == manual && ( "$status" == starting || "$status" == active || "$status" == restoring ) ]]; then
                   seen_active=true
@@ -246,7 +291,13 @@ jobs:
                   terminal="$status"
                   end_reason="$end"
                   restored="$restored_now"
-                  break
+                fi
+                # A restored Soren frame is not enough: keep observing until
+                # the required loop/runner are alive and game_state is fresh.
+                if [[ "$terminal" != not_observed && "$restored" == true ]]; then
+                  if [[ "$active_game" != sorengame || "$soren_resumed" == true ]]; then
+                    break
+                  fi
                 fi
               fi
             fi
@@ -260,6 +311,10 @@ jobs:
             echo "restored=$restored"
             echo "audio_status=$audio_status"
             echo "active_game=$active_game"
+            echo "soren_loop=$soren_loop"
+            echo "soren_state=$soren_state"
+            echo "soren_age=$soren_age"
+            echo "soren_resumed=$soren_resumed"
           } >> "$GITHUB_OUTPUT"
 
       - name: Return fixed result metadata to the control Issue
@@ -280,14 +335,19 @@ jobs:
           RESTORED: ${{ steps.observe.outputs.restored }}
           AUDIO_STATUS: ${{ steps.observe.outputs.audio_status }}
           ACTIVE_GAME: ${{ steps.observe.outputs.active_game }}
+          SOREN_LOOP: ${{ steps.observe.outputs.soren_loop }}
+          SOREN_STATE: ${{ steps.observe.outputs.soren_state }}
+          SOREN_AGE: ${{ steps.observe.outputs.soren_age }}
+          SOREN_RESUMED: ${{ steps.observe.outputs.soren_resumed }}
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/weather-start"
           install -m 700 -d "$work"
-          python3 - "$SOURCE_COMMENT_ID" "$RUN_ID" "$RUN_ATTEMPT" "$RUN_SHA" "$START_OUTCOME" "$START_REASON" "$SEEN_ACTIVE" "$MAX_INDEX" "$TERMINAL" "$END_REASON" "$RESTORED" "$AUDIO_STATUS" "$ACTIVE_GAME" > "$work/reply.json" <<'PY'
+          python3 - "$SOURCE_COMMENT_ID" "$RUN_ID" "$RUN_ATTEMPT" "$RUN_SHA" "$START_OUTCOME" "$START_REASON" "$SEEN_ACTIVE" "$MAX_INDEX" "$TERMINAL" "$END_REASON" "$RESTORED" "$AUDIO_STATUS" "$ACTIVE_GAME" "$SOREN_LOOP" "$SOREN_STATE" "$SOREN_AGE" "$SOREN_RESUMED" > "$work/reply.json" <<'PY'
           import json, re, sys
           (comment_id, run_id, attempt, sha, outcome, reason, seen_active, max_index,
-           terminal, end_reason, restored, audio_status, active_game) = sys.argv[1:]
+           terminal, end_reason, restored, audio_status, active_game, soren_loop,
+           soren_state, soren_age, soren_resumed) = sys.argv[1:]
           if not (comment_id.isdigit() and run_id.isdigit() and attempt.isdigit()
                   and re.fullmatch(r"[0-9a-f]{40}", sha)
                   and outcome in {"success", "failure", "cancelled", "skipped"}):
@@ -309,7 +369,8 @@ jobs:
           safe_token = re.compile(r"[A-Za-z0-9_.:-]{1,64}\Z")
           fields = [seen_active or "unknown", max_index or "-1", terminal or "not_observed",
                     end_reason or "none", restored or "unknown", audio_status or "unknown",
-                    active_game or "unknown"]
+                    active_game or "unknown", soren_loop or "unknown",
+                    soren_state or "unknown", soren_age or "-1", soren_resumed or "unknown"]
           if not all(safe_token.fullmatch(value) for value in fields):
               raise SystemExit("invalid observation metadata")
           body = "\n".join((
@@ -326,6 +387,10 @@ jobs:
               f"Audio status: {audio_status or 'unknown'}",
               f"Restored: {restored or 'unknown'}",
               f"Active game after observation: {active_game or 'unknown'}",
+              f"Soren loop after restore: {soren_loop or 'unknown'}",
+              f"Soren game state: {soren_state or 'unknown'}",
+              f"Soren game state age sec: {soren_age or '-1'}",
+              f"Soren resumed: {soren_resumed or 'unknown'}",
           ))
           json.dump({"body": body}, sys.stdout, separators=(",", ":"))
           PY
