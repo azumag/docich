@@ -96,6 +96,7 @@ class TsuitateProgramViewAdapter(ProgramViewAdapter):
                 if (
                     response.status == 200
                     and isinstance(data, dict)
+                    and data.get("ok") is True
                     and data.get("runtime_id") == self.spec.runtime_id
                     and data.get("generation") == self.spec.generation
                     and data.get("lease_id") == self.spec.lease_id
