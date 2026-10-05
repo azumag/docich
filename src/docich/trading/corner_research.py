@@ -35,8 +35,6 @@ MAX_SUMMARY_CHARS = 600
 MAX_BACKGROUND_CHARS = 1800
 MAX_HISTORY_NEWS = 120
 MAX_HISTORY_ASSETS = 12
-MAX_VERIFIED_WEB_ITEMS = 4
-MAX_VERIFIED_WEB_EXCERPT_CHARS = 1200
 
 ASSET_ANGLES = (
     ("origin_history", "誕生の経緯や歴史的なエピソード"),
@@ -291,35 +289,21 @@ def _history(trading_dir: Path) -> dict:
 
 
 def _verified_web_material(name: str, env: Mapping[str, str]) -> list[dict[str, str]]:
-    """Collect bounded full-page evidence through the shared public Web broker."""
-    from ..reply_research_web import collect_verified_public
+    """Collect PAPER material through the shared native radio MaterialProvider."""
+    from ..radio.contracts import MaterialQuery
+    from ..radio.material import collect_public_web_material
 
     queries = [
-        ("market", "暗号資産 ビットコイン イーサリアム 規制 ETF 市場 最新"),
+        MaterialQuery("market", "暗号資産 ビットコイン イーサリアム 規制 ETF 市場 最新"),
     ]
     if name:
-        queries.append(("asset", f"{name} 暗号資産 技術 歴史 採用 ニュース"))
-
-    rows: list[dict[str, str]] = []
-    seen_urls: set[str] = set()
-    for kind, query in queries:
-        receipts = collect_verified_public(query, env=env, timeout_sec=12.0, limit=2)
-        for receipt in receipts:
-            if receipt.url in seen_urls:
-                continue
-            seen_urls.add(receipt.url)
-            excerpt = _clean_text(receipt.text, MAX_VERIFIED_WEB_EXCERPT_CHARS)
-            if not excerpt:
-                continue
-            rows.append({
-                "kind": kind,
-                "url": receipt.url,
-                "sha256": receipt.sha256,
-                "excerpt": excerpt,
-            })
-            if len(rows) >= MAX_VERIFIED_WEB_ITEMS:
-                return rows
-    return rows
+        queries.append(MaterialQuery("asset", f"{name} 暗号資産 技術 歴史 採用 ニュース"))
+    return [
+        item.wire()
+        for item in collect_public_web_material(
+            queries, env=env, timeout_sec=20.0, max_items=4, per_query=2
+        )
+    ]
 
 
 def load_research_result(trading_dir) -> dict:
