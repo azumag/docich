@@ -453,6 +453,171 @@ def _collect_storage_breakdown(
 
 
 
+CPU_PROFILE_REPORT = Path("/tmp/docich-cpu-profile-latest.json")
+CPU_PROFILE_MAX_BYTES = 32768
+CPU_PROFILE_MAX_COMPONENTS = 20
+CPU_PROFILE_MAX_SPAWNS = 20
+CPU_PROFILE_FRESH_SEC = 900
+
+
+def _cpu_profile_number(value, *, maximum=10**12):
+    if type(value) not in (int, float) or not math.isfinite(value):
+        return None
+    value = float(value)
+    if value < 0 or value > maximum:
+        return None
+    return int(value) if value.is_integer() else value
+
+
+def _cpu_profile_label(value):
+    if not isinstance(value, str) or not 1 <= len(value) <= 64:
+        return None
+    if value in {
+        "retroarch", "x_server", "xdotool", "audio_server", "browser",
+        "kernel", "shell", "python", "other", "profiler",
+    }:
+        return value
+    if re.fullmatch(r"ffmpeg:(?:capture|stream|x11grab|other)", value):
+        return value
+    if re.fullmatch(r"(?:game|docich):[a-z0-9-]{1,32}", value):
+        return value
+    if re.fullmatch(r"(?:py|sh):[A-Za-z0-9_.-]{1,48}", value):
+        return value
+    if re.fullmatch(r"worker:[a-z0-9_-]{1,48}", value):
+        return value
+    return None
+
+
+def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
+    """Project one fixed profiler report without exposing arbitrary /tmp JSON."""
+    result = {
+        "schema_version": 1,
+        "status": "missing",
+        "present": False,
+        "readable": False,
+    }
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= CPU_PROFILE_MAX_BYTES:
+            return {**result, "present": True, "status": "invalid"}
+        raw = os.read(fd, CPU_PROFILE_MAX_BYTES + 1)
+        if len(raw) > CPU_PROFILE_MAX_BYTES:
+            return {**result, "present": True, "status": "invalid"}
+        data = json.loads(raw.decode("utf-8"))
+    except FileNotFoundError:
+        return result
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {**result, "present": True, "status": "unreadable"}
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+    if not isinstance(data, dict) or data.get("schema") != "docich.cpu_profile.v1":
+        return {**result, "present": True, "status": "invalid"}
+    meta = data.get("meta")
+    host = data.get("host")
+    if not isinstance(meta, dict) or not isinstance(host, dict):
+        return {**result, "present": True, "status": "invalid"}
+
+    scenario = meta.get("scenario")
+    generated_at = _cpu_profile_number(meta.get("generated_at"), maximum=253402300799)
+    if (not isinstance(scenario, str)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,39}", scenario)
+            or generated_at is None):
+        return {**result, "present": True, "status": "invalid"}
+    age_sec = int(now - generated_at)
+    if age_sec < -5:
+        return {**result, "present": True, "status": "invalid"}
+
+    projected_meta = {"scenario": scenario, "generated_at": int(generated_at)}
+    for key, maximum in {
+        "elapsed_sec": 1000,
+        "interval_sec": 20,
+        "samples": 10000,
+        "ncpu": 4096,
+        "worker_pidfiles_resolved": 10000,
+        "profiler_cpu_sec": 1000,
+    }.items():
+        value = _cpu_profile_number(meta.get(key), maximum=maximum)
+        if value is not None:
+            projected_meta[key] = value
+
+    projected_host = {}
+    for key, maximum in {
+        "cpu_busy_pct": 100,
+        "cpu_iowait_pct": 100,
+        "cpu_busy_pct_p50": 100,
+        "cpu_busy_pct_p95": 100,
+        "load1_p50": 100000,
+        "load1_p95": 100000,
+        "runnable_p50": 100000,
+        "runnable_p95": 100000,
+        "forks": 10**9,
+        "forks_per_sec": 10**7,
+        "ctxt_per_sec": 10**9,
+        "processes_start": 10**7,
+        "processes_end": 10**7,
+        "processes_max": 10**7,
+    }.items():
+        value = _cpu_profile_number(host.get(key), maximum=maximum)
+        if value is not None:
+            projected_host[key] = value
+
+    components = []
+    raw_components = data.get("components")
+    if isinstance(raw_components, list):
+        for item in raw_components[:CPU_PROFILE_MAX_COMPONENTS]:
+            if not isinstance(item, dict):
+                continue
+            label = _cpu_profile_label(item.get("component"))
+            if label is None:
+                continue
+            row = {"component": label}
+            for key, maximum in {
+                "cpu_pct": 10**6,
+                "cpu_share_pct": 100,
+                "processes": 10**7,
+                "spawned": 10**9,
+                "vcs_per_sec": 10**9,
+                "nvcs_per_sec": 10**9,
+                "rss_kb": 10**12,
+                "threads": 10**7,
+            }.items():
+                value = _cpu_profile_number(item.get(key), maximum=maximum)
+                if value is not None:
+                    row[key] = value
+            components.append(row)
+
+    spawns = []
+    raw_spawns = data.get("spawns")
+    if isinstance(raw_spawns, list):
+        for item in raw_spawns[:CPU_PROFILE_MAX_SPAWNS]:
+            if not isinstance(item, dict):
+                continue
+            component = _cpu_profile_label(item.get("component"))
+            spawner = _cpu_profile_label(item.get("spawner"))
+            count = _cpu_profile_number(item.get("count"), maximum=10**9)
+            if component is None or spawner is None or count is None:
+                continue
+            spawns.append({"component": component, "spawner": spawner, "count": int(count)})
+
+    return {
+        "schema_version": 1,
+        "status": "ok" if age_sec <= CPU_PROFILE_FRESH_SEC else "stale",
+        "present": True,
+        "readable": True,
+        "age_sec": age_sec,
+        "meta": projected_meta,
+        "host": projected_host,
+        "components": components,
+        "components_truncated": max(len(raw_components) - len(components), 0)
+            if isinstance(raw_components, list) else 0,
+        "spawns": spawns,
+    }
+
+
 def _empty_opencode_attribution_bucket():
     return {
         "sessions": 0,
@@ -6171,6 +6336,7 @@ def main(argv):
         "nethack_tiles": _collect_nethack_tiles(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "webui": _collect_webui(),
+        "cpu_profile": _collect_cpu_profile(now),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
         "opencode_session_attribution": _collect_opencode_session_attribution(
             Path(soren).parent / ".local" / "share" / "opencode" / "opencode.db",
