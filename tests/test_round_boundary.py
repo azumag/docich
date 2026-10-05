@@ -648,7 +648,27 @@ def test_fifo_maintenance_does_not_cancel_a_live_drain():
         assert result_box[0].status == "succeeded"
 
 
-def test_fifo_maintenance_recovers_expired_drain_and_starts_only_queue_head():
+def test_fifo_replay_keeps_head_queued_when_writer_wins_claim(monkeypatch, tmp_path):
+    store, coordinator = _coordinator(BoundaryFactory(), tmp_path / "run")
+    assert coordinator.start("nethack").status == "succeeded"
+    head = store.enqueue_request(str(uuid.uuid4()), "switch", "hanjuku")
+    following = store.enqueue_request(str(uuid.uuid4()), "switch", "robots")
+    original_switch = coordinator.switch
+
+    def claim_with_busy_writer(target, **kwargs):
+        # resume_queued has already released its snapshot transaction. A stale
+        # driver may acquire the writer before the separate head claim.
+        with store.lock(exclusive=True, blocking=False):
+            return original_switch(target, **kwargs)
+
+    monkeypatch.setattr(coordinator, "switch", claim_with_busy_writer)
+    resumed = coordinator.resume_queued(timeout_s=1.0)
+    assert resumed.status == "queued" and resumed.request_id == head.request_id
+    assert [item["request_id"] for item in store.receipts.queued()] == [head.request_id, following.request_id]
+    assert store.canonical.load()[0]["active"]["game"] == "nethack"
+
+
+def test_fifo_maintenance_recovers_expired_drain_and_starts_only_queue_head(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
@@ -678,6 +698,17 @@ def test_fifo_maintenance_recovers_expired_drain_and_starts_only_queue_head():
             store.canonical.save(state)
 
         maintenance_result = []
+        resume_queued = coordinator.resume_queued
+
+        def resume_after_stale_driver(*, timeout_s=None):
+            # Cancellation wakes the old driver. Let its final writer hold
+            # finish before claiming the FIFO head; otherwise a valid queued
+            # result depends on thread scheduling, not this recovery contract.
+            first_worker.join(3.0)
+            assert not first_worker.is_alive()
+            return resume_queued(timeout_s=timeout_s)
+
+        monkeypatch.setattr(coordinator, "resume_queued", resume_after_stale_driver)
         maintenance_worker = threading.Thread(
             target=lambda: maintenance_result.append(
                 coordinator.maintain_fifo(timeout_s=1.0)

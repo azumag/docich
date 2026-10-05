@@ -99,6 +99,19 @@ EventLogはbest-effortで、receipt削除のtombstoneもないため、保持行
 任意パス・shell・ゲーム入力は受け付けない。既存gatewayのexec搬送は固定reviewed scriptのみ使用する。
 workflowのstatus照合に加え、gateway deployment lock内の固定scriptでもVM HEADとtracked cleanを照合する。
 VM helperの非ゼロexit・SHA不一致はworkflowも失敗とし、原記録を公開しない。
+予約指紋はActionsの開始時headerへ露出する`env`やworkflow式へ展開しない。
+認可と固定operatorはrunnerの既存`GITHUB_EVENT_PATH`から同じ入力を読み、operatorはquotedな
+shell captureからVM stdinへ渡す。`GITHUB_ENV`・step output・診断JSONへ保存しない。
+認可のowner/main/confirm/固定operationと64桁指紋の条件は維持し、イベント欠落・不正型は固定理由で拒否する。
+これは今後の受渡しの修正であり、過去runの公開ログが消えたことやGitHub全体の入力保管を保証しない。
+拒否時はhelperが固定enumを専用の非ゼロ終了コード（81〜103）で伝え、既存gatewayの
+`exit_code` envelopeをworkflowがSSH終了コードと照合して表示する。SSHが非ゼロでも結果を読んでから
+失敗にする。出力はstatus・reason・corner・cancellation_authorityだけで、指紋・原stdout・例外文・
+パス・operation IDは表示しない。未知の例外理由は`evidence_unverified`、旧helper/未知の終了コードは
+`helper_failed`、不正JSON・SHA/transport不一致は`gateway_result_unverified`として拒否する。
+scriptの固定preflight失敗は`helper_preflight_failed`（25）、引数拒否は`helper_arguments_invalid`（64）。
+既存失敗runの終了コード1だけから過去の判定理由を復元できない。check失敗はrelease許可にならず、
+新しい診断の実行も別途許可された段階で行う。gatewayの非公開ログ契約や保護条件は維持する。
 新admin scriptだけPython 3.11以上をisolated probeで必須確認し、safe-path `-P` でmoduleを起動する。
 PYTHONPATHは配布済みsrcに固定し、untrackedなCWDのdocich packageを読み込まない。非対応版へfallbackしない。
 

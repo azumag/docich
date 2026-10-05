@@ -2,7 +2,7 @@
   "output_sha256": "ffa26dd93d41937b1653fd09584d14bbabc94114acd4fd83a4865ba6ccde91c9",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "3cba86147f59e2552d14a1583db18c0a0b0b2187df6f458660ec2f9f0bf3d31e",
+  "source_sha256": "f3b2bb5d735c0fe9f9c168f6ccd1d61e393e7b0a9285921bf16e1ccadce84b0c",
   "topics": [
     "半熟admin checkの固定拒否enumをReady PRでレビュー（本番未実行）",
     "Discordの内部応答生成を文字送信から分離（実音声・本番未接続）",
