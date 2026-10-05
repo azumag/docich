@@ -110,9 +110,12 @@ class TestBridge(unittest.TestCase):
         }
         self.assertEqual(control.project_player_view(valid)["yourPieces"], [{"square": "5i", "role": "king"}])
         for bad in [
+            {**valid, "yourColor": []},
             {**valid, "yourPieces": [{"square": "5z", "role": "king"}]},
+            {**valid, "yourPieces": [{"square": "5i", "role": []}]},
             {**valid, "yourHand": {"king": 1}},
             {**valid, "moveNumber": 0},
+            {**valid, "clocks": {**valid["clocks"], "running": []}},
             {**valid, "clocks": {**valid["clocks"], "running": "gote"}},
             {**valid, "fouls": {"you": 11, "opponent": 0}},
         ]:
