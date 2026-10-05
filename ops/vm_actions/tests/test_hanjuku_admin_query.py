@@ -223,7 +223,7 @@ class HanjukuAdminQueryWorkflowTests(unittest.TestCase):
             "manual_pending_fingerprint",
             "expected_fingerprint_digest",
             "ADMIN_RELEASE_EXPECTED",
-            "gateway_result",
+            "$gateway_result",
             "diagnostics_json",
         ):
             with self.subTest(forbidden=forbidden):
