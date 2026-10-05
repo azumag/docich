@@ -188,7 +188,12 @@ def test_direct_chat_specs_preserve_legacy_cli_and_use_explicit_profiles():
             assert args[2] == 45 and answer.call_args.kwargs == {"raw_reply": True}
             assert answer.call_count == 1
             cli.assert_not_called()
-        for label in ("RADIO:test", "COMMENT:RESEARCH", "COMMENT:PREPASS"):
+        with mock.patch("docich.reply_research_api.answer_once", return_value="radio direct") as answer:
+            request = DispatchRequest(label="RADIO:paper-script", prompt="safe", agents=(spec,))
+            result = call_agent(spec, request, timeout=5, env={key: "SYNTHETIC_KEY", **extra})
+            assert result.returncode == 0 and result.output == "radio direct"
+            assert answer.call_count == 1
+        for label in ("COMMENT:RESEARCH", "COMMENT:PREPASS", "RADIO:RESEARCH", "RADIO:PREPASS"):
             with mock.patch("docich.reply_research_api.answer_once") as answer:
                 request = DispatchRequest(label=label, prompt="safe", agents=(spec,))
                 assert call_agent(spec, request, timeout=5, env={key: "SYNTHETIC_KEY", **extra}).returncode != 0

@@ -202,7 +202,7 @@ routing有効時のAPI-onlyも分類からの残り45秒をbounded callbackへ�
   `DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID=<32hex>`。
   safe agent alphabet上の`cf/...`を固定HTTP modelの`@cf/...`へ投影する。
 
-新specはCOMMENTの会話生成のみで、RADIO/RESEARCH/PREPASSは拒否する。
+新specは通常のCOMMENT/RADIO生成で利用できる。RESEARCH/PREPASSは引き続き拒否し、検索・コード調査の権限境界へdirect生成specを流用しない。RADIO側もagent chainへ`*-api:`を明示した場合だけdirect APIを使い、既存の`opencode:`/`opencode-go:`設定を暗黙変換しない。
 画像provider allowlistは拡張しない。明示chain内の次候補はbounded direct APIに限定し、
 既存local/CLI chainとの混在は送信前に拒否する。fallback候補を環境やモデル回答から作らない。typed requestでもrawのmodelと
 実HTTP modelが一致しなければ、鍵解決/worker/telemetry前に拒否する。
