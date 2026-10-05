@@ -23,22 +23,16 @@ class HanjukuTerminalPendingError(SorenOutputError):
 PAPER_PERSONA_CHUKA = "chuka"
 PAPER_PERSONA_MERIKEN = "meriken"
 
-# Matches both the daily corner's fixed scope ("paper-corner:...") and any
-# operator/manual test run's per-invocation scope ("paper-corner-manual-
-# <uuid12hex>:...", "paper-corner-operator-...", etc). Both need the persona
-# treatment below (see pick_paper_persona/_paper_corner_speech_text). A
-# scope-prefix split is used instead of a regex tied to the exact
-# manual-scope shape (e.g. the uuid hex length), so a future scope variant
-# is covered by construction rather than needing this file updated in
-# lockstep.
-def _is_paper_corner_delivery(event_id: str) -> bool:
+# Common rotation keys do not identify their corner. PAPER's owner supplies
+# that identity explicitly; legacy paper-corner keys remain supported.
+def _is_paper_corner_delivery(event_id: str, *, corner_owner: str = "") -> bool:
     scope = str(event_id or "").split(":", 1)[0]
-    return scope == "paper-corner" or scope.startswith("paper-corner-")
+    return corner_owner == "paper" or scope == "paper-corner" or scope.startswith("paper-corner-")
 
 
-def pick_paper_persona(event_id: str) -> str:
+def pick_paper_persona(event_id: str, *, corner_owner: str = "") -> str:
     """Keep PAPER on Meriken regardless of run date, scope, segment or retry."""
-    return PAPER_PERSONA_MERIKEN if _is_paper_corner_delivery(event_id) else PAPER_PERSONA_CHUKA
+    return PAPER_PERSONA_MERIKEN if _is_paper_corner_delivery(event_id, corner_owner=corner_owner) else PAPER_PERSONA_CHUKA
 
 
 _PAPER_CORNER_INTRO = "PAPER・暗号資産の模擬売買コーナーです。"
@@ -52,7 +46,7 @@ _PAPER_CORNER_CHATTER = (
 )
 
 
-def _paper_corner_speech_text(text: str, event_id: str) -> str:
+def _paper_corner_speech_text(text: str, event_id: str, *, corner_owner: str = "") -> str:
     """Keep the programme intro one-shot and add bounded between-segment talk.
 
     Paper-corner reports are durable and delivered every five minutes.  The
@@ -62,7 +56,7 @@ def _paper_corner_speech_text(text: str, event_id: str) -> str:
     """
     body = str(text).strip()
     key = str(event_id or "")
-    if not _is_paper_corner_delivery(key):
+    if not _is_paper_corner_delivery(key, corner_owner=corner_owner):
         return body
     parts = key.split(":")
     suffix = parts[-1]
@@ -134,15 +128,20 @@ def _retry_pending_hanjuku_terminal(g: GlobalConfig, *, exclude_key: str = "") -
         )
 
 
-def enqueue_speech(g: GlobalConfig, text: str, *, event_id: str = "") -> None:
+def enqueue_paper_corner_speech(g: GlobalConfig, text: str, *, event_id: str = "") -> None:
+    """PAPER-owned delivery, including the shared rotation namespace."""
+    enqueue_speech(g, text, event_id=event_id, corner_owner="paper")
+
+
+def enqueue_speech(g: GlobalConfig, text: str, *, event_id: str = "", corner_owner: str = "") -> None:
     # Reuse the same production Soren comment-audio queue used by Web UI.  The
     # paper event id is a durable sink-side dedupe key so a crash after enqueue
     # but before notification ACK cannot cause a later replay.
     _retry_pending_hanjuku_terminal(g)
-    speech_text = _paper_corner_speech_text(text, event_id)
+    speech_text = _paper_corner_speech_text(text, event_id, corner_owner=corner_owner)
     root = resolve_soren_root(g)
     speaker = ""
-    if pick_paper_persona(event_id) == PAPER_PERSONA_MERIKEN:
+    if pick_paper_persona(event_id, corner_owner=corner_owner) == PAPER_PERSONA_MERIKEN:
         speaker = resolve_meriken_speaker(g, root)
     try:
         from .. import webui

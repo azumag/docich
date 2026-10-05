@@ -1,10 +1,10 @@
 {
-  "output_sha256": "50da31e5b9dd78cf9b23372490b8874f96a5ff08cf1c28800a0cfeada5f28de9",
+  "output_sha256": "9cce3ba614d33c7abcfa81dee53ed7e7aec5f385b35ab855e86be06e17c47836",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "134b1192ae2e7d05fb515da01ae91d7146f6a2fd91b72ef9c8677e812e7e4cf9",
+  "source_sha256": "6d868698d4c8020729310d3f9bce546974360d69ced20bc1497fe8bd41b1d671",
   "topics": [
-    "PAPERコーナーの人格と声をメリケンへ固定（実装・ローカル検証、本番未反映）",
+    "PAPERコーナーの人格と声をメリケンへ固定（共通rotation経路も修正、本番未反映）",
     "Soren「GAMEOVERのまま進まない」固定復旧 `recover_soren_round` を Ready （未merge・本番未実…",
     "半熟英雄: 卵回復の見積もりを実測卵だけにし、支払へ賃金フロアを固定（v133）を配備"
   ]

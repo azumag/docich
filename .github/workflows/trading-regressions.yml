@@ -146,3 +146,4 @@ jobs:
           tests/test_trading_free_strategy_systemd.py
           tests/test_trading_soren_output.py tests/test_overlay_queue.py tests/test_audio_delivery.py tests/test_overlay_interop.py
           tests/test_soren91_corner.py
+          tests/test_paper_corner_meriken_rotation.py

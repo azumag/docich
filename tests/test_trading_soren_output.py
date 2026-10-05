@@ -147,13 +147,15 @@ class TestSorenOutputAdapter(unittest.TestCase):
                 # fresh manual identities, all slots and exact retry/replay.
                 for day in range(366):
                     date = dt.date(2028, 1, 1) + dt.timedelta(days=day)
-                    for scope in ("paper-corner", f"paper-corner-manual-{day:012x}",
-                                  f"paper-corner-operator-{day:012x}"):
+                    for scope, owner in (("paper-corner", ""),
+                                         (f"paper-corner-manual-{day:012x}", ""),
+                                         (f"paper-corner-operator-{day:012x}", ""),
+                                         (f"corner-rotation:{day:012x}", "paper")):
                         for slot in range(1, 9):
                             key = f"{scope}:{date}:script:{slot}"
-                            self.assertEqual(soren_output.pick_paper_persona(key), "meriken")
+                            self.assertEqual(soren_output.pick_paper_persona(key, corner_owner=owner), "meriken")
                             for _ in range(2):
-                                soren_output.enqueue_speech(g, "本文", event_id=key)
+                                soren_output.enqueue_speech(g, "本文", event_id=key, corner_owner=owner)
                                 self.assertEqual(enqueue.call_args.kwargs["speaker"], "14")
                                 self.assertEqual(enqueue.call_args.kwargs["delivery_key"], key)
                                 self.assertEqual(enqueue.call_args.args[1], "本文")
