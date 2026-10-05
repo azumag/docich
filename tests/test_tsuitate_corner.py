@@ -9,6 +9,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from docich.corner_adapters import CornerExecutionError, TsuitateCornerAdapter
+from docich.corner_catalog import Corner
 from docich.tsuitate_beta_control import ControlError
 from docich.tsuitate_corner import TsuitateCornerManager
 from docich.tsuitate_view import VIEW_NAME
@@ -171,3 +173,68 @@ def test_manual_stop_requests_beta_stop_before_restore(tmp_path, monkeypatch):
     assert manager._wait_and_restore(state) == "completed"
     assert ("stop", REQ) in calls
     assert seen == ["manual"]
+
+
+def test_rotation_adapter_loads_only_beta_control_env(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    env_file = home / ".config" / "docich" / "webui.env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text(
+        "DOCICH_BETA_CONTROL_SECRET=fixture-control-secret-12345678901234567890\n"
+        "DOCICH_BETA_CONTROL_URL=https://docich-tsuitate-bot.fixture.workers.dev\n"
+        "DOCICH_WEBUI_TOKEN=operator-secret-never-export\n"
+        "OTHER_PRIVATE_VALUE=never-read\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    for key in ("DOCICH_BETA_CONTROL_SECRET", "DOCICH_BETA_CONTROL_URL",
+                "DOCICH_WEBUI_TOKEN", "DOCICH_WEBUI_READONLY_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+
+    adapter = TsuitateCornerAdapter(
+        _global(tmp_path), Corner("tsuitate", "tsuitate", VIEW_NAME, manual_only=True)
+    )
+    captured = {}
+
+    def eligible():
+        import os
+        captured["secret"] = os.environ.get("DOCICH_BETA_CONTROL_SECRET")
+        captured["url"] = os.environ.get("DOCICH_BETA_CONTROL_URL")
+        captured["webui"] = os.environ.get("DOCICH_WEBUI_TOKEN")
+        captured["other"] = os.environ.get("OTHER_PRIVATE_VALUE")
+        return True
+
+    adapter.manager.eligible = eligible
+    assert adapter.eligible() is True
+    assert captured == {
+        "secret": "fixture-control-secret-12345678901234567890",
+        "url": "https://docich-tsuitate-bot.fixture.workers.dev",
+        "webui": None,
+        "other": None,
+    }
+    import os
+    assert os.environ.get("DOCICH_BETA_CONTROL_SECRET") is None
+    assert os.environ.get("DOCICH_BETA_CONTROL_URL") is None
+
+
+def test_rotation_adapter_rejects_control_secret_reusing_webui_token(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    env_file = home / ".config" / "docich" / "webui.env"
+    env_file.parent.mkdir(parents=True)
+    same = "shared-secret-that-must-not-be-reused-123456"
+    env_file.write_text(
+        f"DOCICH_BETA_CONTROL_SECRET={same}\n"
+        "DOCICH_BETA_CONTROL_URL=https://docich-tsuitate-bot.fixture.workers.dev\n"
+        f"DOCICH_WEBUI_TOKEN={same}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    for key in ("DOCICH_BETA_CONTROL_SECRET", "DOCICH_BETA_CONTROL_URL",
+                "DOCICH_WEBUI_TOKEN", "DOCICH_WEBUI_READONLY_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+
+    adapter = TsuitateCornerAdapter(
+        _global(tmp_path), Corner("tsuitate", "tsuitate", VIEW_NAME, manual_only=True)
+    )
+    with pytest.raises(CornerExecutionError, match="must not reuse"):
+        adapter.eligible()
