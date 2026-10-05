@@ -6,7 +6,7 @@ import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 
-from ..reply_research_web import Receipt, collect_verified_public
+from ..reply_research_web import Receipt
 from .contracts import MaterialQuery, WebMaterial
 
 
@@ -46,7 +46,11 @@ def collect_public_web_material(
     if any(not isinstance(item, MaterialQuery) for item in queries):
         raise ValueError("invalid radio material query")
 
-    fetch = collector or collect_verified_public
+    if collector is None:
+        from ..reply_research_web import collect_verified_public
+        fetch = collect_verified_public
+    else:
+        fetch = collector
     deadline = time.monotonic() + float(timeout_sec)
     rows: list[WebMaterial] = []
     seen_urls: set[str] = set()
