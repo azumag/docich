@@ -41,7 +41,7 @@
 
 ## 1. 作業再開時は handoff.md を読む
 
-新しいセッション・タスクの開始時は、docichの唯一の運用正本であるローカル `handoff.md` を読み、目標、進行中の作業、既知の問題、次の作業を把握する。`handoff.md` はGit管理外でprimary checkoutにだけ存在するため、worktreeのカレントディレクトリから `./handoff.md` を探さない。worktreeでは `git rev-parse --path-format=absolute --git-common-dir` で共通Gitディレクトリを取得し、その親ディレクトリにある `handoff.md` を読む。正本を読み取れない場合は未読と明記し、コピーを作ったり内容を推測したりしない。
+新しいセッション・タスクの開始時は、承認済みの非公開共通領域で管理する `handoff.md` を読み、目標、進行中の作業、既知の問題、次の作業を把握する。正本はcheckoutの場所から推測せず、環境設定 `DOCICH_HANDOFF_PATH` の絶対パス、または明示された正本参照を使う。primary checkoutやworktreeの `./handoff.md` へ暗黙にfallbackしない。正本の参照が未設定・読み取り不能なら未読と明記し、コピーの作成や内容の推測をせず、GitHubとアクセス可能な現行コードを根拠に通常の開発を進めてよい。非公開正本の最新性や本番状態を確認済みとは扱わない。
 
 - `handoff` スキルがある場合は `/handoff load` を使ってよい。
 - 記載内容は `git status`、GitHubの現行状態、アクセス可能なサービスの実測と突き合わせる。「完了」「反映済み」は裏取りできるまでは仮の情報として扱う。
@@ -49,13 +49,13 @@
 
 ## 2. 区切りで引き継ぎを更新する
 
-運用に関わるタスクの完了・大きな意思決定・中断時は `handoff.md` を更新する。既存内容を読んで差分を反映し、丸ごと消さない。
+運用に関わるタスクの完了・大きな意思決定・中断時は、利用可能な共通正本 `handoff.md` を更新する。既存内容を読んで差分を反映し、丸ごと消さない。参照が未設定・読み取り不能ならPRへ事実と残件を残し、正本更新は未実施とする。正本不在を通常のコード・テスト・文書のcommit・pushの停止条件にしない。
 
 - 対象コミット、決定、実行コマンドと結果、未確認事項、残件、次の具体的な一手を事実ベースで残す。デプロイしただけ、テストが緑なだけで「直った」と書かない。
 - `handoff` スキルがある場合は `/handoff` の保存モードを使ってよい。
-- 運用正本はprimary checkoutルートのローカル `handoff.md` だけ。内部記録のためGit管理外を維持し、SorenサブモジュールやVM側のhandoffを正本にしない。worktreeから更新する場合も、共通Gitディレクトリの親にある正本だけを編集し、worktree内に複製しない。
-- 更新時は親の `python3 ops/vm_actions/ops_brief.py build` と `check-source` を実行する。公開可能な最新見出し3件・ソースSHA-256・出力SHA-256だけが `ops/runtime_context/ops_brief.json` へ決定的に生成される。見出しに機密情報を含めず、親の作業ブランチで生成物をレビュー・コミットする。分離worktreeでは `--handoff /絶対パス/docich/handoff.md` で唯一の正本を明示する。
-- CIは `check-artifact` とstale検知回帰テストを実行する。非公開ソースがないCIは正本の最新性までは証明できないため、最終コミット・pushの担当者が直前に毎回 `build` / `check-source` を実行する。並行更新され得る正本に対して過去の照合成功を恒久的な保証としてコードや文書に記録しない。ソース欠落は成功扱いしない。
+- 運用正本は承認済みの非公開共通領域で管理する。内部記録のため公開Gitへ追加せず、checkoutごとの複製やSorenサブモジュール・VM側への独立更新を行わない。共有場所・アクセス権の新設や正本移行は別途確認し、参照方法の整備だけで移行済みと書かない。
+- 公開投影 `ops/runtime_context/ops_brief.json` を更新する場合は、docichの `python3 ops/vm_actions/ops_brief.py build` と `check-source` を共通正本から実行する。`--handoff /絶対パス/共通領域/handoff.md` は `DOCICH_HANDOFF_PATH` より優先する。公開可能な最新見出し3件・ソースSHA-256・出力SHA-256だけを決定的に生成し、見出しに機密情報を含めず、docichの作業ブランチでレビュー・コミットする。
+- CIは `check-artifact` とstale検知回帰テストを実行する。非公開ソースがないCIは正本の最新性までは証明できない。最終commit・push直前の `build` / `check-source` は公開投影を更新する作業だけで必要とし、通常のコード・テスト・文書変更へ一律に要求しない。正本の欠落・照合失敗を成功扱いせず、参照できない場合は既存投影を維持して正本との一致は未確認と記録する。並行更新され得る正本に対して過去の照合成功を恒久的な保証としてコードや文書に記録しない。
 - runtimeの `prompts/ops_brief.md` は親の生成物を入力にcanonical gatewayが同一deploy transactionで生成・検証する。`games/soviet_now/prompts/ops_brief.md` の既存tracked copyはlegacyであり、以後の配布元ではない。Soren側で手動再生成・コミット・VMコピーは不要。旧 `games/soviet_now/tools/build_ops_brief.sh` はこの経路では使用しない。
 - gateway初回切替・drift・未配布の扱いは `docs/operations/ops-brief.md` を参照する。生成だけでVM反映済みと書かない。
 - GitHub上の文書改訂だけで運用状況に変更がない場合は、PR本文を引き継ぎとし、運用中の `handoff.md` / `ops_brief.md` を書き換えない。生成・配布環境がない場合は未実施と記録し、配布済みと書かない。

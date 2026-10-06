@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private parent handoff -> reviewed public projection -> runtime markdown.
+"""Private shared handoff -> reviewed public projection -> runtime markdown.
 
 Never print source/projection text. The private handoff is deliberately not in
 Git; check-source proves provenance locally, check-artifact works in clean CI.
@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -20,6 +21,7 @@ CAPABILITY = "parent_ops_brief_v1"
 MAX_SOURCE = 4 * 1024 * 1024
 MAX_ARTIFACT = 4096
 HEADER = "# 直近の裏側の改修 (docich handoff.md から自動生成。手で編集しない)\n"
+HANDOFF_ENV = "DOCICH_HANDOFF_PATH"
 
 
 def digest(data: bytes) -> str:
@@ -116,19 +118,30 @@ def read_regular(path: Path, limit: int) -> bytes:
     return data
 
 
+def handoff_path(explicit: Path | None) -> Path:
+    """Use an explicitly configured source; never infer a checkout-local copy."""
+    if explicit is None:
+        configured = os.environ.get(HANDOFF_ENV)
+        if not configured:
+            raise ValueError("shared handoff source not configured")
+        explicit = Path(configured)
+    if not explicit.is_absolute() or explicit.name != "handoff.md":
+        raise ValueError("explicit absolute handoff.md path required")
+    return explicit
+
+
 def main() -> int:
     root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("build", "check-source", "check-artifact", "materialize"))
-    parser.add_argument("--handoff", type=Path, default=root / "handoff.md")
+    parser.add_argument("--handoff", type=Path,
+                        help="absolute shared handoff.md path (overrides DOCICH_HANDOFF_PATH)")
     parser.add_argument("--artifact", type=Path, default=root / ARTIFACT)
     parser.add_argument("--output", type=Path, help="explicit local runtime markdown output")
     args = parser.parse_args()
     try:
         if args.operation in {"build", "check-source"}:
-            if args.handoff.name != "handoff.md":
-                raise ValueError("parent handoff.md required")
-            expected = build(read_regular(args.handoff, MAX_SOURCE))
+            expected = build(read_regular(handoff_path(args.handoff), MAX_SOURCE))
             if args.operation == "check-source":
                 if read_regular(args.artifact, MAX_ARTIFACT) != expected:
                     raise ValueError("stale ops brief source")

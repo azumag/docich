@@ -1,19 +1,21 @@
 # handoff / ops_brief の正本と配布
 
-運用正本は **docichルートのローカル `handoff.md` だけ**。内部運用記録を含むため
-公開Gitへ追加しない。SorenサブモジュールやVM側のhandoffを独立更新しない。
+運用正本は **承認済みの非公開共通領域で管理する `handoff.md`**。
+`DOCICH_HANDOFF_PATH` の絶対パス、または `--handoff` で明示参照し、
+primary checkout・worktreeの位置から推測しない。内部運用記録を含むため
+公開Gitへ追加しない。checkoutごとの複製やSorenサブモジュール・VM側への独立更新はしない。
 既存のVM側handoffは自動では削除しないが、この生成・検証・配布経路では読まない。
 
 ## 入力からruntimeまで
 
-1. 親の非公開 `handoff.md` を更新する。先頭の `##` 見出し3件は配信で使うため、
+1. 共通領域の非公開 `handoff.md` を更新する。先頭の `##` 見出し3件は配信で使うため、
    見出しには機密情報や未確認の「本番反映済み」を書かない。
 2. 親の `ops/vm_actions/ops_brief.py build` が日付・`Issue #123` / `docich#123` /
    `PR #899` 等の内部番号を取り除き、
    最大70文字の公開用topicとソース全体のSHA-256、生成markdownのSHA-256を
    `ops/runtime_context/ops_brief.json` に保存する。時刻・絶対パス・本文は含めない。
-3. `check-source` が正本から再生成してJSON全体を比較する。本文だけの変更も
-   ソースSHAで検出する。正本がない場合は失敗し、VMやSoren側へfallbackしない。
+3. `check-source` が明示参照した正本から再生成してJSON全体を比較する。本文だけの変更も
+   ソースSHAで検出する。参照未設定・正本欠落の場合は失敗し、checkout・VM・Soren側へfallbackしない。
 4. JSONを**docichの作業ブランチだけ**でコミットしてレビューする。
    CIの `check-artifact` はschema・正規化・出力SHAを検証し、回帰テストは
    ソース変更・改変・欠落・rollbackを検証する。CIは非公開ソースを持たないので、
@@ -34,23 +36,37 @@ Sorenコードの変更は従来どおりSoren側PRと親gitlinkで扱う。
 ## ローカル操作
 
 docichルートで実行する（生成・検証だけ。ネットワーク・VM操作はない）。
+`build` / `check-source` のソースは `--handoff`、次に `DOCICH_HANDOFF_PATH` の順に選ぶ。
+どちらも絶対パスの通常ファイル `handoff.md` を指定する。checkoutルートの既定値はない。
+次は参照設定の例であり、実際の共有場所や移行完了を示すものではない。
 
 ```bash
+export DOCICH_HANDOFF_PATH=/approved/shared/docich/handoff.md
 python3 ops/vm_actions/ops_brief.py build
 python3 ops/vm_actions/ops_brief.py check-source
 python3 ops/vm_actions/ops_brief.py check-artifact
 ```
 
-worktreeに正本がない場合、`build` と `check-source` に
-`--handoff /absolute/path/to/docich/handoff.md` を追加する。正本のコピーは作らない。
+一時的な明示指定では `build` と `check-source` に
+`--handoff /approved/shared/docich/handoff.md` を追加する。環境設定より優先される。
+正本のコピーは作らない。`check-artifact` / `materialize` は非公開ソースや参照設定を必要としない。
 markdownのローカル照合が必要なら `materialize --output run/ops_brief.md` を使う。
 共有サブモジュール内のtracked fileへ出力しない。コマンドは成功/失敗だけ表示する。
 
 正本は並行更新され得るため、過去の `check-source` 結果は将来の同期保証ではない。
-最終pushの担当者が、その直前に現在の正本から `build` → `check-source` を実行し、
-生成物をコミットする。コミット後・push直前にも `check-source` を再実行し、差分が
-出たら再生成からやり直す。ソース照合成功をコード・文書に恒久的な事実として残さない。
-PR #902のレビュー修正ではartifactの最終再生成とコミットは親担当が行う。
+公開投影 `ops/runtime_context/ops_brief.json` を変更する担当者だけが、最終commit・push直前に
+現在の共通正本から `build` → `check-source` を実行し、生成物をコミットする。
+コミット後・push直前にも `check-source` を再実行し、差分が出たら再生成からやり直す。
+通常のコード・テスト・文書変更には、この非公開ソース照合を一律に要求しない。
+正本を参照できない場合は既存投影を維持し、未読・更新未実施・最新性未確認をPRへ残す。
+ソース欠落や照合失敗を成功扱いせず、ソース照合成功をコード・文書に恒久的な事実として残さない。
+
+## 共通正本への移行の境界
+
+参照方法の整備と、非公開正本の移行は別の作業である。既存の承認済み共有場所・アクセス方法が
+確認できない環境では、正本の参照設定・移行は未完了と記録する。作業用workspace内の共有ディレクトリを
+全環境で永続共有される正本とみなさない。新しい共有権限・資格情報を設定したり、公開Git/Issueへ
+私的運用記録を移したりせず、承認済みの共通参照を利用する。参照が未設定でも通常の開発を止めない。
 
 ローカルファイルの変更だけではGitHub Actionsは起動しない。公開用JSONの親PRを
 統合した時点で既存push deployが起動する。非公開handoffの自動アップロード、
@@ -125,7 +141,7 @@ main統合、gateway install、配布、実タイトル確認は未実施。
 - `python3 -m unittest discover -s ops/vm_actions/tests -q`: 617件中613成功、
   3失敗、1skip。失敗は変更前と同一のMoomoo preflight 2件（GNU `stat -c`）と
   radio restart 1件（Linux `/proc` 必須）。対象の既存コード・テストに差分なし。
-- source照合は最終push担当の直前検証が必要。過去の結果を最新性の保証に使わない。
+- この実装時点のsource照合結果を最新性の保証に使わない。現行の直前照合対象は上記の公開投影更新作業に限る。
 - `check-artifact`、Python構文確認、installerの `bash -n`、`git diff --check` は
   レビュー修正時のローカル実行で成功。artifactの対private source鮮度を保証しない。
 - PR #902の独立レビュー指摘に対応したが、修正後の独立再レビュー・GitHub CIは
