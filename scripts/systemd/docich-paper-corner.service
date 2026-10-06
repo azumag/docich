@@ -7,6 +7,9 @@ Type=oneshot
 # The common rotation tick spawns follow-up jobs with systemd-run --user; a
 # timer-launched service does not reliably inherit XDG_RUNTIME_DIR (#947).
 Environment=XDG_RUNTIME_DIR=%t
+# Optional PAPER AI capability file. Missing means the existing legacy
+# RSS/OpenCode path; only the owner-only paper_ai_enable operation creates it.
+EnvironmentFile=-%h/.config/docich/paper-ai.env
 WorkingDirectory=__DOCICH_ROOT__
 ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml paper-corner tick
 TimeoutStartSec=infinity
