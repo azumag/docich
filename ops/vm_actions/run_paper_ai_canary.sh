@@ -39,7 +39,7 @@ mkdir -p "$receipt_dir"
 chmod 0700 "$receipt_dir"
 if [[ -e "$receipt" || -L "$receipt" ]]; then
   [[ -f "$receipt" && ! -L "$receipt" ]] || exit 70
-  rm -f "$receipt"
+  unlink "$receipt"
 fi
 
 result="$(
@@ -59,7 +59,7 @@ result="$(
 )"
 
 tmp="$(mktemp "$receipt_dir/.paper-ai-canary.XXXXXX")"
-cleanup() { rm -f "$tmp"; }
+cleanup() { unlink "$tmp" 2>/dev/null || true; }
 trap cleanup EXIT
 
 CANARY_RESULT="$result" python3 - "$expected_sha" "$tmp" <<'PY'
