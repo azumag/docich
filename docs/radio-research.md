@@ -31,6 +31,39 @@ queryは共通collectorと同じ最大3件/各256文字、取得attempt最大4�
 WebBroker receiptの取得・full-text hash再検証は共通collectorが所有し、
 plannerのDTO検査だけを実取得の証明とはしない。
 
+## Native script consumer（既定off）
+
+`docich.radio.script.generate_script(topic, queries, agents=..., env=...)` は、
+このplannerの結果を既存のnative direct dispatchへ渡す純core。
+`DOCICH_RADIO_SCRIPT_DIRECT_ENABLED=1`、上記routing flag、`DOCICH_ALLOW_REAL_AI=1`
+がすべて必要。未設定はclassifier/search/generationすべて0。
+callerは具体的な登録済み `*-api:` agentsを明示する。chain最大8件、CLI/local/旧aliasや
+未登録modelの混在はclassifier前に拒否する。provider/billing設定の検証とcredential処理は
+既存direct adapterが所有し、このcoreは新しいAPI transportを作らない。
+
+topicだけをJEVへ渡し、Webが必要ならcaller-owned queryから得たVerifiedWebMaterialだけを
+JSONデータとして生成promptへ渡す。検索snippetは入れない。低confidence、unknown、
+取得失敗はhold。partialは不足をprompt/resultに保持し、未取得部分を架空補充しない。
+分類・取得・生成は同じ最大45秒の予算を使い、native queue/fallbackも残時間へ制限する。
+残予算がなくなった、または遅れて返った生成結果はscriptとして返さない。
+生成promptはmessagesへのJSON再エスケープと登録model/provider wrapperの予約分を数え、
+既存named direct APIの32KiB request上限に収まらなければ生成前に`input_limit`へ終端する。
+collectorの最大4×8KiB bundleが全量入るとは保証せず、hash/provenanceを壊す暗黙切詰めをしない。
+
+出力は既存 `ON_AIR_SCRIPT_START` / `===SUMMARY===` parser契約へ通す。
+parserはdocich gitlinkで固定されたSoren commit `793990939dbfd262491846be52a804841d7aa56c`
+の `lib/radio_parser.py`（blob `f455459926b2d0bb87eb82cd1e7a791907bd5c96`）を純関数化したもの。
+必須marker時に到達しない無marker枝は移植せず、旧parser実行から採取した16合成goldenで
+body/summary/selected-newsと必須marker拒否を照合する。本文が空でSUMMARYだけが長い応答は
+生成coreが拒否し、旧parserの短文救済を音声本文の生成根拠にしない。
+生成coreは既存final-output/onair guardも使い、100字以上・日本語・終端約物・summaryを確認。
+receipt/hashは素材の取得根拠、parser/guardは出力形式と衛生の検査であり、生成した全主張の
+事実検証やnative RADIO全体の互換検証にはならない。
+
+返すのはメモリ上のtyped script/materialsのみ。`docich radio`の既存参照実行、常駐worker、
+persona/templateの正本、state/history、音声・字幕・queueへのdeliveryはこのsliceで切り替えない。
+既存RADIOのactive consumer接続・実provider canary・本番有効化は未実施。
+
 ## 利用条件と今回の非対象
 
 Cloudflare Web Search adapterは既にmainにあり、backendを明示した場合だけ使う。
