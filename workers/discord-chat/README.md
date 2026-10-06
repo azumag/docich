@@ -44,10 +44,10 @@ cf deploy
 その後、Bot TokenだけをCloudflare Secretとして追加します。値はリポジトリやbuild変数へ置きません。
 
 ```sh
-npx wrangler secret put DISCORD_BOT_TOKEN --name docich-discord-chat
+./node_modules/.bin/cf workers secrets update DISCORD_BOT_TOKEN --worker docich-discord-chat
 ```
 
-Secret追加後は次の1分CronでGateway接続を開始します。単独secret更新は現行Cf CLIでは未対応のため、この操作だけWranglerを使います。
+Secret追加後は次の1分CronでGateway接続を開始します。
 
 TokenをGit、Issue、PR、Actions output、Workers Logsへ出しません。
 
@@ -64,7 +64,7 @@ Windows上のDiscord Voice runtimeから、STT済み本文だけをこのWorker�
 Cloudflare側では十分長いランダム値をsecretとして登録します。
 
 ```sh
-npx wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN --name docich-discord-chat
+./node_modules/.bin/cf workers secrets update DISCORD_VOICE_INTERNAL_TOKEN --worker docich-discord-chat --type secret_text
 ```
 
 Windows runtime側には同じ値を `DOCICH_DISCORD_VOICE_CHAT_TOKEN` として、WorkerのHTTPS endpointを `DOCICH_DISCORD_VOICE_CHAT_URL=https://<worker-host>/voice/reply` として設定します。Token、transcript、reply、Guild/Channel/User IDは通常ログへ出しません。
