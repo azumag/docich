@@ -306,12 +306,24 @@ def recap_body(runtime_dir, run_state) -> str:
     the run, labels unsupported causality as unknown, and finishes with a
     concrete next-run focus instead of replaying the event log.
     """
+    try:
+        terminal_reason = (run_state or {}).get('terminal_reason')
+    except AttributeError:
+        terminal_reason = None
+
     records = list(_decisions(runtime_dir))
     if not records:
+        outcome = {
+            'game_over': '今回はゲームオーバーとなりました。',
+            'screen_stalled': '今回は画面停止で終了しました。',
+            'manual_saved_stop': '今回はセーブして終了しました。',
+            'manual_forced_stop': '今回は強制終了となりました。',
+        }.get(terminal_reason, '今回の挑戦は終了しました。')
         return (
-            '今回の挑戦では、確認できる出来事の記録が残っていません。'
+            f'{outcome}ただし、確認できる出来事の記録が残っていないため、'
+            '何が流れを変えたかは判断できません。'
             '次回は終了直前の戦闘結果と城の保有変化を残し、'
-            'どこで流れが変わったかを振り返れるようにします。'
+            '敗因を具体的に振り返れるようにします。'
         )
 
     chapters = [
@@ -332,10 +344,6 @@ def recap_body(runtime_dir, run_state) -> str:
         year, month = max(months)
         progress.append(f'{year}年{month}月')
 
-    try:
-        terminal_reason = (run_state or {}).get('terminal_reason')
-    except AttributeError:
-        terminal_reason = None
     lead = {
         'game_over': '今回はゲームオーバーとなり、',
         'screen_stalled': '今回は画面停止で終了し、',
