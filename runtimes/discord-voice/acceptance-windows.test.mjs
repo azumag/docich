@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const source = readFileSync(
   new URL('./acceptance-windows.ps1', import.meta.url),
+  'utf8',
+);
+const nativeStdinSource = readFileSync(
+  new URL('./native-stdin.ps1', import.meta.url),
   'utf8',
 );
 
@@ -44,8 +51,9 @@ test('Windows acceptance bootstrap provisions bridge secret without command-line
   );
   assert.match(
     source,
-    /\$generatedSecret\s*\|\s*& \$cfcli workers secrets update DISCORD_VOICE_INTERNAL_TOKEN --worker docich-discord-chat --type secret_text/,
+    /Invoke-CommandWithStandardInput -CommandLine \$cfCommandLine -Text \$generatedSecret/,
   );
+  assert.match(source, /workers secrets update DISCORD_VOICE_INTERNAL_TOKEN --worker docich-discord-chat --type secret_text/);
   assert.match(
     source,
     /DOCICH_DISCORD_VOICE_CHAT_TOKEN = \$null/,
@@ -58,10 +66,10 @@ test('Windows acceptance bootstrap provisions bridge secret without command-line
 });
 
 test('Windows acceptance bootstrap gives the non-TTY Cloudflare CLI an explicit secret type before stdin', () => {
-  const invocation = source.match(
-    /\$generatedSecret\s*\|\s*& \$cfcli (workers secrets update DISCORD_VOICE_INTERNAL_TOKEN --worker docich-discord-chat --type secret_text)/,
-  );
-  assert.ok(invocation, 'secret_text must be selected in the piped CLI invocation');
+  assert.match(source, /Invoke-CommandWithStandardInput -CommandLine \$cfCommandLine -Text \$generatedSecret/);
+  assert.match(source, /--type secret_text/);
+  assert.match(nativeStdinSource, /\.StandardInput\.Write\(\$Text\)/);
+  assert.doesNotMatch(nativeStdinSource, /\.StandardInput\.WriteLine/);
 
   const mockCli = String.raw`
 const args = process.argv.slice(1);
@@ -86,13 +94,13 @@ main().catch(() => process.exit(5));
 `;
   const result = spawnSync(
     process.execPath,
-    ['-e', mockCli, ...invocation[1].split(/\s+/)],
+    ['-e', mockCli, 'workers', 'secrets', 'update', 'DISCORD_VOICE_INTERNAL_TOKEN', '--worker', 'docich-discord-chat', '--type', 'secret_text'],
     { input: 'dummy-secret-for-non-tty-contract-test', encoding: 'utf8' },
   );
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'secret text consumed\n');
   assert.doesNotMatch(result.stdout + result.stderr, /dummy-secret/);
-  assert.doesNotMatch(invocation[1], /dummy-secret/);
+  assert.doesNotMatch(source, /dummy-secret/);
 });
 
 
@@ -133,12 +141,68 @@ process.stdin.on('end', () => {
   assert.equal(result.stdout.includes('synthetic-pipeline-dummy'), false);
 });
 
+test('Windows bridge secret writer sends exact UTF-8 stdin bytes through cmd without a newline', {
+  skip: process.platform !== 'win32',
+}, () => {
+  assert.match(nativeStdinSource, /\.StandardInput\.Write\(\$Text\)/);
+  assert.doesNotMatch(nativeStdinSource, /\.StandardInput\.WriteLine/);
+
+  const tempDir = mkdtempSync(join(tmpdir(), 'docich stdin contract-'));
+  try {
+    const mockCmd = join(tempDir, 'mock-cf.cmd');
+    const collector = String.raw`
+const chunks = [];
+process.stdin.on('data', (chunk) => chunks.push(chunk));
+process.stdin.on('end', () => {
+  const raw = Buffer.concat(chunks);
+  const text = raw.toString('utf8');
+  const cloudflareValue = text.endsWith('\n') ? text.slice(0, -1) : text;
+  process.stdout.write(JSON.stringify({
+    rawEndsWithCRLF: raw.subarray(-2).equals(Buffer.from('\r\n')),
+    cloudflareKeepsCR: cloudflareValue.endsWith('\r'),
+    cloudflareValueMatches: cloudflareValue === 'synthetic-pipeline-dummy',
+    byteLength: raw.length,
+  }));
+});
+`;
+    const collectorBase64 = Buffer.from(collector).toString('base64');
+    writeFileSync(
+      mockCmd,
+      `@echo off\r\nnode -e "eval(Buffer.from('${collectorBase64}', 'base64').toString())"\r\n`,
+      'utf8',
+    );
+
+    const helperPath = fileURLToPath(new URL('./native-stdin.ps1', import.meta.url));
+    const ps = [
+      `. '${helperPath.replace(/'/g, "''")}'`,
+      `$commandLine = '\"${mockCmd.replace(/'/g, "''")}\"'`,
+      "$exitCode = Invoke-CommandWithStandardInput -CommandLine $commandLine -Text 'synthetic-pipeline-dummy'",
+      'if ($exitCode -ne 0) { exit $exitCode }',
+    ].join('; ');
+    const encoded = Buffer.from(ps, 'utf16le').toString('base64');
+    const result = spawnSync('pwsh', ['-NoProfile', '-EncodedCommand', encoded], {
+      encoding: 'utf8',
+      timeout: 10000,
+      windowsHide: true,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout.trim());
+    assert.equal(report.rawEndsWithCRLF, false);
+    assert.equal(report.cloudflareKeepsCR, false);
+    assert.equal(report.cloudflareValueMatches, true);
+    assert.equal(report.byteLength, Buffer.byteLength('synthetic-pipeline-dummy'));
+    assert.equal(result.stdout.includes('synthetic-pipeline-dummy'), false);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('Windows acceptance bootstrap uses pinned Worker dependencies before secret mutation', () => {
   const install = source.indexOf(
     'npm install --no-package-lock --no-audit --no-fund',
   );
   const secret = source.indexOf(
-    '$generatedSecret | & $cfcli workers secrets update DISCORD_VOICE_INTERNAL_TOKEN',
+    'Invoke-CommandWithStandardInput -CommandLine $cfCommandLine -Text $generatedSecret',
   );
   assert.ok(install >= 0);
   assert.ok(secret > install);
