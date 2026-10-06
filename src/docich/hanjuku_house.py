@@ -135,8 +135,8 @@ def _phase(state, phase, **fields):
 def _choose(screen, label, *, mem=None):
     from . import hanjuku_policy as p
     # g604 (2026-10-06): the monthly survey pressed the same direction at a
-    # cursor box that never moved for hours. Every navigation this module owns
-    # goes through here, so the bounded retry lives in one place.
+    # cursor box that never moved for hours. The monthly entry uses a bounded
+    # guard; other house phases retain their own existing step limits.
     move = (p.guarded_menu_to(screen, mem, label, key='house_nav')
             if mem is not None else p.menu_to(screen, label))
     if isinstance(move, list):
@@ -410,6 +410,28 @@ def step(screen, mem, frame):
     # starts a repair trip, and gives the ordinary spending policy the next
     # observation. Delayed pre-open monthly frames do not start another flow.
     if state.get('month_scan') and screen.kind == 'month_menu':
+        if not p.month_menu_ready(screen):
+            # A foreground quantity/confirmation/recruitment panel belongs to
+            # the monthly transaction policy, not the background roster route.
+            # Only a tracked transaction may pause the scan budget. Losing a
+            # hand without such an owner is a failed observation, not an
+            # unbounded suspension of this month's roster survey.
+            if not mem.get('month_sub'):
+                if phase == 'close':
+                    _finish(mem)
+                    return None
+                state['age'] += 1
+                state['total'] += 1
+                if state['age'] >= STEP_LIMIT or state['total'] >= SESSION_LIMIT:
+                    _exit(mem, '月初の前面を読み取れないため募集確認を有限に終了',
+                          limit='step' if state['age'] >= STEP_LIMIT else 'session')
+            return None
+        if phase == 'open_roster' and isinstance(p.menu_to(screen, 'メインメニュー'), dict):
+            # v134 could label its recovery A as a successful menu selection.
+            # Resume from the observed monthly row, preserving the scan budget.
+            state['phase'] = phase = 'month_open'
+            _record(mem, 'month_menu_reobserved',
+                    reason='情報画面への遷移を確認できないため現在の選択行から移動を再開')
         if phase in ('leave_roster', 'close'):
             if phase == 'leave_roster':
                 complete = receipts.complete(mem, state)
@@ -421,8 +443,9 @@ def step(screen, mem, frame):
             state['age'] += 1
             if state['age'] >= STEP_LIMIT:
                 return _exit(mem, '月初の情報メニューへ移動できないため募集確認を有限に保留', limit='step')
+            reached = p.menu_to(screen, 'メインメニュー') == 'here'
             actions = _choose(screen, 'メインメニュー', mem=mem)
-            if actions == [p.pad('a')]:
+            if reached and actions == [p.pad('a')]:
                 _phase(state, 'open_roster')
             return actions
         if phase == 'open_roster':
