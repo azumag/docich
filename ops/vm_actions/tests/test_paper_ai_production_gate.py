@@ -4,10 +4,12 @@ import json
 import os
 from pathlib import Path
 import stat
+import shutil
 import subprocess
 import time
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 ENABLE = ROOT / "ops/vm_actions/enable_paper_ai.sh"
@@ -26,7 +28,7 @@ def _repo(tmp_path: Path) -> tuple[Path, str]:
     subprocess.run(["git", "-C", str(root), "add", "tracked"], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
     sha = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
-    return root, sha
+    return root.resolve(), sha
 
 
 def _receipt(home: Path, sha: str, *, age: int = 0) -> Path:
@@ -109,6 +111,16 @@ class PaperAiProductionGateTests(unittest.TestCase):
         body = target.read_text(encoding="utf-8")
         self.assertNotIn("OPENCODE", body)
         self.assertNotIn("DISCORD", body)
+        self.assertEqual(stat.S_IMODE(target.parent.stat().st_mode), 0o700)
+        self.assertEqual(list(target.parent.glob(".paper-ai.env.*")), [])
+        previous_inode = target.stat().st_ino
+        target.write_text("previous-capability\n", encoding="utf-8")
+        again = _run_fixed(ENABLE, root=root, soren=soren, home=home, sha=sha)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertNotEqual(target.stat().st_ino, previous_inode)
+        self.assertEqual(target.read_text(encoding="utf-8"), body)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+        self.assertEqual(list(target.parent.glob(".paper-ai.env.*")), [])
 
     def test_enable_rejects_stale_or_wrong_sha_receipt_without_capability_file(self):
         for age, wrong in ((86401, False), (0, True)):
@@ -122,6 +134,95 @@ class PaperAiProductionGateTests(unittest.TestCase):
                 run = _run_fixed(ENABLE, root=root, soren=soren, home=home, sha=sha)
                 self.assertNotEqual(run.returncode, 0)
                 self.assertFalse((home / ".config" / "docich" / "paper-ai.env").exists())
+
+    def test_enable_rejects_nonregular_and_symlink_destinations_without_writing(self):
+        for kind in ("directory", "directory-symlink", "file-symlink", "dangling-symlink", "fifo"):
+            with self.subTest(kind=kind):
+                case = self.temp()
+                root, sha = _repo(case)
+                home, soren = case / "home", case / "soren"
+                home.mkdir()
+                _production_env(soren)
+                _receipt(home, sha)
+                target = home / ".config/docich/paper-ai.env"
+                outside = case / "outside"
+                if kind == "directory":
+                    target.mkdir()
+                elif kind == "directory-symlink":
+                    outside.mkdir()
+                    target.symlink_to(outside, target_is_directory=True)
+                elif kind == "file-symlink":
+                    outside.write_text("keep\n", encoding="utf-8")
+                    target.symlink_to(outside)
+                elif kind == "dangling-symlink":
+                    target.symlink_to(outside)
+                else:
+                    os.mkfifo(target)
+
+                before = target.lstat()
+                run = _run_fixed(ENABLE, root=root, soren=soren, home=home, sha=sha)
+                self.assertNotEqual(run.returncode, 0)
+                self.assertNotIn("paper_ai_enabled", run.stdout)
+                self.assertEqual(target.lstat().st_ino, before.st_ino)
+                self.assertEqual(target.lstat().st_mode, before.st_mode)
+                self.assertEqual(list(target.parent.glob(".paper-ai.env.*")), [])
+                if kind == "directory":
+                    self.assertEqual(list(target.iterdir()), [])
+                elif kind == "directory-symlink":
+                    self.assertEqual(list(outside.iterdir()), [])
+                elif kind == "file-symlink":
+                    self.assertEqual(outside.read_text(encoding="utf-8"), "keep\n")
+                elif kind == "dangling-symlink":
+                    self.assertFalse(outside.exists())
+
+    def test_enable_rename_failure_preserves_old_file_and_cleans_temporary_file(self):
+        case = self.temp()
+        root, sha = _repo(case)
+        home, soren = case / "home", case / "soren"
+        home.mkdir()
+        _production_env(soren)
+        _receipt(home, sha)
+        target = home / ".config/docich/paper-ai.env"
+        target.write_text("previous-capability\n", encoding="utf-8")
+        bin_dir = case / "bin"
+        bin_dir.mkdir()
+        fake_mv = bin_dir / "mv"
+        fake_mv.write_text("#!/usr/bin/env bash\nexit 91\n", encoding="utf-8")
+        fake_mv.chmod(0o700)
+        with patch.dict(os.environ, {"PATH": f"{bin_dir}:{os.environ['PATH']}"}):
+            run = _run_fixed(ENABLE, root=root, soren=soren, home=home, sha=sha)
+        self.assertEqual(run.returncode, 91)
+        self.assertNotIn("paper_ai_enabled", run.stdout)
+        self.assertEqual(target.read_text(encoding="utf-8"), "previous-capability\n")
+        self.assertEqual(list(target.parent.glob(".paper-ai.env.*")), [])
+
+    def test_enable_rename_never_treats_destination_as_directory(self):
+        case = self.temp()
+        root, sha = _repo(case)
+        home, soren = case / "home", case / "soren"
+        home.mkdir()
+        _production_env(soren)
+        _receipt(home, sha)
+        target = home / ".config/docich/paper-ai.env"
+        real_mv = shutil.which("mv")
+        self.assertIsNotNone(real_mv)
+        bin_dir = case / "bin"
+        bin_dir.mkdir()
+        fake_mv = bin_dir / "mv"
+        fake_mv.write_text(
+            '#!/usr/bin/env bash\nset -euo pipefail\n'
+            'mkdir -- "${@: -1}"\n'
+            f'exec "{real_mv}" "$@"\n',
+            encoding="utf-8",
+        )
+        fake_mv.chmod(0o700)
+        with patch.dict(os.environ, {"PATH": f"{bin_dir}:{os.environ['PATH']}"}):
+            run = _run_fixed(ENABLE, root=root, soren=soren, home=home, sha=sha)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertNotIn("paper_ai_enabled", run.stdout)
+        self.assertTrue(target.is_dir())
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertEqual(list(target.parent.glob(".paper-ai.env.*")), [])
 
     def test_disable_removes_only_regular_capability_file_and_is_idempotent(self):
         tmp_path = self.temp()

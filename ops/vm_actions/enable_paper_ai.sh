@@ -19,6 +19,10 @@ head="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
 [[ "$head" == "$expected_sha" ]] || exit 67
 [[ -z "$(git -C "$root" status --porcelain --untracked-files=no --ignore-submodules=all 2>/dev/null)" ]] || exit 68
 [[ -f "$receipt" && ! -L "$receipt" ]] || exit 69
+# Match rollback's fixed regular-file contract before preparing capabilities.
+if [[ -e "$target" || -L "$target" ]]; then
+  [[ -f "$target" && ! -L "$target" ]] || exit 87
+fi
 
 python3 - "$receipt" "$expected_sha" <<'PY'
 import json, pathlib, re, sys, time
@@ -110,7 +114,12 @@ trap cleanup EXIT
   fi
 } > "$tmp"
 chmod 0600 "$tmp"
-mv -f "$tmp" "$target"
+if [[ -e "$target" || -L "$target" ]]; then
+  [[ -f "$target" && ! -L "$target" ]] || exit 87
+fi
+# Same-directory rename is atomic. -T also fails if a directory appears after
+# the check instead of moving the capability file inside that directory.
+mv -fT -- "$tmp" "$target"
 trap - EXIT
 
 # No restart: future oneshot rotation/PAPER invocations load the optional file.

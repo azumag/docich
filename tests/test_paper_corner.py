@@ -1,11 +1,13 @@
 import json
 import os
+from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
 import sys
 import pytest
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'src'))
 from docich.config import load_global
 from docich.paper_corner import PaperCornerManager
 
@@ -24,6 +26,9 @@ soren_root = "{tmp_path}/soren"
 enabled = true
 start_hour = 22
 ''')
+    wrapper = tmp_path / 'ops/vm_actions/run_paper_improve_with_ai_env.sh'
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    wrapper.write_bytes((ROOT / 'ops/vm_actions/run_paper_improve_with_ai_env.sh').read_bytes())
     return load_global(tmp_path,cfg)
 
 
@@ -473,6 +478,34 @@ def test_improve_direct_off_keeps_legacy_chain(tmp_path, monkeypatch):
     assert manager(g).improve_agents == 'opencode:legacy'
 
 
+@pytest.mark.parametrize('flag', [None, '0', '1'])
+def test_production_profile_initializes_paper_and_full_rotation_offline(tmp_path, monkeypatch, flag):
+    import subprocess
+    import tomllib
+    from docich.corner_rotation import CornerRotationManager
+
+    if flag is None:
+        monkeypatch.delenv('DOCICH_PAPER_IMPROVE_DIRECT_ENABLED', raising=False)
+    else:
+        monkeypatch.setenv('DOCICH_PAPER_IMPROVE_DIRECT_ENABLED', flag)
+
+    def reject_runtime(*args, **kwargs):
+        raise AssertionError('constructor must not execute runtime/provider commands')
+
+    monkeypatch.setattr(subprocess, 'run', reject_runtime)
+    monkeypatch.setattr(subprocess, 'Popen', reject_runtime)
+    config = ROOT / 'config/docich.soren-live.toml'
+    g = replace(load_global(ROOT, config), state_dir=tmp_path / 'state')
+    expected = ('cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8' if flag == '1'
+                else tomllib.loads(config.read_text())['paper_corner']['improve_agents'])
+    paper = manager(g)
+    rotation = CornerRotationManager(g)
+    assert paper.improve_agents == expected
+    assert rotation.adapters['paper'].manager.improve_agents == expected
+    assert set(rotation.adapters) == {corner.id for corner in rotation.catalog}
+    assert not g.state_dir.exists()
+
+
 @pytest.mark.parametrize('flag,direct_agents', [
     ('invalid', 'cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8'),
     ('1', ''),
@@ -833,6 +866,26 @@ def test_rejected_systemd_submission_keeps_the_systemd_message(tmp_path, monkeyp
     error = state['improve_job']['error']
     assert 'rc=1' in error
     assert 'No medium found' in error
+
+
+def test_missing_improvement_wrapper_fails_closed_before_systemd_submission(tmp_path, monkeypatch):
+    import subprocess
+    g = setup(tmp_path)
+    (g.repo_root / 'ops/vm_actions/run_paper_improve_with_ai_env.sh').unlink()
+    mgr = manager(g)
+    mgr.improve_agents = 'test-agent'
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    monkeypatch.setenv('INVOCATION_ID', 'parent-corner')
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError('missing wrapper must not submit or fall back')
+
+    monkeypatch.setattr(subprocess, 'run', unexpected)
+    monkeypatch.setattr(subprocess, 'Popen', unexpected)
+    state = {'date': '2026-10-06'}
+    mgr._spawn_improve_once(state)
+    assert state['improve_job']['spawned'] is False
+    assert 'wrapper' in state['improve_job']['error']
 
 
 def test_non_systemd_improve_preserves_detached_launch(tmp_path, monkeypatch):
