@@ -374,7 +374,16 @@ def recap_body(runtime_dir, run_state) -> str:
     # Explain the intended attack and what was actually confirmed. Prefer a
     # launch to the planned target, so a substitute general becomes a useful
     # part of the story rather than an unrelated first/last-event sample.
-    plan = plans[0] if plans else None
+    plan = next(
+        (
+            candidate for candidate in reversed(plans)
+            if any(
+                launch[0] >= candidate[0] and launch[2] == candidate[2]
+                for launch in launches
+            )
+        ),
+        plans[-1] if plans else None,
+    )
     launch = None
     if plan is not None:
         launch = next(
@@ -435,7 +444,7 @@ def recap_body(runtime_dir, run_state) -> str:
         if win_sentence and latest_win_entry and latest_win_entry[0] > latest_loss[0]:
             story.append(
                 f'{lost_castle}城の失陥が確認された一方、その後、{win_sentence}'
-                '局地戦では取り返せても、全体では拠点を失ったまま終えたことが'
+                'その後の局地戦では勝てても、全体では拠点を失ったまま終えたことが'
                 '今回の反省点です。'
             )
         elif win_sentence:
@@ -502,10 +511,10 @@ def recap_body(runtime_dir, run_state) -> str:
 
 
 def summarize_recap(runtime_dir, run_state) -> tuple[str, str]:
-    """A grounded game-over recap for the 实況 (owner rule 2026-09-28).
+    """A grounded game-over recap shared by voice and chat.
 
-    The numbers all come from ``recap_body`` (this run's own decision log and
-    run state); nothing is invented, per the module contract.
+    The body comes only from this run's own decision log and run state; no
+    unsupported cause or event is invented.
     """
     return ('game_over_recap',
             f'{recap_body(runtime_dir, run_state)}タイトル画面への復帰を確認し、今回の挑戦はここまでです。')
