@@ -331,8 +331,21 @@ def recap_body(runtime_dir, run_state) -> str:
     if months:
         year, month = max(months)
         progress.append(f'{year}年{month}月')
+
+    try:
+        terminal_reason = (run_state or {}).get('terminal_reason')
+    except AttributeError:
+        terminal_reason = None
+    lead = {
+        'game_over': '今回はゲームオーバーとなり、',
+        'screen_stalled': '今回は画面停止で終了し、',
+        'manual_saved_stop': '今回はセーブして終了し、',
+        'manual_forced_stop': '今回は強制終了となり、',
+    }.get(terminal_reason, '今回の挑戦は、')
     if progress:
-        story = [f"今回の挑戦は、記録上は{'・'.join(progress)}まで進みました。"]
+        story = [f"{lead}記録上は{'・'.join(progress)}まで進みました。"]
+    elif terminal_reason in {'game_over', 'screen_stalled', 'manual_saved_stop', 'manual_forced_stop'}:
+        story = [f'{lead.rstrip("、")}ました。確認できた戦況から振り返ります。']
     else:
         story = ['今回の挑戦を、確認できた戦況から振り返ります。']
 
@@ -461,10 +474,6 @@ def recap_body(runtime_dir, run_state) -> str:
             win_sentence = _battle_story_sentence(latest_win)
             if win_sentence:
                 story.append(f'{win_sentence}戦闘で前進できた場面は確認できています。')
-        try:
-            terminal_reason = (run_state or {}).get('terminal_reason')
-        except AttributeError:
-            terminal_reason = None
         if terminal_reason == 'game_over':
             story.append(
                 'ただし、ゲームオーバーへ至った直接の原因はこの記録だけでは特定できません。'
