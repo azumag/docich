@@ -2682,7 +2682,7 @@ def test_summarize_recap_turns_run_evidence_into_story(tmp_path):
     assert '作戦ではジョンリギ城への進出を狙い、どうし将軍の出撃までは実行できました。' in text
     assert 'けっかい城ではクイーンとの戦闘に勝っています。' in text
     assert 'ココット城の失陥' in text
-    assert '局地戦の勝利を拠点の維持へつなげ切れなかった' in text
+    assert '局地戦で勝てても、全体では拠点を維持できなかった' in text
     assert '直接の結果だったかまでは記録から断定できません' in text
     assert '次回は出撃の前後で守備配置と兵力を確認' in text
     assert '戦闘42回' not in text
