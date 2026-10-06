@@ -203,6 +203,8 @@ routing有効時のAPI-onlyも分類からの残り45秒をbounded callbackへ�
   safe agent alphabet上の`cf/...`を固定HTTP modelの`@cf/...`へ投影する。
 
 新specは通常のCOMMENT/RADIO生成で利用できる。RESEARCH/PREPASSは引き続き拒否し、検索・コード調査の権限境界へdirect生成specを流用しない。RADIO側もagent chainへ`*-api:`を明示した場合だけdirect APIを使い、既存の`opencode:`/`opencode-go:`設定を暗黙変換しない。
+
+PAPER終了後改善も段階導入する。 `DOCICH_PAPER_IMPROVE_DIRECT_ENABLED=1` のときだけ `[paper_corner].improve_direct_agents` を使い、explicit direct providerのみを受理する。未設定/0では従来 `improve_agents` のまま。不正flag・空chain・CLI/local混在はprovider起動前に拒否する。親cornerが選択したeffective chainは `paper-improve --agents` で子へ明示し、親と子で設定解決を食い違わせない。改善出力の既存validator・PAPER限定・live禁止境界は変更しない。
 画像provider allowlistは拡張しない。明示chain内の次候補はbounded direct APIに限定し、
 既存local/CLI chainとの混在は送信前に拒否する。fallback候補を環境やモデル回答から作らない。typed requestでもrawのmodelと
 実HTTP modelが一致しなければ、鍵解決/worker/telemetry前に拒否する。
