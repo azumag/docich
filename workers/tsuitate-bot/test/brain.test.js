@@ -14,6 +14,14 @@ function observation(pieces, options = {}) {
   });
 }
 
+// 王手の応手は玉から一直線・斜め・または桂跳びのマスへ向かう手だけ（checkResponses）。
+function addressesCheck(usi, king) {
+  const destination = usi.slice(2, 4);
+  const dx = Number(destination[0]) - Number(king[0]);
+  const dy = destination.charCodeAt(1) - king.charCodeAt(1);
+  return dx === 0 || dy === 0 || Math.abs(dx) === Math.abs(dy) || (Math.abs(dx) === 1 && Math.abs(dy) === 2);
+}
+
 function profile(weights = {}, overrides = {}) {
   return {
     ...LINEAR_PROFILE, exploration: 0,
@@ -170,13 +178,15 @@ test("public check probes king escapes before other moves in both policies and c
   }
 });
 
-test("check escapes probe sheltered squares before the advancing score preference", () => {
-  // 玉5eと自駒4枚。線形スコアは前進して中央に寄る5e5dを最良とするが、そこは
-  // 未知マスからの攻撃経路が最も多い。王手の応答では、自駒に守られた露出の低い
-  // 行き先を先に試す。自駒は遮蔽として数え、相手駒の位置は推測しない。
-  for (const [color, pieces, first, second, quiet] of [
-    ["b", [["5e", "K"], ["4g", "S"], ["5g", "P"], ["7e", "P"], ["3e", "G"]], "5e4f", "5e5f", "5g5f"],
-    ["w", [["5e", "K"], ["6c", "S"], ["5c", "P"], ["3e", "P"], ["7e", "G"]], "5e6d", "5e5d", "5c5d"],
+test("check probes a sheltered escape first and answers the check once it is exhausted", () => {
+  // 玉6hと自駒8枚。脱出先のうち6h7iだけが自駒に蔽われて露出度15（ESCAPE_EXPOSURE_LIMIT
+  // 未満）。蔽われた脱出が在るあいだは玉の脱出を先に試し、次の手は残りの露出度21
+  // 以上の脱出候補を消費せず応手へ移る。自駒は遮蔽として数え、相手駒は推測しない。
+  const pieces = [["6h", "K"], ["7h", "P"], ["5g", "P"], ["8e", "P"], ["3d", "P"],
+    ["3b", "P"], ["6d", "P"], ["8g", "P"], ["3i", "P"]];
+  for (const [color, first, second, quiet] of [
+    ["b", "6h7i", "5g5f", "6d6c+"],
+    ["w", "6h7i", "5g5h+", "5g5h+"],
   ]) {
     const options = { profile: { ...LINEAR_PROFILE, exploration: 0 }, seed: "exposure" };
     const checked = observation(pieces, { color, turn: color, inCheck: true });
@@ -185,10 +195,14 @@ test("check escapes probe sheltered squares before the advancing score preferenc
     assert.equal(choice.features.kingMove, 1);
     const retry = chooseMove(checked, { ...options, forbiddenMoves: [choice.usi], foulMoves: [choice.usi] });
     assert.equal(retry.usi, second);
-    // 王手が確定していない局面と、残り1試行の最終手では従来の評価順を保つ。
-    for (const patch of [{ inCheck: null }, { inCheck: false }, { inCheck: true, attemptBudget: 1 }]) {
+    assert.equal(retry.features.kingMove, 0);
+    // 王手が確定していない局面では従来の評価順を保つ。
+    for (const patch of [{ inCheck: null }, { inCheck: false }]) {
       assert.equal(chooseMove(observation(pieces, { color, turn: color, ...patch }), options).usi, quiet);
     }
+    // 残り1試行の最終手では、蔽れていない脱出候補から消費しない。
+    assert.equal(chooseMove(observation(pieces, { color, turn: color, inCheck: true, attemptBudget: 1 }),
+      options).usi, second);
   }
 });
 
@@ -204,7 +218,10 @@ test("viewer public lastInfo identifies check without disclosing the attacking s
       { inCheck: false, opponentInCheck: true });
   }
   assert.deepEqual(checksFromLastMove({}, "b"), { inCheck: null, opponentInCheck: null });
-  const options = { sfen: "9/9/9/9/4K4/9/4P4/9/9 b - 1", color: "b", gameId: "check-fixture", ply: 1,
+  // 敵駒を推測せず玉の位置だけが王手を示す。蔽われた脱出先が在る局面にして、
+  // 王手を検知した決定が玉脱出から始まることを確認する。
+  const options = { sfen: "9/2P6/9/2P2P3/7P1/9/4P2P1/5KP2/2P6 b - 1", color: "b",
+    gameId: "check-fixture", ply: 1,
     ...checksFromLastMove({ lastMove: "-0000ZZ", lastInfo: 3 }, "b") };
   assert.equal(chooseWebhookDecision(options).decision.features.kingMove, 1);
 });
@@ -282,12 +299,20 @@ test("check-response drops include blocks but exclude knight origins and rays be
   }
 });
 
-test("final public attempt budget ranks possible responses instead of probing a king", () => {
+test("public attempt budget keeps the final attempt on a response and escapes only when sheltered", () => {
+  // 脱出候補がすべて露出度18以上の局面。玉脱出から試行を消費すると残り試行を
+  // 反則で失うので、残り1試行でも2試行でも応手（玉の幾何を満たす手）から試す。
   const options = { sfen: "9/9/9/9/9/9/9/3P1G3/3LKL3 b - 1", color: "b",
     gameId: "final-attempt", ply: 0, inCheck: true, profile: { ...LINEAR_PROFILE, exploration: 0 } };
   assert.equal(chooseWebhookDecision({ ...options, attemptBudget: 1 }).move, "+4857KI");
-  assert.equal(chooseWebhookDecision({ ...options, attemptBudget: 2 }).move, "+5958OU");
-  assert.equal(chooseWebhookDecision(options).move, "+5958OU"); // Unknown budget is explicit null.
+  assert.equal(chooseWebhookDecision({ ...options, attemptBudget: 2 }).move, "+4857KI");
+  assert.equal(chooseWebhookDecision(options).move, "+4857KI"); // Unknown budget is explicit null.
+  // 蔽われた脱出先が在る局面なら、残り2試行から玉脱出を先に試し、最後の
+  // 1試行では応手から試す。
+  const sheltered = { ...options, sfen: "9/2P6/9/2P2P3/7P1/9/4P2P1/5KP2/2P6 b - 1" };
+  assert.equal(chooseWebhookDecision({ ...sheltered, attemptBudget: 1 }).move, "+5756FU");
+  assert.equal(chooseWebhookDecision({ ...sheltered, attemptBudget: 2 }).move, "+4839OU");
+  assert.equal(chooseWebhookDecision(sheltered).move, "+4839OU");
   assert.equal(chooseWebhookDecision({ ...options, attemptBudget: 0 }), null);
   assert.ok(chooseWebhookDecision({ ...options, profile: LEGACY_PROFILE, attemptBudget: 1 }));
   for (const invalid of [-1, 1.5, 1002, "1", false]) {
@@ -342,10 +367,12 @@ test("capture evidence recaptures at a fresh square before the advancing score p
   assert.equal(chooseMove(observation(pieces, { knownEnemies: [{ square: "5e", age: 2 }] }), options).usi, "5d5e");
   // 古い証拠は打ちの遮断だけに使い、手順の選好には使わない。
   assert.equal(chooseMove(observation(pieces, { knownEnemies: [{ square: "5e", age: 3 }] }), options).usi, "5d5c");
-  // 王手中はv6の玉脱出順を保つ。捕獲の選好を挟まない。
-  assert.equal(chooseMove({ ...fresh, inCheck: true }, options).usi,
-    chooseMove({ ...observation(pieces), inCheck: true }, options).usi);
-  assert.match(chooseMove({ ...fresh, inCheck: true }, options).usi, /^5i[4-6][hi]$/);
+  // 王手中は証拠の選好を挟まない。蔽れていない脱出候補より応手が先で、
+  // 証拠の新しさが選択を変えることも、玉の幾何を満たす手以外を選ぶことも無い。
+  const checked = chooseMove({ ...fresh, inCheck: true }, options);
+  assert.equal(checked.usi, chooseMove({ ...observation(pieces), inCheck: true }, options).usi);
+  assert.ok(addressesCheck(checked.usi, "5i"));
+  assert.equal(checked.features.kingMove, 0);
 });
 
 test("capture evidence stops a ray beyond the proven square but keeps the capture itself", () => {
@@ -514,7 +541,9 @@ test("short-ray retry requires known no-check, one own king and a source away fr
     const choice = chooseMove({ ...state, inCheck }, { profile: selectedProfile, forbiddenMoves: ["8h1a+"], foulMoves: ["8h1a+"] });
     assert.notEqual(choice.usi, "8h7g");
     assert.ok(choice.candidateCount > 1);
-    if (inCheck === true) assert.equal(choice.features.kingMove, 1);
+    // 王手中は応手から（玉の幾何を満たす手）。脱出候補は蔽れていないので先に
+    // 試さず、拒否された短い経路へも戻らない。
+    if (inCheck === true) assert.ok(addressesCheck(choice.usi, "3i"));
   }
   const possiblePin = observation([["3i", "K"], ["3f", "R"]], { inCheck: false });
   const pinnedChoice = chooseMove(possiblePin, { profile: selectedProfile, forbiddenMoves: ["3f9f"], foulMoves: ["3f9f"] });
