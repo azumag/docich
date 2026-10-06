@@ -42,7 +42,7 @@ EXPORT_TTL_MS = 10 * 60 * 1000
 STATE_NAME = "soren91_manual_evidence_export.json"
 BUNDLE_NAME = "soren91_manual_evidence_export.tar.gz"
 GAME_RE = re.compile(r"game_(\d+)\.json\Z")
-SCREENSHOT_RE = re.compile(r"turn_(\d+)(?:[._-][A-Za-z0-9._-]+)?\.png\Z", re.I)
+SCREENSHOT_RE = re.compile(r"turn_(\d+)(?:[._-][A-Za-z0-9._-]+)?\.(?:png|jpe?g)\Z", re.I)
 TELEMETRY_NAMES = ("soren91_loop_metrics.json", "soren91_runtime_metrics.json")
 SESSION_RE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 ISO_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\Z")
@@ -284,6 +284,61 @@ def _png_dimensions(data: bytes) -> tuple[int, int] | None:
     return width, height
 
 
+def _jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        return None
+    offset = 2
+    while offset + 4 <= len(data):
+        if data[offset] != 0xFF:
+            return None
+        marker = data[offset + 1]
+        if marker == 0xFF:
+            offset += 1
+            continue
+        if marker == 0xD8 or marker == 0x01 or 0xD0 <= marker <= 0xD7:
+            offset += 2
+            continue
+        length = int.from_bytes(data[offset + 2:offset + 4], "big")
+        if length < 2 or offset + 2 + length > len(data):
+            return None
+        is_sof = 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC)
+        if is_sof:
+            if offset + 9 > len(data):
+                return None
+            height = int.from_bytes(data[offset + 5:offset + 7], "big")
+            width = int.from_bytes(data[offset + 7:offset + 9], "big")
+            if not (
+                1 <= width <= MAX_SCREENSHOT_DIMENSION and 1 <= height <= MAX_SCREENSHOT_DIMENSION
+                and width * height <= MAX_SCREENSHOT_PIXELS
+            ):
+                raise EvidenceError("evidence file outside size/type contract")
+            return width, height
+        offset += 2 + length
+    return None
+
+
+def _image_dimensions(data: bytes) -> tuple[int, int] | None:
+    return _png_dimensions(data) or _jpeg_dimensions(data)
+
+
+def _latest_partial_screenshot(runtime: Path, turn: int) -> Path | None:
+    """Pick the newest fixed-extension turn image; reject unsafe aliases/links."""
+    candidates: list[tuple[int, Path]] = []
+    for ext in ("jpg", "jpeg", "png"):
+        path = runtime / "tmp" / "screenshots" / f"turn_{turn:04d}.{ext}"
+        _reject_symlink_chain(runtime, path)
+        try:
+            info = path.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise EvidenceError("evidence file outside size/type contract") from exc
+        if not stat.S_ISREG(info.st_mode) or not 0 <= info.st_size <= MAX_SCREENSHOT_BYTES:
+            raise EvidenceError("evidence file outside size/type contract")
+        candidates.append((info.st_mtime_ns, path))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
 def _timestamp_ms(value: object) -> int | None:
     if not isinstance(value, str) or not ISO_TIMESTAMP_RE.fullmatch(value):
         return None
@@ -389,9 +444,10 @@ def _prepare_partial_evidence(
     token = f"{game:04d}"
     if _has_completed_evidence(runtime, token):
         return None
-    screenshot_path = runtime / "tmp" / "screenshots" / f"turn_{turn:04d}.png"
+    screenshot_path = _latest_partial_screenshot(runtime, turn)
     history_path = runtime / "game_history" / f"latest_{token}.jsonl"
-    screenshot = _read_stable_optional(runtime, screenshot_path, MAX_SCREENSHOT_BYTES)
+    screenshot = (_read_stable_optional(runtime, screenshot_path, MAX_SCREENSHOT_BYTES)
+                  if screenshot_path is not None else None)
     history = _read_stable_optional(runtime, history_path, MAX_HISTORY_BYTES)
     screenshot_status = "included" if screenshot is not None else "missing-or-unstable"
     if screenshot is not None and (
@@ -402,10 +458,10 @@ def _prepare_partial_evidence(
         # window must never be attributed to this telemetry session.
         screenshot = None
         screenshot_status = "outside-time-window"
-    dimensions = _png_dimensions(screenshot[0]) if screenshot is not None else None
+    dimensions = _image_dimensions(screenshot[0]) if screenshot is not None else None
     if screenshot is not None and dimensions is None:
         screenshot = None
-        screenshot_status = "invalid-or-incomplete-png"
+        screenshot_status = "invalid-or-incomplete-image"
     if history is not None:
         if not _partial_file_in_window(history[1], now_ms, updated) or not history[0].endswith(b"\n"):
             history = None
@@ -446,7 +502,7 @@ def _prepare_partial_evidence(
                 calibration_status = "included-separate-saved-calibration"
 
     # Pin the exact telemetry revision, including updatedAtMs, around all source
-    # reads. Nothing below reopens a live PNG/history/calibration for content.
+    # reads. Nothing below reopens a live image/history/calibration for content.
     loop_after = _read_stable_optional(runtime, loop_path, MAX_TELEMETRY_BYTES)
     if loop_after is None or loop_after[0] != loop_data or _has_completed_evidence(runtime, token):
         return None
@@ -479,7 +535,7 @@ def _prepare_partial_evidence(
         record_file(dst, history[0], history_path, history[1], "partial-history",
                     relationship="separate-saved-history", sessionAttributed=False)
     if screenshot is not None:
-        source_copy = staging / ".partial-source.png"
+        source_copy = staging / f".partial-source{screenshot_path.suffix.lower()}"
         dst = partial_dir / "screenshots" / f"turn_{turn:04d}.jpg"
         _copy_bytes(source_copy, screenshot[0])
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -488,7 +544,7 @@ def _prepare_partial_evidence(
             transcode(source_copy, dst)
             image = dst.read_bytes()
         except (EvidenceError, OSError, subprocess.SubprocessError):
-            # A concurrent truncate/write may leave a stable but incomplete PNG
+            # A concurrent truncate/write may leave a stable but incomplete image
             # snapshot. This optional image must not discard completed evidence.
             metadata["screenshotStatus"] = "transcode-failed"
         finally:
