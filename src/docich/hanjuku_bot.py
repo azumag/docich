@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v134-month-nav-cursor-guard'
+BOT_VERSION = 'hanjuku-chart-v135-month-foreground-state'
 
 # Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
 # frozen and the bot has planned no input for more than this many observations,
@@ -204,7 +204,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     from . import hanjuku_policy as policy
     from . import hanjuku_house
     from . import hanjuku_chart
-    from .hanjuku_screen import parse
+    from .hanjuku_screen import month_confirmation_positions, parse
     # State written before the castle-label rename still names chapter 1's home
     # castle ほんじょう. Rename it here, before anything reads or writes it, so
     # garrison keys, order sources and free-text notes all match the chart.
@@ -227,6 +227,11 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     policy.observe_events(screen,mem)
     policy.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     kind=screen.kind
+    if state.get('screen_kind') != kind:
+        # A shop/information/confirmation round trip starts a new navigation
+        # episode. No movement failure belongs to a different visible screen.
+        mem.pop('month_nav', None)
+        mem.pop('house_nav', None)
     map_kinds={'map','map_target','castle_menu','general_list','card_select','sortie_confirm'}
     if kind not in map_kinds and mem.get('cursor'):
         # Battles, events and month menus can move the map cursor.
@@ -270,7 +275,12 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     if kind != 'battle_menu':
         for key in ('indep_menu','indep_menu_key','indep_menu_action','egg_row_dead'):
             mem.pop(key,None)
-    recruit_dialog = (mem.get('month_sub') or {}).get('kind') == 'recruit' and not policy.month_menu_ready(screen)
+    # Every explicit foreground confirmation keeps its owner's amount/target
+    # checks. A missing hand alone is not evidence of such a foreground: after
+    # an egg ritual it may simply be a monthly return with a blinking cursor.
+    sub = mem.get('month_sub') or {}
+    month_dialog = ((sub.get('kind') == 'recruit' and not policy.month_menu_ready(screen))
+                    or (bool(sub) and bool(month_confirmation_positions(screen))))
     recall = mem.get('recall') or {}
     recall_dialog = recall and not mem.get('month_sub') and (
         kind in ('map', 'map_target', 'text') or
@@ -284,7 +294,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     actions = policy.defender_egg_pending_step(screen, mem)
     if actions is None:
         actions = (policy.camp_recall_step(screen, mem, frame) if recall_dialog
-                   else policy.month_sub_step(screen, mem) if mem.get('month_sub') and (kind != 'month_menu' or recruit_dialog)
+                   else policy.month_sub_step(screen, mem) if mem.get('month_sub') and (kind != 'month_menu' or month_dialog)
                    else None)
     # No house phase expects a red-curtain screen (concert/merchant backdrop):
     # every branch answers such a text frame with [] or B, which advances
@@ -412,7 +422,14 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         # Even this last-resort path must not confirm an unread summer option:
         # the cursor may be on the mass-dismissal row. Reobserve after one move.
         actions=([pad('up')] if kind=='summer_bonus'
+                 else [pad('b')] if kind=='month_menu'
                  else legacy_actions(frame,phase,updated))
+        if kind == 'month_menu':
+            # The legacy monthly A repeatedly opened the merchant from a
+            # held background row. Cancel and re-read the menu instead; only
+            # an observed target selection may confirm or spend money.
+            mem.pop('month_nav', None)
+            mem.pop('house_nav', None)
         if not actions:
             if phase=='field':
                 if kind in {'unknown','map'}:
