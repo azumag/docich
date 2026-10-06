@@ -64,7 +64,7 @@ Windows上のDiscord Voice runtimeから、STT済み本文だけをこのWorker�
 Cloudflare側では十分長いランダム値をsecretとして登録します。
 
 ```sh
-./node_modules/.bin/cf workers secrets update DISCORD_VOICE_INTERNAL_TOKEN --worker docich-discord-chat
+./node_modules/.bin/cf workers secrets update DISCORD_VOICE_INTERNAL_TOKEN --worker docich-discord-chat --type secret_text
 ```
 
 Windows runtime側には同じ値を `DOCICH_DISCORD_VOICE_CHAT_TOKEN` として、WorkerのHTTPS endpointを `DOCICH_DISCORD_VOICE_CHAT_URL=https://<worker-host>/voice/reply` として設定します。Token、transcript、reply、Guild/Channel/User IDは通常ログへ出しません。

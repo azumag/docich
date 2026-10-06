@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
@@ -43,7 +44,7 @@ test('Windows acceptance bootstrap provisions bridge secret without command-line
   );
   assert.match(
     source,
-    /\$generatedSecret\s*\|\s*& \$cfcli workers secrets update DISCORD_VOICE_INTERNAL_TOKEN --worker docich-discord-chat/,
+    /\$generatedSecret\s*\|\s*& \$cfcli workers secrets update DISCORD_VOICE_INTERNAL_TOKEN --worker docich-discord-chat --type secret_text/,
   );
   assert.match(
     source,
@@ -54,6 +55,52 @@ test('Windows acceptance bootstrap provisions bridge secret without command-line
   assert.doesNotMatch(source, /Set-Content[^\n]*generatedSecret/i);
   assert.doesNotMatch(source, /Out-File[^\n]*generatedSecret/i);
   assert.doesNotMatch(source, /Write-(Host|Output)[^\n]*generatedSecret/i);
+});
+
+test('Windows acceptance bootstrap gives the non-TTY Cloudflare CLI an explicit secret type before stdin', () => {
+  const invocation = source.match(
+    /\$generatedSecret\s*\|\s*& \$cfcli (workers secrets update DISCORD_VOICE_INTERNAL_TOKEN --worker docich-discord-chat --type secret_text)/,
+  );
+  assert.ok(invocation, 'secret_text must be selected in the piped CLI invocation');
+
+  const mockCli = String.raw`
+const args = process.argv.slice(1);
+let stdinRead = false;
+if (!process.stdin.isTTY && !args.includes('--type')) {
+  process.stderr.write('--type is required before the non-TTY type prompt\n');
+  process.exit(2);
+}
+if (args[args.indexOf('--type') + 1] !== 'secret_text') {
+  process.stderr.write('unexpected secret type\n');
+  process.exit(3);
+}
+const chunks = [];
+for await (const chunk of process.stdin) chunks.push(chunk);
+stdinRead = true;
+if (Buffer.concat(chunks).toString() !== 'dummy-secret-for-non-tty-contract-test') {
+  process.stderr.write('stdin payload mismatch\n');
+  process.exit(4);
+}
+process.stdout.write(stdinRead ? 'secret text consumed\n' : 'stdin not read\n');
+`;
+  const args = invocation[1].split(/\s+/);
+  const missingType = spawnSync(
+    process.execPath,
+    ['-e', mockCli, ...args.filter((arg, index) => arg !== '--type' && args[index - 1] !== '--type')],
+    { input: 'dummy-secret-for-non-tty-contract-test', encoding: 'utf8' },
+  );
+  assert.equal(missingType.status, 2);
+  assert.match(missingType.stderr, /--type is required before the non-TTY type prompt/);
+
+  const result = spawnSync(
+    process.execPath,
+    ['-e', mockCli, ...args],
+    { input: 'dummy-secret-for-non-tty-contract-test', encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'secret text consumed\n');
+  assert.doesNotMatch(result.stdout + result.stderr, /dummy-secret/);
+  assert.doesNotMatch(invocation[1], /dummy-secret/);
 });
 
 test('Windows acceptance bootstrap uses pinned Worker dependencies before secret mutation', () => {

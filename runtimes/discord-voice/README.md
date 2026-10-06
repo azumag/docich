@@ -184,7 +184,7 @@ $env:VOICEVOX_URLS = "http://127.0.0.1:50021"
 $env:VOICEVOX_MAX_CHARS = "200"
 ```
 
-Bridge secret mutation is explicit. Either set an existing `DOCICH_DISCORD_VOICE_CHAT_TOKEN` in the current process, or pass `-ProvisionBridgeSecret`. With that switch, the bootstrap generates a random process-local secret and pipes it directly to the pinned local Cloudflare CLI using `cf workers secrets update DISCORD_VOICE_INTERNAL_TOKEN --worker docich-discord-chat`. The secret value is not passed as a command-line argument or written to the log. The Cloudflare CLI must already be authenticated for the owner account. The Cloudflare secret remains configured after the run; a later rotation again requires `-ProvisionBridgeSecret`.
+Bridge secret mutation is explicit. Either set an existing `DOCICH_DISCORD_VOICE_CHAT_TOKEN` in the current process, or pass `-ProvisionBridgeSecret`. With that switch, the bootstrap generates a random process-local secret and pipes it on stdin to the pinned local Cloudflare CLI using `cf workers secrets update DISCORD_VOICE_INTERNAL_TOKEN --worker docich-discord-chat --type secret_text`. The explicit type avoids an interactive type prompt in non-TTY runs. The secret value is not passed as a command-line argument or written to the log. The Cloudflare CLI must already be authenticated for the owner account. The Cloudflare secret remains configured after the run; a later rotation again requires `-ProvisionBridgeSecret`.
 
 For an intentional same-host VOICEVOX Engine:
 
