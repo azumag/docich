@@ -2678,7 +2678,7 @@ def test_summarize_recap_turns_run_evidence_into_story(tmp_path):
     key, text = summarize_recap(
         tmp_path, {'battles_finished': 42, 'terminal_reason': 'game_over'})
     assert key == 'game_over_recap'
-    assert '今回の挑戦は、記録上は第2章・2年7月まで進みました。' in text
+    assert '今回はゲームオーバーとなり、記録上は第2章・2年7月まで進みました。' in text
     assert '作戦ではジョンリギ城への進出を狙い、どうし将軍の出撃までは実行できました。' in text
     assert 'けっかい城ではクイーンとの戦闘に勝っています。' in text
     assert 'ココット城の失陥' in text
@@ -2711,7 +2711,7 @@ def test_recap_matches_owner_report_case_and_does_not_dump_history(tmp_path):
     )
     text = recap_body(
         tmp_path, {'battles_finished': 316, 'terminal_reason': 'game_over'})
-    assert text.startswith('今回の挑戦は、記録上は第1章・3年11月まで進みました。')
+    assert text.startswith('今回はゲームオーバーとなり、記録上は第1章・3年11月まで進みました。')
     assert (
         '作戦ではどうし将軍をアルマムーン城へ向かわせる予定でしたが、'
         '実際にはアンディーブ将軍が同じアルマムーン城へ出撃しました。'
