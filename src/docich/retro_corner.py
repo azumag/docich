@@ -66,6 +66,10 @@ PENDING_SWITCH_STATUSES = {"queued", "in_progress", "busy"}
 # readiness に使う上限。通常の switch より短くし、operatorの対話操作を
 # 待たせ続けない。
 RECOVER_RUNTIME_DEADLINE_S = 180.0
+# restore失敗の固定operator再実行 (Case B) の上限。corner-rotation-operator
+# workflow の job timeout (10分) 内に step2/3 を残すため、自然restoreの
+# 600sより短くする。時間切れは rollback して failed のまま残り、再実行できる。
+RESTORE_RECOVERY_TIMEOUT_S = 420.0
 
 
 class RetroCornerError(RuntimeError):
@@ -2507,6 +2511,318 @@ class RetroCornerManager:
             return None
         return self.recover_failed()
 
+    def _restore_failed_receipt(
+        self, state: dict[str, object]
+    ) -> tuple[dict[str, object], dict[str, object], str, str] | None:
+        """Return the durable restore receipt of one post-completion failure.
+
+        ``None`` keeps every non-restore failure on its existing path.  Only a
+        ``failed`` slot whose completed match already ended and whose recorded
+        restore request has a terminal receipt bound to this exact state
+        qualifies (#1868/#1870).  ``rolled_back``/``failed`` are the live
+        failure shapes; ``succeeded`` covers a crash between a completed
+        restore and the corner's terminal write.
+        """
+
+        if state.get("status") != "failed":
+            return None
+        game = state.get("game")
+        previous = state.get("previous_game")
+        request_id = state.get("switch_request_id")
+        if (
+            not isinstance(game, str)
+            or not game
+            or not isinstance(previous, str)
+            or not previous
+            or previous == game
+            or not isinstance(request_id, str)
+            or not request_id
+            # A failed *start* reuses the rotation request id; a restore
+            # always allocates a fresh one (a successful start popped it).
+            or state.get("rotation_request_id") == request_id
+        ):
+            return None
+        try:
+            completed = dt.datetime.fromisoformat(str(state.get("completed_at")))
+            completed_ts = completed.timestamp()
+        except (OSError, OverflowError, TypeError, ValueError):
+            return None
+        if completed.tzinfo is None or completed_ts < 0:
+            return None
+        try:
+            receipt = self.store.receipts.load(request_id)
+        except StateCorruptError:
+            return None
+        result = receipt.get("result") if isinstance(receipt, dict) else None
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("operation") != "switch"
+            or receipt.get("target") != previous
+            or receipt.get("status") not in {"rolled_back", "failed", "succeeded"}
+            or not isinstance(result, dict)
+            or result.get("request_id") != request_id
+            or result.get("operation") != "switch"
+            or result.get("status") != receipt.get("status")
+            or result.get("from_game") != game
+            or result.get("to_game") != previous
+            or type(result.get("generation")) is not int
+            or result.get("generation") != receipt.get("generation")
+            or result.get("cleanup_pending") not in (None, False)
+        ):
+            return None
+        state_error = state.get("last_error_code")
+        if (
+            state_error is not None
+            and receipt.get("status") != "succeeded"
+            and result.get("error_code") != state_error
+        ):
+            return None
+        return receipt, result, game, previous
+
+    @staticmethod
+    def _restore_landed_proved(
+        canonical: dict[str, object], receipt: dict[str, object]
+    ) -> bool:
+        """Prove canonical already owns the restore target for this receipt."""
+
+        status = receipt.get("status")
+        result = receipt.get("result")
+        if status == "succeeded":
+            request_id = receipt.get("request_id")
+            target = receipt.get("target")
+            if not isinstance(request_id, str) or not isinstance(target, str):
+                return False
+            return RetroCornerManager._succeeded_start_receipt_matches_active(
+                canonical, receipt, request_id=request_id, target=target
+            )
+        if status != "rolled_back" or not isinstance(result, dict):
+            return False
+        active = canonical.get("active")
+        return bool(
+            isinstance(active, dict)
+            and isinstance(active.get("runtime_id"), str)
+            and active.get("runtime_id")
+            and type(active.get("generation")) is int
+            and type(result.get("restored_generation")) is int
+            and active["generation"] >= result["restored_generation"]
+            and result.get("cleanup_pending") in (None, False)
+        )
+
+    def _terminalize_restore_failed_locked(
+        self, state: dict[str, object], *, game: str, previous: str
+    ) -> CornerResult:
+        """Commit a proven restore failure; caller holds the store read lock.
+
+        ``completed_at``/``last_error`` stay as evidence and no improvement job
+        is spawned: the match results were already final before the restore.
+        """
+
+        state.update(status="interrupted")
+        state.pop("switch_status", None)
+        self._write_state(state)
+        return CornerResult(
+            "succeeded",
+            game=game,
+            previous_game=previous,
+            detail="restore終端を確認してinterruptedとして確定しました",
+        )
+
+    def _recover_restore_failed(
+        self, state: dict[str, object]
+    ) -> CornerResult | None:
+        """Settle one post-completion restore failure through the fixed operator.
+
+        A corner that already finished its matches can fail the switch back to
+        the previous game (for example the request-wide ``timeout`` seen in
+        #1868/#1870).  Canonical rolls back to the corner game, the slot stays
+        ``failed`` and the rotation treats it as busy forever.  This
+        operator-only path either
+
+        - Case A: commits the slot as ``interrupted`` when canonical already
+          owns the recorded previous game and the durable receipt proves the
+          landing (a later switch may have landed it); or
+        - Case B: replays the recorded restore exactly once with a fresh
+          request id through the coordinator, then commits the slot.
+
+        Anything unproven (missing/mismatched receipt, non-ready canonical, a
+        different active game, pending cleanup) keeps the slot ``failed``.
+        """
+
+        evidence = self._restore_failed_receipt(state)
+        if evidence is None:
+            return None
+        receipt, _result, game, previous = evidence
+        try:
+            with self.store.lock(exclusive=False):
+                canonical, missing = self.store.canonical.load()
+                if missing:
+                    return CornerResult(
+                        "queued",
+                        game=game,
+                        previous_game=previous,
+                        detail="canonical stateを読めないため確定を待ちます",
+                    )
+                phase = canonical.get("phase")
+                if phase in {"failed", "recovery_required"}:
+                    return CornerResult(
+                        "failed",
+                        game=game,
+                        previous_game=previous,
+                        detail=f"canonical stateが{phase}のため確定しません",
+                    )
+                if phase not in {"idle", "ready"}:
+                    return CornerResult(
+                        "queued",
+                        game=game,
+                        previous_game=previous,
+                        detail=f"canonical phase={phase!r} の完了を待っています",
+                    )
+                if (
+                    canonical.get("candidate") is not None
+                    or canonical.get("previous") is not None
+                ):
+                    return CornerResult(
+                        "queued",
+                        game=game,
+                        previous_game=previous,
+                        detail="別の切替が進行中のため確定を待っています",
+                    )
+                last_result = canonical.get("last_result")
+                if (
+                    isinstance(last_result, dict)
+                    and last_result.get("cleanup_pending") not in (None, False)
+                ):
+                    return CornerResult(
+                        "queued",
+                        game=game,
+                        previous_game=previous,
+                        detail="切替cleanupの完了を待っています",
+                    )
+                active = canonical.get("active")
+                active_game = (
+                    active.get("game") if isinstance(active, dict) else None
+                )
+                if active_game == previous:
+                    if not self._restore_landed_proved(canonical, receipt):
+                        return CornerResult(
+                            "noop",
+                            game=game,
+                            previous_game=previous,
+                            detail="restore-failure-unproven",
+                        )
+                    return self._terminalize_restore_failed_locked(
+                        state, game=game, previous=previous
+                    )
+                if active_game != game or receipt.get("status") == "succeeded":
+                    return CornerResult(
+                        "noop",
+                        game=game,
+                        previous_game=previous,
+                        detail="restore-failure-unproven",
+                    )
+        except GameSwitchBusyError:
+            return CornerResult(
+                "queued",
+                game=game,
+                previous_game=previous,
+                detail="game-switch lockを別writerが保持中のため確定を待っています",
+            )
+        # Case B: canonical still owns the corner game; replay the recorded
+        # restore exactly once and settle with the fresh terminal receipt.
+        return self._replay_restore_failed(state, game=game, previous=previous)
+
+    def _replay_restore_failed(
+        self, state: dict[str, object], *, game: str, previous: str
+    ) -> CornerResult:
+        """Replay one recorded restore through the coordinator, then settle.
+
+        The corner state keeps its original evidence while the switch is in
+        flight: a crash or a timeout leaves the same ``failed`` slot and the
+        fixed operation can run again.  A fresh request id is used so the
+        original terminal receipt is never rewritten.
+        """
+
+        expected_source = None
+        if self._scripted_hanjuku(state):
+            expected_source = state.get("bot_identity")
+            if not isinstance(expected_source, dict):
+                return CornerResult(
+                    "noop",
+                    game=game,
+                    previous_game=previous,
+                    detail="Hanjuku runtime identity missing before restore",
+                )
+        request_id = new_request_id()
+        try:
+            result = self._invoke_coordinator(
+                self.coordinator.switch,
+                previous,
+                request_id=request_id,
+                expected_source=expected_source,
+                # Keep the operator path bounded inside the workflow's job
+                # timeout; a timed-out replay rolls back and can be retried.
+                timeout_s=RESTORE_RECOVERY_TIMEOUT_S,
+                allow_boundary_timeout_extension=False,
+            )
+        except Exception as exc:
+            return CornerResult(
+                "failed",
+                game=game,
+                previous_game=previous,
+                detail=_safe_detail(exc),
+            )
+        status = getattr(result, "status", None)
+        if status in PENDING_SWITCH_STATUSES:
+            return CornerResult(
+                "queued",
+                game=game,
+                previous_game=previous,
+                detail=getattr(result, "detail", None)
+                or "ゲーム切替キューで順番待ちです",
+            )
+        if status != "succeeded":
+            detail = (
+                getattr(result, "detail", None)
+                or getattr(result, "error_code", None)
+                or "restore再実行に失敗しました"
+            )
+            return CornerResult(
+                "failed",
+                game=game,
+                previous_game=previous,
+                detail=_safe_detail(detail),
+            )
+        try:
+            with self.store.lock(exclusive=False):
+                canonical, missing = self.store.canonical.load()
+                try:
+                    receipt = self.store.receipts.load(request_id)
+                except StateCorruptError:
+                    receipt = None
+                if (
+                    missing
+                    or not isinstance(receipt, dict)
+                    or not self._succeeded_start_receipt_matches_active(
+                        canonical, receipt, request_id=request_id, target=previous
+                    )
+                ):
+                    return CornerResult(
+                        "queued",
+                        game=game,
+                        previous_game=previous,
+                        detail="restore再実行のreceipt照合待ちです",
+                    )
+                return self._terminalize_restore_failed_locked(
+                    state, game=game, previous=previous
+                )
+        except GameSwitchBusyError:
+            return CornerResult(
+                "queued",
+                game=game,
+                previous_game=previous,
+                detail="game-switch lockを別writerが保持中のため確定を待っています",
+            )
+
     def recover_failed(self) -> CornerResult:
         """Recover and retry one failed retro slot without selecting a new game.
 
@@ -2522,6 +2838,12 @@ class RetroCornerManager:
         same failed round boundary.  This is the only step
         that clears such a latch, and ``corner-rotation recover`` then commits
         the reservation.
+
+        A slot that finished its matches but failed its restore switch
+        (#1868/#1870) is settled from its durable terminal receipt: as
+        ``interrupted`` when canonical already owns the previous game, or by
+        replaying that recorded restore once when the rollback still owns the
+        corner game.  Unproven evidence keeps the slot ``failed``.
         """
 
         now = self._local_now()
@@ -2533,6 +2855,12 @@ class RetroCornerManager:
             terminalized = self._terminalize_prelaunch_quiesce_failure(state)
             if terminalized is not None:
                 return terminalized
+            # A corner that already finished can fail its restore switch
+            # (#1868/#1870).  Settle that slot (or replay its recorded restore
+            # once) before the canonical-recovery retry path below.
+            restored = self._recover_restore_failed(state)
+            if restored is not None:
+                return restored
             if not self._failed_state_is_recoverable(state):
                 return CornerResult("noop", detail="failed-slot-not-recoverable")
             target = state.get("game")

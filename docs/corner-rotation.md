@@ -106,6 +106,22 @@ latchし、`tick()`は自動開始と手動startを拒否する。latchは自動
      `from_game`→`to_game` を証明し、かつcanonicalが別ゲームを所有したまま
      静止している場合のみ確定する。**再実行はしない**（同じ切替の
      drainingへ再入して同じ失敗を繰り返すため）。
+     コーナー**完了後**のrestore失敗（state=`failed`、`completed_at`あり、
+     restore receiptが `switch`/target=記録済みprevious/terminal
+     （`rolled_back`/`failed`/`succeeded`）で、`switch_request_id`が
+     `rotation_request_id`と別）も同じ固定operationで扱う（#1868/#1870）。
+     1. canonicalが`ready`で記録済みprevious gameを所有し、証跡
+        （`rolled_back`は `restored_generation` 以上のactive generation、
+        `succeeded`はactive identity一致）を確認できる場合は `interrupted`
+        として確定する。`completed_at`/`last_error` は証跡として保持し、
+        改善ジョブは起動しない。
+     2. canonicalが`ready`でcorner gameを所有したまま（rollbackのまま）の
+        場合は、記録済みrestoreを**fresh request_idでcoordinator経由に
+        一度だけ再実行**する。再実行は420s上限・boundary延長なしで行い、
+        成功後に `interrupted` として確定する。タイムアウト・失敗は
+        `failed` のまま残り、同じ固定operationを再実行できる。
+     receipt欠落・不一致、canonicalが`ready`でない、別gameがactive、
+     cleanup未完了のときは確定しない（latch維持、fail-closed）。
      自動予約は `pending`、手動予約は `manual_pending` を同じ規則で解決し、
      手動のcompletedだけ `manual-completion` の履歴行を足す。
    - そのrequestが**一度も起動していない**自動予約なら、ledgerは `waiting`/`execution-pending`
