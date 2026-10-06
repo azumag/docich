@@ -468,7 +468,19 @@ class PaperCornerManager:
         effective = os.environ if env is None else env
         flag = effective.get('DOCICH_PAPER_SCRIPT_DIRECT_ENABLED', '0')
         if flag == '1':
-            return self.direct_script_agents
+            from .llm.contracts import LlmError
+            from .llm.policy import DIRECT_CHAT_PROVIDERS, parse_agents
+
+            agents = self.direct_script_agents
+            if not agents:
+                return ''
+            try:
+                specs = parse_agents(agents)
+            except (LlmError, TypeError, ValueError):
+                return ''
+            if not specs or any(spec.provider not in DIRECT_CHAT_PROVIDERS for spec in specs):
+                return ''
+            return agents
         if flag == '0':
             return self.script_agents
         # Invalid opt-in never silently starts either paid or CLI-backed work.

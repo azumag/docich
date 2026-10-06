@@ -110,6 +110,26 @@ def test_invalid_direct_script_flag_falls_back_without_ai(tmp_path, monkeypatch)
     assert item["text"] == "fallback"
 
 
+def test_direct_script_rejects_non_direct_or_invalid_chains_without_ai(tmp_path, monkeypatch):
+    from docich.trading import corner_script
+
+    mgr, _coord = _manager(tmp_path, script_agents="opencode:legacy")
+    monkeypatch.setenv("DOCICH_PAPER_SCRIPT_DIRECT_ENABLED", "1")
+    monkeypatch.setattr(
+        corner_script, "generate_next_narration",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("AI called")),
+    )
+    for agents in (
+        "", "opencode:legacy", "opencode:one,opencode-go:two", "local", "vercel:legacy",
+        "cloudflare-api:model,opencode:legacy", "cloudflare-api:",
+        "cloudflare-api:model,", "unknown:model", "cloudflare-api:unsafe model",
+    ):
+        mgr.direct_script_agents = agents
+        item = mgr._generate_narration_text(1, [], "fallback")
+        assert item["source"] == "fallback", agents
+        assert item["text"] == "fallback", agents
+
+
 def test_prewarm_installs_the_finite_fallback_once(tmp_path):
     mgr, _coord = _manager(tmp_path)
     state = {"status": "waiting", "date": "2026-09-17", "requested_at": 1000.0}
