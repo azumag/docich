@@ -80,14 +80,26 @@ class PartialEvidenceExportTests(unittest.TestCase):
         )
 
     @staticmethod
+    def jpeg(width=3, height=2):
+        # Minimal SOF-bearing JPEG header sufficient for the bounded dimension parser.
+        return (
+            b"\xff\xd8\xff\xc0"
+            + struct.pack("!H", 17)
+            + b"\x08"
+            + struct.pack("!HH", height, width)
+            + b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00"
+        )
+
+    @staticmethod
     def fake_transcode(src, dst):
         dst.write_bytes(b"JPEG:" + src.read_bytes())
 
-    def write_partial(self, *, age_minutes=5):
+    def write_partial(self, *, age_minutes=5, image_format="png"):
         self.write_loop_metrics(age_minutes=age_minutes)
         updated = self.now_ms - age_minutes * 60_000
-        shot = self.runtime / "tmp" / "screenshots" / "turn_0002.png"
-        shot.write_bytes(self.png())
+        ext = "jpg" if image_format == "jpeg" else "png"
+        shot = self.runtime / "tmp" / "screenshots" / f"turn_0002.{ext}"
+        shot.write_bytes(self.jpeg() if image_format == "jpeg" else self.png())
         os.utime(shot, ((updated - 3000) / 1000,) * 2)
         history = self.runtime / "game_history" / "latest_0009.jsonl"
         history.write_text(json.dumps({"turn": 1, "timestamp": self.iso(updated - 60_000), "state": {"pieces": []}}) + "\n")
@@ -211,6 +223,18 @@ class PartialEvidenceExportTests(unittest.TestCase):
         self.assertEqual(history_meta["relationship"], "separate-saved-history")
         self.assertIs(history_meta["sessionAttributed"], False)
         self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+    def test_historical_partial_accepts_jpeg_turn_image_and_uses_newest_fixed_extension(self):
+        shot, _, _ = self.write_partial(image_format="jpeg")
+        updated = self.now_ms - 5 * 60_000
+        stale_png = shot.with_suffix(".png")
+        stale_png.write_bytes(self.png())
+        os.utime(stale_png, ((updated - 60_000) / 1000,) * 2)
+        _, manifest, files = self.read_bundle()
+        self.assertIn("partial/game_0009/screenshots/turn_0002.jpg", files)
+        image_meta = next(item for item in manifest["files"] if item["kind"] == "partial-screenshot")
+        self.assertTrue(image_meta["source"].endswith("turn_0002.jpg"))
+        self.assertEqual((image_meta["sourceWidth"], image_meta["sourceHeight"]), (3, 2))
 
     def test_schema_two_projects_only_numeric_arena_and_hud_fields(self):
         _, _, calibration = self.write_partial()
@@ -376,7 +400,7 @@ class PartialEvidenceExportTests(unittest.TestCase):
                 shot.write_bytes(data)
                 os.utime(shot, ((self.now_ms - 303_000) / 1000,) * 2)
                 _, manifest, files = self.read_bundle()
-                self.assertEqual(manifest["partialEvidence"]["screenshotStatus"], "invalid-or-incomplete-png")
+                self.assertEqual(manifest["partialEvidence"]["screenshotStatus"], "invalid-or-incomplete-image")
                 self.assertNotIn("partial/game_0009/screenshots/turn_0002.jpg", files)
                 self.assertIn("partial/game_0009/history.jsonl", files)
         shot, _, _ = self.write_partial()
