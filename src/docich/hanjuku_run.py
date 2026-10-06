@@ -152,7 +152,7 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
         # failure must never block the terminal latch.
         try:
             from .hanjuku_commentary import COMMENTARY_VERSION, summarize_recap
-            key, text = summarize_recap(runtime_dir, old)
+            key, text = summarize_recap(runtime_dir, {**old, 'terminal_reason': reason})
             if text:
                 append_log(runtime_dir, 'hanjuku_commentary', {
                     'schema': 1, 'seq': _next_commentary_seq(runtime_dir), 'at': wall,

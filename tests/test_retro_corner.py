@@ -2438,42 +2438,50 @@ class TestEndResultChatParts(unittest.TestCase):
     def assert_complete_parts(self, text):
         parts = _end_result_chat_parts(text)
         self.assertGreater(len(parts), 1)
-        bodies = []
-        for number, part in enumerate(parts, 1):
-            prefix = f"[{number}/{len(parts)}] "
-            self.assertTrue(part.startswith(prefix))
-            self.assertLessEqual(len(part.encode("utf-8")), 200)
-            bodies.append(part[len(prefix):])
-        self.assertEqual("".join(bodies), text)
-        self.assertEqual(len(set(parts)), len(parts))
-        return bodies
+        for part in parts:
+            self.assertLessEqual(len(part.encode("utf-8")), 430)
+            self.assertFalse(part.startswith("["))
+        self.assertEqual("".join(parts), text)
+        return parts
 
     def test_short_and_exact_byte_limit_remain_one_unlabelled_post(self):
-        for text in ("今回の挑戦はここまでです。", "あ" * 66 + "ab", "a" * 200):
+        for text in ("今回の挑戦はここまでです。", "a" * 430):
             with self.subTest(text=text):
                 self.assertEqual(_end_result_chat_parts(text), [text])
         self.assertEqual(_end_result_chat_parts(""), [])
 
     def test_one_byte_over_limit_is_split_without_losing_multibyte_characters(self):
-        for text in ("a" * 201, "あ" * 67, "🥚" * 50 + "a", "城🥚A" * 80):
+        for text in ("a" * 431, "あ" * 144, "🥚" * 108, "城🥚A" * 100):
             with self.subTest(text=text):
                 self.assert_complete_parts(text)
 
-    def test_sentence_boundaries_take_precedence_over_mid_sentence_cuts(self):
+    def test_sentence_boundaries_pack_multiple_sentences_before_cutting(self):
         sentence = "どうし将軍のジョンリギ城への出撃が確認されました。"
-        bodies = self.assert_complete_parts(sentence * 8)
-        self.assertTrue(all(body.endswith("。") for body in bodies))
+        parts = self.assert_complete_parts(sentence * 12)
+        self.assertTrue(all(part.endswith("。") for part in parts[:-1]))
+        self.assertTrue(all(len(part.encode("utf-8")) >= 215 for part in parts[:-1]))
 
-    def test_clause_boundary_is_used_when_a_sentence_exceeds_the_budget(self):
-        text = "あ" * 40 + "、" + "い" * 50 + "。"
-        bodies = self.assert_complete_parts(text)
-        self.assertEqual(bodies[0], "あ" * 40 + "、")
+    def test_clause_boundary_is_used_when_one_sentence_exceeds_the_budget(self):
+        text = "あ" * 80 + "、" + "い" * 80 + "。"
+        parts = self.assert_complete_parts(text)
+        self.assertEqual(parts[0], "あ" * 80 + "、")
 
-    def test_part_labels_fit_when_count_grows_to_two_or_three_digits(self):
-        for repeats in (1800, 19000):
-            with self.subTest(repeats=repeats):
-                bodies = self.assert_complete_parts("あ" * repeats)
-                self.assertGreaterEqual(len(bodies), 10 if repeats == 1800 else 100)
+    def test_owner_style_story_is_not_fragmented_into_five_tiny_posts(self):
+        text = (
+            "今回の挑戦は、記録上は第1章・3年11月まで進みました。"
+            "作戦ではどうし将軍をアルマムーン城へ向かわせる予定でしたが、"
+            "実際にはアンディーブ将軍が同じアルマムーン城へ出撃しました。"
+            "ジョンリギ城ではバジルとの戦闘に勝っています。"
+            "その一方でナキューメラ城の失陥も確認されており、"
+            "局地戦の勝利と拠点の失陥が両方記録されていることが今回の反省点です。"
+            "ただし、ナキューメラ城の失陥が出撃判断の直接の結果だったかまでは"
+            "記録から断定できません。次回は出撃の前後で守備配置と兵力を確認し、"
+            "攻撃後も城を維持できる条件を優先します。"
+        )
+        parts = self.assert_complete_parts(text)
+        self.assertGreaterEqual(len(parts), 2)
+        self.assertLessEqual(len(parts), 4)
+        self.assertNotIn("[1/", "".join(parts))
 
 
 class TestRetroCornerAnnounce(RetroCornerTestBase):
@@ -2615,19 +2623,23 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
 
         def flaky(text):
             attempts.append(text)
-            if text.startswith("[2/"):
+            # intro is attempt 1; fail the second result passage.
+            if len(attempts) == 3:
                 raise RuntimeError("chat down")
 
         mgr, _ = self._manager_with_chat([None], flaky)
-        text = "城の獲得と出撃の結果を記録しました。" * 20
+        text = "城の獲得と出撃の結果を振り返ります。" * 40
+        expected_parts = _end_result_chat_parts(text)
+        self.assertGreater(len(expected_parts), 1)
         with patch.object(mgr, "_end_result_text", return_value=text):
             self.assertEqual(mgr.start().status, "completed")
         state = mgr.status()
         self.assertTrue(state.get("end_announced"))
         self.assertIn("end_announce_error", state)
         self.assertEqual(len(attempts), 3)  # intro, first part, failed second part
-        self.assertTrue(attempts[1].startswith("[1/"))
-        self.assertTrue(attempts[2].startswith("[2/"))
+        self.assertEqual(attempts[1], expected_parts[0])
+        self.assertEqual(attempts[2], expected_parts[1])
+        self.assertFalse(attempts[1].startswith("["))
 
     def test_end_result_labels_cover_every_reason(self):
         mgr, _ = self._manager_with_chat([None], lambda text: None)
@@ -2650,7 +2662,7 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
             self.assertTrue(text.startswith("Robotsは"), reason)
             self.assertIn(clause, text, reason)
 
-    def test_hanjuku_end_result_uses_grounded_run_numbers(self):
+    def test_hanjuku_end_result_uses_grounded_story_and_actual_end_reason(self):
         from docich.naming import runtime_directory
 
         mgr, _ = self._manager_with_chat([None], lambda text: None)
@@ -2664,9 +2676,12 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
         runtime_dir.mkdir(parents=True, exist_ok=True)
         rows = [
             {"event": "decision", "decision": "month_seen", "month": "2-7"},
-            {"event": "decision", "decision": "order_launched"},
-            {"event": "decision", "decision": "order_launched_unconfirmed"},
-            {"event": "decision", "decision": "discharge_general"},
+            {"event": "decision", "decision": "order_start",
+             "general": "どうし", "target": "ジョンリギ"},
+            {"event": "decision", "decision": "order_launched",
+             "general": "どうし", "target": "ジョンリギ"},
+            {"event": "decision", "decision": "battle_result",
+             "enemy": "クイーン", "castle": "けっかい", "outcome": "win"},
             {"event": "decision", "decision": "castle_owned_observed",
              "resulting_event": "captured:ジョンリギ"},
             {"event": "decision", "chapter": 3},
@@ -2684,15 +2699,13 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
             "bot_identity": identity,
             "end_reason": "manual_forced_stop",
         }
-        # Progress remains grounded in the decision log/run state and the
-        # closing still reflects the actual corner end reason.
         result = mgr._end_result_text(state, self.now_value)
-        self.assertIn("第3章まで", result)
-        self.assertIn("2年7月まで", result)
-        self.assertIn("出撃1回", result)
-        self.assertIn("戦闘7回", result)
-        self.assertIn("1城の獲得記録", result)
-        self.assertIn("将軍の解雇1回", result)
+        self.assertIn("今回は強制終了となり、記録上は第3章・2年7月まで進みました。", result)
+        self.assertIn("ジョンリギ城への進出を狙い", result)
+        self.assertIn("けっかい城ではクイーンとの戦闘に勝っています。", result)
+        self.assertNotIn("戦闘7回", result)
+        self.assertNotIn("1城の獲得記録", result)
+        self.assertNotIn("将軍の解雇", result)
         self.assertTrue(result.endswith("セーブ失敗による強制終了で、今回の挑戦はここまでです。"))
         state["end_reason"] = "game_over"
         self.assertTrue(
@@ -2700,8 +2713,6 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
                 "タイトル画面への復帰を確認し、今回の挑戦はここまでです。"
             )
         )
-        # 開始前の切替失敗では、開始していないのに挑戦は終わったと
-        # 却没有できない (#1044)。
         state["end_reason"] = "switch-terminal-before-corner-active"
         self.assertTrue(
             mgr._end_result_text(state, self.now_value).endswith(
@@ -2737,7 +2748,10 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
             "".join(json.dumps({"event": "decision", **row}, ensure_ascii=False) + "\n" for row in rows),
             encoding="utf-8",
         )
-        run = {**identity, "schema": 1, "battles_finished": 42}
+        run = {
+            **identity, "schema": 1, "battles_finished": 42,
+            "terminal_reason": "game_over",
+        }
         (runtime_dir / "hanjuku_run.json").write_text(json.dumps(run), encoding="utf-8")
         state = {"game": "hanjuku-hero", "bot_identity": identity, "end_reason": "game_over"}
         expected = summarize_recap(runtime_dir, run)[1]
@@ -2745,14 +2759,12 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
 
         mgr._announce_end_result_locked(state, self.now_value)
         self.assertGreater(len(chats), 1)
-        bodies = []
-        for number, part in enumerate(chats, 1):
-            prefix = f"[{number}/{len(chats)}] "
-            self.assertTrue(part.startswith(prefix))
-            self.assertLessEqual(len(part.encode("utf-8")), 200)
-            bodies.append(part[len(prefix):])
-        self.assertEqual("".join(bodies), expected)
-        self.assertIn("戦闘42回", "".join(bodies))
+        self.assertLessEqual(len(chats), 4)
+        self.assertTrue(all(len(part.encode("utf-8")) <= 430 for part in chats))
+        self.assertTrue(all(not part.startswith("[") for part in chats))
+        self.assertEqual("".join(chats), expected)
+        self.assertNotIn("戦闘42回", "".join(chats))
+        self.assertIn("局地戦の勝利と拠点の失陥が両方記録されている", "".join(chats))
         self.assertTrue(chats[-1].endswith("タイトル画面への復帰を確認し、今回の挑戦はここまでです。"))
         self.assertTrue(state.get("end_announced"))
         self.assertNotIn("end_announce_error", state)
