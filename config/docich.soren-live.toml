@@ -108,6 +108,9 @@ start_window_minutes = 30
 # 平均スコアの高い腕を採用する。
 # improve_agents はゲーム一覧ではなく既存のAI委任先チェーン。
 improve_agents = "opencode-go:longcat-2.5-preview-free,opencode-go:space-bunny-free,opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4-flash,opencode-go:muse-spark-1.3-contributor"
+# DOCICH_PAPER_IMPROVE_DIRECT_ENABLED=1 のときだけ使うdirect-only候補。
+# 未設定/0では従来improve_agentsを維持。本番flagはこのPRでは変更しない。
+improve_direct_agents = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
 improve_matches = 2
 improve_margin_pct = 10.0
 
