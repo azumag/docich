@@ -21,7 +21,8 @@ from . import hanjuku_reference as reference
 from .hanjuku_egg_reference import enemy_egg_triggers, general_debut_chapter, general_max_hp
 from .hanjuku_font import UNKNOWN, TextLine
 from .hanjuku_screen import (HEADER as HEADER_RE, OKUNOTE_CHOICES,
-                             SUMMER_BONUS_CHOICES, Screen, castle_roofs, own_camps)
+                             SUMMER_BONUS_CHOICES, Screen, castle_roofs,
+                             month_confirmation_positions, own_camps)
 
 NAME = chart.HERO
 FPS = 60
@@ -107,15 +108,10 @@ def menu_to(screen: Screen, label: str, *, exact=True):
     return pad('right' if tx > cur[0] else 'left')
 
 
-# Consecutive directional presses toward one menu row that leave the detected
-# cursor box untouched. The month menu keeps its own hand visible behind a
-# foreground panel (g496, 2026-09-30: a recruit dialogue over the background
-# menu, kind=month_menu, hand=(115,41,132,54)), and the old routes pressed down
-# at the background row forever; the chart counters stayed still and the stall
-# watchdog stayed quiet because the foreground kept redrawing. g604
-# (2026-10-06) reproduced it unchanged through the house monthly survey: 128+
-# down presses, battles/gold/month frozen for hours. Four observations are ~6 s
-# at the 1.5 s cadence, far above the couple of frames a real cursor move needs.
+# Count failed movement within one menu/target episode, independently of cursor
+# jitter. The legacy counter survived shop round trips and hotloads forever.
+# Re-evaluate that old state once; never migrate an unobserved target arrival.
+MENU_NAV_SCHEMA = 2
 MENU_NAV_PRESS_LIMIT = 4
 # A real cursor step moves a whole menu row (16 px in the measured layouts), so
 # anything smaller is detection jitter, not progress toward the target.
@@ -133,15 +129,10 @@ def _menu_distance(screen: Screen, label: str):
 
 
 def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV_PRESS_LIMIT):
-    """Bounded menu navigation that can leave a stuck foreground panel.
+    """Move toward an observed label; cancel once after bounded non-progress.
 
-    Returns ``'here'``/a pad dict/None exactly like :func:`menu_to`, but after
-    ``limit`` consecutive presses toward ``label`` that never got closer to it
-    it stops repeating: one A to close the foreground panel, then hold until
-    the screen changes. Progress is measured as a real reduction of the
-    distance to the row, so ordinary scrolling across many rows is untouched,
-    while a frozen cursor, a jittering detection and a cursor that walks away
-    or wraps are all bounded. It never claims the label was reached.
+    A may confirm a purchase or an unwanted answer, so recovery never emits
+    it. Only the caller's explicit ``'here'`` branch may confirm the target.
     """
     move = menu_to(screen, label)
     if not isinstance(move, dict):
@@ -151,39 +142,34 @@ def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV
     direction = buttons[0] if isinstance(buttons, list) and buttons else None
     state = mem.get(key)
     distance = _menu_distance(screen, label)
-    if not (isinstance(state, dict) and state.get('direction') == direction
-            and direction is not None):
+    context = [screen.kind, label, mem.get('chapter'), mem.get('month'),
+               bool(month_confirmation_positions(screen))]
+    same = (isinstance(state, dict) and state.get('schema') == MENU_NAV_SCHEMA
+            and state.get('context') == context and state.get('direction') == direction
+            and direction is not None)
+    cancel_sent = False
+    if not same:
         presses = 0
     else:
         before = state.get('distance')
         progressed = (isinstance(distance, int) and isinstance(before, int)
                       and distance + MENU_NAV_PROGRESS_PX <= before)
-        presses = 0 if progressed else int(state.get('presses') or 0) + 1
-    mem[key] = {'direction': direction, 'distance': distance, 'presses': presses}
+        previous = state.get('presses')
+        previous = previous if type(previous) is int and previous >= 0 else 0
+        presses = 0 if progressed else min(previous + 1, limit + 1)
+        cancel_sent = not progressed and state.get('cancel_sent') is True
+    state = mem[key] = {'schema': MENU_NAV_SCHEMA, 'context': context,
+                        'direction': direction, 'distance': distance,
+                        'presses': presses, 'cancel_sent': cancel_sent}
     if presses < limit:
         return move
-    if presses == limit:
+    if not cancel_sent:
+        state['cancel_sent'] = True
         _record(mem, 'menu_nav_stuck', screen=screen.kind, choice=label,
                 observed_metric={'presses': presses, 'direction': direction,
                                  'route': key},
-                reason='同方向の入力を続けても目標行へ近づかないため、'
-                       '前面別の画面を疑って閉じるAを1回だけ送る')
-        return [pad('a')]
-    if presses == limit + 1:
-        # g604 2026-10-06: A alone changed the screen once (shop_list) but the
-        # month menu still did not advance. B is this game's close/cancel key
-        # and cannot spend gold, so it is the bounded second dismissal before
-        # the route holds and waits for the screen itself to change.
-        _record(mem, 'menu_nav_stuck', screen=screen.kind, choice=label,
-                observed_metric={'presses': presses - 1, 'direction': direction,
-                                 'route': key},
-                reason='Aを1回送っても目標行へ近づかないため、閉じるBを1回だけ送る')
+                reason='目標行へ近づかないため確定せずBで戻り、前面を再観測する')
         return [pad('b')]
-    if presses == limit + 2:
-        _record(mem, 'menu_nav_stuck', screen=screen.kind, choice=label,
-                observed_metric={'presses': presses - 2, 'direction': direction,
-                                 'route': key},
-                reason='AとBを各1回送っても目標行へ近づかないため入力を保留し、画面変化を待つ')
     return []
 
 
@@ -5735,7 +5721,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
     for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
                 'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
-                'month_nav',
+                'month_nav', 'house_nav',
                 'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                 'source_override', 'uncertain', 'month', 'soldiers_seen', 'soldiers_seen_key',
                 'soldiers_seen_basis', 'order_context', 'sortie_general', 'sortie_actor_miss',
@@ -6345,6 +6331,8 @@ def _month_dialog_body(screen):
 def month_menu_ready(screen):
     """The recruitment overlay can retain the background menu's upper hand."""
     return (screen.kind == 'month_menu' and bool(screen.hand and screen.hand[1] < 120)
+            and not month_confirmation_positions(screen)
+            and not screen.has('じゅうじキー')
             and _month_dialog_body(screen) not in (RECRUIT_INTRO, RECRUIT_GOODBYE))
 
 
