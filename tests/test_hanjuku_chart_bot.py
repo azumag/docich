@@ -706,13 +706,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v134-month-nav-cursor-guard'
+    assert state['bot_version'] == 'hanjuku-chart-v135-month-foreground-state'
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_month_nav_cursor_guard_release():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v134-month-nav-cursor-guard'
+    assert BOT_VERSION == 'hanjuku-chart-v135-month-foreground-state'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -2029,12 +2029,11 @@ def test_month_menu_recovers_egg_then_defers_recruit_until_actual_roster_is_know
     assert not [r for r in state['_records'] if r['decision'] == 'month_sub_open' and r.get('choice') == 'しょうぐんぼしゅう']
 
 
-def test_month_menu_navigation_that_never_moves_closes_once_then_holds():
+def test_month_menu_navigation_that_never_moves_cancels_without_confirming():
     # g604 (2026-10-06): kind stayed month_menu while the monthly roster survey
     # pressed the same direction at an unmoving cursor box for 128+ plans, so
     # no chart counter moved and the stall watchdog stayed quiet. Repeating the
-    # press is not an option: close a foreground panel once, then hold until
-    # the screen itself changes.
+    # press is not an option: cancel once, without selecting the current row.
     state = {'policy': {'chapter': 1, 'orders': {}, 'picked': []}}
     frame = month_canvas(59, on='しょうにん')
     assert parse(frame).kind == 'month_menu'
@@ -2045,14 +2044,15 @@ def test_month_menu_navigation_that_never_moves_closes_once_then_holds():
         assert [a['buttons'] for a in actions] == [['down']]
     assert state['policy']['house_nav']['direction'] == 'down'
     actions, state = decide(frame, state)
-    assert actions == [policy.pad('a')]
+    assert actions == [policy.pad('b')]
     assert [r['decision'] for r in state['_records']][-1] == 'menu_nav_stuck'
     assert state['_records'][-1]['observed_metric']['route'] == 'house_nav'
-    # No further pressing toward the unread row: at most the bounded second
-    # dismissal, then the route holds.
+    assert state['policy']['house']['phase'] == 'month_open'
+    # No current-row confirmation and no more directional burning.
     for _ in range(4):
         actions, state = decide(frame, state)
-        assert 'down' not in [a['buttons'][0] for a in actions]
+        assert actions == []
+        assert state['policy']['house']['phase'] == 'month_open'
 
 
 def test_spending_month_menu_navigation_that_never_moves_is_bounded_too():
@@ -2063,10 +2063,9 @@ def test_spending_month_menu_navigation_that_never_moves_is_bounded_too():
     frame = month_canvas(59, on='しょうにん')
     for _ in range(policy.MENU_NAV_PRESS_LIMIT):
         assert [a['buttons'] for a in policy.month_step(parse(frame), mem)] == [['down']]
-    assert policy.month_step(parse(frame), mem) == [policy.pad('a')]
+    assert policy.month_step(parse(frame), mem) == [policy.pad('b')]
     assert [r['decision'] for r in mem['_records']][-1] == 'menu_nav_stuck'
     assert mem['_records'][-1]['observed_metric']['route'] == 'month_nav'
-    assert policy.month_step(parse(frame), mem) == [policy.pad('b')]
     assert policy.month_step(parse(frame), mem) == []
 
 
