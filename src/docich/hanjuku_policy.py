@@ -1917,6 +1917,12 @@ def is_camp_menu(screen) -> bool:
 
 
 def camp_recall_step(screen: Screen, mem, frame):
+    """Observe named retreaters before reusing the existing camp recall route."""
+    from . import hanjuku_camp_recheck
+    return hanjuku_camp_recheck.step(screen, mem, frame, _camp_recall_step)
+
+
+def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     """Owner rule (2026-09-28): a camp (野営) seen on screen is recalled.
 
     Measured in the isolated probe: A on our tent opens
@@ -1926,11 +1932,16 @@ def camp_recall_step(screen: Screen, mem, frame):
     own castle (補給できる城). ``None`` means "no recall in flight": the
     caller keeps its ordinary map steering.
     """
+    if screen.kind in {'battle', 'battle_menu', 'egg_battle_menu', 'monster_menu',
+                       'egg_choice_menu', 'attack_started', 'defense_started', 'boss_attack_started'}:
+        return None  # combat owns this screen; keep the recall intention pending
+    if mem.get('battle'):
+        return [] if screen.kind == 'map' else None  # first result frame is not a finished battle
     state = mem.get('recall')
     if state is None:
         if screen.kind != 'map' or frame is None:
             return None
-        camps = own_camps(frame)
+        camps = own_camps(frame) if observed_camps is None else observed_camps
         skip = mem.get('recall_skip')
         if skip and int(mem.get('tick') or 0) - int(skip.get('tick') or 0) < RECALL_SKIP_TICKS:
             # A skipped camp would reopen the same picker on every map frame.
@@ -1976,12 +1987,22 @@ def camp_recall_step(screen: Screen, mem, frame):
         # Re-detect every step: a tent clipped by the top edge is targeted
         # above the screen, and the cursor servo there scrolls the camera
         # until the flag shows and the real selecting cell is known.
-        camps = own_camps(frame) if frame is not None else []
-        if camps:
-            cursor = _cursor(screen)
-            camp = min(camps, key=lambda c: (abs(c['target'][0] - cursor[0])
-                                             + abs(c['target'][1] - cursor[1])) if cursor else 0)
-            state['target'] = list(camp['target'])
+        camps = (own_camps(frame) if frame is not None else []) if observed_camps is None else observed_camps
+        if not camps:
+            missing = state['camp_missing_reads'] = int(state.get('camp_missing_reads') or 0) + 1
+            if missing == 1:
+                _record(mem, 'camp_position_unconfirmed', observed_metric={'previous_target': state.get('target')},
+                        reason='現在の画面に自軍tentを確認できず、保存した画面座標では決定しない')
+            if missing >= 3:
+                mem['recall_verification'] = {**state, 'status': 'camp_unobserved'}
+                mem.pop('recall', None)
+                mem['uncertain'] = True
+            return []  # an old screen coordinate never licenses a camp-opening A
+        state.pop('camp_missing_reads', None)
+        cursor = _cursor(screen)
+        camp = min(camps, key=lambda c: (abs(c['target'][0] - cursor[0])
+                                         + abs(c['target'][1] - cursor[1])) if cursor else 0)
+        state['target'] = list(camp['target'])
         cursor = _cursor(screen)
         if not cursor:
             return []
@@ -4656,11 +4677,15 @@ def _unarmed_clash_risk(cur):
 
 def _survival_needed(cur):
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
-    if any(type(n) is not int or n <= 0 for n in (hp, enemy, start)):
+    if any(type(n) is not int or n <= 0 for n in (hp, enemy)):
         return False
     # Sword practice has no resource menu. Preserve its released A bursts.
     if (cur.get('enemy'), cur.get('ally'), start, cur.get('start_enemy_hp'), cur.get('step')) == (
             'だいじん', 'どうし', 90, 90, None):
+        return False
+    if _critical_survival_needed(cur):
+        return True  # current danger is known; historical HP is not required
+    if type(start) is not int or start <= 0:
         return False
     # Far behind the enemy from the start: the old 40%-of-start rule fired
     # only at HP ~10, after the melee had already decided the fight, and
@@ -4749,6 +4774,8 @@ def _hero_retreat_needed(cur):
         return True
     if not cur.get('ally') or not _survival_needed(cur):
         return False
+    if _critical_survival_needed(cur):
+        return True
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
     ref = (max(start, int(cur.get('ref_ally_hp') or 0)) if cur.get('ally') == NAME else start)
     rescue = cur.get('survival') or {}
@@ -4797,7 +4824,7 @@ def _hero_retreat_open(mem, cur):
             general=cur.get('ally'), enemy=cur.get('enemy'),
             castle=cur.get('castle'), side=cur.get('side'),
             observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
-                             'start_ally_hp': cur['start_ally_hp']},
+                             'start_ally_hp': cur.get('start_ally_hp')},
             reason='主人公の敗北によるゲームオーバーまたは一般将軍の喪失を避けるため退却の可否を確認')
     return [pad('b')]
 
@@ -5670,6 +5697,8 @@ def battle_end(mem, next_kind, *, defense_continues=False):
     # One judged battle per started battle, whatever the verdict. The gap
     # against battles_started is the set the status panel must disclose.
     _tally(mem, 'battles_judged')
+    from . import hanjuku_camp_recheck
+    hanjuku_camp_recheck.capture(mem, cur)
     _maybe_recall_weak_hero(mem, cur, outcome, ally_hp)
 
 
@@ -5825,7 +5854,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'target_miss', 'target_cancel', 'menu_hold', 'card_scroll', 'card_unreadable',
                 'sortie_confirm_miss',
                 'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
-                'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip', 'recall_verification',
+                'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip', 'recall_verification', 'retreat_rechecks', 'retreat_anonymous_budget',
                 'near_goal', 'align_steps', 'unanchored', 'select_tick',
                 'house', 'house_scan_tick', 'house_scan_month', 'house_field_scan', 'house_eggs',
                 'roster_survey', 'roster_survey_scope', 'house_status_recheck',

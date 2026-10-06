@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v136-resource-priority'
+BOT_VERSION = 'hanjuku-chart-v137-camp-recheck'
 
 # Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
 # frozen and the bot has planned no input for more than this many observations,
@@ -242,6 +242,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     policy.observe_events(screen,mem)
     policy.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     kind=screen.kind
+    from . import hanjuku_camp_recheck
+    hanjuku_camp_recheck.interrupt(screen, mem)
     if state.get('screen_kind') != kind:
         # A shop/information/confirmation round trip starts a new navigation
         # episode. No movement failure belongs to a different visible screen.
@@ -300,9 +302,10 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     month_dialog = ((sub.get('kind') == 'recruit' and not policy.month_menu_ready(screen))
                     or (bool(sub) and bool(month_confirmation_positions(screen))))
     recall = mem.get('recall') or {}
-    recall_dialog = recall and not mem.get('month_sub') and (
-        kind in ('map', 'map_target', 'text') or
-        (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no')))
+    recall_dialog = recall and (hanjuku_camp_recheck.owns_dialog(screen, mem) or (
+        not recall.get('retreat_recheck') and not recall.get('anonymous_recheck')
+        and not mem.get('month_sub') and (kind in ('map', 'map_target', 'text') or
+        (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no')))))
     # Cancel an outstanding repair before an emergency recall can move its
     # general; the old house route must not resume afterwards.
     if mem.get('house') and mem.get('recall'):
