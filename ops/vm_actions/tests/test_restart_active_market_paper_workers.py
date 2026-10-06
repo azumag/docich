@@ -160,7 +160,7 @@ class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
         self.assertIn("workflow_run.event == 'push'", text)
         self.assertIn("workflow_run.conclusion == 'success'", text)
         self.assertIn("workflow_run.head_branch == 'main'", text)
-        self.assertIn("group: vm-operations-${{ github.repository }}", text)
+        self.assertIn("group: market-paper-runtime-reload-${{ github.repository }}", text)
         self.assertIn("restart_active_market_paper_workers.sh", text)
         self.assertNotIn("systemctl --user enable", text)
 
