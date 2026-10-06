@@ -1,7 +1,7 @@
 """g486 boss sortie waits for measured egg recovery, without inferred payment."""
-from test_hanjuku_chart_bot import policy, sortie_canvas
+from test_hanjuku_chart_bot import policy, sortie_canvas, month_canvas
 from docich import hanjuku_chart as chart
-from docich.hanjuku_screen import Screen
+from docich.hanjuku_screen import Screen, parse
 import pytest
 
 
@@ -39,9 +39,10 @@ def test_newly_read_depletion_cancels_sortie_and_recovery_reopens_check():
     assert mem['active'] is None and mem['picked'] == []
     assert not policy._ready(order(), mem)
     # Existing recovery payment path clears stale counts, never invents 4.
+    mem['month'] = '1-7'
     mem['month_sub'] = {'kind': 'egg', 'gold_before': 100, 'quoted_cost': 50,
-                        'full_selected': True, 'left_menu': True}
-    assert policy._finish_month_sub(Screen([], None, '', header={'gold': 50}), mem, {'egg': 'opened'})
+                        'full_selected': True, 'left_menu': True, 'key': '1-7'}
+    assert policy._finish_month_sub(parse(month_canvas(50)), mem, {'key': '1-7', 'egg': 'opened'})
     assert mem['egg_uses'] == {} and policy._ready(order(), mem)
     # A fresh depleted reading cancels again even after observed payment.
     mem.update(active='1-B1', picked=[], sortie_general={'1-B1': 'どうし'})
