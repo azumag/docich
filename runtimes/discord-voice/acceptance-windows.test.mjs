@@ -39,11 +39,11 @@ test('Windows acceptance bootstrap bounds bridge secret propagation retries', ()
 test('Windows acceptance bootstrap provisions bridge secret without command-line value or persistence', () => {
   assert.match(
     source,
-    /node_modules\/\.bin\/wrangler\.cmd/,
+    /node_modules\/\.bin\/cf\.cmd/,
   );
   assert.match(
     source,
-    /\$generatedSecret\s*\|\s*& \$wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN --name docich-discord-chat/,
+    /\$generatedSecret\s*\|\s*& \$cfcli workers secrets update DISCORD_VOICE_INTERNAL_TOKEN --worker docich-discord-chat/,
   );
   assert.match(
     source,
@@ -61,7 +61,7 @@ test('Windows acceptance bootstrap uses pinned Worker dependencies before secret
     'npm install --no-package-lock --no-audit --no-fund',
   );
   const secret = source.indexOf(
-    '$generatedSecret | & $wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN',
+    '$generatedSecret | & $cfcli workers secrets update DISCORD_VOICE_INTERNAL_TOKEN',
   );
   assert.ok(install >= 0);
   assert.ok(secret > install);

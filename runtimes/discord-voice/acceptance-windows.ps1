@@ -121,11 +121,11 @@ try {
       if ($LASTEXITCODE -ne 0) {
         throw "Failed to install pinned Discord Worker dependencies."
       }
-      $wrangler = Join-Path $workerDir "node_modules/.bin/wrangler.cmd"
-      if (-not (Test-Path -LiteralPath $wrangler)) {
-        throw "Pinned Wrangler binary was not installed."
+      $cfcli = Join-Path $workerDir "node_modules/.bin/cf.cmd"
+      if (-not (Test-Path -LiteralPath $cfcli)) {
+        throw "Pinned Cloudflare CLI binary was not installed."
       }
-      $generatedSecret | & $wrangler secret put DISCORD_VOICE_INTERNAL_TOKEN --name docich-discord-chat
+      $generatedSecret | & $cfcli workers secrets update DISCORD_VOICE_INTERNAL_TOKEN --worker docich-discord-chat
       if ($LASTEXITCODE -ne 0) {
         throw "Failed to provision DISCORD_VOICE_INTERNAL_TOKEN."
       }
