@@ -67,30 +67,52 @@ class WeatherProgramViewAdapter(ProgramViewAdapter):
         browser = _browser_bin()
         if not browser:
             raise AdapterError("chromium が見つかりません (weather HTML view)")
+
+        display = self.g.display
+        # Weather is a broadcast-native information screen, not a game that
+        # needs the shared top/right/bottom status rails.  When the full X11
+        # display dimensions are known, own the complete frame so the weather
+        # map replaces those rails only for this synthetic corner.
+        full_width = int(getattr(display, "width", 0) or 0)
+        full_height = int(getattr(display, "height", 0) or 0)
+        if full_width > 0 and full_height > 0:
+            present_x, present_y = 0, 0
+            present_width, present_height = full_width, full_height
+        else:
+            present_x, present_y = display.viewport_x, display.viewport_y
+            present_width, present_height = display.viewport_width, display.viewport_height
+
+        browser_width = present_width if present_width > 0 else 960
+        browser_height = present_height if present_height > 0 else 540
         command = [
             browser,
             f"--app=http://127.0.0.1:{self.dashboard_port}/broadcast",
-            "--window-size=960,540",
+            f"--window-size={browser_width},{browser_height}",
             "--window-position=0,0",
+            "--lang=ja-JP",
             "--no-first-run",
             "--no-default-browser-check",
             "--hide-scrollbars",
             "--disable-dev-shm-usage",
             "--disable-gpu",
-            "--disable-features=Translate,BackForwardCache",
+            # Chromium has used both the legacy Translate switch and the
+            # TranslateUI feature gate.  Keep both off for this fixed Japanese
+            # broadcast page so a Japanese/English translation tip cannot
+            # cover the upper-right forecast panel.
+            "--disable-translate",
+            "--disable-features=Translate,TranslateUI,BackForwardCache",
             f"--user-data-dir={self.spec.runtime_dir / 'weather-browser-profile'}",
         ]
-        display = self.g.display
-        if display.viewport_width > 0 and display.viewport_height > 0:
+        if present_width > 0 and present_height > 0:
             return [
                 sys.executable,
                 str(Path(__file__).resolve().parents[1] / "presentation.py"),
                 "--display", display.name,
                 "--title", f"docich-present-{self.spec.runtime_id}",
-                "--x", str(display.viewport_x),
-                "--y", str(display.viewport_y),
-                "--width", str(display.viewport_width),
-                "--height", str(display.viewport_height),
+                "--x", str(present_x),
+                "--y", str(present_y),
+                "--width", str(present_width),
+                "--height", str(present_height),
                 "--", *command,
             ]
         return command
