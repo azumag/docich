@@ -1,5 +1,5 @@
 /** Site-independent, visible-information-only Tsuitate move selection. */
-export const BRAIN_VERSION = "tsuitate-brain-v10";
+export const BRAIN_VERSION = "tsuitate-brain-v11";
 const ROLES = new Set(["P", "L", "N", "S", "G", "B", "R", "K", "+P", "+L", "+N", "+S", "+B", "+R"]);
 const HAND_ROLES = ["P", "L", "N", "S", "G", "B", "R"];
 const HAND_LIMITS = { P: 18, L: 4, N: 4, S: 4, G: 4, B: 2, R: 2 };
@@ -399,10 +399,19 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
     const age = recaptureAge.get(candidate.usi.slice(2, 4));
     return age !== undefined && age <= RECAPTURE_AGE_LIMIT;
   });
+  // While checked, fresh capture evidence on a response line is a plausible
+  // checker: a move there can capture it, while a drop can only block. These
+  // moves are ordered ahead of the escapes; the evidence never claims legality.
+  const evidenceResponses = observation.inCheck === true ? responses.filter((candidate) => {
+    if (candidate.role === "K" || candidate.usi[1] === "*") return false;
+    const age = recaptureAge.get(candidate.usi.slice(2, 4));
+    return age !== undefined && age <= RECAPTURE_AGE_LIMIT;
+  }) : [];
   // Preserve the existing fallback for incomplete own-king observations or
   // exhausted response candidates; geometry cannot prove mate or legality.
   const candidates = recaptures.length ? recaptures
-    : escapes.length ? escapes : retries.length ? retries : responses.length ? responses : available;
+    : escapes.length ? [...evidenceResponses, ...escapes]
+      : retries.length ? retries : responses.length ? responses : available;
   if (!candidates.length) return null;
   const scored = candidates.map((candidate) => {
     const values = features(observation, candidate, recent);
@@ -411,6 +420,24 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
         - pathRisk(observation, candidate);
     return { usi: candidate.usi, role: candidate.role, features: values, score, priority: 0 };
   });
+  // 王手時は、新鮮な証拠（自分の駒が消えたマス）への幾何応手を先頭にする。
+  // そこが実際の王手駒なら捕獲で王手が解ける。打駒は捕獲できないので含めない。
+  if (observation.inCheck === true && evidenceResponses.length) {
+    const evidenceAge = new Map(observation.knownEnemies.map((item) => [item.square, item.age]));
+    const evidenceSet = new Set(evidenceResponses.map((candidate) => candidate.usi));
+    scored.filter((candidate) => evidenceSet.has(candidate.usi))
+      .sort((a, b) => (evidenceAge.get(a.usi.slice(2, 4)) - evidenceAge.get(b.usi.slice(2, 4)))
+        || b.score - a.score)
+      .forEach((candidate, index) => { candidate.priority = 100 - index; });
+  }
+  // 脱出候補がどれも露出過多（閾値以上）のときは、ブロック・捕獲になり得る
+  // 移動を先に試し、玉の移動は後ろに回す。残り予算が少ないときは後回しに
+  // しない（合法な玉脱出が応手の後ろに隠れたまま試行を使い切るのを避ける）。
+  if (observation.inCheck === true && !prioritizeEscapes
+      && (observation.attemptBudget === null || observation.attemptBudget >= 3)
+      && scored.some((candidate) => candidate.role !== "K")) {
+    for (const candidate of scored) if (candidate.role === "K") candidate.priority = -1;
+  }
   // 王手中は玉の脱出候補を露出度の低い順に試す。特徴量スコアは前進を
   // 好むため、そのままでは隠れた駒の多い方向へ玉を運び反則になる。
   if (prioritizeEscapes && checkedKing) {
