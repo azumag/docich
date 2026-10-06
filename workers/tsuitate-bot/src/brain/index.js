@@ -1,5 +1,5 @@
 /** Site-independent, visible-information-only Tsuitate move selection. */
-export const BRAIN_VERSION = "tsuitate-brain-v9";
+export const BRAIN_VERSION = "tsuitate-brain-v10";
 const ROLES = new Set(["P", "L", "N", "S", "G", "B", "R", "K", "+P", "+L", "+N", "+S", "+B", "+R"]);
 const HAND_ROLES = ["P", "L", "N", "S", "G", "B", "R"];
 const HAND_LIMITS = { P: 18, L: 4, N: 4, S: 4, G: 4, B: 2, R: 2 };
@@ -10,6 +10,12 @@ const RECAPTURE_AGE_LIMIT = 2;
 // A long move crosses squares we cannot see, so it can be blocked and foul.
 // This only lowers the ordering score; it never claims a move is legal or not.
 const PATH_RISK_WEIGHT = 0.25;
+// While checked, a king escape is worth probing only while some way out still
+// looks sheltered. When every escape scores at least this exposure, probing
+// them all spends the foul budget one certain foul at a time; blocks and
+// captures that address the check geometry are tried first instead. Ordering
+// only: neither threshold claims any move is legal.
+const ESCAPE_EXPOSURE_LIMIT = 18;
 const FEATURE_NAMES = ["advance", "centrality", "promotion", "drop", "kingMove", "distance", "repeat"];
 const SQUARE = /^[1-9][a-i]$/;
 const USI_MOVE = /^(?:[1-9][a-i][1-9][a-i]\+?|[PLNSGBR]\*[1-9][a-i])$/;
@@ -358,10 +364,6 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
     ...forbiddenMoves.filter((move) => typeof move === "string" && USI_MOVE.test(move))]);
   const legacy = selectedProfile.policy === "legacy-v1";
   if (legacy && recent.length) forbidden.add(recent.at(-1));
-  // Probe escapes only while another attempt can follow a foul. Otherwise rank
-  // possible blocks/captures and king moves, not unrelated attacking advances.
-  const prioritizeEscapes = observation.inCheck === true
-    && (observation.attemptBudget === null || observation.attemptBudget > 1);
   const generated = candidatesFor(observation, legacy && observation.inCheck !== true);
   // Both visibly valid promotion variants have the same path, destination
   // occupancy and own-king safety. A foul on either rules out that path here.
@@ -371,8 +373,19 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
     .map((candidate) => candidate.usi.replace(/\+$/, "")));
   const available = generated.filter((candidate) => !forbidden.has(candidate.usi)
     && !rejectedPaths.has(candidate.usi.replace(/\+$/, "")));
-  const escapes = prioritizeEscapes
-    ? available.filter((candidate) => candidate.role === "K") : [];
+  // Probe escapes only while another attempt can follow a foul, and only while
+  // some way out still looks sheltered. Otherwise rank possible blocks and
+  // captures first, not unrelated attacking advances.
+  const canProbeEscapes = observation.inCheck === true
+    && (observation.attemptBudget === null || observation.attemptBudget > 1);
+  const escapeCandidates = canProbeEscapes ? available.filter((candidate) => candidate.role === "K") : [];
+  const checkedKing = canProbeEscapes ? observation.pieces.find((piece) => piece.role === "K") : null;
+  const escapeMinExposure = (escapeCandidates.length && checkedKing)
+    ? Math.min(...escapeCandidates.map((candidate) =>
+      escapeExposure(observation, checkedKing.square, candidate.usi.slice(2, 4))))
+    : Infinity;
+  const prioritizeEscapes = canProbeEscapes && escapeMinExposure < ESCAPE_EXPOSURE_LIMIT;
+  const escapes = prioritizeEscapes ? escapeCandidates : [];
   const responses = observation.inCheck === true ? checkResponses(observation, available) : available;
   const retries = shortRayRetries(observation, generated, rejected, forbidden);
   // Capture evidence outranks the ray-shortening heuristic: an own piece that
@@ -400,14 +413,11 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
   });
   // 王手中は玉の脱出候補を露出度の低い順に試す。特徴量スコアは前進を
   // 好むため、そのままでは隠れた駒の多い方向へ玉を運び反則になる。
-  if (observation.inCheck === true && prioritizeEscapes) {
-    const king = observation.pieces.find((piece) => piece.role === "K");
-    if (king) {
-      scored.filter((candidate) => candidate.role === "K")
-        .map((candidate) => ({ candidate, exposure: escapeExposure(observation, king.square, candidate.usi.slice(2, 4)) }))
-        .sort((a, b) => a.exposure - b.exposure || b.candidate.score - a.candidate.score)
-        .forEach((entry, index) => { entry.candidate.priority = -index; });
-    }
+  if (prioritizeEscapes && checkedKing) {
+    scored.filter((candidate) => candidate.role === "K")
+      .map((candidate) => ({ candidate, exposure: escapeExposure(observation, checkedKing.square, candidate.usi.slice(2, 4)) }))
+      .sort((a, b) => a.exposure - b.exposure || b.candidate.score - a.candidate.score)
+      .forEach((entry, index) => { entry.candidate.priority = -index; });
   }
   const topPriority = Math.max(...scored.map((candidate) => candidate.priority));
   const pool = scored.filter((candidate) => candidate.priority === topPriority);
