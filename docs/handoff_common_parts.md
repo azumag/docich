@@ -305,6 +305,6 @@ soviet_now 側ラッパ置換は将来の別 PR (外部 push はユーザー承�
 | `docs/architecture.md` | 設計の一次情報 (共存原則 §0、アダプタ契約 §3、フェーズ状況 §10) |
 | `docs/multi_repo_plan.md` | サブモジュール構成・C0〜C4 ロードマップ・監視プロトコル |
 | `docs/hanjuku_brain.md` | 半熟英雄 brain の設計と検証状況 (再開時の正典) |
-| `handoff.md` (リポジトリ直下) | Codex 側の運用引き継ぎ (Soren 本番の正体・残ゲート)。**Codex が所有** |
+| 非公開共通正本 `handoff.md` (`DOCICH_HANDOFF_PATH` 等で明示参照) | Codex 側の運用引き継ぎ (Soren 本番の正体・残ゲート)。参照不能時は未読と記録。現行契約は `AGENTS.md` §1/§2 |
 | `docs/twitch_closed_captions.md` | 字幕アーキテクチャ (同期済みの正典) |
 | `wiki/` | 入り口・運用ハンドブック (発行は `scripts/publish_wiki.sh`) |
