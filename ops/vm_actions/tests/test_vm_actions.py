@@ -242,7 +242,7 @@ class AuthorizeTests(unittest.TestCase):
         self.assertIn('[[ "$head" == "$expected_sha" ]]', runner)
         self.assertIn('status --porcelain --untracked-files=no --ignore-submodules=all', runner)
         self.assertIn('. "$env_file"', runner)
-        self.assertIn('DOCICH_ALLOW_REAL_AI=1', runner)
+        self.assertIn('DOCICH_ALLOW_REAL_AI="1"', runner)
         self.assertIn('paper-ai-canary --execute', runner)
         self.assertIn('exec env -i', runner)
         for allowed in (
