@@ -1770,7 +1770,7 @@ def test_monster_menu_skips_a_full_hp_heal_first_skill_for_damage():
     assert choice['strategy_variant'] == 'monster_menu_skill2'
     assert choice['observed_metric']['action'] == 'skill2'
     assert choice['observed_metric']['menu'] == ['ふくらむ', 'シャウト', 'たまごにもどれ']
-    assert '回復技' in choice['reason']
+    assert choice['observed_metric']['target_hp'] == policy.BALLOON_FINCH_MAX_HP
     assert actions[0]['buttons'] == ['down']
 
 
