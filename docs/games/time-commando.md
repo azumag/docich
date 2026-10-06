@@ -2,6 +2,8 @@
 
 関連: [Issue #17](https://github.com/azumag/docich/issues/17)
 
+続く段階の構成検査と実測項目は [非本番受入](time-commando-acceptance.md) を参照。
+
 既存のRetroArch adapterとDOSBox Pureを使う設定例。
 この変更でゲームを自動登録・起動せず、インストールやデータコピーも行わない。
 ゲーム本体、CDイメージ、manual、音声、保存データをGit・CI artifact・releaseへ含めない。
