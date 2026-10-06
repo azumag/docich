@@ -639,7 +639,11 @@ class RetroCornerManager:
             from .naming import runtime_directory
 
             runtime_dir = runtime_directory(self.g.state_dir, identity["runtime_id"])
-            return recap_body(runtime_dir, load_hanjuku_run(runtime_dir, identity))
+            run_state = load_hanjuku_run(runtime_dir, identity)
+            if isinstance(run_state, dict):
+                run_state = dict(run_state)
+                run_state["terminal_reason"] = self._end_reason_key(state)
+            return recap_body(runtime_dir, run_state)
         except Exception:
             return None
 
