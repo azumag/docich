@@ -95,6 +95,44 @@ main().catch(() => process.exit(5));
   assert.doesNotMatch(invocation[1], /dummy-secret/);
 });
 
+
+test('Windows PowerShell native string pipeline exposes the Cloudflare trailing-CR risk', {
+  skip: process.platform !== 'win32',
+}, () => {
+  const collector = String.raw`
+const chunks = [];
+process.stdin.on('data', (chunk) => chunks.push(chunk));
+process.stdin.on('end', () => {
+  const raw = Buffer.concat(chunks);
+  const text = raw.toString('utf8');
+  const cloudflareValue = text.endsWith('\n') ? text.slice(0, -1) : text;
+  process.stdout.write(JSON.stringify({
+    rawEndsWithCRLF: raw.subarray(-2).equals(Buffer.from('\r\n')),
+    cloudflareKeepsCR: cloudflareValue.endsWith('\r'),
+    cloudflareValueMatches: cloudflareValue === 'synthetic-pipeline-dummy',
+    byteLength: raw.length,
+  }));
+});
+`;
+  const collectorBase64 = Buffer.from(collector).toString('base64');
+  const ps = [
+    "$dummy = 'synthetic-pipeline-dummy'",
+    `$result = $dummy | node -e 'eval(Buffer.from("${collectorBase64}", "base64").toString())'`,
+    'Write-Output $result',
+  ].join('; ');
+  const encoded = Buffer.from(ps, 'utf16le').toString('base64');
+  const result = spawnSync('pwsh', ['-NoProfile', '-EncodedCommand', encoded], {
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout.trim());
+  assert.equal(report.rawEndsWithCRLF, true);
+  assert.equal(report.cloudflareKeepsCR, true);
+  assert.equal(report.cloudflareValueMatches, false);
+  assert.equal(result.stdout.includes('synthetic-pipeline-dummy'), false);
+});
+
 test('Windows acceptance bootstrap uses pinned Worker dependencies before secret mutation', () => {
   const install = source.indexOf(
     'npm install --no-package-lock --no-audit --no-fund',
