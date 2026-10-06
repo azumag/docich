@@ -1794,7 +1794,7 @@ class TestEndResultChatParts(unittest.TestCase):
             "実際にはアンディーブ将軍が同じアルマムーン城へ出撃しました。"
             "ジョンリギ城ではバジルとの戦闘に勝っています。"
             "その一方でナキューメラ城の失陥も確認されており、"
-            "局地戦の勝利を拠点の維持へつなげ切れなかったことが今回の反省点です。"
+            "局地戦で勝てても、全体では拠点を維持できなかったことが今回の反省点です。"
             "ただし、ナキューメラ城の失陥が出撃判断の直接の結果だったかまでは"
             "記録から断定できません。次回は出撃の前後で守備配置と兵力を確認し、"
             "攻撃後も城を維持できる条件を優先します。"
@@ -2079,7 +2079,7 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
         self.assertTrue(all(not part.startswith("[") for part in chats))
         self.assertEqual("".join(chats), expected)
         self.assertNotIn("戦闘42回", "".join(chats))
-        self.assertIn("局地戦の勝利を拠点の維持へつなげ切れなかった", "".join(chats))
+        self.assertIn("局地戦で勝てても、全体では拠点を維持できなかった", "".join(chats))
         self.assertTrue(chats[-1].endswith("タイトル画面への復帰を確認し、今回の挑戦はここまでです。"))
         self.assertTrue(state.get("end_announced"))
         self.assertNotIn("end_announce_error", state)
