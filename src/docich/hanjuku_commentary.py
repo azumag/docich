@@ -418,19 +418,31 @@ def recap_body(runtime_dir, run_state) -> str:
         and latest_state.get(event[2], event)[0] > event[0]
         and latest_state.get(event[2], event)[1] == 'captured'
     ]
-    latest_win = next((rec for _i, rec in reversed(battles) if rec.get('outcome') == 'win'), None)
+    latest_win_entry = next(
+        (item for item in reversed(battles) if item[1].get('outcome') == 'win'),
+        None,
+    )
+    latest_win = latest_win_entry[1] if latest_win_entry else None
     latest_battle_loss = next(
         (rec for _i, rec in reversed(battles) if rec.get('outcome') == 'loss'),
         None,
     )
 
     if unresolved_losses:
-        lost_castle = unresolved_losses[-1][2]
+        latest_loss = unresolved_losses[-1]
+        lost_castle = latest_loss[2]
         win_sentence = _battle_story_sentence(latest_win) if latest_win else None
-        if win_sentence:
+        if win_sentence and latest_win_entry and latest_win_entry[0] > latest_loss[0]:
+            story.append(
+                f'{lost_castle}城の失陥が確認された一方、その後、{win_sentence}'
+                '局地戦では取り返せても、全体では拠点を失ったまま終えたことが'
+                '今回の反省点です。'
+            )
+        elif win_sentence:
             story.append(
                 f'{win_sentence}その一方で{lost_castle}城の失陥も確認されており、'
-                '局地戦の勝利を拠点の維持へつなげ切れなかったことが今回の反省点です。'
+                '局地戦で勝てても、全体では拠点を維持できなかったことが'
+                '今回の反省点です。'
             )
         else:
             story.append(
