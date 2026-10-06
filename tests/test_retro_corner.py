@@ -2034,6 +2034,12 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
                 "タイトル画面への復帰を確認し、今回の挑戦はここまでです。"
             )
         )
+        state["end_reason"] = "switch-terminal-before-corner-active"
+        self.assertTrue(
+            mgr._end_result_text(state, self.now_value).endswith(
+                "開始前の切り替えが失敗したため、今日は挑戦できませんでした。"
+            )
+        )
         # 記録が読めない場合は generic 文面 (ゲーム名＋理由) へフォールバック。
         fallback = mgr._end_result_text(
             {"game": "hanjuku-hero", "end_reason": "game_over"}, self.now_value
