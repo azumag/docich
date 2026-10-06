@@ -706,13 +706,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v133-measured-egg-fee'
+    assert state['bot_version'] == 'hanjuku-chart-v134-month-nav-cursor-guard'
     assert '_records' not in state['policy']
 
 
-def test_bot_version_marks_measured_egg_fee_release():
+def test_bot_version_marks_month_nav_cursor_guard_release():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v133-measured-egg-fee'
+    assert BOT_VERSION == 'hanjuku-chart-v134-month-nav-cursor-guard'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -2022,6 +2022,59 @@ def test_month_menu_recovers_egg_then_defers_recruit_until_actual_roster_is_know
     assert mem['shop']['recruit'] == 'deferred_roster'
     assert not mem.get('month_sub')
     assert not [r for r in state['_records'] if r['decision'] == 'month_sub_open' and r.get('choice') == 'しょうぐんぼしゅう']
+
+
+def test_month_menu_navigation_that_never_moves_closes_once_then_holds():
+    # g604 (2026-10-06): kind stayed month_menu while the monthly roster survey
+    # pressed the same direction at an unmoving cursor box for 128+ plans, so
+    # no chart counter moved and the stall watchdog stayed quiet. Repeating the
+    # press is not an option: close a foreground panel once, then hold until
+    # the screen itself changes.
+    state = {'policy': {'chapter': 1, 'orders': {}, 'picked': []}}
+    frame = month_canvas(59, on='しょうにん')
+    assert parse(frame).kind == 'month_menu'
+    actions, state = decide(frame, state)          # the survey's own first look
+    assert [a['buttons'] for a in actions] == [['down']]
+    for _ in range(policy.MENU_NAV_PRESS_LIMIT):
+        actions, state = decide(frame, state)
+        assert [a['buttons'] for a in actions] == [['down']]
+    assert state['policy']['house_nav']['direction'] == 'down'
+    actions, state = decide(frame, state)
+    assert actions == [policy.pad('a')]
+    assert [r['decision'] for r in state['_records']][-1] == 'menu_nav_stuck'
+    assert state['_records'][-1]['observed_metric']['route'] == 'house_nav'
+    # The input burn stops instead of restarting with the next bounded step.
+    for _ in range(3):
+        actions, state = decide(frame, state)
+        assert 'a' not in [a['buttons'][0] for a in actions]
+
+
+def test_spending_month_menu_navigation_that_never_moves_is_bounded_too():
+    # The same screen without the monthly survey: the reviewed spending policy
+    # gets the identical bounded retry instead of pressing down forever.
+    mem = {'chapter': 1, 'orders': {}, 'picked': [],
+           'recruit_month_scan_attempts': {'scope': [1, '1-7'], 'count': 2}}
+    frame = month_canvas(59, on='しょうにん')
+    for _ in range(policy.MENU_NAV_PRESS_LIMIT):
+        assert [a['buttons'] for a in policy.month_step(parse(frame), mem)] == [['down']]
+    assert policy.month_step(parse(frame), mem) == [policy.pad('a')]
+    assert [r['decision'] for r in mem['_records']][-1] == 'menu_nav_stuck'
+    assert mem['_records'][-1]['observed_metric']['route'] == 'month_nav'
+    assert policy.month_step(parse(frame), mem) == []
+
+
+def test_menu_nav_guard_restarts_once_the_cursor_moves():
+    mem = {'chapter': 1, 'orders': {}, 'picked': [],
+           'recruit_month_scan_attempts': {'scope': [1, '1-7'], 'count': 2}}
+    frame = month_canvas(59, on='しょうにん')
+    for _ in range(policy.MENU_NAV_PRESS_LIMIT):
+        assert [a['buttons'] for a in policy.month_step(parse(frame), mem)] == [['down']]
+    # Reaching the wanted row is the reviewed way out: no stuck record, and the
+    # held press count is dropped with the screen change.
+    actions = policy.month_step(parse(month_canvas(59, on='へいしほじゅう')), mem)
+    assert actions
+    assert 'month_nav' not in mem
+    assert 'menu_nav_stuck' not in [r['decision'] for r in mem['_records']]
 
 
 def test_unknown_roster_defers_recruit_even_with_sufficient_cash_and_soldiers():

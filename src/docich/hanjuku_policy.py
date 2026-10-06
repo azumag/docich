@@ -107,6 +107,62 @@ def menu_to(screen: Screen, label: str, *, exact=True):
     return pad('right' if tx > cur[0] else 'left')
 
 
+# Consecutive directional presses toward one menu row that leave the detected
+# cursor box untouched. The month menu keeps its own hand visible behind a
+# foreground panel (g496, 2026-09-30: a recruit dialogue over the background
+# menu, kind=month_menu, hand=(115,41,132,54)), and the old routes pressed down
+# at the background row forever; the chart counters stayed still and the stall
+# watchdog stayed quiet because the foreground kept redrawing. g604
+# (2026-10-06) reproduced it unchanged through the house monthly survey: 128+
+# down presses, battles/gold/month frozen for hours. Four observations are ~6 s
+# at the 1.5 s cadence, far above the couple of frames a real cursor move needs.
+MENU_NAV_PRESS_LIMIT = 4
+
+
+def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV_PRESS_LIMIT):
+    """Bounded menu navigation that can leave a stuck foreground panel.
+
+    Returns ``'here'``/a pad dict/None exactly like :func:`menu_to`, but after
+    ``limit`` identical presses with an unchanged cursor box it stops
+    repeating: one A to close the foreground panel, then hold until the screen
+    changes. It never claims the label was reached, and a cursor that moves (or
+    a different direction) restarts the count.
+    """
+    move = menu_to(screen, label)
+    if not isinstance(move, dict):
+        mem.pop(key, None)
+        return move
+    hand = list(screen.hand or ())
+    buttons = move.get('buttons')
+    direction = buttons[0] if isinstance(buttons, list) and buttons else None
+    state = mem.get(key)
+    if (isinstance(state, dict) and state.get('hand') == hand
+            and state.get('direction') == direction):
+        presses = int(state.get('presses') or 0) + 1
+    else:
+        presses = 1
+    mem[key] = {'hand': hand, 'direction': direction, 'presses': presses}
+    if presses <= limit:
+        return move
+    if presses == limit + 1:
+        _record(mem, 'menu_nav_stuck', screen=screen.kind, choice=label,
+                observed_metric={'presses': presses - 1, 'direction': direction,
+                                 'route': key},
+                reason='同じカーソル位置で同方向の入力を続けても選択が移動しないため、'
+                       '前面別の画面を疑って閉じるAを1回だけ送る')
+        return [pad('a')]
+    if presses == limit + 2:
+        _record(mem, 'menu_nav_stuck', screen=screen.kind, choice=label,
+                observed_metric={'presses': presses - 2, 'direction': direction,
+                                 'route': key},
+                reason='Aを1回送ってもカーソル位置が変わらないため入力を保留し、画面変化を待つ')
+    return []
+
+
+def _month_menu_move(screen: Screen, mem, label: str):
+    return guarded_menu_to(screen, mem, label, key='month_nav')
+
+
 # ---------------------------------------------------------------- name entry
 # ひらがな page of the name grid (measured). The hand can hide the glyph it
 # passes over, so the fixed layout supplies target cells OCR cannot see.
@@ -5651,6 +5707,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
     for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
                 'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
+                'month_nav',
                 'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                 'source_override', 'uncertain', 'month', 'soldiers_seen', 'soldiers_seen_key',
                 'soldiers_seen_basis', 'order_context', 'sortie_general', 'sortie_actor_miss',
@@ -6296,7 +6353,9 @@ def month_step(screen: Screen, mem):
     if screen.has('うむッ') and screen.has('いかんッ'):
         # "よろしいですかな?" after も〜おしまい!: confirm only our own exit.
         choice = 'うむッ!' if mem.get('month_exit') or mem.get('month_sub') else 'いかんッ!'
-        move = menu_to(screen, choice)
+        move = _month_menu_move(screen, mem, choice)
+        if isinstance(move, list):
+            return move
         if move == 'here':
             if choice == 'うむッ!':
                 mem['month_exit'] = False
@@ -6304,7 +6363,9 @@ def month_step(screen: Screen, mem):
             return [pad('a')]
         return [move] if move else [pad('b')]
     if shop and not shop['merchant_done'] and shop['items']:
-        move = menu_to(screen, 'しょうにん')
+        move = _month_menu_move(screen, mem, 'しょうにん')
+        if isinstance(move, list):
+            return move
         return [pad('a')] if move == 'here' else [move] if move else []
     if (mem.get('month_sub', {}).get('kind') == 'egg'
             and screen.has('おはらいのひつような') and screen.has('たまごはありませんぞ')):
@@ -6355,7 +6416,9 @@ def month_step(screen: Screen, mem):
         if not _finish_month_sub(screen, mem, shop):
             return []
     if shop and not shop['soldiers_done']:
-        move = menu_to(screen, 'へいしほじゅう')
+        move = _month_menu_move(screen, mem, 'へいしほじゅう')
+        if isinstance(move, list):
+            return move
         return [pad('a')] if move == 'here' else [move] if move else []
     if mem.get('month_sub') and not _finish_month_sub(screen, mem, shop):
         # g462 18:06:04: the menu frame still predates the game's reaction to
@@ -6372,7 +6435,9 @@ def month_step(screen: Screen, mem):
                                  'gold_start': shop['gold_start'],
                                  'gold_end': (screen.header or {}).get('gold')},
                 reason='月一の購入を終了')
-    move = menu_to(screen, 'も〜おしまい!')
+    move = _month_menu_move(screen, mem, 'も〜おしまい!')
+    if isinstance(move, list):
+        return move
     if move == 'here':
         mem['month_exit'] = True
         return [pad('a')]
@@ -6449,7 +6514,9 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
             _record(mem, 'egg_recover_skip', month=shop.get('key'), gold=gold,
                     reason='所持金が卵の回復費に足りないため見送る')
             continue
-        move = menu_to(screen, label)
+        move = _month_menu_move(screen, mem, label)
+        if isinstance(move, list):
+            return move
         if move == 'here':
             shop[sub] = 'opened'
             mem['month_sub'] = {'kind': sub, 'gold_before': gold, 'presses': 0, 'key': shop.get('key'),

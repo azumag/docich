@@ -132,9 +132,15 @@ def _phase(state, phase, **fields):
     state.update(phase=phase, age=0, **fields)
 
 
-def _choose(screen, label):
+def _choose(screen, label, *, mem=None):
     from . import hanjuku_policy as p
-    move = p.menu_to(screen, label)
+    # g604 (2026-10-06): the monthly survey pressed the same direction at a
+    # cursor box that never moved for hours. Every navigation this module owns
+    # goes through here, so the bounded retry lives in one place.
+    move = (p.guarded_menu_to(screen, mem, label, key='house_nav')
+            if mem is not None else p.menu_to(screen, label))
+    if isinstance(move, list):
+        return move
     return [p.pad('a')] if move == 'here' else [move] if move else []
 
 
@@ -415,7 +421,7 @@ def step(screen, mem, frame):
             state['age'] += 1
             if state['age'] >= STEP_LIMIT:
                 return _exit(mem, '月初の情報メニューへ移動できないため募集確認を有限に保留', limit='step')
-            actions = _choose(screen, 'メインメニュー')
+            actions = _choose(screen, 'メインメニュー', mem=mem)
             if actions == [p.pad('a')]:
                 _phase(state, 'open_roster')
             return actions
