@@ -170,10 +170,20 @@ def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV
                        '前面別の画面を疑って閉じるAを1回だけ送る')
         return [pad('a')]
     if presses == limit + 1:
+        # g604 2026-10-06: A alone changed the screen once (shop_list) but the
+        # month menu still did not advance. B is this game's close/cancel key
+        # and cannot spend gold, so it is the bounded second dismissal before
+        # the route holds and waits for the screen itself to change.
         _record(mem, 'menu_nav_stuck', screen=screen.kind, choice=label,
                 observed_metric={'presses': presses - 1, 'direction': direction,
                                  'route': key},
-                reason='Aを1回送っても目標行へ近づかないため入力を保留し、画面変化を待つ')
+                reason='Aを1回送っても目標行へ近づかないため、閉じるBを1回だけ送る')
+        return [pad('b')]
+    if presses == limit + 2:
+        _record(mem, 'menu_nav_stuck', screen=screen.kind, choice=label,
+                observed_metric={'presses': presses - 2, 'direction': direction,
+                                 'route': key},
+                reason='AとBを各1回送っても目標行へ近づかないため入力を保留し、画面変化を待つ')
     return []
 
 

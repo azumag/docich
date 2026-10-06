@@ -2043,10 +2043,11 @@ def test_month_menu_navigation_that_never_moves_closes_once_then_holds():
     assert actions == [policy.pad('a')]
     assert [r['decision'] for r in state['_records']][-1] == 'menu_nav_stuck'
     assert state['_records'][-1]['observed_metric']['route'] == 'house_nav'
-    # The input burn stops instead of restarting with the next bounded step.
-    for _ in range(3):
+    # No further pressing toward the unread row: at most the bounded second
+    # dismissal, then the route holds.
+    for _ in range(4):
         actions, state = decide(frame, state)
-        assert 'a' not in [a['buttons'][0] for a in actions]
+        assert 'down' not in [a['buttons'][0] for a in actions]
 
 
 def test_spending_month_menu_navigation_that_never_moves_is_bounded_too():
@@ -2060,6 +2061,7 @@ def test_spending_month_menu_navigation_that_never_moves_is_bounded_too():
     assert policy.month_step(parse(frame), mem) == [policy.pad('a')]
     assert [r['decision'] for r in mem['_records']][-1] == 'menu_nav_stuck'
     assert mem['_records'][-1]['observed_metric']['route'] == 'month_nav'
+    assert policy.month_step(parse(frame), mem) == [policy.pad('b')]
     assert policy.month_step(parse(frame), mem) == []
 
 
