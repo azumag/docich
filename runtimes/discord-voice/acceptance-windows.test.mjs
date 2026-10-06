@@ -65,23 +65,24 @@ test('Windows acceptance bootstrap gives the non-TTY Cloudflare CLI an explicit 
 
   const mockCli = String.raw`
 const args = process.argv.slice(1);
-let stdinRead = false;
-if (!process.stdin.isTTY && !args.includes('--type')) {
-  process.stderr.write('--type is required before the non-TTY type prompt\n');
-  process.exit(2);
+async function main() {
+  if (!process.stdin.isTTY && !args.includes('--type')) {
+    process.stderr.write('--type is required before the non-TTY type prompt\n');
+    process.exit(2);
+  }
+  if (args[args.indexOf('--type') + 1] !== 'secret_text') {
+    process.stderr.write('unexpected secret type\n');
+    process.exit(3);
+  }
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  if (Buffer.concat(chunks).toString() !== 'dummy-secret-for-non-tty-contract-test') {
+    process.stderr.write('stdin payload mismatch\n');
+    process.exit(4);
+  }
+  process.stdout.write('secret text consumed\n');
 }
-if (args[args.indexOf('--type') + 1] !== 'secret_text') {
-  process.stderr.write('unexpected secret type\n');
-  process.exit(3);
-}
-const chunks = [];
-for await (const chunk of process.stdin) chunks.push(chunk);
-stdinRead = true;
-if (Buffer.concat(chunks).toString() !== 'dummy-secret-for-non-tty-contract-test') {
-  process.stderr.write('stdin payload mismatch\n');
-  process.exit(4);
-}
-process.stdout.write(stdinRead ? 'secret text consumed\n' : 'stdin not read\n');
+main().catch(() => process.exit(5));
 `;
   const result = spawnSync(
     process.execPath,
