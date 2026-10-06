@@ -58,7 +58,7 @@ h1{font-size:38px;line-height:1.05;margin:0 0 7px}.sub{color:#aeb7c2;font-size:1
 const labels={stopped:"待機中",queued:"対戦相手を待っています",playing:"対局中",draining:"終局後に停止します",finished:"対局終了",queue_timeout:"対戦相手が見つかりませんでした",paused:"結果確認待ち"};
 const colorLabel={sente:"先手",gote:"後手"};
 const outcomeLabel={win:"AIの勝ち",loss:"AIの負け",draw:"引き分け",unknown:"結果未確定"};
-const reasonLabel={normal:"通常終了",checkmate:"詰み",stalemate:"持棋子",resign:"投了",timeout:"時間切れ",foul_limit:"反則上限",repetition:"連続王手",draw:"引き分け",aborted:"中止",disconnect:"通信断",transport_error:"通信エラー",protocol_error:"通信エラー",storage_error:"保存エラー",interrupted:"中断",no_move:"指し手なし",unknown:"理由未確定"};
+const reasonLabel={normal:"通常終了",checkmate:"詰み",stalemate:"stalemate",resign:"投了",timeout:"時間切れ",foul_limit:"反則上限",repetition:"千日手",draw:"引き分け",aborted:"中止",disconnect:"通信断",transport_error:"通信エラー",protocol_error:"通信エラー",storage_error:"保存エラー",interrupted:"中断",no_move:"指し手なし",unknown:"理由未確定"};
 function clock(ms){if(typeof ms!=="number")return "-";const sec=Math.max(0,Math.floor(ms/1000)),m=Math.floor(sec/60),s=sec%60;return m+":"+String(s).padStart(2,"0");}
 function apply(d){
  const state=document.getElementById("state");state.textContent=d.ok?(labels[d.state]||"状態確認中"):"制御接続を確認できません";state.className="state "+(d.ok?"":"bad");
