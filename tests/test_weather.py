@@ -193,18 +193,61 @@ def test_auto_target_switches_at_17_jst(tmp_path):
     assert result["target_date"] == "2026-09-30"
 
 
-def test_narration_is_literal_detailed_and_has_no_invented_minimum():
-    view=w.project(bundle(),now=NOW);lines=w.narration(view)
-    assert len(lines)==13
+def test_narration_is_cohesive_and_summarizes_precipitation_trend():
+    view = w.project(bundle(), now=NOW)
+    lines = w.narration(view)
+    assert len(lines) == 13
     assert "9月29日" in lines[0]
-    assert "時間帯ごとの降水確率" in lines[0]
-    assert all("最低気温" not in line for line in lines)
-    assert all("晴れ 夜 くもり" in line for line in lines[1:-1])
-    assert all("6時から12時が0パーセント" in line for line in lines[1:-1])
-    assert all("12時から18時が10パーセント" in line for line in lines[1:-1])
-    assert all("18時から24時が20パーセント" in line for line in lines[1:-1])
-    assert all("0時から6時" not in line for line in lines[1:-1])
+    assert "札幌から那覇まで" in lines[0]
+    assert all("最低気温" not in line for line in lines[1:-1])
+    assert all("晴れ、夜はくもりの予報です" in line for line in lines[1:-1])
+    assert all(
+        "降水確率は、午前は0パーセントで、夜には20パーセントまで上がります。"
+        in line for line in lines[1:-1]
+    )
+    assert all("時から" not in line for line in lines[1:-1])
+    assert all("気象庁" not in line for line in lines[1:-1])
+    assert sum("気象庁" in line for line in lines) == 1
     assert "気象庁" in lines[-1] and "編集" in lines[-1]
+    assert max(map(len, lines)) < 1000
+
+
+def test_narration_collapses_all_zero_precipitation():
+    view = w.project(bundle(), now=NOW)
+    for city in view["cities"]:
+        for period in city["pops"]:
+            period["percent"] = 0
+    lines = w.narration(view)
+    assert all("降水確率は全時間帯で0パーセントです。" in line for line in lines[1:-1])
+    assert all(line.count("0パーセント") == 1 for line in lines[1:-1])
+
+
+def test_narration_collapses_irregular_precipitation_to_range():
+    view = w.project(bundle(), now=NOW)
+    view["cities"][0]["pops"] = [
+        {"start": 0, "end": 6, "percent": 0},
+        {"start": 6, "end": 12, "percent": 30},
+        {"start": 12, "end": 18, "percent": 10},
+        {"start": 18, "end": 24, "percent": 20},
+    ]
+    line = w.narration(view)[1]
+    assert "降水確率は0から30パーセントの範囲で変動します。" in line
+    assert line.count("パーセント") == 1
+
+
+def test_narration_describes_twenty_to_zero_as_one_transition():
+    view = w.project(bundle(), now=NOW)
+    view["cities"][0]["pops"] = [
+        {"start": 0, "end": 6, "percent": None},
+        {"start": 6, "end": 12, "percent": 20},
+        {"start": 12, "end": 18, "percent": 0},
+        {"start": 18, "end": 24, "percent": 0},
+    ]
+    line = w.narration(view)[1]
+    assert "降水確率は、午前は20パーセントですが、午後以降は0パーセントです。" in line
+    assert line.count("パーセント") == 2
+    assert "12時から18時" not in line
+    assert "18時から24時" not in line
 
 
 def test_projected_read_view_narration_builds_all_thirteen_offline_audio_requests(tmp_path):
