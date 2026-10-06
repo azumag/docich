@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Non-delivering RADIO preparation bridge. JSON request on stdin; JSON on stdout.
+# As with docich-comment-classify, do not import from Soren's cwd or PYTHONPATH.
+set -euo pipefail
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
+export PYTHONPATH="$ROOT/src"
+exec python3 -P -m docich.radio.bridge "$@"
