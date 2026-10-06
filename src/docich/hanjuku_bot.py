@@ -315,6 +315,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         # a remembered monthly recruit/exit that could accept this yes/no.
         # Only both explicit choices plus event wording can take precedence;
         # regular paid prompts and recruitment introductions keep their owner.
+        policy.interrupt_month_payment(mem)
         actions = policy.yes_no_step(screen, mem)
     if actions is None:
         actions = (policy.camp_recall_step(screen, mem, frame) if recall_dialog

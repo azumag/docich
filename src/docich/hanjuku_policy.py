@@ -7023,6 +7023,24 @@ def _chikujou_step(screen, mem, sub):
     return _chikujou_wait(screen, mem, sub, 'build_screen_unclassified')
 
 
+def _recruit_fee_observed(sub):
+    before, receipt = sub.get('gold_before'), sub.get('recruit_paid_gold')
+    return (sub.get('kind') == 'recruit' and type(before) is int and type(receipt) is int
+            and before - receipt == RECRUIT_COST)
+
+
+def interrupt_month_payment(mem):
+    """An unrelated event cannot supply the old monthly action's fee receipt."""
+    sub = mem.get('month_sub')
+    if (not isinstance(sub, dict) or sub.get('kind') not in ('egg', 'recruit', 'chikujou')
+            or sub.get('payment_interrupted')):
+        return
+    sub['payment_interrupted'] = True
+    _record(mem, 'month_payment_interrupted', month=sub.get('key'),
+            observed_metric={'kind': sub['kind'], 'recruit_fee_observed': _recruit_fee_observed(sub)},
+            reason='別イベントを確認したため旧月初取引の残金差を支払証拠にせず、既確認の募集費だけ保持する')
+
+
 def _finish_month_sub(screen, mem, shop) -> bool:
     """Back on the month menu: judge the sub-action by the gold it cost.
 
@@ -7049,7 +7067,8 @@ def _finish_month_sub(screen, mem, shop) -> bool:
     if sub['kind'] == 'chikujou':
         before = sub.get('confirm_gold', before)
     cost = sub.get('quoted_cost') if sub['kind'] in ('egg', 'chikujou') else RECRUIT_COST
-    paid = (type(cost) is int and cost > 0 and type(gold) is int and type(before) is int
+    paid = (not sub.get('payment_interrupted')
+            and type(cost) is int and cost > 0 and type(gold) is int and type(before) is int
             and before - gold == cost
             and (sub['kind'] != 'egg' or (sub.get('full_selected') is True
                  and sub.get('left_menu') is True and not sub.get('aborted')
@@ -7057,22 +7076,21 @@ def _finish_month_sub(screen, mem, shop) -> bool:
                  and sub.get('key') == (shop or {}).get('key') == _month_key(screen.header)
                  and month_menu_ready(screen) and not _month_dialog_body(screen))))
     if sub['kind'] == 'recruit':
-        receipt = sub.get('recruit_paid_gold')
         # g498: the 235 ->185 fee was observed in the candidate dialogue;
         # the final menu was 183, so later deductions cannot erase that fee.
-        paid = paid or (type(receipt) is int and type(before) is int
-                        and before - receipt == RECRUIT_COST)
+        paid = paid or _recruit_fee_observed(sub)
     if sub['kind'] == 'chikujou':
-        paid = paid or (type(cost) is int and cost == 0
+        paid = paid or (not sub.get('payment_interrupted') and type(cost) is int and cost == 0
                         and sub.get('confirm_sent') and sub.get('upgraded')
                         and type(gold) is int and gold == before)
-        if (sub.get('confirm_sent') or sub.get('upgraded')) and not paid:
+        if (sub.get('confirm_sent') or sub.get('upgraded')) and not paid and not sub.get('payment_interrupted'):
             # The header can lag behind a result. Keep ownership of the flow
             # while waiting for the receipt; no further purchase may start.
             sub['receipt_wait'] = int(sub.get('receipt_wait') or 0) + 1
             if sub['receipt_wait'] < MONTH_SUB_MENU_WAIT:
                 return False
-    if sub.get('left_menu') is False and not paid and not sub.get('declined'):
+    if (sub.get('left_menu') is False and not paid and not sub.get('declined')
+            and not sub.get('payment_interrupted')):
         wait = int(sub.get('menu_wait', 0)) + 1
         sub['menu_wait'] = wait
         if wait < MONTH_SUB_MENU_WAIT:
@@ -7170,9 +7188,12 @@ def _finish_month_sub(screen, mem, shop) -> bool:
                              'full_selected': sub.get('full_selected'), 'quoted_cost': cost,
                              'fee_receipt_gold': sub.get('recruit_paid_gold'),
                              'joined_announced': sub.get('joined_names', [])},
-            deviation_reason=None if paid else 'cost_not_observed',
-            reason='月一メニュー復帰時の所持金で実行を確認' if paid
-            else '月一メニューに戻ったが所持金の減少を確認できない')
+            deviation_reason=(None if paid else 'payment_interrupted'
+                              if sub.get('payment_interrupted') else 'cost_not_observed'),
+            reason=('月一メニュー復帰時の所持金で実行を確認' if paid else
+                    '別イベント割込み後の残金差は旧取引の支払証拠にしない'
+                    if sub.get('payment_interrupted') else
+                    '月一メニューに戻ったが所持金の減少を確認できない'))
     return True
 
 
@@ -7203,6 +7224,8 @@ def chikujou_leftover(screen, mem) -> bool:
 
 def _paid_recruit_candidate(screen, sub):
     """Measured candidate biography + paid recruitment receipt, not a blank fade."""
+    if sub.get('payment_interrupted') and not _recruit_fee_observed(sub):
+        return None
     gold = (screen.header or {}).get('gold')
     before = sub.get('gold_before')
     if sub.get('kind') != 'recruit' or type(gold) is not int or type(before) is not int or before - gold != RECRUIT_COST:
@@ -7231,6 +7254,12 @@ def month_sub_step(screen: Screen, mem):
         _record(mem, 'month_sub_lost', screen=kind, observed_metric=sub,
                 reason='月一の実行中に月一メニューへ戻らず別画面になったため追跡をやめる')
         return None
+    if sub.get('payment_interrupted') and not _recruit_fee_observed(sub):
+        if not sub.get('aborted'):
+            _record(mem, 'month_sub_abort', screen=kind,
+                    reason='別イベントで旧取引の費用帰属が未確認になったため追加支払いせず戻る')
+        sub['aborted'] = True
+        return [pad('b')]
     candidate = _paid_recruit_candidate(screen, sub)
     if candidate:
         sub['recruit_paid_gold'] = screen.header['gold']
@@ -7243,7 +7272,8 @@ def month_sub_step(screen: Screen, mem):
                     mem.get('month') is None or sub.get('key') == mem.get('month'))
         paid = bool(candidate) or (type(before) is int and scope_ok
                 and type(receipt) is int and before - receipt == RECRUIT_COST)
-        paid = paid or (type(before) is int and key is not None and sub.get('key') == key
+        paid = paid or (not sub.get('payment_interrupted')
+                        and type(before) is int and key is not None and sub.get('key') == key
                         and type(gold) is int and before - gold == RECRUIT_COST)
         if not paid and (mem.get('shop') or {}).get('egg') not in ('done', 'not_needed'):
             sub['aborted'] = True

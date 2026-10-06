@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_policy as policy
 from docich.hanjuku_bot import NO_INPUT_HOLD_MAX, decide
 from docich.hanjuku_screen import parse
-from test_hanjuku_chart_bot import Canvas, GREEN, _goninja_offer
+from test_hanjuku_chart_bot import Canvas, GREEN, MONTH_GRID, _goninja_offer, paid_recruit_screen
 from test_hanjuku_month_foreground import monthly_canvas, monthly_memory
 
 
@@ -177,3 +177,99 @@ def test_goninja_words_without_both_choices_keep_recruit_owner():
 def test_trade_remains_declined_even_above_goninja_floor():
     actions, state = decide(offer(1001, prompt='しょうぐんどうしのトレードだ!'), owned_state('recruit'))
     assert actions == [policy.pad('down')]
+
+
+def monthly_return(gold):
+    canvas = Canvas()
+    canvas.text(48, 15, f'2ねん 11のつき {gold}G')
+    for label, (x, y) in MONTH_GRID.items():
+        canvas.text(x, y, label)
+    x, y = MONTH_GRID['しょうにん']
+    canvas.hand(x - 22, y - 6)
+    return canvas.frame()
+
+
+def pending_payment(kind):
+    state = owned_state(None)
+    mem = state['policy']
+    mem['month_sub'] = {'kind': kind, 'gold_before': 1000, 'presses': 0,
+                        'key': '2-11', 'left_menu': True}
+    mem['shop'].update({kind: 'opened', 'gold_start': 1000})
+    if kind == 'egg':
+        mem['egg_uses'] = {'どうし': 0}
+        mem['shop']['recruit'] = 'check'
+        mem['month_sub'].update(quoted_cost=50, full_selected=True, stage='recovering')
+    elif kind == 'chikujou':
+        mem['month_sub'].update(quoted_cost=50, confirm_gold=1000, confirm_sent=True,
+                                upgraded=True, chosen='アルマムーン')
+    return state
+
+
+@pytest.mark.parametrize('kind', ['egg', 'recruit', 'chikujou'])
+@pytest.mark.parametrize('prompt', ['うちとおすか?', 'しょうぐんどうしのトレードだ!'])
+def test_foreign_event_deduction_never_becomes_a_monthly_payment_receipt(kind, prompt):
+    _, state = decide(offer(1000, prompt=prompt), pending_payment(kind))
+    mem = state['policy']
+    for _ in range(policy.MONTH_SUB_MENU_WAIT + 1):
+        if mem.get('month_sub') is None:
+            break
+        policy._finish_month_sub(parse(monthly_return(950)), mem, mem['shop'])
+    assert mem.get('month_sub') is None
+    assert mem['shop'][kind] == 'unverified'
+    if kind == 'egg':
+        assert mem['egg_uses'] == {'どうし': 0}
+        assert mem['shop']['recruit'] == 'check'
+    if kind == 'chikujou':
+        assert not mem['shop'].get('chikujou_upgrades')
+
+
+@pytest.mark.parametrize('kind', ['egg', 'recruit'])
+def test_two_frame_goninja_payment_does_not_unlock_unfinished_recovery_or_recruitment(kind):
+    actions, state = decide(offer(1000), pending_payment(kind))
+    assert actions == [policy.pad('a')]
+    _, state = decide(monthly_return(950), state)
+    mem = state['policy']
+    assert mem['shop'][kind] != 'done'
+    result = next(r for r in state['_records'] if r['decision'] == ('egg_recover' if kind == 'egg' else 'recruit'))
+    assert result['deviation_reason'] == 'payment_interrupted'
+    if kind == 'egg':
+        assert mem['egg_uses'] == {'どうし': 0}
+        assert (mem.get('month_sub') or {}).get('kind') != 'recruit'
+
+
+@pytest.mark.parametrize('kind', ['egg', 'recruit', 'chikujou'])
+def test_interrupted_unpaid_owner_closes_without_resuming_spending(kind):
+    _, state = decide(offer(1000), pending_payment(kind))
+    mem = state['policy']
+    assert policy.month_sub_step(parse(monthly_return(950)), mem) == [policy.pad('b')]
+    assert mem['month_sub']['aborted'] is True
+    assert not mem['month_sub'].get('recruit_paid_gold')
+
+
+def test_a_candidate_balance_after_an_event_cannot_create_a_new_recruit_fee_receipt():
+    _, state = decide(offer(1000), pending_payment('recruit'))
+    mem = state['policy']
+    screen = replace(paid_recruit_screen(gold=950), header={'year': 2, 'month': 11, 'gold': 950})
+    assert policy.month_sub_step(screen, mem) == [policy.pad('b')]
+    assert not mem['month_sub'].get('recruit_paid_gold')
+    assert not mem['month_sub'].get('paid_candidates')
+
+
+@pytest.mark.parametrize('kind', ['egg', 'recruit'])
+def test_normal_amount_receipts_without_a_foreign_event_remain_valid(kind):
+    mem = pending_payment(kind)['policy']
+    assert policy._finish_month_sub(parse(monthly_return(950)), mem, mem['shop'])
+    assert mem['shop'][kind] == 'done'
+
+
+def test_a_previously_observed_recruit_fee_survives_a_later_goninja_deduction():
+    state = pending_payment('recruit')
+    sub = state['policy']['month_sub']
+    sub.update(gold_before=1050, recruit_paid_gold=1000, paid_candidates=True,
+               candidate_names=['ゼウス'])
+    _, state = decide(offer(1000), state)
+    _, state = decide(monthly_return(950), state)
+    assert state['policy']['shop']['recruit'] == 'done'
+    result = next(r for r in state['_records'] if r['decision'] == 'recruit')
+    assert result['observed_metric']['fee_receipt_gold'] == 1000
+    assert result['deviation_reason'] is None
