@@ -32,6 +32,16 @@ direct_account="${DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID:-}"
 direct_token="${CLOUDFLARE_API_TOKEN:-}"
 direct_token_file="${CLOUDFLARE_API_TOKEN_FILE:-}"
 
+receipt_dir="$HOME/.config/docich"
+receipt="$receipt_dir/paper-ai-canary.json"
+umask 077
+mkdir -p "$receipt_dir"
+chmod 0700 "$receipt_dir"
+if [[ -e "$receipt" || -L "$receipt" ]]; then
+  [[ -f "$receipt" && ! -L "$receipt" ]] || exit 70
+  rm -f "$receipt"
+fi
+
 result="$(
   env -i \
     PATH="/usr/local/bin:/usr/bin:/bin" \
@@ -48,11 +58,6 @@ result="$(
     paper-ai-canary --execute
 )"
 
-receipt_dir="$HOME/.config/docich"
-receipt="$receipt_dir/paper-ai-canary.json"
-umask 077
-mkdir -p "$receipt_dir"
-chmod 0700 "$receipt_dir"
 tmp="$(mktemp "$receipt_dir/.paper-ai-canary.XXXXXX")"
 cleanup() { rm -f "$tmp"; }
 trap cleanup EXIT
