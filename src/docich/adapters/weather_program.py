@@ -43,7 +43,7 @@ def _weather_bin() -> str:
 
 
 class WeatherProgramViewAdapter(ProgramViewAdapter):
-    """A generation-bound local server and contained 960x540 browser view."""
+    """A generation-bound local server and broadcast-frame weather view."""
 
     def __init__(self, g, spec: RuntimeSpec):
         super().__init__(g, weather_view_game_config(), spec)
