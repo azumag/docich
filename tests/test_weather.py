@@ -153,6 +153,34 @@ def test_cache_reuses_data_but_checks_full_content(tmp_path):
     assert len(calls)==12
 
 
+def test_near_expiry_cache_is_refreshed_when_broadcast_runway_is_required(tmp_path):
+    calls = []
+
+    def get(office, timeout):
+        calls.append(office)
+        return fixture(next(city for city in w.CITIES if city.office == office))
+
+    w.build_bundle(tmp_path, now=NOW, getter=get)
+    assert len(calls) == 11
+
+    # Only one office is still technically inside the 15-minute cache TTL,
+    # but it cannot cover a four-minute broadcast. It must be refreshed while
+    # the other ten fresh offices remain cached.
+    first = tmp_path / f"{w.CITIES[0].office}.json"
+    cached = json.loads(first.read_text())
+    cached["fetched_at"] = NOW - (w.CACHE_TTL - 60)
+    w.write_json(first, cached)
+
+    bundle = w.build_bundle(
+        tmp_path, now=NOW + 1, getter=get, min_remaining_s=4 * 60 + 30,
+    )
+
+    assert len(calls) == 12
+    assert calls[-1] == w.CITIES[0].office
+    view = w.project(bundle, now=NOW + 1)
+    assert view["expires_at"] - (NOW + 1) >= 4 * 60 + 30
+
+
 def test_stale_cache_failure_never_uses_old_forecast(tmp_path):
     w.build_bundle(tmp_path,now=NOW,getter=lambda office,t:fixture(next(c for c in w.CITIES if c.office==office)))
     def fail(*args):raise w.WeatherError("fetch-failed")
