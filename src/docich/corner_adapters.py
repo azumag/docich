@@ -294,6 +294,7 @@ class MerikenCornerAdapter(GameCornerAdapter):
         if profile not in {None, "rejected_png_v1"}:
             raise CornerExecutionError("unsupported Soren91 capture profile")
         overrides = ({
+            "SOREN91_CAPTURE_PROFILE": "rejected_png_v1",
             "SOREN91_CAPTURE_FORMAT": "png",
             "SOREN91_REJECT_FRAME_DIAGNOSTICS": "1",
         } if profile == "rejected_png_v1" else {})
