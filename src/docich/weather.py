@@ -232,8 +232,14 @@ def normalize(payload: object, city: City, target: date, now: float) -> dict:
     }
 
 
-def build_bundle(cache_dir: Path, *, now=None, day="auto", getter=download, clock=time.time) -> dict:
-    """Fetch at most once/office/15min; a failed refresh NEVER replays stale data."""
+def build_bundle(cache_dir: Path, *, now=None, day="auto", getter=download, clock=time.time,
+                 min_remaining_s=0) -> dict:
+    """Fetch a national bundle with enough remaining cache life for its caller."""
+    if (type(min_remaining_s) not in (int, float)
+            or not math.isfinite(min_remaining_s)
+            or not 0 <= min_remaining_s < CACHE_TTL):
+        raise WeatherError("invalid-minimum-freshness")
+    min_remaining_s = float(min_remaining_s)
     started = epoch(clock() if now is None else now)
     local = datetime.fromtimestamp(started, JST)
     if day not in {"auto", "today", "tomorrow"}:
@@ -247,10 +253,16 @@ def build_bundle(cache_dir: Path, *, now=None, day="auto", getter=download, cloc
         try:
             with path.open("rb") as handle:
                 candidate = decode(handle.read(MAX_BYTES + 4097), limit=MAX_BYTES + 4096)
+            fetched_at = epoch(candidate.get("fetched_at")) if isinstance(candidate, dict) else None
             if (isinstance(candidate, dict) and candidate.get("office") == city.office
                     and candidate.get("schema_version") == 1
-                    and 0 <= started - epoch(candidate.get("fetched_at")) < CACHE_TTL):
+                    and fetched_at is not None
+                    and 0 <= started - fetched_at < CACHE_TTL
+                    and fetched_at + CACHE_TTL - started >= min_remaining_s):
                 # Do not trust cache timestamps alone: validate the actual forecast.
+                # A selected corner may require several minutes of remaining life;
+                # near-expiry cache entries are refreshed instead of causing a
+                # broadcast that starts successfully and then disappears mid-read.
                 normalize(candidate["payload"], city, target, started)
                 cached = candidate
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -265,8 +277,12 @@ def build_bundle(cache_dir: Path, *, now=None, day="auto", getter=download, cloc
             write_json(path, cached)
         records[city.office] = cached
     bundle = {"schema_version": 1, "generated_at": started, "target_date": target.isoformat(), "records": records}
-    # Re-check after network latency: source publication/cache must still be valid.
-    project(bundle, now=started if now is not None else clock())
+    # Re-check after network latency: source publication/cache must still be valid
+    # and must still have the caller's requested runway.
+    checked_at = started if now is not None else epoch(clock())
+    view = project(bundle, now=checked_at)
+    if view["expires_at"] - checked_at < min_remaining_s:
+        raise WeatherError("insufficient-forecast-freshness")
     return bundle
 
 

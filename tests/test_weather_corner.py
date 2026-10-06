@@ -953,8 +953,9 @@ def test_selected_weather_fetches_once_before_switch_and_replay_never_fetches(tm
     g, now, factory, store, switch = _setup(tmp_path, boundary_generation=None)
     original = store.canonical.load()[0]["active"]
     calls = []
-    def refresh(path):
+    def refresh(path, *, min_remaining_s=0):
         assert store.canonical.load()[0]["active"] == original
+        assert min_remaining_s == 90
         calls.append(path)
         if failure:
             raise WeatherError("fetch-failed")
@@ -977,6 +978,29 @@ def test_selected_weather_fetches_once_before_switch_and_replay_never_fetches(tm
     else:
         assert owner["end_reason"] == "duration"
         assert store.canonical.load()[0]["active"]["game"] == "robots"
+
+
+def test_weather_refuses_to_switch_when_snapshot_cannot_cover_full_slot(tmp_path, monkeypatch):
+    import docich.weather_corner as weather_corner
+
+    g, now, _factory, store, switch = _setup(
+        tmp_path, duration=4, boundary_generation=None,
+    )
+    original = store.canonical.load()[0]["active"]
+    manager = WeatherCornerManager(
+        g, duration_minutes=4, coordinator=switch, clock=lambda: now[0],
+    )
+    monkeypatch.setattr(
+        weather_corner, "read_view",
+        lambda _path, clock=None: {"expires_at": now[0] + 4 * 60 + 29},
+    )
+
+    request_id = str(uuid.uuid4())
+    state = manager._new_state({"request_id": request_id, "selected_at": now[0]})
+
+    assert state["status"] == "interrupted"
+    assert state["end_reason"] == "forecast-expires-before-start"
+    assert store.canonical.load()[0]["active"] == original
 
 
 @pytest.mark.parametrize("adapter,game", [("weather", "weather-view"), ("game", "robots")])
