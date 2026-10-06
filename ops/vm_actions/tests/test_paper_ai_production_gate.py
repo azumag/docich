@@ -6,6 +6,8 @@ from pathlib import Path
 import stat
 import subprocess
 import time
+import tempfile
+import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 ENABLE = ROOT / "ops/vm_actions/enable_paper_ai.sh"
@@ -70,106 +72,115 @@ def _run_fixed(script: Path, *, root: Path, soren: Path | None, home: Path, sha:
     )
 
 
-def test_enable_requires_fresh_exact_sha_receipt_and_writes_only_fixed_capabilities(tmp_path):
-    root, sha = _repo(tmp_path)
-    home, soren = tmp_path / "home", tmp_path / "soren"
-    home.mkdir()
-    _production_env(soren)
-    _receipt(home, sha)
+class PaperAiProductionGateTests(unittest.TestCase):
+    def temp(self):
+        return Path(tempfile.mkdtemp(prefix="paper-ai-gate-"))
 
-    run = _run_fixed(ENABLE, root=root, soren=soren, home=home, sha=sha)
-    assert run.returncode == 0, run.stderr
-    target = home / ".config" / "docich" / "paper-ai.env"
-    assert stat.S_IMODE(target.stat().st_mode) == 0o600
-    values = dict(
-        line.split("=", 1)
-        for line in target.read_text(encoding="utf-8").splitlines()
-        if line
-    )
-    assert values == {
-        "DOCICH_PAPER_RESEARCH_BACKEND": "websearch",
-        "DOCICH_REPLY_WEB_SEARCH_BACKEND": "cloudflare",
-        "DOCICH_REPLY_WEB_SEARCH_ENABLED": "1",
-        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_PROVIDER": "ceramic",
-        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_GATEWAY_ID": "default",
-        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID": "a" * 32,
-        "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN": "SEARCH_TOKEN_123",
-        "DOCICH_PAPER_SCRIPT_DIRECT_ENABLED": "1",
-        "DOCICH_PAPER_IMPROVE_DIRECT_ENABLED": "1",
-        "DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID": "b" * 32,
-        "CLOUDFLARE_API_TOKEN": "DIRECT_TOKEN_456",
-    }
-    assert "OPENCODE" not in target.read_text(encoding="utf-8")
-    assert "DISCORD" not in target.read_text(encoding="utf-8")
-
-
-def test_enable_rejects_stale_or_wrong_sha_receipt_without_capability_file(tmp_path):
-    for age, wrong in ((86401, False), (0, True)):
-        case = tmp_path / f"case-{age}-{wrong}"
-        case.mkdir()
-        root, sha = _repo(case)
-        home, soren = case / "home", case / "soren"
+    def test_enable_requires_fresh_exact_sha_receipt_and_writes_only_fixed_capabilities(self):
+        tmp_path = self.temp()
+        root, sha = _repo(tmp_path)
+        home, soren = tmp_path / "home", tmp_path / "soren"
         home.mkdir()
         _production_env(soren)
-        _receipt(home, "f" * 40 if wrong else sha, age=age)
+        _receipt(home, sha)
+
         run = _run_fixed(ENABLE, root=root, soren=soren, home=home, sha=sha)
-        assert run.returncode != 0
-        assert not (home / ".config" / "docich" / "paper-ai.env").exists()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        target = home / ".config" / "docich" / "paper-ai.env"
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+        values = dict(
+            line.split("=", 1)
+            for line in target.read_text(encoding="utf-8").splitlines()
+            if line
+        )
+        self.assertEqual(values, {
+            "DOCICH_PAPER_RESEARCH_BACKEND": "websearch",
+            "DOCICH_REPLY_WEB_SEARCH_BACKEND": "cloudflare",
+            "DOCICH_REPLY_WEB_SEARCH_ENABLED": "1",
+            "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_PROVIDER": "ceramic",
+            "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_GATEWAY_ID": "default",
+            "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+            "DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN": "SEARCH_TOKEN_123",
+            "DOCICH_PAPER_SCRIPT_DIRECT_ENABLED": "1",
+            "DOCICH_PAPER_IMPROVE_DIRECT_ENABLED": "1",
+            "DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID": "b" * 32,
+            "CLOUDFLARE_API_TOKEN": "DIRECT_TOKEN_456",
+        })
+        body = target.read_text(encoding="utf-8")
+        self.assertNotIn("OPENCODE", body)
+        self.assertNotIn("DISCORD", body)
+
+    def test_enable_rejects_stale_or_wrong_sha_receipt_without_capability_file(self):
+        for age, wrong in ((86401, False), (0, True)):
+            with self.subTest(age=age, wrong=wrong):
+                case = self.temp()
+                root, sha = _repo(case)
+                home, soren = case / "home", case / "soren"
+                home.mkdir()
+                _production_env(soren)
+                _receipt(home, "f" * 40 if wrong else sha, age=age)
+                run = _run_fixed(ENABLE, root=root, soren=soren, home=home, sha=sha)
+                self.assertNotEqual(run.returncode, 0)
+                self.assertFalse((home / ".config" / "docich" / "paper-ai.env").exists())
+
+    def test_disable_removes_only_regular_capability_file_and_is_idempotent(self):
+        tmp_path = self.temp()
+        root, sha = _repo(tmp_path)
+        home = tmp_path / "home"
+        target = home / ".config" / "docich" / "paper-ai.env"
+        target.parent.mkdir(parents=True)
+        target.write_text("DOCICH_PAPER_SCRIPT_DIRECT_ENABLED=1\n", encoding="utf-8")
+        target.chmod(0o600)
+        unrelated = target.parent / "keep"
+        unrelated.write_text("yes", encoding="utf-8")
+
+        run = _run_fixed(DISABLE, root=root, soren=None, home=home, sha=sha)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertFalse(target.exists())
+        self.assertEqual(unrelated.read_text(encoding="utf-8"), "yes")
+        again = _run_fixed(DISABLE, root=root, soren=None, home=home, sha=sha)
+        self.assertEqual(again.returncode, 0)
+
+    def test_improvement_wrapper_sources_fixed_file_without_putting_secret_in_argv(self):
+        tmp_path = self.temp()
+        home = tmp_path / "home"
+        env_file = home / ".config" / "docich" / "paper-ai.env"
+        env_file.parent.mkdir(parents=True)
+        env_file.write_text("CLOUDFLARE_API_TOKEN=WRAPPED_SECRET\n", encoding="utf-8")
+        env = {"PATH": os.environ["PATH"], "HOME": str(home)}
+        run = subprocess.run(
+            [
+                "bash", str(WRAPPER), "--", "python3", "-c",
+                "import os;print(os.environ.get('CLOUDFLARE_API_TOKEN',''))",
+            ],
+            env=env, text=True, capture_output=True,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "WRAPPED_SECRET")
+        self.assertNotIn("WRAPPED_SECRET", " ".join(run.args))
+
+    def test_rotation_and_legacy_units_load_only_optional_paper_ai_capability_file(self):
+        for name in (
+            "docich-corner-rotation.service",
+            "docich-retro-corner.service",
+            "docich-paper-corner.service",
+        ):
+            with self.subTest(name=name):
+                text = (ROOT / "scripts" / "systemd" / name).read_text(encoding="utf-8")
+                self.assertIn("EnvironmentFile=-%h/.config/docich/paper-ai.env", text)
+                self.assertNotIn("CLOUDFLARE_API_TOKEN=", text)
+
+    def test_canary_runner_invalidates_old_receipt_and_writes_safe_exact_sha_receipt(self):
+        text = CANARY.read_text(encoding="utf-8")
+        self.assertIn('receipt="$receipt_dir/paper-ai-canary.json"', text)
+        self.assertIn('unlink "$receipt"', text)
+        self.assertIn('"sha": sha', text)
+        self.assertIn('"recorded_at": int(time.time())', text)
+        self.assertIn('"output_sha256": data["output_sha256"]', text)
+        self.assertIn('"publishing": False', text)
+        receipt_block = text.split('receipt = {', 1)[1].split('}', 1)[0]
+        self.assertNotIn("summary", receipt_block)
 
 
-def test_disable_removes_only_regular_capability_file_and_is_idempotent(tmp_path):
-    root, sha = _repo(tmp_path)
-    home = tmp_path / "home"
-    target = home / ".config" / "docich" / "paper-ai.env"
-    target.parent.mkdir(parents=True)
-    target.write_text("DOCICH_PAPER_SCRIPT_DIRECT_ENABLED=1\n", encoding="utf-8")
-    target.chmod(0o600)
-    unrelated = target.parent / "keep"
-    unrelated.write_text("yes", encoding="utf-8")
-
-    run = _run_fixed(DISABLE, root=root, soren=None, home=home, sha=sha)
-    assert run.returncode == 0, run.stderr
-    assert not target.exists()
-    assert unrelated.read_text(encoding="utf-8") == "yes"
-    again = _run_fixed(DISABLE, root=root, soren=None, home=home, sha=sha)
-    assert again.returncode == 0
-
-
-def test_improvement_wrapper_sources_fixed_file_without_putting_secret_in_argv(tmp_path):
-    home = tmp_path / "home"
-    env_file = home / ".config" / "docich" / "paper-ai.env"
-    env_file.parent.mkdir(parents=True)
-    env_file.write_text("CLOUDFLARE_API_TOKEN=WRAPPED_SECRET\n", encoding="utf-8")
-    env = {"PATH": os.environ["PATH"], "HOME": str(home)}
-    run = subprocess.run(
-        [
-            "bash", str(WRAPPER), "--", "python3", "-c",
-            "import os;print(os.environ.get('CLOUDFLARE_API_TOKEN',''))",
-        ],
-        env=env, text=True, capture_output=True,
-    )
-    assert run.returncode == 0, run.stderr
-    assert run.stdout.strip() == "WRAPPED_SECRET"
-    assert "WRAPPED_SECRET" not in " ".join(run.args)
-
-
-def test_rotation_and_legacy_units_load_only_optional_paper_ai_capability_file():
-    for name in (
-        "docich-corner-rotation.service",
-        "docich-retro-corner.service",
-        "docich-paper-corner.service",
-    ):
-        text = (ROOT / "scripts" / "systemd" / name).read_text(encoding="utf-8")
-        assert "EnvironmentFile=-%h/.config/docich/paper-ai.env" in text
-        assert "CLOUDFLARE_API_TOKEN=" not in text
-
-
-def test_canary_runner_invalidates_old_receipt_and_writes_safe_exact_sha_receipt():
-    text = CANARY.read_text(encoding="utf-8")
-    assert 'receipt="$receipt_dir/paper-ai-canary.json"' in text
-    assert 'rm -f "$receipt"' in text
-    assert '"sha": sha' in text
-    assert '"recorded_at": int(time.time())' in text
-    assert '"output_sha256": data["output_sha256"]' in text
-    assert '"publishing": False' in text
-    assert "summary" not in text.split('receipt = {', 1)[1].split('}', 1)[0]
+if __name__ == "__main__":
+    unittest.main()
