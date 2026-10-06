@@ -27,7 +27,7 @@ class StockMarketDataProviderTests(unittest.TestCase):
         self.assertIn("github.actor_id == 9018513", text)
         self.assertIn("github.ref == 'refs/heads/main'", text)
         self.assertIn("github.ref_protected == true", text)
-        self.assertIn("group: vm-operations-${{ github.repository }}", text)
+        self.assertIn("group: vm-operations-v2-${{ github.repository }}", text)
         self.assertIn("options: [enable, disable, restart]", text)
         self.assertIn("MARKET_PAPER_ACTION=provider-%s", text)
         self.assertIn("MARKET_PAPER_MARKET=stocks", text)
