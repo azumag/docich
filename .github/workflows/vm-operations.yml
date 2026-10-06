@@ -467,6 +467,33 @@ jobs:
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           cat control/ops/vm_actions/restart_radio_worker.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
+      - name: Restart Soren fallback BGM after reviewed runtime update
+        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git -C candidate cat-file -e "$BEFORE_SHA^{commit}"
+
+          restart_required=0
+          for path in games/soviet_now ops/vm_actions/restart_soren_bgm.sh; do
+            if ! git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- "$path"; then
+              restart_required=1
+            fi
+          done
+          [[ "$restart_required" -eq 1 ]] || exit 0
+
+          bash -n control/ops/vm_actions/restart_soren_bgm.sh
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/restart_soren_bgm.sh |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
       - name: Restart active Soren91 agent for reviewed runtime epoch
         if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
         shell: bash
