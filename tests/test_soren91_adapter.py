@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import sys
 import tempfile
 import time
@@ -15,6 +16,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import config  # noqa: E402
+from docich.corner_adapters import MerikenCornerAdapter  # noqa: E402
 from docich import soren91_renderer  # noqa: E402
 from docich.adapters import make_coordinator_adapter  # noqa: E402
 from docich.adapters.base import AdapterError  # noqa: E402
@@ -359,6 +361,90 @@ class TestPreflight(Soren91AdapterTestBase):
 
 
 class TestLifecycle(Soren91AdapterTestBase):
+    def test_manual_runtime_profile_reaches_agent_and_does_not_leak_to_next_request(self):
+        corner_adapter = object.__new__(MerikenCornerAdapter)
+        agent = self._adapter()
+        env_file = self.root / "missing-soren91-agent.env"
+
+        with mock.patch.dict(os.environ, {"DOCICH_SOREN91_ENV_FILE": str(env_file)}):
+            os.environ.pop("SOREN91_CAPTURE_PROFILE", None)
+            with corner_adapter.runtime_environment({"capture_profile": "rejected_png_v1"}):
+                self.assertEqual(os.environ.get("SOREN91_CAPTURE_PROFILE"), "rejected_png_v1")
+                with self._http():
+                    self.http_plan = [
+                        (200, {"ok": True, "running": False}),
+                        (202, {"ok": True, "started": True}),
+                        (200, {"ok": True, "running": True, "captureSettings": {
+                            "format": "png", "rejectedFrameDiagnostics": True,
+                        }}),
+                    ]
+                    agent._start_remote_renderer(time.monotonic() + 30, None)
+                    self.assertTrue(agent._agent_running(time.monotonic() + 30, None))
+                posts = [call for call in self.http_calls if call["method"] == "POST"]
+                self.assertEqual(json.loads(posts[0]["body"])["captureProfile"], "rejected_png_v1")
+                self.assertTrue(agent._capture_profile_is_active())
+
+            self.assertNotIn("SOREN91_CAPTURE_PROFILE", os.environ)
+            self.assertNotIn("SOREN91_CAPTURE_FORMAT", os.environ)
+            self.assertNotIn("SOREN91_REJECT_FRAME_DIAGNOSTICS", os.environ)
+
+            # The next ordinary request uses the same real scope and adapter,
+            # with no inherited one-shot profile in its start body or status.
+            ordinary = self._adapter()
+            with corner_adapter.runtime_environment({"capture_profile": None}):
+                self.assertNotIn("SOREN91_CAPTURE_PROFILE", os.environ)
+                with self._http():
+                    self.http_plan = [
+                        (200, {"ok": True, "running": False}),
+                        (202, {"ok": True, "started": True}),
+                        (200, {"ok": True, "running": True, "captureSettings": {
+                            "format": "jpeg", "rejectedFrameDiagnostics": False,
+                        }}),
+                    ]
+                    ordinary._start_remote_renderer(time.monotonic() + 30, None)
+                    self.assertTrue(ordinary._agent_running(time.monotonic() + 30, None))
+                posts = [call for call in self.http_calls if call["method"] == "POST"]
+                ordinary_body = json.loads(posts[-1]["body"])
+                self.assertNotIn("captureProfile", ordinary_body)
+                self.assertFalse(ordinary._capture_profile_is_active())
+
+            self.assertNotIn("SOREN91_CAPTURE_PROFILE", os.environ)
+
+    def test_private_capture_profile_is_forwarded_only_to_a_new_renderer_child(self):
+        adapter = self._adapter()
+        profile = mock.patch.dict(
+            os.environ, {"SOREN91_CAPTURE_PROFILE": "rejected_png_v1"}, clear=False
+        )
+        with profile, self._http():
+            self.http_plan = [
+                (200, {"ok": True, "running": False}),
+                (202, {"ok": True, "started": True}),
+            ]
+            adapter._start_remote_renderer(time.monotonic() + 30, None)
+        posts = [call for call in self.http_calls if call["method"] == "POST"]
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(json.loads(posts[0]["body"]), {
+            "srtUrl": f"srt://{OCI_IP}:19192?mode=caller",
+            "captureProfile": "rejected_png_v1",
+        })
+
+    def test_private_capture_profile_refuses_to_reconfigure_an_already_running_renderer(self):
+        adapter = self._adapter()
+        with mock.patch.dict(os.environ, {"SOREN91_CAPTURE_PROFILE": "rejected_png_v1"}), self._http():
+            self.http_plan = [(200, {"ok": True, "running": True,
+                                     "captureSettings": {"format": "jpeg", "rejectedFrameDiagnostics": False}})]
+            with self.assertRaisesRegex(AdapterError, "different capture profile"):
+                adapter._start_remote_renderer(time.monotonic() + 30, None)
+        self.assertFalse([call for call in self.http_calls if call["method"] == "POST"])
+
+    def test_private_capture_profile_reuses_only_a_matching_renderer(self):
+        adapter = self._adapter()
+        with mock.patch.dict(os.environ, {"SOREN91_CAPTURE_PROFILE": "rejected_png_v1"}), self._http():
+            self.http_plan = [(200, {"ok": True, "running": True,
+                                     "captureSettings": {"format": "png", "rejectedFrameDiagnostics": True}})]
+            adapter._start_remote_renderer(time.monotonic() + 30, None)
+        self.assertFalse([call for call in self.http_calls if call["method"] == "POST"])
+
     def test_materialize_posts_start_with_caller_url(self):
         with self._ffplay(), self._bound_listener(True), self._http():
             self.http_plan = [
@@ -889,6 +975,9 @@ class ManualSoren91CornerTests(unittest.TestCase):
         self.assertEqual(args.duration_minutes, 5)
         args = _parser().parse_args(["start", "--duration-minutes", "10"])
         self.assertEqual(args.duration_minutes, 10)
+        args = _parser().parse_args(["start", "--duration-minutes", "5",
+                                     "--capture-profile", "rejected_png_v1"])
+        self.assertEqual(args.capture_profile, "rejected_png_v1")
         args = _parser().parse_args(["recover"])
         self.assertEqual(args.command, "recover")
 
