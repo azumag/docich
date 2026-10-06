@@ -44,7 +44,7 @@ def gated(records, step='I:first', target='ゴーメン'):
                                    {step: {'chapter': 1, 'kind': 'interim'}})[0]
 
 
-@pytest.mark.parametrize('kind', ['battle_menu', 'egg_summon', 'monster_menu'])
+@pytest.mark.parametrize('kind', ['battle_menu', 'egg_summon'])
 def test_attack_and_defense_do_not_share_learning(kind):
     attack = memory()
     defense = memory(side='defense')
@@ -281,3 +281,15 @@ def test_unknown_full_hp_does_not_enable_untried_exploration():
     key = experience.situation_key('egg_summon', mem)
     exp = learned(key, {'use_egg': {'losses': 1}})
     assert experience.preferred(exp, key, default='use_egg', kind='egg_summon') == 'use_egg'
+
+
+def test_monster_skill_key_keeps_summoned_panel_contract():
+    mem = {'chapter': 1, 'battle': {'enemy': 'クイーン', 'ally': 'ゼウス', 'step': '1-A3'},
+           'monster_panel': {'ally': 'ローラーキラー', 'enemy': 'ヒュドラ',
+                             'ally_hp': 348, 'enemy_hp': 135}}
+    key = experience.situation_key('monster_menu', mem)
+    assert key == 'monster_menu|1|クイーン|ゼウス|1-A3|ローラーキラー|ヒュドラ|ahead'
+    mem['battle'].update(side='defense', ally_hp=1, ally_soldiers=0)
+    assert experience.situation_key('monster_menu', mem) == key
+    mem['monster_panel']['ally_hp'] = 1
+    assert experience.situation_key('monster_menu', mem) != key

@@ -89,6 +89,10 @@ def situation_key(kind: str, mem: dict) -> str:
         parts.append(str(panel.get('ally') or ''))
         parts.append(str(panel.get('enemy') or ''))
         parts.append(_hp_band(panel.get('enemy_hp'), panel.get('ally_hp')))
+    # Monster skills already key on the current summoned panel. Preserve that
+    # contract: the summoner's stale resources must not re-key a monster turn.
+    if kind not in ('battle_menu', 'egg_summon'):
+        return '|'.join(part.replace('|', '/') for part in parts)
     # Version the fingerprint, not the persisted document: old evidence remains
     # available for inspection but cannot silently govern a different context.
     side = battle.get('side')
