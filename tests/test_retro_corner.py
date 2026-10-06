@@ -2021,7 +2021,7 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
             "end_reason": "manual_forced_stop",
         }
         result = mgr._end_result_text(state, self.now_value)
-        self.assertIn("今回の挑戦は、記録上は第3章・2年7月まで進みました。", result)
+        self.assertIn("今回は強制終了となり、記録上は第3章・2年7月まで進みました。", result)
         self.assertIn("ジョンリギ城への進出を狙い", result)
         self.assertIn("けっかい城ではクイーンとの戦闘に勝っています。", result)
         self.assertNotIn("戦闘7回", result)
