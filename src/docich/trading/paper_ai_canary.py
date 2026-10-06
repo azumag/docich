@@ -128,6 +128,17 @@ def run_once(
     try:
         with tempfile.TemporaryDirectory(prefix="docich-paper-ai-canary-") as directory:
             target = Path(directory)
+            # Isolate native dispatch state too: inherited directory overrides
+            # must never redirect this acceptance probe into production state.
+            effective.update({
+                "DOCICH_LLM_STATE_DIR": str(target / "llm"),
+                "DOCICH_LLM_STATS_DIR": str(target / "llm" / "stats"),
+                "AI_BACKOFF_DIR": str(target / "llm" / "backoff"),
+                "AI_FAIL_STREAK_DIR": str(target / "llm" / "failure_streak"),
+                "AI_GENERATION_QUEUE_LOCK_DIR": str(target / "llm" / "generation_queue"),
+                "TMP_STATE_DIR": str(target),
+                "IMPROVE_STATE_FILE": str(target / "improve_state.json"),
+            })
             _write_synthetic_state(target, moment)
             research = researcher(
                 target,

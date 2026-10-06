@@ -23,6 +23,11 @@ modify a PAPER ledger, start/stop a corner, or enable any production feature
 flag. The synthetic state is deleted with its temporary directory after the
 single run.
 
+Native AI dispatch queues, telemetry, backoff and failure streaks also use
+that temporary directory. The canary overrides inherited state paths and its
+improvement-gate state path in a private environment copy, so it neither reads
+the production improvement gate nor alters shared dispatcher state.
+
 Search snippets/descriptions are not accepted as evidence. The existing PAPER
 Web Search adapter requires fetched WebBroker bodies. The canary sends the
 bounded public research DTO to the model and tells it to treat every document

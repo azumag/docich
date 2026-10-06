@@ -187,3 +187,63 @@ def test_cli_dry_run_never_executes(monkeypatch, capsys):
     assert data["publishing"] is False
     assert "SEARCH_SECRET" not in json.dumps(data)
     assert "AI_SECRET" not in json.dumps(data)
+
+
+@pytest.mark.parametrize("outcome", ["success", "rate_limit", "invalid_output"])
+@pytest.mark.parametrize("explicit_overrides", [False, True])
+def test_native_dispatch_state_is_temporary(tmp_path, monkeypatch, outcome, explicit_overrides):
+    from docich.llm import dispatch
+    from docich.llm.contracts import ProviderResult
+
+    production = tmp_path / "production"
+    production.mkdir()
+    (production / "sentinel").write_text("unchanged")
+    env = _env()
+    if explicit_overrides:
+        for key in (
+            "DOCICH_LLM_STATE_DIR", "DOCICH_LLM_STATS_DIR", "AI_BACKOFF_DIR",
+            "AI_FAIL_STREAK_DIR", "AI_GENERATION_QUEUE_LOCK_DIR", "TMP_STATE_DIR",
+        ):
+            env[key] = str(production / key)
+        gate = production / "improve_state.json"
+        gate.write_text('{"running":true}')
+        env["IMPROVE_STATE_FILE"] = str(gate)
+    before = {str(p.relative_to(production)): p.read_bytes()
+              for p in production.rglob("*") if p.is_file()}
+    ambient = dict(env)
+    monkeypatch.setattr(c.os, "environ", ambient)
+    observed = {}
+
+    def researcher(target, **kwargs):
+        observed["target"] = Path(target)
+        observed["env"] = dict(kwargs["env"])
+        return {"research_backend": "websearch_verified_body",
+                "news_items": [{"summary": "verified fixture"}], "asset": {}}
+
+    def provider(spec, request, *, timeout, env):
+        assert spec.raw == c.CANARY_AGENT
+        observed["called"] = True
+        if outcome == "rate_limit":
+            return ProviderResult(79, failure_kind="rate_limit")
+        output = '{"summary":"fixture"}' if outcome == "success" else "invalid"
+        return ProviderResult(0, output=output)
+
+    monkeypatch.setattr(dispatch, "call_agent", provider)
+    g = SimpleNamespace(repo_root=production)
+    if outcome == "success":
+        assert c.run_once(g, researcher=researcher)["production_state_written"] is False
+    else:
+        with pytest.raises(c.PaperAiCanaryError):
+            c.run_once(g, researcher=researcher)
+    assert observed["called"] is True
+    assert not observed["target"].exists()
+    for key in ("DOCICH_LLM_STATE_DIR", "DOCICH_LLM_STATS_DIR", "AI_BACKOFF_DIR",
+                "AI_FAIL_STREAK_DIR", "AI_GENERATION_QUEUE_LOCK_DIR", "TMP_STATE_DIR",
+                "IMPROVE_STATE_FILE"):
+        assert Path(observed["env"][key]).is_relative_to(observed["target"])
+    after = {str(p.relative_to(production)): p.read_bytes()
+             for p in production.rglob("*") if p.is_file()}
+    assert after == before
+    assert sorted(p.name for p in production.iterdir()) == (
+        ["improve_state.json", "sentinel"] if explicit_overrides else ["sentinel"])
+    assert ambient == env
