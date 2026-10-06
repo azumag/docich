@@ -202,7 +202,7 @@ def test_narration_is_cohesive_and_summarizes_precipitation_trend():
     assert all("最低気温" not in line for line in lines[1:-1])
     assert all("晴れ、夜はくもりの予報です" in line for line in lines[1:-1])
     assert all(
-        "降水確率は午前の0パーセントから、夜には20パーセントまで上がります。"
+        "降水確率は、午前は0パーセントで、夜には20パーセントまで上がります。"
         in line for line in lines[1:-1]
     )
     assert all("時から" not in line for line in lines[1:-1])
@@ -222,6 +222,19 @@ def test_narration_collapses_all_zero_precipitation():
     assert all(line.count("0パーセント") == 1 for line in lines[1:-1])
 
 
+def test_narration_collapses_irregular_precipitation_to_range():
+    view = w.project(bundle(), now=NOW)
+    view["cities"][0]["pops"] = [
+        {"start": 0, "end": 6, "percent": 0},
+        {"start": 6, "end": 12, "percent": 30},
+        {"start": 12, "end": 18, "percent": 10},
+        {"start": 18, "end": 24, "percent": 20},
+    ]
+    line = w.narration(view)[1]
+    assert "降水確率は0から30パーセントの範囲で変動します。" in line
+    assert line.count("パーセント") == 1
+
+
 def test_narration_describes_twenty_to_zero_as_one_transition():
     view = w.project(bundle(), now=NOW)
     view["cities"][0]["pops"] = [
@@ -231,7 +244,7 @@ def test_narration_describes_twenty_to_zero_as_one_transition():
         {"start": 18, "end": 24, "percent": 0},
     ]
     line = w.narration(view)[1]
-    assert "降水確率は午前が20パーセントですが、午後以降は0パーセントです。" in line
+    assert "降水確率は、午前は20パーセントですが、午後以降は0パーセントです。" in line
     assert line.count("パーセント") == 2
     assert "12時から18時" not in line
     assert "18時から24時" not in line
