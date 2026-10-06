@@ -532,6 +532,19 @@ def egg_choice_names(screen):
     return choices if screen.battle is None and not screen.egg_rows else []
 
 
+def month_confirmation_positions(screen):
+    """Both explicit choices in the foreground of a monthly menu.
+
+    The upper menu can retain its hand while the confirmation draws another
+    one below it. Do not let the background hand choose the foreground answer.
+    """
+    choices = [(x, line.y, word) for line in screen.lines if line.y >= 120
+               for x, word in line.spans() if word in ('うむッ!', 'いかんッ!')]
+    if {word for _, _, word in choices} != {'うむッ!', 'いかんッ!'}:
+        return []
+    return [(x, y) for x, y, _ in choices]
+
+
 def parse(frame: Frame, *, phase: str | None = None) -> Screen:
     masks = row_masks(frame, light)
     lines = read_lines(frame, masks=masks)
@@ -584,6 +597,13 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         white = row_masks(frame, lambda r, g, b: min(r, g, b) > 200)
         screen.cursor = _free_cursor(white, frame)
     screen.kind = classify_text(screen)
+    if screen.kind == 'month_menu':
+        positions = month_confirmation_positions(screen)
+        if positions:
+            # Re-evaluate even when the global reader found the upper hand:
+            # it is not evidence that a lower confirmation has been selected.
+            screen.hand = find_hand(frame, option_positions=positions)
+            screen.selected = _selected(lines, screen.hand)
     if screen.kind == 'summer_bonus' and screen.hand is None:
         # An orange event sprite can make the global hand ambiguous. Only a
         # unique whole hand aligned with an actual choice may recover it.
@@ -657,6 +677,11 @@ def classify_text(s: Screen) -> str:
     if sum(1 for line in s.lines if PRICE.match(''.join(line.words(120, 256)))) >= 3:
         return 'shop_list'
     if 'しょうにん' in t and 'おしまい' in t:
+        # The information menu can cover only part of the monthly menu. Its
+        # own distinctive labels prove the foreground; background monthly
+        # labels must not keep the roster route waiting for it to open.
+        if 'ステータス' in t and 'システム' in t:
+            return 'main_menu'
         return 'month_menu'
     # おどす is also a summoned monster's skill: a たまごに もどれ row makes it
     # our monster's turn (g401 21:58: read as okunote, held 300 s, stalled).
