@@ -35,6 +35,7 @@ from .weather_view import read_view
 
 WEATHER_VIEW_NAME = "weather-view"
 STATE_FILENAME = "weather_corner.json"
+FORECAST_START_MARGIN_S = 30
 RUNTIME_IDENTITY_KEYS = ("game", "runtime_id", "generation", "lease_id")
 PENDING_SWITCH_STATUSES = frozenset({"queued", "in_progress", "busy"})
 ROLLBACK_ERROR_CODES = frozenset({
@@ -191,6 +192,11 @@ class WeatherCornerManager:
             raise WeatherCornerError("rotation request identity is invalid")
         return value
 
+    def _required_forecast_remaining(self):
+        if type(self.duration_minutes) is not int:
+            raise WeatherCornerError("weather duration is required for forecast runway")
+        return self.duration_minutes * 60 + FORECAST_START_MARGIN_S
+
     def _new_state(self, request):
         request_id = self._request_id(request.get("request_id"))
         try:
@@ -214,7 +220,7 @@ class WeatherCornerManager:
         now = self.clock()
         expires_at = forecast.get("expires_at")
         if (type(expires_at) not in (int, float)
-                or expires_at - now <= 5):
+                or expires_at - now < self._required_forecast_remaining()):
             return {
                 "schema_version": 1,
                 "game": WEATHER_VIEW_NAME,
@@ -750,7 +756,10 @@ class WeatherCornerManager:
                 raise WeatherCornerError("another weather execution owns the state")
             if self.forecast_refresh is not None and not self._stop_requested():
                 try:
-                    self.forecast_refresh(self.snapshot_path.parent)
+                    self.forecast_refresh(
+                        self.snapshot_path.parent,
+                        min_remaining_s=self._required_forecast_remaining(),
+                    )
                 except (OSError, WeatherError):
                     # No switch/queue was requested. Complete this reservation
                     # without retrying stale data or blocking the other corners.
