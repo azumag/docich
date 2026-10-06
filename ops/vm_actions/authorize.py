@@ -7,7 +7,7 @@ REPOSITORY='azumag/docich'
 REPOSITORY_ID='1327276249'
 WORKFLOW='.github/workflows/vm-operations.yml'
 OPS={'deploy','exec','configure_jev','disable_jev','configure_jev_route_direct','configure_jev_route_vercel',
-     'disable_jev_route','status','bootstrap','diagnostics','reclaim','rebaseline','market_paper','restart_webui',
+     'disable_jev_route','status','bootstrap','diagnostics','reclaim','rebaseline','market_paper','paper_ai_canary','restart_webui',
      'recover_soren_game','recover_soren_round'}
 TARGETS={'preview','production'}
 REF_RE=re.compile(r'[A-Za-z0-9][A-Za-z0-9_./-]{0,199}\Z')
@@ -57,6 +57,8 @@ def main():
         if op=='rebaseline' and ref!='main': fail('rebaseline must run from main')
         if op=='market_paper' and target!='production': fail('market_paper is production-only')
         if op=='market_paper' and ref!='main': fail('market_paper must run from main')
+        if op=='paper_ai_canary' and target!='production': fail('paper_ai_canary is production-only')
+        if op=='paper_ai_canary' and ref!='main': fail('paper_ai_canary must run from main')
         if op=='restart_webui' and target!='production': fail('restart_webui is production-only')
         if op=='restart_webui' and ref!='main': fail('restart_webui must run from main')
         if op=='recover_soren_game' and target!='production': fail('recover_soren_game is production-only')
@@ -72,7 +74,7 @@ def main():
             if ref!='main': fail(f'{op} must run from main')
         if target=='production' and op in {'exec','configure_jev','disable_jev','configure_jev_route_direct',
                                             'configure_jev_route_vercel','disable_jev_route','bootstrap',
-                                            'reclaim','rebaseline','market_paper','restart_webui',
+                                            'reclaim','rebaseline','market_paper','paper_ai_canary','restart_webui',
                                             'recover_soren_game','recover_soren_round'} and confirm!='production':
             fail('production confirmation required')
         # diagnostics is read-only with sanitized bounded output, so it needs

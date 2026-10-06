@@ -43,6 +43,7 @@ from .game_switch import (
 from .naming import NameValidationError
 from .netcmd import send_ra_cmd
 from .trading import cli as trading_cli
+from .trading import paper_ai_canary
 from .state import State
 from .stream import (
     CaptionSocketDirectoryError,
@@ -80,6 +81,7 @@ USER_ERRORS = (
     captions.CaptionError,
     CliError,
     trading_cli.TradingCliError,
+    paper_ai_canary.PaperAiCanaryError,
     tts.TtsError,
 )
 
@@ -264,6 +266,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_radio.add_argument("--score", default="", metavar="SCORE", help="スコア (省略可)")
     p_radio.add_argument("--dry-run", action="store_true", help="実行せずargv/env/cwdを表示する")
 
+    p_canary = sub.add_parser(
+        "paper-ai-canary",
+        help="公開Web検索→PAPER research→direct AIを一時状態で1回だけ検証する",
+    )
+    p_canary.add_argument(
+        "--execute", action="store_true",
+        help="実Cloudflare検索/Workers AIを1回実行する。省略時はsecret-free readinessのみ表示",
+    )
+
     p_ai = sub.add_parser(
         "ai", help="ゲーム非依存のnative AIディスパッチを実行する (C-S1)"
     )
@@ -385,6 +396,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return chat.cli_radio(args)
     if command == "ai":
         return ai_generate.cli_ai(args)
+    if command == "paper-ai-canary":
+        return paper_ai_canary.cli_canary(g, args)
     if command == "voicevox":
         return speech.run_args(args)
     if command == "overlay":
