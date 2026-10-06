@@ -356,6 +356,17 @@ def _rain_period_label(start: int, end: int) -> str:
     return _RAIN_PERIOD_LABELS.get((start, end), f"{start}時から{end}時")
 
 
+def _rain_period_phrase(start: int, end: int, *, destination=False) -> str:
+    label = _rain_period_label(start, end)
+    if label == "全時間帯":
+        return "全時間帯で"
+    if label.endswith("以降"):
+        return f"{label}は"
+    if "から" in label:
+        return f"{label}にかけては" if destination else f"{label}にかけて"
+    return f"{label}には" if destination else f"{label}は"
+
+
 def _rain_summary(pops: list[dict]) -> str:
     """Compress precipitation probabilities into stable trends instead of a four-number list."""
     rows = [
@@ -380,22 +391,21 @@ def _rain_summary(pops: list[dict]) -> str:
         start, end, percent = runs[0]
         if all_periods:
             return f"降水確率は全時間帯で{percent}パーセントです。"
-        return f"降水確率は{_rain_period_label(start, end)}が{percent}パーセントです。"
+        return f"降水確率は、{_rain_period_phrase(start, end)}{percent}パーセントです。"
 
     values = [run[2] for run in runs]
     if len(runs) == 2:
         first, second = runs
-        first_label = _rain_period_label(first[0], first[1])
-        second_label = _rain_period_label(second[0], second[1])
         if second[2] < first[2]:
             return (
-                f"降水確率は{first_label}が{first[2]}パーセントですが、"
-                f"{second_label}は{second[2]}パーセントです。"
+                f"降水確率は、{_rain_period_phrase(first[0], first[1])}{first[2]}パーセントですが、"
+                f"{_rain_period_phrase(second[0], second[1])}{second[2]}パーセントです。"
             )
         if second[2] > first[2]:
             return (
-                f"降水確率は{first_label}の{first[2]}パーセントから、"
-                f"{second_label}には{second[2]}パーセントまで上がります。"
+                f"降水確率は、{_rain_period_phrase(first[0], first[1])}{first[2]}パーセントで、"
+                f"{_rain_period_phrase(second[0], second[1], destination=True)}"
+                f"{second[2]}パーセントまで上がります。"
             )
         return f"降水確率は確認できる時間帯では{first[2]}パーセントです。"
 
@@ -404,13 +414,15 @@ def _rain_summary(pops: list[dict]) -> str:
     first, last = runs[0], runs[-1]
     if increasing and values[0] != values[-1]:
         return (
-            f"降水確率は{_rain_period_label(first[0], first[1])}の{first[2]}パーセントから、"
-            f"{_rain_period_label(last[0], last[1])}には{last[2]}パーセントまで上がります。"
+            f"降水確率は、{_rain_period_phrase(first[0], first[1])}{first[2]}パーセントで、"
+            f"{_rain_period_phrase(last[0], last[1], destination=True)}"
+            f"{last[2]}パーセントまで上がります。"
         )
     if decreasing and values[0] != values[-1]:
         return (
-            f"降水確率は{_rain_period_label(first[0], first[1])}の{first[2]}パーセントから、"
-            f"{_rain_period_label(last[0], last[1])}には{last[2]}パーセントまで下がります。"
+            f"降水確率は、{_rain_period_phrase(first[0], first[1])}{first[2]}パーセントで、"
+            f"{_rain_period_phrase(last[0], last[1], destination=True)}"
+            f"{last[2]}パーセントまで下がります。"
         )
 
     low, high = min(values), max(values)
