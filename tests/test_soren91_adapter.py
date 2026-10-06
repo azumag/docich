@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import sys
 import tempfile
 import time
@@ -359,6 +360,41 @@ class TestPreflight(Soren91AdapterTestBase):
 
 
 class TestLifecycle(Soren91AdapterTestBase):
+    def test_private_capture_profile_is_forwarded_only_to_a_new_renderer_child(self):
+        adapter = self._adapter()
+        profile = mock.patch.dict(
+            os.environ, {"SOREN91_CAPTURE_PROFILE": "rejected_png_v1"}, clear=False
+        )
+        with profile, self._http():
+            self.http_plan = [
+                (200, {"ok": True, "running": False}),
+                (202, {"ok": True, "started": True}),
+            ]
+            adapter._start_remote_renderer(time.monotonic() + 30, None)
+        posts = [call for call in self.http_calls if call["method"] == "POST"]
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(json.loads(posts[0]["body"]), {
+            "srtUrl": f"srt://{OCI_IP}:19192?mode=caller",
+            "captureProfile": "rejected_png_v1",
+        })
+
+    def test_private_capture_profile_refuses_to_reconfigure_an_already_running_renderer(self):
+        adapter = self._adapter()
+        with mock.patch.dict(os.environ, {"SOREN91_CAPTURE_PROFILE": "rejected_png_v1"}), self._http():
+            self.http_plan = [(200, {"ok": True, "running": True,
+                                     "captureSettings": {"format": "jpeg", "rejectedFrameDiagnostics": False}})]
+            with self.assertRaisesRegex(AdapterError, "different capture profile"):
+                adapter._start_remote_renderer(time.monotonic() + 30, None)
+        self.assertFalse([call for call in self.http_calls if call["method"] == "POST"])
+
+    def test_private_capture_profile_reuses_only_a_matching_renderer(self):
+        adapter = self._adapter()
+        with mock.patch.dict(os.environ, {"SOREN91_CAPTURE_PROFILE": "rejected_png_v1"}), self._http():
+            self.http_plan = [(200, {"ok": True, "running": True,
+                                     "captureSettings": {"format": "png", "rejectedFrameDiagnostics": True}})]
+            adapter._start_remote_renderer(time.monotonic() + 30, None)
+        self.assertFalse([call for call in self.http_calls if call["method"] == "POST"])
+
     def test_materialize_posts_start_with_caller_url(self):
         with self._ffplay(), self._bound_listener(True), self._http():
             self.http_plan = [
@@ -889,6 +925,9 @@ class ManualSoren91CornerTests(unittest.TestCase):
         self.assertEqual(args.duration_minutes, 5)
         args = _parser().parse_args(["start", "--duration-minutes", "10"])
         self.assertEqual(args.duration_minutes, 10)
+        args = _parser().parse_args(["start", "--duration-minutes", "5",
+                                     "--capture-profile", "rejected_png_v1"])
+        self.assertEqual(args.capture_profile, "rejected_png_v1")
         args = _parser().parse_args(["recover"])
         self.assertEqual(args.command, "recover")
 

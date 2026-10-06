@@ -287,12 +287,17 @@ class MerikenCornerAdapter(GameCornerAdapter):
 
     @contextmanager
     def runtime_environment(self, request=None):
-        """Load Meriken credentials only for this adapter's execution."""
+        """Load Meriken credentials and one fixed capture profile per request."""
         path = Path(os.environ.get("DOCICH_SOREN91_ENV_FILE", str(self.DEFAULT_ENV_FILE)))
-        if not path.is_file():
-            yield
-            return
-        values = self._read_env_file(path)
+        values = self._read_env_file(path) if path.is_file() else {}
+        profile = request.get("capture_profile") if isinstance(request, dict) else None
+        if profile not in {None, "rejected_png_v1"}:
+            raise CornerExecutionError("unsupported Soren91 capture profile")
+        overrides = ({
+            "SOREN91_CAPTURE_FORMAT": "png",
+            "SOREN91_REJECT_FRAME_DIAGNOSTICS": "1",
+        } if profile == "rejected_png_v1" else {})
+        values = {**values, **overrides}
         missing = object()
         previous = {key: os.environ.get(key, missing) for key in values}
         os.environ.update(values)

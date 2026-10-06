@@ -24,6 +24,7 @@ from .corner_adapters import (
 from .game_switch import atomic_write_json
 
 DAY = 86400.0
+MANUAL_CAPTURE_PROFILE_TTL = 60.0
 STOP_REQUEST_DIR = "corner-stop-requests"
 BUSY = {"waiting", "starting", "active", "restoring", "preparing", "recovery_required", "failed"}
 TERMINAL = {"idle", "completed", "interrupted", "expired"}
@@ -272,6 +273,10 @@ class CornerRotationManager:
                 raise RotationError("invalid manual pending request")
             uuid.UUID(manual["request_id"])
             timestamp(manual["selected_at"])
+            if manual.get("capture_profile") is not None:
+                if manual.get("capture_profile") != "rejected_png_v1":
+                    raise RotationError("manual pending capture profile is unsupported")
+                timestamp(manual.get("capture_profile_expires_at"))
         queued = state.get("queued_manual")
         if queued is not None:
             if (not isinstance(queued, dict) or not isinstance(queued.get("corner"), str)):
@@ -613,6 +618,36 @@ class CornerRotationManager:
             state, reservation, settled_at, manual=manual
         )
 
+    @staticmethod
+    def _expired_capture_has_no_live_owner(reservation, adapter):
+        """Prove an expired PNG reservation never entered the manual owner.
+
+        The common rotation lock excludes a live manual dispatcher. Still
+        require the exact manual state's adapter and a read lock on its shared
+        GameSwitch ledger; busy, missing, malformed, or unknown state is not
+        enough evidence to release the slot.
+        """
+        if adapter is None:
+            return False
+        resolve_state = getattr(adapter, "_manager_for_state_file", None)
+        if not callable(resolve_state):
+            return False
+        manager = resolve_state(reservation.get("state_file"))
+        if manager is None or getattr(manager, "state_path", None) is None:
+            return False
+        if manager.state_path.name != reservation.get("state_file"):
+            return False
+        store = getattr(manager, "store", None)
+        if store is None:
+            return False
+        try:
+            from .game_switch import GameSwitchBusyError
+            with store.lock(exclusive=False):
+                canonical, _migrated = store.canonical.load()
+            return canonical.get("phase") in {"idle", "ready"}
+        except (GameSwitchBusyError, OSError, ValueError, KeyError, TypeError):
+            return False
+
     def tick(self):
         # The common timer owns only retry/reconciliation, never new predictions.
         from .hanjuku_predictions import tick as prediction_tick
@@ -639,6 +674,39 @@ class CornerRotationManager:
                 return self._wait(state, "clock-gap-quarantine")
             try:
                 manual = state.get("manual_pending")
+                # A diagnostic profile is a one-shot authorization, not a
+                # standing preference on the durable manual reservation. Never
+                # dispatch it after its short window; release only when the
+                # exact manual owner and GameSwitch ledger prove it never began.
+                if (manual is not None
+                        and manual.get("capture_profile") == "rejected_png_v1"
+                        and now > timestamp(manual["capture_profile_expires_at"])):
+                    adapter = self.adapters.get(manual.get("corner"))
+                    outcome = self._commit_verified_failed_start(
+                        state, manual, adapter, manual=True, now=now
+                    )
+                    if outcome is not None:
+                        self.save(state)
+                        return outcome
+                    owned = ([raw for raw in adapter.observations()
+                              if raw.get("rotation_request_id") == manual.get("request_id")]
+                             if adapter is not None else [])
+                    finished = any(raw.get("status") in TERMINAL for raw in owned)
+                    started_in_window = any(
+                        raw.get("status") in BUSY and raw.get("started_at") is not None
+                        and timestamp(raw["started_at"]) <= timestamp(manual["capture_profile_expires_at"])
+                        for raw in owned
+                    )
+                    if not finished and not started_in_window:
+                        if (owned or self._observe(state, now)
+                                or not self._expired_capture_has_no_live_owner(manual, adapter)):
+                            return self._wait(state, "manual-capture-profile-expired")
+                        state["manual_pending"] = None
+                        state.update(status="ready", reason=None,
+                                     last_result={"corner": manual["corner"],
+                                                  "request_id": manual["request_id"],
+                                                  "status": "expired", "at": now})
+                        manual = None
                 # A failed switch may leave a retro start and its manual slot
                 # parked even after game-switch has returned to the old game.
                 # Only the game adapter can prove the exact terminal receipt
@@ -1124,6 +1192,14 @@ def run_manual(g, manager, games):
     from types import SimpleNamespace
     from .retro_corner import CornerResult
     rotation = CornerRotationManager(g)
+    requested_capture_profile = getattr(manager, "capture_profile", None)
+    if requested_capture_profile not in {None, "rejected_png_v1"}:
+        raise RotationError("unsupported manual capture profile")
+    if requested_capture_profile and (
+        list(games) != ["soren91"]
+        or getattr(manager, "state_path", Path()).name != "soren91_corner_manual.json"
+    ):
+        raise RotationError("PNG rejected-frame profile is Soren91-manual only")
     with rotation.locked() as acquired:
         if not acquired:
             raise RotationError("common corner coordinator is busy")
@@ -1147,6 +1223,14 @@ def run_manual(g, manager, games):
             if not choices or request.get("state_file") != path.name:
                 raise RotationError("manual pending owner mismatch")
             chosen = choices[0]
+            stored_profile = request.get("capture_profile")
+            if stored_profile not in {None, "rejected_png_v1"}:
+                raise RotationError("manual pending capture profile is unsupported")
+            if (stored_profile == "rejected_png_v1"
+                    and now > timestamp(request["capture_profile_expires_at"])):
+                raise RotationError("manual capture profile authorization expired; recover the reservation")
+            if requested_capture_profile and stored_profile != requested_capture_profile:
+                raise RotationError("manual pending capture profile does not match")
             if chosen.id not in eligible and not any(
                 raw.get("rotation_request_id") == request["request_id"]
                 for raw in rotation.adapters[chosen.id].observations()
@@ -1160,6 +1244,9 @@ def run_manual(g, manager, games):
                 raise RotationError("no eligible manual corner")
             chosen = min(choices, key=lambda c: hashlib.sha256(f'{state["seed"]}:{state["slot"]}:{c.id}'.encode()).digest())
             request = dict(corner=chosen.id, selected_at=now, request_id=str(uuid.uuid4()), state_file=path.name)
+            if requested_capture_profile:
+                request["capture_profile"] = requested_capture_profile
+                request["capture_profile_expires_at"] = now + MANUAL_CAPTURE_PROFILE_TTL
             state["manual_pending"] = request
             state["slot"] += 1
             state["history"].append(dict(corner=chosen.id, at=now, source="manual-reservation"))
@@ -1177,15 +1264,36 @@ def run_manual(g, manager, games):
         state.update(last_seen_at=now, status="running")
         rotation.save(state)
         selected_adapter = rotation.adapters[chosen.id]
+
+        def run_reserved_manual(request):
+            if (request.get("capture_profile") == "rejected_png_v1"
+                    and timestamp(rotation.clock()) > timestamp(request["capture_profile_expires_at"])):
+                return "capture-profile-expired"
+            return manager.run_rotation(request["request_id"])
+
         adapter = SimpleNamespace(
             manager=manager,
             state_path=path,
-            run=lambda req: manager.run_rotation(req["request_id"]),
+            run=run_reserved_manual,
             runtime_environment=getattr(selected_adapter, "runtime_environment", None),
         )
         try:
             result = rotation.executor.execute(adapter, request)
             status = result if isinstance(result, str) else result.status
+            if status == "capture-profile-expired":
+                owned = [raw for raw in selected_adapter.observations()
+                         if raw.get("rotation_request_id") == request["request_id"]]
+                if (owned or rotation._observe(state, timestamp(rotation.clock()))
+                        or not rotation._expired_capture_has_no_live_owner(request, selected_adapter)):
+                    raise RotationError("expired capture profile has unresolved execution ownership",
+                                        kind="execution-unverified")
+                expired_at = timestamp(rotation.clock())
+                state["manual_pending"] = None
+                state.update(last_seen_at=expired_at, status="ready", reason=None,
+                             last_result={"corner": chosen.id, "request_id": request["request_id"],
+                                          "status": "expired", "at": expired_at})
+                rotation.save(state)
+                return CornerResult("expired", game=chosen.game)
             state.update(status="waiting", reason="manual-execution-pending")
             if status == "completed":
                 finished = timestamp(rotation.clock())
