@@ -64,6 +64,20 @@ receipt/hashは素材の取得根拠、parser/guardは出力形式と衛生の�
 persona/templateの正本、state/history、音声・字幕・queueへのdeliveryはこのsliceで切り替えない。
 既存RADIOのactive consumer接続・実provider canary・本番有効化は未実施。
 
+### Process bridge
+
+`python3 -P -m docich.radio.consumer` は、
+稼働中consumerから上記coreを呼ぶための薄いprocess境界。stdinに
+`{"topic": "...", "queries": ["..."], "agents": "provider-api:model"}` の3キーだけを受け、
+stdoutへ固定status/scopeと、成功時だけbody/summary/selected_newsをJSONで返す。
+topic/queryをargvへ出さず、credential/provider設定は環境から既存adapterへ委譲する。
+bridge自体はTTS、deferred queue、state/history、retry/fallbackを所有しない。
+
+bridgeの追加だけではactive cutoverではない。consumer側は既定offの明示gateで呼び、
+disabled/hold/timeout/provider failureをlegacy生成へ暗黙fallbackさせない。成功本文だけを
+既存の音声/deferred queue契約へ渡す。実API canary、本番flag、credential/課金、worker
+reload/restartは引き続き別の受入作業とする。
+
 ## 利用条件と今回の非対象
 
 Cloudflare Web Search adapterは既にmainにあり、backendを明示した場合だけ使う。
