@@ -74,7 +74,7 @@ class RestartSorenBgmTest(unittest.TestCase):
                 "PATH": f"{bindir}:/usr/bin:/bin",
                 "FAKE_PID_STATE": str(state),
             }
-            return subprocess.run([str(SCRIPT)], env=env, capture_output=True, text=True, timeout=8)
+            return subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=8)
 
     def test_success_restarts_only_fixed_service(self):
         result = self._run()
