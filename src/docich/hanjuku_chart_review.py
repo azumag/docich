@@ -18,6 +18,7 @@ from . import hanjuku_chart as chart
 from . import hanjuku_chart_adjust as adjust
 from .game_switch import atomic_write_json
 from .hanjuku_run import append_log
+from . import hanjuku_review_evidence as evidence
 
 REVIEW_FILE = 'hanjuku_chart_review.json'
 SCHEMA = 1
@@ -128,7 +129,10 @@ def collate(runtime_dir: Path) -> dict:
             continue
         seen.add(key)
         proposals.append({'type': 'cover_off_chart', **item})
+    proof = evidence.audit(_read_jsonl(runtime_dir, 'hanjuku_decisions'))
+    proposals = evidence.gate_proposals(proposals, proof, steps)
     return {'schema': SCHEMA, 'generated_at': time.time(), 'chapters': sorted(chapters),
+            'evidence': proof,
             'steps': steps, 'adjusted_orders': adjusted_orders,
             'off_chart_requests': len(off_chart), 'proposals': proposals}
 
@@ -145,7 +149,10 @@ def review(runtime_dir: Path, identity: dict | None = None) -> dict:
                'by_type': {t: sum(1 for p in report['proposals'] if p['type'] == t)
                            for t in sorted({p['type'] for p in report['proposals']})},
                'off_chart_requests': report['off_chart_requests'],
-               'adjusted_orders': len(report['adjusted_orders'])}
+               'adjusted_orders': len(report['adjusted_orders']),
+               'battle_outcomes': report['evidence']['battle_outcomes'],
+               'unattributed_battles': report['evidence']['unattributed_battles'],
+               'capture_evidence_overflow': report['evidence']['capture_evidence_overflow']}
     append_log(runtime_dir, adjust.HISTORY_LOG, {'event': 'chart_review', 'at': time.time(),
                                                  **(identity or {}), **summary})
     return {'file': REVIEW_FILE, **summary}
