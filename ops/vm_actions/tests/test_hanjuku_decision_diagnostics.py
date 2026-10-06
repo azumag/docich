@@ -130,6 +130,67 @@ class HanjukuDecisionDiagnosticsTests(unittest.TestCase):
                           "signatures": [{"screen_kind": "text", "buttons": ["a"]},
                                          {"screen_kind": "text", "buttons": ["b"]}]})
 
+    def test_tied_valid_and_invalid_buttons_keep_the_projection(self):
+        invalid = self.plan("text", planned_actions="PRIVATE_ACTIONS")
+        valid = self.plan("text", ("a",))
+        for unit in ([invalid, valid], [valid, invalid]):
+            with self.subTest(first_actions=unit[0]["planned_actions"]):
+                self.write(unit * 2)
+                output = self.collect()
+                self.assertEqual(output["status"], "available")
+                self.assertEqual(output["matched_records"], 4)
+                self.assertEqual(output["rejected_records"], 0)
+                self.assertEqual(output["window_plans"], 4)
+                self.assertEqual(output["distinct_signatures"], 2)
+                self.assertEqual(output["screen_kind_counts"], {"text": 4})
+                self.assertEqual(output["button_counts"]["a"], 2)
+                self.assertEqual(output["top_signature"],
+                                 {"screen_kind": "text", "buttons": ["a"], "count": 2})
+                self.assertEqual(output["trailing_repeat"]["period"], 2)
+                self.assertEqual(output["trailing_repeat"]["repeats"], 2)
+                self.assertNotIn("PRIVATE", json.dumps(output))
+
+    def test_empty_buttons_remain_distinct_from_invalid_buttons(self):
+        invalid = self.plan("text", planned_actions="PRIVATE_ACTIONS")
+        empty = self.plan("text", (), planned_actions=[])
+        for unit in ([invalid, empty], [empty, invalid]):
+            with self.subTest(first_actions=unit[0]["planned_actions"]):
+                self.write(unit * 2)
+                output = self.collect()
+                self.assertEqual(output["status"], "available")
+                self.assertEqual(output["distinct_signatures"], 2)
+                self.assertEqual(output["top_signature"],
+                                 {"screen_kind": "text", "buttons": [], "count": 2})
+                self.assertTrue(all(count == 0 for count in output["button_counts"].values()))
+                self.assertEqual(output["trailing_repeat"],
+                                 {"period": 2, "repeats": 2,
+                                  "signatures": [{"screen_kind": "text", "buttons": None},
+                                                 {"screen_kind": "text", "buttons": []}]
+                                  if unit[0] is invalid else
+                                  [{"screen_kind": "text", "buttons": []},
+                                   {"screen_kind": "text", "buttons": None}]})
+
+    def test_signature_ties_are_deterministic_in_any_record_order(self):
+        cases = [
+            ([self.plan("text", ("b",)), self.plan("text", ("a",))],
+             {"screen_kind": "text", "buttons": ["a"], "count": 1}),
+            ([self.plan("text", ("a",)), self.plan("text", (), planned_actions=[])],
+             {"screen_kind": "text", "buttons": [], "count": 1}),
+            ([self.plan("text", ("a",)), self.plan("month_menu", ("b",))],
+             {"screen_kind": "month_menu", "buttons": ["b"], "count": 1}),
+            ([self.plan("month_menu", ("a",)), self.plan("text", ("b",)),
+              self.plan("text", ("b",))],
+             {"screen_kind": "text", "buttons": ["b"], "count": 2}),
+        ]
+        for rows, expected in cases:
+            for offset in range(len(rows)):
+                ordered = rows[offset:] + rows[:offset]
+                with self.subTest(expected=expected, first_kind=ordered[0]["screen_kind"]):
+                    self.write(ordered)
+                    output = self.collect()
+                    self.assertEqual(output["status"], "available")
+                    self.assertEqual(output["top_signature"], expected)
+
     def test_a_plan_that_sends_nothing_is_not_reported_as_an_operation(self):
         self.write([self.plan("unknown", (), at=99, planned_actions=[])] * 3
                    + [self.plan("text", ("a",), at=99)])

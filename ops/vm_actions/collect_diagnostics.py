@@ -4769,7 +4769,9 @@ def _collect_hanjuku_decision_plans(state_dir, now=None):
             for name in (buttons or ()):
                 buttons_seen[name] = buttons_seen.get(name, 0) + 1
             repeats[signature] = repeats.get(signature, 0) + 1
-        ranked = sorted(repeats.items(), key=lambda item: (-item[1], item[0]))
+        # Keep unknown buttons distinct from empty plans without comparing None to tuples.
+        ranked = sorted(repeats.items(), key=lambda item: (
+            -item[1], item[0][0], item[0][1] is None, item[0][1] or ()))
         top_kind, top_buttons = ranked[0][0]
         out.update(
             status="partial" if rejected else "available",
