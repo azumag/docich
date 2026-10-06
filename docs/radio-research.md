@@ -66,7 +66,7 @@ persona/templateの正本、state/history、音声・字幕・queueへのdeliver
 
 ### Process bridge
 
-`python3 -P -m docich.radio.consumer`（launcher: `bin/docich-radio-native-script`）は、
+`python3 -P -m docich.radio.consumer` は、
 稼働中consumerから上記coreを呼ぶための薄いprocess境界。stdinに
 `{"topic": "...", "queries": ["..."], "agents": "provider-api:model"}` の3キーだけを受け、
 stdoutへ固定status/scopeと、成功時だけbody/summary/selected_newsをJSONで返す。
