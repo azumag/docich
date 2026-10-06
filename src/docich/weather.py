@@ -426,12 +426,7 @@ def _rain_summary(pops: list[dict]) -> str:
         )
 
     low, high = min(values), max(values)
-    peaks = "と".join(
-        _rain_period_label(start, end)
-        for start, end, percent in runs
-        if percent == high
-    )
-    return f"降水確率は{low}から{high}パーセントの範囲で変わり、{peaks}が最も高くなります。"
+    return f"降水確率は{low}から{high}パーセントの範囲で変動します。"
 
 
 def narration(view: dict) -> list[str]:
