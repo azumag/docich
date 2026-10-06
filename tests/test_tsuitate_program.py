@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import re
 import sys
 import time
 import uuid
@@ -184,6 +185,26 @@ def test_broadcast_projection_drops_unreviewed_remote_fields(monkeypatch):
     assert "yourHand" not in data["spectatorView"]
     assert "opponentPieces" not in tsuitate_view.HTML
     assert "公平性のため配信しません" in tsuitate_view.HTML
+
+
+@pytest.mark.parametrize(("reason", "expected"), [
+    ("repetition", "千日手"),
+    ("stalemate", "stalemate"),
+])
+@pytest.mark.parametrize("surface", ["broadcast", "webui"])
+def test_terminal_reason_labels_preserve_the_reported_reason(reason, expected, surface):
+    # Repetition does not imply perpetual check. Keep stalemate's source term
+    # until its site-specific rules have been established, rather than inventing
+    # a shogi adjudication or deriving a win/draw from this reason alone.
+    if surface == "broadcast":
+        html, name = tsuitate_view.HTML, "reasonLabel"
+    else:
+        html = (ROOT / "src/docich/webui_resources/index.html").read_text(encoding="utf-8")
+        name = "GAME_REASON_JA"
+    declaration = re.search(rf"const\s+{name}\s*=\s*\{{([^}}]+)\}};", html)
+    assert declaration is not None
+    labels = dict(re.findall(r'([a-z_]+):"([^"]+)"', declaration.group(1)))
+    assert labels[reason] == expected
 
 
 def test_tsuitate_readiness_requires_exact_runtime_identity(tmp_path, monkeypatch):
