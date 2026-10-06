@@ -251,6 +251,57 @@ class PaperTests(unittest.TestCase):
         profile.write_text("[paper_corner]\nimprove_agents = ''\n")
         return Runtime(SimpleNamespace(state_dir=self.root / "run", config_path=profile), market, settings)
 
+    def test_market_ai_direct_flag_selects_direct_only_chain(self):
+        r = self.runtime()
+        try:
+            r.settings["ai"]["agents"] = "opencode:legacy"
+            r.settings["ai"]["direct_agents"] = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
+            with patch.dict("os.environ", {"DOCICH_MARKET_PAPER_DIRECT_ENABLED": "1"}, clear=False):
+                self.assertEqual(
+                    r._improvement_agents(),
+                    "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8",
+                )
+            with patch.dict("os.environ", {"DOCICH_MARKET_PAPER_DIRECT_ENABLED": "0"}, clear=False):
+                self.assertEqual(r._improvement_agents(), "opencode:legacy")
+        finally:
+            r.book.close()
+
+    def test_market_ai_invalid_direct_flag_does_not_fallback(self):
+        r = self.runtime()
+        try:
+            r.settings["ai"]["agents"] = "opencode:legacy"
+            r.settings["ai"]["direct_agents"] = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
+            with patch.dict("os.environ", {"DOCICH_MARKET_PAPER_DIRECT_ENABLED": "invalid"}, clear=False):
+                self.assertEqual(r._improvement_agents(), "")
+        finally:
+            r.book.close()
+
+    def test_market_ai_direct_enabled_with_empty_chain_does_not_inherit_legacy(self):
+        r = self.runtime()
+        try:
+            r.settings["ai"]["agents"] = "opencode:legacy"
+            r.settings["ai"]["direct_agents"] = ""
+            with patch.dict("os.environ", {"DOCICH_MARKET_PAPER_DIRECT_ENABLED": "1"}, clear=False):
+                self.assertEqual(r._improvement_agents(), "")
+        finally:
+            r.book.close()
+
+    def test_market_ai_direct_flag_rejects_non_direct_or_invalid_chains(self):
+        r = self.runtime()
+        try:
+            r.settings["ai"]["agents"] = "opencode:legacy"
+            with patch.dict("os.environ", {"DOCICH_MARKET_PAPER_DIRECT_ENABLED": "1"}, clear=False):
+                for agents in (
+                    "opencode:legacy", "opencode:one,opencode-go:two", "local", "vercel:legacy",
+                    "cloudflare-api:model,opencode:legacy", "cloudflare-api:",
+                    "cloudflare-api:model,", "unknown:model", "cloudflare-api:unsafe model", None,
+                ):
+                    with self.subTest(agents=agents):
+                        r.settings["ai"]["direct_agents"] = agents
+                        self.assertEqual(r._improvement_agents(), "")
+        finally:
+            r.book.close()
+
     def test_stock_entries_require_fresh_presentation_lease(self):
         r = self.runtime()
         try:
