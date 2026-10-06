@@ -783,7 +783,13 @@ def test_systemd_improve_submission_is_independent_and_bounded(tmp_path, monkeyp
     assert '--setenv=DOCICH_ALLOW_REAL_AI=1' in argv
     assert f'--setenv=PYTHONPATH={g.repo_root / "src"}' in argv
     assert f'--property=StandardOutput=append:{log.resolve()}' in argv
-    assert argv[argv.index('--') + 1:] == child
+    child_argv = argv[argv.index('--') + 1:]
+    assert child_argv[:3] == [
+        '/usr/bin/bash',
+        str(g.repo_root / 'ops/vm_actions/run_paper_improve_with_ai_env.sh'),
+        '--',
+    ]
+    assert child_argv[3:] == child
     assert 'must-not-forward' not in str(argv)
     assert kwargs['check'] is False
     assert kwargs['timeout'] == 30
