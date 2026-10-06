@@ -669,7 +669,9 @@ def prepare_export(
             screenshot_dir = runtime / "tmp" / "game_screenshots" / game_dir
             _reject_symlink_chain(runtime, screenshot_dir)
             if screenshot_dir.is_dir():
-                shots: list[tuple[int, Path]] = []
+                # Output names are turn-based: collapse format/padding/suffix
+                # aliases BEFORE the per-game limit and before writing files.
+                shots: dict[int, tuple[Path, os.stat_result]] = {}
                 for entry in os.scandir(screenshot_dir):
                     match = SCREENSHOT_RE.fullmatch(entry.name)
                     if not match or entry.is_symlink():
@@ -678,18 +680,34 @@ def prepare_export(
                         info = entry.stat(follow_symlinks=False)
                     except OSError:
                         continue
-                    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_SCREENSHOT_BYTES:
+                    if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_SCREENSHOT_BYTES:
                         continue
-                    shots.append((int(match.group(1)), Path(entry.path)))
-                shots.sort(key=lambda item: (item[0], item[1].name))
-                for turn, src in shots[:MAX_SCREENSHOTS_PER_GAME]:
-                    _read_regular(runtime, src, MAX_SCREENSHOT_BYTES)
+                    turn, src = int(match.group(1)), Path(entry.path)
+                    previous = shots.get(turn)
+                    if previous is None or (info.st_mtime_ns, src.name) > (
+                        previous[1].st_mtime_ns, previous[0].name
+                    ):
+                        shots[turn] = (src, info)
+                for turn, (src, selected_info) in sorted(shots.items())[:MAX_SCREENSHOTS_PER_GAME]:
+                    snapshot = _read_stable_optional(runtime, src, MAX_SCREENSHOT_BYTES)
+                    if snapshot is None:
+                        continue
+                    source_bytes, source_info = snapshot
+                    fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+                    if any(getattr(selected_info, key) != getattr(source_info, key) for key in fields):
+                        continue
+                    # As with partial evidence, ffmpeg sees only the validated
+                    # snapshot, not a mutable source reopened after validation.
+                    source_copy = staging / f".completed-source-{token}-{turn}{src.suffix.lower()}"
+                    _copy_bytes(source_copy, source_bytes)
                     dst = staging / game_dir / "screenshots" / f"turn_{turn}.jpg"
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     try:
-                        transcode(src, dst)
+                        transcode(source_copy, dst)
                     except (OSError, subprocess.SubprocessError) as exc:
                         raise EvidenceError("screenshot transcode failed") from exc
+                    finally:
+                        source_copy.unlink(missing_ok=True)
                     image = dst.read_bytes()
                     if not image or len(image) > MAX_SCREENSHOT_BYTES:
                         raise EvidenceError("transcoded screenshot outside size contract")
@@ -725,6 +743,9 @@ def prepare_export(
                 "sha256": _sha256_bytes(data),
             })
 
+        names = [item["name"] for item in files_meta]
+        if len(names) != len(set(names)):
+            raise EvidenceError("duplicate evidence output name")
         manifest_bytes = (json.dumps(manifest, sort_keys=True, ensure_ascii=False) + "\n").encode()
         _copy_bytes(staging / "manifest.json", manifest_bytes)
 
