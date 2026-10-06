@@ -12,7 +12,7 @@ import json
 import re
 from pathlib import Path
 
-COMMENTARY_VERSION = "hanjuku-commentary-v4-explicit-evidence"
+COMMENTARY_VERSION = "hanjuku-commentary-v5-terminal-story"
 
 _STEP_LABEL = {
     '1-A1': '主人公の初手', '1-V1': 'ヴィーナスの初手', '1-C1': 'ココットの初手',
@@ -286,19 +286,38 @@ def _ownership_events(rec):
             yield ('captured', label)
 
 
-def recap_body(runtime_dir, run_state) -> str:
-    """A short chronological story grounded in this run's own records.
+def _battle_story_sentence(rec):
+    outcome = rec.get('outcome')
+    if outcome not in {'win', 'loss'}:
+        return None
+    enemy = _story_label(rec.get('enemy'))
+    castle = _story_label(rec.get('castle'))
+    place = f'{castle}城では' if castle else ''
+    opponent = f'{enemy}との戦闘に' if enemy else '戦闘に'
+    result = '勝っています' if outcome == 'win' else '敗れています'
+    return f'{place}{opponent}{result}。'
 
-    The first recorded order is stated as a plan; only ``order_launched`` is
-    stated as an actual sortie. Battle outcomes and observed castle ownership
-    remain separate facts. The same deterministic text feeds chat and voice.
+
+def recap_body(runtime_dir, run_state) -> str:
+    """Turn this run's evidence into a short post-game story.
+
+    The recap deliberately separates plans, confirmed actions, battle results,
+    and ownership observations.  It explains the most important contrast in
+    the run, labels unsupported causality as unknown, and finishes with a
+    concrete next-run focus instead of replaying the event log.
     """
     records = list(_decisions(runtime_dir))
     if not records:
-        return '今回の挑戦では、確認できる出来事の記録が残っていません。'
+        return (
+            '今回の挑戦では、確認できる出来事の記録が残っていません。'
+            '次回は終了直前の戦闘結果と城の保有変化を残し、'
+            'どこで流れが変わったかを振り返れるようにします。'
+        )
 
-    chapters = [rec['chapter'] for rec in records
-                if type(rec.get('chapter')) is int and 1 <= rec['chapter'] <= 99]
+    chapters = [
+        rec['chapter'] for rec in records
+        if type(rec.get('chapter')) is int and 1 <= rec['chapter'] <= 99
+    ]
     months = []
     for rec in records:
         key = rec.get('month') if rec.get('decision') == 'month_seen' else None
@@ -306,96 +325,158 @@ def recap_body(runtime_dir, run_state) -> str:
             year, month = key.split('-', 1)
             months.append((int(year), int(month)))
 
-    chapter = max(chapters) if chapters else None
-    month_label = None
+    progress = []
+    if chapters:
+        progress.append(f'第{max(chapters)}章')
     if months:
         year, month = max(months)
-        month_label = f'{year}年{month}月'
-    launches = sum(rec.get('decision') == 'order_launched' for rec in records)
-    discharged = sum(rec.get('decision') == 'discharge_general' for rec in records)
-    captured = set()
-    for rec in records:
-        for event_kind, castle in _ownership_events(rec):
-            if event_kind == 'captured':
-                captured.add(castle)
+        progress.append(f'{year}年{month}月')
+    if progress:
+        story = [f"今回の挑戦は、記録上は{'・'.join(progress)}まで進みました。"]
+    else:
+        story = ['今回の挑戦を、確認できた戦況から振り返ります。']
 
-    story = []
-    plan = next((rec for rec in records if rec.get('decision') == 'order_start'
-                 and _story_label(rec.get('general')) and _story_label(rec.get('target'))), None)
-    if plan:
-        story.append(
-            f"作戦記録には、{_story_label(plan.get('general'))}将軍を"
-            f"{_story_label(plan.get('target'))}城へ向かわせる予定が残っています。"
-        )
-
-    events = []
+    plans = []
+    launches = []
+    battles = []
+    ownership = []
     for index, rec in enumerate(records):
         kind = rec.get('decision')
-        if kind == 'order_launched':
+        if kind == 'order_start':
             general = _story_label(rec.get('general'))
             target = _story_label(rec.get('target'))
             if general and target:
-                events.append((index, f'{general}将軍の{target}城への出撃が確認されました。'))
-        elif kind == 'battle_result':
-            sentence = _battle_result_sentence(rec)
-            if sentence:
-                events.append((index, sentence))
-        elif kind in {'castle_owned_observed', 'castle_lost_observed', 'world_map_owners'}:
+                plans.append((index, general, target))
+        elif kind == 'order_launched':
+            general = _story_label(rec.get('general'))
+            target = _story_label(rec.get('target'))
+            if general and target:
+                launches.append((index, general, target))
+        elif kind == 'battle_result' and rec.get('outcome') in {'win', 'loss'}:
+            battles.append((index, rec))
+        if kind in {'castle_owned_observed', 'castle_lost_observed', 'world_map_owners'}:
             for event_kind, castle in _ownership_events(rec):
-                if event_kind == 'captured':
-                    sentence = f'{castle}城を自軍が保持していることを観測で確認しました。'
-                else:
-                    sentence = f'{castle}城の失陥が観測で確認されました。'
-                events.append((index, sentence))
+                ownership.append((index, event_kind, castle))
 
-    # Retain the first actual sortie plus the latest battle and ownership
-    # observations. Fill any remaining slot with the latest recorded event.
-    # This keeps the story chronological and gives it a concrete turning
-    # point without reading every menu action aloud.
-    if len(events) > 3:
-        selected = []
-        first_sortie = next((event for event in events
-                             if '出撃が確認されました。' in event[1]), None)
-        latest_battle = next((event for event in reversed(events)
-                              if '戦闘は' in event[1]), None)
-        latest_ownership = next((event for event in reversed(events)
-                                 if '城を自軍が保持' in event[1]
-                                 or '城の失陥' in event[1]), None)
-        for event in (first_sortie, latest_battle, latest_ownership):
-            if event is not None and event not in selected:
-                selected.append(event)
-        if len(selected) < 3:
-            for event in reversed(events):
-                if event not in selected:
-                    selected.append(event)
-                if len(selected) == 3:
-                    break
-        events = sorted(selected, key=lambda event: event[0])
-    story.extend(sentence for _index, sentence in events)
+    # Explain the intended attack and what was actually confirmed. Prefer a
+    # launch to the planned target, so a substitute general becomes a useful
+    # part of the story rather than an unrelated first/last-event sample.
+    plan = plans[0] if plans else None
+    launch = None
+    if plan is not None:
+        launch = next(
+            (item for item in launches if item[0] >= plan[0] and item[2] == plan[2]),
+            None,
+        )
+    if launch is None and launches:
+        launch = launches[0]
 
-    try:
-        battles = (run_state or {}).get('battles_finished')
-    except AttributeError:
-        battles = None
-    if type(battles) is not int or battles < 0:
-        battles = None
-    progress = []
-    if chapter is not None:
-        progress.append(f'第{chapter}章まで')
-    if month_label:
-        progress.append(f'{month_label}まで')
-    if launches:
-        progress.append(f'出撃{launches}回')
-    if battles is not None:
-        progress.append(f'戦闘{battles}回')
-    if captured:
-        progress.append(f'{len(captured)}城の獲得記録')
-    if discharged:
-        progress.append(f'将軍の解雇{discharged}回')
-    if progress:
-        story.append('記録では' + '、'.join(progress) + 'の経過が確認できます。')
-    elif not story:
-        return '今回の挑戦では、確認できる出来事の記録が残っていません。'
+    if plan and launch and plan[2] == launch[2]:
+        if plan[1] == launch[1]:
+            story.append(
+                f'作戦では{plan[2]}城への進出を狙い、'
+                f'{launch[1]}将軍の出撃までは実行できました。'
+            )
+        else:
+            story.append(
+                f'作戦では{plan[1]}将軍を{plan[2]}城へ向かわせる予定でしたが、'
+                f'実際には{launch[1]}将軍が同じ{launch[2]}城へ出撃しました。'
+            )
+    elif launch:
+        story.append(
+            f'{launch[1]}将軍が{launch[2]}城へ出撃したところまでは確認できました。'
+        )
+    elif plan:
+        story.append(
+            f'作戦では{plan[1]}将軍を{plan[2]}城へ向かわせる予定でしたが、'
+            'この記録からは出撃完了までは確認できません。'
+        )
+
+    latest_state = {}
+    for event in ownership:
+        latest_state[event[2]] = event
+    unresolved_losses = [
+        event for event in ownership
+        if event[1] == 'lost' and latest_state.get(event[2]) == event
+    ]
+    recovered_losses = [
+        event for event in ownership
+        if event[1] == 'lost'
+        and latest_state.get(event[2], event)[0] > event[0]
+        and latest_state.get(event[2], event)[1] == 'captured'
+    ]
+    latest_win = next((rec for _i, rec in reversed(battles) if rec.get('outcome') == 'win'), None)
+    latest_battle_loss = next(
+        (rec for _i, rec in reversed(battles) if rec.get('outcome') == 'loss'),
+        None,
+    )
+
+    if unresolved_losses:
+        lost_castle = unresolved_losses[-1][2]
+        win_sentence = _battle_story_sentence(latest_win) if latest_win else None
+        if win_sentence:
+            story.append(
+                f'{win_sentence}その一方で{lost_castle}城の失陥も確認されており、'
+                '局地戦の勝利を拠点の維持へつなげ切れなかったことが今回の反省点です。'
+            )
+        else:
+            story.append(
+                f'{lost_castle}城を失ったまま終えており、'
+                '攻めるだけでなく拠点を維持する判断に課題が残りました。'
+            )
+        if launches:
+            story.append(
+                f'ただし、{lost_castle}城の失陥が出撃判断の直接の結果だったかまでは'
+                '記録から断定できません。次回は出撃の前後で守備配置と兵力を確認し、'
+                '攻撃後も城を維持できる条件を優先します。'
+            )
+        else:
+            story.append(
+                '失陥の直接原因までは記録から断定できません。'
+                '次回は失陥直前の守備配置・兵力・敵の接近状況を確認し、'
+                'どの判断で守りが崩れたのかを絞り込みます。'
+            )
+    elif recovered_losses:
+        lost_castle = recovered_losses[-1][2]
+        story.append(
+            f'途中で{lost_castle}城を失いましたが、その後の観測では奪回できています。'
+            '立て直せた点は成果ですが、一度守りを崩した場面は次回の改善材料です。'
+        )
+        story.append(
+            '次回はその失陥直前の守備配置と出撃判断を見直し、'
+            '奪回を前提にしない安定した進軍を狙います。'
+        )
+    elif latest_battle_loss is not None:
+        loss_sentence = _battle_story_sentence(latest_battle_loss)
+        if loss_sentence:
+            story.append(
+                f'{loss_sentence}今回確認できる明確なつまずきはこの戦闘です。'
+            )
+        story.append(
+            '次回はその戦闘の開始時体力と、使える切り札・たまごの選択を見直し、'
+            '同じ条件で無理に押し切らない判断を優先します。'
+        )
+    else:
+        if latest_win is not None:
+            win_sentence = _battle_story_sentence(latest_win)
+            if win_sentence:
+                story.append(f'{win_sentence}戦闘で前進できた場面は確認できています。')
+        try:
+            terminal_reason = (run_state or {}).get('terminal_reason')
+        except AttributeError:
+            terminal_reason = None
+        if terminal_reason == 'game_over':
+            story.append(
+                'ただし、ゲームオーバーへ至った直接の原因はこの記録だけでは特定できません。'
+                '次回は終了直前の戦闘結果と城の保有変化を突き合わせ、'
+                '戦闘・守備・操作のどこで流れが切れたかを確認します。'
+            )
+        else:
+            story.append(
+                '大きな失陥や敗戦はこの記録からは確認できません。'
+                '次回も同じ攻勢を続けつつ、終了直前の盤面変化を重点的に残します。'
+            )
+
     return ''.join(story)
 
 
