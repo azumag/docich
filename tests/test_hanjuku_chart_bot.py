@@ -770,22 +770,27 @@ def test_summoned_monster_turn_menu_is_answered_instead_of_stalling():
     assert actions[0]['buttons'] == ['a']
 
 
-def test_a_heal_first_monster_inflates_then_shouts():
-    # バルーンフィンチ: ふくらむ to the tracked max, then シャウト while at max
-    # (owner 2026-09-29); damage re-enables the heal.
-    def run(ally_hp, state=None):
-        frame = monster_menu_frame(['ふくらむ', 'シャウト'],
-                                   ally=('バルーンフィンチ', ally_hp), enemy=('クミン', 40), cursor=0)
-        state = state or {'policy': {'chapter': 1, 'battle': {
-            'enemy': 'クミン', 'ally': 'バルーンフィンチ', 'enemy_hp': 40,
-            'ally_hp': ally_hp, 'step': None}}}
-        return decide(frame, state)
-    _, state = run(30)                                             # hurt: inflate first
-    assert state['policy']['monster_menu_choice'] == 'skill1'
-    _, state = run(120, state)                                     # healed to the new max
-    assert state['policy']['monster_menu_choice'] == 'skill2'      # shout at full
-    _, state = run(30, state)                                      # damaged again
-    assert state['policy']['monster_menu_choice'] == 'skill1'
+@pytest.mark.parametrize(
+    ('ally_hp', 'enemy_hp', 'choice'),
+    [
+        (192, 1000, 'skill1'),    # even badly behind, inflate instead of retreating
+        (6144, 40, 'skill1'),     # an intermediate observed high is not "full"
+        (9998, 40, 'skill1'),     # one point below the cap still inflates
+        (9999, 40, 'skill2'),     # only full HP may shout
+        (4999, 40, 'skill1'),     # after shout/damage, inflate back to full
+    ],
+)
+def test_balloon_finch_inflates_to_real_cap_then_shouts(ally_hp, enemy_hp, choice):
+    # Owner 2026-10-06: ふくらむ until HP is actually maxed, then シャウト.
+    # The policy is fixed for this monster and must beat generic retreat/experience.
+    frame = monster_menu_frame(
+        ['ふくらむ', 'シャウト'],
+        ally=('バルーンフィンチ', ally_hp), enemy=('クミン', enemy_hp), cursor=0)
+    state = {'policy': {'chapter': 1, 'battle': {
+        'enemy': 'クミン', 'ally': 'バルーンフィンチ', 'enemy_hp': enemy_hp,
+        'ally_hp': ally_hp, 'step': None}}}
+    _, state = decide(frame, state)
+    assert state['policy']['monster_menu_choice'] == choice
 
 
 def test_egg_summon_menu_falls_back_to_attack_when_the_egg_is_spent():
@@ -1778,7 +1783,7 @@ def test_monster_menu_skips_a_full_hp_heal_first_skill_for_damage():
     assert choice['strategy_variant'] == 'monster_menu_skill2'
     assert choice['observed_metric']['action'] == 'skill2'
     assert choice['observed_metric']['menu'] == ['ふくらむ', 'シャウト', 'たまごにもどれ']
-    assert '回復技' in choice['reason']
+    assert choice['observed_metric']['target_hp'] == policy.BALLOON_FINCH_MAX_HP
     assert actions[0]['buttons'] == ['down']
 
 
