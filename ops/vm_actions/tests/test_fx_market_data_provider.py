@@ -61,7 +61,7 @@ class FxMarketDataProviderTests(unittest.TestCase):
         self.assertIn("github.triggering_actor == 'azumag'", text)
         self.assertIn("github.ref == 'refs/heads/main'", text)
         self.assertIn("github.ref_protected == true", text)
-        self.assertIn("group: vm-operations-${{ github.repository }}", text)
+        self.assertIn("group: vm-operations-v2-${{ github.repository }}", text)
         self.assertIn("options: [enable, disable, restart]", text)
         self.assertIn("MARKET_PAPER_ACTION=provider-%s", text)
         self.assertIn("MARKET_PAPER_MARKET=fx", text)

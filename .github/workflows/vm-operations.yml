@@ -67,7 +67,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: vm-operations-${{ github.repository }}
+  group: vm-operations-v2-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:

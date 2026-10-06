@@ -136,7 +136,7 @@ class PaperCornerEmergencyRestoreWorkflowTests(unittest.TestCase):
         self.assertNotIn("github.event_name == 'workflow_call'", text)
         self.assertIn("github.ref_protected == true", text)
         self.assertIn("environment: vm-operations", text)
-        self.assertIn("group: vm-operations-${{ github.repository }}", text)
+        self.assertIn("group: vm-operations-v2-${{ github.repository }}", text)
         self.assertIn("restore-scheduled", text)
         self.assertIn("bin/docich-paper-corner-restore", text)
         self.assertIn("docich:paper-restore-complete", text)

@@ -213,7 +213,7 @@ class ReloadPollWorkerTests(unittest.TestCase):
                          'github.actor_id == 9018513', "github.triggering_actor == 'azumag'",
                          "github.repository == 'azumag/docich'", "github.ref == 'refs/heads/main'",
                          'github.ref_protected == true', 'environment: vm-operations',
-                         'group: vm-operations-${{ github.repository }}', 'cancel-in-progress: false',
+                         'group: market-paper-runtime-reload-${{ github.repository }}', 'cancel-in-progress: false',
                          'ref: ${{ github.event.workflow_run.head_sha }}',
                          '[[ "$current_main" != "$SHA" ]]', 'cd /home/ubuntu/docich',
                          'git diff --quiet HEAD --', 'python3 ops/vm_actions/reload_poll_worker.py',

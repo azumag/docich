@@ -16,7 +16,7 @@ permissions:
 # It deliberately shares the normal VM lane; the request marker is durable
 # outside this lane, so a pending run can be replaced without losing work.
 concurrency:
-  group: vm-operations-${{ github.repository }}
+  group: vm-operations-v2-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
