@@ -2652,7 +2652,7 @@ def test_egg_recovery_holds_the_gold_over_more_soldiers_when_army_is_big():
     assert policy._extras_reserve(dict(mem), {'year': 2, 'month': 4, 'gold': 130})[0] == 50
 
 
-def test_summarize_recap_counts_only_the_runs_own_story(tmp_path):
+def test_summarize_recap_turns_run_evidence_into_story(tmp_path):
     from docich.hanjuku_commentary import summarize_recap
     rows = [
         {'event': 'decision', 'decision': 'month_seen', 'month': '2-7'},
@@ -2671,20 +2671,55 @@ def test_summarize_recap_counts_only_the_runs_own_story(tmp_path):
     ]
     (tmp_path / 'hanjuku_decisions.jsonl').write_text(
         ''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in rows))
-    key, text = summarize_recap(tmp_path, {'battles_finished': 42})
+    key, text = summarize_recap(
+        tmp_path, {'battles_finished': 42, 'terminal_reason': 'game_over'})
     assert key == 'game_over_recap'
-    sentences = text.split('。')
-    assert 4 <= len(sentences) - 1 <= 6
-    assert 'どうし将軍をジョンリギ城へ向かわせる予定' in text
-    assert 'ジョンリギ城への出撃が確認' in text
-    assert 'けっかい城でクイーンとの戦闘は勝利' in text
-    assert 'ココット城の失陥が観測で確認' in text
-    assert '城を勝ち取った' not in text  # battle victory is not castle ownership
-    assert '第2章まで' in text and '2年7月まで' in text
-    assert '戦闘42回' in text and '将軍の解雇1回' in text
-    assert 120 < len(text) <= 1000
-    _, bare = summarize_recap(tmp_path, {})
-    assert '今回の挑戦はここまでです。' in bare
+    assert '今回はゲームオーバーとなり、記録上は第2章・2年7月まで進みました。' in text
+    assert '作戦ではジョンリギ城への進出を狙い、どうし将軍の出撃までは実行できました。' in text
+    assert 'けっかい城ではクイーンとの戦闘に勝っています。' in text
+    assert 'ココット城の失陥' in text
+    assert '局地戦の勝利と拠点の失陥が両方記録されている' in text
+    assert '直接の結果だったかまでは記録から断定できません' in text
+    assert '次回は出撃の前後で守備配置と兵力を確認' in text
+    assert '戦闘42回' not in text
+    assert '作戦記録には' not in text
+    assert text.endswith('タイトル画面への復帰を確認し、今回の挑戦はここまでです。')
+    assert 140 < len(text) <= 1000
+
+
+def test_recap_matches_owner_report_case_and_does_not_dump_history(tmp_path):
+    from docich.hanjuku_commentary import recap_body
+
+    rows = [
+        {'event': 'decision', 'decision': 'month_seen', 'month': '3-11', 'chapter': 1},
+        {'event': 'decision', 'decision': 'order_start',
+         'general': 'どうし', 'target': 'アルマムーン'},
+        {'event': 'decision', 'decision': 'order_launched',
+         'general': 'アンディーブ', 'target': 'アルマムーン'},
+        {'event': 'decision', 'decision': 'castle_lost_observed',
+         'castle': 'ナキューメラ'},
+        {'event': 'decision', 'decision': 'battle_result',
+         'enemy': 'バジル', 'castle': 'ジョンリギ', 'outcome': 'win'},
+    ]
+    (tmp_path / 'hanjuku_decisions.jsonl').write_text(
+        ''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in rows),
+        encoding='utf-8',
+    )
+    text = recap_body(
+        tmp_path, {'battles_finished': 316, 'terminal_reason': 'game_over'})
+    assert text.startswith('今回はゲームオーバーとなり、記録上は第1章・3年11月まで進みました。')
+    assert (
+        '作戦ではどうし将軍をアルマムーン城へ向かわせる予定でしたが、'
+        '実際にはアンディーブ将軍が同じアルマムーン城へ出撃しました。'
+    ) in text
+    assert 'ジョンリギ城ではバジルとの戦闘に勝っています。' in text
+    assert 'ナキューメラ城の失陥' in text
+    assert '今回の反省点' in text
+    assert '次回は出撃の前後で守備配置と兵力を確認' in text
+    assert '出撃8回' not in text
+    assert '戦闘316回' not in text
+    assert '4城の獲得記録' not in text
+    assert '作戦記録には' not in text
 
 
 def test_recap_body_is_shared_by_chat_summary(tmp_path):
@@ -2693,7 +2728,8 @@ def test_recap_body_is_shared_by_chat_summary(tmp_path):
     (tmp_path / 'hanjuku_decisions.jsonl').write_text(
         json.dumps({'event': 'decision', 'chapter': 4}) + '\n')
     body = recap_body(tmp_path, {})
-    assert body == '記録では第4章までの経過が確認できます。'
+    assert body.startswith('今回の挑戦は、記録上は第4章まで進みました。')
+    assert '大きな失陥や敗戦はこの記録からは確認できません。' in body
     # Voice and chat use the same recorded story; voice adds its game-over ending.
     assert summarize_recap(tmp_path, {}) == (
         'game_over_recap', f'{body}タイトル画面への復帰を確認し、今回の挑戦はここまでです。')
@@ -4089,3 +4125,46 @@ def test_unreadable_yes_no_records_situation_held_not_silent_empty():
     actions = policy.yes_no_step(screen, mem)
     assert actions == []
     assert any(r['decision'] == 'situation_held' for r in mem['_records'])
+
+
+def test_recap_does_not_pair_an_old_launch_with_a_later_plan(tmp_path):
+    from docich.hanjuku_commentary import recap_body
+
+    rows = [
+        {'decision': 'order_launched', 'general': 'アンディーブ', 'target': 'アルマムーン'},
+        {'decision': 'order_start', 'general': 'どうし', 'target': 'アルマムーン'},
+    ]
+    (tmp_path / 'hanjuku_decisions.jsonl').write_text(
+        ''.join(json.dumps({'event': 'decision', **row}, ensure_ascii=False) + '\n'
+                for row in rows), encoding='utf-8')
+    text = recap_body(tmp_path, {'terminal_reason': 'game_over'})
+    assert 'どうし将軍をアルマムーン城へ向かわせる予定' in text
+    assert 'この記録からは出撃完了までは確認できません' in text
+    assert '実際にはアンディーブ将軍が同じ' not in text
+    assert '出撃までは実行できました' not in text
+
+
+def test_month_only_recap_does_not_invent_an_offensive(tmp_path):
+    from docich.hanjuku_commentary import recap_body
+
+    (tmp_path / 'hanjuku_decisions.jsonl').write_text(
+        json.dumps({'event': 'decision', 'decision': 'month_seen', 'month': '3-11'}) + '\n')
+    text = recap_body(tmp_path, {'terminal_reason': 'manual_saved_stop'})
+    assert '3年11月まで進みました' in text
+    assert '同じ攻勢' not in text
+    assert '出撃' not in text
+    assert '作戦と実行結果を確認' in text
+
+
+def test_loss_observation_does_not_assert_a_bad_defensive_decision(tmp_path):
+    from docich.hanjuku_commentary import recap_body
+
+    (tmp_path / 'hanjuku_decisions.jsonl').write_text(
+        json.dumps({'event': 'decision', 'decision': 'castle_lost_observed',
+                    'castle': 'ナキューメラ'}, ensure_ascii=False) + '\n', encoding='utf-8')
+    text = recap_body(tmp_path, {'terminal_reason': 'game_over'})
+    assert 'ナキューメラ城の失陥が記録されており' in text
+    assert '失陥の直接原因までは記録から断定できません' in text
+    assert '判断に課題' not in text
+    assert 'どの判断で守りが崩れた' not in text
+    assert '守備配置・兵力・敵の接近状況を確認' in text

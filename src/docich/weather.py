@@ -232,8 +232,14 @@ def normalize(payload: object, city: City, target: date, now: float) -> dict:
     }
 
 
-def build_bundle(cache_dir: Path, *, now=None, day="auto", getter=download, clock=time.time) -> dict:
-    """Fetch at most once/office/15min; a failed refresh NEVER replays stale data."""
+def build_bundle(cache_dir: Path, *, now=None, day="auto", getter=download, clock=time.time,
+                 min_remaining_s=0) -> dict:
+    """Fetch a national bundle with enough remaining cache life for its caller."""
+    if (type(min_remaining_s) not in (int, float)
+            or not math.isfinite(min_remaining_s)
+            or not 0 <= min_remaining_s < CACHE_TTL):
+        raise WeatherError("invalid-minimum-freshness")
+    min_remaining_s = float(min_remaining_s)
     started = epoch(clock() if now is None else now)
     local = datetime.fromtimestamp(started, JST)
     if day not in {"auto", "today", "tomorrow"}:
@@ -247,10 +253,16 @@ def build_bundle(cache_dir: Path, *, now=None, day="auto", getter=download, cloc
         try:
             with path.open("rb") as handle:
                 candidate = decode(handle.read(MAX_BYTES + 4097), limit=MAX_BYTES + 4096)
+            fetched_at = epoch(candidate.get("fetched_at")) if isinstance(candidate, dict) else None
             if (isinstance(candidate, dict) and candidate.get("office") == city.office
                     and candidate.get("schema_version") == 1
-                    and 0 <= started - epoch(candidate.get("fetched_at")) < CACHE_TTL):
+                    and fetched_at is not None
+                    and 0 <= started - fetched_at < CACHE_TTL
+                    and fetched_at + CACHE_TTL - started >= min_remaining_s):
                 # Do not trust cache timestamps alone: validate the actual forecast.
+                # A selected corner may require several minutes of remaining life;
+                # near-expiry cache entries are refreshed instead of causing a
+                # broadcast that starts successfully and then disappears mid-read.
                 normalize(candidate["payload"], city, target, started)
                 cached = candidate
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -265,8 +277,12 @@ def build_bundle(cache_dir: Path, *, now=None, day="auto", getter=download, cloc
             write_json(path, cached)
         records[city.office] = cached
     bundle = {"schema_version": 1, "generated_at": started, "target_date": target.isoformat(), "records": records}
-    # Re-check after network latency: source publication/cache must still be valid.
-    project(bundle, now=started if now is not None else clock())
+    # Re-check after network latency: source publication/cache must still be valid
+    # and must still have the caller's requested runway.
+    checked_at = started if now is not None else epoch(clock())
+    view = project(bundle, now=checked_at)
+    if view["expires_at"] - checked_at < min_remaining_s:
+        raise WeatherError("insufficient-forecast-freshness")
     return bundle
 
 
@@ -310,33 +326,129 @@ def project(bundle: object, *, now: float) -> dict:
         raise WeatherError("invalid-bundle") from exc
 
 
+_RAIN_PERIOD_LABELS = {
+    (0, 6): "未明",
+    (6, 12): "午前",
+    (12, 18): "午後",
+    (18, 24): "夜",
+    (0, 12): "未明から午前",
+    (6, 18): "朝から夕方",
+    (12, 24): "午後以降",
+    (0, 18): "未明から夕方",
+    (6, 24): "朝以降",
+    (0, 24): "全時間帯",
+}
+
+
+def _spoken_weather(value: str) -> str:
+    """Make JMA's space-delimited weather phrase easier to hear without adding facts."""
+    spoken = re.sub(r"[ \u3000]+", " ", value).strip()
+    for label in ("夜遅く", "昼過ぎ", "明け方", "未明", "夕方", "昼前", "朝", "夜"):
+        spoken = re.sub(rf" {label} から ", f"、{label}からは", spoken)
+        spoken = re.sub(rf" {label} まで ", f"、{label}までは", spoken)
+        spoken = re.sub(rf" {label} ", f"、{label}は", spoken)
+    for connector in ("のち", "時々", "一時", "から", "まで"):
+        spoken = spoken.replace(f" {connector} ", connector)
+    return spoken.replace(" ", "")
+
+
+def _rain_period_label(start: int, end: int) -> str:
+    return _RAIN_PERIOD_LABELS.get((start, end), f"{start}時から{end}時")
+
+
+def _rain_period_phrase(start: int, end: int, *, destination=False) -> str:
+    label = _rain_period_label(start, end)
+    if label == "全時間帯":
+        return "全時間帯で"
+    if label.endswith("以降"):
+        return f"{label}は"
+    if "から" in label:
+        return f"{label}にかけては" if destination else f"{label}にかけて"
+    return f"{label}には" if destination else f"{label}は"
+
+
+def _rain_summary(pops: list[dict]) -> str:
+    """Compress precipitation probabilities into stable trends instead of a four-number list."""
+    rows = [
+        (period["start"], period["end"], period["percent"])
+        for period in pops
+        if period["percent"] is not None
+    ]
+    if not rows:
+        return ""
+
+    runs: list[list[int]] = []
+    for start, end, percent in rows:
+        if runs and runs[-1][1] == start and runs[-1][2] == percent:
+            runs[-1][1] = end
+        else:
+            runs.append([start, end, percent])
+
+    all_periods = [(start, end) for start, end, _ in rows] == [
+        (0, 6), (6, 12), (12, 18), (18, 24)
+    ]
+    if len(runs) == 1:
+        start, end, percent = runs[0]
+        if all_periods:
+            return f"降水確率は全時間帯で{percent}パーセントです。"
+        return f"降水確率は、{_rain_period_phrase(start, end)}{percent}パーセントです。"
+
+    values = [run[2] for run in runs]
+    if len(runs) == 2:
+        first, second = runs
+        if second[2] < first[2]:
+            return (
+                f"降水確率は、{_rain_period_phrase(first[0], first[1])}{first[2]}パーセントですが、"
+                f"{_rain_period_phrase(second[0], second[1])}{second[2]}パーセントです。"
+            )
+        if second[2] > first[2]:
+            return (
+                f"降水確率は、{_rain_period_phrase(first[0], first[1])}{first[2]}パーセントで、"
+                f"{_rain_period_phrase(second[0], second[1], destination=True)}"
+                f"{second[2]}パーセントまで上がります。"
+            )
+        return f"降水確率は確認できる時間帯では{first[2]}パーセントです。"
+
+    increasing = all(a <= b for a, b in zip(values, values[1:]))
+    decreasing = all(a >= b for a, b in zip(values, values[1:]))
+    first, last = runs[0], runs[-1]
+    if increasing and values[0] != values[-1]:
+        return (
+            f"降水確率は、{_rain_period_phrase(first[0], first[1])}{first[2]}パーセントで、"
+            f"{_rain_period_phrase(last[0], last[1], destination=True)}"
+            f"{last[2]}パーセントまで上がります。"
+        )
+    if decreasing and values[0] != values[-1]:
+        return (
+            f"降水確率は、{_rain_period_phrase(first[0], first[1])}{first[2]}パーセントで、"
+            f"{_rain_period_phrase(last[0], last[1], destination=True)}"
+            f"{last[2]}パーセントまで下がります。"
+        )
+
+    low, high = min(values), max(values)
+    return f"降水確率は{low}から{high}パーセントの範囲で変動します。"
+
+
 def narration(view: dict) -> list[str]:
-    """Literal, date-stamped reading. No model, advice, inferred rain timing or warnings."""
+    """Deterministic spoken forecast summary. No model, advice or invented conditions."""
     day = date.fromisoformat(view["date"])
     lines = [
-        f"気象庁発表の、{day.month}月{day.day}日の全国の天気です。"
-        "代表11地点について、天気、気温、時間帯ごとの降水確率を順にお伝えします。"
+        f"{day.month}月{day.day}日の全国の天気です。"
+        "札幌から那覇まで、代表11地点を順にお伝えします。"
     ]
     for item in view["cities"]:
-        issued = stamp(item["issued_at"])
-        line = f'{item["city"]}です。予報は、{item["weather"]}。'
-        if item["high_c"] is not None:
-            line += f'最高気温は{item["high_c"]}度。'
-        if item["low_c"] is not None:
-            line += f'最低気温は{item["low_c"]}度。'
-
-        rain_periods = [
-            f'{period["start"]}時から{period["end"]}時が{period["percent"]}パーセント'
-            for period in item["pops"]
-            if period["percent"] is not None
-        ]
-        if rain_periods:
-            line += '降水確率は、' + '、'.join(rain_periods) + '。'
-
-        line += f'この予報は、気象庁の{issued.day}日{issued.hour}時発表です。'
+        line = f'{item["city"]}です。{_spoken_weather(item["weather"])}の予報です。'
+        high, low = item["high_c"], item["low_c"]
+        if high is not None and low is not None:
+            line += f"気温は最高{high}度、最低{low}度です。"
+        elif high is not None:
+            line += f"最高気温は{high}度です。"
+        elif low is not None:
+            line += f"最低気温は{low}度です。"
+        line += _rain_summary(item["pops"])
         lines.append(line)
     lines.append(
-        "以上、全国11地点の天気、気温、時間帯ごとの降水確率を、"
+        "以上、全国11地点の天気でした。"
         "気象庁の予報をもとにdocichが編集してお伝えしました。"
     )
     return lines

@@ -265,16 +265,23 @@ def serve(path: Path, *, port=DEFAULT_PORT, runtime_id="preview", generation=Non
         server.serve_forever(poll_interval=0.2)
 
 
-def refresh_snapshot(state_dir: Path, *, day="auto") -> dict:
-    """Publish only a fully validated bundle; share the CLI's single-flight lock."""
+def refresh_snapshot(state_dir: Path, *, day="auto", min_remaining_s=0) -> dict:
+    """Publish only a validated bundle with the requested remaining runway."""
     state_dir.mkdir(parents=True, exist_ok=True)
     path = state_dir / "snapshot.json"
     with (state_dir / ".fetch.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         path.unlink(missing_ok=True)
-        bundle = build_bundle(state_dir / "cache", day=day)
-        # Validate before publication, including elapsed network time.
-        project(bundle, now=time.time())
+        bundle = build_bundle(
+            state_dir / "cache", day=day, min_remaining_s=min_remaining_s,
+        )
+        # Validate before publication, including elapsed network time and the
+        # caller's minimum runway. Never publish a snapshot that can expire
+        # during the requested weather slot.
+        checked_at = time.time()
+        view = project(bundle, now=checked_at)
+        if view["expires_at"] - checked_at < float(min_remaining_s):
+            raise WeatherError("insufficient-forecast-freshness")
         write_json(path, bundle)
         return read_view(path)
 

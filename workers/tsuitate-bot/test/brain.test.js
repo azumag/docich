@@ -206,6 +206,18 @@ test("check probes a sheltered escape first and answers the check once it is exh
   }
 });
 
+test("exposed escapes keep the king move for the later attempts", () => {
+  // 玉の周囲が全て未知で、脱出候補の最小露出度が閾値（18）以上の局面。
+  // 残り予算が3以上あるときはブロックになり得る応手を先に試し、残り2試行
+  // 以下では玉の移動を後回しにしない（最後の試行は応手内の評価順のまま）。
+  const state = observation([["5e", "K"], ["4e", "G"]], { inCheck: true });
+  const options = { profile: profile({ kingMove: 1 }), seed: "exposed" };
+  assert.equal(chooseMove({ ...state, attemptBudget: 3 }, options).usi, "4e4f");
+  assert.equal(chooseMove({ ...state, attemptBudget: 2 }, options).usi, "5e4f");
+  assert.equal(chooseMove({ ...state, attemptBudget: 1 }, options).usi, "5e4f");
+  assert.equal(chooseMove({ ...state, attemptBudget: null }, options).usi, "4e4f");
+});
+
 test("viewer public lastInfo identifies check without disclosing the attacking square", () => {
   for (const [color, own, opponent] of [["b", "+", "-"], ["w", "-", "+"]]) {
     assert.deepEqual(checksFromLastMove({ lastMove: `${opponent}0000ZZ`, lastInfo: 3 }, color),
@@ -367,12 +379,23 @@ test("capture evidence recaptures at a fresh square before the advancing score p
   assert.equal(chooseMove(observation(pieces, { knownEnemies: [{ square: "5e", age: 2 }] }), options).usi, "5d5e");
   // 古い証拠は打ちの遮断だけに使い、手順の選好には使わない。
   assert.equal(chooseMove(observation(pieces, { knownEnemies: [{ square: "5e", age: 3 }] }), options).usi, "5d5c");
-  // 王手中は証拠の選好を挟まない。蔽れていない脱出候補より応手が先で、
-  // 証拠の新しさが選択を変えることも、玉の幾何を満たす手以外を選ぶことも無い。
-  const checked = chooseMove({ ...fresh, inCheck: true }, options);
-  assert.equal(checked.usi, chooseMove({ ...observation(pieces), inCheck: true }, options).usi);
-  assert.ok(addressesCheck(checked.usi, "5i"));
-  assert.equal(checked.features.kingMove, 0);
+  // v11: 王手中は、幾何応手になる新鮮な証拠マスへの移動を玉の脱出より先に試す。
+  // そこが実際の王手駒なら捕獲で王手が解ける（打駒は捕獲できないので含めない）。
+  // 証拠が無い場合・古い場合は順序を変えず、玉の幾何を満たす手のまま。
+  const checkedPieces = [["5i", "K"], ["4e", "R"]];
+  const checkedPlain = chooseMove({ ...observation(checkedPieces), inCheck: true, attemptBudget: 3 }, options);
+  assert.equal(checkedPlain.usi, "4e5e");
+  const checkedFresh = chooseMove({
+    ...observation(checkedPieces, { knownEnemies: [{ square: "4i", age: 0 }] }),
+    inCheck: true, attemptBudget: 3,
+  }, options);
+  assert.equal(checkedFresh.usi, "4e4i");
+  assert.equal(checkedFresh.features.kingMove, 0);
+  assert.ok(addressesCheck(checkedFresh.usi, "5i"));
+  assert.equal(chooseMove({
+    ...observation(checkedPieces, { knownEnemies: [{ square: "4i", age: 3 }] }),
+    inCheck: true, attemptBudget: 3,
+  }, options).usi, checkedPlain.usi);
 });
 
 test("capture evidence stops a ray beyond the proven square but keeps the capture itself", () => {

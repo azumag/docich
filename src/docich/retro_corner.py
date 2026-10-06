@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import fcntl
+import hashlib
 import inspect
 import json
 import os
@@ -400,41 +401,53 @@ _END_HANJUKU_CLOSING = {
 _END_HANJUKU_CLOSING_DEFAULT = "今回の挑戦はここまでです。"
 _END_CLAUSE_DEFAULT = "終了しました"
 
-# The shared sender truncates Twitch at 430 UTF-8 bytes and its YouTube
-# mirror at 200. Include the part label in the smaller transport budget.
-_END_RESULT_CHAT_MAX_BYTES = 200
+# Twitch accepts the larger chat budget.  The shared outbound queue mirrors to
+# YouTube using its own smaller split budget, so this layer must not force the
+# Twitch copy down to YouTube's size.
+_END_RESULT_CHAT_MAX_BYTES = 430
 
 
 def _end_result_chat_parts(text: str) -> list[str]:
-    """Keep the complete recap, preferring sentence boundaries within each post."""
+    """Split a complete recap into readable Twitch-sized passages.
+
+    The complete story is composed first.  We then pack as many sentences as
+    fit, falling back to a clause boundary only for an overlong sentence.
+    Parts are deliberately unlabelled: the YouTube mirror may split them again
+    with a different transport budget, so a shared part counter would be wrong
+    on one of the destinations.
+    """
+    if not text:
+        return []
     if len(text.encode("utf-8")) <= _END_RESULT_CHAT_MAX_BYTES:
-        return [text] if text else []
+        return [text]
 
-    prefix_bytes = len("[1/1] ")
-    while True:
-        budget = _END_RESULT_CHAT_MAX_BYTES - prefix_bytes
-        remaining = text
-        parts = []
-        while remaining:
-            part = remaining.encode("utf-8")[:budget].decode("utf-8", "ignore")
-            if len(part) < len(remaining):
-                end = max(part.rfind(mark) for mark in "。！？!?\n") + 1
-                if not end:
-                    end = max(part.rfind(mark) for mark in "、，, \t") + 1
-                if end:
-                    part = part[:end]
-            parts.append(part)
-            remaining = remaining[len(part):]
-
-        required = len(f"[{len(parts)}/{len(parts)}] ")
-        if required <= prefix_bytes:
+    remaining = text
+    parts = []
+    while remaining:
+        encoded = remaining.encode("utf-8")
+        if len(encoded) <= _END_RESULT_CHAT_MAX_BYTES:
+            parts.append(remaining)
             break
-        # Re-split if the total needs another digit; the label must fit too.
-        prefix_bytes = required
+        part = encoded[:_END_RESULT_CHAT_MAX_BYTES].decode("utf-8", "ignore")
+        if not part:
+            break
 
-    # Distinct labels also prevent repeated passages from being deduplicated
-    # by the shared queue. Short results retain their original single post.
-    return [f"[{number}/{len(parts)}] {part}" for number, part in enumerate(parts, 1)]
+        cut = 0
+        for marks in ("。！？!?\n", "、，, \t"):
+            candidate = max((part.rfind(mark) for mark in marks), default=-1) + 1
+            if (
+                candidate > 0
+                and len(part[:candidate].encode("utf-8"))
+                >= _END_RESULT_CHAT_MAX_BYTES // 2
+            ):
+                cut = candidate
+                break
+        if cut:
+            part = part[:cut]
+        parts.append(part)
+        remaining = remaining[len(part):]
+
+    return parts
 
 
 class RetroCornerManager:
@@ -481,7 +494,8 @@ class RetroCornerManager:
         self._sleep = sleep
         self._active_game_reader = active_game_reader or self._canonical_active_game
         self._ensure_runtime = ensure_runtime or self._default_ensure_runtime
-        self._chat = chat or (lambda text: enqueue_chat(self.g, text, source="retro-corner"))
+        self._default_chat = lambda text: enqueue_chat(self.g, text, source="retro-corner")
+        self._chat = chat or self._default_chat
         self._spawn = spawn or self._default_spawn_improve_proc
         self._rng = rng or random.Random()
         self._stream_game = stream_game or self._default_stream_game
@@ -638,7 +652,11 @@ class RetroCornerManager:
             from .naming import runtime_directory
 
             runtime_dir = runtime_directory(self.g.state_dir, identity["runtime_id"])
-            return recap_body(runtime_dir, load_hanjuku_run(runtime_dir, identity))
+            run_state = load_hanjuku_run(runtime_dir, identity)
+            if isinstance(run_state, dict):
+                run_state = dict(run_state)
+                run_state["terminal_reason"] = self._end_reason_key(state)
+            return recap_body(runtime_dir, run_state)
         except Exception:
             return None
 
@@ -647,9 +665,8 @@ class RetroCornerManager:
     ) -> str:
         """終了時の視聴者向け結果まとめ文面 (チャット投稿用)。
 
-        半熟英雄は decision log と run state から数値を数える (音声 recap と
-        同内容)。他のゲームは ゲーム名＋終了理由＋プレイ時間。数値はすべて
-        記録から読み、捏造しない。
+        半熟英雄は decision log と run state から戦評を組み立てる (音声 recap と
+        同内容)。他のゲームは ゲーム名＋終了理由＋プレイ時間。
         """
         reason = self._end_reason_key(state)
         if state.get("game") == "hanjuku-hero":
@@ -685,8 +702,27 @@ class RetroCornerManager:
         if state.get("end_announced"):
             return
         try:
-            for part in _end_result_chat_parts(self._end_result_text(state, completed_at)):
-                self._chat(part)
+            for number, part in enumerate(
+                _end_result_chat_parts(self._end_result_text(state, completed_at)), 1
+            ):
+                if state.get("game") == "hanjuku-hero" and self._chat is self._default_chat:
+                    # Keep transport identity out of the visible story. The shared
+                    # queue keeps source-based mirror exclusions intact while an
+                    # optional run/part dedup key distinguishes equal passages.
+                    identity = {
+                        "bot_identity": state.get("bot_identity"),
+                        "date": state.get("date"),
+                        "started_at": state.get("started_at"),
+                    }
+                    key = hashlib.sha256(
+                        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                    ).hexdigest()[:24]
+                    enqueue_chat(
+                        self.g, part, source="retro-corner",
+                        delivery_key=f"{key}:part:{number}",
+                    )
+                else:
+                    self._chat(part)
         except Exception as exc:
             state["end_announce_error"] = _safe_detail(exc)
         else:
