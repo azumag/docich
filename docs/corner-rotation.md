@@ -116,10 +116,28 @@ latchし、`tick()`は自動開始と手動startを拒否する。latchは自動
         として確定する。`completed_at`/`last_error` は証跡として保持し、
         改善ジョブは起動しない。
      2. canonicalが`ready`でcorner gameを所有したまま（rollbackのまま）の
-        場合は、記録済みrestoreを**fresh request_idでcoordinator経由に
-        一度だけ再実行**する。再実行は420s上限・boundary延長なしで行い、
+        場合は、元receiptと最新canonical resultを照合して復旧対象を確認する。
+        rollbackは現在active generationと`restored_generation`の一致、
+        boundary失敗の`failed`は`retained_active`本人一致とcancel済みを要求する。
+        旧bot leaseを再利用せず、検証した現在のgame/runtime/generation/leaseを
+        **全ゲームのexpected_source fence**としてcoordinatorへ渡す。
+        fresh request ID・元restore ID・source・phaseは`restore_recovery`へ
+        dispatch前にatomic保存し、queuedやdriver中断は**同じID/payload**で再開する。
+        準備時刻と420s後のabsolute deadlineを同じrecordへ保存し、FIFO receiptにも
+        同じdeadlineを一度だけ保存・照合する（再送で延長しない）。
+        再実行は420s上限・boundary延長なしで行い、
         成功後に `interrupted` として確定する。タイムアウト・失敗は
-        `failed` のまま残り、同じ固定operationを再実行できる。
+        `failed` のまま残り、terminal receiptと現在ownerを検証できる場合だけ
+        次の固定operationが新しい試行を準備できる。
+     Case A/Bとも終端前に`retiring=[]`と最新cleanup証拠を確認する。
+     receiptはfinalize前に保存されるため、成功receiptだけでは資源解放を認定しない。
+     generationは正整数、cleanupは欠落/nullまたは厳密なfalseだけを受け入れる。
+     明示error codeを旧復旧文言より優先し、timerはこのrestore経路へ入らない。
+     restore候補のreceiptが欠落・不正でもgeneral retryへfallbackしない。
+     accepted driverの中断は同じrequestのcoordinator recoveryへ収束させる。
+     ただし初回source検査前の`validating`ではsource fenceを先に確認し、
+     他runtimeを復旧対象にしない。commit直後にreceipt未確定なら、同requestの
+     canonical resultを照合してreceipt確定とfinalizeを同じwriter lockで完了する。
      receipt欠落・不一致、canonicalが`ready`でない、別gameがactive、
      cleanup未完了のときは確定しない（latch維持、fail-closed）。
      自動予約は `pending`、手動予約は `manual_pending` を同じ規則で解決し、
