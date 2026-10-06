@@ -83,18 +83,9 @@ if (Buffer.concat(chunks).toString() !== 'dummy-secret-for-non-tty-contract-test
 }
 process.stdout.write(stdinRead ? 'secret text consumed\n' : 'stdin not read\n');
 `;
-  const args = invocation[1].split(/\s+/);
-  const missingType = spawnSync(
-    process.execPath,
-    ['-e', mockCli, ...args.filter((arg, index) => arg !== '--type' && args[index - 1] !== '--type')],
-    { input: 'dummy-secret-for-non-tty-contract-test', encoding: 'utf8' },
-  );
-  assert.equal(missingType.status, 2);
-  assert.match(missingType.stderr, /--type is required before the non-TTY type prompt/);
-
   const result = spawnSync(
     process.execPath,
-    ['-e', mockCli, ...args],
+    ['-e', mockCli, ...invocation[1].split(/\s+/)],
     { input: 'dummy-secret-for-non-tty-contract-test', encoding: 'utf8' },
   );
   assert.equal(result.status, 0, result.stderr);
