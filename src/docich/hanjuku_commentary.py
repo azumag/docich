@@ -444,8 +444,7 @@ def recap_body(runtime_dir, run_state) -> str:
         if win_sentence and latest_win_entry and latest_win_entry[0] > latest_loss[0]:
             story.append(
                 f'{lost_castle}城の失陥が確認された一方、その後、{win_sentence}'
-                'その後の局地戦では勝てても、全体では拠点を失ったまま終えたことが'
-                '今回の反省点です。'
+                'それでも全体では拠点を失ったまま終えたことが今回の反省点です。'
             )
         elif win_sentence:
             story.append(
