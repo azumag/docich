@@ -389,41 +389,53 @@ _END_HANJUKU_CLOSING = {
 _END_HANJUKU_CLOSING_DEFAULT = "今回の挑戦はここまでです。"
 _END_CLAUSE_DEFAULT = "終了しました"
 
-# The shared sender truncates Twitch at 430 UTF-8 bytes and its YouTube
-# mirror at 200. Include the part label in the smaller transport budget.
-_END_RESULT_CHAT_MAX_BYTES = 200
+# Twitch accepts the larger chat budget.  The shared outbound queue mirrors to
+# YouTube using its own smaller split budget, so this layer must not force the
+# Twitch copy down to YouTube's size.
+_END_RESULT_CHAT_MAX_BYTES = 430
 
 
 def _end_result_chat_parts(text: str) -> list[str]:
-    """Keep the complete recap, preferring sentence boundaries within each post."""
+    """Split a complete recap into readable Twitch-sized passages.
+
+    The complete story is composed first.  We then pack as many sentences as
+    fit, falling back to a clause boundary only for an overlong sentence.
+    Parts are deliberately unlabelled: the YouTube mirror may split them again
+    with a different transport budget, so a shared part counter would be wrong
+    on one of the destinations.
+    """
+    if not text:
+        return []
     if len(text.encode("utf-8")) <= _END_RESULT_CHAT_MAX_BYTES:
-        return [text] if text else []
+        return [text]
 
-    prefix_bytes = len("[1/1] ")
-    while True:
-        budget = _END_RESULT_CHAT_MAX_BYTES - prefix_bytes
-        remaining = text
-        parts = []
-        while remaining:
-            part = remaining.encode("utf-8")[:budget].decode("utf-8", "ignore")
-            if len(part) < len(remaining):
-                end = max(part.rfind(mark) for mark in "。！？!?\n") + 1
-                if not end:
-                    end = max(part.rfind(mark) for mark in "、，, \t") + 1
-                if end:
-                    part = part[:end]
-            parts.append(part)
-            remaining = remaining[len(part):]
-
-        required = len(f"[{len(parts)}/{len(parts)}] ")
-        if required <= prefix_bytes:
+    remaining = text
+    parts = []
+    while remaining:
+        encoded = remaining.encode("utf-8")
+        if len(encoded) <= _END_RESULT_CHAT_MAX_BYTES:
+            parts.append(remaining)
             break
-        # Re-split if the total needs another digit; the label must fit too.
-        prefix_bytes = required
+        part = encoded[:_END_RESULT_CHAT_MAX_BYTES].decode("utf-8", "ignore")
+        if not part:
+            break
 
-    # Distinct labels also prevent repeated passages from being deduplicated
-    # by the shared queue. Short results retain their original single post.
-    return [f"[{number}/{len(parts)}] {part}" for number, part in enumerate(parts, 1)]
+        cut = 0
+        for marks in ("。！？!?\n", "、，, \t"):
+            candidate = max((part.rfind(mark) for mark in marks), default=-1) + 1
+            if (
+                candidate > 0
+                and len(part[:candidate].encode("utf-8"))
+                >= _END_RESULT_CHAT_MAX_BYTES // 2
+            ):
+                cut = candidate
+                break
+        if cut:
+            part = part[:cut]
+        parts.append(part)
+        remaining = remaining[len(part):]
+
+    return parts
 
 
 class RetroCornerManager:
