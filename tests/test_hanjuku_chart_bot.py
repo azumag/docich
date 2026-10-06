@@ -2063,6 +2063,26 @@ def test_spending_month_menu_navigation_that_never_moves_is_bounded_too():
     assert policy.month_step(parse(frame), mem) == []
 
 
+def test_menu_nav_guard_never_cuts_off_navigation_that_keeps_closing_in():
+    # A cursor that really walks toward the row may need many presses; the
+    # guard counts only presses that did not get closer.
+    mem = {'chapter': 1, 'orders': {}, 'picked': [],
+           'shop': {'key': '1-7', 'items': [], 'soldiers': 99, 'soldiers_done': True,
+                    'merchant_done': True, 'egg': 'skipped', 'recruit': 'skipped',
+                    'gold_start': 59, 'bought': [], 'closed': True},
+           'recruit_month_scan_attempts': {'scope': [1, '1-7'], 'count': 2}}
+    approaches = []
+    for on in ('しょうにん', 'しょうぐんかいこ', 'ちくじょう'):
+        actions = policy.month_step(parse(month_canvas(59, on=on)), mem)
+        approaches.append((on, [a['buttons'] for a in actions]))
+    assert [buttons for _, buttons in approaches] == [[['down']], [['down']], [['down']]]
+    # Reaching the row ends the navigation the reviewed way, with no A guess.
+    assert policy.month_step(parse(month_canvas(59, on='も〜おしまい!')), mem) == [policy.pad('a')]
+    assert mem['month_exit'] is True
+    assert 'month_nav' not in mem
+    assert 'menu_nav_stuck' not in [r['decision'] for r in mem['_records']]
+
+
 def test_menu_nav_guard_restarts_once_the_cursor_moves():
     mem = {'chapter': 1, 'orders': {}, 'picked': [],
            'recruit_month_scan_attempts': {'scope': [1, '1-7'], 'count': 2}}

@@ -117,45 +117,63 @@ def menu_to(screen: Screen, label: str, *, exact=True):
 # down presses, battles/gold/month frozen for hours. Four observations are ~6 s
 # at the 1.5 s cadence, far above the couple of frames a real cursor move needs.
 MENU_NAV_PRESS_LIMIT = 4
+# A real cursor step moves a whole menu row (16 px in the measured layouts), so
+# anything smaller is detection jitter, not progress toward the target.
+MENU_NAV_PROGRESS_PX = 4
+
+
+def _menu_distance(screen: Screen, label: str):
+    """Manhattan distance from the hand to the row :func:`menu_to` would pick."""
+    cur = _current(screen)
+    target = [(x, y, w) for x, y, w in _options(screen) if w == label]
+    if not cur or not target:
+        return None
+    tx, ty, _ = min(target, key=lambda t: abs(t[1] - cur[1]) + abs(t[0] - cur[0]))
+    return abs(ty - cur[1]) + abs(tx - cur[0])
 
 
 def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV_PRESS_LIMIT):
     """Bounded menu navigation that can leave a stuck foreground panel.
 
     Returns ``'here'``/a pad dict/None exactly like :func:`menu_to`, but after
-    ``limit`` identical presses with an unchanged cursor box it stops
-    repeating: one A to close the foreground panel, then hold until the screen
-    changes. It never claims the label was reached, and a cursor that moves (or
-    a different direction) restarts the count.
+    ``limit`` consecutive presses toward ``label`` that never got closer to it
+    it stops repeating: one A to close the foreground panel, then hold until
+    the screen changes. Progress is measured as a real reduction of the
+    distance to the row, so ordinary scrolling across many rows is untouched,
+    while a frozen cursor, a jittering detection and a cursor that walks away
+    or wraps are all bounded. It never claims the label was reached.
     """
     move = menu_to(screen, label)
     if not isinstance(move, dict):
         mem.pop(key, None)
         return move
-    hand = list(screen.hand or ())
     buttons = move.get('buttons')
     direction = buttons[0] if isinstance(buttons, list) and buttons else None
     state = mem.get(key)
-    if (isinstance(state, dict) and state.get('hand') == hand
-            and state.get('direction') == direction):
-        presses = int(state.get('presses') or 0) + 1
+    distance = _menu_distance(screen, label)
+    if not (isinstance(state, dict) and state.get('direction') == direction
+            and direction is not None):
+        presses = 0
     else:
-        presses = 1
-    mem[key] = {'hand': hand, 'direction': direction, 'presses': presses}
-    if presses <= limit:
+        before = state.get('distance')
+        progressed = (isinstance(distance, int) and isinstance(before, int)
+                      and distance + MENU_NAV_PROGRESS_PX <= before)
+        presses = 0 if progressed else int(state.get('presses') or 0) + 1
+    mem[key] = {'direction': direction, 'distance': distance, 'presses': presses}
+    if presses < limit:
         return move
+    if presses == limit:
+        _record(mem, 'menu_nav_stuck', screen=screen.kind, choice=label,
+                observed_metric={'presses': presses, 'direction': direction,
+                                 'route': key},
+                reason='同方向の入力を続けても目標行へ近づかないため、'
+                       '前面別の画面を疑って閉じるAを1回だけ送る')
+        return [pad('a')]
     if presses == limit + 1:
         _record(mem, 'menu_nav_stuck', screen=screen.kind, choice=label,
                 observed_metric={'presses': presses - 1, 'direction': direction,
                                  'route': key},
-                reason='同じカーソル位置で同方向の入力を続けても選択が移動しないため、'
-                       '前面別の画面を疑って閉じるAを1回だけ送る')
-        return [pad('a')]
-    if presses == limit + 2:
-        _record(mem, 'menu_nav_stuck', screen=screen.kind, choice=label,
-                observed_metric={'presses': presses - 2, 'direction': direction,
-                                 'route': key},
-                reason='Aを1回送ってもカーソル位置が変わらないため入力を保留し、画面変化を待つ')
+                reason='Aを1回送っても目標行へ近づかないため入力を保留し、画面変化を待つ')
     return []
 
 
