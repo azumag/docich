@@ -286,6 +286,22 @@ class PaperTests(unittest.TestCase):
         finally:
             r.book.close()
 
+    def test_market_ai_direct_flag_rejects_non_direct_or_invalid_chains(self):
+        r = self.runtime()
+        try:
+            r.settings["ai"]["agents"] = "opencode:legacy"
+            with patch.dict("os.environ", {"DOCICH_MARKET_PAPER_DIRECT_ENABLED": "1"}, clear=False):
+                for agents in (
+                    "opencode:legacy", "opencode:one,opencode-go:two", "local", "vercel:legacy",
+                    "cloudflare-api:model,opencode:legacy", "cloudflare-api:",
+                    "cloudflare-api:model,", "unknown:model", "cloudflare-api:unsafe model", None,
+                ):
+                    with self.subTest(agents=agents):
+                        r.settings["ai"]["direct_agents"] = agents
+                        self.assertEqual(r._improvement_agents(), "")
+        finally:
+            r.book.close()
+
     def test_stock_entries_require_fresh_presentation_lease(self):
         r = self.runtime()
         try:

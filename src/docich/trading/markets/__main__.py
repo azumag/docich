@@ -54,7 +54,19 @@ class Runtime:
         flag = os.environ.get("DOCICH_MARKET_PAPER_DIRECT_ENABLED", "0")
         if flag == "1":
             value = raw.get("direct_agents", "")
-            return value.strip() if isinstance(value, str) else ""
+            agents = value.strip() if isinstance(value, str) else ""
+            if not agents:
+                return ""
+            from ...llm.contracts import LlmError
+            from ...llm.policy import DIRECT_CHAT_PROVIDERS, parse_agents
+
+            try:
+                specs = parse_agents(agents)
+            except (LlmError, TypeError, ValueError):
+                return ""
+            if not specs or any(spec.provider not in DIRECT_CHAT_PROVIDERS for spec in specs):
+                return ""
+            return agents
         if flag != "0":
             return ""
         value = raw.get("agents", "")
