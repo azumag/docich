@@ -295,7 +295,8 @@ def main():
             actions,state=decide(frame,state,adjusted=hanjuku_chart_adjust.load(runtime),
                                  interim=state.get('chart_interim_answer'),
                                  experience=experience,
-                                 recall_inputs=recall_input_receipts(runtime, state, meta))
+                                 recall_inputs=recall_input_receipts(runtime, state, meta),
+                                 run_identity=meta.get('hanjuku'))
             interval_ms=observation_interval_ms(state)
             records=state.pop('_records',[])
             updated_experience=state.pop('_experience',None)

@@ -396,9 +396,8 @@ def _goninja_offer(gold, hand_y=177):
     return c
 
 
-def test_goninja_is_ordered_only_with_money_to_spare():
-    # Owner rule 2026-10-02: 隠密戦隊ごにんじゃー（月イチイベント「ゴニンジャー」
-    # 50Gで敵将軍の暗殺を依頼）はお金に余裕がある時のみ依頼する。
+def test_goninja_is_ordered_only_at_the_owner_cash_floor():
+    # Owner rule 2026-10-06: 所持金1000G以上なら依頼、未満・不明なら拒否。
     screen = parse(_goninja_offer(7572).frame())
     assert screen.kind == 'yes_no'
     assert screen.header == {'chapter': None, 'year': 5, 'month': 10, 'gold': 7572}
@@ -407,14 +406,14 @@ def test_goninja_is_ordered_only_with_money_to_spare():
     rec = mem['_records'][-1]
     assert rec['strategy_variant'] == 'accept_goninja'
     assert rec['choice'] == 'うむッ!'
-    assert rec['observed_metric']['spare'] >= policy.GONINJA_COST
+    assert rec['observed_metric'] == {'gold': 7572, 'minimum_gold': 1000}
 
-    # 賃金リザーブ30Gを残して依頼料が出せない所持金では断る。
+    # 依頼料50Gがあっても1000G未満なら断る。
     mem2 = {'chapter': 3, '_records': []}
     assert policy.yes_no_step(parse(_goninja_offer(60).frame()), mem2)[0]['buttons'] == ['down']
     low = _goninja_offer(60, hand_y=193)                 # うむッ! -> いかんッ! へ移動済み
     assert policy.yes_no_step(parse(low.frame()), mem2)[0]['buttons'] == ['a']
-    assert mem2['_records'][-1]['strategy_variant'] == 'decline_goninja_no_spare'
+    assert mem2['_records'][-1]['strategy_variant'] == 'decline_goninja_below_floor'
     assert mem2['_records'][-1]['choice'] == 'いかんッ!'
     assert mem2['_records'][-1]['observed_metric']['gold'] == 60
 
@@ -429,30 +428,21 @@ def test_goninja_is_ordered_only_with_money_to_spare():
     assert mem3['_records'][-1]['observed_metric'] is None
 
 
-def test_goninja_never_takes_the_charted_month_purchase():
-    # 第1話 5月のチャート購入は214G。その分と賃金リザーブを差し引いて残る額だけが
-    # 依頼に使える余裕。
+def test_goninja_uses_cash_not_the_old_monthly_spare_budget():
     assert policy.GONINJA_COST == 50
+    assert policy.GONINJA_MIN_GOLD == 1000
     mem = {'chapter': 1, '_records': []}
-    header = {'chapter': None, 'year': 1, 'month': 5, 'gold': 240}
-    budget = policy._goninja_budget(mem, header)
-    assert budget['planned'] == 214
-    assert budget['spare'] == 240 - 214 - policy.WAGE_RESERVE
-    assert budget['spare'] < policy.GONINJA_COST
-    # 同じ予定でも所持金が残っていれば受ける。
-    rich = policy._goninja_budget(mem, dict(header, gold=300))
-    assert rich['spare'] == 300 - 214 - policy.WAGE_RESERVE
-    assert rich['spare'] >= policy.GONINJA_COST
-
-    # 採用済み調整チャートは実価格で見積もる。価格未測定のカードが混ざれば読めない扱い。
-    adjusted = {'chapter': 1, '_records': [],
-                'chart_plan': {'purchases': {'month': (1, 5),
-                                             'cards': (('クースカン', 1), ('ノリウツール', 2)),
-                                             'soldiers': 10}}}
-    priced = policy._goninja_budget(adjusted, dict(header, gold=400))
-    assert priced['planned'] == policy.KNOWN_PRICES['クースカン'] + 2 * policy.KNOWN_PRICES['ノリウツール'] + 10
-    adjusted['chart_plan']['purchases']['cards'] = (('デッドガン', 1),)   # 未測定価格
-    assert policy._goninja_budget(adjusted, header) is None
+    header = {'chapter': None, 'year': 1, 'month': 5, 'gold': 999}
+    # The old 214G purchase and 30G wage reserve no longer define "余裕".
+    assert policy._goninja_budget(mem, header) == {'gold': 999, 'minimum_gold': 1000}
+    assert policy._goninja_budget(mem, dict(header, gold=1000)) == {
+        'gold': 1000, 'minimum_gold': 1000}
+    # An unpriced adjusted chart cannot veto the explicit readable cash floor.
+    mem['chart_plan'] = {'purchases': {'month': (1, 5),
+                                      'cards': (('デッドガン', 1),)}}
+    assert policy._goninja_budget(mem, dict(header, gold=1000)) == {
+        'gold': 1000, 'minimum_gold': 1000}
+    assert policy._goninja_budget(mem, None) is None
 
 
 def test_a_lost_source_castle_releases_the_running_order_instead_of_steer_back():
@@ -706,13 +696,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v135-month-foreground-state'
+    assert state['bot_version'] == 'hanjuku-chart-v136-resource-priority'
     assert '_records' not in state['policy']
 
 
-def test_bot_version_marks_month_nav_cursor_guard_release():
+def test_bot_version_marks_resource_priority_release():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v135-month-foreground-state'
+    assert BOT_VERSION == 'hanjuku-chart-v136-resource-priority'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -863,8 +853,11 @@ def test_battle_menu_without_chart_tactic_records_independent_judgment():
                     hand=None, text='たまごをつかうきりふだたいきゃく', kind='battle_menu')
     mem = {'chapter': 1, 'battle': {'enemy': 'ミント', 'ally': 'どうし', 'enemy_hp': 50,
                                     'ally_hp': 20, 'cards_used': []}}
+    assert policy.battle_menu_step(screen, mem) == []  # unread cursor never licenses A
+    assert 'egg_recheck' not in mem
+    screen.menu_cursor = 175  # current egg-row cursor, not an assumed top item
     actions = policy.battle_menu_step(screen, mem)
-    assert actions[0]['buttons'] == ['a']  # top item = たまご (behind on HP)
+    assert actions[0]['buttons'] == ['a']
     rec = mem['_records'][-1]
     assert rec['decision'] == 'independent_menu'
     assert rec['strategy_variant'] == 'independent_use_egg'
@@ -2116,7 +2109,8 @@ def test_unknown_roster_defers_recruit_even_with_sufficient_cash_and_soldiers():
 
 def test_unmeasured_month_sub_screen_leaves_with_b_after_the_limit():
     mem = {'chapter': 1, 'month_sub': {'kind': 'recruit', 'gold_before': 151, 'presses': 0, 'key': '1-7'},
-           'orders': {}, 'picked': []}
+           'orders': {}, 'picked': [], 'shop': {'egg': 'not_needed'}}
+    mem['month_sub']['recruit_paid_gold'] = 101  # test the bounded already-paid conversation
     state = {'policy': mem}
     c = Canvas((0, 0, 0))
     c.text(24, 183, 'オーディション')
@@ -2335,9 +2329,9 @@ def test_egg_ritual_fade_holds_input_before_returning_to_month_menu():
     assert actions != [policy.pad('a')]  # do not open the merchant
 
 
-def recruit_overlay_screen():
+def recruit_overlay_screen(gold=158):
     from docich.hanjuku_font import TextLine
-    screen = parse(month_canvas(158, on='しょうぐんぼしゅう'))
+    screen = parse(month_canvas(gold, on='しょうぐんぼしゅう'))
     screen.hand = None
     words = ['ども!しょうぐんえんごかいのものです。', 'しょうぐんのぼしゅうでございますね?']
     screen.lines.extend(TextLine(183+16*i, tuple((8+8*j,ch) for j,ch in enumerate(w)))
@@ -2347,8 +2341,10 @@ def recruit_overlay_screen():
 
 
 def recruit_overlay_memory():
-    return {'chapter':1,'shop':{'key':'1-7','items':[],'soldiers':99,'soldiers_done':True,
-            'merchant_done':False,'egg':'done','recruit':'unverified','closed':True,'gold_start':307}}
+    mem = _short_recruit_memory()
+    mem['shop'] = {'key':'1-7','items':[],'soldiers':99,'soldiers_done':True,
+        'merchant_done':False,'egg':'done','recruit':'unverified','closed':True,'gold_start':307}
+    return mem
 
 
 def test_recruit_intro_restores_lost_tracking_only_from_measured_dialogue():
@@ -2394,7 +2390,7 @@ def test_recruit_overlay_recovery_keeps_army_and_budget_guards():
     for gold,soldiers in ((49,99),(158,60)):
         sc=recruit_overlay_screen();sc.header['gold']=gold
         mem=recruit_overlay_memory();mem['shop']['soldiers']=soldiers
-        assert policy.month_step(sc,mem)==[]
+        assert policy.month_step(sc,mem)==([policy.pad('b')] if gold < 80 else [])
         assert not mem.get('month_sub')
 
 
@@ -3448,7 +3444,7 @@ def test_recruit_intro_with_upper_background_hand_resumes_only_guarded_flow():
         sc.header['gold'] = gold
         guarded = recruit_overlay_memory()
         guarded['shop']['soldiers'] = soldiers
-        assert policy.month_step(sc, guarded) == []
+        assert policy.month_step(sc, guarded) == ([policy.pad('b')] if gold < 80 else [])
         assert not guarded.get('month_sub')
 
 
@@ -3504,6 +3500,14 @@ def _short_recruit_memory():
             'castle_income': {'アルマムーン': {'chapter': 1, 'month': '1-7', 'tick': 95, 'income': 30}}}
 
 
+def _fewer_generals_than_castles_memory():
+    mem = _short_recruit_memory()
+    mem['captured'] = ['キカンドン', 'ジョンリギ']
+    mem['castle_income'].update({c: {'chapter': 1, 'month': '1-7', 'tick': 95, 'income': value}
+        for c, value in (('キカンドン', 14), ('ジョンリギ', 16))})
+    return mem
+
+
 @pytest.mark.parametrize('gold,soldiers,reserved', [(154, 74, 50), (101, 21, 50), (79, 0, 49), (46, 0, 16)])
 def test_short_generals_reserve_fee_before_soldiers(gold, soldiers, reserved):
     mem = _short_recruit_memory()
@@ -3515,7 +3519,9 @@ def test_short_generals_reserve_fee_before_soldiers(gold, soldiers, reserved):
 
 
 def test_short_generals_recruit_without_the_old_99_refill_gate():
-    mem = _short_recruit_memory()
+    mem = _fewer_generals_than_castles_memory()
+    # This test isolates recruitment after the game's recovery-not-needed receipt.
+    policy._plan(mem, {'year': 1, 'month': 7, 'gold': 101})['egg'] = 'not_needed'
     actions = policy.month_step(parse(month_canvas(101, on='しょうぐんぼしゅう')), mem)
     assert actions == [policy.pad('a')]
     assert mem['shop']['soldiers'] == 21 and not mem['shop']['soldiers_done']
@@ -3530,7 +3536,8 @@ def test_short_generals_recruit_without_the_old_99_refill_gate():
 
 
 def test_short_generals_save_insufficient_fee_without_building_it_away():
-    mem = _short_recruit_memory()
+    mem = _fewer_generals_than_castles_memory()
+    policy._plan(mem, {'year': 1, 'month': 7, 'gold': 79})['egg'] = 'not_needed'
     policy.month_step(parse(month_canvas(79, on='しょうぐんぼしゅう')), mem)
     assert mem['shop']['soldiers'] == 0
     assert mem['shop']['recruit'] == 'skipped'
@@ -3563,7 +3570,8 @@ def test_short_generals_keep_hero_egg_and_wage_reserves():
     mem = _short_recruit_memory(); mem['egg_uses'] = {'どうし': 0}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
     assert shop['reserve'] == 50 and shop['recruit_reserve'] == 50 and shop['soldiers'] == 0
-    assert policy.month_step(parse(month_canvas(130, on='しょうぐんぼしゅう')), mem) == [policy.pad('a')]
+    assert policy.month_step(parse(month_canvas(130, on='しょうぐんぼしゅう')), mem) == [policy.pad('down')]
+    assert mem.get('month_sub', {}).get('kind') != 'recruit'
     mem = _short_recruit_memory(); mem['egg_uses'] = {'どうし': 0}
     policy.month_step(parse(month_canvas(100, on='しょうぐんぼしゅう')), mem)
     assert mem['shop']['recruit'] == 'check'  # defer until the real egg cost is known
@@ -3608,18 +3616,18 @@ def test_overestimated_egg_cost_defers_recruit_then_uses_real_balance():
     # g498 month 1-6: reserve 150, quote/pay 50; 166G remained but v95
     # had already permanently skipped recruiting before recovery.
     mem = _short_recruit_memory()
-    shop = {'key': '1-6', 'recruit_priority': True, 'recruit': 'check',
+    shop = {'key': '1-7', 'recruit_priority': True, 'recruit': 'check',
             'egg': 'pending', 'reserve': 150, 'recruit_reserve': 36,
             'soldiers': 0, 'chikujou': 'check'}
     screen = parse(month_canvas(216, on='しょうぐんぼしゅう'))
-    assert policy._month_extra(screen, mem, shop, recruit_only=True) is None
+    assert policy._month_extra(screen, mem, shop, recruit_only=True) == [policy.pad('down')]
     assert shop['recruit'] == 'check'
-    assert mem['_records'][-1]['decision'] == 'recruit_deferred_egg'
+    assert mem.get('month_sub', {}).get('kind') != 'recruit'
     # Paid full recovery is measured rather than replacing the reserve by
     # an invented quote; then the same month's real 166G affords recruitment.
     shop['egg'] = 'opened'
     mem['month_sub'] = {'kind': 'egg', 'gold_before': 216, 'quoted_cost': 50,
-                        'full_selected': True, 'left_menu': True, 'key': '1-6'}
+                        'full_selected': True, 'left_menu': True, 'key': '1-7'}
     screen = parse(month_canvas(166, on='しょうぐんぼしゅう'))
     assert policy._finish_month_sub(screen, mem, shop)
     assert policy._month_extra(screen, mem, shop) == [policy.pad('a')]
@@ -3668,6 +3676,7 @@ def test_deferred_recruit_does_not_replace_the_egg_payment_tracker():
                         'full_selected': True, 'left_menu': False, 'key': '1-7'}
     assert policy.month_step(parse(month_canvas(216, on='しょうぐんぼしゅう')), mem) == []
     assert mem['month_sub']['kind'] == 'egg'
+    mem['month_sub']['left_menu'] = True  # the ritual, not just its payment, left the menu
     assert policy.month_step(parse(month_canvas(166, on='しょうぐんぼしゅう')), mem) == [policy.pad('a')]
     assert mem['shop']['egg'] == 'done' and mem['month_sub']['kind'] == 'recruit'
     assert any(r['decision'] == 'egg_recover' for r in mem['_records'])
@@ -3757,9 +3766,11 @@ def test_broken_hero_keeps_house_fee_before_recruit_and_soldiers(gold, soldiers,
 
 def test_recruit_and_castle_cannot_spend_broken_hero_house_fund():
     mem = _broken_hero_memory()
+    policy._plan(mem, {'year': 1, 'month': 7, 'gold': 101}).update(
+        egg='not_needed', soldiers=0, soldiers_done=True, soldiers_before_recruit_done=True)
     screen = parse(month_canvas(101, on='しょうぐんぼしゅう'))
     policy.month_step(screen, mem)
-    assert mem['shop']['recruit'] == 'skipped'
+    assert mem['shop']['recruit'] == 'deferred_cash'
     assert mem['shop']['soldiers'] == 0 and mem['shop']['chikujou'] == 'skipped'
     assert 'month_sub' not in mem
 
@@ -3903,7 +3914,8 @@ def test_elabel_digit_fold_does_not_accept_a_different_monster_number():
 
 
 def test_recruit_priority_waits_for_the_first_menu_cursor_instead_of_skipping():
-    mem = _short_recruit_memory()
+    mem = _fewer_generals_than_castles_memory()
+    policy._plan(mem, {'year': 1, 'month': 7, 'gold': 166})['egg'] = 'not_needed'
     incomplete = parse(month_canvas(166))
     incomplete.hand = None
     assert policy.month_step(incomplete, mem) == []
@@ -3916,7 +3928,8 @@ def test_recruit_priority_waits_for_the_first_menu_cursor_instead_of_skipping():
 
 
 def test_missing_priority_recruit_menu_has_a_bound_and_keeps_the_fee():
-    mem = _short_recruit_memory()
+    mem = _fewer_generals_than_castles_memory()
+    policy._plan(mem, {'year': 1, 'month': 7, 'gold': 166})['egg'] = 'not_needed'
     sc = parse(month_canvas(166, on='へいしほじゅう'))
     sc.lines = [line for line in sc.lines if 'しょうぐんぼしゅう' not in line.known]
     for _ in range(6):

@@ -56,7 +56,9 @@ def general_status(screen):
         wage_value = receipts.fixed_wage(name)  # stable salary; no extra individual screen
         return {'general': name, 'broken': broken, 'hp': hp, 'max_hp': max_hp, 'wage': wage_value,
                 'egg': uses[1] if uses else None, 'uses': int(uses[2]) if uses else None,
-                'location': 'castle' if 'しろのなかにいます' in screen.text else 'field'}
+                'location': 'castle' if 'しろのなかにいます' in screen.text else 'field',
+                'location_observed': any(phrase in screen.text for phrase in
+                                         ('しろのなかにいます', 'いどうしています'))}
     return None
 
 
@@ -219,6 +221,8 @@ def _survey_work(mem, p):
     receipt. Those two jobs, and only those, justify a second walk.
     """
     month = mem.get('month')
+    if (receipts.completed_survey(mem) or {}).get('dirty'):
+        return True
     if any(info.get('broken') and info.get('month') == month
            for info in (mem.get('house_eggs') or {}).values()):
         return True
@@ -239,6 +243,7 @@ def _observe_status(screen, mem):
         if info['uses'] is not None:
             mem.setdefault('egg_uses', {})[name] = info['uses']
             mem.setdefault('egg_types', {})[name] = info['egg']
+        receipts.status_observed(mem, mem['house_eggs'][name])
         _record(mem, 'egg_seen', observed_metric=info, reason='将軍のステータスで卵の状態を確認')
     return info
 
@@ -335,6 +340,38 @@ def _next_general(mem):
         _phase(state, 'find_field')
 
 
+def _resume_completed_survey(screen, mem, p, scope, field_count, field_tick):
+    survey = receipts.completed_survey(mem)
+    if survey is None:
+        return False, None
+    if (screen.kind != 'map' or mem.get('chapter') not in HOUSE_VIEW
+            or any(mem.get(k) for k in ('active', 'recall', 'y_jump', 'sortie_attempt', 'month_sub', 'battle'))):
+        return True, None
+    dirty = list(survey.get('dirty') or {})
+    pending = [name for name, info in survey['statuses'].items()
+               if info.get('broken') is True and 'egg' not in survey.get('dirty', {}).get(name, [])]
+    missing = ([c for c in sorted(p._owned(mem))
+                if receipts.economics(mem, [p.STATUS_NAMES.get(c, c)]) is None]
+               if p._recruit_shortage(mem) and not mem.get('recruit_payroll_pending') else [])
+    if not dirty and not pending and not missing:
+        return True, None  # returning to the field is not a status change
+    if field_count >= 2 or int(mem.get('tick') or 0) - int(field_tick) < SCAN_INTERVAL:
+        return True, None
+    state = mem['house'] = {'phase': 'open_roster' if dirty else 'income_next' if missing else 'close',
+        'chapter': mem['chapter'], 'roster_month': scope[1], 'month_scan': False,
+        'age': 0, 'total': 0, 'seen': [], 'pending': pending, 'from_survey': True,
+        'status_targets': dirty, 'income_castles': missing, 'income_failures': []}
+    mem['recruit_field_scan_attempts']['count'] = field_count + 1
+    _record(mem, 'survey_reused', observed_metric={'status_targets': dirty,
+            'broken': pending, 'missing_incomes': missing},
+            reason='同月・同ランの完了した月初確認を引き継ぎ、変化した本人や未読の城収入だけ確認する')
+    if dirty:
+        return True, [p.pad('x')]
+    if not missing:
+        _next_general(mem)
+    return True, []
+
+
 def step(screen, mem, frame):
     """Actions, or None to let battle/month/ordinary map policy run.
 
@@ -386,6 +423,10 @@ def step(screen, mem, frame):
                       0 if legacy_monthly else mem.get('house_scan_tick', 0))
         field_month = (scope[1] if field_done else
                        None if legacy_monthly else mem.get('house_scan_month'))
+        if not monthly:
+            reused, actions = _resume_completed_survey(screen, mem, p, scope, field_count, field_tick)
+            if reused:
+                return actions
         if ((screen.kind != 'map' and not monthly) or mem.get('chapter') not in HOUSE_VIEW
                 or (not monthly and any(mem.get(k) for k in ('active', 'recall', 'y_jump', 'sortie_attempt', 'month_sub', 'battle')))
                 or (not monthly and tick - int(field_tick) < SCAN_INTERVAL)
@@ -405,6 +446,8 @@ def step(screen, mem, frame):
     if state.get('chapter') != mem.get('chapter'):
         _finish(mem)
         return None
+    if state.get('from_survey') and receipts.completed_survey(mem) is None:
+        return _exit(mem, '完了確認の月・ラン・名簿が無効になったため部分再確認を中断')
     phase = state['phase']
     # The monthly main-menu survey returns to the same monthly menu, never
     # starts a repair trip, and gives the ordinary spending policy the next
@@ -518,6 +561,19 @@ def step(screen, mem, frame):
         selected = screen.selected
         if selected not in names:
             return []
+        if state.get('from_survey'):
+            targets = state.get('status_targets') or []
+            if not targets:
+                _phase(state, 'leave_roster')
+                return [p.pad('b')]
+            target = targets[0]
+            if target not in names:
+                return [p.pad('down')]  # the existing step budget bounds this search
+            actions = _choose(screen, target)
+            if actions == [p.pad('a')]:
+                state['selected'] = target
+                _phase(state, 'status')
+            return actions
         if not state['seen'] and state.get('roster_opened'):
             state['singleton_first_page'] = _singleton_page(screen, frame)
         if selected in state['seen'] or len(state['seen']) >= ROSTER_LIMIT:
@@ -535,12 +591,17 @@ def step(screen, mem, frame):
         name = info['general']
         receipts.wage(mem, info)
         state['seen'].append(name)
-        if info['broken']:
+        if info['broken'] and name not in state['pending']:
             state['pending'].append(name)
+        if state.get('from_survey') and name in state['status_targets']:
+            state['status_targets'].remove(name)
         _phase(state, 'roster_next')
         return [p.pad('b')]
     if phase == 'roster_next':
         if roster(screen) is None:
+            return []
+        if state.get('from_survey'):
+            _phase(state, 'roster')
             return []
         _phase(state, 'roster_advance')
         return [p.pad('down')]
@@ -571,7 +632,8 @@ def step(screen, mem, frame):
         return []
     if phase == 'leave_roster':
         if screen.kind == 'map':
-            complete = receipts.complete(mem, state)
+            complete = (receipts.completed_survey(mem) is not None if state.get('from_survey')
+                        else receipts.complete(mem, state))
             _record(mem, 'scan_complete', observed_metric={'generals': list(state['seen']), 'broken': list(state['pending']),
                                                          'roster_complete': complete},
                     reason='一覧で確認した将軍の卵状態から修理対象を決定')
@@ -901,6 +963,7 @@ def _repair_step(screen, mem, frame):
         return _return_step(screen, mem, frame)
     if phase == 'return_done':
         if screen.kind == 'map':
+            receipts.dirty_status(mem, [name], fields=('hp', 'location'))
             tick = int(mem.get('tick') or 0)
             for sortie in (mem.get('sorties') or {}).values():
                 if sortie.get('general') == name and sortie.get('purpose') == 'house':
