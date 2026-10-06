@@ -165,12 +165,17 @@ def test_auto_target_switches_at_17_jst(tmp_path):
     assert result["target_date"] == "2026-09-30"
 
 
-def test_narration_is_literal_and_has_no_invented_minimum():
+def test_narration_is_literal_detailed_and_has_no_invented_minimum():
     view=w.project(bundle(),now=NOW);lines=w.narration(view)
     assert len(lines)==13
     assert "9月29日" in lines[0]
+    assert "時間帯ごとの降水確率" in lines[0]
     assert all("最低気温" not in line for line in lines)
     assert all("晴れ 夜 くもり" in line for line in lines[1:-1])
+    assert all("6時から12時が0パーセント" in line for line in lines[1:-1])
+    assert all("12時から18時が10パーセント" in line for line in lines[1:-1])
+    assert all("18時から24時が20パーセント" in line for line in lines[1:-1])
+    assert all("0時から6時" not in line for line in lines[1:-1])
     assert "気象庁" in lines[-1] and "編集" in lines[-1]
 
 
