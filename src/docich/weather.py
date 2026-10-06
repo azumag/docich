@@ -313,15 +313,30 @@ def project(bundle: object, *, now: float) -> dict:
 def narration(view: dict) -> list[str]:
     """Literal, date-stamped reading. No model, advice, inferred rain timing or warnings."""
     day = date.fromisoformat(view["date"])
-    lines = [f"気象庁発表の、{day.month}月{day.day}日の全国の天気です。代表11地点をお伝えします。"]
+    lines = [
+        f"気象庁発表の、{day.month}月{day.day}日の全国の天気です。"
+        "代表11地点について、天気、気温、時間帯ごとの降水確率を順にお伝えします。"
+    ]
     for item in view["cities"]:
         issued = stamp(item["issued_at"])
-        line = f'{item["city"]}。{item["weather"]}。'
+        line = f'{item["city"]}です。予報は、{item["weather"]}。'
         if item["high_c"] is not None:
             line += f'最高気温は{item["high_c"]}度。'
         if item["low_c"] is not None:
             line += f'最低気温は{item["low_c"]}度。'
-        line += f'気象庁、{issued.day}日{issued.hour}時発表。'
+
+        rain_periods = [
+            f'{period["start"]}時から{period["end"]}時が{period["percent"]}パーセント'
+            for period in item["pops"]
+            if period["percent"] is not None
+        ]
+        if rain_periods:
+            line += '降水確率は、' + '、'.join(rain_periods) + '。'
+
+        line += f'この予報は、気象庁の{issued.day}日{issued.hour}時発表です。'
         lines.append(line)
-    lines.append("以上、気象庁の予報をもとにdocichが編集してお伝えしました。")
+    lines.append(
+        "以上、全国11地点の天気、気温、時間帯ごとの降水確率を、"
+        "気象庁の予報をもとにdocichが編集してお伝えしました。"
+    )
     return lines

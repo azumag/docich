@@ -377,6 +377,8 @@ def test_field_scan_then_month_boundary_rescans_and_reaches_paid_recruitment(nam
     actions,state=decide(month_canvas(250,on='メインメニュー',month=7),state)
     assert actions==[] and not state['policy'].get('house')
     assert r.fresh(state['policy'])['complete']
+    # Recruitment is tested after the game's recovery-not-needed receipt.
+    p._plan(state['policy'], {'year': 1, 'month': 7, 'gold': 250})['egg'] = 'not_needed'
     # Native monthly frames navigate to, and actually open, recruitment.
     actions,state=decide(month_canvas(250,on='しょうぐんぼしゅう',month=7),state)
     assert actions==[p.pad('a')]

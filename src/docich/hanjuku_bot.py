@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v135-month-foreground-state'
+BOT_VERSION = 'hanjuku-chart-v137-camp-recheck'
 
 # Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
 # frozen and the bot has planned no input for more than this many observations,
@@ -187,7 +187,7 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
 
 def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
            interim: dict | None = None, experience: dict | None = None,
-           recall_inputs: dict | None = None) -> tuple[list[dict], dict]:
+           recall_inputs: dict | None = None, run_identity: dict | None = None) -> tuple[list[dict], dict]:
     """Return bounded pad actions and new policy memory; never write or send.
 
     ``adjusted`` is a validated runtime-adjusted chart (``hanjuku_chart_adjust``)
@@ -203,6 +203,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     from . import hanjuku_experience as experience_module
     from . import hanjuku_policy as policy
     from . import hanjuku_house
+    from . import hanjuku_roster
     from . import hanjuku_chart
     from .hanjuku_screen import month_confirmation_positions, parse
     # State written before the castle-label rename still names chapter 1's home
@@ -213,6 +214,20 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     step=int(state.get('step',0))+1
     phase_step=int(state.get('phase_step',0))+1 if state.get('phase')==phase else 1
     mem=dict(state.get('policy') or {})
+    identity = hanjuku_roster.run_identity(run_identity)
+    mem['_run_identity'] = identity
+    if identity is not None and mem.get('survey_run_identity') != identity:
+        previous_identity = (hanjuku_roster.run_identity(mem.get('survey_run_identity'))
+                             or hanjuku_roster.run_identity(state.get('decision_trace')))
+        hanjuku_roster.invalidate(mem)
+        if previous_identity != identity:
+            for key in ('house', 'house_field_scan', 'house_scan_tick', 'house_scan_month',
+                        'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'recruit_roster_attempts',
+                        'house_eggs', 'egg_uses', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership'):
+                mem.pop(key, None)
+        # A matching old trace may retain observed zero counts, but never
+        # upgrades an old unbound roster into a complete reusable snapshot.
+        mem['survey_run_identity'] = identity
     mem['_records']=[]
     mem['_adjusted']=adjusted
     mem['_interim']=interim
@@ -227,6 +242,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     policy.observe_events(screen,mem)
     policy.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     kind=screen.kind
+    from . import hanjuku_camp_recheck
+    hanjuku_camp_recheck.interrupt(screen, mem)
     if state.get('screen_kind') != kind:
         # A shop/information/confirmation round trip starts a new navigation
         # episode. No movement failure belongs to a different visible screen.
@@ -279,12 +296,16 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # checks. A missing hand alone is not evidence of such a foreground: after
     # an egg ritual it may simply be a monthly return with a blinking cursor.
     sub = mem.get('month_sub') or {}
+    event_confirmation = (bool(month_confirmation_positions(screen))
+                          and (policy._is_general_trade_prompt(screen.text)
+                               or policy._is_goninja_prompt(screen.text)))
     month_dialog = ((sub.get('kind') == 'recruit' and not policy.month_menu_ready(screen))
                     or (bool(sub) and bool(month_confirmation_positions(screen))))
     recall = mem.get('recall') or {}
-    recall_dialog = recall and not mem.get('month_sub') and (
-        kind in ('map', 'map_target', 'text') or
-        (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no')))
+    recall_dialog = recall and (hanjuku_camp_recheck.owns_dialog(screen, mem) or (
+        not recall.get('retreat_recheck') and not recall.get('anonymous_recheck')
+        and not mem.get('month_sub') and (kind in ('map', 'map_target', 'text') or
+        (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no')))))
     # Cancel an outstanding repair before an emergency recall can move its
     # general; the old house route must not resume afterwards.
     if mem.get('house') and mem.get('recall'):
@@ -292,6 +313,13 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # A planned summon-preemption must not become a blind A on an unfinished
     # command menu, or be replaced by an old monthly/house transaction.
     actions = policy.defender_egg_pending_step(screen, mem)
+    if actions is None and event_confirmation:
+        # Owner (2026-10-06): trade refusal and the goninja cash floor outrank
+        # a remembered monthly recruit/exit that could accept this yes/no.
+        # Only both explicit choices plus event wording can take precedence;
+        # regular paid prompts and recruitment introductions keep their owner.
+        policy.interrupt_month_payment(mem)
+        actions = policy.yes_no_step(screen, mem)
     if actions is None:
         actions = (policy.camp_recall_step(screen, mem, frame) if recall_dialog
                    else policy.month_sub_step(screen, mem) if mem.get('month_sub') and (kind != 'month_menu' or month_dialog)
@@ -421,8 +449,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     if not actions and streak>NO_INPUT_HOLD_MAX:
         # Even this last-resort path must not confirm an unread summer option:
         # the cursor may be on the mass-dismissal row. Reobserve after one move.
+        # These recognized events must never borrow a scripted scene's blind A.
         actions=([pad('up')] if kind=='summer_bonus'
-                 else [pad('b')] if kind=='month_menu'
+                 else [pad('b')] if kind=='month_menu' or event_confirmation
                  else legacy_actions(frame,phase,updated))
         if kind == 'month_menu':
             # The legacy monthly A repeatedly opened the merchant from a

@@ -1156,6 +1156,685 @@ class TestPrelaunchQuiesceFailureTerminalization(RetroCornerTestBase):
         self.assertEqual(coordinator.calls, [])
 
 
+class _RestoreSettlingCoordinator(FakeCoordinator):
+    """Replay double that commits the canonical + receipt shape of a real
+    switch, so the manager's fresh-receipt proof can pass."""
+
+    def __init__(self, current, store, *, fail_with=None):
+        super().__init__(current)
+        self.store = store
+        self.fail_with = fail_with
+
+    def switch(self, game, **_kwargs):
+        request_id = _kwargs.get("request_id") or str(uuid.uuid4())
+        self.calls.append(("switch", game))
+        if self.fail_with is not None:
+            return self.fail_with
+        from_game = self.current[0]
+        payload = dict(_kwargs.get("payload") or {})
+        if _kwargs.get("allow_boundary_timeout_extension") is False:
+            payload["_allow_boundary_timeout_extension"] = False
+        with self.store.transaction() as tx:
+            accepted = tx.accept_request(
+                request_id, "switch", game, payload,
+            )
+        generation = accepted.generation
+        allocated = self.store.receipts.load(request_id)
+        names = runtime_names(generation)
+        identity = {
+            "game": game,
+            "adapter": "browser",
+            "generation": generation,
+            "runtime_id": allocated["runtime_id"],
+            "lease_id": str(uuid.uuid4()),
+            "game_window": names.game_window,
+            "agent_window": names.agent_window,
+            "adapter_session": names.adapter_session,
+            "started_at": "2026-09-23T12:00:00Z",
+        }
+        result = {
+            "request_id": request_id,
+            "operation": "switch",
+            "status": "succeeded",
+            "from_game": from_game,
+            "to_game": game,
+            "generation": generation,
+            "active_runtime": {
+                key: identity[key]
+                for key in ("game", "runtime_id", "generation", "lease_id")
+            },
+        }
+        canonical, _missing = self.store.canonical.load()
+        canonical.update(
+            phase="ready", operation=None, request_id=None, deadline_at=None,
+            active=identity, candidate=None, previous=None,
+            next_generation=generation + 1, last_result=result,
+        )
+        self.store.canonical.save(canonical)
+        self.store.finish_request(request_id, "succeeded", result)
+        self.current[0] = game
+        return SimpleNamespace(status="succeeded", error_code=None, detail=None)
+
+
+class TestRestoreFailedRecovery(RetroCornerTestBase):
+    """#1868/#1870: a finished corner whose restore switch failed.
+
+    ``recover-failed`` settles the slot from the durable restore receipt:
+    Case A commits when canonical already owns the previous game, Case B
+    replays the recorded restore exactly once when the rollback still owns the
+    corner game.  Unproven evidence keeps the slot failed (fail closed).
+    """
+
+    @staticmethod
+    def _runtime(game, generation):
+        names = runtime_names(generation)
+        return {
+            "game": game, "adapter": "browser", "generation": generation,
+            "runtime_id": f"g{generation}-abcdef", "lease_id": str(uuid.uuid4()),
+            "game_window": names.game_window, "agent_window": names.agent_window,
+            "adapter_session": names.adapter_session,
+            "started_at": "2026-09-23T12:00:00Z",
+        }
+
+    def _setup_restore_failed(
+        self, *, receipt_status="rolled_back", result_patch=None,
+        receipt_patch=None, canonical_patch=None, error_code="timeout",
+    ):
+        mgr, _coordinator = self.manager(["robots"])
+        rotation_id = str(uuid.uuid4())
+        restore_id = str(uuid.uuid4())
+        state = mgr._default_state()
+        state.update(
+            status="failed",
+            game="robots",
+            previous_game="sorengame",
+            rotation_request_id=rotation_id,
+            switch_request_id=restore_id,
+            started_at=self.now_value.isoformat(),
+            completed_at=self.now_value.isoformat(),
+            last_error=(
+                "robots->sorengame restore に失敗しました: "
+                "Soren lifecycle call のdeadlineを超過しました"
+            ),
+            last_error_code=error_code,
+            target_matches=3,
+        )
+        mgr._write_state(state)
+
+        canonical = mgr.store.initialize()
+        rollback_generation = 2
+        active = self._runtime("robots", rollback_generation)
+        canonical.update(
+            phase="ready", next_generation=rollback_generation + 1,
+            operation=None, request_id=None, deadline_at=None,
+            active=active, candidate=None, previous=None, retiring=[],
+        )
+        mgr.store.canonical.save(canonical)
+        accepted = mgr.store.accept_request(restore_id, "switch", "sorengame")
+        result = {
+            "request_id": restore_id, "operation": "switch",
+            "status": receipt_status, "from_game": "robots",
+            "to_game": "sorengame", "generation": accepted.generation,
+            "error_code": error_code,
+        }
+        if receipt_status == "rolled_back":
+            result["restored_generation"] = rollback_generation
+        elif receipt_status == "failed":
+            result.update(failure_phase="round_boundary", retained_active=dict(active),
+                          boundary_cancelled=True)
+        elif receipt_status == "succeeded":
+            allocated = mgr.store.receipts.load(restore_id)
+            identity = self._runtime("sorengame", accepted.generation)
+            identity["runtime_id"] = allocated["runtime_id"]
+            result.pop("error_code", None)
+            result["active_runtime"] = {
+                key: identity[key]
+                for key in ("game", "runtime_id", "generation", "lease_id")
+            }
+            active = identity
+        if result_patch is not None:
+            result_patch(result)
+        canonical, _ = mgr.store.canonical.load()
+        canonical.update(
+            phase="ready",
+            next_generation=max(accepted.generation + 1, rollback_generation + 1),
+            operation=None, request_id=None, deadline_at=None,
+            active=active, candidate=None, previous=None, retiring=[],
+            last_result=result,
+        )
+        if canonical_patch is not None:
+            canonical_patch(canonical, result)
+        mgr.store.canonical.save(canonical)
+        mgr.store.finish_request(restore_id, receipt_status, result)
+        if receipt_patch is not None:
+            patched = mgr.store.receipts.load(restore_id)
+            receipt_patch(patched)
+            mgr.store.receipts.save(patched)
+        return mgr, restore_id
+
+    def test_case_a_commits_interrupted_from_the_rolled_back_receipt(self):
+        mgr, restore_id = self._setup_restore_failed(
+            canonical_patch=lambda canonical, _result: canonical.update(
+                active=self._runtime("sorengame", 3), next_generation=4,
+            )
+        )
+        before = mgr._read_state()
+
+        result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(result.game, "robots")
+        self.assertEqual(result.previous_game, "sorengame")
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertEqual(state["completed_at"], before["completed_at"])
+        self.assertEqual(state["last_error"], before["last_error"])
+        self.assertEqual(state["last_error_code"], "timeout")
+        self.assertEqual(state["switch_request_id"], restore_id)
+        self.assertNotIn("end_reason", state)
+        # A second run is a no-op: the slot is already terminal.
+        again = mgr.recover_failed()
+        self.assertEqual(again.status, "noop")
+
+    def test_case_a_requires_the_restored_generation_proof(self):
+        mgr, _restore_id = self._setup_restore_failed(
+            canonical_patch=lambda canonical, _result: canonical.update(
+                active=self._runtime("sorengame", 1),
+            )
+        )
+
+        result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "noop")
+        self.assertEqual(mgr._read_state()["status"], "failed")
+
+    def test_case_b_replays_the_recorded_restore_once_and_commits(self):
+        mgr, _restore_id = self._setup_restore_failed()
+        before = mgr._read_state()
+        settling = _RestoreSettlingCoordinator(["robots"], mgr.store)
+        mgr.coordinator = settling
+
+        result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(settling.calls, [("switch", "sorengame")])
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertEqual(state["completed_at"], before["completed_at"])
+        self.assertEqual(state["last_error"], before["last_error"])
+        canonical, _ = mgr.store.canonical.load()
+        self.assertEqual(canonical["active"]["game"], "sorengame")
+
+    def test_failed_receipt_rollback_is_also_replayed_once(self):
+        mgr, _restore_id = self._setup_restore_failed(receipt_status="failed")
+        settling = _RestoreSettlingCoordinator(["robots"], mgr.store)
+        mgr.coordinator = settling
+
+        result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(settling.calls, [("switch", "sorengame")])
+        self.assertEqual(mgr._read_state()["status"], "interrupted")
+
+    def test_case_b_replay_failure_keeps_the_slot_failed(self):
+        mgr, _restore_id = self._setup_restore_failed()
+        before = mgr._read_state()
+        settling = _RestoreSettlingCoordinator(
+            ["robots"], mgr.store,
+            fail_with=SimpleNamespace(
+                status="failed", error_code="timeout", detail="boundary timeout"
+            ),
+        )
+        mgr.coordinator = settling
+
+        result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(settling.calls, [("switch", "sorengame")])
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["completed_at"], before["completed_at"])
+        self.assertEqual(state["last_error"], before["last_error"])
+
+    def test_succeeded_restore_receipt_settles_the_crash_window(self):
+        mgr, _restore_id = self._setup_restore_failed(receipt_status="succeeded")
+
+        result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(mgr._read_state()["status"], "interrupted")
+
+    def test_unproven_evidence_never_replays_the_restore(self):
+        cases = {
+            "cleanup pending": dict(
+                result_patch=lambda r: r.update(cleanup_pending=True)
+            ),
+            "receipt error differs": dict(
+                result_patch=lambda r: r.update(error_code="quiesce_failed")
+            ),
+            "receipt target differs": dict(
+                receipt_patch=lambda r: r.update(target="robots")
+            ),
+            "receipt request differs": dict(
+                result_patch=lambda r: r.update(request_id=str(uuid.uuid4()))
+            ),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(case=name):
+                mgr, _restore_id = self._setup_restore_failed(**kwargs)
+                settling = _RestoreSettlingCoordinator(["robots"], mgr.store)
+                mgr.coordinator = settling
+
+                result = mgr.recover_failed()
+
+                self.assertEqual(result.status, "noop")
+                self.assertEqual(settling.calls, [])
+                self.assertEqual(mgr._read_state()["status"], "failed")
+
+    def test_draining_and_pending_cleanup_keep_the_slot_queued(self):
+        cases = {
+            "draining": dict(
+                canonical_patch=lambda canonical, _result: canonical.update(
+                    phase="draining", operation="switch",
+                    request_id=str(uuid.uuid4()),
+                    deadline_at="2026-09-24T00:48:10Z",
+                )
+            ),
+            "cleanup pending": dict(
+                canonical_patch=lambda canonical, result: canonical.update(
+                    last_result={**result, "cleanup_pending": True}
+                )
+            ),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(case=name):
+                mgr, _restore_id = self._setup_restore_failed(**kwargs)
+                settling = _RestoreSettlingCoordinator(["robots"], mgr.store)
+                mgr.coordinator = settling
+
+                result = mgr.recover_failed()
+
+                self.assertEqual(result.status, "queued")
+                self.assertEqual(settling.calls, [])
+                self.assertEqual(mgr._read_state()["status"], "failed")
+
+    def test_the_timer_never_settles_or_replays_the_restore_failed_slot(self):
+        mgr, _restore_id = self._setup_restore_failed()
+        settling = _RestoreSettlingCoordinator(["robots"], mgr.store)
+        mgr.coordinator = settling
+
+        self.assertIsNone(mgr._retry_failed_tick(self.now_value))
+
+        self.assertEqual(mgr._read_state()["status"], "failed")
+        self.assertEqual(settling.calls, [])
+
+
+class TestRestoreRecoveryBoundaries(RetroCornerTestBase):
+    """Real coordinator/fake adapters exercise replay ownership and crashes."""
+
+    _runtime = staticmethod(TestRestoreFailedRecovery._runtime)
+    _setup_restore_failed = TestRestoreFailedRecovery._setup_restore_failed
+
+    def _real(self, mgr):
+        from docich import game_switch
+        from test_coordinator import FakeAdapterFactory
+
+        factory = FakeAdapterFactory({g: {"name": "browser"} for g in
+                                     ("robots", "nethack", "sorengame", "hanjuku-hero")})
+        real = game_switch.GameSwitchCoordinator(
+            mgr.store, factory, quiesce_verify_timeout_s=0.3,
+            poll_interval_s=0.01, default_timeout_s=5,
+            step_timeouts=game_switch.StepTimeouts(
+                preflight_s=1, stop_agent_s=1, start_s=1,
+                agent_start_s=1, cleanup_s=1, probe_s=0.5),
+        )
+        active = mgr.store.canonical.load()[0]["active"]
+        adapter = factory(game_switch.RuntimeSpec.from_runtime(mgr.g.state_dir, active))
+        adapter.runtime.materialized = True
+        adapter.runtime.alive = True
+        adapter.runtime.agent_started = True
+        adapter.runtime.agent_lease = active["lease_id"]
+        return real, factory
+
+    def test_non_hanjuku_source_fence_protects_a_rival_runtime(self):
+        from docich.game_switch import ERROR_SOURCE_FENCE_LOST
+
+        mgr, _original = self._setup_restore_failed()
+        real, factory = self._real(mgr)
+        replies = []
+
+        original_replay = mgr._replay_restore_failed
+        def replay_after_rival(state, **kwargs):
+            self.assertEqual(real.switch("nethack").status, "succeeded")
+            return original_replay(state, **kwargs)
+        def capture_switch(target, **kwargs):
+            result = real.switch(target, **kwargs)
+            replies.append(result)
+            return result
+        mgr._replay_restore_failed = replay_after_rival
+        mgr.coordinator = SimpleNamespace(switch=capture_switch)
+        result = mgr.recover_failed()
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(replies[0].error_code, ERROR_SOURCE_FENCE_LOST)
+        self.assertEqual(mgr.store.canonical.load()[0]["active"]["game"], "nethack")
+        self.assertEqual(mgr._read_state()["status"], "failed")
+        self.assertFalse(any(a.runtime.cleaned for (g, _), a in factory.adapters.items()
+                             if g == "nethack"))
+
+    def test_fifo_retry_claims_the_same_persisted_replay_id(self):
+        mgr, original = self._setup_restore_failed()
+        real, _factory = self._real(mgr)
+        mgr.coordinator = real
+        blocker = str(uuid.uuid4())
+        with mgr.store.transaction() as tx:
+            tx.enqueue_request(blocker, "switch", "robots")
+        self.assertEqual(mgr.recover_failed().status, "queued")
+        state = mgr._read_state()
+        replay_id = state["restore_recovery"]["request_id"]
+        receipt = mgr.store.receipts.load(replay_id)
+        self.assertNotEqual(replay_id, original)
+        self.assertEqual([r["request_id"] for r in mgr.store.receipts.queued()],
+                         [blocker, replay_id])
+        self.assertEqual(mgr.recover_failed().status, "queued")
+        self.assertEqual(mgr.store.receipts.load(replay_id)["hard_deadline_at"],
+                         receipt["hard_deadline_at"])
+        self.assertEqual(len(mgr.store.receipts.queued()), 2)
+        self.assertEqual(real.switch("robots", request_id=blocker).status, "succeeded")
+        self.assertEqual(mgr.recover_failed().status, "succeeded")
+        self.assertEqual(mgr._read_state()["restore_recovery"]["request_id"], replay_id)
+        self.assertEqual(mgr._read_state()["switch_request_id"], original)
+        self.assertEqual(mgr.store.receipts.queued(), [])
+
+    def test_crash_before_dispatch_reuses_id_payload_and_deadline(self):
+        mgr, original = self._setup_restore_failed()
+        real, _factory = self._real(mgr)
+        seen = []
+
+        def crash_before_dispatch(target, **kwargs):
+            seen.append(kwargs)
+            self.assertEqual(mgr._read_state()["restore_recovery"]["request_id"], kwargs["request_id"])
+            self.assertEqual(mgr.store.receipts.load(kwargs["request_id"])["status"], "queued")
+            raise RuntimeError("driver disappeared before dispatch")
+
+        mgr.coordinator = SimpleNamespace(switch=crash_before_dispatch)
+        self.assertEqual(mgr.recover_failed().status, "failed")
+        replay_id = seen[0]["request_id"]
+        deadline = mgr.store.receipts.load(replay_id)["hard_deadline_at"]
+        restarted, _ = self.manager(["robots"])
+        restarted.coordinator = real
+        self.assertEqual(restarted.recover_failed().status, "succeeded")
+        state = restarted._read_state()
+        self.assertEqual(state["restore_recovery"]["request_id"], replay_id)
+        self.assertEqual(state["switch_request_id"], original)
+        self.assertEqual(mgr.store.receipts.load(replay_id)["hard_deadline_at"], deadline)
+
+    def test_crash_after_commit_reconciles_without_another_switch(self):
+        mgr, original = self._setup_restore_failed()
+        real, _factory = self._real(mgr)
+        calls = []
+
+        def crash_after_commit(target, **kwargs):
+            calls.append(kwargs)
+            self.assertEqual(real.switch(target, **kwargs).status, "succeeded")
+            raise RuntimeError("driver disappeared after commit")
+
+        mgr.coordinator = SimpleNamespace(switch=crash_after_commit)
+        self.assertEqual(mgr.recover_failed().status, "failed")
+        self.assertEqual(mgr.recover_failed().status, "succeeded")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(mgr._read_state()["switch_request_id"], original)
+
+    def test_hanjuku_real_rollback_uses_current_verified_lease(self):
+        mgr, _original = self._setup_restore_failed()
+        (self.root / "config/games/hanjuku-hero.toml").write_text(
+            '[game]\nname="hanjuku-hero"\ntitle="Hanjuku"\nadapter="browser"\n[hanjuku]\nscript_bot=true\n'
+        )
+        canonical, _ = mgr.store.canonical.load()
+        canonical["active"]["game"] = "hanjuku-hero"
+        mgr.store.canonical.save(canonical)
+        old = {k: canonical["active"][k] for k in ("game", "runtime_id", "generation", "lease_id")}
+        real, factory = self._real(mgr)
+        factory.behaviors["sorengame"]["preflight_error"] = RuntimeError("target not ready")
+        failed_id = str(uuid.uuid4())
+        failed = real.switch("sorengame", request_id=failed_id, payload={"expected_source": old})
+        self.assertEqual(failed.status, "rolled_back")
+        current = mgr.store.canonical.load()[0]["active"]
+        self.assertNotEqual(current["lease_id"], old["lease_id"])
+        state = mgr._read_state()
+        state.update(game="hanjuku-hero", bot_identity=old, bot_runtime_id=old["runtime_id"],
+                     switch_request_id=failed_id, last_error_code=failed.error_code)
+        mgr._write_state(state)
+        del factory.behaviors["sorengame"]["preflight_error"]
+        mgr.coordinator = real
+        self.assertEqual(mgr.recover_failed().status, "succeeded")
+        record = mgr._read_state()["restore_recovery"]
+        self.assertEqual(record["expected_source"]["lease_id"], current["lease_id"])
+        self.assertNotEqual(record["expected_source"]["lease_id"], old["lease_id"])
+
+    def test_fresh_replay_cleanup_pending_never_terminalizes(self):
+        from test_coordinator import FailAfter
+
+        mgr, _original = self._setup_restore_failed()
+        real, factory = self._real(mgr)
+        factory.behaviors["robots"]["cleanup_error"] = FailAfter(RuntimeError("cleanup pending"))
+        replies = []
+
+        def capture(target, **kwargs):
+            result = real.switch(target, **kwargs)
+            replies.append(result)
+            return result
+
+        mgr.coordinator = SimpleNamespace(switch=capture)
+        self.assertEqual(mgr.recover_failed().status, "queued")
+        self.assertTrue(replies[0].cleanup_pending)
+        self.assertTrue(mgr.store.canonical.load()[0]["retiring"])
+        self.assertEqual(mgr._read_state()["status"], "failed")
+        self.assertEqual(mgr.recover_failed().status, "queued")
+        self.assertEqual(len(replies), 1)
+        del factory.behaviors["robots"]["cleanup_error"]
+        self.assertEqual(real.recover().status, "succeeded")
+        self.assertEqual(mgr.store.canonical.load()[0]["retiring"], [])
+        self.assertEqual(mgr.recover_failed().status, "succeeded")
+        self.assertEqual(len(replies), 1)
+
+    def test_new_run_of_the_same_game_is_not_a_replay_source(self):
+        mgr, _original = self._setup_restore_failed(
+            canonical_patch=lambda c, r: c.update(active=self._runtime("robots", 5), next_generation=6)
+        )
+        real, _factory = self._real(mgr)
+        mgr.coordinator = real
+        self.assertEqual(mgr.recover_failed().status, "noop")
+        self.assertNotIn("restore_recovery", mgr._read_state())
+        self.assertEqual(mgr.store.canonical.load()[0]["active"]["generation"], 5)
+
+    def test_case_a_rejects_retiring_and_malformed_terminal_proofs(self):
+        cases = {
+            "retiring": dict(canonical_patch=lambda c, r: c.update(retiring=[self._runtime("robots", 1)])),
+            "zero rollback": dict(result_patch=lambda r: r.update(restored_generation=0)),
+            "negative rollback": dict(result_patch=lambda r: r.update(restored_generation=-1)),
+            "receipt cleanup zero": dict(result_patch=lambda r: r.update(cleanup_pending=0)),
+            "canonical cleanup zero": dict(canonical_patch=lambda c, r: c.update(last_result={**r, "cleanup_pending": 0})),
+            "canonical result list": dict(canonical_patch=lambda c, r: c.update(last_result=[])),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(case=name):
+                extra = kwargs.get("canonical_patch")
+                def landed(c, r):
+                    c.update(active=self._runtime("sorengame", 4), next_generation=5)
+                    if extra is not None:
+                        extra(c, r)
+                mgr, _original = self._setup_restore_failed(
+                    result_patch=kwargs.get("result_patch"), canonical_patch=landed
+                )
+                self.assertNotEqual(mgr.recover_failed().status, "succeeded")
+                self.assertEqual(mgr._read_state()["status"], "failed")
+                self.assertEqual(mgr.coordinator.calls, [])
+
+    def test_timer_cannot_use_legacy_phrase_to_settle_or_replay_restore(self):
+        for landed in (False, True):
+            for code in ("timeout", "recovery_required", None):
+                with self.subTest(landed=landed, code=code):
+                    def patch_canonical(c, r):
+                        if landed:
+                            c.update(active=self._runtime("sorengame", 4), next_generation=5)
+                    mgr, _original = self._setup_restore_failed(
+                        error_code=code, canonical_patch=patch_canonical
+                    )
+                    state = mgr._read_state()
+                    state["last_error"] = "restore失敗: canonical stateの復旧が必要です"
+                    mgr._write_state(state)
+                    self.assertIsNone(mgr._retry_failed_tick(self.now_value))
+                    self.assertEqual(mgr._read_state()["status"], "failed")
+                    self.assertEqual(mgr.coordinator.calls, [])
+
+    def test_recovery_payload_tampering_does_not_dispatch(self):
+        mgr, _original = self._setup_restore_failed()
+        real, _factory = self._real(mgr)
+        mgr.coordinator = SimpleNamespace(switch=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("crash")))
+        self.assertEqual(mgr.recover_failed().status, "failed")
+        state = mgr._read_state()
+        state["restore_recovery"]["expected_source"]["lease_id"] = str(uuid.uuid4())
+        mgr._write_state(state)
+        calls = []
+        mgr.coordinator = SimpleNamespace(switch=lambda *a, **k: calls.append(k))
+        self.assertNotEqual(mgr.recover_failed().status, "succeeded")
+        self.assertEqual(calls, [])
+
+
+    def test_accepted_driver_crashes_converge_then_restore(self):
+        for phase in ("validating", "preparing", "quiescing", "starting", "probing", "ready"):
+            with self.subTest(phase=phase):
+                mgr, original = self._setup_restore_failed()
+                real, _factory = self._real(mgr)
+                mgr.coordinator = real
+                def crash(stage, path):
+                    if stage == "after_replace" and path == mgr.store.canonical.path:
+                        if json.loads(path.read_text())["phase"] == phase:
+                            raise RuntimeError("owned driver disappeared")
+                real.crash_hook = crash
+                if phase == "validating":
+                    accept = mgr.store._accept_request_locked
+                    def crash_after_accept(*args, **kwargs):
+                        accepted = accept(*args, **kwargs)
+                        if accepted.status == "accepted":
+                            raise RuntimeError("accepted before first fence")
+                        return accepted
+                    with patch.object(mgr.store, "_accept_request_locked", side_effect=crash_after_accept):
+                        self.assertEqual(mgr.recover_failed().status, "failed")
+                else:
+                    self.assertEqual(mgr.recover_failed().status, "failed")
+                self.assertEqual(mgr.store.canonical.load()[0]["phase"], phase)
+                replay_id = mgr._read_state()["restore_recovery"]["request_id"]
+                real.crash_hook = None
+                recovered = mgr.recover_failed()
+                self.assertEqual(mgr.store.canonical.load()[0]["phase"], "ready")
+                terminal = mgr.store.receipts.load(replay_id)
+                self.assertIn(terminal["status"], ("succeeded", "rolled_back"))
+                if recovered.status != "succeeded":
+                    self.assertEqual(mgr.recover_failed().status, "succeeded")
+                self.assertEqual(mgr._read_state()["status"], "interrupted")
+                self.assertEqual(mgr._read_state()["switch_request_id"], original)
+                self.assertEqual(mgr.store.receipts.queued(), [])
+
+    def test_accept_before_first_fence_crash_never_recovers_a_rival(self):
+        mgr, _original = self._setup_restore_failed()
+        real, factory = self._real(mgr)
+        mgr.coordinator = real
+        original_replay = mgr._replay_restore_failed
+        def after_rival(state, **kwargs):
+            self.assertEqual(real.switch("nethack").status, "succeeded")
+            accept = mgr.store._accept_request_locked
+            def crash_after_accept(*args, **accept_kwargs):
+                accepted = accept(*args, **accept_kwargs)
+                if accepted.status == "accepted":
+                    raise RuntimeError("accepted before first fence")
+                return accepted
+            with patch.object(mgr.store, "_accept_request_locked", side_effect=crash_after_accept):
+                return original_replay(state, **kwargs)
+        mgr._replay_restore_failed = after_rival
+        self.assertEqual(mgr.recover_failed().status, "failed")
+        self.assertEqual(mgr.store.canonical.load()[0]["phase"], "validating")
+        active = mgr.store.canonical.load()[0]["active"]
+        rival = factory.adapter("nethack", active["generation"])
+        before = list(rival.runtime.events)
+        lease = active["lease_id"]
+        real.crash_hook = None
+        mgr._replay_restore_failed = original_replay
+        self.assertEqual(mgr.recover_failed().status, "failed")
+        final = mgr.store.canonical.load()[0]
+        self.assertEqual(final["phase"], "ready")
+        self.assertEqual(final["active"]["lease_id"], lease)
+        self.assertEqual(rival.runtime.events, before)
+        self.assertEqual(final["last_result"]["error_code"], "source_fence_lost")
+
+    def test_expired_fifo_attempt_allows_a_new_bounded_owned_attempt(self):
+        from docich import game_switch
+
+        mgr, _original = self._setup_restore_failed()
+        real, _factory = self._real(mgr)
+        mgr.coordinator = SimpleNamespace(switch=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("crash")))
+        self.assertEqual(mgr.recover_failed().status, "failed")
+        old = mgr._read_state()["restore_recovery"]
+        remaining = game_switch._wall_deadline_remaining_s
+        mgr.coordinator = real
+        with patch.object(game_switch, "_wall_deadline_remaining_s", side_effect=lambda v: -1 if v == old["hard_deadline_at"] else remaining(v)):
+            self.assertEqual(mgr.recover_failed().status, "failed")
+        self.assertEqual(mgr.store.receipts.load(old["request_id"])["result"]["error_code"], "timeout")
+        self.assertEqual(mgr.recover_failed().status, "succeeded")
+        new = mgr._read_state()["restore_recovery"]
+        self.assertNotEqual(new["request_id"], old["request_id"])
+        self.assertEqual(mgr.store.receipts.load(old["request_id"])["hard_deadline_at"], old["hard_deadline_at"])
+
+    def test_missing_or_changed_absolute_cap_never_dispatches(self):
+        for mutation in ("missing", "changed"):
+            with self.subTest(mutation=mutation):
+                mgr, _original = self._setup_restore_failed()
+                mgr.coordinator = SimpleNamespace(switch=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("crash")))
+                self.assertEqual(mgr.recover_failed().status, "failed")
+                record = mgr._read_state()["restore_recovery"]
+                receipt = mgr.store.receipts.load(record["request_id"])
+                if mutation == "missing":
+                    receipt.pop("hard_deadline_at")
+                else:
+                    receipt["hard_deadline_at"] = "2099-01-01T00:00:00Z"
+                mgr.store.receipts.save(receipt)
+                calls = []
+                mgr.coordinator = SimpleNamespace(switch=lambda *a, **k: calls.append(k))
+                self.assertEqual(mgr.recover_failed().status, "queued")
+                self.assertEqual(calls, [])
+                self.assertEqual(mgr._read_state()["status"], "failed")
+
+    def test_unproven_restore_cannot_alias_general_timer_or_operator_retry(self):
+        for mutation in ("missing", "cleanup zero", "start target alias"):
+            for code in ("recovery_required", None):
+                with self.subTest(mutation=mutation, code=code):
+                    mgr, original = self._setup_restore_failed(
+                        error_code=code,
+                        canonical_patch=lambda c, r: c.update(active=self._runtime("nethack", 5), next_generation=6),
+                    )
+                    state = mgr._read_state()
+                    state["last_error"] = "restore失敗: canonical stateの復旧が必要です"
+                    mgr._write_state(state)
+                    if mutation == "missing":
+                        mgr.store.receipts._path(original).unlink()
+                    else:
+                        receipt = mgr.store.receipts.load(original)
+                        if mutation == "cleanup zero":
+                            receipt["result"]["cleanup_pending"] = 0
+                        else:
+                            receipt["target"] = "robots"
+                        mgr.store.receipts.save(receipt)
+                    real, factory = self._real(mgr)
+                    mgr.coordinator = real
+                    before = mgr.store.canonical.load()[0]
+                    self.assertIsNone(mgr._retry_failed_tick(self.now_value))
+                    self.assertEqual(mgr.recover_failed().status, "noop")
+                    self.assertEqual(mgr._read_state()["status"], "failed")
+                    self.assertEqual(mgr.store.canonical.load()[0], before)
+                    self.assertFalse(any(a.runtime.cleaned for a in factory.adapters.values()))
+
+
+
 class TestRetroCornerLifecycle(RetroCornerTestBase):
     def test_start_bounds_game_switch_by_the_saved_slot_deadline(self):
         current = ["sorengame"]
@@ -1794,7 +2473,7 @@ class TestEndResultChatParts(unittest.TestCase):
             "実際にはアンディーブ将軍が同じアルマムーン城へ出撃しました。"
             "ジョンリギ城ではバジルとの戦闘に勝っています。"
             "その一方でナキューメラ城の失陥も確認されており、"
-            "局地戦で勝てても、全体では拠点を維持できなかったことが今回の反省点です。"
+            "局地戦の勝利と拠点の失陥が両方記録されていることが今回の反省点です。"
             "ただし、ナキューメラ城の失陥が出撃判断の直接の結果だったかまでは"
             "記録から断定できません。次回は出撃の前後で守備配置と兵力を確認し、"
             "攻撃後も城を維持できる条件を優先します。"
@@ -2085,7 +2764,7 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
         self.assertTrue(all(not part.startswith("[") for part in chats))
         self.assertEqual("".join(chats), expected)
         self.assertNotIn("戦闘42回", "".join(chats))
-        self.assertIn("局地戦で勝てても、全体では拠点を維持できなかった", "".join(chats))
+        self.assertIn("局地戦の勝利と拠点の失陥が両方記録されている", "".join(chats))
         self.assertTrue(chats[-1].endswith("タイトル画面への復帰を確認し、今回の挑戦はここまでです。"))
         self.assertTrue(state.get("end_announced"))
         self.assertNotIn("end_announce_error", state)

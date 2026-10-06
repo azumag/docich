@@ -8,9 +8,13 @@ set -euo pipefail
 # states fail closed.
 #
 # Three phase-gated steps run in order:
-#   1. The retro adapter settles only a prelaunch quiesce failure whose exact
-#      terminal receipt and stable canonical owner prove that Hanjuku never
-#      became active. Other games/states return noop; queued/failed refuses.
+#   1. The retro adapter settles only a proven terminal failure: a prelaunch
+#      quiesce failure whose exact terminal receipt and stable canonical owner
+#      prove that Hanjuku never became active, or a post-completion restore
+#      failure whose durable restore receipt is bound to the corner state
+#      (#1868/#1870; the recorded restore is replayed once when canonical
+#      still owns the corner game). Other games/states return noop;
+#      queued/failed refuses.
 #   2. corner-rotation recover commits the now-terminal adapter observation
 #      without dropping or replaying the recorded reservation.
 #   3. The reviewed service unit is restarted so the next normal tick can

@@ -123,6 +123,6 @@ def test_failed_priority_recovery_money_is_also_protected_from_recruitment():
                    'recruit': 'check', 'recruit_priority': True, 'recruit_reserve': 20,
                    'egg': 'unverified', 'egg_priority': True, 'reserve': 50}
     policy.month_step(parse(month_canvas(100, on='しょうぐんぼしゅう')), mem)
-    assert mem['shop']['recruit'] == 'skipped'
+    assert mem['shop']['recruit'] == 'deferred_egg'
     assert 'month_sub' not in mem
     assert mem['shop']['reserve'] == 50

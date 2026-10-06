@@ -764,6 +764,14 @@ def test_third_image_resets_two_image_stasis(tmp_path):
 
 def test_game_over_writes_a_grounded_recap_candidate(tmp_path):
     """Owner rule 2026-09-28: a game over narrates a recap of the run."""
+    from types import SimpleNamespace
+    import datetime as dt
+    from docich.naming import runtime_directory
+    from docich.retro_corner import RetroCornerConfig, RetroCornerManager
+
+    g = SimpleNamespace(state_dir=tmp_path)
+    tmp_path = runtime_directory(g.state_dir, IDENTITY['runtime_id'])
+    tmp_path.mkdir(parents=True)
     title = title_frame()
     for now in range(4):
         hanjuku_run.observe(tmp_path, IDENTITY, title, now=now, wall=1000 + now)
@@ -786,8 +794,16 @@ def test_game_over_writes_a_grounded_recap_candidate(tmp_path):
     item = recap[0]
     assert item['key'] == 'game_over_recap' and item['seq'] == 1
     assert item['game'] == IDENTITY['game'] and item['runtime_id'] == IDENTITY['runtime_id']
-    assert '第1章' in item['text'] and '1年5月' in item['text'] and '出撃1回' in item['text']
-    assert item['text'].startswith('記録では')
+    assert '第1章' in item['text'] and '1年5月' in item['text']
+    assert '出撃1回' not in item['text']
+    assert item['text'].startswith('今回はゲームオーバーとなり、')
+    from docich.hanjuku_commentary import summarize_recap
+    assert item['text'] == summarize_recap(tmp_path, run)[1]
+    manager = RetroCornerManager(g, config=RetroCornerConfig(), coordinator=SimpleNamespace())
+    chat_text = manager._end_result_text(
+        {'game': 'hanjuku-hero', 'bot_identity': IDENTITY, 'end_reason': 'game_over'},
+        dt.datetime.now(dt.timezone.utc))
+    assert item['text'] == chat_text
     assert item['text'].endswith('今回の挑戦はここまでです。')
     assert len(item['text']) <= 1000
     # The terminal latch returns the old state: never a second recap.

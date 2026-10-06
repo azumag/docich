@@ -398,7 +398,7 @@ def recap_body(runtime_dir, run_state) -> str:
             (item for item in launches if item[0] >= plan[0] and item[2] == plan[2]),
             None,
         )
-    if launch is None and launches:
+    if plan is None and launches:
         launch = launches[0]
 
     if plan and launch and plan[2] == launch[2]:
@@ -452,18 +452,18 @@ def recap_body(runtime_dir, run_state) -> str:
         if win_sentence and latest_win_entry and latest_win_entry[0] > latest_loss[0]:
             story.append(
                 f'{lost_castle}城の失陥が確認された一方、その後、{win_sentence}'
-                'それでも全体では拠点を失ったまま終えたことが今回の反省点です。'
+                '最後に確認できた保有情報で、この拠点の失陥が今回の反省点です。'
             )
         elif win_sentence:
             story.append(
                 f'{win_sentence}その一方で{lost_castle}城の失陥も確認されており、'
-                '局地戦で勝てても、全体では拠点を維持できなかったことが'
-                '今回の反省点です。'
+                '局地戦の勝利と拠点の失陥が両方記録されていることが、'
+                '今回の振り返りの焦点です。'
             )
         else:
             story.append(
-                f'{lost_castle}城を失ったまま終えており、'
-                '攻めるだけでなく拠点を維持する判断に課題が残りました。'
+                f'最後に確認できた保有情報では{lost_castle}城の失陥が記録されており、'
+                'その前後の状況を振り返る必要があります。'
             )
         if launches:
             story.append(
@@ -475,13 +475,13 @@ def recap_body(runtime_dir, run_state) -> str:
             story.append(
                 '失陥の直接原因までは記録から断定できません。'
                 '次回は失陥直前の守備配置・兵力・敵の接近状況を確認し、'
-                'どの判断で守りが崩れたのかを絞り込みます。'
+                '失陥までの経緯を絞り込みます。'
             )
     elif recovered_losses:
         lost_castle = recovered_losses[-1][2]
         story.append(
             f'途中で{lost_castle}城を失いましたが、その後の観測では奪回できています。'
-            '立て直せた点は成果ですが、一度守りを崩した場面は次回の改善材料です。'
+            '保有を回復した点は成果ですが、失陥に至る経緯は次回の確認材料です。'
         )
         story.append(
             '次回はその失陥直前の守備配置と出撃判断を見直し、'
@@ -511,7 +511,7 @@ def recap_body(runtime_dir, run_state) -> str:
         else:
             story.append(
                 '大きな失陥や敗戦はこの記録からは確認できません。'
-                '次回も同じ攻勢を続けつつ、終了直前の盤面変化を重点的に残します。'
+                '次回は終了直前の盤面変化を重点的に残し、作戦と実行結果を確認します。'
             )
 
     return ''.join(story)

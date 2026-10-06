@@ -2767,7 +2767,8 @@ class GameSwitchCoordinator:
             )
         except StateCorruptError:
             reconciled = self._reconcile_stale_receipt(
-                tx, request_id, operation, None if operation == "rotate" else target, payload
+                tx, request_id, operation, None if operation == "rotate" else target, payload,
+                deadline=deadline,
             )
             if reconciled is not None:
                 return reconciled
@@ -2817,6 +2818,20 @@ class GameSwitchCoordinator:
         # Receipt conflict/FIFO/replay rules run first. The source check is
         # atomic with teardown under this exclusive lock, and stale queued
         # restores finish durably without touching the current runtime.
+        replay_phase = self.store.canonical.load()[0].get("phase")
+        if accepted_replay and replay_phase != "validating":
+            # Receipt identity/payload and driver ownership were verified above.
+            # A dead accepted driver may already have detached its old active;
+            # recover a transaction which already passed its source check.
+            # Validating may have crashed before that check and stays fenced.
+            # Converge fail-closed through the recovery path.
+            recovered = self._recover_locked(tx, deadline=deadline)
+            self._log(
+                "recovery_finished", phase="",
+                result=recovered.status, error_code=recovered.error_code,
+                cleanup_pending=recovered.cleanup_pending,
+            )
+            return recovered
         if payload is not None and "expected_source" in payload:
             expected = payload["expected_source"]
             keys = ("game", "runtime_id", "generation", "lease_id")
@@ -2839,14 +2854,12 @@ class GameSwitchCoordinator:
                 saved = tx.finish_request(request_id, "failed", result)
                 return _result_from_receipt(saved)
         if accepted_replay:
-            # The previous driver is provably dead (we hold the lock).
-            # Converge fail-closed through the recovery path.
+            # Validating replay passed the exact source fence above. Resolve
+            # the dead accepted driver without launching a second operation.
             recovered = self._recover_locked(tx, deadline=deadline)
-            self._log(
-                "recovery_finished", phase="",
-                result=recovered.status, error_code=recovered.error_code,
-                cleanup_pending=recovered.cleanup_pending,
-            )
+            self._log("recovery_finished", phase="", result=recovered.status,
+                      error_code=recovered.error_code,
+                      cleanup_pending=recovered.cleanup_pending)
             return recovered
         self._log_update(
             target=rotate_target if rotate_target is not None else target,
@@ -3037,6 +3050,7 @@ class GameSwitchCoordinator:
         operation: str,
         target: str | None,
         payload: Mapping[str, object] | None,
+        *, deadline: float,
     ) -> SwitchResult | None:
         """Repair a receipt left non-terminal by a crash after the commit
         write.  Only converges when canonical ``last_result`` names the same
@@ -3055,7 +3069,10 @@ class GameSwitchCoordinator:
         if receipt.get("payload_hash") != expected_hash:
             raise RequestConflictError("同じrequest_idが異なるpayloadで使用されています")
         saved = tx.finish_request(request_id, str(status), dict(last_result))
-        return _result_from_receipt(saved)
+        warnings: list[str] = []
+        cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings)
+        return _result_from_receipt(saved, warnings=tuple(warnings),
+                                    cleanup_pending=cleanup_pending)
 
     def _run_operation_locked(
         self,

@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 from .game_switch import atomic_write_json
+from .hanjuku_chart import HERO
 
 SCHEMA = 1
 EXPERIENCE_FILE = 'hanjuku_experience.json'
@@ -48,6 +49,28 @@ def _hp_band(enemy_hp, ally_hp) -> str:
     return 'even'
 
 
+def _resource_band(value) -> str:
+    """Unknown is not zero; booleans are not measured resource counts."""
+    if type(value) is not int or not 0 <= value <= 999:
+        return 'unknown'
+    return 'empty' if value == 0 else 'available'
+
+
+def _risk_band(mem: dict, battle: dict) -> str:
+    hp = battle.get('ally_hp')
+    if type(hp) is not int or hp <= 0:
+        return 'unknown'
+    hero = battle.get('ally') == HERO
+    full = mem.get('hero_max_hp') if hero else battle.get('start_ally_hp')
+    known_full = type(full) is int and full >= hp
+    floor = 20 if hero else 4
+    if hp <= floor:
+        return 'critical'
+    if not known_full:
+        return 'unknown'
+    return 'critical' if hp <= max(floor, full // (2 if hero else 4)) else 'normal'
+
+
 def situation_key(kind: str, mem: dict) -> str:
     """Stable fingerprint of one independent-judgment situation."""
     battle = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
@@ -58,7 +81,7 @@ def situation_key(kind: str, mem: dict) -> str:
         str(battle.get('ally') or ''),
         str(battle.get('step') or mem.get('active') or ''),
     ]
-    if kind == 'battle_menu':
+    if kind in ('battle_menu', 'egg_summon'):
         parts.append(_hp_band(battle.get('enemy_hp'), battle.get('ally_hp')))
     if kind == 'monster_menu':
         # The summoned monsters decide the skill menu, not the hero battle.
@@ -66,6 +89,25 @@ def situation_key(kind: str, mem: dict) -> str:
         parts.append(str(panel.get('ally') or ''))
         parts.append(str(panel.get('enemy') or ''))
         parts.append(_hp_band(panel.get('enemy_hp'), panel.get('ally_hp')))
+    # Monster skills already key on the current summoned panel. Preserve that
+    # contract: the summoner's stale resources must not re-key a monster turn.
+    if kind not in ('battle_menu', 'egg_summon'):
+        return '|'.join(part.replace('|', '/') for part in parts)
+    # Version the fingerprint, not the persisted document: old evidence remains
+    # available for inspection but cannot silently govern a different context.
+    side = battle.get('side')
+    side = side if side in ('attack', 'defense') else 'unknown'
+    eggs = mem.get('egg_uses')
+    eggs = eggs if isinstance(eggs, dict) else {}
+    recheck = mem.get('egg_recheck')
+    recheck = recheck if isinstance(recheck, (list, tuple)) else ()
+    ally = battle.get('ally')
+    ally = ally if isinstance(ally, str) else None
+    egg_count = None if ally in recheck else eggs.get(ally)
+    parts.extend(('ctx2', f'side={side}', f'risk={_risk_band(mem, battle)}',
+                  f'egg={_resource_band(egg_count)}',
+                  f'ally_soldiers={_resource_band(battle.get("ally_soldiers"))}',
+                  f'enemy_soldiers={_resource_band(battle.get("enemy_soldiers"))}'))
     return '|'.join(part.replace('|', '/') for part in parts)
 
 
@@ -90,9 +132,21 @@ def preferred(exp: dict | None, key: str, *, default: str, kind: str) -> str:
     A measured non-default only replaces the default when it has a strictly
     higher win rate. If the default is losing (rate below 0.5) and an
     alternative has never been tried, that alternative is selected so the bot
-    can learn beyond the built-in default. An untried default stays default.
+    can learn beyond the built-in default, except in measured defense, critical
+    or unknown contexts. Emergency default summons are never replaced by a
+    learned pass/attack. Actions outside this menu's vocabulary are ignored.
+    An untried default stays default.
     """
-    if not isinstance(exp, dict):
+    allowed = ALTERNATIVES.get(kind, ())
+    if default not in allowed or not isinstance(key, str) or not isinstance(exp, dict):
+        return default
+    context = key.split('|')
+    constrained = ('ctx2' in context and
+                   ('risk=critical' in context or 'risk=unknown' in context or
+                    'side=defense' in context or 'side=unknown' in context))
+    # Keep a policy-selected emergency summon. This function chooses a label;
+    # the caller must still verify the real menu and egg availability.
+    if constrained and 'risk=critical' in context and default == 'use_egg':
         return default
     row = exp.get('situations')
     row = row.get(key) if isinstance(row, dict) else None
@@ -102,7 +156,7 @@ def preferred(exp: dict | None, key: str, *, default: str, kind: str) -> str:
         return default
     best_action, best_rate, best_trials = None, default_rate, -1
     for action, st in actions.items():
-        if action == default or not isinstance(action, str):
+        if not isinstance(action, str) or action == default or action not in allowed:
             continue
         _, _, trials, rate = _stats(st)
         if trials <= 0 or rate is None:
@@ -112,7 +166,7 @@ def preferred(exp: dict | None, key: str, *, default: str, kind: str) -> str:
                 best_action, best_rate, best_trials = action, rate, trials
     if best_action is not None and best_rate > default_rate:
         return best_action
-    if default_rate < 0.5:
+    if default_rate < 0.5 and not constrained:
         for alt in ALTERNATIVES.get(kind, ()):
             if alt == default:
                 continue

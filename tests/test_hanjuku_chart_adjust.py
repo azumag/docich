@@ -563,6 +563,9 @@ def test_review_collates_base_adjusted_and_outcomes(tmp_path):
         {'decision': 'order_start', 'chart_step': j1, 'target': 'スペンソニア', 'general': 'ココット'},
         {'decision': 'battle_result', 'chart_step': j1, 'outcome': 'win', 'side': 'attack',
          'castle': 'スペンソニア'},
+        # An HP win alone is not a castle capture. Confirm ownership afterwards.
+        {'decision': 'world_map_owners', 'chart_step': None,
+         'observed_metric': {'スペンソニア': 'own'}},
         # A later generation reusing J1 (different target) does not mix outcomes.
         {'decision': 'order_start', 'chart_step': other_j1, 'target': 'けっかい', 'general': 'どうし'},
         {'decision': 'battle_result', 'chart_step': other_j1, 'outcome': 'loss', 'side': 'attack',
@@ -577,9 +580,11 @@ def test_review_collates_base_adjusted_and_outcomes(tmp_path):
     assert types['promote_adjusted_step']['order']['target'] == 'スペンソニア'
     assert types['cover_off_chart']['off_chart_reason'] == 'orders_locked'
     assert types['promote_adjusted_step']['step'] == j1
+    assert types['promote_adjusted_step']['capture_evidence'] == 'observed_ownership_after_attack'
+    assert types['review_adjusted_failure']['step'] == other_j1
     assert report['steps'][j1]['kind'] == 'adjusted' and report['runtime_id'] == 'r'
     assert report['steps'][other_j1]['wins'] == 0 and report['steps'][j1]['losses'] == 0
-    assert summary['proposals'] == 3
+    assert summary['proposals'] == 4
     assert chart.CHAPTER_1_ORDERS == BASE_ORDERS
 
 
