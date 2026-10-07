@@ -334,14 +334,28 @@ def test_boundary_override_does_not_extend_post_boundary_steps():
         # Keep scheduler jitter before target construction outside the
         # assertion we care about. The restored post-boundary budget must
         # still be the ordinary request budget, never the 30s override.
+        # Synchronously pre-construct the target adapter (same generation
+        # allocation as the switch path) so factory-construction jitter can
+        # no longer consume the request budget before the target even
+        # exists: previously this surfaced as KeyError on ("robots", 2)
+        # instead of the readiness assertion (#1118).
         request_timeout_s = 2.0
+        pre_state, _ = store.canonical.load()
+        target_generation = max(
+            int(str(pre_state["next_generation"])),
+            store.receipts.max_generation() + 1,
+        )
+        factory(replace(old.spec, game="robots", generation=target_generation))
         started = time.monotonic()
         result = coordinator.switch("robots", timeout_s=request_timeout_s)
         elapsed = time.monotonic() - started
         assert result.status in {"failed", "rolled_back"}
         assert elapsed < 5.0, elapsed
-        target = factory.adapters[("robots", 2)]
-        assert target.readiness_deadline_left is not None
+        target = factory.adapters[("robots", target_generation)]
+        assert target.readiness_deadline_left is not None, (
+            result.status,
+            elapsed,
+        )
         assert target.readiness_deadline_left <= request_timeout_s
         assert target.readiness_deadline_left < factory.boundary_timeout_s
         state, _ = store.canonical.load()
