@@ -6,6 +6,7 @@ run (architecture.md §9.6).
 """
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import subprocess
@@ -22,9 +23,34 @@ from .naming import (
     validate_tmux_window_id,
     validate_tmux_window_ref,
 )
-from .process_tree import terminate_process_tree
+from .process_tree import (
+    ancestor_pids,
+    is_running,
+    process_pgid,
+    processes_in_pane_scopes,
+    processes_with_env,
+    terminate_process_tree,
+)
+
+logger = logging.getLogger(__name__)
 
 SESSION = "docich"
+
+# Every pane process is tagged with the runtime identity that owns it
+# (Issue #1105).  A process that escapes the pane's descendant tree — e.g. the
+# pane leader exited and tmux reparented the game — keeps these tags, so a
+# teardown can still prove ownership of exactly the runtime it is stopping.
+OWNERSHIP_RUNTIME_ID_ENV = "DOCICH_TMUX_RUNTIME_ID"
+OWNERSHIP_GENERATION_ENV = "DOCICH_TMUX_GENERATION"
+OWNERSHIP_ROLE_ENV = "DOCICH_TMUX_ROLE"
+
+# systemd scope prefix tmux uses for a pane spawn; used together with a pane
+# process group so a recycled PID is never signalled.
+TMUX_PANE_SCOPE_MARKER = "tmux-spawn-"
+
+# Fail closed instead of reaping an implausible number of processes: a bigger
+# population means the ownership inference itself is not trustworthy.
+MAX_ORPHAN_SWEEP_PROCESSES = 64
 
 # Throwaway evaluation sessions (resolver/bot_eval/improve/ninvaders arena)
 # must never share the production tmux server.  A tmux client with no server
@@ -90,6 +116,16 @@ class TmuxOwnership:
 class PaneState:
     dead: bool
     pid: int
+
+
+def ownership_environment(ownership: TmuxOwnership) -> dict[str, str]:
+    """Environment tags that mark every process spawned for ``ownership``."""
+
+    return {
+        OWNERSHIP_RUNTIME_ID_ENV: ownership.runtime_id,
+        OWNERSHIP_GENERATION_ENV: str(ownership.generation),
+        OWNERSHIP_ROLE_ENV: ownership.role,
+    }
 
 
 class Tmux:
@@ -205,9 +241,8 @@ class Tmux:
         ]
         if cwd:
             args += ["-c", cwd]
-        if env:
-            for key, value in env.items():
-                args += ["-e", f"{key}={value}"]
+        for key, value in self._pane_environment(ownership, env).items():
+            args += ["-e", f"{key}={value}"]
         args.append(shlex.join(cmd))
         result = self._checked(args, "window作成")
         try:
@@ -259,17 +294,19 @@ class Tmux:
         cols: int,
         rows: int,
         ownership: TmuxOwnership,
+        env: dict | None = None,
     ) -> str:
         """Create, configure, tag and verify a session as one rollback-safe primitive."""
 
         validate_tmux_name(session)
-        result = self._checked(
-            [
-                "new-session", "-d", "-P", "-F", "#{session_id}",
-                "-s", session, "-x", str(cols), "-y", str(rows), shlex.join(cmd),
-            ],
-            "session作成",
-        )
+        args = [
+            "new-session", "-d", "-P", "-F", "#{session_id}",
+            "-s", session, "-x", str(cols), "-y", str(rows),
+        ]
+        for key, value in self._pane_environment(ownership, env).items():
+            args += ["-e", f"{key}={value}"]
+        args.append(shlex.join(cmd))
+        result = self._checked(args, "session作成")
         try:
             session_id = validate_tmux_session_id(result.stdout.strip())
         except ValueError as exc:
@@ -519,13 +556,110 @@ class Tmux:
                 pids.append(pid)
         return list(dict.fromkeys(pids))
 
-    def _stop_pane_processes(self, target: str) -> tuple[int, ...]:
-        """Stop descendants after the caller has validated the target scope."""
+    @staticmethod
+    def _pane_environment(ownership: TmuxOwnership, env: dict | None) -> dict[str, str]:
+        """Explicit ``env`` plus the runtime ownership tags (Issue #1105)."""
+
+        merged = {str(key): str(value) for key, value in (env or {}).items()}
+        merged.update(ownership_environment(ownership))
+        return merged
+
+    def _stop_scoped_processes(self, target: str) -> tuple[tuple[int, ...], dict[int, int]]:
+        """Stop the pane trees of an ownership-checked target.
+
+        Returns the PIDs that survived together with the pane leaders' process
+        groups, which the post-condition sweep uses to find children that left
+        the descendant tree.
+        """
 
         pids = self._pane_pids(target)
         if not pids:
+            return (), {}
+        groups: dict[int, int] = {}
+        for pid in pids:
+            pgid = process_pgid(pid)
+            if pgid is not None:
+                groups[pid] = pgid
+        return terminate_process_tree(pids).remaining, groups
+
+    def _stop_pane_processes(self, target: str) -> tuple[int, ...]:
+        """Stop descendants after the caller has validated the target scope."""
+
+        remaining, _groups = self._stop_scoped_processes(target)
+        return remaining
+
+    def _escaped_process_ids(
+        self,
+        ownership: TmuxOwnership | None,
+        roles: tuple[str, ...] | None,
+        pane_groups: dict[int, int],
+    ) -> tuple[int, ...]:
+        """Live processes provably owned by the target being torn down.
+
+        Two independent proofs are accepted and nothing else is ever touched:
+
+        * the ownership tags exported into every pane environment of the
+          runtime (they survive reparenting, ``setsid`` and re-exec), and
+          optionally one of ``roles`` (``None`` accepts every role, which is
+          the right scope for a whole-session teardown), and
+        * a pane leader's process group **and** a tmux pane cgroup scope,
+          which also catches a process spawned before the tags existed as long
+          as it stayed in the pane it was started from.
+        """
+
+        found: list[int] = []
+        if ownership is not None:
+            base_tags = {
+                OWNERSHIP_RUNTIME_ID_ENV: ownership.runtime_id,
+                OWNERSHIP_GENERATION_ENV: str(ownership.generation),
+            }
+            for role in (roles if roles is not None else (None,)):
+                tags = dict(base_tags)
+                if role is not None:
+                    tags[OWNERSHIP_ROLE_ENV] = role
+                found.extend(processes_with_env(tags))
+        if pane_groups and not any(is_running(pid) for pid in pane_groups):
+            # Every pane leader is gone (a live one is reported as `remaining`
+            # before this sweep runs), so nothing legitimate can still be in
+            # their process groups: only escaped children remain.
+            found.extend(
+                processes_in_pane_scopes(
+                    set(pane_groups.values()), cgroup_marker=TMUX_PANE_SCOPE_MARKER
+                )
+            )
+        protected = set(ancestor_pids())
+        return tuple(
+            pid for pid in dict.fromkeys(found) if pid > 1 and pid not in protected
+        )
+
+    def _reap_escaped_processes(
+        self,
+        ownership: TmuxOwnership | None,
+        roles: tuple[str, ...] | None,
+        pane_groups: dict[int, int],
+        *,
+        operation: str,
+    ) -> tuple[int, ...]:
+        """Stop processes that escaped the pane descendant tree (Issue #1105).
+
+        An orphan that survived the pane sweep keeps burning CPU after the
+        switch reports success, so every teardown ends with this
+        post-condition: reclaim what is provably owned, and fail closed when
+        something owned cannot be stopped.
+        """
+
+        victims = self._escaped_process_ids(ownership, roles, pane_groups)
+        if not victims:
             return ()
-        return terminate_process_tree(pids).remaining
+        if len(victims) > MAX_ORPHAN_SWEEP_PROCESSES:
+            raise TmuxError(
+                f"{operation}: 回収対象の孤立プロセスが上限"
+                f"{MAX_ORPHAN_SWEEP_PROCESSES}件を超えました: {victims}"
+            )
+        logger.warning(
+            "tmux %s: 回収対象の孤立プロセスを停止します victims=%s", operation, victims
+        )
+        return terminate_process_tree(list(victims)).remaining
 
     def _kill_after_process_stop(self, args: list[str], operation: str) -> None:
         """Finish cleanup while accepting only a target that already vanished.
@@ -550,10 +684,25 @@ class Tmux:
         generation_suffix = session.removeprefix("docich-game-g")
         if session != "docich-game" and not generation_suffix.isdigit():
             raise ValueError("legacy game cleanup only accepts docich-game")
-        remaining = self._stop_pane_processes(session)
+        remaining, pane_groups = self._stop_scoped_processes(session)
         self._run(["kill-session", "-t", session])
+        # Legacy sessions carry no runtime tags, so only the pane process
+        # group / cgroup scope evidence is available on this path.
+        remaining = self._merge_remaining(
+            remaining,
+            self._reap_escaped_processes(
+                None, None, pane_groups, operation="legacy session停止"
+            ),
+        )
         if remaining:
             raise TmuxError(f"legacy game sessionの子プロセスが停止しませんでした: {remaining}")
+
+    @staticmethod
+    def _merge_remaining(*groups: tuple[int, ...]) -> tuple[int, ...]:
+        merged: list[int] = []
+        for group in groups:
+            merged.extend(group)
+        return tuple(dict.fromkeys(merged))
 
     def kill_window_owned(self, target: str, expected: TmuxOwnership) -> bool:
         validate_tmux_window_ref(target)
@@ -564,8 +713,16 @@ class Tmux:
             raise OwnershipMismatchError(
                 f"window ownershipが一致しません (expected={expected}, actual={actual})"
             )
-        remaining = self._stop_pane_processes(target)
+        remaining, pane_groups = self._stop_scoped_processes(target)
         self._kill_after_process_stop(["kill-window", "-t", target], "window停止")
+        # Only this window's role is reclaimed: a sibling window of the same
+        # runtime (game vs agent) must keep running.
+        remaining = self._merge_remaining(
+            remaining,
+            self._reap_escaped_processes(
+                expected, (expected.role,), pane_groups, operation="window停止"
+            ),
+        )
         if remaining:
             raise TmuxError(f"tmux windowの子プロセスが停止しませんでした: {remaining}")
         return True
@@ -579,8 +736,16 @@ class Tmux:
             raise OwnershipMismatchError(
                 f"session ownershipが一致しません (expected={expected}, actual={actual})"
             )
-        remaining = self._stop_pane_processes(session)
+        remaining, pane_groups = self._stop_scoped_processes(session)
         self._kill_after_process_stop(["kill-session", "-t", session], "session停止")
+        # The session owns every role of the runtime (its own pane and the
+        # generation windows), so no role filter applies here.
+        remaining = self._merge_remaining(
+            remaining,
+            self._reap_escaped_processes(
+                expected, None, pane_groups, operation="session停止"
+            ),
+        )
         if remaining:
             raise TmuxError(f"tmux sessionの子プロセスが停止しませんでした: {remaining}")
         return True
