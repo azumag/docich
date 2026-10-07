@@ -148,7 +148,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div class="card kpi"><h3>Improve</h3><div class="val" id="status-improve">-</div><div class="subk mono" id="status-improve-sub">-</div></div>
 <div class="card kpi"><h3>Wildcard</h3><div class="val" id="status-wildcard">-</div><div class="subk mono" id="status-wildcard-sub">-</div></div>
 </div>
-<div class="card"><h3>生成中インジケータ</h3><div id="status-generators"></div><div class="help">source: tmp/state/.comment_gen_state / .radio_state（フレッシュ判定は comment 90s / radio 600s alive, 20s dead）</div></div>
+<div class="card"><h3>生成中インジケータ</h3><div id="status-generators"></div><div class="help">source: tmp/state/.comment_gen_state(.json) / .radio_state（フレッシュ判定は comment 300s alive / 90s dead, radio 600s alive / 20s dead — PID生存中は延長）</div></div>
 <div class="row">
 <div class="card" style="flex:1"><h3>Game</h3><div class="kv" id="status-game-kv"></div></div>
 <div class="card" style="flex:1"><h3>Improve 詳細</h3><div class="kv" id="status-improve-kv"></div><div class="help" style="margin-top:8px">log tail (直近6行)</div><pre id="status-improve-log" class="mono" style="white-space:pre-wrap;background:#111319;border:1px solid var(--border);border-radius:8px;padding:8px;max-height:160px;overflow:auto"></pre></div>
@@ -2315,11 +2315,21 @@ async function loadStatus(){
     const imp=data.improve||{};
     const wc=data.wildcard||{};
     const game=data.game||{};
-    // status-comment
+    // status-comment — 詳細表示（どのコメント・どのモデル）
     if(cGen){
       $("#status-comment").textContent=cGen.fresh?"生成中":"古い";
       $("#status-comment").className="val "+(cGen.fresh?"badge ok":"badge warn");
-      $("#status-comment-sub").textContent=`${cGen.label} age ${cGen.age}s / ${cGen.stale_sec}s ts ${fmtTime(cGen.ts)} raw ${esc(cGen.raw||"")}`;
+      const parts=[];
+      parts.push(`${cGen.label}`);
+      if(cGen.model) parts.push(`model=${cGen.model}`);
+      if(cGen.count) parts.push(`${cGen.count}件`);
+      if(cGen.attempt) parts.push(`試行 ${cGen.attempt}${cGen.max_retry?`/${cGen.max_retry}`:""}`);
+      if(cGen.mode) parts.push(`mode=${cGen.mode}`);
+      if(cGen.preview) parts.push(`「${cGen.preview.slice(0,60)}」`);
+      const detail = parts.join(" | ");
+      const pidInfo = cGen.owner_pid ? ` pid ${cGen.owner_pid} alive ${cGen.owner_alive?"yes":"no"}` : "";
+      $("#status-comment-sub").textContent=`${detail} | age ${cGen.age}s / ${cGen.stale_sec}s${pidInfo} ts ${fmtTime(cGen.ts)} raw ${esc(cGen.raw||"")}`;
+      $("#status-comment-sub").title = `model: ${cGen.model||"-"} | preview: ${cGen.preview||"-"} | batch: ${cGen.batch_hash||"-"}`;
     } else {
       $("#status-comment").textContent="待機中";
       $("#status-comment-sub").textContent=`raw: ${esc(data.comment_gen.raw||"-")} fresh: -`;
@@ -2337,14 +2347,28 @@ async function loadStatus(){
     const wcActive=wc.data && (wc.data.phase==="generating"||wc.data.phase==="running");
     $("#status-wildcard").textContent=wcActive? (wc.data.phase||"active"):"idle";
     $("#status-wildcard-sub").textContent= wc.data? `phase ${wc.data.phase||"-"} pid ${wc.data.controller_pid||"-"} exists ${wc.exists?"yes":"no"}`:"-";
-    // generators list
+    // generators list — コメントは詳細を表示
     const gCont=$("#status-generators");
     gCont.innerHTML="";
     if(gens.length===0) gCont.innerHTML='<div class="help">生成中なし</div>';
     else for(const g of gens){
       const d=document.createElement("div");
       d.className="card"; d.style.background="#111319"; d.style.marginBottom="6px";
-      d.innerHTML=`<div style="display:flex;gap:8px;align-items:center"><span style="font-size:18px">${esc(g.icon||"")}</span><span class="mono" style="flex:1">${esc(g.label)}</span><span class="badge ${g.fresh?"ok":"warn"}">${g.fresh?"fresh":"stale"}</span><span class="badge">${g.age}s</span><span class="mono" style="font-size:11px">${fmtTime(g.ts)}</span></div><div class="help">key ${esc(g.key)} stale ${g.stale_sec}s raw ${esc(g.raw||"")}</div>`;
+      let detailLine="";
+      if(g.key==="comment"){
+        const segs=[];
+        if(g.model) segs.push(`model=${esc(g.model)}`);
+        if(g.count) segs.push(`${g.count}件`);
+        if(g.attempt) segs.push(`試行 ${g.attempt}${g.max_retry?`/${g.max_retry}`:""}`);
+        if(g.mode) segs.push(`mode=${esc(g.mode)}`);
+        if(g.preview) segs.push(`「${esc(g.preview.slice(0,80))}」`);
+        if(g.owner_pid) segs.push(`pid ${g.owner_pid} ${g.owner_alive?"alive":"dead"}`);
+        detailLine = segs.join(" | ");
+        if(g.batch_hash) detailLine += ` | batch ${esc(String(g.batch_hash).slice(0,8))}`;
+      } else if(g.key==="radio"){
+        detailLine = `pid ${g.owner_pid||"-"} alive ${g.owner_alive?"yes":"no"} mode ${esc(g.mode||"")} corner ${esc(g.corner||"")}`;
+      }
+      d.innerHTML=`<div style="display:flex;gap:8px;align-items:center"><span style="font-size:18px">${esc(g.icon||"")}</span><span class="mono" style="flex:1">${esc(g.label)}</span><span class="badge ${g.fresh?"ok":"warn"}">${g.fresh?"fresh":"stale"}</span><span class="badge">${g.age}s</span><span class="mono" style="font-size:11px">${fmtTime(g.ts)}</span></div><div class="help">key ${esc(g.key)} stale ${g.stale_sec}s raw ${esc(g.raw||"")}</div>${detailLine?`<div class="help" style="margin-top:4px;color:#cbd5e1">${detailLine}</div>`:""}`;
       gCont.appendChild(d);
     }
     // game kv
