@@ -426,7 +426,7 @@ def _stuck_plan_memory():
     return {'chapter': 1, 'orders': {'1-A2': 'launched_unconfirmed', 'I:b:1': 'launched'},
             '_records': [], 'captured': ['ジョンリギ'], 'lost': ['キカンドン'],
             'chart_plan': {'request_id': 'p', 'orders': plan},
-            'garrison': {'アルマムーン': [], 'ジョンリギ': ['ココット']},
+            'garrison': {'アルマムーン': [], 'ジョンリギ': ['ココット', 'ゼウス']},
             'sorties': {'1-A2': {'general': 'どうし', 'target': None, 'status': 'launched_unconfirmed'},
                         'I:b:1': {'general': 'ココット', 'target': 'スペンソニア', 'status': 'en_route'}}}
 
@@ -434,7 +434,7 @@ def _stuck_plan_memory():
 def test_sorties_without_a_recent_tick_no_longer_block_their_generals():
     mem = _stuck_plan_memory()
     assert policy._en_route(mem) == (set(), set())          # legacy records: no tick
-    # K1's source was last read empty, so the next runnable order is ココット's K3.
+    # K1's source was last read empty; K3 can launch ココット and leave ゼウス defending.
     assert policy.next_order(mem)['step'] == 'A:p:K3'
     mem['tick'] = 50
     mem['sorties']['I:b:1']['tick'] = 45
