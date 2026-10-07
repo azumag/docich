@@ -639,12 +639,20 @@ class CollectorFixture(unittest.TestCase):
         return before
 
     def run_collector(self, *args):
+        env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": "/tmp"}
+        # The fixture writes ai_stats day files with the parent's localtime
+        # while the child collector resolves day files with its own
+        # localtime. Inherit TZ so both sides compute the same day even
+        # when the parent TZ date differs from the OS default (#1630).
+        # The environment stays scrubbed otherwise; only TZ is inherited.
+        if "TZ" in os.environ:
+            env["TZ"] = os.environ["TZ"]
         return subprocess.run(
             ["python3", str(COLLECTOR), *(args or [str(self.soren)])],
             capture_output=True,
             text=True,
             timeout=120,
-            env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": "/tmp"},
+            env=env,
         )
 
 
