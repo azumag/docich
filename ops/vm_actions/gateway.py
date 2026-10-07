@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import configparser, fcntl, hashlib, importlib.util, json, os, re, shutil, stat, subprocess, sys, tempfile, time, uuid
+import configparser, fcntl, hashlib, importlib.util, json, os, pwd, re, selectors, shutil, signal, socket, stat, subprocess, sys, tempfile, time, urllib.error, urllib.request, uuid
 from pathlib import Path, PurePosixPath
 
 # Load only the sibling installed with this trusted gateway, never candidate code.
@@ -14,7 +14,7 @@ _projection_spec.loader.exec_module(projection_io)
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
 MAX_PAYLOAD=128*1024*1024
 OPS={'upload','deploy','bootstrap','status','exec','configure_jev','disable_jev','configure_jev_route_direct',
-     'configure_jev_route_vercel','disable_jev_route','diagnostics','rebaseline','reconcile'}
+     'configure_jev_route_vercel','disable_jev_route','diagnostics','github_auth_diagnostics','rebaseline','reconcile'}
 TARGETS={'preview','production'}
 DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py',
                    'src/docich/pulse_volume.py','src/docich/corner_rotation.py',
@@ -35,6 +35,9 @@ PROJECTION_REVIEW_PATH_MAX=25
 BUNDLE_DIAGNOSTICS_MAX_ENTRIES=4096
 BUNDLE_AGE_7D_SEC=7*24*60*60
 BUNDLE_AGE_30D_SEC=30*24*60*60
+GH_DIAGNOSTIC_PATH='/usr/local/bin:/usr/bin:/bin'
+GH_DIAGNOSTIC_TIMEOUT=6
+GH_DIAGNOSTIC_OUTPUT_MAX=16384
 OWNED_SUBMODULES={
     'games/soviet_now':'https://github.com/azumag/soviet_now.git',
     'games/hanjuku-sfc-speedrun':'https://github.com/azumag/hanjuku-sfc-speedrun.git',
@@ -1349,6 +1352,174 @@ def diagnostics_result(cfg,repo,target,sha):
         raise ValueError('diagnostics output too large')
     return {'status':'diagnosed','sha':sha,'diagnostics':clean}
 
+
+def _bounded_process(argv, *, timeout=GH_DIAGNOSTIC_TIMEOUT, output_max=GH_DIAGNOSTIC_OUTPUT_MAX, env=None):
+    """Run a fixed local command with bounded time and combined captured output."""
+    proc=None; selector=selectors.DefaultSelector(); buffers={}; total=0
+    try:
+        proc=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                              env=env,cwd='/tmp',close_fds=True,start_new_session=True,shell=False)
+        for stream in (proc.stdout,proc.stderr):
+            selector.register(stream,selectors.EVENT_READ); buffers[stream]=bytearray()
+        deadline=time.monotonic()+timeout
+        while selector.get_map():
+            remaining=deadline-time.monotonic()
+            if remaining<=0:
+                _kill_bounded_process(proc); return {'state':'timeout','returncode':None,'stdout':b'','stderr':b''}
+            events=selector.select(min(remaining,0.25))
+            for key,_ in events:
+                chunk=os.read(key.fd,min(4096,output_max-total+1))
+                if not chunk:
+                    selector.unregister(key.fileobj); key.fileobj.close(); continue
+                total+=len(chunk)
+                if total>output_max:
+                    _kill_bounded_process(proc)
+                    return {'state':'output_limit','returncode':None,'stdout':b'','stderr':b''}
+                buffers[key.fileobj].extend(chunk)
+        remaining=max(0.0,deadline-time.monotonic())
+        try: returncode=proc.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            _kill_bounded_process(proc)
+            return {'state':'timeout','returncode':None,'stdout':b'','stderr':b''}
+        return {'state':'ok','returncode':returncode,'stdout':bytes(buffers[proc.stdout]),'stderr':bytes(buffers[proc.stderr])}
+    except (OSError,ValueError,subprocess.SubprocessError):
+        if proc is not None and proc.poll() is None:
+            _kill_bounded_process(proc)
+        return {'state':'error','returncode':None,'stdout':b'','stderr':b''}
+    finally:
+        selector.close()
+        if proc is not None:
+            for stream in (proc.stdout,proc.stderr):
+                if stream is not None and not stream.closed: stream.close()
+
+
+def _kill_bounded_process(proc):
+    try: os.killpg(proc.pid,signal.SIGKILL)
+    except (OSError,ProcessLookupError):
+        try: proc.kill()
+        except OSError: pass
+    try: proc.wait(timeout=1)
+    except subprocess.TimeoutExpired: pass
+
+
+def _github_api_reachable():
+    request=urllib.request.Request('https://api.github.com/rate_limit',headers={'Accept':'application/vnd.github+json','User-Agent':'docich-vm-auth-diagnostics'})
+    try:
+        with urllib.request.urlopen(request,timeout=GH_DIAGNOSTIC_TIMEOUT) as response:
+            return {'state':'reachable','http_status':int(response.status)}
+    except urllib.error.HTTPError as exc:
+        # An HTTP response, including a rate limit response, proves network/TLS reachability.
+        return {'state':'reachable','http_status':int(exc.code)}
+    except (urllib.error.URLError,TimeoutError,OSError,ValueError):
+        return {'state':'unavailable','http_status':None}
+
+
+def _github_login(value):
+    if not isinstance(value,str) or not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}',value):
+        return None
+    return value
+
+
+def _github_user_response(raw):
+    """Return only an allowlisted status, login, and OAuth scopes from gh api -i output."""
+    if not isinstance(raw,bytes) or len(raw)>GH_DIAGNOSTIC_OUTPUT_MAX:
+        return {'http_status':None,'account':None,'scopes_status':'unavailable','scopes':[]}
+    header,sep,body=raw.partition(b'\r\n\r\n')
+    if not sep: header,sep,body=raw.partition(b'\n\n')
+    if not sep: return {'http_status':None,'account':None,'scopes_status':'unavailable','scopes':[]}
+    status_match=re.search(rb'^HTTP/\d(?:\.\d)?\s+([0-9]{3})(?:\s|$)',header,re.MULTILINE)
+    status=int(status_match.group(1)) if status_match else None
+    scope_value=None
+    for line in header.splitlines():
+        name,colon,value=line.partition(b':')
+        if colon and name.strip().lower()==b'x-oauth-scopes':
+            scope_value=value.decode('ascii','ignore').strip(); break
+    account=None
+    if status==200:
+        try:
+            payload=json.loads(body.decode('utf-8'))
+            account=_github_login(payload.get('login') if isinstance(payload,dict) else None)
+        except (ValueError,UnicodeError):
+            account=None
+    if scope_value is None:
+        scopes_status='not_reported'
+        scopes=[]
+    else:
+        items=[x.strip() for x in scope_value.split(',') if x.strip()]
+        valid=[x for x in items if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9:_-]{0,63}',x)
+               and not re.search(r'gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|'
+                                 r'xox[baprs]-[A-Za-z0-9-]{12,}|Bearer\s+',x,re.IGNORECASE)]
+        scopes_status='reported' if len(valid)==len(items) else 'partially_filtered'
+        scopes=sorted(set(valid))
+    return {'http_status':status,'account':account,'scopes_status':scopes_status,'scopes':scopes}
+
+
+def _gh_auth_state(result,network_state):
+    if result.get('state')=='timeout': return 'check_timeout'
+    if result.get('state')=='output_limit': return 'output_limit_exceeded'
+    if result.get('state')!='ok': return 'check_unavailable'
+    if result.get('returncode')==0: return 'authenticated'
+    text=(result.get('stdout',b'')+b'\n'+result.get('stderr',b''))[:GH_DIAGNOSTIC_OUTPUT_MAX].decode('utf-8','ignore').lower()
+    if re.search(r'not logged into any github hosts|not logged in to github\.com|no authentication token',text):
+        return 'not_authenticated'
+    if re.search(r'authentication token.{0,40}(invalid|expired)|token is (invalid|expired)',text):
+        return 'credential_rejected'
+    if network_state=='unavailable': return 'unknown_network_failure'
+    return 'check_failed'
+
+
+def github_auth_diagnostics(cfg,repo,target,sha):
+    """Owner-only fixed read-only GitHub CLI probe; never returns command output."""
+    if repo!='docich' or target!='production': raise ValueError('github auth diagnostics is production-only')
+    root=Path(cfg['repos'][repo]['production'])
+    try: current=git(root,'rev-parse','HEAD')
+    except Exception: raise ValueError('github auth diagnostics checkout unavailable')
+    try: clean=git_clean(root)
+    except Exception: clean=False
+    if current!=sha or not clean: raise ValueError('github auth diagnostics SHA mismatch')
+    try:
+        hostname=socket.gethostname()
+        if not isinstance(hostname,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,127}',hostname): hostname='unknown'
+    except Exception: hostname='unknown'
+    try:
+        user=pwd.getpwuid(os.geteuid()).pw_name
+        if not isinstance(user,str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}',user): user='unknown'
+    except Exception: user='unknown'
+    network=_github_api_reachable()
+    executable=shutil.which('gh',path=GH_DIAGNOSTIC_PATH)
+    out={'status':'diagnosed','sha':current,'target':'docich-production','host':hostname,'execution_user':user,
+         'gh_available':bool(executable),'network':network['state'],'github_api_http_status':network['http_status'],
+         'gh_auth':'unavailable','api_read':'not_attempted','api_http_status':None,'account':None,
+         'scopes_status':'unavailable','scopes':[]}
+    if not executable:
+        out['gh_auth']='gh_not_installed'; out['api_read']='not_attempted_gh_missing'; return out
+    env=os.environ.copy()
+    env.update({'PATH':GH_DIAGNOSTIC_PATH,'GH_PROMPT_DISABLED':'1','GH_NO_UPDATE_NOTIFIER':'1','GH_PAGER':'cat','PAGER':'cat'})
+    auth=_bounded_process([executable,'auth','status','--hostname','github.com'],env=env)
+    auth_state=_gh_auth_state(auth,network['state']); out['gh_auth']=auth_state
+    if auth_state in {'check_timeout','output_limit_exceeded','check_unavailable','check_failed'}:
+        out['api_read']='not_attempted_auth_check_failed'; return out
+    if auth_state in {'unknown_network_failure'}:
+        out['api_read']='not_attempted_network_unavailable'; return out
+    if auth_state=='credential_rejected':
+        out['api_read']='not_attempted_credential_rejected'; return out
+    if auth_state=='not_authenticated':
+        out['api_read']='not_attempted_no_auth'; return out
+    api=_bounded_process([executable,'api','--include','--hostname','github.com','user'],env=env)
+    if api['state']=='timeout': out['api_read']='timeout'; return out
+    if api['state']=='output_limit': out['api_read']='output_limit_exceeded'; return out
+    if api['state']!='ok': out['api_read']='unavailable'; return out
+    parsed=_github_user_response(api['stdout'])
+    out['api_http_status']=parsed['http_status']; out['account']=parsed['account']
+    out['scopes_status']=parsed['scopes_status']; out['scopes']=parsed['scopes']
+    if api['returncode']==0 and parsed['http_status']==200 and parsed['account']:
+        out['api_read']='verified'
+    elif parsed['http_status']==401:
+        out['api_read']='unauthorized'; out['gh_auth']='credential_rejected'
+    elif network['state']=='unavailable': out['api_read']='network_unavailable'
+    else: out['api_read']='failed'
+    return out
+
 def status_result(cfg,repo,target,sha):
     if target=='preview':
         release=release_dir(cfg,repo,sha)
@@ -1393,6 +1564,7 @@ def main():
             elif op=='configure_jev_route_vercel': result=configure_jev_route(cfg,repo,target,sha,route='vercel')
             elif op=='disable_jev_route': result=configure_jev_route(cfg,repo,target,sha,disable=True)
             elif op=='diagnostics': result=diagnostics_result(cfg,repo,target,sha)
+            elif op=='github_auth_diagnostics': result=github_auth_diagnostics(cfg,repo,target,sha)
             else: result=status_result(cfg,repo,target,sha)
     except ValueError as exc:
         die('VM operation rejected: %s' % reason_code(exc))
