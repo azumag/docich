@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import time
 
-from . import heuristic, jev, screen
+from . import heuristic, jev, screen, active_game
 
 
 def classify_file(path, *, env=None, transport=None):
@@ -27,7 +27,15 @@ def classify_file(path, *, env=None, transport=None):
     env = os.environ if env is None else env
     started = time.monotonic()
     lines = heuristic.read_comment_lines(Path(path))
-    rows = heuristic.baseline(lines)
+    try:
+        hint_enabled, hint_kind, hint_interaction = active_game.settings(env)
+    except (ValueError, TypeError):
+        hint_enabled, hint_kind, hint_interaction = False, None, "unknown"
+    game_hint = None
+    if hint_enabled:
+        assert hint_kind is not None
+        game_hint = active_game.hint(hint_kind, hint_interaction)
+    rows = heuristic.baseline(lines, game_hint=game_hint)
     heuristic_ms = (time.monotonic() - started) * 1000
     if env.get('COMMENT_CLASSIFIER_BACKEND') != 'jev':
         if env.get(screen.ENABLE_ENV) == '1':
