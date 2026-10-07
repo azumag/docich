@@ -1221,7 +1221,30 @@ class TestHttpHandlers(unittest.TestCase):
         finally:
             os.environ.pop(webui.LEGACY_RUNTIME_READS_ENV, None)
         self.assertEqual(status_b, 200)
+        # issue #1225: 2回の読み取りはそれぞれ `now: int(time.time())` を打刻する
+        # ため、秒境界をまたぐと 1 秒ずれて flake する。`now` は許容差つきで比べ、
+        # それ以外 (workers snapshot 本体) を厳密比較する。
+        now_a = data_a.pop("now", None)
+        now_b = data_b.pop("now", None)
         self.assertEqual(data_a, data_b)
+        self.assertIsInstance(now_a, int, f"now_a missing: {data_a!r}")
+        self.assertIsInstance(now_b, int, f"now_b missing: {data_b!r}")
+        self.assertLessEqual(abs(now_a - now_b), 2, f"now drifted too far: {now_a} vs {now_b}")
+
+    def test_workers_snapshot_tolerates_now_second_boundary(self):
+        """回帰 (#1225): 秒境界をまたいでも snapshot 比較が成立すること。"""
+        status_a, data_a = self._request("GET", "/api/workers")
+        self.assertEqual(status_a, 200)
+        base = time.time()
+        with mock.patch.object(webui.time, "time", return_value=int(base) + 2):
+            status_b, data_b = self._request("GET", "/api/workers")
+        self.assertEqual(status_b, 200)
+        now_a = data_a.pop("now", None)
+        now_b = data_b.pop("now", None)
+        self.assertEqual(data_a, data_b)
+        self.assertIsInstance(now_a, int)
+        self.assertIsInstance(now_b, int)
+        self.assertLessEqual(abs(now_a - now_b), 2)
 
     def test_game_state_snapshot_matches_legacy_read_path(self):
         (self.soren / "game_state.json").write_text(
