@@ -484,22 +484,20 @@ def test_fixed_recover_runtime_script_runs_only_the_reviewed_cli(tmp_path):
 
 def test_hanjuku_start_reuses_common_reservation_without_overriding_policy(monkeypatch):
     import sys
-    from dataclasses import replace
     from unittest.mock import Mock
     sys.path.insert(0,str(ROOT/'src'))
-    from docich import hanjuku_corner
+    from docich import corner_rotation, hanjuku_corner
     from docich.config import load_global
-    from docich.retro_corner import load_retro_corner_config
-    config=load_global(ROOT,ROOT/'config/docich.soren-live.toml')
-    expected=replace(load_retro_corner_config(config),games=['hanjuku-hero'])
+    expected=load_global(ROOT,ROOT/'config/docich.soren-live.toml')
     constructor=Mock()
-    monkeypatch.setattr(hanjuku_corner,'RetroCornerManager',constructor)
+    monkeypatch.setattr(corner_rotation,'CornerRotationManager',constructor)
     result=hanjuku_corner.start()
     constructor.assert_called_once()
-    assert constructor.call_args.kwargs['config']==expected
-    assert result is constructor.return_value.start.return_value
-    constructor.return_value.start.assert_called_once_with()
-    constructor.return_value._start_direct.assert_not_called()
+    assert constructor.call_args.args==(expected,)
+    assert constructor.call_args.kwargs=={}
+    manager=constructor.return_value
+    manager.queue_manual.assert_called_once_with('hanjuku-hero')
+    assert result is manager.queue_manual.return_value
 
 
 def test_hanjuku_entry_rejects_unbounded_arguments_before_start(monkeypatch):
@@ -515,17 +513,33 @@ def test_hanjuku_entry_rejects_unbounded_arguments_before_start(monkeypatch):
 
 
 def test_fixed_hanjuku_script_launches_only_owned_service(tmp_path):
+    import json
     import os
-    tool=tmp_path/'systemd-run'
-    tool.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
-    tool.chmod(0o755)
-    result=subprocess.run(['bash',str(ROOT/'ops/vm_actions/start_hanjuku_corner.sh')],
-        env={**os.environ,'PATH':str(tmp_path)+os.pathsep+os.environ['PATH']},
+    script=(ROOT/'ops/vm_actions/start_hanjuku_corner.sh').read_text(encoding='utf-8')
+    # Fixed production root launch path: no unit manager, no service verbs.
+    assert 'DOCICH_HANJUKU_ROOT=/home/ubuntu/docich' in script
+    assert '-m docich.hanjuku_corner' in script
+    assert 'systemd-run' not in script
+    # Mirror the fixed production root offline: only the root prefix changes.
+    root=tmp_path/'docich'
+    launcher=root/'.venv-trading'/'bin'/'python3'
+    launcher.parent.mkdir(parents=True)
+    log=tmp_path/'launches.jsonl'
+    launcher.write_text('#!/usr/bin/env python3\nimport json,os,sys\n'
+        'open(os.environ["STUB_LOG"],"a").write(json.dumps({"argv":sys.argv[1:],'
+        '"cwd":os.getcwd(),"pythonpath":os.environ.get("PYTHONPATH")})+"\\n")\n')
+    launcher.chmod(0o755)
+    assert script.count('DOCICH_HANJUKU_ROOT=/home/ubuntu/docich')==1
+    probe=tmp_path/'start_hanjuku_corner.sh'
+    probe.write_text(script.replace('DOCICH_HANJUKU_ROOT=/home/ubuntu/docich',
+        f'DOCICH_HANJUKU_ROOT={root}'))
+    probe.chmod(0o755)
+    result=subprocess.run(['bash',str(probe)],env={**os.environ,'STUB_LOG':str(log)},
         capture_output=True,text=True)
     assert result.returncode==0,result.stderr
-    args=json.loads(result.stdout.splitlines()[0])
-    assert '--unit=docich-hanjuku-corner' in args
-    assert '--collect' in args and '--property=Type=exec' in args
-    assert '--working-directory=/home/ubuntu/docich' in args
-    assert args[-2:]==['-m','docich.hanjuku_corner']
-    assert not any(x in args for x in ('restart','stop','kill','--shell'))
+    assert result.stdout.splitlines()==['queued Hanjuku through common corner coordinator']
+    launches=[json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+    assert len(launches)==1
+    assert launches[0]['argv']==['-m','docich.hanjuku_corner']
+    assert launches[0]['cwd']==str(root)
+    assert launches[0]['pythonpath']==str(root/'src')
