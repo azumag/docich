@@ -27,6 +27,7 @@ from .process_tree import (
     PaneProcessScope,
     ProcessIdentityError,
     ancestor_pids,
+    descendant_pids,
     is_running,
     process_cgroup,
     process_environ,
@@ -538,6 +539,20 @@ class Tmux:
         except (ValueError, TypeError) as exc:
             raise OwnershipMismatchError("bounded session ownership tag is invalid") from exc
 
+    @staticmethod
+    def _pane_pid_listing(stdout: str) -> list[int]:
+        """Parse a ``#{pane_pid}`` listing into positive, unique PIDs."""
+
+        pids: list[int] = []
+        for raw in stdout.splitlines():
+            try:
+                pid = int(raw.strip())
+            except ValueError:
+                continue
+            if pid > 0:
+                pids.append(pid)
+        return list(dict.fromkeys(pids))
+
     def _pane_pids(self, target: str) -> list[int]:
         """Return pane leaders for an already ownership-checked target."""
 
@@ -547,15 +562,21 @@ class Tmux:
         result = self._run(["list-panes", "-t", target, "-F", "#{pane_pid}"])
         if result.returncode != 0:
             return []
-        pids: list[int] = []
-        for raw in result.stdout.splitlines():
-            try:
-                pid = int(raw.strip())
-            except ValueError:
-                continue
-            if pid > 0:
-                pids.append(pid)
-        return list(dict.fromkeys(pids))
+        return self._pane_pid_listing(result.stdout)
+
+    def _server_pane_leaders(self) -> list[int] | None:
+        """Pane leaders of *every* pane on the server hosting the target.
+
+        ``list-panes -a`` enumerates the whole shared server, which is exactly
+        the population a teardown must leave alone outside its own target
+        (Issue #1105).  ``None`` means the enumeration failed: the caller then
+        cannot prove which panes are outside its target and must not sweep.
+        """
+
+        result = self._run(["list-panes", "-a", "-F", "#{pane_pid}"])
+        if result.returncode != 0:
+            return None
+        return self._pane_pid_listing(result.stdout)
 
     @staticmethod
     def _pane_environment(ownership: TmuxOwnership, env: dict | None) -> dict[str, str]:
@@ -587,14 +608,26 @@ class Tmux:
     ) -> frozenset[int]:
         """PIDs a teardown sweep must never signal (Issue #1105).
 
-        The runtime/role tags are exported into *every* process started from
-        the pane, and that includes the tmux server itself: a client launched
-        from a tagged pane that starts a fresh server passes its environment
-        on, so ``processes_with_env`` reports the server PID.  Signalling it
-        would take down every pane on the shared server (display, audio,
-        watchdog, ffmpeg).  The server hosting the target — and its ancestors
-        — are therefore always protected, together with this process's own
-        ancestors.
+        The runtime/role tags are exported into every process started from a
+        tagged pane, and tmux hands a client's environment to the server it
+        starts plus every pane that server later creates without an explicit
+        ``-e`` override.  The shared-infrastructure windows (display, audio,
+        watchdog, stream, trading) are created by the untagged ``new_window``
+        helper, so on a tagged server they — and the server itself — carry the
+        runtime's tags and look owned to ``processes_with_env``.  Signalling
+        any of them topples the shared foundation and, with it, the whole
+        server.  The sweep therefore protects:
+
+        * the server hosting the target and its ancestors,
+        * every *other* live pane leader on that server, plus its descendant
+          tree,
+        * this process's own ancestors and the target panes' ancestors.
+
+        The target panes themselves stay legitimate victims.  An orphan that
+        already left its pane has been reparented, so it is a descendant of
+        none of the protected panes and remains reclaimable.  When the server's
+        pane listing cannot be read the caller cannot prove which panes are
+        outside its target, so this fails closed instead of sweeping.
         """
 
         protected: set[int] = set(ancestor_pids())
@@ -602,11 +635,22 @@ class Tmux:
         if server_pid is not None:
             protected.add(server_pid)
             protected.update(ancestor_pids(server_pid))
-        for leader in pane_leaders:
+        target_leaders = {pid for pid in pane_leaders if pid > 0}
+        server_leaders = self._server_pane_leaders()
+        if server_leaders is None:
+            raise TmuxError(
+                "teardown: 同一 tmux server の pane 一覧を取得できないため、"
+                "共有基盤を巻き込まずに回収対象を確定できません"
+            )
+        others = [pid for pid in server_leaders if pid not in target_leaders]
+        protected.update(others)
+        if others:
+            protected.update(descendant_pids(others))
+        for leader in target_leaders:
             # The pane leader's parent chain is the tmux server and above; the
             # leader itself stays a legitimate victim.
             protected.update(ancestor_pids(leader))
-            protected.discard(leader)
+        protected.difference_update(target_leaders)
         return frozenset(pid for pid in protected if pid > 0)
 
     def _stop_scoped_processes(
@@ -618,7 +662,8 @@ class Tmux:
         by the post-condition sweep to find children that left the descendant
         tree) and the PIDs the sweep must never signal.  The protection set is
         snapshotted *before* the leaders are stopped, while their ancestors
-        (the tmux server) are still observable.
+        (the tmux server) and the shared-infrastructure panes are still
+        observable.
         """
 
         pids = self._pane_pids(target)
@@ -656,8 +701,9 @@ class Tmux:
           as it stayed in the pane it was started from.
 
         ``protected`` carries the PIDs the caller proved must never be
-        signalled — pre-eminently the tmux server hosting the target, whose
-        environment also carries the tags (Issue #1105).
+        signalled — pre-eminently the tmux server hosting the target and every
+        pane on it outside the target, whose environment also carries the tags
+        (Issue #1105).
         """
 
         found: list[int] = []

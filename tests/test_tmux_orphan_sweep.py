@@ -22,6 +22,10 @@ def _ok(stdout: str = "") -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
 
 
+def _fail(stderr: str) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=stderr)
+
+
 def _stopped(*pids: int) -> TerminationResult:
     return TerminationResult(
         roots=tuple(pids), term_sent=tuple(pids), kill_sent=(), remaining=()
@@ -94,6 +98,7 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
             _ok("g1-abcdef\n"), _ok("1\n"), _ok("game\n"),
             _ok("123\n"),
             _ok("4321\n"),
+            _ok("123\n"),
             _ok(),
         ]
 
@@ -243,6 +248,7 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
             _ok("g1-abcdef\n"), _ok("1\n"), _ok("game\n"),   # window ownership
             _ok("123\n"),                                    # pane leader
             _ok(f"{server_pid}\n"),                          # display-message server
+            _ok("123\n"),                                    # server pane listing
             _ok(),                                           # kill-window
         ]
         mock_env.return_value = [server_pid, 4242]
@@ -256,6 +262,77 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
             [call.args[0] for call in mock_terminate.call_args_list],
             [(4242,)],
         )
+
+    @mock.patch("docich.tmux.process_pgid", return_value=None)
+    @mock.patch("docich.tmux.processes_with_env")
+    @mock.patch("docich.tmux.terminate_owned_processes")
+    @mock.patch("docich.tmux.procs.run")
+    def test_shared_infrastructure_panes_on_the_server_are_never_swept(
+        self, mock_run, mock_terminate, mock_env, _mock_pgid
+    ):
+        # Production layout (cli.py cmd_up): the runtime's agent window is torn
+        # down while the untagged display/audio panes sit in the same session
+        # of a server that inherited the runtime's tags. Those panes look
+        # owned to processes_with_env but must never be signalled — stopping
+        # them removes the session and takes the whole server (and every other
+        # pane) down with it.
+        server_pid, display_pane, audio_pane, orphan = 4321, 9001, 9002, 4242
+        mock_run.side_effect = [
+            _ok("game-g1\n"),                                # window_target_exists
+            _ok("g1-abcdef\n"), _ok("1\n"), _ok("game\n"),    # window ownership
+            _ok("123\n"),                                     # target pane leader
+            _ok(f"{server_pid}\n"),                           # display-message server
+            _ok(f"123\n{display_pane}\n{audio_pane}\n"),       # server pane listing
+            _ok(),                                            # kill-window
+        ]
+        mock_env.return_value = [server_pid, display_pane, audio_pane, orphan]
+        mock_terminate.side_effect = [_stopped(orphan)]
+
+        self.assertTrue(self.tmux.kill_window_owned("docich:game-g1", OWNER))
+
+        self.assertEqual(
+            [call.args[0] for call in mock_terminate.call_args_list],
+            [(orphan,)],
+        )
+
+    def test_protected_set_covers_other_panes_and_their_children(self):
+        with (
+            mock.patch.object(self.tmux, "_server_pid", return_value=4321),
+            mock.patch.object(
+                self.tmux, "_server_pane_leaders", return_value=[123, 9001, 9002]
+            ),
+            mock.patch("docich.tmux.ancestor_pids", return_value=[555, 1]),
+            mock.patch("docich.tmux.descendant_pids", return_value=[9003]) as mock_desc,
+        ):
+            protected = self.tmux._protected_teardown_pids([123])
+
+        self.assertIn(4321, protected)      # the server itself
+        self.assertIn(9001, protected)      # another live pane (display)
+        self.assertIn(9002, protected)      # another live pane (audio)
+        self.assertIn(9003, protected)      # a child of another pane
+        self.assertNotIn(123, protected)    # the target pane stays a victim
+        mock_desc.assert_called_once_with([9001, 9002])
+
+    @mock.patch("docich.tmux.process_pgid", return_value=None)
+    @mock.patch("docich.tmux.terminate_process_tree")
+    @mock.patch("docich.tmux.procs.run")
+    def test_unreadable_server_pane_listing_fails_closed(
+        self, mock_run, mock_terminate, _mock_pgid
+    ):
+        # Without the server-wide pane listing the sweep cannot prove which
+        # panes are outside its target, so it must not stop anything.
+        mock_run.side_effect = [
+            _ok("game-g1\n"),
+            _ok("g1-abcdef\n"), _ok("1\n"), _ok("game\n"),
+            _ok("123\n"),
+            _ok("4321\n"),
+            _fail("failed to connect to server: Connection refused"),
+        ]
+
+        with self.assertRaises(tmux_mod.TmuxError):
+            self.tmux.kill_window_owned("docich:game-g1", OWNER)
+
+        mock_terminate.assert_not_called()
 
     def test_reclaim_is_logged_for_the_switch_timeline(self):
         with (
@@ -288,6 +365,7 @@ class TestOrphanSweepOnSessionTeardown(unittest.TestCase):
             _ok("g1-abcdef\n"), _ok("1\n"), _ok("adapter\n"),
             _ok("123\n"),
             _ok("4321\n"),
+            _ok("123\n"),
             _ok(),
         ]
 
@@ -329,7 +407,7 @@ class TestOrphanSweepOnSessionTeardown(unittest.TestCase):
         self, mock_run, mock_terminate, _mock_pgid, _mock_running,
         mock_scopes, _mock_ancestors,
     ):
-        mock_run.side_effect = [_ok("123\n"), _ok("4321\n"), _ok()]
+        mock_run.side_effect = [_ok("123\n"), _ok("4321\n"), _ok("123\n"), _ok()]
         mock_terminate.side_effect = [_stopped(777)]
 
         self.tmux.stop_game_session_named("docich-game-g7")

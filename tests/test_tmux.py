@@ -315,6 +315,7 @@ class TestCheckedOperations(unittest.TestCase):
             _ok("game\n"),
             _ok("123\n"),
             _ok("4321\n"),
+            _ok("123\n"),
             _ok(),
         ]
         mock_terminate.return_value = TerminationResult(
@@ -332,7 +333,7 @@ class TestCheckedOperations(unittest.TestCase):
     @mock.patch("docich.tmux.terminate_process_tree")
     @mock.patch("docich.tmux.procs.run")
     def test_legacy_game_cleanup_stops_generation_session_descendants(self, mock_run, mock_terminate):
-        mock_run.side_effect = [_ok("123\n"), _ok("4321\n"), _ok()]
+        mock_run.side_effect = [_ok("123\n"), _ok("4321\n"), _ok("123\n"), _ok()]
         mock_terminate.return_value = TerminationResult(
             roots=(123,), term_sent=(123,), kill_sent=(), remaining=()
         )
