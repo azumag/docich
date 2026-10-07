@@ -1072,6 +1072,49 @@ def _validate_audio_delivery_key(delivery_key: str) -> str:
     return value
 
 
+def _stage_speaker_sidecar(queue_dir: Path, dest: Path, speaker: str) -> None:
+    """Atomically publish ``dest.speaker`` before the queue payload is visible.
+
+    The audio worker claims ``*.txt`` only, so a sidecar that becomes visible
+    first can never trigger consumption on its own. Publication is best-effort:
+    a staging failure falls back to publishing the payload without a speaker,
+    matching the previous contract.
+    """
+    if not speaker:
+        return
+    sidecar = Path(str(dest) + ".speaker")
+    tmp_spk: Path | None = None
+    try:
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        fd, tmp_spk_str = tempfile.mkstemp(dir=str(queue_dir), prefix=".speaker.")
+        tmp_spk = Path(tmp_spk_str)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(speaker)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp_spk.chmod(0o644)
+        os.replace(str(tmp_spk), str(sidecar))
+    except Exception:
+        pass
+    finally:
+        if tmp_spk is not None:
+            try:
+                if tmp_spk.exists():
+                    tmp_spk.unlink()
+            except Exception:
+                pass
+
+
+def _cleanup_orphan_speaker_sidecar(dest: Path, speaker: str) -> None:
+    """Remove a staged sidecar whose payload never became visible."""
+    if not speaker:
+        return
+    try:
+        Path(str(dest) + ".speaker").unlink()
+    except Exception:
+        pass
+
+
 def _enqueue_audio_delivery(
     soren_root: Path, text: str, delivery: str, *, source: str = "crypto_paper", speaker: str = "",
     wait_for_lock: bool = True,
@@ -1086,7 +1129,9 @@ def _enqueue_audio_delivery(
     exactly-once playback or recovery from filesystem/power loss.
 
     ``speaker`` (when non-empty) is published as a ``.speaker`` sidecar next
-    to the queue file, mirroring the claim path. The Soren audio worker reads
+    to the queue file, mirroring the claim path. The sidecar is staged before
+    the payload becomes visible so an immediate worker claim cannot miss the
+    voice override. The Soren audio worker reads
     the sidecar to pick the voice. A redelivery of the same event reuses the
     same speaker because callers derive it deterministically from ``delivery``.
     """
@@ -1141,14 +1186,17 @@ def _enqueue_audio_delivery(
         if not payload.exists():
             return {"ok": True, "dedup": True, "filename": None}
         dest = queue / filename
+        # The sidecar goes first: the worker claims *.txt only, so an early
+        # sidecar cannot trigger consumption, while a late one could be missed
+        # by an immediate claim.
+        _stage_speaker_sidecar(queue, dest, speaker)
         # This rename is both publication and the durable committed state.
         # Do not recreate/remove the receipt on any exception after this point.
-        os.replace(payload, dest)
-        if speaker:
-            try:
-                (Path(str(dest) + ".speaker")).write_text(speaker, encoding="utf-8")
-            except Exception:
-                pass
+        try:
+            os.replace(payload, dest)
+        except Exception:
+            _cleanup_orphan_speaker_sidecar(dest, speaker)
+            raise
         return {"ok": True, "dedup": False, "filename": filename, "path": str(dest)}
 
 
@@ -1339,12 +1387,14 @@ def _enqueue_audio_text(
             os.fsync(fh.fileno())
         tmp_fd = None
         tmp_path.chmod(0o644)
-        os.replace(str(tmp_path), str(dest))
-        if spk:
-            try:
-                (Path(str(dest) + ".speaker")).write_text(spk, encoding="utf-8")
-            except Exception:
-                pass
+        # Same ordering contract as the durable path: sidecar first, payload
+        # publication second, so an immediate worker claim keeps the voice.
+        _stage_speaker_sidecar(queue_dir, dest, spk)
+        try:
+            os.replace(str(tmp_path), str(dest))
+        except Exception:
+            _cleanup_orphan_speaker_sidecar(dest, spk)
+            raise
         return {"ok": True, "dedup": False, "filename": filename, "path": str(dest)}
     except Exception:
         _comment_audio_release_enqueue_key(soren_root, cleaned)
