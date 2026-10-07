@@ -670,6 +670,77 @@ def test_expired_draining_recovery_cancels_stale_driver_without_stop(legacy_canc
         assert old.cancel_request_ids == [request_id]
 
 
+def test_stale_driver_timeout_after_recovery_returns_failed_result():
+    """Deterministic repro for #523: stale driver enters the failure path late.
+
+    Recovery terminally cancels an expired drain while the old switch driver
+    is still parked in its boundary wait.  When that stale driver then
+    observes its own boundary timeout, it must report a failed/stale
+    ``SwitchResult`` instead of leaking ``RoundBoundaryStateChangedError``,
+    and it must never stop the retained runtime.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory()
+        # Keep the boundary step timeout long so the gated adapter below,
+        # not a racy step timer, decides when the stale driver times out.
+        store, coordinator = _coordinator(factory, state_dir, round_boundary_s=5.0)
+        assert coordinator.start("nethack").status == "succeeded"
+        old = factory.adapters[("nethack", 1)]
+        request_id = str(uuid.uuid4())
+        recovered_evt = threading.Event()
+
+        def gated_request(request_id, deadline, cancel):
+            old.boundary_entered.set()
+            assert recovered_evt.wait(5.0), "recovery did not complete first"
+            raise game_switch.ReadinessTimeoutError(
+                "late boundary timeout after recovery"
+            )
+
+        old.request_round_boundary = gated_request
+        result_box = []
+        errors = []
+
+        def run_switch():
+            try:
+                result_box.append(
+                    coordinator.switch("robots", request_id=request_id, timeout_s=60.0)
+                )
+            except BaseException as exc:  # noqa: BLE001 - must surface leaks
+                errors.append(exc)
+
+        worker = threading.Thread(target=run_switch)
+        worker.start()
+        assert old.boundary_entered.wait(2.0)
+        _wait_for_phase(store, "draining")
+        # Simulate a controller crash whose durable deadline has elapsed.
+        with store.lock(exclusive=True, blocking=False):
+            state, _ = store.canonical.load()
+            state["deadline_at"] = "2000-01-01T00:00:00Z"
+            store.canonical.save(state)
+
+        recovered = coordinator.recover()
+        assert recovered.status == "failed"
+        assert recovered.error_code == game_switch.ERROR_TIMEOUT
+        recovered_evt.set()
+
+        worker.join(5.0)
+        assert not worker.is_alive()
+        assert errors == []
+        assert len(result_box) == 1
+        assert result_box[0].status == "failed"
+        assert result_box[0].request_id == request_id
+        assert "stop_agent" not in old.runtime.events
+        assert "cleanup" not in old.runtime.events
+        assert old.runtime.alive
+        state, _ = store.canonical.load()
+        assert state["phase"] == "ready"
+        assert state["active"]["game"] == "nethack"
+        receipt = store.receipts.load(request_id)
+        assert receipt is not None
+        assert receipt["status"] == "failed"
+
+
 def test_fifo_maintenance_does_not_cancel_a_live_drain():
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
