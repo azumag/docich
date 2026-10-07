@@ -67,11 +67,59 @@ def test_sample_break_resets_stasis_instead_of_false_game_over(tmp_path,break_ki
     assert result['unchanged_seconds']==0
 
 
-def test_animated_screen_keeps_playing_beyond_twenty_minutes(tmp_path):
-    for now in range(0,1301,10):
+def test_animated_screen_with_live_input_keeps_playing_beyond_twenty_minutes(tmp_path):
+    # #1369 without input would now end as input_stalled; a bot that keeps
+    # sending input while the screen animates must keep playing.
+    from types import SimpleNamespace
+    action=SimpleNamespace(type='pad',buttons=['a'],hold_ms=100)
+    result=None
+    for step,now in enumerate(range(0,1301,10)):
         result=hanjuku_run.observe(tmp_path,IDENTITY,frame((now%255,90,50)),now=now,wall=1000+now)
+        assert result['terminal_reason'] is None
+        if step%5==0:
+            hanjuku_run.action_sent(tmp_path,IDENTITY,action,now=now)
+    assert result is not None and result['observations']==131
+
+
+def test_animated_screen_without_input_ends_as_input_stalled(tmp_path):
+    # #1369: the merchant confirm screen animated for ~16 min with no input
+    # sent, so screen_stalled never fired. 600 s of active observing with
+    # 120+ further observations and no input ends the run instead.
+    for now in range(1000,1600,5):
+        result=hanjuku_run.observe(tmp_path,IDENTITY,frame((now%255,90,50)),now=now,wall=now)
+        assert result['terminal_reason'] is None
+    result=hanjuku_run.observe(tmp_path,IDENTITY,frame((70,90,50)),now=1600,wall=1600)
+    assert result['terminal_reason']=='input_stalled'
+    assert result['terminal_evidence']=='no_input_sent_while_observing'
+    assert result['observed_monotonic']-result['last_input_monotonic']>=600
+    assert result['observations']-result['last_input_observations']>=120
+    terminal_state=hanjuku_run.terminal(tmp_path,IDENTITY)
+    assert terminal_state is not None and terminal_state['terminal_reason']=='input_stalled'
+
+
+def test_sent_input_restarts_the_input_stall_clock(tmp_path):
+    from types import SimpleNamespace
+    action=SimpleNamespace(type='pad',buttons=['a'],hold_ms=100)
+    for now in range(1000,1590,5):
+        result=hanjuku_run.observe(tmp_path,IDENTITY,frame((now%255,90,50)),now=now,wall=now)
+        assert result['terminal_reason'] is None
+    hanjuku_run.action_sent(tmp_path,IDENTITY,action,now=1590)
+    result=hanjuku_run.observe(tmp_path,IDENTITY,frame(),now=1595,wall=1595)
     assert result['terminal_reason'] is None
-    assert result['observations']==131
+    assert result['last_input_observations']==result['observations']-1
+
+
+def test_pause_and_sample_gap_reanchor_the_input_stall_clock(tmp_path):
+    for now in range(1000,1590,5):
+        result=hanjuku_run.observe(tmp_path,IDENTITY,frame((now%255,90,50)),now=now,wall=now)
+        assert result['terminal_reason'] is None
+    paused=hanjuku_run.observe(tmp_path,IDENTITY,frame(),now=1595,wall=1595,playing=False)
+    assert paused['terminal_reason'] is None
+    # A long pause then a sample gap must not end the run on stale markers.
+    resumed=hanjuku_run.observe(tmp_path,IDENTITY,frame(),now=3595,wall=3595)
+    assert resumed['terminal_reason'] is None
+    again=hanjuku_run.observe(tmp_path,IDENTITY,frame((7,90,50)),now=3600,wall=3600)
+    assert again['terminal_reason'] is None
 
 
 def test_other_generation_or_symlink_cannot_supply_terminal_evidence(tmp_path):

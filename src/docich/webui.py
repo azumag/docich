@@ -2067,7 +2067,7 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                                 and not isinstance(target, bool) and 1 <= target <= 100 else None),
                 stop_retryable=_hanjuku_stop_retryable(g, raw),
                 end_reason=(raw.get("end_reason") if raw.get("end_reason") in
-                            {"game_over", "screen_stalled", "manual_saved_stop",
+                            {"game_over", "screen_stalled", "input_stalled", "manual_saved_stop",
                              "manual_forced_stop",
                              "switch-terminal-before-corner-active", "game-completed",
                              "queue-timeout", "beta-stopped", "manual", "match-timeout",

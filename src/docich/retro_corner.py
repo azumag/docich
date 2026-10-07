@@ -381,6 +381,7 @@ _END_CLAUSE = {
     None: "予定時間になりましたので終了しました",
     "game_over": "ゲームオーバーになりました",
     "screen_stalled": "画面停止で終了しました",
+    "input_stalled": "入力停滞で終了しました",
     "manual_saved_stop": "セーブして終了しました",
     "manual_forced_stop": "セーブ失敗で強制終了しました",
     # 起動前の切替失敗でゲームが始まらなかった終了。予定終了や game over と
@@ -393,6 +394,7 @@ _END_HANJUKU_CLOSING = {
     None: "今回の挑戦はここまでです。",
     "game_over": "タイトル画面への復帰を確認し、今回の挑戦はここまでです。",
     "screen_stalled": "画面停止のため、今回の挑戦はここまでです。",
+    "input_stalled": "入力が長時間送れなかったため、今回の挑戦はここまでです。",
     "manual_saved_stop": "セーブして、今回の挑戦はここまでです。",
     "manual_forced_stop": "セーブ失敗による強制終了で、今回の挑戦はここまでです。",
     # 開始前の切替失敗。開始していないのに「遊んだ」にしない (#1044)。
@@ -592,7 +594,7 @@ class RetroCornerManager:
         if self._scripted_hanjuku(state):
             state['ends_at'] = None
             state['target_matches'] = 1
-            state['end_condition'] = 'game_over_or_screen_stalled'
+            state['end_condition'] = 'game_over_or_stalled'
         if state.get("announced"):
             return
         game = state.get("game")
@@ -2427,7 +2429,7 @@ class RetroCornerManager:
                 except Exception:
                     latest['game_audio'] = None
                 self._write_state(latest)
-                if run.get('terminal_reason') in {'game_over', 'screen_stalled'}:
+                if run.get('terminal_reason') in {'game_over', 'screen_stalled', 'input_stalled'}:
                     # Re-verify durable evidence bound to this runtime,
                     # generation and lease before any teardown; a mismatch
                     # or invalid record raises and fails closed.
@@ -2488,7 +2490,7 @@ class RetroCornerManager:
             raise RetroCornerError("Hanjuku runtime identity is unverified before restore")
 
         reason = state.get("end_reason")
-        if reason not in {"game_over", "screen_stalled"}:
+        if reason not in {"game_over", "screen_stalled", "input_stalled"}:
             # Explicit stop paths can enter restoring without a terminal frame.
             # Their source runtime is still fenced by verify_runtime and the
             # coordinator's expected_source check in _finish_locked.

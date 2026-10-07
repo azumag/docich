@@ -3553,7 +3553,7 @@ def _project_corner_state(data):
         "announcements": announcements,
         "improve_job": improve_job,
         "end_reason": (data.get("end_reason") if data.get("end_reason")
-                       in {"game_over", "screen_stalled", "manual_saved_stop",
+                       in {"game_over", "screen_stalled", "input_stalled", "manual_saved_stop",
                            "manual_forced_stop",
                            "switch-terminal-before-corner-active", "game-completed",
                            "queue-timeout", "beta-stopped", "manual", "match-timeout",

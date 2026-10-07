@@ -2647,6 +2647,7 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
             None: "予定時間になりましたので終了しました",
             "game_over": "ゲームオーバーになりました",
             "screen_stalled": "画面停止で終了しました",
+            "input_stalled": "入力停滞で終了しました",
             "manual_saved_stop": "セーブして終了しました",
             "manual_forced_stop": "セーブ失敗で強制終了しました",
             # 起動前の切替失敗は予定終了や game over と区別する (#1044)。
