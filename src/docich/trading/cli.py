@@ -639,7 +639,7 @@ def run_args(args, *, repo_root: Path, global_config: GlobalConfig | None = None
                 policy=CapitalPolicy(),
                 now=snapshot["as_of"],
             )
-            broker = PaperBroker(ledger)
+            broker = PaperBroker(ledger, markets=snapshot["markets"])
             for decision in result.decisions:
                 broker.fill(decision, timestamp=snapshot["as_of"])
             deployed_after = snapshot["deployed_reference"] + ledger.deployed_reference()
@@ -675,7 +675,7 @@ def run_args(args, *, repo_root: Path, global_config: GlobalConfig | None = None
                 capital_reference=snapshot["capital_reference"], deployed_reference=deployed_before,
                 policy=CapitalPolicy(), now=snapshot["as_of"],
             )
-            broker = PaperBroker(ledger)
+            broker = PaperBroker(ledger, markets=snapshot["markets"])
             for decision in allocation.decisions:
                 broker.fill(decision, timestamp=snapshot["as_of"])
             rejected_codes = [item.reason_code for item in selection.rejected]

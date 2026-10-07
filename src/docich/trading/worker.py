@@ -501,7 +501,22 @@ def run_worker_cycle(
                 now=decision_now,
             )
 
-            broker = PaperBroker(ledger)
+            broker = PaperBroker(ledger, markets=markets)
+            books: dict[str, object] = {}
+            fetch_top_books = getattr(gateway, "fetch_top_books", None)
+            if callable(fetch_top_books):
+                try:
+                    top_books = fetch_top_books(
+                        [item.symbol for item in allocation.decisions],
+                        now=decision_now,
+                        limit=5,
+                    )
+                    if isinstance(top_books, dict):
+                        books = dict(top_books)
+                except Exception:
+                    # Public depth is best-effort: missing books fail safe to
+                    # the conservative fixed slippage inside the broker.
+                    books = {}
             new_fill_count = 0
             checked_entry_gate = False
             # Realized losses become known on exits. Recheck before any buys,
@@ -525,7 +540,10 @@ def run_worker_cycle(
                 # order (observed signal vs threshold). Pop it once and persist it
                 # with the fill as well as the public event.
                 signal_context = pop_reason_context(decision.opportunity_id)
-                fill = broker.fill(decision, timestamp=decision_now, signal_context=signal_context)
+                fill = broker.fill(
+                    decision, timestamp=decision_now, signal_context=signal_context,
+                    book=books.get(decision.symbol),
+                )
                 if append_public_event(event_path, build_fill_event(fill, reason_context=signal_context)):
                     new_fill_count += 1
 
