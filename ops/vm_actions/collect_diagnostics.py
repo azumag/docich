@@ -61,6 +61,12 @@ Observed sources (all read-only):
     (tmp/state/corner_boundary_*.json, ab_state.json, ab_games.jsonl,
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
     bodies and environment values are never read out.
+  - Soren game-lifecycle pause provenance (tmp/state/game_lifecycle/
+    request.json, ack.json and the four fixed pause-ownership records):
+    only the fixed request/ack status enums, whether a handover is active,
+    which of the four managed workers carry a proven lifecycle-owned pause,
+    and the fixed waiting-for enum. Request ids, game names, generations,
+    deadlines, paths and record bodies are never read out.
   - the PulseAudio sink-input list (`pactl list sink-inputs`, read-only) so a
     muted or silent BGM/SE playback stream is observable without an ad-hoc
     owner shell (#968). Only index, sink name, fixed media role, mute,
@@ -876,6 +882,41 @@ LIFECYCLE_DEADLINE_STATUSES = frozenset({
     "stopping",
     "resume_requested",
 })
+# Sanitized ack statuses from the lifecycle broker contract
+# (soren-integration/lib/game_lifecycle.sh). Only these fixed enums are ever
+# emitted; request ids, game names, generations and deadlines are never
+# exposed. Terminal stopped parks the bridge until an explicit fresh launch.
+LIFECYCLE_ACK_STATUSES = frozenset({
+    "accepted",
+    "waiting",
+    "boundary",
+    "stop_requested",
+    "stopping",
+    "stopped",
+    "resume_requested",
+    "resumed",
+    "cancelled",
+    "failed",
+    "timeout",
+    "unsupported",
+})
+LIFECYCLE_ACTIVE_STATUSES = frozenset({
+    "accepted",
+    "waiting",
+    "boundary",
+    "stop_requested",
+    "stopping",
+    "resume_requested",
+    "stopped",
+})
+LIFECYCLE_REQUEST_STATUSES = ("absent", "malformed", "present")
+LIFECYCLE_WAITING_FOR = (
+    "none",
+    "lifecycle_handover",
+    "fresh_launch",
+    "operator_action",
+    "unknown",
+)
 PAUSE_OWNERS = ("lifecycle_owned", "operator_owned", "unknown")
 UNREGISTERED_HEALTH = ("alive", "paused", "stale_only", "unknown")
 
@@ -1148,6 +1189,113 @@ def _pause_owner(state_dir, name, now):
     ):
         return "operator_owned"
     return "unknown"
+
+
+def _lifecycle_pair_status(state_dir):
+    """Sanitize the lifecycle request/ack pair into fixed enums only.
+
+    Returns (request_status, ack_status) where request_status is one of
+    LIFECYCLE_REQUEST_STATUSES and ack_status is one of LIFECYCLE_ACK_STATUSES
+    plus "absent", "malformed" or "mismatched".  No request id, game name,
+    generation, deadline or free-form value is ever returned.
+    """
+    lifecycle = state_dir / "game_lifecycle"
+    request = _read_json(lifecycle / "request.json")
+    ack = _read_json(lifecycle / "ack.json")
+    if request is None and ack is None:
+        return "absent", "absent"
+    if not isinstance(request, dict) or request.get("schema") != 1:
+        if not isinstance(request, dict):
+            if ack is None:
+                return "absent", "absent"
+            return "absent", "malformed"
+        return "malformed", "malformed"
+    request_id = request.get("request_id")
+    if not isinstance(request_id, str) or not request_id:
+        return "malformed", "malformed"
+    if not isinstance(ack, dict) or ack.get("schema") != 1:
+        return "present", "malformed" if ack is not None else "absent"
+    if not isinstance(ack.get("request_id"), str) or not ack.get("request_id"):
+        return "present", "malformed"
+    for field in ("game", "generation", "deadline_epoch", "deadline_at"):
+        if field not in request or field not in ack or ack.get(field) != request.get(field):
+            return "present", "mismatched"
+    if ack.get("request_id") != request_id:
+        return "present", "mismatched"
+    status = ack.get("status")
+    if not isinstance(status, str) or status not in LIFECYCLE_ACK_STATUSES:
+        return "present", "unknown"
+    return "present", status
+
+
+def _collect_lifecycle_pause(soren, now, workers=None):
+    """Sanitized lifecycle pause provenance (read-only).
+
+    Reports whether a lifecycle handover currently governs the supervisor
+    pause markers, which of the four lifecycle-managed workers carry a proven
+    lifecycle-owned pause, and what a paused worker is waiting for -- all as
+    fixed enums.  Never emits request ids, game names, deadlines, paths,
+    secrets or free-form text.  Never modifies markers or processes.
+    """
+    state_dir = soren / "tmp" / "state"
+    request_status, ack_status = _lifecycle_pair_status(state_dir)
+    details = {}
+    if isinstance(workers, dict):
+        details = workers.get("details") or {}
+    owned = []
+    operator_paused = False
+    any_paused = False
+    for name in LIFECYCLE_PAUSE_RECORDS:
+        if isinstance(details, dict) and name in details:
+            record = details[name] or {}
+            is_paused = bool(record.get("paused"))
+            owner = record.get("pause_owner")
+        else:
+            is_paused = (state_dir / f"{name}.paused").is_file()
+            owner = _pause_owner(state_dir, name, now) if is_paused else None
+        if is_paused:
+            any_paused = True
+        if owner == "operator_owned" and is_paused:
+            operator_paused = True
+        if is_paused and owner == "lifecycle_owned":
+            owned.append(name)
+    owned = sorted(owned)
+    active = False
+    if request_status == "present" and ack_status in LIFECYCLE_ACTIVE_STATUSES:
+        if ack_status == "stopped":
+            # Terminal park: the bridge intentionally waits for a fresh
+            # launch, so no deadline applies.
+            active = True
+        elif ack_status in LIFECYCLE_DEADLINE_STATUSES:
+            request = _read_json(state_dir / "game_lifecycle" / "request.json")
+            deadline_raw = request.get("deadline_epoch") if isinstance(request, dict) else None
+            if isinstance(deadline_raw, (int, float)) and math.isfinite(deadline_raw):
+                active = bool(float(deadline_raw) > float(now))
+            else:
+                active = False
+        else:
+            # accepted/waiting/boundary: handover accepted but the broker has
+            # not parked a deadline-bound phase yet; still governed.
+            active = True
+    if active and ack_status == "stopped" and owned:
+        waiting_for = "fresh_launch"
+    elif active and (owned or ack_status in LIFECYCLE_ACTIVE_STATUSES):
+        waiting_for = "lifecycle_handover"
+    elif operator_paused:
+        waiting_for = "operator_action"
+    elif any_paused:
+        # Paused markers exist but none prove an active lifecycle handover
+        # nor an operator webui pause: stale, expired or mismatched.
+        waiting_for = "unknown"
+    else:
+        waiting_for = "none"
+    return {
+        "active": bool(active),
+        "request_status": request_status,
+        "ack_status": ack_status,
+        "pause_owned_by_lifecycle": owned,
+        "waiting_for": waiting_for,
+    }
 
 
 def _parse_pid_file(path):
@@ -6691,6 +6839,7 @@ def main(argv):
         ),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
         "workers": workers,
+        "lifecycle_pause": _collect_lifecycle_pause(soren, now, workers),
         "supervisor_identity": _collect_supervisor_identity(soren, meta.get("soren_gitlink_sha")),
         "semantic_decision": _collect_semantic_decision(workers),
         "queues": {**queues, "queue_giveups_15m": ai["queue_giveups"]},
