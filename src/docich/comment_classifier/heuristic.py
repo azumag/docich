@@ -19,6 +19,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from . import active_game
+
 # --- lib/comment_bilingual.py (looks_like_english and its constants) --------
 
 URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
@@ -87,7 +89,19 @@ STREAM_BUG_TERMS = (
 )
 
 
-def classify(user: str, comment: str) -> str:
+def _with_hint(base: str, text: str, game_hint) -> str:
+    """Apply an active-game hint only over non-game body-only results."""
+    if base in {"general_question", "chitchat"} and _hint_active(game_hint):
+        return active_game.suggest_category(text) or base
+    return base
+
+
+def _hint_active(game_hint) -> bool:
+    return (isinstance(game_hint, dict) and game_hint.get("game_active") is True
+            and game_hint.get("active_game_kind") in active_game.GAME_KINDS)
+
+
+def classify(user: str, comment: str, *, game_hint=None) -> str:
     text = comment.strip()
     lower = text.lower()
     compact = re.sub(r"\s+", "", lower)
@@ -117,12 +131,12 @@ def classify(user: str, comment: str) -> str:
     if "?" in text or "？" in text:
         if re.search(r"ゲーム|スコア|盤面|戦略|ロシア|ソ連|建国|何点|何試合", text):
             return "game_question"
-        return "general_question"
+        return _with_hint("general_question", text, game_hint)
     if re.search(r"スコア|点|ロシア|ソ連|建国|ウクライナ|カザフ|盤面|落下|テンポ", text):
         return "game_status"
     if re.search(r"したほうが|すべき|狙|置|改善|閾値|ワーカー|返答|コメント", text):
         return "strategy_advice" if re.search(r"戦略|置|狙|スコア|閾値", text) else "comment_advice"
-    return "chitchat"
+    return _with_hint("chitchat", text, game_hint)
 
 
 def split_line(raw: str) -> tuple[str, str]:
@@ -138,7 +152,7 @@ def read_comment_lines(path: Path) -> list[str]:
         return [line.rstrip("\n") for line in stream if line.strip()]
 
 
-def heuristic_rows(lines: list[str]) -> list[dict]:
+def heuristic_rows(lines: list[str], *, game_hint=None) -> list[dict]:
     rows = []
     for idx, raw in enumerate(lines, 1):
         user, comment = split_line(raw)
@@ -149,7 +163,7 @@ def heuristic_rows(lines: list[str]) -> list[dict]:
         if CARD_ACQUIRED_RE.search(raw) or CARD_MULTI_RE.search(raw):
             category = "card_gacha"
         else:
-            category = classify(user, comment)
+            category = classify(user, comment, game_hint=game_hint)
         rows.append({"index": idx, "user": user, "comment": comment,
                      "category": category, "is_english": is_english})
     if not rows:
@@ -213,6 +227,6 @@ def enforce_english_safety(rows, source: list[str]) -> list:
     return rows
 
 
-def baseline(lines: list[str]) -> list[dict]:
+def baseline(lines: list[str], *, game_hint=None) -> list[dict]:
     """The canonical local classification: heuristic -> normalise -> safety."""
-    return enforce_english_safety(normalize_rows(heuristic_rows(lines)), lines)
+    return enforce_english_safety(normalize_rows(heuristic_rows(lines, game_hint=game_hint)), lines)
