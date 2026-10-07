@@ -319,14 +319,22 @@ def _progress_evidence(root: Path, run: dict[str, object]) -> dict[str, object]:
         and item["hp_max"] > 0
     ]
 
-    def same_frame_stats(phase: str) -> tuple[int, int]:
-        records = [item for item in samples if item.get("phase") == phase]
+    def same_frame_stats(phase: str, *, contiguous: bool = False) -> tuple[int, int]:
+        records = samples if contiguous else [
+            item for item in samples if item.get("phase") == phase
+        ]
         pairs = 0
         streak = 0
         max_streak = 0
         previous_hash = None
         previous_turn = None
         for item in records:
+            if item.get("phase") != phase:
+                max_streak = max(max_streak, streak)
+                streak = 0
+                previous_hash = None
+                previous_turn = None
+                continue
             frame_hash = item.get("frame_hash")
             turn = item.get("turn")
             if isinstance(frame_hash, str) and frame_hash == previous_hash and turn == previous_turn:
@@ -339,8 +347,12 @@ def _progress_evidence(root: Path, run: dict[str, object]) -> dict[str, object]:
             previous_turn = turn
         return pairs, max(max_streak, streak)
 
+    # Preserve the historical sent metric semantics. Holds are stricter:
+    # any intervening sent sample proves the agent was not continuously stuck.
     same_frame_pairs, max_same_frame_streak = same_frame_stats("sent")
-    same_frame_hold_pairs, max_same_frame_hold_streak = same_frame_stats("hold")
+    same_frame_hold_pairs, max_same_frame_hold_streak = same_frame_stats(
+        "hold", contiguous=True
+    )
     turns = [item["turn"] for item in samples if type(item.get("turn")) is int]
     depths = [item["depth"] for item in samples if type(item.get("depth")) is int]
     timestamps = [float(item["ts"]) for item in samples]
