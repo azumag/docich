@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          python3 -m pytest -q tests/test_hanjuku_adjusted_source_defense.py --junitxml=/tmp/hanjuku-source-baseline.xml
+          python3 -m pytest -q --tb=short tests/test_hanjuku_adjusted_source_defense.py --junitxml=/tmp/hanjuku-source-baseline.xml
           result=$?
           set -e
           test "$result" -eq 1
@@ -44,6 +44,7 @@ jobs:
                     if case.find('failure') is not None]
           assert any(name.startswith('test_attack_guard_requires_two_distinct_available_generals')
                      and 'A:guard001' in name for name in failed), failed
+          assert 'test_validated_and_adopted_real_plan_is_guarded' in failed
           print('Confirmed baseline assertion failures:', len(failed))
           PY
       - name: Apply only reviewed source-defense change
@@ -59,13 +60,13 @@ jobs:
                       or (order.get('purpose') == 'attack' and order['step'].startswith('I:')))
           '''
           new = '''def _reserve_source_guard(order, mem):
-              # The original chart and boss waves retain their sequences. Adjusted
-              # and interim attacks must leave a measured idle defender, like retakes.
-              return (not _is_boss_order(order, mem)
-                      and (_retake_order(order, mem)
-                           or (order.get('purpose') == 'attack'
-                               and order['step'].startswith(
-                                   (chart_adjust.PLAN_PREFIX, chart_adjust.INTERIM_PREFIX)))))
+              # Original chart offensives and boss waves retain their sequences. A
+              # recapture or an off-chart attack must leave a measured idle defender.
+              # Adjusted orders normally omit purpose; only explicit moves are exempt.
+              return (_retake_order(order, mem)
+                      or (not _is_boss_order(order, mem) and order.get('purpose') != 'move'
+                          and order['step'].startswith(chart_adjust.PLAN_PREFIX))
+                      or (order.get('purpose') == 'attack' and order['step'].startswith('I:')))
           '''
           assert source.count(old) == 1, 'Source drift: refusing approximate replacement'
           path.write_text(source.replace(old, new), encoding='utf-8')
@@ -74,7 +75,7 @@ jobs:
         env:
           PYTHONPATH: src
         run: |
-          python3 -m pytest -q tests/test_hanjuku_adjusted_source_defense.py tests/test_hanjuku_retake_guard.py tests/test_hanjuku_chart_bot.py tests/test_hanjuku_chart_adjust.py
+          python3 -m pytest -q --tb=short tests/test_hanjuku_adjusted_source_defense.py tests/test_hanjuku_retake_guard.py tests/test_hanjuku_chart_bot.py tests/test_hanjuku_chart_adjust.py
           python3 -m py_compile src/docich/hanjuku_policy.py tests/test_hanjuku_adjusted_source_defense.py
           git diff --check
       - name: Commit only the verified policy to this feature branch
