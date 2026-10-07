@@ -24,11 +24,15 @@ from .naming import (
     validate_tmux_window_ref,
 )
 from .process_tree import (
+    ProcessIdentityError,
     ancestor_pids,
     is_running,
+    process_cgroup,
+    process_environ,
     process_pgid,
     processes_in_pane_scopes,
     processes_with_env,
+    terminate_owned_processes,
     terminate_process_tree,
 )
 
@@ -45,7 +49,8 @@ OWNERSHIP_GENERATION_ENV = "DOCICH_TMUX_GENERATION"
 OWNERSHIP_ROLE_ENV = "DOCICH_TMUX_ROLE"
 
 # systemd scope prefix tmux uses for a pane spawn; used together with a pane
-# process group so a recycled PID is never signalled.
+# process group for legacy ownership discovery. Signalling additionally
+# requires ownership revalidation under a retained pidfd.
 TMUX_PANE_SCOPE_MARKER = "tmux-spawn-"
 
 # Fail closed instead of reaping an implausible number of processes: a bigger
@@ -639,7 +644,7 @@ class Tmux:
         *,
         protected: frozenset[int] | None = None,
     ) -> tuple[int, ...]:
-        """Live processes provably owned by the target being torn down.
+        """Candidate PIDs; ownership must be revalidated under a pidfd.
 
         Two independent proofs are accepted and nothing else is ever touched:
 
@@ -683,6 +688,33 @@ class Tmux:
             pid for pid in dict.fromkeys(found) if pid > 1 and pid not in guarded
         )
 
+    def _escaped_process_is_owned(
+        self,
+        pid: int,
+        ownership: TmuxOwnership | None,
+        roles: tuple[str, ...] | None,
+        pane_groups: dict[int, int],
+        protected: frozenset[int] | None = None,
+    ) -> bool:
+        """Fresh proof read only after the caller has opened this PID's pidfd."""
+
+        if pid <= 1 or pid in (protected or ()) or pid in ancestor_pids():
+            return False
+        if ownership is not None:
+            env = process_environ(pid)
+            if (
+                env.get(OWNERSHIP_RUNTIME_ID_ENV) == ownership.runtime_id
+                and env.get(OWNERSHIP_GENERATION_ENV) == str(ownership.generation)
+                and (roles is None or env.get(OWNERSHIP_ROLE_ENV) in roles)
+            ):
+                return True
+        return bool(
+            pane_groups
+            and not any(is_running(leader) for leader in pane_groups)
+            and process_pgid(pid) in pane_groups.values()
+            and TMUX_PANE_SCOPE_MARKER in (process_cgroup(pid) or "")
+        )
+
     def _reap_escaped_processes(
         self,
         ownership: TmuxOwnership | None,
@@ -714,7 +746,15 @@ class Tmux:
         logger.warning(
             "tmux %s: 回収対象の孤立プロセスを停止します victims=%s", operation, victims
         )
-        return terminate_process_tree(list(victims)).remaining
+        try:
+            return terminate_owned_processes(
+                victims,
+                lambda pid: self._escaped_process_is_owned(
+                    pid, ownership, roles, pane_groups, protected
+                ),
+            ).remaining
+        except ProcessIdentityError as exc:
+            raise TmuxError(f"{operation}: 孤立プロセスの安全な停止に失敗しました: {exc}") from exc
 
     def _kill_after_process_stop(self, args: list[str], operation: str) -> None:
         """Finish cleanup while accepting only a target that already vanished.

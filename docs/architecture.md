@@ -461,6 +461,8 @@ enabled = false        # viewer専用。productionはsoviet_nowが運転
 10. **生成出力を字幕へ直結しない**: model応答からJSONらしいsubstringを抽出しない。完全schema不一致はcaption failureとして破棄し、audioを継続する。
 11. **pane の子孫だけを見る終了処理は孤立プロセスを見逃す** (#1105): tmux の pane leader (ゲーム本体) が先に終了すると、その子は再親化されて pane の descendant tree から外れる。`list-panes` の pane PID を起点にした ppid 探索だけでは回収できず、旧世代のゲームが切替後も CPU を使い続ける (実測 ~50% / 72分)。`tmux.py` の teardown は (a) pane プロセスの環境へ runtime/role tag (`DOCICH_TMUX_RUNTIME_ID` / `DOCICH_TMUX_GENERATION` / `DOCICH_TMUX_ROLE`) を `-e` で export し、(b) pane leader の process group と tmux pane cgroup scope を snapshot したうえで、pane の外へ出たプロセスを**所有証明のあるものだけ**回収する。回収対象が残った場合は fail-closed で切替を失敗させる (成功として canonical を進めない)。window 停止は同じ runtime の当該 role のみ、session 停止は runtime 全体を対象にする。所有証明は環境 tag に依存するため、tag 付き pane から起動された client が新規起動した tmux server 自身も tag を継承する。これを victim に取ると共通基盤 (display/audio/watchdog/ffmpeg) を含む server 配下の全 pane が落ちるため、**対象を収容する tmux server (`display-message -p '#{pid}'`) とその祖先、および pane leader の祖先は sweep の protected に必ず入れる**。環境 tag 照合 `processes_with_env` は `/proc` を読むため実質 Linux のみで、Linux 以外では空を返す。
 
+発見した PID は候補に留め、Linux pidfd を開いた後で tag または PGID/cgroup を再検証し、読取中に handle が終了していないことを確認する。TERM・KILL・終了待ちは同じ pidfd を使い、後から子孫を追加しない。pidfd 未対応・取得/送信/監視失敗は `TmuxError` として fail-closed にし、数値 PID への signal fallback は使わない。
+
 ---
 
 ## 10. フェーズ計画

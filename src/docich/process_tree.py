@@ -22,10 +22,12 @@ reclaim exactly the processes it owns and nothing else.
 from __future__ import annotations
 
 import os
+import select
 import signal
 import subprocess
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,6 +45,96 @@ class TerminationResult:
     term_sent: tuple[int, ...]
     kill_sent: tuple[int, ...]
     remaining: tuple[int, ...]
+
+
+class ProcessIdentityError(RuntimeError):
+    """A stable process handle cannot be acquired, inspected or signalled."""
+
+
+def _pidfd_is_running(fd: int) -> bool:
+    poller = select.poll()
+    poller.register(fd, select.POLLIN)
+    events = poller.poll(0)
+    if any(event & select.POLLNVAL for _fd, event in events):
+        raise ProcessIdentityError("invalid pidfd")
+    # pidfds become readable on exit, including for an unreaped zombie.
+    return not events
+
+
+def terminate_owned_processes(
+    pids: Sequence[int],
+    owns_process: Callable[[int], bool],
+    *,
+    term_timeout_s: float = 1.5,
+    kill_timeout_s: float = 1.0,
+) -> TerminationResult:
+    """Revalidate ownership under pidfds and retain them through TERM/KILL.
+
+    Discovery PIDs are only candidates. Open each handle *before* reading
+    ownership again, then check that the handle did not exit during that
+    read. Thus /proc reads cannot authorize signalling a reused PID. After
+    validation, exit checks and signals use only the retained handle.
+
+    Stop exactly the owned candidates, without expanding a later descendant
+    snapshot. Unsupported/denied pidfd operations fail closed: checking start
+    ticks and then using os.kill would still race with PID reuse.
+    """
+
+    roots = tuple(dict.fromkeys(pid for pid in pids if type(pid) is int and pid > 1))
+    if not roots:
+        return TerminationResult(roots, (), (), ())
+    opener = getattr(os, "pidfd_open", None)
+    sender = getattr(signal, "pidfd_send_signal", None)
+    if not callable(opener) or not callable(sender):
+        raise ProcessIdentityError("orphan teardown requires pidfd support")
+
+    handles: dict[int, int] = {}
+    term_sent: list[int] = []
+    kill_sent: list[int] = []
+
+    def send(pid: int, sig: signal.Signals) -> bool:
+        try:
+            sender(handles[pid], sig)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def wait(pending: Sequence[int], timeout_s: float) -> list[int]:
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while True:
+            remaining = [pid for pid in pending if _pidfd_is_running(handles[pid])]
+            if not remaining or time.monotonic() >= deadline:
+                return remaining
+            time.sleep(0.05)
+
+    with ExitStack() as stack:
+        try:
+            for pid in roots:
+                try:
+                    fd = opener(pid)
+                except ProcessLookupError:
+                    continue
+                stack.callback(os.close, fd)
+                if (
+                    _pidfd_is_running(fd)
+                    and owns_process(pid)
+                    and _pidfd_is_running(fd)
+                ):
+                    handles[pid] = fd
+
+            # Acquire and validate every handle before sending any signal.
+            for pid in handles:
+                if send(pid, signal.SIGTERM):
+                    term_sent.append(pid)
+            remaining = wait(tuple(handles), term_timeout_s)
+            for pid in remaining:
+                if send(pid, signal.SIGKILL):
+                    kill_sent.append(pid)
+            remaining = wait(remaining, kill_timeout_s)
+        except OSError as exc:
+            raise ProcessIdentityError("orphan teardown pidfd operation failed") from exc
+
+    return TerminationResult(roots, tuple(term_sent), tuple(kill_sent), tuple(remaining))
 
 
 def _linux_process_table() -> dict[int, ProcessInfo]:
@@ -312,8 +404,8 @@ def processes_in_pane_scopes(
     """PIDs in one of ``pgids`` that still live in a tmux pane (systemd) scope.
 
     Both the process group and the cgroup scope must match a snapshot taken
-    from an ownership-checked tmux target, so a recycled PID/PGID that is not
-    a tmux pane process is never signalled.
+    from an ownership-checked tmux target. These are discovery candidates;
+    callers must revalidate ownership under a stable handle before signalling.
     """
 
     wanted = {int(pgid) for pgid in pgids if type(pgid) is int and pgid > 0}

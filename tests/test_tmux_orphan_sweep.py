@@ -79,6 +79,9 @@ class TestOwnershipEnvironmentExport(unittest.TestCase):
 class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
     def setUp(self):
         self.tmux = tmux_mod.Tmux()
+        pane_stop = mock.patch("docich.tmux.terminate_process_tree", return_value=_stopped(123))
+        self.pane_stop = pane_stop.start()
+        self.addCleanup(pane_stop.stop)
 
     @staticmethod
     def _window_kill_calls() -> list[subprocess.CompletedProcess]:
@@ -92,20 +95,20 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
 
     @mock.patch("docich.tmux.process_pgid", return_value=None)
     @mock.patch("docich.tmux.processes_with_env")
-    @mock.patch("docich.tmux.terminate_process_tree")
+    @mock.patch("docich.tmux.terminate_owned_processes")
     @mock.patch("docich.tmux.procs.run")
     def test_tagged_orphan_outside_the_pane_is_reclaimed(
         self, mock_run, mock_terminate, mock_env, _mock_pgid
     ):
         mock_run.side_effect = self._window_kill_calls()
         mock_env.return_value = [4242]
-        mock_terminate.side_effect = [_stopped(123), _stopped(4242)]
+        mock_terminate.side_effect = [_stopped(4242)]
 
         self.assertTrue(self.tmux.kill_window_owned("docich:game-g1", OWNER))
 
         self.assertEqual(
             [call.args[0] for call in mock_terminate.call_args_list],
-            [[123], [4242]],
+            [(4242,)],
         )
         self.assertEqual(
             mock_env.call_args.args[0],
@@ -118,27 +121,28 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
 
     @mock.patch("docich.tmux.process_pgid", return_value=None)
     @mock.patch("docich.tmux.processes_with_env", return_value=[])
-    @mock.patch("docich.tmux.terminate_process_tree")
+    @mock.patch("docich.tmux.terminate_owned_processes")
     @mock.patch("docich.tmux.procs.run")
     def test_unattributable_processes_are_never_signalled(
         self, mock_run, mock_terminate, _mock_env, _mock_pgid
     ):
         mock_run.side_effect = self._window_kill_calls()
-        mock_terminate.side_effect = [_stopped(123)]
+        mock_terminate.return_value = _stopped()
 
         self.assertTrue(self.tmux.kill_window_owned("docich:game-g1", OWNER))
 
-        mock_terminate.assert_called_once_with([123])
+        mock_terminate.assert_not_called()
+        self.pane_stop.assert_called_once_with([123])
 
     @mock.patch("docich.tmux.process_pgid", return_value=None)
     @mock.patch("docich.tmux.processes_with_env", return_value=[4242])
-    @mock.patch("docich.tmux.terminate_process_tree")
+    @mock.patch("docich.tmux.terminate_owned_processes")
     @mock.patch("docich.tmux.procs.run")
     def test_surviving_orphan_fails_the_teardown_closed(
         self, mock_run, mock_terminate, _mock_env, _mock_pgid
     ):
         mock_run.side_effect = self._window_kill_calls()
-        mock_terminate.side_effect = [_stopped(123), _survived((4242,))]
+        mock_terminate.side_effect = [_survived((4242,))]
 
         with self.assertRaises(tmux_mod.TmuxError) as ctx:
             self.tmux.kill_window_owned("docich:game-g1", OWNER)
@@ -150,21 +154,21 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
     @mock.patch("docich.tmux.is_running", return_value=False)
     @mock.patch("docich.tmux.process_pgid", return_value=123)
     @mock.patch("docich.tmux.processes_with_env", return_value=[])
-    @mock.patch("docich.tmux.terminate_process_tree")
+    @mock.patch("docich.tmux.terminate_owned_processes")
     @mock.patch("docich.tmux.procs.run")
     def test_reparented_child_is_found_by_pane_process_group(
         self, mock_run, mock_terminate, _mock_env, _mock_pgid, _mock_running,
         mock_scopes, _mock_ancestors,
     ):
         mock_run.side_effect = self._window_kill_calls()
-        mock_terminate.side_effect = [_stopped(123), _stopped(777)]
+        mock_terminate.side_effect = [_stopped(777)]
 
         self.assertTrue(self.tmux.kill_window_owned("docich:game-g1", OWNER))
 
         mock_scopes.assert_called_once_with({123}, cgroup_marker="tmux-spawn-")
         self.assertEqual(
             [call.args[0] for call in mock_terminate.call_args_list],
-            [[123], [777]],
+            [(777,)],
         )
 
     def test_pane_group_evidence_is_skipped_while_a_leader_lives(self):
@@ -182,7 +186,7 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
         over_cap = [5000 + index for index in range(tmux_mod.MAX_ORPHAN_SWEEP_PROCESSES + 1)]
         with (
             mock.patch("docich.tmux.processes_with_env", return_value=over_cap),
-            mock.patch("docich.tmux.terminate_process_tree", return_value=_stopped(123)) as mock_terminate,
+            mock.patch("docich.tmux.terminate_owned_processes") as mock_terminate,
         ):
             with self.assertRaises(tmux_mod.TmuxError) as ctx:
                 self.tmux._reap_escaped_processes(
@@ -219,7 +223,7 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
     @mock.patch("docich.tmux.ancestor_pids", return_value=[])
     @mock.patch("docich.tmux.process_pgid", return_value=None)
     @mock.patch("docich.tmux.processes_with_env")
-    @mock.patch("docich.tmux.terminate_process_tree")
+    @mock.patch("docich.tmux.terminate_owned_processes")
     @mock.patch("docich.tmux.procs.run")
     def test_tagged_tmux_server_is_never_swept(
         self, mock_run, mock_terminate, mock_env, _mock_pgid, _mock_ancestors
@@ -238,7 +242,7 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
             _ok(),                                           # kill-window
         ]
         mock_env.return_value = [server_pid, 4242]
-        mock_terminate.side_effect = [_stopped(123), _stopped(4242)]
+        mock_terminate.side_effect = [_stopped(4242)]
 
         self.assertTrue(self.tmux.kill_window_owned("docich:game-g1", OWNER))
 
@@ -246,13 +250,13 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
         # signal batch.
         self.assertEqual(
             [call.args[0] for call in mock_terminate.call_args_list],
-            [[123], [4242]],
+            [(4242,)],
         )
 
     def test_reclaim_is_logged_for_the_switch_timeline(self):
         with (
             mock.patch("docich.tmux.processes_with_env", return_value=[4242]),
-            mock.patch("docich.tmux.terminate_process_tree", return_value=_stopped(4242)),
+            mock.patch("docich.tmux.terminate_owned_processes", return_value=_stopped(4242)),
             self.assertLogs("docich.tmux", level="WARNING") as logs,
         ):
             remaining = self.tmux._reap_escaped_processes(
@@ -266,6 +270,9 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
 class TestOrphanSweepOnSessionTeardown(unittest.TestCase):
     def setUp(self):
         self.tmux = tmux_mod.Tmux()
+        pane_stop = mock.patch("docich.tmux.terminate_process_tree", return_value=_stopped(123))
+        self.pane_stop = pane_stop.start()
+        self.addCleanup(pane_stop.stop)
 
     @staticmethod
     def _session_kill_calls() -> list[subprocess.CompletedProcess]:
@@ -279,14 +286,14 @@ class TestOrphanSweepOnSessionTeardown(unittest.TestCase):
 
     @mock.patch("docich.tmux.process_pgid", return_value=None)
     @mock.patch("docich.tmux.processes_with_env")
-    @mock.patch("docich.tmux.terminate_process_tree")
+    @mock.patch("docich.tmux.terminate_owned_processes")
     @mock.patch("docich.tmux.procs.run")
     def test_session_kill_reclaims_every_role_of_this_runtime(
         self, mock_run, mock_terminate, mock_env, _mock_pgid
     ):
         mock_run.side_effect = self._session_kill_calls()
         mock_env.return_value = [901]
-        mock_terminate.side_effect = [_stopped(123), _stopped(901)]
+        mock_terminate.side_effect = [_stopped(901)]
         adapter = tmux_mod.TmuxOwnership("g1-abcdef", 1, "adapter")
 
         self.assertTrue(self.tmux.kill_session_owned("docich-game-g1", adapter))
@@ -302,28 +309,28 @@ class TestOrphanSweepOnSessionTeardown(unittest.TestCase):
         )
         self.assertEqual(
             [call.args[0] for call in mock_terminate.call_args_list],
-            [[123], [901]],
+            [(901,)],
         )
 
     @mock.patch("docich.tmux.ancestor_pids", return_value=[])
     @mock.patch("docich.tmux.processes_in_pane_scopes", return_value=[777])
     @mock.patch("docich.tmux.is_running", return_value=False)
     @mock.patch("docich.tmux.process_pgid", return_value=123)
-    @mock.patch("docich.tmux.terminate_process_tree")
+    @mock.patch("docich.tmux.terminate_owned_processes")
     @mock.patch("docich.tmux.procs.run")
     def test_legacy_session_cleanup_uses_pane_group_evidence(
         self, mock_run, mock_terminate, _mock_pgid, _mock_running,
         mock_scopes, _mock_ancestors,
     ):
         mock_run.side_effect = [_ok("123\n"), _ok("4321\n"), _ok()]
-        mock_terminate.side_effect = [_stopped(123), _stopped(777)]
+        mock_terminate.side_effect = [_stopped(777)]
 
         self.tmux.stop_game_session_named("docich-game-g7")
 
         mock_scopes.assert_called_once_with({123}, cgroup_marker="tmux-spawn-")
         self.assertEqual(
             [call.args[0] for call in mock_terminate.call_args_list],
-            [[123], [777]],
+            [(777,)],
         )
 
 
