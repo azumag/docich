@@ -38,6 +38,7 @@ BUNDLE_AGE_30D_SEC=30*24*60*60
 GH_DIAGNOSTIC_PATH='/usr/local/bin:/usr/bin:/bin'
 GH_DIAGNOSTIC_TIMEOUT=6
 GH_DIAGNOSTIC_OUTPUT_MAX=16384
+GH_DIAGNOSTIC_PREFLIGHT_TIMEOUT=8
 OWNED_SUBMODULES={
     'games/soviet_now':'https://github.com/azumag/soviet_now.git',
     'games/hanjuku-sfc-speedrun':'https://github.com/azumag/hanjuku-sfc-speedrun.git',
@@ -116,6 +117,9 @@ REASON_CODES={
  'configure_jev_route_direct is production-only':'configure_jev_route_production_only',
  'configure_jev_route_vercel is production-only':'configure_jev_route_production_only',
  'disable_jev_route is production-only':'disable_jev_route_production_only',
+ 'github auth diagnostics preflight timeout':'github_auth_preflight_timeout',
+ 'github auth diagnostics checkout unavailable':'github_auth_checkout_unavailable',
+ 'github auth diagnostics SHA mismatch':'github_auth_sha_mismatch',
  'configured Jev route script missing':'configure_jev_route_script_missing',
  'invalid Jev route key payload':'configure_jev_route_key_invalid',
  'reconcile production only':'reconcile_production_only',
@@ -1402,6 +1406,56 @@ def _kill_bounded_process(proc):
     except subprocess.TimeoutExpired: pass
 
 
+def _github_diagnostics_git_preflight(root):
+    """Bound this diagnostic's production checkout and owned-submodule checks."""
+    executable=shutil.which('git',path=GH_DIAGNOSTIC_PATH)
+    if not executable: return {'state':'unavailable','sha':None,'clean':False}
+    env={k:v for k,v in os.environ.items() if not k.startswith('GIT_')}
+    env.update({'PATH':GH_DIAGNOSTIC_PATH,'GIT_TERMINAL_PROMPT':'0','GIT_CONFIG_NOSYSTEM':'1',
+                'GIT_CONFIG_GLOBAL':os.devnull,'GIT_OPTIONAL_LOCKS':'0'})
+    deadline=time.monotonic()+GH_DIAGNOSTIC_PREFLIGHT_TIMEOUT
+
+    def run(args):
+        remaining=deadline-time.monotonic()
+        if remaining<=0: return {'state':'timeout','returncode':None,'stdout':b'','stderr':b''}
+        return _bounded_process([executable,'-C',str(root),'-c','core.hooksPath=/dev/null',*args],
+                                timeout=remaining,output_max=GH_DIAGNOSTIC_OUTPUT_MAX,env=env)
+
+    def checked(args):
+        result=run(args)
+        if result.get('state')!='ok': return result.get('state','error'),b''
+        if result.get('returncode')!=0: return 'error',b''
+        return 'ok',result.get('stdout',b'')
+
+    state,head=checked(['rev-parse','--verify','HEAD'])
+    if state!='ok': return {'state':state,'sha':None,'clean':False}
+    head=head.strip().decode('ascii','ignore')
+    if not SHA_RE.fullmatch(head): return {'state':'error','sha':None,'clean':False}
+    state,status=checked(['status','--porcelain','--untracked-files=no','--ignore-submodules=all'])
+    if state!='ok': return {'state':state,'sha':head,'clean':False}
+    if status.strip(): return {'state':'dirty','sha':head,'clean':False}
+    for path,expected_url in OWNED_SUBMODULES.items():
+        state,line=checked(['ls-tree','HEAD','--',path])
+        if state!='ok': return {'state':state,'sha':head,'clean':False}
+        fields=line.strip().split()
+        if not fields: continue
+        if len(fields)<3 or fields[0]!=b'160000' or fields[1]!=b'commit' or not SHA_RE.fullmatch(fields[2].decode('ascii','ignore')):
+            return {'state':'dirty','sha':head,'clean':False}
+        expected=fields[2].decode('ascii')
+        try: actual_url=submodule_url(root,path)
+        except Exception: return {'state':'error','sha':head,'clean':False}
+        if actual_url!=expected_url: return {'state':'dirty','sha':head,'clean':False}
+        work=Path(root)/path
+        if not work.is_dir(): return {'state':'dirty','sha':head,'clean':False}
+        state,subhead=checked(['-C',str(work),'-c','core.hooksPath=/dev/null','rev-parse','--verify','HEAD'])
+        if state!='ok': return {'state':state,'sha':head,'clean':False}
+        if subhead.strip().decode('ascii','ignore')!=expected: return {'state':'dirty','sha':head,'clean':False}
+        state,substatus=checked(['-C',str(work),'-c','core.hooksPath=/dev/null','status','--porcelain','--untracked-files=no'])
+        if state!='ok': return {'state':state,'sha':head,'clean':False}
+        if substatus.strip(): return {'state':'dirty','sha':head,'clean':False}
+    return {'state':'ok','sha':head,'clean':True}
+
+
 def _github_api_reachable():
     request=urllib.request.Request('https://api.github.com/rate_limit',headers={'Accept':'application/vnd.github+json','User-Agent':'docich-vm-auth-diagnostics'})
     try:
@@ -1472,11 +1526,11 @@ def github_auth_diagnostics(cfg,repo,target,sha):
     """Owner-only fixed read-only GitHub CLI probe; never returns command output."""
     if repo!='docich' or target!='production': raise ValueError('github auth diagnostics is production-only')
     root=Path(cfg['repos'][repo]['production'])
-    try: current=git(root,'rev-parse','HEAD')
-    except Exception: raise ValueError('github auth diagnostics checkout unavailable')
-    try: clean=git_clean(root)
-    except Exception: clean=False
-    if current!=sha or not clean: raise ValueError('github auth diagnostics SHA mismatch')
+    preflight=_github_diagnostics_git_preflight(root)
+    if preflight['state']=='timeout': raise ValueError('github auth diagnostics preflight timeout')
+    if preflight['state'] not in {'ok','dirty'}: raise ValueError('github auth diagnostics checkout unavailable')
+    current=preflight.get('sha')
+    if current!=sha or not preflight['clean']: raise ValueError('github auth diagnostics SHA mismatch')
     try:
         hostname=socket.gethostname()
         if not isinstance(hostname,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,127}',hostname): hostname='unknown'
