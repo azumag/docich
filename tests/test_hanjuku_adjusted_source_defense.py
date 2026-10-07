@@ -9,11 +9,14 @@ from docich.hanjuku_screen import Screen
 
 
 def memory(step='A:guard001:J1'):
+    # Validated adjusted orders normally omit purpose; interim attacks do not.
     order = {
         'step': step, 'general': 'ゼウス', 'source': 'アルマムーン',
-        'target': 'ゴーメン', 'purpose': 'attack', 'cards': [],
+        'target': 'ゴーメン', 'cards': [],
         'after': None, 'note': 'source defender regression',
     }
+    if step.startswith(p.chart_adjust.INTERIM_PREFIX):
+        order['purpose'] = 'attack'
     return {
         'chapter': 1, 'tick': 100, 'captured': ['カストーラ', 'キカンドン'],
         'lost': [], 'active': step, 'picked': [], '_records': [],
@@ -47,6 +50,35 @@ def test_attack_guard_requires_two_distinct_available_generals(step, names):
     assert p._reserve_source_guard(order, mem)
     assert p._source_spare_missing(order, mem)
     assert mem == before
+
+
+@pytest.mark.parametrize('purpose', [None, 'attack', 'retake'])
+def test_explicit_adjusted_purpose_also_preserves_a_defender(purpose):
+    mem = memory()
+    order = p._order(mem)
+    order['purpose'] = purpose
+    mem['garrison']['アルマムーン'] = ['ゼウス']
+    assert p._source_spare_missing(order, mem)
+
+
+def test_validated_and_adopted_real_plan_is_guarded():
+    mem = memory()
+    raw_order = dict(p._order(mem), step='J1')
+    rid = '0123456789abcdef'
+    doc = p.chart_adjust.validate({
+        'schema': p.chart_adjust.SCHEMA, 'chapter': 1, 'request_id': rid,
+        'orders': [raw_order],
+    })
+    p._adopt_plan(mem, doc, rid)
+    order = mem['chart_plan']['orders'][0]
+    assert 'purpose' not in order
+    assert order['step'] == p.chart_adjust.execution_step(rid, 'J1')
+    mem['active'] = order['step']
+    mem['garrison']['アルマムーン'] = ['ゼウス']
+    assert not p._plan_pending(mem)
+    assert p._source_spare_missing(order, mem)
+    assert p.deploy_step(generals(['ゼウス']), mem) == [p.pad('b'), p.pad('b')]
+    assert mem['orders'][order['step']] == 'pending'
 
 
 def test_adjusted_attack_is_pending_but_does_not_starve_other_orders(monkeypatch):
@@ -83,18 +115,33 @@ def test_hotloaded_adjusted_order_is_rechecked_after_source_changes(kind):
     assert mem['_records'][-1]['decision'] == 'sortie_held_source_defender'
 
 
-@pytest.mark.parametrize('unavailable', ['en_route', 'launched_unconfirmed', 'unknown'])
-def test_busy_or_location_unknown_spare_does_not_count(unavailable):
+@pytest.mark.parametrize('status', ['en_route', 'launched_unconfirmed'])
+def test_busy_spare_does_not_count_even_in_cached_live_list(status):
     mem = memory()
-    if unavailable == 'unknown':
-        mem['general_location_unknown'] = ['どうし']
-    else:
-        mem['sorties'] = {
-            'earlier': {'general': 'どうし', 'target': 'ジョンリギ',
-                        'status': unavailable, 'tick': 99},
-        }
+    mem['sorties'] = {
+        'earlier': {'general': 'どうし', 'target': 'ジョンリギ',
+                    'status': status, 'tick': 99},
+    }
     assert p._source_spare_missing(p._order(mem), mem)
     assert p.deploy_step(generals(['ゼウス', 'どうし']), mem) == [p.pad('b'), p.pad('b')]
+
+
+@pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm'])
+def test_location_unknown_spare_is_excluded_without_fresh_roster(kind):
+    mem = memory()
+    mem['general_location_unknown'] = ['どうし']
+    assert p._source_spare_missing(p._order(mem), mem)
+    assert p.deploy_step(Screen(kind=kind, lines=[], hand=None, text=''), mem) == [p.pad('b'), p.pad('b')]
+
+
+def test_fresh_roster_can_resolve_unknown_spare_and_release_guard():
+    mem = memory()
+    mem['general_location_unknown'] = ['どうし']
+    assert p._source_spare_missing(p._order(mem), mem)
+    # Actual re-observation is new evidence; stale unknown must not block forever.
+    assert p.deploy_step(generals(['ゼウス', 'どうし']), mem) == [p.pad('a')]
+    assert 'どうし' not in (mem.get('general_location_unknown') or ())
+    assert not p._source_spare_missing(p._order(mem), mem)
 
 
 def test_live_spare_allows_dispatch_without_claiming_departure():
@@ -148,8 +195,8 @@ def test_unconfirmed_issued_sortie_is_reconciled_not_cancelled():
     assert not p._source_spare_missing(order, mem)
 
 
-@pytest.mark.parametrize('step', ['A:guard001:J1', 'I:guard001:1', '1-B1'])
-@pytest.mark.parametrize('purpose', ['attack', 'retake'])
+@pytest.mark.parametrize('step', ['A:guard001:J1', '1-B1'])
+@pytest.mark.parametrize('purpose', [None, 'attack', 'retake'])
 def test_boss_waves_remain_exempt_even_if_recorded_lost(step, purpose):
     mem = memory(step)
     order = p._order(mem)
