@@ -967,6 +967,74 @@ class GameSwitchStore:
                 identity_payload["_allow_boundary_timeout_extension"] = False
             return self.classify_request(request_id, operation, target, identity_payload)
 
+    def _claim_queued_head_locked(
+        self,
+        lock: GameSwitchLock,
+        state: Mapping[str, object],
+        canonical_request_id: str | None,
+        request_id: str,
+        operation: str,
+        target: str | None,
+        existing: Mapping[str, object],
+        payload_hash: str,
+    ) -> RequestAcceptance:
+        """Claim the FIFO head after the exact-head checks.
+
+        Shared by the queued-replay path and the orphaned pre-FIFO
+        ``accepted`` migration (#1159): only the durable queue head may
+        run while canonical is stable (idle/ready) with no owner.
+        """
+        queued = self.receipts.queued()
+        if not queued or queued[0].get("request_id") != request_id:
+            raise GameSwitchBusyError("先行するゲーム切替要求がキューに残っています")
+        if canonical_request_id is not None or state.get("phase") not in {"idle", "ready"}:
+            raise GameSwitchBusyError("現在のゲーム切替が完了していません")
+        hard_deadline_at = existing.get("hard_deadline_at")
+        hard_remaining_s = _wall_deadline_remaining_s(hard_deadline_at)
+        if hard_remaining_s is not None and hard_remaining_s <= 0:
+            active = state.get("active")
+            result = {
+                "request_id": request_id,
+                "operation": operation,
+                "status": "failed",
+                "from_game": (
+                    active.get("game") if isinstance(active, dict) else None
+                ),
+                "to_game": target,
+                "generation": existing.get("generation"),
+                "error_code": ERROR_TIMEOUT,
+                "detail": "FIFO requestのhard deadlineがclaim前に終了しました",
+            }
+            saved = self._finish_request_locked(
+                lock, request_id, "failed", result
+            )
+            return replace(
+                self._classify_existing(saved, payload_hash),
+                status="failed",
+            )
+        next_state = copy.deepcopy(dict(state))
+        next_state.update(
+            {
+                "phase": "validating",
+                "operation": operation,
+                "request_id": request_id,
+            }
+        )
+        if hard_deadline_at is not None:
+            # Keep the durable absolute cap in canonical state in the
+            # same transaction which claims the FIFO head.  A caller's
+            # relative timeout must never move this boundary later.
+            next_state["deadline_at"] = hard_deadline_at
+        self.canonical.save(next_state)
+        claimed = dict(existing)
+        claimed["status"] = "accepted"
+        claimed = self.receipts.save(claimed)
+        return replace(
+            self._classify_existing(claimed, payload_hash),
+            status="accepted",
+            claimed_from_queue=True,
+        )
+
     def _accept_request_locked(
         self,
         lock: GameSwitchLock,
@@ -1039,57 +1107,43 @@ class GameSwitchStore:
                 existing = self.receipts.save(existing)
                 classified = self._classify_existing(existing, payload_hash)
             elif existing.get("status") == QUEUED_RECEIPT_STATUS:
-                queued = self.receipts.queued()
-                if not queued or queued[0].get("request_id") != request_id:
-                    raise GameSwitchBusyError("先行するゲーム切替要求がキューに残っています")
-                if canonical_request_id is not None or state.get("phase") not in {"idle", "ready"}:
-                    raise GameSwitchBusyError("現在のゲーム切替が完了していません")
-                hard_deadline_at = existing.get("hard_deadline_at")
-                hard_remaining_s = _wall_deadline_remaining_s(hard_deadline_at)
-                if hard_remaining_s is not None and hard_remaining_s <= 0:
-                    active = state.get("active")
-                    result = {
-                        "request_id": request_id,
-                        "operation": operation,
-                        "status": "failed",
-                        "from_game": (
-                            active.get("game") if isinstance(active, dict) else None
-                        ),
-                        "to_game": target,
-                        "generation": existing.get("generation"),
-                        "error_code": ERROR_TIMEOUT,
-                        "detail": "FIFO requestのhard deadlineがclaim前に終了しました",
-                    }
-                    saved = self._finish_request_locked(
-                        lock, request_id, "failed", result
-                    )
-                    return replace(
-                        self._classify_existing(saved, payload_hash),
-                        status="failed",
-                    )
-                next_state = copy.deepcopy(state)
-                next_state.update(
-                    {
-                        "phase": "validating",
-                        "operation": operation,
-                        "request_id": request_id,
-                    }
-                )
-                if hard_deadline_at is not None:
-                    # Keep the durable absolute cap in canonical state in the
-                    # same transaction which claims the FIFO head.  A caller's
-                    # relative timeout must never move this boundary later.
-                    next_state["deadline_at"] = hard_deadline_at
-                self.canonical.save(next_state)
-                existing = dict(existing)
-                existing["status"] = "accepted"
-                existing = self.receipts.save(existing)
-                classified = replace(
-                    self._classify_existing(existing, payload_hash),
-                    status="accepted",
-                    claimed_from_queue=True,
+                return self._claim_queued_head_locked(
+                    lock,
+                    state,
+                    canonical_request_id
+                    if isinstance(canonical_request_id, str)
+                    else None,
+                    request_id,
+                    operation,
+                    target,
+                    existing,
+                    payload_hash,
                 )
             elif canonical_request_id is None:
+                if (
+                    state.get("phase") in {"idle", "ready"}
+                    and existing.get("status") == "accepted"
+                ):
+                    # Orphaned pre-FIFO accepted receipt (#1159): its drain
+                    # already left canonical (a stale driver rolled back to
+                    # a stable phase while this request was entering), so
+                    # the draining-path migration never ran.  No live
+                    # driver can own canonical here -- we hold the writer
+                    # and the phase is stable with no owner -- so migrate
+                    # it through the durable queue and claim the head
+                    # under the same exact-head checks as a queued replay
+                    # instead of leaking StateCorruptError to the caller.
+                    requeued = self._requeue_request_locked(lock, request_id)
+                    return self._claim_queued_head_locked(
+                        lock,
+                        state,
+                        None,
+                        request_id,
+                        operation,
+                        target,
+                        dict(requeued.receipt),
+                        payload_hash,
+                    )
                 raise StateCorruptError("accepted receiptに対応するcanonical requestがありません")
             return classified
 
@@ -1347,6 +1401,13 @@ PROBE_TIMEOUT_S = 5.0
 AGENT_REPAIR_TIMEOUT_S = 30.0
 CANCEL_GRACE_S = 0.5
 ROLLBACK_TIMEOUT_S = 120.0
+# A single non-blocking writer acquisition at request entry is enough to
+# turn transient contention (a stale driver finishing its rollback writes)
+# into a spurious busy/in_progress for a request that would otherwise
+# recover an expired drain immediately.  Retry briefly before degrading;
+# genuine busyness (a live drain) outlasts this window by orders of
+# magnitude (#1159).
+ENTRY_ACQUIRE_RETRY_S = 1.0
 
 ERROR_BUSY = "busy"
 ERROR_QUEUED = "queued"
@@ -2424,21 +2485,34 @@ class GameSwitchCoordinator:
         ).isoformat().replace("+00:00", "Z")
         self._log_reset(request_id, operation, target)
         self._log("requested", phase="requested")
-        try:
-            with self.store.transaction() as tx:
-                return self._execute_locked(
-                    tx,
-                    request_id,
-                    operation,
-                    target,
-                    payload,
-                    deadline,
-                    deadline_at,
-                    games=games,
-                    allow_boundary_timeout_extension=allow_boundary_timeout_extension,
-                )
-        except GameSwitchBusyError:
-            return self._classify_busy(request_id, operation, target, payload)
+        # The writer is released during boundary waits, so a stale driver
+        # finishing its rollback can hold it for a few milliseconds exactly
+        # when a recovery request enters.  One non-blocking attempt would
+        # spuriously report busy/in_progress here (#1159); retry briefly
+        # within the caller's budget before degrading.  A live drain
+        # outlasts this window, so genuine busyness still reports busy.
+        acquire_until = time.monotonic() + min(
+            ENTRY_ACQUIRE_RETRY_S, max(deadline - time.monotonic(), 0.0)
+        )
+        while True:
+            try:
+                with self.store.transaction() as tx:
+                    return self._execute_locked(
+                        tx,
+                        request_id,
+                        operation,
+                        target,
+                        payload,
+                        deadline,
+                        deadline_at,
+                        games=games,
+                        allow_boundary_timeout_extension=allow_boundary_timeout_extension,
+                    )
+            except GameSwitchBusyError:
+                now = time.monotonic()
+                if now >= acquire_until:
+                    return self._classify_busy(request_id, operation, target, payload)
+                time.sleep(min(self.poll_interval_s, acquire_until - now))
 
     def _classify_busy(
         self,
