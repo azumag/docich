@@ -225,6 +225,40 @@ class TestRetrospectiveEngine(unittest.TestCase):
         self.assertEqual(progress["sent_key_counts"], {"h": 3})
         self.assertNotIn("raw_text", json.dumps(progress))
 
+    def test_repeated_hold_trace_is_summarized_as_stall_evidence(self) -> None:
+        run = self.make_run(1)
+        progress_dir = self.state / "nethack" / "progress"
+        progress_dir.mkdir(parents=True)
+        start = run["started_epoch"]
+        samples = []
+        for offset, frame_hash in ((10, "a" * 64), (45, "a" * 64), (80, "b" * 64)):
+            samples.append({
+                "schema_version": PROGRESS_SCHEMA_VERSION,
+                "ts": start + offset,
+                "phase": "hold",
+                "turn": 42,
+                "depth": 3,
+                "hp": 8,
+                "hp_max": 12,
+                "conditions": [],
+                "prompt": "unknown",
+                "player": [4, 5],
+                "intent": "inspect_screen",
+                "resolved_intent": "progress_blocked",
+                "key": None,
+                "frame_hash": frame_hash,
+                "map_hash": "c" * 64,
+            })
+        trace = progress_dir / f"{run['run_id']}.jsonl"
+        trace.write_text("".join(json.dumps(item) + "\n" for item in samples), encoding="utf-8")
+
+        result = NethackRetrospectiveEngine(self.g).generate(run_id=run["run_id"], now=self.now)
+        progress = result["progress_evidence"]
+        self.assertEqual(progress["same_frame_hold_pairs"], 1)
+        self.assertEqual(progress["max_same_frame_hold_streak"], 2)
+        self.assertEqual(progress["prompt_counts"], {"unknown": 3})
+        self.assertEqual(progress["phase_counts"], {"hold": 3})
+
     def test_ended_unknown_never_invents_death_reason(self) -> None:
         run = self.make_run(1, status="ended_unknown", death=None)
         run["terminal"] = {"source": "xlogfile", "analysis_error": "xlogfile-missing"}
