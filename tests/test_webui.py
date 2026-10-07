@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -2703,6 +2704,8 @@ class TestRunWebuiUnsafeConfigGuard(unittest.TestCase):
 
 class TestCornerReservationDisplay(unittest.TestCase):
     def _render(self, rotation, *, weather_status="completed"):
+        if shutil.which("node") is None:
+            self.skipTest("JS レンダリング検証には node が必要 (CI runner には同梱)")
         source = webui.INDEX_HTML.split("const ROT_STATUS_JA=", 1)[1].split(
             "async function cornerAction", 1)[0]
         data = {"rotation": rotation, "game_switch": {"phase": "ready", "active_game": "sorengame"},
@@ -2784,6 +2787,8 @@ process.stdout.write(JSON.stringify(out));
 
 class TestPredictionWorkerDisplay(unittest.TestCase):
     def _display(self, row, prediction):
+        if shutil.which("node") is None:
+            self.skipTest("JS レンダリング検証には node が必要 (CI runner には同梱)")
         html = webui.INDEX_HTML
         start_marker = "// prediction-worker-display:start"
         end_marker = "// prediction-worker-display:end"

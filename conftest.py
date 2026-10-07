@@ -21,11 +21,18 @@ and the ``sun_path`` limit (104 bytes on macOS) is exceeded when the full
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import uuid
 from pathlib import Path
 
 import pytest
+
+# Canonical pytest runner contract: every test file can rely on
+# ``from docich import ...`` without its own sys.path bootstrap and
+# regardless of collection order or standalone invocation
+# (``pytest tests/test_x.py``).  Per-file bootstraps remain harmless.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 _TMP_ENV_VARS = ("TMPDIR", "TEMP", "TMP")
 _LINK_PREFIX = "pyt-"

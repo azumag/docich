@@ -751,7 +751,7 @@ class TestLegacyCommand(StatusTestBase):
         self._mirror("nethack")
         out = io.StringIO()
         with redirect_stdout(out):
-            rc = cli.cmd_status_legacy(self.g, json_output=True)
+            rc = cli.cmd_status_legacy(self.g, json_output=True, tmux=self.tmux)
         self.assertEqual(rc, 0)
         data = json.loads(out.getvalue())
         self.assertEqual(data["footprint"], ["current_game"])
@@ -759,7 +759,7 @@ class TestLegacyCommand(StatusTestBase):
     def test_legacy_human_reports_none(self):
         out = io.StringIO()
         with redirect_stdout(out):
-            rc = cli.cmd_status_legacy(self.g)
+            rc = cli.cmd_status_legacy(self.g, tmux=self.tmux)
         self.assertEqual(rc, 0)
         self.assertIn("(なし)", out.getvalue())
 

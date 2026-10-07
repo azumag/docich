@@ -21,6 +21,9 @@ ENTRYPOINT ["python", "-m", "docich.discord_chat"]
 
 FROM runtime AS test
 USER root
+COPY requirements-discord.txt ./requirements-discord.txt
+COPY requirements-screen.txt ./requirements-screen.txt
+COPY requirements-twica-overlay.txt ./requirements-twica-overlay.txt
 COPY requirements-test.txt ./requirements-test.txt
 RUN python -m pip install --no-cache-dir -r requirements-test.txt
 COPY src/docich/comment_classifier/__init__.py src/docich/comment_classifier/heuristic.py \

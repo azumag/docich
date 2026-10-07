@@ -19,10 +19,16 @@ SOURCE = Path(os.environ.get("SOREN_CHAT_QUEUE_SOURCE", REPO / "games/soviet_now
 def test_repeated_end_passages_keep_run_part_identity_and_full_text(tmp_path, monkeypatch, exclude_mirror):
     # Only copy the queue helper and use synthetic senders. No network sender,
     # chat worker, or live queue is started; everything stays in this temp root.
+    queue_helper = SOURCE / 'lib/outbound_queue.sh'
+    if not queue_helper.is_file():
+        pytest.skip(
+            f"native queue helper が不在のため読み飛ばし: {queue_helper} "
+            "(git submodule 未取得の hermetic checkout では正常。取得時は "
+            "SOREN_CHAT_QUEUE_SOURCE で上書き可)"
+        )
     sink = tmp_path / 'sink'
     (sink / 'lib').mkdir(parents=True)
-    shutil.copyfile(SOURCE / 'lib/outbound_queue.sh',
-                    sink / 'lib/outbound_queue.sh')
+    shutil.copyfile(queue_helper, sink / 'lib/outbound_queue.sh')
     queue = sink / 'queue'
     monkeypatch.setenv('OUTBOUND_CHAT_QUEUE_DIR', str(queue))
     monkeypatch.setenv('OUTBOUND_CHAT_ENQUEUE_DEDUP_TTL_SEC', '300')

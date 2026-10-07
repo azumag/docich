@@ -30,3 +30,32 @@ jobs:
           persist-credentials: false
       - name: Compile Python
         run: python3 -m compileall -q src tests
+
+  full-suite:
+    # Hermetic full-suite contract (issue #79): every tests/test_*.py runs
+    # green through the canonical pytest runner on each supported Python,
+    # with no submodules, no network, and no ambient PYTHONPATH.
+    # tests/ relies on the root conftest.py for sys.path (src) and
+    # tempfile isolation; tests needing live external state (real tmux
+    # server, submodules, browsers, /proc identity) must inject fakes or
+    # declare an explicit opt-in/skip gate, never fail the suite.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-test.txt
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Full hermetic test suite (canonical pytest runner)
+        run: python3 -m pytest -q tests/

@@ -7,9 +7,17 @@ from types import SimpleNamespace
 import pytest
 from docich.twica_checkpoint import read_checkpoint, save_checkpoint
 from docich.twica_operator import NotReady, prepare
-from docich.twica_state import atomic_json, heartbeat, new_control, read_json, status
+from docich.twica_state import atomic_json, heartbeat, new_control, process_identity, read_json, status
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# PID 再利用フェンスは Linux /proc の boot-id identity を要する。
+# /proc のない環境 (macOS 等) では heartbeat→fresh が成立しないため、
+# readiness 断面の検証だけを明示的に閉じる (CI の ubuntu runner では実行)。
+requires_proc_identity = pytest.mark.skipif(
+    not process_identity(),
+    reason='Linux /proc boot-id identity が必要 (PID 再利用フェンス契約)',
+)
 
 def helper():
     spec = importlib.util.spec_from_file_location('twica_ops_fixture', ROOT/'ops/vm_actions/twica_common.py')
@@ -53,6 +61,7 @@ def test_no_optimistic_health_when_legacy_proofs_missing(tmp_path):
     assert status(tmp_path/'control')['legacy_healthy'] is False
 
 
+@requires_proc_identity
 def test_arm_never_interrupts_before_explicit_confirmation_and_guard_readiness(tmp_path,monkeypatch):
     ops=helper();directory=tmp_path/'control';prepare(directory)
     monkeypatch.setenv('DOCICH_TWICA_STATE_DIR',str(directory))
@@ -67,6 +76,7 @@ def test_arm_never_interrupts_before_explicit_confirmation_and_guard_readiness(t
     assert called==[]
 
 
+@requires_proc_identity
 def test_active_pipeline_arm_is_idempotent_without_restart(tmp_path,monkeypatch):
     ops=helper();directory=tmp_path/'control';prepare(directory)
     monkeypatch.setenv('DOCICH_TWICA_STATE_DIR',str(directory))
@@ -113,6 +123,7 @@ def test_operator_reuses_existing_user_bus_without_changing_it(monkeypatch):
     assert os.environ['DBUS_SESSION_BUS_ADDRESS'] == 'unix:path=/fixture/bus'
 
 
+@requires_proc_identity
 def test_renderer_prepare_wait_requires_fresh_readiness(tmp_path, monkeypatch):
     ops = helper()
     directory = tmp_path / 'control'
@@ -124,6 +135,7 @@ def test_renderer_prepare_wait_requires_fresh_readiness(tmp_path, monkeypatch):
     ops.wait_renderer_ready(timeout_sec=0.1)
 
 
+@requires_proc_identity
 def test_arm_rejects_duplicate_guards_before_interrupting(tmp_path, monkeypatch):
     ops = helper()
     directory = tmp_path / 'control'

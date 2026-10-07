@@ -11,6 +11,13 @@ import pytest
 def test_native_stop_reaps_child_and_closes_progress(tmp_path, stop_mode):
     # An isolated Linux subreaper lets the fixture clean up even the pre-fix
     # orphan. It does not change pytest's child adoption or signal handlers.
+    repo = Path(__file__).resolve().parents[1]
+    module = repo / 'games/soviet_now/lib/direct_stream.py'
+    if not module.is_file():
+        pytest.skip(
+            f"native stop helper が不在のため読み飛ばし: {module} "
+            "(git submodule 未取得の hermetic checkout では正常)"
+        )
     scenario = tmp_path / 'scenario.py'
     scenario.write_text(r'''
 import ctypes, importlib.util, json, os, select, signal, subprocess, sys, time
@@ -114,9 +121,13 @@ finally:
     for stream in (wrapper.stdin, wrapper.stdout, wrapper.stderr):
         stream.close()
 ''')
-    module = Path(__file__).resolve().parents[1] / 'games/soviet_now/lib/direct_stream.py'
+    # 子プロセスは親の sys.path を継承しないため src を明示する
+    # (CI の PYTHONPATH=src 依存をテスト内に閉じる)。
+    scenario_env = dict(os.environ, SOREN_STOP_MODULE=str(module),
+                        PYTHONPATH=str(repo / 'src') + (os.pathsep + os.environ['PYTHONPATH']
+                                                       if os.environ.get('PYTHONPATH') else ''))
     result = subprocess.run([sys.executable, str(scenario), str(tmp_path), stop_mode],
                             capture_output=True, text=True, timeout=20,
-                            env=dict(os.environ, SOREN_STOP_MODULE=str(module)))
+                            env=scenario_env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'native reaped; progress EOF' in result.stdout

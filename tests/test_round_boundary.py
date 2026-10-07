@@ -132,12 +132,35 @@ def _wait_for_phase(store, phase):
     raise AssertionError(f"phase {phase!r} was not reached")
 
 
+def _assert_started(coordinator, game="nethack"):
+    """Start a game; the fixture adapters finish every step instantly.
+
+    A failed setup start is therefore scheduling pressure on a loaded
+    runner, never the behavior under test.  Setup gets a generous
+    request deadline (per-step budgets exercised by each test are
+    unchanged).  Failures report error_code/detail/canonical phase so a
+    recurrence is actionable instead of a bare status mismatch.
+    """
+    result = coordinator.start(game, timeout_s=30.0)
+    if result.status != "succeeded":
+        try:
+            phase = coordinator.store.canonical.load()[0].get("phase")
+        except Exception:
+            phase = "<unreadable>"
+        raise AssertionError(
+            f"start({game!r}) failed: status={result.status} "
+            f"error_code={result.error_code} detail={result.detail!r} "
+            f"phase={phase!r}"
+        )
+    return result
+
+
 def test_boundary_wait_releases_writer_and_orders_stop_after_ack():
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
         store, coordinator = _coordinator(factory, state_dir)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         request_id = str(uuid.uuid4())
         result_box = []
@@ -201,7 +224,7 @@ def test_boundary_timeout_override_extends_request_deadline():
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory(boundary_timeout_s=3.0)
         store, coordinator = _coordinator(factory, state_dir)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         request_id = str(uuid.uuid4())
         result_box = []
@@ -244,7 +267,7 @@ def test_boundary_timeout_override_respects_explicit_hard_cap():
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory(boundary_timeout_s=3.0)
         store, coordinator = _coordinator(factory, state_dir)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         request_id = str(uuid.uuid4())
         result_box = []
@@ -328,7 +351,7 @@ def test_boundary_override_does_not_extend_post_boundary_steps():
         state_dir = Path(tmp) / "run"
         factory = HangingTargetFactory("robots", boundary_timeout_s=30.0)
         store, coordinator = _coordinator(factory, state_dir)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         old.boundary_release.set()          # the match ends immediately
         # Keep scheduler jitter before target construction outside the
@@ -373,7 +396,7 @@ def test_boundary_override_post_boundary_deadline_is_durable():
         state_dir = Path(tmp) / "run"
         factory = HangingTargetFactory("robots", boundary_timeout_s=30.0)
         store, coordinator = _coordinator(factory, state_dir)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         factory.adapters[("nethack", 1)].boundary_release.set()
         seen = []
 
@@ -402,7 +425,7 @@ def test_boundary_without_override_times_out_at_request_deadline():
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
         store, coordinator = _coordinator(factory, state_dir, round_boundary_s=5.0)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         started = time.monotonic()
         result = coordinator.switch("robots", timeout_s=0.6)
@@ -422,7 +445,7 @@ def test_new_request_recovers_expired_drain_and_consumes_queue_head():
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
         store, coordinator = _coordinator(factory, state_dir)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         first_result = []
         first_id = str(uuid.uuid4())
@@ -457,7 +480,7 @@ def test_pre_fifo_accepted_request_is_migrated_before_expired_drain_recovery():
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
         store, coordinator = _coordinator(factory, state_dir)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         first_result = []
         first_id = str(uuid.uuid4())
@@ -500,7 +523,7 @@ def test_queued_request_retries_expired_drain_recovery_after_a_refusal():
         # boundary call enough time that CI scheduling cannot time it out
         # before the refusal and retry paths have run.
         store, coordinator = _coordinator(factory, state_dir, round_boundary_s=5.0)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         first_result = []
         first_id = str(uuid.uuid4())
@@ -540,7 +563,7 @@ def test_boundary_timeout_retains_old_active_without_cleanup():
         # #1017 remained flaky under CI even after the equal-deadline race was
         # removed; the adjacent request-deadline contract already uses 0.6s.
         store, coordinator = _coordinator(factory, state_dir, round_boundary_s=5.0)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         result = coordinator.switch("robots", timeout_s=0.6)
         assert result.status == "failed"
@@ -591,7 +614,7 @@ def test_boundary_failure_keeps_draining_until_cancel_ack(cancel_mode):
         # Trigger the boundary-step timeout well before the request-wide
         # deadline so this test always reaches the cancellation path it owns.
         store, coordinator = _coordinator(factory, state_dir, round_boundary_s=0.1)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         result = coordinator.switch("robots", timeout_s=1.0)
         assert result.status == "failed"
@@ -623,7 +646,7 @@ def test_required_boundary_without_capability_fails_closed():
         state_dir = Path(tmp) / "run"
         factory = UnsupportedFactory()
         store, coordinator = _coordinator(factory, state_dir)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         result = coordinator.switch("robots")
         assert result.status == "failed"
@@ -641,7 +664,7 @@ def test_expired_draining_recovery_cancels_stale_driver_without_stop(legacy_canc
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
         store, coordinator = _coordinator(factory, state_dir)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         request_id = str(uuid.uuid4())
         if legacy_cancel:
@@ -760,7 +783,7 @@ def test_fifo_maintenance_does_not_cancel_a_live_drain():
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
         store, coordinator = _coordinator(factory, state_dir)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         result_box = []
         worker = threading.Thread(
@@ -786,7 +809,7 @@ def test_fifo_maintenance_does_not_cancel_a_live_drain():
 
 def test_fifo_replay_keeps_head_queued_when_writer_wins_claim(monkeypatch, tmp_path):
     store, coordinator = _coordinator(BoundaryFactory(), tmp_path / "run")
-    assert coordinator.start("nethack").status == "succeeded"
+    _assert_started(coordinator)
     head = store.enqueue_request(str(uuid.uuid4()), "switch", "hanjuku")
     following = store.enqueue_request(str(uuid.uuid4()), "switch", "robots")
     original_switch = coordinator.switch
@@ -811,7 +834,7 @@ def test_fifo_maintenance_recovers_expired_drain_and_starts_only_queue_head(monk
         # This test expires deadline_at explicitly below. Keep the boundary
         # step timeout out of the race so CI load cannot trigger recovery first.
         store, coordinator = _coordinator(factory, state_dir, round_boundary_s=5.0)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         first_result = []
         first_id = str(uuid.uuid4())
@@ -872,7 +895,7 @@ def test_fifo_maintenance_preserves_queued_boundary_hard_cap():
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory(boundary_timeout_s=3.0)
         store, coordinator = _coordinator(factory, state_dir)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
 
         owner_result = []
@@ -934,8 +957,7 @@ def test_expired_capped_fifo_head_is_terminal_without_adapter_call():
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
         store, coordinator = _coordinator(factory, state_dir)
-        started = coordinator.start("robots")
-        assert started.status == "succeeded"
+        started = _assert_started(coordinator, "robots")
 
         expired_id = str(uuid.uuid4())
         store.enqueue_request(
@@ -975,8 +997,7 @@ def test_capped_fifo_deadline_expiring_between_snapshot_and_claim_is_terminal():
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
         store, coordinator = _coordinator(factory, state_dir)
-        started = coordinator.start("robots")
-        assert started.status == "succeeded"
+        started = _assert_started(coordinator, "robots")
 
         import datetime as _dt
 
@@ -1039,7 +1060,7 @@ def test_direct_replay_cannot_replace_expired_capped_fifo_deadline():
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
         store, coordinator = _coordinator(factory, state_dir)
-        assert coordinator.start("robots").status == "succeeded"
+        _assert_started(coordinator, "robots")
 
         request_id = str(uuid.uuid4())
         store.enqueue_request(
@@ -1072,8 +1093,7 @@ def test_capped_fifo_claim_keeps_canonical_deadline_at_or_before_saved_cap():
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
         store, coordinator = _coordinator(factory, state_dir)
-        started = coordinator.start("robots")
-        assert started.status == "succeeded"
+        started = _assert_started(coordinator, "robots")
 
         import datetime as _dt
 
@@ -1122,8 +1142,7 @@ def test_old_non_head_capped_replay_keeps_legacy_identity_and_fifo_order():
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
         store, coordinator = _coordinator(factory, state_dir)
-        started = coordinator.start("robots")
-        assert started.status == "succeeded"
+        started = _assert_started(coordinator, "robots")
 
         first = store.enqueue_request(str(uuid.uuid4()), "switch", "nethack")
         second = store.enqueue_request(str(uuid.uuid4()), "switch", "hanjuku")
@@ -1162,7 +1181,7 @@ def test_boundary_wait_longer_than_reacquire_grace_succeeds():
         store, coordinator = _coordinator(factory, Path(tmp) / "run")
         coordinator.round_reacquire_timeout_s = 0.1
         coordinator.step_timeouts = replace(coordinator.step_timeouts, round_boundary_s=1.0)
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         results = []
         worker = threading.Thread(target=lambda: results.append(coordinator.switch("robots")))
@@ -1190,7 +1209,7 @@ def test_soren_recovery_progress_wait_does_not_block_existing_draining_driver(tm
         return adapter
     store, coordinator = _coordinator(adapter_factory, tmp_path / "run", round_boundary_s=2.0)
     coordinator.round_reacquire_timeout_s = 0.1
-    assert coordinator.start("sorengame").status == "succeeded"
+    _assert_started(coordinator, "sorengame")
     assert store.canonical.load()[0]["active"]["adapter"] == "soren"
     old = factory.adapters[("sorengame", 1)]
     results, errors = [], []
@@ -1250,7 +1269,7 @@ def test_hung_boundary_cancel_is_short_and_keeps_input_unlocked():
         )
         coordinator.step_timeouts = replace(coordinator.step_timeouts, round_cancel_s=0.15)
         coordinator.cancel_grace_s = 0.05
-        assert coordinator.start("nethack").status == "succeeded"
+        _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         entered, release = threading.Event(), threading.Event()
 
@@ -1269,7 +1288,12 @@ def test_hung_boundary_cancel_is_short_and_keeps_input_unlocked():
         )
         worker.start()
         try:
-            assert entered.wait(1.0)
+            # Sync-only margin: the cancel path reaches hung_cancel after
+            # the 0.1s boundary-step timeout plus grace (~0.3s by design).
+            # A loaded runner may schedule slower; promptness itself is
+            # asserted below (< 1.2s end-to-end), so this wait only needs
+            # to be generous, never tight.
+            assert entered.wait(10.0)
             with store.lock(exclusive=False, blocking=False):
                 state, _ = store.canonical.load()
                 assert state["phase"] == "draining"
