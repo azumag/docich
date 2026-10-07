@@ -26,8 +26,7 @@ class GitHubAuthDiagnosticsTests(unittest.TestCase):
                b"Content-Type: application/json\r\n\r\n"
                b'{"login":"azumag","email":"private@example.invalid","private_field":"' +
                PRIVATE_SENTINEL.encode() + b'","remote":"https://example.invalid/private-remote"}')
-        with mock.patch.object(gw, "git", return_value=SHA), \
-             mock.patch.object(gw, "git_clean", return_value=True), \
+        with mock.patch.object(gw, "_github_diagnostics_git_preflight", return_value={"state":"ok","sha":SHA,"clean":True}), \
              mock.patch.object(gw.socket, "gethostname", return_value="docich-prod"), \
              mock.patch.object(gw.pwd, "getpwuid", return_value=mock.Mock(pw_name="ubuntu")), \
              mock.patch.object(gw.os, "geteuid", return_value=1000), \
@@ -50,8 +49,7 @@ class GitHubAuthDiagnosticsTests(unittest.TestCase):
 
     def test_absent_auth_is_distinguished_from_network_failure(self):
         no_auth = result(returncode=1, stderr=b"You are not logged into any GitHub hosts.")
-        with mock.patch.object(gw, "git", return_value=SHA), \
-             mock.patch.object(gw, "git_clean", return_value=True), \
+        with mock.patch.object(gw, "_github_diagnostics_git_preflight", return_value={"state":"ok","sha":SHA,"clean":True}), \
              mock.patch.object(gw, "_github_api_reachable", return_value={"state":"reachable","http_status":200}), \
              mock.patch.object(gw.shutil, "which", return_value="/usr/bin/gh"), \
              mock.patch.object(gw, "_bounded_process", return_value=no_auth) as run:
@@ -64,8 +62,7 @@ class GitHubAuthDiagnosticsTests(unittest.TestCase):
 
     def test_unknown_auth_with_unavailable_network_is_not_reported_as_no_auth(self):
         transient = result(returncode=1, stderr=b"temporary connection problem: " + PRIVATE_SENTINEL.encode())
-        with mock.patch.object(gw, "git", return_value=SHA), \
-             mock.patch.object(gw, "git_clean", return_value=True), \
+        with mock.patch.object(gw, "_github_diagnostics_git_preflight", return_value={"state":"ok","sha":SHA,"clean":True}), \
              mock.patch.object(gw, "_github_api_reachable", return_value={"state":"unavailable","http_status":None}), \
              mock.patch.object(gw.shutil, "which", return_value="/usr/bin/gh"), \
              mock.patch.object(gw, "_bounded_process", return_value=transient):
@@ -76,8 +73,7 @@ class GitHubAuthDiagnosticsTests(unittest.TestCase):
         self.assertNotIn(PRIVATE_SENTINEL, json.dumps(output))
 
     def test_missing_cli_and_sha_mismatch_fail_closed(self):
-        with mock.patch.object(gw, "git", return_value=SHA), \
-             mock.patch.object(gw, "git_clean", return_value=True), \
+        with mock.patch.object(gw, "_github_diagnostics_git_preflight", return_value={"state":"ok","sha":SHA,"clean":True}), \
              mock.patch.object(gw, "_github_api_reachable", return_value={"state":"reachable","http_status":200}), \
              mock.patch.object(gw.shutil, "which", return_value=None):
             output = gw.github_auth_diagnostics(ROOT_CONFIG, "docich", "production", SHA)
@@ -86,8 +82,7 @@ class GitHubAuthDiagnosticsTests(unittest.TestCase):
         self.assertEqual(output["api_read"], "not_attempted_gh_missing")
         for args, message in (( (ROOT_CONFIG,"docich","preview",SHA), "production-only" ),
                               ( (ROOT_CONFIG,"docich","production","b"*40), "SHA mismatch" )):
-            with self.subTest(message=message), mock.patch.object(gw, "git", return_value=SHA), \
-                 mock.patch.object(gw, "git_clean", return_value=True):
+            with self.subTest(message=message), mock.patch.object(gw, "_github_diagnostics_git_preflight", return_value={"state":"ok","sha":SHA,"clean":True}):
                 with self.assertRaisesRegex(ValueError, message):
                     gw.github_auth_diagnostics(*args)
 
@@ -113,6 +108,46 @@ class GitHubAuthDiagnosticsTests(unittest.TestCase):
         ok = gw._bounded_process([sys.executable, "-c", "print('safe')"], timeout=2, output_max=128)
         self.assertEqual(ok["state"], "ok")
         self.assertEqual(ok["stdout"].strip(), b"safe")
+
+    def test_checkout_preflight_git_calls_are_bounded_and_timeout_is_sanitized(self):
+        for phase, outputs in (
+            ("rev-parse", [result(state="timeout")]),
+            ("status", [result(stdout=SHA.encode()), result(state="timeout")]),
+        ):
+            with self.subTest(phase=phase), \
+                 mock.patch.object(gw.shutil, "which", return_value="/usr/bin/git"), \
+                 mock.patch.dict(gw.os.environ, {"GH_TOKEN":PRIVATE_SENTINEL,"GITHUB_TOKEN":PRIVATE_SENTINEL,
+                                                  "GIT_ASKPASS":PRIVATE_SENTINEL,"SSH_AUTH_SOCK":PRIVATE_SENTINEL,
+                                                  "HOME":"/private/home"}), \
+                 mock.patch.object(gw, "_bounded_process", side_effect=outputs) as run:
+                preflight = gw._github_diagnostics_git_preflight(Path("/srv/docich"))
+            self.assertEqual(preflight["state"], "timeout")
+            self.assertEqual(run.call_count, 1 if phase == "rev-parse" else 2)
+            expected_command = "rev-parse" if phase == "rev-parse" else "status"
+            self.assertIn(expected_command, run.call_args_list[-1].args[0])
+            for call in run.call_args_list:
+                self.assertLessEqual(call.kwargs["timeout"], gw.GH_DIAGNOSTIC_PREFLIGHT_TIMEOUT)
+                self.assertEqual(call.kwargs["output_max"], gw.GH_DIAGNOSTIC_OUTPUT_MAX)
+                self.assertIsInstance(call.args[0], list)
+                self.assertEqual(call.args[0][0], "/usr/bin/git")
+                self.assertIn("core.hooksPath=/dev/null", call.args[0])
+                self.assertIn("core.fsmonitor=false", call.args[0])
+                self.assertEqual(set(call.kwargs["env"]), {
+                    "PATH", "GIT_TERMINAL_PROMPT", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_OPTIONAL_LOCKS"
+                })
+                self.assertNotIn("GH_TOKEN", call.kwargs["env"])
+                self.assertNotIn("GITHUB_TOKEN", call.kwargs["env"])
+                self.assertNotIn("GIT_ASKPASS", call.kwargs["env"])
+                self.assertNotIn("SSH_AUTH_SOCK", call.kwargs["env"])
+                self.assertNotIn("HOME", call.kwargs["env"])
+
+        timeout = {"state":"timeout","sha":None,"clean":False}
+        with mock.patch.object(gw, "_github_diagnostics_git_preflight", return_value=timeout), \
+             mock.patch.object(gw, "_github_api_reachable") as network:
+            with self.assertRaisesRegex(ValueError, "preflight timeout") as raised:
+                gw.github_auth_diagnostics(ROOT_CONFIG, "docich", "production", SHA)
+        self.assertEqual(gw.reason_code(raised.exception), "github_auth_preflight_timeout")
+        network.assert_not_called()
 
     def test_scope_header_missing_is_not_claimed_as_no_permissions(self):
         raw = b'HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n{"login":"azumag"}'
