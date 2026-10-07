@@ -116,6 +116,9 @@ class GitHubAuthDiagnosticsTests(unittest.TestCase):
         ):
             with self.subTest(phase=phase), \
                  mock.patch.object(gw.shutil, "which", return_value="/usr/bin/git"), \
+                 mock.patch.dict(gw.os.environ, {"GH_TOKEN":PRIVATE_SENTINEL,"GITHUB_TOKEN":PRIVATE_SENTINEL,
+                                                  "GIT_ASKPASS":PRIVATE_SENTINEL,"SSH_AUTH_SOCK":PRIVATE_SENTINEL,
+                                                  "HOME":"/private/home"}), \
                  mock.patch.object(gw, "_bounded_process", side_effect=outputs) as run:
                 preflight = gw._github_diagnostics_git_preflight(Path("/srv/docich"))
             self.assertEqual(preflight["state"], "timeout")
@@ -127,6 +130,16 @@ class GitHubAuthDiagnosticsTests(unittest.TestCase):
                 self.assertEqual(call.kwargs["output_max"], gw.GH_DIAGNOSTIC_OUTPUT_MAX)
                 self.assertIsInstance(call.args[0], list)
                 self.assertEqual(call.args[0][0], "/usr/bin/git")
+                self.assertIn("core.hooksPath=/dev/null", call.args[0])
+                self.assertIn("core.fsmonitor=false", call.args[0])
+                self.assertEqual(set(call.kwargs["env"]), {
+                    "PATH", "GIT_TERMINAL_PROMPT", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_OPTIONAL_LOCKS"
+                })
+                self.assertNotIn("GH_TOKEN", call.kwargs["env"])
+                self.assertNotIn("GITHUB_TOKEN", call.kwargs["env"])
+                self.assertNotIn("GIT_ASKPASS", call.kwargs["env"])
+                self.assertNotIn("SSH_AUTH_SOCK", call.kwargs["env"])
+                self.assertNotIn("HOME", call.kwargs["env"])
 
         timeout = {"state":"timeout","sha":None,"clean":False}
         with mock.patch.object(gw, "_github_diagnostics_git_preflight", return_value=timeout), \

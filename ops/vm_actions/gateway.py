@@ -1410,15 +1410,15 @@ def _github_diagnostics_git_preflight(root):
     """Bound this diagnostic's production checkout and owned-submodule checks."""
     executable=shutil.which('git',path=GH_DIAGNOSTIC_PATH)
     if not executable: return {'state':'unavailable','sha':None,'clean':False}
-    env={k:v for k,v in os.environ.items() if not k.startswith('GIT_')}
-    env.update({'PATH':GH_DIAGNOSTIC_PATH,'GIT_TERMINAL_PROMPT':'0','GIT_CONFIG_NOSYSTEM':'1',
-                'GIT_CONFIG_GLOBAL':os.devnull,'GIT_OPTIONAL_LOCKS':'0'})
+    env={'PATH':GH_DIAGNOSTIC_PATH,'GIT_TERMINAL_PROMPT':'0','GIT_CONFIG_NOSYSTEM':'1',
+         'GIT_CONFIG_GLOBAL':os.devnull,'GIT_OPTIONAL_LOCKS':'0'}
     deadline=time.monotonic()+GH_DIAGNOSTIC_PREFLIGHT_TIMEOUT
 
     def run(args):
         remaining=deadline-time.monotonic()
         if remaining<=0: return {'state':'timeout','returncode':None,'stdout':b'','stderr':b''}
-        return _bounded_process([executable,'-C',str(root),'-c','core.hooksPath=/dev/null',*args],
+        return _bounded_process([executable,'-C',str(root),'-c','core.hooksPath=/dev/null',
+                                 '-c','core.fsmonitor=false',*args],
                                 timeout=remaining,output_max=GH_DIAGNOSTIC_OUTPUT_MAX,env=env)
 
     def checked(args):
