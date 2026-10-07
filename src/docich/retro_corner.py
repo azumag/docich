@@ -375,6 +375,13 @@ def _strategy_value_text(value) -> str:
 PRESENTATION_NOT_READY = "RetroArch native presentation is not ready"
 PRESENTATION_RETRY_LIMIT = 45  # x 2 s: a presenter still starting under load (Issue #1280)
 
+# #1469: while the agent and the corner have published different Hanjuku logic
+# generations the new-policy-dependent stall teardown is not taken.  A mixed
+# state is transient (each observer re-reads the deployed generation on its next
+# observation), but a process that stopped observing must not wedge the corner:
+# after this grace the pre-existing teardown applies and the timeout is logged.
+HOTLOAD_MIXED_GRACE_SECONDS = 60.0
+
 # 終了時チャット結果まとめの視聴者向け終了理由 (内部の終了コードは出さない)。
 # None は end_reason 未設定＝時間切れ通常終了。未知コードは既定文面へ落とす。
 _END_CLAUSE = {
@@ -650,7 +657,7 @@ class RetroCornerManager:
             return None
         try:
             from .hanjuku_commentary import recap_body
-            from .hanjuku_run import load as load_hanjuku_run
+            from .hanjuku_hotload import load as load_hanjuku_run
             from .naming import runtime_directory
 
             runtime_dir = runtime_directory(self.g.state_dir, identity["runtime_id"])
@@ -2319,10 +2326,12 @@ class RetroCornerManager:
         from .agent.fence import AgentFence, shared_section
         from .game_switch import DeadlineExceededError, GameSwitchBusyError
         from .hanjuku_run import event
+        from . import hanjuku_hotload
         from .naming import runtime_directory
         from .adapters.base import AdapterError
         next_repair = 0.
         not_ready = 0
+        mixed_since = None
         owned_runtime = state.get('bot_runtime_id')
         owned_identity = state.get('bot_identity')
         if not isinstance(owned_identity, dict):
@@ -2377,6 +2386,30 @@ class RetroCornerManager:
             not_ready = 0
             run = observation.meta.get('hanjuku') or {}
             runtime_dir = runtime_directory(self.g.state_dir, active['runtime_id'])
+            # #1469: durably publish the Hanjuku logic generation this corner is
+            # executing, and read back the agent's.  The agent publishes through
+            # the same trampoline; a mixed pair fails the teardown gate closed.
+            hanjuku_hotload.publish(runtime_dir, owned_identity, 'corner')
+            terminal_reason = run.get('terminal_reason')
+            teardown_allowed, hotload_status = hanjuku_hotload.generation_gate(
+                runtime_dir, owned_identity, terminal_reason)
+            if teardown_allowed:
+                mixed_since = None
+            else:
+                if mixed_since is None:
+                    mixed_since = time.monotonic()
+                if time.monotonic() - mixed_since < HOTLOAD_MIXED_GRACE_SECONDS:
+                    # Fail closed: the two observers do not agree on the Hanjuku
+                    # logic generation that produced this terminal, so the
+                    # new-policy-dependent teardown is not taken yet.  Keep
+                    # observing (the terminal evidence already holds input) until
+                    # the other observer catches up or the grace expires.
+                    event(runtime_dir, {'event': 'hotload_generation_hold', 'at': time.time(),
+                                        'terminal_reason': terminal_reason, **hotload_status})
+                    self._sleep(2.)
+                    continue
+                event(runtime_dir, {'event': 'hotload_generation_timeout', 'at': time.time(),
+                                    'terminal_reason': terminal_reason, **hotload_status})
             try:
                 from . import hanjuku_narration
                 # Terminal narration is published after observe releases the
@@ -2428,12 +2461,13 @@ class RetroCornerManager:
                                     for st in streams[:4] if isinstance(st, dict)]}
                 except Exception:
                     latest['game_audio'] = None
+                latest['hotload'] = hotload_status
                 self._write_state(latest)
                 if run.get('terminal_reason') in {'game_over', 'screen_stalled', 'input_stalled'}:
                     # Re-verify durable evidence bound to this runtime,
                     # generation and lease before any teardown; a mismatch
                     # or invalid record raises and fails closed.
-                    from .hanjuku_run import runtime_identity, terminal
+                    from .hanjuku_hotload import runtime_identity, terminal
                     evidence = terminal(runtime_directory(self.g.state_dir, active['runtime_id']),
                                         runtime_identity(fence))
                     if evidence is None:
@@ -2500,7 +2534,7 @@ class RetroCornerManager:
                 or terminal_generation != identity["generation"]):
             raise RetroCornerError("Hanjuku terminal generation does not match runtime")
 
-        from .hanjuku_run import terminal
+        from .hanjuku_hotload import terminal
         from .naming import runtime_directory
 
         evidence = terminal(

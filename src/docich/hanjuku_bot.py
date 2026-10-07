@@ -5,9 +5,15 @@ The rules deliberately remain separate from terminal evidence and input I/O.
 """
 from __future__ import annotations
 
+from .hanjuku_hotload import logic_generation as _logic_generation
 from .hanjuku_pixels import Frame
 
 BOT_VERSION = 'hanjuku-chart-v137-camp-recheck'
+
+# The Hanjuku logic generation this module loaded (#1469). A long-lived observer
+# records it so the shared trampoline can tell its own cached copy apart from a
+# newly deployed one without restarting the process.
+LOGIC_GENERATION = _logic_generation()
 
 # Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
 # frozen and the bot has planned no input for more than this many observations,
