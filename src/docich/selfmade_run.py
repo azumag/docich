@@ -385,13 +385,30 @@ def _acceptance(phases, terminal, box, restored, review):
                  "reproduced every tick hash and the %s result" % terminal) if replayed else
                 "the replay phase (%s) did not reproduce the play result (%s)"
                 % (stages["replay"], box["play_terminal"])))
-    restore_ok = restored and stages["cleanup"] in ("once", "not_required")
-    out.append(("isolation_and_restore",
-                "partial" if restore_ok else "not_satisfied",
-                ("corner cleanup ran once and the previous screen is restored on this "
-                 "terminal; the OS sandbox, resource limits, collector and real child "
-                 "kill/reap are not implemented, and generated execution stays closed")
-                if restore_ok else "cleanup or previous-screen restore was not confirmed"))
+    # The reason is derived from the observed cleanup stage: a run that never
+    # acquired the corner (build_failed / invalid_artifact / run_generated's
+    # sandbox_violation) has no exit or restore evidence to claim, so it must
+    # not be presented as a partially satisfied condition.
+    cleanup = stages["cleanup"]
+    if cleanup == "once" and restored:
+        iso = ("partial",
+               "corner cleanup ran once (release_keys/stop_and_reap/release_owner/"
+               "restore) and the previous screen is restored on this terminal; the OS "
+               "sandbox, resource limits, collector and real child kill/reap are not "
+               "implemented, and generated execution stays closed")
+    elif cleanup == "once":
+        iso = ("not_satisfied",
+               "cleanup ran, but the previous screen was not restored on this "
+               "terminal, so the exit/restore half is not established")
+    elif cleanup == "not_required":
+        iso = ("not_satisfied",
+               "the corner was never acquired on this terminal, so no cleanup or "
+               "previous-screen restore happened and neither is evidenced")
+    else:
+        iso = ("not_satisfied",
+               "the cleanup sequence was %s, so a single ownership release and "
+               "previous-screen restore are not evidenced" % cleanup)
+    out.append(("isolation_and_restore", iso[0], iso[1]))
     return tuple(out)
 
 

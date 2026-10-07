@@ -48,9 +48,9 @@ PYTHONPATH=src python3 -m unittest discover -s tests -p test_selfmade_contract.p
 - 検査probe: `probe_input_contract` が使い捨ての信頼側sessionで、宣言した状態書換え入力7種（`success`／`event`／`win`／`player`／`key`／`switch`／`state`）がすべて拒否され、かつ正規のcontrol入力は受理されてtickが進むことを確認する。bundleは変更しない
 - 攻略: `run_fixture` の `inputs` は生の厳密JSON bytes列、または `next_input(observation) -> bytes | None`。終端後の入力は適用せず破棄として数える
 - 再現判定: `session.verify()` の新しい信頼側engineが受理入力列を先頭から再生し、全tick hashと終端を照合する。`candidate_win` は `verified_win` になった時だけ勝利。不一致は `replay_mismatch` で未検証
-- 終了/復帰: 全経路で子プロセス0・所有権二重取得0・所有権解除と元画面復帰を一度だけ行う。復帰不成立なら `verified_win` でも `success=false`
+- 終了/復帰: 全経路で子プロセス0・所有権二重取得0。コーナーを切り替えた経路では所有権解除と元画面復帰を一度だけ行う（切り替えていない `build_failed`／`invalid_artifact`／`run_generated` の `sandbox_violation` は復帰不要で、終了・復帰の証拠は無い）。復帰不成立なら `verified_win` でも `success=false`
 
-`RunReport.acceptance` は受入条件5点を次の3状態で返す。`verified`＝今回の実行の機械検査で示せた、`partial`＝実装・実行済みだが宣言済みの外部前提（モデル呼出し、OS隔離）が無いため成立としない、`not_satisfied`＝実行の証拠が条件に届かない。現時点で `one_game_built` はAI著作が未実施のため `partial`、`freeze_blocks_write`／`win_is_distinguished`／`reproducible` は `verified`、`isolation_and_restore` は復帰のみ確認でOS隔離・資源制限・実kill/reapが未実装のため `partial` になる。
+`RunReport.acceptance` は受入条件5点を次の3状態で返す。`verified`＝今回の実行の機械検査で示せた、`partial`＝実装・実行済みだが宣言済みの外部前提（モデル呼出し、OS隔離）が無いため成立としない、`not_satisfied`＝実行の証拠が条件に届かない。現時点で `one_game_built` はAI著作が未実施のため `partial`、`freeze_blocks_write`／`win_is_distinguished`／`reproducible` は `verified`、`isolation_and_restore` はコーナーを切り替えた実行で復帰のみ確認（OS隔離・資源制限・実kill/reapが未実装）のため `partial`、切り替えていない経路（`build_failed`／`invalid_artifact`／`run_generated` の `sandbox_violation`）では終了・復帰の証拠が無いため `not_satisfied` になる。
 
 `run_generated` は同じゲートを通したうえで生成実行の口を閉じる。適合する `validate_preflight` reportを渡しても実行は許可されず（reportは`validated`として記録）、`sandbox_violation` で終わる。preflight不適合は理由コードを記録して同じくfail-closed。
 

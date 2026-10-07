@@ -168,6 +168,37 @@ def test_failed_build_reports_build_failed_and_takes_no_ownership(tmp_path):
                ("review", "freeze", "probe", "play", "replay"))
 
 
+def test_unhanded_corner_never_claims_cleanup_or_restore(tmp_path):
+    """A run that never acquired the corner has no exit/restore evidence.
+
+    ``restored`` only means the screen was never hidden; the acceptance reason
+    must be derived from the observed cleanup stage instead of claiming a
+    cleanup that never ran.
+    """
+    failed = r.run_fixture(spec(seed=True), tmp_path / "build", [], corner=p.MockCorner())
+    assert failed.terminal == "build_failed" and failed.phase("cleanup") == "not_required"
+    assert failed.restored  # the field only says the screen stayed visible
+    status, why = dict((name, (s, w)) for name, s, w in failed.acceptance)[
+        "isolation_and_restore"]
+    assert status == "not_satisfied" and "never acquired" in why
+    assert "cleanup ran once" not in why
+
+    plain = r.run_generated(spec(), tmp_path / "generated")
+    assert plain.terminal == "sandbox_violation" and plain.phase("cleanup") == "not_required"
+    status, why = dict((name, (s, w)) for name, s, w in plain.acceptance)[
+        "isolation_and_restore"]
+    assert status == "not_satisfied" and "never acquired" in why
+
+
+def test_isolation_reason_follows_the_observed_cleanup(tmp_path):
+    """A handed-over corner reports the restore it actually observed."""
+    report = win(tmp_path)
+    assert report.phase("cleanup") == "once" and report.restored
+    status, why = dict((name, (s, w)) for name, s, w in report.acceptance)[
+        "isolation_and_restore"]
+    assert status == "partial" and "cleanup ran once" in why
+
+
 def test_review_gate_refuses_a_non_canonical_bundle_from_a_builder(tmp_path):
     report = r.run_fixture(spec(), tmp_path / "bundle", plan_solver([("RIGHT", 16)]),
                            builder=LooseBuilder())
