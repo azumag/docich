@@ -590,7 +590,9 @@ commit SHA のみで、path・diff・bytes・raw exception を含めない。
 ## CPU profiling
 
 CPU 消費・wake-up・spawn 経路の短時間 baseline は diagnostics とは別の read-only
-profiler で取る。契約と実行方法は [cpu-profiling.md](cpu-profiling.md)（#970）。
+profiler で取る。通常 `diagnostics` は保存済みprofileのfreshnessを示すだけ。
+owner-only `cpu_profile / production / main` workflow dispatch は固定条件のone-shot計測を
+実行し、freshなsanitized projectionを返す。契約と実行方法は [cpu-profiling.md](cpu-profiling.md)（#970）。
 
 NetHack tiles の `nethack_tiles.json` はruntime固有のprivate ownership manifestである。
 diagnostics は active runtime と manifest のgeneration/ownership一致、固定status/mode/reason、

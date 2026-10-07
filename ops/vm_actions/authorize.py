@@ -7,7 +7,7 @@ REPOSITORY='azumag/docich'
 REPOSITORY_ID='1327276249'
 WORKFLOW='.github/workflows/vm-operations.yml'
 OPS={'deploy','exec','configure_jev','disable_jev','configure_jev_route_direct','configure_jev_route_vercel',
-     'disable_jev_route','status','bootstrap','diagnostics','reclaim','rebaseline','market_paper','paper_ai_canary','restart_webui',
+     'disable_jev_route','status','bootstrap','diagnostics','cpu_profile','reclaim','rebaseline','market_paper','paper_ai_canary','restart_webui',
      'recover_soren_game','recover_soren_round'}
 TARGETS={'preview','production'}
 REF_RE=re.compile(r'[A-Za-z0-9][A-Za-z0-9_./-]{0,199}\Z')
@@ -51,6 +51,8 @@ def main():
             fail('arbitrary VM exec is disabled when the repository is public')
         if op=='bootstrap' and target!='production': fail('bootstrap is production-only')
         if op=='diagnostics' and target!='production': fail('diagnostics is production-only')
+        if op=='cpu_profile' and (target!='production' or ref!='main'):
+            fail('cpu_profile requires production/main')
         if op=='reclaim' and target!='production': fail('reclaim is production-only')
         if op=='reclaim' and ref!='main': fail('reclaim must run from main')
         if op=='rebaseline' and target!='production': fail('rebaseline is production-only')
@@ -77,8 +79,8 @@ def main():
                                             'reclaim','rebaseline','market_paper','paper_ai_canary','restart_webui',
                                             'recover_soren_game','recover_soren_round'} and confirm!='production':
             fail('production confirmation required')
-        # diagnostics is read-only with sanitized bounded output, so it needs
-        # owner-only gating (above) but no separate confirmation.
+        # diagnostics and cpu_profile are bounded read-only operations, so they
+        # need owner-only gating (above) but no separate confirmation.
         if op=='deploy' and target=='production' and ref!='main': fail('production deploy must use main')
         result={'operation':op,'target':target,'ref':ref,'confirm':confirm}
     else:
