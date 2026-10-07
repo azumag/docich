@@ -160,7 +160,7 @@ export class CloudflareWhisperSTT {
       signal.throwIfAborted();
       wav = pcmToWav(pcm, format);
       const body = JSON.stringify({
-        audio: Array.from(wav),
+        audio: Buffer.from(wav.buffer, wav.byteOffset, wav.byteLength).toString('base64'),
         task: 'transcribe',
         language: 'ja',
         vad_filter: true,
