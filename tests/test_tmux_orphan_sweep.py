@@ -86,6 +86,7 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
             _ok("game-g1\n"),
             _ok("g1-abcdef\n"), _ok("1\n"), _ok("game\n"),
             _ok("123\n"),
+            _ok("4321\n"),
             _ok(),
         ]
 
@@ -205,6 +206,49 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
 
         self.assertEqual(victims, (4242,))
 
+    def test_explicitly_protected_pids_are_never_signalled(self):
+        # ``protected`` carries the caller's proven-untouchable set (the tmux
+        # server) into the sweep; a tagged PID in it must never be signalled.
+        with mock.patch("docich.tmux.processes_with_env", return_value=[4321, 4242]):
+            victims = self.tmux._escaped_process_ids(
+                OWNER, ("game",), {}, protected=frozenset({4321})
+            )
+
+        self.assertEqual(victims, (4242,))
+
+    @mock.patch("docich.tmux.ancestor_pids", return_value=[])
+    @mock.patch("docich.tmux.process_pgid", return_value=None)
+    @mock.patch("docich.tmux.processes_with_env")
+    @mock.patch("docich.tmux.terminate_process_tree")
+    @mock.patch("docich.tmux.procs.run")
+    def test_tagged_tmux_server_is_never_swept(
+        self, mock_run, mock_terminate, mock_env, _mock_pgid, _mock_ancestors
+    ):
+        # A tmux client launched from a tagged pane starts a server that keeps
+        # the tags, so the sweep's environment query reports the server PID.
+        # Signalling it would take every pane on the shared server down with
+        # it (display / audio / watchdog / ffmpeg), so the server must be
+        # excluded even though it looks owned.
+        server_pid = 4321
+        mock_run.side_effect = [
+            _ok("game-g1\n"),                               # window_target_exists
+            _ok("g1-abcdef\n"), _ok("1\n"), _ok("game\n"),   # window ownership
+            _ok("123\n"),                                    # pane leader
+            _ok(f"{server_pid}\n"),                          # display-message server
+            _ok(),                                           # kill-window
+        ]
+        mock_env.return_value = [server_pid, 4242]
+        mock_terminate.side_effect = [_stopped(123), _stopped(4242)]
+
+        self.assertTrue(self.tmux.kill_window_owned("docich:game-g1", OWNER))
+
+        # The escaped orphan is reclaimed; the tagged server is not in any
+        # signal batch.
+        self.assertEqual(
+            [call.args[0] for call in mock_terminate.call_args_list],
+            [[123], [4242]],
+        )
+
     def test_reclaim_is_logged_for_the_switch_timeline(self):
         with (
             mock.patch("docich.tmux.processes_with_env", return_value=[4242]),
@@ -229,6 +273,7 @@ class TestOrphanSweepOnSessionTeardown(unittest.TestCase):
             _ok(),
             _ok("g1-abcdef\n"), _ok("1\n"), _ok("adapter\n"),
             _ok("123\n"),
+            _ok("4321\n"),
             _ok(),
         ]
 
@@ -270,7 +315,7 @@ class TestOrphanSweepOnSessionTeardown(unittest.TestCase):
         self, mock_run, mock_terminate, _mock_pgid, _mock_running,
         mock_scopes, _mock_ancestors,
     ):
-        mock_run.side_effect = [_ok("123\n"), _ok()]
+        mock_run.side_effect = [_ok("123\n"), _ok("4321\n"), _ok()]
         mock_terminate.side_effect = [_stopped(123), _stopped(777)]
 
         self.tmux.stop_game_session_named("docich-game-g7")

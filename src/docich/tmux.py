@@ -564,35 +564,80 @@ class Tmux:
         merged.update(ownership_environment(ownership))
         return merged
 
-    def _stop_scoped_processes(self, target: str) -> tuple[tuple[int, ...], dict[int, int]]:
+    def _server_pid(self) -> int | None:
+        """PID of the tmux server that hosts this wrapper (best effort).
+
+        ``#{pid}`` is the server PID for every client attached to a server, so
+        this identifies the shared server a teardown must never signal
+        (Issue #1105).  A missing/unreachable server degrades to ``None``.
+        """
+
+        result = self._run(["display-message", "-p", "#{pid}"])
+        if result.returncode != 0:
+            return None
+        try:
+            pid = int((result.stdout or "").strip())
+        except (TypeError, ValueError):
+            return None
+        return pid if pid > 0 else None
+
+    def _protected_teardown_pids(
+        self, pane_leaders: list[int] | tuple[int, ...]
+    ) -> frozenset[int]:
+        """PIDs a teardown sweep must never signal (Issue #1105).
+
+        The runtime/role tags are exported into *every* process started from
+        the pane, and that includes the tmux server itself: a client launched
+        from a tagged pane that starts a fresh server passes its environment
+        on, so ``processes_with_env`` reports the server PID.  Signalling it
+        would take down every pane on the shared server (display, audio,
+        watchdog, ffmpeg).  The server hosting the target — and its ancestors
+        — are therefore always protected, together with this process's own
+        ancestors.
+        """
+
+        protected: set[int] = set(ancestor_pids())
+        server_pid = self._server_pid()
+        if server_pid is not None:
+            protected.add(server_pid)
+            protected.update(ancestor_pids(server_pid))
+        for leader in pane_leaders:
+            # The pane leader's parent chain is the tmux server and above; the
+            # leader itself stays a legitimate victim.
+            protected.update(ancestor_pids(leader))
+            protected.discard(leader)
+        return frozenset(pid for pid in protected if pid > 0)
+
+    def _stop_scoped_processes(
+        self, target: str
+    ) -> tuple[tuple[int, ...], dict[int, int], frozenset[int]]:
         """Stop the pane trees of an ownership-checked target.
 
-        Returns the PIDs that survived together with the pane leaders' process
-        groups, which the post-condition sweep uses to find children that left
-        the descendant tree.
+        Returns the PIDs that survived, the pane leaders' process groups (used
+        by the post-condition sweep to find children that left the descendant
+        tree) and the PIDs the sweep must never signal.  The protection set is
+        snapshotted *before* the leaders are stopped, while their ancestors
+        (the tmux server) are still observable.
         """
 
         pids = self._pane_pids(target)
+        protected = self._protected_teardown_pids(pids)
         if not pids:
-            return (), {}
+            return (), {}, protected
         groups: dict[int, int] = {}
         for pid in pids:
             pgid = process_pgid(pid)
             if pgid is not None:
                 groups[pid] = pgid
-        return terminate_process_tree(pids).remaining, groups
-
-    def _stop_pane_processes(self, target: str) -> tuple[int, ...]:
-        """Stop descendants after the caller has validated the target scope."""
-
-        remaining, _groups = self._stop_scoped_processes(target)
-        return remaining
+        return terminate_process_tree(pids).remaining, groups, protected
 
     def _escaped_process_ids(
         self,
         ownership: TmuxOwnership | None,
         roles: tuple[str, ...] | None,
         pane_groups: dict[int, int],
+        *,
+        protected: frozenset[int] | None = None,
     ) -> tuple[int, ...]:
         """Live processes provably owned by the target being torn down.
 
@@ -605,6 +650,10 @@ class Tmux:
         * a pane leader's process group **and** a tmux pane cgroup scope,
           which also catches a process spawned before the tags existed as long
           as it stayed in the pane it was started from.
+
+        ``protected`` carries the PIDs the caller proved must never be
+        signalled — pre-eminently the tmux server hosting the target, whose
+        environment also carries the tags (Issue #1105).
         """
 
         found: list[int] = []
@@ -627,9 +676,11 @@ class Tmux:
                     set(pane_groups.values()), cgroup_marker=TMUX_PANE_SCOPE_MARKER
                 )
             )
-        protected = set(ancestor_pids())
+        guarded = set(ancestor_pids())
+        if protected:
+            guarded.update(protected)
         return tuple(
-            pid for pid in dict.fromkeys(found) if pid > 1 and pid not in protected
+            pid for pid in dict.fromkeys(found) if pid > 1 and pid not in guarded
         )
 
     def _reap_escaped_processes(
@@ -639,16 +690,20 @@ class Tmux:
         pane_groups: dict[int, int],
         *,
         operation: str,
+        protected: frozenset[int] | None = None,
     ) -> tuple[int, ...]:
         """Stop processes that escaped the pane descendant tree (Issue #1105).
 
         An orphan that survived the pane sweep keeps burning CPU after the
         switch reports success, so every teardown ends with this
         post-condition: reclaim what is provably owned, and fail closed when
-        something owned cannot be stopped.
+        something owned cannot be stopped.  The tmux server hosting the target
+        is never reclaimed even though it carries the ownership tags.
         """
 
-        victims = self._escaped_process_ids(ownership, roles, pane_groups)
+        victims = self._escaped_process_ids(
+            ownership, roles, pane_groups, protected=protected
+        )
         if not victims:
             return ()
         if len(victims) > MAX_ORPHAN_SWEEP_PROCESSES:
@@ -684,14 +739,18 @@ class Tmux:
         generation_suffix = session.removeprefix("docich-game-g")
         if session != "docich-game" and not generation_suffix.isdigit():
             raise ValueError("legacy game cleanup only accepts docich-game")
-        remaining, pane_groups = self._stop_scoped_processes(session)
+        remaining, pane_groups, protected = self._stop_scoped_processes(session)
         self._run(["kill-session", "-t", session])
         # Legacy sessions carry no runtime tags, so only the pane process
         # group / cgroup scope evidence is available on this path.
         remaining = self._merge_remaining(
             remaining,
             self._reap_escaped_processes(
-                None, None, pane_groups, operation="legacy session停止"
+                None,
+                None,
+                pane_groups,
+                operation="legacy session停止",
+                protected=protected,
             ),
         )
         if remaining:
@@ -713,14 +772,18 @@ class Tmux:
             raise OwnershipMismatchError(
                 f"window ownershipが一致しません (expected={expected}, actual={actual})"
             )
-        remaining, pane_groups = self._stop_scoped_processes(target)
+        remaining, pane_groups, protected = self._stop_scoped_processes(target)
         self._kill_after_process_stop(["kill-window", "-t", target], "window停止")
         # Only this window's role is reclaimed: a sibling window of the same
         # runtime (game vs agent) must keep running.
         remaining = self._merge_remaining(
             remaining,
             self._reap_escaped_processes(
-                expected, (expected.role,), pane_groups, operation="window停止"
+                expected,
+                (expected.role,),
+                pane_groups,
+                operation="window停止",
+                protected=protected,
             ),
         )
         if remaining:
@@ -736,14 +799,18 @@ class Tmux:
             raise OwnershipMismatchError(
                 f"session ownershipが一致しません (expected={expected}, actual={actual})"
             )
-        remaining, pane_groups = self._stop_scoped_processes(session)
+        remaining, pane_groups, protected = self._stop_scoped_processes(session)
         self._kill_after_process_stop(["kill-session", "-t", session], "session停止")
         # The session owns every role of the runtime (its own pane and the
         # generation windows), so no role filter applies here.
         remaining = self._merge_remaining(
             remaining,
             self._reap_escaped_processes(
-                expected, None, pane_groups, operation="session停止"
+                expected,
+                None,
+                pane_groups,
+                operation="session停止",
+                protected=protected,
             ),
         )
         if remaining:
