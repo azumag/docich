@@ -1,0 +1,9 @@
+{
+  "name": "docich-monorepo-root",
+  "private": true,
+  "type": "module",
+  "description": "Fail-safe only: the Cloudflare Workers Builds project root must be workers/tsuitate-bot (see workers/tsuitate-bot/BUILDS.md). If a build ever runs at the repository root, this delegates to the Worker directory so the same build runs with the same working directory instead of failing with ENOENT on a missing root package.json (#1571). It defines no dependencies and installs nothing.",
+  "scripts": {
+    "build:cf": "cd workers/tsuitate-bot && npm run build:cf"
+  }
+}
