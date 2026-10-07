@@ -14,6 +14,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 from docich import hanjuku_scene_process as processes
 
+# 下記の単体テストは Linux カーネル機能 (pidfd//proc identity) を前提とする。
+# macOS 等ではコード到達前に別経路の SceneProcessUnavailable となるか、
+# monkeypatch 対象の属性自体が存在しない。CI の ubuntu runner では実行する。
+linux_only = pytest.mark.skipif(
+    not sys.platform.startswith('linux'),
+    reason='Linux process containment (subreaper/pidfd//proc) required',
+)
+
 
 HELPER = r'''
 import json, os, signal, subprocess, sys, time
@@ -171,6 +179,8 @@ finally:
 
 
 def helper(tmp_path, mode):
+    if not sys.platform.startswith('linux'):
+        pytest.skip('Linux process containment (subreaper/pidfd) required')
     result = subprocess.run(
         [sys.executable, '-c', HELPER, str(tmp_path), mode],
         env={**os.environ, 'PYTHONPATH': str(ROOT / 'src')},
@@ -230,6 +240,7 @@ def test_stop_during_cleanup_is_deferred_until_owned_children_stop(tmp_path):
     assert result['elapsed'] < 3
 
 
+@linux_only
 def test_shared_process_cannot_launch_a_scene_job(monkeypatch):
     monkeypatch.setattr(processes, '_ENABLED_OWNER', None)
     monkeypatch.setattr(processes.subprocess, 'Popen', lambda *a, **k: pytest.fail('shared process launched child'))
@@ -237,6 +248,7 @@ def test_shared_process_cannot_launch_a_scene_job(monkeypatch):
         processes.OwnedSceneProcess(['never-run'])
 
 
+@linux_only
 def test_reused_pid_is_never_signalled(monkeypatch):
     owner = object.__new__(processes.OwnedSceneProcess)
     identity = processes._Identity(proc_pid=101, pid=5, start_ticks=1000)
@@ -255,6 +267,7 @@ def test_reused_pid_is_never_signalled(monkeypatch):
     assert closed == [123]
 
 
+@linux_only
 def test_exit_race_does_not_abandon_other_bound_children(monkeypatch):
     owner = object.__new__(processes.OwnedSceneProcess)
     owner._owned = {processes._Identity(101, 5, 1000): 123,
@@ -312,6 +325,7 @@ def test_unreadable_process_is_not_assumed_to_be_unrelated(tmp_path, monkeypatch
         view.descendants()
 
 
+@linux_only
 @pytest.mark.parametrize('unsupported', ['signal', 'waitid'])
 def test_unusable_pidfd_syscalls_reject_before_subreaper_or_launch(monkeypatch, unsupported):
     monkeypatch.setattr(processes.os, 'pidfd_open', lambda pid: 123)

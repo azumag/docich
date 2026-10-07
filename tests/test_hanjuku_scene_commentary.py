@@ -373,6 +373,8 @@ def test_terminal_run_starts_no_generation_or_delivery(live):
 
 
 def test_generation_timeout_stops_its_private_bootstrap_and_children(live):
+    if not sys.platform.startswith('linux'):
+        pytest.skip('Linux process containment (subreaper/pidfd) required')
     root = live.root / 'fake_soren'
     root.mkdir()
     (root / 'child.py').write_text('import time\nfrom pathlib import Path\n'

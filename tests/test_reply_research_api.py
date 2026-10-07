@@ -450,7 +450,9 @@ def test_real_named_answer_worker_only_http_is_synthetic(monkeypatch, slow):
     """Actual parent/worker/deadline/reap; no real socket or provider calls."""
     script = r'''
 import json,os,runpy,sys,time,urllib.request
-assert set(os.environ) <= {'PATH','LANG','DOCICH_ANSWER_API_KEY','LC_CTYPE'}
+# __CF_USER_TEXT_ENCODING は macOS が全プロセスへ注入する locale cookie
+# (credential ではない)。Linux CI では現れない。
+assert set(os.environ) <= {'PATH','LANG','DOCICH_ANSWER_API_KEY','LC_CTYPE','__CF_USER_TEXT_ENCODING'}
 assert os.environ['DOCICH_ANSWER_API_KEY']=='SYNTHETIC_KEY'
 class Response:
     def __enter__(self): return self

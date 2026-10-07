@@ -115,7 +115,22 @@ def _stream_window_env(g: GlobalConfig) -> dict[str, str]:
 
 def _load_global(args: argparse.Namespace) -> GlobalConfig:
     config_path = Path(args.config) if getattr(args, "config", None) else None
-    return load_global(_repo_root(), config_path)
+    root = _repo_root()
+    explicit = config_path
+    if explicit is None:
+        env_value = os.environ.get("DOCICH_CONFIG")
+        if env_value:
+            explicit = Path(env_value)
+    if explicit is not None:
+        # An out-of-tree --config (hermetic tests, reference runs) defines
+        # its own tree root: repo-relative paths (game submodules, roms)
+        # must resolve inside that tree, not inside the source checkout.
+        # In-tree configs keep the source-tree root (unchanged behavior).
+        try:
+            Path(explicit).expanduser().resolve().relative_to(root.resolve())
+        except ValueError:
+            root = Path(explicit).expanduser().resolve().parent
+    return load_global(root, config_path)
 
 
 # ---------------------------------------------------------------------------
@@ -212,9 +227,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_say.add_argument("game", help="ゲーム名 (config/games/<name>.toml)")
     p_say.add_argument(
         "-f", "--file", dest="file", metavar="PATH",
-        help="読み上げるテキストファイル (docichが一時コピーして渡す)",
+        help="読み上げるテキストファイル (docichが一時コピーして渡す; 直接テキストと併用不可)",
     )
-    p_say.add_argument("text", nargs="*", help="読み上げるテキスト (ファイルと併用不可)")
+    # NOTE: 直接テキストは -f より前に置く。argparse は単一引数を取る
+    # optional (-f PATH) の後に nargs="*" positional が続く順序を解釈
+    # できないため、逆順は parser 段階で exit 2 となる。相互排他チェック
+    # 自体は cli_say が「併用できません」で失敗させる (rc=2)。
+    p_say.add_argument("text", nargs="*", help="読み上げるテキスト (-f より前に置く; ファイルと併用不可)")
     p_say.add_argument("--rate", type=int, default=120, metavar="N", help="読み上げ速度 (既定120)")
     p_say.add_argument(
         "--pre-delay", dest="pre_delay", type=int, default=60, metavar="SEC",
@@ -1019,16 +1038,19 @@ def cmd_status(g: GlobalConfig, *, json_output: bool = False) -> int:
     return 0
 
 
-def cmd_status_legacy(g: GlobalConfig, *, json_output: bool = False) -> int:
+def cmd_status_legacy(g: GlobalConfig, *, json_output: bool = False, tmux=None) -> int:
     """Report pre-coordinator runtime traces for migration (P4).
 
     Machine-readable via --json ({"schema_version", "footprint",
     "unreadable"}), human readable otherwise.  Read-only: nothing is
     stopped or rewritten.
+
+    ``tmux`` is injectable so tests stay hermetic (no real tmux server);
+    production callers leave it unset and probe the live server.
     """
     from .status import STATUS_SCHEMA_VERSION, legacy_footprint
 
-    probe = legacy_footprint(g, tmux=Tmux())
+    probe = legacy_footprint(g, tmux=tmux if tmux is not None else Tmux())
     if json_output:
         print(json.dumps(
             {

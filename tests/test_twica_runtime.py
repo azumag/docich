@@ -11,10 +11,18 @@ import pytest
 from docich.twica_ffmpeg import compose_args, encoding_geometry, OwnedReader
 from docich.twica_operator import prepare, transfer, NotReady
 from docich.twica_state import (atomic_json, control, exclusive, fresh, heartbeat,
-                               new_control, read_json, status)
+                               new_control, process_identity, read_json, status)
 from docich.twica_overlay import SnapshotPublisher, private_directory
 from docich.twica_service import serve
 from docich.twica_renderer import browser_environment
+
+# PID 再利用フェンスは Linux /proc の boot-id identity を要する。
+# /proc のない環境 (macOS 等) では heartbeat→fresh が成立しないため、
+# readiness 断面の検証だけを明示的に閉じる (CI の ubuntu runner では実行)。
+requires_proc_identity = pytest.mark.skipif(
+    not process_identity(),
+    reason='Linux /proc boot-id identity が必要 (PID 再利用フェンス契約)',
+)
 
 
 def argv(cc=False):
@@ -148,6 +156,7 @@ def test_invalid_or_missing_managed_control_stays_transparent(tmp_path, monkeypa
         assert reader.read() == bytes(4)
 
 
+@requires_proc_identity
 def test_state_rejects_symlink_fifo_and_stale_identity(tmp_path):
     directory = private_directory(tmp_path/'control')
     target = directory/'target'
@@ -164,6 +173,7 @@ def test_state_rejects_symlink_fifo_and_stale_identity(tmp_path):
             with exclusive(directory,'lock'): pass
 
 
+@requires_proc_identity
 def test_activation_requires_readiness_and_does_not_mutate_old_owner(tmp_path):
     directory=tmp_path/'control';prepare(directory);before=control(directory)
     with pytest.raises(NotReady, match='idle_boundary'):
@@ -179,6 +189,7 @@ def test_activation_requires_readiness_and_does_not_mutate_old_owner(tmp_path):
     assert control(directory)==before
 
 
+@requires_proc_identity
 def test_handoff_waits_for_every_client_and_fails_closed(tmp_path):
     directory=tmp_path/'control';prepare(directory)
     heartbeat(directory,'renderer.json',ready=True,state='standby',subscribed=False)
@@ -190,6 +201,7 @@ def test_handoff_waits_for_every_client_and_fails_closed(tmp_path):
     assert control(directory)['owner']=='none'
 
 
+@requires_proc_identity
 def test_full_two_phase_activation_and_rollback(tmp_path):
     directory=tmp_path/'control';prepare(directory)
     stop=threading.Event()
@@ -206,7 +218,21 @@ def test_full_two_phase_activation_and_rollback(tmp_path):
             seen.append(c['owner'])
     t=threading.Thread(target=participants);t.start()
     try:
-        time.sleep(.08)
+        # Startup race removal: transfer() checks readiness exactly once,
+        # so wait for the participants thread's first heartbeat instead of
+        # guessing with sleep(.08). A descheduled thread on a loaded
+        # runner otherwise reads as renderer_not_ready. transfer() to
+        # 'common' also requires pipeline.json fresh+ready, so wait for
+        # both files (a fresh renderer heartbeat can land one loop
+        # iteration before the first pipeline heartbeat).
+        def _ready(name):
+            doc = read_json(directory / name)
+            return fresh(doc) and doc.get('ready') is True
+        deadline = time.monotonic() + 10.0
+        while not (_ready('renderer.json') and _ready('pipeline.json')):
+            if time.monotonic() > deadline:
+                raise AssertionError('participants thread did not publish first heartbeat')
+            time.sleep(0.01)
         r=transfer(directory,'common',idle_confirmed=True,timeout_sec=3)
         assert r['owner']=='common' and r['legacy_subscribers']==0
         r=transfer(directory,'legacy',idle_confirmed=True,timeout_sec=3,legacy_role='shared')
@@ -224,6 +250,7 @@ def test_status_never_exposes_extra_untrusted_fields(tmp_path):
     assert 'url' not in status(directory)
 
 
+@requires_proc_identity
 def test_service_keeps_single_renderer_across_all_game_switches(tmp_path, monkeypatch):
     monkeypatch.setenv('DOCICH_TWICA_FRAME_DIR',str(tmp_path/'frames'))
     async def scenario():
@@ -255,7 +282,12 @@ def test_real_adapter_preserves_stdin_q_stdout_and_child_exit(tmp_path, monkeypa
     fake=tmp_path/'fake-ffmpeg'
     fake.write_text('#!'+sys.executable+'\nimport sys\nassert sys.stdin.readline()=="q\\n"\nprint("progress=end",flush=True)\n')
     fake.chmod(0o700)
-    env=dict(os.environ,DOCICH_TWICA_REAL_FFMPEG=str(fake))
+    # 子プロセスは親の sys.path を継承しないため src を明示する
+    # (CI の PYTHONPATH=src 依存をテスト内に閉じる)。
+    repo_src = str(Path(__file__).resolve().parents[1] / 'src')
+    env = dict(os.environ, DOCICH_TWICA_REAL_FFMPEG=str(fake),
+               PYTHONPATH=repo_src + (os.pathsep + os.environ['PYTHONPATH']
+                                      if os.environ.get('PYTHONPATH') else ''))
     result=subprocess.run([sys.executable,'-m','docich.twica_ffmpeg',*argv()],input='q\n',
                           text=True,capture_output=True,env=env,timeout=5)
     assert result.returncode==0,result.stderr
