@@ -13,7 +13,7 @@ on:
         required: true
         default: status
         type: choice
-        options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, market_paper, paper_ai_canary, restart_webui, recover_soren_game, recover_soren_round]
+        options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, market_paper, paper_ai_canary, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute]
       target:
         description: VM target
         required: true
@@ -770,6 +770,23 @@ jobs:
           set -euo pipefail
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           cat control/ops/vm_actions/recover_soren_round.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Recover muted BGM sink-input with restore-memory refresh
+        if: ${{ steps.auth.outputs.operation == 'recover_bgm_mute' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # The helper is a fixed reviewed script from the trusted main checkout.
+          # It unmutes exactly one owned BGM playback stream on soren_null with a
+          # fixed pactl argv, then verifies a fresh silent probe stream is born
+          # unmuted. No caller input reaches the VM shell. Output stays in the
+          # VM-private exec log.
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/recover_bgm_mute.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Probe Moomoo JP quote readiness after reviewed production deploy
         id: market_provider_probe

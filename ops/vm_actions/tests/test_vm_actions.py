@@ -309,6 +309,26 @@ class AuthorizeTests(unittest.TestCase):
         self.assertIn("cat control/ops/vm_actions/recover_soren_game.sh | ssh", step)
         self.assertNotIn("VM_COMMAND", step)
 
+    def test_recover_bgm_mute_is_fixed_production_operation(self):
+        for target, ref, confirm in (("preview", "main", "production"),
+                                     ("production", "feature", "production"),
+                                     ("production", "main", "")):
+            p = self.run_auth(INPUT_OPERATION="recover_bgm_mute", INPUT_TARGET=target,
+                              INPUT_REF=ref, INPUT_CONFIRM=confirm)
+            self.assertNotEqual(p.returncode, 0)
+        for op in ("recover_bgm_mute --admin", "recover_bgm_mute;id"):
+            p = self.run_auth(INPUT_OPERATION=op, INPUT_TARGET="production",
+                              INPUT_REF="main", INPUT_CONFIRM="production")
+            self.assertNotEqual(p.returncode, 0)
+        p = self.run_auth(GITHUB_REPOSITORY_PRIVATE="false",
+                          INPUT_OPERATION="recover_bgm_mute", INPUT_TARGET="production",
+                          INPUT_REF="main", INPUT_CONFIRM="production")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        workflow = WF.read_text(encoding="utf-8")
+        step = workflow.split("Recover muted BGM sink-input with restore-memory refresh", 1)[1].split("- name:", 1)[0]
+        self.assertIn("cat control/ops/vm_actions/recover_bgm_mute.sh | ssh", step)
+        self.assertNotIn("VM_COMMAND", step)
+
     def test_push_is_fixed_to_production_deploy(self):
         p=self.run_auth(GITHUB_EVENT_NAME='push',INPUT_OPERATION='',INPUT_TARGET='',INPUT_REF='')
         self.assertEqual(p.returncode,0,p.stderr)

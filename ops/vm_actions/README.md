@@ -243,4 +243,49 @@ kill以降の失敗・120秒timeoutでも専用pause/holdは残らず、supervis
 出力は固定の結果/拒否理由と共通worker変化の件数のみで、PID・argv・request_idを含みません。
 本番での受入は別承認後、read-only diagnosticsと進行の実測で確認します。
 
+### `recover_bgm_mute`（所有済みBGM再生streamのmute解除と記憶更新・#1518）
+
+引数なしの owner 専用固定操作です。#968 の無音（bridge/BGM `ffplay` は生存・
+`soren_null` 接続・volume 正常なのに sink-input だけ `Mute: yes` で、
+`module-stream-restore` が同一キーの新規 stream に mute を再適用する）に対し、
+所有権を証明できた1件だけを `pactl set-sink-input-mute <index> 0` の固定 argv で
+解除し、同一キーの記憶が残っていないことを無音の短命 probe stream の生成で検証します。
+caller の shell は実行しません。index は daemon 出力を再検証してから単一 argv 要素で渡します。
+
+**実行固定コマンド（実行にはオーナーの別承認が必要）**
+
+```sh
+cd /home/ubuntu/docich
+bash ops/vm_actions/recover_bgm_mute.sh
+```
+
+Actions の固定入力は `operation=recover_bgm_mute / target=production / ref=main /
+confirm=production` です。public repository では gateway の arbitrary `exec` が無効なので、
+この固定 operation 名だけが許可されます。authorize の成功だけで実行可能とは扱いません。
+public guard を弱めたり、任意 command/argument を受けたりしません。
+
+**変更前の拒否条件**
+
+- sink-input 以外（capture/monitor の source-output）は列挙しません。構造的に対象外です。
+- sink 名が `list short sinks` で `soren_null` に解決できない。解決できない stream には触りません。
+- `Mute: yes` でない。所有済みで全て unmuted なら no-op 成功（`already_unmuted`）で probe を出しません。
+- 所有権を証明できない。`application.process.id` が生きた `ffplay` で、かつ固定 worker タグ
+  （`soren-bgm-loop`）を持つか、固定 owner（`bgm_worker.sh`、`soviet_local.mjs`、
+  `soren_loop.sh`、`soviet_watchdog.sh`）の子孫でない。application 名だけでは所有とみなしません。
+- 所有済み muted が0件（所有情報なしは `ownership_unproven`、他者の stream だけは `no_target`）、
+  2件以上（`multiple_targets`）、または corked（`target_corked`）。
+- probe 用の `ffplay` がない。検証なしの解除報告はしないため、変更前に拒否します。
+
+**実行は2段階**
+
+1. 対象を unmute し、直後に同一 (index, pid) が `Mute: no` であることを再照合します。
+   daemon がこの変更を同キーの stream-restore 記憶へ書き戻します。
+2. 固定 argv の無音 probe（同 player・同 sink・`-volume 0`・数秒）を出し、
+   新規 stream が unmuted で生まれることを確認します。muted で生まれたら1度だけ解除して再検証し、
+   記憶が残っている場合は拒否します。probe は必ず終了させ、最後に対象が再 mute されていないことも
+   照合します（再 mute されていたら `remuted` で拒否し、回復成功とは報告しません）。
+
+配信・共通音声・共有 sink・他ゲーム・読み上げの stream は数えて報告するだけで変更しません。
+出力は固定の status/reason/index・検証真偽・件数のみで、生プロパティ・command line・path・PID を出しません。
+
 既存VMの `/home/ubuntu/docich` に tracked差分またはowned submodule差分がある場合、bootstrapは拒否します。VMとrepositoryのどちらを正とするか確認して差分を整理してからbaselineを登録してください。`/home/ubuntu/soren` はbootstrap時に丸ごとsourceへ戻しません。以後、gitlink変更時に変更対象pathだけ旧sourceとの一致を検証して投影するため、既存runtime stateは保持されます。driftを無視して上書きする経路は用意しません。
