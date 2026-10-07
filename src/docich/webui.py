@@ -1000,6 +1000,9 @@ def _work_indicator_path(soren_root: Path) -> Path:
 def _comment_gen_state_path(soren_root: Path) -> Path:
     return shared_overlay_queue.comment_gen_state_path(soren_root)
 
+def _comment_gen_detail_path(soren_root: Path) -> Path:
+    return shared_overlay_queue.comment_gen_detail_path(soren_root)
+
 def _radio_state_path(soren_root: Path) -> Path:
     return shared_overlay_queue.radio_state_path(soren_root)
 
@@ -1563,14 +1566,31 @@ def _get_gen_indicators(soren_root: Path, now: int | None = None) -> list[dict[s
     if now is None:
         now = int(time.time())
     indicators: list[dict[str, Any]] = []
-    # comment
+    # comment — detail JSON and owner-PID liveness extend the stale window
+    # so the indicator does not vanish mid-generation (#1182)
     try:
         c_path = _comment_gen_state_path(soren_root)
-        stale = 90
+        d_path = _comment_gen_detail_path(soren_root)
+        alive_stale = 300
+        dead_stale = 90
         try:
-            stale = int(os.environ.get("EVENT_OVERLAY_COMMENT_GEN_STALE_SEC", "90") or "90")
+            alive_stale = int(os.environ.get("EVENT_OVERLAY_COMMENT_GEN_ALIVE_STALE_SEC", "300") or "300")
         except Exception:
-            stale = 90
+            alive_stale = 300
+        try:
+            dead_stale = int(os.environ.get("EVENT_OVERLAY_COMMENT_GEN_DEAD_STALE_SEC", "90") or "90")
+        except Exception:
+            dead_stale = 90
+        try:
+            old = os.environ.get("EVENT_OVERLAY_COMMENT_GEN_STALE_SEC", "")
+            if old and str(old).strip().isdigit():
+                old_v = int(str(old).strip())
+                if dead_stale == 90 and old_v != 90:
+                    dead_stale = old_v
+                    if alive_stale == 300 and old_v > 300:
+                        alive_stale = old_v
+        except Exception:
+            pass
         try:
             line = c_path.read_text(encoding="utf-8", errors="ignore").strip()
         except Exception:
@@ -1578,7 +1598,12 @@ def _get_gen_indicators(soren_root: Path, now: int | None = None) -> list[dict[s
         if line.startswith("generating:"):
             parts = line.split(":")
             ts = 0
-            if len(parts) >= 3 and parts[-1].isdigit():
+            if len(parts) >= 3 and parts[2].isdigit():
+                try:
+                    ts = int(parts[2])
+                except Exception:
+                    ts = 0
+            elif len(parts) >= 3 and parts[-1].isdigit():
                 try:
                     ts = int(parts[-1])
                 except Exception:
@@ -1588,8 +1613,63 @@ def _get_gen_indicators(soren_root: Path, now: int | None = None) -> list[dict[s
                     ts = int(c_path.stat().st_mtime)
                 except Exception:
                     ts = now
+            # Detail JSON written by the soviet_now comment worker
+            # (model/preview/count/attempt/max_retry/batch_hash/mode/owner_pid).
+            detail: dict[str, Any] = {}
+            try:
+                if d_path.is_file():
+                    txt = d_path.read_text(encoding="utf-8", errors="ignore").strip()
+                    if txt:
+                        j = json.loads(txt)
+                        if isinstance(j, dict):
+                            detail = j
+                            try:
+                                dts = int(j.get("ts") or 0)
+                                if dts > 0:
+                                    ts = dts
+                            except Exception:
+                                pass
+            except Exception:
+                detail = {}
+            owner_pid = 0
+            try:
+                owner_pid = int(detail.get("owner_pid") or 0) if isinstance(detail, dict) else 0
+            except Exception:
+                owner_pid = 0
+            if owner_pid == 0:
+                try:
+                    pid_file = soren_root / "tmp/.twitch_chat/comment_gen.pid"
+                    if pid_file.is_file():
+                        raw = pid_file.read_text(encoding="utf-8", errors="ignore").strip().split("|")[0]
+                        if raw.isdigit():
+                            owner_pid = int(raw)
+                except Exception:
+                    pass
+            if owner_pid == 0 and len(parts) >= 4 and parts[3].isdigit():
+                try:
+                    owner_pid = int(parts[3])
+                except Exception:
+                    pass
+            alive = bool(owner_pid) and _is_pid_alive(owner_pid)
+            window = alive_stale if alive else dead_stale
             age = now - ts
-            fresh = 0 <= age <= stale
+            fresh = 0 <= age <= window
+            model = str(detail.get("model") or "") if isinstance(detail, dict) else ""
+            preview = str(detail.get("preview") or "") if isinstance(detail, dict) else ""
+            count = 0
+            attempt = 0
+            max_retry = 0
+            batch_hash = ""
+            mode = ""
+            try:
+                if isinstance(detail, dict):
+                    count = int(detail.get("count") or 0)
+                    attempt = int(detail.get("attempt") or 0)
+                    max_retry = int(detail.get("max_retry") or 0)
+                    batch_hash = str(detail.get("batch_hash") or "")
+                    mode = str(detail.get("mode") or "")
+            except Exception:
+                pass
             indicators.append({
                 "key": "comment",
                 "icon": "💬",
@@ -1597,8 +1677,18 @@ def _get_gen_indicators(soren_root: Path, now: int | None = None) -> list[dict[s
                 "ts": ts,
                 "age": age,
                 "fresh": fresh,
-                "stale_sec": stale,
+                "stale_sec": window,
                 "raw": line,
+                "owner_pid": owner_pid,
+                "owner_alive": alive,
+                "model": model,
+                "preview": preview,
+                "count": count,
+                "attempt": attempt,
+                "max_retry": max_retry,
+                "batch_hash": batch_hash,
+                "mode": mode,
+                "detail_raw": detail,
             })
     except Exception:
         pass
