@@ -342,6 +342,54 @@ export function featuresForMove(rawObservation, usi, recentMoves = []) {
   return candidate ? features(observation, candidate, validRecentMoves(recentMoves)) : null;
 }
 
+/**
+ * Private/offline inspection boundary for experimental policies. This does not
+ * change chooseMove or publish anything to Worker status/broadcast. Candidates
+ * satisfy own-view constraints, not hidden-board legality. Score is the same
+ * linear feature score (including path penalty) used by the v11 baseline.
+ */
+export function inspectMoveCandidates(rawObservation, options = {}) {
+  if (!record(options)) return null;
+  const { profile = LINEAR_PROFILE, seed = "", recentMoves = [],
+    forbiddenMoves = [], foulMoves = [] } = options;
+  const observation = normalizeObservation(rawObservation);
+  const selectedProfile = validateProfile(profile);
+  if (!observation || observation.turn !== observation.color || observation.attemptBudget === 0
+      || selectedProfile?.policy !== "linear-v1" || typeof seed !== "string" || seed.length > 512
+      || !Array.isArray(forbiddenMoves) || forbiddenMoves.length > 4096
+      || !Array.isArray(foulMoves) || foulMoves.length > 4096) return null;
+  const recent = validRecentMoves(recentMoves);
+  const generated = candidatesFor(observation, false);
+  if (generated.length > 4096) return null;
+  const rejected = new Set(foulMoves.filter((move) => typeof move === "string" && USI_MOVE.test(move)));
+  const forbidden = new Set([...rejected,
+    ...forbiddenMoves.filter((move) => typeof move === "string" && USI_MOVE.test(move))]);
+  // Unknown acknowledgements exclude only their exact attempt. Only confirmed,
+  // visibly valid fouls exclude the corresponding promotion sibling as in v11.
+  const rejectedPaths = new Set(generated.filter((candidate) => rejected.has(candidate.usi))
+    .map((candidate) => candidate.usi.replace(/\+$/, "")));
+  const available = generated.filter((candidate) => !forbidden.has(candidate.usi)
+    && !rejectedPaths.has(candidate.usi.replace(/\+$/, "")));
+  const responses = observation.inCheck === true ? checkResponses(observation, available) : available;
+  const eligible = responses.length ? responses : available;
+  const evidenceAge = new Map(observation.knownEnemies.map((item) => [item.square, item.age]));
+  const candidates = eligible.map((candidate) => {
+    const values = features(observation, candidate, recent);
+    const pathPenalty = pathRisk(observation, candidate);
+    const age = evidenceAge.get(candidate.usi.slice(2, 4));
+    return {
+      usi: candidate.usi, role: candidate.role, features: values,
+      score: FEATURE_NAMES.reduce((sum, name) => sum + values[name] * selectedProfile.weights[name], 0)
+        - pathPenalty,
+      unknownPathSquares: pathPenalty / PATH_RISK_WEIGHT,
+      // Only geometry-compatible, non-king moves get the v11 check evidence tier.
+      evidenceCapture: candidate.usi[1] !== "*" && age !== undefined && age <= RECAPTURE_AGE_LIMIT
+        && (observation.inCheck !== true || (responses.length > 0 && candidate.role !== "K")),
+    };
+  });
+  return { observation, profile: selectedProfile, seed, candidates };
+}
+
 function hash(text) {
   return [...text].reduce((value, char) => (value * 33 + char.charCodeAt(0)) >>> 0, 5381);
 }
