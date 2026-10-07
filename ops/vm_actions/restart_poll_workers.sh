@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Reviewed, bounded targeted restart of the supervised polling workers.
+#
+# Purpose (azumag/docich#970): `audio_worker` / `youtube_worker` / `poll_worker` /
+# `prediction_worker` / `stream_noon_audit` are long-lived bash processes started
+# once by `start_all.sh`. A projected Soren runtime change is therefore NOT
+# active in production until those processes are replaced: `start_all.sh` only
+# respawns a worker that has exited, and it never restarts a worker because its
+# file changed. The overlay / radio / BGM / webui paths already have fixed
+# reviewed restart hooks; the polling workers did not, so activating a reviewed
+# update needed an ad-hoc SSH session.
+#
+# This helper is the fixed, reviewed path for exactly these five workers and
+# nothing else. It is invoked from the push-deploy workflow only when the
+# reviewed `ops/vm_actions/restart_poll_workers_epoch` changes, so a restart is
+# an explicit, reviewable decision rather than a side effect of every deploy.
+#
+# Safety properties:
+#   - No root privileges and no caller input. The production root is fixed;
+#     `--root` exists only so repository tests can exercise the helper without
+#     touching /home/ubuntu/soren.
+#   - Only the five named polling workers are signalled. The display, Soren,
+#     audio, radio, prediction *service*, game, stream encoder and Twitch units
+#     are never touched.
+#   - A PID recorded in `tmp/state/<worker>.pid` is signalled only when it is
+#     alive and its `/proc/<pid>/cmdline` still contains `workers/<worker>.sh`.
+#     A live foreign PID is refused instead of being killed.
+#   - A worker with the generic pause marker `tmp/state/<worker>.paused` is left
+#     untouched: the operator's intentional stop is not undone by a restart.
+#   - A worker without a pid file (never started, or intentionally disabled by
+#     config) is skipped, not failed: this is a rollout helper, not a health
+#     gate, and a disabled worker must not fail an unrelated deploy.
+#   - TERM is intentional rather than HUP: a projected `workers/<name>.sh`
+#     cannot replace functions already resident in the old bash process. The
+#     existing `start_all.sh` supervisor owns respawn; this helper waits for a
+#     new live PID with the reviewed cmdline and fails closed if none appears.
+#   - Output goes to the VM-private exec log. Only the exit code reaches the
+#     workflow step log; keep these stable:
+#       0   every target was replaced, skipped (paused / not started), or absent
+#       10  audio_worker: recorded PID alive but is not the reviewed worker
+#       11  audio_worker: old PID survived the bounded TERM wait
+#       12  audio_worker: no live reviewed replacement within the bounded wait
+#       20-22 youtube_worker, 30-32 poll_worker, 40-42 prediction_worker,
+#       50-52 stream_noon_audit (same three meanings per worker)
+#     When several workers fail, the human-readable log records all of them and
+#     the exit code is the first failure, so a rerun has a stable meaning.
+
+root="/home/ubuntu/soren"
+if [[ "${1:-}" == "--root" ]]; then
+  [[ $# -eq 2 ]]
+  root="$2"
+  shift 2
+fi
+[[ $# -eq 0 ]]
+
+is_live_pid() {
+  local pid="$1" state=""
+  kill -0 "$pid" 2>/dev/null || return 1
+  if [[ -r "/proc/$pid/stat" ]]; then
+    state="$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f1)"
+    [[ "$state" == Z ]] && return 1
+  fi
+  return 0
+}
+
+# Prints the live reviewed PID for a worker, or returns 1.
+#   1  no pid file / stale pid / not the reviewed worker
+read_live_worker_pid() {
+  local name="$1" pid_file="$root/tmp/state/$1.pid" pid="" cmdline=""
+  [[ -r "$pid_file" ]] || return 1
+  pid="$(tr -d '[:space:]' < "$pid_file" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  is_live_pid "$pid" || return 1
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+  cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  [[ "$cmdline" == *"workers/${name}.sh"* ]] || return 1
+  printf '%s\n' "$pid"
+}
+
+#  0  the recorded PID is alive but belongs to something else (refuse)
+#  1  no pid file, or the recorded PID is already gone (supervisor's business)
+recorded_pid_state() {
+  local name="$1" pid_file="$root/tmp/state/$1.pid" pid=""
+  [[ -r "$pid_file" ]] || return 1
+  pid="$(tr -d '[:space:]' < "$pid_file" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  is_live_pid "$pid" || return 1
+  return 0
+}
+
+# restart_worker <name> <failure_base>
+restart_worker() {
+  local name="$1" base="$2" old_pid="" new_pid=""
+
+  if [[ -e "$root/tmp/state/${name}.paused" ]]; then
+    echo "skip: ${name} is intentionally paused (pause marker kept)" >&2
+    return 0
+  fi
+
+  if ! recorded_pid_state "$name"; then
+    echo "skip: ${name} has no live recorded PID (not started or already restarting)" >&2
+    return 0
+  fi
+
+  if ! old_pid="$(read_live_worker_pid "$name")"; then
+    echo "${name}: PID in tmp/state/${name}.pid is alive but is not the reviewed worker" >&2
+    return "$base"
+  fi
+
+  kill -TERM "$old_pid" 2>/dev/null || {
+    echo "${name}: TERM failed for PID ${old_pid}" >&2
+    return "$base"
+  }
+
+  # The old process must actually exit before a replacement can be trusted.
+  for _ in $(seq 1 40); do
+    is_live_pid "$old_pid" || break
+    sleep 0.25
+  done
+  if is_live_pid "$old_pid"; then
+    echo "${name}: old PID ${old_pid} still alive after TERM" >&2
+    return "$((base + 1))"
+  fi
+
+  # start_all.sh respawns dead workers. Success requires a *new* live PID that is
+  # still the reviewed worker, so a supervisor that gave up is detected.
+  for _ in $(seq 1 80); do
+    if new_pid="$(read_live_worker_pid "$name" 2>/dev/null)"; then
+      if [[ "$new_pid" != "$old_pid" ]]; then
+        echo "${name}: replaced PID ${old_pid} -> ${new_pid}" >&2
+        return 0
+      fi
+    fi
+    sleep 0.25
+  done
+  echo "${name}: no live reviewed replacement appeared within the bounded wait" >&2
+  return "$((base + 2))"
+}
+
+targets=(audio_worker youtube_worker poll_worker prediction_worker stream_noon_audit)
+failure_bases=(10 20 30 40 50)
+
+first_failure=0
+for idx in "${!targets[@]}"; do
+  status=0
+  restart_worker "${targets[$idx]}" "${failure_bases[$idx]}" || status=$?
+  if [[ "$status" -ne 0 && "$first_failure" -eq 0 ]]; then
+    first_failure="$status"
+  fi
+done
+
+exit "$first_failure"
