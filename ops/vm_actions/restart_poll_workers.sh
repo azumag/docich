@@ -22,8 +22,8 @@ set -euo pipefail
 #     `--root` exists only so repository tests can exercise the helper without
 #     touching /home/ubuntu/soren.
 #   - Only the five named polling workers are signalled. The display, Soren,
-#     audio, radio, prediction *service*, game, stream encoder and Twitch units
-#     are never touched.
+#     audio server, radio, game, stream encoder and Twitch units are never
+#     touched.
 #   - A PID recorded in `tmp/state/<worker>.pid` is signalled only when it is
 #     alive and its `/proc/<pid>/cmdline` still contains `workers/<worker>.sh`.
 #     A live foreign PID is refused instead of being killed.
@@ -36,6 +36,11 @@ set -euo pipefail
 #     cannot replace functions already resident in the old bash process. The
 #     existing `start_all.sh` supervisor owns respawn; this helper waits for a
 #     new live PID with the reviewed cmdline and fails closed if none appears.
+#   - The probes use bash builtins (`kill`, `read`) instead of pipelines: the
+#     deployment host runs at load average > 10, where one `sed | cut` per
+#     iteration stretched a nominal 10s bound to ~30s and made the wait
+#     meaningless. `audio_worker` gets the longest bound because it defers TERM
+#     while a playback/queue child is in the foreground.
 #   - Output goes to the VM-private exec log. Only the exit code reaches the
 #     workflow step log; keep these stable:
 #       0   every target was replaced, skipped (paused / not started), or absent
@@ -55,51 +60,58 @@ if [[ "${1:-}" == "--root" ]]; then
 fi
 [[ $# -eq 0 ]]
 
+# Read /proc/<pid>/stat without forking. Bash cannot split on the closing paren
+# with a glob, so strip through the last ") " and take the first field.
 is_live_pid() {
-  local pid="$1" state=""
+  local pid="$1" stat="" state=""
   kill -0 "$pid" 2>/dev/null || return 1
-  if [[ -r "/proc/$pid/stat" ]]; then
-    state="$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f1)"
+  if IFS= read -r stat < "/proc/$pid/stat" 2>/dev/null; then
+    state="${stat##*) }"
+    state="${state%% *}"
     [[ "$state" == Z ]] && return 1
   fi
   return 0
 }
 
-# Prints the live reviewed PID for a worker, or returns 1.
-#   1  no pid file / stale pid / not the reviewed worker
-read_live_worker_pid() {
-  local name="$1" pid_file="$root/tmp/state/$1.pid" pid="" cmdline=""
-  [[ -r "$pid_file" ]] || return 1
-  pid="$(tr -d '[:space:]' < "$pid_file" 2>/dev/null || true)"
-  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
-  is_live_pid "$pid" || return 1
-  [[ -r "/proc/$pid/cmdline" ]] || return 1
-  cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
-  [[ "$cmdline" == *"workers/${name}.sh"* ]] || return 1
-  printf '%s\n' "$pid"
-}
-
-#  0  the recorded PID is alive but belongs to something else (refuse)
+#  0  the recorded PID is alive (whatever it is)
 #  1  no pid file, or the recorded PID is already gone (supervisor's business)
-recorded_pid_state() {
-  local name="$1" pid_file="$root/tmp/state/$1.pid" pid=""
-  [[ -r "$pid_file" ]] || return 1
-  pid="$(tr -d '[:space:]' < "$pid_file" 2>/dev/null || true)"
+recorded_pid_is_live() {
+  local pid_file="$root/tmp/state/$1.pid" pid=""
+  IFS= read -r pid < "$pid_file" 2>/dev/null || return 1
+  pid="${pid//[[:space:]]/}"
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
   is_live_pid "$pid" || return 1
   return 0
 }
 
-# restart_worker <name> <failure_base>
+# Prints the live reviewed PID for a worker, or returns 1.
+# The cmdline is NUL-separated, so read token by token instead of piping tr.
+read_live_worker_pid() {
+  local name="$1" pid_file="$root/tmp/state/$1.pid" pid="" token=""
+  IFS= read -r pid < "$pid_file" 2>/dev/null || return 1
+  pid="${pid//[[:space:]]/}"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  is_live_pid "$pid" || return 1
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+  while IFS= read -r -d '' token; do
+    if [[ "$token" == *"workers/${name}.sh"* ]]; then
+      printf '%s\n' "$pid"
+      return 0
+    fi
+  done < "/proc/$pid/cmdline"
+  return 1
+}
+
+# restart_worker <name> <failure_base> <term_wait_iterations> <replace_wait_iterations>
 restart_worker() {
-  local name="$1" base="$2" old_pid="" new_pid=""
+  local name="$1" base="$2" term_wait="$3" replace_wait="$4" old_pid="" new_pid=""
 
   if [[ -e "$root/tmp/state/${name}.paused" ]]; then
     echo "skip: ${name} is intentionally paused (pause marker kept)" >&2
     return 0
   fi
 
-  if ! recorded_pid_state "$name"; then
+  if ! recorded_pid_is_live "$name"; then
     echo "skip: ${name} has no live recorded PID (not started or already restarting)" >&2
     return 0
   fi
@@ -115,7 +127,7 @@ restart_worker() {
   }
 
   # The old process must actually exit before a replacement can be trusted.
-  for _ in $(seq 1 40); do
+  for _ in $(seq 1 "$term_wait"); do
     is_live_pid "$old_pid" || break
     sleep 0.25
   done
@@ -126,7 +138,7 @@ restart_worker() {
 
   # start_all.sh respawns dead workers. Success requires a *new* live PID that is
   # still the reviewed worker, so a supervisor that gave up is detected.
-  for _ in $(seq 1 80); do
+  for _ in $(seq 1 "$replace_wait"); do
     if new_pid="$(read_live_worker_pid "$name" 2>/dev/null)"; then
       if [[ "$new_pid" != "$old_pid" ]]; then
         echo "${name}: replaced PID ${old_pid} -> ${new_pid}" >&2
@@ -141,11 +153,15 @@ restart_worker() {
 
 targets=(audio_worker youtube_worker poll_worker prediction_worker stream_noon_audit)
 failure_bases=(10 20 30 40 50)
+# audio_worker parks the TERM trap behind a foreground playback/queue child, so
+# it gets up to 60s to exit; the others exit between 1s poll slices and get 20s.
+term_waits=(240 80 80 80 80)
+replace_waits=(120 80 80 80 80)
 
 first_failure=0
 for idx in "${!targets[@]}"; do
   status=0
-  restart_worker "${targets[$idx]}" "${failure_bases[$idx]}" || status=$?
+  restart_worker "${targets[$idx]}" "${failure_bases[$idx]}" "${term_waits[$idx]}" "${replace_waits[$idx]}" || status=$?
   if [[ "$status" -ne 0 && "$first_failure" -eq 0 ]]; then
     first_failure="$status"
   fi
