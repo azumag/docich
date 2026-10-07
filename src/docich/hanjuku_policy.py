@@ -904,7 +904,10 @@ def _retake_order(order, mem):
 def _reserve_source_guard(order, mem):
     # Original chart offensives and boss waves retain their sequences. A
     # recapture or an off-chart attack must leave a measured idle defender.
+    # Adjusted orders normally omit purpose; only explicit moves are exempt.
     return (_retake_order(order, mem)
+            or (not _is_boss_order(order, mem) and order.get('purpose') != 'move'
+                and order['step'].startswith(chart_adjust.PLAN_PREFIX))
             or (order.get('purpose') == 'attack' and order['step'].startswith('I:')))
 
 
