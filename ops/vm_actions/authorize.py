@@ -8,7 +8,7 @@ REPOSITORY_ID='1327276249'
 WORKFLOW='.github/workflows/vm-operations.yml'
 OPS={'deploy','exec','configure_jev','disable_jev','configure_jev_route_direct','configure_jev_route_vercel',
      'disable_jev_route','status','bootstrap','diagnostics','cpu_profile','reclaim','rebaseline','market_paper','paper_ai_canary','restart_webui',
-     'recover_soren_game','recover_soren_round'}
+     'recover_soren_game','recover_soren_round','recover_bgm_mute'}
 TARGETS={'preview','production'}
 REF_RE=re.compile(r'[A-Za-z0-9][A-Za-z0-9_./-]{0,199}\Z')
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
@@ -67,6 +67,8 @@ def main():
         if op=='recover_soren_game' and ref!='main': fail('recover_soren_game must run from main')
         if op=='recover_soren_round' and (target!='production' or ref!='main'):
             fail('recover_soren_round requires production/main')
+        if op=='recover_bgm_mute' and (target!='production' or ref!='main'):
+            fail('recover_bgm_mute requires production/main')
         if op=='configure_jev' and target!='production': fail('configure_jev is production-only')
         if op=='configure_jev' and ref!='main': fail('configure_jev must run from main')
         if op=='disable_jev' and target!='production': fail('disable_jev is production-only')
@@ -77,7 +79,7 @@ def main():
         if target=='production' and op in {'exec','configure_jev','disable_jev','configure_jev_route_direct',
                                             'configure_jev_route_vercel','disable_jev_route','bootstrap',
                                             'reclaim','rebaseline','market_paper','paper_ai_canary','restart_webui',
-                                            'recover_soren_game','recover_soren_round'} and confirm!='production':
+                                            'recover_soren_game','recover_soren_round','recover_bgm_mute'} and confirm!='production':
             fail('production confirmation required')
         # diagnostics and cpu_profile are bounded read-only operations, so they
         # need owner-only gating (above) but no separate confirmation.
