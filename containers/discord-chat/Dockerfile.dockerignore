@@ -1,6 +1,8 @@
 **
 !requirements-discord.txt
+!requirements-screen.txt
 !requirements-test.txt
+!requirements-twica-overlay.txt
 !src/docich/__init__.py
 !src/docich/discord_chat.py
 !src/docich/discord_memory.py
