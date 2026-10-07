@@ -375,13 +375,8 @@ if [[ "$skip_system" == 0 ]]; then
     done < <(snap list --all 2>/dev/null | tail -n +2 || true)
   fi
 
-  # Docker: dangling images and build cache older than 168h (7 days) only.
-  # image: `until=<duration>` prunes images CREATED more than that duration
-  # ago (daemon clock); dangling=true is forced without -a, so tagged images
-  # can never be candidates. builder: `until` is the documented synonym of
-  # `unused-for` (KeepDuration), so cache RECENTLY USED within 168h survives
-  # regardless of creation date. Containers and volumes are never touched;
-  # Local Volumes is 0 on production and the PAPER sandbox runs without them.
+  # Docker: dangling images / build cache older than 168h only. Tagged
+  # images, containers, volumes are never candidates.
   docker_image_max_age="168h"
   docker_builder_max_age="168h"
   if command -v docker >/dev/null 2>&1; then
@@ -396,6 +391,8 @@ if [[ "$skip_system" == 0 ]]; then
   fi
 
   # Rotate only soren application logs (never truncate live file; copytruncate).
+  # opencode.log lives outside soren/logs: own stanza, size 50M x3.
+  # tool-output stays out: opencode reads it live, no age-gate delete (#389).
   logrotate_conf='/etc/logrotate.d/soren'
   read -r -d '' conf <<'CONF' || true
 /home/ubuntu/soren/logs/*.log {
@@ -403,6 +400,15 @@ if [[ "$skip_system" == 0 ]]; then
   weekly
   rotate 4
   size 100M
+  missingok
+  notifempty
+  compress
+  delaycompress
+  copytruncate
+}
+/home/ubuntu/.local/share/opencode/log/opencode.log {
+  rotate 3
+  size 50M
   missingok
   notifempty
   compress
