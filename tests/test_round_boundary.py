@@ -503,16 +503,109 @@ def test_pre_fifo_accepted_request_is_migrated_before_expired_drain_recovery():
             state["deadline_at"] = "2000-01-01T00:00:00Z"
             store.canonical.save(state)
 
-        resumed = coordinator.switch("hanjuku", request_id=legacy.request_id)
-        assert resumed.status == "succeeded"
-        assert resumed.to_game == "hanjuku"
-        assert store.receipts.load(legacy.request_id)["status"] == "succeeded"
-        assert store.canonical.load()[0]["active"]["game"] == "hanjuku"
+        try:
+            resumed = coordinator.switch("hanjuku", request_id=legacy.request_id)
+            assert resumed.status == "succeeded"
+            assert resumed.to_game == "hanjuku"
+            assert store.receipts.load(legacy.request_id)["status"] == "succeeded"
+            assert store.canonical.load()[0]["active"]["game"] == "hanjuku"
 
-        first_worker.join(2.0)
-        assert not first_worker.is_alive()
-        assert first_result[0].status == "failed"
-        assert old.cancel_request_ids == [first_id]
+            first_worker.join(2.0)
+            assert not first_worker.is_alive()
+            assert first_result[0].status == "failed"
+            assert old.cancel_request_ids == [first_id]
+        finally:
+            # The TemporaryDirectory below is destroyed when this block
+            # exits.  A background driver still running at that point
+            # writes canonical state into a deleted directory
+            # (FileNotFoundError) and leaks the worker (#1159): always
+            # release and rejoin before teardown, even on assertion
+            # failure, so teardown never races a live driver.
+            old.boundary_release.set()
+            first_worker.join(5.0)
+
+
+def test_pre_fifo_migrated_switch_survives_transient_writer_contention():
+    """Deterministic repro for #1159: writer contention at recovery entry.
+
+    CI runs 36258612023 and 36351667697 showed the migrated switch in
+    ``test_pre_fifo_accepted_request_is_migrated_before_expired_drain_recovery``
+    spuriously returning ``in_progress`` (and leaking the stale driver):
+    the stale boundary driver can hold the exclusive writer for a few
+    milliseconds exactly when the recovery request enters, and a single
+    non-blocking acquisition degrades to busy/in_progress instead of
+    recovering the expired drain.
+
+    This test forces that interleaving deterministically by holding the
+    writer while the migrated switch enters.  The entry retry must ride
+    it out and still recover to ``succeeded``; both drivers must be
+    joined before the TemporaryDirectory is destroyed.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        _assert_started(coordinator)
+        old = factory.adapters[("nethack", 1)]
+        first_result = []
+        first_id = str(uuid.uuid4())
+        first_worker = threading.Thread(
+            target=lambda: first_result.append(
+                coordinator.switch("robots", request_id=first_id, timeout_s=60.0)
+            )
+        )
+        resumed_box: list = []
+        resumed_worker: threading.Thread | None = None
+        try:
+            first_worker.start()
+            _wait_for_phase(store, "draining")
+            assert old.boundary_entered.wait(1.0)
+
+            legacy = store.enqueue_request(str(uuid.uuid4()), "switch", "hanjuku")
+            with store.lock(exclusive=True, blocking=False):
+                receipt = store.receipts.load(legacy.request_id)
+                assert receipt is not None
+                receipt["status"] = "accepted"
+                store.receipts.save(receipt)
+                state, _ = store.canonical.load()
+                state["deadline_at"] = "2000-01-01T00:00:00Z"
+                store.canonical.save(state)
+
+            # Hold the writer across the migrated switch's entry: longer
+            # than a single non-blocking acquisition, well within the
+            # entry retry window.
+            def _resumed() -> None:
+                resumed_box.append(
+                    coordinator.switch(
+                        "hanjuku", request_id=legacy.request_id, timeout_s=60.0
+                    )
+                )
+
+            with store.lock(exclusive=True, blocking=True):
+                resumed_worker = threading.Thread(target=_resumed)
+                resumed_worker.start()
+                time.sleep(0.3)
+            resumed_worker.join(30.0)
+            assert not resumed_worker.is_alive()
+            assert len(resumed_box) == 1
+            assert resumed_box[0].status == "succeeded"
+            assert resumed_box[0].to_game == "hanjuku"
+            assert store.receipts.load(legacy.request_id)["status"] == "succeeded"
+            assert store.canonical.load()[0]["active"]["game"] == "hanjuku"
+
+            first_worker.join(5.0)
+            assert not first_worker.is_alive()
+            assert first_result[0].status == "failed"
+            # Recovery and the stale driver's own step-timeout path can
+            # cancel the same boundary concurrently; the adapter cancel
+            # is idempotent, so require exact identity, not exact count.
+            assert old.cancel_request_ids
+            assert set(old.cancel_request_ids) == {first_id}
+        finally:
+            old.boundary_release.set()
+            if resumed_worker is not None:
+                resumed_worker.join(5.0)
+            first_worker.join(5.0)
 
 
 def test_queued_request_retries_expired_drain_recovery_after_a_refusal():
