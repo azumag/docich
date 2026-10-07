@@ -3503,8 +3503,19 @@ class GameSwitchCoordinator:
             or state.get("request_id") != acceptance.request_id
             or state.get("active") != dict(old_active)
         ):
-            raise RoundBoundaryStateChangedError(
-                "round boundary失敗時にcanonical identityが変化しています"
+            # A concurrent recovery already terminally cancelled this drain
+            # (or a newer request owns the canonical state).  This stale
+            # driver must not touch canonical state, receipts, or the old
+            # runtime.  Return the decided terminal receipt when this request
+            # was recovered, else a stale failure bound to this request --
+            # never mistake canonical state for a newer request.
+            receipt = self.store.receipts.load(acceptance.request_id)
+            if receipt is not None and receipt.get("status") in TERMINAL_RECEIPT_STATUSES:
+                return _result_from_receipt(receipt)
+            return self._round_boundary_stale_result(
+                acceptance,
+                target,
+                "round boundary失敗時にcanonical identityが変化しています",
             )
 
         if cancel_boundary:
