@@ -293,6 +293,46 @@ class AuthorizeTests(unittest.TestCase):
         self.assertIn("src/docich ops/runtime_context/webui_restart_epoch", step)
         self.assertIn('git -C candidate diff --quiet "$BEFORE_SHA" "$SHA"', step)
 
+    def test_restart_chat_kick_workers_requires_production_main_and_confirmation(self):
+        p=self.run_auth(INPUT_OPERATION='restart_chat_kick_workers',INPUT_TARGET='preview',INPUT_REF='main',INPUT_CONFIRM='production')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('production-only',p.stderr)
+        p=self.run_auth(INPUT_OPERATION='restart_chat_kick_workers',INPUT_TARGET='production',INPUT_REF='feature',INPUT_CONFIRM='production')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('must run from main',p.stderr)
+        p=self.run_auth(INPUT_OPERATION='restart_chat_kick_workers',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('confirmation required',p.stderr)
+        p=self.run_auth(INPUT_OPERATION='restart_chat_kick_workers',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='production')
+        self.assertEqual(p.returncode,0,p.stderr)
+
+    def test_restart_chat_kick_workers_not_blocked_by_public_repo_exec_disable(self):
+        # 固定スクリプトだけを実行する operation なので、public repo で無効化
+        # される arbitrary exec には該当しない (targeted restart の正規経路)。
+        p=self.run_auth(
+            GITHUB_REPOSITORY_PRIVATE='false',
+            INPUT_OPERATION='restart_chat_kick_workers',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='production',
+        )
+        self.assertEqual(p.returncode,0,p.stderr)
+
+    def test_workflow_restart_chat_kick_workers_uses_reviewed_fixed_script(self):
+        workflow = WF.read_text(encoding="utf-8")
+        self.assertIn("steps.auth.outputs.operation == 'restart_chat_kick_workers'", workflow)
+        self.assertIn("cat control/ops/vm_actions/restart_chat_kick_workers.sh | ssh", workflow)
+        step = workflow.split("Restart chat and kick resident workers after owner confirmation", 1)[1].split("- name:", 1)[0]
+        # 任意 command の入力を再起動へ流用しない (stdin は固定スクリプト本文だけ)。
+        self.assertNotIn("VM_COMMAND", step)
+        # deploy hook では決して発火しない dispatch-only の operation。
+        self.assertNotIn("github.event_name == 'push'", step)
+        self.assertIn("exec docich production $SHA", step)
+        helper = (ROOT / "ops/vm_actions/restart_chat_kick_workers.sh").read_text(encoding="utf-8")
+        # 対象は chat_worker / kick_worker の2つだけで、任意の worker 名を受けない。
+        self.assertIn('targets=(chat_worker kick_worker)', helper)
+        self.assertIn('root="/home/ubuntu/soren"', helper)
+        self.assertIn('workers/${name}.sh', helper)
+        for forbidden in ("systemctl", "sudo", "tmux", "pkill"):
+            self.assertNotIn(forbidden, helper)
+
     def test_recover_soren_game_is_fixed_production_operation(self):
         for target, ref, confirm in (("preview", "main", "production"),
                                      ("production", "feature", "production"),
