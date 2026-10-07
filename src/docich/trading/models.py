@@ -155,6 +155,9 @@ class PaperFill:
     # (observed signal value vs threshold, lookback, exit pnl/hold). Optional
     # because legacy rows and non-strategy fills predate the column.
     signal_context: Mapping[str, object] | None = None
+    # Private execution-cost breakdown (fee/slippage sources and rates).
+    # Ledger-only audit detail; never published to the public status.
+    cost_context: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)

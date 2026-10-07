@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS paper_fills (
     reference_notional TEXT NOT NULL,
     reason_code TEXT NOT NULL,
     filled_at REAL NOT NULL,
-    signal_context TEXT
+    signal_context TEXT,
+    cost_context TEXT
 );
 CREATE TABLE IF NOT EXISTS paper_multileg_settlements (
     settlement_id TEXT PRIMARY KEY,
@@ -122,6 +123,8 @@ class PaperLedger:
         }
         if "signal_context" not in existing:
             self._conn.execute("ALTER TABLE paper_fills ADD COLUMN signal_context TEXT")
+        if "cost_context" not in existing:
+            self._conn.execute("ALTER TABLE paper_fills ADD COLUMN cost_context TEXT")
 
     @staticmethod
     def _dump_signal_context(value: Mapping[str, object] | None) -> str | None:
@@ -162,11 +165,12 @@ class PaperLedger:
             reason_code=row[10],
             filled_at=float(row[11]),
             signal_context=PaperLedger._load_signal_context(row[12] if len(row) > 12 else None),
+            cost_context=PaperLedger._load_signal_context(row[13] if len(row) > 13 else None),
         )
 
     _FILL_COLUMNS = (
         "fill_id, opportunity_id, strategy_id, symbol, side, quote, amount, price, "
-        "quote_notional, reference_notional, reason_code, filled_at, signal_context"
+        "quote_notional, reference_notional, reason_code, filled_at, signal_context, cost_context"
     )
 
     def get_fill_for_opportunity(self, opportunity_id: str) -> PaperFill | None:
@@ -182,6 +186,7 @@ class PaperLedger:
         *,
         timestamp: float,
         signal_context: Mapping[str, object] | None = None,
+        cost_context: Mapping[str, object] | None = None,
     ) -> PaperFill:
         existing = self.get_fill_for_opportunity(decision.opportunity_id)
         if existing is not None:
@@ -211,9 +216,11 @@ class PaperLedger:
             self._conn.execute(
                 """INSERT OR IGNORE INTO paper_fills
                    (fill_id, opportunity_id, strategy_id, symbol, side, quote, amount, price,
-                    quote_notional, reference_notional, reason_code, filled_at, signal_context)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (fill_id, *values, self._dump_signal_context(signal_context)),
+                    quote_notional, reference_notional, reason_code, filled_at, signal_context,
+                    cost_context)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (fill_id, *values, self._dump_signal_context(signal_context),
+                 self._dump_signal_context(cost_context)),
             )
         recorded = self.get_fill_for_opportunity(decision.opportunity_id)
         if recorded is None:
