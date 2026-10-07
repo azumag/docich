@@ -33,6 +33,7 @@ def _survived(pids: tuple[int, ...]) -> TerminationResult:
 
 
 OWNER = tmux_mod.TmuxOwnership("g1-abcdef", 1, "game")
+PANE_SCOPE = tmux_mod.PaneProcessScope(123, "0::/tmux-spawn-original.scope")
 
 
 class TestOwnershipEnvironmentExport(unittest.TestCase):
@@ -82,6 +83,9 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
         pane_stop = mock.patch("docich.tmux.terminate_process_tree", return_value=_stopped(123))
         self.pane_stop = pane_stop.start()
         self.addCleanup(pane_stop.stop)
+        cgroup = mock.patch("docich.tmux.process_cgroup", return_value=PANE_SCOPE.cgroup)
+        cgroup.start()
+        self.addCleanup(cgroup.stop)
 
     @staticmethod
     def _window_kill_calls() -> list[subprocess.CompletedProcess]:
@@ -165,7 +169,7 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
 
         self.assertTrue(self.tmux.kill_window_owned("docich:game-g1", OWNER))
 
-        mock_scopes.assert_called_once_with({123}, cgroup_marker="tmux-spawn-")
+        mock_scopes.assert_called_once_with({PANE_SCOPE})
         self.assertEqual(
             [call.args[0] for call in mock_terminate.call_args_list],
             [(777,)],
@@ -177,7 +181,7 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
             mock.patch("docich.tmux.processes_with_env", return_value=[]),
             mock.patch("docich.tmux.processes_in_pane_scopes") as mock_scopes,
         ):
-            victims = self.tmux._escaped_process_ids(None, None, {123: 123})
+            victims = self.tmux._escaped_process_ids(None, None, {123: PANE_SCOPE})
 
         self.assertEqual(victims, ())
         mock_scopes.assert_not_called()
@@ -273,6 +277,9 @@ class TestOrphanSweepOnSessionTeardown(unittest.TestCase):
         pane_stop = mock.patch("docich.tmux.terminate_process_tree", return_value=_stopped(123))
         self.pane_stop = pane_stop.start()
         self.addCleanup(pane_stop.stop)
+        cgroup = mock.patch("docich.tmux.process_cgroup", return_value=PANE_SCOPE.cgroup)
+        cgroup.start()
+        self.addCleanup(cgroup.stop)
 
     @staticmethod
     def _session_kill_calls() -> list[subprocess.CompletedProcess]:
@@ -327,7 +334,7 @@ class TestOrphanSweepOnSessionTeardown(unittest.TestCase):
 
         self.tmux.stop_game_session_named("docich-game-g7")
 
-        mock_scopes.assert_called_once_with({123}, cgroup_marker="tmux-spawn-")
+        mock_scopes.assert_called_once_with({PANE_SCOPE})
         self.assertEqual(
             [call.args[0] for call in mock_terminate.call_args_list],
             [(777,)],

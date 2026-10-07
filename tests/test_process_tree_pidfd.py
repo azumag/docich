@@ -82,7 +82,7 @@ def sweep(monkeypatch, env_reader, *, legacy=False, roles=("game",)):
     monkeypatch.setattr(tmux, "terminate_owned_processes", immediate)
     return tmux.Tmux()._reap_escaped_processes(
         None if legacy else OWNER, None if legacy else roles,
-        {123: 123} if legacy else {}, operation="test"
+        {123: tmux.PaneProcessScope(123, "0::/tmux-spawn-old.scope")} if legacy else {}, operation="test"
     )
 
 
@@ -120,7 +120,7 @@ def test_pane_scope_proof_cannot_authorize_replacement(kernel, monkeypatch, phas
         owned = kernel.current[pid] == "owned"
         if phase == "proof":
             kernel.replace(pid)
-        return "0::/tmux-spawn-old.scope" if owned else "0::/unrelated.scope"
+        return "0::/tmux-spawn-old.scope" if owned else "0::/tmux-spawn-unrelated.scope"
     monkeypatch.setattr(tmux, "process_cgroup", cgroup)
     if phase == "open":
         kernel.before_open = kernel.replace

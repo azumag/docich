@@ -40,6 +40,31 @@ class ProcessInfo:
 
 
 @dataclass(frozen=True)
+class PaneProcessScope:
+    """A pane's captured process group and exact cgroup membership."""
+
+    pgid: int
+    cgroup: str
+
+    @classmethod
+    def from_cgroup(cls, pgid: int, cgroup: str | None) -> PaneProcessScope | None:
+        """Accept a concrete tmux scope, retaining its exact membership."""
+
+        if type(pgid) is not int or pgid <= 0 or not cgroup:
+            return None
+        for line in cgroup.splitlines():
+            fields = line.split(":", 2)
+            if len(fields) != 3 or not fields[0].isdigit() or not fields[2].startswith("/"):
+                continue
+            if any(
+                part.startswith("tmux-spawn-") and part.endswith(".scope")
+                for part in fields[2].split("/")
+            ):
+                return cls(pgid, cgroup)
+        return None
+
+
+@dataclass(frozen=True)
 class TerminationResult:
     roots: tuple[int, ...]
     term_sent: tuple[int, ...]
@@ -394,32 +419,32 @@ def processes_with_env(
 
 
 def processes_in_pane_scopes(
-    pgids: Iterable[int],
+    scopes: Iterable[PaneProcessScope],
     *,
-    cgroup_marker: str = "tmux-spawn-",
     pids: Sequence[int] | None = None,
     pgid_lookup: Mapping[int, int] | None = None,
     cgroup_reader=None,
 ) -> list[int]:
-    """PIDs in one of ``pgids`` that still live in a tmux pane (systemd) scope.
+    """PIDs matching an exact captured (PGID, cgroup membership) pair.
 
     Both the process group and the cgroup scope must match a snapshot taken
     from an ownership-checked tmux target. These are discovery candidates;
     callers must revalidate ownership under a stable handle before signalling.
     """
 
-    wanted = {int(pgid) for pgid in pgids if type(pgid) is int and pgid > 0}
+    wanted = {(scope.pgid, scope.cgroup) for scope in scopes}
     if not wanted:
         return []
+    wanted_pgids = {pgid for pgid, _cgroup in wanted}
     reader = process_cgroup if cgroup_reader is None else cgroup_reader
     lookup = process_pgid_map() if pgid_lookup is None else pgid_lookup
     candidates = list(pids) if pids is not None else list(lookup.keys())
     found: list[int] = []
     for pid in candidates:
         pid = int(pid)
-        if lookup.get(pid) not in wanted:
+        if lookup.get(pid) not in wanted_pgids:
             continue
-        if cgroup_marker and cgroup_marker not in (reader(pid) or ""):
+        if (lookup.get(pid), reader(pid)) not in wanted:
             continue
         found.append(pid)
     return found

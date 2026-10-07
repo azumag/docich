@@ -95,13 +95,14 @@ class TestOwnershipIntrospection(unittest.TestCase):
         pgid_lookup = {20: 123, 21: 123, 22: 999}
         cgroups = {
             20: "0::/user.slice/user-1000.slice/tmux-spawn-abc.scope",
-            21: "0::/user.slice/user-1000.slice/app.slice",
+            21: "0::/user.slice/user-1000.slice/tmux-spawn-other.scope",
             22: "0::/user.slice/user-1000.slice/tmux-spawn-abc.scope",
         }
 
         self.assertEqual(
             process_tree.processes_in_pane_scopes(
-                {123}, pids=pids, pgid_lookup=pgid_lookup, cgroup_reader=cgroups.get
+                {process_tree.PaneProcessScope(123, cgroups[20])},
+                pids=pids, pgid_lookup=pgid_lookup, cgroup_reader=cgroups.get
             ),
             [20],
         )

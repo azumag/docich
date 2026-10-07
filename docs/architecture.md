@@ -463,6 +463,8 @@ enabled = false        # viewer専用。productionはsoviet_nowが運転
 
 発見した PID は候補に留め、Linux pidfd を開いた後で tag または PGID/cgroup を再検証し、読取中に handle が終了していないことを確認する。TERM・KILL・終了待ちは同じ pidfd を使い、後から子孫を追加しない。pidfd 未対応・取得/送信/監視失敗は `TmuxError` として fail-closed にし、数値 PID への signal fallback は使わない。
 
+PGID fallback は停止前の pane leader から取得した **PGID と exact cgroup membership の組**に束縛する。候補発見と pidfd 取得後の所有再検証の両方で同じ組を要求し、任意の `tmux-spawn-` scope は許可しない。元scopeが取得できない・tmux scopeでない・PGID読取の前後で変わった場合は、そのpaneのPGID fallbackを無効にする。runtime tagによる独立した所有証明は引き続き利用できる。
+
 ---
 
 ## 10. フェーズ計画

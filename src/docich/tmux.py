@@ -24,6 +24,7 @@ from .naming import (
     validate_tmux_window_ref,
 )
 from .process_tree import (
+    PaneProcessScope,
     ProcessIdentityError,
     ancestor_pids,
     is_running,
@@ -47,11 +48,6 @@ SESSION = "docich"
 OWNERSHIP_RUNTIME_ID_ENV = "DOCICH_TMUX_RUNTIME_ID"
 OWNERSHIP_GENERATION_ENV = "DOCICH_TMUX_GENERATION"
 OWNERSHIP_ROLE_ENV = "DOCICH_TMUX_ROLE"
-
-# systemd scope prefix tmux uses for a pane spawn; used together with a pane
-# process group for legacy ownership discovery. Signalling additionally
-# requires ownership revalidation under a retained pidfd.
-TMUX_PANE_SCOPE_MARKER = "tmux-spawn-"
 
 # Fail closed instead of reaping an implausible number of processes: a bigger
 # population means the ownership inference itself is not trustworthy.
@@ -615,10 +611,10 @@ class Tmux:
 
     def _stop_scoped_processes(
         self, target: str
-    ) -> tuple[tuple[int, ...], dict[int, int], frozenset[int]]:
+    ) -> tuple[tuple[int, ...], dict[int, PaneProcessScope], frozenset[int]]:
         """Stop the pane trees of an ownership-checked target.
 
-        Returns the PIDs that survived, the pane leaders' process groups (used
+        Returns the PIDs that survived, the pane leaders' exact group/scopes (used
         by the post-condition sweep to find children that left the descendant
         tree) and the PIDs the sweep must never signal.  The protection set is
         snapshotted *before* the leaders are stopped, while their ancestors
@@ -629,18 +625,21 @@ class Tmux:
         protected = self._protected_teardown_pids(pids)
         if not pids:
             return (), {}, protected
-        groups: dict[int, int] = {}
+        groups: dict[int, PaneProcessScope] = {}
         for pid in pids:
+            cgroup = process_cgroup(pid)
             pgid = process_pgid(pid)
-            if pgid is not None:
-                groups[pid] = pgid
+            if pgid is not None and cgroup == process_cgroup(pid):
+                scope = PaneProcessScope.from_cgroup(pgid, cgroup)
+                if scope is not None:
+                    groups[pid] = scope
         return terminate_process_tree(pids).remaining, groups, protected
 
     def _escaped_process_ids(
         self,
         ownership: TmuxOwnership | None,
         roles: tuple[str, ...] | None,
-        pane_groups: dict[int, int],
+        pane_groups: dict[int, PaneProcessScope],
         *,
         protected: frozenset[int] | None = None,
     ) -> tuple[int, ...]:
@@ -652,7 +651,7 @@ class Tmux:
           runtime (they survive reparenting, ``setsid`` and re-exec), and
           optionally one of ``roles`` (``None`` accepts every role, which is
           the right scope for a whole-session teardown), and
-        * a pane leader's process group **and** a tmux pane cgroup scope,
+        * a pane leader's process group **and its exact captured cgroup**,
           which also catches a process spawned before the tags existed as long
           as it stayed in the pane it was started from.
 
@@ -673,13 +672,10 @@ class Tmux:
                     tags[OWNERSHIP_ROLE_ENV] = role
                 found.extend(processes_with_env(tags))
         if pane_groups and not any(is_running(pid) for pid in pane_groups):
-            # Every pane leader is gone (a live one is reported as `remaining`
-            # before this sweep runs), so nothing legitimate can still be in
-            # their process groups: only escaped children remain.
+            # Numeric PGIDs can be reused by other tmux panes. Only a process
+            # in the original pane's exact captured scope is attributable.
             found.extend(
-                processes_in_pane_scopes(
-                    set(pane_groups.values()), cgroup_marker=TMUX_PANE_SCOPE_MARKER
-                )
+                processes_in_pane_scopes(set(pane_groups.values()))
             )
         guarded = set(ancestor_pids())
         if protected:
@@ -693,7 +689,7 @@ class Tmux:
         pid: int,
         ownership: TmuxOwnership | None,
         roles: tuple[str, ...] | None,
-        pane_groups: dict[int, int],
+        pane_groups: dict[int, PaneProcessScope],
         protected: frozenset[int] | None = None,
     ) -> bool:
         """Fresh proof read only after the caller has opened this PID's pidfd."""
@@ -711,15 +707,15 @@ class Tmux:
         return bool(
             pane_groups
             and not any(is_running(leader) for leader in pane_groups)
-            and process_pgid(pid) in pane_groups.values()
-            and TMUX_PANE_SCOPE_MARKER in (process_cgroup(pid) or "")
+            and (process_pgid(pid), process_cgroup(pid))
+            in {(scope.pgid, scope.cgroup) for scope in pane_groups.values()}
         )
 
     def _reap_escaped_processes(
         self,
         ownership: TmuxOwnership | None,
         roles: tuple[str, ...] | None,
-        pane_groups: dict[int, int],
+        pane_groups: dict[int, PaneProcessScope],
         *,
         operation: str,
         protected: frozenset[int] | None = None,
