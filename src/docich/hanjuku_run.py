@@ -18,8 +18,16 @@ from .hanjuku_pixels import Frame
 from .retroarch_boundary import read_record
 
 RUN_FILE='hanjuku_run.json'
-TERMINAL_REASONS=frozenset({'game_over','screen_stalled'})
+TERMINAL_REASONS=frozenset({'game_over','screen_stalled','input_stalled'})
 STALL_SECONDS=300
+# #1369: the merchant confirm screen held ~16 min with no input sent while the
+# screen kept animating, so screen_stalled never fired and the corner had no
+# exit. End the run when observations keep arriving but no input is sent.
+# Both bounds clear every bounded wait the policy resolves itself
+# (NO_INPUT_HOLD_MAX=100 observations ~=150 s at the normal 1.5 s cadence)
+# with margin, while staying well inside the observed 16-min outage.
+INPUT_STALL_SECONDS=600
+INPUT_STALL_OBSERVATIONS=120
 MAX_SAMPLE_GAP=15
 MAX_LOG_BYTES=4*1024*1024
 # Consecutive observations the battle panel must hold (or stay away) before a
@@ -68,10 +76,15 @@ def load(runtime_dir: Path, identity: dict):
             if type(value) is not int or value < 0:
                 raise AdapterError('invalid Hanjuku counter')
         for key in ('observed_monotonic', 'observed_at', 'unchanged_since',
-                    'unchanged_seconds', 'last_snapshot_at', 'title_since'):
+                    'unchanged_seconds', 'last_snapshot_at', 'title_since',
+                    'last_input_monotonic'):
             value = state.get(key, 0)
             if type(value) not in (int, float) or not math.isfinite(value):
                 raise AdapterError('invalid Hanjuku timestamp')
+        for key in ('last_input_observations',):
+            value = state.get(key, 0)
+            if type(value) is not int or value < 0:
+                raise AdapterError('invalid Hanjuku counter')
     return state
 
 
@@ -85,6 +98,13 @@ def terminal(runtime_dir: Path, identity: dict):
            and all(c in '0123456789abcdef' for c in digest))
     if reason=='screen_stalled':
         valid=valid and state.get('unchanged_seconds',0)>=STALL_SECONDS
+    elif reason=='input_stalled':
+        last_at=state.get('last_input_monotonic',0)
+        last_obs=state.get('last_input_observations',0)
+        valid=(valid and type(last_at) in (int,float) and math.isfinite(last_at)
+               and type(last_obs) is int and last_obs>=0
+               and state.get('observed_monotonic',0)-last_at>=INPUT_STALL_SECONDS
+               and state.get('observations',0)-last_obs>=INPUT_STALL_OBSERVATIONS)
     else:
         valid=(valid and state.get('name_entered') is True and state.get('gameplay_seen') is True
                and state.get('phase')=='title' and state.get('title_count',0)>=3
@@ -145,6 +165,27 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     reason='game_over' if candidate and title_count>=3 and now-title_since>=2 else None
     if not reason and duration>=STALL_SECONDS:
         reason='screen_stalled'
+    # #1369: observations kept arriving while no input was sent (an animated
+    # confirm screen screen_stalled can never catch). Only active consecutive
+    # play advances the stall clock: pauses, sample gaps and clock rewinds
+    # re-anchor it, so a resumed or legacy run never ends on stale markers.
+    observations_now=int(old.get('observations',0))+1
+    if consecutive and playing and old.get('playing') is True:
+        last_at: float = float(now)
+        raw_at = old.get('last_input_monotonic')
+        if (type(raw_at) in (int, float) and math.isfinite(raw_at)
+                and 0 < raw_at <= now):
+            last_at = float(raw_at)
+        raw_obs = old.get('last_input_observations')
+        last_obs: int = observations_now
+        if type(raw_obs) is int and raw_obs >= 0:
+            last_obs = raw_obs
+        input_idle=(now-last_at>=INPUT_STALL_SECONDS
+                    and observations_now-last_obs>=INPUT_STALL_OBSERVATIONS)
+    else:
+        last_at,last_obs,input_idle=now,observations_now,False
+    if not reason and input_idle:
+        reason='input_stalled'
     if reason == 'game_over':
         # Owner rule (2026-09-28): narrate a grounded recap of the run when it
         # ends. Written BEFORE the terminal state is persisted so the adapter's
@@ -187,12 +228,16 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
            'playing':playing,'terminal_reason':reason,
            'name_entered':named,'gameplay_seen':played,
            'terminal_candidate':candidate,'title_since':title_since,'title_count':title_count,
-           'terminal_evidence':'title_return_after_gameplay' if reason=='game_over' else None,
+           'terminal_evidence':'title_return_after_gameplay' if reason=='game_over'
+                             else 'no_input_sent_while_observing' if reason=='input_stalled'
+                             else None,
            'battle_active':battle_active,'battle_streak':battle_streak,
            'battle_away_streak':away_streak,
            'battles_started':int(old.get('battles_started',0))+int(battle_started),
            'battles_finished':int(old.get('battles_finished',0))+int(battle_ended),
-           'observations':int(old.get('observations',0))+1,
+           'observations':observations_now,
+           'last_input_monotonic':last_at,
+           'last_input_observations':last_obs,
            'actions_sent':int(old.get('actions_sent',0)),
            'phase_transitions':int(old.get('phase_transitions',0))+int(old.get('phase')!=phase)}
     snapshot=None
@@ -225,8 +270,10 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     return state
 
 
-def action_sent(runtime_dir: Path, identity: dict, action):
+def action_sent(runtime_dir: Path, identity: dict, action, *, now=None):
     state=load(runtime_dir,identity)
+    if now is None:
+        now=time.monotonic()
     trace=(read_record(runtime_dir/'hanjuku_bot.json', limit=256 * 1024).get('decision_trace') or {})
     if not isinstance(trace,dict) or any(trace.get(k)!=v for k,v in identity.items()):
         trace={}
@@ -236,4 +283,6 @@ def action_sent(runtime_dir: Path, identity: dict, action):
                       'decision_id':trace.get('decision_id'),
                       'decision_frame_sha256':trace.get('frame_sha256')})
     if state:
-        atomic_write_json(runtime_dir/RUN_FILE,{**state,'actions_sent':int(state.get('actions_sent',0))+1})
+        atomic_write_json(runtime_dir/RUN_FILE,{**state,'actions_sent':int(state.get('actions_sent',0))+1,
+                                                'last_input_monotonic':now,
+                                                'last_input_observations':int(state.get('observations',0))})
