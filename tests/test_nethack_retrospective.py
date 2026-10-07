@@ -249,6 +249,23 @@ class TestRetrospectiveEngine(unittest.TestCase):
                 "frame_hash": frame_hash,
                 "map_hash": "c" * 64,
             })
+        samples.insert(2, {
+            "schema_version": PROGRESS_SCHEMA_VERSION,
+            "ts": start + 60,
+            "phase": "sent",
+            "turn": 42,
+            "depth": 3,
+            "hp": 8,
+            "hp_max": 12,
+            "conditions": [],
+            "prompt": "none",
+            "player": [4, 5],
+            "intent": "explore_step",
+            "resolved_intent": "explore_step",
+            "key": "h",
+            "frame_hash": "d" * 64,
+            "map_hash": "c" * 64,
+        })
         trace = progress_dir / f"{run['run_id']}.jsonl"
         trace.write_text("".join(json.dumps(item) + "\n" for item in samples), encoding="utf-8")
 
@@ -256,8 +273,8 @@ class TestRetrospectiveEngine(unittest.TestCase):
         progress = result["progress_evidence"]
         self.assertEqual(progress["same_frame_hold_pairs"], 1)
         self.assertEqual(progress["max_same_frame_hold_streak"], 2)
-        self.assertEqual(progress["prompt_counts"], {"unknown": 3})
-        self.assertEqual(progress["phase_counts"], {"hold": 3})
+        self.assertEqual(progress["prompt_counts"], {"none": 1, "unknown": 3})
+        self.assertEqual(progress["phase_counts"], {"hold": 3, "sent": 1})
 
     def test_ended_unknown_never_invents_death_reason(self) -> None:
         run = self.make_run(1, status="ended_unknown", death=None)
