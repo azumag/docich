@@ -41,14 +41,21 @@ set -euo pipefail
 #     iteration stretched a nominal 10s bound to ~30s and made the wait
 #     meaningless. `audio_worker` gets the longest bound because it defers TERM
 #     while a playback/queue child is in the foreground.
+#   - A worker that does not exit within the bounded TERM wait is *logged and
+#     skipped*, not failed: `audio_worker` defers the TERM trap while a
+#     playback/queue child is in the foreground, which can exceed any bound a
+#     deploy is willing to wait. The TERM is already delivered at that point and
+#     `start_all.sh` replaces the process the moment the foreground work ends.
+#     Failing the step instead aborted the remaining deploy steps (observed in
+#     run 37688998678), which is worse than a deferred replacement.
 #   - Output goes to the VM-private exec log. Only the exit code reaches the
 #     workflow step log; keep these stable:
-#       0   every target was replaced, skipped (paused / not started), or absent
+#       0   every target was replaced, or skipped (paused / not started /
+#           still winding down after a delivered TERM)
 #       10  audio_worker: recorded PID alive but is not the reviewed worker
-#       11  audio_worker: old PID survived the bounded TERM wait
 #       12  audio_worker: no live reviewed replacement within the bounded wait
-#       20-22 youtube_worker, 30-32 poll_worker, 40-42 prediction_worker,
-#       50-52 stream_noon_audit (same three meanings per worker)
+#       20/22 youtube_worker, 30/32 poll_worker, 40/42 prediction_worker,
+#       50/52 stream_noon_audit (same two meanings per worker)
 #     When several workers fail, the human-readable log records all of them and
 #     the exit code is the first failure, so a rerun has a stable meaning.
 
@@ -132,8 +139,8 @@ restart_worker() {
     sleep 0.25
   done
   if is_live_pid "$old_pid"; then
-    echo "${name}: old PID ${old_pid} still alive after TERM" >&2
-    return "$((base + 1))"
+    echo "${name}: TERM delivered to PID ${old_pid}; still winding down after the bounded wait (supervisor replaces it when its foreground work ends)" >&2
+    return 0
   fi
 
   # start_all.sh respawns dead workers. Success requires a *new* live PID that is
@@ -154,8 +161,9 @@ restart_worker() {
 targets=(audio_worker youtube_worker poll_worker prediction_worker stream_noon_audit)
 failure_bases=(10 20 30 40 50)
 # audio_worker parks the TERM trap behind a foreground playback/queue child, so
-# it gets up to 60s to exit; the others exit between 1s poll slices and get 20s.
-term_waits=(240 80 80 80 80)
+# it gets a longer exit bound (20s) than the others (10s). Exceeding it is a
+# logged skip, not a failure -- see the note above.
+term_waits=(80 40 40 40 40)
 replace_waits=(120 80 80 80 80)
 
 first_failure=0

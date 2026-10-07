@@ -140,9 +140,11 @@ class RestartPollWorkersTests(unittest.TestCase):
         self.assertEqual(result.returncode, 10, result.stderr)
         self.assertIsNone(sleeper.poll(), "helper must not signal an unrelated process")
 
-    def test_reports_a_worker_that_ignores_term(self):
-        # poll_worker is live and refuses to exit: the helper must report that
-        # instead of reporting a replacement it never observed.
+    def test_a_worker_that_outlives_the_term_wait_is_skipped_not_failed(self):
+        # poll_worker is live and refuses to exit (this is what audio_worker does
+        # while a playback child is in the foreground). The TERM is delivered, so
+        # the rollout must log it and let the rest of the deploy continue rather
+        # than failing the step and skipping the remaining steps.
         script = self.root / "workers" / "poll_worker.sh"
         script.write_text(
             "#!/usr/bin/env bash\n"
@@ -156,8 +158,9 @@ class RestartPollWorkersTests(unittest.TestCase):
 
         result = self.run_helper()
 
-        self.assertEqual(result.returncode, 31, result.stderr)
-        self.assertIn("still alive after TERM", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("still winding down", result.stderr)
+        self.assertIn(f"TERM delivered to PID {stubborn.pid}", result.stderr)
 
     def test_reports_the_first_worker_that_did_not_come_back(self):
         # audio/youtube have no pid file (skipped); poll_worker is live but
