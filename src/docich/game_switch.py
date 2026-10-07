@@ -1124,6 +1124,23 @@ class GameSwitchStore:
                     state.get("phase") in {"idle", "ready"}
                     and existing.get("status") == "accepted"
                 ):
+                    last_result = state.get("last_result")
+                    if (
+                        isinstance(last_result, dict)
+                        and last_result.get("request_id") == request_id
+                        and last_result.get("status")
+                        in TERMINAL_RECEIPT_STATUSES
+                    ):
+                        # The commit already landed (crash between the
+                        # commit write and the receipt finish): canonical
+                        # last_result names this request terminal while
+                        # the receipt is still accepted.  Fail closed so
+                        # the caller reconciles the receipt instead of
+                        # re-executing an already-committed operation
+                        # (#1909).
+                        raise StateCorruptError(
+                            "accepted receiptに対応するcanonical requestがありません"
+                        )
                     # Orphaned pre-FIFO accepted receipt (#1159): its drain
                     # already left canonical (a stale driver rolled back to
                     # a stable phase while this request was entering), so
