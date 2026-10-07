@@ -140,6 +140,25 @@ class RestartPollWorkersTests(unittest.TestCase):
         self.assertEqual(result.returncode, 10, result.stderr)
         self.assertIsNone(sleeper.poll(), "helper must not signal an unrelated process")
 
+    def test_reports_a_worker_that_ignores_term(self):
+        # poll_worker is live and refuses to exit: the helper must report that
+        # instead of reporting a replacement it never observed.
+        script = self.root / "workers" / "poll_worker.sh"
+        script.write_text(
+            "#!/usr/bin/env bash\n"
+            "trap '' TERM\n"
+            "while true; do sleep 0.1; done\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        stubborn = self.start_worker("poll_worker")
+        self.record("poll_worker", stubborn.pid)
+
+        result = self.run_helper()
+
+        self.assertEqual(result.returncode, 31, result.stderr)
+        self.assertIn("still alive after TERM", result.stderr)
+
     def test_reports_the_first_worker_that_did_not_come_back(self):
         # audio/youtube have no pid file (skipped); poll_worker is live but
         # nothing respawns it, so the operation fails with poll_worker's code.
