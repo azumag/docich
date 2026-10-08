@@ -32,6 +32,8 @@ jobs:
           node-version: '22.18.0'
       - name: Synthetic PCM and fake providers only
         run: node --test runtimes/discord-voice/test/*.test.mjs
+      - name: Local STT audio and progress-text contracts without a model
+        run: python3 runtimes/discord-voice/local-stt-server.test.py
       - name: Existing text Worker offline regression
         run: node --test workers/discord-chat/test/*.test.js
 

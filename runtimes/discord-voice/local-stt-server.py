@@ -3,12 +3,29 @@ import argparse
 import io
 import json
 import logging
+import re
 import sys
 import wave
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 MAX_WAV = 44 + 48000 * 10 * 2
+STT_PROFILE = "game-progress-v1"
+STT_HOTWORDS = "同志、進捗、戦略、攻略、クリア、着地地点"
+STT_INITIAL_PROMPT = "日本語のゲームの会話です。同志、進捗、戦略調整、攻略、クリア、着地地点。"
+# Correct only the known addressed progress request, never arbitrary prose or word lookup.
+_PROGRESS_REQUEST = re.compile(
+    r"^(?P<before>[「『（(]*(?:同志|同士|どうし|ドウシ)[\s、,。!！?？:：]*(?:(?:今|現在)の)?)"
+    r"真直(?P<after>を教えて(?:ください|下さい)?[\s。.!！?？」』）)]*)$"
+)
+
+
+def normalize_transcript(text):
+    text = text.strip()
+    match = _PROGRESS_REQUEST.fullmatch(text)
+    if match:
+        return match.group("before") + "進捗" + match.group("after")
+    return text
 
 
 def valid_wav(audio):
@@ -40,7 +57,7 @@ def serve(model, port):
             self.wfile.write(body)
 
         def do_GET(self):
-            self.reply(200 if self.path == '/healthz' else 404, {'ready': self.path == '/healthz'})
+            self.reply(200 if self.path == '/healthz' else 404, {'ready': self.path == '/healthz', 'sttProfile': STT_PROFILE})
 
         def do_POST(self):
             audio = None
@@ -55,9 +72,9 @@ def serve(model, port):
                     self.reply(400, {'error': 'invalid_audio'}); return
                 segments, _ = model.transcribe(io.BytesIO(audio), language='ja', task='transcribe',
                     beam_size=1, temperature=0.0, condition_on_previous_text=False, vad_filter=True,
-                    without_timestamps=True, hotwords="同志",
-                    initial_prompt='日本語の会話です。呼びかけの言葉は「同志」です。')
-                text = ''.join(segment.text for segment in segments).strip()
+                    without_timestamps=True, hotwords=STT_HOTWORDS,
+                    initial_prompt=STT_INITIAL_PROMPT)
+                text = normalize_transcript(''.join(segment.text for segment in segments))
                 if len(text) > 2000:
                     self.reply(422, {'error': 'text_too_long'}); return
                 self.reply(200, {'text': text})
