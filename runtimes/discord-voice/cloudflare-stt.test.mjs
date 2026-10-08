@@ -79,8 +79,16 @@ test('Cloudflare STT sends bounded Japanese transcription request and returns on
   assert.equal(body.language, 'ja');
   assert.equal(body.vad_filter, true);
   assert.equal(body.condition_on_previous_text, false);
-  assert.ok(Array.isArray(body.audio));
-  assert.equal(body.audio.length, 44 + pcm.byteLength);
+  assert.equal(typeof body.audio, 'string');
+  const audio = Buffer.from(body.audio, 'base64');
+  assert.equal(audio.toString('base64'), body.audio);
+  assert.equal(audio.length, 44 + pcm.byteLength);
+  assert.equal(audio.toString('ascii', 0, 4), 'RIFF');
+  assert.equal(audio.toString('ascii', 8, 12), 'WAVE');
+  assert.equal(audio.readUInt32LE(24), PCM.sampleRate);
+  assert.equal(audio.readUInt32LE(40), pcm.byteLength);
+  assert.equal(audio.readInt16LE(44), 2000);
+  assert.equal(audio.readInt16LE(audio.length - 2), 2000);
 });
 
 test('Cloudflare STT turns provider details into fixed error codes', async () => {

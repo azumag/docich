@@ -1,4 +1,6 @@
-# Discord voice: offline turn coordinator (#1628)
+# Discord voice runtime (#1628)
+
+**Resident invitation mode:** see [RESIDENT.md](./RESIDENT.md) for `/join` into the caller's VC, resident listening, the `同志` wake word, and bounded background topic context. This is opt-in and has separate deployment/credential prerequisites. The fixed-target acceptance and historical slice descriptions below remain available for isolated testing.
 
 This directory contains the synthetic/offline foundation for [Issue #1628](https://github.com/azumag/docich/issues/1628) plus a separately gated **live Discord join/playback bootstrap** for temporary Windows operation. The offline coordinator remains fake-only and does not receive network audio. The live bootstrap only logs into Discord, joins one explicitly configured Guild Voice channel with DAVE-capable `@discordjs/voice`, optionally plays a bounded generated PCM test tone, and stays connected until shutdown. It does not receive or record audio, run STT, call the conversation core, invoke TTS, or deploy itself as a service.
 

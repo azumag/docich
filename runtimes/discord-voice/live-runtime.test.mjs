@@ -490,6 +490,68 @@ test('barge-in during playback cancels output and never commits memory', async (
   assert.equal(await running, 0);
 });
 
+test('resident wake mode uses prior ambient context, answers only a wake, and commits only the delivered wake',async()=>{
+  const h=makeHarness('none'); const calls=[]; let receiver; let allow;
+  const originalResolve=h.runtimeOps.resolveVoiceChannel;
+  h.runtimeOps.resolveVoiceChannel=async()=>{
+    const result=await originalResolve();
+    result.channel.members=new Map([
+      ['3',{user:{bot:false},voice:{channelId:result.channel.id}}],
+      ['4',{user:{bot:false},voice:{channelId:result.channel.id}}],
+      ['5',{user:{bot:true},voice:{channelId:result.channel.id}}],
+      ['6',{user:{bot:false},voice:{channelId:'other'}}],
+    ]); return result;
+  };
+  const running=runLiveVoice({...env(),DOCICH_DISCORD_VOICE_TEST_TONE:'0',DOCICH_DISCORD_VOICE_WAKE_ENABLED:'1',
+    DOCICH_DISCORD_VOICE_RECEIVE_ENABLED:'1',DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED:'1',DOCICH_DISCORD_VOICE_TTS_ENABLED:'1'}, {
+    ...h.runtimeOps,emit:()=>{},
+    createStt:()=>({transcribe:async()=>''}),
+    createConversation:()=>({generate:async(text,ctx)=>{calls.push(['generate',text,ctx]);return {turnId:'wake-turn',reply:'返答です'};},
+      commit:async(turn,ctx)=>{calls.push(['commit',turn,ctx]);return 'committed';}}),
+    createTts:()=>({synthesize:async()=>new Int16Array(960)}),
+    createPlayback:()=>({play:async()=>{calls.push(['play']);},close(){}}),
+    attachReceiver:o=>{receiver=o.onTranscript;allow=o.allowSpeaker;assert.equal(o.onTargetSpeechStart,null);return {stop(){}};},
+  });
+  await waitFor(()=>receiver);
+  assert.equal(allow('3'),true); assert.equal(allow('5'),false); assert.equal(allow('6'),false); assert.equal(allow('99'),false);
+  const signal=new AbortController().signal;
+  await receiver('京都のお寺に行こう',{userId:'3',signal});
+  await new Promise(r=>setImmediate(r)); assert.equal(calls.length,0);
+  await receiver('同志、おすすめは？',{userId:'4',signal});
+  await waitFor(()=>calls.some(c=>c[0]==='commit'));
+  const gen=calls.find(c=>c[0]==='generate');
+  assert.equal(gen[2].userId,'4'); assert.deepEqual(gen[2].recentContext,[{userId:'3',text:'京都のお寺に行こう'}]);
+  const commit=calls.find(c=>c[0]==='commit'); assert.equal(commit[1].transcript,'同志、おすすめは？'); assert.equal(commit[1].recentContext,undefined);
+  assert.ok(calls.findIndex(c=>c[0]==='play')<calls.findIndex(c=>c[0]==='commit'));
+  h.signalTarget.emit('SIGINT'); assert.equal(await running,0);
+});
+
+test('new resident wake interrupts playback, ordinary ambient speech does not, and interrupted reply never commits',async()=>{
+  const h=makeHarness('none'); let receiver; let playCount=0; const commits=[]; const events=[];
+  const running=runLiveVoice({...env(),DOCICH_DISCORD_VOICE_TEST_TONE:'0',DOCICH_DISCORD_VOICE_WAKE_ENABLED:'1',
+    DOCICH_DISCORD_VOICE_RECEIVE_ENABLED:'1',DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED:'1',DOCICH_DISCORD_VOICE_TTS_ENABLED:'1'}, {
+    ...h.runtimeOps,emit:e=>events.push(e.event),
+    createStt:()=>({transcribe:async()=>''}),
+    createConversation:()=>({generate:async text=>({turnId:text.includes('最初')?'first':'second',reply:'返答'}),commit:async turn=>commits.push(turn.turnId)}),
+    createTts:()=>({synthesize:async()=>new Int16Array(960)}),
+    createPlayback:()=>({play:async(_pcm,{signal})=>{
+      playCount++;
+      if(playCount===1) await new Promise((resolve,reject)=>{
+        if(signal.aborted) reject(Error('cancelled'));
+        else signal.addEventListener('abort',()=>reject(Error('cancelled')),{once:true});
+      });
+    },close(){}}),
+    attachReceiver:o=>{receiver=o.onTranscript;return {stop(){}};},
+  });
+  await waitFor(()=>receiver);
+  const signal=new AbortController().signal;
+  await receiver('同志、最初の質問',{userId:'3',signal}); await waitFor(()=>playCount===1);
+  await receiver('背景の会話',{userId:'4',signal}); await new Promise(r=>setImmediate(r));
+  assert.equal(events.includes('playback_interrupted'),false);
+  await receiver('同志、次の質問',{userId:'4',signal}); await waitFor(()=>commits.length===1);
+  assert.deepEqual(commits,['second']); assert.ok(events.includes('playback_interrupted'));
+  h.signalTarget.emit('SIGINT'); assert.equal(await running,0);
+});
 
 test('memory scope channel is overridable for conversation and commit only', async () => {
   const signalTarget = new EventEmitter();

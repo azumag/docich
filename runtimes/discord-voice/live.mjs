@@ -26,6 +26,7 @@ import { attachLiveSttReceiver } from './live-receive.mjs';
 import { createLivePlayback } from './live-playback.mjs';
 import { createLiveVoicevoxTTS } from './live-voicevox.mjs';
 import { PCM } from './runtime.mjs';
+import { WakeSession } from './wake-context.mjs';
 import { LiveVoiceError, loadLiveVoiceConfig, makeStereoTestTone } from './live-support.mjs';
 
 const defaultEmit = (record) =>
@@ -182,6 +183,8 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
 
   let connection = null;
   let liveReceiver = null;
+  let wakeSession = null;
+  let wakeChannel = null;
   let livePlayback = null;
   let activeTurn = null;
   let stopping = false;
@@ -361,21 +364,27 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
     }
 
     if (config.receiveEnabled) {
-      const scope = Object.freeze({
+      wakeChannel = resolved.channel;
+      const baseScope = Object.freeze({
         guildId: config.guildId,
         channelId: config.channelId,
         userId: config.receiveUserId,
       });
-      const memoryScope = Object.freeze({
-        guildId: config.guildId,
-        channelId: config.memoryChannelId,
-        userId: config.receiveUserId,
-      });
+
 
       const onTranscript = conversation
-        ? async (transcript, { signal }) => {
+        ? async (transcript, { signal, userId = config.receiveUserId, recentContext }) => {
+            const scope = { ...baseScope, userId };
+            const memoryScope = { ...scope, channelId: config.memoryChannelId };
+            if (signal.aborted || stopping) return;
             const turnController = new AbortController();
-            const onParentAbort = () => turnController.abort();
+            const onParentAbort = () => {
+              if (config.wakeEnabled && !stopping) {
+                turn.interrupted = true;
+                emit({ event: 'turn_interrupted' });
+              }
+              turnController.abort();
+            };
             signal.addEventListener('abort', onParentAbort, { once: true });
             const turn = { controller: turnController, interrupted: false };
             activeTurn = turn;
@@ -390,6 +399,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
                   (stageSignal) =>
                     conversation.generate(transcript, {
                       ...memoryScope,
+                      ...(recentContext ? {recentContext} : {}),
                       signal: stageSignal,
                     }),
                 );
@@ -517,7 +527,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
           }
         : null;
 
-      const onTargetSpeechStart = config.ttsEnabled
+      const onTargetSpeechStart = config.ttsEnabled && !config.wakeEnabled
         ? () => {
             if (activeTurn && !activeTurn.controller.signal.aborted) {
               activeTurn.interrupted = true;
@@ -527,13 +537,19 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
           }
         : null;
 
+      if (config.wakeEnabled) wakeSession = new WakeSession({reply:onTranscript, emit});
+      const allowSpeaker = config.wakeEnabled ? (userId) => {
+        const member = wakeChannel.members?.get(userId);
+        return Boolean(member && member.user?.bot === false && member.voice?.channelId === config.channelId && userId !== client.user?.id);
+      } : null;
       liveReceiver = ops.attachReceiver({
         connection,
         targetUserId: config.receiveUserId,
+        allowSpeaker,
         stt,
         emit,
         debugTranscript: config.transcriptDebug,
-        onTranscript,
+        onTranscript: wakeSession ? (text, context) => wakeSession.observe(text, context) : onTranscript,
         onTargetSpeechStart,
       });
       emit({ event: 'voice_receive_enabled' });
@@ -553,6 +569,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
     client.off(Events.Error, onClientError);
 
     try {
+      wakeSession?.stop();
       liveReceiver?.stop();
     } catch {
       // Fixed shutdown path.
