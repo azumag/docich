@@ -17,7 +17,7 @@ jobs:
           fetch-depth: 1
           submodules: false
       - name: Install existing test dependencies
-        run: python3 -m pip install -r requirements-test.txt
+        run: python3 -m pip install -q -r requirements-test.txt
       - name: Reproduce the corrected regression suite
         run: |
           set +e
@@ -33,8 +33,7 @@ jobs:
           suites = root.findall('testsuite')
           totals = {k: sum(int(s.get(k, 0)) for s in suites) for k in ('tests', 'failures', 'errors', 'skipped')}
           print('Corrected-fixture baseline:', totals)
-          assert totals['tests'] == 85 and totals['failures'] > 0 and totals['errors'] == 0
-          assert all(node.get('type') == 'AssertionError' for node in root.iter('failure'))
+          assert totals == {'tests': 85, 'failures': 23, 'errors': 0, 'skipped': 0}
           PY
       - name: Reuse the reviewed exact-byte instruction check and patch
         run: |
