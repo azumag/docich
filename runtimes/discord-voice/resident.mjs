@@ -46,10 +46,15 @@ export class ResidentController {
       // Announce the background-context policy before subscribing to anybody.
       await interaction.editReply('このVCに参加します。Bot以外の参加者の発話を文字起こしし、直近30分の話題を一時的に保持します。「同志」を含む発話にだけ返答します。/leave で退出し、一時文脈を破棄します。');
       if(this.#closed) return;
+      if(this.#sessions.size>=8) { await interaction.editReply('接続上限に達しています。'); return; }
       const session=this.#start({guild,channel});
       session.channelId=channel.id;
       this.#sessions.set(guild.id,session);
-      void session.done.catch(()=>this.#emit({event:'resident_session_failed'})).finally(()=>{
+      const reportFailure=async()=>{
+        this.#emit({event:'resident_session_failed'});
+        try { await interaction.editReply('VC接続が終了しました。接続権限とサービス設定を確認してから /join を再実行してください。'); } catch {}
+      };
+      void session.done.then(code=>{ if(code!==undefined && code!==0) return reportFailure(); },reportFailure).finally(()=>{
         if(this.#sessions.get(guild.id)===session) this.#sessions.delete(guild.id);
       });
     } catch {
@@ -127,6 +132,7 @@ export async function runResident(env=process.env,{register=false}={}) {
         await client.application.commands.create(desired);
       }
     }
+    if(stopping) return;
     if(register) { emitDefault({event:'resident_commands_registered'}); return; }
     client.on(Events.InteractionCreate,onInteraction);
     emitDefault({event:'resident_ready'});

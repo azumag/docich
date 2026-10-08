@@ -20,6 +20,7 @@ SCHEMA = 1
 EXPERIENCE_FILE = 'hanjuku_experience.json'
 MAX_SITUATIONS = 200
 MAX_ACTIONS = 8
+SITUATION_CONTEXT = 'ctx3'
 
 # Known independent choices per situation kind, used when the default is
 # losing and an alternative has not been tried yet. Map to the original six
@@ -54,6 +55,21 @@ def _resource_band(value) -> str:
     if type(value) is not int or not 0 <= value <= 999:
         return 'unknown'
     return 'empty' if value == 0 else 'available'
+
+
+def _soldier_count(battle: dict, field: str) -> str:
+    """Fingerprint the current 0..6 soldiers, never a cached or invalid count.
+
+    The card reader already tracks whether both armies belong to its current
+    panel. Reuse that evidence instead of treating an old positive count as
+    "available". Exact counts keep 1-vs-6 and 6-vs-1 experience separate.
+    """
+    value = battle.get(field)
+    if (battle.get('card_soldiers_current') is not True
+            or battle.get('card_hp_unread') or battle.get('card_context_unclassified')
+            or type(value) is not int or not 0 <= value <= 6):
+        return 'unknown'
+    return str(value)
 
 
 def _risk_band(mem: dict, battle: dict) -> str:
@@ -104,10 +120,10 @@ def situation_key(kind: str, mem: dict) -> str:
     ally = battle.get('ally')
     ally = ally if isinstance(ally, str) else None
     egg_count = None if ally in recheck else eggs.get(ally)
-    parts.extend(('ctx2', f'side={side}', f'risk={_risk_band(mem, battle)}',
+    parts.extend((SITUATION_CONTEXT, f'side={side}', f'risk={_risk_band(mem, battle)}',
                   f'egg={_resource_band(egg_count)}',
-                  f'ally_soldiers={_resource_band(battle.get("ally_soldiers"))}',
-                  f'enemy_soldiers={_resource_band(battle.get("enemy_soldiers"))}'))
+                  f'ally_soldiers={_soldier_count(battle, "ally_soldiers")}',
+                  f'enemy_soldiers={_soldier_count(battle, "enemy_soldiers")}'))
     return '|'.join(part.replace('|', '/') for part in parts)
 
 
@@ -135,15 +151,21 @@ def preferred(exp: dict | None, key: str, *, default: str, kind: str) -> str:
     can learn beyond the built-in default, except in measured defense, critical
     or unknown contexts. Emergency default summons are never replaced by a
     learned pass/attack. Actions outside this menu's vocabulary are ignored.
-    An untried default stays default.
+    An untried default stays default. Current-context unread armies also
+    prohibit untried exploration. Measured choices within the same unknown
+    context keep the existing learning contract; known-army records never match.
     """
     allowed = ALTERNATIVES.get(kind, ())
     if default not in allowed or not isinstance(key, str) or not isinstance(exp, dict):
         return default
     context = key.split('|')
-    constrained = ('ctx2' in context and
-                   ('risk=critical' in context or 'risk=unknown' in context or
-                    'side=defense' in context or 'side=unknown' in context))
+    unread_armies = (SITUATION_CONTEXT in context and
+                     any(f'{field}=unknown' in context
+                         for field in ('ally_soldiers', 'enemy_soldiers')))
+    constrained = (unread_armies or
+                   (any(version in context for version in ('ctx2', SITUATION_CONTEXT)) and
+                    ('risk=critical' in context or 'risk=unknown' in context or
+                     'side=defense' in context or 'side=unknown' in context)))
     # Keep a policy-selected emergency summon. This function chooses a label;
     # the caller must still verify the real menu and egg availability.
     if constrained and 'risk=critical' in context and default == 'use_egg':

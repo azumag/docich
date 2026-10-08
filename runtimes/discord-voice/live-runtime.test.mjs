@@ -552,3 +552,90 @@ test('new resident wake interrupts playback, ordinary ambient speech does not, a
   assert.deepEqual(commits,['second']); assert.ok(events.includes('playback_interrupted'));
   h.signalTarget.emit('SIGINT'); assert.equal(await running,0);
 });
+
+test('memory scope channel is overridable for conversation and commit only', async () => {
+  const signalTarget = new EventEmitter();
+  const memoryChannel = '923456789012345678';
+  const seen = [];
+  let transcriptHandler = null;
+
+  class FakeClient extends EventEmitter {
+    async login() {
+      return 'ok';
+    }
+    destroy() {}
+  }
+
+  const connection = new EventEmitter();
+  connection.state = { status: VoiceConnectionStatus.Ready };
+  connection.destroy = () => {
+    connection.state.status = VoiceConnectionStatus.Destroyed;
+  };
+  connection.rejoin = () => true;
+
+  const liveEnv = {
+    ...env(),
+    DOCICH_DISCORD_VOICE_TEST_TONE: '0',
+    DOCICH_DISCORD_VOICE_RECEIVE_ENABLED: '1',
+    DOCICH_DISCORD_VOICE_RECEIVE_USER_ID: '323456789012345678',
+    DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED: '1',
+    DOCICH_DISCORD_VOICE_TTS_ENABLED: '1',
+    DOCICH_DISCORD_VOICE_MEMORY_CHANNEL_ID: memoryChannel,
+  };
+
+  const running = runLiveVoice(liveEnv, {
+    signalTarget,
+    createStt: () => ({ transcribe: async () => 'fixture' }),
+    createConversation: () => ({
+      async generate(_transcript, context) {
+        seen.push(context.channelId);
+        context.signal.throwIfAborted();
+        return { turnId: 'turn-memory-scope', reply: '返答です' };
+      },
+      async commit(_turn, context) {
+        seen.push(context.channelId);
+        context.signal.throwIfAborted();
+        return 'committed';
+      },
+    }),
+    createTts: () => ({
+      async synthesize(_reply, { scope }) {
+        // TTS keeps the joined Voice channel scope, not the memory scope.
+        seen.push(scope.channelId);
+        return new Int16Array(960).fill(1500);
+      },
+    }),
+    createPlayback: () => ({
+      async play(_pcm, { signal }) {
+        signal.throwIfAborted();
+      },
+      close() {},
+    }),
+    createClient: () => new FakeClient(),
+    waitClientReady: async () => {},
+    resolveVoiceChannel: async () => ({
+      guild: { id: liveEnv.DOCICH_DISCORD_VOICE_GUILD_ID },
+      channel: { id: liveEnv.DOCICH_DISCORD_VOICE_CHANNEL_ID },
+    }),
+    joinVoice: () => connection,
+    waitVoiceReady: async () => {},
+    attachReceiver: ({ onTranscript }) => {
+      transcriptHandler = onTranscript;
+      return { stop() {} };
+    },
+  });
+
+  await waitFor(() => transcriptHandler !== null);
+  await transcriptHandler('fixture transcript', {
+    signal: new AbortController().signal,
+  });
+
+  assert.deepEqual(seen, [
+    memoryChannel,
+    liveEnv.DOCICH_DISCORD_VOICE_CHANNEL_ID,
+    memoryChannel,
+  ]);
+
+  signalTarget.emit('SIGINT');
+  assert.equal(await running, 0);
+});

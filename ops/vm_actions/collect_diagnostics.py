@@ -5042,8 +5042,34 @@ def _systemctl_user(args, timeout=5):
     return proc.returncode, (proc.stdout or "").strip()
 
 
-def _unit_is_active(unit):
-    result = _systemctl_user(["is-active", unit])
+def _systemctl_system(args, timeout=5):
+    """Run `systemctl <args>` against the *system* manager (no `--user`).
+    Returns (returncode, stdout) or None when the command cannot run at all
+    (missing binary, timeout). A non-zero returncode with output (e.g.
+    "inactive") is still a valid answer, not an error."""
+    env = {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+    }
+    try:
+        proc = subprocess.run(
+            ["systemctl", *args],
+            capture_output=True, text=True, timeout=timeout, env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.returncode, (proc.stdout or "").strip()
+
+
+def _systemctl_scope(scope, args, timeout=5):
+    """Read-only `systemctl` query against the ``user`` or ``system`` manager."""
+    if scope == "system":
+        return _systemctl_system(args, timeout=timeout)
+    return _systemctl_user(args, timeout=timeout)
+
+
+def _unit_is_active(unit, scope="user"):
+    result = _systemctl_scope(scope, ["is-active", unit])
     if result is None:
         return None
     _, out = result
@@ -5054,8 +5080,8 @@ def _unit_is_active(unit):
     return None
 
 
-def _unit_is_enabled(unit):
-    result = _systemctl_user(["is-enabled", unit])
+def _unit_is_enabled(unit, scope="user"):
+    result = _systemctl_scope(scope, ["is-enabled", unit])
     if result is None:
         return None
     _, out = result
@@ -5077,17 +5103,56 @@ RESOLVER_IMPROVE_UNITS = (
     "docich-resolver-improve.service",
     "docich-resolver-improve-gnurobots.service",
 )
+# 2026-10-08 VM observation: both units are installed in the *system* manager
+# (/etc/systemd/system, root-owned, WantedBy=default.target). A user-scope
+# probe therefore answers "not-found" while the daemon is actually running —
+# on 2026-10-01 `docich-resolver-improve.service` had been up since 06:18 JST
+# and the user-scope-only projection reported it absent (#1286). Read both
+# scopes; a running unit in either manager is a running daemon.
+RESOLVER_IMPROVE_SCOPES = ("system", "user")
+
+
+def _resolver_unit_scopes(unit):
+    return {
+        scope: {
+            "active": _unit_is_active(unit, scope=scope),
+            "enabled": _unit_is_enabled(unit, scope=scope),
+        }
+        for scope in RESOLVER_IMPROVE_SCOPES
+    }
+
+
+def _aggregate_scope_flag(values):
+    """True when any scope says True, False when any says False, else None.
+
+    Unknown readings never mask a known one: a unit the system manager runs is
+    reported active even when the user-scope probe cannot answer.
+    """
+    if any(value is True for value in values):
+        return True
+    if any(value is False for value in values):
+        return False
+    return None
 
 
 def _collect_resolver_daemon():
-    """Active/enabled state of the resolver improve daemons (#1286 follow-up)."""
+    """Active/enabled state of the resolver improve daemons (#1286 follow-up).
+
+    ``active`` / ``enabled`` aggregate the system and user managers; ``scopes``
+    keeps the per-manager readings so a partial read is never flattened into
+    "absent".
+    """
     units = {}
     for unit in RESOLVER_IMPROVE_UNITS:
+        scopes = _resolver_unit_scopes(unit)
         units[unit] = {
-            'active': _unit_is_active(unit),
-            'enabled': _unit_is_enabled(unit),
+            'active': _aggregate_scope_flag(
+                [scopes[scope]['active'] for scope in RESOLVER_IMPROVE_SCOPES]),
+            'enabled': _aggregate_scope_flag(
+                [scopes[scope]['enabled'] for scope in RESOLVER_IMPROVE_SCOPES]),
+            'scopes': scopes,
         }
-    return {'schema_version': 1, 'units': units}
+    return {'schema_version': 2, 'units': units}
 
 
 GAME_SWITCH_WATCHDOG_UNIT = "docich-game-switch-fifo.timer"
@@ -5956,7 +6021,14 @@ HANJUKU_TACTICAL_CASTLES = ('アルマムーン', 'キカンドン', 'ナキュ�
 HANJUKU_TACTICAL_KEYS = ('game', 'runtime_id', 'generation', 'lease_id')
 HANJUKU_TACTICAL_LIMIT = 256 * 1024
 
-TMUX_SERVER_NAMES = ('docich', 'docich-eval')
+# `tmux -L` server names. The production corner (game, agent, obs, bridge
+# sessions) runs on tmux's *default* server — the socket tmux names "default"
+# when no -L is given; `docich` is a *session* name inside it, not a server
+# name. Evaluation jobs must run on the private `docich-eval` server
+# (`docich.tmux.EVAL_SERVER`). Reading `-L default` therefore reads exactly the
+# production server; the earlier `-L docich` target never existed on the VM and
+# reported the production server as absent (#1286).
+TMUX_SERVER_NAMES = ('default', 'docich-eval')
 TMUX_SERVER_OUTPUT_LIMIT = 4096
 
 
@@ -5991,10 +6063,10 @@ def _tmux_server_session_count(server):
 def _collect_tmux_servers():
     """Fixed projection of tmux server ownership (#1286 follow-up).
 
-    The production corner runs on the default ``docich`` socket; evaluation
-    jobs must run on ``docich-eval``. This projection makes the separation
-    directly observable in diagnostics instead of inferring it from process
-    trees. Read-only: ``list-sessions`` never sends input.
+    The production corner runs on tmux's default server (session ``docich``);
+    evaluation jobs must run on ``docich-eval``. This projection makes the
+    separation directly observable in diagnostics instead of inferring it from
+    process trees. Read-only: ``list-sessions`` never sends input.
     """
     servers = {}
     for name in TMUX_SERVER_NAMES:
@@ -6004,7 +6076,7 @@ def _collect_tmux_servers():
             'present': bool(count) if count is not None else None,
             'session_count': count,
         }
-    return {'schema_version': 1, 'servers': servers}
+    return {'schema_version': 2, 'servers': servers}
 
 
 PULSE_SINK_INPUTS_TIMEOUT = 5
@@ -6478,7 +6550,8 @@ def _nethack_progress(raw):
     result = {'status': _rotation_enum(raw.get('status'),
               {'ok', 'empty', 'missing', 'error', 'too_large', 'invalid_run_id'})}
     for key in ('sample_count', 'malformed_lines', 'first_turn', 'last_turn',
-                'max_turn', 'max_depth', 'same_frame_sent_pairs', 'max_same_frame_sent_streak'):
+                'max_turn', 'max_depth', 'same_frame_sent_pairs', 'max_same_frame_sent_streak',
+                'same_frame_hold_pairs', 'max_same_frame_hold_streak'):
         result[key] = _nethack_number(raw.get(key))
     for key in ('first_ts', 'last_ts', 'min_hp_ratio'):
         value = raw.get(key)
@@ -6486,6 +6559,11 @@ def _nethack_progress(raw):
     result['truncated'] = raw.get('truncated') if type(raw.get('truncated')) is bool else None
     result['phase_counts'] = {key: _nethack_number(raw.get('phase_counts', {}).get(key))
                              for key in ('sent', 'hold')} if isinstance(raw.get('phase_counts'), dict) else {}
+    result['prompt_counts'] = {
+        key: _nethack_number(raw.get('prompt_counts', {}).get(key))
+        for key in ('none', 'more', 'yes_no', 'direction', 'selection', 'text', 'unknown')
+        if _nethack_number(raw.get('prompt_counts', {}).get(key)) is not None
+    } if isinstance(raw.get('prompt_counts'), dict) else {}
     return result
 
 

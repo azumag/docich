@@ -303,6 +303,10 @@ def _progress_evidence(root: Path, run: dict[str, object]) -> dict[str, object]:
         item["phase"] for item in samples
         if item.get("phase") in {"sent", "hold"}
     )
+    prompts = Counter(
+        item["prompt"] for item in samples
+        if isinstance(item.get("prompt"), str)
+    )
     keys = Counter(
         item["key"] for item in samples
         if item.get("phase") == "sent" and isinstance(item.get("key"), str)
@@ -314,24 +318,41 @@ def _progress_evidence(root: Path, run: dict[str, object]) -> dict[str, object]:
         and type(item.get("hp_max")) is int
         and item["hp_max"] > 0
     ]
-    sent = [item for item in samples if item.get("phase") == "sent"]
-    same_frame_pairs = 0
-    same_frame_streak = 0
-    max_same_frame_streak = 0
-    previous_hash = None
-    previous_turn = None
-    for item in sent:
-        frame_hash = item.get("frame_hash")
-        turn = item.get("turn")
-        if isinstance(frame_hash, str) and frame_hash == previous_hash and turn == previous_turn:
-            same_frame_pairs += 1
-            same_frame_streak += 1
-        else:
-            max_same_frame_streak = max(max_same_frame_streak, same_frame_streak)
-            same_frame_streak = 1 if isinstance(frame_hash, str) else 0
-        previous_hash = frame_hash
-        previous_turn = turn
-    max_same_frame_streak = max(max_same_frame_streak, same_frame_streak)
+
+    def same_frame_stats(phase: str, *, contiguous: bool = False) -> tuple[int, int]:
+        records = samples if contiguous else [
+            item for item in samples if item.get("phase") == phase
+        ]
+        pairs = 0
+        streak = 0
+        max_streak = 0
+        previous_hash = None
+        previous_turn = None
+        for item in records:
+            if item.get("phase") != phase:
+                max_streak = max(max_streak, streak)
+                streak = 0
+                previous_hash = None
+                previous_turn = None
+                continue
+            frame_hash = item.get("frame_hash")
+            turn = item.get("turn")
+            if isinstance(frame_hash, str) and frame_hash == previous_hash and turn == previous_turn:
+                pairs += 1
+                streak += 1
+            else:
+                max_streak = max(max_streak, streak)
+                streak = 1 if isinstance(frame_hash, str) else 0
+            previous_hash = frame_hash
+            previous_turn = turn
+        return pairs, max(max_streak, streak)
+
+    # Preserve the historical sent metric semantics. Holds are stricter:
+    # any intervening sent sample proves the agent was not continuously stuck.
+    same_frame_pairs, max_same_frame_streak = same_frame_stats("sent")
+    same_frame_hold_pairs, max_same_frame_hold_streak = same_frame_stats(
+        "hold", contiguous=True
+    )
     turns = [item["turn"] for item in samples if type(item.get("turn")) is int]
     depths = [item["depth"] for item in samples if type(item.get("depth")) is int]
     timestamps = [float(item["ts"]) for item in samples]
@@ -348,11 +369,14 @@ def _progress_evidence(root: Path, run: dict[str, object]) -> dict[str, object]:
         "max_depth": max(depths) if depths else None,
         "min_hp_ratio": round(min(hp_ratios), 3) if hp_ratios else None,
         "phase_counts": dict(sorted(phases.items())),
+        "prompt_counts": dict(sorted(prompts.items())),
         "intent_counts": dict(sorted(intents.items())),
         "resolved_intent_counts": dict(sorted(resolved.items())),
         "sent_key_counts": dict(sorted(keys.items())),
         "same_frame_sent_pairs": same_frame_pairs,
         "max_same_frame_sent_streak": max_same_frame_streak,
+        "same_frame_hold_pairs": same_frame_hold_pairs,
+        "max_same_frame_hold_streak": max_same_frame_hold_streak,
     }
 
 

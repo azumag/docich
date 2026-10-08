@@ -371,9 +371,11 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
         userId: config.receiveUserId,
       });
 
+
       const onTranscript = conversation
         ? async (transcript, { signal, userId = config.receiveUserId, recentContext }) => {
             const scope = { ...baseScope, userId };
+            const memoryScope = { ...scope, channelId: config.memoryChannelId };
             if (signal.aborted || stopping) return;
             const turnController = new AbortController();
             const onParentAbort = () => {
@@ -396,7 +398,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
                   10_000,
                   (stageSignal) =>
                     conversation.generate(transcript, {
-                      ...scope,
+                      ...memoryScope,
                       ...(recentContext ? {recentContext} : {}),
                       signal: stageSignal,
                     }),
@@ -506,7 +508,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
                         transcript,
                         reply: generated.reply,
                       },
-                      { ...scope, signal: stageSignal },
+                      { ...memoryScope, signal: stageSignal },
                     ),
                 );
                 emit({ event: 'memory_commit_completed' });

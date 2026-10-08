@@ -34,3 +34,17 @@ test('shutdown during member resolution prevents a late join',async()=>{
   const pending=c.handle(f.interaction); await new Promise(r=>setImmediate(r));
   await c.close(); release(); await pending; assert.equal(calls,0);
 });
+
+test('failed connection informs the command user and allows retry',async()=>{
+  const f=fixture(); let starts=0;
+  const c=new ResidentController({startSession:()=>{starts++;return {done:Promise.resolve(2),stop(){}};},emit:()=>{}});
+  await c.handle(f.interaction); await new Promise(r=>setImmediate(r));
+  assert.ok(f.replies.some(v=>typeof v==='string' && v.includes('VC接続が終了')));
+  await c.handle(f.interaction); assert.equal(starts,2); await c.close();
+});
+
+test('simultaneous guild requests do not exceed eight resident connections',async()=>{
+  let starts=0; const c=new ResidentController({startSession:()=>{starts++;let resolve;return {done:new Promise(r=>{resolve=r;}),stop(){resolve(0);}};},emit:()=>{}});
+  await Promise.all(Array.from({length:16},(_,i)=>c.handle(fixture({id:String(100+i)}).interaction)));
+  assert.equal(starts,8); await c.close();
+});

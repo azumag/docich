@@ -50,19 +50,20 @@ smoke_ok: bool                     # production fingerprint 不変 / cleanup / p
 
 `ops/vm_actions/nethack_promotion_runner.py` が seed 固定で 2 arm を実行し、`EpisodeOutcome` と trace 検証を集めて `evaluate_promotion` を呼びます。
 
-- baseline arm は image 同梱の catalog、candidate arm は候補 catalog を arena に置き `DOCICH_CANARY_CATALOG` で注入（両 arm とも canary tactical baseline policy）。
-- 各 episode は seed 固定（`DOCICH_CANARY_ACTION_TRACE=1` で trace も取得し P6c 検証）。
+- 両 arm とも catalog を **明示的な artifact** として arena に置き `DOCICH_CANARY_CATALOG` で注入する（baseline = known-good、candidate = 候補。両 arm とも canary tactical baseline policy）。image 同梱の既定 catalog を名前だけの known-good で代用しないため、`PromotionRunSpec.baseline_catalog` は必須で、gate 判定は実際に投入した artifact に結び付く。`ArmResult.catalog_sha256` がその artifact の digest（baseline の artifact を差し替えれば digest も変わる）。
+- 各 episode は seed 固定（`DOCICH_CANARY_ACTION_TRACE=1` で trace も取得し P6c 検証）。trace 検証は **両 arm** が対象で、証跡欠損・空 trace は「違反0」ではなく未検証として数える。
+- `request` の `arm` フィールドは **controller 種別**（baseline_p3b / candidate broker）であって実験 arm ではない。promotion の両 arm は同じ baseline controller を使うため、実験 arm は arena のパスと `ArmResult.arm` が持つ。`episode_id` は seed ごとの index で固定され、結果・trace の取り違えや再利用を防ぐ。
 - seed 制御は、image が NetHack の `DEV_RANDOM` を `/canary/episode/seed` へ向け、worker が `request.seed` を 8 byte で書くことで成立（`seed_applied=true`）。
-- production isolation チェックは caller が `isolation_check` で注入。
+- production isolation チェックは caller が `isolation_check` で注入する。`run_promotion` / `run_improvement_cycle` の `regression_green` / `smoke_ok` / `isolation_check` は既定値を持たない必須引数で、証跡を出せない caller は成功既定値を受け取れない。
 
 ## improvement loop（P6f）
 
 `run_improvement_cycle`（`ops/vm_actions/nethack_promotion_runner.py` + `src/docich/nethack_catalog_proposer.py`）:
 
-1. baseline arm を実行し `FailureSignal`（stall intent / exit_reason / turns / depth）を作る。
+1. baseline arm を **明示的な known-good catalog** で実行し `FailureSignal`（stall intent / exit_reason / turns / depth）を作る（image 既定 catalog には fallback しない）。
 2. `build_proposal_request` で bounded な公開 JSON（failure + 現行 catalog + `allowed_effects` / `allowed_new_action_effects` / `allowed_placeholders` / `allowed_risk_classes` + constraints）を作り、外部 command（proposer）へ渡す。
 3. proposer 出力は `parse_action_catalog` で schema/safety 検証し、**reviewed effect/predicate/placeholder 語彙のみ**許可する。新 action id は固定セマンティクスを持つ `allowed_new_action_effects` の effect を使う場合に限り data で追加可能。
-4. 候補 catalog を runner で seed 比較 → P6c trace 検証 → `evaluate_promotion`。
+4. 候補 catalog を runner で seed 比較 → P6c trace 検証（両 arm）→ `evaluate_promotion`。
 5. promote なら known-good 更新、reject なら作り直し。
 
 proposer は外部 command 境界（`CommandCatalogProposer`）。timeout / 非0 exit / 過大要求・応答 / 不正 JSON / 未知 effect・predicate・placeholder / 既存 action の effect・risk_class・key_pattern 変更・既存 action の削除 / 新 action での generic `keys` effect 使用は `CatalogProposalError` で fail-closed。`allowed_action_ids` 引数は後方互換のため残しているが、新規呼び出しは `allowed_effects` を使う。
@@ -76,5 +77,6 @@ reviewed effect のうち `attack_direction` / `open_door` / `eat_item` / `explo
 ## 未実装（次）
 
 - fitness の本格化（simulator / 並列 rollout）。
+- #859 PR2 の残り: runner/proposer の入出力 streaming 上限、終了後 source（#859 PR1 の `nethack_source` 契約）を job 入力へ接続、gate 側の両 arm isolation 検証（現状は candidate arm のみ isolation を判定）。
 
-Relates to #630, #631, #586, #490.
+Relates to #630, #631, #586, #490, #859.

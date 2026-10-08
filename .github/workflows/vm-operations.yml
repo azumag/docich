@@ -13,7 +13,7 @@ on:
         required: true
         default: status
         type: choice
-        options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, market_paper, paper_ai_canary, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute]
+        options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, market_paper, paper_ai_canary, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute]
       target:
         description: VM target
         required: true
@@ -494,6 +494,33 @@ jobs:
           cat control/ops/vm_actions/restart_soren_bgm.sh |
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
+      - name: Restart resident poll workers after reviewed runtime epoch
+        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git -C candidate cat-file -e "$BEFORE_SHA^{commit}"
+          # Issue #970: audio/youtube/poll/prediction/stream_noon_audit workers
+          # are started once by start_all.sh and keep the previously projected
+          # code resident, so a reviewed runtime change is not active until they
+          # are replaced. Restarting them is an explicit decision: this step only
+          # runs when the reviewed epoch below changes.
+          if git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- ops/vm_actions/restart_poll_workers_epoch; then
+            exit 0
+          fi
+
+          bash -n control/ops/vm_actions/restart_poll_workers.sh
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/restart_poll_workers.sh |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
       - name: Restart active Soren91 agent for reviewed runtime epoch
         if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
         shell: bash
@@ -746,6 +773,29 @@ jobs:
           # after the restart. Output stays in the VM-private exec log.
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           cat control/ops/vm_actions/restart_webui.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Restart chat and kick resident workers after owner confirmation
+        if: ${{ steps.auth.outputs.operation == 'restart_chat_kick_workers' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Issue #262: the resident chat workers keep the previously sourced
+          # broadcast/comment.sh in memory, so a projected Soren runtime update
+          # is not active in production until those processes are replaced.
+          # This operation is dispatch-only (never implied by a push deploy) and
+          # sends the fixed reviewed helper from the trusted main checkout. It
+          # signals only the chat_worker/kick_worker PIDs recorded under
+          # /home/ubuntu/soren/tmp/state, lets start_all.sh respawn them, and
+          # fails closed unless a new live reviewed process appears. No caller
+          # input reaches the VM shell; output stays in the VM-private exec log
+          # with a stable exit code: 0 replaced (or intentionally paused) /
+          # 10-12 chat_worker / 20-22 kick_worker.
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/restart_chat_kick_workers.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Recover a stale non-founding Soren match
         if: ${{ steps.auth.outputs.operation == 'recover_soren_game' }}
