@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { validVoiceContext } from '../../workers/discord-chat/src/voice-context.js';
 
 export class CloudflareConversationError extends Error {
   constructor(code) {
@@ -190,11 +191,12 @@ export class CloudflareConversationClient {
     }
   }
 
-  async generate(transcript, { guildId, channelId, userId, signal } = {}) {
+  async generate(transcript, { guildId, channelId, userId, signal, recentContext } = {}) {
     if (
       typeof transcript !== 'string' ||
       !transcript.trim() ||
       transcript.length > 2000 ||
+      !validVoiceContext(recentContext) ||
       !validScope({ guildId, channelId, userId, signal })
     ) {
       fail('invalid_conversation_context');
@@ -211,6 +213,7 @@ export class CloudflareConversationClient {
         userId,
         turnId,
         transcript: transcript.trim(),
+        ...(recentContext ? {recentContext} : {}),
       },
       signal,
     );

@@ -21,6 +21,7 @@ import {
   sendDiscordReply,
   stripBotMention,
 } from "./discord.js";
+import { validVoiceContext } from "./voice-context.js";
 import { generateConversationReply } from "./conversation.js";
 
 const FAILURE_REPLY = "今は返答を作れませんでした。少し後でもう一度メンションしてください。";
@@ -96,7 +97,7 @@ export class DiscordBot {
       });
     }
 
-    const allowedKeys = new Set(["guildId", "channelId", "userId", "turnId", "transcript"]);
+    const allowedKeys = new Set(["guildId", "channelId", "userId", "turnId", "transcript", "recentContext"]);
     if (
       !body ||
       typeof body !== "object" ||
@@ -109,7 +110,8 @@ export class DiscordBot {
       !VOICE_TURN_ID.test(body.turnId) ||
       typeof body.transcript !== "string" ||
       !body.transcript.trim() ||
-      body.transcript.length > 2000
+      body.transcript.length > 2000 ||
+      !validVoiceContext(body.recentContext)
     ) {
       return Response.json({ error: "invalid_request" }, {
         status: 400,
@@ -135,6 +137,7 @@ export class DiscordBot {
       authorId: body.userId,
       authorName: "音声ユーザー",
       content: body.transcript.trim(),
+      ...(body.recentContext ? {voiceContext:body.recentContext} : {}),
       referenceId: null,
       createdAt: Date.now() / 1000,
     };

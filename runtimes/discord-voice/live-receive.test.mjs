@@ -382,3 +382,26 @@ test('a new utterance is captured while the previous STT call is still running',
   assert.equal(sttCalls, 2);
   receiver.stop();
 });
+
+test('resident receiver admits human speakers through trusted channel policy and preserves their scope', async()=>{
+  const f=fakeConnection(()=>Array.from({length:6},()=>stereoChunk(2000)));
+  const handled=[]; const allowed=new Set([TARGET,OTHER]);
+  const r=attachLiveSttReceiver({connection:f.connection,allowSpeaker:id=>allowed.has(id),stt:{transcribe:async()=> '背景の会話'},
+    createDecoder:decoderFactory,onTranscript:async(text,ctx)=>handled.push({text,userId:ctx.userId})});
+  f.connection.receiver.speaking.emit('start','523456789012345678');
+  f.connection.receiver.speaking.emit('start',TARGET);
+  f.connection.receiver.speaking.emit('start',OTHER);
+  await waitFor(()=>handled.length===2);
+  assert.deepEqual(new Set(handled.map(x=>x.userId)),allowed);
+  assert.equal(f.subscriptions.length,2); r.stop();
+});
+
+test('resident receiver drops delayed transcript when its speaker has left the admitted channel',async()=>{
+  let release; const gate=new Promise(r=>{release=r;}); let allowed=true; let handled=0;
+  const f=fakeConnection(()=>Array.from({length:6},()=>stereoChunk(2000)));
+  const r=attachLiveSttReceiver({connection:f.connection,allowSpeaker:()=>allowed,stt:{transcribe:async()=>{await gate;return '同志';}},
+    createDecoder:decoderFactory,onTranscript:async()=>{handled++;}});
+  f.connection.receiver.speaking.emit('start',TARGET);
+  await waitFor(()=>r.status().transcribing); allowed=false; release();
+  await waitFor(()=>!r.status().active); assert.equal(handled,0); r.stop();
+});

@@ -40,8 +40,9 @@ export function loadLiveVoiceConfig(env = process.env) {
   }
 
   const receiveEnabled = boolFlag(env.DOCICH_DISCORD_VOICE_RECEIVE_ENABLED, false);
+  const wakeEnabled = boolFlag(env.DOCICH_DISCORD_VOICE_WAKE_ENABLED, false);
   const receiveUserId = env.DOCICH_DISCORD_VOICE_RECEIVE_USER_ID;
-  if (receiveEnabled && !validSnowflake(receiveUserId)) fail('invalid_config');
+  if (receiveEnabled && !wakeEnabled && !validSnowflake(receiveUserId)) fail('invalid_config');
 
   const conversationEnabled = boolFlag(
     env.DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED,
@@ -55,7 +56,10 @@ export function loadLiveVoiceConfig(env = process.env) {
   );
   if (ttsEnabled && !conversationEnabled) fail('invalid_config');
 
+  if (wakeEnabled && (!receiveEnabled || !conversationEnabled || !ttsEnabled || boolFlag(env.DOCICH_DISCORD_VOICE_TRANSCRIPT_DEBUG) || boolFlag(env.DOCICH_DISCORD_VOICE_REPLY_DEBUG))) fail('invalid_config');
+
   return Object.freeze({
+    wakeEnabled,
     token,
     guildId,
     channelId,

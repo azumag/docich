@@ -347,3 +347,19 @@ test("fake voice caller uses same persona/core with its own limits; text 901 cha
     assert.throws(() => voiceReply(900), /voice_reply_limit/); assert.throws(() => voiceReply(200), /voice_reply_limit/);
   }
 });
+
+test('voice recent context reaches only model input, never delivery memory, and invalid context is rejected',async(t)=>{
+  let input; const f=await botFixture(t,async(_model,value)=>{input=value; return completion('京都のお寺がよさそうです。');});
+  const turn={guildId:'1',channelId:'10',userId:'7',turnId:'wake-context-fixture',transcript:'同志、どこへ行きますか？'};
+  const post=(path,body)=>f.bot.fetch(new Request('https://discord-bot.internal'+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}));
+  const result=await post('/voice/reply',{...turn,recentContext:[{userId:'8',text:'京都のお寺へ行こう。'}]});
+  assert.equal(result.status,200);
+  const latest=JSON.parse(input.messages.at(-1).content);
+  assert.equal(latest.text,turn.transcript); assert.equal(latest.recent_voice_context[0].userId,'8');
+  assert.equal(rows(f.sql).length,0);
+  const commit=await post('/voice/commit',{...turn,reply:'京都のお寺がよさそうです。'});
+  assert.equal(commit.status,200); assert.equal(rows(f.sql)[0].content,turn.transcript);
+  assert.equal(rows(f.sql).some(r=>r.content.includes('京都のお寺へ行こう')),false);
+  const bad=await post('/voice/reply',{...turn,recentContext:[{userId:'8',text:'a'.repeat(2001)}]}); assert.equal(bad.status,400);
+  const foreign=await post('/voice/reply',{...turn,recentContext:[{userId:'8',text:'fixture',guildId:'other'}]}); assert.equal(foreign.status,400);
+});
