@@ -97,3 +97,9 @@ fatal close（認証失敗、disallowed intents等）は15分のcooldownを記�
 音声live runtimeは選択TTSの既定200字制限、LLM/TTS/playback/commitの個別deadline、barge-in取消、scope、再生成功後だけの保存方針を明示的に適用します。この生成関数自体は暗黙に短縮/切断/期限変更/保存を行いません。fake音声callerテストは引き続きoffline境界を検証し、実VC・実VOICEVOX・長時間品質の受入を示すものではありません。
 
 音声応答では、既定のDeepSeek V4 Flashを `reasoning_effort: none` と `chat_template_kwargs.enable_thinking: false` で呼びます。実VCで500/900 tokenの枠を推論だけで使い切り、空本文となる失敗を確認したためです。同じモデルの人工入力疎通では、非推論設定で本文117文字を約2.6秒で取得しました。文字メンション経路と他モデルの設定は変更しません。モデルの本文品質、実VC再生、記憶commitは別途受入します。
+
+### 音声の返答対象と現在状況
+
+音声接続では人格・一人称・ユーモアを共通personaから引き継ぎ、現在状況は `src/llm.js` の音声用指示で「Fly Me to the Home（通称『ツ』）の並走会にVCで参加」と指定します。共通personaの以前のゲーム設定よりこちらを優先し、画面・操作・進行は捏造しません。テキストメンションのpersonaは維持します。
+
+モデルへの入力では、直前のVC会話を `voice_background_context` / `reference_only` として、最後の `current_voice_call` の本文から分離します。返答は今回の呼びかけだけを対象とし、保存済み履歴と直前の会話は必要な部分だけ参照します。過去の質問への一括回答や求められていない要約は行いません。挨拶には挨拶を返し、今回の呼びかけで過去の話題を尋ねた場合はその関連部分に答えます。これは生成指示であり、過去の発話を保存する条件・保持上限・再生後commitの契約は変わりません。

@@ -358,7 +358,12 @@ test('voice recent context reaches only model input, never delivery memory, and 
   const result=await post('/voice/reply',{...turn,recentContext:[{userId:'8',text:'京都のお寺へ行こう。'}]});
   assert.equal(result.status,200);
   const latest=JSON.parse(input.messages.at(-1).content);
-  assert.equal(latest.text,turn.transcript); assert.equal(latest.recent_voice_context[0].userId,'8');
+  assert.equal(latest.text,turn.transcript); assert.equal(latest.source,'current_voice_call');
+  assert.equal(latest.recent_voice_context,undefined);
+  const background=JSON.parse(input.messages.at(-2).content);
+  assert.equal(background.source,'voice_background_context');
+  assert.equal(background.purpose,'reference_only');
+  assert.equal(background.recent_voice_context[0].userId,'8');
   assert.equal(rows(f.sql).length,0);
   const commit=await post('/voice/commit',{...turn,reply:'京都のお寺がよさそうです。'});
   assert.equal(commit.status,200); assert.equal(rows(f.sql)[0].content,turn.transcript);
