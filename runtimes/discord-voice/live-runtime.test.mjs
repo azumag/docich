@@ -526,31 +526,32 @@ test('resident wake mode uses prior ambient context, answers only a wake, and co
   h.signalTarget.emit('SIGINT'); assert.equal(await running,0);
 });
 
-test('new resident wake interrupts playback, ordinary ambient speech does not, and interrupted reply never commits',async()=>{
-  const h=makeHarness('none'); let receiver; let playCount=0; const commits=[]; const events=[];
+test('resident A finishes playback and commit before B starts, with no cross-speaker interruption',async()=>{
+  const h=makeHarness('none');let receiver,releasePlay,releaseCommit;const order=[],events=[];let plays=0;
+  const heldPlay=new Promise(r=>{releasePlay=r;}),heldCommit=new Promise(r=>{releaseCommit=r;});
+  const resolve=h.runtimeOps.resolveVoiceChannel;
+  h.runtimeOps.resolveVoiceChannel=async()=>{const result=await resolve();result.channel.members=new Map([
+    ['3',{user:{bot:false},voice:{channelId:result.channel.id}}],['4',{user:{bot:false},voice:{channelId:result.channel.id}}],
+  ]);return result;};
   const running=runLiveVoice({...env(),DOCICH_DISCORD_VOICE_TEST_TONE:'0',DOCICH_DISCORD_VOICE_WAKE_ENABLED:'1',
     DOCICH_DISCORD_VOICE_RECEIVE_ENABLED:'1',DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED:'1',DOCICH_DISCORD_VOICE_TTS_ENABLED:'1'}, {
-    ...h.runtimeOps,emit:e=>events.push(e.event),
-    createStt:()=>({transcribe:async()=>''}),
-    createConversation:()=>({generate:async text=>({turnId:text.includes('最初')?'first':'second',reply:'返答'}),commit:async turn=>commits.push(turn.turnId)}),
+    ...h.runtimeOps,emit:e=>events.push(e.event),createStt:()=>({transcribe:async()=>''}),
+    createConversation:()=>({generate:async(text,ctx)=>{order.push('generate:'+ctx.userId);return {turnId:ctx.userId,reply:'返答'};},
+      commit:async turn=>{order.push('commit-start:'+turn.turnId);if(turn.turnId==='3')await heldCommit;order.push('commit-end:'+turn.turnId);}}),
     createTts:()=>({synthesize:async()=>new Int16Array(960)}),
-    createPlayback:()=>({play:async(_pcm,{signal})=>{
-      playCount++;
-      if(playCount===1) await new Promise((resolve,reject)=>{
-        if(signal.aborted) reject(Error('cancelled'));
-        else signal.addEventListener('abort',()=>reject(Error('cancelled')),{once:true});
-      });
-    },close(){}}),
+    createPlayback:()=>({play:async(_pcm,{signal})=>{plays++;order.push('play:'+plays);if(plays===1){await heldPlay;assert.equal(signal.aborted,false);}order.push('played:'+plays);},close(){}}),
     attachReceiver:o=>{receiver=o.onTranscript;return {stop(){}};},
   });
-  await waitFor(()=>receiver);
-  const signal=new AbortController().signal;
-  await receiver('同志、最初の質問',{userId:'3',signal}); await waitFor(()=>playCount===1);
-  await receiver('背景の会話',{userId:'4',signal}); await new Promise(r=>setImmediate(r));
-  assert.equal(events.includes('playback_interrupted'),false);
-  await receiver('同志、次の質問',{userId:'4',signal}); await waitFor(()=>commits.length===1);
-  assert.deepEqual(commits,['second']); assert.ok(events.includes('playback_interrupted'));
-  h.signalTarget.emit('SIGINT'); assert.equal(await running,0);
+  await waitFor(()=>receiver);const signal=new AbortController().signal;
+  await receiver('同志、Aの質問',{userId:'3',signal});await waitFor(()=>plays===1);
+  await receiver('背景の会話',{userId:'4',signal});
+  await receiver('同志、Bの質問',{userId:'4',signal});await new Promise(r=>setImmediate(r));
+  assert.equal(plays,1);assert.equal(order.includes('generate:4'),false);assert.equal(events.includes('playback_interrupted'),false);
+  releasePlay();await waitFor(()=>order.includes('commit-start:3'));assert.equal(order.includes('generate:4'),false);
+  releaseCommit();await waitFor(()=>order.includes('commit-end:4'));
+  assert.deepEqual(order,['generate:3','play:1','played:1','commit-start:3','commit-end:3','generate:4','play:2','played:2','commit-start:4','commit-end:4']);
+  assert.equal(events.includes('playback_interrupted'),false);assert.equal(events.includes('turn_interrupted'),false);
+  h.signalTarget.emit('SIGINT');assert.equal(await running,0);
 });
 
 test('memory scope channel is overridable for conversation and commit only', async () => {

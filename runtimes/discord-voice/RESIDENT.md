@@ -7,8 +7,8 @@ This opt-in mode is implemented locally alongside the existing fixed-target acce
 1. A server manager joins a normal voice channel and runs `/join` in that server. The Bot resolves that member's current VC; no Guild, channel, or receive-user IDs are entered at the terminal.
 2. The Bot stays in that VC until `/leave` or host shutdown. Repeating `/join` is idempotent; it refuses to move an existing session into a different channel implicitly.
 3. The join response announces that speech will be transcribed and temporarily retained as context. Only current human members of that VC are admitted; bots, unknown users, and users in other channels are excluded.
-4. Every admitted utterance is transcribed locally by default. Ordinary utterances only update context. An utterance containing the literal word `同志` triggers a reply to that utterance, with recent same-VC conversation available as untrusted data. Homophones such as `同士` are not aliases.
-5. Background speech does not interrupt the reply. A newly transcribed wake utterance cancels the older reply and supersedes any pending reply. Detection therefore has STT latency, unlike immediate speech-onset interruption in the old acceptance mode.
+4. Every admitted utterance is transcribed locally by default. Ordinary utterances only update context. An utterance containing the literal word `同志` triggers a reply to that utterance, with recent same-VC conversation available as untrusted data. Leading separated `同士`, `どうし` and `ドウシ` are also recognized; ordinary words such as `友達同士` and `どうして` are not calls.
+5. Background speech and new wake calls do not interrupt an ongoing reply. Recognized calls enter a FIFO queue across speakers: A completes generation, synthesis, playback and post-playback commit before B begins. Queue order is the order in which calls finish transcription, not a guarantee of overlapping microphone onset order. `/leave` and host shutdown still cancel the active reply and clear queued calls.
 6. Only successfully played wake/reply turns are committed to existing long-term conversational memory. Background context is not written to that database. `/leave` discards the session's background context; it does not erase previously delivered conversations.
 
 ## Context and resource bounds
@@ -17,7 +17,7 @@ Pending owner preference, the default is a session-local RAM window of 30 minute
 
 The reply request includes at most the latest 12 prior utterances / 2,000 total characters. The current wake utterance remains a separate field. Server validation rejects malformed/oversized context. Scope comes from the authenticated local session, not spoken text; each VC session owns a separate buffer. The Worker treats context as conversation data, never system instructions, and does not persist it during reply or commit.
 
-At most eight guild sessions, one VC per guild, four simultaneous captures per VC, one active STT plus four queued utterances, and one active reply plus one replacement are admitted. Each captured utterance remains bounded to 10 seconds. When overloaded, excess audio/wake work is discarded rather than accumulated without limit. This is bounded multi-speaker admission, not a claim of perfect overlapping-speech recognition.
+At most eight guild sessions, one VC per guild, four simultaneous captures per VC, one active STT plus four queued utterances, and one active reply plus eight FIFO pending calls are admitted. Each captured utterance remains bounded to 10 seconds. When overloaded, excess audio/wake work is discarded rather than accumulated without limit. Queue overflow rejects the newest call with the sanitized `voice_reply_queue_full` event; it never replaces an accepted call. Before starting a queued reply, the same human must still belong to the joined VC; stale calls are skipped. Failed turns release the queue for the next call, and only delivered replies are committed. This is bounded multi-speaker admission, not a claim of perfect overlapping-speech recognition.
 
 ## Host and Discord setup (not executed by offline tests)
 
@@ -44,7 +44,7 @@ The host waits for `/join`; it does not auto-join a configured Guild/VC. It shar
 
 ## Verification boundary
 
-`npm run test:live-contracts` includes fake tests for invitation-derived channel selection, repeated join/leave, shutdown races, human-only speaker admission, leaving before delayed STT, wake/context separation, expiration, bounded replacement, actual live-pipeline composition, interrupt suppression of memory commit, and sanitized events. Worker tests prove context is model input only and malformed context is rejected.
+`npm run test:live-contracts` includes fake tests for invitation-derived channel selection, repeated join/leave, shutdown races, human-only speaker admission, leaving before delayed STT, wake/context separation, expiration, bounded FIFO reply order, shutdown/queue cleanup, dequeued participant checks, actual live-pipeline composition, playback-before-commit, and sanitized events. Worker tests prove context is model input only and malformed context is rejected.
 
 Local tests are not proof of actual DAVE receive quality, Japanese wake detection in room noise, application-command delivery, real audio playback, reconnect, or 30-minute operation. Those require credentialed VC acceptance. No Worker deployment, command registration, Bot restart, or fixed-secret change is implied by this document.
 

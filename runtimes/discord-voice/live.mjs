@@ -540,11 +540,11 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
           }
         : null;
 
-      if (config.wakeEnabled) wakeSession = new WakeSession({reply:onTranscript, emit});
       const allowSpeaker = config.wakeEnabled ? (userId) => {
         const member = wakeChannel.members?.get(userId);
         return Boolean(member && member.user?.bot === false && member.voice?.channelId === config.channelId && userId !== client.user?.id);
       } : null;
+      if (config.wakeEnabled) wakeSession = new WakeSession({reply:onTranscript, emit, allowReply:allowSpeaker});
       liveReceiver = ops.attachReceiver({
         connection,
         targetUserId: config.receiveUserId,
