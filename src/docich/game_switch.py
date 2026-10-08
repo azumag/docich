@@ -44,6 +44,7 @@ from .naming import (
     validate_runtime_id,
 )
 from .teardown_evidence import TeardownEvidence, bind_recorder
+from .log_redaction import redact_log_detail
 
 
 SCHEMA_VERSION = 2
@@ -134,46 +135,10 @@ def _safe_detail(exc: BaseException) -> str:
     return str(exc).replace("\n", " ")[:240]
 
 
-_AUTH_HEADER_CREDENTIAL = re.compile(
-    r"(?i)\b(?P<header>authorization\s*[:=]\s*)"
-    r"(?:bearer|basic|digest|negotiate)\s+\S+"
-)
-_STANDALONE_AUTH_CREDENTIAL = re.compile(
-    r"(?i)(?<![\w\-])(?:bearer|basic|digest|negotiate)\s+\S+"
-)
-_SECRET_KEY_VALUE = re.compile(
-    r"(?i)\b(?P<key>token|api[_-]?key|password|passwd|pwd|secret|"
-    r"stream[_-]?key|auth|authorization|bearer|session[_-]?key|"
-    r"private[_-]?key|client[_-]?secret)\b(?P<sep>\s*[:=]\s*)"
-    r"(?P<value>\"[^\"]*\"|'[^']*'|\S+)"
-)
-_ARGV_EXPR = re.compile(
-    r"(?i)\b(?:argv|command|cmd|args)\s*[:=]\s*"
-    r"(?:\[[^\]\n]*\]|\([^)\n]*\)|\"[^\"]*\"|'[^']*'|\S+)"
-)
-_URL_WHOLE = re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://[^\s\"']+")
-_LONG_OPAQUE_TOKEN = re.compile(r"\b(?:[0-9a-f]{32,}|[0-9A-Za-z+/]{24,}={0,2})\b")
-
-
 def _sanitize_log_detail(detail: str | None) -> str | None:
-    """Redact secrets from an event-log detail (design v2 §9).
+    """Redact complete input before enforcing the event log's 240-char limit."""
 
-    The log contract records no URLs, tokens, or argv: command expressions
-    and whole URLs are replaced outright, credential key=value pairs keep
-    only a redacted value, and leftover long opaque tokens are replaced.
-    Hosts are not preserved (a URL is a URL).  Game/window names,
-    generations, request ids and error codes survive.
-    """
-    if not detail:
-        return None
-    text = _safe_detail(detail)
-    text = _AUTH_HEADER_CREDENTIAL.sub(lambda m: f"{m['header']}<redacted>", text)
-    text = _STANDALONE_AUTH_CREDENTIAL.sub("<redacted>", text)
-    text = _ARGV_EXPR.sub("<redacted>", text)
-    text = _URL_WHOLE.sub("<redacted-url>", text)
-    text = _SECRET_KEY_VALUE.sub(lambda m: f"{m['key']}{m['sep']}<redacted>", text)
-    text = _LONG_OPAQUE_TOKEN.sub("<redacted>", text)
-    return text
+    return _safe_detail(redact_log_detail(detail)) if detail else None
 
 
 def _prepare_private_dir(path: Path) -> None:
@@ -4126,7 +4091,7 @@ class GameSwitchCoordinator:
         except Exception as exc:
             stopped = False
             evidence.error_code = _failure_code(exc, ERROR_INTERNAL)
-            evidence.add_remark(_safe_detail(exc))
+            evidence.add_remark(str(exc))
         # The liveness probe is the proof of teardown, so it is recorded as
         # such: a confirmed-dead teardown reports how it was confirmed, and a
         # failed one reports why it could not be.
@@ -5536,7 +5501,7 @@ def _evidence_from_exception(exc: BaseException) -> TeardownEvidence:
 
     evidence = TeardownEvidence()
     evidence.error_code = _failure_code(exc, ERROR_INTERNAL)
-    evidence.add_remark(_safe_detail(exc))
+    evidence.add_remark(str(exc))
     return evidence
 
 

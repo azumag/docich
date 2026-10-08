@@ -816,6 +816,7 @@ class Tmux:
         recorder.reclaim_kill_sent = tuple(
             dict.fromkeys((*recorder.reclaim_kill_sent, *outcome.kill_sent))
         )
+        self._record_signals(outcome)
 
     def _record_remaining(self, remaining: tuple[int, ...], *, reason: str) -> None:
         """Record PIDs that survived, keeping the first reason offered."""

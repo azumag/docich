@@ -172,19 +172,31 @@ class TeardownEvidenceTestBase(unittest.TestCase):
         for name, original in self._saved_process.items():
             setattr(tmux_mod, name, original)
 
-    def _mock_orphan_sweep(self, victims=(4242,), *, survived=()):
+    def _mock_orphan_sweep(self, victims=(4242,), *, survived=(), kill_sent=()):
         """Make the session teardown reclaim ``victims``, some of which survive."""
 
         def reap(self, ownership, roles, pane_groups, *, operation, protected=None):
             if operation != "session停止":
                 return ()
             outcome = TerminationResult(
-                tuple(victims), tuple(victims), (), tuple(survived)
+                tuple(victims), tuple(victims), tuple(kill_sent), tuple(survived)
             )
             self._record_reclaim(victims, outcome)
             return tuple(survived)
 
         tmux_mod.Tmux._reap_escaped_processes = reap
+
+    def _mock_distinct_panes(self):
+        def pane_pids(self, target):
+            if ":agent-" in target:
+                return [111111]
+            if ":game-" in target:
+                return [222222]
+            return [111111, 222222]
+
+        tmux_mod.Tmux._pane_pids = pane_pids
+        tmux_mod.process_pgid = lambda pid: pid
+        tmux_mod.process_cgroup = lambda pid: f"0::/tmux-spawn-{pid}.scope"
 
     def run_cleanup(self) -> tuple[bool, dict[str, dict]]:
         """Put one runtime in ``retiring`` and run the real cleanup loop."""
@@ -203,11 +215,25 @@ class TeardownEvidenceTestBase(unittest.TestCase):
             held.release()
         events = {}
         for event in self.coordinator.event_log.read_all():
-            events.setdefault(str(event["event"]), event)
+            events[str(event["event"])] = event
         return pending, events
 
 
 class TestCleanedEventRecordsEvidence(TeardownEvidenceTestBase):
+    def test_multiple_panes_keep_success_probe_and_omission_count(self):
+        self._mock_distinct_panes()
+        self._mock_orphan_sweep(victims=(333333,), kill_sent=(333333,))
+        pending, events = self.run_cleanup()
+        self.assertFalse(pending)
+        detail = events["cleaned"]["detail"]
+        self.assertLessEqual(len(detail), 240)
+        for field in (
+            "confirmed=yes", "probe=adapter.alive=false", "signals=term,kill",
+            "reclaimed=333333",
+        ):
+            self.assertIn(field, detail)
+        self.assertRegex(detail, r"panes=\[.*\+\d+\]")
+
     def test_cleaned_records_target_scopes_signals_and_proof(self):
         self._mock_orphan_sweep()
         pending, events = self.run_cleanup()
@@ -257,6 +283,47 @@ class TestCleanedEventRecordsEvidence(TeardownEvidenceTestBase):
 
 
 class TestCleanupFailureRecordsWhatSurvived(TeardownEvidenceTestBase):
+    def test_exception_argv_is_redacted_before_remark_and_event_budgets(self):
+        for prefix_length in (60, 190, 230):
+            with self.subTest(prefix_length=prefix_length):
+                fixture = (
+                    "fixture failure " * (prefix_length // 15)
+                    + "argv=['--input', 'fixture-secret-1', '--tail', '"
+                    + "x" * 80 + "']"
+                )
+
+                def boom(self, target, expected):
+                    raise tmux_mod.TmuxError(fixture)
+
+                tmux_mod.Tmux.kill_window_owned = boom
+                pending, events = self.run_cleanup()
+                self.assertTrue(pending)
+                detail = events["cleanup_failed"]["detail"]
+                self.assertLessEqual(len(detail), 240)
+                self.assertNotIn("fixture-secret-1", detail)
+                self.assertNotIn("--tail", detail)
+                self.assertNotIn("--input", detail)
+
+    def test_multiple_panes_keep_failure_diagnostics_in_final_event(self):
+        self._mock_distinct_panes()
+        self._mock_orphan_sweep(
+            victims=(333333,), survived=(444444,), kill_sent=(333333,)
+        )
+        pending, events = self.run_cleanup()
+        self.assertTrue(pending)
+        self.assertEqual(
+            {pane.pane_pid for pane in self.coordinator.last_teardown_evidence.pane_scopes},
+            {111111, 222222},
+        )
+        detail = events["cleanup_failed"]["detail"]
+        self.assertLessEqual(len(detail), 240)
+        for field in (
+            "confirmed=no", "remaining=444444", "reason=teardown後も停止を確認できなかった",
+            "probe=消滅を確認できませんでした", "error_code=internal",
+            "reclaimed=333333", "panes=[+2]",
+        ):
+            self.assertIn(field, detail)
+
     def test_unconfirmed_teardown_logs_cleanup_failed_with_survivors(self):
         self._mock_orphan_sweep(survived=(4242,))
         pending, events = self.run_cleanup()
@@ -332,6 +399,61 @@ class TestEventSchemaStaysCompatible(TeardownEvidenceTestBase):
 
 
 class TestTeardownEvidenceRendering(unittest.TestCase):
+    def test_event_log_redacts_complete_and_preclipped_command_expressions(self):
+        for expression in (
+            "argv=['--input', 'fixture-secret-1', '--tail', '" + "x" * 80 + "']",
+            "argv=['--input', 'fixture-secret-1', '--tail'",
+            "command=\"fixture-tool fixture-secret-1 --tail",
+            "args=('--input', 'fixture-secret-1', '--tail'",
+        ):
+            with self.subTest(expression=expression), tempfile.TemporaryDirectory() as directory:
+                log = game_switch.EventLog(Path(directory) / "events.jsonl")
+                log.emit("cleanup_failed", detail="fixture failure " * 10 + expression)
+                detail = log.read_all()[0]["detail"]
+                self.assertIn("<redacted>", detail)
+                self.assertLessEqual(len(detail), 240)
+                self.assertNotIn("fixture-secret-1", detail)
+                self.assertNotIn("--tail", detail)
+
+    def test_full_diagnostic_fields_are_redacted_before_each_field_budget(self):
+        fixture = (
+            "fixture failure " * 4
+            + "argv=['--input', 'fixture-secret-1', '--tail', '" + "x" * 80 + "']"
+        )
+        for field in ("remaining_reason", "probe", "error_code", "remarks"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                evidence = TeardownEvidence()
+                setattr(evidence, field, (fixture,) if field == "remarks" else fixture)
+                log = game_switch.EventLog(Path(directory) / "events.jsonl")
+                log.emit("cleanup_failed", detail=game_switch._teardown_detail(evidence, RUNTIME))
+                detail = log.read_all()[0]["detail"]
+                self.assertLessEqual(len(detail), 240)
+                self.assertNotIn("fixture-secret-1", detail)
+                self.assertNotIn("--tail", detail)
+
+    def test_all_populated_fields_preserve_bounded_diagnostics(self):
+        evidence = TeardownEvidence(
+            pane_scopes=tuple(PaneScopeEvidence(pid, pid, CGROUP) for pid in range(111111, 111131)),
+            reclaimed=tuple(range(333333, 333353)),
+            remaining=tuple(range(444444, 444464)),
+            remaining_reason="fixture-reason " * 20,
+            probe="fixture-probe " * 20,
+            error_code="round_boundary_unsupported",
+            signals=("term", "kill"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            log = game_switch.EventLog(Path(directory) / "events.jsonl")
+            log.emit("cleanup_failed", detail=game_switch._teardown_detail(evidence, RUNTIME))
+            detail = log.read_all()[0]["detail"]
+        self.assertLessEqual(len(evidence.render()), MAX_EVIDENCE_DETAIL_CHARS)
+        self.assertLessEqual(len(detail), 240)
+        for field in (
+            "remaining=444444", "reason=fixture-reason", "probe=fixture-probe",
+            "error_code=round_boundary_unsupported", "signals=term,kill",
+        ):
+            self.assertIn(field, detail)
+        self.assertRegex(detail, r"remaining=[0-9,]+,\+\d+")
+
     def test_empty_evidence_renders_only_the_confirmation(self):
         self.assertEqual(TeardownEvidence().render(), "confirmed=no")
 
@@ -342,7 +464,7 @@ class TestTeardownEvidenceRendering(unittest.TestCase):
     def test_term_only_and_term_then_kill_are_distinguishable(self):
         term_only = TeardownEvidence(signals=("term",), confirmed=True, probe="adapter.alive=false")
         escalated = TeardownEvidence(signals=("term", "kill"), confirmed=True, probe="adapter.alive=false")
-        self.assertIn("signals=term;", term_only.render())
+        self.assertRegex(term_only.render(), r"signals=term(?:;|$)")
         self.assertIn("signals=term,kill", escalated.render())
         # "term" must not be reported as an escalation that never happened.
         self.assertNotIn("signals=term,kill", term_only.render())
@@ -368,7 +490,7 @@ class TestTeardownEvidenceRendering(unittest.TestCase):
         self.assertNotIn("199", rendered)
 
     def test_secret_bearing_evidence_is_redacted_by_the_log_sanitizer(self):
-        """Redaction is the event log's job; the renderer must not pre-empt it.
+        """Evidence fields and EventLog share the same redaction policy.
 
         ``EventLog.emit`` runs ``_sanitize_log_detail`` on every ``detail``, so
         a teardown that surfaces an adapter message containing a token, a
@@ -454,6 +576,24 @@ class TestRecorderBinding(unittest.TestCase):
     def test_evidence_from_mapping_tolerates_garbage(self):
         for payload in (None, "not a mapping", [], {}, {"signals": "not a list"}):
             self.assertEqual(evidence_from_mapping(payload).render(), "confirmed=no")
+
+
+class TestReclaimSignalCollection(TeardownEvidenceTestBase):
+    def test_reclaim_outcomes_join_pane_signals_in_the_final_event(self):
+        for pane_present in (True, False):
+            for escalated in (False, True):
+                with self.subTest(pane_present=pane_present, escalated=escalated):
+                    tmux_mod.Tmux._pane_pids = lambda self, target: [123] if pane_present else []
+                    self._mock_orphan_sweep(kill_sent=(4242,) if escalated else ())
+                    pending, events = self.run_cleanup()
+                    self.assertFalse(pending)
+                    expected = ("term", "kill") if escalated else ("term",)
+                    evidence = self.coordinator.last_teardown_evidence
+                    self.assertEqual(evidence.signals, expected)
+                    self.assertEqual(evidence.reclaim_kill_sent, (4242,) if escalated else ())
+                    detail = events["cleaned"]["detail"]
+                    self.assertRegex(detail, "signals=" + ",".join(expected) + r"(?:;|$)")
+                    self.assertIn("reclaimed=4242", detail)
 
 
 if __name__ == "__main__":

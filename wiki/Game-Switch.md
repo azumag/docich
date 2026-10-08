@@ -110,9 +110,11 @@ moon-buggy が tmux server 配下に残った理由」を特定できず未解�
   残さない。
 - `cleanup_pending` — 未回収 runtime の一覧 (recovery が再試行できるようにする)。
 
-証拠行は `detail` の 240 字予算に収まるよう組み立てられ (`confirmed` を先頭に置く)、
-機密除去は書き込み時の `_sanitize_log_detail` が一貫して行う。マスク後も PID・scope・
-シグナルは残る。実装は `src/docich/teardown_evidence.py`。
+証拠部分は210字、runtime識別子を含む `detail` は240字以内に収める。
+完全入力に共通の機密除去を適用してからfield単位で予算化する。
+`confirmed`・残PID・理由・probe・error_code・signalsを優先し、長い値は `…`、
+pane/PIDリストの省略件数は `+N` で示す。signalsにはpane停止と孤立process回収の
+両方で実際に送ったTERM/KILLを集約する。実装は `src/docich/teardown_evidence.py`。
 
 ## ラウンド境界のタイムアウト契約
 

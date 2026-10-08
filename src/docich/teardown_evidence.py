@@ -27,6 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
+from .log_redaction import redact_log_detail
+
 # Cap on the number of entries rendered for any list-valued evidence field.  A
 # teardown that would exceed this is itself a fault worth surfacing, so the
 # renderer keeps a truncation marker instead of the tail.
@@ -35,7 +37,7 @@ MAX_EVIDENCE_ENTRIES = 12
 # The event log's ``detail`` field is truncated to 240 characters on write
 # (game_switch._safe_detail), and _teardown_detail prefixes the runtime
 # identity.  This budget leaves room for that prefix, so the sanitizer cuts
-# nothing and every field survives intact.
+# nothing. Diagnostic fields have priority over the optional ownership lists.
 MAX_EVIDENCE_DETAIL_CHARS = 210
 
 MAX_REMARK_CHARS = 120
@@ -119,7 +121,7 @@ class TeardownEvidence:
     def add_remark(self, remark: str) -> None:
         """Record one bounded remark (an adapter detail or a sweep note)."""
 
-        text = _clean(remark)[:MAX_REMARK_CHARS]
+        text = _bounded_text(remark, MAX_REMARK_CHARS)
         if text and len(self.remarks) < MAX_EVIDENCE_ENTRIES:
             self.remarks = (*self.remarks, text)
 
@@ -134,41 +136,66 @@ class TeardownEvidence:
         the same short line the log carried before evidence existed.
         """
 
-        segments: list[str] = []
-        # The liveness verdict comes first: it is the one field a reader must
-        # never lose to the truncation budget, because a ``cleaned`` event is
-        # only evidence at all if the runtime was observed gone.
-        segments.append(f"confirmed={'yes' if self.confirmed else 'no'}")
+        # Even with every diagnostic present, these caps plus names and
+        # separators total at most 210 chars. Budget each complete, redacted
+        # field; never cut the assembled line through a later diagnostic.
+        segments = [f"confirmed={'yes' if self.confirmed else 'no'}"]
+        if self.remaining:
+            segments.append("remaining=" + _pids(self.remaining, max_chars=40))
+        for name, value in (
+            ("reason", self.remaining_reason),
+            ("probe", self.probe),
+            ("error_code", self.error_code),
+        ):
+            if value:
+                segments.append(f"{name}={_bounded_text(value, 32)}")
+        signals = [signal for signal in ("term", "kill") if signal in self.signals]
+        if signals:
+            segments.append("signals=" + ",".join(signals))
+
+        def add(
+            name: str, value: str, *, items: Iterable[str] | None = None,
+            pids: Iterable[int] | None = None,
+        ) -> None:
+            available = MAX_EVIDENCE_DETAIL_CHARS - len("; ".join(segments)) - len(name) - 3
+            if available <= 0:
+                return
+            if items is not None:
+                value = _items(items, max_chars=available)
+            elif pids is not None and len(value) > available:
+                # Keep whole PIDs and a count marker; the signal summary above
+                # still records any escalation whose per-PID detail is omitted.
+                suffix = "(…)"
+                value = _pids(pids, max_chars=available - len(suffix))
+                value = value + suffix if value else ""
+            else:
+                value = _bounded_text(value, available)
+            if not value:
+                return
+            segments.append(f"{name}={value}")
+
+        if self.reclaimed:
+            add(
+                "reclaimed", _pids(self.reclaimed) + _escalation(
+                    self.reclaim_term_sent, self.reclaim_kill_sent),
+                pids=self.reclaimed,
+            )
+        if self.pane_scopes:
+            add("panes", "", items=(p.as_line() for p in self.pane_scopes))
         windows = _ids(
             ("game", self.game_window_id),
             ("agent", self.agent_window_id),
             ("session", self.session_id),
         )
         if windows:
-            segments.append(f"windows={windows}")
+            add("windows", windows)
         if self.ownership:
-            segments.append("roles=" + _roles(self.ownership))
-        if self.pane_scopes:
-            segments.append("panes=" + _items(p.as_line() for p in self.pane_scopes))
-        if self.signals:
-            segments.append("signals=" + ",".join(self.signals))
-        if self.reclaimed:
-            segments.append(
-                "reclaimed=" + _pids(self.reclaimed) + _escalation(
-                    self.reclaim_term_sent, self.reclaim_kill_sent
-                )
-            )
-        if self.remaining:
-            segments.append("remaining=" + _pids(self.remaining))
-        if self.remaining_reason:
-            segments.append(f"reason={_clean(self.remaining_reason)[:MAX_REMARK_CHARS]}")
-        if self.probe:
-            segments.append(f"probe={_clean(self.probe)[:MAX_REMARK_CHARS]}")
-        if self.error_code:
-            segments.append(f"error_code={_clean(self.error_code)[:64]}")
+            add("roles", _roles(self.ownership))
         if self.remarks:
-            segments.append("remarks=" + " | ".join(self.remarks))
-        return "; ".join(segments)[:MAX_EVIDENCE_DETAIL_CHARS]
+            add("remarks", " | ".join(
+                _bounded_text(remark, MAX_REMARK_CHARS) for remark in self.remarks
+            ))
+        return "; ".join(segments)
 
 
 # --- the recorder a teardown writes into ---------------------------------
@@ -211,6 +238,13 @@ def _clean(text: object) -> str:
     return " ".join(str(text or "").split())
 
 
+def _bounded_text(text: object, max_chars: int) -> str:
+    """Redact the complete value, then flag any character-budget omission."""
+
+    value = redact_log_detail(_clean(text))
+    return value if len(value) <= max_chars else value[:max_chars - 1] + "…"
+
+
 def _cgroup_leaf(cgroup: object) -> str:
     """Keep the meaningful scope unit of a cgroup path.
 
@@ -227,12 +261,16 @@ def _cgroup_leaf(cgroup: object) -> str:
     return ""
 
 
-def _pids(values: Iterable[int]) -> str:
+def _pids(values: Iterable[int], *, max_chars: int | None = None) -> str:
     """Render PIDs, capping the count and flagging truncation."""
 
     listed = [str(int(value)) for value in values if int(value) > 0]
     shown = listed[:MAX_EVIDENCE_ENTRIES]
-    return ",".join(shown) + _over(len(listed), len(shown))
+    def rendered() -> str:
+        return ",".join(shown) + _over(len(listed), len(shown))
+    while shown and max_chars is not None and len(rendered()) > max_chars:
+        shown.pop()
+    return rendered() if max_chars is None or len(rendered()) <= max_chars else ""
 
 
 def _over(total: int, shown: int) -> str:
@@ -260,10 +298,17 @@ def _ids(*pairs: tuple[str, str | None]) -> str:
     return ",".join(f"{role}:{value}" for role, value in pairs if value)
 
 
-def _items(items: Iterable[str]) -> str:
-    listed = [item for item in items if item]
+def _items(items: Iterable[str], *, max_chars: int | None = None) -> str:
+    listed = [redact_log_detail(item) for item in items if item]
     shown = listed[:MAX_EVIDENCE_ENTRIES]
-    return "[" + " ".join(shown) + _over(len(listed), len(shown)) + "]"
+    def rendered() -> str:
+        omitted = _over(len(listed), len(shown))
+        if not shown:
+            omitted = omitted.lstrip(",")
+        return "[" + " ".join(shown) + omitted + "]"
+    while shown and max_chars is not None and len(rendered()) > max_chars:
+        shown.pop()
+    return rendered() if max_chars is None or len(rendered()) <= max_chars else ""
 
 
 def _escalation(term: Iterable[int], kill: Iterable[int]) -> str:
