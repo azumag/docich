@@ -95,6 +95,25 @@ state_dir 下 `logs/game_switch.log` に JSON 行で追記する (phase 遷移�
 `detail` は書き込み時にマスクされ (URL 全体・argv/command・Authorization 等の認証情報・
 `key=value` 形式・長いトークン)、機密がログへ流れない。receipt の canonical 表現は生のまま。
 
+### 片付けた証拠 (teardown evidence)
+
+`cleanup_started` / `cleaned` / `cleanup_failed` は「何をどう片付けたか」を `detail` に
+記録する (#1936)。背景: #1105 は `cleaned` が `detail=null` のため「前世代の
+moon-buggy が tmux server 配下に残った理由」を特定できず未解明のまま閉じた。
+
+- `cleanup_started` — 対象 runtime が主張する tmux オブジェクト。teardown 後に消える
+  ため、**事前にしか取れない**記録。
+- `cleaned` — 消した window id / session id (`@N` / `$N`)、証明した ownership の role、
+  pane の PID/PGID/cgroup scope、実際に送ったシグナル (`term` → `term,kill`)、
+  孤立プロセスの回収結果、消滅確認 (`confirmed=yes; probe=adapter.alive=false`)。
+- `cleanup_failed` — `confirmed=no` と残った PID と理由。成功に見えない失敗を
+  残さない。
+- `cleanup_pending` — 未回収 runtime の一覧 (recovery が再試行できるようにする)。
+
+証拠行は `detail` の 240 字予算に収まるよう組み立てられ (`confirmed` を先頭に置く)、
+機密除去は書き込み時の `_sanitize_log_detail` が一貫して行う。マスク後も PID・scope・
+シグナルは残る。実装は `src/docich/teardown_evidence.py`。
+
 ## ラウンド境界のタイムアウト契約
 
 - request 全体の deadline (`switch --timeout` / 既定 600s) が全ステップの上限。

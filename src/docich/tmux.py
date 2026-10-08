@@ -10,6 +10,7 @@ import logging
 import os
 import shlex
 import subprocess
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from . import procs
@@ -26,6 +27,7 @@ from .naming import (
 from .process_tree import (
     PaneProcessScope,
     ProcessIdentityError,
+    TerminationResult,
     ancestor_pids,
     descendant_pids,
     is_running,
@@ -36,6 +38,11 @@ from .process_tree import (
     processes_with_env,
     terminate_owned_processes,
     terminate_process_tree,
+)
+from .teardown_evidence import (
+    PaneScopeEvidence,
+    TeardownEvidence,
+    adapter_recorder,
 )
 
 logger = logging.getLogger(__name__)
@@ -137,6 +144,19 @@ class Tmux:
         # apart from the production server (Issue #1280).  ``None`` keeps the
         # default server used by every production component.
         self.server = validate_tmux_name(server) if server is not None else None
+        # Set by bind_teardown_owner() when an adapter binds itself, so the
+        # teardown evidence (Issue #1936) this wrapper records reaches the
+        # adapter's recorder.  ``None`` means nobody is recording.
+        self._docich_adapter: object | None = None
+
+    def bind_teardown_owner(self, adapter: object) -> None:
+        """Record which adapter's teardown this wrapper is reporting on.
+
+        Every adapter owns its own :class:`Tmux`, so binding here is enough
+        for the wrapper to find the recorder of the runtime being torn down.
+        """
+
+        self._docich_adapter = adapter
 
     def _run(self, args: list[str], **kwargs):
         command = ["tmux", "-L", self.server, *args] if self.server is not None else ["tmux", *args]
@@ -678,7 +698,136 @@ class Tmux:
                 scope = PaneProcessScope.from_cgroup(pgid, cgroup)
                 if scope is not None:
                     groups[pid] = scope
-        return terminate_process_tree(pids).remaining, groups, protected
+        outcome = terminate_process_tree(pids)
+        self._record_termination(groups, outcome)
+        return outcome.remaining, groups, protected
+
+    # --- teardown evidence (Issue #1936) ---------------------------------
+
+    def _active_recorder(self) -> "TeardownEvidence | None":
+        """The recorder bound to the runtime currently being torn down.
+
+        The teardown layer binds the recorder onto the adapter that owns the
+        teardown, and every adapter holds its own :class:`~docich.tmux.Tmux`.
+        A shared/unbound Tmux has no recorder, so recording stays opt-in and a
+        non-instrumented teardown behaves exactly as before.
+        """
+
+        owner = getattr(self, "_docich_adapter", None)
+        return adapter_recorder(owner) if owner is not None else None
+
+    def _record_target(self, target: str, expected: TmuxOwnership, *, window: bool) -> None:
+        """Record which tmux object and runtime identity a teardown stopped.
+
+        Called *before* the stop so the ids and ownership tags are still
+        readable.  Silent when nobody is recording.
+        """
+
+        recorder = self._active_recorder()
+        if recorder is None:
+            return
+        target_id = self._target_id(target, window=window)
+        if window:
+            if expected.role == "agent":
+                recorder.agent_window_id = target_id
+            else:
+                recorder.game_window_id = target_id
+        else:
+            recorder.session_id = target_id
+        if target not in recorder.targets:
+            recorder.targets = (*recorder.targets, target)
+        tag = f"{expected.runtime_id}:{expected.generation}:{expected.role}"
+        if tag not in recorder.ownership:
+            recorder.ownership = (*recorder.ownership, tag)
+
+    def _target_id(self, target: str, *, window: bool) -> str | None:
+        """Stable tmux id (``@N`` window / ``$N`` session) for a target ref."""
+
+        fmt = "#{window_id}" if window else "#{session_id}"
+        result = self._run(["display-message", "-p", "-t", target, fmt])
+        if result.returncode != 0:
+            return None
+        try:
+            value = (result.stdout or "").strip()
+            return (
+                validate_tmux_window_id(value) if window else validate_tmux_session_id(value)
+            )
+        except ValueError:
+            return None
+
+    def _record_termination(
+        self,
+        groups: Mapping[int, PaneProcessScope],
+        outcome: TerminationResult,
+    ) -> None:
+        """Record each pane leader's scope and the signals it actually took.
+
+        Per-PID attribution matters: a teardown that TERMed one pane and had to
+        KILL another must not report both as KILL-only.
+        """
+
+        recorder = self._active_recorder()
+        if recorder is None:
+            return
+        for leader in sorted(groups):
+            scope = groups[leader]
+            recorder.pane_scopes = (
+                *[entry for entry in recorder.pane_scopes if entry.pane_pid != leader],
+                PaneScopeEvidence(
+                    pane_pid=leader,
+                    pgid=scope.pgid,
+                    cgroup=scope.cgroup,
+                    term_sent=(leader,) if leader in outcome.term_sent else (),
+                    kill_sent=(leader,) if leader in outcome.kill_sent else (),
+                    remaining=(leader,) if leader in outcome.remaining else (),
+                ),
+            )
+        self._record_signals(outcome)
+
+    def _record_signals(self, *outcomes: TerminationResult) -> None:
+        """Record the escalation actually used, in order (TERM -> KILL)."""
+
+        recorder = self._active_recorder()
+        if recorder is None:
+            return
+        signals = list(recorder.signals)
+        for outcome in outcomes:
+            term_sent = tuple(getattr(outcome, "term_sent", ()) or ())
+            kill_sent = tuple(getattr(outcome, "kill_sent", ()) or ())
+            if term_sent and "term" not in signals:
+                signals.append("term")
+            if kill_sent and "kill" not in signals:
+                signals.append("kill")
+        recorder.signals = tuple(signals)
+
+    def _record_reclaim(self, victims: Iterable[int], outcome: TerminationResult) -> None:
+        """Record an escaped-process sweep and the PIDs it actually reclaimed."""
+
+        recorder = self._active_recorder()
+        if recorder is None:
+            return
+        found = tuple(int(pid) for pid in victims)
+        recorder.reclaimed = tuple(
+            dict.fromkeys((*recorder.reclaimed, *found))
+        )
+        recorder.reclaim_term_sent = tuple(
+            dict.fromkeys((*recorder.reclaim_term_sent, *outcome.term_sent))
+        )
+        recorder.reclaim_kill_sent = tuple(
+            dict.fromkeys((*recorder.reclaim_kill_sent, *outcome.kill_sent))
+        )
+
+    def _record_remaining(self, remaining: tuple[int, ...], *, reason: str) -> None:
+        """Record PIDs that survived, keeping the first reason offered."""
+
+        recorder = self._active_recorder()
+        if recorder is None or not remaining:
+            return
+        recorder.remaining = tuple(
+            dict.fromkeys((*recorder.remaining, *tuple(int(pid) for pid in remaining)))
+        )
+        recorder.remaining_reason = recorder.remaining_reason or reason
+
 
     def _escaped_process_ids(
         self,
@@ -789,14 +938,16 @@ class Tmux:
             "tmux %s: 回収対象の孤立プロセスを停止します victims=%s", operation, victims
         )
         try:
-            return terminate_owned_processes(
+            outcome = terminate_owned_processes(
                 victims,
                 lambda pid: self._escaped_process_is_owned(
                     pid, ownership, roles, pane_groups, protected
                 ),
-            ).remaining
+            )
         except ProcessIdentityError as exc:
             raise TmuxError(f"{operation}: 孤立プロセスの安全な停止に失敗しました: {exc}") from exc
+        self._record_reclaim(victims, outcome)
+        return outcome.remaining
 
     def _kill_after_process_stop(self, args: list[str], operation: str) -> None:
         """Finish cleanup while accepting only a target that already vanished.
@@ -836,6 +987,7 @@ class Tmux:
             ),
         )
         if remaining:
+            self._record_remaining(remaining, reason="teardown後も停止を確認できなかった")
             raise TmuxError(f"legacy game sessionの子プロセスが停止しませんでした: {remaining}")
 
     @staticmethod
@@ -854,6 +1006,9 @@ class Tmux:
             raise OwnershipMismatchError(
                 f"window ownershipが一致しません (expected={expected}, actual={actual})"
             )
+        # Record the target identity and the ownership tags before anything is
+        # signalled: this is the receipt for which runtime was torn down.
+        self._record_target(target, expected, window=True)
         remaining, pane_groups, protected = self._stop_scoped_processes(target)
         self._kill_after_process_stop(["kill-window", "-t", target], "window停止")
         # Only this window's role is reclaimed: a sibling window of the same
@@ -869,6 +1024,7 @@ class Tmux:
             ),
         )
         if remaining:
+            self._record_remaining(remaining, reason="teardown後も停止を確認できなかった")
             raise TmuxError(f"tmux windowの子プロセスが停止しませんでした: {remaining}")
         return True
 
@@ -881,6 +1037,7 @@ class Tmux:
             raise OwnershipMismatchError(
                 f"session ownershipが一致しません (expected={expected}, actual={actual})"
             )
+        self._record_target(session, expected, window=False)
         remaining, pane_groups, protected = self._stop_scoped_processes(session)
         self._kill_after_process_stop(["kill-session", "-t", session], "session停止")
         # The session owns every role of the runtime (its own pane and the
@@ -896,6 +1053,7 @@ class Tmux:
             ),
         )
         if remaining:
+            self._record_remaining(remaining, reason="teardown後も停止を確認できなかった")
             raise TmuxError(f"tmux sessionの子プロセスが停止しませんでした: {remaining}")
         return True
 
