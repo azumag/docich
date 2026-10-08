@@ -1,0 +1,23 @@
+{
+  "version": "reply-semantic-v1",
+  "axes": {
+    "intent_relevance": {
+      "description": "The reply understands what the comment is about."
+    },
+    "game_grounding": {
+      "description": "Uses current-game context when needed and does not force a game reading onto an off-game comment."
+    },
+    "answer_usefulness": {
+      "description": "Actually answers the question/correction/request."
+    },
+    "evidence_discipline": {
+      "description": "Never invents a screen, state or past scene that was not available."
+    },
+    "conversation_quality": {
+      "description": "Natural broadcast reply, not overly long."
+    },
+    "factual_consistency": {
+      "description": "No assertion contradicting the input or available context."
+    }
+  }
+}
