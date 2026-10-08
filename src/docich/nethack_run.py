@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .config import GlobalConfig, load_game
-from .game_switch import atomic_write_json
+from .game_switch import GameSwitchBusyError, GameSwitchStore, atomic_write_json
 
 SCHEMA_VERSION = 1
 PROGRESS_SCHEMA_VERSION = 1
@@ -165,6 +165,10 @@ class NethackRunStore:
         self.meta_path = self.root / "meta.json"
         self.current_path = self.root / "current.json"
         self.lock_path = self.root / ".lock"
+        # Capture the worker's own runtime, not whichever session is current
+        # when a delayed observation is eventually published.
+        self._progress_session = os.environ.get("DOCICH_GAME_SESSION")
+        self._progress_identity: tuple[object, ...] | None = None
 
     @classmethod
     def from_global(cls, g: GlobalConfig) -> "NethackRunStore | None":
@@ -180,12 +184,11 @@ class NethackRunStore:
         os.chmod(self.progress_dir, 0o700)
 
     def append_progress_sample(self, sample: dict[str, object]) -> bool:
-        """Append one bounded public-state sample without taking the run lock.
+        """Append a bounded sample and publish its observed turn without waiting.
 
-        The current pointer/run JSON are atomically replaced by lifecycle code,
-        so a best-effort read is enough here. Avoiding the shared run lock keeps
-        telemetry from waiting behind a save/finish transaction in the game
-        input path. A trace is deliberately capped and never stores raw TTY.
+        The trace remains best effort, capped, and free of raw TTY. The small
+        display update tries the lifecycle locks nonblockingly; it must never
+        wait behind a save/finish transaction in the game input path.
         """
         allowed = {
             "ts", "phase", "turn", "depth", "hp", "hp_max", "conditions",
@@ -260,6 +263,9 @@ class NethackRunStore:
             line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
             if len(line) > MAX_PROGRESS_LINE_BYTES:
                 raise NethackRunError("progress sample exceeds line size limit")
+            # The display must keep advancing even after the trace is capped.
+            # Only an observed T: value is published, never a sent-key count.
+            self._publish_observed_turn(run_id, sample)
             self._ensure_private_dirs()
             path = self.progress_dir / f"{run_id}.jsonl"
             flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
@@ -289,12 +295,68 @@ class NethackRunStore:
         except OSError as exc:
             raise NethackRunError("progress sample could not be written") from exc
 
+    def _publish_observed_turn(self, run_id: str, sample: dict[str, object]) -> None:
+        """Update the existing sidebar source for this worker's active run only.
+
+        Lock order matches the agent: game-switch shared, then run exclusive.
+        Both acquisitions are nonblocking. Xlog import remains authoritative
+        at termination; telemetry never changes lifecycle or terminal facts.
+        """
+        turn = sample["turn"]
+        if turn is None or not self._progress_session:
+            return
+        switch = GameSwitchStore(Path(self.g.state_dir))
+        try:
+            with switch.lock(exclusive=False):
+                state, _ = switch.canonical.load()
+                active = state.get("active")
+                if (
+                    state.get("phase") != "ready"
+                    or not isinstance(active, dict)
+                    or active.get("game") != "nethack"
+                    or active.get("adapter_session") != self._progress_session
+                    or not isinstance(active.get("runtime_id"), str)
+                    or not active["runtime_id"]
+                    or type(active.get("generation")) is not int
+                    or active["generation"] < 1
+                ):
+                    return
+                identity = (
+                    run_id, active["runtime_id"], active["generation"],
+                    active.get("lease_id"),
+                )
+                if self._progress_identity not in (None, identity):
+                    return
+                with self._locked(blocking=False):
+                    run = self._current_unlocked()
+                    if (
+                        run is None
+                        or run.get("run_id") != run_id
+                        or run.get("status") != "active"
+                    ):
+                        return
+                    started = dt.datetime.fromisoformat(str(run.get("last_started_at")))
+                    if started.tzinfo is None or sample["ts"] < started.timestamp():
+                        return
+                    self._progress_identity = identity
+                    previous = run.get("turns")
+                    if previous is not None and (
+                        type(previous) is not int or previous < 0 or turn <= previous
+                    ):
+                        return
+                    run["turns"] = turn
+                    self._write_run_unlocked(run)
+        except (BlockingIOError, GameSwitchBusyError):
+            # Display telemetry cannot stall gameplay or save/finish handling.
+            return
+
     @contextmanager
-    def _locked(self) -> Iterator[None]:
+    def _locked(self, *, blocking: bool = True) -> Iterator[None]:
         self._ensure_private_dirs()
         with self.lock_path.open("a+", encoding="utf-8") as handle:
             os.chmod(self.lock_path, 0o600)
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+            fcntl.flock(handle.fileno(), flags)
             try:
                 yield
             finally:
