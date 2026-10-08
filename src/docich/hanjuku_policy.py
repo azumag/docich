@@ -4015,6 +4015,21 @@ def _card_gate_choice(mem, cur, candidates, names):
             choices = [card for card in candidates if gates[card]['role'] == role]
             if choices:
                 choice = _rescue_card(choices, cur)
+                # Conserve firepower only between already-proven finishers.
+                # Critical/unknown HP keeps the existing emergency order;
+                # healing above, explicit chart choices, and final A gates
+                # remain unchanged. Do not rank guessed or self-harming hits.
+                if (role == 'single_card_lethal'
+                        and type(cur.get('ally_hp')) is int
+                        and cur['ally_hp'] > GENERAL_CRITICAL_RETREAT_HP):
+                    safe = [card for card in choices
+                            if gates[card]['estimate']['self_harm'] is False
+                            and type(gates[card]['estimate']['raw_damage_min']) is int
+                            and gates[card]['estimate']['raw_damage_min'] > 0]
+                    if safe:
+                        minimum = min(gates[card]['estimate']['raw_damage_min'] for card in safe)
+                        choice = _rescue_card([card for card in safe
+                            if gates[card]['estimate']['raw_damage_min'] == minimum], cur)
                 break
         if choice is None:
             choice = _rescue_card(candidates, cur)
