@@ -1,11 +1,11 @@
 {
-  "output_sha256": "dee642d1625ffac99538dca2475a5a68b6ae20e382babfe7f91866672729045f",
+  "output_sha256": "befcaeed3840a2d9b72659a476813759c5cf0389bc3fc1ca6438a74549b7bff5",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "f279b3778b0954a6a82f6e7d964789dc11beb742f4319c0e5a0b425017e19f9c",
+  "source_sha256": "ee15bac222c3693b61eea90515919be610117e2e6cf09a1ec0822e73ca9a1370",
   "topics": [
-    "ついたて将棋コーナー: 勝敗・終局理由の表示とコーナーの有界終了（ merged・main 反映、Worker 未配備）",
-    "半熟コーナー g604: month_menu で `down` が 128 回連続の入力ループと特定（read-only project…",
-    "衝立brain v8 配備と実戦5局（総反則は悪化）、v9 実装まで"
+    "ゲーム BGM の二重減衰を確認、無中断で音量復旧（恒久コードの配備・runtime読込は進行中）",
+    "ついたてbrain v11 実装・ローカル検証（push/PR は owner 承認待ち）",
+    "半熟コーナー g604: `down` 連打ループを v134 で hot load し入力消費は解消（ゲームの進行は未復旧）"
   ]
 }
