@@ -13,7 +13,8 @@ def memory(**battle):
     return {'chapter': 1, 'hero_max_hp': 90, 'egg_uses': {'どうし': 4},
             'battle': {'step': '1-A1', 'ally': 'どうし', 'enemy': 'ガルバンゾー',
                        'side': 'attack', 'ally_hp': 90, 'enemy_hp': 40,
-                       'ally_soldiers': 6, 'enemy_soldiers': 6, **battle}}
+                       'ally_soldiers': 6, 'enemy_soldiers': 6,
+                       'card_soldiers_current': True, **battle}}
 
 
 def learned(key, actions):
@@ -178,7 +179,7 @@ def test_unassigned_defense_loss_is_visible_without_invented_death():
 def test_defense_win_is_not_a_capture_candidate():
     record = win()
     record['side'] = 'defense'
-    assert gated([record, owner()])['type'] == 'review_unverified_capture'
+    assert gated([record, owner()])['type'] == 'promote_interim_attack'
 
 
 def test_malformed_records_are_not_proof():
@@ -293,3 +294,118 @@ def test_monster_skill_key_keeps_summoned_panel_contract():
     assert experience.situation_key('monster_menu', mem) == key
     mem['monster_panel']['ally_hp'] = 1
     assert experience.situation_key('monster_menu', mem) != key
+
+
+@pytest.mark.parametrize('kind', ['battle_menu', 'egg_summon'])
+def test_learning_distinguishes_every_current_soldier_pair(kind):
+    # One surviving soldier and six soldiers used to share "available".
+    keys = {experience.situation_key(kind, memory(ally_soldiers=ours, enemy_soldiers=theirs))
+            for ours in range(7) for theirs in range(7)}
+    assert len(keys) == 49
+
+
+@pytest.mark.parametrize('kind,alternative', [('battle_menu', 'pass'), ('egg_summon', 'attack')])
+def test_outnumbered_battle_does_not_borrow_a_full_armys_winning_choice(kind, alternative):
+    strong = experience.situation_key(kind, memory(ally_soldiers=6, enemy_soldiers=1))
+    weak = experience.situation_key(kind, memory(ally_soldiers=1, enemy_soldiers=6))
+    exp = learned(strong, {'use_egg': {'losses': 5}, alternative: {'wins': 20}})
+    assert experience.preferred(exp, strong, default='use_egg', kind=kind) == alternative
+    assert experience.preferred(exp, weak, default='use_egg', kind=kind) == 'use_egg'
+
+
+@pytest.mark.parametrize('kind', ['battle_menu', 'egg_summon'])
+@pytest.mark.parametrize('field', ['ally_soldiers', 'enemy_soldiers'])
+@pytest.mark.parametrize('value', [None, True, False, -1, 7, 999, '6', 6.0])
+def test_invalid_soldier_count_is_unknown_not_an_available_force(kind, field, value):
+    mem = memory(**{field: value})
+    key = experience.situation_key(kind, mem)
+    assert f'{field}=unknown' in key.split('|')
+    assert key != experience.situation_key(kind, memory(**{field: 0}))
+    assert key != experience.situation_key(kind, memory(**{field: 6}))
+
+
+@pytest.mark.parametrize('kind,alternative', [('battle_menu', 'pass'), ('egg_summon', 'attack')])
+@pytest.mark.parametrize('flag', [None, False, 0, 1, 'true'])
+def test_stale_or_unproven_counts_keep_policy_default_despite_biased_history(kind, alternative, flag):
+    mem = memory(card_soldiers_current=flag)
+    if flag is None:
+        mem['battle'].pop('card_soldiers_current')
+    key = experience.situation_key(kind, mem)
+    assert 'ally_soldiers=unknown' in key.split('|')
+    assert 'enemy_soldiers=unknown' in key.split('|')
+    for actions in ({'use_egg': {'losses': 5}},
+                    {'use_egg': {'losses': 5}, alternative: {'wins': 20}}):
+        assert experience.preferred(learned(key, actions), key,
+                                    default='use_egg', kind=kind) == 'use_egg'
+    # Falling back to policy also preserves its healthy melee choice: this
+    # guard never manufactures an egg action or stops the input loop.
+    exp = learned(key, {alternative: {'losses': 5}, 'use_egg': {'wins': 20}})
+    assert experience.preferred(exp, key, default=alternative, kind=kind) == alternative
+
+
+@pytest.mark.parametrize('flag', ['card_hp_unread', 'card_context_unclassified'])
+def test_unread_or_mismatched_panel_cannot_reuse_old_soldier_counts(flag):
+    key = experience.situation_key('battle_menu', memory(**{flag: True}))
+    assert 'ally_soldiers=unknown' in key.split('|')
+    assert 'enemy_soldiers=unknown' in key.split('|')
+
+
+@pytest.mark.parametrize('field', ['ally_soldiers', 'enemy_soldiers'])
+def test_one_unread_army_is_enough_to_prevent_speculative_learning(field):
+    key = experience.situation_key('battle_menu', memory(**{field: None}))
+    exp = learned(key, {'use_egg': {'losses': 5}, 'pass': {'wins': 20}})
+    assert experience.preferred(exp, key, default='use_egg', kind='battle_menu') == 'use_egg'
+
+
+@pytest.mark.parametrize('kind', ['battle_menu', 'egg_summon'])
+def test_ctx2_statistics_are_preserved_but_never_relabelled_as_current_counts(kind):
+    key = experience.situation_key(kind, memory())
+    legacy = (f'{kind}|1|ガルバンゾー|どうし|1-A1|ahead|ctx2|side=attack|risk=normal'
+              '|egg=available|ally_soldiers=available|enemy_soldiers=available')
+    exp = learned(legacy, {'use_egg': {'wins': 0, 'losses': 5},
+                          'attack': {'wins': 20, 'losses': 0}, 'pass': {'wins': 20, 'losses': 0}})
+    before = copy.deepcopy(exp)
+    assert 'ctx3' in key.split('|') and key != legacy
+    assert experience.preferred(exp, key, default='use_egg', kind=kind) == 'use_egg'
+    assert experience._clean(exp) == before
+    assert exp == before
+
+
+def test_ctx2_emergency_history_keeps_its_existing_rescue_protection():
+    legacy = ('egg_summon|1|ガルバンゾー|どうし|1-A1|behind|ctx2|side=attack|risk=critical'
+              '|egg=available|ally_soldiers=available|enemy_soldiers=available')
+    exp = learned(legacy, {'use_egg': {'losses': 5}, 'attack': {'wins': 20}})
+    assert experience.preferred(exp, legacy, default='use_egg', kind='egg_summon') == 'use_egg'
+
+
+def test_soldier_context_does_not_mutate_evidence_or_expand_persistence_limit():
+    mem = memory()
+    before = copy.deepcopy(mem)
+    key = experience.situation_key('battle_menu', mem)
+    assert mem == before
+    mem['_experience'] = experience.empty()
+    for index in range(experience.MAX_SITUATIONS + 1):
+        assert experience.record(mem, f'{key}|test={index}', 'pass', 'win')
+    assert len(mem['_experience']['situations']) == experience.MAX_SITUATIONS
+    assert mem['_experience']['schema'] == 1
+
+
+@pytest.mark.parametrize('kind', ['battle_menu', 'egg_summon'])
+def test_integration_learning_tracks_the_real_card_panel_reader(kind):
+    from docich import hanjuku_policy as policy
+    from test_hanjuku_card_damage_gate import memory as card_memory, panel
+
+    mem = card_memory(ally='どうし', ally_hp=90, soldiers=(1, 6))
+    first = experience.situation_key(kind, mem)
+    assert 'ally_soldiers=1' in first.split('|')
+    assert 'enemy_soldiers=6' in first.split('|')
+    policy._card_battle_reading(panel(mem, soldiers=(None, None)), mem['battle'])
+    unread = experience.situation_key(kind, mem)
+    assert 'ally_soldiers=unknown' in unread.split('|')
+    assert 'enemy_soldiers=unknown' in unread.split('|')
+    policy._card_battle_reading(panel(mem, soldiers=(6, 1)), mem['battle'])
+    fresh = experience.situation_key(kind, mem)
+    assert 'ally_soldiers=6' in fresh.split('|')
+    assert 'enemy_soldiers=1' in fresh.split('|')
+    assert len({first, unread, fresh}) == 3
+    assert mem['battle']['cards_used'] == []  # observations never prove a card use
