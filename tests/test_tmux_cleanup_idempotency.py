@@ -32,6 +32,8 @@ class TestOwnedCleanupIdempotency(unittest.TestCase):
             _ok("1\n"),
             _ok("game\n"),
             _ok("123\n"),
+            _ok("4321\n"),
+            _ok("123\n"),
             _fail("can't find window: game-g1"),
         ]
         mock_terminate.return_value = TerminationResult(
@@ -50,6 +52,8 @@ class TestOwnedCleanupIdempotency(unittest.TestCase):
             _ok("1\n"),
             _ok("game\n"),
             _ok("123\n"),
+            _ok("4321\n"),
+            _ok("123\n"),
             _fail("no server running on /tmp/tmux-1000/default"),
         ]
         mock_terminate.return_value = TerminationResult(
@@ -67,6 +71,8 @@ class TestOwnedCleanupIdempotency(unittest.TestCase):
             _ok("g1-abcdef\n"),
             _ok("1\n"),
             _ok("game\n"),
+            _ok("123\n"),
+            _ok("4321\n"),
             _ok("123\n"),
             _fail("failed to connect to server: Connection refused"),
         ]
