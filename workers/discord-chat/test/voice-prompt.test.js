@@ -15,22 +15,21 @@ async function capture(event, history = []) {
 test("voice call is the only latest reply target; ambient questions remain a separate reference", async () => {
   const context = [{userId: "8", text: "晩ご飯は何にする？"}, {userId: "9", text: "明日の天気は？"}];
   const history = [{role: "user", content: "以前の質問"}, {role: "assistant", content: "以前の返答"}];
-  const messages = await capture({voice: true, voiceContext: context}, history);
+  const messages = await capture({voice: true, voiceContext: context, content: "同志、さっきの続きは？"}, history);
   const target = JSON.parse(messages.at(-1).content);
-  const reference = JSON.parse(messages.at(-2).content);
+  const reference = JSON.parse(/<voice_background_context>\n([^]*?)\n<\/voice_background_context>/.exec(messages[0].content)[1]);
   assert.equal(target.source, "current_voice_call");
-  assert.equal(target.text, "同志、こんにちは。");
+  assert.equal(target.text, "同志、さっきの続きは？");
   assert.equal(target.recent_voice_context, undefined);
-  assert.equal(messages.at(-2).role, "assistant");
   assert.equal(messages.at(-1).role, "user");
-  assert.equal(reference.source, "voice_background_context");
+  assert.equal(messages.length, history.length + 2);
   assert.equal(reference.purpose, "reference_only");
   assert.deepEqual(reference.recent_voice_context, context);
   assert.deepEqual(messages.slice(1, 3), history);
   assert.match(messages[0].content, /返答の対象は最後のcurrent_voice_callのtextだけ/);
   assert.match(messages[0].content, /過去の質問をまとめて回答/);
   assert.match(messages[0].content, /挨拶には挨拶/);
-  assert.match(messages[0].content, /私が返答した内容ではありません/);
+  assert.match(messages[0].content, /Botが実際に返答した内容ではありません/);
   assert.ok(messages[0].content.indexOf("【音声返答の最終規則】") > messages[0].content.indexOf(DISCORD_CONTEXT));
 });
 
@@ -66,4 +65,23 @@ test("voice preserves canonical character traits without conflicting Twitch/game
   )) assert.ok(system.includes(line));
   assert.match(system, /ウィットや比喩も今回の呼びかけに沿う/);
   assert.match(system, /背景会話から別の話題を持ち出しません/);
+});
+
+
+test("greeting-only voice calls omit irrelevant model context without altering its source", async () => {
+  const context = [{userId: "8", text: "晩ご飯はカレーとラーメンどちら？"}];
+  const history = [{role: "user", content: "明日の天気は？"}, {role: "assistant", content: "以前の返答"}];
+  for (const content of ["同志、こんばんは。", "こんにちは、どうし。", "同志、おはようございます！"]) {
+    const messages = await capture({voice: true, voiceContext: context, content}, history);
+    assert.equal(messages.length, 2);
+    assert.doesNotMatch(messages[0].content, /カレー|ラーメン|明日の天気|以前の返答/);
+    assert.equal(JSON.parse(messages[1].content).text, content);
+  }
+  for (const content of ["同志、こんばんは。さっきの休憩は？", "同志、おはようと言っていたのは誰？"]) {
+    const messages = await capture({voice: true, voiceContext: context, content}, history);
+    assert.equal(messages.length, history.length + 2);
+    assert.match(messages[0].content, /カレー/);
+  }
+  assert.deepEqual(context, [{userId: "8", text: "晩ご飯はカレーとラーメンどちら？"}]);
+  assert.equal(history.length, 2);
 });
