@@ -61,7 +61,8 @@ test("voice preserves canonical character traits without conflicting Twitch/game
   assert.doesNotMatch(system, /ソ連ゲーム|自分自身が|プレイヤー当事者/);
   for (const line of persona.split(/\r?\n/u).filter(line =>
     !line.startsWith("あなたはTwitch配信「ソ連ゲーム」") &&
-    !line.startsWith("ゲームの話をするときはプレイヤー当事者として語ること。")
+    !line.startsWith("ゲームの話をするときはプレイヤー当事者として語ること。") &&
+    !line.startsWith("コメント返しは毎回、")
   )) assert.ok(system.includes(line));
   assert.match(system, /ウィットや比喩も今回の呼びかけに沿う/);
   assert.match(system, /背景会話から別の話題を持ち出しません/);
@@ -84,4 +85,14 @@ test("greeting-only voice calls omit irrelevant model context without altering i
   }
   assert.deepEqual(context, [{userId: "8", text: "晩ご飯はカレーとラーメンどちら？"}]);
   assert.equal(history.length, 2);
+});
+
+
+test("voice humor is optional so factual answers need no unrelated context flourish", async () => {
+  const messages = await capture({voice:true, content:"同志、次の休憩は何時？"});
+  assert.doesNotMatch(messages[0].content, /ウィットを一つ必ず入れる|淡白で常識的なだけの返しは禁止/);
+  assert.match(messages[0].content, /呼びかけに合う場合だけ/);
+  assert.match(messages[0].content, /尋ねられた事実だけを簡潔に/);
+  const text = await capture({content:"次の休憩は何時？"});
+  assert.equal(text[0].content, persona + "\n\n" + DISCORD_CONTEXT);
 });
