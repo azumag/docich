@@ -151,25 +151,24 @@ def preferred(exp: dict | None, key: str, *, default: str, kind: str) -> str:
     can learn beyond the built-in default, except in measured defense, critical
     or unknown contexts. Emergency default summons are never replaced by a
     learned pass/attack. Actions outside this menu's vocabulary are ignored.
-    An untried default stays default. Current-context unread armies always
-    keep the policy default, even if pooled unknown-state history looks better.
+    An untried default stays default. Current-context unread armies also
+    prohibit untried exploration. Measured choices within the same unknown
+    context keep the existing learning contract; known-army records never match.
     """
     allowed = ALTERNATIVES.get(kind, ())
     if default not in allowed or not isinstance(key, str) or not isinstance(exp, dict):
         return default
     context = key.split('|')
-    constrained = (any(version in context for version in ('ctx2', SITUATION_CONTEXT)) and
-                   ('risk=critical' in context or 'risk=unknown' in context or
-                    'side=defense' in context or 'side=unknown' in context))
+    unread_armies = (SITUATION_CONTEXT in context and
+                     any(f'{field}=unknown' in context
+                         for field in ('ally_soldiers', 'enemy_soldiers')))
+    constrained = (unread_armies or
+                   (any(version in context for version in ('ctx2', SITUATION_CONTEXT)) and
+                    ('risk=critical' in context or 'risk=unknown' in context or
+                     'side=defense' in context or 'side=unknown' in context)))
     # Keep a policy-selected emergency summon. This function chooses a label;
     # the caller must still verify the real menu and egg availability.
     if constrained and 'risk=critical' in context and default == 'use_egg':
-        return default
-    # Unknown armies pool incomparable strengths. Neither a lucky recorded
-    # win nor an untried alternative may override the policy in that pool.
-    # Legacy documents/keys remain inspectable; monster-skill keys are unchanged.
-    if (SITUATION_CONTEXT in context and
-            any(f'{field}=unknown' in context for field in ('ally_soldiers', 'enemy_soldiers'))):
         return default
     row = exp.get('situations')
     row = row.get(key) if isinstance(row, dict) else None
