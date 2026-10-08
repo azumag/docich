@@ -48,6 +48,7 @@ _PROGRESS_INTENTS = frozenset({
     "retreat_step", "bump_creature", "open_door_start", "open_door_direction",
 })
 _PROGRESS_KEYS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ .")
+_PROGRESS_PROMPTS = frozenset({"none", "more", "yes_no", "direction", "selection", "text", "unknown"})
 
 
 class NethackDailyImproveError(RuntimeError):
@@ -138,13 +139,21 @@ def _improvement_candidates(retrospectives: list[dict[str, object]]) -> list[dic
         run_id = item.get("run_id")
         same_frame = progress.get("same_frame_sent_pairs")
         streak = progress.get("max_same_frame_sent_streak")
-        if (
-            isinstance(run_id, str)
-            and type(same_frame) is int
+        same_hold = progress.get("same_frame_hold_pairs")
+        hold_streak = progress.get("max_same_frame_hold_streak")
+        sent_stalled = (
+            type(same_frame) is int
             and same_frame > 0
             and type(streak) is int
             and streak >= 2
-        ):
+        )
+        hold_stalled = (
+            type(same_hold) is int
+            and same_hold > 0
+            and type(hold_streak) is int
+            and hold_streak >= 2
+        )
+        if isinstance(run_id, str) and (sent_stalled or hold_stalled):
             candidates.append({
                 "candidate_id": f"progress-stall:{run_id}",
                 "category": "progress_stall",
@@ -152,9 +161,16 @@ def _improvement_candidates(retrospectives: list[dict[str, object]]) -> list[dic
                 "evidence": {
                     "same_frame_sent_pairs": same_frame,
                     "max_same_frame_sent_streak": streak,
+                    "same_frame_hold_pairs": same_hold,
+                    "max_same_frame_hold_streak": hold_streak,
+                    "prompt_counts": progress.get("prompt_counts", {}),
                     "resolved_intent_counts": progress.get("resolved_intent_counts", {}),
                 },
-                "next_step": "該当turnを回帰fixtureにし、同じ画面へ同じキーを再送する経路を確認する",
+                "next_step": (
+                    "該当holdを回帰fixtureにし、prompt/startup判定で入力なしが継続する経路を確認する"
+                    if hold_stalled
+                    else "該当turnを回帰fixtureにし、同じ画面へ同じキーを再送する経路を確認する"
+                ),
                 "policy_effect": "none",
             })
         min_hp = progress.get("min_hp_ratio")
@@ -256,11 +272,14 @@ def _public_evidence(retrospectives: list[dict[str, object]], day: str) -> dict[
             "max_depth": nonnegative_int(progress.get("max_depth")),
             "min_hp_ratio": hp_ratio,
             "phase_counts": safe_counts(progress.get("phase_counts"), frozenset({"sent", "hold"})),
+            "prompt_counts": safe_counts(progress.get("prompt_counts"), _PROGRESS_PROMPTS),
             "intent_counts": safe_counts(progress.get("intent_counts"), _PROGRESS_INTENTS),
             "resolved_intent_counts": safe_counts(progress.get("resolved_intent_counts"), _PROGRESS_INTENTS),
             "sent_key_counts": safe_counts(progress.get("sent_key_counts"), _PROGRESS_KEYS),
             "same_frame_sent_pairs": nonnegative_int(progress.get("same_frame_sent_pairs")),
             "max_same_frame_sent_streak": nonnegative_int(progress.get("max_same_frame_sent_streak")),
+            "same_frame_hold_pairs": nonnegative_int(progress.get("same_frame_hold_pairs")),
+            "max_same_frame_hold_streak": nonnegative_int(progress.get("max_same_frame_hold_streak")),
         }
         score = nonnegative_int(item.get("score"))
         turns = nonnegative_int(item.get("turns"))
@@ -424,7 +443,13 @@ def run_daily_improvement(
                 intent_counts = progress.get("resolved_intent_counts")
                 intent_counts = intent_counts if isinstance(intent_counts, dict) else {}
                 stall_intent = None
-                if type(progress.get("max_same_frame_sent_streak")) is int and progress["max_same_frame_sent_streak"] >= 2:
+                stall_streak = max(
+                    progress.get("max_same_frame_sent_streak")
+                    if type(progress.get("max_same_frame_sent_streak")) is int else 0,
+                    progress.get("max_same_frame_hold_streak")
+                    if type(progress.get("max_same_frame_hold_streak")) is int else 0,
+                )
+                if stall_streak >= 2:
                     stall_intent = max(
                         ((str(key), value) for key, value in intent_counts.items() if type(value) is int),
                         key=lambda item: item[1],

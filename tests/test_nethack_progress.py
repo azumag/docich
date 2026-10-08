@@ -574,6 +574,38 @@ def test_same_more_frame_is_sent_once_until_frame_changes():
     assert act(agent, frame(message="Another page --More--", turn=None)) == [" "]
 
 
+def test_repeated_policy_hold_emits_one_bounded_stall_diagnostic(capsys):
+    agent = brain()
+    text = frame(message="Unknown question?")
+    for _ in range(agent._STALL_HOLD_REPEAT_THRESHOLD + 5):
+        assert act(agent, text) == []
+    stderr = capsys.readouterr().err
+    assert stderr.count("[nethack-stall]") == 1
+    assert "stage=policy" in stderr
+    assert "prompt=unknown" in stderr
+    assert "resolved=prompt_decision" in stderr
+    assert "Unknown question" not in stderr
+
+
+def test_repeated_startup_hold_is_diagnosed_without_gameplay_input(capsys):
+    agent = NethackPolicyBrain(SimpleNamespace(), SimpleNamespace(
+        name="nethack",
+        adapter="cli",
+        raw={
+            "cli": {"cols": 80, "rows": 24},
+            "nethack": {"startup": {"enabled": True}},
+        },
+    ))
+    text = "Character creation help screen"
+    for _ in range(agent._STALL_HOLD_REPEAT_THRESHOLD + 2):
+        assert act(agent, text) == []
+    stderr = capsys.readouterr().err
+    assert stderr.count("[nethack-stall]") == 1
+    assert "stage=startup" in stderr
+    assert "prompt=none" in stderr
+    assert "Character creation help screen" not in stderr
+
+
 def observation(text):
     return Observation(game="nethack", title="NetHack", adapter="cli", ts=1.0, kind="text", text=text)
 

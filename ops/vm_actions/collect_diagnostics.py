@@ -6550,7 +6550,8 @@ def _nethack_progress(raw):
     result = {'status': _rotation_enum(raw.get('status'),
               {'ok', 'empty', 'missing', 'error', 'too_large', 'invalid_run_id'})}
     for key in ('sample_count', 'malformed_lines', 'first_turn', 'last_turn',
-                'max_turn', 'max_depth', 'same_frame_sent_pairs', 'max_same_frame_sent_streak'):
+                'max_turn', 'max_depth', 'same_frame_sent_pairs', 'max_same_frame_sent_streak',
+                'same_frame_hold_pairs', 'max_same_frame_hold_streak'):
         result[key] = _nethack_number(raw.get(key))
     for key in ('first_ts', 'last_ts', 'min_hp_ratio'):
         value = raw.get(key)
@@ -6558,6 +6559,11 @@ def _nethack_progress(raw):
     result['truncated'] = raw.get('truncated') if type(raw.get('truncated')) is bool else None
     result['phase_counts'] = {key: _nethack_number(raw.get('phase_counts', {}).get(key))
                              for key in ('sent', 'hold')} if isinstance(raw.get('phase_counts'), dict) else {}
+    result['prompt_counts'] = {
+        key: _nethack_number(raw.get('prompt_counts', {}).get(key))
+        for key in ('none', 'more', 'yes_no', 'direction', 'selection', 'text', 'unknown')
+        if _nethack_number(raw.get('prompt_counts', {}).get(key)) is not None
+    } if isinstance(raw.get('prompt_counts'), dict) else {}
     return result
 
 
