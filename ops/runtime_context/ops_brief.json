@@ -2,7 +2,7 @@
   "output_sha256": "93a40fc931f772320c698b4e2198227402e5a76e6e0a6a288e8bee4b1e0f28ec",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "c56237a838b9896e3d5aa2ac527b9d458efc7a10963bcc6210673bf0f34802cb",
+  "source_sha256": "1a94d8c68e70cf2c800288cfeb9f5ff4a4c8987395bf781e79dfd911a8c3f827",
   "topics": [
     "自動ローテーション復帰とついたて将棋の自動登録（owner依頼、実装検証中）",
     "owner指定に合わせゲームBGMを30%へ訂正（無再起動）",

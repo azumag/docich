@@ -376,6 +376,7 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
         adapter.spec = RuntimeSpec.from_runtime(adapter.g.state_dir, retired)
         adapter._status = Mock(return_value={"schema": 1, "request": None, "ack": None, "resource": None})
         adapter._live_process = Mock(return_value=True)
+        adapter._singleton_process_identity = Mock(side_effect=lambda name: (1 if name == "soren_loop.sh" else 2, 10))
         adapter._run = Mock(side_effect=AssertionError("must not stop the live singleton"))
         return adapter, store, state
 
@@ -385,6 +386,7 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             def factory(spec):
                 instance = SorenCoordinatorAdapter(adapter.g, adapter.game, spec)
                 instance._status, instance._live_process = adapter._status, adapter._live_process
+                instance._singleton_process_identity = adapter._singleton_process_identity
                 instance._run = adapter._run
                 return instance
             result = GameSwitchCoordinator(store, factory).recover(timeout_s=5)
@@ -411,9 +413,10 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                 adapter._status.return_value = payload
                 self.assertFalse(adapter._retired_singleton_is_superseded(deadline, None))
             adapter._status.return_value = {"schema": 1, "request": None, "ack": None, "resource": None}
-            adapter._live_process.return_value = False
+            adapter._singleton_process_identity.side_effect = None
+            adapter._singleton_process_identity.return_value = None
             self.assertFalse(adapter._retired_singleton_is_superseded(deadline, None))
-            adapter._live_process.return_value = True
+            adapter._singleton_process_identity.side_effect = lambda name: (1 if name == "soren_loop.sh" else 2, 10)
             active = state["active"]
             for change in ({"game": "nsnake", "adapter": "cli"},
                            {"lease_id": adapter.spec.lease_id}):
@@ -435,6 +438,62 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                 return {"schema": 1, "request": None, "ack": None, "resource": None}
             adapter._status.side_effect = probe
             self.assertFalse(adapter._retired_singleton_is_superseded(time.monotonic() + 5, None))
+
+    def test_no_stop_recovery_requires_real_programs_at_fixed_root(self):
+        cases = ("valid", "data-arguments", "foreign-root", "single-reporter", "duplicate-loop")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                adapter, store, before = self.make_retired_singleton(root)
+                proc = root / "fake-proc"
+                proc.mkdir()
+                foreign = root / "other"
+                foreign.mkdir()
+                for directory in (root, foreign):
+                    for name in ("soren_loop.sh", "soviet_watchdog.sh", "report.sh"):
+                        (directory / name).write_text("#!/bin/bash\n")
+                def process(pid, argv, cwd):
+                    entry = proc / str(pid)
+                    entry.mkdir()
+                    (entry / "cmdline").write_bytes(("\0".join(argv) + "\0").encode())
+                    (entry / "stat").write_text(f"{pid} (bash) " + " ".join(["S"] + ["0"] * 18 + ["10"]))
+                    (entry / "cwd").symlink_to(cwd, target_is_directory=True)
+                    (entry / "exe").symlink_to("/bin/bash")
+                if case == "single-reporter":
+                    process(11, ["python3", "report.sh", "--loop", "./soren_loop.sh",
+                                 "--watchdog", "./soviet_watchdog.sh"], root)
+                else:
+                    directory = foreign if case == "foreign-root" else root
+                    for pid, name in ((11, "soren_loop.sh"), (12, "soviet_watchdog.sh")):
+                        argv = ["/bin/bash", "./" + name]
+                        if case == "data-arguments":
+                            argv = ["/bin/bash", "./report.sh", "--input", str(root / name)]
+                        process(pid, argv, directory)
+                    if case == "duplicate-loop":
+                        process(13, ["/bin/bash", "./soren_loop.sh"], root)
+                adapter._singleton_process_identity = lambda name: SorenCoordinatorAdapter._singleton_process_identity(
+                    adapter, name, proc_root=proc)
+                def factory(spec):
+                    instance = SorenCoordinatorAdapter(adapter.g, adapter.game, spec)
+                    instance._status, instance._live_process = adapter._status, adapter._live_process
+                    instance._singleton_process_identity = adapter._singleton_process_identity
+                    instance._run = adapter._run
+                    return instance
+                result = GameSwitchCoordinator(store, factory).recover(timeout_s=5)
+                after, _ = store.canonical.load()
+                self.assertEqual(after["active"], before["active"])
+                self.assertEqual(after["retiring"], [] if case == "valid" else before["retiring"])
+                self.assertEqual(bool(result.cleanup_pending), case != "valid")
+                adapter._run.assert_not_called()
+
+    def test_no_stop_proof_rejects_shared_pid_and_process_replacement(self):
+        for identities in ([(1, 10), (1, 10)], [(1, 10), (2, 10), (1, 11)]):
+            with self.subTest(identities=identities), tempfile.TemporaryDirectory() as temp:
+                adapter, store, before = self.make_retired_singleton(Path(temp))
+                adapter._singleton_process_identity.side_effect = identities
+                self.assertFalse(adapter._retired_singleton_is_superseded(time.monotonic() + 5, None))
+                self.assertEqual(store.canonical.load()[0]["retiring"], before["retiring"])
+                adapter._run.assert_not_called()
 
     def test_cleanup_failure_appends_diagnostic_log(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -376,10 +376,55 @@ class SorenCoordinatorAdapter:
                 or any(key not in payload or payload[key] is not None
                        for key in ("request", "ack", "resource"))):
             return False
-        if not self._live_process("soren_loop.sh") or not self._live_process("soviet_watchdog.sh"):
+        processes = {name: self._singleton_process_identity(name) for name in
+                     ("soren_loop.sh", "soviet_watchdog.sh")}
+        if (any(identity is None for identity in processes.values())
+                or processes["soren_loop.sh"][0] == processes["soviet_watchdog.sh"][0]):
+            return False
+        self._check(deadline, cancel)
+        if any(self._singleton_process_identity(name) != identity
+               for name, identity in processes.items()):
             return False
         current, missing = store.canonical.load()
         return not missing and current == state
+
+    def _singleton_process_identity(self, expected: str, *, proc_root=Path("/proc")):
+        """Prove the fixed-root script is a shell's program, not a data argument.
+
+        This stricter proof is limited to no-stop retirement. Unknown shell
+        options or launch shapes fail closed instead of weakening the fence.
+        """
+        matches = []
+        try:
+            script = (self.root / expected).resolve(strict=True)
+            entries = list(proc_root.iterdir())
+        except OSError:
+            return None
+        shells = {Path(name).resolve() for name in ("/bin/bash", "/bin/sh", "/bin/dash")}
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                before = (entry / "stat").read_text().rsplit(") ", 1)[1].split()
+                argv = (entry / "cmdline").read_bytes().decode().rstrip("\0").split("\0")
+                cwd = (entry / "cwd").resolve(strict=True)
+                exe = (entry / "exe").resolve(strict=True)
+                if (before[0] in {"Z", "X"} or len(argv) < 2 or cwd != self.root
+                        or exe not in shells or Path(argv[0]).name not in {"bash", "sh", "dash"}):
+                    continue
+                index = 2 if argv[1] == "--" else 1
+                if len(argv) <= index or argv[index].startswith("-"):
+                    continue
+                if (cwd / argv[index]).resolve(strict=True) != script:
+                    continue
+                after = (entry / "stat").read_text().rsplit(") ", 1)[1].split()
+                ticks = int(before[19])
+                if ticks <= 0 or after[0] in {"Z", "X"} or int(after[19]) != ticks:
+                    continue
+                matches.append((int(entry.name), ticks))
+            except (OSError, UnicodeError, ValueError, IndexError):
+                continue
+        return matches[0] if len(matches) == 1 else None
 
     def cleanup_runtime(self, deadline: float, cancel) -> None:
         if self._retired_singleton_is_superseded(deadline, cancel):
