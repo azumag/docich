@@ -366,6 +366,11 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
         channelId: config.channelId,
         userId: config.receiveUserId,
       });
+      const memoryScope = Object.freeze({
+        guildId: config.guildId,
+        channelId: config.memoryChannelId,
+        userId: config.receiveUserId,
+      });
 
       const onTranscript = conversation
         ? async (transcript, { signal }) => {
@@ -384,7 +389,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
                   10_000,
                   (stageSignal) =>
                     conversation.generate(transcript, {
-                      ...scope,
+                      ...memoryScope,
                       signal: stageSignal,
                     }),
                 );
@@ -493,7 +498,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
                         transcript,
                         reply: generated.reply,
                       },
-                      { ...scope, signal: stageSignal },
+                      { ...memoryScope, signal: stageSignal },
                     ),
                 );
                 emit({ event: 'memory_commit_completed' });
