@@ -1,11 +1,11 @@
 {
-  "output_sha256": "cb29c9f4b18b2da5ecd6e362d76c1ac7b537e4a5b8af196d71e7572de8f3142d",
+  "output_sha256": "087641c8ec63355bca1fe9e73fcbaa0fd333282b882cf07c3a09f338b97d8f24",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "ceb71832a9a5e92cf9c15843126fdc62f2329f1c69555eb3a548ac3d9a05d297",
+  "source_sha256": "d82ab0d2f072a04e9dd982e885bdf10248a6794cd6c97f6f304c27ab28166b00",
   "topics": [
+    "owner指定に合わせゲームBGMを30%へ訂正（無再起動）",
     "ゲーム BGM の二重減衰を修正、配信を維持して可聴音量と実効設定を確認",
-    "ついたてbrain v11 実装・ローカル検証（push/PR は owner 承認待ち）",
-    "半熟コーナー g604: `down` 連打ループを v134 で hot load し入力消費は解消（ゲームの進行は未復旧）"
+    "ついたてbrain v11 実装・ローカル検証（push/PR は owner 承認待ち）"
   ]
 }
