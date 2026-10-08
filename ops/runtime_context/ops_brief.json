@@ -2,7 +2,7 @@
   "output_sha256": "cb29c9f4b18b2da5ecd6e362d76c1ac7b537e4a5b8af196d71e7572de8f3142d",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "1789b6a2968db73b0192a8f2ae404246e5d74db19d9a47776626799c1f18b906",
+  "source_sha256": "ceb71832a9a5e92cf9c15843126fdc62f2329f1c69555eb3a548ac3d9a05d297",
   "topics": [
     "ゲーム BGM の二重減衰を修正、配信を維持して可聴音量と実効設定を確認",
     "ついたてbrain v11 実装・ローカル検証（push/PR は owner 承認待ち）",
