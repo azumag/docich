@@ -7,7 +7,7 @@ This opt-in mode is implemented locally alongside the existing fixed-target acce
 1. A server manager joins a normal voice channel and runs `/join` in that server. The Bot resolves that member's current VC; no Guild, channel, or receive-user IDs are entered at the terminal.
 2. The Bot stays in that VC until `/leave` or host shutdown. Repeating `/join` is idempotent; it refuses to move an existing session into a different channel implicitly.
 3. The join response announces that speech will be transcribed and temporarily retained as context. Only current human members of that VC are admitted; bots, unknown users, and users in other channels are excluded.
-4. Every admitted utterance is transcribed. Ordinary utterances only update context. An utterance containing the literal word `同志` triggers a reply to that utterance, with recent same-VC conversation available as untrusted data. Homophones such as `同士` are not aliases.
+4. Every admitted utterance is transcribed locally by default. Ordinary utterances only update context. An utterance containing the literal word `同志` triggers a reply to that utterance, with recent same-VC conversation available as untrusted data. Homophones such as `同士` are not aliases.
 5. Background speech does not interrupt the reply. A newly transcribed wake utterance cancels the older reply and supersedes any pending reply. Detection therefore has STT latency, unlike immediate speech-onset interruption in the old acceptance mode.
 6. Only successfully played wake/reply turns are committed to existing long-term conversational memory. Background context is not written to that database. `/leave` discards the session's background context; it does not erase previously delivered conversations.
 
@@ -21,7 +21,7 @@ At most eight guild sessions, one VC per guild, four simultaneous captures per V
 
 ## Host and Discord setup (not executed by offline tests)
 
-Use the existing process-only Discord Token, Workers AI credentials, fixed `DOCICH_DISCORD_VOICE_CHAT_TOKEN`, `DOCICH_DISCORD_VOICE_CHAT_URL` ending in `/voice/reply`, and VOICEVOX settings from the main README. For intentional same-host VOICEVOX set `DOCICH_DISCORD_VOICE_VOICEVOX_ALLOW_LOOPBACK=1`. Set `DOCICH_DISCORD_VOICE_RESIDENT_ENABLED=1` only for this mode. Transcript/reply debug output is forcibly disabled for resident sessions.
+Resident mode defaults to local STT. Run the loopback-only faster-whisper server documented in `LOCAL-STT.md` first. Windows Workers AI credentials are not required for local STT. Use the existing process-only Discord Token, fixed `DOCICH_DISCORD_VOICE_CHAT_TOKEN`, `DOCICH_DISCORD_VOICE_CHAT_URL` ending in `/voice/reply`, and VOICEVOX settings from the main README. For intentional same-host VOICEVOX set `DOCICH_DISCORD_VOICE_VOICEVOX_ALLOW_LOOPBACK=1`. Set `DOCICH_DISCORD_VOICE_RESIDENT_ENABLED=1` only for this mode. Transcript/reply debug output is forcibly disabled for resident sessions.
 
 The slash commands have default and runtime `ManageGuild` permission checks. The Bot also needs Connect and Speak in the selected VC. The app must support guild application commands. Invitation alone does not start a stopped Windows host, and this change does not install a Windows service or change the production text Bot.
 

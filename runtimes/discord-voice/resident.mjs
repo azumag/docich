@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { Client, Events, GatewayIntentBits, PermissionFlagsBits, ChannelType } from 'discord.js';
 import { runLiveVoice } from './live.mjs';
-import { loadCloudflareSttConfig } from './cloudflare-stt.mjs';
+import { loadSttConfig } from './stt-provider.mjs';
 import { loadCloudflareConversationConfig } from './cloudflare-conversation.mjs';
 import { createLiveVoicevoxTTS } from './live-voicevox.mjs';
 
@@ -83,6 +83,7 @@ export function startResidentSession(client,env,{guild,channel},emit=emitDefault
     on:client.on.bind(client),off:client.off.bind(client),
   };
   const sessionEnv={...env,
+    DOCICH_DISCORD_VOICE_STT_PROVIDER:env.DOCICH_DISCORD_VOICE_STT_PROVIDER ?? 'local',
     DOCICH_DISCORD_VOICE_ENABLED:'1', DOCICH_DISCORD_VOICE_WAKE_ENABLED:'1',
     DOCICH_DISCORD_VOICE_GUILD_ID:guild.id,DOCICH_DISCORD_VOICE_CHANNEL_ID:channel.id,
     DOCICH_DISCORD_VOICE_RECEIVE_ENABLED:'1',DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED:'1',DOCICH_DISCORD_VOICE_TTS_ENABLED:'1',
@@ -95,10 +96,11 @@ export function startResidentSession(client,env,{guild,channel},emit=emitDefault
 }
 
 export async function runResident(env=process.env,{register=false}={}) {
+  env={...env,DOCICH_DISCORD_VOICE_STT_PROVIDER:env.DOCICH_DISCORD_VOICE_STT_PROVIDER ?? 'local'};
   if(typeof env.DOCICH_DISCORD_TOKEN!=='string' || env.DOCICH_DISCORD_TOKEN.length<20 || /\s/.test(env.DOCICH_DISCORD_TOKEN)) throw Error('invalid_resident_config');
   if(!register) {
     if(env.DOCICH_DISCORD_VOICE_RESIDENT_ENABLED!=='1') throw Error('resident_disabled');
-    loadCloudflareSttConfig(env);
+    loadSttConfig(env);
     loadCloudflareConversationConfig(env);
     createLiveVoicevoxTTS(env,{allowLoopback:env.DOCICH_DISCORD_VOICE_VOICEVOX_ALLOW_LOOPBACK==='1'});
   }
