@@ -137,6 +137,8 @@ Conversation mode is fail-closed unless receive mode is also enabled. The Worker
 
 The voice request reads existing text-memory history for the same full `guild + channel + user` scope and rechecks recalled sources after model generation so a concurrent delete suppresses the reply. This slice intentionally does **not** persist the new voice turn. Delivery acknowledgement does not exist until TTS + Discord playback are connected, so saving the turn now would create remembered replies that were never spoken. There is no automatic request retry in this slice.
 
+Memory scope is the full `guild + channel + user` tuple. By default it is the joined Voice channel, so voice and text history stay separate and no setting is needed. A deployment that intentionally wants the paired text channel and the voice channel to share one memory scope sets `DOCICH_DISCORD_VOICE_MEMORY_CHANNEL_ID` to that text channel's ID; TTS and playback still use the joined Voice channel scope. Sharing across guilds is not possible because the scope always includes the guild ID. See `docs/adr/0004-discord-voice-stt-tts-and-memory-scope.md` for the STT/TTS selection and the memory-scope decision.
+
 ### Slice 4: VOICEVOX + Discord playback + delivery memory
 
 Slice 4 explicitly connects the generated reply to the existing VOICEVOX HTTP contract and then to Discord raw PCM playback. Enable it only after Slice 2/3 settings are present:

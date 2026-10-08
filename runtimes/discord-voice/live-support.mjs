@@ -39,6 +39,16 @@ export function loadLiveVoiceConfig(env = process.env) {
     fail('invalid_config');
   }
 
+  // Memory scope channel. Defaults to the joined Voice channel, so voice and
+  // text history stay separate. Setting it to the paired text channel's ID
+  // opts this deployment into sharing one (guild, channel, user) memory scope.
+  const memoryChannelIdRaw = env.DOCICH_DISCORD_VOICE_MEMORY_CHANNEL_ID;
+  const memoryChannelId =
+    memoryChannelIdRaw === undefined || memoryChannelIdRaw === ''
+      ? channelId
+      : memoryChannelIdRaw;
+  if (!validSnowflake(memoryChannelId)) fail('invalid_config');
+
   const receiveEnabled = boolFlag(env.DOCICH_DISCORD_VOICE_RECEIVE_ENABLED, false);
   const receiveUserId = env.DOCICH_DISCORD_VOICE_RECEIVE_USER_ID;
   if (receiveEnabled && !validSnowflake(receiveUserId)) fail('invalid_config');
@@ -59,6 +69,7 @@ export function loadLiveVoiceConfig(env = process.env) {
     token,
     guildId,
     channelId,
+    memoryChannelId,
     playTestTone: boolFlag(env.DOCICH_DISCORD_VOICE_TEST_TONE, false),
     receiveEnabled,
     receiveUserId: receiveEnabled ? receiveUserId : null,
