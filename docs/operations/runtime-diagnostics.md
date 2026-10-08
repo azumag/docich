@@ -491,21 +491,32 @@ run終了処理や日次処理を起動しない。owner境界・既存lock・�
 
 ## tmux サーバ所有と resolver daemon の read-only 投影（#1286 follow-up）
 
-`tmux_servers` は本番コーナーが使う既定ソケット `docich` と評価ジョブ専用ソケット
-`docich-eval` の読取成否・セッション数・確認できた有無を投影する。
+`tmux_servers` は本番コーナーが使う tmux 既定サーバと評価ジョブ専用サーバ
+`docich-eval` の読取成否・セッション数・確認できた有無を投影する（`schema_version` は2）。
+本番サーバのサーバ名は `default`。tmux は `-L` を付けないときソケットを `default` と
+名付けるので `tmux -L default` が本番サーバそのものを読む。`docich` はその既定サーバ内の
+**セッション名**であり、サーバ名ではない。以前の `-L docich` は VM 上に存在せず、
+本番サーバを常に「不在」（`readable=false`）と誤報していた（2026-10-08 実測）。
 セッション名は取得せず、`list-sessions -F 1` の固定マーカーだけを数える。
 出力は4KiBまでを検証し、不正な行、上限超過、timeout、実行失敗、非zero終了は
 `readable=false / present=null / session_count=null` とする。不在や0件に推測変換しない。
 正常終了した空出力だけが `readable=true / present=false / session_count=0` になる。
 旧 `sessions` フィールドは出力しない。各サーバの結果は独立している。
 #1284 で評価用 tmux を専用サーバへ隔離したが、分離はプロセスツリーからは直接観測できなかった。
-この投影で「eval セッションが `docich-eval` 上に作られ、本番 `docich` サーバに現れない」ことを
+この投影で「eval セッションが `docich-eval` 上に作られ、本番 `default` サーバに現れない」ことを
 diagnostics で直接確認できる。`tmux -L <server> list-sessions` は read-only（入力送信なし）。
 
 `resolver_daemon` は `docich-resolver-improve.service` と
-`docich-resolver-improve-gnurobots.service` の active / enabled 状態を投影する。
-これらの長命 daemon が稼働していると、次回再起動まで本番既定 tmux サーバを共有し続ける
-（#1284 の対象外経路）。`systemctl --user is-active` / `is-enabled` は read-only。
+`docich-resolver-improve-gnurobots.service` の active / enabled 状態を投影する
+（`schema_version` は2）。これらの長命 daemon が稼働していると、次回再起動まで
+本番既定 tmux サーバを共有し続ける（#1284 の対象外経路）。
+2026-10-08 の VM 実測では両 unit は **system manager**（`/etc/systemd/system`、
+root所有、`WantedBy=default.target`）に install されており、`systemctl --user` だけを
+見ると `not-found`（= 未稼働に見える）になっていた。実際には
+`docich-resolver-improve.service` は 2026-10-01 06:18 JST から稼働中だった。
+そのため `active` / `enabled` は system / user 両 manager の集約（いずれかが true なら true、
+既知の false は unknown に隠されない）とし、manager ごとの生値は `scopes` に残す。
+`systemctl is-active` / `is-enabled`（system / `--user`）は read-only。
 
 
 ## YouTube / Kick title sync の read-only 投影
