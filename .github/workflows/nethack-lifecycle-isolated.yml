@@ -1,0 +1,32 @@
+name: NetHack lifecycle isolated verification
+
+on:
+  push:
+    branches: [fix/nethack-terminal-lifecycle-1969]
+    paths:
+      - '.github/workflows/nethack-lifecycle-isolated.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  source-snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Archive tracked source for offline reproduction
+        run: |
+          git archive --format=tar.gz --output="$RUNNER_TEMP/docich-source.tar.gz" HEAD
+          git rev-parse HEAD > "$RUNNER_TEMP/source-commit.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: nethack-lifecycle-source
+          path: |
+            ${{ runner.temp }}/docich-source.tar.gz
+            ${{ runner.temp }}/source-commit.txt
+          retention-days: 1
+          if-no-files-found: error
