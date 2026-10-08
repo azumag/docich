@@ -1,10 +1,10 @@
 {
-  "output_sha256": "93a40fc931f772320c698b4e2198227402e5a76e6e0a6a288e8bee4b1e0f28ec",
+  "output_sha256": "9e241442bf87a9390a89be146a1f7a3d37c3e87dbae148d4e9add5f46473a4f7",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "1a94d8c68e70cf2c800288cfeb9f5ff4a4c8987395bf781e79dfd911a8c3f827",
+  "source_sha256": "7ad3f4ab44fca11c59d2e63685469c1af1640b6d7d687c5c9bd7bdebe1167c8c",
   "topics": [
-    "自動ローテーション復帰とついたて将棋の自動登録（owner依頼、実装検証中）",
+    "自動ローテーション復帰・ついたて自動候補N11を実機確認",
     "owner指定に合わせゲームBGMを30%へ訂正（無再起動）",
     "ゲーム BGM の二重減衰を修正、配信を維持して可聴音量と実効設定を確認"
   ]
