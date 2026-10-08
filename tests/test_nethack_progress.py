@@ -583,7 +583,7 @@ def test_repeated_policy_hold_emits_one_bounded_stall_diagnostic(capsys):
     assert stderr.count("[nethack-stall]") == 1
     assert "stage=policy" in stderr
     assert "prompt=unknown" in stderr
-    assert "resolved=progress_blocked" in stderr
+    assert "resolved=prompt_decision" in stderr
     assert "Unknown question" not in stderr
 
 
