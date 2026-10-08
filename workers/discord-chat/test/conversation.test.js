@@ -360,8 +360,7 @@ test('voice recent context reaches only model input, never delivery memory, and 
   const latest=JSON.parse(input.messages.at(-1).content);
   assert.equal(latest.text,turn.transcript); assert.equal(latest.source,'current_voice_call');
   assert.equal(latest.recent_voice_context,undefined);
-  const background=JSON.parse(input.messages.at(-2).content);
-  assert.equal(background.source,'voice_background_context');
+  const background=JSON.parse(/<voice_background_context>\n([^]*?)\n<\/voice_background_context>/.exec(input.messages[0].content)[1]);
   assert.equal(background.purpose,'reference_only');
   assert.equal(background.recent_voice_context[0].userId,'8');
   assert.equal(rows(f.sql).length,0);
