@@ -395,7 +395,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
               try {
                 generated = await runBoundedStage(
                   turnController.signal,
-                  10_000,
+                  30_000,
                   (stageSignal) =>
                     conversation.generate(transcript, {
                       ...memoryScope,

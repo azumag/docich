@@ -639,3 +639,68 @@ test('memory scope channel is overridable for conversation and commit only', asy
   signalTarget.emit('SIGINT');
   assert.equal(await running, 0);
 });
+
+for (const scenario of ['reply_after_12s', 'deadline_after_30s']) {
+  test(`live reply ${scenario} preserves bounded generation and playback-before-commit`, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const h = makeHarness('none');
+    const events = [];
+    let receiver;
+    let commits = 0;
+    let plays = 0;
+    let generationSignal;
+    const running = runLiveVoice({
+      ...env(), DOCICH_DISCORD_VOICE_TEST_TONE: '0',
+      DOCICH_DISCORD_VOICE_RECEIVE_ENABLED: '1',
+      DOCICH_DISCORD_VOICE_RECEIVE_USER_ID: '323456789012345678',
+      DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED: '1',
+      DOCICH_DISCORD_VOICE_TTS_ENABLED: '1',
+    }, {
+      ...h.runtimeOps, emit: e => events.push(e.event),
+      createStt: () => ({ transcribe: async () => '' }),
+      createConversation: () => ({
+        generate: (_text, {signal}) => {
+          generationSignal = signal;
+          return new Promise((resolve, reject) => {
+            const timer = scenario === 'reply_after_12s'
+              ? setTimeout(() => resolve({turnId: 'slow-valid', reply: '返答です'}), 12_000)
+              : null;
+            signal.addEventListener('abort', () => {
+              clearTimeout(timer);
+              reject(Error('fixture_cancelled'));
+            }, {once: true});
+          });
+        },
+        commit: async () => { assert.equal(plays, 1); commits++; return 'committed'; },
+      }),
+      createTts: () => ({ synthesize: async () => new Int16Array(960) }),
+      createPlayback: () => ({ play: async () => { plays++; }, close() {} }),
+      attachReceiver: options => { receiver = options.onTranscript; return {stop() {}}; },
+    });
+    try {
+      await waitFor(() => receiver);
+      const turn = receiver('artificial deadline fixture', {signal: new AbortController().signal});
+      await waitFor(() => generationSignal);
+      if (scenario === 'reply_after_12s') t.mock.timers.tick(12_000);
+      else {
+        t.mock.timers.tick(29_999);
+        assert.equal(generationSignal.aborted, false);
+        t.mock.timers.tick(1);
+      }
+      await turn;
+      if (scenario === 'reply_after_12s') {
+        assert.equal(commits, 1);
+        assert.ok(events.includes('llm_completed'));
+        assert.ok(!events.includes('llm_failed'));
+      } else {
+        assert.ok(generationSignal.aborted);
+        assert.equal(plays, 0);
+        assert.equal(commits, 0);
+        assert.ok(events.includes('llm_failed'));
+      }
+    } finally {
+      h.signalTarget.emit('SIGINT');
+      assert.equal(await running, 0);
+    }
+  });
+}
