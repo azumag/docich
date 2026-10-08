@@ -333,6 +333,27 @@ class AuthorizeTests(unittest.TestCase):
         for forbidden in ("systemctl", "sudo", "tmux", "pkill"):
             self.assertNotIn(forbidden, helper)
 
+    def test_workflow_restart_soviet_watchdog_uses_reviewed_fixed_script(self):
+        workflow = WF.read_text(encoding="utf-8")
+        self.assertIn("Restart resident soviet_watchdog after reviewed runtime epoch", workflow)
+        self.assertIn("cat control/ops/vm_actions/restart_soviet_watchdog.sh |", workflow)
+        step = workflow.split(
+            "Restart resident soviet_watchdog after reviewed runtime epoch", 1
+        )[1].split("- name:", 1)[0]
+        # Same reviewed epoch as the poll workers: restart is an explicit,
+        # reviewable push-deploy decision, not a dispatch-only or ad-hoc path.
+        self.assertIn("ops/vm_actions/restart_poll_workers_epoch", step)
+        self.assertIn("exec docich production $SHA", step)
+        self.assertNotIn("VM_COMMAND", step)
+        helper = (ROOT / "ops/vm_actions/restart_soviet_watchdog.sh").read_text(encoding="utf-8")
+        # The watchdog owns its singleton through the lock owner file, not a pid
+        # file, and the helper only ever signals that one reviewed process.
+        self.assertIn('root="/home/ubuntu/soren"', helper)
+        self.assertIn(".soviet_watchdog.lock/owner", helper)
+        self.assertIn("soviet_watchdog.sh", helper)
+        for forbidden in ("systemctl", "sudo", "tmux", "pkill"):
+            self.assertNotIn(forbidden, helper)
+
     def test_recover_soren_game_is_fixed_production_operation(self):
         for target, ref, confirm in (("preview", "main", "production"),
                                      ("production", "feature", "production"),
