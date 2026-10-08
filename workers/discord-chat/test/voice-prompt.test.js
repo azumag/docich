@@ -41,7 +41,8 @@ test("voice situation overrides the old game setting even without ambient contex
     assert.match(messages[0].content, /通称「ツ」/);
     assert.match(messages[0].content, /並走会/);
     assert.match(messages[0].content, /以前のゲーム・配信設定より優先/);
-    assert.match(messages[0].content, /自分がゲームを操作しているとは言いません/);
+    assert.match(messages[0].content, /画面を見てゲームを操作し/);
+    assert.doesNotMatch(messages[0].content, /この接続には配信映像、ゲームの現況、ゲーム操作/);
     assert.equal(JSON.parse(messages.at(-1).content).source, "current_voice_call");
   }
 });
