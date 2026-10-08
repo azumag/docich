@@ -18,6 +18,7 @@ from . import hanjuku_chart as chart
 from . import hanjuku_chart_adjust as chart_adjust
 from . import hanjuku_experience as experience
 from . import hanjuku_reference as reference
+from .hanjuku_egg_stock import observed_uses
 from .hanjuku_egg_reference import enemy_egg_triggers, general_debut_chapter, general_max_hp
 from .hanjuku_font import UNKNOWN, TextLine
 from .hanjuku_screen import (HEADER as HEADER_RE, OKUNOTE_CHOICES,
@@ -5999,9 +6000,10 @@ def _egg_row(screen):
         cells = dict(line.spans())
         if cells.get(80) == 'しょうぐん' and cells.get(16):
             general = cells[16]
-        if cells.get(16) == 'たまご' and cells.get(48) and (cells.get(112) or '').isdigit():
-            egg, uses = cells[48], int(cells[112])
-    if not general or UNKNOWN in general or egg is None:
+        if (cells.get(16) == 'たまご' and cells.get(48)
+                and re.fullmatch(r'[0-9]', cells.get(112) or '')):
+            egg, uses = cells[48], observed_uses(int(cells[112]))
+    if not general or UNKNOWN in general or egg is None or UNKNOWN in egg or uses is None:
         return None
     return general, egg, uses
 

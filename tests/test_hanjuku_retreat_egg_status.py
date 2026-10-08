@@ -48,7 +48,7 @@ def test_verified_zero_replaces_cached_two_before_a_critical_enemy_contact(mode,
     critical_contact(mem, actor)
 
 
-@pytest.mark.parametrize('uses', [0, 1, 2, 3, 4])
+@pytest.mark.parametrize('uses', [0, 1, 2, 3, 4, 5])
 def test_actual_positive_and_zero_quantities_are_observed_without_guessing_consumption(uses):
     mem = memory(); mem['egg_uses'] = {'ゼウス': 2}
     focus(mem)
@@ -94,8 +94,8 @@ def test_main_status_and_a_missing_current_tent_do_not_update_quantities():
     assert mem['egg_uses'] == {'ゼウス': 2}
 
 
-@pytest.mark.parametrize('uses', [None, True, False, '0', -1, 5])
-def test_only_strict_observed_zero_to_four_updates_the_cache(monkeypatch, uses):
+@pytest.mark.parametrize('uses', [None, True, False, '0', -1, 6])
+def test_only_strict_observed_zero_to_five_updates_the_cache(monkeypatch, uses):
     mem = memory(); mem['egg_uses'] = {'ゼウス': 2}; focus(mem)
     screen = parse(status('ゼウス', 'エラベルエッグ0', main=False, hp=6))
     info = house.general_status(screen); info['uses'] = uses
