@@ -1,11 +1,11 @@
 {
-  "output_sha256": "9e241442bf87a9390a89be146a1f7a3d37c3e87dbae148d4e9add5f46473a4f7",
+  "output_sha256": "f67a9414c190cd81cbe0c4b075163472034579d9555e61c64f2954fc3f813eae",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "7ad3f4ab44fca11c59d2e63685469c1af1640b6d7d687c5c9bd7bdebe1167c8c",
+  "source_sha256": "d92655d5411273285cefd010d2fc060322325170d9b41f914304df97e7095755",
   "topics": [
+    "全音声の配信接続を復旧、ゲーム盤面・リレーを維持して実測確認",
     "自動ローテーション復帰・ついたて自動候補N11を実機確認",
-    "owner指定に合わせゲームBGMを30%へ訂正（無再起動）",
-    "ゲーム BGM の二重減衰を修正、配信を維持して可聴音量と実効設定を確認"
+    "owner指定に合わせゲームBGMを30%へ訂正（無再起動）"
   ]
 }
