@@ -259,9 +259,12 @@ export class DiscordBot {
   }
 
   async status() {
+    const version = this.env?.CF_VERSION_METADATA?.id;
+    const codeVersion = typeof version === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(version) ? version : null;
     const fatal = await this.state.storage.get("fatal_reason");
     const fatalUntil = Number(await this.state.storage.get("fatal_until") ?? 0);
     return {
+      codeVersion,
       configured: this.#configured(),
       connected: this.ws?.readyState === 1,
       ready: this.ready,
