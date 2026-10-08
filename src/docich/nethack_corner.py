@@ -487,8 +487,47 @@ class NethackCornerManager(RetroCornerManager):
     def _finish_locked(
         self, state: dict[str, object], completed_at: dt.datetime
     ) -> CornerResult:
-        result = super()._finish_locked(state, completed_at)
-        if self._run_store is not None and result.status == "completed":
+        terminal_run = None
+        eligible = (state.get("status") in {"active", "restoring"}
+                    and state.get("finish_reason") == "terminal"
+                    and isinstance(state.get("run_id"), str))
+        if eligible:
+            from .corner_ownership import verify_runtime
+            verify_runtime(self.store, state, GAME_NAME)
+
+        def record_terminal():
+            if not eligible or self._run_store is None:
+                return None
+            try:
+                run = self._run_store.record_confirmed_terminal(
+                    expected_run_id=state["run_id"], now=self._local_now()
+                )
+                if run is not None:
+                    self._run_history_error = None
+                    self._remember_run_in_state(state, run)
+                return run
+            except Exception as exc:
+                self._run_history_error = _safe_detail(exc)
+                state["run_history_error"] = self._run_history_error
+                return None
+
+        # Preserve proved death before restore: rollback may create another
+        # NetHack process, and restore failures must not erase this expedition.
+        terminal_run = record_terminal()
+        try:
+            result = super()._finish_locked(state, completed_at)
+        finally:
+            # xlog can arrive after the terminal screen. Recheck after a failed
+            # or queued restore too, without masking the coordinator's error.
+            if terminal_run is None and state.get("status") != "interrupted":
+                terminal_run = record_terminal()
+            if terminal_run is not None:
+                try:
+                    self._write_state(state)
+                except Exception:
+                    pass
+        if (self._run_store is not None and result.status == "completed"
+                and terminal_run is None):
             try:
                 run = self._run_store.record_finished(
                     now=completed_at,

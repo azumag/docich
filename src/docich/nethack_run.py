@@ -727,14 +727,20 @@ class NethackRunStore:
     def _terminal_record_since(
         self, offset: int
     ) -> tuple[dict[str, str] | None, str | None]:
+        records, error = self._terminal_records_since(offset)
+        return (records[-1], None) if records else (None, error)
+
+    def _terminal_records_since(
+        self, offset: int, *, complete_only: bool = False
+    ) -> tuple[list[dict[str, str]], str | None]:
         try:
             size = self.settings.xlogfile.stat().st_size
         except FileNotFoundError:
-            return None, "xlogfile-missing"
+            return [], "xlogfile-missing"
         except OSError as exc:
             raise NethackRunError("NetHack xlogfileを検査できません") from exc
         if size < offset:
-            return None, "xlogfile-truncated"
+            return [], "xlogfile-truncated"
         try:
             with self.settings.xlogfile.open("rb") as stream:
                 stream.seek(offset)
@@ -742,13 +748,57 @@ class NethackRunStore:
         except OSError as exc:
             raise NethackRunError("NetHack xlogfileを読めません") from exc
         records: list[dict[str, str]] = []
+        if complete_only and not raw.endswith(b"\n"):
+            raw = raw[:raw.rfind(b"\n") + 1]
         for line in raw.decode("utf-8", errors="replace").splitlines():
             record = parse_xlog_line(line)
             if record.get("name") == self.settings.player_name:
                 records.append(record)
         if not records:
-            return None, "no-new-player-xlog-record"
-        return records[-1], None
+            return [], "no-new-player-xlog-record"
+        return records, None
+
+    def record_confirmed_terminal(
+        self, *, expected_run_id: str, now: dt.datetime
+    ) -> dict[str, object] | None:
+        """Persist positive terminal evidence independently of restore success.
+
+        A screen marker alone is insufficient. Require the corner's run, one
+        complete player record after its xlog baseline, and a lifetime spanning
+        that run's start. Ambiguous/missing evidence leaves the ledger untouched.
+        In particular a new game created by rollback cannot finish the old run.
+        """
+        with self._locked():
+            run = self._current_unlocked()
+            if run is None:
+                path = self._run_path(expected_run_id)
+                if not path.is_file():
+                    return None
+                run = self._load_run_unlocked(expected_run_id)
+            if run.get("run_id") != expected_run_id:
+                return None
+            if run.get("status") in {"dead", "ascended", "ended"}:
+                # Repair/replay a terminal write followed by a crash before
+                # pointer unlink or before the corner persisted run_status.
+                if self._current_id_unlocked() == expected_run_id:
+                    self._clear_current_unlocked()
+                return dict(run)
+            if run.get("status") != "active" or self._current_id_unlocked() is None:
+                return None
+            offset = run.get("xlog_offset")
+            started = run.get("started_epoch")
+            if type(offset) is not int or offset < 0 or type(started) is not int:
+                raise NethackRunError("run terminal baselineが不正です")
+            records, _error = self._terminal_records_since(offset, complete_only=True)
+            if len(records) != 1:
+                return None
+            record = records[0]
+            start = _int_field(record, "starttime")
+            end = _int_field(record, "endtime")
+            if (start is None or end is None or not start <= started <= end
+                    or end > int(now.timestamp()) or not record.get("death")):
+                return None
+            return self._record_terminal_unlocked(run, now, record, None)
 
     @staticmethod
     def _terminal_payload(record: dict[str, str]) -> dict[str, object]:
@@ -804,42 +854,48 @@ class NethackRunStore:
             if type(offset) is not int or offset < 0:
                 raise NethackRunError("run xlog_offsetが不正です")
             record, analysis_error = self._terminal_record_since(offset)
-            self._close_open_session_unlocked(run, now, "terminal")
-            run["last_finished_at"] = now.isoformat()
-            if record is None:
-                run["status"] = "ended_unknown"
-                run["terminal"] = {
-                    "source": "xlogfile",
-                    "analysis_error": analysis_error,
-                }
-            else:
-                status = classify_terminal_record(record)
-                terminal = self._terminal_payload(record)
-                run["status"] = status
-                run["terminal"] = terminal
-                run["score"] = terminal["points"]
-                run["turns"] = terminal["turns"]
-                run["max_depth"] = terminal["maxlvl"]
-                run["death_reason"] = terminal["death"]
-                run["role"] = terminal["role"]
-                run["race"] = terminal["race"]
-                run["gender"] = terminal["gender"]
-                run["alignment"] = terminal["align"]
-                bits = terminal["achievement_bits"]
-                run["achievement_bits"] = bits
-                run["got_amulet"] = bool(
-                    isinstance(bits, int) and bits & AMULET_ACHIEVEMENT
-                )
+            return self._record_terminal_unlocked(run, now, record, analysis_error)
 
-            baseline = run.get("dump_baseline_mtime_ns")
-            if type(baseline) is int and baseline >= 0:
-                dump = self._new_dump_file(baseline)
-                if dump is not None:
-                    run["dump_file"] = dump.name
+    def _record_terminal_unlocked(
+        self, run: dict[str, object], now: dt.datetime,
+        record: dict[str, str] | None, analysis_error: str | None,
+    ) -> dict[str, object]:
+        self._close_open_session_unlocked(run, now, "terminal")
+        run["last_finished_at"] = now.isoformat()
+        if record is None:
+            run["status"] = "ended_unknown"
+            run["terminal"] = {
+                "source": "xlogfile",
+                "analysis_error": analysis_error,
+            }
+        else:
+            status = classify_terminal_record(record)
+            terminal = self._terminal_payload(record)
+            run["status"] = status
+            run["terminal"] = terminal
+            run["score"] = terminal["points"]
+            run["turns"] = terminal["turns"]
+            run["max_depth"] = terminal["maxlvl"]
+            run["death_reason"] = terminal["death"]
+            run["role"] = terminal["role"]
+            run["race"] = terminal["race"]
+            run["gender"] = terminal["gender"]
+            run["alignment"] = terminal["align"]
+            bits = terminal["achievement_bits"]
+            run["achievement_bits"] = bits
+            run["got_amulet"] = bool(
+                isinstance(bits, int) and bits & AMULET_ACHIEVEMENT
+            )
 
-            # Persist the terminal body before clearing the public current
-            # pointer. A crash between these writes leaves a stale pointer to a
-            # complete terminal run; prepare_start repairs that case safely.
-            self._write_run_unlocked(run)
-            self._clear_current_unlocked()
-            return dict(run)
+        baseline = run.get("dump_baseline_mtime_ns")
+        if type(baseline) is int and baseline >= 0:
+            dump = self._new_dump_file(baseline)
+            if dump is not None:
+                run["dump_file"] = dump.name
+
+        # Persist the terminal body before clearing the public current
+        # pointer. A crash between these writes leaves a stale pointer to a
+        # complete terminal run; prepare_start repairs that case safely.
+        self._write_run_unlocked(run)
+        self._clear_current_unlocked()
+        return dict(run)
