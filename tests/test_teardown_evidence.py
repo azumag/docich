@@ -399,6 +399,56 @@ class TestEventSchemaStaysCompatible(TeardownEvidenceTestBase):
 
 
 class TestTeardownEvidenceRendering(unittest.TestCase):
+    def test_command_remainders_are_redacted_through_final_event_log(self):
+        fixtures = (
+            "argv=['--input', 'fixture]path', '--token', 'fixture-secret-2']",
+            "args=('--input', 'fixture)path', '--token', 'fixture-secret-3')",
+            'argv=["fixture]path", "--token", "fixture-secret-4"]',
+            "argv=[['fixture]path'], ['--token', 'fixture-secret-5']]",
+            r'cmd="fixture \"quote\" --token fixture-secret-6"',
+            r"command='fixture \'quote\' --token fixture-secret-7'",
+            "argv=['fixture]path', '--token', 'fixture-secret-8'",
+            "args=('fixture)path', '--token', 'fixture-secret-9']",
+            "argv=[] argv=['--token', 'fixture-secret-10']",
+            "cmd=fixture-tool --token fixture-secret-11; args=['fixture-secret-12']",
+            "ARGV : ['fixture]path', '--token', 'fixture-secret-13']\nfixture-secret-14",
+            "Bearer argv=['--input', 'fixture-secret-15', 'fixture-secret-16']",
+        )
+        for expression in fixtures:
+            for via_remark in (False, True):
+                with self.subTest(expression=expression, via_remark=via_remark):
+                    with tempfile.TemporaryDirectory() as directory:
+                        raw = "fixture failure " + expression
+                        if via_remark:
+                            evidence = TeardownEvidence()
+                            evidence.add_remark(raw)
+                            detail = game_switch._teardown_detail(evidence, RUNTIME)
+                            expected = f"{RUNTIME_ID} confirmed=no; remarks=fixture failure <redacted>"
+                        else:
+                            detail, expected = raw, "fixture failure <redacted>"
+                        log = game_switch.EventLog(Path(directory) / "events.jsonl")
+                        log.emit("cleanup_failed", detail=detail)
+                        self.assertEqual(log.read_all()[0]["detail"], expected)
+
+    def test_command_field_redaction_preserves_other_failure_fields(self):
+        fixture = "fixture failure argv=['fixture]path', '--token', 'fixture-secret-2']"
+        evidence = TeardownEvidence(
+            remaining=(444444,), remaining_reason=fixture,
+            probe="adapter.alive=true", error_code="internal", signals=("term", "kill"),
+        )
+        evidence.add_remark(fixture)
+        with tempfile.TemporaryDirectory() as directory:
+            log = game_switch.EventLog(Path(directory) / "events.jsonl")
+            log.emit("cleanup_failed", detail=game_switch._teardown_detail(evidence, RUNTIME))
+            detail = log.read_all()[0]["detail"]
+        for field in (
+            "confirmed=no", "remaining=444444", "reason=fixture failure <redacted>",
+            "probe=adapter.alive=true", "error_code=internal", "signals=term,kill",
+        ):
+            self.assertIn(field, detail)
+        self.assertNotIn("fixture-secret-2", detail)
+        self.assertLessEqual(len(detail), 240)
+
     def test_event_log_redacts_complete_and_preclipped_command_expressions(self):
         for expression in (
             "argv=['--input', 'fixture-secret-1', '--tail', '" + "x" * 80 + "']",

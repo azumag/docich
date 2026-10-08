@@ -112,6 +112,7 @@ moon-buggy が tmux server 配下に残った理由」を特定できず未解�
 
 証拠部分は210字、runtime識別子を含む `detail` は240字以内に収める。
 完全入力に共通の機密除去を適用してからfield単位で予算化する。
+argv/command等のmarker以降は、引用符や括弧で終端を推測せず、その入力の末尾まで伏せる。
 `confirmed`・残PID・理由・probe・error_code・signalsを優先し、長い値は `…`、
 pane/PIDリストの省略件数は `+N` で示す。signalsにはpane停止と孤立process回収の
 両方で実際に送ったTERM/KILLを集約する。実装は `src/docich/teardown_evidence.py`。
