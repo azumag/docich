@@ -186,6 +186,70 @@ def test_mention_inside_quotes_is_ignored():
     assert result.kind == KIND_UNRESOLVED
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "「本編ではなくSoren91」と言われたが反対",
+        "「本編もSoren91も」と言われた",
+        "「本編でやれ」",
+    ],
+)
+def test_review_1924_quoted_targets_are_unresolved(body):
+    result = route(body, intake_mode=TARGET_SOREN91)
+    assert result == AdviceRoute(KIND_UNRESOLVED, (), "ambiguous_target")
+    assert plan_advice_writes(result, body=body, proposal_id="p-quoted") == ()
+
+
+@pytest.mark.parametrize("opening,closing", [("「", "」"), ("『", "』")])
+@pytest.mark.parametrize(
+    "quoted",
+    ["本編ではなくSoren91", "本編もSoren91も", "本編とSoren91の両方", "本編でやれ", "[soren91] 右に置いて"],
+)
+def test_all_text_target_rules_ignore_quoted_spans(opening, closing, quoted):
+    result = route(f"{opening}{quoted}{closing}", intake_mode=TARGET_MAIN)
+    assert result == AdviceRoute(KIND_UNRESOLVED, (), "ambiguous_target")
+
+
+@pytest.mark.parametrize("semantic", [TARGET_MAIN, TARGET_SOREN91, "both"])
+def test_quoted_only_target_cannot_be_rescued_by_semantic_label(semantic):
+    result = route("「本編でやれ」", explicit_target=semantic, intake_mode=TARGET_SOREN91)
+    assert result == AdviceRoute(KIND_UNRESOLVED, (), "ambiguous_target")
+
+
+@pytest.mark.parametrize("prefix,target", [("[main]", TARGET_MAIN), ("[soren91]", TARGET_SOREN91)])
+@pytest.mark.parametrize("quoted", ["本編ではなくSoren91", "本編もSoren91も", "本編でやれ"])
+def test_unquoted_prefix_keeps_priority_over_quoted_targets(prefix, target, quoted):
+    result = route(f"{prefix} 「{quoted}」", explicit_target="both")
+    assert result == AdviceRoute(KIND_STRATEGY, (target,), "explicit_prefix_over_semantic")
+
+
+@pytest.mark.parametrize(
+    "body,expected,reason",
+    [
+        ("「本編ではなくSoren91」本編でやれ", (TARGET_MAIN,), "explicit_text"),
+        ("『Soren91も本編も』Soren91でやれ", (TARGET_SOREN91,), "explicit_text"),
+        ("「本編には反対」Soren91でやれ", (TARGET_SOREN91,), "explicit_text"),
+        ("「本編とSoren91の両方」本編でやれ", (TARGET_MAIN,), "explicit_text"),
+        ("「本編」本編もSoren91も見て", (TARGET_MAIN, TARGET_SOREN91), "explicit_both"),
+        ("「Soren91」本編ではなくSoren91", (TARGET_SOREN91,), "explicit_text"),
+        ("本編ではなく「引用」Soren91", (TARGET_SOREN91,), "explicit_text"),
+        ("本編も「引用」Soren91も", (), "ambiguous_target"),
+        ("本編と「Soren91」の両方", (TARGET_MAIN,), "explicit_text"),
+        ("「本編とSoren91」両方", (), "ambiguous_target"),
+    ],
+)
+def test_only_unquoted_text_can_resolve_a_target(body, expected, reason):
+    result = route(body, intake_mode=TARGET_SOREN91)
+    kind = KIND_STRATEGY if expected else KIND_UNRESOLVED
+    assert result == AdviceRoute(kind, expected, reason)
+
+
+def test_quote_without_any_target_keeps_unspecified_intake_fallback():
+    assert route("「右に置け」", intake_mode=TARGET_MAIN) == AdviceRoute(
+        KIND_STRATEGY, (TARGET_MAIN,), "intake_mode"
+    )
+
+
 def test_case_and_width_folding_matches_the_prefix():
     assert route("[MAIN]　右に置いて", intake_mode=TARGET_SOREN91).targets == (TARGET_MAIN,)
 

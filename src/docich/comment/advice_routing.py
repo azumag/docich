@@ -304,6 +304,13 @@ def _explicit_text_target(normalized: str) -> str | None:
 
     Returns ``"both"``, ``"main"``, ``"soren91"``, ``"ambiguous"`` or ``None``.
     """
+    quoted_target = any(
+        _MENTION_RE.search(match.group(0)) for match in _QUOTED_RE.finditer(normalized)
+    )
+    # Every target rule sees the same unquoted text.  Keep a separator so
+    # removing a quote cannot join mentions into a negation or joint pair.
+    normalized = _QUOTED_RE.sub(lambda match: " " * len(match.group(0)), normalized)
+
     negation = _NEGATION_RE.search(normalized)
     if negation is not None:
         # "本編ではなくSoren91" resolves to the non-negated side.
@@ -330,12 +337,9 @@ def _explicit_text_target(normalized: str) -> str | None:
             return next(iter(groups))
 
     negated_spans = [m.span() for m in _NEGATED_MENTION_RE.finditer(normalized)]
-    quoted_spans = [m.span() for m in _QUOTED_RE.finditer(normalized)]
     groups = set()
     for match in _MENTION_RE.finditer(normalized):
         span = match.span()
-        if any(start <= span[0] and span[1] <= end for start, end in quoted_spans):
-            continue
         if any(start <= span[0] and span[1] <= end for start, end in negated_spans):
             continue
         group = _group(match.group(0))
@@ -346,9 +350,9 @@ def _explicit_text_target(normalized: str) -> str | None:
     if len(groups) == 1:
         return next(iter(groups))
 
-    if negated_spans:
+    if negated_spans or quoted_target:
         # "本編ではない方針で" names no usable target: do not fall back to a
-        # guess, and do not let intake mode re-introduce the denied target.
+        # guess, or let intake mode re-introduce a denied or quoted target.
         return "ambiguous"
     if any(cue in normalized for cue in _QUOTE_CUES):
         return "ambiguous"
