@@ -87,3 +87,5 @@ heuristic baseline（`candidates.heuristic_candidate`）か、外部で生成し
 - PR-4: 実 hillclimber（allowlist prompt の自動生成）と leakage の n-gram 警告出力。
 - PR-5: campaign final の sealed-test 運用と CI/manual workflow（public fixture のみ CI）。
 - #1263 の Jev provider/model 比較を同じ corpus/runner/metrics に載せる。
+  評価セットと計測ハーネスは `bench/README.md` / `bench/jev_eval_v1` /
+  `bench/jev_bench.py`（`docich.eval.*` の schema・classifier grader・metrics を再利用）。
