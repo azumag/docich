@@ -21,6 +21,7 @@ import {
   PermissionFlagsBits,
 } from 'discord.js';
 
+import { validGameState } from '../../workers/discord-chat/src/voice-context.js';
 import { CloudflareConversationClient } from './cloudflare-conversation.mjs';
 import { createStt } from './stt-provider.mjs';
 import { attachLiveSttReceiver } from './live-receive.mjs';
@@ -174,6 +175,11 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
     typeof runtimeOps.emitError === 'function'
       ? runtimeOps.emitError
       : defaultEmitError;
+  // Owner-local UI observers never alter normal diagnostics or stage outcome.
+  const observeText = (observer, text) => {
+    if (typeof observer !== 'function' || typeof text !== 'string') return;
+    try { Promise.resolve(observer(text)).catch(() => {}); } catch {}
+  };
   const signalTarget = ops.signalTarget;
   const stt = config.receiveEnabled ? ops.createStt(env) : null;
   const conversation = config.conversationEnabled
@@ -392,6 +398,12 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
 
             let generated;
             try {
+              let gameState;
+              try {
+                const value = await runtimeOps.getGameState?.();
+                if (value !== undefined && !validGameState(value)) throw Error('invalid_game_state');
+                if (value) gameState = value.trim();
+              } catch { emit({event:'game_state_unavailable'}); }
               const llmStarted = performance.now();
               emit({ event: 'llm_started' });
               try {
@@ -402,6 +414,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
                     conversation.generate(transcript, {
                       ...memoryScope,
                       ...(recentContext ? {recentContext} : {}),
+                      ...(gameState ? {gameState} : {}),
                       signal: stageSignal,
                     }),
                 );
@@ -432,12 +445,14 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
                 pcm = await runBoundedStage(
                   turnController.signal,
                   30_000,
-                  (stageSignal) =>
-                    tts.synthesize(generated.reply, {
+                  (stageSignal) => {
+                    observeText(runtimeOps.onSynthesisText, generated.reply);
+                    return tts.synthesize(generated.reply, {
                       format: PCM,
                       scope,
                       signal: stageSignal,
-                    }),
+                    });
+                  },
                 );
                 if (turnController.signal.aborted || stopping) {
                   emit({ event: 'tts_cancelled' });
@@ -558,7 +573,10 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
         stt,
         emit,
         debugTranscript: config.transcriptDebug,
-        onTranscript: wakeSession ? (text, context) => wakeSession.observe(text, context) : onTranscript,
+        onTranscript: (text, context) => {
+          observeText(runtimeOps.onTranscriptText, text);
+          return wakeSession ? wakeSession.observe(text, context) : onTranscript?.(text, context);
+        },
         onTargetSpeechStart,
       });
       emit({ event: 'voice_receive_enabled' });

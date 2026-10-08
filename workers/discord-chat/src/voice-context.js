@@ -5,3 +5,9 @@ export function validVoiceContext(value) {
       typeof e.text==='string' && e.text.trim().length>0 && e.text.length<=2000) &&
     value.reduce((n,e)=>n+e.text.length,0)<=2000);
 }
+
+
+export function validGameState(value) {
+  return value === undefined || (typeof value === "string" && value.length <= 500 &&
+    value.trim().length > 0 && !/[\u0000-\u001f\u007f-\u009f]/u.test(value));
+}
