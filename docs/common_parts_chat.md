@@ -14,6 +14,11 @@ soviet_now は読み取り専用。実装は broadcast/ が 2 週間程度無変
 > `docich radio --topic "..."` 直指定では合格しない (詳細 §4.2)。
 > broadcast/ の直近変更は 2026-08-16 (`40d7f1b78` "fix: back off models only on
 > explicit rate limits")。
+>
+> **2026-10-08 追記**: 本稿の owner 表（§3 ほか）は PoC 時点の記録である。
+> 現行の到達点と互換経路の廃止期限は
+> `docs/plans/829-staged-migration-status.md` を参照。owner 表そのものの更新は
+> #829 §14 step 14 の docs/cleanup で行う。
 
 ---
 
