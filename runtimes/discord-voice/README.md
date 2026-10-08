@@ -283,3 +283,7 @@ Application voice policy explicitly rejects a generated reply above **200 charac
 Only fixed event names, command names, result codes and bounded status counters appear on stdout. Raw controls/IDs, persona, transcript/reply, URLs, provider messages and credentials are not printed. Unknown keys (including raw audio/endpoint/credential fields) and malformed commands are rejected with fixed codes. Controls are local fixture commands, not a public/authenticated API or an authorization grant.
 
 Missing/unknown mode or endpoint options still fail the **offline** CLI with a fixed code; `cli.mjs` remains synthetic-only. Live Discord join/playback is intentionally a separate `live.mjs` entry point with an explicit enable flag and environment-only credentials. It does not expose a remote auth endpoint and still has no recording, external STT/LLM/TTS, persistent voice memory or automatic host deployment.
+
+### Local STT
+
+Resident mode defaults to local faster-whisper. See [LOCAL-STT.md](LOCAL-STT.md) for setup and the explicit provider switch. No Cloudflare API Token is required for local transcription.

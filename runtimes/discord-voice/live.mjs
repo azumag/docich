@@ -21,7 +21,7 @@ import {
 } from 'discord.js';
 
 import { CloudflareConversationClient } from './cloudflare-conversation.mjs';
-import { CloudflareWhisperSTT } from './cloudflare-stt.mjs';
+import { createStt } from './stt-provider.mjs';
 import { attachLiveSttReceiver } from './live-receive.mjs';
 import { createLivePlayback } from './live-playback.mjs';
 import { createLiveVoicevoxTTS } from './live-voicevox.mjs';
@@ -151,7 +151,7 @@ function defaultRuntimeOps() {
       }),
     waitVoiceReady: (connection) =>
       entersState(connection, VoiceConnectionStatus.Ready, 30_000),
-    createStt: (env) => new CloudflareWhisperSTT({ env }),
+    createStt,
     createConversation: (env) => new CloudflareConversationClient({ env }),
     createTts: (env, config) =>
       createLiveVoicevoxTTS(env, {
