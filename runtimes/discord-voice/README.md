@@ -287,3 +287,9 @@ Missing/unknown mode or endpoint options still fail the **offline** CLI with a f
 ### Local STT
 
 Resident mode defaults to local faster-whisper. See [LOCAL-STT.md](LOCAL-STT.md) for setup and the explicit provider switch. No Cloudflare API Token is required for local transcription.
+
+### Windowsコントロールパネルのゲーム状況
+
+所有者ローカルのパネルから状況説明を設定し、`runResident` / `runLiveVoice` の任意の `getGameState` 関数で、各返答の生成直前に読み込めます。通常の会話本文は変更せず、`CloudflareConversationClient.generate` の任意の `gameState` に添えます。未設定・読込失敗なら状況を添付せず、古い値へfallbackしません。呼びかけなしのSTTでは読み込んだりLLMを呼んだりしません。ゲーム状況はgeneration専用で、再生後のcommitには含めません。通常ログへ本文を出しません。
+
+Windows用パネルの「ゲーム状況」タブは適用・クリア・再読込とUTF-8テキストファイルの編集を提供します。空のファイルで添付停止、変更は次の返答から有効です。ファイルは500文字までの状況説明を一つの参考文として使います。パネルを閉じても設定ファイルは維持します。秘密値をこの状態ファイルへ入力しません。

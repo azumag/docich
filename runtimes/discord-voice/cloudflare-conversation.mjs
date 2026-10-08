@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { validVoiceContext } from '../../workers/discord-chat/src/voice-context.js';
+import { validVoiceContext, validGameState } from '../../workers/discord-chat/src/voice-context.js';
 
 export class CloudflareConversationError extends Error {
   constructor(code) {
@@ -191,12 +191,13 @@ export class CloudflareConversationClient {
     }
   }
 
-  async generate(transcript, { guildId, channelId, userId, signal, recentContext } = {}) {
+  async generate(transcript, { guildId, channelId, userId, signal, recentContext, gameState } = {}) {
     if (
       typeof transcript !== 'string' ||
       !transcript.trim() ||
       transcript.length > 2000 ||
       !validVoiceContext(recentContext) ||
+      !validGameState(gameState) ||
       !validScope({ guildId, channelId, userId, signal })
     ) {
       fail('invalid_conversation_context');
@@ -214,6 +215,7 @@ export class CloudflareConversationClient {
         turnId,
         transcript: transcript.trim(),
         ...(recentContext ? {recentContext} : {}),
+        ...(gameState ? {gameState:gameState.trim()} : {}),
       },
       signal,
     );

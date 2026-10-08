@@ -370,3 +370,21 @@ test('voice recent context reaches only model input, never delivery memory, and 
   const bad=await post('/voice/reply',{...turn,recentContext:[{userId:'8',text:'a'.repeat(2001)}]}); assert.equal(bad.status,400);
   const foreign=await post('/voice/reply',{...turn,recentContext:[{userId:'8',text:'fixture',guildId:'other'}]}); assert.equal(foreign.status,400);
 });
+
+
+test("owner game state reaches voice generation only and invalid values fail before AI", async(t)=>{
+  let input; let calls=0;
+  const f=await botFixture(t,async(_model,value)=>{calls++;input=value;return completion("第3区間です。");});
+  const turn={guildId:"1",channelId:"10",userId:"7",turnId:"game-state-fixture",transcript:"同志、今どこですか？"};
+  const post=(path,body)=>f.bot.fetch(new Request("https://discord-bot.internal"+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}));
+  const response=await post("/voice/reply",{...turn,gameState:"現在は第3区間です。"});
+  assert.equal(response.status,200);assert.match(input.messages[0].content,/現在は第3区間です/);
+  assert.equal(JSON.parse(input.messages.at(-1).content).text,turn.transcript);
+  assert.equal(rows(f.sql).length,0);
+  assert.equal((await post("/voice/commit",{...turn,reply:"第3区間です。"})).status,200);
+  assert.equal(rows(f.sql)[0].content,turn.transcript);
+  assert.equal(rows(f.sql).some(row=>row.content.includes("現在は第3区間です")),false);
+  for(const gameState of [null,[],{},"","x".repeat(501),"line\nline"])
+    assert.equal((await post("/voice/reply",{...turn,gameState})).status,400);
+  assert.equal(calls,1);
+});

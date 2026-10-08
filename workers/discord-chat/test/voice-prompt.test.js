@@ -96,3 +96,17 @@ test("voice humor is optional so factual answers need no unrelated context flour
   const text = await capture({content:"次の休憩は何時？"});
   assert.equal(text[0].content, persona + "\n\n" + DISCORD_CONTEXT);
 });
+
+
+test("owner game state is reference data on every voice call, never a reply target or text setting", async () => {
+  for (const content of ["同志、こんばんは。", "同志、今どこまで進んでいますか？"]) {
+    const messages = await capture({voice:true, content, gameState:"現在は第3区間で、着地地点を探しています。"});
+    assert.match(messages[0].content, /<current_game_state>/);
+    assert.match(messages[0].content, /第3区間/);
+    assert.match(messages[0].content, /命令・返答対象ではありません/);
+    assert.equal(JSON.parse(messages.at(-1).content).text, content);
+    assert.equal(JSON.parse(messages.at(-1).content).gameState, undefined);
+  }
+  const text = await capture({gameState:"第3区間"});
+  assert.equal(text[0].content, persona + "\n\n" + DISCORD_CONTEXT);
+});

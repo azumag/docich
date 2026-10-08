@@ -75,7 +75,7 @@ export class ResidentController {
   }
 }
 
-export function startResidentSession(client,env,{guild,channel},emit=emitDefault) {
+export function startResidentSession(client,env,{guild,channel},emit=emitDefault,observers={}) {
   const signalTarget=new EventEmitter();
   const facade={
     user:client.user,guilds:client.guilds,
@@ -91,11 +91,11 @@ export function startResidentSession(client,env,{guild,channel},emit=emitDefault
   };
   return {
     stop:()=>signalTarget.emit('SIGINT'),
-    done:runLiveVoice(sessionEnv,{createClient:()=>facade,waitClientReady:async()=>{},signalTarget,emit,emitError:()=>emit({event:'resident_session_failed'})}),
+    done:runLiveVoice(sessionEnv,{createClient:()=>facade,waitClientReady:async()=>{},signalTarget,emit,onTranscriptText:observers.onTranscriptText,onSynthesisText:observers.onSynthesisText,getGameState:observers.getGameState,emitError:()=>emit({event:'resident_session_failed'})}),
   };
 }
 
-export async function runResident(env=process.env,{register=false}={}) {
+export async function runResident(env=process.env,{register=false,onTranscriptText,onSynthesisText,getGameState}={}) {
   env={...env,DOCICH_DISCORD_VOICE_STT_PROVIDER:env.DOCICH_DISCORD_VOICE_STT_PROVIDER ?? 'local'};
   if(typeof env.DOCICH_DISCORD_TOKEN!=='string' || env.DOCICH_DISCORD_TOKEN.length<20 || /\s/.test(env.DOCICH_DISCORD_TOKEN)) throw Error('invalid_resident_config');
   if(!register) {
@@ -105,7 +105,7 @@ export async function runResident(env=process.env,{register=false}={}) {
     createLiveVoicevoxTTS(env,{allowLoopback:env.DOCICH_DISCORD_VOICE_VOICEVOX_ALLOW_LOOPBACK==='1'});
   }
   const client=new Client({intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildVoiceStates]});
-  const controller=new ResidentController({startSession:target=>startResidentSession(client,env,target)});
+  const controller=new ResidentController({startSession:target=>startResidentSession(client,env,target,emitDefault,{onTranscriptText,onSynthesisText,getGameState})});
   let stopping=false; let resolveStop;
   const stopped=new Promise(r=>{resolveStop=r;});
   let readyTimer;

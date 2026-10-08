@@ -705,3 +705,48 @@ for (const scenario of ['reply_after_12s', 'deadline_after_30s']) {
     }
   });
 }
+
+for (const observerMode of ['normal', 'throws', 'rejects']) {
+  test(`local text observers preserve reply flow and keep normal logs text-free (${observerMode})`, async()=>{
+    const h=makeHarness('none');let receiver;const seen=[],events=[],synthesized=[];let commits=0;
+    const resolve=h.runtimeOps.resolveVoiceChannel;
+    h.runtimeOps.resolveVoiceChannel=async()=>{const r=await resolve();r.channel.members=new Map([['3',{user:{bot:false},voice:{channelId:r.channel.id}}]]);return r;};
+    const observer=kind=>text=>{seen.push([kind,text]);if(observerMode==='throws')throw Error('observer fixture');if(observerMode==='rejects')return Promise.reject(Error('observer fixture'));};
+    const running=runLiveVoice({...env(),DOCICH_DISCORD_VOICE_TEST_TONE:'0',DOCICH_DISCORD_VOICE_WAKE_ENABLED:'1',DOCICH_DISCORD_VOICE_RECEIVE_ENABLED:'1',DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED:'1',DOCICH_DISCORD_VOICE_TTS_ENABLED:'1'}, {
+      ...h.runtimeOps,emit:e=>events.push(e),createStt:()=>({transcribe:async()=>''}),
+      onTranscriptText:observer('transcript'),onSynthesisText:observer('tts_text'),
+      createConversation:()=>({generate:async()=>({turnId:'fixture-turn',reply:'人工の再生用本文'}),commit:async()=>{commits++;}}),
+      createTts:()=>({synthesize:async text=>{synthesized.push(text);return new Int16Array(960);}}),
+      createPlayback:()=>({play:async()=>{},close(){}}),attachReceiver:o=>{receiver=o.onTranscript;return {stop(){}};},
+    });
+    try{
+      await waitFor(()=>receiver);const signal=new AbortController().signal;
+      await receiver('人工の背景の会話',{userId:'3',signal});
+      assert.deepEqual(seen,[['transcript','人工の背景の会話']]);assert.equal(synthesized.length,0);
+      await receiver('同志、人工の質問',{userId:'3',signal});await waitFor(()=>commits===1);
+      assert.deepEqual(seen,[['transcript','人工の背景の会話'],['transcript','同志、人工の質問'],['tts_text','人工の再生用本文']]);
+      assert.deepEqual(synthesized,['人工の再生用本文']);
+      assert.ok(events.some(e=>e.event==='playback_completed'));assert.ok(events.some(e=>e.event==='memory_commit_completed'));
+      assert.ok(events.every(e=>!Object.hasOwn(e,'transcript')&&!Object.hasOwn(e,'reply')));
+    }finally{h.signalTarget.emit('SIGINT');assert.equal(await running,0);}
+  });
+}
+
+
+test('game state is sampled for each generated call without changing transcript, commits or logs',async()=>{
+ const h=makeHarness('none');let receiver;const payloads=[],events=[],commitTexts=[];let state='第3区間です。';let reads=0;
+ const running=runLiveVoice({...env(),DOCICH_DISCORD_VOICE_TEST_TONE:'0',DOCICH_DISCORD_VOICE_RECEIVE_ENABLED:'1',DOCICH_DISCORD_VOICE_RECEIVE_USER_ID:'323456789012345678',DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED:'1',DOCICH_DISCORD_VOICE_TTS_ENABLED:'1'}, {
+  ...h.runtimeOps,emit:e=>events.push(e),getGameState:()=>{reads++;if(state==='throws')throw Error('fixture');return state;},
+  createStt:()=>({transcribe:async()=>''}),createConversation:()=>({generate:async(text,context)=>{payloads.push({text,gameState:context.gameState});return {turnId:'fixture-'+reads,reply:'返答です。'};},commit:async turn=>{commitTexts.push(turn.transcript);}}),
+  createTts:()=>({synthesize:async()=>new Int16Array(960)}),createPlayback:()=>({play:async()=>{},close(){}}),attachReceiver:o=>{receiver=o.onTranscript;return {stop(){}};},
+ });
+ try{
+  await waitFor(()=>receiver);const signal=new AbortController().signal;
+  for(const next of ['第3区間です。','休憩中です。',undefined,'throws']){state=next;await receiver('同志、現在の状況は？',{signal});}
+  assert.deepEqual(payloads.map(p=>p.gameState),['第3区間です。','休憩中です。',undefined,undefined]);
+  assert.ok(payloads.every(p=>p.text==='同志、現在の状況は？'));
+  assert.equal(commitTexts.length,4);assert.ok(commitTexts.every(text=>text==='同志、現在の状況は？'));
+  assert.ok(events.some(e=>e.event==='game_state_unavailable'));
+  assert.ok(events.every(e=>!JSON.stringify(e).includes('第3区間')&&!JSON.stringify(e).includes('休憩中')));
+ }finally{h.signalTarget.emit('SIGINT');assert.equal(await running,0);}
+});

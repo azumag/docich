@@ -24,10 +24,13 @@ export class WakeContext {
     const normalized = text.trim();
     this.#entries.push({userId, text:normalized, at:this.#now()});
     this.#prune();
-    // Keep the canonical spelling anywhere in the current utterance. STT homophones
-    // count only as a leading, separated call, so どうして/友達同士 cannot activate.
+    // Accept separated STT homophones at any position, including a trailing call.
+    // Separators exclude どうして/どうしよう/友達同士, while preserving
+    // the existing handling of a leading quoted call.
     const spelling = normalized.normalize('NFKC');
-    const wake = spelling.includes('同志') || /^[「『(]*(?:同士|どうし|ドウシ)(?:[\s、,。.!！?？:：」』)]|$)/u.test(spelling);
+    const wake = spelling.includes('同志')
+      || /^[「『(]*(?:同士|どうし|ドウシ)(?:[\s、,。.!！?？:：」』)]|$)/u.test(spelling)
+      || /(?:^|[\s、,。.!！?？:：])(?:同士|どうし|ドウシ)(?=[\s、,。.!！?？:：]|$)/u.test(spelling);
     return wake ? {transcript:normalized, userId, recentContext:prior} : null;
   }
   recent() {
