@@ -77,7 +77,7 @@ def test_flat_live_catalog_and_financial_boundary():
     assert all(c.target_matches is None for c in catalog if c.id != "nsnake")
 
 
-def test_production_profile_marks_common_rotation_enabled_with_manual_tsuitate():
+def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     from docich.corner_catalog import rotation_config
 
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
@@ -92,7 +92,7 @@ def test_production_profile_marks_common_rotation_enabled_with_manual_tsuitate()
     assert paper.enabled is True
     assert paper.live_eligible is False
     tsuitate = next(c for c in catalog if c.id == "tsuitate")
-    assert tsuitate.enabled is True and tsuitate.manual_only is True
+    assert tsuitate.enabled is True and tsuitate.manual_only is False
     assert tsuitate.game == "tsuitate-view"
     assert {c.id for c in catalog} >= {
         "ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
@@ -214,10 +214,19 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
     monkeypatch.setattr("docich.adapters.retroarch.resolve_rom", lambda *_: ROOT / "vm-only.sfc")
     monkeypatch.setattr("docich.adapters.retroarch.resolve_core", lambda *_: "/vm-only/core.so")
     manager = CornerRotationManager(g)
+    monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
+        "state": "finished", "readyForNextRun": True,
+    })
     eligible, excluded = manager._eligible()
-    assert len(eligible) == 10
-    assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero"} <= set(eligible)
-    assert excluded == {"tsuitate": "manual-only"}
+    assert len(eligible) == 11
+    assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate"} <= set(eligible)
+    assert excluded == {}
+    monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
+        "state": "playing", "readyForNextRun": False,
+    })
+    eligible, excluded = manager._eligible()
+    assert len(eligible) == 10 and "tsuitate" not in eligible
+    assert excluded == {"tsuitate": "adapter-unavailable"}
 
 
 def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):

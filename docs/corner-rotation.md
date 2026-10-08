@@ -8,6 +8,17 @@
 ROM/core/adapter適格性を通った項目だけを有効数Nに数える。ゲーム設定の無効化、実行ファイル不足、catalogの
 `paused=true`、`state_dir/corners/<id>.paused` を反映し、Nを固定しない。
 
+ついたて将棋も自動抽選の候補とする。既存のWorker statusが終局状態
+(`stopped` / `finished` / `queue_timeout`)かつ`readyForNextRun=true`の場合だけ
+適格とし、対局中・終局未確認・制御経路不通の間はNから除外する。
+1枠で1局を実行し、既存の最大時間・停止確認・元画面への復帰・24時間cooldownを維持する。
+
+失敗したSoren復元世代が`retiring`に残り、別leaseのSoren ownerが`ready`で
+稼働している場合、正規の`docich recover`は同一外部singletonの旧世代を収束できる。
+正確なretiring identity、進行中broker request/ack/resourceがないこと、loop/watchdogの
+一意な生存、検査前後のcanonical一致を要求し、現在のSorenを停止しない。
+証拠不足なら旧世代の停止も拒否する。収束後に固定`recover-failed`で予約を解決する。
+
 `adapter="game"`の項目には`target_matches`（整数1〜100）を任意指定できる。
 省略時は従来の`retro_corner.target_matches`（既定3）を継承する。
 productionの`nsnake`は1試合とし、開始以降のscorelog保存を確認して既存の終了・復帰へ進む。

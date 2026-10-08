@@ -12,7 +12,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, RuntimeSpec
+from ..game_switch import DeadlineExceededError, GameSwitchStore, ReadinessTimeoutError, RuntimeSpec
 from .base import AdapterError
 
 
@@ -345,7 +345,56 @@ class SorenCoordinatorAdapter:
         except OSError:
             pass
 
+    def _retired_singleton_is_superseded(self, deadline: float, cancel) -> bool:
+        """A restored singleton owns the processes; an obsolete lease does not.
+
+        Only a recorded retiring identity beside a stable, distinct Soren
+        owner can converge without stopping the shared external game. A live
+        broker request or missing process proof keeps ordinary cleanup blocked.
+        The coordinator holds the canonical writer lock during teardown.
+        """
+        state_dir = getattr(self.g, "state_dir", None)
+        if state_dir is None:
+            return False
+        store = GameSwitchStore(state_dir)
+        state, missing = store.canonical.load()
+        active = state.get("active") or {}
+        identity = {key: getattr(self.spec, key) for key in
+                    ("game", "adapter", "runtime_id", "generation", "lease_id")}
+        if (missing or state.get("phase") != "ready"
+                or state.get("request_id") is not None
+                or state.get("candidate") is not None or state.get("previous") is not None
+                or active.get("game") != self.spec.game or active.get("adapter") != "soren"
+                or self.spec.adapter != "soren"
+                or any(active.get(key) == identity[key] for key in
+                       ("runtime_id", "generation", "lease_id"))
+                or not any(all(runtime.get(key) == value for key, value in identity.items())
+                           for runtime in state.get("retiring") or [])):
+            return False
+        payload = self._status(deadline, cancel)
+        if (type(payload.get("schema")) is not int or payload["schema"] != 1
+                or any(key not in payload or payload[key] is not None
+                       for key in ("request", "ack", "resource"))):
+            return False
+        if not self._live_process("soren_loop.sh") or not self._live_process("soviet_watchdog.sh"):
+            return False
+        current, missing = store.canonical.load()
+        return not missing and current == state
+
     def cleanup_runtime(self, deadline: float, cancel) -> None:
+        if self._retired_singleton_is_superseded(deadline, cancel):
+            return
+        state_dir = getattr(self.g, "state_dir", None)
+        if state_dir is not None:
+            state, missing = GameSwitchStore(state_dir).canonical.load()
+            active = state.get("active") or {}
+            if (not missing and active.get("game") == self.spec.game
+                    and active.get("adapter") == "soren"
+                    and active.get("lease_id") != self.spec.lease_id
+                    and any(runtime.get("runtime_id") == self.spec.runtime_id
+                            and runtime.get("lease_id") == self.spec.lease_id
+                            for runtime in state.get("retiring") or [])):
+                raise AdapterError("別Soren ownerが稼働中のため旧singletonの停止を拒否します")
         request_id = self._request_id
         if not request_id:
             ack = self._ack(self._status(deadline, cancel))
@@ -453,6 +502,8 @@ class SorenCoordinatorAdapter:
         return self._fresh_started_at is None or started_at + 1 >= self._fresh_started_at
 
     def alive(self, deadline: float, cancel) -> bool:
+        if self._retired_singleton_is_superseded(deadline, cancel):
+            return False
         payload = self._status(deadline, cancel)
         # Both states require an explicit materialize step before canonical can
         # publish the runtime again.  ``cancelled`` may already have live
