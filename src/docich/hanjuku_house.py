@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 
 from .hanjuku_font import UNKNOWN
+from .hanjuku_egg_stock import observed_uses
 from . import hanjuku_roster as receipts
 
 HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5)}
@@ -43,7 +44,10 @@ def general_status(screen):
             continue
         body = text[len('たまご'):]
         broken = body == 'こわれている'
-        uses = re.fullmatch(r'(.+?)([0-4])', body)
+        # Angelin can leave five uses. Never fold extra digits into the egg name.
+        uses = re.fullmatch(r'([^\d]+)([0-9])', body)
+        if uses and observed_uses(int(uses[2])) is None:
+            uses = None
         if not broken and body != 'なし' and not uses:
             continue
         hp_row = next((r for r in screen.lines if r.y == y + 16), None)
