@@ -179,7 +179,7 @@ def test_unassigned_defense_loss_is_visible_without_invented_death():
 def test_defense_win_is_not_a_capture_candidate():
     record = win()
     record['side'] = 'defense'
-    assert gated([record, owner()])['type'] == 'promote_interim_attack'
+    assert gated([record, owner()])['type'] == 'review_unverified_capture'
 
 
 def test_malformed_records_are_not_proof():
