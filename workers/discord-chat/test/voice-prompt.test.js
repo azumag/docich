@@ -50,3 +50,16 @@ test("text mentions retain the canonical persona and original message shape", as
   assert.equal(JSON.parse(messages[1].content).source, undefined);
   assert.equal(JSON.parse(messages[1].content).text, "元気ですか？");
 });
+
+
+test("voice preserves canonical character traits without conflicting Twitch/game role", async () => {
+  const messages = await capture({voice: true});
+  const system = messages[0].content;
+  assert.doesNotMatch(system, /ソ連ゲーム|自分自身が|プレイヤー当事者/);
+  for (const line of persona.split(/\r?\n/u).filter(line =>
+    !line.startsWith("あなたはTwitch配信「ソ連ゲーム」") &&
+    !line.startsWith("ゲームの話をするときはプレイヤー当事者として語ること。")
+  )) assert.ok(system.includes(line));
+  assert.match(system, /ウィットや比喩も今回の呼びかけに沿う/);
+  assert.match(system, /背景会話から別の話題を持ち出しません/);
+});
