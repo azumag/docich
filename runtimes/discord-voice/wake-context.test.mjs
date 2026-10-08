@@ -21,24 +21,26 @@ test('context is session isolated, bounded, and erased on clear',()=>{
   assert.deepEqual(b.recent(),[]);
   a.clear(); assert.deepEqual(a.recent(),[]);
 });
-test('wake processing continues ambient capture and cancels an earlier reply with at most one replacement',async()=>{
-  const calls=[], events=[]; let release;
+test('wake replies remain FIFO across speakers and keep each arrival context',async()=>{
+  const calls=[],events=[];let release;
   const first=new Promise(r=>{release=r;});
-  const s=new WakeSession({emit:e=>events.push(e),reply:async(text,context)=>{
-    calls.push({text,context}); if(calls.length===1) await first;
+  const session=new WakeSession({emit:e=>events.push(e),reply:async(text,context)=>{
+    calls.push({text,context});if(calls.length===1)await first;
   }});
-  s.observe('背景の話',{userId:'1'}); await tick(); assert.equal(calls.length,0);
-  s.observe('同志、最初の質問',{userId:'1'}); await tick(); assert.equal(calls.length,1);
-  s.observe('別の人の追加情報',{userId:'2'}); assert.equal(calls[0].context.signal.aborted,false);
-  s.observe('同志、次の質問',{userId:'2'});
-  s.observe('同志、最後の質問',{userId:'3'});
-  assert.equal(calls[0].context.signal.aborted,true);
-  release(); await tick(); await tick();
-  assert.equal(calls.length,2); assert.equal(calls[1].text,'同志、最後の質問');
-  assert.ok(calls[1].context.recentContext.some(e=>e.text==='別の人の追加情報'));
-  assert.ok(events.every(e=>Object.keys(e).length===1));
-  s.stop(); s.observe('同志、停止後',{userId:'1'}); await tick(); assert.equal(calls.length,2);
+  session.observe('京都へ行く話',{userId:'1'});await tick();assert.equal(calls.length,0);
+  session.observe('同志、Aの質問',{userId:'1'});await tick();assert.equal(calls.length,1);
+  session.observe('背景の追加情報',{userId:'2'});
+  session.observe('同志、Bの質問',{userId:'2'});
+  session.observe('同志、Cの質問',{userId:'3'});await tick();
+  assert.equal(calls[0].context.signal.aborted,false);assert.equal(calls.length,1);
+  release();await tick();await tick();await tick();
+  assert.deepEqual(calls.map(c=>c.text),['同志、Aの質問','同志、Bの質問','同志、Cの質問']);
+  assert.deepEqual(calls.map(c=>c.context.userId),['1','2','3']);
+  assert.ok(calls[1].context.recentContext.some(e=>e.text==='背景の追加情報'));
+  assert.equal(calls[0].context.recentContext.some(e=>e.text==='同志、Bの質問'),false);
+  assert.ok(events.every(e=>Object.keys(e).length===1));session.stop();
 });
+
 test('stopping before queued reply begins suppresses all output',async()=>{
   let calls=0; const s=new WakeSession({reply:()=>{calls++;}});
   s.observe('同志',{userId:'1'}); s.stop(); await tick(); assert.equal(calls,0);
@@ -53,4 +55,31 @@ test('spoken wake spelling variants are accepted only as a leading separated cal
   for(const text of ['どうしようかな。','どうして雨なの？','友達同士で話します。','同士討ちを避けます。','同士の集まりです。','昔「どうし、教えて」と聞きました。']) {
     const c=new WakeContext();assert.equal(c.observe('1',text),null,text);c.clear();
   }
+});
+
+
+test('full reply queue preserves eight pending calls instead of replacing them',async()=>{
+  let release;const held=new Promise(r=>{release=r;});const calls=[],events=[];
+  const session=new WakeSession({emit:e=>events.push(e.event),reply:async text=>{calls.push(text);if(calls.length===1)await held;}});
+  session.observe('同志、A',{userId:'1'});await tick();
+  for(let n=0;n<9;n++)session.observe('同志、queued '+n,{userId:'2'});
+  assert.equal(events.filter(e=>e==='voice_reply_queue_full').length,1);
+  release();for(let i=0;i<12;i++)await tick();
+  assert.deepEqual(calls,['同志、A',...Array.from({length:8},(_,n)=>'同志、queued '+n)]);session.stop();
+});
+
+test('queue skips departed speakers, continues after a failed turn, and stop clears remaining calls',async()=>{
+  let release;const held=new Promise(r=>{release=r;});const calls=[],events=[],allowed=new Set(['1','2','3']);
+  const session=new WakeSession({allowReply:id=>allowed.has(id),emit:e=>events.push(e.event),reply:async(text,ctx)=>{
+    calls.push({text,signal:ctx.signal});if(calls.length===1)await held;if(text.includes('失敗'))throw Error('private fixture');
+  }});
+  session.observe('同志、最初',{userId:'1'});await tick();
+  session.observe('同志、退出した人',{userId:'2'});session.observe('同志、失敗',{userId:'3'});session.observe('同志、成功',{userId:'1'});
+  allowed.delete('2');release();for(let i=0;i<5;i++)await tick();
+  assert.deepEqual(calls.map(c=>c.text),['同志、最初','同志、失敗','同志、成功']);
+  assert.ok(events.includes('voice_reply_skipped'));assert.ok(events.includes('voice_wake_reply_failed'));session.stop();
+  let releaseStop;const blocking=new Promise(r=>{releaseStop=r;});const stoppedCalls=[];
+  const stopped=new WakeSession({reply:async(text,ctx)=>{stoppedCalls.push({text,signal:ctx.signal});await blocking;}});
+  stopped.observe('同志、active',{userId:'1'});await tick();stopped.observe('同志、pending',{userId:'2'});stopped.stop();
+  assert.equal(stoppedCalls[0].signal.aborted,true);releaseStop();await tick();await tick();assert.equal(stoppedCalls.length,1);
 });

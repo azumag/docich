@@ -45,13 +45,14 @@ export class WakeContext {
   clear() { clearTimeout(this.#expiry); this.#entries=[]; }
 }
 
-// Transcription keeps running while a reply is generated. One active reply and
-// at most one replacement are admitted, so wake calls cannot grow an unbounded queue.
+// Transcription/context continue while a reply plays. A complete reply lifecycle
+// (including its post-playback acknowledgement) finishes before the next starts.
+const MAX_PENDING_REPLIES = 8;
 export class WakeSession {
-  #context; #reply; #emit; #active=null; #pending=null; #stopped=false;
-  constructor({reply, emit=()=>{}, now}={}) {
-    if(typeof reply!=='function') throw new TypeError('invalid_wake_session');
-    this.#reply=reply; this.#emit=emit; this.#context=new WakeContext({now});
+  #context; #reply; #emit; #allow; #active=null; #pending=[]; #stopped=false;
+  constructor({reply, emit=()=>{}, now, allowReply=()=>true}={}) {
+    if(typeof reply!=='function' || typeof allowReply!=='function') throw new TypeError('invalid_wake_session');
+    this.#reply=reply; this.#emit=emit; this.#allow=allowReply; this.#context=new WakeContext({now});
   }
   #event(event) { try { this.#emit({event}); } catch {} }
   observe(text,{userId,signal}={}) {
@@ -59,13 +60,22 @@ export class WakeSession {
     const request=this.#context.observe(userId,text);
     if(!request) { this.#event('voice_context_updated'); return; }
     this.#event('voice_wake_detected');
-    this.#pending=request;
-    this.#active?.controller.abort();
+    if(this.#pending.length>=MAX_PENDING_REPLIES) { this.#event('voice_reply_queue_full'); return; }
+    this.#pending.push(request);
+    if(this.#active) this.#event('voice_reply_queued');
     this.#drain();
   }
   #drain() {
-    if(this.#stopped || this.#active || !this.#pending) return;
-    const request=this.#pending; this.#pending=null;
+    if(this.#stopped || this.#active) return;
+    let request;
+    while(this.#pending.length) {
+      const candidate=this.#pending.shift();
+      let allowed=false;
+      try { allowed=this.#allow(candidate.userId)===true; } catch {}
+      if(allowed) { request=candidate; break; }
+      this.#event('voice_reply_skipped');
+    }
+    if(!request) return;
     const state={controller:new AbortController()}; this.#active=state;
     void Promise.resolve().then(()=>{
       if(this.#stopped || state.controller.signal.aborted) return;
@@ -75,5 +85,5 @@ export class WakeSession {
       state.controller.abort(); this.#drain();
     });
   }
-  stop() { this.#stopped=true; this.#pending=null; this.#active?.controller.abort(); this.#context.clear(); }
+  stop() { this.#stopped=true; this.#pending=[]; this.#active?.controller.abort(); this.#context.clear(); }
 }
