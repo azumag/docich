@@ -1,0 +1,100 @@
+name: Hanjuku current force verification
+on:
+  push:
+    branches: ['fix/hanjuku-current-force-egg-hold-20261009']
+    paths: ['.github/workflows/hanjuku-current-force-verify-temp.yml']
+permissions:
+  contents: write
+jobs:
+  verify-and-publish:
+    if: github.repository == 'azumag/docich' && github.ref == 'refs/heads/fix/hanjuku-current-force-egg-hold-20261009'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          submodules: false
+      - name: Verify reviewed instruction scope
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          assert subprocess.check_output(['git', 'hash-object', 'AGENTS.md'], text=True).strip() == '933baa2ecd2221a70317d12ce9ae4dfe7cc76c25'
+          for folder in ('.', 'src', 'src/docich', 'tests', 'docs', '.github', '.github/workflows'):
+              for name in ('AGENTS.md', 'AGENTS.override.md'):
+                  path = Path(folder) / name
+                  if path != Path('AGENTS.md') and path.exists():
+                      raise SystemExit('Unreviewed scoped instruction: ' + str(path))
+          print('Reviewed instruction scope matches.')
+          PY
+      - name: Install existing test dependencies
+        run: python3 -m pip install -q -r requirements-test.txt
+      - name: Reproduce current-force regressions before the fix
+        run: |
+          set +e
+          python3 -m pytest -q --tb=short tests/test_hanjuku_egg_hold_current_force.py --junitxml="$RUNNER_TEMP/force-before.xml" >"$RUNNER_TEMP/force-before.log" 2>&1
+          code=$?
+          set -e
+          tail -n 65 "$RUNNER_TEMP/force-before.log"
+          test "$code" -eq 1
+          python3 - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          root = ET.parse(os.path.join(os.environ['RUNNER_TEMP'], 'force-before.xml')).getroot()
+          totals = {k: sum(int(s.get(k, 0)) for s in root.findall('testsuite')) for k in ('tests', 'failures', 'errors', 'skipped')}
+          print('Baseline:', totals)
+          assert totals['tests'] >= 80 and totals['failures'] > 0 and totals['errors'] == 0
+          PY
+      - name: Apply only the reviewed exact-blob changes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import subprocess
+          expected = {
+              'src/docich/hanjuku_policy.py': 'acbd19a62912b09ddbbeb3dd48c72271e62f3f5a',
+              'docs/hanjuku_egg_safe_melee.md': 'ff02e39dca702d3f00b4d11e6df9427effad46de',
+              '.github/workflows/hanjuku-predictions-ci.yml': 'c523fe2368d21b2694c216404d121d69df624477',
+          }
+          old_force = "    # 片側だけ読めない戦闘では HP 比較へ退ける (推測で片方だけ加点しない)。\n    measured = type(ally_soldiers) is int and type(enemy_soldiers) is int\n    if type(ally_hp) is int and type(enemy_hp) is int and measured:\n        ally_force = ally_hp + 10 * max(0, ally_soldiers)\n        enemy_force = enemy_hp + 10 * max(0, enemy_soldiers)\n"
+          new_force = "    # Use the same current-panel evidence as learned tactics (ctx3). A\n    # partial/foreign panel invalidates its marker but retains old counts.\n    # Missing or invalid armies fall back to HP only, never one-sided credit.\n    measured = (battle.get('card_soldiers_current') is True\n                and not battle.get('card_hp_unread')\n                and not battle.get('card_context_unclassified')\n                and all(type(count) is int and 0 <= count <= 6\n                        for count in (ally_soldiers, enemy_soldiers)))\n    if type(ally_hp) is int and type(enemy_hp) is int and measured:\n        ally_force = ally_hp + 10 * ally_soldiers\n        enemy_force = enemy_hp + 10 * enemy_soldiers\n"
+          note = "## 卵温存に使う兵数の現在性（2026-10-09）\n\n`_own_egg_needed` は `card_soldiers_current is True`、HP未読・交戦相手未確定のフラグなし、両軍とも厳密な整数0〜6、の全条件を満たす場合だけ兵数を加算する。bool、欠落、文字列、負数、7以上、片側不明は両側とも兵数を使わず、既存のHP比較へ戻す。負数を0へ丸めて有効観測とはしない。\n\n不完全な通常戦闘パネルや別将軍のパネルを読んだ場合、既存readerは直前の兵数を残したまま現在性フラグを落とす。従来の温存判断だけがその古い兵数を再利用していたため、#1930の学習側と同じ証拠条件へ揃えた。例えば味方HP60/82・敵将軍HP90なら、古い味方6人を足して温存せず、兵数不明のHP比較で卵が必要と判断する。逆に古い敵6人だけを理由に不要な卵使用へ変えない。\n\n現在性は同じ戦闘の直近の有効な通常パネルという既存契約であり、秒数による失効や召喚メニューでの新たな兵士計測を保証しない。[GCGX戦闘解析](https://gcgx.games/hanjuku/battle.html)の通常兵士1人HP10、既存の7割閾値、敵将軍HPとの比較、負傷・ボス時の優先、残数0禁止は維持する。途中の卵使用への切替は従来どおり一方向で、観測の再改善だけでは攻撃へ戻さない。\n\n`tests/test_hanjuku_egg_hold_current_force.py` で有効兵数49組、不正値、実readerの無効化と再観測、温存から卵使用への既存メニュー遷移、空卵禁止、観測記録の非改変を確認する。合成パネルのテストであり、新しい実戦ログの敗因や勝率改善を確認したものではない。\n\n"
+          patches = {
+              'src/docich/hanjuku_policy.py': [(old_force, new_force)],
+              'docs/hanjuku_egg_safe_melee.md': [
+                  ('兵士は**両側が整数で読めた時だけ**加算し、片側欠ければ HP 比較へ退ける', '兵士は**有効な直近パネルの両側が整数0〜6と確認できた時だけ**加算し、現在性・片側の値が不明なら HP 比較へ退ける'),
+                  ('## ログと検証の境界\n', note + '## ログと検証の境界\n'),
+              ],
+              '.github/workflows/hanjuku-predictions-ci.yml': [
+                  (' tests/test_hanjuku_egg_stock.py ', ' tests/test_hanjuku_egg_stock.py tests/test_hanjuku_egg_hold_current_force.py '),
+              ],
+          }
+          for name, digest in expected.items():
+              data = Path(name).read_bytes()
+              actual = hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+              assert actual == digest, 'Unexpected base blob: ' + name
+              text = data.decode('utf-8')
+              for old, new in patches[name]:
+                  assert text.count(old) == 1, 'Replacement not unique: ' + name
+                  text = text.replace(old, new, 1)
+              Path(name).write_text(text, encoding='utf-8')
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
+          assert changed == set(expected)
+          print('Applied exactly the three reviewed file patches.')
+          PY
+      - name: Verify fixed and adjacent contracts
+        run: |
+          python3 -m pytest -q --tb=short tests/test_hanjuku_egg_hold_current_force.py tests/test_hanjuku_egg_hold.py tests/test_hanjuku_survival.py tests/test_hanjuku_card_damage_gate.py tests/test_hanjuku_experience.py tests/test_hanjuku_gameover_feedback.py tests/test_hanjuku_egg_stock.py tests/test_hanjuku_recovered_egg_battle.py tests/test_hanjuku_empty_eggs.py
+          python3 -m py_compile src/docich/hanjuku_policy.py tests/test_hanjuku_egg_hold_current_force.py
+          git diff --check
+          git diff --stat
+      - name: Publish reviewed runtime and documentation changes only
+        run: |
+          branch='fix/hanjuku-current-force-egg-hold-20261009'
+          test "$(git ls-remote origin "refs/heads/$branch" | cut -f1)" = "$GITHUB_SHA"
+          git add src/docich/hanjuku_policy.py docs/hanjuku_egg_safe_melee.md .github/workflows/hanjuku-predictions-ci.yml
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix(hanjuku): require current valid armies before conserving eggs'
+          git push origin "HEAD:refs/heads/$branch"
+          git rev-parse HEAD
