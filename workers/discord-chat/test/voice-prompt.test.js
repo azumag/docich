@@ -21,6 +21,8 @@ test("voice call is the only latest reply target; ambient questions remain a sep
   assert.equal(target.source, "current_voice_call");
   assert.equal(target.text, "同志、こんにちは。");
   assert.equal(target.recent_voice_context, undefined);
+  assert.equal(messages.at(-2).role, "assistant");
+  assert.equal(messages.at(-1).role, "user");
   assert.equal(reference.source, "voice_background_context");
   assert.equal(reference.purpose, "reference_only");
   assert.deepEqual(reference.recent_voice_context, context);
@@ -28,6 +30,8 @@ test("voice call is the only latest reply target; ambient questions remain a sep
   assert.match(messages[0].content, /返答の対象は最後のcurrent_voice_callのtextだけ/);
   assert.match(messages[0].content, /過去の質問をまとめて回答/);
   assert.match(messages[0].content, /挨拶には挨拶/);
+  assert.match(messages[0].content, /私が返答した内容ではありません/);
+  assert.ok(messages[0].content.indexOf("【音声返答の最終規則】") > messages[0].content.indexOf(DISCORD_CONTEXT));
 });
 
 test("voice situation overrides the old game setting even without ambient context", async () => {
