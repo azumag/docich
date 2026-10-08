@@ -12,7 +12,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, RuntimeSpec
+from ..game_switch import DeadlineExceededError, GameSwitchStore, ReadinessTimeoutError, RuntimeSpec
 from .base import AdapterError
 
 
@@ -345,7 +345,101 @@ class SorenCoordinatorAdapter:
         except OSError:
             pass
 
+    def _retired_singleton_is_superseded(self, deadline: float, cancel) -> bool:
+        """A restored singleton owns the processes; an obsolete lease does not.
+
+        Only a recorded retiring identity beside a stable, distinct Soren
+        owner can converge without stopping the shared external game. A live
+        broker request or missing process proof keeps ordinary cleanup blocked.
+        The coordinator holds the canonical writer lock during teardown.
+        """
+        state_dir = getattr(self.g, "state_dir", None)
+        if state_dir is None:
+            return False
+        store = GameSwitchStore(state_dir)
+        state, missing = store.canonical.load()
+        active = state.get("active") or {}
+        identity = {key: getattr(self.spec, key) for key in
+                    ("game", "adapter", "runtime_id", "generation", "lease_id")}
+        if (missing or state.get("phase") != "ready"
+                or state.get("request_id") is not None
+                or state.get("candidate") is not None or state.get("previous") is not None
+                or active.get("game") != self.spec.game or active.get("adapter") != "soren"
+                or self.spec.adapter != "soren"
+                or any(active.get(key) == identity[key] for key in
+                       ("runtime_id", "generation", "lease_id"))
+                or not any(all(runtime.get(key) == value for key, value in identity.items())
+                           for runtime in state.get("retiring") or [])):
+            return False
+        payload = self._status(deadline, cancel)
+        if (type(payload.get("schema")) is not int or payload["schema"] != 1
+                or any(key not in payload or payload[key] is not None
+                       for key in ("request", "ack", "resource"))):
+            return False
+        processes = {name: self._singleton_process_identity(name) for name in
+                     ("soren_loop.sh", "soviet_watchdog.sh")}
+        if (any(identity is None for identity in processes.values())
+                or processes["soren_loop.sh"][0] == processes["soviet_watchdog.sh"][0]):
+            return False
+        self._check(deadline, cancel)
+        if any(self._singleton_process_identity(name) != identity
+               for name, identity in processes.items()):
+            return False
+        current, missing = store.canonical.load()
+        return not missing and current == state
+
+    def _singleton_process_identity(self, expected: str, *, proc_root=Path("/proc")):
+        """Prove the fixed-root script is a shell's program, not a data argument.
+
+        This stricter proof is limited to no-stop retirement. Unknown shell
+        options or launch shapes fail closed instead of weakening the fence.
+        """
+        matches = []
+        try:
+            script = (self.root / expected).resolve(strict=True)
+            entries = list(proc_root.iterdir())
+        except OSError:
+            return None
+        shells = {Path(name).resolve() for name in ("/bin/bash", "/bin/sh", "/bin/dash")}
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                before = (entry / "stat").read_text().rsplit(") ", 1)[1].split()
+                argv = (entry / "cmdline").read_bytes().decode().rstrip("\0").split("\0")
+                cwd = (entry / "cwd").resolve(strict=True)
+                exe = (entry / "exe").resolve(strict=True)
+                if (before[0] in {"Z", "X"} or len(argv) < 2 or cwd != self.root
+                        or exe not in shells or Path(argv[0]).name not in {"bash", "sh", "dash"}):
+                    continue
+                index = 2 if argv[1] == "--" else 1
+                if len(argv) <= index or argv[index].startswith("-"):
+                    continue
+                if (cwd / argv[index]).resolve(strict=True) != script:
+                    continue
+                after = (entry / "stat").read_text().rsplit(") ", 1)[1].split()
+                ticks = int(before[19])
+                if ticks <= 0 or after[0] in {"Z", "X"} or int(after[19]) != ticks:
+                    continue
+                matches.append((int(entry.name), ticks))
+            except (OSError, UnicodeError, ValueError, IndexError):
+                continue
+        return matches[0] if len(matches) == 1 else None
+
     def cleanup_runtime(self, deadline: float, cancel) -> None:
+        if self._retired_singleton_is_superseded(deadline, cancel):
+            return
+        state_dir = getattr(self.g, "state_dir", None)
+        if state_dir is not None:
+            state, missing = GameSwitchStore(state_dir).canonical.load()
+            active = state.get("active") or {}
+            if (not missing and active.get("game") == self.spec.game
+                    and active.get("adapter") == "soren"
+                    and active.get("lease_id") != self.spec.lease_id
+                    and any(runtime.get("runtime_id") == self.spec.runtime_id
+                            and runtime.get("lease_id") == self.spec.lease_id
+                            for runtime in state.get("retiring") or [])):
+                raise AdapterError("別Soren ownerが稼働中のため旧singletonの停止を拒否します")
         request_id = self._request_id
         if not request_id:
             ack = self._ack(self._status(deadline, cancel))
@@ -453,6 +547,8 @@ class SorenCoordinatorAdapter:
         return self._fresh_started_at is None or started_at + 1 >= self._fresh_started_at
 
     def alive(self, deadline: float, cancel) -> bool:
+        if self._retired_singleton_is_superseded(deadline, cancel):
+            return False
         payload = self._status(deadline, cancel)
         # Both states require an explicit materialize step before canonical can
         # publish the runtime again.  ``cancelled`` may already have live

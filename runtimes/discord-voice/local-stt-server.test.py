@@ -33,5 +33,24 @@ class AudioValidation(unittest.TestCase):
                 self.assertFalse(server.valid_wav(body))
 
 
+class ProgressRecognition(unittest.TestCase):
+    def test_known_addressed_progress_request_is_corrected(self):
+        for text, expected in [
+            ("同志 真直を教えて", "同志 進捗を教えて"),
+            ("同志、今の真直を教えてください。", "同志、今の進捗を教えてください。"),
+            ("どうし、真直を教えて。", "どうし、進捗を教えて。"),
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(server.normalize_transcript(text), expected)
+
+    def test_literal_lookup_and_ambient_text_are_not_rewritten(self):
+        for text in [
+            "同志、真直という漢字の意味を教えて", "同志、「真直」を教えて", "真直を教えて",
+            "同志、真直って何？", "同志、真直は人の名前です", "同志、進捗を教えて", "",
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(server.normalize_transcript(text), text)
+
+
 if __name__ == '__main__':
     unittest.main()

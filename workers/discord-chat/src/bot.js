@@ -21,7 +21,7 @@ import {
   sendDiscordReply,
   stripBotMention,
 } from "./discord.js";
-import { validVoiceContext } from "./voice-context.js";
+import { validVoiceContext, validGameState } from "./voice-context.js";
 import { generateConversationReply } from "./conversation.js";
 
 const FAILURE_REPLY = "今は返答を作れませんでした。少し後でもう一度メンションしてください。";
@@ -97,7 +97,7 @@ export class DiscordBot {
       });
     }
 
-    const allowedKeys = new Set(["guildId", "channelId", "userId", "turnId", "transcript", "recentContext"]);
+    const allowedKeys = new Set(["guildId", "channelId", "userId", "turnId", "transcript", "recentContext", "gameState"]);
     if (
       !body ||
       typeof body !== "object" ||
@@ -111,7 +111,8 @@ export class DiscordBot {
       typeof body.transcript !== "string" ||
       !body.transcript.trim() ||
       body.transcript.length > 2000 ||
-      !validVoiceContext(body.recentContext)
+      !validVoiceContext(body.recentContext) ||
+      !validGameState(body.gameState)
     ) {
       return Response.json({ error: "invalid_request" }, {
         status: 400,
@@ -139,6 +140,7 @@ export class DiscordBot {
       voice: true,
       content: body.transcript.trim(),
       ...(body.recentContext ? {voiceContext:body.recentContext} : {}),
+      ...(body.gameState ? {gameState:body.gameState.trim()} : {}),
       referenceId: null,
       createdAt: Date.now() / 1000,
     };
@@ -257,9 +259,12 @@ export class DiscordBot {
   }
 
   async status() {
+    const version = this.env?.CF_VERSION_METADATA?.id;
+    const codeVersion = typeof version === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(version) ? version : null;
     const fatal = await this.state.storage.get("fatal_reason");
     const fatalUntil = Number(await this.state.storage.get("fatal_until") ?? 0);
     return {
+      codeVersion,
       configured: this.#configured(),
       connected: this.ws?.readyState === 1,
       ready: this.ready,

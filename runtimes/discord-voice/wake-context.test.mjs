@@ -47,7 +47,7 @@ test('stopping before queued reply begins suppresses all output',async()=>{
 });
 
 
-test('spoken wake spelling variants are accepted only as a leading separated call',()=>{
+test('leading spoken wake variants are accepted without matching words or quoted mentions',()=>{
   for(const text of ['同士、雨でも行ける場所は？','どうし、教えて。','ドウシ 教えて。','「どうし、こんにちは」','どうし']) {
     const c=new WakeContext(); const request=c.observe('1',text);
     assert.ok(request,text); assert.equal(request.transcript,text); c.clear();
@@ -82,4 +82,21 @@ test('queue skips departed speakers, continues after a failed turn, and stop cle
   const stopped=new WakeSession({reply:async(text,ctx)=>{stoppedCalls.push({text,signal:ctx.signal});await blocking;}});
   stopped.observe('同志、active',{userId:'1'});await tick();stopped.observe('同志、pending',{userId:'2'});stopped.stop();
   assert.equal(stoppedCalls[0].signal.aborted,true);releaseStop();await tick();await tick();assert.equal(stoppedCalls.length,1);
+});
+
+test('standalone homophone calls in the middle or at the end activate a reply',()=>{
+  for(const text of ['こんばんは、どうし。','こんばんは、ドウシ。','こんばんは、同士。','こんばんは どうし。','おはよう、どうし、今日はどう？']){
+    const c=new WakeContext();const request=c.observe('1',text);assert.ok(request);assert.equal(request.transcript,text);c.clear();
+  }
+  for(const text of ['こんばんは、どうして？','今日はどうしようかな。','友達同士、こんばんは。','友達どうしで話します。','昔「どうし、教えて」と聞きました。']){
+    const c=new WakeContext();assert.equal(c.observe('1',text),null);c.clear();
+  }
+});
+
+test('trailing homophone call enters the same FIFO as the canonical call',async()=>{
+  const calls=[];let release;const held=new Promise(r=>release=r);
+  const s=new WakeSession({reply:async text=>{calls.push(text);if(calls.length===1)await held;}});
+  s.observe('こんばんは、どうし。',{userId:'1'});await tick();assert.equal(calls.length,1);
+  s.observe('同志 こんばんは。',{userId:'2'});await tick();assert.equal(calls.length,1);
+  release();await tick();await tick();assert.deepEqual(calls,['こんばんは、どうし。','同志 こんばんは。']);s.stop();
 });
