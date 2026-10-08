@@ -136,6 +136,7 @@ export class DiscordBot {
       channelId: body.channelId,
       authorId: body.userId,
       authorName: "音声ユーザー",
+      voice: true,
       content: body.transcript.trim(),
       ...(body.recentContext ? {voiceContext:body.recentContext} : {}),
       referenceId: null,

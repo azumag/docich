@@ -27,8 +27,10 @@ export function cleanReply(value) {
 export async function generateReply(env, history, event) {
   if (!env.AI || typeof env.AI.run !== "function") throw new Error("workers_ai_unavailable");
   const model = String(env.WORKERS_AI_MODEL || "@cf/deepseek-ai/deepseek-v4-flash-0731");
+  const voice = event.voice === true || Array.isArray(event.voiceContext);
+  const fastVoice = voice && model === "@cf/deepseek-ai/deepseek-v4-flash-0731";
   const messages = [
-    { role: "system", content: String(env.DOCICH_PERSONA) + "\n\n" + DISCORD_CONTEXT + (event.voiceContext ? "\n\n" + VOICE_CONTEXT : "") },
+    { role: "system", content: String(env.DOCICH_PERSONA) + "\n\n" + DISCORD_CONTEXT + (voice ? "\n\n" + VOICE_CONTEXT : "") },
     ...history,
     {
       role: "user",
@@ -48,6 +50,7 @@ export async function generateReply(env, history, event) {
       stream: false,
       max_tokens: maxTokens,
       tool_choice: "none",
+      ...(fastVoice ? { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } } : {}),
     });
     const choice = result?.choices?.[0];
     if (choice?.message?.tool_calls || choice?.message?.function_call

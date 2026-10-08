@@ -95,3 +95,5 @@ fatal close（認証失敗、disallowed intents等）は15分のcooldownを記�
 呼出側がadmission/認証・dedupと`beginConversation`を担当します。生成後は`validContext`で現在入力/想起元の削除を再確認し、実送信前に`markSending`、成功して返信IDを得てから`finishConversation`、失敗時に`failConversation`を実行する既存契約を維持してください。生成関数だけでは送信・保存完了になりません。文字側の忘却command、失敗通知、queue、送信ackと診断は引き続き`bot.js`が所有します。
 
 音声live runtimeは選択TTSの既定200字制限、LLM/TTS/playback/commitの個別deadline、barge-in取消、scope、再生成功後だけの保存方針を明示的に適用します。この生成関数自体は暗黙に短縮/切断/期限変更/保存を行いません。fake音声callerテストは引き続きoffline境界を検証し、実VC・実VOICEVOX・長時間品質の受入を示すものではありません。
+
+音声応答では、既定のDeepSeek V4 Flashを `reasoning_effort: none` と `chat_template_kwargs.enable_thinking: false` で呼びます。実VCで500/900 tokenの枠を推論だけで使い切り、空本文となる失敗を確認したためです。同じモデルの人工入力疎通では、非推論設定で本文117文字を約2.6秒で取得しました。文字メンション経路と他モデルの設定は変更しません。モデルの本文品質、実VC再生、記憶commitは別途受入します。

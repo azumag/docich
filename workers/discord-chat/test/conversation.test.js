@@ -160,6 +160,9 @@ test("internal voice reply reuses canonical memory read-only and does not persis
   assert.deepEqual(await response.json(), { reply: "タマです" });
   assert.equal(rows(f.sql).length, before);
   assert.ok(input.messages.some((message) => message.content.includes("猫の名前はタマ")));
+  assert.equal(input.reasoning_effort, "none");
+  assert.deepEqual(input.chat_template_kwargs, {enable_thinking: false});
+  assert.match(input.messages[0].content, /200文字以内/);
   assert.equal(f.logs.at(-1).status, "voice_reply_generated");
 });
 
