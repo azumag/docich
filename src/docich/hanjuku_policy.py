@@ -8057,11 +8057,17 @@ def _own_egg_needed(mem, battle, general_reading=None):
                and reading[0] * 10 > reading[1] * BEHIND_EGG_RATIO_TENTHS)
     ally_hp, enemy_hp = battle.get('ally_hp'), battle.get('enemy_hp')
     ally_soldiers, enemy_soldiers = battle.get('ally_soldiers'), battle.get('enemy_soldiers')
-    # 片側だけ読めない戦闘では HP 比較へ退ける (推測で片方だけ加点しない)。
-    measured = type(ally_soldiers) is int and type(enemy_soldiers) is int
+    # Use the same current-panel evidence as learned tactics (ctx3). A
+    # partial/foreign panel invalidates its marker but retains old counts.
+    # Missing or invalid armies fall back to HP only, never one-sided credit.
+    measured = (battle.get('card_soldiers_current') is True
+                and not battle.get('card_hp_unread')
+                and not battle.get('card_context_unclassified')
+                and all(type(count) is int and 0 <= count <= 6
+                        for count in (ally_soldiers, enemy_soldiers)))
     if type(ally_hp) is int and type(enemy_hp) is int and measured:
-        ally_force = ally_hp + 10 * max(0, ally_soldiers)
-        enemy_force = enemy_hp + 10 * max(0, enemy_soldiers)
+        ally_force = ally_hp + 10 * ally_soldiers
+        enemy_force = enemy_hp + 10 * enemy_soldiers
     else:
         ally_force, enemy_force = ally_hp, enemy_hp
     comfortable = (healthy and type(ally_force) is int and type(enemy_force) is int
