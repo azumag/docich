@@ -73,7 +73,7 @@ def test_house_observation_replaces_old_zero_and_releases_only_its_recovery_cost
     assert mem['house_eggs']['ゼウス']['uses'] == 5
     assert p._egg_measured_cost(mem) == 50
     assert mem['gold'] == 250  # reading is not a payment or an Angelin use
-    assert [r['decision'] for r in mem['_records']] == ['egg_seen']
+    assert [r['decision'] for r in mem['_records']] == ['house_egg_seen']
 
 
 @pytest.mark.parametrize('mode,actor', [('named', 'ゼウス'), ('anonymous', 'ヴィーナス'),
@@ -115,7 +115,7 @@ def test_sortie_observation_accepts_real_single_digit_counts(uses):
     assert p._egg_row(screen) == ('ゼウス', 'エラベルエッグ', uses)
 
 
-@pytest.mark.parametrize('uses', [6, 9, 14, 15, '05', '5x', '?'])
+@pytest.mark.parametrize('uses', [6, 9, 14, 15, '05', '5?', '?'])
 def test_sortie_rejects_out_of_range_or_multidigit_counts(uses):
     assert p._egg_row(sortie_canvas('ゼウス', uses)) is None
 
