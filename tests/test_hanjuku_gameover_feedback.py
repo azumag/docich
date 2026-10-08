@@ -134,9 +134,9 @@ def test_hp_win_and_inferred_captured_event_are_not_ownership():
 
 
 def test_later_same_castle_owner_receipt_unlocks_promotion():
-    result = gated([win(), owner()])
-    assert result['type'] == 'promote_interim_attack'
-    assert result['capture_evidence'] == 'observed_ownership_after_attack'
+    result = gated([win(), owner()])['type']
+    assert result == 'promote_interim_attack'
+    assert gated([win(), owner()])['capture_evidence'] == 'observed_ownership_after_attack'
 
 
 @pytest.mark.parametrize('records', [
@@ -326,20 +326,22 @@ def test_invalid_soldier_count_is_unknown_not_an_available_force(kind, field, va
 
 @pytest.mark.parametrize('kind,alternative', [('battle_menu', 'pass'), ('egg_summon', 'attack')])
 @pytest.mark.parametrize('flag', [None, False, 0, 1, 'true'])
-def test_stale_or_unproven_counts_keep_policy_default_despite_biased_history(kind, alternative, flag):
+def test_stale_or_unproven_counts_do_not_borrow_known_history_or_explore(kind, alternative, flag):
+    known = experience.situation_key(kind, memory())
     mem = memory(card_soldiers_current=flag)
     if flag is None:
         mem['battle'].pop('card_soldiers_current')
     key = experience.situation_key(kind, mem)
     assert 'ally_soldiers=unknown' in key.split('|')
     assert 'enemy_soldiers=unknown' in key.split('|')
-    for actions in ({'use_egg': {'losses': 5}},
-                    {'use_egg': {'losses': 5}, alternative: {'wins': 20}}):
-        assert experience.preferred(learned(key, actions), key,
-                                    default='use_egg', kind=kind) == 'use_egg'
-    # Falling back to policy also preserves its healthy melee choice: this
-    # guard never manufactures an egg action or stops the input loop.
-    exp = learned(key, {alternative: {'losses': 5}, 'use_egg': {'wins': 20}})
+    assert key != known
+    # Strong history from a known army must not control an unread army.
+    exp = learned(known, {'use_egg': {'losses': 5}, alternative: {'wins': 20}})
+    assert experience.preferred(exp, key, default='use_egg', kind=kind) == 'use_egg'
+    # A loss in an unread context must not initiate an untried alternative.
+    exp = learned(key, {'use_egg': {'losses': 5}})
+    assert experience.preferred(exp, key, default='use_egg', kind=kind) == 'use_egg'
+    exp = learned(key, {alternative: {'losses': 5}})
     assert experience.preferred(exp, key, default=alternative, kind=kind) == alternative
 
 
@@ -353,7 +355,7 @@ def test_unread_or_mismatched_panel_cannot_reuse_old_soldier_counts(flag):
 @pytest.mark.parametrize('field', ['ally_soldiers', 'enemy_soldiers'])
 def test_one_unread_army_is_enough_to_prevent_speculative_learning(field):
     key = experience.situation_key('battle_menu', memory(**{field: None}))
-    exp = learned(key, {'use_egg': {'losses': 5}, 'pass': {'wins': 20}})
+    exp = learned(key, {'use_egg': {'losses': 5}})
     assert experience.preferred(exp, key, default='use_egg', kind='battle_menu') == 'use_egg'
 
 
@@ -409,3 +411,17 @@ def test_integration_learning_tracks_the_real_card_panel_reader(kind):
     assert 'enemy_soldiers=1' in fresh.split('|')
     assert len({first, unread, fresh}) == 3
     assert mem['battle']['cards_used'] == []  # observations never prove a card use
+
+
+@pytest.mark.parametrize('kind,alternative', [('battle_menu', 'pass'), ('egg_summon', 'attack')])
+def test_unknown_armies_keep_existing_measured_choice_learning_contract(kind, alternative):
+    # Legacy callers can have actor identities but no readable resources.
+    # Actual wins remain evidence in that same unknown context, not in a
+    # known-force context, and do not license untried exploration.
+    mem = {'chapter': 1, 'battle': {'enemy': 'ミント', 'ally': 'どうし'},
+           '_experience': experience.empty()}
+    key = experience.situation_key(kind, mem)
+    assert experience.record(mem, key, 'use_egg', 'loss')
+    assert experience.record(mem, key, alternative, 'win')
+    assert experience.preferred(mem['_experience'], key, default='use_egg', kind=kind) == alternative
+    assert experience.preferred(mem['_experience'], key, default=alternative, kind=kind) == alternative
