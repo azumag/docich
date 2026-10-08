@@ -24,8 +24,11 @@ export class WakeContext {
     const normalized = text.trim();
     this.#entries.push({userId, text:normalized, at:this.#now()});
     this.#prune();
-    // Respond to the utterance containing the literal wake word; never match prior history.
-    return normalized.normalize('NFKC').includes('同志') ? {transcript:normalized, userId, recentContext:prior} : null;
+    // Keep the canonical spelling anywhere in the current utterance. STT homophones
+    // count only as a leading, separated call, so どうして/友達同士 cannot activate.
+    const spelling = normalized.normalize('NFKC');
+    const wake = spelling.includes('同志') || /^[「『(]*(?:同士|どうし|ドウシ)(?:[\s、,。.!！?？:：」』)]|$)/u.test(spelling);
+    return wake ? {transcript:normalized, userId, recentContext:prior} : null;
   }
   recent() {
     this.#prune();

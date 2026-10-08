@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 import {
   AudioPlayerStatus,
+  EndBehaviorType,
   StreamType,
   VoiceConnectionStatus,
   createAudioPlayer,
@@ -391,6 +392,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
 
             let generated;
             try {
+              const llmStarted = performance.now();
               emit({ event: 'llm_started' });
               try {
                 generated = await runBoundedStage(
@@ -407,7 +409,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
                   emit({ event: 'llm_cancelled' });
                   return;
                 }
-                emit({ event: 'llm_completed' });
+                emit({ event: 'llm_completed', elapsedMs: Math.max(0, Math.round(performance.now() - llmStarted)) });
                 if (config.replyDebug) {
                   emit({ event: 'llm_debug_reply', reply: generated.reply });
                 }
@@ -425,6 +427,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
               let pcm;
               let outputStage = 'tts';
               try {
+                const ttsStarted = performance.now();
                 emit({ event: 'tts_started' });
                 pcm = await runBoundedStage(
                   turnController.signal,
@@ -440,7 +443,7 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
                   emit({ event: 'tts_cancelled' });
                   return;
                 }
-                emit({ event: 'tts_completed' });
+                emit({ event: 'tts_completed', elapsedMs: Math.max(0, Math.round(performance.now() - ttsStarted)) });
 
                 outputStage = 'playback';
                 emit({ event: 'playback_started' });
@@ -546,6 +549,12 @@ export async function runLiveVoice(env = process.env, runtimeOps = {}) {
         connection,
         targetUserId: config.receiveUserId,
         allowSpeaker,
+        // Resident calls are quieter and should begin processing sooner. The
+        // legacy fixed-speaker acceptance path retains 500 RMS / 700ms silence.
+        ...(config.wakeEnabled ? {
+          speechThreshold: 200,
+          subscribeOptions: Object.freeze({end:Object.freeze({behavior:EndBehaviorType.AfterSilence,duration:500})}),
+        } : {}),
         stt,
         emit,
         debugTranscript: config.transcriptDebug,

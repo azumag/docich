@@ -405,3 +405,60 @@ test('resident receiver drops delayed transcript when its speaker has left the a
   await waitFor(()=>r.status().transcribing); allowed=false; release();
   await waitFor(()=>!r.status().active); assert.equal(handled,0); r.stop();
 });
+
+
+test('resident sensitivity admits quiet voice but still discards quieter noise',async()=>{
+  for(const [level,expectedCalls] of [[300,1],[150,0]]) {
+    const events=[];let calls=0;
+    const fixture=fakeConnection(()=>Array.from({length:6},()=>stereoChunk(level)));
+    const receiver=attachLiveSttReceiver({connection:fixture.connection,targetUserId:TARGET,speechThreshold:200,
+      stt:{async transcribe(){calls++;return '同志、こんにちは';}},emit:e=>events.push(e),createDecoder:decoderFactory});
+    fixture.connection.receiver.speaking.emit('start',TARGET);
+    await waitFor(()=>events.some(e=>['stt_completed','utterance_short'].includes(e.event)));
+    assert.equal(calls,expectedCalls);receiver.stop();
+  }
+});
+
+
+test('resident backlog coalesces adjacent same-speaker speech without losing PCM or scope',async()=>{
+  let release;const held=new Promise(r=>{release=r;});const pcmCalls=[];
+  const fixture=fakeConnection(()=>[]);
+  let capture=0;
+  fixture.connection.receiver.subscribe=(id,options)=>{
+    fixture.subscriptions.push({userId:id,options});const value=1000*(++capture);
+    return Readable.from(Array.from({length:6},()=>stereoChunk(value)));
+  };
+  const receiver=attachLiveSttReceiver({connection:fixture.connection,allowSpeaker:id=>id===TARGET,
+    createDecoder:decoderFactory,stt:{async transcribe(pcm){pcmCalls.push(new Int16Array(pcm));if(pcmCalls.length===1)await held;return 'fixture';}}});
+  for(let n=0;n<3;n++){
+    fixture.connection.receiver.speaking.emit('start',TARGET);
+    await waitFor(()=>!receiver.status().capturing);
+  }
+  assert.equal(receiver.status().queued,1);
+  release();await waitFor(()=>!receiver.status().transcribing);
+  assert.equal(pcmCalls.length,2);
+  const joined=pcmCalls[1];assert.equal(joined.length,5760*2+9600);
+  assert.ok(joined.subarray(0,5760).every(n=>n===2000));
+  assert.ok(joined.subarray(5760,15360).every(n=>n===0));
+  assert.ok(joined.subarray(15360).every(n=>n===3000));
+  receiver.stop();
+});
+
+
+for(const scenario of ['different humans','combined audio above ten seconds']) {
+  test(`resident backlog never merges ${scenario}`,async()=>{
+    let release;const held=new Promise(r=>{release=r;});const scopes=[];
+    const frames=scenario==='different humans'?6:300;
+    const fixture=fakeConnection(()=>Array.from({length:frames},()=>stereoChunk(2000)));
+    let calls=0;
+    const receiver=attachLiveSttReceiver({connection:fixture.connection,allowSpeaker:id=>[TARGET,OTHER].includes(id),
+      createDecoder:decoderFactory,stt:{async transcribe(){if(++calls===1)await held;return 'fixture';}},
+      onTranscript:(_text,ctx)=>{scopes.push(ctx.userId);}});
+    for(const id of [TARGET,TARGET,scenario==='different humans'?OTHER:TARGET]) {
+      fixture.connection.receiver.speaking.emit('start',id);await waitFor(()=>!receiver.status().capturing);
+    }
+    assert.equal(receiver.status().queued,2);
+    release();await waitFor(()=>!receiver.status().transcribing);
+    assert.equal(calls,3);assert.deepEqual(scopes,[TARGET,TARGET,scenario==='different humans'?OTHER:TARGET]);receiver.stop();
+  });
+}
