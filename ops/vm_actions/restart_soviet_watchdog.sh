@@ -152,8 +152,14 @@ def bridge_parked(root, config):
     try:
         request = json.loads(read_regular(directory / 'request.json', 65536))
         ack = json.loads(read_regular(directory / 'ack.json', 65536))
-    except (OSError, ValueError):
+    except (FileNotFoundError, ValueError):
+        # Absent/malformed records retain the supervisor's non-parked result.
         return False
+    except (OSError, Refused):
+        # A valid park may be unreadable under this helper's stricter file
+        # policy. Never convert permission/I/O/symlink refusal into permission
+        # to TERM a watchdog while the supervisor still withholds respawn.
+        raise Refused(13, 'lifecycle_state_unreadable') from None
     # Same reviewed predicate as start_all's game_lifecycle_bridge_parked.
     if not isinstance(request, dict) or not isinstance(ack, dict):
         return False

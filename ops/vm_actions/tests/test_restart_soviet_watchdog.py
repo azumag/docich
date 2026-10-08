@@ -7,6 +7,7 @@ hidden behind Linux-only skips.
 """
 
 import contextlib
+import errno
 import io
 import json
 import os
@@ -385,6 +386,70 @@ class RestartSovietWatchdogTests(unittest.TestCase):
         (self.root / 'lib/game_lifecycle.sh').unlink()
         self.assertEqual(self.run_helper()[0], 13)
         self.assertEqual(self.delivered, [])
+
+    def test_symlink_park_records_refused_without_signal(self):
+        directory = self.parked()
+        self.respawn = False
+        for name in ('request.json', 'ack.json'):
+            with self.subTest(name=name):
+                path = directory / name
+                target = self.root / ('synthetic-' + name)
+                target.write_bytes(path.read_bytes())
+                path.unlink()
+                path.symlink_to(target)
+                # The pinned supervisor follows this symlink and still sees
+                # a parked game. The helper must refuse its stronger file
+                # policy, not interpret ELOOP as proof of "not parked".
+                env = {'PATH': os.environ['PATH'], 'GAME_LIFECYCLE_ENABLED': '1', 'GAME_LIFECYCLE_DIR': str(directory)}
+                result = subprocess.run(['bash', '-c', 'source "$1"; game_lifecycle_bridge_parked', '_', str(PREDICATE)], env=env, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                code, out = self.run_helper()
+                self.assertEqual(code, 13, out)
+                self.assertEqual(self.delivered, [])
+                path.unlink()
+                path.write_bytes(target.read_bytes())
+
+    def test_unknown_park_state_read_failures_refused_without_signal(self):
+        self.parked()
+        reader = self.module.read_regular
+        failures = [
+            PermissionError(errno.EACCES, 'PRIVATE_SYNTHETIC_ERROR'),
+            OSError(errno.EIO, 'PRIVATE_SYNTHETIC_ERROR'),
+            OSError(errno.ELOOP, 'PRIVATE_SYNTHETIC_ERROR'),
+            IsADirectoryError(errno.EISDIR, 'PRIVATE_SYNTHETIC_ERROR'),
+            self.module.Refused(10, 'not_regular'),
+            self.module.Refused(10, 'oversized_state'),
+        ]
+        for name in ('request.json', 'ack.json'):
+            for failure in failures:
+                with self.subTest(name=name, failure=type(failure).__name__):
+                    def read(path, *args, **kwargs):
+                        if Path(path).name == name:
+                            raise failure
+                        return reader(path, *args, **kwargs)
+                    with mock.patch.object(self.module, 'read_regular', read):
+                        code, out = self.run_helper()
+                    self.assertEqual(code, 13, out)
+                    self.assertEqual(self.delivered, [])
+                    self.assertNotIn('PRIVATE', out)
+
+    def test_missing_park_record_remains_not_parked(self):
+        directory = self.parked()
+        (directory / 'ack.json').unlink()
+        self.assertFalse(self.module.bridge_parked(self.root, ('1', directory)))
+        self.assertEqual(self.run_helper()[0], 0)
+        self.assertEqual(self.delivered, [(4100, 100, signal.SIGTERM)])
+
+    def test_invalid_park_json_remains_not_parked(self):
+        directory = self.parked()
+        for name in ('request.json', 'ack.json'):
+            for invalid in (b'{invalid JSON', b'\xff'):
+                with self.subTest(name=name, invalid=invalid):
+                    self.parked()
+                    (directory / name).write_bytes(invalid)
+                    self.assertFalse(self.module.bridge_parked(self.root, ('1', directory)))
+        self.assertEqual(self.run_helper()[0], 0)
+        self.assertEqual(self.delivered, [(4100, 100, signal.SIGTERM)])
 
     def test_no_env_file_execution_or_secret_output(self):
         sentinel = self.root / 'executed'
