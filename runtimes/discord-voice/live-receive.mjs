@@ -61,10 +61,10 @@ export function stereoPcm16ToMono(decoded) {
   return mono;
 }
 
-function voicedSamples(samples) {
+function voicedSamples(samples, threshold) {
   let energy = 0;
   for (const sample of samples) energy += sample * sample;
-  return energy / samples.length >= SPEECH_THRESHOLD ** 2
+  return energy / samples.length >= threshold ** 2
     ? samples.length
     : 0;
 }
@@ -79,6 +79,7 @@ export function attachLiveSttReceiver({
   onTranscript = null,
   onTargetSpeechStart = null,
   createDecoder = defaultDecoder,
+  speechThreshold = SPEECH_THRESHOLD,
   subscribeOptions = Object.freeze({
     end: Object.freeze({
       behavior: EndBehaviorType.AfterSilence,
@@ -99,7 +100,8 @@ export function attachLiveSttReceiver({
     typeof emit !== 'function' ||
     (onTranscript !== null && typeof onTranscript !== 'function') ||
     (onTargetSpeechStart !== null && typeof onTargetSpeechStart !== 'function') ||
-    typeof createDecoder !== 'function'
+    typeof createDecoder !== 'function' ||
+    !Number.isFinite(speechThreshold) || speechThreshold < 50 || speechThreshold > 2000
   ) {
     throw new TypeError('invalid_live_receive_config');
   }
@@ -134,7 +136,8 @@ export function attachLiveSttReceiver({
     void (async () => {
       try {
         if (!admitted(state.userId)) return;
-        safeEmit({ event: 'stt_started' });
+        const sttStarted = performance.now();
+        safeEmit({ event: 'stt_started', queueWaitMs: Math.max(0, Math.round(sttStarted - item.queuedAt)) });
         let transcript;
         const sttTimeout = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
         sttTimeout.unref?.();
@@ -144,7 +147,7 @@ export function attachLiveSttReceiver({
             signal: controller.signal,
           });
           if (controller.signal.aborted || !admitted(state.userId)) return;
-          safeEmit({ event: 'stt_completed' });
+          safeEmit({ event: 'stt_completed', elapsedMs: Math.max(0, Math.round(performance.now() - sttStarted)) });
           if (debugTranscript) {
             safeEmit({ event: 'stt_debug_transcript', transcript });
           }
@@ -178,12 +181,21 @@ export function attachLiveSttReceiver({
       erase(pcm);
       return;
     }
+    const last = sttQueue.at(-1);
+    const gap = PCM.sampleRate / 5; // 200ms separator; never merge different humans.
+    if (allowSpeaker && last?.userId === userId &&
+        last.pcm.length + gap + pcm.length <= MAX_UTTERANCE_SAMPLES) {
+      const joined = new Int16Array(last.pcm.length + gap + pcm.length);
+      joined.set(last.pcm); joined.set(pcm, last.pcm.length + gap);
+      erase(last.pcm); erase(pcm); last.pcm = joined;
+      return;
+    }
     if (sttActive && sttQueue.length >= maxPending) {
       erase(pcm);
       safeEmit({ event: 'stt_queue_full' });
       return;
     }
-    sttQueue.push({ pcm, userId });
+    sttQueue.push({ pcm, userId, queuedAt: performance.now() });
     drainStt();
   };
 
@@ -238,7 +250,7 @@ export function attachLiveSttReceiver({
         }
 
         state.samples += mono.length;
-        state.voiced += voicedSamples(mono);
+        state.voiced += voicedSamples(mono, speechThreshold);
         state.chunks.push(mono);
       }
 

@@ -43,3 +43,14 @@ test('stopping before queued reply begins suppresses all output',async()=>{
   let calls=0; const s=new WakeSession({reply:()=>{calls++;}});
   s.observe('同志',{userId:'1'}); s.stop(); await tick(); assert.equal(calls,0);
 });
+
+
+test('spoken wake spelling variants are accepted only as a leading separated call',()=>{
+  for(const text of ['同士、雨でも行ける場所は？','どうし、教えて。','ドウシ 教えて。','「どうし、こんにちは」','どうし']) {
+    const c=new WakeContext(); const request=c.observe('1',text);
+    assert.ok(request,text); assert.equal(request.transcript,text); c.clear();
+  }
+  for(const text of ['どうしようかな。','どうして雨なの？','友達同士で話します。','同士討ちを避けます。','同士の集まりです。','昔「どうし、教えて」と聞きました。']) {
+    const c=new WakeContext();assert.equal(c.observe('1',text),null,text);c.clear();
+  }
+});

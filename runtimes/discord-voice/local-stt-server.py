@@ -55,6 +55,7 @@ def serve(model, port):
                     self.reply(400, {'error': 'invalid_audio'}); return
                 segments, _ = model.transcribe(io.BytesIO(audio), language='ja', task='transcribe',
                     beam_size=1, temperature=0.0, condition_on_previous_text=False, vad_filter=True,
+                    without_timestamps=True, hotwords="同志",
                     initial_prompt='日本語の会話です。呼びかけの言葉は「同志」です。')
                 text = ''.join(segment.text for segment in segments).strip()
                 if len(text) > 2000:

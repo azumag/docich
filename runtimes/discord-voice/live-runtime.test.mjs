@@ -510,7 +510,7 @@ test('resident wake mode uses prior ambient context, answers only a wake, and co
       commit:async(turn,ctx)=>{calls.push(['commit',turn,ctx]);return 'committed';}}),
     createTts:()=>({synthesize:async()=>new Int16Array(960)}),
     createPlayback:()=>({play:async()=>{calls.push(['play']);},close(){}}),
-    attachReceiver:o=>{receiver=o.onTranscript;allow=o.allowSpeaker;assert.equal(o.onTargetSpeechStart,null);return {stop(){}};},
+    attachReceiver:o=>{receiver=o.onTranscript;allow=o.allowSpeaker;assert.equal(o.onTargetSpeechStart,null);assert.equal(o.speechThreshold,200);assert.equal(o.subscribeOptions.end.duration,500);return {stop(){}};},
   });
   await waitFor(()=>receiver);
   assert.equal(allow('3'),true); assert.equal(allow('5'),false); assert.equal(allow('6'),false); assert.equal(allow('99'),false);
