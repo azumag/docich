@@ -403,6 +403,44 @@ class NethackCornerManager(RetroCornerManager):
                         return CornerResult("failed", game=GAME_NAME,
                                             detail="later cleanup evidence differs")
 
+                    # Persist an intent before touching retiring Soren so a
+                    # crash after canonical cleanup but before saving the
+                    # result cannot erase the last correlated owner identity.
+                    attempt = state.get("restore_cleanup_attempt")
+                    attempt_valid = bool(
+                        isinstance(attempt, dict)
+                        and set(attempt) == {
+                            "schema_version", "rotation_request_id",
+                            "restore_request_id", "original_generation",
+                            "source", "retiring",
+                        }
+                        and attempt.get("schema_version") == 1
+                        and attempt.get("rotation_request_id") == request_id
+                        and attempt.get("restore_request_id") == restore_id
+                        and attempt.get("original_generation") == result["generation"]
+                        and isinstance(attempt.get("source"), dict)
+                        and set(attempt["source"]) == set(owner_keys)
+                        and attempt["source"].get("game") == GAME_NAME
+                        and attempt["source"].get("generation") == result["restored_generation"]
+                        and isinstance(attempt.get("retiring"), list)
+                        and bool(attempt["retiring"])
+                        and all(isinstance(entry, dict)
+                                and set(entry) == {
+                                    "game", "adapter", "runtime_id",
+                                    "generation", "lease_id",
+                                }
+                                and entry["game"] == "sorengame"
+                                and entry["adapter"] == "soren"
+                                and type(entry["generation"]) is int
+                                and all(isinstance(entry.get(key), str)
+                                        and bool(entry[key])
+                                        for key in ("runtime_id", "lease_id"))
+                                for entry in attempt["retiring"])
+                    )
+                    if attempt is not None and not attempt_valid:
+                        return CornerResult("failed", game=GAME_NAME,
+                                            detail="cleanup attempt ownership unproven")
+
                     record = state.get("restore_recovery")
                     if status == "interrupted":
                         # The prior operation committed a terminal corner before
@@ -476,6 +514,9 @@ class NethackCornerManager(RetroCornerManager):
                         return CornerResult("failed", game=GAME_NAME,
                                             detail="canonical rollback source unproven")
                     source_identity = {key: source.get(key) for key in owner_keys}
+                    if attempt_valid and attempt["source"] != source_identity:
+                        return CornerResult("failed", game=GAME_NAME,
+                                            detail="cleanup attempt source differs")
                     if proof_valid and proof["source"] != source_identity:
                         return CornerResult("failed", game=GAME_NAME,
                                             detail="cleaned source identity differs")
@@ -493,9 +534,32 @@ class NethackCornerManager(RetroCornerManager):
                         # retiring source on the first attempt. Otherwise a
                         # stale receipt plus an already-empty retiring list
                         # could fabricate successful cleanup.
-                        if result.get("cleanup_pending") is True and not retiring:
+                        if result.get("cleanup_pending") is True and not retiring and not attempt_valid:
                             return CornerResult("failed", game=GAME_NAME,
                                                 detail="late cleanup evidence missing")
+                        if not attempt_valid and retiring:
+                            state["restore_cleanup_attempt"] = {
+                                "schema_version": 1,
+                                "rotation_request_id": request_id,
+                                "restore_request_id": restore_id,
+                                "original_generation": result["generation"],
+                                "source": source_identity,
+                                "retiring": [
+                                    {key: rt.get(key) for key in
+                                     ("game", "adapter", "runtime_id", "generation", "lease_id")}
+                                    for rt in retiring
+                                ],
+                            }
+                            self._write_state(state)
+                        if attempt_valid and retiring:
+                            tracked = [
+                                {key: rt.get(key) for key in
+                                 ("game", "adapter", "runtime_id", "generation", "lease_id")}
+                                for rt in retiring
+                            ]
+                            if tracked != attempt["retiring"]:
+                                return CornerResult("failed", game=GAME_NAME,
+                                                    detail="retiring ownership changed")
                         recovered = self.coordinator.recover(
                             timeout_s=120.0, expected_snapshot=canonical,
                         )
@@ -506,11 +570,13 @@ class NethackCornerManager(RetroCornerManager):
                         verified, missing = self.store.canonical.load()
                         keys = ("game", "adapter", "runtime_id", "generation", "lease_id")
                         after = verified.get("active")
-                        if (missing or not self._restore_canonical_clean(verified)
+                        if (missing or not self._restore_canonical_clean(
+                                verified, late_cleanup_proved=True,
+                            )
                                 or not isinstance(after, dict)
                                 or any(after.get(key) != source.get(key) for key in keys)
                                 or self._restore_replay_source_proved(
-                                    verified, original
+                                    verified, original, late_cleanup_proved=True,
                                 ) is None):
                             return CornerResult("failed", game=GAME_NAME,
                                                 detail="restore source changed or cleanup unproven")
