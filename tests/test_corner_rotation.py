@@ -1504,6 +1504,30 @@ def test_recover_never_launches_while_the_pending_corner_is_still_running(setup)
     assert len(executor.calls) == calls
 
 
+def test_recover_refusal_preserves_original_reservation_and_history(setup, monkeypatch):
+    _, clock, _, executor, make = setup
+    manager = make()
+    _latch(manager, executor, clock)
+    before = state(manager)
+    calls = len(executor.calls)
+
+    def mutate_then_refuse(ledger, reservation, now, *, manual):
+        ledger["pending"] = None
+        ledger["history"].append(dict(corner="foreign", at=now))
+        ledger["last_slot_at"] = now
+        raise RotationError("synthetic refusal", kind="execution-unverified")
+
+    monkeypatch.setattr(manager, "_resolve_reservation", mutate_then_refuse)
+    with pytest.raises(RotationError):
+        manager.recover()
+    refused = state(manager)
+    for key in ("pending", "history", "last_slot_at", "last_seen_at", "slot"):
+        assert refused[key] == before[key]
+    assert refused["status"] == "recovery_required"
+    assert refused["error_kind"] == before["error_kind"]
+    assert len(executor.calls) == calls
+
+
 def test_recover_waits_while_another_corner_holds_the_program_slot(setup):
     _, clock, _, executor, make = setup
     manager = make()

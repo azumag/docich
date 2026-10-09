@@ -1,0 +1,427 @@
+"""PR #1976: delayed Soren retirement is bound to an immutable commit.
+
+All broker/controller/process observations are fakes. No game, VM, tmux,
+service, or external control command is started by these tests.
+"""
+from __future__ import annotations
+
+import copy
+import json
+import time
+import uuid
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+
+from docich import game_switch
+from docich.adapters.base import AdapterError
+from docich.adapters.soren import SorenCoordinatorAdapter
+from test_adapter_stop_resume_safety import broker, retirement
+from test_coordinator import FakeAdapterFactory, _runtime_dict
+
+KEYS = ("game", "adapter", "runtime_id", "generation", "lease_id")
+R = "11111111-1111-4111-8111-111111111976"
+R2 = "22222222-2222-4222-8222-222222221976"
+
+
+class RetirementHarness:
+    """Real coordinator, durable store and Soren adapter; fake game processes."""
+
+    def __init__(self, root):
+        self.root = root
+        self.broker_path = root / "fake-broker.json"
+        self.defer = True
+        self.calls = []
+        self.created = []
+        self.reconstruct()
+
+    def reconstruct(self):
+        self.store = game_switch.GameSwitchStore(self.root / "run")
+        self.factory = FakeAdapterFactory({
+            "sorengame": {"name": "soren"}, "nethack": {}, "robots": {},
+        })
+        state, _ = self.store.canonical.load()
+        active = state.get("active")
+        if active:
+            adapter = self.factory(game_switch.RuntimeSpec.from_runtime(self.store.state_dir, active))
+            adapter.runtime.materialized = adapter.runtime.alive = adapter.runtime.agent_started = True
+        self.coordinator = game_switch.GameSwitchCoordinator(
+            self.store, self.make, quiesce_verify_timeout_s=0.1, poll_interval_s=0.001,
+        )
+
+    def make(self, spec):
+        state, _ = self.store.canonical.load()
+        retiring = any(rt["runtime_id"] == spec.runtime_id for rt in state["retiring"])
+        if spec.game == "sorengame" and retiring:
+            adapter = SorenCoordinatorAdapter(
+                SimpleNamespace(state_dir=self.store.state_dir),
+                SimpleNamespace(raw={"soren": {"root": str(self.root)}},
+                                lifecycle=SimpleNamespace(boundary_timeout_s=5)), spec,
+            )
+            self.created.append(adapter)
+            adapter._retired_singleton_is_superseded = Mock(return_value=False)
+            adapter._status = lambda *_: json.loads(self.broker_path.read_text())
+            adapter.request_round_boundary = Mock(side_effect=AssertionError("must reuse R"))
+            adapter.stop_agent = Mock()
+            adapter.alive = Mock(return_value=False)
+            adapter._wait_status = Mock(return_value="stopped")
+            def run(argv, *_args, **_kwargs):
+                assert argv[:2] == [str(adapter.control), "stop-after-boundary"]
+                self.calls.append(argv[-1])
+                if self.defer:
+                    raise AdapterError("synthetic delayed cleanup")
+                return 0, {}
+            adapter._run = run
+            return adapter
+        adapter = self.factory(spec)
+        if spec.game == "sorengame":
+            def boundary(request_id, *_):
+                self.broker_path.write_text(json.dumps(broker(adapter, request_id, "stopped")))
+            adapter.request_round_boundary = boundary
+        return adapter
+
+    def commit_source(self):
+        assert self.coordinator.start("sorengame").status == "succeeded"
+        source = copy.deepcopy(self.store.canonical.load()[0]["active"])
+        result = self.coordinator.switch("nethack", request_id=R)
+        assert result.status == "succeeded" and result.cleanup_pending
+        state, _ = self.store.canonical.load()
+        assert state["retiring"][0]["retirement"]["source_runtime"] == {k: source[k] for k in KEYS}
+        assert state["retiring"][0]["retirement"] == self.store.receipts.load(R)["result"]
+        return copy.deepcopy(state["retiring"][0]), copy.deepcopy(self.store.receipts.load(R))
+
+    def lose_active(self):
+        active = self.store.canonical.load()[0]["active"]
+        self.factory.adapter(active["game"], active["generation"]).runtime.alive = False
+        result = self.coordinator.recover()
+        assert result.status == "failed" and result.cleanup_pending
+        assert self.store.canonical.load()[0]["active"] is None
+
+
+@pytest.mark.parametrize("later_switch", [False, True])
+@pytest.mark.parametrize("loss", ["none", "recover_missing", "stop"])
+@pytest.mark.parametrize("reconstruct", [False, True])
+def test_commit_deferred_cleanup_later_operation_loss_and_reconstruction(tmp_path, later_switch, loss, reconstruct):
+    h = RetirementHarness(tmp_path)
+    source, receipt = h.commit_source()
+    if later_switch:
+        later = h.coordinator.switch("robots", request_id=R2)
+        assert later.status == "succeeded" and later.cleanup_pending
+        assert h.store.canonical.load()[0]["last_result"]["request_id"] == R2
+    if loss == "recover_missing":
+        h.lose_active()
+    elif loss == "stop":
+        assert h.coordinator.stop().status == "succeeded"
+        assert h.store.canonical.load()[0]["phase"] == "idle"
+    assert h.store.canonical.load()[0]["retiring"] == [source]
+    if reconstruct:
+        h.reconstruct()  # no cached adapter or request ID survives
+    h.defer = False
+    result = h.coordinator.recover()
+    assert result.status == "succeeded" and not result.cleanup_pending
+    assert h.store.canonical.load()[0]["retiring"] == []
+    assert h.store.receipts.load(R) == receipt  # immutable even after recover
+    assert h.calls and set(h.calls) == {R}
+    assert all(not a.request_round_boundary.called for a in h.created)
+    calls = list(h.calls)
+    assert h.coordinator.recover().status == "succeeded"
+    assert h.calls == calls  # no double stop after retirement is removed
+
+
+class CrashAfterCommit(BaseException):
+    pass
+
+
+def test_commit_receipt_crash_then_active_loss_recovers_without_last_result(tmp_path, monkeypatch):
+    h = RetirementHarness(tmp_path)
+    assert h.coordinator.start("sorengame").status == "succeeded"
+    finish = game_switch.GameSwitchTransaction.finish_request
+    def crash(tx, request_id, status, result):
+        if request_id == R:
+            raise CrashAfterCommit()
+        return finish(tx, request_id, status, result)
+    with monkeypatch.context() as patch:
+        patch.setattr(game_switch.GameSwitchTransaction, "finish_request", crash)
+        with pytest.raises(CrashAfterCommit):
+            h.coordinator.switch("nethack", request_id=R)
+    state, _ = h.store.canonical.load()
+    proof = copy.deepcopy(state["retiring"][0]["retirement"])
+    assert state["phase"] == "ready" and h.store.receipts.load(R)["status"] == "accepted"
+    h.lose_active()  # overwrites last_result before dangling-receipt reconciliation
+    assert h.store.canonical.load()[0]["last_result"]["operation"] == "recover"
+    h.reconstruct()
+    h.defer = False
+    recovered = h.coordinator.recover()
+    assert recovered.status == "succeeded" and not recovered.cleanup_pending
+    assert h.store.receipts.load(R)["status"] == "succeeded"
+    assert h.store.receipts.load(R)["result"] == proof
+    assert h.calls == [R]
+
+
+def test_pending_source_receipt_is_pinned_until_retirement_finishes(tmp_path):
+    h = RetirementHarness(tmp_path)
+    h.commit_source()
+    h.coordinator.switch("robots", request_id=R2)
+    path = h.store.receipts._path(R)
+    receipt = json.loads(path.read_text())
+    receipt["updated_at"] = "2000-01-01T00:00:00Z"
+    path.write_text(json.dumps(receipt))
+    with h.store.transaction():
+        assert h.store.receipts.prune_terminal(max_receipts=1) == 2
+    assert h.store.receipts.load(R) == receipt
+    h.reconstruct()
+    h.defer = False
+    assert not h.coordinator.recover().cleanup_pending
+    h.coordinator.stop()
+    with h.store.transaction():
+        assert h.store.receipts.prune_terminal(max_receipts=1) == 1
+    assert h.store.receipts.load(R) is None
+
+
+@pytest.mark.parametrize("change", [
+    "missing_marker", "null_marker", "missing_receipt", "accepted_receipt", "failed_receipt",
+    "source_runtime_id", "source_generation", "source_lease_id", "source_adapter", "source_game",
+    "source_missing_lease", "source_bool", "source_float", "destination_bool", "destination_float",
+    "result_bool", "result_float", "receipt_source_bool", "receipt_source_float",
+    "receipt_destination_float", "receipt_result_float", "receipt_source_missing",
+    "receipt_target", "receipt_request", "receipt_result_request", "receipt_generation",
+    "destination_lease", "destination_runtime", "destination_game", "from_game", "operation",
+    "missing_marker_empty_broker", "other_active_soren", "other_retiring_soren",
+])
+def test_unproven_commit_has_no_control_side_effect(tmp_path, change):
+    adapter, store, payload, request_id = retirement(tmp_path)
+    state, _ = store.canonical.load()
+    runtime = state["retiring"][0]
+    proof = runtime["retirement"]
+    path = store.receipts._path(request_id)
+    receipt = json.loads(path.read_text())
+    if change.startswith("source_"):
+        field = change.removeprefix("source_")
+        if field == "missing_lease":
+            proof["source_runtime"].pop("lease_id")
+        elif field in {"bool", "float"}:
+            # Keep both copies equal under Python == to exercise strict types.
+            value = True if field == "bool" else float(proof["source_runtime"]["generation"])
+            proof["source_runtime"]["generation"] = value
+            receipt["result"]["source_runtime"]["generation"] = value
+        else:
+            proof["source_runtime"][field] = "foreign" if field != "generation" else 9
+    elif change in {"missing_marker", "missing_marker_empty_broker"}:
+        runtime.pop("retirement")
+        if change.endswith("empty_broker"):
+            adapter._status.return_value = dict(schema=1, request=None, ack=None, resource=None)
+    elif change == "null_marker":
+        runtime["retirement"] = None
+    elif change == "missing_receipt":
+        path.unlink()
+    elif change in {"accepted_receipt", "failed_receipt"}:
+        receipt["status"] = change.removesuffix("_receipt")
+        if change == "accepted_receipt":
+            receipt["result"] = None
+    elif change in {"destination_bool", "destination_float", "result_bool", "result_float"}:
+        value = True if change.endswith("bool") else float(proof["generation"])
+        dest = "destination" in change
+        target = proof["active_runtime"] if dest else proof
+        saved = receipt["result"]["active_runtime"] if dest else receipt["result"]
+        target["generation"] = saved["generation"] = value
+    elif change.startswith("receipt_source_"):
+        if change.endswith("missing"):
+            receipt["result"].pop("source_runtime")
+        else:
+            receipt["result"]["source_runtime"]["generation"] = (
+                True if change.endswith("bool") else float(proof["source_runtime"]["generation"]))
+    elif change == "receipt_destination_float":
+        receipt["result"]["active_runtime"]["generation"] = float(proof["generation"])
+    elif change == "receipt_result_float":
+        receipt["result"]["generation"] = float(proof["generation"])
+    elif change == "receipt_target":
+        receipt["target"] = "robots"
+    elif change == "receipt_request":
+        receipt["request_id"] = R2
+    elif change == "receipt_result_request":
+        receipt["result"]["request_id"] = R2
+    elif change == "receipt_generation":
+        receipt["generation"] = 7
+    elif change.startswith("destination_"):
+        field = {"lease": "lease_id", "runtime": "runtime_id", "game": "game"}[change.split("_")[1]]
+        proof["active_runtime"][field] = "foreign"
+    elif change in {"from_game", "operation"}:
+        proof[change] = "robots" if change == "from_game" else "recover"
+    elif change == "other_active_soren":
+        state["active"].update(game="sorengame", adapter="soren")
+    elif change == "other_retiring_soren":
+        state["retiring"].append({**_runtime_dict(1, "sorengame"), "adapter": "soren"})
+    else:
+        raise AssertionError(change)
+    store.canonical.save(state)
+    if change != "missing_receipt":
+        path.write_text(json.dumps(receipt))
+    with pytest.raises(AdapterError):
+        adapter.cleanup_runtime(time.monotonic() + 5, None)
+    adapter._run.assert_not_called()
+    adapter.request_round_boundary.assert_not_called()
+
+
+def test_failed_candidate_can_still_mint_C_after_pre_broker_cleanup_failure(tmp_path):
+    from test_nethack_terminal_lifecycle import failed_soren_candidate
+    adapter, store = failed_soren_candidate(tmp_path)
+    state, _ = store.canonical.load()
+    source = state["candidate"]
+    state.update(candidate=None, previous=None,
+                 retiring=[{**source, "cleanup_role": "failed_candidate"}])
+    store.canonical.save(state)
+    adapter._status = Mock(return_value=dict(schema=1, request=None, ack=None, resource=None))
+    adapter.request_round_boundary = Mock()
+    adapter._run = Mock(return_value=(0, {}))
+    adapter._wait_status = Mock()
+    adapter.cleanup_runtime(time.monotonic() + 5, None)
+    assert adapter.request_round_boundary.call_count == 1
+    assert adapter._run.call_args.args[0][-1] == adapter.request_round_boundary.call_args.args[0]
+
+
+def test_original_p1_reproducer_without_assuming_new_schema(tmp_path):
+    """This reaches the old last_result bug without first asserting new fields."""
+    h = RetirementHarness(tmp_path)
+    assert h.coordinator.start("sorengame").status == "succeeded"
+    first = h.coordinator.switch("nethack", request_id=R)
+    assert first.status == "succeeded" and first.cleanup_pending
+    assert h.coordinator.switch("robots", request_id=R2).status == "succeeded"
+    h.reconstruct()
+    h.defer = False
+    recovered = h.coordinator.recover()
+    assert not recovered.cleanup_pending
+    assert h.store.canonical.load()[0]["retiring"] == []
+    assert set(h.calls) == {R}
+
+
+@pytest.mark.parametrize("change", ["lease_null", "unsupported_phase", "missing_marker_with_C"])
+def test_no_fallback_from_unproved_retirement_to_broker_authority(tmp_path, change):
+    from dataclasses import replace
+    from test_adapter_stop_resume_safety import cleanup_id
+    adapter, store, payload, request_id = retirement(tmp_path)
+    state, _ = store.canonical.load()
+    if change == "lease_null":
+        state["retiring"][0]["lease_id"] = None
+        adapter.spec = replace(adapter.spec, lease_id=None)
+    elif change == "unsupported_phase":
+        state["phase"] = "recovery_required"
+    else:
+        state["retiring"][0].pop("retirement")
+        adapter._status.return_value = broker(adapter, cleanup_id(adapter), "stopped")
+    store.canonical.save(state)
+    with pytest.raises(AdapterError):
+        adapter.cleanup_runtime(time.monotonic() + 5, None)
+    adapter._run.assert_not_called()
+    adapter.request_round_boundary.assert_not_called()
+
+
+def test_new_python_process_recovers_only_from_durable_source_evidence(tmp_path):
+    import subprocess
+    import sys
+    h = RetirementHarness(tmp_path)
+    source, original = h.commit_source()
+    assert h.coordinator.switch("robots", request_id=R2).status == "succeeded"
+    h.lose_active()
+    program = r'''
+import json, sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+sys.path.insert(0, sys.argv[1])
+from docich.game_switch import GameSwitchStore, GameSwitchCoordinator, RuntimeSpec
+from docich.adapters.soren import SorenCoordinatorAdapter
+root = Path(sys.argv[2])
+store = GameSwitchStore(root / "run")
+calls = []
+def factory(spec):
+    assert spec.game == "sorengame" and spec.adapter == "soren"
+    adapter = SorenCoordinatorAdapter(
+        SimpleNamespace(state_dir=store.state_dir),
+        SimpleNamespace(raw={"soren": {"root": str(root)}},
+                        lifecycle=SimpleNamespace(boundary_timeout_s=5)), spec)
+    adapter._retired_singleton_is_superseded = Mock(return_value=False)
+    adapter._status = lambda *_: json.loads((root / "fake-broker.json").read_text())
+    adapter.request_round_boundary = Mock(side_effect=AssertionError("cannot create C"))
+    adapter.stop_agent = Mock()
+    adapter.alive = Mock(return_value=False)
+    adapter._wait_status = Mock(return_value="stopped")
+    def control(argv, *args, **kwargs):
+        assert argv[:2] == [str(adapter.control), "stop-after-boundary"]
+        calls.append(argv[-1])
+        return 0, {}
+    adapter._run = control
+    return adapter
+result = GameSwitchCoordinator(store, factory).recover()
+assert result.status == "succeeded" and not result.cleanup_pending
+assert store.canonical.load()[0]["retiring"] == []
+print(json.dumps(calls))
+'''
+    completed = subprocess.run(
+        [sys.executable, "-c", program, str(Path(__file__).resolve().parents[1] / "src"), str(tmp_path)],
+        capture_output=True, text=True, check=True, timeout=15,
+    )
+    assert json.loads(completed.stdout) == [R]
+    assert h.store.receipts.load(R) == original
+    assert h.store.canonical.load()[0]["retiring"] == []
+
+
+def test_unproved_accepted_receipt_is_neither_finished_nor_used_for_stop(tmp_path):
+    h = RetirementHarness(tmp_path)
+    h.commit_source()
+    path = h.store.receipts._path(R)
+    receipt = json.loads(path.read_text())
+    receipt.update(status="accepted", result=None)
+    path.write_text(json.dumps(receipt))
+    state, _ = h.store.canonical.load()
+    state["retiring"][0]["retirement"]["source_runtime"]["lease_id"] = R2
+    h.store.canonical.save(state)
+    calls = list(h.calls)
+    h.defer = False
+    assert h.coordinator.recover().cleanup_pending
+    assert h.calls == calls
+    assert h.store.receipts.load(R) == receipt
+    assert h.store.canonical.load()[0]["retiring"]
+
+
+@pytest.mark.parametrize("schema", [True, 1.0, 0, 2], ids=["bool", "float", "zero", "future"])
+@pytest.mark.parametrize("status", ["succeeded", "accepted"])
+@pytest.mark.parametrize("entry", ["recover", "adapter"])
+def test_invalid_receipt_schema_never_authorizes_retirement(tmp_path, schema, status, entry):
+    h = RetirementHarness(tmp_path)
+    source, receipt = h.commit_source()
+    receipt["schema_version"] = schema
+    receipt["status"] = status
+    if status == "accepted":
+        receipt["result"] = None
+    path = h.store.receipts._path(R)
+    path.write_text(json.dumps(receipt))
+    original_bytes = path.read_bytes()
+    calls = list(h.calls)
+    h.defer = False
+    if entry == "recover":
+        result = h.coordinator.recover()
+        assert result.cleanup_pending
+    else:
+        spec = game_switch.RuntimeSpec.from_runtime(h.store.state_dir, source)
+        adapter = h.make(spec)
+        with pytest.raises(AdapterError):
+            adapter.cleanup_runtime(time.monotonic() + 5, None)
+        adapter.request_round_boundary.assert_not_called()
+    assert h.calls == calls  # no additional controller invocation
+    assert h.store.canonical.load()[0]["retiring"] == [source]
+    # In particular an accepted receipt is not normalized or terminalized.
+    assert path.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize("schema", [True, 1.0], ids=["bool", "float"])
+@pytest.mark.parametrize("terminal", [True, False])
+def test_retirement_helper_rejects_schema_type_without_store_loading(tmp_path, schema, terminal):
+    h = RetirementHarness(tmp_path)
+    source, receipt = h.commit_source()
+    receipt["schema_version"] = schema
+    if not terminal:
+        receipt.update(status="accepted", result=None)
+    with pytest.raises(game_switch.StateCorruptError):
+        game_switch.committed_retirement_result(source, receipt, require_terminal=terminal)

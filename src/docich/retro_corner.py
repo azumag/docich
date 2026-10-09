@@ -2624,7 +2624,9 @@ class RetroCornerManager:
         return identity
 
     @classmethod
-    def _restore_canonical_clean(cls, canonical: dict[str, object]) -> bool:
+    def _restore_canonical_clean(
+        cls, canonical: dict[str, object], *, late_cleanup_proved: bool = False
+    ) -> bool:
         """A commit receipt alone precedes finalize; check live cleanup too."""
 
         last_result = canonical.get("last_result")
@@ -2637,11 +2639,12 @@ class RetroCornerManager:
             and canonical.get("retiring") == []
             and (last_result is None or isinstance(last_result, dict))
             and (last_result is None
-                 or cls._cleanup_proved(last_result.get("cleanup_pending")))
+                 or cls._cleanup_proved(last_result.get("cleanup_pending"))
+                 or late_cleanup_proved)
         )
 
     def _restore_failed_receipt(
-        self, state: dict[str, object]
+        self, state: dict[str, object], *, late_cleanup_proved: bool = False
     ) -> tuple[dict[str, object], dict[str, object], str, str] | None:
         """Read one original post-completion restore failure, fail closed."""
 
@@ -2683,7 +2686,8 @@ class RetroCornerManager:
             or result.get("to_game") != previous
             or type(result.get("generation")) is not int
             or result.get("generation") != receipt["generation"]
-            or not self._cleanup_proved(result.get("cleanup_pending"))
+            or (not late_cleanup_proved
+                and not self._cleanup_proved(result.get("cleanup_pending")))
         ):
             return None
         state_error = state.get("last_error_code")
@@ -2723,6 +2727,7 @@ class RetroCornerManager:
     def _restore_replay_source_proved(
         cls, canonical: dict[str, object], receipt: dict[str, object],
         expected_source: dict[str, object] | None = None,
+        *, late_cleanup_proved: bool = False,
     ) -> dict[str, object] | None:
         """Bind Case B to the failed request's actual retained/rollback owner.
 
@@ -2734,7 +2739,7 @@ class RetroCornerManager:
 
         result = receipt.get("result")
         active = cls._restore_source_identity(canonical.get("active"))
-        if (not cls._restore_canonical_clean(canonical)
+        if (not cls._restore_canonical_clean(canonical, late_cleanup_proved=late_cleanup_proved)
                 or not isinstance(result, dict) or active is None
                 or active["game"] != result.get("from_game")):
             return None
@@ -2843,13 +2848,19 @@ class RetroCornerManager:
         )
 
     def _recover_restore_failed(
-        self, state: dict[str, object]
+        self, state: dict[str, object], *, late_cleanup_proved: bool = False,
+        one_shot_replay: bool = False,
     ) -> CornerResult | None:
         """Operator-only proof, durable preparation, and fenced replay."""
 
         try:
             with self.store.lock(exclusive=False):
-                evidence = self._restore_failed_receipt(state)
+                # Only a dedicated owner-fenced caller may supply a verified
+                # later cleanup proof. Existing retro and manual paths continue
+                # requiring the original terminal receipt to be clean.
+                evidence = self._restore_failed_receipt(
+                    state, late_cleanup_proved=late_cleanup_proved,
+                )
                 if evidence is None:
                     if self._restore_failure_candidate(state):
                         return CornerResult("noop", game=state.get("game"),
@@ -2868,6 +2879,18 @@ class RetroCornerManager:
                                         detail="restore-recovery-record-unproven")
                 replay = (self._restore_recovery_receipt(record, game=game, previous=previous)
                           if record is not None else None)
+                # The automatic NetHack recovery is an exact one-replay owner
+                # operation. Its outer admission may read queued R1, then
+                # another coordinator writer may terminalize R1 while we wait
+                # for this store lock. Detect terminal failure here too, in
+                # the same lock interval as the base's replacement decision:
+                # never allocate an unrelated R2 after a renewed source lease.
+                if (one_shot_replay and isinstance(replay, dict)
+                        and replay.get("status") in {"failed", "rolled_back"}):
+                    return CornerResult(
+                        "failed", game=game, previous_game=previous,
+                        detail="bounded restore replay already terminal failed",
+                    )
                 pending = record is not None and (
                     replay is None or replay.get("status") in {
                         "allocating", "accepted", "queued"
@@ -2887,11 +2910,15 @@ class RetroCornerManager:
                     and type(last.get("generation")) is int
                     and last["generation"] == replay.get("generation")
                 )
-                if not owns_driver and not owns_commit and not self._restore_canonical_clean(canonical):
+                if not owns_driver and not owns_commit and not self._restore_canonical_clean(
+                    canonical, late_cleanup_proved=late_cleanup_proved,
+                ):
                     return CornerResult("queued", game=game, previous_game=previous,
                                         detail="canonicalと切替cleanupの完了を待っています")
                 if pending:
-                    if replay is None and record["expected_source"] != self._restore_replay_source_proved(canonical, original):
+                    if replay is None and record["expected_source"] != self._restore_replay_source_proved(
+                        canonical, original, late_cleanup_proved=late_cleanup_proved,
+                    ):
                         return CornerResult("noop", game=game, previous_game=previous,
                                             detail="restore-prepared-source-unproven")
                     prepared = record
@@ -2916,6 +2943,7 @@ class RetroCornerManager:
                     source = self._restore_replay_source_proved(
                         canonical, proof,
                         expected_source=(record["expected_source"] if record is not None else None),
+                        late_cleanup_proved=late_cleanup_proved,
                     )
                     if active_game != game or source is None:
                         return CornerResult("noop", game=game, previous_game=previous,
