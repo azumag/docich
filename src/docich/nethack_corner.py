@@ -311,6 +311,310 @@ class NethackCornerManager(RetroCornerManager):
                 latest["finish_reason"] = reason
                 return self._finish_locked(latest, now)
 
+    def recover_failed_rotation(self) -> CornerResult:
+        """Settle the one proven failed automatic NetHack restore.
+
+        Admission/cleanup/replay are serialized by the rotation and NetHack
+        owner locks. Every resumed invocation must reuse the durable original
+        restore request, source identity, and replay deadline. In particular,
+        an immutable rolled-back receipt that reports incomplete cleanup is
+        never altered: a separately persisted *later* cleanup proof is needed
+        before existing replay logic may re-evaluate that receipt.
+        """
+        from .adapters.nethack import _is_dead_disclosure_prompt
+        from .corner_rotation import CornerRotationManager, timestamp
+
+        rotation = CornerRotationManager(self.g)
+        with rotation.locked() as rotation_owned:
+            if not rotation_owned:
+                return CornerResult("queued", game=GAME_NAME, detail="rotation lock busy")
+            with self._tick_guard() as single:
+                if not single:
+                    return CornerResult("queued", game=GAME_NAME, detail="NetHack tick is active")
+                with self._locked():
+                    state = self._read_state()
+                    request_id = state.get("rotation_request_id")
+                    restore_id = state.get("switch_request_id")
+                    status = state.get("status")
+                    if (status not in {"failed", "interrupted"}
+                            or state.get("game") != GAME_NAME
+                            or state.get("previous_game") != "sorengame"
+                            or not isinstance(request_id, str) or not request_id
+                            or not isinstance(restore_id, str) or not restore_id
+                            or request_id == restore_id
+                            or not state.get("completed_at")):
+                        return CornerResult("failed", game=GAME_NAME,
+                                            detail="not a proven failed automatic restore")
+                    ledger = rotation.load(timestamp(rotation.clock()))
+                    pending = ledger.get("pending")
+                    if (ledger.get("status") != "recovery_required"
+                            or ledger.get("manual_pending") is not None
+                            or not isinstance(pending, dict)
+                            or pending.get("corner") != GAME_NAME
+                            or pending.get("request_id") != request_id):
+                        return CornerResult("failed", game=GAME_NAME,
+                                            detail="rotation reservation differs")
+
+                    original = self.store.receipts.load(restore_id)
+                    result = original.get("result") if isinstance(original, dict) else None
+                    if (not isinstance(result, dict)
+                            or original.get("request_id") != restore_id
+                            or original.get("operation") != "switch"
+                            or original.get("target") != "sorengame"
+                            or original.get("status") != "rolled_back"
+                            or result.get("request_id") != restore_id
+                            or result.get("operation") != "switch"
+                            or result.get("status") != "rolled_back"
+                            or result.get("from_game") != GAME_NAME
+                            or result.get("to_game") != "sorengame"
+                            or type(result.get("generation")) is not int
+                            or result.get("generation") != original.get("generation")
+                            or type(result.get("restored_generation")) is not int
+                            or result.get("cleanup_pending") not in (None, False, True)):
+                        return CornerResult("failed", game=GAME_NAME,
+                                            detail="original restore receipt unproven")
+                    canonical, missing = self.store.canonical.load()
+                    if missing:
+                        return CornerResult("failed", game=GAME_NAME,
+                                            detail="canonical unavailable")
+
+                    owner_keys = ("game", "runtime_id", "generation", "lease_id")
+                    proof = state.get("restore_cleanup")
+                    proof_valid = bool(
+                        isinstance(proof, dict)
+                        and set(proof) == {
+                            "schema_version", "rotation_request_id",
+                            "restore_request_id", "source",
+                            "original_generation",
+                        }
+                        and proof.get("schema_version") == 1
+                        and proof.get("rotation_request_id") == request_id
+                        and proof.get("restore_request_id") == restore_id
+                        and proof.get("original_generation") == result["generation"]
+                        and isinstance(proof.get("source"), dict)
+                        and set(proof["source"]) == set(owner_keys)
+                        and proof["source"].get("game") == GAME_NAME
+                        and proof["source"].get("generation") == result["restored_generation"]
+                        and all(isinstance(proof["source"].get(key), str)
+                                and bool(proof["source"].get(key))
+                                for key in ("runtime_id", "lease_id"))
+                    )
+                    if proof is not None and not proof_valid:
+                        return CornerResult("failed", game=GAME_NAME,
+                                            detail="later cleanup evidence differs")
+
+                    # Persist an intent before touching retiring Soren so a
+                    # crash after canonical cleanup but before saving the
+                    # result cannot erase the last correlated owner identity.
+                    attempt = state.get("restore_cleanup_attempt")
+                    attempt_valid = bool(
+                        isinstance(attempt, dict)
+                        and set(attempt) == {
+                            "schema_version", "rotation_request_id",
+                            "restore_request_id", "original_generation",
+                            "source", "retiring",
+                        }
+                        and attempt.get("schema_version") == 1
+                        and attempt.get("rotation_request_id") == request_id
+                        and attempt.get("restore_request_id") == restore_id
+                        and attempt.get("original_generation") == result["generation"]
+                        and isinstance(attempt.get("source"), dict)
+                        and set(attempt["source"]) == set(owner_keys)
+                        and attempt["source"].get("game") == GAME_NAME
+                        and attempt["source"].get("generation") == result["restored_generation"]
+                        and isinstance(attempt.get("retiring"), list)
+                        and bool(attempt["retiring"])
+                        and all(isinstance(entry, dict)
+                                and set(entry) == {
+                                    "game", "adapter", "runtime_id",
+                                    "generation", "lease_id",
+                                }
+                                and entry["game"] == "sorengame"
+                                and entry["adapter"] == "soren"
+                                and type(entry["generation"]) is int
+                                and all(isinstance(entry.get(key), str)
+                                        and bool(entry[key])
+                                        for key in ("runtime_id", "lease_id"))
+                                for entry in attempt["retiring"])
+                    )
+                    if attempt is not None and not attempt_valid:
+                        return CornerResult("failed", game=GAME_NAME,
+                                            detail="cleanup attempt ownership unproven")
+
+                    record = state.get("restore_recovery")
+                    if status == "interrupted":
+                        # The prior operation committed a terminal corner before
+                        # rotation latched its completion. Verify the same
+                        # replay's landing; do not touch a game or mint an ID.
+                        if not proof_valid or record is None:
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="terminal cleanup evidence missing")
+                        validated = self._restore_recovery_record(
+                            state, game=GAME_NAME, previous="sorengame"
+                        )
+                        if (validated is None
+                                or validated["expected_source"] != proof["source"]):
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="terminal replay record unproven")
+                        try:
+                            replay = self._restore_recovery_receipt(
+                                validated, game=GAME_NAME, previous="sorengame"
+                            )
+                        except Exception:
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="terminal replay receipt unproven")
+                        if (not isinstance(replay, dict)
+                                or replay.get("status") != "succeeded"
+                                or not self._restore_landed_proved(canonical, replay)):
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="terminal restore landing unproven")
+                        return CornerResult("succeeded", game=GAME_NAME,
+                                            previous_game="sorengame",
+                                            detail="same replay already committed")
+
+                    if record is not None:
+                        # A previous invocation persisted a bounded replay.
+                        # It may now own a draining coordinator or have already
+                        # committed Soren. The base recovery verifies its exact
+                        # payload, receipt, and phase; the source must equal the
+                        # cleanup proof of *this* rotation, or it is foreign.
+                        if not proof_valid:
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="pending replay cleanup unproven")
+                        validated = self._restore_recovery_record(
+                            state, game=GAME_NAME, previous="sorengame"
+                        )
+                        if (validated is None
+                                or validated["expected_source"] != proof["source"]):
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="pending replay record unproven")
+                        try:
+                            replay = self._restore_recovery_receipt(
+                                validated, game=GAME_NAME, previous="sorengame"
+                            )
+                        except Exception:
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="pending replay receipt unproven")
+                        # A terminal failed/rolled-back replay may have renewed
+                        # the CLI source's lease. The generic retro operator
+                        # can then mint a replacement R2, but this fixed
+                        # NetHack owner operation is authorized only for the
+                        # original S0 -> R1 transition. Do not allocate R2,
+                        # silently accept an updated lease, or launch a new
+                        # expedition. Require separate owner investigation.
+                        if (isinstance(replay, dict)
+                                and replay.get("status") in {"failed", "rolled_back"}):
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="terminal replay requires new owner review")
+                        return self._recover_restore_failed(
+                            state, late_cleanup_proved=True, one_shot_replay=True,
+                        ) or CornerResult(
+                            "failed", game=GAME_NAME,
+                            detail="pending replay receipt unproven",
+                        )
+
+                    source = canonical.get("active")
+                    retiring = canonical.get("retiring")
+                    if (canonical.get("phase") != "ready"
+                            or canonical.get("request_id") is not None
+                            or canonical.get("candidate") is not None
+                            or canonical.get("previous") is not None
+                            or not isinstance(source, dict)
+                            or source.get("game") != GAME_NAME
+                            or source.get("adapter") != "cli"
+                            or not isinstance(retiring, list)
+                            or any(not isinstance(rt, dict)
+                                   or rt.get("game") != "sorengame"
+                                   or rt.get("adapter") != "soren"
+                                   for rt in retiring)
+                            or canonical.get("last_result") != result
+                            or result["restored_generation"] != source.get("generation")):
+                        return CornerResult("failed", game=GAME_NAME,
+                                            detail="canonical rollback source unproven")
+                    source_identity = {key: source.get(key) for key in owner_keys}
+                    if attempt_valid and attempt["source"] != source_identity:
+                        return CornerResult("failed", game=GAME_NAME,
+                                            detail="cleanup attempt source differs")
+                    if proof_valid and proof["source"] != source_identity:
+                        return CornerResult("failed", game=GAME_NAME,
+                                            detail="cleaned source identity differs")
+                    if not _is_dead_disclosure_prompt(
+                        self._runtime_screen() or ""
+                    ):
+                        # The generic analytics marker 'you die' can remain
+                        # after life-saving. An HP-positive or unknown TTY is
+                        # never authority to end a game. The adapter's
+                        # exact HP-zero disclosure is the only entry gate.
+                        return CornerResult("failed", game=GAME_NAME,
+                                            detail="NetHack dead disclosure unproven")
+                    if not proof_valid:
+                        # A pending-cleanup original receipt requires a positive
+                        # retiring source on the first attempt. Otherwise a
+                        # stale receipt plus an already-empty retiring list
+                        # could fabricate successful cleanup.
+                        if result.get("cleanup_pending") is True and not retiring and not attempt_valid:
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="late cleanup evidence missing")
+                        if not attempt_valid and retiring:
+                            state["restore_cleanup_attempt"] = {
+                                "schema_version": 1,
+                                "rotation_request_id": request_id,
+                                "restore_request_id": restore_id,
+                                "original_generation": result["generation"],
+                                "source": source_identity,
+                                "retiring": [
+                                    {key: rt.get(key) for key in
+                                     ("game", "adapter", "runtime_id", "generation", "lease_id")}
+                                    for rt in retiring
+                                ],
+                            }
+                            self._write_state(state)
+                        if attempt_valid and retiring:
+                            tracked = [
+                                {key: rt.get(key) for key in
+                                 ("game", "adapter", "runtime_id", "generation", "lease_id")}
+                                for rt in retiring
+                            ]
+                            if tracked != attempt["retiring"]:
+                                return CornerResult("failed", game=GAME_NAME,
+                                                    detail="retiring ownership changed")
+                        recovered = self.coordinator.recover(
+                            timeout_s=120.0, expected_snapshot=canonical,
+                        )
+                        if (getattr(recovered, "status", None) != "succeeded"
+                                or getattr(recovered, "cleanup_pending", True) is not False):
+                            return CornerResult("queued", game=GAME_NAME,
+                                                detail="retiring resource cleanup pending")
+                        verified, missing = self.store.canonical.load()
+                        keys = ("game", "adapter", "runtime_id", "generation", "lease_id")
+                        after = verified.get("active")
+                        if (missing or not self._restore_canonical_clean(
+                                verified, late_cleanup_proved=True,
+                            )
+                                or not isinstance(after, dict)
+                                or any(after.get(key) != source.get(key) for key in keys)
+                                or self._restore_replay_source_proved(
+                                    verified, original, late_cleanup_proved=True,
+                                ) is None):
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="restore source changed or cleanup unproven")
+                        state["restore_cleanup"] = {
+                            "schema_version": 1,
+                            "rotation_request_id": request_id,
+                            "restore_request_id": restore_id,
+                            "source": source_identity,
+                            "original_generation": result["generation"],
+                        }
+                        # The original immutable receipt may still indicate
+                        # cleanup_pending. This separate fact is durable
+                        # before preparing any new replay request.
+                        self._write_state(state)
+                    return self._recover_restore_failed(
+                        state, late_cleanup_proved=True, one_shot_replay=True,
+                    ) or CornerResult(
+                        "failed", game=GAME_NAME, detail="restore receipt unproven"
+                    )
+
     def _validate_games(self, names: list[str] | None = None) -> None:
         """Validate the existing CLI runtime without pretending an AI exists yet.
 
@@ -696,6 +1000,7 @@ def _build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
     sub.add_parser("recover")
+    sub.add_parser("recover-failed-rotation")
     return parser
 
 
@@ -730,6 +1035,11 @@ def main(argv: list[str] | None = None) -> int:
                     f"previous={state.get('previous_game')} ends_at={state.get('ends_at')}"
                 )
             return 0
+        if args.command == "recover-failed-rotation":
+            result = manager.recover_failed_rotation()
+            print(json.dumps({"status": result.status, "game": GAME_NAME},
+                             separators=(",", ":")))
+            return 0 if result.status == "succeeded" else 4
         if args.command == "recover":
             result = manager.coordinator.recover()
             print(_recover_json(result))
