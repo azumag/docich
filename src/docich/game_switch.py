@@ -43,6 +43,8 @@ from .naming import (
     validate_game_name,
     validate_runtime_id,
 )
+from .teardown_evidence import TeardownEvidence, bind_recorder
+from .log_redaction import redact_log_detail
 
 
 SCHEMA_VERSION = 2
@@ -133,46 +135,10 @@ def _safe_detail(exc: BaseException) -> str:
     return str(exc).replace("\n", " ")[:240]
 
 
-_AUTH_HEADER_CREDENTIAL = re.compile(
-    r"(?i)\b(?P<header>authorization\s*[:=]\s*)"
-    r"(?:bearer|basic|digest|negotiate)\s+\S+"
-)
-_STANDALONE_AUTH_CREDENTIAL = re.compile(
-    r"(?i)(?<![\w\-])(?:bearer|basic|digest|negotiate)\s+\S+"
-)
-_SECRET_KEY_VALUE = re.compile(
-    r"(?i)\b(?P<key>token|api[_-]?key|password|passwd|pwd|secret|"
-    r"stream[_-]?key|auth|authorization|bearer|session[_-]?key|"
-    r"private[_-]?key|client[_-]?secret)\b(?P<sep>\s*[:=]\s*)"
-    r"(?P<value>\"[^\"]*\"|'[^']*'|\S+)"
-)
-_ARGV_EXPR = re.compile(
-    r"(?i)\b(?:argv|command|cmd|args)\s*[:=]\s*"
-    r"(?:\[[^\]\n]*\]|\([^)\n]*\)|\"[^\"]*\"|'[^']*'|\S+)"
-)
-_URL_WHOLE = re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://[^\s\"']+")
-_LONG_OPAQUE_TOKEN = re.compile(r"\b(?:[0-9a-f]{32,}|[0-9A-Za-z+/]{24,}={0,2})\b")
-
-
 def _sanitize_log_detail(detail: str | None) -> str | None:
-    """Redact secrets from an event-log detail (design v2 §9).
+    """Redact complete input before enforcing the event log's 240-char limit."""
 
-    The log contract records no URLs, tokens, or argv: command expressions
-    and whole URLs are replaced outright, credential key=value pairs keep
-    only a redacted value, and leftover long opaque tokens are replaced.
-    Hosts are not preserved (a URL is a URL).  Game/window names,
-    generations, request ids and error codes survive.
-    """
-    if not detail:
-        return None
-    text = _safe_detail(detail)
-    text = _AUTH_HEADER_CREDENTIAL.sub(lambda m: f"{m['header']}<redacted>", text)
-    text = _STANDALONE_AUTH_CREDENTIAL.sub("<redacted>", text)
-    text = _ARGV_EXPR.sub("<redacted>", text)
-    text = _URL_WHOLE.sub("<redacted-url>", text)
-    text = _SECRET_KEY_VALUE.sub(lambda m: f"{m['key']}{m['sep']}<redacted>", text)
-    text = _LONG_OPAQUE_TOKEN.sub("<redacted>", text)
-    return text
+    return _safe_detail(redact_log_detail(detail)) if detail else None
 
 
 def _prepare_private_dir(path: Path) -> None:
@@ -1821,6 +1787,10 @@ class GameSwitchCoordinator:
         self.event_log = event_log or EventLog(store.state_dir)
         self.mirror_writer = mirror_writer
         self.mirror_path = store.state_dir / "current_game"
+        # Evidence from the most recent _teardown_runtime call (Issue #1936).
+        # The retiring loop is serial under the game-switch lock, so one slot
+        # is enough: each teardown overwrites it and is read right after.
+        self.last_teardown_evidence: TeardownEvidence | None = None
 
     def _log_reset(self, request_id: str, operation: str, target: str | None) -> None:
         _log_ctx_var.set(
@@ -4093,8 +4063,18 @@ class GameSwitchCoordinator:
 
         A cleanup that returns without raising is not enough: the runtime
         must be observed dead before the coordinator drops it from tracking.
+
+        The teardown runs inside an evidence recorder (Issue #1936) so the
+        events the caller emits can state *what* was stopped and *how* it was
+        proven gone, instead of reporting a bare success or failure.
         """
+
+        evidence = TeardownEvidence()
         try:
+            # Bind the recorder to the adapter, not a contextvar: the
+            # coordinator runs each step in its own worker thread and a thread
+            # does not inherit the caller's contextvar values.
+            bind_recorder(adapter, evidence)
             self._call_adapter(
                 lambda cancel: adapter.stop_agent(deadline, cancel),
                 deadline,
@@ -4107,9 +4087,21 @@ class GameSwitchCoordinator:
                 self.step_timeouts.cleanup_s,
                 "cleanup",
             )
-            return self._wait_stopped(adapter, deadline)
-        except Exception:
-            return False
+            stopped = self._wait_stopped(adapter, deadline)
+        except Exception as exc:
+            stopped = False
+            evidence.error_code = _failure_code(exc, ERROR_INTERNAL)
+            evidence.add_remark(str(exc))
+        # The liveness probe is the proof of teardown, so it is recorded as
+        # such: a confirmed-dead teardown reports how it was confirmed, and a
+        # failed one reports why it could not be.
+        evidence.confirmed = stopped
+        if stopped:
+            evidence.probe = "adapter.alive=false"
+        else:
+            evidence.probe = evidence.probe or "消滅を確認できませんでした"
+        self.last_teardown_evidence = evidence
+        return stopped
 
     # --- stop ---------------------------------------------------------------
 
@@ -4705,23 +4697,36 @@ class GameSwitchCoordinator:
                 "cleanup_started", phase=str(state.get("phase")),
                 generation=runtime.get("generation"),
                 runtime_id=runtime.get("runtime_id"),
+                detail=_retiring_targets_detail(runtime),
             )
+            evidence: TeardownEvidence | None = None
             try:
                 adapter = self._make_adapter(
                     RuntimeSpec.from_runtime(self.store.state_dir, runtime), deadline
                 )
                 torn_down = self._teardown_runtime(adapter, deadline)
-            except Exception:
+                evidence = self.last_teardown_evidence
+            except Exception as exc:
                 torn_down = False
+                evidence = _evidence_from_exception(exc)
             if not torn_down:
                 cleanup_pending = True
                 remaining.append(runtime)
                 warnings.append("retiring runtimeの停止を確認できませんでした")
+                self._log(
+                    "cleanup_failed", phase=str(state.get("phase")),
+                    generation=runtime.get("generation"),
+                    runtime_id=runtime.get("runtime_id"),
+                    result="failed", cleanup_pending=True,
+                    detail=_teardown_detail(evidence, runtime),
+                )
             else:
                 self._log(
                     "cleaned", phase=str(state.get("phase")),
                     generation=runtime.get("generation"),
                     runtime_id=runtime.get("runtime_id"),
+                    result="cleaned",
+                    detail=_teardown_detail(evidence, runtime),
                 )
         if len(remaining) != len(retiring):
             tx.transition(
@@ -4733,6 +4738,9 @@ class GameSwitchCoordinator:
             self._log(
                 "cleanup_pending", phase=str(state.get("phase")),
                 cleanup_pending=True,
+                detail="未回収のretiring runtime=" + ",".join(
+                    _retiring_label(runtime) for runtime in remaining
+                ),
             )
         return cleanup_pending
 
@@ -5491,3 +5499,56 @@ def _failure_code(exc: BaseException, default: str = ERROR_START_FAILED) -> str:
     if isinstance(exc, DeadlineExceededError):
         return ERROR_TIMEOUT
     return default
+
+
+# --- teardown evidence rendering (Issue #1936) ---------------------------
+
+
+def _retiring_label(runtime: Mapping[str, object]) -> str:
+    """Short identity of a retiring runtime (``g339-ba49eb5b``)."""
+
+    runtime_id = str(runtime.get("runtime_id") or "")
+    generation = runtime.get("generation")
+    return runtime_id or (f"gen={generation}" if generation is not None else "unknown")
+
+
+def _retiring_targets_detail(runtime: Mapping[str, object]) -> str:
+    """What a retiring runtime claims as its own tmux objects.
+
+    Recorded at ``cleanup_started`` because the objects are still readable
+    then; after the teardown they are gone, so the pre-teardown record is the
+    only way to know which windows/session were meant to be reclaimed.
+    """
+
+    parts = [_retiring_label(runtime)]
+    for key in ("game_window", "agent_window", "adapter_session"):
+        value = runtime.get(key)
+        if isinstance(value, str) and value:
+            parts.append(f"{key}={value}")
+    return " ".join(parts)
+
+
+def _evidence_from_exception(exc: BaseException) -> TeardownEvidence:
+    """Evidence for a teardown that could not even be started."""
+
+    evidence = TeardownEvidence()
+    evidence.error_code = _failure_code(exc, ERROR_INTERNAL)
+    evidence.add_remark(str(exc))
+    return evidence
+
+
+def _teardown_detail(
+    evidence: TeardownEvidence | None, runtime: Mapping[str, object]
+) -> str:
+    """Render teardown evidence as the event log's ``detail``.
+
+    The rendered line always starts with the runtime identity so a log reader
+    can group a ``cleanup_started`` / ``cleaned`` pair without cross-checking
+    the other fields.  Evidence an adapter did not produce is simply absent.
+    """
+
+    label = _retiring_label(runtime)
+    if evidence is None:
+        return label
+    rendered = evidence.render()
+    return f"{label} {rendered}".strip()
