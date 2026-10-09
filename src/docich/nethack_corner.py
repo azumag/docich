@@ -520,7 +520,7 @@ class NethackCornerManager(RetroCornerManager):
                     if proof_valid and proof["source"] != source_identity:
                         return CornerResult("failed", game=GAME_NAME,
                                             detail="cleaned source identity differs")
-                    if not proof_valid and not _is_dead_disclosure_prompt(
+                    if not _is_dead_disclosure_prompt(
                         self._runtime_screen() or ""
                     ):
                         # The generic analytics marker 'you die' can remain
