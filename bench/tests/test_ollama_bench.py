@@ -132,6 +132,26 @@ class TestNativeStream(unittest.TestCase):
 
 
 class TestPublicArtifacts(unittest.TestCase):
+    def test_rebuild_preserves_each_saved_peak_by_run_id(self):
+        gold = case("a", "game_question")
+        rows = [record(run_id, gold, "game_question") for run_id in (7, 9, 3)]
+        previous = summarize(rows, [gold])
+        previous.update({"peak_vram_mib": 20, "num_ctx": 8192, "think": None,
+                         "vram_samples": [],
+                         "per_run": [{"run": 7, "peak_vram_mib": 20},
+                                     {"run": 3, "peak_vram_mib": 10},
+                                     {"run": 9, "peak_vram_mib": None}]})
+        before = copy.deepcopy(previous)
+        with patch.object(runner, "http_json", side_effect=AssertionError("no API")), \
+             patch.object(runner.urllib.request, "urlopen", side_effect=AssertionError("no network")):
+            entry = runner.rebuild_entry(rows, [gold], previous, SUITE)
+        self.assertEqual(previous, before)
+        self.assertEqual({r["run"]: r["peak_vram_mib"] for r in entry["pooled"]["per_run"]},
+                         {3: 10, 7: 20, 9: None})
+        self.assertEqual([r["peak_vram_mib"] for r in entry["per_run"]], [10, 20, None])
+        self.assertEqual(entry["peak_vram_mib"], 20)
+        self.assertEqual(entry["pooled"]["peak_vram_mib"], 20)
+
     def test_projection_leaves_local_records_untouched(self):
         for private in ("/Users/synthetic/work/private", "/home/synthetic/private",
                         r"C:\Users\synthetic\private"):

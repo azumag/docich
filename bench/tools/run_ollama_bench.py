@@ -166,14 +166,20 @@ def per_run_summary(reports, run_ids):
 def rebuild_entry(records, cases, previous, suite_dir):
     """Recompute a native result from saved records, with no model or API calls."""
     run_ids = sorted({row["run"] for row in records})
+    # VRAM cannot be recovered from classification raw. Preserve each saved
+    # run's observation by ID; unknown peaks must not inherit the pooled peak.
+    saved_peaks = {run["run"]: run.get("peak_vram_mib")
+                   for run in previous.get("per_run", [])}
     args = argparse.Namespace(**previous["generation"])
     common = dict(model=previous["model"], quantization=previous["quantization"],
                   backend=previous["backend"], args=args,
-                  peak_vram=previous["peak_vram_mib"], suite_dir=suite_dir,
+                  suite_dir=suite_dir,
                   run_dir=previous["run_dir"], started_at=previous["started_at"])
     per_run = [jb.summarize([row for row in records if row["run"] == run_id],
-                            cases, runs=1, **common) for run_id in run_ids]
-    pooled = {**previous, **jb.summarize(records, cases, runs=len(run_ids), **common),
+                            cases, runs=1, peak_vram=saved_peaks.get(run_id), **common)
+               for run_id in run_ids]
+    pooled = {**previous, **jb.summarize(records, cases, runs=len(run_ids),
+                                       peak_vram=previous["peak_vram_mib"], **common),
               "per_run": per_run_summary(per_run, run_ids)}
     return {"model": pooled["model"], "quantization": pooled["quantization"],
             "num_ctx": pooled["num_ctx"], "think": pooled["think"],
