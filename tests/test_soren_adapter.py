@@ -355,8 +355,15 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             self.assertIsNone(adapter._fresh_started_at)
 
     def make_stateful_adapter(self, root: Path) -> SorenCoordinatorAdapter:
+        from test_coordinator import _runtime_dict
         adapter = self.make_adapter(root)
         adapter.g = SimpleNamespace(state_dir=root / "state")
+        store = GameSwitchStore(adapter.g.state_dir)
+        state = store.initialize()
+        runtime = {**_runtime_dict(7, "sorengame"), "adapter": "soren"}
+        state.update(phase="ready", active=runtime, next_generation=8)
+        store.canonical.save(state)
+        adapter.spec = RuntimeSpec.from_runtime(adapter.g.state_dir, runtime)
         return adapter
 
     def make_retired_singleton(self, root):
@@ -533,10 +540,10 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
     def test_diagnostic_log_never_breaks_cleanup(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            adapter = self.make_adapter(root)
+            adapter = self.make_stateful_adapter(root)
             blocker = root / "blocker"
             blocker.write_text("file, not dir")
-            adapter.g = SimpleNamespace(state_dir=blocker)
+            adapter._diagnostic_log_path = Mock(return_value=blocker / "log")
             adapter._request_id = "req-11"
             result = SimpleNamespace(returncode=1, stdout="改善プロセスの停止確認に失敗", stderr="")
             with patch("docich.adapters.soren.subprocess.run", return_value=result):
