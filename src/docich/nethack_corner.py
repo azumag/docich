@@ -17,6 +17,7 @@ import os
 import stat
 import sys
 import tomllib
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -333,6 +334,10 @@ class NethackCornerManager(RetroCornerManager):
                     return CornerResult("queued", game=GAME_NAME, detail="NetHack tick is active")
                 with self._locked():
                     state = self._read_state()
+                    if ("previous_game" not in state
+                            and state.get("game") == GAME_NAME
+                            and state.get("status") in {"failed", "interrupted"}):
+                        return self._reconcile_legacy_return_locked(state, rotation)
                     request_id = state.get("rotation_request_id")
                     restore_id = state.get("switch_request_id")
                     status = state.get("status")
@@ -614,6 +619,115 @@ class NethackCornerManager(RetroCornerManager):
                     ) or CornerResult(
                         "failed", game=GAME_NAME, detail="restore receipt unproven"
                     )
+
+    def _reconcile_legacy_return_locked(self, state, rotation) -> CornerResult:
+        """Owner-approved legacy metadata reconciliation; never replay a game.
+
+        Caller holds rotation, tick and corner locks. The shared canonical
+        lock remains held through evidence preparation and the terminal write.
+        A crash may leave only a prepared record; retries must reprove the same
+        complete snapshot and immutable evidence before committing it.
+        """
+        from .game_switch import GameSwitchBusyError
+        from .corner_rotation import timestamp
+        from .nethack_return import RECORD_KEY, ReturnUnproven, legacy_return_proof, saved_record_matches
+
+        try:
+            with self.store.lock(exclusive=False):
+                now = self._local_now().astimezone(dt.timezone.utc)
+                ledger = rotation.load(timestamp(rotation.clock()))
+                player = self._run_store.settings.player_name
+
+                def prove():
+                    return legacy_return_proof(
+                        Path(self.g.state_dir), state, ledger, player=player, now=now,
+                    )
+
+                proof = prove()
+                record = state.get(RECORD_KEY)
+                if record is not None:
+                    phase = saved_record_matches(record, proof, now=now)
+                    if state["status"] == "interrupted" and phase == "committed":
+                        if prove() != proof:
+                            raise ReturnUnproven("legacy return evidence changed")
+                        return CornerResult("succeeded", game=GAME_NAME,
+                                            previous_game="sorengame",
+                                            detail="same legacy return already committed")
+                    if state["status"] != "failed" or phase != "prepared":
+                        raise ReturnUnproven("legacy return record phase differs")
+                else:
+                    if state["status"] != "failed":
+                        raise ReturnUnproven("legacy terminal evidence missing")
+                    # Re-read all evidence even with the honest-actor locks:
+                    # external file drift is never silently accepted.
+                    if prove() != proof:
+                        raise ReturnUnproven("legacy return evidence changed")
+                    state[RECORD_KEY] = {
+                        **proof, "phase": "prepared", "prepared_at": now.isoformat(),
+                    }
+                    self._write_state(state)
+                if prove() != proof:
+                    raise ReturnUnproven("legacy return evidence changed")
+                state[RECORD_KEY]["phase"] = "committed"
+                state["status"] = "interrupted"
+                state.pop("switch_status", None)
+                self._write_state(state)
+                return CornerResult("succeeded", game=GAME_NAME,
+                                    previous_game="sorengame",
+                                    detail="legacy return reconciled without resource operations")
+        except GameSwitchBusyError:
+            return CornerResult("queued", game=GAME_NAME, detail="canonical lock busy")
+        except Exception:
+            # Never export raw paths, receipts, player names, or exception text.
+            return CornerResult("failed", game=GAME_NAME,
+                                detail="legacy return evidence unproven or changed")
+
+    @contextmanager
+    def legacy_return_recovery_guard(self, reservation):
+        """Fence legacy terminal observation through rotation's ledger save.
+
+        Rotation already holds its owner lock. Modern observations retain the
+        existing contract; a legacy owner must reprove its committed snapshot
+        while holding tick/corner/shared canonical locks until ledger commit.
+        """
+        from .corner_rotation import RotationError
+        from .nethack_return import (
+            RECORD_KEY, legacy_return_proof, read_record, saved_record_matches,
+        )
+
+        state = self._read_state()
+        if (RECORD_KEY not in state and
+                ("previous_game" in state or state.get("game") != GAME_NAME)):
+            yield
+            return
+        # Keep the try/except outside the yield: errors from rotation itself
+        # must preserve their original classification and cannot be masked.
+        from contextlib import ExitStack
+        with ExitStack() as held:
+            try:
+                if not held.enter_context(self._tick_guard()):
+                    raise RotationError("legacy NetHack tick is active", kind="execution-unverified")
+                held.enter_context(self._locked())
+                held.enter_context(self.store.lock(exclusive=False))
+                state = self._read_state()
+                root = Path(self.g.state_dir)
+                ledger = read_record(root, ("corner_rotation.json",))
+                if ledger.get("pending") != reservation:
+                    raise ValueError("legacy rotation reservation changed")
+                now = self._local_now().astimezone(dt.timezone.utc)
+                proof = legacy_return_proof(
+                    root, state, ledger, player=self._run_store.settings.player_name, now=now,
+                )
+                if (state.get("status") != "interrupted"
+                        or saved_record_matches(state.get(RECORD_KEY), proof, now=now) != "committed"
+                        or legacy_return_proof(
+                            root, state, ledger, player=self._run_store.settings.player_name, now=now,
+                        ) != proof):
+                    raise ValueError("legacy terminal return unproven")
+            except Exception:
+                raise RotationError("legacy terminal return unproven or changed",
+                                    kind="execution-unverified") from None
+            yield True
 
     def _validate_games(self, names: list[str] | None = None) -> None:
         """Validate the existing CLI runtime without pretending an AI exists yet.

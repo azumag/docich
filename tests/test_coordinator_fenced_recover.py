@@ -22,7 +22,7 @@ class TestFencedCoordinatorRecover(unittest.TestCase):
             )
             before = dict(store.canonical.initialize())
             after = {**before, "next_generation": before["next_generation"] + 1}
-            store.canonical.save(after)
+            after = store.canonical.save(after)
 
             result = coordinator.recover(
                 expected_snapshot=before, timeout_s=0.5,
