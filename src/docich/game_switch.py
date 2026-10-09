@@ -541,7 +541,8 @@ def validate_receipt(
     missing = sorted(required - receipt.keys())
     if missing:
         raise StateCorruptError(f"request receiptに必須項目がありません: {missing}")
-    if receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION:
+    if (type(receipt.get("schema_version")) is not int
+            or receipt["schema_version"] != RECEIPT_SCHEMA_VERSION):
         raise StateCorruptError("request receiptのschemaが不正です")
     try:
         request_id = validate_request_id(receipt.get("request_id"))
@@ -599,6 +600,82 @@ def validate_receipt(
     for label in ("created_at", "updated_at"):
         if not isinstance(receipt.get(label), str) or not receipt.get(label):
             raise StateCorruptError(f"request receiptの{label}が不正です")
+
+
+RUNTIME_IDENTITY_KEYS = ("game", "adapter", "runtime_id", "generation", "lease_id")
+
+
+def committed_retirement_result(
+    runtime: Mapping[str, object],
+    receipt: Mapping[str, object] | None,
+    *,
+    require_terminal: bool = True,
+) -> Mapping[str, object] | None:
+    """Validate the immutable normal-commit proof on a retiring runtime.
+
+    The canonical commit and its terminal receipt bind *both* runtime
+    identities to the original request. Neither current active nor
+    last_result is authority for delayed retirement. An accepted receipt is
+    usable only by the locked coordinator to close the commit/receipt crash
+    window, never directly by an adapter to authorize a stop.
+    """
+    if "retirement" not in runtime:
+        return None
+    result = runtime["retirement"]
+    if not isinstance(result, dict) or not isinstance(receipt, Mapping):
+        raise StateCorruptError("retirement commit/receiptがありません")
+    # This proof boundary can also be called with a receipt already in memory.
+    if (type(receipt.get("schema_version")) is not int
+            or receipt["schema_version"] != RECEIPT_SCHEMA_VERSION):
+        raise StateCorruptError("retirement receiptのschemaが不正です")
+    source = result.get("source_runtime")
+    active = result.get("active_runtime")
+    if (not isinstance(source, dict) or set(source) != set(RUNTIME_IDENTITY_KEYS)
+            or type(source.get("generation")) is not int
+            or source != {key: runtime.get(key) for key in RUNTIME_IDENTITY_KEYS}
+            or not isinstance(active, dict)
+            or set(active) != {"game", "runtime_id", "generation", "lease_id"}
+            or type(active.get("generation")) is not int
+            or type(result.get("generation")) is not int
+            or result["generation"] != active["generation"]
+            or active["generation"] <= source["generation"]):
+        raise StateCorruptError("retirement source/destination identityが一致しません")
+    try:
+        request_id = validate_request_id(result.get("request_id"))
+        validate_game_name(source["game"])
+        validate_game_name(active["game"])
+        validate_request_id(active["lease_id"])
+        if source["lease_id"] is not None:
+            validate_request_id(source["lease_id"])
+        if (runtime_id_generation(source["runtime_id"]) != source["generation"]
+                or runtime_id_generation(active["runtime_id"]) != active["generation"]):
+            raise NameValidationError("retirement generation mismatch")
+    except (NameValidationError, TypeError) as exc:
+        raise StateCorruptError("retirement identityの形式が不正です") from exc
+    operation = result.get("operation")
+    if (operation not in {"start", "switch", "restart", "rotate"}
+            or result.get("status") != "succeeded"
+            or result.get("from_game") != source["game"]
+            or result.get("to_game") != active["game"]
+            or receipt.get("request_id") != request_id
+            or receipt.get("operation") != operation
+            or receipt.get("target") != (None if operation == "rotate" else active["game"])
+            or type(receipt.get("generation")) is not int
+            or receipt["generation"] != active["generation"]
+            or receipt.get("runtime_id") != active["runtime_id"]):
+        raise StateCorruptError("retirement request/receipt identityが一致しません")
+    if receipt.get("status") == "succeeded":
+        saved_result = receipt.get("result")
+        # Python equality aliases True/1 and 3.0/3. Reject those in each
+        # copy of the proof instead of treating dict equality as type proof.
+        if (not isinstance(saved_result, dict) or saved_result != result
+                or type(saved_result.get("generation")) is not int
+                or type(saved_result.get("source_runtime", {}).get("generation")) is not int
+                or type(saved_result.get("active_runtime", {}).get("generation")) is not int):
+            raise StateCorruptError("terminal retirement receiptの証拠が一致しません")
+    elif require_terminal or receipt.get("status") != "accepted" or receipt.get("result") is not None:
+        raise StateCorruptError("retirement receiptは成功済みではありません")
+    return result
 
 
 class RequestReceiptStore:
@@ -677,8 +754,23 @@ class RequestReceiptStore:
         receipts = self.receipts()
         if len(receipts) <= max_receipts:
             return 0
+        # A pending retirement still needs its original terminal receipt.
+        # Retention is a soft cap until those exact identities are cleaned.
+        state, _missing = CanonicalStateStore(self.state_dir).load()
+        pinned: set[str] = set()
+        for runtime in state.get("retiring") or []:
+            if "retirement" not in runtime:
+                continue
+            proof = runtime["retirement"]
+            if not isinstance(proof, dict):
+                raise StateCorruptError("retirement receipt pinが不正です")
+            try:
+                pinned.add(validate_request_id(proof.get("request_id")))
+            except NameValidationError as exc:
+                raise StateCorruptError("retirement receipt pinが不正です") from exc
         terminal = sorted(
-            (r for r in receipts if r.get("status") in TERMINAL_RECEIPT_STATUSES),
+            (r for r in receipts if r.get("status") in TERMINAL_RECEIPT_STATUSES
+             and r.get("request_id") not in pinned),
             key=lambda r: str(r.get("updated_at", "")),
         )
         removable = min(len(terminal), len(receipts) - max_receipts)
@@ -1092,10 +1184,12 @@ class GameSwitchStore:
                 ):
                     last_result = state.get("last_result")
                     if (
-                        isinstance(last_result, dict)
-                        and last_result.get("request_id") == request_id
-                        and last_result.get("status")
-                        in TERMINAL_RECEIPT_STATUSES
+                        (isinstance(last_result, dict)
+                         and last_result.get("request_id") == request_id
+                         and last_result.get("status") in TERMINAL_RECEIPT_STATUSES)
+                        or any(isinstance(rt.get("retirement"), dict)
+                               and rt["retirement"].get("request_id") == request_id
+                               for rt in state.get("retiring") or [])
                     ):
                         # The commit already landed (crash between the
                         # commit write and the receipt finish): canonical
@@ -3137,6 +3231,18 @@ class GameSwitchCoordinator:
         request; anything else fails closed with StateCorruptError."""
         state, _migrated = self.store.canonical.load()
         last_result = state.get("last_result")
+        from_retirement = False
+        for runtime in state.get("retiring") or []:
+            proof = runtime.get("retirement")
+            if isinstance(proof, dict) and proof.get("request_id") == request_id:
+                last_result = committed_retirement_result(
+                    runtime, self.store.receipts.load(request_id), require_terminal=False,
+                )
+                from_retirement = True
+                break
+        if (isinstance(last_result, dict) and last_result.get("source_runtime") is not None
+                and last_result.get("request_id") == request_id and not from_retirement):
+            raise StateCorruptError("正常退役のcommit markerがありません")
         if not isinstance(last_result, dict) or last_result.get("request_id") != request_id:
             return None
         status = last_result.get("status")
@@ -4010,8 +4116,6 @@ class GameSwitchCoordinator:
         state, _migrated = self.store.canonical.load()
         old_for_retiring = state.get("previous")
         retiring = state.get("retiring") or []
-        if old_for_retiring is not None:
-            retiring = [old_for_retiring, *retiring]
         from_game = old_active["game"] if old_active is not None else None
         last_result = {
             "request_id": acceptance.request_id,
@@ -4020,9 +4124,18 @@ class GameSwitchCoordinator:
             "from_game": from_game,
             "to_game": target,
             "generation": acceptance.generation,
+            "source_runtime": ({k: old_for_retiring[k] for k in RUNTIME_IDENTITY_KEYS}
+                               if old_for_retiring is not None else None),
             "active_runtime": {k: candidate_rd[k] for k in
                                ("game", "runtime_id", "generation", "lease_id")},
         }
+        if old_for_retiring is not None:
+            # Publish source identity + R atomically with the new active.
+            # Keep the complete commit result to reconcile a crash before
+            # finish_request even if a subsequent recovery loses active.
+            retired = copy.deepcopy(old_for_retiring)
+            retired["retirement"] = copy.deepcopy(last_result)
+            retiring = [retired, *retiring]
         # The single atomic commit write is the commit point (design §5 E).
         tx.transition(
             {"probing"}, "ready",
@@ -4299,7 +4412,8 @@ class GameSwitchCoordinator:
                     {"rolling_back"}, "rolling_back",
                     updates={
                         "candidate": None,
-                        "retiring": [candidate, *(state.get("retiring") or [])],
+                        "retiring": [{**candidate, "cleanup_role": "failed_candidate"},
+                                     *(state.get("retiring") or [])],
                     },
                     crash_hook=self.crash_hook,
                 )
@@ -4605,7 +4719,8 @@ class GameSwitchCoordinator:
                         {"rolling_back"}, "rolling_back",
                         updates={
                             "candidate": None,
-                            "retiring": [state["candidate"], *(state.get("retiring") or [])],
+                            "retiring": [{**state["candidate"], "cleanup_role": "failed_candidate"},
+                                         *(state.get("retiring") or [])],
                         },
                         crash_hook=self.crash_hook,
                     )
@@ -4720,6 +4835,14 @@ class GameSwitchCoordinator:
             )
             evidence: TeardownEvidence | None = None
             try:
+                if "retirement" in runtime:
+                    proof = runtime["retirement"]
+                    if not isinstance(proof, dict):
+                        raise StateCorruptError("retirement commitが不正です")
+                    original = self.store.receipts.load(proof.get("request_id"))
+                    result = committed_retirement_result(runtime, original, require_terminal=False)
+                    if original["status"] == "accepted":
+                        tx.finish_request(original["request_id"], "succeeded", result)
                 adapter = self._make_adapter(
                     RuntimeSpec.from_runtime(self.store.state_dir, runtime), deadline
                 )
@@ -5068,6 +5191,7 @@ class GameSwitchCoordinator:
                         torn_down = self._teardown_runtime(adapter, deadline)
                     except Exception:
                         torn_down = False
+                    cleanup_pending = not torn_down or bool(state.get("retiring"))
                     last_result = {
                         "request_id": "",
                         "operation": "recover",
@@ -5077,7 +5201,7 @@ class GameSwitchCoordinator:
                         "generation": active["generation"],
                         "error_code": ERROR_START_FAILED,
                         "detail": "active runtimeが失われています",
-                        "cleanup_pending": None if torn_down else True,
+                        "cleanup_pending": True if cleanup_pending else None,
                     }
                     updates = {
                         "active": None,
@@ -5111,7 +5235,7 @@ class GameSwitchCoordinator:
                         error_code=ERROR_START_FAILED,
                         detail="active runtimeが失われています",
                         warnings=tuple(warnings),
-                        cleanup_pending=not torn_down,
+                        cleanup_pending=cleanup_pending,
                         receipt=None,
                     )
                 if alive is None:
@@ -5465,7 +5589,8 @@ class GameSwitchCoordinator:
                     {str(current["phase"])}, str(current["phase"]),
                     updates={
                         "candidate": None,
-                        "retiring": [candidate, *(current.get("retiring") or [])],
+                        "retiring": [{**candidate, "cleanup_role": "failed_candidate"},
+                                     *(current.get("retiring") or [])],
                     },
                     crash_hook=self.crash_hook,
                 )
@@ -5499,6 +5624,11 @@ class GameSwitchCoordinator:
         state, _migrated = self.store.canonical.load()
         last_result = state.get("last_result")
         if not isinstance(last_result, dict):
+            return
+        # New normal retirements are reconciled in _finalize_locked from
+        # their full commit/receipt identity. If that validation failed,
+        # mutable last_result must not silently authorize the same receipt.
+        if last_result.get("source_runtime") is not None:
             return
         status = last_result.get("status")
         if status not in TERMINAL_RECEIPT_STATUSES:

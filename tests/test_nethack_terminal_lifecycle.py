@@ -95,10 +95,10 @@ def test_ended_nethack_does_not_authorize_a_new_adventure(tmp_path):
     assert adapter.can_restore_stopped_runtime(time.monotonic() + 5, None) is False
 
 
-def test_saved_nethack_can_resume(tmp_path):
+def test_save_presence_cannot_prove_restore_only_launch(tmp_path):
     adapter, save = nethack(tmp_path)
     (save / "1000docich").write_bytes(b"saved adventure")
-    assert adapter.can_restore_stopped_runtime(time.monotonic() + 5, None) is True
+    assert adapter.can_restore_stopped_runtime(time.monotonic() + 5, None) is False
 
 
 @pytest.mark.parametrize("names", [("1000otherdocich",), ("1000docich", "1001docich")])
