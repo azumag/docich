@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
+import stat
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -487,7 +489,22 @@ class NethackCornerManager(RetroCornerManager):
     def _finish_locked(
         self, state: dict[str, object], completed_at: dt.datetime
     ) -> CornerResult:
-        result = super()._finish_locked(state, completed_at)
+        source = None
+        if self._run_store is not None:
+            try:
+                canonical, _ = self.coordinator.store.canonical.load()
+                active = canonical.get("active")
+                if isinstance(active, dict) and active.get("game") == GAME_NAME:
+                    source = dict(active)
+            except Exception:
+                pass  # Missing analytics evidence never changes the switch.
+        try:
+            result = super()._finish_locked(state, completed_at)
+        except Exception:
+            # The adventure can have ended even though returning to Soren
+            # failed. Keep that fact separate from corner/restore success.
+            self._remember_failed_restore_terminal(state, source, completed_at)
+            raise
         if self._run_store is not None and result.status == "completed":
             try:
                 run = self._run_store.record_finished(
@@ -502,12 +519,68 @@ class NethackCornerManager(RetroCornerManager):
                 # disturb the saved/terminal game state after the fact.
                 self._run_history_error = _safe_detail(exc)
                 state["run_history_error"] = self._run_history_error
-        self._announce_end_locked(state)
+        if result.status in {"completed", "interrupted"}:
+            self._announce_end_locked(state)
         try:
             self._write_state(state)
         except Exception:
             pass
         return result
+
+    def _remember_failed_restore_terminal(self, state, source, completed_at) -> None:
+        if self._run_store is None or not isinstance(source, dict):
+            return
+        run_id = state.get("run_id")
+        request_id = state.get("switch_request_id")
+        if not isinstance(run_id, str) or not isinstance(request_id, str):
+            return
+        expected_runtime = state.get("rotation_runtime_id")
+        if expected_runtime is not None and source.get("runtime_id") != expected_runtime:
+            return
+        try:
+            from .naming import runtime_directory
+            from .adapters.nethack import BOUNDARY_RESULT_FILENAME
+
+            canonical, _ = self.coordinator.store.canonical.load()
+            previous = canonical.get("previous")
+            keys = ("game", "runtime_id", "generation", "lease_id")
+            if (canonical.get("active") is not None or not isinstance(previous, dict)
+                    or any(previous.get(key) != source.get(key) for key in keys)):
+                return
+            # This is the adapter's durable, request-bound acknowledgement of
+            # actual process exit, NOT an old TTY message or a missing pane.
+            path = runtime_directory(self.g.state_dir, source["runtime_id"]) / BOUNDARY_RESULT_FILENAME
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as handle:
+                metadata = os.fstat(handle.fileno())
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 4096:
+                    return
+                raw = handle.read(4097)
+            if len(raw) > 4096:
+                return
+            boundary = json.loads(raw)
+            if (not isinstance(boundary, dict)
+                    or type(boundary.get("schema_version")) is not int
+                    or boundary["schema_version"] != 1
+                    or boundary.get("request_id") != request_id
+                    or boundary.get("player_name") != self._run_store.settings.player_name
+                    or type(boundary.get("generation")) is not int
+                    or any(boundary.get(key) != source.get(key) for key in keys[:-1])
+                    or boundary.get("outcome") not in {"ended", "suspended"}):
+                return
+            run = self._run_store.record_finished(
+                now=completed_at, nethack_still_active=False, expected_run_id=run_id,
+            )
+            self._remember_run_in_state(state, run)
+            self._write_state(state)
+        except Exception as exc:
+            # Preserve the original failure and never mutate runtime state or
+            # turn a failed restore into a completed corner.
+            state["run_history_error"] = _safe_detail(exc)
+            try:
+                self._write_state(state)
+            except Exception:
+                pass
 
     def _spawn_improve_once(self, state: dict[str, object]) -> None:
         # P1 records evidence only. P3/P5 add a bounded, testable strategy
