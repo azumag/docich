@@ -16,7 +16,7 @@ from docich.nethack_corner import (
     NethackCornerManager,
     _build_parser,
 )
-from docich.retro_corner import CornerResult
+from docich.retro_corner import CornerResult, RetroCornerManager
 
 
 @contextmanager
@@ -250,3 +250,37 @@ class TestAutomaticNethackFailedRestore(TestCase):
                  "ops/vm_actions/recover_corner_rotation.sh").read_text()
         self.assertIn("nethack-corner recover-failed-rotation", shell)
         self.assertIn("corner-rotation recover", shell)
+
+
+
+class TestLaterCleanupReceiptProof(TestCase):
+    def test_immutable_incomplete_receipt_needs_explicit_later_proof(self):
+        request_id = "00000000-0000-4000-8000-000000000001"
+        result = {
+            "request_id": request_id, "operation": "switch",
+            "status": "rolled_back", "from_game": "nethack",
+            "to_game": "sorengame", "generation": 651,
+            "cleanup_pending": True,
+        }
+        receipt = {
+            "request_id": request_id, "operation": "switch",
+            "target": "sorengame", "status": "rolled_back",
+            "generation": 651, "result": result,
+        }
+        state = {
+            "status": "failed", "game": "nethack",
+            "previous_game": "sorengame", "switch_request_id": request_id,
+            "rotation_request_id": "00000000-0000-4000-8000-000000000002",
+            "completed_at": "2026-10-09T08:13:07+09:00",
+        }
+        manager = object.__new__(RetroCornerManager)
+        manager.store = SimpleNamespace(receipts=SimpleNamespace(
+            load=Mock(return_value=receipt)
+        ))
+        self.assertIsNone(manager._restore_failed_receipt(state))
+        proved = manager._restore_failed_receipt(
+            state, late_cleanup_proved=True,
+        )
+        self.assertIsNotNone(proved)
+        self.assertIs(proved[0], receipt)
+        self.assertTrue(receipt["result"]["cleanup_pending"])
