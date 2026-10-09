@@ -1,27 +1,103 @@
-name: Isolated PR1976 source and test workspace
+name: Isolated PR1976 retirement proof validation
 on:
   push:
     branches: ['scratch/1976-retirement-proof-20261009']
+    paths: ['reviewed-patches/**', 'apply.py', '.github/workflows/isolated-1976.yml']
 permissions:
   contents: read
 jobs:
-  export-source:
+  prepare:
     if: github.ref == 'refs/heads/scratch/1976-retirement-proof-20261009'
+    permissions:
+      contents: write
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          ref: ${{ github.sha }}
+          path: payload
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
           ref: 14ad543977cebc935d0f28e0acec166aa0901175
+          path: source
           persist-credentials: false
           submodules: false
-      - name: Export only tracked source, never runtime data
+      - name: Verify readable patches and syntax
         run: |
-          test "$(git rev-parse HEAD)" = 14ad543977cebc935d0f28e0acec166aa0901175
-          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/docich-pr1976-source.tar.gz"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          python3 payload/apply.py source
+          python3 -m compileall -q source/src/docich/game_switch.py source/src/docich/adapters/soren.py source/tests/test_soren_retirement_identity.py source/tests/test_adapter_stop_resume_safety.py
+      - name: Publish only source blobs on isolated scratch branch
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/scratch/1976-retirement-proof-20261009
+          for path in src/docich/adapters/soren.py src/docich/game_switch.py tests/test_adapter_stop_resume_safety.py tests/test_soren_retirement_identity.py; do
+            mkdir -p "payload/$(dirname "$path")"
+            cp "source/$path" "payload/$path"
+            git -C payload add -- "$path"
+          done
+          git -C payload diff --cached --check
+          git -C payload config user.name 'github-actions[bot]'
+          git -C payload config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C payload commit -m '[test] publish isolated PR1976 source blobs for reviewed integration'
+          git -C payload push origin HEAD:refs/heads/scratch/1976-retirement-proof-20261009
+          echo 'PREPARED SOURCE BLOBS (no main or PR branch updated)'
+          git -C payload rev-parse HEAD
+          git -C payload ls-files -s src/docich/adapters/soren.py src/docich/game_switch.py tests/test_adapter_stop_resume_safety.py tests/test_soren_retirement_identity.py
+  test:
+    needs: prepare
+    if: github.ref == 'refs/heads/scratch/1976-retirement-proof-20261009'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+        integration: ['pr1976', 'with-pr1975']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          name: docich-pr1976-source-14ad543
-          path: ${{ runner.temp }}/docich-pr1976-source.tar.gz
-          retention-days: 1
-          if-no-files-found: error
+          ref: ${{ github.sha }}
+          path: payload
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: 14ad543977cebc935d0f28e0acec166aa0901175
+          path: source
+          fetch-depth: 200
+          persist-credentials: false
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Apply checked patches
+        run: python3 payload/apply.py source
+      - name: Integrate exact PR1975 in disposable checkout only
+        if: matrix.integration == 'with-pr1975'
+        working-directory: source
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m '[test] temporary PR1976 integration candidate'
+          git fetch --no-tags --depth=200 origin cf4e97f8a546d7aaa63116672cca8e30a95aa6b4
+          git merge --no-commit --no-ff cf4e97f8a546d7aaa63116672cca8e30a95aa6b4
+          git diff --cached --check
+      - name: Install hermetic test dependencies
+        working-directory: source
+        run: python3 -m pip install -r requirements-test.txt
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Full hermetic suite
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q src tests
+          python3 -m pytest -q tests/ | tee "$RUNNER_TEMP/pytest-${{ matrix.python }}-${{ matrix.integration }}.log"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: pytest-${{ matrix.python }}-${{ matrix.integration }}
+          path: ${{ runner.temp }}/pytest-${{ matrix.python }}-${{ matrix.integration }}.log
+          retention-days: 2
+          if-no-files-found: ignore
