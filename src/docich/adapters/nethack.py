@@ -580,6 +580,21 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             if entry.is_file() and self._save_name_matches_player(entry.name)
         )
 
+    def can_restore_stopped_runtime(self, deadline: float, cancel) -> bool:
+        """Rollback may resume one save, never silently create another hero.
+
+        This is called only after the old runtime is confirmed stopped. Normal
+        explicit starts remain unrestricted; losing a save during a failed
+        switch requires operator recovery, not a guessed new expedition.
+        """
+        self._check_active(deadline, cancel)
+        saves = self._matching_save_files()
+        if len(saves) != 1 or saves[0].is_symlink():
+            return False
+        allowed = saves[0].stat().st_size > 0
+        self._check_active(deadline, cancel)
+        return allowed
+
     def _save_signatures(self) -> dict[str, tuple[int, int]]:
         signatures: dict[str, tuple[int, int]] = {}
         for path in self._matching_save_files():

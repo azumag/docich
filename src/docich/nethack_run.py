@@ -777,12 +777,19 @@ class NethackRunStore:
         *,
         now: dt.datetime,
         nethack_still_active: bool,
+        expected_run_id: str | None = None,
     ) -> dict[str, object]:
-        """Close one program session and reconcile save/xlog evidence."""
+        """Close one program session and reconcile save/xlog evidence.
+
+        An asynchronous/failed restore may only finish its original expedition;
+        validate that identity inside the same lock as the terminal write.
+        """
         with self._locked():
             run = self._current_unlocked()
             if run is None:
                 raise NethackRunError("終了対象のcurrent NetHack runがありません")
+            if expected_run_id is not None and run.get("run_id") != expected_run_id:
+                raise NethackRunError("終了対象のNetHack run identityが変化しました")
             if run.get("status") not in {"active", "suspended"}:
                 raise NethackRunError("終了対象runのstatusが不正です")
 
