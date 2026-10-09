@@ -345,3 +345,38 @@ class TestLaterCleanupReceiptProof(TestCase):
         self.assertIsNotNone(proved)
         self.assertIs(proved[0], receipt)
         self.assertTrue(receipt["result"]["cleanup_pending"])
+
+
+
+class TestRealLaterCleanupReplay(TestCase):
+    def test_original_pending_receipt_can_replay_once_after_proven_cleanup(self):
+        """Exercise the base replay with a real store/coordinator and fake games."""
+        from test_retro_corner import TestRestoreRecoveryBoundaries
+
+        fixture = TestRestoreRecoveryBoundaries(
+            "test_fifo_retry_claims_the_same_persisted_replay_id"
+        )
+        fixture.setUp()
+        try:
+            manager, original_id = fixture._setup_restore_failed(
+                result_patch=lambda result: result.update(cleanup_pending=True)
+            )
+            real, _factory = fixture._real(manager)
+            manager.coordinator = real
+
+            # A late positive cleanup is the *only* reason a stale immutable
+            # original pending receipt may be replayed. Existing generic
+            # callers without the explicit proof still refuse it.
+            self.assertIsNone(manager._restore_failed_receipt(manager._read_state()))
+            outcome = manager._recover_restore_failed(
+                manager._read_state(), late_cleanup_proved=True,
+            )
+            self.assertEqual(outcome.status, "succeeded")
+            self.assertEqual(manager._read_state()["status"], "interrupted")
+            self.assertTrue(manager.store.receipts.load(original_id)[
+                "result"]["cleanup_pending"])
+            self.assertNotEqual(
+                manager._read_state()["restore_recovery"]["request_id"], original_id
+            )
+        finally:
+            fixture.tearDown()
