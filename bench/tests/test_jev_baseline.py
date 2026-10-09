@@ -34,6 +34,12 @@ def record(cid, pass_n, status='ok', latency=12):
 
 
 class MetricsTests(unittest.TestCase):
+    def test_public_precision_absorbs_float_summation_tail(self):
+        a = {'f1': 0.7922320098474617, 'count': 103, 'nested': [0.6407766990291262]}
+        b = {'f1': 0.7922320098474618, 'count': 103, 'nested': [0.6407766990291263]}
+        self.assertEqual(baseline.public_numbers(a), baseline.public_numbers(b))
+        self.assertEqual(baseline.public_numbers(a)['count'], 103)
+
     def test_misses_stay_in_full_and_live_denominators(self):
         pred = {'a': 'chitchat', 'b': None, 'c': 'card_gacha'}
         gold = {'a': 'chitchat', 'b': 'chitchat', 'c': 'other'}

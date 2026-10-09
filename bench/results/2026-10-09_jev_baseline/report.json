@@ -18,24 +18,24 @@
   },
   "current_jev": {
     "ungated_full_106": {
-      "accuracy_all": 0.6698113207547169,
+      "accuracy_all": 0.669811320755,
       "accuracy_on_available": 0.71,
       "available": 100,
       "correct": 71,
-      "coverage": 0.9433962264150944,
-      "live_log_accuracy": 0.5897435897435898,
-      "live_log_accuracy_on_available": 0.6388888888888888,
+      "coverage": 0.943396226415,
+      "live_log_accuracy": 0.589743589744,
+      "live_log_accuracy_on_available": 0.638888888889,
       "live_log_available": 72,
       "live_log_correct": 46,
       "live_log_n": 78,
-      "macro_f1": 0.7898921227262241,
+      "macro_f1": 0.789892122726,
       "n": 106,
       "notification": {
-        "f1": 0.8780487804878049,
+        "f1": 0.878048780488,
         "fn": 2,
         "fp": 3,
-        "fp_per_100": 2.830188679245283,
-        "precision": 0.8571428571428571,
+        "fp_per_100": 2.830188679245,
+        "precision": 0.857142857143,
         "recall": 0.9,
         "support": 20,
         "tp": 18
@@ -52,25 +52,25 @@
           "tp": 2
         },
         "card_gacha": {
-          "f1": 0.9090909090909091,
+          "f1": 0.909090909091,
           "fn": 2,
           "fp": 0,
           "precision": 1.0,
-          "recall": 0.8333333333333334,
+          "recall": 0.833333333333,
           "support": 12,
           "tp": 10
         },
         "chitchat": {
-          "f1": 0.3888888888888889,
+          "f1": 0.388888888889,
           "fn": 22,
           "fp": 0,
           "precision": 1.0,
-          "recall": 0.2413793103448276,
+          "recall": 0.241379310345,
           "support": 29,
           "tp": 7
         },
         "comment_advice": {
-          "f1": 0.6666666666666666,
+          "f1": 0.666666666667,
           "fn": 0,
           "fp": 3,
           "precision": 0.5,
@@ -83,16 +83,16 @@
           "fn": 1,
           "fp": 0,
           "precision": 1.0,
-          "recall": 0.6666666666666666,
+          "recall": 0.666666666667,
           "support": 3,
           "tp": 2
         },
         "game_status": {
-          "f1": 0.7096774193548387,
+          "f1": 0.709677419355,
           "fn": 4,
           "fp": 5,
           "precision": 0.6875,
-          "recall": 0.7333333333333333,
+          "recall": 0.733333333333,
           "support": 15,
           "tp": 11
         },
@@ -106,11 +106,11 @@
           "tp": 6
         },
         "other": {
-          "f1": 0.6363636363636364,
+          "f1": 0.636363636364,
           "fn": 3,
           "fp": 13,
-          "precision": 0.5185185185185185,
-          "recall": 0.8235294117647058,
+          "precision": 0.518518518519,
+          "recall": 0.823529411765,
           "support": 17,
           "tp": 14
         },
@@ -133,7 +133,7 @@
           "tp": 2
         },
         "strategy_advice": {
-          "f1": 0.8571428571428571,
+          "f1": 0.857142857143,
           "fn": 1,
           "fp": 0,
           "precision": 1.0,
@@ -142,16 +142,16 @@
           "tp": 3
         },
         "stream_bug_report": {
-          "f1": 0.7692307692307693,
+          "f1": 0.769230769231,
           "fn": 2,
           "fp": 1,
-          "precision": 0.8333333333333334,
-          "recall": 0.7142857142857143,
+          "precision": 0.833333333333,
+          "recall": 0.714285714286,
           "support": 7,
           "tp": 5
         },
         "stream_goal": {
-          "f1": 0.5714285714285714,
+          "f1": 0.571428571429,
           "fn": 0,
           "fp": 3,
           "precision": 0.4,
@@ -176,25 +176,25 @@
       "p95": 204.4
     },
     "ungated_matched_103": {
-      "accuracy_all": 0.6699029126213593,
-      "accuracy_on_available": 0.7040816326530612,
+      "accuracy_all": 0.669902912621,
+      "accuracy_on_available": 0.704081632653,
       "available": 98,
       "correct": 69,
-      "coverage": 0.9514563106796117,
-      "live_log_accuracy": 0.5866666666666667,
-      "live_log_accuracy_on_available": 0.6285714285714286,
+      "coverage": 0.95145631068,
+      "live_log_accuracy": 0.586666666667,
+      "live_log_accuracy_on_available": 0.628571428571,
       "live_log_available": 70,
       "live_log_correct": 44,
       "live_log_n": 75,
-      "macro_f1": 0.7921839485474617,
+      "macro_f1": 0.792183948547,
       "n": 103,
       "notification": {
-        "f1": 0.8888888888888888,
+        "f1": 0.888888888889,
         "fn": 1,
         "fp": 3,
-        "fp_per_100": 2.912621359223301,
-        "precision": 0.8421052631578947,
-        "recall": 0.9411764705882353,
+        "fp_per_100": 2.912621359223,
+        "precision": 0.842105263158,
+        "recall": 0.941176470588,
         "support": 17,
         "tp": 16
       },
@@ -210,25 +210,25 @@
           "tp": 2
         },
         "card_gacha": {
-          "f1": 0.9411764705882353,
+          "f1": 0.941176470588,
           "fn": 1,
           "fp": 0,
           "precision": 1.0,
-          "recall": 0.8888888888888888,
+          "recall": 0.888888888889,
           "support": 9,
           "tp": 8
         },
         "chitchat": {
-          "f1": 0.3888888888888889,
+          "f1": 0.388888888889,
           "fn": 22,
           "fp": 0,
           "precision": 1.0,
-          "recall": 0.2413793103448276,
+          "recall": 0.241379310345,
           "support": 29,
           "tp": 7
         },
         "comment_advice": {
-          "f1": 0.6666666666666666,
+          "f1": 0.666666666667,
           "fn": 0,
           "fp": 3,
           "precision": 0.5,
@@ -241,16 +241,16 @@
           "fn": 1,
           "fp": 0,
           "precision": 1.0,
-          "recall": 0.6666666666666666,
+          "recall": 0.666666666667,
           "support": 3,
           "tp": 2
         },
         "game_status": {
-          "f1": 0.7096774193548387,
+          "f1": 0.709677419355,
           "fn": 4,
           "fp": 5,
           "precision": 0.6875,
-          "recall": 0.7333333333333333,
+          "recall": 0.733333333333,
           "support": 15,
           "tp": 11
         },
@@ -264,11 +264,11 @@
           "tp": 6
         },
         "other": {
-          "f1": 0.6363636363636364,
+          "f1": 0.636363636364,
           "fn": 3,
           "fp": 13,
-          "precision": 0.5185185185185185,
-          "recall": 0.8235294117647058,
+          "precision": 0.518518518519,
+          "recall": 0.823529411765,
           "support": 17,
           "tp": 14
         },
@@ -291,7 +291,7 @@
           "tp": 2
         },
         "strategy_advice": {
-          "f1": 0.8571428571428571,
+          "f1": 0.857142857143,
           "fn": 1,
           "fp": 0,
           "precision": 1.0,
@@ -300,16 +300,16 @@
           "tp": 3
         },
         "stream_bug_report": {
-          "f1": 0.7692307692307693,
+          "f1": 0.769230769231,
           "fn": 2,
           "fp": 1,
-          "precision": 0.8333333333333334,
-          "recall": 0.7142857142857143,
+          "precision": 0.833333333333,
+          "recall": 0.714285714286,
           "support": 7,
           "tp": 5
         },
         "stream_goal": {
-          "f1": 0.5714285714285714,
+          "f1": 0.571428571429,
           "fn": 0,
           "fp": 3,
           "precision": 0.4,
@@ -334,12 +334,12 @@
     }
   },
   "delta_matched_103_jev_minus_llama": {
-    "accuracy_all": 0.029126213592232997,
+    "accuracy_all": 0.029126213592,
     "live_log_accuracy": 0.0,
-    "macro_f1": 0.05330287505376263,
-    "notification_fp_per_100": 0.970873786407767,
-    "notification_precision": -0.04024767801857587,
-    "notification_recall": 0.05882352941176472
+    "macro_f1": 0.053302875054,
+    "notification_fp_per_100": 0.970873786408,
+    "notification_precision": -0.040247678019,
+    "notification_recall": 0.058823529412
   },
   "grader": "docich.eval.graders.classifier.evaluate",
   "interpretation": "Observed matched-case differences only; no significance or production acceptance established. Gated pipeline predictions and ungated Llama predictions do not measure actual TTS firing. The separate 19/150 provider experiment has no published raw here.",
@@ -347,49 +347,49 @@
     "cases_per_run": 105,
     "latency_total_ms": {
       "n": 315,
-      "p50": 553.6549580283463,
-      "p95": 693.1117081549019
+      "p50": 553.654958028346,
+      "p95": 693.111708154902
     },
     "latency_ttft_ms": {
       "n": 315,
-      "p50": 284.5464579295367,
-      "p95": 409.1083339881152
+      "p50": 284.546457929537,
+      "p95": 409.108333988115
     },
     "matched_attempts": 309,
     "matched_medians": {
-      "accuracy_all": 0.6407766990291263,
+      "accuracy_all": 0.640776699029,
       "coverage": 1.0,
-      "live_log_accuracy": 0.5866666666666667,
-      "macro_f1": 0.738881073493699,
-      "notification_fp_per_100": 1.941747572815534,
-      "notification_precision": 0.8823529411764706,
-      "notification_recall": 0.8823529411764706
+      "live_log_accuracy": 0.586666666667,
+      "macro_f1": 0.738881073494,
+      "notification_fp_per_100": 1.941747572816,
+      "notification_precision": 0.882352941176,
+      "notification_recall": 0.882352941176
     },
     "matched_notification_fp": 6,
-    "matched_notification_fp_per_100": 1.941747572815534,
+    "matched_notification_fp_per_100": 1.941747572816,
     "n_attempts": 315,
     "parse_failures": 0,
     "per_run_full_105": {
       "1": {
-        "accuracy_all": 0.6285714285714286,
-        "accuracy_on_available": 0.6285714285714286,
+        "accuracy_all": 0.628571428571,
+        "accuracy_on_available": 0.628571428571,
         "available": 105,
         "correct": 66,
         "coverage": 1.0,
-        "live_log_accuracy": 0.5866666666666667,
-        "live_log_accuracy_on_available": 0.5866666666666667,
+        "live_log_accuracy": 0.586666666667,
+        "live_log_accuracy_on_available": 0.586666666667,
         "live_log_available": 75,
         "live_log_correct": 44,
         "live_log_n": 75,
-        "macro_f1": 0.7339270490805018,
+        "macro_f1": 0.733927049081,
         "n": 105,
         "notification": {
-          "f1": 0.8823529411764706,
+          "f1": 0.882352941176,
           "fn": 2,
           "fp": 2,
-          "fp_per_100": 1.9047619047619047,
-          "precision": 0.8823529411764706,
-          "recall": 0.8823529411764706,
+          "fp_per_100": 1.904761904762,
+          "precision": 0.882352941176,
+          "recall": 0.882352941176,
           "support": 17,
           "tp": 15
         },
@@ -405,20 +405,20 @@
             "tp": 2
           },
           "card_gacha": {
-            "f1": 0.8235294117647058,
+            "f1": 0.823529411765,
             "fn": 2,
             "fp": 1,
             "precision": 0.875,
-            "recall": 0.7777777777777778,
+            "recall": 0.777777777778,
             "support": 9,
             "tp": 7
           },
           "chitchat": {
-            "f1": 0.5833333333333334,
+            "f1": 0.583333333333,
             "fn": 15,
             "fp": 5,
-            "precision": 0.7368421052631579,
-            "recall": 0.4827586206896552,
+            "precision": 0.736842105263,
+            "recall": 0.48275862069,
             "support": 29,
             "tp": 14
           },
@@ -427,7 +427,7 @@
             "fn": 2,
             "fp": 0,
             "precision": 1.0,
-            "recall": 0.3333333333333333,
+            "recall": 0.333333333333,
             "support": 3,
             "tp": 1
           },
@@ -436,25 +436,25 @@
             "fn": 1,
             "fp": 0,
             "precision": 1.0,
-            "recall": 0.6666666666666666,
+            "recall": 0.666666666667,
             "support": 3,
             "tp": 2
           },
           "game_status": {
-            "f1": 0.6666666666666666,
+            "f1": 0.666666666667,
             "fn": 1,
             "fp": 13,
-            "precision": 0.5185185185185185,
-            "recall": 0.9333333333333333,
+            "precision": 0.518518518519,
+            "recall": 0.933333333333,
             "support": 15,
             "tp": 14
           },
           "general_question": {
-            "f1": 0.43478260869565216,
+            "f1": 0.434782608696,
             "fn": 1,
             "fp": 12,
-            "precision": 0.29411764705882354,
-            "recall": 0.8333333333333334,
+            "precision": 0.294117647059,
+            "recall": 0.833333333333,
             "support": 6,
             "tp": 5
           },
@@ -462,8 +462,8 @@
             "f1": 0.5,
             "fn": 11,
             "fp": 5,
-            "precision": 0.6153846153846154,
-            "recall": 0.42105263157894735,
+            "precision": 0.615384615385,
+            "recall": 0.421052631579,
             "support": 19,
             "tp": 8
           },
@@ -471,7 +471,7 @@
             "f1": 0.8,
             "fn": 0,
             "fp": 1,
-            "precision": 0.6666666666666666,
+            "precision": 0.666666666667,
             "recall": 1.0,
             "support": 2,
             "tp": 2
@@ -486,7 +486,7 @@
             "tp": 2
           },
           "strategy_advice": {
-            "f1": 0.6666666666666666,
+            "f1": 0.666666666667,
             "fn": 2,
             "fp": 0,
             "precision": 1.0,
@@ -499,7 +499,7 @@
             "fn": 4,
             "fp": 2,
             "precision": 0.6,
-            "recall": 0.42857142857142855,
+            "recall": 0.428571428571,
             "support": 7,
             "tp": 3
           },
@@ -524,25 +524,25 @@
         }
       },
       "2": {
-        "accuracy_all": 0.6285714285714286,
-        "accuracy_on_available": 0.6285714285714286,
+        "accuracy_all": 0.628571428571,
+        "accuracy_on_available": 0.628571428571,
         "available": 105,
         "correct": 66,
         "coverage": 1.0,
-        "live_log_accuracy": 0.5866666666666667,
-        "live_log_accuracy_on_available": 0.5866666666666667,
+        "live_log_accuracy": 0.586666666667,
+        "live_log_accuracy_on_available": 0.586666666667,
         "live_log_available": 75,
         "live_log_correct": 44,
         "live_log_n": 75,
-        "macro_f1": 0.7339270490805018,
+        "macro_f1": 0.733927049081,
         "n": 105,
         "notification": {
-          "f1": 0.8823529411764706,
+          "f1": 0.882352941176,
           "fn": 2,
           "fp": 2,
-          "fp_per_100": 1.9047619047619047,
-          "precision": 0.8823529411764706,
-          "recall": 0.8823529411764706,
+          "fp_per_100": 1.904761904762,
+          "precision": 0.882352941176,
+          "recall": 0.882352941176,
           "support": 17,
           "tp": 15
         },
@@ -558,20 +558,20 @@
             "tp": 2
           },
           "card_gacha": {
-            "f1": 0.8235294117647058,
+            "f1": 0.823529411765,
             "fn": 2,
             "fp": 1,
             "precision": 0.875,
-            "recall": 0.7777777777777778,
+            "recall": 0.777777777778,
             "support": 9,
             "tp": 7
           },
           "chitchat": {
-            "f1": 0.5833333333333334,
+            "f1": 0.583333333333,
             "fn": 15,
             "fp": 5,
-            "precision": 0.7368421052631579,
-            "recall": 0.4827586206896552,
+            "precision": 0.736842105263,
+            "recall": 0.48275862069,
             "support": 29,
             "tp": 14
           },
@@ -580,7 +580,7 @@
             "fn": 2,
             "fp": 0,
             "precision": 1.0,
-            "recall": 0.3333333333333333,
+            "recall": 0.333333333333,
             "support": 3,
             "tp": 1
           },
@@ -589,25 +589,25 @@
             "fn": 1,
             "fp": 0,
             "precision": 1.0,
-            "recall": 0.6666666666666666,
+            "recall": 0.666666666667,
             "support": 3,
             "tp": 2
           },
           "game_status": {
-            "f1": 0.6666666666666666,
+            "f1": 0.666666666667,
             "fn": 1,
             "fp": 13,
-            "precision": 0.5185185185185185,
-            "recall": 0.9333333333333333,
+            "precision": 0.518518518519,
+            "recall": 0.933333333333,
             "support": 15,
             "tp": 14
           },
           "general_question": {
-            "f1": 0.43478260869565216,
+            "f1": 0.434782608696,
             "fn": 1,
             "fp": 12,
-            "precision": 0.29411764705882354,
-            "recall": 0.8333333333333334,
+            "precision": 0.294117647059,
+            "recall": 0.833333333333,
             "support": 6,
             "tp": 5
           },
@@ -615,8 +615,8 @@
             "f1": 0.5,
             "fn": 11,
             "fp": 5,
-            "precision": 0.6153846153846154,
-            "recall": 0.42105263157894735,
+            "precision": 0.615384615385,
+            "recall": 0.421052631579,
             "support": 19,
             "tp": 8
           },
@@ -624,7 +624,7 @@
             "f1": 0.8,
             "fn": 0,
             "fp": 1,
-            "precision": 0.6666666666666666,
+            "precision": 0.666666666667,
             "recall": 1.0,
             "support": 2,
             "tp": 2
@@ -639,7 +639,7 @@
             "tp": 2
           },
           "strategy_advice": {
-            "f1": 0.6666666666666666,
+            "f1": 0.666666666667,
             "fn": 2,
             "fp": 0,
             "precision": 1.0,
@@ -652,7 +652,7 @@
             "fn": 4,
             "fp": 2,
             "precision": 0.6,
-            "recall": 0.42857142857142855,
+            "recall": 0.428571428571,
             "support": 7,
             "tp": 3
           },
@@ -677,25 +677,25 @@
         }
       },
       "3": {
-        "accuracy_all": 0.6285714285714286,
-        "accuracy_on_available": 0.6285714285714286,
+        "accuracy_all": 0.628571428571,
+        "accuracy_on_available": 0.628571428571,
         "available": 105,
         "correct": 66,
         "coverage": 1.0,
-        "live_log_accuracy": 0.5866666666666667,
-        "live_log_accuracy_on_available": 0.5866666666666667,
+        "live_log_accuracy": 0.586666666667,
+        "live_log_accuracy_on_available": 0.586666666667,
         "live_log_available": 75,
         "live_log_correct": 44,
         "live_log_n": 75,
-        "macro_f1": 0.7339270490805018,
+        "macro_f1": 0.733927049081,
         "n": 105,
         "notification": {
-          "f1": 0.8823529411764706,
+          "f1": 0.882352941176,
           "fn": 2,
           "fp": 2,
-          "fp_per_100": 1.9047619047619047,
-          "precision": 0.8823529411764706,
-          "recall": 0.8823529411764706,
+          "fp_per_100": 1.904761904762,
+          "precision": 0.882352941176,
+          "recall": 0.882352941176,
           "support": 17,
           "tp": 15
         },
@@ -711,20 +711,20 @@
             "tp": 2
           },
           "card_gacha": {
-            "f1": 0.8235294117647058,
+            "f1": 0.823529411765,
             "fn": 2,
             "fp": 1,
             "precision": 0.875,
-            "recall": 0.7777777777777778,
+            "recall": 0.777777777778,
             "support": 9,
             "tp": 7
           },
           "chitchat": {
-            "f1": 0.5833333333333334,
+            "f1": 0.583333333333,
             "fn": 15,
             "fp": 5,
-            "precision": 0.7368421052631579,
-            "recall": 0.4827586206896552,
+            "precision": 0.736842105263,
+            "recall": 0.48275862069,
             "support": 29,
             "tp": 14
           },
@@ -733,7 +733,7 @@
             "fn": 2,
             "fp": 0,
             "precision": 1.0,
-            "recall": 0.3333333333333333,
+            "recall": 0.333333333333,
             "support": 3,
             "tp": 1
           },
@@ -742,25 +742,25 @@
             "fn": 1,
             "fp": 0,
             "precision": 1.0,
-            "recall": 0.6666666666666666,
+            "recall": 0.666666666667,
             "support": 3,
             "tp": 2
           },
           "game_status": {
-            "f1": 0.6666666666666666,
+            "f1": 0.666666666667,
             "fn": 1,
             "fp": 13,
-            "precision": 0.5185185185185185,
-            "recall": 0.9333333333333333,
+            "precision": 0.518518518519,
+            "recall": 0.933333333333,
             "support": 15,
             "tp": 14
           },
           "general_question": {
-            "f1": 0.43478260869565216,
+            "f1": 0.434782608696,
             "fn": 1,
             "fp": 12,
-            "precision": 0.29411764705882354,
-            "recall": 0.8333333333333334,
+            "precision": 0.294117647059,
+            "recall": 0.833333333333,
             "support": 6,
             "tp": 5
           },
@@ -768,8 +768,8 @@
             "f1": 0.5,
             "fn": 11,
             "fp": 5,
-            "precision": 0.6153846153846154,
-            "recall": 0.42105263157894735,
+            "precision": 0.615384615385,
+            "recall": 0.421052631579,
             "support": 19,
             "tp": 8
           },
@@ -777,7 +777,7 @@
             "f1": 0.8,
             "fn": 0,
             "fp": 1,
-            "precision": 0.6666666666666666,
+            "precision": 0.666666666667,
             "recall": 1.0,
             "support": 2,
             "tp": 2
@@ -792,7 +792,7 @@
             "tp": 2
           },
           "strategy_advice": {
-            "f1": 0.6666666666666666,
+            "f1": 0.666666666667,
             "fn": 2,
             "fp": 0,
             "precision": 1.0,
@@ -805,7 +805,7 @@
             "fn": 4,
             "fp": 2,
             "precision": 0.6,
-            "recall": 0.42857142857142855,
+            "recall": 0.428571428571,
             "support": 7,
             "tp": 3
           },
@@ -832,25 +832,25 @@
     },
     "per_run_matched_103": {
       "1": {
-        "accuracy_all": 0.6407766990291263,
-        "accuracy_on_available": 0.6407766990291263,
+        "accuracy_all": 0.640776699029,
+        "accuracy_on_available": 0.640776699029,
         "available": 103,
         "correct": 66,
         "coverage": 1.0,
-        "live_log_accuracy": 0.5866666666666667,
-        "live_log_accuracy_on_available": 0.5866666666666667,
+        "live_log_accuracy": 0.586666666667,
+        "live_log_accuracy_on_available": 0.586666666667,
         "live_log_available": 75,
         "live_log_correct": 44,
         "live_log_n": 75,
-        "macro_f1": 0.738881073493699,
+        "macro_f1": 0.738881073494,
         "n": 103,
         "notification": {
-          "f1": 0.8823529411764706,
+          "f1": 0.882352941176,
           "fn": 2,
           "fp": 2,
-          "fp_per_100": 1.941747572815534,
-          "precision": 0.8823529411764706,
-          "recall": 0.8823529411764706,
+          "fp_per_100": 1.941747572816,
+          "precision": 0.882352941176,
+          "recall": 0.882352941176,
           "support": 17,
           "tp": 15
         },
@@ -866,20 +866,20 @@
             "tp": 2
           },
           "card_gacha": {
-            "f1": 0.8235294117647058,
+            "f1": 0.823529411765,
             "fn": 2,
             "fp": 1,
             "precision": 0.875,
-            "recall": 0.7777777777777778,
+            "recall": 0.777777777778,
             "support": 9,
             "tp": 7
           },
           "chitchat": {
-            "f1": 0.5833333333333334,
+            "f1": 0.583333333333,
             "fn": 15,
             "fp": 5,
-            "precision": 0.7368421052631579,
-            "recall": 0.4827586206896552,
+            "precision": 0.736842105263,
+            "recall": 0.48275862069,
             "support": 29,
             "tp": 14
           },
@@ -888,7 +888,7 @@
             "fn": 2,
             "fp": 0,
             "precision": 1.0,
-            "recall": 0.3333333333333333,
+            "recall": 0.333333333333,
             "support": 3,
             "tp": 1
           },
@@ -897,34 +897,34 @@
             "fn": 1,
             "fp": 0,
             "precision": 1.0,
-            "recall": 0.6666666666666666,
+            "recall": 0.666666666667,
             "support": 3,
             "tp": 2
           },
           "game_status": {
-            "f1": 0.6829268292682927,
+            "f1": 0.682926829268,
             "fn": 1,
             "fp": 12,
-            "precision": 0.5384615384615384,
-            "recall": 0.9333333333333333,
+            "precision": 0.538461538462,
+            "recall": 0.933333333333,
             "support": 15,
             "tp": 14
           },
           "general_question": {
-            "f1": 0.45454545454545453,
+            "f1": 0.454545454545,
             "fn": 1,
             "fp": 11,
             "precision": 0.3125,
-            "recall": 0.8333333333333334,
+            "recall": 0.833333333333,
             "support": 6,
             "tp": 5
           },
           "other": {
-            "f1": 0.5333333333333333,
+            "f1": 0.533333333333,
             "fn": 9,
             "fp": 5,
-            "precision": 0.6153846153846154,
-            "recall": 0.47058823529411764,
+            "precision": 0.615384615385,
+            "recall": 0.470588235294,
             "support": 17,
             "tp": 8
           },
@@ -932,7 +932,7 @@
             "f1": 0.8,
             "fn": 0,
             "fp": 1,
-            "precision": 0.6666666666666666,
+            "precision": 0.666666666667,
             "recall": 1.0,
             "support": 2,
             "tp": 2
@@ -947,7 +947,7 @@
             "tp": 2
           },
           "strategy_advice": {
-            "f1": 0.6666666666666666,
+            "f1": 0.666666666667,
             "fn": 2,
             "fp": 0,
             "precision": 1.0,
@@ -960,7 +960,7 @@
             "fn": 4,
             "fp": 2,
             "precision": 0.6,
-            "recall": 0.42857142857142855,
+            "recall": 0.428571428571,
             "support": 7,
             "tp": 3
           },
@@ -985,25 +985,25 @@
         }
       },
       "2": {
-        "accuracy_all": 0.6407766990291263,
-        "accuracy_on_available": 0.6407766990291263,
+        "accuracy_all": 0.640776699029,
+        "accuracy_on_available": 0.640776699029,
         "available": 103,
         "correct": 66,
         "coverage": 1.0,
-        "live_log_accuracy": 0.5866666666666667,
-        "live_log_accuracy_on_available": 0.5866666666666667,
+        "live_log_accuracy": 0.586666666667,
+        "live_log_accuracy_on_available": 0.586666666667,
         "live_log_available": 75,
         "live_log_correct": 44,
         "live_log_n": 75,
-        "macro_f1": 0.738881073493699,
+        "macro_f1": 0.738881073494,
         "n": 103,
         "notification": {
-          "f1": 0.8823529411764706,
+          "f1": 0.882352941176,
           "fn": 2,
           "fp": 2,
-          "fp_per_100": 1.941747572815534,
-          "precision": 0.8823529411764706,
-          "recall": 0.8823529411764706,
+          "fp_per_100": 1.941747572816,
+          "precision": 0.882352941176,
+          "recall": 0.882352941176,
           "support": 17,
           "tp": 15
         },
@@ -1019,20 +1019,20 @@
             "tp": 2
           },
           "card_gacha": {
-            "f1": 0.8235294117647058,
+            "f1": 0.823529411765,
             "fn": 2,
             "fp": 1,
             "precision": 0.875,
-            "recall": 0.7777777777777778,
+            "recall": 0.777777777778,
             "support": 9,
             "tp": 7
           },
           "chitchat": {
-            "f1": 0.5833333333333334,
+            "f1": 0.583333333333,
             "fn": 15,
             "fp": 5,
-            "precision": 0.7368421052631579,
-            "recall": 0.4827586206896552,
+            "precision": 0.736842105263,
+            "recall": 0.48275862069,
             "support": 29,
             "tp": 14
           },
@@ -1041,7 +1041,7 @@
             "fn": 2,
             "fp": 0,
             "precision": 1.0,
-            "recall": 0.3333333333333333,
+            "recall": 0.333333333333,
             "support": 3,
             "tp": 1
           },
@@ -1050,34 +1050,34 @@
             "fn": 1,
             "fp": 0,
             "precision": 1.0,
-            "recall": 0.6666666666666666,
+            "recall": 0.666666666667,
             "support": 3,
             "tp": 2
           },
           "game_status": {
-            "f1": 0.6829268292682927,
+            "f1": 0.682926829268,
             "fn": 1,
             "fp": 12,
-            "precision": 0.5384615384615384,
-            "recall": 0.9333333333333333,
+            "precision": 0.538461538462,
+            "recall": 0.933333333333,
             "support": 15,
             "tp": 14
           },
           "general_question": {
-            "f1": 0.45454545454545453,
+            "f1": 0.454545454545,
             "fn": 1,
             "fp": 11,
             "precision": 0.3125,
-            "recall": 0.8333333333333334,
+            "recall": 0.833333333333,
             "support": 6,
             "tp": 5
           },
           "other": {
-            "f1": 0.5333333333333333,
+            "f1": 0.533333333333,
             "fn": 9,
             "fp": 5,
-            "precision": 0.6153846153846154,
-            "recall": 0.47058823529411764,
+            "precision": 0.615384615385,
+            "recall": 0.470588235294,
             "support": 17,
             "tp": 8
           },
@@ -1085,7 +1085,7 @@
             "f1": 0.8,
             "fn": 0,
             "fp": 1,
-            "precision": 0.6666666666666666,
+            "precision": 0.666666666667,
             "recall": 1.0,
             "support": 2,
             "tp": 2
@@ -1100,7 +1100,7 @@
             "tp": 2
           },
           "strategy_advice": {
-            "f1": 0.6666666666666666,
+            "f1": 0.666666666667,
             "fn": 2,
             "fp": 0,
             "precision": 1.0,
@@ -1113,7 +1113,7 @@
             "fn": 4,
             "fp": 2,
             "precision": 0.6,
-            "recall": 0.42857142857142855,
+            "recall": 0.428571428571,
             "support": 7,
             "tp": 3
           },
@@ -1138,25 +1138,25 @@
         }
       },
       "3": {
-        "accuracy_all": 0.6407766990291263,
-        "accuracy_on_available": 0.6407766990291263,
+        "accuracy_all": 0.640776699029,
+        "accuracy_on_available": 0.640776699029,
         "available": 103,
         "correct": 66,
         "coverage": 1.0,
-        "live_log_accuracy": 0.5866666666666667,
-        "live_log_accuracy_on_available": 0.5866666666666667,
+        "live_log_accuracy": 0.586666666667,
+        "live_log_accuracy_on_available": 0.586666666667,
         "live_log_available": 75,
         "live_log_correct": 44,
         "live_log_n": 75,
-        "macro_f1": 0.738881073493699,
+        "macro_f1": 0.738881073494,
         "n": 103,
         "notification": {
-          "f1": 0.8823529411764706,
+          "f1": 0.882352941176,
           "fn": 2,
           "fp": 2,
-          "fp_per_100": 1.941747572815534,
-          "precision": 0.8823529411764706,
-          "recall": 0.8823529411764706,
+          "fp_per_100": 1.941747572816,
+          "precision": 0.882352941176,
+          "recall": 0.882352941176,
           "support": 17,
           "tp": 15
         },
@@ -1172,20 +1172,20 @@
             "tp": 2
           },
           "card_gacha": {
-            "f1": 0.8235294117647058,
+            "f1": 0.823529411765,
             "fn": 2,
             "fp": 1,
             "precision": 0.875,
-            "recall": 0.7777777777777778,
+            "recall": 0.777777777778,
             "support": 9,
             "tp": 7
           },
           "chitchat": {
-            "f1": 0.5833333333333334,
+            "f1": 0.583333333333,
             "fn": 15,
             "fp": 5,
-            "precision": 0.7368421052631579,
-            "recall": 0.4827586206896552,
+            "precision": 0.736842105263,
+            "recall": 0.48275862069,
             "support": 29,
             "tp": 14
           },
@@ -1194,7 +1194,7 @@
             "fn": 2,
             "fp": 0,
             "precision": 1.0,
-            "recall": 0.3333333333333333,
+            "recall": 0.333333333333,
             "support": 3,
             "tp": 1
           },
@@ -1203,34 +1203,34 @@
             "fn": 1,
             "fp": 0,
             "precision": 1.0,
-            "recall": 0.6666666666666666,
+            "recall": 0.666666666667,
             "support": 3,
             "tp": 2
           },
           "game_status": {
-            "f1": 0.6829268292682927,
+            "f1": 0.682926829268,
             "fn": 1,
             "fp": 12,
-            "precision": 0.5384615384615384,
-            "recall": 0.9333333333333333,
+            "precision": 0.538461538462,
+            "recall": 0.933333333333,
             "support": 15,
             "tp": 14
           },
           "general_question": {
-            "f1": 0.45454545454545453,
+            "f1": 0.454545454545,
             "fn": 1,
             "fp": 11,
             "precision": 0.3125,
-            "recall": 0.8333333333333334,
+            "recall": 0.833333333333,
             "support": 6,
             "tp": 5
           },
           "other": {
-            "f1": 0.5333333333333333,
+            "f1": 0.533333333333,
             "fn": 9,
             "fp": 5,
-            "precision": 0.6153846153846154,
-            "recall": 0.47058823529411764,
+            "precision": 0.615384615385,
+            "recall": 0.470588235294,
             "support": 17,
             "tp": 8
           },
@@ -1238,7 +1238,7 @@
             "f1": 0.8,
             "fn": 0,
             "fp": 1,
-            "precision": 0.6666666666666666,
+            "precision": 0.666666666667,
             "recall": 1.0,
             "support": 2,
             "tp": 2
@@ -1253,7 +1253,7 @@
             "tp": 2
           },
           "strategy_advice": {
-            "f1": 0.6666666666666666,
+            "f1": 0.666666666667,
             "fn": 2,
             "fp": 0,
             "precision": 1.0,
@@ -1266,7 +1266,7 @@
             "fn": 4,
             "fp": 2,
             "precision": 0.6,
-            "recall": 0.42857142857142855,
+            "recall": 0.428571428571,
             "support": 7,
             "tp": 3
           },
@@ -1292,15 +1292,15 @@
       }
     },
     "pooled_notification_fp": 6,
-    "pooled_notification_fp_per_100": 1.9047619047619047,
+    "pooled_notification_fp_per_100": 1.904761904762,
     "run_medians": {
-      "accuracy_all": 0.6285714285714286,
+      "accuracy_all": 0.628571428571,
       "coverage": 1.0,
-      "live_log_accuracy": 0.5866666666666667,
-      "macro_f1": 0.7339270490805018,
-      "notification_fp_per_100": 1.9047619047619047,
-      "notification_precision": 0.8823529411764706,
-      "notification_recall": 0.8823529411764706
+      "live_log_accuracy": 0.586666666667,
+      "macro_f1": 0.733927049081,
+      "notification_fp_per_100": 1.904761904762,
+      "notification_precision": 0.882352941176,
+      "notification_recall": 0.882352941176
     }
   },
   "llama_measured": {
@@ -1528,6 +1528,7 @@
     "case_ids_sha256": "a7afee125e9ae11a9e5bb25973a72dd8ac4f8c909efcf5ce1c97a496e4c2f75f",
     "n": 103
   },
+  "numeric_precision": "Public JSON floats rounded to 12 decimal places after scoring/deltas; integer counts remain exact.",
   "pipeline_reproduction": {
     "events": 106,
     "reason": "Legacy raw has no case IDs; batch/latency mapping was not published. Positional scores are historical and unverified.",

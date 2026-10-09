@@ -24,6 +24,9 @@ jobs:
   saved-evidence-and-retry:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    strategy:
+      matrix:
+        python: ['3.11', '3.14']
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -31,7 +34,7 @@ jobs:
           submodules: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python }}
       - name: Offline saved evidence and synthetic retry regressions
         run: env -u PYTHONPATH python3 -m unittest discover -s bench/tests -p test_jev_baseline.py -v
       - name: Reproduce committed reports

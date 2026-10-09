@@ -58,6 +58,17 @@ def latency_quantiles(values):
     return {'n': len(values), 'p50': values[len(values) // 2], 'p95': values[int(len(values) * .95)]}
 
 
+def public_numbers(value):
+    """Canonical JSON precision across supported Python float summations."""
+    if isinstance(value, float):
+        return round(value, 12)
+    if isinstance(value, dict):
+        return {key: public_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [public_numbers(item) for item in value]
+    return value
+
+
 def build_report(repo=REPO, *, scorer=score, pipeline_path=None):
     data = load(repo, pipeline_path)
     gold, tags = data['gold'], data['tags']
@@ -83,6 +94,7 @@ def build_report(repo=REPO, *, scorer=score, pipeline_path=None):
     pooled_fp = sum(v['notification']['fp'] for v in full.values())
     matched_fp = sum(v['notification']['fp'] for v in matched_runs.values())
     result = {'schema_version': 2, 'grader': 'docich.eval.graders.classifier.evaluate',
+              'numeric_precision': 'Public JSON floats rounded to 12 decimal places after scoring/deltas; integer counts remain exact.',
               'accuracy_policy': 'Missing predictions stay in accuracy_all denominator; available-only is separate.',
               **data['metadata'], 'llama_warmup_excluded': sorted(WARMUP_IDS),
               'current_jev': {'ungated_full_106': scorer(pred, all_ids, gold, tags),
@@ -113,7 +125,7 @@ def build_report(repo=REPO, *, scorer=score, pipeline_path=None):
     result['interpretation'] = ('Observed matched-case differences only; no significance or production acceptance established. '
                                 'Gated pipeline predictions and ungated Llama predictions do not measure actual TTS firing. '
                                 'The separate 19/150 provider experiment has no published raw here.')
-    return result
+    return public_numbers(result)
 
 
 def write_report(report, out):
