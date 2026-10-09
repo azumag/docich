@@ -6621,7 +6621,10 @@ def _nethack_evidence_resources(reader, runtime, probe):
     tiles = reader.read(('runtimes', runtime, 'nethack_tiles.json'))
     result = dict(presentation_stopped=None, tiles_identity_matches=None,
                   tiles_cleanup_complete=None, tmux_absent=None,
-                  all_resources_released=None, coverage='release_records_and_tmux')
+                  all_resources_released=None, coverage='release_records_and_tmux',
+                  unknown_reasons=[])
+    if presentation is None:
+        result['unknown_reasons'].append('presentation_record_missing')
     if presentation is not None:
         result['presentation_stopped'] = presentation.get('status') == 'stopped'
     if tiles is not None:
@@ -6634,12 +6637,19 @@ def _nethack_evidence_resources(reader, runtime, probe):
         if matches and type(tiles.get('cleanup_complete')) is bool:
             result['tiles_cleanup_complete'] = (tiles['cleanup_complete']
                                                and tiles.get('status') == 'stopped')
+        elif matches:
+            result['unknown_reasons'].append('tiles_cleanup_unproven')
+    else:
+        result['unknown_reasons'].append('tiles_record_missing')
     try:
         absent = probe(generation)
         if type(absent) is bool:
             result['tmux_absent'] = absent
     except Exception:
         pass
+    if result['tmux_absent'] is None:
+        result['unknown_reasons'].append('tmux_probe_unavailable')
+    result['unknown_reasons'] += ['detached_children_unobserved', 'unregistered_workers_unobserved']
     # A stopped presenter / empty tmux cannot prove detached game children or
     # an unregistered improvement worker gone. Preserve unknown; positive
     # contrary evidence, however, can prove incomplete cleanup.
@@ -6647,6 +6657,72 @@ def _nethack_evidence_resources(reader, runtime, probe):
                                        'tiles_cleanup_complete', 'tmux_absent')):
         result['all_resources_released'] = False
     return result
+
+
+def _nethack_evidence_dispatch_history(owner, ledger, now):
+    """Observe the legacy producer checks in the already-read ledger only."""
+    unknown = ('invalid', 'invalid')
+    history = ledger.get('history')
+    if not isinstance(history, list):
+        return unknown
+    if len(history) > 512:
+        return ('scan_limit', 'scan_limit')
+
+    def stamp(value):
+        if isinstance(value, str):
+            return _nethack_evidence_time(value)
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            raise ValueError('invalid timestamp')
+        return value
+
+    try:
+        selected = stamp(ledger['pending']['selected_at'])
+        started = stamp(owner['started_at'])
+        if not selected <= started <= now or stamp(ledger['last_seen_at']) > now:
+            return unknown
+        automatic, manual = False, False
+        for row in history:
+            if not isinstance(row, dict):
+                return unknown
+            recorded = stamp(row.get('at'))
+            if recorded > now:
+                return unknown
+            if row.get('corner') == 'nethack' and recorded >= selected:
+                manual |= row.get('source') == 'manual-reservation'
+                automatic |= row.get('source') == 'reservation' and recorded <= started
+        return ('matched' if automatic else 'missing', 'present' if manual else 'absent')
+    except (KeyError, ValueError, TypeError, OverflowError):
+        return unknown
+
+
+def _nethack_evidence_contract_conditions(owner, ledger, original, landed, now):
+    """Fixed input observations, never a recovery verdict or a historical error."""
+    def category(key, expected):
+        if key not in owner:
+            return 'absent'
+        value = owner[key]
+        if value is None:
+            return 'null'
+        if not isinstance(value, str):
+            return 'invalid'
+        return expected if value == expected else 'other'
+
+    automatic, manual = _nethack_evidence_dispatch_history(owner, ledger, now)
+    result = original['result']
+    cleanup = result.get('cleanup_pending')
+    return dict(
+        previous_game=category('previous_game', 'sorengame'),
+        finish_reason=category('finish_reason', 'terminal'),
+        pending_source_absent='source' not in ledger['pending'],
+        original_source_absent='source_runtime' not in result,
+        original_restored_identity_absent='restored_runtime' not in result,
+        return_source_absent='source_runtime' not in landed['result'],
+        restore_request_distinct=original['request_id'] != ledger['pending']['request_id'],
+        original_cleanup_pending=('absent' if 'cleanup_pending' not in result else
+                                  'null' if cleanup is None else 'pending' if cleanup else 'clear'),
+        automatic_dispatch_history=automatic,
+        manual_reservation_since_selection=manual,
+    )
 
 
 def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=None):
@@ -6658,6 +6734,7 @@ def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=Non
     result = dict(schema_version=1, status='unavailable', reason='missing_evidence',
                   recovery_authority=False, snapshot_stable=None,
                   owner_matches=None, owner_terminal=None, legacy_contract_applicable=None,
+                  contract_conditions=None,
                   restore_recovery_present=None, cleanup_record_present=None,
                   cleanup_attempt_present=None, chronology_matches=None, terminal_chain_matches=None,
                   manual_clear=None, original_receipt=None, original_boundary=None,
@@ -6772,6 +6849,8 @@ def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=Non
             _nethack_evidence_time(landed['updated_at']) <= now
             and int(runtime.split('-')[0][1:]) < original['generation']
                 < original['result']['restored_generation'] < landed['generation'])
+        result['contract_conditions'] = _nethack_evidence_contract_conditions(
+            owner, ledger, original, landed, now)
         probe = probe or _nethack_evidence_tmux_absent
         result['original_resources'] = _nethack_evidence_resources(reader, runtime, probe)
         result['rollback_resources'] = _nethack_evidence_resources(reader, restored, probe)
