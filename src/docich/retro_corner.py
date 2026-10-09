@@ -2624,7 +2624,9 @@ class RetroCornerManager:
         return identity
 
     @classmethod
-    def _restore_canonical_clean(cls, canonical: dict[str, object]) -> bool:
+    def _restore_canonical_clean(
+        cls, canonical: dict[str, object], *, late_cleanup_proved: bool = False
+    ) -> bool:
         """A commit receipt alone precedes finalize; check live cleanup too."""
 
         last_result = canonical.get("last_result")
@@ -2637,7 +2639,8 @@ class RetroCornerManager:
             and canonical.get("retiring") == []
             and (last_result is None or isinstance(last_result, dict))
             and (last_result is None
-                 or cls._cleanup_proved(last_result.get("cleanup_pending")))
+                 or cls._cleanup_proved(last_result.get("cleanup_pending"))
+                 or late_cleanup_proved)
         )
 
     def _restore_failed_receipt(
@@ -2724,6 +2727,7 @@ class RetroCornerManager:
     def _restore_replay_source_proved(
         cls, canonical: dict[str, object], receipt: dict[str, object],
         expected_source: dict[str, object] | None = None,
+        *, late_cleanup_proved: bool = False,
     ) -> dict[str, object] | None:
         """Bind Case B to the failed request's actual retained/rollback owner.
 
@@ -2735,7 +2739,7 @@ class RetroCornerManager:
 
         result = receipt.get("result")
         active = cls._restore_source_identity(canonical.get("active"))
-        if (not cls._restore_canonical_clean(canonical)
+        if (not cls._restore_canonical_clean(canonical, late_cleanup_proved=late_cleanup_proved)
                 or not isinstance(result, dict) or active is None
                 or active["game"] != result.get("from_game")):
             return None
@@ -2893,11 +2897,15 @@ class RetroCornerManager:
                     and type(last.get("generation")) is int
                     and last["generation"] == replay.get("generation")
                 )
-                if not owns_driver and not owns_commit and not self._restore_canonical_clean(canonical):
+                if not owns_driver and not owns_commit and not self._restore_canonical_clean(
+                    canonical, late_cleanup_proved=late_cleanup_proved,
+                ):
                     return CornerResult("queued", game=game, previous_game=previous,
                                         detail="canonicalと切替cleanupの完了を待っています")
                 if pending:
-                    if replay is None and record["expected_source"] != self._restore_replay_source_proved(canonical, original):
+                    if replay is None and record["expected_source"] != self._restore_replay_source_proved(
+                        canonical, original, late_cleanup_proved=late_cleanup_proved,
+                    ):
                         return CornerResult("noop", game=game, previous_game=previous,
                                             detail="restore-prepared-source-unproven")
                     prepared = record
@@ -2922,6 +2930,7 @@ class RetroCornerManager:
                     source = self._restore_replay_source_proved(
                         canonical, proof,
                         expected_source=(record["expected_source"] if record is not None else None),
+                        late_cleanup_proved=late_cleanup_proved,
                     )
                     if active_game != game or source is None:
                         return CornerResult("noop", game=game, previous_game=previous,
