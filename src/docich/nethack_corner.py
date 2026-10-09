@@ -598,14 +598,57 @@ class NethackCornerManager(RetroCornerManager):
                     source = dict(active)
             except Exception:
                 pass  # Missing analytics evidence never changes the switch.
+        terminal_run = None
+        eligible = (state.get("status") in {"active", "restoring"}
+                    and state.get("finish_reason") == "terminal"
+                    and isinstance(state.get("run_id"), str))
+        if eligible:
+            from .corner_ownership import verify_runtime
+            verify_runtime(self.store, state, GAME_NAME)
+            # Freeze the first observation across queued restore retries. The
+            # later restore/write time must not admit a new rollback adventure.
+            state.setdefault("terminal_observed_at", completed_at.isoformat())
+
+        def record_terminal():
+            if not eligible or self._run_store is None:
+                return None
+            try:
+                run = self._run_store.record_confirmed_terminal(
+                    expected_run_id=state["run_id"], now=self._local_now(),
+                    terminal_observed_at=dt.datetime.fromisoformat(state["terminal_observed_at"]),
+                )
+                if run is not None:
+                    self._run_history_error = None
+                    self._remember_run_in_state(state, run)
+                return run
+            except Exception as exc:
+                self._run_history_error = _safe_detail(exc)
+                state["run_history_error"] = self._run_history_error
+                return None
+
+        # Preserve proved death before restore: rollback may create another
+        # NetHack process, and restore failures must not erase this expedition.
+        terminal_run = record_terminal()
         try:
             result = super()._finish_locked(state, completed_at)
         except Exception:
-            # The adventure can have ended even though returning to Soren
-            # failed. Keep that fact separate from corner/restore success.
-            self._remember_failed_restore_terminal(state, source, completed_at)
+            # A terminal observation uses the bounded xlog path below. The
+            # process-exit fallback must not override that cutoff or its error.
+            if not eligible and state.get("terminal_observed_at") is None:
+                self._remember_failed_restore_terminal(state, source, completed_at)
             raise
-        if self._run_store is not None and result.status == "completed":
+        finally:
+            # xlog can arrive after the terminal screen. Recheck after a failed
+            # or queued restore too, without masking the coordinator's error.
+            if terminal_run is None and state.get("status") != "interrupted":
+                terminal_run = record_terminal()
+            if eligible:
+                try:
+                    self._write_state(state)
+                except Exception:
+                    pass
+        if (self._run_store is not None and result.status == "completed"
+                and terminal_run is None):
             try:
                 run = self._run_store.record_finished(
                     now=completed_at,
