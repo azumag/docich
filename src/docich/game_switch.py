@@ -4381,6 +4381,16 @@ class GameSwitchCoordinator:
     ) -> Mapping[str, object] | None:
         """Restore the previous runtime.  Returns the terminal receipt when
         the restore commits, or None when the restore failed."""
+        # A failed candidate may still be running (notably the external Soren
+        # singleton). Tracking it as retiring is NOT proof that it stopped.
+        # Both rollback and explicit recovery must finish cleanup before they
+        # start/re-lease another game. Recovery retries leftovers first.
+        state, _migrated = self.store.canonical.load()
+        if state.get("candidate") is not None or state.get("retiring"):
+            warnings.append("未停止runtimeがあるためpreviousの再起動を拒否しました")
+            if cleanup_pending_out is not None:
+                cleanup_pending_out.append(True)
+            return None
         # Issue a fresh lease up front and bind the adapter to it, so an
         # agent started by the restore carries the lease that canonical
         # active will publish (no lease mismatch on rollback).
@@ -4490,6 +4500,24 @@ class GameSwitchCoordinator:
             if cleanup_pending_out is not None:
                 cleanup_pending_out.append(pending)
             return receipt_done
+
+        # A stopped game need not be restartable: NetHack without its save
+        # would create a NEW adventure after death, not restore the old one.
+        # Adapters may require positive continuation evidence. Do not allocate
+        # a generation or start anything when that evidence is unknown.
+        can_restore = getattr(previous_adapter, "can_restore_stopped_runtime", None)
+        if callable(can_restore):
+            try:
+                allowed = self._call_adapter(
+                    lambda cancel: can_restore(deadline, cancel),
+                    deadline, self.step_timeouts.probe_s, "restore_continuity",
+                )
+            except Exception as exc:
+                warnings.append(f"previousの継続証拠を確認できません: {_safe_detail(exc)}")
+                return None
+            if allowed is not True:
+                warnings.append("previousの継続証拠がないため新規ゲームへの置換を拒否しました")
+                return None
 
         # Replace mode: the previous game was stopped, so restore it as a
         # fresh generation (design §5 F).
@@ -5341,6 +5369,8 @@ class GameSwitchCoordinator:
         # ``recover`` result loses the generation/request needed by the next
         # recovery attempt and turns a transient readiness failure into
         # permanent canonical corruption.
+        current, _migrated = self.store.canonical.load()
+        cleanup_pending = bool(current.get("candidate") or current.get("retiring"))
         prior = state.get("last_result")
         prior = prior if isinstance(prior, Mapping) else {}
         last_result = {
@@ -5352,7 +5382,7 @@ class GameSwitchCoordinator:
             "generation": prior.get("generation"),
             "error_code": error_code,
             "detail": detail,
-            "cleanup_pending": None,
+            "cleanup_pending": True if cleanup_pending else None,
         }
         try:
             tx.transition(
@@ -5376,7 +5406,7 @@ class GameSwitchCoordinator:
             error_code=error_code,
             detail=detail,
             warnings=tuple(warnings),
-            cleanup_pending=False,
+            cleanup_pending=cleanup_pending,
             receipt=None,
         )
 
@@ -5420,7 +5450,9 @@ class GameSwitchCoordinator:
                         updates={"candidate": None},
                         crash_hook=self.crash_hook,
                     )
-        return cleanup_pending
+        # Failed candidates can already have been moved to retiring by an
+        # earlier rollback. Retry those BEFORE trying to restore previous.
+        return self._retry_retiring_locked(tx, deadline, warnings) or cleanup_pending
 
     def _finish_recovering_receipt(
         self,

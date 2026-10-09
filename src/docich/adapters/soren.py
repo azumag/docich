@@ -426,6 +426,66 @@ class SorenCoordinatorAdapter:
                 continue
         return matches[0] if len(matches) == 1 else None
 
+    def _owns_failed_candidate_cleanup(self) -> bool:
+        """Only a canonical candidate/retiring identity may create a stop.
+
+        A failed fresh-start clears the previous broker request. It must not
+        therefore become an un-stoppable singleton. The coordinator owns the
+        writer lock here; refuse any competing Soren identity, including a
+        previous or newly committed owner of the same external processes.
+        """
+        state_dir = getattr(self.g, "state_dir", None)
+        if state_dir is None or not self.spec.lease_id:
+            return False
+        state, missing = GameSwitchStore(state_dir).canonical.load()
+        if missing or state.get("phase") not in {"rolling_back", "failed", "ready"}:
+            return False
+        identity = {key: getattr(self.spec, key) for key in
+                    ("game", "adapter", "runtime_id", "generation", "lease_id")}
+        candidates = [state.get("candidate"), *(state.get("retiring") or [])]
+        if not any(isinstance(item, dict) and all(item.get(k) == v for k, v in identity.items())
+                   for item in candidates):
+            return False
+        if any(isinstance(item, dict) and item.get("adapter") == "soren"
+               for item in (state.get("active"), state.get("previous"))):
+            raise AdapterError("active/previous Sorenがあるためcandidateの停止を拒否します")
+        for item in candidates:
+            if isinstance(item, dict) and item.get("adapter") == "soren":
+                if any(item.get(k) != v for k, v in identity.items()):
+                    raise AdapterError("別Soren identityがあるためcandidateの停止を拒否します")
+        return True
+
+    def _candidate_cleanup_request(self, deadline: float, cancel) -> str:
+        # Stable across adapter reconstruction/recovery. The broker persists
+        # the first accepted deadline; an already accepted request is polled,
+        # never replaced with a fresh timeout or another UUID.
+        identity = ":".join(str(getattr(self.spec, key)) for key in
+                            ("game", "runtime_id", "generation", "lease_id"))
+        request_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "docich:soren-candidate-cleanup:" + identity))
+        payload = self._status(deadline, cancel)
+        if (type(payload.get("schema")) is not int or payload["schema"] != 1
+                or any(key not in payload for key in ("request", "ack", "resource"))):
+            raise AdapterError("Soren candidate cleanupのbroker状態が不明です")
+        if all(payload[key] is None for key in ("request", "ack", "resource")):
+            self._check(deadline, cancel)
+            self.request_round_boundary(request_id, deadline, cancel)
+            return request_id
+        receipt = payload.get("request")
+        if (not isinstance(receipt, dict) or receipt.get("request_id") != request_id
+                or receipt.get("game") != self.spec.game
+                or receipt.get("generation") != self.spec.generation):
+            raise AdapterError("Soren candidate cleanupのrequest所有者が一致しません")
+        resource = payload.get("resource")
+        if resource is not None and (not isinstance(resource, dict) or any(
+                resource.get(key) != receipt[key] for key in ("request_id", "game", "generation"))):
+            raise AdapterError("Soren candidate cleanupのresource所有者が一致しません")
+        ack = self._checked_round_boundary_ack(payload, receipt)
+        if ack.get("status") in {"accepted", "waiting"}:
+            self._wait_round_boundary(dict(receipt), deadline, cancel)
+        elif ack.get("status") not in {"boundary", "stopped"}:
+            raise AdapterError("Soren candidate cleanupのboundaryを確認できません")
+        return request_id
+
     def cleanup_runtime(self, deadline: float, cancel) -> None:
         if self._retired_singleton_is_superseded(deadline, cancel):
             return
@@ -440,10 +500,13 @@ class SorenCoordinatorAdapter:
                             and runtime.get("lease_id") == self.spec.lease_id
                             for runtime in state.get("retiring") or [])):
                 raise AdapterError("別Soren ownerが稼働中のため旧singletonの停止を拒否します")
-        request_id = self._request_id
-        if not request_id:
-            ack = self._ack(self._status(deadline, cancel))
-            request_id = str(ack.get("request_id") or "")
+        if self._owns_failed_candidate_cleanup():
+            request_id = self._candidate_cleanup_request(deadline, cancel)
+        else:
+            request_id = self._request_id
+            if not request_id:
+                ack = self._ack(self._status(deadline, cancel))
+                request_id = str(ack.get("request_id") or "")
         if not request_id:
             raise AdapterError("Soren lifecycle stop requestがありません")
         # The fixed stop path may spend up to 30 seconds draining the

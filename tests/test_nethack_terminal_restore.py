@@ -1,4 +1,5 @@
 """Synthetic terminal evidence; no production state or raw runtime logs."""
+import json
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -36,6 +37,47 @@ class TestTerminalRestore(NethackCornerTestBase):
 
     def failed_restore(self, _target):
         raise RetroCornerError("synthetic readiness timeout")
+
+    def with_process_exit_receipt(self, restore):
+        """Exercise main's real process-exit fallback beside our bounded path."""
+        from test_coordinator import _runtime_dict
+        from docich.naming import runtime_directory
+        source = _runtime_dict(1, "nethack")
+        canonical = dict(phase="ready", active=source, previous=None)
+        self.coordinator.store = SimpleNamespace(canonical=SimpleNamespace(load=lambda: (canonical, False)))
+        self.state["switch_request_id"] = "fixture-restore"
+        boundary = dict(schema_version=1, request_id="fixture-restore", player_name="fixture_player", outcome="ended",
+                        **{key: source[key] for key in ("game", "runtime_id", "generation")})
+        path = runtime_directory(self.g.state_dir, source["runtime_id"]) / "nethack_boundary.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(boundary))
+
+        def failed(target):
+            canonical.update(phase="failed", active=None, previous=source)
+            restore(target)
+        self.coordinator.switch = failed
+
+    def test_process_exit_fallback_preserves_non_observed_end(self):
+        self.state["finish_reason"] = "stalled"
+        self.with_process_exit_receipt(self.failed_restore)
+        with self.assertRaisesRegex(RetroCornerError, "synthetic readiness timeout"):
+            self.mgr._finish_locked(self.state, self.now_value)
+        self.assertIsNone(self.run_store.current())
+        self.assertEqual(self.mgr.status()["status"], "failed")
+        self.assertEqual(self.mgr.status()["run_status"], "ended_unknown")
+
+    def test_process_exit_fallback_cannot_override_terminal_observation(self):
+        observed = self.now_value
+        self.state["terminal_observed_at"] = observed.isoformat()
+        self.now_value += timedelta(seconds=60)
+        epoch = self.run["started_epoch"]
+        self.xlog.write_text(f'name=fixture_player\tstarttime={epoch + 40}\tendtime={epoch + 50}'
+                             '\tdeath=killed by a later synthetic monster\n')
+        self.with_process_exit_receipt(self.failed_restore)
+        with self.assertRaises(RetroCornerError):
+            self.mgr._finish_locked(self.state, self.now_value)
+        self.assertEqual(self.run_store.current()["status"], "active")
+        self.assertEqual(self.mgr.status()["terminal_observed_at"], observed.isoformat())
 
     def test_death_is_durable_before_restore_and_survives_timeout(self):
         self.append_terminal()
@@ -125,6 +167,18 @@ class TestTerminalRestore(NethackCornerTestBase):
             self.append_terminal()
             self.failed_restore(target)
         self.coordinator.switch = restore
+        with patch.object(self.mgr._run_store, "record_confirmed_terminal",
+                          side_effect=[None, OSError("fixture late storage failure")]):
+            with self.assertRaisesRegex(RetroCornerError, "synthetic readiness timeout"):
+                self.mgr._finish_locked(self.state, self.now_value)
+        self.assertEqual(self.run_store.current()["status"], "active")
+        self.assertIn("fixture late storage failure", self.mgr.status()["run_history_error"])
+
+    def test_process_exit_fallback_cannot_hide_late_only_history_failure(self):
+        def restore(target):
+            self.append_terminal()
+            self.failed_restore(target)
+        self.with_process_exit_receipt(restore)
         with patch.object(self.mgr._run_store, "record_confirmed_terminal",
                           side_effect=[None, OSError("fixture late storage failure")]):
             with self.assertRaisesRegex(RetroCornerError, "synthetic readiness timeout"):
