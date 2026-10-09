@@ -1969,11 +1969,30 @@ class GameSwitchCoordinator:
         *,
         timeout_s: float | None = None,
         abandon_program_view: bool = False,
+        expected_snapshot: Mapping[str, object] | None = None,
     ) -> SwitchResult:
         self._log_reset("", "recover", None)
         try:
             with self.store.transaction() as tx:
                 deadline = time.monotonic() + (timeout_s if timeout_s is not None else self.default_timeout_s)
+                if expected_snapshot is not None:
+                    # An owner-only recovery can read a stable snapshot and a
+                    # terminal game, but another legitimate switch may start
+                    # before it acquires the canonical writer lock. Refuse to
+                    # act on any changed state *inside* that same transaction.
+                    # Do not log/surface either snapshot; runtime metadata
+                    # belongs to the private store.
+                    observed, missing = self.store.canonical.load()
+                    if missing or observed != expected_snapshot:
+                        self._log("rejected", phase="", result="failed",
+                                  error_code=ERROR_SOURCE_FENCE_LOST)
+                        return SwitchResult(
+                            request_id="", operation="recover", status="failed",
+                            target=None, from_game=None, to_game=None,
+                            generation=None, error_code=ERROR_SOURCE_FENCE_LOST,
+                            detail="recover source changed before execution",
+                            warnings=(), cleanup_pending=True, receipt=None,
+                        )
                 recovered = self._recover_locked(
                     tx, deadline=deadline, abandon_program_view=abandon_program_view
                 )
