@@ -488,6 +488,24 @@ class NethackCornerManager(RetroCornerManager):
                                 or validated["expected_source"] != proof["source"]):
                             return CornerResult("failed", game=GAME_NAME,
                                                 detail="pending replay record unproven")
+                        try:
+                            replay = self._restore_recovery_receipt(
+                                validated, game=GAME_NAME, previous="sorengame"
+                            )
+                        except Exception:
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="pending replay receipt unproven")
+                        # A terminal failed/rolled-back replay may have renewed
+                        # the CLI source's lease. The generic retro operator
+                        # can then mint a replacement R2, but this fixed
+                        # NetHack owner operation is authorized only for the
+                        # original S0 -> R1 transition. Do not allocate R2,
+                        # silently accept an updated lease, or launch a new
+                        # expedition. Require separate owner investigation.
+                        if (isinstance(replay, dict)
+                                and replay.get("status") in {"failed", "rolled_back"}):
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="terminal replay requires new owner review")
                         return self._recover_restore_failed(
                             state, late_cleanup_proved=True,
                         ) or CornerResult(
