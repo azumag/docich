@@ -312,18 +312,16 @@ class NethackCornerManager(RetroCornerManager):
                 return self._finish_locked(latest, now)
 
     def recover_failed_rotation(self) -> CornerResult:
-        """Owner-only recovery of one failed automatic NetHack *restore*.
+        """Settle only the latched automatic NetHack restore, exactly once.
 
-        Never re-run a slot or fabricate a new expedition.  The current
-        rotation reservation, original restore receipt, rollback generation,
-        and a live terminal TTY must all identify the same failed handoff.
-        First converge retained game resources via normal coordinator
-        recovery.  Only after cleanup is proved may the base retro recovery
-        replay that exact recorded restore request (with its own fixed cap).
-
-        This entry point intentionally refuses unrelated failed starts,
-        manual corners, active gameplay, and unprovable old receipts.
+        This is a fixed owner operation, not a general-purpose game switch.
+        Keep the rotation reservation and NetHack manager locked throughout:
+        admission, resource cleanup, replay, and terminal observation.
+        Interrupted replay may be resumed using its already-persisted request
+        and deadline; a terminal corner may be verified for rotation-only
+        finalization without repeating the game switch.
         """
+        from .adapters.nethack import _is_dead_disclosure_prompt
         from .corner_rotation import CornerRotationManager, timestamp
 
         rotation = CornerRotationManager(self.g)
@@ -337,7 +335,8 @@ class NethackCornerManager(RetroCornerManager):
                     state = self._read_state()
                     request_id = state.get("rotation_request_id")
                     restore_id = state.get("switch_request_id")
-                    if (state.get("status") != "failed"
+                    status = state.get("status")
+                    if (status not in {"failed", "interrupted"}
                             or state.get("game") != GAME_NAME
                             or state.get("previous_game") != "sorengame"
                             or not isinstance(request_id, str) or not request_id
@@ -355,12 +354,77 @@ class NethackCornerManager(RetroCornerManager):
                             or pending.get("request_id") != request_id):
                         return CornerResult("failed", game=GAME_NAME,
                                             detail="rotation reservation differs")
-                    receipt = self.store.receipts.load(restore_id)
-                    result = receipt.get("result") if isinstance(receipt, dict) else None
+                    original = self.store.receipts.load(restore_id)
+                    result = original.get("result") if isinstance(original, dict) else None
+                    if (not isinstance(result, dict)
+                            or original.get("request_id") != restore_id
+                            or original.get("operation") != "switch"
+                            or original.get("target") != "sorengame"
+                            or original.get("status") != "rolled_back"
+                            or result.get("request_id") != restore_id
+                            or result.get("operation") != "switch"
+                            or result.get("status") != "rolled_back"
+                            or result.get("from_game") != GAME_NAME
+                            or result.get("to_game") != "sorengame"
+                            or type(result.get("generation")) is not int
+                            or result.get("generation") != original.get("generation")
+                            or type(result.get("restored_generation")) is not int):
+                        return CornerResult("failed", game=GAME_NAME,
+                                            detail="original restore receipt unproven")
+
                     canonical, missing = self.store.canonical.load()
+                    if missing:
+                        return CornerResult("failed", game=GAME_NAME,
+                                            detail="canonical unavailable")
+                    record = state.get("restore_recovery")
+                    if status == "interrupted":
+                        # A prior invocation has already completed the restore
+                        # but died before rotation committed its reservation.
+                        # Only a fully bound, succeeded replay receipt and a
+                        # clean, correct destination may release that latch.
+                        validated = self._restore_recovery_record(
+                            state, game=GAME_NAME, previous="sorengame"
+                        )
+                        if record is None or validated is None:
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="terminal replay record unproven")
+                        try:
+                            replay = self._restore_recovery_receipt(
+                                validated, game=GAME_NAME, previous="sorengame"
+                            )
+                        except Exception:
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="terminal replay receipt unproven")
+                        if (not isinstance(replay, dict)
+                                or replay.get("status") != "succeeded"
+                                or not self._restore_landed_proved(canonical, replay)):
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="terminal restore landing unproven")
+                        return CornerResult("succeeded", game=GAME_NAME,
+                                            previous_game="sorengame",
+                                            detail="terminal replay already committed")
+
+                    if record is not None:
+                        # A previous invocation already persisted a bounded
+                        # replay identity; base recovery checks the exact
+                        # immutable payload, in-flight owner, and landing.
+                        # Rechecking the *original* active NetHack here would
+                        # strand that same replay during draining or after
+                        # Soren committed. Never run coordinator.recover() or
+                        # mint a replacement request on this path.
+                        validated = self._restore_recovery_record(
+                            state, game=GAME_NAME, previous="sorengame"
+                        )
+                        if validated is None:
+                            return CornerResult("failed", game=GAME_NAME,
+                                                detail="pending replay record unproven")
+                        return self._recover_restore_failed(state) or CornerResult(
+                            "failed", game=GAME_NAME, detail="pending replay receipt unproven"
+                        )
+
                     source = canonical.get("active")
                     retiring = canonical.get("retiring")
-                    if (missing or canonical.get("phase") != "ready"
+                    if (canonical.get("phase") != "ready"
                             or canonical.get("request_id") is not None
                             or canonical.get("candidate") is not None
                             or canonical.get("previous") is not None
@@ -372,24 +436,17 @@ class NethackCornerManager(RetroCornerManager):
                                    or rt.get("game") != "sorengame"
                                    or rt.get("adapter") != "soren"
                                    for rt in retiring)
-                            or not isinstance(result, dict)
                             or canonical.get("last_result") != result
-                            or receipt.get("request_id") != restore_id
-                            or receipt.get("operation") != "switch"
-                            or receipt.get("target") != "sorengame"
-                            or receipt.get("status") != "rolled_back"
-                            or result.get("request_id") != restore_id
-                            or result.get("operation") != "switch"
-                            or result.get("status") != "rolled_back"
-                            or result.get("from_game") != GAME_NAME
-                            or result.get("to_game") != "sorengame"
-                            or type(result.get("restored_generation")) is not int
                             or result.get("restored_generation") != source.get("generation")):
                         return CornerResult("failed", game=GAME_NAME,
-                                            detail="canonical restore identity unproven")
-                    if not _is_terminal_screen(self._runtime_screen() or ""):
+                                            detail="canonical rollback source unproven")
+                    # Analytics markers are NOT safe authorization for ending
+                    # a game: savelife may leave old "You die" text beside a
+                    # perfectly alive HP-positive player. Only the adapter's
+                    # exact death disclosure with HP=0 permits this operation.
+                    if not _is_dead_disclosure_prompt(self._runtime_screen() or ""):
                         return CornerResult("failed", game=GAME_NAME,
-                                            detail="NetHack terminal screen unproven")
+                                            detail="NetHack dead disclosure unproven")
                     recovered = self.coordinator.recover(
                         timeout_s=120.0, expected_snapshot=canonical,
                     )
@@ -403,7 +460,7 @@ class NethackCornerManager(RetroCornerManager):
                     if (missing or not self._restore_canonical_clean(verified)
                             or not isinstance(after, dict)
                             or any(after.get(key) != source.get(key) for key in keys)
-                            or self._restore_replay_source_proved(verified, receipt) is None):
+                            or self._restore_replay_source_proved(verified, original) is None):
                         return CornerResult("failed", game=GAME_NAME,
                                             detail="restore source changed or cleanup unproven")
                     restored = self._recover_restore_failed(state)
