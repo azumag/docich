@@ -2,8 +2,8 @@
   "model": "llama3.1:8b-instruct-q4_K_M",
   "quantization": "8b-instruct-q4_K_M",
   "backend": "ollama",
-  "suite": "/Users/azumag/.hermes/kanban/workspaces/t_93c8260c/docich/bench/jev_eval_v1",
-  "run_dir": "/Users/azumag/.hermes/kanban/workspaces/t_93c8260c/docich/bench/runs/20261009-020558_llama3.1-8b-instruct-q4_K_M/default",
+  "suite": "bench/jev_eval_v1",
+  "run_dir": "results:2026-10-09_rtx3060_jev/llama3.1-8b-instruct-q4_K_M",
   "runs": 3,
   "cases": 315,
   "started_at": "2026-10-08T17:05:58+00:00",
@@ -25,121 +25,121 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0,
-        "support": 2
+        "support": 6
       },
       "card_gacha": {
         "precision": 0.875,
         "recall": 0.7777777777777778,
         "f1": 0.8235294117647058,
-        "support": 9
+        "support": 27
       },
       "chitchat": {
         "precision": 0.7368421052631579,
         "recall": 0.4827586206896552,
         "f1": 0.5833333333333334,
-        "support": 29
+        "support": 87
       },
       "comment_advice": {
         "precision": 1.0,
         "recall": 0.3333333333333333,
         "f1": 0.5,
-        "support": 3
+        "support": 9
       },
       "game_question": {
         "precision": 1.0,
         "recall": 0.6666666666666666,
         "f1": 0.8,
-        "support": 3
+        "support": 9
       },
       "game_status": {
         "precision": 0.5185185185185185,
         "recall": 0.9333333333333333,
         "f1": 0.6666666666666666,
-        "support": 15
+        "support": 45
       },
       "general_question": {
         "precision": 0.29411764705882354,
         "recall": 0.8333333333333334,
         "f1": 0.43478260869565216,
-        "support": 6
+        "support": 18
       },
       "other": {
         "precision": 0.6153846153846154,
         "recall": 0.42105263157894735,
         "f1": 0.5,
-        "support": 19
+        "support": 57
       },
       "raid": {
         "precision": 0.6666666666666666,
         "recall": 1.0,
         "f1": 0.8,
-        "support": 2
+        "support": 6
       },
       "sing_request": {
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0,
-        "support": 2
+        "support": 6
       },
       "strategy_advice": {
         "precision": 1.0,
         "recall": 0.5,
         "f1": 0.6666666666666666,
-        "support": 4
+        "support": 12
       },
       "stream_bug_report": {
         "precision": 0.6,
         "recall": 0.42857142857142855,
         "f1": 0.5,
-        "support": 7
+        "support": 21
       },
       "stream_goal": {
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0,
-        "support": 2
+        "support": 6
       },
       "subscription": {
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0,
-        "support": 2
+        "support": 6
       }
     },
     "confusion": {
-      "card_gacha->card_gacha": 7,
-      "card_gacha->other": 2,
-      "raid->raid": 2,
-      "game_status->game_status": 14,
-      "game_status->other": 1,
-      "general_question->general_question": 5,
-      "general_question->chitchat": 1,
-      "strategy_advice->game_status": 2,
-      "comment_advice->chitchat": 1,
-      "comment_advice->general_question": 1,
-      "stream_bug_report->stream_bug_report": 3,
-      "stream_bug_report->game_status": 3,
-      "chitchat->chitchat": 14,
-      "chitchat->general_question": 7,
-      "chitchat->other": 2,
-      "chitchat->game_status": 4,
-      "chitchat->stream_bug_report": 1,
-      "other->other": 8,
-      "other->general_question": 4,
-      "other->game_status": 3,
-      "other->card_gacha": 1,
-      "other->chitchat": 2,
-      "other->stream_bug_report": 1,
-      "stream_bug_report->chitchat": 1,
-      "strategy_advice->strategy_advice": 2,
-      "game_question->game_question": 2,
-      "sing_request->sing_request": 2,
-      "comment_advice->comment_advice": 1,
-      "subscription->subscription": 2,
-      "stream_goal->stream_goal": 2,
-      "bits->bits": 2,
-      "chitchat->raid": 1,
-      "game_question->game_status": 1
+      "card_gacha->card_gacha": 21,
+      "card_gacha->other": 6,
+      "raid->raid": 6,
+      "game_status->game_status": 42,
+      "game_status->other": 3,
+      "general_question->general_question": 15,
+      "general_question->chitchat": 3,
+      "strategy_advice->game_status": 6,
+      "comment_advice->chitchat": 3,
+      "comment_advice->general_question": 3,
+      "stream_bug_report->stream_bug_report": 9,
+      "stream_bug_report->game_status": 9,
+      "chitchat->chitchat": 42,
+      "chitchat->general_question": 21,
+      "chitchat->other": 6,
+      "chitchat->game_status": 12,
+      "chitchat->stream_bug_report": 3,
+      "other->other": 24,
+      "other->general_question": 12,
+      "other->game_status": 9,
+      "other->card_gacha": 3,
+      "other->chitchat": 6,
+      "other->stream_bug_report": 3,
+      "stream_bug_report->chitchat": 3,
+      "strategy_advice->strategy_advice": 6,
+      "game_question->game_question": 6,
+      "sing_request->sing_request": 6,
+      "comment_advice->comment_advice": 3,
+      "subscription->subscription": 6,
+      "stream_goal->stream_goal": 6,
+      "bits->bits": 6,
+      "chitchat->raid": 3,
+      "game_question->game_status": 3
     },
     "parse_failures": 0,
     "errors": 0
@@ -155,121 +155,121 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0,
-        "support": 2
+        "support": 6
       },
       "card_gacha": {
         "precision": 0.875,
         "recall": 0.7777777777777778,
         "f1": 0.8235294117647058,
-        "support": 9
+        "support": 27
       },
       "chitchat": {
         "precision": 0.7368421052631579,
         "recall": 0.4827586206896552,
         "f1": 0.5833333333333334,
-        "support": 29
+        "support": 87
       },
       "comment_advice": {
         "precision": 1.0,
         "recall": 0.3333333333333333,
         "f1": 0.5,
-        "support": 3
+        "support": 9
       },
       "game_question": {
         "precision": 1.0,
         "recall": 0.6666666666666666,
         "f1": 0.8,
-        "support": 3
+        "support": 9
       },
       "game_status": {
         "precision": 0.5185185185185185,
         "recall": 0.9333333333333333,
         "f1": 0.6666666666666666,
-        "support": 15
+        "support": 45
       },
       "general_question": {
         "precision": 0.29411764705882354,
         "recall": 0.8333333333333334,
         "f1": 0.43478260869565216,
-        "support": 6
+        "support": 18
       },
       "other": {
         "precision": 0.6153846153846154,
         "recall": 0.42105263157894735,
         "f1": 0.5,
-        "support": 19
+        "support": 57
       },
       "raid": {
         "precision": 0.6666666666666666,
         "recall": 1.0,
         "f1": 0.8,
-        "support": 2
+        "support": 6
       },
       "sing_request": {
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0,
-        "support": 2
+        "support": 6
       },
       "strategy_advice": {
         "precision": 1.0,
         "recall": 0.5,
         "f1": 0.6666666666666666,
-        "support": 4
+        "support": 12
       },
       "stream_bug_report": {
         "precision": 0.6,
         "recall": 0.42857142857142855,
         "f1": 0.5,
-        "support": 7
+        "support": 21
       },
       "stream_goal": {
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0,
-        "support": 2
+        "support": 6
       },
       "subscription": {
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0,
-        "support": 2
+        "support": 6
       }
     },
     "confusion": {
-      "card_gacha->card_gacha": 7,
-      "card_gacha->other": 2,
-      "raid->raid": 2,
-      "game_status->game_status": 14,
-      "game_status->other": 1,
-      "general_question->general_question": 5,
-      "general_question->chitchat": 1,
-      "strategy_advice->game_status": 2,
-      "comment_advice->chitchat": 1,
-      "comment_advice->general_question": 1,
-      "stream_bug_report->stream_bug_report": 3,
-      "stream_bug_report->game_status": 3,
-      "chitchat->chitchat": 14,
-      "chitchat->general_question": 7,
-      "chitchat->other": 2,
-      "chitchat->game_status": 4,
-      "chitchat->stream_bug_report": 1,
-      "other->other": 8,
-      "other->general_question": 4,
-      "other->game_status": 3,
-      "other->card_gacha": 1,
-      "other->chitchat": 2,
-      "other->stream_bug_report": 1,
-      "stream_bug_report->chitchat": 1,
-      "strategy_advice->strategy_advice": 2,
-      "game_question->game_question": 2,
-      "sing_request->sing_request": 2,
-      "comment_advice->comment_advice": 1,
-      "subscription->subscription": 2,
-      "stream_goal->stream_goal": 2,
-      "bits->bits": 2,
-      "chitchat->raid": 1,
-      "game_question->game_status": 1
+      "card_gacha->card_gacha": 21,
+      "card_gacha->other": 6,
+      "raid->raid": 6,
+      "game_status->game_status": 42,
+      "game_status->other": 3,
+      "general_question->general_question": 15,
+      "general_question->chitchat": 3,
+      "strategy_advice->game_status": 6,
+      "comment_advice->chitchat": 3,
+      "comment_advice->general_question": 3,
+      "stream_bug_report->stream_bug_report": 9,
+      "stream_bug_report->game_status": 9,
+      "chitchat->chitchat": 42,
+      "chitchat->general_question": 21,
+      "chitchat->other": 6,
+      "chitchat->game_status": 12,
+      "chitchat->stream_bug_report": 3,
+      "other->other": 24,
+      "other->general_question": 12,
+      "other->game_status": 9,
+      "other->card_gacha": 3,
+      "other->chitchat": 6,
+      "other->stream_bug_report": 3,
+      "stream_bug_report->chitchat": 3,
+      "strategy_advice->strategy_advice": 6,
+      "game_question->game_question": 6,
+      "sing_request->sing_request": 6,
+      "comment_advice->comment_advice": 3,
+      "subscription->subscription": 6,
+      "stream_goal->stream_goal": 6,
+      "bits->bits": 6,
+      "chitchat->raid": 3,
+      "game_question->game_status": 3
     },
     "parse_failures": 0,
     "errors": 0
@@ -291,37 +291,37 @@
         "precision": 0.7368421052631579,
         "recall": 0.4827586206896552,
         "f1": 0.5833333333333334,
-        "support": 29
+        "support": 87
       },
       "comment_advice": {
         "precision": 1.0,
         "recall": 0.3333333333333333,
         "f1": 0.5,
-        "support": 3
+        "support": 9
       },
       "game_question": {
         "precision": 1.0,
         "recall": 0.6666666666666666,
         "f1": 0.8,
-        "support": 3
+        "support": 9
       },
       "game_status": {
         "precision": 0.5185185185185185,
         "recall": 0.9333333333333333,
         "f1": 0.6666666666666666,
-        "support": 15
+        "support": 45
       },
       "general_question": {
         "precision": 0.29411764705882354,
         "recall": 0.8333333333333334,
         "f1": 0.43478260869565216,
-        "support": 6
+        "support": 18
       },
       "other": {
         "precision": 0.7272727272727273,
         "recall": 0.42105263157894735,
         "f1": 0.5333333333333333,
-        "support": 19
+        "support": 57
       },
       "raid": {
         "precision": 0.0,
@@ -333,49 +333,49 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0,
-        "support": 2
+        "support": 6
       },
       "strategy_advice": {
         "precision": 1.0,
         "recall": 0.5,
         "f1": 0.6666666666666666,
-        "support": 4
+        "support": 12
       },
       "stream_bug_report": {
         "precision": 0.6,
         "recall": 0.42857142857142855,
         "f1": 0.5,
-        "support": 7
+        "support": 21
       }
     },
     "confusion": {
-      "game_status->game_status": 14,
-      "game_status->other": 1,
-      "general_question->general_question": 5,
-      "general_question->chitchat": 1,
-      "strategy_advice->game_status": 2,
-      "comment_advice->chitchat": 1,
-      "comment_advice->general_question": 1,
-      "stream_bug_report->stream_bug_report": 3,
-      "stream_bug_report->game_status": 3,
-      "chitchat->chitchat": 14,
-      "chitchat->general_question": 7,
-      "chitchat->other": 2,
-      "chitchat->game_status": 4,
-      "chitchat->stream_bug_report": 1,
-      "other->other": 8,
-      "other->general_question": 4,
-      "other->game_status": 3,
-      "other->card_gacha": 1,
-      "other->chitchat": 2,
-      "other->stream_bug_report": 1,
-      "stream_bug_report->chitchat": 1,
-      "strategy_advice->strategy_advice": 2,
-      "game_question->game_question": 2,
-      "sing_request->sing_request": 2,
-      "comment_advice->comment_advice": 1,
-      "chitchat->raid": 1,
-      "game_question->game_status": 1
+      "game_status->game_status": 42,
+      "game_status->other": 3,
+      "general_question->general_question": 15,
+      "general_question->chitchat": 3,
+      "strategy_advice->game_status": 6,
+      "comment_advice->chitchat": 3,
+      "comment_advice->general_question": 3,
+      "stream_bug_report->stream_bug_report": 9,
+      "stream_bug_report->game_status": 9,
+      "chitchat->chitchat": 42,
+      "chitchat->general_question": 21,
+      "chitchat->other": 6,
+      "chitchat->game_status": 12,
+      "chitchat->stream_bug_report": 3,
+      "other->other": 24,
+      "other->general_question": 12,
+      "other->game_status": 9,
+      "other->card_gacha": 3,
+      "other->chitchat": 6,
+      "other->stream_bug_report": 3,
+      "stream_bug_report->chitchat": 3,
+      "strategy_advice->strategy_advice": 6,
+      "game_question->game_question": 6,
+      "sing_request->sing_request": 6,
+      "comment_advice->comment_advice": 3,
+      "chitchat->raid": 3,
+      "game_question->game_status": 3
     },
     "parse_failures": 0,
     "errors": 0
@@ -391,81 +391,81 @@
         "precision": 0.875,
         "recall": 0.7777777777777778,
         "f1": 0.8235294117647058,
-        "support": 9
+        "support": 27
       },
       "chitchat": {
         "precision": 0.7142857142857143,
         "recall": 0.43478260869565216,
         "f1": 0.5405405405405406,
-        "support": 23
+        "support": 69
       },
       "comment_advice": {
         "precision": null,
         "recall": 0.0,
         "f1": 0.0,
-        "support": 2
+        "support": 6
       },
       "game_status": {
         "precision": 0.5714285714285714,
         "recall": 0.9230769230769231,
         "f1": 0.7058823529411765,
-        "support": 13
+        "support": 39
       },
       "general_question": {
         "precision": 0.23076923076923078,
         "recall": 0.75,
         "f1": 0.35294117647058826,
-        "support": 4
+        "support": 12
       },
       "other": {
         "precision": 0.6153846153846154,
         "recall": 0.47058823529411764,
         "f1": 0.5333333333333333,
-        "support": 17
+        "support": 51
       },
       "raid": {
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0,
-        "support": 2
+        "support": 6
       },
       "strategy_advice": {
         "precision": null,
         "recall": 0.0,
         "f1": 0.0,
-        "support": 1
+        "support": 3
       },
       "stream_bug_report": {
         "precision": 0.5,
         "recall": 0.5,
         "f1": 0.5,
-        "support": 4
+        "support": 12
       }
     },
     "confusion": {
-      "card_gacha->card_gacha": 7,
-      "card_gacha->other": 2,
-      "raid->raid": 2,
-      "game_status->game_status": 12,
-      "game_status->other": 1,
-      "general_question->general_question": 3,
-      "general_question->chitchat": 1,
-      "strategy_advice->game_status": 1,
-      "comment_advice->chitchat": 1,
-      "comment_advice->general_question": 1,
-      "stream_bug_report->stream_bug_report": 2,
-      "stream_bug_report->game_status": 2,
-      "chitchat->chitchat": 10,
-      "chitchat->general_question": 6,
-      "chitchat->other": 2,
-      "chitchat->game_status": 4,
-      "chitchat->stream_bug_report": 1,
-      "other->other": 8,
-      "other->general_question": 3,
-      "other->game_status": 2,
-      "other->card_gacha": 1,
-      "other->chitchat": 2,
-      "other->stream_bug_report": 1
+      "card_gacha->card_gacha": 21,
+      "card_gacha->other": 6,
+      "raid->raid": 6,
+      "game_status->game_status": 36,
+      "game_status->other": 3,
+      "general_question->general_question": 9,
+      "general_question->chitchat": 3,
+      "strategy_advice->game_status": 3,
+      "comment_advice->chitchat": 3,
+      "comment_advice->general_question": 3,
+      "stream_bug_report->stream_bug_report": 6,
+      "stream_bug_report->game_status": 6,
+      "chitchat->chitchat": 30,
+      "chitchat->general_question": 18,
+      "chitchat->other": 6,
+      "chitchat->game_status": 12,
+      "chitchat->stream_bug_report": 3,
+      "other->other": 24,
+      "other->general_question": 9,
+      "other->game_status": 6,
+      "other->card_gacha": 3,
+      "other->chitchat": 6,
+      "other->stream_bug_report": 3
     },
     "parse_failures": 0,
     "errors": 0
@@ -522,6 +522,7 @@
   "per_run": [
     {
       "run": 1,
+      "n": 105,
       "accuracy": 0.6285714285714286,
       "accuracy_live_log": 0.5866666666666667,
       "macro_f1": 0.7339270490805018,
@@ -534,6 +535,7 @@
     },
     {
       "run": 2,
+      "n": 105,
       "accuracy": 0.6285714285714286,
       "accuracy_live_log": 0.5866666666666667,
       "macro_f1": 0.7339270490805018,
@@ -546,6 +548,7 @@
     },
     {
       "run": 3,
+      "n": 105,
       "accuracy": 0.6285714285714286,
       "accuracy_live_log": 0.5866666666666667,
       "macro_f1": 0.7339270490805018,

@@ -39,7 +39,8 @@ import argparse
 import datetime as dt
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+import shlex
 import statistics
 import sys
 import threading
@@ -115,18 +116,23 @@ class OllamaBackend:
                     ttft = time.monotonic() - started
                 if piece:
                     chunks.append(piece)
-                if event.get("done"):
+                if event.get("done") is True:
                     final = event
+                    break
+        if not final:
+            raise RuntimeError("Ollama stream ended without done:true")
         total = time.monotonic() - started
         text = "".join(chunks)
-        eval_count = final.get("eval_count")
+        eval_count = measured_token_count(final.get("eval_count"))
         eval_ns = final.get("eval_duration") or 0
-        prompt_eval = final.get("prompt_eval_count")
-        output_tokens = eval_count if isinstance(eval_count, int) else max(1, len(text) // 4)
-        tokens_per_second = (eval_count / (eval_ns / 1e9)) if (eval_count and eval_ns) else (
-            output_tokens / total if total > 0 else None)
+        prompt_eval = measured_token_count(final.get("prompt_eval_count"))
+        output_tokens = eval_count
+        tokens_per_second = None
+        if output_tokens is not None:
+            duration = eval_ns / 1e9 if eval_ns > 0 else total
+            tokens_per_second = output_tokens / duration if duration > 0 else None
         usage = {"input_tokens": prompt_eval, "output_tokens": output_tokens}
-        if isinstance(prompt_eval, int) and isinstance(eval_count, int):
+        if prompt_eval is not None and eval_count is not None:
             usage["total_tokens"] = prompt_eval + eval_count
         return text, {"ttft_ms": (ttft if ttft is not None else total) * 1000.0,
                       "total_ms": total * 1000.0,
@@ -136,6 +142,75 @@ class OllamaBackend:
                       "finish_reason": final.get("done_reason"),
                       "load_ms": (final.get("load_duration") or 0) / 1e6,
                       "prompt_eval_ms": (final.get("prompt_eval_duration") or 0) / 1e6}
+
+
+def measured_token_count(value):
+    """Unknown usage stays unknown; booleans and negative counts are invalid."""
+    return value if type(value) is int and value >= 0 else None
+
+
+def per_run_summary(reports, run_ids):
+    return [{"run": run_id, "n": report.get("all", {}).get("n"),
+             "accuracy": report.get("all", {}).get("accuracy"),
+             "accuracy_live_log": report.get("live_log", {}).get("accuracy"),
+             "macro_f1": report.get("all", {}).get("macro_f1"),
+             "peak_vram_mib": report.get("peak_vram_mib"),
+             "ttft_p50_ms": report["latency"]["ttft_ms"].get("p50"),
+             "ttft_p95_ms": report["latency"]["ttft_ms"].get("p95"),
+             "total_p50_ms": report["latency"]["total_ms"].get("p50"),
+             "total_p95_ms": report["latency"]["total_ms"].get("p95"),
+             "tokens_per_second_median": report["latency"]["tokens_per_second"]["median"]}
+            for run_id, report in zip(run_ids, reports)]
+
+
+def rebuild_entry(records, cases, previous, suite_dir):
+    """Recompute a native result from saved records, with no model or API calls."""
+    run_ids = sorted({row["run"] for row in records})
+    args = argparse.Namespace(**previous["generation"])
+    common = dict(model=previous["model"], quantization=previous["quantization"],
+                  backend=previous["backend"], args=args,
+                  peak_vram=previous["peak_vram_mib"], suite_dir=suite_dir,
+                  run_dir=previous["run_dir"], started_at=previous["started_at"])
+    per_run = [jb.summarize([row for row in records if row["run"] == run_id],
+                            cases, runs=1, **common) for run_id in run_ids]
+    pooled = {**previous, **jb.summarize(records, cases, runs=len(run_ids), **common),
+              "per_run": per_run_summary(per_run, run_ids)}
+    return {"model": pooled["model"], "quantization": pooled["quantization"],
+            "num_ctx": pooled["num_ctx"], "think": pooled["think"],
+            "pooled": pooled, "per_run": per_run,
+            "peak_vram_mib": pooled["peak_vram_mib"],
+            "vram_samples": pooled["vram_samples"]}
+
+
+def public_suite_reference(suite_dir, suite_digest):
+    """Use a repo-relative suite path or a content identity for external suites."""
+    try:
+        if PureWindowsPath(suite_dir).is_absolute():
+            raise ValueError("external Windows path")
+        return Path(suite_dir).resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return "suite:" + (suite_digest or "external")
+
+
+def public_report(report, *, suite_reference, run_reference):
+    """Project location fields without mutating the local report."""
+    return {**report, "suite": suite_reference, "run_dir": run_reference}
+
+
+def public_metadata(metadata, *, suite_reference):
+    """Keep measurements, and reconstruct a portable command from their settings."""
+    generation = metadata["generation"]
+    command = ["python3", "bench/tools/run_ollama_bench.py",
+               "--base-url", "<ollama-base-url>", "--suite", suite_reference,
+               "--num-ctx", str(metadata["num_ctx"]),
+               "--runs", str(metadata["runs"]), "--warmup", str(metadata["warmup"])]
+    for flag, key in (("--temperature", "temperature"), ("--top-p", "top_p"),
+                      ("--max-tokens", "max_tokens"), ("--seed", "seed")):
+        command.extend([flag, str(generation[key])])
+    for model in metadata["models"]:
+        command.extend(["--model", model])
+    command.extend(["--out", "bench/runs", "--results-dir", "bench/results"])
+    return {**metadata, "suite": suite_reference, "command": shlex.join(command)}
 
 
 class OllamaVramSampler:
@@ -298,17 +373,7 @@ def run_model(args, model, cases):
     pooled["think"] = think
     pooled["vram_samples"] = run_vram
     pooled["size_vram_mib"] = vram_mib(run_vram[-1] if run_vram else None)
-    pooled["per_run"] = [{"run": index + 1,
-                          "accuracy": r.get("all", {}).get("accuracy"),
-                          "accuracy_live_log": r.get("live_log", {}).get("accuracy"),
-                          "macro_f1": r.get("all", {}).get("macro_f1"),
-                          "peak_vram_mib": r.get("peak_vram_mib"),
-                          "ttft_p50_ms": r["latency"]["ttft_ms"].get("p50"),
-                          "ttft_p95_ms": r["latency"]["ttft_ms"].get("p95"),
-                          "total_p50_ms": r["latency"]["total_ms"].get("p50"),
-                          "total_p95_ms": r["latency"]["total_ms"].get("p95"),
-                          "tokens_per_second_median": r["latency"]["tokens_per_second"]["median"]}
-                         for index, r in enumerate(per_run)]
+    pooled["per_run"] = per_run_summary(per_run, range(1, args.runs + 1))
 
     (run_dir / "config.json").write_text(json.dumps(
         {**vars(args), "model": model, "quantization": quant, "num_ctx": args.num_ctx,
@@ -332,7 +397,7 @@ def run_model(args, model, cases):
             "peak_vram_mib": vram.peak_mib, "vram_samples": run_vram}
 
 
-AGG_FIELDS = ["model", "quantization", "num_ctx", "think", "runs", "cases_per_run",
+AGG_FIELDS = ["model", "quantization", "num_ctx", "think", "runs", "cases_per_run", "pooled_n",
               "accuracy_median", "accuracy_min", "accuracy_max", "accuracy_std",
               "accuracy_live_log_median", "macro_f1_median", "coverage_all",
               "parse_failures_total", "errors_total",
@@ -362,11 +427,14 @@ def aggregate_row(entry):
     tp95_m, _, _, _ = _stats([r["latency"]["total_ms"].get("p95") for r in runs])
     tps_m, _, _, _ = _stats([r["latency"]["tokens_per_second"]["median"] for r in runs])
     all_block = pooled.get("all", {})
+    case_counts = {r.get("all", {}).get("n") for r in runs}
+    if len(case_counts) != 1:
+        raise ValueError("cases_per_run requires equal scored counts across runs")
     last_vram = entry["vram_samples"][-1] if entry["vram_samples"] else None
     return {
         "model": entry["model"], "quantization": entry["quantization"],
         "num_ctx": entry["num_ctx"], "think": entry["think"], "runs": len(runs),
-        "cases_per_run": all_block.get("n"),
+        "cases_per_run": next(iter(case_counts)), "pooled_n": all_block.get("n"),
         "accuracy_median": acc_m, "accuracy_min": acc_min, "accuracy_max": acc_max,
         "accuracy_std": acc_std, "accuracy_live_log_median": live_m, "macro_f1_median": f1_m,
         "coverage_all": all_block.get("coverage"),
@@ -485,10 +553,12 @@ def main(argv=None):
     rows = [aggregate_row(e) for e in ok_entries]
     jb.write_csv(results_dir / "summary.csv", rows, AGG_FIELDS)
 
+    suite_reference = public_suite_reference(args.suite, loaded["manifest"]["corpus_digest"])
+    local_metadata = {**collect_metadata(args.base_url, args, models, loaded["manifest"]),
+                      "failed_models": [{"model": e["model"], "error": e["error"]}
+                                        for e in entries if "error" in e]}
     (results_dir / "metadata.json").write_text(json.dumps(
-        {**collect_metadata(args.base_url, args, models, loaded["manifest"]),
-         "failed_models": [{"model": e["model"], "error": e["error"]}
-                           for e in entries if "error" in e]},
+        public_metadata(local_metadata, suite_reference=suite_reference),
         ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     raw_dir = results_dir / "raw"
@@ -499,7 +569,10 @@ def main(argv=None):
             (raw_dir / (jb.slug(entry["model"]) + ".raw.jsonl")).write_text(
                 src.read_text(encoding="utf-8"), encoding="utf-8")
         (results_dir / (jb.slug(entry["model"]) + ".report.json")).write_text(
-            json.dumps(entry["pooled"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            json.dumps(public_report(
+                entry["pooled"], suite_reference=suite_reference,
+                run_reference=f"results:{jb.slug(results_dir.name)}/{jb.slug(entry['model'])}"),
+                ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     print("\n=== SUMMARY (%s) ===" % results_dir, flush=True)
     for row in rows:

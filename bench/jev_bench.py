@@ -329,8 +329,16 @@ def _subset(records, predicate):
 
 
 def score_subset(cases, records):
-    outputs = {row["case_id"]: {"category": row["choice"], "screen_need": None} for row in records}
-    return classifier_grader.evaluate(cases, outputs)
+    # The grader joins on case_id. Give each observed trial its own identity
+    # so repeating a case in another run cannot overwrite its prediction.
+    by_case = {case["case_id"]: case for case in cases}
+    trials = []
+    outputs = {}
+    for index, row in enumerate(records):
+        trial_id = str(index)
+        trials.append({**by_case[row["case_id"]], "case_id": trial_id})
+        outputs[trial_id] = {"category": row["choice"], "screen_need": None}
+    return classifier_grader.evaluate(trials, outputs)
 
 
 def summarize(records, cases, *, model, quantization, backend, args, peak_vram,
@@ -376,7 +384,7 @@ def summarize(records, cases, *, model, quantization, backend, args, peak_vram,
 
 def write_csv(path, rows, fieldnames):
     with Path(path).open("w", encoding="utf-8", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fieldnames, extrasaction="ignore")
+        writer = csv.DictWriter(stream, fieldnames=fieldnames, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
         for row in rows:
             writer.writerow(row)

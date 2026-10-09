@@ -1,0 +1,31 @@
+name: Jev bench offline
+
+on:
+  pull_request:
+    paths:
+      - 'bench/**'
+      - 'src/docich/eval/**'
+      - 'src/docich/comment_classifier/**'
+      - '.github/workflows/jev-bench-offline.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'bench/**'
+      - 'src/docich/eval/**'
+      - 'src/docich/comment_classifier/**'
+      - '.github/workflows/jev-bench-offline.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  offline-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Synthetic mocks and saved raw reaggregation (no inference)
+        run: env -u PYTHONPATH python3 -m unittest discover -s bench/tests -v

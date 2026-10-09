@@ -159,6 +159,36 @@ python3 bench/jev_bench.py --suite evals/comment/v1 --backend dummy --model dumm
 
 `--warmup N` は各 run の先頭 N 件を集計から除外する。`--runs N` で繰り返し、
 `summary.csv` の各行が 1 実行に対応する（同一モデルの複数 run を median/分散比較に使う）。
+
+### native Ollama の公開結果とオフライン再集計
+
+`bench/tools/run_ollama_bench.py` の公開 `summary.csv` はモデルごとに1行を出す。
+`cases_per_run` は warmup 除外後の1 run の件数、`pooled_n` は全 runs の試行数。
+accuracy / macro F1 の `*_median` は run 別の中央値であり、report の `all` は
+全試行を採点した pooled 集計となる。同じ `case_id` の各試行を独立に採点し、
+confusion と label support の合計を pooled の母数に揃える。
+
+保存した raw から report・summary・metadata のみを再生成するには:
+
+```sh
+python3 bench/tools/reaggregate_ollama_results.py bench/results/2026-10-09_rtx3060_jev
+env -u PYTHONPATH python3 -m unittest discover -s bench/tests -v
+```
+
+再生成処理は suite digest を照合し、API・GPU・VM へ接続せず、raw を読み取るだけ。
+公開 report の suite は repo 相対パス（外部 suite は digest による識別子）、run_dir は
+`results:<結果ID>/<モデルID>` とする。ローカル run の report は元の場所情報を保持する。
+公開 metadata の command は相対出力先と `<ollama-base-url>` を用いる再現用テンプレート。
+
+2026-10-09 の保存 raw は各モデル324行、warmup 除外後105件 × 3 runs = 315試行。
+訂正後の Swallow pooled accuracy は157/315 = 0.4984126984、macro F1 は0.6576904727。
+run 別 median は accuracy 0.4952380952 / macro F1 0.6555766816 のまま。
+Llama の通知ラベル FP は6/315 = 約1.90件/100件で、旧0.6件/100件を訂正した。
+この再集計でモデル採用・shadow 運用の判断は変更していない。
+
+native stream は `done:true` を受信するまで成功とせず、EOF・JSON途中終了は失敗となる。
+`eval_count` 欠落時は `output_tokens`・tokens/sec を unknown (`null`) とし、
+文字数による推定を実測列へ混ぜない。保存済み5本の raw にある実測 usage は変更しない。
 `--extra-body '{"chat_template_kwargs": {"enable_thinking": false}}'` で
 ランタイム固有オプションを全リクエストへ一律に付与できる。
 
