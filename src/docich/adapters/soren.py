@@ -12,7 +12,10 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from ..game_switch import DeadlineExceededError, GameSwitchStore, ReadinessTimeoutError, RuntimeSpec
+from ..game_switch import (
+    DeadlineExceededError, GameSwitchStore, ReadinessTimeoutError, RuntimeSpec,
+    committed_retirement_result,
+)
 from .base import AdapterError
 
 
@@ -435,10 +438,10 @@ class SorenCoordinatorAdapter:
         previous or newly committed owner of the same external processes.
         """
         state_dir = getattr(self.g, "state_dir", None)
-        if state_dir is None or not self.spec.lease_id:
+        if state_dir is None:
             return False
         state, missing = GameSwitchStore(state_dir).canonical.load()
-        if missing or state.get("phase") not in {"rolling_back", "failed", "ready"}:
+        if missing:
             return False
         identity = {key: getattr(self.spec, key) for key in
                     ("game", "adapter", "runtime_id", "generation", "lease_id")}
@@ -446,6 +449,10 @@ class SorenCoordinatorAdapter:
         if not any(isinstance(item, dict) and all(item.get(k) == v for k, v in identity.items())
                    for item in candidates):
             return False
+        if not self.spec.lease_id:
+            raise AdapterError("candidate/retiring Sorenのleaseがありません")
+        if state.get("phase") not in {"rolling_back", "failed", "ready", "idle"}:
+            raise AdapterError("candidate/retiring Sorenを停止できるphaseではありません")
         if any(isinstance(item, dict) and item.get("adapter") == "soren"
                for item in (state.get("active"), state.get("previous"))):
             raise AdapterError("active/previous Sorenがあるためcandidateの停止を拒否します")
@@ -455,6 +462,37 @@ class SorenCoordinatorAdapter:
                     raise AdapterError("別Soren identityがあるためcandidateの停止を拒否します")
         return True
 
+    def _committed_source_request(self) -> str | None:
+        """Resolve R from the retiring identity and its immutable receipt.
+
+        Current active and last_result may already describe another switch,
+        stop or recovery. Broker request data is not commit evidence.
+        """
+        store = GameSwitchStore(self.g.state_dir)
+        state, missing = store.canonical.load()
+        if missing:
+            raise AdapterError("canonical Soren retirementがありません")
+        identity = {key: getattr(self.spec, key) for key in
+                    ("game", "adapter", "runtime_id", "generation", "lease_id")}
+        for runtime in state.get("retiring") or []:
+            if not all(runtime.get(key) == value for key, value in identity.items()):
+                continue
+            if "retirement" not in runtime:
+                return None
+            proof = runtime["retirement"]
+            try:
+                if not isinstance(proof, dict):
+                    raise ValueError("missing commit proof")
+                receipt = store.receipts.load(proof.get("request_id"))
+                result = committed_retirement_result(runtime, receipt)
+                if (result["operation"] not in {"switch", "rotate"}
+                        or result["to_game"] == self.spec.game):
+                    raise ValueError("not a retiring source switch")
+            except (RuntimeError, ValueError, TypeError, KeyError) as exc:
+                raise AdapterError("退役Sorenのcommit/receipt所有権を証明できません") from exc
+            return result["request_id"]
+        return None
+
     def _candidate_cleanup_request(self, deadline: float, cancel) -> str:
         # Stable across adapter reconstruction/recovery. The broker persists
         # the first accepted deadline; an already accepted request is polled,
@@ -462,11 +500,35 @@ class SorenCoordinatorAdapter:
         identity = ":".join(str(getattr(self.spec, key)) for key in
                             ("game", "runtime_id", "generation", "lease_id"))
         request_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "docich:soren-candidate-cleanup:" + identity))
+        source_request = self._committed_source_request()
+        committed_source = source_request is not None
+        if committed_source:
+            request_id = source_request
+        if not committed_source:
+            # Neither a matching broker C nor an empty broker proves the
+            # canonical role. Legacy normal retirement must not become C.
+            state, _ = GameSwitchStore(self.g.state_dir).canonical.load()
+            identity = {key: getattr(self.spec, key) for key in
+                        ("game", "adapter", "runtime_id", "generation", "lease_id")}
+            candidate = state.get("candidate")
+            known_candidate = isinstance(candidate, dict) and all(
+                candidate.get(key) == value for key, value in identity.items()
+            )
+            known_candidate = known_candidate or any(
+                runtime.get("cleanup_role") == "failed_candidate"
+                and "retirement" not in runtime
+                and all(runtime.get(key) == value for key, value in identity.items())
+                for runtime in state.get("retiring") or []
+            )
+            if not known_candidate:
+                raise AdapterError("退役Sorenをfailed candidateとして停止する証拠がありません")
         payload = self._status(deadline, cancel)
         if (type(payload.get("schema")) is not int or payload["schema"] != 1
                 or any(key not in payload for key in ("request", "ack", "resource"))):
             raise AdapterError("Soren candidate cleanupのbroker状態が不明です")
         if all(payload[key] is None for key in ("request", "ack", "resource")):
+            if committed_source:
+                raise AdapterError("退役Sorenの元stop requestを確認できません")
             self._check(deadline, cancel)
             self.request_round_boundary(request_id, deadline, cancel)
             return request_id
@@ -482,7 +544,7 @@ class SorenCoordinatorAdapter:
         ack = self._checked_round_boundary_ack(payload, receipt)
         if ack.get("status") in {"accepted", "waiting"}:
             self._wait_round_boundary(dict(receipt), deadline, cancel)
-        elif ack.get("status") not in {"boundary", "stopped"}:
+        elif ack.get("status") not in {"boundary", "stop_requested", "stopping", "stopped"}:
             raise AdapterError("Soren candidate cleanupのboundaryを確認できません")
         return request_id
 
@@ -492,6 +554,14 @@ class SorenCoordinatorAdapter:
         state_dir = getattr(self.g, "state_dir", None)
         if state_dir is not None:
             state, missing = GameSwitchStore(state_dir).canonical.load()
+            identity = {key: getattr(self.spec, key) for key in
+                        ("game", "adapter", "runtime_id", "generation", "lease_id")}
+            owners = [state.get(key) for key in ("active", "candidate", "previous")]
+            owners.extend(state.get("retiring") or [])
+            if missing or not any(
+                    isinstance(owner, dict) and all(owner.get(k) == v for k, v in identity.items())
+                    for owner in owners):
+                raise AdapterError("canonical Soren identityが一致しないため停止を拒否します")
             active = state.get("active") or {}
             if (not missing and active.get("game") == self.spec.game
                     and active.get("adapter") == "soren"
