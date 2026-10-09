@@ -2446,7 +2446,7 @@ def test_corner_rotation_timer_projection_reports_alias_state():
         (unit_dir / 'docich-corner-rotation.timer').write_text('[Unit]')
         (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
         (unit_dir / 'docich-retro-corner.timer').symlink_to(unit_dir / 'docich-corner-rotation.timer')
-        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+        with mock.patch.object(module, 'PROD_ROOT', Path(tmp) / 'docich'):
             result = module._collect_corner_rotation_timer_alias()
         assert result['legacy_service_alias'] is True
         assert result['legacy_timer_alias'] is True
@@ -2468,7 +2468,7 @@ def test_corner_rotation_timer_projection_detects_inconsistent_alias():
         (unit_dir / 'docich-corner-rotation.timer').write_text('[Unit]')
         # Only the service alias exists (timer is missing)
         (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
-        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+        with mock.patch.object(module, 'PROD_ROOT', Path(tmp) / 'docich'):
             result = module._collect_corner_rotation_timer_alias()
         assert result['legacy_service_alias'] is True
         assert result['legacy_timer_alias'] is False
@@ -2487,7 +2487,7 @@ def test_corner_rotation_timer_projection_detects_wrong_target():
         (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
         # Timer alias points to the wrong target
         (unit_dir / 'docich-retro-corner.timer').symlink_to(unit_dir / 'docich-corner-rotation.service')
-        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+        with mock.patch.object(module, 'PROD_ROOT', Path(tmp) / 'docich'):
             result = module._collect_corner_rotation_timer_alias()
         assert result['legacy_service_alias'] is True
         assert result['legacy_timer_alias'] is True

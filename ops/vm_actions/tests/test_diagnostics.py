@@ -101,6 +101,8 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         self.assertIn(diag["status"], ("ok", "warn", "critical"))
         for section in ("meta", "workers", "queues", "ai", "improvement", "corners", "semantic_decision"):
             self.assertIn(section, diag)
+        self.assertIn("nethack_rotation_evidence", diag)
+        self.assertFalse(diag["nethack_rotation_evidence"]["recovery_authority"])
         self.assertEqual(diag["workers"]["expected"] >= 10, True)
         self.assertEqual(diag["semantic_decision"], {"present": False, "readable": False})
         self.assertEqual(diag["supervisor_identity"]["loaded_functions_status"], "unverified")
