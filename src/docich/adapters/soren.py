@@ -356,12 +356,10 @@ class SorenCoordinatorAdapter:
         request or missing process proof keeps ordinary cleanup blocked. The
         coordinator holds the canonical writer lock during teardown.
 
-        The owner may be either a restored Soren runtime in the canonical
-        active slot (the case PR#1951 handled) or another game entirely, when a
-        rollback handed the active slot to a CLI corner. The latter needs no
-        lease comparison: the only requirement is that canonical holds no Soren
-        owner and no in-flight switch, since the switching decision is then
-        proven by the coordinator's own record rather than by the broker.
+        Only another Soren runtime for the same game can own these singleton
+        processes. A CLI active slot and an idle broker do not prove either
+        process release or ownership transfer; that case must use the normal
+        request-bound stop and stopped ACK, or retain the retiring identity.
         """
         state_dir = getattr(self.g, "state_dir", None)
         if state_dir is None:
@@ -371,24 +369,14 @@ class SorenCoordinatorAdapter:
         active = state.get("active") or {}
         identity = {key: getattr(self.spec, key) for key in
                     ("game", "adapter", "runtime_id", "generation", "lease_id")}
-        # A restored Soren runtime may have lost the canonical active slot to
-        # another game entirely (a CLI corner took over after a rollback).  The
-        # evidence this decision rests on is then the coordinator's own: no
-        # canonical Soren owner, no in-flight switch, and an idle broker.
-        active_is_soren = active.get("adapter") == "soren"
-        canonical_soren_owner = active_is_soren and active.get("game") == self.spec.game
         collides = any(active.get(key) == identity[key] for key in
                        ("runtime_id", "generation", "lease_id"))
         if (missing or state.get("phase") != "ready"
                 or state.get("request_id") is not None
                 or state.get("candidate") is not None or state.get("previous") is not None
-                # Only a Soren runtime or a CLI corner may hold the active slot
-                # beside this retiring lease; any other owner is unsupported.
-                or active.get("adapter") not in {"soren", "cli"} or self.spec.adapter != "soren"
-                # A distinct lease is required, whichever kind owns the slot.
-                or collides
-                # A Soren owner of a different game is not our successor either.
-                or (active_is_soren and not canonical_soren_owner)
+                or active.get("adapter") != "soren" or self.spec.adapter != "soren"
+                or active.get("game") != self.spec.game or collides
+                or not active.get("lease_id") or not self.spec.lease_id
                 or not any(all(runtime.get(key) == value for key, value in identity.items())
                            for runtime in state.get("retiring") or [])):
             return False
