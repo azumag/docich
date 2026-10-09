@@ -158,6 +158,25 @@ class TestAutomaticNethackFailedRestore(TestCase):
         self.assertEqual(self.manager.recover_failed_rotation().status, "failed")
         self.manager.coordinator.recover.assert_not_called()
 
+    def test_later_cleanup_proof_never_authorizes_revived_character(self):
+        self.original_result["cleanup_pending"] = True
+        self.manager._read_state.return_value["restore_cleanup"] = {
+            "schema_version": 1,
+            "rotation_request_id": "rotation-123",
+            "restore_request_id": "restore-456",
+            "original_generation": 649,
+            "source": {key: self.source[key] for key in (
+                "game", "runtime_id", "generation", "lease_id"
+            )},
+        }
+        self.canonical["retiring"] = []
+        self.manager._runtime_screen.return_value = (
+            "You die...\nBut wait... you survive!\nDlvl:1 HP:18(18)"
+        )
+        self.assertEqual(self.manager.recover_failed_rotation().status, "failed")
+        self.manager.coordinator.recover.assert_not_called()
+        self.manager._recover_restore_failed.assert_not_called()
+
     def test_cleanup_pending_never_replays_restore(self):
         self.manager.coordinator.recover.return_value.cleanup_pending = True
         self.assertEqual(self.manager.recover_failed_rotation().status, "queued")
