@@ -507,7 +507,7 @@ class NethackCornerManager(RetroCornerManager):
                             return CornerResult("failed", game=GAME_NAME,
                                                 detail="terminal replay requires new owner review")
                         return self._recover_restore_failed(
-                            state, late_cleanup_proved=True,
+                            state, late_cleanup_proved=True, one_shot_replay=True,
                         ) or CornerResult(
                             "failed", game=GAME_NAME,
                             detail="pending replay receipt unproven",
@@ -610,7 +610,7 @@ class NethackCornerManager(RetroCornerManager):
                         # before preparing any new replay request.
                         self._write_state(state)
                     return self._recover_restore_failed(
-                        state, late_cleanup_proved=True,
+                        state, late_cleanup_proved=True, one_shot_replay=True,
                     ) or CornerResult(
                         "failed", game=GAME_NAME, detail="restore receipt unproven"
                     )
