@@ -29,9 +29,9 @@ class TestTerminalRestore(NethackCornerTestBase):
                           finish_reason="terminal", run_id=self.run["run_id"])
         self.mgr._write_state(self.state)
 
-    def append_terminal(self):
+    def append_terminal(self, start_delay=0):
         epoch = self.run["started_epoch"]
-        self.xlog.write_text(f'name=fixture_player\tstarttime={epoch}\tendtime={epoch + 20}'
+        self.xlog.write_text(f'name=fixture_player\tstarttime={epoch + start_delay}\tendtime={epoch + 20}'
                              '\tdeath=killed by a synthetic monster\tpoints=7\tturns=12\thp=0\n')
 
     def failed_restore(self, _target):
@@ -63,6 +63,14 @@ class TestTerminalRestore(NethackCornerTestBase):
         self.assertIsNone(self.run_store.current())
         self.assertEqual(self.mgr.status()["run_status"], "dead")
 
+    def test_delayed_character_selection_is_saved_on_restore_failure(self):
+        self.append_terminal(start_delay=5)
+        self.coordinator.switch = self.failed_restore
+        with self.assertRaises(RetroCornerError):
+            self.mgr._finish_locked(self.state, self.now_value)
+        self.assertIsNone(self.run_store.current())
+        self.assertEqual(self.mgr.status()["run_status"], "dead")
+
     def test_missing_evidence_does_not_invent_death_on_timeout(self):
         self.coordinator.switch = self.failed_restore
         with self.assertRaises(RetroCornerError):
@@ -77,6 +85,32 @@ class TestTerminalRestore(NethackCornerTestBase):
         self.assertEqual(self.mgr.status()["status"], "restoring")
         self.assertEqual(self.mgr.status()["run_status"], "dead")
 
+    def test_restore_retry_cannot_advance_original_terminal_cutoff(self):
+        self.coordinator.switch = lambda target: SimpleNamespace(status="queued", detail="fixture queue")
+        observed_at = self.now_value
+        self.assertEqual(self.mgr._finish_locked(self.state, observed_at).status, "queued")
+        self.now_value += timedelta(seconds=60)
+        epoch = self.run["started_epoch"]
+        self.xlog.write_text(f'name=fixture_player\tstarttime={epoch + 40}\tendtime={epoch + 50}'
+                             '\tdeath=killed by a later synthetic monster\n')
+        self.coordinator.switch = self.failed_restore
+        with self.assertRaises(RetroCornerError):
+            self.mgr._finish_locked(self.state, self.now_value)
+        self.assertEqual(self.mgr.status()["terminal_observed_at"], observed_at.isoformat())
+        self.assertEqual(self.run_store.current()["status"], "active")
+
+    def test_late_genuine_record_survives_delayed_restore_retry(self):
+        self.coordinator.switch = lambda target: SimpleNamespace(status="queued", detail="fixture queue")
+        observed_at = self.now_value
+        self.assertEqual(self.mgr._finish_locked(self.state, observed_at).status, "queued")
+        self.now_value += timedelta(seconds=60)
+        self.append_terminal(start_delay=5)
+        self.coordinator.switch = self.failed_restore
+        with self.assertRaises(RetroCornerError):
+            self.mgr._finish_locked(self.state, self.now_value)
+        self.assertEqual(self.mgr.status()["terminal_observed_at"], observed_at.isoformat())
+        self.assertEqual(self.mgr.status()["run_status"], "dead")
+
     def test_history_write_failure_does_not_mask_restore_failure(self):
         self.append_terminal()
         self.coordinator.switch = self.failed_restore
@@ -85,6 +119,18 @@ class TestTerminalRestore(NethackCornerTestBase):
                 self.mgr._finish_locked(self.state, self.now_value)
         self.assertEqual(self.run_store.current()["status"], "active")
         self.assertIn("fixture storage failure", self.mgr.status()["run_history_error"])
+
+    def test_late_only_history_failure_is_persisted_without_masking_restore(self):
+        def restore(target):
+            self.append_terminal()
+            self.failed_restore(target)
+        self.coordinator.switch = restore
+        with patch.object(self.mgr._run_store, "record_confirmed_terminal",
+                          side_effect=[None, OSError("fixture late storage failure")]):
+            with self.assertRaisesRegex(RetroCornerError, "synthetic readiness timeout"):
+                self.mgr._finish_locked(self.state, self.now_value)
+        self.assertEqual(self.run_store.current()["status"], "active")
+        self.assertIn("fixture late storage failure", self.mgr.status()["run_history_error"])
 
     def test_ownership_rejection_cannot_finalize_run(self):
         self.append_terminal()

@@ -759,14 +759,17 @@ class NethackRunStore:
         return records, None
 
     def record_confirmed_terminal(
-        self, *, expected_run_id: str, now: dt.datetime
+        self, *, expected_run_id: str, now: dt.datetime,
+        terminal_observed_at: dt.datetime,
     ) -> dict[str, object] | None:
         """Persist positive terminal evidence independently of restore success.
 
         A screen marker alone is insufficient. Require the corner's run, one
-        complete player record after its xlog baseline, and a lifetime spanning
-        that run's start. Ambiguous/missing evidence leaves the ledger untouched.
-        In particular a new game created by rollback cannot finish the old run.
+        complete player record after its xlog baseline, and an end between the
+        ledger start and the original terminal observation. Character selection
+        may finish after the ledger start; ubirthday is not a process start.
+        Ambiguous/missing evidence leaves the ledger untouched.
+        Later writes/retries cannot extend that observation window for rollback.
         """
         with self._locked():
             run = self._current_unlocked()
@@ -795,8 +798,11 @@ class NethackRunStore:
             record = records[0]
             start = _int_field(record, "starttime")
             end = _int_field(record, "endtime")
-            if (start is None or end is None or not start <= started <= end
-                    or end > int(now.timestamp()) or not record.get("death")):
+            observed = int(terminal_observed_at.timestamp())
+            if (terminal_observed_at.tzinfo is None or now.tzinfo is None
+                    or observed > int(now.timestamp())
+                    or start is None or end is None or start > end
+                    or not started <= end <= observed or not record.get("death")):
                 return None
             return self._record_terminal_unlocked(run, now, record, None)
 

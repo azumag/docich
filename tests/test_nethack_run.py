@@ -91,12 +91,41 @@ class NethackRunStoreTest(unittest.TestCase):
         self.append_xlog(starttime=int(self.now.timestamp()),
                          endtime=int(self.now.timestamp()) + 10)
         finished = self.store.record_confirmed_terminal(
-            expected_run_id=run["run_id"], now=self.now + timedelta(seconds=10))
+            expected_run_id=run["run_id"], now=self.now + timedelta(seconds=10), terminal_observed_at=self.now + timedelta(seconds=10))
         self.assertEqual(finished["status"], "dead")
         self.assertEqual(finished["sessions"][-1]["outcome"], "terminal")
         self.assertIsNone(self.store.current())
         self.assertEqual(self.store.record_confirmed_terminal(
-            expected_run_id=run["run_id"], now=self.now + timedelta(seconds=20)), finished)
+            expected_run_id=run["run_id"], now=self.now + timedelta(seconds=20), terminal_observed_at=self.now + timedelta(seconds=20)), finished)
+
+    def test_character_selection_after_ledger_start_is_a_genuine_terminal(self):
+        run = self.start()
+        self.append_xlog(starttime=int(self.now.timestamp()) + 5,
+                         endtime=int(self.now.timestamp()) + 20)
+        finished = self.store.record_confirmed_terminal(
+            expected_run_id=run["run_id"], now=self.now + timedelta(seconds=20), terminal_observed_at=self.now + timedelta(seconds=20))
+        self.assertIsNotNone(finished)
+        self.assertEqual(finished["status"], "dead")
+
+    def test_late_write_time_cannot_admit_a_post_observation_adventure(self):
+        run = self.start()
+        self.append_xlog(starttime=int(self.now.timestamp()) + 30,
+                         endtime=int(self.now.timestamp()) + 40)
+        before = self.store.current()
+        result = self.store.record_confirmed_terminal(
+            expected_run_id=run["run_id"], now=self.now + timedelta(seconds=60),
+            terminal_observed_at=self.now + timedelta(seconds=20))
+        self.assertIsNone(result)
+        self.assertEqual(self.store.current(), before)
+
+    def test_late_genuine_record_uses_original_observation_not_write_time(self):
+        run = self.start()
+        self.append_xlog(starttime=int(self.now.timestamp()) + 5,
+                         endtime=int(self.now.timestamp()) + 20)
+        result = self.store.record_confirmed_terminal(
+            expected_run_id=run["run_id"], now=self.now + timedelta(seconds=60),
+            terminal_observed_at=self.now + timedelta(seconds=20))
+        self.assertEqual(result["status"], "dead")
 
     def test_confirmed_terminal_repairs_interrupted_pointer_clear(self):
         from unittest.mock import patch
@@ -106,9 +135,9 @@ class NethackRunStoreTest(unittest.TestCase):
         with patch.object(self.store, "_clear_current_unlocked", side_effect=OSError("fixture crash")):
             with self.assertRaises(OSError):
                 self.store.record_confirmed_terminal(
-                    expected_run_id=run["run_id"], now=self.now + timedelta(seconds=10))
+                    expected_run_id=run["run_id"], now=self.now + timedelta(seconds=10), terminal_observed_at=self.now + timedelta(seconds=10))
         result = self.store.record_confirmed_terminal(
-            expected_run_id=run["run_id"], now=self.now + timedelta(seconds=20))
+            expected_run_id=run["run_id"], now=self.now + timedelta(seconds=20), terminal_observed_at=self.now + timedelta(seconds=20))
         self.assertEqual(result["status"], "dead")
         self.assertIsNone(self.store.current())
 
@@ -117,11 +146,11 @@ class NethackRunStoreTest(unittest.TestCase):
         self.append_xlog(starttime=int(self.now.timestamp()),
                          endtime=int(self.now.timestamp()) + 10)
         self.store.record_confirmed_terminal(
-            expected_run_id=old["run_id"], now=self.now + timedelta(seconds=10))
+            expected_run_id=old["run_id"], now=self.now + timedelta(seconds=10), terminal_observed_at=self.now + timedelta(seconds=10))
         self.now += timedelta(seconds=20)
         new = self.start()
         self.assertIsNone(self.store.record_confirmed_terminal(
-            expected_run_id=old["run_id"], now=self.now + timedelta(seconds=10)))
+            expected_run_id=old["run_id"], now=self.now + timedelta(seconds=10), terminal_observed_at=self.now + timedelta(seconds=10)))
         self.assertEqual(self.store.current()["run_id"], new["run_id"])
 
     def test_confirmed_terminal_rejects_unproved_or_other_run_evidence(self):
@@ -135,8 +164,8 @@ class NethackRunStoreTest(unittest.TestCase):
                     epoch = int(other.now.timestamp())
                     if case != "missing":
                         other.append_xlog(
-                            starttime=epoch + (1 if case == "new" else -10),
-                            endtime=epoch + (-1 if case == "old" else 100 if case == "future" else 10),
+                            starttime=epoch + (21 if case == "new" else -10),
+                            endtime=epoch + (-1 if case == "old" else 100 if case == "future" else 22 if case == "new" else 10),
                             name="another-player" if case == "other_player" else "docich")
                     if case == "partial":
                         other.xlogfile.write_bytes(other.xlogfile.read_bytes().rstrip(b"\n"))
@@ -145,7 +174,7 @@ class NethackRunStoreTest(unittest.TestCase):
                     before = other.store.current()
                     result = other.store.record_confirmed_terminal(
                         expected_run_id="00000000-0000-4000-8000-000000000000" if case == "other_run" else run["run_id"],
-                        now=other.now + timedelta(seconds=20))
+                        now=other.now + timedelta(seconds=20), terminal_observed_at=other.now + timedelta(seconds=20))
                     self.assertIsNone(result)
                     self.assertEqual(other.store.current(), before)
                 finally:

@@ -494,13 +494,17 @@ class NethackCornerManager(RetroCornerManager):
         if eligible:
             from .corner_ownership import verify_runtime
             verify_runtime(self.store, state, GAME_NAME)
+            # Freeze the first observation across queued restore retries. The
+            # later restore/write time must not admit a new rollback adventure.
+            state.setdefault("terminal_observed_at", completed_at.isoformat())
 
         def record_terminal():
             if not eligible or self._run_store is None:
                 return None
             try:
                 run = self._run_store.record_confirmed_terminal(
-                    expected_run_id=state["run_id"], now=self._local_now()
+                    expected_run_id=state["run_id"], now=self._local_now(),
+                    terminal_observed_at=dt.datetime.fromisoformat(state["terminal_observed_at"]),
                 )
                 if run is not None:
                     self._run_history_error = None
@@ -521,7 +525,7 @@ class NethackCornerManager(RetroCornerManager):
             # or queued restore too, without masking the coordinator's error.
             if terminal_run is None and state.get("status") != "interrupted":
                 terminal_run = record_terminal()
-            if terminal_run is not None:
+            if eligible:
                 try:
                     self._write_state(state)
                 except Exception:
