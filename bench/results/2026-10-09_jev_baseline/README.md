@@ -1,136 +1,108 @@
-# 現行 Jev ベースライン計測 (#1263)
+# 現行 Jev の公開保存予測の再集計 (#1263 / PR #1974)
 
-`bench/jev_eval_v1` の public ケース **106 件**（suite digest
-`sha256:d750a436...56c2b`）を **現行 Jev 分類器（本番実装）** に投入し、
-`llama3.1:8b-instruct-q4_K_M`（PR #1970）と **同一スコアリング**
-（`docich.eval.graders.classifier.evaluate`、`bench/jev_bench.py` と同じ呼び出し）
-で accuracy / macro F1 / ラベル別 P・R・F1 / coverage / parse failure を出した。
+正本は `report.json` と `score_baseline.py`。公開 raw の bytes は変更せず、
+case ID・件数・suite SHA-256 を検証して再集計する。provider/API/GPU/VM への
+再計測は行っていない。accuracy_all は miss を分母に含み、available-only は
+別 field とする。macro F1 も abstention を miss として扱う共通 grader
+`docich.eval.graders.classifier.evaluate` を使用する。
 
-## 測り方（2 ビュー）
+## 公開106件での ungated 単一パス
 
-`bench/jev_bench.py` は「1 モデル = 1 パス、ゲートなし」で測る。現行 Jev は
-パイプライン（heuristic → min_confidence 0.70 → 通知保護 → cooldown gate）
-なので、両方を同じ採点器で測っている。
+| 保存予測 | accuracy_all | available-only | macro F1 | live-log accuracy_all | coverage | miss |
+| --- | --- | --- | --- | --- | --- | --- |
+| 現行 Jev ungated (106) | 71/106 = 0.6698 | 0.7100 | 0.7899 | 46/78 = 0.5897 | 0.9434 | 6 |
 
-| ビュー | 何を測ったか |
-| --- | --- |
-| `ungated_single_pass` | ケースごとに reviewed provider へ 1 回だけ呼び、返答ラベルをそのまま採点。llama と同じ単一パス構造で、**精度の直接比較はこの列** |
-| `production_pipeline` | 本番 `bin/docich-comment-classify` を 1 ケース 1 バッチで回し、実際に row に載ったラベルを採点。ゲートと provider の flakiness を含む **実運用精度** |
+live-log available-only は 46/72 =
+0.6389。旧主表の 0.7100 / 0.6389 は
+available-only の値だった。miss込みの精度として扱わない。
 
-ゲート・閾値・通知保護を外した ungated を主比較にしているのは、llama 側にも
-それらのゲートが存在しないため。逆に pipeline 側を ungated と比べると
-「ゲットが落としている精度」がそのまま見える。
+## 同じ public 103ケースの比較
 
-## 結果
+baseline は public106件。Llama は各 run で public106件の先頭3件
+`jev-0001/0002/0003` を warmup とし、critical2件 `jev-0093/0094` を含む105件を採点。
+主比較は critical を除き、warmup3件を除いた public103件で固定する。
+対応ID・ID順序の SHA-256・各 run の採点値は report に保存している。
 
-| | accuracy | macro F1 | live-log accuracy | coverage | parse failure |
-| --- | --- | --- | --- | --- | --- |
-| 現行 Jev（ungated, 単一パス） | **0.7100** | **0.7899** | **0.6389** | 0.9434 | 6 |
-| 現行 Jev（production pipeline） | 0.6698 | 0.6303 | 0.6282 | 1.0000 | 0 |
-| heuristic のみ（Jev 不実行） | 0.5849 | 0.5169 | 0.5513 | 1.0000 | 0 |
-| llama3.1:8b-instruct-q4_K_M（PR #1970） | 0.629 | 0.734 | 0.587 | 1.00 | 0 |
+| 保存予測 | accuracy_all | available-only | macro F1 | live-log accuracy_all | coverage | miss |
+| --- | --- | --- | --- | --- | --- | --- |
+| 現行 Jev ungated (103) | 69/103 = 0.6699 | 0.7041 | 0.7922 | 44/75 = 0.5867 | 0.9515 | 5 |
+| Llama (103, 各run同値) | 66/103 = 0.6408 | 0.6408 | 0.7389 | 44/75 = 0.5867 | 1.0000 | 0 |
 
-- accuracy は「miss を誤答として数える」共通ルール。ungated の available-only は
-  0.7100 / coverage 0.9434。
-- llama の live-log 0.587 は 3 連 run 平均、現行 Jev は 1 パス。
+Llama は保存された3 run 全てを別々に採点し、中央値と pooled 母数を報告する。
+この raw では3 run が同値。Jev ungated − Llama の観測差は accuracy_all
++0.0291、macro F1 +0.0533、live-log 0.0000。missing prediction は分母から除かない。
 
-### 通知ラベル（intent_family=notification, gold 20 件）
+| 同一103件の通知分類 | precision | recall | FP / ケース | FP/100 |
+| --- | --- | --- | --- | --- |
+| 現行 Jev ungated | 0.8421 | 0.9412 | 3 / 103 | 2.9126 |
+| Llama 各run | 0.8824 | 0.8824 | 2 / 103 | 1.9417 |
 
-| | precision | recall | F1 | FP | FN |
-| --- | --- | --- | --- | --- | --- |
-| 現行 Jev（ungated） | 0.8571 | 0.9000 | 0.8780 | 3 | 2 |
-| 現行 Jev（pipeline） | 0.9412 | 0.8000 | 0.8649 | 1 | 4 |
-| llama3.1:8b | 0.882 | 0.882 | – | 0.6 / 100 件 | – |
+Llama の pooled FP は **6/309 × 100 = 1.9417**（共通103件 × 3 run）。
+元の105件 × 3 runでは **6/315 × 100 = 1.9048**。旧 0.6/100 は
+1 runの分子を3 runの分母で割った誤値であり、参照値には使用しない。
 
-- 現行 Jev の FP は `( ́・ω・) 長時間の配信乙です!N 時間に到達しました!` を
-  `stream_goal` と誤った 3 件（jev-0043 / 0044 / 0050、gold は chitchat）。
-  100 件あたり **2.83 件** で llama の 0.6 より多い。
-- FN 2 件（jev-0002 / 0007）はカード獲得通知だが、下記の provider 側
-  validator 失敗で miss になっているだけ。
+## pipeline 証拠の限界
 
-### レイテンシ
+`pipeline_metrics.jsonl` は公開済み106イベントをそのまま保持するが、case ID を持たず、
+ランダム `batch_id` からケースを復元できない。元 batches と latency/case対応記録も
+公開されていない。順序から case ID を後付けしない。
+`pipeline_reproduction.state = unavailable` として、新しい report には
+pipeline/heuristic の case別スコアと直接比較 delta を生成しない。
 
-| | p50 | p95 |
-| --- | --- | --- |
-| 現行 Jev ungated（1 呼び出し全体） | 154 ms | 204 ms |
-| 現行 Jev pipeline（jev_ms, 試行時のみ） | 308 ms | 392 ms |
-| llama3.1:8b total | 554 ms | 693 ms |
+旧 report と verify の pipeline 精度0.6698、共通103件0.6602、通知FP 1件という
+数値は、公開case順との positional join による**対応関係未検証の歴史的集計**。
+旧出力は Git の `d6bab623` に残るが、新しい集計の正本ではない。
+検証可能な実測時 case対応の公開投影が得られるまで保留する。
 
-## 発見: provider 応答が厳密 validator を約 13% の率で落とす
+## metadata と再現契約
 
-`docich.semantic_decision.validator.validate_response` は `probabilities` の
-合計を `abs_tol=1e-5` で 1.0 と比較する。現行 provider（`jev-1.13.0`,
-api.typesafe.ai）は 2 桁に丸めた確率を返すことがあり、その合計が **0.99**
-になり validator が `invalid_response` を投げる。実測（同ケース 150 呼び出し）
-で **19/150 = 12.7%**。
+- public suite: 106件、SHA-256 `d750a4361f7b7acffd46a192b1f7f5e873e8a2692cf45bbae78ce97240a46c37`。
+- critical suite: 2件、SHA-256 `3dc691d401b1bbb7d2f6cdc23f686ee8c0521bb24b6fa0b250996b0c903a7d3a`。
+- それぞれの label/intent分布の合計は対応する n と一致する。public の other は17件。
+- 実装は上記期待SHAと照合する。hashを記録するだけではない。
+- ungated は public IDと件数が完全一致し、保存goldも照合する。
+- Llama は3 run全ての public+critical ID、件数、warmup集合、保存goldを照合する。
+  欠落・重複・未知ID・run不一致は失敗する。
+- 読取pathは内部で解決し、出力へは repo相対参照と内容hashを保存する。
+  repo外の入力は内容識別子へ投影する。作業場所・時刻は serialize しない。
 
-これが起きると:
+## オフライン再現
 
-1. そのバッチは heuristic にフォールバックする（`status=invalid_response`）
-2. `COOLDOWNS['invalid_response'] = 10` 秒、direct gate が閉まる
-3. fallback の vercel は **auth_error**（キー未設定/失効）→ 300 秒 gate
-4. 以後のバッチはまとめて cooldown 落ちする
-
-suite 全体を 1 パスで流すと、この連鎖で 106 件中 **64 件が cooldown**
-（provider を一切呼ばず heuristic のまま）になった。ラベル精度そのものより
-**この可用性の低さ** が現行 Jev の実運用上の弱点。
-
-## GO / NOGO 判定
-
-判定基準（親カード t_2e3d9101 の結論）:
-
-- GO: 現行 Jev が llama の accuracy 0.629 と同等以上 **かつ** 通知 FP 率が同水準
-- NOGO: 現行 Jev が有意に上回る場合
-
-**判定: 精度は GO（現行 Jev を維持）、通知 FP は NOGO 側（llama 優位）、
-可用性は NOGO（provider flakiness が支配的）。**
-
-1. **精度**: 現行 Jev は llama3.1:8b を全指標で上回る
-   （accuracy +0.081 / macro F1 +0.056 / live-log +0.052 / 通知 recall +0.018）。
-   ローカル LLM への置き換えで精度を取る理由はない。**現行 Jev を維持**。
-2. **通知 FP**: llama 0.6/100 件に対し現行 Jev 2.83/100 件（同一パス条件）。
-   ただし pipeline 側（ゲート込み）は 0.94/100 件で、誤動作の実害は小さい。
-   `( ́・ω・) 長時間の配信乙です` 系の誤判定は閾値 or ルールで潰せる。
-3. **可用性**: llama の 693ms p95 は目標 300ms に未達、かつ VRAM 5.53GiB を
-   OBS/VRChat と奪い合う。現行 Jev の 154ms p50 は用途に対して十分速い。
-
-**結論: shadow mode の GO / NOGO という問い自体が成立しない。** ローカル LLM は
-精度でも速さでも現行 Jev を越えていないので、置き換え候補ではない。
-親カードの結論（「現行 Jev 維持・ローカル LLM は shadow mode で段階検証」）を
-**維持**する。むしろ優先すべきは上記 provider flakiness（13% の validator 失敗
-→ 10 秒/300 秒 gate 連鎖）で、これは shadow mode より前に潰すべき本番缺陷。
-
-## 改善条件（NOGO 時に記録する差分）
-
-- 差分が最大のラベル: 現行 Jev の FP は `stream_goal`（長時間配信通知の誤判定）、
-  FN は `card_gacha`（validator 失敗による見かけ上の取りこぼし）。
-- 条件 1: provider の `probabilities` 丸め（2 桁）を validator が許すか、
-  provider 側で少数桁を増やす。これだけで 12.7% の invalid_response が消え、
-  pipeline coverage が実効 100% に近づく。
-- 条件 2: vercel fallback の認証情報を修正する（現状は常時 auth_error で
-  実質 fallback が機能していない）。
-- 条件 3: `stream_goal` の FP は「N 時間に到達しました」パターンを
-  heuristic 側で除外するか、通知ラベルの min_confidence を引き上げる。
-
-## 再現
+repository の任意の clean checkout から実行できる。キー・非公開 workspace・
+batches は不要。入力は公開 suite2ファイル、ungated raw、pipeline raw、Llama raw。
 
 ```sh
-# VM 上（Soren 本番実装を read-only で分類させる。state/metrics は
-# /home/ubuntu/jev-baseline-* に逃がし、本番 gate と telemetry は触らない）
-scp run_baseline.sh run_ungated_on_vm.py ubuntu@soren-prod-vnic:~
-scp public_cases.jsonl ubuntu@soren-prod-vnic:/home/ubuntu/jev-baseline-suite/
-ssh ubuntu@soren-prod-vnic 'bash ~/run_jev_baseline.sh'          # pipeline ビュー
-ssh ubuntu@soren-prod-vnic 'python3 ~/run_ungated_on_vm.py'      # ungated ビュー
-
-# 手元（採点のみ。provider キーは不要）
-python3 score_baseline.py      # -> report.json
+python3 bench/results/2026-10-09_jev_baseline/score_baseline.py
+python3 bench/results/2026-10-09_jev_baseline/verify/score_independent.py
+python3 -m unittest discover -s bench/tests -p test_jev_baseline.py -v
 ```
 
-## public_safe 確認
+`verify/score_independent.py` は入力identity検証と出力schemaを共有するが、
+metric算術は共通graderを呼ばず別実装する。二つの checkout場所からのbyte一致、
+両 scorerの一致、分母・metadata・不一致入力・retryを回帰テストする。
 
-- `@handle` は全ケース `[user]` 投影済み（suite 側で実施）。
-- 生ログは Git に置いていない。本計測で書き出したのは
-  `report.json` / `ungated_results.jsonl`（ラベルと採点のみ）/ `pipeline_metrics.jsonl`
-  （telemetry event。`rows` は baseline/candidate/selected/status のみで
-  コメント本文を含まない）。
-- 資格情報（TYPESAFE_API_KEY 等）は成果物に一切含まれないことを確認済み。
+## 今後の収集コード（今回未実行）
+
+`build_batches.py <public_cases.jsonl> <out_dir>` は case IDと相対batch名を manifestへ保存。
+`run_baseline.sh` が正しい収集script名。実行には別途 provider呼出の許可が必要。
+準備済みrepoで既存の安全な環境設定を使用し、`BATCH_DIR` と新しい `RUN_DIR` を指定する。
+今回これらのlive収集scriptは実行していない。
+
+runner は各 case呼出の専用metrics directoryを使い、イベント1件/row1件を検証して
+case ID・pass・exit code・latencyを保存する。passファイルを残し、前passの成功ケースは
+再試行対象に含めず、全caseの latest eventへmergeする。passのID・件数・順序が
+期待したpending集合と異なる場合は失敗する。後続pass開始時も前passの記録を消さない。
+
+合成classifierによる「成功1件＋retry1件」のshell実行で、pass1成功event/latency保持、
+retryだけの更新、元pass保持を検証する。新収集の証拠を既存rawへ補完した扱いにはしない。
+
+## 解釈と保留
+
+観測値の差は統計的有意性・採否確定・本番受入を証明しない。live-log は同値。
+pipeline は通知保護/cooldownを含み、Llama はungatedで条件が異なる。
+実TTS発火は測定していないので、分類FPから実害の大小を結論しない。
+19/150の別provider実験には公開rawがなく、このcheckoutから再現できない。
+本番hash一致もここでは独立確認していない。#1933/#1934 の残条件は別件として保持する。
+
+今回の作業はoffline修正のみ。VM・本番・配信バナー/音声は未操作。
+handoff正本参照は未設定で未読/未更新。PRはReadyのまま維持し、mergeしない。

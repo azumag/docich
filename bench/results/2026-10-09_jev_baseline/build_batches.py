@@ -21,6 +21,12 @@ def build(suite_path: Path, out_dir: Path) -> list[dict]:
     manifest = []
     with suite_path.open(encoding="utf-8") as stream:
         rows = [json.loads(line) for line in stream if line.strip()]
+    ids = [case['case_id'] for case in rows]
+    if len(set(ids)) != len(ids):
+        raise ValueError('duplicate case ID in suite')
+    import re
+    if any(not re.fullmatch(r'jev-\d{4}', cid) for cid in ids):
+        raise ValueError('invalid case ID in suite')
     for case in rows:
         case_id = case["case_id"]
         comment = case["input"]["comment"]
@@ -29,7 +35,7 @@ def build(suite_path: Path, out_dir: Path) -> list[dict]:
         line = f"{PROBE_USER}: {comment}"
         batch = out_dir / f"{case_id}.txt"
         batch.write_text(line + "\n", encoding="utf-8")
-        manifest.append({"case_id": case_id, "batch": str(batch),
+        manifest.append({"case_id": case_id, "batch": batch.name,
                          "expected_category": case["expected"]["category"],
                          "intent_family": case["expected"]["intent_family"],
                          "tags": list(case.get("tags") or [])})

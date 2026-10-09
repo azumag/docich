@@ -1,0 +1,43 @@
+name: Jev baseline offline evidence
+
+on:
+  pull_request:
+    paths:
+      - 'bench/results/2026-10-09_jev_baseline/**'
+      - 'bench/results/2026-10-09_rtx3060_jev/raw/llama3.1-8b-instruct-q4_K_M.raw.jsonl'
+      - 'bench/jev_eval_v1/**'
+      - 'bench/tests/test_jev_baseline.py'
+      - 'src/docich/eval/**'
+      - '.github/workflows/jev-baseline-offline.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'bench/results/2026-10-09_jev_baseline/**'
+      - 'bench/jev_eval_v1/**'
+      - 'bench/tests/test_jev_baseline.py'
+      - '.github/workflows/jev-baseline-offline.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  saved-evidence-and-retry:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Offline saved evidence and synthetic retry regressions
+        run: env -u PYTHONPATH python3 -m unittest discover -s bench/tests -p test_jev_baseline.py -v
+      - name: Reproduce committed reports
+        run: |
+          python3 bench/results/2026-10-09_jev_baseline/score_baseline.py
+          python3 bench/results/2026-10-09_jev_baseline/verify/score_independent.py
+          git diff --exit-code -- bench/results/2026-10-09_jev_baseline/report.json bench/results/2026-10-09_jev_baseline/verify/independent_summary.json
+      - name: Collection shell syntax (no provider calls)
+        run: bash -n bench/results/2026-10-09_jev_baseline/run_baseline.sh

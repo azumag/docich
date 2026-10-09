@@ -1,209 +1,135 @@
 #!/usr/bin/env python3
-"""Score the live-Jev baseline (#1263) with the SAME grader the bench uses.
-
-Both views are graded by ``docich.eval.graders.classifier.evaluate`` -- the exact
-call ``bench/jev_bench.py`` makes -- so the numbers are directly comparable with
-the local-LLM column in ``bench/results/2026-10-09_rtx3060_jev``.
-
-view "ungated"  one reviewed provider call per case, no production gates, no
-                 retries. This is the apples-to-apples comparison with
-                 llama3.1:8b (acc 0.629 / macro_f1 0.734 / live-log 0.587),
-                 which the harness also scores single-pass.
-view "pipeline" the production classifier's own output row per case, including
-                 min_confidence 0.70, notification protection and the cooldown
-                 gate. This is the honest live-accuracy number.
-
-A response the core's strict validator rejects is a miss in both views and is
-counted in ``parse_failures``/``coverage``, exactly as the harness counts an
-unparseable model answer.
-"""
+"""Re-score saved #1974 evidence offline with the common classifier grader."""
 from __future__ import annotations
 
+import argparse
+from collections import Counter
 import json
 from pathlib import Path
+import statistics
 import sys
 
-REPO = Path("/tmp/jev1933")
-sys.path.insert(0, str(REPO / "src"))
-
-from docich.comment_classifier import jev  # noqa: E402
-from docich.eval.graders import classifier as grader  # noqa: E402
-
-BASE = Path("/Users/azumag/.hermes/kanban/workspaces/t_7d465767/jev_baseline")
-NOTIFICATION = frozenset(jev.NOTIFICATIONS)
-LABELS = sorted(jev.CRITERIA)
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[2]
+sys.path.insert(0, str(REPO / 'src'))
+from docich.eval.graders import classifier as grader
+from evidence_inputs import NOTIFICATIONS, WARMUP_IDS, load
 
 
-def load_cases() -> dict:
-    out = {}
-    with (BASE / "public_cases.jsonl").open(encoding="utf-8") as stream:
-        for line in stream:
-            if line.strip():
-                case = json.loads(line)
-                out[case["case_id"]] = case
-    return out
+def score(pred, subset, gold, tags):
+    cases = [{'case_id': cid, 'expected': {'category': gold[cid],
+              'intent_family': None, 'screen_need': None}} for cid in subset]
+    outputs = {cid: {'category': pred.get(cid)} for cid in subset}
+    s = grader.evaluate(cases, outputs)['category']
+    per_label = {}
+    for label, row in s['per_label'].items():
+        tp = sum(gold[i] == pred.get(i) == label for i in subset)
+        fp = sum(gold[i] != label and pred.get(i) == label for i in subset)
+        fn = sum(gold[i] == label and pred.get(i) != label for i in subset)
+        per_label[label] = {**row, 'tp': tp, 'fp': fp, 'fn': fn}
+    live = [i for i in subset if 'live-log' in tags[i]]
+    live_available = [i for i in live if pred.get(i) is not None]
+    ntp = sum(gold[i] in NOTIFICATIONS and pred.get(i) in NOTIFICATIONS for i in subset)
+    nfp = sum(gold[i] not in NOTIFICATIONS and pred.get(i) in NOTIFICATIONS for i in subset)
+    nfn = sum(gold[i] in NOTIFICATIONS and pred.get(i) not in NOTIFICATIONS for i in subset)
+    ratio = lambda a, b: a / b if b else None
+    return {'n': s['n'], 'available': s['available_n'], 'coverage': s['coverage'],
+            'correct': sum(gold[i] == pred.get(i) for i in subset),
+            'accuracy_all': s['correct_fraction_all'],
+            'accuracy_on_available': s['accuracy_on_available'],
+            'macro_f1': s['macro_f1_with_abstentions_as_misses'],
+            'live_log_accuracy': ratio(sum(gold[i] == pred.get(i) for i in live), len(live)),
+            'live_log_accuracy_on_available': ratio(sum(gold[i] == pred.get(i) for i in live_available), len(live_available)),
+            'live_log_n': len(live), 'live_log_available': len(live_available),
+            'live_log_correct': sum(gold[i] == pred.get(i) for i in live),
+            'parse_failures': s['n'] - s['available_n'],
+            'notification': {'precision': ratio(ntp, ntp + nfp), 'recall': ratio(ntp, ntp + nfn),
+                             'f1': ratio(2 * ntp, 2 * ntp + nfp + nfn), 'tp': ntp, 'fp': nfp, 'fn': nfn,
+                             'support': sum(gold[i] in NOTIFICATIONS for i in subset),
+                             'fp_per_100': ratio(100 * nfp, s['n'])},
+            'per_label': per_label}
 
 
-def load_ungated() -> dict:
-    out = {}
-    with (BASE / "ungated_results.jsonl").open(encoding="utf-8") as stream:
-        for line in stream:
-            if line.strip():
-                record = json.loads(line)
-                out[record["case_id"]] = record
-    return out
+def latency_quantiles(values):
+    # Preserve the published benchmark's upper-index quantile convention.
+    values = sorted(v for v in values if isinstance(v, (int, float)))
+    if not values:
+        return {'n': 0, 'p50': None, 'p95': None}
+    return {'n': len(values), 'p50': values[len(values) // 2], 'p95': values[int(len(values) * .95)]}
 
 
-def load_pipeline() -> dict:
-    """The last pipeline telemetry event per case, in batch order."""
-    metrics = BASE / "jev-baseline-metrics/metrics-2026-10-09.jsonl"
-    lines = [l for l in metrics.read_text(encoding="utf-8").splitlines() if l.strip()]
-    ids = sorted(f.name[:-4] for f in
-                 (BASE / "batches").iterdir() if f.name.startswith("jev-"))
-    assert len(lines) == len(ids), (len(lines), len(ids))
-    return {case_id: json.loads(line) for case_id, line in zip(ids, lines)}
+def build_report(repo=REPO, *, scorer=score, pipeline_path=None):
+    data = load(repo, pipeline_path)
+    gold, tags = data['gold'], data['tags']
+    all_ids, matched, measured = data['all_ids'], data['matched'], data['measured_ids']
+    ungated = data['ungated']
+    pred = {cid: r['category'] for cid, r in ungated.items()}
+    u = scorer(pred, matched, gold, tags)
+    by_run = data['by_run']
+    predictions = {run: {cid: r['choice'] if r['parse_ok'] else None for cid, r in rows.items()}
+                   for run, rows in by_run.items()}
+    full = {run: scorer(p, measured, gold, tags) for run, p in predictions.items()}
+    matched_runs = {run: scorer(p, matched, gold, tags) for run, p in predictions.items()}
+    # Each run is scored on exactly the same validated case IDs. Do not select run 1.
+    def medians(views):
+        out = {}
+        for key in ('accuracy_all', 'macro_f1', 'live_log_accuracy', 'coverage'):
+            out[key] = statistics.median(v[key] for v in views.values())
+        for key in ('precision', 'recall', 'fp_per_100'):
+            out['notification_' + key] = statistics.median(v['notification'][key] for v in views.values())
+        return out
+    l = medians(matched_runs)
+    rows = [r for run in sorted(by_run) for r in by_run[run].values()]
+    pooled_fp = sum(v['notification']['fp'] for v in full.values())
+    matched_fp = sum(v['notification']['fp'] for v in matched_runs.values())
+    result = {'schema_version': 2, 'grader': 'docich.eval.graders.classifier.evaluate',
+              'accuracy_policy': 'Missing predictions stay in accuracy_all denominator; available-only is separate.',
+              **data['metadata'], 'llama_warmup_excluded': sorted(WARMUP_IDS),
+              'current_jev': {'ungated_full_106': scorer(pred, all_ids, gold, tags),
+                              'ungated_matched_103': u,
+                              'ungated_status': dict(sorted(Counter(r['status'] for r in ungated.values()).items())),
+                              'ungated_latency_ms': latency_quantiles(r.get('latency_ms') for r in ungated.values())},
+              'llama3.1_8b_q4_K_M': {'n_attempts': len(rows), 'cases_per_run': len(measured),
+                                    'per_run_full_105': full, 'per_run_matched_103': matched_runs,
+                                    'run_medians': medians(full), 'matched_medians': l,
+                                    'pooled_notification_fp': pooled_fp,
+                                    'pooled_notification_fp_per_100': 100 * pooled_fp / len(rows),
+                                    'matched_notification_fp': matched_fp,
+                                    'matched_attempts': len(matched) * len(by_run),
+                                    'matched_notification_fp_per_100': 100 * matched_fp / (len(matched) * len(by_run)),
+                                    'latency_total_ms': latency_quantiles(r.get('total_ms') for r in rows),
+                                    'latency_ttft_ms': latency_quantiles(r.get('ttft_ms') for r in rows),
+                                    'parse_failures': sum(not r['parse_ok'] for r in rows)}}
+    result['delta_matched_103_jev_minus_llama'] = {
+        **{key: u[key] - l[key] for key in ('accuracy_all', 'macro_f1', 'live_log_accuracy')},
+        **{'notification_' + key: u['notification'][key] - l['notification_' + key]
+           for key in ('precision', 'recall', 'fp_per_100')}}
+    if data['pipeline'] is not None:
+        pipeline = data['pipeline']
+        for field, view_name in (('selected', 'pipeline'), ('baseline', 'heuristic')):
+            p = {cid: r['event']['rows'][0][field] for cid, r in pipeline.items()}
+            for ids, scope_name in ((all_ids, 'full_106'), (matched, 'matched_103')):
+                result['current_jev'][view_name + '_' + scope_name] = scorer(p, ids, gold, tags)
+    result['interpretation'] = ('Observed matched-case differences only; no significance or production acceptance established. '
+                                'Gated pipeline predictions and ungated Llama predictions do not measure actual TTS firing. '
+                                'The separate 19/150 provider experiment has no published raw here.')
+    return result
 
 
-def grade(cases, ids, predictions):
-    cases_for_grader = [
-        {"case_id": cid,
-         "expected": {"category": cases[cid]["expected"]["category"],
-                      "intent_family": cases[cid]["expected"]["intent_family"],
-                      "screen_need": cases[cid]["expected"].get("screen_need")}}
-        for cid in ids]
-    outputs = {cid: {"category": pred, "screen_need": None}
-               for cid, pred in zip(ids, predictions)}
-    return grader.evaluate(cases_for_grader, outputs)["category"]
+def write_report(report, out):
+    Path(out).write_text(json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True) + '\n', encoding='utf-8')
 
 
-def micro_prf(gold, pred, labels):
-    tp = sum(1 for g, p in zip(gold, pred) if g in labels and p in labels)
-    fp = sum(1 for g, p in zip(gold, pred) if g not in labels and p in labels)
-    fn = sum(1 for g, p in zip(gold, pred) if g in labels and p not in labels)
-    precision = tp / (tp + fp) if tp + fp else 0.0
-    recall = tp / (tp + fn) if tp + fn else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-    return {"precision": round(precision, 4), "recall": round(recall, 4),
-            "f1": round(f1, 4), "tp": tp, "fp": fp, "fn": fn}
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--repo', type=Path, default=REPO)
+    parser.add_argument('--pipeline', type=Path, help='Optional case-ID-bound latest records; never positional raw')
+    parser.add_argument('--out', type=Path, default=HERE / 'report.json')
+    args = parser.parse_args(argv)
+    write_report(build_report(args.repo, pipeline_path=args.pipeline), args.out)
+    print('wrote offline report')
+    return 0
 
 
-def family_prf(gold, pred, labels):
-    out = {}
-    for label in labels:
-        tp = sum(1 for g, p in zip(gold, pred) if g == label and p == label)
-        fp = sum(1 for g, p in zip(gold, pred) if g != label and p == label)
-        fn = sum(1 for g, p in zip(gold, pred) if g == label and p != label)
-        precision = tp / (tp + fp) if tp + fp else 0.0
-        recall = tp / (tp + fn) if tp + fn else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-        out[label] = {"precision": round(precision, 4), "recall": round(recall, 4),
-                      "f1": round(f1, 4), "support": tp + fn, "tp": tp, "fp": fp, "fn": fn}
-    return out
-
-
-def view(gold, pred):
-    scored = grade(cases, ids, pred)
-    return {
-        "n": len(ids),
-        "accuracy": round(scored["accuracy_on_available"], 4),
-        "coverage": round(scored["coverage"], 4),
-        "macro_f1": round(scored["macro_f1_with_abstentions_as_misses"], 4),
-        "correct": int(round(scored["correct_fraction_all"] * len(ids))),
-        "parse_failures": sum(1 for p in pred if p is None),
-        "per_label": family_prf(gold, pred, LABELS),
-        "notification_family": micro_prf(gold, pred, NOTIFICATION),
-    }
-
-
-cases = load_cases()
-ids = sorted(cases)
-ungated = load_ungated()
-pipeline = load_pipeline()
-
-gold = [cases[cid]["expected"]["category"] for cid in ids]
-pred_ungated = [ungated[cid].get("category") for cid in ids]
-pred_pipeline = [pipeline[cid]["rows"][0]["selected"] for cid in ids]
-pred_baseline = [pipeline[cid]["rows"][0]["baseline"] for cid in ids]
-
-live_log_ids = [cid for cid in ids if "live-log" in (cases[cid].get("tags") or [])]
-live_gold = [cases[cid]["expected"]["category"] for cid in live_log_ids]
-
-
-def subset(view_dict, name, pred_all):
-    sub = grade(cases, live_log_ids,
-                [pred_all[ids.index(cid)] for cid in live_log_ids])
-    view_dict[f"accuracy_{name}"] = round(sub["accuracy_on_available"], 4)
-    view_dict[f"macro_f1_{name}"] = round(sub["macro_f1_with_abstentions_as_misses"], 4)
-
-
-v_ungated = view(gold, pred_ungated)
-subset(v_ungated, "live_log", pred_ungated)
-v_pipeline = view(gold, pred_pipeline)
-subset(v_pipeline, "live_log", pred_pipeline)
-v_baseline = view(gold, pred_baseline)
-subset(v_baseline, "live_log", pred_baseline)
-
-from collections import Counter  # noqa: E402
-status = {
-    "ungated": dict(Counter(ungated[cid]["status"] for cid in ids)),
-    "ungated_invalid_detail": dict(Counter(
-        ungated[cid].get("detail", "") for cid in ids if ungated[cid]["status"] != "ok")),
-    "pipeline_event": dict(Counter(pipeline[cid]["status"] for cid in ids)),
-    "pipeline_row": dict(Counter(pipeline[cid]["rows"][0]["status"] for cid in ids)),
-    "pipeline_route": dict(Counter(pipeline[cid]["route"] for cid in ids)),
-}
-
-latency_ungated = sorted(ungated[cid].get("latency_ms") or 0 for cid in ids)
-jev_ms = sorted(pipeline[cid]["jev_ms"] for cid in ids
-                if pipeline[cid].get("jev_ms") is not None)
-latency = {
-    "ungated_total_ms": {"n": len(latency_ungated),
-                         "p50": latency_ungated[len(latency_ungated) // 2],
-                         "p95": latency_ungated[int(len(latency_ungated) * 0.95)],
-                         "min": latency_ungated[0], "max": latency_ungated[-1]},
-    "pipeline_jev_ms_attempted": {"n": len(jev_ms),
-                                  "p50": jev_ms[len(jev_ms) // 2] if jev_ms else None,
-                                  "p95": jev_ms[int(len(jev_ms) * 0.95)] if jev_ms else None},
-    "pipeline_attempted_share": round(
-        sum(1 for cid in ids if pipeline[cid].get("attempted")) / len(ids), 4),
-}
-
-reference = {
-    "model": "llama3.1:8b-instruct-q4_K_M",
-    "source": "bench/results/2026-10-09_rtx3060_jev/llama3.1-8b-instruct-q4_K_M.report.json",
-    "accuracy": 0.6286, "macro_f1": 0.7339, "accuracy_live_log": 0.5867,
-    "coverage": 1.0, "parse_failures": 0,
-    "notification_precision": 0.882, "notification_recall": 0.882,
-    "notification_fp_per_100": 0.6,
-}
-
-delta = {
-    "accuracy_ungated_minus_llama": round(v_ungated["accuracy"] - reference["accuracy"], 4),
-    "macro_f1_ungated_minus_llama": round(v_ungated["macro_f1"] - reference["macro_f1"], 4),
-    "accuracy_live_log_ungated_minus_llama": round(
-        v_ungated["accuracy_live_log"] - reference["accuracy_live_log"], 4),
-    "accuracy_pipeline_minus_llama": round(v_pipeline["accuracy"] - reference["accuracy"], 4),
-    "notification_precision_ungated_minus_llama": round(
-        v_ungated["notification_family"]["precision"] - reference["notification_precision"], 4),
-    "notification_recall_ungated_minus_llama": round(
-        v_ungated["notification_family"]["recall"] - reference["notification_recall"], 4),
-}
-
-result = {
-    "task": "docich#1263 live-Jev baseline on the public eval suite",
-    "suite_digest": "sha256:d750a4361f7b7acffd46a192b1f7f5e873e8a2692cf45bbae78ce97240a46c37",
-    "grader": "docich.eval.graders.classifier (same call as bench/jev_bench.py)",
-    "cases": len(ids),
-    "live_log_cases": len(live_log_ids),
-    "views": {"ungated_single_pass": v_ungated,
-              "production_pipeline": v_pipeline,
-              "heuristic_baseline_only": v_baseline},
-    "status_counts": status,
-    "latency": latency,
-    "reference_local_llm": reference,
-    "delta_vs_reference": delta,
-}
-
-out = BASE / "report.json"
-out.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-print(json.dumps(result, ensure_ascii=False, indent=2))
+if __name__ == '__main__':
+    raise SystemExit(main())
