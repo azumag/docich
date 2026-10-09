@@ -1,0 +1,27 @@
+name: Isolated PR1976 source and test workspace
+on:
+  push:
+    branches: ['scratch/1976-retirement-proof-20261009']
+permissions:
+  contents: read
+jobs:
+  export-source:
+    if: github.ref == 'refs/heads/scratch/1976-retirement-proof-20261009'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: 14ad543977cebc935d0f28e0acec166aa0901175
+          persist-credentials: false
+          submodules: false
+      - name: Export only tracked source, never runtime data
+        run: |
+          test "$(git rev-parse HEAD)" = 14ad543977cebc935d0f28e0acec166aa0901175
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/docich-pr1976-source.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: docich-pr1976-source-14ad543
+          path: ${{ runner.temp }}/docich-pr1976-source.tar.gz
+          retention-days: 1
+          if-no-files-found: error

@@ -1,8 +1,0 @@
-# Hermetic full-suite test dependencies (issue #79).
-# `python3 -m pip install -r requirements-test.txt` must be sufficient to run
-# the entire suite: `python3 -m pytest -q tests/`.
-# Version pins for SDKs live in their own files (single source of truth).
-pytest==9.1.1
--r requirements-discord.txt
--r requirements-screen.txt
--r requirements-twica-overlay.txt
