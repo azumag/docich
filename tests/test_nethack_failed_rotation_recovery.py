@@ -146,6 +146,7 @@ class TestAutomaticNethackFailedRestore(TestCase):
             "Do you want your possessions identified? [ynq] (n)\\nDlvl:1 HP:18(18)",
         ):
             with self.subTest(text=text):
+                self.store.canonical.load.side_effect = [(self.canonical, False)]
                 self.manager._runtime_screen.return_value = text
                 self.assertEqual(self.manager.recover_failed_rotation().status,
                                  "failed")
@@ -196,7 +197,7 @@ class TestAutomaticNethackFailedRestore(TestCase):
         )
         got = self.manager.recover_failed_rotation()
         self.assertEqual(got.status, "succeeded")
-        self.manager._write_state.assert_called_once()
+        self.assertEqual(self.manager._write_state.call_count, 2)
         persisted = self.manager._write_state.call_args.args[0]
         self.assertEqual(persisted["restore_cleanup"]["source"]["generation"], 650)
         self.assertEqual(
@@ -280,6 +281,7 @@ class TestAutomaticNethackFailedRestore(TestCase):
         self.manager._restore_recovery_record.assert_called_once()
         self.manager._recover_restore_failed.assert_called_once_with(
             self.manager._read_state.return_value, late_cleanup_proved=True,
+            one_shot_replay=True,
         )
         self.manager.coordinator.recover.assert_not_called()
 

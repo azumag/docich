@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import datetime as dt
 import fcntl
 import hashlib
@@ -993,14 +993,18 @@ class CornerRotationManager:
                 # request against the receipt and stable canonical owner; no
                 # retry or new execution is started by this path.
                 adapter = self.adapters[reservation["corner"]]
-                outcome = self._commit_verified_failed_start(
-                    state, reservation, adapter, manual=manual is not None, now=now
-                )
-                if outcome is not None:
+                guard = getattr(adapter, "recovery_guard", None) if manual is None else None
+                with (guard(reservation) if callable(guard) else nullcontext()) as terminal_verified:
+                    outcome = None
+                    if terminal_verified is not True:
+                        outcome = self._commit_verified_failed_start(
+                            state, reservation, adapter, manual=manual is not None, now=now
+                        )
+                    if outcome is None:
+                        outcome = self._resolve_reservation(state, reservation, now,
+                                                           manual=manual is not None)
                     self.save(state)
                     return outcome
-                outcome = self._resolve_reservation(state, reservation, now,
-                                                    manual=manual is not None)
             except Exception as exc:
                 # A refusal must not overwrite the classification of the
                 # original latch: that is the evidence operators diagnose from.
@@ -1010,9 +1014,6 @@ class CornerRotationManager:
                     state["error_kind"] = _error_kind(exc)
                 self.save(state)
                 raise
-            self.save(state)
-            return outcome
-
     def _resolve_reservation(self, state, reservation, now, *, manual):
         corner_id = reservation["corner"]
         adapter = self.adapters[corner_id]
