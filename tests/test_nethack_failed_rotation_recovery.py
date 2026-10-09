@@ -267,6 +267,9 @@ class TestAutomaticNethackFailedRestore(TestCase):
             "request_id": "replay-789",
             "expected_source": self.manager._read_state.return_value["restore_cleanup"]["source"],
         })
+        self.manager._restore_recovery_receipt = Mock(
+            return_value={"status": "queued", "request_id": "replay-789"}
+        )
         self.canonical["phase"] = "draining"
         self.store.canonical.load.side_effect = [(self.canonical, False)]
         self.manager._recover_restore_failed.return_value = CornerResult(
@@ -279,6 +282,32 @@ class TestAutomaticNethackFailedRestore(TestCase):
             self.manager._read_state.return_value, late_cleanup_proved=True,
         )
         self.manager.coordinator.recover.assert_not_called()
+
+    def test_terminal_rollback_replay_cannot_allocate_a_second_request(self):
+        self.manager._read_state.return_value["restore_cleanup"] = {
+            "schema_version": 1,
+            "rotation_request_id": "rotation-123",
+            "restore_request_id": "restore-456",
+            "original_generation": 649,
+            "source": {key: self.source[key] for key in
+                       ("game", "runtime_id", "generation", "lease_id")},
+        }
+        self.manager._read_state.return_value["restore_recovery"] = {
+            "request_id": "replay-789",
+        }
+        self.manager._restore_recovery_record = Mock(return_value={
+            "request_id": "replay-789",
+            "expected_source": self.manager._read_state.return_value["restore_cleanup"]["source"],
+        })
+        for terminal in ("failed", "rolled_back"):
+            with self.subTest(status=terminal):
+                self.manager._restore_recovery_receipt = Mock(
+                    return_value={"status": terminal, "request_id": "replay-789"}
+                )
+                outcome = self.manager.recover_failed_rotation()
+                self.assertEqual(outcome.status, "failed")
+                self.manager._recover_restore_failed.assert_not_called()
+                self.manager.coordinator.recover.assert_not_called()
 
     def test_persisted_terminal_replay_can_reach_rotation_commit(self):
         """After interrupted was persisted, operator must be safely idempotent."""
