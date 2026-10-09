@@ -6589,6 +6589,22 @@ def _nethack_evidence_boundary(reader, runtime, receipt, player, *, active_start
     return result
 
 
+def _nethack_evidence_source(receipt, runtime):
+    """A present modern source must agree with the selected NetHack boundary."""
+    if 'source_runtime' not in receipt['result']:
+        return
+    source = receipt['result']['source_runtime']
+    if (not isinstance(source, dict)
+            or set(source) != {'game', 'adapter', 'runtime_id', 'generation', 'lease_id'}
+            or source.get('game') != 'nethack' or source.get('adapter') != 'cli'
+            or source.get('runtime_id') != runtime
+            or type(source.get('generation')) is not int
+            or source['generation'] != int(runtime.split('-')[0][1:])
+            or source['generation'] >= receipt['generation']):
+        raise _NethackEvidenceError('source_mismatch')
+    _nethack_evidence_uuid(source.get('lease_id'))
+
+
 def _nethack_evidence_tmux_absent(generation):
     # Only exact-generation read-only targets. No recovery/teardown helper,
     # input, shell, new-window or signal is invoked.
@@ -6695,6 +6711,7 @@ def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=Non
                 raise _NethackEvidenceError('source_mismatch')
             source_runtime = source.get('runtime_id')
         runtime = _nethack_evidence_runtime(source_runtime)
+        _nethack_evidence_source(original, runtime)
         result['original_boundary'] = _nethack_evidence_boundary(reader, runtime, original, player)
         last = canonical.get('last_result')
         if not isinstance(last, dict):
@@ -6743,6 +6760,7 @@ def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=Non
                    and landed['result'].get('cleanup_pending') in (None, False)),
         )
         restored = reader.restored_runtime(original['result'].get('restored_generation'))
+        _nethack_evidence_source(landed, restored)
         result['return_boundary'] = _nethack_evidence_boundary(
             reader, restored, landed, player, active_started=active_started)
         result['chronology_matches'] = (
@@ -6752,7 +6770,8 @@ def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=Non
             _nethack_evidence_time(original['updated_at']) <=
             _nethack_evidence_time(landed['created_at']) <=
             _nethack_evidence_time(landed['updated_at']) <= now
-            and original['generation'] < original['result']['restored_generation'] < landed['generation'])
+            and int(runtime.split('-')[0][1:]) < original['generation']
+                < original['result']['restored_generation'] < landed['generation'])
         probe = probe or _nethack_evidence_tmux_absent
         result['original_resources'] = _nethack_evidence_resources(reader, runtime, probe)
         result['rollback_resources'] = _nethack_evidence_resources(reader, restored, probe)
@@ -6770,15 +6789,18 @@ def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=Non
                       reason=('resource_coverage_incomplete' if result['terminal_chain_matches'] is True
                               else 'terminal_chain_unproven'), snapshot_stable=True)
     except _NethackEvidenceError as exc:
-        if str(exc) == 'evidence_changed':
-            # Discard all positive claims from the straddled snapshot.
-            for key in tuple(result):
-                if key not in {'schema_version', 'recovery_authority', 'status', 'reason'}:
-                    result[key] = None
-            result['snapshot_stable'] = False
-        result['reason'] = str(exc)
+        # Any failed read/recheck can straddle a changed record. Never retain
+        # affirmative fields from an incomplete or unverified observation.
+        for key in tuple(result):
+            if key not in {'schema_version', 'recovery_authority', 'status', 'reason'}:
+                result[key] = None
+        result.update(status='unavailable', reason=str(exc), snapshot_stable=False)
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
-        result.update(status='unavailable', reason='unreadable_or_invalid_evidence')
+        for key in tuple(result):
+            if key not in {'schema_version', 'recovery_authority', 'status', 'reason'}:
+                result[key] = None
+        result.update(status='unavailable', reason='unreadable_or_invalid_evidence',
+                      snapshot_stable=False)
     return result
 
 

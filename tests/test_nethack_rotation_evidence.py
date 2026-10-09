@@ -202,6 +202,68 @@ class RotationEvidenceTests(unittest.TestCase):
         self.assertFalse(result['snapshot_stable'])
         self.assertIsNone(result['original_resources'])
 
+    def test_all_recheck_failures_discard_affirmative_observations(self):
+        path = self.root / 'nethack_corner.json'
+        for kind in ('invalid_json', 'symlink', 'directory', 'non_object', 'duplicate', 'large'):
+            with self.subTest(kind=kind):
+                def change(_):
+                    if path.is_dir():
+                        return True
+                    if path.is_symlink():
+                        return True
+                    path.unlink()
+                    if kind == 'symlink': path.symlink_to('/etc/passwd')
+                    elif kind == 'directory': path.mkdir()
+                    elif kind == 'non_object': path.write_text('[]')
+                    elif kind == 'duplicate': path.write_text('{"x":1,"x":2}')
+                    elif kind == 'large': path.write_bytes(b' ' * 65537)
+                    else: path.write_text('{')
+                    return True
+                result = self.collect(probe=change)
+                self.assertEqual(result['status'], 'unavailable')
+                self.assertFalse(result['snapshot_stable'])
+                self.assertIsNone(result['terminal_chain_matches'])
+                self.assertIsNone(result['canonical'])
+                self.assertIsNone(result['original_resources'])
+                self.assertFalse(result['recovery_authority'])
+                if path.is_dir(): path.rmdir()
+                else: path.unlink()
+                self.write('nethack_corner.json', self.owner)
+
+    def test_present_modern_source_identities_match_each_selected_boundary(self):
+        for receipt, runtime, generation in ((self.original, 'g1-aaaaaa', 1),
+                                              (self.landed, 'g3-cccccc', 3)):
+            receipt['result']['source_runtime'] = dict(game='nethack', adapter='cli',
+                runtime_id=runtime, generation=generation, lease_id=OTHER)
+            self.write('game-switch/requests/' + receipt['request_id'] + '.json', receipt)
+        self.write('game_switch.json', self.canonical)
+        result = self.collect()
+        self.assertTrue(result['terminal_chain_matches'])
+        self.assertFalse(result['legacy_contract_applicable'])
+        for receipt in (self.original, self.landed):
+            original = copy.deepcopy(receipt)
+            for key, bad in (('game', 'sorengame'), ('adapter', 'soren'),
+                             ('runtime_id', 'g8-eeeeee'), ('generation', True),
+                             ('generation', 8), ('lease_id', 'invalid'), ('lease_id', None)):
+                with self.subTest(request=receipt['request_id'], field=key, bad=bad):
+                    changed = copy.deepcopy(original)
+                    changed['result']['source_runtime'][key] = bad
+                    self.write('game-switch/requests/' + receipt['request_id'] + '.json', changed)
+                    self.assertIsNot(self.collect()['terminal_chain_matches'], True)
+            for bad in (None, {}, []):
+                changed = copy.deepcopy(original)
+                changed['result']['source_runtime'] = bad
+                self.write('game-switch/requests/' + receipt['request_id'] + '.json', changed)
+                self.assertIsNot(self.collect()['terminal_chain_matches'], True)
+            self.write('game-switch/requests/' + receipt['request_id'] + '.json', original)
+
+    def test_original_source_generation_precedes_failed_switch_even_without_modern_identity(self):
+        self.owner['rotation_runtime_id'] = 'g2-aaaaaa'
+        self.write('nethack_corner.json', self.owner)
+        self.write('runtimes/g2-aaaaaa/nethack_boundary.json', self.boundary('g2-aaaaaa', R0, -70))
+        self.assertFalse(self.collect()['chronology_matches'])
+        self.assertFalse(self.collect()['terminal_chain_matches'])
+
     def test_parent_directory_symlink_is_never_followed(self):
         directory=self.root/'runtimes/g1-aaaaaa'; outside=self.root/'external'
         directory.rename(outside); directory.symlink_to(outside,target_is_directory=True)
