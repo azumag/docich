@@ -194,6 +194,23 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   保存済みrestore recovery/cleanup記録は有無だけを出す。UUID、runtime/lease/player、
   path、prompt、argv、任意JSON本文・例外本文は出さない。
 
+  `contract_conditions` は同じ読取済みレコードから契約入力の内訳だけを追加する。
+  `previous_game` は `absent/null/sorengame/other/invalid`、`finish_reason` は
+  `absent/null/terminal/other/invalid`。キー不在と明示的nullは区別する。
+  `pending_source_absent`、元receiptの`original_source_absent` /
+  `original_restored_identity_absent`、復帰receiptの`return_source_absent`、
+  `restore_request_distinct`（元restore requestとrotation予約の相違）はboolean。
+  `original_cleanup_pending` は `absent/null/pending/clear`。
+  従来の`cleanup_clear=false`だけからcleanupがpendingだと推定しない。
+  legacy producerの履歴条件は `automatic_dispatch_history=matched/missing/invalid/scan_limit` と
+  `manual_reservation_since_selection=absent/present/invalid/scan_limit` に分ける。
+  ledger内のhistory最大512件、selected/started/last_seenと全履歴の時刻を確認し、
+  選択以降・開始以前のautomatic reservationと、選択以降のNetHack manual-reservationを
+  観測する。欠損・不正時刻・未来履歴・上限超過では部分的な肯定値を保持しない。
+  `legacy_contract_applicable`は入口条件の集約であり、全guardの成功を意味しない。
+  この内訳は現在の入力の観測であって、過去のexit 70の実際の拒否理由や
+  lock下での復旧可否を返すものではない。新しい読取対象・process走査は追加しない。
+
   読取は固定state rootからdirfd/no-followで行い、regular JSON 64KiB以下・duplicate key拒否、
   runtime探索4096 entries以下に制限する。resource probeの後に、読んだ全レコードと
   runtime listingを再確認する。変更があれば肯定的投影を破棄し`snapshot_stable=false`。
@@ -205,6 +222,12 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   exact generationの既存tmux target不在を別々に出す。いずれか否定なら
   `all_resources_released=false`。全て肯定でも、これらの記録からdetached/unregisteredな
   game childや改善workerの不在を証明できないため`all_resources_released=null`を維持する。
+  各resourceの`unknown_reasons`は固定列挙値のみ。release記録の欠落は
+  `presentation_record_missing` / `tiles_record_missing`、identity一致したtile記録に
+  booleanのcleanup値がない場合は`tiles_cleanup_unproven`、tmux読取失敗・非boolean値は
+  `tmux_probe_unavailable`。既存観測の範囲外である`detached_children_unobserved` /
+  `unregistered_workers_unobserved`は常に残す。別資源に否定証拠がある場合も、
+  未観測範囲の理由を消さない。全レコードの再確認が失敗すれば内訳も破棄する。
   `terminal_chain_matches`は終了証拠の一致のみであり、全資源解放や運用解除の許可ではない。
   `recovery_authority`は常にfalse。安定した前後読取も原子的snapshotや将来のfenceではなく、
   正規operatorは別承認後にwriter lock下で適用契約を再照合する必要がある。

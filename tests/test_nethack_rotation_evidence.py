@@ -32,7 +32,10 @@ class RotationEvidenceTests(unittest.TestCase):
             rotation_request_id=SLOT, switch_request_id=R0, rotation_runtime_id='g1-aaaaaa',
             finish_reason='terminal', started_at=self.at(-100), completed_at=self.at(-90))
         self.ledger = dict(schema_version=1, status='recovery_required', slot=7,
-            pending=dict(corner='nethack', phase='dispatched', request_id=SLOT), manual_pending=None)
+            pending=dict(corner='nethack', phase='dispatched', request_id=SLOT,
+                         selected_at=self.now - 120), manual_pending=None,
+            last_seen_at=self.now - 10,
+            history=[dict(corner='nethack', at=self.now - 110, source='reservation')])
         self.original = self.receipt(R0, 2, 'rolled_back', -80, -60)
         self.original['result'].update(restored_generation=3, cleanup_pending=True)
         self.landed = self.receipt(RETURN, 4, 'succeeded', -40, -20)
@@ -103,6 +106,145 @@ class RotationEvidenceTests(unittest.TestCase):
         # No process-table attribution exists in these durable files.
         self.assertIsNone(result['original_resources']['all_resources_released'])
         self.assertFalse(result['recovery_authority'])
+
+    def test_contract_conditions_explain_inputs_without_authorizing_recovery(self):
+        result = self.collect()
+        self.assertEqual(result['contract_conditions'], dict(
+            previous_game='absent', finish_reason='terminal', pending_source_absent=True,
+            original_source_absent=True, original_restored_identity_absent=True,
+            return_source_absent=True, restore_request_distinct=True,
+            original_cleanup_pending='pending', automatic_dispatch_history='matched',
+            manual_reservation_since_selection='absent'))
+        self.assertFalse(result['recovery_authority'])
+        self.assertIsNone(result['original_resources']['all_resources_released'])
+
+    def test_owner_key_absence_null_and_invalid_values_are_distinct_fixed_categories(self):
+        for key, expected in [('previous_game', 'sorengame'), ('finish_reason', 'terminal')]:
+            initial = dict(self.owner)
+            for value, category in [(None, 'null'), (expected, expected),
+                                    ('PRIVATE_DO_NOT_EMIT', 'other'), ([], 'invalid'),
+                                    ({'secret': 'PRIVATE_DO_NOT_EMIT'}, 'invalid')]:
+                with self.subTest(key=key, value=value):
+                    changed = dict(initial); changed[key] = value
+                    self.write('nethack_corner.json', changed)
+                    result = self.collect()
+                    self.assertEqual(result['contract_conditions'][key], category)
+                    self.assertNotIn('PRIVATE_DO_NOT_EMIT', json.dumps(result))
+            changed = dict(initial); changed.pop(key, None)
+            self.write('nethack_corner.json', changed)
+            self.assertEqual(self.collect()['contract_conditions'][key], 'absent')
+            self.write('nethack_corner.json', initial)
+
+    def test_present_null_source_markers_do_not_qualify_as_absent(self):
+        self.ledger['pending']['source'] = None
+        self.original['result']['restored_runtime'] = None
+        self.write('corner_rotation.json', self.ledger)
+        self.write('game-switch/requests/' + R0 + '.json', self.original)
+        result = self.collect()
+        self.assertFalse(result['contract_conditions']['pending_source_absent'])
+        self.assertFalse(result['contract_conditions']['original_restored_identity_absent'])
+        self.assertFalse(result['legacy_contract_applicable'])
+        # A null modern source is already invalid evidence, so no new
+        # affirmative input observations may survive that failure.
+        self.original['result']['source_runtime'] = None
+        self.write('game-switch/requests/' + R0 + '.json', self.original)
+        self.assertIsNone(self.collect()['contract_conditions'])
+
+    def test_original_cleanup_pending_is_not_inferred_from_cleanup_clear(self):
+        for value, category in [(None, 'null'), (True, 'pending'), (False, 'clear')]:
+            self.original['result']['cleanup_pending'] = value
+            self.write('game-switch/requests/' + R0 + '.json', self.original)
+            self.assertEqual(self.collect()['contract_conditions']['original_cleanup_pending'], category)
+        self.original['result'].pop('cleanup_pending')
+        self.write('game-switch/requests/' + R0 + '.json', self.original)
+        self.assertEqual(self.collect()['contract_conditions']['original_cleanup_pending'], 'absent')
+
+    def test_restore_request_must_be_distinct_from_the_rotation_slot(self):
+        self.owner['rotation_request_id'] = R0
+        self.ledger['pending']['request_id'] = R0
+        self.write('nethack_corner.json', self.owner)
+        self.write('corner_rotation.json', self.ledger)
+        result = self.collect()
+        self.assertFalse(result['contract_conditions']['restore_request_distinct'])
+        self.assertFalse(result['recovery_authority'])
+
+    def test_legacy_history_separates_producer_proof_and_later_manual_reservations(self):
+        for at, corner, source, automatic, manual in [
+                (self.now - 110, 'nethack', 'reservation', 'matched', 'absent'),
+                (self.at(-110), 'nethack', 'reservation', 'matched', 'absent'),
+                (self.now - 90, 'nethack', 'reservation', 'missing', 'absent'),
+                (self.now - 121, 'nethack', 'manual-reservation', 'missing', 'absent'),
+                (self.now - 110, 'nethack', 'manual-reservation', 'missing', 'present'),
+                (self.now - 110, 'weather', 'manual-reservation', 'missing', 'absent'),
+                (self.now - 110, 'nethack', 'PRIVATE_DO_NOT_EMIT', 'missing', 'absent')]:
+            with self.subTest(at=at, corner=corner, source=source):
+                self.ledger['history'] = [dict(at=at, corner=corner, source=source)]
+                self.write('corner_rotation.json', self.ledger)
+                result = self.collect(); conditions = result['contract_conditions']
+                self.assertEqual(conditions['automatic_dispatch_history'], automatic)
+                self.assertEqual(conditions['manual_reservation_since_selection'], manual)
+                self.assertFalse(result['recovery_authority'])
+                self.assertNotIn('PRIVATE_DO_NOT_EMIT', json.dumps(result))
+
+    def test_invalid_or_unbounded_history_cannot_preserve_partial_positive_matches(self):
+        valid = self.ledger['history'][0]
+        for history, reason in [(None, 'invalid'), ([valid, {}], 'invalid'),
+                                ([valid, []], 'invalid'),
+                                ([valid, dict(at=True)], 'invalid'),
+                                ([valid, dict(at=-1)], 'invalid'),
+                                ([valid, dict(at=self.now + 1)], 'invalid'),
+                                ([valid] * 513, 'scan_limit')]:
+            with self.subTest(reason=reason, history=history):
+                self.ledger['history'] = history
+                self.write('corner_rotation.json', self.ledger)
+                conditions = self.collect()['contract_conditions']
+                self.assertEqual(conditions['automatic_dispatch_history'], reason)
+                self.assertEqual(conditions['manual_reservation_since_selection'], reason)
+        self.ledger['history'] = [valid] * 512
+        self.write('corner_rotation.json', self.ledger)
+        self.assertEqual(self.collect()['contract_conditions']['automatic_dispatch_history'], 'matched')
+
+    def test_history_timestamp_context_is_required(self):
+        for key, value in [('last_seen_at', None), ('last_seen_at', self.now + 1),
+                           ('selected_at', True), ('selected_at', self.now - 99)]:
+            with self.subTest(key=key, value=value):
+                changed = copy.deepcopy(self.ledger)
+                target = changed['pending'] if key == 'selected_at' else changed
+                target[key] = value; self.write('corner_rotation.json', changed)
+                conditions = self.collect()['contract_conditions']
+                self.assertEqual(conditions['automatic_dispatch_history'], 'invalid')
+                self.assertEqual(conditions['manual_reservation_since_selection'], 'invalid')
+
+    def test_resource_unknown_reasons_explain_coverage_without_new_probes(self):
+        result = self.collect()
+        always = ['detached_children_unobserved', 'unregistered_workers_unobserved']
+        self.assertEqual(result['original_resources']['unknown_reasons'], always)
+        for name in ('presentation.json', 'nethack_tiles.json'):
+            (self.root / 'runtimes/g1-aaaaaa' / name).unlink()
+        probe = mock.Mock(return_value=None)
+        result = self.collect(probe=probe)
+        self.assertEqual(probe.call_args_list, [mock.call(1), mock.call(3)])
+        self.assertEqual(result['original_resources']['unknown_reasons'],
+            ['presentation_record_missing', 'tiles_record_missing', 'tmux_probe_unavailable'] + always)
+        self.assertIsNone(result['original_resources']['all_resources_released'])
+        self.assertFalse(result['recovery_authority'])
+
+    def test_unproven_tile_cleanup_and_failed_tmux_probe_have_fixed_reasons(self):
+        path = self.root / 'runtimes/g1-aaaaaa/nethack_tiles.json'
+        manifest = json.loads(path.read_text())
+        manifest.pop('cleanup_complete'); self.write(str(path.relative_to(self.root)), manifest)
+        result = self.collect(probe=mock.Mock(side_effect=RuntimeError('PRIVATE_DO_NOT_EMIT')))
+        self.assertIn('tiles_cleanup_unproven', result['original_resources']['unknown_reasons'])
+        self.assertIn('tmux_probe_unavailable', result['original_resources']['unknown_reasons'])
+        self.assertNotIn('PRIVATE_DO_NOT_EMIT', json.dumps(result))
+        self.assertIsNone(result['original_resources']['all_resources_released'])
+
+    def test_new_fields_stay_bounded_through_the_existing_gateway(self):
+        from ops.vm_actions import gateway
+        result = self.collect()
+        clean = gateway._sanitize_diagnostics({'nethack_rotation_evidence': result})
+        self.assertEqual(clean['nethack_rotation_evidence'], result)
+        self.assertLess(len(json.dumps(clean).encode()), 4096)
 
     def test_no_lifecycle_or_write_calls(self):
         # Import before patching: modules importing the writer must retain the
@@ -195,6 +337,7 @@ class RotationEvidenceTests(unittest.TestCase):
         self.assertFalse(result['snapshot_stable'])
         self.assertIsNone(result['terminal_chain_matches'])
         self.assertIsNone(result['canonical'])
+        self.assertIsNone(result['contract_conditions'])
         self.assertFalse(result['recovery_authority'])
 
     def test_optional_resource_appearing_during_probe_is_a_changed_snapshot(self):
@@ -229,6 +372,7 @@ class RotationEvidenceTests(unittest.TestCase):
                 self.assertIsNone(result['terminal_chain_matches'])
                 self.assertIsNone(result['canonical'])
                 self.assertIsNone(result['original_resources'])
+                self.assertIsNone(result['contract_conditions'])
                 self.assertFalse(result['recovery_authority'])
                 if path.is_dir(): path.rmdir()
                 else: path.unlink()
@@ -244,6 +388,8 @@ class RotationEvidenceTests(unittest.TestCase):
         result = self.collect()
         self.assertTrue(result['terminal_chain_matches'])
         self.assertFalse(result['legacy_contract_applicable'])
+        self.assertFalse(result['contract_conditions']['original_source_absent'])
+        self.assertFalse(result['contract_conditions']['return_source_absent'])
         for receipt in (self.original, self.landed):
             original = copy.deepcopy(receipt)
             for key, bad in (('game', 'sorengame'), ('adapter', 'soren'),
