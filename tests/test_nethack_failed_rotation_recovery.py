@@ -99,7 +99,9 @@ class TestAutomaticNethackFailedRestore(TestCase):
     def test_exact_terminal_rollback_recovers_and_replays_once(self):
         result = self.manager.recover_failed_rotation()
         self.assertEqual(result.status, "succeeded")
-        self.manager.coordinator.recover.assert_called_once_with(timeout_s=120.0)
+        self.manager.coordinator.recover.assert_called_once_with(
+            timeout_s=120.0, expected_snapshot=self.canonical,
+        )
         self.manager._restore_replay_source_proved.assert_called_once()
         self.manager._recover_restore_failed.assert_called_once()
 
