@@ -25,8 +25,7 @@ def broker(adapter, request_id, status):
                    generation=adapter.spec.generation, deadline_epoch=1893456000.25,
                    deadline_at="2030-01-01T00:00:00.250Z")
     return dict(schema=1, request=receipt, ack={**receipt, "status": status},
-                resource={"request_id": request_id, "game": receipt["game"],
-                          "generation": receipt["generation"], "status": status})
+                resource={**receipt, "status": status})
 
 
 def retirement(tmp_path, status="stopped", operation="switch"):

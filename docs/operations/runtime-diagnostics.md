@@ -187,9 +187,33 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `corners.retro_corner.status`と`corners.retro_corner.game_audio.status`は別物で、
   `applied`は後者の音量適用結果。これらの診断値は復旧/再開の許可ではない。
   `recovery_required`は次cornerを停止する実行契約であり、診断自体は復旧操作をしない。
+  `nethack_rotation_evidence` は、このautomatic NetHack pendingのownerに結び付く
+  元restore receipt、元runtimeのrequest付き終了境界、rollback復元世代の唯一のruntime、
+  現在canonicalの復帰receipt・終了境界・lease/result一致を固定booleanで投影する。
+  ownerに`previous_game`がある場合、欠落を入口条件とするlegacy契約を適用可能とは表示しない。
+  保存済みrestore recovery/cleanup記録は有無だけを出す。UUID、runtime/lease/player、
+  path、prompt、argv、任意JSON本文・例外本文は出さない。
+
+  読取は固定state rootからdirfd/no-followで行い、regular JSON 64KiB以下・duplicate key拒否、
+  runtime探索4096 entries以下に制限する。resource probeの後に、読んだ全レコードと
+  runtime listingを再確認する。変更があれば肯定的投影を破棄し`snapshot_stable=false`。
+  欠落、不正schema/identity、曖昧なruntime、scan上限、読取拒否は固定理由とunknownで返す。
+  状態・lockを作らず、recover/coordinator/teardownを呼ばず、signalやtmux入力を送らない。
+  playerの比較元は固定のレビュー済み`config/games/nethack.toml`であり、証拠側のpathを使わない。
+
+  各runtimeの`presentation_stopped`、identity一致したtile manifestの`tiles_cleanup_complete`、
+  exact generationの既存tmux target不在を別々に出す。いずれか否定なら
+  `all_resources_released=false`。全て肯定でも、これらの記録からdetached/unregisteredな
+  game childや改善workerの不在を証明できないため`all_resources_released=null`を維持する。
+  `terminal_chain_matches`は終了証拠の一致のみであり、全資源解放や運用解除の許可ではない。
+  `recovery_authority`は常にfalse。安定した前後読取も原子的snapshotや将来のfenceではなく、
+  正規operatorは別承認後にwriter lock下で適用契約を再照合する必要がある。
+
   `corners.corner_rotation_timer` は支配的なtimer unit名（移行後は
   `docich-corner-rotation.timer`）、active/enabled、旧名が正しいaliasかを示す
   bounded boolean `legacy_alias` のみを出す。unit path・alias target・state pathは出さない。
+  alias pair投影も支配timer選択と同じ`PROD_ROOT.parent`のuser unit rootを使う。
+  gatewayのscrubbed `HOME=/tmp` をunit欠損の判定元にしない。
   時刻指定manual予約がある場合は、UUIDや任意payloadを出さずに
   `scheduled_manual`、固定corner名、`scheduled_manual_trigger_at`、`scheduled_manual_due`、
   7日で上限化したoverdue秒、固定 `scheduled_manual_blocked_reason`（`not_due` /

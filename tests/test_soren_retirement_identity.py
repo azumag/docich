@@ -273,7 +273,8 @@ def test_failed_candidate_can_still_mint_C_after_pre_broker_cleanup_failure(tmp_
                  retiring=[{**source, "cleanup_role": "failed_candidate"}])
     store.canonical.save(state)
     adapter._status = Mock(return_value=dict(schema=1, request=None, ack=None, resource=None))
-    adapter.request_round_boundary = Mock()
+    adapter.request_round_boundary = Mock(side_effect=lambda request_id, *_:
+        setattr(adapter._status, "return_value", broker(adapter, request_id, "boundary")))
     adapter._run = Mock(return_value=(0, {}))
     adapter._wait_status = Mock()
     adapter.cleanup_runtime(time.monotonic() + 5, None)

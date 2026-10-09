@@ -134,7 +134,9 @@ def failed_soren_candidate(tmp_path):
 def test_soren_failed_candidate_can_request_its_own_bounded_cleanup(tmp_path):
     adapter, _ = failed_soren_candidate(tmp_path)
     adapter._status = Mock(return_value={"schema": 1, "request": None, "ack": None, "resource": None})
-    adapter.request_round_boundary = Mock()
+    from test_adapter_stop_resume_safety import broker
+    adapter.request_round_boundary = Mock(side_effect=lambda request_id, *_:
+        setattr(adapter._status, "return_value", broker(adapter, request_id, "boundary")))
     adapter._run = Mock(return_value=(0, {}))
     adapter._wait_status = Mock(return_value="stopped")
     adapter.cleanup_runtime(time.monotonic() + 10, None)
