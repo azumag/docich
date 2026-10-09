@@ -541,7 +541,8 @@ def validate_receipt(
     missing = sorted(required - receipt.keys())
     if missing:
         raise StateCorruptError(f"request receiptに必須項目がありません: {missing}")
-    if receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION:
+    if (type(receipt.get("schema_version")) is not int
+            or receipt["schema_version"] != RECEIPT_SCHEMA_VERSION):
         raise StateCorruptError("request receiptのschemaが不正です")
     try:
         request_id = validate_request_id(receipt.get("request_id"))
@@ -623,6 +624,10 @@ def committed_retirement_result(
     result = runtime["retirement"]
     if not isinstance(result, dict) or not isinstance(receipt, Mapping):
         raise StateCorruptError("retirement commit/receiptがありません")
+    # This proof boundary can also be called with a receipt already in memory.
+    if (type(receipt.get("schema_version")) is not int
+            or receipt["schema_version"] != RECEIPT_SCHEMA_VERSION):
+        raise StateCorruptError("retirement receiptのschemaが不正です")
     source = result.get("source_runtime")
     active = result.get("active_runtime")
     if (not isinstance(source, dict) or set(source) != set(RUNTIME_IDENTITY_KEYS)
