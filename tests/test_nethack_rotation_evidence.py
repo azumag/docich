@@ -105,14 +105,18 @@ class RotationEvidenceTests(unittest.TestCase):
         self.assertFalse(result['recovery_authority'])
 
     def test_no_lifecycle_or_write_calls(self):
+        # Import before patching: modules importing the writer must retain the
+        # real function after this test's mock context has exited.
+        from docich import game_switch, nethack_corner
+
         before = self.snapshot()
         with (mock.patch.object(diag.os, 'kill', side_effect=AssertionError('signal')),
               mock.patch.object(diag.os, 'killpg', side_effect=AssertionError('signal')),
               mock.patch.object(diag.fcntl, 'flock', side_effect=AssertionError('lock')),
               mock.patch.object(diag.subprocess, 'run', side_effect=AssertionError('exec')),
-              mock.patch('docich.game_switch.atomic_write_json', side_effect=AssertionError('write')),
-              mock.patch('docich.game_switch.GameSwitchCoordinator.recover', side_effect=AssertionError('recover')),
-              mock.patch('docich.nethack_corner.NethackCornerManager.recover_failed_rotation',
+              mock.patch.object(game_switch, 'atomic_write_json', side_effect=AssertionError('write')),
+              mock.patch.object(game_switch.GameSwitchCoordinator, 'recover', side_effect=AssertionError('recover')),
+              mock.patch.object(nethack_corner.NethackCornerManager, 'recover_failed_rotation',
                          side_effect=AssertionError('recover'))):
             result = self.collect()
         self.assertTrue(result['terminal_chain_matches'])
