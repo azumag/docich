@@ -2641,7 +2641,7 @@ class RetroCornerManager:
         )
 
     def _restore_failed_receipt(
-        self, state: dict[str, object]
+        self, state: dict[str, object], *, late_cleanup_proved: bool = False
     ) -> tuple[dict[str, object], dict[str, object], str, str] | None:
         """Read one original post-completion restore failure, fail closed."""
 
@@ -2683,7 +2683,8 @@ class RetroCornerManager:
             or result.get("to_game") != previous
             or type(result.get("generation")) is not int
             or result.get("generation") != receipt["generation"]
-            or not self._cleanup_proved(result.get("cleanup_pending"))
+            or (not late_cleanup_proved
+                and not self._cleanup_proved(result.get("cleanup_pending")))
         ):
             return None
         state_error = state.get("last_error_code")
@@ -2843,13 +2844,18 @@ class RetroCornerManager:
         )
 
     def _recover_restore_failed(
-        self, state: dict[str, object]
+        self, state: dict[str, object], *, late_cleanup_proved: bool = False
     ) -> CornerResult | None:
         """Operator-only proof, durable preparation, and fenced replay."""
 
         try:
             with self.store.lock(exclusive=False):
-                evidence = self._restore_failed_receipt(state)
+                # Only a dedicated owner-fenced caller may supply a verified
+                # later cleanup proof. Existing retro and manual paths continue
+                # requiring the original terminal receipt to be clean.
+                evidence = self._restore_failed_receipt(
+                    state, late_cleanup_proved=late_cleanup_proved,
+                )
                 if evidence is None:
                     if self._restore_failure_candidate(state):
                         return CornerResult("noop", game=state.get("game"),
