@@ -1,6 +1,7 @@
 """Synthetic broker/save fixtures; no VM, controller or NetHack is executed."""
 from dataclasses import replace
 import time
+import copy
 import uuid
 from unittest.mock import Mock
 
@@ -34,13 +35,23 @@ def retirement(tmp_path, status="stopped", operation="switch"):
     source = state["candidate"]
     active = _runtime_dict(3, "nethack")
     request_id = str(uuid.uuid4())
-    state.update(phase="ready", active=active, candidate=None, previous=None,
-                 retiring=[source], next_generation=4, last_result={
-                     "request_id": request_id, "operation": operation, "status": "succeeded",
-                     "from_game": "sorengame", "to_game": "nethack", "generation": 3,
-                     "active_runtime": {k: active[k] for k in
-                                        ("game", "runtime_id", "generation", "lease_id")}})
+    state.update(phase="idle", candidate=None, previous=None)
     store.canonical.save(state)
+    acceptance = store.accept_request(request_id, operation, None if operation == "rotate" else "nethack")
+    active["runtime_id"] = acceptance.receipt["runtime_id"]
+    result = {
+        "request_id": request_id, "operation": operation, "status": "succeeded",
+        "from_game": "sorengame", "to_game": "nethack", "generation": 3,
+        "source_runtime": {k: source[k] for k in
+                           ("game", "adapter", "runtime_id", "generation", "lease_id")},
+        "active_runtime": {k: active[k] for k in
+                           ("game", "runtime_id", "generation", "lease_id")},
+    }
+    source["retirement"] = copy.deepcopy(result)
+    state.update(phase="ready", active=active, candidate=None, previous=None,
+                 retiring=[source], next_generation=4, last_result=result)
+    store.canonical.save(state)
+    store.finish_request(request_id, "succeeded", result)
     payload = broker(adapter, request_id, status)
     adapter._status = Mock(return_value=payload)
     adapter.request_round_boundary = Mock()
@@ -159,10 +170,10 @@ def test_unproved_normal_retirement_is_not_a_new_candidate_request(tmp_path, cha
     adapter, store, payload, _ = retirement(tmp_path)
     state, _ = store.canonical.load()
     if change == "active_lease":
-        state["active"]["lease_id"] = str(uuid.uuid4())
+        state["retiring"][0]["retirement"]["active_runtime"]["lease_id"] = str(uuid.uuid4())
     else:
         key = {"request": "request_id", "source": "from_game", "status": "status"}[change]
-        state["last_result"][key] = "foreign"
+        state["retiring"][0]["retirement"][key] = "foreign"
     store.canonical.save(state)
     with pytest.raises(AdapterError):
         adapter.cleanup_runtime(time.monotonic() + 10, None)
