@@ -348,6 +348,107 @@ class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
         self.assertTrue(any("4242" in line for line in logs.output))
 
 
+class TestDynamicChildProtection(unittest.TestCase):
+    """The protection snapshot is re-evaluated, not frozen (Issue #1105).
+
+    A process spawned *after* the protection set was snapshotted — a child
+    forked by a pane that is still running, or the leader of a pane created
+    concurrently by the switch — inherits the runtime's ownership tags from
+    the tagged tmux server.  To the environment query it is indistinguishable
+    from a target orphan, so a frozen snapshot would reclaim a process that
+    never belonged to the target.
+    """
+
+    def setUp(self):
+        self.tmux = tmux_mod.Tmux()
+
+    def _patch_descendants(self, root_children, target_children):
+        """Mock ``descendant_pids`` per root set (both use the same table)."""
+
+        def fake_descendant_pids(roots):
+            roots = frozenset(roots)
+            if roots == frozenset([123]):
+                return list(target_children)
+            return list(root_children)
+
+        return mock.patch("docich.tmux.descendant_pids", fake_descendant_pids)
+
+    def test_child_spawned_after_the_snapshot_is_protected(self):
+        protected = tmux_mod.ProtectedTeardownPids(
+            [4321, 9001], roots=[4321, 9001], targets=[123]
+        )
+        # The protected pane 9001 forks a child after the snapshot was taken.
+        # (target exclusion is probed first, then the protected roots)
+        with self._patch_descendants([7777], []):
+            self.assertIn(7777, protected)
+
+    def test_concurrently_created_pane_leader_is_protected(self):
+        # tmux spawns new panes as children of the server, so a pane created
+        # while the teardown runs is a fresh descendant of the server root.
+        protected = tmux_mod.ProtectedTeardownPids(
+            [4321, 9001], roots=[4321, 9001], targets=[123]
+        )
+        with self._patch_descendants([9500], []):
+            self.assertIn(9500, protected)
+
+    def test_target_subtree_stays_reclaimable_after_the_snapshot(self):
+        # A spawn racing with the teardown inside the target pane must remain
+        # a legitimate victim, otherwise the post-condition can no longer fail
+        # closed on a real orphan of the target.
+        protected = tmux_mod.ProtectedTeardownPids(
+            [4321, 9001], roots=[4321, 9001], targets=[123]
+        )
+        with self._patch_descendants([7777], [8888]):
+            self.assertNotIn(8888, protected)
+            self.assertIn(7777, protected)
+
+    def test_frozen_protection_never_broadens_by_itself(self):
+        # A plain frozenset (no roots) keeps the pre-existing semantics: only
+        # the snapshotted members are protected.
+        protected = tmux_mod.ProtectedTeardownPids([4321, 9001])
+        with self._patch_descendants([7777], []):
+            self.assertNotIn(7777, protected)
+            self.assertIn(9001, protected)
+
+    def test_expanded_returns_snapshot_plus_fresh_descendants(self):
+        protected = tmux_mod.ProtectedTeardownPids(
+            [4321, 9001], roots=[4321, 9001], targets=[123]
+        )
+        with self._patch_descendants([7777], [8888]):
+            self.assertEqual(protected.expanded(), frozenset({4321, 9001, 7777}))
+
+    @mock.patch("docich.tmux.process_pgid", return_value=None)
+    @mock.patch("docich.tmux.processes_with_env")
+    @mock.patch("docich.tmux.terminate_owned_processes")
+    @mock.patch("docich.tmux.procs.run")
+    def test_sweep_never_signals_a_child_spawned_after_the_snapshot(
+        self, mock_run, mock_terminate, mock_env, _mock_pgid
+    ):
+        server_pid, display_pane, late_child, orphan = 4321, 9001, 7777, 4242
+        mock_run.side_effect = [
+            _ok("game-g1\n"),                               # window_target_exists
+            _ok("g1-abcdef\n"), _ok("1\n"), _ok("game\n"),  # window ownership
+            _ok("123\n"),                                   # target pane leader
+            _ok(f"{server_pid}\n"),                         # display-message server
+            _ok(f"123\n{display_pane}\n"),                  # server pane listing
+            _ok(),                                          # kill-window
+        ]
+        # The tagged server, the still-running display pane and its late child
+        # all look owned; only the orphan actually escaped the target pane.
+        mock_env.return_value = [server_pid, display_pane, late_child, orphan]
+        mock_terminate.side_effect = [_stopped(orphan)]
+
+        with mock.patch(
+            "docich.tmux.descendant_pids", return_value=[late_child]
+        ):
+            self.assertTrue(self.tmux.kill_window_owned("docich:game-g1", OWNER))
+
+        self.assertEqual(
+            [call.args[0] for call in mock_terminate.call_args_list],
+            [(orphan,)],
+        )
+
+
 class TestOrphanSweepOnSessionTeardown(unittest.TestCase):
     def setUp(self):
         self.tmux = tmux_mod.Tmux()
