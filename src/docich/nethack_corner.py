@@ -390,7 +390,9 @@ class NethackCornerManager(RetroCornerManager):
                     if not _is_terminal_screen(self._runtime_screen() or ""):
                         return CornerResult("failed", game=GAME_NAME,
                                             detail="NetHack terminal screen unproven")
-                    recovered = self.coordinator.recover(timeout_s=120.0)
+                    recovered = self.coordinator.recover(
+                        timeout_s=120.0, expected_snapshot=canonical,
+                    )
                     if (getattr(recovered, "status", None) != "succeeded"
                             or getattr(recovered, "cleanup_pending", True) is not False):
                         return CornerResult("queued", game=GAME_NAME,
