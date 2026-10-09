@@ -132,9 +132,13 @@ def _live_text(row):
     """The text the classifier model would see for one live log row."""
     batch_line = str(row.get("batch_line") or row.get("comment") or "")
     comment = str(row.get("comment") or "")
-    # Card / multi-gacha notifications are matched on the whole raw line in the
-    # heuristic, so keep the whole line rather than the (often mangled) split
-    # body. Everything else is projected to the comment body only.
+    # Retain the notification body even if its card title contains ': ', but
+    # never retain the structured poster prefix from the batch envelope.
+    sender = str(row.get("user") or "")
+    if sender and batch_line.startswith(sender + ": "):
+        batch_line = batch_line[len(sender) + 2:]
+    else:
+        batch_line = re.sub(r"^[^\s:：]+:\s+", "", batch_line, count=1)
     if heuristic.CARD_ACQUIRED_RE.search(batch_line) or heuristic.CARD_MULTI_RE.search(batch_line):
         return redact_handles(batch_line)
     return redact_handles(comment or batch_line)

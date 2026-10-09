@@ -127,6 +127,8 @@ class TestBackends(unittest.TestCase):
                 {"role": "system", "content": "s"}, {"role": "user", "content": "u"}]})
         finally:
             server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
         self.assertIn('"chitchat"', text)
         self.assertEqual(jev_bench.parse_answer(text)[0], "chitchat")
         self.assertGreaterEqual(meta["ttft_ms"], 0)

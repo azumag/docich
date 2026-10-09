@@ -3,8 +3,8 @@
 Jev 分類器のローカルLLM化（[#1263](https://github.com/azumag/docich/issues/1263)）の
 前段として、RTX 3060 12GB 実機で動かす **対象モデル 5 個**と **実行環境**を確定した。
 本番の精度・レイテンシ比較は後段タスクが `bench/jev_bench.py`（PR #1933）で行う。
-ここが用意するのは「どのモデルを、どう入れて、いくら VRAM を食うか」と、
-全モデルが実際に **1 応答を返す**ことの実測記録。
+ここが用意するのは「どのモデルを、どう入れて、いくら 割当量を報告するか」と、
+全モデルが実際に **1 応答を返した**とする保存記録（終端は未検証）。
 
 - 実測日: 2026-10-09
 - 実測ホスト: `desktop-9j2it17`（Windows 実機, RTX 3060 12GB, Tailscale 経由）
@@ -21,7 +21,7 @@ Jev 分類器のローカルLLM化（[#1263](https://github.com/azumag/docich/is
 3. **入手容易性** — Ollama レジストリから `ollama pull` 一発で入る（実機の常駐運用に載る）。
 4. **既存 Jev パイプラインとの互換** — OpenAI 互換 API で叩け、`{"choice","confidence"}`
    の JSON 契約を安定して返せる（`docich.comment_classifier.jev.CRITERIA` のラベル）。
-5. **モデルサイズ** — 3〜8B 級・Q4/Q5、12GB VRAM に KV キャッシュ込みで全載せできる。
+5. **モデルサイズ** — 3〜8B 級・Q4/Q5を12GB環境で評価する。全載せの実測受入は未確認。
 
 ### 候補（8 個）
 
@@ -73,7 +73,7 @@ Jev 分類器のローカルLLM化（[#1263](https://github.com/azumag/docich/is
 | 推論ランタイム | Ollama **0.30.10**（内蔵 llama.cpp バックエンド、GGUF） |
 | API | `http://<host>:11434`（native `/api/*` と OpenAI 互換 `/v1`） |
 | ドライバ / CUDA | **未取得**（下記） |
-| 実機に既存のモデル | `gemma4:12b`（11.9B / Q4_K_M / VRAM 8.09GB 常駐） |
+| 実機に既存のモデル | `gemma4:12b`（11.9B / Q4_K_M / Ollama報告割当量8.09GB） |
 
 ### ランタイム決定: Ollama（llama.cpp バックエンド）
 
@@ -92,41 +92,38 @@ Jev 分類器のローカルLLM化（[#1263](https://github.com/azumag/docich/is
 `nvidia-smi` は実機で実行する必要があるが、**Windows 側の SSH:22 が閉じている**ため
 この経路では取得できない（既知のブロッカー: `handoff.md` 2026-09-27 節「Windows の SSH:22 が
 閉じている。ユーザーに OpenSSH 有効化と鍵登録・ユーザー名を依頼中」）。代わりに得られた
-GPU 実行の証拠は次。
-
-- Ollama `/api/ps` の `size_vram` が `size` と一致（**100% GPU オフロード**、CPU フォールバックなし）。
-- 12GB 級を超える重み（`gemma4:12b` = 8.09GB VRAM 常駐、8B Q4 = 5.3〜9.8GB）が全載せできている
-  → 8GB 超の VRAM があることまでは実測で確認できる。
+保存されているのは `/api/ps` が報告した `size` と `size_vram` の割当量である。
+両者の一致は runtime の報告上の比率を示すが、process 全体の GPU 使用量、
+CPU fallback の不在、物理 VRAM 容量の独立した実測にはならない。
+ドライバ/CUDA、全プロセスの使用量、配信と同時稼働時の空き容量は未確認。
 
 次の一手（ユーザー作業）: Windows で OpenSSH を有効化 + 公開鍵登録。
 入り次第 `nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv` と
 Ollama が使う CUDA ランタイム版を本ファイルへ追記する。
 
-## 3. 量子化バリアントと VRAM 実測
+## 3. 量子化バリアントと Ollama の報告割当量
 
-VRAM は Ollama `/api/ps` の `size_vram` 実測（重み + KV キャッシュ + compute buffer、
-プロセス全体の合計）。`num_ctx` は Ollama 側で**モデルの最大長にクランプ**されるため、
-上限が 8192 のモデルは 16k/32k 指定でも値が伸びない。
+以下は保存 smoke の `/api/ps.size_vram`（GB、10進）の値。
+`size` / `size_vram` はランタイムが報告した割当量であり、重み・KV・compute buffer を
+含む process 全体の実測 VRAM としては扱わない。旧 `vram_offload_pct=100` は
+`size_vram / size` の比率であり、CPU fallback が無いという受入証拠ではない。
 
-| モデル | 量子化 | 最大 ctx | ディスク | VRAM @4k | VRAM @16k | VRAM @32k | 全載せ |
+| モデル | 量子化 | 公称最大 ctx | ディスク | 要求 ctx 4k の報告量 | 要求 ctx 16k の報告量 | 要求 ctx 32k の報告量 | 実効 ctx（保存 smoke） |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `MHKetbi/…-sarashina2.2-3b-…:q4_K_S` | Q4_K_S | 8,192 | 1.97 GB | 2.67 GB | 3.80 GB | 3.80 GB | 100% |
-| `qwen2.5:7b-instruct-q4_K_M` | Q4_K_M | 32,768 | 4.68 GB | 4.75 GB | 5.62 GB | 6.59 GB | 100% |
-| `qwen3:8b-q4_K_M` | Q4_K_M | 40,960 | 5.23 GB | 5.58 GB | 7.52 GB | 9.84 GB | 100% |
-| `llama3.1:8b-instruct-q4_K_M` | Q4_K_M | 131,072 | 4.92 GB | 5.27 GB | 7.02 GB | 9.06 GB | 100% |
-| `schroneko/…-swallow-8b-…:q4_k_m` | Q4_K_M | 8,192 | 4.92 GB | 5.27 GB | 5.93 GB | 5.93 GB | 100% |
+| `MHKetbi/…-sarashina2.2-3b-…:q4_K_S` | Q4_K_S | 8,192 | 1.97 GB | 2.67 GB | 3.80 GB | 3.80 GB | 未記録 |
+| `qwen2.5:7b-instruct-q4_K_M` | Q4_K_M | 32,768 | 4.68 GB | 4.75 GB | 5.62 GB | 6.59 GB | 未記録 |
+| `qwen3:8b-q4_K_M` | Q4_K_M | 40,960 | 5.23 GB | 5.58 GB | 7.52 GB | 9.84 GB | 未記録 |
+| `llama3.1:8b-instruct-q4_K_M` | Q4_K_M | 131,072 | 4.92 GB | 5.27 GB | 7.02 GB | 9.06 GB | 未記録 |
+| `schroneko/…-swallow-8b-…:q4_k_m` | Q4_K_M | 8,192 | 4.92 GB | 5.27 GB | 5.93 GB | 5.93 GB | 未記録 |
 
-見積もりの内訳は `VRAM ≒ 重み + KVキャッシュ(ctx に線形) + compute buffer`。
-実測では KV が支配的なのは 8B で、4k→32k で **+3.5〜4.3GB**。3B は同じ 8k 上限でも 3.8GB に収まる。
+保存 JSON の `num_ctx` は要求値。`context_length` が保存されていないため、
+実効長、モデル上限へのクランプ、KV の内訳はこの証拠から再現できない。
+修正後の smoke は `requested_num_ctx` と `/api/ps` の `loaded_context_length` を別々に記録し、
+後者の欠落は `null` とする。旧 raw は補完・変更しない。
 
-### 12GB への収まりと縮小設定
-
-- **全 5 モデル × 全 ctx で 12GB に収まり、CPU へ一切こぼれない**（offload 100%）。
-- ただし 8B の 32k は 9.1〜9.8GB で、配信 PC が OBS/VRChat を同時に使う前提では残り ~2GB
-  しかない。**Jev 用途は `num_ctx` 8192〜16384 を推奨**（32k は単独運用時の検証枠）。
-- 元コメントは 4〜477 文字（中央値 36）で、分類プロンプトも短い。8k でも運用上十分な余裕がある。
-- `schroneko/…swallow` と `MHKetbi/…sarashina2.2` はモデル上限が 8192 のため、
-  **ハーネス側で `num_ctx` を明示しないと VRAM 比較が揃わない**（Ollama の既定 ctx に依存）。
+報告量の最大値は9.84GBだが、他プロセスを含む使用量が未測定のため、12GB内への
+実際の収まりやOBS/VRChat同時稼働時のheadroomは未確認。`num_ctx` 8192〜16384 は
+検証候補の要求値として扱い、運用採用やCPU fallback不在を確定しない。
 
 ## 4. 起動確認（smoke test）
 
@@ -155,7 +152,9 @@ warmup 1 回（初回ロードを計測から除外）。モデル差は chat te
 | `llama3.1:8b-instruct-q4_K_M` | 258 ms | 61 tok/s | `{"choice":"stream_goal","confidence":0.8}` |
 | `schroneko/…-swallow-8b-…:q4_k_m` | 307 ms | 59 tok/s | `{"choice":"card_gacha","confidence":0.9}` |
 
-**全 5 モデルが実機で 1 応答を返した**（受入条件）。生成速度は 3B 107 tok/s / 8B 59〜66 tok/s、
+**保存された15応答はいずれも認識可能なlabelと有限の0〜1 confidenceを持つ。**
+旧collectorは終端イベントを検証・保存していないため、正常なstream完了は未検証。
+修正後のcollectorは `done:true`、非空JSON応答、label、confidenceをすべて検証してから `status=ok` とする。生成速度は 3B 107 tok/s / 8B 59〜66 tok/s、
 8B の warm TTFT は 209〜307 ms。#1263 の暫定目標（warm p95 300ms 程度）は境界域で、
 実際の判定は同一プロンプト・全 108 ケースのハーネス計測で行う。
 
@@ -172,7 +171,7 @@ warmup 1 回（初回ロードを計測から除外）。モデル差は chat te
 ## 5. 補足: DiffusionGemma 26B-A4B
 
 #1263 の方針どおり本命候補にはしない（Ampere は NVFP4 ネイティブでない、26B の全重みを
-12GB に置けない）。実機には `gemma4:12b` Q4_K_M（8.09GB 常駐、32k ctx）が既に入っており、
+12GB に置けない）。実機には `gemma4:12b` Q4_K_M（報告割当量8.09GB、要求32k ctx）が既に入っており、
 必要なら CPU/MoE オフロード時の参考値として使える。ハーネスは `--model` 差し替えだけで
 これも計測できる。
 

@@ -4,12 +4,12 @@
   "gpu": "NVIDIA GeForce RTX 3060 12GB (Ampere)",
   "driver_version": null,
   "cuda_version": null,
-  "driver_cuda_note": "nvidia-smi は実機でしか実行できず、Windows 側 SSH:22 が閉じているため取得不可（既知のブロッカー）。代替証拠は /api/ps の size_vram == size（100% GPU オフロード）",
+  "driver_cuda_note": "未取得。/api/ps size/size_vram はランタイム報告割当量であり、process全体VRAM・CPU fallback不在の証明ではない",
   "runtime": "Ollama 0.30.10",
   "ollama_version": "0.30.10",
   "api": "native /api/chat (streaming)",
   "transport_reason": "Ollama /v1 は num_ctx と Qwen3 think:false を無視するため、計測は native /api/chat で行う（同一プロンプト・同一生成パラメータは jev_bench 側で固定）",
-  "suite": "/Users/azumag/.hermes/kanban/workspaces/t_93c8260c/docich/bench/jev_eval_v1",
+  "suite": "bench/jev_eval_v1",
   "suite_digest": "sha256:81b6279a445e52d4ce06f305ccb22d18502779b2e292bc80447dfd9ad6056c2b",
   "suite_case_count": 108,
   "generation": {
@@ -35,6 +35,19 @@
     "schroneko/llama-3.1-swallow-8b-instruct-v0.1:q4_k_m": 4921248118,
     "MHKetbi/sbintuitions-sarashina2.2-3b-instruct-v0.1:q4_K_S": 1971364212
   },
-  "command": "python3 bench/tools/run_ollama_bench.py --base-url http://desktop-9j2it17:11434 --num-ctx 8192 --runs 3 --warmup 3 --temperature 0.0 --top-p 1.0 --max-tokens 64 --seed 42 --model qwen2.5:7b-instruct-q4_K_M --model qwen3:8b-q4_K_M --model llama3.1:8b-instruct-q4_K_M --model schroneko/llama-3.1-swallow-8b-instruct-v0.1:q4_k_m --model MHKetbi/sbintuitions-sarashina2.2-3b-instruct-v0.1:q4_K_S --out bench/runs --results-dir bench/results",
-  "failed_models": []
+  "command": "python3 bench/tools/run_ollama_bench.py --base-url '<ollama-base-url>' --suite bench/jev_eval_v1 --num-ctx 8192 --runs 3 --warmup 3 --temperature 0.0 --top-p 1.0 --max-tokens 64 --seed 42 --model qwen2.5:7b-instruct-q4_K_M --model qwen3:8b-q4_K_M --model llama3.1:8b-instruct-q4_K_M --model schroneko/llama-3.1-swallow-8b-instruct-v0.1:q4_k_m --model MHKetbi/sbintuitions-sarashina2.2-3b-instruct-v0.1:q4_K_S --out bench/runs --results-dir bench/results",
+  "failed_models": [],
+  "reaggregation": {
+    "method": "bench/tools/reaggregate_ollama_results.py",
+    "inputs": "unchanged published raw; saved per-run VRAM retained by run ID",
+    "raw_sha256": {
+      "MHKetbi-sbintuitions-sarashina2.2-3b-instruct-v0.1-q4_K_S.raw.jsonl": "2a8bb63397d6484da29b8c56167fdb7d5d7c2467d1f1dd4268431aaad02ea82c",
+      "llama3.1-8b-instruct-q4_K_M.raw.jsonl": "f8bb88c114218c4de1e4eff2e2eed36bde51b89202b9592fcb4818bd5daca787",
+      "qwen2.5-7b-instruct-q4_K_M.raw.jsonl": "63dfd1a595676725d43919a4989efe99c7ffe8927648bfc77de76c031863703d",
+      "qwen3-8b-q4_K_M.raw.jsonl": "aff056d18ff6066d306d2d7ef2cb44aaa3e66215d820dfa0c962dcff136d08ca",
+      "schroneko-llama-3.1-swallow-8b-instruct-v0.1-q4_k_m.raw.jsonl": "46f3fe2ef975ca87387139188a78e34b88428aa05bcfdf10fad2dc88e239ead8"
+    },
+    "validation": "suite digest; exact run/case count and order; warmup; gold and tags",
+    "historical_stream_completion": "unverified: raw does not preserve terminal events"
+  }
 }

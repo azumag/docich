@@ -65,7 +65,8 @@ chitchat が大量で、そのままでは希少な意図ラベルが埋もれ�
 `live-log` の行は production の投影規則を通してある。
 
 - モデル入力は production と同じく **コメント本文のみ**（`heuristic.split_line`）。
-  カード獲得通知だけは heuristic が生行全体で判定するため生行を保持。
+  カード獲得通知は通知本文を保持し、batchの投稿者prefixを除去する。
+  既存suiteは再生成していない。新規投影を架空の投稿者/受取人で検証する。
 - `@handle` は ASCII・非 ASCII を問わず `[user]` に置換（`build_jev_suite.redact_handles`）。
   `docich.eval.corpus.sanitize_text` は ASCII の `@[A-Za-z0-9_]` しか消さないため、
   日本語表示名が残らないよう自前で補っている。
@@ -158,7 +159,38 @@ python3 bench/jev_bench.py --suite evals/comment/v1 --backend dummy --model dumm
 ```
 
 `--warmup N` は各 run の先頭 N 件を集計から除外する。`--runs N` で繰り返し、
-`summary.csv` の各行が 1 実行に対応する（同一モデルの複数 run を median/分散比較に使う）。
+`summary.csv` の各行が 1 run に対応する（同一モデルの複数 run を median/分散比較に使う）。
+
+### native Ollama の公開結果とオフライン再集計
+
+`bench/tools/run_ollama_bench.py` の公開 `summary.csv` はモデルごとに1行を出す。
+`cases_per_run` は warmup 除外後の1 run の件数、`pooled_n` は全 runs の試行数。
+accuracy / macro F1 の `*_median` は run 別の中央値であり、report の `all` は
+全試行を採点した pooled 集計となる。`accuracy` は応答がある試行の正答率、
+`correct_fraction_all` はmissを含む全試行の正答率で、coverageを併記する。同じ `case_id` の各試行を独立に採点し、
+confusion と label support の合計を pooled の母数に揃える。
+
+保存した raw から report・summary・metadata のみを再生成するには:
+
+```sh
+python3 bench/tools/reaggregate_ollama_results.py bench/results/2026-10-09_rtx3060_jev
+env -u PYTHONPATH python3 -m unittest discover -s bench/tests -v
+```
+
+再生成処理は suite digest を照合し、API・GPU・VM へ接続せず、raw を読み取るだけ。
+公開 report の suite は repo 相対パス（外部 suite は digest による識別子）、run_dir は
+`results:<結果ID>/<モデルID>` とする。ローカル run の report は元の場所情報を保持する。
+公開 metadata の command は相対出力先と `<ollama-base-url>` を用いる再現用テンプレート。
+
+2026-10-09 の保存 raw は各モデル324行、warmup 除外後105件 × 3 runs = 315試行。
+訂正後の Swallow pooled accuracy は157/315 = 0.4984126984、macro F1 は0.6576904727。
+run 別 median は accuracy 0.4952380952 / macro F1 0.6555766816 のまま。
+Llama の通知ラベル FP は6/315 = 約1.90件/100件で、旧0.6件/100件を訂正した。
+この再集計でモデル採用・shadow 運用の判断は変更していない。
+
+native stream は `done:true` を受信するまで成功とせず、EOF・JSON途中終了は失敗となる。
+`eval_count` 欠落時は `output_tokens`・tokens/sec を unknown (`null`) とし、
+文字数による推定を実測列へ混ぜない。保存済み5本の raw にある実測 usage は変更しない。
 `--extra-body '{"chat_template_kwargs": {"enable_thinking": false}}'` で
 ランタイム固有オプションを全リクエストへ一律に付与できる。
 
@@ -202,3 +234,21 @@ summary_csv=bench/runs/<stamp>_dummy-1b/default/summary.csv
 - RTX 3060 実機での本番計測・結果の考察・採用モデル決定は別タスクが受け持つ
   （カード `t_93c8260c` = 実機計測、`t_827803e3` = 結果分析・採否判断）。
   ここはその入力と計測手順までを整備する。
+
+## 継承レビュー修正の検証範囲
+
+OpenAI backendはCLIの4生成設定を実リクエストへ渡し、extra-bodyでの上書きを拒否する。
+chat/templateの双方でstreamを要求し、JSON応答もContent-Typeで読み取る。
+errorイベント・終端無しEOFは失敗として採点し、usage欠落時の実token数と速度はnull。
+dummyのseedもCLI値を使う。`report.json`は全試行とrun別の集計を持つ。
+
+保存native結果の再集計はsuite digestに加え、run/caseの件数・順序、warmup、gold、tagsを照合する。
+rawのSHA-256と方法をmetadataに記録し、保存run別VRAMをpooled peakで補完しない。
+CSVにもmissを含む `correct_fraction_all`（native集計では `correct_fraction_all_median`）を併記する。
+公開の計算結果は演算後に小数12桁へ揃え、Python 3.11/3.14で同一ファイルを再現する。
+歴史的なrawにはstream終端イベントが無いため、修正後の完了判定を遡及適用できない。
+保存smokeの要求contextから実効contextを補完しない。OpenAI経由の過去のCLI記録だけでは、
+旧版が送信しなかった生成設定の適用を証明できない。外部再計測は行っていない。
+
+これらは#1974側のコード・保存証拠の訂正であり、#1933/#1934自体のブランチ・レビュー条件を
+完了した扱いにはしない。main mergeには既存のVM自動配備経路があるため、mergeせずReadyで保留する。

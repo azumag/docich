@@ -221,20 +221,25 @@ class OpenAIBackend:
     name = "openai"
 
     def __init__(self, base_url, model, api_key="", timeout=120.0, extra_body=None,
-                 prompt_format="chat"):
+                 prompt_format="chat", generation=None):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
         self.timeout = timeout
         self.extra_body = extra_body or {}
         self.prompt_format = prompt_format
+        self.generation = {**GENERATION_DEFAULTS, **(generation or {})}
+        reserved = set(self.generation) | {"model", "messages", "prompt", "stream"}
+        if not isinstance(self.extra_body, dict) or reserved.intersection(self.extra_body):
+            raise ValueError("extra-body must be an object without generation or request overrides")
 
     def generate(self, payload):
         body = {key: value for key, value in payload.items() if not key.startswith("_")}
         body["model"] = self.model
         body.update(self.extra_body)
-        if self.prompt_format == "chat":
-            body["stream"] = True
+        body.update(self.generation)
+        body["stream"] = True
+        body.setdefault("stream_options", {"include_usage": True})
         url = self.base_url + ("/chat/completions" if self.prompt_format == "chat" else "/completions")
         request = urllib.request.Request(
             url, data=json.dumps(body).encode("utf-8"),
@@ -245,18 +250,33 @@ class OpenAIBackend:
         chunks = []
         usage = None
         finish = None
+        done = False
         with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            for raw in response:
+            content_type = response.headers.get("Content-Type", "text/event-stream")
+            if "application/json" in content_type:
+                event = json.load(response)
+                if event.get("error"):
+                    raise RuntimeError("OpenAI backend returned an error")
+                choice = (event.get("choices") or [{}])[0]
+                chunks.append((choice.get("message") or {}).get("content") or choice.get("text") or "")
+                usage = event.get("usage")
+                finish = choice.get("finish_reason")
+                done = finish is not None
+                # A buffered JSON response cannot provide a streamed TTFT.
+                events = ()
+            else:
+                events = response
+            for raw in events:
                 line = raw.decode("utf-8", "ignore").strip()
                 if not line or not line.startswith("data:"):
                     continue
                 data = line[5:].strip()
                 if data == "[DONE]":
+                    done = True
                     break
-                try:
-                    event = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
+                event = json.loads(data)
+                if event.get("error"):
+                    raise RuntimeError("OpenAI stream returned an error")
                 usage = event.get("usage") or usage
                 choices = event.get("choices") or [{}]
                 delta = choices[0].get("delta") or {}
@@ -266,16 +286,18 @@ class OpenAIBackend:
                 if piece:
                     chunks.append(piece)
                 finish = choices[0].get("finish_reason") or finish
+        if not done and finish is None:
+            raise RuntimeError("OpenAI response ended without a terminal event")
         total = time.monotonic() - started
         text = "".join(chunks)
         output_tokens = (usage or {}).get("completion_tokens")
-        if not isinstance(output_tokens, int):
-            output_tokens = max(1, len(text) // 4) if text else 0
-        ttft_ms = (ttft or total) * 1000.0
+        if type(output_tokens) is not int or output_tokens < 0:
+            output_tokens = None
+        ttft_ms = ttft * 1000.0 if ttft is not None else None
         total_ms = total * 1000.0
         return text, {"ttft_ms": ttft_ms, "total_ms": total_ms,
                       "output_tokens": output_tokens,
-                      "tokens_per_second": output_tokens / total if total > 0 else None,
+                      "tokens_per_second": output_tokens / total if output_tokens is not None and total > 0 else None,
                       "usage": usage, "finish_reason": finish}
 
 
@@ -298,7 +320,7 @@ def run_once(backend, cases, *, system, prompt_format, chat_template, vram, run_
                 text, meta = backend.generate(payload)
             except Exception as exc:  # a model failure must not abort the suite
                 text, meta, error = "", {"ttft_ms": None, "total_ms": (time.monotonic() - started) * 1000.0,
-                                         "output_tokens": 0, "tokens_per_second": None,
+                                         "output_tokens": None, "tokens_per_second": None,
                                          "usage": None, "finish_reason": None}, type(exc).__name__
             choice, confidence, parse_ok = parse_answer(text)
             rows.append({
@@ -329,8 +351,21 @@ def _subset(records, predicate):
 
 
 def score_subset(cases, records):
-    outputs = {row["case_id"]: {"category": row["choice"], "screen_need": None} for row in records}
-    return classifier_grader.evaluate(cases, outputs)
+    # The grader joins on case_id; each repeated observation needs its own ID.
+    by_case = {case["case_id"]: case for case in cases}
+    trials = []
+    outputs = {}
+    seen = set()
+    for index, row in enumerate(records):
+        identity = (row["run"], row["case_id"])
+        if identity in seen:
+            raise ValueError("duplicate run/case_id observation")
+        seen.add(identity)
+        trial_id = str(index)
+        trials.append({**by_case[row["case_id"]], "case_id": trial_id})
+        outputs[trial_id] = {"category": row["choice"] if not row.get("error") else None,
+                             "screen_need": None}
+    return classifier_grader.evaluate(trials, outputs)
 
 
 def summarize(records, cases, *, model, quantization, backend, args, peak_vram,
@@ -376,7 +411,7 @@ def summarize(records, cases, *, model, quantization, backend, args, peak_vram,
 
 def write_csv(path, rows, fieldnames):
     with Path(path).open("w", encoding="utf-8", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fieldnames, extrasaction="ignore")
+        writer = csv.DictWriter(stream, fieldnames=fieldnames, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
@@ -385,8 +420,8 @@ def write_csv(path, rows, fieldnames):
 PER_CASE_FIELDS = ["run", "case_id", "category_expected", "choice", "correct", "confidence",
                    "parse_ok", "ttft_ms", "total_ms", "output_tokens", "tokens_per_second",
                    "finish_reason", "error", "intent_family", "tags"]
-SUMMARY_FIELDS = ["model", "quantization", "backend", "suite", "runs", "cases",
-                  "accuracy_all", "accuracy_non_notification", "accuracy_live_log",
+SUMMARY_FIELDS = ["model", "quantization", "backend", "suite", "run", "runs", "cases",
+                  "accuracy_all", "correct_fraction_all", "accuracy_non_notification", "accuracy_live_log",
                   "macro_f1_all", "coverage_all", "parse_failures", "errors",
                   "ttft_p50_ms", "ttft_p95_ms", "total_p50_ms", "total_p95_ms", "total_p99_ms",
                   "tokens_per_second_median", "peak_vram_mib",
@@ -402,6 +437,7 @@ def summary_row(result):
         "backend": result["backend"], "suite": result["suite"], "runs": result["runs"],
         "cases": result["cases"],
         "accuracy_all": all_block.get("accuracy"),
+        "correct_fraction_all": all_block.get("correct_fraction_all"),
         "accuracy_non_notification": non_notif.get("accuracy"),
         "accuracy_live_log": live.get("accuracy"),
         "macro_f1_all": all_block.get("macro_f1"),
@@ -464,12 +500,13 @@ def main(argv=None):
     system = build_system_prompt()
 
     if args.backend == "dummy":
-        backend = DummyBackend(args.model)
+        backend = DummyBackend(args.model, seed=args.seed)
     else:
         backend = OpenAIBackend(args.base_url, args.model,
                                 api_key=os.environ.get(args.api_key_env, ""),
                                 extra_body=json.loads(args.extra_body),
-                                prompt_format=args.prompt_format)
+                                prompt_format=args.prompt_format,
+                                generation={key: getattr(args, key) for key in GENERATION_DEFAULTS})
 
     started_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -490,6 +527,13 @@ def main(argv=None):
                        suite_dir=Path(args.suite).resolve(), run_dir=run_dir.resolve(),
                        started_at=started_at, runs=args.runs)
     result["suite_digest"] = loaded["manifest"].get("corpus_digest")
+    per_run = [{"run": run_index, **summarize(
+        [row for row in records if row["run"] == run_index], cases,
+        model=args.model, quantization=args.quantization, backend=args.backend,
+        args=args, peak_vram=None, suite_dir=Path(args.suite).resolve(),
+        run_dir=run_dir.resolve(), started_at=started_at, runs=1)}
+        for run_index in range(1, args.runs + 1)]
+    result["per_run"] = per_run
     result["suite_manifest"] = loaded["manifest"]
     result["prompt"] = {"prompt_format": args.prompt_format,
                         "chat_template": args.chat_template,
@@ -502,12 +546,12 @@ def main(argv=None):
                                         encoding="utf-8")
     corpus.write_jsonl(run_dir / "raw.jsonl", records)
     corpus.write_jsonl(run_dir / "outputs.jsonl",
-                       [{"case_id": row["case_id"], "category": row["choice"],
+                       [{"run": row["run"], "case_id": row["case_id"], "category": row["choice"],
                          "parse_ok": row["parse_ok"], "usage": row["usage"],
                          "ttft_ms": row["ttft_ms"], "total_ms": row["total_ms"]}
                         for row in records if not row["warmup"]])
     write_csv(run_dir / "per_case.csv", records, PER_CASE_FIELDS)
-    write_csv(run_dir / "summary.csv", [summary_row(result)], SUMMARY_FIELDS)
+    write_csv(run_dir / "summary.csv", [{**summary_row(r), "run": r["run"]} for r in per_run], SUMMARY_FIELDS)
 
     all_block = result.get("all", {})
     print(f"run_dir={run_dir}")

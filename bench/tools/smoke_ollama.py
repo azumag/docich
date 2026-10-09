@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Ollama 起動確認 + VRAM 実測スモークテスト (#1263).
+"""Ollama 起動確認 + Ollama報告割当量スモークテスト (#1263).
 
 RTX 3060 実機の Ollama (HTTP API) に対し、選定モデルごとに **1 プロンプト**を
-流して「起動して応答を返すか」を確認し、同時に実測 VRAM を取る。本番の精度
+流して「起動して応答を返すか」を確認し、同時にOllamaの報告割当量を取る。本番の精度
 比較は `bench/jev_bench.py`（PR #1933, OpenAI 互換 `/v1/chat/completions`）
 が担う。ここはモデルを入れ替えても同じ手順で回せる起動確認用の薄い層。
 
@@ -10,7 +10,7 @@ RTX 3060 実機の Ollama (HTTP API) に対し、選定モデルごとに **1 �
 
 - TTFT (ms): 最初の非空 content チャンクまで
 - 総生成時間 (ms) / eval tokens-per-sec
-- 実測 VRAM (`/api/ps` の `size_vram`) と重み込みロードサイズ (`size`)
+- 報告割当量 (`/api/ps` の `size_vram` / `size`) と実効 context_length
 - 出力テキスト（JSON 分類契約を満たしたかどうかの目視/機械確認用）
 
 プロンプトは全モデル共通。モデル差は chat template のみ（Ollama 側が適用）。
@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import os
 import time
 import urllib.error
@@ -89,7 +90,7 @@ def stream_chat(base_url, model, num_ctx, max_tokens=128, no_think=False):
     req = urllib.request.Request(
         base_url + "/api/chat", data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"})
-    t0 = time.time()
+    t0 = time.monotonic()
     ttft = None
     text_parts = []
     final = {}
@@ -103,38 +104,55 @@ def stream_chat(base_url, model, num_ctx, max_tokens=128, no_think=False):
                 raise RuntimeError(ev["error"])
             piece = (ev.get("message") or {}).get("content") or ""
             if piece and ttft is None:
-                ttft = (time.time() - t0) * 1000.0
+                ttft = (time.monotonic() - t0) * 1000.0
             if piece:
                 text_parts.append(piece)
-            if ev.get("done"):
+            if ev.get("done") is True:
                 final = ev
-    total_ms = (time.time() - t0) * 1000.0
-    eval_count = final.get("eval_count") or 0
-    eval_ns = final.get("eval_duration") or 0
+                break
+    if not final:
+        raise RuntimeError("Ollama smoke stream ended without done:true")
+    text = "".join(text_parts).strip()
+    answer = json.loads(text)
+    if not isinstance(answer, dict) or answer.get("choice") not in LABELS:
+        raise ValueError("smoke response must contain a recognized choice")
+    confidence = answer.get("confidence")
+    if type(confidence) not in (int, float) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
+        raise ValueError("smoke confidence must be finite and between 0 and 1")
+    total_ms = (time.monotonic() - t0) * 1000.0
+    eval_count = final.get("eval_count")
+    if type(eval_count) is not int or eval_count < 0:
+        eval_count = None
+    eval_ns = final.get("eval_duration")
+    valid_duration = type(eval_ns) in (int, float) and math.isfinite(eval_ns) and eval_ns > 0
     return {
         "ttft_ms": round(ttft, 1) if ttft is not None else None,
         "total_ms": round(total_ms, 1),
         "prompt_eval_count": final.get("prompt_eval_count"),
         "eval_count": eval_count,
-        "eval_tok_per_s": round(eval_count / (eval_ns / 1e9), 1) if eval_ns else None,
+        "eval_tok_per_s": round(eval_count / (eval_ns / 1e9), 1) if eval_count is not None and valid_duration else None,
         "load_ms": round((final.get("load_duration") or 0) / 1e6, 1),
-        "response": "".join(text_parts).strip(),
+        "response": text,
+        "choice": answer["choice"], "confidence": confidence,
+        "stream_complete": True,
     }
 
 
 def loaded(base_url, model):
-    """ロード中のモデルの VRAM 実測値 (/api/ps)。"""
+    """ロード中のモデルの Ollama報告割当量値 (/api/ps)。"""
     try:
         ps = http_json(base_url + "/api/ps", timeout=30)
     except Exception:  # noqa: BLE001
         return None
     for m in ps.get("models", []):
         if m.get("name") == model or m.get("model") == model:
-            return {"size": m.get("size"), "size_vram": m.get("size_vram")}
+            ctx = m.get("context_length")
+            return {"size": m.get("size"), "size_vram": m.get("size_vram"),
+                    "context_length": ctx if type(ctx) is int and ctx > 0 else None}
     return None
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--base-url", default="http://desktop-9j2it17:11434")
     ap.add_argument("--model", action="append", default=None,
@@ -145,7 +163,7 @@ def main():
     ap.add_argument("--prompt", default=None, help="USER_PROMPT を差し替える")
     ap.add_argument("--warmup", type=int, default=1,
                     help="計測前に捨てる呼び出し回数（既定1、初回ロード分を除外）")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     global USER_PROMPT  # noqa: PLW0603
     if args.prompt:
@@ -162,7 +180,8 @@ def main():
     for model in models:
         family = model.split("/")[-1].split(":")[0]
         for ctx in ctxs:
-            row = {"model": model, "num_ctx": ctx,
+            row = {"model": model, "requested_num_ctx": ctx,
+                   "loaded_context_length": None,
                    "disk_bytes": disk.get(model),
                    "ollama_version": version.get("version"),
                    "prompt": USER_PROMPT}
@@ -179,8 +198,9 @@ def main():
             if ps:
                 row["loaded_size"] = ps["size"]
                 row["size_vram"] = ps["size_vram"]
+                row["loaded_context_length"] = ps["context_length"]
                 if ps["size"] and ps["size_vram"] is not None:
-                    row["vram_offload_pct"] = round(
+                    row["reported_vram_fraction_pct"] = round(
                         100.0 * ps["size_vram"] / ps["size"], 1)
             results.append(row)
             print(json.dumps(row, ensure_ascii=False), flush=True)
