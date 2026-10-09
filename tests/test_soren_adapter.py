@@ -246,10 +246,9 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             adapter = self.make_adapter(Path(temp))
             adapter._request_id = "req-2"
-            outputs = [
-                {},
-                {"ack": {"request_id": "req-2", "status": "stopped"}},
-            ]
+            outputs = [{}]
+            adapter._status = Mock(side_effect=[self.stop_payload("req-2", "stopping"),
+                                               self.stop_payload("req-2", "stopped")])
             calls = []
             def fake_run(argv, **kwargs):
                 calls.append((argv, kwargs))
@@ -271,12 +270,28 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temp:
                 adapter = self.make_adapter(Path(temp))
                 adapter._request_id = "req-2"
+                adapter._status = Mock(return_value=self.stop_payload("req-2", "stopping"))
                 result = SimpleNamespace(returncode=1, stdout=output, stderr="raw-secret")
                 with patch("docich.adapters.soren.subprocess.run", return_value=result):
                     with self.assertRaisesRegex(AdapterError, rf"rc=1 reason={expected}$") as caught:
                         adapter.cleanup_runtime(time.monotonic() + 30, None)
                 self.assertNotIn("do-not-copy", str(caught.exception))
                 self.assertNotIn("raw-secret", str(caught.exception))
+
+    def test_completed_stop_proof_does_not_outlive_a_successful_fresh_start(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            adapter._request_id = "req-2"
+            adapter._status = Mock(side_effect=[self.stop_payload("req-2", "stopping"),
+                self.stop_payload("req-2", "stopped"), self.stop_payload("req-2", "stopped"),
+                {"schema": 1, "request": None, "ack": None, "resource": None}])
+            adapter._run = Mock(return_value=(0, {}))
+            deadline = time.monotonic() + 30
+            adapter.cleanup_runtime(deadline, None)
+            self.assertIsNotNone(adapter._completed_stop_receipt)
+            adapter.materialize_runtime(deadline, None)
+            self.assertIsNone(adapter._completed_stop_receipt)
+            self.assertTrue(adapter.alive(deadline, None))
 
     def test_cancel_uses_fixed_control_so_partial_pause_is_restored(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -364,7 +379,12 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
         state.update(phase="ready", active=runtime, next_generation=8)
         store.canonical.save(state)
         adapter.spec = RuntimeSpec.from_runtime(adapter.g.state_dir, runtime)
+        adapter._status = Mock(side_effect=lambda *_: self.stop_payload(adapter._request_id, "stopping"))
         return adapter
+
+    def stop_payload(self, request_id, status):
+        payload = self.boundary_payload(status, request_id=request_id)
+        return {**payload, "schema": 1, "resource": {**payload["request"], "status": status}}
 
     def make_retired_singleton(self, root):
         import uuid
@@ -514,7 +534,9 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
         import uuid
         from test_adapter_stop_resume_safety import retirement
         from test_coordinator import FakeAdapterFactory
-        for outcome in ("stopped", "missing-ack", "foreign-ack", "failed-ack", "stop-failed"):
+        for outcome in ("stopped", "missing-ack", "foreign-ack", "failed-ack", "stop-failed",
+                        "ack-game", "ack-generation", "ack-deadline", "resource-owner",
+                        "resource-stopping", "resource-missing", "request-deadline", "late-owner-change"):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temp:
                 adapter, store, payload, request_id = retirement(Path(temp), status="stopping")
                 before, _ = store.canonical.load()
@@ -528,6 +550,15 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                     if outcome == "missing-ack": payload["ack"] = None
                     elif outcome == "foreign-ack": payload["ack"]["request_id"] = str(uuid.uuid4())
                     elif outcome == "failed-ack": payload["ack"]["status"] = "failed"
+                    elif outcome == "ack-game": payload["ack"]["game"] = "nethack"
+                    elif outcome == "ack-generation": payload["ack"]["generation"] += 1
+                    elif outcome == "ack-deadline": payload["ack"]["deadline_epoch"] += 1
+                    elif outcome == "resource-owner": payload["resource"]["generation"] += 1
+                    elif outcome == "resource-stopping": payload["resource"]["status"] = "stopping"
+                    elif outcome == "resource-missing": payload["resource"] = None
+                    elif outcome == "request-deadline":
+                        for key in ("request", "ack", "resource"):
+                            payload[key]["deadline_epoch"] += 1
                     return 0, {}
                 controller = Mock(side_effect=controller)
                 processes = Mock(return_value=(1, 10))
@@ -538,7 +569,15 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                 def factory(spec):
                     if spec.adapter != "soren": return fake(spec)
                     fresh = SorenCoordinatorAdapter(adapter.g, adapter.game, spec)
-                    fresh._status = Mock(side_effect=lambda *_: payload)
+                    def status(*_):
+                        import copy
+                        result = copy.deepcopy(payload)
+                        if outcome == "late-owner-change" and result["ack"]["status"] == "stopped":
+                            # The post-controller ACK passes; then the liveness
+                            # probe observes replacement of the resource owner.
+                            payload["resource"]["generation"] += 1
+                        return result
+                    fresh._status = Mock(side_effect=status)
                     fresh._run = controller
                     fresh._singleton_process_identity = processes
                     fresh.request_round_boundary = boundary

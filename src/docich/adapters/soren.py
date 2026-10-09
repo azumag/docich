@@ -41,6 +41,7 @@ class SorenCoordinatorAdapter:
         self._request_id: str | None = None
         self._fresh_started_at: float | None = None
         self._last_command_output = ""
+        self._completed_stop_receipt: dict | None = None
 
     def _check(self, deadline: float, cancel) -> None:
         if cancel is not None and cancel.is_set():
@@ -104,14 +105,33 @@ class SorenCoordinatorAdapter:
         ack = payload.get("ack")
         return ack if isinstance(ack, dict) else {}
 
-    def _wait_status(self, request_id: str, wanted: set[str], deadline: float, cancel) -> str:
+    def _checked_stop_state(self, payload: dict, receipt: dict, *, stopped=False) -> dict:
+        if (type(payload.get("schema")) is not int or payload["schema"] != 1
+                or any(key not in payload for key in ("request", "ack", "resource"))
+                or receipt.get("game") != self.spec.game
+                or type(receipt.get("generation")) is not int
+                or receipt["generation"] != self.spec.generation):
+            raise AdapterError("Soren stopのbroker/所有者が一致しません")
+        ack = self._checked_round_boundary_ack(payload, receipt)
+        resource = payload.get("resource")
+        if resource is not None:
+            if self._round_boundary_identity(resource) != self._round_boundary_identity(receipt):
+                raise AdapterError("Soren stopのresource所有者が一致しません")
+        if stopped and (ack.get("status") != "stopped" or not isinstance(resource, dict)
+                        or resource.get("status") != "stopped"):
+            raise AdapterError("Soren stopの一致するstopped resourceがありません")
+        return ack
+
+    def _wait_status(self, request_id: str, wanted: set[str], deadline: float, cancel,
+                     *, receipt: dict) -> str:
         while True:
             payload = self._status(deadline, cancel)
-            ack = self._ack(payload)
-            if ack.get("request_id") != request_id:
+            if receipt.get("request_id") != request_id:
                 raise AdapterError("Soren lifecycle request identityが変化しました")
+            ack = self._checked_stop_state(payload, receipt)
             status = str(ack.get("status") or "")
             if status in wanted:
+                self._checked_stop_state(payload, receipt, stopped=True)
                 return status
             if status in {"failed", "timeout", "unsupported", "cancelled", "resumed"}:
                 raise AdapterError(f"Soren lifecycleが停止しました: {status}")
@@ -585,6 +605,12 @@ class SorenCoordinatorAdapter:
                 request_id = str(ack.get("request_id") or "")
         if not request_id:
             raise AdapterError("Soren lifecycle stop requestがありません")
+        payload = self._status(deadline, cancel)
+        receipt = payload.get("request")
+        if not isinstance(receipt, dict) or receipt.get("request_id") != request_id:
+            raise AdapterError("Soren stopの元requestを確認できません")
+        self._checked_stop_state(payload, receipt)
+        receipt = dict(receipt)  # Pin the complete identity before the controller runs.
         # The fixed stop path may spend up to 30 seconds draining the
         # watchdog after stopping the other game workers.  A 15 second
         # subprocess cap killed the controller halfway through, leaving the
@@ -604,7 +630,8 @@ class SorenCoordinatorAdapter:
             reason = self._classify_stop_failure(self._last_command_output)
             self._record_command_output("stop-after-boundary", request_id, rc)
             raise AdapterError(f"Soren game-only stopに失敗しました rc={rc} reason={reason}")
-        self._wait_status(request_id, {"stopped"}, deadline, cancel)
+        self._wait_status(request_id, {"stopped"}, deadline, cancel, receipt=receipt)
+        self._completed_stop_receipt = receipt
 
     def materialize_runtime(self, deadline: float, cancel) -> None:
         payload = self._status(deadline, cancel)
@@ -631,6 +658,7 @@ class SorenCoordinatorAdapter:
             rc, _ = self._run([str(self.control), "fresh-start", request_id], deadline, cancel)
             if rc != 0:
                 raise AdapterError(f"Soren fresh start準備に失敗しました (rc={rc})")
+            self._completed_stop_receipt = None
 
     def readiness(self, deadline: float, cancel) -> None:
         while True:
@@ -689,6 +717,8 @@ class SorenCoordinatorAdapter:
         if self._retired_singleton_is_superseded(deadline, cancel):
             return False
         payload = self._status(deadline, cancel)
+        if self._completed_stop_receipt is not None:
+            self._checked_stop_state(payload, self._completed_stop_receipt, stopped=True)
         # Both states require an explicit materialize step before canonical can
         # publish the runtime again.  ``cancelled`` may already have live
         # processes, but its broker state must still be archived; reporting it
