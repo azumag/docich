@@ -2848,7 +2848,8 @@ class RetroCornerManager:
         )
 
     def _recover_restore_failed(
-        self, state: dict[str, object], *, late_cleanup_proved: bool = False
+        self, state: dict[str, object], *, late_cleanup_proved: bool = False,
+        one_shot_replay: bool = False,
     ) -> CornerResult | None:
         """Operator-only proof, durable preparation, and fenced replay."""
 
@@ -2878,6 +2879,18 @@ class RetroCornerManager:
                                         detail="restore-recovery-record-unproven")
                 replay = (self._restore_recovery_receipt(record, game=game, previous=previous)
                           if record is not None else None)
+                # The automatic NetHack recovery is an exact one-replay owner
+                # operation. Its outer admission may read queued R1, then
+                # another coordinator writer may terminalize R1 while we wait
+                # for this store lock. Detect terminal failure here too, in
+                # the same lock interval as the base's replacement decision:
+                # never allocate an unrelated R2 after a renewed source lease.
+                if (one_shot_replay and isinstance(replay, dict)
+                        and replay.get("status") in {"failed", "rolled_back"}):
+                    return CornerResult(
+                        "failed", game=game, previous_game=previous,
+                        detail="bounded restore replay already terminal failed",
+                    )
                 pending = record is not None and (
                     replay is None or replay.get("status") in {
                         "allocating", "accepted", "queued"
