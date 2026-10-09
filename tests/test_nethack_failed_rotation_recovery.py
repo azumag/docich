@@ -4,9 +4,12 @@ No VM, process or game is ever started by these tests.
 """
 from contextlib import contextmanager
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import Mock, patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.nethack_corner import (
     GAME_NAME,
@@ -101,6 +104,7 @@ class TestAutomaticNethackFailedRestore(TestCase):
         self.manager._recover_restore_failed.assert_called_once()
 
     def test_healthy_or_manual_slot_is_not_recovered(self):
+        original = self.manager._read_state.return_value
         for change in (
             {"status": "active"},
             {"rotation_request_id": ""},
@@ -108,9 +112,7 @@ class TestAutomaticNethackFailedRestore(TestCase):
             {"previous_game": "pacman4console"},
         ):
             with self.subTest(change=change):
-                self.manager._read_state.return_value = {
-                    **self.manager._read_state.return_value, **change,
-                }
+                self.manager._read_state.return_value = {**original, **change}
                 result = self.manager.recover_failed_rotation()
                 self.assertEqual(result.status, "failed")
                 self.manager.coordinator.recover.assert_not_called()
