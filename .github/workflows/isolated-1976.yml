@@ -1,4 +1,4 @@
-name: Isolated PR1976 retirement proof validation
+name: Isolated PR1976 schema follow-up validation
 on:
   push:
     branches: ['scratch/1976-retirement-proof-20261009']
@@ -19,19 +19,19 @@ jobs:
           path: payload
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          ref: 14ad543977cebc935d0f28e0acec166aa0901175
+          ref: 4a8091444a652fb72958b5799d2a1c4e5b95219f
           path: source
           persist-credentials: false
           submodules: false
-      - name: Verify readable patches and syntax
+      - name: Verify patch and syntax
         run: |
           python3 payload/apply.py source
-          python3 -m compileall -q source/src/docich/game_switch.py source/src/docich/adapters/soren.py source/tests/test_soren_retirement_identity.py source/tests/test_adapter_stop_resume_safety.py
-      - name: Publish only source blobs on isolated scratch branch
+          python3 -m compileall -q source/src/docich/game_switch.py source/tests/test_soren_retirement_identity.py
+      - name: Publish only the two source blobs on the isolated scratch branch
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = refs/heads/scratch/1976-retirement-proof-20261009
-          for path in src/docich/adapters/soren.py src/docich/game_switch.py tests/test_adapter_stop_resume_safety.py tests/test_soren_retirement_identity.py; do
+          for path in src/docich/game_switch.py tests/test_soren_retirement_identity.py; do
             mkdir -p "payload/$(dirname "$path")"
             cp "source/$path" "payload/$path"
             git -C payload add -- "$path"
@@ -39,12 +39,11 @@ jobs:
           git -C payload diff --cached --check
           git -C payload config user.name 'github-actions[bot]'
           git -C payload config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git -C payload commit -m '[test] publish isolated PR1976 source blobs for reviewed integration'
+          git -C payload commit -m '[test] publish PR1976 schema-validation source blobs'
           git -C payload push origin HEAD:refs/heads/scratch/1976-retirement-proof-20261009
-          echo 'PREPARED SOURCE BLOBS (no main or PR branch updated)'
           git -C payload rev-parse HEAD
-          git -C payload ls-files -s src/docich/adapters/soren.py src/docich/game_switch.py tests/test_adapter_stop_resume_safety.py tests/test_soren_retirement_identity.py
-  test:
+          git -C payload ls-files -s src/docich/game_switch.py tests/test_soren_retirement_identity.py
+  integration:
     needs: prepare
     if: github.ref == 'refs/heads/scratch/1976-retirement-proof-20261009'
     runs-on: ubuntu-24.04
@@ -53,7 +52,6 @@ jobs:
       fail-fast: false
       matrix:
         python: ['3.11', '3.12']
-        integration: ['pr1976', 'with-pr1975']
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -62,7 +60,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          ref: 14ad543977cebc935d0f28e0acec166aa0901175
+          ref: 4a8091444a652fb72958b5799d2a1c4e5b95219f
           path: source
           fetch-depth: 200
           persist-credentials: false
@@ -70,16 +68,14 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: ${{ matrix.python }}
-      - name: Apply checked patches
-        run: python3 payload/apply.py source
-      - name: Integrate exact PR1975 in disposable checkout only
-        if: matrix.integration == 'with-pr1975'
+      - name: Apply checked patch and integrate exact PR1975 in disposable checkout
         working-directory: source
         run: |
           set -euo pipefail
+          python3 ../payload/apply.py .
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m '[test] temporary PR1976 integration candidate'
+          git commit -m '[test] temporary PR1976 schema follow-up integration'
           git fetch --no-tags --depth=200 origin cf4e97f8a546d7aaa63116672cca8e30a95aa6b4
           git merge --no-commit --no-ff cf4e97f8a546d7aaa63116672cca8e30a95aa6b4
           git diff --cached --check
@@ -93,11 +89,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m compileall -q src tests
-          python3 -m pytest -q tests/ | tee "$RUNNER_TEMP/pytest-${{ matrix.python }}-${{ matrix.integration }}.log"
+          python3 -m pytest -q tests/ | tee "$RUNNER_TEMP/pytest-schema-${{ matrix.python }}-with-pr1975.log"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: pytest-${{ matrix.python }}-${{ matrix.integration }}
-          path: ${{ runner.temp }}/pytest-${{ matrix.python }}-${{ matrix.integration }}.log
+          name: pytest-schema-${{ matrix.python }}-with-pr1975
+          path: ${{ runner.temp }}/pytest-schema-${{ matrix.python }}-with-pr1975.log
           retention-days: 2
           if-no-files-found: ignore

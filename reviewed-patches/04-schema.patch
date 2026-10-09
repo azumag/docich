@@ -1,0 +1,73 @@
+diff --git a/src/docich/game_switch.py b/src/docich/game_switch.py
+--- a/src/docich/game_switch.py
++++ b/src/docich/game_switch.py
+@@ -541,7 +541,8 @@
+     missing = sorted(required - receipt.keys())
+     if missing:
+         raise StateCorruptError(f"request receiptに必須項目がありません: {missing}")
+-    if receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION:
++    if (type(receipt.get("schema_version")) is not int
++            or receipt["schema_version"] != RECEIPT_SCHEMA_VERSION):
+         raise StateCorruptError("request receiptのschemaが不正です")
+     try:
+         request_id = validate_request_id(receipt.get("request_id"))
+@@ -623,6 +624,10 @@
+     result = runtime["retirement"]
+     if not isinstance(result, dict) or not isinstance(receipt, Mapping):
+         raise StateCorruptError("retirement commit/receiptがありません")
++    # This proof boundary can also be called with a receipt already in memory.
++    if (type(receipt.get("schema_version")) is not int
++            or receipt["schema_version"] != RECEIPT_SCHEMA_VERSION):
++        raise StateCorruptError("retirement receiptのschemaが不正です")
+     source = result.get("source_runtime")
+     active = result.get("active_runtime")
+     if (not isinstance(source, dict) or set(source) != set(RUNTIME_IDENTITY_KEYS)
+diff --git a/tests/test_soren_retirement_identity.py b/tests/test_soren_retirement_identity.py
+--- a/tests/test_soren_retirement_identity.py
++++ b/tests/test_soren_retirement_identity.py
+@@ -383,3 +383,45 @@
+     assert h.calls == calls
+     assert h.store.receipts.load(R) == receipt
+     assert h.store.canonical.load()[0]["retiring"]
++
++
++@pytest.mark.parametrize("schema", [True, 1.0, 0, 2], ids=["bool", "float", "zero", "future"])
++@pytest.mark.parametrize("status", ["succeeded", "accepted"])
++@pytest.mark.parametrize("entry", ["recover", "adapter"])
++def test_invalid_receipt_schema_never_authorizes_retirement(tmp_path, schema, status, entry):
++    h = RetirementHarness(tmp_path)
++    source, receipt = h.commit_source()
++    receipt["schema_version"] = schema
++    receipt["status"] = status
++    if status == "accepted":
++        receipt["result"] = None
++    path = h.store.receipts._path(R)
++    path.write_text(json.dumps(receipt))
++    original_bytes = path.read_bytes()
++    calls = list(h.calls)
++    h.defer = False
++    if entry == "recover":
++        result = h.coordinator.recover()
++        assert result.cleanup_pending
++    else:
++        spec = game_switch.RuntimeSpec.from_runtime(h.store.state_dir, source)
++        adapter = h.make(spec)
++        with pytest.raises(AdapterError):
++            adapter.cleanup_runtime(time.monotonic() + 5, None)
++        adapter.request_round_boundary.assert_not_called()
++    assert h.calls == calls  # no additional controller invocation
++    assert h.store.canonical.load()[0]["retiring"] == [source]
++    # In particular an accepted receipt is not normalized or terminalized.
++    assert path.read_bytes() == original_bytes
++
++
++@pytest.mark.parametrize("schema", [True, 1.0], ids=["bool", "float"])
++@pytest.mark.parametrize("terminal", [True, False])
++def test_retirement_helper_rejects_schema_type_without_store_loading(tmp_path, schema, terminal):
++    h = RetirementHarness(tmp_path)
++    source, receipt = h.commit_source()
++    receipt["schema_version"] = schema
++    if not terminal:
++        receipt.update(status="accepted", result=None)
++    with pytest.raises(game_switch.StateCorruptError):
++        game_switch.committed_retirement_result(source, receipt, require_terminal=terminal)
