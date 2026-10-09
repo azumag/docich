@@ -28,7 +28,7 @@ def broker(adapter, request_id, status):
                           "generation": receipt["generation"], "status": status})
 
 
-def retirement(tmp_path, status="stopped"):
+def retirement(tmp_path, status="stopped", operation="switch"):
     adapter, store = failed_soren_candidate(tmp_path)
     state, _ = store.canonical.load()
     source = state["candidate"]
@@ -36,7 +36,7 @@ def retirement(tmp_path, status="stopped"):
     request_id = str(uuid.uuid4())
     state.update(phase="ready", active=active, candidate=None, previous=None,
                  retiring=[source], next_generation=4, last_result={
-                     "request_id": request_id, "operation": "switch", "status": "succeeded",
+                     "request_id": request_id, "operation": operation, "status": "succeeded",
                      "from_game": "sorengame", "to_game": "nethack", "generation": 3,
                      "active_runtime": {k: active[k] for k in
                                         ("game", "runtime_id", "generation", "lease_id")}})
@@ -50,8 +50,9 @@ def retirement(tmp_path, status="stopped"):
 
 
 @pytest.mark.parametrize("status", ["boundary", "stop_requested", "stopping", "stopped"])
-def test_normal_source_retirement_keeps_original_stop_request(tmp_path, status):
-    adapter, store, payload, request_id = retirement(tmp_path, status)
+@pytest.mark.parametrize("operation", ["switch", "rotate"])
+def test_normal_source_retirement_keeps_original_stop_request(tmp_path, status, operation):
+    adapter, store, payload, request_id = retirement(tmp_path, status, operation)
     before = store.canonical.load()[0]
     for _ in range(2):  # Reconstructed finalization/recovery must be idempotent.
         fresh = type(adapter)(adapter.g, adapter.game, adapter.spec)
@@ -85,8 +86,9 @@ def test_normal_retirement_refuses_replacement_candidate_request(tmp_path):
     adapter._run.assert_not_called()
 
 
-def test_ready_recover_finalizes_normal_source_with_original_request(tmp_path):
-    adapter, store, _, request_id = retirement(tmp_path)
+@pytest.mark.parametrize("operation", ["switch", "rotate"])
+def test_ready_recover_finalizes_normal_source_with_original_request(tmp_path, operation):
+    adapter, store, _, request_id = retirement(tmp_path, operation=operation)
     state, _ = store.canonical.load()
     factory = FakeAdapterFactory({"nethack": {}})
     active = factory(RuntimeSpec.from_runtime(store.state_dir, state["active"]))

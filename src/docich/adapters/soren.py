@@ -472,7 +472,7 @@ class SorenCoordinatorAdapter:
             return False
         return bool(
             result.get("request_id") == request_id
-            and result.get("operation") == "switch"
+            and result.get("operation") in {"switch", "rotate"}
             and result.get("status") == "succeeded"
             and result.get("from_game") == self.spec.game
             and active.get("game") != self.spec.game
