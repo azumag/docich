@@ -1,0 +1,515 @@
+{
+  "task": "docich#1263 live-Jev baseline on the public eval suite",
+  "suite_digest": "sha256:d750a4361f7b7acffd46a192b1f7f5e873e8a2692cf45bbae78ce97240a46c37",
+  "grader": "docich.eval.graders.classifier (same call as bench/jev_bench.py)",
+  "cases": 106,
+  "live_log_cases": 78,
+  "views": {
+    "ungated_single_pass": {
+      "n": 106,
+      "accuracy": 0.71,
+      "coverage": 0.9434,
+      "macro_f1": 0.7899,
+      "correct": 71,
+      "parse_failures": 6,
+      "per_label": {
+        "bits": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 2,
+          "tp": 2,
+          "fp": 0,
+          "fn": 0
+        },
+        "card_gacha": {
+          "precision": 1.0,
+          "recall": 0.8333,
+          "f1": 0.9091,
+          "support": 12,
+          "tp": 10,
+          "fp": 0,
+          "fn": 2
+        },
+        "chitchat": {
+          "precision": 1.0,
+          "recall": 0.2414,
+          "f1": 0.3889,
+          "support": 29,
+          "tp": 7,
+          "fp": 0,
+          "fn": 22
+        },
+        "comment_advice": {
+          "precision": 0.5,
+          "recall": 1.0,
+          "f1": 0.6667,
+          "support": 3,
+          "tp": 3,
+          "fp": 3,
+          "fn": 0
+        },
+        "game_question": {
+          "precision": 1.0,
+          "recall": 0.6667,
+          "f1": 0.8,
+          "support": 3,
+          "tp": 2,
+          "fp": 0,
+          "fn": 1
+        },
+        "game_status": {
+          "precision": 0.6875,
+          "recall": 0.7333,
+          "f1": 0.7097,
+          "support": 15,
+          "tp": 11,
+          "fp": 5,
+          "fn": 4
+        },
+        "general_question": {
+          "precision": 0.6,
+          "recall": 1.0,
+          "f1": 0.75,
+          "support": 6,
+          "tp": 6,
+          "fp": 4,
+          "fn": 0
+        },
+        "other": {
+          "precision": 0.5185,
+          "recall": 0.8235,
+          "f1": 0.6364,
+          "support": 17,
+          "tp": 14,
+          "fp": 13,
+          "fn": 3
+        },
+        "raid": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 2,
+          "tp": 2,
+          "fp": 0,
+          "fn": 0
+        },
+        "sing_request": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 2,
+          "tp": 2,
+          "fp": 0,
+          "fn": 0
+        },
+        "strategy_advice": {
+          "precision": 1.0,
+          "recall": 0.75,
+          "f1": 0.8571,
+          "support": 4,
+          "tp": 3,
+          "fp": 0,
+          "fn": 1
+        },
+        "stream_bug_report": {
+          "precision": 0.8333,
+          "recall": 0.7143,
+          "f1": 0.7692,
+          "support": 7,
+          "tp": 5,
+          "fp": 1,
+          "fn": 2
+        },
+        "stream_goal": {
+          "precision": 0.4,
+          "recall": 1.0,
+          "f1": 0.5714,
+          "support": 2,
+          "tp": 2,
+          "fp": 3,
+          "fn": 0
+        },
+        "subscription": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 2,
+          "tp": 2,
+          "fp": 0,
+          "fn": 0
+        }
+      },
+      "notification_family": {
+        "precision": 0.8571,
+        "recall": 0.9,
+        "f1": 0.878,
+        "tp": 18,
+        "fp": 3,
+        "fn": 2
+      },
+      "accuracy_live_log": 0.6389,
+      "macro_f1_live_log": 0.5531
+    },
+    "production_pipeline": {
+      "n": 106,
+      "accuracy": 0.6698,
+      "coverage": 1.0,
+      "macro_f1": 0.6303,
+      "correct": 71,
+      "parse_failures": 0,
+      "per_label": {
+        "bits": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 2,
+          "tp": 2,
+          "fp": 0,
+          "fn": 0
+        },
+        "card_gacha": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 12,
+          "tp": 12,
+          "fp": 0,
+          "fn": 0
+        },
+        "chitchat": {
+          "precision": 0.4909,
+          "recall": 0.931,
+          "f1": 0.6429,
+          "support": 29,
+          "tp": 27,
+          "fp": 28,
+          "fn": 2
+        },
+        "comment_advice": {
+          "precision": 1.0,
+          "recall": 0.3333,
+          "f1": 0.5,
+          "support": 3,
+          "tp": 1,
+          "fp": 0,
+          "fn": 2
+        },
+        "game_question": {
+          "precision": 0.6667,
+          "recall": 0.6667,
+          "f1": 0.6667,
+          "support": 3,
+          "tp": 2,
+          "fp": 1,
+          "fn": 1
+        },
+        "game_status": {
+          "precision": 0.75,
+          "recall": 0.4,
+          "f1": 0.5217,
+          "support": 15,
+          "tp": 6,
+          "fp": 2,
+          "fn": 9
+        },
+        "general_question": {
+          "precision": 0.75,
+          "recall": 0.5,
+          "f1": 0.6,
+          "support": 6,
+          "tp": 3,
+          "fp": 1,
+          "fn": 3
+        },
+        "other": {
+          "precision": 1.0,
+          "recall": 0.3529,
+          "f1": 0.5217,
+          "support": 17,
+          "tp": 6,
+          "fp": 0,
+          "fn": 11
+        },
+        "raid": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 2,
+          "tp": 0,
+          "fp": 0,
+          "fn": 2
+        },
+        "sing_request": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 2,
+          "tp": 2,
+          "fp": 0,
+          "fn": 0
+        },
+        "strategy_advice": {
+          "precision": 1.0,
+          "recall": 0.75,
+          "f1": 0.8571,
+          "support": 4,
+          "tp": 3,
+          "fp": 0,
+          "fn": 1
+        },
+        "stream_bug_report": {
+          "precision": 0.7143,
+          "recall": 0.7143,
+          "f1": 0.7143,
+          "support": 7,
+          "tp": 5,
+          "fp": 2,
+          "fn": 2
+        },
+        "stream_goal": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 2,
+          "tp": 0,
+          "fp": 0,
+          "fn": 2
+        },
+        "subscription": {
+          "precision": 0.6667,
+          "recall": 1.0,
+          "f1": 0.8,
+          "support": 2,
+          "tp": 2,
+          "fp": 1,
+          "fn": 0
+        }
+      },
+      "notification_family": {
+        "precision": 0.9412,
+        "recall": 0.8,
+        "f1": 0.8649,
+        "tp": 16,
+        "fp": 1,
+        "fn": 4
+      },
+      "accuracy_live_log": 0.6282,
+      "macro_f1_live_log": 0.4559
+    },
+    "heuristic_baseline_only": {
+      "n": 106,
+      "accuracy": 0.5849,
+      "coverage": 1.0,
+      "macro_f1": 0.5169,
+      "correct": 62,
+      "parse_failures": 0,
+      "per_label": {
+        "bits": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 2,
+          "tp": 2,
+          "fp": 0,
+          "fn": 0
+        },
+        "card_gacha": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 12,
+          "tp": 12,
+          "fp": 0,
+          "fn": 0
+        },
+        "chitchat": {
+          "precision": 0.4655,
+          "recall": 0.931,
+          "f1": 0.6207,
+          "support": 29,
+          "tp": 27,
+          "fp": 31,
+          "fn": 2
+        },
+        "comment_advice": {
+          "precision": 0.5,
+          "recall": 0.3333,
+          "f1": 0.4,
+          "support": 3,
+          "tp": 1,
+          "fp": 1,
+          "fn": 2
+        },
+        "game_question": {
+          "precision": 0.3333,
+          "recall": 0.3333,
+          "f1": 0.3333,
+          "support": 3,
+          "tp": 1,
+          "fp": 2,
+          "fn": 2
+        },
+        "game_status": {
+          "precision": 0.5455,
+          "recall": 0.4,
+          "f1": 0.4615,
+          "support": 15,
+          "tp": 6,
+          "fp": 5,
+          "fn": 9
+        },
+        "general_question": {
+          "precision": 0.5,
+          "recall": 0.1667,
+          "f1": 0.25,
+          "support": 6,
+          "tp": 1,
+          "fp": 1,
+          "fn": 5
+        },
+        "other": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 17,
+          "tp": 0,
+          "fp": 0,
+          "fn": 17
+        },
+        "raid": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 2,
+          "tp": 0,
+          "fp": 0,
+          "fn": 2
+        },
+        "sing_request": {
+          "precision": 0.6667,
+          "recall": 1.0,
+          "f1": 0.8,
+          "support": 2,
+          "tp": 2,
+          "fp": 1,
+          "fn": 0
+        },
+        "strategy_advice": {
+          "precision": 1.0,
+          "recall": 0.75,
+          "f1": 0.8571,
+          "support": 4,
+          "tp": 3,
+          "fp": 0,
+          "fn": 1
+        },
+        "stream_bug_report": {
+          "precision": 0.7143,
+          "recall": 0.7143,
+          "f1": 0.7143,
+          "support": 7,
+          "tp": 5,
+          "fp": 2,
+          "fn": 2
+        },
+        "stream_goal": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 2,
+          "tp": 0,
+          "fp": 0,
+          "fn": 2
+        },
+        "subscription": {
+          "precision": 0.6667,
+          "recall": 1.0,
+          "f1": 0.8,
+          "support": 2,
+          "tp": 2,
+          "fp": 1,
+          "fn": 0
+        }
+      },
+      "notification_family": {
+        "precision": 0.9412,
+        "recall": 0.8,
+        "f1": 0.8649,
+        "tp": 16,
+        "fp": 1,
+        "fn": 4
+      },
+      "accuracy_live_log": 0.5513,
+      "macro_f1_live_log": 0.3955
+    }
+  },
+  "status_counts": {
+    "ungated": {
+      "ok": 100,
+      "invalid_response": 6
+    },
+    "ungated_invalid_detail": {
+      "probability_sum=0.990000": 6
+    },
+    "pipeline_event": {
+      "no_candidates": 17,
+      "ok": 24,
+      "auth_error": 1,
+      "cooldown": 64
+    },
+    "pipeline_row": {
+      "local_notification": 17,
+      "unconfirmed_notification": 3,
+      "auth_error": 1,
+      "cooldown": 64,
+      "low_confidence": 3,
+      "jev": 18
+    },
+    "pipeline_route": {
+      "direct": 41,
+      "vercel": 65
+    }
+  },
+  "latency": {
+    "ungated_total_ms": {
+      "n": 106,
+      "p50": 153.9,
+      "p95": 204.4,
+      "min": 111.6,
+      "max": 243.0
+    },
+    "pipeline_jev_ms_attempted": {
+      "n": 26,
+      "p50": 308.379,
+      "p95": 392.058
+    },
+    "pipeline_attempted_share": 0.2453
+  },
+  "reference_local_llm": {
+    "model": "llama3.1:8b-instruct-q4_K_M",
+    "source": "bench/results/2026-10-09_rtx3060_jev/llama3.1-8b-instruct-q4_K_M.report.json",
+    "accuracy": 0.6286,
+    "macro_f1": 0.7339,
+    "accuracy_live_log": 0.5867,
+    "coverage": 1.0,
+    "parse_failures": 0,
+    "notification_precision": 0.882,
+    "notification_recall": 0.882,
+    "notification_fp_per_100": 0.6
+  },
+  "delta_vs_reference": {
+    "accuracy_ungated_minus_llama": 0.0814,
+    "macro_f1_ungated_minus_llama": 0.056,
+    "accuracy_live_log_ungated_minus_llama": 0.0522,
+    "accuracy_pipeline_minus_llama": 0.0412,
+    "notification_precision_ungated_minus_llama": -0.0249,
+    "notification_recall_ungated_minus_llama": 0.018
+  },
+  "grader_note": "ungated accuracy_on_available 0.7100 / coverage 0.9434 / macro_f1 0.7899 / live-log 0.6389; FP per 100 cases 2.83",
+  "ungated_accuracy_convention": {
+    "all_cases_misses_wrong": 0.6698,
+    "available_only": 0.71,
+    "coverage": 0.9434
+  }
+}
