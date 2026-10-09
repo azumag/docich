@@ -31,7 +31,7 @@ class TestAutomaticNethackFailedRestore(TestCase):
         self.manager._locked = owned
         self.manager._tick_guard = owned
         self.manager._runtime_screen = Mock(
-            return_value="Do you want your possessions identified? [ynq] (n)"
+            return_value="Do you want your possessions identified? [ynq] (n)\nDlvl:1 $:0 HP:0(14) Pw:5(5) AC:4"
         )
         self.manager._read_state = Mock(return_value={
             "status": "failed",
@@ -51,11 +51,12 @@ class TestAutomaticNethackFailedRestore(TestCase):
             "status": "rolled_back",
             "from_game": GAME_NAME,
             "to_game": "sorengame",
-            "restored_generation": 650,
+            "restored_generation": 650, "generation": 649,
         }
         self.receipt = {
             "request_id": "restore-456", "operation": "switch",
             "target": "sorengame", "status": "rolled_back",
+            "generation": 649,
             "result": self.original_result,
         }
         self.canonical = {
@@ -133,7 +134,13 @@ class TestAutomaticNethackFailedRestore(TestCase):
                 self.manager.coordinator.recover.assert_not_called()
 
     def test_alive_or_unreadable_tty_never_starts_recovery(self):
-        for text in ("Dlvl:1 HP:14(14)", None):
+        for text in (
+            "Dlvl:1 HP:14(14)",
+            None,
+            "Do you want your possessions identified? [ynq] (n)",
+            "You die...\\nBut wait... Your medallion begins to glow!\\nDlvl:1 HP:18(18)",
+            "Do you want your possessions identified? [ynq] (n)\\nDlvl:1 HP:18(18)",
+        ):
             with self.subTest(text=text):
                 self.manager._runtime_screen.return_value = text
                 self.assertEqual(self.manager.recover_failed_rotation().status,
@@ -161,6 +168,55 @@ class TestAutomaticNethackFailedRestore(TestCase):
         self.manager._restore_replay_source_proved.return_value = None
         self.assertEqual(self.manager.recover_failed_rotation().status, "failed")
         self.manager._recover_restore_failed.assert_not_called()
+
+    def test_persisted_pending_replay_resumes_original_without_new_recover(self):
+        """Mid-switch request owns canonical draining, not the old g650."""
+        self.manager._read_state.return_value["restore_recovery"] = {
+            "request_id": "replay-789",
+        }
+        self.manager._restore_recovery_record = Mock(return_value={
+            "request_id": "replay-789",
+        })
+        self.canonical["phase"] = "draining"
+        self.store.canonical.load.side_effect = [(self.canonical, False)]
+        self.manager._recover_restore_failed.return_value = CornerResult(
+            "queued", game=GAME_NAME,
+        )
+        got = self.manager.recover_failed_rotation()
+        self.assertEqual(got.status, "queued")
+        self.manager._restore_recovery_record.assert_called_once()
+        self.manager._recover_restore_failed.assert_called_once()
+        self.manager.coordinator.recover.assert_not_called()
+
+    def test_persisted_terminal_replay_can_reach_rotation_commit(self):
+        """After interrupted was persisted, operator must be safely idempotent."""
+        self.manager._read_state.return_value.update(
+            status="interrupted", restore_recovery={"request_id": "replay-789"},
+        )
+        self.manager._restore_recovery_record = Mock(
+            return_value={"request_id": "replay-789"}
+        )
+        self.manager._restore_recovery_receipt = Mock(return_value={
+            "status": "succeeded", "request_id": "replay-789",
+        })
+        self.manager._restore_landed_proved = Mock(return_value=True)
+        self.canonical["phase"] = "ready"
+        self.canonical["active"] = {
+            "game": "sorengame", "adapter": "soren", "generation": 651,
+        }
+        self.canonical["retiring"] = []
+        self.store.canonical.load.side_effect = [(self.canonical, False)]
+        got = self.manager.recover_failed_rotation()
+        self.assertEqual(got.status, "succeeded")
+        self.manager.coordinator.recover.assert_not_called()
+        self.manager._recover_restore_failed.assert_not_called()
+
+    def test_unproven_terminal_replay_must_not_release_rotation(self):
+        self.manager._read_state.return_value["status"] = "interrupted"
+        self.manager._restore_recovery_record = Mock(return_value=None)
+        got = self.manager.recover_failed_rotation()
+        self.assertEqual(got.status, "failed")
+        self.manager.coordinator.recover.assert_not_called()
 
     def test_cli_has_fixed_command_and_operator_routes_it(self):
         self.assertEqual(
