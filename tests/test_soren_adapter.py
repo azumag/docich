@@ -387,6 +387,24 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
         adapter._run = Mock(side_effect=AssertionError("must not stop the live singleton"))
         return adapter, store, state
 
+    def cli_active(self, generation: int) -> dict:
+        """A canonical active runtime owned by a non-Soren game (e.g. nethack).
+
+        The caller must keep ``next_generation`` ahead of this generation.
+        """
+        import uuid
+        names = runtime_names(generation)
+        return dict(game="nethack", adapter="cli", generation=generation,
+                    runtime_id=f"g{generation}-abcdef", lease_id=str(uuid.uuid4()),
+                    game_window=names.game_window, agent_window=names.agent_window,
+                    adapter_session=names.adapter_session, started_at="2026-10-09T00:00:00Z")
+
+    def swap_active_to_cli(self, store, state: dict, generation: int = 10) -> None:
+        """Hand the canonical active slot to a non-Soren game (a CLI corner)."""
+        state["active"] = self.cli_active(generation)
+        state["next_generation"] = max(generation + 1, state["next_generation"])
+        store.canonical.save(state)
+
     def test_recover_retires_superseded_singleton_without_stopping_active_game(self):
         with tempfile.TemporaryDirectory() as temp:
             adapter, store, before = self.make_retired_singleton(Path(temp))
@@ -425,7 +443,8 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             self.assertFalse(adapter._retired_singleton_is_superseded(deadline, None))
             adapter._singleton_process_identity.side_effect = lambda name: (1 if name == "soren_loop.sh" else 2, 10)
             active = state["active"]
-            for change in ({"game": "nsnake", "adapter": "cli"},
+            # A Soren owner in the active slot must still be a distinct lease.
+            for change in ({"game": "soren91", "adapter": "soren"},
                            {"lease_id": adapter.spec.lease_id}):
                 state["active"] = {**active, **change}
                 store.canonical.save(state)
@@ -434,6 +453,118 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             state["retiring"] = []
             store.canonical.save(state)
             self.assertFalse(adapter._retired_singleton_is_superseded(deadline, None))
+
+    def test_retired_singleton_converges_when_active_switched_to_another_game(self):
+        """The unhandled case: a rollback handed the active slot to a CLI corner.
+
+        The restoring switch failed on adapter readiness, so canonical restored
+        the CLI game as active while the old Soren generation stayed in
+        ``retiring``.  The broker is idle and the singleton is alive, so the
+        lease is obsolete and cleanup must converge without stopping anything.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            adapter, store, state = self.make_retired_singleton(Path(temp))
+            self.swap_active_to_cli(store, state)
+            adapter.spec = RuntimeSpec.from_runtime(adapter.g.state_dir, state["retiring"][0])
+            deadline = time.monotonic() + 30
+            self.assertTrue(adapter._retired_singleton_is_superseded(deadline, None))
+            self.assertFalse(adapter.alive(deadline, None))
+            adapter.cleanup_runtime(deadline, None)
+            adapter._run.assert_not_called()
+
+            def factory(spec):
+                if spec.adapter != "soren":
+                    # The active runtime is another game (nethack).  Its real
+                    # adapter is out of scope here; only liveness matters.
+                    # The factory return still has to satisfy the
+                    # CoordinatorAdapter protocol and carry a matching name,
+                    # exactly as a real cli_game.CliCoordinatorAdapter would.
+                    instance = SimpleNamespace(
+                        name=spec.adapter, agent_enabled=False,
+                        preflight=lambda deadline, cancel: None,
+                        materialize_runtime=lambda deadline, cancel: None,
+                        readiness=lambda deadline, cancel: None,
+                        alive=lambda deadline, cancel: True,
+                        cleanup_runtime=lambda deadline, cancel: None,
+                        start_agent=lambda deadline, cancel: None,
+                        stop_agent=lambda deadline, cancel: None,
+                        spec=spec,
+                    )
+                    return instance
+                instance = SorenCoordinatorAdapter(adapter.g, adapter.game, spec)
+                instance._status = adapter._status
+                instance._live_process = adapter._live_process
+                instance._singleton_process_identity = adapter._singleton_process_identity
+                instance._run = adapter._run
+                return instance
+            before, _ = store.canonical.load()
+            result = GameSwitchCoordinator(store, factory).recover(timeout_s=5)
+            after, _ = store.canonical.load()
+            self.assertEqual(result.status, "succeeded")
+            self.assertFalse(result.cleanup_pending)
+            self.assertEqual(after["active"], before["active"])
+            self.assertEqual(after["retiring"], [])
+
+    def test_foreign_game_active_still_refuses_with_live_broker_request(self):
+        """Fail-closed must survive the widened gate: a live request blocks it."""
+        with tempfile.TemporaryDirectory() as temp:
+            adapter, store, state = self.make_retired_singleton(Path(temp))
+            self.swap_active_to_cli(store, state)
+            adapter.spec = RuntimeSpec.from_runtime(adapter.g.state_dir, state["retiring"][0])
+            deadline = time.monotonic() + 30
+            for field in ("request", "ack", "resource"):
+                with self.subTest(field=field):
+                    adapter._status.return_value = {
+                        "schema": 1, "request": None, "ack": None, "resource": None,
+                        field: {"status": "stopped"},
+                    }
+                    self.assertFalse(adapter._retired_singleton_is_superseded(deadline, None))
+                    with self.assertRaises(AdapterError):
+                        adapter.cleanup_runtime(deadline, None)
+                    self.assertEqual(store.canonical.load()[0]["retiring"], state["retiring"])
+                    adapter._run.assert_not_called()
+
+    def test_foreign_game_active_rejects_in_flight_switch_and_other_adapters(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter, store, state = self.make_retired_singleton(Path(temp))
+            self.swap_active_to_cli(store, state)
+            adapter.spec = RuntimeSpec.from_runtime(adapter.g.state_dir, state["retiring"][0])
+            adapter._status = Mock(return_value={"schema": 1, "request": None, "ack": None,
+                                                "resource": None})
+            deadline = time.monotonic() + 30
+            import uuid
+            in_flight = {
+                "phase": ("starting", "switch", str(uuid.uuid4())),
+                "request_id": ("starting", "switch", str(uuid.uuid4())),
+                "candidate": ("starting", "switch", str(uuid.uuid4())),
+                "previous": ("starting", "switch", str(uuid.uuid4())),
+            }
+            for field, (phase, operation, request_id) in in_flight.items():
+                with self.subTest(field=field):
+                    snapshot = dict(state)
+                    snapshot["next_generation"] = 13
+                    # Only an in-progress phase may carry operation/request_id;
+                    # validate_state treats idle/ready/failed/recovery_required
+                    # as stable phases that must keep neither.
+                    snapshot["phase"], snapshot["operation"] = phase, operation
+                    snapshot["request_id"] = request_id
+                    if field == "candidate":
+                        snapshot["candidate"] = self.cli_active(11)
+                    if field == "previous":
+                        snapshot["previous"] = self.cli_active(12)
+                    store.canonical.save(snapshot)
+                    self.assertFalse(adapter._retired_singleton_is_superseded(deadline, None))
+                    adapter._run.assert_not_called()
+            store.canonical.save(state)
+            # canonical requires a non-empty adapter string, so an "unknown"
+            # adapter means a valid one that is neither soren nor a cli corner
+            # (retroarch/browser/...), plus a second Soren game identity.
+            for adapter_kind in ("retroarch", "browser", "soren91"):
+                with self.subTest(adapter=adapter_kind):
+                    state["active"] = {**self.cli_active(10), "adapter": adapter_kind}
+                    store.canonical.save(state)
+                    self.assertFalse(adapter._retired_singleton_is_superseded(deadline, None))
+                    adapter._run.assert_not_called()
 
     def test_retired_singleton_rejects_owner_change_during_probe(self):
         with tempfile.TemporaryDirectory() as temp:
