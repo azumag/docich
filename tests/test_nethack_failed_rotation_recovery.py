@@ -43,7 +43,8 @@ class TestAutomaticNethackFailedRestore(TestCase):
         })
         self.source = {
             "game": GAME_NAME, "adapter": "cli", "generation": 650,
-            "runtime_id": "g650-dead", "lease_id": "lease650",
+            "runtime_id": "g650-abcdef",
+            "lease_id": "11111111-1111-4111-8111-111111111111",
         }
         self.original_result = {
             "request_id": "restore-456",
@@ -62,7 +63,9 @@ class TestAutomaticNethackFailedRestore(TestCase):
         self.canonical = {
             "phase": "ready", "request_id": None, "candidate": None,
             "previous": None, "active": self.source, "last_result": self.original_result,
-            "retiring": [{"game": "sorengame", "adapter": "soren", "generation": 649}],
+            "retiring": [{"game": "sorengame", "adapter": "soren",
+                          "generation": 649, "runtime_id": "g649-abcdef",
+                          "lease_id": "22222222-2222-4222-8222-222222222222"}],
         }
         self.cleaned = {**self.canonical, "retiring": []}
         self.store = SimpleNamespace(
@@ -164,6 +167,64 @@ class TestAutomaticNethackFailedRestore(TestCase):
         self.cleaned["active"] = {**self.source, "generation": 651}
         self.assertEqual(self.manager.recover_failed_rotation().status, "failed")
         self.manager._recover_restore_failed.assert_not_called()
+
+    def test_real_source_checks_accept_late_clean_without_rewriting_receipt(self):
+        """Retiring Soren was cleaned but immutable rollback still says pending."""
+        self.original_result["cleanup_pending"] = True
+        self.manager._restore_canonical_clean = RetroCornerManager._restore_canonical_clean
+        self.manager._restore_replay_source_proved = (
+            RetroCornerManager._restore_replay_source_proved
+        )
+        got = self.manager.recover_failed_rotation()
+        self.assertEqual(got.status, "succeeded")
+        self.manager._write_state.assert_called_once()
+        persisted = self.manager._write_state.call_args.args[0]
+        self.assertEqual(persisted["restore_cleanup"]["source"]["generation"], 650)
+        self.assertEqual(
+            persisted["restore_cleanup_attempt"]["retiring"][0]["generation"], 649
+        )
+        self.assertTrue(self.original_result["cleanup_pending"])
+
+    def test_cleanup_was_interrupted_after_canonical_commit_pre_cornermark(self):
+        """The durable intent plus exact now-empty retiring enables safe retry."""
+        self.original_result["cleanup_pending"] = True
+        state = self.manager._read_state.return_value
+        state["restore_cleanup_attempt"] = {
+            "schema_version": 1,
+            "rotation_request_id": "rotation-123",
+            "restore_request_id": "restore-456",
+            "original_generation": 649,
+            "source": {key: self.source[key] for key in (
+                "game", "runtime_id", "generation", "lease_id"
+            )},
+            "retiring": [
+                {key: self.canonical["retiring"][0].get(key) for key in (
+                    "game", "adapter", "runtime_id", "generation", "lease_id"
+                )}
+            ],
+        }
+        self.cleaned["retiring"] = []
+        self.store.canonical.load.side_effect = [
+            (self.cleaned, False), (self.cleaned, False),
+        ]
+        self.manager._restore_canonical_clean = RetroCornerManager._restore_canonical_clean
+        self.manager._restore_replay_source_proved = (
+            RetroCornerManager._restore_replay_source_proved
+        )
+        got = self.manager.recover_failed_rotation()
+        self.assertEqual(got.status, "succeeded")
+        self.manager._write_state.assert_called_once()
+        self.manager.coordinator.recover.assert_called_once()
+        self.assertTrue(self.original_result["cleanup_pending"])
+
+    def test_missing_durable_intent_does_not_normalize_pending_receipt(self):
+        self.original_result["cleanup_pending"] = True
+        self.canonical["retiring"] = []
+        self.store.canonical.load.side_effect = [(self.canonical, False)]
+        self.assertEqual(
+            self.manager.recover_failed_rotation().status, "failed"
+        )
+        self.manager.coordinator.recover.assert_not_called()
 
     def test_unproven_replay_fails_closed(self):
         self.manager._restore_replay_source_proved.return_value = None
