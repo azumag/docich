@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from contextlib import contextmanager, nullcontext
 import datetime as dt
 import fcntl
@@ -963,6 +964,7 @@ class CornerRotationManager:
                 return {"status": "waiting", "reason": "already-running"}
             now = timestamp(self.clock())
             state = self.load(now)
+            recover_snapshot = deepcopy(state)
             self._remember_catalog(state)
             if state["status"] != "recovery_required":
                 raise RotationError("rotation state is not latched", kind="invalid-state")
@@ -986,6 +988,10 @@ class CornerRotationManager:
             if reservation.get("corner") not in self.adapters:
                 raise RotationError("pending corner removed from catalog",
                                     kind="catalog-mismatch")
+            commit_started = False
+            guard = None
+            guard_entered = False
+            terminal_verified = None
             try:
                 # A failed automatic start can already have a terminal
                 # rolled-back game-switch receipt while its corner state still
@@ -995,6 +1001,7 @@ class CornerRotationManager:
                 adapter = self.adapters[reservation["corner"]]
                 guard = getattr(adapter, "recovery_guard", None) if manual is None else None
                 with (guard(reservation) if callable(guard) else nullcontext()) as terminal_verified:
+                    guard_entered = True
                     outcome = None
                     if terminal_verified is not True:
                         outcome = self._commit_verified_failed_start(
@@ -1003,17 +1010,31 @@ class CornerRotationManager:
                     if outcome is None:
                         outcome = self._resolve_reservation(state, reservation, now,
                                                            manual=manual is not None)
+                    # A persistence failure must never enter the refusal
+                    # writer with a consumed pending reservation/history.
+                    # Atomic save may have failed before or after replace;
+                    # leave its durable outcome intact and let the next read
+                    # determine whether this same reservation committed.
+                    commit_started = True
                     self.save(state)
                     return outcome
             except Exception as exc:
+                if (commit_started or terminal_verified is True
+                        or (callable(guard) and not guard_entered)):
+                    # Legacy proof binds the original ledger including error
+                    # metadata. A transient guard refusal cannot mutate that
+                    # input and make the same proof permanently unretryable.
+                    raise
                 # A refusal must not overwrite the classification of the
                 # original latch: that is the evidence operators diagnose from.
-                state.update(status="recovery_required",
-                             reason="execution-or-state-unverified")
-                if state.get("error_kind") is None:
-                    state["error_kind"] = _error_kind(exc)
-                self.save(state)
+                refused = deepcopy(recover_snapshot)
+                refused.update(status="recovery_required",
+                               reason="execution-or-state-unverified")
+                if refused.get("error_kind") is None:
+                    refused["error_kind"] = _error_kind(exc)
+                self.save(refused)
                 raise
+
     def _resolve_reservation(self, state, reservation, now, *, manual):
         corner_id = reservation["corner"]
         adapter = self.adapters[corner_id]

@@ -156,7 +156,7 @@ def legacy_return_proof(root: Path, owner, ledger, *, player, now):
     _require(ledger.get("status") == "recovery_required"
              and ledger.get("manual_pending") is None and isinstance(pending, dict)
              and pending.get("corner") == "nethack" and pending.get("phase") == "dispatched"
-             and pending.get("request_id") == reservation)
+             and pending.get("request_id") == reservation and "source" not in pending)
     manual = read_record(root, ("nethack_corner_manual.json",), optional=True)
     if manual is not None:
         _require(type(manual.get("schema_version")) is int and manual["schema_version"] == 1
@@ -191,6 +191,22 @@ def legacy_return_proof(root: Path, owner, ledger, *, player, now):
     completed = _instant(owner.get("completed_at"))
     _require(timestamp(ledger.get("last_seen_at")) <= now.timestamp()
              and timestamp(pending.get("selected_at")) <= started.timestamp())
+    # Automatic dispatch omits pending.source and writes a reservation row.
+    # A queued manual dispatch uses source=manual/manual-reservation; removing
+    # just one of those markers cannot turn it into an automatic owner.
+    history = ledger.get("history")
+    _require(isinstance(history, list))
+    selected_at = timestamp(pending["selected_at"])
+    automatic_dispatch = False
+    for row in history:
+        _require(isinstance(row, dict))
+        recorded_at = timestamp(row.get("at"))
+        _require(recorded_at <= now.timestamp())
+        if row.get("corner") == "nethack" and recorded_at >= selected_at:
+            _require(row.get("source") != "manual-reservation")
+            if row.get("source") == "reservation" and recorded_at <= started.timestamp():
+                automatic_dispatch = True
+    _require(automatic_dispatch)
     _require(started <= completed <= _instant(original["created_at"])
              <= _instant(original["updated_at"]) <= _instant(landed["created_at"])
              <= _instant(landed["updated_at"]) <= now)
@@ -201,7 +217,11 @@ def legacy_return_proof(root: Path, owner, ledger, *, player, now):
     _require(active is not None and canonical["active"].get("adapter") == "soren"
              and RetroCornerManager._succeeded_start_receipt_matches_active(
                  canonical, landed, request_id=return_id, target="sorengame")
-             and last == landed["result"])
+             and _digest(last) == _digest(landed["result"]))
+    active_started = _instant(canonical["active"].get("started_at"))
+    _require(_instant(landed["created_at"]) <= _instant(second["recorded_at"])
+             <= active_started <= _instant(landed["updated_at"])
+             and active_started <= _instant(canonical["updated_at"]) <= now)
     # Capture the complete owner input, not just the fields used above. A new
     # run/history mutation cannot inherit an old reconciliation authorization.
     owner_input = {key: value for key, value in owner.items()

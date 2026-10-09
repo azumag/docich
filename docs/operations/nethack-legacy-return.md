@@ -13,6 +13,8 @@ manual corner、in-place rollback、保存済みR1/cleanup intent、source prove
 
 rotation → NetHack tick → NetHack owner → shared canonicalの既存lock順序を守り、
 同じdispatched NetHack予約を確認する。次を全て読み直して照合する。
+automatic producerのsourceなしpendingと、その選択以降・開始以前のreservation履歴を
+必須とする。manual sourceまたは当該選択以降のmanual-reservation履歴は拒否する。
 
 1. ownerの元runtimeにある、元復帰要求R0と一致する`ended`境界記録。
 2. R0の不変rolled-back receiptが示すreplace-modeの復元世代。
@@ -24,6 +26,8 @@ schema、runtime、generation、request、時刻を検証する。
 receiptとcanonicalは既存schema検証に加え、厳密な整数型や完全なresult一致を検証する。
 現在のcanonicalはready、driver/candidate/previousなし、retiring空、cleanup完了で
 なければならない。unknown/active manual owner、時刻逆行、証拠の矛盾も拒否する。
+Soren active.started_atはRの作成～完了の間で、source終了境界以降かつcanonical更新
+以前でなければならない。canonical last_resultとreceipt resultは型を保持して比較する。
 
 これは過去のsource leaseが確認できたという主張ではない。
 この限定legacy契約では2つのrequest付き終了境界を歴史的sourceの代替証拠とする。
@@ -44,6 +48,11 @@ committed後・rotation ledger確定前の再実行は同じ証拠を再確認�
 rotation側のNetHack recovery guardも同じcommitted証拠を再確認し、shared canonical
 lockをledger保存まで保持する。この間の通常coordinator変更は許可されず、
 両段階の間にsnapshotが変わればpendingはlatchedのまま拒否する。
+終端ledgerのatomic保存が失敗した場合、消費済みpending/historyを例外処理から
+再保存しない。次の読取で元のlatched予約または完了済みledgerを確認する。
+通常の照合段階の拒否は元ledgerのコピーから記録し、途中の履歴変更を持ち込まない。
+legacy guard拒否はreason/error_kindも追記せず、proofが参照する元ledgerを保持する。
+一時的なcanonical/tick lock競合の解消後は、同じproofで正規に再試行できる。
 
 元receipt、save、runtime、pause、run履歴、元の開始/完了時刻は変更しない。
 TTY観測、coordinator recover/switch、stop、kill、restart、R1 replayは呼ばない。

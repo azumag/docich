@@ -279,6 +279,55 @@ def test_later_clean_landing_does_not_rewrite_original_pending_cleanup_receipt(l
     untouched_resources(f)
 
 
+@pytest.mark.parametrize("kind", ["manual_source", "manual_history", "both", "unknown_source",
+                                  "null_source", "missing_dispatch", "future_history"])
+def test_only_proven_automatic_dispatch_can_use_legacy_reconciliation(legacy, kind):
+    f = legacy
+    if kind in {"manual_source", "both"}:
+        f.ledger["pending"]["source"] = "manual"
+    if kind in {"manual_history", "both"}:
+        f.ledger["history"][0]["source"] = "manual-reservation"
+    if kind == "unknown_source":
+        f.ledger["pending"]["source"] = "unverified"
+    if kind == "null_source":
+        f.ledger["pending"]["source"] = None
+    if kind == "missing_dispatch":
+        f.ledger["history"][0]["source"] = "execution"
+    if kind == "future_history":
+        f.ledger["history"].append(dict(corner="foreign", source="execution", at=f.now.timestamp() + 1))
+    f.write(("corner_rotation.json",), f.ledger)
+    assert_refused(f)
+
+
+def test_older_manual_history_is_preserved_and_does_not_impersonate_current_dispatch(legacy):
+    f = legacy
+    f.ledger["history"].insert(0, dict(corner="nethack", source="manual-reservation",
+                                    at=f.now.timestamp() - 200))
+    f.write(("corner_rotation.json",), f.ledger)
+    assert f.manager.recover_failed_rotation().status == "succeeded"
+    assert json.loads(f.rotation.path.read_text()) == f.ledger
+    untouched_resources(f)
+
+
+@pytest.mark.parametrize("kind", ["nonsense", "future", "naive", "missing", "before_request",
+                                  "after_receipt", "before_source_exit", "canonical_before_start"])
+def test_active_started_at_must_fit_the_successful_request_and_canonical_clock(legacy, kind):
+    f = legacy
+    changes = {"nonsense": "nonsense", "future": (f.now + dt.timedelta(days=100)).isoformat(),
+               "naive": "2026-01-01T00:00:00", "missing": None,
+               "before_request": (f.now - dt.timedelta(seconds=41)).isoformat(),
+               "after_receipt": (f.now - dt.timedelta(seconds=15)).isoformat(),
+               "before_source_exit": (f.now - dt.timedelta(seconds=39)).isoformat()}
+    if kind == "canonical_before_start":
+        f.canonical["updated_at"] = (f.now - dt.timedelta(seconds=35)).isoformat()
+    elif kind == "missing":
+        f.canonical["active"].pop("started_at")
+    else:
+        f.canonical["active"]["started_at"] = changes[kind]
+    f.write(("game_switch.json",), f.canonical)
+    assert_refused(f)
+
+
 @pytest.mark.parametrize("which", ["canonical", "boundary", "owner", "owner_coercion", "ledger"])
 def test_drift_before_preparation_never_writes_a_reconciliation_record(legacy, monkeypatch, which):
     f = legacy
@@ -437,18 +486,31 @@ def test_shared_canonical_lock_covers_the_actual_rotation_ledger_write(legacy, m
     untouched_resources(f)
 
 
-def test_ledger_write_failure_retries_the_same_committed_corner(legacy, monkeypatch):
+@pytest.mark.parametrize("fail_once", [False, True])
+def test_ledger_write_failure_retries_the_same_committed_corner(legacy, monkeypatch, fail_once):
     f = legacy
     assert f.manager.recover_failed_rotation().status == "succeeded"
     owner = f.manager.state_path.read_bytes()
     prepare_rotation_commit(f, monkeypatch)
     save = f.rotation.save
-    monkeypatch.setattr(f.rotation, "save", Mock(side_effect=OSError("synthetic write failure")))
+    calls = []
+
+    def write_failure(state):
+        calls.append(deepcopy(state))
+        if not fail_once or len(calls) == 1:
+            raise OSError("synthetic write failure")
+        save(state)
+
+    monkeypatch.setattr(f.rotation, "save", write_failure)
     with pytest.raises(OSError):
         f.rotation.recover()
     assert json.loads(f.rotation.path.read_text()) == f.ledger
-    monkeypatch.setattr(f.rotation, "save", save)
+    assert len(calls) == 1
+    if not fail_once:
+        monkeypatch.setattr(f.rotation, "save", save)
     assert f.rotation.recover()["status"] == "ready"
+    if fail_once:
+        assert len(calls) == 2
     assert f.manager.state_path.read_bytes() == owner
     assert json.loads(f.rotation.path.read_text())["history"][:-1] == f.ledger["history"]
     untouched_resources(f)
@@ -470,4 +532,89 @@ def test_automatic_legacy_guard_does_not_change_manual_recovery_contract(legacy,
     assert f.rotation.recover()["status"] == "ready"
     adapter.recovery_guard.assert_not_called()
     assert f.manager.state_path.read_bytes() == owner
+    untouched_resources(f)
+
+
+def test_refusal_discards_in_memory_reservation_and_history_mutations(legacy, monkeypatch):
+    f = legacy
+    assert f.manager.recover_failed_rotation().status == "succeeded"
+    prepare_rotation_commit(f, monkeypatch)
+
+    def partially_mutate_then_refuse(state, reservation, now, *, manual):
+        state["pending"] = None
+        state["history"].append(dict(corner="foreign", at=now))
+        state["last_slot_at"] = now
+        raise RotationError("synthetic resolution refusal", kind="execution-unverified")
+
+    monkeypatch.setattr(f.rotation, "_resolve_reservation", partially_mutate_then_refuse)
+    with pytest.raises(RotationError):
+        f.rotation.recover()
+    ledger = json.loads(f.rotation.path.read_text())
+    for key in ("pending", "history", "last_slot_at", "last_seen_at", "slot"):
+        assert ledger[key] == f.ledger[key]
+    assert ledger["status"] == "recovery_required"
+    assert ledger == f.ledger
+    untouched_resources(f)
+
+
+@pytest.mark.parametrize("which", ["canonical", "tick"])
+def test_transient_guard_lock_refusal_preserves_the_proof_bound_ledger_for_retry(legacy, monkeypatch, which):
+    f = legacy
+    assert f.manager.recover_failed_rotation().status == "succeeded"
+    prepare_rotation_commit(f, monkeypatch)
+    ledger_bytes = f.rotation.path.read_bytes()
+    owner_bytes = f.manager.state_path.read_bytes()
+    lock = (lambda: f.manager.store.lock(exclusive=True)) if which == "canonical" else f.manager._tick_guard
+    with lock():
+        with pytest.raises(RotationError):
+            f.rotation.recover()
+    assert f.rotation.path.read_bytes() == ledger_bytes
+    assert f.manager.state_path.read_bytes() == owner_bytes
+    assert f.manager.recover_failed_rotation().status == "succeeded"
+    assert f.rotation.recover()["status"] == "ready"
+    assert f.manager.state_path.read_bytes() == owner_bytes
+    untouched_resources(f)
+
+
+@pytest.mark.parametrize("field", ["result", "identity"])
+@pytest.mark.parametrize("value", [4.0, True, False])
+def test_canonical_result_generations_cannot_match_receipt_by_numeric_coercion(legacy, field, value):
+    f = legacy
+    if field == "result":
+        f.canonical["last_result"]["generation"] = value
+    else:
+        f.canonical["last_result"]["active_runtime"]["generation"] = value
+    f.write(("game_switch.json",), f.canonical)
+    assert_refused(f)
+
+
+def test_result_comparison_keeps_boolean_and_integer_types_distinct(legacy):
+    f = legacy
+    f.landed["result"]["fixture_flag"] = True
+    f.canonical["last_result"]["fixture_flag"] = 1
+    f.write(("game-switch", "requests", f"{R}.json"), f.landed)
+    f.write(("game_switch.json",), f.canonical)
+    assert_refused(f)
+
+
+def test_error_after_atomic_ledger_replace_does_not_re_latch_consumed_reservation(legacy, monkeypatch):
+    f = legacy
+    assert f.manager.recover_failed_rotation().status == "succeeded"
+    prepare_rotation_commit(f, monkeypatch)
+    save = f.rotation.save
+    calls = []
+
+    def write_then_report_error(state):
+        calls.append(deepcopy(state))
+        save(state)
+        raise OSError("synthetic error after atomic replace")
+
+    monkeypatch.setattr(f.rotation, "save", write_then_report_error)
+    with pytest.raises(OSError):
+        f.rotation.recover()
+    ledger = json.loads(f.rotation.path.read_text())
+    assert len(calls) == 1
+    assert ledger["status"] == "ready" and ledger["pending"] is None
+    assert ledger["last_result"]["request_id"] == SLOT
+    assert ledger["history"][:-1] == f.ledger["history"]
     untouched_resources(f)
