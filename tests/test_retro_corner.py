@@ -1365,6 +1365,85 @@ class TestRestoreFailedRecovery(RetroCornerTestBase):
         canonical, _ = mgr.store.canonical.load()
         self.assertEqual(canonical["active"]["game"], "sorengame")
 
+    def _setup_adopted(self, *, adoption_patch=None, receipt_status="failed"):
+        """Failed restore whose Soren candidate was later adopted as active."""
+        def result_patch(result):
+            result["error_code"] = "rollback_failed"
+            result["cleanup_pending"] = True
+
+        def canonical_patch(canonical, result):
+            generation = result["generation"]
+            names = runtime_names(generation)
+            active = {
+                "game": "sorengame", "adapter": "soren", "generation": generation,
+                "runtime_id": f"g{generation}-abcdef", "lease_id": str(uuid.uuid4()),
+                "game_window": names.game_window, "agent_window": names.agent_window,
+                "adapter_session": names.adapter_session,
+                "started_at": "2026-09-23T12:00:00Z",
+            }
+            adoption = {
+                "request_id": "", "operation": "recover", "status": "succeeded",
+                "from_game": "robots", "to_game": "sorengame", "generation": generation,
+                "active_runtime": {k: active[k] for k in
+                                   ("game", "runtime_id", "generation", "lease_id")},
+                "error_code": None,
+            }
+            if adoption_patch is not None:
+                adoption_patch(adoption, active, canonical)
+            canonical.update(active=active, last_result=adoption,
+                             next_generation=max(generation + 1, canonical["next_generation"]))
+
+        mgr, restore_id = self._setup_restore_failed(
+            receipt_status=receipt_status, error_code="rollback_failed",
+            result_patch=result_patch, canonical_patch=canonical_patch)
+        # The real failure kept a pending cleanup in the (now immutable) receipt.
+        mgr.coordinator = _RestoreSettlingCoordinator(["robots"], mgr.store)
+        return mgr, restore_id
+
+    def test_adopted_candidate_settles_the_failed_restore_without_replay(self):
+        mgr, _restore_id = self._setup_adopted()
+        before = mgr._read_state()
+        result = mgr.recover_failed()
+        self.assertEqual(result.status, "succeeded", result)
+        self.assertEqual(mgr.coordinator.calls, [])  # nothing is replayed or restarted
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertEqual(state["completed_at"], before["completed_at"])
+        canonical, _ = mgr.store.canonical.load()
+        self.assertEqual(canonical["active"]["game"], "sorengame")
+
+    def test_adoption_proof_must_match_this_restore_exactly(self):
+        def other_generation(adoption, _active, _canonical):
+            adoption["generation"] += 1
+
+        def other_target(adoption, _active, _canonical):
+            adoption["to_game"] = "another"
+
+        def other_runtime(adoption, _active, _canonical):
+            adoption["active_runtime"]["lease_id"] = str(uuid.uuid4())
+
+        def ordinary_result(adoption, _active, _canonical):
+            adoption["operation"] = "switch"
+
+        def named_request(adoption, _active, _canonical):
+            adoption["request_id"] = str(uuid.uuid4())
+
+        def not_clean(_adoption, _active, canonical):
+            canonical["retiring"] = [self._runtime("robots", 9)]
+            canonical["next_generation"] = 99
+
+        for patch in (other_generation, other_target, other_runtime,
+                      ordinary_result, named_request, not_clean):
+            with self.subTest(patch=patch.__name__):
+                mgr, _restore_id = self._setup_adopted(adoption_patch=patch)
+                self.assertIsNone(mgr._settle_adopted_restore(mgr._read_state()))
+                self.assertEqual(mgr._read_state()["status"], "failed")
+
+    def test_only_a_failed_receipt_is_settled_by_adoption(self):
+        mgr, _restore_id = self._setup_adopted(receipt_status="rolled_back")
+        self.assertIsNone(mgr._settle_adopted_restore(mgr._read_state()))
+        self.assertEqual(mgr._read_state()["status"], "failed")
+
     def test_failed_receipt_rollback_is_also_replayed_once(self):
         mgr, _restore_id = self._setup_restore_failed(receipt_status="failed")
         settling = _RestoreSettlingCoordinator(["robots"], mgr.store)
