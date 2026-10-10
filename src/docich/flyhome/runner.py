@@ -301,8 +301,17 @@ def play(
                         if hz_mem:
                             # 棘はプレイヤーの炎と混同されて一時的に消えることがある: 最近見えた棘も足して計画する
                             world_obs = dataclasses.replace(world_obs, hazards=list(hz_mem))
-                        grid = planner.build_grid(world_obs)
-                        new_path = planner.astar(grid, (st.x, st.y), target) or [(st.x, st.y), target]
+                        # 棘の格子の間を抜けるレベル (実機 Lv23) では余白 3 セルだと道が無い: 余白を縮めて探し直す
+                        new_path = None
+                        for hm in (3, 2, 1):
+                            grid = planner.build_grid(world_obs, hazard_margin=hm)
+                            new_path = planner.astar(grid, (st.x, st.y), target)
+                            if new_path:
+                                break
+                        if isinstance(ctl, MpcController):
+                            ctl.cfg.hazard_margin = {3: 9.0, 2: 7.0, 1: 5.0}[hm]
+                        if not new_path:
+                            new_path = path if path else [(st.x, st.y), target]
                         # ヒステリシス: 島の上回り/下回りのように長さの近い経路が毎回入れ替わると迷走する。
                         # 前の経路がまだ通れて、新しい経路が 20% 以上短くなければ前の経路を使い続ける。
                         if path is not None and len(path) >= 2:
