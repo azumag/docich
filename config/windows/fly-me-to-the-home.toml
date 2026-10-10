@@ -5,13 +5,14 @@
 
 use_demo = false
 window_titles = ["Fly Me To The Home"]  # 部分一致・大文字小文字無視。`windows` で実際のタイトルを確認
-exe_names = []                          # 例: ["FlyMeToTheHome.exe"] (doctor の exes を参照)
+exe_names = ["FlyMeToTheHome.exe"]                          # 例: ["FlyMeToTheHome.exe"] (doctor の exes を参照)
 native_width = 320                      # ゲームの内部解像度 (ストアのスクリーンショットから実測)
 native_height = 180
 aspect = [16, 9]
 tick_hz = 30.0
-capture_mode = "screen"                 # 黒画面しか取れない場合は "printwindow"
-input_mode = "sendinput"                # 前面以外へ送りたい場合の代替: "postmessage" (届くかは要確認)
+capture_mode = "printwindow"                 # 黒画面しか取れない場合は "printwindow"
+input_mode = "postmessage"                # 前面以外へ送りたい場合の代替: "postmessage" (届くかは要確認)
+controller = "mpc"                     # 実機の物理 (片足でも満額推力・回転は慣性) には mpc。"pd" は旧仮説モデル
 abort_vk = 0x7B                         # F12 で即停止
 retry_delay_s = 0.8
 run_dir = "run/flyhome"

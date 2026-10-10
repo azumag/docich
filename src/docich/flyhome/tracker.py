@@ -2,6 +2,11 @@
 
 死亡時は爆発してプレイヤーが消え、帰宅時は家に入って消える。どちらも左上に案内看板が
 出るが、背景色と紛らわしいので「消えた直前の位置が家の近くか」で判定する。
+
+ただし家の近くで見失っただけ (花の茎でプレイヤーが分断された等) はクリアではない。実機の
+クリアは、家に入ったあとに淡い白の面 (``Observation.wipe``) が画面を覆うので、それを見て
+初めて CLEARED にする (クリア画面は上下端の橙のプレイヤー像の列でも検出)。出ないまま
+家の近くなら ``home_wait_s`` 秒、遠ければ ``lost_wait_s`` 秒たったら死亡扱い。
 """
 
 from __future__ import annotations
@@ -50,8 +55,12 @@ class State:
 
 
 class Tracker:
-    def __init__(self, *, vel_alpha: float = 0.6, lost_frames: int = 3, home_margin: float = 8.0):
+    def __init__(self, *, vel_alpha: float = 0.6, lost_frames: int = 3, home_margin: float = 8.0, home_wait_s: float = 1.2, lost_wait_s: float = 0.3):
         self.vel_alpha = vel_alpha
+        self.home_wait_s = home_wait_s
+        self.lost_wait_s = lost_wait_s
+        self._missing_since: float | None = None
+        self._wipe_seen = False
         self.lost_frames = lost_frames
         self.home_margin = home_margin
         self.phase = MENU
@@ -64,7 +73,8 @@ class Tracker:
 
     @property
     def prev_pos(self):
-        if self._last is None or self._last.x is None:
+        # プレイ中だけ前フレームの位置で追跡する。死亡/帰宅/メニュー後は新しい試行の初期位置を探し直す。
+        if self.phase != PLAYING or self._last is None or self._last.x is None:
             return None
         return self._last.x, self._last.y
 
@@ -86,8 +96,15 @@ class Tracker:
         last = self._last
         if p is None:
             self._missing += 1
+            if self._missing == 1:
+                self._missing_since = t
+            self._wipe_seen = self._wipe_seen or obs.wipe
             if self.phase == PLAYING and self._missing >= self.lost_frames and last is not None and last.x is not None:
-                self.phase = CLEARED if self._near_home(last.x, last.y) else DEAD
+                waited = 0.0 if self._missing_since is None else t - self._missing_since
+                if self._wipe_seen:
+                    self.phase = CLEARED
+                elif waited >= (self.home_wait_s if self._near_home(last.x, last.y) else self.lost_wait_s):
+                    self.phase = DEAD
             st = State(t, self.phase, self.attempt, home=self._home, home_bbox=self._home_bbox)
             if last is not None:
                 st.x, st.y, st.angle, st.best_dist = last.x, last.y, last.angle, last.best_dist
@@ -96,6 +113,7 @@ class Tracker:
             return st
 
         self._missing = 0
+        self._wipe_seen = False
         self.last_obs = obs
         if self.phase != PLAYING:
             self.attempt += 1

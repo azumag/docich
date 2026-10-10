@@ -40,6 +40,13 @@ LABEL_COLORS = (
 # 爆発片 (<40 px) やメニュー文字を拾わないよう幅を持たせて絞る。
 PLAYER_AREA = (60, 150)
 
+# プレイヤーが他の橙 (看板の見本など) と融合したときの塊の面積の上限と、窓内に最低限必要な橙画素数。
+MERGED_AREA_MAX = 700
+MERGED_MIN_PIXELS = 40
+
+# 追跡中に前フレームからこれ以上離れた候補は別物 (看板の見本など) とみなす (native px)。
+TRACK_GATE_PX = 30.0
+
 
 def classify_rgb(r: int, g: int, b: int) -> int:
     if r > 200 and 90 <= g <= 170 and b < 80:
@@ -172,6 +179,7 @@ class Observation:
     level_sig: int
     solid: bytearray = field(repr=False)  # width*height, 1 = 地形 (草/土)
     labels: bytearray = field(repr=False)
+    wipe: bool = False  # クリア演出 (淡い白の面で画面が覆われる) が出ている
 
     def summary(self) -> dict:
         p = self.player
@@ -236,6 +244,49 @@ def _ring_white_ratio(labels: bytearray, w: int, h: int, bbox: tuple[int, int, i
     return white / total if total else 0.0
 
 
+PLANK_RGB = (153, 128, 101)  # 操作説明の看板の板 (実機の体験版 Level 1 で実測)
+WIPE_RGB = (217, 235, 244)  # クリア時、家に入ったあとに出る半透明の白い面 (実機 Lv2 で計測)
+WIPE_MIN = 400  # 2px おきの標本でこの数以上ならクリア演出とみなす
+
+
+PARTY_ICONS_MIN = 6  # クリア画面は上下の端に橙のプレイヤー像がずらりと並ぶ (実機 Lv3 で確認)
+
+
+def _party_icons(oranges: list, h: int) -> bool:
+    """画面の上端・下端の帯に橙の小さな塊が PARTY_ICONS_MIN 個以上並んでいればクリア画面。"""
+    band = max(10, h // 12)
+    n = sum(1 for b in oranges if b.area >= 8 and (b.center[1] < band or b.center[1] > h - band))
+    return n >= PARTY_ICONS_MIN
+
+
+def _wipe_present(img: Image) -> bool:
+    """クリア演出の白い面 (217,235,244) が画面を覆っているか。通常の空・雲とは色が違う。"""
+    n = 0
+    data, w = img.data, img.width
+    for y in range(0, img.height, 2):
+        row = y * w * 3
+        for x in range(0, w, 2):
+            i = row + x * 3
+            if abs(data[i] - WIPE_RGB[0]) <= 6 and abs(data[i + 1] - WIPE_RGB[1]) <= 6 and abs(data[i + 2] - WIPE_RGB[2]) <= 6:
+                n += 1
+    return n >= WIPE_MIN
+
+
+def _plank_ratio(img: Image, bbox: tuple[int, int, int, int]) -> float:
+    """bbox の外側 3 px の枠のうち、看板の板の色が占める割合。"""
+    x0, y0, x1, y1 = bbox
+    total = plank = 0
+    for y in range(max(0, y0 - 3), min(img.height, y1 + 3)):
+        for x in range(max(0, x0 - 3), min(img.width, x1 + 3)):
+            if x0 <= x < x1 and y0 <= y < y1:
+                continue
+            i = (y * img.width + x) * 3
+            total += 1
+            if all(abs(img.data[i + k] - PLANK_RGB[k]) <= 10 for k in range(3)):
+                plank += 1
+    return plank / total if total else 0.0
+
+
 def _orientation(blob: Blob, labels: bytearray, w: int, h: int, prev_angle: float | None):
     """主軸 (PCA) で体の向きを、顔 (白) の偏りで頭側を決める。"""
     x0, y0, x1, y1 = blob.bbox
@@ -293,21 +344,40 @@ def analyze(
     oranges = [b for b in blobs(labels, w, h, {ORANGE}, mask=in_hud) if b.area >= 4]
     coins: list[tuple[float, float]] = []
     candidates: list[Blob] = []
+    oversized: list[Blob] = []
+    fragments: list[Blob] = []
     for b in oranges:
         if b.area >= 12 and _ring_white_ratio(labels, w, h, b.bbox) >= 0.35:
             coins.append(b.center)
         elif PLAYER_AREA[0] <= b.area <= PLAYER_AREA[1]:
             candidates.append(b)
+        elif PLAYER_AREA[1] < b.area <= MERGED_AREA_MAX:
+            oversized.append(b)
+        elif b.area < PLAYER_AREA[0]:
+            fragments.append(b)  # 花の茎などで体が分断された断片
 
     player = None
+    if prev_player is not None and (oversized or fragments) and not any(math.hypot(b.center[0] - prev_player[0], b.center[1] - prev_player[1]) <= TRACK_GATE_PX for b in candidates):
+        # 看板の見本 (同じ橙) と重なって大きな塊になった、または花の茎で体が分断された:
+        # 前フレームの位置の窓にある橙の画素だけを本体とみなす。
+        px, py = prev_player
+        pix = [(x, y) for b in oversized + fragments for (x, y) in b.pixels if abs(x + 0.5 - px) <= 10 and abs(y + 0.5 - py) <= 11]
+        if len(pix) >= MERGED_MIN_PIXELS:
+            candidates.append(Blob(ORANGE, pix))
     if candidates:
         if prev_player is not None:
-            best = min(candidates, key=lambda b: (b.center[0] - prev_player[0]) ** 2 + (b.center[1] - prev_player[1]) ** 2 - 4 * b.area)
+            # 追跡中は前フレームの近くだけを見る。遠い候補 (看板の見本など) へは飛び移らず、見失った扱いにする。
+            near = [b for b in candidates if math.hypot(b.center[0] - prev_player[0], b.center[1] - prev_player[1]) <= TRACK_GATE_PX]
+            best = min(near, key=lambda b: (b.center[0] - prev_player[0]) ** 2 + (b.center[1] - prev_player[1]) ** 2 - 4 * b.area) if near else None
         else:
-            best = max(candidates, key=lambda b: b.area)
-        cx, cy = best.center
-        angle = _orientation(best, labels, w, h, prev_angle)
-        player = Player(cx, cy, angle, best.bbox, best.area)
+            # レベル 1 の操作説明の看板には、オレンジの見本プレイヤーが描かれている (開始直後は本物より先に現れる)。
+            # 周囲が板の色の候補は、唯一の候補でも採らない。
+            fresh = [b for b in candidates if _plank_ratio(native, b.bbox) < 0.5]
+            best = max(fresh, key=lambda b: b.area) if fresh else None
+        if best is not None:
+            cx, cy = best.center
+            angle = _orientation(best, labels, w, h, prev_angle)
+            player = Player(cx, cy, angle, best.bbox, best.area)
 
     reds = blobs(labels, w, h, {RED, YELLOW}, mask=in_hud)
     hazards: list[tuple[int, int, int, int]] = []
@@ -363,6 +433,7 @@ def analyze(
         level_sig=_region_sig(labels, w, _rect_px(s.hud.level_text, w, h)),
         solid=solid,
         labels=labels,
+        wipe=_wipe_present(native) or _party_icons(oranges, h),
     )
 
 

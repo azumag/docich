@@ -17,6 +17,7 @@ from pathlib import Path
 
 from . import planner, vision
 from .control import JetController, Physics
+from .mpc import MpcController
 from .image import Image, write_png
 from .settings import Settings
 from .timeline import Timeline
@@ -258,7 +259,8 @@ def play(
     """制御器でプレイする。死亡したら Enter で再挑戦し、帰宅したら止まる。"""
     log = SessionLog(log_root)
     loop = Loop(backend, settings, log)
-    ctl = JetController(physics or Physics.load(settings.physics_file))
+    phys = physics or Physics.load(settings.physics_file)
+    ctl = MpcController(phys) if settings.controller == "mpc" else JetController(phys)
     done = 0
     path = None
     k = 0
@@ -278,8 +280,11 @@ def play(
                 if path is None or k % replan_every == 0:
                     target = st.home
                     if target is not None:
-                        grid = planner.build_grid(loop.tracker.last_obs or loop.obs)
+                        world_obs = loop.tracker.last_obs or loop.obs
+                        grid = planner.build_grid(world_obs)
                         path = planner.astar(grid, (st.x, st.y), target) or [(st.x, st.y), target]
+                        if isinstance(ctl, MpcController):
+                            ctl.set_world(grid, world_obs, path)
                 if path is not None:
                     keys = ctl.decide(st, planner.lookahead(path, (st.x, st.y)))
                 if st.t - t_start > attempt_timeout_s:
@@ -372,7 +377,7 @@ def probe(
             row.update({"left": keys[0], "right": keys[1], "hud": [loop.obs.hud_left, loop.obs.hud_right]})
             if loop.obs.player is not None:
                 row["flame"] = [loop.obs.player.flame_left, loop.obs.player.flame_right]
-            rows.append(row)
+                rows.append(row)  # 見失っている間の行 (直前の値の持ち越し) はフィットに入れない
             log.frame(st, loop.obs, keys)
             log.snapshot(st.t, loop.native, loop.obs)
             if st.phase in (DEAD, CLEARED):

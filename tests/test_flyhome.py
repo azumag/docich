@@ -135,6 +135,35 @@ class TestTracker(unittest.TestCase):
             st = tr.update(vision.analyze(sim.render(world, body)), 1.1 + 0.1 * i)
         self.assertEqual(st.phase, tracker.CLEARED)
 
+    def test_lost_near_home_without_wipe_is_not_clear(self):
+        # 家の近くで見失っただけ (白い面なし) はクリアにしない: しばらく待っても出なければ死亡
+        world = sim.World.basic()
+        tr = tracker.Tracker()
+        hx0, hy0, hx1, hy1 = world.home
+        body = sim.Body((hx0 + hx1) / 2, hy0 - 4)
+        tr.update(vision.analyze(sim.render(world, body)), 0.0)
+        body.outcome = "dead"  # 白い面は出ない
+        st = None
+        for i in range(4):
+            st = tr.update(vision.analyze(sim.render(world, body)), 0.1 * (i + 1))
+        self.assertEqual(st.phase, tracker.PLAYING)
+        st = tr.update(vision.analyze(sim.render(world, body)), 2.0)
+        self.assertEqual(st.phase, tracker.DEAD)
+
+    def test_split_player_is_rescued(self):
+        # 花の茎などで体が縦に分断されても、前フレーム付近の断片を合わせて追い続ける
+        world = sim.World.basic()
+        body = sim.Body(60, 140)
+        img = sim.render(world, body)
+        first = vision.analyze(img)
+        self.assertIsNotNone(first.player)
+        px, py = first.player.x, first.player.y
+        for y in range(int(py) - 8, int(py) + 8):
+            img.put(int(px), y, (40, 120, 20))  # 茎
+        obs = vision.analyze(img, prev_player=(px, py))
+        self.assertIsNotNone(obs.player)
+        self.assertLess(abs(obs.player.x - px), 4)
+
     def test_velocity_estimate(self):
         world = sim.World.basic()
         tr = tracker.Tracker(vel_alpha=1.0)

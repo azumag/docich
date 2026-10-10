@@ -104,6 +104,9 @@ def step(world: World, b: Body, left: bool, right: bool, dt: float, p: Physics) 
             return
 
 
+WIPE = (217, 235, 244)
+
+
 def render(world: World, b: Body) -> Image:
     img = Image.blank(world.width, world.height, SKY)
     for x0, y0, x1, y1 in world.solids:
@@ -123,6 +126,8 @@ def render(world: World, b: Body) -> Image:
         img.fill_rect(x0 + 1, 161, x0 + 15, 173, ORANGE if on else SKY)
     if b.outcome is None:
         _draw_player(img, b)
+    elif b.outcome == "cleared":
+        img.fill_rect(110, 30, 155, 105, WIPE)  # 実機のクリア演出 (家に入ったあとの淡い白の面)
     return img
 
 

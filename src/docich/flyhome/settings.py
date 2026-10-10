@@ -67,6 +67,7 @@ class Settings:
     # 死亡/クリア後に Enter を送るまでの待ち (演出が終わる前の入力は無視されやすい)。
     retry_delay_s: float = 0.8
     max_attempts: int = 0  # 0 = 無制限
+    controller: str = "pd"  # "pd" (control.JetController) | "mpc" (mpc.MpcController、実機の物理向け)
     # 物理パラメータ (calibrate で上書きする)。単位はネイティブ px と秒。
     physics_file: Path = REPO_ROOT / "run" / "flyhome" / "physics.json"
 
