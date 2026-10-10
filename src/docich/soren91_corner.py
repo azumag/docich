@@ -536,6 +536,10 @@ def _build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
     sub.add_parser("recover")
+    # Settles a slot that finished but failed its restore switch (#1868/#1870)
+    # through the inherited retro recovery, against soren91_corner.json (the
+    # retro-corner CLI only sees retro_corner.json and cannot reach this slot).
+    sub.add_parser("recover-failed")
     return parser
 
 
@@ -574,7 +578,8 @@ def main(argv: list[str] | None = None) -> int:
             result = manager.coordinator.recover()
             print(_recover_json(result))
             return 0
-        result = getattr(manager, args.command)()
+        method_name = {"recover-failed": "recover_failed"}.get(args.command, args.command)
+        result = getattr(manager, method_name)()
         print(
             json.dumps(
                 {
