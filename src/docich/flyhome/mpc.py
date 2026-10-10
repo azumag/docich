@@ -75,6 +75,9 @@ class MpcConfig:
     settle_above: float = 16.0  # 家の基準点 (扉の足元) からこの高さまでが静止ゾーン
     settle_speed: float = 45.0
     takeoff_s: float = 0.35  # 試行開始からこの秒数は両足で真上に上がる (開始直後は角速度が推定できず、片足で回りすぎる)
+    om_gain: float = 0.35  # 角速度観測器の測定への補正の強さ
+    tilt_hard: float = 0.7  # これを超える傾きに強い罰則 (狭い回廊で横倒しになって加速するのを防ぐ)
+    w_tilt_hard: float = 150.0
     seed: int = 1
 
 
@@ -105,6 +108,9 @@ class MpcController:
         self._attempt: int | None = None
         self._unwrapped = 0.0
         self._last_angle: float | None = None
+        self._om_obs = 0.0
+        self._t_obs: float | None = None
+        self._acts: deque[tuple[float, int]] = deque(maxlen=12)  # (時刻, 押した入力)
 
     def set_world(self, grid: Grid, obs: Observation, path: list[tuple[float, float]] | None = None) -> None:
         self.grid = grid
@@ -200,8 +206,27 @@ class MpcController:
         t0, x0, y0, a0 = self._hist[0]
         dt = st.t - t0
         if len(self._hist) < 3 or dt < 0.05:
-            return st.x, st.y, 0.0, 0.0, st.angle, 0.0
-        return st.x, st.y, (st.x - x0) / dt, (st.y - y0) / dt, st.angle, (self._unwrapped - a0) / dt
+            om_meas = 0.0
+            vx = vy = 0.0
+        else:
+            om_meas = (self._unwrapped - a0) / dt
+            vx, vy = (st.x - x0) / dt, (st.y - y0) / dt
+        # 角速度の観測器: 測定 (数フレームの差分) は遅れるので、自分が押したジェット (遅れ delay_s 込み) から予測し、測定で補正する。
+        p, c = self.p, self.cfg
+        if self._t_obs is None:
+            self._om_obs = om_meas
+        else:
+            h = max(0.0, st.t - self._t_obs)
+            a = 0
+            for ta, aa in self._acts:
+                if ta <= st.t - c.delay_s:
+                    a = aa
+            left, right = a & 1, (a >> 1) & 1
+            pred = self._om_obs + (left - right) * p.torque_sign * p.spin * h
+            pred -= pred * min(1.0, p.angular_damping * h)
+            self._om_obs = pred + c.om_gain * (om_meas - pred)
+        self._t_obs = st.t
+        return st.x, st.y, vx, vy, st.angle, self._om_obs
 
     # --- シミュレーション -----------------------------------------------------------------
     def _cost(self, x, y, vx, vy, ang, om, seq, tx, ty, first_dt, first_action) -> float:
@@ -334,6 +359,8 @@ class MpcController:
             if sp > vcap:
                 total += 3.0 * (sp - vcap)
             total += c.w_tilt * ang * ang + c.w_omega * abs(om)
+            if abs(ang) > c.tilt_hard:
+                total += c.w_tilt_hard * (abs(ang) - c.tilt_hard)
             if abs(ang) > c.max_tilt:
                 total += 60.0 * (abs(ang) - c.max_tilt)
             if hb is not None and hb[0] <= x <= hb[2] and hb[1] <= y <= hb[3]:
@@ -413,6 +440,7 @@ class MpcController:
         x, y, vx, vy, ang, om = self._estimate(st)
         if st.t - getattr(self, "_t0", st.t) < c.takeoff_s and abs(ang) < 0.3:
             self._plan, self._last_action = [3] * c.horizon, 3
+            self._acts.append((st.t, 3))
             return True, True
         if st.home is not None:
             hx, hy = st.home
@@ -426,6 +454,7 @@ class MpcController:
                 in_front = x0 - 4 <= x <= x1 + 4 and y1 - 20 <= y <= y1 + 14
             if slow and (in_door or in_front):
                 self._plan, self._last_action = None, 0
+                self._acts.append((st.t, 0))
                 return False, False
         tx, ty = target
         if c.mode == "track":
@@ -456,5 +485,6 @@ class MpcController:
                 best_seq, best_cost = seq, cost
         self._plan = best_seq
         self._last_action = best_seq[0]
+        self._acts.append((st.t, best_seq[0]))
         left, right = ACTIONS[best_seq[0]]
         return left, right
