@@ -334,9 +334,9 @@ class NethackCornerManager(RetroCornerManager):
                     return CornerResult("queued", game=GAME_NAME, detail="NetHack tick is active")
                 with self._locked():
                     state = self._read_state()
-                    if ("previous_game" not in state
-                            and state.get("game") == GAME_NAME
-                            and state.get("status") in {"failed", "interrupted"}):
+                    if (state.get("game") == GAME_NAME
+                            and state.get("status") in {"failed", "interrupted"}
+                            and self._legacy_return_applies(state, rotation)):
                         return self._reconcile_legacy_return_locked(state, rotation)
                     request_id = state.get("rotation_request_id")
                     restore_id = state.get("switch_request_id")
@@ -619,6 +619,36 @@ class NethackCornerManager(RetroCornerManager):
                     ) or CornerResult(
                         "failed", game=GAME_NAME, detail="restore receipt unproven"
                     )
+
+    def _legacy_return_applies(self, state, rotation) -> bool:
+        """Route an owner to the legacy contract; caller holds rotation/tick/corner locks.
+
+        An owner without previous_game is legacy by format. One that records
+        previous_game is routed here only when the read-only legacy proof
+        already holds for it (or a legacy record was already started), so the
+        modern restore recovery keeps every owner whose receipts carry source
+        identities. Nothing is written.
+        """
+        from .game_switch import GameSwitchBusyError
+        from .corner_rotation import timestamp
+        from .nethack_return import LEGACY_PREVIOUS_GAME, RECORD_KEY, legacy_return_proof
+
+        previous = state.get("previous_game", LEGACY_PREVIOUS_GAME)
+        if "previous_game" not in state or RECORD_KEY in state:
+            return previous == LEGACY_PREVIOUS_GAME
+        if previous != LEGACY_PREVIOUS_GAME:
+            return False
+        try:
+            with self.store.lock(exclusive=False):
+                now = self._local_now().astimezone(dt.timezone.utc)
+                ledger = rotation.load(timestamp(rotation.clock()))
+                legacy_return_proof(Path(self.g.state_dir), state, ledger,
+                                    player=self._run_store.settings.player_name, now=now)
+            return True
+        except GameSwitchBusyError:
+            return True
+        except Exception:
+            return False
 
     def _reconcile_legacy_return_locked(self, state, rotation) -> CornerResult:
         """Owner-approved legacy metadata reconciliation; never replay a game.

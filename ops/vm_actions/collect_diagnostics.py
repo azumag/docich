@@ -6766,7 +6766,7 @@ def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=Non
         result.update(restore_recovery_present='restore_recovery' in owner,
                       cleanup_record_present='restore_cleanup' in owner,
                       cleanup_attempt_present='restore_cleanup_attempt' in owner)
-        result['legacy_contract_applicable'] = ('previous_game' not in owner
+        result['legacy_contract_applicable'] = (owner.get('previous_game', 'sorengame') == 'sorengame'
             and owner.get('finish_reason') == 'terminal'
             and all(k not in owner for k in ('restore_recovery', 'restore_cleanup', 'restore_cleanup_attempt')))
         result['manual_clear'] = (ledger.get('manual_pending') is None

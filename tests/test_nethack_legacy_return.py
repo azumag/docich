@@ -171,7 +171,7 @@ def test_foreign_or_incomplete_evidence_never_releases_the_latch(legacy, kind):
         f.ledger["manual_pending"] = dict(corner="nethack", request_id=OTHER,
                                          selected_at=f.now.timestamp(), state_file="nethack_corner_manual.json")
     elif kind in {"legacy_scope", "replay", "stall"}:
-        f.owner.update({"legacy_scope": {"previous_game": "sorengame"},
+        f.owner.update({"legacy_scope": {"previous_game": "ninvaders"},
                         "replay": {"restore_recovery": {}}, "stall": {"finish_reason": "stall"}}[kind])
         f.write(("nethack_corner.json",), f.owner)
     elif kind == "modern_source":
@@ -618,3 +618,51 @@ def test_error_after_atomic_ledger_replace_does_not_re_latch_consumed_reservatio
     assert ledger["last_result"]["request_id"] == SLOT
     assert ledger["history"][:-1] == f.ledger["history"]
     untouched_resources(f)
+
+
+def test_owner_recording_previous_game_with_source_less_receipts_uses_the_legacy_contract(legacy, monkeypatch):
+    """#1969 production shape: previous_game was persisted before receipts carried
+    source identities, so the receipts (not the owner field) decide legacy-ness."""
+    f = legacy
+    f.owner["previous_game"] = "sorengame"
+    f.write(("nethack_corner.json",), f.owner)
+    assert f.manager.recover_failed_rotation().status == "succeeded"
+    owner = f.manager._read_state()
+    assert owner["status"] == "interrupted" and owner["previous_game"] == "sorengame"
+    assert owner[RECORD_KEY]["phase"] == "committed"
+    before = f.manager.state_path.read_bytes()
+    assert f.manager.recover_failed_rotation().status == "succeeded"
+    assert f.manager.state_path.read_bytes() == before
+    prepare_rotation_commit(f, monkeypatch)
+    outcome = f.rotation.recover()
+    assert outcome == dict(status="ready", corner="nethack", result="interrupted", recovered=True)
+    ledger = json.loads(f.rotation.path.read_text())
+    assert ledger["pending"] is None and ledger["last_result"]["request_id"] == SLOT
+    untouched_resources(f)
+
+
+@pytest.mark.parametrize("kind", ["modern_original", "modern_landed"])
+def test_previous_game_owner_with_source_identities_stays_on_the_modern_path(legacy, kind):
+    f = legacy
+    f.owner["previous_game"] = "sorengame"
+    f.write(("nethack_corner.json",), f.owner)
+    if kind == "modern_original":
+        f.original["result"]["source_runtime"] = {}
+        f.write(("game-switch", "requests", f"{R0}.json"), f.original)
+    else:
+        f.landed["result"]["source_runtime"] = {}
+        f.write(("game-switch", "requests", f"{R}.json"), f.landed)
+    before = f.manager.state_path.read_bytes()
+    assert f.manager.recover_failed_rotation().status == "failed"
+    assert f.manager.state_path.read_bytes() == before
+    assert RECORD_KEY not in f.manager._read_state()
+
+
+def test_previous_game_owner_with_unproven_chain_is_never_prepared(legacy):
+    f = legacy
+    f.owner["previous_game"] = "sorengame"
+    f.write(("nethack_corner.json",), f.owner)
+    f.canonical["active"]["lease_id"] = OTHER
+    f.write(("game_switch.json",), f.canonical)
+    assert_refused(f)
+    assert RECORD_KEY not in f.manager._read_state()
