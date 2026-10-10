@@ -220,13 +220,17 @@ def test_failed_start_is_settled_only_by_its_own_confirmed_recovery(setup):
     s = setup
     rid = str(uuid.uuid4())
     state = dict(start_request_id=rid, previous_runtime_identity=s.source, status="starting")
-    body = dict(request_id=rid, status="failed", error_code="rollback_failed")
-    receipt = dict(request_id=rid, target=corner.VIEW_NAME, status="failed", result=body)
+    body = dict(request_id=rid, operation="switch", status="failed", error_code="rollback_failed",
+                from_game=None, to_game=corner.VIEW_NAME, generation=2)
+    receipt = dict(request_id=rid, operation="switch", target=corner.VIEW_NAME, generation=2,
+                   status="failed", result=body)
     s.manager.coordinator.switch = lambda *_a, **_kw: SimpleNamespace(
-        status="failed", receipt=receipt, request_id=rid, cleanup_pending=False)
+        status="failed", receipt=receipt, request_id=rid, cleanup_pending=False,
+        operation="switch", target=corner.VIEW_NAME, generation=2)
     s.canonical[0] = ready(s.restored)
-    s.canonical[0]["last_result"] = dict(request_id=str(uuid.uuid4()), status="rolled_back",
-        from_game=s.source["game"], restored_generation=s.restored["generation"])
+    s.canonical[0]["last_result"] = dict(request_id=str(uuid.uuid4()), operation="switch",
+        status="rolled_back", from_game=s.source["game"], to_game=corner.VIEW_NAME,
+        generation=2, restored_generation=s.restored["generation"])
     with pytest.raises(receiver.ExternalVideoError):
         s.manager._dispatch(state)
     s.canonical[0]["last_result"]["request_id"] = rid
