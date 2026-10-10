@@ -55,7 +55,7 @@ class State:
 
 
 class Tracker:
-    def __init__(self, *, vel_alpha: float = 0.6, lost_frames: int = 3, home_margin: float = 8.0, home_wait_s: float = 1.2, lost_wait_s: float = 0.3):
+    def __init__(self, *, vel_alpha: float = 0.6, lost_frames: int = 3, home_margin: float = 8.0, home_wait_s: float = 4.0, lost_wait_s: float = 0.3):
         self.vel_alpha = vel_alpha
         self.home_wait_s = home_wait_s
         self.lost_wait_s = lost_wait_s
@@ -94,6 +94,16 @@ class Tracker:
             self._home, self._home_bbox = obs.home, obs.home_bbox
         p = obs.player
         last = self._last
+        if obs.wipe and self.phase == PLAYING:
+            # クリア画面 (上下端のプレイヤー像の列) が出たら、像をプレイヤーと誤認していても帰宅とする (実機 Lv24)
+            self.phase = CLEARED
+            st = State(t, self.phase, self.attempt, home=self._home, home_bbox=self._home_bbox)
+            if last is not None:
+                st.x, st.y, st.angle, st.best_dist = last.x, last.y, last.angle, last.best_dist
+            self._last = st
+            return st
+        if obs.wipe and p is not None:
+            p = None  # クリア画面の像はプレイヤーではない (新しい試行を始めない)
         if p is None:
             self._missing += 1
             if self._missing == 1:

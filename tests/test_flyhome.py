@@ -148,6 +148,8 @@ class TestTracker(unittest.TestCase):
             st = tr.update(vision.analyze(sim.render(world, body)), 0.1 * (i + 1))
         self.assertEqual(st.phase, tracker.PLAYING)
         st = tr.update(vision.analyze(sim.render(world, body)), 2.0)
+        self.assertEqual(st.phase, tracker.PLAYING)  # 家の前で帰宅の進捗中かもしれないので長めに待つ
+        st = tr.update(vision.analyze(sim.render(world, body)), 4.5)
         self.assertEqual(st.phase, tracker.DEAD)
 
     def test_split_player_is_rescued(self):
