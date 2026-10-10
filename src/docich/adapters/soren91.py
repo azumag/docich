@@ -198,7 +198,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
     def __init__(self, g, game, spec: RuntimeSpec):
         super().__init__(g, game, spec)
         # Soren91 has no round boundary yet (Phase 3 owns the Soren本編
-        # boundary linkage).  Hide the capability like CLI games with
+        # boundary linkage). Hide the capability like CLI games with
         # require_round_boundary=false so the coordinator takes the
         # immediate-quiesce path.
         self.agent_enabled = bool(game.agent.enabled)
@@ -235,6 +235,16 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         self._agent_capture_settings: dict[str, object] | None = None
         self.srt_port = _validated_port(raw.get("srt_port"), key="srt_port", default=DEFAULT_SRT_PORT)
         self.cdp_port = _validated_port(raw.get("cdp_port"), key="cdp_port", default=DEFAULT_CDP_PORT)
+        # Keep the measured FlyHome change opt-in here until Soren91 has its
+        # own A/V and CPU acceptance. Only the local presentation is affected;
+        # the remote renderer and the main sorengame WebGL path are unchanged.
+        self.sdl_software_render = raw.get("sdl_software_render", False)
+        if type(self.sdl_software_render) is not bool:
+            raise AdapterError("[soren91].sdl_software_render は真偽値である必要があります")
+        if self.sdl_software_render and (
+            g.display.viewport_width <= 0 or g.display.viewport_height <= 0
+        ):
+            raise AdapterError("[soren91].sdl_software_render にはdisplay viewportが必要です")
         self.ffplay_bin = str(raw.get("ffplay_bin", DEFAULT_FFPLAY_BIN))
         if not self.ffplay_bin.strip() or "\x00" in self.ffplay_bin:
             raise AdapterError("[soren91].ffplay_bin は空でない実行ファイル名である必要があります")
@@ -416,6 +426,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                 # arrives (Chrome boot + game load take a minute or more), so
                 # the presenter gets a longer viewer budget than local games.
                 "--viewer-wait-sec", str(self.viewer_wait_sec),
+                *(["--sdl-software-render"] if self.sdl_software_render else []),
                 *(["--audio-sink", self.audio_sink] if self.audio_sink else []),
                 "--", *inner,
             ]
@@ -749,7 +760,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
     def readiness(self, deadline: float, cancel) -> None:
         # The contained presenter window must exist (super), the Mac renderer
         # must report running, and our listener port must accept — all three
-        # before the coordinator may commit.  Anything else fails closed.
+        # before the coordinator may commit. Anything else fails closed.
         super().readiness(deadline, cancel)
         while True:
             try:
