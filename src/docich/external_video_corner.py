@@ -48,6 +48,8 @@ def settled_rollback(receipt, current, request_id, source, target):
     Rollback receipts contain restored_generation, not active_runtime. A live
     previous runtime gets a fresh lease; a stopped one gets a new generation.
     Only the same request's canonical rollback can authorize either outcome.
+    A failed receipt is immutable, so its historical cleanup flag may outlive
+    recovery; cleanup must be clear in the current canonical rollback instead.
     """
     actual = identity(current.get("active"))
     body = receipt.get("result") if isinstance(receipt, dict) else None
@@ -62,7 +64,9 @@ def settled_rollback(receipt, current, request_id, source, target):
             or any(evidence.get("request_id") != request_id
                    or evidence.get("operation") != "switch"
                    or evidence.get("to_game") != target
-                   or evidence.get("cleanup_pending") for evidence in (body, last))
+                   for evidence in (body, last))
+            or last.get("cleanup_pending")
+            or (receipt["status"] == "rolled_back" and body.get("cleanup_pending"))
             or last.get("status") != "rolled_back"
             or last.get("from_game") != source["game"] or actual["game"] != source["game"]
             or type(receipt.get("generation")) is not int
@@ -136,15 +140,16 @@ class ExternalVideoCornerManager:
                 and body.get("generation") == receipt["generation"]
                 and body.get("status") == "failed" and last == body
                 and not body.get("cleanup_pending"))
+            rolled_back = settled_rollback(receipt, current, state["start_request_id"], source, VIEW_NAME)
             if (isinstance(receipt, dict) and result.request_id == state["start_request_id"]
                     and result.status == receipt.get("status")
                     and result.operation == receipt.get("operation")
                     and result.target == receipt.get("target")
-                    and result.generation == receipt.get("generation") and not result.cleanup_pending
+                    and result.generation == receipt.get("generation")
+                    and (not result.cleanup_pending or (result.status == "failed" and rolled_back))
                     and stable(current)
                     and not any(current.get(k) for k in ("request_id", "operation", "cleanup_pending"))
-                    and (unchanged or settled_rollback(receipt, current,
-                        state["start_request_id"], source, VIEW_NAME))):
+                    and (unchanged or rolled_back)):
                 state.update(status="interrupted", recovery_required=False, completed_at=self.clock(),
                              end_reason="start-rolled-back")
                 self.save(state)

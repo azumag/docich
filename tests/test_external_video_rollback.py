@@ -98,6 +98,13 @@ def test_real_pending_cleanup_does_not_authorize_recovery(real_corner):
         s.manager.run(recovering=True)
     assert s.manager.canonical()["retiring"] and not s.stopped
     assert [key for key in s.factory.adapters if key[0] == "sorengame"] == [("sorengame", 1)]
+    # The immutable failed receipt still reports the original cleanup residue
+    # after canonical recovery has positively stopped it and restored Soren.
+    s.behaviors[corner.VIEW_NAME]["immortal"] = False
+    state = s.manager.run(recovering=True)
+    assert state["status"] == "interrupted" and not state["recovery_required"]
+    assert corner.stable(s.manager.canonical()) and not s.stopped
+    assert s.manager.store.receipts.load(failed["start_request_id"]) == receipt
 
 
 def test_recover_rejects_a_later_real_operator_generation(real_corner):
