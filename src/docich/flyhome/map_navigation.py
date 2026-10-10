@@ -12,3 +12,26 @@ def level_number(img):
         return None
     level = tens * 10 + ones
     return level if 1 <= level <= 50 else None
+
+
+def select_sequential_level(read_image, tap, target, timeout_s=5.0):
+    """動く看板が読めるまで待ち、次の面への右入力は1回だけ送る。"""
+    import time
+    def wait_number():
+        deadline = time.monotonic() + timeout_s
+        previous = None
+        while time.monotonic() < deadline:
+            number = level_number(read_image())
+            if number is not None and number == previous:
+                return number
+            previous = number
+            time.sleep(.1)
+        raise RuntimeError('map level number did not settle; no further selection input')
+    current = wait_number()
+    if current == target:
+        return
+    if current + 1 != target:
+        raise RuntimeError(f'map is level {current}, expected {target} or {target - 1}; no skip permitted')
+    tap('right')
+    if wait_number() != target:
+        raise RuntimeError('next map level did not match; no further selection input')

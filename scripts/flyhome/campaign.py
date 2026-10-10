@@ -10,7 +10,7 @@ from pathlib import Path
 from docich.flyhome import settings as S, runner, vision
 from docich.flyhome.image import write_png
 from docich.flyhome.progress import StatePublisher
-from docich.flyhome.map_navigation import level_number
+from docich.flyhome.map_navigation import level_number, select_sequential_level
 from docich.flyhome.narration import SpeechJournal, LiveNarrator
 STATE = Path(os.environ.get("FLYHOME_STATE_FILE", "run/game-state.txt"))
 LOG = Path(os.environ.get("FLYHOME_CAMPAIGN_LOG", "run/campaign_results.txt"))
@@ -64,19 +64,26 @@ def to_next_level(b, level=None):
     else:
         raise RuntimeError("map BEST TIME header was not observed")
     time.sleep(0.8)
-    # マップの選択が次のレベルとは限らない (クリア済みのレベルのまま等): 未クリアのレベルまで → で進める
-    for selection_step in range(50):
-        save("  いま: マップで%sを選択 (%d/50)" % ("Lv%d" % level if SEQUENTIAL else "未クリアの面", selection_step + 1))
-        if not is_map(b):
-            raise RuntimeError("map lost during level selection")
-        if SEQUENTIAL:
-            if level_number(vision.to_native(b.capture(), s)) == level:
-                break
-        elif uncleared(b):
-            break
-        b.tap("right"); time.sleep(0.8)
+    if SEQUENTIAL:
+        def map_frame():
+            if not is_map(b):
+                raise RuntimeError("map lost during level selection")
+            return vision.to_native(b.capture(), s)
+        save("  いま: マップ番号の看板が止まるまで待機、Lv%dを確認" % level)
+        def select_tap(key):
+            save("  いま: マップを次のLv%dへ1面だけ進めます" % level)
+            b.tap(key)
+        select_sequential_level(map_frame, select_tap, level)
     else:
-        raise RuntimeError("requested level was not found on map")
+        for selection_step in range(50):
+            save("  いま: マップで未クリアの面を選択 (%d/50)" % (selection_step + 1))
+            if not is_map(b):
+                raise RuntimeError("map lost during level selection")
+            if uncleared(b):
+                break
+            b.tap("right"); time.sleep(0.8)
+        else:
+            raise RuntimeError("uncleared level was not found on map")
     write_png(s.run_dir / "maps" / ("selected-%d.png" % time.time_ns()), b.capture())
     save("  いま: マップでLv%dを確認、Enterで開始" % level if SEQUENTIAL else "  いま: マップで未クリアを確認、Enterで開始")
     b.tap("enter"); time.sleep(2.0)
