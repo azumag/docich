@@ -258,7 +258,7 @@ def play(
     physics: Physics | None = None,
     attempts: int = 1,
     max_seconds: float = 120.0,
-    attempt_timeout_s: float = 60.0,
+    attempt_timeout_s: float = 120.0,
     retry: bool = True,
     log_root: Path | None = None,
     replan_every: int = 6,
@@ -281,6 +281,8 @@ def play(
     t_motion = backend.now()
     motion_pos = None
     grid_cache = {}
+    grid_spec = None
+    solid_mem = None
     t_idle = backend.now()  # プレイヤーが見えなくなった時刻 (死亡/クリア画面で止まったままの検出用)
     try:
         while backend.now() - t_begin < max_seconds:
@@ -303,33 +305,49 @@ def play(
                 if t_start is None:
                     t_start, tl, path = st.t, Timeline(meta={"source": "controller"}), None
                     ctl.reset()
+                planning_start = backend.now()
                 if path is None or k % replan_every == 0:
                     target = st.home
                     if target is not None:
                         world_obs = loop.tracker.last_obs or loop.obs
+                        if solid_mem is None:
+                            solid_mem = bytearray(world_obs.solid)
+                        else:
+                            solid_mem = bytearray(a | b for a, b in zip(solid_mem, world_obs.solid))
+                        world_obs = dataclasses.replace(world_obs, solid=solid_mem)
                         if hz_mem:
                             # 棘はプレイヤーの炎と混同されて一時的に消えることがある: 最近見えた棘も足して計画する
                             world_obs = dataclasses.replace(world_obs, hazards=list(hz_mem))
                         # 棘の格子の間を抜けるレベル (実機 Lv23) では余白 3 セルだと道が無い: 余白を縮めて探し直す
                         new_path = None
-                        for cell, sm, hm in ((4, 2, 3), (4, 2, 2), (4, 2, 1), (2, 3, 5), (2, 3, 4), (4, 1, 3), (4, 1, 2), (4, 1, 1)):
-                            world_key = (hash(bytes(world_obs.solid)), tuple(sorted(world_obs.hazards)), world_obs.home_bbox)
+                        kept_path = False
+                        world_key = (hash(bytes(world_obs.solid)), tuple(sorted(world_obs.hazards)), world_obs.home_bbox)
+                        def get_grid(cell, sm, hm):
                             cache_key = (world_key, cell, sm, hm)
                             if cache_key not in grid_cache:
-                                if len(grid_cache) > 24:
+                                if len(grid_cache) > 128:
                                     grid_cache.clear()
                                 grid_cache[cache_key] = planner.build_grid(world_obs, cell=cell, solid_margin=sm, hazard_margin=hm, top_extra=2 if cell == 4 else 5)
-                            grid = grid_cache[cache_key]
-                            new_path = planner.astar(grid, (st.x, st.y), target)
-                            if new_path:
-                                break
+                            return grid_cache[cache_key]
+                        if path and grid_spec and planner.path_distance(path, (st.x, st.y)) <= 12.0:
+                            cell, sm, hm = grid_spec
+                            grid = get_grid(cell, sm, hm)
+                            if not planner.path_blocked(grid, path):
+                                new_path, kept_path = path, True
+                        if new_path is None:
+                            for cell, sm, hm in ((4, 2, 3), (4, 2, 2), (4, 2, 1), (2, 3, 5), (2, 3, 4), (4, 1, 3), (4, 1, 2), (4, 1, 1)):
+                                grid = get_grid(cell, sm, hm)
+                                new_path = planner.astar(grid, (st.x, st.y), target)
+                                if new_path:
+                                    grid_spec = (cell, sm, hm)
+                                    break
                         if isinstance(ctl, MpcController):
                             ctl.cfg.hazard_margin = max(5.0, hm * cell - 3.0)
                         if not new_path:
                             new_path = path if path else [(st.x, st.y), target]
                         # ヒステリシス: 島の上回り/下回りのように長さの近い経路が毎回入れ替わると迷走する。
                         # 前の経路がまだ通れて、新しい経路が 20% 以上短くなければ前の経路を使い続ける。
-                        if path is not None and len(path) >= 2:
+                        if not kept_path and path is not None and len(path) >= 2:
                             rest = planner.remaining_path(path, (st.x, st.y))
                             if (len(rest) >= 2 and not planner.path_blocked(grid, rest)
                                     and planner.path_length(new_path) > 0.8 * planner.path_length(rest)):
@@ -337,8 +355,11 @@ def play(
                         path = new_path
                         if isinstance(ctl, MpcController):
                             ctl.set_world(grid, world_obs, path)
+                planning_s = backend.now() - planning_start
+                control_start = backend.now()
                 if path is not None:
                     keys = ctl.decide(st, planner.lookahead(path, (st.x, st.y)))
+                control_s = backend.now() - control_start
                 if motion_pos is None or abs(st.x - motion_pos[0]) + abs(st.y - motion_pos[1]) > 3.0:
                     motion_pos = (st.x, st.y)
                     t_motion = st.t
@@ -371,7 +392,10 @@ def play(
             if backend.ready():
                 backend.set_jets(*keys)
                 if isinstance(ctl, MpcController) and ctl._acts:
-                    ctl._acts[-1] = (backend.now(), int(keys[0]) + 2 * int(keys[1]))
+                    sent_at = backend.now()
+                    ctl._acts[-1] = (sent_at, int(keys[0]) + 2 * int(keys[1]))
+                    if len(ctl._acts) == 1:
+                        ctl._t0 = sent_at  # 初回の格子生成時間を離陸の噴射時間に数えない。
             else:
                 backend.release_all()
                 keys = (False, False)
@@ -380,6 +404,10 @@ def play(
                 r0, r1 = ctl._ref[0], ctl._ref[-1]
                 extra = {"ref0": [round(r0[0], 1), round(r0[1], 1)], "ref_end": [round(r1[0], 1), round(r1[1], 1)],
                          "path0": [round(v, 1) for v in ctl.path[min(3, len(ctl.path) - 1)]] if ctl.path else None, "path": ctl.path, "estimated": getattr(ctl, "_estimate_debug", None)}
+            if isinstance(ctl, MpcController) and ctl._acts:
+                extra = dict(extra or {}, input_sent_at=round(ctl._acts[-1][0], 6))
+                if st.phase == PLAYING:
+                    extra.update(planning_s=round(planning_s, 6), control_s=round(control_s, 6))
             log.frame(st, loop.obs, keys, extra)
             if on_step is not None:
                 on_step(st, extra)

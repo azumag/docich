@@ -105,6 +105,7 @@ class MpcController:
 
     # --- 外部から ---------------------------------------------------------------------------
     def reset(self) -> None:
+        self._pending = None
         self._plan_t: float | None = None
         self._plan: list[int] | None = None
         self._last_action = 0
@@ -119,12 +120,12 @@ class MpcController:
     def set_world(self, grid: Grid, obs: Observation, path: list[tuple[float, float]] | None = None) -> None:
         self.grid = grid
         narrow = grid.cell <= 2
-        self.cfg.v_ref = 14.0 if narrow else self._open_limits['v_ref']
+        self.cfg.v_ref = 8.0 if narrow else self._open_limits['v_ref']
         self.cfg.tilt_hard = 0.4 if narrow else self._open_limits['tilt_hard']
         self.cfg.w_tilt_hard = 300.0 if narrow else self._open_limits['w_tilt_hard']
         self.cfg.w_omega = 10.0 if narrow else self._open_limits['w_omega']
         self.cfg.w_vel = 2.5 if narrow else self._open_limits['w_vel']
-        self.cfg.w_speed = 14.0 if narrow else self._open_limits['w_speed']
+        self.cfg.w_speed = 18.0 if narrow else self._open_limits['w_speed']
         self.hazards = list(obs.hazards)
         if path:
             self.path = list(path)
@@ -340,7 +341,12 @@ class MpcController:
 
         # 入力が効くまでの遅れ: 直前に出した入力がまだ効いている間
         if first_dt > 0:
-            advance(first_dt, first_action)
+            pending = getattr(self, '_pending', None)
+            if pending:
+                for duration, action in pending:
+                    advance(duration, action)
+            else:
+                advance(first_dt, first_action)
 
         for i in range(n_steps):
             a = seq[i]
@@ -398,12 +404,12 @@ class MpcController:
                 for ox, oy in ((6 * sa, -6 * ca), (4 * ca, 4 * sa), (-4 * ca, -4 * sa)):
                     px, py = int(x + ox), int(y + oy)
                     if 0 <= px < W and 0 <= py < H and solid[py * W + px]:
-                        total += c.terrain_pen * (0.35 if safe_slide else 2.0)
+                        total += c.terrain_pen * (0.0 if safe_slide else 2.0)
                         break
             if grid is not None:
                 cc, rr = int(x // cell), int(y // cell)
                 if 0 <= cc < cols and 0 <= rr < rows and blocked[rr * cols + cc]:
-                    total += c.terrain_pen * (0.2 if safe_slide else 1.0)
+                    total += c.terrain_pen * (0.0 if safe_slide else 1.0)
             sp = hypot(vx, vy)
             if home_pt is not None:
                 dh = hypot(x - home_pt[0], y - home_pt[1])
@@ -411,7 +417,8 @@ class MpcController:
                     lim = c.home_v0 + c.home_v_per_px * dh
                     if sp > lim:
                         total += c.w_home_v * (sp - lim)
-            vcap = min(c.max_speed, max(18.0, hypot(rvx, rvy) + 10.0)) if track else min(c.max_speed, math.sqrt(vb * d) + c.v_floor)
+            narrow = grid is not None and grid.cell <= 2
+            vcap = min(c.max_speed, max(10.0 if narrow else 18.0, hypot(rvx, rvy) + (4.0 if narrow else 10.0))) if track else min(c.max_speed, math.sqrt(vb * d) + c.v_floor)
             if segs and not track:
                 for cs in corners:
                     if cs > s_cur:
@@ -489,6 +496,22 @@ class MpcController:
                 y += vy * dt
         return seq
 
+    def _pending_inputs(self, t: float) -> float:
+        """観測時刻から新入力が効くまで、送信済み入力の適用順序を保つ。"""
+        send_lag = min(0.2, max(0.0, self._acts[-1][0] - self._hist[-2][0])) if self._acts and len(self._hist) >= 2 else 0.0
+        first_delay = self.cfg.delay_s + send_lag
+        action, elapsed = 0, 0.0
+        self._pending = []
+        for ta, aa in self._acts:
+            when = ta + self.cfg.delay_s - t
+            if when <= 0:
+                action = aa
+            elif when < first_delay:
+                self._pending.append((when - elapsed, action))
+                elapsed, action = when, aa
+        self._pending.append((first_delay - elapsed, action))
+        return first_delay
+
     # --- 計画 -----------------------------------------------------------------------------------
     def decide(self, st: State, target: tuple[float, float]) -> tuple[bool, bool]:
         if st.x is None or st.angle is None:
@@ -542,11 +565,18 @@ class MpcController:
             for _ in range(H - 1):
                 seq.append(seq[-1] if self.rng.random() < c.persistence else self.rng.randrange(4))
             cands.append(seq)
+        # 既に送信済みだがまだ効いていない入力の列を、その適用時刻どおりに先読み。
+        # 最後の入力だけで delay 全体を進めると、連続する短い片足噴射を誤予測する。
+        first_delay = self._pending_inputs(st.t)
         best_seq, best_cost = cands[0], math.inf
         for seq in cands:
-            cost = self._cost(x, y, vx, vy, ang, om, seq, tx, ty, c.delay_s, self._last_action)
+            cost = self._cost(x, y, vx, vy, ang, om, seq, tx, ty, first_delay, self._last_action)
             if cost < best_cost:
                 best_seq, best_cost = seq, cost
+        if self.grid and self.grid.cell <= 2 and (abs(ang) > 0.45 or abs(om) > 1.3):
+            # 実機の接触・量子化で予測外に姿勢が崩れたら、通路への追従より立て直しを優先。
+            turn_error = ang + 0.35 * om
+            best_seq[0] = (2 if turn_error * self.p.torque_sign > 0 else 1) if abs(turn_error) > 0.1 else 0
         self._plan = best_seq
         self._plan_t = st.t
         self._last_action = best_seq[0]

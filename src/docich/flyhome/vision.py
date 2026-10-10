@@ -61,7 +61,7 @@ def classify_rgb(r: int, g: int, b: int) -> int:
         return ROOF
     if r < 30 and g < 30 and b < 30:
         return DARK
-    if g > 40 and g > 1.4 * r and g > 2.0 * b:
+    if g > 30 and g > 1.4 * r and g > 2.0 * b:
         return GRASS
     if 40 < r < 200 and 0.3 * r < g < 0.7 * r and b < 0.25 * r:
         return DIRT

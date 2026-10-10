@@ -152,6 +152,18 @@ def path_length(path: list[tuple[float, float]]) -> float:
     return sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(path, path[1:]))
 
 
+def path_distance(path: list[tuple[float, float]], pos: tuple[float, float]) -> float:
+    """折れ線までの距離。疎な経路でも線分の途中を正しく測る。"""
+    best = math.inf
+    x, y = pos
+    for (ax, ay), (bx, by) in zip(path, path[1:]):
+        dx, dy = bx - ax, by - ay
+        ll = dx * dx + dy * dy
+        u = 0.0 if ll == 0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / ll))
+        best = min(best, math.hypot(x - ax - u * dx, y - ay - u * dy))
+    return best
+
+
 def remaining_path(path: list[tuple[float, float]], pos: tuple[float, float]) -> list[tuple[float, float]]:
     """経路のうち現在位置から先の部分 (最寄りの折れ点以降、先頭は現在位置)。"""
     if not path:
