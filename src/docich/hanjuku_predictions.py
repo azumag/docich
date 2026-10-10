@@ -14,6 +14,7 @@ from pathlib import Path
 import secrets
 import time
 
+from . import hanjuku_hotload
 from . import hanjuku_progress as progress
 from . import hanjuku_run
 from .config import load_game
@@ -161,7 +162,7 @@ def _result(root, identity):
     identity = progress.checked_identity(identity)
     runtime = runtime_directory(root, identity['runtime_id'])
     # Re-validate terminal provenance even if a result from an earlier tick exists.
-    evidence = hanjuku_run.terminal(runtime, identity)
+    evidence = hanjuku_hotload.terminal(runtime, identity)
     if evidence is None:
         return None
     saved = read_record(runtime / RESULT_FILE)
@@ -328,8 +329,8 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
     canonical = read_record(root / 'game_switch.json', limit=256 * 1024)
     active = canonical.get('active') if isinstance(canonical.get('active'), dict) else {}
     if (canonical.get('phase') != 'ready' or not same(row)
-            or hanjuku_run.terminal(runtime_directory(root, row['runtime_id']),
-                                    {k: row[k] for k in progress.KEYS}) is not None):
+            or hanjuku_hotload.terminal(runtime_directory(root, row['runtime_id']),
+                                        {k: row[k] for k in progress.KEYS}) is not None):
         state['mode'] = 'pending'
         return
     cleared = progress.completed_count(runtime_directory(root, row['runtime_id']),

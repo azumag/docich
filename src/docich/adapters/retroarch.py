@@ -212,7 +212,7 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
         lines += ['video_fullscreen = "false"', 'video_scale = "3.0"',
                   'video_force_aspect = "true"', 'video_crop_overscan = "false"',
                   'savestate_auto_index = "false"', 'state_slot = "0"']
-    from ..hanjuku_run import enabled as scripted_hanjuku
+    from ..hanjuku_hotload import enabled as scripted_hanjuku
     if scripted_hanjuku(game):
         if d.viewport_width > 0:
             # Keep the core's aspect ratio at the small window scale (Snes9x:
@@ -330,9 +330,12 @@ class RetroArchAdapter(Adapter):
         self._check_fence()
         d = self.ctx.g.display
         out_path = self.ctx.state.screenshots_dir / "latest.png"
-        from .. import hanjuku_run
+        # Stable Hanjuku hot-load trampoline (#1469): both long-lived observers
+        # run the deployed logic generation, not the one this process happened
+        # to import at start-up.
+        from .. import hanjuku_hotload
         runtime_dir = self._runtime_dir()
-        scripted = hanjuku_run.enabled(self.ctx.game) and runtime_dir is not None
+        scripted = hanjuku_hotload.enabled(self.ctx.game) and runtime_dir is not None
         if scripted:
             out_path = runtime_dir / 'screenshots' / 'latest.png'
         meta = {}
@@ -351,8 +354,8 @@ class RetroArchAdapter(Adapter):
                 frame = read_png(Path(result)).resized()
                 reply = send_ra_cmd('GET_STATUS', port=retroarch_network_port(self.ctx.fence.generation), wait_reply_s=.1)
                 paused = bool(reply and reply.startswith('GET_STATUS PAUSED '))
-                state = hanjuku_run.observe(runtime_dir, hanjuku_run.runtime_identity(self.ctx.fence),
-                                           frame, playing=not paused)
+                state = hanjuku_hotload.observe(runtime_dir, hanjuku_hotload.runtime_identity(self.ctx.fence),
+                                                frame, playing=not paused)
                 try:
                     from .. import hanjuku_chart_worker
                     # Side channel only: at most one daemon-thread LLM call
@@ -390,12 +393,12 @@ class RetroArchAdapter(Adapter):
     def act(self, action: Action) -> None:
         self._check_fence()
         runtime_dir = self._runtime_dir()
+        from .. import hanjuku_hotload
         with (input_gate(runtime_dir, time.monotonic() + 5) if runtime_dir else nullcontext()):
             if runtime_dir:
                 require_input_open(runtime_dir)
-                from .. import hanjuku_run
-                if hanjuku_run.enabled(self.ctx.game):
-                    run = hanjuku_run.load(runtime_dir, hanjuku_run.runtime_identity(self.ctx.fence))
+                if hanjuku_hotload.enabled(self.ctx.game):
+                    run = hanjuku_hotload.load(runtime_dir, hanjuku_hotload.runtime_identity(self.ctx.fence))
                     if run.get('terminal_reason') or run.get('terminal_candidate'):
                         raise AdapterError('Hanjuku terminal evidence holds input')
             source, native = self._source()
@@ -404,8 +407,8 @@ class RetroArchAdapter(Adapter):
                 self.ctx.xkit = source
                 self._window_id = native["window"]
             self._act(action)
-            if runtime_dir and hanjuku_run.enabled(self.ctx.game):
-                hanjuku_run.action_sent(runtime_dir, hanjuku_run.runtime_identity(self.ctx.fence), action)
+            if runtime_dir and hanjuku_hotload.enabled(self.ctx.game):
+                hanjuku_hotload.action_sent(runtime_dir, hanjuku_hotload.runtime_identity(self.ctx.fence), action)
 
     def _act(self, action: Action) -> None:
         if action.type == "pad":
@@ -470,7 +473,7 @@ class RetroArchCoordinatorAdapter:
         d = self.g.display
         audio_enabled, audio_sink = retroarch_audio(self.g, self.game)
         volume = retroarch_audio_volume(self.game)
-        from ..hanjuku_run import enabled as scripted_hanjuku
+        from ..hanjuku_hotload import enabled as scripted_hanjuku
         return [sys.executable, str(Path(__file__).resolve().parents[1] / "presentation.py"),
                 '--display', d.name, '--title', f'docich-present-{self.spec.runtime_id}',
                 '--x', str(d.viewport_x), '--y', str(d.viewport_y),
@@ -542,7 +545,7 @@ class RetroArchCoordinatorAdapter:
             raise AdapterError("safe RetroArch requires a private contained presentation")
         resolve_rom(self.g, self.game)
         resolve_core(self.game)
-        from ..hanjuku_run import enabled as scripted_hanjuku
+        from ..hanjuku_hotload import enabled as scripted_hanjuku
         if self._contained() and scripted_hanjuku(self.game) and procs.which("ffmpeg") is None:
             raise AdapterError("コマンドが見つかりません: ffmpeg")
         for binary in ("dbus-run-session", "retroarch", *(("Xvfb", "ffplay", "xdotool")
@@ -671,12 +674,12 @@ class RetroArchCoordinatorAdapter:
                 record = read_record(self.spec.runtime_dir / BOUNDARY_FILE)
                 if not matches(record, self.spec, record.get("request_id")) or record.get("status") != "reached":
                     raise AdapterError("RetroArch committed runtime has no safe boundary")
-                from .. import hanjuku_run
-                if hanjuku_run.enabled(self.game):
+                from .. import hanjuku_hotload
+                if hanjuku_hotload.enabled(self.game):
                     if record.get('outcome') in {'suspended', 'manual_forced_stop'}:
                         self._verify_manual_boundary(record, deadline, cancel, allow_stopped=True)
                         return
-                    terminal = hanjuku_run.terminal(self.spec.runtime_dir, hanjuku_run.runtime_identity(self.spec))
+                    terminal = hanjuku_hotload.terminal(self.spec.runtime_dir, hanjuku_hotload.runtime_identity(self.spec))
                     if (terminal and record.get('outcome') == terminal['terminal_reason']
                             and record.get('frame_sha256') == terminal['frame_sha256']):
                         return
@@ -703,8 +706,8 @@ class RetroArchCoordinatorAdapter:
     def request_round_boundary(self, request_id: str, deadline: float, cancel) -> None:
         if not self._contained():
             raise RoundBoundaryUnsupportedError("RetroArch safe boundary requires private presentation")
-        from .. import hanjuku_run
-        if hanjuku_run.enabled(self.game):
+        from .. import hanjuku_hotload
+        if hanjuku_hotload.enabled(self.game):
             return self._request_script_boundary(request_id, deadline, cancel)
         path = self.spec.runtime_dir / BOUNDARY_FILE
         with input_gate(self.spec.runtime_dir, deadline, cancel):
@@ -739,7 +742,7 @@ class RetroArchCoordinatorAdapter:
 
     def _request_script_boundary(self, request_id, deadline, cancel):
         """Wait for game-over/stasis evidence while the bot continues playing."""
-        from .. import hanjuku_run
+        from .. import hanjuku_hotload
         path = self.spec.runtime_dir / BOUNDARY_FILE
         while True:
             self._check_active(deadline, cancel)
@@ -765,7 +768,7 @@ class RetroArchCoordinatorAdapter:
                         atomic_write_json(path, dict(identity(self.spec, request_id),
                             status='reached', outcome='manual_forced_stop', save_error='save_timeout'))
                     return
-                terminal = hanjuku_run.terminal(self.spec.runtime_dir, hanjuku_run.runtime_identity(self.spec))
+                terminal = hanjuku_hotload.terminal(self.spec.runtime_dir, hanjuku_hotload.runtime_identity(self.spec))
                 if terminal:
                     atomic_write_json(path, dict(identity(self.spec, request_id), status='reached',
                         outcome=terminal['terminal_reason'], frame_sha256=terminal['frame_sha256']))

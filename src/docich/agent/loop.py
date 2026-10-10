@@ -50,6 +50,17 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
     else:
         obs = adapter.observe()
 
+    # #1469: durably publish the Hanjuku logic generation this agent executed,
+    # so the corner can prove both observers share one generation before it
+    # takes a new-policy-dependent teardown.  Observation-side only: a
+    # publication failure must not stop gameplay (the corner then sees the
+    # boundary as unestablished and keeps its pre-existing semantics).
+    from .. import hanjuku_hotload
+    try:
+        hanjuku_hotload.publish_observation(obs, 'agent')
+    except Exception as exc:
+        print(f"[agent] 警告: Hanjuku logic generation を公開できませんでした: {exc}", flush=True)
+
     acts = brain.decide(obs)
     # This opt-in is deliberately limited to the stateful NetHack brain.
     # Other brains retain their existing observation/action protocol.
