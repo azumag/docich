@@ -237,8 +237,15 @@ class MpcController:
             left, right = a & 1, (a >> 1) & 1
             n = left + right
             thr = T if n == 2 else (T * ratio if n == 1 else 0.0)
-            om += (left - right) * sign * spin * dt
-            om -= om * min(1.0, damp * dt)
+            grounded = False
+            if solid is not None:
+                xi, yi = int(x), int(y + foot + 1)
+                grounded = 0 <= xi < W and 0 <= yi < H and bool(solid[yi * W + xi])
+            if grounded:
+                om = 0.0  # 実機: 地面に触れていると回転しない (横倒しのまま頭の向きへ滑る)
+            else:
+                om += (left - right) * sign * spin * dt
+                om -= om * min(1.0, damp * dt)
             ang += om * dt
             vx += sin(ang) * thr * dt
             vy += (-cos(ang) * thr + g) * dt
@@ -416,7 +423,7 @@ class MpcController:
             in_front = False
             if st.home_bbox is not None:
                 x0, y0, x1, y1 = st.home_bbox
-                in_front = x0 + 2 <= x <= x1 - 2 and y1 - 20 <= y <= y1 + 14
+                in_front = x0 - 4 <= x <= x1 + 4 and y1 - 20 <= y <= y1 + 14
             if slow and (in_door or in_front):
                 self._plan, self._last_action = None, 0
                 return False, False
