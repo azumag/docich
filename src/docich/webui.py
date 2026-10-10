@@ -703,7 +703,7 @@ CSRF_TTL_SEC = 4 * 3600  # 4時間
 # (method, path) の組。フロントエンドは既存の window.confirm() ダイアログ
 # (streamAction/workerControl) または「保存」操作自体を再確認とみなし、
 # confirm:true を body に含める。
-CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config"), ("POST", "/api/corners"), ("POST", "/api/tsuitate-beta")}
+CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config"), ("POST", "/api/corners"), ("POST", "/api/tsuitate-beta"), ("POST", "/api/special-corner/end")}
 
 
 def _make_csrf_token(secret: bytes, ttl: int = CSRF_TTL_SEC, now: int | None = None) -> str:
@@ -3417,6 +3417,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_get_predictions()
             elif path == "/api/corners":
                 status = self._handle_get_corners()
+            elif path == "/api/special-corner":
+                status = self._handle_get_special_corner()
             elif path == "/api/soren91/renderer":
                 status = self._handle_get_soren91_renderer()
             else:
@@ -3532,6 +3534,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_post_prediction_action()
             elif parsed.path == "/api/corners":
                 status = self._handle_post_corners()
+            elif parsed.path == "/api/special-corner/end":
+                status = self._handle_post_special_corner_end()
             elif parsed.path == "/api/soren91/renderer":
                 status = self._handle_post_soren91_renderer()
             else:
@@ -4471,6 +4475,53 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(500, "corners_unavailable", str(exc)[:200])
             return 500
         self._send_json(200, view)
+        return 200
+
+    def _handle_get_special_corner(self) -> int:
+        """Read-only projection of the Fly Me To The Home! special corner (no ids)."""
+        state = _load_json_file(Path(self.g.state_dir) / "external_video_corner.json")
+        state = state if isinstance(state, dict) else {}
+        status = state.get("status") if isinstance(state.get("status"), str) else "idle"
+        closing = state.get("closing") if isinstance(state.get("closing"), dict) else {}
+        self._send_json(200, {
+            "title": "Fly Me To The Home!",
+            "status": status[:32],
+            "can_end": status in ("waiting", "starting", "active"),
+            "started_at": state.get("started_at") if isinstance(state.get("started_at"), (int, float)) else None,
+            "ends_at": state.get("ends_at") if isinstance(state.get("ends_at"), (int, float)) else None,
+            "wait_deadline_at": state.get("wait_deadline_at") if isinstance(state.get("wait_deadline_at"), (int, float)) else None,
+            "end_reason": state.get("end_reason") if isinstance(state.get("end_reason"), str) else None,
+            "closing": str(closing.get("status") or "")[:32] or None,
+        })
+        return 200
+
+    def _handle_post_special_corner_end(self) -> int:
+        """終了ボタン: クリアとして特別コーナーを終え、Soren へ復帰して感想を話す。"""
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8")) if body else {}
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict) or set(data) - {"confirm"}:
+            self._send_error_json(400, "validation_error", "body must be {confirm:true}")
+            return 400
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "特別コーナーの終了には confirm:true が必要です")
+            return 428
+        from .external_video_corner import OPERATOR_END, request_end
+        from .external_video_receiver import ExternalVideoError
+        state = _load_json_file(Path(self.g.state_dir) / "external_video_corner.json")
+        try:
+            if not isinstance(state, dict):
+                raise ExternalVideoError("no special corner is running")
+            request_end(self.g, state, OPERATOR_END)
+        except ExternalVideoError as exc:
+            self._send_error_json(409, "special_corner_not_running", str(exc)[:200])
+            return 409
+        self._send_json(200, {"ok": True, "action": "end"})
         return 200
 
     def _handle_get_soren91_renderer(self) -> int:
