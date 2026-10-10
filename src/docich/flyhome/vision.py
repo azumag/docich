@@ -179,7 +179,7 @@ class Observation:
     level_sig: int
     solid: bytearray = field(repr=False)  # width*height, 1 = 地形 (草/土)
     labels: bytearray = field(repr=False)
-    wipe: bool = False  # クリア演出 (淡い白の面で画面が覆われる) が出ている
+    wipe: bool = False  # クリア画面 (上下端に橙のプレイヤー像の列) が出ている
 
     def summary(self) -> dict:
         p = self.player
@@ -245,18 +245,25 @@ def _ring_white_ratio(labels: bytearray, w: int, h: int, bbox: tuple[int, int, i
 
 
 PLANK_RGB = (153, 128, 101)  # 操作説明の看板の板 (実機の体験版 Level 1 で実測)
-WIPE_RGB = (217, 235, 244)  # クリア時、家に入ったあとに出る半透明の白い面 (実機 Lv2 で計測)
+WIPE_RGB = (217, 235, 244)  # レベル開始/やり直し時のレベル番号の形の白い面。クリアの合図ではない (実機 Lv8 で誤判定)
 WIPE_MIN = 400  # 2px おきの標本でこの数以上ならクリア演出とみなす
 
 
-PARTY_ICONS_MIN = 6  # クリア画面は上下の端に橙のプレイヤー像がずらりと並ぶ (実機 Lv3 で確認)
+PARTY_MIN = 800  # クリア画面の上下端の帯に並ぶプレイヤー像の色 (濃い橙) の画素数の下限 (実機 Lv3: 約 3200 / 7680)
 
 
-def _party_icons(oranges: list, h: int) -> bool:
-    """画面の上端・下端の帯に橙の小さな塊が PARTY_ICONS_MIN 個以上並んでいればクリア画面。"""
-    band = max(10, h // 12)
-    n = sum(1 for b in oranges if b.area >= 8 and (b.center[1] < band or b.center[1] > h - band))
-    return n >= PARTY_ICONS_MIN
+def _party_present(img: Image) -> bool:
+    """クリア画面か: 上下端 12 行の帯が濃い橙 (≈186–191, 95–104, 0–16) のプレイヤー像で埋まっている。
+    通常のプレイ中は空・草・土 (115,64,0) でこの色は出ない。"""
+    w, h, data = img.width, img.height, img.data
+    n = 0
+    for y in list(range(0, min(12, h))) + list(range(max(0, h - 12), h)):
+        row = y * w * 3
+        for x in range(w):
+            i = row + x * 3
+            if 170 <= data[i] <= 205 and 85 <= data[i + 1] <= 115 and data[i + 2] <= 30:
+                n += 1
+    return n >= PARTY_MIN
 
 
 def _wipe_present(img: Image) -> bool:
@@ -433,7 +440,7 @@ def analyze(
         level_sig=_region_sig(labels, w, _rect_px(s.hud.level_text, w, h)),
         solid=solid,
         labels=labels,
-        wipe=_wipe_present(native) or _party_icons(oranges, h),
+        wipe=_party_present(native),
     )
 
 

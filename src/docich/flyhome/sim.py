@@ -104,7 +104,7 @@ def step(world: World, b: Body, left: bool, right: bool, dt: float, p: Physics) 
             return
 
 
-WIPE = (217, 235, 244)
+PARTY = (189, 104, 16)  # クリア画面の上下端に並ぶプレイヤー像の色
 
 
 def render(world: World, b: Body) -> Image:
@@ -127,7 +127,9 @@ def render(world: World, b: Body) -> Image:
     if b.outcome is None:
         _draw_player(img, b)
     elif b.outcome == "cleared":
-        img.fill_rect(110, 30, 155, 105, WIPE)  # 実機のクリア演出 (家に入ったあとの淡い白の面)
+        # 実機のクリア画面: 上下端に橙のプレイヤー像がずらりと並ぶ
+        img.fill_rect(0, 0, world.width, 12, PARTY)
+        img.fill_rect(0, world.height - 12, world.width, world.height, PARTY)
     return img
 
 

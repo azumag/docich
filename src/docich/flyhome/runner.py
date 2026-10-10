@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import json
 import time
 from dataclasses import dataclass, field
@@ -251,10 +253,12 @@ def play(
     physics: Physics | None = None,
     attempts: int = 1,
     max_seconds: float = 120.0,
-    attempt_timeout_s: float = 30.0,
+    attempt_timeout_s: float = 25.0,
     retry: bool = True,
     log_root: Path | None = None,
     replan_every: int = 6,
+    idle_enter_s: float = 4.0,
+    hazard_memory_s: float = 1.5,
 ) -> list[dict]:
     """制御器でプレイする。死亡したら Enter で再挑戦し、帰宅したら止まる。"""
     log = SessionLog(log_root)
@@ -267,12 +271,25 @@ def play(
     t_begin = backend.now()
     t_start = None
     tl: Timeline | None = None
+    hz_mem: dict[tuple[int, int, int, int], float] = {}  # 最近見えた棘の矩形 → 最後に見えた時刻
+    t_idle = backend.now()  # プレイヤーが見えなくなった時刻 (死亡/クリア画面で止まったままの検出用)
     try:
         while backend.now() - t_begin < max_seconds:
             if backend.aborted():
                 break
             st = loop.tick()
             keys = (False, False)
+            if loop.obs is not None:
+                for r in loop.obs.hazards:
+                    hz_mem[tuple(r)] = st.t
+                for r in [r for r, tt in hz_mem.items() if st.t - tt > hazard_memory_s]:
+                    del hz_mem[r]
+            if loop.obs is not None and loop.obs.player is not None:
+                t_idle = backend.now()
+            elif retry and t_start is None and st.phase != PLAYING and backend.now() - t_idle >= idle_enter_s and backend.ready():
+                # 死亡/クリア画面やマップで止まっている (開始時にすでにそうなっていた場合など): Enter で先へ進める
+                backend.tap("enter")
+                t_idle = backend.now()
             if st.phase == PLAYING and loop.obs is not None:
                 if t_start is None:
                     t_start, tl, path = st.t, Timeline(meta={"source": "controller"}), None
@@ -281,6 +298,9 @@ def play(
                     target = st.home
                     if target is not None:
                         world_obs = loop.tracker.last_obs or loop.obs
+                        if hz_mem:
+                            # 棘はプレイヤーの炎と混同されて一時的に消えることがある: 最近見えた棘も足して計画する
+                            world_obs = dataclasses.replace(world_obs, hazards=list(hz_mem))
                         grid = planner.build_grid(world_obs)
                         path = planner.astar(grid, (st.x, st.y), target) or [(st.x, st.y), target]
                         if isinstance(ctl, MpcController):
@@ -289,6 +309,15 @@ def play(
                     keys = ctl.decide(st, planner.lookahead(path, (st.x, st.y)))
                 if st.t - t_start > attempt_timeout_s:
                     keys = (False, False)  # 打ち切り: 落下させて死亡→再挑戦に回す
+                    if st.t - t_start > attempt_timeout_s + 3.0 and backend.ready():
+                        # 地面で生きたまま動けなくなった: Esc でマップへ戻り、Enter で同じレベルをやり直す
+                        backend.release_all()
+                        backend.tap("escape")
+                        loop.wait(1.0)
+                        backend.tap("enter")
+                        loop.wait(1.5)
+                        t_start = None
+                        continue
                 tl.add(int((st.t - t_start) * 1000), *keys)
                 k += 1
             if backend.ready():
@@ -296,7 +325,12 @@ def play(
             else:
                 backend.release_all()
                 keys = (False, False)
-            log.frame(st, loop.obs, keys)
+            extra = None
+            if isinstance(ctl, MpcController) and st.phase == PLAYING and ctl._ref:
+                r0, r1 = ctl._ref[0], ctl._ref[-1]
+                extra = {"ref0": [round(r0[0], 1), round(r0[1], 1)], "ref_end": [round(r1[0], 1), round(r1[1], 1)],
+                         "path0": [round(v, 1) for v in ctl.path[min(3, len(ctl.path) - 1)]] if ctl.path else None}
+            log.frame(st, loop.obs, keys, extra)
             if loop.native is not None:
                 log.snapshot(st.t, loop.native, loop.obs)
             if st.phase in (DEAD, CLEARED) and t_start is not None:
