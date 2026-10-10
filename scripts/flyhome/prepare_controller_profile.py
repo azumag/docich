@@ -16,17 +16,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('level', type=int, choices=range(1, 51))
     parser.add_argument('--takeoff', type=float, default=.35)
+    parser.add_argument('--revision', default=REVISION, help='Local Git commit to compare')
     args = parser.parse_args()
     if not 0 <= args.takeoff <= .35:
         parser.error('takeoff must be between 0 and .35 seconds')
-    source = subprocess.check_output(['git', 'show', REVISION + ':src/docich/flyhome/mpc.py']).decode('utf-8')
+    revision = subprocess.check_output(['git', 'rev-parse', '--verify', '--end-of-options',
+                                        args.revision + '^{commit}']).decode('ascii').strip()
+    source = subprocess.check_output(['git', 'show', revision + ':src/docich/flyhome/mpc.py']).decode('utf-8')
     source += f'''
 
-# Local real-game comparison; original controller source from Git {REVISION}.
+# Local real-game comparison; original controller source from Git {revision[:7]}.
 _Baseline = MpcController
 from .mpc import MpcController as _Current
 class MpcController(_Baseline, _Current):
-    profile_name = "{REVISION}-actual-level{args.level}-takeoff{args.takeoff:g}"
+    profile_name = "{revision[:7]}-actual-level{args.level}-takeoff{args.takeoff:g}"
     def __init__(self, physics=None, cfg=None):
         super().__init__(physics, MpcConfig(takeoff_s={args.takeoff!r}))
     def reset(self):
