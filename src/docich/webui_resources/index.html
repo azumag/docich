@@ -2010,7 +2010,6 @@ async function loadSpecial(){
     const r=await api("/api/special-corner");
     if(el){
       let t=SPECIAL_LABELS[r.status]||r.status;
-      if(r.status==="active"&&r.ends_at) t+=`（上限 ${fmtTime(r.ends_at)} まで）`;
       if(r.closing) t+=` / 感想: ${r.closing}`;
       el.textContent=t;
     }

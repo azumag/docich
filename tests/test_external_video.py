@@ -293,10 +293,10 @@ def test_brief_stale_frame_does_not_end_the_corner(setup, monkeypatch):
     assert seen and state["end_reason"] == "duration"
 
 
-def test_duration_cap_is_three_hours(setup):
-    with pytest.raises(receiver.ExternalVideoError, match="1-180"):
-        setup.manager.run(181)
-    assert setup.manager.run(180)["status"] == "completed"
+def test_duration_ceiling_is_a_day_not_three_hours(setup):
+    with pytest.raises(receiver.ExternalVideoError, match="1-1440"):
+        setup.manager.run(1441)
+    assert setup.manager.run(300)["status"] == "completed"
 
 
 def test_operator_end_flag_restores_and_speaks_closing_once(setup, monkeypatch):

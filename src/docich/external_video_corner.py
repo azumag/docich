@@ -16,7 +16,7 @@ import uuid
 from .config import load_global
 from .corner_boundary import CornerWaitExpired, other_corner_busy, program_slot
 from .external_video_receiver import (
-    ExternalVideoError, exclusive, prepare, read_json, read_receiver,
+    ExternalVideoError, MAX_RECEIVER_MINUTES, exclusive, prepare, read_json, read_receiver,
     receive, request_receiver_stop,
 )
 from .game_switch import GameSwitchCoordinator, GameSwitchStore, atomic_write_json
@@ -25,7 +25,9 @@ VIEW_NAME = "external-video-view"
 STATE_FILE = "external_video_corner.json"
 STOP_FILE = "external_video_stop.json"
 PENDING = {"queued", "in_progress", "busy"}
-MAX_DURATION_MINUTES = 180
+# The operator's End button is the normal finish; this is only the technical
+# ceiling a systemd unit lifetime needs (24 h), not a play-time limit.
+MAX_DURATION_MINUTES = 24 * 60
 # A single stale frame (SRT hiccup, keyframe gap) must not end a long session;
 # a real disconnect stays stale for far longer than this.
 DISCONNECT_GRACE_S = 30
@@ -224,7 +226,7 @@ class ExternalVideoCornerManager:
             if (not renewed and not receiver["alive"]
                     and (receiver.get("status") != "launching" or self.clock() >= receiver["expires_at"])):
                 reservation = prepare(self.g, state["listen_ip"],
-                                      min(max(60, state["duration_minutes"] + 10), 200),
+                                      min(max(60, state["duration_minutes"] + 10), MAX_RECEIVER_MINUTES),
                                       expected_receiver_id=state["receiver_id"])
                 state["receiver_id"] = reservation["receiver_id"]
                 self.save(state)
