@@ -1,0 +1,40 @@
+{
+  "measured_at_utc": "2026-10-08T17:15:44+00:00",
+  "host": "desktop-9j2it17 (Windows, Tailscale)",
+  "gpu": "NVIDIA GeForce RTX 3060 12GB (Ampere)",
+  "driver_version": null,
+  "cuda_version": null,
+  "driver_cuda_note": "nvidia-smi は実機でしか実行できず、Windows 側 SSH:22 が閉じているため取得不可（既知のブロッカー）。代替証拠は /api/ps の size_vram == size（100% GPU オフロード）",
+  "runtime": "Ollama 0.30.10",
+  "ollama_version": "0.30.10",
+  "api": "native /api/chat (streaming)",
+  "transport_reason": "Ollama /v1 は num_ctx と Qwen3 think:false を無視するため、計測は native /api/chat で行う（同一プロンプト・同一生成パラメータは jev_bench 側で固定）",
+  "suite": "bench/jev_eval_v1",
+  "suite_digest": "sha256:81b6279a445e52d4ce06f305ccb22d18502779b2e292bc80447dfd9ad6056c2b",
+  "suite_case_count": 108,
+  "generation": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "max_tokens": 64,
+    "seed": 42
+  },
+  "num_ctx": 8192,
+  "runs": 3,
+  "warmup": 3,
+  "models": [
+    "qwen2.5:7b-instruct-q4_K_M",
+    "qwen3:8b-q4_K_M",
+    "llama3.1:8b-instruct-q4_K_M",
+    "schroneko/llama-3.1-swallow-8b-instruct-v0.1:q4_k_m",
+    "MHKetbi/sbintuitions-sarashina2.2-3b-instruct-v0.1:q4_K_S"
+  ],
+  "model_disk_bytes": {
+    "qwen2.5:7b-instruct-q4_K_M": 4683087332,
+    "qwen3:8b-q4_K_M": 5225388164,
+    "llama3.1:8b-instruct-q4_K_M": 4920753328,
+    "schroneko/llama-3.1-swallow-8b-instruct-v0.1:q4_k_m": 4921248118,
+    "MHKetbi/sbintuitions-sarashina2.2-3b-instruct-v0.1:q4_K_S": 1971364212
+  },
+  "command": "python3 bench/tools/run_ollama_bench.py --base-url '<ollama-base-url>' --suite bench/jev_eval_v1 --num-ctx 8192 --runs 3 --warmup 3 --temperature 0.0 --top-p 1.0 --max-tokens 64 --seed 42 --model qwen2.5:7b-instruct-q4_K_M --model qwen3:8b-q4_K_M --model llama3.1:8b-instruct-q4_K_M --model schroneko/llama-3.1-swallow-8b-instruct-v0.1:q4_k_m --model MHKetbi/sbintuitions-sarashina2.2-3b-instruct-v0.1:q4_K_S --out bench/runs --results-dir bench/results",
+  "failed_models": []
+}
