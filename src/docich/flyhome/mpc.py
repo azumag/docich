@@ -504,6 +504,32 @@ class MpcController:
                 y += vy * dt
         return seq
 
+    def _low_terrain_tunnel(self, x, y) -> bool:
+        """実機の低い地形通路では姿勢を起こすprecisionよりMPCの滑走を使う。"""
+        if self.solid is None or self.hazards or not self._ref:
+            return False
+        rx, ry, rvx, rvy = self._ref[-1]
+        if abs(rvx) < 4 or abs(rvy) > 3 or abs(ry - y) > 32:
+            return False
+        direction = 1 if rvx > 0 else -1
+        lane = None
+        for ahead in (0, 12, 24, 36):
+            xi, cy = int(x + direction * ahead), int(ry)
+            if not 0 <= xi < self.width or not 1 <= cy < self.height - 1:
+                continue
+            if self.solid[cy * self.width + xi]:
+                continue
+            ceiling = next((yy for yy in range(cy - 1, max(-1, cy - 28), -1)
+                            if self.solid[yy * self.width + xi]), None)
+            floor = next((yy for yy in range(cy + 1, min(self.height, cy + 28))
+                          if self.solid[yy * self.width + xi]), None)
+            if ceiling is not None and floor is not None and 10 <= floor - ceiling <= 20:
+                lane = (ceiling, floor)
+                break
+        if lane is None:
+            return False
+        return True
+
     def _precision_action(self, x, y, vx, vy, ang, om) -> int:
         """狭い通路では回転の停止角を使って短い片足噴射を決める。"""
         c, p = self.cfg, self.p
@@ -673,8 +699,9 @@ class MpcController:
         tx, ty = target
         if c.mode == "track":
             self._make_ref(x, y)
+        low_tunnel = self._low_terrain_tunnel(x, y)
         near_home = st.home is not None and math.hypot(x - st.home[0], y - st.home[1]) < 100
-        if self._ref and (self._narrow_level or near_home):
+        if self._ref and not low_tunnel and (self._narrow_level or near_home):
             a = self._precision_action(x, y, vx, vy, ang, om)
             self._plan = None
             self._last_action = a

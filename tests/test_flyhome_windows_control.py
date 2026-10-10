@@ -317,3 +317,32 @@ def test_same_pid_with_unexpected_exe_still_rejects_input():
     backend.info = SimpleNamespace(pid=10, exe='game.exe')
     backend.w = SimpleNamespace(window_identity=lambda hwnd: (10, 'other.exe'))
     assert not backend.ready()
+
+
+def test_actual_level15_low_terrain_tunnel_needs_sideways_sliding():
+    ctl = _actual_mpc()
+    ctl.solid = bytearray(320 * 180)
+    for xx in range(194, 251):
+        for yy in range(132):
+            ctl.solid[yy * 320 + xx] = 1
+        for yy in range(148, 180):
+            ctl.solid[yy * 320 + xx] = 1
+    ctl._hist.append((10, 170, 139, 0))
+    ctl._ref = [(185, 141, 8, 0)] * ctl.cfg.horizon
+    assert ctl._low_terrain_tunnel(170, 139)
+    assert ctl._low_terrain_tunnel(210, 144)
+    ctl.hazards = [(220, 132, 224, 135)]
+    assert not ctl._low_terrain_tunnel(210, 144)
+    ctl.hazards = []
+    ctl.solid = bytearray(320 * 180)
+    assert not ctl._low_terrain_tunnel(170, 139)
+
+
+def test_low_terrain_tunnel_is_detected_towards_left_as_well():
+    ctl = _actual_mpc()
+    ctl.solid = bytearray(320 * 180)
+    for yy in list(range(132)) + list(range(148, 180)):
+        ctl.solid[yy * 320 + 150:yy * 320 + 180] = bytes([1]) * 30
+    ctl._hist.append((10, 200, 139, 0))
+    ctl._ref = [(185, 141, -8, 0)] * ctl.cfg.horizon
+    assert ctl._low_terrain_tunnel(200, 139)

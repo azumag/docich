@@ -2,7 +2,7 @@
   "output_sha256": "e1d63e7601939139f3f1cac43ed1b9269bd674cac740f3801bca140cc0eb0922",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "22650682c2fc780516bb2ed7acd0a34d53326e930e2c164665147eb4e3c7e099",
+  "source_sha256": "396c9dce963fdf1988adaa3de7a8874fd31a790bbded1741935aa7516cdc2865",
   "topics": [
     "Fly Me To The Home! 実機検証（更新 2026-10-10）",
     "追記: 実機での連続プレイ（目標: 50面クリア）",
