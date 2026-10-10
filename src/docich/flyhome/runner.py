@@ -233,8 +233,13 @@ class Loop:
     def tick(self) -> State:
         self.b.sleep_until(self.next_t)
         self.next_t = max(self.next_t + self.period, self.b.now())
+        capture_start = self.b.now()
         self.native = self.b.capture()
+        self.capture_s = self.b.now() - capture_start
+        self.max_capture_s = max(getattr(self, "max_capture_s", 0.0), self.capture_s)
+        vision_start = self.b.now()
         self.obs = vision.analyze(self.native, self.s, prev_player=self.tracker.prev_pos, prev_angle=self.tracker.prev_angle)
+        self.vision_s = self.b.now() - vision_start
         return self.tracker.update(self.obs, self.b.now())
 
     def wait(self, seconds: float) -> None:
@@ -291,6 +296,8 @@ def play(
     grid_cache = {}
     grid_spec = None
     solid_mem = None
+    previous_io_s = 0.0
+    io_parts = {}
     t_idle = backend.now()  # プレイヤーが見えなくなった時刻 (死亡/クリア画面で止まったままの検出用)
     try:
         while backend.now() - t_begin < max_seconds:
@@ -439,11 +446,21 @@ def play(
                 extra = dict(extra or {}, input_sent_at=round(ctl._acts[-1][0], 6))
                 if st.phase == PLAYING:
                     extra.update(planning_s=round(planning_s, 6), control_s=round(control_s, 6))
+            extra = dict(extra or {}, capture_s=round(loop.capture_s, 6), max_capture_s=round(loop.max_capture_s, 6),
+                         vision_s=round(loop.vision_s, 6), previous_io_s=round(previous_io_s, 6), **io_parts)
+            io_start = backend.now()
             log.frame(st, loop.obs, keys, extra)
+            frame_end = backend.now()
             if on_step is not None:
                 on_step(st, extra)
+            step_end = backend.now()
             if loop.native is not None:
                 log.snapshot(st.t, loop.native, loop.obs)
+            io_end = backend.now()
+            previous_io_s = io_end - io_start
+            io_parts = {"previous_frame_s": round(frame_end - io_start, 6),
+                        "previous_step_s": round(step_end - frame_end, 6),
+                        "previous_snapshot_s": round(io_end - step_end, 6)}
             if st.phase in (DEAD, CLEARED) and t_start is not None:
                 backend.release_all()
                 row = _finish_attempt(loop, st, t_start, tl)

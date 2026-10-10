@@ -104,3 +104,23 @@ def test_path_rejoin_preserves_corridor_height_before_long_horizontal_leg():
     assert rest[:3] == [(30, 40), (30.0, 50.0), (300, 50)]
     # Lv48実機での逸脱: (30,41)→(291,57)の長い斜線に置き換えて上の棘へ寄っていた。
     assert planner.path_distance(path, rest[1]) == 0
+
+def test_aligned_descent_does_not_return_to_old_recovery_leg():
+    from docich.flyhome import planner
+    from docich.flyhome.vision import Observation
+    ctl = MpcController()
+    grid = planner.Grid(80, 45, 4, bytearray(3600), bytearray(3600))
+    obs = Observation(320, 180, None, (168, 106.6), None, [], [], False, False,
+                      1, 1, bytearray(320 * 180), bytearray(320 * 180))
+    # Lv48実ログ: 入口へ合流する古い斜線が、中央到着後も左への参照を返していた。
+    ctl.set_world(grid, obs, [(298, 43), (288, 53), (290, 54), (294, 58), (294, 142), (168, 106.6)])
+    ctl._hist.extend([(9.7, 294, 50, 0), (9.8, 294, 50, 0), (9.9, 294, 50, 0), (10, 294, 50, 0)])
+    ctl._ref = [(292, 49, -20, 0)] * ctl.cfg.horizon
+    ctl._descent_ready_since = 9.5
+    assert ctl._precision_action(294, 50, 0, 0, 0, 0) in (0, 3)
+    assert ctl._precision_debug[2] == 0
+    ctl._hist.append((10.1, 294, 60, 0))
+    assert ctl._precision_action(294, 60, 0, 0, 0, 0) in (0, 3)
+    assert ctl._precision_debug[2] == 0
+    ctl.reset()
+    assert ctl._descent_commit is None

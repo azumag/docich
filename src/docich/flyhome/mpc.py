@@ -110,6 +110,8 @@ class MpcController:
         self._plan_t: float | None = None
         self._plan: list[int] | None = None
         self._last_action = 0
+        self._descent_ready_since: float | None = None
+        self._descent_commit: tuple[float, float] | None = None
         self._hist: deque[tuple[float, float, float, float]] = deque(maxlen=6)  # (t, x, y, angle 連続値)
         self._attempt: int | None = None
         self._unwrapped = 0.0
@@ -515,24 +517,46 @@ class MpcController:
         align_descent = False
         # 長い縦通路へ下りる前に、その中心へ横から入って減速する。
         # 斜めの角の参照を同時に追うと、足が棘の列へ出る間も横慣性が残る。
-        k = 0
-        while k < len(self.path) - 1:
-            sx, sy = self.path[k]
-            j = k
-            while j + 1 < len(self.path) and abs(self.path[j + 1][0] - sx) < 0.1 and self.path[j + 1][1] > self.path[j][1]:
-                j += 1
-            if j > k and self.path[j][1] - sy >= 24 and -2 <= sy - y <= 30 and abs(sx - x) < 25:
-                if abs(sx - x) > 2 or abs(vx) > 3:
-                    rx, ry, rvx, rvy = sx, min(ry, sy - 8), 0.0, 0.0
-                    align_descent = True
-                break
-            k = max(k + 1, j)
+        if self._descent_commit is not None:
+            sx, end_y = self._descent_commit
+            if y >= end_y or abs(x - sx) > 12:
+                self._descent_commit = None
+                self._descent_ready_since = None
+        if self._descent_commit is not None:
+            rx, ry = self._descent_commit
+            rvx, rvy = 0.0, 12.0
+        else:
+            k = 0
+            while k < len(self.path) - 1:
+                sx, sy = self.path[k]
+                j = k
+                while j + 1 < len(self.path) and abs(self.path[j + 1][0] - sx) < 0.1 and self.path[j + 1][1] > self.path[j][1]:
+                    j += 1
+                if j > k and self.path[j][1] - sy >= 24 and -2 <= sy - y <= 30 and abs(sx - x) < 25:
+                    stable = abs(sx - x) <= 2 and abs(vx) <= 3
+                    now = self._hist[-1][0]
+                    if stable:
+                        if self._descent_ready_since is None:
+                            self._descent_ready_since = now
+                    else:
+                        self._descent_ready_since = None
+                    if not stable or now - self._descent_ready_since < 0.25:
+                        rx, ry, rvx, rvy = sx, sy - 8, 0.0, 0.0
+                        align_descent = True
+                    else:
+                        self._descent_commit = (sx, sy + 12)
+                        rx, ry, rvx, rvy = sx, sy + 12, 0.0, 12.0
+                    break
+                k = max(k + 1, j)
+            else:
+                self._descent_ready_since = None
         # 頭を天井へ押し付けると実機では回転が止まる。横へ曲がる前に下降して空間を作る。
         if self.solid is not None and abs(rx - x) > 3:
             for ox in (-2, 0, 2):
                 xi, yi = int(x + ox), int(y - 14)
                 if 0 <= xi < self.width and 0 <= yi < self.height and self.solid[yi * self.width + xi]:
                     return 0
+        vertical_lane = abs(rvx) < 0.1 and rvy > 3
         want_vx = max(-8.0, min(8.0, rvx + 0.8 * (rx - x)))
         want_vy = max(-12.0, min(12.0, rvy + 0.8 * (ry - y)))
         # 横壁へ向かう区間は入口の直前で止めるだけでなく、離れた地点から低速で近づく。
@@ -555,7 +579,7 @@ class MpcController:
             future_vy += (p.gravity - math.cos(ang) * thrust - p.drag * future_vy) * duration
         stop_angle = future_angle + future_om * abs(future_om) / (2 * max(0.1, p.spin))
         error = theta - stop_angle
-        self._precision_debug = [round(v, 3) for v in (vx, vy, want_vx, want_vy, theta, stop_angle, error)] + [align_descent]
+        self._precision_debug = [round(v, 3) for v in (vx, vy, want_vx, want_vy, theta, stop_angle, error)] + [align_descent, vertical_lane]
         # 回すための噴射にも上向き推力がある。上端に上昇中はまず自由落下で減速。
         rising_vy = min(0.0, vy, future_vy)
         minimum_y = y + rising_vy * c.delay_s - rising_vy ** 2 / (2 * max(1.0, p.gravity))
