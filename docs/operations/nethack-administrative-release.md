@@ -8,26 +8,39 @@ automatic NetHackのfailed予約について、現在の資源不在を独立に
 **実在する予約がこの操作の条件を満たすかは未確認である。**
 合成fixtureで閉じた資源集合とtransactionを検証した開発変更であり、配備、
 本番census、controllerの参加確認、実解除、rotation再開は別の承認と実測を要する。
-共有worker/daemonの正の帰属契約が欠ける本番では、正常配信中でも拒否され得る。
-その拒否を復旧完了とは扱わない。
+current Sorenや共有worker/daemon、foreign UID資源の正の帰属契約が欠ける本番では、
+正常配信中でも拒否され得る。このPRはそれらの契約を追加していない。
+通常hostのeligible成立は確認しておらず、fixture上のtransaction/fence機能を
+提供する段階である。非祖先のroot daemonやkernel threadがある通常Linux hostでは
+現契約が必ず拒否となる可能性が高い。その拒否を復旧完了とは扱わない。
 
 ## 現在資源の検査と限定したspawn fence
 
 検査はLinuxのstate owner UIDについて、PID/birth、親、3つのownership tag、
 実行ファイル、cwd、引数digest、boot IDとPID namespaceを有界に観測する。
 2回の全contextが同一でなければ拒否する。読取不能、PID増減、namespace差、
-部分tag、未知job/child、矛盾も拒否する。他UIDについて環境・引数は読まない。
+部分tag、未知job/child、矛盾も拒否する。他UIDについて環境・引数・pathは読まず、
+UID/PID/birthと親だけを観測する。実際のcontrol祖先以外のforeign UID taskは
+正の帰属契約がないためunknownとして拒否する。正常なsystem daemonも例外にしない。
 
-許可するのは検査自身の実際の祖先、現在のcanonical Soren identityの完全な
-3 tagを持つprocess、およびtmux自身への固定queryと現在PID/birth/executable/argvが
-一致した通常のtmux server一つだけである。現在tagでも引数にNetHackがあるprocess、
+許可するのは検査自身の実際のcontrol祖先、およびtmux自身への固定queryと
+現在PID/birth/executable/argvが一致した通常のtmux server一つだけである。
+canonical Sorenの3 tag一致だけでは独立したrole/ownership edgeを証明できないため、
+tagged processもunknownとして拒否する。現在tagでも引数にNetHackがあるprocess、
 別socketのtmux、他paneや共有serverの子を包括的に許可しない。
 実行ファイル名やplain PIDfileを根拠に共有daemon/workerを許可しない。
+祖先にも不一致tag/NetHack argvの拒否を適用し、tagged祖先を包括許可しない。
+helper自身のPIDにある固定のadmin module tokenだけをcontrol codeとして扱う。
 
 固定のローカルDocker socketに対するrunning container一覧も必要である。
-一覧が空でなければ拒否する。これは別UIDの孤立したcanary containerを、UID censusの
-対象外という理由で見逃さないためである。任意Docker host/context、container名に
-よる共有許可はない。Docker不在、接続拒否、不正/過大な応答も拒否する。
+一覧が空でなければ拒否する。空は必要条件であり、旧別endpointの不在証明ではない。
+旧launcherが消えて別local daemon/runscに残ったtaskも、host-visible process censusの
+UID/tag単独許可へ隠さずunknownとして拒否する。任意Docker host/context、container名に
+よる共有許可はない。host launcherのpreflight、game/broker生成、cleanupも
+同じ固定endpointとminimal environmentへ束縛する。
+Docker不在、接続拒否、不正/過大な応答も拒否する。
+正規hostのproc範囲が前提で、内側namespaceのprocから外側資源を証明する機能はない。
+NSpid/cgroupやgVisorの仮想PIDの非検出を、旧canary不在の証拠として使わない。
 
 既知の旧NetHackの両window/sessionはstrictな不在確認を要する。
 正常stopで消えるpresentation/tilesのPID・birth・membersや過去のimprove jobは

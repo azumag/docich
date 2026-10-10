@@ -153,9 +153,15 @@ class DockerRunner:
         self.mutate_result = mutate_result
         self.timeout_run = timeout_run
         self.calls = []
+        self.raw_calls = []
         self.internal = None
 
     def __call__(self, argv, **kwargs):
+        self.raw_calls.append((list(argv), kwargs))
+        assert argv[1:3] == ['--host', 'unix:///var/run/docker.sock']
+        assert kwargs['env'] == {'PATH': '/usr/local/bin:/usr/bin:/bin',
+            'HOME': '/home/ubuntu', 'DOCKER_CONFIG': '/home/ubuntu/.docker'}
+        argv = [argv[0], *argv[3:]]
         self.calls.append(list(argv))
         if len(argv) >= 2 and argv[1] == "info":
             return SimpleNamespace(returncode=0, stdout=docker_info(runsc=self.runsc), stderr="")
@@ -174,6 +180,18 @@ class DockerRunner:
                 self.mutate_result(result)
             return SimpleNamespace(returncode=0, stdout=json.dumps(result), stderr="")
         raise AssertionError(f"unexpected docker call: {argv}")
+
+
+def test_every_launch_and_cleanup_ignores_ambient_docker_endpoint(tmp_path, monkeypatch):
+    req = request(tmp_path, candidate=True)
+    runner = DockerRunner(req)
+    monkeypatch.setenv('DOCKER_HOST', 'unix:///private/alternate.sock')
+    monkeypatch.setenv('DOCKER_CONTEXT', 'alternate')
+    monkeypatch.setenv('DOCKER_CONFIG', '/private/alternate-config')
+    with patch('docich.nethack_canary_container.shutil.which', return_value='/usr/bin/docker'):
+        run_container_worker(json.dumps(req), docker='docker', image=IMAGE, runner=runner,
+                             wait_for_broker=lambda *args: None)
+    assert [argv[3] for argv, _ in runner.raw_calls] == ['info', 'image', 'run', 'run', 'rm', 'rm']
 
 
 def test_game_container_is_runsc_hardened_and_mounts_only_episode(tmp_path):

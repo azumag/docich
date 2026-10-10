@@ -226,7 +226,12 @@ def _resources(root, soren, owner, proof, *, probe=None, tmux=None, container_pr
     fingerprints = []
     for row in rows:
         if row.get('uid', root.stat().st_uid) != root.stat().st_uid:
-            continue  # Only PID/birth is observed across UIDs, for manifest checks.
+            # An old container launcher can die while a foreign-UID runsc task
+            # survives on another local daemon. No positive foreign-resource
+            # contract exists; PID/birth alone cannot make it harmless.
+            if row['pid'] not in ancestors:
+                refuse('process_coverage_unproven')
+            continue  # Only the actual control ancestry is exempt across UIDs.
         tags = row.get('tags')
         if not isinstance(tags, dict):
             refuse('process_coverage_unproven')
@@ -241,8 +246,6 @@ def _resources(root, soren, owner, proof, *, probe=None, tmux=None, container_pr
                 ppid=row.get('ppid'), tags=tags, exe=row['exe'], cwd=row['cwd'],
                 argv_sha256=hashlib.sha256(b'\0'.join(argv)).hexdigest(),
                 boot_id=row.get('boot_id'), pid_namespace=row.get('pid_namespace')))
-        if row['pid'] in ancestors:
-            continue
         # Identify the one normal server through tmux itself and current
         # PID/birth/executable/argv. It can inherit an old game's env tags.
         # Do not permit alternate sockets, other panes or all descendants.
@@ -251,14 +254,22 @@ def _resources(root, soren, owner, proof, *, probe=None, tmux=None, container_pr
             continue
         if row['exe'] in {'/usr/bin/tmux', '/usr/local/bin/tmux'}:
             refuse('process_coverage_unproven')
-        if any(b'nethack' in v.lower() for v in argv):
+        # The helper itself necessarily has its module name in argv. That one
+        # token on our own PID is control code, not a game producer exemption.
+        if any(b'nethack' in v.lower() and not (
+                row['pid'] == os.getpid() and v == b'docich.nethack_admin_release')
+                for v in argv):
             refuse('resources_present')
         if tags:
             if (set(tags) != set(TAG_KEYS) or tags[TAG_KEYS[0]] != current['runtime_id']
                     or tags[TAG_KEYS[1]] != str(current['generation'])
                     or tags[TAG_KEYS[2]] not in {'game', 'agent', 'adapter'}):
                 refuse('resources_present')
+        if row['pid'] in ancestors and (row['pid'] == os.getpid() or not tags):
             continue
+        # Matching current tags are necessary but not a positive role/ownership
+        # edge: a shared pane can inherit them and leave a generic detached
+        # child. Until that independent contract exists these remain unknown.
         # A basename or plain PID file cannot distinguish a shared daemon from
         # a detached game child or a reused PID. There is currently no durable
         # positive shared-resource contract, so these processes remain unknown.

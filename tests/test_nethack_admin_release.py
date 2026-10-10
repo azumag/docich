@@ -155,14 +155,53 @@ def test_all_uid_processes_require_positive_current_coverage(fixture,kind):
     assert inspect(f)['status']=='refused'
 
 
-def test_current_runtime_and_unknown_shared_daemon(fixture):
+def test_current_tags_alone_and_unknown_shared_daemon_are_not_ownership(fixture):
     f=fixture
     current=row();current['tags']={'DOCICH_TMUX_RUNTIME_ID':'g4-dddddd','DOCICH_TMUX_GENERATION':'4','DOCICH_TMUX_ROLE':'game'}
     shared=row(889);shared['exe']='/usr/bin/pulseaudio'
     f.probe.return_value=[current]
-    assert inspect(f)['status']=='admin-eligible'
+    assert inspect(f)['reason']=='process_coverage_unproven'
     f.probe.return_value=[current,shared]
     assert inspect(f)['status']=='refused'
+
+
+@pytest.mark.parametrize('kind', ['old-tag', 'nethack-argv', 'current-tag', 'current-generic'])
+def test_control_ancestor_does_not_hide_a_tagged_or_explicit_game(fixture, kind):
+    f = fixture
+    child = row(os.getpid()); child['ppid'] = 889
+    parent = row(889)
+    if kind == 'old-tag':
+        parent['tags'] = {'DOCICH_TMUX_RUNTIME_ID':'g1-aaaaaa',
+            'DOCICH_TMUX_GENERATION':'1', 'DOCICH_TMUX_ROLE':'game'}
+    if kind == 'nethack-argv': parent['argv'] = [b'python3', b'-m', b'docich.nethack_tiles_supervisor']
+    if kind in {'current-tag', 'current-generic'}:
+        parent['tags'] = {'DOCICH_TMUX_RUNTIME_ID':'g4-dddddd',
+            'DOCICH_TMUX_GENERATION':'4', 'DOCICH_TMUX_ROLE':'game'}
+        if kind == 'current-tag': parent['argv'] = [b'python3', b'-m', b'docich.nethack_daily_improve']
+    f.probe.return_value = [child, parent]
+    assert inspect(f)['reason'] == ('process_coverage_unproven' if kind == 'current-generic' else 'resources_present')
+
+
+def test_only_own_admin_module_token_is_control_code(fixture):
+    f = fixture
+    control = row(os.getpid()); control['argv'] = [b'python3', b'-m', b'docich.nethack_admin_release']
+    f.probe.return_value = [control]
+    assert inspect(f)['status'] == 'admin-eligible'
+    control['ppid'] = 889
+    parent = row(889); parent['argv'] = control['argv']
+    f.probe.return_value = [control, parent]
+    assert inspect(f)['reason'] == 'resources_present'
+
+
+def test_foreign_uid_task_is_not_proven_absent_by_the_fixed_socket(fixture):
+    f = fixture
+    # An orphan on an older alternate daemon needs no private argv/environment
+    # observation to be refused. Empty fixed inventory is only necessary.
+    f.probe.return_value = [dict(pid=888, ppid=1, start_ticks=444,
+        uid=f.root.stat().st_uid + 1)]
+    before = snapshot(f)
+    assert inspect(f)['reason'] == 'process_coverage_unproven'
+    assert snapshot(f) == before
 
 
 def test_one_normal_tmux_server_can_inherit_old_tags_but_not_its_children(fixture):
@@ -254,9 +293,9 @@ def test_docker_inspection_is_fixed_local_and_discards_raw_failure(monkeypatch):
 @pytest.mark.parametrize('identity', ['boot_id', 'pid_namespace'])
 def test_machine_or_namespace_change_invalidates_exact_process_context(fixture, identity):
     f = fixture
-    current = row(); current.update(tags={'DOCICH_TMUX_RUNTIME_ID':'g4-dddddd',
-        'DOCICH_TMUX_GENERATION':'4','DOCICH_TMUX_ROLE':'game'},
+    current = row(); current.update(exe='/usr/bin/tmux', argv=[b'tmux: server', b''],
         boot_id='11111111-1111-4111-8111-111111111111', pid_namespace='pid:[123]')
+    f.tmux._server_pid.return_value = current['pid']
     f.probe.return_value = [current]
     proposal = inspect(f)
     current[identity] = 'changed'
@@ -410,6 +449,8 @@ def test_unregistered_game_child_never_becomes_shared_by_basename(fixture, execu
 def test_same_pid_exec_and_ownership_or_manifest_changes_invalidate_approval(fixture, mutation):
     f = fixture
     child = row()
+    child.update(exe='/usr/bin/tmux', argv=[b'tmux: server', b''])
+    f.tmux._server_pid.return_value = child['pid']
     child['tags'] = {'DOCICH_TMUX_RUNTIME_ID': 'g4-dddddd', 'DOCICH_TMUX_GENERATION': '4',
                      'DOCICH_TMUX_ROLE': 'game'}
     f.probe.return_value = [child]
@@ -424,7 +465,7 @@ def test_same_pid_exec_and_ownership_or_manifest_changes_invalidate_approval(fix
         data = json.loads(path.read_text()); data['updated_at'] = 9
         atomic_write_json(path, data)
     before = snapshot(f)
-    with pytest.raises(Refused, match='fingerprint_changed'):
+    with pytest.raises(Refused):
         apply(f, proposal)
     assert snapshot(f) == before
 

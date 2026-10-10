@@ -75,8 +75,8 @@ def processes(uid, *, proc=Path('/proc')):
         fields = raw[raw.rfind(')') + 2:].split()
         row = dict(pid=int(name), ppid=int(fields[1]), start_ticks=int(fields[19]),
                    state=fields[0], uid=uids[0], boot_id=boot_id, pid_namespace=namespace)
-        # Keep PID/birth visibility across UIDs for old manifest PID checks,
-        # but never read another user's environment, command line or paths.
+        # Keep UID/PID/birth visibility across UIDs. The caller refuses foreign
+        # tasks without a positive contract; do not read their private metadata.
         if not own:
             rows.append(row)
             continue

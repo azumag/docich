@@ -463,6 +463,14 @@ def _run_container_worker(
     manifest = _candidate_manifest(request)
     selected_docker = _docker_binary(docker)
     selected_image = _image_id(image)
+    original_runner = runner
+    def local_runner(argv, **kwargs):
+        # Bind preflight, both launches and cleanup to the same endpoint as
+        # administrative inventory. Never inherit a remote/local-alt context.
+        return original_runner([argv[0], '--host', 'unix:///var/run/docker.sock', *argv[1:]],
+            **kwargs, env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/home/ubuntu',
+                          'DOCKER_CONFIG': '/home/ubuntu/.docker'})
+    runner = local_runner
     _preflight(selected_docker, selected_image, runner=runner)
     internal = _internal_request(request, manifest)
     payload = json.dumps(internal, ensure_ascii=False, separators=(",", ":"))
