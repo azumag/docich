@@ -72,3 +72,35 @@ def test_live_home_target_remains_fixed_when_player_splits_roof():
     assert st.home == (184, 154.6)
     assert st.home_bbox == (163, 133, 205, 164)
     assert tr.last_obs.home == st.home
+
+
+def test_restart_can_release_jets_left_down_by_previous_controller():
+    # 強制終了したcontrollerのheldは消えるが、ゲーム内のキー状態は残り得る。
+    kb = win32.Keyboard.__new__(win32.Keyboard)
+    kb.held = set()
+    events = []
+    kb._event = lambda scan, down: events.append((scan, down))
+    kb.release_all((75, 77))
+    assert set(events) == {(75, False), (77, False)}
+    assert kb.held == set()
+
+
+def test_restart_resync_rejects_reused_game_handle_before_sending_keys():
+    import pytest
+    backend = runner.WindowsBackend.__new__(runner.WindowsBackend)
+    backend.s = SimpleNamespace(input_mode='postmessage')
+    backend._jets_synced = False
+    backend.hwnd = 1
+    backend.info = SimpleNamespace(pid=10, exe='game.exe')
+    backend.w = SimpleNamespace(list_windows=lambda: [SimpleNamespace(hwnd=1, pid=11, exe='game.exe')])
+    with pytest.raises(RuntimeError, match='identity changed'):
+        backend.set_jets(False, False)
+
+
+def test_path_rejoin_preserves_corridor_height_before_long_horizontal_leg():
+    from docich.flyhome import planner
+    path = [(20, 150), (20, 50), (300, 50), (300, 150)]
+    rest = planner.remaining_path(path, (30, 40))
+    assert rest[:3] == [(30, 40), (30.0, 50.0), (300, 50)]
+    # Lv48実機での逸脱: (30,41)→(291,57)の長い斜線に置き換えて上の棘へ寄っていた。
+    assert planner.path_distance(path, rest[1]) == 0

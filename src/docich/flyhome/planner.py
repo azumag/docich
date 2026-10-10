@@ -175,12 +175,23 @@ def path_distance(path: list[tuple[float, float]], pos: tuple[float, float]) -> 
 
 
 def remaining_path(path: list[tuple[float, float]], pos: tuple[float, float]) -> list[tuple[float, float]]:
-    """経路のうち現在位置から先の部分 (最寄りの折れ点以降、先頭は現在位置)。"""
+    """最寄りの線分へ合流してから、元の経路の残りをたどる。"""
     if not path:
         return []
-    near = min(range(len(path)), key=lambda i: (path[i][0] - pos[0]) ** 2 + (path[i][1] - pos[1]) ** 2)
-    nxt = min(near + 1, len(path) - 1)
-    return [pos] + path[nxt:]
+    if len(path) < 2:
+        return [pos] + path
+    best, segment, projection = math.inf, 0, path[0]
+    x, y = pos
+    for i, ((ax, ay), (bx, by)) in enumerate(zip(path, path[1:])):
+        dx, dy = bx - ax, by - ay
+        ll = dx * dx + dy * dy
+        u = 0.0 if ll == 0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / ll))
+        px, py = ax + u * dx, ay + u * dy
+        distance = (px - x) ** 2 + (py - y) ** 2
+        if distance < best:
+            best, segment, projection = distance, i, (px, py)
+    return [pos, projection] + path[segment + 1:]
+
 
 
 def path_blocked(g: Grid, path: list[tuple[float, float]]) -> bool:

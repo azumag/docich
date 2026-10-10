@@ -34,11 +34,14 @@ def save(note=""):
                 return
             time.sleep(0.002)
 def is_map(b):
+    import zlib
     img = vision.to_native(b.capture(), s)
     if vision._party_present(img):
-        return False  # クリア画面 (こちらも暗い) はマップではない: Enter で抜ける
-    r, g, bl = img.get(250, 60)  # 空の色。マップは暗転している
-    return r + g + bl < 480
+        return False
+    # 実機マップ固有の BEST TIME 見出し。暗いLv48のプレイ/死亡画面は空の色では区別できない。
+    bits = bytes(int(all(c > 200 for c in img.get(x, y)))
+                 for y in range(1, 8) for x in range(267, 318))
+    return sum(bits) == 129 and zlib.crc32(bits) == 3045283794
 UNCLEARED_CRC = 3686374964  # 未クリアのマップの BEST TIME「99:99.999」の白画素パターン
 def uncleared(b):
     """マップの右上 BEST TIME が 99:99.999 (未クリア) か。白い画素の並びで判定 (実機の未クリアのマップで常に 432 画素・同じ並び)。"""
@@ -56,14 +59,22 @@ def to_next_level(b):
     for _ in range(6):
         if is_map(b):
             break
-        b.tap("enter"); time.sleep(1.5)
+        img = vision.to_native(b.capture(), s)
+        b.tap("enter" if vision._party_present(img) else "escape")
+        time.sleep(1.5)
+    else:
+        raise RuntimeError("map BEST TIME header was not observed")
     time.sleep(0.8)
     # マップの選択が次のレベルとは限らない (クリア済みのレベルのまま等): 未クリアのレベルまで → で進める
     for selection_step in range(50):
         save("  いま: マップで未クリアの面を選択 (%d/50)" % (selection_step + 1))
+        if not is_map(b):
+            raise RuntimeError("map lost during level selection")
         if uncleared(b):
             break
         b.tap("right"); time.sleep(0.8)
+    else:
+        raise RuntimeError("no uncleared level found on map")
     write_png(s.run_dir / "maps" / ("selected-%d.png" % time.time_ns()), b.capture())
     save("  いま: マップで未クリアを確認、Enterで開始")
     b.tap("enter"); time.sleep(2.0)
@@ -78,7 +89,7 @@ for i in range(max(0, last - first + 1)):
             b.tap("escape")  # 実プレイ画面からの明示的な選び直し要求。
             time.sleep(1.0)
             to_next_level(b)
-        elif not (i == 0 and os.environ.get("ON_LEVEL")) or vision._party_present(initial_img) or uncleared(b):
+        elif not (i == 0 and os.environ.get("ON_LEVEL")) or vision._party_present(initial_img) or is_map(b):
             to_next_level(b)
         save("  いま: Lv%d を play 中..." % lv)
         out = runner.session_dir(s, "play")

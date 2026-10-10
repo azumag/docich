@@ -384,6 +384,13 @@ def analyze(
         if best is not None:
             cx, cy = best.center
             angle = _orientation(best, labels, w, h, prev_angle)
+            bx0, by0, bx1, by1 = best.bbox
+            clipped_by_hud = any(bx0 < hx1 + 2 and bx1 > hx0 - 2 and by0 < hy1 + 2 and by1 > hy0 - 2
+                                 for hx0, hy0, hx1, hy1 in hud_rects)
+            if clipped_by_hud and prev_angle is not None:
+                # Lv48実機: 下の矢印HUDが体を切り、直立→90度と誤認して強い回転を出した。
+                # 隠れた断片のPCAでは向きを決めず、完全な体が再び見えるまで直前の向きを保つ。
+                angle = prev_angle
             player = Player(cx, cy, angle, best.bbox, best.area)
 
     reds = blobs(labels, w, h, {RED, YELLOW}, mask=in_hud)

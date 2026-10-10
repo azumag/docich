@@ -286,8 +286,9 @@ class Keyboard:
         time.sleep(hold_s)
         self.set(scan, False)
 
-    def release_all(self) -> None:
-        for scan in list(self.held):
+    def release_all(self, scans: tuple[int, ...] = ()) -> None:
+        # 前のcontrollerが強制終了したときは、新しいheld集合に載らないキーも解放する。
+        for scan in self.held.union(scans):
             try:
                 self._event(scan, False)
             finally:

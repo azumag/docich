@@ -78,6 +78,7 @@ class WindowsBackend(Backend):  # pragma: no cover - Windows 実機のみ
         self.scan = {"left": k.left, "right": k.right, "up": k.up, "down": k.down, "enter": k.enter, "escape": k.escape, "space": k.space}
         ext = {self.scan[n] for n in k.extended if n in self.scan}
         self.kb = win32.Keyboard(self.hwnd, ext, settings.input_mode)
+        self._jets_synced = False
         self.cap = win32.Capturer(self.hwnd, settings.native_width, settings.native_height, aspect=settings.aspect, mode=settings.capture_mode)
         if focus:
             win32.bring_to_front(self.hwnd)
@@ -103,6 +104,11 @@ class WindowsBackend(Backend):  # pragma: no cover - Windows 実機のみ
         return self.w.key_down(self.s.abort_vk)
 
     def set_jets(self, left: bool, right: bool) -> None:
+        if not self._jets_synced and self.s.input_mode == "postmessage":
+            if not self.ready():
+                raise RuntimeError("game window identity changed; input aborted")
+            self.kb.release_all((self.scan["left"], self.scan["right"]))
+            self._jets_synced = True
         self.kb.set(self.scan["left"], left)
         self.kb.set(self.scan["right"], right)
 
@@ -183,7 +189,8 @@ class SessionLog:
         if self._frames is None:
             return
         row = st.as_dict()
-        row.update({"left": keys[0], "right": keys[1], "hud": [obs.hud_left, obs.hud_right]})
+        row.update({"left": keys[0], "right": keys[1], "hud": [obs.hud_left, obs.hud_right],
+                    "player_bbox": obs.player.bbox if obs.player else None, "player_area": obs.player.area if obs.player else None})
         if extra:
             row.update(extra)
         self._frames.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -325,21 +332,33 @@ def play(
                         # 棘の格子の間を抜けるレベル (実機 Lv23) では余白 3 セルだと道が無い: 余白を縮めて探し直す
                         new_path = None
                         kept_path = False
-                        world_key = (hash(bytes(world_obs.solid)), tuple(sorted(world_obs.hazards)), world_obs.home_bbox)
+                        planning_solid = bytearray(world_obs.solid)
+                        for rect in (settings.hud.arrow_left, settings.hud.arrow_right):
+                            x0, y0, x1, y1 = vision._rect_px(rect, world_obs.width, world_obs.height)
+                            for yy in range(max(0, y0 - 4), min(world_obs.height, y1 + 4)):
+                                for xx in range(max(0, x0 - 4), min(world_obs.width, x1 + 4)):
+                                    planning_solid[yy * world_obs.width + xx] = 1
+                        # 矢印HUDの裏では体が見えない。経路だけで避け、物理の地面には加えない。
+                        planning_obs = dataclasses.replace(world_obs, solid=planning_solid)
+                        world_key = (hash(bytes(planning_solid)), tuple(sorted(world_obs.hazards)), world_obs.home_bbox)
                         def get_grid(cell, sm, hm):
                             cache_key = (world_key, cell, sm, hm)
                             if cache_key not in grid_cache:
                                 if len(grid_cache) > 128:
                                     grid_cache.clear()
-                                grid_cache[cache_key] = planner.build_grid(world_obs, cell=cell, solid_margin=sm, hazard_margin=hm, top_extra=2 if cell == 4 else 5)
+                                grid_cache[cache_key] = planner.build_grid(planning_obs, cell=cell, solid_margin=sm, hazard_margin=hm, soft_margin=2 if cell == 4 else 4, top_extra=2 if cell == 4 else 5)
                             return grid_cache[cache_key]
                         if path and grid_spec and planner.path_distance(path, (st.x, st.y)) <= 12.0:
                             cell, sm, hm = grid_spec
                             grid = get_grid(cell, sm, hm)
-                            if not planner.path_blocked(grid, path):
+                            forward_path = planner.remaining_path(path, (st.x, st.y))
+                            if not planner.path_blocked(grid, forward_path):
                                 new_path, kept_path = path, True
                         if new_path is None:
-                            for cell, sm, hm in ((4, 2, 3), (4, 2, 2), (4, 2, 1), (2, 3, 5), (2, 3, 4), (4, 1, 3), (4, 1, 2), (4, 1, 1)):
+                            specs = ((4, 2, 3), (4, 2, 2), (4, 2, 1), (2, 3, 5), (2, 3, 4), (4, 1, 3), (4, 1, 2), (4, 1, 1))
+                            if grid_spec is not None:
+                                specs = (grid_spec,) + tuple(spec for spec in specs if spec != grid_spec)
+                            for cell, sm, hm in specs:
                                 grid = get_grid(cell, sm, hm)
                                 new_path = planner.astar(grid, (st.x, st.y), target)
                                 if new_path:
@@ -360,8 +379,10 @@ def play(
                         if isinstance(ctl, MpcController):
                             ctl.set_world(grid, world_obs, path)
                 planning_s = backend.now() - planning_start
+                if planning_s > 0.03:
+                    st = loop.tick()  # 重い再計画中にも実機は動く。古い角度のまま次の噴射を選ばない。
                 control_start = backend.now()
-                if path is not None:
+                if path is not None and st.phase == PLAYING:
                     keys = ctl.decide(st, planner.lookahead(path, (st.x, st.y)))
                 control_s = backend.now() - control_start
                 if motion_pos is None or abs(st.x - motion_pos[0]) + abs(st.y - motion_pos[1]) > 3.0:
@@ -413,7 +434,7 @@ def play(
             if isinstance(ctl, MpcController) and st.phase == PLAYING and ctl._ref:
                 r0, r1 = ctl._ref[0], ctl._ref[-1]
                 extra = {"ref0": [round(r0[0], 1), round(r0[1], 1)], "ref_end": [round(r1[0], 1), round(r1[1], 1)],
-                         "path0": [round(v, 1) for v in ctl.path[min(3, len(ctl.path) - 1)]] if ctl.path else None, "path": ctl.path, "estimated": getattr(ctl, "_estimate_debug", None)}
+                         "path0": [round(v, 1) for v in ctl.path[min(3, len(ctl.path) - 1)]] if ctl.path else None, "path": ctl.path, "estimated": getattr(ctl, "_estimate_debug", None), "precision": getattr(ctl, "_precision_debug", None)}
             if isinstance(ctl, MpcController) and ctl._acts:
                 extra = dict(extra or {}, input_sent_at=round(ctl._acts[-1][0], 6))
                 if st.phase == PLAYING:

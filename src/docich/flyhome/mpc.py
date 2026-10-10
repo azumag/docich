@@ -512,6 +512,21 @@ class MpcController:
                 vx, vy = (x - x0) / dt, (y - y0) / dt
                 # 角速度は遅延補正済み観測器を保ち、位置差分だけ実測を使う。
         rx, ry, rvx, rvy = self._ref[min(4, len(self._ref) - 1)]
+        align_descent = False
+        # 長い縦通路へ下りる前に、その中心へ横から入って減速する。
+        # 斜めの角の参照を同時に追うと、足が棘の列へ出る間も横慣性が残る。
+        k = 0
+        while k < len(self.path) - 1:
+            sx, sy = self.path[k]
+            j = k
+            while j + 1 < len(self.path) and abs(self.path[j + 1][0] - sx) < 0.1 and self.path[j + 1][1] > self.path[j][1]:
+                j += 1
+            if j > k and self.path[j][1] - sy >= 24 and -2 <= sy - y <= 30 and abs(sx - x) < 25:
+                if abs(sx - x) > 2 or abs(vx) > 3:
+                    rx, ry, rvx, rvy = sx, min(ry, sy - 8), 0.0, 0.0
+                    align_descent = True
+                break
+            k = max(k + 1, j)
         # 頭を天井へ押し付けると実機では回転が止まる。横へ曲がる前に下降して空間を作る。
         if self.solid is not None and abs(rx - x) > 3:
             for ox in (-2, 0, 2):
@@ -520,14 +535,14 @@ class MpcController:
                     return 0
         want_vx = max(-8.0, min(8.0, rvx + 0.8 * (rx - x)))
         want_vy = max(-12.0, min(12.0, rvy + 0.8 * (ry - y)))
-        # 横壁が近いとき、下降待ちで回転を止めると横の慣性だけで棘へ滑り込む。
-        braking_x = x + vx * (c.delay_s + 0.3) + vx * abs(vx) / 40.0
-        side_risk = any(hy0 - 10 <= y <= hy1 + 10 and
-                        ((vx > 0 and hx0 > x and braking_x + 16 >= hx0) or
-                         (vx < 0 and hx1 < x and braking_x - 16 <= hx1))
-                        for hx0, hy0, hx1, hy1 in self.hazards)
-        if side_risk:
-            want_vx = 0.0
+        # 横壁へ向かう区間は入口の直前で止めるだけでなく、離れた地点から低速で近づく。
+        for hx0, hy0, hx1, hy1 in self.hazards:
+            if hy0 - 10 <= y <= hy1 + 10:
+                if want_vx > 0 and x < hx0 < x + 55:
+                    want_vx = min(want_vx, 4.0)
+                elif want_vx < 0 and x - 55 < hx1 < x:
+                    want_vx = max(want_vx, -4.0)
+
         ax = 1.8 * (want_vx - vx)
         theta = max(-0.22, min(0.22, math.atan2(ax, p.gravity)))
         self._pending_inputs(self._hist[-1][0])
@@ -540,18 +555,25 @@ class MpcController:
             future_vy += (p.gravity - math.cos(ang) * thrust - p.drag * future_vy) * duration
         stop_angle = future_angle + future_om * abs(future_om) / (2 * max(0.1, p.spin))
         error = theta - stop_angle
+        self._precision_debug = [round(v, 3) for v in (vx, vy, want_vx, want_vy, theta, stop_angle, error)] + [align_descent]
         # 回すための噴射にも上向き推力がある。上端に上昇中はまず自由落下で減速。
-        minimum_y = y + min(0.0, vy) * c.delay_s - min(0.0, vy) ** 2 / (2 * max(1.0, p.gravity))
+        rising_vy = min(0.0, vy, future_vy)
+        minimum_y = y + rising_vy * c.delay_s - rising_vy ** 2 / (2 * max(1.0, p.gravity))
+        falling_vy = max(0.0, vy, future_vy)
+        maximum_y = y + falling_vy * c.delay_s + falling_vy ** 2 / (2 * max(1.0, p.thrust - p.gravity))
         ceiling = 14.0
         projected_x = x + vx * c.delay_s
         for hx0, hy0, hx1, hy1 in self.hazards:
             if hy1 < y and hx0 - 6 <= projected_x <= hx1 + 6:
                 ceiling = max(ceiling, hy1 + 10.0)
-        if vy < 0 and minimum_y < ceiling and abs(ang) < 1.0:
+        self._precision_debug += [round(v, 3) for v in (minimum_y, ceiling, maximum_y)]
+        if maximum_y > self.height - 16 and abs(ang) < 0.5:
+            return 3
+        if rising_vy < 0 and minimum_y < ceiling and abs(ang) < 1.0:
             return 0
         if y < 34 and vy < -6 and abs(ang) < 0.35 and abs(om) < 0.7:
             return 0
-        if future_vy < want_vy - 3 and abs(ang) < 0.45 and abs(om) < 0.8 and not side_risk:
+        if future_vy < want_vy - 3 and abs(ang) < 0.45 and abs(om) < 0.8:
             return 0  # 姿勢を直す噴射でも上昇するため、まず要求速度まで自由落下で減速。
         if abs(error) > 0.08:
             return 1 if error * p.torque_sign > 0 else 2
@@ -602,7 +624,7 @@ class MpcController:
             grounded = False
             if self.solid is not None:
                 xi = int(x)
-                for yi in range(int(y + c.foot), min(self.height, int(y + c.foot + 4))):
+                for yi in range(int(y + c.foot), min(self.height, int(y + c.foot + 12))):
                     if 0 <= xi < self.width and yi >= 0 and self.solid[yi * self.width + xi]:
                         grounded = True
                         break
