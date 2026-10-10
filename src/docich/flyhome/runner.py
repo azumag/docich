@@ -358,8 +358,7 @@ def play(
                         if path and grid_spec and planner.path_distance(path, (st.x, st.y)) <= 12.0:
                             cell, sm, hm = grid_spec
                             grid = get_grid(cell, sm, hm)
-                            forward_path = planner.remaining_path(path, (st.x, st.y))
-                            if not planner.path_blocked(grid, forward_path):
+                            if planner.forward_path_clear(grid, path, (st.x, st.y)):
                                 new_path, kept_path = path, True
                         if new_path is None:
                             specs = ((4, 2, 3), (4, 2, 2), (4, 2, 1), (2, 3, 5), (2, 3, 4), (4, 1, 3), (4, 1, 2), (4, 1, 1))
@@ -379,7 +378,7 @@ def play(
                         # 前の経路がまだ通れて、新しい経路が 20% 以上短くなければ前の経路を使い続ける。
                         if not kept_path and path is not None and len(path) >= 2:
                             rest = planner.remaining_path(path, (st.x, st.y))
-                            if (len(rest) >= 2 and not planner.path_blocked(grid, rest)
+                            if (len(rest) >= 2 and planner.forward_path_clear(grid, path, (st.x, st.y))
                                     and planner.path_length(new_path) > 0.8 * planner.path_length(rest)):
                                 new_path = rest
                         path = new_path

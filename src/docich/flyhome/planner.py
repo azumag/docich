@@ -194,6 +194,20 @@ def remaining_path(path: list[tuple[float, float]], pos: tuple[float, float]) ->
 
 
 
+def forward_path_clear(g: Grid, path: list[tuple[float, float]], pos: tuple[float, float]) -> bool:
+    """ずれた体からの合流線を除き、元の経路の残りがまだ通れるか。
+
+    地形の膨張領域へ少し入っただけで合流線まで再探索すると、同じ通路を
+    重く計画し直す間にも実機が動く。投影先以降の障害物は引き続き確認する。
+    """
+    rest = remaining_path(path, pos)[1:]
+    if not rest:
+        return False
+    if any(not g.free(*g.to_cell(x, y)) for x, y in rest[:-1]):
+        return False
+    return not path_blocked(g, rest)
+
+
 def path_blocked(g: Grid, path: list[tuple[float, float]]) -> bool:
     """経路の線分がどこかで通行不可のセルを通るか (コストのみのセルは許す)。"""
     for a, b in zip(path, path[1:]):

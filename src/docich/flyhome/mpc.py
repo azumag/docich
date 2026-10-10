@@ -551,11 +551,12 @@ class MpcController:
             else:
                 self._descent_ready_since = None
         # 頭を天井へ押し付けると実機では回転が止まる。横へ曲がる前に下降して空間を作る。
-        if self.solid is not None and abs(rx - x) > 3:
+        if self.solid is not None:
             for d in range(1, 9):
                 for ox in (-2, 0, 2):
                     xi, yi = int(x + math.sin(ang) * d + ox), int(y - math.cos(ang) * d)
                     if 0 <= xi < self.width and 0 <= yi < self.height and self.solid[yi * self.width + xi]:
+                        self._om_obs = 0.0  # 接触中の実機は回転しない。噴射履歴からの架空の回転を消す。
                         return 0
         vertical_lane = abs(rvx) < 0.1 and rvy > 3
         want_vx = max(-8.0, min(8.0, rvx + 0.8 * (rx - x)))

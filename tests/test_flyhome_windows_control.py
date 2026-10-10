@@ -199,3 +199,28 @@ def _actual_mpc(**kwargs):
     return MpcController(Physics(gravity=86, thrust=211, single_thrust_ratio=.89,
                                  spin=5.29, spin_mode="accel", angular_damping=.17,
                                  torque_sign=1, drag=.55), **kwargs)
+
+
+def test_rejoin_from_inflated_terrain_keeps_clear_corridor_but_rejects_new_obstacles():
+    from docich.flyhome import planner
+    g = planner.Grid(4, 4, 1, bytearray(16), bytearray(16))
+    g.blocked[g.idx(0, 0)] = 1
+    path = [(1.5, .5), (2.5, .5), (2.5, 2.5)]
+    assert planner.forward_path_clear(g, path, (.5, .5))
+    g.blocked[g.idx(2, 1)] = 1
+    assert not planner.forward_path_clear(g, path, (.5, .5))
+    g.blocked[g.idx(2, 1)] = 0
+    g.blocked[g.idx(1, 0)] = 1
+    assert not planner.forward_path_clear(g, path, (.5, .5))
+
+
+def test_head_contact_waits_even_when_horizontal_reference_is_close():
+    ctl = _actual_mpc()
+    ctl.solid = bytearray(320 * 180)
+    for y in range(65, 68):
+        ctl.solid[y * 320 + 10:y * 320 + 40] = bytes([1]) * 30
+    ctl._hist.append((10, 24, 75, 0))
+    ctl._ref = [(25, 83, 8, 0)] * ctl.cfg.horizon
+    ctl._om_obs = 2
+    assert ctl._precision_action(24, 75, 0, 0, 0, 2) == 0
+    assert ctl._om_obs == 0
