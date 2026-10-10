@@ -103,6 +103,9 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             self.assertIn(section, diag)
         self.assertIn("nethack_rotation_evidence", diag)
         self.assertFalse(diag["nethack_rotation_evidence"]["recovery_authority"])
+        self.assertIn("nethack_admin_preflight", diag)
+        self.assertFalse(diag["nethack_admin_preflight"]["release_authority"])
+        self.assertFalse(diag["nethack_admin_preflight"]["resource_absence_proven"])
         self.assertEqual(diag["workers"]["expected"] >= 10, True)
         self.assertEqual(diag["semantic_decision"], {"present": False, "readable": False})
         self.assertEqual(diag["supervisor_identity"]["loaded_functions_status"], "unverified")
@@ -126,7 +129,8 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         # The administrative projection verifies its helpers against deployed
         # HEAD before importing them, with all transitive project imports clean.
         # Its dedicated drift regression protects this local verification path.
-        verified.add('src/docich/nethack_admin_release.py')
+        verified.update(('src/docich/nethack_admin_release.py',
+                         'src/docich/nethack_admin_preflight.py'))
         for module in sorted(imported):
             relative = "src/" + module.replace(".", "/") + ".py"
             with self.subTest(module=module):
