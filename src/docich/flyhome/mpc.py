@@ -110,6 +110,7 @@ class MpcController:
         self._plan_t: float | None = None
         self._plan: list[int] | None = None
         self._last_action = 0
+        self._home_settling = False
         self._descent_ready_since: float | None = None
         self._descent_commit: tuple[float, float] | None = None
         self._hist: deque[tuple[float, float, float, float]] = deque(maxlen=6)  # (t, x, y, angle 連続値)
@@ -621,7 +622,8 @@ class MpcController:
         minimum_y = y + rising_vy * c.delay_s - rising_vy ** 2 / (2 * max(1.0, p.gravity))
         falling_vy = max(0.0, vy, future_vy)
         maximum_y = y + falling_vy * c.delay_s + falling_vy ** 2 / (2 * max(1.0, p.thrust - p.gravity))
-        ceiling = 14.0
+        # 実機Lv23: 中心23pxから姿勢制動で12pxへ上昇すると回転の余裕を失う。
+        ceiling = 24.0
         projected_x = x + vx * c.delay_s
         for hx0, hy0, hx1, hy1 in self.hazards:
             if hy1 < y and hx0 - 6 <= projected_x <= hx1 + 6:
@@ -690,9 +692,11 @@ class MpcController:
             # 実機: 家の前 (家の幅のどこでも) で地面にいれば、レベル番号の白い面が満ちていきクリアになる。
             # 横倒しで噴射すると地面を滑って家から出てしまうので、家の幅の中では何もしない。
             in_front = False
+            settling_area = False
             if st.home_bbox is not None:
                 x0, y0, x1, y1 = st.home_bbox
-                in_front = x0 + 6 <= x <= x1 - 6 and y1 - 20 <= y <= y1 + 14
+                in_front = x0 + 4 <= x <= x1 - 4 and y1 - 20 <= y <= y1 + 14
+                settling_area = x0 <= x <= x1 and y1 - 20 <= y <= y1 + 14
             grounded = False
             if self.solid is not None:
                 xi = int(x)
@@ -700,7 +704,11 @@ class MpcController:
                     if 0 <= xi < self.width and yi >= 0 and self.solid[yi * self.width + xi]:
                         grounded = True
                         break
-            if grounded and slow and (in_door or in_front):
+            # 実機Lv23: 帰宅演出中に端の量子化/速度差分で再噴射し、家から出ていた。
+            # 接地・低速で待機に入ったら、家の幅を離れるまで噴射を再開しない。
+            self._home_settling = self._home_settling and settling_area
+            if self._home_settling or (grounded and slow and (in_door or in_front)):
+                self._home_settling = True
                 self._plan, self._last_action = None, 0
                 self._acts.append((st.t, 0))
                 return False, False

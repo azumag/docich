@@ -413,3 +413,43 @@ def test_invalid_live_input_delays_are_rejected():
     for value in (-.01, .51, float('inf'), float('nan'), '0.04'):
         with pytest.raises(ValueError):
             Settings(mpc_delay_s=value)
+
+
+def test_actual_level23_ascent_stops_before_rotation_runs_out_of_headroom():
+    ctl = _actual_mpc()
+    ctl._hist.append((10, 127.924, 23.337, 0))
+    ctl._ref = [(129.2, 30, 8, 5.33)] * ctl.cfg.horizon
+    # 実フレームの上昇速度: 姿勢制動の片足噴射を足さず自由落下へ。
+    assert ctl._precision_action(127.924, 23.337, 21.779, -20.037, 0, -1.344) == 0
+    # 十分な高さでは残った回転の制動を続ける。
+    ctl._hist.clear()
+    ctl._hist.append((10, 127.924, 60, 0))
+    ctl._ref = [(129.2, 66, 8, 5.33)] * ctl.cfg.horizon
+    assert ctl._precision_action(127.924, 60, 21.779, -20.037, 0, -1.344) == 1
+
+
+def test_actual_level23_home_progress_wait_survives_edge_and_speed_quantization():
+    from docich.flyhome.tracker import State, PLAYING
+    ctl = _actual_mpc()
+    ctl.cfg.takeoff_s = 0
+    ctl._attempt = 1
+    ctl.solid = bytearray(320 * 180)
+    for y in range(164, 180):
+        for x in range(147, 189):
+            ctl.solid[y * 320 + x] = 1
+    ctl._estimate = lambda st: (st.x, st.y, st.vx, st.vy, st.angle, st.omega)
+    ctl._ref = [(168, 154.6, 0, 0)] * ctl.cfg.horizon
+    ctl._precision_action = lambda *args: 2
+    st = State(10, PLAYING, 1, 183.924, 153.337, -.0, .347, 0, 0, (168, 154.6), (147, 133, 189, 164))
+    assert ctl.decide(st, st.home) == (False, False)
+    assert ctl._home_settling
+    # 実機では演出中に端へ約2pxずれ、差分速度が13px/sになった。
+    st.t, st.x, st.vx, st.vy, st.angle = 10.3, 185.444, 13, -7.642, .311
+    assert ctl.decide(st, st.home) == (False, False)
+    # 家を離れたら追従へ戻す。試行のリセットでも待機を持ち越さない。
+    st.t, st.x = 10.6, 190
+    assert ctl.decide(st, st.home) == (False, True)
+    assert not ctl._home_settling
+    ctl._home_settling = True
+    ctl.reset()
+    assert not ctl._home_settling
