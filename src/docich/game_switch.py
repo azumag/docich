@@ -2064,6 +2064,7 @@ class GameSwitchCoordinator:
         timeout_s: float | None = None,
         abandon_program_view: bool = False,
         expected_snapshot: Mapping[str, object] | None = None,
+        adopt_failed_candidate: bool = False,
     ) -> SwitchResult:
         self._log_reset("", "recover", None)
         try:
@@ -2088,7 +2089,8 @@ class GameSwitchCoordinator:
                             warnings=(), cleanup_pending=True, receipt=None,
                         )
                 recovered = self._recover_locked(
-                    tx, deadline=deadline, abandon_program_view=abandon_program_view
+                    tx, deadline=deadline, abandon_program_view=abandon_program_view,
+                    adopt_failed_candidate=adopt_failed_candidate,
                 )
                 self._log(
                     "recovery_finished", phase="",
@@ -5081,6 +5083,7 @@ class GameSwitchCoordinator:
         *,
         deadline: float,
         abandon_program_view: bool = False,
+        adopt_failed_candidate: bool = False,
     ) -> SwitchResult:
         state = self.store.canonical.initialize()
         phase = state["phase"]
@@ -5131,6 +5134,8 @@ class GameSwitchCoordinator:
                 cleanup_pending=False,
                 receipt=None,
             )
+        if phase == "failed" and adopt_failed_candidate:
+            return self._recover_adopt_failed_candidate_locked(tx, deadline, warnings)
         if phase == "failed":
             state, _migrated = self.store.canonical.load()
             cleanup_pending = self._cleanup_leftovers_locked(tx, state, deadline, warnings)
@@ -5401,6 +5406,103 @@ class GameSwitchCoordinator:
             deadline,
             error_code="recovery",
             detail="crash後にrecoveryで復旧しました",
+        )
+
+    def _recover_adopt_failed_candidate_locked(
+        self,
+        tx: GameSwitchTransaction,
+        deadline: float,
+        warnings: list[str],
+    ) -> SwitchResult:
+        """Publish a failed-but-running candidate as active instead of killing it.
+
+        A rollback that could not stop the candidate leaves ``failed`` with
+        ``previous`` held and the candidate in ``retiring``. When that
+        candidate is in fact the live, wanted game, the ordinary recovery
+        would stop it and restart ``previous``. This operator-selected path
+        instead lets the adapter prove (canonical, immutable failed receipt,
+        broker, processes) that it is the same running candidate, and only
+        then commits it. Anything unproven leaves canonical untouched.
+        """
+
+        def refused(detail: str) -> SwitchResult:
+            self._log("recovery_adopt_refused", phase="failed", detail=detail)
+            return SwitchResult(
+                request_id="", operation="recover", status="failed", target=None,
+                from_game=None, to_game=None, generation=None,
+                error_code=ERROR_RECOVERY_REQUIRED, detail=detail,
+                warnings=tuple(warnings), cleanup_pending=True, receipt=None,
+            )
+
+        state, _migrated = self.store.canonical.load()
+        previous = state.get("previous")
+        retiring = state.get("retiring") or []
+        if (state.get("phase") != "failed" or not isinstance(previous, Mapping)
+                or state.get("active") is not None or state.get("candidate") is not None
+                or len(retiring) != 1
+                or retiring[0].get("cleanup_role") != "failed_candidate"):
+            return refused("採用できるfailed candidateの形ではありません")
+        failed = dict(retiring[0])
+        try:
+            adapter = self._make_adapter(RuntimeSpec.from_runtime(self.store.state_dir, failed), deadline)
+        except Exception as exc:
+            return refused(f"failed candidate adapter生成失敗: {_safe_detail(exc)}")
+        adopt = getattr(adapter, "adopt_failed_candidate", None)
+        if not callable(adopt):
+            return refused("このadapterはfailed candidateの採用に対応していません")
+        try:
+            adopted_ok = self._call_adapter(
+                lambda cancel: adopt(deadline, cancel), deadline,
+                max(deadline - time.monotonic(), 0.0), "adopt_failed_candidate",
+            )
+        except Exception as exc:
+            return refused(f"failed candidateの採用証明に失敗しました: {_safe_detail(exc)}")
+        if adopted_ok is not True:
+            return refused("failed candidateが稼働中の同一candidateであることを証明できません")
+        # The adapter settled its own residue; canonical must be unchanged.
+        current, _migrated = self.store.canonical.load()
+        if current != state:
+            return refused("採用の証明中にcanonical stateが変化しました")
+
+        active = {k: v for k, v in failed.items() if k != "cleanup_role"}
+        last_result = {
+            "request_id": "",
+            "operation": "recover",
+            "status": "succeeded",
+            "from_game": previous.get("game"),
+            "to_game": active["game"],
+            "generation": active["generation"],
+            "active_runtime": {k: active[k] for k in
+                               ("game", "runtime_id", "generation", "lease_id")},
+            "error_code": None,
+            "detail": "failed candidateを稼働中のまま採用しました",
+        }
+        # ``previous`` was already quiesced by the failed switch; retire it so
+        # finalize confirms its resources are released (idempotent teardown).
+        tx.transition(
+            {"failed"}, "ready",
+            updates={
+                "active": active,
+                "candidate": None,
+                "previous": None,
+                "retiring": [dict(previous)],
+                "operation": None,
+                "request_id": None,
+                "deadline_at": None,
+                "last_result": last_result,
+                "last_error": None,
+            },
+            crash_hook=self.crash_hook,
+        )
+        self._log("committed", phase="ready", result="succeeded")
+        self._emit_post_commit(active["game"])
+        cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings)
+        return SwitchResult(
+            request_id="", operation="recover", status="succeeded", target=None,
+            from_game=previous.get("game"), to_game=active["game"],
+            generation=active["generation"], error_code=None,
+            detail=last_result["detail"], warnings=tuple(warnings),
+            cleanup_pending=cleanup_pending, receipt=None,
         )
 
     def _recover_from_previous_locked(

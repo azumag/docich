@@ -479,6 +479,126 @@ class SorenCoordinatorAdapter:
         current, missing = store.canonical.load()
         return not missing and current == state
 
+    def _adoptable_failed_candidate_state(self):
+        """Prove canonical records this Soren as the failed, still-wanted candidate.
+
+        A switch that timed out while the Soren singleton was in fact coming
+        up (and whose rollback then failed) leaves the running game tracked
+        only as ``retiring``/``failed_candidate`` beside a non-Soren
+        ``previous``. Adoption is allowed only for exactly that shape, tied
+        to the immutable failed receipt of the same switch.
+        """
+        store = GameSwitchStore(self.g.state_dir)
+        state, missing = store.canonical.load()
+        previous = state.get("previous") or {}
+        retiring = state.get("retiring") or []
+        last = state.get("last_result") or {}
+        if (missing or state.get("phase") != "failed" or self.agent_enabled
+                or self.spec.adapter != "soren" or not self.spec.lease_id
+                or state.get("active") is not None or state.get("candidate") is not None
+                or state.get("request_id") is not None or len(retiring) != 1
+                or not previous or previous.get("adapter") == "soren"
+                or previous.get("game") == self.spec.game
+                or last.get("status") != "failed" or last.get("error_code") != "rollback_failed"
+                or last.get("to_game") != self.spec.game
+                or type(last.get("generation")) is not int
+                or last["generation"] != self.spec.generation
+                or not previous["generation"] < self.spec.generation):
+            return None
+        failed = retiring[0]
+        if (failed.get("cleanup_role") != "failed_candidate" or "retirement" in failed
+                or any(failed.get(k) != getattr(self.spec, k) for k in
+                       ("game", "adapter", "runtime_id", "generation", "lease_id"))):
+            return None
+        try:
+            receipt = store.receipts.load(last.get("request_id"))
+            result = (receipt.get("result") or {}) if receipt else {}
+            if (not receipt or receipt.get("status") != "failed"
+                    or receipt.get("operation") not in {"start", "switch", "rotate", "restart"}
+                    or result.get("status") != "failed"
+                    or result.get("error_code") != "rollback_failed"
+                    or result.get("request_id") != last.get("request_id")
+                    or result.get("to_game") != self.spec.game
+                    or receipt.get("target") != self.spec.game
+                    or receipt.get("generation") != self.spec.generation):
+                return None
+        except (RuntimeError, ValueError, TypeError, KeyError):
+            return None
+        return state
+
+    def _failed_candidate_broker_state(self, payload: dict) -> str | None:
+        """Classify broker residue: only this candidate's own cleanup request.
+
+        ``stale``: its stop request timed out (the stop never started);
+        ``cancelled``: that request was cancelled and awaits fresh-start
+        archival; ``clean``: nothing held. Anything else (another request, a
+        resource, an irreversible stop in progress) is refused.
+        """
+        if (type(payload.get("schema")) is not int or payload["schema"] != 1
+                or any(k not in payload for k in ("request", "ack", "resource", "control"))
+                or payload["resource"] is not None):
+            return None
+        request, ack, control = payload["request"], payload["ack"], payload["control"]
+        if request is None and ack is None and control is None:
+            return "clean"
+        request_id = self._candidate_cleanup_request_id()
+        for record in (request, ack):
+            if (not isinstance(record, dict) or record.get("request_id") != request_id
+                    or record.get("game") != self.spec.game
+                    or record.get("generation") != self.spec.generation):
+                return None
+        if control is not None and (not isinstance(control, dict)
+                                    or control.get("request_id") != request_id):
+            return None
+        status = ack.get("status")
+        if status == "timeout" and control is None:
+            return "stale"
+        if status == "cancelled":
+            return "cancelled"
+        return None
+
+    def _live_singleton_processes(self):
+        processes = {name: self._singleton_process_identity(name) for name in
+                     ("soren_loop.sh", "soviet_watchdog.sh")}
+        if (any(value is None for value in processes.values())
+                or processes["soren_loop.sh"][0] == processes["soviet_watchdog.sh"][0]):
+            return None
+        return processes
+
+    def adopt_failed_candidate(self, deadline: float, cancel) -> bool:
+        """Keep the live failed candidate: settle its broker residue, then prove it.
+
+        The coordinator holds the canonical writer lock. Fail closed (False)
+        unless canonical, the immutable failed receipt, the broker and the
+        singleton processes all agree this is the same, running candidate.
+        """
+        if self._adoptable_failed_candidate_state() is None:
+            return False
+        before = self._live_singleton_processes()
+        broker = self._failed_candidate_broker_state(self._status(deadline, cancel))
+        if before is None or broker is None:
+            return False
+        request_id = self._candidate_cleanup_request_id()
+        if broker == "stale":
+            rc, _ = self._run([str(self.control), "cancel", request_id], deadline, cancel)
+            if rc != 0:
+                return False
+            broker = self._failed_candidate_broker_state(self._status(deadline, cancel))
+        if broker == "cancelled":
+            # Archives the cancelled request. A cancelled ack never applies
+            # the fresh-start process fence: these are the live processes.
+            self.materialize_runtime(deadline, cancel)
+            broker = self._failed_candidate_broker_state(self._status(deadline, cancel))
+        if broker != "clean":
+            return False
+        self.readiness(deadline, cancel)
+        self._check(deadline, cancel)
+        first = self._live_singleton_processes()
+        self._check(deadline, cancel)
+        second = self._live_singleton_processes()
+        return (first is not None and first == second
+                and self._adoptable_failed_candidate_state() is not None)
+
     def _singleton_process_identity(self, expected: str, *, proc_root=Path("/proc")):
         """Prove the fixed-root script is a shell's program, not a data argument.
 
@@ -581,13 +701,16 @@ class SorenCoordinatorAdapter:
             return result["request_id"]
         return None
 
+    def _candidate_cleanup_request_id(self) -> str:
+        identity = ":".join(str(getattr(self.spec, key)) for key in
+                            ("game", "runtime_id", "generation", "lease_id"))
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, "docich:soren-candidate-cleanup:" + identity))
+
     def _candidate_cleanup_request(self, deadline: float, cancel) -> str:
         # Stable across adapter reconstruction/recovery. The broker persists
         # the first accepted deadline; an already accepted request is polled,
         # never replaced with a fresh timeout or another UUID.
-        identity = ":".join(str(getattr(self.spec, key)) for key in
-                            ("game", "runtime_id", "generation", "lease_id"))
-        request_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "docich:soren-candidate-cleanup:" + identity))
+        request_id = self._candidate_cleanup_request_id()
         source_request = self._committed_source_request()
         committed_source = source_request is not None
         if committed_source:
