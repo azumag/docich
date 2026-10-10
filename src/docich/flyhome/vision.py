@@ -401,7 +401,10 @@ def analyze(
             px0, py0, px1, py1 = player.bbox
             bx0, by0, bx1, by1 = b.bbox
             near = bx0 <= px1 + 6 and bx1 >= px0 - 6 and by0 <= py1 + 6 and by1 >= py0 - 6
-            if near and b.area <= 40:
+            spike_red = any(190 <= native.get(xx, yy)[0] <= 230
+                            and native.get(xx, yy)[1] < 25 and native.get(xx, yy)[2] < 25
+                            for xx, yy in b.pixels) if near and b.area <= 40 else False
+            if near and b.area <= 40 and not spike_red:
                 flames.append(b)
                 continue
         if b.label == RED and b.area >= 3:

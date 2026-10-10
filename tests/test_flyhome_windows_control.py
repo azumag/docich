@@ -124,3 +124,45 @@ def test_aligned_descent_does_not_return_to_old_recovery_leg():
     assert ctl._precision_debug[2] == 0
     ctl.reset()
     assert ctl._descent_commit is None
+
+
+def test_low_corridor_brakes_before_body_reaches_bottom_edge():
+    ctl = MpcController()
+    ctl._hist.append((10, 170, 161, 0))
+    ctl._ref = [(170, 162, 0, 0)] * ctl.cfg.horizon
+    # Lv48の家の下: y158の参照へ降りる途中でも、入力遅れ用の下端余白を残す。
+    assert ctl._precision_action(170, 161, 0, 0, 0, 0) == 3
+
+
+def test_terrain_above_full_body_does_not_disable_rotation_under_house():
+    ctl = MpcController(height=200)
+    ctl.solid = bytearray(320 * 200)
+    for y in range(144, 149):
+        ctl.solid[y * 320 + 140:y * 320 + 195] = bytes([1]) * 55
+    ctl._hist.append((10, 170, 159, .4))
+    ctl._ref = [(150, 158, -8, 0)] * ctl.cfg.horizon
+    # Lv48の家の下: 本体の頭はy152。旧y-14プローブだけが地形へ入り噴射を止めた。
+    assert ctl._precision_action(170, 159, -20, 5, .4, 0) == 2
+    # 実際に頭が地形へ接する高さでは、先に噴射を切り離れる。
+    assert ctl._precision_action(170, 150, -20, 5, 0, 0) == 0
+
+
+def test_real_spike_red_ring_is_not_removed_as_nearby_jet_flame():
+    from docich.flyhome import vision
+    from docich.flyhome.image import Image
+    from docich.flyhome.settings import Settings
+    img = Image.blank(320, 180)
+    for y in range(80, 94):
+        for x in range(110, 118):
+            img.put(x, y, (255, 127, 0))
+    for y in range(80, 90):
+        for x in range(99, 109):
+            if x in (99, 108) or y in (80, 89):
+                img.put(x, y, (217, 0, 0))
+    for y in range(95, 99):
+        for x in range(110, 112):
+            img.put(x, y, (251, 0, 2))
+    obs = vision.analyze(img, Settings())
+    assert obs.player is not None
+    assert (99, 80, 109, 90) in obs.hazards
+    assert (110, 95, 112, 99) not in obs.hazards

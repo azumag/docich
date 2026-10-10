@@ -552,10 +552,11 @@ class MpcController:
                 self._descent_ready_since = None
         # 頭を天井へ押し付けると実機では回転が止まる。横へ曲がる前に下降して空間を作る。
         if self.solid is not None and abs(rx - x) > 3:
-            for ox in (-2, 0, 2):
-                xi, yi = int(x + ox), int(y - 14)
-                if 0 <= xi < self.width and 0 <= yi < self.height and self.solid[yi * self.width + xi]:
-                    return 0
+            for d in range(1, 9):
+                for ox in (-2, 0, 2):
+                    xi, yi = int(x + math.sin(ang) * d + ox), int(y - math.cos(ang) * d)
+                    if 0 <= xi < self.width and 0 <= yi < self.height and self.solid[yi * self.width + xi]:
+                        return 0
         vertical_lane = abs(rvx) < 0.1 and rvy > 3
         want_vx = max(-8.0, min(8.0, rvx + 0.8 * (rx - x)))
         want_vy = max(-12.0, min(12.0, rvy + 0.8 * (ry - y)))
@@ -591,7 +592,7 @@ class MpcController:
             if hy1 < y and hx0 - 6 <= projected_x <= hx1 + 6:
                 ceiling = max(ceiling, hy1 + 10.0)
         self._precision_debug += [round(v, 3) for v in (minimum_y, ceiling, maximum_y)]
-        if maximum_y > self.height - 16 and abs(ang) < 0.5:
+        if maximum_y > self.height - 20 and abs(ang) < 0.5:
             return 3
         if rising_vy < 0 and minimum_y < ceiling and abs(ang) < 1.0:
             return 0

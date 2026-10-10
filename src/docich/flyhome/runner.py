@@ -389,7 +389,7 @@ def play(
                 if planning_s > 0.03:
                     st = loop.tick()  # 重い再計画中にも実機は動く。古い角度のまま次の噴射を選ばない。
                 control_start = backend.now()
-                if path is not None and st.phase == PLAYING:
+                if path is not None and st.phase == PLAYING and loop.obs.player is not None:
                     keys = ctl.decide(st, planner.lookahead(path, (st.x, st.y)))
                 control_s = backend.now() - control_start
                 if motion_pos is None or abs(st.x - motion_pos[0]) + abs(st.y - motion_pos[1]) > 3.0:
