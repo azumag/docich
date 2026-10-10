@@ -49,18 +49,27 @@ def test_unconfigured_transport_only_records_pending_local_speech(tmp_path):
     assert not journal.path.with_suffix('.receipts.jsonl').exists()
 
 
-def test_narration_suppresses_intro_death_and_repeats_of_terminal_state(tmp_path):
+def test_narration_only_speaks_explicit_findings_and_strategy_updates(tmp_path):
     journal = SpeechJournal(tmp_path / 'speech.jsonl')
-    narrator = LiveNarrator(journal, 9)
+    narrator = LiveNarrator(journal, 15)
     st = SimpleNamespace(t=10, attempt=1, phase='playing', x=40, y=80)
-    narrator.step(st)
-    st.t=10.4;st.phase='dead';narrator.step(st)
-    st.t=11;st.attempt=2;st.phase='playing';narrator.step(st)
-    st.t=30;st.phase='cleared';narrator.step(st);narrator.step(st)
+    for attempt in range(1, 5):
+        st.attempt = attempt
+        for phase in ('playing', 'dead', 'cleared'):
+            st.phase = phase
+            narrator.step(st)
+    assert journal.published == 0
+    text = '15面の低い通路は横倒しで滑って通ります。'
+    event_id = narrator.note(text, 'strategy')
+    assert event_id
+    assert narrator.note(text, 'strategy') is None
+    with pytest.raises(ValueError):
+        narrator.note('試行を始めます。', 'level_start')
     journal.close()
     events = [json.loads(l) for l in journal.path.read_text(encoding='utf-8').splitlines()]
-    assert [e['kind'] for e in events].count('failure') == 0
-    assert [e['kind'] for e in events].count('clear_screen') == 1
+    assert len(events) == 1
+    assert events[0]['kind'] == 'strategy'
+    assert events[0]['attempt'] == 4
 
 
 @pytest.mark.parametrize('url', ['http://user:secret@vm/', 'http://vm/?token=secret', 'file:///tmp/audio'])

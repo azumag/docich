@@ -99,33 +99,21 @@ class SpeechJournal:
         self.futures.clear()
 
 class LiveNarrator:
+    """試行や座標では発話せず、確認した戦略更新・発見だけを明示的に送る。"""
     def __init__(self, journal, level):
         self.journal, self.level = journal, level
-        self.last_spoken = -1e30
-        self.attempt_started = None
         self.last_attempt = None
-        self.terminal = set()
-        self.journal.publish(f'{level}面を始めます。家に帰るまで実機で挑戦します。', 'level_start', level)
+        self.notes = set()
 
     def step(self, state):
-        if state.attempt != self.last_attempt:
-            self.last_attempt = state.attempt
-            self.attempt_started = state.t
-        key = (state.attempt, state.phase)
-        if state.phase == 'cleared' and key not in self.terminal:
-            self.terminal.add(key)
-            self.journal.publish(f'{self.level}面でクリア画面が出ました。次の面へ進みます。',
-                                 'clear_screen', self.level, state.attempt, 300)
-            self.last_spoken = state.t
-        elif state.phase == 'dead' and key not in self.terminal:
-            self.terminal.add(key)
-            if state.t - self.attempt_started >= 1.2 and state.t - self.last_spoken >= 10:
-                self.journal.publish(f'{self.level}面、試行{state.attempt}は失敗しました。もう一度挑戦します。',
-                                     'failure', self.level, state.attempt)
-                self.last_spoken = state.t
-        elif state.phase == 'playing' and state.x is not None and state.t - self.last_spoken >= 15:
-            vertical = '上' if state.y < 60 else '下' if state.y > 120 else '中央'
-            horizontal = '左' if state.x < 100 else '右' if state.x > 220 else '中央'
-            self.journal.publish(f'{self.level}面、試行{state.attempt}。画面の{vertical}、{horizontal}側で家への進路を試しています。',
-                                 'progress', self.level, state.attempt)
-            self.last_spoken = state.t
+        self.last_attempt = state.attempt
+
+    def note(self, text, kind):
+        if kind not in ('strategy', 'finding', 'verified_progress', 'complete_verified'):
+            raise ValueError('narration requires a meaningful strategy update or verified finding')
+        key = (kind, text)
+        if key in self.notes:
+            return None
+        event_id = self.journal.publish(text, kind, self.level, self.last_attempt, 300)
+        self.notes.add(key)
+        return event_id
