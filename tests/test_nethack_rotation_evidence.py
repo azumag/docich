@@ -267,6 +267,14 @@ class RotationEvidenceTests(unittest.TestCase):
                          ['corner_rotation.json', 'game-switch', 'game_switch.json',
                           'nethack_corner.json', 'runtimes'])
 
+    def test_previous_game_owner_with_source_less_receipts_is_legacy_applicable(self):
+        self.owner.update(previous_game='sorengame')
+        self.write('nethack_corner.json', self.owner)
+        self.assertTrue(self.collect()['legacy_contract_applicable'])
+        self.owner.update(previous_game='ninvaders')
+        self.write('nethack_corner.json', self.owner)
+        self.assertFalse(self.collect()['legacy_contract_applicable'])
+
     def test_current_owner_selects_recorded_contract_without_becoming_legacy(self):
         self.owner.update(previous_game='sorengame', restore_recovery={'secret':'DO_NOT_EMIT'})
         self.write('nethack_corner.json', self.owner)

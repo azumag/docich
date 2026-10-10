@@ -1,9 +1,14 @@
 """Read-only proof for the owner-approved legacy NetHack return contract.
 
-Only old corners missing previous_game qualify. Two request-bound process-exit
-acknowledgements substitute for the missing historical source lease; the live
-target still requires its complete canonical identity and snapshot. This module
-never changes a receipt, runtime, reservation, save, or process.
+Only old corners qualify: previous_game is absent, or it is the recorded
+``sorengame`` source of an owner written before receipts carried source
+identities (#1969: previous_game was persisted earlier than source_runtime, so
+its presence alone does not make an owner modern -- the receipts decide, and
+any receipt with a source identity is refused below). Two request-bound
+process-exit acknowledgements substitute for the missing historical source
+lease; the live target still requires its complete canonical identity and
+snapshot. This module never changes a receipt, runtime, reservation, save, or
+process.
 """
 from __future__ import annotations
 
@@ -19,6 +24,7 @@ from .naming import runtime_id_generation, validate_runtime_id
 from .retro_corner import RetroCornerManager
 
 RECORD_KEY = "legacy_return_reconciliation"
+LEGACY_PREVIOUS_GAME = "sorengame"
 
 
 class ReturnUnproven(ValueError):
@@ -139,7 +145,8 @@ def legacy_return_proof(root: Path, owner, ledger, *, player, now):
     from .corner_rotation import timestamp
 
     _require(type(owner.get("schema_version")) is int and owner["schema_version"] == 1
-             and "previous_game" not in owner and owner.get("game") == "nethack"
+             and owner.get("previous_game", LEGACY_PREVIOUS_GAME) == LEGACY_PREVIOUS_GAME
+             and owner.get("game") == "nethack"
              and owner.get("status") in {"failed", "interrupted"}
              and owner.get("finish_reason") == "terminal"
              and all(key not in owner for key in
