@@ -14,7 +14,7 @@ import time
 import uuid
 
 from .config import load_global
-from .corner_boundary import other_corner_busy, program_slot
+from .corner_boundary import CornerWaitExpired, other_corner_busy, program_slot
 from .external_video_receiver import (
     ExternalVideoError, exclusive, prepare, read_json, read_receiver,
     receive, request_receiver_stop,
@@ -24,6 +24,10 @@ from .game_switch import GameSwitchCoordinator, GameSwitchStore, atomic_write_js
 VIEW_NAME = "external-video-view"
 STATE_FILE = "external_video_corner.json"
 PENDING = {"queued", "in_progress", "busy"}
+
+
+class WaitingStopped(ExternalVideoError):
+    pass
 
 
 def identity(runtime):
@@ -163,11 +167,61 @@ class ExternalVideoCornerManager:
         self.save(state)
         return True
 
-    def run(self, duration_minutes=15, *, recovering=False, require_audio=True):
+    def _initialize(self, state, current, receiver, require_audio):
+        if not stable(current):
+            raise ExternalVideoError("game-switch requires recovery before external corner")
+        source = identity(current.get("active"))
+        if source and source["game"] == VIEW_NAME:
+            raise ExternalVideoError("external view has no matching corner owner")
+        if not receiver["fresh"] or receiver["expires_at"] - self.clock() < 30:
+            raise ExternalVideoError("receiver has no safe fresh video lifetime")
+        if require_audio and not receiver.get("audio_present"):
+            raise ExternalVideoError("OBS audio has not been decoded")
+        state.update(status="starting", receiver_id=receiver["receiver_id"],
+                     previous_runtime_identity=source, receiver_expires_at=receiver["expires_at"])
+        self.save(state)
+
+    def _receiver_at_turn(self, state, require_audio):
+        # An expired reservation may be renewed only after its exact worker
+        # has exited. A replacement by any other operator is never adopted.
+        deadline = min(self.clock() + 30, state["wait_deadline_at"])
+        renewed = False
+        while True:
+            self._check_wait(state)
+            if self.clock() >= deadline:
+                raise ExternalVideoError("OBS did not provide fresh video and audio at the reserved turn")
+            receiver = read_receiver(self.g, expected=state["receiver_id"])
+            if receiver["fresh"] and (not require_audio or receiver.get("audio_present")):
+                return receiver
+            if (not renewed and not receiver["alive"]
+                    and (receiver.get("status") != "launching" or self.clock() >= receiver["expires_at"])):
+                reservation = prepare(self.g, state["listen_ip"], 60,
+                                      expected_receiver_id=state["receiver_id"])
+                state["receiver_id"] = reservation["receiver_id"]
+                self.save(state)
+                renewed = True
+            if self.clock() >= deadline:
+                raise ExternalVideoError("OBS did not provide fresh video and audio at the reserved turn")
+            self.sleep(1)
+
+    def _check_wait(self, state):
+        if self.stop_requested(state):
+            raise WaitingStopped("external corner waiting was stopped")
+        if self.clock() >= state["wait_deadline_at"]:
+            raise CornerWaitExpired("external corner waiting expired")
+        if (Path(self.g.state_dir) / "corners" / "external-video.paused").exists():
+            raise WaitingStopped("external corner was paused while waiting")
+
+    def run(self, duration_minutes=15, *, recovering=False, require_audio=True,
+            wait_for_idle=False, wait_minutes=120):
         if type(duration_minutes) is not int or not 1 <= duration_minutes <= 30:
             raise ExternalVideoError("corner duration must be 1-30 minutes")
+        if type(wait_minutes) is not int or not 1 <= wait_minutes <= 120:
+            raise ExternalVideoError("corner waiting must be 1-120 minutes")
+        if recovering and wait_for_idle:
+            raise ExternalVideoError("recovery cannot create a new waiting reservation")
         with exclusive(Path(self.g.state_dir) / "external-video-corner.lock"):
-            current = self.canonical()
+            current = None if wait_for_idle else self.canonical()
             if recovering:
                 state = read_json(self.path)
                 if state.get("status") not in {"starting", "active", "restoring", "failed"}:
@@ -204,28 +258,35 @@ class ExternalVideoCornerManager:
                     raise ExternalVideoError("external video corner is paused")
                 if self.path.exists() and read_json(self.path).get("status") in {"starting", "active", "restoring", "failed"}:
                     raise ExternalVideoError("existing external corner must recover or finish")
-                if not stable(current):
-                    raise ExternalVideoError("game-switch requires recovery before external corner")
-                source = identity(current.get("active"))
-                if source and source["game"] == VIEW_NAME:
-                    raise ExternalVideoError("external view has no matching corner owner")
-                if other_corner_busy(self.g, self.path):
-                    raise ExternalVideoError("another program owner must finish or recover")
-                receiver = read_receiver(self.g, fresh=True)
-                if receiver["expires_at"] - self.clock() < 30:
-                    raise ExternalVideoError("receiver expiry is too near for a safe start")
-                if require_audio and not receiver.get("audio_present"):
-                    raise ExternalVideoError("OBS audio has not been decoded")
                 now = self.clock()
-                state = dict(schema_version=1, game=VIEW_NAME, status="starting",
-                             start_request_id=str(uuid.uuid4()), receiver_id=receiver["receiver_id"],
-                             previous_runtime_identity=source, requested_at=now,
-                             duration_minutes=duration_minutes, receiver_expires_at=receiver["expires_at"])
-                self.save(state)
+                state = dict(schema_version=1, game=VIEW_NAME, status="waiting",
+                             start_request_id=str(uuid.uuid4()), requested_at=now,
+                             duration_minutes=duration_minutes, wait_deadline_at=now + wait_minutes * 60)
+                if wait_for_idle:
+                    receiver = read_receiver(self.g)
+                    state.update(receiver_id=receiver["receiver_id"], listen_ip=receiver["listen_ip"])
+                    self.save(state)
+                else:
+                    # Preserve the immediate mode's refusal before mutation.
+                    if not stable(current):
+                        raise ExternalVideoError("game-switch requires recovery before external corner")
+                    if other_corner_busy(self.g, self.path):
+                        raise ExternalVideoError("another program owner must finish or recover")
+                    self._initialize(state, current, read_receiver(self.g, fresh=True), require_audio)
             try:
+                def waiting_sleep(seconds):
+                    self._check_wait(state)
+                    self.sleep(seconds)
+
                 with program_slot(self.g, self.path, requested_at=state["requested_at"],
-                                  wait_deadline_ts=min(self.clock() + 600, state["receiver_expires_at"]),
-                                  wait_boundary=True):
+                                  wait_deadline_ts=(state["wait_deadline_at"] if wait_for_idle
+                                      else min(self.clock() + 600, state["receiver_expires_at"])),
+                                  wait_boundary=True,
+                                  **(dict(sleep=waiting_sleep, now=self.clock) if wait_for_idle else {})):
+                    if wait_for_idle:
+                        self._check_wait(state)
+                        receiver = self._receiver_at_turn(state, require_audio)
+                        self._initialize(state, self.canonical(), receiver, require_audio)
                     if state["status"] == "starting":
                         receipt = self.store.receipts.load(state["start_request_id"])
                         if self.stop_requested(state) and receipt is None:
@@ -257,7 +318,15 @@ class ExternalVideoCornerManager:
                     while not self.restore(state, reason):
                         self.sleep(1)
                     return state
-            except Exception:
+            except Exception as exc:
+                if state.get("status") == "waiting":
+                    state.update(status="interrupted", recovery_required=False,
+                                 completed_at=self.clock(), end_reason=("wait-expired"
+                                     if isinstance(exc, CornerWaitExpired) else "waiting-cancelled"))
+                    self.save(state)
+                    if isinstance(exc, (CornerWaitExpired, WaitingStopped)):
+                        return state
+                    raise
                 # On a local preview/state failure, restore a still-proven
                 # active view before retaining a failed owner. Never do this
                 # when another runtime has acquired the display.
@@ -286,6 +355,8 @@ def main(argv=None):
     p.add_argument("--receiver-id", required=True)
     p = sub.add_parser("start")
     p.add_argument("--duration-minutes", type=int, default=15)
+    p.add_argument("--wait-for-idle", action="store_true", help="queue behind the current corner without requesting its end")
+    p.add_argument("--wait-minutes", type=int, default=120, help="bounded FIFO wait, 1-120 minutes")
     p.add_argument("--video-only", action="store_true", help="explicitly permit an OBS source without audio")
     for command in ("status", "stop", "recover", "receiver-stop"):
         sub.add_parser(command)
@@ -302,7 +373,7 @@ def main(argv=None):
                       "corner": read_json(manager.path) if manager.path.exists() else {"status": "idle"}}
         elif args.command == "stop":
             state = read_json(manager.path)
-            if state.get("status") not in {"starting", "active", "restoring"}:
+            if state.get("status") not in {"waiting", "starting", "active", "restoring"}:
                 raise ExternalVideoError("external corner is not running; use recover for failed ownership")
             atomic_write_json(Path(g.state_dir) / "external_video_stop.json",
                               {"start_request_id": state["start_request_id"]})
@@ -318,7 +389,9 @@ def main(argv=None):
             signal.signal(signal.SIGINT, lambda *_: setattr(manager, "stopping", True))
             output = manager.run(args.duration_minutes if args.command == "start" else 15,
                                  recovering=args.command == "recover",
-                                 require_audio=not getattr(args, "video_only", False))
+                                 require_audio=not getattr(args, "video_only", False),
+                                 wait_for_idle=getattr(args, "wait_for_idle", False),
+                                 wait_minutes=getattr(args, "wait_minutes", 120))
         print(json.dumps(output, ensure_ascii=False))
         return 0
     except ExternalVideoError as exc:

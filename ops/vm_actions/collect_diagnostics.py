@@ -4232,7 +4232,7 @@ def _collect_external_video(state_dir, now):
         entry["corner_status"] = "unknown"
     if readable:
         status = corner.get("status")
-        if status in {"starting", "active", "restoring", "failed", "completed", "interrupted"}:
+        if status in {"waiting", "starting", "active", "restoring", "failed", "completed", "interrupted"}:
             entry["corner_status"] = status
         entry["recovery_required"] = corner.get("recovery_required") is True
     receiver_path = Path(state_dir) / _REG.EXTERNAL_VIDEO["receiver_file"]
