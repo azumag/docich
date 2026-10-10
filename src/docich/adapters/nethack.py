@@ -158,6 +158,16 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         self.player_name, self.save_dir = self._load_nethack_settings(game)
         self.presentation_mode = self._load_presentation_mode(game)
 
+    def materialize_runtime(self, deadline, cancel):
+        from ..nethack_resource_fence import resource_fence
+        with resource_fence(self.g.state_dir):
+            return super().materialize_runtime(deadline, cancel)
+
+    def start_agent(self, deadline, cancel):
+        from ..nethack_resource_fence import resource_fence
+        with resource_fence(self.g.state_dir):
+            return super().start_agent(deadline, cancel)
+
     @staticmethod
     def _load_presentation_mode(game) -> str:
         raw = game.raw.get("nethack", {}) if isinstance(game.raw, dict) else {}

@@ -887,6 +887,13 @@ class NethackTilesSupervisor:
         return None
 
     def run(self) -> int:
+        # Cover every browser/TTY fallback and its final child cleanup, not
+        # just the first spawn. Shared with materialize_runtime's producer.
+        from docich.nethack_resource_fence import resource_fence
+        with resource_fence(self.state_dir):
+            return self._run_fenced()
+
+    def _run_fenced(self) -> int:
         result = 0
         manifest_refresh_at = self._clock() + MANIFEST_REFRESH_INTERVAL_S
         try:

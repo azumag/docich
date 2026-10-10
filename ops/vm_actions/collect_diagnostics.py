@@ -115,6 +115,10 @@ import urllib.request
 from pathlib import Path
 
 PROD_ROOT = Path(__file__).resolve().parents[2]
+# Diagnostics is read-only, including first imports of deployed helpers. Ignore
+# local bytecode caches so drift verification refers to the source being run.
+sys.dont_write_bytecode = True
+sys.pycache_prefix = '/dev/null/docich-disabled-cache'
 sys.path.insert(0, str(PROD_ROOT / "src"))
 
 from docich.runtime_backend import _pid_is_active, _process_is_zombie  # noqa: E402
@@ -6785,6 +6789,69 @@ def _nethack_evidence_contract_conditions(owner, ledger, original, landed, now):
     )
 
 
+def _verified_nethack_admin_sha():
+    # Verify every imported authority helper before importing it. The installed
+    # gateway's older diagnostic allowlist need not be expanded or reinstalled.
+    try:
+        deadline = time.monotonic() + 5
+        def git(*args):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError()
+            return subprocess.run(['git', '-C', str(PROD_ROOT), '-c', 'core.hooksPath=/dev/null',
+                                   *args], capture_output=True, timeout=min(3, remaining),
+                                  env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'GIT_OPTIONAL_LOCKS': '0'})
+        # Transitive project imports must also be clean; no root-owned gateway
+        # allowlist update is needed. Untracked package modules are refused too.
+        clean = git('status', '--porcelain', '--untracked-files=all', '--', 'src/docich')
+        if clean.returncode or clean.stdout:
+            return None
+        paths = ('src/docich/nethack_admin_release.py', 'src/docich/nethack_admin_resources.py',
+                 'src/docich/nethack_admin_preflight.py',
+                 'src/docich/nethack_admin_result.py', 'src/docich/nethack_resource_fence.py',
+                 'src/docich/nethack_return.py', 'src/docich/retro_corner.py',
+                 'src/docich/game_switch.py', 'src/docich/hanjuku_manual_cancel.py',
+                 'src/docich/naming.py', 'src/docich/tmux.py')
+        for name in paths:
+            path = PROD_ROOT / name
+            if any(p.is_symlink() for p in (path, *path.parents)):
+                return None
+            expected = git('show', f'HEAD:{name}')
+            if expected.returncode or expected.stdout != path.read_bytes():
+                return None
+        revision = git('rev-parse', 'HEAD')
+        if revision.returncode:
+            return None
+        return revision.stdout.decode().strip()
+    except Exception:
+        return None
+
+
+def _collect_nethack_admin_check(state_dir, soren, now, *, player):
+    unavailable = {'schema_version': 1, 'status': 'refused', 'reason': 'code_unverified',
+                   'history_authority': False, 'all_resources_released': None}
+    try:
+        sha = _verified_nethack_admin_sha()
+        if sha is None:
+            return unavailable
+        from docich.nethack_admin_release import check
+        return check(Path(state_dir), Path(soren), player=player, sha=sha, now=now)
+    except Exception:
+        return unavailable
+
+
+def _collect_nethack_admin_preflight(state_dir, soren, now, *, player):
+    unavailable = dict(schema_version=1, status='unavailable', reason='code_unverified',
+        release_authority=False, history_authority=False, resource_absence_proven=False)
+    try:
+        if _verified_nethack_admin_sha() is None:
+            return unavailable
+        from docich.nethack_admin_preflight import preflight
+        return preflight(Path(state_dir), Path(soren), player=player, now=now)
+    except Exception:
+        return unavailable
+
+
 def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=None):
     """Observe one automatic failed owner; evidence is never recovery authority.
 
@@ -7347,6 +7414,12 @@ def _diagnostics_budget(payload):
     # only against the gateway's hard ceiling, where keeping it would fail the
     # whole diagnostics operation instead of one field.
     text = _nethack_history_budget(payload)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES and "nethack_admin_preflight" in payload:
+        payload["nethack_admin_preflight"] = {
+            "schema_version": 1, "status": "output_omitted", "release_authority": False,
+            "history_authority": False, "resource_absence_proven": False,
+        }
+        text = _nethack_history_budget(payload)
     if (len(text.encode("utf-8")) > HARD_JSON_BYTES and isinstance(retro, dict)
             and "decision_plans" in retro):
         retro["decision_plans"] = {"status": "output_omitted"}
@@ -7500,6 +7573,10 @@ def main(argv):
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "nethack_rotation_evidence": _collect_nethack_rotation_evidence(
             _program_state_dir(), now, player=_nethack_evidence_player()),
+        "nethack_admin_check": _collect_nethack_admin_check(
+            _program_state_dir(), soren, now, player=_nethack_evidence_player()),
+        "nethack_admin_preflight": _collect_nethack_admin_preflight(
+            _program_state_dir(), soren, now, player=_nethack_evidence_player()),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
         "nethack_tiles": _collect_nethack_tiles(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),

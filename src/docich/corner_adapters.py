@@ -316,6 +316,17 @@ class MerikenCornerAdapter(GameCornerAdapter):
 
 
 class NethackCornerAdapter(GameCornerAdapter):
+    def observations(self):
+        from .nethack_admin_release import administrative_observation
+        for path in (self.state_path, self.state_path.with_name('nethack_corner_manual.json')):
+            if path.exists():
+                state = json.loads(path.read_text())
+                if not isinstance(state, dict):
+                    raise CornerExecutionError('invalid adapter state')
+                if state.get('game', self.corner.game) == self.corner.game:
+                    yield (administrative_observation(self.g.state_dir, state)
+                           if path.name == 'nethack_corner.json' else state)
+
     def recovery_guard(self, reservation):
         return self.manager.legacy_return_recovery_guard(reservation)
 

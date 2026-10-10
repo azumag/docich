@@ -162,11 +162,13 @@ class CornerRotationAuthorizeTests(unittest.TestCase):
         }
         env.update(overrides)
         expected = env.get("INPUT_EXPECTED_RESERVATION", "")
+        expires = env.pop("INPUT_APPROVAL_EXPIRES_AT", "")
         with tempfile.TemporaryDirectory() as directory:
             if "GITHUB_EVENT_PATH" not in env:
                 env.pop("INPUT_EXPECTED_RESERVATION", None)
                 event = Path(directory) / "event.json"
-                event.write_text(json.dumps({"inputs": {"expected_reservation": expected}}))
+                event.write_text(json.dumps({"inputs": {"expected_reservation": expected,
+                                                       "approval_expires_at": expires}}))
                 env["GITHUB_EVENT_PATH"] = str(event)
             return subprocess.run([sys.executable, str(auth)], capture_output=True, text=True, env=env)
 
@@ -333,7 +335,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
         for required in (
-            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku]",
+            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-admin-release-nethack, admin-release-nethack]",
             "github.actor_id == 9018513",
             "github.triggering_actor == 'azumag'",
             "github.ref_protected == true",

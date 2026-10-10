@@ -232,6 +232,13 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `recovery_authority`は常にfalse。安定した前後読取も原子的snapshotや将来のfenceではなく、
   正規operatorは別承認後にwriter lock下で適用契約を再照合する必要がある。
 
+  `nethack_admin_preflight`は同じfailed automatic NetHack予約について、見えているprocの
+  走査完了/前後一致、拒否候補の固定カテゴリ件数、固定Docker/旧tmuxの観測、
+  producer参加証明の不足を別に返す。正の共有帰属・host coverage・live enrollmentは
+  未証明で、`release_authority`と`resource_absence_proven`は常にfalse。
+  生PID/出生時刻/引数/path/tag/digest/例外本文を返さず、state/lockを作らない。
+  詳細と正常host fixtureの成立限界は[nethack-administrative-release.md](nethack-administrative-release.md)を参照。
+
   `corners.corner_rotation_timer` は支配的なtimer unit名（移行後は
   `docich-corner-rotation.timer`）、active/enabled、旧名が正しいaliasかを示す
   bounded boolean `legacy_alias` のみを出す。unit path・alias target・state pathは出さない。

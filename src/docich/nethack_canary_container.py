@@ -435,7 +435,21 @@ def _rewrite_result_arena(
     return result
 
 
-def run_container_worker(
+def _fixed_fence_state_dir():
+    # Every host entry, including the independent production smoke launcher,
+    # uses the canonical production configuration, never request arena input.
+    from .config import load_global
+    root = Path(__file__).resolve().parents[2]
+    return load_global(root, root / 'config/docich.soren-live.toml').state_dir
+
+
+def run_container_worker(request_text, **kwargs):
+    from .nethack_resource_fence import resource_fence
+    with resource_fence(_fixed_fence_state_dir()):
+        return _run_container_worker(request_text, **kwargs)
+
+
+def _run_container_worker(
     request_text: str,
     *,
     docker: str | None = None,
@@ -449,6 +463,14 @@ def run_container_worker(
     manifest = _candidate_manifest(request)
     selected_docker = _docker_binary(docker)
     selected_image = _image_id(image)
+    original_runner = runner
+    def local_runner(argv, **kwargs):
+        # Bind preflight, both launches and cleanup to the same endpoint as
+        # administrative inventory. Never inherit a remote/local-alt context.
+        return original_runner([argv[0], '--host', 'unix:///var/run/docker.sock', *argv[1:]],
+            **kwargs, env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/home/ubuntu',
+                          'DOCKER_CONFIG': '/home/ubuntu/.docker'})
+    runner = local_runner
     _preflight(selected_docker, selected_image, runner=runner)
     internal = _internal_request(request, manifest)
     payload = json.dumps(internal, ensure_ascii=False, separators=(",", ":"))

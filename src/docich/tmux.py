@@ -103,7 +103,7 @@ class ProtectedTeardownPids(frozenset):
 
         if not self.targets:
             return False
-        return pid in self._dynamic_descendants(list(self.targets))
+        return pid in self.targets or pid in self._dynamic_descendants(list(self.targets))
 
     def __contains__(self, pid: object) -> bool:
         if super().__contains__(pid):
@@ -127,6 +127,7 @@ class ProtectedTeardownPids(frozenset):
         if not self.roots:
             return frozenset(self)
         fresh = self._dynamic_descendants(list(self.roots))
+        fresh.difference_update(self.targets)
         fresh.difference_update(self._dynamic_descendants(list(self.targets)))
         return frozenset((*self, *fresh))
 
@@ -732,6 +733,9 @@ class Tmux:
         if server_pid is not None:
             protected.add(server_pid)
             protected.update(ancestor_pids(server_pid))
+            # A new pane can appear even when the target is currently the
+            # server's only pane. Keep this root independently of ``others``.
+            protected_roots.add(server_pid)
         target_leaders = {pid for pid in pane_leaders if pid > 0}
         server_leaders = self._server_pane_leaders()
         if server_leaders is None:
@@ -750,8 +754,6 @@ class Tmux:
             # created concurrently — both inherit the ownership tags from the
             # tagged server and would otherwise be reclaimed as "orphans".
             protected_roots.update(others)
-            if server_pid is not None:
-                protected_roots.add(server_pid)
         for leader in target_leaders:
             # The pane leader's parent chain is the tmux server and above; the
             # leader itself stays a legitimate victim.

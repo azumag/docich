@@ -391,6 +391,23 @@ class TestDynamicChildProtection(unittest.TestCase):
         with self._patch_descendants([9500], []):
             self.assertIn(9500, protected)
 
+    def test_only_target_pane_snapshot_protects_a_later_shared_pane(self):
+        with (
+            mock.patch.object(self.tmux, "_server_pid", return_value=4321),
+            mock.patch.object(self.tmux, "_server_pane_leaders", return_value=[123]),
+            mock.patch("docich.tmux.ancestor_pids", return_value=[]),
+        ):
+            protected = self.tmux._protected_teardown_pids([123])
+
+        self.assertEqual(protected.roots, frozenset({4321}))
+        # A new shared pane appears after the empty-other-pane snapshot. The
+        # target's remaining children must still be reclaimable.
+        with self._patch_descendants([123, 9500, 8888], [8888]):
+            self.assertIn(9500, protected)
+            self.assertNotIn(123, protected)
+            self.assertNotIn(8888, protected)
+            self.assertEqual(protected.expanded(), frozenset({4321, 9500}))
+
     def test_target_subtree_stays_reclaimable_after_the_snapshot(self):
         # A spawn racing with the teardown inside the target pane must remain
         # a legitimate victim, otherwise the post-condition can no longer fail

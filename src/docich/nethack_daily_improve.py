@@ -349,14 +349,24 @@ def _ai_propose(g: GlobalConfig, *, agents: str, request: Mapping[str, object]) 
     return _decode_catalog_output(result.output)
 
 
-def run_daily_improvement(
+def run_daily_improvement(g, *, now=None, proposer=None):
+    config = _load_config(g)
+    if not config.enabled:
+        return {"status": "disabled", "policy_effect": "none"}
+    from .nethack_resource_fence import resource_fence
+    with resource_fence(g.state_dir):
+        return _run_daily_improvement(g, now=now, proposer=proposer, config=config)
+
+
+def _run_daily_improvement(
     g: GlobalConfig,
     *,
     now: dt.datetime | None = None,
     proposer=None,
+    config=None,
 ) -> dict[str, object]:
     """Write one idempotent evidence report for the current configured date."""
-    config = _load_config(g)
+    config = config or _load_config(g)
     if not config.enabled:
         return {"status": "disabled", "policy_effect": "none"}
     timestamp = now or dt.datetime.now(dt.timezone.utc)

@@ -221,7 +221,15 @@ def read_strategy_for_game(game_name: str, path: Path) -> dict:
     return st
 
 
-def evaluate(
+def evaluate(policy, strategy, g, game_name, matches, **kwargs):
+    if game_name == 'nethack':
+        from ..nethack_resource_fence import resource_fence
+        with resource_fence(g.state_dir):
+            return _evaluate(policy, strategy, g, game_name, matches, **kwargs)
+    return _evaluate(policy, strategy, g, game_name, matches, **kwargs)
+
+
+def _evaluate(
     policy,
     strategy: dict,
     g,
@@ -261,7 +269,15 @@ def evaluate(
     return {"matches": results, "mean_score": mean, "played": len(scores)}
 
 
-def improve_once(
+def improve_once(g, game_name, **kwargs):
+    if game_name == 'nethack':
+        from ..nethack_resource_fence import resource_fence
+        with resource_fence(g.state_dir):
+            return _improve_once(g, game_name, **kwargs)
+    return _improve_once(g, game_name, **kwargs)
+
+
+def _improve_once(
     g,
     game_name: str,
     *,
@@ -438,7 +454,15 @@ def _claim_activity_marker(marker: Path, claim: dict) -> None:
         return
 
 
-def run_daemon(
+def run_daemon(g, game_name, **kwargs):
+    if game_name == 'nethack':
+        from ..nethack_resource_fence import resource_fence
+        with resource_fence(g.state_dir):
+            return _run_daemon(g, game_name, **kwargs)
+    return _run_daemon(g, game_name, **kwargs)
+
+
+def _run_daemon(
     g,
     game_name: str,
     *,
