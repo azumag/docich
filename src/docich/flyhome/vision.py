@@ -322,7 +322,12 @@ def _orientation(blob: Blob, labels: bytearray, w: int, h: int, prev_angle: floa
     """主軸 (PCA) で体の向きを、顔 (白) の偏りで頭側を決める。"""
     x0, y0, x1, y1 = blob.bbox
     body = list(blob.pixels)
-    face = [(x, y) for y in range(max(0, y0), min(h, y1)) for x in range(max(0, x0), min(w, x1)) if labels[y * w + x] == WHITE]
+    body_set = set(body)
+    # 実機Lv16: 足元に重なるHOMEの白文字を顔と数えると、直立を180度反転する。
+    # 顔は体の橙に囲まれた白画素。背景/文字の端は顔の重心へ混ぜない。
+    face = [(x, y) for y in range(max(0, y0), min(h, y1)) for x in range(max(0, x0), min(w, x1))
+            if labels[y * w + x] == WHITE and
+            sum((x + dx, y + dy) in body_set for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))) >= 2]
     pts = body + face
     n = len(pts)
     if n < 6:

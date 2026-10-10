@@ -346,3 +346,54 @@ def test_low_terrain_tunnel_is_detected_towards_left_as_well():
     ctl._hist.append((10, 200, 139, 0))
     ctl._ref = [(185, 141, -8, 0)] * ctl.cfg.horizon
     assert ctl._low_terrain_tunnel(200, 139)
+
+
+def test_actual_level16_wide_spike_lane_can_descend_without_exact_stillness():
+    ctl = _actual_mpc()
+    ctl.path = [(150, 62), (150, 126), (152, 154.6)]
+    ctl._hist.append((10, 154, 54, .2))
+    ctl._ref = [(150, 65, 0, 12)] * ctl.cfg.horizon
+    ctl.hazards = [(115, 70, 123, 153), (179, 70, 187, 153)]
+    ctl._descent_ready_since = 9.7
+    ctl._precision_action(154, 54, 8, 0, .2, .6)
+    assert ctl._descent_commit == (150, 74)
+
+
+def test_narrow_spike_lane_keeps_strict_descent_alignment():
+    ctl = _actual_mpc()
+    ctl.path = [(150, 62), (150, 126), (152, 154.6)]
+    ctl._hist.append((10, 154, 54, .2))
+    ctl._ref = [(150, 65, 0, 12)] * ctl.cfg.horizon
+    ctl.hazards = [(131, 70, 139, 153), (161, 70, 169, 153)]
+    ctl._descent_ready_since = 9.7
+    ctl._precision_action(154, 54, 8, 0, .2, .6)
+    assert ctl._descent_commit is None
+    assert ctl._precision_debug[7]
+
+
+def test_actual_level16_home_text_at_feet_does_not_reverse_head():
+    from docich.flyhome import vision
+    rows = ['..OOOO....', '..OOOOOO..', '.OOOOOOO..', 'OOOOOWOWO.',
+            '.OOWOWOWO.', '.OOWOOOOO.', '.OOOWWWWO.', '.OOOOOOOO.',
+            '.OOOOOOOOO', '..OOOOOOOO', '..OOOOOOOO', '..OOOOOOOO',
+            '..OOO..OOO', 'WWWOOW.OWW']
+    labels = bytearray(30 * 30)
+    body = []
+    for y, row in enumerate(rows, 5):
+        for x, value in enumerate(row, 5):
+            if value == 'O':
+                labels[y * 30 + x] = vision.ORANGE
+                body.append((x, y))
+            elif value == 'W':
+                labels[y * 30 + x] = vision.WHITE
+    blob = vision.Blob(vision.ORANGE, body)
+    angle = vision._orientation(blob, labels, 30, 30, -.14)
+    assert abs(angle) < .35  # 実機は直立。旧判定は2.972rad。
+    rotated = bytearray(30 * 30)
+    for y in range(30):
+        for x in range(30):
+            rotated[x * 30 + 29 - y] = labels[y * 30 + x]
+    blob = vision.Blob(vision.ORANGE, [(29 - y, x) for x, y in body])
+    import math
+    angle = vision._orientation(blob, rotated, 30, 30, math.pi / 2)
+    assert abs(angle - math.pi / 2) < .35
