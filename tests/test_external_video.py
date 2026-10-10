@@ -502,3 +502,12 @@ def test_canonical_still_raises_when_the_lock_never_frees(setup, monkeypatch):
     monkeypatch.setattr(setup.manager.store, "lock", lock)
     with pytest.raises(GameSwitchBusyError):
         type(setup.manager).canonical(setup.manager, patience_s=2)
+
+
+def test_default_coordinator_carries_the_stream_category_hook(tmp_path, monkeypatch):
+    import docich.stream_category as sc
+    marker = object()
+    monkeypatch.setattr(sc, "commit_hook", lambda g: marker)
+    g = SimpleNamespace(state_dir=tmp_path, config_path=tmp_path / "c.toml")
+    manager = corner.ExternalVideoCornerManager(g)
+    assert manager.coordinator.post_commit is marker
