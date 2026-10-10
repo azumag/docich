@@ -297,3 +297,13 @@ public guard を弱めたり、任意 command/argument を受けたりしませ�
 出力は固定の status/reason/index・検証真偽・件数のみで、生プロパティ・command line・path・PID を出しません。
 
 既存VMの `/home/ubuntu/docich` に tracked差分またはowned submodule差分がある場合、bootstrapは拒否します。VMとrepositoryのどちらを正とするか確認して差分を整理してからbaselineを登録してください。`/home/ubuntu/soren` はbootstrap時に丸ごとsourceへ戻しません。以後、gitlink変更時に変更対象pathだけ旧sourceとの一致を検証して投影するため、既存runtime stateは保持されます。driftを無視して上書きする経路は用意しません。
+
+### `Audio worker speak`（任意の一文を audio-worker に喋らせる owner-only の口）
+
+`.github/workflows/audio-worker-speak.yml`（`workflow_dispatch`）。Actions タブ、または `gh workflow run audio-worker-speak.yml -f text='こんにちは' -f confirm=production` で実行する。
+
+- 入力は `text`（1行・240字以内）と `confirm=production` だけ。owner（`azumag`/9018513）・`refs/heads/main`・protected・workflow path の完全一致で認可し、それ以外は fail-closed（`authorize_audio_speak.py`）。
+- 本文は認可スクリプトが検証・正規化（改行は空白に畳む、制御/不可視文字は拒否）し、base64 で VM へ渡す。シェル式・コマンド・パスには一切展開されない。VM 側 `speak_audio_worker.sh` が再検証し、`lib/outbound_queue.sh` の `enqueue_audio_text`（source=`owner_speak`、重複抑制TTL=0）でキューへ積む。
+- 稼働中の `audio_worker` が無ければ exit 66 で何も積まない。積んだ後は audio_worker がキューを消化するまで最大90秒待ち、消化を確認できれば成功、できなければ exit 2（積み済みだが未消化）。**これは「キューから取り出された」ことの確認であり、VOICEVOX 合成・配信ミックスでの可聴は別途確認が必要。**
+- 本文は**配信で読み上げられ、かつ workflow run の入力として公開リポジトリ上に残る**。秘密情報は入れない。実行出力は gateway が VM private log に退避する（Actions には出ない）。
+- 話者は audio_worker 既定。変更したい場合は別 PR で固定の許可リスト入力を追加する。
