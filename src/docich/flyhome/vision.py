@@ -415,6 +415,18 @@ def analyze(
     home = home_bbox = None
     if roofs:
         roof = max(roofs, key=lambda b: b.area)
+        # 夕焼けの配色のレベル (実機 Lv26) では棘の縁が暗い赤 (140,0,0) で ROOF に分類される。
+        # 家の屋根 (一番大きい塊) 以外の、棘ブロック大 (縁の画素 ≤ 60、箱 ≤ 14px) の ROOF の塊は棘とみなす。
+        for b in blobs(labels, w, h, {ROOF}, mask=in_hud):
+            if b is roof or b.area < 12 or b.area > 60:
+                continue
+            bx0, by0, bx1, by1 = b.bbox
+            if bx1 - bx0 > 14 or by1 - by0 > 14:
+                continue
+            rx0, ry0, rx1, ry1 = roof.bbox
+            if bx0 <= rx1 + 2 and bx1 >= rx0 - 2 and by0 <= ry1 + 2 and by1 >= ry0 - 2:
+                continue  # 屋根の一部
+            hazards.append(b.bbox)
         x0, y0, x1, y1 = roof.bbox
         rh = y1 - y0
         home_bbox = (x0, y0, x1, min(h, y1 + int(rh * 1.6)))
