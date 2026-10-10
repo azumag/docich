@@ -1,5 +1,5 @@
 """Fly Me To The Home! の連続プレイ (実機 Windows、リポジトリのルートで実行)。
-クリア後はクリア画面を Enter で抜けてマップへ行き、BEST TIME が 99:99.999 (未クリア) のレベルまで → で進めて開始する。
+クリア後はクリア画面を Enter で抜けてマップへ行き、通常は未クリアの面を選択し、sequential指定時は番号順に1面ずつ開始する。
 使い方: py scripts/flyhome/campaign.py <表示用の最初のレベル> <最大レベル数> [秒/レベル]
 環境変数 ON_LEVEL=1: 最初はすでにレベル中 / FLYHOME_STATE_FILE: 進捗ファイル
 FLYHOME_LEVEL_ORDER=sequential: クリア済みも番号順に再プレイ
@@ -9,6 +9,7 @@ sys.path.insert(0, "src")
 from pathlib import Path
 from docich.flyhome import settings as S, runner, vision
 from docich.flyhome.image import write_png
+from docich.flyhome.timeline import Timeline
 from docich.flyhome.progress import StatePublisher
 from docich.flyhome.map_navigation import level_number, select_sequential_level
 from docich.flyhome.narration import SpeechJournal, LiveNarrator
@@ -111,7 +112,27 @@ try:
                 if extra is not None:
                     extra.update(publisher.metrics())
                     extra.update(speech.metrics())
-            res = runner.play(b, s, attempts=0, max_seconds=per, log_root=out, on_step=step, on_restart=lambda: to_next_level(b, lv))
+            res = []
+            replay_path = s.run_dir / "replays" / ("level%d.json" % lv)
+            if replay_path.exists():
+                tl = Timeline.load(replay_path)
+                if tl.level != lv or tl.meta.get("outcome") != "cleared" or not tl.events:
+                    raise RuntimeError("replay needs a verified successful timeline for this level")
+                # A bounded actual-game experiment; failure returns to the controller.
+                for replay_trial in range(3):
+                    to_next_level(b, lv)
+                    out = runner.session_dir(s, "play")
+                    save("  いま: Lv%d 成功入力の実機再生 %d/3" % (lv, replay_trial + 1))
+                    result = runner.replay(b, s, tl, log_root=out, on_step=step)
+                    res.append(result)
+                    print("Lv%d replay" % lv, replay_trial + 1, result["outcome"], flush=True)
+                    if result["outcome"] == "cleared":
+                        break
+            if not res or res[-1]["outcome"] != "cleared":
+                if res:
+                    to_next_level(b, lv)
+                    out = runner.session_dir(s, "play")
+                res.extend(runner.play(b, s, attempts=0, max_seconds=per, log_root=out, on_step=step, on_restart=lambda: to_next_level(b, lv)))
         finally:
             b.close()
         ok = bool(res) and res[-1]["outcome"] == "cleared"

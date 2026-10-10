@@ -472,3 +472,13 @@ def test_actual_level33_open_descent_does_not_require_two_spike_columns():
         ctl._precision_action(49.924, 33.337, -.588, -2.023, 0, .391)
         assert ctl._descent_commit is None
         assert ctl._precision_debug[7]
+
+
+def test_vertical_descent_preserves_three_identical_position_observations():
+    ctl = _actual_mpc()
+    ctl._hist.extend([(9.88, 151, 60, 0), (9.92, 150, 60, 0),
+                      (9.96, 150, 60, 0), (10, 150, 60, 0)])
+    ctl._ref = [(150, 65, 0, 12)] * ctl.cfg.horizon
+    assert ctl._precision_action(150, 60, 0, 0, 0, 0) == 0
+    assert ctl._precision_debug[0] == 0
+    assert ctl._precision_debug[4] == 0

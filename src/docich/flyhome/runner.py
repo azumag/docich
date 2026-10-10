@@ -584,26 +584,34 @@ def record(backend: Backend, settings: Settings, *, max_seconds: float = 600.0, 
     return out
 
 
-def replay(backend: Backend, settings: Settings, tl: Timeline, *, log_root: Path | None = None, wait_player_s: float = 10.0) -> dict:
+def replay(backend: Backend, settings: Settings, tl: Timeline, *, log_root: Path | None = None, wait_player_s: float = 10.0,
+           on_step: Callable[[State, dict | None], None] | None = None) -> dict:
     """タイムラインを開ループで再生する。最初のイベント時刻 = 試行開始。"""
     log = SessionLog(log_root)
     loop = Loop(backend, settings, log)
     try:
         t0 = backend.now()
         st = loop.tick()
+        if on_step is not None:
+            on_step(st, {"replay_wait": True})
         while st.phase != PLAYING:
             if backend.now() - t0 > wait_player_s:
                 raise RuntimeError("player not visible; レベルを開始した状態で実行する")
             st = loop.tick()
+            if on_step is not None:
+                on_step(st, {"replay_wait": True})
         t_start = backend.now()
-        limit = tl.duration_ms / 1000 + 5.0
+        limit = max(tl.duration_ms / 1000, float(tl.meta.get("duration_s") or 0)) + 5.0
         while not backend.aborted():
             el = (backend.now() - t_start) * 1000
             keys = tl.state_at(el)
             if backend.ready():
                 backend.set_jets(*keys)
             st = loop.tick()
-            log.frame(st, loop.obs, keys)
+            extra = {"replay_elapsed_ms": round(el, 1)}
+            if on_step is not None:
+                on_step(st, extra)
+            log.frame(st, loop.obs, keys, extra)
             if st.phase in (DEAD, CLEARED) or el / 1000 > limit:
                 break
         backend.release_all()

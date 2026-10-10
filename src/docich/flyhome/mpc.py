@@ -540,6 +540,8 @@ class MpcController:
             if dt > 0.06:
                 vx, vy = (x - x0) / dt, (y - y0) / dt
                 # 角速度は遅延補正済み観測器を保ち、位置差分だけ実測を使う。
+            if all(abs(px - x) + abs(py - y) < .1 for _, px, py, _ in list(self._hist)[-3:]):
+                vx = vy = 0.0  # _estimateで認識した静止を古い差分で再び動いている扱いにしない。
         rx, ry, rvx, rvy = self._ref[min(4, len(self._ref) - 1)]
         align_descent = False
         # 長い縦通路へ下りる前に、その中心へ横から入って減速する。
