@@ -278,12 +278,13 @@ def play(
     hazard_memory_s: float = 1.5,
     on_step: Callable[[State, dict | None], None] | None = None,
     on_restart: Callable[[], None] | None = None,
+    mpc_factory: Callable[[Physics, MpcConfig], MpcController] | None = None,
 ) -> list[dict]:
     """制御器でプレイする。死亡したら Enter で再挑戦し、帰宅したら止まる。"""
     log = SessionLog(log_root)
     loop = Loop(backend, settings, log)
     phys = physics or Physics.load(settings.physics_file)
-    ctl = MpcController(phys, MpcConfig(delay_s=settings.mpc_delay_s)) if settings.controller == "mpc" else JetController(phys)
+    ctl = (mpc_factory or MpcController)(phys, MpcConfig(delay_s=settings.mpc_delay_s)) if settings.controller == "mpc" else JetController(phys)
     routes = RouteWorker()
     done = 0
     path = None
@@ -439,7 +440,7 @@ def play(
             if isinstance(ctl, MpcController) and st.phase == PLAYING and ctl._ref:
                 r0, r1 = ctl._ref[0], ctl._ref[-1]
                 extra = {"ref0": [round(r0[0], 1), round(r0[1], 1)], "ref_end": [round(r1[0], 1), round(r1[1], 1)],
-                         "path0": [round(v, 1) for v in ctl.path[min(3, len(ctl.path) - 1)]] if ctl.path else None, "path": ctl.path, "input_delay_s": ctl.cfg.delay_s, "home_settling": ctl._home_settling, "estimated": getattr(ctl, "_estimate_debug", None), "precision": getattr(ctl, "_precision_debug", None)}
+                         "path0": [round(v, 1) for v in ctl.path[min(3, len(ctl.path) - 1)]] if ctl.path else None, "path": ctl.path, "input_delay_s": ctl.cfg.delay_s, "controller_profile": getattr(ctl, "profile_name", "current"), "home_settling": ctl._home_settling, "estimated": getattr(ctl, "_estimate_debug", None), "precision": getattr(ctl, "_precision_debug", None)}
             if isinstance(ctl, MpcController) and ctl._acts:
                 extra = dict(extra or {}, input_sent_at=round(ctl._acts[-1][0], 6))
                 if st.phase == PLAYING:

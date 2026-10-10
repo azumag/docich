@@ -132,7 +132,20 @@ try:
                 if res:
                     to_next_level(b, lv)
                     out = runner.session_dir(s, "play")
-                res.extend(runner.play(b, s, attempts=0, max_seconds=per, log_root=out, on_step=step, on_restart=lambda: to_next_level(b, lv)))
+                factory = None
+                profile_path = s.run_dir / "controller_profiles" / ("level%d.py" % lv)
+                if profile_path.exists():
+                    import importlib.util
+                    name = "docich.flyhome.live_profile_level%d" % lv
+                    spec = importlib.util.spec_from_file_location(name, profile_path)
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[name] = module
+                    spec.loader.exec_module(module)
+                    factory = module.MpcController
+                    if not issubclass(factory, runner.MpcController):
+                        raise RuntimeError("local profile must retain the MPC logging contract")
+                    print("Lv%d controller profile" % lv, factory.profile_name, flush=True)
+                res.extend(runner.play(b, s, attempts=0, max_seconds=per, log_root=out, on_step=step, on_restart=lambda: to_next_level(b, lv), mpc_factory=factory))
         finally:
             b.close()
         ok = bool(res) and res[-1]["outcome"] == "cleared"
