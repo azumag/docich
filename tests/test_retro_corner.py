@@ -1370,6 +1370,8 @@ class TestRestoreFailedRecovery(RetroCornerTestBase):
         def result_patch(result):
             result["error_code"] = "rollback_failed"
             result["cleanup_pending"] = True
+            # Production's failed receipt never recorded its source game.
+            result["from_game"] = None
 
         def canonical_patch(canonical, result):
             generation = result["generation"]
@@ -1438,6 +1440,13 @@ class TestRestoreFailedRecovery(RetroCornerTestBase):
                 mgr, _restore_id = self._setup_adopted(adoption_patch=patch)
                 self.assertIsNone(mgr._settle_adopted_restore(mgr._read_state()))
                 self.assertEqual(mgr._read_state()["status"], "failed")
+
+    def test_unrecorded_source_is_accepted_only_for_the_adoption_path(self):
+        mgr, _restore_id = self._setup_adopted()
+        state = mgr._read_state()
+        self.assertIsNone(mgr._restore_failed_receipt(state, late_cleanup_proved=True))
+        self.assertIsNotNone(mgr._restore_failed_receipt(
+            state, late_cleanup_proved=True, allow_unrecorded_source=True))
 
     def test_only_a_failed_receipt_is_settled_by_adoption(self):
         mgr, _restore_id = self._setup_adopted(receipt_status="rolled_back")
