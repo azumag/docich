@@ -13,6 +13,9 @@ from docich.flyhome.timeline import Timeline
 from docich.flyhome.progress import StatePublisher
 from docich.flyhome.map_navigation import level_number, select_sequential_level
 from docich.flyhome.narration import SpeechJournal, LiveNarrator
+import hashlib
+print('vision-source', Path(vision.__file__).resolve(), 'sha256',
+      hashlib.sha256(Path(vision.__file__).read_bytes()).hexdigest()[:12], flush=True)
 STATE = Path(os.environ.get("FLYHOME_STATE_FILE", "run/game-state.txt"))
 LOG = Path(os.environ.get("FLYHOME_CAMPAIGN_LOG", "run/campaign_results.txt"))
 SEQUENTIAL = os.environ.get("FLYHOME_LEVEL_ORDER") == "sequential"

@@ -189,7 +189,7 @@ class SessionLog:
         if self._frames is None:
             return
         row = st.as_dict()
-        row.update({"left": keys[0], "right": keys[1], "hud": [obs.hud_left, obs.hud_right], "timer_sig": obs.timer_sig, "control_prompt": obs.control_prompt,
+        row.update({"left": keys[0], "right": keys[1], "hud": [obs.hud_left, obs.hud_right], "timer_sig": obs.timer_sig, "control_prompt": obs.control_prompt, "home_text_overlap": obs.home_text_overlap,
                     "player_bbox": obs.player.bbox if obs.player else None, "player_area": obs.player.area if obs.player else None})
         if extra:
             row.update(extra)
@@ -238,7 +238,7 @@ class Loop:
         self.capture_s = self.b.now() - capture_start
         self.max_capture_s = max(getattr(self, "max_capture_s", 0.0), self.capture_s)
         vision_start = self.b.now()
-        self.obs = vision.analyze(self.native, self.s, prev_player=self.tracker.prev_pos, prev_angle=self.tracker.prev_angle)
+        self.obs = vision.analyze(self.native, self.s, prev_player=self.tracker.prev_pos, prev_angle=self.tracker.prev_angle, known_home_bbox=self.tracker.known_home_bbox)
         self.vision_s = self.b.now() - vision_start
         return self.tracker.update(self.obs, self.b.now())
 

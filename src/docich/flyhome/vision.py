@@ -205,6 +205,7 @@ class Observation:
     labels: bytearray = field(repr=False)
     wipe: bool = False  # クリア画面 (上下端に橙のプレイヤー像の列) が出ている
     control_prompt: bool = False  # 実機の左上の操作案内（開始時/死亡後）
+    home_text_overlap: bool = False  # HOME重なり中に頭側の連続性を使った
 
     def summary(self) -> dict:
         p = self.player
@@ -379,6 +380,7 @@ def analyze(
     *,
     prev_player: tuple[float, float] | None = None,
     prev_angle: float | None = None,
+    known_home_bbox: tuple[int, int, int, int] | None = None,
 ) -> Observation:
     s = settings or Settings()
     w, h = native.width, native.height
@@ -409,12 +411,18 @@ def analyze(
     # HOMEは屋根の上に固定表示される。姿勢判定の前に屋根を特定する。
     roofs = [b for b in blobs(labels, w, h, {ROOF}, mask=in_hud) if b.area >= 15]
     home_text_rect = None
-    if roofs:
-        rx0, ry0, rx1, _ = max(roofs, key=lambda b: b.area).bbox
-        if rx1 - rx0 >= 24:
-            home_text_rect = (rx0 + 6, ry0 - 13, rx1 - 6, ry0 - 4)
+    text_anchor = known_home_bbox
+    if text_anchor is None and roofs:
+        roof_box = max(roofs, key=lambda b: b.area).bbox
+        if roof_box[2] - roof_box[0] >= 24:
+            text_anchor = roof_box
+    if text_anchor is not None:
+        # 屋根の実観測が途切れても、追跡側で確定した家は動かない。
+        rx0, ry0, rx1, _ = text_anchor
+        home_text_rect = (rx0 + 6, ry0 - 13, rx1 - 6, ry0 - 4)
 
     player = None
+    overlaps_text = False
     if prev_player is not None and (oversized or fragments) and not any(math.hypot(b.center[0] - prev_player[0], b.center[1] - prev_player[1]) <= TRACK_GATE_PX for b in candidates):
         # 看板の見本 (同じ橙) と重なって大きな塊になった、または花の茎で体が分断された:
         # 前フレームの位置の窓にある橙の画素だけを本体とみなす。
@@ -520,6 +528,7 @@ def analyze(
         labels=labels,
         wipe=_party_present(native),
         control_prompt=_control_prompt_present(native),
+        home_text_overlap=overlaps_text,
     )
 
 

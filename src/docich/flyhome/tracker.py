@@ -88,6 +88,10 @@ class Tracker:
     def prev_angle(self):
         return None if self._last is None else self._last.angle
 
+    @property
+    def known_home_bbox(self):
+        return self._home_bbox if self._home_confident else None
+
     def _near_home(self, x: float, y: float) -> bool:
         if self._home_bbox is None:
             return False
