@@ -1,15 +1,19 @@
 """Fly Me To The Home! の連続プレイ (実機 Windows、リポジトリのルートで実行)。
 クリア後はクリア画面を Enter で抜けてマップへ行き、BEST TIME が 99:99.999 (未クリア) のレベルまで → で進めて開始する。
 使い方: py scripts/flyhome/campaign.py <表示用の最初のレベル> <最大レベル数> [秒/レベル]
-環境変数 ON_LEVEL=1: 最初はすでにレベル中 / FLYHOME_STATE_FILE: 進捗を上書きするファイル (既定 run/game-state.txt)"""
+環境変数 ON_LEVEL=1: 最初はすでにレベル中 / FLYHOME_STATE_FILE: 進捗ファイル
+FLYHOME_LEVEL_ORDER=sequential: クリア済みも番号順に再プレイ
+FLYHOME_CAMPAIGN_LOG: 再プレイ用の独立した結果ファイル"""
 import sys, time, os
 sys.path.insert(0, "src")
 from pathlib import Path
 from docich.flyhome import settings as S, runner, vision
 from docich.flyhome.image import write_png
 from docich.flyhome.progress import StatePublisher
+from docich.flyhome.map_navigation import level_number
 STATE = Path(os.environ.get("FLYHOME_STATE_FILE", "run/game-state.txt"))
-LOG = Path("run/campaign_results.txt")
+LOG = Path(os.environ.get("FLYHOME_CAMPAIGN_LOG", "run/campaign_results.txt"))
+SEQUENTIAL = os.environ.get("FLYHOME_LEVEL_ORDER") == "sequential"
 first = int(sys.argv[1]); count = int(sys.argv[2]); per = float(sys.argv[3]) if len(sys.argv) > 3 else 600.0
 last = min(50, first + count - 1)
 s = S.load(None)
@@ -21,7 +25,8 @@ if _cl:
 publisher = StatePublisher(STATE)
 
 def save(note=""):
-    lines = ["[campaign4] 製品版を自動プレイ中 (MPC, 実機 printwindow+postmessage)"] + done_lines
+    heading = "[特別コーナー] Fly Me To The Home! 1面から自動プレイ" if SEQUENTIAL else "[campaign4] 製品版を自動プレイ中 (MPC, 実機 printwindow+postmessage)"
+    lines = [heading] + done_lines
     if note: lines.append(note)
     publisher.publish("\n".join(lines) + "\n")
 
@@ -45,7 +50,7 @@ def uncleared(b):
             r, g, bl = img.get(x, y)
             bits.append(1 if (r > 200 and g > 200 and bl > 200) else 0)
     return sum(bits) == 432 and zlib.crc32(bytes(bits)) == UNCLEARED_CRC
-def to_next_level(b):
+def to_next_level(b, level=None):
     save("  いま: マップ切替待ち")
     time.sleep(3.0)
     for _ in range(6):
@@ -59,16 +64,19 @@ def to_next_level(b):
     time.sleep(0.8)
     # マップの選択が次のレベルとは限らない (クリア済みのレベルのまま等): 未クリアのレベルまで → で進める
     for selection_step in range(50):
-        save("  いま: マップで未クリアの面を選択 (%d/50)" % (selection_step + 1))
+        save("  いま: マップで%sを選択 (%d/50)" % ("Lv%d" % level if SEQUENTIAL else "未クリアの面", selection_step + 1))
         if not is_map(b):
             raise RuntimeError("map lost during level selection")
-        if uncleared(b):
+        if SEQUENTIAL:
+            if level_number(vision.to_native(b.capture(), s)) == level:
+                break
+        elif uncleared(b):
             break
         b.tap("right"); time.sleep(0.8)
     else:
-        raise RuntimeError("no uncleared level found on map")
+        raise RuntimeError("requested level was not found on map")
     write_png(s.run_dir / "maps" / ("selected-%d.png" % time.time_ns()), b.capture())
-    save("  いま: マップで未クリアを確認、Enterで開始")
+    save("  いま: マップでLv%dを確認、Enterで開始" % level if SEQUENTIAL else "  いま: マップで未クリアを確認、Enterで開始")
     b.tap("enter"); time.sleep(2.0)
 try:
     for i in range(max(0, last - first + 1)):
@@ -81,9 +89,9 @@ try:
                 rescan.unlink()
                 b.tap("escape")  # 実プレイ画面からの明示的な選び直し要求。
                 time.sleep(1.0)
-                to_next_level(b)
+                to_next_level(b, lv)
             elif not (i == 0 and os.environ.get("ON_LEVEL")) or vision._party_present(initial_img) or is_map(b):
-                to_next_level(b)
+                to_next_level(b, lv)
             save("  いま: Lv%d を play 中..." % lv)
             out = runner.session_dir(s, "play")
             def step(st, extra):
@@ -91,7 +99,7 @@ try:
                 save("  いま: Lv%d 試行%d %s %s (%s)" % (lv, st.attempt, st.phase, pos, out))
                 if extra is not None:
                     extra.update(publisher.metrics())
-            res = runner.play(b, s, attempts=0, max_seconds=per, log_root=out, on_step=step, on_restart=lambda: to_next_level(b))
+            res = runner.play(b, s, attempts=0, max_seconds=per, log_root=out, on_step=step, on_restart=lambda: to_next_level(b, lv))
         finally:
             b.close()
         ok = bool(res) and res[-1]["outcome"] == "cleared"
