@@ -44,6 +44,9 @@ class ExternalVideoProgramAdapter(CliCoordinatorAdapter):
                 "--x", str(d.viewport_x), "--y", str(d.viewport_y),
                 "--width", str(d.viewport_width), "--height", str(d.viewport_height),
                 "--viewer-wait-sec", "20", "--framerate", "30", "--audio-sink", "soren_null",
+                # 2026-10-11 実測: 既定の SDL(OpenGL=llvmpipe) だと表示 ffplay 2 本で
+                # 約 1 コア。CPU レンダラにして VM の CPU 飽和(PSI 60-80%)を下げる。
+                "--sdl-software-render",
                 "--runtime-state", str(self.spec.runtime_dir / "presentation.json"),
                 "--", "ffplay", "-hide_banner", "-loglevel", "error", "-autoexit",
                 "-window_title", "Fly Me To The Home!", "-i",
