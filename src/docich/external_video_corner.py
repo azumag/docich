@@ -42,6 +42,49 @@ def stable(state):
             and not any(state.get(k) for k in ("candidate", "previous", "retiring")))
 
 
+def settled_rollback(receipt, current, request_id, source, target):
+    """Bind a rollback (or recovery of its immutable failure) to canonical.
+
+    Rollback receipts contain restored_generation, not active_runtime. A live
+    previous runtime gets a fresh lease; a stopped one gets a new generation.
+    Only the same request's canonical rollback can authorize either outcome.
+    """
+    actual = identity(current.get("active"))
+    body = receipt.get("result") if isinstance(receipt, dict) else None
+    last = current.get("last_result")
+    if (not source or not actual or not stable(current)
+            or any(current.get(k) for k in ("request_id", "operation", "cleanup_pending"))
+            or not isinstance(body, dict) or not isinstance(last, dict)
+            or receipt.get("request_id") != request_id
+            or receipt.get("operation") != "switch" or receipt.get("target") != target
+            or receipt.get("status") not in {"rolled_back", "failed"}
+            or body.get("status") != receipt["status"]
+            or any(evidence.get("request_id") != request_id
+                   or evidence.get("operation") != "switch"
+                   or evidence.get("to_game") != target
+                   or evidence.get("cleanup_pending") for evidence in (body, last))
+            or last.get("status") != "rolled_back"
+            or last.get("from_game") != source["game"] or actual["game"] != source["game"]
+            or type(receipt.get("generation")) is not int
+            or receipt["generation"] <= source["generation"]
+            or any(evidence.get("generation") != receipt["generation"] for evidence in (body, last))
+            or type(last.get("restored_generation")) is not int
+            or last["restored_generation"] != actual["generation"]):
+        return False
+    if receipt["status"] == "rolled_back":
+        if (body.get("from_game") != source["game"]
+                or type(body.get("restored_generation")) is not int
+                or body.get("restored_generation") != actual["generation"]):
+            return False
+    elif (body.get("error_code") != "rollback_failed"
+          or body.get("from_game") not in {None, source["game"]}):
+        return False
+    if actual["generation"] == source["generation"]:
+        return (actual["runtime_id"] == source["runtime_id"]
+                and actual["lease_id"] != source["lease_id"])
+    return actual["generation"] > receipt["generation"]
+
+
 class ExternalVideoCornerManager:
     def __init__(self, g, *, coordinator=None, clock=time.time, sleep=time.sleep):
         self.g, self.clock, self.sleep = g, clock, sleep
@@ -80,24 +123,29 @@ class ExternalVideoCornerManager:
             receipt = result.receipt
             body = receipt.get("result", {}) if isinstance(receipt, dict) else {}
             actual = identity(current.get("active"))
-            rolled_back = (result.status == "rolled_back" and isinstance(receipt, dict)
-                           and receipt.get("request_id") == state["start_request_id"]
-                           and body.get("request_id") == state["start_request_id"]
-                           and identity(body.get("active_runtime")) == actual
-                           and (actual["game"] if actual else None) == (source["game"] if source else None))
             last = current.get("last_result") or {}
-            recovered_start = (source and actual and isinstance(receipt, dict)
+            unchanged = (actual == source and isinstance(receipt, dict)
                 and receipt.get("request_id") == state["start_request_id"]
+                and receipt.get("operation") == ("switch" if source else "start")
                 and receipt.get("target") == VIEW_NAME and receipt.get("status") == "failed"
                 and body.get("request_id") == state["start_request_id"]
-                and body.get("error_code") == "rollback_failed"
-                and last.get("request_id") == state["start_request_id"]
-                and last.get("status") == "rolled_back"
-                and last.get("from_game") == source["game"] == actual["game"]
-                and last.get("restored_generation") == actual["generation"]
-                and actual["generation"] >= source["generation"])
-            if stable(current) and (actual == source or rolled_back or recovered_start):
-                state.update(status="interrupted", completed_at=self.clock(),
+                and body.get("operation") == receipt["operation"]
+                and body.get("to_game") == VIEW_NAME
+                and body.get("from_game") == (source["game"] if source else None)
+                and type(receipt.get("generation")) is int
+                and body.get("generation") == receipt["generation"]
+                and body.get("status") == "failed" and last == body
+                and not body.get("cleanup_pending"))
+            if (isinstance(receipt, dict) and result.request_id == state["start_request_id"]
+                    and result.status == receipt.get("status")
+                    and result.operation == receipt.get("operation")
+                    and result.target == receipt.get("target")
+                    and result.generation == receipt.get("generation") and not result.cleanup_pending
+                    and stable(current)
+                    and not any(current.get(k) for k in ("request_id", "operation", "cleanup_pending"))
+                    and (unchanged or settled_rollback(receipt, current,
+                        state["start_request_id"], source, VIEW_NAME))):
+                state.update(status="interrupted", recovery_required=False, completed_at=self.clock(),
                              end_reason="start-rolled-back")
                 self.save(state)
                 return True
@@ -183,14 +231,12 @@ class ExternalVideoCornerManager:
                 restore_id = state.get("restore_request_id")
                 if restore_id and state.get("runtime_identity"):
                     receipt = self.store.receipts.load(restore_id)
-                    body = receipt.get("result", {}) if isinstance(receipt, dict) else {}
                     actual = identity(current.get("active"))
                     owned = identity(state["runtime_identity"])
-                    if (receipt and receipt.get("status") in {"failed", "rolled_back"}
-                            and stable(current) and actual
-                            and all(actual[k] == owned[k] for k in ("game", "runtime_id", "generation"))
-                            and body.get("request_id") == restore_id
-                            and identity(body.get("active_runtime")) == actual):
+                    if (settled_rollback(receipt, current, restore_id, owned,
+                            state["previous_runtime_identity"]["game"]
+                            if state["previous_runtime_identity"] else None)
+                            and all(actual[k] == owned[k] for k in ("game", "runtime_id", "generation"))):
                         attempts = state.setdefault("restore_attempts", [])
                         if len(attempts) >= 3:
                             raise ExternalVideoError("external corner restore retry limit reached")
