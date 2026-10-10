@@ -209,7 +209,7 @@ def test_diagnostics_cannot_emit_receiver_secrets_or_address(tmp_path, monkeypat
     atomic_write_json(tmp_path / receiver.RECEIVER_FILE,
                       dict(schema_version=1, receiver_id=rid, listen_ip="100.71.107.106", expires_at=2000,
                            status="receiving", token="never-output-me", pid=4321, start_ticks=1, audio_present=True))
-    monkeypatch.setattr(receiver, "worker_alive", lambda _: False)
+    monkeypatch.setattr(module, "_external_video_process_alive", lambda _: False)
     data = module._collect_external_video(tmp_path, 1000)
     text = json.dumps(data)
     assert "never-output-me" not in text and "100.71" not in text and str(rid) not in text
@@ -232,3 +232,24 @@ def test_failed_start_is_settled_only_by_its_own_confirmed_recovery(setup):
     s.canonical[0]["last_result"]["request_id"] = rid
     assert s.manager._dispatch(state)
     assert state["status"] == "interrupted"
+
+
+def test_diagnostics_freshness_requires_live_worker_and_recent_frame(tmp_path, monkeypatch):
+    import os
+    path = Path(__file__).parents[1] / "ops/vm_actions/collect_diagnostics.py"
+    spec = importlib.util.spec_from_file_location("external_video_fresh_projection", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    rid = str(uuid.uuid4())
+    state = dict(schema_version=1, receiver_id=rid, expires_at=2000,
+                 status="receiving", pid=4321, start_ticks=1, audio_present=True)
+    atomic_write_json(tmp_path / receiver.RECEIVER_FILE, state)
+    frame = tmp_path / "external-video" / rid / "current.png"
+    frame.parent.mkdir(parents=True)
+    frame.write_bytes(b"same pixels")
+    os.utime(frame, (998, 998))
+    monkeypatch.setattr(module, "_external_video_process_alive", lambda _: True)
+    assert module._collect_external_video(tmp_path, 1000)["frame_fresh"]
+    assert not module._collect_external_video(tmp_path, 1010)["frame_fresh"]
+    monkeypatch.setattr(module, "_external_video_process_alive", lambda _: False)
+    assert not module._collect_external_video(tmp_path, 1000)["frame_fresh"]
