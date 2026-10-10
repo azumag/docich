@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import statistics
+import time
 from pathlib import Path
 import re
 from typing import Mapping
@@ -94,6 +95,8 @@ class SorenGameContextProvider:
         game = active.get("game") if isinstance(active, dict) else None
         if mode == "soren91":
             game_state = SOREN91_GAME_STATE_NOTE
+        elif game == "external-video-view":
+            game_state = self._flyhome_state_context(canonical)
         elif isinstance(game, str) and game != "sorengame":
             game_state = (f"現在のメイン画面: {game} — {GAME_BLURBS.get(game, '')}。"
                           "ソ連ゲームのスコア・盤面・ピース・建国統計はこのゲームの状況ではありません。"
@@ -104,6 +107,26 @@ class SorenGameContextProvider:
             game_state_context=game_state,
             comment_ops_context=self._ops_context(mode),
             celebration_history_context=self._celebration_history_context(),
+        )
+
+    def _flyhome_state_context(self, canonical: dict) -> str:
+        """Measured facts only: the screen is the streamer's real play, not data we hold."""
+        canonical_path = self._path(
+            "DOCICH_GAME_SWITCH_CANONICAL_FILE", "/home/ubuntu/docich/run-soren-live/game_switch.json")
+        corner = self._read_json(canonical_path.with_name("external_video_corner.json"))
+        started = corner.get("started_at")
+        elapsed = ""
+        if isinstance(started, (int, float)) and corner.get("status") == "active":
+            minutes = int((time.time() - started) // 60)
+            if 0 <= minutes < 24 * 60:
+                elapsed = f"このコーナーは開始から約{minutes}分経過。"
+        return (
+            "現在のメイン画面: Fly Me To The Home!(特別コーナー)。" + elapsed
+            + GAME_BLURBS["external-video-view"] + "。"
+            "ソ連ゲームのスコア・盤面・ピース・建国統計はこのコーナーの状況ではありません。"
+            "いま何面かやプレイの詳しい状況はこのメモにありません。分からないときは分からないと答え、"
+            "『画面を見てね』『応援してるよ』のように視聴者と一緒に見守る言い方にしてください。"
+            "クリアしたらコーナーが終わり、感想を話す流れです。数値や仕掛けを推測で補わないでください。"
         )
 
     def _read_json(self, path: Path | None) -> dict:
