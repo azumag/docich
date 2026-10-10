@@ -140,8 +140,8 @@ def ffmpeg_command(g, state):
 
 def prepare(g, ip, minutes=30, *, expected_receiver_id=None):
     ip = listen_ip(ip)
-    if type(minutes) is not int or not 1 <= minutes <= 60:
-        raise ExternalVideoError("receiver wait must be 1-60 minutes")
+    if type(minutes) is not int or not 1 <= minutes <= 200:
+        raise ExternalVideoError("receiver wait must be 1-200 minutes")
     with exclusive(Path(g.state_dir) / "external-video-prepare.lock"):
         corner_path = Path(g.state_dir) / "external_video_corner.json"
         if corner_path.exists() and read_json(corner_path).get("status") in {

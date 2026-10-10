@@ -23,7 +23,24 @@ from .game_switch import GameSwitchCoordinator, GameSwitchStore, atomic_write_js
 
 VIEW_NAME = "external-video-view"
 STATE_FILE = "external_video_corner.json"
+STOP_FILE = "external_video_stop.json"
 PENDING = {"queued", "in_progress", "busy"}
+MAX_DURATION_MINUTES = 180
+# A single stale frame (SRT hiccup, keyframe gap) must not end a long session;
+# a real disconnect stays stale for far longer than this.
+DISCONNECT_GRACE_S = 30
+# The operator pressed "end" (WebUI/CLI): the game was cleared, speak about it.
+OPERATOR_END = "operator-end"
+
+
+def request_end(g, state, reason="manual"):
+    """Identity-bound end request shared by the CLI and the WebUI."""
+    if reason not in {"manual", OPERATOR_END}:
+        raise ExternalVideoError("invalid end reason")
+    if state.get("status") not in {"waiting", "starting", "active", "restoring"}:
+        raise ExternalVideoError("external corner is not running; use recover for failed ownership")
+    atomic_write_json(Path(g.state_dir) / STOP_FILE,
+                      {"start_request_id": state["start_request_id"], "reason": reason})
 
 
 class WaitingStopped(ExternalVideoError):
@@ -65,9 +82,20 @@ class ExternalVideoCornerManager:
         atomic_write_json(self.path, state)
 
     def stop_requested(self, state):
-        flag = Path(self.g.state_dir) / "external_video_stop.json"
+        flag = Path(self.g.state_dir) / STOP_FILE
         return self.stopping or (flag.exists()
             and read_json(flag).get("start_request_id") == state.get("start_request_id"))
+
+    def stop_reason(self, state):
+        """"operator-end" only for an identity-bound flag; signals are "manual"."""
+        flag = Path(self.g.state_dir) / STOP_FILE
+        try:
+            data = read_json(flag) if flag.exists() else {}
+        except ExternalVideoError:
+            return "manual"
+        if data.get("start_request_id") == state.get("start_request_id") and data.get("reason") == OPERATOR_END:
+            return OPERATOR_END
+        return "manual"
 
     def _dispatch(self, state):
         source = state["previous_runtime_identity"]
@@ -195,7 +223,8 @@ class ExternalVideoCornerManager:
                 return receiver
             if (not renewed and not receiver["alive"]
                     and (receiver.get("status") != "launching" or self.clock() >= receiver["expires_at"])):
-                reservation = prepare(self.g, state["listen_ip"], 60,
+                reservation = prepare(self.g, state["listen_ip"],
+                                      min(max(60, state["duration_minutes"] + 10), 200),
                                       expected_receiver_id=state["receiver_id"])
                 state["receiver_id"] = reservation["receiver_id"]
                 self.save(state)
@@ -212,10 +241,25 @@ class ExternalVideoCornerManager:
         if (Path(self.g.state_dir) / "corners" / "external-video.paused").exists():
             raise WaitingStopped("external corner was paused while waiting")
 
+    def closing(self, state):
+        """Speak the post-clear impression once, after Soren is back. Never fails the corner."""
+        if state.get("closing"):
+            return
+        state["closing"] = {"status": "speaking", "at": self.clock()}
+        self.save(state)
+        try:
+            from .external_video_closing import speak_closing
+            minutes = max(1, round((self.clock() - state["started_at"]) / 60))
+            outcome = speak_closing(self.g, minutes)
+        except Exception as exc:
+            outcome = "failed:" + type(exc).__name__
+        state["closing"] = {"status": outcome, "at": self.clock()}
+        self.save(state)
+
     def run(self, duration_minutes=15, *, recovering=False, require_audio=True,
             wait_for_idle=False, wait_minutes=120):
-        if type(duration_minutes) is not int or not 1 <= duration_minutes <= 30:
-            raise ExternalVideoError("corner duration must be 1-30 minutes")
+        if type(duration_minutes) is not int or not 1 <= duration_minutes <= MAX_DURATION_MINUTES:
+            raise ExternalVideoError(f"corner duration must be 1-{MAX_DURATION_MINUTES} minutes")
         if type(wait_minutes) is not int or not 1 <= wait_minutes <= 120:
             raise ExternalVideoError("corner waiting must be 1-120 minutes")
         if recovering and wait_for_idle:
@@ -298,9 +342,10 @@ class ExternalVideoCornerManager:
                     if state["status"] == "interrupted":
                         return state
                     reason = "manual" if recovering else "duration"
+                    lost_since = None
                     while state["status"] == "active" and not recovering:
                         if self.stop_requested(state):
-                            reason = "manual"
+                            reason = self.stop_reason(state)
                             break
                         if self.clock() >= state["ends_at"]:
                             break
@@ -309,14 +354,20 @@ class ExternalVideoCornerManager:
                         except ExternalVideoError:
                             reason = "receiver-unavailable"
                             break
-                        if not receiver["fresh"]:
-                            reason = "receiver-disconnected"
-                            break
+                        if receiver["fresh"]:
+                            lost_since = None
+                        else:
+                            lost_since = self.clock() if lost_since is None else lost_since
+                            if self.clock() - lost_since >= DISCONNECT_GRACE_S:
+                                reason = "receiver-disconnected"
+                                break
                         if identity(self.canonical().get("active")) != state["runtime_identity"]:
                             raise ExternalVideoError("external corner ownership changed during display")
                         self.sleep(1)
                     while not self.restore(state, reason):
                         self.sleep(1)
+                    if reason == OPERATOR_END:
+                        self.closing(state)
                     return state
             except Exception as exc:
                 if state.get("status") == "waiting":
@@ -358,7 +409,7 @@ def main(argv=None):
     p.add_argument("--wait-for-idle", action="store_true", help="queue behind the current corner without requesting its end")
     p.add_argument("--wait-minutes", type=int, default=120, help="bounded FIFO wait, 1-120 minutes")
     p.add_argument("--video-only", action="store_true", help="explicitly permit an OBS source without audio")
-    for command in ("status", "stop", "recover", "receiver-stop"):
+    for command in ("status", "stop", "end", "recover", "receiver-stop"):
         sub.add_parser(command)
     args = parser.parse_args(argv)
     try:
@@ -373,11 +424,11 @@ def main(argv=None):
                       "corner": read_json(manager.path) if manager.path.exists() else {"status": "idle"}}
         elif args.command == "stop":
             state = read_json(manager.path)
-            if state.get("status") not in {"waiting", "starting", "active", "restoring"}:
-                raise ExternalVideoError("external corner is not running; use recover for failed ownership")
-            atomic_write_json(Path(g.state_dir) / "external_video_stop.json",
-                              {"start_request_id": state["start_request_id"]})
+            request_end(g, state, "manual")
             output = {"status": "stop-requested"}
+        elif args.command == "end":
+            request_end(g, read_json(manager.path), OPERATOR_END)
+            output = {"status": "end-requested"}
         elif args.command == "receiver-stop":
             if manager.path.exists() and read_json(manager.path).get("status") in {"starting", "active", "restoring", "failed"}:
                 raise ExternalVideoError("restore the external corner before stopping its receiver")

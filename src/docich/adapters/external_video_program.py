@@ -43,7 +43,7 @@ class ExternalVideoProgramAdapter(CliCoordinatorAdapter):
                 "--display", d.name, "--title", f"docich-present-{self.spec.runtime_id}",
                 "--x", str(d.viewport_x), "--y", str(d.viewport_y),
                 "--width", str(d.viewport_width), "--height", str(d.viewport_height),
-                "--viewer-wait-sec", "20", "--framerate", "30", "--audio-sink", "soren_null",
+                "--viewer-wait-sec", "20", "--framerate", "20", "--audio-sink", "soren_null",
                 "--runtime-state", str(self.spec.runtime_dir / "presentation.json"),
                 "--", "ffplay", "-hide_banner", "-loglevel", "error", "-autoexit",
                 "-window_title", "Fly Me To The Home!", "-i",

@@ -1771,6 +1771,41 @@ class TestHttpHandlers(unittest.TestCase):
             self.g.webui.read_only_token = ""
         self.assertFalse((Path(self.g.state_dir) / "corner_manual_queue.json").exists())
 
+    def _write_special_corner(self, status):
+        Path(self.g.state_dir).mkdir(parents=True, exist_ok=True)
+        (Path(self.g.state_dir) / "external_video_corner.json").write_text(json.dumps({
+            "status": status, "start_request_id": "req-secret-1", "receiver_id": "rcv-secret-1",
+            "started_at": 1000.0, "ends_at": 2000.0}), encoding="utf-8")
+
+    def test_special_corner_end_requires_confirm_operator_and_a_running_corner(self):
+        self._write_special_corner("active")
+        status, data = self._request("POST", "/api/special-corner/end", {"confirm": False})
+        self.assertEqual(status, 428, data)
+        self.g.webui.read_only_token = "viewer-secret"
+        try:
+            status, data = self._request("POST", "/api/special-corner/end", {"confirm": True},
+                                         headers={"Authorization": "Bearer viewer-secret"})
+            self.assertEqual(status, 403, data)
+        finally:
+            self.g.webui.read_only_token = ""
+        flag = Path(self.g.state_dir) / "external_video_stop.json"
+        self.assertFalse(flag.exists())
+        status, data = self._request("POST", "/api/special-corner/end", {"confirm": True})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(json.loads(flag.read_text()), {"start_request_id": "req-secret-1", "reason": "operator-end"})
+
+    def test_special_corner_end_refuses_when_not_running_and_get_hides_ids(self):
+        self._write_special_corner("completed")
+        status, data = self._request("POST", "/api/special-corner/end", {"confirm": True})
+        self.assertEqual(status, 409, data)
+        self.assertFalse((Path(self.g.state_dir) / "external_video_stop.json").exists())
+        self._write_special_corner("active")
+        status, view = self._request("GET", "/api/special-corner")
+        self.assertEqual(status, 200, view)
+        self.assertTrue(view["can_end"])
+        self.assertNotIn("req-secret-1", json.dumps(view))
+        self.assertNotIn("rcv-secret-1", json.dumps(view))
+
     def test_soren91_renderer_mode_roundtrip_without_secrets(self):
         env_file = self.repo_root / "soren91.env"
         env_file.write_text(

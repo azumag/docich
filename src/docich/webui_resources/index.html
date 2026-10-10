@@ -167,6 +167,10 @@ input:checked+.slider:before{transform:translateX(20px)}
 <button class="btn" id="beta-stop" disabled>終了後停止</button>
 <button class="btn" id="beta-reconcile" disabled>終局結果を再確認</button>
 <button class="btn" id="beta-refresh">状態更新</button></div></div>
+<div class="card"><h2>特別コーナー（Fly Me To The Home!）</h2>
+<p class="desc">OBS（SRT）から受けたゲーム映像を表示する特別コーナーです。クリアしたら「終了」を押してください。終了すると Soren に戻り、クリアの感想を話します。待機中に押すと予約を取り消します。</p>
+<p id="special-status" class="help">読込中…</p>
+<div class="actions"><button class="btn primary" id="special-end" disabled>終了（クリア）</button></div></div>
 <div class="card"><h2>コーナーローテーション</h2>
 <p class="desc">配信の「コーナー」（レトロゲーム・NetHack・PAPER・メリケン・天気）は、ローテーションが自動で1つずつ起動します。一度実行したコーナーは cooldown（既定24時間）が明けるまで自動では選ばれません。この画面は10秒ごとに自動更新されます。</p>
 <div id="corners-source-warn" class="help" style="display:none;color:var(--warn)"></div>
@@ -1999,7 +2003,30 @@ async function betaControl(action){
   catch(e){ toast("操作結果を確認できません。状態更新後に同じ操作を再確認してください。"); }
   finally{ BETA_BUSY=false; await loadBetaStatus(); }
 }
+const SPECIAL_LABELS={idle:"動いていません",waiting:"待機中（順番待ち）",starting:"開始処理中",active:"表示中",restoring:"Soren へ復帰中",completed:"終了しました",interrupted:"終了しました",failed:"要復旧"};
+async function loadSpecial(){
+  const el=document.getElementById("special-status"), b=document.getElementById("special-end");
+  try{
+    const r=await api("/api/special-corner");
+    if(el){
+      let t=SPECIAL_LABELS[r.status]||r.status;
+      if(r.status==="active"&&r.ends_at) t+=`（上限 ${fmtTime(r.ends_at)} まで）`;
+      if(r.closing) t+=` / 感想: ${r.closing}`;
+      el.textContent=t;
+    }
+    if(b) b.disabled=!r.can_end;
+  }catch(e){ if(el) el.textContent="状態を取得できません。"; if(b) b.disabled=true; }
+}
+async function endSpecial(){
+  const b=document.getElementById("special-end");
+  if(!confirm("特別コーナーを終了します（クリアとして Soren に戻り、感想を話します）。よろしいですか？")) return;
+  if(b) b.disabled=true;
+  try{ await api("/api/special-corner/end",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({confirm:true})}); toast("終了を依頼しました。まもなく Soren に戻ります。"); }
+  catch(e){ toast("終了を依頼できませんでした。状態更新後に確認してください。"); }
+  finally{ await loadSpecial(); }
+}
 async function loadCorners(){
+  loadSpecial();
   loadBetaStatus();
   loadRenderer();
   try{
@@ -2911,6 +2938,7 @@ document.addEventListener("DOMContentLoaded",()=>{
   const cRefresh=document.getElementById("corners-refresh");
   if(cRefresh) cRefresh.onclick=()=>loadCorners();
   $("#beta-refresh").onclick=()=>loadBetaStatus();
+  $("#special-end").onclick=()=>endSpecial();
   $("#beta-start").onclick=()=>betaControl("start");
   $("#beta-stop").onclick=()=>betaControl("stop");
   const betaReconcile=$("#beta-reconcile");

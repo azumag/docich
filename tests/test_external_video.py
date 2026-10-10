@@ -272,10 +272,72 @@ def test_disconnect_restores_before_receiver_cleanup(setup, monkeypatch):
     def read(*_a, **kw):
         return dict(setup.prepared, fresh=bool(kw.get("fresh")))
     monkeypatch.setattr(corner, "read_receiver", read)
+    setup.manager.sleep = lambda n: setup.now.__setitem__(0, setup.now[0] + 10)
     state = setup.manager.run(1)
     assert state["end_reason"] == "receiver-disconnected"
     assert state["status"] == "completed"
     assert [x[0] for x in setup.calls] == [corner.VIEW_NAME, "sorengame"]
+
+
+def test_brief_stale_frame_does_not_end_the_corner(setup, monkeypatch):
+    seen = []
+
+    def read(*_a, **kw):
+        # stale for 20 s (< grace), then fresh again until the duration ends
+        stale = 1000 <= setup.now[0] < 1020 + 10 and bool(seen.append(1) or True)
+        return dict(setup.prepared, fresh=bool(kw.get("fresh")) or not stale)
+
+    monkeypatch.setattr(corner, "read_receiver", read)
+    setup.manager.sleep = lambda n: setup.now.__setitem__(0, setup.now[0] + 10)
+    state = setup.manager.run(1)
+    assert seen and state["end_reason"] == "duration"
+
+
+def test_duration_cap_is_three_hours(setup):
+    with pytest.raises(receiver.ExternalVideoError, match="1-180"):
+        setup.manager.run(181)
+    assert setup.manager.run(180)["status"] == "completed"
+
+
+def test_operator_end_flag_restores_and_speaks_closing_once(setup, monkeypatch):
+    spoken = []
+    import docich.external_video_closing as closing
+    monkeypatch.setattr(closing, "speak_closing", lambda g, minutes: spoken.append(minutes) or "spoken:fallback")
+
+    def sleep(_n):
+        state = json.loads(setup.manager.path.read_text())
+        if state["status"] == "active" and not (setup.g.state_dir / corner.STOP_FILE).exists():
+            corner.request_end(setup.g, state, corner.OPERATOR_END)
+        setup.now[0] += 5
+
+    setup.manager.sleep = sleep
+    state = setup.manager.run(180)
+    assert state["end_reason"] == corner.OPERATOR_END
+    assert [x[0] for x in setup.calls] == [corner.VIEW_NAME, "sorengame"]
+    assert spoken == [1] or len(spoken) == 1
+    assert state["closing"]["status"] == "spoken:fallback"
+
+
+def test_manual_stop_does_not_speak_closing(setup, monkeypatch):
+    import docich.external_video_closing as closing
+    monkeypatch.setattr(closing, "speak_closing", lambda *a: pytest.fail("closing on manual stop"))
+
+    def sleep(_n):
+        state = json.loads(setup.manager.path.read_text())
+        if state["status"] == "active":
+            corner.request_end(setup.g, state, "manual")
+        setup.now[0] += 5
+
+    setup.manager.sleep = sleep
+    state = setup.manager.run(180)
+    assert state["end_reason"] == "manual" and "closing" not in state
+
+
+def test_end_request_rejects_unknown_reason_and_idle_state(setup):
+    with pytest.raises(receiver.ExternalVideoError):
+        corner.request_end(setup.g, {"status": "active", "start_request_id": "x"}, "bogus")
+    with pytest.raises(receiver.ExternalVideoError):
+        corner.request_end(setup.g, {"status": "completed", "start_request_id": "x"}, corner.OPERATOR_END)
 
 
 def test_restore_failure_keeps_failed_owner_and_receiver(setup):
