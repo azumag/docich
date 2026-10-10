@@ -596,7 +596,9 @@ class SorenCoordinatorAdapter:
         first = self._live_singleton_processes()
         self._check(deadline, cancel)
         second = self._live_singleton_processes()
-        return (first is not None and first == second
+        # Stability after broker settlement is insufficient: a replacement may
+        # already be stable but cannot inherit the failed candidate's lease.
+        return (before == first == second
                 and self._adoptable_failed_candidate_state() is not None)
 
     def _singleton_process_identity(self, expected: str, *, proc_root=Path("/proc")):
