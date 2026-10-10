@@ -2644,7 +2644,8 @@ class RetroCornerManager:
         )
 
     def _restore_failed_receipt(
-        self, state: dict[str, object], *, late_cleanup_proved: bool = False
+        self, state: dict[str, object], *, late_cleanup_proved: bool = False,
+        allow_unrecorded_source: bool = False,
     ) -> tuple[dict[str, object], dict[str, object], str, str] | None:
         """Read one original post-completion restore failure, fail closed."""
 
@@ -2682,7 +2683,8 @@ class RetroCornerManager:
             or result.get("request_id") != request_id
             or result.get("operation") != "switch"
             or result.get("status") != receipt.get("status")
-            or result.get("from_game") != game
+            or not (result.get("from_game") == game
+                    or (allow_unrecorded_source and result.get("from_game") is None))
             or result.get("to_game") != previous
             or type(result.get("generation")) is not int
             or result.get("generation") != receipt["generation"]
@@ -2861,7 +2863,10 @@ class RetroCornerManager:
 
         try:
             with self.store.lock(exclusive=False):
-                evidence = self._restore_failed_receipt(state, late_cleanup_proved=True)
+                # A rollback_failed receipt may not have recorded its source game.
+                evidence = self._restore_failed_receipt(
+                    state, late_cleanup_proved=True, allow_unrecorded_source=True,
+                )
                 if evidence is None:
                     return None
                 original, result, game, previous = evidence
