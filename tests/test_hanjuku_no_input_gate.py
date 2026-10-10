@@ -9,12 +9,31 @@ input is not.
 from pathlib import Path
 import sys
 
+import pytest
+
+from hanjuku_frame_read_cache import reuse_frame_reads
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 from docich.hanjuku_bot import BOT_VERSION, NO_INPUT_HOLD_MAX, classify, decide, pad
 from docich.hanjuku_pixels import Frame
 
 from test_hanjuku_chart_bot import Canvas, monster_menu_frame
+
+
+@pytest.fixture(autouse=True)
+def _reuse_immutable_frame_reads():
+    """Exercise every real decision; avoid rereading identical fixture pixels.
+
+    Scope is this module and one test only, not the root conftest. The first
+    occurrence of each frame/phase is read by the real classifier/parser;
+    subsequent reads get a fresh Screen copy. No decision, digest, loop count
+    or production threshold is replaced. Parser/vision tests stay uncached.
+    """
+    from docich import hanjuku_bot as bot, hanjuku_screen as screen
+
+    with reuse_frame_reads(bot, screen):
+        yield
 
 
 def flat(color):
