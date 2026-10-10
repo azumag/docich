@@ -2,7 +2,7 @@
   "output_sha256": "e7404b5465ec34b58b9537bd39cec57e70f78fd3df14dd1e57f3521fa4f8adaa",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "8ca2ab47799b49a1ec9d58dad8d44b40a22294f85968c965c2ba94c9d7bc9b57",
+  "source_sha256": "cedcf9dcf88185c6feb71d0cd5db5b03cc6921722c11fc7f4d6c9218ec9918cb",
   "topics": [
     "手動OBS特別コーナーの受信と専用経路の実装",
     "自動ローテーション復旧（slot181停滞35h）と恒久修正2件",

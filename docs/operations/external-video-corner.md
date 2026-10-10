@@ -39,6 +39,23 @@ runnerはprogram_slotの予測境界とFIFOを守り、GameSwitchが旧ゲーム
 `run-soren-live/corners/external-video.paused`は開始を拒否します。
 ユーザーの休止を解除しません。
 
+既存コーナーの自然終了後に表示する場合は、先に共通FIFOへ予約します。
+
+```sh
+bin/docich --config config/docich.soren-live.toml external-video-corner start --wait-for-idle --wait-minutes 120 --duration-minutes 15
+```
+
+待機中のstatusは`waiting`です。既存コーナーへ終了・保存・入力を要求せず、
+所有枠が解放されて順番が来た後に、canonicalの復帰先runtimeを確定します。
+待機上限は1-120分（既定120分）、表示時間は取得後から数えます。予測境界・
+先行する予約・failed ownerを迂回しません。受信は予約したUUIDに固定し、
+そのworkerが期限切れ等で終了した場合だけ同じTailscale IPで最大60分再準備します。
+30秒以内にfresh映像と音声が戻らなければ表示せず予約を終了します。OBS側で
+手動の再接続が必要になる場合があります。他者が差し替えたreceiverは採用しません。
+待機中のstop/TERM/INT、期限切れ、外部映像の休止設定で予約だけを取り消し、
+既存ゲームを維持します。user unitのRuntimeMaxSecには待機・切替・表示・復帰の
+全予算を含めてください（最大設定なら180分を目安）。
+
 receiverは同じSRT接続からloopback UDP19195へ映像・音声を中継します。
 generation/lease/request所有のpresenterだけがこのsourceを表示し、元解像度から
 containで `(0,90,960,540)` に収め、黒余白を付けます。映像の切り抜き・引き伸ばし、
