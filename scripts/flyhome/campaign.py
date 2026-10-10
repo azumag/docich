@@ -21,7 +21,18 @@ def save(note=""):
     lines = ["[campaign4] 製品版を自動プレイ中 (MPC, 実機 printwindow+postmessage)"] + done_lines
     if note: lines.append(note)
     STATE.parent.mkdir(parents=True, exist_ok=True)
-    STATE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    body = "\n".join(lines) + "\n"
+    temporary = STATE.with_name("." + STATE.name + ".tmp")
+    temporary.write_text(body, encoding="utf-8")
+    for retry in range(3):
+        try:
+            os.replace(temporary, STATE)
+            break
+        except PermissionError:
+            if retry == 2:
+                # 一時的なWindows reader lockではプレイを止めず、次stepで再公開する。
+                return
+            time.sleep(0.002)
 def is_map(b):
     img = vision.to_native(b.capture(), s)
     if vision._party_present(img):
