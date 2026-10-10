@@ -22,3 +22,6 @@ games/roms/*
 
 # Local Discord Voice acceptance logs are sanitized but remain machine-local.
 /runtimes/discord-voice/acceptance-logs/
+
+# bench/jev_bench.py run artifacts (raw logs + CSVs) stay out of Git.
+/bench/runs/
