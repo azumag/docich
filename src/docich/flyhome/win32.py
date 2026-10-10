@@ -209,6 +209,8 @@ def find_window(titles: tuple[str, ...], exe_names: tuple[str, ...] = ()) -> Win
     for w in wins:
         if exes and os.path.basename(w.exe).lower() in exes:
             return w
+    if exes:
+        return None  # exe指定時は他アプリの同名タイトルへフォールバックしない
     for w in wins:
         if any(t in w.title.lower() for t in lowered) and "steam" not in os.path.basename(w.exe).lower():
             return w

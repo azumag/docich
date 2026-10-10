@@ -6,9 +6,11 @@ import sys, time, os
 sys.path.insert(0, "src")
 from pathlib import Path
 from docich.flyhome import settings as S, runner, vision
+from docich.flyhome.image import write_png
 STATE = Path(os.environ.get("FLYHOME_STATE_FILE", "run/game-state.txt"))
 LOG = Path("run/campaign_results.txt")
 first = int(sys.argv[1]); count = int(sys.argv[2]); per = float(sys.argv[3]) if len(sys.argv) > 3 else 600.0
+last = min(50, first + count - 1)
 s = S.load(None)
 done_lines = LOG.read_text(encoding="utf-8").splitlines() if LOG.exists() else []
 import re as _re
@@ -18,6 +20,7 @@ if _cl:
 def save(note=""):
     lines = ["[campaign4] 製品版を自動プレイ中 (MPC, 実機 printwindow+postmessage)"] + done_lines
     if note: lines.append(note)
+    STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 def is_map(b):
     img = vision.to_native(b.capture(), s)
@@ -48,16 +51,21 @@ def to_next_level(b):
         if uncleared(b):
             break
         b.tap("right"); time.sleep(0.8)
+    write_png(s.run_dir / "maps" / ("selected-%d.png" % time.time_ns()), b.capture())
     b.tap("enter"); time.sleep(2.0)
-for i in range(count):
+for i in range(max(0, last - first + 1)):
     lv = first + i
     b = runner.WindowsBackend(s, focus=False)
     try:
-        if not (os.environ.get("ON_LEVEL") and i == 0):
+        initial_img = vision.to_native(b.capture(), s)
+        if not (i == 0 and os.environ.get("ON_LEVEL")) or vision._party_present(initial_img) or uncleared(b):
             to_next_level(b)
         save("  いま: Lv%d を play 中..." % lv)
         out = runner.session_dir(s, "play")
-        res = runner.play(b, s, attempts=0, max_seconds=per, log_root=out)
+        def step(st, extra):
+            pos = "位置不明" if st.x is None else "x=%.1f y=%.1f angle=%.2f" % (st.x, st.y, st.angle or 0.0)
+            save("  いま: Lv%d 試行%d %s %s (%s)" % (lv, st.attempt, st.phase, pos, out))
+        res = runner.play(b, s, attempts=0, max_seconds=per, log_root=out, on_step=step)
     finally:
         b.close()
     ok = bool(res) and res[-1]["outcome"] == "cleared"
@@ -67,5 +75,5 @@ for i in range(count):
     save()
     print("Lv%d" % lv, "cleared" if ok else "FAILED", "attempts", len(res), flush=True)
     if not ok:
-        break
+        raise SystemExit(1)
 print("done")

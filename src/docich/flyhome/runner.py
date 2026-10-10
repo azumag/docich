@@ -14,6 +14,7 @@ import dataclasses
 
 import json
 import time
+from typing import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -93,7 +94,8 @@ class WindowsBackend(Backend):  # pragma: no cover - Windows 実機のみ
 
     def ready(self) -> bool:
         if self.s.input_mode == "postmessage":
-            return True
+            return any(w.hwnd == self.hwnd and w.pid == self.info.pid and w.exe == self.info.exe
+                       for w in self.w.list_windows())
         return self.w.foreground_hwnd() == self.hwnd
 
     def aborted(self) -> bool:
@@ -104,6 +106,8 @@ class WindowsBackend(Backend):  # pragma: no cover - Windows 実機のみ
         self.kb.set(self.scan["right"], right)
 
     def tap(self, key: str) -> None:
+        if not self.ready():
+            raise RuntimeError("game window identity changed; input aborted")
         self.kb.tap(self.scan[key])
 
     def human_jets(self) -> tuple[bool, bool]:
@@ -253,12 +257,13 @@ def play(
     physics: Physics | None = None,
     attempts: int = 1,
     max_seconds: float = 120.0,
-    attempt_timeout_s: float = 25.0,
+    attempt_timeout_s: float = 60.0,
     retry: bool = True,
     log_root: Path | None = None,
     replan_every: int = 6,
     idle_enter_s: float = 4.0,
     hazard_memory_s: float = 1.5,
+    on_step: Callable[[State, dict | None], None] | None = None,
 ) -> list[dict]:
     """制御器でプレイする。死亡したら Enter で再挑戦し、帰宅したら止まる。"""
     log = SessionLog(log_root)
@@ -272,6 +277,9 @@ def play(
     t_start = None
     tl: Timeline | None = None
     hz_mem: dict[tuple[int, int, int, int], float] = {}  # 最近見えた棘の矩形 → 最後に見えた時刻
+    t_motion = backend.now()
+    motion_pos = None
+    grid_cache = {}
     t_idle = backend.now()  # プレイヤーが見えなくなった時刻 (死亡/クリア画面で止まったままの検出用)
     try:
         while backend.now() - t_begin < max_seconds:
@@ -303,8 +311,14 @@ def play(
                             world_obs = dataclasses.replace(world_obs, hazards=list(hz_mem))
                         # 棘の格子の間を抜けるレベル (実機 Lv23) では余白 3 セルだと道が無い: 余白を縮めて探し直す
                         new_path = None
-                        for hm in (3, 2, 1):
-                            grid = planner.build_grid(world_obs, hazard_margin=hm)
+                        for sm, hm in ((2, 3), (2, 2), (2, 1), (1, 3), (1, 2), (1, 1)):
+                            world_key = (hash(bytes(world_obs.solid)), tuple(sorted(world_obs.hazards)), world_obs.home_bbox)
+                            cache_key = (world_key, sm, hm)
+                            if cache_key not in grid_cache:
+                                if len(grid_cache) > 24:
+                                    grid_cache.clear()
+                                grid_cache[cache_key] = planner.build_grid(world_obs, solid_margin=sm, hazard_margin=hm)
+                            grid = grid_cache[cache_key]
                             new_path = planner.astar(grid, (st.x, st.y), target)
                             if new_path:
                                 break
@@ -316,7 +330,7 @@ def play(
                         # 前の経路がまだ通れて、新しい経路が 20% 以上短くなければ前の経路を使い続ける。
                         if path is not None and len(path) >= 2:
                             rest = planner.remaining_path(path, (st.x, st.y))
-                            if (len(rest) >= 2 and not planner.path_blocked(grid, rest[1:])
+                            if (len(rest) >= 2 and not planner.path_blocked(grid, rest)
                                     and planner.path_length(new_path) > 0.8 * planner.path_length(rest)):
                                 new_path = rest
                         path = new_path
@@ -324,9 +338,13 @@ def play(
                             ctl.set_world(grid, world_obs, path)
                 if path is not None:
                     keys = ctl.decide(st, planner.lookahead(path, (st.x, st.y)))
-                if st.t - t_start > attempt_timeout_s:
+                if motion_pos is None or abs(st.x - motion_pos[0]) + abs(st.y - motion_pos[1]) > 3.0:
+                    motion_pos = (st.x, st.y)
+                    t_motion = st.t
+                stuck = st.t - t_motion > 8.0 and st.best_dist is not None and st.best_dist > 30.0
+                if st.t - t_start > attempt_timeout_s or stuck:
                     keys = (False, False)  # 打ち切り: 落下させて死亡→再挑戦に回す
-                    if st.t - t_start > attempt_timeout_s + 3.0 and backend.ready():
+                    if (st.t - t_start > attempt_timeout_s + 3.0 or stuck) and backend.ready():
                         # 地面で生きたまま動けなくなった: Esc でマップへ戻り、Enter で同じレベルをやり直す
                         backend.release_all()
                         backend.tap("escape")
@@ -334,11 +352,15 @@ def play(
                         backend.tap("enter")
                         loop.wait(1.5)
                         t_start = None
+                        motion_pos = None
+                        t_motion = backend.now()
                         continue
                 tl.add(int((st.t - t_start) * 1000), *keys)
                 k += 1
             if backend.ready():
                 backend.set_jets(*keys)
+                if isinstance(ctl, MpcController) and ctl._acts:
+                    ctl._acts[-1] = (backend.now(), int(keys[0]) + 2 * int(keys[1]))
             else:
                 backend.release_all()
                 keys = (False, False)
@@ -346,8 +368,10 @@ def play(
             if isinstance(ctl, MpcController) and st.phase == PLAYING and ctl._ref:
                 r0, r1 = ctl._ref[0], ctl._ref[-1]
                 extra = {"ref0": [round(r0[0], 1), round(r0[1], 1)], "ref_end": [round(r1[0], 1), round(r1[1], 1)],
-                         "path0": [round(v, 1) for v in ctl.path[min(3, len(ctl.path) - 1)]] if ctl.path else None}
+                         "path0": [round(v, 1) for v in ctl.path[min(3, len(ctl.path) - 1)]] if ctl.path else None, "path": ctl.path, "estimated": getattr(ctl, "_estimate_debug", None)}
             log.frame(st, loop.obs, keys, extra)
+            if on_step is not None:
+                on_step(st, extra)
             if loop.native is not None:
                 log.snapshot(st.t, loop.native, loop.obs)
             if st.phase in (DEAD, CLEARED) and t_start is not None:

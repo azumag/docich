@@ -33,8 +33,8 @@ class MpcConfig:
     step_s: float = 0.1  # 入力列 1 要素の長さ
     horizon: int = 14  # 要素数 (先読み = step_s * horizon 秒)
     substeps: int = 2  # 1 要素あたりの積分分割
-    candidates: int = 80  # 1 ティックで試す入力列の数
-    delay_s: float = 0.08  # 入力が効くまでの遅れ
+    candidates: int = 48  # 1 ティックで試す入力列の数
+    delay_s: float = 0.12  # 入力が効くまでの遅れ
     persistence: float = 0.65  # ランダム列で直前と同じ入力を続ける確率
     mutate_p: float = 0.2  # 前回の最良列を崩す確率
     # コスト
@@ -52,7 +52,7 @@ class MpcConfig:
     w_final: float = 4.0  # 最終ステップの残り距離の追加重み
     brake_accel: float = 45.0  # 速度上限 sqrt(2*a*残距離) の a (px/s^2)
     v_floor: float = 12.0  # 残距離がほぼ 0 でも許す速度
-    terrain_pen: float = 12.0  # 地形に重なる 1 ステップごと (地面は死なないので軽め)
+    terrain_pen: float = 60.0  # 地形への接触は姿勢を崩すため、経路を逸れて突っ切る予測を避ける
     fatal_pen: float = 400.0  # 棘・画面外 (以降は死亡として打ち切り)
     max_speed: float = 90.0  # これを超える速度に罰則
     max_tilt: float = 0.8  # rad。これ以上傾くと立て直せない
@@ -61,8 +61,8 @@ class MpcConfig:
     hazard_soft: float = 14.0  # 棘の(生の)矩形からこの距離以内に近づくと、近さに比例して罰則 (遠回りより近道を選んで突っ込むのを防ぐ)
     hazard_soft_w: float = 8.0
     corner_turn: float = 0.7  # rad。経路のこれ以上の曲がり角の手前では、角までの距離に応じた速度上限をかける
-    corner_accel: float = 30.0
-    corner_floor: float = 10.0
+    corner_accel: float = 18.0
+    corner_floor: float = 6.0
     home_slow_r: float = 50.0  # 家からこの距離以内では速度 <= home_v0 + home_v_per_px * 距離 を強く守る (通り過ぎ・滑り落ち対策)
     home_v0: float = 10.0
     home_v_per_px: float = 0.8
@@ -114,6 +114,7 @@ class MpcController:
 
     def set_world(self, grid: Grid, obs: Observation, path: list[tuple[float, float]] | None = None) -> None:
         self.grid = grid
+        self.hazards = list(obs.hazards)
         if path:
             self.path = list(path)
             self._cum = [0.0]
@@ -121,12 +122,11 @@ class MpcController:
                 self._cum.append(self._cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
             self._corners = self._find_corners()
             self._samp = self._sample_path()
-        self.hazards = list(obs.hazards)
         self.home_bbox = obs.home_bbox
         self.width, self.height = obs.width, obs.height
         self.solid = obs.solid  # 画素単位の地形 (草/土)
 
-    def _find_corners(self, m: int = 3) -> list[float]:
+    def _find_corners(self, m: int = 1) -> list[float]:
         pts, cum = self.path, self._cum
         out: list[float] = []
         for k in range(m, len(pts) - m):
@@ -162,7 +162,12 @@ class MpcController:
                 if cs >= sv:
                     v = min(v, math.sqrt(2.0 * c.corner_accel * (cs - sv)) + c.corner_floor)
                     break
-            out.append((ax + u * (bx - ax), ay + u * (by - ay), tx / tl, ty / tl, v))
+            px, py = ax + u * (bx - ax), ay + u * (by - ay)
+            if self.hazards:
+                clearance = min(math.hypot(max(hx0 - px, 0, px - hx1), max(hy0 - py, 0, py - hy1))
+                                for hx0, hy0, hx1, hy1 in self.hazards)
+                v = min(v, 12.0 + 1.5 * max(0.0, clearance - 9.0))
+            out.append((px, py, tx / tl, ty / tl, v))
             if sv >= plen:
                 break
             sv = min(plen, sv + ds)
@@ -339,6 +344,8 @@ class MpcController:
                     dmin = dd
             if dmin < soft:
                 total += soft_w * (soft - dmin)  # 一番近い棘の生の矩形からの距離だけで (足し合わせない)
+            if solid is not None and solid[min(H - 1, max(0, int(y))) * W + min(W - 1, max(0, int(x)))]:
+                total += c.fatal_pen  # 地形への食い込みは姿勢を崩すので、通過できる予測を避ける
             if grid is not None:
                 cc, rr = int(x // cell), int(y // cell)
                 if 0 <= cc < cols and 0 <= rr < rows and blocked[rr * cols + cc]:
@@ -438,7 +445,9 @@ class MpcController:
             self._t0 = st.t
         c = self.cfg
         x, y, vx, vy, ang, om = self._estimate(st)
-        if st.t - getattr(self, "_t0", st.t) < c.takeoff_s and abs(ang) < 0.3:
+        self._estimate_debug = [round(v, 3) for v in (vx, vy, ang, om)]
+        takeoff_s = min(c.takeoff_s, 0.15) if y < 40 else c.takeoff_s
+        if st.t - getattr(self, "_t0", st.t) < takeoff_s and abs(ang) < 0.3:
             self._plan, self._last_action = [3] * c.horizon, 3
             self._acts.append((st.t, 3))
             return True, True
