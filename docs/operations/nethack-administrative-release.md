@@ -14,6 +14,40 @@ current Sorenや共有worker/daemon、foreign UID資源の正の帰属契約が�
 提供する段階である。非祖先のroot daemonやkernel threadがある通常Linux hostでは
 現契約が必ず拒否となる可能性が高い。その拒否を復旧完了とは扱わない。
 
+## 拒否対象を分類する固定readonly preflight
+
+既存read-only `diagnostics`に`nethack_admin_preflight`を追加する。
+対象は同じfailed automatic NetHack予約に限定し、既存のchain readerで前後の
+owner/ledger/canonical/receipt/終了境界を照合する。任意PID/path/command入力、
+新gateway operation、service/workerや参加記録のproducerは追加しない。
+check/releaseはこの投影を入力にせず、解除guard・資源許可は変更しない。
+
+processは既存の有界proc readerで2回取得し、固定カテゴリの件数だけを返す。
+カテゴリはcontrol祖先、正規tmux server、明示的NetHack引数、旧/矛盾tag、
+current Soren tagだが帰属未証明、untagged state UID、foreign UID未証明、
+別tmux未証明である。名前やtagによる分類は正の所有証明や停止対象の確定ではない。
+PID/birth/親、boot/namespace、tags/exe/cwd/argvは内部照合だけに使い、
+その実値・digest・path・例外本文は投影しない。foreign UIDのprivate metadataは読まない。
+
+`process_observation.traversal_complete`は2回の**見えているproc**走査が完了した意味である。
+`snapshot=stable/changed/single_sample/unavailable`を別に返し、内側namespaceからの
+host coverageは`host_scope_proven=false`のまま。部分sampleの件数はfirst_sampleとして残すが、
+未取得の件数はnull。missing/unsafe/過大なinventoryをゼロ件の成功にしない。
+固定local Docker一覧と既知の旧tmuxも前後を比較し、別endpoint/未登録資源の不在とは扱わない。
+同じ入力やprocessの前後一致もatomic snapshotや将来のspawn抑止ではない。
+
+producerの実行中契約版とfence参加を証明するenrollment protocolは未実装である。
+`producer_participation`は固定6カテゴリ（coordinator、tiles、daily/canary、host canary、resolver、
+shared controller）について`live_proof_available=false`、`verified=0`と不足理由を返す。
+固定fence inodeのmissing/safe/unsafe/unavailableをreadonlyで観測するが、存在しても参加証明にしない。
+lock取得・作成・修復や未知の参加JSONの読取は行わない。
+
+`release_authority=false`、`resource_absence_proven=false`、`history_authority=false`は常に保持する。
+このprojectionは既存gatewayの60秒と出力上限の内側で動き、gatewayのtimeout/欠測/省略を
+資源不在へ読み替えない。正常Soren＋共有audio/improve＋通常daemon/kernelを含む架空fixtureは、
+分類ができても`process_coverage_unproven`で解除を拒否する。現在の契約で正常Sorenを残して
+通過する条件は成立していない。追加の正の帰属/実行中参加契約や本番操作はこの追加開発に含めない。
+
 ## 現在資源の検査と限定したspawn fence
 
 検査はLinuxのstate owner UIDについて、PID/birth、親、3つのownership tag、

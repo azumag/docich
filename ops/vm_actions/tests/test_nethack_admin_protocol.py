@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location('admin_check_collector', ROOT / 'ops/vm_actions/collect_diagnostics.py')
 diag = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(diag)
-PATHS = ('nethack_admin_release', 'nethack_admin_resources', 'nethack_admin_result', 'nethack_resource_fence',
+PATHS = ('nethack_admin_release', 'nethack_admin_resources', 'nethack_admin_preflight', 'nethack_admin_result', 'nethack_resource_fence',
          'nethack_return', 'retro_corner', 'game_switch', 'hanjuku_manual_cancel', 'naming', 'tmux')
 
 
@@ -68,15 +68,21 @@ class AdminProtocolTests(unittest.TestCase):
                     return subprocess.CompletedProcess(argv, 0, (ROOT/path).read_bytes(), b'')
                 return subprocess.CompletedProcess(argv, 0, b'a'*40 if 'rev-parse' in argv else b'', b'')
             with patch.object(diag, 'PROD_ROOT', root), patch.object(diag.subprocess, 'run', git), \
-                    patch('docich.nethack_admin_release.check', Mock(return_value={'status':'verified'})) as checker:
+                    patch('docich.nethack_admin_release.check', Mock(return_value={'status':'verified'})) as checker, \
+                    patch('docich.nethack_admin_preflight.preflight', Mock(return_value={'status':'classification'})) as classifier:
                 self.assertEqual(diag._collect_nethack_admin_check(root, root, 1, player='fixture')['status'], 'verified')
+                self.assertEqual(diag._collect_nethack_admin_preflight(root, root, 1, player='fixture')['status'], 'classification')
                 self.assertEqual(checker.call_count, 1)
                 for name in PATHS:
                     target = root / f'src/docich/{name}.py'
                     original = target.read_bytes(); target.write_bytes(original+b'\n# drift\n')
                     self.assertEqual(diag._collect_nethack_admin_check(root, root, 1, player='fixture')['reason'], 'code_unverified')
+                    projection = diag._collect_nethack_admin_preflight(root, root, 1, player='fixture')
+                    self.assertEqual(projection['reason'], 'code_unverified')
+                    self.assertIs(projection['release_authority'], False)
                     target.write_bytes(original)
                 self.assertEqual(checker.call_count, 1)
+                self.assertEqual(classifier.call_count, 1)
 
     def test_initial_check_ignores_poisoned_bytecode_and_creates_no_cache(self):
         # An equal-size/equal-mtime .pyc would normally mask the verified source.
