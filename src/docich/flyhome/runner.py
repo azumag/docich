@@ -189,7 +189,7 @@ class SessionLog:
         if self._frames is None:
             return
         row = st.as_dict()
-        row.update({"left": keys[0], "right": keys[1], "hud": [obs.hud_left, obs.hud_right],
+        row.update({"left": keys[0], "right": keys[1], "hud": [obs.hud_left, obs.hud_right], "timer_sig": obs.timer_sig, "control_prompt": obs.control_prompt,
                     "player_bbox": obs.player.bbox if obs.player else None, "player_area": obs.player.area if obs.player else None})
         if extra:
             row.update(extra)

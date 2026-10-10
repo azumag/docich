@@ -204,6 +204,7 @@ class Observation:
     solid: bytearray = field(repr=False)  # width*height, 1 = 地形 (草/土)
     labels: bytearray = field(repr=False)
     wipe: bool = False  # クリア画面 (上下端に橙のプレイヤー像の列) が出ている
+    control_prompt: bool = False  # 実機の左上の操作案内（開始時/死亡後）
 
     def summary(self) -> dict:
         p = self.player
@@ -220,7 +221,7 @@ class Observation:
             "hazards": len(self.hazards),
             "coins": [[round(c[0], 1), round(c[1], 1)] for c in self.coins],
             "hud": [self.hud_left, self.hud_right],
-            "timer_sig": self.timer_sig,
+            "timer_sig": self.timer_sig, "control_prompt": self.control_prompt,
             "level_sig": self.level_sig,
         }
 
@@ -359,6 +360,16 @@ def _orientation(blob: Blob, labels: bytearray, w: int, h: int, prev_angle: floa
     return math.atan2(ax, -ay)
 
 
+def _control_prompt_present(native: Image) -> bool:
+    """実機で採取した操作案内の白いキー/文字の配置。開始時にも出る。"""
+    if native.width != 320 or native.height != 180:
+        return False
+    import zlib
+    bits = bytes(int(min(native.get(x, y)) > 200)
+                 for y in range(17, 65) for x in range(64))
+    return sum(bits) == 352 and zlib.crc32(bits) == 1242029274
+
+
 def analyze(
     native: Image,
     settings: Settings | None = None,
@@ -492,6 +503,7 @@ def analyze(
         solid=solid,
         labels=labels,
         wipe=_party_present(native),
+        control_prompt=_control_prompt_present(native),
     )
 
 

@@ -72,6 +72,9 @@ class Tracker:
         self._home = None
         self._home_bbox = None
         self._home_confident = False
+        self._timer_sig = None
+        self._timer_changed_at = None
+        self._timer_has_changed = False
         self.last_obs: Observation | None = None  # プレイヤーが写っていた最新の観測 (地図用)
 
     @property
@@ -111,6 +114,18 @@ class Tracker:
             return st
         if obs.wipe and p is not None:
             p = None  # クリア画面の像はプレイヤーではない (新しい試行を始めない)
+        if self._timer_sig != obs.timer_sig:
+            self._timer_has_changed = self._timer_sig is not None or self._timer_has_changed
+            self._timer_sig = obs.timer_sig
+            self._timer_changed_at = t
+        frozen_s = 0.0 if self._timer_changed_at is None else t - self._timer_changed_at
+        if (obs.control_prompt and frozen_s >= self.home_wait_s
+                and (self._timer_has_changed or p is None or p.area < 70)):
+            # 実機Lv37: 死亡片を家の横で追い続け、183秒まで再試行できなかった。
+            # 操作案内と停止した時計の両方を要求し、開始直後や帰宅待ちと区別。
+            p = None
+            if self.phase == PLAYING:
+                self.phase = DEAD
         if p is None:
             self._missing += 1
             if self._missing == 1:
