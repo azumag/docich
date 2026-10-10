@@ -453,3 +453,22 @@ def test_actual_level23_home_progress_wait_survives_edge_and_speed_quantization(
     ctl._home_settling = True
     ctl.reset()
     assert not ctl._home_settling
+
+
+def test_actual_level33_open_descent_does_not_require_two_spike_columns():
+    ctl = _actual_mpc()
+    ctl.path = [(46, 46), (46, 90), (58, 102)]
+    ctl._hist.append((10, 49.924, 33.337, 0))
+    ctl._ref = [(46.2, 38.7, 0, 12)] * ctl.cfg.horizon
+    ctl.hazards = [(195, 87, 205, 97), (259, 87, 269, 97)]
+    ctl._descent_ready_since = 9.7
+    ctl._precision_action(49.924, 33.337, -.588, -2.023, 0, .391)
+    assert ctl._descent_commit == (46, 58)
+    # 片側だけの近い棘でも厳密条件を保つ。通路上に棘があれば余白0。
+    for rect in ((59, 50, 69, 90), (41, 50, 51, 90)):
+        ctl._descent_commit = None
+        ctl._descent_ready_since = 9.7
+        ctl.hazards = [rect]
+        ctl._precision_action(49.924, 33.337, -.588, -2.023, 0, .391)
+        assert ctl._descent_commit is None
+        assert ctl._precision_debug[7]

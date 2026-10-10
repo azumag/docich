@@ -560,13 +560,12 @@ class MpcController:
                 while j + 1 < len(self.path) and abs(self.path[j + 1][0] - sx) < 0.1 and self.path[j + 1][1] > self.path[j][1]:
                     j += 1
                 if j > k and self.path[j][1] - sy >= 24 and -2 <= sy - y <= 30 and abs(sx - x) < 25:
-                    # Lv16実機の幅広い棘列では、1px量子化の速度変動で厳密な
-                    # 静止待ちが続く。左右の棘まで24px以上あれば余白内で下りる。
-                    left = [sx - hx1 for hx0, hy0, hx1, hy1 in self.hazards
-                            if hx1 < sx and hy0 <= self.path[j][1] + 10 and hy1 >= sy - 10]
-                    right = [hx0 - sx for hx0, hy0, hx1, hy1 in self.hazards
-                             if hx0 > sx and hy0 <= self.path[j][1] + 10 and hy1 >= sy - 10]
-                    wide = bool(left and right and min(min(left), min(right)) >= 24)
+                    # 実機Lv16/33: 量子化で厳密静止待ちが続く。近くに棘がない
+                    # 開けた降下も緩和し、片側/頭上に近い棘があれば厳密条件を保つ。
+                    clearance = [max(hx0 - sx, sx - hx1, 0.0)
+                                 for hx0, hy0, hx1, hy1 in self.hazards
+                                 if hy0 <= self.path[j][1] + 10 and hy1 >= sy - 10]
+                    wide = min(clearance, default=math.inf) >= 24
                     pos_limit, speed_limit, angle_limit, omega_limit, hold_s = (6, 10, .25, .8, .12) if wide else (2, 3, .12, .35, .25)
                     stable = abs(sx - x) <= pos_limit and abs(vx) <= speed_limit and abs(ang) <= angle_limit and abs(om) <= omega_limit
                     now = self._hist[-1][0]
