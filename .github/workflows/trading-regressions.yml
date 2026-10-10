@@ -4,15 +4,18 @@ on:
   pull_request:
     paths:
       - '.github/workflows/trading-regressions.yml'
-      - 'src/docich/trading/**'
-      - 'src/docich/paper_*.py'
       - 'src/docich/overlay*.py'
-      - 'src/docich/webui.py'
+      - 'src/docich/paper_*.py'
+      - 'src/docich/trading/*.py'
+      - 'src/docich/trading/exchanges/**'
+      - 'src/docich/trading/free_strategy/**'
       - 'src/docich/config.py'
-      - 'src/docich/meriken_voice.py'
-      - 'src/docich/soren91_corner.py'
-      - 'src/docich/runtime_backend.py'
       - 'src/docich/hanjuku_narration.py'
+      - 'src/docich/meriken_voice.py'
+      - 'src/docich/runtime_backend.py'
+      - 'src/docich/soren91_corner.py'
+      - 'src/docich/webui.py'
+      - 'src/docich/trading/dashboard_assets/*'
       - 'tests/test_trading*.py'
       - 'tests/test_paper*.py'
       - 'tests/test_program_view*.py'
@@ -24,19 +27,23 @@ on:
       - 'games/soviet_now'
       - '.github/scripts/soren_gitlink_gate.py'
       - 'requirements-test.txt'
+      - 'conftest.py'
   push:
     branches: [main]
     paths:
       - '.github/workflows/trading-regressions.yml'
-      - 'src/docich/trading/**'
-      - 'src/docich/paper_*.py'
       - 'src/docich/overlay*.py'
-      - 'src/docich/webui.py'
+      - 'src/docich/paper_*.py'
+      - 'src/docich/trading/*.py'
+      - 'src/docich/trading/exchanges/**'
+      - 'src/docich/trading/free_strategy/**'
       - 'src/docich/config.py'
-      - 'src/docich/meriken_voice.py'
-      - 'src/docich/soren91_corner.py'
-      - 'src/docich/runtime_backend.py'
       - 'src/docich/hanjuku_narration.py'
+      - 'src/docich/meriken_voice.py'
+      - 'src/docich/runtime_backend.py'
+      - 'src/docich/soren91_corner.py'
+      - 'src/docich/webui.py'
+      - 'src/docich/trading/dashboard_assets/*'
       - 'tests/test_trading*.py'
       - 'tests/test_paper*.py'
       - 'tests/test_program_view*.py'
@@ -48,6 +55,7 @@ on:
       - 'games/soviet_now'
       - '.github/scripts/soren_gitlink_gate.py'
       - 'requirements-test.txt'
+      - 'conftest.py'
 
 permissions:
   contents: read
@@ -79,15 +87,18 @@ jobs:
             --before "$BEFORE_SHA" \
             --after "$AFTER_SHA" \
             --root-path '.github/workflows/trading-regressions.yml' \
-            --root-path 'src/docich/trading/**' \
-            --root-path 'src/docich/paper_*.py' \
             --root-path 'src/docich/overlay*.py' \
-            --root-path 'src/docich/webui.py' \
+            --root-path 'src/docich/paper_*.py' \
+            --root-path 'src/docich/trading/*.py' \
+            --root-path 'src/docich/trading/exchanges/**' \
+            --root-path 'src/docich/trading/free_strategy/**' \
             --root-path 'src/docich/config.py' \
-            --root-path 'src/docich/meriken_voice.py' \
-            --root-path 'src/docich/soren91_corner.py' \
-            --root-path 'src/docich/runtime_backend.py' \
             --root-path 'src/docich/hanjuku_narration.py' \
+            --root-path 'src/docich/meriken_voice.py' \
+            --root-path 'src/docich/runtime_backend.py' \
+            --root-path 'src/docich/soren91_corner.py' \
+            --root-path 'src/docich/webui.py' \
+            --root-path 'src/docich/trading/dashboard_assets/*' \
             --root-path 'tests/test_trading*.py' \
             --root-path 'tests/test_paper*.py' \
             --root-path 'tests/test_program_view*.py' \
@@ -96,8 +107,9 @@ jobs:
             --root-path 'tests/test_soren91_corner.py' \
             --root-path 'containers/paper-strategy/**' \
             --root-path 'config/market-paper.toml' \
-            --root-path 'requirements-test.txt' \
             --root-path '.github/scripts/soren_gitlink_gate.py' \
+            --root-path 'requirements-test.txt' \
+            --root-path 'conftest.py' \
             --soren-path 'overlay_notify.sh' \
             --soren-path 'generate_event_overlay.py' \
             --soren-path 'core/config.sh' \
