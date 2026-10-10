@@ -25,6 +25,7 @@ from .mpc import MpcController
 from .image import Image, write_png
 from .settings import Settings
 from .timeline import Timeline
+from .route_worker import RouteWorker
 from .tracker import CLEARED, DEAD, PLAYING, State, Tracker
 
 
@@ -96,8 +97,7 @@ class WindowsBackend(Backend):  # pragma: no cover - Windows 実機のみ
 
     def ready(self) -> bool:
         if self.s.input_mode == "postmessage":
-            return any(w.hwnd == self.hwnd and w.pid == self.info.pid and w.exe == self.info.exe
-                       for w in self.w.list_windows())
+            return self.w.window_identity(self.hwnd) == (self.info.pid, self.info.exe)
         return self.w.foreground_hwnd() == self.hwnd
 
     def aborted(self) -> bool:
@@ -284,6 +284,7 @@ def play(
     loop = Loop(backend, settings, log)
     phys = physics or Physics.load(settings.physics_file)
     ctl = MpcController(phys) if settings.controller == "mpc" else JetController(phys)
+    routes = RouteWorker()
     done = 0
     path = None
     k = 0
@@ -293,7 +294,6 @@ def play(
     hz_mem: dict[tuple[int, int, int, int], float] = {}  # 最近見えた棘の矩形 → 最後に見えた時刻
     t_motion = backend.now()
     motion_pos = None
-    grid_cache = {}
     grid_spec = None
     solid_mem = None
     previous_io_s = 0.0
@@ -306,6 +306,7 @@ def play(
             st = loop.tick()
             keys = (False, False)
             planning_detail = None
+            route_worker_s = None
             if loop.obs is not None:
                 for r in loop.obs.hazards:
                     hz_mem[tuple(r)] = st.t
@@ -345,13 +346,19 @@ def play(
                     if log.root is not None and loop.native is not None:
                         write_png(log.root / f"world-attempt{st.attempt:04d}-initial.png", loop.native)
                     solid_mem = None  # 死亡演出の破片や変色を、次の実試行の地形へ持ち越さない。
-                    grid_cache.clear()
                     grid_spec = None
                     hz_mem.clear()
                     for rect in loop.obs.hazards:
                         hz_mem[tuple(rect)] = st.t  # 前の死亡破片を新しい試行の棘として残さない。
                 planning_start = backend.now()
-                if (path is None or k % replan_every == 0) and loop.obs.player is not None:
+                completed = routes.poll(st.attempt)
+                if completed is not None:
+                    path, grid, grid_spec = completed.path, completed.grid, completed.spec
+                    planning_detail, route_worker_s = completed.detail, completed.duration_s
+                    if isinstance(ctl, MpcController):
+                        ctl.cfg.hazard_margin = max(5.0, grid_spec[2] * grid_spec[0] - 3.0)
+                        ctl.set_world(grid, completed.observation, path)
+                if (path is None or k % replan_every == 0) and loop.obs.player is not None and not routes.busy:
                     target = st.home
                     if target is not None:
                         world_obs = loop.tracker.last_obs or loop.obs
@@ -368,8 +375,6 @@ def play(
                             # 棘はプレイヤーの炎と混同されて一時的に消えることがある: 最近見えた棘も足して計画する
                             world_obs = dataclasses.replace(world_obs, hazards=list(hz_mem))
                         # 棘の格子の間を抜けるレベル (実機 Lv23) では余白 3 セルだと道が無い: 余白を縮めて探し直す
-                        new_path = None
-                        kept_path = False
                         planning_solid = bytearray(world_obs.solid)
                         for rect in (settings.hud.arrow_left, settings.hud.arrow_right):
                             x0, y0, x1, y1 = vision._rect_px(rect, world_obs.width, world_obs.height)
@@ -378,49 +383,7 @@ def play(
                                     planning_solid[yy * world_obs.width + xx] = 1
                         # 矢印HUDの裏では体が見えない。経路だけで避け、物理の地面には加えない。
                         planning_obs = dataclasses.replace(world_obs, solid=planning_solid)
-                        world_key = (hash(bytes(planning_solid)), tuple(sorted(world_obs.hazards)), world_obs.home_bbox)
-                        def get_grid(cell, sm, hm):
-                            cache_key = (world_key, cell, sm, hm)
-                            if cache_key not in grid_cache:
-                                if len(grid_cache) > 128:
-                                    grid_cache.clear()
-                                grid_cache[cache_key] = planner.build_grid(planning_obs, cell=cell, solid_margin=sm, hazard_margin=hm, soft_margin=2 if cell == 4 else 4, top_extra=2 if cell == 4 else 5)
-                            return grid_cache[cache_key]
-                        if path and grid_spec and planner.path_distance(path, (st.x, st.y)) <= 12.0:
-                            cell, sm, hm = grid_spec
-                            grid = get_grid(cell, sm, hm)
-                            if planner.forward_path_clear(grid, path, (st.x, st.y)):
-                                new_path, kept_path = path, True
-                        if new_path is None:
-                            planning_detail = {"cached_spec": grid_spec, "distance": planner.path_distance(path, (st.x, st.y)) if path else None,
-                                "hazards": world_obs.hazards, "solid_pixels": sum(world_obs.solid)}
-                            if path and grid_spec:
-                                grid = get_grid(*grid_spec)
-                                rest_check = planner.remaining_path(path, (st.x, st.y))[1:]
-                                planning_detail["blocked_vertices"] = [pt for pt in rest_check[:-1] if not grid.free(*grid.to_cell(*pt))][:5]
-                            specs = ((4, 2, 3), (4, 2, 2), (4, 2, 1), (2, 3, 5), (2, 3, 4), (4, 1, 3), (4, 1, 2), (4, 1, 1))
-                            if grid_spec is not None:
-                                specs = (grid_spec,) + tuple(spec for spec in specs if spec != grid_spec)
-                            for cell, sm, hm in specs:
-                                grid = get_grid(cell, sm, hm)
-                                new_path = planner.astar(grid, (st.x, st.y), target)
-                                if new_path:
-                                    grid_spec = (cell, sm, hm)
-                                    break
-                        if isinstance(ctl, MpcController):
-                            ctl.cfg.hazard_margin = max(5.0, hm * cell - 3.0)
-                        if not new_path:
-                            new_path = path if path else [(st.x, st.y), target]
-                        # ヒステリシス: 島の上回り/下回りのように長さの近い経路が毎回入れ替わると迷走する。
-                        # 前の経路がまだ通れて、新しい経路が 20% 以上短くなければ前の経路を使い続ける。
-                        if not kept_path and path is not None and len(path) >= 2:
-                            rest = planner.remaining_path(path, (st.x, st.y))
-                            if (len(rest) >= 2 and planner.forward_path_clear(grid, path, (st.x, st.y))
-                                    and planner.path_length(new_path) > 0.8 * planner.path_length(rest)):
-                                new_path = rest
-                        path = new_path
-                        if isinstance(ctl, MpcController):
-                            ctl.set_world(grid, world_obs, path)
+                        routes.request(st.attempt, world_obs, planning_obs, (st.x, st.y), target, path, grid_spec)
                 planning_s = backend.now() - planning_start
                 if planning_s > 0.03:
                     st = loop.tick()  # 重い再計画中にも実機は動く。古い角度のまま次の噴射を選ばない。
@@ -454,7 +417,6 @@ def play(
                         ctl.reset()
                         hz_mem.clear()
                         solid_mem = None
-                        grid_cache.clear()
                         grid_spec = None
                         path = None
                         t_start = None
@@ -481,7 +443,7 @@ def play(
             if isinstance(ctl, MpcController) and ctl._acts:
                 extra = dict(extra or {}, input_sent_at=round(ctl._acts[-1][0], 6))
                 if st.phase == PLAYING:
-                    extra.update(planning_s=round(planning_s, 6), control_s=round(control_s, 6), planning_detail=planning_detail)
+                    extra.update(planning_s=round(planning_s, 6), control_s=round(control_s, 6), planning_detail=planning_detail, route_worker_s=round(route_worker_s, 6) if route_worker_s is not None else None, route_pending=routes.busy)
             extra = dict(extra or {}, capture_s=round(loop.capture_s, 6), max_capture_s=round(loop.max_capture_s, 6),
                          vision_s=round(loop.vision_s, 6), previous_io_s=round(previous_io_s, 6), **io_parts)
             io_start = backend.now()
@@ -513,7 +475,10 @@ def play(
                     loop.wait(settings.retry_delay_s)  # Enter後の暗転中に地形/姿勢を使って噴射しない。
     finally:
         backend.release_all()
-        log.close()
+        try:
+            routes.close()
+        finally:
+            log.close()
     return log.results
 
 

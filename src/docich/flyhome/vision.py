@@ -68,6 +68,30 @@ def classify_rgb(r: int, g: int, b: int) -> int:
     return OTHER
 
 
+def _terrain_mask(labels: bytearray, w: int, h: int) -> bytearray:
+    """草花の細い茎や花弁を除き、厚みのある草と土を地形として残す。
+
+    実機Lv49の花は地面の上に描かれる飾りで、茎を壁として膨張させない。
+    3x3の厚みを残す処理を整数の1byte/画素の行で行い、毎フレームの遅延を抑える。
+    土は細い縁でも実地形なので保持する。
+    """
+    solid = bytearray(lab in (GRASS, DIRT) for lab in labels)
+    rows = [int.from_bytes(solid[y * w:(y + 1) * w], "little") for y in range(h)]
+    cores = [0] * h
+    for y in range(1, h - 1):
+        a, b, c = rows[y - 1:y + 2]
+        cores[y] = a & (a << 8) & (a >> 8) & b & (b << 8) & (b >> 8) & c & (c << 8) & (c >> 8)
+    keep = bytearray(w * h)
+    row_mask = (1 << (8 * w)) - 1
+    for y in range(h):
+        a = cores[y] | (cores[y - 1] if y else 0) | (cores[y + 1] if y + 1 < h else 0)
+        keep[y * w:(y + 1) * w] = ((a | (a << 8) | (a >> 8)) & row_mask & rows[y]).to_bytes(w, "little")
+    for i, lab in enumerate(labels):
+        if lab == DIRT:
+            keep[i] = 1
+    return keep
+
+
 class _LabelCache(dict):
     """24bit 色 → ラベル。ピクセルアートは色数が少ないのでほぼ dict 参照だけで済む。"""
 
@@ -442,7 +466,7 @@ def analyze(
         home_bbox = (x0, y0, x1, min(h, y1 + int(rh * 1.6)))
         home = ((x0 + x1) / 2, y1 + rh * 0.8)
 
-    solid = bytearray(1 if lab in (GRASS, DIRT) else 0 for lab in labels)
+    solid = _terrain_mask(labels, w, h)
     for x0, y0, x1, y1 in hud_rects:
         for y in range(y0, min(h, y1)):
             for x in range(x0, min(w, x1)):

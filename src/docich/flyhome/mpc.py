@@ -550,14 +550,14 @@ class MpcController:
                 k = max(k + 1, j)
             else:
                 self._descent_ready_since = None
-        # 頭を天井へ押し付けると実機では回転が止まる。横へ曲がる前に下降して空間を作る。
+        # 天井へ近いときは上昇を止めるが、実測で残る回転の制動は許す。
+        head_near = False
         if self.solid is not None:
             for d in range(1, 9):
                 for ox in (-2, 0, 2):
                     xi, yi = int(x + math.sin(ang) * d + ox), int(y - math.cos(ang) * d)
                     if 0 <= xi < self.width and 0 <= yi < self.height and self.solid[yi * self.width + xi]:
-                        self._om_obs = 0.0  # 接触中の実機は回転しない。噴射履歴からの架空の回転を消す。
-                        return 0
+                        head_near = True
         vertical_lane = abs(rvx) < 0.1 and rvy > 3
         want_vx = max(-8.0, min(8.0, rvx + 0.8 * (rx - x)))
         want_vy = max(-12.0, min(12.0, rvy + 0.8 * (ry - y)))
@@ -593,10 +593,16 @@ class MpcController:
             if hy1 < y and hx0 - 6 <= projected_x <= hx1 + 6:
                 ceiling = max(ceiling, hy1 + 10.0)
         self._precision_debug += [round(v, 3) for v in (minimum_y, ceiling, maximum_y)]
+        if head_near:
+            if abs(future_om) > 0.35:
+                return 2 if future_om * p.torque_sign > 0 else 1
+            return 0
         if maximum_y > self.height - 20 and abs(ang) < 0.5:
             # 片足でもほぼ全推力。落下の制動中も残った回転を止める。
             if abs(error) > 0.08:
                 return 1 if error * p.torque_sign > 0 else 2
+            if abs(future_om) > 0.35:
+                return 2 if future_om * p.torque_sign > 0 else 1
             return 3
         if rising_vy < 0 and minimum_y < ceiling and abs(ang) < 1.0:
             return 0
@@ -606,6 +612,9 @@ class MpcController:
             return 0  # 姿勢を直す噴射でも上昇するため、まず要求速度まで自由落下で減速。
         if abs(error) > 0.08:
             return 1 if error * p.torque_sign > 0 else 2
+        if abs(future_om) > 0.35:
+            # 停止角が目標に合うのは「今から制動すれば合う」状態。両足では角速度が残る。
+            return 2 if future_om * p.torque_sign > 0 else 1
         return 3 if future_vy > want_vy else 0
 
     def _pending_inputs(self, t: float) -> float:

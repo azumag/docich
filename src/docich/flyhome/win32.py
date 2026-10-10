@@ -77,6 +77,12 @@ if IS_WINDOWS:  # pragma: no cover - Windows 実機でのみ実行
 
     WNDENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
+    user32.IsWindow.argtypes = (wt.HWND,)
+    user32.IsWindow.restype = wt.BOOL
+    user32.IsWindowVisible.argtypes = (wt.HWND,)
+    user32.IsWindowVisible.restype = wt.BOOL
+    user32.GetWindowThreadProcessId.argtypes = (wt.HWND, ctypes.POINTER(wt.DWORD))
+    user32.GetWindowThreadProcessId.restype = wt.DWORD
     user32.SendInput.argtypes = (wt.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
     user32.SendInput.restype = wt.UINT
     user32.GetWindowTextW.argtypes = (wt.HWND, wt.LPWSTR, ctypes.c_int)
@@ -165,6 +171,19 @@ def _exe_of(pid: int) -> str:
         return ""
     finally:
         kernel32.CloseHandle(h)
+
+
+def window_identity(hwnd: int) -> tuple[int, str] | None:
+    """指定したゲームのハンドルだけを確認する。毎入力で全窓を列挙しない。"""
+    _require()
+    handle = wt.HWND(hwnd)
+    if not user32.IsWindow(handle) or not user32.IsWindowVisible(handle):
+        return None
+    pid = wt.DWORD()
+    if not user32.GetWindowThreadProcessId(handle, ctypes.byref(pid)):
+        return None
+    exe = _exe_of(pid.value)
+    return (pid.value, exe) if exe else None
 
 
 def client_rect(hwnd: int) -> tuple[int, int, int, int]:

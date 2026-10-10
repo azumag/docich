@@ -13,7 +13,7 @@ def test_reused_game_handle_rejects_input():
     backend.s = SimpleNamespace(input_mode='postmessage')
     backend.hwnd = 1
     backend.info = SimpleNamespace(pid=10, exe='game.exe')
-    backend.w = SimpleNamespace(list_windows=lambda: [SimpleNamespace(hwnd=1, pid=11, exe='game.exe')])
+    backend.w = SimpleNamespace(window_identity=lambda hwnd: (11, 'game.exe'))
     assert not backend.ready()
 
 def test_sparse_path_first_turn_is_slowed():
@@ -92,7 +92,7 @@ def test_restart_resync_rejects_reused_game_handle_before_sending_keys():
     backend._jets_synced = False
     backend.hwnd = 1
     backend.info = SimpleNamespace(pid=10, exe='game.exe')
-    backend.w = SimpleNamespace(list_windows=lambda: [SimpleNamespace(hwnd=1, pid=11, exe='game.exe')])
+    backend.w = SimpleNamespace(window_identity=lambda hwnd: (11, 'game.exe'))
     with pytest.raises(RuntimeError, match='identity changed'):
         backend.set_jets(False, False)
 
@@ -222,8 +222,8 @@ def test_head_contact_waits_even_when_horizontal_reference_is_close():
     ctl._hist.append((10, 24, 75, 0))
     ctl._ref = [(25, 83, 8, 0)] * ctl.cfg.horizon
     ctl._om_obs = 2
-    assert ctl._precision_action(24, 75, 0, 0, 0, 2) == 0
-    assert ctl._om_obs == 0
+    assert ctl._precision_action(24, 75, 0, 0, 0, 0) == 0
+    assert ctl._om_obs == 2  # 天井の近接判定で残っている回転を捨てない。
 
 
 def test_actual_floor_uses_configured_foot_to_reset_phantom_rotation():
@@ -244,3 +244,76 @@ def test_actual_floor_uses_configured_foot_to_reset_phantom_rotation():
         st.t = t
         result = ctl._estimate(st)
     assert result[-1] > 0
+
+
+def test_actual_flower_stems_are_not_terrain_but_floor_and_ceiling_are():
+    from docich.flyhome import vision
+    w, h = 40, 50
+    labs = bytearray(w * h)
+    for y in range(2, 10):
+        labs[y * w: (y + 1) * w] = bytes([vision.GRASS]) * w
+    for y in range(40, 50):
+        labs[y * w: (y + 1) * w] = bytes([vision.DIRT if y > 44 else vision.GRASS]) * w
+    for y in range(28, 40):
+        labs[y * w + 20] = vision.GRASS
+    for x in range(18, 23):
+        labs[28 * w + x] = vision.GRASS
+    result = vision._terrain_mask(labs, w, h)
+    assert not any(result[y * w + 20] for y in range(28, 39))
+    assert all(result[9 * w + x] for x in range(w))
+    assert all(result[40 * w + x] for x in range(w))
+    assert all(result[y * w + 20] for y in range(40, 50))
+
+
+def test_thin_dirt_edge_remains_real_terrain():
+    from docich.flyhome import vision
+    labs = bytearray(12 * 12)
+    for y in range(12):
+        labs[y * 12 + 6] = vision.DIRT
+    result = vision._terrain_mask(labs, 12, 12)
+    assert all(result[y * 12 + 6] for y in range(12))
+    assert sum(result) == 12
+
+
+def test_near_ceiling_brakes_observed_remaining_rotation():
+    ctl = _actual_mpc()
+    ctl.solid = bytearray(320 * 180)
+    for y in range(65, 68):
+        ctl.solid[y * 320 + 10:y * 320 + 40] = bytes([1]) * 30
+    ctl._hist.append((10, 24, 75, 0))
+    ctl._ref = [(25, 83, 8, 0)] * ctl.cfg.horizon
+    ctl._om_obs = 2
+    assert ctl._precision_action(24, 75, 0, 0, 0, 2) == 2
+    assert ctl._om_obs == 2
+
+
+def test_matching_predicted_stop_angle_still_requires_counter_torque():
+    ctl = _actual_mpc()
+    ctl._hist.append((10, 24, 80, -.1))
+    ctl._ref = [(24, 80, 5.3, 0)] * ctl.cfg.horizon
+    assert ctl._precision_action(24, 80, 0, 0, -.1, 1) == 2
+    assert abs(ctl._precision_debug[6]) < .02
+
+
+def test_direct_window_identity_avoids_enumeration_and_checks_live_exe():
+    def get_pid(hwnd, output):
+        output._obj.value = 10
+        return 1
+    api = SimpleNamespace(IsWindow=lambda hwnd: True, IsWindowVisible=lambda hwnd: True,
+                          GetWindowThreadProcessId=get_pid)
+    with patch.object(win32, '_require'), patch.object(win32, 'user32', api, create=True), \
+         patch.object(win32, '_exe_of', return_value='game.exe'), \
+         patch.object(win32, 'list_windows', side_effect=AssertionError('enumeration is slow')):
+        assert win32.window_identity(1) == (10, 'game.exe')
+    api.IsWindow = lambda hwnd: False
+    with patch.object(win32, '_require'), patch.object(win32, 'user32', api, create=True):
+        assert win32.window_identity(1) is None
+
+
+def test_same_pid_with_unexpected_exe_still_rejects_input():
+    backend = runner.WindowsBackend.__new__(runner.WindowsBackend)
+    backend.s = SimpleNamespace(input_mode='postmessage')
+    backend.hwnd = 1
+    backend.info = SimpleNamespace(pid=10, exe='game.exe')
+    backend.w = SimpleNamespace(window_identity=lambda hwnd: (10, 'other.exe'))
+    assert not backend.ready()
