@@ -533,7 +533,7 @@ class MpcController:
                 while j + 1 < len(self.path) and abs(self.path[j + 1][0] - sx) < 0.1 and self.path[j + 1][1] > self.path[j][1]:
                     j += 1
                 if j > k and self.path[j][1] - sy >= 24 and -2 <= sy - y <= 30 and abs(sx - x) < 25:
-                    stable = abs(sx - x) <= 2 and abs(vx) <= 3
+                    stable = abs(sx - x) <= 2 and abs(vx) <= 3 and abs(ang) <= 0.12 and abs(om) <= 0.35
                     now = self._hist[-1][0]
                     if stable:
                         if self._descent_ready_since is None:
@@ -593,12 +593,15 @@ class MpcController:
                 ceiling = max(ceiling, hy1 + 10.0)
         self._precision_debug += [round(v, 3) for v in (minimum_y, ceiling, maximum_y)]
         if maximum_y > self.height - 20 and abs(ang) < 0.5:
+            # 片足でもほぼ全推力。落下の制動中も残った回転を止める。
+            if abs(error) > 0.08:
+                return 1 if error * p.torque_sign > 0 else 2
             return 3
         if rising_vy < 0 and minimum_y < ceiling and abs(ang) < 1.0:
             return 0
         if y < 34 and vy < -6 and abs(ang) < 0.35 and abs(om) < 0.7:
             return 0
-        if future_vy < want_vy - 3 and abs(ang) < 0.45 and abs(om) < 0.8:
+        if future_vy < want_vy - 3 and abs(ang) < 0.45 and abs(om) < 0.8 and abs(stop_angle) < 0.4:
             return 0  # 姿勢を直す噴射でも上昇するため、まず要求速度まで自由落下で減速。
         if abs(error) > 0.08:
             return 1 if error * p.torque_sign > 0 else 2

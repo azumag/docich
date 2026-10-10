@@ -127,7 +127,7 @@ def test_aligned_descent_does_not_return_to_old_recovery_leg():
 
 
 def test_low_corridor_brakes_before_body_reaches_bottom_edge():
-    ctl = MpcController()
+    ctl = _actual_mpc()
     ctl._hist.append((10, 170, 161, 0))
     ctl._ref = [(170, 162, 0, 0)] * ctl.cfg.horizon
     # Lv48の家の下: y158の参照へ降りる途中でも、入力遅れ用の下端余白を残す。
@@ -166,3 +166,36 @@ def test_real_spike_red_ring_is_not_removed_as_nearby_jet_flame():
     assert obs.player is not None
     assert (99, 80, 109, 90) in obs.hazards
     assert (110, 95, 112, 99) not in obs.hazards
+
+
+def test_bottom_braking_also_stops_residual_rotation():
+    ctl = _actual_mpc()
+    ctl._hist.append((10, 170, 161, .3))
+    ctl._ref = [(170, 162, 0, 0)] * ctl.cfg.horizon
+    assert ctl._precision_action(170, 161, 0, 0, .3, .7) == 2
+
+
+def test_upward_coast_does_not_suppress_urgent_rotation_braking():
+    ctl = _actual_mpc()
+    ctl._hist.append((10, 100, 52, .3))
+    ctl._ref = [(100, 52, 0, 0)] * ctl.cfg.horizon
+    assert ctl._precision_action(100, 52, 0, -16, .3, .7) == 2
+    assert ctl._precision_action(100, 52, 0, -16, .05, .1) == 0
+
+
+def test_descent_entry_waits_for_upright_still_pose():
+    ctl = _actual_mpc()
+    ctl.path = [(294, 58), (294, 142), (168, 106.6)]
+    ctl._hist.extend([(9.7,294,50,.3),(9.8,294,50,.3),(9.9,294,50,.3),(10,294,50,.3)])
+    ctl._ref = [(294, 65, 0, 12)] * ctl.cfg.horizon
+    ctl._descent_ready_since = 9.5
+    ctl._precision_action(294, 50, 0, 0, .3, .4)
+    assert ctl._descent_commit is None
+    assert ctl._precision_debug[7] is True
+
+
+def _actual_mpc(**kwargs):
+    from docich.flyhome.control import Physics
+    return MpcController(Physics(gravity=86, thrust=211, single_thrust_ratio=.89,
+                                 spin=5.29, spin_mode="accel", angular_damping=.17,
+                                 torque_sign=1, drag=.55), **kwargs)
