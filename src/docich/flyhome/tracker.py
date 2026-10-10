@@ -12,7 +12,7 @@ CLEARED にする。レベル番号の形の白い面はレベル開始/やり�
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .vision import Observation
 
@@ -69,6 +69,7 @@ class Tracker:
         self._missing = 0
         self._home = None
         self._home_bbox = None
+        self._home_confident = False
         self.last_obs: Observation | None = None  # プレイヤーが写っていた最新の観測 (地図用)
 
     @property
@@ -90,8 +91,12 @@ class Tracker:
         return x0 - m <= x <= x1 + m and y0 - m <= y <= y1 + m
 
     def update(self, obs: Observation, t: float) -> State:
-        if obs.home_bbox is not None:
+        if obs.home_bbox is not None and not self._home_confident:
             self._home, self._home_bbox = obs.home, obs.home_bbox
+            # 家はレベル内で動かない。屋根が十分に見えたら、プレイヤーによる分断で位置を更新しない。
+            self._home_confident = obs.home_bbox[2] - obs.home_bbox[0] >= 24
+        if self._home is not None:
+            obs = replace(obs, home=self._home, home_bbox=self._home_bbox)
         p = obs.player
         last = self._last
         if obs.wipe and self.phase == PLAYING:

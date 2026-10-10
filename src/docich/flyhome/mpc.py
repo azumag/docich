@@ -74,7 +74,7 @@ class MpcConfig:
     # 家の扉の上で低速になったら入力を止めて地面で静止する (実機: 扉付近に約 2 秒とどまるとクリア)
     settle_half_w: float = 9.0
     settle_above: float = 16.0  # 家の基準点 (扉の足元) からこの高さまでが静止ゾーン
-    settle_speed: float = 45.0
+    settle_speed: float = 12.0
     takeoff_s: float = 0.35  # 試行開始からこの秒数は両足で真上に上がる (開始直後は角速度が推定できず、片足で回りすぎる)
     om_gain: float = 0.35  # 角速度観測器の測定への補正の強さ
     tilt_hard: float = 0.7  # これを超える傾きに強い罰則 (狭い回廊で横倒しになって加速するのを防ぐ)
@@ -120,7 +120,7 @@ class MpcController:
 
     def set_world(self, grid: Grid, obs: Observation, path: list[tuple[float, float]] | None = None) -> None:
         self.grid = grid
-        self._narrow_level = self._narrow_level or grid.cell <= 2
+        self._narrow_level = self._narrow_level or grid.cell <= 2 or len(obs.hazards) >= 24
         narrow = self._narrow_level
         self.cfg.v_ref = 20.0 if narrow else self._open_limits['v_ref']
         self.cfg.tilt_hard = 0.4 if narrow else self._open_limits['tilt_hard']
@@ -534,7 +534,14 @@ class MpcController:
         error = theta - stop_angle
         # 回すための噴射にも上向き推力がある。上端に上昇中はまず自由落下で減速。
         minimum_y = y + min(0.0, vy) * c.delay_s - min(0.0, vy) ** 2 / (2 * max(1.0, p.gravity))
-        if ((y < 34 and vy < -6) or minimum_y < 14) and abs(ang) < 0.35 and abs(om) < 0.7:
+        ceiling = 14.0
+        projected_x = x + vx * c.delay_s
+        for hx0, hy0, hx1, hy1 in self.hazards:
+            if hy1 < y and hx0 - 6 <= projected_x <= hx1 + 6:
+                ceiling = max(ceiling, hy1 + 10.0)
+        if vy < 0 and minimum_y < ceiling and abs(ang) < 1.0:
+            return 0
+        if y < 34 and vy < -6 and abs(ang) < 0.35 and abs(om) < 0.7:
             return 0
         if future_vy < want_vy - 3 and abs(ang) < 0.45 and abs(om) < 0.8:
             return 0  # 姿勢を直す噴射でも上昇するため、まず要求速度まで自由落下で減速。
@@ -583,15 +590,23 @@ class MpcController:
             in_front = False
             if st.home_bbox is not None:
                 x0, y0, x1, y1 = st.home_bbox
-                in_front = x0 - 4 <= x <= x1 + 4 and y1 - 20 <= y <= y1 + 14
-            if slow and (in_door or in_front):
+                in_front = x0 + 6 <= x <= x1 - 6 and y1 - 20 <= y <= y1 + 14
+            grounded = False
+            if self.solid is not None:
+                xi = int(x)
+                for yi in range(int(y + c.foot), min(self.height, int(y + c.foot + 4))):
+                    if 0 <= xi < self.width and yi >= 0 and self.solid[yi * self.width + xi]:
+                        grounded = True
+                        break
+            if grounded and slow and (in_door or in_front):
                 self._plan, self._last_action = None, 0
                 self._acts.append((st.t, 0))
                 return False, False
         tx, ty = target
         if c.mode == "track":
             self._make_ref(x, y)
-        if self._narrow_level and self._ref:
+        near_home = st.home is not None and math.hypot(x - st.home[0], y - st.home[1]) < 100
+        if self._ref and (self._narrow_level or near_home):
             a = self._precision_action(x, y, vx, vy, ang, om)
             self._plan = None
             self._last_action = a

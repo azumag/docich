@@ -56,3 +56,19 @@ def test_live_level39_dark_green_wall_edge_is_solid():
 def test_distance_to_sparse_path_measures_segment_not_waypoint():
     from docich.flyhome import planner
     assert planner.path_distance([(20,20), (100,20)], (60,22)) == 2
+
+
+def test_live_home_target_remains_fixed_when_player_splits_roof():
+    from dataclasses import replace
+    from docich.flyhome.vision import Observation, Player
+    from docich.flyhome.tracker import Tracker
+    obs = Observation(320, 180, Player(198, 146, 0, (194, 138, 203, 153), 92),
+                      (184, 154.6), (163, 133, 205, 164), [], [], False, False,
+                      1, 1, bytearray(320 * 180), bytearray(320 * 180))
+    tr = Tracker()
+    tr.update(obs, 0)
+    # Lv42実機: 屋根が隠れると中央184→172/高さ154.6→149へ誤推定し、経路が逆行していた。
+    st = tr.update(replace(obs, home=(172, 149), home_bbox=(163, 133, 181, 156)), .1)
+    assert st.home == (184, 154.6)
+    assert st.home_bbox == (163, 133, 205, 164)
+    assert tr.last_obs.home == st.home
