@@ -11,6 +11,7 @@ from docich.flyhome import settings as S, runner, vision
 from docich.flyhome.image import write_png
 from docich.flyhome.progress import StatePublisher
 from docich.flyhome.map_navigation import level_number
+from docich.flyhome.narration import SpeechJournal, LiveNarrator
 STATE = Path(os.environ.get("FLYHOME_STATE_FILE", "run/game-state.txt"))
 LOG = Path(os.environ.get("FLYHOME_CAMPAIGN_LOG", "run/campaign_results.txt"))
 SEQUENTIAL = os.environ.get("FLYHOME_LEVEL_ORDER") == "sequential"
@@ -23,9 +24,10 @@ _cl = [int(m.group(1)) for l in done_lines for m in [_re.search(r"Lv(\d+): ク�
 if _cl:
     first = max(first, max(_cl) + 1)  # 再起動時は記録済みのクリアの次から数える
 publisher = StatePublisher(STATE)
+speech = SpeechJournal.from_env()
 
 def save(note=""):
-    heading = "[特別コーナー] Fly Me To The Home! 1面から自動プレイ" if SEQUENTIAL else "[campaign4] 製品版を自動プレイ中 (MPC, 実機 printwindow+postmessage)"
+    heading = "[特別コーナー] Fly Me To The Home! %s面から自動プレイ" % sys.argv[1] if SEQUENTIAL else "[campaign4] 製品版を自動プレイ中 (MPC, 実機 printwindow+postmessage)"
     lines = [heading] + done_lines
     if note: lines.append(note)
     publisher.publish("\n".join(lines) + "\n")
@@ -94,11 +96,14 @@ try:
                 to_next_level(b, lv)
             save("  いま: Lv%d を play 中..." % lv)
             out = runner.session_dir(s, "play")
+            narrator = LiveNarrator(speech, lv)
             def step(st, extra):
+                narrator.step(st)
                 pos = "位置不明" if st.x is None else "x=%.1f y=%.1f angle=%.2f" % (st.x, st.y, st.angle or 0.0)
                 save("  いま: Lv%d 試行%d %s %s (%s)" % (lv, st.attempt, st.phase, pos, out))
                 if extra is not None:
                     extra.update(publisher.metrics())
+                    extra.update(speech.metrics())
             res = runner.play(b, s, attempts=0, max_seconds=per, log_root=out, on_step=step, on_restart=lambda: to_next_level(b, lv))
         finally:
             b.close()
@@ -112,4 +117,7 @@ try:
             raise SystemExit(1)
     print("done")
 finally:
-    publisher.close()
+    try:
+        speech.close()
+    finally:
+        publisher.close()
