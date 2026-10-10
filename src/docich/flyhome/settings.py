@@ -7,6 +7,7 @@ Windows 実機で違いがあれば ``config/windows/fly-me-to-the-home.toml`` �
 from __future__ import annotations
 
 import tomllib
+import math
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
@@ -68,8 +69,13 @@ class Settings:
     retry_delay_s: float = 0.8
     max_attempts: int = 0  # 0 = 無制限
     controller: str = "pd"  # "pd" (control.JetController) | "mpc" (mpc.MpcController、実機の物理向け)
+    mpc_delay_s: float = 0.12  # 実機入力遅延。MPCの予測/観測器へ同じ値を使う。
     # 物理パラメータ (calibrate で上書きする)。単位はネイティブ px と秒。
     physics_file: Path = REPO_ROOT / "run" / "flyhome" / "physics.json"
+
+    def __post_init__(self):
+        if not isinstance(self.mpc_delay_s, (int, float)) or not math.isfinite(self.mpc_delay_s) or not 0 <= self.mpc_delay_s <= .5:
+            raise ValueError("mpc_delay_s must be finite and between 0 and 0.5 seconds")
 
     @property
     def active_app_id(self) -> int:

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import planner, vision
 from .control import JetController, Physics
-from .mpc import MpcController
+from .mpc import MpcController, MpcConfig
 from .image import Image, write_png
 from .settings import Settings
 from .timeline import Timeline
@@ -283,7 +283,7 @@ def play(
     log = SessionLog(log_root)
     loop = Loop(backend, settings, log)
     phys = physics or Physics.load(settings.physics_file)
-    ctl = MpcController(phys) if settings.controller == "mpc" else JetController(phys)
+    ctl = MpcController(phys, MpcConfig(delay_s=settings.mpc_delay_s)) if settings.controller == "mpc" else JetController(phys)
     routes = RouteWorker()
     done = 0
     path = None
@@ -439,7 +439,7 @@ def play(
             if isinstance(ctl, MpcController) and st.phase == PLAYING and ctl._ref:
                 r0, r1 = ctl._ref[0], ctl._ref[-1]
                 extra = {"ref0": [round(r0[0], 1), round(r0[1], 1)], "ref_end": [round(r1[0], 1), round(r1[1], 1)],
-                         "path0": [round(v, 1) for v in ctl.path[min(3, len(ctl.path) - 1)]] if ctl.path else None, "path": ctl.path, "estimated": getattr(ctl, "_estimate_debug", None), "precision": getattr(ctl, "_precision_debug", None)}
+                         "path0": [round(v, 1) for v in ctl.path[min(3, len(ctl.path) - 1)]] if ctl.path else None, "path": ctl.path, "input_delay_s": ctl.cfg.delay_s, "estimated": getattr(ctl, "_estimate_debug", None), "precision": getattr(ctl, "_precision_debug", None)}
             if isinstance(ctl, MpcController) and ctl._acts:
                 extra = dict(extra or {}, input_sent_at=round(ctl._acts[-1][0], 6))
                 if st.phase == PLAYING:

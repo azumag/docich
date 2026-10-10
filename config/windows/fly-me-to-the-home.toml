@@ -13,6 +13,7 @@ tick_hz = 30.0
 capture_mode = "printwindow"                 # 黒画面しか取れない場合は "printwindow"
 input_mode = "postmessage"                # 前面以外へ送りたい場合の代替: "postmessage" (届くかは要確認)
 controller = "mpc"                     # 実機の物理 (片足でも満額推力・回転は慣性) には mpc。"pd" は旧仮説モデル
+mpc_delay_s = 0.04  # 実機の自由飛行393区間から推定。17〜19面で実機評価、既定値は0.12秒
 abort_vk = 0x7B                         # F12 で即停止
 retry_delay_s = 0.8
 run_dir = "run/flyhome"

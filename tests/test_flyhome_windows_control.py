@@ -397,3 +397,19 @@ def test_actual_level16_home_text_at_feet_does_not_reverse_head():
     import math
     angle = vision._orientation(blob, rotated, 30, 30, math.pi / 2)
     assert abs(angle - math.pi / 2) < .35
+
+
+def test_measured_input_delay_can_be_loaded_for_live_mpc(tmp_path):
+    from docich.flyhome.settings import load, Settings
+    cfg = tmp_path / 'flyhome.toml'
+    cfg.write_text('mpc_delay_s = 0.04', encoding='utf8')
+    assert load(cfg).mpc_delay_s == .04
+    assert Settings().mpc_delay_s == .12
+
+
+def test_invalid_live_input_delays_are_rejected():
+    import pytest
+    from docich.flyhome.settings import Settings
+    for value in (-.01, .51, float('inf'), float('nan'), '0.04'):
+        with pytest.raises(ValueError):
+            Settings(mpc_delay_s=value)
