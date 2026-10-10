@@ -2847,6 +2847,50 @@ class RetroCornerManager:
             detail="restore終端とcleanupを確認してinterruptedとして確定しました",
         )
 
+    def _settle_adopted_restore(self, state: dict[str, object]) -> CornerResult | None:
+        """Settle a restore whose switch failed but whose target was adopted live.
+
+        ``recover --adopt-failed-candidate`` publishes the still-running
+        failed candidate as canonical active without rewriting the failed
+        restore receipt, so the receipt alone can never prove the landing.
+        Accept it only when the canonical recover record names this very
+        restore (target game and generation), carries the active runtime
+        identity, and canonical is fully clean. Anything else returns None and
+        leaves the existing fail-closed paths untouched.
+        """
+
+        try:
+            with self.store.lock(exclusive=False):
+                evidence = self._restore_failed_receipt(state, late_cleanup_proved=True)
+                if evidence is None:
+                    return None
+                original, result, game, previous = evidence
+                if (original.get("status") != "failed"
+                        or result.get("error_code") != "rollback_failed"):
+                    return None
+                canonical, missing = self.store.canonical.load()
+                if missing or not self._restore_canonical_clean(canonical, late_cleanup_proved=True):
+                    return None
+                last = canonical.get("last_result")
+                active = self._restore_source_identity(canonical.get("active"))
+                recorded = last.get("active_runtime") if isinstance(last, dict) else None
+                if not (
+                    isinstance(last, dict) and active is not None
+                    and last.get("operation") == "recover"
+                    and last.get("status") == "succeeded"
+                    and last.get("request_id") == ""
+                    and last.get("to_game") == previous
+                    and last.get("generation") == original["generation"]
+                    and active["game"] == previous
+                    and active["generation"] == original["generation"]
+                    and isinstance(recorded, dict)
+                    and all(recorded.get(key) == active[key] for key in active)
+                ):
+                    return None
+                return self._terminalize_restore_failed_locked(state, game=game, previous=previous)
+        except (GameSwitchBusyError, StateCorruptError):
+            return None
+
     def _recover_restore_failed(
         self, state: dict[str, object], *, late_cleanup_proved: bool = False,
         one_shot_replay: bool = False,
@@ -3061,6 +3105,9 @@ class RetroCornerManager:
             # A corner that already finished can fail its restore switch
             # (#1868/#1870).  Settle that slot (or replay its recorded restore
             # once) before the canonical-recovery retry path below.
+            adopted = self._settle_adopted_restore(state)
+            if adopted is not None:
+                return adopted
             restored = self._recover_restore_failed(state)
             if restored is not None:
                 return restored
