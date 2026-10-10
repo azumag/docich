@@ -305,6 +305,7 @@ def play(
                 break
             st = loop.tick()
             keys = (False, False)
+            planning_detail = None
             if loop.obs is not None:
                 for r in loop.obs.hazards:
                     hz_mem[tuple(r)] = st.t
@@ -320,11 +321,37 @@ def play(
                 if t_start is None:
                     t_start, tl, path = st.t, Timeline(meta={"source": "controller"}), None
                     ctl.reset()
+                    # Lv49実画面: 最初の入力まで左上の操作案内が天井を覆う。
+                    # 確認済みの開始位置/家だけで短く噴射し、案内の消えた実画面から地形を作る。
+                    if (isinstance(ctl, MpcController) and st.home is not None
+                            and abs(st.home[0] - 200) < 2 and abs(st.home[1] - 90.6) < 2
+                            and abs(st.x - 23.924) < 2 and abs(st.y - 91.337) < 2
+                            and backend.ready()):
+                        backend.set_jets(True, True)
+                        tl.add(0, True, True)
+                        if on_step is not None:
+                            on_step(st, {"intro_reveal": "both"})
+                        loop.wait(0.04)
+                        if not backend.ready():
+                            raise RuntimeError("game window identity changed during intro reveal")
+                        backend.set_jets(False, False)
+                        tl.add(int((backend.now() - t_start) * 1000), False, False)
+                        if on_step is not None:
+                            on_step(st, {"intro_reveal": "release"})
+                        loop.wait(0.16)
+                        st = loop.tick()
+                    initial_solid_count = sum(loop.obs.solid)
+                    expanded_world_saved = False
+                    if log.root is not None and loop.native is not None:
+                        write_png(log.root / f"world-attempt{st.attempt:04d}-initial.png", loop.native)
+                    solid_mem = None  # 死亡演出の破片や変色を、次の実試行の地形へ持ち越さない。
+                    grid_cache.clear()
+                    grid_spec = None
                     hz_mem.clear()
                     for rect in loop.obs.hazards:
                         hz_mem[tuple(rect)] = st.t  # 前の死亡破片を新しい試行の棘として残さない。
                 planning_start = backend.now()
-                if path is None or k % replan_every == 0:
+                if (path is None or k % replan_every == 0) and loop.obs.player is not None:
                     target = st.home
                     if target is not None:
                         world_obs = loop.tracker.last_obs or loop.obs
@@ -333,6 +360,10 @@ def play(
                         else:
                             solid_mem = bytearray(a | b for a, b in zip(solid_mem, world_obs.solid))
                         world_obs = dataclasses.replace(world_obs, solid=solid_mem)
+                        if not expanded_world_saved and sum(solid_mem) > initial_solid_count * 1.1:
+                            if log.root is not None and loop.native is not None:
+                                write_png(log.root / f"world-attempt{st.attempt:04d}-expanded.png", loop.native)
+                            expanded_world_saved = True
                         if hz_mem:
                             # 棘はプレイヤーの炎と混同されて一時的に消えることがある: 最近見えた棘も足して計画する
                             world_obs = dataclasses.replace(world_obs, hazards=list(hz_mem))
@@ -361,6 +392,12 @@ def play(
                             if planner.forward_path_clear(grid, path, (st.x, st.y)):
                                 new_path, kept_path = path, True
                         if new_path is None:
+                            planning_detail = {"cached_spec": grid_spec, "distance": planner.path_distance(path, (st.x, st.y)) if path else None,
+                                "hazards": world_obs.hazards, "solid_pixels": sum(world_obs.solid)}
+                            if path and grid_spec:
+                                grid = get_grid(*grid_spec)
+                                rest_check = planner.remaining_path(path, (st.x, st.y))[1:]
+                                planning_detail["blocked_vertices"] = [pt for pt in rest_check[:-1] if not grid.free(*grid.to_cell(*pt))][:5]
                             specs = ((4, 2, 3), (4, 2, 2), (4, 2, 1), (2, 3, 5), (2, 3, 4), (4, 1, 3), (4, 1, 2), (4, 1, 1))
                             if grid_spec is not None:
                                 specs = (grid_spec,) + tuple(spec for spec in specs if spec != grid_spec)
@@ -444,7 +481,7 @@ def play(
             if isinstance(ctl, MpcController) and ctl._acts:
                 extra = dict(extra or {}, input_sent_at=round(ctl._acts[-1][0], 6))
                 if st.phase == PLAYING:
-                    extra.update(planning_s=round(planning_s, 6), control_s=round(control_s, 6))
+                    extra.update(planning_s=round(planning_s, 6), control_s=round(control_s, 6), planning_detail=planning_detail)
             extra = dict(extra or {}, capture_s=round(loop.capture_s, 6), max_capture_s=round(loop.max_capture_s, 6),
                          vision_s=round(loop.vision_s, 6), previous_io_s=round(previous_io_s, 6), **io_parts)
             io_start = backend.now()
@@ -473,6 +510,7 @@ def play(
                 loop.wait(settings.retry_delay_s)
                 if backend.ready():
                     backend.tap("enter")
+                    loop.wait(settings.retry_delay_s)  # Enter後の暗転中に地形/姿勢を使って噴射しない。
     finally:
         backend.release_all()
         log.close()

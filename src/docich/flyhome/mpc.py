@@ -272,7 +272,7 @@ class MpcController:
         if self.solid is not None and len(self._hist) >= 3:
             still_angle = all(abs(a - self._unwrapped) < 0.015 for _, _, _, a in list(self._hist)[-3:])
             if still_angle:
-                for ox, oy in ((0, 7), (0, -7), (5, 0), (-5, 0)):
+                for ox, oy in ((0, self.cfg.foot + 1), (0, -7), (5, 0), (-5, 0)):
                     xi, yi = int(st.x + ox), int(st.y + oy)
                     if 0 <= xi < self.width and 0 <= yi < self.height and self.solid[yi * self.width + xi]:
                         self._om_obs = 0.0

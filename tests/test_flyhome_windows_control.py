@@ -224,3 +224,23 @@ def test_head_contact_waits_even_when_horizontal_reference_is_close():
     ctl._om_obs = 2
     assert ctl._precision_action(24, 75, 0, 0, 0, 2) == 0
     assert ctl._om_obs == 0
+
+
+def test_actual_floor_uses_configured_foot_to_reset_phantom_rotation():
+    ctl = _actual_mpc()
+    ctl.solid = bytearray(320 * 180)
+    for y in range(100, 106):
+        ctl.solid[y * 320 + 10:y * 320 + 90] = bytes([1]) * 80
+    ctl._acts.append((9.8, 1))
+    st = SimpleNamespace(t=10, x=23.924, y=91.337, angle=0)
+    for t in (10, 10.033, 10.066):
+        st.t = t
+        result = ctl._estimate(st)
+    assert result[-1] == 0
+    ctl.reset()
+    ctl.solid = bytearray(320 * 180)
+    ctl._acts.append((9.8, 1))
+    for t in (10, 10.033, 10.066):
+        st.t = t
+        result = ctl._estimate(st)
+    assert result[-1] > 0
