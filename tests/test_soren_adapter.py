@@ -475,6 +475,25 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             self.assertEqual(store.receipts.load(receipt["request_id"]), receipt)
             adapter._run.assert_not_called()
 
+    def test_failed_restore_rechecks_proof_after_readiness(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter, store, before = self.make_failed_singleton_restore(Path(temp))
+            proof = Mock(side_effect=[True, False])
+            def factory(spec):
+                instance = SorenCoordinatorAdapter(adapter.g, adapter.game, spec)
+                instance._status = adapter._status
+                instance._singleton_process_identity = adapter._singleton_process_identity
+                instance._run = adapter._run
+                instance.readiness = Mock()
+                instance.can_restore_live_singleton = proof
+                return instance
+            result = GameSwitchCoordinator(store, factory).recover(timeout_s=5)
+            self.assertEqual(result.status, "failed")
+            after = store.canonical.load()[0]
+            self.assertEqual(after["previous"], before["previous"])
+            self.assertEqual(after["retiring"], before["retiring"])
+            adapter._run.assert_not_called()
+
     def test_failed_live_restore_requires_exact_ownership_and_positive_process_proof(self):
         import copy
         with tempfile.TemporaryDirectory() as temp:

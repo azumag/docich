@@ -85,7 +85,18 @@ class ExternalVideoCornerManager:
                            and body.get("request_id") == state["start_request_id"]
                            and identity(body.get("active_runtime")) == actual
                            and (actual["game"] if actual else None) == (source["game"] if source else None))
-            if stable(current) and (actual == source or rolled_back):
+            last = current.get("last_result") or {}
+            recovered_start = (source and actual and isinstance(receipt, dict)
+                and receipt.get("request_id") == state["start_request_id"]
+                and receipt.get("target") == VIEW_NAME and receipt.get("status") == "failed"
+                and body.get("request_id") == state["start_request_id"]
+                and body.get("error_code") == "rollback_failed"
+                and last.get("request_id") == state["start_request_id"]
+                and last.get("status") == "rolled_back"
+                and last.get("from_game") == source["game"] == actual["game"]
+                and last.get("restored_generation") == actual["generation"]
+                and actual["generation"] >= source["generation"])
+            if stable(current) and (actual == source or rolled_back or recovered_start):
                 state.update(status="interrupted", completed_at=self.clock(),
                              end_reason="start-rolled-back")
                 self.save(state)

@@ -83,10 +83,7 @@ receiverはwait-minutes（1-60分）のdeadlineとsystemdの安全上限を持�
 - 実OBS受信、表示後の異時刻配信frame・四辺、音声、共有PID維持、stop/期限/切断からの
   復帰を別々に実測します。CIやdeployだけで受入れ完了にしません。
 
-A failed rollback with one failed Soren restore candidate can be recovered
-without stopping the live previous singleton only when the terminal failure
-receipt, adjacent restore generation, idle broker including its control
-marker, and two stable fixed-root process identities are all proven. The
-coordinator re-leases the existing previous runtime after readiness; ordinary
-stable-owner retirement proof then clears the obsolete attempt. It never
-starts a new process across unproven resources or edits canonical state by hand.
+Sorenの復帰候補が1つ残るrollback失敗では、終了済みの失敗receipt、隣接する復帰世代、
+controlを含む空のbroker、固定rootの単一プロセスを証明できる場合に限り、動作中の
+previousへ所有状態を戻せます。readiness後にも同じ証明を再照合し、新規プロセスは
+起動しません。候補はready後の既存退役証明が成立するまで保持します。

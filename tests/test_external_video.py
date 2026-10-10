@@ -214,3 +214,21 @@ def test_diagnostics_cannot_emit_receiver_secrets_or_address(tmp_path, monkeypat
     text = json.dumps(data)
     assert "never-output-me" not in text and "100.71" not in text and str(rid) not in text
     assert data["receiver_readable"] and data["receiver_alive"] is False
+
+
+def test_failed_start_is_settled_only_by_its_own_confirmed_recovery(setup):
+    s = setup
+    rid = str(uuid.uuid4())
+    state = dict(start_request_id=rid, previous_runtime_identity=s.source, status="starting")
+    body = dict(request_id=rid, status="failed", error_code="rollback_failed")
+    receipt = dict(request_id=rid, target=corner.VIEW_NAME, status="failed", result=body)
+    s.manager.coordinator.switch = lambda *_a, **_kw: SimpleNamespace(
+        status="failed", receipt=receipt, request_id=rid, cleanup_pending=False)
+    s.canonical[0] = ready(s.restored)
+    s.canonical[0]["last_result"] = dict(request_id=str(uuid.uuid4()), status="rolled_back",
+        from_game=s.source["game"], restored_generation=s.restored["generation"])
+    with pytest.raises(receiver.ExternalVideoError):
+        s.manager._dispatch(state)
+    s.canonical[0]["last_result"]["request_id"] = rid
+    assert s.manager._dispatch(state)
+    assert state["status"] == "interrupted"

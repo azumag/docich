@@ -4577,6 +4577,17 @@ class GameSwitchCoordinator:
             except Exception as exc:
                 warnings.append(f"previous readiness確認失敗: {_safe_detail(exc)}")
                 return None
+            if live_singleton_only:
+                try:
+                    proven = self._call_adapter(
+                        lambda cancel: proof(deadline, cancel), deadline,
+                        self.step_timeouts.probe_s, "restore_singleton_recheck",
+                    )
+                except Exception:
+                    proven = False
+                if proven is not True:
+                    warnings.append("共有singletonの復帰直前照合に失敗しました")
+                    return None
             # Persist the new lease in previous BEFORE starting the agent so
             # the new worker can await a canonical identity and the old lease
             # is fenced out immediately (design v2 §5 F / §6).
