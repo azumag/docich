@@ -312,19 +312,19 @@ def play(
                             world_obs = dataclasses.replace(world_obs, hazards=list(hz_mem))
                         # 棘の格子の間を抜けるレベル (実機 Lv23) では余白 3 セルだと道が無い: 余白を縮めて探し直す
                         new_path = None
-                        for sm, hm in ((2, 3), (2, 2), (2, 1), (1, 3), (1, 2), (1, 1)):
+                        for cell, sm, hm in ((4, 2, 3), (4, 2, 2), (4, 2, 1), (2, 3, 5), (2, 3, 4), (4, 1, 3), (4, 1, 2), (4, 1, 1)):
                             world_key = (hash(bytes(world_obs.solid)), tuple(sorted(world_obs.hazards)), world_obs.home_bbox)
-                            cache_key = (world_key, sm, hm)
+                            cache_key = (world_key, cell, sm, hm)
                             if cache_key not in grid_cache:
                                 if len(grid_cache) > 24:
                                     grid_cache.clear()
-                                grid_cache[cache_key] = planner.build_grid(world_obs, solid_margin=sm, hazard_margin=hm)
+                                grid_cache[cache_key] = planner.build_grid(world_obs, cell=cell, solid_margin=sm, hazard_margin=hm, top_extra=2 if cell == 4 else 5)
                             grid = grid_cache[cache_key]
                             new_path = planner.astar(grid, (st.x, st.y), target)
                             if new_path:
                                 break
                         if isinstance(ctl, MpcController):
-                            ctl.cfg.hazard_margin = {3: 9.0, 2: 7.0, 1: 5.0}[hm]
+                            ctl.cfg.hazard_margin = max(5.0, hm * cell - 3.0)
                         if not new_path:
                             new_path = path if path else [(st.x, st.y), target]
                         # ヒステリシス: 島の上回り/下回りのように長さの近い経路が毎回入れ替わると迷走する。

@@ -54,9 +54,10 @@ class MpcConfig:
     v_floor: float = 12.0  # 残距離がほぼ 0 でも許す速度
     terrain_pen: float = 60.0  # 地形への接触は姿勢を崩すため、経路を逸れて突っ切る予測を避ける
     fatal_pen: float = 400.0  # 棘・画面外 (以降は死亡として打ち切り)
+    w_speed: float = 3.0
     max_speed: float = 90.0  # これを超える速度に罰則
     max_tilt: float = 0.8  # rad。これ以上傾くと立て直せない
-    bound_margin: float = 4.0  # 画面端からこの距離を切ると死亡扱い
+    bound_margin: float = 10.0  # 画面端からこの距離を切ると死亡扱い
     hazard_margin: float = 9.0  # 体の半分の長さ (横倒しで約 7px) + 余裕。5 では Lv8 で x≈137–145 で棘に当たり続けた
     hazard_soft: float = 14.0  # 棘の(生の)矩形からこの距離以内に近づくと、近さに比例して罰則 (遠回りより近道を選んで突っ込むのを防ぐ)
     hazard_soft_w: float = 8.0
@@ -87,6 +88,8 @@ class MpcController:
     def __init__(self, physics: Physics | None = None, cfg: MpcConfig | None = None, *, width: int = 320, height: int = 180):
         self.p = physics or Physics()
         self.cfg = cfg or MpcConfig()
+        self._open_limits = {name: getattr(self.cfg, name) for name in
+                             ('v_ref', 'tilt_hard', 'w_tilt_hard', 'w_omega', 'w_vel', 'w_speed')}
         self.width, self.height = width, height
         self.rng = random.Random(self.cfg.seed)
         self.grid: Grid | None = None
@@ -115,6 +118,13 @@ class MpcController:
 
     def set_world(self, grid: Grid, obs: Observation, path: list[tuple[float, float]] | None = None) -> None:
         self.grid = grid
+        narrow = grid.cell <= 2
+        self.cfg.v_ref = 14.0 if narrow else self._open_limits['v_ref']
+        self.cfg.tilt_hard = 0.4 if narrow else self._open_limits['tilt_hard']
+        self.cfg.w_tilt_hard = 300.0 if narrow else self._open_limits['w_tilt_hard']
+        self.cfg.w_omega = 10.0 if narrow else self._open_limits['w_omega']
+        self.cfg.w_vel = 2.5 if narrow else self._open_limits['w_vel']
+        self.cfg.w_speed = 14.0 if narrow else self._open_limits['w_speed']
         self.hazards = list(obs.hazards)
         if path:
             self.path = list(path)
@@ -219,6 +229,25 @@ class MpcController:
             vx, vy = (st.x - x0) / dt, (st.y - y0) / dt
         # 角速度の観測器: 測定 (数フレームの差分) は遅れるので、自分が押したジェット (遅れ delay_s 込み) から予測し、測定で補正する。
         p, c = self.p, self.cfg
+        if len(self._hist) >= 3 and dt >= 0.05:
+            # 差分速度は観測窓の中央時刻の値。実際に送った入力で現在まで進める。
+            # 加速中に半窓ぶん遅い速度を使うと、棘の手前の停止が間に合わない。
+            mid = st.t - dt * 0.5
+            n = max(1, math.ceil((st.t - mid) / 0.025))
+            h = (st.t - mid) / n
+            for k in range(n):
+                a = 0
+                when = mid + (k + 0.5) * h - c.delay_s
+                for ta, aa in self._acts:
+                    if ta <= when:
+                        a = aa
+                left, right = a & 1, (a >> 1) & 1
+                thrust = p.thrust if left and right else p.thrust * p.single_thrust_ratio if left or right else 0.0
+                vx += (math.sin(st.angle) * thrust - p.drag * vx) * h
+                vy += (p.gravity - math.cos(st.angle) * thrust - p.drag * vy) * h
+                om_meas += ((left - right) * p.torque_sign * p.spin - p.angular_damping * om_meas) * h
+            if all(abs(px - st.x) + abs(py - st.y) < 0.1 for _, px, py, _ in list(self._hist)[-3:]):
+                vx = vy = 0.0  # 地形に接して静止しているときは、空中モデルを足さない。
         if self._t_obs is None:
             self._om_obs = om_meas
         else:
@@ -231,6 +260,14 @@ class MpcController:
             pred = self._om_obs + (left - right) * p.torque_sign * p.spin * h
             pred -= pred * min(1.0, p.angular_damping * h)
             self._om_obs = pred + c.om_gain * (om_meas - pred)
+        if self.solid is not None and len(self._hist) >= 3:
+            still_angle = all(abs(a - self._unwrapped) < 0.015 for _, _, _, a in list(self._hist)[-3:])
+            if still_angle:
+                for ox, oy in ((0, 7), (0, -7), (5, 0), (-5, 0)):
+                    xi, yi = int(st.x + ox), int(st.y + oy)
+                    if 0 <= xi < self.width and 0 <= yi < self.height and self.solid[yi * self.width + xi]:
+                        self._om_obs = 0.0
+                        break
         self._t_obs = st.t
         return st.x, st.y, vx, vy, st.angle, self._om_obs
 
@@ -272,8 +309,15 @@ class MpcController:
             if solid is not None:
                 xi, yi = int(x), int(y + foot + 1)
                 grounded = 0 <= xi < W and 0 <= yi < H and bool(solid[yi * W + xi])
+            if solid is not None and not grounded:
+                sa, ca = sin(ang), cos(ang)
+                for ox, oy in ((6 * sa, -6 * ca), (4 * ca, 4 * sa), (-4 * ca, -4 * sa)):
+                    xi, yi = int(x + ox), int(y + oy)
+                    if 0 <= xi < W and 0 <= yi < H and solid[yi * W + xi]:
+                        grounded = True
+                        break
             if grounded:
-                om = 0.0  # 実機: 地面に触れていると回転しない (横倒しのまま頭の向きへ滑る)
+                om = 0.0  # 実機: 地形接触中は回転しない (壁・天井への接触も含む)。
             else:
                 om += (left - right) * sign * spin * dt
                 om -= om * min(1.0, damp * dt)
@@ -345,12 +389,21 @@ class MpcController:
                     dmin = dd
             if dmin < soft:
                 total += soft_w * (soft - dmin)  # 一番近い棘の生の矩形からの距離だけで (足し合わせない)
-            if solid is not None and solid[min(H - 1, max(0, int(y))) * W + min(W - 1, max(0, int(x)))]:
-                total += c.fatal_pen  # 地形への食い込みは姿勢を崩すので、通過できる予測を避ける
+            safe_slide = abs(ang) < 0.25 and abs(vx) < 10.0
+            if solid is not None:
+                if solid[min(H - 1, max(0, int(y))) * W + min(W - 1, max(0, int(x)))]:
+                    total += c.fatal_pen
+                # 実機の頭・胴の幅まで検査。中心だけなら壁をかすめて姿勢を崩す。
+                sa, ca = sin(ang), cos(ang)
+                for ox, oy in ((6 * sa, -6 * ca), (4 * ca, 4 * sa), (-4 * ca, -4 * sa)):
+                    px, py = int(x + ox), int(y + oy)
+                    if 0 <= px < W and 0 <= py < H and solid[py * W + px]:
+                        total += c.terrain_pen * (0.35 if safe_slide else 2.0)
+                        break
             if grid is not None:
                 cc, rr = int(x // cell), int(y // cell)
                 if 0 <= cc < cols and 0 <= rr < rows and blocked[rr * cols + cc]:
-                    total += c.terrain_pen
+                    total += c.terrain_pen * (0.2 if safe_slide else 1.0)
             sp = hypot(vx, vy)
             if home_pt is not None:
                 dh = hypot(x - home_pt[0], y - home_pt[1])
@@ -365,7 +418,7 @@ class MpcController:
                         vcap = min(vcap, math.sqrt(2.0 * c.corner_accel * (cs - s_cur)) + c.corner_floor)
                         break
             if sp > vcap:
-                total += 3.0 * (sp - vcap)
+                total += c.w_speed * (sp - vcap)
             total += c.w_tilt * ang * ang + c.w_omega * abs(om)
             if abs(ang) > c.tilt_hard:
                 total += c.w_tilt_hard * (abs(ang) - c.tilt_hard)
@@ -447,7 +500,7 @@ class MpcController:
         c = self.cfg
         x, y, vx, vy, ang, om = self._estimate(st)
         self._estimate_debug = [round(v, 3) for v in (vx, vy, ang, om)]
-        takeoff_s = min(c.takeoff_s, 0.15) if y < 40 else c.takeoff_s
+        takeoff_s = min(c.takeoff_s, 0.15) if y < 40 or (self.grid and self.grid.cell <= 2) else c.takeoff_s
         if st.t - getattr(self, "_t0", st.t) < takeoff_s and abs(ang) < 0.3:
             self._plan, self._last_action = [3] * c.horizon, 3
             self._acts.append((st.t, 3))
