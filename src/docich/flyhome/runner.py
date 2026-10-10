@@ -13,6 +13,7 @@ from __future__ import annotations
 import dataclasses
 
 import json
+import math
 import time
 from typing import Callable
 from dataclasses import dataclass, field
@@ -341,16 +342,26 @@ def play(
                 if motion_pos is None or abs(st.x - motion_pos[0]) + abs(st.y - motion_pos[1]) > 3.0:
                     motion_pos = (st.x, st.y)
                     t_motion = st.t
-                stuck = st.t - t_motion > 8.0 and st.best_dist is not None and st.best_dist > 30.0
+                distance_home = math.hypot(st.x - st.home[0], st.y - st.home[1]) if st.home else math.inf
+                stuck = st.t - t_motion > 8.0 and distance_home > 30.0
                 if st.t - t_start > attempt_timeout_s or stuck:
                     keys = (False, False)  # 打ち切り: 落下させて死亡→再挑戦に回す
                     if (st.t - t_start > attempt_timeout_s + 3.0 or stuck) and backend.ready():
                         # 地面で生きたまま動けなくなった: Esc でマップへ戻り、Enter で同じレベルをやり直す
                         backend.release_all()
+                        _finish_attempt(loop, dataclasses.replace(st, phase="stuck" if stuck else "timeout"), t_start, tl)
+                        done += 1
+                        if not retry or (attempts and done >= attempts):
+                            break
                         backend.tap("escape")
                         loop.wait(1.0)
                         backend.tap("enter")
                         loop.wait(1.5)
+                        loop.tracker = Tracker()
+                        loop.tracker.attempt = st.attempt
+                        ctl.reset()
+                        hz_mem.clear()
+                        path = None
                         t_start = None
                         motion_pos = None
                         t_motion = backend.now()

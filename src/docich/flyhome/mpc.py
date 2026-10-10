@@ -102,6 +102,7 @@ class MpcController:
 
     # --- 外部から ---------------------------------------------------------------------------
     def reset(self) -> None:
+        self._plan_t: float | None = None
         self._plan: list[int] | None = None
         self._last_action = 0
         self._hist: deque[tuple[float, float, float, float]] = deque(maxlen=6)  # (t, x, y, angle 連続値)
@@ -357,7 +358,7 @@ class MpcController:
                     lim = c.home_v0 + c.home_v_per_px * dh
                     if sp > lim:
                         total += c.w_home_v * (sp - lim)
-            vcap = c.max_speed if track else min(c.max_speed, math.sqrt(vb * d) + c.v_floor)
+            vcap = min(c.max_speed, max(18.0, hypot(rvx, rvy) + 10.0)) if track else min(c.max_speed, math.sqrt(vb * d) + c.v_floor)
             if segs and not track:
                 for cs in corners:
                     if cs > s_cur:
@@ -471,7 +472,8 @@ class MpcController:
         H = c.horizon
         cands: list[list[int]] = []
         if self._plan is not None:
-            base = self._plan[1:] + [self._plan[-1]]
+            shift = min(H, max(0, round((st.t - self._plan_t) / c.step_s))) if self._plan_t is not None else 1
+            base = self._plan[shift:] + [self._plan[-1]] * shift
             cands.append(base)
             for _ in range(c.candidates // 3):
                 cands.append([a if self.rng.random() > c.mutate_p else self.rng.randrange(4) for a in base])
@@ -493,6 +495,7 @@ class MpcController:
             if cost < best_cost:
                 best_seq, best_cost = seq, cost
         self._plan = best_seq
+        self._plan_t = st.t
         self._last_action = best_seq[0]
         self._acts.append((st.t, best_seq[0]))
         left, right = ACTIONS[best_seq[0]]
