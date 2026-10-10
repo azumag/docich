@@ -319,7 +319,8 @@ def _plank_ratio(img: Image, bbox: tuple[int, int, int, int]) -> float:
     return plank / total if total else 0.0
 
 
-def _orientation(blob: Blob, labels: bytearray, w: int, h: int, prev_angle: float | None):
+def _orientation(blob: Blob, labels: bytearray, w: int, h: int, prev_angle: float | None,
+                 *, home_text_overlap: bool = False):
     """主軸 (PCA) で体の向きを、顔 (白) の偏りで頭側を決める。"""
     x0, y0, x1, y1 = blob.bbox
     body = list(blob.pixels)
@@ -347,8 +348,10 @@ def _orientation(blob: Blob, labels: bytearray, w: int, h: int, prev_angle: floa
         fx = sum(p[0] for p in face) / len(face) - mx
         fy = sum(p[1] for p in face) / len(face) - my
         sign = fx * ax + fy * ay
-    if abs(sign) < 0.3 and prev_angle is not None:
-        # 顔が見えない/中央付近 → 前フレームの向きに近い側を採る
+    if (home_text_overlap or abs(sign) < 0.3) and prev_angle is not None:
+        # HOME重なりでは文字が体を切り、橙に隣接した白文字も顔と誤認する。
+        # PCAの軸は追うが、頭側は前フレームに近い側を採る（実Lv38の180度反転）。
+        # 顔が見えない/中央付近の場合も同じ。
         hx, hy = math.sin(prev_angle), -math.cos(prev_angle)
         sign = hx * ax + hy * ay
     if sign == 0.0:
@@ -403,6 +406,14 @@ def analyze(
         elif b.area < PLAYER_AREA[0]:
             fragments.append(b)  # 花の茎などで体が分断された断片
 
+    # HOMEは屋根の上に固定表示される。姿勢判定の前に屋根を特定する。
+    roofs = [b for b in blobs(labels, w, h, {ROOF}, mask=in_hud) if b.area >= 15]
+    home_text_rect = None
+    if roofs:
+        rx0, ry0, rx1, _ = max(roofs, key=lambda b: b.area).bbox
+        if rx1 - rx0 >= 24:
+            home_text_rect = (rx0 + 6, ry0 - 13, rx1 - 6, ry0 - 4)
+
     player = None
     if prev_player is not None and (oversized or fragments) and not any(math.hypot(b.center[0] - prev_player[0], b.center[1] - prev_player[1]) <= TRACK_GATE_PX for b in candidates):
         # 看板の見本 (同じ橙) と重なって大きな塊になった、または花の茎で体が分断された:
@@ -423,7 +434,13 @@ def analyze(
             best = max(fresh, key=lambda b: b.area) if fresh else None
         if best is not None:
             cx, cy = best.center
-            angle = _orientation(best, labels, w, h, prev_angle)
+            overlaps_text = False
+            if home_text_rect is not None:
+                tx0, ty0, tx1, ty1 = home_text_rect
+                bx0, by0, bx1, by1 = best.bbox
+                overlaps_text = bx0 < tx1 and bx1 > tx0 and by0 < ty1 and by1 > ty0
+            angle = _orientation(best, labels, w, h, prev_angle,
+                                 home_text_overlap=overlaps_text)
             bx0, by0, bx1, by1 = best.bbox
             clipped_by_hud = any(bx0 < hx1 + 2 and bx1 > hx0 - 2 and by0 < hy1 + 2 and by1 > hy0 - 2
                                  for hx0, hy0, hx1, hy1 in hud_rects)
@@ -461,7 +478,6 @@ def analyze(
             else:
                 player.flame_right = True
 
-    roofs = [b for b in blobs(labels, w, h, {ROOF}, mask=in_hud) if b.area >= 15]
     home = home_bbox = None
     if roofs:
         roof = max(roofs, key=lambda b: b.area)
