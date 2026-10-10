@@ -59,6 +59,7 @@ def build_grid(
     solid_margin: int = 2,
     hazard_margin: int = 3,
     soft_margin: int = 2,
+    top_extra: int = 2,
 ) -> Grid:
     cols, rows = math.ceil(obs.width / cell), math.ceil(obs.height / cell)
     solid = bytearray(cols * rows)
@@ -70,6 +71,9 @@ def build_grid(
     # 画面外へ出ると見失う (実機で死亡扱いかは要確認) ので四辺を壁として扱う。
     for c in range(cols):
         solid[c] = solid[(rows - 1) * cols + c] = 1
+        # 上端は余分に塞ぐ (実機 Lv19: 中心 y≈20 で上へ飛び出して死亡。右上はタイマー表示とも重なる)
+        for r in range(1, min(rows, top_extra + 1)):
+            solid[r * cols + c] = 1
     for r in range(rows):
         solid[r * cols] = solid[r * cols + cols - 1] = 1
     hazard = bytearray(cols * rows)
@@ -142,6 +146,30 @@ def astar(g: Grid, start: tuple[float, float], goal: tuple[float, float]) -> lis
     pts = [g.center(c, r) for c, r in cells]
     pts[-1] = goal
     return simplify(g, pts)
+
+
+def path_length(path: list[tuple[float, float]]) -> float:
+    return sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(path, path[1:]))
+
+
+def remaining_path(path: list[tuple[float, float]], pos: tuple[float, float]) -> list[tuple[float, float]]:
+    """経路のうち現在位置から先の部分 (最寄りの折れ点以降、先頭は現在位置)。"""
+    if not path:
+        return []
+    near = min(range(len(path)), key=lambda i: (path[i][0] - pos[0]) ** 2 + (path[i][1] - pos[1]) ** 2)
+    nxt = min(near + 1, len(path) - 1)
+    return [pos] + path[nxt:]
+
+
+def path_blocked(g: Grid, path: list[tuple[float, float]]) -> bool:
+    """経路の線分がどこかで通行不可のセルを通るか (コストのみのセルは許す)。"""
+    for a, b in zip(path, path[1:]):
+        n = max(2, int(math.hypot(b[0] - a[0], b[1] - a[1]) / (g.cell / 2)))
+        for i in range(1, n):
+            c, r = g.to_cell(a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n)
+            if not g.free(c, r):
+                return True
+    return False
 
 
 def line_free(g: Grid, a: tuple[float, float], b: tuple[float, float]) -> bool:

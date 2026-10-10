@@ -41,7 +41,7 @@ class MpcConfig:
     # "track": 経路上を速度 v_ref (曲がり角・家の手前で減速) で進む目標点を追う (既定)。
     # "progress": 経路の残り距離を減らす (角を斜めに突っ切りがちで、Lv8 の棘の柱に当たり続けた)。
     mode: str = "track"
-    v_ref: float = 40.0
+    v_ref: float = 32.0
     w_track: float = 1.5  # 目標点との距離 (px)
     w_vel: float = 0.8  # 目標速度との差 (px/s)
     end_accel: float = 18.0  # 家の手前の減速
@@ -63,6 +63,10 @@ class MpcConfig:
     corner_turn: float = 0.7  # rad。経路のこれ以上の曲がり角の手前では、角までの距離に応じた速度上限をかける
     corner_accel: float = 30.0
     corner_floor: float = 10.0
+    home_slow_r: float = 50.0  # 家からこの距離以内では速度 <= home_v0 + home_v_per_px * 距離 を強く守る (通り過ぎ・滑り落ち対策)
+    home_v0: float = 10.0
+    home_v_per_px: float = 0.8
+    w_home_v: float = 4.0
     w_omega: float = 3.0  # 毎ステップ w_omega * |角速度| (回して戻す列は実機では遅れで破綻しやすい)
     w_tilt: float = 5.0  # 毎ステップ w_tilt * 傾き^2 (まっすぐ上がる/降りるほうを少し優先)
     w_vaway: float = 0.8  # 経路から離れる向きの横速度 (px/s) への罰則 (経路を飛び出して家を通り過ぎるのを抑える)
@@ -220,6 +224,7 @@ class MpcController:
         soft, soft_w = c.hazard_soft, c.hazard_soft_w
         corners = self._corners
         ref = self._ref
+        home_pt = self.path[-1] if self.path else None
         dt_sub = c.step_s / c.substeps
         n_steps = len(seq)
         track = self.cfg.mode == "track" and len(ref) >= n_steps
@@ -307,6 +312,12 @@ class MpcController:
                 if 0 <= cc < cols and 0 <= rr < rows and blocked[rr * cols + cc]:
                     total += c.terrain_pen
             sp = hypot(vx, vy)
+            if home_pt is not None:
+                dh = hypot(x - home_pt[0], y - home_pt[1])
+                if dh < c.home_slow_r:
+                    lim = c.home_v0 + c.home_v_per_px * dh
+                    if sp > lim:
+                        total += c.w_home_v * (sp - lim)
             vcap = c.max_speed if track else min(c.max_speed, math.sqrt(vb * d) + c.v_floor)
             if segs and not track:
                 for cs in corners:
