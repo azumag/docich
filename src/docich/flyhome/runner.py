@@ -305,6 +305,9 @@ def play(
                 if t_start is None:
                     t_start, tl, path = st.t, Timeline(meta={"source": "controller"}), None
                     ctl.reset()
+                    hz_mem.clear()
+                    for rect in loop.obs.hazards:
+                        hz_mem[tuple(rect)] = st.t  # 前の死亡破片を新しい試行の棘として残さない。
                 planning_start = backend.now()
                 if path is None or k % replan_every == 0:
                     target = st.home

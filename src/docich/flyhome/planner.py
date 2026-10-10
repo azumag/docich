@@ -83,6 +83,16 @@ def build_grid(
                 hazard[r * cols + c] = 1
     hard = _dilate(solid, cols, rows, solid_margin)
     hz = _dilate(hazard, cols, rows, hazard_margin)
+    # 細い経路でも頭/足の長さは横幅より大きい。横の余白を縮めても上下8pxは保つ。
+    vertical_extra = max(0, math.ceil(8 / cell) - hazard_margin)
+    if vertical_extra:
+        expanded = bytearray(hz)
+        for r in range(rows):
+            for c in range(cols):
+                if hz[r * cols + c]:
+                    for nr in range(max(0, r - vertical_extra), min(rows, r + vertical_extra + 1)):
+                        expanded[nr * cols + c] = 1
+        hz = expanded
     blocked = bytearray(a | b for a, b in zip(hard, hz))
     near = _dilate(blocked, cols, rows, soft_margin)
     cost = bytearray(4 if n and not b else 0 for n, b in zip(near, blocked))
