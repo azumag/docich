@@ -15,6 +15,9 @@ BOOT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 
 def host(f):
     uid = f.root.stat().st_uid
+    # Production state belongs to ubuntu; ordinary system/kernel tasks use
+    # UID 0. Keep this invented sample foreign even in a root-run test runner.
+    system_uid = 0 if uid != 0 else 1
     def row(pid, **changes):
         value = dict(pid=pid, ppid=1, start_ticks=10000+pid, uid=uid,
             boot_id=BOOT, pid_namespace='pid:[4026531836]', tags={},
@@ -30,9 +33,9 @@ def host(f):
             'DOCICH_TMUX_GENERATION':'4', 'DOCICH_TMUX_ROLE':'game'}),
         row(9103, exe='/usr/bin/pulseaudio', argv=[b'pulseaudio']),
         row(9104, exe='/usr/bin/bash', argv=[b'bash', b'improve_daemon.sh']),
-        dict(pid=1, ppid=0, start_ticks=1, uid=uid+1, boot_id=BOOT, pid_namespace='pid:[4026531836]'),
-        dict(pid=9105, ppid=1, start_ticks=19105, uid=uid+1, boot_id=BOOT, pid_namespace='pid:[4026531836]'),
-        dict(pid=2, ppid=0, start_ticks=2, uid=uid+1, boot_id=BOOT, pid_namespace='pid:[4026531836]')]
+        dict(pid=1, ppid=0, start_ticks=1, uid=system_uid, boot_id=BOOT, pid_namespace='pid:[4026531836]'),
+        dict(pid=9105, ppid=1, start_ticks=19105, uid=system_uid, boot_id=BOOT, pid_namespace='pid:[4026531836]'),
+        dict(pid=2, ppid=0, start_ticks=2, uid=system_uid, boot_id=BOOT, pid_namespace='pid:[4026531836]')]
     f.tmux._server_pid.return_value = 9101
     f.probe.return_value = rows
     return rows
