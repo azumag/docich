@@ -93,6 +93,7 @@ class MpcController:
         self.width, self.height = width, height
         self.rng = random.Random(self.cfg.seed)
         self.grid: Grid | None = None
+        self._narrow_level = False
         self.solid: bytearray | None = None
         self.hazards: list[tuple[int, int, int, int]] = []
         self.home_bbox: tuple[int, int, int, int] | None = None
@@ -119,7 +120,8 @@ class MpcController:
 
     def set_world(self, grid: Grid, obs: Observation, path: list[tuple[float, float]] | None = None) -> None:
         self.grid = grid
-        narrow = grid.cell <= 2
+        self._narrow_level = self._narrow_level or grid.cell <= 2
+        narrow = self._narrow_level
         self.cfg.v_ref = 8.0 if narrow else self._open_limits['v_ref']
         self.cfg.tilt_hard = 0.4 if narrow else self._open_limits['tilt_hard']
         self.cfg.w_tilt_hard = 300.0 if narrow else self._open_limits['w_tilt_hard']
@@ -417,7 +419,7 @@ class MpcController:
                     lim = c.home_v0 + c.home_v_per_px * dh
                     if sp > lim:
                         total += c.w_home_v * (sp - lim)
-            narrow = grid is not None and grid.cell <= 2
+            narrow = self._narrow_level
             vcap = min(c.max_speed, max(10.0 if narrow else 18.0, hypot(rvx, rvy) + (4.0 if narrow else 10.0))) if track else min(c.max_speed, math.sqrt(vb * d) + c.v_floor)
             if segs and not track:
                 for cs in corners:
@@ -523,7 +525,7 @@ class MpcController:
         c = self.cfg
         x, y, vx, vy, ang, om = self._estimate(st)
         self._estimate_debug = [round(v, 3) for v in (vx, vy, ang, om)]
-        takeoff_s = min(c.takeoff_s, 0.15) if y < 40 or (self.grid and self.grid.cell <= 2) else c.takeoff_s
+        takeoff_s = min(c.takeoff_s, 0.15) if y < 40 or self._narrow_level else c.takeoff_s
         if st.t - getattr(self, "_t0", st.t) < takeoff_s and abs(ang) < 0.3:
             self._plan, self._last_action = [3] * c.horizon, 3
             self._acts.append((st.t, 3))
@@ -573,7 +575,7 @@ class MpcController:
             cost = self._cost(x, y, vx, vy, ang, om, seq, tx, ty, first_delay, self._last_action)
             if cost < best_cost:
                 best_seq, best_cost = seq, cost
-        if self.grid and self.grid.cell <= 2 and (abs(ang) > 0.45 or abs(om) > 1.3):
+        if self._narrow_level and (abs(ang) > 0.45 or abs(om) > 1.3):
             # 実機の接触・量子化で予測外に姿勢が崩れたら、通路への追従より立て直しを優先。
             turn_error = ang + 0.35 * om
             best_seq[0] = (2 if turn_error * self.p.torque_sign > 0 else 1) if abs(turn_error) > 0.1 else 0
