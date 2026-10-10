@@ -469,3 +469,36 @@ def test_diagnostics_freshness_requires_live_worker_and_recent_frame(tmp_path, m
     assert not module._collect_external_video(tmp_path, 1010)["frame_fresh"]
     monkeypatch.setattr(module, "_external_video_process_alive", lambda _: False)
     assert not module._collect_external_video(tmp_path, 1000)["frame_fresh"]
+
+
+def test_canonical_waits_out_a_busy_switch_lock_instead_of_crashing_the_runner(setup, monkeypatch):
+    from docich.game_switch import GameSwitchBusyError
+    from contextlib import contextmanager
+    calls = []
+
+    @contextmanager
+    def lock(*, exclusive, blocking=False):
+        calls.append(1)
+        if len(calls) < 4:
+            raise GameSwitchBusyError("busy")
+        yield
+
+    monkeypatch.setattr(setup.manager.store, "lock", lock)
+    real = type(setup.manager).canonical
+    monkeypatch.setattr(setup.manager.store.canonical, "load", lambda: ({"phase": "ready"}, None))
+    assert real(setup.manager) == {"phase": "ready"}
+    assert len(calls) == 4
+
+
+def test_canonical_still_raises_when_the_lock_never_frees(setup, monkeypatch):
+    from docich.game_switch import GameSwitchBusyError
+    from contextlib import contextmanager
+
+    @contextmanager
+    def lock(*, exclusive, blocking=False):
+        raise GameSwitchBusyError("busy")
+        yield
+
+    monkeypatch.setattr(setup.manager.store, "lock", lock)
+    with pytest.raises(GameSwitchBusyError):
+        type(setup.manager).canonical(setup.manager, patience_s=2)

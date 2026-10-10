@@ -19,7 +19,9 @@ from .external_video_receiver import (
     ExternalVideoError, MAX_RECEIVER_MINUTES, exclusive, prepare, read_json, read_receiver,
     receive, request_receiver_stop,
 )
-from .game_switch import GameSwitchCoordinator, GameSwitchStore, atomic_write_json
+from .game_switch import (
+    GameSwitchBusyError, GameSwitchCoordinator, GameSwitchStore, atomic_write_json,
+)
 
 VIEW_NAME = "external-video-view"
 STATE_FILE = "external_video_corner.json"
@@ -76,7 +78,17 @@ class ExternalVideoCornerManager:
             coordinator = GameSwitchCoordinator(self.store, lambda spec: make_coordinator_adapter(g, spec))
         self.coordinator = coordinator
 
-    def canonical(self):
+    def canonical(self, *, patience_s=60):
+        # A game switch / FIFO tick holds the exclusive lock for a few seconds at a
+        # time. A non-blocking read that raised GameSwitchBusyError used to kill the
+        # long-lived runner (2026-10-11 05:27) and leave the corner "active" with
+        # nobody to honor the End button or restore Soren. Wait it out instead.
+        for attempt in range(max(1, int(patience_s / 0.5))):
+            try:
+                with self.store.lock(exclusive=False):
+                    return self.store.canonical.load()[0]
+            except GameSwitchBusyError:
+                self.sleep(0.5)
         with self.store.lock(exclusive=False):
             return self.store.canonical.load()[0]
 
