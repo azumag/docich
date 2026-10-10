@@ -520,6 +520,14 @@ class MpcController:
                     return 0
         want_vx = max(-8.0, min(8.0, rvx + 0.8 * (rx - x)))
         want_vy = max(-12.0, min(12.0, rvy + 0.8 * (ry - y)))
+        # 横壁が近いとき、下降待ちで回転を止めると横の慣性だけで棘へ滑り込む。
+        braking_x = x + vx * (c.delay_s + 0.3) + vx * abs(vx) / 40.0
+        side_risk = any(hy0 - 10 <= y <= hy1 + 10 and
+                        ((vx > 0 and hx0 > x and braking_x + 16 >= hx0) or
+                         (vx < 0 and hx1 < x and braking_x - 16 <= hx1))
+                        for hx0, hy0, hx1, hy1 in self.hazards)
+        if side_risk:
+            want_vx = 0.0
         ax = 1.8 * (want_vx - vx)
         theta = max(-0.22, min(0.22, math.atan2(ax, p.gravity)))
         self._pending_inputs(self._hist[-1][0])
@@ -543,7 +551,7 @@ class MpcController:
             return 0
         if y < 34 and vy < -6 and abs(ang) < 0.35 and abs(om) < 0.7:
             return 0
-        if future_vy < want_vy - 3 and abs(ang) < 0.45 and abs(om) < 0.8:
+        if future_vy < want_vy - 3 and abs(ang) < 0.45 and abs(om) < 0.8 and not side_risk:
             return 0  # 姿勢を直す噴射でも上昇するため、まず要求速度まで自由落下で減速。
         if abs(error) > 0.08:
             return 1 if error * p.torque_sign > 0 else 2

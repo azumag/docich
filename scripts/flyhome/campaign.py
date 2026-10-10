@@ -51,6 +51,7 @@ def uncleared(b):
             bits.append(1 if (r > 200 and g > 200 and bl > 200) else 0)
     return sum(bits) == 432 and zlib.crc32(bytes(bits)) == UNCLEARED_CRC
 def to_next_level(b):
+    save("  いま: マップ切替待ち")
     time.sleep(3.0)
     for _ in range(6):
         if is_map(b):
@@ -58,25 +59,33 @@ def to_next_level(b):
         b.tap("enter"); time.sleep(1.5)
     time.sleep(0.8)
     # マップの選択が次のレベルとは限らない (クリア済みのレベルのまま等): 未クリアのレベルまで → で進める
-    for _ in range(50):
+    for selection_step in range(50):
+        save("  いま: マップで未クリアの面を選択 (%d/50)" % (selection_step + 1))
         if uncleared(b):
             break
         b.tap("right"); time.sleep(0.8)
     write_png(s.run_dir / "maps" / ("selected-%d.png" % time.time_ns()), b.capture())
+    save("  いま: マップで未クリアを確認、Enterで開始")
     b.tap("enter"); time.sleep(2.0)
 for i in range(max(0, last - first + 1)):
     lv = first + i
     b = runner.WindowsBackend(s, focus=False)
     try:
         initial_img = vision.to_native(b.capture(), s)
-        if not (i == 0 and os.environ.get("ON_LEVEL")) or vision._party_present(initial_img) or uncleared(b):
+        rescan = s.run_dir / "request-map-rescan"
+        if i == 0 and rescan.exists():
+            rescan.unlink()
+            b.tap("escape")  # 実プレイ画面からの明示的な選び直し要求。
+            time.sleep(1.0)
+            to_next_level(b)
+        elif not (i == 0 and os.environ.get("ON_LEVEL")) or vision._party_present(initial_img) or uncleared(b):
             to_next_level(b)
         save("  いま: Lv%d を play 中..." % lv)
         out = runner.session_dir(s, "play")
         def step(st, extra):
             pos = "位置不明" if st.x is None else "x=%.1f y=%.1f angle=%.2f" % (st.x, st.y, st.angle or 0.0)
             save("  いま: Lv%d 試行%d %s %s (%s)" % (lv, st.attempt, st.phase, pos, out))
-        res = runner.play(b, s, attempts=0, max_seconds=per, log_root=out, on_step=step)
+        res = runner.play(b, s, attempts=0, max_seconds=per, log_root=out, on_step=step, on_restart=lambda: to_next_level(b))
     finally:
         b.close()
     ok = bool(res) and res[-1]["outcome"] == "cleared"

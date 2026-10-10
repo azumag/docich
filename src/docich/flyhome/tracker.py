@@ -51,6 +51,8 @@ class State:
             "angle": r(self.angle),
             "omega": r(self.omega),
             "best_dist": r(self.best_dist),
+            "home": self.home,
+            "home_bbox": self.home_bbox,
         }
 
 

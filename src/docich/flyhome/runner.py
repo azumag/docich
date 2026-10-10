@@ -258,13 +258,14 @@ def play(
     physics: Physics | None = None,
     attempts: int = 1,
     max_seconds: float = 120.0,
-    attempt_timeout_s: float = 120.0,
+    attempt_timeout_s: float = 180.0,
     retry: bool = True,
     log_root: Path | None = None,
     replan_every: int = 6,
     idle_enter_s: float = 4.0,
     hazard_memory_s: float = 1.5,
     on_step: Callable[[State, dict | None], None] | None = None,
+    on_restart: Callable[[], None] | None = None,
 ) -> list[dict]:
     """制御器でプレイする。死亡したら Enter で再挑戦し、帰宅したら止まる。"""
     log = SessionLog(log_root)
@@ -379,12 +380,18 @@ def play(
                             break
                         backend.tap("escape")
                         loop.wait(1.0)
-                        backend.tap("enter")
-                        loop.wait(1.5)
+                        if on_restart is not None:
+                            on_restart()  # campaignはマップで未クリアの面を選び直す。
+                        else:
+                            backend.tap("enter")
+                            loop.wait(1.5)
                         loop.tracker = Tracker()
                         loop.tracker.attempt = st.attempt
                         ctl.reset()
                         hz_mem.clear()
+                        solid_mem = None
+                        grid_cache.clear()
+                        grid_spec = None
                         path = None
                         t_start = None
                         motion_pos = None
@@ -576,4 +583,3 @@ def watch(backend: Backend, settings: Settings, *, seconds: float = 10.0, every_
         if st.t - last >= every_s:
             last = st.t
             printer(json.dumps({"state": st.as_dict(), "obs": loop.obs.summary()}, ensure_ascii=False))
-
