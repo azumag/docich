@@ -1,11 +1,11 @@
 {
-  "output_sha256": "f67a9414c190cd81cbe0c4b075163472034579d9555e61c64f2954fc3f813eae",
+  "output_sha256": "e7404b5465ec34b58b9537bd39cec57e70f78fd3df14dd1e57f3521fa4f8adaa",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "d92655d5411273285cefd010d2fc060322325170d9b41f914304df97e7095755",
+  "source_sha256": "8ca2ab47799b49a1ec9d58dad8d44b40a22294f85968c965c2ba94c9d7bc9b57",
   "topics": [
-    "全音声の配信接続を復旧、ゲーム盤面・リレーを維持して実測確認",
-    "自動ローテーション復帰・ついたて自動候補N11を実機確認",
-    "owner指定に合わせゲームBGMを30%へ訂正（無再起動）"
+    "手動OBS特別コーナーの受信と専用経路の実装",
+    "自動ローテーション復旧（slot181停滞35h）と恒久修正2件",
+    "docich VM・配信 read-only 監視（slot 181停滞継続）"
   ]
 }

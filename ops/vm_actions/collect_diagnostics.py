@@ -4170,6 +4170,7 @@ def _collect_corner_files(state_dir, payload, now):
     payload["weather_corner"] = _weather_corner_projection(
         state_dir, rotation_data, rotation_data is not None
     )
+    payload["external_video"] = _collect_external_video(state_dir, now)
     payload["game_switch_fifo"] = _collect_game_switch_fifo(state_dir, now)
     payload["game_switch_watchdog"] = _collect_game_switch_watchdog()
     payload["corner_rotation_timer_alias"] = _collect_corner_rotation_timer_alias()
@@ -4201,6 +4202,65 @@ def _collect_corner_files(state_dir, payload, now):
     payload["paper_improve"] = _collect_paper_improve_status(state_dir, now)
     payload["paper_experiment"] = _collect_paper_experiment(state_dir, now)
     payload["rotation_evidence"] = _collect_rotation_evidence(state_dir)
+
+
+def _external_video_process_alive(receiver):
+    pid, ticks = receiver.get("pid"), receiver.get("start_ticks")
+    if type(pid) is not int or pid <= 1 or type(ticks) is not int or ticks <= 0:
+        return False
+    root = Path("/proc") / str(pid)
+    try:
+        before = (root / "stat").read_text().rsplit(") ", 1)[1].split()
+        argv = (root / "cmdline").read_bytes().split(b"\0")
+        after = (root / "stat").read_text().rsplit(") ", 1)[1].split()
+        return (before[0] not in {"Z", "X"} and after[0] not in {"Z", "X"}
+                and int(before[19]) == int(after[19]) == ticks
+                and b"external-video-corner" in argv and b"receive" in argv
+                and receiver["receiver_id"].encode() in argv)
+    except (OSError, ValueError, IndexError, KeyError):
+        return False
+
+
+def _collect_external_video(state_dir, now):
+    """Fixed enums/health only: no IP, request, PID, file body or argv output."""
+    entry = {"receiver_present": False, "receiver_readable": False,
+             "receiver_status": "absent", "receiver_alive": None,
+             "frame_fresh": None, "audio_present": None,
+             "corner_status": "absent", "recovery_required": None}
+    present, readable, corner = _load_state_file(Path(state_dir) / _REG.EXTERNAL_VIDEO["corner_file"])
+    if present:
+        entry["corner_status"] = "unknown"
+    if readable:
+        status = corner.get("status")
+        if status in {"starting", "active", "restoring", "failed", "completed", "interrupted"}:
+            entry["corner_status"] = status
+        entry["recovery_required"] = corner.get("recovery_required") is True
+    receiver_path = Path(state_dir) / _REG.EXTERNAL_VIDEO["receiver_file"]
+    entry["receiver_present"] = receiver_path.exists()
+    if not entry["receiver_present"]:
+        return entry
+    entry["receiver_status"] = "unknown"
+    _, readable, receiver = _load_state_file(receiver_path)
+    if not readable:
+        return entry
+    rid = receiver.get("receiver_id")
+    expiry = receiver.get("expires_at")
+    if (receiver.get("schema_version") != 1 or not isinstance(rid, str)
+            or re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", rid) is None
+            or type(expiry) not in (int, float) or not math.isfinite(expiry)):
+        return entry
+    alive = _external_video_process_alive(receiver)
+    try:
+        age = now - (Path(state_dir) / "external-video" / rid / "current.png").stat().st_mtime
+    except OSError:
+        age = None
+    fresh = (alive and receiver.get("status") == "receiving" and now < expiry
+             and age is not None and 0 <= age <= _REG.EXTERNAL_VIDEO["frame_max_age_sec"])
+    entry.update(receiver_readable=True, receiver_alive=alive,
+                 frame_fresh=fresh, audio_present=receiver.get("audio_present") is True)
+    if receiver.get("status") in {"launching", "waiting", "receiving", "stopped", "failed"}:
+        entry["receiver_status"] = receiver["status"]
+    return entry
 
 
 def _collect_hanjuku_predictions(state_dir):

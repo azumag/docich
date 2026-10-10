@@ -417,6 +417,68 @@ class SorenCoordinatorAdapter:
         current, missing = store.canonical.load()
         return not missing and current == state
 
+    def can_restore_live_singleton(self, deadline: float, cancel) -> bool:
+        """Prove a failed restore attempt shares the still-running previous.
+
+        This permits re-leasing an existing singleton only; it never permits
+        materializing it or forgetting the failed candidate before commit.
+        The ordinary stable-owner retirement proof runs after that commit.
+        """
+        store = GameSwitchStore(self.g.state_dir)
+        state, missing = store.canonical.load()
+        keys = ("game", "adapter", "runtime_id", "generation", "lease_id")
+        previous = state.get("previous") or {}
+        retiring = state.get("retiring") or []
+        last = state.get("last_result") or {}
+        if (missing or state.get("phase") != "failed" or self.agent_enabled
+                or state.get("active") is not None or state.get("candidate") is not None
+                or state.get("request_id") is not None or len(retiring) != 1
+                or self.spec.adapter != "soren" or not self.spec.lease_id
+                or any(previous.get(k) != getattr(self.spec, k) for k in keys)
+                or last.get("error_code") != "rollback_failed"):
+            return False
+        failed = retiring[0]
+        if (failed.get("cleanup_role") != "failed_candidate"
+                or failed.get("adapter") != "soren" or failed.get("game") != self.spec.game
+                or not failed.get("lease_id")
+                or any(failed.get(k) == previous.get(k) for k in
+                       ("runtime_id", "generation", "lease_id"))):
+            return False
+        try:
+            receipt = store.receipts.load(last.get("request_id"))
+            result = (receipt.get("result") or {}) if receipt else {}
+            generation = receipt.get("generation") if receipt else None
+            if (not receipt or receipt.get("status") != "failed"
+                    or receipt.get("operation") not in {"start", "switch", "rotate", "restart"}
+                    or result.get("status") != "failed"
+                    or result.get("error_code") != "rollback_failed"
+                    or result.get("request_id") != last.get("request_id")
+                    or result.get("to_game") != last.get("to_game")
+                    or receipt.get("target") != last.get("to_game")
+                    or result.get("operation") != receipt.get("operation")
+                    or generation != last.get("generation")
+                    or type(generation) is not int
+                    or not previous["generation"] < generation
+                    or failed.get("generation") != generation + 1):
+                return False
+        except (RuntimeError, ValueError, TypeError, KeyError):
+            return False
+        payload = self._status(deadline, cancel)
+        if (type(payload.get("schema")) is not int or payload["schema"] != 1
+                or any(k not in payload or payload[k] is not None
+                       for k in ("request", "ack", "resource", "control"))):
+            return False
+        processes = {name: self._singleton_process_identity(name) for name in
+                     ("soren_loop.sh", "soviet_watchdog.sh")}
+        if (any(value is None for value in processes.values())
+                or processes["soren_loop.sh"][0] == processes["soviet_watchdog.sh"][0]):
+            return False
+        self._check(deadline, cancel)
+        if any(self._singleton_process_identity(name) != value for name, value in processes.items()):
+            return False
+        current, missing = store.canonical.load()
+        return not missing and current == state
+
     def _singleton_process_identity(self, expected: str, *, proc_root=Path("/proc")):
         """Prove the fixed-root script is a shell's program, not a data argument.
 

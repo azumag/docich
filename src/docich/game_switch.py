@@ -4511,7 +4511,18 @@ class GameSwitchCoordinator:
         # Both rollback and explicit recovery must finish cleanup before they
         # start/re-lease another game. Recovery retries leftovers first.
         state, _migrated = self.store.canonical.load()
-        if state.get("candidate") is not None or state.get("retiring"):
+        live_singleton_only = False
+        if state.get("candidate") is None and state.get("retiring") and previous.get("adapter") == "soren":
+            try:
+                proof_adapter = self._make_adapter(RuntimeSpec.from_runtime(self.store.state_dir, previous), deadline)
+                proof = getattr(proof_adapter, "can_restore_live_singleton", None)
+                live_singleton_only = callable(proof) and self._call_adapter(
+                    lambda cancel: proof(deadline, cancel), deadline,
+                    self.step_timeouts.probe_s, "restore_singleton_identity",
+                ) is True
+            except Exception:
+                live_singleton_only = False
+        if state.get("candidate") is not None or (state.get("retiring") and not live_singleton_only):
             warnings.append("未停止runtimeがあるためpreviousの再起動を拒否しました")
             if cleanup_pending_out is not None:
                 cleanup_pending_out.append(True)
@@ -4528,6 +4539,9 @@ class GameSwitchCoordinator:
             warnings.append(f"previous adapter生成失敗: {_safe_detail(exc)}")
             return None
         previous_alive = self._probe_alive(previous_adapter, deadline)
+        if live_singleton_only and previous_alive is not True:
+            warnings.append("共有singletonの再起動は許可されていません")
+            return None
         if previous_alive is None:
             if previous_adapter.name == "program":
                 # The synthetic PAPER dashboard has no game state and is always
@@ -4563,6 +4577,17 @@ class GameSwitchCoordinator:
             except Exception as exc:
                 warnings.append(f"previous readiness確認失敗: {_safe_detail(exc)}")
                 return None
+            if live_singleton_only:
+                try:
+                    proven = self._call_adapter(
+                        lambda cancel: proof(deadline, cancel), deadline,
+                        self.step_timeouts.probe_s, "restore_singleton_recheck",
+                    )
+                except Exception:
+                    proven = False
+                if proven is not True:
+                    warnings.append("共有singletonの復帰直前照合に失敗しました")
+                    return None
             # Persist the new lease in previous BEFORE starting the agent so
             # the new worker can await a canonical identity and the old lease
             # is fenced out immediately (design v2 §5 F / §6).
@@ -5419,10 +5444,11 @@ class GameSwitchCoordinator:
                 tx, state, warnings, "previous runtimeの復旧に失敗しました", "rollback_failed"
             )
         self._reconcile_dangling_receipt_locked(tx)
+        current, _migrated = self.store.canonical.load()
         return _result_from_receipt(
             restored,
             warnings=tuple(warnings),
-            cleanup_pending=cleanup_pending or any(pending_out),
+            cleanup_pending=bool(current.get("candidate") or current.get("retiring")) or any(pending_out),
         )
 
     def _recover_stop_locked(

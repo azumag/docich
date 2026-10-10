@@ -425,6 +425,112 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
         state["next_generation"] = max(generation + 1, state["next_generation"])
         store.canonical.save(state)
 
+    def make_failed_singleton_restore(self, root):
+        import uuid
+        adapter, store, state = self.make_retired_singleton(root)
+        previous = state["active"]
+        state.update(retiring=[])
+        store.canonical.save(state)
+        rid = str(uuid.uuid4())
+        acceptance = store.accept_request(rid, "switch", "tsuitate-view")
+        body = dict(request_id=rid, operation="switch", status="failed",
+                    from_game=None, to_game="tsuitate-view", generation=acceptance.generation,
+                    error_code="rollback_failed", detail="synthetic rollback failure")
+        with store.transaction() as tx:
+            tx.finish_request(rid, "failed", body)
+        names = runtime_names(acceptance.generation + 1)
+        failed = dict(previous, generation=acceptance.generation + 1,
+                      runtime_id=f"g{acceptance.generation + 1}-abcdef", lease_id=str(uuid.uuid4()),
+                      game_window=names.game_window, agent_window=names.agent_window,
+                      adapter_session=names.adapter_session, cleanup_role="failed_candidate")
+        state = store.canonical.load()[0]
+        state.update(phase="failed", active=None, previous=previous, candidate=None,
+                     retiring=[failed], request_id=None, operation=None, last_result=body,
+                     next_generation=failed["generation"] + 1)
+        store.canonical.save(state)
+        adapter.spec = RuntimeSpec.from_runtime(store.state_dir, previous)
+        adapter._status = Mock(return_value=dict(schema=1, request=None, ack=None, resource=None, control=None))
+        return adapter, store, state
+
+    def test_failed_restore_releases_no_game_process_and_preserves_receipt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter, store, before = self.make_failed_singleton_restore(Path(temp))
+            receipt = store.receipts.load(before["last_result"]["request_id"])
+            def factory(spec):
+                instance = SorenCoordinatorAdapter(adapter.g, adapter.game, spec)
+                instance._status = adapter._status
+                instance._singleton_process_identity = adapter._singleton_process_identity
+                instance._run = adapter._run
+                instance.readiness = Mock()
+                instance.materialize_runtime = Mock(side_effect=AssertionError("must not restart"))
+                return instance
+            result = GameSwitchCoordinator(store, factory).recover(timeout_s=5)
+            after = store.canonical.load()[0]
+            self.assertEqual(result.status, "rolled_back")
+            self.assertFalse(result.cleanup_pending)
+            self.assertEqual(after["phase"], "ready")
+            self.assertEqual(after["active"]["runtime_id"], before["previous"]["runtime_id"])
+            self.assertNotEqual(after["active"]["lease_id"], before["previous"]["lease_id"])
+            self.assertEqual(after["retiring"], [])
+            self.assertEqual(store.receipts.load(receipt["request_id"]), receipt)
+            adapter._run.assert_not_called()
+
+    def test_failed_restore_rechecks_proof_after_readiness(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter, store, before = self.make_failed_singleton_restore(Path(temp))
+            proof = Mock(side_effect=[True, False])
+            def factory(spec):
+                instance = SorenCoordinatorAdapter(adapter.g, adapter.game, spec)
+                instance._status = adapter._status
+                instance._singleton_process_identity = adapter._singleton_process_identity
+                instance._run = adapter._run
+                instance.readiness = Mock()
+                instance.can_restore_live_singleton = proof
+                return instance
+            result = GameSwitchCoordinator(store, factory).recover(timeout_s=5)
+            self.assertEqual(result.status, "failed")
+            after = store.canonical.load()[0]
+            self.assertEqual(after["previous"], before["previous"])
+            self.assertEqual(after["retiring"], before["retiring"])
+            adapter._run.assert_not_called()
+
+    def test_failed_live_restore_requires_exact_ownership_and_positive_process_proof(self):
+        import copy
+        with tempfile.TemporaryDirectory() as temp:
+            adapter, store, before = self.make_failed_singleton_restore(Path(temp))
+            deadline = time.monotonic() + 5
+            self.assertTrue(adapter.can_restore_live_singleton(deadline, None))
+            variants = []
+            for key, value in [("cleanup_role", "source"), ("game", "another"), ("lease_id", None)]:
+                state = copy.deepcopy(before)
+                state["retiring"][0][key] = value
+                variants.append(state)
+            state = copy.deepcopy(before)
+            state["retiring"].append(copy.deepcopy(state["retiring"][0]))
+            # Duplicate identities are rejected by the canonical schema, so
+            # use a second distinct, positively tracked runtime here.
+            state["retiring"][1]["runtime_id"] = "g12-012345ab"
+            state["retiring"][1]["lease_id"] = str(__import__("uuid").uuid4())
+            state["retiring"][1]["generation"] += 1
+            state["retiring"][1].update({k: v for k,v in vars(runtime_names(state["retiring"][1]["generation"])).items()})
+            state["next_generation"] += 1
+            variants.append(state)
+            for state in variants:
+                store.canonical.save(state)
+                self.assertFalse(adapter.can_restore_live_singleton(deadline, None))
+            store.canonical.save(before)
+            for key in ("request", "ack", "resource", "control"):
+                adapter._status.return_value = dict(schema=1, request=None, ack=None, resource=None, control=None)
+                adapter._status.return_value[key] = {"held": True}
+                self.assertFalse(adapter.can_restore_live_singleton(deadline, None))
+            adapter._status.return_value = dict(schema=1, request=None, ack=None, resource=None, control=None)
+            adapter._singleton_process_identity.return_value = None
+            adapter._singleton_process_identity.side_effect = None
+            self.assertFalse(adapter.can_restore_live_singleton(deadline, None))
+            adapter._singleton_process_identity.side_effect = lambda name: (1 if name == "soren_loop.sh" else 2, 10)
+            store.receipts._path(before["last_result"]["request_id"]).unlink()
+            self.assertFalse(adapter.can_restore_live_singleton(deadline, None))
+
     def test_recover_retires_superseded_singleton_without_stopping_active_game(self):
         with tempfile.TemporaryDirectory() as temp:
             adapter, store, before = self.make_retired_singleton(Path(temp))
