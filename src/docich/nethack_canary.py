@@ -524,6 +524,10 @@ def _difference(candidate: object, baseline: object) -> float | None:
     return float(candidate) - float(baseline)
 
 
+from .nethack_resource_fence import fenced_configuration
+
+
+@fenced_configuration
 def run_canary(
     g: GlobalConfig,
     plan: NethackCanaryPlan,

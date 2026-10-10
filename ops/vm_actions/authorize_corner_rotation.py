@@ -15,6 +15,7 @@ import re
 import sys
 
 from corner_rotation_input import read_expected
+from nethack_admin_input import read_expires
 
 OWNER = "azumag"
 OWNER_ID = "9018513"
@@ -29,9 +30,11 @@ ALLOWED_OPERATIONS = {
     "recover-runtime",
     "check-cancel-hanjuku", "cancel-hanjuku",
     "check-admin-release-hanjuku", "admin-release-hanjuku",
+    "check-admin-release-nethack", "admin-release-nethack",
 }
 CANONICAL_ONLY_OPERATIONS = {"start-hanjuku", "recover-runtime", "check-cancel-hanjuku", "cancel-hanjuku",
-                             "check-admin-release-hanjuku", "admin-release-hanjuku"}
+                             "check-admin-release-hanjuku", "admin-release-hanjuku",
+                             "check-admin-release-nethack", "admin-release-nethack"}
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 
 
@@ -71,7 +74,7 @@ def main() -> None:
         fail("unsupported corner rotation operation")
 
     if operation in CANONICAL_ONLY_OPERATIONS and env.get("GITHUB_WORKFLOW_REF") != f"{REPOSITORY}/{WORKFLOWS[0]}@refs/heads/main":
-        fail("Hanjuku recovery requires the canonical operator workflow")
+        fail("operation requires the canonical operator workflow")
     try:
         expected = read_expected(env)
     except ValueError:
@@ -80,6 +83,17 @@ def main() -> None:
         fail("reviewed reservation fingerprint required")
     if operation == "check-cancel-hanjuku" and expected:
         fail("check accepts no reservation input")
+
+    if operation in {"check-admin-release-nethack", "admin-release-nethack"}:
+        try:
+            expires = read_expires(env)
+        except ValueError:
+            fail("approval input unavailable")
+        if operation == "check-admin-release-nethack" and (expected or expires):
+            fail("check accepts no approval input")
+        if operation == "admin-release-nethack" and (not re.fullmatch(r"[0-9a-f]{64}", expected)
+                or not expires):
+            fail("reviewed unexpired approval required")
 
     result = {"operation": operation, "target": "production", "ref": "main"}
     output = env.get("GITHUB_OUTPUT")

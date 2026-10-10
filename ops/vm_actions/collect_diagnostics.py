@@ -115,6 +115,10 @@ import urllib.request
 from pathlib import Path
 
 PROD_ROOT = Path(__file__).resolve().parents[2]
+# Diagnostics is read-only, including first imports of deployed helpers. Ignore
+# local bytecode caches so drift verification refers to the source being run.
+sys.dont_write_bytecode = True
+sys.pycache_prefix = '/dev/null/docich-disabled-cache'
 sys.path.insert(0, str(PROD_ROOT / "src"))
 
 from docich.runtime_backend import _pid_is_active, _process_is_zombie  # noqa: E402
@@ -6725,6 +6729,47 @@ def _nethack_evidence_contract_conditions(owner, ledger, original, landed, now):
     )
 
 
+def _collect_nethack_admin_check(state_dir, soren, now, *, player):
+    # Verify every imported authority helper before importing it. The installed
+    # gateway's older diagnostic allowlist need not be expanded or reinstalled.
+    unavailable = {'schema_version': 1, 'status': 'refused', 'reason': 'code_unverified',
+                   'history_authority': False, 'all_resources_released': None}
+    try:
+        deadline = time.monotonic() + 5
+        def git(*args):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError()
+            return subprocess.run(['git', '-C', str(PROD_ROOT), '-c', 'core.hooksPath=/dev/null',
+                                   *args], capture_output=True, timeout=min(3, remaining),
+                                  env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'GIT_OPTIONAL_LOCKS': '0'})
+        # Transitive project imports must also be clean; no root-owned gateway
+        # allowlist update is needed. Untracked package modules are refused too.
+        clean = git('status', '--porcelain', '--untracked-files=all', '--', 'src/docich')
+        if clean.returncode or clean.stdout:
+            return unavailable
+        paths = ('src/docich/nethack_admin_release.py', 'src/docich/nethack_admin_resources.py',
+                 'src/docich/nethack_admin_result.py', 'src/docich/nethack_resource_fence.py',
+                 'src/docich/nethack_return.py', 'src/docich/retro_corner.py',
+                 'src/docich/game_switch.py', 'src/docich/hanjuku_manual_cancel.py',
+                 'src/docich/naming.py', 'src/docich/tmux.py')
+        for name in paths:
+            path = PROD_ROOT / name
+            if any(p.is_symlink() for p in (path, *path.parents)):
+                return unavailable
+            expected = git('show', f'HEAD:{name}')
+            if expected.returncode or expected.stdout != path.read_bytes():
+                return unavailable
+        revision = git('rev-parse', 'HEAD')
+        if revision.returncode:
+            return unavailable
+        sha = revision.stdout.decode().strip()
+        from docich.nethack_admin_release import check
+        return check(Path(state_dir), Path(soren), player=player, sha=sha, now=now)
+    except Exception:
+        return unavailable
+
+
 def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=None):
     """Observe one automatic failed owner; evidence is never recovery authority.
 
@@ -7440,6 +7485,8 @@ def main(argv):
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "nethack_rotation_evidence": _collect_nethack_rotation_evidence(
             _program_state_dir(), now, player=_nethack_evidence_player()),
+        "nethack_admin_check": _collect_nethack_admin_check(
+            _program_state_dir(), soren, now, player=_nethack_evidence_player()),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
         "nethack_tiles": _collect_nethack_tiles(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),

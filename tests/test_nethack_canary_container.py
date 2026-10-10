@@ -22,6 +22,13 @@ from docich.nethack_canary_container import (
 IMAGE = "sha256:" + "a" * 64
 
 
+@pytest.fixture(autouse=True)
+def fixed_test_fence(tmp_path, monkeypatch):
+    # Exercise the real host lock without touching canonical production state.
+    monkeypatch.setattr('docich.nethack_canary_container._fixed_fence_state_dir',
+                        lambda: tmp_path.resolve() / 'host-state')
+
+
 def arena(root: Path):
     episode = root / "episode"
     playground = episode / "playground"

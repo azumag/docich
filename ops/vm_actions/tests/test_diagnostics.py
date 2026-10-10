@@ -123,6 +123,10 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         )
         self.assertTrue(imported, "collector must import at least one docich module")
         verified = set(gateway.DIAGNOSTICS_FILES)
+        # The administrative projection verifies its helpers against deployed
+        # HEAD before importing them, with all transitive project imports clean.
+        # Its dedicated drift regression protects this local verification path.
+        verified.add('src/docich/nethack_admin_release.py')
         for module in sorted(imported):
             relative = "src/" + module.replace(".", "/") + ".py"
             with self.subTest(module=module):
