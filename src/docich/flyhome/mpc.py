@@ -45,7 +45,7 @@ class MpcConfig:
     w_track: float = 1.5  # 目標点との距離 (px)
     w_vel: float = 0.8  # 目標速度との差 (px/s)
     end_accel: float = 18.0  # 家の手前の減速
-    foot: int = 6  # 中心から足元まで (地面との接触判定)
+    foot: int = 9  # 実機の中心155px・床164pxの差に合わせた、中心から足元まで (地面との接触判定)
     ground_friction: float = 2.5  # 地面での横速度の減衰 (1/s)
     w_dist: float = 1.0  # 経路の残り距離 (px) を毎ステップ足す
     w_lat: float = 4.0  # 経路からのずれ (px)。高く登りすぎない・壁際を避ける
@@ -122,7 +122,7 @@ class MpcController:
         self.grid = grid
         self._narrow_level = self._narrow_level or grid.cell <= 2
         narrow = self._narrow_level
-        self.cfg.v_ref = 8.0 if narrow else self._open_limits['v_ref']
+        self.cfg.v_ref = 20.0 if narrow else self._open_limits['v_ref']
         self.cfg.tilt_hard = 0.4 if narrow else self._open_limits['tilt_hard']
         self.cfg.w_tilt_hard = 300.0 if narrow else self._open_limits['w_tilt_hard']
         self.cfg.w_omega = 10.0 if narrow else self._open_limits['w_omega']
@@ -181,6 +181,10 @@ class MpcController:
                 clearance = min(math.hypot(max(hx0 - px, 0, px - hx1), max(hy0 - py, 0, py - hy1))
                                 for hx0, hy0, hx1, hy1 in self.hazards)
                 v = min(v, 12.0 + 1.5 * max(0.0, clearance - 9.0))
+            if self._narrow_level and self.grid is not None:
+                cc, rr = self.grid.to_cell(px, py)
+                if self.grid.cost[self.grid.idx(cc, rr)]:
+                    v = min(v, 8.0)  # 通路の壁・棘近くは遅く、広い部分では進捗を確保。
             out.append((px, py, tx / tl, ty / tl, v))
             if sv >= plen:
                 break
@@ -498,6 +502,46 @@ class MpcController:
                 y += vy * dt
         return seq
 
+    def _precision_action(self, x, y, vx, vy, ang, om) -> int:
+        """狭い通路では回転の停止角を使って短い片足噴射を決める。"""
+        c, p = self.cfg, self.p
+        if len(self._hist) >= 4:
+            t0, x0, y0, a0 = self._hist[-4]
+            dt = self._hist[-1][0] - t0
+            if dt > 0.06:
+                vx, vy = (x - x0) / dt, (y - y0) / dt
+                # 角速度は遅延補正済み観測器を保ち、位置差分だけ実測を使う。
+        rx, ry, rvx, rvy = self._ref[min(4, len(self._ref) - 1)]
+        # 頭を天井へ押し付けると実機では回転が止まる。横へ曲がる前に下降して空間を作る。
+        if self.solid is not None and abs(rx - x) > 3:
+            for ox in (-2, 0, 2):
+                xi, yi = int(x + ox), int(y - 14)
+                if 0 <= xi < self.width and 0 <= yi < self.height and self.solid[yi * self.width + xi]:
+                    return 0
+        want_vx = max(-8.0, min(8.0, rvx + 0.8 * (rx - x)))
+        want_vy = max(-12.0, min(12.0, rvy + 0.8 * (ry - y)))
+        ax = 1.8 * (want_vx - vx)
+        theta = max(-0.22, min(0.22, math.atan2(ax, p.gravity)))
+        self._pending_inputs(self._hist[-1][0])
+        future_angle, future_om, future_vy = ang, om, vy
+        for duration, action in self._pending:
+            torque = ((action & 1) - ((action >> 1) & 1)) * p.torque_sign * p.spin
+            future_angle += future_om * duration + 0.5 * torque * duration ** 2
+            future_om += (torque - p.angular_damping * future_om) * duration
+            thrust = p.thrust if action == 3 else p.thrust * p.single_thrust_ratio if action else 0.0
+            future_vy += (p.gravity - math.cos(ang) * thrust - p.drag * future_vy) * duration
+        stop_angle = future_angle + future_om * abs(future_om) / (2 * max(0.1, p.spin))
+        error = theta - stop_angle
+        # 回すための噴射にも上向き推力がある。上端に上昇中はまず自由落下で減速。
+        minimum_y = y + min(0.0, vy) * c.delay_s - min(0.0, vy) ** 2 / (2 * max(1.0, p.gravity))
+        if ((y < 34 and vy < -6) or minimum_y < 14) and abs(ang) < 0.35 and abs(om) < 0.7:
+            return 0
+        if future_vy < want_vy - 3 and abs(ang) < 0.45 and abs(om) < 0.8:
+            return 0  # 姿勢を直す噴射でも上昇するため、まず要求速度まで自由落下で減速。
+        if abs(error) > 0.08:
+            return 1 if error * p.torque_sign > 0 else 2
+        return 3 if future_vy > want_vy else 0
+
     def _pending_inputs(self, t: float) -> float:
         """観測時刻から新入力が効くまで、送信済み入力の適用順序を保つ。"""
         send_lag = min(0.2, max(0.0, self._acts[-1][0] - self._hist[-2][0])) if self._acts and len(self._hist) >= 2 else 0.0
@@ -525,7 +569,7 @@ class MpcController:
         c = self.cfg
         x, y, vx, vy, ang, om = self._estimate(st)
         self._estimate_debug = [round(v, 3) for v in (vx, vy, ang, om)]
-        takeoff_s = min(c.takeoff_s, 0.15) if y < 40 or self._narrow_level else c.takeoff_s
+        takeoff_s = min(c.takeoff_s, 0.15 if y < 40 else 0.25) if y < 40 or self._narrow_level else c.takeoff_s
         if st.t - getattr(self, "_t0", st.t) < takeoff_s and abs(ang) < 0.3:
             self._plan, self._last_action = [3] * c.horizon, 3
             self._acts.append((st.t, 3))
@@ -547,6 +591,12 @@ class MpcController:
         tx, ty = target
         if c.mode == "track":
             self._make_ref(x, y)
+        if self._narrow_level and self._ref:
+            a = self._precision_action(x, y, vx, vy, ang, om)
+            self._plan = None
+            self._last_action = a
+            self._acts.append((st.t, a))
+            return ACTIONS[a]
         H = c.horizon
         cands: list[list[int]] = []
         if self._plan is not None:
