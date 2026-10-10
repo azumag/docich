@@ -681,6 +681,45 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                 if identities != "flapping":
                     adapter.materialize_runtime.assert_not_called()
 
+    def test_adoption_rejects_stable_replacement_after_initial_process_proof(self):
+        import copy
+        initial = {"soren_loop.sh": (11, 100), "soviet_watchdog.sh": (22, 200)}
+        for names in (("soren_loop.sh",), ("soviet_watchdog.sh",), tuple(initial)):
+            for field in (0, 1):  # PID replacement or PID reuse with a new birth tick.
+                with self.subTest(names=names, field=field), tempfile.TemporaryDirectory() as temp:
+                    adapter, store, before = self.make_failed_live_candidate(Path(temp))
+                    before = store.canonical.load()[0]
+                    changed = copy.deepcopy(initial)
+                    for name in names:
+                        identity = list(changed[name])
+                        identity[field] += 1000
+                        changed[name] = tuple(identity)
+                    adapter._live_singleton_processes = Mock(
+                        side_effect=[initial, changed, changed])
+                    receipt_id = before["last_result"]["request_id"]
+                    receipt = store.receipts.load(receipt_id)
+                    self.assertFalse(adapter.adopt_failed_candidate(time.monotonic() + 5, None))
+                    self.assertEqual(store.canonical.load()[0], before)
+                    self.assertEqual(store.receipts.load(receipt_id), receipt)
+                    self.assertEqual(adapter.spec.lease_id, before["retiring"][0]["lease_id"])
+
+    def test_adoption_accepts_only_three_matching_process_samples(self):
+        initial = {"soren_loop.sh": (11, 100), "soviet_watchdog.sh": (22, 200)}
+        other = {**initial, "soren_loop.sh": (33, 300)}
+        for samples, expected in (
+            ([initial, initial, initial], True),
+            ([initial, other, initial], False),
+            ([initial, initial, other], False),
+            ([initial, None, None], False),
+            ([initial, initial, None], False),
+        ):
+            with self.subTest(samples=samples), tempfile.TemporaryDirectory() as temp:
+                adapter, store, before = self.make_failed_live_candidate(Path(temp))
+                before = store.canonical.load()[0]
+                adapter._live_singleton_processes = Mock(side_effect=samples)
+                self.assertEqual(adapter.adopt_failed_candidate(time.monotonic() + 5, None), expected)
+                self.assertEqual(store.canonical.load()[0], before)
+
     def test_adopt_failed_candidate_fails_closed_when_cancel_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             adapter, _store, _before = self.make_failed_live_candidate(Path(temp))
