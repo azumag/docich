@@ -148,6 +148,16 @@ def _nethack_sidecar_argv(command: str, argv: list[str]) -> list[str] | None:
     return None
 
 
+# The automatic NetHack corner owns its CLI (tick/start/stop/status/recover/
+# recover-failed-rotation). ops/vm_actions/recover_corner_rotation.sh invokes
+# it as ``docich nethack-corner ...``; without this route the argparse error
+# (rc=2) was reported by the operator as a refused recovery (exit 70, #1969).
+nethack_corner_argv = _nethack_sidecar_argv("nethack-corner", sys.argv[1:])
+if nethack_corner_argv is not None:
+    from .nethack_corner import main as nethack_corner_main
+
+    sys.exit(nethack_corner_main(nethack_corner_argv))
+
 nethack_spectator_argv = _nethack_sidecar_argv("nethack-spectator-live", sys.argv[1:])
 if nethack_spectator_argv is not None:
     from .nethack_spectator_live import main as nethack_spectator_main
