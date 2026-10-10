@@ -4170,6 +4170,7 @@ def _collect_corner_files(state_dir, payload, now):
     payload["weather_corner"] = _weather_corner_projection(
         state_dir, rotation_data, rotation_data is not None
     )
+    payload["external_video"] = _collect_external_video(state_dir, now)
     payload["game_switch_fifo"] = _collect_game_switch_fifo(state_dir, now)
     payload["game_switch_watchdog"] = _collect_game_switch_watchdog()
     payload["corner_rotation_timer_alias"] = _collect_corner_rotation_timer_alias()
@@ -4201,6 +4202,39 @@ def _collect_corner_files(state_dir, payload, now):
     payload["paper_improve"] = _collect_paper_improve_status(state_dir, now)
     payload["paper_experiment"] = _collect_paper_experiment(state_dir, now)
     payload["rotation_evidence"] = _collect_rotation_evidence(state_dir)
+
+
+def _collect_external_video(state_dir, now):
+    """Fixed enums/health only: no IP, request, PID, file body or argv output."""
+    from types import SimpleNamespace
+    from docich.external_video_receiver import ExternalVideoError, read_receiver
+
+    entry = {"receiver_present": False, "receiver_readable": False,
+             "receiver_status": "absent", "receiver_alive": None,
+             "frame_fresh": None, "audio_present": None,
+             "corner_status": "absent", "recovery_required": None}
+    present, readable, corner = _load_state_file(Path(state_dir) / _REG.EXTERNAL_VIDEO["corner_file"])
+    if present:
+        entry["corner_status"] = "unknown"
+    if readable:
+        status = corner.get("status")
+        if status in {"starting", "active", "restoring", "failed", "completed", "interrupted"}:
+            entry["corner_status"] = status
+        entry["recovery_required"] = corner.get("recovery_required") is True
+    receiver_path = Path(state_dir) / _REG.EXTERNAL_VIDEO["receiver_file"]
+    entry["receiver_present"] = receiver_path.exists()
+    if not entry["receiver_present"]:
+        return entry
+    entry["receiver_status"] = "unknown"
+    try:
+        receiver = read_receiver(SimpleNamespace(state_dir=state_dir), now=now)
+    except (ExternalVideoError, OSError, ValueError):
+        return entry
+    entry.update(receiver_readable=True, receiver_alive=receiver["alive"],
+                 frame_fresh=receiver["fresh"], audio_present=receiver.get("audio_present") is True)
+    if receiver.get("status") in {"launching", "waiting", "receiving", "stopped", "failed"}:
+        entry["receiver_status"] = receiver["status"]
+    return entry
 
 
 def _collect_hanjuku_predictions(state_dir):

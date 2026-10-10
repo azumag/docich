@@ -3,6 +3,20 @@ from __future__ import annotations
 
 import sys
 
+def _external_video_argv(argv):
+    if argv and argv[0] == "external-video-corner":
+        return argv[1:]
+    if len(argv) >= 3 and argv[0] == "--config" and argv[2] == "external-video-corner":
+        return ["--config", argv[1], *argv[3:]]
+    if len(argv) >= 2 and argv[0].startswith("--config=") and argv[1] == "external-video-corner":
+        return [argv[0], *argv[2:]]
+    return None
+
+external_video_argv = _external_video_argv(sys.argv[1:])
+if external_video_argv is not None:
+    from .external_video_corner import main as external_video_main
+    sys.exit(external_video_main(external_video_argv))
+
 def _retro_corner_argv(argv: list[str]) -> list[str] | None:
     if argv and argv[0] == "retro-corner":
         return argv[1:]

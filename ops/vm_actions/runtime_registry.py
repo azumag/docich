@@ -59,6 +59,17 @@ LANE_GUARD_SUFFIXES = (".owner_guard.lock", ".owner_guard.d", ".pending")
 # Never reported as unregistered; liveness is still recorded in details.
 KNOWN_INFRA_PIDFILES = ("tmp/state/start_all.pid",)
 
+# Explicit bounded operator operation; absence is normal, no AI queue or
+# automatic scheduling. The presenter uses the ordinary generation tmux tags.
+EXTERNAL_VIDEO = {
+    "receiver_file": "external_video_receiver.json",
+    "corner_file": "external_video_corner.json",
+    "module": "docich.external_video_corner",
+    "diagnostics_key": "corners.external_video",
+    "queue_lane": None,
+    "frame_max_age_sec": 10,
+}
+
 # Diagnostics window for AI telemetry aggregation (seconds).
 DIAG_WINDOW_SEC = 900
 
