@@ -61,6 +61,76 @@ OWNERSHIP_ROLE_ENV = "DOCICH_TMUX_ROLE"
 # population means the ownership inference itself is not trustworthy.
 MAX_ORPHAN_SWEEP_PROCESSES = 64
 
+
+class ProtectedTeardownPids(frozenset):
+    """PIDs a teardown must never signal, re-evaluated at sweep time.
+
+    The protection set is necessarily a snapshot: it is taken *before* the
+    pane leaders are stopped, while their ancestors (the tmux server) and the
+    shared-infrastructure panes are still observable.  A process spawned after
+    that snapshot — a child forked by a pane that is still running, or the
+    leader of a pane created concurrently — inherits the runtime's ownership
+    tags from the tagged server, so it matches ``processes_with_env`` and
+    would be reclaimed even though it never belonged to the target (Issue
+    #1105).  This set therefore keeps the *roots* it was built from (the
+    server and every other pane leader) and re-derives their descendants from
+    a fresh process table on every membership test, so a later child of a
+    protected pane is protected too.
+
+    The target panes and their subtrees stay excluded: the post-condition
+    sweep must still reclaim the orphans that escaped the target's own tree,
+    so reclaiming them is never blocked by a stale ancestor chain.
+    """
+
+    __slots__ = ("roots", "targets")
+
+    def __new__(
+        cls,
+        pids: Iterable[int],
+        roots: Iterable[int] = (),
+        targets: Iterable[int] = (),
+    ):
+        members = super().__new__(cls, (pid for pid in pids if pid > 1))
+        members.roots = frozenset(pid for pid in roots if pid > 1)
+        members.targets = frozenset(pid for pid in targets if pid > 1)
+        return members
+
+    def _dynamic_descendants(self, roots: list[int]) -> set[int]:
+        return set(descendant_pids(roots))
+
+    def _excluded_by_target(self, pid: int) -> bool:
+        """True when ``pid`` belongs to the target subtree (stay reclaimable)."""
+
+        if not self.targets:
+            return False
+        return pid in self._dynamic_descendants(list(self.targets))
+
+    def __contains__(self, pid: object) -> bool:
+        if super().__contains__(pid):
+            return True
+        if type(pid) is not int or not self.roots:
+            return False
+        if self._excluded_by_target(pid):
+            return False
+        # Only a *fresh* descendant of a protected root is protected.  The
+        # snapshot's own members were already checked above.
+        return pid in self._dynamic_descendants(list(self.roots))
+
+    def expanded(self) -> frozenset[int]:
+        """The snapshot plus every dynamic descendant of its roots.
+
+        Callers that test many candidates use this to derive the whole set
+        once; :meth:`__contains__` stays available for the fresh per-PID proof
+        read later, after more time has passed.
+        """
+
+        if not self.roots:
+            return frozenset(self)
+        fresh = self._dynamic_descendants(list(self.roots))
+        fresh.difference_update(self._dynamic_descendants(list(self.targets)))
+        return frozenset((*self, *fresh))
+
+
 # Throwaway evaluation sessions (resolver/bot_eval/improve/ninvaders arena)
 # must never share the production tmux server.  A tmux client with no server
 # running starts one in the caller's cgroup; when that caller is a transient
@@ -625,7 +695,7 @@ class Tmux:
 
     def _protected_teardown_pids(
         self, pane_leaders: list[int] | tuple[int, ...]
-    ) -> frozenset[int]:
+    ) -> ProtectedTeardownPids:
         """PIDs a teardown sweep must never signal (Issue #1105).
 
         The runtime/role tags are exported into every process started from a
@@ -643,6 +713,12 @@ class Tmux:
           tree,
         * this process's own ancestors and the target panes' ancestors.
 
+        The returned set re-derives the descendants of those roots on every
+        membership test, so a process spawned after this snapshot — a child of
+        a still-running protected pane, or the leader of a pane created
+        concurrently — is protected as well instead of being swept as an
+        "orphan" that merely inherited the tags.
+
         The target panes themselves stay legitimate victims.  An orphan that
         already left its pane has been reparented, so it is a descendant of
         none of the protected panes and remains reclaimable.  When the server's
@@ -651,6 +727,7 @@ class Tmux:
         """
 
         protected: set[int] = set(ancestor_pids())
+        protected_roots: set[int] = set()
         server_pid = self._server_pid()
         if server_pid is not None:
             protected.add(server_pid)
@@ -666,12 +743,24 @@ class Tmux:
         protected.update(others)
         if others:
             protected.update(descendant_pids(others))
+            # The server and every other pane keep running after this target
+            # is stopped, so their descendants are exactly the population that
+            # can appear *after* the snapshot.  Re-deriving from these roots at
+            # sweep time protects a child forked by a live pane and a pane
+            # created concurrently — both inherit the ownership tags from the
+            # tagged server and would otherwise be reclaimed as "orphans".
+            protected_roots.update(others)
+            if server_pid is not None:
+                protected_roots.add(server_pid)
         for leader in target_leaders:
             # The pane leader's parent chain is the tmux server and above; the
             # leader itself stays a legitimate victim.
             protected.update(ancestor_pids(leader))
         protected.difference_update(target_leaders)
-        return frozenset(pid for pid in protected if pid > 0)
+        # The target subtree stays reclaimable: a fresh descendant of a
+        # protected root that is also a descendant of a target pane (a spawn
+        # racing with the teardown) must not be shielded by the dynamic set.
+        return ProtectedTeardownPids(protected, protected_roots, target_leaders)
 
     def _stop_scoped_processes(
         self, target: str
@@ -874,8 +963,14 @@ class Tmux:
                 processes_in_pane_scopes(set(pane_groups.values()))
             )
         guarded = set(ancestor_pids())
-        if protected:
-            guarded.update(protected)
+        if protected is not None:
+            if isinstance(protected, ProtectedTeardownPids):
+                # Re-derive the dynamic descendants now (children forked and
+                # panes created after the snapshot) so a candidate that merely
+                # inherited the tags never becomes a victim.
+                guarded.update(protected.expanded())
+            else:
+                guarded.update(protected)
         return tuple(
             pid for pid in dict.fromkeys(found) if pid > 1 and pid not in guarded
         )
