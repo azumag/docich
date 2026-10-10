@@ -449,18 +449,18 @@ def play(
             extra = dict(extra or {}, capture_s=round(loop.capture_s, 6), max_capture_s=round(loop.max_capture_s, 6),
                          vision_s=round(loop.vision_s, 6), previous_io_s=round(previous_io_s, 6), **io_parts)
             io_start = backend.now()
-            log.frame(st, loop.obs, keys, extra)
-            frame_end = backend.now()
             if on_step is not None:
                 on_step(st, extra)
             step_end = backend.now()
+            log.frame(st, loop.obs, keys, extra)
+            frame_end = backend.now()
             if loop.native is not None:
                 log.snapshot(st.t, loop.native, loop.obs)
             io_end = backend.now()
             previous_io_s = io_end - io_start
-            io_parts = {"previous_frame_s": round(frame_end - io_start, 6),
-                        "previous_step_s": round(step_end - frame_end, 6),
-                        "previous_snapshot_s": round(io_end - step_end, 6)}
+            io_parts = {"previous_frame_s": round(frame_end - step_end, 6),
+                        "previous_step_s": round(step_end - io_start, 6),
+                        "previous_snapshot_s": round(io_end - frame_end, 6)}
             if st.phase in (DEAD, CLEARED) and t_start is not None:
                 backend.release_all()
                 row = _finish_attempt(loop, st, t_start, tl)

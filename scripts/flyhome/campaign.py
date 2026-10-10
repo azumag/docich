@@ -7,6 +7,7 @@ sys.path.insert(0, "src")
 from pathlib import Path
 from docich.flyhome import settings as S, runner, vision
 from docich.flyhome.image import write_png
+from docich.flyhome.progress import StatePublisher
 STATE = Path(os.environ.get("FLYHOME_STATE_FILE", "run/game-state.txt"))
 LOG = Path("run/campaign_results.txt")
 first = int(sys.argv[1]); count = int(sys.argv[2]); per = float(sys.argv[3]) if len(sys.argv) > 3 else 600.0
@@ -17,22 +18,13 @@ import re as _re
 _cl = [int(m.group(1)) for l in done_lines for m in [_re.search(r"Lv(\d+): クリア", l)] if m]
 if _cl:
     first = max(first, max(_cl) + 1)  # 再起動時は記録済みのクリアの次から数える
+publisher = StatePublisher(STATE)
+
 def save(note=""):
     lines = ["[campaign4] 製品版を自動プレイ中 (MPC, 実機 printwindow+postmessage)"] + done_lines
     if note: lines.append(note)
-    STATE.parent.mkdir(parents=True, exist_ok=True)
-    body = "\n".join(lines) + "\n"
-    temporary = STATE.with_name("." + STATE.name + ".tmp")
-    temporary.write_text(body, encoding="utf-8")
-    for retry in range(3):
-        try:
-            os.replace(temporary, STATE)
-            break
-        except PermissionError:
-            if retry == 2:
-                # 一時的なWindows reader lockではプレイを止めず、次stepで再公開する。
-                return
-            time.sleep(0.002)
+    publisher.publish("\n".join(lines) + "\n")
+
 def is_map(b):
     import zlib
     img = vision.to_native(b.capture(), s)
@@ -78,33 +70,38 @@ def to_next_level(b):
     write_png(s.run_dir / "maps" / ("selected-%d.png" % time.time_ns()), b.capture())
     save("  いま: マップで未クリアを確認、Enterで開始")
     b.tap("enter"); time.sleep(2.0)
-for i in range(max(0, last - first + 1)):
-    lv = first + i
-    b = runner.WindowsBackend(s, focus=False)
-    try:
-        initial_img = vision.to_native(b.capture(), s)
-        rescan = s.run_dir / "request-map-rescan"
-        if i == 0 and rescan.exists():
-            rescan.unlink()
-            b.tap("escape")  # 実プレイ画面からの明示的な選び直し要求。
-            time.sleep(1.0)
-            to_next_level(b)
-        elif not (i == 0 and os.environ.get("ON_LEVEL")) or vision._party_present(initial_img) or is_map(b):
-            to_next_level(b)
-        save("  いま: Lv%d を play 中..." % lv)
-        out = runner.session_dir(s, "play")
-        def step(st, extra):
-            pos = "位置不明" if st.x is None else "x=%.1f y=%.1f angle=%.2f" % (st.x, st.y, st.angle or 0.0)
-            save("  いま: Lv%d 試行%d %s %s (%s)" % (lv, st.attempt, st.phase, pos, out))
-        res = runner.play(b, s, attempts=0, max_seconds=per, log_root=out, on_step=step, on_restart=lambda: to_next_level(b))
-    finally:
-        b.close()
-    ok = bool(res) and res[-1]["outcome"] == "cleared"
-    line = "  Lv%d: %s 試行%d回 %s (%s)" % (lv, "クリア" if ok else "未クリア(時間切れ)", len(res), ("%.1fs" % res[-1]["duration_s"]) if ok else "-", out)
-    done_lines.append(line); LOG.parent.mkdir(exist_ok=True)
-    LOG.write_text("\n".join(done_lines) + "\n", encoding="utf-8")
-    save()
-    print("Lv%d" % lv, "cleared" if ok else "FAILED", "attempts", len(res), flush=True)
-    if not ok:
-        raise SystemExit(1)
-print("done")
+try:
+    for i in range(max(0, last - first + 1)):
+        lv = first + i
+        b = runner.WindowsBackend(s, focus=False)
+        try:
+            initial_img = vision.to_native(b.capture(), s)
+            rescan = s.run_dir / "request-map-rescan"
+            if i == 0 and rescan.exists():
+                rescan.unlink()
+                b.tap("escape")  # 実プレイ画面からの明示的な選び直し要求。
+                time.sleep(1.0)
+                to_next_level(b)
+            elif not (i == 0 and os.environ.get("ON_LEVEL")) or vision._party_present(initial_img) or is_map(b):
+                to_next_level(b)
+            save("  いま: Lv%d を play 中..." % lv)
+            out = runner.session_dir(s, "play")
+            def step(st, extra):
+                pos = "位置不明" if st.x is None else "x=%.1f y=%.1f angle=%.2f" % (st.x, st.y, st.angle or 0.0)
+                save("  いま: Lv%d 試行%d %s %s (%s)" % (lv, st.attempt, st.phase, pos, out))
+                if extra is not None:
+                    extra.update(publisher.metrics())
+            res = runner.play(b, s, attempts=0, max_seconds=per, log_root=out, on_step=step, on_restart=lambda: to_next_level(b))
+        finally:
+            b.close()
+        ok = bool(res) and res[-1]["outcome"] == "cleared"
+        line = "  Lv%d: %s 試行%d回 %s (%s)" % (lv, "クリア" if ok else "未クリア(時間切れ)", len(res), ("%.1fs" % res[-1]["duration_s"]) if ok else "-", out)
+        done_lines.append(line); LOG.parent.mkdir(exist_ok=True)
+        LOG.write_text("\n".join(done_lines) + "\n", encoding="utf-8")
+        save()
+        print("Lv%d" % lv, "cleared" if ok else "FAILED", "attempts", len(res), flush=True)
+        if not ok:
+            raise SystemExit(1)
+    print("done")
+finally:
+    publisher.close()
