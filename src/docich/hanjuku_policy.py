@@ -905,6 +905,14 @@ def _tactics(mem, step):
                      'tactic_id': f'rare:{step}:キャトルミュー',
                      'boss_only': _is_boss_order(order, mem),
                      'note': 'レアイベント札を活用: 通常将軍を一撃、EMへ224と石化、ボスへ90ダメージ'},)
+        elif (mem.get('chapter') == 2 and step == '2-B1'
+              and _is_boss_order(order, mem) and 'バルムンク' in carried):
+            used = ((mem.get('kit_spent') or {}).get(step) or []).count('バルムンク')
+            rare = tuple({'enemy': chart.BOSSES[2], 'card': 'バルムンク',
+                          'open': True, 'step': step, 'boss_only': True,
+                          'tactic_id': f'rare:{step}:バルムンク:{used + index}',
+                          'note': '実携行を確認したイベント札を実測第2話ボスへ使用'}
+                         for index in range(carried.count('バルムンク')))
     if order is None or any(o['step'] == step for o in chart.orders(mem.get('chapter') or 0)):
         return (*rare, *base)
     override = set() if rare_kit is not None else set((mem.get('card_override') or {}).get(step) or ())
@@ -2800,6 +2808,42 @@ def _observe_card_stock(mem, inventory):
 
 
 
+def _chapter_two_balmung_inventory(mem, order, inventory):
+    """Freeze the isolated-tested boss kit from this unselected live panel.
+
+    g700: one イッテツーン plus two バルムンク, native carried confirmation,
+    measured boss entry, first バルムンク selection then enemy HP0 / next
+    chapter. The cheap card protects the event cards in road encounters.
+    Never infer stock from an old global cache or alter a selected sortie.
+    """
+    step = order['step']
+    if (mem.get('chapter') != 2 or step != '2-B1'
+            or order.get('target') != chart.boss_castle(2)
+            or (mem.get('orders') or {}).get(step) not in (None, 'pending')
+            or mem.get('picked') or inventory['remaining'] != CARRY_SLOTS
+            or (mem.get('rare_card_kit') or {}).get(step) is not None
+            or (mem.get('kit_spent') or {}).get(step)
+            or (mem.get('card_drop') or {}).get(step)):
+        return None
+    stocks = {r['card']: r['stock'] for r in inventory['rows']}
+    if stocks.get('イッテツーン', 0) < 1 or stocks.get('バルムンク', 0) < 2:
+        return None
+    original = _deploy_cards(order, mem)
+    kit = ['イッテツーン', 'バルムンク', 'バルムンク']
+    mem.setdefault('rare_card_kit', {})[step] = kit
+    mem.pop('rare_scan', None)
+    mem.setdefault('strong_card_kit', {}).pop(step, None)
+    _record(mem, 'rare_card_kit', **_deploy_context(order, mem), chart_step=step,
+            observed_metric={'card': 'バルムンク', 'stock': stocks['バルムンク'],
+                             'cards': kit, 'original_cards': original,
+                             'id_sum': sum(CARD_IDS[c] for c in kit),
+                             'stocks': {c: stocks[c] for c in set(kit)},
+                             'inventory_evidence': inventory['inventory_evidence'],
+                             'observed_rows': inventory['observed_rows']},
+            reason='実在庫のイベント札2枚と道中用の安価な札を確認し、第2話ボスの実測装備を携行する')
+    return []  # the following observation selects and verifies the actual kit
+
+
 def _rare_card_inventory(screen, mem, order, inventory):
     """Discover event stock before picking; freeze a positive, measured kit.
 
@@ -2985,9 +3029,13 @@ def _deploy_context(order, mem, *, expected_metric=None):
         context.update(strategy_variant=retry.get('strategy_variant', 'retry_with_opening_cards'),
                        deviation_reason=retry.get('deviation_reason'),
                        expected_metric=retry.get('expected_metric'))
-    if (mem.get('rare_card_kit') or {}).get(order['step']):
+    rare_kit = (mem.get('rare_card_kit') or {}).get(order['step'])
+    if rare_kit and 'キャトルミュー' in rare_kit:
         context.update(strategy_variant='rare_cattlemyu',
                        deviation_reason='実在庫のキャトルミューを活用するため携行札を変更')
+    elif rare_kit and 'バルムンク' in rare_kit:
+        context.update(strategy_variant='rare_balmung_boss',
+                       deviation_reason='実在庫のバルムンクを第2話ボスの実測装備として携行')
     return context
 
 
@@ -3615,6 +3663,9 @@ def deploy_step(screen: Screen, mem):
                                 '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
         mem.get('card_unreadable', {}).pop(order['step'], None)
         _observe_card_stock(mem, inventory)
+        boss_actions = _chapter_two_balmung_inventory(mem, order, inventory)
+        if boss_actions is not None:
+            return boss_actions
         rare_actions = _rare_card_inventory(screen, mem, order, inventory)
         if rare_actions is not None:
             return rare_actions
