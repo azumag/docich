@@ -35,6 +35,7 @@ class MpcConfig:
     substeps: int = 2  # 1 要素あたりの積分分割
     candidates: int = 48  # 1 ティックで試す入力列の数
     delay_s: float = 0.12  # 入力が効くまでの遅れ
+    ceiling_y: float = 24.0  # 上昇制動の中心座標の境界。実上側回廊の比較用に設定可能
     persistence: float = 0.65  # ランダム列で直前と同じ入力を続ける確率
     mutate_p: float = 0.2  # 前回の最良列を崩す確率
     # コスト
@@ -624,7 +625,7 @@ class MpcController:
         falling_vy = max(0.0, vy, future_vy)
         maximum_y = y + falling_vy * c.delay_s + falling_vy ** 2 / (2 * max(1.0, p.thrust - p.gravity))
         # 実機Lv23: 中心23pxから姿勢制動で12pxへ上昇すると回転の余裕を失う。
-        ceiling = 24.0
+        ceiling = c.ceiling_y
         projected_x = x + vx * c.delay_s
         for hx0, hy0, hx1, hy1 in self.hazards:
             if hy1 < y and hx0 - 6 <= projected_x <= hx1 + 6:

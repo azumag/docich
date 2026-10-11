@@ -17,21 +17,29 @@ def main():
     parser.add_argument('level', type=int, choices=range(1, 51))
     parser.add_argument('--takeoff', type=float, default=.35)
     parser.add_argument('--revision', default=REVISION, help='Local Git commit to compare')
+    parser.add_argument('--ceiling-y', type=float, help='Upper braking boundary for a compatible revision')
     args = parser.parse_args()
     if not 0 <= args.takeoff <= .35:
         parser.error('takeoff must be between 0 and .35 seconds')
     revision = subprocess.check_output(['git', 'rev-parse', '--verify', '--end-of-options',
                                         args.revision + '^{commit}']).decode('ascii').strip()
     source = subprocess.check_output(['git', 'show', revision + ':src/docich/flyhome/mpc.py']).decode('utf-8')
+    ceiling_arg = ''
+    suffix = ''
+    if args.ceiling_y is not None:
+        if not 12 <= args.ceiling_y <= 24 or 'ceiling_y:' not in source:
+            parser.error('ceiling-y requires 12..24 and a compatible controller revision')
+        ceiling_arg = f', ceiling_y={args.ceiling_y!r}'
+        suffix = f'-ceiling{args.ceiling_y:g}'
     source += f'''
 
 # Local real-game comparison; original controller source from Git {revision[:7]}.
 _Baseline = MpcController
 from .mpc import MpcController as _Current
 class MpcController(_Baseline, _Current):
-    profile_name = "{revision[:7]}-actual-level{args.level}-takeoff{args.takeoff:g}"
+    profile_name = "{revision[:7]}-actual-level{args.level}-takeoff{args.takeoff:g}{suffix}"
     def __init__(self, physics=None, cfg=None):
-        super().__init__(physics, MpcConfig(takeoff_s={args.takeoff!r}))
+        super().__init__(physics, MpcConfig(takeoff_s={args.takeoff!r}{ceiling_arg}))
     def reset(self):
         super().reset()
         self._home_settling = False
