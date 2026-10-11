@@ -686,3 +686,14 @@ status 75は未実行/延期であり、serviceの異常終了ループを避け
 デプロイepoch=3の1回回収後はtimerが継続担当する。回収が失敗/延期ならcanonical runも非成功になり、`diagnostics`で段階・理由と容量を確認する。
 
 OpenCodeの `compact_storage` は `disk` / `memory` を区別する。圧縮コピーにtmpfsを利用した場合も、root空き1GiB・利用可能RAM4GiB（cgroup制限込み）を予約する。`insufficient_memory` / `memory_unknown` は成功ではなく延期で、次回の定期実行へ持ち越す。
+
+### 半熟英雄の停滞終了checkpoint
+
+`retro_corner.saved_checkpoint`は、cornerのruntime/generation/leaseと一致した固定保存境界を
+`save_status=waiting/failed/saved_receipt/unverified`へ投影する。ファイル存在・サイズ・保存時の
+metadataとの一致は別フィールドで示す。`saved_receipt`だけでは現ファイルのSHA再検証や復元成功を
+証明しない。ゲーム終了を許可するadapter側はpause・実ファイルSHAを再検証する。
+診断は保存ゲームの内容を読まず、checkpoint名を入力パスとして使用せず、ファイル名・パス・
+SHA・request/lease/runtime識別子・自由文を出力しない。worker/queue/manifestは追加しない。
+
+`hanjuku_resume` は固定保存再開のmetadataだけを報告します。`prepared` は未公開snapshotのみ、`queued` は標準manual queueに対応する予約、`claimed` は同候補への移行途中、`verified_receipt` は同active runtimeのcore roundtrip/native章/PLAYING検査を記録したreceiptです。公開直後に中断してprivate receiptが`prepared`のままでも、同IDの実manual queueがあれば`queued`を報告します。現在の保存の完全性やライブ画面の進行は別確認です。identity不一致・欠落はunavailable/unverifiedで、保存データ・ROM・source path・SHA・request/lease識別子・自由本文は出力しません。停止済みruntimeのreceiptを現在進行中として表示しません。

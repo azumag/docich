@@ -374,8 +374,15 @@ def wage(mem, info):
         receipt.setdefault('wages', {})[info['general']] = value
 
 
-def economics(mem, owned):
-    """Fresh complete actual wages and current-owned castle income only."""
+def economics(mem, owned, *, lower_bound=False):
+    """Fresh complete actual wages and current-owned castle income only.
+
+    ``lower_bound``: an owned castle without a valid reading is left out
+    instead of voiding the whole result. Income is never negative, so the sum
+    of the readings is a sound lower bound (g684 2-1..2-2: ゴーメン changed
+    hands repeatedly, was never read, and every month's recruitment was held
+    although the read castles alone covered the payroll). Wages stay exact.
+    """
     receipt = fresh(mem)
     if (not receipt or receipt.get('complete') is not True
             or mem.get('recruit_payroll_pending')):
@@ -391,16 +398,24 @@ def economics(mem, owned):
         if (not isinstance(row, dict) or row.get('chapter') != mem.get('chapter')
                 or type(row.get('tick')) is not int or not 0 <= row['tick'] <= mem['tick']
                 or type(row.get('income')) is not int or not 0 <= row['income'] <= 999):
+            if lower_bound:
+                continue
             return None
         recent = row.get('month') == mem.get('month') and mem['tick'] - row['tick'] < FRESH_TICKS
         expected = NORMAL_CASTLE_INCOME.get(mem.get('chapter'), {}).get(castle)
         property_read = (expected is not None and row['income'] == expected
                          and owned_fresh(mem, castle))
         if not recent and not property_read:
+            if lower_bound:
+                continue
             return None
         observed.append(row['income'])
     total = sum(observed)
-    return {'income': total, 'wages': sum(wages.values()), 'additional_wage_max': MAX_RECRUIT_WAGE}
+    result = {'income': total, 'wages': sum(wages.values()), 'additional_wage_max': MAX_RECRUIT_WAGE}
+    if lower_bound:
+        result['income_lower_bound'] = True
+        result['castles_read'] = len(observed)
+    return result
 
 
 def owner(mem, castle, kind):
