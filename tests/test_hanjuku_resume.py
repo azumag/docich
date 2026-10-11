@@ -128,20 +128,29 @@ def test_claim_rejects_changed_rom_without_default_game(setup):
 
 def restore_test(s, *, valid=True, ack=True, chapter=1):
     stage(s);commands=[];writes=[]
-    path=s.spec.runtime_dir/'states/hanjuku-hero.state'
+    path=s.spec.runtime_dir/'states/hanjuku-hero.state1'
+    slots=[0]
+    load_source=s.spec.runtime_dir/'states/hanjuku-hero.state'
+    original_source=load_source.read_bytes()
     atomic_write_json(s.spec.runtime_dir/'presentation.json', {'display':':99','width':256,'height':224,'window':'4'})
     if valid=='unchanged_future':
+        path.write_bytes(state_bytes())
         os.utime(path,ns=(time.time_ns()+60_000_000_000,time.time_ns()+60_000_000_000))
     def send(command,**kwargs):
         commands.append(command)
         if command=='GET_STATUS':return ('GET_STATUS PLAYING Snes9x,hanjuku' if 'PAUSE_TOGGLE' in commands else 'GET_STATUS PAUSED Snes9x,hanjuku')
         if command=='LOAD_STATE_SLOT 0':return 'LOAD_STATE_SLOT 0' if ack else None
+        if command=='STATE_SLOT_PLUS':slots[0]+=1
+        if command=='STATE_SLOT_MINUS':slots[0]-=1
         if command=='SAVE_STATE':
             if valid=='unchanged_future':return None
+            if slots[0]==1:assert load_source.read_bytes()==original_source
+            else:assert writes[-1]==b'serialized core'  # complete proof before slot0 is touched
             # First SAVE precedes asynchronous load completion. It must not be
             # accepted solely because the LOAD receipt/mtime exist.
             payload=b'boot state' if not valid or not writes else b'serialized core'
-            path.write_bytes(state_bytes(payload));writes.append(payload)
+            output=s.spec.runtime_dir/('states/hanjuku-hero.state'+(str(slots[0]) if slots[0] else ''))
+            output.write_bytes(state_bytes(payload));writes.append(payload)
         return None
     frame=SimpleNamespace(digest=lambda:'loaded-native-rgb',resized=lambda:frame)
     with mock.patch('docich.adapters.retroarch.send_ra_cmd',side_effect=send), \
@@ -154,7 +163,8 @@ def restore_test(s, *, valid=True, ack=True, chapter=1):
 
 def test_native_roundtrip_must_match_before_ai_unpause_and_fresh_policy(setup):
     s=setup;commands,writes=restore_test(s)
-    assert writes==[b'boot state',b'serialized core']
+    assert writes==[b'boot state',b'serialized core',b'serialized core']
+    assert commands.index('STATE_SLOT_PLUS')<commands.index('SAVE_STATE')<commands.index('STATE_SLOT_MINUS')
     assert commands.index('LOAD_STATE_SLOT 0')<commands.index('SAVE_STATE')<commands.index('FRAMEADVANCE')<commands.index('PAUSE_TOGGLE')
     receipt=read_record(s.spec.runtime_dir/resume.RECEIPT_FILE)
     assert receipt['status']=='verified' and receipt['chapter']==1
@@ -185,3 +195,23 @@ def test_unchanged_future_mtime_is_not_fresh_roundtrip_proof(setup):
     s=setup
     with pytest.raises(DeadlineExceededError):restore_test(s,valid='unchanged_future')
     with pytest.raises(AdapterError):resume.require_verified(s.spec)
+
+
+def test_verified_readiness_does_not_reload_or_reset_policy(setup):
+    s=setup;restore_test(s)
+    original=read_record(s.spec.runtime_dir/'hanjuku_bot.json')
+    with mock.patch('docich.adapters.retroarch.send_ra_cmd') as send:
+        resume.restore(s.adapter,time.monotonic()+3,None)
+    send.assert_not_called()
+    assert read_record(s.spec.runtime_dir/'hanjuku_bot.json')==original
+
+
+def test_verified_runtime_cannot_fall_back_to_fresh_when_pane_is_missing(setup):
+    s=setup;restore_test(s)
+    s.adapter._game_window_target=lambda:'game-700'
+    s.adapter.tmux=SimpleNamespace(window_target_exists=lambda t:False)
+    with pytest.raises(AdapterError):resume.claim(s.adapter,time.monotonic()+3,None)
+    s.adapter.tmux.window_target_exists=lambda t:True
+    s.adapter._verify_window_ownership=mock.Mock()
+    resume.claim(s.adapter,time.monotonic()+3,None)
+    s.adapter._verify_window_ownership.assert_called_once_with('game-700','game')

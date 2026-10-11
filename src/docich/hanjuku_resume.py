@@ -177,6 +177,15 @@ def claim(adapter, deadline, cancel):
     if spec.game != 'hanjuku-hero':
         return
     adapter._check_active(deadline, cancel)
+    prior = read_record(spec.runtime_dir / RECEIPT_FILE)
+    if prior:
+        if not matches(prior, spec, prior.get('request_id')) or prior.get('status') != 'verified':
+            raise AdapterError('checkpoint candidate needs explicit recovery')
+        target = adapter._game_window_target()
+        if not adapter.tmux.window_target_exists(target):
+            raise AdapterError('verified checkpoint process is missing; explicit recovery required')
+        adapter._verify_window_ownership(target, 'game')
+        return
     with _lock(g) as root:
         request = read_record(root / REQUEST_FILE)
         if request.get('status') != 'queued':
@@ -207,41 +216,22 @@ def claim(adapter, deadline, cancel):
         adapter._check_active(deadline, cancel)
 
 
-def restore(adapter, deadline, cancel):
-    """Pause, load, then reserialize and compare before staging any agent."""
+def _fresh_roundtrip(adapter, saved, expected, deadline, cancel):
     from .adapters.retroarch import send_ra_cmd
-    spec = adapter.spec
-    deadline = min(deadline, time.monotonic() + 10)
-    receipt_path = spec.runtime_dir / RECEIPT_FILE
-    request = read_record(receipt_path)
-    if not request:
-        return
-    if not matches(request, spec, request.get('request_id')) or request.get('status') != 'claimed':
-        raise AdapterError('checkpoint restoration is not pending')
-    saved = spec.runtime_dir / 'states/hanjuku-hero.state'
-    adapter._verify_manual_content(deadline, cancel)
-    if checkpoint_digest(saved, deadline, cancel) != request.get('sha256'):
-        raise AdapterError('staged checkpoint changed')
-    reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
-    if not reply or not reply.startswith('GET_STATUS PAUSED '):
-        send_ra_cmd('PAUSE_TOGGLE', port=adapter._network_port())
-    adapter._require_paused(deadline, cancel)
-    # This reply confirms receipt only, not completion of unserialize.
-    reply = send_ra_cmd('LOAD_STATE_SLOT 0', port=adapter._network_port(), wait_reply_s=.5)
-    if reply is None or reply.strip() != 'LOAD_STATE_SLOT 0':
-        raise AdapterError('checkpoint load command is unconfirmed')
     verified = False
     while not verified:
         adapter._check_active(deadline, cancel)
         adapter._require_paused(deadline, cancel)
-        before = saved.stat()
-        fingerprint = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        before = saved.stat() if saved.exists() else None
+        fingerprint = ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) if before else None)
         requested_ns = time.time_ns()
         send_ra_cmd('SAVE_STATE', port=adapter._network_port())
         save_end = min(deadline, time.monotonic() + 2)
         while time.monotonic() < save_end:
             adapter._check_active(deadline, cancel)
             time.sleep(.05)
+            if not saved.exists():
+                continue
             metadata = saved.stat()
             current = (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns)
             if metadata.st_mtime_ns < requested_ns or current == fingerprint:
@@ -250,7 +240,7 @@ def restore(adapter, deadline, cancel):
                 digest = core_digest(saved)
             except AdapterError:
                 continue  # asynchronous file write is incomplete
-            if digest != request.get('core_state_sha256'):
+            if digest != expected:
                 break  # LOAD task may not have completed before this SAVE
             first = (metadata.st_size, metadata.st_mtime_ns, checkpoint_digest(saved, deadline, cancel))
             time.sleep(.05)
@@ -262,6 +252,41 @@ def restore(adapter, deadline, cancel):
                 adapter._require_paused(deadline, cancel)
                 verified = True
                 break
+
+
+def restore(adapter, deadline, cancel):
+    """Pause, load, then reserialize and compare before staging any agent."""
+    from .adapters.retroarch import send_ra_cmd
+    spec = adapter.spec
+    deadline = min(deadline, time.monotonic() + 10)
+    receipt_path = spec.runtime_dir / RECEIPT_FILE
+    request = read_record(receipt_path)
+    if not request:
+        return
+    if matches(request, spec, request.get('request_id')) and request.get('status') == 'verified':
+        adapter._verify_manual_content(deadline, cancel)
+        return  # readiness/agent repair never reloads an already verified run
+    if not matches(request, spec, request.get('request_id')) or request.get('status') != 'claimed':
+        raise AdapterError('checkpoint restoration is not pending')
+    saved = spec.runtime_dir / 'states/hanjuku-hero.state'
+    adapter._verify_manual_content(deadline, cancel)
+    if checkpoint_digest(saved, deadline, cancel) != request.get('sha256'):
+        raise AdapterError('staged checkpoint changed')
+    reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
+    if not reply or not reply.startswith('GET_STATUS PAUSED '):
+        send_ra_cmd('PAUSE_TOGGLE', port=adapter._network_port(), wait_reply_s=.1)
+    adapter._require_paused(deadline, cancel)
+    # This reply confirms receipt only, not completion of unserialize.
+    reply = send_ra_cmd('LOAD_STATE_SLOT 0', port=adapter._network_port(), wait_reply_s=.5)
+    if reply is None or reply.strip() != 'LOAD_STATE_SLOT 0':
+        raise AdapterError('checkpoint load command is unconfirmed')
+    # Do not overwrite slot 0 while the asynchronous load task may still be
+    # reading it. Prove the core using slot 1, then reset and prove slot 0.
+    send_ra_cmd('STATE_SLOT_PLUS', port=adapter._network_port(), wait_reply_s=.1)
+    _fresh_roundtrip(adapter, spec.runtime_dir / 'states/hanjuku-hero.state1',
+                     request.get('core_state_sha256'), deadline, cancel)
+    send_ra_cmd('STATE_SLOT_MINUS', port=adapter._network_port(), wait_reply_s=.1)
+    _fresh_roundtrip(adapter, saved, request.get('core_state_sha256'), deadline, cancel)
     # Render one loaded frame while retaining pause; seed only the observed
     # chapter. Never carry the source run's final policy/roster/terminal state.
     send_ra_cmd('FRAMEADVANCE', port=adapter._network_port())
@@ -275,6 +300,9 @@ def restore(adapter, deadline, cancel):
     while chapter is None:
         adapter._check_active(deadline, cancel)
         time.sleep(.05)
+        reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
+        if not reply or not reply.startswith('GET_STATUS PAUSED '):
+            continue
         adapter._require_paused(deadline, cancel)
         XKit(native['display']).screenshot(capture, native['width'], native['height'],
                                          window_id=native['window'], low_latency=True)
