@@ -507,8 +507,10 @@ def analyze(
             if near and b.area <= 40 and not spike_red:
                 flames.append(b)
                 continue
-        if b.label == RED and b.area >= 3:
-            hazards.append(b.bbox)
+        # Actual stage 50 DANGER text/arrows are pure 255-red, like hot jets.
+        # Only stable spike-colored pixels can supply a hazard boundary.
+        if b.label == RED and b.area >= 3 and spike_pixels:
+            hazards.append(Blob(RED, spike_pixels).bbox)
 
     if player is not None and flames and player.angle is not None:
         # 体の右方向ベクトル (頭が上のとき画面右)。炎の重心を体の左右に振り分ける。

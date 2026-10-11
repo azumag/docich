@@ -297,6 +297,7 @@ def play(
     motion_pos = None
     grid_spec = None
     solid_mem = None
+    up_waypoint = None
     previous_io_s = 0.0
     io_parts = {}
     t_idle = backend.now()  # プレイヤーが見えなくなった時刻 (死亡/クリア画面で止まったままの検出用)
@@ -342,6 +343,7 @@ def play(
                             on_step(st, {"intro_reveal": "release"})
                         loop.wait(0.16)
                         st = loop.tick()
+                    up_waypoint = loop.obs.home_exit_up
                     initial_solid_count = sum(loop.obs.solid)
                     expanded_world_saved = False
                     if log.root is not None and loop.native is not None:
@@ -351,6 +353,8 @@ def play(
                     hz_mem.clear()
                     for rect in loop.obs.hazards:
                         hz_mem[tuple(rect)] = st.t  # 前の死亡破片を新しい試行の棘として残さない。
+                if loop.obs.home_exit_up is not None:
+                    up_waypoint = loop.obs.home_exit_up
                 planning_start = backend.now()
                 completed = routes.poll(st.attempt)
                 if completed is not None:
@@ -360,11 +364,11 @@ def play(
                         ctl.cfg.hazard_margin = max(5.0, grid_spec[2] * grid_spec[0] - 3.0)
                         ctl.set_world(grid, completed.observation, path)
                 if (path is None or k % replan_every == 0) and loop.obs.player is not None and not routes.busy:
-                    target = st.home or loop.obs.home_exit_up
+                    target = st.home or up_waypoint
                     if target is not None:
                         world_obs = loop.tracker.last_obs or loop.obs
                         # A camera scrolling toward off-screen HOME invalidates old screen-space terrain.
-                        if solid_mem is None or world_obs.home_exit_up is not None:
+                        if solid_mem is None or (up_waypoint is not None and st.home is None):
                             solid_mem = bytearray(world_obs.solid)
                         else:
                             solid_mem = bytearray(a | b for a, b in zip(solid_mem, world_obs.solid))
@@ -397,7 +401,9 @@ def play(
                     motion_pos = (st.x, st.y)
                     t_motion = st.t
                 distance_home = math.hypot(st.x - st.home[0], st.y - st.home[1]) if st.home else math.inf
-                stuck = st.t - t_motion > 8.0 and distance_home > 30.0
+                # Actual stage 50 camera keeps a rising player around screen y80.
+                scrolling_up = up_waypoint is not None and st.home is None and st.y < 100
+                stuck = st.t - t_motion > 8.0 and distance_home > 30.0 and not scrolling_up
                 if st.t - t_start > attempt_timeout_s or stuck:
                     keys = (False, False)  # 打ち切り: 落下させて死亡→再挑戦に回す
                     if (st.t - t_start > attempt_timeout_s + 3.0 or stuck) and backend.ready():
@@ -446,7 +452,7 @@ def play(
                 extra = dict(extra or {}, input_sent_at=round(ctl._acts[-1][0], 6))
                 if st.phase == PLAYING:
                     extra.update(planning_s=round(planning_s, 6), control_s=round(control_s, 6), planning_detail=planning_detail, route_worker_s=round(route_worker_s, 6) if route_worker_s is not None else None, route_pending=routes.busy)
-            extra = dict(extra or {}, capture_s=round(loop.capture_s, 6), max_capture_s=round(loop.max_capture_s, 6),
+            extra = dict(extra or {}, target_up_waypoint=up_waypoint, capture_s=round(loop.capture_s, 6), max_capture_s=round(loop.max_capture_s, 6),
                          vision_s=round(loop.vision_s, 6), previous_io_s=round(previous_io_s, 6), **io_parts)
             io_start = backend.now()
             if on_step is not None:

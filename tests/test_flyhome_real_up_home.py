@@ -26,3 +26,11 @@ def test_actual_up_arrow_animation_keeps_the_same_waypoint():
     obs = vision.analyze(read_png(FIXTURES / 'flyhome-level50-up-home-bob.png'))
     assert obs.home is None and obs.home_bbox is None
     assert obs.home_exit_up == (152, 24)
+
+def test_actual_danger_text_is_not_a_spike_and_small_tiles_are_not_a_house():
+    obs = vision.analyze(read_png(FIXTURES / 'flyhome-level50-danger-text.png'))
+    # Four actual dark-red tiles enter at the bottom; pure-red warning glyphs stay at the top.
+    assert set(obs.hazards) == {(27,174,37,180), (107,174,117,180),
+                                (187,174,197,180), (267,174,277,180)}
+    assert obs.home is None and obs.home_bbox is None
+    assert not obs.wipe
