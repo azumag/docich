@@ -22,6 +22,14 @@ LEGACY_REF = (
 
 
 class CornerRotationAuthorizeTests(unittest.TestCase):
+    def test_latest_checkpoint_resume_is_fixed_canonical_owner_operation(self):
+        self.assertEqual(self.run_auth(INPUT_OPERATION='resume-hanjuku-latest').returncode, 0)
+        for changes in ({'GITHUB_WORKFLOW_REF': LEGACY_REF}, {'GITHUB_ACTOR_ID': '42'},
+                        {'GITHUB_REF_PROTECTED': 'false'}, {'INPUT_CONFIRM': ''},
+                        {'INPUT_OPERATION': 'resume-hanjuku-latest;id'}):
+            with self.subTest(changes=changes):
+                self.assertNotEqual(self.run_auth(**{'INPUT_OPERATION':'resume-hanjuku-latest', **changes}).returncode, 0)
+
     def test_admin_script_excludes_untracked_cwd_package(self):
         import os
         import sys
@@ -333,7 +341,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
         for required in (
-            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku]",
+            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku]",
             "github.actor_id == 9018513",
             "github.triggering_actor == 'azumag'",
             "github.ref_protected == true",

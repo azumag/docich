@@ -436,13 +436,17 @@ def test_failed_start_is_settled_only_by_its_own_confirmed_recovery(setup):
     s = setup
     rid = str(uuid.uuid4())
     state = dict(start_request_id=rid, previous_runtime_identity=s.source, status="starting")
-    body = dict(request_id=rid, status="failed", error_code="rollback_failed")
-    receipt = dict(request_id=rid, target=corner.VIEW_NAME, status="failed", result=body)
+    body = dict(request_id=rid, operation="switch", status="failed", error_code="rollback_failed",
+                from_game=None, to_game=corner.VIEW_NAME, generation=2)
+    receipt = dict(request_id=rid, operation="switch", target=corner.VIEW_NAME, generation=2,
+                   status="failed", result=body)
     s.manager.coordinator.switch = lambda *_a, **_kw: SimpleNamespace(
-        status="failed", receipt=receipt, request_id=rid, cleanup_pending=False)
+        status="failed", receipt=receipt, request_id=rid, cleanup_pending=False,
+        operation="switch", target=corner.VIEW_NAME, generation=2)
     s.canonical[0] = ready(s.restored)
-    s.canonical[0]["last_result"] = dict(request_id=str(uuid.uuid4()), status="rolled_back",
-        from_game=s.source["game"], restored_generation=s.restored["generation"])
+    s.canonical[0]["last_result"] = dict(request_id=str(uuid.uuid4()), operation="switch",
+        status="rolled_back", from_game=s.source["game"], to_game=corner.VIEW_NAME,
+        generation=2, restored_generation=s.restored["generation"])
     with pytest.raises(receiver.ExternalVideoError):
         s.manager._dispatch(state)
     s.canonical[0]["last_result"]["request_id"] = rid
@@ -469,3 +473,155 @@ def test_diagnostics_freshness_requires_live_worker_and_recent_frame(tmp_path, m
     assert not module._collect_external_video(tmp_path, 1010)["frame_fresh"]
     monkeypatch.setattr(module, "_external_video_process_alive", lambda _: False)
     assert not module._collect_external_video(tmp_path, 1000)["frame_fresh"]
+
+
+def test_canonical_waits_out_a_busy_switch_lock_instead_of_crashing_the_runner(setup, monkeypatch):
+    from docich.game_switch import GameSwitchBusyError
+    from contextlib import contextmanager
+    calls = []
+
+    @contextmanager
+    def lock(*, exclusive, blocking=False):
+        calls.append(1)
+        if len(calls) < 4:
+            raise GameSwitchBusyError("busy")
+        yield
+
+    monkeypatch.setattr(setup.manager.store, "lock", lock)
+    real = type(setup.manager).canonical
+    monkeypatch.setattr(setup.manager.store.canonical, "load", lambda: ({"phase": "ready"}, None))
+    assert real(setup.manager) == {"phase": "ready"}
+    assert len(calls) == 4
+
+
+def test_canonical_still_raises_when_the_lock_never_frees(setup, monkeypatch):
+    from docich.game_switch import GameSwitchBusyError
+    from contextlib import contextmanager
+
+    @contextmanager
+    def lock(*, exclusive, blocking=False):
+        raise GameSwitchBusyError("busy")
+        yield
+
+    monkeypatch.setattr(setup.manager.store, "lock", lock)
+    with pytest.raises(GameSwitchBusyError):
+        type(setup.manager).canonical(setup.manager, patience_s=2)
+
+
+def test_default_coordinator_carries_the_stream_category_hook(tmp_path, monkeypatch):
+    g = SimpleNamespace(state_dir=tmp_path, config_path=tmp_path / "c.toml")
+    manager = corner.ExternalVideoCornerManager(g)
+    assert manager.coordinator.post_commit == manager._announce_committed_view
+
+
+def special_settings(name):
+    from docich.special_corner import DEFAULTS
+    return dict(DEFAULTS, title=f"ゲーム{name}", title_suffix=f"挑戦{name}",
+                category_id=str(100 + ord(name)), category_name=f"Game {name}",
+                comment_prompt=f"説明{name}", closing_prompt=f"感想{name}")
+
+
+def snapshot_commit(setup, monkeypatch, after_commit):
+    """Fake coordinator emits the same post-commit hook as the real one."""
+    from docich import stream_category as category
+    s = setup
+    announcements, restored = [], []
+    monkeypatch.setattr(category, "announce_stream_special",
+                        lambda g, *, settings: announcements.append(dict(settings)))
+    monkeypatch.setattr(category, "announce_running_view", lambda g, game: restored.append(game))
+    original = s.manager.coordinator.switch
+
+    def switch(target, **kwargs):
+        result = original(target, **kwargs)
+        if result.status == "succeeded":
+            s.manager._announce_committed_view(target)
+            if target == corner.VIEW_NAME:
+                after_commit()
+        return result
+
+    monkeypatch.setattr(s.manager.coordinator, "switch", switch)
+    return announcements, restored
+
+
+def closing_texts(setup, monkeypatch):
+    from docich import external_video_closing as closing
+    text = []
+    original = closing.speak_closing
+    monkeypatch.setattr(closing, "closing_agents", lambda g: None)
+    monkeypatch.setattr(closing, "speak_closing", lambda g, minutes:
+                        original(g, minutes, enqueue=lambda g, value, **kw: text.append(value)))
+    return text
+
+
+def test_active_corner_retains_committed_settings_after_future_save(setup, monkeypatch):
+    from docich.special_corner import save_settings
+    s = setup
+    active, future = special_settings("A"), special_settings("B")
+    save_settings(s.g.state_dir, active)
+
+    def edit_and_end():
+        save_settings(s.g.state_dir, future)
+        corner.request_end(s.g, json.loads(s.manager.path.read_text()), corner.OPERATOR_END)
+
+    announcements, restored = snapshot_commit(s, monkeypatch, edit_and_end)
+    spoken = closing_texts(s, monkeypatch)
+    state = s.manager.run(1)
+    assert state["special_corner_snapshot_required"] is True
+    assert state["special_corner_settings"] == active
+    assert json.loads(s.manager.path.read_text())["special_corner_settings"] == active
+    assert announcements == [active] and restored == [s.source["game"]]
+    assert "ゲームA" in spoken[0] and "ゲームB" not in spoken[0]
+    assert state["restored_runtime_identity"] == s.restored
+
+
+def test_fifo_wait_and_pending_switch_read_settings_only_at_commit(setup, monkeypatch):
+    from docich.special_corner import save_settings
+    s = setup
+    save_settings(s.g.state_dir, special_settings("A"))
+
+    @contextmanager
+    def slot(*args, **kwargs):
+        assert "special_corner_settings" not in json.loads(s.manager.path.read_text())
+        save_settings(s.g.state_dir, special_settings("B"))
+        yield
+
+    monkeypatch.setattr(corner, "program_slot", slot)
+
+    def edit_and_end():
+        save_settings(s.g.state_dir, special_settings("D"))
+        corner.request_end(s.g, json.loads(s.manager.path.read_text()), corner.OPERATOR_END)
+
+    announcements, restored = snapshot_commit(s, monkeypatch, edit_and_end)
+    commit = s.manager.coordinator.switch
+    queued = [False]
+
+    def pending_once(target, **kwargs):
+        if target == corner.VIEW_NAME and not queued[0]:
+            queued[0] = True
+            assert "special_corner_settings" not in json.loads(s.manager.path.read_text())
+            save_settings(s.g.state_dir, special_settings("C"))
+            return SimpleNamespace(status="queued")
+        return commit(target, **kwargs)
+
+    monkeypatch.setattr(s.manager.coordinator, "switch", pending_once)
+    spoken = closing_texts(s, monkeypatch)
+    state = s.manager.run(1, wait_for_idle=True)
+    assert state["special_corner_settings"] == special_settings("C")
+    assert announcements == [special_settings("C")] and restored == [s.source["game"]]
+    assert "ゲームC" in spoken[0] and "ゲームD" not in spoken[0]
+
+
+def test_replayed_post_commit_preserves_existing_snapshot(setup, monkeypatch):
+    from docich import stream_category as category
+    from docich.special_corner import save_settings
+    s = setup
+    snapshot = special_settings("A")
+    state = dict(special_corner_snapshot_required=True, special_corner_settings=snapshot)
+    s.manager.save(state)
+    save_settings(s.g.state_dir, special_settings("B"))
+    announced = []
+    monkeypatch.setattr(category, "announce_stream_special",
+                        lambda g, *, settings: announced.append(settings))
+    s.manager._announce_committed_view(corner.VIEW_NAME)
+    assert {key: announced[0][key] for key in snapshot} == snapshot
+    assert json.loads(s.manager.path.read_text()) == state

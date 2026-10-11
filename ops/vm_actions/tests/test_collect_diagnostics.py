@@ -458,7 +458,20 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                 "hanjuku-chart-v134-month-nav-cursor-guard",
                 "hanjuku-chart-v135-month-foreground-state",
                 "hanjuku-chart-v136-resource-priority",
-                "hanjuku-chart-v137-camp-recheck")
+                "hanjuku-chart-v137-camp-recheck",
+                "hanjuku-chart-v150-summoned-monster-threat",
+                "hanjuku-chart-v151-chikujou-scroll",
+                "hanjuku-chart-v152-control-melee-followup",
+                "hanjuku-chart-v153-visible-castle-levels",
+                "hanjuku-chart-v154-nearest-recall",
+                "hanjuku-chart-v155-sortie-source-probe",
+                "hanjuku-chart-v156-starter-party",
+                "hanjuku-chart-v157-eggless-wall-risk",
+                "hanjuku-chart-v158-native-starter-pane",
+                "hanjuku-chart-v159-egg-recheck-wall-risk",
+                "hanjuku-chart-v162-starter-selected-row-cursor",
+                "hanjuku-chart-v163-recruit-dialog-eligibility",
+                "hanjuku-chart-v164-source-location-recheck")
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',

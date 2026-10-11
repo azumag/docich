@@ -144,3 +144,8 @@ timezone = "Asia/Tokyo"
 
 [webui]
 soren_root = "/home/ubuntu/soren"
+
+# 手動の特別コーナー（OBS→SRT、external-video-corner）。WebUI の「SRT 受付開始」が
+# 受信を bind する VM の Tailscale IPv4。自動 rotation には載せない。
+[external_video_corner]
+listen_ip = "100.71.107.106"

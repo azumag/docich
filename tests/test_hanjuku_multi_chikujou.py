@@ -165,7 +165,8 @@ def test_lagging_header_can_be_reconciled_before_the_next_castle_opens():
 @pytest.mark.parametrize('held', [
     {'egg': 'unverified', 'reserve': 50, 'egg_cost': 50},
     {'hero_repair_reserve': 50},
-    {'recruit_reserve': 50},
+    {'recruit_reserve': 50, 'recruit': 'check'},
+    {'recruit_reserve': 50, 'recruit': 'skipped', 'recruit_priority': True},
     {'soldiers_done': False, 'soldiers': 50},
 ])
 def test_actual_quote_cannot_consume_unfinished_necessities(held):
@@ -189,10 +190,80 @@ def test_completed_egg_recovery_releases_the_old_estimate_for_building():
 
 def test_the_actual_remaining_balance_can_end_a_batch_after_one_success():
     mem = memory()
-    upgrade(mem, HOME, 70, 5)
+    upgrade(mem, HOME, 35, 5)   # 30G left = the wage reserve, nothing spare
     assert mem['shop']['chikujou'] == 'done'
-    assert mem['shop']['chikujou_upgrades'][0]['gold_after'] == 65
-    assert policy._month_chikujou(month(65), mem, mem['shop']) is None
+    assert mem['shop']['chikujou_upgrades'][0]['gold_after'] == 30
+    assert policy._month_chikujou(month(30), mem, mem['shop']) is None
+
+
+def test_other_holdings_are_upgraded_with_a_small_margin_after_home():
+    # Owner 2026-10-11: only アルマムーン was upgraded. A level costs
+    # 20 - 内政 (<= 20G); the old 40G margin ended the batch after home.
+    mem = memory()
+    upgrade(mem, HOME, 60, 15)
+    assert mem['shop']['chikujou'] == 'check'
+    upgrade(mem, OTHER, 45, 8)
+    assert [u['castle'] for u in mem['shop']['chikujou_upgrades']] == [HOME, OTHER]
+    assert mem['shop']['chikujou'] == 'done'
+
+
+def test_three_holdings_are_all_upgraded_in_one_month():
+    third = 'キカンドン'   # chart order: アルマムーン, キカンドン, ..., ジョンリギ
+    mem = memory()
+    mem['captured'] = [OTHER, third]
+    mem['garrison'][third] = ['ヴィーナス']
+    names = (HOME, third, OTHER)
+
+    def upgrade_listed(castle, gold, cost):
+        open_build(mem, gold)
+        assert policy.month_sub_step(castles(on=castle, names=names), mem) == [policy.pad('a')]
+        assert policy.month_sub_step(quote(castle, gold, cost), mem) == [policy.pad('a')]
+        assert policy.month_sub_step(result(castle), mem) == [policy.pad('a')]
+        assert policy.month_sub_step(castles(on=castle, names=names), mem) == [policy.pad('b')]
+        assert policy._finish_month_sub(month(gold - cost), mem, mem['shop']) is True
+
+    upgrade_listed(HOME, 80, 10)
+    assert mem['shop']['chikujou'] == 'check'
+    upgrade_listed(third, 70, 12)
+    assert mem['shop']['chikujou'] == 'check'
+    upgrade_listed(OTHER, 58, 6)
+    assert [u['castle'] for u in mem['shop']['chikujou_upgrades']] == [HOME, third, OTHER]
+    assert mem['shop']['chikujou'] == 'done'
+
+
+def test_a_castle_too_expensive_for_the_spare_does_not_end_the_others():
+    mem = memory()
+    sub = open_build(mem, 45)
+    assert policy.month_sub_step(castles(), mem) == [policy.pad('a')]
+    # home quotes 18G but only 15G is spare above the 30G reserve
+    assert policy.month_sub_step(quote(HOME, 45, 18, on='いかんッ!'), mem) == [policy.pad('a')]
+    assert sub['declined'] and sub['cost_declined'] and not sub.get('confirm_sent')
+    assert policy.month_sub_step(castles(), mem) == [policy.pad('b')]
+    assert policy._finish_month_sub(month(45), mem, mem['shop']) is True
+    assert mem['shop']['chikujou'] == 'check'
+    assert mem['shop']['chikujou_tried'] == [HOME]
+    sub = open_build(mem, 45)
+    assert policy.month_sub_step(castles(on=OTHER), mem) == [policy.pad('a')]
+    assert policy.month_sub_step(quote(OTHER, 45, 9), mem) == [policy.pad('a')]
+    assert policy.month_sub_step(result(OTHER), mem) == [policy.pad('a')]
+    assert policy.month_sub_step(castles(on=OTHER), mem) == [policy.pad('b')]
+    assert policy._finish_month_sub(month(36), mem, mem['shop']) is True
+    assert mem['shop']['chikujou_upgrades'] == [
+        {'castle': OTHER, 'cost': 9, 'gold_before': 45, 'gold_after': 36}]
+    assert mem['shop']['chikujou'] == 'done'
+
+
+def test_an_unread_quote_still_ends_the_batch():
+    mem = memory()
+    sub = open_build(mem, 45)
+    policy.month_sub_step(castles(), mem)
+    unread = quote(HOME, 45, 18, on='いかんッ!')
+    unread.header = {}
+    assert policy.month_sub_step(unread, mem) == [policy.pad('a')]
+    assert sub['declined'] and not sub.get('cost_declined')
+    assert policy.month_sub_step(castles(), mem) == [policy.pad('b')]
+    assert policy._finish_month_sub(month(45), mem, mem['shop']) is True
+    assert mem['shop']['chikujou'] == 'skipped'
 
 
 @pytest.mark.parametrize('refusal', ['これいじょうのぞうちくはできませんぞ!!',
@@ -278,3 +349,89 @@ def test_castle_navigation_has_its_own_finite_budget_above_the_old_eight_frames(
     sub['presses'] = policy.CHIKUJOU_SUB_LIMIT
     assert policy.month_sub_step(castles(on=HOME), mem) == [policy.pad('b')]
     assert sub['aborted']
+
+
+def test_145g_builds_when_this_months_recovery_was_skipped():
+    # Owner 2026-10-11: 145G on hand and no castle was built. Three generals
+    # had each summoned once (3 x 50G hold) and the recovery had already been
+    # skipped as unaffordable this month.
+    mem = memory(egg='skipped')
+    mem['egg_uses'] = {'ゼウス': 3, 'ココット': 2, 'ヴィーナス': 3, 'どうし': 4}
+    assert policy._chikujou_reserve(mem, mem['shop']) == policy.WAGE_RESERVE
+    assert policy._month_chikujou(month(145), mem, mem['shop']) == [policy.pad('a')]
+
+
+def test_skipped_recovery_still_keeps_the_heros_egg():
+    mem = memory(egg='skipped')
+    mem['egg_uses'] = {'どうし': 0, 'ゼウス': 3}
+    assert policy._chikujou_reserve(mem, mem['shop']) == policy.WAGE_RESERVE + 50
+
+
+def test_unresolved_recovery_keeps_the_worst_case_hold():
+    mem = memory(egg='check', egg_cost=50)
+    mem['egg_uses'] = {'ゼウス': 3}
+    mem['egg_recheck'] = ['ココット', 'ヴィーナス']
+    assert policy._chikujou_reserve(mem, mem['shop']) == policy.WAGE_RESERVE + 150
+
+
+@pytest.mark.parametrize('status', ['deferred_cash', 'deferred_roster', 'not_needed',
+                                    'deferred_economy', 'not_affordable', 'done'])
+def test_recruit_stopped_this_month_releases_its_fee_for_building(status):
+    mem = memory(recruit=status, recruit_reserve=50)
+    assert policy._chikujou_reserve(mem, mem['shop']) == policy.WAGE_RESERVE
+    assert policy._month_chikujou(month(145), mem, mem['shop']) == [policy.pad('a')]
+
+
+@pytest.mark.parametrize('hero_uses', [4, None])
+def test_skipped_recovery_keeps_the_hero_awaiting_a_reread(hero_uses):
+    # Review P2: a summon leaves the old count (4) or none and puts the hero
+    # on egg_recheck; that is not proof his egg is full.
+    mem = memory(egg='skipped')
+    mem['egg_uses'] = {'ゼウス': 3}
+    if hero_uses is not None:
+        mem['egg_uses']['どうし'] = hero_uses
+    mem['egg_recheck'] = ['どうし']
+    assert policy._chikujou_reserve(mem, mem['shop']) == policy.WAGE_RESERVE + 50
+    assert policy._month_chikujou(month(79), mem, mem['shop']) is None   # 79 < 80 + 1
+    assert 'month_sub' not in mem
+    mem['shop']['chikujou'] = 'check'
+    sub = open_build(mem, 95)
+    policy.month_sub_step(castles(), mem)
+    # 95 - 20 = 75 would spend the hero's 50G + the 30G wage
+    assert policy.month_sub_step(quote(HOME, 95, 20, on='いかんッ!'), mem) == [policy.pad('a')]
+    assert sub['declined'] and not sub.get('confirm_sent')
+
+def test_a_leftover_refusal_above_the_list_still_upgrades_the_next_castle():
+    # g684 1-11 13:11:05: after the home upgrade the reopened list carried
+    # 「これいじょうのぞうちくはできませんぞ」; the bot declined with no castle.
+    mem = memory()
+    upgrade(mem, HOME, 150, 5)
+    open_build(mem, 145)
+    leftover = castles(on=HOME, text='これいじょうのぞうちくはできませんぞ!!' + PROMPT)
+    assert policy.month_sub_step(leftover, mem) == [policy.pad('down')]
+    assert not mem['month_sub'].get('declined')
+    assert any(r['decision'] == 'chikujou_leftover_refusal' for r in mem['_records'])
+    other = castles(on=OTHER, text='これいじょうのぞうちくはできませんぞ!!' + PROMPT)
+    assert policy.month_sub_step(other, mem) == [policy.pad('a')]
+    assert mem['month_sub']['chosen'] == OTHER
+
+
+def test_a_bare_refusal_without_the_list_still_declines():
+    mem = memory()
+    open_build(mem, 150)
+    bare = Screen([], None, 'これいじょうのぞうちくはできませんぞ!!', kind='text')
+    assert policy.month_sub_step(bare, mem) == [policy.pad('b')]
+    assert mem['month_sub']['declined'] is True
+
+
+def test_walk_to_chikujou_is_bounded_when_the_hand_does_not_move():
+    # g684 2-8 14:52: a soldier-count dialogue stayed in front of the menu;
+    # the unguarded walk to ちくじょう pressed down every observation.
+    stuck = Screen([line(48, 63, 'へいしほじゅう'), line(48, 79, 'ちくじょう')], (26, 57, 44, 70),
+                   'へいしほじゅうちくじょう', header={'year': 1, 'month': 7, 'gold': 150},
+                   kind='month_menu')
+    mem = memory()
+    out = [policy._month_chikujou(stuck, mem, mem['shop']) for _ in range(policy.MENU_NAV_PRESS_LIMIT + 1)]
+    assert out[:policy.MENU_NAV_PRESS_LIMIT] == [[policy.pad('down')]] * policy.MENU_NAV_PRESS_LIMIT
+    assert out[-1] == [policy.pad('b')]
+    assert mem['_records'][-1]['decision'] == 'menu_nav_stuck'

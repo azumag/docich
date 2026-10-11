@@ -227,12 +227,31 @@ def test_duplicate_json_and_unfinished_events_rejected():
     with pytest.raises(ValueError): r.parse_proposal(b'{"type":"text","part":{"type":"text","text":"{}"}}')
 
 
-def test_sandbox_uses_opencode_only_no_source_or_fetch_mount(tmp_path):
-    argv=r.sandbox_argv(tmp_path,'opencode/existing-model','/usr/bin/bwrap','/usr/bin/opencode',
-                        bridge_script=tmp_path/'bridge',proxy_socket=tmp_path/'proxy')
-    assert 'run' in argv and 'docich-evidence' in argv
+@pytest.mark.parametrize('host_path', ['plain', '.codex/worktrees/synthetic-checkout'])
+def test_sandbox_uses_opencode_only_no_source_or_fetch_mount(tmp_path, host_path):
+    host = tmp_path / host_path
+    argv=r.sandbox_argv(host,'opencode/existing-model','/usr/bin/bwrap','/usr/bin/opencode',
+                        bridge_script=host/'bridge',proxy_socket=host/'proxy')
+    assert argv[0] == '/usr/bin/bwrap'
+    boundary = argv.index('--')
+    assert argv[boundary + 1:] == [
+        '/usr/bin/python3', '/tmp/docich-research-bridge.py',
+        '/usr/bin/opencode', 'run', '--format', 'json',
+        '--agent', 'docich-evidence', '--model', 'opencode/existing-model',
+    ]
     assert '--unshare-net' in argv and '--disable-userns' in argv
-    assert not any('codex' in x.lower() for x in argv)
+    mounts = [argv[i + 1:i + 3] for i in range(boundary) if argv[i] == '--ro-bind']
+    expected_mounts = [['/usr', '/usr']]
+    for directory in ('/bin', '/lib', '/lib64', '/etc/ssl/certs'):
+        if Path(directory).exists():
+            expected_mounts.append([directory, directory])
+    if str(Path('/usr/bin/opencode').resolve()).startswith('/snap/opencode/'):
+        expected_mounts.append(['/snap/opencode', '/snap/opencode'])
+    expected_mounts += [
+        [str(host/'bridge'), '/tmp/docich-research-bridge.py'],
+        [str(host/'proxy'), '/tmp/.docich-egress.sock'],
+    ]
+    assert mounts == expected_mounts
     assert '/workspace/source' not in argv
     assert '/tmp/.docich-web-fetch.sock' not in argv
 

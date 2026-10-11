@@ -1806,6 +1806,125 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertNotIn("req-secret-1", json.dumps(view))
         self.assertNotIn("rcv-secret-1", json.dumps(view))
 
+    def _special_settings_body(self, **overrides):
+        body = {"title": "ゲームA", "title_suffix": "初見クリアに挑戦", "category_id": "12345",
+                "category_name": "Game A", "comment_prompt": "ゲームAの映像です。",
+                "closing_prompt": "", "confirm": True}
+        body.update(overrides)
+        return body
+
+    def test_special_corner_settings_default_save_and_viewer_read_only(self):
+        status, view = self._request("GET", "/api/special-corner/settings")
+        self.assertEqual(status, 200, view)
+        self.assertTrue(view["is_default"])
+        self.assertEqual(view["settings"]["title"], "Fly Me To The Home!")
+        self.assertEqual(view["limits"]["comment_prompt"]["max"], 800)
+        status, data = self._request("PUT", "/api/special-corner/settings",
+                                     self._special_settings_body(confirm=False))
+        self.assertEqual(status, 428, data)
+        self.g.webui.read_only_token = "viewer-secret"
+        try:
+            status, data = self._request("PUT", "/api/special-corner/settings",
+                                         self._special_settings_body(),
+                                         headers={"Authorization": "Bearer viewer-secret"})
+            self.assertEqual(status, 403, data)
+            status, data = self._request("POST", "/api/special-corner/category-search", {"query": "x"},
+                                         headers={"Authorization": "Bearer viewer-secret"})
+            self.assertEqual(status, 403, data)
+            status, view = self._request("GET", "/api/special-corner/settings",
+                                         headers={"Authorization": "Bearer viewer-secret"})
+            self.assertEqual(status, 200, view)
+        finally:
+            self.g.webui.read_only_token = ""
+        self.assertFalse((Path(self.g.state_dir) / "special_corner.json").exists())
+        status, data = self._request("PUT", "/api/special-corner/settings", self._special_settings_body())
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["settings"]["title"], "ゲームA")
+        status, view = self._request("GET", "/api/special-corner/settings")
+        self.assertFalse(view["is_default"])
+        self.assertEqual(view["settings"]["category_id"], "12345")
+        status, view = self._request("GET", "/api/special-corner")
+        self.assertEqual(view["title"], "ゲームA")
+
+    def test_special_corner_settings_validation_names_the_field(self):
+        for field, value in (("title", "$HOME"), ("category_id", "12a"), ("comment_prompt", "x" * 801),
+                             ("closing_prompt", "<b>")):
+            with self.subTest(field=field):
+                status, data = self._request("PUT", "/api/special-corner/settings",
+                                             self._special_settings_body(**{field: value}))
+                self.assertEqual(status, 400, data)
+                self.assertEqual(data.get("field"), field)
+        status, data = self._request("PUT", "/api/special-corner/settings",
+                                     dict(self._special_settings_body(), extra="x"))
+        self.assertEqual(status, 400, data)
+        self.assertFalse((Path(self.g.state_dir) / "special_corner.json").exists())
+
+    def test_special_corner_category_search_uses_resolve_only(self):
+        from docich import special_corner
+        with mock.patch.object(special_corner, "search_categories",
+                               return_value=[{"id": "1", "name": "A"}]) as search:
+            status, data = self._request("POST", "/api/special-corner/category-search", {"query": "A"})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["candidates"], [{"id": "1", "name": "A"}])
+        self.assertEqual(search.call_args.args[1], "A")
+        status, data = self._request("POST", "/api/special-corner/category-search", {"query": "-x"})
+        self.assertEqual(status, 400, data)
+        with mock.patch.object(special_corner, "search_categories",
+                               side_effect=special_corner.CategorySearchError("カテゴリ検索に失敗しました (rc=3)")):
+            status, data = self._request("POST", "/api/special-corner/category-search", {"query": "A"})
+        self.assertEqual(status, 502, data)
+        status, data = self._request("POST", "/api/special-corner/category-search", {"query": "A", "x": 1})
+        self.assertEqual(status, 400, data)
+
+    def test_special_corner_manual_start_and_receiver_require_operator_and_confirm(self):
+        from docich import special_corner
+        with mock.patch.object(special_corner, "launch_corner") as launch, \
+                mock.patch.object(special_corner, "prepare_receiver", return_value={"state": "launching"}) as prep, \
+                mock.patch.object(special_corner, "stop_receiver", return_value={"state": "stopped"}) as stop:
+            status, data = self._request("POST", "/api/special-corner/start", {})
+            self.assertEqual(status, 428, data)
+            status, data = self._request("POST", "/api/special-corner/receiver", {"action": "prepare"})
+            self.assertEqual(status, 428, data)
+            self.g.webui.read_only_token = "viewer-secret"
+            try:
+                for path, body in (("/api/special-corner/start", {"confirm": True}),
+                                   ("/api/special-corner/receiver", {"action": "prepare", "confirm": True})):
+                    status, data = self._request("POST", path, body,
+                                                 headers={"Authorization": "Bearer viewer-secret"})
+                    self.assertEqual(status, 403, data)
+            finally:
+                self.g.webui.read_only_token = ""
+            launch.assert_not_called()
+            prep.assert_not_called()
+            status, data = self._request("POST", "/api/special-corner/receiver", {"action": "rm", "confirm": True})
+            self.assertEqual(status, 400, data)
+            status, data = self._request("POST", "/api/special-corner/receiver", {"action": "prepare", "confirm": True})
+            self.assertEqual(status, 200, data)
+            self.assertEqual(data["receiver"], {"state": "launching"})
+            status, data = self._request("POST", "/api/special-corner/receiver", {"action": "stop", "confirm": True})
+            self.assertEqual(status, 200, data)
+            status, data = self._request("POST", "/api/special-corner/start", {"confirm": True})
+            self.assertEqual(status, 200, data)
+            self.assertNotIn("unit", data)
+            launch.assert_called_once()
+            prep.assert_called_once()
+            stop.assert_called_once()
+
+    def test_special_corner_start_refusal_is_409_with_reason(self):
+        from docich import special_corner
+        status, data = self._request("POST", "/api/special-corner/start", {"confirm": True})
+        self.assertEqual(status, 409, data)
+        self.assertEqual(data["error"], "receiver_not_ready")
+        status, view = self._request("GET", "/api/special-corner")
+        self.assertEqual(status, 200, view)
+        self.assertEqual(view["control"]["receiver"]["state"], "none")
+        self.assertFalse(view["control"]["can_start"])
+        with mock.patch.object(special_corner, "prepare_receiver",
+                               side_effect=special_corner.SpecialCornerControlError("refused", "receiver is already reserved")):
+            status, data = self._request("POST", "/api/special-corner/receiver", {"action": "prepare", "confirm": True})
+        self.assertEqual(status, 409, data)
+        self.assertEqual(data["error"], "refused")
+
     def test_soren91_renderer_mode_roundtrip_without_secrets(self):
         env_file = self.repo_root / "soren91.env"
         env_file.write_text(
@@ -2010,6 +2129,34 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(data["error"], "confirmation_required")
         status, data = self._request("POST", "/api/corners", {"action": "recover"})
         self.assertEqual(status, 428, data)
+
+    def test_post_corners_start_refuses_non_cli_game_without_dispatch(self):
+        # 2026-10-11: the one-off runner is CLI-only. Starting hanjuku-hero
+        # (retroarch) dispatched a runner that always failed and latched the
+        # rotation; refuse here and point to the fixed Hanjuku operator.
+        path = Path(self.g.config_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '[corner_rotation]\nenabled = true\nschedule_mode = "queue"\n'
+            'corners = [{id = "hanjuku-hero", adapter = "game", game = "hanjuku-hero"}]\n',
+            encoding="utf-8",
+        )
+        games = Path(self.g.games_dir)
+        games.mkdir(parents=True, exist_ok=True)
+        (games / "hanjuku-hero.toml").write_text(
+            '[game]\nname = "hanjuku-hero"\ntitle = "Hanjuku"\nadapter = "retroarch"\n'
+            '[retroarch]\nrom = "games/roms/hanjuku-hero.sfc"\n',
+            encoding="utf-8",
+        )
+        with mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request(
+                "POST", "/api/corners",
+                {"action": "start", "corner": "hanjuku-hero", "duration_minutes": 5,
+                 "confirm": True},
+            )
+        self.assertEqual(status, 400, data)
+        self.assertIn("start-hanjuku", data["detail"])
+        popen.assert_not_called()
 
     def test_post_corners_start_dispatches_reviewed_one_off_runner(self):
         self._write_catalog_config()

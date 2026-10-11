@@ -19,7 +19,9 @@ from .external_video_receiver import (
     ExternalVideoError, MAX_RECEIVER_MINUTES, exclusive, prepare, read_json, read_receiver,
     receive, request_receiver_stop,
 )
-from .game_switch import GameSwitchCoordinator, GameSwitchStore, atomic_write_json
+from .game_switch import (
+    GameSwitchBusyError, GameSwitchCoordinator, GameSwitchStore, atomic_write_json,
+)
 
 VIEW_NAME = "external-video-view"
 STATE_FILE = "external_video_corner.json"
@@ -65,18 +67,100 @@ def stable(state):
             and not any(state.get(k) for k in ("candidate", "previous", "retiring")))
 
 
+def settled_rollback(receipt, current, request_id, source, target):
+    """Bind a rollback (or recovery of its immutable failure) to canonical.
+
+    Rollback receipts contain restored_generation, not active_runtime. A live
+    previous runtime gets a fresh lease; a stopped one gets a new generation.
+    Only the same request's canonical rollback can authorize either outcome.
+    A failed receipt is immutable, so its historical cleanup flag may outlive
+    recovery; cleanup must be clear in the current canonical rollback instead.
+    """
+    actual = identity(current.get("active"))
+    body = receipt.get("result") if isinstance(receipt, dict) else None
+    last = current.get("last_result")
+    if (not source or not actual or not stable(current)
+            or any(current.get(k) for k in ("request_id", "operation", "cleanup_pending"))
+            or not isinstance(body, dict) or not isinstance(last, dict)
+            or receipt.get("request_id") != request_id
+            or receipt.get("operation") != "switch" or receipt.get("target") != target
+            or receipt.get("status") not in {"rolled_back", "failed"}
+            or body.get("status") != receipt["status"]
+            or any(evidence.get("request_id") != request_id
+                   or evidence.get("operation") != "switch"
+                   or evidence.get("to_game") != target
+                   for evidence in (body, last))
+            or last.get("cleanup_pending")
+            or (receipt["status"] == "rolled_back" and body.get("cleanup_pending"))
+            or last.get("status") != "rolled_back"
+            or last.get("from_game") != source["game"] or actual["game"] != source["game"]
+            or type(receipt.get("generation")) is not int
+            or receipt["generation"] <= source["generation"]
+            or any(evidence.get("generation") != receipt["generation"] for evidence in (body, last))
+            or type(last.get("restored_generation")) is not int
+            or last["restored_generation"] != actual["generation"]):
+        return False
+    if receipt["status"] == "rolled_back":
+        if (body.get("from_game") != source["game"]
+                or type(body.get("restored_generation")) is not int
+                or body.get("restored_generation") != actual["generation"]):
+            return False
+    elif (body.get("error_code") != "rollback_failed"
+          or body.get("from_game") not in {None, source["game"]}):
+        return False
+    if actual["generation"] == source["generation"]:
+        return (actual["runtime_id"] == source["runtime_id"]
+                and actual["lease_id"] != source["lease_id"])
+    return actual["generation"] > receipt["generation"]
+
+
 class ExternalVideoCornerManager:
     def __init__(self, g, *, coordinator=None, clock=time.time, sleep=time.sleep):
         self.g, self.clock, self.sleep = g, clock, sleep
         self.path = Path(g.state_dir) / STATE_FILE
         self.store = GameSwitchStore(g.state_dir)
         self.stopping = False
+        self._dispatch_state = None
         if coordinator is None:
             from .adapters import make_coordinator_adapter
-            coordinator = GameSwitchCoordinator(self.store, lambda spec: make_coordinator_adapter(g, spec))
+            # Freeze this corner's settings at the actual switch commit, after
+            # any FIFO/boundary wait. Restore still announces the previous game.
+            coordinator = GameSwitchCoordinator(self.store, lambda spec: make_coordinator_adapter(g, spec),
+                                                post_commit=self._announce_committed_view)
         self.coordinator = coordinator
 
-    def canonical(self):
+    def _announce_committed_view(self, game):
+        from .stream_category import announce_running_view, announce_stream_special
+        from .special_corner import LIMITS, load_settings, validate_settings
+
+        if game != VIEW_NAME:
+            return announce_running_view(self.g, game)
+        state = self._dispatch_state
+        if state is not None and "special_corner_settings" not in state:
+            loaded = load_settings(self.g.state_dir)
+            state["special_corner_settings"] = validate_settings({key: loaded[key] for key in LIMITS})
+            self.save(state)
+        else:
+            # Recovery of an already committed corner must not adopt future
+            # settings. Its snapshot may be absent after a crash at commit.
+            from .external_video_closing import corner_settings
+            loaded = corner_settings(self.g)
+            if not loaded.get("category_id"):
+                return False
+            return announce_stream_special(self.g, settings=loaded)
+        return announce_stream_special(self.g, settings=state["special_corner_settings"])
+
+    def canonical(self, *, patience_s=60):
+        # A game switch / FIFO tick holds the exclusive lock for a few seconds at a
+        # time. A non-blocking read that raised GameSwitchBusyError used to kill the
+        # long-lived runner (2026-10-11 05:27) and leave the corner "active" with
+        # nobody to honor the End button or restore Soren. Wait it out instead.
+        for attempt in range(max(1, int(patience_s / 0.5))):
+            try:
+                with self.store.lock(exclusive=False):
+                    return self.store.canonical.load()[0]
+            except GameSwitchBusyError:
+                self.sleep(0.5)
         with self.store.lock(exclusive=False):
             return self.store.canonical.load()[0]
 
@@ -106,7 +190,11 @@ class ExternalVideoCornerManager:
                       allow_boundary_timeout_extension=False)
         if source:
             kwargs["payload"] = {"expected_source": source}
-        result = method(VIEW_NAME, **kwargs)
+        self._dispatch_state = state
+        try:
+            result = method(VIEW_NAME, **kwargs)
+        finally:
+            self._dispatch_state = None
         if result.status in PENDING:
             return False
         if result.status != "succeeded":
@@ -114,24 +202,30 @@ class ExternalVideoCornerManager:
             receipt = result.receipt
             body = receipt.get("result", {}) if isinstance(receipt, dict) else {}
             actual = identity(current.get("active"))
-            rolled_back = (result.status == "rolled_back" and isinstance(receipt, dict)
-                           and receipt.get("request_id") == state["start_request_id"]
-                           and body.get("request_id") == state["start_request_id"]
-                           and identity(body.get("active_runtime")) == actual
-                           and (actual["game"] if actual else None) == (source["game"] if source else None))
             last = current.get("last_result") or {}
-            recovered_start = (source and actual and isinstance(receipt, dict)
+            unchanged = (actual == source and isinstance(receipt, dict)
                 and receipt.get("request_id") == state["start_request_id"]
+                and receipt.get("operation") == ("switch" if source else "start")
                 and receipt.get("target") == VIEW_NAME and receipt.get("status") == "failed"
                 and body.get("request_id") == state["start_request_id"]
-                and body.get("error_code") == "rollback_failed"
-                and last.get("request_id") == state["start_request_id"]
-                and last.get("status") == "rolled_back"
-                and last.get("from_game") == source["game"] == actual["game"]
-                and last.get("restored_generation") == actual["generation"]
-                and actual["generation"] >= source["generation"])
-            if stable(current) and (actual == source or rolled_back or recovered_start):
-                state.update(status="interrupted", completed_at=self.clock(),
+                and body.get("operation") == receipt["operation"]
+                and body.get("to_game") == VIEW_NAME
+                and body.get("from_game") == (source["game"] if source else None)
+                and type(receipt.get("generation")) is int
+                and body.get("generation") == receipt["generation"]
+                and body.get("status") == "failed" and last == body
+                and not body.get("cleanup_pending"))
+            rolled_back = settled_rollback(receipt, current, state["start_request_id"], source, VIEW_NAME)
+            if (isinstance(receipt, dict) and result.request_id == state["start_request_id"]
+                    and result.status == receipt.get("status")
+                    and result.operation == receipt.get("operation")
+                    and result.target == receipt.get("target")
+                    and result.generation == receipt.get("generation")
+                    and (not result.cleanup_pending or (result.status == "failed" and rolled_back))
+                    and stable(current)
+                    and not any(current.get(k) for k in ("request_id", "operation", "cleanup_pending"))
+                    and (unchanged or rolled_back)):
+                state.update(status="interrupted", recovery_required=False, completed_at=self.clock(),
                              end_reason="start-rolled-back")
                 self.save(state)
                 return True
@@ -208,7 +302,8 @@ class ExternalVideoCornerManager:
         if require_audio and not receiver.get("audio_present"):
             raise ExternalVideoError("OBS audio has not been decoded")
         state.update(status="starting", receiver_id=receiver["receiver_id"],
-                     previous_runtime_identity=source, receiver_expires_at=receiver["expires_at"])
+                     previous_runtime_identity=source, receiver_expires_at=receiver["expires_at"],
+                     special_corner_snapshot_required=True)
         self.save(state)
 
     def _receiver_at_turn(self, state, require_audio):
@@ -283,14 +378,12 @@ class ExternalVideoCornerManager:
                 restore_id = state.get("restore_request_id")
                 if restore_id and state.get("runtime_identity"):
                     receipt = self.store.receipts.load(restore_id)
-                    body = receipt.get("result", {}) if isinstance(receipt, dict) else {}
                     actual = identity(current.get("active"))
                     owned = identity(state["runtime_identity"])
-                    if (receipt and receipt.get("status") in {"failed", "rolled_back"}
-                            and stable(current) and actual
-                            and all(actual[k] == owned[k] for k in ("game", "runtime_id", "generation"))
-                            and body.get("request_id") == restore_id
-                            and identity(body.get("active_runtime")) == actual):
+                    if (settled_rollback(receipt, current, restore_id, owned,
+                            state["previous_runtime_identity"]["game"]
+                            if state["previous_runtime_identity"] else None)
+                            and all(actual[k] == owned[k] for k in ("game", "runtime_id", "generation"))):
                         attempts = state.setdefault("restore_attempts", [])
                         if len(attempts) >= 3:
                             raise ExternalVideoError("external corner restore retry limit reached")
@@ -440,6 +533,13 @@ def main(argv=None):
         else:
             signal.signal(signal.SIGTERM, lambda *_: setattr(manager, "stopping", True))
             signal.signal(signal.SIGINT, lambda *_: setattr(manager, "stopping", True))
+            if args.command == "start":
+                # Hand-run starts also get the comment-reply memo (best effort).
+                try:
+                    from .special_corner import write_comment_memo
+                    write_comment_memo(g.state_dir)
+                except Exception:
+                    pass
             output = manager.run(args.duration_minutes if args.command == "start" else 15,
                                  recovering=args.command == "recover",
                                  require_audio=not getattr(args, "video_only", False),
