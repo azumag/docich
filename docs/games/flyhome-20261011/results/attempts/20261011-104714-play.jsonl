@@ -1,0 +1,17 @@
+{"attempt": 1, "outcome": "dead", "duration_s": 0.762, "best_dist": null, "level_sig": 262327755563924, "events": 4}
+{"attempt": 2, "outcome": "dead", "duration_s": 10.583, "best_dist": null, "level_sig": 111506716310666, "events": 129}
+{"attempt": 3, "outcome": "dead", "duration_s": 13.85, "best_dist": null, "level_sig": 47127323717208, "events": 189}
+{"attempt": 4, "outcome": "dead", "duration_s": 18.903, "best_dist": null, "level_sig": 111506716310666, "events": 225}
+{"attempt": 5, "outcome": "dead", "duration_s": 14.118, "best_dist": null, "level_sig": 111506716310666, "events": 178}
+{"attempt": 6, "outcome": "dead", "duration_s": 19.618, "best_dist": null, "level_sig": 47127323717208, "events": 238}
+{"attempt": 7, "outcome": "dead", "duration_s": 19.636, "best_dist": null, "level_sig": 111506716310666, "events": 260}
+{"attempt": 8, "outcome": "dead", "duration_s": 19.918, "best_dist": null, "level_sig": 111506716310666, "events": 249}
+{"attempt": 9, "outcome": "dead", "duration_s": 19.034, "best_dist": null, "level_sig": 150241850867016, "events": 251}
+{"attempt": 10, "outcome": "dead", "duration_s": 10.37, "best_dist": null, "level_sig": 111506716310666, "events": 123}
+{"attempt": 11, "outcome": "dead", "duration_s": 13.601, "best_dist": null, "level_sig": 111506716310666, "events": 186}
+{"attempt": 12, "outcome": "dead", "duration_s": 20.801, "best_dist": null, "level_sig": 111506716310666, "events": 231}
+{"attempt": 13, "outcome": "dead", "duration_s": 13.45, "best_dist": null, "level_sig": 156731527523752, "events": 173}
+{"attempt": 14, "outcome": "dead", "duration_s": 13.373, "best_dist": null, "level_sig": 111506716310666, "events": 152}
+{"attempt": 15, "outcome": "dead", "duration_s": 33.016, "best_dist": null, "level_sig": 174609437841391, "events": 415}
+{"attempt": 16, "outcome": "dead", "duration_s": 0.654, "best_dist": null, "level_sig": 0, "events": 0}
+{"attempt": 17, "outcome": "dead", "duration_s": 0.471, "best_dist": 142.7, "level_sig": 277160600858723, "events": 0}

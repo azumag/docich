@@ -1,0 +1,164 @@
+diff --git a/scripts/flyhome/prepare_controller_profile.py b/scripts/flyhome/prepare_controller_profile.py
+index 1dd86d5..ca09c1f 100644
+--- a/scripts/flyhome/prepare_controller_profile.py
++++ b/scripts/flyhome/prepare_controller_profile.py
+@@ -21,6 +21,7 @@ def main():
+     parser.add_argument('--full-takeoff', action='store_true', help='Keep full takeoff below the upper screen on a compatible revision')
+     parser.add_argument('--head-margin', type=float, help='Raw spike overhead margin for a compatible revision')
+     parser.add_argument('--delay-s', type=float, help='Measured input delay override for the selected revision')
++    parser.add_argument('--corridor-control', action='store_true', help='Use horizontal raw spike boundaries in a compatible revision')
+     args = parser.parse_args()
+     if not 0 <= args.takeoff <= .35:
+         parser.error('takeoff must be between 0 and .35 seconds')
+@@ -40,12 +41,24 @@ def main():
+             parser.error('delay-s requires .04.. .16 and a compatible delay configuration')
+         delay_arg = f', delay_s={args.delay_s!r}'
+         suffix += f'-delay{args.delay_s:g}'
++    head_arg = ''
+     if args.head_margin is not None:
+         head_limit = 'ceiling = max(ceiling, hy1 + 10.0)'
+-        if not 8 <= args.head_margin <= 10 or source.count(head_limit) != 1:
+-            parser.error('head-margin requires 8..10 and a compatible overhead branch')
+-        source = source.replace(head_limit, f'ceiling = max(ceiling, hy1 + {args.head_margin!r})')
++        if not 8 <= args.head_margin <= 10:
++            parser.error('head-margin requires 8..10')
++        if 'head_margin:' in source:
++            head_arg = f', head_margin={args.head_margin!r}'
++        elif source.count(head_limit) == 1:
++            source = source.replace(head_limit, f'ceiling = max(ceiling, hy1 + {args.head_margin!r})')
++        else:
++            parser.error('head-margin requires a compatible overhead branch')
+         suffix += f'-head{args.head_margin:g}'
++    corridor_arg = ''
++    if args.corridor_control:
++        if 'corridor_control:' not in source:
++            parser.error('corridor-control requires a compatible controller revision')
++        corridor_arg = ', corridor_control=True'
++        suffix += '-corridor'
+     if args.full_takeoff:
+         narrow_cap = 'y < 40 or self._narrow_level'
+         if source.count(narrow_cap) != 1:
+@@ -60,7 +73,7 @@ from .mpc import MpcController as _Current
+ class MpcController(_Baseline, _Current):
+     profile_name = "{revision[:7]}-actual-level{args.level}-takeoff{args.takeoff:g}{suffix}"
+     def __init__(self, physics=None, cfg=None):
+-        super().__init__(physics, MpcConfig(takeoff_s={args.takeoff!r}{ceiling_arg}{delay_arg}))
++        super().__init__(physics, MpcConfig(takeoff_s={args.takeoff!r}{ceiling_arg}{delay_arg}{head_arg}{corridor_arg}))
+     def reset(self):
+         super().reset()
+         self._home_settling = False
+diff --git a/src/docich/flyhome/mpc.py b/src/docich/flyhome/mpc.py
+index 4824b36..7037e81 100644
+--- a/src/docich/flyhome/mpc.py
++++ b/src/docich/flyhome/mpc.py
+@@ -35,6 +35,8 @@ class MpcConfig:
+     substeps: int = 2  # 1 要素あたりの積分分割
+     candidates: int = 48  # 1 ティックで試す入力列の数
+     delay_s: float = 0.12  # 入力が効くまでの遅れ
++    head_margin: float = 10.0  # 生の棘の下端から頭側の制動境界まで
++    corridor_control: bool = False  # 狭い水平通路の上下端を使う実機比較
+     ceiling_y: float = 24.0  # 上昇制動の中心座標の境界。実上側回廊の比較用に設定可能
+     persistence: float = 0.65  # ランダム列で直前と同じ入力を続ける確率
+     mutate_p: float = 0.2  # 前回の最良列を崩す確率
+@@ -532,6 +534,21 @@ class MpcController:
+             return False
+         return True
+ 
++    def _horizontal_gap(self, x, y, rx, ry, rvx, rvy):
++        """実機の水平棘通路で、中心が使える上下の範囲を返す。"""
++        if not self.cfg.corridor_control or abs(rvx) < 1 or abs(rvy) > 4 or abs(ry - y) > 10:
++            return None
++        left, right = (x - 6, max(x, rx) + 10) if rvx > 0 else (min(x, rx) - 10, x + 6)
++        above = [b[3] for b in self.hazards if b[0] <= right and b[2] >= left and b[3] <= y]
++        below = [b[1] for b in self.hazards if b[0] <= right and b[2] >= left and b[1] >= y]
++        if not above or not below:
++            return None
++        ceiling = max(above) + self.cfg.head_margin
++        floor = min(below) - self.cfg.foot
++        if 2 <= floor - ceiling <= 10:
++            return ceiling, floor
++        return None
++
+     def _precision_action(self, x, y, vx, vy, ang, om) -> int:
+         """狭い通路では回転の停止角を使って短い片足噴射を決める。"""
+         c, p = self.cfg, self.p
+@@ -596,8 +613,17 @@ class MpcController:
+                     if 0 <= xi < self.width and 0 <= yi < self.height and self.solid[yi * self.width + xi]:
+                         head_near = True
+         vertical_lane = abs(rvx) < 0.1 and rvy > 3
++        gap = self._horizontal_gap(x, y, rx, ry, rvx, rvy)
++        self._corridor_debug = None
++        if gap is not None:
++            ry, rvy = (gap[0] + gap[1]) / 2, 0.0
++            self._corridor_debug = {"ceiling": gap[0], "floor": gap[1], "target_y": ry}
+         want_vx = max(-8.0, min(8.0, rvx + 0.8 * (rx - x)))
+         want_vy = max(-12.0, min(12.0, rvy + 0.8 * (ry - y)))
++        if gap is not None:
++            want_vy = max(-4.0, min(4.0, want_vy))
++            if not gap[0] + .4 <= y <= gap[1] - .4:
++                want_vx = max(-2.0, min(2.0, want_vx))
+         # 横壁へ向かう区間は入口の直前で止めるだけでなく、離れた地点から低速で近づく。
+         for hx0, hy0, hx1, hy1 in self.hazards:
+             if hy0 - 10 <= y <= hy1 + 10:
+@@ -610,12 +636,15 @@ class MpcController:
+         theta = max(-0.22, min(0.22, math.atan2(ax, p.gravity)))
+         self._pending_inputs(self._hist[-1][0])
+         future_angle, future_om, future_vy = ang, om, vy
++        future_y = y
+         for duration, action in self._pending:
+             torque = ((action & 1) - ((action >> 1) & 1)) * p.torque_sign * p.spin
+             future_angle += future_om * duration + 0.5 * torque * duration ** 2
+             future_om += (torque - p.angular_damping * future_om) * duration
+             thrust = p.thrust if action == 3 else p.thrust * p.single_thrust_ratio if action else 0.0
+-            future_vy += (p.gravity - math.cos(ang) * thrust - p.drag * future_vy) * duration
++            ay = p.gravity - math.cos(ang) * thrust - p.drag * future_vy
++            future_y += future_vy * duration + 0.5 * ay * duration ** 2
++            future_vy += ay * duration
+         stop_angle = future_angle + future_om * abs(future_om) / (2 * max(0.1, p.spin))
+         error = theta - stop_angle
+         self._precision_debug = [round(v, 3) for v in (vx, vy, want_vx, want_vy, theta, stop_angle, error)] + [align_descent, vertical_lane]
+@@ -624,18 +653,29 @@ class MpcController:
+         minimum_y = y + rising_vy * c.delay_s - rising_vy ** 2 / (2 * max(1.0, p.gravity))
+         falling_vy = max(0.0, vy, future_vy)
+         maximum_y = y + falling_vy * c.delay_s + falling_vy ** 2 / (2 * max(1.0, p.thrust - p.gravity))
++        if c.corridor_control:
++            # 送信済みの噴射で既に制動する分も含め、遅れ後の位置と速度から上下端を予測。
++            minimum_y = min(y, future_y) - min(0.0, future_vy) ** 2 / (2 * max(1.0, p.gravity))
++            maximum_y = max(y, future_y) + max(0.0, future_vy) ** 2 / (2 * max(1.0, p.thrust - p.gravity))
+         # 実機Lv23: 中心23pxから姿勢制動で12pxへ上昇すると回転の余裕を失う。
+         ceiling = c.ceiling_y
+         projected_x = x + vx * c.delay_s
+         for hx0, hy0, hx1, hy1 in self.hazards:
+             if hy1 < y and hx0 - 6 <= projected_x <= hx1 + 6:
+-                ceiling = max(ceiling, hy1 + 10.0)
++                ceiling = max(ceiling, hy1 + c.head_margin)
+         self._precision_debug += [round(v, 3) for v in (minimum_y, ceiling, maximum_y)]
+         if head_near:
+             if abs(future_om) > 0.35:
+                 return 2 if future_om * p.torque_sign > 0 else 1
+             return 0
+-        if maximum_y > self.height - 20 and abs(ang) < 0.5:
++        floor = self.height - 20
++        if c.corridor_control:
++            for hx0, hy0, hx1, hy1 in self.hazards:
++                if hy0 > y and hx0 - 6 <= projected_x <= hx1 + 6:
++                    floor = min(floor, hy0 - c.foot)
++            if gap is not None:
++                floor = min(floor, gap[1])
++        if maximum_y > floor and abs(ang) < 0.5:
+             # 片足でもほぼ全推力。落下の制動中も残った回転を止める。
+             if abs(error) > 0.08:
+                 return 1 if error * p.torque_sign > 0 else 2
+diff --git a/src/docich/flyhome/runner.py b/src/docich/flyhome/runner.py
+index 8cff3ac..de65777 100644
+--- a/src/docich/flyhome/runner.py
++++ b/src/docich/flyhome/runner.py
+@@ -440,7 +440,7 @@ def play(
+             if isinstance(ctl, MpcController) and st.phase == PLAYING and ctl._ref:
+                 r0, r1 = ctl._ref[0], ctl._ref[-1]
+                 extra = {"ref0": [round(r0[0], 1), round(r0[1], 1)], "ref_end": [round(r1[0], 1), round(r1[1], 1)],
+-                         "path0": [round(v, 1) for v in ctl.path[min(3, len(ctl.path) - 1)]] if ctl.path else None, "path": ctl.path, "input_delay_s": ctl.cfg.delay_s, "controller_profile": getattr(ctl, "profile_name", "current"), "home_settling": ctl._home_settling, "estimated": getattr(ctl, "_estimate_debug", None), "precision": getattr(ctl, "_precision_debug", None)}
++                         "path0": [round(v, 1) for v in ctl.path[min(3, len(ctl.path) - 1)]] if ctl.path else None, "path": ctl.path, "input_delay_s": ctl.cfg.delay_s, "controller_profile": getattr(ctl, "profile_name", "current"), "home_settling": ctl._home_settling, "estimated": getattr(ctl, "_estimate_debug", None), "precision": getattr(ctl, "_precision_debug", None), "corridor": getattr(ctl, "_corridor_debug", None)}
+             if isinstance(ctl, MpcController) and ctl._acts:
+                 extra = dict(extra or {}, input_sent_at=round(ctl._acts[-1][0], 6))
+                 if st.phase == PLAYING:

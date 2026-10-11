@@ -1,0 +1,190 @@
+diff --git a/src/docich/flyhome/mpc.py b/src/docich/flyhome/mpc.py
+index d36b6f0..f98b5a8 100644
+--- a/src/docich/flyhome/mpc.py
++++ b/src/docich/flyhome/mpc.py
+@@ -561,7 +561,15 @@ class MpcController:
+                 j = k
+                 while j + 1 < len(self.path) and abs(self.path[j + 1][0] - sx) < 0.1 and self.path[j + 1][1] > self.path[j][1]:
+                     j += 1
+-                if j > k and self.path[j][1] - sy >= 24 and -2 <= sy - y <= 30 and abs(sx - x) < 25:
++                if j > k and self.path[j][1] - sy >= 24:
++                    # A*の2/4pxセル中心が変わっても、狭い棘列の中央は固定する。
++                    columns = [(hx0, hx1) for hx0, hy0, hx1, hy1 in self.hazards
++                               if hy0 <= self.path[j][1] + 10 and hy1 >= sy - 10]
++                    left = max((hx1 for hx0, hx1 in columns if hx1 < sx), default=None)
++                    right = min((hx0 for hx0, hx1 in columns if hx0 > sx), default=None)
++                    if left is not None and right is not None and 16 <= right - left <= 40:
++                        sx = (left + right) / 2
++                if j > k and self.path[j][1] - sy >= 24 and -10 <= sy - y <= 30 and abs(sx - x) < 25:
+                     # 実機Lv16/33: 量子化で厳密静止待ちが続く。近くに棘がない
+                     # 開けた降下も緩和し、片側/頭上に近い棘があれば厳密条件を保つ。
+                     clearance = [max(hx0 - sx, sx - hx1, 0.0)
+@@ -577,7 +585,7 @@ class MpcController:
+                     else:
+                         self._descent_ready_since = None
+                     if not stable or now - self._descent_ready_since < hold_s:
+-                        rx, ry, rvx, rvy = sx, sy - 8, 0.0, 0.0
++                        rx, ry, rvx, rvy = sx, max(24.0, sy - 8), 0.0, 0.0
+                         align_descent = True
+                     else:
+                         self._descent_commit = (sx, sy + 12)
+@@ -595,6 +603,15 @@ class MpcController:
+                     if 0 <= xi < self.width and 0 <= yi < self.height and self.solid[yi * self.width + xi]:
+                         head_near = True
+         vertical_lane = abs(rvx) < 0.1 and rvy > 3
++        narrow_vertical_lane = False
++        if vertical_lane:
++            columns = [(hx0, hx1) for hx0, hy0, hx1, hy1 in self.hazards
++                       if hy0 <= max(y, ry) + 10 and hy1 >= min(y, ry) - 10]
++            left = max((hx1 for hx0, hx1 in columns if hx1 < rx), default=None)
++            right = min((hx0 for hx0, hx1 in columns if hx0 > rx), default=None)
++            if left is not None and right is not None and 16 <= right - left <= 40:
++                rx = (left + right) / 2
++                narrow_vertical_lane = True
+         want_vx = max(-8.0, min(8.0, rvx + 0.8 * (rx - x)))
+         want_vy = max(-12.0, min(12.0, rvy + 0.8 * (ry - y)))
+         # 横壁へ向かう区間は入口の直前で止めるだけでなく、離れた地点から低速で近づく。
+@@ -647,7 +664,10 @@ class MpcController:
+             return 0
+         if future_vy < want_vy - 3 and abs(ang) < 0.45 and abs(om) < 0.8 and abs(stop_angle) < 0.4:
+             return 0  # 姿勢を直す噴射でも上昇するため、まず要求速度まで自由落下で減速。
+-        if abs(error) > 0.08:
++        # 入口の位置許容2pxに対する小さな傾き要求を0.08radで捨てると、
++        # 中心から3〜5px離れた静止位置でも永遠に待ち続ける。
++        angle_deadband = .025 if align_descent or narrow_vertical_lane else .08
++        if abs(error) > angle_deadband:
+             return 1 if error * p.torque_sign > 0 else 2
+         if abs(future_om) > 0.35:
+             # 停止角が目標に合うのは「今から制動すれば合う」状態。両足では角速度が残る。
+@@ -670,6 +690,26 @@ class MpcController:
+         self._pending.append((first_delay - elapsed, action))
+         return first_delay
+ 
++    def _guard_top_turn(self, x, y, ang, om, action):
++        """上側の棘へ近い離陸では、送信済み噴射を含む停止角が大きければ先に制動。"""
++        self._top_turn_debug = None
++        if y >= 45 or not self.hazards:
++            return action
++        distance = min(math.hypot(max(hx0 - x, x - hx1, 0), max(hy0 - y, y - hy1, 0))
++                       for hx0, hy0, hx1, hy1 in self.hazards)
++        if distance >= 60:
++            return action
++        future_ang, future_om = ang, om
++        for duration, pending_action in self._pending:
++            torque = ((pending_action & 1) - ((pending_action >> 1) & 1)) * self.p.torque_sign * self.p.spin
++            future_ang += future_om * duration + .5 * torque * duration ** 2
++            future_om += (torque - self.p.angular_damping * future_om) * duration
++        stop_angle = future_ang + future_om * abs(future_om) / (2 * max(.1, self.p.spin))
++        self._top_turn_debug = [round(v, 3) for v in (distance, future_ang, future_om, stop_angle)]
++        if abs(stop_angle) > .4 and abs(future_om) > .35 and stop_angle * future_om > 0:
++            return 2 if future_om * self.p.torque_sign > 0 else 1
++        return action
++
+     # --- 計画 -----------------------------------------------------------------------------------
+     def decide(self, st: State, target: tuple[float, float]) -> tuple[bool, bool]:
+         if st.x is None or st.angle is None:
+@@ -679,6 +719,7 @@ class MpcController:
+             self._attempt = st.attempt
+             self._t0 = st.t
+         c = self.cfg
++        self._top_turn_debug = None
+         x, y, vx, vy, ang, om = self._estimate(st)
+         self._estimate_debug = [round(v, 3) for v in (vx, vy, ang, om)]
+         takeoff_s = min(c.takeoff_s, 0.15 if y < 40 else 0.25) if y < 40 or self._narrow_level else c.takeoff_s
+@@ -756,6 +797,7 @@ class MpcController:
+             # 実機の接触・量子化で予測外に姿勢が崩れたら、通路への追従より立て直しを優先。
+             turn_error = ang + 0.35 * om
+             best_seq[0] = (2 if turn_error * self.p.torque_sign > 0 else 1) if abs(turn_error) > 0.1 else 0
++        best_seq[0] = self._guard_top_turn(x, y, ang, om, best_seq[0])
+         self._plan = best_seq
+         self._plan_t = st.t
+         self._last_action = best_seq[0]
+diff --git a/src/docich/flyhome/runner.py b/src/docich/flyhome/runner.py
+index 0b97556..99085bc 100644
+--- a/src/docich/flyhome/runner.py
++++ b/src/docich/flyhome/runner.py
+@@ -439,7 +439,7 @@ def play(
+             if isinstance(ctl, MpcController) and st.phase == PLAYING and ctl._ref:
+                 r0, r1 = ctl._ref[0], ctl._ref[-1]
+                 extra = {"ref0": [round(r0[0], 1), round(r0[1], 1)], "ref_end": [round(r1[0], 1), round(r1[1], 1)],
+-                         "path0": [round(v, 1) for v in ctl.path[min(3, len(ctl.path) - 1)]] if ctl.path else None, "path": ctl.path, "input_delay_s": ctl.cfg.delay_s, "home_settling": ctl._home_settling, "estimated": getattr(ctl, "_estimate_debug", None), "precision": getattr(ctl, "_precision_debug", None)}
++                         "path0": [round(v, 1) for v in ctl.path[min(3, len(ctl.path) - 1)]] if ctl.path else None, "path": ctl.path, "input_delay_s": ctl.cfg.delay_s, "home_settling": ctl._home_settling, "top_turn_guard": getattr(ctl, "_top_turn_debug", None), "estimated": getattr(ctl, "_estimate_debug", None), "precision": getattr(ctl, "_precision_debug", None)}
+             if isinstance(ctl, MpcController) and ctl._acts:
+                 extra = dict(extra or {}, input_sent_at=round(ctl._acts[-1][0], 6))
+                 if st.phase == PLAYING:
+diff --git a/tests/test_flyhome_windows_control.py b/tests/test_flyhome_windows_control.py
+index 3e4f4b0..0b77abc 100644
+--- a/tests/test_flyhome_windows_control.py
++++ b/tests/test_flyhome_windows_control.py
+@@ -482,3 +482,71 @@ def test_vertical_descent_preserves_three_identical_position_observations():
+     assert ctl._precision_action(150, 60, 0, 0, 0, 0) == 0
+     assert ctl._precision_debug[0] == 0
+     assert ctl._precision_debug[4] == 0
++
++
++def test_actual_level35_descent_alignment_survives_path_entry_quantization():
++    ctl = _actual_mpc()
++    ctl.path = [(138, 22), (142, 22), (146, 22), (150, 22), (150, 26), (150, 134)]
++    ctl.hazards = [(131, 39, 141, 129), (163, 39, 173, 129)]
++    ctl._ref = [(150, 30, 0, 12)] * 14
++    ctl._hist.extend([(9.8,144.728,25.337,.206),(10,144.728,25.337,.206)])
++    ctl._precision_action(144.728,25.337,6.126,6.878,.206,-.466)
++    assert ctl._descent_commit is None
++    assert ctl._precision_debug[7]  # still align before entering, despite sy=22/y=25.337
++    assert ctl._precision_debug[3] == -1.07
++    ctl._precision_action(144.728,35,6.126,6.878,.206,-.466)
++    assert not ctl._precision_debug[7]  # below the entry band: continue shaft traversal
++
++
++def test_actual_level35_top_departure_brakes_pending_rotation_before_landing():
++    ctl = _actual_mpc()
++    ctl.hazards = [(131,39,141,129),(163,39,173,129)]
++    ctl._pending = [(.12,1)]
++    # Actual early departure x103.745/y22.309, angle .177, omega1.068.
++    assert ctl._guard_top_turn(103.745,22.309,.177,1.068,3) == 2
++    assert ctl._top_turn_debug[3] > .4
++    assert ctl._guard_top_turn(103.745,60,.177,1.068,3) == 3
++    ctl.hazards = []
++    assert ctl._guard_top_turn(103.745,22.309,.177,1.068,3) == 3
++    ctl.hazards = [(131,39,141,129)]
++    ctl._pending = [(.12,2)]
++    assert ctl._guard_top_turn(103.745,22.309,-.177,-1.068,3) == 1
++    ctl._pending = [(.12,0)]
++    assert ctl._guard_top_turn(103.745,22.309,.1,.1,3) == 3
++
++
++def test_actual_level35_descent_centre_uses_spike_gap_across_grid_replans():
++    ctl = _actual_mpc()
++    ctl.hazards = [(131,39,141,129),(163,39,173,129)]
++    ctl._ref = [(152,40,0,12)] * 14
++    ctl._hist.extend([(9.8,152,26,0),(10,152,26,0)])
++    for grid_x in (150,153):
++        ctl.path = [(grid_x,26),(grid_x,134)]
++        ctl._descent_ready_since = 9.5
++        ctl._descent_commit = None
++        ctl._precision_action(152,26,0,0,0,0)
++        assert ctl._descent_commit == (152,38)
++
++
++def test_descent_entry_small_centre_error_is_not_inside_angular_deadband():
++    ctl = _actual_mpc()
++    ctl.height = 180
++    ctl.path = [(150,26),(150,134)]
++    ctl.hazards = [(131,39,141,129),(163,39,173,129)]
++    ctl._ref = [(150,40,0,12)] * 14
++    ctl._hist.extend([(9.8,149,26,0),(10,149,26,0)])
++    assert ctl._precision_action(149,26,0,0,0,0) == 1
++    assert ctl._precision_debug[7]
++    assert .025 < ctl._precision_debug[6] < .08
++
++
++def test_actual_level35_shaft_stays_on_geometric_centre_after_entry_commit():
++    ctl = _actual_mpc()
++    ctl.path = [(150,22),(150,134)]
++    ctl.hazards = [(131,39,141,129),(163,39,173,129)]
++    ctl._ref = [(150,70,0,12)] * 14
++    ctl._hist.extend([(9.8,145.924,60.337,0),(10,145.924,60.337,0)])
++    assert ctl._precision_action(145.924,60.337,0,10.043,0,.028) == 1
++    assert not ctl._precision_debug[7]
++    assert ctl._precision_debug[8]
++    assert ctl._precision_debug[2] == 4.0  # geometric centre correction, capped near the opposite wall

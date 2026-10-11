@@ -75,7 +75,11 @@ class ExternalVideoCornerManager:
         self.stopping = False
         if coordinator is None:
             from .adapters import make_coordinator_adapter
-            coordinator = GameSwitchCoordinator(self.store, lambda spec: make_coordinator_adapter(g, spec))
+            from .stream_category import commit_hook
+            # Same post-commit hook as PAPER/CLI: start switches the Twitch
+            # category/title to FlyHome, and the restore puts the previous game back.
+            coordinator = GameSwitchCoordinator(self.store, lambda spec: make_coordinator_adapter(g, spec),
+                                                post_commit=commit_hook(g))
         self.coordinator = coordinator
 
     def canonical(self, *, patience_s=60):

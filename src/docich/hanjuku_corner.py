@@ -8,13 +8,15 @@ from pathlib import Path
 from .config import ConfigError, load_global
 
 
-def start():
+def start(*, resume_latest=False):
     root = Path(__file__).resolve().parents[2]
     config = load_global(root, root / 'config/docich.soren-live.toml')
     from .corner_rotation import CornerRotationManager
     # Durable next-slot priority: the timer finishes the current reservation
     # and uses the normal execution/program-slot/game-boundary gates.
-    return CornerRotationManager(config).queue_manual('hanjuku-hero')
+    manager = CornerRotationManager(config)
+    return (manager.queue_manual('hanjuku-hero', resume_latest=True) if resume_latest
+            else manager.queue_manual('hanjuku-hero'))
 
 
 ROTATION_FAILURE_EXIT = {
@@ -95,9 +97,11 @@ def _fixed_failure_exit(exc):
 
 
 def main(argv=None):
-    argparse.ArgumentParser(description=__doc__).parse_args(argv)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--resume-latest', action='store_true')
+    args = parser.parse_args(argv)
     try:
-        result = start()
+        result = start(resume_latest=True) if args.resume_latest else start()
     except Exception as exc:
         exit_code = _fixed_failure_exit(exc)
         # stderr is retained only in the owner-only VM operation log. Keep it
