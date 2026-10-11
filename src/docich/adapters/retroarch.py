@@ -223,6 +223,10 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
             lines.append('video_scale = "1.0"')
         # Stable native pixels for the deterministic screen signatures.
         lines += ['video_smooth = "false"',
+                  # Paused LOAD/SAVE/slot OSD persists over native dialogue
+                  # (g704: State slot #0 hid two glyphs). Keep the observed
+                  # game pixels readable without weakening restore evidence.
+                  'video_font_enable = "false"',
                   # Custom configs may have no core-info search directory. The
                   # loaded core still has to provide a nonzero serialize size.
                   'core_info_savestate_bypass = "true"',
