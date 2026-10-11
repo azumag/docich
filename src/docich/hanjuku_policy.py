@@ -6683,6 +6683,27 @@ def _recruit_spare_after_necessities(mem, shop, gold):
     return evidence['spare'] >= RECRUIT_COST, evidence
 
 
+def _recruit_cash_floor(shop):
+    """Keep the menu's fee, wage and necessary reserves before any payment."""
+    repair = shop.get('hero_repair_reserve', 0)
+    egg = (shop.get('reserve', 0) if shop.get('recruit_priority')
+           and (shop.get('egg') in ('pending', 'check') or _egg_before_soldiers(shop)) else 0)
+    if any(type(value) is not int or value < 0 for value in (repair, egg)):
+        return None
+    return RECRUIT_COST + WAGE_RESERVE + repair + egg
+
+
+def _recruit_dialog_cash_ready(mem, shop, gold):
+    spare, evidence = _recruit_spare_after_necessities(mem, shop, gold)
+    floor = _recruit_cash_floor(shop)
+    evidence['minimum_gold'] = floor
+    if type(gold) is not int or floor is None:
+        return None, evidence
+    if gold < floor:
+        return False, evidence
+    return spare, evidence
+
+
 def _defer_recruit_cash(mem, shop, gold, evidence):
     """Restore only an affordable pre-recruit plan; zero budget is not a receipt."""
     original = shop.get('soldiers_before_recruit')
@@ -6697,7 +6718,7 @@ def _defer_recruit_cash(mem, shop, gold, evidence):
         shop['soldiers_done'] = shop['soldiers'] == 0  # no purchase claimed
     shop.update(recruit='deferred_cash', recruit_priority=False, recruit_reserve=0)
     _record(mem, 'recruit_cash_held', month=shop.get('key'), observed_metric=evidence,
-            reason='自軍城を守る人数がいる場合は、必要兵士・卵・修理・賃金予備を削って募集費を作らず余裕資金だけ使う')
+            reason='募集費・卵・修理・賃金予備を支払い直前にも確認し、城を守る人数がいる場合は必要兵士の予算も温存する')
 
 
 def _recruit_target(mem):
@@ -7098,7 +7119,7 @@ def month_step(screen: Screen, mem):
                 _record(mem, 'recruit_deferred_egg', month=shop.get('key'),
                         reason='募集導入の復帰でも回復未確認のまま新たな募集費を払わず戻る')
             return [pad('b')]
-        spare, evidence = _recruit_spare_after_necessities(mem, shop, gold) if shop else (None, None)
+        spare, evidence = _recruit_dialog_cash_ready(mem, shop, gold) if shop else (None, None)
         if shop and spare is not True:
             _defer_recruit_cash(mem, shop, gold, evidence)
             return [pad('b')]
@@ -7278,11 +7299,9 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
                 continue
             # Owner rule (2026-09-27): recruit only when the soldiers got
             # their full 99 and the fee plus the wage reserve is still left.
+            floor = _recruit_cash_floor(shop)
             if (type(gold) is not int or (not shop.get('recruit_priority') and shop.get('soldiers', 0) < SOLDIER_CAP)
-                    or gold < cost + WAGE_RESERVE + shop.get('hero_repair_reserve', 0)
-                    + (shop.get('reserve', 0) if shop.get('recruit_priority')
-                       and (shop.get('egg') in ('pending', 'check')
-                            or _egg_before_soldiers(shop)) else 0)):
+                    or floor is None or gold < floor):
                 if (shop.get('recruit_priority') and type(gold) is int
                         and gold >= RECRUIT_COST + WAGE_RESERVE + shop.get('hero_repair_reserve', 0)
                         and shop.get('egg') in ('pending', 'check')):
@@ -8027,7 +8046,7 @@ def month_sub_step(screen: Screen, mem):
                     reason='追跡中の未払い募集導入でも卵回復を先に確認するため戻る')
         elif not paid:
             shop = mem.get('shop') or {}
-            spare, evidence = _recruit_spare_after_necessities(mem, shop, gold)
+            spare, evidence = _recruit_dialog_cash_ready(mem, shop, gold)
             if spare is not True and type(gold) is not int:
                 # An unread header is not "no spare cash" (g662). Never confirm
                 # a payment blind; other dialogue advances within the limit.
