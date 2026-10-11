@@ -231,7 +231,11 @@ def claim(adapter, deadline, cancel):
             return
         ledger = read_record(Path(g.state_dir) / 'corner_rotation.json', limit=1024 * 1024)
         pending = ledger.get('pending') or {}
-        if (pending.get('request_id') != request.get('request_id')
+        recovery = request.get('startup_recovery')
+        attempt_id = (recovery.get('attempt_id') if isinstance(recovery, dict)
+                      else request.get('request_id'))
+        if (pending.get('request_id') != attempt_id
+                or (recovery is not None and pending.get('resume_request_id') != request.get('request_id'))
                 or pending.get('corner') != request.get('corner')
                 or pending.get('source') != 'manual' or pending.get('resume_latest') is not True):
             return  # another legitimate corner start cannot steal the request

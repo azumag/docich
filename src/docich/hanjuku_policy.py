@@ -8866,6 +8866,22 @@ def observe_events(screen: Screen, mem):
     mem['tick'] = int(mem.get('tick') or 0) + 1      # observations: ages sorties (_en_route)
     _hold_general_loss_metric(mem)
     _migrate_card_evidence(mem)
+    if (mem.get('resume_chapter_pending') is True and not mem.get('chapter')
+            and screen.kind == 'text' and screen.header is None):
+        # Native restored party-picker -> chapter-2 introduction (public
+        # frame fixtures). Require both independent lines, never the source
+        # run's final chapter or the year/month header. Neither line alone
+        # identifies a map. This recognition is limited to chapterless resume.
+        clues = mem.setdefault('resume_intro_clues', {})
+        if 'かんじゅくクイーンめをたおしてから' in screen.text:
+            clues['queen'] = True
+        if 'どうしににたヤツ「フフフ' in screen.text:
+            clues['double'] = True
+        if clues.get('queen') is True and clues.get('double') is True:
+            mem.pop('resume_chapter_pending', None)
+            mem.pop('resume_intro_clues', None)
+            _enter_chapter(mem, 2, evidence='native_chapter_2_intro',
+                           reason='再開後のクイーン撃破と主人公の偽物の導入会話を両方確認して第2話を確定')
     if screen.kind in ('card_select', 'sortie_confirm'):
         row = _egg_row(screen)
         eggs = mem.setdefault('egg_uses', {})

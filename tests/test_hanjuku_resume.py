@@ -348,3 +348,162 @@ def test_unknown_resume_chapter_resolves_only_fresh_unique_castle():
     untouched={'_records':[]}
     observe_chapter_castle(untouched,'フーリック')
     assert untouched.get('chapter') is None
+
+
+@pytest.fixture
+def recovery_setup(setup, monkeypatch):
+    from docich import hanjuku_resume_recovery as op
+    from docich.corner_rotation import CornerRotationManager
+    from docich.corner_catalog import Corner
+    from docich.game_switch import GameSwitchStore, _initial_state
+    s = setup
+    config = s.g.repo_root / 'config.toml'
+    config.write_text('[corner_rotation]\nenabled=true\n')
+    s.g = load_global(s.g.repo_root, config); s.adapter.g = s.g
+    manager = CornerRotationManager(s.g, clock=lambda:1000000.0,
+        catalog=[Corner('hanjuku-hero','game','hanjuku-hero')],
+        adapter_factory=lambda *_:SimpleNamespace(eligible=lambda:True, observations=lambda:[]))
+    ledger = manager.load(1000000.0)
+    stage(s)
+    base = Path(s.g.state_dir)
+    claim = read_record(s.spec.runtime_dir / resume.RECEIPT_FILE)
+    ledger.update(status='recovery_required', pending=dict(s.queue,source='manual',phase='dispatched'))
+    manager.save(ledger)
+    owner = {'status':'failed','rotation_request_id':s.queue['request_id'],'game':'hanjuku-hero','detail':'retained'}
+    atomic_write_json(base/'retro_corner.json',owner)
+    atomic_write_json(s.spec.runtime_dir/'presentation.json',{'status':'stopped'})
+    soren = s.g.repo_root/'soren'; (soren/'tmp/state').mkdir(parents=True)
+    (soren/'tmp/state/docich_program.lock').touch()
+    (base/'corner-manual-queue.lock').touch()
+    for name in ('corner-rotation','retro-corner','retro-corner-manual'):
+        (base/'locks').mkdir(exist_ok=True); (base/f'locks/{name}.lock').touch()
+    store=GameSwitchStore(base);store.initialize()
+    idle = _initial_state();idle['next_generation']=700;store.canonical.save(idle)
+    terminal=dict(store.accept_request(s.queue['request_id'],'switch','hanjuku-hero').receipt)
+    terminal.update(runtime_id=s.spec.runtime_id,runtime_dir=str(s.spec.runtime_dir),status='rolled_back',
+        result={'request_id':s.queue['request_id'],'generation':700,'status':'rolled_back'})
+    store.receipts.save(terminal)
+    idle['next_generation']=701;store.canonical.save(idle)
+    monkeypatch.setattr(op,'CornerRotationManager',lambda g:manager)
+    monkeypatch.setattr(op,'resolve_soren_root',lambda g:soren)
+    class Absent:
+        def window_target_exists(self,*args,**kwargs):return False
+        def session_target_exists(self,*args,**kwargs):return False
+    s.tmux=Absent();s.op=op;s.store=store;s.manager=manager;s.claim=claim
+    s.fingerprint=op.fingerprint(claim)
+    return s
+
+
+def snapshot_recovery(s):
+    return {p:p.read_bytes() for p in Path(s.g.state_dir).rglob('*') if p.is_file()}
+
+
+def recover_startup(s, **kwargs):
+    return s.op.recover(s.g,tmux=s.tmux,now=lambda:1000000.0,**kwargs)
+
+
+def test_recovery_check_read_only_and_exact_logical_checkpoint_preserved(recovery_setup):
+    s=recovery_setup;before=snapshot_recovery(s)
+    assert recover_startup(s)=={'status':'recovery-eligible','fingerprint':s.fingerprint}
+    assert snapshot_recovery(s)==before
+    # A newer save must never replace the immutable selection.
+    s.older.write_bytes(state_bytes(b'newer'));os.utime(s.older,ns=(500,500))
+    result=recover_startup(s,apply=True,expected=s.fingerprint)
+    assert result['status']=='recovery-queued'
+    current=read_record(Path(s.g.state_dir)/'hanjuku-resume'/resume.REQUEST_FILE)
+    assert current['request_id']==s.queue['request_id']
+    assert current['sha256']==s.claim['sha256']
+    assert current['startup_recovery']['original']==s.claim
+    queued=s.manager.load(1000000.0)['queued_manual']
+    assert queued['request_id']!=s.queue['request_id']
+    assert queued['request_id']==current['startup_recovery']['attempt_id']
+    assert queued['resume_request_id']==s.queue['request_id']
+    unchanged=snapshot_recovery(s)
+    assert recover_startup(s,apply=True,expected=s.fingerprint)==result
+    assert snapshot_recovery(s)==unchanged
+    # Old local claim and terminal execution remain byte-for-byte immutable.
+    assert (s.spec.runtime_dir/resume.RECEIPT_FILE).read_bytes()==before[s.spec.runtime_dir/resume.RECEIPT_FILE]
+    path=s.store.receipts._path(s.queue['request_id'])
+    assert path.read_bytes()==before[path]
+    assert len(list((Path(s.g.state_dir)/'hanjuku-resume').glob('*.state')))==1
+
+
+@pytest.mark.parametrize('change', ['bot','run','events','wrong-fingerprint','local-mismatch',
+    'not-rolled-back','wrong-runtime','active','live-presentation','tmux','paused','checkpoint',
+    'queued-conflict','owner-active','automatic','wrong-generation','missing-lock'])
+def test_recovery_refuses_gameplay_uncertainty_drift_or_other_owner(recovery_setup,change):
+    from docich.hanjuku_manual_cancel import CancelRefused
+    from docich.game_switch import runtime_state_dict
+    s=recovery_setup;base=Path(s.g.state_dir);expected=s.fingerprint
+    if change in {'bot','run','events'}:
+        names={'bot':'hanjuku_bot.json','run':'hanjuku_run.json','events':'hanjuku_events.jsonl'}
+        (s.spec.runtime_dir/names[change]).touch()
+    elif change=='wrong-fingerprint':expected='a'*64
+    elif change=='local-mismatch':atomic_write_json(s.spec.runtime_dir/resume.RECEIPT_FILE,dict(s.claim,status='verified'))
+    elif change in {'not-rolled-back','wrong-runtime'}:
+        d=s.store.receipts.load(s.queue['request_id'])
+        if change=='not-rolled-back':d['status']='failed'
+        else:d.update(runtime_id='g700-ffffabcd',runtime_dir=str(base/'runtimes/g700-ffffabcd'))
+        s.store.receipts.save(d)
+    elif change=='active':
+        d,_=s.store.canonical.load();d.update(phase='ready',active=runtime_state_dict(RuntimeSpec.from_runtime(base, {**vars(s.spec)}),'2026-10-12T00:00:00Z'));s.store.canonical.save(d)
+    elif change=='live-presentation':atomic_write_json(s.spec.runtime_dir/'presentation.json',{'status':'ready'})
+    elif change=='tmux':s.tmux.window_target_exists=lambda *a,**k:True
+    elif change=='paused':
+        p=base/'corners/hanjuku-hero.paused';p.parent.mkdir();p.touch()
+    elif change=='checkpoint':(base/'hanjuku-resume'/(s.queue['request_id']+'.state')).write_bytes(state_bytes(b'changed'))
+    elif change=='queued-conflict':
+        d=s.manager.load(1000000.0);d['queued_manual']={'corner':'weather','request_id':str(uuid.uuid4()),'selected_at':1000000.0};s.manager.save(d)
+    elif change=='owner-active':atomic_write_json(base/'retro_corner.json',{'status':'active','rotation_request_id':s.queue['request_id']})
+    elif change=='automatic':
+        d=s.manager.load(1000000.0);d['pending']['source']='automatic';s.manager.save(d)
+    elif change=='wrong-generation':
+        d=dict(s.claim,generation=True);atomic_write_json(base/'hanjuku-resume'/resume.REQUEST_FILE,d)
+    elif change=='missing-lock':(base/'locks/retro-corner.lock').unlink()
+    before=snapshot_recovery(s)
+    with pytest.raises(CancelRefused):recover_startup(s,apply=True,expected=expected)
+    assert snapshot_recovery(s)==before
+
+
+@pytest.mark.parametrize('failed_write', ['owner','ledger'])
+def test_recovery_partial_publication_repairs_same_attempt(recovery_setup,failed_write):
+    s=recovery_setup;base=Path(s.g.state_dir)
+    from docich.game_switch import atomic_write_json as write
+    def fail(path,value):
+        if Path(path)==(base/'retro_corner.json' if failed_write=='owner' else s.manager.path):
+            raise OSError('interrupted')
+        return write(path,value)
+    target='docich.hanjuku_resume_recovery.atomic_write_json' if failed_write=='owner' else 'docich.corner_rotation.atomic_write_json'
+    with mock.patch(target,side_effect=fail):
+        with pytest.raises((OSError,s.op.CancelRefused)):recover_startup(s,apply=True,expected=s.fingerprint)
+    prepared=read_record(base/'hanjuku-resume'/resume.REQUEST_FILE)
+    assert prepared['request_id']==s.queue['request_id']
+    assert recover_startup(s,apply=True,expected=s.fingerprint)['status']=='recovery-queued'
+    queued=s.manager.load(1000000.0)['queued_manual']
+    assert queued['request_id']==prepared['startup_recovery']['attempt_id']
+
+
+def test_recovery_claim_requires_derived_attempt_and_retains_logical_uuid(recovery_setup):
+    s=recovery_setup;base=Path(s.g.state_dir)
+    recover_startup(s,apply=True,expected=s.fingerprint)
+    queued=s.manager.load(1000000.0)['queued_manual']
+    # Normal / natural starts cannot steal the queued recovery.
+    rd=base/'runtimes/g701-cafe1234';(rd/'states').mkdir(parents=True)
+    spec=replace(s.spec,generation=701,runtime_id=rd.name,runtime_dir=rd,lease_id=str(uuid.uuid4()))
+    adapter=SimpleNamespace(**{**vars(s.adapter),'spec':spec})
+    candidate={k:getattr(spec,k) for k in ('game','runtime_id','generation','lease_id')}
+    for pending in (dict(s.queue,source='manual'),dict(queued,source='automatic'),
+                    {k:v for k,v in dict(queued,source='manual').items() if k!='resume_request_id'}):
+        atomic_write_json(base/'corner_rotation.json',{'pending':pending})
+        with mock.patch('docich.agent.fence.read_canonical',return_value={'candidate':candidate}):
+            resume.claim(adapter,time.monotonic()+3,None)
+        assert not (rd/resume.RECEIPT_FILE).exists()
+    atomic_write_json(base/'corner_rotation.json',{'pending':dict(queued,source='manual')})
+    with mock.patch('docich.agent.fence.read_canonical',return_value={'candidate':candidate}):
+        resume.claim(adapter,time.monotonic()+3,None)
+    receipt=read_record(rd/resume.RECEIPT_FILE)
+    assert receipt['request_id']==s.queue['request_id'] and receipt['generation']==701
+    assert (rd/'states/hanjuku-hero.state').read_bytes()==s.source.read_bytes()
+    before=snapshot_recovery(s)
+    assert recover_startup(s,apply=True,expected=s.fingerprint)['status']=='already-dispatched'
+    assert snapshot_recovery(s)==before
