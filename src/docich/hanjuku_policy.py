@@ -114,6 +114,7 @@ def menu_to(screen: Screen, label: str, *, exact=True):
 # Re-evaluate that old state once; never migrate an unobserved target arrival.
 MENU_NAV_SCHEMA = 2
 MENU_NAV_PRESS_LIMIT = 4
+MENU_NAV_RETRY_HOLD = 6          # held observations (~9 s) after the cancel B before retrying
 # A real cursor step moves a whole menu row (16 px in the measured layouts), so
 # anything smaller is detection jitter, not progress toward the target.
 MENU_NAV_PROGRESS_PX = 4
@@ -159,9 +160,10 @@ def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV
         previous = previous if type(previous) is int and previous >= 0 else 0
         presses = 0 if progressed else min(previous + 1, limit + 1)
         cancel_sent = not progressed and state.get('cancel_sent') is True
+    held = int(state.get('held') or 0) if same and cancel_sent else 0
     state = mem[key] = {'schema': MENU_NAV_SCHEMA, 'context': context,
                         'direction': direction, 'distance': distance,
-                        'presses': presses, 'cancel_sent': cancel_sent}
+                        'presses': presses, 'cancel_sent': cancel_sent, 'held': held}
     if presses < limit:
         return move
     if not cancel_sent:
@@ -171,11 +173,79 @@ def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV
                                  'route': key},
                 reason='目標行へ近づかないため確定せずBで戻り、前面を再観測する')
         return [pad('b')]
-    return []
+    # 2026-10-11 1-11 and 2-1: right after the month menu appeared, the moves
+    # and the cancel B were ignored and this hold lasted until the bot's 150 s
+    # no-input fallback, whose fresh navigation then worked. Retry the same
+    # bounded move/cancel episode after a short wait instead (never A).
+    state['held'] = held + 1
+    if state['held'] < MENU_NAV_RETRY_HOLD:
+        return []
+    mem[key] = {'schema': MENU_NAV_SCHEMA, 'context': context, 'direction': direction,
+                'distance': distance, 'presses': 0, 'cancel_sent': False, 'held': 0}
+    _record(mem, 'menu_nav_retry', screen=screen.kind, choice=label,
+            observed_metric={'held': state['held'], 'direction': direction, 'route': key},
+            reason='Bで戻った後も目標行へ近づかないため、短い待機の後に移動をやり直す')
+    return move
+
+
+MONTH_TEXT_ADVANCE_LIMIT = 6    # A presses per unread message over the month menu
 
 
 def _month_menu_move(screen: Screen, mem, label: str):
-    return guarded_menu_to(screen, mem, label, key='month_nav')
+    move = guarded_menu_to(screen, mem, label, key='month_nav')
+    if move == []:
+        return _month_text_advance(screen, mem, label) or move
+    return move
+
+
+def _month_dialog_unread(screen: Screen) -> bool:
+    """An unread tile in the dialogue window, other than a voicing mark.
+
+    Dakuten/handakuten sit on the tile row 8 px above their kana and read as
+    unknown tiles there; anything else unknown may be a choice.
+    """
+    rows = {line.y: line for line in screen.lines if line.y >= 167}
+    for y, line in rows.items():
+        unknown = [x for x, ch in line.cells if ch == UNKNOWN]
+        if not unknown:
+            continue
+        below = rows.get(y + 8)
+        known_below = {x for x, ch in (below.cells if below else ()) if ch != UNKNOWN}
+        if len(unknown) < len(line.cells) or not set(unknown) <= known_below:
+            return True
+    return False
+
+
+def _month_text_advance(screen: Screen, mem, label: str):
+    """A message box over the month menu takes the input; only A closes it.
+
+    g-1-11 (2026-10-11 13:0x): after the おねだり gift was bought the month
+    menu stayed behind a message box. Down and the cancel B changed nothing,
+    the guarded navigation then held for 150 s and the bot fallback's B kept
+    the screen frozen. The normal month menu has no text in its dialogue
+    window (y>=175), so once navigation is stuck, unread plain text there is
+    advanced with A - never a うむッ/いかんッ choice, never inside a tracked
+    egg/recruit/building flow, and a bounded number of times per message.
+    """
+    body = _month_dialog_body(screen)
+    # Any unread glyph in the window may be a half-read うむッ!/いかんッ! choice
+    # (the known-only body would hide it): only fully read text is plain.
+    unread = _month_dialog_unread(screen)
+    if (not body or unread or mem.get('month_sub') or screen.has('うむッ') or screen.has('いかんッ')
+            or body in (RECRUIT_INTRO, RECRUIT_GOODBYE) or screen.has('じゅうじキー')):
+        return None
+    key = [mem.get('month'), body[-40:]]
+    state = mem.get('month_text_advance')
+    if not isinstance(state, dict) or state.get('key') != key:
+        state = mem['month_text_advance'] = {'key': key, 'presses': 0}
+    if state['presses'] >= MONTH_TEXT_ADVANCE_LIMIT:
+        return None
+    state['presses'] += 1
+    mem.pop('month_nav', None)   # re-read the menu once the box is gone
+    _record(mem, 'month_text_advance', screen=screen.kind, choice=label,
+            observed_metric={'presses': state['presses'], 'text': body[-40:]},
+            reason='月初メニューの前面に残った会話文でカーソルが動かないため、選択肢のない文だけAで送る')
+    return [pad('a')]
 
 
 # ---------------------------------------------------------------- name entry
@@ -6897,9 +6967,22 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
     return None if recruit_only or egg_only else _month_chikujou(screen, mem, shop)
 
 
-CHIKUJOU_SPARE = 40            # gold beyond the wage reserve before a castle is upgraded
+CHIKUJOU_SPARE = 1             # gold beyond the necessities before a castle's quote is read
 CHIKUJOU_SUB_LIMIT = 64        # bounded castle navigation, quote, result and return
 CHIKUJOU_WAIT_LIMIT = 6        # no repeated A while a selection/result frame persists
+
+
+def _chikujou_affordable(gold, reserve):
+    """Any gold above the necessities may buy a level; the quote decides.
+
+    Owner (2026-10-11): アルマムーン alone was upgraded. A level costs
+    20 - the defending general's 内政 (gcgx info.html), at most 20G, but a
+    castle was only opened with 40G spare beyond the reserve, so the home
+    upgrade used up the margin of every other holding. The reserve already
+    holds the wage, egg, hero repair, recruit, soldier and card money, and
+    the real NGかかりますが quote is still checked against it before うむッ.
+    """
+    return type(gold) is int and reserve is not None and gold >= reserve + CHIKUJOU_SPARE
 
 
 def _chikujou_reserve(mem, shop):
@@ -6907,18 +6990,36 @@ def _chikujou_reserve(mem, shop):
     def amount(value):
         return value if type(value) is int and value > 0 else 0
 
-    # Optional building yields to the worst case: the estimate is a lower
-    # bound (measured counts only), while an unread recheck name may still
-    # turn into a real quote next month.
-    egg = (0 if shop.get('egg') in ('done', 'not_needed') else
-           max(amount(shop.get('reserve')), amount(shop.get('egg_cost')),
-               EGG_RECOVER_COST * len(_egg_recovery_targets(mem))))
+    # Optional building yields to the worst case while this month's recovery
+    # is unresolved: the estimate is a lower bound (measured counts only),
+    # while an unread recheck name may still turn into a real quote.
+    # Owner (2026-10-11): 145G on hand and no castle was built. A recovery
+    # already skipped as unaffordable this month spends nothing more now, so
+    # it keeps only the hero's egg (g604: an eggless hero in a defense is game
+    # over), not 50G per general that had summoned once against a level
+    # costing at most 20G.
+    status = shop.get('egg')
+    if status in ('done', 'not_needed'):
+        egg = 0
+    elif status == 'skipped':
+        # The hero awaiting a re-read after a summon (egg_recheck / dirty
+        # roster egg, old count 4 or none) is not proof his egg is full.
+        egg = EGG_RECOVER_COST if NAME in _egg_recovery_targets(mem) else 0
+    else:
+        egg = max(amount(shop.get('reserve')), amount(shop.get('egg_cost')),
+                  EGG_RECOVER_COST * len(_egg_recovery_targets(mem)))
     repair = max(amount(shop.get('hero_repair_reserve')), 50 if _hero_egg_broken(mem) else 0)
     soldiers = 0 if shop.get('soldiers_done') else amount(shop.get('soldiers'))
+    # A recruit stopped as unneeded/unaffordable no longer holds its fee; a
+    # general shortage (recruit_priority) still saves it for the next month.
+    recruit = (amount(shop.get('recruit_reserve'))
+               if shop.get('recruit') != 'done' and (
+                   shop.get('recruit') in ('pending', 'check', 'opened')
+                   or shop.get('recruit_priority')) else 0)
     cards = [] if shop.get('merchant_done') else shop.get('items') or []
     if any(name not in KNOWN_PRICES for name, _ in cards):
         return None  # an unpriced required purchase is not spare money
-    return (WAGE_RESERVE + egg + repair + amount(shop.get('recruit_reserve')) + soldiers
+    return (WAGE_RESERVE + egg + repair + recruit + soldiers
             + sum(KNOWN_PRICES[name] * quantity for name, quantity in cards))
 
 
@@ -6967,7 +7068,7 @@ def _month_chikujou(screen, mem, shop):
         return None
     gold = (screen.header or {}).get('gold')
     reserve = _chikujou_reserve(mem, shop)
-    if type(gold) is not int or reserve is None or gold < reserve + CHIKUJOU_SPARE:
+    if not _chikujou_affordable(gold, reserve):
         shop['chikujou'] = 'done' if shop.get('chikujou_upgrades') else 'skipped'
         return None
     move = menu_to(screen, 'ちくじょう')
@@ -7035,6 +7136,10 @@ def _chikujou_step(screen, mem, sub):
         reserve = _chikujou_reserve(mem, mem.get('shop') or {})
         if (sub.get('declined') or cost is None or type(gold) is not int
                 or reserve is None or gold - cost < reserve):
+            if (not sub.get('declined') and cost is not None and type(gold) is int
+                    and reserve is not None and sub.get('chosen')
+                    and f"{sub['chosen']}じょうですな" in text):
+                sub['cost_declined'] = True  # this castle's price only
             sub['declined'] = True
             move = menu_to(screen, 'いかんッ!')
             if not sub.get('decline_recorded'):
@@ -7254,12 +7359,19 @@ def _finish_month_sub(screen, mem, shop) -> bool:
                                      'gold_before': before, 'gold_after': gold})
                 reserve = _chikujou_reserve(mem, shop)
                 more = (sub.get('key') is not None and sub.get('key') == shop.get('key')
-                        and not sub.get('aborted') and reserve is not None
-                        and gold >= reserve + CHIKUJOU_SPARE
+                        and not sub.get('aborted') and _chikujou_affordable(gold, reserve)
                         and any(c not in tried for c in _chikujou_candidates(mem)))
                 shop['chikujou'] = 'check' if more else 'done'
             elif sub.get('declined') and type(gold) is int and gold == before:
-                shop['chikujou'] = 'done' if shop.get('chikujou_upgrades') else 'skipped'
+                # A castle refused only on its own read price leaves the
+                # others: each castle's price follows its own general's 内政.
+                reserve = _chikujou_reserve(mem, shop)
+                more = (sub.get('cost_declined') and chosen
+                        and sub.get('key') is not None and sub.get('key') == shop.get('key')
+                        and not sub.get('aborted') and _chikujou_affordable(gold, reserve)
+                        and any(c not in tried for c in _chikujou_candidates(mem)))
+                shop['chikujou'] = ('check' if more else
+                                    'done' if shop.get('chikujou_upgrades') else 'skipped')
             else:
                 shop['chikujou'] = 'unverified'
         _record(mem, 'chikujou', month=sub.get('key'),
