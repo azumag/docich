@@ -6004,6 +6004,7 @@ MONTH_SUB_LIMIT = 8              # A presses through an unmeasured sub-screen
 MONTH_SUB_MENU_WAIT = 4
 RECRUIT_CANDIDATE_LIMIT = 32     # paid candidate introductions outlast the generic 8 observations
 EGG_RITUAL_LIMIT = 64            # measured paid recovery includes a long chant
+MONTH_SUB_ABORT_B_LIMIT = 12     # ignored Bs (~18 s) before plain text is advanced with A (g662)
 
 
 def _egg_row(screen):
@@ -7329,21 +7330,42 @@ def month_sub_step(screen: Screen, mem):
         paid = paid or (not sub.get('payment_interrupted')
                         and type(before) is int and key is not None and sub.get('key') == key
                         and type(gold) is int and before - gold == RECRUIT_COST)
-        if not paid and (mem.get('shop') or {}).get('egg') not in ('done', 'not_needed'):
+        if (paid and sub.get('aborted') and not sub.get('paid_receipt_recovered')
+                and not sub.get('payment_interrupted')):
+            # g662 1-10 02:41: うむッ paid 50G (144->94G), the next fade had no
+            # header, the unread gold was judged "no spare cash" and aborted;
+            # the trio's 「おめにかかれて こうえいです」 introduction (not the
+            # measured biography) then took 109 B presses for 300 s until the
+            # run watchdog ended the corner. An observed fee is progress.
+            sub['paid_receipt_recovered'] = True
+            sub['presses'] = 0
+            sub.pop('aborted', None)
+            sub.pop('abort_backs', None)
+            if mem.get('shop'):
+                mem['shop']['recruit'] = 'opened'
+            _record(mem, 'recruit_paid_receipt', month=sub.get('key'),
+                    observed_metric={'gold_before': before, 'gold': gold, 'receipt': receipt},
+                    reason='募集費50Gの実減少を確認したため離脱を取り消し、候補紹介を上限付きAで進める')
+        if sub.get('aborted'):
+            pass  # already leaving; the bounded abort handler below owns B
+        elif not paid and (mem.get('shop') or {}).get('egg') not in ('done', 'not_needed'):
             sub['aborted'] = True
             if mem.get('shop'):
                 mem['shop']['recruit'] = 'deferred_egg'
             _record(mem, 'recruit_deferred_egg', month=sub.get('key'),
                     reason='追跡中の未払い募集導入でも卵回復を先に確認するため戻る')
-            return [pad('b')]
-        if not paid:
+        elif not paid:
             shop = mem.get('shop') or {}
             spare, evidence = _recruit_spare_after_necessities(mem, shop, gold)
-            if spare is not True:
+            if spare is not True and type(gold) is not int:
+                # An unread header is not "no spare cash" (g662). Never confirm
+                # a payment blind; other dialogue advances within the limit.
+                if kind == 'yes_no' or (screen.has('うむッ') and screen.has('いかんッ')):
+                    return []
+            elif spare is not True:
                 sub['aborted'] = True
                 if shop:
                     _defer_recruit_cash(mem, shop, gold, evidence)
-                return [pad('b')]
     if sub['kind'] == 'recruit' and sub.get('recruit_paid_gold') is not None:
         for line in screen.lines:
             joined = re.fullmatch(r'([^�]+)がはいかにくわわった!', line.known.replace(' ', '').replace('！', '!'))
@@ -7374,6 +7396,21 @@ def month_sub_step(screen: Screen, mem):
             sub['aborted'] = True
             _record(mem, 'month_sub_abort', screen=kind, observed_metric={'text': screen.text[-40:]},
                     reason='月一の未測定画面が上限回数で終わらないためBで離脱')
+        backs = int(sub.get('abort_backs') or 0) + 1
+        sub['abort_backs'] = backs
+        # B cannot close a plain message box (g662: 109 B, 300 s, corner
+        # ended). After a bounded number of ignored Bs, a dialogue with no
+        # menu cursor and no yes/no is advanced with A - A on plain text
+        # cannot choose a purchase - then B is tried again.
+        if (backs > MONTH_SUB_ABORT_B_LIMIT and screen.hand is None and kind == 'text'
+                and not (screen.has('うむッ') or screen.has('いかんッ'))
+                and backs % 2 == 0 and backs <= MONTH_SUB_ABORT_B_LIMIT + 2 * RECRUIT_CANDIDATE_LIMIT):
+            if not sub.get('abort_text_advance'):
+                sub['abort_text_advance'] = True
+                _record(mem, 'month_sub_abort_text_advance', screen=kind,
+                        observed_metric={'backs': backs, 'text': screen.text[-40:]},
+                        reason='離脱のBで進まない会話文のため、カーソル・確認のない文だけAで送る')
+            return [pad('a')]
         return [pad('b')]
     if sub['kind'] == 'egg':
         return _egg_recovery_step(screen, mem, sub)
