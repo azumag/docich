@@ -184,6 +184,24 @@ def _month_menu_move(screen: Screen, mem, label: str):
     return move
 
 
+def _month_dialog_unread(screen: Screen) -> bool:
+    """An unread tile in the dialogue window, other than a voicing mark.
+
+    Dakuten/handakuten sit on the tile row 8 px above their kana and read as
+    unknown tiles there; anything else unknown may be a choice.
+    """
+    rows = {line.y: line for line in screen.lines if line.y >= 167}
+    for y, line in rows.items():
+        unknown = [x for x, ch in line.cells if ch == UNKNOWN]
+        if not unknown:
+            continue
+        below = rows.get(y + 8)
+        known_below = {x for x, ch in (below.cells if below else ()) if ch != UNKNOWN}
+        if len(unknown) < len(line.cells) or not set(unknown) <= known_below:
+            return True
+    return False
+
+
 def _month_text_advance(screen: Screen, mem, label: str):
     """A message box over the month menu takes the input; only A closes it.
 
@@ -196,7 +214,10 @@ def _month_text_advance(screen: Screen, mem, label: str):
     egg/recruit/building flow, and a bounded number of times per message.
     """
     body = _month_dialog_body(screen)
-    if (not body or mem.get('month_sub') or screen.has('うむッ') or screen.has('いかんッ')
+    # Any unread glyph in the window may be a half-read うむッ!/いかんッ! choice
+    # (the known-only body would hide it): only fully read text is plain.
+    unread = _month_dialog_unread(screen)
+    if (not body or unread or mem.get('month_sub') or screen.has('うむッ') or screen.has('いかんッ')
             or body in (RECRUIT_INTRO, RECRUIT_GOODBYE) or screen.has('じゅうじキー')):
         return None
     key = [mem.get('month'), body[-40:]]

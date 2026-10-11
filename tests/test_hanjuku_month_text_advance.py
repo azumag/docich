@@ -72,3 +72,27 @@ def test_tracked_monthly_flows_keep_their_own_handling():
     screen = menu()
     mem = {'month': '1-11', '_records': [], 'month_sub': {'kind': 'egg'}}
     assert stuck(mem, screen)[-1] == []
+
+
+def test_a_partly_unread_choice_is_not_plain_text():
+    # Review P2: one unread glyph in each of うむッ!/いかんッ! leaves a
+    # known-only body without the words; it must not be advanced with A.
+    from docich.hanjuku_font import TextLine, UNKNOWN
+    screen = menu(body=None)
+    screen.lines = [*screen.lines,
+                    TextLine(183, ((184, 'う'), (192, UNKNOWN), (200, 'ッ'), (208, '!'))),
+                    TextLine(199, ((184, 'い'), (192, UNKNOWN), (200, 'ん'), (208, 'ッ'), (216, '!')))]
+    assert policy._month_dialog_body(screen)
+    assert not (screen.has('うむッ') or screen.has('いかんッ'))
+    mem = {'month': '1-11', '_records': []}
+    assert all(m != [policy.pad('a')] for m in stuck(mem, screen))
+    assert not any(r['decision'] == 'month_text_advance' for r in mem['_records'])
+
+
+def test_a_fully_unread_row_that_is_not_voicing_marks_blocks_the_advance():
+    from docich.hanjuku_font import TextLine, UNKNOWN
+    screen = menu()
+    screen.lines = [*screen.lines,
+                    TextLine(199, ((184, UNKNOWN), (192, UNKNOWN), (200, UNKNOWN)))]
+    mem = {'month': '1-11', '_records': []}
+    assert all(m != [policy.pad('a')] for m in stuck(mem, screen))
