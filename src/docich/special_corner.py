@@ -215,3 +215,179 @@ def search_categories(g, query, *, run=subprocess.run) -> list[dict]:
     if result.returncode != 0:
         raise CategorySearchError(f"カテゴリ検索に失敗しました (rc={result.returncode})")
     return parse_candidates(result.stdout)
+
+
+# --- Manual start from the WebUI (SRT receiver + FIFO reservation) ---------
+#
+# The WebUI only drives the reviewed ``external-video-corner`` CLI: ``prepare``
+# opens the SRT listener, and the runner (``start --wait-for-idle``) waits in
+# the shared program FIFO.  Both run as independent ``systemd-run --user``
+# units so a WebUI restart (every deploy) never kills them.
+
+CORNER_FILE = "external_video_corner.json"
+PAUSE_MARKER = Path("corners") / "external-video.paused"
+# Same values as the hand-run commands: the operator's End button is the real
+# finish; these are the technical ceilings (receiver 25 h, display 24 h).
+RECEIVER_WAIT_MINUTES = 25 * 60
+RUNNER_DURATION_MINUTES = 24 * 60
+RUNNER_WAIT_MINUTES = 120
+# waiting + display + restore budget for the runner unit's RuntimeMaxSec.
+RUNNER_RUNTIME_MAX_SEC = (RUNNER_WAIT_MINUTES + RUNNER_DURATION_MINUTES + 30) * 60
+CLI_TIMEOUT_S = 30
+CORNER_BUSY = frozenset({"waiting", "starting", "active", "restoring", "failed"})
+
+
+class SpecialCornerControlError(RuntimeError):
+    """A manual start/receiver action was refused; ``code`` is a fixed reason."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def configured_listen_ip(g) -> str:
+    """``[external_video_corner] listen_ip`` (a validated Tailscale IPv4)."""
+    import tomllib
+
+    from .external_video_receiver import ExternalVideoError, listen_ip
+
+    try:
+        raw = tomllib.loads(Path(g.config_path).read_text(encoding="utf-8"))
+        value = raw.get("external_video_corner", {}).get("listen_ip", "")
+        return listen_ip(value)
+    except (OSError, ValueError, AttributeError, ExternalVideoError):
+        raise SpecialCornerControlError(
+            "listen_ip_not_configured",
+            "config の [external_video_corner] listen_ip（Tailscale IPv4）が未設定です") from None
+
+
+def corner_status(g) -> str:
+    try:
+        data = json.loads((Path(g.state_dir) / CORNER_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "idle"
+    status = data.get("status") if isinstance(data, dict) else None
+    return status[:32] if isinstance(status, str) and status else "idle"
+
+
+def receiver_view(g, *, now=None) -> dict:
+    """Receiver projection for the WebUI: no ids, IPs, pids or paths."""
+    from .external_video_receiver import ExternalVideoError, read_receiver
+
+    clock = time.time() if now is None else now
+    try:
+        state = read_receiver(g, now=clock)
+    except (ExternalVideoError, OSError):
+        return {"state": "none", "audio": False, "expires_in_s": None}
+    status = state.get("status")
+    expires_in = max(0, int(state["expires_at"] - clock))
+    if state["alive"] and status == "receiving":
+        if state["fresh"]:
+            label = "receiving_audio" if state.get("audio_present") else "receiving"
+        else:
+            label = "stale"
+    elif state["alive"]:
+        label = "waiting"
+    elif status == "launching" and clock < state["expires_at"]:
+        label = "launching"
+    else:
+        label, expires_in = "stopped", None
+    return {"state": label, "audio": bool(state.get("audio_present")), "expires_in_s": expires_in}
+
+
+def control_view(g, *, now=None) -> dict:
+    """What the WebUI may offer right now (the CLI still re-checks everything)."""
+    status = corner_status(g)
+    receiver = receiver_view(g, now=now)
+    busy = status in CORNER_BUSY
+    paused = (Path(g.state_dir) / PAUSE_MARKER).exists()
+    return {
+        "receiver": receiver,
+        "paused": paused,
+        "can_prepare": not busy and not paused and receiver["state"] in ("none", "stopped"),
+        "can_start": not busy and not paused and receiver["state"] == "receiving_audio",
+        "can_stop_receiver": not busy and receiver["state"] in ("launching", "waiting", "receiving",
+                                                                 "receiving_audio", "stale"),
+    }
+
+
+def _cli(g) -> list[str]:
+    repo = Path(g.repo_root).resolve()
+    # Absolute config: a relative one resolves against the unit's cwd and has
+    # already failed once in production.
+    return [str(repo / "bin" / "docich"), "--config", str(Path(g.config_path).resolve()),
+            "external-video-corner"]
+
+
+def _run_cli(g, args, *, run):
+    from .procs import user_bus_env
+
+    try:
+        result = run([*_cli(g), *args], cwd=str(Path(g.repo_root).resolve()), env=user_bus_env(),
+                     stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                     timeout=CLI_TIMEOUT_S, check=False)
+    except subprocess.TimeoutExpired:
+        raise SpecialCornerControlError("cli_timeout", "受信の操作がタイムアウトしました") from None
+    except OSError:
+        raise SpecialCornerControlError("cli_failed", "受信の操作を実行できません") from None
+    if result.returncode != 0:
+        lines = (result.stderr or "").strip().splitlines()
+        raise SpecialCornerControlError("refused", (lines[-1] if lines else f"rc={result.returncode}")[:200])
+    return result
+
+
+def prepare_receiver(g, *, run=subprocess.run, now=None) -> dict:
+    """Open the SRT listener (``prepare``) for OBS; returns the new projection."""
+    view = control_view(g, now=now)
+    if view["paused"]:
+        raise SpecialCornerControlError("paused", "外部映像コーナーが休止設定です")
+    if not view["can_prepare"]:
+        raise SpecialCornerControlError("not_ready", "受信を新しく開始できる状態ではありません")
+    ip = configured_listen_ip(g)
+    _run_cli(g, ["prepare", "--listen-ip", ip, "--wait-minutes", str(RECEIVER_WAIT_MINUTES)], run=run)
+    return receiver_view(g)
+
+
+def stop_receiver(g, *, run=subprocess.run, now=None) -> dict:
+    """Stop a prepared receiver that no corner is using (or will use)."""
+    if not control_view(g, now=now)["can_stop_receiver"]:
+        raise SpecialCornerControlError("not_ready", "止められる受信がありません（コーナー実行中・予約中は止めません）")
+    _run_cli(g, ["receiver-stop"], run=run)
+    return receiver_view(g)
+
+
+def launch_corner(g, *, run=subprocess.run, now=None, unit_suffix=None) -> str:
+    """Reserve the corner: ``start --wait-for-idle`` in its own user unit.
+
+    Refused unless OBS video *and* audio are being decoded now, so a forgotten
+    OBS never holds a FIFO turn (the runner also cancels at its turn when the
+    source is gone for 30 s).  Returns the unit name.
+    """
+    from .procs import user_bus_env
+
+    view = control_view(g, now=now)
+    if view["paused"]:
+        raise SpecialCornerControlError("paused", "外部映像コーナーが休止設定です")
+    if corner_status(g) in CORNER_BUSY:
+        raise SpecialCornerControlError("busy", "特別コーナーはすでに予約・実行中です")
+    if not view["can_start"]:
+        raise SpecialCornerControlError("receiver_not_ready",
+                                        "OBS の映像と音声を受信中になってから開始してください")
+    import uuid
+
+    unit = "docich-external-video-corner-" + (unit_suffix or str(uuid.uuid4()))
+    repo = Path(g.repo_root).resolve()
+    command = ["systemd-run", "--user", "--quiet", "--collect", f"--unit={unit}",
+               f"--property=RuntimeMaxSec={RUNNER_RUNTIME_MAX_SEC}",
+               "--property=KillMode=control-group", f"--working-directory={repo}",
+               *_cli(g), "start", "--duration-minutes", str(RUNNER_DURATION_MINUTES),
+               "--wait-for-idle", "--wait-minutes", str(RUNNER_WAIT_MINUTES)]
+    try:
+        result = run(command, env=user_bus_env(), stdin=subprocess.DEVNULL, capture_output=True,
+                     text=True, timeout=15, check=False)
+    except (subprocess.TimeoutExpired, OSError):
+        raise SpecialCornerControlError("launch_failed", "特別コーナーの起動を依頼できませんでした") from None
+    if result.returncode != 0:
+        raise SpecialCornerControlError("launch_failed",
+                                        f"特別コーナーの起動を依頼できませんでした (rc={result.returncode})")
+    return unit
