@@ -4211,7 +4211,7 @@ def _card_melee_ready(mem, cur):
     hp = cur.get('enemy_hp')
     return bool(watch and 'クースカン' in cur.get('cards_selected', [])
                 and (watch.get('ally'), watch.get('enemy')) == (cur.get('ally'), cur.get('enemy'))
-                and int(mem.get('tick') or 0) - watch['selected_tick'] <= CARD_ANNOUNCE_LIMIT + MELEE_HOLD_LIMIT
+                and 0 <= int(mem.get('tick') or 0) - watch['selected_tick'] <= CARD_MELEE_OBSERVE_LIMIT
                 and watch['bursts'] < MELEE_HOLD_LIMIT
                 and not (cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed'))
                 and not cur.get('card_hp_unread') and cur.get('card_soldiers_current') is True
@@ -4727,6 +4727,10 @@ CARD_MENU_OPEN_RETRIES = 4    # B repeats while the command menu has not opened 
 CARD_LIST_CURSOR_LIMIT = 10  # same finite list budget as survival selections
 CARD_ANNOUNCE_LIMIT = 6      # shared by chart and survival confirmation waits
 MELEE_HOLD_LIMIT = 8          # egg-safe holds in one fight before melee proceeds
+CARD_MELEE_OBSERVE_LIMIT = (CARD_ANNOUNCE_LIMIT + CARD_LIST_CURSOR_LIMIT
+                            + 2 * CARD_MENU_OPEN_RETRIES + MELEE_HOLD_LIMIT)
+# g692: animation/menus took 26 observations before a fresh advantageous
+# panel. Keep their bounded read budget separate from the eight power bursts.
 # A hold that bleeds the general past this share of the fight's opening HP
 # stops before the count bound (g530 09:52 defense: 90 -> 81 by the 7th hold,
 # the count alone let it reach 73, and the forced push that followed fought
