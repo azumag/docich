@@ -38,6 +38,7 @@ CHART_DECISIONS=frozenset({
 # Only records that explain this observation's planned input/hold may override
 # the active battle. Observation, migration and result records are not actions.
 INPUT_CONTEXT_DECISIONS=frozenset({
+    'battle_command_open_wait',
     'battle_card_damage_rejected','battle_card_damage_replan','battle_card_damage_recheck',
     'battle_survival','battle_survival_select','battle_survival_unavailable',
     'egg_recover_select','egg_recover_confirm','egg_recover_skip',
@@ -118,7 +119,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
                               'soldiers_seen','soldier_refill','soldier_refill_receipt','egg_priority_replan'}
         or (r.get('decision') == 'order_start' and r.get('cards'))
         or (r.get('decision') == 'situation_held' and r.get('screen') in {'card_select','sortie_confirm'})
-        or str(r.get('decision','')).startswith(('battle_card','battle_survival','battle_okunote','battle_hero_retreat','egg_recover','chikujou')) for r in records))
+        or str(r.get('decision','')).startswith(('battle_card','battle_command','battle_survival','battle_okunote','battle_hero_retreat','egg_recover','chikujou')) for r in records))
     if frame is not None and capture:
         directory=runtime/'hanjuku_frames'
         if directory.is_symlink():
@@ -209,11 +210,20 @@ def observation_interval_ms(state):
     policy=state.get('policy') or {}
     battle=policy.get('battle') or {}
     preempt=battle.get('okunote_egg_preempt') or {}
+    rescue=battle.get('survival') or {}
+    retreat=battle.get('hero_retreat') or {}
+    command_pending=(battle.get('command_open_pending')
+                     or ((rescue.get('pending_opens', 0) > 0 or rescue.get('menu_ticks', 0) > 0)
+                         and not rescue.get('exhausted'))
+                     or (retreat.get('opens', 0) > 0 and not retreat.get('exhausted')
+                         and not retreat.get('unavailable')))
     living=all(type(battle.get(k)) is int and battle[k]>0 for k in ('ally_hp','enemy_hp'))
     if (living and not policy.get('egg_battle')
             and (state.get('screen_kind') == 'battle'
                  or (battle.get('card_flow') and state.get('screen_kind') in
                      {'unknown', 'text', 'battle_menu'})
+                 or (command_pending and state.get('screen_kind') in
+                     {'unknown', 'text', 'battle_menu', 'battle_menu_pending'})
                  or (((preempt.get('stage') in {'opening', 'menu', 'selected'}
                        and not preempt.get('exhausted')) or preempt.get('close_pending'))
                      and state.get('screen_kind') in

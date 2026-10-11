@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v155-sortie-source-probe'
+BOT_VERSION = 'hanjuku-chart-v156-starter-party'
 
 # Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
 # frozen and the bot has planned no input for more than this many observations,
@@ -223,7 +223,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         if previous_identity != identity:
             for key in ('house', 'house_field_scan', 'house_scan_tick', 'house_scan_month',
                         'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'recruit_roster_attempts',
-                        'house_eggs', 'egg_uses', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership'):
+                        'house_eggs', 'egg_uses', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership',
+                        'starter_party'):
                 mem.pop(key, None)
         # A matching old trace may retain observed zero counts, but never
         # upgrades an old unbound roster into a complete reusable snapshot.
@@ -242,6 +243,18 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     policy.observe_events(screen,mem)
     policy.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     kind=screen.kind
+    from . import hanjuku_starter
+    starter_actions = hanjuku_starter.step(screen, mem, frame)
+    if starter_actions is not None:
+        # Never let the generic shop/event/no-input fallback skip this list,
+        # or let an old monthly/repair transaction own the chapter foreground.
+        updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
+        for key in ('_adjusted', '_interim', '_recall_inputs'):
+            mem.pop(key, None)
+        updated['_records'] = mem.pop('_records')
+        updated['_experience'] = mem.pop('_experience', None)
+        updated['policy'] = mem
+        return starter_actions, updated
     from . import hanjuku_camp_recheck
     hanjuku_camp_recheck.interrupt(screen, mem)
     if state.get('screen_kind') != kind:
@@ -314,6 +327,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # command menu, or be replaced by an old monthly/house transaction.
     policy.note_duel_event(screen, mem)
     actions = policy.defender_egg_pending_step(screen, mem)
+    if actions is None:
+        actions = policy.command_open_pending_step(screen, mem)
     if actions is None:
         actions = policy.trade_guard_step(screen, mem)
     if actions is None and event_confirmation:
