@@ -346,7 +346,7 @@ class CornerRotationManager:
             self._manual_queue_path.unlink()
             return None
 
-    def queue_manual(self, game, *, trigger_at=None):
+    def queue_manual(self, game, *, trigger_at=None, resume_latest=False):
         """Queue one owner request, optionally with a not-before trigger.
 
         Immediate requests preserve the existing behavior. A future trigger is
@@ -354,6 +354,8 @@ class CornerRotationManager:
         continues normally before that time. Eligibility and pauses apply at
         reservation and again at dispatch; cooldown is bypassed.
         """
+        if type(resume_latest) is not bool or (resume_latest and (game != 'hanjuku-hero' or trigger_at is not None)):
+            raise RotationError('invalid resume request', reason_code='invalid_value')
         if not rotation_enabled(self.g):
             raise RotationError(
                 "common corner rotation is disabled", reason_code="rotation_disabled"
@@ -424,7 +426,8 @@ class CornerRotationManager:
                 existing_trigger = queued.get("trigger_at")
                 if existing_trigger is not None:
                     existing_trigger = timestamp(existing_trigger)
-                if queued["corner"] != chosen or existing_trigger != requested_trigger:
+                if (queued["corner"] != chosen or existing_trigger != requested_trigger
+                        or bool(queued.get("resume_latest")) != resume_latest):
                     raise RotationError(
                         "another manual corner or schedule is already queued",
                         reason_code="manual_queue_conflict",
@@ -433,6 +436,11 @@ class CornerRotationManager:
                 queued = dict(corner=chosen, selected_at=now, request_id=str(uuid.uuid4()))
                 if requested_trigger is not None:
                     queued["trigger_at"] = requested_trigger
+                if resume_latest:
+                    from .hanjuku_resume import prepare
+                    from .config import load_game
+                    queued['resume_latest'] = True
+                    prepare(self.g, load_game(self.g, game), queued)
                 atomic_write_json(self._manual_queue_path, queued)
             result = {"status": ("scheduled" if requested_trigger is not None
                                   and requested_trigger > now else "queued"),

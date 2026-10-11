@@ -2506,3 +2506,37 @@ def test_reconcile_settled_at_is_clamped_to_tick_now():
         FakeAdapter(), reservation, manual=True, now=tick_now
     )
     assert settled == tick_now
+
+
+def test_resume_queue_is_explicit_single_request_before_normal_dispatch(setup):
+    from unittest import mock
+    g, clock, catalog, executor, make=setup
+    item=Corner('hanjuku-hero','game','hanjuku-hero')
+    manager=make([item])
+    with mock.patch('docich.config.load_game',return_value=object()), mock.patch('docich.hanjuku_resume.prepare') as prepare:
+        request=manager.queue_manual('hanjuku-hero',resume_latest=True)
+        assert request['status']=='queued' and not executor.calls
+        prepare.assert_called_once()
+        assert prepare.call_args.args[2]['request_id']==request['request_id']
+        assert manager.queue_manual('hanjuku-hero',resume_latest=True)==request
+        prepare.assert_called_once()
+        with pytest.raises(RotationError):manager.queue_manual('hanjuku-hero')
+        manager.tick()
+    assert executor.calls[0]['request_id']==request['request_id']
+    assert executor.calls[0]['resume_latest'] is True
+    assert executor.calls[0]['source']=='manual'
+
+
+def test_failed_preservation_does_not_queue_fresh_game(setup):
+    from unittest import mock
+    g, clock, catalog, executor, make=setup
+    manager=make([Corner('hanjuku-hero','game','hanjuku-hero')])
+    with mock.patch('docich.config.load_game',return_value=object()), mock.patch('docich.hanjuku_resume.prepare',side_effect=RuntimeError('save failed')):
+        with pytest.raises(RuntimeError):manager.queue_manual('hanjuku-hero',resume_latest=True)
+    assert not manager._manual_queue_path.exists() and not executor.calls
+
+
+@pytest.mark.parametrize('game,trigger', [('nsnake',None),('hanjuku-hero',1000001)])
+def test_resume_rejects_unrelated_or_scheduled_requests(setup,game,trigger):
+    *_,make=setup
+    with pytest.raises(RotationError):make().queue_manual(game,resume_latest=True,trigger_at=trigger)

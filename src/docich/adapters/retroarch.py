@@ -559,6 +559,8 @@ class RetroArchCoordinatorAdapter:
         self.spec.runtime_dir.mkdir(parents=True, exist_ok=True)
         for d in ("states", "saves", "system"):
             (self.spec.runtime_dir / d).mkdir(parents=True, exist_ok=True)
+        from ..hanjuku_resume import claim
+        claim(self, deadline, cancel)
         cfg_path = self._cfg_path()
         lines = retroarch_cfg_lines(self.g, self.game, cfg_path, self._network_port())
         cfg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -606,6 +608,8 @@ class RetroArchCoordinatorAdapter:
                 if state.get("status") == "ready" and presenter.find_window(
                     f"^docich-present-{self.spec.runtime_id}$", timeout=0.1
                 ):
+                    from ..hanjuku_resume import restore
+                    restore(self, deadline, cancel)
                     return
                 time.sleep(min(0.05, max(0, deadline - time.monotonic())))
 
@@ -1008,6 +1012,8 @@ class RetroArchCoordinatorAdapter:
             return True
 
     def start_agent(self, deadline: float, cancel) -> None:
+        from ..hanjuku_resume import require_verified
+        require_verified(self.spec)
         self._check_active(deadline, cancel)
         target = self._agent_window_target()
         if self.tmux.window_target_exists(target):

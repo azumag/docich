@@ -8,7 +8,7 @@ on:
         required: true
         default: restart-service
         type: choice
-        options: [restart-service, recover-failed, rollback-timer, start-hanjuku, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku]
+        options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku]
       expected_reservation:
         description: Reviewed reservation fingerprint (cancel or separately approved administrative release)
         required: false
@@ -233,3 +233,24 @@ jobs:
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           cat control/ops/vm_actions/start_hanjuku_corner.sh |
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Resume Hanjuku once from latest remaining checkpoint
+        if: steps.auth.outputs.operation == 'resume-hanjuku-latest'
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          result="$(cat control/ops/vm_actions/resume_hanjuku_latest.sh |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA")"
+          python3 - "$result" "$SHA" <<'PY'
+          import json, sys
+          result = json.loads(sys.argv[1])
+          if (result.get('status') != 'executed' or type(result.get('exit_code')) is not int
+                  or result['exit_code'] != 0 or result.get('sha') != sys.argv[2]):
+              raise SystemExit('checkpoint resumption reservation unverified')
+          print('queued one checkpoint resumption; native restoration still pending')
+          PY
