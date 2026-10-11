@@ -167,10 +167,23 @@ input:checked+.slider:before{transform:translateX(20px)}
 <button class="btn" id="beta-stop" disabled>終了後停止</button>
 <button class="btn" id="beta-reconcile" disabled>終局結果を再確認</button>
 <button class="btn" id="beta-refresh">状態更新</button></div></div>
-<div class="card"><h2>特別コーナー（Fly Me To The Home!）</h2>
-<p class="desc">OBS（SRT）から受けたゲーム映像を表示する特別コーナーです。クリアしたら「終了」を押してください。終了すると Soren に戻り、クリアの感想を話します。待機中に押すと予約を取り消します。</p>
+<div class="card"><h2>特別コーナー</h2>
+<p class="desc">OBS（SRT）から受けたゲーム映像を表示する特別コーナーです。「設定」でタイトル・カテゴリ・プロンプトを決めておきます。クリアしたら「終了」を押してください。終了すると Soren に戻り、感想を話します。待機中に押すと予約を取り消します。</p>
+<p>いまの設定: <b id="special-title">-</b></p>
 <p id="special-status" class="help">読込中…</p>
-<div class="actions"><button class="btn primary" id="special-end" disabled>終了（クリア）</button></div></div>
+<div class="actions"><button class="btn primary" id="special-end" disabled>終了（クリア）</button></div>
+<details id="special-settings-box" style="margin-top:8px"><summary style="cursor:pointer">設定（タイトル・カテゴリ・プロンプト）</summary>
+<div style="margin-top:8px"><label>タイトル表示名（1-60字。配信タイトルと番組内の呼び名）</label><input id="sc-title" maxlength="60"/></div>
+<div style="margin-top:8px"><label>配信タイトルの接尾辞（1-60字。例: 全50面クリアに挑戦）</label><input id="sc-title-suffix" maxlength="60"/></div>
+<div style="margin-top:8px"><label>Twitch カテゴリ</label><div id="sc-category" class="help mono">-</div>
+<div class="row" style="margin-top:6px;gap:8px"><input id="sc-category-query" maxlength="50" placeholder="カテゴリ名で検索" style="flex:1"/><button class="btn" id="sc-category-search">検索</button></div>
+<select id="sc-category-candidates" style="margin-top:6px;display:none"></select></div>
+<div style="margin-top:8px"><label>コメント返し用プロンプト（特別コーナー中だけ使います。0-800字・20行まで）</label><textarea id="sc-comment-prompt" rows="5" maxlength="800"></textarea></div>
+<div style="margin-top:8px"><label>終了後の感想プロンプト（任意。0-400字・20行まで）</label><textarea id="sc-closing-prompt" rows="3" maxlength="400"></textarea></div>
+<p class="help">$ ` \ &lt; &gt; と制御文字は使えません。配信タイトル・カテゴリは次に特別コーナーが始まった時から使われます。</p>
+<p id="sc-settings-note" class="help"></p>
+<div class="actions"><button class="btn primary" id="sc-save">設定を保存</button></div>
+</details></div>
 <div class="card"><h2>コーナーローテーション</h2>
 <p class="desc">配信の「コーナー」（レトロゲーム・NetHack・PAPER・メリケン・天気）は、ローテーションが自動で1つずつ起動します。一度実行したコーナーは cooldown（既定24時間）が明けるまで自動では選ばれません。この画面は10秒ごとに自動更新されます。</p>
 <div id="corners-source-warn" class="help" style="display:none;color:var(--warn)"></div>
@@ -2004,10 +2017,63 @@ async function betaControl(action){
   finally{ BETA_BUSY=false; await loadBetaStatus(); }
 }
 const SPECIAL_LABELS={idle:"動いていません",waiting:"待機中（順番待ち）",starting:"開始処理中",active:"表示中",restoring:"Soren へ復帰中",completed:"終了しました",interrupted:"終了しました",failed:"要復旧"};
+let SC_CATEGORY=null, SC_LOADED=false;
+function renderScCategory(){
+  const el=document.getElementById("sc-category");
+  if(el) el.textContent=SC_CATEGORY?`${SC_CATEGORY.name}（ID ${SC_CATEGORY.id}）`:"未選択";
+}
+async function loadSpecialSettings(force){
+  // Do not overwrite what the operator is typing on the 10-second refresh.
+  if(SC_LOADED && !force) return;
+  const note=document.getElementById("sc-settings-note");
+  try{
+    const r=await api("/api/special-corner/settings");
+    const s=r.settings||{};
+    $("#sc-title").value=s.title||"";
+    $("#sc-title-suffix").value=s.title_suffix||"";
+    $("#sc-comment-prompt").value=s.comment_prompt||"";
+    $("#sc-closing-prompt").value=s.closing_prompt||"";
+    SC_CATEGORY=s.category_id?{id:s.category_id,name:s.category_name||""}:null;
+    renderScCategory();
+    if(note) note.textContent=r.is_default?"未保存です（既定値の Fly Me To The Home! を表示しています）。":(r.updated_at?`最終保存: ${new Date(r.updated_at*1000).toLocaleString()}`:"");
+    SC_LOADED=true;
+  }catch(e){ if(note) note.textContent="設定を取得できません。"; }
+}
+async function searchScCategory(){
+  const q=($("#sc-category-query").value||"").trim();
+  const sel=document.getElementById("sc-category-candidates");
+  if(!q){ toast("検索語を入力してください"); return; }
+  const b=document.getElementById("sc-category-search"); b.disabled=true;
+  try{
+    const r=await api("/api/special-corner/category-search",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({query:q})});
+    sel.replaceChildren();
+    const list=r.candidates||[];
+    const head=document.createElement("option"); head.value=""; head.textContent=list.length?"候補から選んでください":"候補がありません"; sel.appendChild(head);
+    for(const c of list){ const o=document.createElement("option"); o.value=c.id; o.textContent=`${c.name}（ID ${c.id}）`; o.dataset.name=c.name; sel.appendChild(o); }
+    sel.style.display="";
+  }catch(e){ toast("カテゴリを検索できませんでした: "+String(e.message||e)); }
+  finally{ b.disabled=false; }
+}
+async function saveSpecialSettings(){
+  if(!SC_CATEGORY){ toast("Twitch カテゴリを選んでください"); return; }
+  if(!confirm("特別コーナーの設定を保存しますか？（次の開始から配信タイトル・カテゴリに使われます）")) return;
+  const body={confirm:true,title:$("#sc-title").value,title_suffix:$("#sc-title-suffix").value,
+    category_id:SC_CATEGORY.id,category_name:SC_CATEGORY.name,
+    comment_prompt:$("#sc-comment-prompt").value,closing_prompt:$("#sc-closing-prompt").value};
+  const b=document.getElementById("sc-save"); b.disabled=true;
+  try{
+    const r=await api("/api/special-corner/settings",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    toast("特別コーナーの設定を保存しました");
+    await loadSpecialSettings(true); await loadSpecial();
+  }catch(e){ toast("保存できませんでした: "+String(e.message||e)); }
+  finally{ b.disabled=false; }
+}
 async function loadSpecial(){
   const el=document.getElementById("special-status"), b=document.getElementById("special-end");
+  loadSpecialSettings(false);
   try{
     const r=await api("/api/special-corner");
+    const t0=document.getElementById("special-title"); if(t0) t0.textContent=r.title||"-";
     if(el){
       let t=SPECIAL_LABELS[r.status]||r.status;
       if(r.closing) t+=` / 感想: ${r.closing}`;
@@ -2938,6 +3004,9 @@ document.addEventListener("DOMContentLoaded",()=>{
   if(cRefresh) cRefresh.onclick=()=>loadCorners();
   $("#beta-refresh").onclick=()=>loadBetaStatus();
   $("#special-end").onclick=()=>endSpecial();
+  $("#sc-category-search").onclick=()=>searchScCategory();
+  $("#sc-save").onclick=()=>saveSpecialSettings();
+  $("#sc-category-candidates").onchange=(ev)=>{ const o=ev.target.selectedOptions[0]; if(o&&o.value){ SC_CATEGORY={id:o.value,name:o.dataset.name||""}; renderScCategory(); } };
   $("#beta-start").onclick=()=>betaControl("start");
   $("#beta-stop").onclick=()=>betaControl("stop");
   const betaReconcile=$("#beta-reconcile");
