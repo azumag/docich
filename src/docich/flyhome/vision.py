@@ -207,6 +207,7 @@ class Observation:
     control_prompt: bool = False  # 実機の左上の操作案内（開始時/死亡後）
     home_text_overlap: bool = False  # HOME重なり中に頭側の連続性を使った
     home_exit_up: tuple[float, float] | None = None  # Actual off-screen HOME arrow; a viewport waypoint only.
+    warning_lanes: list[float] = field(default_factory=list)  # Pure-red upward DANGER arrows, separate from physical spikes.
 
     def summary(self) -> dict:
         p = self.player
@@ -364,6 +365,20 @@ def _orientation(blob: Blob, labels: bytearray, w: int, h: int, prev_angle: floa
     if elong < 1.3 and prev_angle is not None:
         return prev_angle  # ほぼ円形で軸が決まらない
     return math.atan2(ax, -ay)
+
+
+def _warning_lanes(native: Image, labels: bytearray) -> list[float]:
+    """Actual stage 50 red warning arrows at the top, including those outside HUD masks."""
+    w, h = native.width, native.height
+    if w != 320 or h != 180:
+        return []
+    result = []
+    for b in blobs(labels, w, h, {RED},
+                   mask=lambda x, y: y >= 18 or native.get(x, y)[0] < 235):
+        x0, y0, x1, y1 = b.bbox
+        if 24 <= b.area <= 45 and 8 <= x1 - x0 <= 11 and 9 <= y1 - y0 <= 12 and y0 <= 8:
+            result.append((x0 + x1) / 2)
+    return result
 
 
 def _home_exit_up(labels: bytearray, w: int, h: int) -> tuple[float, float] | None:
@@ -577,6 +592,7 @@ def analyze(
         control_prompt=_control_prompt_present(native),
         home_text_overlap=overlaps_text,
         home_exit_up=_home_exit_up(labels, w, h) if home is None else None,
+        warning_lanes=_warning_lanes(native, labels),
     )
 
 

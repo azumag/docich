@@ -34,3 +34,25 @@ def test_actual_danger_text_is_not_a_spike_and_small_tiles_are_not_a_house():
                                 (187,174,197,180), (267,174,277,180)}
     assert obs.home is None and obs.home_bbox is None
     assert not obs.wipe
+
+def test_actual_warning_arrows_allow_an_early_side_step_without_blocking_the_text():
+    obs = vision.analyze(read_png(FIXTURES / 'flyhome-level50-danger-text.png'))
+    assert set(obs.warning_lanes) == {22, 92, 162, 232}
+    target = planner.upward_warning_waypoint((152, 24), obs.warning_lanes)
+    assert target == (144, 24)
+    assert all(abs(target[0] - lane) >= 16 for lane in obs.warning_lanes)
+    start = vision.analyze(read_png(FIXTURES / 'flyhome-level50-up-home.png'))
+    assert planner.upward_warning_waypoint(start.home_exit_up, start.warning_lanes) == (152, 24)
+
+def test_actual_warning_waypoint_replaces_a_clear_route_to_the_previous_goal():
+    from docich.flyhome.route_worker import RouteWorker
+    obs = vision.analyze(read_png(FIXTURES / 'flyhome-level50-danger-text.png'))
+    pos = (obs.player.x, obs.player.y)
+    old_path = planner.astar(planner.build_grid(obs), pos, (152, 24))
+    worker = RouteWorker()
+    try:
+        result = worker._solve(1, obs, obs, pos, (144, 24), old_path, (4, 2, 3))
+        assert result.path[-1] == (144, 24)
+        assert not planner.path_blocked(result.grid, result.path)
+    finally:
+        worker.close()

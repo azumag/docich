@@ -252,3 +252,14 @@ def lookahead(path: list[tuple[float, float]], pos: tuple[float, float], reach: 
         if math.hypot(p[0] - pos[0], p[1] - pos[1]) > reach:
             return p
     return path[-1]
+
+
+def upward_warning_waypoint(goal, lanes, width=320):
+    """Step aside from the actual upward warning columns while continuing toward off-screen HOME."""
+    x, y = goal
+    if not any(abs(x - lane) < 16 for lane in lanes):
+        return goal
+    candidates = [max(24.0, min(width - 24.0, lane + delta))
+                  for lane in lanes for delta in (-18.0, 18.0)]
+    safe = [candidate for candidate in candidates if all(abs(candidate - lane) >= 16 for lane in lanes)]
+    return (min(safe, key=lambda candidate: abs(candidate - x)), y) if safe else goal

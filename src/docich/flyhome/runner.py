@@ -298,6 +298,7 @@ def play(
     grid_spec = None
     solid_mem = None
     up_waypoint = None
+    warning_memory = {}
     previous_io_s = 0.0
     io_parts = {}
     t_idle = backend.now()  # プレイヤーが見えなくなった時刻 (死亡/クリア画面で止まったままの検出用)
@@ -344,6 +345,7 @@ def play(
                         loop.wait(0.16)
                         st = loop.tick()
                     up_waypoint = loop.obs.home_exit_up
+                    warning_memory.clear()
                     initial_solid_count = sum(loop.obs.solid)
                     expanded_world_saved = False
                     if log.root is not None and loop.native is not None:
@@ -355,6 +357,10 @@ def play(
                         hz_mem[tuple(rect)] = st.t  # 前の死亡破片を新しい試行の棘として残さない。
                 if loop.obs.home_exit_up is not None:
                     up_waypoint = loop.obs.home_exit_up
+                    warning_memory.clear()
+                for lane in loop.obs.warning_lanes:
+                    warning_memory[lane] = st.t
+                warning_memory = {lane: seen for lane, seen in warning_memory.items() if st.t - seen <= 2.0}
                 planning_start = backend.now()
                 completed = routes.poll(st.attempt)
                 if completed is not None:
@@ -364,7 +370,8 @@ def play(
                         ctl.cfg.hazard_margin = max(5.0, grid_spec[2] * grid_spec[0] - 3.0)
                         ctl.set_world(grid, completed.observation, path)
                 if (path is None or k % replan_every == 0) and loop.obs.player is not None and not routes.busy:
-                    target = st.home or up_waypoint
+                    target = st.home or (planner.upward_warning_waypoint(up_waypoint, warning_memory, loop.obs.width)
+                                         if up_waypoint is not None else None)
                     if target is not None:
                         world_obs = loop.tracker.last_obs or loop.obs
                         # A camera scrolling toward off-screen HOME invalidates old screen-space terrain.
@@ -452,7 +459,7 @@ def play(
                 extra = dict(extra or {}, input_sent_at=round(ctl._acts[-1][0], 6))
                 if st.phase == PLAYING:
                     extra.update(planning_s=round(planning_s, 6), control_s=round(control_s, 6), planning_detail=planning_detail, route_worker_s=round(route_worker_s, 6) if route_worker_s is not None else None, route_pending=routes.busy)
-            extra = dict(extra or {}, target_up_waypoint=up_waypoint, capture_s=round(loop.capture_s, 6), max_capture_s=round(loop.max_capture_s, 6),
+            extra = dict(extra or {}, target_up_waypoint=up_waypoint, warning_lanes=list(warning_memory), capture_s=round(loop.capture_s, 6), max_capture_s=round(loop.max_capture_s, 6),
                          vision_s=round(loop.vision_s, 6), previous_io_s=round(previous_io_s, 6), **io_parts)
             io_start = backend.now()
             if on_step is not None:

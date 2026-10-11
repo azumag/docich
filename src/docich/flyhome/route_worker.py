@@ -53,6 +53,9 @@ class RouteWorker:
         if self._cache_attempt != attempt:
             self._cache.clear()
             self._cache_attempt = attempt
+        # A new warning waypoint must not keep a clear route to the previous goal.
+        if path and sum((a - b) ** 2 for a, b in zip(path[-1], target)) > 1.0:
+            path = None
         new_path, kept_path, detail = None, False, None
         world_key = (hash(bytes(planning_obs.solid)), tuple(sorted(world_obs.hazards)), world_obs.home_bbox)
         def get_grid(cell, sm, hm):
