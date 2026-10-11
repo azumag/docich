@@ -19,7 +19,7 @@ from . import hanjuku_chart_adjust as chart_adjust
 from . import hanjuku_experience as experience
 from . import hanjuku_reference as reference
 from .hanjuku_egg_stock import observed_uses
-from .hanjuku_egg_reference import enemy_egg_triggers, general_debut_chapter, general_max_hp
+from .hanjuku_egg_reference import GENERAL_EGGS, enemy_egg_triggers, general_debut_chapter, general_max_hp
 from .hanjuku_font import UNKNOWN, TextLine
 from .hanjuku_pixels import Frame
 from .hanjuku_screen import (HEADER as HEADER_RE, OKUNOTE_CHOICES,
@@ -4493,6 +4493,7 @@ def battle_step(screen: Screen, mem):
         preempt_guard.pop('close_pending', None)
         preempt_guard.pop('unread_ticks', None)
     _card_battle_reading(screen, cur, mem)
+    cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)
     from .hanjuku_roster import dirty_status
     dirty_status(mem, [cur.get('ally')])
     if b.enemy_hp is not None and cur.get('start_enemy_hp') is not None and b.enemy_hp < cur['start_enemy_hp']:
@@ -5031,7 +5032,27 @@ def _survival_needed(cur):
     return (hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 5 <= start * 2)
             or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS or behind_start
             or cur.get('card_damage_rescue_needed') is True
-            or _unarmed_clash_risk(cur))
+            or _unarmed_clash_risk(cur) or _unarmed_wall_risk(cur))
+
+
+def _unarmed_wall_risk(cur):
+    """An eggless attacker cannot answer a later wall-triggered summon.
+
+    g684 Trevis66 vs Alfalfa38 carried a card but had no timed chart tactic.
+    Clash=False allowed unchecked melee until Sandworm202 was already out.
+    Check the real resource menu first; a carried kit is not a usable-card
+    receipt. Egg capability=False is static, usable counts require a named
+    zero observation. Unknown capability/count is never treated as empty.
+    """
+    ally = GENERAL_EGGS.get('しゅじんこう' if cur.get('ally') == NAME else cur.get('ally'))
+    if (cur.get('side') != 'attack' or cur.get('planned_cards') or cur.get('egg_battle')
+            or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('enemy') in reference.BOSS_GENERALS
+            or ally is None or not (ally[0] is False or cur.get('own_egg_zero_observed') is True)):
+        return False
+    triggers = enemy_egg_triggers(cur.get('enemy'), player_castle_defense=False)
+    return (triggers.has_egg is True and triggers.clash_position is False
+            and (triggers.wall_critical is True or triggers.wall_mod4 is True))
 
 
 def _survival_state(mem, cur):
@@ -5043,6 +5064,8 @@ def _survival_state(mem, cur):
                 expected_metric='使用可能な切り札・たまごを確認して選択',
                 reason=('携行戦術のない卵持ち敵との衝突前に、戦闘メニューで救済手段を確認'
                         if _unarmed_clash_risk(cur)
+                        else '卵を使えない攻撃将軍のため、敵の壁判定召喚より先に実切り札を確認'
+                        if _unarmed_wall_risk(cur)
                         else 'HP低下のため温存を中止し、戦闘メニューで救済手段を確認'))
     return cur['survival']
 
@@ -5176,7 +5199,8 @@ def _hero_retreat_needed(cur):
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
     ref = (max(start, int(cur.get('ref_ally_hp') or 0)) if cur.get('ally') == NAME else start)
     rescue = cur.get('survival') or {}
-    if (((_unarmed_clash_risk(cur) and not cur.get('card_damage_rescue_needed'))
+    if ((((_unarmed_clash_risk(cur) or _unarmed_wall_risk(cur))
+          and not cur.get('card_damage_rescue_needed'))
          or (cur.get('card_damage_rescue_needed') and _card_damage_probe_exhausted(cur)))
             and rescue.get('exhausted')
             and not rescue.get('cards_uncertain')):
@@ -5494,6 +5518,7 @@ def battle_menu_step(screen: Screen, mem):
         return []
     cur.pop('command_open_pending', None)  # foreground receipt, not a planned B
     _card_battle_reading(screen, cur, mem)
+    cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)
     # A newly readable resource invalidates the earlier all-disabled receipt
     # before a pending preemption can select an irreversible command.
     if any(w in BATTLE_MENU for _, _, w in _options(screen)):
