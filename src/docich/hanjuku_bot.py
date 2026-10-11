@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v166-egg-recovery-receipt'
+BOT_VERSION = 'hanjuku-chart-v167-fake-hero-reveal'
 
 # Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
 # frozen and the bot has planned no input for more than this many observations,
@@ -205,7 +205,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     from . import hanjuku_house
     from . import hanjuku_roster
     from . import hanjuku_chart
-    from .hanjuku_screen import month_confirmation_positions, parse
+    from .hanjuku_screen import fake_hero_announcement_chapter, month_confirmation_positions, parse
     # State written before the castle-label rename still names chapter 1's home
     # castle ほんじょう. Rename it here, before anything reads or writes it, so
     # garrison keys, order sources and free-text notes all match the chart.
@@ -243,6 +243,25 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     policy.observe_events(screen,mem)
     policy.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     kind=screen.kind
+    reveal_chapter = fake_hero_announcement_chapter(screen)
+    if reveal_chapter is not None:
+        # This explicit field transition owns the foreground even when a
+        # repair/recall or battle command was remembered before the reveal.
+        if mem.get('battle'):
+            policy.battle_end(mem, 'fake_hero_reveal')
+        policy.reset_battle_controls(mem)
+        mem['chapter'] = reveal_chapter
+        mem.pop('resume_chapter_pending', None)
+        policy._record(mem, 'fake_hero_reveal',
+                       reason='二行の城の正体告知を実画面で確認したため会話を進める',
+                       observed_metric={'chapter': reveal_chapter})
+        updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
+        for key in ('_adjusted', '_interim', '_recall_inputs'):
+            mem.pop(key, None)
+        updated['_records'] = mem.pop('_records')
+        updated['_experience'] = mem.pop('_experience', None)
+        updated['policy'] = mem
+        return [pad('a')], updated
     from . import hanjuku_starter
     starter_actions = hanjuku_starter.step(screen, mem, frame)
     if starter_actions is not None:

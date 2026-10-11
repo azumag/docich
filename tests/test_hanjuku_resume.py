@@ -305,6 +305,19 @@ def test_verified_runtime_cannot_fall_back_to_fresh_when_pane_is_missing(setup):
     s.adapter._verify_window_ownership.assert_called_once_with('game-700','game')
 
 
+def test_native_fake_hero_checkpoint_restores_with_only_observed_chapter(setup):
+    from docich.hanjuku_pixels import read_png
+    frame=read_png(Path(__file__).parent/'fixtures/hanjuku/g700-fake-hero-announcement.png')
+    commands,writes=restore_test(setup,chapter=None,native_frame=frame)
+    assert writes==[b'boot state',b'serialized core',b'serialized core']
+    assert commands.index('FRAMEADVANCE') < commands.index('PAUSE_TOGGLE')
+    receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
+    assert receipt['status']=='verified' and receipt['chapter']==2
+    assert receipt['frame_sha256']==frame.digest()
+    assert read_record(setup.spec.runtime_dir/'hanjuku_bot.json')=={
+        'policy': {'name': {'done': True}, 'chapter': 2}}
+
+
 def test_native_starter_checkpoint_restores_without_inventing_chapter(setup):
     from docich.hanjuku_pixels import read_png
     from docich.hanjuku_screen import parse

@@ -291,6 +291,28 @@ class Screen:
         return needle.replace(' ', '') in self.text
 
 
+def fake_hero_announcement_chapter(screen: Screen) -> int | None:
+    """The measured chapter-2 castle reveal, never arbitrary map dialogue.
+
+    g700 draws this two-row message over an animated map without a chapter
+    header or hand. Require both complete native glyph rows before confirming
+    it or using it as a paused-checkpoint chapter cue.
+    """
+    if screen.kind != 'text' or screen.hand is not None or screen.header is not None:
+        return None
+    # Border/map tiles also produce UNKNOWN glyphs. Read only the measured
+    # message interior, retaining unknown glyphs on either actual text row.
+    rows = [(line.y, line.span(72, 232).replace(' ', '')) for line in screen.lines
+            if line.y in (167, 183)]
+    if any(any(ch != '\ufffd' for x, ch in line.cells if 72 <= x < 232)
+           for line in screen.lines if 160 <= line.y <= 208 and line.y not in (167, 183)):
+        return None
+    if rows == [(167, 'にせヒーローはそのしろまで'),
+                (183, 'わがくにのにせものだった!')]:
+        return 2
+    return None
+
+
 def _selected(lines: list[TextLine], hand) -> str | None:
     if not hand:
         return None
