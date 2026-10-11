@@ -4087,6 +4087,57 @@ def _rotation_manual_pending_projection(state_dir, data, now):
     return out
 
 
+def _collect_hanjuku_checkpoint(state_dir, corner):
+    """Fixed receipt and file metadata only; never read/export saved game bytes."""
+    if not isinstance(corner, dict) or corner.get("game") != "hanjuku-hero":
+        return None
+    owner = corner.get("bot_identity")
+    if (not isinstance(owner, dict) or owner.get("game") != "hanjuku-hero"
+            or type(owner.get("generation")) is not int or owner["generation"] < 1
+            or not isinstance(owner.get("lease_id"), str) or not owner["lease_id"]
+            or not isinstance(owner.get("runtime_id"), str)
+            or not re.fullmatch(r"g[0-9]+-[a-f0-9]{8}", owner["runtime_id"])):
+        return None
+    runtime = Path(state_dir) / "runtimes" / owner["runtime_id"]
+    receipt = runtime / "retroarch_boundary.json"
+    if runtime.parent.is_symlink() or runtime.is_symlink() or receipt.is_symlink():
+        return None
+    present, readable, data = _load_state_file(receipt)
+    out = {"receipt_present": present, "receipt_readable": readable,
+           "save_status": "unverified", "file_present": None,
+           "file_bytes": None, "file_metadata_matches": None}
+    if not readable or any(data.get(k) != owner.get(k) for k in
+                           ("game", "runtime_id", "generation", "lease_id")):
+        return out
+    if data.get("outcome") not in {"screen_stalled", "input_stalled", "suspended"}:
+        return out
+    if data.get("status") == "waiting" and data.get("save_required") is True:
+        out["save_status"] = "failed" if data.get("save_error") in {
+            "save_timeout", "save_failed"} else "waiting"
+    sha = data.get("sha256")
+    if (data.get("status") == "reached" and data.get("checkpoint") == "hanjuku-hero.state"
+            and isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha)):
+        out["save_status"] = "saved_receipt"
+    # Do not accept a receipt-provided path or read the state contents/hash.
+    directory = runtime / "states"
+    path = directory / "hanjuku-hero.state"
+    try:
+        if directory.is_symlink() or path.is_symlink():
+            return out
+        st = path.stat()
+        if not stat.S_ISREG(st.st_mode) or not 0 < st.st_size <= 64 * 1024 * 1024:
+            out["file_present"] = False
+            return out
+        out.update(file_present=True, file_bytes=st.st_size)
+        if (type(data.get("checkpoint_bytes")) is int
+                and type(data.get("checkpoint_mtime_ns")) is int):
+            out["file_metadata_matches"] = (st.st_size == data["checkpoint_bytes"]
+                                           and st.st_mtime_ns == data["checkpoint_mtime_ns"])
+    except OSError:
+        out["file_present"] = False
+    return out
+
+
 def _collect_corner_files(state_dir, payload, now):
     present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["corner_rotation"])
     rotation_data = data if readable else None
@@ -4195,6 +4246,8 @@ def _collect_corner_files(state_dir, payload, now):
         entry = {"present": present, "readable": readable}
         if readable:
             entry.update(_project_corner_state(data))
+            if name == "retro_corner":
+                entry["saved_checkpoint"] = _collect_hanjuku_checkpoint(state_dir, data)
         payload[name] = entry
 
     present, readable, data = _load_state_file(state_dir / "trading" / "presentation.json")

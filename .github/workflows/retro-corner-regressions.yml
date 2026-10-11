@@ -35,6 +35,8 @@ on:
       - 'src/docich/retro_corner.py'
       - 'src/docich/retro_corner_manual.py'
       - 'src/docich/retroarch_boundary.py'
+      - 'ops/vm_actions/collect_diagnostics.py'
+      - 'ops/vm_actions/tests/test_hanjuku_checkpoint_diagnostics.py'
       - 'src/docich/soren_recovery_process.py'
       - 'src/docich/soren_round_recovery.py'
       - 'src/docich/soren91*.py'
@@ -119,6 +121,8 @@ on:
       - 'src/docich/retro_corner.py'
       - 'src/docich/retro_corner_manual.py'
       - 'src/docich/retroarch_boundary.py'
+      - 'ops/vm_actions/collect_diagnostics.py'
+      - 'ops/vm_actions/tests/test_hanjuku_checkpoint_diagnostics.py'
       - 'src/docich/soren_recovery_process.py'
       - 'src/docich/soren_round_recovery.py'
       - 'src/docich/soren91*.py'
@@ -349,9 +353,11 @@ jobs:
         run: >-
           python3 -m pytest -q
           tests/test_retroarch_safe_boundary.py tests/test_retroarch_adapter.py
-          tests/test_hanjuku_saved_stop.py
+          tests/test_hanjuku_saved_stop.py tests/test_hanjuku_stall_checkpoint.py
           tests/test_coordinator_adapter_retroarch.py tests/test_retroarch_readiness_contract.py
           tests/test_presentation.py tests/test_presentation_viewer_wait.py tests/test_presentation_script_volume.py
+      - name: Hanjuku checkpoint diagnostics and redaction
+        run: python3 -m pytest -q ops/vm_actions/tests/test_hanjuku_checkpoint_diagnostics.py
       - name: Transactional switch contract
         run: >-
           python3 -m pytest -q
