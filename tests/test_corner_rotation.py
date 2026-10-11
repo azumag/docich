@@ -2513,7 +2513,7 @@ def test_resume_queue_is_explicit_single_request_before_normal_dispatch(setup):
     g, clock, catalog, executor, make=setup
     item=Corner('hanjuku-hero','game','hanjuku-hero')
     manager=make([item])
-    with mock.patch('docich.config.load_game',return_value=object()), mock.patch('docich.hanjuku_resume.prepare') as prepare:
+    with mock.patch('docich.config.load_game',return_value=object()), mock.patch('docich.hanjuku_resume.prepare') as prepare, mock.patch('docich.hanjuku_resume.publish'):
         request=manager.queue_manual('hanjuku-hero',resume_latest=True)
         assert request['status']=='queued' and not executor.calls
         prepare.assert_called_once()

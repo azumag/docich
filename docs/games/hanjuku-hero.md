@@ -241,7 +241,7 @@ ROM取得、実機起動、課金brain、VM操作、push/PR/merge/deployは本�
 
 owner-only `corner-rotation-operator.yml` の `resume-hanjuku-latest` は、今回一度の再開を明示指定された場合に使います。`start-hanjuku` は引き続き新規開始で、ゲームオーバー後の自動巻戻しは行いません。
 
-固定runtime配下のslot 0/番号付きstateから最新の非空保存を選び、原本を保持してprivate snapshotへコピー・SHA検証・fsyncします。破損した最新保存から過去の保存へ黙ってfallbackしません。共通のdurable manual queueが既存コーナーの完走・休止・実行枠を守り、予約IDに対応する新canonical candidateだけがsnapshotを消費します。旧runtimeの最終bot/terminal/名簿は移行しません。
+固定runtime配下のslot 0/番号付きstateから最新の非空保存を選び、原本を保持してprivate snapshotへコピー・SHA検証・fsyncします。最新が64MiB上限を超える場合も、古い保存へfallbackせず拒否します。snapshot準備時は`prepared`、manual inboxの永続化後は`queued`を記録します。inbox公開前の失敗は同じID・同じsnapshotで再試行し、公開直後の中断も実inbox/dispatchと照合して継続できます。`prepared`だけではdispatchや復元の証拠にしません。共通のdurable manual queueが既存コーナーの完走・休止・実行枠を守り、予約IDに対応する新canonical candidateだけがsnapshotを消費します。旧runtimeの最終bot/terminal/名簿は移行しません。
 
 新候補はAI開始前に内容・core一致を確認し、pause→`LOAD_STATE_SLOT 0`→別slot 1への新規書込みを確認した`SAVE_STATE`→RASTATEのcore MEM SHA一致→slot 0へ戻して再度保存・一致を確認します。非同期loadが読み終わるまでslot 0を上書きしません。LOADのUDP返信は非同期task受付だけなので、復元成功の根拠にはしません。その後1frameを描画してnative画面の章番号を読み、観測した章だけを新方策へ初期設定し、PLAYING確認後にagentを許可します。内部検証済み・予約済み・実配信での再開は区別します。
 

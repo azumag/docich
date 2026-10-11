@@ -6432,7 +6432,7 @@ def _collect_hanjuku_resume(state_dir):
         canonical, _ = _read_hanjuku_record(root / 'game_switch.json')
         request, _ = _read_hanjuku_record(root / 'hanjuku-resume/hanjuku_resume.json')
         status = request.get('status')
-        if status == 'queued':
+        if status in {'prepared', 'queued'}:
             ledger = {}
             try:
                 ledger, _ = _read_hanjuku_record(root / 'corner_rotation.json')
@@ -6448,7 +6448,7 @@ def _collect_hanjuku_resume(state_dir):
                    and q.get('request_id') == request.get('request_id')
                    and q.get('corner') == 'hanjuku-hero' for q in choices):
                 return {**unavailable, 'status': 'queued'}
-            return {**unavailable, 'status': 'unverified'}
+            return {**unavailable, 'status': 'prepared' if status == 'prepared' else 'unverified'}
         owner = canonical.get('candidate') if status == 'claimed' else canonical.get('active')
         keys = ('game', 'runtime_id', 'generation', 'lease_id', 'request_id')
         if (not isinstance(owner, dict) or owner.get('game') != 'hanjuku-hero'

@@ -437,11 +437,14 @@ class CornerRotationManager:
                 if requested_trigger is not None:
                     queued["trigger_at"] = requested_trigger
                 if resume_latest:
-                    from .hanjuku_resume import prepare
+                    from .hanjuku_resume import prepare, recover_prepared
                     from .config import load_game
-                    queued['resume_latest'] = True
+                    queued = recover_prepared(self.g, chosen) or dict(queued, resume_latest=True)
                     prepare(self.g, load_game(self.g, game), queued)
                 atomic_write_json(self._manual_queue_path, queued)
+            if resume_latest:
+                from .hanjuku_resume import publish
+                publish(self.g, queued)
             result = {"status": ("scheduled" if requested_trigger is not None
                                   and requested_trigger > now else "queued"),
                       "corner": chosen, "request_id": queued["request_id"]}

@@ -125,7 +125,7 @@ def prepare(g, game, queued):
     uuid.UUID(queued['request_id'])
     with _lock(g) as root:
         prior = read_record(root / REQUEST_FILE)
-        if prior and prior.get('status') in {'queued', 'claimed'}:
+        if prior and prior.get('status') in {'prepared', 'queued', 'claimed'}:
             if prior.get('request_id') == queued['request_id']:
                 return
             raise AdapterError('another checkpoint request is pending')
@@ -148,12 +148,14 @@ def prepare(g, game, queued):
                 suffix = path.name.removeprefix('hanjuku-hero.state')
                 if suffix and not suffix.isdecimal():
                     continue
-                if path.is_file() and not path.is_symlink() and 0 < path.stat().st_size <= MAX_BYTES:
+                if path.is_file() and not path.is_symlink() and 0 < path.stat().st_size:
                     choices.append(path)
         if not choices:
             raise AdapterError('no remaining checkpoint')
         selected = max(choices, key=lambda p: (p.stat().st_mtime_ns, str(p)))
         before = selected.stat()
+        if before.st_size > MAX_BYTES:
+            raise AdapterError('latest checkpoint exceeds read bound')
         digest = checkpoint_digest(selected)
         mem_digest = core_digest(selected)
         sealed = root / (queued['request_id'] + '.state')
@@ -162,13 +164,48 @@ def prepare(g, game, queued):
         if ((before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
                 or checkpoint_digest(sealed) != digest or checkpoint_digest(selected) != digest):
             raise AdapterError('selected checkpoint changed during preservation')
-        atomic_write_json(root / REQUEST_FILE, dict(schema=1, status='queued',
+        atomic_write_json(root / REQUEST_FILE, dict(schema=1, status='prepared',
             request_id=queued['request_id'], corner=queued['corner'],
+            selected_at=queued['selected_at'],
             selected_source=str(selected.relative_to(Path(g.state_dir))),
             selected_mtime_ns=before.st_mtime_ns, bytes=before.st_size,
             sha256=digest, core_state_sha256=mem_digest,
             rom_sha256=checkpoint_digest(resolve_rom(g, game)),
             core_sha256=checkpoint_digest(Path(resolve_core(game)))))
+
+
+def recover_prepared(g, corner):
+    """Reuse a sealed, unpublished request under the caller's inbox lock."""
+    from .corner_rotation import timestamp
+    with _lock(g) as root:
+        prior = read_record(root / REQUEST_FILE)
+        if prior.get('status') != 'prepared':
+            return None
+        if (prior.get('schema') != 1 or prior.get('corner') != corner
+                or any(k in prior for k in ('runtime_id', 'generation', 'lease_id'))):
+            raise AdapterError('invalid prepared checkpoint request')
+        request_id = str(uuid.UUID(prior['request_id']))
+        selected_at = timestamp(prior['selected_at'])
+        sealed = root / (request_id + '.state')
+        if (checkpoint_digest(sealed) != prior.get('sha256')
+                or core_digest(sealed) != prior.get('core_state_sha256')):
+            raise AdapterError('prepared checkpoint changed')
+        return dict(corner=corner, selected_at=selected_at,
+                    request_id=request_id, resume_latest=True)
+
+
+def publish(g, queued):
+    """Reconcile the durable inbox with its snapshot without changing identity."""
+    with _lock(g) as root:
+        prior = read_record(root / REQUEST_FILE)
+        if (prior.get('request_id') != queued.get('request_id')
+                or prior.get('corner') != queued.get('corner')
+                or queued.get('resume_latest') is not True):
+            raise AdapterError('checkpoint publication identity mismatch')
+        if prior.get('status') == 'prepared':
+            atomic_write_json(root / REQUEST_FILE, dict(prior, status='queued'))
+        elif prior.get('status') not in {'queued', 'claimed', 'verified'}:
+            raise AdapterError('checkpoint publication needs explicit recovery')
 
 
 def claim(adapter, deadline, cancel):
@@ -188,7 +225,7 @@ def claim(adapter, deadline, cancel):
         return
     with _lock(g) as root:
         request = read_record(root / REQUEST_FILE)
-        if request.get('status') != 'queued':
+        if request.get('status') not in {'prepared', 'queued'}:
             if request.get('runtime_id') == spec.runtime_id and request.get('status') == 'claimed':
                 raise AdapterError('checkpoint candidate needs explicit recovery')
             return

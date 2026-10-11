@@ -19,11 +19,18 @@ def setup(tmp_path,status='verified'):
     return data,runtime
 
 
-@pytest.mark.parametrize('status,expected',[('queued','queued'),('claimed','claimed'),('verified','verified_receipt')])
+@pytest.mark.parametrize('status,expected',[('prepared','queued'),('queued','queued'),('claimed','claimed'),('verified','verified_receipt')])
 def test_resume_metadata_bound_to_current_owner(tmp_path,status,expected):
     setup(tmp_path,status);result=load_collector()._collect_hanjuku_resume(tmp_path)
     assert result['status']==expected
     assert 'PRIVATE' not in json.dumps(result) and 'a'*64 not in json.dumps(result)
+
+
+def test_unpublished_prepared_snapshot_is_not_a_queue(tmp_path):
+    setup(tmp_path,'prepared')
+    (tmp_path/'corner_rotation.json').write_text('{}')
+    result=load_collector()._collect_hanjuku_resume(tmp_path)
+    assert result['status']=='prepared' and 'PRIVATE' not in json.dumps(result)
 
 
 @pytest.mark.parametrize('bad',['other_runtime','wrong_lease','wrong_request','missing','symlink','free_status','invalid_chapter'])
