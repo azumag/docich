@@ -441,6 +441,7 @@ def test_actual_level23_home_progress_wait_survives_edge_and_speed_quantization(
     ctl._ref = [(168, 154.6, 0, 0)] * ctl.cfg.horizon
     ctl._precision_action = lambda *args: 2
     st = State(10, PLAYING, 1, 183.924, 153.337, -.0, .347, 0, 0, (168, 154.6), (147, 133, 189, 164))
+    ctl._hist.extend((t, st.x, st.y, st.angle) for t in (9.76, 9.84, 9.92, 10))
     assert ctl.decide(st, st.home) == (False, False)
     assert ctl._home_settling
     # 実機では演出中に端へ約2pxずれ、差分速度が13px/sになった。

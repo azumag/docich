@@ -1,0 +1,706 @@
+{
+  "observations": [
+    {
+      "t": 1152165.5621,
+      "phase": "playing",
+      "attempt": 1,
+      "x": 229.098,
+      "y": 136.337,
+      "vx": 20.171,
+      "vy": 1.208,
+      "angle": -0.143,
+      "omega": -1.613,
+      "best_dist": 19.037,
+      "home": [
+        248.0,
+        138.6
+      ],
+      "home_bbox": [
+        227,
+        117,
+        269,
+        148
+      ],
+      "left": true,
+      "right": false,
+      "hud": [
+        false,
+        true
+      ],
+      "timer_sig": 231559454278640,
+      "control_prompt": false,
+      "home_text_overlap": false,
+      "player_bbox": [
+        225,
+        129,
+        234,
+        143
+      ],
+      "player_area": 92,
+      "ref0": [
+        234.5,
+        130.0
+      ],
+      "ref_end": [
+        248.0,
+        138.6
+      ],
+      "path0": [
+        222.0,
+        122.0
+      ],
+      "path": [
+        [
+          56.73913043478261,
+          118.17391304347827
+        ],
+        [
+          62.0,
+          130.0
+        ],
+        [
+          62.0,
+          130.0
+        ],
+        [
+          222.0,
+          122.0
+        ],
+        [
+          248.0,
+          138.6
+        ]
+      ],
+      "input_delay_s": 0.12,
+      "controller_profile": "current",
+      "home_settling": false,
+      "estimated": [
+        14.781,
+        4.149,
+        -0.143,
+        -0.409
+      ],
+      "precision": [
+        10.026,
+        8.541,
+        8.0,
+        7.498,
+        -0.042,
+        -0.262,
+        0.22,
+        false,
+        false,
+        136.337,
+        24.0,
+        137.661
+      ],
+      "input_sent_at": 1152165.562409,
+      "planning_s": 1e-06,
+      "control_s": 0.000142,
+      "planning_detail": null,
+      "route_worker_s": null,
+      "route_pending": false,
+      "capture_s": 0.010425,
+      "max_capture_s": 0.034603,
+      "vision_s": 0.024399,
+      "previous_io_s": 0.000158,
+      "previous_frame_s": 8.5e-05,
+      "previous_step_s": 7.2e-05,
+      "previous_snapshot_s": 2e-06,
+      "state_write_s": 0.002353,
+      "state_max_write_s": 0.176325,
+      "state_queue_s": 0.00019,
+      "state_pending": 1,
+      "state_written_sequence": 3865,
+      "audio_delivery": "local_pending",
+      "audio_published": 0,
+      "audio_accepted": 0,
+      "audio_failed": 0
+    },
+    {
+      "t": 1152165.5944,
+      "phase": "playing",
+      "attempt": 1,
+      "x": 229.106,
+      "y": 136.309,
+      "vx": 8.227,
+      "vy": -0.046,
+      "angle": -0.177,
+      "omega": -1.267,
+      "best_dist": 19.032,
+      "home": [
+        248.0,
+        138.6
+      ],
+      "home_bbox": [
+        227,
+        117,
+        269,
+        148
+      ],
+      "left": true,
+      "right": false,
+      "hud": [
+        true,
+        false
+      ],
+      "timer_sig": 2975451716208,
+      "control_prompt": false,
+      "home_text_overlap": false,
+      "player_bbox": [
+        225,
+        129,
+        234,
+        143
+      ],
+      "player_area": 94,
+      "ref0": [
+        234.5,
+        130.0
+      ],
+      "ref_end": [
+        248.0,
+        138.6
+      ],
+      "path0": [
+        222.0,
+        122.0
+      ],
+      "path": [
+        [
+          56.73913043478261,
+          118.17391304347827
+        ],
+        [
+          62.0,
+          130.0
+        ],
+        [
+          62.0,
+          130.0
+        ],
+        [
+          222.0,
+          122.0
+        ],
+        [
+          248.0,
+          138.6
+        ]
+      ],
+      "input_delay_s": 0.12,
+      "controller_profile": "current",
+      "home_settling": false,
+      "estimated": [
+        9.011,
+        0.175,
+        -0.177,
+        -0.833
+      ],
+      "precision": [
+        11.41,
+        -0.954,
+        8.0,
+        7.52,
+        -0.071,
+        -0.339,
+        0.268,
+        false,
+        false,
+        136.189,
+        24.0,
+        136.309
+      ],
+      "input_sent_at": 1152165.594654,
+      "planning_s": 1e-06,
+      "control_s": 0.000142,
+      "planning_detail": null,
+      "route_worker_s": null,
+      "route_pending": false,
+      "capture_s": 0.008152,
+      "max_capture_s": 0.034603,
+      "vision_s": 0.023611,
+      "previous_io_s": 0.000109,
+      "previous_frame_s": 6.3e-05,
+      "previous_step_s": 4.4e-05,
+      "previous_snapshot_s": 1e-06,
+      "state_write_s": 0.001041,
+      "state_max_write_s": 0.176325,
+      "state_queue_s": 0.0001,
+      "state_pending": 1,
+      "state_written_sequence": 3866,
+      "audio_delivery": "local_pending",
+      "audio_published": 0,
+      "audio_accepted": 0,
+      "audio_failed": 0
+    },
+    {
+      "t": 1152165.6274,
+      "phase": "playing",
+      "attempt": 1,
+      "x": 230.081,
+      "y": 136.371,
+      "vx": 20.988,
+      "vy": 1.116,
+      "angle": -0.194,
+      "omega": -0.83,
+      "best_dist": 18.057,
+      "home": [
+        248.0,
+        138.6
+      ],
+      "home_bbox": [
+        227,
+        117,
+        269,
+        148
+      ],
+      "left": true,
+      "right": false,
+      "hud": [
+        true,
+        false
+      ],
+      "timer_sig": 171328623209776,
+      "control_prompt": false,
+      "home_text_overlap": false,
+      "player_bbox": [
+        226,
+        129,
+        235,
+        143
+      ],
+      "player_area": 93,
+      "ref0": [
+        236.2,
+        131.1
+      ],
+      "ref_end": [
+        248.0,
+        138.6
+      ],
+      "path0": [
+        222.0,
+        122.0
+      ],
+      "path": [
+        [
+          56.73913043478261,
+          118.17391304347827
+        ],
+        [
+          62.0,
+          130.0
+        ],
+        [
+          62.0,
+          130.0
+        ],
+        [
+          222.0,
+          122.0
+        ],
+        [
+          248.0,
+          138.6
+        ]
+      ],
+      "input_delay_s": 0.12,
+      "controller_profile": "current",
+      "home_settling": false,
+      "estimated": [
+        8.827,
+        0.799,
+        -0.194,
+        -1.031
+      ],
+      "precision": [
+        20.311,
+        -0.214,
+        8.0,
+        7.107,
+        -0.22,
+        -0.348,
+        0.128,
+        false,
+        false,
+        136.104,
+        24.0,
+        136.371
+      ],
+      "input_sent_at": 1152165.627685,
+      "planning_s": 1e-06,
+      "control_s": 0.000143,
+      "planning_detail": null,
+      "route_worker_s": null,
+      "route_pending": false,
+      "capture_s": 0.008429,
+      "max_capture_s": 0.034603,
+      "vision_s": 0.024188,
+      "previous_io_s": 0.000107,
+      "previous_frame_s": 6.3e-05,
+      "previous_step_s": 4.3e-05,
+      "previous_snapshot_s": 1e-06,
+      "state_write_s": 0.001102,
+      "state_max_write_s": 0.176325,
+      "state_queue_s": 0.000129,
+      "state_pending": 1,
+      "state_written_sequence": 3867,
+      "audio_delivery": "local_pending",
+      "audio_published": 0,
+      "audio_accepted": 0,
+      "audio_failed": 0
+    },
+    {
+      "t": 1152165.6601,
+      "phase": "playing",
+      "attempt": 1,
+      "x": 230.12,
+      "y": 137.337,
+      "vx": 9.11,
+      "vy": 18.177,
+      "angle": -0.206,
+      "omega": -0.541,
+      "best_dist": 17.925,
+      "home": [
+        248.0,
+        138.6
+      ],
+      "home_bbox": [
+        227,
+        117,
+        269,
+        148
+      ],
+      "left": true,
+      "right": false,
+      "hud": [
+        true,
+        false
+      ],
+      "timer_sig": 218538758533584,
+      "control_prompt": false,
+      "home_text_overlap": false,
+      "player_bbox": [
+        226,
+        130,
+        235,
+        144
+      ],
+      "player_area": 92,
+      "ref0": [
+        236.2,
+        131.1
+      ],
+      "ref_end": [
+        248.0,
+        138.6
+      ],
+      "path0": [
+        222.0,
+        122.0
+      ],
+      "path": [
+        [
+          56.73913043478261,
+          118.17391304347827
+        ],
+        [
+          62.0,
+          130.0
+        ],
+        [
+          62.0,
+          130.0
+        ],
+        [
+          222.0,
+          122.0
+        ],
+        [
+          248.0,
+          138.6
+        ]
+      ],
+      "input_delay_s": 0.12,
+      "controller_profile": "current",
+      "home_settling": false,
+      "estimated": [
+        10.888,
+        5.01,
+        -0.206,
+        -1.109
+      ],
+      "precision": [
+        10.429,
+        10.207,
+        8.0,
+        6.334,
+        -0.051,
+        -0.344,
+        0.293,
+        false,
+        false,
+        137.337,
+        24.0,
+        138.979
+      ],
+      "input_sent_at": 1152165.668507,
+      "planning_s": 0.003581,
+      "control_s": 0.000142,
+      "planning_detail": null,
+      "route_worker_s": null,
+      "route_pending": true,
+      "capture_s": 0.008254,
+      "max_capture_s": 0.034603,
+      "vision_s": 0.023945,
+      "previous_io_s": 0.000118,
+      "previous_frame_s": 6.6e-05,
+      "previous_step_s": 5.1e-05,
+      "previous_snapshot_s": 1e-06,
+      "state_write_s": 0.001168,
+      "state_max_write_s": 0.176325,
+      "state_queue_s": 0.000106,
+      "state_pending": 1,
+      "state_written_sequence": 3868,
+      "audio_delivery": "local_pending",
+      "audio_published": 0,
+      "audio_accepted": 0,
+      "audio_failed": 0
+    },
+    {
+      "t": 1152165.7109,
+      "phase": "playing",
+      "attempt": 1,
+      "x": 231.12,
+      "y": 137.337,
+      "vx": 15.447,
+      "vy": 7.271,
+      "angle": -0.206,
+      "omega": -0.216,
+      "best_dist": 16.928,
+      "home": [
+        248.0,
+        138.6
+      ],
+      "home_bbox": [
+        227,
+        117,
+        269,
+        148
+      ],
+      "left": false,
+      "right": false,
+      "hud": [
+        true,
+        false
+      ],
+      "timer_sig": 178323804972416,
+      "control_prompt": false,
+      "home_text_overlap": false,
+      "player_bbox": [
+        227,
+        130,
+        236,
+        144
+      ],
+      "player_area": 92,
+      "ref0": [
+        237.9,
+        132.1
+      ],
+      "ref_end": [
+        248.0,
+        138.6
+      ],
+      "path0": [
+        222.0,
+        122.0
+      ],
+      "path": [
+        [
+          56.73913043478261,
+          118.17391304347827
+        ],
+        [
+          62.0,
+          130.0
+        ],
+        [
+          62.0,
+          130.0
+        ],
+        [
+          222.0,
+          122.0
+        ],
+        [
+          248.0,
+          138.6
+        ]
+      ],
+      "input_delay_s": 0.12,
+      "controller_profile": "current",
+      "home_settling": false,
+      "estimated": [
+        15.025,
+        8.412,
+        -0.206,
+        0.0
+      ],
+      "precision": [
+        17.272,
+        8.824,
+        8.0,
+        6.334,
+        -0.192,
+        -0.119,
+        -0.073,
+        false,
+        false,
+        136.756,
+        24.0,
+        138.707
+      ],
+      "input_sent_at": 1152165.711322,
+      "planning_s": 0.00012,
+      "control_s": 0.000132,
+      "planning_detail": null,
+      "route_worker_s": 0.008116,
+      "route_pending": false,
+      "capture_s": 0.014273,
+      "max_capture_s": 0.034603,
+      "vision_s": 0.024547,
+      "previous_io_s": 0.000113,
+      "previous_frame_s": 6.6e-05,
+      "previous_step_s": 4.7e-05,
+      "previous_snapshot_s": 1e-06,
+      "state_write_s": 0.001051,
+      "state_max_write_s": 0.176325,
+      "state_queue_s": 0.00352,
+      "state_pending": 1,
+      "state_written_sequence": 3869,
+      "audio_delivery": "local_pending",
+      "audio_published": 0,
+      "audio_accepted": 0,
+      "audio_failed": 0
+    },
+    {
+      "t": 1152165.7438,
+      "phase": "playing",
+      "attempt": 1,
+      "x": 231.081,
+      "y": 136.371,
+      "vx": 5.467,
+      "vy": -14.754,
+      "angle": -0.194,
+      "omega": 0.121,
+      "best_dist": 16.928,
+      "home": [
+        248.0,
+        138.6
+      ],
+      "home_bbox": [
+        227,
+        117,
+        269,
+        148
+      ],
+      "left": false,
+      "right": false,
+      "hud": [
+        true,
+        false
+      ],
+      "timer_sig": 34254728956128,
+      "control_prompt": false,
+      "home_text_overlap": false,
+      "player_bbox": [
+        227,
+        129,
+        236,
+        143
+      ],
+      "player_area": 93,
+      "ref0": [
+        237.9,
+        132.1
+      ],
+      "ref_end": [
+        248.0,
+        138.6
+      ],
+      "path0": [
+        222.0,
+        122.0
+      ],
+      "path": [
+        [
+          56.73913043478261,
+          118.17391304347827
+        ],
+        [
+          62.0,
+          130.0
+        ],
+        [
+          62.0,
+          130.0
+        ],
+        [
+          222.0,
+          122.0
+        ],
+        [
+          248.0,
+          138.6
+        ]
+      ],
+      "input_delay_s": 0.12,
+      "controller_profile": "current",
+      "home_settling": true,
+      "estimated": [
+        7.943,
+        -4.551,
+        -0.194,
+        0.141
+      ],
+      "precision": [
+        17.272,
+        8.824,
+        8.0,
+        6.334,
+        -0.192,
+        -0.119,
+        -0.073,
+        false,
+        false,
+        136.756,
+        24.0,
+        138.707
+      ],
+      "input_sent_at": 1152165.743952,
+      "planning_s": 1e-06,
+      "control_s": 5.8e-05,
+      "planning_detail": null,
+      "route_worker_s": null,
+      "route_pending": false,
+      "capture_s": 0.007863,
+      "max_capture_s": 0.034603,
+      "vision_s": 0.024362,
+      "previous_io_s": 0.000165,
+      "previous_frame_s": 9.8e-05,
+      "previous_step_s": 6.6e-05,
+      "previous_snapshot_s": 1e-06,
+      "state_write_s": 0.001031,
+      "state_max_write_s": 0.176325,
+      "state_queue_s": 0.000153,
+      "state_pending": 1,
+      "state_written_sequence": 3870,
+      "audio_delivery": "local_pending",
+      "audio_published": 0,
+      "audio_accepted": 0,
+      "audio_failed": 0
+    }
+  ]
+}

@@ -709,7 +709,13 @@ class MpcController:
             # 実機Lv23: 帰宅演出中に端の量子化/速度差分で再噴射し、家から出ていた。
             # 接地・低速で待機に入ったら、家の幅を離れるまで噴射を再開しない。
             self._home_settling = self._home_settling and settling_area
-            if self._home_settling or (grounded and slow and (in_door or in_front)):
+            # 土色の家の縁や足元の先の床だけでは接地を確定しない。
+            # 実機Lv44の空中下降で待機をラッチし、家の下へ落ちていた。
+            recent = list(self._hist)
+            settled = (len(recent) >= 4 and recent[-1][0] - recent[0][0] >= 0.18
+                       and max(v[2] for v in recent) - min(v[2] for v in recent) <= 0.4
+                       and max(v[1] for v in recent) - min(v[1] for v in recent) <= 2.0)
+            if self._home_settling or (grounded and slow and settled and (in_door or in_front)):
                 self._home_settling = True
                 self._plan, self._last_action = None, 0
                 self._acts.append((st.t, 0))
