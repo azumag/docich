@@ -448,5 +448,31 @@ class TestCaptionCli(IsolatedConfigTestBase):
         self.assertIn("字幕を無効化して配信を継続", out)
 
 
+class TestGlobalConfigRoot(unittest.TestCase):
+    def test_explicit_and_ambient_config_preserve_tree_root_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "checkout"
+            root.mkdir()
+            in_tree = root / "config" / "docich.toml"
+            external = Path(tmp) / "external" / "docich.toml"
+            for explicit, ambient, expected_root in (
+                (None, None, root),
+                (in_tree, external, root),
+                (external, in_tree, external.resolve().parent),
+                (None, external, external.resolve().parent),
+            ):
+                with self.subTest(explicit=explicit, ambient=ambient):
+                    environment = {"DOCICH_CONFIG": str(ambient)} if ambient else {}
+                    argv = ["--config", str(explicit)] if explicit else []
+                    args = cli.build_parser().parse_args([*argv, "games"])
+                    with (
+                        mock.patch.object(cli, "_repo_root", return_value=root),
+                        mock.patch.object(cli, "load_global", return_value=mock.sentinel.g) as load,
+                        mock.patch.dict(os.environ, environment, clear=True),
+                    ):
+                        self.assertIs(cli._load_global(args), mock.sentinel.g)
+                    load.assert_called_once_with(expected_root, explicit)
+
+
 if __name__ == "__main__":
     unittest.main()
