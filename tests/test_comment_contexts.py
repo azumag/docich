@@ -184,3 +184,26 @@ def test_other_active_game_does_not_inherit_soren_live_board(tmp_path):
     assert 'snapshot_score=' not in result.game_state_context
     assert 'next=type' not in result.game_state_context
     assert '現在の戦闘・勝敗・操作の情報はこのメモにはありません' in result.game_state_context
+
+
+def test_flyhome_screen_gets_its_own_state_note_without_soren_board(tmp_path):
+    import time as _time
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'external-video-view'}}))
+    (root / 'external_video_corner.json').write_text(json.dumps({
+        'status': 'active', 'started_at': _time.time() - 125 * 60}))
+    result = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main')
+    text = result.game_state_context
+    assert 'Fly Me To The Home!' in text and '約125分経過' in text
+    assert '50面' in text and '推測で補わない' in text
+    assert 'snapshot_score=' not in text
+
+
+def test_flyhome_note_omits_elapsed_when_corner_is_not_active(tmp_path):
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'external-video-view'}}))
+    (root / 'external_video_corner.json').write_text(json.dumps({'status': 'restoring', 'started_at': 1.0}))
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert '経過' not in text and 'Fly Me To The Home!' in text

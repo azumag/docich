@@ -26,6 +26,10 @@ from docich.stream_category import (  # noqa: E402
     announce_running_view,
     announce_stream_game,
     announce_stream_paper,
+    announce_stream_flyhome,
+    announce_running_view,
+    FLYHOME_CATEGORY_ID,
+    FLYHOME_CATEGORY_NAME,
     commit_hook,
     script_path,
     twitch_category,
@@ -119,6 +123,42 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
         )
         self.assertNotIn("--game", call["argv"])
         self.assertNotIn("--title-prefix", call["argv"])
+
+    def test_flyhome_view_uses_its_own_category_and_title(self) -> None:
+        script = self._install_script()
+
+        self.assertTrue(announce_stream_flyhome(self.g, spawn=self._recorder))
+        self.assertEqual(self.spawned[0]["argv"], [
+            str(script.resolve()), "--category-id", FLYHOME_CATEGORY_ID,
+            "--category-name", FLYHOME_CATEGORY_NAME,
+            "--activity", "Fly Me To The Home!", "--strategy", "全50面クリアに挑戦",
+        ])
+        self.assertEqual(FLYHOME_CATEGORY_ID, "1202315854")
+
+    def test_special_view_uses_saved_webui_settings(self) -> None:
+        from docich.special_corner import save_settings
+
+        script = self._install_script()
+        save_settings(self.g.state_dir, {
+            "title": "ゲームA", "title_suffix": "初見クリアに挑戦", "category_id": "33214",
+            "category_name": "Game A", "comment_prompt": "", "closing_prompt": "",
+        })
+        self.assertTrue(announce_running_view(self.g, "external-video-view", spawn=self._recorder))
+        self.assertEqual(self.spawned[-1]["argv"], [
+            str(script.resolve()), "--category-id", "33214", "--category-name", "Game A",
+            "--activity", "ゲームA", "--strategy", "初見クリアに挑戦",
+        ])
+        # The restore still announces the previous game through its own TOML.
+        self.assertTrue(announce_running_view(self.g, "nethack", spawn=self._recorder))
+        self.assertEqual(self.spawned[-1]["argv"][1:3], ["--game", "nethack"])
+
+    def test_commit_follow_routes_flyhome_and_restores_the_previous_game(self) -> None:
+        self._install_script()
+        self.assertTrue(announce_running_view(self.g, "external-video-view", spawn=self._recorder))
+        self.assertIn("--category-id", self.spawned[-1]["argv"])
+        self.assertNotIn("--game", self.spawned[-1]["argv"])
+        self.assertTrue(announce_running_view(self.g, "nethack", spawn=self._recorder))
+        self.assertEqual(self.spawned[-1]["argv"][1:3], ["--game", "nethack"])
 
     def test_a_game_without_a_twitch_category_is_left_alone(self) -> None:
         self._install_script()

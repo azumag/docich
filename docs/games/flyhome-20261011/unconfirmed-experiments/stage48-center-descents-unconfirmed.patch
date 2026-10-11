@@ -1,0 +1,97 @@
+diff --git a/scripts/flyhome/prepare_controller_profile.py b/scripts/flyhome/prepare_controller_profile.py
+index 697a8d3..0624637 100644
+--- a/scripts/flyhome/prepare_controller_profile.py
++++ b/scripts/flyhome/prepare_controller_profile.py
+@@ -22,6 +22,7 @@ def main():
+     parser.add_argument('--head-margin', type=float, help='Raw spike overhead margin for a compatible revision')
+     parser.add_argument('--delay-s', type=float, help='Measured input delay override for the selected revision')
+     parser.add_argument('--descent-clearance', type=float, help='Lateral clearance for relaxed descent alignment on a compatible revision')
++    parser.add_argument('--center-descents', action='store_true', help='Balance raw side clearance on long descending corridors')
+     args = parser.parse_args()
+     if not 0 <= args.takeoff <= .35:
+         parser.error('takeoff must be between 0 and .35 seconds')
+@@ -59,6 +60,12 @@ def main():
+             parser.error('descent-clearance requires 16..24 and a compatible configuration')
+         descent_arg = f', descent_wide_clearance={args.descent_clearance!r}'
+         suffix += f'-descentclearance{args.descent_clearance:g}'
++    center_arg = ''
++    if args.center_descents:
++        if 'center_descents:' not in source:
++            parser.error('center-descents requires a compatible controller revision')
++        center_arg = ', center_descents=True'
++        suffix += '-centerdescents'
+     source += f'''
+ 
+ # Local real-game comparison; original controller source from Git {revision[:7]}.
+@@ -67,7 +74,7 @@ from .mpc import MpcController as _Current
+ class MpcController(_Baseline, _Current):
+     profile_name = "{revision[:7]}-actual-level{args.level}-takeoff{args.takeoff:g}{suffix}"
+     def __init__(self, physics=None, cfg=None):
+-        super().__init__(physics, MpcConfig(takeoff_s={args.takeoff!r}{ceiling_arg}{delay_arg}{descent_arg}))
++        super().__init__(physics, MpcConfig(takeoff_s={args.takeoff!r}{ceiling_arg}{delay_arg}{descent_arg}{center_arg}))
+     def reset(self):
+         super().reset()
+         self._home_settling = False
+diff --git a/src/docich/flyhome/mpc.py b/src/docich/flyhome/mpc.py
+index 97448bb..5d23989 100644
+--- a/src/docich/flyhome/mpc.py
++++ b/src/docich/flyhome/mpc.py
+@@ -14,6 +14,8 @@
+ 
+ from __future__ import annotations
+ 
++from . import planner
++
+ import math
+ import random
+ from collections import deque
+@@ -37,6 +39,7 @@ class MpcConfig:
+     delay_s: float = 0.12  # 入力が効くまでの遅れ
+     ceiling_y: float = 24.0  # 上昇制動の中心座標の境界。実上側回廊の比較用に設定可能
+     descent_wide_clearance: float = 24.0  # Raw lateral clearance before relaxing descent alignment.
++    center_descents: bool = False  # Actual-game comparison of balanced side clearance.
+     persistence: float = 0.65  # ランダム列で直前と同じ入力を続ける確率
+     mutate_p: float = 0.2  # 前回の最良列を崩す確率
+     # コスト
+@@ -135,7 +138,7 @@ class MpcController:
+         self.cfg.w_speed = 18.0 if narrow else self._open_limits['w_speed']
+         self.hazards = list(obs.hazards)
+         if path:
+-            self.path = list(path)
++            self.path = planner.center_descending_passages(grid, list(path), obs.hazards) if self.cfg.center_descents else list(path)
+             self._cum = [0.0]
+             for a, b in zip(self.path, self.path[1:]):
+                 self._cum.append(self._cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+diff --git a/src/docich/flyhome/planner.py b/src/docich/flyhome/planner.py
+index 9df0495..700db32 100644
+--- a/src/docich/flyhome/planner.py
++++ b/src/docich/flyhome/planner.py
+@@ -252,3 +252,28 @@ def lookahead(path: list[tuple[float, float]], pos: tuple[float, float], reach:
+         if math.hypot(p[0] - pos[0], p[1] - pos[1]) > reach:
+             return p
+     return path[-1]
++
++
++def center_descending_passages(g: Grid, path: list[tuple[float, float]], hazards) -> list[tuple[float, float]]:
++    """Balance raw side clearance on long descents, only if all changed grid segments are free."""
++    out = list(path)
++    k = 0
++    while k < len(out) - 1:
++        sx, sy = out[k]
++        j = k
++        while j + 1 < len(out) and abs(out[j + 1][0] - sx) < 0.1 and out[j + 1][1] > out[j][1]:
++            j += 1
++        if j > k and out[j][1] - sy >= 24:
++            walls = [h for h in hazards if h[1] < out[j][1] + 10 and h[3] > sy - 10]
++            left = [h[2] for h in walls if h[2] <= sx]
++            right = [h[0] for h in walls if h[0] >= sx]
++            if left and right:
++                lo, hi = max(left), min(right)
++                mid = (lo + hi) * 0.5
++                if 16 <= hi - lo <= 40 and abs(mid - sx) <= 8:
++                    candidate = [(mid, out[i][1]) for i in range(k, j + 1)]
++                    check = ([out[k - 1]] if k else []) + candidate + ([out[j + 1]] if j + 1 < len(out) else [])
++                    if all(g.free(*g.to_cell(x, y)) for x, y in candidate) and not path_blocked(g, check):
++                        out[k:j + 1] = candidate
++        k = max(k + 1, j)
++    return out

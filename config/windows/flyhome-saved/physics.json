@@ -1,0 +1,10 @@
+{
+  "gravity": 86.0,
+  "thrust": 211.0,
+  "single_thrust_ratio": 0.89,
+  "spin": 5.29,
+  "spin_mode": "accel",
+  "angular_damping": 0.17,
+  "torque_sign": 1,
+  "drag": 0.55
+}

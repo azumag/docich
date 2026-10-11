@@ -5,12 +5,16 @@ on:
     paths:
       - '.github/workflows/overlay-queue-interoperability.yml'
       - 'src/docich/overlay*.py'
-      - 'src/docich/webui.py'
+      - 'src/docich/trading/__init__.py'
+      - 'src/docich/trading/models.py'
+      - 'src/docich/trading/narration_style.py'
+      - 'src/docich/trading/risk.py'
+      - 'src/docich/trading/soren_output.py'
       - 'src/docich/config.py'
-      - 'src/docich/runtime_backend.py'
-      - 'src/docich/trading/**'
       - 'src/docich/hanjuku_narration.py'
       - 'src/docich/retro_corner.py'
+      - 'src/docich/runtime_backend.py'
+      - 'src/docich/webui.py'
       - 'games/soviet_now'
       - '.github/scripts/soren_gitlink_gate.py'
       - 'tests/test_overlay_interop.py'
@@ -19,17 +23,22 @@ on:
       - 'tests/test_hanjuku_end_chat_interop.py'
       - 'tests/test_trading_soren_output.py'
       - 'requirements-test.txt'
+      - 'conftest.py'
   push:
     branches: [main]
     paths:
       - '.github/workflows/overlay-queue-interoperability.yml'
       - 'src/docich/overlay*.py'
-      - 'src/docich/webui.py'
+      - 'src/docich/trading/__init__.py'
+      - 'src/docich/trading/models.py'
+      - 'src/docich/trading/narration_style.py'
+      - 'src/docich/trading/risk.py'
+      - 'src/docich/trading/soren_output.py'
       - 'src/docich/config.py'
-      - 'src/docich/runtime_backend.py'
-      - 'src/docich/trading/**'
       - 'src/docich/hanjuku_narration.py'
       - 'src/docich/retro_corner.py'
+      - 'src/docich/runtime_backend.py'
+      - 'src/docich/webui.py'
       - 'games/soviet_now'
       - '.github/scripts/soren_gitlink_gate.py'
       - 'tests/test_overlay_interop.py'
@@ -38,6 +47,7 @@ on:
       - 'tests/test_hanjuku_end_chat_interop.py'
       - 'tests/test_trading_soren_output.py'
       - 'requirements-test.txt'
+      - 'conftest.py'
 
 permissions:
   contents: read
@@ -70,19 +80,24 @@ jobs:
             --after "$AFTER_SHA" \
             --root-path '.github/workflows/overlay-queue-interoperability.yml' \
             --root-path 'src/docich/overlay*.py' \
-            --root-path 'src/docich/webui.py' \
+            --root-path 'src/docich/trading/__init__.py' \
+            --root-path 'src/docich/trading/models.py' \
+            --root-path 'src/docich/trading/narration_style.py' \
+            --root-path 'src/docich/trading/risk.py' \
+            --root-path 'src/docich/trading/soren_output.py' \
             --root-path 'src/docich/config.py' \
-            --root-path 'src/docich/runtime_backend.py' \
-            --root-path 'src/docich/trading/**' \
             --root-path 'src/docich/hanjuku_narration.py' \
             --root-path 'src/docich/retro_corner.py' \
+            --root-path 'src/docich/runtime_backend.py' \
+            --root-path 'src/docich/webui.py' \
+            --root-path '.github/scripts/soren_gitlink_gate.py' \
             --root-path 'tests/test_overlay_interop.py' \
             --root-path 'tests/test_overlay_queue.py' \
             --root-path 'tests/test_audio_delivery.py' \
             --root-path 'tests/test_hanjuku_end_chat_interop.py' \
             --root-path 'tests/test_trading_soren_output.py' \
             --root-path 'requirements-test.txt' \
-            --root-path '.github/scripts/soren_gitlink_gate.py' \
+            --root-path 'conftest.py' \
             --soren-path 'overlay_notify.sh' \
             --soren-path 'generate_event_overlay.py' \
             --soren-path 'core/config.sh' \

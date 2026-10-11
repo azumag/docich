@@ -24,6 +24,8 @@ RECEIVER_FILE = "external_video_receiver.json"
 SRT_PORT = 19194
 RELAY_PORT = 19195
 FRAME_MAX_AGE = 10.0
+# systemd unit lifetime ceiling (25 h): the corner itself ends on the operator's End.
+MAX_RECEIVER_MINUTES = 25 * 60
 
 
 class ExternalVideoError(RuntimeError):
@@ -138,16 +140,20 @@ def ffmpeg_command(g, state):
     ]
 
 
-def prepare(g, ip, minutes=30):
+def prepare(g, ip, minutes=30, *, expected_receiver_id=None):
     ip = listen_ip(ip)
-    if type(minutes) is not int or not 1 <= minutes <= 60:
-        raise ExternalVideoError("receiver wait must be 1-60 minutes")
+    if type(minutes) is not int or not 1 <= minutes <= MAX_RECEIVER_MINUTES:
+        raise ExternalVideoError(f"receiver wait must be 1-{MAX_RECEIVER_MINUTES} minutes")
     with exclusive(Path(g.state_dir) / "external-video-prepare.lock"):
         corner_path = Path(g.state_dir) / "external_video_corner.json"
         if corner_path.exists() and read_json(corner_path).get("status") in {
                 "starting", "active", "restoring", "failed"}:
             raise ExternalVideoError("existing corner must finish or recover first")
         path = Path(g.state_dir) / RECEIVER_FILE
+        if expected_receiver_id is not None:
+            # Recheck under the prepare lock; a queued owner may renew only
+            # the reservation it observed, never a concurrently replaced one.
+            read_receiver(g, expected=expected_receiver_id)
         if path.exists():
             old = read_receiver(g)
             if old["alive"] or (old.get("status") == "launching"

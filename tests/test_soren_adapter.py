@@ -349,6 +349,59 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                 adapter.materialize_runtime(time.monotonic() + 30, None)
             self.assertEqual(calls[1], [str(adapter.control), "fresh-start", "req-4"])
 
+    def _stopped_materialize(self, adapter, request_id="req-9"):
+        identity = {"request_id": request_id, "game": "sorengame", "generation": 7}
+        outputs = [{"request": identity, "ack": None, "resource": {**identity, "status": "stopped"}},
+                   {"status": "starting"}]
+
+        def fake_run(argv, **kwargs):
+            return SimpleNamespace(returncode=0, stdout=json.dumps(outputs.pop(0)), stderr="")
+
+        with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+            adapter.materialize_runtime(time.monotonic() + 30, None)
+
+    def test_paused_loop_that_survived_the_stop_is_accepted_once_the_pause_is_cleared(self):
+        """2026-10-11: stop pauses soren_loop.sh; fresh-start only clears the pause."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            adapter = self.make_adapter(root)
+            (root / "tmp/state").mkdir(parents=True)
+            pause = root / "tmp/state/soren_loop.paused"
+            pause.write_text("lifecycle:req-9")
+            old_loop = [(time.time() - 3000, 4242, 777)]       # born long before the fence
+            with patch.object(adapter, "_process_matches", side_effect=lambda name: list(old_loop)):
+                self._stopped_materialize(adapter)
+                self.assertEqual(adapter._resumed_loop, (4242, 777))
+                self.assertFalse(adapter._live_process("soren_loop.sh"))   # still paused
+                pause.unlink()
+                self.assertTrue(adapter._live_process("soren_loop.sh"))     # resumed, same instance
+                # the watchdog is never excused by this path
+                self.assertFalse(adapter._live_process("soviet_watchdog.sh"))
+
+    def test_a_different_old_loop_or_a_second_loop_is_still_refused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            adapter = self.make_adapter(root)
+            (root / "tmp/state").mkdir(parents=True)
+            (root / "tmp/state/soren_loop.paused").write_text("x")
+            with patch.object(adapter, "_process_matches", return_value=[(time.time() - 3000, 4242, 777)]):
+                self._stopped_materialize(adapter)
+            (root / "tmp/state/soren_loop.paused").unlink()
+            stale_other = [(time.time() - 3000, 9999, 888)]
+            with patch.object(adapter, "_process_matches", return_value=stale_other):
+                self.assertFalse(adapter._live_process("soren_loop.sh"))
+            two = [(time.time() - 3000, 4242, 777), (time.time() - 5, 5000, 999)]
+            with patch.object(adapter, "_process_matches", return_value=two):
+                self.assertFalse(adapter._live_process("soren_loop.sh"))
+
+    def test_without_a_pause_marker_no_old_loop_is_remembered(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            with patch.object(adapter, "_process_matches", return_value=[(time.time() - 3000, 4242, 777)]):
+                self._stopped_materialize(adapter)
+                self.assertIsNone(adapter._resumed_loop)
+                self.assertFalse(adapter._live_process("soren_loop.sh"))
+
     def test_materialize_clears_matching_cancelled_request_for_rollback(self):
         with tempfile.TemporaryDirectory() as temp:
             adapter = self.make_adapter(Path(temp))
@@ -530,6 +583,203 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             adapter._singleton_process_identity.side_effect = lambda name: (1 if name == "soren_loop.sh" else 2, 10)
             store.receipts._path(before["last_result"]["request_id"]).unlink()
             self.assertFalse(adapter.can_restore_live_singleton(deadline, None))
+
+    def make_failed_live_candidate(self, root):
+        """Soren switch timed out + rollback failed, yet the candidate is running."""
+        import copy
+        import uuid
+        adapter, store, state = self.make_retired_singleton(root)
+        previous = self.cli_active(6)
+        state.update(phase="ready", active=previous, retiring=[], next_generation=7)
+        store.canonical.save(state)
+        rid = str(uuid.uuid4())
+        acceptance = store.accept_request(rid, "switch", "sorengame")
+        gen = acceptance.generation
+        body = dict(request_id=rid, operation="switch", status="failed", from_game="nethack",
+                    to_game="sorengame", generation=gen, error_code="rollback_failed",
+                    detail="synthetic rollback failure")
+        with store.transaction() as tx:
+            tx.finish_request(rid, "failed", body)
+        names = runtime_names(gen)
+        failed = dict(game="sorengame", adapter="soren", generation=gen, runtime_id=f"g{gen}-abcdef",
+                      lease_id=str(uuid.uuid4()), game_window=names.game_window,
+                      agent_window=names.agent_window, adapter_session=names.adapter_session,
+                      started_at="2026-10-09T00:00:00Z", cleanup_role="failed_candidate")
+        state = store.canonical.load()[0]
+        state.update(phase="failed", active=None, previous=previous, candidate=None,
+                     retiring=[failed], request_id=None, operation=None, last_result=body,
+                     next_generation=gen + 1)
+        store.canonical.save(state)
+        adapter.spec = RuntimeSpec.from_runtime(store.state_dir, failed)
+        broker = {"v": self.candidate_broker_payload(adapter, "timeout")}
+        calls = []
+        def run(argv, deadline, cancel, **kwargs):
+            calls.append(list(argv))
+            if argv[1:2] == ["cancel"]:
+                broker["v"] = self.candidate_broker_payload(adapter, "cancelled", control=True)
+            return 0, {}
+        adapter._status = Mock(side_effect=lambda *a: copy.deepcopy(broker["v"]))
+        adapter._run = Mock(side_effect=run)
+        adapter.materialize_runtime = Mock(side_effect=lambda *a: broker.update(v=self.clean_broker()))
+        adapter.readiness = Mock()
+        adapter.test_calls = calls
+        adapter.test_broker = broker
+        return adapter, store, state
+
+    @staticmethod
+    def clean_broker():
+        return dict(schema=1, request=None, ack=None, resource=None, control=None)
+
+    @staticmethod
+    def candidate_broker_payload(adapter, status, control=False):
+        rid = adapter._candidate_cleanup_request_id()
+        rec = {"schema": 1, "request_id": rid, "game": "sorengame",
+               "generation": adapter.spec.generation}
+        return dict(schema=1, request=dict(rec), ack={**rec, "status": status}, resource=None,
+                    control=dict(rec) if control else None)
+
+    def test_adopt_failed_candidate_cancels_stale_stop_and_archives_it(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter, store, before = self.make_failed_live_candidate(Path(temp))
+            deadline = time.monotonic() + 5
+            self.assertTrue(adapter.adopt_failed_candidate(deadline, None))
+            rid = adapter._candidate_cleanup_request_id()
+            self.assertEqual(len(adapter.test_calls), 1)
+            self.assertEqual(adapter.test_calls[0][1:], ["cancel", rid])
+            adapter.materialize_runtime.assert_called_once()
+            adapter.readiness.assert_called_once()
+            # The adapter never writes canonical (the coordinator commits).
+            self.assertEqual(store.canonical.load()[0]["phase"], "failed")
+            self.assertEqual(store.canonical.load()[0]["retiring"], before["retiring"])
+
+    def test_adopt_failed_candidate_resumes_after_cancel_or_when_already_clean(self):
+        for payload, expect_materialize in (("cancelled", True), ("clean", False)):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as temp:
+                adapter, _store, _before = self.make_failed_live_candidate(Path(temp))
+                adapter.test_broker["v"] = (
+                    self.candidate_broker_payload(adapter, "cancelled", control=True)
+                    if payload == "cancelled" else self.clean_broker())
+                self.assertTrue(adapter.adopt_failed_candidate(time.monotonic() + 5, None))
+                self.assertEqual(adapter.test_calls, [])  # no second cancel
+                self.assertEqual(adapter.materialize_runtime.called, expect_materialize)
+
+    def test_adopt_failed_candidate_refuses_unproven_ownership_and_never_mutates(self):
+        import copy
+        import uuid
+        def foreign_request(adapter):
+            payload = self.candidate_broker_payload(adapter, "timeout")
+            payload["request"]["request_id"] = str(uuid.uuid4())
+            return payload
+        def with_resource(adapter):
+            payload = self.candidate_broker_payload(adapter, "timeout")
+            payload["resource"] = {"status": "stopped"}
+            return payload
+        broker_cases = {
+            "foreign request": foreign_request,
+            "resource held": with_resource,
+            "stop in progress": lambda a: self.candidate_broker_payload(a, "stopping"),
+            "stopped": lambda a: self.candidate_broker_payload(a, "stopped"),
+            "timeout with control": lambda a: self.candidate_broker_payload(a, "timeout", control=True),
+        }
+        for label, build in broker_cases.items():
+            with self.subTest(broker=label), tempfile.TemporaryDirectory() as temp:
+                adapter, _store, _before = self.make_failed_live_candidate(Path(temp))
+                adapter.test_broker["v"] = build(adapter)
+                self.assertFalse(adapter.adopt_failed_candidate(time.monotonic() + 5, None))
+                self.assertEqual(adapter.test_calls, [])
+                adapter.materialize_runtime.assert_not_called()
+        def drop_receipt(adapter, store, state):
+            store.receipts._path(state["last_result"]["request_id"]).unlink()
+        def phase_ready(adapter, store, state):
+            state = copy.deepcopy(state)
+            state.update(phase="ready", previous=None, active=state["retiring"][0], retiring=[])
+            store.canonical.save(state)
+        def previous_is_soren(adapter, store, state):
+            state = copy.deepcopy(state)
+            state["previous"]["adapter"] = "soren"
+            store.canonical.save(state)
+        def other_error(adapter, store, state):
+            state = copy.deepcopy(state)
+            state["last_result"]["error_code"] = "start_failed"
+            store.canonical.save(state)
+        def has_retirement_proof(adapter, store, state):
+            state = copy.deepcopy(state)
+            state["retiring"][0]["retirement"] = {"request_id": state["last_result"]["request_id"]}
+            store.canonical.save(state)
+        def other_identity(adapter, store, state):
+            adapter.spec = RuntimeSpec.from_runtime(
+                store.state_dir, {**state["retiring"][0], "lease_id": str(uuid.uuid4())})
+        for mutate in (drop_receipt, phase_ready, previous_is_soren, other_error,
+                       has_retirement_proof, other_identity):
+            with self.subTest(canonical=mutate.__name__), tempfile.TemporaryDirectory() as temp:
+                adapter, store, state = self.make_failed_live_candidate(Path(temp))
+                mutate(adapter, store, state)
+                self.assertFalse(adapter.adopt_failed_candidate(time.monotonic() + 5, None))
+                self.assertEqual(adapter.test_calls, [])
+                adapter.materialize_runtime.assert_not_called()
+
+    def test_adopt_failed_candidate_requires_both_singleton_processes(self):
+        for identities in (None, "same_pid", "flapping"):
+            with self.subTest(identities=identities), tempfile.TemporaryDirectory() as temp:
+                adapter, _store, _before = self.make_failed_live_candidate(Path(temp))
+                if identities is None:
+                    adapter._singleton_process_identity = Mock(return_value=None)
+                elif identities == "same_pid":
+                    adapter._singleton_process_identity = Mock(return_value=(5, 10))
+                else:
+                    ticks = iter(range(100, 200))
+                    adapter._singleton_process_identity = Mock(
+                        side_effect=lambda name: (1 if name == "soren_loop.sh" else 2, next(ticks)))
+                self.assertFalse(adapter.adopt_failed_candidate(time.monotonic() + 5, None))
+                if identities != "flapping":
+                    adapter.materialize_runtime.assert_not_called()
+
+    def test_adoption_rejects_stable_replacement_after_initial_process_proof(self):
+        import copy
+        initial = {"soren_loop.sh": (11, 100), "soviet_watchdog.sh": (22, 200)}
+        for names in (("soren_loop.sh",), ("soviet_watchdog.sh",), tuple(initial)):
+            for field in (0, 1):  # PID replacement or PID reuse with a new birth tick.
+                with self.subTest(names=names, field=field), tempfile.TemporaryDirectory() as temp:
+                    adapter, store, before = self.make_failed_live_candidate(Path(temp))
+                    before = store.canonical.load()[0]
+                    changed = copy.deepcopy(initial)
+                    for name in names:
+                        identity = list(changed[name])
+                        identity[field] += 1000
+                        changed[name] = tuple(identity)
+                    adapter._live_singleton_processes = Mock(
+                        side_effect=[initial, changed, changed])
+                    receipt_id = before["last_result"]["request_id"]
+                    receipt = store.receipts.load(receipt_id)
+                    self.assertFalse(adapter.adopt_failed_candidate(time.monotonic() + 5, None))
+                    self.assertEqual(store.canonical.load()[0], before)
+                    self.assertEqual(store.receipts.load(receipt_id), receipt)
+                    self.assertEqual(adapter.spec.lease_id, before["retiring"][0]["lease_id"])
+
+    def test_adoption_accepts_only_three_matching_process_samples(self):
+        initial = {"soren_loop.sh": (11, 100), "soviet_watchdog.sh": (22, 200)}
+        other = {**initial, "soren_loop.sh": (33, 300)}
+        for samples, expected in (
+            ([initial, initial, initial], True),
+            ([initial, other, initial], False),
+            ([initial, initial, other], False),
+            ([initial, None, None], False),
+            ([initial, initial, None], False),
+        ):
+            with self.subTest(samples=samples), tempfile.TemporaryDirectory() as temp:
+                adapter, store, before = self.make_failed_live_candidate(Path(temp))
+                before = store.canonical.load()[0]
+                adapter._live_singleton_processes = Mock(side_effect=samples)
+                self.assertEqual(adapter.adopt_failed_candidate(time.monotonic() + 5, None), expected)
+                self.assertEqual(store.canonical.load()[0], before)
+
+    def test_adopt_failed_candidate_fails_closed_when_cancel_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter, _store, _before = self.make_failed_live_candidate(Path(temp))
+            adapter._run = Mock(return_value=(3, {}))
+            self.assertFalse(adapter.adopt_failed_candidate(time.monotonic() + 5, None))
+            adapter.materialize_runtime.assert_not_called()
+            adapter.readiness.assert_not_called()
 
     def test_recover_retires_superseded_singleton_without_stopping_active_game(self):
         with tempfile.TemporaryDirectory() as temp:

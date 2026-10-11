@@ -1,11 +1,11 @@
 {
-  "output_sha256": "e7404b5465ec34b58b9537bd39cec57e70f78fd3df14dd1e57f3521fa4f8adaa",
+  "output_sha256": "883de484fe9813eb5538879f7ea1667a7f87e93cc3454048f0a13dbf8bb0d323",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "8ca2ab47799b49a1ec9d58dad8d44b40a22294f85968c965c2ba94c9d7bc9b57",
+  "source_sha256": "457bf377e0f1dbeee9d575660092893d664ca92f17dd5e73431d69d7272ac7da",
   "topics": [
-    "手動OBS特別コーナーの受信と専用経路の実装",
-    "自動ローテーション復旧（slot181停滞35h）と恒久修正2件",
-    "docich VM・配信 read-only 監視（slot 181停滞継続）"
+    "先発隊1人の灰色行停滞を修正、終了前の保存を実測",
+    "募集の支払い直前の最低残金を再検査",
+    "切り札後の追撃期限を実画面で修正、募集の残金P2対応へ"
   ]
 }

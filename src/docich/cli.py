@@ -181,6 +181,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_recover = sub.add_parser("recover", help="中断した切替を復旧する (crash/failed 後の再開)")
     p_recover.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
+    p_recover.add_argument(
+        "--adopt-failed-candidate",
+        action="store_true",
+        help="rollback失敗で停止できなかった稼働中のcandidateを、停止せずactiveとして採用する (証明できない場合は何も変更しない)",
+    )
 
     p_maintain_fifo = sub.add_parser(
         "maintain-fifo",
@@ -386,7 +391,9 @@ def _dispatch(args: argparse.Namespace) -> int:
     if command == "restart":
         return cmd_restart(g, request_id=args.request_id, timeout_s=args.timeout)
     if command == "recover":
-        return cmd_recover(g, timeout_s=args.timeout)
+        return cmd_recover(
+            g, timeout_s=args.timeout, adopt_failed_candidate=args.adopt_failed_candidate
+        )
     if command == "maintain-fifo":
         return cmd_maintain_fifo(g, timeout_s=args.timeout)
     if command == "rotate":
@@ -930,11 +937,14 @@ def cmd_restart(g: GlobalConfig, *, request_id: str | None = None, timeout_s: fl
     return _result_exit_code(result)
 
 
-def cmd_recover(g: GlobalConfig, *, timeout_s: float | None = None) -> int:
+def cmd_recover(
+    g: GlobalConfig, *, timeout_s: float | None = None, adopt_failed_candidate: bool = False
+) -> int:
     _require_no_legacy_runtime(g)
     try:
         result = _coordinator(g).recover(
             timeout_s=_checked_timeout(timeout_s),
+            adopt_failed_candidate=adopt_failed_candidate,
         )
     except GameSwitchError as exc:
         raise CliError(f"復旧できませんでした: {exc}") from exc

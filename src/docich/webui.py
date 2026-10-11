@@ -36,6 +36,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -703,7 +704,7 @@ CSRF_TTL_SEC = 4 * 3600  # 4時間
 # (method, path) の組。フロントエンドは既存の window.confirm() ダイアログ
 # (streamAction/workerControl) または「保存」操作自体を再確認とみなし、
 # confirm:true を body に含める。
-CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config"), ("POST", "/api/corners"), ("POST", "/api/tsuitate-beta")}
+CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config"), ("POST", "/api/corners"), ("POST", "/api/tsuitate-beta"), ("POST", "/api/special-corner/end"), ("PUT", "/api/special-corner/settings"), ("POST", "/api/special-corner/receiver"), ("POST", "/api/special-corner/start")}
 
 
 def _make_csrf_token(secret: bytes, ttl: int = CSRF_TTL_SEC, now: int | None = None) -> str:
@@ -3121,6 +3122,8 @@ def _log_authz_event(soren_root: Path, method: str, path: str, identity: str, de
 # --- HTTP handler --------------------------------------------------------
 
 MAX_BODY_BYTES = 256 * 1024
+# One Twitch category search at a time (it runs the Soren updater's --resolve).
+_SPECIAL_CATEGORY_SEARCH_LOCK = threading.Lock()
 
 _RESOURCES = ResourceLoader(Path(__file__).with_name("webui_resources"), WEBUI_ALLOWLIST, _validate_value)
 # Compatibility exports for callers inspecting the packaged initial snapshot.
@@ -3417,6 +3420,10 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_get_predictions()
             elif path == "/api/corners":
                 status = self._handle_get_corners()
+            elif path == "/api/special-corner":
+                status = self._handle_get_special_corner()
+            elif path == "/api/special-corner/settings":
+                status = self._handle_get_special_corner_settings()
             elif path == "/api/soren91/renderer":
                 status = self._handle_get_soren91_renderer()
             else:
@@ -3446,6 +3453,8 @@ class _Handler(BaseHTTPRequestHandler):
             elif parsed.path.startswith("/api/prompts/"):
                 prompt_id = urllib.parse.unquote(parsed.path[len("/api/prompts/") :])
                 status = self._handle_put_prompt(prompt_id)
+            elif parsed.path == "/api/special-corner/settings":
+                status = self._handle_put_special_corner_settings()
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -3532,6 +3541,14 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_post_prediction_action()
             elif parsed.path == "/api/corners":
                 status = self._handle_post_corners()
+            elif parsed.path == "/api/special-corner/end":
+                status = self._handle_post_special_corner_end()
+            elif parsed.path == "/api/special-corner/receiver":
+                status = self._handle_post_special_corner_receiver()
+            elif parsed.path == "/api/special-corner/start":
+                status = self._handle_post_special_corner_start()
+            elif parsed.path == "/api/special-corner/category-search":
+                status = self._handle_post_special_corner_category_search()
             elif parsed.path == "/api/soren91/renderer":
                 status = self._handle_post_soren91_renderer()
             else:
@@ -4471,6 +4488,174 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(500, "corners_unavailable", str(exc)[:200])
             return 500
         self._send_json(200, view)
+        return 200
+
+    def _handle_get_special_corner(self) -> int:
+        """Read-only projection of the Fly Me To The Home! special corner (no ids)."""
+        state = _load_json_file(Path(self.g.state_dir) / "external_video_corner.json")
+        state = state if isinstance(state, dict) else {}
+        status = state.get("status") if isinstance(state.get("status"), str) else "idle"
+        closing = state.get("closing") if isinstance(state.get("closing"), dict) else {}
+        from .special_corner import control_view, load_settings
+        try:
+            control = control_view(self.g)
+        except Exception:
+            control = None
+        self._send_json(200, {
+            "title": load_settings(self.g.state_dir)["title"],
+            "control": control,
+            "status": status[:32],
+            "can_end": status in ("waiting", "starting", "active"),
+            "started_at": state.get("started_at") if isinstance(state.get("started_at"), (int, float)) else None,
+            "ends_at": state.get("ends_at") if isinstance(state.get("ends_at"), (int, float)) else None,
+            "wait_deadline_at": state.get("wait_deadline_at") if isinstance(state.get("wait_deadline_at"), (int, float)) else None,
+            "end_reason": state.get("end_reason") if isinstance(state.get("end_reason"), str) else None,
+            "closing": str(closing.get("status") or "")[:32] or None,
+        })
+        return 200
+
+    def _handle_post_special_corner_end(self) -> int:
+        """終了ボタン: クリアとして特別コーナーを終え、Soren へ復帰して感想を話す。"""
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8")) if body else {}
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict) or set(data) - {"confirm"}:
+            self._send_error_json(400, "validation_error", "body must be {confirm:true}")
+            return 400
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "特別コーナーの終了には confirm:true が必要です")
+            return 428
+        from .external_video_corner import OPERATOR_END, request_end
+        from .external_video_receiver import ExternalVideoError
+        state = _load_json_file(Path(self.g.state_dir) / "external_video_corner.json")
+        try:
+            if not isinstance(state, dict):
+                raise ExternalVideoError("no special corner is running")
+            request_end(self.g, state, OPERATOR_END)
+        except ExternalVideoError as exc:
+            self._send_error_json(409, "special_corner_not_running", str(exc)[:200])
+            return 409
+        self._send_json(200, {"ok": True, "action": "end"})
+        return 200
+
+    def _read_json_object(self, allowed: set[str]) -> tuple[dict | None, int]:
+        """Small JSON object body with a fixed key set; error already sent on failure."""
+        body, err = self._read_body()
+        if err:
+            return None, err
+        try:
+            data = json.loads(body.decode("utf-8")) if body else {}
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc)[:200])
+            return None, 400
+        if not isinstance(data, dict) or set(data) - allowed:
+            self._send_error_json(400, "validation_error", "unexpected body fields")
+            return None, 400
+        return data, 0
+
+    def _handle_get_special_corner_settings(self) -> int:
+        """特別コーナー設定の読み取り (viewer も可。秘密は含まない)。"""
+        from .special_corner import LIMITS, load_settings
+        settings = load_settings(self.g.state_dir)
+        self._send_json(200, {
+            "settings": {key: settings[key] for key in LIMITS},
+            "is_default": settings["is_default"],
+            "updated_at": settings["updated_at"],
+            "limits": {key: {"min": lo, "max": hi, "multiline": multi}
+                       for key, (lo, hi, multi) in LIMITS.items()},
+        })
+        return 200
+
+    def _handle_put_special_corner_settings(self) -> int:
+        """特別コーナー設定の保存 (operator + CSRF + confirm。保存操作自体が再確認)。"""
+        from .special_corner import LIMITS, SpecialCornerSettingsError, save_settings
+        data, err = self._read_json_object(set(LIMITS) | {"confirm"})
+        if err:
+            return err
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "特別コーナー設定の保存には confirm:true が必要です")
+            return 428
+        data.pop("confirm", None)
+        try:
+            saved = save_settings(self.g.state_dir, data)
+        except SpecialCornerSettingsError as exc:
+            self._send_error_json(400, "validation_error", str(exc)[:200], exc.field)
+            return 400
+        except OSError as exc:
+            self._send_error_json(500, "settings_write_failed", type(exc).__name__)
+            return 500
+        self._send_json(200, {
+            "ok": True,
+            "settings": {key: saved[key] for key in LIMITS},
+            "is_default": False,
+            "updated_at": saved["updated_at"],
+        })
+        return 200
+
+    def _handle_post_special_corner_receiver(self) -> int:
+        """SRT 受付の開始/停止 (operator + CSRF + confirm)。正規 CLI prepare/receiver-stop を使う。"""
+        from .special_corner import SpecialCornerControlError, prepare_receiver, stop_receiver
+        data, err = self._read_json_object({"action", "confirm"})
+        if err:
+            return err
+        action = data.get("action")
+        if action not in ("prepare", "stop"):
+            self._send_error_json(400, "invalid_action", "action must be prepare or stop")
+            return 400
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "SRT 受付の操作には confirm:true が必要です")
+            return 428
+        try:
+            receiver = prepare_receiver(self.g) if action == "prepare" else stop_receiver(self.g)
+        except SpecialCornerControlError as exc:
+            self._send_error_json(409, exc.code, str(exc)[:200])
+            return 409
+        self._send_json(200, {"ok": True, "action": action, "receiver": receiver})
+        return 200
+
+    def _handle_post_special_corner_start(self) -> int:
+        """手動開始: 受信中(音声あり)のときだけ start --wait-for-idle を独立 user unit で予約する。"""
+        from .special_corner import SpecialCornerControlError, launch_corner
+        data, err = self._read_json_object({"confirm"})
+        if err:
+            return err
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "特別コーナーの開始には confirm:true が必要です")
+            return 428
+        try:
+            launch_corner(self.g)
+        except SpecialCornerControlError as exc:
+            self._send_error_json(409, exc.code, str(exc)[:200])
+            return 409
+        self._send_json(200, {"ok": True, "action": "start"})
+        return 200
+
+    def _handle_post_special_corner_category_search(self) -> int:
+        """Twitch カテゴリ候補の検索 (operator のみ。updater の読み取り専用 --resolve)。"""
+        from .special_corner import CategorySearchError, SpecialCornerSettingsError, search_categories
+        data, err = self._read_json_object({"query"})
+        if err:
+            return err
+        lock = _SPECIAL_CATEGORY_SEARCH_LOCK
+        if not lock.acquire(blocking=False):
+            self._send_error_json(429, "search_busy", "別のカテゴリ検索を実行中です")
+            return 429
+        try:
+            candidates = search_categories(self.g, data.get("query"))
+        except SpecialCornerSettingsError as exc:
+            self._send_error_json(400, "validation_error", str(exc)[:200], exc.field)
+            return 400
+        except CategorySearchError as exc:
+            self._send_error_json(502, "category_search_failed", str(exc)[:200])
+            return 502
+        finally:
+            lock.release()
+        self._send_json(200, {"candidates": candidates})
         return 200
 
     def _handle_get_soren91_renderer(self) -> int:

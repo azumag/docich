@@ -1,0 +1,5 @@
+{"attempt": 1, "outcome": "dead", "duration_s": 3.314, "best_dist": 122.8, "level_sig": 247771087531907, "events": 26}
+{"attempt": 2, "outcome": "dead", "duration_s": 5.897, "best_dist": 128.2, "level_sig": 93778224945434, "events": 40}
+{"attempt": 3, "outcome": "dead", "duration_s": 5.947, "best_dist": 129.4, "level_sig": 93778224945434, "events": 43}
+{"attempt": 4, "outcome": "dead", "duration_s": 49.104, "best_dist": 37.1, "level_sig": 30675503414709, "events": 641}
+{"attempt": 5, "outcome": "dead", "duration_s": 30.265, "best_dist": 114.6, "level_sig": 247771087531907, "events": 396}

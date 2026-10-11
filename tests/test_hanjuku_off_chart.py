@@ -1453,3 +1453,22 @@ def test_chikujou_refusal_without_alternative_or_selection_exits(monkeypatch):
         assert policy._chikujou_step(refused, mem, sub) == [policy.pad('b')]
         assert sub['declined']
 
+
+
+@pytest.mark.parametrize('flag_age,captured', [(50, False), (policy.WORLD_FLAG_TRUST + 1, True)])
+def test_a_recent_world_map_enemy_flag_vetoes_a_roof_capture(flag_age, captured):
+    # g684 2-8 15:12:45: roof reads said スペンソニア was ours while the world
+    # map (Y) flew its enemy flag; all_captured sent the hero to the boss.
+    home = CASTLES['アルマムーン']
+    cam = (home[0] - 100, home[1] - 100)
+    sp = CASTLES['スペンソニア']
+    pair = [{'kind': 'enemy', 'target': (100, 100), 'clipped': False},
+            {'kind': 'own', 'target': (sp[0] - cam[0], sp[1] - cam[1]), 'clipped': False}]
+    mem = {'chapter': 1, 'captured': [], '_records': [], 'tick': 100}
+    policy._apply_world_flags(mem, {'スペンソニア': 'enemy'})
+    mem['tick'] = 100 + flag_age
+    for _ in range(4):
+        policy.observe_owners(mem, pair, cam)
+    assert ('スペンソニア' in mem['captured']) is captured
+    vetoes = decisions(mem, 'castle_owned_vetoed')
+    assert (len(vetoes) == 1) is (not captured)
