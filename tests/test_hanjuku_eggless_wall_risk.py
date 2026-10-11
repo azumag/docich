@@ -101,3 +101,43 @@ def test_unread_menu_cursor_never_selects_or_creates_resources():
         assert actions != [p.pad('a')]
     assert mem['battle']['survival']['exhausted']
     assert mem['battle']['cards_used'] == [] and not mem['battle'].get('hero_retreat', {}).get('selected')
+
+
+@pytest.mark.parametrize('own,hp', [('トレビス', 66), ('タルタル', 40), ('アマンディーヌ', 59)])
+@pytest.mark.parametrize('uses', [1, 4, 5])
+def test_acquired_live_egg_uses_override_initially_eggless_general(own, hp, uses):
+    mem = trevis(); mem['battle'].update(ally=own, ally_hp=hp, start_ally_hp=hp)
+    mem['egg_uses'] = {own: uses}
+    actions = p.battle_step(battle(mem), mem)
+    assert not p._unarmed_wall_risk(mem['battle'])
+    assert actions != [p.pad('b')]
+    assert not mem['battle'].get('survival')
+    assert mem['egg_uses'][own] == uses
+
+
+def test_acquired_egg_count_is_rechecked_after_json_and_new_observed_zero():
+    mem = trevis(); mem['egg_uses'] = {'トレビス': 1}
+    assert p.battle_step(battle(mem), mem) != [p.pad('b')]
+    mem = json.loads(json.dumps(mem))
+    mem['egg_uses']['トレビス'] = 0
+    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+    assert p._unarmed_wall_risk(mem['battle'])
+
+
+@pytest.mark.parametrize('uses', [None, True, '1', 1.0, 6, -1])
+def test_other_general_or_invalid_count_cannot_claim_acquired_egg(uses):
+    mem = trevis(); mem['egg_uses'] = {'ヴィーナス': 4, 'トレビス': uses}
+    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+    assert mem['battle']['own_egg_positive_observed'] is False
+
+
+def test_menu_rechecks_acquired_egg_before_stale_healthy_retreat_guard():
+    mem = trevis()
+    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+    mem['battle']['survival'].update(exhausted=True, cards_uncertain=False)
+    mem['battle']['own_egg_zero_observed'] = True
+    mem['egg_uses'] = {'トレビス': 1}
+    p.battle_menu_step(menu(), mem)
+    assert mem['battle']['own_egg_positive_observed'] is True
+    assert mem['battle']['own_egg_zero_observed'] is False
+    assert not p._hero_retreat_needed(mem['battle'])
