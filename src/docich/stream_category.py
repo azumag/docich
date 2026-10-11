@@ -18,6 +18,11 @@ from pathlib import Path
 from .config import GlobalConfig, load_game
 from .naming import NameValidationError, validate_game_name
 from .procs import user_bus_env
+from .special_corner import (
+    DEFAULT_CATEGORY_ID as FLYHOME_CATEGORY_ID,
+    DEFAULT_CATEGORY_NAME as FLYHOME_CATEGORY_NAME,
+    DEFAULT_TITLE_SUFFIX as FLYHOME_TITLE_SUFFIX,
+)
 
 SCRIPT_NAME = "update_stream_game.sh"
 LOG_NAME = "stream-game.log"
@@ -31,12 +36,11 @@ TITLE_SYNC_SKIP_REASONS = frozenset({
 PAPER_CATEGORY_ID = "509670"
 PAPER_CATEGORY_NAME = "Science & Technology"
 
-# ``external-video-view`` (OBS-sourced special corner) is likewise synthetic.
-# The id was resolved read-only with the Soren updater's ``--resolve`` (single
-# exact match for the title) on 2026-10-11.
-FLYHOME_VIEW_NAME = "external-video-view"
-FLYHOME_CATEGORY_ID = "1202315854"
-FLYHOME_CATEGORY_NAME = "Fly Me To The Home!"
+# ``external-video-view`` (the OBS-sourced special corner) is likewise
+# synthetic.  Its title, suffix and category are operator settings
+# (``special_corner.json``, edited in the WebUI); the FLYHOME_* values are the
+# backward-compatible defaults used until settings are saved.
+SPECIAL_VIEW_NAME = FLYHOME_VIEW_NAME = "external-video-view"
 
 # Public viewer labels only: never use operational briefs, chart versions,
 # paths or generated/private text to compose an automatic broadcast title.
@@ -60,13 +64,22 @@ def viewer_title_args(game: str, g: GlobalConfig | None = None) -> list[str]:
     game = validate_game_name(game)
     label = VIEWER_GAME_NAMES.get(game, game)
     suffix = {"paper-view": "AIの検証配信",
-              FLYHOME_VIEW_NAME: "全50面クリアに挑戦"}.get(game, "AIプレイ配信")
+              SPECIAL_VIEW_NAME: FLYHOME_TITLE_SUFFIX}.get(game, "AIプレイ配信")
+    if g is not None and game == SPECIAL_VIEW_NAME:
+        settings = _special_settings(g)
+        return ["--activity", settings["title"], "--strategy", settings["title_suffix"]]
     if g is not None:
         from .stream_title_context import progress_phrase
         from .trading.soren_output import resolve_soren_root
 
         suffix = progress_phrase(game, Path(g.state_dir), resolve_soren_root(g)) or suffix
     return ["--activity", label, "--strategy", suffix]
+
+
+def _special_settings(g: GlobalConfig) -> dict:
+    from .special_corner import load_settings
+
+    return load_settings(g.state_dir)
 
 
 class StreamCategoryError(RuntimeError):
@@ -293,15 +306,24 @@ def announce_stream_paper(g: GlobalConfig, *, spawn=None) -> bool:
     )
 
 
-def announce_stream_flyhome(g: GlobalConfig, *, spawn=None) -> bool:
-    """Move the stream to the Fly Me To The Home! category and title."""
+def announce_stream_special(g: GlobalConfig, *, spawn=None) -> bool:
+    """Move the stream to the special corner's configured category and title.
+
+    Read at commit time, so settings saved while waiting apply to this start;
+    the restore goes back through the previous game's own announcement.
+    """
+    settings = _special_settings(g)
     return _announce_explicit_category(
         g,
-        category_id=FLYHOME_CATEGORY_ID,
-        category_name=FLYHOME_CATEGORY_NAME,
-        view=FLYHOME_VIEW_NAME,
+        category_id=settings["category_id"],
+        category_name=settings["category_name"],
+        view=SPECIAL_VIEW_NAME,
         spawn=spawn,
     )
+
+
+# Backward-compatible name (the corner was Fly Me To The Home! only).
+announce_stream_flyhome = announce_stream_special
 
 
 def announce_running_view(g: GlobalConfig, game: str, *, spawn=None) -> bool:
@@ -316,8 +338,8 @@ def announce_running_view(g: GlobalConfig, game: str, *, spawn=None) -> bool:
 
     if game == PAPER_VIEW_NAME:
         return announce_stream_paper(g, spawn=spawn)
-    if game == FLYHOME_VIEW_NAME:
-        return announce_stream_flyhome(g, spawn=spawn)
+    if game == SPECIAL_VIEW_NAME:
+        return announce_stream_special(g, spawn=spawn)
     return announce_stream_game(g, game, spawn=spawn)
 
 
