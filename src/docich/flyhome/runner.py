@@ -370,7 +370,8 @@ def play(
                         ctl.cfg.hazard_margin = max(5.0, grid_spec[2] * grid_spec[0] - 3.0)
                         ctl.set_world(grid, completed.observation, path)
                 if (path is None or k % replan_every == 0) and loop.obs.player is not None and not routes.busy:
-                    target = st.home or (planner.upward_warning_waypoint(up_waypoint, warning_memory, loop.obs.width)
+                    # Actual stage 50 repeats its first warning at the start column; ascend 18px left early.
+                    target = st.home or (planner.upward_warning_waypoint((up_waypoint[0] - 18, up_waypoint[1]), warning_memory, loop.obs.width)
                                          if up_waypoint is not None else None)
                     if target is not None:
                         world_obs = loop.tracker.last_obs or loop.obs

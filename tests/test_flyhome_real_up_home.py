@@ -56,3 +56,12 @@ def test_actual_warning_waypoint_replaces_a_clear_route_to_the_previous_goal():
         assert not planner.path_blocked(result.grid, result.path)
     finally:
         worker.close()
+
+def test_actual_initial_ascent_can_start_left_of_the_repeated_first_warning_column():
+    obs = vision.analyze(read_png(FIXTURES / 'flyhome-level50-up-home.png'))
+    target = (obs.home_exit_up[0] - 18, obs.home_exit_up[1])
+    assert target == (134, 24)
+    path = planner.astar(planner.build_grid(obs), (obs.player.x, obs.player.y), target)
+    assert path and path[-1] == target
+    # First actual warning columns from four trials; the early lane is already clear of them.
+    assert planner.upward_warning_waypoint(target, (72, 152, 232)) == target
