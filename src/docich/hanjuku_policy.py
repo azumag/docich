@@ -994,11 +994,38 @@ def _retake_reserved(order, mem):
                for step, s in (mem.get('sorties') or {}).items())
 
 
+def _unplaced_castle_generals(mem):
+    """Generals read in a castle this month whom no garrison list holds.
+
+    g684 2-5 13:45-14:18: アマンディーヌ and カシュー had joined (status:
+    location castle) but no castle list had been reopened, so every garrison
+    read one general, every sortie lacked a spare and nothing launched for
+    30 minutes (owner 2026-10-11: しょうぐんがいるのに新規出撃をしてない).
+    """
+    month = mem.get('month')
+    placed = {g for gs in (mem.get('garrison') or {}).values() for g in gs or ()}
+    busy = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    return sorted(name for name, info in (mem.get('house_eggs') or {}).items()
+                  if isinstance(info, dict) and info.get('location') == 'castle'
+                  and info.get('month') == month and name not in placed and name not in busy)
+
+
+def _arrival_castle(mem, owned):
+    """Where joiners appear: the hero's castle (home if his list is unread)."""
+    garrison = mem.get('garrison') or {}
+    hero = [c for c in owned if NAME in (garrison.get(c) or ())]
+    return hero[0] if len(hero) == 1 else chart.home_castle(mem.get('chapter') or 0)
+
+
 def _source_spare_missing(order, mem):
     if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
         return False  # reconcile an issued sortie; do not cancel its carried-kit receipt
-    present = (mem.get('garrison') or {}).get(_source(order, mem))
+    source = _source(order, mem)
+    present = (mem.get('garrison') or {}).get(source)
     unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    if (present is not None and _unplaced_castle_generals(mem)
+            and source == _arrival_castle(mem, _owned(mem))):
+        return False   # the list is read at the sortie screen (_keep_sortie_defender)
     return (_reserve_source_guard(order, mem) and present is not None
             and len(set(present) - unavailable) < 2)
 
@@ -1026,6 +1053,13 @@ def _interim_source(mem, target, chart_order, owned, busy):
         present = [g for g in free[staffed[0]] if g not in unavailable_for_attack]
         present.sort(key=lambda g: g == NAME)          # risk the hero last
         return staffed[0], present[0]
+    unplaced = [g for g in _unplaced_castle_generals(mem)
+                if g not in busy and g not in unavailable_for_attack]
+    arrival = _arrival_castle(mem, owned)
+    if unplaced and arrival in owned:
+        # Joiners stand in the hero's castle; the sortie list is the reading
+        # and still cancels if fewer than two are really there.
+        return arrival, unplaced[0]
     general = chart_order['general'] if chart_order else NAME
     if general in busy or general in unavailable_for_attack:
         return None
@@ -4235,6 +4269,7 @@ def battle_step(screen: Screen, mem):
                     observed_metric={'sortie_step': cur['step']},
                     reason='出撃注文を特定できない突入のため、同じ将軍の進軍中出撃の携行札だけを結び付け')
         _bind_substitute_defender(mem, cur, b)
+        _bind_event_duel(mem, cur)
         planned = [t['card'] for t in _tactics(mem, cur['step'])
                    if _tactic_enemy_ok(t, b.enemy, cur) and t.get('step') in (None, cur['step'])
                    and not (t.get('boss_only')
@@ -4502,8 +4537,9 @@ def _melee_step(mem, cur):
     # There is no calibrated egg-loss receipt yet. A selected dropper plus
     # lower HP is only a candidate, including True flags saved by older bots.
     # The existing HP/count budgets still end a passive hold boundedly.
+    duel = cur.get('event_duel') is True
     safe = (triggers.has_egg is False or triggers.clash_position is False
-            or charted or forced or probe)
+            or charted or forced or probe or duel)
     cur['melee_forced'] = forced
     # A probe is in `safe`, so melee_holds stays zero.  Only probe_ticks is
     # incremented below; inventory rechecks are not copied into either count.
@@ -4525,6 +4561,7 @@ def _melee_step(mem, cur):
             **({'defender_egg_window': egg_window} if egg_window else {}),
             hold_hp_budget=hp_budget, hold_hp_bled=hp_bled,
             reason=('札での撃破を未保証のため、保持予算内の短い入力で実HP・兵数を再観測' if probe
+                    else '月一イベントの一騎打ちは保留せず、ぶつかり合いの青ゲージでA連打' if duel
                     else 'チャートのぶつかり合いに向けて押し込む' if charted
                     else '保持中のHP劣化が予算に達したため押し込む' if hold_cut
                     else '卵の激突リスクの保留上限に達したため押し込む' if holds >= MELEE_HOLD_LIMIT
@@ -4849,6 +4886,36 @@ def _critical_safe_card(mem, cur, rescue):
                 or (gate['role'] == 'healing_not_a_kill' and _card_healing_needed(cur))):
             return True
     return False
+
+
+# Monthly duel events: 武芸者の挑戦 (「…ごあいてねがえぬか?」), はたしあい and
+# 裏切り. Owner (2026-10-11): these fights barely used the blue gauge.
+DUEL_EVENT_TOKENS = ('ごあいて', 'はたしあい', 'うらぎ', 'ぶげいしゃ', 'いっきうち')
+DUEL_EVENT_WINDOW = 40          # observations (~60 s) from the event text to the battle
+
+
+def note_duel_event(screen, mem):
+    flat = ''.join((screen.text or '').split())
+    if flat and any(tok in flat for tok in DUEL_EVENT_TOKENS):
+        mem['duel_event'] = {'tick': int(mem.get('tick') or 0), 'text': flat[-40:]}
+
+
+def _bind_event_duel(mem, cur):
+    """A battle right after a duel event, outside any castle attack/defense.
+
+    gcgx battle.html: ぶつかった際にバーが青くなるので、その間にAを連打すると
+    踏ん張って前進しやすくなる. The egg-safe hold sends nothing at exactly that
+    clash, so a duel held through its blue windows (owner 2026-10-11).
+    """
+    event = mem.get('duel_event')
+    if (not isinstance(event, dict) or cur.get('side') or cur.get('castle')
+            or int(mem.get('tick') or 0) - int(event.get('tick') or 0) > DUEL_EVENT_WINDOW):
+        return
+    cur['event_duel'] = True
+    mem.pop('duel_event', None)
+    _record(mem, 'battle_event_duel', **_battle_labels(cur),
+            observed_metric={'event_text': event.get('text')},
+            reason='月一イベントの一騎打ちのため、卵の激突保留をせず青ゲージでA連打する')
 
 
 def _tactic_enemy_ok(tactic, enemy, cur):
@@ -6405,6 +6472,12 @@ def _stop_uneconomic_recruit(mem, shop):
         return False  # finish the existing conversation without guessing refunds
     owned = {STATUS_NAMES.get(c, c) for c in _owned(mem)}
     economy = economics(mem, owned)
+    if economy is None:
+        # Unread castles only add income: a covering lower bound suffices
+        # (g684 2-2: ゴーメン unread, recruitment held every month).
+        bound = economics(mem, owned, lower_bound=True)
+        if bound and bound['castles_read'] and bound['income'] >= bound['wages'] + bound['additional_wage_max']:
+            economy = bound
     # Owner approved ordinary observed income plus the existing cash reserves.
     # Do not silently apply an unapproved permanent quarter-income factor.
     sustainable = economy and economy['income'] >= economy['wages'] + economy['additional_wage_max']
@@ -7186,6 +7259,17 @@ def _chikujou_step(screen, mem, sub):
             _record(mem, 'chikujou_castle_unavailable',
                     observed_metric={'castle': chosen},
                     reason='選択した城が増築不可のため、その城を今回の候補から外して次を探す')
+        elif 'ぞうちくなさいます' in text and screen.hand is not None:
+            # g684 1-10/1-11 13:11:05: reopening after アルマムーン's upgrade
+            # showed the refusal line above a readable castle list with no
+            # selection of ours. Declining there ended every month after the
+            # home castle; pick the next untried castle from the list instead.
+            if not sub.get('leftover_refusal_recorded'):
+                sub['leftover_refusal_recorded'] = True
+                _record(mem, 'chikujou_leftover_refusal',
+                        observed_metric={'tried': list(sub.get('rows_tried') or []),
+                                         'text': text[-60:]},
+                        reason='前回の増築不可の文が残った一覧のため、未試行の所有城を選び直す')
         else:
             # Lost selection context cannot identify which castle was refused.
             sub['declined'] = True
@@ -7931,6 +8015,109 @@ def _is_general_trade_prompt(text: str) -> bool:
     return any(tok in flat for tok in TRADE_DECLINE_TOKENS)
 
 
+TRADE_WEAK_MAX_HP = 50          # owner 2026-10-11: weak generals may be traded away
+TRADE_WEAK_MAX_COMBAT = 10
+TRADE_NAMED = re.compile(r'そちらの([^\ufffd\s]+?)しょうぐん')
+
+
+def _trade_named_general(text: str):
+    match = TRADE_NAMED.search(''.join((text or '').split()))
+    return match[1] if match else None
+
+
+def trade_accept_weak(mem, name):
+    """(accept, evidence): only a clearly weak, non-chart, non-hero general.
+
+    Owner (2026-10-11): 花いちもんめは強い将軍と弱い将軍が交換されがちなので、
+    強い将軍が指定された時は断る / 弱い将軍なら受ける. Strength is the static
+    gcgx shogun.html row (max HP, 戦闘). An unread or unknown name declines.
+    """
+    from .hanjuku_reference import general_strength
+    chart_generals = {o.get('general') for o in chart.all_orders(mem.get('chapter') or 0)}
+    stats = general_strength(name)
+    evidence = {'general': name, 'stats': list(stats[:2]) if stats else None,
+                'max_hp_limit': TRADE_WEAK_MAX_HP, 'combat_limit': TRADE_WEAK_MAX_COMBAT}
+    if not name or name == NAME or name in chart_generals or stats is None:
+        evidence['rule'] = ('unread' if not name else 'hero' if name == NAME
+                            else 'chart_general' if name in chart_generals else 'unknown')
+        return False, evidence
+    weak = stats[0] < TRADE_WEAK_MAX_HP and stats[1] < TRADE_WEAK_MAX_COMBAT
+    evidence['rule'] = 'weak' if weak else 'strong'
+    return weak, evidence
+
+
+TRADE_GUARD_OBSERVATIONS = 40   # ~60 s: lead-in, the offer and its choice
+# Arming needs trade-only wording; 'しょうぐんどうし' can be the hero's name.
+TRADE_GUARD_TOKENS = ('トレード', 'いちもんめ', 'イキのいいの', 'いきのいいの')
+
+
+def trade_guard_step(screen: Screen, mem):
+    """Fail closed on a 花いちもんめ offer whose choice is not a measured yes/no.
+
+    g684 1-10 13:05: 「ここで しょうぐんどうしの トレードを しようじゃないか。」
+    was read as plain text, the choice that followed never matched the
+    うむッ/いかんッ yes/no, every frame got the generic A, and ヴィーナス (82,
+    スーパーエッグ) was traded for シェーブル (27). Owner (2026-10-11): the
+    trade swaps strong generals for weak ones; refuse when a strong general
+    is named (always declined here, as before).
+
+    After trade wording is seen, a choice with a readable hand cursor is
+    moved off its first (default, accepting) row and the lower row is chosen.
+    Plain text still advances with A. The screen text is recorded so the
+    real choice wording can be measured.
+    """
+    if mem.get('month_sub'):
+        return None   # a monthly owner keeps its dialogue (measured yes/no still declines)
+    tick = int(mem.get('tick') or 0)
+    guard = mem.get('trade_guard')
+    flat = ''.join(screen.text.split())
+    if (any(tok in flat for tok in TRADE_GUARD_TOKENS)
+            and screen.kind in ('text', 'unknown')):
+        if not isinstance(guard, dict):
+            guard = mem['trade_guard'] = {'tick': tick, 'chosen': False}
+            _record(mem, 'trade_offer_seen', screen=screen.kind,
+                    observed_metric={'text': screen.text[-80:], 'hand': screen.hand is not None},
+                    reason='将軍トレード（花いちもんめ）の申し出を検出。選択肢は断る側を選ぶ')
+        guard['tick'] = tick
+    if isinstance(guard, dict) and screen.kind in ('text', 'unknown', 'yes_no'):
+        named = _trade_named_general(screen.text)
+        if named and named != guard.get('named'):
+            guard['named'] = named
+            guard['accept'], guard['strength'] = trade_accept_weak(mem, named)
+    if not isinstance(guard, dict):
+        return None
+    if guard.get('chosen') or tick - int(guard.get('tick') or 0) > TRADE_GUARD_OBSERVATIONS \
+            or screen.kind in ('map', 'map_target', 'month_menu', 'battle', 'world_map'):
+        mem.pop('trade_guard', None)
+        return None
+    if screen.kind == 'yes_no':
+        return None   # the measured yes/no path declines the trade itself
+    if screen.kind not in ('text', 'unknown') or screen.hand is None:
+        return None   # plain dialogue: the normal A advances it
+    cur = _current(screen)
+    rows = sorted({y for x, y, w in _options(screen)
+                   if cur and abs(x - cur[0]) <= 24 and w and not w.isdigit()})
+    if not cur or len(rows) < 2:
+        if not guard.get('unread_choice_recorded'):
+            guard['unread_choice_recorded'] = True
+            _record(mem, 'situation_held', screen=screen.kind,
+                    observed_metric={'trade_guard': True, 'text': screen.text[-80:]},
+                    reason='トレードの選択肢の行を読めないため決定せず再観測')
+        return []
+    accept = guard.get('accept') is True
+    on_first = abs(cur[1] - rows[0]) <= 2
+    if accept != on_first:
+        return [pad('up' if accept else 'down')]   # first row = default (accept)
+    guard['chosen'] = True
+    _record(mem, 'prompt', choice=cur[2], prompt=screen.text[-60:],
+            strategy_variant='accept_weak_general_trade' if accept else 'decline_general_trade',
+            observed_metric={'rows': rows, 'cursor_y': cur[1], 'strength': guard.get('strength')},
+            reason=('指定された将軍が弱い（最大HP50未満・戦闘10未満、チャート外）ため花いちもんめを受ける'
+                    if accept else
+                    '花いちもんめで強い将軍・主人公・チャートの将軍・判定不能の将軍が指定されたため断る'))
+    return [pad('a')]
+
+
 def _is_goninja_prompt(text: str) -> bool:
     # Measured monthly assassination offer; a generic 50G prompt is not enough.
     return 'うちとおす' in ''.join(text.split())
@@ -7979,8 +8166,13 @@ def yes_no_step(screen: Screen, mem):
         # 入らないのでやってはいけない), so decline it. Measured question
         # (倒転王国 月イチイベント): 「ここで将軍同士のトレードをしようじゃ
         # ないか。そちらの◯◯将軍と我が軍のイキのいいのとではどーだ?」
-        choice, reason = 'いかんッ!', '将軍トレード（花いちもんめ）は不平等な提案が多いため断る'
-        variant = 'decline_general_trade'
+        accept, metric = trade_accept_weak(mem, _trade_named_general(text))
+        if accept:
+            choice, reason = 'うむッ!', '指定された将軍が弱い（最大HP50未満・戦闘10未満、チャート外）ため花いちもんめを受ける'
+            variant = 'accept_weak_general_trade'
+        else:
+            choice, reason = 'いかんッ!', '将軍トレード（花いちもんめ）で強い・判定不能の将軍が指定されたため断る'
+            variant = 'decline_general_trade'
     else:
         choice, reason, variant = 'うむッ!', '未分類の確認は既定で進行', 'unclassified_prompt'
     move = menu_to(screen, choice)

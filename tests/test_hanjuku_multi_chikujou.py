@@ -400,3 +400,25 @@ def test_skipped_recovery_keeps_the_hero_awaiting_a_reread(hero_uses):
     # 95 - 20 = 75 would spend the hero's 50G + the 30G wage
     assert policy.month_sub_step(quote(HOME, 95, 20, on='いかんッ!'), mem) == [policy.pad('a')]
     assert sub['declined'] and not sub.get('confirm_sent')
+
+def test_a_leftover_refusal_above_the_list_still_upgrades_the_next_castle():
+    # g684 1-11 13:11:05: after the home upgrade the reopened list carried
+    # 「これいじょうのぞうちくはできませんぞ」; the bot declined with no castle.
+    mem = memory()
+    upgrade(mem, HOME, 150, 5)
+    open_build(mem, 145)
+    leftover = castles(on=HOME, text='これいじょうのぞうちくはできませんぞ!!' + PROMPT)
+    assert policy.month_sub_step(leftover, mem) == [policy.pad('down')]
+    assert not mem['month_sub'].get('declined')
+    assert any(r['decision'] == 'chikujou_leftover_refusal' for r in mem['_records'])
+    other = castles(on=OTHER, text='これいじょうのぞうちくはできませんぞ!!' + PROMPT)
+    assert policy.month_sub_step(other, mem) == [policy.pad('a')]
+    assert mem['month_sub']['chosen'] == OTHER
+
+
+def test_a_bare_refusal_without_the_list_still_declines():
+    mem = memory()
+    open_build(mem, 150)
+    bare = Screen([], None, 'これいじょうのぞうちくはできませんぞ!!', kind='text')
+    assert policy.month_sub_step(bare, mem) == [policy.pad('b')]
+    assert mem['month_sub']['declined'] is True
