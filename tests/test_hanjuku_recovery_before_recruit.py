@@ -293,3 +293,25 @@ def test_unpaid_tracked_owner_also_uses_the_pretransfer_cash_gate():
     assert policy.month_sub_step(recruit_overlay_screen(gold=101), mem) == [policy.pad('b')]
     assert shop['recruit'] == 'deferred_cash' and shop['soldiers'] == 71
     assert shop['recruit_reserve'] == 0
+
+
+def test_partly_used_unaffordable_eggs_do_not_hold_a_short_army_recruitment():
+    # g684 2-9: eggs at 1-3 uses, recovery 150G > 75G, generals 7 of 13;
+    # recruitment was deferred every month and building spent the fee.
+    mem = memory(130, uses=2)
+    screen = parse(month_canvas(130, on='しょうぐんぼしゅう'))
+    for _ in range(8):
+        policy.month_step(screen, mem)
+        if mem.get('month_sub'):
+            break
+    shop = mem['shop']
+    if shop.get('egg') == 'skipped':
+        assert shop['recruit'] != 'deferred_egg'
+
+
+def test_a_short_army_keeps_the_recruit_fee_from_building():
+    shop = {'recruit': 'deferred_egg', 'recruit_priority': True, 'recruit_reserve': 0,
+            'egg': 'done', 'soldiers_done': True, 'merchant_done': True, 'items': []}
+    assert policy._chikujou_reserve({}, shop) == policy.WAGE_RESERVE + policy.RECRUIT_COST
+    shop['recruit'] = 'done'
+    assert policy._chikujou_reserve({}, shop) == policy.WAGE_RESERVE

@@ -6964,7 +6964,12 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
         status = shop.get(sub)
         if status not in ('pending', 'check'):
             continue
-        if sub == 'recruit' and shop.get('egg') not in ('done', 'not_needed'):
+        if (sub == 'recruit' and shop.get('egg') not in ('done', 'not_needed')
+                and not (shop.get('egg') == 'skipped' and shop.get('recruit_priority')
+                         and _no_empty_egg_to_recover(mem))):
+            # A recovery already skipped as unaffordable spends nothing this
+            # month; with generals short the recruit keeps its own cash gate
+            # (g684 2-9: egg skipped at 75G deferred recruitment again).
             if shop.get('egg') in ('pending', 'check'):
                 actions = _month_extra(screen, mem, shop, egg_only=True)
                 if actions is not None:
@@ -7090,6 +7095,13 @@ def _chikujou_affordable(gold, reserve):
     return type(gold) is int and reserve is not None and gold >= reserve + CHIKUJOU_SPARE
 
 
+def _no_empty_egg_to_recover(mem):
+    """Every egg awaiting recovery was read with uses left (none at 0, none unread)."""
+    uses = mem.get('egg_uses') or {}
+    targets = _egg_recovery_targets(mem)
+    return bool(targets) and all(type(uses.get(name)) is int and uses[name] >= 1 for name in targets)
+
+
 def _chikujou_reserve(mem, shop):
     """Only money left after unfinished necessities may fund optional building."""
     def amount(value):
@@ -7121,6 +7133,10 @@ def _chikujou_reserve(mem, shop):
                if shop.get('recruit') != 'done' and (
                    shop.get('recruit') in ('pending', 'check', 'opened')
                    or shop.get('recruit_priority')) else 0)
+    if shop.get('recruit_priority') and shop.get('recruit') not in ('done', 'opened', 'unverified'):
+        # g684 2-9: deferral zeroed recruit_reserve, so building spent the
+        # fee every month while generals stayed short (7 of 13).
+        recruit = max(recruit, RECRUIT_COST)
     cards = [] if shop.get('merchant_done') else shop.get('items') or []
     if any(name not in KNOWN_PRICES for name, _ in cards):
         return None  # an unpriced required purchase is not spare money
