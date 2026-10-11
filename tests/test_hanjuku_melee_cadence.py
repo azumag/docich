@@ -36,6 +36,33 @@ def test_short_feedback_only_for_living_human_melee():
         assert entry.observation_interval_ms(changed) == 1500
 
 
+@pytest.mark.parametrize('flow', [
+    {'command_open_pending': {'owner': 'survival', 'waits': 0}},
+    {'survival': {'pending_opens': 1}}, {'survival': {'menu_ticks': 1}},
+    {'hero_retreat': {'opens': 1}},
+])
+@pytest.mark.parametrize('kind', ['unknown', 'text', 'battle_menu', 'battle_menu_pending'])
+def test_general_rescue_and_retreat_keep_short_feedback_across_opening_frames(flow, kind):
+    state = melee_state()
+    state['screen_kind'] = kind
+    state['policy']['battle'].update(flow)
+    assert entry.observation_interval_ms(state) == 500
+    state['policy']['battle']['ally_hp'] = 0
+    assert entry.observation_interval_ms(state) == 1500
+
+
+@pytest.mark.parametrize('flow', [
+    {'survival': {'pending_opens': 3, 'menu_ticks': 12, 'exhausted': True}},
+    {'hero_retreat': {'opens': 3, 'exhausted': True}},
+    {'hero_retreat': {'opens': 1, 'unavailable': True}},
+])
+def test_exhausted_general_command_does_not_speed_up_unrelated_text(flow):
+    state = melee_state()
+    state['screen_kind'] = 'text'
+    state['policy']['battle'].update(flow)
+    assert entry.observation_interval_ms(state) == 1500
+
+
 @pytest.mark.parametrize('stage', ['menu', 'cards', 'announce'])
 @pytest.mark.parametrize('kind', ['battle', 'unknown', 'text', 'battle_menu'])
 def test_card_chain_keeps_short_feedback_across_command_fades(stage, kind):

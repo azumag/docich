@@ -104,6 +104,26 @@ def test_unread_party_cannot_borrow_shop_or_frozen_screen_fallback(bad):
         assert not s['policy']['starter_party'].get('confirm_sent')
 
 
+@pytest.mark.parametrize('missing', ['upper_unknown', 'lower_body'])
+def test_isolated_unknown_or_missing_voiced_body_is_unread_without_exception(missing):
+    c = picture(selected=('ゼウス', 'ヴィーナス', 'ココット'), confirm=missing == 'lower_body')
+    if missing == 'upper_unknown':
+        c.tile(48, 95, 0xfffffff0fffffff0)
+    else:
+        # Only the voicing mark above the selected Venus survives the fade.
+        for y in range(143, 151):
+            for x in range(48, 128):
+                c.put(x, y, (0, 0, 0))
+    frame = c.frame()
+    assert starter.rows(parse(frame), selected=missing == 'lower_body') is None
+    s = state()
+    for _ in range(35):
+        actions, s = decide(frame, json.loads(json.dumps(s)))
+        assert keys(actions) in ([[], ['down']] if missing == 'lower_body' else [[]])
+        assert s['no_input_streak'] == 0
+        assert not s['policy']['starter_party'].get('confirm_sent')
+
+
 def test_previous_repair_monthly_and_recall_transactions_do_not_own_the_party():
     s = state(house={'phase': 'close'}, month_sub={'kind': 'recruit'}, recall={'stage': 'dest'})
     actions, s = decide(picture().frame(), s)

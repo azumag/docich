@@ -32,7 +32,7 @@ def rows(screen, *, selected=False):
         # Voicing marks are UNKNOWN on the row above their combined glyph.
         # Only ignore those exact columns; an unread name/body row is not a
         # blank slot and must not be hidden by known-only text extraction.
-        voiced = 'がぎぐげござじずぜぞだぢづでどばびぶべぼぱぴぷぺぽガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポヴ'
+        voiced = frozenset('がぎぐげござじずぜぞだぢづでどばびぶべぼぱぴぷぺぽガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポヴ')
         if all(c == UNKNOWN and by_y.get(line.y + 8, {}).get(x) in voiced for x, c in cells):
             continue
         # Never use a readable substring

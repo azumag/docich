@@ -328,6 +328,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     policy.note_duel_event(screen, mem)
     actions = policy.defender_egg_pending_step(screen, mem)
     if actions is None:
+        actions = policy.command_open_pending_step(screen, mem)
+    if actions is None:
         actions = policy.trade_guard_step(screen, mem)
     if actions is None and event_confirmation:
         # Owner (2026-10-06): trade refusal and the goninja cash floor outrank

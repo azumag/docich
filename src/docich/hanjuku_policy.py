@@ -4515,6 +4515,9 @@ def battle_step(screen: Screen, mem):
     _observe_egg_drop_candidate(mem, cur)
     _card_damage_recheck_resources(mem, cur)
     melee_followup = _card_melee_ready(mem, cur)
+    opening_wait = _command_open_wait(mem, cur)
+    if opening_wait is not None:
+        return opening_wait
     retreat = None if melee_followup else _hero_retreat_open(mem, cur)
     if retreat is not None:
         return retreat
@@ -4665,13 +4668,13 @@ def battle_step(screen: Screen, mem):
                 and (rescue.get('exhausted') or rescue['opens'] >= 12)):
             rescue.update(critical_open_recheck=True, exhausted=False,
                           pending_opens=1, menu_ticks=0, opens=rescue['opens'] + 1)
-            return [pad('b')]  # one final live inspection, not a renewed loop budget
+            return _human_menu_open(cur, 'survival')  # one final live inspection
         if (not rescue.get('exhausted') and rescue['opens'] < 12
                 and rescue.get('pending_opens', 0) < 3):
             rescue['opens'] += 1
             rescue['pending_opens'] = rescue.get('pending_opens', 0) + 1
             rescue['menu_ticks'] = 0
-            return [pad('b')]
+            return _human_menu_open(cur, 'survival')
     return _melee_step(mem, cur)
 
 
@@ -5187,6 +5190,49 @@ def _hero_retreat_needed(cur):
     return hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 4 <= ref)
 
 
+def _human_menu_open(cur, owner):
+    if (not cur.get('egg_battle')
+            and all(type(cur.get(k)) is int and cur[k] > 0 for k in ('ally_hp', 'enemy_hp'))):
+        cur['command_open_pending'] = {'owner': owner, 'waits': 0}
+    return [pad('b')]
+
+
+def _command_open_wait(mem, cur):
+    pending = cur.get('command_open_pending')
+    if not pending:
+        return None
+    owner_flow = cur.get({'survival': 'survival', 'retreat': 'hero_retreat',
+                          'defender_egg': 'okunote_egg_preempt'}.get(pending.get('owner'), '')) or {}
+    if owner_flow.get('exhausted') or owner_flow.get('unavailable'):
+        cur.pop('command_open_pending', None)
+        return None
+    # A complete HP panel can survive while the command box slides in.
+    # Repeated B there can close the menu just requested. Current HP is still
+    # read before this short wait, and the old opening budgets are retained.
+    pending['waits'] = pending.get('waits', 0) + 1
+    if pending['waits'] > 2:
+        cur.pop('command_open_pending', None)
+        return None
+    _record(mem, 'battle_command_open_wait', **_battle_labels(cur),
+            observed_metric={'owner': pending['owner'], 'waits': pending['waits'],
+                             'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp')},
+            reason='戦闘メニューの表示を短く再観測し、未確認の再BやAを送らない')
+    return [{'type': 'wait', 'ms': 50}]
+
+
+def command_open_pending_step(screen, mem):
+    cur = mem.get('battle') or {}
+    if not cur.get('command_open_pending'):
+        return None
+    if screen.kind in ('unknown', 'text'):
+        return _command_open_wait(mem, cur)
+    if screen.kind not in ('battle', 'battle_menu_pending'):
+        cur.pop('command_open_pending', None)
+    # HP readings belong to battle_step. A measured clipped command belongs
+    # to its existing bounded pending-menu route, not a guessed option.
+    return None
+
+
 def _hero_retreat_open(mem, cur):
     if not _hero_retreat_needed(cur) or cur.get('side') == 'defense':
         return None
@@ -5220,7 +5266,7 @@ def _hero_retreat_open(mem, cur):
             observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
                              'start_ally_hp': cur.get('start_ally_hp')},
             reason='主人公の敗北によるゲームオーバーまたは一般将軍の喪失を避けるため退却の可否を確認')
-    return [pad('b')]
+    return _human_menu_open(cur, 'retreat')
 
 
 def _hero_retreat_menu(screen, mem, cur):
@@ -5446,6 +5492,7 @@ def battle_menu_step(screen: Screen, mem):
     flow = cur.get('card_flow')
     if screen.kind != 'battle_menu':
         return []
+    cur.pop('command_open_pending', None)  # foreground receipt, not a planned B
     _card_battle_reading(screen, cur, mem)
     # A newly readable resource invalidates the earlier all-disabled receipt
     # before a pending preemption can select an irreversible command.
@@ -5632,7 +5679,7 @@ def _defender_egg_open(mem, cur):
             observed_metric={**window, 'open_attempt': guard['opens']},
             expected_metric='実メニューの奥の手と現在カーソルを確認して選択',
             reason='味方の卵・札が使えず敵の召喚危険が目前のため、連打を止めて奥の手を確認する')
-    return [pad('b')]
+    return _human_menu_open(cur, 'defender_egg')
 
 
 def defender_egg_pending_step(screen, mem):
