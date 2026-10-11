@@ -7186,6 +7186,17 @@ def _chikujou_step(screen, mem, sub):
             _record(mem, 'chikujou_castle_unavailable',
                     observed_metric={'castle': chosen},
                     reason='選択した城が増築不可のため、その城を今回の候補から外して次を探す')
+        elif 'ぞうちくなさいます' in text:
+            # g684 1-10/1-11 13:11:05: reopening after アルマムーン's upgrade
+            # showed the refusal line above a readable castle list with no
+            # selection of ours. Declining there ended every month after the
+            # home castle; pick the next untried castle from the list instead.
+            if not sub.get('leftover_refusal_recorded'):
+                sub['leftover_refusal_recorded'] = True
+                _record(mem, 'chikujou_leftover_refusal',
+                        observed_metric={'tried': list(sub.get('rows_tried') or []),
+                                         'text': text[-60:]},
+                        reason='前回の増築不可の文が残った一覧のため、未試行の所有城を選び直す')
         else:
             # Lost selection context cannot identify which castle was refused.
             sub['declined'] = True
