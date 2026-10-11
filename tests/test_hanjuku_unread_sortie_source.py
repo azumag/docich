@@ -47,11 +47,15 @@ def test_real_list_cannot_send_the_unread_castles_last_defender(names):
 
 
 def test_two_observed_generals_choose_spare_and_keep_hero_at_castle():
-    mem = stalled(); order = activate(mem)
+    mem = stalled()
+    order = dict(next(o for o in p.interim_candidates(mem).values() if o.get('source_probe')),
+                 step='I:probe-actor:1')
+    mem.update(active=order['step'], orders={}, launched_orders={order['step']: order})
     screen = generals(['ゼウス', 'どうし'])
     assert p.deploy_step(screen, mem) == [p.pad('a')]
     assert mem['garrison']['ジョンリギ'] == ['ゼウス', 'どうし']
     assert mem['general_override'][order['step']] == 'ゼウス'
+    assert mem['sortie_general'][order['step']] == 'ゼウス'
     assert not mem.get('sorties')  # selecting is not a dispatch/arrival receipt
     p._garrison_move(mem, 'ゼウス', source='ジョンリギ')
     assert mem['garrison']['ジョンリギ'] == ['どうし']
@@ -122,3 +126,28 @@ def test_all_negative_castle_lists_stop_probing_instead_of_alternating_home():
         assert p.deploy_step(generals(names), mem) == [p.pad('b'), p.pad('b')]
     assert len(sources) == len(set(sources))
     assert not p.interim_candidates(mem)
+
+
+def test_probe_does_not_select_an_unrecognized_actor_from_a_partial_read():
+    mem = stalled()
+    order = next(o for o in p.interim_candidates(mem).values() if o.get('source_probe'))
+    order = dict(order, step='I:unknown-actor:1')
+    mem.update(active=order['step'], orders={}, launched_orders={order['step']: order})
+    actions = p.deploy_step(generals(['ゼウス', '未知の将軍']), mem)
+    assert not any('a' in a.get('buttons', []) for a in actions)
+    assert not mem.get('sortie_general') and not mem.get('sorties')
+
+
+@pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm'])
+def test_probe_selection_must_match_the_actual_departure_panel(kind):
+    from test_hanjuku_sortie_evidence import actor_panel, measured_card_select, measured_loaded_sortie
+    mem = stalled()
+    order = dict(next(o for o in p.interim_candidates(mem).values() if o.get('source_probe')),
+                 step='I:probe-actor:1')
+    mem.update(active=order['step'], orders={}, launched_orders={order['step']: order})
+    assert p.deploy_step(generals(['ゼウス', 'どうし']), mem) == [p.pad('a')]
+    screen = (measured_card_select() if kind == 'card_select'
+              else measured_loaded_sortie(('クースカン', 'ノリウツール')))
+    assert p.deploy_step(actor_panel(screen, 'どうし'), mem) == [p.pad('b'), p.pad('b')]
+    assert mem['active'] is None and not mem.get('sorties')
+    assert mem['_records'][-1]['decision'] == 'sortie_actor_unconfirmed'

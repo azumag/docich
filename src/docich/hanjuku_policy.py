@@ -2914,7 +2914,8 @@ def _selected_actor_guard(screen, mem, order):
     departure confirmation for the new substitute path.
     """
     selected = (mem.get('sortie_general') or {}).get(order['step'])
-    if order['general'] != NAME or not selected or selected == NAME:
+    if (order['general'] != NAME and order.get('source_probe') is not True
+            or not selected or selected == NAME):
         return None
     row = next((line for line in screen.lines if line.y == 31), None)
     name = row.span(16, 80).strip() if row else None
@@ -3434,7 +3435,7 @@ def deploy_step(screen: Screen, mem):
         # force the chart hero and discard the actual substitute identity.
         # Prefer an idle companion when the planned attacker is the hero;
         # preserve a chart's explicit non-hero role.
-        if order['general'] == NAME or _is_boss_order(order, mem):
+        if order['general'] == NAME or _is_boss_order(order, mem) or order.get('source_probe') is True:
             mem.setdefault('sortie_general', {}).pop(order['step'], None)
             mem.setdefault('order_context', {}).pop(order['step'], None)
             (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
@@ -3443,7 +3444,8 @@ def deploy_step(screen: Screen, mem):
                     or any(not _general_visible(screen, g) or general_max_hp(
                         'しゅじんこう' if g == NAME else g) is None for g in present)):
                 return _hold_deploy(screen, mem, order, '出撃一覧の本人・カーソルを確認できないため保留')
-            candidates = _hero_alternatives(mem, present) if order['general'] == NAME else []
+            candidates = (_hero_alternatives(mem, present)
+                          if order['general'] == NAME or order.get('source_probe') is True else [])
             general = candidates[0] if candidates else order['general']
             # A stale override is not a receipt, and a companion selected in
             # this list must not inherit the hero's depleted-egg guard.
