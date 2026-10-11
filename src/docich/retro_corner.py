@@ -3075,6 +3075,108 @@ class RetroCornerManager:
             return CornerResult("queued", game=game, previous_game=previous,
                                 detail="restore再実行のlockまたは証跡照合待ちです")
 
+    def _recover_terminal_hanjuku_restore(self, state: dict[str, object]) -> CornerResult | None:
+        """Restore the background once after a proven terminal source was released.
+
+        Never relaunch the finished Hanjuku, rewrite its failed receipt, or
+        replace another active game. The new capped start has a durable ID.
+        """
+        if state.get("game") != "hanjuku-hero" or state.get("previous_game") != "sorengame":
+            return None
+        evidence = self._restore_failed_receipt(
+            state, late_cleanup_proved=True, allow_unrecorded_source=True)
+        if evidence is None:
+            return None
+        original, result, game, previous = evidence
+        if original.get("status") != "failed" or result.get("error_code") != "rollback_failed":
+            return None
+        canonical, missing = self.store.canonical.load()
+        if missing:
+            return None
+        source = self._restore_source_identity(canonical.get("previous"))
+        record = state.get("terminal_restore")
+        if record is None and canonical.get("phase") == "failed" and source is not None:
+            if (source["game"] != game or canonical.get("active") is not None
+                    or canonical.get("candidate") is not None or canonical.get("retiring")
+                    or (canonical.get("last_result") or {}).get("request_id") != original["request_id"]):
+                return None
+            recovered = self.coordinator.recover(expected_snapshot=canonical)
+            if recovered.status != "succeeded" or recovered.cleanup_pending:
+                return CornerResult("failed", game=game, previous_game=previous,
+                                    detail="terminal Hanjuku release was not confirmed")
+        try:
+            with self.store.transaction(blocking=False) as tx:
+                canonical, missing = self.store.canonical.load()
+                if record is None:
+                    last = canonical.get("last_result") or {}
+                    released = self._restore_source_identity(last.get("released_terminal"))
+                    if (missing or canonical.get("phase") != "idle"
+                            or any(canonical.get(k) for k in ("active", "previous", "candidate", "retiring"))
+                            or last.get("operation") != "recover" or last.get("status") != "succeeded"
+                            or last.get("restore_request_id") != original["request_id"]
+                            or released is None or released["game"] != game
+                            or (source is not None and released != source)):
+                        return None
+                    now = dt.datetime.now(dt.timezone.utc)
+                    record = {"request_id": new_request_id(),
+                              "restore_request_id": original["request_id"],
+                              "released_runtime": released, "prepared_at": now.isoformat(),
+                              "hard_deadline_at": (now + dt.timedelta(seconds=RESTORE_RECOVERY_TIMEOUT_S)).isoformat()}
+                    state["terminal_restore"] = record
+                    self._write_state(state)
+                if not isinstance(record, dict) or set(record) != {
+                        "request_id", "restore_request_id", "released_runtime", "prepared_at", "hard_deadline_at"}:
+                    raise StateCorruptError("invalid terminal restore record")
+                validate_request_id(record["request_id"])
+                a = dt.datetime.fromisoformat(record["prepared_at"])
+                b = dt.datetime.fromisoformat(record["hard_deadline_at"])
+                released = self._restore_source_identity(record["released_runtime"])
+                if (record["restore_request_id"] != original["request_id"]
+                        or record["request_id"] in (original["request_id"], state.get("rotation_request_id"))
+                        or released is None or released["game"] != game
+                        or a.tzinfo is None or b.tzinfo is None
+                        or b-a != dt.timedelta(seconds=RESTORE_RECOVERY_TIMEOUT_S)):
+                    raise StateCorruptError("terminal restore binding differs")
+                receipt = self.store.receipts.load(record["request_id"])
+                if receipt is None:
+                    last = canonical.get("last_result") or {}
+                    if (canonical.get("phase") != "idle"
+                            or any(canonical.get(k) for k in ("active", "previous", "candidate", "retiring"))
+                            or last.get("operation") != "recover" or last.get("status") != "succeeded"
+                            or last.get("restore_request_id") != original["request_id"]
+                            or self._restore_source_identity(last.get("released_terminal")) != released):
+                        raise StateCorruptError("terminal restore no longer owns idle")
+                    tx.enqueue_request(record["request_id"], "start", previous, None,
+                                       allow_boundary_timeout_extension=False,
+                                       hard_deadline_at=record["hard_deadline_at"])
+                else:
+                    if (receipt.get("operation") != "start" or receipt.get("target") != previous
+                            or receipt.get("hard_deadline_at") != record["hard_deadline_at"]
+                            or receipt.get("allow_boundary_timeout_extension") is not False
+                            or receipt.get("payload_hash") != _request_payload_hash(
+                                "start", previous, {"_allow_boundary_timeout_extension": False})):
+                        raise StateCorruptError("terminal restore receipt differs")
+                    if receipt.get("status") in {"failed", "rolled_back"}:
+                        return CornerResult("failed", game=game, previous_game=previous,
+                                            detail="terminal restore already failed; not replayed")
+            transition = self._invoke_coordinator(
+                self.coordinator.start, previous, request_id=record["request_id"],
+                timeout_s=RESTORE_RECOVERY_TIMEOUT_S, allow_boundary_timeout_extension=False)
+            with self.store.lock(exclusive=False):
+                canonical, missing = self.store.canonical.load()
+                receipt = self.store.receipts.load(record["request_id"])
+                landed = isinstance(receipt, dict) and self._succeeded_start_receipt_matches_active(
+                    canonical, receipt, request_id=record["request_id"], target=previous)
+                if (not missing and landed and receipt.get("result", {}).get("from_game") is None
+                        and self._restore_canonical_clean(canonical)):
+                    return self._terminalize_restore_failed_locked(state, game=game, previous=previous)
+            return CornerResult("queued" if transition.status in PENDING_SWITCH_STATUSES else "failed",
+                                game=game, previous_game=previous,
+                                detail="terminal restore landing is not confirmed")
+        except (GameSwitchBusyError, StateCorruptError, NameValidationError, TypeError, ValueError):
+            return CornerResult("failed", game=game, previous_game=previous,
+                                detail="terminal restore proof refused")
+
     def recover_failed(self) -> CornerResult:
         """Recover and retry one failed retro slot without selecting a new game.
 
@@ -3107,6 +3209,9 @@ class RetroCornerManager:
             terminalized = self._terminalize_prelaunch_quiesce_failure(state)
             if terminalized is not None:
                 return terminalized
+            terminal_restore = self._recover_terminal_hanjuku_restore(state)
+            if terminal_restore is not None:
+                return terminal_restore
             # A corner that already finished can fail its restore switch
             # (#1868/#1870).  Settle that slot (or replay its recorded restore
             # once) before the canonical-recovery retry path below.
