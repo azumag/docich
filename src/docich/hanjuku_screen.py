@@ -649,6 +649,10 @@ def summer_bonus_seen(text: str) -> bool:
 
 def classify_text(s: Screen) -> str:
     t = s.text
+    from .hanjuku_starter import kind as starter_kind
+    starter = starter_kind(s)
+    if starter:
+        return starter
     if t in ('いばらのとうをとりまいていたすべてのいばらがしょうめつしました!',
              'いばらとともにけっかいもしょうめつしたようです!'):
         return 'barrier_removed'

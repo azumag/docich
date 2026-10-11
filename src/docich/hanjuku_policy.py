@@ -2914,6 +2914,12 @@ def _selected_actor_guard(screen, mem, order):
     departure confirmation for the new substitute path.
     """
     selected = (mem.get('sortie_general') or {}).get(order['step'])
+    if order.get('source_probe') is True and (not selected or selected == NAME):
+        (mem.get('general_override') or {}).pop(order['step'], None)
+        (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
+        return _hold_guarded_sortie(mem, order, 'sortie_actor_unconfirmed',
+            '実一覧で選んだ将軍の証拠がないため配置確認の出撃を取り消す',
+            {'selected': selected, 'observed': None, 'screen': screen.kind})
     if (order['general'] != NAME and order.get('source_probe') is not True
             or not selected or selected == NAME):
         return None
@@ -6233,7 +6239,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
     for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
                 'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
-                'month_nav', 'house_nav',
+                'month_nav', 'house_nav', 'starter_party',
                 'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                 'source_override', 'uncertain', 'month', 'soldiers_seen', 'soldiers_seen_key',
                 'soldiers_seen_basis', 'order_context', 'sortie_general', 'sortie_actor_miss',
