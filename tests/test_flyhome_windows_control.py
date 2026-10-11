@@ -308,7 +308,8 @@ def test_direct_window_identity_avoids_enumeration_and_checks_live_exe():
          patch.object(win32, 'list_windows', side_effect=AssertionError('enumeration is slow')):
         assert win32.window_identity(1) == (10, 'game.exe')
     api.IsWindow = lambda hwnd: False
-    with patch.object(win32, '_require'), patch.object(win32, 'user32', api, create=True):
+    with patch.object(win32, '_require'), patch.object(win32, 'user32', api, create=True), \
+         patch.object(win32, 'wt', wintypes, create=True):
         assert win32.window_identity(1) is None
 
 
