@@ -22,6 +22,10 @@ STEP_LIMIT = 24
 TRAVEL_LIMIT = 240
 SESSION_LIMIT = 1200
 SCAN_INTERVAL = 200
+INTERRUPTION_RETRIES = 2
+PRE_DISPATCH_PHASES = frozenset({
+    'find_castle', 'castle_view', 'castle_open', 'castle_verify',
+    'castle_sortie', 'castle_pick', 'castle_kit', 'castle_confirm'})
 
 
 def general_status(screen):
@@ -377,6 +381,40 @@ def _resume_completed_survey(screen, mem, p, scope, field_count, field_tick):
     return True, []
 
 
+def _retry_target_current(mem):
+    state = mem['house']
+    name = state.get('general')
+    info = (mem.get('house_eggs') or {}).get(name) or {}
+    observed, now = info.get('observed_tick'), mem.get('tick')
+    return (isinstance(name, str) and name and UNKNOWN not in name
+            and isinstance(mem.get('month'), str) and bool(mem['month'])
+            and mem.get('chapter') in HOUSE_VIEW
+            and info.get('general') == name and info.get('broken') is True
+            and info.get('location') == 'castle' and info.get('location_observed') is True
+            and _repair_hp_ready(info) and not state.get('month_scan')
+            and state.get('chapter') == info.get('observed_chapter') == mem.get('chapter')
+            and state.get('roster_month') == info.get('month') == mem.get('month')
+            and type(observed) is int and type(now) is int and 0 <= observed <= now
+            and not any(state.get(k) for k in ('purchase', 'purchased', 'returning', 'departure_pending')))
+
+
+def _retry_interrupted_repair(mem):
+    state = mem['house']
+    retries = state.get('interruption_retries', 0)
+    if (state['phase'] not in PRE_DISPATCH_PHASES or not _retry_target_current(mem)
+            or type(retries) is not int or not 0 <= retries < INTERRUPTION_RETRIES
+            or state.get('total', 0) >= SESSION_LIMIT):
+        return False
+    prior = state['phase']
+    _phase(state, 'repair_recheck', interruption_retries=retries + 1)
+    state.pop('sole_defender', None)
+    _record(mem, 'interruption_retry', observed_metric={
+        'phase': prior, 'retry': retries + 1, 'limit': INTERRUPTION_RETRIES,
+        'total': state.get('total')},
+        reason='出撃前の修理が割り込まれたため、マップ復帰後に城・本人・卵・HPを再確認する')
+    return True
+
+
 def step(screen, mem, frame):
     """Actions, or None to let battle/month/ordinary map policy run.
 
@@ -532,10 +570,12 @@ def step(screen, mem, frame):
             'monster_menu', 'okunote_menu', 'attack_started', 'defense_started', 'boss_attack_started',
             'month_menu', 'shop_quantity', 'shop_quantity_prompt', 'shop_exit_confirm', 'discharge_menu'}
             or mem.get('month_sub')):
-        if phase not in ('travel', 'close'):
+        if phase not in ('travel', 'close', 'repair_recheck'):
             state['interrupted'] = True
         return None
     if state.pop('interrupted', False):
+        if _retry_interrupted_repair(mem):
+            return []
         return _exit(mem, '割り込みでメニューの同一性を失ったため修理操作を中断')
     state['age'] += 1
     if state['total'] > SESSION_LIMIT:
@@ -553,6 +593,17 @@ def step(screen, mem, frame):
             return None
         limit = 'travel' if phase == 'travel' else 'step'
         return _exit(mem, '卵修理の観測回数上限に達したため入力を中止', limit=limit)
+    if phase == 'repair_recheck':
+        if not _retry_target_current(mem):
+            return _exit(mem, '修理対象の月・本人・卵状態が変わったため再試行しない')
+        if screen.kind == 'map':
+            name = state['general']
+            state['pending'] = [name, *(n for n in state.get('pending') or [] if n != name)]
+            _next_general(mem)  # rebuild owned castles; verify the resident before committing
+            return []
+        if screen.kind in {'world_map', 'castle_menu', 'general_list', 'card_select', 'sortie_confirm'}:
+            return [p.pad('y' if screen.kind == 'world_map' else 'b')]
+        return None  # unrelated dialogue keeps its ordinary handler
     if phase == 'close':
         if screen.kind == 'map':
             _finish(mem)
