@@ -994,11 +994,38 @@ def _retake_reserved(order, mem):
                for step, s in (mem.get('sorties') or {}).items())
 
 
+def _unplaced_castle_generals(mem):
+    """Generals read in a castle this month whom no garrison list holds.
+
+    g684 2-5 13:45-14:18: アマンディーヌ and カシュー had joined (status:
+    location castle) but no castle list had been reopened, so every garrison
+    read one general, every sortie lacked a spare and nothing launched for
+    30 minutes (owner 2026-10-11: しょうぐんがいるのに新規出撃をしてない).
+    """
+    month = mem.get('month')
+    placed = {g for gs in (mem.get('garrison') or {}).values() for g in gs or ()}
+    busy = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    return sorted(name for name, info in (mem.get('house_eggs') or {}).items()
+                  if isinstance(info, dict) and info.get('location') == 'castle'
+                  and info.get('month') == month and name not in placed and name not in busy)
+
+
+def _arrival_castle(mem, owned):
+    """Where joiners appear: the hero's castle (home if his list is unread)."""
+    garrison = mem.get('garrison') or {}
+    hero = [c for c in owned if NAME in (garrison.get(c) or ())]
+    return hero[0] if len(hero) == 1 else chart.home_castle(mem.get('chapter') or 0)
+
+
 def _source_spare_missing(order, mem):
     if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
         return False  # reconcile an issued sortie; do not cancel its carried-kit receipt
-    present = (mem.get('garrison') or {}).get(_source(order, mem))
+    source = _source(order, mem)
+    present = (mem.get('garrison') or {}).get(source)
     unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    if (present is not None and _unplaced_castle_generals(mem)
+            and source == _arrival_castle(mem, _owned(mem))):
+        return False   # the list is read at the sortie screen (_keep_sortie_defender)
     return (_reserve_source_guard(order, mem) and present is not None
             and len(set(present) - unavailable) < 2)
 
@@ -1026,6 +1053,13 @@ def _interim_source(mem, target, chart_order, owned, busy):
         present = [g for g in free[staffed[0]] if g not in unavailable_for_attack]
         present.sort(key=lambda g: g == NAME)          # risk the hero last
         return staffed[0], present[0]
+    unplaced = [g for g in _unplaced_castle_generals(mem)
+                if g not in busy and g not in unavailable_for_attack]
+    arrival = _arrival_castle(mem, owned)
+    if unplaced and arrival in owned:
+        # Joiners stand in the hero's castle; the sortie list is the reading
+        # and still cancels if fewer than two are really there.
+        return arrival, unplaced[0]
     general = chart_order['general'] if chart_order else NAME
     if general in busy or general in unavailable_for_attack:
         return None
