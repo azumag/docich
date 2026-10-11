@@ -40,3 +40,22 @@ def test_last_months_status_is_not_a_placement():
     order = {'step': 'A:x:P1', 'general': 'どうし', 'source': 'アルマムーン',
              'target': 'ナキューメラ', 'cards': [], 'after': None}
     assert p._source_spare_missing(order, mem) is True
+
+
+def test_a_read_list_refutes_the_arrival_assumption_until_the_unplaced_set_changes():
+    # g684 3-1 16:09-16:10: どうし alone at ジョンリギ, ゼウス/ミント unplaced;
+    # the same retake order was issued and cancelled every 10 s.
+    from docich.hanjuku_screen import Screen
+    mem = memory()
+    order = {'step': 'A:x:P1', 'general': 'どうし', 'source': 'アルマムーン',
+             'target': 'ナキューメラ', 'cards': [], 'after': None, 'purpose': 'retake'}
+    mem['orders'] = {'A:x:P1': 'pending'}
+    assert p._source_spare_missing(order, mem) is False
+    from unittest import mock
+    with mock.patch.object(p, '_present_generals', return_value=['どうし']):
+        p._keep_sortie_defender(Screen([], None, '', kind='general_list'), mem, order)
+    assert p._source_spare_missing(order, mem) is True          # no re-issue loop
+    assert not [o for o in p.interim_candidates(mem).values() if o.get('source') == 'アルマムーン'
+                and o.get('general') in ('アマンディーヌ', 'カシュー')]
+    mem['house_eggs']['ビーツ'] = {'location': 'castle', 'month': '2-5'}   # a new joiner
+    assert p._source_spare_missing(order, mem) is False

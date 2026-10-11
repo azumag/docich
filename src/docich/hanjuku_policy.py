@@ -1026,10 +1026,18 @@ def _unplaced_castle_generals(mem):
 
 
 def _arrival_castle(mem, owned):
-    """Where joiners appear: the hero's castle (home if his list is unread)."""
+    """Where joiners appear: the hero's castle (home if his list is unread).
+
+    None once that castle's real list refuted the current unplaced set.
+    """
     garrison = mem.get('garrison') or {}
     hero = [c for c in owned if NAME in (garrison.get(c) or ())]
-    return hero[0] if len(hero) == 1 else chart.home_castle(mem.get('chapter') or 0)
+    castle = hero[0] if len(hero) == 1 else chart.home_castle(mem.get('chapter') or 0)
+    refuted = mem.get('unplaced_refuted') or {}
+    if (refuted.get('castle') == castle and refuted.get('month') == mem.get('month')
+            and refuted.get('names') == _unplaced_castle_generals(mem)):
+        return None
+    return castle
 
 
 def _source_spare_missing(order, mem):
@@ -3278,6 +3286,11 @@ def _keep_sortie_defender(screen, mem, order):
     available = set(present) - unavailable
     if len(available) >= 2:
         return None
+    # The read list refutes "unplaced joiners stand here" for this castle
+    # until the unplaced set changes (g684 3-1 16:09-16:10: the same order
+    # was re-issued and cancelled every 10 s).
+    mem['unplaced_refuted'] = {'castle': _source(order, mem), 'month': mem.get('month'),
+                               'names': _unplaced_castle_generals(mem)}
     return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',
         '奪還・暫定攻撃の出撃元に待機将軍を1人残せないため出撃を取り消す',
         {'present': present[:8], 'available': sorted(available)})
