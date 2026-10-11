@@ -726,29 +726,26 @@ def _income_step(screen, mem, frame):
     return []
 
 
-def _sole_defender_repair_due(mem, name):
-    """A broken-egg sole defender waits one month, then goes anyway.
+def _sole_defender_repair_due(mem, name, source):
+    """Repair immediately unless this is the hero or our last castle.
 
-    g684 1-7..1-10: ヴィーナス (82, broken スーパーエッグ) was カストーラ's only
-    general; every month the repair was deferred to keep the castle manned,
-    so the egg was never fixed (owner 2026-10-11: 城に1人しかいないから卵を
-    治しにいけなくなってる). A broken egg cannot answer a summon, and an empty
-    castle can be retaken; a dead general cannot. The first deferral is kept
-    so a reinforcement can arrive first.
+    Owner 2026-10-11: prioritize a broken-egg Venus even when she is the
+    only defender. A previous-month deferral is not permission to leave
+    the hero or the last castle unprotected, including after a hotload.
     """
-    month = mem.get('month')
-    deferred = mem.setdefault('repair_deferred', {})
-    first = deferred.get(name)
-    if first is None:
-        deferred[name] = month
-        return False
-    return first != month
+    from . import hanjuku_policy as p
+    owned = p._owned(mem)
+    return name != p.NAME and source in owned and len(owned) > 1
 
 
 def _repair_step(screen, mem, frame):
     from . import hanjuku_policy as p
     state = mem['house']
     phase, name = state['phase'], state['general']
+    if (phase in ('castle_kit', 'castle_confirm', 'house_confirm')
+            and state.get('sole_defender')
+            and not _sole_defender_repair_due(mem, name, state.get('source'))):
+        return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
     if phase == 'find_castle':
         if screen.kind != 'map':
             if screen.kind == 'text' and roster(screen) is None:
@@ -790,17 +787,17 @@ def _repair_step(screen, mem, frame):
             mem.setdefault('garrison', {})[source] = names
             if name not in names:
                 _phase(state, 'find_castle')
-            elif len(names) < 2 and not _sole_defender_repair_due(mem, name):
-                _record(mem, 'general_deferred', reason='修理派遣で城が無人になるため守備将軍を残す')
+            elif len(names) < 2 and not _sole_defender_repair_due(mem, name, source):
+                _record(mem, 'general_deferred', reason='主人公または最後の自軍城の唯一の守将を残す')
                 _next_general(mem)
             else:
                 if len(names) < 2:
                     state['sole_defender'] = True
                     _record(mem, 'repair_sole_defender', castle=source,
-                            observed_metric={'deferred_month': (mem.get('repair_deferred') or {}).get(name),
-                                             'month': mem.get('month')},
-                            reason=('前月も唯一の守備将軍として修理を見送ったため、城を空けても'
-                                    '卵を直しに行く（卵の壊れた将軍は召喚に応戦できない）'))
+                            observed_metric={'month': mem.get('month'), 'owned_castles': len(p._owned(mem))},
+                            reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
+                else:
+                    state.pop('sole_defender', None)
                 _phase(state, 'castle_sortie')
             return [p.pad('b')]
         if screen.kind == 'castle_menu':
@@ -822,9 +819,13 @@ def _repair_step(screen, mem, frame):
         present = p._present_generals(screen)
         if present is None:
             return []
-        if ((len(present) < 2 and not state.get('sole_defender')) or name not in present
+        if ((len(present) < 2 and not _sole_defender_repair_due(mem, name, state['source'])) or name not in present
                 or state['source'] not in p._owned(mem)):
             return _exit(mem, '出撃直前の在城・守備条件を満たさないため派遣しない')
+        if len(present) < 2:
+            state['sole_defender'] = True
+        else:
+            state.pop('sole_defender', None)
         actions = _choose(screen, name)
         if actions == [p.pad('a')]:
             _phase(state, 'castle_kit')

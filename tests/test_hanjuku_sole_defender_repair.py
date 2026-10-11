@@ -3,6 +3,8 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import pytest
+
 from docich import hanjuku_house as house
 from docich import hanjuku_policy as p
 from docich.hanjuku_font import TextLine
@@ -18,38 +20,68 @@ def castle_status(castle, names):
 
 def memory(month):
     return {'chapter': 1, 'month': month, 'gold': 250, 'tick': 500,
-            'castle_ownership': {}, 'house': {'phase': 'castle_verify', 'chapter': 1, 'age': 0,
+            'captured': ['カストーラ'], 'castle_ownership': {}, 'house': {'phase': 'castle_verify', 'chapter': 1, 'age': 0,
                                               'total': 0, 'general': 'ヴィーナス', 'source': 'カストーラ',
                                               'pending': [], 'seen': [], 'inspected': []}}
 
 
-def test_first_month_defers_the_sole_defender():
-    mem = memory('1-7')
-    assert house._repair_step(castle_status('カストーラ', ['ヴィーナス']), mem, None) == [p.pad('b')]
-    assert any(r['decision'] == 'house_general_deferred' for r in mem['_records'])
-    assert mem['repair_deferred'] == {'ヴィーナス': '1-7'}
-
-
-def test_a_later_month_sends_the_sole_defender_to_repair():
-    mem = memory('1-8')
-    mem['repair_deferred'] = {'ヴィーナス': '1-7'}
-    assert house._repair_step(castle_status('カストーラ', ['ヴィーナス']), mem, None) == [p.pad('b')]
+@pytest.mark.parametrize('general', ['ヴィーナス', 'ゼウス', 'クミン'])
+@pytest.mark.parametrize('deferred', [None, '1-7', '1-6'])
+def test_every_nonhero_sole_defender_repairs_immediately(general, deferred):
+    mem = memory('1-7'); mem['house']['general'] = general
+    if deferred: mem['repair_deferred'] = {general: deferred}
+    assert house._repair_step(castle_status('カストーラ', [general]), mem, None) == [p.pad('b')]
     assert mem['house']['phase'] == 'castle_sortie'
     assert mem['house']['sole_defender'] is True
     assert any(r['decision'] == 'house_repair_sole_defender' for r in mem['_records'])
     assert not any(r['decision'] == 'house_general_deferred' for r in mem['_records'])
 
 
-def test_same_month_repeat_still_defers():
-    mem = memory('1-7')
-    mem['repair_deferred'] = {'ヴィーナス': '1-7'}
-    house._repair_step(castle_status('カストーラ', ['ヴィーナス']), mem, None)
+@pytest.mark.parametrize('general,owned', [('どうし', ['カストーラ']), ('ヴィーナス', [])])
+@pytest.mark.parametrize('deferred', [None, '1-6'])
+def test_hero_and_last_castle_remain_protected_even_after_old_deferral(general, owned, deferred):
+    mem = memory('1-7'); mem['captured'] = owned
+    source = 'カストーラ' if owned else 'アルマムーン'
+    mem['house'].update(general=general, source=source)
+    if deferred: mem['repair_deferred'] = {general: deferred}
+    house._repair_step(castle_status(source, [general]), mem, None)
     assert mem['house']['phase'] != 'castle_sortie'
+    assert any(r['decision'] == 'house_general_deferred' for r in mem['_records'])
 
 
-def test_two_generals_dispatch_as_before():
+@pytest.mark.parametrize('phase', ['castle_pick', 'castle_kit', 'castle_confirm', 'house_confirm'])
+@pytest.mark.parametrize('general,last', [('どうし', False), ('ヴィーナス', True)])
+def test_hotloaded_sole_permission_cannot_bypass_final_protection(phase, general, last):
+    from test_hanjuku_retake_guard import generals
     mem = memory('1-7')
-    house._repair_step(castle_status('カストーラ', ['ヴィーナス', 'ゼウス']), mem, None)
+    mem['house'].update(phase=phase, general=general, source='アルマムーン', sole_defender=True)
+    if last: mem['captured'] = []
+    screen = generals([general]) if phase == 'castle_pick' else Screen([], None, '', kind='unknown')
+    actions = house._repair_step(screen, mem, None)
+    assert not any('a' in a.get('buttons', []) for a in actions)
+    assert mem['house']['phase'] == 'close'
+
+
+def test_two_generals_dispatch_as_before_even_at_the_last_castle():
+    mem = memory('1-7'); mem['captured'] = []
+    mem['house']['source'] = 'アルマムーン'
+    house._repair_step(castle_status('アルマムーン', ['ヴィーナス', 'ゼウス']), mem, None)
     assert mem['house']['phase'] == 'castle_sortie'
     assert not mem['house'].get('sole_defender')
 
+
+@pytest.mark.parametrize('general', ['ヴィーナス', 'ゼウス'])
+def test_actual_single_general_list_can_select_repair_without_old_permission(general):
+    from test_hanjuku_retake_guard import generals
+    mem = memory('1-7'); mem['house'].update(phase='castle_pick', general=general)
+    assert house._repair_step(generals([general]), mem, None) == [p.pad('a')]
+    assert mem['house']['phase'] == 'castle_kit' and mem['house']['sole_defender'] is True
+
+
+def test_losing_other_castles_after_selection_cancels_the_repair():
+    from test_hanjuku_retake_guard import generals
+    mem = memory('1-7'); mem['house'].update(phase='castle_pick', source='アルマムーン')
+    assert house._repair_step(generals(['ヴィーナス']), mem, None) == [p.pad('a')]
+    mem['captured'] = []
+    assert house._repair_step(Screen([], None, '', kind='card_select'), mem, None) == []
+    assert mem['house']['phase'] == 'close'
