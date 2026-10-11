@@ -959,7 +959,7 @@ def test_chapter_2_cells_put_every_measured_flag_on_the_y_view_grid():
     for name, (fx, fy) in flags.items():
         x, y = chart.castles(2)[name]
         assert abs(x / 8 + ox - fx) <= 1 and abs(y / 8 + oy - fy) <= 1
-    assert [o['step'] for o in chart.orders(2)] == ['2-Z1', '2-C1', '2-V1', '2-S1', '2-Z2', '2-V2', '2-Z3']
+    assert [o['step'] for o in chart.orders(2)] == ['2-Z1', '2-C1', '2-V1', '2-S1', '2-Z2', '2-V2', '2-Z3', '2-B1']
 
 
 def test_the_island_picker_confirms_the_observed_owned_castle_with_a_twice(monkeypatch):
