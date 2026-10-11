@@ -456,6 +456,13 @@ def main(argv=None):
         else:
             signal.signal(signal.SIGTERM, lambda *_: setattr(manager, "stopping", True))
             signal.signal(signal.SIGINT, lambda *_: setattr(manager, "stopping", True))
+            if args.command == "start":
+                # Hand-run starts also get the comment-reply memo (best effort).
+                try:
+                    from .special_corner import write_comment_memo
+                    write_comment_memo(g.state_dir)
+                except Exception:
+                    pass
             output = manager.run(args.duration_minutes if args.command == "start" else 15,
                                  recovering=args.command == "recover",
                                  require_audio=not getattr(args, "video_only", False),
