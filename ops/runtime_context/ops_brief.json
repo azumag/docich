@@ -1,11 +1,11 @@
 {
-  "output_sha256": "6eb70555eba1c08c47ff33eab7b9eb51b8f2ece9f5bf0059a1f7f382e080b70a",
+  "output_sha256": "d10a5e694d3f20079603467b8abc2f29c783efc13f5d2ed3562f79d9af7665f3",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "903c18e112c98275d1fc48a9684df25a7455c8edfbe1fbf2c5ca4878494b219b",
+  "source_sha256": "6affe718d01b2c914eb302d27c3ecd11d635a997eacf8718b1ddaa2bd1ba54ab",
   "topics": [
-    "先発隊v158の本番ファイル照合を完了",
-    "先発隊修正main統合、再開のslot検証を強化",
-    "再確認待ちの卵残数を現在根拠から除外"
+    "再開の最新選択・公開再試行P2を修正",
+    "未配備PRのmain同期と再開元を保全",
+    "先発隊v158の本番ファイル照合を完了"
   ]
 }
