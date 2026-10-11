@@ -333,7 +333,7 @@ def restore(adapter, deadline, cancel):
     send_ra_cmd('FRAMEADVANCE', port=adapter._network_port())
     from .xkit import XKit
     from .hanjuku_pixels import read_png
-    from .hanjuku_screen import parse
+    from .hanjuku_screen import fake_hero_announcement_chapter, parse
     native = read_record(spec.runtime_dir / 'presentation.json')
     capture = spec.runtime_dir / 'screenshots/resume.png'
     capture.parent.mkdir(exist_ok=True)
@@ -354,6 +354,8 @@ def restore(adapter, deadline, cancel):
         observed = header.get('chapter')
         if type(observed) is int and 1 <= observed <= 12:
             chapter = observed
+        elif fake_hero_announcement_chapter(screen) is not None:
+            chapter = fake_hero_announcement_chapter(screen)
         elif observed is None and screen.kind in {'starter_list', 'starter_confirm'}:
             from .hanjuku_starter import rows
             upper, lower = rows(screen), rows(screen, selected=True)
