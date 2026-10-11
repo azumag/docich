@@ -19,7 +19,7 @@ from . import hanjuku_chart_adjust as chart_adjust
 from . import hanjuku_experience as experience
 from . import hanjuku_reference as reference
 from .hanjuku_egg_stock import observed_uses
-from .hanjuku_egg_reference import enemy_egg_triggers, general_debut_chapter, general_max_hp
+from .hanjuku_egg_reference import GENERAL_EGGS, enemy_egg_triggers, general_debut_chapter, general_max_hp
 from .hanjuku_font import UNKNOWN, TextLine
 from .hanjuku_pixels import Frame
 from .hanjuku_screen import (HEADER as HEADER_RE, OKUNOTE_CHOICES,
@@ -2914,6 +2914,12 @@ def _selected_actor_guard(screen, mem, order):
     departure confirmation for the new substitute path.
     """
     selected = (mem.get('sortie_general') or {}).get(order['step'])
+    if order.get('source_probe') is True and (not selected or selected == NAME):
+        (mem.get('general_override') or {}).pop(order['step'], None)
+        (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
+        return _hold_guarded_sortie(mem, order, 'sortie_actor_unconfirmed',
+            '実一覧で選んだ将軍の証拠がないため配置確認の出撃を取り消す',
+            {'selected': selected, 'observed': None, 'screen': screen.kind})
     if (order['general'] != NAME and order.get('source_probe') is not True
             or not selected or selected == NAME):
         return None
@@ -4169,6 +4175,7 @@ def _card_melee_ready(mem, cur):
                 and not (cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed'))
                 and not cur.get('card_hp_unread') and cur.get('card_soldiers_current') is True
                 and type(hp) is int and 0 < hp <= watch['enemy_hp_after_upper']
+                and hp < watch['enemy_hp_before']
                 and _control_melee_advantage(cur, hp, cur.get('ally_soldiers'), cur.get('enemy_soldiers')))
 
 
@@ -4487,6 +4494,8 @@ def battle_step(screen: Screen, mem):
         preempt_guard.pop('close_pending', None)
         preempt_guard.pop('unread_ticks', None)
     _card_battle_reading(screen, cur, mem)
+    cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)
+    cur['own_egg_positive_observed'] = _own_egg_positive(mem, cur)
     from .hanjuku_roster import dirty_status
     dirty_status(mem, [cur.get('ally')])
     if b.enemy_hp is not None and cur.get('start_enemy_hp') is not None and b.enemy_hp < cur['start_enemy_hp']:
@@ -4509,6 +4518,9 @@ def battle_step(screen: Screen, mem):
     _observe_egg_drop_candidate(mem, cur)
     _card_damage_recheck_resources(mem, cur)
     melee_followup = _card_melee_ready(mem, cur)
+    opening_wait = _command_open_wait(mem, cur)
+    if opening_wait is not None:
+        return opening_wait
     retreat = None if melee_followup else _hero_retreat_open(mem, cur)
     if retreat is not None:
         return retreat
@@ -4659,13 +4671,13 @@ def battle_step(screen: Screen, mem):
                 and (rescue.get('exhausted') or rescue['opens'] >= 12)):
             rescue.update(critical_open_recheck=True, exhausted=False,
                           pending_opens=1, menu_ticks=0, opens=rescue['opens'] + 1)
-            return [pad('b')]  # one final live inspection, not a renewed loop budget
+            return _human_menu_open(cur, 'survival')  # one final live inspection
         if (not rescue.get('exhausted') and rescue['opens'] < 12
                 and rescue.get('pending_opens', 0) < 3):
             rescue['opens'] += 1
             rescue['pending_opens'] = rescue.get('pending_opens', 0) + 1
             rescue['menu_ticks'] = 0
-            return [pad('b')]
+            return _human_menu_open(cur, 'survival')
     return _melee_step(mem, cur)
 
 
@@ -5022,7 +5034,30 @@ def _survival_needed(cur):
     return (hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 5 <= start * 2)
             or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS or behind_start
             or cur.get('card_damage_rescue_needed') is True
-            or _unarmed_clash_risk(cur))
+            or _unarmed_clash_risk(cur) or _unarmed_wall_risk(cur))
+
+
+def _unarmed_wall_risk(cur):
+    """Inspect initially eggless attackers before a wall-triggered summon.
+
+    g684 Trevis66 vs Alfalfa38 carried a card but had no timed chart tactic.
+    Clash=False allowed unchecked melee until Sandworm202 was already out.
+    Check the real resource menu first; a carried kit is not a usable-card
+    receipt. Initially eggless generals can acquire an いっぱつエッグ after
+    a victory: a named positive count overrides that initial metadata.
+    Initial metadata requests inspection, never proves live availability:
+    only the actual menu can authorize a resource selection.
+    """
+    ally = GENERAL_EGGS.get('しゅじんこう' if cur.get('ally') == NAME else cur.get('ally'))
+    if (cur.get('side') != 'attack' or cur.get('planned_cards') or cur.get('egg_battle')
+            or cur.get('own_egg_positive_observed') is True
+            or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('enemy') in reference.BOSS_GENERALS
+            or ally is None or not (ally[0] is False or cur.get('own_egg_zero_observed') is True)):
+        return False
+    triggers = enemy_egg_triggers(cur.get('enemy'), player_castle_defense=False)
+    return (triggers.has_egg is True and triggers.clash_position is False
+            and (triggers.wall_critical is True or triggers.wall_mod4 is True))
 
 
 def _survival_state(mem, cur):
@@ -5034,6 +5069,8 @@ def _survival_state(mem, cur):
                 expected_metric='使用可能な切り札・たまごを確認して選択',
                 reason=('携行戦術のない卵持ち敵との衝突前に、戦闘メニューで救済手段を確認'
                         if _unarmed_clash_risk(cur)
+                        else '初期卵なしまたは観測残数0の攻撃将軍は、敵の壁判定召喚より先に実資源を確認'
+                        if _unarmed_wall_risk(cur)
                         else 'HP低下のため温存を中止し、戦闘メニューで救済手段を確認'))
     return cur['survival']
 
@@ -5167,7 +5204,8 @@ def _hero_retreat_needed(cur):
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
     ref = (max(start, int(cur.get('ref_ally_hp') or 0)) if cur.get('ally') == NAME else start)
     rescue = cur.get('survival') or {}
-    if (((_unarmed_clash_risk(cur) and not cur.get('card_damage_rescue_needed'))
+    if ((((_unarmed_clash_risk(cur) or _unarmed_wall_risk(cur))
+          and not cur.get('card_damage_rescue_needed'))
          or (cur.get('card_damage_rescue_needed') and _card_damage_probe_exhausted(cur)))
             and rescue.get('exhausted')
             and not rescue.get('cards_uncertain')):
@@ -5179,6 +5217,49 @@ def _hero_retreat_needed(cur):
         # her while the bot chose こうげき and the retreat came too late).
         return hp <= GENERAL_CRITICAL_RETREAT_HP or hp * 2 <= enemy or hp * 2 <= ref
     return hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 4 <= ref)
+
+
+def _human_menu_open(cur, owner):
+    if (not cur.get('egg_battle')
+            and all(type(cur.get(k)) is int and cur[k] > 0 for k in ('ally_hp', 'enemy_hp'))):
+        cur['command_open_pending'] = {'owner': owner, 'waits': 0}
+    return [pad('b')]
+
+
+def _command_open_wait(mem, cur):
+    pending = cur.get('command_open_pending')
+    if not pending:
+        return None
+    owner_flow = cur.get({'survival': 'survival', 'retreat': 'hero_retreat',
+                          'defender_egg': 'okunote_egg_preempt'}.get(pending.get('owner'), '')) or {}
+    if owner_flow.get('exhausted') or owner_flow.get('unavailable'):
+        cur.pop('command_open_pending', None)
+        return None
+    # A complete HP panel can survive while the command box slides in.
+    # Repeated B there can close the menu just requested. Current HP is still
+    # read before this short wait, and the old opening budgets are retained.
+    pending['waits'] = pending.get('waits', 0) + 1
+    if pending['waits'] > 2:
+        cur.pop('command_open_pending', None)
+        return None
+    _record(mem, 'battle_command_open_wait', **_battle_labels(cur),
+            observed_metric={'owner': pending['owner'], 'waits': pending['waits'],
+                             'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp')},
+            reason='戦闘メニューの表示を短く再観測し、未確認の再BやAを送らない')
+    return [{'type': 'wait', 'ms': 50}]
+
+
+def command_open_pending_step(screen, mem):
+    cur = mem.get('battle') or {}
+    if not cur.get('command_open_pending'):
+        return None
+    if screen.kind in ('unknown', 'text'):
+        return _command_open_wait(mem, cur)
+    if screen.kind not in ('battle', 'battle_menu_pending'):
+        cur.pop('command_open_pending', None)
+    # HP readings belong to battle_step. A measured clipped command belongs
+    # to its existing bounded pending-menu route, not a guessed option.
+    return None
 
 
 def _hero_retreat_open(mem, cur):
@@ -5214,7 +5295,7 @@ def _hero_retreat_open(mem, cur):
             observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
                              'start_ally_hp': cur.get('start_ally_hp')},
             reason='主人公の敗北によるゲームオーバーまたは一般将軍の喪失を避けるため退却の可否を確認')
-    return [pad('b')]
+    return _human_menu_open(cur, 'retreat')
 
 
 def _hero_retreat_menu(screen, mem, cur):
@@ -5440,7 +5521,10 @@ def battle_menu_step(screen: Screen, mem):
     flow = cur.get('card_flow')
     if screen.kind != 'battle_menu':
         return []
+    cur.pop('command_open_pending', None)  # foreground receipt, not a planned B
     _card_battle_reading(screen, cur, mem)
+    cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)
+    cur['own_egg_positive_observed'] = _own_egg_positive(mem, cur)
     # A newly readable resource invalidates the earlier all-disabled receipt
     # before a pending preemption can select an irreversible command.
     if any(w in BATTLE_MENU for _, _, w in _options(screen)):
@@ -5626,7 +5710,7 @@ def _defender_egg_open(mem, cur):
             observed_metric={**window, 'open_attempt': guard['opens']},
             expected_metric='実メニューの奥の手と現在カーソルを確認して選択',
             reason='味方の卵・札が使えず敵の召喚危険が目前のため、連打を止めて奥の手を確認する')
-    return [pad('b')]
+    return _human_menu_open(cur, 'defender_egg')
 
 
 def defender_egg_pending_step(screen, mem):
@@ -6233,7 +6317,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
     for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
                 'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
-                'month_nav', 'house_nav',
+                'month_nav', 'house_nav', 'starter_party',
                 'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                 'source_override', 'uncertain', 'month', 'soldiers_seen', 'soldiers_seen_key',
                 'soldiers_seen_basis', 'order_context', 'sortie_general', 'sortie_actor_miss',
@@ -6493,6 +6577,19 @@ def _own_egg_empty(mem, battle):
     ally = battle.get('ally') if isinstance(battle, dict) else None
     uses = (mem.get('egg_uses') or {}).get(ally) if ally else None
     return type(uses) is int and uses == 0
+
+
+def _own_egg_positive(mem, battle):
+    """A named, observed 1..5 count overrides initially eggless metadata.
+
+    No selection or victory infers an acquisition/count. This reads the
+    same named observation ledger as the zero-count guard and never alters it.
+    """
+    ally = battle.get('ally') if isinstance(battle, dict) else None
+    if ally in (mem.get('egg_recheck') or []):
+        return False  # a selection dirties the old count until this owner is read
+    uses = observed_uses((mem.get('egg_uses') or {}).get(ally)) if ally else None
+    return uses is not None and uses > 0
 
 
 def _refresh_egg_priority(mem, shop, header):

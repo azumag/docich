@@ -1,11 +1,11 @@
 {
-  "output_sha256": "b50aa31d9921d96725bdf717f1cb76ce74d057f89dbc556956d8a3570fe26139",
+  "output_sha256": "789e15f61f0b5b4ce558ae9e2e2dc5c67ba5c029d71e05adcdb1a885d9ac6c31",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "54e1db2d6736808b22c4661ad23dfb5be36ae0e6882998d81bda8abd96fccde9",
+  "source_sha256": "2f15f17ffbe4563c1833f6eb75c573ad35c3e65d445a82fb6e440e77fa975936",
   "topics": [
-    "半熟英雄の壊れた卵修復を即時優先",
-    "半熟英雄の帰還先統合と出撃停滞の配置確認修正",
-    "半熟英雄の5城目増築確認と帰還先・出撃停滞の改善"
+    "最新保存からの一度の再開を正規予約",
+    "切り札選択後の未低下HP1を追撃根拠から除外",
+    "再開の最新選択・公開再試行P2を修正"
   ]
 }

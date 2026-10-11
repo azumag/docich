@@ -151,3 +151,29 @@ def test_probe_selection_must_match_the_actual_departure_panel(kind):
     assert p.deploy_step(actor_panel(screen, 'どうし'), mem) == [p.pad('b'), p.pad('b')]
     assert mem['active'] is None and not mem.get('sorties')
     assert mem['_records'][-1]['decision'] == 'sortie_actor_unconfirmed'
+
+
+@pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm'])
+@pytest.mark.parametrize('actor', ['どうし', 'ゼウス'])
+def test_partial_list_reobservation_invalidates_probe_actor_evidence(kind, actor):
+    import json
+    from docich.hanjuku_font import UNKNOWN
+    from test_hanjuku_sortie_evidence import actor_panel, measured_card_select, measured_loaded_sortie
+    mem = stalled()
+    order = dict(next(o for o in p.interim_candidates(mem).values() if o.get('source_probe')),
+                 step='I:probe-reobserved:1')
+    mem.update(active=order['step'], orders={}, launched_orders={order['step']: order})
+    assert p.deploy_step(generals(['ゼウス', 'どうし']), mem) == [p.pad('a')]
+    # A later incomplete observation clears the list selection. The stale
+    # override remains a plan, even if the next panel happens to match it.
+    p.deploy_step(generals(['ゼウス', 'どうし' + UNKNOWN]), mem)
+    assert order['step'] not in mem['sortie_general']
+    assert mem['general_override'][order['step']] == 'ゼウス'
+    mem = json.loads(json.dumps(mem))
+    screen = (measured_card_select() if kind == 'card_select'
+              else measured_loaded_sortie(('クースカン', 'ノリウツール')))
+    actions = p.deploy_step(actor_panel(screen, actor), mem)
+    assert actions == [p.pad('b'), p.pad('b')]
+    assert not mem.get('sorties') and mem['active'] is None
+    assert not mem.get('order_context') and not mem.get('general_override')
+    assert mem['_records'][-1]['decision'] == 'sortie_actor_unconfirmed'
