@@ -18,6 +18,7 @@ def main():
     parser.add_argument('--takeoff', type=float, default=.35)
     parser.add_argument('--revision', default=REVISION, help='Local Git commit to compare')
     parser.add_argument('--ceiling-y', type=float, help='Upper braking boundary for a compatible revision')
+    parser.add_argument('--full-takeoff', action='store_true', help='Keep full takeoff below the upper screen on a compatible revision')
     args = parser.parse_args()
     if not 0 <= args.takeoff <= .35:
         parser.error('takeoff must be between 0 and .35 seconds')
@@ -31,6 +32,12 @@ def main():
             parser.error('ceiling-y requires 12..24 and a compatible controller revision')
         ceiling_arg = f', ceiling_y={args.ceiling_y!r}'
         suffix = f'-ceiling{args.ceiling_y:g}'
+    if args.full_takeoff:
+        narrow_cap = 'y < 40 or self._narrow_level'
+        if source.count(narrow_cap) != 1:
+            parser.error('full-takeoff requires a compatible narrow takeoff branch')
+        source = source.replace(narrow_cap, 'y < 40')
+        suffix += '-fulltakeoff'
     source += f'''
 
 # Local real-game comparison; original controller source from Git {revision[:7]}.
