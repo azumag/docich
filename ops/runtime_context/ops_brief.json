@@ -2,7 +2,7 @@
   "output_sha256": "883de484fe9813eb5538879f7ea1667a7f87e93cc3454048f0a13dbf8bb0d323",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "87dcfb415aff22f9f432d86481805df082867d3cfd40bde0d5ad9c661dcf8772",
+  "source_sha256": "457bf377e0f1dbeee9d575660092893d664ca92f17dd5e73431d69d7272ac7da",
   "topics": [
     "先発隊1人の灰色行停滞を修正、終了前の保存を実測",
     "募集の支払い直前の最低残金を再検査",
