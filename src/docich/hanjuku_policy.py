@@ -7862,13 +7862,27 @@ def _finish_month_sub(screen, mem, shop) -> bool:
     cost = sub.get('quoted_cost') if sub['kind'] in ('egg', 'chikujou') else RECRUIT_COST
     paid = (not sub.get('payment_interrupted')
             and type(cost) is int and cost > 0 and type(gold) is int and type(before) is int
-            and before - gold == cost
-            and (sub['kind'] != 'egg' or ((sub.get('full_selected') is True
-                                           or sub.get('hero_selected') is True)
-                 and sub.get('left_menu') is True and not sub.get('aborted')
-                 and all(type((screen.header or {}).get(k)) is int for k in ('year', 'month'))
-                 and sub.get('key') == (shop or {}).get('key') == _month_key(screen.header)
-                 and month_menu_ready(screen) and _month_menu_quiet(screen))))
+            and before - gold == cost)
+    if sub['kind'] == 'egg':
+        receipt = (paid and (sub.get('full_selected') is True or sub.get('hero_selected') is True)
+                   and sub.get('left_menu') is True and not sub.get('aborted')
+                   and all(type((screen.header or {}).get(k)) is int for k in ('year', 'month'))
+                   and sub.get('key') == (shop or {}).get('key') == _month_key(screen.header))
+        # g700: the paid ritual returned at 34G (134G - quoted 100G)
+        # before the upper cursor appeared. Keep this flow
+        # until a ready menu can confirm it; do not reserve its cost twice.
+        # Only a quiet, same-month return from our confirmed ritual gets
+        # this bound. A different dialogue/debit/event remains unverified.
+        if (receipt and sub.get('stage') == 'recovering' and screen.kind == 'month_menu'
+                and screen.hand is None and _month_menu_quiet(screen)):
+            sub['receipt_wait'] = int(sub.get('receipt_wait') or 0) + 1
+            if sub['receipt_wait'] < MONTH_SUB_MENU_WAIT:
+                _record(mem, 'egg_recover_receipt_wait', month=sub.get('key'),
+                        observed_metric={'gold_before': before, 'gold_after': gold,
+                                         'quoted_cost': cost, 'waits': sub['receipt_wait']},
+                        reason='卵回復の実費減少が一致したため、月一カーソルの復帰を上限付きで再観測する')
+                return False
+        paid = bool(receipt and month_menu_ready(screen) and _month_menu_quiet(screen))
     if sub['kind'] == 'recruit':
         # g498: the 235 ->185 fee was observed in the candidate dialogue;
         # the final menu was 183, so later deductions cannot erase that fee.
@@ -7987,6 +8001,8 @@ def _finish_month_sub(screen, mem, shop) -> bool:
             observed_metric={'gold_before': before, 'gold_after': gold, 'presses': sub.get('presses'),
                              'aborted': sub.get('aborted', False),
                              'full_selected': sub.get('full_selected'), 'quoted_cost': cost,
+                             'payment_verified': bool(paid),
+                             'menu_ready': month_menu_ready(screen),
                              'fee_receipt_gold': sub.get('recruit_paid_gold'),
                              'joined_announced': sub.get('joined_names', [])},
             deviation_reason=(None if paid else 'payment_interrupted'
@@ -7994,7 +8010,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
             reason=('月一メニュー復帰時の所持金で実行を確認' if paid else
                     '別イベント割込み後の残金差は旧取引の支払証拠にしない'
                     if sub.get('payment_interrupted') else
-                    '月一メニューに戻ったが所持金の減少を確認できない'))
+                    '月一メニュー復帰時の支払い・操作可能状態を照合できない'))
     return True
 
 
