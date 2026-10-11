@@ -464,7 +464,9 @@ def observe_owners(mem, roofs, cam):
     for castle, kind in seen.items():
         prev = streak.get(castle) or {}
         count = prev.get('count', 0) + 1 if prev.get('kind') == kind else 1
-        streak[castle] = {'kind': kind, 'count': count}
+        streak[castle] = {'kind': kind, 'count': count,
+                          **({'world_flag_vetoed': True} if prev.get('world_flag_vetoed')
+                             and prev.get('kind') == kind else {})}
         if count < OWNER_CONFIRM:
             continue
         from .hanjuku_roster import owner
@@ -485,6 +487,19 @@ def observe_owners(mem, roofs, cam):
                     reason='占領していた城の屋根が敵の色になったため失陥として奪還対象にする')
             _tally(mem, 'castle_losses')
         elif kind == 'own' and castle not in captured:
+            flag = (mem.get('world_flags') or {}).get(castle) or {}
+            if (flag.get('kind') == 'enemy' and flag.get('chapter') == chapter
+                    and 0 <= int(mem.get('tick') or 0) - int(flag.get('tick') or 0) <= WORLD_FLAG_TRUST):
+                # g684 2-8 15:12:45: four roof reads called スペンソニア ours
+                # while every world map flew its enemy flag; the false capture
+                # met all_captured and sent the hero to the boss castle.
+                if not streak[castle].get('world_flag_vetoed'):
+                    streak[castle]['world_flag_vetoed'] = True
+                    _record(mem, 'castle_owned_vetoed', castle=castle,
+                            observed_metric={'roof': kind, 'readings': count,
+                                             'world_flag_tick': flag.get('tick')},
+                            reason='屋根は自軍色だが直近の全体マップの旗が敵のため占領と扱わない')
+                continue
             (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
             captured.append(castle)
             if castle in (mem.get('lost') or []):
@@ -1627,12 +1642,17 @@ def world_map_step(screen, mem, frame):
     return [pad('y')]
 
 
+WORLD_FLAG_TRUST = 200   # observations a world-map (Y) flag outranks a roof reading
+
+
 def _apply_world_flags(mem, flags):
     chapter = mem.get('chapter') or 0
     from .hanjuku_roster import owner
+    seen = mem.setdefault('world_flags', {})
     for name, kind in flags.items():
         if name in chart.castles(chapter):
             owner(mem, STATUS_NAMES.get(name, name), kind)
+            seen[name] = {'kind': kind, 'tick': int(mem.get('tick') or 0), 'chapter': chapter}
     home = chart.home_castle(chapter)
     cur = mem.get('battle') or {}
     castle = cur.get('castle')
