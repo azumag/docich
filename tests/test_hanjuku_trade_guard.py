@@ -60,3 +60,45 @@ def test_guard_expires_and_hero_name_does_not_arm_it():
     mem['tick'] = 1 + policy.TRADE_GUARD_OBSERVATIONS + 1
     assert policy.trade_guard_step(choice(['A', 'B'], 0), mem) is None
     assert 'trade_guard' not in mem
+
+
+def _offer(mem, name):
+    policy.trade_guard_step(text('トレードをしようじゃないか'), mem)
+    policy.trade_guard_step(text(f'そちらの{name}しょうぐんとわがぐんのイキのいいのとではどーだ?'), mem)
+
+
+def test_a_weak_named_general_is_traded_on_the_default_row():
+    # Owner 2026-10-11: 弱い将軍なら受ける (シェーブル 27/4 in gcgx).
+    mem = {'tick': 10, 'chapter': 1}
+    _offer(mem, 'シェーブル')
+    assert mem['trade_guard']['accept'] is True
+    assert policy.trade_guard_step(choice(['OK', 'NO'], 1), mem) == [policy.pad('up')]
+    assert policy.trade_guard_step(choice(['OK', 'NO'], 0), mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['strategy_variant'] == 'accept_weak_general_trade'
+
+
+def test_strong_chart_hero_and_unknown_generals_are_refused():
+    for name, rule in (('ヴィーナス', 'chart_general'), ('ゼウス', 'strong'),
+                       ('どうし', 'hero'), ('ココット', 'chart_general'), ('だれか', 'unknown')):
+        accept, evidence = policy.trade_accept_weak({'chapter': 1}, name)
+        assert accept is False and evidence['rule'] == rule, name
+    mem = {'tick': 10, 'chapter': 1}
+    _offer(mem, 'ゼウス')
+    assert policy.trade_guard_step(choice(['OK', 'NO'], 0), mem) == [policy.pad('down')]
+    assert policy.trade_guard_step(choice(['OK', 'NO'], 1), mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['strategy_variant'] == 'decline_general_trade'
+
+
+def test_measured_yes_no_accepts_only_a_weak_general():
+    from docich.hanjuku_font import TextLine as T
+    def yn(name, on):
+        lines = [T(183, tuple((184 + 8 * j, ch) for j, ch in enumerate('うむッ!'))),
+                 T(199, tuple((184 + 8 * j, ch) for j, ch in enumerate('いかんッ!')))]
+        y = 183 if on == 'yes' else 199
+        return Screen(lines=lines, hand=(162, y - 6, 182, y + 6),
+                      text=f'そちらの{name}しょうぐんとイキのいいのとではどーだ?うむッ!いかんッ!', kind='yes_no')
+    mem = {'chapter': 1}
+    assert policy.yes_no_step(yn('アルファルファ', 'yes'), mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['strategy_variant'] == 'accept_weak_general_trade'
+    mem = {'chapter': 1}
+    assert policy.yes_no_step(yn('ゼウス', 'yes'), mem) == [policy.pad('down')]

@@ -7975,6 +7975,37 @@ def _is_general_trade_prompt(text: str) -> bool:
     return any(tok in flat for tok in TRADE_DECLINE_TOKENS)
 
 
+TRADE_WEAK_MAX_HP = 50          # owner 2026-10-11: weak generals may be traded away
+TRADE_WEAK_MAX_COMBAT = 10
+TRADE_NAMED = re.compile(r'そちらの([^\ufffd\s]+?)しょうぐん')
+
+
+def _trade_named_general(text: str):
+    match = TRADE_NAMED.search(''.join((text or '').split()))
+    return match[1] if match else None
+
+
+def trade_accept_weak(mem, name):
+    """(accept, evidence): only a clearly weak, non-chart, non-hero general.
+
+    Owner (2026-10-11): 花いちもんめは強い将軍と弱い将軍が交換されがちなので、
+    強い将軍が指定された時は断る / 弱い将軍なら受ける. Strength is the static
+    gcgx shogun.html row (max HP, 戦闘). An unread or unknown name declines.
+    """
+    from .hanjuku_reference import general_strength
+    chart_generals = {o.get('general') for o in chart.all_orders(mem.get('chapter') or 0)}
+    stats = general_strength(name)
+    evidence = {'general': name, 'stats': list(stats[:2]) if stats else None,
+                'max_hp_limit': TRADE_WEAK_MAX_HP, 'combat_limit': TRADE_WEAK_MAX_COMBAT}
+    if not name or name == NAME or name in chart_generals or stats is None:
+        evidence['rule'] = ('unread' if not name else 'hero' if name == NAME
+                            else 'chart_general' if name in chart_generals else 'unknown')
+        return False, evidence
+    weak = stats[0] < TRADE_WEAK_MAX_HP and stats[1] < TRADE_WEAK_MAX_COMBAT
+    evidence['rule'] = 'weak' if weak else 'strong'
+    return weak, evidence
+
+
 TRADE_GUARD_OBSERVATIONS = 40   # ~60 s: lead-in, the offer and its choice
 # Arming needs trade-only wording; 'しょうぐんどうし' can be the hero's name.
 TRADE_GUARD_TOKENS = ('トレード', 'いちもんめ', 'イキのいいの', 'いきのいいの')
@@ -8008,6 +8039,11 @@ def trade_guard_step(screen: Screen, mem):
                     observed_metric={'text': screen.text[-80:], 'hand': screen.hand is not None},
                     reason='将軍トレード（花いちもんめ）の申し出を検出。選択肢は断る側を選ぶ')
         guard['tick'] = tick
+    if isinstance(guard, dict) and screen.kind in ('text', 'unknown', 'yes_no'):
+        named = _trade_named_general(screen.text)
+        if named and named != guard.get('named'):
+            guard['named'] = named
+            guard['accept'], guard['strength'] = trade_accept_weak(mem, named)
     if not isinstance(guard, dict):
         return None
     if guard.get('chosen') or tick - int(guard.get('tick') or 0) > TRADE_GUARD_OBSERVATIONS \
@@ -8028,13 +8064,17 @@ def trade_guard_step(screen: Screen, mem):
                     observed_metric={'trade_guard': True, 'text': screen.text[-80:]},
                     reason='トレードの選択肢の行を読めないため決定せず再観測')
         return []
-    if abs(cur[1] - rows[0]) <= 2:
-        return [pad('down')]   # off the default (accepting) first row
+    accept = guard.get('accept') is True
+    on_first = abs(cur[1] - rows[0]) <= 2
+    if accept != on_first:
+        return [pad('up' if accept else 'down')]   # first row = default (accept)
     guard['chosen'] = True
     _record(mem, 'prompt', choice=cur[2], prompt=screen.text[-60:],
-            strategy_variant='decline_general_trade',
-            observed_metric={'rows': rows, 'cursor_y': cur[1]},
-            reason='将軍トレード（花いちもんめ）は強い将軍を弱い将軍と交換されやすいため断る')
+            strategy_variant='accept_weak_general_trade' if accept else 'decline_general_trade',
+            observed_metric={'rows': rows, 'cursor_y': cur[1], 'strength': guard.get('strength')},
+            reason=('指定された将軍が弱い（最大HP50未満・戦闘10未満、チャート外）ため花いちもんめを受ける'
+                    if accept else
+                    '花いちもんめで強い将軍・主人公・チャートの将軍・判定不能の将軍が指定されたため断る'))
     return [pad('a')]
 
 
@@ -8086,8 +8126,13 @@ def yes_no_step(screen: Screen, mem):
         # 入らないのでやってはいけない), so decline it. Measured question
         # (倒転王国 月イチイベント): 「ここで将軍同士のトレードをしようじゃ
         # ないか。そちらの◯◯将軍と我が軍のイキのいいのとではどーだ?」
-        choice, reason = 'いかんッ!', '将軍トレード（花いちもんめ）は不平等な提案が多いため断る'
-        variant = 'decline_general_trade'
+        accept, metric = trade_accept_weak(mem, _trade_named_general(text))
+        if accept:
+            choice, reason = 'うむッ!', '指定された将軍が弱い（最大HP50未満・戦闘10未満、チャート外）ため花いちもんめを受ける'
+            variant = 'accept_weak_general_trade'
+        else:
+            choice, reason = 'いかんッ!', '将軍トレード（花いちもんめ）で強い・判定不能の将軍が指定されたため断る'
+            variant = 'decline_general_trade'
     else:
         choice, reason, variant = 'うむッ!', '未分類の確認は既定で進行', 'unclassified_prompt'
     move = menu_to(screen, choice)
