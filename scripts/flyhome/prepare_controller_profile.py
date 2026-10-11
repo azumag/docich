@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--revision', default=REVISION, help='Local Git commit to compare')
     parser.add_argument('--ceiling-y', type=float, help='Upper braking boundary for a compatible revision')
     parser.add_argument('--full-takeoff', action='store_true', help='Keep full takeoff below the upper screen on a compatible revision')
+    parser.add_argument('--head-margin', type=float, help='Raw spike overhead margin for a compatible revision')
     args = parser.parse_args()
     if not 0 <= args.takeoff <= .35:
         parser.error('takeoff must be between 0 and .35 seconds')
@@ -32,6 +33,12 @@ def main():
             parser.error('ceiling-y requires 12..24 and a compatible controller revision')
         ceiling_arg = f', ceiling_y={args.ceiling_y!r}'
         suffix = f'-ceiling{args.ceiling_y:g}'
+    if args.head_margin is not None:
+        head_limit = 'ceiling = max(ceiling, hy1 + 10.0)'
+        if not 8 <= args.head_margin <= 10 or source.count(head_limit) != 1:
+            parser.error('head-margin requires 8..10 and a compatible overhead branch')
+        source = source.replace(head_limit, f'ceiling = max(ceiling, hy1 + {args.head_margin!r})')
+        suffix += f'-head{args.head_margin:g}'
     if args.full_takeoff:
         narrow_cap = 'y < 40 or self._narrow_level'
         if source.count(narrow_cap) != 1:
