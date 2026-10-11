@@ -144,7 +144,8 @@ def test_zero_boss_panel_never_spends_the_spare_event_card():
 def test_partial_original_kit_cancels_without_rewriting_reserved_cards(remaining):
     mem = memory(); mem['picked'] = ['イッテツーン']; inv = inventory(); inv['remaining'] = remaining
     assert p._chapter_two_balmung_inventory(mem, order(), inv) == [p.pad('b'), p.pad('b')]
-    assert mem['active'] is None and mem['picked'] == []
+    assert mem['active'] == '2-B1' and mem['picked'] == []
+    assert mem['boss_stock_restart'] == {'step': '2-B1', 'readings': 0}
     assert mem['orders']['2-B1'] == 'pending'
     assert not mem.get('rare_card_kit') and not mem.get('kit_spent')
     assert mem['_records'][-1]['decision'] == 'boss_stock_kit_restart'
@@ -154,3 +155,24 @@ def test_partial_reservation_is_not_assumed_to_match_cached_selected_name():
     mem = memory(); mem['picked'] = ['ノリウツール']; inv = inventory(); inv['remaining'] = 2
     assert p._chapter_two_balmung_inventory(mem, order(), inv) == [p.pad('b'), p.pad('b')]
     assert not mem.get('rare_card_kit')
+
+
+def test_restart_backs_out_before_reselecting_and_is_bounded():
+    mem = memory(); mem['boss_stock_restart'] = {'step': '2-B1', 'readings': 0}
+    screen = parse(read_png(F / 'g700-balmung-kit-confirm.png'))
+    for _ in range(11):
+        assert p.deploy_step(screen, mem) == [p.pad('b')]
+        assert not mem.get('order_context')
+    assert p.deploy_step(screen, mem) == [p.pad('b'), p.pad('b')]
+    assert mem['active'] is None and not mem.get('boss_stock_restart')
+
+
+def test_restart_flag_is_cleared_on_full_backout_and_other_order(monkeypatch):
+    mem = memory(); mem['boss_stock_restart'] = {'step': 'other', 'readings': 1}
+    p.deploy_step(parse(read_png(F / 'g700-balmung-stock-panel.png')), mem)
+    assert not mem.get('boss_stock_restart')
+    assert p._deploy_cards(order(), mem) == KIT
+    mem = memory(); mem['boss_stock_restart'] = {'step': '2-B1', 'readings': 2}
+    monkeypatch.setattr(p, '_check_source_castle', lambda *args: [p.pad('b')])
+    p.deploy_step(Screen([], None, '', kind='castle_menu'), mem)
+    assert not mem.get('boss_stock_restart') and mem['active'] == '2-B1'

@@ -2831,10 +2831,15 @@ def _chapter_two_balmung_inventory(mem, order, inventory):
         # g706's latest stall checkpoint contains one selected chart card.
         # Do not rewrite that partial kit or infer its identity. Back out of
         # both panels, then a new live panel can establish the complete kit.
-        return _hold_guarded_sortie(mem, order, 'boss_stock_kit_restart',
+        actions = _hold_guarded_sortie(mem, order, 'boss_stock_kit_restart',
             '不足した予定札の途中選択を取り消し、実測装備を未選択の一覧から確認し直す',
             {'remaining': inventory['remaining'],
              'visible_stocks': {c: stocks[c] for c in ('イッテツーン', 'バルムンク')}})
+        # Keep this already-started boss order ahead of a new field survey.
+        # The restart backs out completely before selecting another actor.
+        mem['active'] = step
+        mem['boss_stock_restart'] = {'step': step, 'readings': 0}
+        return actions
     if mem.get('picked') or inventory['remaining'] != CARRY_SLOTS:
         return None
     original = _deploy_cards(order, mem)
@@ -3494,7 +3499,22 @@ def deploy_step(screen: Screen, mem):
     kind = screen.kind
     if order is None:
         # Menus we did not open (e.g. confirm pressed by an earlier fallback).
+        mem.pop('boss_stock_restart', None)
         return [pad('b')]
+    restarting = mem.get('boss_stock_restart')
+    if isinstance(restarting, dict):
+        if restarting.get('step') != order['step']:
+            mem.pop('boss_stock_restart', None)
+        elif kind == 'castle_menu':
+            mem.pop('boss_stock_restart', None)  # full backout; normal source check resumes
+        else:
+            restarting['readings'] = int(restarting.get('readings') or 0) + 1
+            if restarting['readings'] >= 12:
+                mem.pop('boss_stock_restart', None)
+                return _hold_guarded_sortie(mem, order, 'boss_stock_restart_deferred',
+                    '選択画面の取り消し確認が上限に達したため、承認せず出撃を取り消す',
+                    {'screen': kind, 'readings': 12})
+            return [pad('b')]
     if kind == 'general_list' and (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed':
         # A newly selected sortie may use a different actor. An interrupted
         # departure instead retains its evidence for source reconciliation.
@@ -6423,7 +6443,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
     # Route state belongs to the measured map of one chapter. Keep
     # run-wide counters/name evidence, never carry coordinates/orders.
     for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
-                'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
+                'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'boss_stock_restart', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
                 'month_nav', 'house_nav', 'starter_party',
                 'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
