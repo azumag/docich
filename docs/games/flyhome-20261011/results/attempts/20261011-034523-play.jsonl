@@ -1,0 +1,16 @@
+{"attempt": 1, "outcome": "dead", "duration_s": 12.165, "best_dist": 74.9, "level_sig": 65025541268894, "events": 51}
+{"attempt": 2, "outcome": "dead", "duration_s": 7.966, "best_dist": 160.8, "level_sig": 128128262799619, "events": 34}
+{"attempt": 3, "outcome": "dead", "duration_s": 28.481, "best_dist": 64.7, "level_sig": 65025541268894, "events": 330}
+{"attempt": 4, "outcome": "dead", "duration_s": 27.185, "best_dist": 83.8, "level_sig": 65025541268894, "events": 307}
+{"attempt": 5, "outcome": "stuck", "duration_s": 15.882, "best_dist": 118.6, "level_sig": 128128262799619, "events": 63}
+{"attempt": 6, "outcome": "dead", "duration_s": 5.463, "best_dist": 80.2, "level_sig": 65025541268894, "events": 17}
+{"attempt": 7, "outcome": "stuck", "duration_s": 35.667, "best_dist": 111.0, "level_sig": 128128262799619, "events": 235}
+{"attempt": 8, "outcome": "dead", "duration_s": 4.43, "best_dist": 156.7, "level_sig": 128128262799619, "events": 15}
+{"attempt": 9, "outcome": "dead", "duration_s": 7.569, "best_dist": 148.6, "level_sig": 195159478053212, "events": 23}
+{"attempt": 10, "outcome": "stuck", "duration_s": 14.231, "best_dist": 134.9, "level_sig": 128128262799619, "events": 22}
+{"attempt": 11, "outcome": "dead", "duration_s": 7.966, "best_dist": 73.6, "level_sig": 65025541268894, "events": 25}
+{"attempt": 12, "outcome": "dead", "duration_s": 16.802, "best_dist": 98.0, "level_sig": 65025541268894, "events": 98}
+{"attempt": 13, "outcome": "dead", "duration_s": 30.306, "best_dist": 72.6, "level_sig": 65025541268894, "events": 341}
+{"attempt": 14, "outcome": "dead", "duration_s": 6.985, "best_dist": 122.1, "level_sig": 62236893252302, "events": 19}
+{"attempt": 15, "outcome": "dead", "duration_s": 15.948, "best_dist": 93.9, "level_sig": 128128262799619, "events": 142}
+{"attempt": 16, "outcome": "dead", "duration_s": 13.866, "best_dist": 100.7, "level_sig": 65025541268894, "events": 135}

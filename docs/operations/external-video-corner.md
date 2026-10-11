@@ -4,6 +4,23 @@
 自動rotation候補に追加せず、soren91のsender/agent/CDP/19192を使用しません。
 Windowsのゲーム実行・入力・自動プレイには関与しません。
 
+## WebUI から（通常の手順）
+
+WebUI の Corners タブ「特別コーナー」カードで操作します（operator token、各操作は確認ダイアログ付き）。
+
+1. 「設定」でタイトル表示名・配信タイトルの接尾辞・Twitch カテゴリ（名前検索→候補から選択）・
+   コメント返し用プロンプト・終了後の感想プロンプトを保存します（`run-soren-live/special_corner.json`）。
+   未保存のときは Fly Me To The Home! の既定値です。
+2. 「① SRT 受付開始」: 下記 `prepare` を `[external_video_corner] listen_ip` と `--wait-minutes 1500` で
+   実行します（受信は独立 user unit）。OBS から送信します。
+3. 受信表示が「受信中（音声あり）」になったら「② 開始（予約）」: `start --duration-minutes 1440
+   --wait-for-idle --wait-minutes 120` を `docich-external-video-corner-<uuid>` の user transient unit
+   （絶対パスの config、RuntimeMaxSec=待機+表示+復帰）で起動します。WebUI の再起動では止まりません。
+   受信中（音声あり）でないと開始は拒否します。予約後に OBS が切れたまま順番が来ると、
+   30 秒待って予約を取り消します（既存仕様）。
+4. 「終了」で Soren へ復帰し感想を話します。予約中に押すと予約を取り消します。
+   使わなかった受信は「受付停止」で止めます（予約中・実行中は止めません）。
+
 ## 準備と受信確認
 
 VMの配備済みmainで実行します。秘密情報や任意URLは引数に渡しません。

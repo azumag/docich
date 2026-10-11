@@ -1,0 +1,4 @@
+{"attempt": 1, "outcome": "dead", "duration_s": 32.114, "best_dist": 27.3, "level_sig": 117193142677094, "events": 323}
+{"attempt": 2, "outcome": "dead", "duration_s": 3.382, "best_dist": 217.9, "level_sig": 183845060499302, "events": 22}
+{"attempt": 3, "outcome": "dead", "duration_s": 47.594, "best_dist": 8.2, "level_sig": 183845060499302, "events": 476}
+{"attempt": 4, "outcome": "cleared", "duration_s": 49.283, "best_dist": 3.0, "level_sig": 246947782030027, "events": 629}

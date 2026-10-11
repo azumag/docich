@@ -25,12 +25,12 @@ WORKFLOWS = (
     ".github/workflows/retro-corner-operator.yml",
 )
 ALLOWED_OPERATIONS = {
-    "restart-service", "recover-failed", "rollback-timer", "start-hanjuku",
+    "restart-service", "recover-failed", "rollback-timer", "start-hanjuku", "resume-hanjuku-latest",
     "recover-runtime",
     "check-cancel-hanjuku", "cancel-hanjuku",
     "check-admin-release-hanjuku", "admin-release-hanjuku",
 }
-CANONICAL_ONLY_OPERATIONS = {"start-hanjuku", "recover-runtime", "check-cancel-hanjuku", "cancel-hanjuku",
+CANONICAL_ONLY_OPERATIONS = {"start-hanjuku", "resume-hanjuku-latest", "recover-runtime", "check-cancel-hanjuku", "cancel-hanjuku",
                              "check-admin-release-hanjuku", "admin-release-hanjuku"}
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 
