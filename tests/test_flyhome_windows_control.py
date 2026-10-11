@@ -296,12 +296,14 @@ def test_matching_predicted_stop_angle_still_requires_counter_torque():
 
 
 def test_direct_window_identity_avoids_enumeration_and_checks_live_exe():
+    from ctypes import wintypes
     def get_pid(hwnd, output):
         output._obj.value = 10
         return 1
     api = SimpleNamespace(IsWindow=lambda hwnd: True, IsWindowVisible=lambda hwnd: True,
                           GetWindowThreadProcessId=get_pid)
     with patch.object(win32, '_require'), patch.object(win32, 'user32', api, create=True), \
+         patch.object(win32, 'wt', wintypes, create=True), \
          patch.object(win32, '_exe_of', return_value='game.exe'), \
          patch.object(win32, 'list_windows', side_effect=AssertionError('enumeration is slow')):
         assert win32.window_identity(1) == (10, 'game.exe')
