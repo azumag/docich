@@ -159,7 +159,7 @@ def test_wrong_general_status_does_not_confirm_repair():
     assert mem['house']['phase'] == 'verify_status'
 
 
-def test_castle_repair_will_not_empty_even_one_of_many_owned_castles():
+def test_castle_repair_will_not_empty_the_last_owned_castle():
     mem = memory('castle_pick', source='アルマムーン')
     c = Canvas()
     c.text(64, 31, 'しゅつげき')

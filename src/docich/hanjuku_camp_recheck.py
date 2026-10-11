@@ -335,6 +335,7 @@ def _named_step(screen, mem, frame, state):
         if len(under) != 1:
             return _wait(mem, state, '本人focus後の現在tentとcursorが一致せず決定しない')
         state['target'] = list(under[0]['target'])
+        p._observe_recall_origin(screen, mem, frame, state)
         state['camp_observation'] = _observe_camp(screen, mem, frame, state, 'named_focus')
         if not _valid_camp(mem, state):
             _defer(mem, state, '現在tentと同episodeを束縛できず選択しない')

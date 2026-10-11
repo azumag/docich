@@ -40,6 +40,8 @@ class SorenCoordinatorAdapter:
         self.control = self.root / "game_lifecycle_control.sh"
         self._request_id: str | None = None
         self._fresh_started_at: float | None = None
+        # (pid, start ticks) of a soren_loop.sh that survived the stop in the paused state
+        self._resumed_loop: tuple[int, int] | None = None
         self._last_command_output = ""
         self._completed_stop_receipt: dict | None = None
 
@@ -842,6 +844,11 @@ class SorenCoordinatorAdapter:
             # recovered.
             if ack.get("status") == "stopped" or not ack:
                 self._fresh_started_at = time.time()
+                # Stop pauses soren_loop.sh instead of killing it, and fresh-start only
+                # clears the pause.  That loop is the same legitimate instance, so remember
+                # it; otherwise the freshness fence below can never accept it and the
+                # restore times out (2026-10-11 05:23, 06:44, with a live healthy Soren).
+                self._resumed_loop = self._paused_loop_identity()
             rc, _ = self._run([str(self.control), "fresh-start", request_id], deadline, cancel)
             if rc != 0:
                 raise AdapterError(f"Soren fresh start準備に失敗しました (rc={rc})")
@@ -861,14 +868,23 @@ class SorenCoordinatorAdapter:
                         pass
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
-    def _live_process(self, expected: str) -> bool:
-        matches: list[float] = []
+    def _paused_loop_identity(self) -> tuple[int, int] | None:
+        """The single soren_loop.sh that is alive while the lifecycle pause marker exists."""
+        if not (self.root / "tmp/state/soren_loop.paused").exists():
+            return None
+        found = self._process_matches("soren_loop.sh")
+        if found is None or len(found) != 1:
+            return None
+        return found[0][1], found[0][2]
+
+    def _process_matches(self, expected: str) -> list[tuple[float, int, int]] | None:
+        matches: list[tuple[float, int, int]] = []
         proc_root = Path("/proc")
         try:
             uptime = float((proc_root / "uptime").read_text().split()[0])
             hz = int(subprocess.check_output(["getconf", "CLK_TCK"], text=True).strip())
         except (OSError, ValueError, IndexError, subprocess.SubprocessError):
-            return False
+            return None
         for entry in proc_root.iterdir():
             if not entry.name.isdigit():
                 continue
@@ -881,8 +897,20 @@ class SorenCoordinatorAdapter:
             words = cmdline.split()
             if not any(word == expected or word.endswith("/" + expected) for word in words):
                 continue
-            matches.append(time.time() - uptime + ticks / hz)
-        return len(matches) == 1 and (self._fresh_started_at is None or matches[0] + 1 >= self._fresh_started_at)
+            matches.append((time.time() - uptime + ticks / hz, int(entry.name), ticks))
+        return matches
+
+    def _live_process(self, expected: str) -> bool:
+        matches = self._process_matches(expected)
+        if matches is None or len(matches) != 1:
+            return False
+        started_at, pid, ticks = matches[0]
+        if self._fresh_started_at is None or started_at + 1 >= self._fresh_started_at:
+            return True
+        # An older instance is acceptable only if it is the very loop that was paused
+        # at the stop and the lifecycle has since cleared the pause (fresh-start ran).
+        return (expected == "soren_loop.sh" and self._resumed_loop == (pid, ticks)
+                and not (self.root / "tmp/state/soren_loop.paused").exists())
 
     def _live_pid(self, filename: str, expected: str) -> bool:
         """Compatibility helper retained for callers with a trustworthy pidfile."""

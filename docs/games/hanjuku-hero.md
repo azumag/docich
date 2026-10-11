@@ -150,12 +150,21 @@ LLMは操作に使わず、OpenCodeによる結果ベースの自動改善は後
 ROM、core、`retroarch`、`dbus-run-session`、`python3`、共通の表示バイナリが揃うと候補になる。
 Claude/OpenCodeの存在や認証は実行条件ではない。ROMなしcheckoutでは候補から外れる。
 
-script botの自然終了では20分の保存境界を使わず、ゲームオーバーまたは画面不変300秒を待つ。
+script botの自然終了では20分の保存境界を使わず、ゲームオーバー・画面不変300秒・入力停滞の実証拠を待つ。
+画面/入力の停滞で終了する場合は、同じruntimeの入力を排他し、対象ROMとpauseを確認して
+slot 0のクイックセーブを作る。非空・要求後更新・二度の安定したサイズ/時刻/SHA-256、
+ファイルとstates directoryのfsync、pauseとSHAの再確認後だけ、保存先・SHA・サイズ/時刻と
+元の停滞フレームを`retroarch_boundary.json`へ保存完了として記録する。
+保存前のwaiting/固定save_errorは未完了であり、UDPのSAVE_STATE送信だけでは保存済みにしない。
+保存の失敗や10秒timeoutでは終了/資源解放を許可せず、今回変更したpauseだけを戻して失敗を報告する。
+終了直前にも保存のSHAを検証し、削除/書換え/欠損したcheckpointでゲームを停止しない。
+ゲームオーバーでの保存・自動再起動・自動ロードは行わない。
 運用者による停止（WebUI / retro-corner stop）は2026-09-25のオーナー承認により例外とし、
 試合途中でも一時停止・slot 0保存・保存完了検証の後に元ゲームへ復帰する。
 要求IDとruntime/generation/leaseを結び、入力を排他して保存する。保存を10秒待っても
 完了しない場合は、同日の追加承認により対象ゲームだけを強制終了して復帰する。
 この場合は`manual_forced_stop`（セーブ失敗・強制終了）を記録し、保存成功とは区別する。
+この明示操作に限った例外を、自然な停滞終了へ流用しない。
 要求の取消・対象ROMや世代の不一致は強制終了の許可とみなさない。
 保存データは旧runtimeのstatesに残る。次回起動時の自動ロードは行わない。
 停止待ちタイムアウト後も同一runtimeならWebUIで再停止できる。自然終了・他ゲームの境界は変更しない。
@@ -226,3 +235,16 @@ OSからの強制終了や別sessionへ離脱する子まで救済する仕組�
 
 契約テスト: `tests/test_retroarch_safe_boundary.py`、`tests/test_presentation.py`。
 ROM取得、実機起動、課金brain、VM操作、push/PR/merge/deployは本タスクでは実施しない。
+
+
+### 明示指定による最新クイックセーブの再開
+
+owner-only `corner-rotation-operator.yml` の `resume-hanjuku-latest` は、今回一度の再開を明示指定された場合に使います。`start-hanjuku` は引き続き新規開始で、ゲームオーバー後の自動巻戻しは行いません。
+
+固定runtime配下のslot 0/番号付きstateから最新の非空保存を選び、原本を保持してprivate snapshotへコピー・SHA検証・fsyncします。最新が64MiB上限を超える場合も、古い保存へfallbackせず拒否します。snapshot準備時は`prepared`、manual inboxの永続化後は`queued`を記録します。inbox公開前の失敗は同じID・同じsnapshotで再試行し、公開直後の中断も実inbox/dispatchと照合して継続できます。`prepared`だけではdispatchや復元の証拠にしません。共通のdurable manual queueが既存コーナーの完走・休止・実行枠を守り、予約IDに対応する新canonical candidateだけがsnapshotを消費します。旧runtimeの最終bot/terminal/名簿は移行しません。
+
+新候補はAI開始前に内容・core一致を確認し、pause→`LOAD_STATE_SLOT 0`→別slot 1への新規書込みを確認した`SAVE_STATE`→RASTATEのcore MEM SHA一致→slot 0へ戻して再度保存・一致を確認します。非同期loadが読み終わるまでslot 0を上書きしません。LOADのUDP返信は非同期task受付だけなので、復元成功の根拠にはしません。その後1frameを描画してnative画面の章番号を読み、観測した章だけを新方策へ初期設定し、PLAYING確認後にagentを許可します。内部検証済み・予約済み・実配信での再開は区別します。
+
+対応形式はbounded RZIP v1/RASTATE1です。nativeの章表示を読めない保存、内容/core差分、未更新state、ロード失敗、timeoutではcandidateを成功扱いせず、元保存を保持します。一度claimした候補を新規開始へfallbackしたり、次の自然発火で自動巻戻ししたりしません。ゲームオーバー後は改善だけ行って自然発火を待つ運用を維持します。保存データ・ROM・private snapshotはGit/Actions出力へ含めません。
+
+実装根拠: [RetroArch v1.18 task_save.c](https://github.com/libretro/RetroArch/blob/v1.18.0/tasks/task_save.c) のRASTATE/core deserialize、[command.c](https://github.com/libretro/RetroArch/blob/v1.18.0/command.c) の非同期LOAD_STATE_SLOT、[rzip_stream.c](https://github.com/libretro/RetroArch/blob/v1.18.0/libretro-common/streams/rzip_stream.c) のbounded形式を使用します。
