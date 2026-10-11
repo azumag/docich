@@ -174,8 +174,43 @@ def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV
     return []
 
 
+MONTH_TEXT_ADVANCE_LIMIT = 6    # A presses per unread message over the month menu
+
+
 def _month_menu_move(screen: Screen, mem, label: str):
-    return guarded_menu_to(screen, mem, label, key='month_nav')
+    move = guarded_menu_to(screen, mem, label, key='month_nav')
+    if move == []:
+        return _month_text_advance(screen, mem, label) or move
+    return move
+
+
+def _month_text_advance(screen: Screen, mem, label: str):
+    """A message box over the month menu takes the input; only A closes it.
+
+    g-1-11 (2026-10-11 13:0x): after the おねだり gift was bought the month
+    menu stayed behind a message box. Down and the cancel B changed nothing,
+    the guarded navigation then held for 150 s and the bot fallback's B kept
+    the screen frozen. The normal month menu has no text in its dialogue
+    window (y>=175), so once navigation is stuck, unread plain text there is
+    advanced with A - never a うむッ/いかんッ choice, never inside a tracked
+    egg/recruit/building flow, and a bounded number of times per message.
+    """
+    body = _month_dialog_body(screen)
+    if (not body or mem.get('month_sub') or screen.has('うむッ') or screen.has('いかんッ')
+            or body in (RECRUIT_INTRO, RECRUIT_GOODBYE) or screen.has('じゅうじキー')):
+        return None
+    key = [mem.get('month'), body[-40:]]
+    state = mem.get('month_text_advance')
+    if not isinstance(state, dict) or state.get('key') != key:
+        state = mem['month_text_advance'] = {'key': key, 'presses': 0}
+    if state['presses'] >= MONTH_TEXT_ADVANCE_LIMIT:
+        return None
+    state['presses'] += 1
+    mem.pop('month_nav', None)   # re-read the menu once the box is gone
+    _record(mem, 'month_text_advance', screen=screen.kind, choice=label,
+            observed_metric={'presses': state['presses'], 'text': body[-40:]},
+            reason='月初メニューの前面に残った会話文でカーソルが動かないため、選択肢のない文だけAで送る')
+    return [pad('a')]
 
 
 # ---------------------------------------------------------------- name entry
