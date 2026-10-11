@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--full-takeoff', action='store_true', help='Keep full takeoff below the upper screen on a compatible revision')
     parser.add_argument('--head-margin', type=float, help='Raw spike overhead margin for a compatible revision')
     parser.add_argument('--delay-s', type=float, help='Measured input delay override for the selected revision')
+    parser.add_argument('--descent-clearance', type=float, help='Lateral clearance for relaxed descent alignment on a compatible revision')
     args = parser.parse_args()
     if not 0 <= args.takeoff <= .35:
         parser.error('takeoff must be between 0 and .35 seconds')
@@ -52,6 +53,12 @@ def main():
             parser.error('full-takeoff requires a compatible narrow takeoff branch')
         source = source.replace(narrow_cap, 'y < 40')
         suffix += '-fulltakeoff'
+    descent_arg = ''
+    if args.descent_clearance is not None:
+        if not 16 <= args.descent_clearance <= 24 or 'descent_wide_clearance:' not in source:
+            parser.error('descent-clearance requires 16..24 and a compatible configuration')
+        descent_arg = f', descent_wide_clearance={args.descent_clearance!r}'
+        suffix += f'-descentclearance{args.descent_clearance:g}'
     source += f'''
 
 # Local real-game comparison; original controller source from Git {revision[:7]}.
@@ -60,7 +67,7 @@ from .mpc import MpcController as _Current
 class MpcController(_Baseline, _Current):
     profile_name = "{revision[:7]}-actual-level{args.level}-takeoff{args.takeoff:g}{suffix}"
     def __init__(self, physics=None, cfg=None):
-        super().__init__(physics, MpcConfig(takeoff_s={args.takeoff!r}{ceiling_arg}{delay_arg}))
+        super().__init__(physics, MpcConfig(takeoff_s={args.takeoff!r}{ceiling_arg}{delay_arg}{descent_arg}))
     def reset(self):
         super().reset()
         self._home_settling = False

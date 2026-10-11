@@ -36,6 +36,7 @@ class MpcConfig:
     candidates: int = 48  # 1 ティックで試す入力列の数
     delay_s: float = 0.12  # 入力が効くまでの遅れ
     ceiling_y: float = 24.0  # 上昇制動の中心座標の境界。実上側回廊の比較用に設定可能
+    descent_wide_clearance: float = 24.0  # Raw lateral clearance before relaxing descent alignment.
     persistence: float = 0.65  # ランダム列で直前と同じ入力を続ける確率
     mutate_p: float = 0.2  # 前回の最良列を崩す確率
     # コスト
@@ -568,7 +569,7 @@ class MpcController:
                     clearance = [max(hx0 - sx, sx - hx1, 0.0)
                                  for hx0, hy0, hx1, hy1 in self.hazards
                                  if hy0 <= self.path[j][1] + 10 and hy1 >= sy - 10]
-                    wide = min(clearance, default=math.inf) >= 24
+                    wide = min(clearance, default=math.inf) >= c.descent_wide_clearance
                     pos_limit, speed_limit, angle_limit, omega_limit, hold_s = (6, 10, .25, .8, .12) if wide else (2, 3, .12, .35, .25)
                     stable = abs(sx - x) <= pos_limit and abs(vx) <= speed_limit and abs(ang) <= angle_limit and abs(om) <= omega_limit
                     now = self._hist[-1][0]
