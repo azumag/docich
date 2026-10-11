@@ -22,6 +22,7 @@ def main():
     parser.add_argument('--head-margin', type=float, help='Raw spike overhead margin for a compatible revision')
     parser.add_argument('--delay-s', type=float, help='Measured input delay override for the selected revision')
     parser.add_argument('--descent-clearance', type=float, help='Lateral clearance for relaxed descent alignment on a compatible revision')
+    parser.add_argument('--spike-floor-guard', action='store_true', help='Brake falling feet above raw spikes on a compatible revision')
     args = parser.parse_args()
     if not 0 <= args.takeoff <= .35:
         parser.error('takeoff must be between 0 and .35 seconds')
@@ -59,6 +60,12 @@ def main():
             parser.error('descent-clearance requires 16..24 and a compatible configuration')
         descent_arg = f', descent_wide_clearance={args.descent_clearance!r}'
         suffix += f'-descentclearance{args.descent_clearance:g}'
+    floor_arg = ''
+    if args.spike_floor_guard:
+        if 'spike_floor_guard:' not in source:
+            parser.error('spike-floor-guard requires a compatible controller revision')
+        floor_arg = ', spike_floor_guard=True'
+        suffix += '-spikefloorguard'
     source += f'''
 
 # Local real-game comparison; original controller source from Git {revision[:7]}.
@@ -67,7 +74,7 @@ from .mpc import MpcController as _Current
 class MpcController(_Baseline, _Current):
     profile_name = "{revision[:7]}-actual-level{args.level}-takeoff{args.takeoff:g}{suffix}"
     def __init__(self, physics=None, cfg=None):
-        super().__init__(physics, MpcConfig(takeoff_s={args.takeoff!r}{ceiling_arg}{delay_arg}{descent_arg}))
+        super().__init__(physics, MpcConfig(takeoff_s={args.takeoff!r}{ceiling_arg}{delay_arg}{descent_arg}{floor_arg}))
     def reset(self):
         super().reset()
         self._home_settling = False

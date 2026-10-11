@@ -37,6 +37,7 @@ class MpcConfig:
     delay_s: float = 0.12  # 入力が効くまでの遅れ
     ceiling_y: float = 24.0  # 上昇制動の中心座標の境界。実上側回廊の比較用に設定可能
     descent_wide_clearance: float = 24.0  # Raw lateral clearance before relaxing descent alignment.
+    spike_floor_guard: bool = False  # Local actual-game comparison of braking above spikes.
     persistence: float = 0.65  # ランダム列で直前と同じ入力を続ける確率
     mutate_p: float = 0.2  # 前回の最良列を崩す確率
     # コスト
@@ -628,15 +629,20 @@ class MpcController:
         # 実機Lv23: 中心23pxから姿勢制動で12pxへ上昇すると回転の余裕を失う。
         ceiling = c.ceiling_y
         projected_x = x + vx * c.delay_s
+        floor = self.height - 20.0
         for hx0, hy0, hx1, hy1 in self.hazards:
             if hy1 < y and hx0 - 6 <= projected_x <= hx1 + 6:
                 ceiling = max(ceiling, hy1 + 10.0)
+            if c.spike_floor_guard and hy0 > y and hx0 - 6 <= projected_x <= hx1 + 6:
+                floor = min(floor, hy0 - c.foot - 1.0)
         self._precision_debug += [round(v, 3) for v in (minimum_y, ceiling, maximum_y)]
+        if c.spike_floor_guard:
+            self._precision_debug.append(round(floor, 3))
         if head_near:
             if abs(future_om) > 0.35:
                 return 2 if future_om * p.torque_sign > 0 else 1
             return 0
-        if maximum_y > self.height - 20 and abs(ang) < 0.5:
+        if maximum_y > floor and abs(ang) < 0.5:
             # 片足でもほぼ全推力。落下の制動中も残った回転を止める。
             if abs(error) > 0.08:
                 return 1 if error * p.torque_sign > 0 else 2
