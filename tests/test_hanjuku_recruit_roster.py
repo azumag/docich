@@ -655,3 +655,18 @@ def test_an_unverified_egg_recovery_does_not_block_the_month_roster_scan(egg, op
     mem['shop']={'key':'1-7','egg':egg,'recruit':'deferred_roster'}
     actions=house.step(parse(month_canvas(250,on='メインメニュー',month=7)),mem,None)
     assert (actions==[p.pad('a')])==opens
+
+
+@pytest.mark.parametrize('income,held', [(40, False), (5, True)])
+def test_an_unread_castle_does_not_hold_a_payroll_the_read_castles_cover(income, held):
+    # g684 2-2: ゴーメン (owned, never read) made economics None and every
+    # month's recruitment was 'deferred_economy' although 74G covered 25+15.
+    mem = memory(castles=3, income=income)
+    mem['castle_income'].pop('ジョンリギ')
+    owned = {p.STATUS_NAMES.get(c, c) for c in p._owned(mem)}
+    assert r.economics(mem, owned) is None
+    bound = r.economics(mem, owned, lower_bound=True)
+    assert bound['castles_read'] == 2 and bound['income'] == 2 * income
+    s = {'key': '1-7', 'recruit': 'pending'}
+    assert p._stop_uneconomic_recruit(mem, s) is held
+    assert (s['recruit'] == 'deferred_economy') is held

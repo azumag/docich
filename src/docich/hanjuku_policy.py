@@ -6438,6 +6438,12 @@ def _stop_uneconomic_recruit(mem, shop):
         return False  # finish the existing conversation without guessing refunds
     owned = {STATUS_NAMES.get(c, c) for c in _owned(mem)}
     economy = economics(mem, owned)
+    if economy is None:
+        # Unread castles only add income: a covering lower bound suffices
+        # (g684 2-2: ゴーメン unread, recruitment held every month).
+        bound = economics(mem, owned, lower_bound=True)
+        if bound and bound['castles_read'] and bound['income'] >= bound['wages'] + bound['additional_wage_max']:
+            economy = bound
     # Owner approved ordinary observed income plus the existing cash reserves.
     # Do not silently apply an unapproved permanent quarter-income factor.
     sustainable = economy and economy['income'] >= economy['wages'] + economy['additional_wage_max']
