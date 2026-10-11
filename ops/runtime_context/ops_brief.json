@@ -1,11 +1,11 @@
 {
-  "output_sha256": "1a900ff9de81e783a80b63cb43b98adcc1ac7c02d795272717d195fcac0525ed",
+  "output_sha256": "6eb70555eba1c08c47ff33eab7b9eb51b8f2ece9f5bf0059a1f7f382e080b70a",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "02948abdc20ce687ff9e5aef5f2b45797b764c3061951519f7bcb0a6b61603b7",
+  "source_sha256": "903c18e112c98275d1fc48a9684df25a7455c8edfbe1fbf2c5ca4878494b219b",
   "topics": [
-    "先発隊の移動入力も現在の画像・文脈へ結合",
-    "半熟英雄の停滞終了前にクイックセーブを必須化",
-    "先発隊の実画面でスクロール矢印を名前から除外"
+    "先発隊v158の本番ファイル照合を完了",
+    "先発隊修正main統合、再開のslot検証を強化",
+    "再確認待ちの卵残数を現在根拠から除外"
   ]
 }
