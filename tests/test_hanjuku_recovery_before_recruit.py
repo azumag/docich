@@ -315,3 +315,14 @@ def test_a_short_army_keeps_the_recruit_fee_from_building():
     assert policy._chikujou_reserve({}, shop) == policy.WAGE_RESERVE + policy.RECRUIT_COST
     shop['recruit'] = 'done'
     assert policy._chikujou_reserve({}, shop) == policy.WAGE_RESERVE
+
+
+def test_the_month_waits_briefly_for_a_deferred_roster_scan_then_closes():
+    # g684 2-10 15:24:44: month_done fired before the roster scan could start.
+    shop = {'key': '1-7', 'recruit': 'deferred_roster'}
+    mem = {'chapter': 1, 'month': '1-7', '_records': []}
+    waits = [policy._await_month_roster_scan(mem, shop) for _ in range(policy.MONTH_ROSTER_WAIT + 2)]
+    assert waits == [True] * policy.MONTH_ROSTER_WAIT + [False, False]
+    mem2 = {'chapter': 1, 'month': '1-7', 'recruit_month_scan_attempts': {'scope': [1, '1-7'], 'count': 1}}
+    assert policy._await_month_roster_scan(mem2, {'recruit': 'deferred_roster'}) is False
+    assert policy._await_month_roster_scan(mem, {'recruit': 'done'}) is False

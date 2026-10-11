@@ -6918,6 +6918,8 @@ def month_step(screen: Screen, mem):
     extra = _month_extra(screen, mem, shop)
     if extra is not None:
         return extra
+    if shop and not shop.get('closed') and _await_month_roster_scan(mem, shop):
+        return []
     if shop and not shop.get('closed'):
         shop['closed'] = True
         _record(mem, 'month_done', month=shop['key'], gold_after=(screen.header or {}).get('gold'),
@@ -7093,6 +7095,33 @@ def _chikujou_affordable(gold, reserve):
     the real NGかかりますが quote is still checked against it before うむッ.
     """
     return type(gold) is int and reserve is not None and gold >= reserve + CHIKUJOU_SPARE
+
+
+MONTH_ROSTER_WAIT = 4   # menu observations held for the free roster scan to start
+
+
+def _await_month_roster_scan(mem, shop):
+    """Hold the month open briefly so a deferred roster recruit can be read.
+
+    g684 2-10 15:24:44: recruit was deferred_roster, the egg sub ended and
+    month_done fired in the same observation, before the monthly roster
+    scan (house.step) could start; the scan ran on the field instead and the
+    month passed without recruitment at 103G. Bounded: the month still
+    closes if the scan never starts.
+    """
+    if shop.get('recruit') != 'deferred_roster' or mem.get('month_sub'):
+        return False
+    attempts = mem.get('recruit_month_scan_attempts') or {}
+    if attempts.get('scope') == [mem.get('chapter'), mem.get('month')] and attempts.get('count', 0) >= 1:
+        return False
+    waits = int(shop.get('roster_scan_wait') or 0)
+    if waits >= MONTH_ROSTER_WAIT:
+        return False
+    shop['roster_scan_wait'] = waits + 1
+    if waits == 0:
+        _record(mem, 'month_roster_scan_wait', month=shop.get('key'),
+                reason='募集が一覧確認待ちのため、月一メニューを閉じる前に一覧確認の開始を短く待つ')
+    return True
 
 
 def _no_empty_egg_to_recover(mem):
