@@ -7156,7 +7156,12 @@ def _month_chikujou(screen, mem, shop):
     if not _chikujou_affordable(gold, reserve):
         shop['chikujou'] = 'done' if shop.get('chikujou_upgrades') else 'skipped'
         return None
-    move = menu_to(screen, 'ちくじょう')
+    # Bounded like every other month row (g684 2-8 14:52: a soldier-count
+    # dialogue stayed in front of the menu and the unguarded walk pressed
+    # down at an unmoving hand every observation).
+    move = _month_menu_move(screen, mem, 'ちくじょう')
+    if isinstance(move, list):
+        return move
     if move is None:
         shop['chikujou'] = 'skipped'
         return None

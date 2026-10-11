@@ -422,3 +422,16 @@ def test_a_bare_refusal_without_the_list_still_declines():
     bare = Screen([], None, 'これいじょうのぞうちくはできませんぞ!!', kind='text')
     assert policy.month_sub_step(bare, mem) == [policy.pad('b')]
     assert mem['month_sub']['declined'] is True
+
+
+def test_walk_to_chikujou_is_bounded_when_the_hand_does_not_move():
+    # g684 2-8 14:52: a soldier-count dialogue stayed in front of the menu;
+    # the unguarded walk to ちくじょう pressed down every observation.
+    stuck = Screen([line(48, 63, 'へいしほじゅう'), line(48, 79, 'ちくじょう')], (26, 57, 44, 70),
+                   'へいしほじゅうちくじょう', header={'year': 1, 'month': 7, 'gold': 150},
+                   kind='month_menu')
+    mem = memory()
+    out = [policy._month_chikujou(stuck, mem, mem['shop']) for _ in range(policy.MENU_NAV_PRESS_LIMIT + 1)]
+    assert out[:policy.MENU_NAV_PRESS_LIMIT] == [[policy.pad('down')]] * policy.MENU_NAV_PRESS_LIMIT
+    assert out[-1] == [policy.pad('b')]
+    assert mem['_records'][-1]['decision'] == 'menu_nav_stuck'
