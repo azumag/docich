@@ -460,7 +460,8 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                 "hanjuku-chart-v136-resource-priority",
                 "hanjuku-chart-v137-camp-recheck",
                 "hanjuku-chart-v150-summoned-monster-threat",
-                "hanjuku-chart-v151-chikujou-scroll")
+                "hanjuku-chart-v151-chikujou-scroll",
+                "hanjuku-chart-v152-control-melee-followup")
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',

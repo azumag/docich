@@ -4023,18 +4023,73 @@ def _card_damage_context(mem, cur):
 
 def _card_damage_key(mem, cur):
     context = _card_damage_context(mem, cur)
-    return [cur.get('ally'), cur.get('side'), *context.values()]
+    # Reevaluate v151 refusals once after hotload, within the existing budget.
+    return [2, cur.get('ally'), cur.get('side'), *context.values()]
 
 
 CARD_CONTROL_SETUP = frozenset({'クースカン', 'ブレイコウ'})
+
+
+def _control_melee_advantage(cur, enemy_hp, ally_soldiers, enemy_soldiers):
+    """A healthy normal army can follow up; this is not a victory guarantee."""
+    ally = reference.general_strength('しゅじんこう' if cur.get('ally') == NAME else cur.get('ally'))
+    enemy = reference.general_strength(cur.get('enemy'))
+    hp = cur.get('ally_hp')
+    return (ally is not None and enemy is not None
+            and cur.get('enemy') not in reference.BOSS_GENERALS
+            and all(type(n) is int and n > 0 for n in (hp, enemy_hp))
+            and all(type(n) is int and 0 <= n <= 6 for n in (ally_soldiers, enemy_soldiers))
+            and ally_soldiers > 0 and ally_soldiers >= enemy_soldiers
+            and ally[1] >= enemy[1]
+            and hp > GENERAL_CRITICAL_RETREAT_HP
+            and hp * 10 > ally[0] * BEHIND_EGG_RATIO_TENTHS
+            and hp >= enemy_hp * 2)
+
+
+def _card_melee_projection(cur, card, context, estimate):
+    # gcgx kirihuda.html: クースカン halves enemy general/soldier HP and
+    # stuns. Keep the prospective effect separate from observed live HP.
+    hp = context['enemy_hp']
+    ours, theirs = context['ally_soldiers'], context['enemy_soldiers']
+    if (card != 'クースカン' or estimate['target_kind'] != 'general'
+            or type(hp) is not int or hp <= 0
+            or not _control_melee_advantage(cur, (hp + 1) // 2, ours, theirs)):
+        return None
+    return {'enemy_hp_before': hp, 'enemy_hp_after_upper': (hp + 1) // 2,
+            'enemy_soldier_hp_after_upper': theirs * ((reference.GENERAL_SOLDIER_HP + 1) // 2),
+            'ally_soldiers': ours, 'enemy_soldiers': theirs,
+            'effect_confirmation': 'unclassified', 'rule': 'healthy_hp_double_equal_army_combat'}
+
+
+def _watch_card_melee(mem, cur, gate):
+    if gate['role'] == 'control_then_melee_not_a_kill':
+        cur['card_melee_followup'] = {**gate['melee_followup'],
+            'ally': cur.get('ally'), 'enemy': cur.get('enemy'),
+            'selected_tick': int(mem.get('tick') or 0), 'bursts': 0}
+    else:
+        cur.pop('card_melee_followup', None)
+
+
+def _card_melee_ready(mem, cur):
+    watch = cur.get('card_melee_followup') or {}
+    hp = cur.get('enemy_hp')
+    return bool(watch and 'クースカン' in cur.get('cards_selected', [])
+                and (watch.get('ally'), watch.get('enemy')) == (cur.get('ally'), cur.get('enemy'))
+                and int(mem.get('tick') or 0) - watch['selected_tick'] <= CARD_ANNOUNCE_LIMIT + MELEE_HOLD_LIMIT
+                and watch['bursts'] < MELEE_HOLD_LIMIT
+                and not (cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed'))
+                and not cur.get('card_hp_unread') and cur.get('card_soldiers_current') is True
+                and type(hp) is int and 0 < hp <= watch['enemy_hp_after_upper']
+                and _control_melee_advantage(cur, hp, cur.get('ally_soldiers'), cur.get('enemy_soldiers')))
 
 
 def _card_damage_gate(mem, cur, card, *, listed_cards=None):
     """A selection gate, separate from use, hit, kill and egg-loss receipts.
 
     B may inspect a real inventory even when no kill can be proven.  The
-    final A needs a fresh evaluation with that inventory.  Merely carrying
-    another attack card never licenses a nonlethal attack into an enemy egg.
+    final A needs a fresh evaluation with that inventory. A control card
+    may set up observed cards or a healthy, measured normal-army follow-up;
+    neither is classified as a guaranteed kill or an egg-loss receipt.
     """
     context = _card_damage_context(mem, cur)
     estimate = reference.card_damage_estimate(card, **context)
@@ -4085,7 +4140,11 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
             result.update(allowed=True, role='observed_control_chain_not_a_kill',
                           listed_followups=followups)
         else:
-            result['role'] = 'control_has_no_observed_followup'
+            melee = _card_melee_projection(cur, card, context, estimate)
+            if melee:
+                result.update(allowed=True, role='control_then_melee_not_a_kill', melee_followup=melee)
+            else:
+                result['role'] = 'control_has_no_observed_followup'
     elif estimate['lethal'] is None:
         result['role'] = 'damage_or_egg_risk_unclassified'
     cur['card_assessment'] = {
@@ -4096,7 +4155,8 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
         'damage_lower_bound': estimate['damage_lower_bound'],
         'remaining_hp_upper': estimate['remaining_hp_upper'], 'lethal': estimate['lethal'],
         'egg_drop_fit': drop.get('drops') if drop else None,
-        'allowed': result['allowed'], 'reason': result['role']}
+        'allowed': result['allowed'], 'reason': result['role'],
+        **({'melee_followup': result['melee_followup']} if result.get('melee_followup') else {})}
     mem['last_card_assessment'] = {**cur['card_assessment'], 'tick': mem.get('tick')}
     return result
 
@@ -4139,7 +4199,7 @@ def _card_healing_needed(cur):
 
 
 def _card_gate_choice(mem, cur, candidates, names):
-    """Healing when needed, proven lethal, drop candidate, then control chain."""
+    """Healing when needed, proven lethal, drop candidate, then control setup."""
     if not candidates:
         return None
     gates = {card: _card_damage_gate(mem, cur, card, listed_cards=names) for card in candidates}
@@ -4148,7 +4208,7 @@ def _card_gate_choice(mem, cur, candidates, names):
     else:
         choice = None
         for role in ('single_card_lethal', 'egg_drop_candidate_not_a_kill',
-                     'observed_control_chain_not_a_kill'):
+                     'observed_control_chain_not_a_kill', 'control_then_melee_not_a_kill'):
             choices = [card for card in candidates if gates[card]['role'] == role]
             if choices:
                 choice = _rescue_card(choices, cur)
@@ -4221,7 +4281,7 @@ def _card_damage_recheck_resources(mem, cur):
         finishing = False
         for card in names:
             gate = _card_damage_gate(mem, cur, card, listed_cards=names)
-            if (gate['allowed'] and (gate['role'] == 'single_card_lethal'
+            if (gate['allowed'] and (gate['role'] in ('single_card_lethal', 'control_then_melee_not_a_kill')
                     or (gate['role'] == 'healing_not_a_kill' and _card_healing_needed(cur)))):
                 finishing = True
                 break
@@ -4359,7 +4419,8 @@ def battle_step(screen: Screen, mem):
     # the A input may not have reached the game, and melee also lowers HP.
     _observe_egg_drop_candidate(mem, cur)
     _card_damage_recheck_resources(mem, cur)
-    retreat = _hero_retreat_open(mem, cur)
+    melee_followup = _card_melee_ready(mem, cur)
+    retreat = None if melee_followup else _hero_retreat_open(mem, cur)
     if retreat is not None:
         return retreat
     if (_critical_survival_needed(cur) and cur.get('side') == 'defense'
@@ -4384,8 +4445,10 @@ def battle_step(screen: Screen, mem):
                               and t.get('enemy') in (None, b.enemy)
                               and t.get('step') in (None, cur.get('step'))
                               for t in _tactics(mem, cur.get('step'))))
-        if fast_chain:
-            _card_use_unclassified(mem, cur, '選択後の敵HP低下と白兵復帰を実測したため、使用告知は未確認のまま後続札へ進む')
+        if fast_chain or melee_followup:
+            _card_use_unclassified(mem, cur, ('選択後の敵HP低下と白兵復帰を実測したため、使用告知は未確認のまま白兵で追撃'
+                                             if melee_followup else
+                                             '選択後の敵HP低下と白兵復帰を実測したため、使用告知は未確認のまま後続札へ進む'))
         else:
             flow['battle_frames_without_receipt'] = flow.get('battle_frames_without_receipt', 0) + 1
             waited = flow['battle_frames_without_receipt']
@@ -4395,6 +4458,16 @@ def battle_step(screen: Screen, mem):
             if waited >= (CARD_MENU_OPEN_RETRIES + 1 if opening else 2):
                 _card_use_unclassified(mem, cur, '実使用告知を確認できないまま白兵戦へ復帰')
             return []
+    if melee_followup:
+        watch = cur['card_melee_followup']
+        watch['bursts'] += 1
+        _record(mem, 'battle_card_melee_followup', **_battle_labels(cur),
+                observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp,
+                                 'ally_soldiers': cur['ally_soldiers'], 'enemy_soldiers': cur['enemy_soldiers'],
+                                 'bursts': watch['bursts'], 'limit': MELEE_HOLD_LIMIT,
+                                 'effect_confirmation': 'unclassified'},
+                reason='クースカン選択後の敵HP低下と健全な白兵優位を実測したため、保持予算内でA連打して追撃')
+        return _power_mash(mem, cur)
     extra = [{'enemy': b.enemy, 'card': card, 'open': True, 'step': cur.get('step'),
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
              for card in ([] if (mem.get('rare_card_kit') or {}).get(cur.get('step')) is not None
@@ -5239,6 +5312,7 @@ def _survival_card_list(screen, mem, cur, flow, names):
     rescue['cards_uncertain'] = False
     cur['card_consumption_complete'] = False
     cur.setdefault('cards_selected', []).append(card)
+    _watch_card_melee(mem, cur, gate)
     egg_drop = _egg_drop_evidence(cur, card)
     _watch_egg_drop(cur, card, cur.get('enemy_hp'), egg_drop)
     _record(mem, 'battle_card_selected', **_battle_labels(cur), card=card,
@@ -5710,6 +5784,7 @@ def card_list_step(screen: Screen, mem):
         cur['card_damage_rescue_needed'] = False
         cur['card_consumption_complete'] = False
         cur.setdefault('cards_selected', []).append(flow['card'])
+        _watch_card_melee(mem, cur, gate)
         _watch_egg_drop(cur, flow['card'], cur.get('enemy_hp'),
                         _egg_drop_evidence(cur, flow['card']))
         _record(mem, 'battle_card_selected', **_battle_labels(cur), card=flow['card'],
