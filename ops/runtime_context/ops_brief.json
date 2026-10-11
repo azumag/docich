@@ -1,11 +1,11 @@
 {
-  "output_sha256": "9e72896d80549c141309a5d7d17bbd8e316ed0f165aec0ef275fb66fbeca759d",
+  "output_sha256": "2e2c8543335ee453cd3daa5df4704840cdb4af125c5623c0612ce7322862a85d",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "9ad042d1fdd388763da73644efcbb512c290deba314b5edf92c4644961a8788c",
+  "source_sha256": "72f528bce2c21aabcf899ad7cba7718933dab211f1e792a2bcc31fbef1ba5c71",
   "topics": [
+    "半熟英雄の築城スクロール配備とカストーラ切り札判断",
     "半熟英雄の築城一覧スクロール修正とv150ホットロード",
-    "半熟英雄の継続監視と召喚獣・募集予算の改善",
-    "半熟英雄コーナー g684 監視と敗因対策（v138 / , #2029）"
+    "半熟英雄の継続監視と召喚獣・募集予算の改善"
   ]
 }
