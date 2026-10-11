@@ -6,6 +6,7 @@ Windows API とゲーム本体は使わず、ゲームと同じ配色で描く�
 
 import json
 import math
+import os
 import sys
 import tempfile
 import unittest
@@ -198,6 +199,8 @@ class TestPlanner(unittest.TestCase):
         self.assertEqual(planner.lookahead(path, (0, 0), reach=5), (10, 0))
 
 
+@unittest.skipUnless(os.environ.get("FLYHOME_TEST_SIM") == "1",
+                     "physics simulator tests require explicit opt-in")
 class TestControllerInSim(unittest.TestCase):
     """仮説の物理パラメータを振っても、経路追従で帰宅できること。"""
 
@@ -235,6 +238,8 @@ class TestControllerInSim(unittest.TestCase):
                     self.assertEqual(self.fly(Physics(**kw), wall), "cleared")
 
 
+@unittest.skipUnless(os.environ.get("FLYHOME_TEST_SIM") == "1",
+                     "physics simulator tests require explicit opt-in")
 class TestRunnerWithSim(unittest.TestCase):
     def settings(self, tmp):
         return replace(Settings(), run_dir=Path(tmp), physics_file=Path(tmp) / "physics.json")

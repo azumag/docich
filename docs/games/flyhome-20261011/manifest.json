@@ -67,6 +67,11 @@
       "sha256": "4437d32d49bf761a2804a82078471ff8a24604dd077c2fc445aede51c1804e6f"
     },
     {
+      "path": "docs/games/flyhome-20261011/README.md",
+      "bytes": 6304,
+      "sha256": "46a9a45df0bb1e15f9f7c164b8bff6ae75bf68345edf78c6c8b116f8ac6662aa"
+    },
+    {
       "path": "docs/games/flyhome-20261011/evidence/corner-evidence/level01-cleared.png",
       "bytes": 28128,
       "sha256": "8720ea28fb65325992f5c85713ea3986d14508f2620e2a3d89b9bfec0df5dd9d"
@@ -610,11 +615,6 @@
       "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level49-cleared.png",
       "bytes": 32907,
       "sha256": "e68726c0d443082bc51701c1428d60835512b8ee376d2bd5ee11d41a0ed74179"
-    },
-    {
-      "path": "docs/games/flyhome-20261011/README.md",
-      "bytes": 6200,
-      "sha256": "35a9ccfb3138294384c936c64a3da75441ea080757956bf179adc47d724dfc24"
     },
     {
       "path": "docs/games/flyhome-20261011/results/attempts/20261010-233019-play.jsonl",
@@ -1822,9 +1822,24 @@
       "sha256": "af6f513af2700ae035ed0772280148c6b5fe6c058c3968fdf1a49f0ada63d081"
     },
     {
+      "path": "requirements-discord.txt",
+      "bytes": 100,
+      "sha256": "abc09d64eaf1ac4cf6c043565fe7401458d7fe09c108a0b239396666c47fe64e"
+    },
+    {
+      "path": "requirements-screen.txt",
+      "bytes": 87,
+      "sha256": "44f9779950c765cc66a65be80b47a1dc6bb04c418b41492311c5bb1035677288"
+    },
+    {
       "path": "requirements-test.txt",
-      "bytes": 14,
-      "sha256": "93c4ab5f175d24229e46ec70a8ecaeb6db8b36e3f54d8005808044c060acbc92"
+      "bytes": 359,
+      "sha256": "7ca999a79e950b36965e372ceaf00c5762a7daeb96aac31422f5959c0ddc3a9d"
+    },
+    {
+      "path": "requirements-twica-overlay.txt",
+      "bytes": 111,
+      "sha256": "0ad0b4662f35ec31b48ec5000d96b171ba301109177796ee4bd24102ba88e5c1"
     },
     {
       "path": "scripts/flyhome/campaign.py",
@@ -2033,8 +2048,8 @@
     },
     {
       "path": "tests/test_flyhome.py",
-      "bytes": 18148,
-      "sha256": "b8f81a472b80063fb5ab79c67209e27f0027b61ec15c2d954d1c1747f31bc40b"
+      "bytes": 18430,
+      "sha256": "a47fc9cc72895094ea32f1913f9019ca0512fc73cb21abf3cf99032d8f4844a7"
     },
     {
       "path": "tests/test_flyhome_map_navigation.py",
