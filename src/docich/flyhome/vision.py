@@ -524,11 +524,11 @@ def analyze(
 
     solid = _terrain_mask(labels, w, h)
     # 家の窓枠/壁の茶色も土の色条件に入るが、通過できる絵である。
-    # 確定した家を使い、最下段の縁とその下の実地形は残す。
+    # 確定した家を使い、家の箱の外にある実地形は残す。
     facade = known_home_bbox or home_bbox
     if facade is not None:
         fx0, fy0, fx1, fy1 = facade
-        for yy in range(max(0, fy0), min(h, fy1 - 1)):
+        for yy in range(max(0, fy0), min(h, fy1)):
             for xx in range(max(0, fx0), min(w, fx1)):
                 if labels[yy * w + xx] == DIRT:
                     solid[yy * w + xx] = 0

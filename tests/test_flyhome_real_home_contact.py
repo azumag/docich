@@ -13,7 +13,7 @@ def test_actual_house_facade_is_not_a_soil_wall():
     obs = vision.analyze(im)
     assert im.get(248, 145) == (61, 29, 14)
     assert not obs.solid[145 * 320 + 248]
-    assert obs.solid[147 * 320 + 248]  # Keep the bottom edge, and real terrain below houses.
+    assert not obs.solid[147 * 320 + 248]  # The brown bottom trim is also part of the facade.
     assert obs.solid[170 * 320 + 48]   # The actual starting platform remains solid.
 
 def test_recorded_level44_descent_does_not_latch_home_wait():
