@@ -39,7 +39,7 @@ CHART_DECISIONS=frozenset({
 # the active battle. Observation, migration and result records are not actions.
 INPUT_CONTEXT_DECISIONS=frozenset({
     'starter_select','starter_confirm','starter_underfilled_rejected',
-    'starter_unread','starter_navigation_stalled',
+    'starter_unread','starter_navigation','starter_navigation_stalled',
     'battle_command_open_wait',
     'battle_card_damage_rejected','battle_card_damage_replan','battle_card_damage_recheck',
     'battle_survival','battle_survival_select','battle_survival_unavailable',

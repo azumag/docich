@@ -95,6 +95,8 @@ def _navigation(mem, episode, move, label, hand, selected):
         nav.update(burst=0, waits=0)
     nav['presses'] += 1
     nav['burst'] += 1
+    _record(mem, 'starter_navigation', observed_metric={'selected': selected},
+            reason='実先発隊カーソルから選択・不足拒否の項目へ移動する')
     return [move]
 
 
