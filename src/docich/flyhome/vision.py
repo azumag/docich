@@ -507,7 +507,9 @@ def analyze(
         roof = max(roofs, key=lambda b: b.area)
         # 夕焼けの配色のレベル (実機 Lv26) では棘の縁が暗い赤 (140,0,0) で ROOF に分類される。
         # 家の屋根 (一番大きい塊) 以外の、棘ブロック大 (縁の画素 ≤ 60、箱 ≤ 14px) の ROOF の塊は棘とみなす。
-        for b in blobs(labels, w, h, {ROOF}, mask=in_hud):
+        # 実機Lv49: タイマーの下にある暗赤の棘も残った画素から検出する。
+        # 文字のHUDマスクはプレイヤーに使い、棘の小さな塊には適用しない。
+        for b in blobs(labels, w, h, {ROOF}):
             if b is roof or b.area < 12 or b.area > 60:
                 continue
             bx0, by0, bx1, by1 = b.bbox
