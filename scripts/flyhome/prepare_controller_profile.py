@@ -20,6 +20,7 @@ def main():
     parser.add_argument('--ceiling-y', type=float, help='Upper braking boundary for a compatible revision')
     parser.add_argument('--full-takeoff', action='store_true', help='Keep full takeoff below the upper screen on a compatible revision')
     parser.add_argument('--head-margin', type=float, help='Raw spike overhead margin for a compatible revision')
+    parser.add_argument('--delay-s', type=float, help='Measured input delay override for the selected revision')
     args = parser.parse_args()
     if not 0 <= args.takeoff <= .35:
         parser.error('takeoff must be between 0 and .35 seconds')
@@ -33,6 +34,12 @@ def main():
             parser.error('ceiling-y requires 12..24 and a compatible controller revision')
         ceiling_arg = f', ceiling_y={args.ceiling_y!r}'
         suffix = f'-ceiling{args.ceiling_y:g}'
+    delay_arg = ''
+    if args.delay_s is not None:
+        if not .04 <= args.delay_s <= .16 or 'delay_s:' not in source:
+            parser.error('delay-s requires .04.. .16 and a compatible delay configuration')
+        delay_arg = f', delay_s={args.delay_s!r}'
+        suffix += f'-delay{args.delay_s:g}'
     if args.head_margin is not None:
         head_limit = 'ceiling = max(ceiling, hy1 + 10.0)'
         if not 8 <= args.head_margin <= 10 or source.count(head_limit) != 1:
@@ -53,7 +60,7 @@ from .mpc import MpcController as _Current
 class MpcController(_Baseline, _Current):
     profile_name = "{revision[:7]}-actual-level{args.level}-takeoff{args.takeoff:g}{suffix}"
     def __init__(self, physics=None, cfg=None):
-        super().__init__(physics, MpcConfig(takeoff_s={args.takeoff!r}{ceiling_arg}))
+        super().__init__(physics, MpcConfig(takeoff_s={args.takeoff!r}{ceiling_arg}{delay_arg}))
     def reset(self):
         super().reset()
         self._home_settling = False
