@@ -154,19 +154,28 @@ def test_paid_foreground_keeps_its_own_budget_handler(kind, button, decision):
     assert state['policy']['gold'] == 59
 
 
-def test_paid_egg_return_without_hand_is_not_treated_as_a_foreground_ritual():
+def test_paid_egg_return_without_hand_waits_bounded_without_repeating_the_ritual():
     frame = monthly_canvas(on=None).frame()
     mem = monthly_memory()
     mem['month_sub'] = {'kind': 'egg', 'gold_before': 109, 'quoted_cost': 50,
                         'full_selected': True, 'stage': 'recovering',
                         'left_menu': True, 'key': '2-11', 'presses': 10}
-    actions, state = decide(frame, {'policy': mem, 'screen_kind': 'month_menu'})
-    assert actions == []
-    assert state['policy']['gold'] == 59
+    state = {'policy': mem, 'screen_kind': 'month_menu'}
+    for _ in range(policy.MONTH_SUB_MENU_WAIT - 1):
+        actions, state = decide(frame, state)
+        assert actions == []
+        assert state['policy']['gold'] == 59
+        assert state['policy']['month_sub']['presses'] == 10
+        assert not any(row['decision'] in {'egg_recover', 'egg_recover_confirm'}
+                       for row in state['_records'])
+    actions, state = decide(frame, state)
+    assert actions == [] and state['policy']['gold'] == 59
     assert 'month_sub' not in state['policy']
     receipt = next(row for row in state['_records'] if row['decision'] == 'egg_recover')
     assert receipt['observed_metric']['gold_before'] == 109
     assert receipt['observed_metric']['gold_after'] == 59
+    assert receipt['observed_metric']['payment_verified'] is False
+    assert receipt['observed_metric']['menu_ready'] is False
     assert not any(row['decision'] == 'egg_recover_confirm' for row in state['_records'])
 
 
