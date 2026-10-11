@@ -6179,6 +6179,14 @@ KNOWN_PRICES = {'イッテツーン': 1, 'ノリウツール': 18, 'クースカ
 
 # 兵士は1G=1人で2桁入力が上限。チャート計画の無い月の残金はここまでの補充に使う。
 SOLDIER_CAP = 99
+SOLDIER_ENOUGH = 50   # owner 2026-10-11: with this many on hand, buy no more soldiers
+
+
+def _soldiers_enough(mem, shop, header):
+    key = _month_key(header) if header else None
+    count = mem.get('soldiers_seen')
+    return (key is not None and key == shop.get('key') and mem.get('soldiers_seen_key') == key
+            and type(count) is int and count >= SOLDIER_ENOUGH)
 # The month boundary pays 収入 − 総賃金; ending a month at 0G forced a
 # dismissal in g358 (-1G) and g407 (-3G, 6 generals lost). Keep this much
 # gold unspent so a shortfall month cannot push the balance negative
@@ -7946,6 +7954,17 @@ def quantity_step(screen: Screen, mem, soldiers=False):
         if _egg_before_soldiers(shop) and not shop.get('soldier_receipt'):
             # This is where the army total first becomes visible. Leave the
             # old quantity plan before sending a purchase confirmation.
+            return [pad('b')]
+        if _soldiers_enough(mem, shop, screen.header) and not shop.get('soldier_receipt'):
+            # Owner (2026-10-11): そもそも兵士も十分いるから兵士も買わなくていい
+            # (g684 2-12: 79 read, 75 more bought, 105G -> 30G).
+            if not shop.get('soldiers_done'):
+                _record(mem, 'soldier_refill_skip', month=shop.get('key'),
+                        observed_metric={'soldiers': mem.get('soldiers_seen'),
+                                         'planned': shop.get('soldiers'), 'enough': SOLDIER_ENOUGH},
+                        reason='当月の兵士数が十分なため兵士補充を行わず資金を残す')
+            shop['soldiers'] = 0
+            shop['soldiers_done'] = True
             return [pad('b')]
         receipt = shop.get('soldier_receipt') or {}
         if receipt.get('status') in ('paid', 'unverified') or receipt.get('payment_seen'):
