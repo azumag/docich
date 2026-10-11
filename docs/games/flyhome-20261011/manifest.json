@@ -1,0 +1,2110 @@
+{
+  "algorithm": "sha256",
+  "files": [
+    {
+      "path": "config/windows/fly-me-to-the-home.toml",
+      "bytes": 2250,
+      "sha256": "2a51e12693e1f75572bef0b83590cc9b089b2ef44b5f3a6c299406e2ed7d4f3d"
+    },
+    {
+      "path": "config/windows/flyhome-saved/controller_profiles/level35.py",
+      "bytes": 25846,
+      "sha256": "8afb402ef99b6bdf91d7db20485ed94eb68194f827fa621791c64ffc3596c298"
+    },
+    {
+      "path": "config/windows/flyhome-saved/controller_profiles/level36.py",
+      "bytes": 25846,
+      "sha256": "7426a1534f663ee4e7508ae304c9e2b3a51b0912019b9aba55adb47cbeea7aa4"
+    },
+    {
+      "path": "config/windows/flyhome-saved/controller_profiles/level37.py",
+      "bytes": 25846,
+      "sha256": "496ead750fb9caa92766983161a11a1aad5f25e690286bd40174dcf0782a2786"
+    },
+    {
+      "path": "config/windows/flyhome-saved/controller_profiles/level38.py",
+      "bytes": 25846,
+      "sha256": "4e80e239ddf8b4ba544a0922a370270d115f5ffffb57c5076fa405defb712d3e"
+    },
+    {
+      "path": "config/windows/flyhome-saved/controller_profiles/level39.py",
+      "bytes": 42734,
+      "sha256": "7ce0e36e2a1f2c9dd947e2547711d4dd3fc29112e90d493a61425ff8d4c51005"
+    },
+    {
+      "path": "config/windows/flyhome-saved/controller_profiles/level41.py",
+      "bytes": 42739,
+      "sha256": "8abebf85741c3718bd4628e4b6aadf12fe031840e8cb945605da212b8a338072"
+    },
+    {
+      "path": "config/windows/flyhome-saved/controller_profiles/level44.py",
+      "bytes": 43212,
+      "sha256": "4d23e3a9add1ef214d3c4bafe679aa99f93e2c47faffcb8f718c32d096d95ea6"
+    },
+    {
+      "path": "config/windows/flyhome-saved/controller_profiles/level46.py",
+      "bytes": 35193,
+      "sha256": "a1f00aa5e5387b4a8dac26e9e66fdef874b279bbba8a890927dfdb11fd3cef06"
+    },
+    {
+      "path": "config/windows/flyhome-saved/controller_profiles/level49.py",
+      "bytes": 43997,
+      "sha256": "8c6b35ed9eaf8d338fa8db53913cb19bab748b5a95804ec2b46ecc0b96236113"
+    },
+    {
+      "path": "config/windows/flyhome-saved/map-digits.json",
+      "bytes": 290,
+      "sha256": "3b8aea3b734bf7b7126f3767192568ed999ad254b8c538df3ce23ae79da38da2"
+    },
+    {
+      "path": "config/windows/flyhome-saved/physics.json",
+      "bytes": 175,
+      "sha256": "34872d2442c2ec4fefc326a16e0ab51037883e2514f05e500ca414aef746dcbd"
+    },
+    {
+      "path": "docs/games/fly-me-to-the-home.md",
+      "bytes": 16601,
+      "sha256": "155e15c00189fe5e6547c4efe76448968cc43d19ba340651366db1cf79635e2a"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/corner-evidence/level01-cleared.png",
+      "bytes": 28128,
+      "sha256": "8720ea28fb65325992f5c85713ea3986d14508f2620e2a3d89b9bfec0df5dd9d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/corner-evidence/level02-cleared.png",
+      "bytes": 28004,
+      "sha256": "ff9f2a11a9a2a7531ee164e6893c14313633e9bf4372f691d96cd69bd095a033"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/corner-evidence/level03-cleared.png",
+      "bytes": 28333,
+      "sha256": "4304a0d8e08f1bb5b462353bc81aa212fab2afdb5812f38e93c31eeca7df89d3"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/corner-evidence/level04-cleared.png",
+      "bytes": 27581,
+      "sha256": "242f0ce717257366e36656fb422f8803160a7d65327761a20148fed5594ebb0d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/corner-evidence/level05-cleared.png",
+      "bytes": 27859,
+      "sha256": "a9cc8e24bba2041cec3b8cff9870a71980c2267c4f611981c21cf9e3c9fbc6bf"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/corner-evidence/level06-cleared.png",
+      "bytes": 27777,
+      "sha256": "9c5d9cfc4281d2d8dac9fe0c4220b745d7511e02e4e2ad6246e4f96dbf21619a"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/corner-evidence/level07-cleared.png",
+      "bytes": 27682,
+      "sha256": "e4bba069576fd62ff0bb3422bb96291aa7e675a62a76065826ac3e677b4b5de1"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/corner-evidence/level08-cleared.png",
+      "bytes": 29577,
+      "sha256": "3ec451f8f06e233db3c3de5ce96accb7a0f6ac42bc574ca07bcb5b25b84df7fa"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/corner-evidence/level09-cleared.png",
+      "bytes": 27719,
+      "sha256": "5ecbb177475f9152287f30ec022e4e992621246c95f478a3212b60a79e475f23"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/corner-evidence/level10-cleared.png",
+      "bytes": 28933,
+      "sha256": "74ebdc108a91411cec28d6742b1dde4a7ea779137fffdaf5bf35555f4faf6604"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/attempt0001-cleared.png",
+      "bytes": 29795,
+      "sha256": "bd6b1f35379dabc63743581b8b0acf9962e10732703e9641288edaa8a4e8f241"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/attempt0002-cleared.png",
+      "bytes": 30124,
+      "sha256": "c74808e7cf5282c9c2123136722aad7a20794b14f3fe94299b644fbfcfc323ee"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/attempt0006-cleared.png",
+      "bytes": 28813,
+      "sha256": "d3270c08da0609a865867380da7a3f61fcb6a471cb27a0039c0bc045bca1efd6"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/attempt0056-cleared.png",
+      "bytes": 33744,
+      "sha256": "30e964e3f31f0c564adb7e99b182350a6cf176ffdeee1b4d7b8f079f6464a91a"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/clears-13-25.png",
+      "bytes": 528645,
+      "sha256": "8603f91bbb996fd0346c676599d42ba614c5808fabf5137a13533f1e91f3c899"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/clears-26-33.png",
+      "bytes": 28666,
+      "sha256": "a263d5ab96a239f15e66f37e65e0e63448375c8bfcd1af3cfe8b3f69477636ea"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/clears-26-34.png",
+      "bytes": 28123,
+      "sha256": "b57561cafd3450b7df642c6afcc12547b97a131700fd50110d06587c6c077693"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/clears-26-35.png",
+      "bytes": 38551,
+      "sha256": "8a0d61dbc8f42413723e0335ed7aa78323fe1a6ed0a45b2893eac3e8b2376f73"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/clears-26-37.png",
+      "bytes": 561638,
+      "sha256": "32d554d0d275115720f9286a58bdceeb3768c5ff1d313d57e1d01e0ea93ce309"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/clears-38-38.png",
+      "bytes": 54234,
+      "sha256": "0c4a9798b23914f196d7022458c593d260a745598664782acb9969da8cb67197"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/clears-38-39.png",
+      "bytes": 90018,
+      "sha256": "4f4b04f95c46c974befec8065cb11b45174f1244c40431e780326538de309b4a"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/clears-38-40.png",
+      "bytes": 128727,
+      "sha256": "330625248223a624f6b3382f3ad9f92fbd2a8d847de3938da7e76041944d50f4"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/clears-38-41.png",
+      "bytes": 181172,
+      "sha256": "52f9bcfd7b252474e0ac86f81f20612bcc9c85289f8707690a45172d56ca9acf"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/clears-38-43.png",
+      "bytes": 252041,
+      "sha256": "342f91eecbbbeb18dea358546bb112ad8aa1f71adf8de9f8cf94c5bcd2137073"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/clears-38-44.png",
+      "bytes": 292281,
+      "sha256": "24fc115044f6f18abc2170c468892454287015f6befc988251d6bfcd5361fa99"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/clears-38-45.png",
+      "bytes": 325038,
+      "sha256": "18169b447105dc00af899d993fc0a35325dcb55b09d0545fa7509c2159974a44"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/clears-38-46.png",
+      "bytes": 371056,
+      "sha256": "889f9d0b67cd69ff5e604c910c1d28b310438eeb0798817c832d2892a286db70"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/clears-38-47.png",
+      "bytes": 427956,
+      "sha256": "c11895f4f07850b6a2316d9f746583221f82662866c9b9a9fa9701e44854ed1c"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/clears-38-48.png",
+      "bytes": 472952,
+      "sha256": "4e687e1b8ab8b257769eeeb1d7a5e9c9d12455b017df0648dcd48ecea9ae3475"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv13-cleared.png",
+      "bytes": 27617,
+      "sha256": "3640b213e70fae44122c9918862529831128a600882cbbde1d561f1a514ffd75"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv14-cleared.png",
+      "bytes": 29329,
+      "sha256": "cc4421ba969f41dd627e1d1984208e77c515c7db32b705d684c2d09442878bb7"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv15-cleared.png",
+      "bytes": 28239,
+      "sha256": "9558b7d60eaf12ba6863aed9ea9475fc51254ef9cc6b785d3911fe3511637a4e"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv16-cleared.png",
+      "bytes": 29430,
+      "sha256": "bc44636715a5f48a6a4e8c7a9f15741a470448a31699c4f3176ccb525ec780c8"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv17-cleared.png",
+      "bytes": 27848,
+      "sha256": "19e56493a0b723bd9e9f11de59e6bef37d5dc313494a5ce6561b0078e27720b5"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv18-cleared.png",
+      "bytes": 31736,
+      "sha256": "8c3ebcbb770fd8b285dd8f473c6fdac5e7ea3c26130bb9951377d1486a4dcaa8"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv19-cleared.png",
+      "bytes": 29424,
+      "sha256": "192b382dab82ca5270bb39946904d2adc663fc1c489760ec3dbef9f46fd501e2"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv20-cleared.png",
+      "bytes": 29508,
+      "sha256": "6cf1cbf309bc4b017fd05c04acd0ec79e6ad46738bb67b4b6c4422c4e5f746b0"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv21-cleared.png",
+      "bytes": 29458,
+      "sha256": "39d45af3faebe4d58fd9fc87b0079656a896f97e6f4445d9311e8b9a7990cd51"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv22-cleared.png",
+      "bytes": 29488,
+      "sha256": "3f29e812480ee8875e6410c50ea047a726c40208ba45e5b5b6c7efb1b8c9dcf7"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv23-cleared.png",
+      "bytes": 30787,
+      "sha256": "e148aa67f7ad25aea0cd86c38bb484eefd648efaf93265772edde13b3f0ab5b6"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv25-cleared.png",
+      "bytes": 31619,
+      "sha256": "8c1887b3ba7badb03055a9228e623c55145631978fda231db3cda738becc2b3d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv26-cleared.png",
+      "bytes": 33744,
+      "sha256": "30e964e3f31f0c564adb7e99b182350a6cf176ffdeee1b4d7b8f079f6464a91a"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv27-cleared.png",
+      "bytes": 28813,
+      "sha256": "d3270c08da0609a865867380da7a3f61fcb6a471cb27a0039c0bc045bca1efd6"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv28-cleared.png",
+      "bytes": 30019,
+      "sha256": "ad182180900ae223a7ee6afab7d7313b579e9df676f0f56b99074697db661581"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv29-cleared.png",
+      "bytes": 31524,
+      "sha256": "bd97be99ffad36958f42a34d907efe8b49b35bb0b44546dad719c2ac361d86d0"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv30-cleared.png",
+      "bytes": 30124,
+      "sha256": "c74808e7cf5282c9c2123136722aad7a20794b14f3fe94299b644fbfcfc323ee"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv31-cleared.png",
+      "bytes": 29795,
+      "sha256": "bd6b1f35379dabc63743581b8b0acf9962e10732703e9641288edaa8a4e8f241"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv32-cleared.png",
+      "bytes": 29530,
+      "sha256": "c0884fa37d1a765c7840e3b14a3e7f42736f2a672c9b7bf828b11806c31817c2"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv33-cleared.png",
+      "bytes": 30750,
+      "sha256": "3cfc611ac0d315727bf84d5b736174423ecb493f2e6b39d6de6beaa8e7481090"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv34-cleared.png",
+      "bytes": 30269,
+      "sha256": "d841cd4699d895dd01a81aa4bdbc4432fbaf602c72e381ffa1ece91067b02cc3"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv35-cleared.png",
+      "bytes": 30684,
+      "sha256": "778e00fb2a6626f2b68f0243e7f1632ee5881d31f78c20b8bf2b51655ab04495"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv36-cleared.png",
+      "bytes": 29036,
+      "sha256": "6c3ddbc17d33cc992664f730fcf321dd26817934a19283a9d41715a57f698490"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv37-cleared.png",
+      "bytes": 30101,
+      "sha256": "98cd5b149f86de58f259344a3a6ebeb8fdf99bab8bab7f08dfeddb6e16429a87"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv38-cleared.png",
+      "bytes": 30963,
+      "sha256": "5b02e298dff2bd3bfecb5567957dc03fc11ba769675b1f8ac69a3c578c319561"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv39-cleared.png",
+      "bytes": 30789,
+      "sha256": "c3bb8b1ba62271e2dea1431fd80675dd596147480bcb234da91688f96f788e5d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv40-cleared.png",
+      "bytes": 32516,
+      "sha256": "8cb7d486fcacd599bd5cc2ff18b26f54b15fc050faf54aff96a2191dad31d429"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv41-cleared.png",
+      "bytes": 32264,
+      "sha256": "b70f9e7207c63b3023f208988c4421fabcbb51e34fffba3618da2c549d9128ba"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv42-cleared.png",
+      "bytes": 31234,
+      "sha256": "62256c35b8a48b52518184f6430f7912cf480a6b7d1bf2b159b16d613fca42bf"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv43-cleared.png",
+      "bytes": 31568,
+      "sha256": "a9e9c2e819a9a92b903757970886f1a91b268e538f9aae52810b3d3f8b6d8e05"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv44-cleared.png",
+      "bytes": 28116,
+      "sha256": "cd0076a6f46aab2cdbef2ecdea72b425ca97bd8c33371ca340277e6e90d17a1e"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv45-cleared.png",
+      "bytes": 30502,
+      "sha256": "1367d1a6a4d9c29cb427ccca0b70167680657ff50414e823190014a2559ab66e"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv46-cleared.png",
+      "bytes": 32155,
+      "sha256": "6098fce70d07b848eaaf359e2f5a3ddb15fd836dcd42a0efe5af2cd79da74ba7"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv47-cleared.png",
+      "bytes": 33231,
+      "sha256": "cf35452d6c435485f4f784469e34031689cc7967ad1e49fa3612f9b042eb6c23"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/lv48-cleared.png",
+      "bytes": 33246,
+      "sha256": "45d9c6440d61c372d12ec3de65c54a219b367e8dbae412cbfd7c1e98c363de7d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/previous-shots-0.png",
+      "bytes": 273141,
+      "sha256": "660fe2c156713a8501ab495205be19718a8b6b66cbd037a0a669584f9acbceb7"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/previous-shots-18.png",
+      "bytes": 325880,
+      "sha256": "aebd0401da9775d577442adcf86a46792fb576be9eca6f22527e5990de693f2d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/evidence/previous-shots-36.png",
+      "bytes": 96509,
+      "sha256": "2bd2e846fe241ba96da1938ca8f7c635849c8ecd24e9ec9813b7a1edc915d72d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage09-evidence/level09-cleared.png",
+      "bytes": 26905,
+      "sha256": "75643788adacf420a69803eee2af226226a6a2aef110389cc1529a856bb0f11d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage09-evidence/level10-cleared.png",
+      "bytes": 29090,
+      "sha256": "33e551bad8a0fc2f876a9562e889c2eb87ff0f075895a9cd2d8c4947190bbc37"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage09-evidence/level11-cleared.png",
+      "bytes": 27702,
+      "sha256": "9458c9d729068b413203c37db90650a73463fdd7ec8f675f2882ee2ad1f7bd84"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage09-evidence/level12-cleared.png",
+      "bytes": 28097,
+      "sha256": "5db2c364278ffcbbee054f279931294090897a008243497c58b26d4be2efb57a"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage09-evidence/level13-cleared.png",
+      "bytes": 27786,
+      "sha256": "508499d01f49512def4094a272a96de227de5c18733271d4d9d0968ca1ea7618"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage09-evidence/level14-cleared.png",
+      "bytes": 28064,
+      "sha256": "48f674cb0e5b75efb3c3d6b46c75392d78249a66e58f0708fd00f1fc51b2f656"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage09-evidence/level15-cleared.png",
+      "bytes": 27785,
+      "sha256": "48f57455878fd1412877462bfa7a909d5f80606b87cf9f9b8c3c797c784b340c"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level15-cleared.png",
+      "bytes": 26571,
+      "sha256": "f846b563415dd46923e76c0ff5e03883068483781e1fa9ea5b51619b66fdbba3"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level16-cleared.png",
+      "bytes": 29293,
+      "sha256": "d8f00037027cabe3198be2fdbc16ab6f31e86fc25353e2a46beb132191a5df95"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level17-cleared.png",
+      "bytes": 26901,
+      "sha256": "6dd23838514b06935770ec78af34659d079510fce3a4f0abd74d8e65d4ff2d29"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level18-cleared.png",
+      "bytes": 31153,
+      "sha256": "669d50cd5f8a4f733f6db23fa79b37f0408e2a899a16d0de77660e878ae4aeec"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level19-cleared.png",
+      "bytes": 29027,
+      "sha256": "e3dc79f0b3fcdec11e3668a2743a9a8cb47c038cb3300227c748f1a393a16738"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level20-cleared.png",
+      "bytes": 28921,
+      "sha256": "49919c2d65db52399da2bd2b6bf854ccb21c7933d569d8a6ffe4763da1dcf68b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level21-cleared.png",
+      "bytes": 28352,
+      "sha256": "5c1e53f313b37a2cecb25ad83beb4e79d9613927c83507abc193b39bac6f3de9"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level22-cleared.png",
+      "bytes": 29719,
+      "sha256": "bc26c3a74413e92c76a05488af233e39d2b59e9e2d5f0740b13cb52e5d625469"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level23-cleared.png",
+      "bytes": 30909,
+      "sha256": "f39ef3774874e4e8b7e001c632a5fe59b2a0b418dd795fd1c1e39c85e4820472"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level24-cleared.png",
+      "bytes": 31499,
+      "sha256": "29510c36f858eaa6c62c6fd6f9251659ff22321aeeb20f0c58b7a6cb6aaa65d0"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level25-cleared.png",
+      "bytes": 31185,
+      "sha256": "c765c5094325b48f1b7c5d7632aeb4e1736f2ed81f88d82caa69ef97517dd1d2"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level26-cleared.png",
+      "bytes": 33931,
+      "sha256": "075aa5b38bade78adbea8ea12dc302af442cfabfd4f679550baafe8adb6ddc94"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level27-cleared.png",
+      "bytes": 28700,
+      "sha256": "82e00e4afc741171a968e5ce22c6a57345035260993f831c4318ab3eb5182904"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level28-cleared.png",
+      "bytes": 28665,
+      "sha256": "06ec06c25b660b567e0948b441752d9167952d4f91f350d2226fc4212d3ee5fc"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level29-cleared.png",
+      "bytes": 31472,
+      "sha256": "613701778881a8d50088aadfa487ae20e2955e6586738c06cfcb3ccc26f11f89"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level30-cleared.png",
+      "bytes": 29464,
+      "sha256": "eabc35f24d32209b4129fbb59b79c9ee460d300fa8814ec91c04e454cfe4483b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level31-cleared.png",
+      "bytes": 29448,
+      "sha256": "7dd27a9462514dc0b312b4f9f5edab9f7a5198856e46c2ace6d90aa6769d9975"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level32-cleared.png",
+      "bytes": 29464,
+      "sha256": "8072dd13006b36bfa890b3d2bdd7c7553234101b480ead47e7dab87343832ae3"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level33-cleared.png",
+      "bytes": 29998,
+      "sha256": "e6c786fdd4186b175f61a9e7236aabd62e0a9ffee1f4bd09781a639cc5fab54f"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level34-cleared.png",
+      "bytes": 29763,
+      "sha256": "e57ec0384efd7bae7787f5c8661cc205bcee577a85023b6c589b14f02c6c2945"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level35-cleared.png",
+      "bytes": 30302,
+      "sha256": "a6ada7b8a5ade5338a9c04160db31dba62b7b2d1933c5e1bd2a0ca7b11cd030e"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level36-cleared.png",
+      "bytes": 28934,
+      "sha256": "783316cdb1bfb19f6df875e8646db39f4ec3180afdd82d4cd0ecc4a4b3f2e0a2"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level37-cleared.png",
+      "bytes": 31112,
+      "sha256": "7e7dcc52ed4af829baa10fff9d67ade83c3773bcd8b0f0a8f6f145f3e79d8e5d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level38-cleared.png",
+      "bytes": 31246,
+      "sha256": "cd4ce3f4ecb502369a05d6732f27d1d41b885e4a12842e8e7fc55a37d8c92e78"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level39-cleared.png",
+      "bytes": 31116,
+      "sha256": "a8110ccdfaeea3bcbbdc6b5209a6ce4a4f3f96284a9518a4061c7cf47e1dc387"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level40-cleared.png",
+      "bytes": 32529,
+      "sha256": "a4d8a894f80b46fad457b61dcc83f0ea5d08f1d86f13d965e606dd44573fdd10"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level41-cleared.png",
+      "bytes": 32787,
+      "sha256": "264f32f774560f35d4f685ba4fc510a0db513f5bf814a5c3d1f9594620102072"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level42-cleared.png",
+      "bytes": 32327,
+      "sha256": "ef41a294a8b92b0c2838de74031579072186efe347a885d4efd33cd961ea2229"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level43-cleared.png",
+      "bytes": 31934,
+      "sha256": "253aad910da196bdc616a745147f1a46641b90e0ea2637a605d6ff5920d3a93d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level44-cleared.png",
+      "bytes": 28089,
+      "sha256": "3e96eec727988bb710df1150c3bcb45a830bcf7af5ddc2d4c3e0bece7b747fb9"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level45-cleared.png",
+      "bytes": 31329,
+      "sha256": "634a7da8f8d79d955d77c83a42972a94cf27ac3ee1b4972b2cb68c3ad7c49d9e"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level46-cleared.png",
+      "bytes": 33291,
+      "sha256": "f09c89daafeb67f8291c4d6cf4bcba2f5f58789513bc836e72fda07120e6c258"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level47-cleared.png",
+      "bytes": 33649,
+      "sha256": "672d4cfb2f7ffba7a26e5e28bd3943155d36a3b96f4cb58befcbcc6d9e3e2d99"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level48-cleared.png",
+      "bytes": 32932,
+      "sha256": "281a93d3c7b67a9fd1823b64c4b4f282d9bfc19261b2ef555f688aa28b5e432a"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/evidence/stage15-evidence/level49-cleared.png",
+      "bytes": 32907,
+      "sha256": "e68726c0d443082bc51701c1428d60835512b8ee376d2bd5ee11d41a0ed74179"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/README.md",
+      "bytes": 6099,
+      "sha256": "51be8507445b8bcf482992740f376018fe07b8a5d3fefd0827b1e05dcabdba2b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261010-233019-play.jsonl",
+      "bytes": 480,
+      "sha256": "350c413b4b16c05a5d59c7aba08254c51dc2c3147fb5a5a72c0330d15c6dde77"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261010-233208-play.jsonl",
+      "bytes": 595,
+      "sha256": "2016c548555a6302262c7ff3ff13ce55c8cd3961df98845b64c8b99bf490c8d5"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261010-233410-play.jsonl",
+      "bytes": 122,
+      "sha256": "b6471010f62d2e1ec50bf725b38bcbfb679aaa2fc592fe6c38a157532b31a7cb"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261010-233442-play.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261010-233450-play.jsonl",
+      "bytes": 1552,
+      "sha256": "e9f10df75df15d2fb59fa9d203bda11901056f57c7f39b6ad84fc12cc8ae04fe"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261010-233712-play.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261010-233729-play.jsonl",
+      "bytes": 709,
+      "sha256": "546d5397c59777c7a13c49240654dccb64576f515cc4b3b55462a77f6248d96f"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261010-233916-play.jsonl",
+      "bytes": 359,
+      "sha256": "1db7b0fb8a9259a44eaff6993d1f8e8a12420d4451d8aab6d35303f54ecd9df4"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261010-234000-play.jsonl",
+      "bytes": 123,
+      "sha256": "d6d7b8c966957fde9457653cc94abaaac95d6e39ad18d0365f890783f10eee18"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261010-234024-play.jsonl",
+      "bytes": 118,
+      "sha256": "54c91637e5782819b5e926a273eca2c09d200053fbc06f405d768fcfbb42dba9"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261010-234040-play.jsonl",
+      "bytes": 2403,
+      "sha256": "0a884e7651b91c2d59a69bf0c2563a2883214cfabccb0c2587a98cc61faf5e79"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261010-234420-play.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261010-234425-play.jsonl",
+      "bytes": 242,
+      "sha256": "3c69eb0ad31fa791f5ad8ca1b513b590177f0cba43c7e5f8a8ecd76a8f0cbd1f"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261010-234632-play.jsonl",
+      "bytes": 482,
+      "sha256": "e5db9a666c1575fe8508d123937a998aa1563b6a3e8283af7f7cb68e54d16bc1"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261010-234834-play.jsonl",
+      "bytes": 5637,
+      "sha256": "ca4d4588056df98b3e97a5565197a8bfd20fe988fd2ade8853ea0fceeefad86a"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-000206-play.jsonl",
+      "bytes": 483,
+      "sha256": "3cd1d43e6ab15182ba2a507b1ac57d0e274fde7672d62fc024ffff01bf510375"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-000313-play.jsonl",
+      "bytes": 1451,
+      "sha256": "986e5f023daef7e54d2eed429841526231481c54ed373f995051256cf7829354"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-000605-play.jsonl",
+      "bytes": 605,
+      "sha256": "04e48d39d9c62c8e0b5dd893301aada6d26ef4d1e71059e8afd11a5721d4fd3a"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-000714-play.jsonl",
+      "bytes": 726,
+      "sha256": "32fc7f9ca02e5aa3899bd31d103955404a497a4149ab6016daf91e6f678a854f"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-000907-play.jsonl",
+      "bytes": 849,
+      "sha256": "d8da40c99d4417b3b9bbefc297145ed990d7ca542d14818406ecc44dcbadea54"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-001054-play.jsonl",
+      "bytes": 972,
+      "sha256": "0168ea22a9adf689acc2c1a43dceb42e603d4b0bef445a1b31fce9499ed006e4"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-001329-play.jsonl",
+      "bytes": 366,
+      "sha256": "4e6a44093bbf93a4f97730677ed398d8a2af0b0effe0c90621c4345657da0160"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-001438-play.jsonl",
+      "bytes": 973,
+      "sha256": "f210f83ae3a866e05a582a0f13e710c2227b3c84b443d5ca6ad6c25d215efef1"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-001722-play.jsonl",
+      "bytes": 489,
+      "sha256": "9948025faad053d6e8bdf0aa0d773ce978301d578d56e7fb3435899a6f0f1587"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-001954-play.jsonl",
+      "bytes": 1455,
+      "sha256": "96016173ce9a62c85665ad8235cc95d0b390c86d495f67ffb7c610e26064233c"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-002448-play.jsonl",
+      "bytes": 243,
+      "sha256": "db76e4be6823b7cbf6ea265f95028fb713947dbd9030bd753113288a23751a1e"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-002657-play.jsonl",
+      "bytes": 725,
+      "sha256": "78500c412d839afa241b44821c5630e9805997e820233848f13e2ae85d6e0598"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-002946-play.jsonl",
+      "bytes": 363,
+      "sha256": "0eba351ae5602d006d1ce1b55be4da9679357053cf9916e3cad5468c9c1aa2b4"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-003158-play.jsonl",
+      "bytes": 1338,
+      "sha256": "94ad61a6e0f90642f5f61544b807ce9bdc5165572d02f64e7ae04c76b325c3c4"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-003553-play.jsonl",
+      "bytes": 362,
+      "sha256": "5662071bea113ca1f6300f10f363aa8d90fd913699e8d237905240ae0ffc3d1b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-003700-play.jsonl",
+      "bytes": 241,
+      "sha256": "e1003f6b6aa4981583068a1fab4da1e7207551a108d6ec3a0ebe5f841a5b73c5"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-003850-play.jsonl",
+      "bytes": 1332,
+      "sha256": "4ce1bb8edc517146207d27201603e96804d2071d8bae5fcadf550678875bdc07"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-004059-play.jsonl",
+      "bytes": 244,
+      "sha256": "41925a455af95b3c4d3efdd6ae167bb66d86e6cb907340b2d2fdb48a0d9fe108"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-004317-play.jsonl",
+      "bytes": 5749,
+      "sha256": "5906d40b056181219d97a5653d39acfdc1dee81772cf6a55be103987a0bd8d6f"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-004556-play.jsonl",
+      "bytes": 1580,
+      "sha256": "6fa5587ff5467be2fbd8601265edbadfca93810d44711460cd93ad88e3e9014b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-005017-play.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-005026-play.jsonl",
+      "bytes": 2158,
+      "sha256": "c4d654c40d97e37318a4b3836cec245a3ef36deb9dd31c50cb3872c851f80984"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-005149-play.jsonl",
+      "bytes": 956,
+      "sha256": "3f1dbb91f5e7737644df78dee7a4e9eac485d497085d97ee959d8b58c35a5672"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-005243-play.jsonl",
+      "bytes": 728,
+      "sha256": "1673ca47b10504e6760e81a7eefa3582a7cbaed2a41b04f5e56e3a176b4d59e0"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-005543-play.jsonl",
+      "bytes": 487,
+      "sha256": "6d2cd67218b72e8c6fa601988abac94c7769873f885013991b3dd564b7d1892c"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-005743-play.jsonl",
+      "bytes": 715,
+      "sha256": "6f2bb6f503d5efffcceeec47062821ac34e514b8ef4cc1149d2af978ea1698e0"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-005920-play.jsonl",
+      "bytes": 1912,
+      "sha256": "d04a7c66650f4e235e6af5773552b889d022941b3fb91f168afa99f7a1f866eb"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-010211-play.jsonl",
+      "bytes": 596,
+      "sha256": "acb0beda85d6b19d1d5bbc8144e9f26a25faa8f83ccaf3b3802b45c105969f36"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-010349-play.jsonl",
+      "bytes": 120,
+      "sha256": "a3870bf156c90fd27a2fef8238866052c87e9d08c93ac4b3140dcaa7a00359b9"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-010549-play.jsonl",
+      "bytes": 839,
+      "sha256": "97a92dcc8cc310b3ff321726212018f15dcb647cf5cc5805c436ecf27ca43cb7"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-010831-play.jsonl",
+      "bytes": 241,
+      "sha256": "5b8e33635ff32d7c91f87a68aef70b290e92eae5fb448903578d083a28e179c6"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-011017-play.jsonl",
+      "bytes": 123,
+      "sha256": "d4abde68a4031ad6f65a444af8434207defd061f98c457b980286b005d2317fd"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-011058-play.jsonl",
+      "bytes": 711,
+      "sha256": "0792b9d7f2f769db765843062708b83c0b530570d722554315af8f3ab3986169"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-011216-play.jsonl",
+      "bytes": 475,
+      "sha256": "3e5fb69ccdd851d07c6f059a4fdab9bedf2a933caa109312abf0992be7fc01f4"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-011319-play.jsonl",
+      "bytes": 122,
+      "sha256": "0658fa4ac017d7843b7241e6ec3b8ffa8f515cd5bf9b082c845ef833a6f83fc9"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-011341-play.jsonl",
+      "bytes": 1211,
+      "sha256": "1df146265339f5c5df8cec2d6fd735c007df6b1f214ca8a869cc47261503a2f6"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-011908-play.jsonl",
+      "bytes": 245,
+      "sha256": "935283e66b1ff8886f154eb7941f700ee035c22b80eb8900cdb893d291b87b31"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-012012-play.jsonl",
+      "bytes": 123,
+      "sha256": "5a103f2c63224f2614da420f302f2d1c8765ab0a49fac5642d5450be71ce10b9"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-012057-play.jsonl",
+      "bytes": 242,
+      "sha256": "e06a86ee2bb3d74f5edcf80311a7cf871bbd4134550d36a59df6cd76f2875655"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-012340-play.jsonl",
+      "bytes": 483,
+      "sha256": "906f35b43a2bc15c92888fd462e655dccccb5e21b6e0cf1dae2c999ff6e6f0f4"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-012716-play.jsonl",
+      "bytes": 242,
+      "sha256": "33a52a8d00accc1b5e902b9f508acc16c2e23e2955774d7c6dfa54a8af45f5d4"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-012937-play.jsonl",
+      "bytes": 607,
+      "sha256": "3a557c29ed976aa5744320cbb556a623dbe94caf5036c4f8fbe30bc3051180c0"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-013159-play.jsonl",
+      "bytes": 240,
+      "sha256": "8bb0d64c53ff55344e97e4b30bc107e775b83938a68c76fbed7614247438c76b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-013223-play.jsonl",
+      "bytes": 4909,
+      "sha256": "97f359b2a529ebc0744db42c7aafe3f5b80b528c2d7667e3436b9a3ff6764f20"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-013657-play.jsonl",
+      "bytes": 729,
+      "sha256": "6ce9a052e0627efb5c75ba90dfd3304164ef6633b75469021f5860f60582e18d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-013829-play.jsonl",
+      "bytes": 2535,
+      "sha256": "dee14f99b71d8ad422cbed9c144c6449c74d7494903c81080ee02c6545cc636e"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-014105-play.jsonl",
+      "bytes": 362,
+      "sha256": "56dd75a0c2b808bbd14f7eaa0483b8a70875e59c8a14bfe458c397d7594b5fab"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-014403-play.jsonl",
+      "bytes": 1702,
+      "sha256": "b75e4c64c8f63c3e6441cd4e3997d0f5504b6aced5e1d6aa30033747d51d0a9e"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-015130-play.jsonl",
+      "bytes": 363,
+      "sha256": "fe284a95360351b915b2ee7c6ce29d9a97c16fb13c85b6175baaaba6c5aa6ba0"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-015355-play.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-015414-play.jsonl",
+      "bytes": 482,
+      "sha256": "699188bd91694dc84a8a6bc0c5f986e5c2534edab5247ee20630a2c87548903f"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-015730-play.jsonl",
+      "bytes": 363,
+      "sha256": "26121ad0a97f31bd63f14d861febd33bad436fbee8f84ff50821224b8d6f5bc7"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-020023-play.jsonl",
+      "bytes": 362,
+      "sha256": "c2ccc5e80846b352698be4cd4eb6f05efc7bfbc186e0ec9fbdcdef28b02d7214"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-020151-play.jsonl",
+      "bytes": 606,
+      "sha256": "d11a51e496722709d8586f73893dd20c4f2e7fbfda9bdb705763735183c5fdeb"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-020332-play.jsonl",
+      "bytes": 726,
+      "sha256": "a92d4574e17f3d7fb8f980c3283c412359c54fa2794463bd443f16c49d696308"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-020644-play.jsonl",
+      "bytes": 851,
+      "sha256": "0d830c444992be5a53e509f9cc7ebcd826a237d6e1259991806da766f35ad9e4"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-020951-play.jsonl",
+      "bytes": 365,
+      "sha256": "34d4c1deb2e45f65755a69b43f7da34b28b70e531e2e1655d6f2c79176c89b59"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-021240-play.jsonl",
+      "bytes": 1336,
+      "sha256": "6de148936ad303f09502ea93fd2781b44524eef1525c2a5114723b2df9e957b9"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-021611-play.jsonl",
+      "bytes": 485,
+      "sha256": "1323712b49013e3b1b4dbfa226d79f88ec53d77880eed14ef9dc88e84ef6a3fb"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-021817-play.jsonl",
+      "bytes": 485,
+      "sha256": "810bad889541addfe08f0d01e5af1fba799457630fb467d8a37efcff233fdf4e"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-022010-play.jsonl",
+      "bytes": 122,
+      "sha256": "522b1bfdb80f0da5837fe91e0ad4e0a89f85395c6212928005fda9716cd28c7f"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-022224-play.jsonl",
+      "bytes": 367,
+      "sha256": "e419ac5bcddd2b30677145b554e19dffaab3f1aa4b4690d52ff1d94bfb5ff6df"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-022743-play.jsonl",
+      "bytes": 242,
+      "sha256": "08ff43bcdd5d3cdfbfd9e0469520e6a4ee93cb3a4aa1793259ae7f386b1ac30c"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-023105-play.jsonl",
+      "bytes": 606,
+      "sha256": "ad4ea5ca7510bff22ef35a685ec3e58b82276a5930f671515c1c371e3f68fdde"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-023719-play.jsonl",
+      "bytes": 243,
+      "sha256": "f551f7c5c7ca1549f4b3d0b7506e21e8b2450e3a631dda921c1600097288e288"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-024033-play.jsonl",
+      "bytes": 242,
+      "sha256": "8937afd6818605f401e7eddeda1fac5eec721ff76f1bb1d1fb1f9da4dbfc9613"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-024427-play.jsonl",
+      "bytes": 481,
+      "sha256": "8cd5632e75c3dd91e7431cbcdbadb73c1f963bc6d7b134d062e2a97304d5db89"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-024551-play.jsonl",
+      "bytes": 242,
+      "sha256": "795a4275674b16184800b2242c45ba01a0acd17bc74491cd8705d51e1189b22b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-024906-play.jsonl",
+      "bytes": 242,
+      "sha256": "6f56d49db16e78179bbe5d467ac917e210eac2758937bfc623cf28ef53da4cb9"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-025142-play.jsonl",
+      "bytes": 123,
+      "sha256": "5dcb8ae395ddcb57ca1034cbc2636e1399ac73588ba14354f0e7d40fbed77bc7"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-025519-play.jsonl",
+      "bytes": 363,
+      "sha256": "ffa40535e1c88e29358532719523c722679a68e5ea21d44ee1674f102e7c70b0"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-025843-play.jsonl",
+      "bytes": 605,
+      "sha256": "35b5ecbbe223e7dbf210d2acbd9aa578742ce4eac2e972975ecd754394b66aa6"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-030349-play.jsonl",
+      "bytes": 484,
+      "sha256": "fe0f97bf5306e3918f1de730ee9228a5de9a1974028b3b7bdcedb628e09877d6"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-031001-play.jsonl",
+      "bytes": 363,
+      "sha256": "652bb66331fa20d83bf625602f476387a3485c7247441a65518231e2f233761d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-031417-play.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-031443-play.jsonl",
+      "bytes": 361,
+      "sha256": "77799cca69467bdbbeba54a038300079298a876f877f383ade397d477ccde80c"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-031830-play.jsonl",
+      "bytes": 243,
+      "sha256": "63197ec80f3fdb371cc7c1bb9737ac016a02bd20685a8ce2464d1c6bdd02c2ab"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-032136-play.jsonl",
+      "bytes": 852,
+      "sha256": "a213abd2e76cbe65a95e19f67feee7afbeea3c99da7fb7bce2c836349e3c90b3"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-032350-play.jsonl",
+      "bytes": 484,
+      "sha256": "bcd90a5db62c389e85b898e680138e28f3277101c55b711c99579a3b3fd3f8fb"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-032912-play.jsonl",
+      "bytes": 849,
+      "sha256": "09bc820ef88c80f09e66d22f48ee461b95dfd9da3a801a9148ddc001fd1d3cd4"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-033631-play.jsonl",
+      "bytes": 245,
+      "sha256": "235d48b002a3f49ce4404f7fa4697df4d790bc2f3c2c18b6732c5e83bc6a282b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-034009-play.jsonl",
+      "bytes": 2166,
+      "sha256": "654481159f80c0dc9cab3715888b861019f874d79d881f3ee862c50b41aece6a"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-034523-play.jsonl",
+      "bytes": 1928,
+      "sha256": "3b421f6c319fec17ab61adc67beb6cb27ac0d309b32e83be7ef59ba70ecf65d7"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-035025-play.jsonl",
+      "bytes": 1912,
+      "sha256": "efc0b9591288aea542f647c1ca368222665192051308c0db96f112ac77b01b24"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-035317-play.jsonl",
+      "bytes": 717,
+      "sha256": "22e5abf78d4c297590637ce435af339e9121816a1aa56905c3f086fb7fed40cc"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-035507-play.jsonl",
+      "bytes": 726,
+      "sha256": "7c4b6b79319d787063daf69e8b8b1d8ce9599bc8a20ef3577f6e49e2b313c6e9"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-035714-play.jsonl",
+      "bytes": 1080,
+      "sha256": "5b615e26cb7b85b7874fbe1eeac6fd31715f80fb2dca8e69e992d16ad1b13009"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-035957-play.jsonl",
+      "bytes": 118,
+      "sha256": "f30ad31691670f50a427bd98af24769440d29baf4c781b350d72e78e4eccef9c"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-040009-play.jsonl",
+      "bytes": 1200,
+      "sha256": "ebc8447bfc6d57533dfb5ce045667b09b17cc2e52a3d923345c8ac96e5cd10b3"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-040253-play.jsonl",
+      "bytes": 719,
+      "sha256": "8cbef943f6efff0128c7fe6afa27fcde9fdb3912d4b65d02ad6d9f6e9113fb69"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-040422-play.jsonl",
+      "bytes": 1430,
+      "sha256": "ad1edf80797626a1ce5d89a8f55c5c159b81bdbb34afc34996028cffafeffa3b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-040642-play.jsonl",
+      "bytes": 1206,
+      "sha256": "542554ae81b807d680942134a24f5353194b427d30ec1dbef1f6451eefca49ff"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-040910-play.jsonl",
+      "bytes": 1326,
+      "sha256": "bf1ab464f146c73a18ff7564055a4807f719ef78d5bc13ac4731ae07506933ac"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-041213-play.jsonl",
+      "bytes": 3127,
+      "sha256": "a4110b62eabec84c53b4ebc1ed611cfaf50774d85dde4e114732181b958ce4c9"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-041758-play.jsonl",
+      "bytes": 2031,
+      "sha256": "4bd9e40043a170cd156c836f22f1f59aafce363f5ef634dd929bb3f407ade924"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-042051-play.jsonl",
+      "bytes": 1677,
+      "sha256": "e6b060460629f2abf6d823b8f2331da1e3cc999adf2b988e0776e05e54ba7774"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-042331-play.jsonl",
+      "bytes": 2292,
+      "sha256": "70c5c6d950fcd9cb022ca2c7ff28b081888373712cad087178fc001a923729ac"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-042941-play.jsonl",
+      "bytes": 717,
+      "sha256": "f9792468d9874a098c0ee5c3f08e18e4a403825ae8e71663c70b661bb67297e2"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-043336-play.jsonl",
+      "bytes": 1198,
+      "sha256": "c4c3057f9eb1dd22ba4f3cd00399f39f4a4155c30cd350f4236b15517cc55f7d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-043944-play.jsonl",
+      "bytes": 836,
+      "sha256": "c197e212d68caaccaa73aab4ca4ddde68eecf31f4fa5f873422084672a7cb252"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-044726-play.jsonl",
+      "bytes": 361,
+      "sha256": "f8c9d5604872041e8a11ac9d8ecd57e592ffa4f45bddd40baf51ae951872ee9d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-044815-play.jsonl",
+      "bytes": 124,
+      "sha256": "2ee4048021bcb5d1825d66db1867e100d99b01151a08648e19b8e1ba6afa83d6"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-044901-play.jsonl",
+      "bytes": 120,
+      "sha256": "fd979079a8c72f06a3c4863df5531c0a13c11cd77bb5979104d70e1c39b17b9e"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-044918-play.jsonl",
+      "bytes": 241,
+      "sha256": "de75dee7e520dc0195b31067744d55e5e5456b745601d4524156fafe8eb80f9a"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-044951-play.jsonl",
+      "bytes": 357,
+      "sha256": "ae93550f1de69b243664ac44ffe2b2c1fe2c91fd97d786f513a018acd6bb2f2f"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-045033-play.jsonl",
+      "bytes": 841,
+      "sha256": "925e13643ebeb9510b729e9872aa7ce195b172ff3d551abd48f879c18ce465f6"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-045213-play.jsonl",
+      "bytes": 124,
+      "sha256": "85f7fafecbd9914a38bc86f2254b6e0694776dd8ba495ef584075c370c0c6957"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-045232-play.jsonl",
+      "bytes": 122,
+      "sha256": "4f5da04590258d78aa625e052286c0fca5f6c470fd57ffa6c74b452f68439e18"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-045312-play.jsonl",
+      "bytes": 241,
+      "sha256": "c10f536d69501ffbab7cc5bdae0e92f612cd83dd5e62d8d596a43ac12aab240d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-045353-play.jsonl",
+      "bytes": 124,
+      "sha256": "f18bd8afe3c8b50dcd985c833536c5b9ad04912747528b5a8708c88dd34699fc"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-045514-play.jsonl",
+      "bytes": 123,
+      "sha256": "fb53b3bd291ddb5a09f74b8c8f8415343491d904d6d99443fde0b3e036a42b8c"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-045535-play.jsonl",
+      "bytes": 242,
+      "sha256": "9ab57c743581952163cc54f60357e2fbc220734586658fe921249e64e27b95ee"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-052612-play.jsonl",
+      "bytes": 122,
+      "sha256": "5b4b47f40fccd2e607375227a0112b4d5d66cda584d0d6d4191356837464c0de"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-052637-play.jsonl",
+      "bytes": 123,
+      "sha256": "b49f5b548b5959983067ad8baa4d4a9b834116beedac924fd6f59c6c355e73d3"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-052700-play.jsonl",
+      "bytes": 242,
+      "sha256": "7200164810ac83e1144eda66a0bb82c150ab025583dee1ed2b2a876cd9970ffa"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-052739-play.jsonl",
+      "bytes": 361,
+      "sha256": "8b90328d56445a435b310052d07aa26a5933dc35c637569fca80d5dbfb7a70df"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-052933-play.jsonl",
+      "bytes": 597,
+      "sha256": "b3ab5ced480b4cab04d14ecae1420aff291843c188d5d1e352f000ce9234d646"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-053048-play.jsonl",
+      "bytes": 243,
+      "sha256": "9be285f83f212c4447128a1dbbbb08e9dfa5049c1deade021a58dfc8e6445b57"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-053133-play.jsonl",
+      "bytes": 490,
+      "sha256": "99eac57cee3d055ba50522e0b8044caebfabd1bf026cc5dea48deaa21caa9aa9"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-053649-play.jsonl",
+      "bytes": 607,
+      "sha256": "77634f40290ab1f0f983cf9c8431125bf346bb633afd9d9ce5e0f450d3dc9298"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-054041-play.jsonl",
+      "bytes": 485,
+      "sha256": "61a60714e41b65415cba86cbd7a8a60c6aeedde2cb12550e8767aef8a54253a2"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-054222-play.jsonl",
+      "bytes": 123,
+      "sha256": "ec0a2a2a0af7e1f926e260e7d05d690a750b0cacdcc5c785c84d6df912640fae"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-054640-play.jsonl",
+      "bytes": 123,
+      "sha256": "1afaddfcf1c7e0f4866f043a8e5c58fd85a4cb42a62f5b5227643bcff6495b33"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-054836-play.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-054843-play.jsonl",
+      "bytes": 121,
+      "sha256": "a5a24e6720c627311e5afaf93137e7c932048edb0b5c32f7afa10605061592e9"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-055154-play.jsonl",
+      "bytes": 2065,
+      "sha256": "a8d7540505abbf4a6566e5dbe8f113146ec6ea5099e87978c2eb32b6e61f0d7b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-055831-play.jsonl",
+      "bytes": 1086,
+      "sha256": "ab5c55aba4d8774e6d45aa0e35534090cb8a90228084735cf4f3b04df1c070a1"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-060207-play.jsonl",
+      "bytes": 120,
+      "sha256": "45a6c2088e60241ba437eec6aabc889fdbeadf5cd0bfb244d4c553bba144eaa5"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-060216-play.jsonl",
+      "bytes": 243,
+      "sha256": "c8a2f0e1e7b107edda3020bbfd39794c72bad8955be9f70726ce4c9ee70a8463"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-060333-play.jsonl",
+      "bytes": 485,
+      "sha256": "3f33dd95a919c2593d685e9f00dfd5d06e98ebfdec22c88daa700afc3163c64d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-071204-play.jsonl",
+      "bytes": 243,
+      "sha256": "6b297ab42d0440f731db20472317d97eae1fb5ffc258e33b2bcbbaf95605a4a0"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-071232-play.jsonl",
+      "bytes": 363,
+      "sha256": "f17279473dd5b6d2b8fda6cc5dc2fe4c0691990b620e9795050ab55415fff452"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-071340-play.jsonl",
+      "bytes": 123,
+      "sha256": "639da9fef9e0157845df73ef2d4016bfcdb773bbedf6c61ff299aca86b99f7e5"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-071411-play.jsonl",
+      "bytes": 242,
+      "sha256": "98481f8eabdd83e7367e8dfa65dfbfd94904137692b9b01df91077004458d591"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-071457-play.jsonl",
+      "bytes": 485,
+      "sha256": "494ffc4854eef4174aee73625e9274f4f48c6fdaefffe2a29fa4331af0621d6d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-071715-play.jsonl",
+      "bytes": 243,
+      "sha256": "70e0156f5267689845c1edaf91201e35d8027d9db14f049b146f8537eaea3f2b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-071828-play.jsonl",
+      "bytes": 368,
+      "sha256": "744317bc483038989260b52ad2c14e5967fc7ae041d1a8487e44f7137fbc06dc"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-072228-play.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-072252-play.jsonl",
+      "bytes": 120,
+      "sha256": "e14bf920449892faf6e4d515ea3c3c16c19ff500e5467a5e6188dc989f791034"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-072330-play.jsonl",
+      "bytes": 242,
+      "sha256": "50d1ca263127c2b9c388491de120831cd0a63e48609fb0e853b89ed31ffce7a7"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-072448-play.jsonl",
+      "bytes": 121,
+      "sha256": "cd0efe874af625a3ca1f6b77032f21ada778891fabd92663691b6be54233d849"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-072538-play.jsonl",
+      "bytes": 244,
+      "sha256": "0e90b904f78872103cf2db275c99a483a1738603574920a1369f7579e8ed13db"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-072702-play.jsonl",
+      "bytes": 124,
+      "sha256": "7f487f60b94a93bec32fee7a48fc08228b797882dd910dcae92fcdac6f8d80bd"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-072743-play.jsonl",
+      "bytes": 484,
+      "sha256": "5b6b06332ee9b9021e447e4546a94b59ff7f3a395bc677cc99a86928dde403e2"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-073009-play.jsonl",
+      "bytes": 121,
+      "sha256": "a80a74d8caccde834ba49f622a4a34cc7bb5f9faaf6f3d978910c29791f36157"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-073040-play.jsonl",
+      "bytes": 124,
+      "sha256": "b9bb3783c32808fc47e8847c4b58e654d83c1792f4586af8698dbb8ec881a67c"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-073108-play.jsonl",
+      "bytes": 244,
+      "sha256": "90c9d32699a971bc38433b46528cfb050138358b991a71e95c55e527532ce38e"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-073229-play.jsonl",
+      "bytes": 354,
+      "sha256": "d4f8ca904a21a0c497c07c2127ba4e14f2d291c0f0737b1aff82729ae79c6711"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-073558-play.jsonl",
+      "bytes": 119,
+      "sha256": "b44d6572b645ec2dd3aa995e43af102f01d5a7b8b4bfe196846bcbc5199a19be"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-073606-play.jsonl",
+      "bytes": 123,
+      "sha256": "b18e4bac6f5ec215297ee4dfb935e00482d5cca74f88ba1b3c56c6bdac45f019"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-073721-play.jsonl",
+      "bytes": 1201,
+      "sha256": "023d8deabe967be511b7828eac633cb5e0c409281eba433704f504626a2420aa"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-074110-play.jsonl",
+      "bytes": 1072,
+      "sha256": "1d1755af8cd6775a0fa379cfb0f1e5419b59bcb320dd5cc7649828cb9c6188f0"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-074339-play.jsonl",
+      "bytes": 599,
+      "sha256": "70025a67f0f1313fa10b3b0e0065db43f218871169e21988b1b44ebef6da3e5c"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-074615-play.jsonl",
+      "bytes": 837,
+      "sha256": "9fcae2c5465ed923ec1e292d028c17f323c4090b066f256bd078dda628823170"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-074833-play.jsonl",
+      "bytes": 2770,
+      "sha256": "b4837791c3164c71858fe632c0f1c4fcacaed218de55a738ce244ef966ff8ca9"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-075537-play.jsonl",
+      "bytes": 119,
+      "sha256": "88ac675f017b00c6d7182c1c3c96248d5278a6e6b90deb9cd9c843e7e965d702"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-075546-play.jsonl",
+      "bytes": 119,
+      "sha256": "ce2cc8191cdeae5ef5daef846cd7e6cd1d521fb2f15b33b06865c8a49dd7a301"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-075555-play.jsonl",
+      "bytes": 119,
+      "sha256": "5f8cbb88a6d3ce12f9401967b1218deaf072ad4e7cac200899a94f44ca536959"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-075604-play.jsonl",
+      "bytes": 243,
+      "sha256": "d315cc35af2d9c8e0feaa944b988261b6dc800bc2ac5fb8e8e833600615309e3"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-075701-play.jsonl",
+      "bytes": 118,
+      "sha256": "8f9f24e53299c28bb67057b129b91585ebc6ca7e93b9e90f849da32e62a74786"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-075712-play.jsonl",
+      "bytes": 119,
+      "sha256": "15c14c95e643a2ddadad40a834282c7581308160028d60c998d2be8b7dc535f4"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-075724-play.jsonl",
+      "bytes": 120,
+      "sha256": "979a34775e225b0dd4134a83d052c7ce96d0c51176e93af3d17a490a1c65456f"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-075734-play.jsonl",
+      "bytes": 1438,
+      "sha256": "8ab59b50850df3dcb5d7443c2454b576a4f55770198b7015b0e4876d95d34f6a"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-080007-play.jsonl",
+      "bytes": 1318,
+      "sha256": "3d82201ec7d3aff4be3e4f1a1f5e667d3e5f6b23c3837a757646a9a427f5d811"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-080218-play.jsonl",
+      "bytes": 600,
+      "sha256": "85ad527a63b353823b2f57d45ab3b0ef5745c45b585c88856c656b53bcab885e"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-080415-play.jsonl",
+      "bytes": 478,
+      "sha256": "86b527124e9626d402ebc795fa73f502bdfff883290a5f287bbfc78f3e2584d4"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-080637-play.jsonl",
+      "bytes": 1075,
+      "sha256": "b4e659557cb06db81abeace15256a38ebbbe89fa45ae38e01b40e7d53d19b70b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-080951-play.jsonl",
+      "bytes": 1196,
+      "sha256": "1d94fce5ac353d585ea8e1053e0ab33f688fa8e357eb5f634a2ff21797c0060b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-081340-play.jsonl",
+      "bytes": 359,
+      "sha256": "78a441c4cedf44aae7dad96f0f280d565092951c7759837989698646b4cb95a9"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-081430-play.jsonl",
+      "bytes": 597,
+      "sha256": "d38eb28e70453e5b3738978245a328a308680a3a5e8c60815b94265fce08f84d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-081554-play.jsonl",
+      "bytes": 478,
+      "sha256": "ce58d5d4ee5b7f8b09a8c316fc7e62cdd4a1c1ec8637f3e00294358ca4b1c001"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-081653-play.jsonl",
+      "bytes": 724,
+      "sha256": "4ebe4c45e4bc69094c2fe5995b98e690899dbdaa7f277a05e837341211b54da8"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-081925-play.jsonl",
+      "bytes": 721,
+      "sha256": "88641b9b7a0552bcdd08ba6b4a6eb7964f350e5f5ede3df9f229dcffac8b5ca5"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-082125-play.jsonl",
+      "bytes": 484,
+      "sha256": "343ce79947f2bc76614c3b97260c931e1f0c8873a116c90bca090af9f93cc0f0"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-082459-play.jsonl",
+      "bytes": 370,
+      "sha256": "c54e5d83ef71f54006b8cdf3ee90bf2a3e3277bef024f66e89a6b7967d374bcc"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-082856-play.jsonl",
+      "bytes": 358,
+      "sha256": "7d517e3f431e178b53ea2fba985e746d5e8e58ac8b6b9e77b098bf1dad64a7b0"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-083131-play.jsonl",
+      "bytes": 1442,
+      "sha256": "4b90ce8609f10bb6a98c5283eb4afd1e61de083cd29bc548befcfaa2bcdbb80e"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-084043-play.jsonl",
+      "bytes": 479,
+      "sha256": "e2eb8138e5c434bf1a0caadda1230498a5adef6d6676121c0940503747daecf0"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-084414-play.jsonl",
+      "bytes": 479,
+      "sha256": "ea69bd3722a681f3a641bb455452862222a211a659f67ca2e6ef90bc13e64991"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-084659-play.jsonl",
+      "bytes": 361,
+      "sha256": "1fdb13204b12fd60a37ff47fbbfa52f184e6e383654ffce99fc69d8766ff99db"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-085014-play.jsonl",
+      "bytes": 1560,
+      "sha256": "a70125876f1e98faa133cbf4beee87828c394615ec8e3295f576600217b40e89"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-085250-play.jsonl",
+      "bytes": 610,
+      "sha256": "1d81e45df495198e99dbff52f671d847796cbf574d1f8141ef21c78de73ad40f"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-085526-play.jsonl",
+      "bytes": 362,
+      "sha256": "45b6b827a81025eae8321096aa39cb7eafbea44eb8106ba3dc834b8d217df552"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-085701-play.jsonl",
+      "bytes": 857,
+      "sha256": "bec70f8ec0fb25b76e6892a5ad204e9f25f0de2e318cce57bb9d63c9a12fa379"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-090639-play.jsonl",
+      "bytes": 123,
+      "sha256": "116804965ff697c6d62d54816e5bcf640f42a10a3a06b4d3b0b8c68f1dde9d4d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-090722-play.jsonl",
+      "bytes": 367,
+      "sha256": "9448a072808af354607cd817afcdb419c75c4298bb1f9bbe83a52d4376125d7c"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-090912-play.jsonl",
+      "bytes": 716,
+      "sha256": "3150224b9cbd4dded220c9d5efa57b40802c9280874f8b7e45a7fe3c433b7c3a"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-091028-play.jsonl",
+      "bytes": 2045,
+      "sha256": "412863bddbac820e72718216ba3963bb4095246c4822a423bb80d063e02bb7ba"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-091437-play.jsonl",
+      "bytes": 361,
+      "sha256": "14d2231238236efd67703e4bbf306e5397b95a93a915a1a909d7cfbe879c6b8b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-091620-play.jsonl",
+      "bytes": 4421,
+      "sha256": "d754ac24794e4f1ae7f07a03e852c6c00f488cf2fe1dcdc158dae4c60ccbb156"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-092025-play.jsonl",
+      "bytes": 1563,
+      "sha256": "c949bedfe30eec71334e9b7a7e88e99cbabba6584d29f02989f10521d05103c8"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-092344-play.jsonl",
+      "bytes": 9019,
+      "sha256": "bdfd04ba9add89aa3bdfa66d93985e3d7377501c513d37ac0eb96f8632761068"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-093632-play.jsonl",
+      "bytes": 841,
+      "sha256": "5de87a12a94e0f74431f8bf4887d4f6575c7dcb5843fd40124007fa2c29a4392"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-093810-play.jsonl",
+      "bytes": 123,
+      "sha256": "fc3c6615f44070a9996168372a6c33bbec6aab34958ef17ea8875461801b9e4b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-093904-play.jsonl",
+      "bytes": 124,
+      "sha256": "73d92bea7cb6cff20ff5059ec456020af5c6f27576236938c727c2b4c8fb3fb1"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-094016-play.jsonl",
+      "bytes": 601,
+      "sha256": "ff8897406193621640731497e13dc95a9d1bad80f09cc470f17849f8c24be771"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-094135-play.jsonl",
+      "bytes": 2145,
+      "sha256": "1b5c7130e0f0f4d223ee3c32301fccd8ceae4e2552f01be44e4901a5a56c7103"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-094538-play.jsonl",
+      "bytes": 243,
+      "sha256": "e4b8ef4bdd75ccb2e43a40446e504be995c9f6b9f80b90049a7f5e8f71078d02"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-094622-play.jsonl",
+      "bytes": 121,
+      "sha256": "0ad82443fcf6b2e1a8e19cc30ab20e3cdf49ae6a833b08da6fad6866c984a4ba"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-094712-play.jsonl",
+      "bytes": 123,
+      "sha256": "57b6295d29a21a103dbc48f01086e5297ae3ca7cf6444412f7254b9cc92b06c7"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-094757-play.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-094909-play.jsonl",
+      "bytes": 483,
+      "sha256": "259502f2028f12e82d5e6efbeeabf09039473417f4bdd06dbe9cf169b88a7666"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-095126-play.jsonl",
+      "bytes": 361,
+      "sha256": "bad7b10bb91fcc82f4581f73975a9c57dbb6b2050ff9787636a0679894f89bc1"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-095446-play.jsonl",
+      "bytes": 727,
+      "sha256": "3cfec7ab35af469a1a8ede4baa714cd79df3c3aa45d453476030f4d9179e937e"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-100153-play.jsonl",
+      "bytes": 1926,
+      "sha256": "b0cd5d13d6633a5e8b3f4de0022732885b799c89902aa7a8e75322c7a1c7f9f8"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-100958-play.jsonl",
+      "bytes": 598,
+      "sha256": "fb37efe3263ba4fef3c046c1388c9cfe9bc0ecad0525df30f848fd4669059333"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-101358-play.jsonl",
+      "bytes": 1561,
+      "sha256": "585b2db0dabd6572fa09ccce354e8327a13630fd48f3eb0918c0feeefc1b65ee"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-102321-play.jsonl",
+      "bytes": 480,
+      "sha256": "1d829e338e7c391420123ae048c10623eeb94c513ce1b9bc9d82b68ca02c560d"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-102640-play.jsonl",
+      "bytes": 124,
+      "sha256": "fdeacc96d94ba4ab33eb75ac6b9be3e7eaa3b6a14badd7d04ac8dbff0348a023"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-102743-play.jsonl",
+      "bytes": 1429,
+      "sha256": "91210c19bf0f884f90e8ec3a104f41e3854f9a436e480a046f30e421497479ed"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-103052-play.jsonl",
+      "bytes": 240,
+      "sha256": "651d81f55634cd9122d57a4c8522d9a732a9e385513df11cc718c9af470f3430"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-103553-play.jsonl",
+      "bytes": 1203,
+      "sha256": "edcdd1871732a62d8da013e3e93a9f6571b33e1db320a470efd92e985a677f24"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-103914-play.jsonl",
+      "bytes": 2167,
+      "sha256": "dd17c2606e9f1fe6b67d04fa2fa8d6ba45036ddf13fe0c69f9b7f5499dc3ed6f"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-104326-play.jsonl",
+      "bytes": 1077,
+      "sha256": "75157652da46386e91d43803f5c70ad039f8e76e13acee8d836551d28f9f8a38"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-104556-play.jsonl",
+      "bytes": 479,
+      "sha256": "64131e9bd2446a08e409f6c5dfcc7ea5b27b245fe20db1a0476b7d81c583f113"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/attempts/20261011-104714-play.jsonl",
+      "bytes": 2038,
+      "sha256": "017b3db268a4aa8930f79d79d13a00127c64474d8655e95e8cf34913571de850"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/campaign_results.txt",
+      "bytes": 3061,
+      "sha256": "132a6f83e7fc995de0909b0bd25a8895861278c5ac37312d721e2d54020c06ae"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/corner_campaign_results.txt",
+      "bytes": 950,
+      "sha256": "09b234a3a53c341e965ff10b0192f85ee9b24597ff60d1a69a71642d13780747"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/corner_stage09_results.txt",
+      "bytes": 559,
+      "sha256": "132bdb22b96eee3b936be7630798ee32cd50135c765419b70fe9bb768cf7081b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/results/corner_stage15_results.txt",
+      "bytes": 2799,
+      "sha256": "c40a4f04c738271a715f0d3f8aa07c0aec05b59c9e7e4fb5bffe0fae51104734"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/status.json",
+      "bytes": 758,
+      "sha256": "fbc7a74dbc311bcc60511a886f744cd933ad5f95caeda65b59a8cdc015c4c18f"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/unconfirmed-experiments/stage35-geometric-comparison-unconfirmed.patch",
+      "bytes": 11184,
+      "sha256": "021996d1b6feb3acecb4eb6fa16dce2934b2df03498fc5004eb841e80b97e69b"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/unconfirmed-experiments/stage35-near-spike-upper-brake-pending.patch",
+      "bytes": 5117,
+      "sha256": "05022c4ea6260d5a283c7607ec0cabbbe9e459fefc63822ddbfff7ec82f362ec"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/unconfirmed-experiments/stage41-horizontal-gap-unconfirmed.patch",
+      "bytes": 10611,
+      "sha256": "c13ef5b21cc43363781ce8b65372d9ae23644aebde310733c866a2f5a2908c76"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/unconfirmed-experiments/stage48-center-descents-unconfirmed.patch",
+      "bytes": 5250,
+      "sha256": "049327c437d81a8bc8955e7395733ebb28847c34c4e0f6fade449d83bf6c8ffa"
+    },
+    {
+      "path": "docs/games/flyhome-20261011/verification.json",
+      "bytes": 475,
+      "sha256": "79e4c1bab7a5bcc37e478b439975c6e266d692ddbdd09a66815d4baca6e1e926"
+    },
+    {
+      "path": "requirements-test.txt",
+      "bytes": 15,
+      "sha256": "5fbf87b6a497a20f42243f6b9de542c7814b8ae05826ea34ca15bc76bde5f2e7"
+    },
+    {
+      "path": "scripts/flyhome/campaign.py",
+      "bytes": 9202,
+      "sha256": "e412e7da4f03744c0cefd08fca2d585acc8603242a362802dc30f71c11e8ae36"
+    },
+    {
+      "path": "scripts/flyhome/nav.py",
+      "bytes": 1249,
+      "sha256": "34ab55679b5332cbcbc887a000de202863f0598943a8ee30f7a20c7c56458c2b"
+    },
+    {
+      "path": "scripts/flyhome/prepare_controller_profile.py",
+      "bytes": 5013,
+      "sha256": "91de4ae562002292abe7d87e357ee79482a0525f2ddc8c62e5e9ad7314230d99"
+    },
+    {
+      "path": "scripts/flyhome/restore_saved_bot.py",
+      "bytes": 1767,
+      "sha256": "c44528af16a57c943069e874cc1be38b75fb4e1fef99daf2a8d1097bb06e4b63"
+    },
+    {
+      "path": "scripts/flyhome/supervise.sh",
+      "bytes": 715,
+      "sha256": "0f3b0b9c6cc040d235b6fadeab7a6b2cd78470b599a1e42b47b04449fa3c4f3a"
+    },
+    {
+      "path": "src/docich/flyhome/__init__.py",
+      "bytes": 1472,
+      "sha256": "517570d424e26b8185f98ac8502b3b0632433dbb6221a066786e39e59a2af82b"
+    },
+    {
+      "path": "src/docich/flyhome/__main__.py",
+      "bytes": 57,
+      "sha256": "4b1afbca74a10abc3cff7b4e5a11b558bf619e45b89709faf9225a474a2a250f"
+    },
+    {
+      "path": "src/docich/flyhome/calibrate.py",
+      "bytes": 6485,
+      "sha256": "9e01b49efecc32ec7cb62e13364ae7880f28ecb7c23de58b832553525b194750"
+    },
+    {
+      "path": "src/docich/flyhome/cli.py",
+      "bytes": 10583,
+      "sha256": "d26906b67ce0a99061daa3e5a3f02f60b60be1fa6bce30f4395d006b826a747c"
+    },
+    {
+      "path": "src/docich/flyhome/control.py",
+      "bytes": 5502,
+      "sha256": "5f0cb475198a30da237f23c0b9d7bc6299d8dfc704fa3e6c41f9bdb40041de8e"
+    },
+    {
+      "path": "src/docich/flyhome/image.py",
+      "bytes": 7939,
+      "sha256": "4e73093f0392b11e09839683be38a91b146bee4215f0865e186079e1b3bb1c5a"
+    },
+    {
+      "path": "src/docich/flyhome/map_navigation.py",
+      "bytes": 2231,
+      "sha256": "e606eff09bb659ffa29b456a41515a2d302303455b7f6fbecb16865879540a62"
+    },
+    {
+      "path": "src/docich/flyhome/mpc.py",
+      "bytes": 43346,
+      "sha256": "971467b30196d5e17db96885998843aaf99d256bc2ec933da43ded6465f61452"
+    },
+    {
+      "path": "src/docich/flyhome/narration.py",
+      "bytes": 5415,
+      "sha256": "ee95a1d5fbccf2dde40f41a2aa35d305dd216835719bea48fdba7dfd67a922a4"
+    },
+    {
+      "path": "src/docich/flyhome/planner.py",
+      "bytes": 10764,
+      "sha256": "b2dec9802b8665fed70234c6acf86165bd37cee4380fd39f03f0b51cf3f5ba8a"
+    },
+    {
+      "path": "src/docich/flyhome/progress.py",
+      "bytes": 3006,
+      "sha256": "cd0fba1737dea89ed5e0aeb1c0e3ccc9e327b5e23ce7a9f740204fd3d5a20674"
+    },
+    {
+      "path": "src/docich/flyhome/route_worker.py",
+      "bytes": 5028,
+      "sha256": "bc927d1dafdb0f2d4281c5a6df268462eb0471984b6f0117862bb1bab7089276"
+    },
+    {
+      "path": "src/docich/flyhome/runner.py",
+      "bytes": 31001,
+      "sha256": "a67d003879c97594b83f6348a002f620944fd5cb2950fdb228799a81f034a7f3"
+    },
+    {
+      "path": "src/docich/flyhome/settings.py",
+      "bytes": 4552,
+      "sha256": "32d66f712b07b3400501b12cf4b6da277dc60291386c8cc2dd61d64f0f37e40c"
+    },
+    {
+      "path": "src/docich/flyhome/sim.py",
+      "bytes": 6025,
+      "sha256": "2bd7f5872fe40c01d3684fecb424fed47529b11dc96e5a1898fb7227b5ae09b9"
+    },
+    {
+      "path": "src/docich/flyhome/steam.py",
+      "bytes": 4056,
+      "sha256": "a10e669e5868242d930fa2e3d144b1bfc74c822de5555bde83f842c5c6fa025e"
+    },
+    {
+      "path": "src/docich/flyhome/timeline.py",
+      "bytes": 2404,
+      "sha256": "7f74556129a7bfdab412c543386ae03fc6f2f1decacfee22b82ecc454d5ca766"
+    },
+    {
+      "path": "src/docich/flyhome/tracker.py",
+      "bytes": 7966,
+      "sha256": "8c2a5f5af3fbd2613a62f7b8c22161b499f4cdac83f7680c270c194fd9f4320b"
+    },
+    {
+      "path": "src/docich/flyhome/vision.py",
+      "bytes": 27820,
+      "sha256": "1a6cdf8312e1debc211ff46114b96f2e243db566de3b6f015dea2df71eb1747b"
+    },
+    {
+      "path": "src/docich/flyhome/win32.py",
+      "bytes": 16136,
+      "sha256": "41a0f62bd1c64a7493652fa584e8ca0e98eb26aef73bc7cce05b05c5ca5399d6"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level37-dead-prompt.png",
+      "bytes": 4140,
+      "sha256": "62b414b433132a3264093de1bf4198ef9b90ca4efdd142612fe3d5f091dff1f2"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level38-home-overlap.png",
+      "bytes": 3923,
+      "sha256": "2f4eccc095f22d0cf39d9512b478fd8e12e10895ef78e181a6f051ce0c164953"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level38-home-split-roof.png",
+      "bytes": 3977,
+      "sha256": "4009ba481376559078269e8a59c35bf284a27c474b5990c88db49c090149e373"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level39-upper-passage.json",
+      "bytes": 4487,
+      "sha256": "33159a16a2e39d3a6a881523bd72bbe9b3e5e6a6aa99d1d6c667bf274e49ad2e"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level41-before-lower-spike.png",
+      "bytes": 3981,
+      "sha256": "a24eed8a00c98e004aa665d8b7485c047853a87167f0f32f1ec93ccd1a6799a3"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level44-false-home-contact.json",
+      "bytes": 4148,
+      "sha256": "95b52ac88cffb8b6a5ca541b757655cc9146291a8f8e8b3cce22582957bb6145"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level44-initial.png",
+      "bytes": 2574,
+      "sha256": "4da8111756eeb9b1a797f52ef932c922d95a707e2c835cd1de14590f6ce70a1d"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level46-descent-wait.json",
+      "bytes": 3380,
+      "sha256": "fe29219173416dddf2f0b1ca00c076098c7bad7c0abc6e681803134870418ea9"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level46-initial.png",
+      "bytes": 4518,
+      "sha256": "3fcee912bf3a9298e1ad529021328d5173f7dbec2549c233d10ca2a54130a9e7"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level49-rising-foot-boundary.json",
+      "bytes": 8640,
+      "sha256": "787afa6024e1788e49607343e5eef56ab3ee85f075db685499fe7618c2161c7e"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level49-timer-boundary.png",
+      "bytes": 4462,
+      "sha256": "21cecb6cca1bccae49be6805a4e81b3948303fd3f4610519329ac670e040be42"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level49-timer-spike.png",
+      "bytes": 4408,
+      "sha256": "fd5b664523df28171b7c5721aeb84d1a8be0bdbc4849bc9a9e92772141e3e916"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level49-upper-foot-brake.json",
+      "bytes": 8384,
+      "sha256": "4ef8ca1fb730cf650cbe07001342b4618002a86a2fb00d86ffa7ee5fbe7b7ed1"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level50-danger-text.png",
+      "bytes": 2236,
+      "sha256": "572ff3c6f820d5e8b67167b0c36f80c24ca7c8dba929b52a87afb51fc6a38fe0"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level50-up-home-bob.png",
+      "bytes": 2168,
+      "sha256": "09ccab97bd3188105dac94e4ee3006e257be423a69c5e7f174c32cdb79438ad6"
+    },
+    {
+      "path": "tests/fixtures/flyhome-level50-up-home.png",
+      "bytes": 2120,
+      "sha256": "053baa5f14fd270c65b5c21c1ecd06289511db229d8427f6967973a08aeef2e6"
+    },
+    {
+      "path": "tests/test_flyhome.py",
+      "bytes": 18531,
+      "sha256": "21c6c6933c565de2a2fe8bb592307c952e25d3f763b9dc5f5ccd45f01e0bab54"
+    },
+    {
+      "path": "tests/test_flyhome_map_navigation.py",
+      "bytes": 2551,
+      "sha256": "af571adb27ffa07bf17b6994f37e5e122752f99d790f25ce47a5ad354173d75e"
+    },
+    {
+      "path": "tests/test_flyhome_narration.py",
+      "bytes": 3304,
+      "sha256": "f3943659e5071f2cc0a2b34ff80952ec1597dcd75babeecb8bbd56367679cfaf"
+    },
+    {
+      "path": "tests/test_flyhome_progress.py",
+      "bytes": 4365,
+      "sha256": "812d01348220af04aca4bf24060114fd891b26c7309016e22f16506cf810bd21"
+    },
+    {
+      "path": "tests/test_flyhome_real_descent_clearance.py",
+      "bytes": 1218,
+      "sha256": "62f0d7ab7807559cf21e552c43bf033c0a25dcf57a36b6083cbb31439f0e9b7c"
+    },
+    {
+      "path": "tests/test_flyhome_real_home_contact.py",
+      "bytes": 1623,
+      "sha256": "e51c2d7245655ae7b6c550dc3ae5c5f1c283df025c16bb6d3fadc98a9c6721ff"
+    },
+    {
+      "path": "tests/test_flyhome_real_home_overlap.py",
+      "bytes": 3661,
+      "sha256": "289c95f1b92d3a94ca0224c8d27da1b52334f3cae365db97ecd470f07efabc09"
+    },
+    {
+      "path": "tests/test_flyhome_real_hud_spikes.py",
+      "bytes": 1343,
+      "sha256": "b03b8b5de3b895d850c131bf1c90f9e899d694bf6199d15433d2c21338549846"
+    },
+    {
+      "path": "tests/test_flyhome_real_retry_prompt.py",
+      "bytes": 2635,
+      "sha256": "14ea43c8a59ec5495a38591657217ee73231b7792c2955828844ba112082b02f"
+    },
+    {
+      "path": "tests/test_flyhome_real_spike_flame.py",
+      "bytes": 722,
+      "sha256": "1a567b990aeae2084e6e0a895ad7ab2200e9634e9fb44213a32a32dfb030cdc7"
+    },
+    {
+      "path": "tests/test_flyhome_real_spike_floor.py",
+      "bytes": 2779,
+      "sha256": "6f6e3fa8282a93e32511e330812decb7773d44b168a4cdba9828df866f2cd63f"
+    },
+    {
+      "path": "tests/test_flyhome_real_up_home.py",
+      "bytes": 3383,
+      "sha256": "423ad74e91f7ccf700726ad5d0c9271c99675e83b0c60d2ffc108eb1976a3ec7"
+    },
+    {
+      "path": "tests/test_flyhome_real_upper_passage.py",
+      "bytes": 1321,
+      "sha256": "e04e41b4a9ea563da3640e182bf1c97f00356e1624c3f118945c8141a96af23e"
+    },
+    {
+      "path": "tests/test_flyhome_route_worker.py",
+      "bytes": 2494,
+      "sha256": "98f52e38cf9c5ea513d77cada28cdfeff504e5f53e962d62c958e3f6c7940bed"
+    },
+    {
+      "path": "tests/test_flyhome_windows_control.py",
+      "bytes": 20655,
+      "sha256": "d91e1dd41fee5065bd903cb3e1d48fb22e9eaab37c77426e0ce0f58524297260"
+    }
+  ]
+}

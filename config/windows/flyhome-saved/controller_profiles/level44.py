@@ -1,0 +1,787 @@
+"""物理モデルで先の動きを何通りも試して、一番よい入力を選ぶ制御器 (モデル予測制御・ランダムシューティング)。
+
+実機の物理 (2026-10 に製品版で計測) は ``control.JetController`` の仮説と違った:
+
+- 片足だけ噴射してもほぼ満額の推力が出る (``single_thrust_ratio`` ≈ 0.9)。回すだけの片足噴射は無い。
+- 回転は「押している間だけ角加速度」で、離しても角速度がほとんど減衰しない (``spin_mode="accel"``)。
+- キー入力から動きに出るまで約 0.08 秒の遅れがある。
+
+こうなると「傾けたい角度を決めて PD で追う」方式は噴射のたびに上へ飛んでしまうので、
+``Physics`` のモデルで 1 秒ほど先までをシミュレートし、経路の目標点へ近づき、
+地形・棘・画面外を避ける入力列を選ぶ。最初の 1 手だけ使い、毎ティック計画し直す。
+標準ライブラリだけで動く (1 ティックあたり数十 ms)。
+"""
+
+from __future__ import annotations
+
+import math
+import random
+from collections import deque
+from dataclasses import dataclass
+
+from .control import Physics
+from .planner import Grid
+from .tracker import State, wrap
+from .vision import Observation
+
+# (左, 右) の 4 通り。インデックス = 左*1 + 右*2
+ACTIONS: tuple[tuple[bool, bool], ...] = ((False, False), (True, False), (False, True), (True, True))
+
+
+@dataclass
+class MpcConfig:
+    step_s: float = 0.1  # 入力列 1 要素の長さ
+    horizon: int = 14  # 要素数 (先読み = step_s * horizon 秒)
+    substeps: int = 2  # 1 要素あたりの積分分割
+    candidates: int = 48  # 1 ティックで試す入力列の数
+    delay_s: float = 0.12  # 入力が効くまでの遅れ
+    ceiling_y: float = 24.0  # 上昇制動の中心座標の境界。実上側回廊の比較用に設定可能
+    persistence: float = 0.65  # ランダム列で直前と同じ入力を続ける確率
+    mutate_p: float = 0.2  # 前回の最良列を崩す確率
+    # コスト
+    # "track": 経路上を速度 v_ref (曲がり角・家の手前で減速) で進む目標点を追う (既定)。
+    # "progress": 経路の残り距離を減らす (角を斜めに突っ切りがちで、Lv8 の棘の柱に当たり続けた)。
+    mode: str = "track"
+    v_ref: float = 32.0
+    w_track: float = 1.5  # 目標点との距離 (px)
+    w_vel: float = 0.8  # 目標速度との差 (px/s)
+    end_accel: float = 18.0  # 家の手前の減速
+    foot: int = 9  # 実機の中心155px・床164pxの差に合わせた、中心から足元まで (地面との接触判定)
+    ground_friction: float = 2.5  # 地面での横速度の減衰 (1/s)
+    w_dist: float = 1.0  # 経路の残り距離 (px) を毎ステップ足す
+    w_lat: float = 4.0  # 経路からのずれ (px)。高く登りすぎない・壁際を避ける
+    w_final: float = 4.0  # 最終ステップの残り距離の追加重み
+    brake_accel: float = 45.0  # 速度上限 sqrt(2*a*残距離) の a (px/s^2)
+    v_floor: float = 12.0  # 残距離がほぼ 0 でも許す速度
+    terrain_pen: float = 60.0  # 地形への接触は姿勢を崩すため、経路を逸れて突っ切る予測を避ける
+    fatal_pen: float = 400.0  # 棘・画面外 (以降は死亡として打ち切り)
+    w_speed: float = 3.0
+    max_speed: float = 90.0  # これを超える速度に罰則
+    max_tilt: float = 0.8  # rad。これ以上傾くと立て直せない
+    bound_margin: float = 10.0  # 画面端からこの距離を切ると死亡扱い
+    hazard_margin: float = 9.0  # 体の半分の長さ (横倒しで約 7px) + 余裕。5 では Lv8 で x≈137–145 で棘に当たり続けた
+    hazard_soft: float = 14.0  # 棘の(生の)矩形からこの距離以内に近づくと、近さに比例して罰則 (遠回りより近道を選んで突っ込むのを防ぐ)
+    hazard_soft_w: float = 8.0
+    corner_turn: float = 0.7  # rad。経路のこれ以上の曲がり角の手前では、角までの距離に応じた速度上限をかける
+    corner_accel: float = 18.0
+    corner_floor: float = 6.0
+    home_slow_r: float = 50.0  # 家からこの距離以内では速度 <= home_v0 + home_v_per_px * 距離 を強く守る (通り過ぎ・滑り落ち対策)
+    home_v0: float = 10.0
+    home_v_per_px: float = 0.8
+    w_home_v: float = 4.0
+    w_omega: float = 3.0  # 毎ステップ w_omega * |角速度| (回して戻す列は実機では遅れで破綻しやすい)
+    w_tilt: float = 5.0  # 毎ステップ w_tilt * 傾き^2 (まっすぐ上がる/降りるほうを少し優先)
+    w_vaway: float = 0.8  # 経路から離れる向きの横速度 (px/s) への罰則 (経路を飛び出して家を通り過ぎるのを抑える)
+    # 家の扉の上で低速になったら入力を止めて地面で静止する (実機: 扉付近に約 2 秒とどまるとクリア)
+    settle_half_w: float = 9.0
+    settle_above: float = 16.0  # 家の基準点 (扉の足元) からこの高さまでが静止ゾーン
+    settle_speed: float = 12.0
+    takeoff_s: float = 0.35  # 試行開始からこの秒数は両足で真上に上がる (開始直後は角速度が推定できず、片足で回りすぎる)
+    om_gain: float = 0.35  # 角速度観測器の測定への補正の強さ
+    tilt_hard: float = 0.7  # これを超える傾きに強い罰則 (狭い回廊で横倒しになって加速するのを防ぐ)
+    w_tilt_hard: float = 150.0
+    seed: int = 1
+
+
+class MpcController:
+    """``JetController`` と同じ ``decide(state, target) -> (左, 右)`` を持つ。"""
+
+    def __init__(self, physics: Physics | None = None, cfg: MpcConfig | None = None, *, width: int = 320, height: int = 180):
+        self.p = physics or Physics()
+        self.cfg = cfg or MpcConfig()
+        self._open_limits = {name: getattr(self.cfg, name) for name in
+                             ('v_ref', 'tilt_hard', 'w_tilt_hard', 'w_omega', 'w_vel', 'w_speed')}
+        self.width, self.height = width, height
+        self.rng = random.Random(self.cfg.seed)
+        self.grid: Grid | None = None
+        self._narrow_level = False
+        self.solid: bytearray | None = None
+        self.hazards: list[tuple[int, int, int, int]] = []
+        self.home_bbox: tuple[int, int, int, int] | None = None
+        self.path: list[tuple[float, float]] = []
+        self._cum: list[float] = []
+        self._corners: list[float] = []  # 曲がり角の経路上の位置 (始点からの弧長)
+        self._samp: list[tuple[float, float, float, float, float]] = []  # 2px ごと (x, y, 接線x, 接線y, 速度上限)
+        self._ref: list[tuple[float, float, float, float]] = []  # 各ステップの目標 (x, y, vx, vy)
+        self.reset()
+
+    # --- 外部から ---------------------------------------------------------------------------
+    def reset(self) -> None:
+        self._pending = None
+        self._plan_t: float | None = None
+        self._plan: list[int] | None = None
+        self._last_action = 0
+        self._home_settling = False
+        self._descent_ready_since: float | None = None
+        self._descent_commit: tuple[float, float] | None = None
+        self._hist: deque[tuple[float, float, float, float]] = deque(maxlen=6)  # (t, x, y, angle 連続値)
+        self._attempt: int | None = None
+        self._unwrapped = 0.0
+        self._last_angle: float | None = None
+        self._om_obs = 0.0
+        self._t_obs: float | None = None
+        self._acts: deque[tuple[float, int]] = deque(maxlen=12)  # (時刻, 押した入力)
+
+    def set_world(self, grid: Grid, obs: Observation, path: list[tuple[float, float]] | None = None) -> None:
+        self.grid = grid
+        self._narrow_level = self._narrow_level or grid.cell <= 2 or len(obs.hazards) >= 24
+        narrow = self._narrow_level
+        self.cfg.v_ref = 20.0 if narrow else self._open_limits['v_ref']
+        self.cfg.tilt_hard = 0.4 if narrow else self._open_limits['tilt_hard']
+        self.cfg.w_tilt_hard = 300.0 if narrow else self._open_limits['w_tilt_hard']
+        self.cfg.w_omega = 10.0 if narrow else self._open_limits['w_omega']
+        self.cfg.w_vel = 2.5 if narrow else self._open_limits['w_vel']
+        self.cfg.w_speed = 18.0 if narrow else self._open_limits['w_speed']
+        self.hazards = list(obs.hazards)
+        if path:
+            self.path = list(path)
+            self._cum = [0.0]
+            for a, b in zip(self.path, self.path[1:]):
+                self._cum.append(self._cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+            self._corners = self._find_corners()
+            self._samp = self._sample_path()
+        self.home_bbox = obs.home_bbox
+        self.width, self.height = obs.width, obs.height
+        self.solid = obs.solid  # 画素単位の地形 (草/土)
+
+    def _find_corners(self, m: int = 1) -> list[float]:
+        pts, cum = self.path, self._cum
+        out: list[float] = []
+        for k in range(m, len(pts) - m):
+            ax, ay = pts[k][0] - pts[k - m][0], pts[k][1] - pts[k - m][1]
+            bx, by = pts[k + m][0] - pts[k][0], pts[k + m][1] - pts[k][1]
+            la, lb = math.hypot(ax, ay), math.hypot(bx, by)
+            if la < 1e-6 or lb < 1e-6:
+                continue
+            turn = math.acos(max(-1.0, min(1.0, (ax * bx + ay * by) / (la * lb))))
+            if turn >= self.cfg.corner_turn and (not out or cum[k] - out[-1] > 12.0):
+                out.append(cum[k])
+        return out
+
+    def _sample_path(self, ds: float = 2.0) -> list[tuple[float, float, float, float, float]]:
+        pts, cum, c = self.path, self._cum, self.cfg
+        if len(pts) < 2:
+            return []
+        plen = cum[-1]
+        out = []
+        j = 0
+        sv = 0.0
+        while True:
+            while j < len(pts) - 2 and cum[j + 1] < sv:
+                j += 1
+            seg = cum[j + 1] - cum[j]
+            u = 0.0 if seg <= 1e-9 else (sv - cum[j]) / seg
+            ax, ay = pts[j]
+            bx, by = pts[j + 1]
+            tx, ty = (bx - ax, by - ay)
+            tl = math.hypot(tx, ty) or 1.0
+            v = min(c.v_ref, math.sqrt(2.0 * c.end_accel * max(0.0, plen - sv)))
+            for cs in self._corners:
+                if cs >= sv:
+                    v = min(v, math.sqrt(2.0 * c.corner_accel * (cs - sv)) + c.corner_floor)
+                    break
+            px, py = ax + u * (bx - ax), ay + u * (by - ay)
+            if self.hazards:
+                clearance = min(math.hypot(max(hx0 - px, 0, px - hx1), max(hy0 - py, 0, py - hy1))
+                                for hx0, hy0, hx1, hy1 in self.hazards)
+                v = min(v, 12.0 + 1.5 * max(0.0, clearance - 9.0))
+            if self._narrow_level and self.grid is not None:
+                cc, rr = self.grid.to_cell(px, py)
+                if self.grid.cost[self.grid.idx(cc, rr)]:
+                    v = min(v, 8.0)  # 通路の壁・棘近くは遅く、広い部分では進捗を確保。
+            out.append((px, py, tx / tl, ty / tl, v))
+            if sv >= plen:
+                break
+            sv = min(plen, sv + ds)
+        return out
+
+    def _project(self, x: float, y: float) -> int:
+        """現在位置に最も近い経路サンプルの番号。"""
+        best, bi = 1e18, 0
+        for i, (px, py, _, _, _) in enumerate(self._samp):
+            d = (px - x) ** 2 + (py - y) ** 2
+            if d < best:
+                best, bi = d, i
+        return bi
+
+    def _make_ref(self, x: float, y: float) -> None:
+        c = self.cfg
+        samp = self._samp
+        self._ref = []
+        if not samp:
+            return
+        sidx = float(self._project(x, y))
+        last = len(samp) - 1
+        dt = c.step_s / 2
+        for _ in range(c.horizon):
+            for _ in range(2):
+                k = min(last, int(sidx))
+                sidx = min(float(last), sidx + samp[k][4] * dt / 2.0)  # サンプル間隔 2px
+            k = min(last, int(sidx))
+            px, py, tx, ty, v = samp[k]
+            self._ref.append((px, py, tx * v, ty * v))
+
+    # --- 状態推定 -----------------------------------------------------------------------------
+    def _estimate(self, st: State) -> tuple[float, float, float, float, float, float]:
+        """位置は 1 px 量子化なので、数フレーム前との差で速度・角速度を出す (tracker の速度は雑音が大きい)。"""
+        if self._last_angle is None:
+            self._unwrapped = st.angle
+        else:
+            self._unwrapped += wrap(st.angle - self._last_angle)
+        self._last_angle = st.angle
+        self._hist.append((st.t, st.x, st.y, self._unwrapped))
+        t0, x0, y0, a0 = self._hist[0]
+        dt = st.t - t0
+        if len(self._hist) < 3 or dt < 0.05:
+            om_meas = 0.0
+            vx = vy = 0.0
+        else:
+            om_meas = (self._unwrapped - a0) / dt
+            vx, vy = (st.x - x0) / dt, (st.y - y0) / dt
+        # 角速度の観測器: 測定 (数フレームの差分) は遅れるので、自分が押したジェット (遅れ delay_s 込み) から予測し、測定で補正する。
+        p, c = self.p, self.cfg
+        if len(self._hist) >= 3 and dt >= 0.05:
+            # 差分速度は観測窓の中央時刻の値。実際に送った入力で現在まで進める。
+            # 加速中に半窓ぶん遅い速度を使うと、棘の手前の停止が間に合わない。
+            mid = st.t - dt * 0.5
+            n = max(1, math.ceil((st.t - mid) / 0.025))
+            h = (st.t - mid) / n
+            for k in range(n):
+                a = 0
+                when = mid + (k + 0.5) * h - c.delay_s
+                for ta, aa in self._acts:
+                    if ta <= when:
+                        a = aa
+                left, right = a & 1, (a >> 1) & 1
+                thrust = p.thrust if left and right else p.thrust * p.single_thrust_ratio if left or right else 0.0
+                vx += (math.sin(st.angle) * thrust - p.drag * vx) * h
+                vy += (p.gravity - math.cos(st.angle) * thrust - p.drag * vy) * h
+                om_meas += ((left - right) * p.torque_sign * p.spin - p.angular_damping * om_meas) * h
+            if all(abs(px - st.x) + abs(py - st.y) < 0.1 for _, px, py, _ in list(self._hist)[-3:]):
+                vx = vy = 0.0  # 地形に接して静止しているときは、空中モデルを足さない。
+        if self._t_obs is None:
+            self._om_obs = om_meas
+        else:
+            h = max(0.0, st.t - self._t_obs)
+            a = 0
+            for ta, aa in self._acts:
+                if ta <= st.t - c.delay_s:
+                    a = aa
+            left, right = a & 1, (a >> 1) & 1
+            pred = self._om_obs + (left - right) * p.torque_sign * p.spin * h
+            pred -= pred * min(1.0, p.angular_damping * h)
+            self._om_obs = pred + c.om_gain * (om_meas - pred)
+        if self.solid is not None and len(self._hist) >= 3:
+            still_angle = all(abs(a - self._unwrapped) < 0.015 for _, _, _, a in list(self._hist)[-3:])
+            if still_angle:
+                for ox, oy in ((0, self.cfg.foot + 1), (0, -7), (5, 0), (-5, 0)):
+                    xi, yi = int(st.x + ox), int(st.y + oy)
+                    if 0 <= xi < self.width and 0 <= yi < self.height and self.solid[yi * self.width + xi]:
+                        self._om_obs = 0.0
+                        break
+        self._t_obs = st.t
+        return st.x, st.y, vx, vy, st.angle, self._om_obs
+
+    # --- シミュレーション -----------------------------------------------------------------
+    def _cost(self, x, y, vx, vy, ang, om, seq, tx, ty, first_dt, first_action) -> float:
+        p, c = self.p, self.cfg
+        g, T, ratio, spin, damp, drag, sign = p.gravity, p.thrust, p.single_thrust_ratio, p.spin, p.angular_damping, p.drag, p.torque_sign
+        grid = self.grid
+        cell = grid.cell if grid else 4
+        cols = grid.cols if grid else 0
+        blocked = grid.blocked if grid else b""
+        rows = grid.rows if grid else 0
+        hz = [(x0 - c.hazard_margin, y0 - c.hazard_margin, x1 + c.hazard_margin, y1 + c.hazard_margin) for x0, y0, x1, y1 in self.hazards]
+        hraw = self.hazards
+        hb = self.home_bbox
+        W, H, bm = self.width, self.height, c.bound_margin
+        total = 0.0
+        path, cum = self.path, self._cum
+        plen = cum[-1] if cum else 0.0
+        segs = [(path[i][0], path[i][1], path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1], cum[i]) for i in range(len(path) - 1)]
+        vb = 2.0 * c.brake_accel
+        soft, soft_w = c.hazard_soft, c.hazard_soft_w
+        corners = self._corners
+        ref = self._ref
+        home_pt = self.path[-1] if self.path else None
+        dt_sub = c.step_s / c.substeps
+        n_steps = len(seq)
+        track = self.cfg.mode == "track" and len(ref) >= n_steps
+        sin, cos, hypot = math.sin, math.cos, math.hypot
+        solid = self.solid
+        foot = c.foot
+
+        def advance(dt: float, a: int) -> None:
+            nonlocal x, y, vx, vy, ang, om
+            left, right = a & 1, (a >> 1) & 1
+            n = left + right
+            thr = T if n == 2 else (T * ratio if n == 1 else 0.0)
+            grounded = False
+            if solid is not None:
+                xi, yi = int(x), int(y + foot + 1)
+                grounded = 0 <= xi < W and 0 <= yi < H and bool(solid[yi * W + xi])
+            if solid is not None and not grounded:
+                sa, ca = sin(ang), cos(ang)
+                for ox, oy in ((6 * sa, -6 * ca), (4 * ca, 4 * sa), (-4 * ca, -4 * sa)):
+                    xi, yi = int(x + ox), int(y + oy)
+                    if 0 <= xi < W and 0 <= yi < H and solid[yi * W + xi]:
+                        grounded = True
+                        break
+            if grounded:
+                om = 0.0  # 実機: 地形接触中は回転しない (壁・天井への接触も含む)。
+            else:
+                om += (left - right) * sign * spin * dt
+                om -= om * min(1.0, damp * dt)
+            ang += om * dt
+            vx += sin(ang) * thr * dt
+            vy += (-cos(ang) * thr + g) * dt
+            k = min(1.0, drag * dt)
+            vx -= vx * k
+            vy -= vy * k
+            x += vx * dt
+            y += vy * dt
+            if solid is not None:
+                # 地面: 足元 (中心から foot px 下) が地形なら落ちずに止まり、横は摩擦で減速する (実機は地面を滑って止まる)
+                xi, yi = int(x), int(y + foot)
+                if 0 <= xi < W and 0 <= yi < H and solid[yi * W + xi]:
+                    if vy > 0:
+                        vy = 0.0
+                        y = float(yi - foot)
+                    vx -= vx * min(1.0, c.ground_friction * dt)
+
+        # 入力が効くまでの遅れ: 直前に出した入力がまだ効いている間
+        if first_dt > 0:
+            pending = getattr(self, '_pending', None)
+            if pending:
+                for duration, action in pending:
+                    advance(duration, action)
+            else:
+                advance(first_dt, first_action)
+
+        for i in range(n_steps):
+            a = seq[i]
+            for _ in range(c.substeps):
+                advance(dt_sub, a)
+            if track:
+                rx, ry, rvx, rvy = ref[i]
+                d = hypot(x - rx, y - ry)
+                total += c.w_track * d + c.w_vel * hypot(vx - rvx, vy - rvy)
+            elif segs:
+                best_lat, rem = 1e9, 0.0
+                away = 0.0
+                s_cur = 0.0
+                for ax, ay, dx, dy, c0 in segs:
+                    ll = dx * dx + dy * dy
+                    u = 0.0 if ll <= 1e-9 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / ll))
+                    lat = hypot(x - ax - u * dx, y - ay - u * dy)
+                    if lat < best_lat:
+                        best_lat, rem = lat, plen - (c0 + u * math.sqrt(ll))
+                        s_cur = c0 + u * math.sqrt(ll)
+                        if ll > 1e-9 and lat > 1.5:
+                            inv = 1.0 / math.sqrt(ll)
+                            side = ((x - ax) * dy - (y - ay) * dx) * inv  # 経路の左右どちら側か (符号付きずれ)
+                            vperp = (vx * dy - vy * dx) * inv
+                            away = vperp if side > 0 else -vperp
+                        else:
+                            away = 0.0
+                d = rem if rem > 0.0 else 0.0
+                total += c.w_dist * d + c.w_lat * best_lat
+                if away > 0.0:
+                    total += c.w_vaway * away
+            else:
+                d = hypot(x - tx, y - ty)
+                total += c.w_dist * d
+            if x < bm or x > W - bm or y < bm or y > H - bm:
+                return total + c.fatal_pen * (n_steps - i)
+            dmin = 1e9
+            for hx0, hy0, hx1, hy1 in hz:
+                if hx0 <= x <= hx1 and hy0 <= y <= hy1:
+                    return total + c.fatal_pen * (n_steps - i)
+            for hx0, hy0, hx1, hy1 in hraw:
+                ddx = hx0 - x if x < hx0 else (x - hx1 if x > hx1 else 0.0)
+                ddy = hy0 - y if y < hy0 else (y - hy1 if y > hy1 else 0.0)
+                dd = hypot(ddx, ddy)
+                if dd < dmin:
+                    dmin = dd
+            if dmin < soft:
+                total += soft_w * (soft - dmin)  # 一番近い棘の生の矩形からの距離だけで (足し合わせない)
+            safe_slide = abs(ang) < 0.25 and abs(vx) < 10.0
+            if solid is not None:
+                if solid[min(H - 1, max(0, int(y))) * W + min(W - 1, max(0, int(x)))]:
+                    total += c.fatal_pen
+                # 実機の頭・胴の幅まで検査。中心だけなら壁をかすめて姿勢を崩す。
+                sa, ca = sin(ang), cos(ang)
+                for ox, oy in ((6 * sa, -6 * ca), (4 * ca, 4 * sa), (-4 * ca, -4 * sa)):
+                    px, py = int(x + ox), int(y + oy)
+                    if 0 <= px < W and 0 <= py < H and solid[py * W + px]:
+                        total += c.terrain_pen * (0.0 if safe_slide else 2.0)
+                        break
+            if grid is not None:
+                cc, rr = int(x // cell), int(y // cell)
+                if 0 <= cc < cols and 0 <= rr < rows and blocked[rr * cols + cc]:
+                    total += c.terrain_pen * (0.0 if safe_slide else 1.0)
+            sp = hypot(vx, vy)
+            if home_pt is not None:
+                dh = hypot(x - home_pt[0], y - home_pt[1])
+                if dh < c.home_slow_r:
+                    lim = c.home_v0 + c.home_v_per_px * dh
+                    if sp > lim:
+                        total += c.w_home_v * (sp - lim)
+            narrow = self._narrow_level
+            vcap = min(c.max_speed, max(10.0 if narrow else 18.0, hypot(rvx, rvy) + (4.0 if narrow else 10.0))) if track else min(c.max_speed, math.sqrt(vb * d) + c.v_floor)
+            if segs and not track:
+                for cs in corners:
+                    if cs > s_cur:
+                        vcap = min(vcap, math.sqrt(2.0 * c.corner_accel * (cs - s_cur)) + c.corner_floor)
+                        break
+            if sp > vcap:
+                total += c.w_speed * (sp - vcap)
+            total += c.w_tilt * ang * ang + c.w_omega * abs(om)
+            if abs(ang) > c.tilt_hard:
+                total += c.w_tilt_hard * (abs(ang) - c.tilt_hard)
+            if abs(ang) > c.max_tilt:
+                total += 60.0 * (abs(ang) - c.max_tilt)
+            if hb is not None and hb[0] <= x <= hb[2] and hb[1] <= y <= hb[3]:
+                total -= 30.0 * (n_steps - i)  # 家に入れる列は強く優先
+                break
+        total += c.w_final * (d if (segs or track) else hypot(x - tx, y - ty)) + 0.8 * abs(om)
+        return total
+
+    def _policy_seq(self, x, y, vx, vy, ang, om, theta: float) -> list[int]:
+        """目標の傾き theta を PD で保ちながら両足で噴射する入力列を、モデルを進めて作る (閉ループ候補)。"""
+        p, c = self.p, self.cfg
+        dt = c.step_s / c.substeps
+        seq: list[int] = []
+        for _ in range(c.horizon):
+            err = theta - ang - 0.45 * om
+            a = 3 if abs(err) < 0.06 else (1 if (err > 0) == (p.torque_sign > 0) else 2)
+            seq.append(a)
+            left, right = a & 1, (a >> 1) & 1
+            n = left + right
+            thr = p.thrust if n == 2 else p.thrust * p.single_thrust_ratio
+            for _ in range(c.substeps):
+                om += (left - right) * p.torque_sign * p.spin * dt
+                om -= om * min(1.0, p.angular_damping * dt)
+                ang += om * dt
+                vx += math.sin(ang) * thr * dt
+                vy += (-math.cos(ang) * thr + p.gravity) * dt
+                k = min(1.0, p.drag * dt)
+                vx -= vx * k
+                vy -= vy * k
+                x += vx * dt
+                y += vy * dt
+        return seq
+
+    def _track_policy_seq(self, x, y, vx, vy, ang, om, k_tilt: float, max_tilt: float) -> list[int]:
+        """目標点の速度に合わせる閉ループ方策を、モデルを進めて入力列にする。
+        上下は両足噴射の入/切 (PWM) で、左右は傾き (目標 = k_tilt * 横速度の不足) を片足の短い噴射で作る。"""
+        p, c = self.p, self.cfg
+        dt = c.step_s / c.substeps
+        seq: list[int] = []
+        for i in range(c.horizon):
+            rx, ry, rvx, rvy = self._ref[i] if i < len(self._ref) else self._ref[-1]
+            # 位置のずれも少し速度目標に足す
+            want_vx = rvx + 0.8 * (rx - x)
+            want_vy = rvy + 0.8 * (ry - y)
+            theta = max(-max_tilt, min(max_tilt, k_tilt * (want_vx - vx)))
+            err = theta - ang - 0.45 * om
+            if abs(err) > 0.08:
+                a = 1 if (err > 0) == (p.torque_sign > 0) else 2
+            else:
+                a = 3 if vy > want_vy else 0
+            seq.append(a)
+            left, right = a & 1, (a >> 1) & 1
+            n = left + right
+            thr = p.thrust if n == 2 else (p.thrust * p.single_thrust_ratio if n == 1 else 0.0)
+            for _ in range(c.substeps):
+                om += (left - right) * p.torque_sign * p.spin * dt
+                om -= om * min(1.0, p.angular_damping * dt)
+                ang += om * dt
+                vx += math.sin(ang) * thr * dt
+                vy += (-math.cos(ang) * thr + p.gravity) * dt
+                k = min(1.0, p.drag * dt)
+                vx -= vx * k
+                vy -= vy * k
+                x += vx * dt
+                y += vy * dt
+        return seq
+
+    def _low_terrain_tunnel(self, x, y) -> bool:
+        """実機の低い地形通路では姿勢を起こすprecisionよりMPCの滑走を使う。"""
+        if self.solid is None or self.hazards or not self._ref:
+            return False
+        rx, ry, rvx, rvy = self._ref[-1]
+        if abs(rvx) < 4 or abs(rvy) > 3 or abs(ry - y) > 32:
+            return False
+        direction = 1 if rvx > 0 else -1
+        lane = None
+        for ahead in (0, 12, 24, 36):
+            xi, cy = int(x + direction * ahead), int(ry)
+            if not 0 <= xi < self.width or not 1 <= cy < self.height - 1:
+                continue
+            if self.solid[cy * self.width + xi]:
+                continue
+            ceiling = next((yy for yy in range(cy - 1, max(-1, cy - 28), -1)
+                            if self.solid[yy * self.width + xi]), None)
+            floor = next((yy for yy in range(cy + 1, min(self.height, cy + 28))
+                          if self.solid[yy * self.width + xi]), None)
+            if ceiling is not None and floor is not None and 10 <= floor - ceiling <= 20:
+                lane = (ceiling, floor)
+                break
+        if lane is None:
+            return False
+        return True
+
+    def _precision_action(self, x, y, vx, vy, ang, om) -> int:
+        """狭い通路では回転の停止角を使って短い片足噴射を決める。"""
+        c, p = self.cfg, self.p
+        if len(self._hist) >= 4:
+            t0, x0, y0, a0 = self._hist[-4]
+            dt = self._hist[-1][0] - t0
+            if dt > 0.06:
+                vx, vy = (x - x0) / dt, (y - y0) / dt
+                # 角速度は遅延補正済み観測器を保ち、位置差分だけ実測を使う。
+            if all(abs(px - x) + abs(py - y) < .1 for _, px, py, _ in list(self._hist)[-3:]):
+                vx = vy = 0.0  # _estimateで認識した静止を古い差分で再び動いている扱いにしない。
+        rx, ry, rvx, rvy = self._ref[min(4, len(self._ref) - 1)]
+        align_descent = False
+        # 長い縦通路へ下りる前に、その中心へ横から入って減速する。
+        # 斜めの角の参照を同時に追うと、足が棘の列へ出る間も横慣性が残る。
+        if self._descent_commit is not None:
+            sx, end_y = self._descent_commit
+            if y >= end_y or abs(x - sx) > 12:
+                self._descent_commit = None
+                self._descent_ready_since = None
+        if self._descent_commit is not None:
+            rx, ry = self._descent_commit
+            rvx, rvy = 0.0, 12.0
+        else:
+            k = 0
+            while k < len(self.path) - 1:
+                sx, sy = self.path[k]
+                j = k
+                while j + 1 < len(self.path) and abs(self.path[j + 1][0] - sx) < 0.1 and self.path[j + 1][1] > self.path[j][1]:
+                    j += 1
+                if j > k and self.path[j][1] - sy >= 24 and -2 <= sy - y <= 30 and abs(sx - x) < 25:
+                    # 実機Lv16/33: 量子化で厳密静止待ちが続く。近くに棘がない
+                    # 開けた降下も緩和し、片側/頭上に近い棘があれば厳密条件を保つ。
+                    clearance = [max(hx0 - sx, sx - hx1, 0.0)
+                                 for hx0, hy0, hx1, hy1 in self.hazards
+                                 if hy0 <= self.path[j][1] + 10 and hy1 >= sy - 10]
+                    wide = min(clearance, default=math.inf) >= 24
+                    pos_limit, speed_limit, angle_limit, omega_limit, hold_s = (6, 10, .25, .8, .12) if wide else (2, 3, .12, .35, .25)
+                    stable = abs(sx - x) <= pos_limit and abs(vx) <= speed_limit and abs(ang) <= angle_limit and abs(om) <= omega_limit
+                    now = self._hist[-1][0]
+                    if stable:
+                        if self._descent_ready_since is None:
+                            self._descent_ready_since = now
+                    else:
+                        self._descent_ready_since = None
+                    if not stable or now - self._descent_ready_since < hold_s:
+                        rx, ry, rvx, rvy = sx, sy - 8, 0.0, 0.0
+                        align_descent = True
+                    else:
+                        self._descent_commit = (sx, sy + 12)
+                        rx, ry, rvx, rvy = sx, sy + 12, 0.0, 12.0
+                    break
+                k = max(k + 1, j)
+            else:
+                self._descent_ready_since = None
+        # 天井へ近いときは上昇を止めるが、実測で残る回転の制動は許す。
+        head_near = False
+        if self.solid is not None:
+            for d in range(1, 9):
+                for ox in (-2, 0, 2):
+                    xi, yi = int(x + math.sin(ang) * d + ox), int(y - math.cos(ang) * d)
+                    if 0 <= xi < self.width and 0 <= yi < self.height and self.solid[yi * self.width + xi]:
+                        head_near = True
+        vertical_lane = abs(rvx) < 0.1 and rvy > 3
+        want_vx = max(-8.0, min(8.0, rvx + 0.8 * (rx - x)))
+        want_vy = max(-12.0, min(12.0, rvy + 0.8 * (ry - y)))
+        # 横壁へ向かう区間は入口の直前で止めるだけでなく、離れた地点から低速で近づく。
+        for hx0, hy0, hx1, hy1 in self.hazards:
+            if hy0 - 10 <= y <= hy1 + 10:
+                if want_vx > 0 and x < hx0 < x + 55:
+                    want_vx = min(want_vx, 4.0)
+                elif want_vx < 0 and x - 55 < hx1 < x:
+                    want_vx = max(want_vx, -4.0)
+
+        ax = 1.8 * (want_vx - vx)
+        theta = max(-0.22, min(0.22, math.atan2(ax, p.gravity)))
+        self._pending_inputs(self._hist[-1][0])
+        future_angle, future_om, future_vy = ang, om, vy
+        for duration, action in self._pending:
+            torque = ((action & 1) - ((action >> 1) & 1)) * p.torque_sign * p.spin
+            future_angle += future_om * duration + 0.5 * torque * duration ** 2
+            future_om += (torque - p.angular_damping * future_om) * duration
+            thrust = p.thrust if action == 3 else p.thrust * p.single_thrust_ratio if action else 0.0
+            future_vy += (p.gravity - math.cos(ang) * thrust - p.drag * future_vy) * duration
+        stop_angle = future_angle + future_om * abs(future_om) / (2 * max(0.1, p.spin))
+        error = theta - stop_angle
+        self._precision_debug = [round(v, 3) for v in (vx, vy, want_vx, want_vy, theta, stop_angle, error)] + [align_descent, vertical_lane]
+        # 回すための噴射にも上向き推力がある。上端に上昇中はまず自由落下で減速。
+        rising_vy = min(0.0, vy, future_vy)
+        minimum_y = y + rising_vy * c.delay_s - rising_vy ** 2 / (2 * max(1.0, p.gravity))
+        falling_vy = max(0.0, vy, future_vy)
+        maximum_y = y + falling_vy * c.delay_s + falling_vy ** 2 / (2 * max(1.0, p.thrust - p.gravity))
+        # 実機Lv23: 中心23pxから姿勢制動で12pxへ上昇すると回転の余裕を失う。
+        ceiling = c.ceiling_y
+        projected_x = x + vx * c.delay_s
+        for hx0, hy0, hx1, hy1 in self.hazards:
+            if hy1 < y and hx0 - 6 <= projected_x <= hx1 + 6:
+                ceiling = max(ceiling, hy1 + 10.0)
+        self._precision_debug += [round(v, 3) for v in (minimum_y, ceiling, maximum_y)]
+        if head_near:
+            if abs(future_om) > 0.35:
+                return 2 if future_om * p.torque_sign > 0 else 1
+            return 0
+        if maximum_y > self.height - 20 and abs(ang) < 0.5:
+            # 片足でもほぼ全推力。落下の制動中も残った回転を止める。
+            if abs(error) > 0.08:
+                return 1 if error * p.torque_sign > 0 else 2
+            if abs(future_om) > 0.35:
+                return 2 if future_om * p.torque_sign > 0 else 1
+            return 3
+        if rising_vy < 0 and minimum_y < ceiling and abs(ang) < 1.0:
+            return 0
+        if y < 34 and vy < -6 and abs(ang) < 0.35 and abs(om) < 0.7:
+            return 0
+        if future_vy < want_vy - 3 and abs(ang) < 0.45 and abs(om) < 0.8 and abs(stop_angle) < 0.4:
+            return 0  # 姿勢を直す噴射でも上昇するため、まず要求速度まで自由落下で減速。
+        if abs(error) > 0.08:
+            return 1 if error * p.torque_sign > 0 else 2
+        if abs(future_om) > 0.35:
+            # 停止角が目標に合うのは「今から制動すれば合う」状態。両足では角速度が残る。
+            return 2 if future_om * p.torque_sign > 0 else 1
+        return 3 if future_vy > want_vy else 0
+
+    def _pending_inputs(self, t: float) -> float:
+        """観測時刻から新入力が効くまで、送信済み入力の適用順序を保つ。"""
+        send_lag = min(0.2, max(0.0, self._acts[-1][0] - self._hist[-2][0])) if self._acts and len(self._hist) >= 2 else 0.0
+        first_delay = self.cfg.delay_s + send_lag
+        action, elapsed = 0, 0.0
+        self._pending = []
+        for ta, aa in self._acts:
+            when = ta + self.cfg.delay_s - t
+            if when <= 0:
+                action = aa
+            elif when < first_delay:
+                self._pending.append((when - elapsed, action))
+                elapsed, action = when, aa
+        self._pending.append((first_delay - elapsed, action))
+        return first_delay
+
+    # --- 計画 -----------------------------------------------------------------------------------
+    def decide(self, st: State, target: tuple[float, float]) -> tuple[bool, bool]:
+        if st.x is None or st.angle is None:
+            return False, False
+        if st.attempt != self._attempt:
+            self.reset()
+            self._attempt = st.attempt
+            self._t0 = st.t
+        c = self.cfg
+        x, y, vx, vy, ang, om = self._estimate(st)
+        self._estimate_debug = [round(v, 3) for v in (vx, vy, ang, om)]
+        takeoff_s = min(c.takeoff_s, 0.15 if y < 40 else 0.25) if y < 40 or self._narrow_level else c.takeoff_s
+        if st.t - getattr(self, "_t0", st.t) < takeoff_s and abs(ang) < 0.3:
+            self._plan, self._last_action = [3] * c.horizon, 3
+            self._acts.append((st.t, 3))
+            return True, True
+        if st.home is not None:
+            hx, hy = st.home
+            slow = math.hypot(vx, vy) < c.settle_speed
+            in_door = abs(x - hx) <= c.settle_half_w and hy - c.settle_above <= y <= hy + 14
+            # 実機: 家の前 (家の幅のどこでも) で地面にいれば、レベル番号の白い面が満ちていきクリアになる。
+            # 横倒しで噴射すると地面を滑って家から出てしまうので、家の幅の中では何もしない。
+            in_front = False
+            settling_area = False
+            if st.home_bbox is not None:
+                x0, y0, x1, y1 = st.home_bbox
+                in_front = x0 + 4 <= x <= x1 - 4 and y1 - 20 <= y <= y1 + 14
+                settling_area = x0 <= x <= x1 and y1 - 20 <= y <= y1 + 14
+            grounded = False
+            if self.solid is not None:
+                xi = int(x)
+                for yi in range(int(y + c.foot), min(self.height, int(y + c.foot + 12))):
+                    if 0 <= xi < self.width and yi >= 0 and self.solid[yi * self.width + xi]:
+                        grounded = True
+                        break
+            # 実機Lv23: 帰宅演出中に端の量子化/速度差分で再噴射し、家から出ていた。
+            # 接地・低速で待機に入ったら、家の幅を離れるまで噴射を再開しない。
+            self._home_settling = self._home_settling and settling_area
+            # 土色の家の縁や足元の先の床だけでは接地を確定しない。
+            # 実機Lv44の空中下降で待機をラッチし、家の下へ落ちていた。
+            recent = list(self._hist)
+            settled = (len(recent) >= 4 and recent[-1][0] - recent[0][0] >= 0.18
+                       and max(v[2] for v in recent) - min(v[2] for v in recent) <= 0.4
+                       and max(v[1] for v in recent) - min(v[1] for v in recent) <= 2.0)
+            if self._home_settling or (grounded and slow and settled and (in_door or in_front)):
+                self._home_settling = True
+                self._plan, self._last_action = None, 0
+                self._acts.append((st.t, 0))
+                return False, False
+        tx, ty = target
+        if c.mode == "track":
+            self._make_ref(x, y)
+        low_tunnel = self._low_terrain_tunnel(x, y)
+        near_home = st.home is not None and math.hypot(x - st.home[0], y - st.home[1]) < 100
+        if self._ref and not low_tunnel and (self._narrow_level or near_home):
+            a = self._precision_action(x, y, vx, vy, ang, om)
+            self._plan = None
+            self._last_action = a
+            self._acts.append((st.t, a))
+            return ACTIONS[a]
+        H = c.horizon
+        cands: list[list[int]] = []
+        if self._plan is not None:
+            shift = min(H, max(0, round((st.t - self._plan_t) / c.step_s))) if self._plan_t is not None else 1
+            base = self._plan[shift:] + [self._plan[-1]] * shift
+            cands.append(base)
+            for _ in range(c.candidates // 3):
+                cands.append([a if self.rng.random() > c.mutate_p else self.rng.randrange(4) for a in base])
+        for a in range(4):
+            cands.append([a] * H)
+        for theta in (-0.5, -0.25, 0.0, 0.25, 0.5):
+            cands.append(self._policy_seq(x, y, vx, vy, ang, om, theta))
+        if self._ref:
+            for k_tilt, mt in ((0.008, 0.2), (0.015, 0.3), (0.025, 0.4)):
+                cands.append(self._track_policy_seq(x, y, vx, vy, ang, om, k_tilt, mt))
+        while len(cands) < c.candidates:
+            seq = [self.rng.randrange(4)]
+            for _ in range(H - 1):
+                seq.append(seq[-1] if self.rng.random() < c.persistence else self.rng.randrange(4))
+            cands.append(seq)
+        # 既に送信済みだがまだ効いていない入力の列を、その適用時刻どおりに先読み。
+        # 最後の入力だけで delay 全体を進めると、連続する短い片足噴射を誤予測する。
+        first_delay = self._pending_inputs(st.t)
+        best_seq, best_cost = cands[0], math.inf
+        for seq in cands:
+            cost = self._cost(x, y, vx, vy, ang, om, seq, tx, ty, first_delay, self._last_action)
+            if cost < best_cost:
+                best_seq, best_cost = seq, cost
+        if self._narrow_level and (abs(ang) > 0.45 or abs(om) > 1.3):
+            # 実機の接触・量子化で予測外に姿勢が崩れたら、通路への追従より立て直しを優先。
+            turn_error = ang + 0.35 * om
+            best_seq[0] = (2 if turn_error * self.p.torque_sign > 0 else 1) if abs(turn_error) > 0.1 else 0
+        self._plan = best_seq
+        self._plan_t = st.t
+        self._last_action = best_seq[0]
+        self._acts.append((st.t, best_seq[0]))
+        left, right = ACTIONS[best_seq[0]]
+        return left, right
+
+
+# Local real-game comparison; original controller source from Git 11f8270.
+_Baseline = MpcController
+from .mpc import MpcController as _Current
+class MpcController(_Baseline, _Current):
+    profile_name = "11f8270-actual-level44-takeoff0.35"
+    def __init__(self, physics=None, cfg=None):
+        super().__init__(physics, MpcConfig(takeoff_s=0.35))
+    def reset(self):
+        super().reset()
+        self._home_settling = False
+    def _estimate(self, state):
+        result = super()._estimate(state)
+        self._estimate_debug = [round(v, 3) for v in result[2:]]
+        return result
