@@ -1,11 +1,11 @@
 {
-  "output_sha256": "0b7f78aca9b2735ec74d3ca57a38f25afe10e709bb1adcdde54a5d9cf576a1b7",
+  "output_sha256": "9e72896d80549c141309a5d7d17bbd8e316ed0f165aec0ef275fb66fbeca759d",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "44320972c79c948b237f49ab5f7e790176aee5889694a9e28b462c9d7a61b505",
+  "source_sha256": "9ad042d1fdd388763da73644efcbb512c290deba314b5edf92c4644961a8788c",
   "topics": [
+    "半熟英雄の築城一覧スクロール修正とv150ホットロード",
     "半熟英雄の継続監視と召喚獣・募集予算の改善",
-    "半熟英雄コーナー g684 監視と敗因対策（v138 / , #2029）",
-    "時事コーナーの見出し選定から俗っぽい記事を除外"
+    "半熟英雄コーナー g684 監視と敗因対策（v138 / , #2029）"
   ]
 }
