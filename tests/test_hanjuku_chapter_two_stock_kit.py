@@ -176,3 +176,20 @@ def test_restart_flag_is_cleared_on_full_backout_and_other_order(monkeypatch):
     monkeypatch.setattr(p, '_check_source_castle', lambda *args: [p.pad('b')])
     p.deploy_step(Screen([], None, '', kind='castle_menu'), mem)
     assert not mem.get('boss_stock_restart') and mem['active'] == '2-B1'
+
+
+def test_chapter_two_boss_keeps_comparable_companions_and_rejects_weak_one():
+    mem = memory()
+    assert p._order_hero_alternatives(order(), mem, ['どうし', 'シェーブル', 'ゼウス']) == ['ゼウス']
+    assert p._order_hero_alternatives(order(), mem, ['どうし', 'シェーブル']) == []
+    assert p._hero_alternatives(mem, ['どうし', 'シェーブル']) == ['シェーブル']
+    road = {**order(), 'step': '2-S1', 'target': 'スペランザ'}
+    assert p._order_hero_alternatives(road, mem, ['どうし', 'シェーブル']) == ['シェーブル']
+
+
+def test_broken_hero_is_not_licensed_by_a_weak_boss_companion():
+    mem = memory(); mem['garrison'] = {'スペランザ': ['どうし', 'シェーブル']}
+    mem['house_eggs'] = {'どうし': {'broken': True}}
+    mem['captured'] = [n for n in chart.castles(2) if n not in ('アルマムーン', 'ボス')]
+    assert not p._hero_source_alternative(order(), mem)
+    assert not p._ready(order(), mem)

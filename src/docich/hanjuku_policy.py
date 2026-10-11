@@ -689,9 +689,26 @@ def _hero_alternatives(mem, names):
     return [g for g in names if g != NAME and general_max_hp(g) is not None and g not in unavailable]
 
 
+def _order_hero_alternatives(order, mem, names):
+    candidates = _hero_alternatives(mem, names)
+    if (mem.get('chapter') != 2 or order.get('step') != '2-B1'
+            or order.get('target') != chart.boss_castle(2)):
+        return candidates
+    # g706's selected シェーブル (27 HP, combat 4) entered a long road egg
+    # fight; the isolated-tested hero has 90 HP/combat 14. Keep companions
+    # with comparable primary stats, using the existing strength-gap rules.
+    boss = reference.general_strength(chart.BOSSES[2])
+    if boss is None:
+        return []
+    return [name for name in candidates
+            if (stats := reference.general_strength(name)) is not None
+            and boss[0] - stats[0] < reference.STRONG_GENERAL_HP_GAP
+            and boss[1] - stats[1] < reference.STRONG_GENERAL_COMBAT_GAP]
+
+
 def _hero_source_alternative(order, mem):
     return (order.get('general') == NAME
-            and bool(_hero_alternatives(mem, (mem.get('garrison') or {}).get(_source(order, mem)))))
+            and bool(_order_hero_alternatives(order, mem, (mem.get('garrison') or {}).get(_source(order, mem)))))
 
 
 def _boss_egg_depleted(order, mem) -> bool:
@@ -856,7 +873,7 @@ def _follow_general(mem, order, garrison, owned):
     assumes どうし at スペンソニア, but he held ゴーメン)."""
     general = order.get('general')
     source = _source(order, mem)
-    if general == NAME and _hero_alternatives(mem, garrison.get(source)):
+    if general == NAME and _order_hero_alternatives(order, mem, garrison.get(source)):
         return  # inspect the chart source's companion rather than chase the hero
     if not general or general in (garrison.get(source) or ()):
         return
@@ -3569,7 +3586,7 @@ def deploy_step(screen: Screen, mem):
                     or any(not _general_visible(screen, g) or general_max_hp(
                         'しゅじんこう' if g == NAME else g) is None for g in present)):
                 return _hold_deploy(screen, mem, order, '出撃一覧の本人・カーソルを確認できないため保留')
-            candidates = (_hero_alternatives(mem, present)
+            candidates = (_order_hero_alternatives(order, mem, present)
                           if order['general'] == NAME or order.get('source_probe') is True else [])
             general = candidates[0] if candidates else order['general']
             # A stale override is not a receipt, and a companion selected in
