@@ -6403,6 +6403,17 @@ def observe_chapter_castle(mem, castle):
     A name absent from this chapter and present in the next one is proof.
     """
     chapter = mem.get('chapter') or 0
+    if (not chapter and mem.get('resume_chapter_pending') is True and castle
+            and castle not in {'アルマムーン', 'あるまむーん', 'ほんじょう', 'ボス'}):
+        # A restored party picker has no chapter label. Resolve from a fresh
+        # full castle name unique across all chapters, never from the old bot.
+        matches = [n for n, names in chart.CASTLE_NAMES.items()
+                   if castle in names or castle in {STATUS_NAMES.get(x, x) for x in names}]
+        if len(matches) == 1:
+            mem.pop('resume_chapter_pending', None)
+            _enter_chapter(mem, matches[0], evidence=castle,
+                           reason='再開後の実城名が一つの章だけに存在するため章を確定する')
+        return
     if not castle or not chapter:
         return
     here = set(chart.CASTLE_NAMES.get(chapter, ())) | {chart.home_castle(chapter), chart.boss_castle(chapter)}
@@ -8855,6 +8866,22 @@ def observe_events(screen: Screen, mem):
     mem['tick'] = int(mem.get('tick') or 0) + 1      # observations: ages sorties (_en_route)
     _hold_general_loss_metric(mem)
     _migrate_card_evidence(mem)
+    if (mem.get('resume_chapter_pending') is True and not mem.get('chapter')
+            and screen.kind == 'text' and screen.header is None):
+        # Native restored party-picker -> chapter-2 introduction (public
+        # frame fixtures). Require both independent lines, never the source
+        # run's final chapter or the year/month header. Neither line alone
+        # identifies a map. This recognition is limited to chapterless resume.
+        clues = mem.setdefault('resume_intro_clues', {})
+        if 'かんじゅくクイーンめをたおしてから' in screen.text:
+            clues['queen'] = True
+        if 'どうしににたヤツ「フフフ' in screen.text:
+            clues['double'] = True
+        if clues.get('queen') is True and clues.get('double') is True:
+            mem.pop('resume_chapter_pending', None)
+            mem.pop('resume_intro_clues', None)
+            _enter_chapter(mem, 2, evidence='native_chapter_2_intro',
+                           reason='再開後のクイーン撃破と主人公の偽物の導入会話を両方確認して第2話を確定')
     if screen.kind in ('card_select', 'sortie_confirm'):
         row = _egg_row(screen)
         eggs = mem.setdefault('egg_uses', {})
@@ -8878,6 +8905,10 @@ def observe_events(screen: Screen, mem):
             _record(mem, 'month_seen', month=key, gold=header['gold'], reason='月の表示')
         mem['gold'] = header['gold']
     castle = CASTLE_STATUS.search(screen.text)
+    if castle and mem.get('resume_chapter_pending') is True:
+        observe_chapter_castle(mem, castle[1])
+    if mem.get('resume_chapter_pending') is True and type(mem.get('chapter')) is int and 1 <= mem['chapter'] <= 12:
+        mem.pop('resume_chapter_pending', None)
     income = re.search(r'しゅうにゅう(\d{1,3})Gレベル\d+しょうぐん', screen.text)
     if castle and income and mem.get('chapter') and mem.get('month'):
         label = STATUS_NAMES.get(castle[1], castle[1])
