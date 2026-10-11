@@ -1,11 +1,11 @@
 {
-  "output_sha256": "ca6435c2d0a14a1f0b84242ef26d3292e3db9565401534668d03cb1b55d2f255",
+  "output_sha256": "0b7f78aca9b2735ec74d3ca57a38f25afe10e709bb1adcdde54a5d9cf576a1b7",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "85ee6e8cf21f6d3e1709a763300eb872a8aed90c985af3f04cc6aafb31d4f684",
+  "source_sha256": "44320972c79c948b237f49ab5f7e790176aee5889694a9e28b462c9d7a61b505",
   "topics": [
+    "半熟英雄の継続監視と召喚獣・募集予算の改善",
     "半熟英雄コーナー g684 監視と敗因対策（v138 / , #2029）",
-    "時事コーナーの見出し選定から俗っぽい記事を除外",
-    "手動OBS特別コーナーの受信と専用経路の実装"
+    "時事コーナーの見出し選定から俗っぽい記事を除外"
   ]
 }

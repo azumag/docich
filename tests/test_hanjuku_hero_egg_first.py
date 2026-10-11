@@ -101,7 +101,8 @@ def test_healthy_hero_answers_a_summon_with_his_egg():
     assert policy.egg_battle_step(screen, mem) == [policy.pad('down')]
     assert mem['egg_action'] == 'use_egg' and mem['egg_needed'] is True
     rec = [r for r in mem['_records'] if r['decision'] == 'egg_battle'][-1]
-    assert rec['observed_metric']['egg_need']['rule'] in ('hero_vs_summon', 'ally_wounded')
+    assert rec['observed_metric']['egg_need']['rule'] in ('hero_vs_summon', 'ally_wounded',
+                                                       'enemy_monster_threat')
 
 
 def test_learned_attack_cannot_override_the_heros_egg():

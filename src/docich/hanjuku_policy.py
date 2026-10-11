@@ -8684,6 +8684,23 @@ def egg_battle_step(screen: Screen, mem):
         battle['card_context_unclassified'] = False
     general_reading = _egg_general_reading(screen, mem, battle)
     wants_egg, egg_evidence = _own_egg_needed(mem, battle, general_reading)
+    # g684: アルテミス 49/49 saved her egg against ヘーゼル's old HP11,
+    # while the actual opponent was ダークエルフ HP240. A live monster
+    # panel owns this comparison; the general's old HP/army do not. Its
+    # instant-death skill is dangerous even at a low remaining monster HP.
+    enemy_rows = [r for r in screen.egg_rows if r.side == 'enemy']
+    enemy_monsters = [r for r in enemy_rows
+                      if r.name in reference.MONSTER_SKILLS
+                      and type(r.hp) is int and r.hp > 0]
+    summon_threat = bool(general_reading and len(enemy_rows) == len(enemy_monsters) == 1
+                        and (enemy_monsters[0].name == 'ダークエルフ'
+                             or general_reading[0] * 10
+                             <= enemy_monsters[0].hp * BEHIND_EGG_RATIO_TENTHS))
+    if summon_threat:
+        wants_egg = True
+        egg_evidence = {**egg_evidence, 'rule': 'enemy_monster_threat',
+                        'enemy_monster': enemy_monsters[0].name,
+                        'enemy_monster_hp': enemy_monsters[0].hp}
     empty_egg = _own_egg_empty(mem, battle)
     hero_summon = isinstance(battle, dict) and battle.get('ally') == NAME
     if hero_summon and not wants_egg:
@@ -8700,8 +8717,8 @@ def egg_battle_step(screen: Screen, mem):
         # ⑥の写像: HP不利ならたまご、勝てそうなら温存 (attack) から始める。
         action = experience.preferred(exp, key, default='use_egg' if wants_egg and not empty_egg else 'attack',
                                       kind='egg_summon')
-        if hero_summon and not empty_egg:
-            action = 'use_egg'  # learned 'attack' never outranks the hero's life
+        if (hero_summon or summon_threat) and not empty_egg:
+            action = 'use_egg'  # learned attacks cannot overrule a measured summon threat
         if action == 'use_egg' and empty_egg:
             action = 'attack'
         mem['egg_action'] = action
@@ -8744,7 +8761,7 @@ def egg_battle_step(screen: Screen, mem):
         return [pad('b')]
     # 途中昇格: 温存していた (前回まで勝てていた) のに劣勢になったら、たまごを
     # 使う判断へ切り替える。回復しても温存へは戻さない (一方向だけ)。
-    if (mem.get('egg_needed') is False and wants_egg and not empty_egg
+    if ((mem.get('egg_needed') is False or summon_threat) and wants_egg and not empty_egg
             and mem.get('egg_action') == 'attack'):
         mem['egg_action'] = 'use_egg'
         if isinstance(battle.get('independent'), dict):
@@ -8753,7 +8770,8 @@ def egg_battle_step(screen: Screen, mem):
                 deviation_reason='チャート外: 敵の卵召喚戦',
                 expected_metric='召喚獣への対処と戦闘結果',
                 observed_metric={'egg_need': egg_evidence}, source_pattern='⑥',
-                reason=('温存していたが、自軍のHPが最大の7割以下になるか、'
+                reason=('実画面の敵召喚獣が将軍より強いか即死攻撃を持つため、卵の温存を取り消す'
+                        if summon_threat else '温存していたが、自軍のHPが最大の7割以下になるか、'
                         'HPと兵士の合戦力が敵の7割を下回ったため途中でたまごを'
                         '使う判断へ切り替える'))
     mem['egg_needed'] = wants_egg
