@@ -7092,7 +7092,7 @@ def month_step(screen: Screen, mem):
         # g496: the real background hand remained visible, so a hand alone
         # could neither prove menu return nor rule out this measured dialogue.
         gold = (screen.header or {}).get('gold')
-        if shop and shop.get('egg') not in ('done', 'not_needed'):
+        if shop and not _recruit_egg_ready(mem, shop):
             if shop.get('recruit') != 'deferred_egg':
                 shop['recruit'] = 'deferred_egg'
                 _record(mem, 'recruit_deferred_egg', month=shop.get('key'),
@@ -7248,9 +7248,7 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
         status = shop.get(sub)
         if status not in ('pending', 'check'):
             continue
-        if (sub == 'recruit' and shop.get('egg') not in ('done', 'not_needed')
-                and not (shop.get('egg') == 'skipped' and shop.get('recruit_priority')
-                         and _no_empty_egg_to_recover(mem))):
+        if sub == 'recruit' and not _recruit_egg_ready(mem, shop):
             # A recovery already skipped as unaffordable spends nothing this
             # month; with generals short the recruit keeps its own cash gate
             # (g684 2-9: egg skipped at 75G deferred recruitment again).
@@ -7411,6 +7409,15 @@ def _no_empty_egg_to_recover(mem):
     uses = mem.get('egg_uses') or {}
     targets = _egg_recovery_targets(mem)
     return bool(targets) and all(type(uses.get(name)) is int and uses[name] >= 1 for name in targets)
+
+
+def _recruit_egg_ready(mem, shop):
+    """The menu and each unpaid dialogue share the same recovery permission."""
+    if shop.get('egg') in ('done', 'not_needed'):
+        return True
+    return (shop.get('egg') == 'skipped' and bool(shop.get('recruit_priority'))
+            and _no_empty_egg_to_recover(mem)
+            and not set(_egg_recovery_targets(mem)).intersection(mem.get('egg_recheck') or []))
 
 
 def _chikujou_reserve(mem, shop):
@@ -8012,7 +8019,7 @@ def month_sub_step(screen: Screen, mem):
                     reason='募集費50Gの実減少を確認したため離脱を取り消し、候補紹介を上限付きAで進める')
         if sub.get('aborted'):
             pass  # already leaving; the bounded abort handler below owns B
-        elif not paid and (mem.get('shop') or {}).get('egg') not in ('done', 'not_needed'):
+        elif not paid and not _recruit_egg_ready(mem, mem.get('shop') or {}):
             sub['aborted'] = True
             if mem.get('shop'):
                 mem['shop']['recruit'] = 'deferred_egg'
