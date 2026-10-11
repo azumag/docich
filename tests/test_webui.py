@@ -2130,6 +2130,34 @@ class TestHttpHandlers(unittest.TestCase):
         status, data = self._request("POST", "/api/corners", {"action": "recover"})
         self.assertEqual(status, 428, data)
 
+    def test_post_corners_start_refuses_non_cli_game_without_dispatch(self):
+        # 2026-10-11: the one-off runner is CLI-only. Starting hanjuku-hero
+        # (retroarch) dispatched a runner that always failed and latched the
+        # rotation; refuse here and point to the fixed Hanjuku operator.
+        path = Path(self.g.config_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '[corner_rotation]\nenabled = true\nschedule_mode = "queue"\n'
+            'corners = [{id = "hanjuku-hero", adapter = "game", game = "hanjuku-hero"}]\n',
+            encoding="utf-8",
+        )
+        games = Path(self.g.games_dir)
+        games.mkdir(parents=True, exist_ok=True)
+        (games / "hanjuku-hero.toml").write_text(
+            '[game]\nname = "hanjuku-hero"\ntitle = "Hanjuku"\nadapter = "retroarch"\n'
+            '[retroarch]\nrom = "games/roms/hanjuku-hero.sfc"\n',
+            encoding="utf-8",
+        )
+        with mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request(
+                "POST", "/api/corners",
+                {"action": "start", "corner": "hanjuku-hero", "duration_minutes": 5,
+                 "confirm": True},
+            )
+        self.assertEqual(status, 400, data)
+        self.assertIn("start-hanjuku", data["detail"])
+        popen.assert_not_called()
+
     def test_post_corners_start_dispatches_reviewed_one_off_runner(self):
         self._write_catalog_config()
         with mock.patch("docich.webui.subprocess.Popen") as popen:
