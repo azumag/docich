@@ -37,6 +37,7 @@ on:
       - 'src/docich/retroarch_boundary.py'
       - 'ops/vm_actions/collect_diagnostics.py'
       - 'ops/vm_actions/tests/test_hanjuku_checkpoint_diagnostics.py'
+      - 'ops/vm_actions/tests/test_hanjuku_resume_diagnostics.py'
       - 'src/docich/soren_recovery_process.py'
       - 'src/docich/soren_round_recovery.py'
       - 'src/docich/soren91*.py'
@@ -123,6 +124,7 @@ on:
       - 'src/docich/retroarch_boundary.py'
       - 'ops/vm_actions/collect_diagnostics.py'
       - 'ops/vm_actions/tests/test_hanjuku_checkpoint_diagnostics.py'
+      - 'ops/vm_actions/tests/test_hanjuku_resume_diagnostics.py'
       - 'src/docich/soren_recovery_process.py'
       - 'src/docich/soren_round_recovery.py'
       - 'src/docich/soren91*.py'
@@ -236,6 +238,7 @@ jobs:
             --root-path 'src/docich/retroarch_boundary.py' \
             --root-path 'ops/vm_actions/collect_diagnostics.py' \
             --root-path 'ops/vm_actions/tests/test_hanjuku_checkpoint_diagnostics.py' \
+            --root-path 'ops/vm_actions/tests/test_hanjuku_resume_diagnostics.py' \
             --root-path 'src/docich/soren_recovery_process.py' \
             --root-path 'src/docich/soren_round_recovery.py' \
             --root-path 'src/docich/soren91*.py' \
@@ -373,3 +376,6 @@ jobs:
           tests/test_soren_round_recovery.py
       - name: Round-boundary contract
         run: python3 -m pytest -q tests/test_round_boundary.py
+
+      - name: Hanjuku checkpoint resume metadata diagnostics
+        run: python3 -m pytest -q ops/vm_actions/tests/test_hanjuku_resume_diagnostics.py

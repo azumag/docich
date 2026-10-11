@@ -6424,6 +6424,55 @@ def _project_hanjuku_card_assessment(value, tick):
     return out
 
 
+def _collect_hanjuku_resume(state_dir):
+    """Fixed metadata projection; does not read checkpoint/ROM bytes."""
+    unavailable = {'status': 'unavailable', 'basis': 'resume_receipt'}
+    try:
+        root = Path(state_dir)
+        canonical, _ = _read_hanjuku_record(root / 'game_switch.json')
+        request, _ = _read_hanjuku_record(root / 'hanjuku-resume/hanjuku_resume.json')
+        status = request.get('status')
+        if status == 'queued':
+            ledger = {}
+            try:
+                ledger, _ = _read_hanjuku_record(root / 'corner_rotation.json')
+            except (OSError, ValueError):
+                pass
+            inbox = None
+            try:
+                inbox, _ = _read_hanjuku_record(root / 'corner_manual_queue.json')
+            except (OSError, ValueError):
+                pass
+            choices = [inbox, ledger.get('queued_manual'), ledger.get('pending')]
+            if any(isinstance(q, dict) and q.get('resume_latest') is True
+                   and q.get('request_id') == request.get('request_id')
+                   and q.get('corner') == 'hanjuku-hero' for q in choices):
+                return {**unavailable, 'status': 'queued'}
+            return {**unavailable, 'status': 'unverified'}
+        owner = canonical.get('candidate') if status == 'claimed' else canonical.get('active')
+        keys = ('game', 'runtime_id', 'generation', 'lease_id', 'request_id')
+        if (not isinstance(owner, dict) or owner.get('game') != 'hanjuku-hero'
+                or not isinstance(owner.get('runtime_id'), str)
+                or not re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', owner['runtime_id'])
+                or any(request.get(k) != owner.get(k) for k in keys[:-1])):
+            return unavailable
+        receipt, _ = _read_hanjuku_record(root / 'runtimes' / owner['runtime_id'] / 'hanjuku_resume.json')
+        if any(receipt.get(k) != request.get(k) for k in keys) or receipt.get('status') != status:
+            return {**unavailable, 'status': 'unverified'}
+        again, _ = _read_hanjuku_record(root / 'game_switch.json')
+        if again != canonical:
+            return {**unavailable, 'status': 'identity_changed'}
+        if status == 'claimed':
+            return {**unavailable, 'status': 'claimed'}
+        chapter = receipt.get('chapter')
+        if status == 'verified' and type(chapter) is int and 1 <= chapter <= 12:
+            return {**unavailable, 'status': 'verified_receipt', 'chapter': chapter,
+                    'core_roundtrip_record': True}
+        return {**unavailable, 'status': 'unverified'}
+    except (OSError, ValueError, TypeError):
+        return unavailable
+
+
 def _collect_hanjuku_tactical(state_dir, now):
     """Chapter-1 fixed castle labels and last card prediction from a fresh run.
 
@@ -7552,6 +7601,7 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": corners,
+        "hanjuku_resume": _collect_hanjuku_resume(_program_state_dir()),
         "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
         "tmux_servers": _collect_tmux_servers(),
         "pulse_sink_inputs": _collect_pulse_sink_inputs(),
