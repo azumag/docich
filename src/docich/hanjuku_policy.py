@@ -3035,7 +3035,7 @@ def _empty_sortie_inventory(screen):
                          for x, ch in line.cells if left <= x < 240)
         if observed != expected:
             return False
-    return not any(card in word for _, _, word in _options(screen) for card in CARD_NAMES)
+    return not any(card in word for _, _, word in _options(screen) for card in ALL_CARD_NAMES)
 
 
 def _sortie_inventory(screen):
@@ -3043,7 +3043,8 @@ def _sortie_inventory(screen):
 
     The one-card placement is live-measured. Additional names are classified
     only when each occupies a complete known slot and the whole panel matches;
-    this recognizes text, not quantities or partial names.
+    this recognizes text, not quantities or partial names. The receipt uses
+    the canonical game catalogue, independently of the planning allowlist.
     """
     if screen.kind != 'sortie_confirm' or screen.hand not in ((138, 105, 156, 118), (138, 105, 158, 118)):
         return None
@@ -3055,7 +3056,7 @@ def _sortie_inventory(screen):
     first = cells(47)
     heading = text_cells(136, 'きりふだ')
     first_spans = TextLine(47, tuple((x, ch) for x, ch in first if x >= 176)).spans()
-    if len(first_spans) != 1 or first_spans[0][0] != 176 or first_spans[0][1] not in CARD_NAMES:
+    if len(first_spans) != 1 or first_spans[0][0] != 176 or first_spans[0][1] not in ALL_CARD_NAMES:
         return None
     cards = [first_spans[0][1]]
     if first != heading + text_cells(176, cards[0]):
@@ -3072,7 +3073,7 @@ def _sortie_inventory(screen):
         if empty_tail:
             return None
         spans = TextLine(y, tuple((x, ch) for x, ch in row if x >= 176)).spans()
-        if len(spans) != 1 or spans[0][0] != 176 or spans[0][1] not in CARD_NAMES:
+        if len(spans) != 1 or spans[0][0] != 176 or spans[0][1] not in ALL_CARD_NAMES:
             return None
         if row != text_cells(176, spans[0][1]):
             return None
@@ -3087,7 +3088,7 @@ def _sortie_inventory(screen):
            and (line.y not in expected or (line.y in (111, 127) and x < 160))
            for line in screen.lines if 32 <= line.y < 135 for x, ch in line.cells):
         return None
-    if [word for _, _, word in _options(screen) if word in CARD_NAMES] != cards:
+    if [word for _, _, word in _options(screen) if word in ALL_CARD_NAMES] != cards:
         return None
     return cards
 
@@ -5932,7 +5933,9 @@ def card_list_step(screen: Screen, mem):
         _record(mem, 'battle_hero_retreat_cancel_card', **_battle_labels(cur),
                 reason='未選択の切り札一覧を閉じ、どうしの緊急退却を優先')
         return [pad('b')]
-    names = [w for _, _, w in _options(screen) if w in CARD_NAMES]
+    # Recognition follows the real catalogue; tactic/rescue selection retains
+    # its own planning and damage gates. A held event card must be visible.
+    names = [w for _, _, w in _options(screen) if w in ALL_CARD_NAMES]
     if not flow:
         return [pad('b')]
     if flow['stage'] == 'list' and flow.get('survival'):
