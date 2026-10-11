@@ -642,7 +642,9 @@ class MpcController:
             if abs(future_om) > 0.35:
                 return 2 if future_om * p.torque_sign > 0 else 1
             return 0
-        if maximum_y > floor and abs(ang) < 0.5:
+        # 棘の上へ既に上昇しているときは、現在位置が境界外でも追加噴射しない。
+        # 実機Lv49: y29から−19px/sで上昇中に再噴射し、頭が上の棘へ向かった。
+        if maximum_y > floor and abs(ang) < 0.5 and (not c.spike_floor_guard or falling_vy > 0):
             # 片足でもほぼ全推力。落下の制動中も残った回転を止める。
             if abs(error) > 0.08:
                 return 1 if error * p.torque_sign > 0 else 2
