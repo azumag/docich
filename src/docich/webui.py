@@ -2253,6 +2253,19 @@ def _corner_manual_argv(g: GlobalConfig, corner_id: str, action: str,
     if spec is None:
         raise ValueError("corner has no manual runner")
     launcher, supports_duration, needs_game = spec
+    if row.adapter == "game" and action == "start":
+        # The one-off retro runner is CLI-only and refuses others only after
+        # the rotation reservation exists, latching rotation (2026-10-11).
+        from .config import load_game
+        try:
+            game_adapter = load_game(g, row.game).adapter
+        except Exception:
+            game_adapter = None  # the runner re-validates before reserving
+        if game_adapter not in (None, "cli"):
+            raise ValueError(
+                f"{row.game} は手動開始できません ({game_adapter})。半熟英雄は GitHub Actions の "
+                "Corner rotation operator → start-hanjuku で起動してください"
+            )
     argv = [str(Path(g.repo_root) / "bin" / launcher)]
     # runner は既定で config/docich.toml を読む。webui と同じ config（本番は
     # docich.soren-live.toml）を明示しないと別の state_dir を操作してしまう。
