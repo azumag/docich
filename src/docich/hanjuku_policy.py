@@ -6585,6 +6585,8 @@ def _own_egg_positive(mem, battle):
     same named observation ledger as the zero-count guard and never alters it.
     """
     ally = battle.get('ally') if isinstance(battle, dict) else None
+    if ally in (mem.get('egg_recheck') or []):
+        return False  # a selection dirties the old count until this owner is read
     uses = observed_uses((mem.get('egg_uses') or {}).get(ally)) if ally else None
     return uses is not None and uses > 0
 

@@ -141,3 +141,35 @@ def test_menu_rechecks_acquired_egg_before_stale_healthy_retreat_guard():
     assert mem['battle']['own_egg_positive_observed'] is True
     assert mem['battle']['own_egg_zero_observed'] is False
     assert not p._hero_retreat_needed(mem['battle'])
+
+
+@pytest.mark.parametrize('fresh', [None, 'other', 1, 0])
+def test_selection_recheck_blocks_old_positive_until_named_observation(fresh):
+    from test_hanjuku_chart_bot import sortie_canvas
+    mem = trevis()
+    # Actual observed-count producer, then actual menu selection producer.
+    p.observe_events(sortie_canvas('トレビス', 1), mem)
+    mem['battle']['ally_hp'] = 25
+    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+    assert p.battle_menu_step(menu(('たまごをつかう', 'たいきゃく')), mem) == [p.pad('a')]
+    assert mem['egg_recheck'] == ['トレビス']
+    assert mem['egg_uses']['トレビス'] == 1  # selection does not prove a use
+    p.battle_end(mem, 'map'); p.battle_end(mem, 'map')
+    mem = json.loads(json.dumps(mem))
+    if fresh == 'other': p.observe_events(sortie_canvas('ゼウス', 4), mem)
+    elif type(fresh) is int: p.observe_events(sortie_canvas('トレビス', fresh), mem)
+    # A subsequent synthetic complete attack panel; keep its named context,
+    # but never manufacture a count decrement or consumption receipt.
+    mem['battle'] = trevis()['battle']
+    first = p.battle_step(battle(mem), mem)
+    mem = json.loads(json.dumps(mem))
+    second = p.battle_step(battle(mem), mem)
+    if fresh in (None, 'other', 0):
+        assert first == [p.pad('b')]
+        assert not any(a.get('buttons') == ['a'] for a in second)
+        assert mem['battle']['own_egg_positive_observed'] is False
+    else:
+        assert first != [p.pad('b')]
+        assert mem['battle']['own_egg_positive_observed'] is True
+    assert mem['egg_uses']['トレビス'] == (fresh if type(fresh) is int else 1)
+    assert ('トレビス' in mem.get('egg_recheck', [])) == (fresh in (None, 'other'))
