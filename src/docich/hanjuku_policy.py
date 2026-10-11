@@ -6004,6 +6004,7 @@ MONTH_SUB_LIMIT = 8              # A presses through an unmeasured sub-screen
 MONTH_SUB_MENU_WAIT = 4
 RECRUIT_CANDIDATE_LIMIT = 32     # paid candidate introductions outlast the generic 8 observations
 EGG_RITUAL_LIMIT = 64            # measured paid recovery includes a long chant
+MONTH_SUB_ABORT_B_LIMIT = 12     # ignored Bs (~18 s) before plain text is advanced with A (g662)
 
 
 def _egg_row(screen):
@@ -6761,7 +6762,11 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
         if sub == 'egg' and status == 'check':
             # After the soldiers: recover the eggs only from what is left.
             cost = _egg_estimate(shop)
-            if type(gold) is not int or gold < cost + WAGE_RESERVE + shop.get('hero_repair_reserve', 0):
+            floor = WAGE_RESERVE
+            if NAME in _depleted_eggs(mem):
+                # Hero-only recovery (g604): 50G over this month's real payroll.
+                cost, floor = min(cost, EGG_RECOVER_COST), _hero_egg_wage_floor(mem)
+            if type(gold) is not int or gold < cost + floor + shop.get('hero_repair_reserve', 0):
                 shop[sub] = 'skipped'
                 _record(mem, 'egg_recover_skip', month=shop.get('key'), gold=gold,
                         observed_metric={'cost': cost, 'gold': gold},
@@ -7119,7 +7124,8 @@ def _finish_month_sub(screen, mem, shop) -> bool:
     paid = (not sub.get('payment_interrupted')
             and type(cost) is int and cost > 0 and type(gold) is int and type(before) is int
             and before - gold == cost
-            and (sub['kind'] != 'egg' or (sub.get('full_selected') is True
+            and (sub['kind'] != 'egg' or ((sub.get('full_selected') is True
+                                           or sub.get('hero_selected') is True)
                  and sub.get('left_menu') is True and not sub.get('aborted')
                  and all(type((screen.header or {}).get(k)) is int for k in ('year', 'month'))
                  and sub.get('key') == (shop or {}).get('key') == _month_key(screen.header)
@@ -7324,21 +7330,42 @@ def month_sub_step(screen: Screen, mem):
         paid = paid or (not sub.get('payment_interrupted')
                         and type(before) is int and key is not None and sub.get('key') == key
                         and type(gold) is int and before - gold == RECRUIT_COST)
-        if not paid and (mem.get('shop') or {}).get('egg') not in ('done', 'not_needed'):
+        if (paid and sub.get('aborted') and not sub.get('paid_receipt_recovered')
+                and not sub.get('payment_interrupted')):
+            # g662 1-10 02:41: うむッ paid 50G (144->94G), the next fade had no
+            # header, the unread gold was judged "no spare cash" and aborted;
+            # the trio's 「おめにかかれて こうえいです」 introduction (not the
+            # measured biography) then took 109 B presses for 300 s until the
+            # run watchdog ended the corner. An observed fee is progress.
+            sub['paid_receipt_recovered'] = True
+            sub['presses'] = 0
+            sub.pop('aborted', None)
+            sub.pop('abort_backs', None)
+            if mem.get('shop'):
+                mem['shop']['recruit'] = 'opened'
+            _record(mem, 'recruit_paid_receipt', month=sub.get('key'),
+                    observed_metric={'gold_before': before, 'gold': gold, 'receipt': receipt},
+                    reason='募集費50Gの実減少を確認したため離脱を取り消し、候補紹介を上限付きAで進める')
+        if sub.get('aborted'):
+            pass  # already leaving; the bounded abort handler below owns B
+        elif not paid and (mem.get('shop') or {}).get('egg') not in ('done', 'not_needed'):
             sub['aborted'] = True
             if mem.get('shop'):
                 mem['shop']['recruit'] = 'deferred_egg'
             _record(mem, 'recruit_deferred_egg', month=sub.get('key'),
                     reason='追跡中の未払い募集導入でも卵回復を先に確認するため戻る')
-            return [pad('b')]
-        if not paid:
+        elif not paid:
             shop = mem.get('shop') or {}
             spare, evidence = _recruit_spare_after_necessities(mem, shop, gold)
-            if spare is not True:
+            if spare is not True and type(gold) is not int:
+                # An unread header is not "no spare cash" (g662). Never confirm
+                # a payment blind; other dialogue advances within the limit.
+                if kind == 'yes_no' or (screen.has('うむッ') and screen.has('いかんッ')):
+                    return []
+            elif spare is not True:
                 sub['aborted'] = True
                 if shop:
                     _defer_recruit_cash(mem, shop, gold, evidence)
-                return [pad('b')]
     if sub['kind'] == 'recruit' and sub.get('recruit_paid_gold') is not None:
         for line in screen.lines:
             joined = re.fullmatch(r'([^�]+)がはいかにくわわった!', line.known.replace(' ', '').replace('！', '!'))
@@ -7369,6 +7396,21 @@ def month_sub_step(screen: Screen, mem):
             sub['aborted'] = True
             _record(mem, 'month_sub_abort', screen=kind, observed_metric={'text': screen.text[-40:]},
                     reason='月一の未測定画面が上限回数で終わらないためBで離脱')
+        backs = int(sub.get('abort_backs') or 0) + 1
+        sub['abort_backs'] = backs
+        # B cannot close a plain message box (g662: 109 B, 300 s, corner
+        # ended). After a bounded number of ignored Bs, a dialogue with no
+        # menu cursor and no yes/no is advanced with A - A on plain text
+        # cannot choose a purchase - then B is tried again.
+        if (backs > MONTH_SUB_ABORT_B_LIMIT and screen.hand is None and kind == 'text'
+                and not (screen.has('うむッ') or screen.has('いかんッ'))
+                and backs % 2 == 0 and backs <= MONTH_SUB_ABORT_B_LIMIT + 2 * RECRUIT_CANDIDATE_LIMIT):
+            if not sub.get('abort_text_advance'):
+                sub['abort_text_advance'] = True
+                _record(mem, 'month_sub_abort_text_advance', screen=kind,
+                        observed_metric={'backs': backs, 'text': screen.text[-40:]},
+                        reason='離脱のBで進まない会話文のため、カーソル・確認のない文だけAで送る')
+            return [pad('a')]
         return [pad('b')]
     if sub['kind'] == 'egg':
         return _egg_recovery_step(screen, mem, sub)
@@ -7384,6 +7426,44 @@ def month_sub_step(screen: Screen, mem):
     return [pad('a')]
 
 
+def _hero_only_egg_recovery(screen, mem, sub):
+    """Recover only the hero's egg when the full recovery is unaffordable.
+
+    g604 3-11: どうし had 0 uses, the full quote was 3こで150G against 68G, so
+    nothing was recovered. Two battles later a defended castle (no たいきゃく)
+    met チコリ's ダークエルフ (ひとだまくん = instant death, gcgx evil_egg) and
+    the eggless hero died -> game over. The list shows one row per general
+    (ぜんかいふく at y=47, then names at x=32); the quote screen must still
+    read 1こで50G before anything is paid.
+    """
+    if NAME not in _depleted_eggs(mem):
+        return False
+    if not any(x == 32 and word == NAME for x, y, word in _options(screen)):
+        return False
+    gold = sub.get('gold_before')
+    repair = (mem.get('shop') or {}).get('hero_repair_reserve', 0)
+    return (type(gold) is int and gold >= EGG_RECOVER_COST + repair + _hero_egg_wage_floor(mem)
+            and gold < _egg_measured_cost(mem) + repair + WAGE_RESERVE)
+
+
+def _hero_egg_wage_floor(mem):
+    """Wage floor for the hero's own egg: this month's measured payroll.
+
+    WAGE_RESERVE (30G) is a blind upper bound that keeps generals from being
+    fired. g604 3-11 had 68G and a measured payroll of 16G (0+4+4+5+3), so the
+    blind floor refused the 50G that would have kept the hero alive. Only a
+    fresh, complete roster with every wage read lowers it; otherwise 30G.
+    """
+    from .hanjuku_roster import MAX_RECRUIT_WAGE, fresh
+    receipt = fresh(mem)
+    wages = (receipt or {}).get('wages')
+    if (not receipt or receipt.get('complete') is not True or mem.get('recruit_payroll_pending')
+            or not isinstance(wages, dict) or set(wages) != set(receipt.get('names') or ())
+            or any(type(v) is not int or not 0 <= v <= MAX_RECRUIT_WAGE for v in wages.values())):
+        return WAGE_RESERVE
+    return min(WAGE_RESERVE, sum(wages.values()))
+
+
 def _egg_recovery_step(screen, mem, sub):
     """Measured full-recovery list and NこでNG confirmation; never guess a row."""
     if not screen.text:
@@ -7394,14 +7474,16 @@ def _egg_recovery_step(screen, mem, sub):
         body = ''.join(line.known.replace(' ', '') for line in screen.lines if line.y >= 140)
         quote = re.search(r'(\d+)こで(\d+)Gになりまんな', body)
         gold = (screen.header or {}).get('gold')
-        if (not sub.get('full_selected') or not quote
+        hero_only = bool(sub.get('hero_selected'))
+        if (not (sub.get('full_selected') or hero_only) or not quote
                 or int(quote[1]) <= 0 or int(quote[2]) != int(quote[1]) * EGG_RECOVER_COST
+                or (hero_only and int(quote[1]) != 1)
                 or type(gold) is not int or gold < int(quote[2])
                 + (mem.get('shop') or {}).get('hero_repair_reserve', 0)
                 # Owner (2026-09-28): 賃金リザーブは守る - the estimate that
                 # opened this screen is only a lower bound, so the floor is
                 # checked against the real quote, not the reservation.
-                + WAGE_RESERVE):
+                + (_hero_egg_wage_floor(mem) if hero_only else WAGE_RESERVE)):
             sub['aborted'] = True
             _record(mem, 'egg_recover_skip', observed_metric={'gold': gold, 'quote_read': bool(quote)},
                     reason='全回復の選択・費用・所持金を確認できないか、費用が足りないため戻る')
@@ -7409,13 +7491,27 @@ def _egg_recovery_step(screen, mem, sub):
         move = menu_to(screen, 'うむッ!')
         if move == 'here':
             sub.update(quoted_cost=int(quote[2]), stage='recovering')
-            _record(mem, 'egg_recover_confirm', choice='ぜんかいふく',
+            _record(mem, 'egg_recover_confirm', choice=NAME if hero_only else 'ぜんかいふく',
                     observed_metric={'eggs': int(quote[1]), 'cost': int(quote[2]), 'gold': gold},
-                    reason='全回復の表示費用が所持金以内なので決定。回復完了は未確定')
+                    reason=('主人公1個分の表示費用が所持金以内なので決定。回復完了は未確定'
+                            if hero_only else
+                            '全回復の表示費用が所持金以内なので決定。回復完了は未確定'))
             return [pad('a')]
         return [move] if move else []
     if sub.get('stage') != 'recovering' and any(
             x == 32 and y == 47 and word == 'ぜんかいふく' for x, y, word in _options(screen)):
+        if sub.get('hero_selected') or _hero_only_egg_recovery(screen, mem, sub):
+            move = menu_to(screen, NAME)
+            if move == 'here':
+                sub['hero_selected'] = True
+                _record(mem, 'egg_recover_select', choice=NAME,
+                        observed_metric={'gold': sub.get('gold_before'),
+                                         'full_estimate': _egg_measured_cost(mem)},
+                        reason=('全回復は所持金と賃金リザーブに足りないが、防衛戦で退却できず'
+                                '卵のない主人公は召喚獣の即死攻撃でゲームオーバーになる'
+                                '(g604 ダークエルフ)ため、主人公の卵だけを回復する'))
+                return [pad('a')]
+            return [move] if move else []
         move = menu_to(screen, 'ぜんかいふく')
         if move == 'here':
             sub['full_selected'] = True
@@ -8127,6 +8223,14 @@ def egg_battle_step(screen: Screen, mem):
     general_reading = _egg_general_reading(screen, mem, battle)
     wants_egg, egg_evidence = _own_egg_needed(mem, battle, general_reading)
     empty_egg = _own_egg_empty(mem, battle)
+    hero_summon = isinstance(battle, dict) and battle.get('ally') == NAME
+    if hero_summon and not wants_egg:
+        # g604 3-11: どうし 66/90 looked healthy against チコリ (HP11), so the
+        # egg was "saved"; the summoned ダークエルフ's ひとだまくん is instant
+        # death (gcgx evil_egg) and HP comparisons cannot price it. A dead
+        # hero ends the run, so he always answers a summon with his egg.
+        wants_egg = True
+        egg_evidence = {**egg_evidence, 'rule': 'hero_vs_summon'}
     if not mem.get('egg_battle'):
         mem['egg_battle'] = True
         exp = mem.get('_experience')
@@ -8134,6 +8238,8 @@ def egg_battle_step(screen: Screen, mem):
         # ⑥の写像: HP不利ならたまご、勝てそうなら温存 (attack) から始める。
         action = experience.preferred(exp, key, default='use_egg' if wants_egg and not empty_egg else 'attack',
                                       kind='egg_summon')
+        if hero_summon and not empty_egg:
+            action = 'use_egg'  # learned 'attack' never outranks the hero's life
         if action == 'use_egg' and empty_egg:
             action = 'attack'
         mem['egg_action'] = action
