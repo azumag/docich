@@ -234,6 +234,8 @@ jobs:
             --root-path 'src/docich/retro_corner.py' \
             --root-path 'src/docich/retro_corner_manual.py' \
             --root-path 'src/docich/retroarch_boundary.py' \
+            --root-path 'ops/vm_actions/collect_diagnostics.py' \
+            --root-path 'ops/vm_actions/tests/test_hanjuku_checkpoint_diagnostics.py' \
             --root-path 'src/docich/soren_recovery_process.py' \
             --root-path 'src/docich/soren_round_recovery.py' \
             --root-path 'src/docich/soren91*.py' \
