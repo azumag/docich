@@ -450,7 +450,8 @@ def analyze(
             angle = _orientation(best, labels, w, h, prev_angle,
                                  home_text_overlap=overlaps_text)
             bx0, by0, bx1, by1 = best.bbox
-            clipped_by_hud = any(bx0 < hx1 + 2 and bx1 > hx0 - 2 and by0 < hy1 + 2 and by1 > hy0 - 2
+            # 実機Lv49: HUDから1px離れた全身まで姿勢を固定すると、実際の逆回転を見失う。
+            clipped_by_hud = any(bx0 < hx1 + 1 and bx1 > hx0 - 1 and by0 < hy1 + 1 and by1 > hy0 - 1
                                  for hx0, hy0, hx1, hy1 in hud_rects)
             if clipped_by_hud and prev_angle is not None:
                 # Lv48実機: 下の矢印HUDが体を切り、直立→90度と誤認して強い回転を出した。
