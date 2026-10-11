@@ -207,3 +207,17 @@ def test_flyhome_note_omits_elapsed_when_corner_is_not_active(tmp_path):
     (root / 'external_video_corner.json').write_text(json.dumps({'status': 'restoring', 'started_at': 1.0}))
     text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
     assert '経過' not in text and 'Fly Me To The Home!' in text
+
+
+def test_special_corner_note_follows_webui_settings(tmp_path):
+    from docich.special_corner import save_settings
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'external-video-view'}}))
+    save_settings(root, {'title': 'ゲームA', 'title_suffix': '初見クリアに挑戦', 'category_id': '1',
+                         'category_name': 'Game A', 'comment_prompt': 'ゲームAの映像です。\n目標はクリア。',
+                         'closing_prompt': ''})
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert 'ゲームA(特別コーナー)' in text
+    assert 'コーナーの説明: ゲームAの映像です。 目標はクリア。' in text
+    assert 'Fly Me' not in text and '50面' not in text

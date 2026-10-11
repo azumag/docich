@@ -369,7 +369,8 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             pause = root / "tmp/state/soren_loop.paused"
             pause.write_text("lifecycle:req-9")
             old_loop = [(time.time() - 3000, 4242, 777)]       # born long before the fence
-            with patch.object(adapter, "_process_matches", side_effect=lambda name: list(old_loop)):
+            with patch.object(adapter, "_process_matches", side_effect=lambda name: list(old_loop)), \
+                    patch.object(adapter, "_singleton_process_identity", return_value=(4242, 777)):
                 self._stopped_materialize(adapter)
                 self.assertEqual(adapter._resumed_loop, (4242, 777))
                 self.assertFalse(adapter._live_process("soren_loop.sh"))   # still paused
@@ -384,7 +385,8 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             adapter = self.make_adapter(root)
             (root / "tmp/state").mkdir(parents=True)
             (root / "tmp/state/soren_loop.paused").write_text("x")
-            with patch.object(adapter, "_process_matches", return_value=[(time.time() - 3000, 4242, 777)]):
+            with patch.object(adapter, "_process_matches", return_value=[(time.time() - 3000, 4242, 777)]), \
+                    patch.object(adapter, "_singleton_process_identity", return_value=(4242, 777)):
                 self._stopped_materialize(adapter)
             (root / "tmp/state/soren_loop.paused").unlink()
             stale_other = [(time.time() - 3000, 9999, 888)]
@@ -397,10 +399,59 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
     def test_without_a_pause_marker_no_old_loop_is_remembered(self):
         with tempfile.TemporaryDirectory() as temp:
             adapter = self.make_adapter(Path(temp))
-            with patch.object(adapter, "_process_matches", return_value=[(time.time() - 3000, 4242, 777)]):
+            with patch.object(adapter, "_process_matches", return_value=[(time.time() - 3000, 4242, 777)]), \
+                    patch.object(adapter, "_singleton_process_identity", return_value=(4242, 777)):
                 self._stopped_materialize(adapter)
                 self.assertIsNone(adapter._resumed_loop)
                 self.assertFalse(adapter._live_process("soren_loop.sh"))
+
+    def test_resumed_loop_requires_fixed_root_program_identity_before_and_after(self):
+        cases = ("valid", "tail-argument", "foreign-root", "birth-changed",
+                 "program-changed", "duplicate", "missing", "still-paused")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                adapter = self.make_adapter(root)
+                proc = root / "fake-proc"
+                entry = proc / "4242"
+                entry.mkdir(parents=True)
+                foreign = root / "other"
+                foreign.mkdir()
+                for directory in (root, foreign):
+                    (directory / "soren_loop.sh").write_text("#!/bin/bash\n")
+                pause = root / "tmp/state/soren_loop.paused"
+                pause.parent.mkdir(parents=True)
+                pause.write_text("lifecycle:req-9")
+                def write_process(target, argv, cwd, ticks=777):
+                    target.mkdir(exist_ok=True)
+                    (target / "cmdline").write_bytes(("\0".join(argv) + "\0").encode())
+                    (target / "stat").write_text(target.name + " (bash) " + " ".join(["S"] + ["0"] * 18 + [str(ticks)]))
+                    for name, path in (("cwd", cwd), ("exe", Path("/bin/bash"))):
+                        link = target / name
+                        if link.is_symlink():
+                            link.unlink()
+                        link.symlink_to(path)
+                argv = ["/bin/bash", "./soren_loop.sh"]
+                if case == "tail-argument":
+                    argv = ["/usr/bin/tail", "-f", str(root / "soren_loop.sh")]
+                write_process(entry, argv, foreign if case == "foreign-root" else root)
+                adapter._singleton_process_identity = lambda name: SorenCoordinatorAdapter._singleton_process_identity(
+                    adapter, name, proc_root=proc)
+                old = (time.time() - 3000, 4242, 777)
+                with patch.object(adapter, "_process_matches", return_value=[old]):
+                    self._stopped_materialize(adapter)
+                    self.assertEqual(adapter._resumed_loop, None if case in {"tail-argument", "foreign-root"} else (4242, 777))
+                    if case != "still-paused":
+                        pause.unlink()
+                    if case == "birth-changed":
+                        write_process(entry, argv, root, ticks=778)
+                    elif case == "program-changed":
+                        write_process(entry, ["/usr/bin/tail", "-f", str(root / "soren_loop.sh")], root)
+                    elif case == "duplicate":
+                        write_process(proc / "5000", argv, root)
+                    elif case == "missing":
+                        (entry / "cmdline").unlink()
+                    self.assertEqual(adapter._live_process("soren_loop.sh"), case == "valid")
 
     def test_materialize_clears_matching_cancelled_request_for_rollback(self):
         with tempfile.TemporaryDirectory() as temp:

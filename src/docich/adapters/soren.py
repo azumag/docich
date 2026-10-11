@@ -606,7 +606,7 @@ class SorenCoordinatorAdapter:
     def _singleton_process_identity(self, expected: str, *, proc_root=Path("/proc")):
         """Prove the fixed-root script is a shell's program, not a data argument.
 
-        This stricter proof is limited to no-stop retirement. Unknown shell
+        This proof also fences paused-loop resumption. Unknown shell
         options or launch shapes fail closed instead of weakening the fence.
         """
         matches = []
@@ -872,10 +872,7 @@ class SorenCoordinatorAdapter:
         """The single soren_loop.sh that is alive while the lifecycle pause marker exists."""
         if not (self.root / "tmp/state/soren_loop.paused").exists():
             return None
-        found = self._process_matches("soren_loop.sh")
-        if found is None or len(found) != 1:
-            return None
-        return found[0][1], found[0][2]
+        return self._singleton_process_identity("soren_loop.sh")
 
     def _process_matches(self, expected: str) -> list[tuple[float, int, int]] | None:
         matches: list[tuple[float, int, int]] = []
@@ -910,6 +907,7 @@ class SorenCoordinatorAdapter:
         # An older instance is acceptable only if it is the very loop that was paused
         # at the stop and the lifecycle has since cleared the pause (fresh-start ran).
         return (expected == "soren_loop.sh" and self._resumed_loop == (pid, ticks)
+                and self._singleton_process_identity(expected) == self._resumed_loop
                 and not (self.root / "tmp/state/soren_loop.paused").exists())
 
     def _live_pid(self, filename: str, expected: str) -> bool:
