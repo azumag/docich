@@ -7375,6 +7375,25 @@ def _month_chikujou(screen, mem, shop):
     return [pad('a')]
 
 
+def _chikujou_visible_maxed(screen, mem):
+    """Read level 5 only from this native castle-list window, never a saved cap."""
+    options = _options(screen)
+    known = chart.CASTLE_NAMES.get(mem.get('chapter') or 1, ())
+    rows = sorted((x, y, word) for x, y, word in options if word in known)
+    if (not 1 <= len(rows) <= 4 or len({r[2] for r in rows}) != len(rows)
+            or any(x != 168 or y != 39 + i * 16 for i, (x, y, _) in enumerate(rows))
+            or _current(screen) not in rows):
+        return []
+    levels = []
+    for _, y, name in rows:
+        values = [word for x, row_y, word in options if x == 232 and row_y == y]
+        if len(values) != 1 or values[0] not in ('1', '2', '3', '4', '5'):
+            return []
+        if values[0] == '5':
+            levels.append(name)
+    return levels
+
+
 def _chikujou_step(screen, mem, sub):
     text = screen.text
     header = screen.header or {}
@@ -7459,7 +7478,8 @@ def _chikujou_step(screen, mem, sub):
         # A refusal applies to the chosen castle, not every castle. Never
         # infer a permanent level cap (it can also mean upgraded this month).
         chosen = sub.get('chosen')
-        if sub.get('rejected_frame') == text:
+        if (sub.get('rejected_frame') == text
+                and chosen not in _chikujou_visible_maxed(screen, mem)):
             if chosen:
                 # Input may not have taken effect yet. Do not attribute the
                 # previous castle's unchanged refusal to our next candidate.
@@ -7500,6 +7520,15 @@ def _chikujou_step(screen, mem, sub):
         if sub.get('chosen'):
             return _chikujou_wait(screen, mem, sub, 'castle_selection_unconfirmed')
         tried = sub.setdefault('rows_tried', [])
+        maxed = [c for c in _chikujou_visible_maxed(screen, mem) if c not in tried]
+        if maxed:
+            # gcgx info.html / rrpg basic.html: maximum level 5. An unchanged
+            # refusal is otherwise indistinguishable from ignored input.
+            # Skip observed capped rows before A, only in this month's substate.
+            tried.extend(maxed)
+            _record(mem, 'chikujou_max_level_seen',
+                    observed_metric={'castles': maxed, 'level': 5},
+                    reason='実一覧でレベル5を確認した城は当月の選択を省き、未表示の増築候補へ進む')
         names = [c for c in _chikujou_candidates(mem) if c not in tried]
         for name in names:
             move = menu_to(screen, name)
