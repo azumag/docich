@@ -35,7 +35,7 @@ ARRIVE_PX = 4
 ANCHOR_PX = 24                # roof-to-castle association radius (castles >=100 px apart)
 BATTLE_MENU = ('たまごをつかう', 'きりふだ', 'たいきゃく')
 AFTER_BATTLE_KINDS = frozenset({'map', 'map_target', 'castle_menu', 'general_list', 'month_menu',
-                                'attack_started', 'defense_started', 'castle_info', 'main_menu',
+                                'attack_started', 'defense_started', 'field_encounter_started', 'castle_info', 'main_menu',
                                 'yes_no', 'shop_list', 'boss_attack_started'})
 CARD_NAMES = frozenset({
     'イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース', 'グリンボー', 'ピッグローラー',
@@ -689,9 +689,26 @@ def _hero_alternatives(mem, names):
     return [g for g in names if g != NAME and general_max_hp(g) is not None and g not in unavailable]
 
 
+def _order_hero_alternatives(order, mem, names):
+    candidates = _hero_alternatives(mem, names)
+    if (mem.get('chapter') != 2 or order.get('step') != '2-B1'
+            or order.get('target') != chart.boss_castle(2)):
+        return candidates
+    # g706's selected シェーブル (27 HP, combat 4) entered a long road egg
+    # fight; the isolated-tested hero has 90 HP/combat 14. Keep companions
+    # with comparable primary stats, using the existing strength-gap rules.
+    boss = reference.general_strength(chart.BOSSES[2])
+    if boss is None:
+        return []
+    return [name for name in candidates
+            if (stats := reference.general_strength(name)) is not None
+            and boss[0] - stats[0] < reference.STRONG_GENERAL_HP_GAP
+            and boss[1] - stats[1] < reference.STRONG_GENERAL_COMBAT_GAP]
+
+
 def _hero_source_alternative(order, mem):
     return (order.get('general') == NAME
-            and bool(_hero_alternatives(mem, (mem.get('garrison') or {}).get(_source(order, mem)))))
+            and bool(_order_hero_alternatives(order, mem, (mem.get('garrison') or {}).get(_source(order, mem)))))
 
 
 def _boss_egg_depleted(order, mem) -> bool:
@@ -856,7 +873,7 @@ def _follow_general(mem, order, garrison, owned):
     assumes どうし at スペンソニア, but he held ゴーメン)."""
     general = order.get('general')
     source = _source(order, mem)
-    if general == NAME and _hero_alternatives(mem, garrison.get(source)):
+    if general == NAME and _order_hero_alternatives(order, mem, garrison.get(source)):
         return  # inspect the chart source's companion rather than chase the hero
     if not general or general in (garrison.get(source) or ()):
         return
@@ -905,6 +922,14 @@ def _tactics(mem, step):
                      'tactic_id': f'rare:{step}:キャトルミュー',
                      'boss_only': _is_boss_order(order, mem),
                      'note': 'レアイベント札を活用: 通常将軍を一撃、EMへ224と石化、ボスへ90ダメージ'},)
+        elif (mem.get('chapter') == 2 and step == '2-B1'
+              and _is_boss_order(order, mem) and 'バルムンク' in carried):
+            used = ((mem.get('kit_spent') or {}).get(step) or []).count('バルムンク')
+            rare = tuple({'enemy': chart.BOSSES[2], 'card': 'バルムンク',
+                          'open': True, 'step': step, 'boss_only': True,
+                          'tactic_id': f'rare:{step}:バルムンク:{used + index}',
+                          'note': '実携行を確認したイベント札を実測第2話ボスへ使用'}
+                         for index in range(carried.count('バルムンク')))
     if order is None or any(o['step'] == step for o in chart.orders(mem.get('chapter') or 0)):
         return (*rare, *base)
     override = set() if rare_kit is not None else set((mem.get('card_override') or {}).get(step) or ())
@@ -2800,6 +2825,56 @@ def _observe_card_stock(mem, inventory):
 
 
 
+def _chapter_two_balmung_inventory(mem, order, inventory):
+    """Freeze the isolated-tested boss kit from this unselected live panel.
+
+    g700: one イッテツーン plus two バルムンク, native carried confirmation,
+    measured boss entry, first バルムンク selection then enemy HP0 / next
+    chapter. The cheap card protects the event cards in road encounters.
+    Never infer stock from an old global cache or alter a selected sortie.
+    """
+    step = order['step']
+    if (mem.get('chapter') != 2 or step != '2-B1'
+            or order.get('target') != chart.boss_castle(2)
+            or (mem.get('orders') or {}).get(step) not in (None, 'pending')
+            or (mem.get('rare_card_kit') or {}).get(step) is not None
+            or (mem.get('kit_spent') or {}).get(step)
+            or (mem.get('card_drop') or {}).get(step)):
+        return None
+    stocks = {r['card']: r['stock'] for r in inventory['rows']}
+    if stocks.get('イッテツーン', 0) < 1 or stocks.get('バルムンク', 0) < 2:
+        return None
+    if inventory['remaining'] in (1, 2):
+        # g706's latest stall checkpoint contains one selected chart card.
+        # Do not rewrite that partial kit or infer its identity. Back out of
+        # both panels, then a new live panel can establish the complete kit.
+        actions = _hold_guarded_sortie(mem, order, 'boss_stock_kit_restart',
+            '不足した予定札の途中選択を取り消し、実測装備を未選択の一覧から確認し直す',
+            {'remaining': inventory['remaining'],
+             'visible_stocks': {c: stocks[c] for c in ('イッテツーン', 'バルムンク')}})
+        # Keep this already-started boss order ahead of a new field survey.
+        # The restart backs out completely before selecting another actor.
+        mem['active'] = step
+        mem['boss_stock_restart'] = {'step': step, 'readings': 0}
+        return actions
+    if mem.get('picked') or inventory['remaining'] != CARRY_SLOTS:
+        return None
+    original = _deploy_cards(order, mem)
+    kit = ['イッテツーン', 'バルムンク', 'バルムンク']
+    mem.setdefault('rare_card_kit', {})[step] = kit
+    mem.pop('rare_scan', None)
+    mem.setdefault('strong_card_kit', {}).pop(step, None)
+    _record(mem, 'rare_card_kit', **_deploy_context(order, mem), chart_step=step,
+            observed_metric={'card': 'バルムンク', 'stock': stocks['バルムンク'],
+                             'cards': kit, 'original_cards': original,
+                             'id_sum': sum(CARD_IDS[c] for c in kit),
+                             'stocks': {c: stocks[c] for c in set(kit)},
+                             'inventory_evidence': inventory['inventory_evidence'],
+                             'observed_rows': inventory['observed_rows']},
+            reason='実在庫のイベント札2枚と道中用の安価な札を確認し、第2話ボスの実測装備を携行する')
+    return []  # the following observation selects and verifies the actual kit
+
+
 def _rare_card_inventory(screen, mem, order, inventory):
     """Discover event stock before picking; freeze a positive, measured kit.
 
@@ -2985,9 +3060,13 @@ def _deploy_context(order, mem, *, expected_metric=None):
         context.update(strategy_variant=retry.get('strategy_variant', 'retry_with_opening_cards'),
                        deviation_reason=retry.get('deviation_reason'),
                        expected_metric=retry.get('expected_metric'))
-    if (mem.get('rare_card_kit') or {}).get(order['step']):
+    rare_kit = (mem.get('rare_card_kit') or {}).get(order['step'])
+    if rare_kit and 'キャトルミュー' in rare_kit:
         context.update(strategy_variant='rare_cattlemyu',
                        deviation_reason='実在庫のキャトルミューを活用するため携行札を変更')
+    elif rare_kit and 'バルムンク' in rare_kit:
+        context.update(strategy_variant='rare_balmung_boss',
+                       deviation_reason='実在庫のバルムンクを第2話ボスの実測装備として携行')
     return context
 
 
@@ -3035,7 +3114,7 @@ def _empty_sortie_inventory(screen):
                          for x, ch in line.cells if left <= x < 240)
         if observed != expected:
             return False
-    return not any(card in word for _, _, word in _options(screen) for card in CARD_NAMES)
+    return not any(card in word for _, _, word in _options(screen) for card in ALL_CARD_NAMES)
 
 
 def _sortie_inventory(screen):
@@ -3043,7 +3122,8 @@ def _sortie_inventory(screen):
 
     The one-card placement is live-measured. Additional names are classified
     only when each occupies a complete known slot and the whole panel matches;
-    this recognizes text, not quantities or partial names.
+    this recognizes text, not quantities or partial names. The receipt uses
+    the canonical game catalogue, independently of the planning allowlist.
     """
     if screen.kind != 'sortie_confirm' or screen.hand not in ((138, 105, 156, 118), (138, 105, 158, 118)):
         return None
@@ -3055,7 +3135,7 @@ def _sortie_inventory(screen):
     first = cells(47)
     heading = text_cells(136, 'きりふだ')
     first_spans = TextLine(47, tuple((x, ch) for x, ch in first if x >= 176)).spans()
-    if len(first_spans) != 1 or first_spans[0][0] != 176 or first_spans[0][1] not in CARD_NAMES:
+    if len(first_spans) != 1 or first_spans[0][0] != 176 or first_spans[0][1] not in ALL_CARD_NAMES:
         return None
     cards = [first_spans[0][1]]
     if first != heading + text_cells(176, cards[0]):
@@ -3072,7 +3152,7 @@ def _sortie_inventory(screen):
         if empty_tail:
             return None
         spans = TextLine(y, tuple((x, ch) for x, ch in row if x >= 176)).spans()
-        if len(spans) != 1 or spans[0][0] != 176 or spans[0][1] not in CARD_NAMES:
+        if len(spans) != 1 or spans[0][0] != 176 or spans[0][1] not in ALL_CARD_NAMES:
             return None
         if row != text_cells(176, spans[0][1]):
             return None
@@ -3087,7 +3167,7 @@ def _sortie_inventory(screen):
            and (line.y not in expected or (line.y in (111, 127) and x < 160))
            for line in screen.lines if 32 <= line.y < 135 for x, ch in line.cells):
         return None
-    if [word for _, _, word in _options(screen) if word in CARD_NAMES] != cards:
+    if [word for _, _, word in _options(screen) if word in ALL_CARD_NAMES] != cards:
         return None
     return cards
 
@@ -3436,7 +3516,22 @@ def deploy_step(screen: Screen, mem):
     kind = screen.kind
     if order is None:
         # Menus we did not open (e.g. confirm pressed by an earlier fallback).
+        mem.pop('boss_stock_restart', None)
         return [pad('b')]
+    restarting = mem.get('boss_stock_restart')
+    if isinstance(restarting, dict):
+        if restarting.get('step') != order['step']:
+            mem.pop('boss_stock_restart', None)
+        elif kind == 'castle_menu':
+            mem.pop('boss_stock_restart', None)  # full backout; normal source check resumes
+        else:
+            restarting['readings'] = int(restarting.get('readings') or 0) + 1
+            if restarting['readings'] >= 12:
+                mem.pop('boss_stock_restart', None)
+                return _hold_guarded_sortie(mem, order, 'boss_stock_restart_deferred',
+                    '選択画面の取り消し確認が上限に達したため、承認せず出撃を取り消す',
+                    {'screen': kind, 'readings': 12})
+            return [pad('b')]
     if kind == 'general_list' and (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed':
         # A newly selected sortie may use a different actor. An interrupted
         # departure instead retains its evidence for source reconciliation.
@@ -3491,7 +3586,7 @@ def deploy_step(screen: Screen, mem):
                     or any(not _general_visible(screen, g) or general_max_hp(
                         'しゅじんこう' if g == NAME else g) is None for g in present)):
                 return _hold_deploy(screen, mem, order, '出撃一覧の本人・カーソルを確認できないため保留')
-            candidates = (_hero_alternatives(mem, present)
+            candidates = (_order_hero_alternatives(order, mem, present)
                           if order['general'] == NAME or order.get('source_probe') is True else [])
             general = candidates[0] if candidates else order['general']
             # A stale override is not a receipt, and a companion selected in
@@ -3614,6 +3709,9 @@ def deploy_step(screen: Screen, mem):
                                 '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
         mem.get('card_unreadable', {}).pop(order['step'], None)
         _observe_card_stock(mem, inventory)
+        boss_actions = _chapter_two_balmung_inventory(mem, order, inventory)
+        if boss_actions is not None:
+            return boss_actions
         rare_actions = _rare_card_inventory(screen, mem, order, inventory)
         if rare_actions is not None:
             return rare_actions
@@ -5932,7 +6030,9 @@ def card_list_step(screen: Screen, mem):
         _record(mem, 'battle_hero_retreat_cancel_card', **_battle_labels(cur),
                 reason='未選択の切り札一覧を閉じ、どうしの緊急退却を優先')
         return [pad('b')]
-    names = [w for _, _, w in _options(screen) if w in CARD_NAMES]
+    # Recognition follows the real catalogue; tactic/rescue selection retains
+    # its own planning and damage gates. A held event card must be visible.
+    names = [w for _, _, w in _options(screen) if w in ALL_CARD_NAMES]
     if not flow:
         return [pad('b')]
     if flow['stage'] == 'list' and flow.get('survival'):
@@ -6264,6 +6364,15 @@ BOSS_ENTRY_HOLD_LIMIT = 8   # unmatched boss entry messages before the screen is
 
 def message_step(screen: Screen, mem):
     text = screen.text
+    encounter = re.fullmatch(r'([^\ufffd\s]+)しょうぐんがてきとそうぐうしました!!', text)
+    if encounter:
+        general = encounter[1]
+        if general != NAME and general_max_hp(general) is None:
+            return []
+        _record(mem, 'field_encounter_observed', general=general, castle=None,
+                observed_metric={'message': text, 'location': 'field'},
+                reason='実測の敵との遭遇告知を確認したため会話を進める')
+        return [pad('a')]
     boss_entry = re.fullmatch(r'([^\ufffd\s]+)しょうぐんがボスじょうにせめこんだ!!', text)
     if boss_entry:
         general = boss_entry.group(1)
@@ -6360,7 +6469,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
     # Route state belongs to the measured map of one chapter. Keep
     # run-wide counters/name evidence, never carry coordinates/orders.
     for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
-                'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
+                'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'boss_stock_restart', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
                 'month_nav', 'house_nav', 'starter_party',
                 'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',

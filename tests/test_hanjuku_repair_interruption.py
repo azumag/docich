@@ -110,6 +110,16 @@ def test_retry_wait_does_not_consume_another_battle_or_unrelated_dialogue():
     assert mem['house']['phase'] == 'repair_recheck'
 
 
+def test_field_encounter_releases_input_to_battle_and_preserves_repair_budget():
+    mem = memory()
+    before_total = mem['house']['total']
+    assert step(mem, 'field_encounter_started') is None
+    assert mem['house']['interrupted'] is True
+    assert mem['house']['total'] == before_total
+    assert step(mem, 'map') == []
+    assert mem['house']['phase'] == 'repair_recheck'
+
+
 def test_scope_change_while_waiting_discards_the_retry():
     mem = memory()
     step(mem, 'defense_started')

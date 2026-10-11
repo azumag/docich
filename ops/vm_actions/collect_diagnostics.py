@@ -3598,7 +3598,8 @@ def _project_corner_state(data):
                 "hanjuku-chart-v167-fake-hero-reveal",
                 "hanjuku-chart-v168-general-repair-budget",
                 "hanjuku-chart-v169-repair-interruption",
-                "hanjuku-chart-v170-chapter-two-boss"} else None),
+                "hanjuku-chart-v170-chapter-two-boss",
+                "hanjuku-chart-v171-chapter-two-stock-kit"} else None),
         "bot_chart": _project_bot_chart(data.get("bot_chart")),
         "narration": _project_counts(data.get("narration"),
                                      ("enqueued", "delivery_failed", "skipped")),
@@ -4873,7 +4874,7 @@ HANJUKU_DECISION_EVENTS = ("action_plan", "decision")
 # source, so a new kind fails closed as "other" instead of being emitted.
 HANJUKU_DECISION_SCREEN_KINDS = frozenset({
     "attack_started", "barrier_removed", "battle", "battle_menu",
-    "battle_menu_pending", "boss_attack_started", "card_select", "castle_info",
+    "battle_menu_pending", "boss_attack_started", "field_encounter_started", "card_select", "castle_info",
     "castle_menu", "defense_started", "discharge_menu", "egg_battle_menu",
     "egg_choice_menu", "general_list", "gift_request", "main_menu", "map",
     "map_target", "monster_menu", "month_menu", "name_entry", "okunote_menu",

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v170-chapter-two-boss'
+BOT_VERSION = 'hanjuku-chart-v171-chapter-two-stock-kit'
 
 # Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
 # frozen and the bot has planned no input for more than this many observations,
@@ -412,7 +412,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=policy.battle_menu_pending_step(mem)
     elif kind=='battle_menu':
         actions=policy.battle_menu_step(screen,mem)
-    elif kind in {'attack_started','defense_started','boss_attack_started'}:
+    elif kind in {'attack_started','defense_started','boss_attack_started','field_encounter_started'}:
         actions=policy.message_step(screen,mem)
     elif kind=='barrier_removed':
         if mem.get('chapter') == 1:
