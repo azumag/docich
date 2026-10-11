@@ -357,7 +357,6 @@ def play(
                         hz_mem[tuple(rect)] = st.t  # 前の死亡破片を新しい試行の棘として残さない。
                 if loop.obs.home_exit_up is not None:
                     up_waypoint = loop.obs.home_exit_up
-                    warning_memory.clear()
                 for lane in loop.obs.warning_lanes:
                     warning_memory[lane] = st.t
                 warning_memory = {lane: seen for lane, seen in warning_memory.items() if st.t - seen <= 2.0}
