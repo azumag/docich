@@ -16,7 +16,10 @@ def main():
     entries = json.loads(manifest.read_text(encoding='utf-8'))['files']
     for entry in entries:
         path = root / entry['path']
-        if hashlib.sha256(path.read_bytes()).hexdigest() != entry['sha256']:
+        data = path.read_bytes()
+        if path.suffix != '.png':
+            data = data.replace(b'\r\n', b'\n')
+        if hashlib.sha256(data).hexdigest() != entry['sha256']:
             raise SystemExit(f'Saved file differs: {entry["path"]}')
     print(f'Archive verified: {len(entries)} files')
     if args.check:
