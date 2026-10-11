@@ -6930,7 +6930,9 @@ def _chikujou_reserve(mem, shop):
     if status in ('done', 'not_needed'):
         egg = 0
     elif status == 'skipped':
-        egg = EGG_RECOVER_COST if NAME in _depleted_eggs(mem) else 0
+        # The hero awaiting a re-read after a summon (egg_recheck / dirty
+        # roster egg, old count 4 or none) is not proof his egg is full.
+        egg = EGG_RECOVER_COST if NAME in _egg_recovery_targets(mem) else 0
     else:
         egg = max(amount(shop.get('reserve')), amount(shop.get('egg_cost')),
                   EGG_RECOVER_COST * len(_egg_recovery_targets(mem)))

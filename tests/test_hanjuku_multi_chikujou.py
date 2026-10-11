@@ -380,3 +380,23 @@ def test_recruit_stopped_this_month_releases_its_fee_for_building(status):
     mem = memory(recruit=status, recruit_reserve=50)
     assert policy._chikujou_reserve(mem, mem['shop']) == policy.WAGE_RESERVE
     assert policy._month_chikujou(month(145), mem, mem['shop']) == [policy.pad('a')]
+
+
+@pytest.mark.parametrize('hero_uses', [4, None])
+def test_skipped_recovery_keeps_the_hero_awaiting_a_reread(hero_uses):
+    # Review P2: a summon leaves the old count (4) or none and puts the hero
+    # on egg_recheck; that is not proof his egg is full.
+    mem = memory(egg='skipped')
+    mem['egg_uses'] = {'ゼウス': 3}
+    if hero_uses is not None:
+        mem['egg_uses']['どうし'] = hero_uses
+    mem['egg_recheck'] = ['どうし']
+    assert policy._chikujou_reserve(mem, mem['shop']) == policy.WAGE_RESERVE + 50
+    assert policy._month_chikujou(month(79), mem, mem['shop']) is None   # 79 < 80 + 1
+    assert 'month_sub' not in mem
+    mem['shop']['chikujou'] = 'check'
+    sub = open_build(mem, 95)
+    policy.month_sub_step(castles(), mem)
+    # 95 - 20 = 75 would spend the hero's 50G + the 30G wage
+    assert policy.month_sub_step(quote(HOME, 95, 20, on='いかんッ!'), mem) == [policy.pad('a')]
+    assert sub['declined'] and not sub.get('confirm_sent')
