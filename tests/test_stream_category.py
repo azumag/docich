@@ -135,6 +135,23 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
         ])
         self.assertEqual(FLYHOME_CATEGORY_ID, "1202315854")
 
+    def test_special_view_uses_saved_webui_settings(self) -> None:
+        from docich.special_corner import save_settings
+
+        script = self._install_script()
+        save_settings(self.g.state_dir, {
+            "title": "ゲームA", "title_suffix": "初見クリアに挑戦", "category_id": "33214",
+            "category_name": "Game A", "comment_prompt": "", "closing_prompt": "",
+        })
+        self.assertTrue(announce_running_view(self.g, "external-video-view", spawn=self._recorder))
+        self.assertEqual(self.spawned[-1]["argv"], [
+            str(script.resolve()), "--category-id", "33214", "--category-name", "Game A",
+            "--activity", "ゲームA", "--strategy", "初見クリアに挑戦",
+        ])
+        # The restore still announces the previous game through its own TOML.
+        self.assertTrue(announce_running_view(self.g, "nethack", spawn=self._recorder))
+        self.assertEqual(self.spawned[-1]["argv"][1:3], ["--game", "nethack"])
+
     def test_commit_follow_routes_flyhome_and_restores_the_previous_game(self) -> None:
         self._install_script()
         self.assertTrue(announce_running_view(self.g, "external-video-view", spawn=self._recorder))
