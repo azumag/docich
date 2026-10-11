@@ -2820,13 +2820,22 @@ def _chapter_two_balmung_inventory(mem, order, inventory):
     if (mem.get('chapter') != 2 or step != '2-B1'
             or order.get('target') != chart.boss_castle(2)
             or (mem.get('orders') or {}).get(step) not in (None, 'pending')
-            or mem.get('picked') or inventory['remaining'] != CARRY_SLOTS
             or (mem.get('rare_card_kit') or {}).get(step) is not None
             or (mem.get('kit_spent') or {}).get(step)
             or (mem.get('card_drop') or {}).get(step)):
         return None
     stocks = {r['card']: r['stock'] for r in inventory['rows']}
     if stocks.get('イッテツーン', 0) < 1 or stocks.get('バルムンク', 0) < 2:
+        return None
+    if inventory['remaining'] in (1, 2):
+        # g706's latest stall checkpoint contains one selected chart card.
+        # Do not rewrite that partial kit or infer its identity. Back out of
+        # both panels, then a new live panel can establish the complete kit.
+        return _hold_guarded_sortie(mem, order, 'boss_stock_kit_restart',
+            '不足した予定札の途中選択を取り消し、実測装備を未選択の一覧から確認し直す',
+            {'remaining': inventory['remaining'],
+             'visible_stocks': {c: stocks[c] for c in ('イッテツーン', 'バルムンク')}})
+    if mem.get('picked') or inventory['remaining'] != CARRY_SLOTS:
         return None
     original = _deploy_cards(order, mem)
     kit = ['イッテツーン', 'バルムンク', 'バルムンク']

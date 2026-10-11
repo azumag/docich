@@ -41,8 +41,8 @@ def test_native_stock_freezes_the_tested_kit_without_selection_or_spending():
     assert 'キャトルミュー' not in record['deviation_reason']
 
 
-@pytest.mark.parametrize('remaining', [0, 1, 2])
-def test_partial_or_full_selected_panel_never_changes_kit(remaining):
+@pytest.mark.parametrize('remaining', [0])
+def test_full_selected_panel_never_changes_kit(remaining):
     mem = memory(); inv = inventory(); inv['remaining'] = remaining
     assert p._chapter_two_balmung_inventory(mem, order(), inv) is None
     assert not mem.get('rare_card_kit')
@@ -138,3 +138,19 @@ def test_zero_boss_panel_never_spends_the_spare_event_card():
     start = len(mem['_records'])
     assert p.battle_step(zero, mem) == []
     assert not any(r['decision'] == 'battle_card' for r in mem['_records'][start:])
+
+
+@pytest.mark.parametrize('remaining', [1, 2])
+def test_partial_original_kit_cancels_without_rewriting_reserved_cards(remaining):
+    mem = memory(); mem['picked'] = ['イッテツーン']; inv = inventory(); inv['remaining'] = remaining
+    assert p._chapter_two_balmung_inventory(mem, order(), inv) == [p.pad('b'), p.pad('b')]
+    assert mem['active'] is None and mem['picked'] == []
+    assert mem['orders']['2-B1'] == 'pending'
+    assert not mem.get('rare_card_kit') and not mem.get('kit_spent')
+    assert mem['_records'][-1]['decision'] == 'boss_stock_kit_restart'
+
+
+def test_partial_reservation_is_not_assumed_to_match_cached_selected_name():
+    mem = memory(); mem['picked'] = ['ノリウツール']; inv = inventory(); inv['remaining'] = 2
+    assert p._chapter_two_balmung_inventory(mem, order(), inv) == [p.pad('b'), p.pad('b')]
+    assert not mem.get('rare_card_kit')
