@@ -100,6 +100,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     step=int(state.get('step',0))+1
     phase_step=int(state.get('phase_step',0))+1 if state.get('phase')==phase else 1
     mem=dict(state.get('policy') or {})
+    if phase != 'dialogue':
+        mem.pop('trade_guard', None)  # release before an earlier foreground owner
     identity = hanjuku_roster.run_identity(run_identity)
     mem['_run_identity'] = identity
     if identity is not None and mem.get('survey_run_identity') != identity:
@@ -249,8 +251,11 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions = battle_menus_flow.defender_egg_pending_step(screen, mem)
     if actions is None:
         actions = battle_menus_flow.command_open_pending_step(screen, mem)
+    trade_guard_hold = False
     if actions is None:
-        actions = prompts_flow.trade_guard_step(screen, mem)
+        actions = prompts_flow.trade_guard_step(screen, mem, phase=phase)
+        trade_guard_hold = (phase == 'dialogue' and actions == []
+                            and (mem.get('trade_guard') or {}).get('held') is True)
     if actions is None:
         actions = month_flow.army_count_pending_step(screen, mem)
     if actions is None and event_confirmation:
@@ -394,7 +399,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         streak=int(updated.get('no_input_streak') or 0)+1
     else:
         streak=1
-    if (not actions and streak>NO_INPUT_HOLD_MAX
+    if (not actions and streak>NO_INPUT_HOLD_MAX and not trade_guard_hold
             and not isinstance(mem.get('resume_egg_ritual'), dict)
             and not isinstance(mem.get('orphan_battle_menu'), dict)
             and not (kind == 'egg_battle_menu'
