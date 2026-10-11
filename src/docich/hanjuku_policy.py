@@ -3511,27 +3511,57 @@ def _keep_sortie_defender(screen, mem, order):
         {'present': present[:8], 'available': sorted(available)})
 
 
+def boss_stock_restart_step(screen: Screen, mem):
+    """Keep ownership of a partly read sortie confirmation while backing out."""
+    rows = {line.y: line for line in screen.lines}
+    partial_confirmation = (screen.kind in {'yes_no', 'text', 'unknown'}
+            and 31 in rows and rows[31].span(80, 128) == 'しょうぐん'
+            and 47 in rows and rows[47].span(136, 176) == 'きりふだ'
+            and 111 in rows and rows[111].span(160, 200) == 'うむッ!'
+            and 127 in rows and rows[127].span(160, 208) == 'いかんッ!')
+    if mem.get('boss_stock_cancelled'):
+        if screen.kind == 'sortie_confirm' or partial_confirmation:
+            _record(mem, 'situation_held', screen=screen.kind,
+                    reason='取り消し上限後も同じ出撃確認が残るため承認せず保留')
+            return []
+        if screen.kind in {'map', 'map_target', 'castle_menu', 'general_list', 'card_select'}:
+            mem.pop('boss_stock_cancelled', None)
+    restarting = mem.get('boss_stock_restart')
+    if not isinstance(restarting, dict):
+        return None
+    order = _order(mem)
+    kind = screen.kind
+    if order is None or restarting.get('step') != order['step']:
+        mem.pop('boss_stock_restart', None)
+        return None
+    if kind == 'castle_menu':
+        mem.pop('boss_stock_restart', None)  # full backout; normal source check resumes
+        return None
+    if kind not in {'general_list', 'card_select', 'sortie_confirm'}:
+        # The action label can lose a glyph and classify as generic yes/no.
+        # Retain only this measured status+carry+choice layout; unrelated
+        # events, battle menus and monthly confirmations keep their owners.
+        if not partial_confirmation:
+            return None
+    restarting['readings'] = int(restarting.get('readings') or 0) + 1
+    if restarting['readings'] >= 12:
+        mem.pop('boss_stock_restart', None)
+        mem['boss_stock_cancelled'] = True
+        return _hold_guarded_sortie(mem, order, 'boss_stock_restart_deferred',
+            '選択画面の取り消し確認が上限に達したため、承認せず出撃を取り消す',
+            {'screen': kind, 'readings': 12})
+    return [pad('b')]
+
+
 def deploy_step(screen: Screen, mem):
+    restart = boss_stock_restart_step(screen, mem)
+    if restart is not None:
+        return restart
     order = _order(mem)
     kind = screen.kind
     if order is None:
         # Menus we did not open (e.g. confirm pressed by an earlier fallback).
-        mem.pop('boss_stock_restart', None)
         return [pad('b')]
-    restarting = mem.get('boss_stock_restart')
-    if isinstance(restarting, dict):
-        if restarting.get('step') != order['step']:
-            mem.pop('boss_stock_restart', None)
-        elif kind == 'castle_menu':
-            mem.pop('boss_stock_restart', None)  # full backout; normal source check resumes
-        else:
-            restarting['readings'] = int(restarting.get('readings') or 0) + 1
-            if restarting['readings'] >= 12:
-                mem.pop('boss_stock_restart', None)
-                return _hold_guarded_sortie(mem, order, 'boss_stock_restart_deferred',
-                    '選択画面の取り消し確認が上限に達したため、承認せず出撃を取り消す',
-                    {'screen': kind, 'readings': 12})
-            return [pad('b')]
     if kind == 'general_list' and (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed':
         # A newly selected sortie may use a different actor. An interrupted
         # departure instead retains its evidence for source reconciliation.
@@ -6469,7 +6499,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
     # Route state belongs to the measured map of one chapter. Keep
     # run-wide counters/name evidence, never carry coordinates/orders.
     for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
-                'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'boss_stock_restart', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
+                'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'boss_stock_restart', 'boss_stock_cancelled', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
                 'month_nav', 'house_nav', 'starter_party',
                 'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
