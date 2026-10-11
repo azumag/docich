@@ -4164,8 +4164,9 @@ def battle_step(screen: Screen, mem):
                     castle=cur.get('castle'), side=cur.get('side'),
                     observed_metric={'sortie_step': cur['step']},
                     reason='出撃注文を特定できない突入のため、同じ将軍の進軍中出撃の携行札だけを結び付け')
+        _bind_substitute_defender(mem, cur, b)
         planned = [t['card'] for t in _tactics(mem, cur['step'])
-                   if t['enemy'] in (None, b.enemy) and t.get('step') in (None, cur['step'])
+                   if _tactic_enemy_ok(t, b.enemy, cur) and t.get('step') in (None, cur['step'])
                    and not (t.get('boss_only')
                             and not _boss_tactics_allowed(mem, cur))]
         planned += list(mem.get('card_override', {}).get(cur['step']) or [])
@@ -4269,7 +4270,7 @@ def battle_step(screen: Screen, mem):
     done = cur.setdefault('tactics_done', [])
     for index, tactic in enumerate(tactics):
         tid = tactic.get('tactic_id') or f"{'x' if index < len(extra) else 'c'}{index}:{tactic['card']}"
-        if tactic['enemy'] not in (None, b.enemy) or tid in done:
+        if not _tactic_enemy_ok(tactic, b.enemy, cur) or tid in done:
             continue
         if tactic.get('step') and tactic['step'] != cur.get('step'):
             continue
@@ -4778,6 +4779,42 @@ def _critical_safe_card(mem, cur, rescue):
                 or (gate['role'] == 'healing_not_a_kill' and _card_healing_needed(cur))):
             return True
     return False
+
+
+def _tactic_enemy_ok(tactic, enemy, cur):
+    """A tactic applies to this enemy, or to the defender standing in for it."""
+    if tactic.get('enemy') in (None, enemy):
+        return True
+    sub = cur.get('tactic_substitute') if isinstance(cur, dict) else None
+    return bool(tactic.get('open') and isinstance(sub, dict)
+                and sub.get('expected') == tactic.get('enemy') and sub.get('actual') == enemy)
+
+
+def _bind_substitute_defender(mem, cur, b):
+    """Apply a step's opening cards when another, at-least-as-strong general defends.
+
+    g684 12:01: 1-C2 sends ココット (max 24) with ダイチスイム×2・ブラッキー for
+    the chart's opening against タピオカ (50). ソーピニヨン (48) defended
+    スペンソニア instead, the enemy-keyed tactic never matched, no card was
+    used and ココット died 24->18->0. The kit (general damage 6+6+22, gcgx
+    kirihuda) is the chart's answer to that matchup, not to the name.
+    """
+    step = cur.get('step')
+    if not step or not b.enemy or type(b.enemy_hp) is not int or type(b.ally_hp) is not int:
+        return
+    tactics = [t for t in _tactics(mem, step) if t.get('step') == step]
+    if any(t.get('enemy') in (None, b.enemy) for t in tactics):
+        return
+    expected = {t['enemy'] for t in tactics if t.get('open') and t.get('enemy')}
+    # Only a clear mismatch (g684: 48 vs 24). A near-even substitute keeps
+    # the egg-drop opener and melee (キッシュ 26 vs ココット 24).
+    if len(expected) != 1 or b.enemy_hp * 2 < b.ally_hp * 3:
+        return
+    cur['tactic_substitute'] = {'expected': next(iter(expected)), 'actual': b.enemy}
+    _record(mem, 'tactic_substitute_defender', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
+            observed_metric={'expected': cur['tactic_substitute']['expected'],
+                             'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
+            reason='チャート想定と別の将軍が守るが、HPが自軍の1.5倍以上のため同じ手順の開幕切り札を使う')
 
 
 def _hero_retreat_needed(cur):
