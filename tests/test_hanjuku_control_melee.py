@@ -1,5 +1,6 @@
 """g684 Castora: a measured melee follow-up is a real option after クースカン."""
 from pathlib import Path
+import json
 
 import pytest
 
@@ -116,6 +117,24 @@ def test_expired_selection_cannot_disable_survival_on_a_later_panel():
     mem['battle']['enemy_hp'] = 17
     mem['tick'] += p.CARD_ANNOUNCE_LIMIT + p.MELEE_HOLD_LIMIT + 1
     assert p._card_melee_ready(mem, mem['battle']) is False
+
+
+@pytest.mark.parametrize('hp',[1,33])
+def test_unchanged_hp_after_selection_never_claims_measured_drop_or_followup(hp):
+    mem=castora()
+    mem['battle'].update(enemy_hp=hp,start_enemy_hp=hp)
+    assert p.card_list_step(cards(['クースカン']),mem)==[p.pad('a')]
+    mem['battle']['planned_cards']=[]
+    for _ in range(3):
+        mem=json.loads(json.dumps(mem))
+        mem['tick']+=1
+        control=json.loads(json.dumps(mem))
+        control['battle'].pop('card_melee_followup')
+        expected=p.battle_step(panel(control,soldiers=(6,6)),control)
+        assert p.battle_step(panel(mem,soldiers=(6,6)),mem)==expected
+        assert not any(r['decision']=='battle_card_melee_followup' for r in mem['_records'])
+        assert mem['battle']['cards_used']==[]
+        assert mem['battle']['card_melee_followup']['bursts']==0
 
 
 def test_hotloaded_refusal_can_recheck_once_at_the_existing_probe_boundary():

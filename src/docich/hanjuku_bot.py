@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v158-native-starter-pane'
+BOT_VERSION = 'hanjuku-chart-v159-egg-recheck-wall-risk'
 
 # Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
 # frozen and the bot has planned no input for more than this many observations,
