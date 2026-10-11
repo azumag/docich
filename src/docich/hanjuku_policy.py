@@ -6403,6 +6403,17 @@ def observe_chapter_castle(mem, castle):
     A name absent from this chapter and present in the next one is proof.
     """
     chapter = mem.get('chapter') or 0
+    if (not chapter and mem.get('resume_chapter_pending') is True and castle
+            and castle not in {'アルマムーン', 'あるまむーん', 'ほんじょう', 'ボス'}):
+        # A restored party picker has no chapter label. Resolve from a fresh
+        # full castle name unique across all chapters, never from the old bot.
+        matches = [n for n, names in chart.CASTLE_NAMES.items()
+                   if castle in names or castle in {STATUS_NAMES.get(x, x) for x in names}]
+        if len(matches) == 1:
+            mem.pop('resume_chapter_pending', None)
+            _enter_chapter(mem, matches[0], evidence=castle,
+                           reason='再開後の実城名が一つの章だけに存在するため章を確定する')
+        return
     if not castle or not chapter:
         return
     here = set(chart.CASTLE_NAMES.get(chapter, ())) | {chart.home_castle(chapter), chart.boss_castle(chapter)}
@@ -8878,6 +8889,10 @@ def observe_events(screen: Screen, mem):
             _record(mem, 'month_seen', month=key, gold=header['gold'], reason='月の表示')
         mem['gold'] = header['gold']
     castle = CASTLE_STATUS.search(screen.text)
+    if castle and mem.get('resume_chapter_pending') is True:
+        observe_chapter_castle(mem, castle[1])
+    if mem.get('resume_chapter_pending') is True and type(mem.get('chapter')) is int and 1 <= mem['chapter'] <= 12:
+        mem.pop('resume_chapter_pending', None)
     income = re.search(r'しゅうにゅう(\d{1,3})Gレベル\d+しょうぐん', screen.text)
     if castle and income and mem.get('chapter') and mem.get('month'):
         label = STATUS_NAMES.get(castle[1], castle[1])

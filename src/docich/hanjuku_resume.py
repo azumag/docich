@@ -334,7 +334,8 @@ def restore(adapter, deadline, cancel):
     capture = spec.runtime_dir / 'screenshots/resume.png'
     capture.parent.mkdir(exist_ok=True)
     chapter = None
-    while chapter is None:
+    starter_without_chapter = False
+    while chapter is None and not starter_without_chapter:
         adapter._check_active(deadline, cancel)
         time.sleep(.05)
         reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
@@ -344,12 +345,23 @@ def restore(adapter, deadline, cancel):
         XKit(native['display']).screenshot(capture, native['width'], native['height'],
                                          window_id=native['window'], low_latency=True)
         frame = read_png(capture).resized()
-        header = parse(frame).header or {}
+        screen = parse(frame)
+        header = screen.header or {}
         observed = header.get('chapter')
         if type(observed) is int and 1 <= observed <= 12:
             chapter = observed
-    atomic_write_json(spec.runtime_dir / 'hanjuku_bot.json',
-                      {'policy': {'chapter': chapter, 'name': {'done': True}}})
+        elif observed is None and screen.kind in {'starter_list', 'starter_confirm'}:
+            from .hanjuku_starter import rows
+            upper, lower = rows(screen), rows(screen, selected=True)
+            starter_without_chapter = upper is not None and bool(upper) and lower is not None
+    # A transition's party picker does not display a chapter. Its visible
+    # names are sufficient to resume selection, never to seed old route state.
+    policy = {'name': {'done': True}}
+    if chapter is not None:
+        policy['chapter'] = chapter
+    else:
+        policy['resume_chapter_pending'] = True
+    atomic_write_json(spec.runtime_dir / 'hanjuku_bot.json', {'policy': policy})
     adapter._check_active(deadline, cancel)
     send_ra_cmd('PAUSE_TOGGLE', port=adapter._network_port())
     from .adapters.retroarch import resolve_rom

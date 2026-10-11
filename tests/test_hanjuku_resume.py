@@ -208,7 +208,7 @@ def test_claim_rejects_changed_rom_without_default_game(setup):
     assert not (s.spec.runtime_dir/resume.RECEIPT_FILE).exists()
 
 
-def restore_test(s, *, valid=True, ack=True, chapter=1):
+def restore_test(s, *, valid=True, ack=True, chapter=1, native_frame=None):
     stage(s);commands=[];writes=[]
     path=s.spec.runtime_dir/'states/hanjuku-hero.state1'
     slots=[0]
@@ -235,11 +235,17 @@ def restore_test(s, *, valid=True, ack=True, chapter=1):
             output.write_bytes(state_bytes(payload));writes.append(payload)
         return None
     frame=SimpleNamespace(digest=lambda:'loaded-native-rgb',resized=lambda:frame)
+    if native_frame is not None:
+        from docich.hanjuku_screen import parse
+        loaded_screen = parse(native_frame.resized())
+        frame = native_frame
+    else:
+        loaded_screen = SimpleNamespace(header={'chapter':chapter},kind='map',lines=[])
     with mock.patch('docich.adapters.retroarch.send_ra_cmd',side_effect=send), \
          mock.patch('docich.xkit.XKit.screenshot'), \
          mock.patch('docich.hanjuku_pixels.read_png',return_value=frame), \
-         mock.patch('docich.hanjuku_screen.parse',return_value=SimpleNamespace(header={'chapter':chapter})):
-        resume.restore(s.adapter,time.monotonic()+(.3 if not valid or valid=='unchanged_future' or chapter is None else 3),None)
+         mock.patch('docich.hanjuku_screen.parse',return_value=loaded_screen):
+        resume.restore(s.adapter,time.monotonic()+(.3 if not valid or valid=='unchanged_future' or chapter is None and native_frame is None else 3),None)
     return commands,writes
 
 
@@ -297,3 +303,48 @@ def test_verified_runtime_cannot_fall_back_to_fresh_when_pane_is_missing(setup):
     s.adapter._verify_window_ownership=mock.Mock()
     resume.claim(s.adapter,time.monotonic()+3,None)
     s.adapter._verify_window_ownership.assert_called_once_with('game-700','game')
+
+
+def test_native_starter_checkpoint_restores_without_inventing_chapter(setup):
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_screen import parse
+    frame=read_png(Path(__file__).parent/'fixtures/hanjuku/g698-resume-starter.png')
+    screen=parse(frame.resized())
+    assert screen.kind=='starter_list' and screen.header['chapter'] is None
+    restore_test(setup,chapter=None,native_frame=frame)
+    receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
+    assert receipt['status']=='verified' and receipt['chapter'] is None
+    policy=read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy']
+    assert policy=={'name':{'done':True},'resume_chapter_pending':True}
+    assert 'garrison' not in policy and 'chapter' not in policy
+
+
+def test_starter_resume_seed_uses_live_selected_row_and_never_issues_sortie(setup):
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_bot import decide
+    frame=read_png(Path(__file__).parent/'fixtures/hanjuku/g698-resume-starter.png')
+    state={'policy':{'name':{'done':True},'resume_chapter_pending':True}}
+    actions,updated=decide(frame.resized(),state)
+    assert actions and actions[0]['buttons']==['down']
+    assert updated['policy']['starter_party']['selected']==['ゼウス']
+    assert updated['policy'].get('chapter') is None
+    assert not any(r['decision']=='order_launched' for r in updated['_records'])
+
+
+@pytest.mark.parametrize('castle', ['アルマムーン','あるまむーん','ボス','フー�リック','しゅじんこう'])
+def test_unknown_resume_chapter_never_resolves_common_or_unread_names(castle):
+    from docich.hanjuku_policy import observe_chapter_castle
+    mem={'resume_chapter_pending':True,'_records':[]}
+    observe_chapter_castle(mem,castle)
+    assert mem.get('chapter') is None and mem['resume_chapter_pending'] is True
+
+
+def test_unknown_resume_chapter_resolves_only_fresh_unique_castle():
+    from docich.hanjuku_policy import observe_chapter_castle
+    mem={'resume_chapter_pending':True,'_records':[]}
+    observe_chapter_castle(mem,'フーリック')
+    assert mem['chapter']==2 and mem['chapter_evidence']=='フーリック'
+    assert 'resume_chapter_pending' not in mem and 'garrison' not in mem
+    untouched={'_records':[]}
+    observe_chapter_castle(untouched,'フーリック')
+    assert untouched.get('chapter') is None
