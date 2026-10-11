@@ -877,6 +877,9 @@ class RetroArchCoordinatorAdapter:
                 send_ra_cmd('PAUSE_TOGGLE', port=self._network_port(), wait_reply_s=.1)
                 paused_here = True
             self._require_paused(deadline, cancel)
+            prior = saved.stat() if saved.exists() else None
+            prior_fingerprint = ((prior.st_dev, prior.st_ino, prior.st_size,
+                                  prior.st_mtime_ns, prior.st_ctime_ns) if prior else None)
             send_ra_cmd('SAVE_STATE', port=self._network_port(), wait_reply_s=.1)
             previous = None
             while True:
@@ -887,7 +890,10 @@ class RetroArchCoordinatorAdapter:
                     metadata = saved.stat()
                     # Empty/incomplete/old writes are not completion. Wait for
                     # a current nonempty file; checksum rejects unsafe paths.
-                    if metadata.st_size == 0 or metadata.st_mtime_ns < record['requested_ns']:
+                    fingerprint = (metadata.st_dev, metadata.st_ino, metadata.st_size,
+                                   metadata.st_mtime_ns, metadata.st_ctime_ns)
+                    if (metadata.st_size == 0 or metadata.st_mtime_ns < record['requested_ns']
+                            or fingerprint == prior_fingerprint):
                         previous = None
                         time.sleep(.1)
                         continue

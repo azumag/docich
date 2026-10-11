@@ -145,3 +145,26 @@ def test_validated_save_allows_cleanup_and_remains_after_game_exit(adapter, monk
     assert r['checkpoint_mtime_ns'] == (adapter.spec.runtime_dir / 'states/hanjuku.state').stat().st_mtime_ns
     # Idempotent cleanup verifies the saved bytes after the window is gone.
     adapter._require_safe_cleanup(time.monotonic() + 1, None)
+
+
+@pytest.mark.parametrize('reason', ['screen_stalled', 'input_stalled'])
+def test_unchanged_future_mtime_cannot_acknowledge_or_allow_cleanup(adapter, monkeypatch, reason):
+    calls = setup(adapter, monkeypatch, save=False)
+    terminal(adapter, reason)
+    path = adapter.spec.runtime_dir / 'states/hanjuku.state'
+    path.write_bytes(b'old checkpoint from before this request')
+    future = time.time_ns() + 60_000_000_000
+    os.utime(path, ns=(future, future))
+    before = path.stat()
+    fingerprint = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+    monkeypatch.setattr('docich.adapters.retroarch.MANUAL_SAVE_TIMEOUT_S', .3)
+    with pytest.raises(ManualSaveTimeout):
+        adapter.request_round_boundary('natural-stop', time.monotonic() + 1, None)
+    assert read_record(adapter.spec.runtime_dir / BOUNDARY_FILE)['status'] == 'waiting'
+    after = path.stat()
+    assert fingerprint == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+    assert calls.count('SAVE_STATE') == 1 and calls.count('PAUSE_TOGGLE') == 2
+    monkeypatch.setattr('docich.agent.fence.read_canonical',
+        lambda _: {'active': {'runtime_id': adapter.spec.runtime_id}})
+    with pytest.raises(AdapterError):adapter.cleanup_runtime(time.monotonic() + 1, None)
+    assert not any(call[0].startswith('kill') for call in adapter.tmux.calls)
