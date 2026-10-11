@@ -6728,7 +6728,7 @@ def _recruit_spare_after_necessities(mem, shop, gold):
     completed = (shop.get('soldiers_before_recruit_done', shop.get('soldiers_done')) is True
                  or (shop.get('soldier_receipt') or {}).get('status') == 'paid')
     soldiers = (0 if completed else shop.get('soldiers_before_recruit', shop.get('soldiers')))
-    repair = shop.get('hero_repair_reserve', 0)
+    repair = _house_repair_reserve(shop)
     if (type(gold) is not int or any(name not in KNOWN_PRICES for name, _ in cards)
             or type(soldiers) is not int or soldiers < 0
             or type(repair) is not int or repair < 0):
@@ -6741,7 +6741,7 @@ def _recruit_spare_after_necessities(mem, shop, gold):
 
 def _recruit_cash_floor(shop):
     """Keep the menu's fee, wage and necessary reserves before any payment."""
-    repair = shop.get('hero_repair_reserve', 0)
+    repair = _house_repair_reserve(shop)
     egg = (shop.get('reserve', 0) if shop.get('recruit_priority')
            and (shop.get('egg') in ('pending', 'check') or _egg_before_soldiers(shop)) else 0)
     if any(type(value) is not int or value < 0 for value in (repair, egg)):
@@ -6750,6 +6750,7 @@ def _recruit_cash_floor(shop):
 
 
 def _recruit_dialog_cash_ready(mem, shop, gold):
+    _reserve_general_repair(mem, shop, gold)
     spare, evidence = _recruit_spare_after_necessities(mem, shop, gold)
     floor = _recruit_cash_floor(shop)
     evidence['minimum_gold'] = floor
@@ -6881,8 +6882,63 @@ def _stop_uneconomic_recruit(mem, shop):
     return True
 
 
+def _house_repair_reserve(shop):
+    values = (shop.get('hero_repair_reserve', 0), shop.get('general_repair_reserve', 0))
+    return sum(values) if all(type(v) is int and v >= 0 for v in values) else None
+
+
 def _month_held_reserve(shop):
-    return shop.get('reserve', 0) + shop.get('hero_repair_reserve', 0)
+    return shop.get('reserve', 0) + _house_repair_reserve(shop)
+
+
+def _general_repair_targets(mem):
+    """Named current castle statuses that the house route can safely recheck."""
+    from .hanjuku_house import HOUSE_VIEW, _castle_status_after_sortie, _repair_hp_ready
+    if mem.get('chapter') not in HOUSE_VIEW:
+        return []
+    owned = _owned(mem)
+    if not owned:
+        return []
+    targets = []
+    for name, info in (mem.get('house_eggs') or {}).items():
+        if (name == NAME or not isinstance(info, dict) or info.get('general') != name
+                or general_max_hp(name) is None or info.get('broken') is not True
+                or info.get('location') != 'castle' or info.get('location_observed') is not True
+                or info.get('observed_chapter') != mem.get('chapter')
+                or not mem.get('month') or info.get('month') != mem.get('month')
+                or type(info.get('observed_tick')) is not int or type(mem.get('tick')) is not int
+                or not 0 <= info['observed_tick'] <= mem['tick'] or not _repair_hp_ready(info)):
+            continue
+        if any(s.get('general') == name and s.get('status') in ('en_route', 'launched_unconfirmed')
+               and not _castle_status_after_sortie(info, s, mem)
+               for s in (mem.get('sorties') or {}).values()):
+            continue
+        if len(owned) == 1 and not any(
+                name in (mem.get('garrison') or {}).get(c, [])
+                and len((mem.get('garrison') or {}).get(c, [])) > 1 for c in owned):
+            continue  # keep the last castle's sole defender; dispatch rechecks it too
+        targets.append(name)
+    return sorted(targets)
+
+
+def _reserve_general_repair(mem, shop, gold):
+    targets = _general_repair_targets(mem)
+    reserve = 50 if targets else 0  # one affordable next trip, not a fee for every unread general
+    changed = (shop.get('general_repair_reserve', 0) != reserve
+               or shop.get('general_repair_targets', []) != targets)
+    shop.update(general_repair_reserve=reserve, general_repair_targets=targets)
+    if reserve and not shop.get('soldiers_done') and type(gold) is int:
+        cards = [] if shop.get('merchant_done') else shop.get('items') or []
+        if all(n in KNOWN_PRICES for n, _ in cards):
+            card_cost = sum(KNOWN_PRICES[n] * qty for n, qty in cards)
+            shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - card_cost
+                - _month_held_reserve(shop) - WAGE_RESERVE - shop.get('recruit_reserve', 0)))
+            shop['soldiers_done'] = shop['soldiers'] == 0
+    if changed:
+        _record(mem, 'general_repair_funds_reserved', month=shop.get('key'),
+                observed_metric={'generals': targets, 'reserve': reserve, 'gold': gold,
+                                 'soldiers': shop.get('soldiers')},
+                reason='在城・卵破損を確認した将軍の次の家修復費を募集・兵士・築城より先に確保する')
 
 
 def _reserve_hero_repair(mem, shop, gold):
@@ -6954,6 +7010,7 @@ def _plan_extras(mem, shop, reserve, recruit):
     shop['recruit'] = 'check' if recruit else None
     shop['chikujou'] = 'check'
     _reserve_hero_repair(mem, shop, shop.get('gold_start'))
+    _reserve_general_repair(mem, shop, shop.get('gold_start'))
     _prioritise_recruit(mem, shop, shop.get('gold_start'))
     if reserve or recruit:
         _record(mem, 'month_extras_plan', chart_step='1-month', month=shop['key'],
@@ -7046,6 +7103,7 @@ def _plan(mem, header):
     shop = mem.get('shop')
     if shop and shop.get('key') == key:
         _reserve_hero_repair(mem, shop, (header or {}).get('gold'))
+        _reserve_general_repair(mem, shop, (header or {}).get('gold'))
         return shop
     adjusted = _adjusted_plan(mem, header, key) if header else None
     if adjusted:
@@ -7359,7 +7417,7 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
             if (type(gold) is not int or (not shop.get('recruit_priority') and shop.get('soldiers', 0) < SOLDIER_CAP)
                     or floor is None or gold < floor):
                 if (shop.get('recruit_priority') and type(gold) is int
-                        and gold >= RECRUIT_COST + WAGE_RESERVE + shop.get('hero_repair_reserve', 0)
+                        and gold >= RECRUIT_COST + WAGE_RESERVE + _house_repair_reserve(shop)
                         and shop.get('egg') in ('pending', 'check')):
                     # g498: estimate 150G, actual recovery only 50G; the
                     # early check must not permanently skip recruitment.
@@ -7518,7 +7576,8 @@ def _chikujou_reserve(mem, shop):
     else:
         egg = max(amount(shop.get('reserve')), amount(shop.get('egg_cost')),
                   EGG_RECOVER_COST * len(_egg_recovery_targets(mem)))
-    repair = max(amount(shop.get('hero_repair_reserve')), 50 if _hero_egg_broken(mem) else 0)
+    repair = (max(amount(shop.get('hero_repair_reserve')), 50 if _hero_egg_broken(mem) else 0)
+              + (50 if _general_repair_targets(mem) else 0))
     soldiers = 0 if shop.get('soldiers_done') else amount(shop.get('soldiers'))
     # A recruit stopped as unneeded/unaffordable no longer holds its fee; a
     # general shortage (recruit_priority) still saves it for the next month.
@@ -7933,7 +7992,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
         # estimate is already paid and must not be reserved a second time.
         shop['reserve'] = 0
     if (shop and type(gold) is int and not shop.get('soldiers_done')
-            and (shop.get('hero_repair_reserve') or (paid and sub['kind'] == 'recruit'))):
+            and (_house_repair_reserve(shop) or (paid and sub['kind'] == 'recruit'))):
         # g508: a confirmed 50G fee plus a further 12G deduction left 94G;
         # the original 76 soldiers then spent the wage reserve down to 18G.
         # All paid recruits need the actual balance, not only broken heroes.
@@ -7953,7 +8012,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
         if shop and (shop.get('egg_priority') or shop.get('egg_before_recruit')):
             if not shop.get('soldiers_done'):
                 shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - WAGE_RESERVE
-                    - shop.get('hero_repair_reserve', 0) - shop.get('recruit_reserve', 0)))
+                    - _house_repair_reserve(shop) - shop.get('recruit_reserve', 0)))
                 shop['soldiers_done'] = shop['soldiers'] == 0
     if sub['kind'] == 'chikujou':
         chosen = sub.get('chosen')
@@ -8389,6 +8448,7 @@ def _observe_soldier_receipt(screen, mem, directly_seen=None):
 def quantity_step(screen: Screen, mem, soldiers=False):
     shop = mem.get('shop') or {}
     if soldiers:
+        _reserve_general_repair(mem, shop, (screen.header or {}).get('gold'))
         _refresh_egg_priority(mem, shop, screen.header)
         if _egg_before_soldiers(shop) and not shop.get('soldier_receipt'):
             # This is where the army total first becomes visible. Leave the
