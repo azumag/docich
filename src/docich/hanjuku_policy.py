@@ -114,6 +114,7 @@ def menu_to(screen: Screen, label: str, *, exact=True):
 # Re-evaluate that old state once; never migrate an unobserved target arrival.
 MENU_NAV_SCHEMA = 2
 MENU_NAV_PRESS_LIMIT = 4
+MENU_NAV_RETRY_HOLD = 6          # held observations (~9 s) after the cancel B before retrying
 # A real cursor step moves a whole menu row (16 px in the measured layouts), so
 # anything smaller is detection jitter, not progress toward the target.
 MENU_NAV_PROGRESS_PX = 4
@@ -159,9 +160,10 @@ def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV
         previous = previous if type(previous) is int and previous >= 0 else 0
         presses = 0 if progressed else min(previous + 1, limit + 1)
         cancel_sent = not progressed and state.get('cancel_sent') is True
+    held = int(state.get('held') or 0) if same and cancel_sent else 0
     state = mem[key] = {'schema': MENU_NAV_SCHEMA, 'context': context,
                         'direction': direction, 'distance': distance,
-                        'presses': presses, 'cancel_sent': cancel_sent}
+                        'presses': presses, 'cancel_sent': cancel_sent, 'held': held}
     if presses < limit:
         return move
     if not cancel_sent:
@@ -171,7 +173,19 @@ def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV
                                  'route': key},
                 reason='目標行へ近づかないため確定せずBで戻り、前面を再観測する')
         return [pad('b')]
-    return []
+    # 2026-10-11 1-11 and 2-1: right after the month menu appeared, the moves
+    # and the cancel B were ignored and this hold lasted until the bot's 150 s
+    # no-input fallback, whose fresh navigation then worked. Retry the same
+    # bounded move/cancel episode after a short wait instead (never A).
+    state['held'] = held + 1
+    if state['held'] < MENU_NAV_RETRY_HOLD:
+        return []
+    mem[key] = {'schema': MENU_NAV_SCHEMA, 'context': context, 'direction': direction,
+                'distance': distance, 'presses': 0, 'cancel_sent': False, 'held': 0}
+    _record(mem, 'menu_nav_retry', screen=screen.kind, choice=label,
+            observed_metric={'held': state['held'], 'direction': direction, 'route': key},
+            reason='Bで戻った後も目標行へ近づかないため、短い待機の後に移動をやり直す')
+    return move
 
 
 MONTH_TEXT_ADVANCE_LIMIT = 6    # A presses per unread message over the month menu

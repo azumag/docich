@@ -96,3 +96,20 @@ def test_a_fully_unread_row_that_is_not_voicing_marks_blocks_the_advance():
                     TextLine(199, ((184, UNKNOWN), (192, UNKNOWN), (200, UNKNOWN)))]
     mem = {'month': '1-11', '_records': []}
     assert all(m != [policy.pad('a')] for m in stuck(mem, screen))
+
+
+def test_ignored_navigation_is_retried_after_a_short_hold_not_150_s():
+    # 2026-10-11 1-11 / 2-1: moves and the cancel B were ignored right after
+    # the month menu appeared; the hold lasted until the 150 s bot fallback.
+    screen = menu(body=None)
+    mem = {'month': '2-1', '_records': []}
+    moves = [policy._month_menu_move(screen, mem, 'へいしほじゅう') for _ in range(30)]
+    limit, hold = policy.MENU_NAV_PRESS_LIMIT, policy.MENU_NAV_RETRY_HOLD
+    assert moves[:limit] == [policy.pad('down')] * limit
+    assert moves[limit] == [policy.pad('b')]
+    assert moves[limit + 1:limit + hold] == [[]] * (hold - 1)
+    assert moves[limit + hold] == policy.pad('down')    # the move itself, retried
+    assert policy.pad('a') not in moves and [policy.pad('a')] not in moves
+    assert any(r['decision'] == 'menu_nav_retry' for r in mem['_records'])
+    # A cursor that finally moves ends the episode as usual.
+    assert policy._month_menu_move(menu(on='へいしほじゅう', body=None), mem, 'へいしほじゅう') == 'here'
