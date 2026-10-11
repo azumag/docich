@@ -3599,7 +3599,7 @@ def _project_corner_state(data):
                 "hanjuku-chart-v168-general-repair-budget",
                 "hanjuku-chart-v169-repair-interruption",
                 "hanjuku-chart-v170-chapter-two-boss",
-                "hanjuku-chart-v171-chapter-two-stock-kit"} else None),
+                "hanjuku-chart-v172-owned-sortie-backout"} else None),
         "bot_chart": _project_bot_chart(data.get("bot_chart")),
         "narration": _project_counts(data.get("narration"),
                                      ("enqueued", "delivery_failed", "skipped")),

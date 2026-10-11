@@ -699,6 +699,22 @@ class RetroArchCoordinatorAdapter:
                         if checkpoint_digest(self._checkpoint(record["checkpoint"]), deadline, cancel) != record.get("sha256"):
                             raise AdapterError("RetroArch checkpoint changed before cleanup")
 
+    def can_release_terminal_previous(self, deadline: float, cancel) -> bool:
+        """Only an identity-bound, acknowledged Hanjuku terminal may be released."""
+        self._check_active(deadline, cancel)
+        from .. import hanjuku_run
+        if not self._contained() or not hanjuku_run.enabled(self.game):
+            return False
+        run = hanjuku_run.load(self.spec.runtime_dir, hanjuku_run.runtime_identity(self.spec))
+        if run.get('terminal_reason') is not None and run['terminal_reason'] not in hanjuku_run.TERMINAL_REASONS:
+            raise AdapterError('unknown Hanjuku terminal reason')
+        terminal = hanjuku_run.terminal(
+            self.spec.runtime_dir, hanjuku_run.runtime_identity(self.spec))
+        if terminal is None:
+            return False
+        self._require_safe_cleanup(deadline, cancel)
+        return True
+
     def cleanup_runtime(self, deadline: float, cancel) -> None:
         self._require_safe_cleanup(deadline, cancel)
         for name, role in (
