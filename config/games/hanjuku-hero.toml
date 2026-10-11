@@ -37,18 +37,31 @@ script_bot = true
 [hanjuku.chart_adjust]
 enabled = true
 agents = "opencode-go:longcat-2.5-preview-free,opencode-go:space-bunny-free,opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4-flash,opencode-go:muse-spark-1.3-contributor"
+# direct chart生成は別受入。false時は上の既存chainを維持する。
+direct_enabled = false
+direct_agents = ""
 timeout_s = 180
 max_attempts = 2
 interim_jev = true
 interim_timeout_ms = 1500
 
-# 実況: botの決定記録から状況説明を作り、既存audio queueへ1件ずつ非同期enqueueする。
-# 半熟英雄プレイ中(このruntimeの観測中)だけ動く。同一key/同一文の連続・短間隔は抑止。
+# 固定テンプレート実況は停止。既存corner monitorが毎回設定を読むため稼働中も停止する。
+# speakerは下の場面実況にも共通。生成失敗時に固定文へ戻すことはしない。
 [hanjuku.narration]
-enabled = true
+enabled = false
 cooldown_s = 25
 max_age_s = 20
 speaker = ""
+
+# 別consumerが確認済みのHP/兵数/結果/方針変更から短文を生成する（ゲーム入力は待たない）。
+# enabledは既存Soren実況roleによる生成への明示opt-in。モデル/秘密/共有queueは追加しない。
+# BATCH_COMMENTARY_AGENTS → RADIO_AGENTS → AI_COMMON_AGENTS の既存実効設定を使う。
+# 話す事実がない・同場面・失敗・期限切れは無音。生成時間で観測の期限を延長しない。
+[hanjuku.scene_commentary]
+enabled = true
+cooldown_s = 25
+max_age_s = 20
+generation_timeout_s = 15
 
 # unified live rotationへ登録済み。ROM/core/実行ファイルが揃った環境だけ抽選候補になる。
 # 実機プレイ・表示・終了後の復帰は、設定有効化と分けて検証する。

@@ -390,6 +390,78 @@ def test_weather_audio_marks_complete_only_after_all_thirteen_played_receipts(tm
     assert state["audio_delivery"]["next_index"] == 13
 
 
+def test_weather_corner_focus_sequence_finishes_as_soon_as_all_audio_is_played(
+    tmp_path, monkeypatch,
+):
+    import datetime as dt
+    import docich.weather_corner as weather_corner
+
+    fixed = dt.datetime(2026, 10, 2, 12, tzinfo=dt.timezone.utc).timestamp()
+    g, now, _factory, _store, switch = _setup(
+        tmp_path, duration=4, clock=fixed, boundary_generation=None,
+    )
+    forecast = _weather_audio_view(now[0])
+    monkeypatch.setattr(weather_corner, "read_view", lambda _path, clock=None: forecast)
+    port = FakeWeatherAudioPort(lambda: now[0], auto_play=True)
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    manager = WeatherCornerManager(
+        g, duration_minutes=4, coordinator=switch, audio_enabled=True,
+        audio_port=port, clock=lambda: now[0], sleep=sleep, poll_s=0.25,
+    )
+    request_id = str(uuid.uuid4())
+    state = manager._new_state({"request_id": request_id, "selected_at": now[0]})
+    manager._save(state)
+    assert manager._dispatch_start(state) is None
+    started = now[0]
+
+    assert manager._wait_and_restore(state) == "completed"
+
+    final = manager._read_state()
+    assert [item["item_index"] for item in port.enqueued] == list(range(13))
+    assert final["audio_delivery"]["status"] == "completed"
+    assert final["audio_delivery"]["next_index"] == 13
+    assert final["end_reason"] == "audio-completed"
+    assert now[0] - started < 4 * 60
+
+
+def test_weather_corner_restores_after_terminal_audio_failure_without_deadlock(
+    tmp_path, monkeypatch,
+):
+    import datetime as dt
+    import docich.weather_corner as weather_corner
+
+    fixed = dt.datetime(2026, 10, 2, 12, tzinfo=dt.timezone.utc).timestamp()
+    g, now, _factory, _store, switch = _setup(
+        tmp_path, duration=4, clock=fixed, boundary_generation=None,
+    )
+    forecast = _weather_audio_view(now[0])
+    monkeypatch.setattr(weather_corner, "read_view", lambda _path, clock=None: forecast)
+    port = FakeWeatherAudioPort(lambda: now[0])
+    manager = WeatherCornerManager(
+        g, duration_minutes=4, coordinator=switch, audio_enabled=True,
+        audio_port=port, clock=lambda: now[0], sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        poll_s=0.25,
+    )
+    request_id = str(uuid.uuid4())
+    state = manager._new_state({"request_id": request_id, "selected_at": now[0]})
+    manager._save(state)
+    assert manager._dispatch_start(state) is None
+
+    delivery = manager._prepare_audio_delivery(state)
+    queued = port.enqueue_weather_audio(delivery["requests"][0])
+    assert queued["status"] == "queued"
+    port.finish(delivery["requests"][0]["item_key"], "rejected")
+
+    assert manager._wait_and_restore(state) == "completed"
+    final = manager._read_state()
+    assert final["audio_delivery"]["status"] == "stopped"
+    assert final["end_reason"] == "audio-unavailable"
+    assert len(port.enqueued) == 1
+
+
 @pytest.mark.parametrize(
     ("status", "reason"),
     [("rejected", "player_rejected"), ("interrupted", "playback_interrupted")],
@@ -664,6 +736,140 @@ def test_failed_weather_readiness_reconciles_only_the_exact_game_switch_rollback
     assert not any(a.spec.game == "weather-view" and a.live for a in factory.adapters.values())
 
 
+def _failing_rollback_factory(monkeypatch, factory):
+    """Make a *replace-mode* rollback of the previous game fail on demand.
+
+    The fake rollback restores the previous game as a fresh generation, so the
+    failure has to be injected on the newly created adapter rather than on the
+    original one.  ``robots_restore_fails[0]`` toggles it.
+    """
+    robots_restore_fails = [True]
+    original_call = type(factory).__call__
+
+    def failing_call(self, spec):
+        adapter = original_call(self, spec)
+        if (robots_restore_fails[0] and spec.game == "robots"
+                and spec.generation > 1):
+            adapter.fail_readiness = True
+        return adapter
+
+    monkeypatch.setattr(type(factory), "__call__", failing_call)
+    return robots_restore_fails
+
+
+def test_rollback_failed_start_terminalizes_only_after_the_previous_game_is_restored(tmp_path, monkeypatch):
+    """A start whose own rollback failed must still be recoverable.
+
+    Reproduces the prod latch: the corner start fails and its own rollback
+    fails too (``rollback_failed``), so game-switch is left ``failed`` with
+    the previous runtime retained.  A later reviewed recovery restores the
+    previous game; only then may the corner slot be terminalized.  While the
+    plane still needs recovery the slot stays latched.
+    """
+    import docich.weather_corner as weather_corner
+
+    g, now, factory, store, switch = _setup(tmp_path, fail_weather=True, boundary_generation=None)
+    monkeypatch.setattr(weather_corner, "read_view", lambda _path, clock=None: {"expires_at": now[0] + 900})
+    adapter = WeatherCornerAdapter(g, SimpleNamespace(duration_minutes=1))
+    adapter.manager.coordinator = switch
+    adapter.manager.clock = lambda: now[0]
+    robots_restore_fails = _failing_rollback_factory(monkeypatch, factory)
+
+    request_id = str(uuid.uuid4())
+    with pytest.raises(WeatherCornerError):
+        adapter.run({"request_id": request_id})
+    state = json.loads(adapter.state_path.read_text())
+    assert state["status"] == "failed"
+    assert state["last_error_code"] == "rollback_failed"
+    canonical, _ = store.canonical.load()
+    assert canonical["phase"] == "failed"
+    assert canonical["previous"]["game"] == "robots"
+    receipt = store.receipts.load(request_id)
+    assert receipt["status"] == "failed"
+    assert receipt["result"]["error_code"] == "rollback_failed"
+
+    # A canonical that still needs recovery is not proof of anything.
+    assert adapter.reconcile_failed_start(request_id) is False
+    assert json.loads(adapter.state_path.read_text())["status"] == "failed"
+
+    # A later reviewed recovery restores the previous game.
+    robots_restore_fails[0] = False
+    assert switch.recover().status in {"succeeded", "rolled_back"}
+    canonical, _ = store.canonical.load()
+    assert canonical["phase"] == "ready"
+    assert canonical["active"]["game"] == "robots"
+    assert canonical["candidate"] is None
+    assert canonical["previous"] is None
+    assert not canonical.get("retiring")
+
+    assert adapter.reconcile_failed_start(request_id) is True
+    final = json.loads(adapter.state_path.read_text())
+    assert final["status"] == "interrupted"
+    assert final["end_reason"] == "switch-terminal-before-corner-active"
+    assert final["completed_at"] == state["completed_at"]
+    # The terminal failed receipt is the evidence and is never rewritten.
+    assert store.receipts.load(request_id)["status"] == "failed"
+    # A repeat is a harmless no-op: the slot is already terminal and the
+    # recorded completion is never rewritten.
+    assert adapter.reconcile_failed_start(request_id) is False
+    assert json.loads(adapter.state_path.read_text())["completed_at"] == state["completed_at"]
+    assert json.loads(adapter.state_path.read_text())["end_reason"] == "switch-terminal-before-corner-active"
+
+
+def test_rollback_failed_start_stays_latched_until_the_previous_game_owns_the_canonical(tmp_path, monkeypatch):
+    import docich.weather_corner as weather_corner
+
+    g, now, factory, store, switch = _setup(tmp_path, fail_weather=True, boundary_generation=None)
+    monkeypatch.setattr(weather_corner, "read_view", lambda _path, clock=None: {"expires_at": now[0] + 900})
+    adapter = WeatherCornerAdapter(g, SimpleNamespace(duration_minutes=1))
+    adapter.manager.coordinator = switch
+    adapter.manager.clock = lambda: now[0]
+    robots_restore_fails = _failing_rollback_factory(monkeypatch, factory)
+
+    request_id = str(uuid.uuid4())
+    with pytest.raises(WeatherCornerError):
+        adapter.run({"request_id": request_id})
+    assert json.loads(adapter.state_path.read_text())["status"] == "failed"
+
+    # Whatever the plane ends up owning, it must be the previous game.
+    robots_restore_fails[0] = False
+    assert switch.recover().status in {"succeeded", "rolled_back"}
+    assert switch.switch("nethack").status == "succeeded"
+    canonical, _ = store.canonical.load()
+    assert canonical["active"]["game"] == "nethack"
+    assert adapter.reconcile_failed_start(request_id) is False
+    assert json.loads(adapter.state_path.read_text())["status"] == "failed"
+
+
+def test_rollback_failed_start_stays_latched_with_a_lingering_previous_runtime(tmp_path, monkeypatch):
+    import docich.weather_corner as weather_corner
+
+    g, now, factory, store, switch = _setup(tmp_path, fail_weather=True, boundary_generation=None)
+    monkeypatch.setattr(weather_corner, "read_view", lambda _path, clock=None: {"expires_at": now[0] + 900})
+    adapter = WeatherCornerAdapter(g, SimpleNamespace(duration_minutes=1))
+    adapter.manager.coordinator = switch
+    adapter.manager.clock = lambda: now[0]
+    robots_restore_fails = _failing_rollback_factory(monkeypatch, factory)
+
+    request_id = str(uuid.uuid4())
+    with pytest.raises(WeatherCornerError):
+        adapter.run({"request_id": request_id})
+    robots_restore_fails[0] = False
+    assert switch.recover().status in {"succeeded", "rolled_back"}
+    canonical, _ = store.canonical.load()
+    assert canonical["active"]["game"] == "robots"
+    # Something from the failed switch is still in flight: a retained previous
+    # runtime must keep the slot latched even though a stable ready owner is
+    # present (the on-disk validator forbids this shape, so inject it).
+    from unittest.mock import patch
+
+    lingering = dict(canonical)
+    lingering["previous"] = dict(canonical["active"])
+    with patch.object(adapter.manager.store.canonical, "load", return_value=(lingering, False)):
+        assert adapter.reconcile_failed_start(request_id) is False
+    assert json.loads(adapter.state_path.read_text())["status"] == "failed"
+
+
 def test_weather_never_restores_over_an_operator_moved_runtime(tmp_path, monkeypatch):
     import docich.weather_corner as weather_corner
 
@@ -872,3 +1078,68 @@ def test_stop_keeps_queued_start_owner_until_game_switch_terminally_fences_it(tm
     assert final["phase"] == "ready"
     assert final["active"]["game"] == "nethack"
     assert not stop_path.exists()
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_selected_weather_fetches_once_before_switch_and_replay_never_fetches(tmp_path, monkeypatch, failure):
+    import docich.weather_corner as module
+    from docich.weather import WeatherError
+    g, now, factory, store, switch = _setup(tmp_path, boundary_generation=None)
+    original = store.canonical.load()[0]["active"]
+    calls = []
+    def refresh(path, *, min_remaining_s=0):
+        assert store.canonical.load()[0]["active"] == original
+        assert min_remaining_s == 90
+        calls.append(path)
+        if failure:
+            raise WeatherError("fetch-failed")
+    monkeypatch.setattr("docich.weather_view.refresh_snapshot", refresh)
+    monkeypatch.setattr(module, "read_view", lambda *_args, **_kw: {"expires_at": now[0] + 900})
+    adapter = _weather_adapter(g, SimpleNamespace(duration_minutes=1, fetch_on_start=True),
+                               switch, now, lambda seconds: now.__setitem__(0, now[0] + seconds))
+    assert adapter.eligible() is True
+    assert calls == []  # Eligibility/status must never contact JMA.
+    request = {"request_id": str(uuid.uuid4())}
+    assert adapter.run(request) == "completed"
+    assert len(calls) == 1
+    assert adapter.run(request) == "completed"
+    assert len(calls) == 1
+    owner = json.loads(adapter.state_path.read_text())
+    if failure:
+        assert owner["end_reason"] == "forecast-fetch-failed-before-start"
+        assert store.canonical.load()[0]["active"] == original
+        assert not any(a.spec.game == "weather-view" for a in factory.adapters.values())
+    else:
+        assert owner["end_reason"] == "duration"
+        assert store.canonical.load()[0]["active"]["game"] == "robots"
+
+
+def test_weather_refuses_to_switch_when_snapshot_cannot_cover_full_slot(tmp_path, monkeypatch):
+    import docich.weather_corner as weather_corner
+
+    g, now, _factory, store, switch = _setup(
+        tmp_path, duration=4, boundary_generation=None,
+    )
+    original = store.canonical.load()[0]["active"]
+    manager = WeatherCornerManager(
+        g, duration_minutes=4, coordinator=switch, clock=lambda: now[0],
+    )
+    monkeypatch.setattr(
+        weather_corner, "read_view",
+        lambda _path, clock=None: {"expires_at": now[0] + 4 * 60 + 29},
+    )
+
+    request_id = str(uuid.uuid4())
+    state = manager._new_state({"request_id": request_id, "selected_at": now[0]})
+
+    assert state["status"] == "interrupted"
+    assert state["end_reason"] == "forecast-expires-before-start"
+    assert store.canonical.load()[0]["active"] == original
+
+
+@pytest.mark.parametrize("adapter,game", [("weather", "weather-view"), ("game", "robots")])
+def test_fetch_on_start_requires_weather_and_boolean(tmp_path, adapter, game):
+    config = tmp_path / "config.toml"
+    config.write_text('[corner_rotation]\ncorners=[{id="weather",adapter="%s",game="%s",fetch_on_start="true"}]\n' % (adapter, game))
+    with pytest.raises(CornerCatalogError):
+        load_catalog(load_global(tmp_path, config))

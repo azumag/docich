@@ -40,7 +40,8 @@ record_score() {
     return $?
   fi
   mkdir -p "$(dirname "$SCORELOG")" 2>/dev/null || true
-  printf '{"ts":%s,"game":"moon-buggy","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$1" >>"$SCORELOG" 2>/dev/null || true
+  printf '{"ts":%s,"game":"moon-buggy","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$1" >>"$SCORELOG" 2>/dev/null || return 0
+  docich_wrapper_record_clip moon-buggy "$1"
 }
 
 select_ab_arm() {
@@ -113,6 +114,7 @@ driver() {
   done
 }
 
+docich_wrapper_seed_clips moon-buggy
 driver </dev/null &
 DRIVER=$!
 docich_wrapper_run_with_driver "$DRIVER" "$MOONBUGGY_BIN"

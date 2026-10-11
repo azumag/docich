@@ -15,7 +15,7 @@
 # syntax error.  Keep it strictly POSIX (no [[ ]], no $((10#...))).
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 . "$SCRIPT_DIR/_run_with_driver.sh"
-SCORELOG="${BASTET_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/bastet.jsonl}"
+SCORELOG="${BASTET_SCORELOG:-${DOCICH_STATE_DIR:-/home/ubuntu/docich/run-soren-live}/scores/bastet.jsonl}"
 PANE="${TMUX_PANE:-}"
 BASTET_BIN="${BASTET_BIN:-/usr/games/bastet}"
 MAX_MATCHES="${BASTET_MAX_MATCHES:-${DOCICH_TARGET_MATCHES:-3}}"
@@ -47,7 +47,8 @@ record_score() {
   # recorded matches to end early.  Non-numeric input is still skipped.
   [ "$1" -ge 0 ] 2>/dev/null || return 0
   mkdir -p "$(dirname "$SCORELOG")" 2>/dev/null || true
-  printf '{"ts":%s,"game":"bastet","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$1" >>"$SCORELOG" 2>/dev/null || true
+  printf '{"ts":%s,"game":"bastet","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$1" >>"$SCORELOG" 2>/dev/null || return 0
+  docich_wrapper_record_clip bastet "$1"
 }
 
 dec() {
@@ -124,6 +125,7 @@ driver() {
   done
 }
 
+docich_wrapper_seed_clips bastet
 driver </dev/null &
 DRIVER=$!
 docich_wrapper_run_with_driver "$DRIVER" "$BASTET_BIN"

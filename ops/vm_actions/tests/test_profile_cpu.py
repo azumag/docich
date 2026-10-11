@@ -67,9 +67,17 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(c(["/usr/bin/python3", "/home/ubuntu/soren/webui/app.py", "--token", SECRET], "python3"),
                          "py:app.py")
         self.assertEqual(c(["bash", "/home/ubuntu/soren/radio_worker.sh"], "bash"), "sh:radio_worker.sh")
+        self.assertEqual(c(["zsh", "/home/ubuntu/soren/show_status.sh", "--once"], "zsh"), "sh:show_status.sh")
+        self.assertEqual(c(["zsh", "-c", "echo " + SECRET], "zsh"), "shell")
         self.assertEqual(c(["bash", "-c", "echo " + SECRET], "bash"), "shell")
         self.assertEqual(c(["python3", "-c", "print(1)"], "python3"), "python")
+        self.assertEqual(c(["/usr/bin/tail", "-n", "1", "/tmp/" + SECRET], "tail"), "tail")
+        self.assertEqual(c(["/usr/bin/mawk", "{print $1}", "/tmp/" + SECRET], "mawk"), "awk")
+        self.assertEqual(c(["/usr/bin/grep", SECRET, "/tmp/x"], "grep"), "grep")
+        self.assertEqual(c(["/usr/bin/stat", "/tmp/" + SECRET], "stat"), "stat")
         self.assertEqual(c(["/opt/weird/" + SECRET], "weird"), "other")
+        self.assertEqual(c(None, "tail"), "tail")
+        self.assertEqual(c(None, "mawk"), "awk")
         self.assertEqual(c(None, "x"), "other")
 
     def test_untrusted_tokens_never_become_labels(self):

@@ -18,7 +18,7 @@
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 ROOT=$(CDPATH= cd "$SCRIPT_DIR/../.." && pwd)
 . "$SCRIPT_DIR/_run_with_driver.sh"
-SCORELOG="${NINVADERS_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/ninvaders.jsonl}"
+SCORELOG="${NINVADERS_SCORELOG:-${DOCICH_STATE_DIR:-/home/ubuntu/docich/run-soren-live}/scores/ninvaders.jsonl}"
 PANE="${TMUX_PANE:-}"
 NINVADERS_BIN="${NINVADERS_BIN:-/usr/games/ninvaders}"
 DRIVER_INTERVAL="${NINVADERS_DRIVER_INTERVAL:-0.35}"
@@ -41,7 +41,8 @@ esac
 record_score() {
   [ "$1" -ge 0 ] 2>/dev/null || return 1
   mkdir -p "$(dirname "$SCORELOG")" 2>/dev/null || return 1
-  printf '{"ts":%s,"game":"ninvaders","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$1" >>"$SCORELOG" 2>/dev/null
+  printf '{"ts":%s,"game":"ninvaders","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$1" >>"$SCORELOG" 2>/dev/null || return $?
+  docich_wrapper_record_clip ninvaders "$1"
 }
 
 driver() {
@@ -144,6 +145,7 @@ driver() {
   done
 }
 
+docich_wrapper_seed_clips ninvaders
 driver </dev/null &
 DRIVER=$!
 docich_wrapper_run_with_driver "$DRIVER" "$NINVADERS_BIN"

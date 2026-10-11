@@ -103,9 +103,49 @@ EXECUTABLES = {
     "sleep": "sleep",
     "inotifywait": "inotifywait",
     "jq": "jq",
+    # Fixed, non-sensitive process labels used to break down short-lived
+    # shell/status pipelines without ever exposing argv or paths.
+    "cat": "cat",
+    "grep": "grep",
+    "egrep": "grep",
+    "fgrep": "grep",
+    "sed": "sed",
+    "awk": "awk",
+    "mawk": "awk",
+    "gawk": "awk",
+    "tail": "tail",
+    "head": "head",
+    "cut": "cut",
+    "tr": "tr",
+    "wc": "wc",
+    "date": "date",
+    "stat": "stat",
+    "ps": "ps",
+    "pgrep": "pgrep",
+    "find": "find",
+    "sort": "sort",
+    "readlink": "readlink",
+    "realpath": "realpath",
+    "basename": "basename",
+    "dirname": "dirname",
+    "tee": "tee",
+    "touch": "touch",
+    "rm": "rm",
+    "mv": "mv",
+    "mkdir": "mkdir",
+    "chmod": "chmod",
+    "cmp": "cmp",
+    "env": "env",
+    "nice": "nice",
+    "timeout": "timeout",
+    "cksum": "cksum",
+    "sha256sum": "sha256sum",
+    "mktemp": "mktemp",
+    "flock": "flock",
+    "xargs": "xargs",
 }
 PYTHON_RE = re.compile(r"^python(\d+(\.\d+)?)?$")
-SHELLS = {"bash", "sh", "dash"}
+SHELLS = {"bash", "sh", "dash", "zsh"}
 GENERIC = ("other", "python", "shell")
 
 
@@ -246,7 +286,10 @@ def list_pids(proc_root):
 def classify(argv, comm):
     """Map a process to a fixed/validated component label."""
     if argv is None:
-        return "other"
+        # Very short-lived processes can vanish after /proc/<pid>/stat was read
+        # but before cmdline. The stat comm is already captured; only use it
+        # when it maps to the same fixed non-sensitive executable allowlist.
+        return EXECUTABLES.get(comm, "other")
     if not argv:
         return "kernel"
     exe = os.path.basename(argv[0])

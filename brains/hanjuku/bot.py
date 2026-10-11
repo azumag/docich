@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Token-free Hanjuku command bot: Observation JSON -> bounded pad actions.
 
-Writes the policy memory, structured decision records and commentary
-candidates into the generation's runtime directory. It never calls a model,
-provider, network or the audio queue; delivery is a separate side channel.
+Writes policy memory and observed scene facts into this generation's runtime.
+It may start one separately locked scene worker, but never waits for a model,
+provider, network or audio queue. Failed narration never changes game input.
 """
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ from docich.game_switch import atomic_write_json
 from docich import hanjuku_chart_adjust
 from docich import hanjuku_experience
 from docich.hanjuku_bot import BOT_VERSION, decide
-from docich.hanjuku_commentary import COMMENTARY_VERSION, SPOKEN, compose, evidence_kind
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_run import append_log
 from docich.retroarch_boundary import read_record
@@ -39,6 +38,7 @@ CHART_DECISIONS=frozenset({
 # Only records that explain this observation's planned input/hold may override
 # the active battle. Observation, migration and result records are not actions.
 INPUT_CONTEXT_DECISIONS=frozenset({
+    'battle_card_damage_rejected','battle_card_damage_replan','battle_card_damage_recheck',
     'battle_survival','battle_survival_select','battle_survival_unavailable',
     'egg_recover_select','egg_recover_confirm','egg_recover_skip',
     'battle_okunote_scroll','battle_okunote_select','battle_okunote_risk_declined',
@@ -114,10 +114,11 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
                               'order_launched_unconfirmed','sortie_arrival_confirmed',
                               'sortie_departed_observed','sortie_cancelled_observed',
                               'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
-                              'house_dispatch_requested','house_arrival_seen'}
+                              'house_dispatch_requested','house_arrival_seen',
+                              'soldiers_seen','soldier_refill','soldier_refill_receipt','egg_priority_replan'}
         or (r.get('decision') == 'order_start' and r.get('cards'))
         or (r.get('decision') == 'situation_held' and r.get('screen') in {'card_select','sortie_confirm'})
-        or str(r.get('decision','')).startswith(('battle_card','battle_survival','battle_okunote','battle_hero_retreat','egg_recover')) for r in records))
+        or str(r.get('decision','')).startswith(('battle_card','battle_survival','battle_okunote','battle_hero_retreat','egg_recover','chikujou')) for r in records))
     if frame is not None and capture:
         directory=runtime/'hanjuku_frames'
         if directory.is_symlink():
@@ -148,20 +149,13 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
             append_log(runtime,'hanjuku_chart_decisions',
                        chart_decision_summary(record,now=now,identity=identity,
                                               decision_id=decision_id))
-        if record.get('decision') not in SPOKEN:
-            continue
-        key,text=compose(record)
-        seq=int(state.get('commentary_seq',0))+1
-        state['commentary_seq']=seq
-        append_log(runtime,'hanjuku_commentary',{
-            'schema':1,'seq':seq,'at':now,'key':key,'text':text,
-            'commentary_version':COMMENTARY_VERSION,
-            'evidence_kind':evidence_kind(record), 'decision_id':decision_id,
-            'status':'candidate' if text else 'held',
-            'held_reason':None if text else '状況判定保留',
-            'decision':record.get('decision'),'chart_step':record.get('chart_step'),
-            'strategy_variant':record.get('strategy_variant'),'reason':record.get('reason'),
-            **identity})
+    # The fresh command process hot-loads the producer/worker launcher. No
+    # fixed template candidates are emitted, including as an AI fallback.
+    try:
+        from docich.hanjuku_scene import observe as observe_scene
+        observe_scene(ROOT, runtime, state, records, obs_meta)
+    except Exception:
+        print('hanjuku-bot: scene_commentary_unavailable', file=sys.stderr)
 
 
 def publish_adjust_request(runtime: Path, records: list, obs_meta: dict):
@@ -206,7 +200,7 @@ def ask_interim(runtime: Path, state: dict, obs_meta: dict, *, settings=None, as
 
 
 def observation_interval_ms(state):
-    """Short feedback for living melee and its in-flight card command.
+    """Short feedback for living melee and its in-flight rescue commands.
 
     g486: slowing to 1500 ms as soon as B planned a card let the Queen
     summon between the chained B and its next readable command menu.
@@ -214,11 +208,16 @@ def observation_interval_ms(state):
     """
     policy=state.get('policy') or {}
     battle=policy.get('battle') or {}
+    preempt=battle.get('okunote_egg_preempt') or {}
     living=all(type(battle.get(k)) is int and battle[k]>0 for k in ('ally_hp','enemy_hp'))
     if (living and not policy.get('egg_battle')
             and (state.get('screen_kind') == 'battle'
                  or (battle.get('card_flow') and state.get('screen_kind') in
-                     {'unknown', 'text', 'battle_menu'}))):
+                     {'unknown', 'text', 'battle_menu'})
+                 or (((preempt.get('stage') in {'opening', 'menu', 'selected'}
+                       and not preempt.get('exhausted')) or preempt.get('close_pending'))
+                     and state.get('screen_kind') in
+                     {'unknown', 'text', 'battle_menu', 'battle_menu_pending', 'okunote_menu'}))):
         return 500
     return 1500
 
@@ -296,7 +295,8 @@ def main():
             actions,state=decide(frame,state,adjusted=hanjuku_chart_adjust.load(runtime),
                                  interim=state.get('chart_interim_answer'),
                                  experience=experience,
-                                 recall_inputs=recall_input_receipts(runtime, state, meta))
+                                 recall_inputs=recall_input_receipts(runtime, state, meta),
+                                 run_identity=meta.get('hanjuku'))
             interval_ms=observation_interval_ms(state)
             records=state.pop('_records',[])
             updated_experience=state.pop('_experience',None)

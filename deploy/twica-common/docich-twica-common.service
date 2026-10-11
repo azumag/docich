@@ -1,0 +1,18 @@
+[Unit]
+Description=docich game-independent TwiCa foreground
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/docich
+ExecStart=%h/docich/bin/docich-twica-common
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=25
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

@@ -19,6 +19,7 @@ import sys
 import tarfile
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -30,7 +31,10 @@ MAX_HISTORY_BYTES = 2 * 1024 * 1024
 MAX_SUMMARY_BYTES = 256 * 1024
 MAX_STRATEGY_BYTES = 256 * 1024
 MAX_TELEMETRY_BYTES = 2 * 1024 * 1024
+MAX_CALIBRATION_BYTES = 256 * 1024
 MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024
+MAX_SCREENSHOT_DIMENSION = 8192
+MAX_SCREENSHOT_PIXELS = 16 * 1024 * 1024
 MAX_SCREENSHOTS_PER_GAME = 3
 MAX_BUNDLE_BYTES = 3 * 1024 * 1024
 CHUNK_BYTES = 24 * 1024
@@ -38,8 +42,11 @@ EXPORT_TTL_MS = 10 * 60 * 1000
 STATE_NAME = "soren91_manual_evidence_export.json"
 BUNDLE_NAME = "soren91_manual_evidence_export.tar.gz"
 GAME_RE = re.compile(r"game_(\d+)\.json\Z")
-SCREENSHOT_RE = re.compile(r"turn_(\d+)(?:[._-][A-Za-z0-9._-]+)?\.png\Z", re.I)
+SCREENSHOT_RE = re.compile(r"turn_(\d+)(?:[._-][A-Za-z0-9._-]+)?\.(?:png|jpe?g)\Z", re.I)
 TELEMETRY_NAMES = ("soren91_loop_metrics.json", "soren91_runtime_metrics.json")
+SESSION_RE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
+ISO_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\Z")
+PARTIAL_CLOCK_SLOP_MS = 1000
 
 
 class EvidenceError(RuntimeError):
@@ -192,7 +199,7 @@ def _default_transcode(src: Path, dst: Path) -> None:
         [
             ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
             "-i", str(src),
-            "-vf", "scale=960:-2:force_original_aspect_ratio=decrease",
+            "-vf", "scale=960:960:force_original_aspect_ratio=decrease:force_divisible_by=2",
             "-frames:v", "1", "-q:v", "6", str(dst),
         ],
         stdin=subprocess.DEVNULL,
@@ -210,6 +217,360 @@ def _copy_bytes(dst: Path, data: bytes) -> None:
 
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _read_stable_optional(runtime: Path, path: Path, limit: int) -> tuple[bytes, os.stat_result] | None:
+    """Snapshot an optional, bounded file without following links or a live rewrite.
+
+    Live PNGs are overwritten and histories are appended. Transcoding must use
+    these checked bytes, never reopen the mutable source after validation.
+    """
+    _reject_symlink_chain(runtime, path)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise EvidenceError("evidence file outside size/type contract") from exc
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or not 0 <= before.st_size <= limit:
+            raise EvidenceError("evidence file outside size/type contract")
+        with os.fdopen(fd, "rb", closefd=True) as handle:
+            fd = -1
+            data = handle.read(limit + 1)
+            after = os.fstat(handle.fileno())
+        if len(data) > limit:
+            raise EvidenceError("evidence file grew beyond limit")
+        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+            after.st_size, after.st_mtime_ns, after.st_ctime_ns
+        ) or len(data) != after.st_size:
+            return None
+        return data, after
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _source_times(info: os.stat_result, now_ms: int, updated_at_ms: int) -> dict[str, int]:
+    mtime_ms = info.st_mtime_ns // 1_000_000
+    return {
+        "sourceMtimeMs": mtime_ms,
+        "sourceAgeMs": now_ms - mtime_ms,
+        "sourceMinusTelemetryMs": mtime_ms - updated_at_ms,
+    }
+
+
+def _partial_file_in_window(info: os.stat_result, now_ms: int, updated_at_ms: int) -> bool:
+    times = _source_times(info, now_ms, updated_at_ms)
+    return (
+        0 <= times["sourceAgeMs"] <= MAX_AGE_MS
+        and times["sourceMinusTelemetryMs"] <= PARTIAL_CLOCK_SLOP_MS
+    )
+
+
+def _png_dimensions(data: bytes) -> tuple[int, int] | None:
+    if (
+        len(data) < 33 or data[:8] != b"\x89PNG\r\n\x1a\n"
+        or data[8:12] != b"\x00\x00\x00\r" or data[12:16] != b"IHDR"
+    ):
+        return None
+    width, height = int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    if not (
+        1 <= width <= MAX_SCREENSHOT_DIMENSION and 1 <= height <= MAX_SCREENSHOT_DIMENSION
+        and width * height <= MAX_SCREENSHOT_PIXELS
+    ):
+        raise EvidenceError("evidence file outside size/type contract")
+    return width, height
+
+
+def _jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        return None
+    offset = 2
+    while offset + 4 <= len(data):
+        if data[offset] != 0xFF:
+            return None
+        marker = data[offset + 1]
+        if marker == 0xFF:
+            offset += 1
+            continue
+        if marker == 0xD8 or marker == 0x01 or 0xD0 <= marker <= 0xD7:
+            offset += 2
+            continue
+        length = int.from_bytes(data[offset + 2:offset + 4], "big")
+        if length < 2 or offset + 2 + length > len(data):
+            return None
+        is_sof = 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC)
+        if is_sof:
+            if offset + 9 > len(data):
+                return None
+            height = int.from_bytes(data[offset + 5:offset + 7], "big")
+            width = int.from_bytes(data[offset + 7:offset + 9], "big")
+            if not (
+                1 <= width <= MAX_SCREENSHOT_DIMENSION and 1 <= height <= MAX_SCREENSHOT_DIMENSION
+                and width * height <= MAX_SCREENSHOT_PIXELS
+            ):
+                raise EvidenceError("evidence file outside size/type contract")
+            return width, height
+        offset += 2 + length
+    return None
+
+
+def _image_dimensions(data: bytes) -> tuple[int, int] | None:
+    return _png_dimensions(data) or _jpeg_dimensions(data)
+
+
+def _latest_partial_screenshot(runtime: Path, turn: int) -> Path | None:
+    """Pick the newest fixed-extension turn image; reject unsafe aliases/links."""
+    candidates: list[tuple[int, Path]] = []
+    for ext in ("jpg", "jpeg", "png"):
+        path = runtime / "tmp" / "screenshots" / f"turn_{turn:04d}.{ext}"
+        _reject_symlink_chain(runtime, path)
+        try:
+            info = path.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise EvidenceError("evidence file outside size/type contract") from exc
+        if not stat.S_ISREG(info.st_mode) or not 0 <= info.st_size <= MAX_SCREENSHOT_BYTES:
+            raise EvidenceError("evidence file outside size/type contract")
+        candidates.append((info.st_mtime_ns, path))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
+def _timestamp_ms(value: object) -> int | None:
+    if not isinstance(value, str) or not ISO_TIMESTAMP_RE.fullmatch(value):
+        return None
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp() * 1000)
+    except (OverflowError, ValueError):
+        return None
+
+
+def _project_calibration(data: bytes) -> dict | None:
+    """Only fixed numeric geometry, known schema/method enums and an ISO date."""
+    try:
+        value = json.loads(data)
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    groups = {
+        "screen": ("width", "height"),
+        "board": ("left", "right", "top", "bottom", "width", "height"),
+        "walls": ("leftOuter", "leftInner", "rightInner", "rightOuter"),
+        "dropArea": ("pixelLeft", "pixelRight"),
+    }
+    projected: dict = {}
+    if "coordinateSchema" in value:
+        if type(value["coordinateSchema"]) is not int or value["coordinateSchema"] != 2:
+            return None
+        projected["coordinateSchema"] = 2
+        groups.update({
+            "arena": ("left", "right", "top", "bottom", "width", "height"),
+            "hud": ("top", "bottom"),
+        })
+    for group, keys in groups.items():
+        source = value.get(group)
+        if not isinstance(source, dict):
+            return None
+        projected[group] = {}
+        for key in keys:
+            number = source.get(key)
+            if type(number) not in (int, float) or not -1_000_000 <= number <= 1_000_000:
+                return None
+            projected[group][key] = number
+    for key in ("pixelsPerUnit", "confidence"):
+        number = value.get(key)
+        if type(number) not in (int, float) or not 0 <= number <= 1_000_000:
+            return None
+        projected[key] = number
+    if value.get("method") not in ("profile", "fallback") or type(value.get("isFallback")) is not bool:
+        return None
+    if _timestamp_ms(value.get("timestamp")) is None:
+        return None
+    projected.update({key: value[key] for key in ("method", "isFallback", "timestamp")})
+    return projected
+
+
+def _has_completed_evidence(runtime: Path, token: str) -> bool:
+    # Completion first renames history and only later writes the summary. Either
+    # marker excludes this game, including a completion concurrent with export.
+    for path in (
+        runtime / "game_history" / f"game_{token}.jsonl",
+        runtime / "tmp" / "summaries" / f"game_{token}.json",
+    ):
+        _reject_symlink_chain(runtime, path)
+        if path.exists():
+            return True
+    return False
+
+
+def _prepare_partial_evidence(
+    runtime: Path, staging: Path, now_ms: int, transcode: Callable[[Path, Path], None]
+) -> tuple[dict, list[dict], bytes] | None:
+    """Export at most one historical unfinished game, separately from completions.
+
+    This is a snapshot of saved evidence, not a claim that a process is running
+    or that the separately saved calibration was used to analyze this frame.
+    """
+    loop_path = runtime / "tmp" / "state" / TELEMETRY_NAMES[0]
+    loop_snapshot = _read_stable_optional(runtime, loop_path, MAX_TELEMETRY_BYTES)
+    if loop_snapshot is None:
+        return None
+    loop_data, loop_info = loop_snapshot
+    try:
+        loop = json.loads(loop_data)
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return None
+    if not isinstance(loop, dict) or loop.get("schemaVersion") != 1:
+        return None
+    game, turn, updated = (loop.get(key) for key in ("game", "turn", "updatedAtMs"))
+    elapsed = loop.get("elapsedMs")
+    profile = loop.get("dropProfile")
+    session = profile.get("session") if isinstance(profile, dict) else None
+    if (
+        type(game) is not int or not 1 <= game <= 9999
+        or type(turn) is not int or not 0 <= turn <= 9999
+        or type(updated) is not int or not 0 <= now_ms - updated <= MAX_AGE_MS
+        or type(elapsed) not in (int, float) or not 0 <= elapsed <= MAX_AGE_MS
+        or not isinstance(session, str) or not SESSION_RE.fullmatch(session)
+        or not _partial_file_in_window(loop_info, now_ms, updated)
+        or abs(loop_info.st_mtime_ns // 1_000_000 - updated) > PARTIAL_CLOCK_SLOP_MS
+    ):
+        return None
+    token = f"{game:04d}"
+    if _has_completed_evidence(runtime, token):
+        return None
+    screenshot_path = _latest_partial_screenshot(runtime, turn)
+    history_path = runtime / "game_history" / f"latest_{token}.jsonl"
+    screenshot = (_read_stable_optional(runtime, screenshot_path, MAX_SCREENSHOT_BYTES)
+                  if screenshot_path is not None else None)
+    history = _read_stable_optional(runtime, history_path, MAX_HISTORY_BYTES)
+    screenshot_status = "included" if screenshot is not None else "missing-or-unstable"
+    if screenshot is not None and (
+        not _partial_file_in_window(screenshot[1], now_ms, updated)
+        or screenshot[1].st_mtime_ns / 1_000_000 < updated - elapsed - PARTIAL_CLOCK_SLOP_MS
+    ):
+        # turn_NNNN is reused each game. A same-name image from an earlier turn
+        # window must never be attributed to this telemetry session.
+        screenshot = None
+        screenshot_status = "outside-time-window"
+    dimensions = _image_dimensions(screenshot[0]) if screenshot is not None else None
+    if screenshot is not None and dimensions is None:
+        screenshot = None
+        screenshot_status = "invalid-or-incomplete-image"
+    if history is not None:
+        if not _partial_file_in_window(history[1], now_ms, updated) or not history[0].endswith(b"\n"):
+            history = None
+        else:
+            try:
+                records = [json.loads(line) for line in history[0].splitlines() if line.strip()]
+                if not records or any(
+                    not isinstance(row, dict) or type(row.get("turn")) is not int
+                    or not 0 <= row["turn"] <= turn
+                    or _timestamp_ms(row.get("timestamp")) is None
+                    or _timestamp_ms(row["timestamp"]) > updated + PARTIAL_CLOCK_SLOP_MS
+                    for row in records
+                ) or any(a["turn"] >= b["turn"] for a, b in zip(records, records[1:])):
+                    history = None
+            except (ValueError, UnicodeDecodeError, RecursionError):
+                history = None
+    if screenshot is None and history is None:
+        return None
+    calibration_path = runtime / "tmp" / "calibration.json"
+    calibration = _read_stable_optional(runtime, calibration_path, MAX_CALIBRATION_BYTES)
+    calibration_value = None
+    calibration_status = "missing-or-stale"
+    if calibration is not None and _partial_file_in_window(calibration[1], now_ms, updated):
+        calibration_value = _project_calibration(calibration[0])
+        calibration_status = "invalid-schema"
+        if calibration_value is not None:
+            timestamp = _timestamp_ms(calibration_value["timestamp"])
+            if (
+                not 0 <= now_ms - timestamp <= MAX_AGE_MS
+                or abs(calibration[1].st_mtime_ns // 1_000_000 - timestamp) > PARTIAL_CLOCK_SLOP_MS
+            ):
+                calibration_value = None
+                calibration_status = "timestamp-mismatch"
+            elif dimensions != tuple(calibration_value["screen"][key] for key in ("width", "height")):
+                calibration_value = None
+                calibration_status = "screen-mismatch" if dimensions else "screenshot-unavailable"
+            else:
+                calibration_status = "included-separate-saved-calibration"
+
+    # Pin the exact telemetry revision, including updatedAtMs, around all source
+    # reads. Nothing below reopens a live image/history/calibration for content.
+    loop_after = _read_stable_optional(runtime, loop_path, MAX_TELEMETRY_BYTES)
+    if loop_after is None or loop_after[0] != loop_data or _has_completed_evidence(runtime, token):
+        return None
+
+    partial_dir = staging / "partial" / f"game_{token}"
+    files: list[dict] = []
+    metadata = {
+        "completed": False, "game": game, "turn": turn, "telemetrySession": session,
+        "basis": "saved-partial-evidence", "telemetryUpdatedAtMs": updated,
+        "telemetryAgeMs": now_ms - updated,
+        "telemetrySourceMtimeMs": loop_info.st_mtime_ns // 1_000_000,
+        "telemetrySourceAgeMs": now_ms - loop_info.st_mtime_ns // 1_000_000,
+        "calibrationStatus": calibration_status, "screenshotStatus": screenshot_status,
+    }
+
+    def record_file(dst: Path, data: bytes, source: Path, info: os.stat_result, kind: str, **extra) -> None:
+        files.append({
+            "game": game, "turn": turn, "partial": True, "kind": kind,
+            "name": dst.relative_to(staging).as_posix(), "bytes": len(data),
+            "sha256": _sha256_bytes(data), "source": source.relative_to(runtime).as_posix(),
+            **_source_times(info, now_ms, updated), **extra,
+        })
+
+    if history is not None:
+        dst = partial_dir / "history.jsonl"
+        _copy_bytes(dst, history[0])
+        # Saved histories do not carry session IDs. Even with a matching game
+        # number and time window, a pre-restart row cannot be attributed to the
+        # telemetry process; expose it only as separate historical evidence.
+        record_file(dst, history[0], history_path, history[1], "partial-history",
+                    relationship="separate-saved-history", sessionAttributed=False)
+    if screenshot is not None:
+        source_copy = staging / f".partial-source{screenshot_path.suffix.lower()}"
+        dst = partial_dir / "screenshots" / f"turn_{turn:04d}.jpg"
+        _copy_bytes(source_copy, screenshot[0])
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        image = None
+        try:
+            transcode(source_copy, dst)
+            image = dst.read_bytes()
+        except (EvidenceError, OSError, subprocess.SubprocessError):
+            # A concurrent truncate/write may leave a stable but incomplete image
+            # snapshot. This optional image must not discard completed evidence.
+            metadata["screenshotStatus"] = "transcode-failed"
+        finally:
+            source_copy.unlink(missing_ok=True)
+        if image and len(image) > MAX_SCREENSHOT_BYTES:
+            raise EvidenceError("transcoded screenshot outside size contract")
+        if image:
+            record_file(dst, image, screenshot_path, screenshot[1], "partial-screenshot",
+                        sourceWidth=dimensions[0], sourceHeight=dimensions[1])
+        else:
+            dst.unlink(missing_ok=True)
+            if metadata["screenshotStatus"] == "included":
+                metadata["screenshotStatus"] = "empty-transcode"
+            if calibration_value is not None:
+                calibration_value = None
+                metadata["calibrationStatus"] = "screenshot-unavailable"
+    if calibration_value is not None:
+        data = (json.dumps(calibration_value, sort_keys=True, allow_nan=False) + "\n").encode()
+        dst = partial_dir / "calibration.json"
+        _copy_bytes(dst, data)
+        record_file(dst, data, calibration_path, calibration[1], "partial-calibration",
+                    relationship="separate-saved-calibration", screenMatchesScreenshot=True,
+                    calibrationTimestampMs=_timestamp_ms(calibration_value["timestamp"]))
+    if not files:
+        return None
+    return metadata, files, loop_data
 
 
 def prepare_export(
@@ -260,6 +621,13 @@ def prepare_export(
     }
     files_meta: list[dict[str, object]] = manifest["files"]  # type: ignore[assignment]
     try:
+        partial = _prepare_partial_evidence(runtime, staging, now_ms, transcode)
+        if partial is not None:
+            manifest["partialEvidence"] = partial[0]
+            files_meta.extend(partial[1])
+            if not selected_games:
+                evidence_mode = "partial_game"
+                manifest["evidenceMode"] = evidence_mode
         for game, token in selected_games:
             game_dir = f"game_{token}"
             specs = [
@@ -301,7 +669,9 @@ def prepare_export(
             screenshot_dir = runtime / "tmp" / "game_screenshots" / game_dir
             _reject_symlink_chain(runtime, screenshot_dir)
             if screenshot_dir.is_dir():
-                shots: list[tuple[int, Path]] = []
+                # Output names are turn-based: collapse format/padding/suffix
+                # aliases BEFORE the per-game limit and before writing files.
+                shots: dict[int, tuple[Path, os.stat_result]] = {}
                 for entry in os.scandir(screenshot_dir):
                     match = SCREENSHOT_RE.fullmatch(entry.name)
                     if not match or entry.is_symlink():
@@ -310,18 +680,34 @@ def prepare_export(
                         info = entry.stat(follow_symlinks=False)
                     except OSError:
                         continue
-                    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_SCREENSHOT_BYTES:
+                    if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_SCREENSHOT_BYTES:
                         continue
-                    shots.append((int(match.group(1)), Path(entry.path)))
-                shots.sort(key=lambda item: (item[0], item[1].name))
-                for turn, src in shots[:MAX_SCREENSHOTS_PER_GAME]:
-                    _read_regular(runtime, src, MAX_SCREENSHOT_BYTES)
+                    turn, src = int(match.group(1)), Path(entry.path)
+                    previous = shots.get(turn)
+                    if previous is None or (info.st_mtime_ns, src.name) > (
+                        previous[1].st_mtime_ns, previous[0].name
+                    ):
+                        shots[turn] = (src, info)
+                for turn, (src, selected_info) in sorted(shots.items())[:MAX_SCREENSHOTS_PER_GAME]:
+                    snapshot = _read_stable_optional(runtime, src, MAX_SCREENSHOT_BYTES)
+                    if snapshot is None:
+                        continue
+                    source_bytes, source_info = snapshot
+                    fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+                    if any(getattr(selected_info, key) != getattr(source_info, key) for key in fields):
+                        continue
+                    # As with partial evidence, ffmpeg sees only the validated
+                    # snapshot, not a mutable source reopened after validation.
+                    source_copy = staging / f".completed-source-{token}-{turn}{src.suffix.lower()}"
+                    _copy_bytes(source_copy, source_bytes)
                     dst = staging / game_dir / "screenshots" / f"turn_{turn}.jpg"
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     try:
-                        transcode(src, dst)
+                        transcode(source_copy, dst)
                     except (OSError, subprocess.SubprocessError) as exc:
                         raise EvidenceError("screenshot transcode failed") from exc
+                    finally:
+                        source_copy.unlink(missing_ok=True)
                     image = dst.read_bytes()
                     if not image or len(image) > MAX_SCREENSHOT_BYTES:
                         raise EvidenceError("transcoded screenshot outside size contract")
@@ -335,7 +721,9 @@ def prepare_export(
                     })
 
         for telemetry_name in TELEMETRY_NAMES:
-            if fresh_partial_telemetry:
+            if partial is not None and telemetry_name == TELEMETRY_NAMES[0]:
+                data = partial[2]
+            elif fresh_partial_telemetry:
                 data = fresh_partial_telemetry.get(telemetry_name)
             else:
                 data = _read_regular(
@@ -355,6 +743,9 @@ def prepare_export(
                 "sha256": _sha256_bytes(data),
             })
 
+        names = [item["name"] for item in files_meta]
+        if len(names) != len(set(names)):
+            raise EvidenceError("duplicate evidence output name")
         manifest_bytes = (json.dumps(manifest, sort_keys=True, ensure_ascii=False) + "\n").encode()
         _copy_bytes(staging / "manifest.json", manifest_bytes)
 

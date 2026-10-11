@@ -8,10 +8,12 @@ on:
 permissions:
   contents: read
 
-# Serialize with the deploy/control workflow.  This workflow is deliberately
-# post-deploy only; it never deploys code or changes opt-in state itself.
+# This post-deploy reload must not hold the production deploy/control lane while
+# it is waiting on the vm-operations environment.  It has its own GitHub lane;
+# the reviewed gateway still serializes the actual VM mutation under
+# vm-operations.lock, and every step rechecks the exact deployed/main SHA.
 concurrency:
-  group: vm-operations-${{ github.repository }}
+  group: market-paper-runtime-reload-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:

@@ -4,6 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from docich.trading.dashboard import render_dashboard
 from docich.trading.dashboard_snapshot import build_dashboard_snapshot
 
 
@@ -60,6 +61,46 @@ def test_snapshot_is_allowlisted_and_finite(tmp_path):
     assert snap["fills"][0]["symbol"] == "btc_jpy"
     assert "performance" in snap
     assert "模擬取引" in snap["disclaimer"]
+
+
+def test_snapshot_distinguishes_per_symbol_signal_states(tmp_path):
+    trading_dir = tmp_path / "trading"
+    status = {
+        "worker_state": "running",
+        "capital_reference": "10000",
+        "deployed_reference": "0",
+        "open_positions": {},
+        "eligible_symbols": ["BTC/JPY", "ETH/JPY", "SOL/JPY", "XRP/JPY"],
+        "recent_fills": [],
+        "signal_summary": {
+            "candidate_count": 3,
+            "selected_count": 1,
+            "rejected_count": 1,
+            "candidate_symbols": ["BTC/JPY", "ETH/JPY", "SOL/JPY"],
+            "selected_symbols": ["BTC/JPY"],
+            "candidate_reason_codes": ["momentum_breakout"],
+        },
+        "skipped_decisions": [
+            {"symbol": "SOL/JPY", "side": "buy", "reason_code": "correlated_exposure"}
+        ],
+        "market_freshness": {},
+    }
+    _write(trading_dir, status, {"symbols": {}})
+    snap = build_dashboard_snapshot(trading_dir, now=1010.0)
+    assert snap["decision"]["candidate_symbols"] == ["BTC/JPY", "ETH/JPY", "SOL/JPY"]
+    assert snap["decision"]["selected_symbols"] == ["BTC/JPY"]
+    assert snap["decision"]["symbol_states"] == [
+        {"symbol": "BTC/JPY", "state": "selected", "reason_code": ""},
+        {"symbol": "ETH/JPY", "state": "candidate", "reason_code": ""},
+        {"symbol": "SOL/JPY", "state": "rejected_after_signal", "reason_code": "correlated_exposure"},
+        {"symbol": "XRP/JPY", "state": "no_signal", "reason_code": ""},
+    ]
+
+    rendered = render_dashboard(status, {}, now=1010.0)
+    assert "BTC/JPY: 採用" in rendered
+    assert "ETH/JPY: 候補" in rendered
+    assert "SOL/JPY: 候補後却下" in rendered
+    assert "XRP/JPY: シグナルなし" in rendered
 
 
 def test_snapshot_reports_true_position_count_when_display_is_capped(tmp_path):

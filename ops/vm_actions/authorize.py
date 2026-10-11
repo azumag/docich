@@ -7,8 +7,9 @@ REPOSITORY='azumag/docich'
 REPOSITORY_ID='1327276249'
 WORKFLOW='.github/workflows/vm-operations.yml'
 OPS={'deploy','exec','configure_jev','disable_jev','configure_jev_route_direct','configure_jev_route_vercel',
-     'disable_jev_route','status','bootstrap','diagnostics','reclaim','rebaseline','market_paper','restart_webui',
-     'recover_soren_game'}
+     'disable_jev_route','status','bootstrap','diagnostics','cpu_profile','reclaim','rebaseline','market_paper','paper_ai_canary',
+     'restart_chat_kick_workers','restart_webui',
+     'recover_soren_game','recover_soren_round','recover_bgm_mute'}
 TARGETS={'preview','production'}
 REF_RE=re.compile(r'[A-Za-z0-9][A-Za-z0-9_./-]{0,199}\Z')
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
@@ -51,16 +52,26 @@ def main():
             fail('arbitrary VM exec is disabled when the repository is public')
         if op=='bootstrap' and target!='production': fail('bootstrap is production-only')
         if op=='diagnostics' and target!='production': fail('diagnostics is production-only')
+        if op=='cpu_profile' and (target!='production' or ref!='main'):
+            fail('cpu_profile requires production/main')
         if op=='reclaim' and target!='production': fail('reclaim is production-only')
         if op=='reclaim' and ref!='main': fail('reclaim must run from main')
         if op=='rebaseline' and target!='production': fail('rebaseline is production-only')
         if op=='rebaseline' and ref!='main': fail('rebaseline must run from main')
         if op=='market_paper' and target!='production': fail('market_paper is production-only')
         if op=='market_paper' and ref!='main': fail('market_paper must run from main')
+        if op=='paper_ai_canary' and target!='production': fail('paper_ai_canary is production-only')
+        if op=='paper_ai_canary' and ref!='main': fail('paper_ai_canary must run from main')
         if op=='restart_webui' and target!='production': fail('restart_webui is production-only')
         if op=='restart_webui' and ref!='main': fail('restart_webui must run from main')
+        if op=='restart_chat_kick_workers' and target!='production': fail('restart_chat_kick_workers is production-only')
+        if op=='restart_chat_kick_workers' and ref!='main': fail('restart_chat_kick_workers must run from main')
         if op=='recover_soren_game' and target!='production': fail('recover_soren_game is production-only')
         if op=='recover_soren_game' and ref!='main': fail('recover_soren_game must run from main')
+        if op=='recover_soren_round' and (target!='production' or ref!='main'):
+            fail('recover_soren_round requires production/main')
+        if op=='recover_bgm_mute' and (target!='production' or ref!='main'):
+            fail('recover_bgm_mute requires production/main')
         if op=='configure_jev' and target!='production': fail('configure_jev is production-only')
         if op=='configure_jev' and ref!='main': fail('configure_jev must run from main')
         if op=='disable_jev' and target!='production': fail('disable_jev is production-only')
@@ -70,11 +81,12 @@ def main():
             if ref!='main': fail(f'{op} must run from main')
         if target=='production' and op in {'exec','configure_jev','disable_jev','configure_jev_route_direct',
                                             'configure_jev_route_vercel','disable_jev_route','bootstrap',
-                                            'reclaim','rebaseline','market_paper','restart_webui',
-                                            'recover_soren_game'} and confirm!='production':
+                                            'reclaim','rebaseline','market_paper','paper_ai_canary','restart_webui',
+                                            'restart_chat_kick_workers',
+                                            'recover_soren_game','recover_soren_round','recover_bgm_mute'} and confirm!='production':
             fail('production confirmation required')
-        # diagnostics is read-only with sanitized bounded output, so it needs
-        # owner-only gating (above) but no separate confirmation.
+        # diagnostics and cpu_profile are bounded read-only operations, so they
+        # need owner-only gating (above) but no separate confirmation.
         if op=='deploy' and target=='production' and ref!='main': fail('production deploy must use main')
         result={'operation':op,'target':target,'ref':ref,'confirm':confirm}
     else:

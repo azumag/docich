@@ -155,12 +155,12 @@ class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
         self.assertIn("--user restart docich-market-data-fx.service", fx_calls)
         self.assertNotIn("--user restart docich-market-data-stocks.service", fx_calls)
 
-    def test_post_deploy_workflow_is_push_only_and_reuses_vm_concurrency_lane(self):
+    def test_post_deploy_workflow_is_push_only_and_uses_dedicated_followup_lane(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("workflow_run.event == 'push'", text)
         self.assertIn("workflow_run.conclusion == 'success'", text)
         self.assertIn("workflow_run.head_branch == 'main'", text)
-        self.assertIn("group: vm-operations-${{ github.repository }}", text)
+        self.assertIn("group: market-paper-runtime-reload-${{ github.repository }}", text)
         self.assertIn("restart_active_market_paper_workers.sh", text)
         self.assertNotIn("systemctl --user enable", text)
 

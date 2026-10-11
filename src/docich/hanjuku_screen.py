@@ -7,6 +7,7 @@ infers a value that is not on screen; missing features are ``None``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import collections
 import re
 
 from .hanjuku_font import TextLine, dark, joined, light, read_lines, row_masks
@@ -34,8 +35,17 @@ def _near(pixel, color, tolerance=10):
     return all(abs(a - b) <= tolerance for a, b in zip(pixel, color))
 
 
-def find_hand(frame: Frame):
-    """Bounding box of the orange pointing-hand menu cursor, or None."""
+def find_hand(frame: Frame, *, option_positions=None):
+    """Unique orange hand, optionally aligned with known menu option positions.
+
+    Filter whole components rather than cropping: cutting a large orange sprite
+    at a menu boundary must not make it look like a hand.
+    """
+    def at_option(box):
+        return option_positions is None or any(
+            0 <= x - box[2] <= 48 and abs(y - (box[1] + 6)) <= 2
+            for x, y in option_positions)
+
     points = set()
     rgb, width = frame.rgb, frame.width
     for y in range(frame.height):
@@ -51,7 +61,8 @@ def find_hand(frame: Frame):
     # The hand is 18-20 px wide; a wider spread means two orange objects.
     x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
     if x1 - x0 <= 26 and y1 - y0 <= 18:
-        return x0, y0, x1, y1
+        box = x0, y0, x1, y1
+        return box if at_option(box) else None
     # g478: the merchant's orange sprite shares the cursor palette. A
     # global box merges both objects and loses the hand. Keep only a unique
     # connected component of the measured hand size; ambiguity still holds.
@@ -72,7 +83,8 @@ def find_hand(frame: Frame):
             continue
         xs, ys = zip(*component)
         box = min(xs), min(ys), max(xs), max(ys)
-        if 12 <= box[2] - box[0] <= 26 and 8 <= box[3] - box[1] <= 18:
+        if (12 <= box[2] - box[0] <= 26 and 8 <= box[3] - box[1] <= 18
+                and at_option(box)):
             candidates.append(box)
     return candidates[0] if len(candidates) == 1 else None
 
@@ -269,6 +281,8 @@ class Screen:
     menu_rows: list[TextLine] = field(default_factory=list)
     menu_cursor: int | None = None
     egg_rows: list[EggRow] = field(default_factory=list)
+    # (味方, 敵) の兵士数。読めない側は None、フィールド計測なしは全体で None。
+    field_soldiers: tuple[int | None, int | None] | None = None
     hidden_battle_commands: bool = False
     # The two-row item box with every row disabled (measured g534 07:51).
     disabled_item_box: bool = False
@@ -320,6 +334,83 @@ def _battle(frame: Frame) -> Battle | None:
                     and str(enemy_hp) == left[-1] and str(ally_hp) == right[-1]):
                 return Battle(left[0], enemy_hp, right[0], ally_hp)
     return None
+
+
+# 戦闘中の兵士を数える帯域。HPパネル (rect (0,160,256,200)) より上の
+# フィールドだけで、下端はボックス上辺 (y152〜) に切りられる兵士も数える。
+SOLDIER_BAND = (0, 40, 256, 150)
+# 1体ぶんの連結成分。gcgx battle.html「兵士は1人ずつHP10を持っている」に
+# 対応する実測サイズ (面積55..260、bbox 26x26以内)。
+SOLDIER_AREA = (55, 260)
+SOLDIER_BOX = (26, 26)
+# 2体以上が重なったとみなす成分。片側でも1つあればその側は計測をやめる。
+SOLDIER_MERGED_AREA = (261, 900)
+SOLDIER_MERGED_BOX = (60, 60)
+
+
+def _field_soldiers(frame: Frame) -> tuple[int | None, int | None] | None:
+    """フィールドに並ぶ兵士スプライトを数える。返り値は (味方, 敵)。
+
+    左右の割り当ては味方が左・敵が右で、HPパネル (敵が左) とは逆。実測:
+    どうし90 vs ロックフォール57 の新規戦で左6 (出撃確認のへいし6人と一致)、
+    どうし0 の敗戦フレームで左が空、ビシソワーズ0 の勝利フレームで右が空。
+    背景色 (上位4色) を完全一致で除いた連結成分のうち1体ぶんの寸法・面積に
+    収まるものだけを兵士と数え、側ごとに2体以上の重なりを見つけたらその側は
+    None (読めない=推測しない) にする。フィールド計測が要る戦闘フレームでの
+    み呼ばれる。
+    """
+    if frame.width < SOLDIER_BAND[2] or frame.height < SOLDIER_BAND[3]:
+        return None
+    x0, y0, x1, y1 = SOLDIER_BAND
+    rgb, stride = frame.rgb, frame.width * 3
+    span = (x1 - x0) * 3
+    tones = collections.Counter()
+    for y in range(y0, y1):
+        row = rgb[y * stride + x0 * 3: y * stride + x0 * 3 + span]
+        for i in range(0, span, 3):
+            tones[row[i:i + 3]] += 1
+    background = {tone for tone, _ in tones.most_common(4)}
+    mask = set()
+    for y in range(y0, y1):
+        row = rgb[y * stride + x0 * 3: y * stride + x0 * 3 + span]
+        for i in range(0, span, 3):
+            if row[i:i + 3] not in background:
+                mask.add((x0 + i // 3, y))
+    seen: set[tuple[int, int]] = set()
+    sides, merged = [0, 0], [0, 0]
+    for seed in mask:
+        if seed in seen:
+            continue
+        stack, cells = [seed], []
+        seen.add(seed)
+        while stack:
+            cx, cy = stack.pop()
+            cells.append((cx, cy))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    nxt = (cx + dx, cy + dy)
+                    if nxt in mask and nxt not in seen:
+                        seen.add(nxt)
+                        stack.append(nxt)
+        if len(cells) < SOLDIER_AREA[0]:
+            continue
+        xs = [c[0] for c in cells]
+        ys = [c[1] for c in cells]
+        # 上端・左右端に接する成分は壁や枠なので数えない。下端だけは
+        # ボックスに沿って切られる兵士を残すため除外しない。
+        if min(ys) <= y0 or min(xs) <= x0 or max(xs) >= x1 - 1:
+            continue
+        side = 0 if sum(xs) // len(cells) < (x0 + x1) // 2 else 1
+        width, height = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+        if (len(cells) > SOLDIER_AREA[1] or width > SOLDIER_BOX[0]
+                or height > SOLDIER_BOX[1]):
+            if (SOLDIER_AREA[1] < len(cells) <= SOLDIER_MERGED_AREA[1]
+                    and width <= SOLDIER_MERGED_BOX[0] and height <= SOLDIER_MERGED_BOX[1]
+                    and max(ys) < y1 - 1):
+                merged[side] += 1
+            continue
+        sides[side] += 1
+    return (None if merged[0] else sides[0], None if merged[1] else sides[1])
 
 
 def _menu_rows(lines: list[TextLine]) -> list[TextLine]:
@@ -441,6 +532,19 @@ def egg_choice_names(screen):
     return choices if screen.battle is None and not screen.egg_rows else []
 
 
+def month_confirmation_positions(screen):
+    """Both explicit choices in the foreground of a monthly menu.
+
+    The upper menu can retain its hand while the confirmation draws another
+    one below it. Do not let the background hand choose the foreground answer.
+    """
+    choices = [(x, line.y, word) for line in screen.lines if line.y >= 120
+               for x, word in line.spans() if word in ('うむッ!', 'いかんッ!')]
+    if {word for _, _, word in choices} != {'うむッ!', 'いかんッ!'}:
+        return []
+    return [(x, y) for x, y, _ in choices]
+
+
 def parse(frame: Frame, *, phase: str | None = None) -> Screen:
     masks = row_masks(frame, light)
     lines = read_lines(frame, masks=masks)
@@ -454,6 +558,10 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
                          'year': int(year), 'month': int(month), 'gold': int(gold)}
     screen.selected = _selected(lines, hand)
     screen.battle = _battle(frame)
+    if screen.battle is not None:
+        # 召喚メニューのフレームでは _battle() は None (敵側は兵士ではなく
+        # 召喚獣なので上書きしない)。読み取りは直近の通常戦闘フレームのもの。
+        screen.field_soldiers = _field_soldiers(frame)
     screen.menu_rows = _menu_rows(lines)
     box_rows = _box_rows(screen.menu_rows)
     if not screen.menu_rows:
@@ -489,6 +597,21 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         white = row_masks(frame, lambda r, g, b: min(r, g, b) > 200)
         screen.cursor = _free_cursor(white, frame)
     screen.kind = classify_text(screen)
+    if screen.kind == 'month_menu':
+        positions = month_confirmation_positions(screen)
+        if positions:
+            # Re-evaluate even when the global reader found the upper hand:
+            # it is not evidence that a lower confirmation has been selected.
+            screen.hand = find_hand(frame, option_positions=positions)
+            screen.selected = _selected(lines, screen.hand)
+    if screen.kind == 'summer_bonus' and screen.hand is None:
+        # An orange event sprite can make the global hand ambiguous. Only a
+        # unique whole hand aligned with an actual choice may recover it.
+        positions = [(x, line.y) for line in lines for x, word in line.spans()
+                     if any(word.startswith(v) for variants in SUMMER_BONUS_CHOICES.values()
+                            for v in variants)]
+        screen.hand = find_hand(frame, option_positions=positions)
+        screen.selected = _selected(lines, screen.hand)
     if screen.kind == 'unknown' and is_world_map(frame):
         screen.kind = 'world_map'
     return screen
@@ -504,6 +627,24 @@ def is_world_map(frame: Frame) -> bool:
         return False
     sea = sum(1 for x in range(60, 200, 2) for y in range(60, 180, 2) if frame.pixel(x, y) == WORLD_SEA)
     return sea >= 1500
+
+
+# 月イチイベント「8月バカンス」(odoru7094 のイベントデータと gcgx event.html
+# が一致)。バカンス→兵士が半減、ボーナス→お金が半減、まとめて解雇→何も
+# ならないか兵士が全員いなくなる。画面実測は保存されていないので、正典の
+# 表記とそのひらがな読みを候補にし、2つとも読めた時だけこの画面と断定する。
+SUMMER_BONUS_CHOICES = {
+    'vacation': ('バカンス', 'ばかんす'),
+    'bonus': ('ボーナス', 'ぼーなす', 'ぼなす', 'ぼーナス'),
+    'discharge': ('まとめて解雇', 'まとめてかいこ', 'まとめてかいほう'),
+}
+
+
+def summer_bonus_seen(text: str) -> bool:
+    """The 8月バカンス prompt: both outcome options legible, no more."""
+    flat = text.replace(' ', '')
+    return any(v in flat for v in SUMMER_BONUS_CHOICES['vacation']) and \
+        any(v in flat for v in SUMMER_BONUS_CHOICES['bonus'])
 
 
 def classify_text(s: Screen) -> str:
@@ -529,9 +670,18 @@ def classify_text(s: Screen) -> str:
         return 'shop_quantity'
     if 'かいあたえ' in t or 'ほしいな' in t or 'だからなんかかって' in t:
         return 'gift_request'
+    if summer_bonus_seen(t):
+        # 8月の月イチイベント (odoru7094 / gcgx event.html)。3択だが片方が
+        # 常に非選択なので yes_no とは別。free map cursor より先に見る。
+        return 'summer_bonus'
     if sum(1 for line in s.lines if PRICE.match(''.join(line.words(120, 256)))) >= 3:
         return 'shop_list'
     if 'しょうにん' in t and 'おしまい' in t:
+        # The information menu can cover only part of the monthly menu. Its
+        # own distinctive labels prove the foreground; background monthly
+        # labels must not keep the roster route waiting for it to open.
+        if 'ステータス' in t and 'システム' in t:
+            return 'main_menu'
         return 'month_menu'
     # おどす is also a summoned monster's skill: a たまごに もどれ row makes it
     # our monster's turn (g401 21:58: read as okunote, held 300 s, stalled).

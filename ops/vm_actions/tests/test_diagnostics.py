@@ -37,6 +37,12 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             "src/docich/runtime_backend.py",
             "src/docich/pulse_volume.py",
             "src/docich/corner_rotation.py",
+            "src/docich/game_switch.py",
+            "src/docich/hanjuku_manual_cancel.py",
+            "src/docich/hanjuku_manual_evidence.py",
+            "src/docich/naming.py",
+            "src/docich/tmux.py",
+            "src/docich/procs.py",
             "src/docich/__init__.py",
             "src/docich/semantic_decision/__init__.py",
             "src/docich/semantic_decision/diagnostics.py",
@@ -95,8 +101,12 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         self.assertIn(diag["status"], ("ok", "warn", "critical"))
         for section in ("meta", "workers", "queues", "ai", "improvement", "corners", "semantic_decision"):
             self.assertIn(section, diag)
+        self.assertIn("nethack_rotation_evidence", diag)
+        self.assertFalse(diag["nethack_rotation_evidence"]["recovery_authority"])
         self.assertEqual(diag["workers"]["expected"] >= 10, True)
         self.assertEqual(diag["semantic_decision"], {"present": False, "readable": False})
+        self.assertEqual(diag["supervisor_identity"]["loaded_functions_status"], "unverified")
+        self.assertIsNone(diag["supervisor_identity"]["open_script_sha256"])
         self.assertEqual(self.snapshot(self.soren), before)
 
     def test_every_docich_module_the_collector_imports_is_drift_verified(self):
@@ -159,6 +169,21 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         (self.doc / "ops" / "vm_actions" / "collect_diagnostics.py").unlink()
         proc = self.call(f"diagnostics docich production {'b' * 40}")
         self.assertNotEqual(proc.returncode, 0)
+
+    def test_manual_receipt_resource_helpers_drift_is_refused_read_only(self):
+        for name in ("game_switch", "hanjuku_manual_cancel", "hanjuku_manual_evidence", "naming", "tmux", "procs"):
+            with self.subTest(module=name):
+                path = self.doc / "src" / "docich" / (name + ".py")
+                original = path.read_bytes()
+                before = self.snapshot(self.soren)
+                try:
+                    path.write_bytes(original + b"\n# unreviewed helper drift\n")
+                    proc = self.call(f"diagnostics docich production {'b' * 40}")
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("VM operation rejected", proc.stderr.decode())
+                    self.assertEqual(self.snapshot(self.soren), before)
+                finally:
+                    path.write_bytes(original)
 
     def test_secrets_never_reach_actions_output(self):
         stats = self.soren / "tmp" / "state" / "ai_stats"
@@ -267,18 +292,29 @@ class DiagnosticsAuthorizeTests(unittest.TestCase):
         proc = self.run_auth(INPUT_TARGET="preview")
         self.assertNotEqual(proc.returncode, 0)
 
+    def test_cpu_profile_is_owner_only_production_main_without_extra_confirm(self):
+        proc = self.run_auth(INPUT_OPERATION="cpu_profile")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout)
+        self.assertEqual((data["operation"], data["target"], data["ref"]),
+                         ("cpu_profile", "production", "main"))
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="cpu_profile", INPUT_TARGET="preview").returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="cpu_profile", INPUT_REF="feature").returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="cpu_profile", GITHUB_TRIGGERING_ACTOR="collab").returncode, 0)
+
 
 class DiagnosticsWorkflowTests(unittest.TestCase):
     def test_workflow_exposes_diagnostics_operation(self):
         text = WF.read_text(encoding="utf-8")
         self.assertIn(
             "options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, "
-            "configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, reclaim, rebaseline, "
-            "market_paper, restart_webui, recover_soren_game]", text
+            "configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, "
+            "market_paper, paper_ai_canary, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute]", text
         )
         self.assertIn("Query read-only runtime diagnostics", text)
         self.assertIn('"diagnostics docich production $SHA"', text)
         self.assertIn("steps.auth.outputs.operation == 'diagnostics'", text)
+        self.assertIn("steps.auth.outputs.operation == 'cpu_profile'", text)
 
     def test_workflow_explains_stale_installed_gateway_without_relaxing_exec_boundary(self):
         text = WF.read_text(encoding="utf-8")

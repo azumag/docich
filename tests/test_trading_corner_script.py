@@ -106,6 +106,33 @@ def test_prompt_requires_interpretation_and_pnl_commentary(tmp_path):
     assert "損失なら言い訳せず" in prompt
 
 
+@pytest.mark.parametrize("target", [None, *SEGMENT_KEYS])
+def test_both_prompts_connect_meriken_to_paper_with_grounding_and_no_canned_quip(target):
+    facts = {"capital_jpy": "10000", "research": {"news_items": []}}
+    covered = ["損益比較は話し済みです"]
+    prompts = [build_prompt(facts), build_next_prompt(facts, covered, target_key=target)]
+    for prompt in prompts:
+        assert "メリケンAI（アメリカ製AI）" in prompt
+        assert "ひねくれた自信家" in prompt
+        assert "一人称は「僕」" in prompt
+        assert "アメリカンジョーク" in prompt
+        assert "PAPER暗号資産の模擬売買" in prompt
+        assert "日本語のです・ます調" in prompt
+        assert "以下の実データ(facts)だけを根拠" in prompt
+        assert "存在しない数値・銘柄・ニュース・因果関係は絶対に作らない" in prompt
+        assert "記録されたBOTの判断" in prompt
+        assert "事実や不確実性を曲げず" in prompt
+        assert "人格設定を相場・損益の根拠にしない" in prompt
+        assert "話し済みの内容をジョークで言い換えて再利用しない" in prompt
+        assert "定型の名乗り・決まり文句" in prompt
+        assert '"capital_jpy": "10000"' in prompt
+        for game_context in ("ソ連ゲーム91", "駒を落と", "対戦相手", "デッドライン", "順位", "Twitchコメント"):
+            assert game_context not in prompt
+    assert covered[0] in prompts[1]
+    assert "【重複の禁止】" in prompts[1]
+    assert "同じ切り口とみなし、もう一度話さない" in prompts[1]
+
+
 def test_corner_facts_and_fallback_include_theoretical_comparison(tmp_path):
     now = dt.datetime(2026, 9, 11, 12, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))).timestamp()
     _write_status(tmp_path)

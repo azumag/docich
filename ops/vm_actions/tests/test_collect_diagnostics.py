@@ -60,6 +60,67 @@ def test_rotation_projection_never_emits_seed_or_request_text(tmp_path):
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
+def test_rotation_projection_reports_scheduled_manual_without_request_identity(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting",
+        "slot": 4,
+        "last_seen_at": 100,
+        "next_due_at": 200,
+        "eligible": ["weather"],
+        "queued_manual": {
+            "corner": "weather",
+            "selected_at": 90,
+            "trigger_at": 200,
+            "request_id": "DO-NOT-PUBLISH-REQUEST",
+            "private": "DO-NOT-PUBLISH-BODY",
+        },
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rotation = output["corner_rotation"]
+    assert rotation["queued_manual"] is True
+    assert rotation["scheduled_manual"] is True
+    assert rotation["scheduled_manual_corner"] == "weather"
+    assert rotation["scheduled_manual_trigger_at"] == 200
+    assert rotation["scheduled_manual_due"] is False
+    assert rotation["scheduled_manual_overdue_sec"] is None
+    assert rotation["scheduled_manual_blocked_reason"] == "not_due"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_rotation_projection_reports_overdue_inbox_waiting_for_slot(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "running",
+        "slot": 5,
+        "last_seen_at": 100,
+        "next_due_at": 100,
+        "eligible": ["weather", "nsnake"],
+        "pending": {
+            "corner": "nsnake", "phase": "dispatched",
+            "selected_at": 80, "request_id": "PRIVATE-AUTO",
+        },
+    }))
+    (tmp_path / "corner_manual_queue.json").write_text(json.dumps({
+        "corner": "weather",
+        "selected_at": 70,
+        "trigger_at": 90,
+        "request_id": "DO-NOT-PUBLISH-SCHEDULE",
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rotation = output["corner_rotation"]
+    assert rotation["queued_manual"] is True
+    assert rotation["scheduled_manual"] is True
+    assert rotation["scheduled_manual_corner"] == "weather"
+    assert rotation["scheduled_manual_trigger_at"] == 90
+    assert rotation["scheduled_manual_due"] is True
+    assert rotation["scheduled_manual_overdue_sec"] == 10
+    assert rotation["scheduled_manual_blocked_reason"] == "waiting_slot"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
 def test_corner_match_target_projection_is_bounded_and_does_not_change_n(tmp_path):
     module = load_collector()
     for value in (1, 3, 100, 0, 101, True, "SECRET-TARGET", None):
@@ -109,6 +170,49 @@ def test_corner_end_reason_reports_the_prelaunch_switch_terminal_vocabulary():
         'status':'interrupted','game':'hanjuku-hero',
         'end_reason':'SECRET-END-REASON'})
     assert unknown['end_reason'] is None
+
+
+def test_tsuitate_end_reason_and_settled_result_survive_diagnostics():
+    # The corner is manual-only, so diagnostics is the only place an operator can
+    # read why a match ended. Dropping the tsuitate vocabulary or the settled
+    # result would leave every production run indistinguishable.
+    module=load_collector()
+    result={'outcome':'win','reason':'checkmate','resultConfidence':'verified',
+            'moveNumber':9,'endedAt':'2026-10-06T00:05:00.000Z'}
+    for reason in ('game-completed','queue-timeout','beta-stopped','manual','match-timeout',
+                   'operator-moved-during-tsuitate','operator-moved-after-start',
+                   'operator-moved-before-restore','operator-stopped-before-start'):
+        output=module._project_corner_state(
+            {'status':'completed','game':'tsuitate-view','end_reason':reason,'beta_result':result})
+        assert output['end_reason']==reason
+        assert output['game_result']==result
+    # Nothing outside the vocabulary is published, and a result that cannot be
+    # vouched for is dropped whole rather than partially echoed.
+    for bad in [
+        {'outcome':'victory','reason':'checkmate','resultConfidence':'verified','moveNumber':9,
+         'endedAt':'2026-10-06T00:05:00.000Z'},
+        {'outcome':'win','reason':'opponent-blamed-the-bot','resultConfidence':'verified',
+         'moveNumber':9,'endedAt':'2026-10-06T00:05:00.000Z'},
+        {'outcome':'win','reason':'checkmate','resultConfidence':'public_replay','moveNumber':9,
+         'endedAt':'2026-10-06T00:05:00.000Z'},
+        {'outcome':'win','reason':'checkmate','resultConfidence':'verified','moveNumber':-1,
+         'endedAt':'2026-10-06T00:05:00.000Z'},
+        {'outcome':'win','reason':'checkmate','resultConfidence':'verified','moveNumber':9,
+         'endedAt':'yesterday'},
+    ]:
+        assert module._project_corner_state(
+            {'status':'completed','game':'tsuitate-view','end_reason':'game-completed',
+             'beta_result':bad})['game_result'] is None
+    assert module._project_corner_state(
+        {'status':'completed','end_reason':'SECRET-END-REASON','beta_result':result})['end_reason'] is None
+    # Extra keys are dropped rather than forwarded, so board/decision content
+    # written by a future change cannot reach diagnostics through this field.
+    extras=module._project_corner_state(
+        {'status':'completed','game':'tsuitate-view','end_reason':'game-completed',
+         'beta_result':{**result,'yourPieces':[{'square':'5i'}],'rawCheckpoint':'SECRET'}})
+    assert extras['game_result']==result
+    assert 'SECRET' not in json.dumps(extras)
+    assert 'yourPieces' not in extras['game_result']
 
 
 PULSE_SINK_INPUTS = (
@@ -343,6 +447,27 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state({'bot_chart':'SECRET'})['bot_chart'] is None
 
 
+def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
+    module = load_collector()
+    versions = ("hanjuku-script-v1", "hanjuku-chart-v2",
+                "hanjuku-chart-v129-battle-card-progress",
+                "hanjuku-chart-v130-summer-cursor-evidence",
+                "hanjuku-chart-v131-defense-month-economy",
+                "hanjuku-chart-v132-card-damage-gate",
+                "hanjuku-chart-v133-measured-egg-fee",
+                "hanjuku-chart-v134-month-nav-cursor-guard",
+                "hanjuku-chart-v135-month-foreground-state",
+                "hanjuku-chart-v136-resource-priority",
+                "hanjuku-chart-v137-camp-recheck")
+    for version in versions:
+        assert module._project_corner_state({'bot_version': version})['bot_version'] == version
+    for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',
+                    'hanjuku-chart-v999-unknown', versions[-1] + '-SECRET'):
+        output = module._project_corner_state({'bot_version': version})
+        assert output['bot_version'] is None
+        assert 'SECRET' not in json.dumps(output)
+
+
 def test_hanjuku_audio_and_narration_evidence_is_bounded():
     module=load_collector()
     state={'game':'hanjuku-hero','narration':{'enqueued':3,'skipped':9,'delivery_failed':0,'text':'SECRET'},
@@ -514,12 +639,20 @@ class CollectorFixture(unittest.TestCase):
         return before
 
     def run_collector(self, *args):
+        env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": "/tmp"}
+        # The fixture writes ai_stats day files with the parent's localtime
+        # while the child collector resolves day files with its own
+        # localtime. Inherit TZ so both sides compute the same day even
+        # when the parent TZ date differs from the OS default (#1630).
+        # The environment stays scrubbed otherwise; only TZ is inherited.
+        if "TZ" in os.environ:
+            env["TZ"] = os.environ["TZ"]
         return subprocess.run(
             ["python3", str(COLLECTOR), *(args or [str(self.soren)])],
             capture_output=True,
             text=True,
             timeout=120,
-            env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": "/tmp"},
+            env=env,
         )
 
 
@@ -1046,6 +1179,7 @@ class ProgramCornerStateTests(CollectorFixture):
         data = json.loads(proc.stdout)
         self.assertIn("corners", data)
         self.assertIn("game_switch", data["corners"])
+        self.assertIn("weather_corner", data["corners"])
         self.assertIn("state_dir_found", data["corners"])
         self.assertIn("boundary", data["corners"])
         self.assertIn("ab", data["corners"])
@@ -1429,6 +1563,151 @@ def test_manual_projection_requires_exact_declared_owner(tmp_path):
     assert project()["manual_pending_owner"] == "unknown"
 
 
+def test_manual_hanjuku_fingerprint_matches_operator_without_identity_output(tmp_path):
+    import hashlib
+    module = load_collector()
+    request = {"corner": "hanjuku-hero", "state_file": "retro_corner_manual.json",
+               "selected_at": 100, "request_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}
+    result = module._rotation_manual_pending_projection(tmp_path, {"manual_pending": request}, 200)
+    assert result["manual_pending_fingerprint"] == hashlib.sha256(json.dumps(
+        request, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assert request["request_id"] not in json.dumps(result)
+    request["corner"] = "nsnake"
+    assert module._rotation_manual_pending_projection(tmp_path, {"manual_pending": request}, 200)["manual_pending_fingerprint"] is None
+
+
+def test_fixed_hanjuku_manual_receipt_observation_is_read_only_and_identity_free(tmp_path):
+    module = load_collector()
+    request_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    manual = {"corner": "hanjuku-hero", "state_file": "retro_corner_manual.json",
+              "selected_at": 100, "request_id": request_id}
+    project = lambda: module._rotation_manual_pending_projection(tmp_path, {"manual_pending": manual}, 200)["manual_pending_receipt"]
+    missing = project()
+    assert missing["observed"] is True
+    assert missing["present"] is False and missing["readable"] is False
+    path = tmp_path / f"game-switch/requests/{request_id}.json"
+    path.parent.mkdir(parents=True)
+    receipt = {"request_id": request_id, "target": "hanjuku-hero", "operation": "start",
+               "status": "failed", "result": {"request_id": request_id,
+                   "operation": "start", "status": "failed", "cleanup_pending": False},
+               "detail": "PRIVATE_BODY", "runtime_dir": "/private/runtime"}
+    path.write_text(json.dumps(receipt))
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    output = project()
+    assert output == {"observed": True, "present": True, "readable": True,
+                      "status": "failed", "operation": "start", "request_matches": True,
+                      "target_matches": True, "terminal_result_matches": True,
+                      "cleanup_pending": False, "updated_after_selection": None,
+                      "runtime_identity_valid": None, "runtime_resources_released": None}
+    assert all(value not in json.dumps(output) for value in (request_id, "PRIVATE_BODY", "/private/runtime"))
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    for status in ("allocating", "accepted", "queued"):
+        receipt.update(status=status, result=None)
+        path.write_text(json.dumps(receipt))
+        output = project()
+        assert output["status"] == status and output["terminal_result_matches"] is None
+
+
+def test_fixed_hanjuku_receipt_mismatch_corruption_and_symlink_stay_unknown(tmp_path):
+    module = load_collector()
+    request_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    manual = {"corner": "hanjuku-hero", "state_file": "retro_corner_manual.json",
+              "selected_at": 100, "request_id": request_id}
+    project = lambda: module._rotation_hanjuku_manual_receipt_projection(tmp_path, manual, 200)
+    path = tmp_path / f"game-switch/requests/{request_id}.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"request_id":"different", "target":"nsnake", "status":"PRIVATE_STATUS", "operation":"PRIVATE_OPERATION"}')
+    output = project()
+    assert output["request_matches"] is False and output["target_matches"] is False
+    assert output["status"] == output["operation"] == "unknown"
+    assert "PRIVATE" not in json.dumps(output)
+    path.write_text("{")
+    assert project()["present"] is True and project()["readable"] is False
+    path.unlink()
+    outside = tmp_path / "private.json"
+    outside.write_text('{"status":"PRIVATE_STATUS"}')
+    path.symlink_to(outside)
+    assert project()["present"] is True and project()["readable"] is False
+    assert "PRIVATE_STATUS" not in json.dumps(project())
+
+
+def test_fixed_hanjuku_receipt_lookup_rejects_arbitrary_identity_or_owner(tmp_path):
+    module = load_collector()
+    valid = {"corner": "hanjuku-hero", "state_file": "retro_corner_manual.json",
+             "selected_at": 100, "request_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}
+    for change in ({"request_id": "../private"}, {"request_id": []}, {"corner": "nsnake"},
+                   {"state_file": "../private.json"}, {"selected_at": 300}):
+        with mock.patch.object(module, "_rotation_evidence_file") as read:
+            output = module._rotation_hanjuku_manual_receipt_projection(tmp_path, {**valid, **change}, 200)
+        read.assert_not_called()
+        assert output["observed"] is False and output["present"] is None
+
+
+def test_fixed_hanjuku_receipt_resources_use_exact_read_only_operator_contract(tmp_path):
+    from docich.game_switch import GameSwitchStore
+    from docich import hanjuku_manual_cancel as operator
+    module = load_collector()
+    store = GameSwitchStore(tmp_path)
+    store.initialize()
+    request_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    receipt = dict(store.accept_request(request_id, "start", "hanjuku-hero").receipt)
+    receipt.update(status="failed", result={"request_id": request_id, "operation": "start",
+                                           "status": "failed", "cleanup_pending": False})
+    store.receipts.save(receipt)
+    path = store.receipts._path(request_id)
+    manual = {"corner": "hanjuku-hero", "state_file": "retro_corner_manual.json",
+              "request_id": request_id, "selected_at": 100}
+    project = lambda: module._rotation_hanjuku_manual_receipt_projection(tmp_path, manual, time.time())
+    tmux = mock.Mock()
+    tmux.window_target_exists.return_value = False
+    tmux.session_target_exists.return_value = False
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    with mock.patch.object(operator, "_ProbeTmux", return_value=tmux):
+        output = project()
+    assert output["runtime_identity_valid"] is True
+    assert output["runtime_resources_released"] is True
+    assert output["updated_after_selection"] is True
+    assert all(value not in json.dumps(output) for value in
+               (request_id, receipt["runtime_id"], receipt["runtime_dir"]))
+    assert all(call.kwargs == {"strict": True} for call in tmux.method_calls)
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    runtime = Path(receipt["runtime_dir"])
+    runtime.mkdir(parents=True)
+    presentation = runtime / "presentation.json"
+    for status, expected in (("ready", False), ("stopped", True)):
+        presentation.write_text(json.dumps({"status": status, "detail": "PRIVATE_RESOURCE"}))
+        with mock.patch.object(operator, "_ProbeTmux", return_value=tmux):
+            assert project()["runtime_resources_released"] is expected
+    for method in (tmux.window_target_exists, tmux.session_target_exists):
+        method.return_value = True
+        with mock.patch.object(operator, "_ProbeTmux", return_value=tmux):
+            assert project()["runtime_resources_released"] is False
+        method.return_value = False
+    tmux.window_target_exists.side_effect = TimeoutError("PRIVATE_ERROR")
+    with mock.patch.object(operator, "_ProbeTmux", return_value=tmux):
+        unknown = project()
+    assert unknown["runtime_resources_released"] is None
+    assert "PRIVATE" not in json.dumps(unknown)
+    for change in ({"runtime_dir": "/private/runtime"}, {"generation": True},
+                   {"runtime_id": "../private"}, {"game_window": "private-window"}):
+        path.write_text(json.dumps({**receipt, **change}))
+        with mock.patch.object(operator, "_ProbeTmux") as probe:
+            assert project()["runtime_resources_released"] is None
+        probe.assert_not_called()
+    path.write_text(json.dumps(receipt))
+    presentation.unlink()
+    presentation.symlink_to(path)
+    with mock.patch.object(operator, "_ProbeTmux", return_value=tmux):
+        assert project()["runtime_resources_released"] is None
+    for change in ({"status": "queued", "result": None},
+                   {"result": {**receipt["result"], "cleanup_pending": True}},
+                   {"request_id": "different"}):
+        path.write_text(json.dumps({**receipt, **change}))
+        with mock.patch.object(operator, "_ProbeTmux") as probe:
+            assert project()["runtime_resources_released"] is None
+        probe.assert_not_called()
+
+
 def test_manual_projection_rejects_arbitrary_paths_and_free_text(tmp_path):
     module = load_collector()
     for invalid in ("DO-NOT-PUBLISH", [], 3):
@@ -1472,6 +1751,335 @@ def test_manual_and_automatic_projection_do_not_hide_each_other(tmp_path):
     module._collect_corner_files(tmp_path, output, 100)
     assert output["corner_rotation"]["pending_owner"] == "retro_corner"
     assert output["corner_rotation"]["manual_pending_owner"] == "paper_corner_manual"
+
+
+def test_weather_pending_and_start_receipt_are_projected_without_request_identity(tmp_path):
+    module = load_collector()
+    request_id = "123e4567-e89b-52d3-a456-426614174000"
+    lease_id = "123e4567-e89b-42d3-a456-426614174001"
+    previous = {
+        "game": "sorengame", "runtime_id": "g41-abc123",
+        "generation": 41, "lease_id": lease_id,
+    }
+    weather = {
+        "game": "weather-view", "runtime_id": "g42-def456",
+        "generation": 42, "lease_id": "123e4567-e89b-42d3-a456-426614174002",
+    }
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "running", "pending": {
+            "corner": "weather", "phase": "dispatched", "selected_at": 100,
+            "request_id": request_id,
+        },
+    }))
+    (tmp_path / "weather_corner.json").write_text(json.dumps({
+        "status": "active", "rotation_request_id": request_id,
+        "start_request_id": request_id, "previous_game": "sorengame",
+        "previous_runtime_identity": previous,
+        "weather_runtime_identity": weather, "started_at": 200,
+        "forecast": "DO-NOT-PUBLISH-FORECAST", "audio_delivery": {
+            "status": "running", "next_index": 6,
+            "body": "DO-NOT-PUBLISH-AUDIO", "request": "DO-NOT-PUBLISH-REQUEST",
+        },
+    }))
+    requests = tmp_path / "game-switch" / "requests"
+    requests.mkdir(parents=True)
+    (requests / f"{request_id}.json").write_text(json.dumps({
+        "request_id": request_id, "operation": "switch", "target": "weather-view",
+        "status": "succeeded", "generation": 42,
+        "updated_at": "2026-10-03T12:00:00Z", "payload_hash": "DO-NOT-PUBLISH-HASH",
+        "result": {
+            "request_id": request_id, "operation": "switch", "status": "succeeded",
+            "from_game": "sorengame", "to_game": "weather-view", "generation": 42,
+            "active_runtime": weather, "prompt": "DO-NOT-PUBLISH-PROMPT",
+        },
+    }))
+    before = {p.relative_to(tmp_path).as_posix(): p.read_bytes()
+              for p in tmp_path.rglob("*") if p.is_file()}
+    output = {}
+    with mock.patch.object(module, "_rotation_policy", return_value=(None, None)), \
+            mock.patch.object(module, "_collect_game_switch_fifo", return_value={"present": False}), \
+            mock.patch.object(module, "_collect_game_switch_watchdog", return_value={}), \
+            mock.patch.object(module, "_collect_corner_rotation_timer_alias", return_value={}):
+        module._collect_corner_files(tmp_path, output, 250)
+    owner = output["weather_corner"]
+    assert output["corner_rotation"]["pending_owner"] == "weather_corner"
+    assert owner["status"] == "active"
+    assert owner["rotation_request_matches_pending"] is True
+    assert owner["selection_kind"] == "automatic"
+    assert owner["start_request_matches_rotation"] is True
+    assert owner["start_receipt"]["status"] == "succeeded"
+    assert owner["start_receipt"]["result_matches_owner"] is True
+    assert owner["start_receipt"]["runtime_matches_owner"] is True
+    assert owner["start_receipt"]["generation_matches_owner"] is True
+    assert owner["audio_delivery_present"] is True
+    assert owner["audio_delivery_status"] == "running"
+    assert owner["audio_next_index"] == 6
+    rendered = json.dumps(output)
+    for secret in (request_id, lease_id, "g41-abc123", "g42-def456", "DO-NOT-PUBLISH"):
+        assert secret not in rendered
+    assert before == {p.relative_to(tmp_path).as_posix(): p.read_bytes()
+                      for p in tmp_path.rglob("*") if p.is_file()}
+
+
+def test_weather_completion_matches_automatic_rotation_and_game_switch_restore(tmp_path):
+    module = load_collector()
+    start_id = "123e4567-e89b-52d3-a456-426614174010"
+    restore_id = "123e4567-e89b-42d3-a456-426614174011"
+    previous_lease = "123e4567-e89b-42d3-a456-426614174012"
+    weather_lease = "123e4567-e89b-42d3-a456-426614174013"
+    restored_lease = "123e4567-e89b-42d3-a456-426614174014"
+    previous = {
+        "game": "sorengame", "runtime_id": "g41-abc123",
+        "generation": 41, "lease_id": previous_lease,
+    }
+    weather = {
+        "game": "weather-view", "runtime_id": "g42-def456",
+        "generation": 42, "lease_id": weather_lease,
+    }
+    restored = {
+        "game": "sorengame", "runtime_id": "g43-789abc",
+        "generation": 43, "lease_id": restored_lease,
+    }
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "ready", "pending": None,
+        "last_result": {"corner": "weather", "request_id": start_id,
+                        "status": "completed", "at": 380},
+        "history": [{"corner": "weather", "at": 380, "source": "completion"}],
+    }))
+    (tmp_path / "weather_corner.json").write_text(json.dumps({
+        "status": "completed", "rotation_request_id": start_id,
+        "start_request_id": start_id, "restore_request_id": restore_id,
+        "previous_game": "sorengame", "previous_runtime_identity": previous,
+        "weather_runtime_identity": weather, "restored_runtime_identity": restored,
+        "requested_at": 100, "starting_at": 110, "started_at": 120,
+        "restore_requested_at": 360, "completed_at": 380, "end_reason": "duration",
+        "forecast": "DO-NOT-PUBLISH-FORECAST", "last_error": "SECRET-ERROR",
+        "audio_plan": {"text": "SECRET-AUDIO"},
+        "audio_delivery": {
+            "status": "completed", "next_index": 13,
+            "requests": [{"text": "SECRET-AUDIO-REQUEST"}],
+        },
+    }))
+    (tmp_path / "game_switch.json").write_text(json.dumps({
+        "phase": "ready", "active": restored,
+    }))
+    requests = tmp_path / "game-switch" / "requests"
+    requests.mkdir(parents=True)
+    (requests / f"{start_id}.json").write_text(json.dumps({
+        "request_id": start_id, "operation": "switch", "target": "weather-view",
+        "status": "succeeded", "generation": 42, "updated_at": "2026-10-03T12:02:00Z",
+        "result": {"request_id": start_id, "operation": "switch", "status": "succeeded",
+                   "from_game": "sorengame", "to_game": "weather-view", "generation": 42,
+                   "active_runtime": weather},
+    }))
+    (requests / f"{restore_id}.json").write_text(json.dumps({
+        "request_id": restore_id, "operation": "switch", "target": "sorengame",
+        "status": "succeeded", "generation": 43, "updated_at": "2026-10-03T12:06:20Z",
+        "result": {"request_id": restore_id, "operation": "switch", "status": "succeeded",
+                   "from_game": "weather-view", "to_game": "sorengame", "generation": 43,
+                   "active_runtime": restored},
+    }))
+    before = {p.relative_to(tmp_path).as_posix(): p.read_bytes()
+              for p in tmp_path.rglob("*") if p.is_file()}
+    output = {}
+    with mock.patch.object(module, "_rotation_policy", return_value=(None, None)), \
+            mock.patch.object(module, "_collect_game_switch_fifo", return_value={"present": False}), \
+            mock.patch.object(module, "_collect_game_switch_watchdog", return_value={}), \
+            mock.patch.object(module, "_collect_corner_rotation_timer_alias", return_value={}):
+        module._collect_corner_files(tmp_path, output, 400)
+    owner = output["weather_corner"]
+    assert owner["status"] == "completed"
+    assert owner["rotation_request_matches_last_result"] is True
+    assert owner["selection_kind"] == "automatic"
+    assert owner["rotation_result_status"] == "completed"
+    assert owner["end_reason"] == "duration"
+    assert owner["start_receipt"]["status"] == "succeeded"
+    assert owner["start_receipt"]["result_matches_owner"] is True
+    assert owner["start_receipt"]["runtime_matches_owner"] is True
+    assert owner["start_receipt"]["generation_matches_owner"] is True
+    assert owner["restore_receipt"]["status"] == "succeeded"
+    assert owner["restore_receipt"]["result_matches_owner"] is True
+    assert owner["restore_receipt"]["runtime_matches_owner"] is True
+    assert owner["restore_receipt"]["generation_matches_owner"] is True
+    assert owner["restored_runtime_matches_current"] is True
+    assert owner["audio_delivery_present"] is True
+    assert owner["audio_delivery_status"] == "completed"
+    assert owner["audio_next_index"] == 13
+    rendered = json.dumps(output)
+    for secret in (start_id, restore_id, previous_lease, weather_lease, restored_lease,
+                   "g41-abc123", "g42-def456", "g43-789abc", "DO-NOT-PUBLISH",
+                   "SECRET-ERROR", "SECRET-AUDIO", "SECRET-AUDIO-REQUEST"):
+        assert secret not in rendered
+    assert before == {p.relative_to(tmp_path).as_posix(): p.read_bytes()
+                      for p in tmp_path.rglob("*") if p.is_file()}
+
+
+def test_weather_invalid_request_identity_never_builds_receipt_path(tmp_path):
+    module = load_collector()
+    valid_rotation_id = "123e4567-e89b-42d3-a456-426614174020"
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "running", "pending": {"corner": "weather", "request_id": valid_rotation_id},
+    }))
+    (tmp_path / "weather_corner.json").write_text(json.dumps({
+        "status": "starting", "rotation_request_id": valid_rotation_id,
+        "start_request_id": "../outside-secret",
+    }))
+    calls = []
+    original = module._rotation_evidence_file
+    def recording_read(state_dir, relative):
+        calls.append(str(relative))
+        return original(state_dir, relative)
+    output = {}
+    with mock.patch.object(module, "_rotation_evidence_file", side_effect=recording_read), \
+            mock.patch.object(module, "_rotation_policy", return_value=(None, None)), \
+            mock.patch.object(module, "_collect_game_switch_fifo", return_value={"present": False}), \
+            mock.patch.object(module, "_collect_game_switch_watchdog", return_value={}), \
+            mock.patch.object(module, "_collect_corner_rotation_timer_alias", return_value={}):
+        module._collect_corner_files(tmp_path, output, 250)
+    assert not any("game-switch/requests/" in path for path in calls)
+    assert output["weather_corner"]["start_receipt"]["present"] is False
+    assert output["weather_corner"]["start_request_matches_rotation"] is None
+    assert "outside-secret" not in json.dumps(output)
+
+
+def test_weather_idle_start_and_restore_accept_only_literal_null_game_fields(tmp_path):
+    module = load_collector()
+    start_id = "123e4567-e89b-42d3-a456-426614174050"
+    restore_id = "123e4567-e89b-42d3-a456-426614174051"
+    weather = {
+        "game": "weather-view", "runtime_id": "g42-def456",
+        "generation": 42, "lease_id": "123e4567-e89b-42d3-a456-426614174052",
+    }
+    state = {
+        "previous_game": None,
+        "weather_runtime_identity": weather,
+        "restored_runtime_identity": None,
+    }
+    requests = tmp_path / "game-switch" / "requests"
+    requests.mkdir(parents=True)
+    (requests / f"{start_id}.json").write_text(json.dumps({
+        "request_id": start_id, "operation": "start", "target": "weather-view",
+        "status": "succeeded", "generation": 42,
+        "result": {
+            "request_id": start_id, "operation": "start", "status": "succeeded",
+            "from_game": None, "to_game": "weather-view", "generation": 42,
+            "active_runtime": weather,
+        },
+    }))
+    (requests / f"{restore_id}.json").write_text(json.dumps({
+        "request_id": restore_id, "operation": "stop", "target": None,
+        "status": "succeeded", "generation": 42,
+        "result": {
+            "request_id": restore_id, "operation": "stop", "status": "succeeded",
+            "from_game": "weather-view", "to_game": None, "generation": 42,
+            "active_runtime": None,
+        },
+    }))
+
+    start = module._weather_receipt_projection(tmp_path, start_id, "start", state)
+    restore = module._weather_receipt_projection(tmp_path, restore_id, "restore", state)
+    assert start["result_matches_owner"] is True
+    assert start["runtime_matches_owner"] is True
+    assert start["generation_matches_owner"] is True
+    assert restore["result_matches_owner"] is True
+    assert restore["runtime_matches_owner"] is True
+    assert restore["generation_matches_owner"] is True
+
+
+def test_weather_idle_restore_rejects_malformed_non_null_receipt_fields(tmp_path):
+    module = load_collector()
+    restore_id = "123e4567-e89b-42d3-a456-426614174060"
+    weather = {
+        "game": "weather-view", "runtime_id": "g42-def456",
+        "generation": 42, "lease_id": "123e4567-e89b-42d3-a456-426614174061",
+    }
+    state = {
+        "previous_game": None,
+        "weather_runtime_identity": weather,
+        "restored_runtime_identity": None,
+    }
+    requests = tmp_path / "game-switch" / "requests"
+    requests.mkdir(parents=True)
+    path = requests / f"{restore_id}.json"
+    base = {
+        "request_id": restore_id, "operation": "stop", "target": None,
+        "status": "succeeded", "generation": 42,
+        "result": {
+            "request_id": restore_id, "operation": "stop", "status": "succeeded",
+            "from_game": "weather-view", "to_game": None, "generation": 42,
+            "active_runtime": None,
+        },
+    }
+
+    malformed = "DO-NOT-PUBLISH malformed"
+    for location, field in (("receipt", "target"), ("result", "from_game"), ("result", "to_game")):
+        receipt = json.loads(json.dumps(base))
+        target = receipt if location == "receipt" else receipt["result"]
+        target[field] = malformed
+        path.write_text(json.dumps(receipt))
+        projection = module._weather_receipt_projection(
+            tmp_path, restore_id, "restore", state
+        )
+        assert projection["result_matches_owner"] is False
+        assert malformed not in json.dumps(projection)
+
+    receipt = json.loads(json.dumps(base))
+    receipt["result"]["active_runtime"] = {"malformed": malformed}
+    path.write_text(json.dumps(receipt))
+    projection = module._weather_receipt_projection(tmp_path, restore_id, "restore", state)
+    assert projection["result_matches_owner"] is True
+    assert projection["runtime_matches_owner"] is False
+    assert malformed not in json.dumps(projection)
+
+
+def test_weather_completed_selection_kind_uses_request_uuid_generation_contract(tmp_path):
+    module = load_collector()
+    automatic_id = "123e4567-e89b-52d3-a456-426614174040"
+    manual_id = "123e4567-e89b-42d3-a456-426614174041"
+    rotation = {"last_result": {"corner": "weather", "request_id": automatic_id,
+                                "status": "completed", "at": 100}}
+    (tmp_path / "weather_corner.json").write_text(json.dumps({
+        "status": "completed", "rotation_request_id": automatic_id,
+    }))
+    projection = module._weather_corner_projection(tmp_path, rotation, True)
+    assert projection["selection_kind"] == "automatic"
+    rotation["last_result"]["request_id"] = manual_id
+    (tmp_path / "weather_corner.json").write_text(json.dumps({
+        "status": "completed", "rotation_request_id": manual_id,
+    }))
+    projection = module._weather_corner_projection(tmp_path, rotation, True)
+    assert projection["selection_kind"] == "manual"
+
+
+def test_weather_receipt_symlink_is_reported_unreadable_without_following_target(tmp_path):
+    module = load_collector()
+    request_id = "123e4567-e89b-42d3-a456-426614174030"
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"secret": "DO-NOT-PUBLISH-SYMLINK-TARGET"}))
+    requests = tmp_path / "game-switch" / "requests"
+    requests.mkdir(parents=True)
+    (requests / f"{request_id}.json").symlink_to(outside)
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "running", "pending": {"corner": "weather", "request_id": request_id},
+    }))
+    (tmp_path / "weather_corner.json").write_text(json.dumps({
+        "status": "interrupted", "rotation_request_id": request_id,
+        "start_request_id": request_id, "previous_game": "sorengame",
+        "restore_request_id": "123e4567-e89b-42d3-a456-426614174031",
+        "end_reason": [], "switch_request_id": {"malformed": True},
+    }))
+    output = {}
+    with mock.patch.object(module, "_rotation_policy", return_value=(None, None)), \
+            mock.patch.object(module, "_collect_game_switch_fifo", return_value={"present": False}), \
+            mock.patch.object(module, "_collect_game_switch_watchdog", return_value={}), \
+            mock.patch.object(module, "_collect_corner_rotation_timer_alias", return_value={}):
+        module._collect_corner_files(tmp_path, output, 250)
+    owner = output["weather_corner"]
+    assert owner["start_receipt"]["present"] is True
+    assert owner["start_receipt"]["readable"] is False
+    assert owner["end_reason"] is None
+    assert owner["restore_receipt"]["present"] is False
+    assert "DO-NOT-PUBLISH-SYMLINK-TARGET" not in json.dumps(output)
 
 
 def test_rotation_error_kind_taxonomy_matches_the_durable_ledger():
@@ -1550,7 +2158,7 @@ def test_manual_corner_queue_projection_is_boolean_only(tmp_path):
 
 class TmuxServerProjectionTests(unittest.TestCase):
     def test_tmux_servers_projection_is_read_only_and_bounded(self):
-        """#1286 follow-up: eval jobs must run on docich-eval, production on docich.
+        """#1286 follow-up: eval jobs must run on docich-eval, production on the default socket.
 
         The projection makes the separation directly observable in diagnostics.
         """
@@ -1566,16 +2174,18 @@ class TmuxServerProjectionTests(unittest.TestCase):
 
         with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
             result = module._collect_tmux_servers()
-        assert result['schema_version'] == 1
-        assert result['servers']['docich']['present'] is True
-        assert result['servers']['docich']['session_count'] == 1
-        assert result['servers']['docich']['readable'] is True
-        assert 'sessions' not in result['servers']['docich']
+        assert module.TMUX_SERVER_NAMES == ('default', 'docich-eval')
+        assert result['schema_version'] == 2
+        assert result['servers']['default']['present'] is True
+        assert result['servers']['default']['session_count'] == 1
+        assert result['servers']['default']['readable'] is True
+        assert 'sessions' not in result['servers']['default']
         assert result['servers']['docich-eval']['present'] is True
         assert result['servers']['docich-eval']['session_count'] == 2
         assert result['servers']['docich-eval']['readable'] is True
         assert 'sessions' not in result['servers']['docich-eval']
-        # Read-only: list-sessions never sends input.
+        # Read-only: list-sessions never sends input. The production target is
+        # tmux's default socket; `docich` is a session name, never a server.
         for cmd in calls:
             assert cmd == ['tmux', '-L', cmd[2], 'list-sessions', '-F', '1']
             assert cmd[2] in module.TMUX_SERVER_NAMES
@@ -1589,7 +2199,7 @@ class TmuxServerProjectionTests(unittest.TestCase):
 
         with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
             result = module._collect_tmux_servers()
-        for name in ('docich', 'docich-eval'):
+        for name in ('default', 'docich-eval'):
             assert result['servers'][name] == {
                 'readable': False, 'present': None, 'session_count': None}
 
@@ -1597,7 +2207,9 @@ class TmuxServerProjectionTests(unittest.TestCase):
     def test_tmux_servers_projection_rejects_invalid_server_names(self):
         module = load_collector()
         with mock.patch.object(module.subprocess, 'run') as run:
-            for server in ('docich; rm -rf /', '', None, 'other-safe-looking-server'):
+            # `docich` is the production *session* name, not a server name: the
+            # earlier `-L docich` target never existed on the VM (#1286).
+            for server in ('docich; rm -rf /', '', None, 'other-safe-looking-server', 'docich'):
                 assert module._tmux_server_session_count(server) is None
             run.assert_not_called()
 
@@ -1638,12 +2250,12 @@ class TmuxServerProjectionTests(unittest.TestCase):
     def test_tmux_servers_projection_keeps_each_server_result_independent(self):
         module = load_collector()
         def fake_run(cmd, **kwargs):
-            if cmd[2] == 'docich':
+            if cmd[2] == 'default':
                 raise subprocess.TimeoutExpired(cmd, 5)
             return subprocess.CompletedProcess(cmd, 0, stdout='1\n', stderr='')
         with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
             result = module._collect_tmux_servers()
-        assert result['servers']['docich'] == {'readable': False, 'present': None, 'session_count': None}
+        assert result['servers']['default'] == {'readable': False, 'present': None, 'session_count': None}
         assert result['servers']['docich-eval'] == {'readable': True, 'present': True, 'session_count': 1}
 
 
@@ -1659,25 +2271,99 @@ class TmuxServerProjectionTests(unittest.TestCase):
             'docich-resolver-improve-gnurobots.service': False,
         }
 
-        with mock.patch.object(module, '_unit_is_active', side_effect=lambda unit: active_states[unit]), \
-             mock.patch.object(module, '_unit_is_enabled', side_effect=lambda unit: enabled_states[unit]):
+        def fake_active(unit, scope='user'):
+            return active_states[unit]
+
+        def fake_enabled(unit, scope='user'):
+            return enabled_states[unit]
+
+        with mock.patch.object(module, '_unit_is_active', side_effect=fake_active), \
+             mock.patch.object(module, '_unit_is_enabled', side_effect=fake_enabled):
             result = module._collect_resolver_daemon()
-        assert result['schema_version'] == 1
-        assert result['units']['docich-resolver-improve.service'] == {'active': True, 'enabled': True}
-        assert result['units']['docich-resolver-improve-gnurobots.service'] == {'active': False, 'enabled': False}
+        assert result['schema_version'] == 2
+        running = result['units']['docich-resolver-improve.service']
+        assert (running['active'], running['enabled']) == (True, True)
+        idle = result['units']['docich-resolver-improve-gnurobots.service']
+        assert (idle['active'], idle['enabled']) == (False, False)
+        for unit in module.RESOLVER_IMPROVE_UNITS:
+            assert set(result['units'][unit]['scopes']) == {'system', 'user'}
+
+
+    def test_resolver_daemon_projection_reads_the_system_manager(self):
+        """#1286 follow-up: the production install is a *system* unit.
+
+        The 2026-10-08 VM observation is that both units live in
+        /etc/systemd/system (root-owned, enabled). A user-scope-only probe
+        answers "not-found" while the daemon actually runs (up since
+        2026-10-01 06:18 JST), which is how a running daemon was reported
+        absent. The aggregate must surface the system reading and keep both
+        scopes visible instead of flattening them.
+        """
+        module = load_collector()
+        states = {
+            ('docich-resolver-improve.service', 'system'): (True, True),
+            ('docich-resolver-improve.service', 'user'): (False, False),
+            ('docich-resolver-improve-gnurobots.service', 'system'): (False, True),
+            ('docich-resolver-improve-gnurobots.service', 'user'): (None, None),
+        }
+
+        def fake_active(unit, scope='user'):
+            return states[(unit, scope)][0]
+
+        def fake_enabled(unit, scope='user'):
+            return states[(unit, scope)][1]
+
+        with mock.patch.object(module, '_unit_is_active', side_effect=fake_active), \
+             mock.patch.object(module, '_unit_is_enabled', side_effect=fake_enabled):
+            result = module._collect_resolver_daemon()
+        running = result['units']['docich-resolver-improve.service']
+        assert running['active'] is True
+        assert running['enabled'] is True
+        assert running['scopes'] == {
+            'system': {'active': True, 'enabled': True},
+            'user': {'active': False, 'enabled': False},
+        }
+        idle = result['units']['docich-resolver-improve-gnurobots.service']
+        assert idle['active'] is False
+        assert idle['enabled'] is True
+        assert idle['scopes']['user'] == {'active': None, 'enabled': None}
+        # A known reading in one scope is never masked by an unknown one.
+        assert module._aggregate_scope_flag([None, True]) is True
+        assert module._aggregate_scope_flag([None, False]) is False
+        assert module._aggregate_scope_flag([None, None]) is None
+
+
+    def test_system_scope_probe_targets_the_system_manager(self):
+        module = load_collector()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout='active\n', stderr='')
+
+        with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
+            assert module._unit_is_active(
+                'docich-resolver-improve.service', scope='system') is True
+        assert calls == [['systemctl', 'is-active', 'docich-resolver-improve.service']]
 
 
     def test_resolver_daemon_projection_handles_missing_units(self):
         module = load_collector()
 
-        def fake_none(unit):
+        def fake_none(unit, scope='user'):
             return None
 
         with mock.patch.object(module, '_unit_is_active', side_effect=fake_none), \
              mock.patch.object(module, '_unit_is_enabled', side_effect=fake_none):
             result = module._collect_resolver_daemon()
         for unit in module.RESOLVER_IMPROVE_UNITS:
-            assert result['units'][unit] == {'active': None, 'enabled': None}
+            record = result['units'][unit]
+            assert record['active'] is None
+            assert record['enabled'] is None
+            assert record['scopes'] == {
+                'system': {'active': None, 'enabled': None},
+                'user': {'active': None, 'enabled': None},
+            }
 
 
 def test_game_switch_watchdog_projection_reports_timer_state():
@@ -1760,7 +2446,7 @@ def test_corner_rotation_timer_projection_reports_alias_state():
         (unit_dir / 'docich-corner-rotation.timer').write_text('[Unit]')
         (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
         (unit_dir / 'docich-retro-corner.timer').symlink_to(unit_dir / 'docich-corner-rotation.timer')
-        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+        with mock.patch.object(module, 'PROD_ROOT', Path(tmp) / 'docich'):
             result = module._collect_corner_rotation_timer_alias()
         assert result['legacy_service_alias'] is True
         assert result['legacy_timer_alias'] is True
@@ -1782,7 +2468,7 @@ def test_corner_rotation_timer_projection_detects_inconsistent_alias():
         (unit_dir / 'docich-corner-rotation.timer').write_text('[Unit]')
         # Only the service alias exists (timer is missing)
         (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
-        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+        with mock.patch.object(module, 'PROD_ROOT', Path(tmp) / 'docich'):
             result = module._collect_corner_rotation_timer_alias()
         assert result['legacy_service_alias'] is True
         assert result['legacy_timer_alias'] is False
@@ -1801,7 +2487,7 @@ def test_corner_rotation_timer_projection_detects_wrong_target():
         (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
         # Timer alias points to the wrong target
         (unit_dir / 'docich-retro-corner.timer').symlink_to(unit_dir / 'docich-corner-rotation.service')
-        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+        with mock.patch.object(module, 'PROD_ROOT', Path(tmp) / 'docich'):
             result = module._collect_corner_rotation_timer_alias()
         assert result['legacy_service_alias'] is True
         assert result['legacy_timer_alias'] is True

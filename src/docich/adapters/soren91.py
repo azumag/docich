@@ -232,6 +232,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         }
         # Host this instance talks to; resolved lazily (see _host_for_call).
         self._host: str | None = None
+        self._agent_capture_settings: dict[str, object] | None = None
         self.srt_port = _validated_port(raw.get("srt_port"), key="srt_port", default=DEFAULT_SRT_PORT)
         self.cdp_port = _validated_port(raw.get("cdp_port"), key="cdp_port", default=DEFAULT_CDP_PORT)
         self.ffplay_bin = str(raw.get("ffplay_bin", DEFAULT_FFPLAY_BIN))
@@ -499,7 +500,22 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
 
     def _agent_running(self, deadline: float, cancel) -> bool:
         _status, payload = self._agent_request("GET", "/v1/status", deadline, cancel)
+        settings = payload.get("captureSettings")
+        self._agent_capture_settings = settings if isinstance(settings, dict) else None
         return payload.get("running") is True
+
+    @staticmethod
+    def _capture_profile_requested() -> bool:
+        profile = os.environ.get("SOREN91_CAPTURE_PROFILE")
+        if profile not in {None, "", "rejected_png_v1"}:
+            raise AdapterError("unsupported Soren91 capture profile")
+        return profile == "rejected_png_v1"
+
+    def _capture_profile_is_active(self) -> bool:
+        settings = self._agent_capture_settings
+        return (isinstance(settings, dict)
+                and settings.get("format") == "png"
+                and settings.get("rejectedFrameDiagnostics") is True)
 
     def _listener_bound(self) -> bool:
         try:
@@ -706,10 +722,17 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
 
     def _start_remote_renderer(self, deadline: float, cancel) -> None:
         """Ask the current host to dial our listener; wait for its CDP proxy."""
+        diagnostic_profile = self._capture_profile_requested()
         renderer_running = self._agent_running(deadline, cancel)
+        if renderer_running and diagnostic_profile and not self._capture_profile_is_active():
+            # Do not restart/reconfigure an active renderer to obtain diagnostics.
+            raise AdapterError("active renderer has a different capture profile")
         if not renderer_running:
+            body = {"srtUrl": self.caller_srt_url()}
+            if diagnostic_profile:
+                body["captureProfile"] = "rejected_png_v1"
             _status, payload = self._agent_request(
-                "POST", "/v1/start", deadline, cancel, body={"srtUrl": self.caller_srt_url()}
+                "POST", "/v1/start", deadline, cancel, body=body
             )
             if _status == 409:
                 pass
@@ -738,6 +761,8 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                     raise
                 running = False
             bound = self._listener_bound()
+            if running and self._capture_profile_requested() and not self._capture_profile_is_active():
+                raise AdapterError("renderer capture profile verification failed")
             if running and bound:
                 if not self._twitch_synced:
                     self._sync_twitch(self.twitch_game)

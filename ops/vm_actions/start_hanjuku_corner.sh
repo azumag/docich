@@ -13,10 +13,11 @@ DOCICH_HANJUKU_PYTHON="$DOCICH_HANJUKU_ROOT/.venv-trading/bin/python3"
 if [[ ! -x "$DOCICH_HANJUKU_PYTHON" ]]; then
   DOCICH_HANJUKU_PYTHON=/usr/bin/python3
 fi
-# The manager must outlive the gateway call while the game runs. A fixed unit
-# refuses duplicate starts; never restart/kill an existing corner to make room.
-systemd-run --user --collect --unit=docich-hanjuku-corner --property=Type=exec \
-  --working-directory="$DOCICH_HANJUKU_ROOT" \
-  --setenv="PYTHONPATH=$DOCICH_HANJUKU_ROOT/src" \
-  "$DOCICH_HANJUKU_PYTHON" -m docich.hanjuku_corner
-printf '%s\n' 'requested Hanjuku start through common corner coordinator'
+# queue_manual() is a short durable write. Wait for its real exit status so
+# the owner workflow cannot report success merely because a child was exec'd.
+(
+  cd "$DOCICH_HANJUKU_ROOT"
+  PYTHONPATH="$DOCICH_HANJUKU_ROOT/src" \
+    "$DOCICH_HANJUKU_PYTHON" -m docich.hanjuku_corner >/dev/null
+)
+printf '%s\n' 'queued Hanjuku through common corner coordinator'

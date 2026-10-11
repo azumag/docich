@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -88,6 +89,116 @@ class BriefGenerationTests(unittest.TestCase):
         self.assertIn("/handoff.md", (ROOT / ".gitignore").read_text())
         self.assertIn('"$source_dir/ops_brief.py"', (ROOT / "ops/vm_actions/install_vm_gateway.sh").read_text())
         self.assertIn('"$source_dir/projection_io.py"', (ROOT / "ops/vm_actions/install_vm_gateway.sh").read_text())
+
+    def test_explicit_shared_source_overrides_environment(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            shared = root / "shared" / "handoff.md"
+            shared.parent.mkdir()
+            shared.write_bytes(SOURCE)
+            artifact = root / "brief.json"
+            env = {**os.environ, brief.HANDOFF_ENV: str(root / "missing" / "handoff.md")}
+            for op in ("build", "check-source"):
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "ops/vm_actions/ops_brief.py"), op,
+                     "--handoff", str(shared), "--artifact", str(artifact)],
+                    env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0)
+                self.assertNotIn(str(shared), result.stdout + result.stderr)
+                self.assertNotIn("private body", result.stdout + result.stderr)
+
+    def test_environment_shared_source_builds_and_checks_without_checkout_copy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            shared = root / "shared" / "handoff.md"
+            shared.parent.mkdir()
+            shared.write_bytes(SOURCE)
+            artifact = root / "brief.json"
+            env = {**os.environ, brief.HANDOFF_ENV: str(shared)}
+            base = [sys.executable, str(ROOT / "ops/vm_actions/ops_brief.py")]
+            for op in ("build", "check-source"):
+                result = subprocess.run(base + [op, "--artifact", str(artifact)],
+                                        env=env, cwd=root, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0)
+                self.assertNotIn(str(shared), result.stdout + result.stderr)
+                self.assertNotIn("private body", result.stdout + result.stderr)
+            self.assertEqual(artifact.read_bytes(), brief.build(SOURCE))
+            self.assertFalse((root / "handoff.md").exists())
+            shared.write_bytes(SOURCE + b"private changed\n")
+            result = subprocess.run(base + ["check-source", "--artifact", str(artifact)],
+                                    env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("private changed", result.stdout + result.stderr)
+
+    def test_missing_shared_source_never_falls_back_to_checkout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            script = root / "ops/vm_actions/ops_brief.py"
+            script.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / "ops/vm_actions/ops_brief.py", script)
+            (root / "handoff.md").write_bytes(SOURCE)
+            artifact = root / "brief.json"
+            artifact.write_bytes(brief.build(SOURCE))
+            before = artifact.read_bytes()
+            env = dict(os.environ)
+            env.pop(brief.HANDOFF_ENV, None)
+            for configured in (None, "", str(root / "missing" / "handoff.md")):
+                if configured is not None:
+                    env[brief.HANDOFF_ENV] = configured
+                for op in ("build", "check-source"):
+                    with self.subTest(configured=configured, operation=op):
+                        result = subprocess.run(
+                            [sys.executable, str(script), op, "--artifact", str(artifact)],
+                            env=env, cwd=root, capture_output=True, text=True)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertEqual(artifact.read_bytes(), before)
+                        self.assertNotIn("private body", result.stdout + result.stderr)
+                        self.assertNotIn(str(root), result.stdout + result.stderr)
+
+    def test_shared_source_requires_absolute_handoff_filename(self):
+        for configured in ("handoff.md", "relative/handoff.md", "/shared/other.md"):
+            with self.subTest(configured=configured), mock.patch.dict(
+                    os.environ, {brief.HANDOFF_ENV: configured}), self.assertRaises(ValueError):
+                brief.handoff_path(None)
+        with mock.patch.dict(os.environ, {brief.HANDOFF_ENV: "/shared/handoff.md"}):
+            for explicit in (Path("handoff.md"), Path("/shared/other.md")):
+                with self.subTest(explicit=explicit), self.assertRaises(ValueError):
+                    brief.handoff_path(explicit)
+
+    def test_artifact_operations_do_not_need_shared_source_configuration(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            artifact, output = root / "brief.json", root / "ops_brief.md"
+            artifact.write_bytes(brief.build(SOURCE))
+            base = [sys.executable, str(ROOT / "ops/vm_actions/ops_brief.py")]
+            env = {**os.environ, brief.HANDOFF_ENV: "invalid/relative/path"}
+            for op in ("check-artifact", "materialize"):
+                args = [op, "--artifact", str(artifact)]
+                if op == "materialize":
+                    args += ["--output", str(output)]
+                result = subprocess.run(base + args, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0)
+                self.assertNotIn("private body", result.stdout + result.stderr)
+            self.assertEqual(output.read_bytes(), brief.render(artifact.read_bytes()))
+
+    def test_configured_source_symlink_is_rejected_without_rewriting_artifact(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            target = root / "source.md"
+            target.write_bytes(SOURCE)
+            source = root / "handoff.md"
+            source.symlink_to(target)
+            artifact = root / "brief.json"
+            artifact.write_bytes(brief.build(SOURCE))
+            before = artifact.read_bytes()
+            env = {**os.environ, brief.HANDOFF_ENV: str(source)}
+            for op in ("build", "check-source"):
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "ops/vm_actions/ops_brief.py"), op,
+                     "--artifact", str(artifact)], env=env, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(artifact.read_bytes(), before)
+                self.assertNotIn(str(source), result.stdout + result.stderr)
 
 
 class BriefDeploymentTests(unittest.TestCase):

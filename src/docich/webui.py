@@ -19,6 +19,12 @@ State: soren_root = ELOOP_LIB_DIR 相当 (games/soviet_now or /home/ubuntu/soren
 """
 from __future__ import annotations
 
+from .tsuitate_beta_control import (
+    ControlError as BetaControlError,
+    call_beta_control,
+    project_game_result,
+)
+
 import datetime
 import hashlib
 import hmac
@@ -697,7 +703,7 @@ CSRF_TTL_SEC = 4 * 3600  # 4時間
 # (method, path) の組。フロントエンドは既存の window.confirm() ダイアログ
 # (streamAction/workerControl) または「保存」操作自体を再確認とみなし、
 # confirm:true を body に含める。
-CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config"), ("POST", "/api/corners")}
+CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config"), ("POST", "/api/corners"), ("POST", "/api/tsuitate-beta"), ("POST", "/api/special-corner/end")}
 
 
 def _make_csrf_token(secret: bytes, ttl: int = CSRF_TTL_SEC, now: int | None = None) -> str:
@@ -994,6 +1000,9 @@ def _work_indicator_path(soren_root: Path) -> Path:
 def _comment_gen_state_path(soren_root: Path) -> Path:
     return shared_overlay_queue.comment_gen_state_path(soren_root)
 
+def _comment_gen_detail_path(soren_root: Path) -> Path:
+    return shared_overlay_queue.comment_gen_detail_path(soren_root)
+
 def _radio_state_path(soren_root: Path) -> Path:
     return shared_overlay_queue.radio_state_path(soren_root)
 
@@ -1066,6 +1075,49 @@ def _validate_audio_delivery_key(delivery_key: str) -> str:
     return value
 
 
+def _stage_speaker_sidecar(queue_dir: Path, dest: Path, speaker: str) -> None:
+    """Atomically publish ``dest.speaker`` before the queue payload is visible.
+
+    The audio worker claims ``*.txt`` only, so a sidecar that becomes visible
+    first can never trigger consumption on its own. Publication is best-effort:
+    a staging failure falls back to publishing the payload without a speaker,
+    matching the previous contract.
+    """
+    if not speaker:
+        return
+    sidecar = Path(str(dest) + ".speaker")
+    tmp_spk: Path | None = None
+    try:
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        fd, tmp_spk_str = tempfile.mkstemp(dir=str(queue_dir), prefix=".speaker.")
+        tmp_spk = Path(tmp_spk_str)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(speaker)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp_spk.chmod(0o644)
+        os.replace(str(tmp_spk), str(sidecar))
+    except Exception:
+        pass
+    finally:
+        if tmp_spk is not None:
+            try:
+                if tmp_spk.exists():
+                    tmp_spk.unlink()
+            except Exception:
+                pass
+
+
+def _cleanup_orphan_speaker_sidecar(dest: Path, speaker: str) -> None:
+    """Remove a staged sidecar whose payload never became visible."""
+    if not speaker:
+        return
+    try:
+        Path(str(dest) + ".speaker").unlink()
+    except Exception:
+        pass
+
+
 def _enqueue_audio_delivery(
     soren_root: Path, text: str, delivery: str, *, source: str = "crypto_paper", speaker: str = "",
     wait_for_lock: bool = True,
@@ -1080,7 +1132,9 @@ def _enqueue_audio_delivery(
     exactly-once playback or recovery from filesystem/power loss.
 
     ``speaker`` (when non-empty) is published as a ``.speaker`` sidecar next
-    to the queue file, mirroring the claim path. The Soren audio worker reads
+    to the queue file, mirroring the claim path. The sidecar is staged before
+    the payload becomes visible so an immediate worker claim cannot miss the
+    voice override. The Soren audio worker reads
     the sidecar to pick the voice. A redelivery of the same event reuses the
     same speaker because callers derive it deterministically from ``delivery``.
     """
@@ -1135,14 +1189,17 @@ def _enqueue_audio_delivery(
         if not payload.exists():
             return {"ok": True, "dedup": True, "filename": None}
         dest = queue / filename
+        # The sidecar goes first: the worker claims *.txt only, so an early
+        # sidecar cannot trigger consumption, while a late one could be missed
+        # by an immediate claim.
+        _stage_speaker_sidecar(queue, dest, speaker)
         # This rename is both publication and the durable committed state.
         # Do not recreate/remove the receipt on any exception after this point.
-        os.replace(payload, dest)
-        if speaker:
-            try:
-                (Path(str(dest) + ".speaker")).write_text(speaker, encoding="utf-8")
-            except Exception:
-                pass
+        try:
+            os.replace(payload, dest)
+        except Exception:
+            _cleanup_orphan_speaker_sidecar(dest, speaker)
+            raise
         return {"ok": True, "dedup": False, "filename": filename, "path": str(dest)}
 
 
@@ -1333,12 +1390,14 @@ def _enqueue_audio_text(
             os.fsync(fh.fileno())
         tmp_fd = None
         tmp_path.chmod(0o644)
-        os.replace(str(tmp_path), str(dest))
-        if spk:
-            try:
-                (Path(str(dest) + ".speaker")).write_text(spk, encoding="utf-8")
-            except Exception:
-                pass
+        # Same ordering contract as the durable path: sidecar first, payload
+        # publication second, so an immediate worker claim keeps the voice.
+        _stage_speaker_sidecar(queue_dir, dest, spk)
+        try:
+            os.replace(str(tmp_path), str(dest))
+        except Exception:
+            _cleanup_orphan_speaker_sidecar(dest, spk)
+            raise
         return {"ok": True, "dedup": False, "filename": filename, "path": str(dest)}
     except Exception:
         _comment_audio_release_enqueue_key(soren_root, cleaned)
@@ -1507,14 +1566,31 @@ def _get_gen_indicators(soren_root: Path, now: int | None = None) -> list[dict[s
     if now is None:
         now = int(time.time())
     indicators: list[dict[str, Any]] = []
-    # comment
+    # comment — detail JSON and owner-PID liveness extend the stale window
+    # so the indicator does not vanish mid-generation (#1182)
     try:
         c_path = _comment_gen_state_path(soren_root)
-        stale = 90
+        d_path = _comment_gen_detail_path(soren_root)
+        alive_stale = 300
+        dead_stale = 90
         try:
-            stale = int(os.environ.get("EVENT_OVERLAY_COMMENT_GEN_STALE_SEC", "90") or "90")
+            alive_stale = int(os.environ.get("EVENT_OVERLAY_COMMENT_GEN_ALIVE_STALE_SEC", "300") or "300")
         except Exception:
-            stale = 90
+            alive_stale = 300
+        try:
+            dead_stale = int(os.environ.get("EVENT_OVERLAY_COMMENT_GEN_DEAD_STALE_SEC", "90") or "90")
+        except Exception:
+            dead_stale = 90
+        try:
+            old = os.environ.get("EVENT_OVERLAY_COMMENT_GEN_STALE_SEC", "")
+            if old and str(old).strip().isdigit():
+                old_v = int(str(old).strip())
+                if dead_stale == 90 and old_v != 90:
+                    dead_stale = old_v
+                    if alive_stale == 300 and old_v > 300:
+                        alive_stale = old_v
+        except Exception:
+            pass
         try:
             line = c_path.read_text(encoding="utf-8", errors="ignore").strip()
         except Exception:
@@ -1522,7 +1598,12 @@ def _get_gen_indicators(soren_root: Path, now: int | None = None) -> list[dict[s
         if line.startswith("generating:"):
             parts = line.split(":")
             ts = 0
-            if len(parts) >= 3 and parts[-1].isdigit():
+            if len(parts) >= 3 and parts[2].isdigit():
+                try:
+                    ts = int(parts[2])
+                except Exception:
+                    ts = 0
+            elif len(parts) >= 3 and parts[-1].isdigit():
                 try:
                     ts = int(parts[-1])
                 except Exception:
@@ -1532,8 +1613,63 @@ def _get_gen_indicators(soren_root: Path, now: int | None = None) -> list[dict[s
                     ts = int(c_path.stat().st_mtime)
                 except Exception:
                     ts = now
+            # Detail JSON written by the soviet_now comment worker
+            # (model/preview/count/attempt/max_retry/batch_hash/mode/owner_pid).
+            detail: dict[str, Any] = {}
+            try:
+                if d_path.is_file():
+                    txt = d_path.read_text(encoding="utf-8", errors="ignore").strip()
+                    if txt:
+                        j = json.loads(txt)
+                        if isinstance(j, dict):
+                            detail = j
+                            try:
+                                dts = int(j.get("ts") or 0)
+                                if dts > 0:
+                                    ts = dts
+                            except Exception:
+                                pass
+            except Exception:
+                detail = {}
+            owner_pid = 0
+            try:
+                owner_pid = int(detail.get("owner_pid") or 0) if isinstance(detail, dict) else 0
+            except Exception:
+                owner_pid = 0
+            if owner_pid == 0:
+                try:
+                    pid_file = soren_root / "tmp/.twitch_chat/comment_gen.pid"
+                    if pid_file.is_file():
+                        raw = pid_file.read_text(encoding="utf-8", errors="ignore").strip().split("|")[0]
+                        if raw.isdigit():
+                            owner_pid = int(raw)
+                except Exception:
+                    pass
+            if owner_pid == 0 and len(parts) >= 4 and parts[3].isdigit():
+                try:
+                    owner_pid = int(parts[3])
+                except Exception:
+                    pass
+            alive = bool(owner_pid) and _is_pid_alive(owner_pid)
+            window = alive_stale if alive else dead_stale
             age = now - ts
-            fresh = 0 <= age <= stale
+            fresh = 0 <= age <= window
+            model = str(detail.get("model") or "") if isinstance(detail, dict) else ""
+            preview = str(detail.get("preview") or "") if isinstance(detail, dict) else ""
+            count = 0
+            attempt = 0
+            max_retry = 0
+            batch_hash = ""
+            mode = ""
+            try:
+                if isinstance(detail, dict):
+                    count = int(detail.get("count") or 0)
+                    attempt = int(detail.get("attempt") or 0)
+                    max_retry = int(detail.get("max_retry") or 0)
+                    batch_hash = str(detail.get("batch_hash") or "")
+                    mode = str(detail.get("mode") or "")
+            except Exception:
+                pass
             indicators.append({
                 "key": "comment",
                 "icon": "💬",
@@ -1541,8 +1677,18 @@ def _get_gen_indicators(soren_root: Path, now: int | None = None) -> list[dict[s
                 "ts": ts,
                 "age": age,
                 "fresh": fresh,
-                "stale_sec": stale,
+                "stale_sec": window,
                 "raw": line,
+                "owner_pid": owner_pid,
+                "owner_alive": alive,
+                "model": model,
+                "preview": preview,
+                "count": count,
+                "attempt": attempt,
+                "max_retry": max_retry,
+                "batch_hash": batch_hash,
+                "mode": mode,
+                "detail_raw": detail,
             })
     except Exception:
         pass
@@ -1665,6 +1811,7 @@ CORNER_RECOVER_TIMEOUT_SEC = 60
 CORNER_MANUAL_STATE_FILES = (
     "retro_corner", "retro_corner_manual", "paper_corner", "paper_corner_manual",
     "soren91_corner", "soren91_corner_manual", "nethack_corner", "nethack_corner_manual",
+    "weather_corner", "tsuitate_corner",
 )
 _ROTATION_STATUS_ENUM = frozenset({"ready", "waiting", "running", "recovery_required"})
 _ROTATION_ERROR_KIND_ENUM = frozenset({
@@ -1684,6 +1831,12 @@ _CORNER_MANUAL_LAUNCHERS = {
     "nethack": ("docich-nethack-corner-manual", True, False),
     "paper": ("docich-paper-corner-manual", False, False),
 }
+# Weather uses the durable common queue; it has no detached one-off runner.
+_CORNER_QUEUED_MANUAL_ADAPTERS = frozenset({"weather", "tsuitate"})
+_MANUAL_RESERVATION_CORNERS = frozenset({
+    "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
+    "pacman4console", "nethack", "hanjuku-hero", "soren91", "paper", "meriken", "tsuitate",
+})
 # rotation / 自動起動が書く base state の停止経路（webui stop は manual だけを見ない）。
 # paper は専用 restore CLI が scheduled service を止めて表示を復帰するため、
 # bin/docich の paper-corner stop ではなく専用 launcher を使う。
@@ -1718,6 +1871,20 @@ def _view_int(value: Any) -> int | None:
     return value
 
 
+def _view_game_result(value: Any) -> dict[str, Any] | None:
+    """Public post-game summary for the UI, rebuilt from a fixed allowlist.
+
+    Owner PlayerView, board pieces and any decision history never enter the
+    corner state, so this only ever echoes the settled result vocabulary.
+    """
+    if value is None:
+        return None
+    try:
+        return project_game_result(value)
+    except BetaControlError:
+        return None
+
+
 def _view_time(value: Any) -> float | None:
     """Epoch seconds for the UI. ISO strings go through the reviewed parser."""
     if isinstance(value, bool):
@@ -1736,6 +1903,42 @@ def _view_time(value: Any) -> float | None:
     return None
 
 
+def _rotation_manual_view(g: GlobalConfig, raw: Any) -> dict[str, str] | None:
+    """Show the declared manual owner without exposing request IDs or paths."""
+    if not isinstance(raw, dict) or raw.get("manual_pending") is None:
+        return None
+    manual = raw["manual_pending"]
+    out = {"corner": "unknown", "owner": "unknown", "status": "unknown"}
+    if not isinstance(manual, dict):
+        return out
+    corner = manual.get("corner")
+    if isinstance(corner, str) and corner in _MANUAL_RESERVATION_CORNERS:
+        out["corner"] = corner
+    # Keep the existing diagnostics' narrower manual-owner file contract.
+    files = {name + ".json": name for name in CORNER_MANUAL_STATE_FILES
+             if name != "weather_corner"}
+    filename = manual.get("state_file")
+    name = files.get(filename) if isinstance(filename, str) else None
+    request_id = manual.get("request_id")
+    if name is None or not isinstance(request_id, str) or not request_id:
+        return out
+    path = Path(g.state_dir) / (name + ".json")
+    if not path.is_file():
+        out["owner"] = "missing"
+        return out
+    owner = _load_json_file(path)
+    if not isinstance(owner, dict):
+        out["owner"] = "unreadable"
+    elif owner.get("rotation_request_id") != request_id:
+        out["owner"] = "mismatch"
+    else:
+        out["owner"] = "matched"
+        status = owner.get("status")
+        if isinstance(status, str) and status in _CORNER_STATUS_ENUM:
+            out["status"] = status
+    return out
+
+
 def _rotation_view(g: GlobalConfig) -> dict[str, Any]:
     """Bounded, read-only projection of corner_rotation.json (#seed/uuid は出さない)."""
     from .corner_catalog import cooldown_seconds, rotation_config, rotation_enabled
@@ -1743,6 +1946,34 @@ def _rotation_view(g: GlobalConfig) -> dict[str, Any]:
     path = Path(g.state_dir) / "corner_rotation.json"
     raw = _load_json_file(path)
     out: dict[str, Any] = {"present": path.is_file(), "readable": isinstance(raw, dict)}
+    out["manual_pending"] = _rotation_manual_view(g, raw)
+    inbox = _load_json_file(Path(g.state_dir) / "corner_manual_queue.json")
+    queued = inbox if isinstance(inbox, dict) else (
+        raw.get("queued_manual") if isinstance(raw, dict) else None)
+    out["queued_manual"] = None
+    now = time.time()
+    if isinstance(queued, dict) and isinstance(queued.get("corner"), str):
+        selected = _view_time(queued.get("selected_at"))
+        trigger = _view_time(queued.get("trigger_at"))
+        scheduled = trigger is not None
+        due = (now >= trigger) if scheduled else None
+        blocked_reason = None
+        if scheduled and not due:
+            blocked_reason = "scheduled-manual-not-due"
+        elif scheduled and isinstance(raw, dict) and (
+                isinstance(raw.get("pending"), dict)
+                or isinstance(raw.get("manual_pending"), dict)):
+            blocked_reason = "waiting-for-slot"
+        out["queued_manual"] = {
+            "corner": _view_str(queued["corner"]),
+            "age_sec": max(0, int(now - selected)) if selected else None,
+            "scheduled": scheduled,
+            "trigger_at": trigger,
+            "due": due,
+            "overdue_sec": (min(7 * 86400, max(0, int(now - trigger)))
+                            if scheduled and due else None),
+            "blocked_reason": blocked_reason,
+        }
     try:
         out["enabled"] = bool(rotation_enabled(g))
     except Exception:
@@ -1856,6 +2087,8 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
 
     state_dir = Path(g.state_dir)
     catalog: list[dict[str, Any]] = []
+    catalog_status = "empty"
+    catalog_error = None
     ledger = _load_json_file(state_dir / "corner_rotation.json")
     last_run = _rotation_last_runs(ledger)
     eligible_ids = set()
@@ -1869,7 +2102,8 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
         cooldown = None
     now = time.time()
     try:
-        for row in load_catalog(g):
+        rows = load_catalog(g)
+        for row in rows:
             last = last_run.get(row.id)
             until = (last + cooldown) if (last is not None and cooldown) else None
             catalog.append({
@@ -1878,14 +2112,31 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                 "game": row.game,
                 "enabled": bool(row.enabled),
                 "paused": bool(row.paused),
-                "manual": row.adapter in _CORNER_MANUAL_LAUNCHERS,
+                "manual_only": bool(row.manual_only),
+                "manual": (row.adapter in _CORNER_MANUAL_LAUNCHERS
+                           or row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS),
+                "manual_mode": "queue" if row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS else "runner",
+                "duration_minutes": row.duration_minutes,
                 "eligible": row.id in eligible_ids,
                 "last_run_at": last,
                 "cooldown_until": until if (until is not None and until > now) else None,
                 "state_file": _CORNER_STATE_FILE_BY_ADAPTER.get(row.adapter),
             })
+        catalog_status = "available" if catalog else "empty"
+    except OSError:
+        catalog = []
+        catalog_status = "error"
+        catalog_error = "configuration_unavailable"
+    except ValueError:
+        # TOML parse errors and validated-catalog errors are intentionally
+        # represented by a fixed code. Do not expose config paths or parser text.
+        catalog = []
+        catalog_status = "error"
+        catalog_error = "invalid_configuration"
     except Exception:
         catalog = []
+        catalog_status = "error"
+        catalog_error = "load_failed"
     corners: dict[str, dict[str, Any]] = {}
     for name in CORNER_MANUAL_STATE_FILES:
         raw = _load_json_file(state_dir / f"{name}.json")
@@ -1906,10 +2157,16 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                                 and not isinstance(target, bool) and 1 <= target <= 100 else None),
                 stop_retryable=_hanjuku_stop_retryable(g, raw),
                 end_reason=(raw.get("end_reason") if raw.get("end_reason") in
-                            {"game_over", "screen_stalled", "manual_saved_stop",
+                            {"game_over", "screen_stalled", "input_stalled", "manual_saved_stop",
                              "manual_forced_stop",
-                             "switch-terminal-before-corner-active"} else None),
+                             "switch-terminal-before-corner-active", "game-completed",
+                             "queue-timeout", "beta-stopped", "manual", "match-timeout",
+                             "operator-moved-during-tsuitate",
+                             "operator-moved-after-start",
+                             "operator-moved-before-restore",
+                             "operator-stopped-before-start"} else None),
                 last_error_code=_view_str(raw.get("last_error_code")),
+                game_result=_view_game_result(raw.get("beta_result")),
             )
         corners[name] = entry
     return {
@@ -1924,6 +2181,8 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
         "rotation": _rotation_view(g),
         "game_switch": _game_switch_view(g),
         "catalog": catalog,
+        "catalog_status": catalog_status,
+        "catalog_error": catalog_error,
         "corners": corners,
     }
 
@@ -1933,6 +2192,8 @@ _CORNER_STATE_FILE_BY_ADAPTER = {
     "meriken": "soren91_corner",
     "nethack": "nethack_corner",
     "paper": "paper_corner",
+    "weather": "weather_corner",
+    "tsuitate": "tsuitate_corner",
 }
 
 
@@ -3104,6 +3365,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/health":
                 status = self._handle_health()
+            elif path == "/api/tsuitate-beta":
+                status = self._handle_beta_control()
             elif path == "/api/csrf":
                 status = self._handle_get_csrf()
             elif path == "/api/config":
@@ -3154,6 +3417,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_get_predictions()
             elif path == "/api/corners":
                 status = self._handle_get_corners()
+            elif path == "/api/special-corner":
+                status = self._handle_get_special_corner()
             elif path == "/api/soren91/renderer":
                 status = self._handle_get_soren91_renderer()
             else:
@@ -3243,6 +3508,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/backoffs/clear":
                 status = self._handle_clear_all_backoffs()
+            elif parsed.path == "/api/tsuitate-beta":
+                status = self._handle_beta_control(mutation=True)
             elif parsed.path == "/api/reload":
                 status = self._handle_reload()
             elif parsed.path == "/api/stream":
@@ -3267,6 +3534,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_post_prediction_action()
             elif parsed.path == "/api/corners":
                 status = self._handle_post_corners()
+            elif parsed.path == "/api/special-corner/end":
+                status = self._handle_post_special_corner_end()
             elif parsed.path == "/api/soren91/renderer":
                 status = self._handle_post_soren91_renderer()
             else:
@@ -3277,6 +3546,38 @@ class _Handler(BaseHTTPRequestHandler):
             _log_request(self.soren_root, "POST", parsed.path, status, latency)
 
     # ---- handlers ----
+
+    def _handle_beta_control(self, mutation: bool = False) -> int:
+        if self._identity() != "operator":
+            self._send_error_json(403, "read_only", "operator identity required")
+            return 403
+        action, run_id = "status", None
+        if mutation:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 4096:
+                    raise ValueError
+                data = json.loads(self.rfile.read(length))
+                if not isinstance(data, dict) or set(data) - {"action", "runId", "confirm"}:
+                    raise ValueError
+            except (ValueError, TypeError):
+                self._send_error_json(400, "invalid_beta_operation")
+                return 400
+            if not _is_confirmed(data, self.headers):
+                self._send_error_json(428, "confirmation_required")
+                return 428
+            action, run_id = data.get("action"), data.get("runId")
+            if not isinstance(action, str) or action not in {"start", "stop", "reconcile"} or not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", run_id):
+                self._send_error_json(400, "invalid_beta_operation")
+                return 400
+        try:
+            result = call_beta_control(action, run_id, forbidden_secrets=(
+                _effective_token(self.g), _effective_read_only_token(self.g)))
+        except BetaControlError as error:
+            self._send_error_json(error.status, error.code)
+            return error.status
+        self._send_json(200, result)
+        return 200
 
     def _handle_get_csrf(self) -> int:
         """issue #42: mutation 用 CSRF token を発行する (認証は _check_auth と同じ)。
@@ -4176,6 +4477,53 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, view)
         return 200
 
+    def _handle_get_special_corner(self) -> int:
+        """Read-only projection of the Fly Me To The Home! special corner (no ids)."""
+        state = _load_json_file(Path(self.g.state_dir) / "external_video_corner.json")
+        state = state if isinstance(state, dict) else {}
+        status = state.get("status") if isinstance(state.get("status"), str) else "idle"
+        closing = state.get("closing") if isinstance(state.get("closing"), dict) else {}
+        self._send_json(200, {
+            "title": "Fly Me To The Home!",
+            "status": status[:32],
+            "can_end": status in ("waiting", "starting", "active"),
+            "started_at": state.get("started_at") if isinstance(state.get("started_at"), (int, float)) else None,
+            "ends_at": state.get("ends_at") if isinstance(state.get("ends_at"), (int, float)) else None,
+            "wait_deadline_at": state.get("wait_deadline_at") if isinstance(state.get("wait_deadline_at"), (int, float)) else None,
+            "end_reason": state.get("end_reason") if isinstance(state.get("end_reason"), str) else None,
+            "closing": str(closing.get("status") or "")[:32] or None,
+        })
+        return 200
+
+    def _handle_post_special_corner_end(self) -> int:
+        """終了ボタン: クリアとして特別コーナーを終え、Soren へ復帰して感想を話す。"""
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8")) if body else {}
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict) or set(data) - {"confirm"}:
+            self._send_error_json(400, "validation_error", "body must be {confirm:true}")
+            return 400
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "特別コーナーの終了には confirm:true が必要です")
+            return 428
+        from .external_video_corner import OPERATOR_END, request_end
+        from .external_video_receiver import ExternalVideoError
+        state = _load_json_file(Path(self.g.state_dir) / "external_video_corner.json")
+        try:
+            if not isinstance(state, dict):
+                raise ExternalVideoError("no special corner is running")
+            request_end(self.g, state, OPERATOR_END)
+        except ExternalVideoError as exc:
+            self._send_error_json(409, "special_corner_not_running", str(exc)[:200])
+            return 409
+        self._send_json(200, {"ok": True, "action": "end"})
+        return 200
+
     def _handle_get_soren91_renderer(self) -> int:
         try:
             view = _soren91_renderer_view(self.g)
@@ -4213,7 +4561,7 @@ class _Handler(BaseHTTPRequestHandler):
         return 200
 
     def _handle_post_corners(self) -> int:
-        """One-off manual start/stop and the fixed latch recovery (issue #42 の
+        """Manual runner/queued weather actions and fixed latch recovery (issue #42 の
         dangerous action: confirm:true 必須)。rotation の cooldown/latch 契約は
         runner/CLI 側の既存 fail-closed に委譲する。"""
         body, err = self._read_body()
@@ -4231,8 +4579,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(428, "confirmation_required", "corner操作には confirm:true が必要です")
             return 428
         action = str(data.get("action", "")).strip().lower()
-        if action not in ("start", "stop", "recover"):
-            self._send_error_json(400, "invalid_action", "action must be start, stop or recover")
+        if action not in ("start", "stop", "recover", "schedule", "cancel-schedule"):
+            self._send_error_json(
+                400, "invalid_action",
+                "action must be start, stop, recover, schedule or cancel-schedule",
+            )
             return 400
         if action == "recover":
             argv = _rotation_recover_argv(self.g)
@@ -4277,6 +4628,16 @@ class _Handler(BaseHTTPRequestHandler):
                 "detail": detail,
             })
             return 200
+        corner_id = str(data.get("corner", "")).strip()
+        try:
+            row = _corner_catalog_row(self.g, corner_id)
+        except ValueError as exc:
+            self._send_error_json(400, "invalid_corner", str(exc))
+            return 400
+        if action in ("schedule", "cancel-schedule"):
+            return self._handle_scheduled_corner_action(row, action, data)
+        if row.adapter in _CORNER_QUEUED_MANUAL_ADAPTERS:
+            return self._handle_queued_corner_action(row, action, data)
         duration = data.get("duration_minutes", CORNER_MANUAL_DURATION_DEFAULT)
         if isinstance(duration, bool) or not isinstance(duration, int):
             self._send_error_json(400, "invalid_duration", "duration_minutes must be an integer")
@@ -4287,7 +4648,6 @@ class _Handler(BaseHTTPRequestHandler):
                 f"duration_minutes must be {CORNER_MANUAL_DURATION_MIN}..{CORNER_MANUAL_DURATION_MAX}",
             )
             return 400
-        corner_id = str(data.get("corner", "")).strip()
         try:
             if action == "stop":
                 argv, meta = _corner_stop_argv(self.g, corner_id, duration)
@@ -4323,6 +4683,121 @@ class _Handler(BaseHTTPRequestHandler):
             "duration_minutes": duration if action == "start" else None,
             "pid": proc.pid,
             "log": f"tmp/logs/corner_manual_{meta['id']}.log",
+        })
+        return 200
+
+    def _handle_scheduled_corner_action(self, row, action: str, data: dict) -> int:
+        """Create/cancel one durable not-before manual reservation (#1759)."""
+        from .corner_rotation import CornerRotationManager, RotationError
+
+        if (row.adapter not in _CORNER_MANUAL_LAUNCHERS
+                and row.adapter not in _CORNER_QUEUED_MANUAL_ADAPTERS):
+            self._send_error_json(400, "manual_schedule_unsupported",
+                                  "このコーナーは手動予約に対応していません")
+            return 400
+        manager = CornerRotationManager(self.g)
+        try:
+            if action == "schedule":
+                if "trigger_at" not in data:
+                    self._send_error_json(400, "invalid_trigger_at",
+                                          "trigger_at が必要です")
+                    return 400
+                outcome = manager.queue_manual(
+                    row.game, trigger_at=data.get("trigger_at")
+                )
+            else:
+                outcome = manager.cancel_scheduled_manual(row.game)
+        except RotationError as exc:
+            reasons = {
+                "rotation_disabled": "ローテーションが無効です",
+                "recovery_required": "ローテーションの復旧が必要です",
+                "clock_regressed": "時計の逆行を検知しました",
+                "manual_queue_conflict": "別の手動予約、または異なる時刻の予約が残っています",
+                "hanjuku_not_eligible": "コーナーが無効・休止中、または利用できません",
+                "invalid_scheduled_time": "指定時刻はタイムゾーン付きISO日時またはepoch秒で指定してください",
+                "scheduled_time_past": "過去の時刻は予約できません",
+                "scheduled_request_missing": "取り消せる時刻指定予約がありません",
+                "scheduled_request_imported": "予約は開始処理へ移ったため、予約取消では止められません",
+                "state_unavailable": "予約状態を読み取れません",
+            }
+            code = 409 if exc.reason_code not in {"invalid_scheduled_time"} else 400
+            self._send_error_json(
+                code, "manual_schedule_refused",
+                reasons.get(exc.reason_code, "コーナー予約の状態を確認できません"),
+            )
+            return code
+        except (OSError, ValueError):
+            self._send_error_json(409, "manual_schedule_unavailable",
+                                  "コーナー予約の状態を確認できません")
+            return 409
+        except Exception:
+            self._send_error_json(500, "manual_schedule_failed",
+                                  "コーナー予約を完了できません")
+            return 500
+        self._send_json(200, {
+            "ok": True,
+            "action": action,
+            "status": outcome.get("status"),
+            "trigger_at": outcome.get("trigger_at"),
+            "corner": {"id": row.id, "adapter": row.adapter,
+                       "game": row.game, "target": "rotation"},
+        })
+        return 200
+
+    def _handle_queued_corner_action(self, row, action: str, data: dict) -> int:
+        """Reserve/stop a durable common-rotation program corner."""
+        from .corner_rotation import CornerRotationManager, RotationError
+        from .corner_adapters import TsuitateCornerAdapter, WeatherCornerAdapter
+        from .tsuitate_corner import TsuitateCornerError
+        from .weather_corner import WeatherCornerError
+
+        if action == "start" and row.adapter == "weather" and "duration_minutes" in data:
+            duration = data["duration_minutes"]
+            if type(duration) is not int or duration != row.duration_minutes:
+                self._send_error_json(400, "invalid_duration",
+                                      "天気の表示時間はカタログの設定を使用します")
+                return 400
+        adapter_type = WeatherCornerAdapter if row.adapter == "weather" else TsuitateCornerAdapter
+        label = "天気" if row.adapter == "weather" else "衝立将棋"
+        try:
+            if action == "start":
+                outcome = CornerRotationManager(self.g).queue_manual(row.game)
+                status = outcome["status"]
+            else:
+                status = adapter_type(self.g, row).manager.stop()
+                if status == "not-active":
+                    code = "weather_not_active" if row.adapter == "weather" else "tsuitate_not_active"
+                    self._send_error_json(409, code,
+                                          f"{label}は実行中ではありません。予約中は開始後に停止できます")
+                    return 409
+        except RotationError as exc:
+            reasons = {
+                "rotation_disabled": "ローテーションが無効です",
+                "recovery_required": "ローテーションの復旧が必要です",
+                "clock_regressed": "時計の逆行を検知しました",
+                "manual_queue_conflict": "別の手動予約が残っています",
+                "hanjuku_not_eligible": f"{label}が無効・休止中、または現在利用できません",
+            }
+            code = "weather_manual_refused" if row.adapter == "weather" else "tsuitate_manual_refused"
+            self._send_error_json(409, code,
+                                  reasons.get(exc.reason_code, "コーナーの状態を確認できません"))
+            return 409
+        except (OSError, ValueError, WeatherCornerError, TsuitateCornerError):
+            code = "weather_manual_unavailable" if row.adapter == "weather" else "tsuitate_manual_unavailable"
+            self._send_error_json(409, code,
+                                  f"{label}の設定または所有者の状態を確認できません")
+            return 409
+        except Exception:
+            code = "weather_manual_failed" if row.adapter == "weather" else "tsuitate_manual_failed"
+            self._send_error_json(500, code,
+                                  f"{label}の操作を完了できません")
+            return 500
+        self._send_json(200, {
+            "ok": True, "action": action, "status": status,
+            "corner": {"id": row.id, "adapter": row.adapter,
+                       "game": row.game, "target": "rotation"},
+            "duration_minutes": (row.duration_minutes
+                                 if action == "start" and row.adapter == "weather" else None),
         })
         return 200
 

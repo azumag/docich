@@ -1,6 +1,7 @@
 """P1 coordinator tests: state machine, idempotency, failure/rollback and
 crash boundaries over the P0 store with fake replace-mode adapters."""
 
+import json
 import sys
 import tempfile
 import threading
@@ -594,11 +595,13 @@ class TestFailureRollback(CoordinatorTestBase):
         self.behaviors["robots"]["immortal"] = True
         self.coordinator.start("nethack")
         result = self.coordinator.switch("robots")
-        self.assertEqual(result.status, "rolled_back")
+        self.assertEqual(result.status, "failed")
         self.assertTrue(result.cleanup_pending)
         state = self.canonical()
-        self.assertEqual(state["phase"], "ready")
-        self.assertEqual(state["active"]["game"], "nethack")
+        self.assertEqual(state["phase"], "failed")
+        self.assertIsNone(state["active"])
+        self.assertEqual(state["previous"]["game"], "nethack")
+        self.assertIsNone(self.factory.adapter("nethack", 3))
         self.assertIsNone(state["candidate"])
         pending = [r["game"] for r in state["retiring"]]
         self.assertIn("robots", pending)
@@ -825,18 +828,20 @@ class TestCleanupPending(CoordinatorTestBase):
         self.behaviors["robots"]["cleanup_error"] = AdapterError("candidate cleanup boom")
         self.coordinator.start("nethack")
         result = self.coordinator.switch("robots")
-        self.assertEqual(result.status, "rolled_back")
+        self.assertEqual(result.status, "failed")
         state = self.canonical()
-        self.assertEqual(state["phase"], "ready")
-        self.assertEqual(state["active"]["game"], "nethack")
+        self.assertEqual(state["phase"], "failed")
+        self.assertIsNone(state["active"])
+        self.assertEqual(state["previous"]["game"], "nethack")
+        self.assertIsNone(self.factory.adapter("nethack", 3))
         self.assertTrue(result.cleanup_pending)
         self.assertIsNone(state["candidate"])
         pending = [r["game"] for r in state["retiring"]]
         self.assertIn("robots", pending)
 
     def test_rollback_propagates_existing_retiring_cleanup_pending(self):
-        """A successful rollback must not hide cleanup failures of retiring
-        runtimes that predate the request."""
+        """Unconfirmed retiring runtimes block rollback, even if they predate
+        the current request; recovery must finish their cleanup first."""
         self.behaviors["nethack"]["cleanup_error"] = FailAfter(AdapterError("cleanup boom"))
         self.behaviors["nethack"]["readiness_error"] = FailOn(
             game_switch.ReadinessTimeoutError("slow"), 2
@@ -849,12 +854,14 @@ class TestCleanupPending(CoordinatorTestBase):
         self.assertEqual(len(state["retiring"]), 1)
 
         second = self.coordinator.switch("nethack")
-        self.assertEqual(second.status, "rolled_back")
+        self.assertEqual(second.status, "failed")
         self.assertTrue(second.cleanup_pending)
         state = self.canonical()
-        self.assertEqual(state["phase"], "ready")
-        self.assertEqual(state["active"]["game"], "robots")
-        self.assertEqual(state["active"]["generation"], 4)
+        self.assertEqual(state["phase"], "failed")
+        self.assertIsNone(state["active"])
+        self.assertEqual(state["previous"]["game"], "robots")
+        self.assertEqual(state["next_generation"], 4)
+        self.assertIsNone(self.factory.adapter("robots", 4))
 
     def test_recover_cleans_pending_retiring(self):
         state, _ = self.store.canonical.load()
@@ -1063,12 +1070,14 @@ class TestRuntimeTracking(CoordinatorTestBase):
         self.behaviors["robots"]["cleanup_error"] = AdapterError("cleanup boom")
 
         result = self.coordinator.recover()
-        self.assertEqual(result.status, "rolled_back")
+        self.assertEqual(result.status, "failed")
         state = self.canonical()
-        self.assertEqual(state["phase"], "ready")
-        self.assertEqual(state["active"]["game"], "nethack")
-        # The un-cleanable candidate must stay tracked even though the
-        # restore commit succeeded.
+        self.assertEqual(state["phase"], "failed")
+        self.assertIsNone(state["active"])
+        self.assertEqual(state["previous"]["game"], "nethack")
+        self.assertIsNone(self.factory.adapter("nethack", 3))
+        # The un-cleanable candidate must stay tracked while the
+        # restore is refused until cleanup is verified.
         self.assertIsNone(state["candidate"])
         pending = [r["game"] for r in state["retiring"]]
         self.assertIn("robots", pending)
@@ -1355,6 +1364,102 @@ class TestCrashBoundaries(CoordinatorTestBase):
                     raise InjectedCrash(f"replace#{n}")
 
         return hook
+
+    def _crash_on_phase(self, phase):
+        def hook(stage, path):
+            if stage != "after_replace" or path != self.store.canonical.path:
+                return
+            state = json.loads(path.read_text(encoding="utf-8"))
+            if state.get("phase") == phase:
+                raise InjectedCrash(phase)
+
+        return hook
+
+    def _expire_capped_request(self, request_id):
+        receipt = self.store.receipts.load(request_id)
+        receipt["hard_deadline_at"] = "2000-01-01T00:00:00Z"
+        self.store.receipts.save(receipt)
+        state, _ = self.store.canonical.load()
+        state["deadline_at"] = "2000-01-01T00:00:00Z"
+        self.store.canonical.save(state)
+
+    def test_expired_capped_accepted_replay_from_preparing_uses_recovery(self):
+        self.coordinator.start("nethack")
+        request_id = str(uuid.uuid4())
+        self.store.enqueue_request(
+            request_id,
+            "switch",
+            "robots",
+            allow_boundary_timeout_extension=False,
+            hard_deadline_at="2099-01-01T00:00:00Z",
+        )
+        self.coordinator.crash_hook = self._crash_on_phase("preparing")
+        with self.assertRaises(InjectedCrash):
+            self.coordinator.switch(
+                "robots",
+                request_id=request_id,
+                allow_boundary_timeout_extension=False,
+            )
+        self.assertEqual(self.canonical()["phase"], "preparing")
+        self._expire_capped_request(request_id)
+
+        self.coordinator.crash_hook = None
+        retried = self.coordinator.switch(
+            "robots",
+            request_id=request_id,
+            allow_boundary_timeout_extension=False,
+        )
+
+        self.assertEqual(retried.status, "rolled_back")
+        self.assertEqual(retried.request_id, request_id)
+        state = self.canonical()
+        self.assertEqual(state["phase"], "ready")
+        self.assertEqual(state["active"]["game"], "nethack")
+        self.assertIsNone(state["candidate"])
+        receipt = self.store.receipts.load(request_id)
+        self.assertEqual(receipt["request_id"], request_id)
+        self.assertEqual(receipt["status"], "rolled_back")
+
+    def test_expired_capped_accepted_replay_from_probing_cleans_candidate(self):
+        self.coordinator.start("nethack")
+        request_id = str(uuid.uuid4())
+        self.store.enqueue_request(
+            request_id,
+            "switch",
+            "robots",
+            allow_boundary_timeout_extension=False,
+            hard_deadline_at="2099-01-01T00:00:00Z",
+        )
+        self.coordinator.crash_hook = self._crash_on_phase("probing")
+        with self.assertRaises(InjectedCrash):
+            self.coordinator.switch(
+                "robots",
+                request_id=request_id,
+                allow_boundary_timeout_extension=False,
+            )
+        self.assertEqual(self.canonical()["phase"], "probing")
+        candidate = self.factory.adapter("robots", 2)
+        self.assertTrue(candidate.runtime.alive)
+        self._expire_capped_request(request_id)
+
+        self.coordinator.crash_hook = None
+        retried = self.coordinator.switch(
+            "robots",
+            request_id=request_id,
+            allow_boundary_timeout_extension=False,
+        )
+
+        self.assertEqual(retried.status, "rolled_back")
+        self.assertEqual(retried.request_id, request_id)
+        self.assertFalse(candidate.runtime.alive)
+        self.assertIn("cleanup", candidate.runtime.events)
+        state = self.canonical()
+        self.assertEqual(state["phase"], "ready")
+        self.assertEqual(state["active"]["game"], "nethack")
+        self.assertIsNone(state["candidate"])
+        receipt = self.store.receipts.load(request_id)
+        self.assertEqual(receipt["request_id"], request_id)
+        self.assertEqual(receipt["status"], "rolled_back")
 
     def test_rollback_persists_new_lease_before_agent_restart(self):
         request_id = str(uuid.uuid4())

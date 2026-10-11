@@ -13,7 +13,15 @@ import time
 from pathlib import Path
 from typing import Mapping
 
-from .dashboard import HEADER_TITLE, _focus_symbol, _fresh_count, _positions, _reason_ja, load_snapshot
+from .dashboard import (
+    HEADER_TITLE,
+    _focus_symbol,
+    _fresh_count,
+    _positions,
+    _reason_ja,
+    _signal_symbol_states,
+    load_snapshot,
+)
 from .free_strategy.contract import decode as free_strategy_decode
 from .free_strategy.evaluation import public_summary as free_strategy_public_summary
 from .performance import build_performance, realized_pnl_for_fill, recent_orders
@@ -207,6 +215,9 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
         },
         "decision": {
             "candidate_count": candidates,
+            "candidate_symbols": _reason_list(summary.get("candidate_symbols"), 64),
+            "selected_symbols": _reason_list(summary.get("selected_symbols"), 64),
+            "symbol_states": _signal_symbol_states(snapshot),
             "reasons": [{"code": code, "label": _reason_ja(code)} for code in reasons],
             "skipped": skipped,
         },

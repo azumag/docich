@@ -95,6 +95,34 @@ def test_intro_more_with_status_lines_is_advanced():
     assert startup.consider(normalized(intro))[0].text == " "
 
 
+@pytest.mark.parametrize("startup_enabled", [True, False])
+@pytest.mark.parametrize("heading", [
+    "An introduction is displayed over the dungeon.",
+    "It is written in the Book of Example:",
+])
+def test_brain_advances_multiline_intro_pager_with_visible_player(startup_enabled, heading):
+    configured = game(startup={"enabled": startup_enabled})
+    configured.raw["cli"]["rows"] = 24
+    brain = build_brain(SimpleNamespace(), configured)
+    lines = [""] * 24
+    lines[:5] = [
+        heading,
+        "After the Creation, Moloch begins this fixture story.",
+        "This fixture also names Marduk the Creator.",
+        "|.........+ --More--",
+        "|....@....|",
+    ]
+    lines[5] = "|.....[...|"
+    lines[22:] = ["[Adventurer ] St:16 Dx:12", "Dlvl:1 HP:14(14) Pw:4(4) AC:4 Xp:1"]
+    captured = observation("\n".join(lines))
+    actions = brain.decide(captured)
+    assert [(a.type, a.text) for a in actions] == [("text", " ")]
+    assert brain.last_decision.intent == "advance_message"
+    assert brain.validate_action(actions[0], captured)
+    lines[0] = "Really save? [yn] (n)"
+    assert not brain.validate_action(actions[0], observation("\n".join(lines)))
+
+
 @pytest.mark.parametrize("kind", ["time", "observations", "actions"])
 def test_startup_bounds_latch_closed(kind):
     now = [0.0]

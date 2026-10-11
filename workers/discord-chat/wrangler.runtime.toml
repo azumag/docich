@@ -1,0 +1,16 @@
+# Local integration-test configuration only. Do not deploy this Worker.
+name = "docich-discord-chat-runtime-test-only"
+main = "test/workerd-worker.js"
+compatibility_date = "2026-10-03"
+
+[[durable_objects.bindings]]
+name = "PRODUCTION_BOT"
+class_name = "DiscordBot"
+
+[[durable_objects.bindings]]
+name = "MEMORY_TEST"
+class_name = "RuntimeMemory"
+
+[[migrations]]
+tag = "runtime-test-v1"
+new_sqlite_classes = ["DiscordBot", "RuntimeMemory"]

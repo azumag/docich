@@ -279,6 +279,11 @@ class TestCmdRecover(CliCoordinatorTestBase):
         args = cli.build_parser().parse_args(["recover", "--timeout", "30"])
         self.assertEqual(args.command, "recover")
         self.assertEqual(args.timeout, 30)
+        self.assertFalse(args.adopt_failed_candidate)
+
+    def test_recover_adopt_failed_candidate_flag_is_opt_in(self):
+        args = cli.build_parser().parse_args(["recover", "--adopt-failed-candidate"])
+        self.assertTrue(args.adopt_failed_candidate)
 
     def test_recover_refuses_with_legacy_runtime_present(self):
         cli.State(self.g).set_current_game("nethack")

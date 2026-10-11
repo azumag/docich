@@ -1,0 +1,61 @@
+name: PAPER improve sidebar contract
+
+on:
+  pull_request:
+    paths:
+      - 'games/soviet_now'
+      - '.github/scripts/soren_gitlink_gate.py'
+      - '.github/workflows/paper-improve-sidebar.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'games/soviet_now'
+      - '.github/scripts/soren_gitlink_gate.py'
+      - '.github/workflows/paper-improve-sidebar.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paper-improve-sidebar-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  soren-gitlink-gate:
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          submodules: false
+      - id: decide
+        env:
+          BEFORE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          AFTER_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          run="$(python3 .github/scripts/soren_gitlink_gate.py \
+            --before "$BEFORE_SHA" \
+            --after "$AFTER_SHA" \
+            --root-path '.github/workflows/paper-improve-sidebar.yml' \
+            --root-path '.github/scripts/soren_gitlink_gate.py' \
+            --soren-path 'lib/direct_broadcast_overlay.mjs' \
+            --soren-path 'tests/test_paper_improve_sidebar.mjs')"
+          [[ "$run" == true || "$run" == false ]]
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+  contract:
+    needs: soren-gitlink-gate
+    if: needs.soren-gitlink-gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - run: git submodule update --init --depth 1 -- games/soviet_now
+      - run: node --test games/soviet_now/tests/test_paper_improve_sidebar.mjs

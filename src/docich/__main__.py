@@ -3,6 +3,20 @@ from __future__ import annotations
 
 import sys
 
+def _external_video_argv(argv):
+    if argv and argv[0] == "external-video-corner":
+        return argv[1:]
+    if len(argv) >= 3 and argv[0] == "--config" and argv[2] == "external-video-corner":
+        return ["--config", argv[1], *argv[3:]]
+    if len(argv) >= 2 and argv[0].startswith("--config=") and argv[1] == "external-video-corner":
+        return [argv[0], *argv[2:]]
+    return None
+
+external_video_argv = _external_video_argv(sys.argv[1:])
+if external_video_argv is not None:
+    from .external_video_corner import main as external_video_main
+    sys.exit(external_video_main(external_video_argv))
+
 def _retro_corner_argv(argv: list[str]) -> list[str] | None:
     if argv and argv[0] == "retro-corner":
         return argv[1:]
@@ -147,6 +161,16 @@ def _nethack_sidecar_argv(command: str, argv: list[str]) -> list[str] | None:
         return [argv[0], *argv[2:]]
     return None
 
+
+# The automatic NetHack corner owns its CLI (tick/start/stop/status/recover/
+# recover-failed-rotation). ops/vm_actions/recover_corner_rotation.sh invokes
+# it as ``docich nethack-corner ...``; without this route the argparse error
+# (rc=2) was reported by the operator as a refused recovery (exit 70, #1969).
+nethack_corner_argv = _nethack_sidecar_argv("nethack-corner", sys.argv[1:])
+if nethack_corner_argv is not None:
+    from .nethack_corner import main as nethack_corner_main
+
+    sys.exit(nethack_corner_main(nethack_corner_argv))
 
 nethack_spectator_argv = _nethack_sidecar_argv("nethack-spectator-live", sys.argv[1:])
 if nethack_spectator_argv is not None:

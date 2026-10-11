@@ -435,7 +435,7 @@ class ControlPlaneWiringTests(unittest.TestCase):
     def test_workflow_exposes_fixed_reclaim_operation(self):
         text = (ROOT / ".github" / "workflows" / "vm-operations.yml").read_text()
         self.assertIn("status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, "
-                     "configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, reclaim", text)
+                     "configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim", text)
         self.assertIn("control/ops/vm_actions/storage_reclaim.sh", text)
         self.assertIn("APPLY", text)
         # Arbitrary exec must stay behind the public-repo guard in authorize.py.
@@ -455,6 +455,32 @@ class ControlPlaneWiringTests(unittest.TestCase):
         text = HELPER.read_text()
         self.assertIn("su root root", text)
         self.assertIn("copytruncate", text)
+
+    def test_logrotate_bounds_live_opencode_log(self):
+        # opencode.log lives outside soren/logs and was a 102MB unbounded
+        # single file (#389): it gets its own stanza, size-gated and
+        # copytruncated so the live writer keeps its inode.
+        text = HELPER.read_text()
+        self.assertIn(
+            "/home/ubuntu/.local/share/opencode/log/opencode.log", text)
+        stanza = text.split(
+            "/home/ubuntu/.local/share/opencode/log/opencode.log", 1)[1]
+        stanza = stanza.split("}", 1)[0]
+        self.assertIn("size 50M", stanza)
+        self.assertIn("rotate 3", stanza)
+        self.assertIn("copytruncate", stanza)
+        self.assertIn("missingok", stanza)
+
+    def test_tool_output_is_never_reclaimed(self):
+        # opencode reads tool-output while running, so an age gate could
+        # delete files a live run still references. No executable line may
+        # name it (the rationale comment is allowed; #389: reader check
+        # first, no auto-delete).
+        code = "\n".join(
+            line for line in HELPER.read_text().splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        self.assertNotIn("tool-output", code)
 
     def test_docker_reclaim_is_dangling_and_age_bounded_only(self):
         # Volumes and tagged images must never be prunable from this helper:

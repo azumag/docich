@@ -40,6 +40,19 @@ MIN_SEGMENT_CHARS = 300
 SCRIPT_LABEL = "RADIO:paper-script"
 JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
+# Adapt the character traits from Soren's prompts/comment_persona_soren91.md,
+# without its puzzle-player perspective or Twitch comment-reply contract.
+_PAPER_MERIKEN_PERSONA = (
+    "【人格】あなたはメリケンAI（アメリカ製AI）、資本主義の申し子で、ちょっとひねくれた自信家です。\n"
+    "PAPER暗号資産の模擬売買を解説するラジオMC兼リサーチャーとして話します。"
+    "一人称は「僕」。日本語のです・ます調を保ってください。\n"
+    "短いアメリカンジョーク、皮肉、自虐、意外な比喩を話題に合わせて自然に添えます。"
+    "ただし説明と実データを優先し、事実や不確実性を曲げず、損失を言い訳でごまかさないでください。\n"
+    "売買判断は記録されたBOTの判断として述べ、僕が実際に注文したとは言わないでください。"
+    "実取引と模擬売買を混同せず、人格設定を相場・損益の根拠にしないでください。\n"
+    "定型の名乗り・決まり文句・同じ出だしやオチを繰り返さず、話し済みの内容をジョークで言い換えて再利用しないでください。\n"
+)
+
 
 class CornerScriptError(RuntimeError):
     """Raised when generated narration is malformed or out of bounds."""
@@ -262,18 +275,31 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None,
 
 def build_prompt(facts: Mapping[str, object]) -> str:
     facts_json = json.dumps(dict(facts), ensure_ascii=False, sort_keys=True)
+    research = facts.get("research") if isinstance(facts.get("research"), Mapping) else {}
+    if research.get("research_backend") == "websearch_verified_body":
+        research_note = (
+            "- research.news_items はWeb Searchで候補を見つけた後、docichがHTTPS本文を取得し、"
+            "receipt/hash検証した本文抜粋です。titleは検索snippetではなく取得本文から付けた短いラベルで、"
+            "published_atがnullの場合は公開時刻を推測しないでください。summaryにない事実を補わず、"
+            "取得済みの件数だけを扱ってください。\n"
+        )
+    else:
+        research_note = (
+            "- research.news_items はGoogle News RSSから取得した見出し・媒体・時刻・RSS要約です。記事全文ではありません。"
+            "見出しだけで断定せず、複数項目の共通点や相違点を見て、事実とあなたの推測を言い分けてください。\n"
+        )
     return (
         "あなたはPAPER暗号資産コーナーのラジオMC兼リサーチャーです。数字の読み上げ係ではありません。\n"
+        f"{_PAPER_MERIKEN_PERSONA}"
         "以下の実データ(facts)だけを根拠に、何が起きているか、戦略がうまく機能しているか、"
         "ニュースが何を意味しそうか、次に何を見るべきかまで自分の視点で噛み砕いてください。"
         "存在しない数値・銘柄・ニュース・因果関係は絶対に作らないでください。\n"
         f"{facts_json}\n\n"
         "【ニュースの扱い】\n"
-        "- research.news_items はGoogle News RSSから取得した見出し・媒体・時刻・RSS要約です。記事全文ではありません。"
-        "見出しだけで断定せず、複数項目の共通点や相違点を見て、事実とあなたの推測を言い分けてください。\n"
+        f"{research_note}"
         "- **見出しの文言をそのまま読み上げず、媒体名も口に出さないでください。** 「『見出し』（媒体）」という紹介は禁止です。"
         "見出しから読み取れる内容（規制・資金動向・価格変動・技術など）を自分の言葉で説明してください。\n"
-        "- **1件で済ませず、重要そうなものを5〜6件選び**、それぞれ『何が起きたか』→『市場やBOTにどう効き得るか』→"
+        "- **取得済みの重要な項目をできるだけ複数扱い**、最大5〜6件を目安に、それぞれ『何が起きたか』→『市場やBOTにどう効き得るか』→"
         "『実際に何を観測すべきか』の順で、他の項目と関連づけながら具体的に掘り下げます。"
         "価格が動いた理由をニュースだけで決めつけないでください。\n"
         "- research.asset があれば、そのsymbolは実際にPAPERで現在保有中です。指定されたangle_labelを中心に、"
@@ -873,7 +899,7 @@ def generate_corner_script(
     research_context: dict = {}
     if real_ai:
         try:
-            research_context = prepare_research_context(target, now=moment)
+            research_context = prepare_research_context(target, now=moment, env=os.environ)
         except Exception:
             # Network/public-research failures are commentary degradation only.
             research_context = {}
@@ -1042,6 +1068,7 @@ def build_next_prompt(
     )
     return (
         "あなたはPAPER暗号資産コーナーのラジオMC兼リサーチャーです。"
+        f"\n{_PAPER_MERIKEN_PERSONA}"
         "以下の実データ(facts)だけを根拠に、"
         "次の読み上げセグメントを1つだけ作ってください。存在しない数値・銘柄・ニュース・因果関係は絶対に作らないでください。\n"
         f"{facts_json}\n\n"
@@ -1141,7 +1168,7 @@ def generate_next_narration(
 
     research_context: dict = {}
     try:
-        research_context = prepare_research_context(target, now=moment)
+        research_context = prepare_research_context(target, now=moment, env=effective_env)
     except Exception:
         research_context = {}
     tf_context: Mapping[str, object] = timeframe_facts if isinstance(timeframe_facts, Mapping) else {}

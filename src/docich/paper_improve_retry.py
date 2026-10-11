@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     from . import cli as docich_cli
     from .trading import cli as trading_cli
     from .trading.ai_text import generate_text
-    from .trading.paper_improve import DEFAULT_TIMEOUT, IMPROVE_LABEL, run_paper_improve
+    from .trading.paper_improve import DEFAULT_TIMEOUT, IMPROVE_LABEL, PAPER_AGENT_TIMEOUT_S, run_paper_improve
 
     args_list = list(sys.argv[1:] if argv is None else argv)
     parser = docich_cli.build_parser()
@@ -91,7 +91,8 @@ def main(argv: list[str] | None = None) -> int:
                     label=IMPROVE_LABEL,
                     agents=cleaned_agents,
                     prompt_text=build_validation_repair_prompt(prompt_text, retry_reason),
-                    timeout=DEFAULT_TIMEOUT,
+                    timeout=min(DEFAULT_TIMEOUT, PAPER_AGENT_TIMEOUT_S),
+                    overall_timeout_s=float(DEFAULT_TIMEOUT + 60),
                 )
 
             summary = run_paper_improve(

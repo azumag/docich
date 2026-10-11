@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import fcntl
 import json
 import math
+import os
 from pathlib import Path
 import time
 import tomllib
@@ -44,6 +45,36 @@ class Runtime:
         self.data_root = g.state_dir / "market-data"
         self.corner_path = g.state_dir / f"market-{market}-corner.json"
         self.book = PaperBook(self.root / "paper.sqlite3", market, self.limits)
+
+    def _improvement_agents(self) -> str:
+        """Select legacy or direct-only AI chain without mixing fallbacks."""
+        raw = self.settings.get("ai", {})
+        if not isinstance(raw, dict):
+            return ""
+        flag = os.environ.get("DOCICH_MARKET_PAPER_DIRECT_ENABLED", "0")
+        if flag == "1":
+            value = raw.get("direct_agents", "")
+            agents = value.strip() if isinstance(value, str) else ""
+            if not agents:
+                return ""
+            from ...llm.contracts import LlmError
+            from ...llm.policy import DIRECT_CHAT_PROVIDERS, parse_agents
+
+            try:
+                specs = parse_agents(agents)
+            except (LlmError, TypeError, ValueError):
+                return ""
+            if not specs or any(spec.provider not in DIRECT_CHAT_PROVIDERS for spec in specs):
+                return ""
+            return agents
+        if flag != "0":
+            return ""
+        value = raw.get("agents", "")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        profile = tomllib.loads(self.g.config_path.read_text())
+        fallback = profile.get("paper_corner", {}).get("improve_agents", "")
+        return fallback.strip() if isinstance(fallback, str) else ""
 
     def _selector_state(self) -> dict:
         path = self.root / "selector-state.json"
@@ -185,10 +216,7 @@ class Runtime:
         with guard(self.root / "improve.lock"):
             news = read_news(self.settings.get("news", {}).get("rss_urls", []), now)
             write_json(self.root / "news.json", {"as_of": now, "items": news, "status": "ok" if news else "unavailable"})
-            agents = self.settings.get("ai", {}).get("agents", "")
-            if not agents:
-                profile = tomllib.loads(self.g.config_path.read_text())
-                agents = profile.get("paper_corner", {}).get("improve_agents", "")
+            agents = self._improvement_agents()
             result = propose(self.book, self.root, self.g, agents=agents, news=news, now=now)
             write_json(self.root / "improvement-status.json", {**result, "as_of": now})
             if self.market == "stocks":

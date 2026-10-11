@@ -1,0 +1,23 @@
+{
+  "status": "proposal-only",
+  "repository": "azumag/docich",
+  "workerName": "docich-tsuitate-bot",
+  "productionBranch": "main",
+  "previewBuilds": false,
+  "rootDirectory": "workers/tsuitate-bot",
+  "pathIncludes": [
+    "workers/tsuitate-bot/*"
+  ],
+  "pathExcludes": [],
+  "buildCommand": "npm run build:cf",
+  "deployCommand": "./node_modules/.bin/cf deploy --prebuilt --worker docich-tsuitate-bot --tag \"$(git rev-parse HEAD)\"",
+  "buildVariables": {
+    "NODE_VERSION": "24.18.0",
+    "CF_SEND_TELEMETRY": "false"
+  },
+  "pathFilterBypass": {
+    "emptyChanges": true,
+    "minimumChangedFiles": 3000,
+    "minimumCommits": 20
+  }
+}

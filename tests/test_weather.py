@@ -1,12 +1,15 @@
 """Synthetic deterministic bulletins; these are NOT live forecasts."""
 from copy import deepcopy
 from datetime import datetime, timedelta
+from html.parser import HTMLParser
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from docich import weather as w
+from docich import weather as w, weather_map_data as map_data
 
 NOW = datetime(2026, 9, 29, 6, tzinfo=w.JST).timestamp()
 TODAY = datetime.fromtimestamp(NOW, w.JST).date()
@@ -150,6 +153,34 @@ def test_cache_reuses_data_but_checks_full_content(tmp_path):
     assert len(calls)==12
 
 
+def test_near_expiry_cache_is_refreshed_when_broadcast_runway_is_required(tmp_path):
+    calls = []
+
+    def get(office, timeout):
+        calls.append(office)
+        return fixture(next(city for city in w.CITIES if city.office == office))
+
+    w.build_bundle(tmp_path, now=NOW, getter=get)
+    assert len(calls) == 11
+
+    # Only one office is still technically inside the 15-minute cache TTL,
+    # but it cannot cover a four-minute broadcast. It must be refreshed while
+    # the other ten fresh offices remain cached.
+    first = tmp_path / f"{w.CITIES[0].office}.json"
+    cached = json.loads(first.read_text())
+    cached["fetched_at"] = NOW - (w.CACHE_TTL - 60)
+    w.write_json(first, cached)
+
+    bundle = w.build_bundle(
+        tmp_path, now=NOW + 1, getter=get, min_remaining_s=4 * 60 + 30,
+    )
+
+    assert len(calls) == 12
+    assert calls[-1] == w.CITIES[0].office
+    view = w.project(bundle, now=NOW + 1)
+    assert view["expires_at"] - (NOW + 1) >= 4 * 60 + 30
+
+
 def test_stale_cache_failure_never_uses_old_forecast(tmp_path):
     w.build_bundle(tmp_path,now=NOW,getter=lambda office,t:fixture(next(c for c in w.CITIES if c.office==office)))
     def fail(*args):raise w.WeatherError("fetch-failed")
@@ -162,13 +193,61 @@ def test_auto_target_switches_at_17_jst(tmp_path):
     assert result["target_date"] == "2026-09-30"
 
 
-def test_narration_is_literal_and_has_no_invented_minimum():
-    view=w.project(bundle(),now=NOW);lines=w.narration(view)
-    assert len(lines)==13
+def test_narration_is_cohesive_and_summarizes_precipitation_trend():
+    view = w.project(bundle(), now=NOW)
+    lines = w.narration(view)
+    assert len(lines) == 13
     assert "9月29日" in lines[0]
-    assert all("最低気温" not in line for line in lines)
-    assert all("晴れ 夜 くもり" in line for line in lines[1:-1])
+    assert "札幌から那覇まで" in lines[0]
+    assert all("最低気温" not in line for line in lines[1:-1])
+    assert all("晴れ、夜はくもりの予報です" in line for line in lines[1:-1])
+    assert all(
+        "降水確率は、午前は0パーセントで、夜には20パーセントまで上がります。"
+        in line for line in lines[1:-1]
+    )
+    assert all("時から" not in line for line in lines[1:-1])
+    assert all("気象庁" not in line for line in lines[1:-1])
+    assert sum("気象庁" in line for line in lines) == 1
     assert "気象庁" in lines[-1] and "編集" in lines[-1]
+    assert max(map(len, lines)) < 1000
+
+
+def test_narration_collapses_all_zero_precipitation():
+    view = w.project(bundle(), now=NOW)
+    for city in view["cities"]:
+        for period in city["pops"]:
+            period["percent"] = 0
+    lines = w.narration(view)
+    assert all("降水確率は全時間帯で0パーセントです。" in line for line in lines[1:-1])
+    assert all(line.count("0パーセント") == 1 for line in lines[1:-1])
+
+
+def test_narration_collapses_irregular_precipitation_to_range():
+    view = w.project(bundle(), now=NOW)
+    view["cities"][0]["pops"] = [
+        {"start": 0, "end": 6, "percent": 0},
+        {"start": 6, "end": 12, "percent": 30},
+        {"start": 12, "end": 18, "percent": 10},
+        {"start": 18, "end": 24, "percent": 20},
+    ]
+    line = w.narration(view)[1]
+    assert "降水確率は0から30パーセントの範囲で変動します。" in line
+    assert line.count("パーセント") == 1
+
+
+def test_narration_describes_twenty_to_zero_as_one_transition():
+    view = w.project(bundle(), now=NOW)
+    view["cities"][0]["pops"] = [
+        {"start": 0, "end": 6, "percent": None},
+        {"start": 6, "end": 12, "percent": 20},
+        {"start": 12, "end": 18, "percent": 0},
+        {"start": 18, "end": 24, "percent": 0},
+    ]
+    line = w.narration(view)[1]
+    assert "降水確率は、午前は20パーセントですが、午後以降は0パーセントです。" in line
+    assert line.count("パーセント") == 2
+    assert "12時から18時" not in line
+    assert "18時から24時" not in line
 
 
 def test_projected_read_view_narration_builds_all_thirteen_offline_audio_requests(tmp_path):
@@ -223,9 +302,11 @@ from docich import weather_view as v
 
 
 @contextmanager
-def serving(path, *, clock=lambda: NOW, runtime_id="preview", generation=None, lease_id=None):
+def serving(path, *, clock=lambda: NOW, runtime_id="preview", generation=None, lease_id=None,
+            cue_path=None):
     server = ThreadingHTTPServer(("127.0.0.1", 0), v.handler_for(
-        path, runtime_id, generation=generation, lease_id=lease_id, clock=clock))
+        path, runtime_id, generation=generation, lease_id=lease_id,
+        cue_path=cue_path, clock=clock))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     try:
@@ -256,6 +337,58 @@ def test_readonly_server_and_literal_narration(tmp_path):
         assert "connect-src 'self'" in headers["Content-Security-Policy"]
         code,headers,raw=request(port,"/")
         assert code==200 and "気象庁" in raw.decode()
+        assert "const BROADCAST=false;" in raw.decode()
+        code,_,raw=request(port,"/broadcast")
+        assert code==200 and "const BROADCAST=true;" in raw.decode()
+
+
+def test_broadcast_cue_exposes_only_runtime_bound_audio_ordinal(tmp_path):
+    path = tmp_path / "weather" / "snapshot.json"
+    path.parent.mkdir()
+    w.write_json(path, bundle())
+    cue_path = tmp_path / "weather_corner.json"
+    lease_id = "01234567-89ab-4cde-8123-456789abcdef"
+    identity = {
+        "game": "weather-view",
+        "runtime_id": "g4-a1b2c3d4",
+        "generation": 4,
+        "lease_id": lease_id,
+    }
+    state = {
+        "schema_version": 1,
+        "status": "active",
+        "weather_runtime_identity": identity,
+        "audio_delivery": {
+            "status": "running",
+            "next_index": 3,
+        },
+    }
+    cue_path.write_text(json.dumps(state), encoding="utf-8")
+    with serving(
+        path, runtime_id=identity["runtime_id"], generation=identity["generation"],
+        lease_id=lease_id, cue_path=cue_path,
+    ) as port:
+        code, _, raw = request(port, "/api/weather-cue")
+        data = json.loads(raw)
+        assert code == 200
+        assert data == {"ok": True, "status": "running", "item_index": 3}
+        assert identity["runtime_id"].encode() not in raw
+        assert lease_id.encode() not in raw
+        assert b"requests" not in raw and b"text" not in raw
+
+        state["audio_delivery"].update(status="completed", next_index=13)
+        cue_path.write_text(json.dumps(state), encoding="utf-8")
+        code, _, raw = request(port, "/api/weather-cue")
+        assert code == 200
+        assert json.loads(raw) == {
+            "ok": True, "status": "completed", "item_index": 12,
+        }
+
+        state["weather_runtime_identity"] = {**identity, "runtime_id": "g5-other"}
+        cue_path.write_text(json.dumps(state), encoding="utf-8")
+        code, _, raw = request(port, "/api/weather-cue")
+        assert code == 503
+        assert json.loads(raw) == {"ok": False, "reason": "cue-unavailable"}
 
 
 def test_readonly_server_reports_the_game_switch_generation(tmp_path):
@@ -319,12 +452,79 @@ def test_readonly_status_does_not_fetch(tmp_path,capsys):
 
 def test_forecast_is_not_embedded_in_script_or_assigned_as_html():
     assert "innerHTML" not in v.HTML
-    assert "textContent=txt" in v.HTML
+    assert ".textContent" in v.HTML
     assert "performance.now()" in v.HTML
     assert "Math.min(remaining,5000)" in v.HTML
     assert "AbortSignal.timeout(2000)" in v.HTML
     assert "晴れ" not in v.HTML  # no fabricated default forecast
     assert "出典：" in v.HTML and "docichが編集" in v.HTML
+    assert "Natural Earth" in v.HTML and "Public Domain" in v.HTML
+    assert "__MAP_DATA__" not in v.HTML
+    assert "順送りズーム" in v.HTML and "全国表示" in v.HTML
+    assert "音声同期" in v.HTML and "読み上げ cue：再生完了同期" in v.HTML
+    assert "@media(max-aspect-ratio:5/4)" in v.HTML
+    assert "fetch('/api/weather'" in v.HTML
+    assert "fetch('/api/weather-cue'" in v.HTML
+    assert "startBroadcastTour" not in v.HTML
+    assert "startBroadcastSync" in v.HTML
+
+
+def test_weather_map_is_natural_earth_and_covers_all_forecast_points():
+    assert map_data.VIEWBOX == (1220, 960)
+    assert len(map_data.POLYGONS) == 109
+    assert set(map_data.CITY_POINTS) == {
+        "sapporo", "sendai", "tokyo", "niigata", "nagoya", "osaka",
+        "hiroshima", "takamatsu", "fukuoka", "kagoshima", "naha",
+    }
+    width, height = map_data.VIEWBOX
+    assert all(0 <= x <= width and 0 <= y <= height for x, y in map_data.CITY_POINTS.values())
+
+
+def test_weather_html_has_unique_ids_and_no_external_runtime_assets():
+    class Markup(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.ids = []
+            self.srcs = []
+            self.resources = []
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if "id" in attrs:
+                self.ids.append(attrs["id"])
+            if "src" in attrs:
+                self.srcs.append(attrs["src"])
+            if tag in {"img", "iframe", "video", "audio", "link"}:
+                self.resources.append(tag)
+
+    markup = Markup()
+    markup.feed(v.HTML)
+    assert len(markup.ids) == len(set(markup.ids))
+    assert not markup.srcs and not markup.resources
+    assert "const MAP_DATA={\"polygons\":" in v.HTML
+    assert v.HTML.count("fetch(") == 2
+
+
+@pytest.mark.parametrize("scenario", [
+    "choose", "next", "previous", "region", "marker", "tour_start", "tour_tick",
+    "national", "width_overflow", "resize", "expired_choose", "expired_next",
+    "expired_national", "expired_tour", "expired_tour_stop", "all_locations", "lease_expiry",
+    "server_failure", "incomplete", "old_poll", "old_failure", "manual_stop", "broadcast_cycle", "broadcast_overflow", "broadcast_expiry", "broadcast_auto",
+])
+def test_weather_ui_control_flow_without_browser(scenario):
+    # No renderer: mocked layout forces overflow so each interaction must fail closed.
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js unavailable for DOM-free UI control-flow tests")
+    script = v.HTML.split("<script>", 1)[1].split("</script>", 1)[0]
+    if scenario.startswith("broadcast_"):
+        script = script.replace("const BROADCAST=false;", "const BROADCAST=true;")
+    runner = Path(__file__).parent / "fixtures/weather_view/contract.js"
+    result = subprocess.run(
+        [node, str(runner)], input=json.dumps({"script": script, "scenario": scenario}),
+        text=True, capture_output=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("value",[0,80,65536,True,"8803"])
@@ -335,3 +535,24 @@ def test_serve_has_fixed_loopback_and_validated_port(tmp_path,value):
 @pytest.mark.parametrize("value",["", "<script>", "../../secret", "x"*129])
 def test_runtime_id_validation(tmp_path,value):
     with pytest.raises(w.WeatherError):v.handler_for(tmp_path/"snapshot.json",value)
+
+
+def test_refresh_snapshot_rejects_bundle_before_publication(tmp_path, monkeypatch):
+    path = tmp_path / "snapshot.json"
+    w.write_json(path, bundle())
+    monkeypatch.setattr(v, "build_bundle", lambda *_args, **_kw: bundle())
+    monkeypatch.setattr(v.time, "time", lambda: NOW + w.CACHE_TTL)
+    with pytest.raises(w.WeatherError):
+        v.refresh_snapshot(tmp_path)
+    assert not path.exists()
+
+
+def test_refresh_snapshot_shares_nonblocking_lock(tmp_path):
+    import fcntl
+    path = tmp_path / "snapshot.json"
+    w.write_json(path, bundle())
+    with (tmp_path / ".fetch.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(BlockingIOError):
+            v.refresh_snapshot(tmp_path)
+    assert path.exists()  # Concurrent caller cannot invalidate the owner's data.

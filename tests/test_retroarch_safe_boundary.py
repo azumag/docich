@@ -211,16 +211,23 @@ def test_confirmation_serializes_with_input(adapter):
     assert read_record(adapter.spec.runtime_dir / BOUNDARY_FILE)['status'] == 'waiting'
 
 
-def test_contain_command_keeps_native_window_and_common_canvas(adapter):
+@pytest.mark.parametrize("numeric_metadata", [False, True])
+def test_contain_command_keeps_native_window_and_common_canvas(adapter, numeric_metadata):
     command = adapter._game_command()
     for option, value in [('--x', '0'), ('--y', '90'), ('--width', '960'), ('--height', '540')]:
         assert command[command.index(option) + 1] == value
     assert '--runtime-state' in command and '--window-pattern' in command
-    lines = retroarch_cfg_lines(adapter.g, adapter.game, adapter._cfg_path(), adapter._network_port())
+    cfg_path, port = adapter._cfg_path(), adapter._network_port()
+    if numeric_metadata:
+        # Unrelated paths/ports may contain viewport digits; only video
+        # settings can resize the core's window.
+        cfg_path = cfg_path.parent / 'synthetic-1280-540' / cfg_path.name
+        port = 15400
+    lines = retroarch_cfg_lines(adapter.g, adapter.game, cfg_path, port)
     assert 'video_fullscreen = "false"' in lines
     assert 'video_scale = "3.0"' in lines
     assert 'video_crop_overscan = "false"' in lines
-    assert not any('1280' in line or '540' in line for line in lines)
+    assert not any('1280' in line or '540' in line for line in lines if line.startswith('video_'))
 
 
 def test_native_observation_and_input_do_not_target_presenter(adapter, monkeypatch):
@@ -489,13 +496,15 @@ def test_scripted_hanjuku_small_render_keeps_aspect_and_contains_at_broadcast_ra
     assert sum(line.startswith('video_scale =') for line in lines) == 1
     assert 'video_smooth = "false"' in lines
     command = adapter._game_command()
-    assert command[command.index('--framerate') + 1] == '30'
+    assert command[command.index('--framerate') + 1] == '15'  # ミラーは放送30fpsの半分(各フレーム2回)で、30fpsはCPU飽和の一因だった
     assert '--fit' not in command  # default contain preserves the source aspect
     assert command.index('--nearest') < command.index('--')
+    assert command[command.index('--align') + 1] == 'right'
 
 
 def test_other_retroarch_games_keep_the_3x_contain_projection(adapter):
     command = adapter._game_command()
     assert '--framerate' not in command and '--fit' not in command and '--nearest' not in command
+    assert '--align' not in command
     lines = retroarch_cfg_lines(adapter.g, adapter.game, adapter._cfg_path(), adapter._network_port())
     assert 'video_scale = "3.0"' in lines and 'video_force_aspect = "true"' in lines

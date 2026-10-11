@@ -51,6 +51,16 @@ def _groups_stopped(children):
     return True
 
 
+# SDL2 の ffplay は、窓の framebuffer 用に OpenGL レンダラ(Mesa llvmpipe =
+# CPU のソフトウェア GL)を内部で作る。SDL_RENDER_DRIVER=software だけでは
+# 抑止できず(llvmpipe スレッドが居残る)、SDL_FRAMEBUFFER_ACCELERATION=0 も
+# 要る。VM(4 vCPU / Xvfb)での FlyHome 実測では、表示 ffplay 2 本の CPU のほぼ
+# 全て(約 1 コア)が llvmpipe だった。--sdl-software-render で両方を設定する。
+SDL_SOFTWARE_RENDER_ENV = {
+    'SDL_RENDER_DRIVER': 'software',
+    'SDL_FRAMEBUFFER_ACCELERATION': '0',
+}
+
 CELL_ASPECT_MIN = 0.25
 CELL_ASPECT_MAX = 4.0
 
@@ -86,7 +96,9 @@ def _cell_aspect(value: str) -> float:
 
 
 def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0,
-                   nearest: bool = False) -> str:
+                   nearest: bool = False, align: str = 'center') -> str:
+    if align not in ('center', 'left', 'right'):
+        raise ValueError('invalid contain alignment')
     filters = []
     if cell_stretch != 1.0:
         # 端末セルを正方形として見せるための水平補正。等倍 (既定) では従来と
@@ -96,9 +108,27 @@ def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0,
         filters.append(f"scale=iw*{cell_stretch:g}:ih:flags=neighbor")
     filters.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease"
                    + (":flags=neighbor" if nearest else ""))
-    filters.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
+    x = '0' if align == 'left' else '(ow-iw)' if align == 'right' else '(ow-iw)/2'
+    filters.append(f"pad={width}:{height}:{x}:(oh-ih)/2:color=black")
     filters.append("setsar=1")
     return ",".join(filters)
+
+
+def measured_contain_size(native_width, native_height, width, height):
+    """Measure the actual RGB scaling pipeline, including FFmpeg rounding."""
+    result = subprocess.run([
+        'ffmpeg', '-v', 'info', '-f', 'rawvideo', '-pix_fmt', 'bgra',
+        '-s', f'{native_width}x{native_height}', '-i', 'pipe:0',
+        '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease:flags=neighbor,showinfo',
+        '-frames:v', '1', '-f', 'null', '-',
+    ], input=bytes(native_width * native_height * 4), capture_output=True, check=True, timeout=10)
+    sizes = re.findall(rb'\bs:(\d+)x(\d+)\b', result.stderr)
+    if len(sizes) != 1:
+        raise RuntimeError('contain measurement unavailable')
+    w, h = map(int, sizes[0])
+    if not (0 < w <= width and 0 < h <= height):
+        raise RuntimeError('contain measurement outside viewport')
+    return w, h
 
 
 def tv_filter(width: int, height: int) -> str:
@@ -170,7 +200,13 @@ def _parser() -> argparse.ArgumentParser:
     # exact named window changes; never restart repeatedly against one failed
     # window.
     parser.add_argument('--rebind-window', action='store_true')
+    parser.add_argument('--align', choices=('center', 'left', 'right'), default='center')
     parser.add_argument('--runtime-state')
+    # Opt-in: make the viewer ffplay and the x11grab projection ffplay use
+    # SDL's CPU renderer instead of Mesa llvmpipe (software OpenGL, which burns
+    # ~1 core on a 4 vCPU VM for 960x540). Off by default so other games keep
+    # their current rendering path until each is measured.
+    parser.add_argument('--sdl-software-render', action='store_true')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     return parser
 
@@ -235,6 +271,8 @@ def main(argv=None) -> int:
                 os.close(write_fd)
         source_env = dict(os.environ, DISPLAY=f':{number}')
         source_env.pop('TMUX', None)
+        if args.sdl_software_render:
+            source_env.update(SDL_SOFTWARE_RENDER_ENV)
         # Route the viewer's audio to the requested PulseAudio sink (the
         # broadcast encoder captures `<sink>.monitor`). Only the viewer gets
         # this; the x11grab projection below stays video-only.
@@ -301,8 +339,13 @@ def main(argv=None) -> int:
         if not window:
             raise RuntimeError('native game viewer did not appear')
         output_env = dict(os.environ, DISPLAY=args.display)
+        if args.sdl_software_render:
+            output_env.update(SDL_SOFTWARE_RENDER_ENV)
+
+        projection = {}
 
         def start_projection(window_id):
+            nonlocal projection
             geometry = subprocess.check_output(
                 ['xdotool', 'getwindowgeometry', '--shell', window_id],
                 env=source_env, text=True, timeout=2)
@@ -311,25 +354,45 @@ def main(argv=None) -> int:
             if width > 4096 or height > 2160:
                 raise RuntimeError('native viewer exceeds private display capacity')
             cell_note = '' if args.cell_stretch is None else f' cell-stretch={args.cell_stretch:g}'
+            if args.sdl_software_render:
+                cell_note += ' sdl=software'
             print(f'native={width}x{height} output={args.width}x{args.height} fit={args.fit}'
                   f' fps={args.framerate}{cell_note}', flush=True)
+            player_width = args.width
+            player_left = args.x
+            video_filter = (tv_filter(args.width, args.height) if args.fit == 'tv'
+                            else contain_filter(args.width, args.height,
+                                                cell_stretch=args.cell_stretch or 1.0,
+                                                nearest=args.nearest, align=args.align))
+            if args.align in ('left', 'right'):
+                if args.fit != 'contain' or args.cell_stretch not in (None, 1.0):
+                    raise RuntimeError('edge projection requires native contain')
+                player_width, content_height = measured_contain_size(width, height, args.width, args.height)
+                gap_width = args.width - player_width
+                crop_x = 0 if args.align == 'left' else gap_width
+                content_x = 0 if args.align == 'left' else gap_width
+                player_left = args.x + content_x
+                # Remove only measured horizontal black padding from the
+                # projection window, exposing the shared browser behind it.
+                # Native capture/input coordinates remain unchanged.
+                video_filter += f',crop={player_width}:{args.height}:{crop_x}:0:exact=1'
+                projection = {'align': args.align, 'viewport': [args.x, args.y, args.width, args.height],
+                              'content': [content_x, (args.height-content_height)//2,
+                                          player_width, content_height]}
             process = launch([
                 'ffplay', '-loglevel', 'warning', '-nostats', '-an', '-sn',
                 '-f', 'x11grab', '-framerate', str(args.framerate), '-draw_mouse', '0',
                 '-window_id', window_id, '-video_size', f'{width}x{height}',
                 '-i', f':{number}',
-                '-vf', (tv_filter(args.width, args.height) if args.fit == 'tv'
-                        else contain_filter(args.width, args.height,
-                                            cell_stretch=args.cell_stretch or 1.0,
-                                            nearest=args.nearest)),
+                '-vf', video_filter,
                 '-noborder', '-window_title', args.title,
-                '-left', str(args.x), '-top', str(args.y),
-                '-x', str(args.width), '-y', str(args.height),
+                '-left', str(player_left), '-top', str(args.y),
+                '-x', str(player_width), '-y', str(args.height),
             ], env=output_env)
             return process, width, height
 
         player, width, height = start_projection(window)
-        _write_state(args.runtime_state, status='ready', display=f':{number}',
+        _write_state(args.runtime_state, status='ready', projection=projection, display=f':{number}',
                      window=window, width=width, height=height,
                      groups=[child.pid for child in children])
         # In the runtime-tracked RetroArch path, loss of the projection alone
@@ -386,7 +449,7 @@ def main(argv=None) -> int:
                         projection_failed = False
                         projection_failed_at = None
                         if args.runtime_state:
-                            _write_state(args.runtime_state, status='ready',
+                            _write_state(args.runtime_state, status='ready', projection=projection,
                                          display=f':{number}', window=window,
                                          width=width, height=height,
                                          groups=[child.pid for child in children])

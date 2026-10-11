@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Bounded evidence-routing entrypoint for the existing broadcast comment batch.
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
+export PYTHONPATH="$ROOT/src"
+exec python3 -P -m docich.comment_classifier.reply_route "$@"

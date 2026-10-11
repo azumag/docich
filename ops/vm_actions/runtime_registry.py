@@ -59,6 +59,17 @@ LANE_GUARD_SUFFIXES = (".owner_guard.lock", ".owner_guard.d", ".pending")
 # Never reported as unregistered; liveness is still recorded in details.
 KNOWN_INFRA_PIDFILES = ("tmp/state/start_all.pid",)
 
+# Explicit bounded operator operation; absence is normal, no AI queue or
+# automatic scheduling. The presenter uses the ordinary generation tmux tags.
+EXTERNAL_VIDEO = {
+    "receiver_file": "external_video_receiver.json",
+    "corner_file": "external_video_corner.json",
+    "module": "docich.external_video_corner",
+    "diagnostics_key": "corners.external_video",
+    "queue_lane": None,
+    "frame_max_age_sec": 10,
+}
+
 # Diagnostics window for AI telemetry aggregation (seconds).
 DIAG_WINDOW_SEC = 900
 
@@ -116,3 +127,29 @@ def default_pid_relpath(name):
 # Maintenance is a oneshot, not a supervised game worker or queue consumer.
 OPENCODE_RETENTION_TIMER = "docich-opencode-retention.timer"
 OPENCODE_RETENTION_MAX_AGE_SEC = 3 * 3600
+
+# Game-owned, bounded oneshot. It has no supervisor PID file and is expected
+# to be absent between verified facts. Health is its generation-bound journal,
+# not the required/optional supervised-worker liveness rule above.
+HANJUKU_SCENE_ONESHOT = {
+    "game": "hanjuku-hero",
+    "module": "docich.hanjuku_scene_worker",
+    "producer_file": "hanjuku_scene.json",
+    "worker_file": "hanjuku_scene_worker.json",
+    "lock_file": "hanjuku_scene_worker.lock",
+    "log_file": "hanjuku_scene_commentary.jsonl",
+    "diagnostics_key": "corners.retro_corner.scene_narration",
+    "queue_lane": "radio",
+}
+
+# Read-only per-runtime evidence file, not a worker, lock or queue: the current
+# Hanjuku runtime's own bounded decision tail. It exists so a corner that keeps
+# answering with the same input (no chart-counter movement, no stall while the
+# cursor blinks) is observable without an ad-hoc owner shell.
+HANJUKU_DECISION_EVIDENCE = {
+    "game": "hanjuku-hero",
+    "module": "brains.hanjuku.bot",
+    "log_file": "hanjuku_decisions.jsonl",
+    "diagnostics_key": "corners.retro_corner.decision_plans",
+    "queue_lane": None,
+}

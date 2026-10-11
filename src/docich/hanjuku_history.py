@@ -184,6 +184,20 @@ def describe_latest_run(state_dir: Path) -> str:
         if row.get("kind") == "adjusted" and _count(row.get("launched")) > 0:
             adjusted_executed += 1
 
+    # Versioned evidence includes defense/unassigned battles. Legacy reports
+    # retain their old per-step summary; malformed new totals never replace it.
+    proof = report.get("evidence")
+    outcomes = proof.get("battle_outcomes") if isinstance(proof, dict) else None
+    unclassified = 0
+    if (isinstance(proof, dict) and type(proof.get("schema")) is int
+            and proof["schema"] == 1 and proof.get("scope") == "retained_decision_logs"
+            and isinstance(outcomes, dict)
+            and all(type(outcomes.get(k, 0)) is int and
+                    0 <= outcomes.get(k, 0) <= MAX_REVIEW_COUNT
+                    for k in ("win", "loss", "unclassified"))
+            and outcomes.get("win", 0) >= wins and outcomes.get("loss", 0) >= losses):
+        wins, losses, unclassified = (outcomes.get(k, 0) for k in ("win", "loss", "unclassified"))
+
     adjusted_orders = report.get("adjusted_orders")
     adjusted_created = (
         min(len(adjusted_orders), MAX_REVIEW_COUNT)
@@ -199,6 +213,8 @@ def describe_latest_run(state_dir: Path) -> str:
         parts = [f"記録に残る直近の完走ランは{wins}勝{losses}敗"]
     else:
         parts = ["記録に残る直近の完走ランには勝敗記録がありません"]
+    if unclassified:
+        parts.append(f"勝敗未分類が{unclassified}件")
     if adjusted_created:
         parts.append(
             f"調整チャート{adjusted_created}手を作成し、{adjusted_executed}手を実行"

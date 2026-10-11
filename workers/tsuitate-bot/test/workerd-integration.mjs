@@ -12,6 +12,10 @@ const workerDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
 const secret = "test-only-not-a-deployable-secret";
 const botId = "fixture-bot-id";
 const initialFixture = JSON.parse(await readFile(join(workerDirectory, "test/fixtures/initial-request.json"), "utf8"));
+const incrementalFixture = JSON.parse(await readFile(join(workerDirectory, "test/fixtures/incremental-request.json"), "utf8"));
+const gameEndFixture = JSON.parse(await readFile(join(workerDirectory, "test/fixtures/game-end-request.json"), "utf8"));
+const runtimeConfig = await readFile(join(workerDirectory, "wrangler.runtime.toml"), "utf8");
+assert.match(runtimeConfig, /^compatibility_date = "2026-09-08"$/m);
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -33,7 +37,7 @@ async function stopProcess(child) {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 }
 
-async function startRuntime(compatibilityDateOverride = null) {
+async function startRuntime() {
   const tempDirectory = await mkdtemp(join(tmpdir(), "tsuitate-workerd-"));
   const port = await availablePort();
   const args = [
@@ -43,8 +47,6 @@ async function startRuntime(compatibilityDateOverride = null) {
     "--var", `WEBHOOK_SECRET:${secret}`,
     "--show-interactive-dev-session=false", "--log-level", "error",
   ];
-  if (compatibilityDateOverride) args.push("--compatibility-date", compatibilityDateOverride);
-
   const child = spawn("wrangler", args, {
     cwd: workerDirectory,
     env: {
@@ -68,7 +70,7 @@ async function startRuntime(compatibilityDateOverride = null) {
       try {
         const health = await fetch(`${baseUrl}/__runtime_test/health`, { signal: AbortSignal.timeout(500) });
         if (health.status === 200 && await health.text() === "ok") {
-          return { child, baseUrl, tempDirectory, output: () => output, compatibilityDateOverride };
+          return { child, baseUrl, tempDirectory, output: () => output };
         }
       } catch {
         // Wrangler may need several seconds to start the local workerd runtime.
@@ -83,32 +85,16 @@ async function startRuntime(compatibilityDateOverride = null) {
   }
 }
 
-async function startWithAvailableCompatibilityDate() {
-  try {
-    const runtime = await startRuntime();
-    console.log("workerd compatibility date: wrangler.runtime.toml default (2026-09-21)");
-    return runtime;
-  } catch (error) {
-    const output = String(error?.message ?? error);
-    const supported = /newest date supported by this server binary is [\"']?(\d{4}-\d{2}-\d{2})/.exec(output)?.[1];
-    if (!supported) throw error;
-    console.log(`local workerd does not support 2026-09-21; retrying with its reported latest date ${supported}`);
-    const runtime = await startRuntime(supported);
-    console.log(`workerd compatibility date override: ${supported}`);
-    return runtime;
-  }
-}
-
-async function signedPost(baseUrl, payload) {
+async function signedPost(baseUrl, payload, { path = "/webhook", botId: requestBotId = botId } = {}) {
   const rawBody = JSON.stringify(payload);
   const body = Buffer.from(rawBody, "utf8");
   const timestamp = String(Math.floor(Date.now() / 1000));
   const signature = createHmac("sha256", secret).update(`${timestamp}.`).update(body).digest("hex");
-  const response = await fetch(`${baseUrl}/webhook`, {
+  const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "X-Tsuitate-Bot-Id": botId,
+      "X-Tsuitate-Bot-Id": requestBotId,
       "X-Tsuitate-Timestamp": timestamp,
       "X-Tsuitate-Signature": `sha256=${signature}`,
       "x-amz-content-sha256": createHash("sha256").update(body).digest("hex"),
@@ -182,13 +168,63 @@ async function testLateCommitRetry(baseUrl) {
   console.log("PASS late Durable Object commit after webhook timeout is replayed from its receipt");
 }
 
+async function testTerminalArchiveAndPrivateExport(baseUrl) {
+  const initial = structuredClone(initialFixture);
+  initial.gameId = "workerd-game-end";
+  initial.requestId = "workerd-game-end:0:b:0";
+  const started = await signedPost(baseUrl, initial);
+  assert.equal(started.status, 200);
+
+  const delta = structuredClone(incrementalFixture);
+  delta.gameId = initial.gameId;
+  delta.requestId = "workerd-game-end:2:b:0";
+  const advanced = await signedPost(baseUrl, delta);
+  assert.equal(advanced.status, 200);
+
+  const end = { ...gameEndFixture, gameId: initial.gameId };
+  const acknowledged = await signedPost(baseUrl, end);
+  assert.equal(acknowledged.status, 204);
+  assert.equal(acknowledged.text, "");
+  assert.equal((await signedPost(baseUrl, end)).status, 204, "an identical terminal event is idempotent");
+  const conflicting = await signedPost(baseUrl, { ...end, result: "Resign", winner: null });
+  assert.equal(conflicting.status, 409);
+  assert.deepEqual(JSON.parse(conflicting.text), { error: "game_end_conflict" });
+
+  const firstQuery = { type: "offline_review_export", gameId: initial.gameId, fromPly: 0, limit: 1 };
+  const firstPage = await signedPost(baseUrl, firstQuery, { path: "/offline-review" });
+  assert.equal(firstPage.status, 200);
+  const first = JSON.parse(firstPage.text);
+  assert.equal(first.archive.param, gameEndFixture.param);
+  assert.equal(first.archive.result, gameEndFixture.result);
+  assert.equal(first.archive.winner, gameEndFixture.winner);
+  assert.equal(first.archive.reviewStatus, "conflicting_terminal_event");
+  assert.equal(first.archive.duplicateCount, 1);
+  assert.equal(first.archive.conflictCount, 1);
+  assert.equal(first.trainingEligible, false);
+  assert.equal(first.historyIntegrity, "complete");
+  assert.deepEqual(first.positions.map(({ ply }) => ply), [0]);
+  assert.equal(first.nextFromPly, 1);
+
+  const secondPage = await signedPost(baseUrl, { ...firstQuery, fromPly: 1, limit: 2 }, { path: "/offline-review" });
+  assert.equal(secondPage.status, 200);
+  const second = JSON.parse(secondPage.text);
+  assert.deepEqual(second.positions.map(({ ply }) => ply), [1, 2]);
+  assert.equal(second.nextFromPly, null);
+
+  const wrongIdentity = await signedPost(baseUrl, firstQuery, { path: "/offline-review", botId: "other-bot" });
+  assert.equal(wrongIdentity.status, 404);
+  console.log("PASS SQLite stores opaque game_end before 204; signed private export pages visible history without training eligibility");
+}
+
 let runtime;
 try {
-  runtime = await startWithAvailableCompatibilityDate();
+  runtime = await startRuntime();
+  console.log("workerd compatibility date: wrangler.runtime.toml (2026-09-08), no CLI override");
   await testConcurrentSameRequest(runtime.baseUrl);
   await testConcurrentChangedBody(runtime.baseUrl);
   await testStorageRollback(runtime.baseUrl);
   await testLateCommitRetry(runtime.baseUrl);
+  await testTerminalArchiveAndPrivateExport(runtime.baseUrl);
   console.log("All local workerd integration checks passed.");
 } catch (error) {
   console.error(error);

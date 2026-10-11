@@ -26,6 +26,10 @@ from docich.stream_category import (  # noqa: E402
     announce_running_view,
     announce_stream_game,
     announce_stream_paper,
+    announce_stream_flyhome,
+    announce_running_view,
+    FLYHOME_CATEGORY_ID,
+    FLYHOME_CATEGORY_NAME,
     commit_hook,
     script_path,
     twitch_category,
@@ -119,6 +123,25 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
         )
         self.assertNotIn("--game", call["argv"])
         self.assertNotIn("--title-prefix", call["argv"])
+
+    def test_flyhome_view_uses_its_own_category_and_title(self) -> None:
+        script = self._install_script()
+
+        self.assertTrue(announce_stream_flyhome(self.g, spawn=self._recorder))
+        self.assertEqual(self.spawned[0]["argv"], [
+            str(script.resolve()), "--category-id", FLYHOME_CATEGORY_ID,
+            "--category-name", FLYHOME_CATEGORY_NAME,
+            "--activity", "Fly Me To The Home!", "--strategy", "全50面クリアに挑戦",
+        ])
+        self.assertEqual(FLYHOME_CATEGORY_ID, "1202315854")
+
+    def test_commit_follow_routes_flyhome_and_restores_the_previous_game(self) -> None:
+        self._install_script()
+        self.assertTrue(announce_running_view(self.g, "external-video-view", spawn=self._recorder))
+        self.assertIn("--category-id", self.spawned[-1]["argv"])
+        self.assertNotIn("--game", self.spawned[-1]["argv"])
+        self.assertTrue(announce_running_view(self.g, "nethack", spawn=self._recorder))
+        self.assertEqual(self.spawned[-1]["argv"][1:3], ["--game", "nethack"])
 
     def test_a_game_without_a_twitch_category_is_left_alone(self) -> None:
         self._install_script()

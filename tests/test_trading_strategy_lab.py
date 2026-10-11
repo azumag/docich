@@ -117,6 +117,8 @@ def _trading_dir(g) -> Path:
         }),
         encoding="utf-8",
     )
+    from docich.trading.ledger import PaperLedger
+    PaperLedger(target / "paper.sqlite3").close()
     return target
 
 
@@ -130,7 +132,7 @@ def test_take_profit_brief_says_observed_move_and_threshold():
     event = build_fill_event(paper_fill(exits[0]))
     event["realized_pnl_reference"] = "1.5"
     rendered = render_notification(event, mode="compact")
-    assert "平均取得価格から1.5%上昇" in rendered.speech_text
+    assert "売却費用を含む推定損益率プラス1.33%" in rendered.speech_text
     assert "利確基準1%以上" in rendered.speech_text
     assert "BTC/JPYを売り。損益はプラス1.5円です。" in rendered.speech_text
     assert "利確条件を検出" not in rendered.speech_text
@@ -145,7 +147,7 @@ def test_stop_loss_and_max_hold_briefs_say_actual_conditions():
     loss_event = build_fill_event(paper_fill(loss, price="96.5"))
     loss_event["realized_pnl_reference"] = "-3.5"
     loss_text = render_notification(loss_event, mode="detailed").speech_text
-    assert "平均取得価格から3.5%下落" in loss_text
+    assert "売却費用を含む推定損益率マイナス3.66%" in loss_text
     assert "損切り基準3%以上" in loss_text
 
     set_active_experiment(None)
@@ -189,7 +191,7 @@ def test_strategy_experiment_is_private_and_drives_entry_and_exit(tmp_path):
     exit_event = build_fill_event(paper_fill(exits[0], price="103"))
     exit_event["realized_pnl_reference"] = "3"
     exit_text = render_notification(exit_event, mode="compact").speech_text
-    assert "平均取得価格から3%上昇" in exit_text
+    assert "売却費用を含む推定損益率プラス2.82%" in exit_text
     assert "BTC/JPYを売り。損益はプラス3円です。" in exit_text
 
 
@@ -361,6 +363,7 @@ def test_evaluate_experiment_with_no_closed_sells_is_not_promotable(tmp_path):
         **experiment_from_mapping(experiment_payload()).__dict__,
         "activated_at": NOW - 3600,
     })
-    evaluation = evaluate_experiment(tmp_path, spec, capital_jpy="10000")
-    assert evaluation["closed_sells"] == 0
+    evaluation = evaluate_experiment(tmp_path, spec, capital_jpy="10000", now=NOW)
+    assert evaluation["status"] == "unavailable"
+    assert evaluation["closed_sells"] is None
     assert evaluation["promotion_ready"] is False

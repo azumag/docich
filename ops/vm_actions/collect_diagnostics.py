@@ -15,6 +15,8 @@ Observed sources (all read-only):
   - tmp/state/ai_stats/YYYYMMDD.jsonl structured telemetry
   - tmp/state/improve_state.json, improve lock/monitor/retry/gate markers
   - deployed git HEADs (docich + intended soviet_now gitlink)
+  - fixed Soren supervisor unit/pidfile/start-time and public script/FD-255
+    fingerprints only; these do not attest already-defined Bash functions
   - one bounded owner-only Soren stream-title journal, projected to fixed enums,
     UTC time, SHA and two nonsecret ID presence booleans only; title and integrated stream-log bodies are never read
   - fixed, known temporary shared-object filename families under /tmp plus
@@ -24,15 +26,26 @@ Observed sources (all read-only):
     logs/tmp/runtime caches, strategy archive, Git metadata, and VOICEVOX;
     scans are bounded, never follow symlinks, and emit no paths or filenames
   - docich program/corner state under the production state_dir
-    (game_switch.json, game-switch/requests/*.json, retro_corner.json, paper_corner.json,
+    (game_switch.json, game-switch/requests/*.json, weather_corner.json, retro_corner.json, paper_corner.json,
     paper_corner_manual.json, trading/presentation.json,
-    trading/paper_improve_status.json): lifecycle statuses, timestamps and
-    counters only. Announcement/script bodies, prompts and log bodies are
+    trading/paper_improve_status.json, trading/paper_experiment_control.json,
+    trading/paper_strategy_evaluation.json): lifecycle statuses, timestamps,
+    counters and finite PAPER result totals only. Strategy identity, rules,
+    announcement/script bodies, prompts and log bodies are
     never read out. FIFO output is limited to queued count and the head's
     fixed operation/target/age fields.
   - while the retro corner is actively running Hanjuku Hero, a bounded tail
     of Soren's speech debug log is parsed in memory for Hanjuku-only queue
     outcome counters. No log lines, queue names or speech text are emitted.
+    Its current runtime's scene producer, worker and bounded event log are
+    separately projected to fixed enums, counts and ages; facts and scene
+    identities are never emitted.
+  - while the retro corner is actively running Hanjuku Hero, a bounded tail of
+    that runtime's own decision log, projected in memory to the fixed
+    screen-kind vocabulary, allowlisted pad button names, counts, ages and the
+    trailing identical-signature run, so a corner that keeps repeating one
+    operation stays diagnosable. Reasons, chart steps, names, hashes, runtime
+    identifiers and log bodies are never read out.
   - a bounded, redacted tail (last lines only) of the NetHack agent's own log
     (state_dir/logs/agent.log, written by supervise.run_callable_loop) so a
     corner that reaches gameplay but never acts stays diagnosable. No
@@ -48,6 +61,12 @@ Observed sources (all read-only):
     (tmp/state/corner_boundary_*.json, ab_state.json, ab_games.jsonl,
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
     bodies and environment values are never read out.
+  - Soren game-lifecycle pause provenance (tmp/state/game_lifecycle/
+    request.json, ack.json and the four fixed pause-ownership records):
+    only the fixed request/ack status enums, whether a handover is active,
+    which of the four managed workers carry a proven lifecycle-owned pause,
+    and the fixed waiting-for enum. Request ids, game names, generations,
+    deadlines, paths and record bodies are never read out.
   - the PulseAudio sink-input list (`pactl list sink-inputs`, read-only) so a
     muted or silent BGM/SE playback stream is observable without an ad-hoc
     owner shell (#968). Only index, sink name, fixed media role, mute,
@@ -122,6 +141,12 @@ KNOWN_INFRA_PIDFILES = _REG.KNOWN_INFRA_PIDFILES
 MAX_COMPONENTS = _REG.MAX_COMPONENTS
 MAX_ERROR_PREVIEW_LEN = _REG.MAX_ERROR_PREVIEW_LEN
 MAX_JSON_BYTES = _REG.MAX_JSON_BYTES
+# The gateway reads this document over SSH with a 64 KiB stdout cap and then
+# re-serializes it under a 48 KiB cap after adding its own metadata; exceeding
+# either fails the whole diagnostics operation closed. Detail reductions aim at
+# the softer MAX_JSON_BYTES target, and only the last-resort reductions below
+# fall back to this hard ceiling.
+HARD_JSON_BYTES = 56 * 1024
 MAX_JSONL_SCAN_BYTES = _REG.MAX_JSONL_SCAN_BYTES
 MAX_JSONL_SCAN_LINES = _REG.MAX_JSONL_SCAN_LINES
 MAX_RECENT_EVENTS = _REG.MAX_RECENT_EVENTS
@@ -446,6 +471,182 @@ def _collect_storage_breakdown(
 
 
 
+CPU_PROFILE_REPORT = Path("/tmp/docich-cpu-profile-latest.json")
+CPU_PROFILE_MAX_BYTES = 32768
+CPU_PROFILE_MAX_COMPONENTS = 30
+CPU_PROFILE_MAX_SPAWNS = 30
+# Output-pressure caps. The producer already orders both lists busiest-first,
+# so only the tail is dropped, and the omitted counts stay visible.
+CPU_PROFILE_BUDGET_COMPONENTS = 10
+CPU_PROFILE_BUDGET_SPAWNS = 10
+CPU_PROFILE_FRESH_SEC = 900
+
+
+def _cpu_profile_number(value, *, maximum=10**12):
+    if type(value) not in (int, float) or not math.isfinite(value):
+        return None
+    value = float(value)
+    if value < 0 or value > maximum:
+        return None
+    return int(value) if value.is_integer() else value
+
+
+def _cpu_profile_label(value):
+    if not isinstance(value, str) or not 1 <= len(value) <= 64:
+        return None
+    if value in {
+        "retroarch", "x_server", "xdotool", "x_capture_tool", "x_query_tool",
+        "audio_server", "audio_cli", "media_player", "browser", "obs", "tmux",
+        "node", "sshd", "tailscale", "container_runtime", "curl", "git", "sleep",
+        "inotifywait", "jq", "cat", "grep", "sed", "awk", "tail", "head",
+        "cut", "tr", "wc", "date", "stat", "ps", "pgrep", "find", "sort",
+        "readlink", "realpath", "basename", "dirname", "tee", "touch", "rm",
+        "mv", "mkdir", "chmod", "cmp", "env", "nice", "timeout", "cksum",
+        "sha256sum", "mktemp", "flock", "xargs",
+        "kernel", "shell", "python", "other", "profiler",
+    }:
+        return value
+    if re.fullmatch(r"ffmpeg:(?:capture|stream|x11grab|other)", value):
+        return value
+    if re.fullmatch(r"(?:game|docich):[a-z0-9-]{1,32}", value):
+        return value
+    if re.fullmatch(r"(?:py|sh):[A-Za-z0-9_.-]{1,48}", value):
+        return value
+    if re.fullmatch(r"worker:[a-z0-9_-]{1,48}", value):
+        return value
+    return None
+
+
+def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
+    """Project one fixed profiler report without exposing arbitrary /tmp JSON."""
+    result = {
+        "schema_version": 1,
+        "status": "missing",
+        "present": False,
+        "readable": False,
+    }
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= CPU_PROFILE_MAX_BYTES:
+            return {**result, "present": True, "status": "invalid"}
+        raw = os.read(fd, CPU_PROFILE_MAX_BYTES + 1)
+        if len(raw) > CPU_PROFILE_MAX_BYTES:
+            return {**result, "present": True, "status": "invalid"}
+        data = json.loads(raw.decode("utf-8"))
+    except FileNotFoundError:
+        return result
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {**result, "present": True, "status": "unreadable"}
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+    if not isinstance(data, dict) or data.get("schema") != "docich.cpu_profile.v1":
+        return {**result, "present": True, "status": "invalid"}
+    meta = data.get("meta")
+    host = data.get("host")
+    if not isinstance(meta, dict) or not isinstance(host, dict):
+        return {**result, "present": True, "status": "invalid"}
+
+    scenario = meta.get("scenario")
+    generated_at = _cpu_profile_number(meta.get("generated_at"), maximum=253402300799)
+    if (not isinstance(scenario, str)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,39}", scenario)
+            or generated_at is None):
+        return {**result, "present": True, "status": "invalid"}
+    age_sec = int(now - generated_at)
+    if age_sec < -5:
+        return {**result, "present": True, "status": "invalid"}
+
+    projected_meta = {"scenario": scenario, "generated_at": int(generated_at)}
+    for key, maximum in {
+        "elapsed_sec": 1000,
+        "interval_sec": 20,
+        "samples": 10000,
+        "ncpu": 4096,
+        "worker_pidfiles_resolved": 10000,
+        "profiler_cpu_sec": 1000,
+    }.items():
+        value = _cpu_profile_number(meta.get(key), maximum=maximum)
+        if value is not None:
+            projected_meta[key] = value
+
+    projected_host = {}
+    for key, maximum in {
+        "cpu_busy_pct": 100,
+        "cpu_iowait_pct": 100,
+        "cpu_busy_pct_p50": 100,
+        "cpu_busy_pct_p95": 100,
+        "load1_p50": 100000,
+        "load1_p95": 100000,
+        "runnable_p50": 100000,
+        "runnable_p95": 100000,
+        "forks": 10**9,
+        "forks_per_sec": 10**7,
+        "ctxt_per_sec": 10**9,
+        "processes_start": 10**7,
+        "processes_end": 10**7,
+        "processes_max": 10**7,
+    }.items():
+        value = _cpu_profile_number(host.get(key), maximum=maximum)
+        if value is not None:
+            projected_host[key] = value
+
+    components = []
+    raw_components = data.get("components")
+    if isinstance(raw_components, list):
+        for item in raw_components[:CPU_PROFILE_MAX_COMPONENTS]:
+            if not isinstance(item, dict):
+                continue
+            label = _cpu_profile_label(item.get("component"))
+            if label is None:
+                continue
+            row = {"component": label}
+            for key, maximum in {
+                "cpu_pct": 10**6,
+                "cpu_share_pct": 100,
+                "processes": 10**7,
+                "spawned": 10**9,
+                "vcs_per_sec": 10**9,
+                "nvcs_per_sec": 10**9,
+                "rss_kb": 10**12,
+                "threads": 10**7,
+            }.items():
+                value = _cpu_profile_number(item.get(key), maximum=maximum)
+                if value is not None:
+                    row[key] = value
+            components.append(row)
+
+    spawns = []
+    raw_spawns = data.get("spawns")
+    if isinstance(raw_spawns, list):
+        for item in raw_spawns[:CPU_PROFILE_MAX_SPAWNS]:
+            if not isinstance(item, dict):
+                continue
+            component = _cpu_profile_label(item.get("component"))
+            spawner = _cpu_profile_label(item.get("spawner"))
+            count = _cpu_profile_number(item.get("count"), maximum=10**9)
+            if component is None or spawner is None or count is None:
+                continue
+            spawns.append({"component": component, "spawner": spawner, "count": int(count)})
+
+    return {
+        "schema_version": 1,
+        "status": "ok" if age_sec <= CPU_PROFILE_FRESH_SEC else "stale",
+        "present": True,
+        "readable": True,
+        "age_sec": age_sec,
+        "meta": projected_meta,
+        "host": projected_host,
+        "components": components,
+        "components_truncated": max(len(raw_components) - len(components), 0)
+            if isinstance(raw_components, list) else 0,
+        "spawns": spawns,
+    }
+
+
 def _empty_opencode_attribution_bucket():
     return {
         "sessions": 0,
@@ -681,6 +882,41 @@ LIFECYCLE_DEADLINE_STATUSES = frozenset({
     "stopping",
     "resume_requested",
 })
+# Sanitized ack statuses from the lifecycle broker contract
+# (soren-integration/lib/game_lifecycle.sh). Only these fixed enums are ever
+# emitted; request ids, game names, generations and deadlines are never
+# exposed. Terminal stopped parks the bridge until an explicit fresh launch.
+LIFECYCLE_ACK_STATUSES = frozenset({
+    "accepted",
+    "waiting",
+    "boundary",
+    "stop_requested",
+    "stopping",
+    "stopped",
+    "resume_requested",
+    "resumed",
+    "cancelled",
+    "failed",
+    "timeout",
+    "unsupported",
+})
+LIFECYCLE_ACTIVE_STATUSES = frozenset({
+    "accepted",
+    "waiting",
+    "boundary",
+    "stop_requested",
+    "stopping",
+    "resume_requested",
+    "stopped",
+})
+LIFECYCLE_REQUEST_STATUSES = ("absent", "malformed", "present")
+LIFECYCLE_WAITING_FOR = (
+    "none",
+    "lifecycle_handover",
+    "fresh_launch",
+    "operator_action",
+    "unknown",
+)
 PAUSE_OWNERS = ("lifecycle_owned", "operator_owned", "unknown")
 UNREGISTERED_HEALTH = ("alive", "paused", "stale_only", "unknown")
 
@@ -953,6 +1189,113 @@ def _pause_owner(state_dir, name, now):
     ):
         return "operator_owned"
     return "unknown"
+
+
+def _lifecycle_pair_status(state_dir):
+    """Sanitize the lifecycle request/ack pair into fixed enums only.
+
+    Returns (request_status, ack_status) where request_status is one of
+    LIFECYCLE_REQUEST_STATUSES and ack_status is one of LIFECYCLE_ACK_STATUSES
+    plus "absent", "malformed" or "mismatched".  No request id, game name,
+    generation, deadline or free-form value is ever returned.
+    """
+    lifecycle = state_dir / "game_lifecycle"
+    request = _read_json(lifecycle / "request.json")
+    ack = _read_json(lifecycle / "ack.json")
+    if request is None and ack is None:
+        return "absent", "absent"
+    if not isinstance(request, dict) or request.get("schema") != 1:
+        if not isinstance(request, dict):
+            if ack is None:
+                return "absent", "absent"
+            return "absent", "malformed"
+        return "malformed", "malformed"
+    request_id = request.get("request_id")
+    if not isinstance(request_id, str) or not request_id:
+        return "malformed", "malformed"
+    if not isinstance(ack, dict) or ack.get("schema") != 1:
+        return "present", "malformed" if ack is not None else "absent"
+    if not isinstance(ack.get("request_id"), str) or not ack.get("request_id"):
+        return "present", "malformed"
+    for field in ("game", "generation", "deadline_epoch", "deadline_at"):
+        if field not in request or field not in ack or ack.get(field) != request.get(field):
+            return "present", "mismatched"
+    if ack.get("request_id") != request_id:
+        return "present", "mismatched"
+    status = ack.get("status")
+    if not isinstance(status, str) or status not in LIFECYCLE_ACK_STATUSES:
+        return "present", "unknown"
+    return "present", status
+
+
+def _collect_lifecycle_pause(soren, now, workers=None):
+    """Sanitized lifecycle pause provenance (read-only).
+
+    Reports whether a lifecycle handover currently governs the supervisor
+    pause markers, which of the four lifecycle-managed workers carry a proven
+    lifecycle-owned pause, and what a paused worker is waiting for -- all as
+    fixed enums.  Never emits request ids, game names, deadlines, paths,
+    secrets or free-form text.  Never modifies markers or processes.
+    """
+    state_dir = soren / "tmp" / "state"
+    request_status, ack_status = _lifecycle_pair_status(state_dir)
+    details = {}
+    if isinstance(workers, dict):
+        details = workers.get("details") or {}
+    owned = []
+    operator_paused = False
+    any_paused = False
+    for name in LIFECYCLE_PAUSE_RECORDS:
+        if isinstance(details, dict) and name in details:
+            record = details[name] or {}
+            is_paused = bool(record.get("paused"))
+            owner = record.get("pause_owner")
+        else:
+            is_paused = (state_dir / f"{name}.paused").is_file()
+            owner = _pause_owner(state_dir, name, now) if is_paused else None
+        if is_paused:
+            any_paused = True
+        if owner == "operator_owned" and is_paused:
+            operator_paused = True
+        if is_paused and owner == "lifecycle_owned":
+            owned.append(name)
+    owned = sorted(owned)
+    active = False
+    if request_status == "present" and ack_status in LIFECYCLE_ACTIVE_STATUSES:
+        if ack_status == "stopped":
+            # Terminal park: the bridge intentionally waits for a fresh
+            # launch, so no deadline applies.
+            active = True
+        elif ack_status in LIFECYCLE_DEADLINE_STATUSES:
+            request = _read_json(state_dir / "game_lifecycle" / "request.json")
+            deadline_raw = request.get("deadline_epoch") if isinstance(request, dict) else None
+            if isinstance(deadline_raw, (int, float)) and math.isfinite(deadline_raw):
+                active = bool(float(deadline_raw) > float(now))
+            else:
+                active = False
+        else:
+            # accepted/waiting/boundary: handover accepted but the broker has
+            # not parked a deadline-bound phase yet; still governed.
+            active = True
+    if active and ack_status == "stopped" and owned:
+        waiting_for = "fresh_launch"
+    elif active and (owned or ack_status in LIFECYCLE_ACTIVE_STATUSES):
+        waiting_for = "lifecycle_handover"
+    elif operator_paused:
+        waiting_for = "operator_action"
+    elif any_paused:
+        # Paused markers exist but none prove an active lifecycle handover
+        # nor an operator webui pause: stale, expired or mismatched.
+        waiting_for = "unknown"
+    else:
+        waiting_for = "none"
+    return {
+        "active": bool(active),
+        "request_status": request_status,
+        "ack_status": ack_status,
+        "pause_owned_by_lifecycle": owned,
+        "waiting_for": waiting_for,
+    }
 
 
 def _parse_pid_file(path):
@@ -1738,7 +2081,7 @@ def _stream_title_sync_git_blob_sha256(repo, commit_sha, relative_path):
     if (
         not isinstance(commit_sha, str)
         or not re.fullmatch(r"[0-9a-f]{40}", commit_sha)
-        or relative_path not in {"update_stream_game.sh", "lib/stream_title_sync.py"}
+        or relative_path not in {"update_stream_game.sh", "lib/stream_title_sync.py", "start_all.sh"}
     ):
         return None
     try:
@@ -2091,6 +2434,213 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha, expected_code=Non
     return result
 
 
+def _supervisor_directory(path, dir_fd=None):
+    flags = (os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+             | getattr(os, "O_CLOEXEC", 0))
+    return os.open(path, flags, dir_fd=dir_fd)
+
+
+def _supervisor_read(path, limit, dir_fd=None):
+    """Bounded regular-file read; never follow a state/metadata symlink."""
+    flags = (os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+             | getattr(os, "O_CLOEXEC", 0))
+    fd = os.open(path, flags, dir_fd=dir_fd)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("unsafe metadata")
+        with os.fdopen(fd, "rb", closefd=False) as source:
+            data = source.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError("oversized metadata")
+        return data
+    finally:
+        os.close(fd)
+
+
+def _supervisor_unit_pid():
+    """One fixed system-scope property, not ExecStart/argv/environment."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", "soren-runtime.service", "--property=MainPID", "--value"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2, check=False,
+        )
+        value = result.stdout.strip()
+        if result.returncode == 0 and re.fullmatch(rb"[1-9][0-9]{0,9}", value):
+            return int(value)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _supervisor_process_start(proc_root, pid, process_fd):
+    if os.fstat(process_fd).st_uid != os.getuid():
+        raise ValueError("foreign process")
+    data = _supervisor_read("stat", 4096, dir_fd=process_fd)
+    # comm can itself contain ')' or whitespace; never emit it.
+    if not data.startswith(str(pid).encode() + b" ("):
+        raise ValueError("invalid process")
+    fields = data[data.rfind(b")") + 2:].split()
+    if len(fields) < 20 or fields[0] not in (b"R", b"S", b"D", b"T", b"t", b"I"):
+        raise ValueError("inactive process")
+    if not re.fullmatch(rb"[1-9][0-9]{0,19}", fields[19]):
+        raise ValueError("invalid process start")
+    ticks = int(fields[19])
+    return ticks
+
+
+def _supervisor_script_fingerprint(path, expected_fd_target=None, dir_fd=None):
+    """Hash only fixed start_all.sh or Bash's validated script FD 255.
+
+    Opening a Linux /proc FD creates a separate read description: do not seek
+    or read the target process's descriptor itself. Never scan other FDs.
+    """
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    if expected_fd_target is None:
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    else:
+        target = os.readlink(path, dir_fd=dir_fd)
+        if target not in (expected_fd_target, expected_fd_target + " (deleted)"):
+            raise ValueError("unexpected script descriptor")
+    fd = os.open(path, flags, dir_fd=dir_fd)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                or before.st_size <= 0 or before.st_size > 512 * 1024):
+            raise ValueError("unsafe script")
+        signature = lambda info: (info.st_dev, info.st_ino, info.st_size,
+                                  info.st_mtime_ns, info.st_ctime_ns)
+        if expected_fd_target is not None and (
+                os.readlink(path, dir_fd=dir_fd) != target
+                or signature(before) != signature(os.stat(path, dir_fd=dir_fd))):
+            raise ValueError("descriptor changed")
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(fd, min(64 * 1024, 512 * 1024 + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 512 * 1024:
+                raise ValueError("oversized script")
+            digest.update(chunk)
+        if (signature(before) != signature(os.fstat(fd))
+                or signature(before) != signature(os.stat(path, dir_fd=dir_fd,
+                    follow_symlinks=expected_fd_target is not None))):
+            raise ValueError("script changed")
+        if expected_fd_target is not None and os.readlink(path, dir_fd=dir_fd) != target:
+            raise ValueError("descriptor changed")
+        return digest.hexdigest(), int(before.st_mtime), int(before.st_ctime)
+    finally:
+        os.close(fd)
+
+
+def _collect_supervisor_identity(soren, expected_sha, proc_root=Path("/proc")):
+    """Source/age evidence only: never certify already-defined Bash functions.
+
+    PID/start ticks stay internal for race detection. A matching disk/held-FD
+    hash does not prove function memory, and a same-PID exec can reload code
+    without changing process start time. No signal or runtime write is used.
+    """
+    source = Path(soren).absolute() / "start_all.sh"
+    expected = _stream_title_sync_git_blob_sha256(
+        PROD_ROOT / "games/soviet_now", expected_sha, "start_all.sh"
+    )
+    result = {
+        "status": "unavailable", "reason": "pidfile_unavailable",
+        "loaded_functions_status": "unverified",
+        "expected_script_sha256": expected, "deployed_script_sha256": None,
+        "open_script_sha256": None, "deployed_matches_expected": None,
+        "open_script_matches_expected": None, "pidfile_matches_unit": None,
+        "identity_stable": None, "process_started_at": None,
+        "deployed_script_mtime": None, "deployed_script_ctime": None,
+    }
+    handles = []
+    def pin(path, dir_fd=None):
+        fd = _supervisor_directory(path, dir_fd)
+        handles.append(fd)
+        return fd
+    try:
+        root_fd = pin(soren)
+        try:
+            digest, mtime, ctime = _supervisor_script_fingerprint("start_all.sh", dir_fd=root_fd)
+            result.update(deployed_script_sha256=digest, deployed_script_mtime=mtime,
+                          deployed_script_ctime=ctime)
+            if expected:
+                result["deployed_matches_expected"] = digest == expected
+        except (OSError, ValueError):
+            pass
+        tmp_fd = pin("tmp", root_fd)
+        state_fd = pin("state", tmp_fd)
+        value = _supervisor_read("start_all.pid", 32, dir_fd=state_fd).strip()
+        if not re.fullmatch(rb"[1-9][0-9]{0,9}", value):
+            return result
+        pid = int(value)
+        unit_pid = _supervisor_unit_pid()
+        if unit_pid is None:
+            result["reason"] = "unit_unavailable"
+            return result
+        result["pidfile_matches_unit"] = pid == unit_pid
+        if pid != unit_pid:
+            result["reason"] = "unit_pid_mismatch"
+            return result
+        result["reason"] = "process_unavailable"
+        # A held /proc/PID directory cannot turn into a recycled PID's
+        # directory. All process reads below are relative to this handle.
+        process_fd = pin(proc_root / str(pid))
+        started = _supervisor_process_start(proc_root, pid, process_fd)
+        executable = os.readlink("exe", dir_fd=process_fd)
+        if Path(executable).name != "bash":
+            result["reason"] = "not_bash"
+            return result
+        try:
+            boot = re.search(rb"(?m)^btime ([0-9]{1,12})$", _supervisor_read(proc_root / "stat", 512 * 1024))
+            hz = os.sysconf("SC_CLK_TCK")
+            if boot and hz > 0:
+                result["process_started_at"] = int(int(boot[1]) + started / hz)
+        except (OSError, ValueError):
+            pass
+        result["reason"] = "script_fd_unavailable"
+        try:
+            script_dir_fd = pin("fd", process_fd)
+            digest, _, _ = _supervisor_script_fingerprint(
+                "255", str(source), dir_fd=script_dir_fd
+            )
+            result["open_script_sha256"] = digest
+        except (OSError, ValueError):
+            pass
+        try:
+            current_fd = pin(proc_root / str(pid))
+            stable = (_supervisor_process_start(proc_root, pid, process_fd) == started
+                      and _supervisor_process_start(proc_root, pid, current_fd) == started
+                      and os.fstat(process_fd).st_ino == os.fstat(current_fd).st_ino
+                      and os.readlink("exe", dir_fd=process_fd) == executable
+                      and _supervisor_read("start_all.pid", 32, dir_fd=state_fd).strip() == value
+                      and _supervisor_unit_pid() == pid)
+            if stable and result["open_script_sha256"] is not None:
+                stable = (_supervisor_script_fingerprint(
+                    "255", str(source), dir_fd=script_dir_fd
+                )[0] == result["open_script_sha256"])
+        except (OSError, ValueError):
+            stable = False
+        if not stable:
+            result.update(reason="identity_changed", identity_stable=False,
+                          process_started_at=None, open_script_sha256=None)
+            return result
+        result["identity_stable"] = True
+        if result["open_script_sha256"] is not None:
+            result.update(status="observed", reason="source_evidence_only")
+            if expected:
+                result["open_script_matches_expected"] = result["open_script_sha256"] == expected
+                if not result["open_script_matches_expected"]:
+                    result["reason"] = "open_script_differs_expected"
+    except (OSError, ValueError):
+        pass
+    finally:
+        for fd in reversed(handles):
+            os.close(fd)
+    return result
+
+
 def _collect_meta(soren, now):
     docich_head = _git_text(PROD_ROOT, "rev-parse", "HEAD")
     if not docich_head or not re.fullmatch(r"[0-9a-f]{40}", docich_head):
@@ -2255,6 +2805,8 @@ def _collect_tracked_drift(root):
 CORNER_STATE_FILES = {
     "corner_rotation": "corner_rotation.json",
     "game_switch": "game_switch.json",
+    "weather_corner": "weather_corner.json",
+    "tsuitate_corner": "tsuitate_corner.json",
     "retro_corner": "retro_corner.json",
     "paper_corner": "paper_corner.json",
     "paper_corner_manual": "paper_corner_manual.json",
@@ -2268,6 +2820,10 @@ ROTATION_CORNER_FILES = (
     "retro_corner", "retro_corner_manual", "paper_corner", "paper_corner_manual",
     "soren91_corner", "soren91_corner_manual", "nethack_corner", "nethack_corner_manual",
 )
+# Automatic reservation ownership includes the weather manager. Keep the
+# separate manual-owner allowlist above unchanged: its state_file contract is
+# intentionally narrower and is not inferred from catalog input.
+ROTATION_PENDING_OWNER_FILES = (*ROTATION_CORNER_FILES, "weather_corner", "tsuitate_corner")
 ROTATION_IMPROVE_GAMES = (
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
     "pacman4console", "nethack", "hanjuku-hero", "soren91",
@@ -2290,6 +2846,28 @@ ROTATION_IMPROVE_REASON_CODES = frozenset({
     "ab-incomplete", "ab-adopted", "ab-rejected", "ab-stale", "ab-invalid",
     "ab-eval", "ab-state", "ab-baseline-changed", "unexpected",
 })
+# AiTextError.kind is normalized by docich.trading.ai_text before it enters
+# PAPER state. Do not expose arbitrary rc suffixes or exception text here.
+PAPER_IMPROVE_REASON_CODES = ROTATION_IMPROVE_REASON_CODES | frozenset({
+    "gate-disabled", "invalid-timeout", "invocation-error", "empty-output",
+    "timeout", "rate-limit", "queue-giveup", "gate-giveup", "provider-failed",
+    "invalid-output", "unknown",
+    "pending-exists", "baseline-changed", "candidate-invalid", "no-change",
+})
+PAPER_EXPERIMENT_STATUSES = frozenset({
+    "active", "draining", "waiting-candidate", "blocked", "legacy",
+})
+PAPER_EXPERIMENT_REASON_CODES = frozenset({
+    "invalid-active", "evaluation-unavailable", "control-invalid", "control-error",
+    "early-stop", "sample-complete", "max-age", "initial-experiment",
+    "collecting", "pending-activated", "no-experiment",
+})
+PAPER_IMPROVE_REASON_CODES |= PAPER_EXPERIMENT_REASON_CODES
+PAPER_EVALUATION_STATUSES = frozenset({"ok", "partial", "unavailable", "invalid"})
+PAPER_EVALUATION_REASON_CODES = frozenset({
+    "evaluated", "ledger_missing", "ledger_read_error", "ledger_invalid_row",
+    "ledger_incomplete_basis", "evaluation_invalid_clock", "evaluation_invalid_capital",
+})
 ROTATION_IMPROVE_PHASES = frozenset({"state", "llm", "eval", "unknown"})
 
 # Fixed latch taxonomy of `corner_rotation.json`'s `error_kind`. Keep in sync
@@ -2305,6 +2883,314 @@ ROTATION_ERROR_KINDS = frozenset({
     "unexpected",
 })
 ROTATION_PENDING_PHASES = frozenset({"selected", "dispatched"})
+
+WEATHER_CORNER_STATUSES = frozenset({
+    "idle", "starting", "active", "restoring", "completed", "interrupted", "failed",
+})
+WEATHER_END_REASONS = frozenset({
+    "forecast-unavailable-before-start", "forecast-expires-before-start",
+    "forecast-fetch-failed-before-start", "operator-stopped-before-start",
+    "operator-moved-after-start", "operator-moved-during-weather",
+    "operator-moved-before-restore", "switch-terminal-before-corner-active",
+    "manual", "forecast-expired", "duration", "audio-completed", "audio-unavailable",
+})
+WEATHER_RECEIPT_STATUSES = frozenset({
+    "allocating", "accepted", "queued", "succeeded", "failed", "rolled_back",
+})
+WEATHER_RESULT_STATUSES = frozenset({"succeeded", "failed", "rolled_back"})
+WEATHER_OPERATIONS = frozenset({"start", "switch", "stop"})
+WEATHER_AUDIO_DELIVERY_STATUSES = frozenset({
+    "running", "stopping", "completed", "stopped", "failed",
+})
+_WEATHER_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+_WEATHER_GAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_WEATHER_RUNTIME_RE = re.compile(r"^g([1-9][0-9]{0,11})-([a-f0-9]{6,32})$")
+
+
+def _weather_request_id(value):
+    """Return only canonical lowercase UUIDs for fixed receipt lookups."""
+    return value if isinstance(value, str) and _WEATHER_UUID_RE.fullmatch(value) else None
+
+
+def _weather_selection_kind(request_id):
+    """Rotation uses UUID5 for automatic picks and UUID4 for manual requests."""
+    request_id = _weather_request_id(request_id)
+    if request_id is None:
+        return "unknown"
+    return {"5": "automatic", "4": "manual"}.get(request_id[14], "unknown")
+
+
+def _weather_game(value):
+    return value if isinstance(value, str) and _WEATHER_GAME_RE.fullmatch(value) else None
+
+
+def _weather_identity(value):
+    """Validate the four-field runtime identity without returning it publicly."""
+    if not isinstance(value, dict):
+        return None
+    game = _weather_game(value.get("game"))
+    runtime_id = value.get("runtime_id")
+    generation = value.get("generation")
+    lease_id = _weather_request_id(value.get("lease_id"))
+    match = _WEATHER_RUNTIME_RE.fullmatch(runtime_id) if isinstance(runtime_id, str) else None
+    if (game is None or match is None or lease_id is None
+            or type(generation) is not int or generation < 1
+            or int(match.group(1)) != generation):
+        return None
+    return {
+        "game": game,
+        "runtime_id": runtime_id,
+        "generation": generation,
+        "lease_id": lease_id,
+    }
+
+
+def _weather_game_matches(value, expected):
+    """Match nullable game fields without treating malformed non-null values as null."""
+    return value is None if expected is None else _weather_game(value) == expected
+
+
+def _weather_receipt_projection(state_dir, request_id, stage, state):
+    """Project one owner-bound GameSwitch receipt from its validated fixed UUID path."""
+    out = {
+        "present": False, "readable": False, "status": "unknown",
+        "operation": "unknown", "updated_at": None, "result_status": "unknown",
+        "result_matches_owner": None, "runtime_matches_owner": None,
+        "generation_matches_owner": None,
+    }
+    request_id = _weather_request_id(request_id)
+    if request_id is None:
+        return out
+    present, readable, receipt = _rotation_evidence_file(
+        state_dir, f"game-switch/requests/{request_id}.json"
+    )
+    out.update(present=present, readable=readable)
+    if not readable:
+        return out
+
+    receipt_id = _weather_request_id(receipt.get("request_id"))
+    receipt_status = _rotation_enum(receipt.get("status"), WEATHER_RECEIPT_STATUSES)
+    operation = _rotation_enum(receipt.get("operation"), WEATHER_OPERATIONS)
+    out.update(
+        status=receipt_status,
+        operation=operation,
+        updated_at=_rotation_time(receipt.get("updated_at")),
+    )
+    if receipt_id != request_id:
+        out["result_matches_owner"] = False
+        out["runtime_matches_owner"] = False
+        out["generation_matches_owner"] = False
+        return out
+
+    previous_game_raw = state.get("previous_game")
+    previous_game = _weather_game(previous_game_raw)
+    previous_game_valid = previous_game_raw is None or previous_game is not None
+    expected_operation = ("start" if previous_game_raw is None else "switch") if stage == "start" else (
+        "stop" if previous_game_raw is None else "switch"
+    )
+    expected_target = "weather-view" if stage == "start" else previous_game
+    expected_from = previous_game if stage == "start" else "weather-view"
+    expected_to = "weather-view" if stage == "start" else previous_game
+    result = receipt.get("result")
+    if not isinstance(result, dict):
+        return out
+
+    result_id = _weather_request_id(result.get("request_id"))
+    result_status = _rotation_enum(result.get("status"), WEATHER_RESULT_STATUSES)
+    out["result_status"] = result_status
+    result_matches = (
+        result_id == request_id
+        and previous_game_valid
+        and operation == expected_operation
+        and _weather_game_matches(receipt.get("target"), expected_target)
+        and result.get("operation") == expected_operation
+        and _weather_game_matches(result.get("from_game"), expected_from)
+        and _weather_game_matches(result.get("to_game"), expected_to)
+    )
+    out["result_matches_owner"] = bool(result_matches)
+
+    result_runtime_raw = result.get("active_runtime")
+    result_runtime = _weather_identity(result_runtime_raw)
+    if stage == "start":
+        expected_runtime = (
+            _weather_identity(state.get("weather_runtime_identity"))
+            or _weather_identity(state.get("starting_runtime_identity"))
+        )
+    else:
+        expected_runtime = _weather_identity(state.get("restored_runtime_identity"))
+    if expected_runtime is not None:
+        out["runtime_matches_owner"] = result_runtime == expected_runtime
+    elif stage == "restore" and state.get("previous_game") is None and "restored_runtime_identity" in state:
+        out["runtime_matches_owner"] = result_runtime_raw is None
+    expected_generation_identity = expected_runtime
+    if stage == "restore" and state.get("previous_game") is None:
+        expected_generation_identity = _weather_identity(state.get("weather_runtime_identity"))
+    if expected_generation_identity is not None:
+        receipt_generation = receipt.get("generation")
+        result_generation = result.get("generation")
+        out["generation_matches_owner"] = bool(
+            type(receipt_generation) is int
+            and type(result_generation) is int
+            and receipt_generation == result_generation == expected_generation_identity["generation"]
+        )
+    return out
+
+
+def _weather_corner_projection(state_dir, rotation, rotation_readable):
+    """Read fixed weather owner state and prove only its reservation/receipt links."""
+    present, readable, state = _rotation_evidence_file(
+        state_dir, CORNER_STATE_FILES["weather_corner"]
+    )
+    out = {
+        "present": present, "readable": readable, "status": "unknown",
+        "rotation_request_matches_pending": None,
+        "rotation_request_matches_last_result": None,
+        "selection_kind": "unknown", "rotation_result_status": "unknown",
+        "rotation_result_at": None, "requested_at": None, "started_at": None,
+        "restore_requested_at": None, "completed_at": None, "end_reason": None,
+        "previous_game": None, "starting_runtime_present": False,
+        "weather_runtime_present": False, "restored_runtime_present": False,
+        "start_request_matches_rotation": None,
+        "start_receipt": {
+            "present": False, "readable": False, "status": "unknown",
+            "operation": "unknown", "updated_at": None, "result_status": "unknown",
+            "result_matches_owner": None, "runtime_matches_owner": None,
+            "generation_matches_owner": None,
+        },
+        "restore_receipt": {
+            "present": False, "readable": False, "status": "unknown",
+            "operation": "unknown", "updated_at": None, "result_status": "unknown",
+            "result_matches_owner": None, "runtime_matches_owner": None,
+            "generation_matches_owner": None,
+        },
+        "restored_runtime_matches_current": None,
+        "audio_delivery_present": False,
+        "audio_delivery_status": "unknown",
+        "audio_next_index": None,
+    }
+    if not readable:
+        return out
+
+    status = _rotation_enum(state.get("status"), WEATHER_CORNER_STATUSES)
+    owner_id = _weather_request_id(state.get("rotation_request_id"))
+    start_id = _weather_request_id(state.get("start_request_id"))
+    restore_id = _weather_request_id(state.get("restore_request_id"))
+    rotation = rotation if rotation_readable and isinstance(rotation, dict) else None
+    pending = rotation.get("pending") if rotation and isinstance(rotation.get("pending"), dict) else None
+    last = rotation.get("last_result") if rotation and isinstance(rotation.get("last_result"), dict) else None
+
+    pending_match = None
+    if rotation is not None and owner_id is not None:
+        pending_match = bool(
+            pending is not None
+            and pending.get("corner") == "weather"
+            and _weather_request_id(pending.get("request_id")) == owner_id
+        )
+    last_match = None
+    if rotation is not None and owner_id is not None:
+        last_match = bool(
+            last is not None
+            and last.get("corner") == "weather"
+            and _weather_request_id(last.get("request_id")) == owner_id
+        )
+    selection_kind = "unknown"
+    if pending_match:
+        source = pending.get("source")
+        selection_kind = (
+            "manual" if source == "manual" else
+            _weather_selection_kind(owner_id) if source is None else "unknown"
+        )
+    elif last_match:
+        selection_kind = _weather_selection_kind(owner_id)
+
+    delivery = state.get("audio_delivery")
+    audio_delivery_present = isinstance(delivery, dict)
+    audio_delivery_status = (
+        _rotation_enum(delivery.get("status"), WEATHER_AUDIO_DELIVERY_STATUSES)
+        if audio_delivery_present else "unknown"
+    )
+    audio_next_index = delivery.get("next_index") if audio_delivery_present else None
+    if type(audio_next_index) is not int or not 0 <= audio_next_index <= 13:
+        audio_next_index = None
+
+    rotation_result_status = "unknown"
+    rotation_result_at = None
+    if last_match:
+        rotation_result_status = _rotation_enum(
+            last.get("status"), {"completed", "failed", "queued", "waiting", "already-running"}
+        )
+        rotation_result_at = _rotation_time(last.get("at"))
+
+    out.update(
+        status=status,
+        rotation_request_matches_pending=pending_match,
+        rotation_request_matches_last_result=last_match,
+        selection_kind=selection_kind,
+        rotation_result_status=rotation_result_status,
+        rotation_result_at=rotation_result_at,
+        requested_at=_rotation_time(state.get("requested_at")),
+        started_at=_rotation_time(state.get("started_at")),
+        restore_requested_at=_rotation_time(state.get("restore_requested_at")),
+        completed_at=_rotation_time(state.get("completed_at")),
+        end_reason=(
+            state.get("end_reason")
+            if isinstance(state.get("end_reason"), str)
+            and state.get("end_reason") in WEATHER_END_REASONS else None
+        ),
+        previous_game=_weather_game(state.get("previous_game")),
+        starting_runtime_present=_weather_identity(state.get("starting_runtime_identity")) is not None,
+        weather_runtime_present=_weather_identity(state.get("weather_runtime_identity")) is not None,
+        restored_runtime_present=(
+            _weather_identity(state.get("restored_runtime_identity")) is not None
+            or (state.get("previous_game") is None and "restored_runtime_identity" in state
+                and state.get("restored_runtime_identity") is None)
+        ),
+        audio_delivery_present=audio_delivery_present,
+        audio_delivery_status=audio_delivery_status,
+        audio_next_index=audio_next_index,
+        start_request_matches_rotation=(
+            start_id == owner_id if start_id is not None and owner_id is not None else None
+        ),
+    )
+    if start_id is not None and start_id == owner_id:
+        out["start_receipt"] = _weather_receipt_projection(
+            state_dir, start_id, "start", state
+        )
+    elif start_id is not None:
+        out["start_receipt"]["result_matches_owner"] = False
+        out["start_receipt"]["runtime_matches_owner"] = False
+    restore_is_owned = (
+        restore_id is not None
+        and (
+            (status == "restoring"
+             and _weather_request_id(state.get("switch_request_id")) == restore_id)
+            or (status in {"completed", "interrupted", "failed"}
+                and (state.get("switch_request_id") is None
+                     or _weather_request_id(state.get("switch_request_id")) == restore_id))
+        )
+    )
+    if restore_is_owned:
+        out["restore_receipt"] = _weather_receipt_projection(
+            state_dir, restore_id, "restore", state
+        )
+    _, current_readable, canonical = _rotation_evidence_file(
+        state_dir, CORNER_STATE_FILES["game_switch"]
+    )
+    current_active = canonical.get("active") if current_readable else None
+    current_identity = _weather_identity(current_active)
+    restored_identity = _weather_identity(state.get("restored_runtime_identity"))
+    if current_readable and status == "completed":
+        if state.get("previous_game") is None:
+            out["restored_runtime_matches_current"] = (
+                canonical.get("phase") == "idle" and current_active is None
+            )
+        elif restored_identity is not None:
+            out["restored_runtime_matches_current"] = current_identity == restored_identity
+        else:
+            out["restored_runtime_matches_current"] = False
+    return out
 
 
 def _rotation_evidence_file(state_dir, relative):
@@ -2667,9 +3553,15 @@ def _project_corner_state(data):
         "announcements": announcements,
         "improve_job": improve_job,
         "end_reason": (data.get("end_reason") if data.get("end_reason")
-                       in {"game_over", "screen_stalled", "manual_saved_stop",
+                       in {"game_over", "screen_stalled", "input_stalled", "manual_saved_stop",
                            "manual_forced_stop",
-                           "switch-terminal-before-corner-active"} else None),
+                           "switch-terminal-before-corner-active", "game-completed",
+                           "queue-timeout", "beta-stopped", "manual", "match-timeout",
+                           "operator-moved-during-tsuitate",
+                           "operator-moved-after-start",
+                           "operator-moved-before-restore",
+                           "operator-stopped-before-start"} else None),
+        "game_result": _project_game_result(data.get("beta_result")),
         "bot_phase": (data.get("bot_phase") if data.get("bot_phase") in {
             "transition", "name", "dialogue", "shop", "field", "field_menu",
             "battle_intro", "battle", "title_or_intro", "title", "month_menu", "concert", "event"} else None),
@@ -2678,7 +3570,16 @@ def _project_corner_state(data):
         "battles_finished": _bounded_int(data.get("battles_finished")),
         "screen_unchanged_seconds": _finite_number(data.get("screen_unchanged_seconds")),
         "bot_version": (data.get("bot_version") if data.get("bot_version") in {
-            "hanjuku-script-v1", "hanjuku-chart-v2"} else None),
+            "hanjuku-script-v1", "hanjuku-chart-v2",
+            "hanjuku-chart-v129-battle-card-progress",
+            "hanjuku-chart-v130-summer-cursor-evidence",
+            "hanjuku-chart-v131-defense-month-economy",
+            "hanjuku-chart-v132-card-damage-gate",
+            "hanjuku-chart-v133-measured-egg-fee",
+            "hanjuku-chart-v134-month-nav-cursor-guard",
+            "hanjuku-chart-v135-month-foreground-state",
+            "hanjuku-chart-v136-resource-priority",
+            "hanjuku-chart-v137-camp-recheck"} else None),
         "bot_chart": _project_bot_chart(data.get("bot_chart")),
         "narration": _project_counts(data.get("narration"),
                                      ("enqueued", "delivery_failed", "skipped")),
@@ -2690,6 +3591,34 @@ def _project_counts(value, keys):
     if not isinstance(value, dict):
         return None
     return {key: _bounded_int(value.get(key)) for key in keys}
+
+
+_GAME_OUTCOMES = frozenset({"win", "loss", "draw", "unknown"})
+_GAME_REASONS = frozenset({
+    "normal", "checkmate", "stalemate", "resign", "timeout", "foul_limit", "repetition",
+    "draw", "aborted", "disconnect", "transport_error", "protocol_error", "storage_error",
+    "interrupted", "no_move", "unknown"})
+_GAME_CONFIDENCE = frozenset({"verified", "unknown"})
+_GAME_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z\Z")
+
+
+def _project_game_result(value):
+    """Settled Tsuitate result, enum by enum. Anything unexpected drops to null."""
+    if not isinstance(value, dict):
+        return None
+    outcome = value.get("outcome")
+    reason = value.get("reason")
+    confidence = value.get("resultConfidence")
+    moves = value.get("moveNumber")
+    ended = value.get("endedAt")
+    if (outcome not in _GAME_OUTCOMES or reason not in _GAME_REASONS
+            or confidence not in _GAME_CONFIDENCE
+            or isinstance(moves, bool) or not isinstance(moves, int)
+            or not 0 <= moves <= 100000
+            or not isinstance(ended, str) or not _GAME_TIME.fullmatch(ended)):
+        return None
+    return {"outcome": outcome, "reason": reason, "resultConfidence": confidence,
+            "moveNumber": moves, "endedAt": ended}
 
 
 _SINK = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
@@ -2837,13 +3766,99 @@ def _collect_paper_improve_status(state_dir, now):
             "phase": _bounded_str(data.get("phase"), 32),
             "progress": progress,
             "detail": _bounded_str(data.get("detail"), 160),
-            "reason_code": _rotation_enum(data.get("reason_code"), ROTATION_IMPROVE_REASON_CODES),
+            "reason_code": _rotation_enum(data.get("reason_code"), PAPER_IMPROVE_REASON_CODES),
             "started_at": _bounded_time(data.get("started_at")),
             "updated_at": _bounded_time(data.get("updated_at")),
             "completed_at": _bounded_time(data.get("completed_at")),
             "changed": changed,
         }
     )
+    return entry
+
+
+def _paper_observed_number(value, *, decimal_string=False, nonnegative=False):
+    """Finite diagnostic numbers only; a string can contain no other text."""
+    if isinstance(value, str) and decimal_string:
+        if (len(value) > 64 or not re.fullmatch(
+                r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?", value)):
+            return None
+    elif type(value) not in (int, float):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or abs(number) > 9007199254740991:
+        return None
+    return None if nonnegative and number < 0 else number
+
+
+def _paper_observed_count(value):
+    return value if type(value) is int and 0 <= value <= 9007199254740991 else None
+
+
+def _collect_paper_experiment_evaluation(trading_dir, control, now):
+    path = trading_dir / "paper_strategy_evaluation.json"
+    present, readable, data = _load_state_file(path)
+    entry = {"present": present, "readable": readable, "age_sec": _file_age_sec(path, now)}
+    if not readable:
+        return entry
+    status = _rotation_enum(data.get("status"), PAPER_EVALUATION_STATUSES)
+    reason = _rotation_enum(data.get("reason_code"), PAPER_EVALUATION_REASON_CODES)
+    matches = None
+    if isinstance(control, dict) and isinstance(control.get("experiment_id"), str):
+        active_at = _paper_observed_number(control.get("activated_at"), nonnegative=True)
+        evaluated_activation = _paper_observed_number(data.get("activated_at"), nonnegative=True)
+        matches = bool(
+            control["experiment_id"]
+            and active_at is not None and evaluated_activation is not None
+            and control["experiment_id"] == data.get("experiment_id")
+            and control["activated_at"] == data.get("activated_at")
+        )
+    if matches is False:
+        # These separately atomic files can straddle an activation. Never
+        # label a different activation's results as the current experiment.
+        status, reason = "unavailable", "evaluation_identity_mismatch"
+    entry.update(
+        status=status, reason_code=reason, matches_active=matches,
+        evaluated_at=_paper_observed_number(data.get("evaluated_at"), nonnegative=True),
+    )
+    usable = status in {"ok", "partial"}
+    for key in (
+        "closed_sells", "self_entry_closed_sells", "carry_in_closed_sells",
+        "mixed_origin_closed_sells", "ignored_unpaired_exits", "open_position_count",
+    ):
+        entry[key] = _paper_observed_count(data.get(key)) if usable else None
+    for key in (
+        "realized_pnl_jpy", "self_entry_realized_pnl_jpy", "carry_in_realized_pnl_jpy",
+        "profit_factor", "max_realized_drawdown_pct",
+    ):
+        entry[key] = _paper_observed_number(
+            data.get(key), decimal_string=True,
+            nonnegative=key in {"profit_factor", "max_realized_drawdown_pct"},
+        ) if usable else None
+    for key in ("inventory_complete", "promotion_ready"):
+        entry[key] = data.get(key) if usable and isinstance(data.get(key), bool) else None
+    return entry
+
+
+def _collect_paper_experiment(state_dir, now):
+    """Observe periodic control independently of the end-of-corner AI job."""
+    trading_dir = Path(state_dir) / "trading"
+    path = trading_dir / "paper_experiment_control.json"
+    present, readable, data = _load_state_file(path)
+    entry = {"present": present, "readable": readable, "age_sec": _file_age_sec(path, now)}
+    if readable:
+        entry.update(
+            status=_rotation_enum(data.get("status"), PAPER_EXPERIMENT_STATUSES),
+            reason_code=_rotation_enum(data.get("reason_code"), PAPER_EXPERIMENT_REASON_CODES),
+            entries_allowed=data.get("entries_allowed") if isinstance(data.get("entries_allowed"), bool) else None,
+            pending_available=data.get("pending_available") if isinstance(data.get("pending_available"), bool) else None,
+            evaluation_status=_rotation_enum(data.get("evaluation_status"), PAPER_EVALUATION_STATUSES),
+            open_position_count=_paper_observed_count(data.get("open_position_count")),
+            updated_at=_paper_observed_number(data.get("updated_at"), nonnegative=True),
+        )
+    entry["evaluation"] = _collect_paper_experiment_evaluation(trading_dir, data if readable else None, now)
     return entry
 
 
@@ -2914,7 +3929,7 @@ def _rotation_pending_projection(state_dir, data, now):
         out["pending_owner"] = "unknown"
         return out
     out["pending_owner"] = "none"
-    for name in ROTATION_CORNER_FILES:
+    for name in ROTATION_PENDING_OWNER_FILES:
         _, readable, raw = _rotation_evidence_file(state_dir, name + ".json")
         if not readable:
             # An unreadable fixed file may hold the owner; never report "none".
@@ -2927,6 +3942,77 @@ def _rotation_pending_projection(state_dir, data, now):
     return out
 
 
+def _rotation_hanjuku_manual_receipt_projection(state_dir, manual, now):
+    """Observe only this fixed manual reservation's UUID receipt, without IDs.
+
+    Missing output means not observed; present=false means the fixed lookup
+    found no file in this snapshot. Neither proves historical non-execution.
+    This is read-only evidence and never authorizes cancellation or recovery.
+    """
+    out = {"observed": False, "present": None, "readable": None,
+           "status": "unknown", "operation": "unknown",
+           "request_matches": None, "target_matches": None,
+           "terminal_result_matches": None, "cleanup_pending": None,
+           "updated_after_selection": None, "runtime_identity_valid": None,
+           "runtime_resources_released": None}
+    if (not isinstance(manual, dict) or manual.get("corner") != "hanjuku-hero"
+            or manual.get("state_file") != "retro_corner_manual.json"):
+        return out
+    request_id = _weather_request_id(manual.get("request_id"))
+    selected = _rotation_time(manual.get("selected_at"))
+    if request_id is None or selected is None or selected > now:
+        return out
+    present, readable, receipt = _rotation_evidence_file(
+        state_dir, f"game-switch/requests/{request_id}.json")
+    out.update(observed=True, present=present, readable=readable)
+    if not readable:
+        return out
+    status = _rotation_enum(receipt.get("status"), WEATHER_RECEIPT_STATUSES)
+    operation = _rotation_enum(receipt.get("operation"), WEATHER_OPERATIONS)
+    matches = receipt.get("request_id") == request_id
+    target_matches = receipt.get("target") == "hanjuku-hero"
+    out.update(status=status, operation=operation, request_matches=matches,
+               target_matches=target_matches)
+    updated = _rotation_time(receipt.get("updated_at"))
+    if updated is not None:
+        out["updated_after_selection"] = updated >= selected
+    result = receipt.get("result")
+    if isinstance(result, dict):
+        if status in WEATHER_RESULT_STATUSES:
+            out["terminal_result_matches"] = bool(
+                matches and target_matches and operation in {"start", "switch"}
+                and result.get("request_id") == request_id
+                and result.get("status") == status
+                and result.get("operation") == operation)
+        if isinstance(result.get("cleanup_pending"), bool):
+            out["cleanup_pending"] = result["cleanup_pending"]
+    if (not out["terminal_result_matches"] or not target_matches
+            or out["cleanup_pending"] is not False):
+        return out
+    # Reuse the operator's validated runtime and read-only release contract.
+    # No canonical/owner decision or cancellation authority comes from this
+    # unlocked snapshot; the operator rechecks everything under writer locks.
+    from docich.game_switch import validate_receipt
+    from docich.hanjuku_manual_cancel import CancelRefused, _ProbeTmux, _released_runtime
+    try:
+        validate_receipt(receipt, state_dir, expected_request_id=request_id)
+        runtime = state_dir / "runtimes" / receipt["runtime_id"]
+        if any(parent.is_symlink() for parent in (runtime, *runtime.parents)):
+            out["runtime_identity_valid"] = False
+            return out
+        out["runtime_identity_valid"] = True
+        _released_runtime(state_dir, receipt["runtime_id"], _ProbeTmux())
+        out["runtime_resources_released"] = True
+    except CancelRefused as exc:
+        if str(exc) == "runtime_resources_present":
+            out["runtime_resources_released"] = False
+    except Exception:
+        # Invalid identity or a failed/timed-out probe stays unknown. Never
+        # expose validation messages, tmux output, identifiers or paths.
+        pass
+    return out
+
+
 def _rotation_manual_pending_projection(state_dir, data, now):
     """Observe the manual reservation separately from automatic ``pending``.
 
@@ -2935,6 +4021,7 @@ def _rotation_manual_pending_projection(state_dir, data, now):
     a matching request in a sibling file must not make it look resumable.
     This is evidence, never an instruction to resume or recover a corner.
     """
+    from docich.hanjuku_manual_evidence import project as manual_evidence
     out = {
         "manual_pending": isinstance(data.get("manual_pending"), dict),
         "manual_pending_corner": None,
@@ -2942,6 +4029,11 @@ def _rotation_manual_pending_projection(state_dir, data, now):
         "manual_pending_age_sec": -1,
         "manual_pending_owner": "absent",
         "manual_pending_owner_status": "unknown",
+        "manual_pending_fingerprint": None,
+        "manual_pending_receipt": _rotation_hanjuku_manual_receipt_projection(
+            state_dir, data.get("manual_pending"), now),
+        "manual_pending_evidence": manual_evidence(
+            state_dir, data.get("manual_pending"), now, read_fixed=_rotation_evidence_file),
     }
     manual = data.get("manual_pending")
     if manual is None:
@@ -2960,6 +4052,15 @@ def _rotation_manual_pending_projection(state_dir, data, now):
     filename = manual.get("state_file")
     name = files.get(filename) if isinstance(filename, str) else None
     request_id = manual.get("request_id")
+    # An opaque compare-and-cancel token, never the request identity itself.
+    # Only this fixed Hanjuku owner is cancellable by the owner operator.
+    if (manual.get("corner") == "hanjuku-hero"
+            and filename == "retro_corner_manual.json"
+            and selected is not None and selected <= now
+            and isinstance(request_id, str)
+            and re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", request_id)):
+        out["manual_pending_fingerprint"] = hashlib.sha256(json.dumps(
+            manual, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     if name is None:
         return out
     out["manual_pending_state_file"] = name
@@ -2980,11 +4081,31 @@ def _rotation_manual_pending_projection(state_dir, data, now):
 
 def _collect_corner_files(state_dir, payload, now):
     present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["corner_rotation"])
+    rotation_data = data if readable else None
     rotation = {"present": present, "readable": readable}
     if readable:
         # Fixed projection only: never emit seed, adapter errors or arbitrary
         # request payloads. Queued ownership remains local for operator recovery.
         status = data.get("status")
+        inbox_present, inbox_readable, inbox_data = _load_state_file(
+            state_dir / "corner_manual_queue.json"
+        )
+        queued_record = data.get("queued_manual")
+        if not isinstance(queued_record, dict) and inbox_readable:
+            queued_record = inbox_data
+        trigger_at = (
+            _bounded_time(queued_record.get("trigger_at"))
+            if isinstance(queued_record, dict) else None
+        )
+        scheduled_manual = trigger_at is not None
+        scheduled_due = now >= trigger_at if scheduled_manual else None
+        scheduled_blocked_reason = None
+        if scheduled_manual and not scheduled_due:
+            scheduled_blocked_reason = "not_due"
+        elif scheduled_manual and (
+                isinstance(data.get("pending"), dict)
+                or isinstance(data.get("manual_pending"), dict)):
+            scheduled_blocked_reason = "waiting_slot"
         rotation.update(
             status=status if status in {"ready", "waiting", "running", "recovery_required"} else "unknown",
             reason=_bounded_str(data.get("reason"), 64),
@@ -2995,8 +4116,19 @@ def _collect_corner_files(state_dir, payload, now):
             slot=_bounded_int(data.get("slot")),
             eligible_count=len(data["eligible"]) if isinstance(data.get("eligible"), list) else None,
             pending=isinstance(data.get("pending"), dict),
-            queued_manual=(isinstance(data.get("queued_manual"), dict)
-                           or (state_dir / "corner_manual_queue.json").is_file()),
+            queued_manual=(isinstance(data.get("queued_manual"), dict) or inbox_present),
+            scheduled_manual=scheduled_manual,
+            scheduled_manual_corner=(
+                _bounded_str(queued_record.get("corner"), 64)
+                if scheduled_manual and isinstance(queued_record, dict) else None
+            ),
+            scheduled_manual_trigger_at=trigger_at,
+            scheduled_manual_due=scheduled_due,
+            scheduled_manual_overdue_sec=(
+                min(7 * 86400, max(0, int(now - trigger_at)))
+                if scheduled_manual and scheduled_due else None
+            ),
+            scheduled_manual_blocked_reason=scheduled_blocked_reason,
             error_kind=_rotation_error_kind(data.get("error_kind")),
         )
         rotation.update(_rotation_pending_projection(state_dir, data, now))
@@ -3035,6 +4167,10 @@ def _collect_corner_files(state_dir, payload, now):
             }
         )
     payload["game_switch"] = entry
+    payload["weather_corner"] = _weather_corner_projection(
+        state_dir, rotation_data, rotation_data is not None
+    )
+    payload["external_video"] = _collect_external_video(state_dir, now)
     payload["game_switch_fifo"] = _collect_game_switch_fifo(state_dir, now)
     payload["game_switch_watchdog"] = _collect_game_switch_watchdog()
     payload["corner_rotation_timer_alias"] = _collect_corner_rotation_timer_alias()
@@ -3045,6 +4181,7 @@ def _collect_corner_files(state_dir, payload, now):
         "paper_corner_manual",
         "nethack_corner",
         "nethack_corner_manual",
+        "tsuitate_corner",
     ):
         present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
         entry = {"present": present, "readable": readable}
@@ -3063,7 +4200,67 @@ def _collect_corner_files(state_dir, payload, now):
         )
     payload["presentation"] = entry
     payload["paper_improve"] = _collect_paper_improve_status(state_dir, now)
+    payload["paper_experiment"] = _collect_paper_experiment(state_dir, now)
     payload["rotation_evidence"] = _collect_rotation_evidence(state_dir)
+
+
+def _external_video_process_alive(receiver):
+    pid, ticks = receiver.get("pid"), receiver.get("start_ticks")
+    if type(pid) is not int or pid <= 1 or type(ticks) is not int or ticks <= 0:
+        return False
+    root = Path("/proc") / str(pid)
+    try:
+        before = (root / "stat").read_text().rsplit(") ", 1)[1].split()
+        argv = (root / "cmdline").read_bytes().split(b"\0")
+        after = (root / "stat").read_text().rsplit(") ", 1)[1].split()
+        return (before[0] not in {"Z", "X"} and after[0] not in {"Z", "X"}
+                and int(before[19]) == int(after[19]) == ticks
+                and b"external-video-corner" in argv and b"receive" in argv
+                and receiver["receiver_id"].encode() in argv)
+    except (OSError, ValueError, IndexError, KeyError):
+        return False
+
+
+def _collect_external_video(state_dir, now):
+    """Fixed enums/health only: no IP, request, PID, file body or argv output."""
+    entry = {"receiver_present": False, "receiver_readable": False,
+             "receiver_status": "absent", "receiver_alive": None,
+             "frame_fresh": None, "audio_present": None,
+             "corner_status": "absent", "recovery_required": None}
+    present, readable, corner = _load_state_file(Path(state_dir) / _REG.EXTERNAL_VIDEO["corner_file"])
+    if present:
+        entry["corner_status"] = "unknown"
+    if readable:
+        status = corner.get("status")
+        if status in {"waiting", "starting", "active", "restoring", "failed", "completed", "interrupted"}:
+            entry["corner_status"] = status
+        entry["recovery_required"] = corner.get("recovery_required") is True
+    receiver_path = Path(state_dir) / _REG.EXTERNAL_VIDEO["receiver_file"]
+    entry["receiver_present"] = receiver_path.exists()
+    if not entry["receiver_present"]:
+        return entry
+    entry["receiver_status"] = "unknown"
+    _, readable, receiver = _load_state_file(receiver_path)
+    if not readable:
+        return entry
+    rid = receiver.get("receiver_id")
+    expiry = receiver.get("expires_at")
+    if (receiver.get("schema_version") != 1 or not isinstance(rid, str)
+            or re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", rid) is None
+            or type(expiry) not in (int, float) or not math.isfinite(expiry)):
+        return entry
+    alive = _external_video_process_alive(receiver)
+    try:
+        age = now - (Path(state_dir) / "external-video" / rid / "current.png").stat().st_mtime
+    except OSError:
+        age = None
+    fresh = (alive and receiver.get("status") == "receiving" and now < expiry
+             and age is not None and 0 <= age <= _REG.EXTERNAL_VIDEO["frame_max_age_sec"])
+    entry.update(receiver_readable=True, receiver_alive=alive,
+                 frame_fresh=fresh, audio_present=receiver.get("audio_present") is True)
+    if receiver.get("status") in {"launching", "waiting", "receiving", "stopped", "failed"}:
+        entry["receiver_status"] = receiver["status"]
+    return entry
 
 
 def _collect_hanjuku_predictions(state_dir):
@@ -3095,6 +4292,41 @@ def _collect_hanjuku_predictions(state_dir):
             "next_poll_at": _finite_number(data.get("next_poll_at"))}
 
 
+RETRO_PROGRAM_QUEUE_FILES = {
+    "scheduled": "retro_corner.json",
+    "manual": "retro_corner_manual.json",
+}
+RETRO_PROGRAM_QUEUE_STATUSES = frozenset({
+    "waiting", "waiting_boundary", "waiting_turn", "running",
+    "done", "expired", "cancelled", "error",
+})
+
+
+def _collect_retro_program_queues(soren):
+    """Two fixed queue snapshots; no identifiers, paths or release authority."""
+    queues = {}
+    for kind, filename in RETRO_PROGRAM_QUEUE_FILES.items():
+        row = {"present": None, "readable": False, "status": "unknown"}
+        try:
+            # Reuse the collector's descriptor-relative, all-components
+            # no-follow reader and its regular-file/256 KiB bound.
+            record = _read_hanjuku_scene_record(
+                Path(soren) / "tmp/state/docich_program_queue" / filename
+            )
+        except FileNotFoundError:
+            row["present"] = False
+        except (ValueError, RecursionError):
+            row["present"] = True
+        except OSError:
+            # An unsafe or inaccessible path cannot prove leaf existence.
+            pass
+        else:
+            row.update(present=True, readable=True,
+                       status=_rotation_enum(record.get("status"), RETRO_PROGRAM_QUEUE_STATUSES))
+        queues[kind] = row
+    return queues
+
+
 def _collect_programs(state_dir, soren, now):
     """Sanitized corner/program lifecycle plus boundary and A/B wait state.
 
@@ -3115,6 +4347,7 @@ def _collect_programs(state_dir, soren, now):
             "legacy_alias": legacy_alias,
         },
         "game_switch": {"present": False, "readable": False},
+        "weather_corner": {"present": False, "readable": False},
         "game_switch_fifo": {
             "present": False,
             "readable": False,
@@ -3130,6 +4363,10 @@ def _collect_programs(state_dir, soren, now):
         "paper_corner_manual": {"present": False, "readable": False},
         "presentation": {"present": False, "readable": False},
         "paper_improve": {"present": False, "readable": False, "age_sec": -1},
+        "paper_experiment": {
+            "present": False, "readable": False, "age_sec": -1,
+            "evaluation": {"present": False, "readable": False, "age_sec": -1},
+        },
     }
     if state_dir.is_dir():
         _collect_corner_files(state_dir, payload, now)
@@ -3142,8 +4379,11 @@ def _collect_programs(state_dir, soren, now):
             and isinstance(game_switch, dict)
             and game_switch.get("active_game") == "hanjuku-hero"):
         retro["narration_playback"] = _collect_hanjuku_narration_playback(soren)
+        retro["scene_narration"] = _collect_hanjuku_scene_narration(state_dir)
+        retro["decision_plans"] = _collect_hanjuku_decision_plans(state_dir)
     payload["hanjuku_predictions"] = _collect_hanjuku_predictions(state_dir)
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
+    payload["retro_program_queues"] = _collect_retro_program_queues(soren)
     payload["ab"] = _collect_ab(soren, now)
     payload["soren_game"] = _collect_soren_game(soren, now)
     return payload
@@ -3154,6 +4394,10 @@ HANJUKU_PLAYBACK_LOG_MAX_LINES = 2048
 _HANJUKU_QUEUE_BASENAME_RE = re.compile(
     r"(?P<name>[^/\s]*_hanjuku(?:_commentary|:commentary)\.(?:txt|playing))(?=$|[\s),])"
 )
+_HANJUKU_FENCE_REJECTION_RE = re.compile(
+    r"^\[say_enqueue [^\]\r\n]+\] 半熟英雄実況を破棄 \(runtime fence失効\) \| "
+)
+_HANJUKU_SAY_LABEL_RE = re.compile(r"(?:^|\s)label=hanjuku_commentary(?:\s|$)")
 _HANJUKU_PLAYBACK_EMPTY = {
     "status": "unavailable",
     "sampled_bytes": None,
@@ -3162,6 +4406,8 @@ _HANJUKU_PLAYBACK_EMPTY = {
     "queue_started": None,
     "queue_completed": None,
     "queue_failed": None,
+    "queue_failed_fence_rejection": None,
+    "queue_failed_unclassified": None,
     "queue_unmatched_starts": None,
     "external_kill_markers": None,
     "truncated_playback_suspected": None,
@@ -3195,7 +4441,10 @@ def _collect_hanjuku_narration_playback(soren):
     Queue basenames are used only as in-memory correlation keys. A start with
     no matching terminal event is evidence of an incomplete observation, not
     proof of cancellation: it can also be the currently playing item or fall
-    across log rotation.
+    across log rotation. Soren also rotates this file upstream, so even an
+    untruncated collector sample is not a whole-run total. A fence rejection
+    is classified only when the same item's fixed marker precedes failure;
+    it does not distinguish expiry from identity or read failures.
     """
     result = dict(_HANJUKU_PLAYBACK_EMPTY)
     fd = None
@@ -3232,6 +4481,8 @@ def _collect_hanjuku_narration_playback(soren):
 
     active = {}
     started = completed = failed = 0
+    fence_rejected = set()
+    failed_fence_rejection = 0
     kill_markers = truncated_suspected = retry_suppressed = 0
     for line in lines:
         match = _HANJUKU_QUEUE_BASENAME_RE.search(line)
@@ -3242,19 +4493,25 @@ def _collect_hanjuku_narration_playback(soren):
             if "再生開始:" in line:
                 started += 1
                 active[identity] = active.get(identity, 0) + 1
+                fence_rejected.discard(identity)
             elif "再生完了:" in line:
                 completed += 1
+                fence_rejected.discard(identity)
                 if active.get(identity, 0) > 1:
                     active[identity] -= 1
                 else:
                     active.pop(identity, None)
             elif "再生失敗:" in line:
                 failed += 1
+                failed_fence_rejection += identity in fence_rejected
+                fence_rejected.discard(identity)
                 if active.get(identity, 0) > 1:
                     active[identity] -= 1
                 else:
                     active.pop(identity, None)
-        elif line.startswith("[say_enqueue ") and "label=hanjuku_commentary" in line:
+        elif line.startswith("[say_enqueue ") and _HANJUKU_SAY_LABEL_RE.search(line):
+            if _HANJUKU_FENCE_REJECTION_RE.match(line):
+                fence_rejected.add(identity)
             if "外部killフラグ検出" in line:
                 kill_markers += 1
             if "say途中切断の疑い" in line:
@@ -3270,12 +4527,482 @@ def _collect_hanjuku_narration_playback(soren):
         "queue_started": started,
         "queue_completed": completed,
         "queue_failed": failed,
+        "queue_failed_fence_rejection": failed_fence_rejection,
+        "queue_failed_unclassified": failed - failed_fence_rejection,
         "queue_unmatched_starts": sum(active.values()),
         "external_kill_markers": kill_markers,
         "truncated_playback_suspected": truncated_suspected,
         "partial_audio_retry_suppressed": retry_suppressed,
     })
     return result
+
+
+HANJUKU_SCENE_RECORD_MAX_BYTES = 256 * 1024
+HANJUKU_SCENE_LOG_MAX_BYTES = 128 * 1024
+HANJUKU_SCENE_LOG_MAX_LINES = 2048
+HANJUKU_SCENE_IDENTITY = ("game", "runtime_id", "generation", "lease_id")
+HANJUKU_SCENE_EVENTS = (
+    "requested", "skipped", "generate_started", "generate_succeeded",
+    "generate_failed", "deliver_enqueued", "deliver_failed",
+)
+HANJUKU_SCENE_REASONS = (
+    "disabled", "no_facts", "duplicate", "cooldown", "in_flight", "stale",
+    "scene_changed", "fence_lost", "unavailable", "invalid_output",
+    "generation_failed", "timeout", "queue_giveup", "gate_giveup",
+    "rate_limit", "backoff", "delivery_failed", "worker_error", "none",
+)
+HANJUKU_SCENE_ROLES = (
+    "BATCH_COMMENTARY_AGENTS", "RADIO_AGENTS", "AI_COMMON_AGENTS",
+)
+
+
+def _open_hanjuku_scene_source(path):
+    """Open a fixed runtime source without following any directory symlink."""
+    directory_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        parts = Path(path).absolute().parts[1:]
+        for part in parts[:-1]:
+            next_fd = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=directory_fd,
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        return os.open(
+            parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=directory_fd,
+        )
+    finally:
+        os.close(directory_fd)
+
+
+def _read_hanjuku_scene_record(path):
+    fd = _open_hanjuku_scene_source(path)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= HANJUKU_SCENE_RECORD_MAX_BYTES:
+            raise ValueError("invalid bounded record")
+        raw = os.read(fd, HANJUKU_SCENE_RECORD_MAX_BYTES + 1)
+        if len(raw) > HANJUKU_SCENE_RECORD_MAX_BYTES:
+            raise ValueError("record grew")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("not object")
+        return data
+    finally:
+        os.close(fd)
+
+
+def _hanjuku_scene_int(value, maximum=1_000_000_000):
+    return value if type(value) is int and 0 <= value <= maximum else None
+
+
+def _hanjuku_scene_latency(value):
+    if type(value) not in (int, float) or not 0 <= value <= 3_600_000 or not math.isfinite(value):
+        return None
+    return round(value, 3)
+
+
+def _hanjuku_scene_age(value, now):
+    if type(value) not in (int, float) or not 0 <= value <= now or not math.isfinite(value):
+        return None
+    return round(now - value, 3)
+
+
+def _hanjuku_scene_matches(data, active, *, schema=True):
+    return (
+        isinstance(data, dict)
+        and (not schema or type(data.get("schema")) is int and data["schema"] == 1)
+        and all(type(data.get(key)) is type(active[key]) and data.get(key) == active[key]
+                for key in HANJUKU_SCENE_IDENTITY)
+    )
+
+
+def _project_hanjuku_scene_record(path, active, now, *, producer=False):
+    if producer:
+        out = dict(read_status="unavailable", enabled=None, age_sec=None,
+                   request_present=None, request_seq=None, request_age_sec=None,
+                   request_scope=None, request_unexpired=None, request_matches_scene=None)
+    else:
+        out = dict(read_status="unavailable", status=None, reason=None, role=None,
+                   age_sec=None, last_request_seq=None, counters=None)
+    try:
+        data = _read_hanjuku_scene_record(path)
+        # main's timestamp predates other diagnostics and drops fractional
+        # seconds. Compare live records against a clock sampled after this read.
+        now = time.time() if now is None else now
+        if not _hanjuku_scene_matches(data, active):
+            return out
+        age = _hanjuku_scene_age(data.get("observed_at" if producer else "at"), now)
+        if age is None or producer and type(data.get("enabled")) is not bool:
+            return out
+        out.update(read_status="available", age_sec=age)
+        if producer:
+            request = data.get("request")
+            out.update(enabled=data["enabled"], request_present=isinstance(request, dict))
+            if isinstance(request, dict):
+                out["request_seq"] = _hanjuku_scene_int(request.get("seq"))
+                out["request_age_sec"] = _hanjuku_scene_age(request.get("at"), now)
+                scope = request.get("scope")
+                out["request_scope"] = scope if scope in ("history", "scene") else None
+                expiry = request.get("expires_at")
+                if type(expiry) in (int, float) and math.isfinite(expiry) and expiry >= 0:
+                    out["request_unexpired"] = now < expiry
+                current_scene = data.get("scene_id")
+                request_scene = request.get("scene_id")
+                if isinstance(current_scene, str) and current_scene and isinstance(request_scene, str) and request_scene:
+                    out["request_matches_scene"] = current_scene == request_scene
+        else:
+            out.update(
+                status=data.get("status") if data.get("status") in HANJUKU_SCENE_EVENTS else None,
+                reason=data.get("reason") if data.get("reason") in HANJUKU_SCENE_REASONS else None,
+                role=data.get("role") if data.get("role") in HANJUKU_SCENE_ROLES else None,
+                last_request_seq=_hanjuku_scene_int(data.get("last_request_seq")),
+            )
+            counts = data.get("counters")
+            if isinstance(counts, dict):
+                out["counters"] = {
+                    key: _hanjuku_scene_int(counts.get(key, 0))
+                    for key in (*HANJUKU_SCENE_EVENTS, *HANJUKU_SCENE_REASONS)
+                    if key != "none"
+                }
+        return out
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        return out
+
+
+def _collect_hanjuku_scene_log(path, active, now):
+    out = dict(status="unavailable", sampled_bytes=None, sampled_lines=None,
+               tail_truncated=None, matched_records=None, rejected_records=None,
+               unknown_reasons=None, event_counts=None, reason_counts=None,
+               last_event=None, last_reason=None, last_age_sec=None,
+               last_seq=None, last_latency_ms=None, last_char_count=None)
+    fd = None
+    try:
+        fd = _open_hanjuku_scene_source(path)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return out
+        offset = max(0, info.st_size - HANJUKU_SCENE_LOG_MAX_BYTES)
+        os.lseek(fd, offset, os.SEEK_SET)
+        raw = os.read(fd, HANJUKU_SCENE_LOG_MAX_BYTES + 1)
+        truncated = offset > 0 or len(raw) > HANJUKU_SCENE_LOG_MAX_BYTES
+        raw = raw[:HANJUKU_SCENE_LOG_MAX_BYTES]
+        if offset:
+            newline = raw.find(b"\n")
+            raw = raw[newline + 1:] if newline >= 0 else b""
+        lines = raw.decode("utf-8", errors="replace").splitlines()
+        if len(lines) > HANJUKU_SCENE_LOG_MAX_LINES:
+            lines = lines[-HANJUKU_SCENE_LOG_MAX_LINES:]
+            truncated = True
+    except (OSError, ValueError, TypeError):
+        return out
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+    now = time.time() if now is None else now
+    events = dict.fromkeys(HANJUKU_SCENE_EVENTS, 0)
+    reasons = dict.fromkeys(HANJUKU_SCENE_REASONS, 0)
+    matched = rejected = unknown_reasons = 0
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+            if not _hanjuku_scene_matches(row, active):
+                raise ValueError("unattributed event")
+            event = row.get("event")
+            age = _hanjuku_scene_age(row.get("at"), now)
+            seq = _hanjuku_scene_int(row.get("seq"))
+            if event not in events or age is None or seq is None and row.get("seq") is not None:
+                raise ValueError("invalid event")
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            rejected += 1
+            continue
+        matched += 1
+        events[event] += 1
+        reason = row.get("reason")
+        if isinstance(reason, str) and reason in reasons:
+            reasons[reason] += 1
+        else:
+            reason = None
+            unknown_reasons += 1
+        out.update(last_event=event, last_reason=reason, last_age_sec=age,
+                   last_seq=seq, last_latency_ms=_hanjuku_scene_latency(row.get("latency_ms")),
+                   last_char_count=_hanjuku_scene_int(row.get("char_count"), 10_000))
+    out.update(sampled_bytes=len(raw), sampled_lines=len(lines), tail_truncated=truncated,
+               matched_records=matched, rejected_records=rejected, unknown_reasons=unknown_reasons)
+    if matched or not rejected and (not truncated or lines):
+        out.update(status="partial" if rejected else "available", event_counts=events,
+                   reason_counts=reasons)
+    return out
+
+
+def _hanjuku_active_runtime(root):
+    """Resolve the current Hanjuku runtime identity from the canonical switch record.
+
+    The identity (game/runtime_id/generation/lease_id) is used only to match
+    records and to resolve one runtime directory. It is never emitted.
+    """
+    canonical = _read_hanjuku_scene_record(Path(root) / "game_switch.json")
+    active = canonical.get("active")
+    if (canonical.get("phase") != "ready" or not isinstance(active, dict)
+            or active.get("game") != "hanjuku-hero"
+            or _hanjuku_scene_int(active.get("generation")) is None
+            or not isinstance(active.get("runtime_id"), str)
+            or not re.fullmatch(r"g[0-9]+-[a-f0-9]{8}", active["runtime_id"])
+            or not isinstance(active.get("lease_id"), str) or not active["lease_id"]):
+        return None, None
+    return active, Path(root) / "runtimes" / active["runtime_id"]
+
+
+def _collect_hanjuku_scene_narration(state_dir, now=None):
+    """Current-runtime scene progress, never facts, text, hashes or identity tokens."""
+    empty = dict(status="unavailable", generation=None, producer=None, worker=None, log=None)
+    try:
+        if now is not None and (type(now) not in (int, float) or not math.isfinite(now) or now < 0):
+            return empty
+        root = Path(state_dir)
+        active, runtime = _hanjuku_active_runtime(root)
+        if active is None:
+            return empty
+        run = _read_hanjuku_scene_record(runtime / "hanjuku_run.json")
+        if (not _hanjuku_scene_matches(run, active, schema=False)
+                or run.get("playing") is not True
+                or run.get("terminal_reason") or run.get("terminal_candidate")):
+            return empty
+        result = dict(
+            status="available", generation=active["generation"],
+            producer=_project_hanjuku_scene_record(runtime / "hanjuku_scene.json", active, now, producer=True),
+            worker=_project_hanjuku_scene_record(runtime / "hanjuku_scene_worker.json", active, now),
+            log=_collect_hanjuku_scene_log(runtime / "hanjuku_scene_commentary.jsonl", active, now),
+        )
+        again = _read_hanjuku_scene_record(root / "game_switch.json")
+        if again.get("phase") != "ready" or again.get("active") != active:
+            return {**empty, "status": "identity_changed"}
+        return result
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        return empty
+
+
+HANJUKU_DECISION_LOG_MAX_BYTES = 128 * 1024
+HANJUKU_DECISION_LOG_MAX_LINES = 1024
+# Bounded window of the newest planned-action records the aggregate covers.
+HANJUKU_DECISION_WINDOW_PLANS = 128
+HANJUKU_DECISION_MAX_ACTIONS = 4
+HANJUKU_DECISION_MAX_BUTTONS = 4
+HANJUKU_DECISION_TOP_KINDS = 6
+HANJUKU_DECISION_MAX_PERIOD = 4
+HANJUKU_DECISION_EVENTS = ("action_plan", "decision")
+# Owned by hanjuku_screen.classify_text plus the literal screen.kind overrides
+# in hanjuku_screen.parse, hanjuku_bot and hanjuku_policy.
+# tests/test_hanjuku_decision_diagnostics.py re-derives that vocabulary from
+# source, so a new kind fails closed as "other" instead of being emitted.
+HANJUKU_DECISION_SCREEN_KINDS = frozenset({
+    "attack_started", "barrier_removed", "battle", "battle_menu",
+    "battle_menu_pending", "boss_attack_started", "card_select", "castle_info",
+    "castle_menu", "defense_started", "discharge_menu", "egg_battle_menu",
+    "egg_choice_menu", "general_list", "gift_request", "main_menu", "map",
+    "map_target", "monster_menu", "month_menu", "name_entry", "okunote_menu",
+    "sealed_castle", "shop_exit_confirm", "shop_list", "shop_quantity",
+    "shop_quantity_prompt", "sortie_confirm", "summer_bonus",
+    "summer_bonus_message", "text", "unknown", "world_map", "yes_no",
+})
+# Pad buttons the reviewed policy can emit; anything else becomes "other".
+HANJUKU_DECISION_BUTTONS = frozenset({
+    "a", "b", "x", "y", "l", "r", "up", "down", "left", "right", "start",
+    "select",
+})
+
+
+def _hanjuku_decision_buttons(value):
+    """Normalize planned actions to allowlisted button names.
+
+    An empty list is a real plan that sends nothing; None means the shape was
+    not a bounded list of pad actions and must not be reported as an operation.
+    """
+    if not isinstance(value, list) or len(value) > HANJUKU_DECISION_MAX_ACTIONS:
+        return None
+    out = []
+    for action in value:
+        if not isinstance(action, dict) or action.get("type") != "pad":
+            return None
+        names = action.get("buttons")
+        if not isinstance(names, list) or not names or len(names) > HANJUKU_DECISION_MAX_BUTTONS:
+            return None
+        for name in names:
+            if not isinstance(name, str):
+                return None
+            out.append(name if name in HANJUKU_DECISION_BUTTONS else "other")
+    return out
+
+
+def _hanjuku_decision_signature(kind, buttons):
+    return {"screen_kind": kind, "buttons": buttons}
+
+
+def _hanjuku_decision_tail(window):
+    """Trailing whole repetitions of the newest short signature unit.
+
+    A blind confirm/cancel fallback alternates two different plans, so a plain
+    "same plan N times" counter would miss it. Period 1 covers one plan pressed
+    over and over, period 2-4 the alternating cycles, and period null means the
+    runtime is not repeating at the tail of the sampled window.
+    """
+    best = None
+    for period in range(1, HANJUKU_DECISION_MAX_PERIOD + 1):
+        if len(window) < 2 * period:
+            continue
+        unit = window[-period:]
+        repeats = 0
+        while (len(window) >= (repeats + 1) * period
+               and window[-(repeats + 1) * period:len(window) - repeats * period] == unit):
+            repeats += 1
+        if repeats < 2:
+            continue
+        covered = period * repeats
+        if best is None or covered > best[0] * best[1]:
+            best = (period, repeats, unit)
+    if best is None:
+        kind, buttons = window[-1]
+        return {"period": None, "repeats": 1,
+                "signatures": [_hanjuku_decision_signature(
+                    kind, None if buttons is None else list(buttons))]}
+    period, repeats, unit = best
+    return {"period": period, "repeats": repeats,
+            "signatures": [_hanjuku_decision_signature(
+                kind, None if buttons is None else list(buttons))
+                for kind, buttons in unit]}
+
+
+def _collect_hanjuku_decision_plans(state_dir, now=None):
+    """Bounded repeat evidence for the current runtime's planned pad actions.
+
+    A corner that keeps answering with the same input is invisible in the
+    chart counters (they only move on purchases, battles and months) and never
+    trips the stall watchdog while the cursor keeps blinking. This projects the
+    repeated operation itself: the fixed screen-kind vocabulary, allowlisted
+    button names, counts, ages and the trailing repeating signature unit.
+
+    Decision reasons, chart steps, general/castle names, frame or decision
+    hashes, runtime identifiers, planned hold times and log bodies are never
+    read out or emitted.
+    """
+    empty = dict(status="unavailable", sampled_bytes=None, sampled_lines=None,
+                 tail_truncated=None, matched_records=None, rejected_records=None,
+                 plan_records=None, window_plans=None, distinct_signatures=None,
+                 distinct_screen_kinds=None, screen_kind_counts=None,
+                 button_counts=None, top_signature=None, trailing_repeat=None,
+                 last_plan_age_sec=None)
+    try:
+        if now is not None and (type(now) not in (int, float) or not math.isfinite(now) or now < 0):
+            return empty
+        root = Path(state_dir)
+        active, runtime = _hanjuku_active_runtime(root)
+        if active is None:
+            return empty
+        run = _read_hanjuku_scene_record(runtime / "hanjuku_run.json")
+        if (not _hanjuku_scene_matches(run, active, schema=False)
+                or run.get("playing") is not True
+                or run.get("terminal_reason") or run.get("terminal_candidate")):
+            return empty
+        fd = _open_hanjuku_scene_source(runtime / "hanjuku_decisions.jsonl")
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                return empty
+            offset = max(0, info.st_size - HANJUKU_DECISION_LOG_MAX_BYTES)
+            os.lseek(fd, offset, os.SEEK_SET)
+            raw = os.read(fd, HANJUKU_DECISION_LOG_MAX_BYTES + 1)
+            truncated = offset > 0 or len(raw) > HANJUKU_DECISION_LOG_MAX_BYTES
+            raw = raw[:HANJUKU_DECISION_LOG_MAX_BYTES]
+            if offset:
+                newline = raw.find(b"\n")
+                raw = raw[newline + 1:] if newline >= 0 else b""
+            lines = raw.decode("utf-8", errors="replace").splitlines()
+            if len(lines) > HANJUKU_DECISION_LOG_MAX_LINES:
+                lines = lines[-HANJUKU_DECISION_LOG_MAX_LINES:]
+                truncated = True
+        finally:
+            os.close(fd)
+        sampled_bytes, sampled_lines = len(raw), len(lines)
+        if not lines:
+            return {**empty, "sampled_bytes": sampled_bytes,
+                    "sampled_lines": sampled_lines, "tail_truncated": truncated}
+        # Compare live records against a clock sampled after this read: main's
+        # timestamp predates the other collectors and drops fractional seconds.
+        clock = time.time() if now is None else now
+        matched = rejected = 0
+        signatures = []
+        last_plan_age = None
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                if not _hanjuku_scene_matches(row, active):
+                    raise ValueError("unattributed event")
+                event = row.get("event")
+                if event not in HANJUKU_DECISION_EVENTS:
+                    raise ValueError("invalid event")
+                age = _hanjuku_scene_age(row.get("at"), clock)
+                if age is None:
+                    raise ValueError("invalid event age")
+            except (ValueError, TypeError, OverflowError, RecursionError):
+                rejected += 1
+                continue
+            matched += 1
+            if event != "action_plan":
+                continue
+            kind = row.get("screen_kind")
+            if not isinstance(kind, str) or kind not in HANJUKU_DECISION_SCREEN_KINDS:
+                kind = "other"
+            buttons = _hanjuku_decision_buttons(row.get("planned_actions"))
+            last_plan_age = age if last_plan_age is None else min(last_plan_age, age)
+            signatures.append((kind, None if buttons is None else tuple(buttons)))
+        out = dict(status="unavailable", sampled_bytes=sampled_bytes,
+                   sampled_lines=sampled_lines, tail_truncated=truncated,
+                   matched_records=matched, rejected_records=rejected,
+                   plan_records=len(signatures), window_plans=None,
+                   distinct_signatures=None, distinct_screen_kinds=None,
+                   screen_kind_counts=None, button_counts=None,
+                   top_signature=None, trailing_repeat=None,
+                   last_plan_age_sec=last_plan_age)
+        if not signatures:
+            return out if rejected else {**out, "status": "available"}
+        window = signatures[-HANJUKU_DECISION_WINDOW_PLANS:]
+        kinds, buttons_seen, repeats = {}, {}, {}
+        for signature in window:
+            kind, buttons = signature
+            kinds[kind] = kinds.get(kind, 0) + 1
+            for name in (buttons or ()):
+                buttons_seen[name] = buttons_seen.get(name, 0) + 1
+            repeats[signature] = repeats.get(signature, 0) + 1
+        # Keep unknown buttons distinct from empty plans without comparing None to tuples.
+        ranked = sorted(repeats.items(), key=lambda item: (
+            -item[1], item[0][0], item[0][1] is None, item[0][1] or ()))
+        top_kind, top_buttons = ranked[0][0]
+        out.update(
+            status="partial" if rejected else "available",
+            window_plans=len(window), distinct_signatures=len(repeats),
+            distinct_screen_kinds=len(kinds),
+            screen_kind_counts=dict(sorted(
+                sorted(kinds.items(), key=lambda item: (-item[1], item[0]))
+                [:HANJUKU_DECISION_TOP_KINDS])),
+            button_counts={name: buttons_seen.get(name, 0)
+                           for name in sorted(HANJUKU_DECISION_BUTTONS | {"other"})},
+            top_signature={**_hanjuku_decision_signature(
+                top_kind, None if top_buttons is None else list(top_buttons)),
+                "count": ranked[0][1]},
+            trailing_repeat=_hanjuku_decision_tail(window),
+        )
+        again = _read_hanjuku_scene_record(root / "game_switch.json")
+        if again.get("phase") != "ready" or again.get("active") != active:
+            return {**empty, "status": "identity_changed"}
+        return out
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        return empty
 
 
 def _collect_soren_game(soren, now):
@@ -3375,8 +5102,34 @@ def _systemctl_user(args, timeout=5):
     return proc.returncode, (proc.stdout or "").strip()
 
 
-def _unit_is_active(unit):
-    result = _systemctl_user(["is-active", unit])
+def _systemctl_system(args, timeout=5):
+    """Run `systemctl <args>` against the *system* manager (no `--user`).
+    Returns (returncode, stdout) or None when the command cannot run at all
+    (missing binary, timeout). A non-zero returncode with output (e.g.
+    "inactive") is still a valid answer, not an error."""
+    env = {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+    }
+    try:
+        proc = subprocess.run(
+            ["systemctl", *args],
+            capture_output=True, text=True, timeout=timeout, env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.returncode, (proc.stdout or "").strip()
+
+
+def _systemctl_scope(scope, args, timeout=5):
+    """Read-only `systemctl` query against the ``user`` or ``system`` manager."""
+    if scope == "system":
+        return _systemctl_system(args, timeout=timeout)
+    return _systemctl_user(args, timeout=timeout)
+
+
+def _unit_is_active(unit, scope="user"):
+    result = _systemctl_scope(scope, ["is-active", unit])
     if result is None:
         return None
     _, out = result
@@ -3387,8 +5140,8 @@ def _unit_is_active(unit):
     return None
 
 
-def _unit_is_enabled(unit):
-    result = _systemctl_user(["is-enabled", unit])
+def _unit_is_enabled(unit, scope="user"):
+    result = _systemctl_scope(scope, ["is-enabled", unit])
     if result is None:
         return None
     _, out = result
@@ -3410,17 +5163,56 @@ RESOLVER_IMPROVE_UNITS = (
     "docich-resolver-improve.service",
     "docich-resolver-improve-gnurobots.service",
 )
+# 2026-10-08 VM observation: both units are installed in the *system* manager
+# (/etc/systemd/system, root-owned, WantedBy=default.target). A user-scope
+# probe therefore answers "not-found" while the daemon is actually running —
+# on 2026-10-01 `docich-resolver-improve.service` had been up since 06:18 JST
+# and the user-scope-only projection reported it absent (#1286). Read both
+# scopes; a running unit in either manager is a running daemon.
+RESOLVER_IMPROVE_SCOPES = ("system", "user")
+
+
+def _resolver_unit_scopes(unit):
+    return {
+        scope: {
+            "active": _unit_is_active(unit, scope=scope),
+            "enabled": _unit_is_enabled(unit, scope=scope),
+        }
+        for scope in RESOLVER_IMPROVE_SCOPES
+    }
+
+
+def _aggregate_scope_flag(values):
+    """True when any scope says True, False when any says False, else None.
+
+    Unknown readings never mask a known one: a unit the system manager runs is
+    reported active even when the user-scope probe cannot answer.
+    """
+    if any(value is True for value in values):
+        return True
+    if any(value is False for value in values):
+        return False
+    return None
 
 
 def _collect_resolver_daemon():
-    """Active/enabled state of the resolver improve daemons (#1286 follow-up)."""
+    """Active/enabled state of the resolver improve daemons (#1286 follow-up).
+
+    ``active`` / ``enabled`` aggregate the system and user managers; ``scopes``
+    keeps the per-manager readings so a partial read is never flattened into
+    "absent".
+    """
     units = {}
     for unit in RESOLVER_IMPROVE_UNITS:
+        scopes = _resolver_unit_scopes(unit)
         units[unit] = {
-            'active': _unit_is_active(unit),
-            'enabled': _unit_is_enabled(unit),
+            'active': _aggregate_scope_flag(
+                [scopes[scope]['active'] for scope in RESOLVER_IMPROVE_SCOPES]),
+            'enabled': _aggregate_scope_flag(
+                [scopes[scope]['enabled'] for scope in RESOLVER_IMPROVE_SCOPES]),
+            'scopes': scopes,
         }
-    return {'schema_version': 1, 'units': units}
+    return {'schema_version': 2, 'units': units}
 
 
 GAME_SWITCH_WATCHDOG_UNIT = "docich-game-switch-fifo.timer"
@@ -3466,7 +5258,9 @@ def _collect_corner_rotation_timer_alias():
     target). This projection makes the alias state directly observable in
     diagnostics without publishing paths or unit file contents.
     """
-    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    # The gateway deliberately sets HOME=/tmp. Use the same reviewed user
+    # unit root as _rotation_timer_selection(), rather than that scrubbed HOME.
+    unit_dir = PROD_ROOT.parent / ".config" / "systemd" / "user"
     legacy_service = unit_dir / CORNER_ROTATION_LEGACY_SERVICE
     legacy_timer = unit_dir / CORNER_ROTATION_LEGACY_TIMER
     service_is_link = legacy_service.is_symlink()
@@ -4289,7 +6083,14 @@ HANJUKU_TACTICAL_CASTLES = ('アルマムーン', 'キカンドン', 'ナキュ�
 HANJUKU_TACTICAL_KEYS = ('game', 'runtime_id', 'generation', 'lease_id')
 HANJUKU_TACTICAL_LIMIT = 256 * 1024
 
-TMUX_SERVER_NAMES = ('docich', 'docich-eval')
+# `tmux -L` server names. The production corner (game, agent, obs, bridge
+# sessions) runs on tmux's *default* server — the socket tmux names "default"
+# when no -L is given; `docich` is a *session* name inside it, not a server
+# name. Evaluation jobs must run on the private `docich-eval` server
+# (`docich.tmux.EVAL_SERVER`). Reading `-L default` therefore reads exactly the
+# production server; the earlier `-L docich` target never existed on the VM and
+# reported the production server as absent (#1286).
+TMUX_SERVER_NAMES = ('default', 'docich-eval')
 TMUX_SERVER_OUTPUT_LIMIT = 4096
 
 
@@ -4324,10 +6125,10 @@ def _tmux_server_session_count(server):
 def _collect_tmux_servers():
     """Fixed projection of tmux server ownership (#1286 follow-up).
 
-    The production corner runs on the default ``docich`` socket; evaluation
-    jobs must run on ``docich-eval``. This projection makes the separation
-    directly observable in diagnostics instead of inferring it from process
-    trees. Read-only: ``list-sessions`` never sends input.
+    The production corner runs on tmux's default server (session ``docich``);
+    evaluation jobs must run on ``docich-eval``. This projection makes the
+    separation directly observable in diagnostics instead of inferring it from
+    process trees. Read-only: ``list-sessions`` never sends input.
     """
     servers = {}
     for name in TMUX_SERVER_NAMES:
@@ -4337,7 +6138,7 @@ def _collect_tmux_servers():
             'present': bool(count) if count is not None else None,
             'session_count': count,
         }
-    return {'schema_version': 1, 'servers': servers}
+    return {'schema_version': 2, 'servers': servers}
 
 
 PULSE_SINK_INPUTS_TIMEOUT = 5
@@ -4521,8 +6322,49 @@ def _read_hanjuku_record(path):
         os.close(fd)
 
 
+HANJUKU_DAMAGE_CARDS = frozenset({
+    'イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース', 'ダンスライン',
+    'グリンボー', 'カルゲンジー', 'ピッグローラー', 'ラピニアール', 'カンケリン',
+    'デッドガン', 'ノリウツール', 'ブレイコウ', 'クースカン', 'ブンシーン', 'ゼンマイン',
+    'バルムンク', 'ミックミー', 'ファイアーボイス', 'グルミー', 'ブラックホール',
+    'シュプレボイス', 'エンジェリン', 'ころぼぐんだん', 'バグストーム', 'リューキーシ',
+    'ドデカヘー', 'マグネガキン', 'キャトルミュー', 'ビッグウェイブ', 'ハリケーン', 'ファバード',
+})
+HANJUKU_DAMAGE_REASONS = frozenset({
+    'single_card_lethal', 'healing_not_a_kill', 'no_autonomous_egg_trigger',
+    'egg_drop_candidate_not_a_kill', 'observed_control_chain_not_a_kill',
+    'summon_already_observed', 'inspect_live_inventory_before_selection',
+    'control_has_no_observed_followup', 'nonlethal_egg_risk',
+    'damage_or_egg_risk_unclassified',
+})
+
+
+def _project_hanjuku_card_assessment(value, tick):
+    """One numerical prediction, not a card-use or victory receipt."""
+    if (not isinstance(value, dict) or type(tick) is not int or tick < 0
+            or type(value.get('tick')) is not int or not 0 <= value['tick'] <= tick):
+        return None
+    def bounded(value, upper):
+        return value if type(value) is int and 0 <= value <= upper else None
+    def enum(value, allowed):
+        return value if type(value) is str and value in allowed else None
+    out = {'prediction_only': True, 'age_ticks': bounded(tick-value['tick'], 10000000),
+           'card': enum(value.get('card'), HANJUKU_DAMAGE_CARDS),
+           'target_kind': enum(value.get('target_kind'), {
+               'general', 'boss_general', 'egg_monster', 'boss_monster', 'unknown'}),
+           'reason': enum(value.get('reason'), HANJUKU_DAMAGE_REASONS)}
+    for key in ('enemy_hp', 'raw_damage_min', 'enemy_soldier_hp_upper',
+                'damage_lower_bound', 'remaining_hp_upper'):
+        out[key] = bounded(value.get(key), 9999)
+    for key in ('ally_soldiers', 'enemy_soldiers'):
+        out[key] = bounded(value.get(key), 6)
+    for key in ('lethal', 'egg_drop_fit', 'allowed'):
+        out[key] = value.get(key) if type(value.get(key)) is bool else None
+    return out
+
+
 def _collect_hanjuku_tactical(state_dir, now):
-    """Only chapter-1 fixed castle labels, counts and flags from a fresh run.
+    """Chapter-1 fixed castle labels and last card prediction from a fresh run.
 
     These are the bot's recorded beliefs, not independently verified ownership
     or roster. An absent garrison record remains unknown rather than empty.
@@ -4553,8 +6395,16 @@ def _collect_hanjuku_tactical(state_dir, now):
         if not 0 <= age <= 30:
             return {**out, 'status': 'stale'}
         mem = bot.get('policy')
-        if not isinstance(mem, dict) or type(mem.get('chapter')) is not int or mem['chapter'] != 1:
+        if (not isinstance(mem, dict) or type(mem.get('chapter')) is not int
+                or not 1 <= mem['chapter'] <= 12):
             return {**out, 'status': 'unsupported_chapter'}
+        assessment = _project_hanjuku_card_assessment(mem.get('last_card_assessment'), mem.get('tick'))
+        if mem['chapter'] != 1:
+            again, _ = _read_hanjuku_record(root / 'game_switch.json')
+            if again.get('phase') != 'ready' or again.get('active') != active:
+                return {**out, 'status': 'identity_changed'}
+            return {**out, 'status': 'unsupported_chapter', 'chapter': mem['chapter'],
+                    'age_sec': int(age), 'last_card_assessment': assessment}
         captured = mem.get('captured', [])
         garrison = mem.get('garrison', {})
         sorties = mem.get('sorties', {})
@@ -4588,11 +6438,509 @@ def _collect_hanjuku_tactical(state_dir, now):
             return {**out, 'status': 'identity_changed'}
         out.update(status='ok', age_sec=int(age), chapter=1,
                    remaining_castles=[c for c in HANJUKU_TACTICAL_CASTLES[1:-1] if c not in captured],
-                   castles=rows, home_lost_record=mem.get('home_lost') is True)
+                   castles=rows, home_lost_record=mem.get('home_lost') is True,
+                   last_card_assessment=assessment)
         return out
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return out
 
+
+
+class _NethackEvidenceError(ValueError):
+    """Only fixed codes leave this read-only evidence reader."""
+
+
+class _NethackEvidenceReader:
+    """Pin every path component; never create a directory, lock or state file."""
+    FILE_BYTES = 65536
+    RUNTIME_LIMIT = 4096
+
+    def __init__(self, root):
+        self.root = Path(root).absolute()
+        self.records = {}
+        self.runtime_listing = None
+
+    def directory(self, parts=()):
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for part in (*self.root.parts[1:], *parts):
+                if part in {'.', '..'} or '/' in part:
+                    raise _NethackEvidenceError('unsafe_path')
+                following = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                    dir_fd=fd)
+                os.close(fd)
+                fd = following
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
+    @staticmethod
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise _NethackEvidenceError('invalid_record')
+            result[key] = value
+        return result
+
+    def read(self, parts):
+        parts = tuple(parts)
+        try:
+            directory = self.directory(parts[:-1])
+            try:
+                fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=directory)
+            finally:
+                os.close(directory)
+            with os.fdopen(fd, 'rb') as stream:
+                before = os.fstat(stream.fileno())
+                if not stat.S_ISREG(before.st_mode) or before.st_size > self.FILE_BYTES:
+                    raise _NethackEvidenceError('invalid_record')
+                raw = stream.read(self.FILE_BYTES + 1)
+                after = os.fstat(stream.fileno())
+                if ((before.st_ino, before.st_size, before.st_mtime_ns) !=
+                        (after.st_ino, after.st_size, after.st_mtime_ns)):
+                    raise _NethackEvidenceError('evidence_changed')
+                if len(raw) > self.FILE_BYTES:
+                    raise _NethackEvidenceError('invalid_record')
+            value = json.loads(raw, object_pairs_hook=self.unique_object,
+                               parse_constant=lambda _: (_ for _ in ()).throw(
+                                   _NethackEvidenceError('invalid_record')))
+            if not isinstance(value, dict):
+                raise _NethackEvidenceError('invalid_record')
+        except FileNotFoundError:
+            value, raw = None, None
+        if parts in self.records and self.records[parts] != raw:
+            raise _NethackEvidenceError('evidence_changed')
+        self.records[parts] = raw
+        return value
+
+    def restored_runtime(self, generation):
+        if type(generation) is not int or not 0 < generation < 10**9:
+            raise _NethackEvidenceError('invalid_identity')
+        directory = self.directory(('runtimes',))
+        try:
+            with os.scandir(directory) as entries:
+                names = []
+                for index, entry in enumerate(entries):
+                    if index >= self.RUNTIME_LIMIT:
+                        raise _NethackEvidenceError('scan_limit')
+                    names.append(entry.name)
+        finally:
+            os.close(directory)
+        names = sorted(names)
+        if self.runtime_listing is not None and names != self.runtime_listing:
+            raise _NethackEvidenceError('evidence_changed')
+        self.runtime_listing = names
+        matches = [name for name in names if name.startswith(f'g{generation}-')]
+        if len(matches) != 1:
+            raise _NethackEvidenceError('runtime_ambiguous')
+        return _nethack_evidence_runtime(matches[0])
+
+    def recheck(self):
+        for parts in tuple(self.records):
+            self.read(parts)
+        if self.runtime_listing is not None:
+            # Reuse one known generation only to verify the whole listing.
+            name = next((n for n in self.runtime_listing
+                         if re.fullmatch(r'g[1-9][0-9]{0,8}-[a-f0-9]{6,32}', n)), None)
+            if name is None:
+                raise _NethackEvidenceError('invalid_identity')
+            self.restored_runtime(int(name.split('-')[0][1:]))
+
+
+def _nethack_evidence_uuid(value):
+    if not isinstance(value, str) or re.fullmatch(
+            r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', value) is None:
+        raise _NethackEvidenceError('invalid_identity')
+    return value
+
+
+def _nethack_evidence_runtime(value):
+    if not isinstance(value, str) or re.fullmatch(r'g[1-9][0-9]{0,8}-[a-f0-9]{6,32}', value) is None:
+        raise _NethackEvidenceError('invalid_identity')
+    return value
+
+
+def _nethack_evidence_time(value):
+    if not isinstance(value, str):
+        raise _NethackEvidenceError('invalid_record')
+    parsed = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if parsed.tzinfo is None or parsed.timestamp() < 0:
+        raise _NethackEvidenceError('invalid_record')
+    return parsed.timestamp()
+
+
+def _nethack_evidence_player():
+    """Read the fixed reviewed game definition, never a boundary-selected path."""
+    try:
+        import tomllib
+        reader = _NethackEvidenceReader(PROD_ROOT)
+        directory = reader.directory(('config', 'games'))
+        try:
+            fd = os.open('nethack.toml', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         dir_fd=directory)
+        finally:
+            os.close(directory)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 16384:
+                return None
+            raw = stream.read(16385)
+        if len(raw) > 16384:
+            return None
+        value = tomllib.loads(raw.decode('utf-8')).get('nethack', {}).get('player_name')
+        return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_]{1,31}', value) else None
+    except (OSError, ValueError, TypeError, AttributeError, ImportError):
+        return None
+
+
+def _nethack_evidence_receipt(reader, request):
+    request = _nethack_evidence_uuid(request)
+    receipt = reader.read(('game-switch', 'requests', request + '.json'))
+    if receipt is None:
+        return None
+    result = receipt.get('result')
+    generation = receipt.get('generation')
+    runtime = _nethack_evidence_runtime(receipt.get('runtime_id'))
+    if (type(receipt.get('schema_version')) is not int or receipt['schema_version'] != 1
+            or receipt.get('request_id') != request or receipt.get('operation') != 'switch'
+            or receipt.get('target') != 'sorengame' or not isinstance(result, dict)
+            or receipt.get('status') not in {'succeeded', 'failed', 'rolled_back'}
+            or result.get('request_id') != request or result.get('operation') != 'switch'
+            or result.get('status') != receipt['status']
+            or result.get('from_game') != 'nethack' or result.get('to_game') != 'sorengame'
+            or type(generation) is not int or generation != int(runtime.split('-')[0][1:])
+            or type(result.get('generation')) is not int or result['generation'] != generation
+            or receipt.get('adapter_session') != f'docich-game-g{generation}'
+            or receipt.get('game_window') != f'game-g{generation}'
+            or receipt.get('agent_window') != f'agent-g{generation}'
+            or receipt.get('runtime_dir') != str(reader.root / 'runtimes' / runtime)
+            or (result.get('cleanup_pending') is not None
+                and type(result['cleanup_pending']) is not bool)
+            or _nethack_evidence_time(receipt.get('created_at')) >
+               _nethack_evidence_time(receipt.get('updated_at'))):
+        raise _NethackEvidenceError('receipt_mismatch')
+    return receipt
+
+
+def _nethack_evidence_boundary(reader, runtime, receipt, player, *, active_started=None):
+    boundary = reader.read(('runtimes', runtime, 'nethack_boundary.json'))
+    result = dict(present=boundary is not None, identity_matches=None,
+                  request_matches=None, player_matches=None, ended=None, time_matches=None)
+    if boundary is None:
+        return result
+    result.update(
+        identity_matches=(type(boundary.get('schema_version')) is int
+                          and boundary['schema_version'] == 1
+                          and boundary.get('game') == 'nethack'
+                          and boundary.get('runtime_id') == runtime
+                          and type(boundary.get('generation')) is int
+                          and boundary['generation'] == int(runtime.split('-')[0][1:])),
+        request_matches=boundary.get('request_id') == receipt['request_id'],
+        player_matches=bool(player) and boundary.get('player_name') == player,
+        ended=boundary.get('outcome') == 'ended',
+        time_matches=(_nethack_evidence_time(receipt['created_at']) <=
+                      _nethack_evidence_time(boundary.get('recorded_at')) <=
+                      (active_started if active_started is not None else
+                       _nethack_evidence_time(receipt['updated_at']))),
+    )
+    return result
+
+
+def _nethack_evidence_source(receipt, runtime):
+    """A present modern source must agree with the selected NetHack boundary."""
+    if 'source_runtime' not in receipt['result']:
+        return
+    source = receipt['result']['source_runtime']
+    if (not isinstance(source, dict)
+            or set(source) != {'game', 'adapter', 'runtime_id', 'generation', 'lease_id'}
+            or source.get('game') != 'nethack' or source.get('adapter') != 'cli'
+            or source.get('runtime_id') != runtime
+            or type(source.get('generation')) is not int
+            or source['generation'] != int(runtime.split('-')[0][1:])
+            or source['generation'] >= receipt['generation']):
+        raise _NethackEvidenceError('source_mismatch')
+    _nethack_evidence_uuid(source.get('lease_id'))
+
+
+def _nethack_evidence_tmux_absent(generation):
+    # Only exact-generation read-only targets. No recovery/teardown helper,
+    # input, shell, new-window or signal is invoked.
+    from docich.hanjuku_manual_cancel import _ProbeTmux
+    probe = _ProbeTmux()
+    return (not probe.window_target_exists(f'docich:game-g{generation}', strict=True)
+            and not probe.window_target_exists(f'docich:agent-g{generation}', strict=True)
+            and not probe.session_target_exists(f'docich-game-g{generation}', strict=True))
+
+
+def _nethack_evidence_resources(reader, runtime, probe):
+    generation = int(runtime.split('-')[0][1:])
+    presentation = reader.read(('runtimes', runtime, 'presentation.json'))
+    tiles = reader.read(('runtimes', runtime, 'nethack_tiles.json'))
+    result = dict(presentation_stopped=None, tiles_identity_matches=None,
+                  tiles_cleanup_complete=None, tmux_absent=None,
+                  all_resources_released=None, coverage='release_records_and_tmux',
+                  unknown_reasons=[])
+    if presentation is None:
+        result['unknown_reasons'].append('presentation_record_missing')
+    if presentation is not None:
+        result['presentation_stopped'] = presentation.get('status') == 'stopped'
+    if tiles is not None:
+        matches = (type(tiles.get('schema_version')) is int and tiles['schema_version'] == 1
+                   and tiles.get('runtime_id') == runtime
+                   and type(tiles.get('generation')) is int and tiles['generation'] == generation
+                   and tiles.get('adapter_session') == f'docich-game-g{generation}'
+                   and tiles.get('game_window') == f'game-g{generation}')
+        result['tiles_identity_matches'] = matches
+        if matches and type(tiles.get('cleanup_complete')) is bool:
+            result['tiles_cleanup_complete'] = (tiles['cleanup_complete']
+                                               and tiles.get('status') == 'stopped')
+        elif matches:
+            result['unknown_reasons'].append('tiles_cleanup_unproven')
+    else:
+        result['unknown_reasons'].append('tiles_record_missing')
+    try:
+        absent = probe(generation)
+        if type(absent) is bool:
+            result['tmux_absent'] = absent
+    except Exception:
+        pass
+    if result['tmux_absent'] is None:
+        result['unknown_reasons'].append('tmux_probe_unavailable')
+    result['unknown_reasons'] += ['detached_children_unobserved', 'unregistered_workers_unobserved']
+    # A stopped presenter / empty tmux cannot prove detached game children or
+    # an unregistered improvement worker gone. Preserve unknown; positive
+    # contrary evidence, however, can prove incomplete cleanup.
+    if any(result[k] is False for k in ('presentation_stopped', 'tiles_identity_matches',
+                                       'tiles_cleanup_complete', 'tmux_absent')):
+        result['all_resources_released'] = False
+    return result
+
+
+def _nethack_evidence_dispatch_history(owner, ledger, now):
+    """Observe the legacy producer checks in the already-read ledger only."""
+    unknown = ('invalid', 'invalid')
+    history = ledger.get('history')
+    if not isinstance(history, list):
+        return unknown
+    if len(history) > 512:
+        return ('scan_limit', 'scan_limit')
+
+    def stamp(value):
+        if isinstance(value, str):
+            return _nethack_evidence_time(value)
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            raise ValueError('invalid timestamp')
+        return value
+
+    try:
+        selected = stamp(ledger['pending']['selected_at'])
+        started = stamp(owner['started_at'])
+        if not selected <= started <= now or stamp(ledger['last_seen_at']) > now:
+            return unknown
+        automatic, manual = False, False
+        for row in history:
+            if not isinstance(row, dict):
+                return unknown
+            recorded = stamp(row.get('at'))
+            if recorded > now:
+                return unknown
+            if row.get('corner') == 'nethack' and recorded >= selected:
+                manual |= row.get('source') == 'manual-reservation'
+                automatic |= row.get('source') == 'reservation' and recorded <= started
+        return ('matched' if automatic else 'missing', 'present' if manual else 'absent')
+    except (KeyError, ValueError, TypeError, OverflowError):
+        return unknown
+
+
+def _nethack_evidence_contract_conditions(owner, ledger, original, landed, now):
+    """Fixed input observations, never a recovery verdict or a historical error."""
+    def category(key, expected):
+        if key not in owner:
+            return 'absent'
+        value = owner[key]
+        if value is None:
+            return 'null'
+        if not isinstance(value, str):
+            return 'invalid'
+        return expected if value == expected else 'other'
+
+    automatic, manual = _nethack_evidence_dispatch_history(owner, ledger, now)
+    result = original['result']
+    cleanup = result.get('cleanup_pending')
+    return dict(
+        previous_game=category('previous_game', 'sorengame'),
+        finish_reason=category('finish_reason', 'terminal'),
+        pending_source_absent='source' not in ledger['pending'],
+        original_source_absent='source_runtime' not in result,
+        original_restored_identity_absent='restored_runtime' not in result,
+        return_source_absent='source_runtime' not in landed['result'],
+        restore_request_distinct=original['request_id'] != ledger['pending']['request_id'],
+        original_cleanup_pending=('absent' if 'cleanup_pending' not in result else
+                                  'null' if cleanup is None else 'pending' if cleanup else 'clear'),
+        automatic_dispatch_history=automatic,
+        manual_reservation_since_selection=manual,
+    )
+
+
+def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=None):
+    """Observe one automatic failed owner; evidence is never recovery authority.
+
+    No locks/writes or manager constructors. Re-read every input after probes;
+    stable bytes are an observation, not an atomic snapshot or a future fence.
+    """
+    result = dict(schema_version=1, status='unavailable', reason='missing_evidence',
+                  recovery_authority=False, snapshot_stable=None,
+                  owner_matches=None, owner_terminal=None, legacy_contract_applicable=None,
+                  contract_conditions=None,
+                  restore_recovery_present=None, cleanup_record_present=None,
+                  cleanup_attempt_present=None, chronology_matches=None, terminal_chain_matches=None,
+                  manual_clear=None, original_receipt=None, original_boundary=None,
+                  return_receipt=None, return_boundary=None, canonical=None,
+                  original_resources=None, rollback_resources=None)
+    reader = _NethackEvidenceReader(state_dir)
+    try:
+        ledger = reader.read(('corner_rotation.json',))
+        if ledger is None:
+            return result
+        pending = ledger.get('pending')
+        if not isinstance(pending, dict) or pending.get('corner') != 'nethack':
+            result.update(status='not_applicable', reason='no_automatic_nethack_pending')
+            return result
+        slot = _nethack_evidence_uuid(pending.get('request_id'))
+        owner = reader.read(('nethack_corner.json',))
+        canonical = reader.read(('game_switch.json',))
+        manual = reader.read(('nethack_corner_manual.json',))
+        if owner is None or canonical is None:
+            return result
+        result['owner_matches'] = (type(ledger.get('schema_version')) is int
+                                   and ledger['schema_version'] == 1
+                                   and ledger.get('status') == 'recovery_required'
+                                   and pending.get('phase') == 'dispatched'
+                                   and owner.get('rotation_request_id') == slot
+                                   and type(owner.get('schema_version')) is int
+                                   and owner['schema_version'] == 1 and owner.get('game') == 'nethack')
+        result['owner_terminal'] = owner.get('status') in {'failed', 'interrupted'}
+        result.update(restore_recovery_present='restore_recovery' in owner,
+                      cleanup_record_present='restore_cleanup' in owner,
+                      cleanup_attempt_present='restore_cleanup_attempt' in owner)
+        result['legacy_contract_applicable'] = (owner.get('previous_game', 'sorengame') == 'sorengame'
+            and owner.get('finish_reason') == 'terminal'
+            and all(k not in owner for k in ('restore_recovery', 'restore_cleanup', 'restore_cleanup_attempt')))
+        result['manual_clear'] = (ledger.get('manual_pending') is None
+            and (manual is None or (type(manual.get('schema_version')) is int
+                                   and manual['schema_version'] == 1
+                                   and manual.get('status') in {'idle', 'completed', 'interrupted', 'expired'})))
+        if result['owner_matches'] is not True or result['owner_terminal'] is not True:
+            raise _NethackEvidenceError('owner_mismatch')
+        original = _nethack_evidence_receipt(reader, owner.get('switch_request_id'))
+        if original is None:
+            raise _NethackEvidenceError('missing_evidence')
+        result['original_receipt'] = dict(status=original['status'], request_matches=True,
+            cleanup_clear=original['result'].get('cleanup_pending') is False,
+            source_identity_present=isinstance(original['result'].get('source_runtime'), dict))
+        source = original['result'].get('source_runtime')
+        source_runtime = owner.get('rotation_runtime_id')
+        if isinstance(source, dict):
+            if source_runtime is not None and source.get('runtime_id') != source_runtime:
+                raise _NethackEvidenceError('source_mismatch')
+            source_runtime = source.get('runtime_id')
+        runtime = _nethack_evidence_runtime(source_runtime)
+        _nethack_evidence_source(original, runtime)
+        result['original_boundary'] = _nethack_evidence_boundary(reader, runtime, original, player)
+        last = canonical.get('last_result')
+        if not isinstance(last, dict):
+            raise _NethackEvidenceError('missing_evidence')
+        landed = _nethack_evidence_receipt(reader, last.get('request_id'))
+        if landed is None:
+            raise _NethackEvidenceError('missing_evidence')
+        active = canonical.get('active')
+        identity = landed['result'].get('active_runtime')
+        identity_fields = ('game', 'runtime_id', 'generation', 'lease_id')
+        identity_complete = isinstance(active, dict) and isinstance(identity, dict)
+        active_started = None
+        if identity_complete:
+            _nethack_evidence_runtime(active.get('runtime_id'))
+            _nethack_evidence_uuid(active.get('lease_id'))
+            active_started = _nethack_evidence_time(active.get('started_at'))
+            identity_complete = (active.get('game') == 'sorengame' and active.get('adapter') == 'soren'
+                and type(active.get('generation')) is int
+                and active['generation'] == int(active['runtime_id'].split('-')[0][1:])
+                and active.get('adapter_session') == f"docich-game-g{active['generation']}"
+                and active.get('game_window') == f"game-g{active['generation']}"
+                and active.get('agent_window') == f"agent-g{active['generation']}"
+                and _nethack_evidence_time(landed['created_at']) <= active_started <=
+                    _nethack_evidence_time(landed['updated_at']) <=
+                    _nethack_evidence_time(canonical.get('updated_at')) <= now)
+        result['return_receipt'] = dict(status=landed['status'],
+            distinct_request=landed['request_id'] not in {slot, original['request_id']},
+            result_matches=(json.dumps(last, sort_keys=True) == json.dumps(landed['result'], sort_keys=True)))
+        result['legacy_contract_applicable'] = (result['legacy_contract_applicable']
+            and 'source' not in pending
+            and all(k not in original['result'] for k in ('source_runtime', 'restored_runtime'))
+            and 'source_runtime' not in landed['result'])
+        result['canonical'] = dict(
+            identity_complete=identity_complete,
+            lease_matches=(identity_complete and all(type(active.get(k)) is type(identity.get(k))
+                                                   and active.get(k) == identity.get(k) for k in identity_fields)
+                           and active['runtime_id'] == landed['runtime_id']
+                           and active['generation'] == landed['generation']),
+            record_clear=(type(canonical.get('schema_version')) is int and canonical['schema_version'] == 2
+                   and canonical.get('phase') == 'ready'
+                   and all(k in canonical and canonical[k] is None
+                           for k in ('request_id', 'operation', 'candidate', 'previous', 'deadline_at'))
+                   and canonical.get('retiring') == []
+                   and type(canonical.get('revision')) is int and canonical['revision'] >= 0
+                   and _nethack_evidence_time(canonical.get('updated_at')) <= now
+                   and landed['result'].get('cleanup_pending') in (None, False)),
+        )
+        restored = reader.restored_runtime(original['result'].get('restored_generation'))
+        _nethack_evidence_source(landed, restored)
+        result['return_boundary'] = _nethack_evidence_boundary(
+            reader, restored, landed, player, active_started=active_started)
+        result['chronology_matches'] = (
+            _nethack_evidence_time(owner.get('started_at')) <=
+            _nethack_evidence_time(owner.get('completed_at')) <=
+            _nethack_evidence_time(original['created_at']) <=
+            _nethack_evidence_time(original['updated_at']) <=
+            _nethack_evidence_time(landed['created_at']) <=
+            _nethack_evidence_time(landed['updated_at']) <= now
+            and int(runtime.split('-')[0][1:]) < original['generation']
+                < original['result']['restored_generation'] < landed['generation'])
+        result['contract_conditions'] = _nethack_evidence_contract_conditions(
+            owner, ledger, original, landed, now)
+        probe = probe or _nethack_evidence_tmux_absent
+        result['original_resources'] = _nethack_evidence_resources(reader, runtime, probe)
+        result['rollback_resources'] = _nethack_evidence_resources(reader, restored, probe)
+        checks = [result['owner_matches'], result['owner_terminal'], result['manual_clear'],
+                  result['chronology_matches'], original['status'] == 'rolled_back',
+                  landed['status'] == 'succeeded', result['return_receipt']['distinct_request'],
+                  result['return_receipt']['result_matches'], result['canonical']['record_clear'],
+                  result['canonical']['identity_complete'], result['canonical']['lease_matches']]
+        checks += [v for b in (result['original_boundary'], result['return_boundary'])
+                   for v in b.values()]
+        result['terminal_chain_matches'] = (False if False in checks else
+                                            None if None in checks else True)
+        reader.recheck()
+        result.update(status='observed',
+                      reason=('resource_coverage_incomplete' if result['terminal_chain_matches'] is True
+                              else 'terminal_chain_unproven'), snapshot_stable=True)
+    except _NethackEvidenceError as exc:
+        # Any failed read/recheck can straddle a changed record. Never retain
+        # affirmative fields from an incomplete or unverified observation.
+        for key in tuple(result):
+            if key not in {'schema_version', 'recovery_authority', 'status', 'reason'}:
+                result[key] = None
+        result.update(status='unavailable', reason=str(exc), snapshot_stable=False)
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        for key in tuple(result):
+            if key not in {'schema_version', 'recovery_authority', 'status', 'reason'}:
+                result[key] = None
+        result.update(status='unavailable', reason='unreadable_or_invalid_evidence',
+                      snapshot_stable=False)
+    return result
 
 
 def _collect_nethack_boundary(state_dir, now):
@@ -4761,7 +7109,8 @@ def _nethack_progress(raw):
     result = {'status': _rotation_enum(raw.get('status'),
               {'ok', 'empty', 'missing', 'error', 'too_large', 'invalid_run_id'})}
     for key in ('sample_count', 'malformed_lines', 'first_turn', 'last_turn',
-                'max_turn', 'max_depth', 'same_frame_sent_pairs', 'max_same_frame_sent_streak'):
+                'max_turn', 'max_depth', 'same_frame_sent_pairs', 'max_same_frame_sent_streak',
+                'same_frame_hold_pairs', 'max_same_frame_hold_streak'):
         result[key] = _nethack_number(raw.get(key))
     for key in ('first_ts', 'last_ts', 'min_hp_ratio'):
         value = raw.get(key)
@@ -4769,6 +7118,11 @@ def _nethack_progress(raw):
     result['truncated'] = raw.get('truncated') if type(raw.get('truncated')) is bool else None
     result['phase_counts'] = {key: _nethack_number(raw.get('phase_counts', {}).get(key))
                              for key in ('sent', 'hold')} if isinstance(raw.get('phase_counts'), dict) else {}
+    result['prompt_counts'] = {
+        key: _nethack_number(raw.get('prompt_counts', {}).get(key))
+        for key in ('none', 'more', 'yes_no', 'direction', 'selection', 'text', 'unknown')
+        if _nethack_number(raw.get('prompt_counts', {}).get(key)) is not None
+    } if isinstance(raw.get('prompt_counts'), dict) else {}
     return result
 
 
@@ -4918,6 +7272,27 @@ def _nethack_history_budget(payload, *, keep_latest=False):
     return text
 
 
+def _cpu_profile_budget(payload):
+    """Keep the busiest profiler rows when the fixed envelope is still full.
+
+    The profiler report is the largest optional section left after the worker
+    and AI reductions, and it is already ordered busiest-first by the
+    producer, so dropping its tail frees room for the current game's evidence
+    instead of forcing it into ``output_omitted``. The dropped row counts stay
+    visible: an omitted row is never reported as absent.
+    """
+    profile = payload.get("cpu_profile")
+    if not isinstance(profile, dict):
+        return payload
+    for key, limit in (("components", CPU_PROFILE_BUDGET_COMPONENTS),
+                       ("spawns", CPU_PROFILE_BUDGET_SPAWNS)):
+        rows = profile.get(key)
+        if isinstance(rows, list) and len(rows) > limit:
+            profile[f"{key}_omitted"] = len(rows) - limit
+            profile[key] = rows[:limit]
+    return payload
+
+
 def _diagnostics_budget(payload):
     """Keep latest history through existing detail reductions, then bound it."""
     text = _nethack_history_budget(payload, keep_latest=True)
@@ -4929,6 +7304,12 @@ def _diagnostics_budget(payload):
         if len(text.encode("utf-8")) > MAX_JSON_BYTES:
             payload["ai"]["anomalous_components"] = {}
             text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # The profiler lists are the largest optional section left. Reducing them
+    # before any game evidence keeps a full envelope from pushing the current
+    # corner's read-only projections into output_omitted.
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        payload = _cpu_profile_budget(payload)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
         profile = payload["soren91_drop_profile"]
         if profile.get('profileStatus') == 'ok':
@@ -4938,6 +7319,14 @@ def _diagnostics_budget(payload):
             profile['games'] = []
             profile['slowest'] = []
             profile['representativeOmitted'] = True
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # Scene narration is optional detail; keep tactical game evidence ahead of
+    # its event histograms if the fixed diagnostics envelope is still full.
+    corners = payload.get("corners")
+    retro = corners.get("retro_corner") if isinstance(corners, dict) else None
+    if (len(text.encode("utf-8")) > MAX_JSON_BYTES and isinstance(retro, dict)
+            and "scene_narration" in retro):
+        retro["scene_narration"] = {"status": "output_omitted"}
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     # Keep current game evidence through the older detail reductions first.
     if len(text.encode("utf-8")) > MAX_JSON_BYTES and "hanjuku_tactical" in payload:
@@ -4951,6 +7340,16 @@ def _diagnostics_budget(payload):
         payload["pulse_sink_inputs"] = {
             key: value for key, value in pulse.items() if key != 'streams'
         } | {'streams': [], 'truncated': True, 'output_omitted': True}
+    # The repeated-operation projection deliberately survives the soft budget.
+    # It is bounded well under 1 KiB and is the only evidence that separates
+    # "corner alive and looping" from "corner progressing" -- the chart
+    # counters and the stall watchdog stay quiet in that state. It is dropped
+    # only against the gateway's hard ceiling, where keeping it would fail the
+    # whole diagnostics operation instead of one field.
+    text = _nethack_history_budget(payload)
+    if (len(text.encode("utf-8")) > HARD_JSON_BYTES and isinstance(retro, dict)
+            and "decision_plans" in retro):
+        retro["decision_plans"] = {"status": "output_omitted"}
     return _nethack_history_budget(payload)
 
 
@@ -5077,6 +7476,8 @@ def main(argv):
         ),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
         "workers": workers,
+        "lifecycle_pause": _collect_lifecycle_pause(soren, now, workers),
+        "supervisor_identity": _collect_supervisor_identity(soren, meta.get("soren_gitlink_sha")),
         "semantic_decision": _collect_semantic_decision(workers),
         "queues": {**queues, "queue_giveups_15m": ai["queue_giveups"]},
         "ai": {
@@ -5097,10 +7498,13 @@ def main(argv):
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
+        "nethack_rotation_evidence": _collect_nethack_rotation_evidence(
+            _program_state_dir(), now, player=_nethack_evidence_player()),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
         "nethack_tiles": _collect_nethack_tiles(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "webui": _collect_webui(),
+        "cpu_profile": _collect_cpu_profile(now),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
         "opencode_session_attribution": _collect_opencode_session_attribution(
             Path(soren).parent / ".local" / "share" / "opencode" / "opencode.db",

@@ -26,6 +26,10 @@ class Corner:
     duration_minutes: int | None = None
     # Speech stays opt-in independently of the visual weather corner.
     audio_enabled: bool = False
+    # Selected execution only; no background fetch timer.
+    fetch_on_start: bool = False
+    # Manual queue only: visible/operable from the owner UI, never auto-selected.
+    manual_only: bool = False
 
 
 # Dispatch policies. "interval" keeps the 24h/N cadence; "queue" fires the next
@@ -74,7 +78,7 @@ def load_catalog(g) -> tuple[Corner, ...]:
     for row in rows:
         if not isinstance(row, dict) or set(row) - {
             "id", "adapter", "game", "enabled", "paused", "live_eligible", "target_matches",
-            "duration_minutes", "audio_enabled",
+            "duration_minutes", "audio_enabled", "fetch_on_start", "manual_only",
         }:
             raise CornerCatalogError("invalid corner catalog entry")
         row = dict(row)
@@ -97,19 +101,27 @@ def load_catalog(g) -> tuple[Corner, ...]:
                         type(item.duration_minutes) is not int
                         or not 1 <= item.duration_minutes <= 14
                     ) or type(item.audio_enabled) is not bool
+                    or type(item.fetch_on_start) is not bool
                     or item.enabled and item.duration_minutes is None):
                 raise CornerCatalogError(
-                    "weather requires id=weather, game=weather-view, boolean audio_enabled, and duration_minutes 1-14 when enabled"
+                    "weather requires id=weather, game=weather-view, boolean audio_enabled/fetch_on_start, and duration_minutes 1-14 when enabled"
                 )
-        elif item.duration_minutes is not None or item.audio_enabled:
-            raise CornerCatalogError("duration_minutes and audio_enabled require weather adapter")
+        elif item.adapter == "tsuitate":
+            if item.id != "tsuitate" or item.game != "tsuitate-view":
+                raise CornerCatalogError(
+                    "tsuitate requires id=tsuitate and game=tsuitate-view"
+                )
+            if item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
+                raise CornerCatalogError("tsuitate does not accept weather-only settings")
+        elif item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
+            raise CornerCatalogError("duration_minutes, audio_enabled and fetch_on_start require weather adapter")
         if item.target_matches is not None and (
             item.adapter != "game" or type(item.target_matches) is not int
             or not 1 <= item.target_matches <= 100
         ):
             raise CornerCatalogError("target_matches requires game adapter and integer 1-100")
         if any(type(value) is not bool for value in
-               (item.enabled, item.paused, item.live_eligible)) or item.live_eligible:
+               (item.enabled, item.paused, item.live_eligible, item.manual_only)) or item.live_eligible:
             raise CornerCatalogError("corners must remain live_eligible=false")
         result.append(item)
     if len({c.id for c in result}) != len(result) or len({c.game for c in result}) != len(result):

@@ -27,7 +27,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import os
 import sys
 import time
 import tomllib
@@ -45,6 +44,7 @@ from .game_switch import (
     GameSwitchStore,
     RuntimeSpec,
 )
+from .meriken_voice import resolve_meriken_speaker
 from .retro_corner import (
     CornerResult,
     RetroCornerError,
@@ -52,7 +52,7 @@ from .retro_corner import (
     RetroCornerManager,
     _safe_detail,
 )
-from .trading.soren_output import enqueue_audio_text, enqueue_chat
+from .trading.soren_output import enqueue_audio_text, enqueue_chat, resolve_soren_root
 
 GAME_NAME = "soren91"
 
@@ -243,13 +243,7 @@ class Soren91CornerManager(RetroCornerManager):
         self.state_path = Path(g.state_dir) / STATE_FILE
         self.lock_path = Path(g.state_dir) / LOCK_FILE
         self.tick_guard_path = Path(g.state_dir) / TICK_GUARD_FILE
-        try:
-            raw = (load_game(g, GAME_NAME).raw.get("soren91") or {})
-            self.voicevox_speaker = os.environ.get("SOREN91_VOICEVOX_SPEAKER") or str(
-                raw.get("voicevox_speaker", 14)
-            )
-        except Exception:
-            self.voicevox_speaker = os.environ.get("SOREN91_VOICEVOX_SPEAKER", "14")
+        self.voicevox_speaker = resolve_meriken_speaker(g, resolve_soren_root(g))
         self._voice = voice or (
             lambda text: enqueue_audio_text(
                 self.g, text, context="soren91:announce", speaker=self.voicevox_speaker
@@ -542,6 +536,10 @@ def _build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
     sub.add_parser("recover")
+    # Settles a slot that finished but failed its restore switch (#1868/#1870)
+    # through the inherited retro recovery, against soren91_corner.json (the
+    # retro-corner CLI only sees retro_corner.json and cannot reach this slot).
+    sub.add_parser("recover-failed")
     return parser
 
 
@@ -580,7 +578,8 @@ def main(argv: list[str] | None = None) -> int:
             result = manager.coordinator.recover()
             print(_recover_json(result))
             return 0
-        result = getattr(manager, args.command)()
+        method_name = {"recover-failed": "recover_failed"}.get(args.command, args.command)
+        result = getattr(manager, method_name)()
         print(
             json.dumps(
                 {

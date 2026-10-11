@@ -291,6 +291,33 @@ class TestRequestReceipts(GameSwitchTestBase):
         self.assertEqual((state["phase"], state["request_id"]), ("validating", first_id))
         self.assertEqual(self.store.receipts.load(second_id)["status"], "queued")
 
+    def test_queued_boundary_policy_is_persisted_and_part_of_identity(self):
+        request_id = str(uuid.uuid4())
+        hard_deadline_at = "2099-01-01T00:00:00Z"
+        first = self.store.enqueue_request(
+            request_id,
+            "switch",
+            "robots",
+            allow_boundary_timeout_extension=False,
+            hard_deadline_at=hard_deadline_at,
+        )
+
+        self.assertFalse(first.receipt["allow_boundary_timeout_extension"])
+        self.assertEqual(first.receipt["hard_deadline_at"], hard_deadline_at)
+        self.assertNotIn("payload", first.receipt)
+        retry = self.store.enqueue_request(
+            request_id,
+            "switch",
+            "robots",
+            allow_boundary_timeout_extension=False,
+            hard_deadline_at="2099-02-01T00:00:00Z",
+        )
+        self.assertTrue(retry.existing)
+        self.assertEqual(retry.status, "queued")
+        self.assertEqual(retry.receipt["hard_deadline_at"], hard_deadline_at)
+        with self.assertRaises(game_switch.RequestConflictError):
+            self.store.enqueue_request(request_id, "switch", "robots")
+
     def test_terminal_result_is_returned_on_retry(self):
         request_id = str(uuid.uuid4())
         self.store.accept_request(request_id, "start", "nethack")

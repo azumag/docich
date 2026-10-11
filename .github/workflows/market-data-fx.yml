@@ -15,7 +15,7 @@ permissions:
 
 # Share the VM operations lane so provider changes cannot race production deploys.
 concurrency:
-  group: vm-operations-${{ github.repository }}
+  group: vm-operations-v2-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:

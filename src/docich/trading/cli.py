@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import math
 import time
 from decimal import Decimal
@@ -115,8 +116,10 @@ def _state_dir(
     return repo_root / "run" / "trading"
 
 
-def _paper_corner_improve_agents(g: GlobalConfig) -> str:
-    """Read [paper_corner].improve_agents (raw; not part of GlobalConfig)."""
+def _paper_corner_improve_agents(
+    g: GlobalConfig, env: Mapping[str, str] | None = None
+) -> str:
+    """Resolve PAPER improvement agents with explicit direct-only opt-in."""
     try:
         import tomllib
         data = tomllib.loads(Path(g.config_path).read_text(encoding="utf-8"))
@@ -125,8 +128,33 @@ def _paper_corner_improve_agents(g: GlobalConfig) -> str:
     section = data.get("paper_corner") if isinstance(data, dict) else None
     if not isinstance(section, dict):
         return ""
-    value = section.get("improve_agents", "")
-    return value.strip() if isinstance(value, str) else ""
+
+    effective_env = os.environ if env is None else env
+    flag = effective_env.get("DOCICH_PAPER_IMPROVE_DIRECT_ENABLED", "0")
+    if flag not in {"0", "1"}:
+        raise TradingCliError("DOCICH_PAPER_IMPROVE_DIRECT_ENABLED must be 0 or 1")
+    key = "improve_direct_agents" if flag == "1" else "improve_agents"
+    value = section.get(key, "")
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise TradingCliError(f"paper_corner.{key} must be a string")
+    agents = value.strip()
+    if flag == "1":
+        if not agents:
+            raise TradingCliError(
+                "paper_corner.improve_direct_agents is required when direct improvement is enabled"
+            )
+        from ..llm.policy import DIRECT_CHAT_PROVIDERS, parse_agents
+        try:
+            specs = parse_agents(agents, dict(effective_env))
+        except Exception as exc:
+            raise TradingCliError("paper_corner.improve_direct_agents is invalid") from exc
+        if any(spec.provider not in DIRECT_CHAT_PROVIDERS for spec in specs):
+            raise TradingCliError(
+                "paper_corner.improve_direct_agents must use explicit *-api providers"
+            )
+    return agents
 
 
 def _json_print(payload: Mapping[str, Any]) -> None:
@@ -611,7 +639,7 @@ def run_args(args, *, repo_root: Path, global_config: GlobalConfig | None = None
                 policy=CapitalPolicy(),
                 now=snapshot["as_of"],
             )
-            broker = PaperBroker(ledger)
+            broker = PaperBroker(ledger, markets=snapshot["markets"])
             for decision in result.decisions:
                 broker.fill(decision, timestamp=snapshot["as_of"])
             deployed_after = snapshot["deployed_reference"] + ledger.deployed_reference()
@@ -647,7 +675,7 @@ def run_args(args, *, repo_root: Path, global_config: GlobalConfig | None = None
                 capital_reference=snapshot["capital_reference"], deployed_reference=deployed_before,
                 policy=CapitalPolicy(), now=snapshot["as_of"],
             )
-            broker = PaperBroker(ledger)
+            broker = PaperBroker(ledger, markets=snapshot["markets"])
             for decision in allocation.decisions:
                 broker.fill(decision, timestamp=snapshot["as_of"])
             rejected_codes = [item.reason_code for item in selection.rejected]

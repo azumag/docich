@@ -44,22 +44,20 @@ docich VM 全体で「何が CPU を使っているか」「どの経路が wake
 - agent の observe/decide/act 時間、screenshot capture/decode 時間、RetroArch FPS、
   dashboard request rate はプロセス外から観測できないため対象外。既存の health / telemetry
   で別途記録する（必要なら follow-up で固定 telemetry を足す）。
-- gateway の `diagnostics` operation（collector timeout 60s）には載せていない。60 秒以上の
-  sample を安全に返すには別 operation が必要で、follow-up とする。
+- gateway の通常 `diagnostics` operation（collector timeout 60s）は保存済みの最新profileを
+  読むだけで、profileを開始しない。owner-onlyの `cpu_profile / production / main` 操作は
+  固定引数なしhelperで一回だけ計測し、その直後にfreshなsanitized projectionを返す。
+  5秒warm-up・60秒測定・0.5秒間隔で、runtime設定やプロセスには変更を加えない。
 
-## 実行方法（VM 上、owner 権限の範囲で）
+## 実行方法（canonical owner-only control plane）
 
-```sh
-cd /home/ubuntu/docich   # production checkout。tracked file は変更しない
-python3 ops/vm_actions/profile_cpu.py sample --scenario idle \
-  --warmup 30 --duration 90 --output /tmp/cpu-idle.json
-python3 ops/vm_actions/profile_cpu.py sample --scenario hanjuku --warmup 30 --duration 90 \
-  --output /tmp/cpu-hanjuku.json
-python3 ops/vm_actions/profile_cpu.py compare /tmp/cpu-before.json /tmp/cpu-after.json
-```
+GitHub Actions の **VM operations** を `workflow_dispatch` し、`cpu_profile` / `production` /
+`main` を選ぶ。固定helperだけがgatewayを通り、reportは `/tmp/docich-cpu-profile-latest.json`
+へ作られ、返るのは既存collectorが許可したprojectionだけ。通常deployでは引き続き
+`cpu_profile_epoch` を明示更新した場合に限り同じone-shot profileを一回実行する。
 
-report は `/tmp` など runtime 外へ置き、Issue #970 へ表（または JSON）を貼る。
-report には秘密情報・command line・パスは含まれないが、貼る前に目視確認する。
+固定duration・scenario以外の入力は受け付けず、arbitrary execや手動SSHは使わない。
+60秒を超える別scenarioはこの操作では実行しない。
 
 ## Baseline scenario（#970 Phase 0）
 

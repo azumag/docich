@@ -228,10 +228,13 @@ def render_html(
         else ""
     )
     if frame.frame_kind == "text":
+        # NOTE: "\n".join を f-string の外に出す (Python 3.11 は f-string
+        # 式内のバックスラッシュを解釈できない; PEP 701 は 3.12 以降)。
+        joined_lines = html.escape("\n".join(frame.tty_lines))
         screen_html = (
             '<main class="tty-frame"><pre class="tty-screen" '
             f'data-cols="{frame.cols}" data-rows="{frame.rows}">'
-            f'{html.escape("\n".join(frame.tty_lines))}</pre></main>'
+            f'{joined_lines}</pre></main>'
         )
     else:
         screen_html = f"""<div class="wrap">

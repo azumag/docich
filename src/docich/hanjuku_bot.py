@@ -7,7 +7,20 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v127-fresh-castle-recheck'
+BOT_VERSION = 'hanjuku-chart-v137-camp-recheck'
+
+# Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
+# frozen and the bot has planned no input for more than this many observations,
+# decide() sends the phase's default input instead of waiting forever.
+#
+# The bound sits above every finite wait the policy already resolves itself
+# (RECALL_LIMIT=90, EGG_RITUAL_LIMIT=64, RARE_SCAN_LIMIT=32,
+# RECRUIT_CANDIDATE_LIMIT=32, MONSTER_MENU_HOLD_LIMIT=30,
+# house.STEP_LIMIT=24), so no bounded step is cut short. At the normal 1.5 s
+# observation interval 100 observations is 150 s, well inside the 300 s
+# screen-stall terminal (hanjuku_run.STALL_SECONDS) that ends the run while
+# nothing is being pressed.
+NO_INPUT_HOLD_MAX = 100
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -174,7 +187,7 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
 
 def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
            interim: dict | None = None, experience: dict | None = None,
-           recall_inputs: dict | None = None) -> tuple[list[dict], dict]:
+           recall_inputs: dict | None = None, run_identity: dict | None = None) -> tuple[list[dict], dict]:
     """Return bounded pad actions and new policy memory; never write or send.
 
     ``adjusted`` is a validated runtime-adjusted chart (``hanjuku_chart_adjust``)
@@ -190,8 +203,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     from . import hanjuku_experience as experience_module
     from . import hanjuku_policy as policy
     from . import hanjuku_house
+    from . import hanjuku_roster
     from . import hanjuku_chart
-    from .hanjuku_screen import parse
+    from .hanjuku_screen import month_confirmation_positions, parse
     # State written before the castle-label rename still names chapter 1's home
     # castle ほんじょう. Rename it here, before anything reads or writes it, so
     # garrison keys, order sources and free-text notes all match the chart.
@@ -200,6 +214,20 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     step=int(state.get('step',0))+1
     phase_step=int(state.get('phase_step',0))+1 if state.get('phase')==phase else 1
     mem=dict(state.get('policy') or {})
+    identity = hanjuku_roster.run_identity(run_identity)
+    mem['_run_identity'] = identity
+    if identity is not None and mem.get('survey_run_identity') != identity:
+        previous_identity = (hanjuku_roster.run_identity(mem.get('survey_run_identity'))
+                             or hanjuku_roster.run_identity(state.get('decision_trace')))
+        hanjuku_roster.invalidate(mem)
+        if previous_identity != identity:
+            for key in ('house', 'house_field_scan', 'house_scan_tick', 'house_scan_month',
+                        'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'recruit_roster_attempts',
+                        'house_eggs', 'egg_uses', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership'):
+                mem.pop(key, None)
+        # A matching old trace may retain observed zero counts, but never
+        # upgrades an old unbound roster into a complete reusable snapshot.
+        mem['survey_run_identity'] = identity
     mem['_records']=[]
     mem['_adjusted']=adjusted
     mem['_interim']=interim
@@ -209,9 +237,18 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     updated.pop('_records',None)
     updated.pop('_experience',None)
     screen=parse(frame,phase=phase)
+    if policy.summer_bonus_continue(screen,mem):
+        screen.kind='summer_bonus'
     policy.observe_events(screen,mem)
     policy.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     kind=screen.kind
+    from . import hanjuku_camp_recheck
+    hanjuku_camp_recheck.interrupt(screen, mem)
+    if state.get('screen_kind') != kind:
+        # A shop/information/confirmation round trip starts a new navigation
+        # episode. No movement failure belongs to a different visible screen.
+        mem.pop('month_nav', None)
+        mem.pop('house_nav', None)
     map_kinds={'map','map_target','castle_menu','general_list','card_select','sortie_confirm'}
     if kind not in map_kinds and mem.get('cursor'):
         # Battles, events and month menus can move the map cursor.
@@ -255,18 +292,38 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     if kind != 'battle_menu':
         for key in ('indep_menu','indep_menu_key','indep_menu_action','egg_row_dead'):
             mem.pop(key,None)
-    recruit_dialog = (mem.get('month_sub') or {}).get('kind') == 'recruit' and not policy.month_menu_ready(screen)
+    # Every explicit foreground confirmation keeps its owner's amount/target
+    # checks. A missing hand alone is not evidence of such a foreground: after
+    # an egg ritual it may simply be a monthly return with a blinking cursor.
+    sub = mem.get('month_sub') or {}
+    event_confirmation = (bool(month_confirmation_positions(screen))
+                          and (policy._is_general_trade_prompt(screen.text)
+                               or policy._is_goninja_prompt(screen.text)))
+    month_dialog = ((sub.get('kind') == 'recruit' and not policy.month_menu_ready(screen))
+                    or (bool(sub) and bool(month_confirmation_positions(screen))))
     recall = mem.get('recall') or {}
-    recall_dialog = recall and not mem.get('month_sub') and (
-        kind in ('map', 'map_target', 'text') or
-        (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no')))
+    recall_dialog = recall and (hanjuku_camp_recheck.owns_dialog(screen, mem) or (
+        not recall.get('retreat_recheck') and not recall.get('anonymous_recheck')
+        and not mem.get('month_sub') and (kind in ('map', 'map_target', 'text') or
+        (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no')))))
     # Cancel an outstanding repair before an emergency recall can move its
     # general; the old house route must not resume afterwards.
     if mem.get('house') and mem.get('recall'):
         hanjuku_house.step(screen, mem, frame)
-    actions = (policy.camp_recall_step(screen, mem, frame) if recall_dialog
-               else policy.month_sub_step(screen, mem) if mem.get('month_sub') and (kind != 'month_menu' or recruit_dialog)
-               else None)
+    # A planned summon-preemption must not become a blind A on an unfinished
+    # command menu, or be replaced by an old monthly/house transaction.
+    actions = policy.defender_egg_pending_step(screen, mem)
+    if actions is None and event_confirmation:
+        # Owner (2026-10-06): trade refusal and the goninja cash floor outrank
+        # a remembered monthly recruit/exit that could accept this yes/no.
+        # Only both explicit choices plus event wording can take precedence;
+        # regular paid prompts and recruitment introductions keep their owner.
+        policy.interrupt_month_payment(mem)
+        actions = policy.yes_no_step(screen, mem)
+    if actions is None:
+        actions = (policy.camp_recall_step(screen, mem, frame) if recall_dialog
+                   else policy.month_sub_step(screen, mem) if mem.get('month_sub') and (kind != 'month_menu' or month_dialog)
+                   else None)
     # No house phase expects a red-curtain screen (concert/merchant backdrop):
     # every branch answers such a text frame with [] or B, which advances
     # neither the event nor input. On an outbound repair that starved the trip
@@ -347,6 +404,10 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=policy.discharge_step(screen,mem)
     elif kind=='gift_request':
         actions=policy.gift_step(screen,mem)
+    elif kind=='summer_bonus':
+        actions=policy.summer_bonus_step(screen,mem)
+    elif kind=='summer_bonus_message':
+        actions=[pad('a')]
     elif kind=='yes_no':
         actions=policy.yes_no_step(screen,mem)
     elif kind in {'castle_info','sealed_castle','main_menu'}:
@@ -369,6 +430,67 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
                                reason='状況判定保留: 文字・カーソル・戦闘表示を読めない画面')
         else:
             mem['held_phase']=None
+    # 保留の廃止: a screen that froze while we planned no input must not stay
+    # that way. The streak counts only observations whose frame digest is one of
+    # the two most recent distinct images -- the same evidence
+    # hanjuku_run.screen_stalled treats as one unchanged screen -- so a fade, an
+    # animation or marching units are never cut short, and a real policy input
+    # starts the count over. Past NO_INPUT_HOLD_MAX the phase's own default
+    # input is sent; the five phases whose reviewed default is deliberately
+    # empty get the key a player would reach for instead of another wait.
+    digest=frame.digest()
+    frozen=[d for d in (updated.get('no_input_frames') or []) if isinstance(d,str)][:2]
+    if actions:
+        streak=0
+    elif digest in frozen:
+        streak=int(updated.get('no_input_streak') or 0)+1
+    else:
+        streak=1
+    if not actions and streak>NO_INPUT_HOLD_MAX:
+        # Even this last-resort path must not confirm an unread summer option:
+        # the cursor may be on the mass-dismissal row. Reobserve after one move.
+        # These recognized events must never borrow a scripted scene's blind A.
+        actions=([pad('up')] if kind=='summer_bonus'
+                 else [pad('b')] if kind=='month_menu' or event_confirmation
+                 else legacy_actions(frame,phase,updated))
+        if kind == 'month_menu':
+            # The legacy monthly A repeatedly opened the merchant from a
+            # held background row. Cancel and re-read the menu instead; only
+            # an observed target selection may confirm or spend money.
+            mem.pop('month_nav', None)
+            mem.pop('house_nav', None)
+        if not actions:
+            if phase=='field':
+                if kind in {'unknown','map'}:
+                    # A bare map the chart policy has no plan for: SELECT
+                    # recentres the cursor on the hero (measured), which moves
+                    # the screen and lets nav_step re-anchor. Mirrors the
+                    # bookkeeping map_step.select_focus does after that jump.
+                    actions=[pad('select')]
+                    mem['nav_last']=None
+                    mem['uncertain']=True
+                    mem['select_focus_tick']=int(mem.get('tick') or 0)
+                elif kind in {'map_target','world_map'}:
+                    actions=[pad('b')]      # leave or cancel an open map view
+                else:
+                    actions=[pad('a')]      # a message over the field: acknowledge
+            elif phase=='transition':
+                actions=[pad('a')]          # a dark scene that stopped moving, not a fade
+            elif phase=='name':
+                actions=[pad('b')]          # only the readable name policy may type or confirm
+            else:
+                actions=[pad('b')]          # field_menu / battle: close, cancel or back out
+        # Deliberately outside INPUT_CONTEXT_DECISIONS: the record that already
+        # explains the hold (situation_held, chart_adjust_request, ...) stays the
+        # input context, so strategy_variant and deviation_reason are not
+        # replaced by this mechanical follow-up. And outside SPOKEN, like every
+        # other wait: it is logged, not narrated.
+        policy._record(mem,'no_input_fallback',screen=kind,phase=phase,
+                       observed_metric={'frozen_observations':streak,'frame_sha256':digest},
+                       reason='同一画面で入力0件の観測が上限を超えたため、フェーズ別の既定入力で保留を解消する')
+        streak=0
+    updated['no_input_streak']=streak
+    updated['no_input_frames']=[digest]+[d for d in frozen if d!=digest][:1]
     updated['screen_kind']=kind
     mem.pop('_adjusted',None)
     mem.pop('_interim',None)

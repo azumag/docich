@@ -17,10 +17,41 @@ rollback、実行終了後の元のゲームへの復帰も実装した。既存
 既に公開済みのsnapshotだけをloopbackで表示し、`game` / `runtime_id` / `generation` / `lease_id`の
 4項目をserverへ渡して応答でも照合する。既存の960×540 presentationとGameSwitch
 所有プロセスの終了処理を使い、start直前のfreshnessと起動後の同一runtime応答を検証する。
-共通corner managerはこのviewを通してのみ起動する。adapter実装は登録済みだが、production
-catalogにはweather行がなく、行を追加する場合も明示的なenabled設定と期間指定が必要。
+共通corner managerはこのviewを通してのみ起動する。weather行には明示的なenabled設定と
+期間指定が必要。
 weather-view用のTwitch category/title mappingは追加せず、合成view起動時にstream titleも更新しない。
 復帰先の実ゲームについてはGameSwitchの既存commit hookを使う。単独では起動しない。
+
+## WebUIでの開始予約・停止
+
+`POST /api/corners` の `start` / `stop` でweatherを選択できる。
+operator認証・CSRF・`confirm:true`は既存の手動操作と同じ条件で必須。
+開始は `CornerRotationManager.queue_manual("weather-view")` による永続予約であり、
+現在のコーナーが終了した後、ローテーションの次のtickで実行する。HTTP処理から
+GameSwitchやweather workerを起動せず、共通program slot・試合境界待ち・owner検証を使う。
+予約は重複しない。無効・休止・復旧待ち・別の手動予約・利用可能な予報がない状態は拒否する。
+手動予約は既存契約どおりcooldownだけを無視し、使用履歴には記録する。
+
+表示時間・`audio_enabled`・`fetch_on_start`はcatalogの設定を使い、表示時間の上書きは拒否する。
+現行のtracked live configは最大1分・開始時予報取得・音声無効。実VMでの開始・表示・復帰確認は
+コード検証とは別の運用確認になる。画面には予約先とweatherの実行状態を分けて表示し、
+予約UUIDや完全runtime identityは返さない。
+
+停止は `WeatherCornerManager.stop()` の永続stop要求を使う。実行ownerが要求を読み、
+既存の所有権検証を通して元のゲームへ復帰する。HTTP受付を復帰完了とは扱わない。
+まだweatherが開始していない予約の取消しは既存契約にないため、停止できるのは
+`starting` / `active` / `restoring` のweather実行。未開始のstopは409で返す。
+
+backendのPython変更はWebUIサービスの再起動が必要。正規deployでファイルが更新されても、
+既存プロセスのimport済みcatalog/adapterは更新されない。HTML一致の診断だけでは
+backendの反映を証明できない。owner承認後、最新mainと同SHAの正規deploy成功を確認し、
+`vm-operations.yml` をworkflow ref `main`で実行する。入力は `operation=restart_webui`、
+`target=production`、`ref=main`、`confirm=production`。入力refへのSHA指定は
+`restart_webui must run from main`で拒否される。workflowの
+`Resolve immutable candidate SHA`とgateway結果の実resolved SHAを、配備成功のSHAと照合する。
+再起動後に認証済み `GET /api/corners` の `source`・`catalog_status`・catalog件数を確認する。
+`source`は `docich.soren-live.toml` / `run-soren-live`、`catalog_status`は `available` が期待値。
+このコード追加・回帰テストだけでは本番再起動やweather開始は行われない。
 
 ## 権利・出典・予報業務の境界
 
@@ -39,6 +70,17 @@ weather-view用のTwitch category/title mappingは追加せず、合成view起�
 気象庁ロゴ、外部地図タイル、外部フォント配信は使用しない。
 フォントは実行ホストのシステムフォントを参照し、フォントファイルは配布しない。
 テストデータは合成データであり、実際の天気として表示・配信しない。
+
+地図画面は Natural Earth の Admin 0 – Countries 1:10m（日本）と
+Populated Places 1:10m の位置データを同梱し、画面用に簡略化したSVGとして描画する。
+同データはPublic Domain。市区町村・都道府県境界や航行に使える精度を示すものではなく、
+行政界を描き足さない。北海道・本州・四国・九州・沖縄を含む全国表示から、地方・代表都市へ
+選択ズームし、全国表示へ戻れる。配信向け960×540ではcontain表示、縦長端末は縦スクロールの
+レイアウトに切り替える。自動順送りは画面だけの操作で、読み上げ音声との同期は未接続。
+
+- [Natural Earth Admin 0 – Countries 1:10m](https://www.naturalearthdata.com/downloads/10m-cultural-vectors/10m-admin-0-countries/)
+- [Natural Earth Populated Places 1:10m](https://www.naturalearthdata.com/downloads/10m-cultural-vectors/10m-populated-places/)
+- [Natural Earth terms of use](https://www.naturalearthdata.com/about/terms-of-use/)
 
 気象庁が発表した予報の伝達・解説という範囲を維持する。
 数値予報の独自解析、地点補間、独自の降雨時刻・確率・警報生成、
@@ -93,10 +135,13 @@ bin/docich-weather --state-dir /tmp/docich-weather-preview serve --port 8803
 CLIの `status` / `narration` は有効なsnapshotがなければ固定理由とexit 2を返す。
 `narration` は原稿のJSON出力であり、TTS queueへの送信ではない。
 
-画面は6地点/5地点の2ページを12秒間隔で切り替える。
+画面は同梱のNatural Earth日本地図と11地点の位置を表示し、地点選択・前後移動・
+全国表示・画面のみの自動順送りでクローズアップする。
 外部文字列をHTMLとして挿入せず、全て `textContent` で描画する。
 長すぎる原文を勝手に切って意味を変えず、表示枠に収まらない場合は休止する。
 描画は960×540を縦横比維持でcontainし、外側の配信枠は操作しない。
+縦長端末は地図と予報パネルを縦に並べる。broadcast表示ではweather ownerの
+再生完了receipt由来のordinal cueに同期し、固定秒数の擬似cue時計では地点を進めない。
 
 `GET /api/weather` はraw予報を毎回再検証する。有効なら200、欠損・期限切れなら503。
 全応答を`no-store`とし、Host検証・CSPも設定する。
@@ -130,8 +175,9 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
 6. snapshotの有効性は適格性判定、GameSwitch preflight/readiness、放送中の表示再検証で
    確認する。取得失敗は休止とし、鮮度期限が来たらGameSwitchで復帰する。
    合成adapterによる境界待ち、開始rollback、終了後復帰、operator移動のfenceをオフラインで検証した。
-7. production有効化の前に独立レビュー、CI、全11地点の現行データ確認、非本番の
-   開始/終了実測を完了する。未実施の項目を成功扱いしない。
+7. PRレビューとCIを経て正規配布する。事前の実画面・非本番の開始/終了実測は未実施。
+   本番表示・開始/終了・元ゲーム復帰の受入確認は配布後に行う。
+   未実施の確認を成功扱いしない。
 
 ## 検証記録
 
@@ -141,3 +187,39 @@ CLIの `status` / `narration` は有効なsnapshotがなければ固定理由と
 - Python compileと`git diff --check`は成功。
 - 現行JMA全国11地点一括取得、実VM、実OBS、実音声、実GameSwitch復帰は未実測。
 - owner checkout固有のgitignored `handoff.md`、運用メモリ、VM作業中バナー・音声はこの実行環境では利用できず、確認・操作していない。
+
+
+## Production rotation登録（2026-10-03）
+
+`config/docich.soren-live.toml`の既存queue rotationへweatherを追加する。
+`duration_minutes=4`, `fetch_on_start=true`, `audio_enabled=true`。4分は安全上限で、13項目の音声が完了すればその時点で復帰する。
+他cornerと同じrolling 24時間cooldown、共通program slot、GameSwitchのラウンド境界待ち・復帰を使う。
+独立timer、他ゲームの強制終了、配信基盤の再起動は追加しない。
+
+`fetch_on_start`はweather専用boolean、省略時false。trueならsnapshotなしでも選択候補となるが、
+適格性・status照会では通信しない。選択された新executionの実行時だけ、GameSwitch要求前に
+CLIと同じsingle-flight publisherを呼ぶ。固定JMA host/11 office、既存15分cache、最大45秒取得budgetを使い、
+取得中は旧ゲームを維持する。全11都市を鮮度検証してからatomic publicationする。
+取得・lock失敗は`interrupted / forecast-fetch-failed-before-start`としてreservationを完了し、
+ゲーム切替や音声送信をせず他cornerへ進む。同requestのterminal replay、starting/active/restoring再開では再取得しない。
+ゲームの境界待ち中にsnapshotが失効した場合は既存preflight/readinessが拒否し、既存rollback/reconcile経路で処理する。
+取得成功は実際の開始成功を保証しない。
+
+owned viewerは`/broadcast`を開き、固定タイマーではなくweather ownerの音声deliveryを表示cueとして使う。
+表示順は全国導入（item 0）→札幌〜那覇の11地点（item 1〜11）→全国のまとめ（item 12）。
+各地点では先に地図をその地点へフォーカスし、そのitemの音声再生完了receiptが`played`になるまで同じ地点を保持する。
+`played`後にownerの`next_index`だけが進み、次のscheduler pollで次itemをenqueueするため、その間にviewerが次地点へ移る。
+通常の`/`は従来どおり手動7秒巡回を維持する。
+
+viewerの`GET /api/weather-cue`は固定の`weather_corner.json`だけをbounded readし、
+自身のruntime id / generation / leaseとownerの`weather_runtime_identity`が完全一致するactive実行だけを受理する。
+レスポンスは`status`と0〜12のitem ordinalだけで、runtime/lease id、音声本文、request payloadは返さない。
+viewerは250ms間隔でこのcueを確認するが、地点進行そのものはtimerではなくownerの`next_index`に従う。
+
+現行11都市の13項目原稿は長いためproduction枠の上限を4分へ広げる。
+13項目すべてが`played`なら`audio-completed`で即復帰し、確認済みのterminal audio failureなら
+`audio-unavailable`で復帰する。manual stop、forecast expiry、GameSwitch ownership transitionと4分上限は従来どおり安全境界として残す。
+実VMでのTTS所要、配信frame上のフォーカス切替、最後の音声から元画面へ戻る実測は別途受入確認する。
+
+出典・編集表記は[気象庁利用規約](https://www.jma.go.jp/jma/kishou/info/coment.html)に従う既存表記を維持。
+地図は[Natural Earth Public Domain](https://www.naturalearthdata.com/about/terms-of-use/)の既存同梱データを維持する。

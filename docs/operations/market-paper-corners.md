@@ -89,6 +89,7 @@ practice価格を入力し、約定はdocich内のローカル台帳にのみ生
 結果固定時に一意なjobを作る。`news.rss_urls`へ承認済みHTTPS RSSを設定し、見出し・公開時刻・取得時刻を記録する。
 ニュース欠損／未来時刻／AI未設定では改善しない。エラーは最大3回のbackoff再試行で、全文や資格情報はログへ出さない。
 `ai.agents`は既存のAIディスパッチ識別子。空の場合は選択profileの`paper_corner.improve_agents`を参照する。
+`DOCICH_MARKET_PAPER_DIRECT_ENABLED=1` の場合だけ `ai.direct_agents` を使い、legacy/profile chainへfallbackしない。現在の設定例は `cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8` のdirect-only 1本で、flag未設定/0では従来経路のまま。direct flagが不正、またはdirect_agentsが空なら `needs_ai_or_news_configuration` 側へfail-closedする。株/FXの提案出力は従来どおりbounded JSONで、資金・銘柄・発注・コード変更権限は増えない。
 「中華AI」として運用する前に、この経路を実際に利用可能な中国系モデルへ設定・実測すること。
 本変更はモデル契約や既存の配信モデルを勝手に変更しない。
 

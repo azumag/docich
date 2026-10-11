@@ -61,6 +61,9 @@ INVALID_TERMINAL = [
     {"name_entered": False}, {"generation": 8}, {"generation": True},
     {"lease_id": None}, {"lease_id": ""}, {"game": "sorengame"}, {"schema": True},
     {"actions_sent": -1}, {"terminal_reason": "screen_stalled", "unchanged_seconds": 299},
+    {"terminal_reason": "input_stalled"},
+    {"terminal_reason": "input_stalled", "observed_monotonic": 700,
+     "last_input_monotonic": 10, "observations": 200, "last_input_observations": 150},
 ]
 
 
@@ -118,21 +121,32 @@ class EvidenceTests(EvidenceFixture, unittest.TestCase):
     def test_stall_accepted(self):
         self.assertTrue(e.terminal_identity(run_state(terminal_reason="screen_stalled", unchanged_seconds=300), RID))
 
+    def test_input_stall_accepted(self):
+        self.assertTrue(e.terminal_identity(run_state(
+            terminal_reason="input_stalled", observed_monotonic=612,
+            last_input_monotonic=10, observations=130,
+            last_input_observations=5), RID))
+
     def test_native_terminal_parity(self):
         # Execute the actual native pure load/terminal functions, not a copied
         # fake validator. AST selection avoids importing the gameplay/bot stack.
         source = MODULE.parents[2] / "src/docich/hanjuku_run.py"
         tree = ast.parse(source.read_text())
-        names = {"RUN_FILE", "TERMINAL_REASONS", "STALL_SECONDS"}
+        names = {"RUN_FILE", "TERMINAL_REASONS", "STALL_SECONDS",
+                 "INPUT_STALL_SECONDS", "INPUT_STALL_OBSERVATIONS"}
         nodes = [n for n in tree.body if
                  (isinstance(n, ast.FunctionDef) and n.name in {"load", "terminal"}) or
                  (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in n.targets))]
-        self.assertEqual(len(nodes), 5)
+        self.assertEqual(len(nodes), 7)
         native = {"Path": Path, "math": math, "AdapterError": ValueError,
                   "read_record": lambda path: json.loads(path.read_bytes())}
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), "exec"), native)
         identity = e.terminal_identity(run_state(), RID)
+        input_stalled = run_state(terminal_reason="input_stalled", observed_monotonic=612,
+                                  last_input_monotonic=10, observations=130,
+                                  last_input_observations=5)
         for index, state in enumerate([run_state(), run_state(terminal_reason="screen_stalled", unchanged_seconds=300),
+                      input_stalled,
                       *(run_state(**v) for v in INVALID_TERMINAL)]):
             (self.run / "hanjuku_run.json").write_text(json.dumps(state))
             try:
@@ -146,7 +160,7 @@ class EvidenceTests(EvidenceFixture, unittest.TestCase):
             with self.subTest(state=state):
                 # Export is intentionally stricter for legacy schema/no lease.
                 self.assertFalse(exported and not native_ok)
-                if index < 2:
+                if index < 3:
                     self.assertTrue(exported and native_ok)
 
     def test_bad_runtime_selector(self):

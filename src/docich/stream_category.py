@@ -31,6 +31,13 @@ TITLE_SYNC_SKIP_REASONS = frozenset({
 PAPER_CATEGORY_ID = "509670"
 PAPER_CATEGORY_NAME = "Science & Technology"
 
+# ``external-video-view`` (OBS-sourced special corner) is likewise synthetic.
+# The id was resolved read-only with the Soren updater's ``--resolve`` (single
+# exact match for the title) on 2026-10-11.
+FLYHOME_VIEW_NAME = "external-video-view"
+FLYHOME_CATEGORY_ID = "1202315854"
+FLYHOME_CATEGORY_NAME = "Fly Me To The Home!"
+
 # Public viewer labels only: never use operational briefs, chart versions,
 # paths or generated/private text to compose an automatic broadcast title.
 VIEWER_GAME_NAMES = {
@@ -40,6 +47,7 @@ VIEWER_GAME_NAMES = {
     "ninvaders": "Space Invaders", "nsnake": "Snake",
     "pacman4console": "Pac-Man", "robots": "Robots",
     "paper-view": "ペーパートレード",
+    FLYHOME_VIEW_NAME: "Fly Me To The Home!",
 }
 
 
@@ -51,7 +59,8 @@ def viewer_title_args(game: str, g: GlobalConfig | None = None) -> list[str]:
     """
     game = validate_game_name(game)
     label = VIEWER_GAME_NAMES.get(game, game)
-    suffix = "AIの検証配信" if game == "paper-view" else "AIプレイ配信"
+    suffix = {"paper-view": "AIの検証配信",
+              FLYHOME_VIEW_NAME: "全50面クリアに挑戦"}.get(game, "AIプレイ配信")
     if g is not None:
         from .stream_title_context import progress_phrase
         from .trading.soren_output import resolve_soren_root
@@ -204,6 +213,7 @@ def _announce_explicit_category(
     *,
     category_id: str,
     category_name: str = "",
+    view: str = "paper-view",
     spawn=None,
 ) -> bool:
     """Ask the Soren updater to use a category without a game TOML.
@@ -222,7 +232,7 @@ def _announce_explicit_category(
     argv = [str(script), "--category-id", category_id.strip()]
     if category_name:
         argv.extend(["--category-name", str(category_name)])
-    argv.extend(viewer_title_args("paper-view", g))
+    argv.extend(viewer_title_args(view, g))
     try:
         (spawn or _spawn)(
             argv,
@@ -283,6 +293,17 @@ def announce_stream_paper(g: GlobalConfig, *, spawn=None) -> bool:
     )
 
 
+def announce_stream_flyhome(g: GlobalConfig, *, spawn=None) -> bool:
+    """Move the stream to the Fly Me To The Home! category and title."""
+    return _announce_explicit_category(
+        g,
+        category_id=FLYHOME_CATEGORY_ID,
+        category_name=FLYHOME_CATEGORY_NAME,
+        view=FLYHOME_VIEW_NAME,
+        spawn=spawn,
+    )
+
+
 def announce_running_view(g: GlobalConfig, game: str, *, spawn=None) -> bool:
     """Follow whatever a committed game switch put on screen.
 
@@ -295,6 +316,8 @@ def announce_running_view(g: GlobalConfig, game: str, *, spawn=None) -> bool:
 
     if game == PAPER_VIEW_NAME:
         return announce_stream_paper(g, spawn=spawn)
+    if game == FLYHOME_VIEW_NAME:
+        return announce_stream_flyhome(g, spawn=spawn)
     return announce_stream_game(g, game, spawn=spawn)
 
 

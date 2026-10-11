@@ -1,16 +1,18 @@
 """Bounded public research inputs for the PAPER crypto corner.
 
-This module is deliberately read-only with respect to exchanges: it searches
-public Google News RSS feeds and Wikipedia, selects one actually-held asset,
-and persists a small allowlisted research record for narration and the later
-strategy-improvement pass. No exchange credentials or order endpoints exist
-here.
+This module is deliberately read-only with respect to exchanges. The default
+path searches public Google News RSS feeds and Wikipedia. An explicit opt-in
+can instead reuse docich's bounded public Web Search + verified-body broker.
+Both paths select one actually-held asset and persist a small allowlisted
+research record for narration and the later strategy-improvement pass. No
+exchange credentials or order endpoints exist here.
 """
 from __future__ import annotations
 
 import datetime as dt
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
+import hashlib
 import html
 import json
 import os
@@ -271,6 +273,89 @@ def _asset_news(name: str, fetcher: Callable[[str], str], seen: set[str]) -> lis
         return []
 
 
+def _web_title(text: str, url: str) -> str:
+    """Derive a bounded label from fetched body text, never from search snippets."""
+    cleaned = _clean_text(text, 300)
+    if cleaned:
+        match = re.search(r"[。！？!?]\s|[.]\s", cleaned)
+        title = cleaned[:match.end()].strip() if match else cleaned[:180].strip()
+        if title:
+            return title[:300]
+    try:
+        return (urllib.parse.urlsplit(url).hostname or "public-web")[:120]
+    except ValueError:
+        return "public-web"
+
+
+def _web_row(material) -> dict[str, object] | None:
+    url = str(getattr(material, "url", "") or "")
+    text = str(getattr(material, "excerpt", "") or "")
+    excerpt_sha = str(getattr(material, "excerpt_sha256", "") or "")
+    body_sha = str(getattr(material, "body_sha256", "") or "")
+    if (not url or not text or len(excerpt_sha) != 64 or len(body_sha) != 64
+            or hashlib.sha256(text.encode()).hexdigest() != excerpt_sha):
+        return None
+    try:
+        source = urllib.parse.urlsplit(url).hostname or ""
+    except ValueError:
+        source = ""
+    title = _web_title(text, url)
+    if not title:
+        return None
+    return {
+        "title": title,
+        "url": url[:700],
+        "source": source[:120],
+        "published_at": None,
+        "summary": _clean_text(text, MAX_SUMMARY_CHARS),
+        "key": _title_key(title),
+        "evidence_sha256": body_sha,
+    }
+
+
+def _prepare_websearch_inputs(
+    *,
+    name: str,
+    seen: set[str],
+    env: Mapping[str, str],
+    searcher=None,
+    broker=None,
+) -> tuple[list[dict[str, object]], str, list[dict[str, object]]]:
+    """Build PAPER DTOs through the shared verified-Web material adapter."""
+    from ..web_material import collect_verified_web_material
+
+    queries = ["暗号資産 ビットコイン イーサリアム 規制 ETF 最新ニュース"]
+    asset_index = None
+    if name:
+        asset_index = len(queries)
+        queries.append(f"{name} cryptocurrency technology history latest news")
+
+    bundle = collect_verified_web_material(
+        queries,
+        env=env,
+        timeout_sec=20.0,
+        max_sources=4,
+        searcher=searcher,
+        broker=broker,
+    )
+    general_rows = []
+    asset_rows = []
+    for material in bundle.items:
+        row = _web_row(material)
+        if row is None:
+            continue
+        indexes = set(getattr(material, "query_indexes", ()))
+        if 0 in indexes:
+            general_rows.append(row)
+        if asset_index is not None and asset_index in indexes:
+            asset_rows.append(row)
+
+    news_items = _merge_news([general_rows], seen, min(MAX_NEWS_ITEMS, 4))
+    related = _merge_news([asset_rows], seen, MAX_ASSET_NEWS) if name else []
+    background = _clean_text(asset_rows[0].get("summary"), MAX_BACKGROUND_CHARS) if asset_rows else ""
+    return news_items, background, related
+
+
 def _history(trading_dir: Path) -> dict:
     data = _read_json(trading_dir / HISTORY_FILENAME)
     news_keys = data.get("news_keys") if isinstance(data.get("news_keys"), list) else []
@@ -301,6 +386,9 @@ def prepare_research_context(
     now: float | None = None,
     fetcher: Callable[[str], str] | None = None,
     chooser=None,
+    env: Mapping[str, str] | None = None,
+    web_searcher=None,
+    web_broker=None,
 ) -> dict:
     """Search public crypto news and select one held asset with deduped angle."""
     target = Path(trading_dir)
@@ -311,18 +399,35 @@ def prepare_research_context(
         return existing
 
     fetch = fetcher or _http_get
+    effective_env = os.environ if env is None else env
+    backend = effective_env.get("DOCICH_PAPER_RESEARCH_BACKEND", "legacy")
+    if backend not in {"legacy", "websearch"}:
+        raise ValueError("invalid paper research backend")
+
     history = _history(target)
     seen = set(history["news_keys"])
     held = _held_symbols(target)
     symbol, angle, angle_label = _select_asset(held, history, chooser)
     name = _asset_name(symbol) if symbol else ""
 
-    news_items = _fetch_crypto_news(fetch, seen)
-    background = _wikipedia_background(name, fetch) if symbol else ""
-    related = _asset_news(name, fetch, seen) if symbol else []
+    if backend == "websearch":
+        news_items, background, related = _prepare_websearch_inputs(
+            name=name,
+            seen=seen,
+            env=effective_env,
+            searcher=web_searcher,
+            broker=web_broker,
+        )
+        research_backend = "websearch_verified_body"
+    else:
+        news_items = _fetch_crypto_news(fetch, seen)
+        background = _wikipedia_background(name, fetch) if symbol else ""
+        related = _asset_news(name, fetch, seen) if symbol else []
+        research_backend = "google_news_wikipedia"
     payload = {
         "schema_version": 1,
         "status": "prepared",
+        "research_backend": research_backend,
         "date": date,
         "generated_at": moment,
         "news_items": news_items,

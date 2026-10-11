@@ -1,0 +1,7 @@
+{
+  "type": "game_end",
+  "gameId": "game-demo",
+  "param": "&amp;visibility_rule=tsuitate&amp;black_player=Player%20One&amp;white_player=Bot&amp;moves=+7776FU-0000ZA&amp;move_durations=2.00-1.00",
+  "result": "Checkmate",
+  "winner": "b"
+}

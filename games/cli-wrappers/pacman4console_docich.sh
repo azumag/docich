@@ -13,7 +13,7 @@
 # panel (scorelog JSONL).
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 . "$SCRIPT_DIR/_run_with_driver.sh"
-SCORELOG="${PACMAN_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/pacman4console.jsonl}"
+SCORELOG="${PACMAN_SCORELOG:-${DOCICH_STATE_DIR:-/home/ubuntu/docich/run-soren-live}/scores/pacman4console.jsonl}"
 PANE="${TMUX_PANE:-}"
 LEVEL="${PACMAN_LEVEL:-1}"
 PACMAN_BIN="${PACMAN_BIN:-/usr/games/pacman4console}"
@@ -25,7 +25,8 @@ esac
 record_score() {
   [ "$1" -ge 0 ] 2>/dev/null || return 0
   mkdir -p "$(dirname "$SCORELOG")" 2>/dev/null || true
-  printf '{"ts":%s,"game":"pacman4console","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$1" >>"$SCORELOG" 2>/dev/null || true
+  printf '{"ts":%s,"game":"pacman4console","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$1" >>"$SCORELOG" 2>/dev/null || return 0
+  docich_wrapper_record_clip pacman4console "$1"
 }
 
 driver() {
@@ -84,6 +85,7 @@ driver() {
   done
 }
 
+docich_wrapper_seed_clips pacman4console
 driver </dev/null &
 DRIVER=$!
 docich_wrapper_run_with_driver "$DRIVER" "$PACMAN_BIN" --level="$LEVEL"

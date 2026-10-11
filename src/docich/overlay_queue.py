@@ -96,6 +96,25 @@ def comment_gen_state_path(soren_root: Path) -> Path:
     return _env_path(Path(soren_root), "COMMENT_GEN_STATE_FILE", "tmp/state/.comment_gen_state")
 
 
+def comment_gen_detail_path(soren_root: Path) -> Path:
+    """Machine-readable comment-generation detail JSON (#1182).
+
+    Written by the soviet_now comment worker (model/preview/count/
+    attempt/max_retry/batch_hash/mode/owner_pid); the WebUI indicator
+    keeps a longer stale window while the owner PID is alive.
+    """
+    raw = os.environ.get("COMMENT_GEN_DETAIL_FILE", "") or os.environ.get(
+        "EVENT_OVERLAY_COMMENT_GEN_DETAIL_STATE", ""
+    )
+    if raw:
+        p = Path(raw)
+        return p if p.is_absolute() else (Path(soren_root) / p)
+    base = comment_gen_state_path(soren_root)
+    if base.name == ".comment_gen_state":
+        return base.parent / ".comment_gen_state.json"
+    return Path(soren_root) / "tmp/state/.comment_gen_state.json"
+
+
 def radio_state_path(soren_root: Path) -> Path:
     return _env_path(Path(soren_root), "RADIO_STATE_FILE", "tmp/state/.radio_state")
 

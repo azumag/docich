@@ -199,6 +199,66 @@ class AuthorizeTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode,0,p.stderr)
 
+    def test_paper_ai_canary_requires_production_main_and_confirmation(self):
+        for target, ref, confirm in (
+            ("preview", "main", "production"),
+            ("production", "feature", "production"),
+            ("production", "main", ""),
+        ):
+            p = self.run_auth(
+                INPUT_OPERATION="paper_ai_canary",
+                INPUT_TARGET=target,
+                INPUT_REF=ref,
+                INPUT_CONFIRM=confirm,
+            )
+            self.assertNotEqual(p.returncode, 0)
+        p = self.run_auth(
+            GITHUB_REPOSITORY_PRIVATE="false",
+            INPUT_OPERATION="paper_ai_canary",
+            INPUT_TARGET="production",
+            INPUT_REF="main",
+            INPUT_CONFIRM="production",
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_paper_ai_canary_workflow_uses_only_fixed_reviewed_helper(self):
+        workflow = WF.read_text(encoding="utf-8")
+        marker = "Run one-shot PAPER Web Search and direct-AI canary"
+        self.assertIn(marker, workflow)
+        block = workflow.split(marker, 1)[1].split("- name:", 1)[0]
+        self.assertIn("steps.auth.outputs.operation == 'paper_ai_canary'", block)
+        self.assertIn("cat control/ops/vm_actions/run_paper_ai_canary.sh", block)
+        self.assertIn("EXPECTED_SHA=%s", block)
+        self.assertIn('"exec docich production $SHA"', block)
+        self.assertNotIn("VM_COMMAND", block)
+        self.assertNotIn("inputs.command", block)
+        self.assertIn(">/dev/null", block)
+
+    def test_paper_ai_canary_runner_is_fixed_nonpublishing_cli(self):
+        runner = (ROOT / "ops/vm_actions/run_paper_ai_canary.sh").read_text(encoding="utf-8")
+        self.assertIn('root="/home/ubuntu/docich"', runner)
+        self.assertIn('soren_root="/home/ubuntu/soren"', runner)
+        self.assertIn('readonly expected_sha="${EXPECTED_SHA:-}"', runner)
+        self.assertIn('[[ "$head" == "$expected_sha" ]]', runner)
+        self.assertIn('status --porcelain --untracked-files=no --ignore-submodules=all', runner)
+        self.assertIn('. "$env_file"', runner)
+        self.assertIn('DOCICH_ALLOW_REAL_AI="1"', runner)
+        self.assertIn('paper-ai-canary --execute', runner)
+        self.assertIn('exec env -i', runner)
+        for allowed in (
+            'DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID',
+            'DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN',
+            'DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID',
+            'CLOUDFLARE_API_TOKEN',
+            'CLOUDFLARE_API_TOKEN_FILE',
+        ):
+            self.assertIn(allowed, runner)
+        for withheld in ('DISCORD_TOKEN', 'OPENCODE_API_KEY', 'OPENAI_API_KEY', 'AI_GATEWAY_API_KEY'):
+            self.assertNotIn(withheld, runner)
+        for forbidden in ("curl ", "wget ", "sudo ", "systemctl ", "tmux ", "kill ", "rm -", "VM_COMMAND"):
+            self.assertNotIn(forbidden, runner)
+        self.assertLess(len(runner.encode("utf-8")), 16384)
+
     def test_restart_webui_requires_production_main_and_confirmation(self):
         p=self.run_auth(INPUT_OPERATION='restart_webui',INPUT_TARGET='preview',INPUT_REF='main',INPUT_CONFIRM='production')
         self.assertNotEqual(p.returncode,0)
@@ -228,6 +288,71 @@ class AuthorizeTests(unittest.TestCase):
         # arbitrary exec の入力 ($VM_COMMAND) を webui 再起動へ流用しない
         step = workflow.split("Restart docich webui systemd unit", 1)[1].split("- name:", 1)[0]
         self.assertNotIn("VM_COMMAND", step)
+        self.assertIn("github.event_name == 'push'", step)
+        self.assertIn("steps.auth.outputs.operation == 'deploy'", step)
+        self.assertIn("src/docich ops/runtime_context/webui_restart_epoch", step)
+        self.assertIn('git -C candidate diff --quiet "$BEFORE_SHA" "$SHA"', step)
+
+    def test_restart_chat_kick_workers_requires_production_main_and_confirmation(self):
+        p=self.run_auth(INPUT_OPERATION='restart_chat_kick_workers',INPUT_TARGET='preview',INPUT_REF='main',INPUT_CONFIRM='production')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('production-only',p.stderr)
+        p=self.run_auth(INPUT_OPERATION='restart_chat_kick_workers',INPUT_TARGET='production',INPUT_REF='feature',INPUT_CONFIRM='production')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('must run from main',p.stderr)
+        p=self.run_auth(INPUT_OPERATION='restart_chat_kick_workers',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('confirmation required',p.stderr)
+        p=self.run_auth(INPUT_OPERATION='restart_chat_kick_workers',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='production')
+        self.assertEqual(p.returncode,0,p.stderr)
+
+    def test_restart_chat_kick_workers_not_blocked_by_public_repo_exec_disable(self):
+        # 固定スクリプトだけを実行する operation なので、public repo で無効化
+        # される arbitrary exec には該当しない (targeted restart の正規経路)。
+        p=self.run_auth(
+            GITHUB_REPOSITORY_PRIVATE='false',
+            INPUT_OPERATION='restart_chat_kick_workers',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='production',
+        )
+        self.assertEqual(p.returncode,0,p.stderr)
+
+    def test_workflow_restart_chat_kick_workers_uses_reviewed_fixed_script(self):
+        workflow = WF.read_text(encoding="utf-8")
+        self.assertIn("steps.auth.outputs.operation == 'restart_chat_kick_workers'", workflow)
+        self.assertIn("cat control/ops/vm_actions/restart_chat_kick_workers.sh | ssh", workflow)
+        step = workflow.split("Restart chat and kick resident workers after owner confirmation", 1)[1].split("- name:", 1)[0]
+        # 任意 command の入力を再起動へ流用しない (stdin は固定スクリプト本文だけ)。
+        self.assertNotIn("VM_COMMAND", step)
+        # deploy hook では決して発火しない dispatch-only の operation。
+        self.assertNotIn("github.event_name == 'push'", step)
+        self.assertIn("exec docich production $SHA", step)
+        helper = (ROOT / "ops/vm_actions/restart_chat_kick_workers.sh").read_text(encoding="utf-8")
+        # 対象は chat_worker / kick_worker の2つだけで、任意の worker 名を受けない。
+        self.assertIn('targets=(chat_worker kick_worker)', helper)
+        self.assertIn('root="/home/ubuntu/soren"', helper)
+        self.assertIn('workers/${name}.sh', helper)
+        for forbidden in ("systemctl", "sudo", "tmux", "pkill"):
+            self.assertNotIn(forbidden, helper)
+
+    def test_workflow_restart_soviet_watchdog_uses_reviewed_fixed_script(self):
+        workflow = WF.read_text(encoding="utf-8")
+        self.assertIn("Restart resident soviet_watchdog after reviewed runtime epoch", workflow)
+        self.assertIn("cat control/ops/vm_actions/restart_soviet_watchdog.sh |", workflow)
+        step = workflow.split(
+            "Restart resident soviet_watchdog after reviewed runtime epoch", 1
+        )[1].split("- name:", 1)[0]
+        # Same reviewed epoch as the poll workers: restart is an explicit,
+        # reviewable push-deploy decision, not a dispatch-only or ad-hoc path.
+        self.assertIn("ops/vm_actions/restart_poll_workers_epoch", step)
+        self.assertIn("exec docich production $SHA", step)
+        self.assertNotIn("VM_COMMAND", step)
+        helper = (ROOT / "ops/vm_actions/restart_soviet_watchdog.sh").read_text(encoding="utf-8")
+        # The watchdog owns its singleton through the lock owner file, not a pid
+        # file, and the helper only ever signals that one reviewed process.
+        self.assertIn('root="/home/ubuntu/soren"', helper)
+        self.assertIn(".soviet_watchdog.lock/owner", helper)
+        self.assertIn("soviet_watchdog.sh", helper)
+        for forbidden in ("systemctl", "sudo", "tmux", "pkill"):
+            self.assertNotIn(forbidden, helper)
 
     def test_recover_soren_game_is_fixed_production_operation(self):
         for target, ref, confirm in (("preview", "main", "production"),
@@ -245,10 +370,46 @@ class AuthorizeTests(unittest.TestCase):
         self.assertIn("cat control/ops/vm_actions/recover_soren_game.sh | ssh", step)
         self.assertNotIn("VM_COMMAND", step)
 
+    def test_recover_bgm_mute_is_fixed_production_operation(self):
+        for target, ref, confirm in (("preview", "main", "production"),
+                                     ("production", "feature", "production"),
+                                     ("production", "main", "")):
+            p = self.run_auth(INPUT_OPERATION="recover_bgm_mute", INPUT_TARGET=target,
+                              INPUT_REF=ref, INPUT_CONFIRM=confirm)
+            self.assertNotEqual(p.returncode, 0)
+        for op in ("recover_bgm_mute --admin", "recover_bgm_mute;id"):
+            p = self.run_auth(INPUT_OPERATION=op, INPUT_TARGET="production",
+                              INPUT_REF="main", INPUT_CONFIRM="production")
+            self.assertNotEqual(p.returncode, 0)
+        p = self.run_auth(GITHUB_REPOSITORY_PRIVATE="false",
+                          INPUT_OPERATION="recover_bgm_mute", INPUT_TARGET="production",
+                          INPUT_REF="main", INPUT_CONFIRM="production")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        workflow = WF.read_text(encoding="utf-8")
+        step = workflow.split("Recover muted BGM sink-input with restore-memory refresh", 1)[1].split("- name:", 1)[0]
+        self.assertIn("cat control/ops/vm_actions/recover_bgm_mute.sh | ssh", step)
+        self.assertNotIn("VM_COMMAND", step)
+
     def test_push_is_fixed_to_production_deploy(self):
         p=self.run_auth(GITHUB_EVENT_NAME='push',INPUT_OPERATION='',INPUT_TARGET='',INPUT_REF='')
         self.assertEqual(p.returncode,0,p.stderr)
         data=json.loads(p.stdout); self.assertEqual((data['operation'],data['target'],data['ref']),('deploy','production','a'*40))
+
+    def test_owned_round_recovery_requires_separate_fixed_owner_confirmation(self):
+        for overrides in (
+            dict(INPUT_TARGET="preview"), dict(INPUT_REF="feature"), dict(INPUT_CONFIRM=""),
+            dict(GITHUB_ACTOR="collab", GITHUB_ACTOR_ID="42"),
+        ):
+            values = dict(INPUT_OPERATION="recover_soren_round", INPUT_TARGET="production",
+                          INPUT_REF="main", INPUT_CONFIRM="production")
+            values.update(overrides)
+            self.assertNotEqual(self.run_auth(**values).returncode, 0)
+        p = self.run_auth(GITHUB_REPOSITORY_PRIVATE="false", INPUT_OPERATION="recover_soren_round",
+                          INPUT_TARGET="production", INPUT_REF="main", INPUT_CONFIRM="production")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        step = WF.read_text().split("Recover only the held Soren round after explicit confirmation", 1)[1].split("- name:", 1)[0]
+        self.assertIn("cat control/ops/vm_actions/recover_soren_round.sh | ssh", step)
+        self.assertNotIn("VM_COMMAND", step)
 
 
 class GatewayTests(unittest.TestCase):

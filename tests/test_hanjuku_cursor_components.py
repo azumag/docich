@@ -26,6 +26,11 @@ def test_two_hand_sized_objects_remain_ambiguous():
     assert find_hand(orange_boxes((163, 177, 180, 190), (30, 50, 47, 63))) is None
 
 
+def test_option_filter_never_crops_an_oversized_sprite_into_a_hand():
+    frame = orange_boxes((138, 155, 156, 192), (30, 50, 47, 63))
+    assert find_hand(frame, option_positions=[(176, 176)]) is None
+
+
 def test_missing_confirmation_hand_records_hold_without_pressing_a():
     mem = {}
     screen = Screen([], None, 'なにかかってかねーかい?うむッ!いかんッ!', kind='yes_no')

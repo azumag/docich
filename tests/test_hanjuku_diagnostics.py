@@ -106,3 +106,73 @@ def test_tactical_omission_only_when_detail_reductions_insufficient(monkeypatch)
     text=d._diagnostics_budget(payload)
     assert payload['hanjuku_tactical']['status']=='output_omitted'
     assert len(text.encode())<=600
+
+
+def damage_record(**changes):
+    return {**dict(tick=498, card='ゼンマイン', enemy_hp=27, ally_soldiers=0,
+                   enemy_soldiers=6, target_kind='general', raw_damage_min=32,
+                   enemy_soldier_hp_upper=60, damage_lower_bound=0, remaining_hp_upper=27,
+                   lethal=False, egg_drop_fit=False, allowed=False, reason='nonlethal_egg_risk',
+                   secret='DO NOT EMIT'), **changes}
+
+
+def test_last_card_prediction_is_numeric_bounded_and_not_a_use_receipt(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy']['last_card_assessment'] = damage_record()
+    file.write_text(json.dumps(bot)); os.utime(file, (100, 100))
+    out = d._collect_hanjuku_tactical(tmp_path, 110)['last_card_assessment']
+    assert out == dict(prediction_only=True, age_ticks=2, card='ゼンマイン',
+                       target_kind='general', reason='nonlethal_egg_risk', enemy_hp=27,
+                       raw_damage_min=32, enemy_soldier_hp_upper=60, damage_lower_bound=0,
+                       remaining_hp_upper=27, ally_soldiers=0, enemy_soldiers=6,
+                       lethal=False, egg_drop_fit=False, allowed=False)
+    assert 'DO NOT EMIT' not in json.dumps(out)
+    assert 'cards_used' not in out
+
+
+@pytest.mark.parametrize('value', [None, {}, {'tick': 501}, {'tick': True}, {'tick': -1}])
+def test_invalid_or_future_card_prediction_is_absent(value):
+    assert d._project_hanjuku_card_assessment(value, 500) is None
+
+
+def test_card_prediction_rejects_arbitrary_text_types_and_out_of_range_values():
+    record = damage_record()
+    record.update(card='SECRET', reason=['SECRET'], target_kind={'SECRET': 1},
+                  enemy_hp=True, raw_damage_min='32', enemy_soldier_hp_upper=10000,
+                  damage_lower_bound=-1, remaining_hp_upper=10000,
+                  ally_soldiers=7, enemy_soldiers=False, lethal='yes', egg_drop_fit=1,
+                  allowed='SECRET')
+    out = d._project_hanjuku_card_assessment(record, 500)
+    assert out['prediction_only'] is True and out['age_ticks'] == 2
+    assert all(value is None for key, value in out.items()
+               if key not in ('prediction_only', 'age_ticks'))
+    assert 'SECRET' not in json.dumps(out)
+
+
+def test_later_chapter_can_report_last_card_without_inventing_castle_coverage(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy'].update(chapter=3, last_card_assessment=damage_record())
+    file.write_text(json.dumps(bot)); os.utime(file, (100, 100))
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    assert out['status'] == 'unsupported_chapter' and out['chapter'] == 3
+    assert out['last_card_assessment']['card'] == 'ゼンマイン'
+    assert 'castles' not in out and 'remaining_castles' not in out
+
+
+def test_later_chapter_card_prediction_still_checks_generation_after_read(tmp_path, monkeypatch):
+    file, bot = setup(tmp_path)
+    bot['policy'].update(chapter=3, last_card_assessment=damage_record())
+    file.write_text(json.dumps(bot)); os.utime(file, (100, 100))
+    original = d._read_hanjuku_record
+    calls = 0
+    def read(path):
+        nonlocal calls
+        data, mtime = original(path)
+        if path.name == 'game_switch.json':
+            calls += 1
+            if calls == 2:
+                data['active']['generation'] += 1
+        return data, mtime
+    monkeypatch.setattr(d, '_read_hanjuku_record', read)
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    assert out['status'] == 'identity_changed' and 'last_card_assessment' not in out

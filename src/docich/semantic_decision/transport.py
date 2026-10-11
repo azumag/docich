@@ -1,6 +1,8 @@
 """One bounded stdlib HTTP path for direct and explicit Vercel choice requests.
 
-POSIX/main-thread only, matching the existing classifier's cancellation boundary.
+POSIX only. Main-thread callers defer signals until child cleanup; threaded
+callers retain child ownership through the deadline and the consumer joins them
+on cancellation (including Discord's shielded generation/shutdown boundary).
 No consumer imports, state writes, retries, fallback, logging or runtime activation.
 """
 from __future__ import annotations
@@ -105,7 +107,7 @@ def _bounded_process(argv, *, data: bytes, timeout: float, env) -> bytes:
     if os.name != "posix":
         raise ValueError("unsupported_platform")
     started = time.monotonic()
-    process, cancelled, completed = None, None, False
+    process, cancelled = None, None
     handlers = {}
 
     def cancel(signum, _frame):
@@ -113,9 +115,11 @@ def _bounded_process(argv, *, data: bytes, timeout: float, env) -> bytes:
         cancelled = signum
 
     try:
-        # Fails before spawn outside the main thread; do not silently drop cleanup.
-        for signum in (signal.SIGTERM, signal.SIGINT):
-            handlers[signum] = signal.signal(signum, cancel)
+        # Signals belong to the main event loop in Discord. Worker threads must
+        # neither mutate its handlers nor fail before reaching the JEV child.
+        if threading.current_thread() is threading.main_thread():
+            for signum in (signal.SIGTERM, signal.SIGINT):
+                handlers[signum] = signal.signal(signum, cancel)
         process = subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, env=env, start_new_session=True,
@@ -133,11 +137,10 @@ def _bounded_process(argv, *, data: bytes, timeout: float, env) -> bytes:
                 continue
             if process.returncode:
                 raise ValueError("process_error")
-            completed = True
             return out
     finally:
         try:
-            if process is not None and (not completed or cancelled is not None):
+            if process is not None:
                 _kill_and_reap(process)
         finally:
             for signum, handler in handlers.items():
@@ -174,7 +177,7 @@ def request_once(request, *, route=None, env=None, timeout_ms: int | None = None
     env = os.environ if env is None else env
     try:
         profile = resolve_route(env.get("DOCICH_JEV_ROUTE", "direct") if route is None else route)
-        if os.name != "posix" or threading.current_thread() is not threading.main_thread():
+        if os.name != "posix":
             return finish("invalid_config")
         if timeout_ms is None:
             configured_timeout = env.get("DOCICH_JEV_TIMEOUT_MS", "1500")

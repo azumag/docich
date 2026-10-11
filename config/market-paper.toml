@@ -52,9 +52,12 @@ max_positions = 3
 max_spread_bps = "10"
 
 [ai]
-# Empty inherits [paper_corner].improve_agents from the selected docich profile.
-# Configure a Chinese-model route for the Chinese-AI show before deployment.
+# Empty legacy agents inherit [paper_corner].improve_agents from the selected
+# docich profile. DOCICH_MARKET_PAPER_DIRECT_ENABLED=1 never inherits or mixes
+# that chain: it uses only direct_agents below, and an empty/invalid value
+# fails closed as needs_ai_or_news_configuration.
 agents = ""
+direct_agents = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
 
 [news]
 # Operator-approved HTTPS RSS sources. Empty means no fabricated news and no

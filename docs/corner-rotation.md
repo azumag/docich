@@ -8,6 +8,17 @@
 ROM/core/adapter適格性を通った項目だけを有効数Nに数える。ゲーム設定の無効化、実行ファイル不足、catalogの
 `paused=true`、`state_dir/corners/<id>.paused` を反映し、Nを固定しない。
 
+ついたて将棋も自動抽選の候補とする。既存のWorker statusが終局状態
+(`stopped` / `finished` / `queue_timeout`)かつ`readyForNextRun=true`の場合だけ
+適格とし、対局中・終局未確認・制御経路不通の間はNから除外する。
+1枠で1局を実行し、既存の最大時間・停止確認・元画面への復帰・24時間cooldownを維持する。
+
+失敗したSoren復元世代が`retiring`に残り、別leaseのSoren ownerが`ready`で
+稼働している場合、正規の`docich recover`は同一外部singletonの旧世代を収束できる。
+正確なretiring identity、進行中broker request/ack/resourceがないこと、loop/watchdogの
+一意な生存、検査前後のcanonical一致を要求し、現在のSorenを停止しない。
+証拠不足なら旧世代の停止も拒否する。収束後に固定`recover-failed`で予約を解決する。
+
 `adapter="game"`の項目には`target_matches`（整数1〜100）を任意指定できる。
 省略時は従来の`retro_corner.target_matches`（既定3）を継承する。
 productionの`nsnake`は1試合とし、開始以降のscorelog保存を確認して既存の終了・復帰へ進む。
@@ -106,6 +117,40 @@ latchし、`tick()`は自動開始と手動startを拒否する。latchは自動
      `from_game`→`to_game` を証明し、かつcanonicalが別ゲームを所有したまま
      静止している場合のみ確定する。**再実行はしない**（同じ切替の
      drainingへ再入して同じ失敗を繰り返すため）。
+     コーナー**完了後**のrestore失敗（state=`failed`、`completed_at`あり、
+     restore receiptが `switch`/target=記録済みprevious/terminal
+     （`rolled_back`/`failed`/`succeeded`）で、`switch_request_id`が
+     `rotation_request_id`と別）も同じ固定operationで扱う（#1868/#1870）。
+     1. canonicalが`ready`で記録済みprevious gameを所有し、証跡
+        （`rolled_back`は `restored_generation` 以上のactive generation、
+        `succeeded`はactive identity一致）を確認できる場合は `interrupted`
+        として確定する。`completed_at`/`last_error` は証跡として保持し、
+        改善ジョブは起動しない。
+     2. canonicalが`ready`でcorner gameを所有したまま（rollbackのまま）の
+        場合は、元receiptと最新canonical resultを照合して復旧対象を確認する。
+        rollbackは現在active generationと`restored_generation`の一致、
+        boundary失敗の`failed`は`retained_active`本人一致とcancel済みを要求する。
+        旧bot leaseを再利用せず、検証した現在のgame/runtime/generation/leaseを
+        **全ゲームのexpected_source fence**としてcoordinatorへ渡す。
+        fresh request ID・元restore ID・source・phaseは`restore_recovery`へ
+        dispatch前にatomic保存し、queuedやdriver中断は**同じID/payload**で再開する。
+        準備時刻と420s後のabsolute deadlineを同じrecordへ保存し、FIFO receiptにも
+        同じdeadlineを一度だけ保存・照合する（再送で延長しない）。
+        再実行は420s上限・boundary延長なしで行い、
+        成功後に `interrupted` として確定する。タイムアウト・失敗は
+        `failed` のまま残り、terminal receiptと現在ownerを検証できる場合だけ
+        次の固定operationが新しい試行を準備できる。
+     Case A/Bとも終端前に`retiring=[]`と最新cleanup証拠を確認する。
+     receiptはfinalize前に保存されるため、成功receiptだけでは資源解放を認定しない。
+     generationは正整数、cleanupは欠落/nullまたは厳密なfalseだけを受け入れる。
+     明示error codeを旧復旧文言より優先し、timerはこのrestore経路へ入らない。
+     restore候補のreceiptが欠落・不正でもgeneral retryへfallbackしない。
+     accepted driverの中断は同じrequestのcoordinator recoveryへ収束させる。
+     ただし初回source検査前の`validating`ではsource fenceを先に確認し、
+     他runtimeを復旧対象にしない。commit直後にreceipt未確定なら、同requestの
+     canonical resultを照合してreceipt確定とfinalizeを同じwriter lockで完了する。
+     receipt欠落・不一致、canonicalが`ready`でない、別gameがactive、
+     cleanup未完了のときは確定しない（latch維持、fail-closed）。
      自動予約は `pending`、手動予約は `manual_pending` を同じ規則で解決し、
      手動のcompletedだけ `manual-completion` の履歴行を足す。
    - そのrequestが**一度も起動していない**自動予約なら、ledgerは `waiting`/`execution-pending`
@@ -365,6 +410,101 @@ read-only diagnostics に投影される。
   epochのrevert PRが必要。
 - 実機rollbackは未実施。受入は固定operationのreview/CIと、配線後のdeployでcanonical維持が
   継続することまで。
+
+### 2026-10-06 本番運用メモ: 「待機中なのに始まらない」とweather復帰後のSoren
+
+#### 1. 半熟の残留 `manual_pending` が全rotationを塞いだケース
+
+本番WebUIが「待機中」のまま次cornerを開始しない場合、cooldownやtimer停止だけで判断しない。
+2026-10-06 JST の実例では、古い半熟英雄の手動予約が `manual_pending` に残り、
+次枠のweatherは `queued_manual` に入っていたが、rotationは
+`manual-request-needs-resume-or-recovery` で安全側に停止していた。
+
+初動では次を一緒に確認する。
+
+- `corner_rotation.manual_pending` / `manual_pending_corner`
+- `corner_rotation.queued_manual`
+- `corner_rotation.reason`
+- `retro_program_queues.manual/scheduled`
+- GameSwitch `phase` と FIFO queued/head
+- 対象corner owner / matching receipt
+
+今回の原因は、半熟の program queue に historical `error` が残り、既存admin releaseが
+`program_queue_unverified` でfail-closedしていたこと。PR #1754で、`error` を単純terminal扱いせず、
+共有program lockを含む全writer lock下で owner / registry / canonical / receipt / reservation fingerprintを
+再検証した場合だけ管理解除できるようにした。PR #1755で、Issue #1752の固定owner-only入口から
+check/releaseできる運用経路を追加した。
+
+本番では check run `37338975002` が `admin-eligible`、その後のrelease run
+`37339075733` が `admin-released`。同runのread-only postconditionでも
+`manual_pending=false` と旧blocker reasonからの脱出を確認した。weather予約は保持し、
+その後通常timerから自然dispatchした。
+
+**運用上の注意:** ledgerやqueueファイルを手編集・削除しない。結果不明時にreleaseを連打しない。
+まずread-only診断→固定check→eligible時だけ1回releaseの順にする。
+
+#### 2. weather終了後、sorengame画面は戻ったが一時的にゲームが進まなかったケース
+
+weatherのrestore成功で `game_switch.active_game=sorengame` になっても、Sorenのゲームloopが
+同時刻に完全復帰済みとは限らない。今回、画面はsorengameへ戻った直後にゲーム進行が止まって見えた。
+直後のVM runtime monitor（run `37340396532`）では
+`required_down_loop=1`、`paused_loop=0`、pause ownership 0件、
+`corner_game_switch_busy=1` だった。その後は手動介入なしでゲーム進行が自然復帰した。
+
+したがって「画面がsorengameへ戻った」ことと「Soren loopが再稼働した」ことは別に確認する。
+再発時は、まず `required_down_loop`、lifecycle state、GameSwitch phase、
+`soren_loop.paused` の有無/ownershipをread-onlyで確認する。pause markerが無いのにloopだけdownなら、
+fresh-start/lifecycle復帰の途中またはsupervisor再起動待ちを疑う。
+画面復帰直後だけを見てpause markerを削除したり、共有runtime全体を再起動したりしない。
+
+今回の実測では自然復帰したため、weather restore自体の失敗とは扱わない。
+一方、同じ見かけの停止を受入成功として見逃さないよう、Weatherの本番観測はterminal/restoreだけで
+終了せず、復帰先が `sorengame` の場合は `soren_loop` alive、main strategy runner alive、
+`game_state` が `MOVE|DROP|WAITING` かつ30秒以内に更新されていることまで確認する。
+この条件を満たすまでは `Soren resumed=false` として観測を継続する。復帰先がSoren以外なら
+この追加条件は `not_applicable` とする。共有runtimeの再起動やpause marker変更は行わない。
+
+本番観測窓は「216回poll」のような回数指定ではなく、開始から18分のwall-clock deadlineで区切る。
+`ls-remote` / `fetch` / SSH status / diagnosticsもそれぞれ、観測開始時に確定したdeadlineまでの
+残り秒数で `timeout --kill-after` を掛ける。loop先頭の時刻確認だけでは、最後のnetwork呼出しが
+詰まった場合にGitHub Actionsの25分上限を越え得るためである。各呼出し後とsleep前にも残り時間を確認し、
+deadline到達時はその時点のbounded観測値を書き出して終了する。workflow timeoutによる強制cancelに
+依存しない。
+
+またmain更新が連続する環境では、productionが最新mainへdeployされるまでの短い遅延を
+「観測不能」と扱わない。各pollでproductionの実HEADをstatusから取得し、runnerが取得した
+protected mainの直近128コミット内の祖先であることを `cat-file` と
+`merge-base --is-ancestor` で検証できた場合だけ、その実HEADを指定してdiagnosticsを読む。
+diagnostics gatewayの応答は `{status, sha, diagnostics}` envelopeとして検証し、
+`status=diagnosed` かつ `sha` が要求したproduction HEADと一致する場合だけ
+`diagnostics` objectを投影する。main系譜外・深さ上限外・status不一致・SHA不一致・
+diagnostics欠落はfail-closedでそのpollを捨てる。
+
+### 手動コーナーの時刻指定予約（#1759）
+
+WebUI の手動操作は即時開始に加えて、1回限りの `trigger_at` を持つ
+**not-before予約**を作れる。指定時刻に現在のcornerを割り込ませる機能ではない。
+`trigger_at` より前は対象cornerを開始せず、到達後に既存の
+program slot / GameSwitch / owner / pause / recovery gateを通って、最初の安全な空き枠で開始する。
+
+予約は既存 `corner_manual_queue.json` の単一ownerモデルを使う。
+`trigger_at` はtimezone付きISO日時または有限なepoch秒として受け付け、
+保存時はepoch秒へ正規化する。欠落は従来の即時manual予約として扱う。
+過去時刻は誤操作防止のため拒否する。時刻前の予約は独立inboxに保持するため、
+自動rotation全体を止めない。ただし同じcornerを予定前に自動実行してしまうと
+予約直前の二重利用になるので、予約対象cornerだけは自動候補から外し、
+他のeligible cornerは通常どおり発火できる。
+
+通常timerが時刻到達を検出すると、同じrequest UUIDのまま
+`queued_manual` → `pending(source=manual)` へatomicに移す。
+そこから先は既存manual予約と同じでcooldownだけを無視し、disabled / paused /
+recovery latch / busy ownershipは迂回しない。停止中に指定時刻を過ぎても、
+復帰後の最初の正常tickで同じ予約を1回だけ処理する。
+
+予約取消は、まだ独立inboxにあるscheduled requestだけに許可する。
+dueになってledgerへ移った後は取消とのraceを作らず、既存のstop/recovery経路へ委譲する。
+同じcorner・同じtriggerの再送は同一requestとして冪等、別corner・別triggerとの
+単一queue競合は拒否する。
 
 ### 半熟英雄の次枠手動予約
 

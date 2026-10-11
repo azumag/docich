@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from copy import deepcopy
+from contextlib import contextmanager, nullcontext
 import datetime as dt
 import fcntl
 import hashlib
@@ -24,6 +25,7 @@ from .corner_adapters import (
 from .game_switch import atomic_write_json
 
 DAY = 86400.0
+MANUAL_CAPTURE_PROFILE_TTL = 60.0
 STOP_REQUEST_DIR = "corner-stop-requests"
 BUSY = {"waiting", "starting", "active", "restoring", "preparing", "recovery_required", "failed"}
 TERMINAL = {"idle", "completed", "interrupted", "expired"}
@@ -48,10 +50,11 @@ class RotationError(RuntimeError):
 
     kind = "invalid-state"
 
-    def __init__(self, message, *, kind=None):
+    def __init__(self, message, *, kind=None, reason_code=None):
         super().__init__(message)
         if kind is not None and kind in ERROR_KINDS:
             self.kind = kind
+        self.reason_code = reason_code
 
 
 def _error_kind(exc):
@@ -241,7 +244,7 @@ class CornerRotationManager:
             for record in known.values():
                 if (not isinstance(record, dict)
                         or not isinstance(record.get("id"), str)
-                        or record.get("adapter") not in {"game", "paper", "meriken", "nethack"}
+                        or record.get("adapter") not in RetiredCornerObserver.STATE_FILES
                         or not isinstance(record.get("game"), str)):
                     raise RotationError("invalid known corner identity")
         if (state.get("status") == "running"
@@ -271,12 +274,18 @@ class CornerRotationManager:
                 raise RotationError("invalid manual pending request")
             uuid.UUID(manual["request_id"])
             timestamp(manual["selected_at"])
+            if manual.get("capture_profile") is not None:
+                if manual.get("capture_profile") != "rejected_png_v1":
+                    raise RotationError("manual pending capture profile is unsupported")
+                timestamp(manual.get("capture_profile_expires_at"))
         queued = state.get("queued_manual")
         if queued is not None:
             if (not isinstance(queued, dict) or not isinstance(queued.get("corner"), str)):
                 raise RotationError("invalid queued manual request")
             uuid.UUID(queued["request_id"])
             timestamp(queued["selected_at"])
+            if queued.get("trigger_at") is not None:
+                timestamp(queued["trigger_at"])
         return state
 
     @contextmanager
@@ -301,56 +310,179 @@ class CornerRotationManager:
             return None
         request = json.loads(self._manual_queue_path.read_text())
         if (not isinstance(request, dict) or not isinstance(request.get("corner"), str)):
-            raise RotationError("invalid manual queue inbox")
+            raise RotationError(
+                "invalid manual queue inbox", reason_code="state_unavailable"
+            )
         uuid.UUID(request["request_id"])
         timestamp(request["selected_at"])
+        if request.get("trigger_at") is not None:
+            timestamp(request["trigger_at"])
         return request
 
-    def _import_manual_queue(self, state):
+    def _import_manual_queue(self, state, now=None):
+        """Transfer a due manual inbox into the rotation ledger.
+
+        Future scheduled requests intentionally remain in the independent inbox
+        so they neither block automatic rotation nor require the execution lock
+        to cancel. The same inbox lock makes due-transfer vs cancellation atomic.
+        """
         with self._manual_queue_lock():
             request = self._read_manual_queue()
             if request is None:
-                return
+                return False
+            if now is None:
+                now = timestamp(self.clock())
+            trigger_at = request.get("trigger_at")
+            if trigger_at is not None and now < timestamp(trigger_at):
+                return request
             current = state.get("queued_manual")
             if current is not None and current != request:
-                raise RotationError("conflicting manual queue ownership")
+                raise RotationError(
+                    "conflicting manual queue ownership",
+                    reason_code="manual_queue_conflict",
+                )
             state["queued_manual"] = request
             self.save(state)  # durable transfer before removing the inbox
             self._manual_queue_path.unlink()
+            return None
 
-    def queue_manual(self, game):
-        """Queue one owner request even while the current corner holds its lock.
+    def queue_manual(self, game, *, trigger_at=None):
+        """Queue one owner request, optionally with a not-before trigger.
 
-        The timer imports this inbox and consumes it only after existing corner
-        ownership settles. Eligibility and pauses apply; cooldown is bypassed.
-        Duplicate calls retain the same durable identity across the transfer.
+        Immediate requests preserve the existing behavior. A future trigger is
+        durable but stays in the tiny inbox until due, so automatic rotation
+        continues normally before that time. Eligibility and pauses apply at
+        reservation and again at dispatch; cooldown is bypassed.
         """
         if not rotation_enabled(self.g):
-            raise RotationError("common corner rotation is disabled")
+            raise RotationError(
+                "common corner rotation is disabled", reason_code="rotation_disabled"
+            )
         with self._manual_queue_lock():
             now = timestamp(self.clock())
+            requested_trigger = None
+            if trigger_at is not None:
+                try:
+                    requested_trigger = timestamp(trigger_at)
+                except RotationError as exc:
+                    raise RotationError(
+                        "invalid scheduled manual trigger",
+                        reason_code="invalid_scheduled_time",
+                    ) from exc
             state = self.load(now)  # atomic ledger read; never edit execution state
+
+            # A retry of the exact scheduled reservation is read-only and
+            # idempotent even after its trigger becomes due. Check this before
+            # rejecting newly-created schedules in the past (#1759 review).
+            all_choices = [c.id for c in self.catalog if c.game == game]
+            if requested_trigger is not None and len(all_choices) == 1:
+                chosen_existing = all_choices[0]
+                existing = self._read_manual_queue() or state.get("queued_manual")
+                pending_existing = state.get("pending")
+                if (existing is None and isinstance(pending_existing, dict)
+                        and pending_existing.get("source") == "manual"):
+                    existing = pending_existing
+                if isinstance(existing, dict):
+                    existing_trigger = existing.get("trigger_at")
+                    if existing_trigger is not None:
+                        existing_trigger = timestamp(existing_trigger)
+                    if (existing.get("corner") == chosen_existing
+                            and existing_trigger == requested_trigger):
+                        return {
+                            "status": "scheduled",
+                            "corner": chosen_existing,
+                            "request_id": existing["request_id"],
+                            "trigger_at": requested_trigger,
+                        }
+
+            if requested_trigger is not None and requested_trigger < now:
+                raise RotationError(
+                    "scheduled manual trigger is in the past",
+                    reason_code="scheduled_time_past",
+                )
             if state["status"] == "recovery_required":
-                raise RotationError("corner recovery required before manual reservation")
+                raise RotationError(
+                    "corner recovery required before manual reservation",
+                    reason_code="recovery_required",
+                )
             if now < state["last_seen_at"]:
-                raise RotationError("clock regressed")
-            eligible, _ = self._eligible()
+                raise RotationError("clock regressed", reason_code="clock_regressed")
+            eligible, _ = self._eligible(include_manual_only=True)
             choices = [c.id for c in self.catalog if c.game == game and c.id in eligible]
             if len(choices) != 1:
-                raise RotationError("no unique eligible manual corner")
+                raise RotationError(
+                    "no unique eligible manual corner", reason_code="hanjuku_not_eligible"
+                )
             chosen = choices[0]
             queued = self._read_manual_queue() or state.get("queued_manual")
             pending = state.get("manual_pending") or state.get("pending") or {}
-            if queued is None and (pending.get("source") == "manual"
-                                   or pending.get("corner") == chosen):
+            if (queued is None and requested_trigger is None
+                    and (pending.get("source") == "manual"
+                         or pending.get("corner") == chosen)):
                 queued = pending
             if queued is not None:
-                if queued["corner"] != chosen:
-                    raise RotationError("another manual corner is already queued")
+                existing_trigger = queued.get("trigger_at")
+                if existing_trigger is not None:
+                    existing_trigger = timestamp(existing_trigger)
+                if queued["corner"] != chosen or existing_trigger != requested_trigger:
+                    raise RotationError(
+                        "another manual corner or schedule is already queued",
+                        reason_code="manual_queue_conflict",
+                    )
             else:
                 queued = dict(corner=chosen, selected_at=now, request_id=str(uuid.uuid4()))
+                if requested_trigger is not None:
+                    queued["trigger_at"] = requested_trigger
                 atomic_write_json(self._manual_queue_path, queued)
-            return {"status": "queued", "corner": chosen, "request_id": queued["request_id"]}
+            result = {"status": ("scheduled" if requested_trigger is not None
+                                  and requested_trigger > now else "queued"),
+                      "corner": chosen, "request_id": queued["request_id"]}
+            if requested_trigger is not None:
+                result["trigger_at"] = requested_trigger
+            return result
+
+    def cancel_scheduled_manual(self, game):
+        """Cancel only a still-in-inbox scheduled request.
+
+        Once the timer has atomically imported a due request into the ledger,
+        cancellation must not race its execution. The normal stop/recovery path
+        owns it from that point onward.
+        """
+        if not rotation_enabled(self.g):
+            raise RotationError(
+                "common corner rotation is disabled", reason_code="rotation_disabled"
+            )
+        with self._manual_queue_lock():
+            now = timestamp(self.clock())
+            state = self.load(now)
+            choices = [c.id for c in self.catalog if c.game == game]
+            if len(choices) != 1:
+                raise RotationError(
+                    "scheduled manual corner is unavailable",
+                    reason_code="scheduled_request_missing",
+                )
+            chosen = choices[0]
+            request = self._read_manual_queue()
+            if request is None:
+                imported = state.get("queued_manual")
+                if (isinstance(imported, dict) and imported.get("corner") == chosen
+                        and imported.get("trigger_at") is not None):
+                    raise RotationError(
+                        "scheduled manual request was already imported",
+                        reason_code="scheduled_request_imported",
+                    )
+                raise RotationError(
+                    "scheduled manual request is not queued",
+                    reason_code="scheduled_request_missing",
+                )
+            if request.get("corner") != chosen or request.get("trigger_at") is None:
+                raise RotationError(
+                    "scheduled manual request does not match",
+                    reason_code="scheduled_request_missing",
+                )
+            self._manual_queue_path.unlink()
+            return {"status": "cancelled", "corner": chosen,
+                    "trigger_at": timestamp(request["trigger_at"])}
 
     def _remember_catalog(self, state):
         known = state.setdefault("known_corners", {})
@@ -408,11 +540,14 @@ class CornerRotationManager:
                         state["history"].append(dict(corner=history_id, at=stamp, source="execution"))
         return busy
 
-    def _eligible(self):
+    def _eligible(self, *, include_manual_only=False):
         result, excluded = [], {}
         for corner in sorted(self.catalog, key=lambda c: c.id):
             if not corner.enabled or corner.paused or (Path(self.g.state_dir) / "corners" / f"{corner.id}.paused").exists():
                 excluded[corner.id] = "disabled-or-paused"
+                continue
+            if corner.manual_only and not include_manual_only:
+                excluded[corner.id] = "manual-only"
                 continue
             try:
                 available = self.adapters[corner.id].eligible()
@@ -484,6 +619,36 @@ class CornerRotationManager:
             state, reservation, settled_at, manual=manual
         )
 
+    @staticmethod
+    def _expired_capture_has_no_live_owner(reservation, adapter):
+        """Prove an expired PNG reservation never entered the manual owner.
+
+        The common rotation lock excludes a live manual dispatcher. Still
+        require the exact manual state's adapter and a read lock on its shared
+        GameSwitch ledger; busy, missing, malformed, or unknown state is not
+        enough evidence to release the slot.
+        """
+        if adapter is None:
+            return False
+        resolve_state = getattr(adapter, "_manager_for_state_file", None)
+        if not callable(resolve_state):
+            return False
+        manager = resolve_state(reservation.get("state_file"))
+        if manager is None or getattr(manager, "state_path", None) is None:
+            return False
+        if manager.state_path.name != reservation.get("state_file"):
+            return False
+        store = getattr(manager, "store", None)
+        if store is None:
+            return False
+        try:
+            from .game_switch import GameSwitchBusyError
+            with store.lock(exclusive=False):
+                canonical, _migrated = store.canonical.load()
+            return canonical.get("phase") in {"idle", "ready"}
+        except (GameSwitchBusyError, OSError, ValueError, KeyError, TypeError):
+            return False
+
     def tick(self):
         # The common timer owns only retry/reconciliation, never new predictions.
         from .hanjuku_predictions import tick as prediction_tick
@@ -498,7 +663,7 @@ class CornerRotationManager:
             self._remember_catalog(state)
             if state["status"] == "recovery_required":
                 return {"status": "recovery_required", "reason": state.get("reason")}
-            self._import_manual_queue(state)
+            future_manual = self._import_manual_queue(state, now)
             if now < state["last_seen_at"]:
                 return self._wait(state, "clock-regressed")
             if now - state["last_seen_at"] > DAY:
@@ -510,6 +675,39 @@ class CornerRotationManager:
                 return self._wait(state, "clock-gap-quarantine")
             try:
                 manual = state.get("manual_pending")
+                # A diagnostic profile is a one-shot authorization, not a
+                # standing preference on the durable manual reservation. Never
+                # dispatch it after its short window; release only when the
+                # exact manual owner and GameSwitch ledger prove it never began.
+                if (manual is not None
+                        and manual.get("capture_profile") == "rejected_png_v1"
+                        and now > timestamp(manual["capture_profile_expires_at"])):
+                    adapter = self.adapters.get(manual.get("corner"))
+                    outcome = self._commit_verified_failed_start(
+                        state, manual, adapter, manual=True, now=now
+                    )
+                    if outcome is not None:
+                        self.save(state)
+                        return outcome
+                    owned = ([raw for raw in adapter.observations()
+                              if raw.get("rotation_request_id") == manual.get("request_id")]
+                             if adapter is not None else [])
+                    finished = any(raw.get("status") in TERMINAL for raw in owned)
+                    started_in_window = any(
+                        raw.get("status") in BUSY and raw.get("started_at") is not None
+                        and timestamp(raw["started_at"]) <= timestamp(manual["capture_profile_expires_at"])
+                        for raw in owned
+                    )
+                    if not finished and not started_in_window:
+                        if (owned or self._observe(state, now)
+                                or not self._expired_capture_has_no_live_owner(manual, adapter)):
+                            return self._wait(state, "manual-capture-profile-expired")
+                        state["manual_pending"] = None
+                        state.update(status="ready", reason=None,
+                                     last_result={"corner": manual["corner"],
+                                                  "request_id": manual["request_id"],
+                                                  "status": "expired", "at": now})
+                        manual = None
                 # A failed switch may leave a retro start and its manual slot
                 # parked even after game-switch has returned to the old game.
                 # Only the game adapter can prove the exact terminal receipt
@@ -566,6 +764,7 @@ class CornerRotationManager:
                     self.save(state)
                     return outcome
                 eligible, excluded = self._eligible()
+                manual_eligible, _ = self._eligible(include_manual_only=True)
                 interval = DAY / len(eligible) if eligible else None
                 state.update(
                     eligible=eligible, excluded=excluded,
@@ -577,10 +776,13 @@ class CornerRotationManager:
                 if busy:
                     return self._wait(state, "other-corner-needs-finish-or-recovery")
                 queued = state.get("queued_manual")
-                if pending is None and queued is not None:
+                queued_due = True
+                if queued is not None and queued.get("trigger_at") is not None:
+                    queued_due = now >= timestamp(queued["trigger_at"])
+                if pending is None and queued is not None and queued_due:
                     if queued["corner"] not in self.adapters:
                         raise RotationError("queued manual corner removed", kind="catalog-mismatch")
-                    if queued["corner"] not in eligible:
+                    if queued["corner"] not in manual_eligible:
                         return self._wait(state, "queued-manual-disabled-or-paused")
                     pending = dict(queued, phase="selected", source="manual")
                     state["pending"] = pending
@@ -604,11 +806,32 @@ class CornerRotationManager:
                         r["corner"] for r in state["history"]
                         if r["at"] > now - self.cooldown_seconds
                     }
-                    candidates = [c for c in eligible if c not in recent]
+                    # A future manual schedule reserves only its own corner:
+                    # automatic rotation may keep using every other eligible
+                    # corner, but must not pre-run the scheduled corner itself.
+                    reserved_corner = (
+                        future_manual.get("corner")
+                        if isinstance(future_manual, dict) else None
+                    )
+                    candidates = [
+                        c for c in eligible
+                        if c not in recent and c != reserved_corner
+                    ]
                     if not candidates:
-                        cooldown_due = self._cooldown_due_at(state["history"], eligible, now)
-                        if cooldown_due is not None:
-                            state["next_due_at"] = cooldown_due
+                        cooldown_due = self._cooldown_due_at(
+                            state["history"],
+                            [c for c in eligible if c != reserved_corner],
+                            now,
+                        )
+                        trigger_due = None
+                        if isinstance(future_manual, dict):
+                            trigger_due = timestamp(future_manual["trigger_at"])
+                        deadlines = [d for d in (cooldown_due, trigger_due) if d is not None]
+                        if deadlines:
+                            state["next_due_at"] = min(deadlines)
+                        if trigger_due is not None and (
+                                cooldown_due is None or trigger_due <= cooldown_due):
+                            return self._wait(state, "scheduled-manual-not-due")
                         return self._wait(state, "all-corners-cooling-down")
                     # Seeded independent random ranking is stable across restart
                     # and catalog order, without persisting interpreter RNG state.
@@ -627,10 +850,11 @@ class CornerRotationManager:
                 adapter = self.adapters[pending["corner"]]
                 owned = any(raw.get("rotation_request_id") == pending["request_id"]
                             for raw in adapter.observations())
-                if pending["corner"] not in eligible and not owned:
+                pending_eligible = manual_eligible if pending.get("source") == "manual" else eligible
+                if pending["corner"] not in pending_eligible and not owned:
                     return self._wait(state, "selected-corner-disabled-or-paused")
                 if pending["phase"] == "selected":
-                    if pending["corner"] not in eligible:
+                    if pending["corner"] not in pending_eligible:
                         return self._wait(state, "selected-corner-disabled-or-paused")
                     # Re-check cooldown after importing concurrent/manual activity.
                     if pending.get("source") != "manual" and any(
@@ -740,6 +964,7 @@ class CornerRotationManager:
                 return {"status": "waiting", "reason": "already-running"}
             now = timestamp(self.clock())
             state = self.load(now)
+            recover_snapshot = deepcopy(state)
             self._remember_catalog(state)
             if state["status"] != "recovery_required":
                 raise RotationError("rotation state is not latched", kind="invalid-state")
@@ -763,6 +988,10 @@ class CornerRotationManager:
             if reservation.get("corner") not in self.adapters:
                 raise RotationError("pending corner removed from catalog",
                                     kind="catalog-mismatch")
+            commit_started = False
+            guard = None
+            guard_entered = False
+            terminal_verified = None
             try:
                 # A failed automatic start can already have a terminal
                 # rolled-back game-switch receipt while its corner state still
@@ -770,25 +999,41 @@ class CornerRotationManager:
                 # request against the receipt and stable canonical owner; no
                 # retry or new execution is started by this path.
                 adapter = self.adapters[reservation["corner"]]
-                outcome = self._commit_verified_failed_start(
-                    state, reservation, adapter, manual=manual is not None, now=now
-                )
-                if outcome is not None:
+                guard = getattr(adapter, "recovery_guard", None) if manual is None else None
+                with (guard(reservation) if callable(guard) else nullcontext()) as terminal_verified:
+                    guard_entered = True
+                    outcome = None
+                    if terminal_verified is not True:
+                        outcome = self._commit_verified_failed_start(
+                            state, reservation, adapter, manual=manual is not None, now=now
+                        )
+                    if outcome is None:
+                        outcome = self._resolve_reservation(state, reservation, now,
+                                                           manual=manual is not None)
+                    # A persistence failure must never enter the refusal
+                    # writer with a consumed pending reservation/history.
+                    # Atomic save may have failed before or after replace;
+                    # leave its durable outcome intact and let the next read
+                    # determine whether this same reservation committed.
+                    commit_started = True
                     self.save(state)
                     return outcome
-                outcome = self._resolve_reservation(state, reservation, now,
-                                                    manual=manual is not None)
             except Exception as exc:
+                if (commit_started or terminal_verified is True
+                        or (callable(guard) and not guard_entered)):
+                    # Legacy proof binds the original ledger including error
+                    # metadata. A transient guard refusal cannot mutate that
+                    # input and make the same proof permanently unretryable.
+                    raise
                 # A refusal must not overwrite the classification of the
                 # original latch: that is the evidence operators diagnose from.
-                state.update(status="recovery_required",
-                             reason="execution-or-state-unverified")
-                if state.get("error_kind") is None:
-                    state["error_kind"] = _error_kind(exc)
-                self.save(state)
+                refused = deepcopy(recover_snapshot)
+                refused.update(status="recovery_required",
+                               reason="execution-or-state-unverified")
+                if refused.get("error_kind") is None:
+                    refused["error_kind"] = _error_kind(exc)
+                self.save(refused)
                 raise
-            self.save(state)
-            return outcome
 
     def _resolve_reservation(self, state, reservation, now, *, manual):
         corner_id = reservation["corner"]
@@ -969,6 +1214,14 @@ def run_manual(g, manager, games):
     from types import SimpleNamespace
     from .retro_corner import CornerResult
     rotation = CornerRotationManager(g)
+    requested_capture_profile = getattr(manager, "capture_profile", None)
+    if requested_capture_profile not in {None, "rejected_png_v1"}:
+        raise RotationError("unsupported manual capture profile")
+    if requested_capture_profile and (
+        list(games) != ["soren91"]
+        or getattr(manager, "state_path", Path()).name != "soren91_corner_manual.json"
+    ):
+        raise RotationError("PNG rejected-frame profile is Soren91-manual only")
     with rotation.locked() as acquired:
         if not acquired:
             raise RotationError("common corner coordinator is busy")
@@ -992,6 +1245,14 @@ def run_manual(g, manager, games):
             if not choices or request.get("state_file") != path.name:
                 raise RotationError("manual pending owner mismatch")
             chosen = choices[0]
+            stored_profile = request.get("capture_profile")
+            if stored_profile not in {None, "rejected_png_v1"}:
+                raise RotationError("manual pending capture profile is unsupported")
+            if (stored_profile == "rejected_png_v1"
+                    and now > timestamp(request["capture_profile_expires_at"])):
+                raise RotationError("manual capture profile authorization expired; recover the reservation")
+            if requested_capture_profile and stored_profile != requested_capture_profile:
+                raise RotationError("manual pending capture profile does not match")
             if chosen.id not in eligible and not any(
                 raw.get("rotation_request_id") == request["request_id"]
                 for raw in rotation.adapters[chosen.id].observations()
@@ -1005,6 +1266,9 @@ def run_manual(g, manager, games):
                 raise RotationError("no eligible manual corner")
             chosen = min(choices, key=lambda c: hashlib.sha256(f'{state["seed"]}:{state["slot"]}:{c.id}'.encode()).digest())
             request = dict(corner=chosen.id, selected_at=now, request_id=str(uuid.uuid4()), state_file=path.name)
+            if requested_capture_profile:
+                request["capture_profile"] = requested_capture_profile
+                request["capture_profile_expires_at"] = now + MANUAL_CAPTURE_PROFILE_TTL
             state["manual_pending"] = request
             state["slot"] += 1
             state["history"].append(dict(corner=chosen.id, at=now, source="manual-reservation"))
@@ -1022,15 +1286,36 @@ def run_manual(g, manager, games):
         state.update(last_seen_at=now, status="running")
         rotation.save(state)
         selected_adapter = rotation.adapters[chosen.id]
+
+        def run_reserved_manual(request):
+            if (request.get("capture_profile") == "rejected_png_v1"
+                    and timestamp(rotation.clock()) > timestamp(request["capture_profile_expires_at"])):
+                return "capture-profile-expired"
+            return manager.run_rotation(request["request_id"])
+
         adapter = SimpleNamespace(
             manager=manager,
             state_path=path,
-            run=lambda req: manager.run_rotation(req["request_id"]),
+            run=run_reserved_manual,
             runtime_environment=getattr(selected_adapter, "runtime_environment", None),
         )
         try:
             result = rotation.executor.execute(adapter, request)
             status = result if isinstance(result, str) else result.status
+            if status == "capture-profile-expired":
+                owned = [raw for raw in selected_adapter.observations()
+                         if raw.get("rotation_request_id") == request["request_id"]]
+                if (owned or rotation._observe(state, timestamp(rotation.clock()))
+                        or not rotation._expired_capture_has_no_live_owner(request, selected_adapter)):
+                    raise RotationError("expired capture profile has unresolved execution ownership",
+                                        kind="execution-unverified")
+                expired_at = timestamp(rotation.clock())
+                state["manual_pending"] = None
+                state.update(last_seen_at=expired_at, status="ready", reason=None,
+                             last_result={"corner": chosen.id, "request_id": request["request_id"],
+                                          "status": "expired", "at": expired_at})
+                rotation.save(state)
+                return CornerResult("expired", game=chosen.game)
             state.update(status="waiting", reason="manual-execution-pending")
             if status == "completed":
                 finished = timestamp(rotation.clock())

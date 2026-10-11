@@ -110,10 +110,20 @@ sudo bash ops/vm_actions/install_vm_gateway.sh ~/.ssh/github-vm-ops.pub ubuntu
 - **preview command**: 同じrefで `exec / preview`。本番filesystem/networkから隔離されます。
 - **production command**: `exec / production / ref=main / confirm=production`。stdout/stderr本文はVM private logだけに保存します。
 - **status**: `status / production` または `status / preview`。production status は総容量・利用可能bytes・使用率だけを返し、pathやログ本文は返しません。
-- **reclaim**: `reclaim / production / ref=main / confirm=production` + `apply`（false=dry-run 既定 / true=適用）+ `voicevox_archive`・`aivis_engine`（いずれも opt-in）。reviewed helper `ops/vm_actions/storage_reclaim.sh` の固定 allowlist だけを対象にします: `soren/tmp` の21日超 stale 検証残骸・deploy-backups（`manual_challenge*`・`deploy`・`radio_quarantine` 含む）、HOME 直下と system `/tmp` の7日超 leftovers（絶対パス固定 allowlist＋参照プロセス0、live encoder の `build/` は除外）、origin/dirty/7日 gate を通った `/tmp` の古い clone と `soren-src`、7日超の snapd download cache、dangling image と7日超 build cache の docker prune（`until=168h`。tagged image・container・volume は绝不）、apt clean / journal vacuum / snap disabled revision / `/etc/logrotate.d/soren`。opt-in の `aivis_engine` は未使用の第二TTS `AivisSpeech-Engine`（1.11GB）を **VOICEVOX engine が intact なときだけ**削除。出力は VM private log のみで workflow には終了コードだけが現れます。安全条件と実測は `docs/operations/vm-storage-reclaim-runbook.md` を参照。
+- **GitHub CLI認証の確認**: 正規SSH forced-command gatewayへ直接 `github_auth_diagnostics docich production <current-main-sha>` を送る、on-demandのread-only operationです。production checkoutと固定owned submoduleのHEAD/clean preflightは固定git argv、allowlist環境変数、`core.hooksPath=/dev/null`・`core.fsmonitor=false`で総計8秒deadlineを設け、timeoutは固定理由コードで拒否します（GH_TOKEN/GITHUB_TOKEN等の実行環境は継承しません）。gatewayを実行するOS userの `gh auth status`、固定GitHub API `GET /user`、GitHub API到達性だけを確認し、結果はhost label・実行user・gh有無・固定状態enum・API account login・GitHubが返すOAuth scopeだけに絞ります。stdout/stderr、API body、credential store、Git remoteは返しません。token/key/credentialやremote認証URLは読み出して公開せず、診断結果はprivateです。このoperationをGitHub Actionsから呼ぶとpublic logへ結果を出す可能性があるため、Actionsのoperation選択肢へは追加せず、承認済みforced-command SSHからだけ使います。root-owned installed gatewayの更新は通常deployでは反映されないため、`docs/operations/ops-brief.md` の管理者更新手順が必要です。
+- **reclaim**: `reclaim / production / ref=main / confirm=production` + `apply`（false=dry-run 既定 / true=適用）+ `voicevox_archive`・`aivis_engine`（いずれも opt-in）。reviewed helper `ops/vm_actions/storage_reclaim.sh` の固定 allowlist だけを対象にします: `soren/tmp` の21日超 stale 検証残骸・deploy-backups（`manual_challenge*`・`deploy`・`radio_quarantine` 含む）、HOME 直下と system `/tmp` の7日超 leftovers（絶対パス固定 allowlist＋参照プロセス0、live encoder の `build/` は除外）、origin/dirty/7日 gate を通った `/tmp` の古い clone と `soren-src`、7日超の snapd download cache、dangling image と7日超 build cache の docker prune（`until=168h`。tagged image・container・volume は绝不）、apt clean / journal vacuum / snap disabled revision / `/etc/logrotate.d/soren`（`soren/logs/*.log` に加え live 追記の `opencode/log/opencode.log` を size 50M×3世代・copytruncate で頭打ち。`tool-output` は稼働中 opencode が参照するため age-gate 削除の対象外）。opt-in の `aivis_engine` は未使用の第二TTS `AivisSpeech-Engine`（1.11GB）を **VOICEVOX engine が intact なときだけ**削除。出力は VM private log のみで workflow には終了コードだけが現れます。安全条件と実測は `docs/operations/vm-storage-reclaim-runbook.md` を参照。
+- **paper_ai_canary**: `paper_ai_canary / production / ref=main / confirm=production`。PAPERを起動せず、一時BTC/JPY状態でCloudflare Web Search→検証済み本文→固定Workers AI directを1回だけ通す固定canaryです。`run_paper_ai_canary.sh`だけをproduction execへ送り、deployed SHA一致・tracked clean・固定`/home/ubuntu/soren/.env`を再確認します。音声/overlay/ledger/strategy/orderを変更せず、モデル本文はActionsへ返しません。credentialの作成・更新やproduction feature flagの変更も行いません。
 - **market_paper**: `market_paper / production / ref=main / confirm=production` + `market_paper_action`(install/enable/disable/restart) + `market_paper_market`(stocks/fx)。opt-inのstocks/FXペーパートレードworker(`docich-market-worker@<market>.service` 等、`scripts/systemd/docich-market-*`)を `systemctl --user` だけで install/enable/disable/restart します。root/sudoは使いません。`config/market-paper.toml` は変更しません（enabled/mode切り替えは通常のcode reviewを通るdeployで行う）。結果は本操作自体では返らず(exec同様output withheld)、後続の `diagnostics` の `market_paper.{stocks,fx}` セクション(unit_active/health_status/feed_unavailable等)で確認します。
 - **Jevコメント分類器の有効化**: 先に Environment `vm-operations` へ `TYPESAFE_API_KEY` を登録し、`configure_jev / production / ref=main / confirm=production` を実行します。キーはstdinで固定gatewayへ渡され、呼び出し元のshellや任意commandは実行されません。VMの`.env`をatomic更新し、chat workerだけを完全再起動して、backend=`jev`・モデル・キー存在を実効環境で確認します。配信encoder、radio worker、共通基盤は再起動しません。
 - **Jevコメント分類器の無効化**: `disable_jev / production / ref=main / confirm=production` を実行します。`COMMENT_CLASSIFIER_BACKEND=`を明示し、Jev設定とキーを`.env`から除去してchat workerだけを完全再起動します。どちらの操作も直前の`.env`をVM内のmode 0600バックアップへ保存し、キー値はworkflow出力へ返しません。
+- **resident chat worker の再起動（chat/kick）**: `restart_chat_kick_workers / production / ref=main / confirm=production`。`chat_worker` / `kick_worker` は起動時に `broadcast/comment.sh` を source して常駐するため、投影済みの Soren runtime 変更（本文ベースのコメント重複判定など）はこの2プロセスを入れ替えるまで本番では有効になりません（Issue #262）。push deploy では発火しない dispatch 専用 operation で、trusted main の固定スクリプト `ops/vm_actions/restart_chat_kick_workers.sh` だけを送ります。`/home/ubuntu/soren/tmp/state/{chat_worker,kick_worker}.pid` の PID が生きていて `/proc/<pid>/cmdline` が `workers/<name>.sh` のときだけ TERM し、supervisor `start_all.sh` が起動した **新しい** 生きた同 worker を確認して初めて成功とします（fail-closed）。配信エンコーダ・Soren・audio・radio・その他の worker は再起動しません。pause マーカー `tmp/state/<name>.paused` がある worker は operator の停止意思として触りません。root/sudo は使わず任意コマンド入力も受け取りません。出力は VM private log に留まり step に現れるのは終了コードのみ: `0` 両方入れ替え済み（または pause 中）/ `10` chat_worker が生きた reviewed worker ではない / `11` TERM 後も生存 / `12` 置換が現れない / `20`〜`22` 同じ意味で kick_worker。arbitrary exec が無効な public repo でもこの operation は使えます。
+- **常駐 poll worker の再起動（#970 / epoch 連動）**: `audio_worker` / `youtube_worker` / `poll_worker` / `prediction_worker` / `stream_noon_audit` は起動時に Soren runtime を読み込んで常駐するため、投影済みの変更はプロセスを入れ替えるまで本番では有効になりません。push deploy の「Restart resident poll workers after reviewed runtime epoch」step が `ops/vm_actions/restart_poll_workers_epoch` を進めたときだけ、trusted main の固定スクリプト `ops/vm_actions/restart_poll_workers.sh` を送ります。`tmp/state/<name>.pid` の PID が生きていて `/proc/<pid>/cmdline` が `workers/<name>.sh` のときだけ TERM し、supervisor `start_all.sh` が起動した **新しい** 生きた同 worker を確認して初めて成功とします。pause マーカーがある worker と pid file の無い worker（未起動・config で無効）は触らず skip します。`audio_worker` は再生/queue の子プロセス中は TERM を保留するため他より長く待ちますが、bound を超えても step は失敗させず "TERM delivered / still winding down" として skip します(TERM は届いており、前景の処理が終わり次第 supervisor が入れ替える。deploy 全体を止める方が有害なため)。配信エンコーダ・音声・radio・Soren・webui は再起動しません。任意入力は受け取らず、出力は VM private log、step に現れるのは終了コードのみ: `0` 入れ替え/skip 完了 / `10`〜`12` audio_worker / `20`〜`22` youtube_worker / `30`〜`32` poll_worker / `40`〜`42` prediction_worker / `50`〜`52` stream_noon_audit。
+- **常駐 soviet_watchdog の再起動（#970 / 同じ epoch 連動）**: 起動時に読み込んだ `lib/poll_wait.sh` を入れ替えるための固定 helper `ops/vm_actions/restart_soviet_watchdog.sh`。watchdog は pid file ではなく `tmp/state/.soviet_watchdog.lock/owner` で singleton を所有します。既存 `restart_poll_workers_epoch` 更新時だけ push deploy から送信し、Python 本体を payload 内に含めて配備世代の混在を防ぎます。
+  - lock owner を同じ UID・Bash executable・固定 root の cwd・正確な script operand・Bash の script fd まで照合します。データ引数の文字列一致、別 root、`bash -c` は拒否します。投影前の古い script fd（同じ固定パスの deleted inode）も置換対象として許容します。
+  - proc directory と Linux pidfd を保持し、lock owner・起動世代を再照合して **pidfd だけ**に TERM を送ります。終了待ちも pidfd を使い、PID 再利用で別プロセスへ signal したり、その生存を旧プロセスの生存と誤認したりしません。pidfd が使えない場合は拒否します。
+  - lifecycle 判定には、固定 `tmp/state/start_all.pid` の reviewed supervisor が**実際の親**であることを確認した watchdog の exec 時環境から `GAME_LIFECYCLE_ENABLED` / `SOREN_GAME_LIFECYCLE_DIR` の2値だけを取得します。`start_all.sh` の `set -a` による起動時設定の継承を契約とし、値が空なら同じ既定値、相対 directory は同じ root 基準で解決します。gateway の限定環境や起動後に編集された `.env` は使わず、`.env` / lifecycle shell を source・実行しません。環境やパスの値は出力しません。adopted/orphan watchdog、読取不能・不正設定は契約未確認として拒否します。park 記録の不在・不正JSONは既存の非parked条件を維持しますが、permission・不明I/O・symlink/非regular/サイズ上限拒否は `13` でsignalなしに停止します。
+  - operator pause（dangling marker 含む）、`tmp/stop`、実効設定での lifecycle parked は保存して skip。新しい lock owner の正確な identity・起動世代・同じ supervisor・設定・生存を確認して初めて置換成功にします。同じ数値 PID でも別の起動世代なら新 owner として照合できます。
+  - step に現れるのは終了コードのみ（固定理由は VM private log）: `0` 置換/意図的 pause/park/未起動、`10` identity/handle 拒否、`11` TERM/旧プロセス終了未確認、`12` reviewed 置換未確認、`13` supervisor の実効 lifecycle 契約未確認。新しい worker・queue・registry・権限は追加しません。
 - **webui のコード更新を反映**: `restart_webui / production / ref=main / confirm=production`。初回のresource loader導入と `src/docich/webui.py` 等のbackend Python変更には再起動が必要です。導入後の画面・モデル候補/defaultは `src/docich/webui_resources/` のHTML・JSON・manifestが揃うと次のGETで更新されます（[resource更新手順](../../README.md#webuiの画面候補更新)）。保存済み.env・paused・overrideは変更しません。この operation は trusted main の固定スクリプト `ops/vm_actions/restart_webui.sh` だけを送り、`systemctl --user restart docich-webui.service` → 5秒以内に active を確認 → active 後はポート到達を0.2秒間隔・最大6秒で上限付きに待ち、到達後に **ローカルポートに配信されている HTML がデプロイ済みresource `index.html`（manifestハッシュ照合済み、旧配布では `INDEX_HTML`）とバイト一致するまで成功にしない**（fail-closed。`Type=simple` は bind 完了前に active になるため、待たずに1回だけ取得すると起動直後に誤って `13` になる）。ユニットが active でも別プロセスがポートを掴んで旧 UI を配信し続けるケースを検出します。root/sudo は使わず、unit 名も固定で任意コマンド入力は受け取りません。出力は VM private log に留まり、step に現れるのは終了コードのみ: `0` 成功 / `10` restart 失敗 / `11` active にならない / `12` ExecStart が配備 root 以外（または resource HTML読込不能）/ `13` ローカル webui 到達不能 / `14` 配信 HTML が古い（別プロセスがポート保持 or restart 未反映）。arbitrary exec が無効な public repo でもこの operation は使えます。
 
 ## Preview release / Git bundle retention and storage alert
@@ -172,5 +182,118 @@ temp file ごと破棄し、既存 bundle は触りません。
 runner の割り込み終了により試合loopが終了し、既存supervisorがゲーム専用プロセスを
 再起動する場合があります。配信・共通workerには直接触れません。実行後は `diagnostics` の
 `corners.soren_game` で新しい試合と runner の進行を別途確認します。
+
+### `recover_soren_round`（静止した Soren 試合を退避し、ゲーム木だけを再生成）
+
+引数なしの owner 専用固定操作です。既存 supervisor を維持したまま、盤面・履歴・建国 marker
+を退避し、ゲームの root と子孫をまとめて SIGKILL して、新しい試合の進行を確認します。
+`ready` と期限前を含む `draining` が対象です。rotation/retro の timeout 確定は要求しません。
+本番実行・ゲーム再読込・merge は実装 PR とは別承認です。
+
+**実行固定コマンド（実行にはオーナーの別承認が必要）**
+
+```sh
+cd /home/ubuntu/docich
+bash ops/vm_actions/recover_soren_round.sh
+```
+
+Actions の固定入力は `operation=recover_soren_round / target=production / ref=main /
+confirm=production` です。public repository では gateway の arbitrary `exec` が無効なので、
+Actions は固定理由で拒否します。authorize の成功だけで実行可能とは扱いません。
+上のローカル固定コマンドは、オーナーが別承認した既存の補助経路から実行します。
+public guard を弱めたり、任意 command/argument を受けたりしません。
+
+**変更前の拒否条件**
+
+- canonical が sole active `sorengame`/`soren` の `ready` または `draining` でない、stop 操作中、
+  または coordinator lock が使用中。
+- `game_state.json` が `STOP`/`GAMEOVER` でない、最終盤面変更から600秒未満、または未来のmtime。
+  保存後と最初のSIGKILL直前にも盤面・root・本人gateを再照合し、盤面/対象が変化したら
+  killせず拒否する。退避中の再書込/盤面再作成も検出し、退避した名前を空いている元の場所へ戻す。
+- ゲーム root（`bash soren_loop.sh`、`bash soviet_watchdog.sh`、`node soviet_local.mjs`、
+  `python3 -u strategy_runner.py`）をcwdとargvで各1つに特定できない。
+  同じroleの祖先を持つbash forkは子孫扱い。tmuxのbridgeは独立root扱い。
+- ゲーム木に共通workerが混入、profile付きブラウザが帰属不明、既存 supervisor を1つに特定できない。
+  ppid=1のcrashpadは、その専用profileのexact path optionが一致する場合だけ対象。
+  cwd不可の子孫はppidで帰属し、cwd不可のrootは推測しない。短命な子の消滅は許容。
+- 本人の `soren_loop`/`soviet_watchdog` pause、`tmp/stop`、`tmp/improve.lock` が存在する。
+  これらは解除しない。
+- Linux pidfdがない、必須の盤面/履歴が欠落、保存対象がsymlink/非regular/16MiB超、
+  または保存中に盤面が変化した。
+
+**実行は3段階**
+
+1. `run-soren-live/soren-round-recovery/<UTC>-<random>/` に盤面・履歴・建国marker・
+   runner marker/出力・observation・commandsをprivate保存し、SHA-256 receiptを残す。
+2. 終了直前のゲーム木を再取得して全targetをpidfdに束縛。保存済みの旧局ファイルを
+   同archiveの `retired/` へ退避してからSIGKILLする。旧局のTERM/EXIT trapによる
+   `cleanup_all` を回避する。kill後のファイル削除はせず、新writerのファイルを消さない。
+3. 既存supervisorによるloop/watchdog、watchdogによるbridgeの自然再生成を最大120秒待つ。
+   4rootの新PID/起動時刻、旧target終了、新runnerとmarkerのpid/起動時刻一致、
+   `game_state.json` の更新と進行状態、score>0または連続観測でのpieces変化を内部照合する。
+   既存supervisorのidentity維持を確認し、共通workerの自然なidentity変化は件数のみ報告する。
+
+coordinator/rotation/retroの状態・receipt・予約、lifecycleのrequest/ack/control/resource、
+共通worker・配信・本人pause/stopは変更しません。freeze・専用pause・段階journalはありません。
+coordinator lockは事前確認・保存・killまでの短い区間だけ保持し、成功/失敗/プロセス終了で解放します。
+最大120秒の進行確認pollは排他外で行い、既存draining driverのwriter再取得と境界ACK処理を妨げません。
+既存の `soren_round_recovery.json` も切替を止める条件から除去しました。
+完了後に新たな恒久holdを作りません。drainingは既存requestの境界ACK処理へ続きます。
+既存timeout予約をこの操作が再dispatch/recoverすることはありません。
+
+**途中失敗と復元不能境界**: 保存失敗では旧ファイルを動かさずkillしません。退避途中の例外は
+まだkillしていないため、退避した名前を空いている元の場所へ戻します。
+最初のSIGKILL以降は盤面を復元できません。保存物は証拠で、Unity盤面の復元手段ではありません。
+kill以降の失敗・120秒timeoutでも専用pause/holdは残らず、supervisorの再生成を継続します。
+再実行は新たな事前条件検査から始まります。既に動いている新試合を再度killしません。
+自動的な段階再開・本番再実行は行いません。
+
+出力は固定の結果/拒否理由と共通worker変化の件数のみで、PID・argv・request_idを含みません。
+本番での受入は別承認後、read-only diagnosticsと進行の実測で確認します。
+
+### `recover_bgm_mute`（所有済みBGM再生streamのmute解除と記憶更新・#1518）
+
+引数なしの owner 専用固定操作です。#968 の無音（bridge/BGM `ffplay` は生存・
+`soren_null` 接続・volume 正常なのに sink-input だけ `Mute: yes` で、
+`module-stream-restore` が同一キーの新規 stream に mute を再適用する）に対し、
+所有権を証明できた1件だけを `pactl set-sink-input-mute <index> 0` の固定 argv で
+解除し、同一キーの記憶が残っていないことを無音の短命 probe stream の生成で検証します。
+caller の shell は実行しません。index は daemon 出力を再検証してから単一 argv 要素で渡します。
+
+**実行固定コマンド（実行にはオーナーの別承認が必要）**
+
+```sh
+cd /home/ubuntu/docich
+bash ops/vm_actions/recover_bgm_mute.sh
+```
+
+Actions の固定入力は `operation=recover_bgm_mute / target=production / ref=main /
+confirm=production` です。public repository では gateway の arbitrary `exec` が無効なので、
+この固定 operation 名だけが許可されます。authorize の成功だけで実行可能とは扱いません。
+public guard を弱めたり、任意 command/argument を受けたりしません。
+
+**変更前の拒否条件**
+
+- sink-input 以外（capture/monitor の source-output）は列挙しません。構造的に対象外です。
+- sink 名が `list short sinks` で `soren_null` に解決できない。解決できない stream には触りません。
+- `Mute: yes` でない。所有済みで全て unmuted なら no-op 成功（`already_unmuted`）で probe を出しません。
+- 所有権を証明できない。`application.process.id` が生きた `ffplay` で、かつ固定 worker タグ
+  （`soren-bgm-loop`）を持つか、固定 owner（`bgm_worker.sh`、`soviet_local.mjs`、
+  `soren_loop.sh`、`soviet_watchdog.sh`）の子孫でない。application 名だけでは所有とみなしません。
+- 所有済み muted が0件（所有情報なしは `ownership_unproven`、他者の stream だけは `no_target`）、
+  2件以上（`multiple_targets`）、または corked（`target_corked`）。
+- probe 用の `ffplay` がない。検証なしの解除報告はしないため、変更前に拒否します。
+
+**実行は2段階**
+
+1. 対象を unmute し、直後に同一 (index, pid) が `Mute: no` であることを再照合します。
+   daemon がこの変更を同キーの stream-restore 記憶へ書き戻します。
+2. 固定 argv の無音 probe（同 player・同 sink・`-volume 0`・数秒）を出し、
+   新規 stream が unmuted で生まれることを確認します。muted で生まれたら1度だけ解除して再検証し、
+   記憶が残っている場合は拒否します。probe は必ず終了させ、最後に対象が再 mute されていないことも
+   照合します（再 mute されていたら `remuted` で拒否し、回復成功とは報告しません）。
+
+配信・共通音声・共有 sink・他ゲーム・読み上げの stream は数えて報告するだけで変更しません。
+出力は固定の status/reason/index・検証真偽・件数のみで、生プロパティ・command line・path・PID を出しません。
 
 既存VMの `/home/ubuntu/docich` に tracked差分またはowned submodule差分がある場合、bootstrapは拒否します。VMとrepositoryのどちらを正とするか確認して差分を整理してからbaselineを登録してください。`/home/ubuntu/soren` はbootstrap時に丸ごとsourceへ戻しません。以後、gitlink変更時に変更対象pathだけ旧sourceとの一致を検証して投影するため、既存runtime stateは保持されます。driftを無視して上書きする経路は用意しません。

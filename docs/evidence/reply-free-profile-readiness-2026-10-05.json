@@ -1,0 +1,80 @@
+{
+  "measurement": "readonly_free_profile_readiness",
+  "date": "2026-10-05",
+  "reviewed_research_head": "dfe860b8d5e8c3a1b2bf902e6cbe4ac685072fc8",
+  "status": "blocked_pending_free_charge_contract_decision",
+  "profile_implemented": false,
+  "native_big_pickle_selection": "rejected_by_existing_go_only_allowlist",
+  "official_reference": "https://opencode.ai/docs/zen/",
+  "candidate": {
+    "model_id": "big-pickle",
+    "opencode_model": "opencode/big-pickle",
+    "dispatcher_registration": "opencode:big-pickle",
+    "endpoint": "https://opencode.ai/zen/v1/chat/completions",
+    "official_price": "limited-time free",
+    "privacy": "Free-period inputs may be used to improve the model; synthetic input and public evidence only."
+  },
+  "existing_public_catalog_observation": {
+    "source": "https://opencode.ai/zen/v1/models",
+    "candidate_id_present": true,
+    "pricing_fields_present": false,
+    "not_a_fresh_read_this_phase": true
+  },
+  "blocker": {
+    "provider_enforced_zero_charge_request_contract": "unverified",
+    "required_decision": "Confirm a provider-enforced zero-charge contract, or explicitly decide whether a fresh official pricing-page check with fail-closed parsing is sufficient despite no transaction-level charge cap.",
+    "pricing_page_limit": "A pre-send Free row does not atomically bind the provider's price at billing time."
+  },
+  "proposed_invariants": [
+    "Operator selects one immutable model/endpoint/key profile.",
+    "Missing, unknown, expired or positive pricing refuses before any POST.",
+    "No model-selected command, path, URL, tool permission or egress expansion.",
+    "Only the selected existing research key reaches the child.",
+    "Default off; Go behavior, mandatory bwrap and fixed egress remain unchanged.",
+    "45-second common wall deadline, pre-send call reservations and 256 output token cap.",
+    "No retry or paid fallback; parent-minted receipts, hashes and quote checks remain mandatory.",
+    "Existing persona API still composes the final answer."
+  ],
+  "duplication_check": {
+    "open_docich_prs_checked": true,
+    "open_soviet_now_prs_checked": true,
+    "free_profile_implementation_found": false,
+    "other_free_model_chain_work": "docich PR1003; not modified",
+    "other_conversation_model_inventory_and_clef_discussion": "known; no duplicated implementation",
+    "limitation": "Open PRs and accessible checkout state cannot prove absence of unpublished changes."
+  },
+  "actual_model_calls_this_phase": 0,
+  "paid_probe_authorization_already_consumed": true,
+  "credential_reads_this_phase": 0,
+  "new_credentials": false,
+  "persistent_settings_changed": false,
+  "production_changed": false,
+  "clef_schema_changes": false,
+  "provider_inclusive_e2e_acceptance": false,
+  "verification": {
+    "native_selection_fixture": "synthetic Big Pickle with all research gates enabled is rejected by Go-only allowlist before dependency lookup or worker spawn",
+    "dispatcher_identifier_fixture": "parse_agents(opencode:big-pickle) resolves provider opencode / model big-pickle; this is no registration change",
+    "python_offline_contracts": {
+      "passed": 467,
+      "skipped": 5,
+      "subtests_passed": 38,
+      "environment": "Darwin Python 3.14",
+      "skips": "optional Discord SDK absent; Linux bwrap/network probes unavailable"
+    },
+    "worker_node_contracts": {
+      "passed": 256,
+      "failed": 2,
+      "failure_class": "cf dependency missing in local tsuitate fixture environment; no installation attempted"
+    },
+    "main_operator_contracts": {
+      "passed": 183,
+      "failed": 2,
+      "subtests_passed": 55,
+      "existing_followup": "https://github.com/azumag/docich/issues/1694",
+      "main_source_identical": true
+    },
+    "runtime_source_changes": false,
+    "independent_review_this_phase": "not performed"
+  },
+  "main_integrated": "f7ed7ac4fcf57bb62a0d17880b473743400ab35e"
+}

@@ -62,6 +62,18 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   "corners": {"state_dir_found": true,
               "game_switch": {"present": true, "phase": "ready", "active_game": "sorengame",
                               "last_status": "succeeded", "last_error_code": null, ...},
+              "weather_corner": {"present": true, "status": "completed",
+                                 "selection_kind": "automatic",
+                                 "rotation_request_matches_last_result": true,
+                                 "started_at": 1790942400, "completed_at": 1790942580,
+                                 "start_receipt": {"status": "succeeded",
+                                                   "result_matches_owner": true,
+                                                   "runtime_matches_owner": true,
+                                                   "generation_matches_owner": true},
+                                 "restore_receipt": {"status": "succeeded",
+                                                     "result_matches_owner": true,
+                                                     "runtime_matches_owner": true,
+                                                     "generation_matches_owner": true}, ...},
               "soren_game": {"present": true, "readable": true, "state": "MOVE",
                              "age_sec": 2, "founding_seen": false,
                              "make_soren_count": 0, "game_count": 12,
@@ -92,6 +104,14 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - 単発の rate-limit だけで critical にしない。rate-limit は件数のみ報告する。
 - queue waiter 数は lock 形式から観測できないため報告しない（不明は不明と扱う）。
 - 診断は stale lock を削除しない。観測のみ。
+- `hanjuku_tactical.last_card_assessment` はv132以降の最後の札判断を、一件の固定形式で示す。
+  `prediction_only=true`、判断からの `age_ticks`、固定32札の名前、対象種別、敵HP・双方の兵数、
+  総威力下限・敵兵士HP上限・将軍へ届く下限・残HP上限、`lethal` / `egg_drop_fit` / `allowed`
+  と固定の判断理由のみを返す。`lethal=false` は「下限で撃破を保証できない」であり、
+  実際の使用・卵落下・撃破の結果ではない。未知の値はnull、自由文・将軍名・入力列は出さない。
+  他の戦術情報と同じactive identity、30秒以内のbot記録、読取り前後の世代一致を確認する。
+  第2〜12話でもこの札判断は返せるが、城一覧は第1話のみのため `status=unsupported_chapter`
+  のままであり、後半の所有城を第1話の名前から推測しない。
 - `corners` はコーナー/番組のライフサイクル観測。`retro_corner` が
   `status=failed` かつ `recovery_required=true` の場合だけ severity を `warn` にし、
   owner-only の固定 `recover-failed` 操作を許可する。`draining` / `recovery_required`
@@ -147,7 +167,7 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   直近のlatch分類として次にlatchし直すまで残る）と、予約（`pending`）が在る限り
   （latch中かどうかを問わず）次を足す:
   `pending_corner`、`pending_phase`（`selected`/`dispatched`/`unknown`）、
-  `pending_age_sec`（-1は不明）、`pending_owner`（固定8種のcorner stateのうち
+  `pending_age_sec`（-1は不明）、`pending_owner`（固定9種のcorner stateのうち
   同じrequestを記録したstate名。該当なし`none`、読取不可`unknown`、予約なし`absent`）、
   `pending_owner_status`。request UUIDは固定stateとの照合にだけ使い出力には含めない。
   これで「まだ起動していない」「既に終了している」「実行中・corner側の復旧が要る」を
@@ -167,10 +187,80 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `corners.retro_corner.status`と`corners.retro_corner.game_audio.status`は別物で、
   `applied`は後者の音量適用結果。これらの診断値は復旧/再開の許可ではない。
   `recovery_required`は次cornerを停止する実行契約であり、診断自体は復旧操作をしない。
+  `nethack_rotation_evidence` は、このautomatic NetHack pendingのownerに結び付く
+  元restore receipt、元runtimeのrequest付き終了境界、rollback復元世代の唯一のruntime、
+  現在canonicalの復帰receipt・終了境界・lease/result一致を固定booleanで投影する。
+  ownerに`previous_game`がある場合、欠落を入口条件とするlegacy契約を適用可能とは表示しない。
+  保存済みrestore recovery/cleanup記録は有無だけを出す。UUID、runtime/lease/player、
+  path、prompt、argv、任意JSON本文・例外本文は出さない。
+
+  `contract_conditions` は同じ読取済みレコードから契約入力の内訳だけを追加する。
+  `previous_game` は `absent/null/sorengame/other/invalid`、`finish_reason` は
+  `absent/null/terminal/other/invalid`。キー不在と明示的nullは区別する。
+  `pending_source_absent`、元receiptの`original_source_absent` /
+  `original_restored_identity_absent`、復帰receiptの`return_source_absent`、
+  `restore_request_distinct`（元restore requestとrotation予約の相違）はboolean。
+  `original_cleanup_pending` は `absent/null/pending/clear`。
+  従来の`cleanup_clear=false`だけからcleanupがpendingだと推定しない。
+  legacy producerの履歴条件は `automatic_dispatch_history=matched/missing/invalid/scan_limit` と
+  `manual_reservation_since_selection=absent/present/invalid/scan_limit` に分ける。
+  ledger内のhistory最大512件、selected/started/last_seenと全履歴の時刻を確認し、
+  選択以降・開始以前のautomatic reservationと、選択以降のNetHack manual-reservationを
+  観測する。欠損・不正時刻・未来履歴・上限超過では部分的な肯定値を保持しない。
+  `legacy_contract_applicable`は入口条件の集約であり、全guardの成功を意味しない。
+  この内訳は現在の入力の観測であって、過去のexit 70の実際の拒否理由や
+  lock下での復旧可否を返すものではない。新しい読取対象・process走査は追加しない。
+
+  読取は固定state rootからdirfd/no-followで行い、regular JSON 64KiB以下・duplicate key拒否、
+  runtime探索4096 entries以下に制限する。resource probeの後に、読んだ全レコードと
+  runtime listingを再確認する。変更があれば肯定的投影を破棄し`snapshot_stable=false`。
+  欠落、不正schema/identity、曖昧なruntime、scan上限、読取拒否は固定理由とunknownで返す。
+  状態・lockを作らず、recover/coordinator/teardownを呼ばず、signalやtmux入力を送らない。
+  playerの比較元は固定のレビュー済み`config/games/nethack.toml`であり、証拠側のpathを使わない。
+
+  各runtimeの`presentation_stopped`、identity一致したtile manifestの`tiles_cleanup_complete`、
+  exact generationの既存tmux target不在を別々に出す。いずれか否定なら
+  `all_resources_released=false`。全て肯定でも、これらの記録からdetached/unregisteredな
+  game childや改善workerの不在を証明できないため`all_resources_released=null`を維持する。
+  各resourceの`unknown_reasons`は固定列挙値のみ。release記録の欠落は
+  `presentation_record_missing` / `tiles_record_missing`、identity一致したtile記録に
+  booleanのcleanup値がない場合は`tiles_cleanup_unproven`、tmux読取失敗・非boolean値は
+  `tmux_probe_unavailable`。既存観測の範囲外である`detached_children_unobserved` /
+  `unregistered_workers_unobserved`は常に残す。別資源に否定証拠がある場合も、
+  未観測範囲の理由を消さない。全レコードの再確認が失敗すれば内訳も破棄する。
+  `terminal_chain_matches`は終了証拠の一致のみであり、全資源解放や運用解除の許可ではない。
+  `recovery_authority`は常にfalse。安定した前後読取も原子的snapshotや将来のfenceではなく、
+  正規operatorは別承認後にwriter lock下で適用契約を再照合する必要がある。
+
   `corners.corner_rotation_timer` は支配的なtimer unit名（移行後は
   `docich-corner-rotation.timer`）、active/enabled、旧名が正しいaliasかを示す
   bounded boolean `legacy_alias` のみを出す。unit path・alias target・state pathは出さない。
+  alias pair投影も支配timer選択と同じ`PROD_ROOT.parent`のuser unit rootを使う。
+  gatewayのscrubbed `HOME=/tmp` をunit欠損の判定元にしない。
+  時刻指定manual予約がある場合は、UUIDや任意payloadを出さずに
+  `scheduled_manual`、固定corner名、`scheduled_manual_trigger_at`、`scheduled_manual_due`、
+  7日で上限化したoverdue秒、固定 `scheduled_manual_blocked_reason`（`not_due` /
+  `waiting_slot`）だけを追加投影する。独立inboxに残る時刻前予約も同じ投影へ含める。
 
+- `corners.weather_corner` は固定 `weather_corner.json` からstatus、request/start/restore/completion時刻、
+  固定enumの終了理由、前のgame名、rotation予約/完了記録とのrequest一致booleanに加え、
+  音声deliveryの固定statusと `next_index`（0〜13）だけを出す。音声本文・request payload・item keyは出さない。
+  開始・復元GameSwitch receiptはweather ownerが保持するcanonical UUIDと一致するときだけ、
+  その固定UUIDのreceiptファイルを一件ずつbounded/no-followで読む。出力するのはstatus・operation・
+  時刻・ownerとのresult/runtime/generation一致booleanのみ。request UUID、runtime ID、lease ID、
+  forecast、音声queueや本文、payload、自由文エラー、パスは出さない。`restored_runtime_matches_current`
+  は保存された復元identityと現在のGameSwitch canonical identityの一致を示す。後続の切替後にfalseでも、
+  保存されたrestore receiptが成功している事実は変わらない。読み取りは順次行うため単一snapshotではない。
+  projectionは観測のみで、corner予約・GameSwitch・runtimeを操作しない。
+
+- `corners.retro_program_queues` は既存Soren rootの固定2 queueを、種類`scheduled`/`manual`と
+  `present`・`readable`・`status`だけへ投影する。`present=false`は読取時の欠落、`null`は
+  symlink/アクセス不成立など存在を確認できない場合。存在する不正JSON・非object・非regular・
+  上限超過は`present=true/readable=false`。読取成立でもstatus欠落・不正型・未知値は`unknown`。
+  既知statusは`waiting/waiting_boundary/waiting_turn/running/done/expired/cancelled/error`のみ。
+  既存の全経路no-follow・regular file・256 KiB上限readerを使い、queueの一覧走査やlock取得・
+  state作成・cleanupはしない。本文・パス・識別子・時刻・自由文例外は出さない。
+  2ファイルは独立snapshotであり、対象要求との一致や取消/管理解除の適格性を証明しない。
 - rotation 待機の補助証跡: `corners.rotation_evidence` に固定8種の
   corner state（retro/PAPER/Soren91/NetHackの通常・manual）と固定10種の
   改善結果（9ゲーム＋PAPER）を出す。状態enum、ゲームenum、完了時刻、
@@ -249,17 +339,93 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   固定boolean `corner_paper_degraded` としてのみ要約する。state_dir は固定 config
   (`config/docich.soren-live.toml`) の `paths.state_dir` から解決し、
   production checkout 内に制約する。
+- Hanjukuの `retro_corner.bot_version` は固定許可値だけを表示する。従来の v1/v2 に加え、
+  `hanjuku-chart-v129-battle-card-progress` / `hanjuku-chart-v130-summer-cursor-evidence` /
+  `hanjuku-chart-v131-defense-month-economy` を許可する。
+  未知の値は `null` のままとし、prefix一致による任意文字列の公開はしない。この値はbot状態の
+  自己申告であり、表示だけで入力適用や勝率改善を実測したことにはならない。
 - Hanjuku実況再生: retro_corner が status=active / game=hanjuku-hero の場合だけ、
   Soren の tmp/.say_queue/debug.log 末尾を最大128KiB・2048行で読み、半熟英雄キューに
   限った queue_started / queue_completed / queue_failed / queue_unmatched_starts と、
   明示的な external_kill_markers / truncated_playback_suspected /
   partial_audio_retry_suppressed の件数を retro_corner.narration_playback に出す。
+  `queue_failed_fence_rejection` は、同じキュー項目の汎用失敗より前に
+  `say_enqueue` の固定「runtime fence失効」マーカーを観測した失敗件数。
+  重複マーカーは1件に数え、完了した項目や別項目のマーカーは流用しない。
+  残りは `queue_failed_unclassified` とし、2値の合計は `queue_failed` と一致する。
+  期限切れ・世代変更・終了・読取失敗の内訳はこのマーカーだけでは判定できない。
+  音声再生後の期限確認でも失敗になり得るため、失敗件数を無音件数とみなさない。
   実行中ログはメモリ内だけで解析し、本文・行・ファイル名・パス・tokenは返さない。
   固定ディレクトリをsymlinkなしで開き、通常ファイル以外や読取失敗は
-  status=unavailable と各値nullにする。tail_truncated=true は全ログではなく末尾の
-  観測であることを示す。queue_unmatched_starts は観測範囲で終端記録が見つからない数で、
+  status=unavailable と各値nullにする。tail_truncated=true はcollectorによる末尾制限を
+  示す。Sorenも上流でdebug.logを500行超から末尾200行へ切り詰めるため、falseでも
+  ラン全履歴とは限らず、開始数と完了・失敗数の合計が一致しないことがある。
+  開始前・claim直後の一部fence拒否には原因ログがなく、collectorだけでは分類できない。
+  queue_unmatched_starts は観測範囲で終端記録が見つからない数で、
   再生中またはログ切替でも起きるため、キャンセル確定数ではない。
   queue_completed も音声全体が聞こえた証明ではなく、リスナー側の実聴確認を代替しない。
+- Hanjuku場面実況: `retro_corner.scene_narration` は現在のcanonical runtimeを直接読み、
+  schema=1の `hanjuku_scene.json`（producer）、`hanjuku_scene_worker.json`（worker）、
+  `hanjuku_scene_commentary.jsonl`（event log）を別々に投影する。ゲーム・runtime・世代・leaseを
+  照合し、playing中で終端候補がないrunだけを対象とする。読み取り前後でcanonicalを再確認し、
+  切替があれば `status=identity_changed` と全component nullへ戻す。
+  JSONは各256KiB、logは末尾128KiB・2048行まで。全path要素でsymlinkを拒否し、通常ファイル
+  以外は読まない。facts・本文・event key・scene hash・lease・runtime名・パスは返さない。
+  producerはenabled・観測age・最新request seq/age・scope（scene/history）・期限内か・現在のsceneと一致するかだけ、
+  workerは固定status/reason/role・age・処理seq・固定counterだけを返す。roleは
+  BATCH_COMMENTARY_AGENTS/RADIO_AGENTS/AI_COMMON_AGENTSのいずれかで、モデル一覧は公開しない。
+  `request_matches_scene=false` は観測値であり、sourceの取得失敗を意味しない。
+  history scopeの完成事実はfieldへ移っても有効な場合があるため、scope・期限・worker結果と併せて読む。
+  epoch hashやsource_sceneの内容は返さない。
+  event enumはrequested/skipped/generate_started/generate_succeeded/generate_failed/
+  deliver_enqueued/deliver_failed。既知reasonごとの件数も別に集計し、自由形式reasonは返さない。
+  logはmatched/rejected件数、範囲制限、最新event/reason/age/seq・latency_ms・char_countを出す。
+  request確定前のskipはseqがnullのまま件数へ含める。workerの通常reason=noneは独立counterを
+  持たないためcounter列から除き、log側のreason別集計では記録されたnoneも数える。
+  logの件数は観測末尾の窓であり、workerの保存counterと同じ累計ではない。
+  source欠損・不正・identity不一致ではcomponentのread_status/statusをunavailableにし、
+  counterはnullに保つ。有効なworkerの空counterと読める空logだけを0件とする。
+  混在logでは確認できる行だけを数えてstatus=partialとし、全行不正なら件数をnullにする。
+  各ageはsource読取後の小数時刻で計算した保存記録の鮮度であり、古いworker値を現在進行中の証拠として扱わない。
+  前段の診断開始時刻は使わず、同じ秒の正常な更新を未来扱いしない。実際の未来時刻は不正として扱う。
+  deliver_enqueuedは既存音声キュー関数の正常終了で、実キュー作成・再生完了の受領記録ではない。
+  出力予算を超える場合は場面実況詳細をstatus=output_omittedへ置き換え、ゲーム戦況を優先する。
+- Hanjuku操作の繰り返し: `retro_corner.decision_plans` は同じgate（status=active /
+  game=hanjuku-hero かつ game_switch.active_game=hanjuku-hero）で、現在のcanonical runtimeの
+  `hanjuku_decisions.jsonl` を末尾128KiB・1024行で読み、identity（game/runtime/世代/lease）と
+  schema=1・event・atを照合した `action_plan` 行だけを集計する。chartのcounterは購入・戦闘・月だけで
+  進むため、同じ入力を返し続けていても動かず、カーソルが点滅する限りstall判定も発火しない。
+  このprojectionは繰り返している操作そのものを返す:
+  固定screen kind語彙（`hanjuku_screen.classify_text` と `screen.kind` のリテラル上書きが所有。
+  テストがソースから再導出するので、追加されたkindは`other`に閉じる）、許可リストのpadボタン名
+  （a/b/x/y/l/r/up/down/left/right/start/select、未知は`other`）、件数、age、
+  そして末尾で繰り返している単位 `trailing_repeat`（`period`=1で単一操作の連打、2〜4で
+  交互/周期的なフォールバック、`null`は末尾で繰り返していない）。
+  `top_signature` は窓内で最多の署名、`screen_kind_counts`/`button_counts`/`distinct_signatures`/
+  `distinct_screen_kinds` は窓（最新128 plan）の内訳、`window_plans` は集計した窓、`plan_records` は
+  末尾範囲内で照合したplan行数、`last_plan_age_sec` は最新planの保存 age。
+  decision理由・chart step・将軍/城名・frame/decision hash・runtime名・hold_ms・log本文は読まない。
+  読み取り前後でcanonicalを再確認し、切替があれば `status=identity_changed` と全値nullへ戻す。
+  窓は観測末尾でありコーナー全体の履歴ではない。`tail_truncated` はcollectorの末尾制限を示す。
+  外部lease・不正行は件数だけ数えて `status=partial`、全行不正なら集計をnullのまま `unavailable` にする。
+  有効なplan行が無い場合は集計をnullに保つ（0件の正常を意味しない）。
+  本projectionは固定の出力予算（36KiB）を超えても保持する。1KiB未満で固定・
+  自動利用無く、「進んでいるcornerか同じ操作のループか」だけを区別できる唯一の
+  証拠のため。gatewayのhard上限（stdout 64KiB / sanitize後48KiB）に近づく場合
+  のみstatus=output_omittedへ置き換える（`HARD_JSON_BYTES` = 56KiB）。
+- 出力予算とcpu_profile: 固定envelope（`runtime_registry.MAX_JSON_BYTES` = 36KiB）は
+  gatewayの48KiB sanitize後capより小さい値で、24KiBのSoren91 evidence chunkが
+  base64/JSON展開後も収まる量を確保する。本番の通常payloadはこの上限を超えるため、
+  予算超過時は `ai.recent_events`・`workers.details`・`ai.anomalous_components`・
+  `cpu_profile`の行・Soren91のgroup・`scene_narration`・`hanjuku_tactical`・
+  `pulse_sink_inputs` の順に削る。`decision_plans` はこの soft 予算では削らず、
+  gatewayのhard上限時のみ削る。残る最大要素が `cpu_profile` なので、
+  ゲーム証拠より**前**に `components`/`spawns` を先頭10行へ縮める
+  （producerはbusiest順に並べるので先頭が重い行）。omitted行数は
+  `components_omitted`/`spawns_omitted` として残し、既存 `components_truncated` は
+  書き換えない。縮めても収まらない場合の最終形は budget を超えるが、
+  gatewayのstdout 64KiB・sanitize後48KiB capが仍然として最終防御となる。
+  profileは既に上限（各30行）付きであり、この縮小は出力圧時のみ効く。
 - boundary: Soren `tmp/state/corner_boundary_improvement.json` /
   `corner_boundary_prediction.json` の `completed_at` と age のみ。コーナーの
   境界待ちの可否を判定できる。
@@ -268,6 +434,26 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   hash・env 文字列・戦略本文は読まない・出さない。A/B 中は improvement
   boundary が保留されるため、コーナー遅延の直接原因になる。
 - meta: デプロイ済み docich HEAD と soviet_now gitlink（検証用。secret ではない）。
+- `supervisor_identity`: 固定system unit `soren-runtime.service` のMainPIDと
+  `tmp/state/start_all.pid` が一致し、同じuserの生存中Bashである場合だけ、
+  `/proc` の開始ticks＋boot時刻から `process_started_at` を観測する。
+  配備済み `start_all.sh`、gitlinkの期待blob、Bashの固定script FD 255の
+  SHA-256を別々に返す。FDは同じ固定script path（削除済みinodeも含む）だけを
+  許可し、512KiB上限・regular file・所有user・変更検査を行う。
+  root/tmp/state、procのPID/fdディレクトリはno-followで開き、proc handleを保持して
+  相対readを行う。PID再利用時に別processのFDを読むことはなく、再照合不一致は不明になる。
+  PID、start ticks、proc comm、FDのpath/inode、argv、環境変数、本文は出力しない。
+  取得前後にunit/PID/start ticks/pidfileを再照合し、変化・終了ならprocess証跡を
+  捨てて `identity_changed` とする。欠測・unsafe・FDなしは不明として返す。
+  `deployed_script_mtime/ctime` は配備fileの時刻であり、deploy完了時刻や起動時hashではない。
+  **hash一致・開始時刻だけでは既に定義済みのBash関数を証明しない**。in-place更新や
+  同じPIDのexecがあり得るため、`loaded_functions_status` は常に `unverified`。
+  `status=observed` もsource証跡の取得だけを意味する。既存shellの起動時attestationは
+  存在せず、この診断は追加書込・signal・reload・休止変更を行わない。
+  FDが期待hashと異なる場合は `reason=open_script_differs_expected` として旧source保持等を
+  積極的に示すが、未知のsourceを特定の旧commitやloaded関数の版と断定しない。
+  停止なしの確実なreload経路がない間は、効果測定を自然の次回supervisor起動まで待つ。
+  この診断を理由にhotpatch・kill・service restartで適用を強制しない。
 - webui: `docich-webui.service` の固定 projection と「配信 UI がデプロイ済み UI と一致するか」の観測。
   `unit_file`（unit ファイル有無）、`unit_active` / `unit_enabled`（`systemctl --user is-active /
   is-enabled`）、`main_pid` / `n_restarts`（`systemctl --user show`、再起動ループの検出用）、
@@ -352,21 +538,32 @@ run終了処理や日次処理を起動しない。owner境界・既存lock・�
 
 ## tmux サーバ所有と resolver daemon の read-only 投影（#1286 follow-up）
 
-`tmux_servers` は本番コーナーが使う既定ソケット `docich` と評価ジョブ専用ソケット
-`docich-eval` の読取成否・セッション数・確認できた有無を投影する。
+`tmux_servers` は本番コーナーが使う tmux 既定サーバと評価ジョブ専用サーバ
+`docich-eval` の読取成否・セッション数・確認できた有無を投影する（`schema_version` は2）。
+本番サーバのサーバ名は `default`。tmux は `-L` を付けないときソケットを `default` と
+名付けるので `tmux -L default` が本番サーバそのものを読む。`docich` はその既定サーバ内の
+**セッション名**であり、サーバ名ではない。以前の `-L docich` は VM 上に存在せず、
+本番サーバを常に「不在」（`readable=false`）と誤報していた（2026-10-08 実測）。
 セッション名は取得せず、`list-sessions -F 1` の固定マーカーだけを数える。
 出力は4KiBまでを検証し、不正な行、上限超過、timeout、実行失敗、非zero終了は
 `readable=false / present=null / session_count=null` とする。不在や0件に推測変換しない。
 正常終了した空出力だけが `readable=true / present=false / session_count=0` になる。
 旧 `sessions` フィールドは出力しない。各サーバの結果は独立している。
 #1284 で評価用 tmux を専用サーバへ隔離したが、分離はプロセスツリーからは直接観測できなかった。
-この投影で「eval セッションが `docich-eval` 上に作られ、本番 `docich` サーバに現れない」ことを
+この投影で「eval セッションが `docich-eval` 上に作られ、本番 `default` サーバに現れない」ことを
 diagnostics で直接確認できる。`tmux -L <server> list-sessions` は read-only（入力送信なし）。
 
 `resolver_daemon` は `docich-resolver-improve.service` と
-`docich-resolver-improve-gnurobots.service` の active / enabled 状態を投影する。
-これらの長命 daemon が稼働していると、次回再起動まで本番既定 tmux サーバを共有し続ける
-（#1284 の対象外経路）。`systemctl --user is-active` / `is-enabled` は read-only。
+`docich-resolver-improve-gnurobots.service` の active / enabled 状態を投影する
+（`schema_version` は2）。これらの長命 daemon が稼働していると、次回再起動まで
+本番既定 tmux サーバを共有し続ける（#1284 の対象外経路）。
+2026-10-08 の VM 実測では両 unit は **system manager**（`/etc/systemd/system`、
+root所有、`WantedBy=default.target`）に install されており、`systemctl --user` だけを
+見ると `not-found`（= 未稼働に見える）になっていた。実際には
+`docich-resolver-improve.service` は 2026-10-01 06:18 JST から稼働中だった。
+そのため `active` / `enabled` は system / user 両 manager の集約（いずれかが true なら true、
+既知の false は unknown に隠されない）とし、manager ごとの生値は `scopes` に残す。
+`systemctl is-active` / `is-enabled`（system / `--user`）は read-only。
 
 
 ## YouTube / Kick title sync の read-only 投影
@@ -407,6 +604,12 @@ key 名に `API_KEY` / `TOKEN` / `SECRET` / `STREAM_KEY` / `PASSWORD` /
 worker 追加時はここへ 1 行（name / required / category / pid 特殊形）を足す。
 queue lane は lock dir スキャンで自動検出されるため登録不要（代表 lane のみ列挙）。
 
+半熟の場面実況は `HANJUKU_SCENE_ONESHOT` に module・runtime内のproducer/state/lock/log・
+診断key・既存radio laneを登録する。確認済みfactがある時だけ最大1件を処理するゲーム所属の
+短命processなので `start_all.sh` の常駐worker表へは追加しない。待機中にPIDが無いことは正常。
+healthは同じruntime/世代の `scene_narration` の鮮度と `generate_*` / `deliver_*` の進行で判断する。
+初回のlauncher receiptだけでworker journalが未完成の間は、workerのstatusは `unavailable` になる。
+
 CI は以下を検査する（`ops/vm_actions/tests/test_runtime_registry.py`）：
 
 - registry schema と required の保守性。
@@ -445,7 +648,9 @@ commit SHA のみで、path・diff・bytes・raw exception を含めない。
 ## CPU profiling
 
 CPU 消費・wake-up・spawn 経路の短時間 baseline は diagnostics とは別の read-only
-profiler で取る。契約と実行方法は [cpu-profiling.md](cpu-profiling.md)（#970）。
+profiler で取る。通常 `diagnostics` は保存済みprofileのfreshnessを示すだけ。
+owner-only `cpu_profile / production / main` workflow dispatch は固定条件のone-shot計測を
+実行し、freshなsanitized projectionを返す。契約と実行方法は [cpu-profiling.md](cpu-profiling.md)（#970）。
 
 NetHack tiles の `nethack_tiles.json` はruntime固有のprivate ownership manifestである。
 diagnostics は active runtime と manifest のgeneration/ownership一致、固定status/mode/reason、

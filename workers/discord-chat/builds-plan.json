@@ -1,0 +1,19 @@
+{
+  "status": "proposal-only",
+  "repository": "azumag/docich",
+  "workerName": "docich-discord-chat",
+  "productionBranch": "main",
+  "previewBuilds": false,
+  "rootDirectory": "workers/discord-chat",
+  "pathIncludes": [
+    "workers/discord-chat/*",
+    "src/docich/comment/prompts/comment_persona_main.md"
+  ],
+  "pathExcludes": [],
+  "buildCommand": "npm run build:cf",
+  "deployCommand": "./node_modules/.bin/cf deploy --prebuilt --worker docich-discord-chat --tag \"$(git rev-parse HEAD)\"",
+  "buildVariables": {
+    "NODE_VERSION": "24.18.0",
+    "CF_SEND_TELEMETRY": "false"
+  }
+}

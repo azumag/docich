@@ -19,6 +19,14 @@ DOCICH = "from pathlib import Path; from docich.overlay_queue import append_even
 
 def prepare(root):
     (root / "core").mkdir(parents=True)
+    missing = [name for name in ("overlay_notify.sh", "generate_event_overlay.py", "core/config.sh")
+               if not (SOURCE / name).is_file()]
+    if missing:
+        pytest.skip(
+            f"native overlay scripts が不在のため読み飛ばし: {missing} "
+            "(git submodule 未取得の hermetic checkout では正常。取得時は "
+            "SOREN_OVERLAY_SOURCE で上書き可)"
+        )
     for name in ("overlay_notify.sh", "generate_event_overlay.py", "core/config.sh"):
         shutil.copyfile(SOURCE / name, root / name)
     obs = root / "obs_control.sh"

@@ -9,7 +9,13 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from docich import config
-from docich.nethack_daily_improve import run_daily_improvement
+from docich.nethack_daily_improve import (
+    NethackDailyImproveError,
+    _improvement_candidates,
+    _load_config,
+    _public_evidence,
+    run_daily_improvement,
+)
 from docich.nethack_run import PROGRESS_SCHEMA_VERSION
 
 
@@ -102,6 +108,86 @@ class DailyImproveTests(unittest.TestCase):
             }
             lines.append(json.dumps(item) + "\n")
         (progress / f"{run['run_id']}.jsonl").write_text("".join(lines), encoding="utf-8")
+
+    def test_repeated_hold_becomes_progress_stall_candidate(self) -> None:
+        retrospectives = [{
+            "run_id": "run-1",
+            "terminal_status": "dead",
+            "progress_evidence": {
+                "same_frame_sent_pairs": 0,
+                "max_same_frame_sent_streak": 1,
+                "same_frame_hold_pairs": 2,
+                "max_same_frame_hold_streak": 3,
+                "prompt_counts": {"unknown": 3},
+                "resolved_intent_counts": {"progress_blocked": 3},
+            },
+        }]
+        candidates = _improvement_candidates(retrospectives)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["category"], "progress_stall")
+        self.assertEqual(candidates[0]["evidence"]["same_frame_hold_pairs"], 2)
+        self.assertIn("prompt/startup", candidates[0]["next_step"])
+
+    def test_public_evidence_keeps_bounded_hold_stall_counts(self) -> None:
+        retrospectives = [{
+            "terminal_status": "dead",
+            "death_signature": None,
+            "score": 1,
+            "turns": 2,
+            "max_depth": 1,
+            "got_amulet": False,
+            "progress_evidence": {
+                "status": "ok",
+                "sample_count": 3,
+                "truncated": False,
+                "phase_counts": {"hold": 3},
+                "prompt_counts": {"unknown": 3, "secret-prompt": 9},
+                "intent_counts": {"inspect_screen": 3},
+                "resolved_intent_counts": {"progress_blocked": 3},
+                "sent_key_counts": {},
+                "same_frame_sent_pairs": 0,
+                "max_same_frame_sent_streak": 0,
+                "same_frame_hold_pairs": 2,
+                "max_same_frame_hold_streak": 3,
+            },
+        }]
+        progress = _public_evidence(retrospectives, "2026-10-07")["runs"][0]["progress"]
+        self.assertEqual(progress["prompt_counts"], {"unknown": 12})
+        self.assertEqual(progress["same_frame_hold_pairs"], 2)
+        self.assertEqual(progress["max_same_frame_hold_streak"], 3)
+
+    def test_direct_daily_improve_chain_is_explicit_opt_in(self) -> None:
+        path = self.root / "config" / "docich.toml"
+        text = path.read_text(encoding="utf-8").replace(
+            'daily_improvement_timezone = "Asia/Tokyo"\n',
+            'daily_improvement_timezone = "Asia/Tokyo"\n'
+            'daily_improvement_direct_enabled = true\n'
+            'daily_improvement_direct_agents = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"\n',
+        )
+        path.write_text(text, encoding="utf-8")
+        g = config.load_global(self.root)
+        resolved = _load_config(g)
+        self.assertEqual(
+            resolved.agents,
+            "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8",
+        )
+
+    def test_direct_daily_improve_rejects_non_direct_chain(self) -> None:
+        path = self.root / "config" / "docich.toml"
+        text = path.read_text(encoding="utf-8").replace(
+            'daily_improvement_timezone = "Asia/Tokyo"\n',
+            'daily_improvement_timezone = "Asia/Tokyo"\n'
+            'daily_improvement_direct_enabled = true\n'
+            'daily_improvement_direct_agents = "opencode:legacy"\n',
+        )
+        path.write_text(text, encoding="utf-8")
+        g = config.load_global(self.root)
+        with self.assertRaises(NethackDailyImproveError):
+            _load_config(g)
+
+    def test_direct_daily_improve_off_keeps_legacy_inheritance(self) -> None:
+        resolved = _load_config(self.g)
+        self.assertEqual(resolved.agents, "provider:model")
 
     def test_daily_candidate_uses_sanitized_result_and_trace_then_waits_for_canary(self) -> None:
         run = self.make_run()

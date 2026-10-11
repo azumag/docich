@@ -1,0 +1,41 @@
+name: Time Commando offline checks
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/time-commando-offline.yml'
+      - 'src/docich/time_commando_preflight.py'
+      - 'tests/test_time_commando*.py'
+      - 'docs/games/time-commando*.md'
+      - 'config/examples/time-commando/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/time-commando-offline.yml'
+      - 'src/docich/time_commando_preflight.py'
+      - 'tests/test_time_commando*.py'
+      - 'docs/games/time-commando*.md'
+      - 'config/examples/time-commando/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: time-commando-offline-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  offline-structure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Synthetic content and existing disabled profile checks
+        run: |
+          set -euo pipefail
+          for pattern in test_time_commando_preflight.py test_time_commando_profile.py test_config.py test_retroarch_adapter.py test_retroarch_readiness_contract.py; do
+            python3 -m unittest discover -s tests -p "$pattern" -v
+          done

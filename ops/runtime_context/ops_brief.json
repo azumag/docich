@@ -1,11 +1,11 @@
 {
-  "output_sha256": "e1d63e7601939139f3f1cac43ed1b9269bd674cac740f3801bca140cc0eb0922",
+  "output_sha256": "e7404b5465ec34b58b9537bd39cec57e70f78fd3df14dd1e57f3521fa4f8adaa",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "c4ab45cfcf1bcb83f9c42128ad51720e17e914d2735d9593552da60f87f4fc43",
+  "source_sha256": "bdc147c6ec467fadffc2e153fbb4f8fdffc0ebd4841590a20a238a832bd02097",
   "topics": [
-    "Fly Me To The Home! 実機検証（更新 2026-10-10）",
-    "追記: 実機での連続プレイ（目標: 50面クリア）",
-    "Codexへ移行"
+    "手動OBS特別コーナーの受信と専用経路の実装",
+    "自動ローテーション復旧（slot181停滞35h）と恒久修正2件",
+    "docich VM・配信 read-only 監視（slot 181停滞継続）"
   ]
 }

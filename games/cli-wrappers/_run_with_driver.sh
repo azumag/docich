@@ -108,3 +108,20 @@ docich_wrapper_run_with_driver() {
   docich_wrapper_cleanup
   return "$rc"
 }
+
+# Optional local record outbox. Disabled for standalone/evaluation wrappers.
+docich_wrapper_record_clip() {
+  [ "${DOCICH_RECORD_CLIPS:-0}" = "1" ] || return 0
+  [ -z "${DOCICH_MOON_BUGGY_AB_STATE:-}" ] || return 0
+  PYTHONPATH="$SCRIPT_DIR/../../src${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 -m docich.record_clips score --game "$1" --value "$2" \
+      --sequence "${matches:-0}" >/dev/null 2>&1 || true
+}
+
+docich_wrapper_seed_clips() {
+  [ "${DOCICH_RECORD_CLIPS:-0}" = "1" ] || return 0
+  [ -z "${DOCICH_MOON_BUGGY_AB_STATE:-}" ] || return 0
+  PYTHONPATH="$SCRIPT_DIR/../../src${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 -m docich.record_clips seed-score --game "$1" --scorelog "$SCORELOG" \
+      >/dev/null 2>&1 || true
+}

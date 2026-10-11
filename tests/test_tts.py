@@ -503,9 +503,11 @@ class TestCliSay(TtsTestBase):
         self._write_script()
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
+            # 直接テキストは -f より前に置く (CLI 契約: 逆順は argparse が
+            # parser 段階で拒否するため、相互排他チェックに届かない)。
             rc = cli.main([
                 "--config", str(self.toml), "say", "sorengame",
-                "-f", str(self._text()), "テキスト", "--dry-run",
+                "テキスト", "-f", str(self._text()), "--dry-run",
             ])
         self.assertEqual(rc, 2)
         self.assertIn("併用できません", err.getvalue())

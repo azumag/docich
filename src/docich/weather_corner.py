@@ -3,8 +3,8 @@
 Scheduling and shared program-slot arbitration stay in corner_rotation and
 corner_adapters. GameSwitch owns boundary waits, runtime teardown, rollback,
 and restoration; this module persists the weather corner's request and full
-runtime identity, plus an opt-in shared-audio item plan. It never fetches a
-forecast or generates speech.
+runtime identity, plus an opt-in shared-audio item plan. An opt-in publisher
+refreshes the forecast before a new execution; this module never generates speech.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from .game_switch import (
     ERROR_AGENT_START_FAILED,
     ERROR_QUIESCE_FAILED,
     ERROR_READINESS_TIMEOUT,
+    ERROR_ROLLBACK_FAILED,
     ERROR_SOURCE_FENCE_LOST,
     ERROR_START_FAILED,
     GameSwitchBusyError,
@@ -35,6 +36,7 @@ from .weather_view import read_view
 
 WEATHER_VIEW_NAME = "weather-view"
 STATE_FILENAME = "weather_corner.json"
+FORECAST_START_MARGIN_S = 30
 RUNTIME_IDENTITY_KEYS = ("game", "runtime_id", "generation", "lease_id")
 PENDING_SWITCH_STATUSES = frozenset({"queued", "in_progress", "busy"})
 ROLLBACK_ERROR_CODES = frozenset({
@@ -76,7 +78,7 @@ class WeatherCornerManager:
     """Run one weather display under an existing GameSwitch/program slot."""
 
     def __init__(self, g, *, duration_minutes=None, coordinator=None,
-                 audio_enabled=False, audio_port=None,
+                 audio_enabled=False, audio_port=None, forecast_refresh=None,
                  clock=time.time, sleep=time.sleep, poll_s=1.0):
         if duration_minutes is not None and (
                 type(duration_minutes) is not int or not 1 <= duration_minutes <= 14):
@@ -91,6 +93,7 @@ class WeatherCornerManager:
         self.duration_minutes = duration_minutes
         self.audio_enabled = audio_enabled
         self.audio_port = audio_port
+        self.forecast_refresh = forecast_refresh
         self.clock, self.sleep, self.poll_s = clock, sleep, float(poll_s)
         self.path = Path(g.state_dir) / STATE_FILENAME
         self.state_path = self.path
@@ -119,6 +122,9 @@ class WeatherCornerManager:
     def eligible(self):
         if self.duration_minutes is None:
             return False
+        if self.forecast_refresh is not None:
+            # Fetch only once selected, never during eligibility/status polling.
+            return True
         try:
             read_view(self.snapshot_path)
         except (OSError, WeatherError):
@@ -187,6 +193,11 @@ class WeatherCornerManager:
             raise WeatherCornerError("rotation request identity is invalid")
         return value
 
+    def _required_forecast_remaining(self):
+        if type(self.duration_minutes) is not int:
+            raise WeatherCornerError("weather duration is required for forecast runway")
+        return self.duration_minutes * 60 + FORECAST_START_MARGIN_S
+
     def _new_state(self, request):
         request_id = self._request_id(request.get("request_id"))
         try:
@@ -210,7 +221,7 @@ class WeatherCornerManager:
         now = self.clock()
         expires_at = forecast.get("expires_at")
         if (type(expires_at) not in (int, float)
-                or expires_at - now <= 5):
+                or expires_at - now < self._required_forecast_remaining()):
             return {
                 "schema_version": 1,
                 "game": WEATHER_VIEW_NAME,
@@ -574,6 +585,12 @@ class WeatherCornerManager:
             if remaining <= 0:
                 return self._restore(state)
             self._advance_audio_delivery(state)
+            if self.audio_enabled:
+                delivery = self._validate_audio_delivery(state)
+                if delivery is not None and delivery["status"] == "completed":
+                    return self._restore(state, end_reason="audio-completed")
+                if delivery is not None and delivery["status"] in {"failed", "stopped"}:
+                    return self._restore(state, end_reason="audio-unavailable")
             self.sleep(min(self.poll_s, remaining))
 
     def _restore_receipt_finished(self, state, canonical):
@@ -738,6 +755,20 @@ class WeatherCornerManager:
         else:
             if state.get("status") not in {"idle", "completed", "interrupted"}:
                 raise WeatherCornerError("another weather execution owns the state")
+            if self.forecast_refresh is not None and not self._stop_requested():
+                try:
+                    self.forecast_refresh(
+                        self.snapshot_path.parent,
+                        min_remaining_s=self._required_forecast_remaining(),
+                    )
+                except (OSError, WeatherError):
+                    # No switch/queue was requested. Complete this reservation
+                    # without retrying stale data or blocking the other corners.
+                    self._save({"schema_version": 1, "game": WEATHER_VIEW_NAME,
+                                "status": "interrupted", "rotation_request_id": request_id,
+                                "completed_at": self.clock(),
+                                "end_reason": "forecast-fetch-failed-before-start"})
+                    return "completed"
             state = self._new_state({"request_id": request_id})
             if state is None:
                 return "queued"
@@ -817,6 +848,34 @@ class WeatherCornerManager:
                             or not isinstance(canonical.get("active"), dict)
                             or _identity(canonical["active"]) != previous):
                         return False
+                elif code == ERROR_ROLLBACK_FAILED:
+                    # The start failed *and* its own rollback failed, so
+                    # game-switch was left in ``failed`` with the previous
+                    # runtime retained for a reviewed recovery.  A later
+                    # recovery restored it.  Accept a terminal ``failed``
+                    # receipt for this exact request only together with the
+                    # canonical state that proves the restore finished: a
+                    # stable owner running the exact previous game, nothing
+                    # still in flight (no candidate/previous/retiring), and a
+                    # generation that is not older than the one this corner
+                    # started from.  A canonical that owns any other game, a
+                    # lingering in-flight runtime, or a mismatched receipt
+                    # keeps the slot latched.
+                    if (result.get("status") != "failed"
+                            or result.get("from_game") not in (None, previous_game)
+                            or previous_game is None
+                            or not _stable(canonical)
+                            or not isinstance(canonical.get("active"), dict)
+                            or canonical["active"].get("game") != previous_game
+                            or type(canonical["active"].get("generation")) is not int
+                            or canonical["active"].get("generation") < 1):
+                        return False
+                    _identity(canonical["active"], expected_game=previous_game)
+                    if isinstance(previous, dict):
+                        prior_generation = previous.get("generation")
+                        if (type(prior_generation) is not int
+                                or canonical["active"]["generation"] < prior_generation):
+                            return False
                 else:
                     return False
                 state.update(status="interrupted", completed_at=state.get("completed_at", self.clock()),

@@ -250,6 +250,8 @@ P3cのstrategic schemaはこの横にある**未接続のadvisory境界**。次�
 `[nethack.narration] enabled=true / cooldown_s=20.0 / speaker=""`。
 `cooldown_s` は5〜300秒の有限値。speakerは空なら共通audio workerの既定音声、
 指定時は64文字以内の英数字と `._:-` のみ。contextは固定 `nethack:policy`。
+
+日次retrospectiveのcatalog候補生成は `daily_improvement_direct_enabled=false` が既定で、従来の `daily_improvement_agents` / `retro_corner.improve_agents` を維持する。true時だけ `daily_improvement_direct_agents` を使い、explicit `openrouter-api / vercel-api / cloudflare-api` chain以外はprovider呼出し前に拒否する。候補は既存どおりaction catalog validatorとseed-paired canary待ちで、本番方策へ自動昇格しない。
 AGENTSの `work_indicator` 作業中音声や、コーナー開始/終了の `nethack:announce` とは別物。
 
 - `PolicyDecision.intent` と既知reasonを日本語の固定1文へ写す（座標・raw reason・TTY本文は読まない）。

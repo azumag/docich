@@ -9,6 +9,7 @@ from typing import Mapping, Sequence
 
 from .market_data import MarketFrame
 from .models import Opportunity, SkipDecision, TradingValidationError, as_decimal
+from .paper import paper_execution_price
 from .strategy_lab import (
     built_in_reason_context,
     scan_experiment_entries,
@@ -286,7 +287,7 @@ def scan_exit_opportunities(
         frame = frames.get(str(symbol))
         if frame is None:
             continue
-        price = frame.last_price
+        price = paper_execution_price(frame.last_price, "sell")
         change = price / average - D("1")
         reason: str | None = None
         if change >= take_profit:
