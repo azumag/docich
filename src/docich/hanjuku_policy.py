@@ -464,7 +464,9 @@ def observe_owners(mem, roofs, cam):
     for castle, kind in seen.items():
         prev = streak.get(castle) or {}
         count = prev.get('count', 0) + 1 if prev.get('kind') == kind else 1
-        streak[castle] = {'kind': kind, 'count': count}
+        streak[castle] = {'kind': kind, 'count': count,
+                          **({'world_flag_vetoed': True} if prev.get('world_flag_vetoed')
+                             and prev.get('kind') == kind else {})}
         if count < OWNER_CONFIRM:
             continue
         from .hanjuku_roster import owner
@@ -485,6 +487,19 @@ def observe_owners(mem, roofs, cam):
                     reason='占領していた城の屋根が敵の色になったため失陥として奪還対象にする')
             _tally(mem, 'castle_losses')
         elif kind == 'own' and castle not in captured:
+            flag = (mem.get('world_flags') or {}).get(castle) or {}
+            if (flag.get('kind') == 'enemy' and flag.get('chapter') == chapter
+                    and 0 <= int(mem.get('tick') or 0) - int(flag.get('tick') or 0) <= WORLD_FLAG_TRUST):
+                # g684 2-8 15:12:45: four roof reads called スペンソニア ours
+                # while every world map flew its enemy flag; the false capture
+                # met all_captured and sent the hero to the boss castle.
+                if not streak[castle].get('world_flag_vetoed'):
+                    streak[castle]['world_flag_vetoed'] = True
+                    _record(mem, 'castle_owned_vetoed', castle=castle,
+                            observed_metric={'roof': kind, 'readings': count,
+                                             'world_flag_tick': flag.get('tick')},
+                            reason='屋根は自軍色だが直近の全体マップの旗が敵のため占領と扱わない')
+                continue
             (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
             captured.append(castle)
             if castle in (mem.get('lost') or []):
@@ -1627,12 +1642,17 @@ def world_map_step(screen, mem, frame):
     return [pad('y')]
 
 
+WORLD_FLAG_TRUST = 200   # observations a world-map (Y) flag outranks a roof reading
+
+
 def _apply_world_flags(mem, flags):
     chapter = mem.get('chapter') or 0
     from .hanjuku_roster import owner
+    seen = mem.setdefault('world_flags', {})
     for name, kind in flags.items():
         if name in chart.castles(chapter):
             owner(mem, STATUS_NAMES.get(name, name), kind)
+            seen[name] = {'kind': kind, 'tick': int(mem.get('tick') or 0), 'chapter': chapter}
     home = chart.home_castle(chapter)
     cur = mem.get('battle') or {}
     castle = cur.get('castle')
@@ -6898,6 +6918,8 @@ def month_step(screen: Screen, mem):
     extra = _month_extra(screen, mem, shop)
     if extra is not None:
         return extra
+    if shop and not shop.get('closed') and _await_month_roster_scan(mem, shop):
+        return []
     if shop and not shop.get('closed'):
         shop['closed'] = True
         _record(mem, 'month_done', month=shop['key'], gold_after=(screen.header or {}).get('gold'),
@@ -6944,7 +6966,12 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
         status = shop.get(sub)
         if status not in ('pending', 'check'):
             continue
-        if sub == 'recruit' and shop.get('egg') not in ('done', 'not_needed'):
+        if (sub == 'recruit' and shop.get('egg') not in ('done', 'not_needed')
+                and not (shop.get('egg') == 'skipped' and shop.get('recruit_priority')
+                         and _no_empty_egg_to_recover(mem))):
+            # A recovery already skipped as unaffordable spends nothing this
+            # month; with generals short the recruit keeps its own cash gate
+            # (g684 2-9: egg skipped at 75G deferred recruitment again).
             if shop.get('egg') in ('pending', 'check'):
                 actions = _month_extra(screen, mem, shop, egg_only=True)
                 if actions is not None:
@@ -7070,6 +7097,40 @@ def _chikujou_affordable(gold, reserve):
     return type(gold) is int and reserve is not None and gold >= reserve + CHIKUJOU_SPARE
 
 
+MONTH_ROSTER_WAIT = 4   # menu observations held for the free roster scan to start
+
+
+def _await_month_roster_scan(mem, shop):
+    """Hold the month open briefly so a deferred roster recruit can be read.
+
+    g684 2-10 15:24:44: recruit was deferred_roster, the egg sub ended and
+    month_done fired in the same observation, before the monthly roster
+    scan (house.step) could start; the scan ran on the field instead and the
+    month passed without recruitment at 103G. Bounded: the month still
+    closes if the scan never starts.
+    """
+    if shop.get('recruit') != 'deferred_roster' or mem.get('month_sub'):
+        return False
+    attempts = mem.get('recruit_month_scan_attempts') or {}
+    if attempts.get('scope') == [mem.get('chapter'), mem.get('month')] and attempts.get('count', 0) >= 1:
+        return False
+    waits = int(shop.get('roster_scan_wait') or 0)
+    if waits >= MONTH_ROSTER_WAIT:
+        return False
+    shop['roster_scan_wait'] = waits + 1
+    if waits == 0:
+        _record(mem, 'month_roster_scan_wait', month=shop.get('key'),
+                reason='募集が一覧確認待ちのため、月一メニューを閉じる前に一覧確認の開始を短く待つ')
+    return True
+
+
+def _no_empty_egg_to_recover(mem):
+    """Every egg awaiting recovery was read with uses left (none at 0, none unread)."""
+    uses = mem.get('egg_uses') or {}
+    targets = _egg_recovery_targets(mem)
+    return bool(targets) and all(type(uses.get(name)) is int and uses[name] >= 1 for name in targets)
+
+
 def _chikujou_reserve(mem, shop):
     """Only money left after unfinished necessities may fund optional building."""
     def amount(value):
@@ -7101,6 +7162,10 @@ def _chikujou_reserve(mem, shop):
                if shop.get('recruit') != 'done' and (
                    shop.get('recruit') in ('pending', 'check', 'opened')
                    or shop.get('recruit_priority')) else 0)
+    if shop.get('recruit_priority') and shop.get('recruit') not in ('done', 'opened', 'unverified'):
+        # g684 2-9: deferral zeroed recruit_reserve, so building spent the
+        # fee every month while generals stayed short (7 of 13).
+        recruit = max(recruit, RECRUIT_COST)
     cards = [] if shop.get('merchant_done') else shop.get('items') or []
     if any(name not in KNOWN_PRICES for name, _ in cards):
         return None  # an unpriced required purchase is not spare money
