@@ -165,7 +165,8 @@ def test_lagging_header_can_be_reconciled_before_the_next_castle_opens():
 @pytest.mark.parametrize('held', [
     {'egg': 'unverified', 'reserve': 50, 'egg_cost': 50},
     {'hero_repair_reserve': 50},
-    {'recruit_reserve': 50},
+    {'recruit_reserve': 50, 'recruit': 'check'},
+    {'recruit_reserve': 50, 'recruit': 'skipped', 'recruit_priority': True},
     {'soldiers_done': False, 'soldiers': 50},
 ])
 def test_actual_quote_cannot_consume_unfinished_necessities(held):
@@ -348,3 +349,34 @@ def test_castle_navigation_has_its_own_finite_budget_above_the_old_eight_frames(
     sub['presses'] = policy.CHIKUJOU_SUB_LIMIT
     assert policy.month_sub_step(castles(on=HOME), mem) == [policy.pad('b')]
     assert sub['aborted']
+
+
+def test_145g_builds_when_this_months_recovery_was_skipped():
+    # Owner 2026-10-11: 145G on hand and no castle was built. Three generals
+    # had each summoned once (3 x 50G hold) and the recovery had already been
+    # skipped as unaffordable this month.
+    mem = memory(egg='skipped')
+    mem['egg_uses'] = {'ゼウス': 3, 'ココット': 2, 'ヴィーナス': 3, 'どうし': 4}
+    assert policy._chikujou_reserve(mem, mem['shop']) == policy.WAGE_RESERVE
+    assert policy._month_chikujou(month(145), mem, mem['shop']) == [policy.pad('a')]
+
+
+def test_skipped_recovery_still_keeps_the_heros_egg():
+    mem = memory(egg='skipped')
+    mem['egg_uses'] = {'どうし': 0, 'ゼウス': 3}
+    assert policy._chikujou_reserve(mem, mem['shop']) == policy.WAGE_RESERVE + 50
+
+
+def test_unresolved_recovery_keeps_the_worst_case_hold():
+    mem = memory(egg='check', egg_cost=50)
+    mem['egg_uses'] = {'ゼウス': 3}
+    mem['egg_recheck'] = ['ココット', 'ヴィーナス']
+    assert policy._chikujou_reserve(mem, mem['shop']) == policy.WAGE_RESERVE + 150
+
+
+@pytest.mark.parametrize('status', ['deferred_cash', 'deferred_roster', 'not_needed',
+                                    'deferred_economy', 'not_affordable', 'done'])
+def test_recruit_stopped_this_month_releases_its_fee_for_building(status):
+    mem = memory(recruit=status, recruit_reserve=50)
+    assert policy._chikujou_reserve(mem, mem['shop']) == policy.WAGE_RESERVE
+    assert policy._month_chikujou(month(145), mem, mem['shop']) == [policy.pad('a')]

@@ -6883,18 +6883,34 @@ def _chikujou_reserve(mem, shop):
     def amount(value):
         return value if type(value) is int and value > 0 else 0
 
-    # Optional building yields to the worst case: the estimate is a lower
-    # bound (measured counts only), while an unread recheck name may still
-    # turn into a real quote next month.
-    egg = (0 if shop.get('egg') in ('done', 'not_needed') else
-           max(amount(shop.get('reserve')), amount(shop.get('egg_cost')),
-               EGG_RECOVER_COST * len(_egg_recovery_targets(mem))))
+    # Optional building yields to the worst case while this month's recovery
+    # is unresolved: the estimate is a lower bound (measured counts only),
+    # while an unread recheck name may still turn into a real quote.
+    # Owner (2026-10-11): 145G on hand and no castle was built. A recovery
+    # already skipped as unaffordable this month spends nothing more now, so
+    # it keeps only the hero's egg (g604: an eggless hero in a defense is game
+    # over), not 50G per general that had summoned once against a level
+    # costing at most 20G.
+    status = shop.get('egg')
+    if status in ('done', 'not_needed'):
+        egg = 0
+    elif status == 'skipped':
+        egg = EGG_RECOVER_COST if NAME in _depleted_eggs(mem) else 0
+    else:
+        egg = max(amount(shop.get('reserve')), amount(shop.get('egg_cost')),
+                  EGG_RECOVER_COST * len(_egg_recovery_targets(mem)))
     repair = max(amount(shop.get('hero_repair_reserve')), 50 if _hero_egg_broken(mem) else 0)
     soldiers = 0 if shop.get('soldiers_done') else amount(shop.get('soldiers'))
+    # A recruit stopped as unneeded/unaffordable no longer holds its fee; a
+    # general shortage (recruit_priority) still saves it for the next month.
+    recruit = (amount(shop.get('recruit_reserve'))
+               if shop.get('recruit') != 'done' and (
+                   shop.get('recruit') in ('pending', 'check', 'opened')
+                   or shop.get('recruit_priority')) else 0)
     cards = [] if shop.get('merchant_done') else shop.get('items') or []
     if any(name not in KNOWN_PRICES for name, _ in cards):
         return None  # an unpriced required purchase is not spare money
-    return (WAGE_RESERVE + egg + repair + amount(shop.get('recruit_reserve')) + soldiers
+    return (WAGE_RESERVE + egg + repair + recruit + soldiers
             + sum(KNOWN_PRICES[name] * quantity for name, quantity in cards))
 
 
