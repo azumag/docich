@@ -4235,6 +4235,7 @@ def battle_step(screen: Screen, mem):
                     observed_metric={'sortie_step': cur['step']},
                     reason='出撃注文を特定できない突入のため、同じ将軍の進軍中出撃の携行札だけを結び付け')
         _bind_substitute_defender(mem, cur, b)
+        _bind_event_duel(mem, cur)
         planned = [t['card'] for t in _tactics(mem, cur['step'])
                    if _tactic_enemy_ok(t, b.enemy, cur) and t.get('step') in (None, cur['step'])
                    and not (t.get('boss_only')
@@ -4502,8 +4503,9 @@ def _melee_step(mem, cur):
     # There is no calibrated egg-loss receipt yet. A selected dropper plus
     # lower HP is only a candidate, including True flags saved by older bots.
     # The existing HP/count budgets still end a passive hold boundedly.
+    duel = cur.get('event_duel') is True
     safe = (triggers.has_egg is False or triggers.clash_position is False
-            or charted or forced or probe)
+            or charted or forced or probe or duel)
     cur['melee_forced'] = forced
     # A probe is in `safe`, so melee_holds stays zero.  Only probe_ticks is
     # incremented below; inventory rechecks are not copied into either count.
@@ -4525,6 +4527,7 @@ def _melee_step(mem, cur):
             **({'defender_egg_window': egg_window} if egg_window else {}),
             hold_hp_budget=hp_budget, hold_hp_bled=hp_bled,
             reason=('札での撃破を未保証のため、保持予算内の短い入力で実HP・兵数を再観測' if probe
+                    else '月一イベントの一騎打ちは保留せず、ぶつかり合いの青ゲージでA連打' if duel
                     else 'チャートのぶつかり合いに向けて押し込む' if charted
                     else '保持中のHP劣化が予算に達したため押し込む' if hold_cut
                     else '卵の激突リスクの保留上限に達したため押し込む' if holds >= MELEE_HOLD_LIMIT
@@ -4849,6 +4852,36 @@ def _critical_safe_card(mem, cur, rescue):
                 or (gate['role'] == 'healing_not_a_kill' and _card_healing_needed(cur))):
             return True
     return False
+
+
+# Monthly duel events: 武芸者の挑戦 (「…ごあいてねがえぬか?」), はたしあい and
+# 裏切り. Owner (2026-10-11): these fights barely used the blue gauge.
+DUEL_EVENT_TOKENS = ('ごあいて', 'はたしあい', 'うらぎ', 'ぶげいしゃ', 'いっきうち')
+DUEL_EVENT_WINDOW = 40          # observations (~60 s) from the event text to the battle
+
+
+def note_duel_event(screen, mem):
+    flat = ''.join((screen.text or '').split())
+    if flat and any(tok in flat for tok in DUEL_EVENT_TOKENS):
+        mem['duel_event'] = {'tick': int(mem.get('tick') or 0), 'text': flat[-40:]}
+
+
+def _bind_event_duel(mem, cur):
+    """A battle right after a duel event, outside any castle attack/defense.
+
+    gcgx battle.html: ぶつかった際にバーが青くなるので、その間にAを連打すると
+    踏ん張って前進しやすくなる. The egg-safe hold sends nothing at exactly that
+    clash, so a duel held through its blue windows (owner 2026-10-11).
+    """
+    event = mem.get('duel_event')
+    if (not isinstance(event, dict) or cur.get('side') or cur.get('castle')
+            or int(mem.get('tick') or 0) - int(event.get('tick') or 0) > DUEL_EVENT_WINDOW):
+        return
+    cur['event_duel'] = True
+    mem.pop('duel_event', None)
+    _record(mem, 'battle_event_duel', **_battle_labels(cur),
+            observed_metric={'event_text': event.get('text')},
+            reason='月一イベントの一騎打ちのため、卵の激突保留をせず青ゲージでA連打する')
 
 
 def _tactic_enemy_ok(tactic, enemy, cur):

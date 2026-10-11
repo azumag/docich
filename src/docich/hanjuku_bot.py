@@ -312,6 +312,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         hanjuku_house.step(screen, mem, frame)
     # A planned summon-preemption must not become a blind A on an unfinished
     # command menu, or be replaced by an old monthly/house transaction.
+    policy.note_duel_event(screen, mem)
     actions = policy.defender_egg_pending_step(screen, mem)
     if actions is None:
         actions = policy.trade_guard_step(screen, mem)
