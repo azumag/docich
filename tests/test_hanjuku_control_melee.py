@@ -115,7 +115,7 @@ def test_selection_alone_or_new_danger_cannot_force_melee(change):
 def test_expired_selection_cannot_disable_survival_on_a_later_panel():
     mem = selected()
     mem['battle']['enemy_hp'] = 17
-    mem['tick'] += p.CARD_ANNOUNCE_LIMIT + p.MELEE_HOLD_LIMIT + 1
+    mem['tick'] += p.CARD_MELEE_OBSERVE_LIMIT + 1
     assert p._card_melee_ready(mem, mem['battle']) is False
 
 

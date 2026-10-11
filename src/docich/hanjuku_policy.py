@@ -1042,11 +1042,35 @@ def _arrival_castle(mem, owned):
     return castle
 
 
+SOURCE_LOCATION_RECHECK_LIMIT = 3
+
+
+def _source_location_recheck(mem, source):
+    """An apparent second idle name needs its own fresh location reading."""
+    present = set((mem.get('garrison') or {}).get(source) or ()) - _en_route(mem)[0]
+    unknown = present & set(mem.get('general_location_unknown') or ())
+    if len(present) < 2 or not unknown or len(present - unknown) >= 2:
+        return None
+    scope = [mem.get('chapter'), mem.get('month'), sorted(present), sorted(unknown)]
+    old = (mem.get('source_location_rechecks') or {}).get(source) or {}
+    attempts = old.get('attempts', 0) if old.get('scope') == scope else 0
+    if type(attempts) is not int or attempts < 0:
+        attempts = SOURCE_LOCATION_RECHECK_LIMIT
+    return {'scope': scope, 'attempts': attempts}
+
+
+def _source_location_recheck_due(mem, source):
+    recheck = _source_location_recheck(mem, source)
+    return recheck is not None and recheck['attempts'] < SOURCE_LOCATION_RECHECK_LIMIT
+
+
 def _source_spare_missing(order, mem, *, allow_probe=False):
     if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
         return False  # reconcile an issued sortie; do not cancel its carried-kit receipt
     source = _source(order, mem)
     present = (mem.get('garrison') or {}).get(source)
+    if _reserve_source_guard(order, mem) and _source_location_recheck(mem, source) is not None:
+        return not (allow_probe and _source_location_recheck_due(mem, source))
     if allow_probe and order.get('source_probe') is True:
         return False  # open its verified list; never bypass the live-list/card guards
     unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
@@ -1080,10 +1104,14 @@ def _interim_source(mem, target, chart_order, owned, busy):
         present = [g for g in free[staffed[0]] if g not in unavailable_for_attack]
         present.sort(key=lambda g: g == NAME)          # risk the hero last
         return staffed[0], present[0]
+    recheck = sorted((c for c in owned if _source_location_recheck_due(mem, c)),
+                     key=lambda c: (_distance(chapter, c, target), c))
+    if recheck:
+        return recheck[0], MOVE_ANY_GENERAL
     unplaced = [g for g in _unplaced_castle_generals(mem)
                 if g not in busy and g not in unavailable_for_attack]
     arrival = _arrival_castle(mem, owned)
-    if unplaced and arrival in owned:
+    if unplaced and arrival in owned and _source_location_recheck(mem, arrival) is None:
         # Joiners stand in the hero's castle; the sortie list is the reading
         # and still cancels if fewer than two are really there.
         return arrival, unplaced[0]
@@ -1101,6 +1129,8 @@ def _interim_source(mem, target, chart_order, owned, busy):
     refuted = mem.get('unplaced_refuted_castles') or {}
     unplaced_names = _unplaced_castle_generals(mem)
     def probe_due(c):
+        if _source_location_recheck(mem, c) is not None:
+            return _source_location_recheck_due(mem, c)
         if garrison.get(c) is None:
             return True
         if garrison.get(c) == []:
@@ -3374,7 +3404,18 @@ def _keep_sortie_defender(screen, mem, order):
     unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
     available = set(present) - unavailable
     if len(available) >= 2:
+        (mem.get('source_location_rechecks') or {}).pop(_source(order, mem), None)
         return None
+    source = _source(order, mem)
+    recheck = _source_location_recheck(mem, source)
+    if recheck is not None:
+        recheck['attempts'] = min(SOURCE_LOCATION_RECHECK_LIMIT, recheck['attempts'] + 1)
+        mem.setdefault('source_location_rechecks', {})[source] = recheck
+        return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',
+            '所在未確認の将軍を守備人数に含めず取り消し、同じ一覧の再確認を上限付きで残す',
+            {'present': present[:8], 'available': sorted(available),
+             'location_recheck_attempts': recheck['attempts']})
+    (mem.get('source_location_rechecks') or {}).pop(source, None)
     # The read list refutes "unplaced joiners stand here" for this castle
     # until the unplaced set changes (g684 3-1 16:09-16:10: the same order
     # was re-issued and cancelled every 10 s).
@@ -4170,7 +4211,7 @@ def _card_melee_ready(mem, cur):
     hp = cur.get('enemy_hp')
     return bool(watch and 'クースカン' in cur.get('cards_selected', [])
                 and (watch.get('ally'), watch.get('enemy')) == (cur.get('ally'), cur.get('enemy'))
-                and int(mem.get('tick') or 0) - watch['selected_tick'] <= CARD_ANNOUNCE_LIMIT + MELEE_HOLD_LIMIT
+                and 0 <= int(mem.get('tick') or 0) - watch['selected_tick'] <= CARD_MELEE_OBSERVE_LIMIT
                 and watch['bursts'] < MELEE_HOLD_LIMIT
                 and not (cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed'))
                 and not cur.get('card_hp_unread') and cur.get('card_soldiers_current') is True
@@ -4686,6 +4727,10 @@ CARD_MENU_OPEN_RETRIES = 4    # B repeats while the command menu has not opened 
 CARD_LIST_CURSOR_LIMIT = 10  # same finite list budget as survival selections
 CARD_ANNOUNCE_LIMIT = 6      # shared by chart and survival confirmation waits
 MELEE_HOLD_LIMIT = 8          # egg-safe holds in one fight before melee proceeds
+CARD_MELEE_OBSERVE_LIMIT = (CARD_ANNOUNCE_LIMIT + CARD_LIST_CURSOR_LIMIT
+                            + 2 * CARD_MENU_OPEN_RETRIES + MELEE_HOLD_LIMIT)
+# g692: animation/menus took 26 observations before a fresh advantageous
+# panel. Keep their bounded read budget separate from the eight power bursts.
 # A hold that bleeds the general past this share of the fight's opening HP
 # stops before the count bound (g530 09:52 defense: 90 -> 81 by the 7th hold,
 # the count alone let it reach 73, and the forced push that followed fought
@@ -6323,7 +6368,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'soldiers_seen_basis', 'order_context', 'sortie_general', 'sortie_actor_miss',
                 'boss_defeated', 'boss_entry_hold',
                 'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
-                'garrison', 'unplaced_refuted', 'unplaced_refuted_castles', 'general_location_unknown', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
+                'garrison', 'unplaced_refuted', 'unplaced_refuted_castles', 'general_location_unknown', 'source_location_rechecks', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                 'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
                 'target_miss', 'target_cancel', 'menu_hold', 'card_scroll', 'card_unreadable',
                 'sortie_confirm_miss',
