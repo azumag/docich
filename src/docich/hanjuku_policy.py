@@ -6756,6 +6756,18 @@ def _month_dialog_body(screen):
     return ''.join(line.known.replace(' ', '') for line in screen.lines if line.y >= 175)
 
 
+# The month menu's own help line for the row under the hand (measured live,
+# g684 2-6 14:24:52: back on しょうにん after a paid recovery). It is not a
+# pending dialogue, so it must not void a payment receipt.
+MONTH_MENU_HELP = {'しょうにん': 'きりふだをうるしょうにんをよびつけますぞ!'}
+
+
+def _month_menu_quiet(screen):
+    """No dialogue over the menu: empty, or only the selected row's help line."""
+    body = _month_dialog_body(screen)
+    return not body or body == MONTH_MENU_HELP.get(screen.selected)
+
+
 def month_menu_ready(screen):
     """The recruitment overlay can retain the background menu's upper hand."""
     return (screen.kind == 'month_menu' and bool(screen.hand and screen.hand[1] < 120)
@@ -7355,7 +7367,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
                  and sub.get('left_menu') is True and not sub.get('aborted')
                  and all(type((screen.header or {}).get(k)) is int for k in ('year', 'month'))
                  and sub.get('key') == (shop or {}).get('key') == _month_key(screen.header)
-                 and month_menu_ready(screen) and not _month_dialog_body(screen))))
+                 and month_menu_ready(screen) and _month_menu_quiet(screen))))
     if sub['kind'] == 'recruit':
         # g498: the 235 ->185 fee was observed in the candidate dialogue;
         # the final menu was 183, so later deductions cannot erase that fee.
