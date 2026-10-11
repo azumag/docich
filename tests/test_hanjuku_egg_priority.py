@@ -71,13 +71,22 @@ def test_insufficient_recovery_money_is_never_spent_on_more_soldiers(gold):
 
 @pytest.mark.parametrize('count,seen,eggs', [
     (49, '1-8', {'ココット': 0}), (60, '1-7', {'ココット': 0}),
-    (None, None, {'ココット': 0}), (60, '1-8', {'ココット': 4}),
+    (None, None, {'ココット': 0}),
 ])
-def test_small_stale_or_unknown_army_and_full_eggs_keep_existing_refill(count, seen, eggs):
+def test_small_stale_or_unknown_army_keeps_existing_refill(count, seen, eggs):
     mem = memory(count, seen)
     mem['egg_uses'] = eggs
     assert policy.quantity_step(quantity(), mem, soldiers=True) == [policy.pad('a')]
     assert not mem['shop'].get('egg_priority')
+
+
+def test_a_sufficient_current_army_buys_no_soldiers_even_with_full_eggs():
+    # Owner 2026-10-11: そもそも兵士も十分いるから兵士も買わなくていい.
+    mem = memory(60, '1-8')
+    mem['egg_uses'] = {'ココット': 4}
+    assert policy.quantity_step(quantity(), mem, soldiers=True) == [policy.pad('b')]
+    assert mem['shop']['soldiers'] == 0 and mem['shop']['soldiers_done'] is True
+    assert any(r['decision'] == 'soldier_refill_skip' for r in mem['_records'])
 
 
 def test_50_is_sufficient_and_cached_skipped_egg_is_reconsidered_once():

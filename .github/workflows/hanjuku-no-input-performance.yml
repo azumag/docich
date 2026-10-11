@@ -1,0 +1,87 @@
+name: Hanjuku no-input performance
+
+# Only measure changes to this optimization, not every Hanjuku/runtime PR.
+# The ordinary two-Python full-suite remains the regression safety net.
+on:
+  pull_request:
+    paths:
+      - 'tests/test_hanjuku_no_input_gate.py'
+      - 'tests/hanjuku_frame_read_cache.py'
+      - 'tests/test_hanjuku_frame_read_cache.py'
+      - '.github/workflows/hanjuku-no-input-performance.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hanjuku-no-input-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          path: candidate
+          persist-credentials: false
+          submodules: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: baseline
+          persist-credentials: false
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install test dependencies
+        working-directory: candidate
+        run: python3 -m pip install -r requirements-test.txt
+      - name: Baseline gate tests (uncached base revision)
+        working-directory: baseline
+        run: python3 -m pytest -q tests/test_hanjuku_no_input_gate.py --durations=10 --junitxml="$RUNNER_TEMP/baseline-gate.xml"
+      - name: Candidate gate tests (same runner and interpreter)
+        working-directory: candidate
+        run: python3 -m pytest -q tests/test_hanjuku_no_input_gate.py --durations=10 --junitxml="$RUNNER_TEMP/candidate-gate.xml"
+      - name: Cache isolation and real decision equivalence
+        working-directory: candidate
+        run: python3 -m pytest -q tests/test_hanjuku_frame_read_cache.py --durations=10
+      - name: Summarize measured gate timings
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import platform
+          import xml.etree.ElementTree as ET
+
+          suites = {}
+          for label in ('baseline', 'candidate'):
+              root = ET.parse(Path(os.environ['RUNNER_TEMP']) / f'{label}-gate.xml').getroot()
+              suite = root.find('testsuite')
+              if suite is None:
+                  raise SystemExit(f'{label}: missing test results')
+              for key in ('failures', 'errors', 'skipped'):
+                  if int(suite.attrib.get(key, 0)):
+                      raise SystemExit(f'{label}: nonzero {key}')
+              suites[label] = suite.attrib
+          if int(suites['baseline']['tests']) != int(suites['candidate']['tests']):
+              raise SystemExit('gate test counts changed; do not claim equivalent timing')
+          before, after = (float(suites[label]['time']) for label in ('baseline', 'candidate'))
+          text = (
+              f"## Hanjuku no-input gate / Python {platform.python_version()}\n\n"
+              f"Same runner, {suites['candidate']['tests']} passing tests each.\n\n"
+              f"Baseline: {before:.3f}s; candidate: {after:.3f}s; saved: {before-after:.3f}s.\n\n"
+              "JUnit test-session timings, excluding dependency setup and the additional "
+              "cache-equivalence checks. Not a full-suite speedup measurement.\n"
+          )
+          print(text)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+              output.write(text)
+          PY

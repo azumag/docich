@@ -37,17 +37,18 @@ def returned(gold=55, month=8):
 
 
 def test_paid_refill_is_added_once_and_keeps_totals_above_purchase_cap():
-    mem = memory(count=110)
+    # Below SOLDIER_ENOUGH a refill is still bought (owner 2026-10-11).
+    mem = memory(count=45)
     commit(mem)
-    assert mem['soldiers_seen'] == 110  # sending A is only an intention
+    assert mem['soldiers_seen'] == 45  # sending A is only an intention
     restored = deepcopy(mem)  # the next observation is a fresh Python process
     policy.observe_events(returned(), restored)
-    assert restored['soldiers_seen'] == 134
+    assert restored['soldiers_seen'] == 69
     assert restored['soldiers_seen_key'] == '1-8'
     assert restored['soldiers_seen_basis'] == 'observed_plus_paid_refill'
     assert restored['shop']['soldier_receipt']['status'] == 'paid'
     policy.observe_events(returned(), restored)
-    assert restored['soldiers_seen'] == 134
+    assert restored['soldiers_seen'] == 69
     assert sum(r['decision'] == 'soldier_refill_receipt' for r in restored['_records']) == 1
     assert policy.quantity_step(quantity(), restored, soldiers=True) == [policy.pad('b')]
 

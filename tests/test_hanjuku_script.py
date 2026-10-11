@@ -295,7 +295,7 @@ def test_non_logo_skips_full_frame_neutral_scan(monkeypatch):
     assert calls == [(108, 108, 124, 120), (76, 102, 180, 120)]
 
 
-def test_waiting_boundary_keeps_bot_live_until_stasis_then_needs_no_save(adapter):
+def test_waiting_boundary_keeps_bot_live_until_stasis_then_saves(adapter, monkeypatch):
     import time
     from docich import game_switch
     from docich.retroarch_boundary import read_record, BOUNDARY_FILE, require_input_open
@@ -306,9 +306,14 @@ def test_waiting_boundary_keeps_bot_live_until_stasis_then_needs_no_save(adapter
     require_input_open(adapter.spec.runtime_dir)
     for now in range(0,301,10):
         hanjuku_run.observe(adapter.spec.runtime_dir,identity,frame(),now=now,wall=1000+now)
+    from test_hanjuku_saved_stop import emulator
+    from docich.retroarch_boundary import MANUAL_SAVE_FILE
+    calls = emulator(adapter, monkeypatch)
+    (adapter.spec.runtime_dir / MANUAL_SAVE_FILE).unlink()
     adapter.request_round_boundary('script-end',time.monotonic()+1,None)
+    assert calls.count('SAVE_STATE') == 1
     boundary=read_record(adapter.spec.runtime_dir/BOUNDARY_FILE)
-    assert boundary['outcome']=='screen_stalled' and 'checkpoint' not in boundary
+    assert boundary['outcome']=='screen_stalled' and boundary['checkpoint']=='hanjuku.state'
     with pytest.raises(AdapterError,match='holds input'):
         require_input_open(adapter.spec.runtime_dir)
     assert not any(call[0].startswith('kill') for call in adapter.tmux.calls)
