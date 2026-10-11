@@ -7978,6 +7978,13 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                         reason='当月の兵士数が十分なため兵士補充を行わず資金を残す')
             shop['soldiers'] = 0
             shop['soldiers_done'] = True
+            # g684 3-7: 133 soldiers meant no refill, but the saved 56G
+            # pre-recruit budget still blocked recruitment at 86G. The
+            # measured sufficient army fulfils that necessity without a
+            # payment receipt; recheck the real spare cash on menu return.
+            shop['soldiers_before_recruit_done'] = True
+            if shop.get('recruit') == 'deferred_cash':
+                shop['recruit'] = 'pending'
             return [pad('b')]
         receipt = shop.get('soldier_receipt') or {}
         if receipt.get('status') in ('paid', 'unverified') or receipt.get('payment_seen'):

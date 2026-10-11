@@ -1,11 +1,11 @@
 {
-  "output_sha256": "e7404b5465ec34b58b9537bd39cec57e70f78fd3df14dd1e57f3521fa4f8adaa",
+  "output_sha256": "ca6435c2d0a14a1f0b84242ef26d3292e3db9565401534668d03cb1b55d2f255",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "bdc147c6ec467fadffc2e153fbb4f8fdffc0ebd4841590a20a238a832bd02097",
+  "source_sha256": "85ee6e8cf21f6d3e1709a763300eb872a8aed90c985af3f04cc6aafb31d4f684",
   "topics": [
-    "手動OBS特別コーナーの受信と専用経路の実装",
-    "自動ローテーション復旧（slot181停滞35h）と恒久修正2件",
-    "docich VM・配信 read-only 監視（slot 181停滞継続）"
+    "半熟英雄コーナー g684 監視と敗因対策（v138 / , #2029）",
+    "時事コーナーの見出し選定から俗っぽい記事を除外",
+    "手動OBS特別コーナーの受信と専用経路の実装"
   ]
 }
