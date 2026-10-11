@@ -1,0 +1,7 @@
+  Lv9: クリア 試行1回 16.7s (run/flyhome/sessions/20261011-052612-play)
+  Lv10: クリア 試行1回 14.1s (run/flyhome/sessions/20261011-052637-play)
+  Lv11: クリア 試行2回 18.0s (run/flyhome/sessions/20261011-052700-play)
+  Lv12: クリア 試行3回 32.4s (run/flyhome/sessions/20261011-052739-play)
+  Lv13: クリア 試行5回 23.0s (run/flyhome/sessions/20261011-052933-play)
+  Lv14: クリア 試行2回 16.8s (run/flyhome/sessions/20261011-053048-play)
+  Lv15: クリア 試行1回 41.8s (run/flyhome/sessions/20261011-054222-play)
