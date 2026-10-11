@@ -4175,6 +4175,7 @@ def _card_melee_ready(mem, cur):
                 and not (cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed'))
                 and not cur.get('card_hp_unread') and cur.get('card_soldiers_current') is True
                 and type(hp) is int and 0 < hp <= watch['enemy_hp_after_upper']
+                and hp < watch['enemy_hp_before']
                 and _control_melee_advantage(cur, hp, cur.get('ally_soldiers'), cur.get('enemy_soldiers')))
 
 
