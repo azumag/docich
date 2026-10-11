@@ -4,8 +4,9 @@ SFC manual pp. 10-11/27 and the unedited SFC play video
 https://www.youtube.com/watch?v=RMj5tDn7Ek8&t=1972s (32:52-32:57):
 A adds a general to the lower panel; the third opens よろしいですか？.
 This is a separate foreground transaction, never a merchant/event B fallback.
-The pixel layout is inferred from those displays; live native acceptance is
-still required. No planned key press creates a garrison/arrival receipt.
+The g684 native frame measures names at x=48..104 and the pane's scrolling
+arrow at x=112. Full selection/departure still needs live acceptance.
+No planned key press creates a garrison/arrival receipt.
 """
 from __future__ import annotations
 
@@ -16,6 +17,10 @@ MAX_PICKS = 3
 MAX_RETRIES = 3
 NAV_WAIT = 6
 NAV_PRESS_LIMIT = 9
+# Seven-glyph names fit here. x=112 is the panel's scroll arrow/border,
+# measured in g684-starter-empty.png, never part of a general's name.
+NAME_LEFT = 48
+NAME_RIGHT = 112
 
 
 def rows(screen, *, selected=False):
@@ -26,7 +31,7 @@ def rows(screen, *, selected=False):
     for line in screen.lines:
         if not band[0] <= line.y < band[1]:
             continue
-        cells = tuple((x, c) for x, c in line.cells if 40 <= x < 128)
+        cells = tuple((x, c) for x, c in line.cells if NAME_LEFT <= x < NAME_RIGHT)
         if not cells:
             continue
         # Voicing marks are UNKNOWN on the row above their combined glyph.
@@ -37,7 +42,7 @@ def rows(screen, *, selected=False):
             continue
         # Never use a readable substring
         # adjoining an unknown tile as a complete general's identity.
-        word = line.span(40, 128)
+        word = line.span(NAME_LEFT, NAME_RIGHT)
         if UNKNOWN in word or word not in GENERAL_HP or word == 'しゅじんこう':
             return None
         result.append((cells[0][0], line.y, word))
