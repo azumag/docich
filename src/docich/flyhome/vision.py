@@ -206,6 +206,7 @@ class Observation:
     wipe: bool = False  # クリア画面 (上下端に橙のプレイヤー像の列) が出ている
     control_prompt: bool = False  # 実機の左上の操作案内（開始時/死亡後）
     home_text_overlap: bool = False  # HOME重なり中に頭側の連続性を使った
+    home_exit_up: tuple[float, float] | None = None  # Actual off-screen HOME arrow; a viewport waypoint only.
 
     def summary(self) -> dict:
         p = self.player
@@ -219,6 +220,7 @@ class Observation:
                 "flame": [p.flame_left, p.flame_right],
             },
             "home": None if self.home is None else [round(v, 1) for v in self.home],
+            "up_waypoint": self.home_exit_up,
             "hazards": len(self.hazards),
             "coins": [[round(c[0], 1), round(c[1], 1)] for c in self.coins],
             "hud": [self.hud_left, self.hud_right],
@@ -362,6 +364,22 @@ def _orientation(blob: Blob, labels: bytearray, w: int, h: int, prev_angle: floa
     if elong < 1.3 and prev_angle is not None:
         return prev_angle  # ほぼ円形で軸が決まらない
     return math.atan2(ax, -ay)
+
+
+def _home_exit_up(labels: bytearray, w: int, h: int) -> tuple[float, float] | None:
+    """Match the actual stage 50 upward HOME glyph; never substitute a house."""
+    if w != 320 or h != 180:
+        return None
+    import zlib
+    for left in range(8, w - 24):
+        center = left + 12
+        if not all(labels[y * w + center] == WHITE for y in range(2, 8)):
+            continue
+        bits = bytes(int(labels[y * w + x] == WHITE)
+                     for y in range(1, 17) for x in range(left, left + 24))
+        if sum(bits) == 79 and zlib.crc32(bits) == 715799730:
+            return float(center), 24.0
+    return None
 
 
 def _control_prompt_present(native: Image) -> bool:
@@ -557,6 +575,7 @@ def analyze(
         wipe=_party_present(native),
         control_prompt=_control_prompt_present(native),
         home_text_overlap=overlaps_text,
+        home_exit_up=_home_exit_up(labels, w, h) if home is None else None,
     )
 
 

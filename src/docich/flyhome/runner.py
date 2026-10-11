@@ -189,7 +189,7 @@ class SessionLog:
         if self._frames is None:
             return
         row = st.as_dict()
-        row.update({"left": keys[0], "right": keys[1], "hud": [obs.hud_left, obs.hud_right], "timer_sig": obs.timer_sig, "control_prompt": obs.control_prompt, "home_text_overlap": obs.home_text_overlap,
+        row.update({"left": keys[0], "right": keys[1], "hud": [obs.hud_left, obs.hud_right], "timer_sig": obs.timer_sig, "control_prompt": obs.control_prompt, "home_text_overlap": obs.home_text_overlap, "up_waypoint": obs.home_exit_up,
                     "player_bbox": obs.player.bbox if obs.player else None, "player_area": obs.player.area if obs.player else None})
         if extra:
             row.update(extra)
@@ -360,10 +360,11 @@ def play(
                         ctl.cfg.hazard_margin = max(5.0, grid_spec[2] * grid_spec[0] - 3.0)
                         ctl.set_world(grid, completed.observation, path)
                 if (path is None or k % replan_every == 0) and loop.obs.player is not None and not routes.busy:
-                    target = st.home
+                    target = st.home or loop.obs.home_exit_up
                     if target is not None:
                         world_obs = loop.tracker.last_obs or loop.obs
-                        if solid_mem is None:
+                        # A camera scrolling toward off-screen HOME invalidates old screen-space terrain.
+                        if solid_mem is None or world_obs.home_exit_up is not None:
                             solid_mem = bytearray(world_obs.solid)
                         else:
                             solid_mem = bytearray(a | b for a, b in zip(solid_mem, world_obs.solid))
