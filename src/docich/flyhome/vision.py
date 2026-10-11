@@ -462,6 +462,22 @@ def analyze(
     hazards: list[tuple[int, int, int, int]] = []
     flames: list[Blob] = []
     for b in reds:
+        # 実機Lv41: 炎の255赤が217赤の棘に接続し、棘の箱を上へ広げていた。
+        # 棘固有の赤だけで箱を取る。接続した高輝度の炎は別の断片として扱う。
+        spike_pixels = [(xx, yy) for xx, yy in b.pixels
+                        if 190 <= native.get(xx, yy)[0] <= 230
+                        and native.get(xx, yy)[1] < 25 and native.get(xx, yy)[2] < 25]
+        if len(spike_pixels) >= 3:
+            hazards.append(Blob(RED, spike_pixels).bbox)
+            if player is not None:
+                hot = [(xx, yy) for xx, yy in b.pixels if native.get(xx, yy)[0] > 230]
+                if 0 < len(hot) <= 40:
+                    flame = Blob(b.label, hot)
+                    bx0, by0, bx1, by1 = flame.bbox
+                    px0, py0, px1, py1 = player.bbox
+                    if bx0 <= px1 + 6 and bx1 >= px0 - 6 and by0 <= py1 + 6 and by1 >= py0 - 6:
+                        flames.append(flame)
+            continue
         if player is not None:
             px0, py0, px1, py1 = player.bbox
             bx0, by0, bx1, by1 = b.bbox
