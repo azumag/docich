@@ -801,7 +801,7 @@ def _plan_pending(mem) -> bool:
         # A source read empty cannot start the order (g438: dead ココット's J1).
         return (_ready(o, mem) and _source(o, mem) in owned
                 and garrison.get(_source(o, mem)) != []
-                and not _retake_reserved(o, mem) and not _source_spare_missing(o, mem))
+                and not _retake_reserved(o, mem) and not _source_spare_missing(o, mem, allow_probe=True))
 
     return any(status.get(o['step']) in (None, 'pending') and live(o) for o in plan)
 
@@ -844,7 +844,7 @@ def next_order(mem):
                 and garrison.get(_source(order, mem)) != []
                 and not _last_castle_held(mem, order)      # its castle must keep its last general
                 and not _retake_reserved(order, mem)
-                and not _source_spare_missing(order, mem)
+                and not _source_spare_missing(order, mem, allow_probe=True)
                 and (mem.get('general_override', {}).get(order['step'], order['general']) not in _en_route(mem)[0]
                      or _hero_source_alternative(order, mem))):
             return order
@@ -1034,18 +1034,21 @@ def _arrival_castle(mem, owned):
     garrison = mem.get('garrison') or {}
     hero = [c for c in owned if NAME in (garrison.get(c) or ())]
     castle = hero[0] if len(hero) == 1 else chart.home_castle(mem.get('chapter') or 0)
-    refuted = mem.get('unplaced_refuted') or {}
+    refuted = ((mem.get('unplaced_refuted_castles') or {}).get(castle)
+               or mem.get('unplaced_refuted') or {})
     if (refuted.get('castle') == castle and refuted.get('month') == mem.get('month')
             and refuted.get('names') == _unplaced_castle_generals(mem)):
         return None
     return castle
 
 
-def _source_spare_missing(order, mem):
+def _source_spare_missing(order, mem, *, allow_probe=False):
     if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
         return False  # reconcile an issued sortie; do not cancel its carried-kit receipt
     source = _source(order, mem)
     present = (mem.get('garrison') or {}).get(source)
+    if allow_probe and order.get('source_probe') is True:
+        return False  # open its verified list; never bypass the live-list/card guards
     unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
     if (present is not None and _unplaced_castle_generals(mem)
             and source == _arrival_castle(mem, _owned(mem))):
@@ -1090,6 +1093,28 @@ def _interim_source(mem, target, chart_order, owned, busy):
     for source in ((chart_order or {}).get('source'), home):
         if source in owned and garrison.get(source) is None:
             return source, general
+    # Refuting home does not refute every other owned castle. g684 4-2:
+    # four known lists each held one defender, while ジョンリギ's list was
+    # never opened and several current castle-status generals were unplaced.
+    # Inspect the nearest unread source through the existing verified
+    # castle/list route; only its real list may permit a spare to leave.
+    refuted = mem.get('unplaced_refuted_castles') or {}
+    unplaced_names = _unplaced_castle_generals(mem)
+    def probe_due(c):
+        if garrison.get(c) is None:
+            return True
+        if garrison.get(c) == []:
+            return False
+        old = refuted.get(c) or (mem.get('unplaced_refuted') or {})
+        disproved = (old.get('castle') == c and old.get('month') == mem.get('month')
+                      and old.get('names') == unplaced_names)
+        # A defender/arrival updates garrison with one known name, which
+        # does not prove that the castle's complete list contains only one.
+        return bool(unplaced_names) and not disproved and len(set(free[c])) < 2
+    unread = sorted((c for c in owned if probe_due(c)),
+                    key=lambda c: (_distance(chapter, c, target), c))
+    if unread:
+        return unread[0], MOVE_ANY_GENERAL
     return None
 
 
@@ -1148,7 +1173,8 @@ def interim_candidates(mem) -> dict:
         cards = list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS)
         sorties[purpose].append({
             'general': general, 'target': target, 'cards': cards, 'source': source,
-            'after': None, 'purpose': purpose, 'note': note})
+            'after': None, 'purpose': purpose, 'note': note,
+            **({'source_probe': True} if general == MOVE_ANY_GENERAL else {})})
     garrison = mem.get('garrison') or {}
     moves = []
     empty = [c for c in sorted(owned, key=lambda c: _distance(chapter, home, c))
@@ -1174,7 +1200,9 @@ def interim_candidates(mem) -> dict:
             'after': None, 'purpose': 'move',
             'note': f"暫定: {general}を{donors[0]}から空の{target}へ移動"})
     out = {}
-    for order in (*sorties['retake'], *moves, *sorties['attack']):
+    known_retakes = [o for o in sorties['retake'] if not o.get('source_probe')]
+    unread_retakes = [o for o in sorties['retake'] if o.get('source_probe')]
+    for order in (*known_retakes, *moves, *unread_retakes, *sorties['attack']):
         out[f"{order['purpose']}_{len(out) + 1}"] = order
     return out
 
@@ -3343,8 +3371,13 @@ def _keep_sortie_defender(screen, mem, order):
     # The read list refutes "unplaced joiners stand here" for this castle
     # until the unplaced set changes (g684 3-1 16:09-16:10: the same order
     # was re-issued and cancelled every 10 s).
+    refuted = mem.setdefault('unplaced_refuted_castles', {})
+    previous = mem.get('unplaced_refuted') or {}
+    if previous.get('castle'):
+        refuted[previous['castle']] = dict(previous)
     mem['unplaced_refuted'] = {'castle': _source(order, mem), 'month': mem.get('month'),
                                'names': _unplaced_castle_generals(mem)}
+    refuted[_source(order, mem)] = dict(mem['unplaced_refuted'])
     return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',
         '奪還・暫定攻撃の出撃元に待機将軍を1人残せないため出撃を取り消す',
         {'present': present[:8], 'available': sorted(available)})
@@ -3369,7 +3402,7 @@ def deploy_step(screen: Screen, mem):
         return _hold_guarded_sortie(mem, order, 'sortie_held_target_reserved',
             '同じ奪還先へ向かう部隊が既にいるため重複出撃を取り消す',
             {'target': order['target']})
-    if kind != 'general_list' and _source_spare_missing(order, mem):
+    if kind != 'general_list' and _source_spare_missing(order, mem, allow_probe=kind == 'castle_menu'):
         return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',
             '出撃元の記録で待機将軍を1人残せないため出撃を取り消す',
             {'present': (mem.get('garrison') or {}).get(_source(order, mem))})
@@ -6204,7 +6237,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'soldiers_seen_basis', 'order_context', 'sortie_general', 'sortie_actor_miss',
                 'boss_defeated', 'boss_entry_hold',
                 'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
-                'garrison', 'general_location_unknown', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
+                'garrison', 'unplaced_refuted', 'unplaced_refuted_castles', 'general_location_unknown', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                 'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
                 'target_miss', 'target_cancel', 'menu_hold', 'card_scroll', 'card_unreadable',
                 'sortie_confirm_miss',
