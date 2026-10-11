@@ -40,6 +40,7 @@ NETWORK_PORT_RANGE = 1000
 RA_READY_POLL_S = 0.5
 RA_READY_IO_TIMEOUT_S = 0.1
 MANUAL_SAVE_TIMEOUT_S = 10.0
+STALLED_TERMINAL_REASONS = frozenset({'screen_stalled', 'input_stalled'})
 
 
 class ManualSaveTimeout(AdapterError):
@@ -679,6 +680,8 @@ class RetroArchCoordinatorAdapter:
                     terminal = hanjuku_run.terminal(self.spec.runtime_dir, hanjuku_run.runtime_identity(self.spec))
                     if (terminal and record.get('outcome') == terminal['terminal_reason']
                             and record.get('frame_sha256') == terminal['frame_sha256']):
+                        if terminal['terminal_reason'] in STALLED_TERMINAL_REASONS:
+                            self._verify_stall_boundary(record, deadline, cancel, allow_stopped=True)
                         return
                     raise AdapterError('Hanjuku terminal evidence is missing')
                 if self.tmux.window_target_exists(self._game_window_target()):
@@ -767,6 +770,17 @@ class RetroArchCoordinatorAdapter:
                     return
                 terminal = hanjuku_run.terminal(self.spec.runtime_dir, hanjuku_run.runtime_identity(self.spec))
                 if terminal:
+                    if terminal['terminal_reason'] in STALLED_TERMINAL_REASONS:
+                        if record.get('status') == 'reached':
+                            self._verify_stall_boundary(record, deadline, cancel)
+                        else:
+                            # Stasis is recoverable progress, not a lost game.
+                            # A missing/failed save must keep this runtime alive;
+                            # the manual-stop unsaved policy does not apply.
+                            self._save_checkpoint_boundary(request_id, deadline, cancel,
+                                outcome=terminal['terminal_reason'],
+                                frame_sha256=terminal['frame_sha256'])
+                        return
                     atomic_write_json(path, dict(identity(self.spec, request_id), status='reached',
                         outcome=terminal['terminal_reason'], frame_sha256=terminal['frame_sha256']))
                     return
@@ -806,6 +820,21 @@ class RetroArchCoordinatorAdapter:
         if (not matches(manual, self.spec, record.get('request_id'))
                 or record.get('outcome') != 'suspended'):
             raise AdapterError('Hanjuku manual save request mismatch')
+        self._verify_saved_checkpoint(record, deadline, cancel, allow_stopped=allow_stopped)
+
+    def _verify_stall_boundary(self, record, deadline, cancel, *, allow_stopped=False):
+        from .. import hanjuku_run
+        terminal = hanjuku_run.terminal(self.spec.runtime_dir, hanjuku_run.runtime_identity(self.spec))
+        if (not terminal or terminal['terminal_reason'] not in STALLED_TERMINAL_REASONS
+                or record.get('status') != 'reached'
+                or not matches(record, self.spec, record.get('request_id'))
+                or record.get('outcome') != terminal['terminal_reason']
+                or record.get('frame_sha256') != terminal['frame_sha256']):
+            raise AdapterError('Hanjuku stalled checkpoint identity mismatch')
+        self._verify_saved_checkpoint(record, deadline, cancel, allow_stopped=allow_stopped)
+
+    def _verify_saved_checkpoint(self, record, deadline, cancel, *, allow_stopped=False):
+        self._check_active(deadline, cancel)
         live = True
         if allow_stopped:
             target = self._game_window_target()
@@ -820,6 +849,10 @@ class RetroArchCoordinatorAdapter:
 
     def _save_manual_boundary(self, request_id, deadline, cancel):
         """Called under the input gate; only a fenced operator request opts in."""
+        return self._save_checkpoint_boundary(request_id, deadline, cancel, outcome='suspended')
+
+    def _save_checkpoint_boundary(self, request_id, deadline, cancel, *, outcome, frame_sha256=None):
+        """Save under the input gate; acknowledge only stable, fsynced bytes."""
         save_deadline = time.monotonic() + MANUAL_SAVE_TIMEOUT_S
         name = resolve_rom(self.g, self.game).stem + '.state'
         saved = self._checkpoint(name)
@@ -835,6 +868,8 @@ class RetroArchCoordinatorAdapter:
         if len(fields) < 2 or fields[1] != stem:
             raise AdapterError('Hanjuku save content identity is unconfirmed')
         record = dict(identity(self.spec, request_id), status='waiting', requested_ns=time.time_ns())
+        if outcome in STALLED_TERMINAL_REASONS:
+            record.update(outcome=outcome, frame_sha256=frame_sha256, save_required=True)
         atomic_write_json(self.spec.runtime_dir / BOUNDARY_FILE, record)
         paused_here = False
         try:
@@ -842,6 +877,9 @@ class RetroArchCoordinatorAdapter:
                 send_ra_cmd('PAUSE_TOGGLE', port=self._network_port(), wait_reply_s=.1)
                 paused_here = True
             self._require_paused(deadline, cancel)
+            prior = saved.stat() if saved.exists() else None
+            prior_fingerprint = ((prior.st_dev, prior.st_ino, prior.st_size,
+                                  prior.st_mtime_ns, prior.st_ctime_ns) if prior else None)
             send_ra_cmd('SAVE_STATE', port=self._network_port(), wait_reply_s=.1)
             previous = None
             while True:
@@ -849,25 +887,53 @@ class RetroArchCoordinatorAdapter:
                 if time.monotonic() >= save_deadline:
                     raise ManualSaveTimeout('Hanjuku save did not complete before timeout')
                 if saved.exists():
-                    digest = checkpoint_digest(saved, deadline, cancel)
                     metadata = saved.stat()
+                    # Empty/incomplete/old writes are not completion. Wait for
+                    # a current nonempty file; checksum rejects unsafe paths.
+                    fingerprint = (metadata.st_dev, metadata.st_ino, metadata.st_size,
+                                   metadata.st_mtime_ns, metadata.st_ctime_ns)
+                    if (metadata.st_size == 0 or metadata.st_mtime_ns < record['requested_ns']
+                            or fingerprint == prior_fingerprint):
+                        previous = None
+                        time.sleep(.1)
+                        continue
+                    digest = checkpoint_digest(saved, deadline, cancel)
                     current = (metadata.st_mtime_ns, metadata.st_size, digest)
                     if metadata.st_mtime_ns >= record['requested_ns'] and current == previous:
                         with saved.open('rb') as stream:
                             os.fsync(stream.fileno())
+                        # The checkpoint lives in states/, not alongside the
+                        # boundary receipt. Persist its new directory entry too.
+                        flags = os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0)
+                        directory_fd = os.open(saved.parent, flags)
+                        try:
+                            os.fsync(directory_fd)
+                        finally:
+                            os.close(directory_fd)
                         self._require_paused(deadline, cancel)
                         if checkpoint_digest(saved, deadline, cancel) != digest:
                             raise AdapterError('Hanjuku checkpoint is still changing')
+                        if saved.stat().st_mtime_ns != metadata.st_mtime_ns:
+                            raise AdapterError('Hanjuku checkpoint metadata is still changing')
                         atomic_write_json(self.spec.runtime_dir / BOUNDARY_FILE,
                                           dict(record, status='reached', checkpoint=name,
-                                               sha256=digest, outcome='suspended'))
+                                               sha256=digest, outcome=outcome,
+                                               checkpoint_bytes=metadata.st_size,
+                                               checkpoint_mtime_ns=metadata.st_mtime_ns))
                         return
                     previous = current
                 time.sleep(.1)
-        except Exception:
+        except Exception as exc:
             # Preserve a pre-existing operator pause. Undo only our own pause
             # while this request still owns an unconfirmed boundary.
             current = read_record(self.spec.runtime_dir / BOUNDARY_FILE)
+            if (outcome in STALLED_TERMINAL_REASONS and matches(current, self.spec, request_id)
+                    and current.get('status') == 'waiting'):
+                try:
+                    atomic_write_json(self.spec.runtime_dir / BOUNDARY_FILE, dict(current,
+                        save_error='save_timeout' if isinstance(exc, ManualSaveTimeout) else 'save_failed'))
+                except Exception:
+                    pass  # Reporting failure must never authorize cleanup.
             if paused_here and matches(current, self.spec, request_id) and current.get('status') == 'waiting':
                 try:
                     self._require_paused(time.monotonic() + 1, None)
