@@ -1876,6 +1876,55 @@ class TestHttpHandlers(unittest.TestCase):
         status, data = self._request("POST", "/api/special-corner/category-search", {"query": "A", "x": 1})
         self.assertEqual(status, 400, data)
 
+    def test_special_corner_manual_start_and_receiver_require_operator_and_confirm(self):
+        from docich import special_corner
+        with mock.patch.object(special_corner, "launch_corner") as launch, \
+                mock.patch.object(special_corner, "prepare_receiver", return_value={"state": "launching"}) as prep, \
+                mock.patch.object(special_corner, "stop_receiver", return_value={"state": "stopped"}) as stop:
+            status, data = self._request("POST", "/api/special-corner/start", {})
+            self.assertEqual(status, 428, data)
+            status, data = self._request("POST", "/api/special-corner/receiver", {"action": "prepare"})
+            self.assertEqual(status, 428, data)
+            self.g.webui.read_only_token = "viewer-secret"
+            try:
+                for path, body in (("/api/special-corner/start", {"confirm": True}),
+                                   ("/api/special-corner/receiver", {"action": "prepare", "confirm": True})):
+                    status, data = self._request("POST", path, body,
+                                                 headers={"Authorization": "Bearer viewer-secret"})
+                    self.assertEqual(status, 403, data)
+            finally:
+                self.g.webui.read_only_token = ""
+            launch.assert_not_called()
+            prep.assert_not_called()
+            status, data = self._request("POST", "/api/special-corner/receiver", {"action": "rm", "confirm": True})
+            self.assertEqual(status, 400, data)
+            status, data = self._request("POST", "/api/special-corner/receiver", {"action": "prepare", "confirm": True})
+            self.assertEqual(status, 200, data)
+            self.assertEqual(data["receiver"], {"state": "launching"})
+            status, data = self._request("POST", "/api/special-corner/receiver", {"action": "stop", "confirm": True})
+            self.assertEqual(status, 200, data)
+            status, data = self._request("POST", "/api/special-corner/start", {"confirm": True})
+            self.assertEqual(status, 200, data)
+            self.assertNotIn("unit", data)
+            launch.assert_called_once()
+            prep.assert_called_once()
+            stop.assert_called_once()
+
+    def test_special_corner_start_refusal_is_409_with_reason(self):
+        from docich import special_corner
+        status, data = self._request("POST", "/api/special-corner/start", {"confirm": True})
+        self.assertEqual(status, 409, data)
+        self.assertEqual(data["error"], "receiver_not_ready")
+        status, view = self._request("GET", "/api/special-corner")
+        self.assertEqual(status, 200, view)
+        self.assertEqual(view["control"]["receiver"]["state"], "none")
+        self.assertFalse(view["control"]["can_start"])
+        with mock.patch.object(special_corner, "prepare_receiver",
+                               side_effect=special_corner.SpecialCornerControlError("refused", "receiver is already reserved")):
+            status, data = self._request("POST", "/api/special-corner/receiver", {"action": "prepare", "confirm": True})
+        self.assertEqual(status, 409, data)
+        self.assertEqual(data["error"], "refused")
+
     def test_soren91_renderer_mode_roundtrip_without_secrets(self):
         env_file = self.repo_root / "soren91.env"
         env_file.write_text(

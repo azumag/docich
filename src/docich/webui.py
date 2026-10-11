@@ -704,7 +704,7 @@ CSRF_TTL_SEC = 4 * 3600  # 4時間
 # (method, path) の組。フロントエンドは既存の window.confirm() ダイアログ
 # (streamAction/workerControl) または「保存」操作自体を再確認とみなし、
 # confirm:true を body に含める。
-CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config"), ("POST", "/api/corners"), ("POST", "/api/tsuitate-beta"), ("POST", "/api/special-corner/end"), ("PUT", "/api/special-corner/settings")}
+CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config"), ("POST", "/api/corners"), ("POST", "/api/tsuitate-beta"), ("POST", "/api/special-corner/end"), ("PUT", "/api/special-corner/settings"), ("POST", "/api/special-corner/receiver"), ("POST", "/api/special-corner/start")}
 
 
 def _make_csrf_token(secret: bytes, ttl: int = CSRF_TTL_SEC, now: int | None = None) -> str:
@@ -3543,6 +3543,10 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_post_corners()
             elif parsed.path == "/api/special-corner/end":
                 status = self._handle_post_special_corner_end()
+            elif parsed.path == "/api/special-corner/receiver":
+                status = self._handle_post_special_corner_receiver()
+            elif parsed.path == "/api/special-corner/start":
+                status = self._handle_post_special_corner_start()
             elif parsed.path == "/api/special-corner/category-search":
                 status = self._handle_post_special_corner_category_search()
             elif parsed.path == "/api/soren91/renderer":
@@ -4492,9 +4496,14 @@ class _Handler(BaseHTTPRequestHandler):
         state = state if isinstance(state, dict) else {}
         status = state.get("status") if isinstance(state.get("status"), str) else "idle"
         closing = state.get("closing") if isinstance(state.get("closing"), dict) else {}
-        from .special_corner import load_settings
+        from .special_corner import control_view, load_settings
+        try:
+            control = control_view(self.g)
+        except Exception:
+            control = None
         self._send_json(200, {
             "title": load_settings(self.g.state_dir)["title"],
+            "control": control,
             "status": status[:32],
             "can_end": status in ("waiting", "starting", "active"),
             "started_at": state.get("started_at") if isinstance(state.get("started_at"), (int, float)) else None,
@@ -4586,6 +4595,44 @@ class _Handler(BaseHTTPRequestHandler):
             "is_default": False,
             "updated_at": saved["updated_at"],
         })
+        return 200
+
+    def _handle_post_special_corner_receiver(self) -> int:
+        """SRT 受付の開始/停止 (operator + CSRF + confirm)。正規 CLI prepare/receiver-stop を使う。"""
+        from .special_corner import SpecialCornerControlError, prepare_receiver, stop_receiver
+        data, err = self._read_json_object({"action", "confirm"})
+        if err:
+            return err
+        action = data.get("action")
+        if action not in ("prepare", "stop"):
+            self._send_error_json(400, "invalid_action", "action must be prepare or stop")
+            return 400
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "SRT 受付の操作には confirm:true が必要です")
+            return 428
+        try:
+            receiver = prepare_receiver(self.g) if action == "prepare" else stop_receiver(self.g)
+        except SpecialCornerControlError as exc:
+            self._send_error_json(409, exc.code, str(exc)[:200])
+            return 409
+        self._send_json(200, {"ok": True, "action": action, "receiver": receiver})
+        return 200
+
+    def _handle_post_special_corner_start(self) -> int:
+        """手動開始: 受信中(音声あり)のときだけ start --wait-for-idle を独立 user unit で予約する。"""
+        from .special_corner import SpecialCornerControlError, launch_corner
+        data, err = self._read_json_object({"confirm"})
+        if err:
+            return err
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "特別コーナーの開始には confirm:true が必要です")
+            return 428
+        try:
+            launch_corner(self.g)
+        except SpecialCornerControlError as exc:
+            self._send_error_json(409, exc.code, str(exc)[:200])
+            return 409
+        self._send_json(200, {"ok": True, "action": "start"})
         return 200
 
     def _handle_post_special_corner_category_search(self) -> int:

@@ -171,7 +171,12 @@ input:checked+.slider:before{transform:translateX(20px)}
 <p class="desc">OBS（SRT）から受けたゲーム映像を表示する特別コーナーです。「設定」でタイトル・カテゴリ・プロンプトを決めておきます。クリアしたら「終了」を押してください。終了すると Soren に戻り、感想を話します。待機中に押すと予約を取り消します。</p>
 <p>いまの設定: <b id="special-title">-</b></p>
 <p id="special-status" class="help">読込中…</p>
-<div class="actions"><button class="btn primary" id="special-end" disabled>終了（クリア）</button></div>
+<p id="special-receiver" class="help">受信: -</p>
+<p class="help">手順: ①「SRT 受付開始」→ OBS から送信 → ② 受信が「受信中（音声あり）」になったら「開始（予約）」。いまのコーナーが終わった後、順番が来ると表示されます。</p>
+<div class="actions"><button class="btn" id="special-prepare" disabled>① SRT 受付開始</button>
+<button class="btn primary" id="special-start" disabled>② 開始（予約）</button>
+<button class="btn primary" id="special-end" disabled>終了</button>
+<button class="btn" id="special-receiver-stop" disabled>受付停止</button></div>
 <details id="special-settings-box" style="margin-top:8px"><summary style="cursor:pointer">設定（タイトル・カテゴリ・プロンプト）</summary>
 <div style="margin-top:8px"><label>タイトル表示名（1-60字。配信タイトルと番組内の呼び名）</label><input id="sc-title" maxlength="60"/></div>
 <div style="margin-top:8px"><label>配信タイトルの接尾辞（1-60字。例: 全50面クリアに挑戦）</label><input id="sc-title-suffix" maxlength="60"/></div>
@@ -2074,6 +2079,7 @@ async function loadSpecial(){
   try{
     const r=await api("/api/special-corner");
     const t0=document.getElementById("special-title"); if(t0) t0.textContent=r.title||"-";
+    renderSpecialControl(r.control);
     if(el){
       let t=SPECIAL_LABELS[r.status]||r.status;
       if(r.closing) t+=` / 感想: ${r.closing}`;
@@ -2082,9 +2088,30 @@ async function loadSpecial(){
     if(b) b.disabled=!r.can_end;
   }catch(e){ if(el) el.textContent="状態を取得できません。"; if(b) b.disabled=true; }
 }
+const RECEIVER_LABELS={none:"未準備",stopped:"停止中",launching:"起動中…",waiting:"受付中（OBS 未接続）",receiving:"受信中（音声なし）",receiving_audio:"受信中（音声あり）",stale:"映像が途切れています"};
+function renderSpecialControl(c){
+  const el=document.getElementById("special-receiver");
+  const ids=["special-prepare","special-start","special-receiver-stop"];
+  if(!c){ if(el) el.textContent="受信: 取得できません"; ids.forEach(id=>{const b=document.getElementById(id); if(b) b.disabled=true;}); return; }
+  const rc=c.receiver||{};
+  let t="受信: "+(RECEIVER_LABELS[rc.state]||rc.state||"-");
+  if(rc.expires_in_s!=null) t+=`（受付の残り約${Math.floor(rc.expires_in_s/3600)}時間${Math.floor(rc.expires_in_s%3600/60)}分）`;
+  if(c.paused) t+=" / 外部映像コーナーは休止設定です";
+  if(el) el.textContent=t;
+  document.getElementById("special-prepare").disabled=!c.can_prepare;
+  document.getElementById("special-start").disabled=!c.can_start;
+  document.getElementById("special-receiver-stop").disabled=!c.can_stop_receiver;
+}
+async function specialAction(path,body,question,done){
+  if(!confirm(question)) return;
+  ["special-prepare","special-start","special-receiver-stop"].forEach(id=>{const b=document.getElementById(id); if(b) b.disabled=true;});
+  try{ await api(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...body,confirm:true})}); toast(done); }
+  catch(e){ toast("できませんでした: "+String(e.message||e)); }
+  finally{ await loadSpecial(); }
+}
 async function endSpecial(){
   const b=document.getElementById("special-end");
-  if(!confirm("特別コーナーを終了します（クリアとして Soren に戻り、感想を話します）。よろしいですか？")) return;
+  if(!confirm("特別コーナーを終了します（Soren に戻り、感想を話します。予約中なら予約を取り消します）。よろしいですか？")) return;
   if(b) b.disabled=true;
   try{ await api("/api/special-corner/end",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({confirm:true})}); toast("終了を依頼しました。まもなく Soren に戻ります。"); }
   catch(e){ toast("終了を依頼できませんでした。状態更新後に確認してください。"); }
@@ -3005,6 +3032,9 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("#beta-refresh").onclick=()=>loadBetaStatus();
   $("#special-end").onclick=()=>endSpecial();
   $("#sc-category-search").onclick=()=>searchScCategory();
+  $("#special-prepare").onclick=()=>specialAction("/api/special-corner/receiver",{action:"prepare"},"SRT の受付を開始しますか？（OBS から送信できるようになります。まだ配信画面には出ません）","SRT 受付を開始しました。OBS から送信してください。");
+  $("#special-start").onclick=()=>specialAction("/api/special-corner/start",{},"特別コーナーを予約しますか？（いまのコーナーが終わった後、順番が来たら表示します）","特別コーナーを予約しました。");
+  $("#special-receiver-stop").onclick=()=>specialAction("/api/special-corner/receiver",{action:"stop"},"SRT の受付を停止しますか？","SRT 受付を停止しました。");
   $("#sc-save").onclick=()=>saveSpecialSettings();
   $("#sc-category-candidates").onchange=(ev)=>{ const o=ev.target.selectedOptions[0]; if(o&&o.value){ SC_CATEGORY={id:o.value,name:o.dataset.name||""}; renderScCategory(); } };
   $("#beta-start").onclick=()=>betaControl("start");
