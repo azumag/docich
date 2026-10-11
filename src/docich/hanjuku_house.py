@@ -319,6 +319,7 @@ def _next_general(mem):
     state.update(general=name, pending=pending, source=None, purchased=False, purchase=None,
                  returning=False)
     state.pop('return_goal', None)
+    state.pop('sole_defender', None)
     # Re-routing a marching army was measured not to reach the house: the
     # 2026-10-01 06:48 dispatch re-aimed ヴィーナス while en_route, and she
     # instead charged キカンドン at 07:08 instead of the house. Wait for her

@@ -85,3 +85,11 @@ def test_losing_other_castles_after_selection_cancels_the_repair():
     mem['captured'] = []
     assert house._repair_step(Screen([], None, '', kind='card_select'), mem, None) == []
     assert mem['house']['phase'] == 'close'
+
+
+def test_next_field_general_does_not_inherit_the_previous_castle_guard():
+    mem = memory('1-7')
+    mem['house'].update(sole_defender=True, pending=['ゼウス'])
+    house._next_general(mem)
+    assert mem['house']['general'] == 'ゼウス' and mem['house']['phase'] == 'find_field'
+    assert mem['house']['source'] is None and not mem['house'].get('sole_defender')
