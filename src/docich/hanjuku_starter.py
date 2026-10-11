@@ -21,6 +21,9 @@ NAV_PRESS_LIMIT = 9
 # measured in g684-starter-empty.png, never part of a general's name.
 NAME_LEFT = 48
 NAME_RIGHT = 112
+# Selected names dim out of text recognition but retain their upper slots
+# and the hand (g692: first selection, cursor on y=47, lower Zeus at y=119).
+UPPER_ROW_Y = (47, 63, 79, 95)
 
 
 def rows(screen, *, selected=False):
@@ -176,7 +179,7 @@ def step(screen, mem, frame):
     # Prefer an egg-bearing, durable general among actually visible names.
     # Do not pretend that a static egg capability proves a repaired live egg.
     target = max(choices, key=lambda r: (GENERAL_EGGS.get(r[2], (False, 0))[0], GENERAL_HP[r[2]], -r[1]))
-    screen.hand = find_hand(frame, option_positions=[(x, y) for x, y, _ in upper])
+    screen.hand = find_hand(frame, option_positions=[(NAME_LEFT, y) for y in UPPER_ROW_Y])
     if screen.hand is None:
         return []
     # Limit navigation to this upper pane: the same selected name below must

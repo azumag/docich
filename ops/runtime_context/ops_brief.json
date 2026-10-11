@@ -1,11 +1,11 @@
 {
-  "output_sha256": "789e15f61f0b5b4ce558ae9e2e2dc5c67ba5c029d71e05adcdb1a885d9ac6c31",
+  "output_sha256": "883de484fe9813eb5538879f7ea1667a7f87e93cc3454048f0a13dbf8bb0d323",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "2f15f17ffbe4563c1833f6eb75c573ad35c3e65d445a82fb6e440e77fa975936",
+  "source_sha256": "87dcfb415aff22f9f432d86481805df082867d3cfd40bde0d5ad9c661dcf8772",
   "topics": [
-    "最新保存からの一度の再開を正規予約",
-    "切り札選択後の未低下HP1を追撃根拠から除外",
-    "再開の最新選択・公開再試行P2を修正"
+    "先発隊1人の灰色行停滞を修正、終了前の保存を実測",
+    "募集の支払い直前の最低残金を再検査",
+    "切り札後の追撃期限を実画面で修正、募集の残金P2対応へ"
   ]
 }
