@@ -6860,9 +6860,22 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
     return None if recruit_only or egg_only else _month_chikujou(screen, mem, shop)
 
 
-CHIKUJOU_SPARE = 40            # gold beyond the wage reserve before a castle is upgraded
+CHIKUJOU_SPARE = 1             # gold beyond the necessities before a castle's quote is read
 CHIKUJOU_SUB_LIMIT = 64        # bounded castle navigation, quote, result and return
 CHIKUJOU_WAIT_LIMIT = 6        # no repeated A while a selection/result frame persists
+
+
+def _chikujou_affordable(gold, reserve):
+    """Any gold above the necessities may buy a level; the quote decides.
+
+    Owner (2026-10-11): アルマムーン alone was upgraded. A level costs
+    20 - the defending general's 内政 (gcgx info.html), at most 20G, but a
+    castle was only opened with 40G spare beyond the reserve, so the home
+    upgrade used up the margin of every other holding. The reserve already
+    holds the wage, egg, hero repair, recruit, soldier and card money, and
+    the real NGかかりますが quote is still checked against it before うむッ.
+    """
+    return type(gold) is int and reserve is not None and gold >= reserve + CHIKUJOU_SPARE
 
 
 def _chikujou_reserve(mem, shop):
@@ -6930,7 +6943,7 @@ def _month_chikujou(screen, mem, shop):
         return None
     gold = (screen.header or {}).get('gold')
     reserve = _chikujou_reserve(mem, shop)
-    if type(gold) is not int or reserve is None or gold < reserve + CHIKUJOU_SPARE:
+    if not _chikujou_affordable(gold, reserve):
         shop['chikujou'] = 'done' if shop.get('chikujou_upgrades') else 'skipped'
         return None
     move = menu_to(screen, 'ちくじょう')
@@ -6998,6 +7011,10 @@ def _chikujou_step(screen, mem, sub):
         reserve = _chikujou_reserve(mem, mem.get('shop') or {})
         if (sub.get('declined') or cost is None or type(gold) is not int
                 or reserve is None or gold - cost < reserve):
+            if (not sub.get('declined') and cost is not None and type(gold) is int
+                    and reserve is not None and sub.get('chosen')
+                    and f"{sub['chosen']}じょうですな" in text):
+                sub['cost_declined'] = True  # this castle's price only
             sub['declined'] = True
             move = menu_to(screen, 'いかんッ!')
             if not sub.get('decline_recorded'):
@@ -7217,12 +7234,19 @@ def _finish_month_sub(screen, mem, shop) -> bool:
                                      'gold_before': before, 'gold_after': gold})
                 reserve = _chikujou_reserve(mem, shop)
                 more = (sub.get('key') is not None and sub.get('key') == shop.get('key')
-                        and not sub.get('aborted') and reserve is not None
-                        and gold >= reserve + CHIKUJOU_SPARE
+                        and not sub.get('aborted') and _chikujou_affordable(gold, reserve)
                         and any(c not in tried for c in _chikujou_candidates(mem)))
                 shop['chikujou'] = 'check' if more else 'done'
             elif sub.get('declined') and type(gold) is int and gold == before:
-                shop['chikujou'] = 'done' if shop.get('chikujou_upgrades') else 'skipped'
+                # A castle refused only on its own read price leaves the
+                # others: each castle's price follows its own general's 内政.
+                reserve = _chikujou_reserve(mem, shop)
+                more = (sub.get('cost_declined') and chosen
+                        and sub.get('key') is not None and sub.get('key') == shop.get('key')
+                        and not sub.get('aborted') and _chikujou_affordable(gold, reserve)
+                        and any(c not in tried for c in _chikujou_candidates(mem)))
+                shop['chikujou'] = ('check' if more else
+                                    'done' if shop.get('chikujou_upgrades') else 'skipped')
             else:
                 shop['chikujou'] = 'unverified'
         _record(mem, 'chikujou', month=sub.get('key'),

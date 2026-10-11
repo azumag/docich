@@ -696,13 +696,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v138-hero-egg-first'
+    assert state['bot_version'] == 'hanjuku-chart-v139-chikujou-all-castles'
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_camp_recheck_release():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v138-hero-egg-first'
+    assert BOT_VERSION == 'hanjuku-chart-v139-chikujou-all-castles'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -3807,7 +3807,17 @@ def test_recruit_and_castle_cannot_spend_broken_hero_house_fund():
     screen = parse(month_canvas(101, on='しょうぐんぼしゅう'))
     policy.month_step(screen, mem)
     assert mem['shop']['recruit'] == 'deferred_cash'
-    assert mem['shop']['soldiers'] == 0 and mem['shop']['chikujou'] == 'skipped'
+    assert mem['shop']['soldiers'] == 0
+    # The 50G house fund and the 30G wage stay out of building; only the
+    # 21G above them may buy a castle level (quote checked before うむッ).
+    assert policy._chikujou_reserve(mem, mem['shop']) == 80
+    assert mem['shop']['chikujou'] == 'check'
+    assert 'month_sub' not in mem
+    mem = _broken_hero_memory()
+    policy._plan(mem, {'year': 1, 'month': 7, 'gold': 80}).update(
+        egg='not_needed', soldiers=0, soldiers_done=True, soldiers_before_recruit_done=True)
+    policy.month_step(parse(month_canvas(80, on='しょうぐんぼしゅう')), mem)
+    assert mem['shop']['chikujou'] == 'skipped'
     assert 'month_sub' not in mem
 
 
