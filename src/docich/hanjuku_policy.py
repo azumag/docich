@@ -21,6 +21,7 @@ from . import hanjuku_reference as reference
 from .hanjuku_egg_stock import observed_uses
 from .hanjuku_egg_reference import enemy_egg_triggers, general_debut_chapter, general_max_hp
 from .hanjuku_font import UNKNOWN, TextLine
+from .hanjuku_pixels import Frame
 from .hanjuku_screen import (HEADER as HEADER_RE, OKUNOTE_CHOICES,
                              SUMMER_BONUS_CHOICES, Screen, castle_roofs,
                              month_confirmation_positions, own_camps)
@@ -1623,17 +1624,28 @@ def world_map_step(screen, mem, frame):
                   if cursor and offset and abs(x / 8 + offset[0] - cursor[0]) <= 6
                   and abs(y / 8 + offset[1] - cursor[1]) <= 6]
         recall['picker_observations'] = int(recall.get('picker_observations', 0)) + 1
-        if len(nearby) != 1 or flags.get(nearby[0]) != 'own':
-            if recall['picker_observations'] >= RECALL_LIMIT:
-                _record(mem, 'camp_recall_aborted',
-                        observed_metric={'cursor': cursor, 'flags': flags},
-                        reason='帰還先の自軍旗を確認できないため敵城へ確定せず帰還操作を取り消す')
-                mem.pop('recall', None)
-                mem['uncertain'] = True
-                return [pad('b')]
+        if recall['picker_observations'] >= RECALL_LIMIT:
+            _record(mem, 'camp_recall_aborted',
+                    observed_metric={'goal': recall.get('goal'), 'cursor': cursor},
+                    reason='帰還先カーソルが有限回で合わず確定せず取り消す')
+            mem.pop('recall', None)
+            mem['uncertain'] = True
+            return [pad('b')]
+        goal = _recall_goal(mem, flags)
+        if not cursor or not offset or goal is None:
             return [pad('right')] if cursor else []
-        home = nearby[0]  # the measured R picker, never an assumed home castle
-        return _request_recall(mem, recall, home,
+        if recall.get('goal') != goal or not recall.get('destination_selected'):
+            recall.update(goal=goal, destination_selected=True)
+            _record(mem, 'camp_recall_destination',
+                    observed_metric={'castle': goal, 'origin': recall.get('origin'),
+                                     'hero_castle': _hero_castle(mem)},
+                    reason='現在地から近い自軍城を選び、同距離ならどうしの在城先を優先する')
+        if nearby != [goal]:
+            gx, gy = chart.castles(chapter)[goal]
+            dx, dy = gx / 8 + offset[0] - cursor[0], gy / 8 + offset[1] - cursor[1]
+            return [pad(('right' if dx > 0 else 'left') if abs(dx) >= abs(dy)
+                        else ('down' if dy > 0 else 'up'))]
+        return _request_recall(mem, recall, goal,
                                [pad('a'), {'type': 'wait', 'ms': 700}, pad('a')])
     flags = world_flags(frame, mem.get('chapter') or 0)
     if not flags:
@@ -2111,6 +2123,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     if stage == 'hero_open':
         if screen.kind != 'map':
             return []
+        _observe_recall_origin(screen, mem, frame, state)
         state['stage'], state['steps'] = 'menu', 0
         _record(mem, 'camp_enter', observed_metric={'hero': True, 'cursor': list(_cursor(screen) or ())},
                 reason='主人公にカーソルを合わせて決定し、きかんを選ぶ')
@@ -2145,6 +2158,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         dx = state['target'][0] - cursor[0]
         dy = state['target'][1] - cursor[1]
         if abs(dx) <= RECALL_ARRIVE_PX and abs(dy) <= RECALL_ARRIVE_PX:
+            _observe_recall_origin(screen, mem, frame, state)
             state['stage'] = 'menu'
             state['steps'] = 0        # each stage gets the full observation budget
             _record(mem, 'camp_enter', observed_metric={'camp': list(state['target'])},
@@ -2224,19 +2238,59 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     return []
 
 
-def _recall_goal(mem):
-    """The owned castle the hero returns to: where he set out from, else the nearest to home."""
+def _observe_recall_origin(screen, mem, frame, state):
+    """Bind distance to the selected unit's current map, never the R home cursor.
+
+    Two or more roofs must agree on one camera translation. A tied
+    constellation or an old integrated cursor cannot locate this unit.
+    """
+    cursor = _cursor(screen)
+    if screen.kind != 'map' or not isinstance(frame, Frame) or cursor is None:
+        return
+    cells = chart.castles(mem.get('chapter') or 0)
+    roofs = [r for r in castle_roofs(frame) if not r.get('clipped')]
+    candidates = {}
+    for roof in roofs:
+        for x, y in cells.values():
+            cam = (x - roof['target'][0], y - roof['target'][1])
+            support = sum(any(abs(r['target'][0] + cam[0] - cx)
+                              + abs(r['target'][1] + cam[1] - cy) <= 12
+                              for cx, cy in cells.values()) for r in roofs)
+            candidates[cam] = support
+    if not candidates or max(candidates.values()) < 2:
+        state.pop('origin', None)
+        return
+    best = [cam for cam, support in candidates.items() if support == max(candidates.values())]
+    # Roof cells differ by a few pixels; equivalent translations are one
+    # location, but two far-away constellations leave the origin unknown.
+    if any(abs(cam[0] - best[0][0]) + abs(cam[1] - best[0][1]) > 24 for cam in best):
+        state.pop('origin', None)
+        return
+    state['origin'] = [cursor[0] + best[0][0], cursor[1] + best[0][1]]
+
+
+def _recall_goal(mem, flags=None):
+    """Nearest owned castle; hero's castle wins ties or supplies an unknown origin."""
     chapter = mem.get('chapter') or 0
     cells = chart.castles(chapter)
-    owned = [c for c in _owned(mem) if c in cells]
+    owned = sorted(c for c in _owned(mem) if c in cells
+                   and (flags is None or flags.get(c) == 'own'))
+    state = mem.get('recall') or {}
+    hero = [c for c in owned if NAME in ((mem.get('garrison') or {}).get(c) or ())]
+    hero_castle = (hero[0] if len(hero) == 1 and NAME not in _en_route(mem)[0]
+                   and NAME not in (mem.get('general_location_unknown') or ()) else None)
+    origin = state.get('origin')
+    if (isinstance(origin, (list, tuple)) and len(origin) == 2
+            and all(type(value) is int for value in origin)):
+        return min(owned, key=lambda c: (sum(abs(cells[c][a] - origin[a]) for a in (0, 1)),
+                                         c != hero_castle, c)) if owned else None
+    if hero_castle:
+        return hero_castle
     for step in (mem.get('recall') or {}).get('sorties') or ():
         source = ((mem.get('sorties') or {}).get(step) or {}).get('source')
         if source in owned:
             return source
-    home = chart.home_castle(chapter)
-    if home in owned:
-        return home
-    return owned[0] if owned else None
+    return owned[0] if len(owned) == 1 else None
 
 
 def _finish_hero_recall(mem, state, goal):
