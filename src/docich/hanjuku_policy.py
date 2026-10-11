@@ -7220,6 +7220,44 @@ def _chikujou_wait(screen, mem, sub, reason):
     return [pad('b')]
 
 
+def _chikujou_scroll(screen, mem, sub):
+    """Reveal off-screen holdings in the observed four-row castle list.
+
+    g684: all four visible castles were already tried, but ゴーメン and
+    スペンソニア remained below them. A missing menu_to target is not the end
+    of this list. Move down only from a named row in the real list, and
+    bound both ignored inputs and an entire traversal (including wrap).
+    """
+    chapter = mem.get('chapter') or 1
+    known = {STATUS_NAMES.get(c, c) for c in chart.CASTLE_NAMES.get(chapter, ())}
+    rows = sorted((x, y, w) for x, y, w in _options(screen) if w in known)
+    cur = _current(screen)
+    if (len(rows) != 4 or len({r[2] for r in rows}) != 4
+            or len({r[0] for r in rows}) != 1
+            or any(b[1] - a[1] != 16 for a, b in zip(rows, rows[1:]))
+            or cur not in rows):
+        return _chikujou_wait(screen, mem, sub, 'castle_list_unread')
+    signature = [list(r) for r in rows] + [list(cur)]
+    state = sub.setdefault('build_scroll', {})
+    stalled = int(state.get('stalled') or 0) + 1 if state.get('signature') == signature else 0
+    presses = int(state.get('presses') or 0)
+    if stalled >= MENU_NAV_PRESS_LIMIT or presses >= len(known) + 4:
+        sub['declined'] = True
+        sub['aborted'] = True
+        _record(mem, 'chikujou_held', deviation_reason='castle_scroll_no_progress',
+                observed_metric={'visible': [r[2] for r in rows], 'scrolls': presses,
+                                 'stalled': stalled},
+                reason='築城一覧の移動が効かないか探索上限に達したため、城を推測して確定せず戻る')
+        return [pad('b')]
+    state.update(signature=signature, stalled=stalled, presses=presses + 1)
+    sub['build_wait'] = 0
+    _record(mem, 'chikujou_scroll',
+            observed_metric={'visible': [r[2] for r in rows], 'selected': cur[2],
+                             'scrolls': presses + 1},
+            reason='未試行の所有城が画面外に残るため、4行の築城一覧を下へ送って確認する')
+    return [pad('down')]
+
+
 def _month_chikujou(screen, mem, shop):
     """Owner (2026-09-29): with money to spare, ちくじょう raises a castle's level.
 
@@ -7398,7 +7436,7 @@ def _chikujou_step(screen, mem, sub):
                 return [pad('a')]
             return [move]
         if names:
-            return _chikujou_wait(screen, mem, sub, 'castle_list_unread')
+            return _chikujou_scroll(screen, mem, sub)
         sub['declined'] = True
         _record(mem, 'chikujou_declined', observed_metric={'tried': tried},
                 reason='当月未試行で増築候補となる所有城がなくなったため、築城を終える')
