@@ -227,6 +227,7 @@ def _announce_explicit_category(
     category_id: str,
     category_name: str = "",
     view: str = "paper-view",
+    title_args: list[str] | None = None,
     spawn=None,
 ) -> bool:
     """Ask the Soren updater to use a category without a game TOML.
@@ -245,7 +246,7 @@ def _announce_explicit_category(
     argv = [str(script), "--category-id", category_id.strip()]
     if category_name:
         argv.extend(["--category-name", str(category_name)])
-    argv.extend(viewer_title_args(view, g))
+    argv.extend(viewer_title_args(view, g) if title_args is None else title_args)
     try:
         (spawn or _spawn)(
             argv,
@@ -306,18 +307,20 @@ def announce_stream_paper(g: GlobalConfig, *, spawn=None) -> bool:
     )
 
 
-def announce_stream_special(g: GlobalConfig, *, spawn=None) -> bool:
+def announce_stream_special(g: GlobalConfig, *, spawn=None, settings=None) -> bool:
     """Move the stream to the special corner's configured category and title.
 
     Read at commit time, so settings saved while waiting apply to this start;
     the restore goes back through the previous game's own announcement.
     """
-    settings = _special_settings(g)
+    if settings is None:
+        settings = _special_settings(g)
     return _announce_explicit_category(
         g,
         category_id=settings["category_id"],
         category_name=settings["category_name"],
         view=SPECIAL_VIEW_NAME,
+        title_args=["--activity", settings["title"], "--strategy", settings["title_suffix"]],
         spawn=spawn,
     )
 

@@ -73,14 +73,35 @@ class ExternalVideoCornerManager:
         self.path = Path(g.state_dir) / STATE_FILE
         self.store = GameSwitchStore(g.state_dir)
         self.stopping = False
+        self._dispatch_state = None
         if coordinator is None:
             from .adapters import make_coordinator_adapter
-            from .stream_category import commit_hook
-            # Same post-commit hook as PAPER/CLI: start switches the Twitch
-            # category/title to FlyHome, and the restore puts the previous game back.
+            # Freeze this corner's settings at the actual switch commit, after
+            # any FIFO/boundary wait. Restore still announces the previous game.
             coordinator = GameSwitchCoordinator(self.store, lambda spec: make_coordinator_adapter(g, spec),
-                                                post_commit=commit_hook(g))
+                                                post_commit=self._announce_committed_view)
         self.coordinator = coordinator
+
+    def _announce_committed_view(self, game):
+        from .stream_category import announce_running_view, announce_stream_special
+        from .special_corner import LIMITS, load_settings, validate_settings
+
+        if game != VIEW_NAME:
+            return announce_running_view(self.g, game)
+        state = self._dispatch_state
+        if state is not None and "special_corner_settings" not in state:
+            loaded = load_settings(self.g.state_dir)
+            state["special_corner_settings"] = validate_settings({key: loaded[key] for key in LIMITS})
+            self.save(state)
+        else:
+            # Recovery of an already committed corner must not adopt future
+            # settings. Its snapshot may be absent after a crash at commit.
+            from .external_video_closing import corner_settings
+            loaded = corner_settings(self.g)
+            if not loaded.get("category_id"):
+                return False
+            return announce_stream_special(self.g, settings=loaded)
+        return announce_stream_special(self.g, settings=state["special_corner_settings"])
 
     def canonical(self, *, patience_s=60):
         # A game switch / FIFO tick holds the exclusive lock for a few seconds at a
@@ -122,7 +143,11 @@ class ExternalVideoCornerManager:
                       allow_boundary_timeout_extension=False)
         if source:
             kwargs["payload"] = {"expected_source": source}
-        result = method(VIEW_NAME, **kwargs)
+        self._dispatch_state = state
+        try:
+            result = method(VIEW_NAME, **kwargs)
+        finally:
+            self._dispatch_state = None
         if result.status in PENDING:
             return False
         if result.status != "succeeded":
@@ -224,7 +249,8 @@ class ExternalVideoCornerManager:
         if require_audio and not receiver.get("audio_present"):
             raise ExternalVideoError("OBS audio has not been decoded")
         state.update(status="starting", receiver_id=receiver["receiver_id"],
-                     previous_runtime_identity=source, receiver_expires_at=receiver["expires_at"])
+                     previous_runtime_identity=source, receiver_expires_at=receiver["expires_at"],
+                     special_corner_snapshot_required=True)
         self.save(state)
 
     def _receiver_at_turn(self, state, require_audio):
