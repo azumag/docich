@@ -7931,6 +7931,69 @@ def _is_general_trade_prompt(text: str) -> bool:
     return any(tok in flat for tok in TRADE_DECLINE_TOKENS)
 
 
+TRADE_GUARD_OBSERVATIONS = 40   # ~60 s: lead-in, the offer and its choice
+# Arming needs trade-only wording; 'しょうぐんどうし' can be the hero's name.
+TRADE_GUARD_TOKENS = ('トレード', 'いちもんめ', 'イキのいいの', 'いきのいいの')
+
+
+def trade_guard_step(screen: Screen, mem):
+    """Fail closed on a 花いちもんめ offer whose choice is not a measured yes/no.
+
+    g684 1-10 13:05: 「ここで しょうぐんどうしの トレードを しようじゃないか。」
+    was read as plain text, the choice that followed never matched the
+    うむッ/いかんッ yes/no, every frame got the generic A, and ヴィーナス (82,
+    スーパーエッグ) was traded for シェーブル (27). Owner (2026-10-11): the
+    trade swaps strong generals for weak ones; refuse when a strong general
+    is named (always declined here, as before).
+
+    After trade wording is seen, a choice with a readable hand cursor is
+    moved off its first (default, accepting) row and the lower row is chosen.
+    Plain text still advances with A. The screen text is recorded so the
+    real choice wording can be measured.
+    """
+    if mem.get('month_sub'):
+        return None   # a monthly owner keeps its dialogue (measured yes/no still declines)
+    tick = int(mem.get('tick') or 0)
+    guard = mem.get('trade_guard')
+    flat = ''.join(screen.text.split())
+    if (any(tok in flat for tok in TRADE_GUARD_TOKENS)
+            and screen.kind in ('text', 'unknown')):
+        if not isinstance(guard, dict):
+            guard = mem['trade_guard'] = {'tick': tick, 'chosen': False}
+            _record(mem, 'trade_offer_seen', screen=screen.kind,
+                    observed_metric={'text': screen.text[-80:], 'hand': screen.hand is not None},
+                    reason='将軍トレード（花いちもんめ）の申し出を検出。選択肢は断る側を選ぶ')
+        guard['tick'] = tick
+    if not isinstance(guard, dict):
+        return None
+    if guard.get('chosen') or tick - int(guard.get('tick') or 0) > TRADE_GUARD_OBSERVATIONS \
+            or screen.kind in ('map', 'map_target', 'month_menu', 'battle', 'world_map'):
+        mem.pop('trade_guard', None)
+        return None
+    if screen.kind == 'yes_no':
+        return None   # the measured yes/no path declines the trade itself
+    if screen.kind not in ('text', 'unknown') or screen.hand is None:
+        return None   # plain dialogue: the normal A advances it
+    cur = _current(screen)
+    rows = sorted({y for x, y, w in _options(screen)
+                   if cur and abs(x - cur[0]) <= 24 and w and not w.isdigit()})
+    if not cur or len(rows) < 2:
+        if not guard.get('unread_choice_recorded'):
+            guard['unread_choice_recorded'] = True
+            _record(mem, 'situation_held', screen=screen.kind,
+                    observed_metric={'trade_guard': True, 'text': screen.text[-80:]},
+                    reason='トレードの選択肢の行を読めないため決定せず再観測')
+        return []
+    if abs(cur[1] - rows[0]) <= 2:
+        return [pad('down')]   # off the default (accepting) first row
+    guard['chosen'] = True
+    _record(mem, 'prompt', choice=cur[2], prompt=screen.text[-60:],
+            strategy_variant='decline_general_trade',
+            observed_metric={'rows': rows, 'cursor_y': cur[1]},
+            reason='将軍トレード（花いちもんめ）は強い将軍を弱い将軍と交換されやすいため断る')
+    return [pad('a')]
+
+
 def _is_goninja_prompt(text: str) -> bool:
     # Measured monthly assassination offer; a generic 50G prompt is not enough.
     return 'うちとおす' in ''.join(text.split())

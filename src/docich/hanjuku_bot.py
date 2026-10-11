@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v139-chikujou-all-castles'
+BOT_VERSION = 'hanjuku-chart-v140-trade-guard'
 
 # Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
 # frozen and the bot has planned no input for more than this many observations,
@@ -313,6 +313,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # A planned summon-preemption must not become a blind A on an unfinished
     # command menu, or be replaced by an old monthly/house transaction.
     actions = policy.defender_egg_pending_step(screen, mem)
+    if actions is None:
+        actions = policy.trade_guard_step(screen, mem)
     if actions is None and event_confirmation:
         # Owner (2026-10-06): trade refusal and the goninja cash floor outrank
         # a remembered monthly recruit/exit that could accept this yes/no.

@@ -696,13 +696,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v139-chikujou-all-castles'
+    assert state['bot_version'] == 'hanjuku-chart-v140-trade-guard'
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_camp_recheck_release():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v139-chikujou-all-castles'
+    assert BOT_VERSION == 'hanjuku-chart-v140-trade-guard'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
