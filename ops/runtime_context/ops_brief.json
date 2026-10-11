@@ -1,11 +1,11 @@
 {
-  "output_sha256": "2e2c8543335ee453cd3daa5df4704840cdb4af125c5623c0612ce7322862a85d",
+  "output_sha256": "a91ee2fd699eb4acbc5284956deff26376b239989584fcb9d02ff2daebe4deb3",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "72f528bce2c21aabcf899ad7cba7718933dab211f1e792a2bcc31fbef1ba5c71",
+  "source_sha256": "e867aa28a33418cb850fc63e80083c3fc81b6de7e4ec405099d8b7080b7c8336",
   "topics": [
+    "半熟英雄の切り札追撃配備と築城レベル上限の追加対策",
     "半熟英雄の築城スクロール配備とカストーラ切り札判断",
-    "半熟英雄の築城一覧スクロール修正とv150ホットロード",
-    "半熟英雄の継続監視と召喚獣・募集予算の改善"
+    "半熟英雄の築城一覧スクロール修正とv150ホットロード"
   ]
 }
