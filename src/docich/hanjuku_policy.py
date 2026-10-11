@@ -1017,13 +1017,30 @@ def _unplaced_castle_generals(mem):
     location castle) but no castle list had been reopened, so every garrison
     read one general, every sortie lacked a spare and nothing launched for
     30 minutes (owner 2026-10-11: しょうぐんがいるのに新規出撃をしてない).
+
+    A general who lost a battle is dropped from every list and marked
+    location-unknown; only a castle list clears that mark. g684 4-3..4-6:
+    no sortie launched while castles fell, because such generals were never
+    unplaced, so no list was ever reopened to find them. A status read after
+    the loss that says しろのなかにいます places them in some castle again.
     """
     month = mem.get('month')
     placed = {g for gs in (mem.get('garrison') or {}).values() for g in gs or ()}
-    busy = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    unknown = set(mem.get('general_location_unknown') or ())
+    lost_at = mem.get('general_location_unknown_at') or {}
+
+    def located(name, info):
+        if name not in unknown:
+            return True
+        at, seen = lost_at.get(name), info.get('observed_tick')
+        # An unknown mark that predates this field has no loss tick to compare.
+        return at is None or (type(at) is int and type(seen) is int and seen > at)
+
+    busy = _en_route(mem)[0]
     return sorted(name for name, info in (mem.get('house_eggs') or {}).items()
                   if isinstance(info, dict) and info.get('location') == 'castle'
-                  and info.get('month') == month and name not in placed and name not in busy)
+                  and info.get('month') == month and name not in placed and name not in busy
+                  and located(name, info))
 
 
 def _arrival_castle(mem, owned):
@@ -3187,6 +3204,7 @@ def _observe_garrison(screen, mem, order):
     mem.setdefault('garrison_observed_at', {})[castle] = time.time()
     mem['general_location_unknown'] = [g for g in mem.get('general_location_unknown') or ()
                                        if g not in present or not _general_visible(screen, g)]
+    _prune_unknown_at(mem)
     verification = mem.get('recruit_verification') or {}
     joined = (set(present) & set(verification.get('candidates') or ())) - set(
         verification.get('generals_before') or ())
@@ -3199,6 +3217,14 @@ def _observe_garrison(screen, mem, order):
         garrison[castle] = present
         _record(mem, 'garrison_seen', **_deploy_context(order, mem), castle=castle,
                 observed_metric=present[:8], reason='出撃元の将軍一覧から駐留将軍を記録')
+
+
+def _prune_unknown_at(mem):
+    """Keep loss ticks only for generals still marked location-unknown."""
+    at = mem.get('general_location_unknown_at')
+    if at:
+        unknown = set(mem.get('general_location_unknown') or ())
+        mem['general_location_unknown_at'] = {g: t for g, t in at.items() if g in unknown}
 
 
 def _garrison_move(mem, general, source=None, target=None):
@@ -3214,6 +3240,7 @@ def _garrison_move(mem, general, source=None, target=None):
         garrison[source] = [g for g in garrison[source] if g != general]
     if target and general:
         mem['general_location_unknown'] = [g for g in mem.get('general_location_unknown') or () if g != general]
+        _prune_unknown_at(mem)
         here = [g for g in garrison.get(target) or () if g != general]
         garrison[target] = [*here, general]
 
@@ -5983,6 +6010,7 @@ def battle_end(mem, next_kind, *, defense_continues=False):
         unknown = mem.setdefault('general_location_unknown', [])
         if general not in unknown:
             unknown.append(general)
+        mem.setdefault('general_location_unknown_at', {})[general] = int(mem.get('tick') or 0)
         _record(mem, 'general_location_unclassified', general=general, castle=castle,
                 reason='敗北した将軍の所在は未確認のため古い駐留情報を破棄し、一覧での再確認を待つ')
     stats = mem.setdefault('stats', {'wins': 0, 'losses': 0, 'unclassified': 0, 'cards_used': 0,
@@ -6239,7 +6267,8 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'soldiers_seen_basis', 'order_context', 'sortie_general', 'sortie_actor_miss',
                 'boss_defeated', 'boss_entry_hold',
                 'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
-                'garrison', 'unplaced_refuted', 'unplaced_refuted_castles', 'general_location_unknown', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
+                'garrison', 'unplaced_refuted', 'unplaced_refuted_castles', 'general_location_unknown',
+                'general_location_unknown_at', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                 'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
                 'target_miss', 'target_cancel', 'menu_hold', 'card_scroll', 'card_unreadable',
                 'sortie_confirm_miss',
