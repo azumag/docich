@@ -42,6 +42,12 @@ def test_cold_resume_reveal_never_requires_old_roster_or_battle():
     assert not updated['policy'].get('battle')
 
 
+def test_native_paused_slot_osd_never_weakens_chapter_evidence():
+    native = read_png(Path(__file__).parent / 'fixtures/hanjuku/g704-resume-reveal-slot-osd.png').resized()
+    assert native.digest() == '97897876700acf85183017d067e9cce624cdc4b4a40d93540434ecfe45840286'
+    assert fake_hero_announcement_chapter(parse(native)) is None
+
+
 @pytest.mark.parametrize('change', ['partial', 'wrong-row', 'unknown', 'other-text',
                                     'header', 'hand', 'other-kind', 'extra-row'])
 def test_only_complete_native_reveal_is_a_chapter_cue(change):
