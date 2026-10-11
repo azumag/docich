@@ -458,6 +458,12 @@ def step(screen, mem, frame):
         _finish(mem)
         return None
     if state.get('from_survey') and receipts.completed_survey(mem) is None:
+        if state.get('phase') == 'close':
+            # g684 2-11 15:49:04-15:50+: already closed, this check re-ran
+            # _exit every observation, held [] and swallowed a duel yes/no
+            # (「ごあいてねがえぬか?」). Release the screen to its owner.
+            _finish(mem)
+            return None
         return _exit(mem, '完了確認の月・ラン・名簿が無効になったため部分再確認を中断')
     phase = state['phase']
     # The monthly main-menu survey returns to the same monthly menu, never
