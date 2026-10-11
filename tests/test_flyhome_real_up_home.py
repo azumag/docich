@@ -21,3 +21,8 @@ def test_actual_visible_house_does_not_activate_the_viewport_waypoint():
     obs = vision.analyze(read_png(FIXTURES / 'flyhome-level49-timer-spike.png'))
     assert obs.home == (200, 90.6)
     assert obs.home_exit_up is None
+
+def test_actual_up_arrow_animation_keeps_the_same_waypoint():
+    obs = vision.analyze(read_png(FIXTURES / 'flyhome-level50-up-home-bob.png'))
+    assert obs.home is None and obs.home_bbox is None
+    assert obs.home_exit_up == (152, 24)

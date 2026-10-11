@@ -373,11 +373,11 @@ def _home_exit_up(labels: bytearray, w: int, h: int) -> tuple[float, float] | No
     import zlib
     for left in range(8, w - 24):
         center = left + 12
-        if not all(labels[y * w + center] == WHITE for y in range(2, 8)):
+        if not all(labels[y * w + center] == WHITE for y in range(3, 8)):
             continue
         bits = bytes(int(labels[y * w + x] == WHITE)
                      for y in range(1, 17) for x in range(left, left + 24))
-        if sum(bits) == 79 and zlib.crc32(bits) == 715799730:
+        if sum(bits) == 79 and zlib.crc32(bits) in (715799730, 2299713944):
             return float(center), 24.0
     return None
 
@@ -522,22 +522,21 @@ def analyze(
                 player.flame_right = True
 
     home = home_bbox = None
-    if roofs:
-        roof = max(roofs, key=lambda b: b.area)
-        # 夕焼けの配色のレベル (実機 Lv26) では棘の縁が暗い赤 (140,0,0) で ROOF に分類される。
-        # 家の屋根 (一番大きい塊) 以外の、棘ブロック大 (縁の画素 ≤ 60、箱 ≤ 14px) の ROOF の塊は棘とみなす。
-        # 実機Lv49: タイマーの下にある暗赤の棘も残った画素から検出する。
-        # 文字のHUDマスクはプレイヤーに使い、棘の小さな塊には適用しない。
-        for b in blobs(labels, w, h, {ROOF}):
-            if b is roof or b.area < 12 or b.area > 60:
-                continue
-            bx0, by0, bx1, by1 = b.bbox
-            if bx1 - bx0 > 14 or by1 - by0 > 14:
-                continue
+    house_roofs = [b for b in roofs if b.bbox[2] - b.bbox[0] >= 20]
+    roof = max(house_roofs, key=lambda b: b.area) if house_roofs else None
+    # Dark-red spike tiles can be visible while the actual house remains off-screen.
+    for b in blobs(labels, w, h, {ROOF}):
+        if b.area < 12 or b.area > 60:
+            continue
+        bx0, by0, bx1, by1 = b.bbox
+        if bx1 - bx0 > 14 or by1 - by0 > 14:
+            continue
+        if roof is not None:
             rx0, ry0, rx1, ry1 = roof.bbox
             if bx0 <= rx1 + 2 and bx1 >= rx0 - 2 and by0 <= ry1 + 2 and by1 >= ry0 - 2:
-                continue  # 屋根の一部
-            hazards.append(b.bbox)
+                continue
+        hazards.append(b.bbox)
+    if roof is not None:
         x0, y0, x1, y1 = roof.bbox
         rh = y1 - y0
         home_bbox = (x0, y0, x1, min(h, y1 + int(rh * 1.6)))
