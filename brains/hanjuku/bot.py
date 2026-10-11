@@ -38,6 +38,8 @@ CHART_DECISIONS=frozenset({
 # Only records that explain this observation's planned input/hold may override
 # the active battle. Observation, migration and result records are not actions.
 INPUT_CONTEXT_DECISIONS=frozenset({
+    'starter_select','starter_confirm','starter_underfilled_rejected',
+    'starter_unread','starter_navigation','starter_navigation_stalled',
     'battle_command_open_wait',
     'battle_card_damage_rejected','battle_card_damage_replan','battle_card_damage_recheck',
     'battle_survival','battle_survival_select','battle_survival_unavailable',
@@ -119,7 +121,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
                               'soldiers_seen','soldier_refill','soldier_refill_receipt','egg_priority_replan'}
         or (r.get('decision') == 'order_start' and r.get('cards'))
         or (r.get('decision') == 'situation_held' and r.get('screen') in {'card_select','sortie_confirm'})
-        or str(r.get('decision','')).startswith(('battle_card','battle_command','battle_survival','battle_okunote','battle_hero_retreat','egg_recover','chikujou')) for r in records))
+        or str(r.get('decision','')).startswith(('starter_','battle_card','battle_command','battle_survival','battle_okunote','battle_hero_retreat','egg_recover','chikujou')) for r in records))
     if frame is not None and capture:
         directory=runtime/'hanjuku_frames'
         if directory.is_symlink():
