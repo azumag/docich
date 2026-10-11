@@ -560,7 +560,8 @@ def step(screen, mem, frame):
     receipts.page(mem, roster(screen))
     owns_observation = (bool(mem.get('battle')) or bool(mem.get('month_sub')) or screen.kind in {
         'battle', 'battle_menu', 'egg_battle_menu', 'egg_choice_menu', 'monster_menu',
-        'okunote_menu', 'attack_started', 'defense_started', 'boss_attack_started'})
+        'okunote_menu', 'attack_started', 'defense_started', 'boss_attack_started',
+        'field_encounter_started'})
     if not owns_observation:
         state['total'] += 1
     if mem.get('battle') and screen.kind == 'map':
@@ -568,6 +569,7 @@ def step(screen, mem, frame):
     # Repair must never consume unrelated battle commands or monthly menus.
     if (mem.get('battle') or screen.kind in {'battle', 'battle_menu', 'egg_battle_menu', 'egg_choice_menu',
             'monster_menu', 'okunote_menu', 'attack_started', 'defense_started', 'boss_attack_started',
+            'field_encounter_started',
             'month_menu', 'shop_quantity', 'shop_quantity_prompt', 'shop_exit_confirm', 'discharge_menu'}
             or mem.get('month_sub')):
         if phase not in ('travel', 'close', 'repair_recheck'):

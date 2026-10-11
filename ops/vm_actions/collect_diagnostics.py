@@ -4874,7 +4874,7 @@ HANJUKU_DECISION_EVENTS = ("action_plan", "decision")
 # source, so a new kind fails closed as "other" instead of being emitted.
 HANJUKU_DECISION_SCREEN_KINDS = frozenset({
     "attack_started", "barrier_removed", "battle", "battle_menu",
-    "battle_menu_pending", "boss_attack_started", "card_select", "castle_info",
+    "battle_menu_pending", "boss_attack_started", "field_encounter_started", "card_select", "castle_info",
     "castle_menu", "defense_started", "discharge_menu", "egg_battle_menu",
     "egg_choice_menu", "general_list", "gift_request", "main_menu", "map",
     "map_target", "monster_menu", "month_menu", "name_entry", "okunote_menu",

@@ -752,6 +752,8 @@ def classify_text(s: Screen) -> str:
         return 'castle_menu'
     if re.fullmatch(r'[^\ufffd\s]+しょうぐんがボスじょうにせめこんだ!!', t):
         return 'boss_attack_started'
+    if re.fullmatch(r'[^\ufffd\s]+しょうぐんがてきとそうぐうしました!!', t):
+        return 'field_encounter_started'
     if 'のりこんだ' in t:
         return 'attack_started'
     if 'せめこまれ' in t:

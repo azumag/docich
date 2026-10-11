@@ -35,7 +35,7 @@ ARRIVE_PX = 4
 ANCHOR_PX = 24                # roof-to-castle association radius (castles >=100 px apart)
 BATTLE_MENU = ('たまごをつかう', 'きりふだ', 'たいきゃく')
 AFTER_BATTLE_KINDS = frozenset({'map', 'map_target', 'castle_menu', 'general_list', 'month_menu',
-                                'attack_started', 'defense_started', 'castle_info', 'main_menu',
+                                'attack_started', 'defense_started', 'field_encounter_started', 'castle_info', 'main_menu',
                                 'yes_no', 'shop_list', 'boss_attack_started'})
 CARD_NAMES = frozenset({
     'イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース', 'グリンボー', 'ピッグローラー',
@@ -6364,6 +6364,15 @@ BOSS_ENTRY_HOLD_LIMIT = 8   # unmatched boss entry messages before the screen is
 
 def message_step(screen: Screen, mem):
     text = screen.text
+    encounter = re.fullmatch(r'([^\ufffd\s]+)しょうぐんがてきとそうぐうしました!!', text)
+    if encounter:
+        general = encounter[1]
+        if general != NAME and general_max_hp(general) is None:
+            return []
+        _record(mem, 'field_encounter_observed', general=general, castle=None,
+                observed_metric={'message': text, 'location': 'field'},
+                reason='実測の敵との遭遇告知を確認したため会話を進める')
+        return [pad('a')]
     boss_entry = re.fullmatch(r'([^\ufffd\s]+)しょうぐんがボスじょうにせめこんだ!!', text)
     if boss_entry:
         general = boss_entry.group(1)
