@@ -641,3 +641,17 @@ def test_hotload_freezes_legacy_field_exhaustion_before_two_new_month_scans():
     actions,state=decide(_survey_field(),state)
     assert not state['policy'].get('house')
     assert state['policy']['recruit_field_scan_attempts']['count']==2
+
+
+@pytest.mark.parametrize('egg,opens', [('unverified', True), ('pending', False), ('check', False)])
+def test_an_unverified_egg_recovery_does_not_block_the_month_roster_scan(egg, opens):
+    # g684 1-12 / 2-1: recovery paid (309->259) but 'unverified'; the month
+    # roster scan never ran and recruitment stayed deferred_roster.
+    from test_hanjuku_chart_bot import month_canvas
+    from docich.hanjuku_screen import parse
+    mem=memory(names=['どうし','ゼウス'],income=22);mem.update(month='1-7',tick=500)
+    p._apply_world_flags(mem,{'アルマムーン':'own'})
+    mem['egg_uses']={'ゼウス':3}
+    mem['shop']={'key':'1-7','egg':egg,'recruit':'deferred_roster'}
+    actions=house.step(parse(month_canvas(250,on='メインメニュー',month=7)),mem,None)
+    assert (actions==[p.pad('a')])==opens

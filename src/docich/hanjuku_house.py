@@ -403,8 +403,15 @@ def step(screen, mem, frame):
                     and (mem.get('shop') or {}).get('recruit') in ('opened', 'done', 'unverified')):
                 return None
             if (p._egg_recovery_targets(mem)
-                    and (mem.get('shop') or {}).get('egg') not in ('done', 'skipped', 'not_needed')):
-                return None  # existing recovery/reserve ordering precedes the free survey
+                    and (mem.get('shop') or {}).get('egg') not in ('done', 'skipped', 'not_needed',
+                                                                    'unverified')):
+                # Existing recovery/reserve ordering precedes the free survey.
+                # g684 1-12/2-1: a paid recovery whose debit could not be
+                # verified stayed 'unverified', this gate never opened, the
+                # roster was never re-read in the month and no general was
+                # recruited (owner 2026-10-11: 将軍たりてないのに募集かけてない).
+                # The attempt is over either way; only the receipt is unknown.
+                return None
             if (p._recruit_sufficient(mem) or receipts.surveyed(mem)
                     or (receipts.fresh(mem)
                         and receipts.fresh(mem).get('complete'))):
