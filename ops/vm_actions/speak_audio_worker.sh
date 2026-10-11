@@ -37,21 +37,51 @@ set +u
 source lib/outbound_queue.sh
 set -u
 queue_dir="${COMMENT_QUEUE_DIR:-tmp/.comment_queue}"
-queued_files() { compgen -G "$queue_dir/comment_announce_*_owner_speak.txt" || true; }
-before="$(queued_files)"
-# TTL 0 disables the 120 s duplicate suppression: the owner may repeat a line.
-COMMENT_AUDIO_DEDUP_TTL_SEC=0 enqueue_audio_text "$text" owner_speak
-mine="$(comm -13 <(printf '%s\n' "$before" | sort) <(queued_files | sort))"
-[[ -n "$mine" && "$(printf '%s\n' "$mine" | wc -l)" -eq 1 ]] \
-  || { echo 'enqueue did not produce exactly one queue file' >&2; exit 1; }
+debug_log=tmp/.say_queue/debug.log
+outcome_wait_s=90
+# The live worker may claim the item before enqueue even returns, so its
+# identity must be fixed before publication rather than inferred from a later
+# directory listing.  enqueue_audio_text embeds the source in the filename;
+# a per-run hex nonce makes that name unique (and keeps the playback label
+# "comment", since no label pattern can match hex).
+nonce="$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+[[ "$nonce" =~ ^[0-9a-f]{16}$ ]] || { echo 'nonce unavailable' >&2; exit 1; }
+item="_owner_speak.${nonce}."
+# TTL 0 disables the 120 s enqueue suppression: the owner may repeat a line.
+# A non-zero return means nothing was published, so retrying is safe.
+COMMENT_AUDIO_DEDUP_TTL_SEC=0 enqueue_audio_text "$text" "owner_speak.$nonce" \
+  || { echo 'enqueue failed; nothing was queued' >&2; exit 1; }
 
-# Measured acknowledgement: the worker claims (renames/removes) the .txt.
-for _ in $(seq 1 90); do
-  if [[ ! -e "$mine" ]]; then
-    echo 'audio_worker consumed the queued sentence'
-    exit 0
-  fi
+# Measured outcome from the worker's own per-file record, never from the
+# queue file merely disappearing (it is also removed when skipped/discarded).
+item_outcome() {
+  local line
+  # Only _play_comment_queue's per-item verdicts count; say_enqueue also logs
+  # per-chunk "再生完了" lines naming the same .playing file mid-playback.
+  line="$(grep -F -- "$item" "$debug_log" 2>/dev/null \
+    | grep -E '^\[_play_comment_queue [^]]*\] [^:]*(再生完了|再生失敗|重複スキップ|破棄)[^:]*: ' \
+    | tail -n 1 || true)"
+  case "$line" in
+    *再生完了*) echo spoken ;;
+    *再生失敗*) echo failed ;;
+    *重複スキップ*) echo duplicate ;;
+    *破棄*) echo discarded ;;
+  esac
+}
+for _ in $(seq 1 "$outcome_wait_s"); do
+  case "$(item_outcome)" in
+    spoken) echo 'audio_worker played the sentence'; exit 0 ;;
+    failed) echo 'audio_worker claimed the sentence but playback failed' >&2; exit 3 ;;
+    duplicate) echo 'audio_worker skipped the sentence as already played' >&2; exit 3 ;;
+    discarded) echo 'audio_worker discarded the sentence (mode mismatch)' >&2; exit 3 ;;
+  esac
   sleep 1
 done
-echo 'queued but not yet consumed by audio_worker (other audio ahead in queue?)' >&2
+if compgen -G "$queue_dir/comment_announce_*${item}playing" >/dev/null; then
+  echo 'audio_worker is still playing the sentence; outcome not yet recorded' >&2
+elif compgen -G "$queue_dir/comment_announce_*${item}txt" >/dev/null; then
+  echo 'queued but not yet claimed by audio_worker (other audio ahead in queue?)' >&2
+else
+  echo 'queued item is gone without a recorded outcome' >&2
+fi
 exit 2

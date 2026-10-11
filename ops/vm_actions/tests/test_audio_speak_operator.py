@@ -150,7 +150,9 @@ class AudioSpeakPolicyTests(unittest.TestCase):
             "base64.b64decode(sys.stdin.read(), validate=True)",
             "audio_worker is not running",
             "COMMENT_AUDIO_DEDUP_TTL_SEC=0 enqueue_audio_text",
-            "owner_speak",
+            'owner_speak.$nonce',
+            "/dev/urandom",
+            "再生完了",
             "/home/ubuntu/soren",
         ):
             self.assertIn(required, text)
@@ -202,43 +204,130 @@ class AudioSpeakScriptRuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 66, result.stderr)
         self.assertEqual(list((self.soren / "tmp/.comment_queue").glob("*")) if (self.soren / "tmp/.comment_queue").exists() else [], [])
 
-    def test_queues_exact_text_and_reports_consumption(self):
-        self.start_worker()
+    def consume(self, verdict="再生完了", log=True, delay=0.0, stop=None, seen=None):
+        """Mimic _play_comment_queue: claim .txt -> .playing, record per file."""
         queue = self.soren / "tmp/.comment_queue"
-        text = "$(touch /tmp/pwned) `x` ; あいう"
-
-        def consume():
-            deadline = time.time() + 20
-            while time.time() < deadline:
-                files = list(queue.glob("comment_announce_*_owner_speak.txt")) if queue.exists() else []
-                if files:
-                    self.seen = files[0].read_text()
-                    files[0].unlink()
+        log_path = self.soren / "tmp/.say_queue/debug.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.time() + 20
+        while time.time() < deadline and not (stop and stop.is_set()):
+            for qf in sorted(queue.glob("comment_announce_*.txt")) if queue.exists() else []:
+                time.sleep(delay)
+                playing = qf.with_suffix(".playing")
+                qf.rename(playing)
+                if seen is not None:
+                    seen.append((qf.name, playing.read_text()))
+                if log:
+                    target = qf if verdict == "重複スキップ" else playing
+                    with log_path.open("a") as fh:
+                        fh.write(f"[_play_comment_queue 00:00:00 PID=1] {verdict}: {target}\n")
+                playing.unlink()
+                if stop is None:
                     return
-                time.sleep(0.2)
+            time.sleep(0.05)
 
+    def start_consumer(self, **kwargs):
         import threading
-        thread = threading.Thread(target=consume)
+        thread = threading.Thread(target=self.consume, kwargs=kwargs)
         thread.start()
+        self.addCleanup(thread.join)
+        return thread
+
+    def use_queue_lib(self, body):
+        (self.soren / "lib/outbound_queue.sh").write_text(body)
+
+    def test_queues_exact_text_and_reports_recorded_playback(self):
+        self.start_worker()
+        seen = []
+        self.start_consumer(delay=0.5, seen=seen)
+        text = "$(touch /tmp/pwned) `x` ; あいう"
         result = self.run_script(self.b64(text))
-        thread.join()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.seen, text + "\n")
+        self.assertEqual(len(seen), 1)
+        self.assertRegex(seen[0][0], r"^comment_announce_.*_owner_speak\.[0-9a-f]{16}\.txt$")
+        self.assertEqual(seen[0][1], text + "\n")
         self.assertFalse(Path("/tmp/pwned").exists())
 
-    def test_same_text_twice_is_not_deduplicated(self):
+    def test_consumption_before_enqueue_returns_is_still_reported_as_played(self):
+        # Review r4240 (#2007): the live worker may claim the item before the
+        # operator can list the queue.  The old directory diff exited 1 here.
         self.start_worker()
-        queue = self.soren / "tmp/.comment_queue"
+        self.use_queue_lib(STUB_QUEUE_LIB + """
+eval "$(declare -f enqueue_audio_text | sed '1s/enqueue_audio_text/__publish_only/')"
+enqueue_audio_text() {
+	__publish_only "$@" || return
+	mkdir -p tmp/.say_queue
+	for f in "${COMMENT_QUEUE_DIR:-tmp/.comment_queue}"/comment_announce_*.txt; do
+		mv "$f" "${f%.txt}.playing"
+		printf '[_play_comment_queue 00:00:00 PID=1] 再生完了: %s\\n' "${f%.txt}.playing" >> tmp/.say_queue/debug.log
+		unlink "${f%.txt}.playing"
+	done
+}
+""")
+        result = self.run_script(self.b64("すぐ読まれる文"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("played", result.stdout)
+
+    def test_enqueue_failure_is_reported_as_nothing_queued(self):
+        self.start_worker()
+        self.use_queue_lib("enqueue_audio_text() { return 1; }\n")
+        result = self.run_script(self.b64("積めない文"))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("nothing was queued", result.stderr)
+
+    def test_worker_skip_failure_or_discard_is_not_success(self):
+        self.start_worker()
+        for verdict in ("重複スキップ", "再生失敗", "mode不一致で破棄"):
+            with self.subTest(verdict=verdict):
+                self.start_consumer(verdict=verdict)
+                result = self.run_script(self.b64("同じ文"))
+                self.assertEqual(result.returncode, 3, result.stderr)
+
+    def test_disappearance_without_a_recorded_outcome_is_not_success(self):
+        self.start_worker()
+        self.script.write_text(self.script.read_text().replace("outcome_wait_s=90", "outcome_wait_s=2", 1))
+        self.start_consumer(log=False)
+        result = self.run_script(self.b64("記録されない文"))
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("without a recorded outcome", result.stderr)
+
+    def test_say_enqueue_chunk_lines_are_not_the_items_verdict(self):
+        self.start_worker()
+        self.script.write_text(self.script.read_text().replace("outcome_wait_s=90", "outcome_wait_s=2", 1))
+        self.use_queue_lib(STUB_QUEUE_LIB + """
+eval "$(declare -f enqueue_audio_text | sed '1s/enqueue_audio_text/__publish_only/')"
+enqueue_audio_text() {
+	__publish_only "$@" || return
+	mkdir -p tmp/.say_queue
+	for f in "${COMMENT_QUEUE_DIR:-tmp/.comment_queue}"/comment_announce_*.txt; do
+		mv "$f" "${f%.txt}.playing"
+		printf '[say_enqueue 00:00:00 PID=1/1] 事前合成済みチャンク再生完了 | file=%s\\n' "${f%.txt}.playing" >> tmp/.say_queue/debug.log
+	done
+}
+""")
+        result = self.run_script(self.b64("再生途中の文"))
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("still playing", result.stderr)
+
+    def test_another_items_outcome_is_not_mistaken_for_ours(self):
+        self.start_worker()
+        log_path = self.soren / "tmp/.say_queue/debug.log"
+        log_path.parent.mkdir(parents=True)
+        log_path.write_text(
+            "[_play_comment_queue 00:00:00 PID=1] 再生完了: "
+            "tmp/.comment_queue/comment_announce_1_2_3_owner_speak.0123456789abcdef.playing\n"
+        )
+        self.script.write_text(self.script.read_text().replace("outcome_wait_s=90", "outcome_wait_s=2", 1))
+        result = self.run_script(self.b64("まだ誰も読まない文"))
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("not yet claimed", result.stderr)
+
+    def test_same_text_twice_is_not_suppressed_at_enqueue(self):
+        self.start_worker()
         import threading
         stop = threading.Event()
-
-        def consume():
-            while not stop.is_set():
-                for f in (list(queue.glob("comment_announce_*.txt")) if queue.exists() else []):
-                    f.unlink()
-                time.sleep(0.1)
-
-        thread = threading.Thread(target=consume)
+        seen = []
+        thread = threading.Thread(target=self.consume, kwargs={"stop": stop, "seen": seen})
         thread.start()
         try:
             for _ in range(2):
@@ -246,6 +335,8 @@ class AudioSpeakScriptRuntimeTests(unittest.TestCase):
         finally:
             stop.set()
             thread.join()
+        self.assertEqual(len(seen), 2)
+        self.assertNotEqual(seen[0][0], seen[1][0])
 
     def test_vm_revalidation_rejects_bad_payloads(self):
         self.start_worker()

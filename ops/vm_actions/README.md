@@ -303,7 +303,7 @@ public guard を弱めたり、任意 command/argument を受けたりしませ�
 `.github/workflows/audio-worker-speak.yml`（`workflow_dispatch`）。Actions タブ、または `gh workflow run audio-worker-speak.yml -f text='こんにちは' -f confirm=production` で実行する。
 
 - 入力は `text`（1行・240字以内）と `confirm=production` だけ。owner（`azumag`/9018513）・`refs/heads/main`・protected・workflow path の完全一致で認可し、それ以外は fail-closed（`authorize_audio_speak.py`）。
-- 本文は認可スクリプトが検証・正規化（改行は空白に畳む、制御/不可視文字は拒否）し、base64 で VM へ渡す。シェル式・コマンド・パスには一切展開されない。VM 側 `speak_audio_worker.sh` が再検証し、`lib/outbound_queue.sh` の `enqueue_audio_text`（source=`owner_speak`、重複抑制TTL=0）でキューへ積む。
-- 稼働中の `audio_worker` が無ければ exit 66 で何も積まない。積んだ後は audio_worker がキューを消化するまで最大90秒待ち、消化を確認できれば成功、できなければ exit 2（積み済みだが未消化）。**これは「キューから取り出された」ことの確認であり、VOICEVOX 合成・配信ミックスでの可聴は別途確認が必要。**
+- 本文は認可スクリプトが検証・正規化（改行は空白に畳む、制御/不可視文字は拒否）し、base64 で VM へ渡す。シェル式・コマンド・パスには一切展開されない。VM 側 `speak_audio_worker.sh` が再検証し、`lib/outbound_queue.sh` の `enqueue_audio_text`（source=`owner_speak.<実行ごとの16桁hex nonce>`、重複抑制TTL=0）でキューへ積む。nonce によりキューファイル名が公開前に確定するので、worker が enqueue 直後に claim しても項目を見失わない。
+- 稼働中の `audio_worker` が無ければ exit 66 で何も積まない。enqueue 自体の失敗は exit 1（何も積まれていないので再実行可）。積んだ後は最大90秒、worker の `tmp/.say_queue/debug.log` にその項目名で記録される結果を待つ: `再生完了` で exit 0、`再生失敗`／`重複スキップ`（同じ文が直近50件の再生済みハッシュにある）／`破棄`（mode不一致）で exit 3、記録なしは exit 2（未claim・再生中・記録なし消失を区別してstderrに出す）。**exit 2/3 は積み済みなので、再実行すると二重に読まれうる。キューファイルの消失だけでは成功扱いしない。exit 0 は say_enqueue への受け渡し成功であり、配信ミックスでの可聴は別途確認が必要。**
 - 本文は**配信で読み上げられ、かつ workflow run の入力として公開リポジトリ上に残る**。秘密情報は入れない。実行出力は gateway が VM private log に退避する（Actions には出ない）。
 - 話者は audio_worker 既定。変更したい場合は別 PR で固定の許可リスト入力を追加する。
