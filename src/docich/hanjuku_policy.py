@@ -5883,6 +5883,67 @@ def battle_menu_pending_step(mem):
     return [pad('b')]
 
 
+def _disabled_defense_probe(screen, mem, cur):
+    """Inspect below an observed disabled two-row box, without accepting a lottery.
+
+    g713 Chevre/Tartar30774 has no retreat row. The older three-row gray
+    detector never scrolled this box, so an unavailable-resource B ended
+    the rescue episode. Two downs are inspection only: they do not prove
+    an egg broke or that an okunote exists. Its actual row and the existing
+    last-resort guards still own any irreversible A.
+    """
+    from .hanjuku_roster import run_identity
+    identity = run_identity(mem.get('_run_identity'))
+    if (not screen.disabled_item_box or screen.hidden_battle_commands
+            or screen.menu_cursor not in (192, 208, 196, 212)
+            or any(w in BATTLE_MENU or w == 'おくのて' for _, _, w in _options(screen))
+            or identity is None or cur.get('away')
+            or cur.get('ally') in (None, NAME, 'しゅじんこう', 'だいじん')
+            or cur.get('side') != 'defense'
+            or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)
+            or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('planned_cards') or cur.get('card_flow')
+            or cur.get('okunote_last_resort_selected')
+            or (cur.get('okunote_egg_preempt') or {}).get('selected')
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('card_summon_observed') or screen.egg_rows
+            or cur.get('egg_battle') or mem.get('egg_battle')):
+        return None
+    hp, enemy, start, enemy_start = (cur.get(k) for k in
+        ('ally_hp', 'enemy_hp', 'start_ally_hp', 'start_enemy_hp'))
+    ally_max, enemy_max = general_max_hp(cur.get('ally')), general_max_hp(cur.get('enemy'))
+    if (any(type(v) is not int or v <= 0 for v in
+            (hp, enemy, start, enemy_start, ally_max, enemy_max))
+            or not hp <= start <= ally_max or not enemy <= enemy_start <= enemy_max):
+        return None
+    balance = _melee_balance(cur)
+    ac, ec = balance.get('ally_combat'), balance.get('enemy_combat')
+    ours, theirs = balance.get('ally_melee_score'), balance.get('enemy_melee_score')
+    if (type(ac) is not int or type(ec) is not int or ac <= 0 or ec <= 0
+            or hp * 2 > enemy or ac > ec
+            or type(ours) is not int or type(theirs) is not int or ours * 2 > theirs):
+        return None  # uncertain armies cannot license a lottery; this only inspects a losing HP/combat match
+    scope = {'identity': identity, 'chapter': mem.get('chapter'),
+             'ally': cur['ally'], 'enemy': cur['enemy'],
+             'start_ally_hp': start, 'start_enemy_hp': enemy_start}
+    probe = cur.get('disabled_defense_probe')
+    if probe is None:
+        probe = cur['disabled_defense_probe'] = {**scope, 'downs': 0}
+    if (not isinstance(probe, dict) or any(probe.get(k) != v for k, v in scope.items())
+            or run_identity(probe.get('identity')) != identity
+            or any(type(probe.get(k)) is not int for k in
+                   ('chapter', 'start_ally_hp', 'start_enemy_hp'))
+            or type(probe.get('downs')) is not int or not 0 <= probe['downs'] < 2):
+        return [pad('b')]  # no reset of a malformed, stale or exhausted persisted inspection
+    probe['downs'] += 1
+    _record(mem, 'battle_disabled_defense_probe', **_battle_labels(cur),
+            observed_metric={'ally_hp': hp, 'enemy_hp': enemy, 'melee_balance': balance,
+                             'cursor_y': screen.menu_cursor, 'down_attempt': probe['downs']},
+            resulting_event='row_inspection_only',
+            reason='卵と札が実2行で使用不能の一般守備将軍が劣勢のため、下の奥の手行を有限で確認。存在・破損・選択は未確認')
+    return [pad('down')]
+
+
 def battle_menu_step(screen: Screen, mem):
     _migrate_card_evidence(mem)
     cur = mem.get('battle') or {}
@@ -5907,6 +5968,9 @@ def battle_menu_step(screen: Screen, mem):
             rescue = _survival_state(mem, cur)
             rescue.update(exhausted=False, menu_ticks=0, pending_opens=0)
             return _survival_menu(screen, mem, cur)
+    probe = _disabled_defense_probe(screen, mem, cur)
+    if probe is not None:
+        return probe
     if screen.hidden_battle_commands or screen.has('おくのて'):
         cur.pop('card_damage_list_blocked', None)
         return okunote_step(screen, mem)
