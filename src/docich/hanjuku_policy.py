@@ -9016,14 +9016,57 @@ def _egg_recovery_step(screen, mem, sub):
         # The paid ritual fades back into the month menu. A on that blank
         # frame can be buffered and open the newly focused merchant row.
         return []
+    if (sub.get('stage') == 'recovering'
+            and (screen.has('うむッ') or screen.has('いかんッ'))):
+        return []  # paid quote, including a partial fade: no second confirmation
+    full_rows = [(x, y, word) for x, y, word in _options(screen)
+                 if x == 32 and y == 47 and word == 'ぜんかいふく']
+    if sub.get('stage') == 'recovering' and full_rows:
+        # g719 UID2981: an individual priest ritual returns to this list,
+        # with the recovered actor omitted and the cursor on full recovery.
+        # The old dialogue A reopened its quote and then waited to the cap.
+        # Close the list; only the existing quiet month-menu receipt may
+        # establish payment. Absence of an actor never establishes quantity.
+        from .hanjuku_roster import run_identity
+        identity = run_identity(mem.get('_run_identity'))
+        header = screen.header or {}
+        gold, before, cost = header.get('gold'), sub.get('gold_before'), sub.get('quoted_cost')
+        full = sub.get('full_selected') is True
+        hero = sub.get('hero_selected') is True
+        individual = sub.get('individual_selected') is True
+        owner = ((full and not hero and not individual)
+                 or (hero and not full and not individual and sub.get('hero_identity') == identity
+                     and sub.get('hero_chapter') == mem.get('chapter'))
+                 or (individual and not full and not hero and _individual_egg_selected(mem, sub)))
+        actor = 'ぜんかいふく' if full else NAME if hero else sub.get('individual_actor')
+        bound = (identity is not None and owner and sub.get('confirm_identity') == identity
+                 and sub.get('kind') == 'egg' and sub.get('confirm_actor') == actor
+                 and type(mem.get('chapter')) is int and 1 <= mem['chapter'] <= 12
+                 and sub.get('confirm_chapter') == mem['chapter'])
+        same = (all(type(header.get(k)) is int for k in ('year', 'month'))
+                and _month_key(header) == sub.get('key') == mem.get('month')
+                == (mem.get('shop') or {}).get('key'))
+        debit = (same and type(gold) is int and type(before) is int
+                 and type(cost) is int and cost > 0 and before - gold == cost)
+        if (not bound or len(full_rows) != 1
+                or (all(type(header.get(k)) is int for k in ('year', 'month')) and not same)
+                or (same and type(gold) is int and not debit)):
+            sub['payment_interrupted'] = True
+        if bound and debit and not sub.get('payment_interrupted'):
+            _observe_recovery_list_quantities(screen, mem, sub)
+        if not sub.get('recovery_list_return'):
+            sub['recovery_list_return'] = True
+            _record(mem, 'egg_recover_list_return', month=sub.get('key'),
+                    observed_metric={'gold_before': before, 'gold_after': gold,
+                                     'quoted_cost': cost, 'debit_matches': bool(bound and debit)},
+                    reason='回復儀式後の実一覧をBで閉じる。支払いは静かな同月メニュー復帰で照合し、消えた本人の残数は推測しない')
+        return [pad('b')]
     if screen.has('うむッ') and screen.has('いかんッ'):
         body = ''.join(line.known.replace(' ', '') for line in screen.lines if line.y >= 140)
         quote = re.search(r'(\d+)こで(\d+)Gになりまんな', body)
         gold = (screen.header or {}).get('gold')
         hero_only = bool(sub.get('hero_selected'))
         individual = _individual_egg_selected(mem, sub)
-        if (individual or hero_only) and sub.get('stage') == 'recovering':
-            return []  # owned confirmation already sent; a fading quote is not a new purchase
         quoted_count = int(quote[1]) if quote else None
         quoted_cost = int(quote[2]) if quote else None
         count_basis = 'screen' if quote else None
@@ -9079,6 +9122,10 @@ def _egg_recovery_step(screen, mem, sub):
         move = menu_to(screen, 'うむッ!')
         if move == 'here':
             sub.update(quoted_cost=quoted_cost, stage='recovering')
+            from .hanjuku_roster import run_identity
+            sub.update(confirm_identity=run_identity(mem.get('_run_identity')),
+                       confirm_chapter=mem.get('chapter'),
+                       confirm_actor=NAME if hero_only else sub['individual_actor'] if individual else 'ぜんかいふく')
             _record(mem, 'egg_recover_confirm', choice=NAME if hero_only else sub['individual_actor'] if individual else 'ぜんかいふく',
                     observed_metric={'eggs': quoted_count, 'cost': quoted_cost, 'gold': gold,
                                          'count_basis': count_basis},
