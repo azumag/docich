@@ -111,6 +111,15 @@ class RuntimeTests(unittest.TestCase):
         import fcntl
         self.assertGreaterEqual(sqlite3.sqlite_version_info, (3, 35))
         self.assertEqual(discord.__version__, '2.7.1')
+        self.assertTrue(callable(fcntl.flock))
+
+    @unittest.skipUnless(
+        os.getuid() == 65532 and os.getgid() == 65532,
+        'テストイメージ内でのみ実行 (uid:gid 65532:65532 の container user)',
+    )
+    def test_container_user_identity(self):
+        # このファイル全体がテストイメージ用だが、uid/gid の検証だけは
+        # イメージ内でしか意味を持たないため明示的に閉じる。他の検証は
+        # hermetic に実行される。
         self.assertEqual(os.getuid(), 65532)
         self.assertEqual(os.getgid(), 65532)
-        self.assertTrue(callable(fcntl.flock))

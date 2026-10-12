@@ -169,6 +169,7 @@ class TestCliChat(ChatTestBase):
         self.assertEqual(rc, 0, err.getvalue())
         self.assertIn("docich: chat dry-run:", out.getvalue())
         self.assertIn("generate_comment_response", out.getvalue())
+        self.assertIn(f"cwd={self.submodule.resolve()}", out.getvalue())
 
     def test_radio_parse(self):
         args = cli.build_parser().parse_args(
@@ -188,6 +189,7 @@ class TestCliChat(ChatTestBase):
         self.assertEqual(rc, 0, err.getvalue())
         self.assertIn("docich: radio dry-run:", out.getvalue())
         self.assertIn("_radio_generate_and_play", out.getvalue())
+        self.assertIn(f"cwd={self.submodule.resolve()}", out.getvalue())
 
     def test_radio_failure_prints_stderr(self):
         from docich import chat as chat_mod

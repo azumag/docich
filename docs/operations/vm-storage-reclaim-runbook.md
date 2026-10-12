@@ -105,6 +105,12 @@ du -sx -B1 /home/ubuntu/soren/tmp/soviet-iso-verify-*       # 3.3M x N
 - `copytruncate` は追記中ファイルに対して使う（サービス停止不要）。
 - 初回のみ既存 `soren_loop.log`(165M) のローテーションを検討（削除ではなく `.1` へ退避）。
 
+### Step 4b: opencode.log の恒久ローテーション（#389）
+
+`~/.local/share/opencode/log/opencode.log` は `soren/logs/*.log` の対象外で、2026-09-23 時点 102MB の単一ファイル・追記中で unbounded。`storage_reclaim.sh` の logrotate conf に専用 stanza を追加: `size 50M`・`rotate 3`・`copytruncate`（live 追記の inode を保つ）・`missingok`・`notifempty`。上限は live 50M＋世代3×50M の約200MB。
+
+`opencode/tool-output/`（約102MB）は稼働中 opencode が参照するため age-gate 削除の対象外。reader（誰が読むか）の特定が先。helper が `tool-output` に触れないことは `test_tool_output_is_never_reclaimed` で固定。
+
 ## 3. 実施後の検証
 
 ```bash

@@ -111,6 +111,19 @@ class EvidenceBundleTests(unittest.TestCase):
         self.assertTrue(all("secret.env" not in name for name in names))
         self.assertTrue(all(not name.endswith(".png") for name in names))
 
+    def test_completed_jpeg_turn_evidence_is_exported(self):
+        self.add_game(104, screenshot_turns=(3,))
+        shot_dir = self.runtime / "tmp" / "game_screenshots" / "game_0104"
+        (shot_dir / "turn_3.png").rename(shot_dir / "turn_3.jpg")
+        state = self.mod.prepare_export(
+            self.root, game_count=1, now_ms=self.now_ms, transcode=self.fake_transcode
+        )
+        self.assertEqual(state["games"], [104])
+        bundle = self.runtime / "tmp" / "state" / self.mod.BUNDLE_NAME
+        with tarfile.open(bundle, "r:gz") as archive:
+            names = set(archive.getnames())
+        self.assertIn("game_0104/screenshots/turn_3.jpg", names)
+
     def test_retained_evidence_within_72h_is_exported_and_older_is_not(self):
         self.add_game(9, age_minutes=48 * 60)
         state = self.mod.prepare_export(

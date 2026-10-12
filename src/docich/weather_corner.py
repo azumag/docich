@@ -18,6 +18,7 @@ from .game_switch import (
     ERROR_AGENT_START_FAILED,
     ERROR_QUIESCE_FAILED,
     ERROR_READINESS_TIMEOUT,
+    ERROR_ROLLBACK_FAILED,
     ERROR_SOURCE_FENCE_LOST,
     ERROR_START_FAILED,
     GameSwitchBusyError,
@@ -35,6 +36,7 @@ from .weather_view import read_view
 
 WEATHER_VIEW_NAME = "weather-view"
 STATE_FILENAME = "weather_corner.json"
+FORECAST_START_MARGIN_S = 30
 RUNTIME_IDENTITY_KEYS = ("game", "runtime_id", "generation", "lease_id")
 PENDING_SWITCH_STATUSES = frozenset({"queued", "in_progress", "busy"})
 ROLLBACK_ERROR_CODES = frozenset({
@@ -191,6 +193,11 @@ class WeatherCornerManager:
             raise WeatherCornerError("rotation request identity is invalid")
         return value
 
+    def _required_forecast_remaining(self):
+        if type(self.duration_minutes) is not int:
+            raise WeatherCornerError("weather duration is required for forecast runway")
+        return self.duration_minutes * 60 + FORECAST_START_MARGIN_S
+
     def _new_state(self, request):
         request_id = self._request_id(request.get("request_id"))
         try:
@@ -214,7 +221,7 @@ class WeatherCornerManager:
         now = self.clock()
         expires_at = forecast.get("expires_at")
         if (type(expires_at) not in (int, float)
-                or expires_at - now <= 5):
+                or expires_at - now < self._required_forecast_remaining()):
             return {
                 "schema_version": 1,
                 "game": WEATHER_VIEW_NAME,
@@ -750,7 +757,10 @@ class WeatherCornerManager:
                 raise WeatherCornerError("another weather execution owns the state")
             if self.forecast_refresh is not None and not self._stop_requested():
                 try:
-                    self.forecast_refresh(self.snapshot_path.parent)
+                    self.forecast_refresh(
+                        self.snapshot_path.parent,
+                        min_remaining_s=self._required_forecast_remaining(),
+                    )
                 except (OSError, WeatherError):
                     # No switch/queue was requested. Complete this reservation
                     # without retrying stale data or blocking the other corners.
@@ -838,6 +848,34 @@ class WeatherCornerManager:
                             or not isinstance(canonical.get("active"), dict)
                             or _identity(canonical["active"]) != previous):
                         return False
+                elif code == ERROR_ROLLBACK_FAILED:
+                    # The start failed *and* its own rollback failed, so
+                    # game-switch was left in ``failed`` with the previous
+                    # runtime retained for a reviewed recovery.  A later
+                    # recovery restored it.  Accept a terminal ``failed``
+                    # receipt for this exact request only together with the
+                    # canonical state that proves the restore finished: a
+                    # stable owner running the exact previous game, nothing
+                    # still in flight (no candidate/previous/retiring), and a
+                    # generation that is not older than the one this corner
+                    # started from.  A canonical that owns any other game, a
+                    # lingering in-flight runtime, or a mismatched receipt
+                    # keeps the slot latched.
+                    if (result.get("status") != "failed"
+                            or result.get("from_game") not in (None, previous_game)
+                            or previous_game is None
+                            or not _stable(canonical)
+                            or not isinstance(canonical.get("active"), dict)
+                            or canonical["active"].get("game") != previous_game
+                            or type(canonical["active"].get("generation")) is not int
+                            or canonical["active"].get("generation") < 1):
+                        return False
+                    _identity(canonical["active"], expected_game=previous_game)
+                    if isinstance(previous, dict):
+                        prior_generation = previous.get("generation")
+                        if (type(prior_generation) is not int
+                                or canonical["active"]["generation"] < prior_generation):
+                            return False
                 else:
                     return False
                 state.update(status="interrupted", completed_at=state.get("completed_at", self.clock()),

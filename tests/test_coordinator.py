@@ -595,11 +595,13 @@ class TestFailureRollback(CoordinatorTestBase):
         self.behaviors["robots"]["immortal"] = True
         self.coordinator.start("nethack")
         result = self.coordinator.switch("robots")
-        self.assertEqual(result.status, "rolled_back")
+        self.assertEqual(result.status, "failed")
         self.assertTrue(result.cleanup_pending)
         state = self.canonical()
-        self.assertEqual(state["phase"], "ready")
-        self.assertEqual(state["active"]["game"], "nethack")
+        self.assertEqual(state["phase"], "failed")
+        self.assertIsNone(state["active"])
+        self.assertEqual(state["previous"]["game"], "nethack")
+        self.assertIsNone(self.factory.adapter("nethack", 3))
         self.assertIsNone(state["candidate"])
         pending = [r["game"] for r in state["retiring"]]
         self.assertIn("robots", pending)
@@ -826,18 +828,20 @@ class TestCleanupPending(CoordinatorTestBase):
         self.behaviors["robots"]["cleanup_error"] = AdapterError("candidate cleanup boom")
         self.coordinator.start("nethack")
         result = self.coordinator.switch("robots")
-        self.assertEqual(result.status, "rolled_back")
+        self.assertEqual(result.status, "failed")
         state = self.canonical()
-        self.assertEqual(state["phase"], "ready")
-        self.assertEqual(state["active"]["game"], "nethack")
+        self.assertEqual(state["phase"], "failed")
+        self.assertIsNone(state["active"])
+        self.assertEqual(state["previous"]["game"], "nethack")
+        self.assertIsNone(self.factory.adapter("nethack", 3))
         self.assertTrue(result.cleanup_pending)
         self.assertIsNone(state["candidate"])
         pending = [r["game"] for r in state["retiring"]]
         self.assertIn("robots", pending)
 
     def test_rollback_propagates_existing_retiring_cleanup_pending(self):
-        """A successful rollback must not hide cleanup failures of retiring
-        runtimes that predate the request."""
+        """Unconfirmed retiring runtimes block rollback, even if they predate
+        the current request; recovery must finish their cleanup first."""
         self.behaviors["nethack"]["cleanup_error"] = FailAfter(AdapterError("cleanup boom"))
         self.behaviors["nethack"]["readiness_error"] = FailOn(
             game_switch.ReadinessTimeoutError("slow"), 2
@@ -850,12 +854,14 @@ class TestCleanupPending(CoordinatorTestBase):
         self.assertEqual(len(state["retiring"]), 1)
 
         second = self.coordinator.switch("nethack")
-        self.assertEqual(second.status, "rolled_back")
+        self.assertEqual(second.status, "failed")
         self.assertTrue(second.cleanup_pending)
         state = self.canonical()
-        self.assertEqual(state["phase"], "ready")
-        self.assertEqual(state["active"]["game"], "robots")
-        self.assertEqual(state["active"]["generation"], 4)
+        self.assertEqual(state["phase"], "failed")
+        self.assertIsNone(state["active"])
+        self.assertEqual(state["previous"]["game"], "robots")
+        self.assertEqual(state["next_generation"], 4)
+        self.assertIsNone(self.factory.adapter("robots", 4))
 
     def test_recover_cleans_pending_retiring(self):
         state, _ = self.store.canonical.load()
@@ -1064,12 +1070,14 @@ class TestRuntimeTracking(CoordinatorTestBase):
         self.behaviors["robots"]["cleanup_error"] = AdapterError("cleanup boom")
 
         result = self.coordinator.recover()
-        self.assertEqual(result.status, "rolled_back")
+        self.assertEqual(result.status, "failed")
         state = self.canonical()
-        self.assertEqual(state["phase"], "ready")
-        self.assertEqual(state["active"]["game"], "nethack")
-        # The un-cleanable candidate must stay tracked even though the
-        # restore commit succeeded.
+        self.assertEqual(state["phase"], "failed")
+        self.assertIsNone(state["active"])
+        self.assertEqual(state["previous"]["game"], "nethack")
+        self.assertIsNone(self.factory.adapter("nethack", 3))
+        # The un-cleanable candidate must stay tracked while the
+        # restore is refused until cleanup is verified.
         self.assertIsNone(state["candidate"])
         pending = [r["game"] for r in state["retiring"]]
         self.assertIn("robots", pending)

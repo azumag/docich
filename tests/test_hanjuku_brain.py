@@ -113,6 +113,12 @@ class TestLoadKnowledge(HanjukuBrainTestCase):
 
     def test_reads_real_submodule_files_when_present(self):
         # brain.REPO_ROOT は brain.py 自身の実パスから解決される実リポジトリ (このリポジトリ)
+        knowledge_root = brain.REPO_ROOT / brain.KNOWLEDGE_ROOT
+        if not (knowledge_root / "README.md").is_file():
+            self.skipTest(
+                f"submodule が取得されていないため読み飛ばし: {knowledge_root} "
+                "(hermetic checkout では submodules: false のため不在が正常)"
+            )
         knowledge = brain.load_knowledge(brain.REPO_ROOT, 1)
         self.assertFalse(knowledge["README.md"].startswith("知識ファイルなし: "))
         self.assertIn("半熟英雄", knowledge["README.md"])

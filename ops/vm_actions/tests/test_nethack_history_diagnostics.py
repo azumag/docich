@@ -35,7 +35,9 @@ class HistoryTests(unittest.TestCase):
                    retrospective=dict(schema_version=1, generated_at='2026-09-30T02:00:00+00:00',
                        source='p5a_retrospective', run_id='SECRET', terminal_status='dead',
                        same_death_total_count=2, progress_evidence=dict(status='ok', sample_count=3,
-                       same_frame_sent_pairs=2, max_same_frame_sent_streak=3, secret='SECRET')))
+                       same_frame_sent_pairs=2, max_same_frame_sent_streak=3,
+                       same_frame_hold_pairs=4, max_same_frame_hold_streak=5,
+                       prompt_counts={'unknown': 6, 'SECRET': 99}, secret='SECRET')))
         raw['run_id'] = f'00000000-0000-0000-0000-{index:012x}'
         raw['retrospective']['run_id'] = raw['run_id']
         raw.update(extra)
@@ -66,7 +68,11 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
         self.assertFalse((self.root / 'nethack/.lock').exists())
         self.assertEqual(result['daily']['records'][0]['candidate_state'], 'pending_canary_evaluation')
-        self.assertEqual(result['completed_runs']['records'][0]['progress']['same_frame_sent_pairs'], 2)
+        progress = result['completed_runs']['records'][0]['progress']
+        self.assertEqual(progress['same_frame_sent_pairs'], 2)
+        self.assertEqual(progress['same_frame_hold_pairs'], 4)
+        self.assertEqual(progress['max_same_frame_hold_streak'], 5)
+        self.assertEqual(progress['prompt_counts'], {'unknown': 6})
 
     def test_missing_empty_active_and_no_retrospective(self):
         self.assertEqual(self.collect()['daily']['status'], 'empty')

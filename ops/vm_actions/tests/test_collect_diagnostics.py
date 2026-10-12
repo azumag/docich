@@ -456,7 +456,31 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                 "hanjuku-chart-v132-card-damage-gate",
                 "hanjuku-chart-v133-measured-egg-fee",
                 "hanjuku-chart-v134-month-nav-cursor-guard",
-                "hanjuku-chart-v135-month-foreground-state")
+                "hanjuku-chart-v135-month-foreground-state",
+                "hanjuku-chart-v136-resource-priority",
+                "hanjuku-chart-v137-camp-recheck",
+                "hanjuku-chart-v150-summoned-monster-threat",
+                "hanjuku-chart-v151-chikujou-scroll",
+                "hanjuku-chart-v152-control-melee-followup",
+                "hanjuku-chart-v153-visible-castle-levels",
+                "hanjuku-chart-v154-nearest-recall",
+                "hanjuku-chart-v155-sortie-source-probe",
+                "hanjuku-chart-v156-starter-party",
+                "hanjuku-chart-v157-eggless-wall-risk",
+                "hanjuku-chart-v158-native-starter-pane",
+                "hanjuku-chart-v159-egg-recheck-wall-risk",
+                "hanjuku-chart-v162-starter-selected-row-cursor",
+                "hanjuku-chart-v163-recruit-dialog-eligibility",
+                "hanjuku-chart-v164-source-location-recheck",
+                "hanjuku-chart-v165-resume-starter-readiness",
+                "hanjuku-chart-v166-egg-recovery-receipt",
+                "hanjuku-chart-v167-fake-hero-reveal",
+                "hanjuku-chart-v168-general-repair-budget",
+                "hanjuku-chart-v169-repair-interruption",
+                "hanjuku-chart-v170-chapter-two-boss",
+                "hanjuku-chart-v173-resume-sortie-menu",
+                "hanjuku-chart-v174-status-reuse-hero-guard",
+                "hanjuku-chart-v175-combat-aware-force", "hanjuku-chart-v177-continuous-chikujou", "hanjuku-chart-v178-native-individual-quote")
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',
@@ -637,12 +661,20 @@ class CollectorFixture(unittest.TestCase):
         return before
 
     def run_collector(self, *args):
+        env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": "/tmp"}
+        # The fixture writes ai_stats day files with the parent's localtime
+        # while the child collector resolves day files with its own
+        # localtime. Inherit TZ so both sides compute the same day even
+        # when the parent TZ date differs from the OS default (#1630).
+        # The environment stays scrubbed otherwise; only TZ is inherited.
+        if "TZ" in os.environ:
+            env["TZ"] = os.environ["TZ"]
         return subprocess.run(
             ["python3", str(COLLECTOR), *(args or [str(self.soren)])],
             capture_output=True,
             text=True,
             timeout=120,
-            env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": "/tmp"},
+            env=env,
         )
 
 
@@ -2148,7 +2180,7 @@ def test_manual_corner_queue_projection_is_boolean_only(tmp_path):
 
 class TmuxServerProjectionTests(unittest.TestCase):
     def test_tmux_servers_projection_is_read_only_and_bounded(self):
-        """#1286 follow-up: eval jobs must run on docich-eval, production on docich.
+        """#1286 follow-up: eval jobs must run on docich-eval, production on the default socket.
 
         The projection makes the separation directly observable in diagnostics.
         """
@@ -2164,16 +2196,18 @@ class TmuxServerProjectionTests(unittest.TestCase):
 
         with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
             result = module._collect_tmux_servers()
-        assert result['schema_version'] == 1
-        assert result['servers']['docich']['present'] is True
-        assert result['servers']['docich']['session_count'] == 1
-        assert result['servers']['docich']['readable'] is True
-        assert 'sessions' not in result['servers']['docich']
+        assert module.TMUX_SERVER_NAMES == ('default', 'docich-eval')
+        assert result['schema_version'] == 2
+        assert result['servers']['default']['present'] is True
+        assert result['servers']['default']['session_count'] == 1
+        assert result['servers']['default']['readable'] is True
+        assert 'sessions' not in result['servers']['default']
         assert result['servers']['docich-eval']['present'] is True
         assert result['servers']['docich-eval']['session_count'] == 2
         assert result['servers']['docich-eval']['readable'] is True
         assert 'sessions' not in result['servers']['docich-eval']
-        # Read-only: list-sessions never sends input.
+        # Read-only: list-sessions never sends input. The production target is
+        # tmux's default socket; `docich` is a session name, never a server.
         for cmd in calls:
             assert cmd == ['tmux', '-L', cmd[2], 'list-sessions', '-F', '1']
             assert cmd[2] in module.TMUX_SERVER_NAMES
@@ -2187,7 +2221,7 @@ class TmuxServerProjectionTests(unittest.TestCase):
 
         with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
             result = module._collect_tmux_servers()
-        for name in ('docich', 'docich-eval'):
+        for name in ('default', 'docich-eval'):
             assert result['servers'][name] == {
                 'readable': False, 'present': None, 'session_count': None}
 
@@ -2195,7 +2229,9 @@ class TmuxServerProjectionTests(unittest.TestCase):
     def test_tmux_servers_projection_rejects_invalid_server_names(self):
         module = load_collector()
         with mock.patch.object(module.subprocess, 'run') as run:
-            for server in ('docich; rm -rf /', '', None, 'other-safe-looking-server'):
+            # `docich` is the production *session* name, not a server name: the
+            # earlier `-L docich` target never existed on the VM (#1286).
+            for server in ('docich; rm -rf /', '', None, 'other-safe-looking-server', 'docich'):
                 assert module._tmux_server_session_count(server) is None
             run.assert_not_called()
 
@@ -2236,12 +2272,12 @@ class TmuxServerProjectionTests(unittest.TestCase):
     def test_tmux_servers_projection_keeps_each_server_result_independent(self):
         module = load_collector()
         def fake_run(cmd, **kwargs):
-            if cmd[2] == 'docich':
+            if cmd[2] == 'default':
                 raise subprocess.TimeoutExpired(cmd, 5)
             return subprocess.CompletedProcess(cmd, 0, stdout='1\n', stderr='')
         with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
             result = module._collect_tmux_servers()
-        assert result['servers']['docich'] == {'readable': False, 'present': None, 'session_count': None}
+        assert result['servers']['default'] == {'readable': False, 'present': None, 'session_count': None}
         assert result['servers']['docich-eval'] == {'readable': True, 'present': True, 'session_count': 1}
 
 
@@ -2257,25 +2293,99 @@ class TmuxServerProjectionTests(unittest.TestCase):
             'docich-resolver-improve-gnurobots.service': False,
         }
 
-        with mock.patch.object(module, '_unit_is_active', side_effect=lambda unit: active_states[unit]), \
-             mock.patch.object(module, '_unit_is_enabled', side_effect=lambda unit: enabled_states[unit]):
+        def fake_active(unit, scope='user'):
+            return active_states[unit]
+
+        def fake_enabled(unit, scope='user'):
+            return enabled_states[unit]
+
+        with mock.patch.object(module, '_unit_is_active', side_effect=fake_active), \
+             mock.patch.object(module, '_unit_is_enabled', side_effect=fake_enabled):
             result = module._collect_resolver_daemon()
-        assert result['schema_version'] == 1
-        assert result['units']['docich-resolver-improve.service'] == {'active': True, 'enabled': True}
-        assert result['units']['docich-resolver-improve-gnurobots.service'] == {'active': False, 'enabled': False}
+        assert result['schema_version'] == 2
+        running = result['units']['docich-resolver-improve.service']
+        assert (running['active'], running['enabled']) == (True, True)
+        idle = result['units']['docich-resolver-improve-gnurobots.service']
+        assert (idle['active'], idle['enabled']) == (False, False)
+        for unit in module.RESOLVER_IMPROVE_UNITS:
+            assert set(result['units'][unit]['scopes']) == {'system', 'user'}
+
+
+    def test_resolver_daemon_projection_reads_the_system_manager(self):
+        """#1286 follow-up: the production install is a *system* unit.
+
+        The 2026-10-08 VM observation is that both units live in
+        /etc/systemd/system (root-owned, enabled). A user-scope-only probe
+        answers "not-found" while the daemon actually runs (up since
+        2026-10-01 06:18 JST), which is how a running daemon was reported
+        absent. The aggregate must surface the system reading and keep both
+        scopes visible instead of flattening them.
+        """
+        module = load_collector()
+        states = {
+            ('docich-resolver-improve.service', 'system'): (True, True),
+            ('docich-resolver-improve.service', 'user'): (False, False),
+            ('docich-resolver-improve-gnurobots.service', 'system'): (False, True),
+            ('docich-resolver-improve-gnurobots.service', 'user'): (None, None),
+        }
+
+        def fake_active(unit, scope='user'):
+            return states[(unit, scope)][0]
+
+        def fake_enabled(unit, scope='user'):
+            return states[(unit, scope)][1]
+
+        with mock.patch.object(module, '_unit_is_active', side_effect=fake_active), \
+             mock.patch.object(module, '_unit_is_enabled', side_effect=fake_enabled):
+            result = module._collect_resolver_daemon()
+        running = result['units']['docich-resolver-improve.service']
+        assert running['active'] is True
+        assert running['enabled'] is True
+        assert running['scopes'] == {
+            'system': {'active': True, 'enabled': True},
+            'user': {'active': False, 'enabled': False},
+        }
+        idle = result['units']['docich-resolver-improve-gnurobots.service']
+        assert idle['active'] is False
+        assert idle['enabled'] is True
+        assert idle['scopes']['user'] == {'active': None, 'enabled': None}
+        # A known reading in one scope is never masked by an unknown one.
+        assert module._aggregate_scope_flag([None, True]) is True
+        assert module._aggregate_scope_flag([None, False]) is False
+        assert module._aggregate_scope_flag([None, None]) is None
+
+
+    def test_system_scope_probe_targets_the_system_manager(self):
+        module = load_collector()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout='active\n', stderr='')
+
+        with mock.patch.object(module.subprocess, 'run', side_effect=fake_run):
+            assert module._unit_is_active(
+                'docich-resolver-improve.service', scope='system') is True
+        assert calls == [['systemctl', 'is-active', 'docich-resolver-improve.service']]
 
 
     def test_resolver_daemon_projection_handles_missing_units(self):
         module = load_collector()
 
-        def fake_none(unit):
+        def fake_none(unit, scope='user'):
             return None
 
         with mock.patch.object(module, '_unit_is_active', side_effect=fake_none), \
              mock.patch.object(module, '_unit_is_enabled', side_effect=fake_none):
             result = module._collect_resolver_daemon()
         for unit in module.RESOLVER_IMPROVE_UNITS:
-            assert result['units'][unit] == {'active': None, 'enabled': None}
+            record = result['units'][unit]
+            assert record['active'] is None
+            assert record['enabled'] is None
+            assert record['scopes'] == {
+                'system': {'active': None, 'enabled': None},
+                'user': {'active': None, 'enabled': None},
+            }
 
 
 def test_game_switch_watchdog_projection_reports_timer_state():
@@ -2358,7 +2468,7 @@ def test_corner_rotation_timer_projection_reports_alias_state():
         (unit_dir / 'docich-corner-rotation.timer').write_text('[Unit]')
         (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
         (unit_dir / 'docich-retro-corner.timer').symlink_to(unit_dir / 'docich-corner-rotation.timer')
-        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+        with mock.patch.object(module, 'PROD_ROOT', Path(tmp) / 'docich'):
             result = module._collect_corner_rotation_timer_alias()
         assert result['legacy_service_alias'] is True
         assert result['legacy_timer_alias'] is True
@@ -2380,7 +2490,7 @@ def test_corner_rotation_timer_projection_detects_inconsistent_alias():
         (unit_dir / 'docich-corner-rotation.timer').write_text('[Unit]')
         # Only the service alias exists (timer is missing)
         (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
-        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+        with mock.patch.object(module, 'PROD_ROOT', Path(tmp) / 'docich'):
             result = module._collect_corner_rotation_timer_alias()
         assert result['legacy_service_alias'] is True
         assert result['legacy_timer_alias'] is False
@@ -2399,7 +2509,7 @@ def test_corner_rotation_timer_projection_detects_wrong_target():
         (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
         # Timer alias points to the wrong target
         (unit_dir / 'docich-retro-corner.timer').symlink_to(unit_dir / 'docich-corner-rotation.service')
-        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+        with mock.patch.object(module, 'PROD_ROOT', Path(tmp) / 'docich'):
             result = module._collect_corner_rotation_timer_alias()
         assert result['legacy_service_alias'] is True
         assert result['legacy_timer_alias'] is True

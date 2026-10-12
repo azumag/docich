@@ -8,6 +8,17 @@
 ROM/core/adapter適格性を通った項目だけを有効数Nに数える。ゲーム設定の無効化、実行ファイル不足、catalogの
 `paused=true`、`state_dir/corners/<id>.paused` を反映し、Nを固定しない。
 
+ついたて将棋も自動抽選の候補とする。既存のWorker statusが終局状態
+(`stopped` / `finished` / `queue_timeout`)かつ`readyForNextRun=true`の場合だけ
+適格とし、対局中・終局未確認・制御経路不通の間はNから除外する。
+1枠で1局を実行し、既存の最大時間・停止確認・元画面への復帰・24時間cooldownを維持する。
+
+失敗したSoren復元世代が`retiring`に残り、別leaseのSoren ownerが`ready`で
+稼働している場合、正規の`docich recover`は同一外部singletonの旧世代を収束できる。
+正確なretiring identity、進行中broker request/ack/resourceがないこと、loop/watchdogの
+一意な生存、検査前後のcanonical一致を要求し、現在のSorenを停止しない。
+証拠不足なら旧世代の停止も拒否する。収束後に固定`recover-failed`で予約を解決する。
+
 `adapter="game"`の項目には`target_matches`（整数1〜100）を任意指定できる。
 省略時は従来の`retro_corner.target_matches`（既定3）を継承する。
 productionの`nsnake`は1試合とし、開始以降のscorelog保存を確認して既存の終了・復帰へ進む。
@@ -106,6 +117,40 @@ latchし、`tick()`は自動開始と手動startを拒否する。latchは自動
      `from_game`→`to_game` を証明し、かつcanonicalが別ゲームを所有したまま
      静止している場合のみ確定する。**再実行はしない**（同じ切替の
      drainingへ再入して同じ失敗を繰り返すため）。
+     コーナー**完了後**のrestore失敗（state=`failed`、`completed_at`あり、
+     restore receiptが `switch`/target=記録済みprevious/terminal
+     （`rolled_back`/`failed`/`succeeded`）で、`switch_request_id`が
+     `rotation_request_id`と別）も同じ固定operationで扱う（#1868/#1870）。
+     1. canonicalが`ready`で記録済みprevious gameを所有し、証跡
+        （`rolled_back`は `restored_generation` 以上のactive generation、
+        `succeeded`はactive identity一致）を確認できる場合は `interrupted`
+        として確定する。`completed_at`/`last_error` は証跡として保持し、
+        改善ジョブは起動しない。
+     2. canonicalが`ready`でcorner gameを所有したまま（rollbackのまま）の
+        場合は、元receiptと最新canonical resultを照合して復旧対象を確認する。
+        rollbackは現在active generationと`restored_generation`の一致、
+        boundary失敗の`failed`は`retained_active`本人一致とcancel済みを要求する。
+        旧bot leaseを再利用せず、検証した現在のgame/runtime/generation/leaseを
+        **全ゲームのexpected_source fence**としてcoordinatorへ渡す。
+        fresh request ID・元restore ID・source・phaseは`restore_recovery`へ
+        dispatch前にatomic保存し、queuedやdriver中断は**同じID/payload**で再開する。
+        準備時刻と420s後のabsolute deadlineを同じrecordへ保存し、FIFO receiptにも
+        同じdeadlineを一度だけ保存・照合する（再送で延長しない）。
+        再実行は420s上限・boundary延長なしで行い、
+        成功後に `interrupted` として確定する。タイムアウト・失敗は
+        `failed` のまま残り、terminal receiptと現在ownerを検証できる場合だけ
+        次の固定operationが新しい試行を準備できる。
+     Case A/Bとも終端前に`retiring=[]`と最新cleanup証拠を確認する。
+     receiptはfinalize前に保存されるため、成功receiptだけでは資源解放を認定しない。
+     generationは正整数、cleanupは欠落/nullまたは厳密なfalseだけを受け入れる。
+     明示error codeを旧復旧文言より優先し、timerはこのrestore経路へ入らない。
+     restore候補のreceiptが欠落・不正でもgeneral retryへfallbackしない。
+     accepted driverの中断は同じrequestのcoordinator recoveryへ収束させる。
+     ただし初回source検査前の`validating`ではsource fenceを先に確認し、
+     他runtimeを復旧対象にしない。commit直後にreceipt未確定なら、同requestの
+     canonical resultを照合してreceipt確定とfinalizeを同じwriter lockで完了する。
+     receipt欠落・不一致、canonicalが`ready`でない、別gameがactive、
+     cleanup未完了のときは確定しない（latch維持、fail-closed）。
      自動予約は `pending`、手動予約は `manual_pending` を同じ規則で解決し、
      手動のcompletedだけ `manual-completion` の履歴行を足す。
    - そのrequestが**一度も起動していない**自動予約なら、ledgerは `waiting`/`execution-pending`

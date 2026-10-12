@@ -229,3 +229,76 @@ _play_comment_queue
     assert spoken.exists(), "consumer should pass the terminal event to the stub player"
     assert "--no-preempt" in spoken.read_text()
     assert not queued.exists(), "consumer should claim and remove the queue file"
+
+
+def _hook_payload_publish(monkeypatch, observations):
+    """Record sidecar visibility at the exact payload-publication instant."""
+    original_replace = os.replace
+
+    def replace(src, dst):
+        dst_path = Path(dst)
+        if dst_path.name.startswith("comment_announce_") and dst_path.suffix == ".txt":
+            sidecar = Path(str(dst_path) + ".speaker")
+            # Simulate an immediate worker claim: whatever the worker can see
+            # at this instant is all it will ever get for this file.
+            observations.append({
+                "sidecar_exists": sidecar.is_file(),
+                "sidecar_content": sidecar.read_text(encoding="utf-8")
+                if sidecar.is_file() else None,
+            })
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(webui.os, "replace", replace)
+
+
+def test_speaker_sidecar_visible_before_payload_publish_durable(tmp_path, monkeypatch):
+    observations: list = []
+    _hook_payload_publish(monkeypatch, observations)
+    result = webui._enqueue_audio_text(
+        tmp_path, "声つき通知", "crypto_paper", speaker="14", delivery_key="ordering-event",
+    )
+    assert result["ok"] is True and result["dedup"] is False
+    assert len(observations) == 1
+    assert observations[0]["sidecar_exists"] is True
+    assert observations[0]["sidecar_content"] == "14"
+    queue = tmp_path / "tmp/.comment_queue"
+    assert (queue / result["filename"]).is_file()
+    assert Path(str(queue / result["filename"]) + ".speaker").read_text(encoding="utf-8") == "14"
+    assert not list(queue.glob(".speaker.*")), "staging temp files must not leak"
+
+
+def test_speaker_sidecar_visible_before_payload_publish_transient(tmp_path, monkeypatch):
+    observations: list = []
+    _hook_payload_publish(monkeypatch, observations)
+    result = webui._enqueue_audio_text(
+        tmp_path, "声つき通知", "webui_manual", speaker="3",
+    )
+    assert result["ok"] is True and result["dedup"] is False
+    assert len(observations) == 1
+    assert observations[0]["sidecar_exists"] is True
+    assert observations[0]["sidecar_content"] == "3"
+
+
+def test_failed_payload_publish_cleans_up_staged_sidecar(tmp_path, monkeypatch):
+    original_replace = os.replace
+    calls = {"payload_attempts": 0}
+
+    def replace(src, dst):
+        dst_path = Path(dst)
+        if dst_path.name.startswith("comment_announce_") and dst_path.suffix == ".txt":
+            calls["payload_attempts"] += 1
+            if calls["payload_attempts"] == 1:
+                raise OSError("simulated publish failure")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(webui.os, "replace", replace)
+    queue = tmp_path / "tmp/.comment_queue"
+    with pytest.raises(OSError, match="simulated publish failure"):
+        webui._enqueue_audio_text(tmp_path, "声つき通知", "webui_manual", speaker="3")
+    assert list(queue.glob("comment_announce_*.txt")) == []
+    assert list(queue.glob("comment_announce_*.speaker")) == [], \
+        "a staged sidecar without its payload must not be left behind"
+    # A retry after the failure publishes payload and sidecar together.
+    result = webui._enqueue_audio_text(tmp_path, "声つき通知", "webui_manual", speaker="3")
+    assert result["ok"] is True and result["dedup"] is False
+    assert Path(str(queue / result["filename"]) + ".speaker").read_text(encoding="utf-8") == "3"

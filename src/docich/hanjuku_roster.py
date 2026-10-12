@@ -1,6 +1,8 @@
 """Fresh, bounded roster receipts. No historical egg cache or paid head counts."""
 from __future__ import annotations
 
+from copy import deepcopy
+
 MAX_GENERALS = 32
 # hanjuku_house._names_at reads the name column at y=39..151 in steps of 16,
 # so the roster shows this many names at once. A page shorter than this ends
@@ -170,13 +172,21 @@ def roles(raw):
 def invalidate(mem):
     mem.pop('recruit_roster', None)
     mem.pop('roster_survey_scope', None)
+    mem.pop('roster_survey', None)
+    mem.pop('roster_status_walk', None)
+    mem.pop('house_status_recheck', None)
     mem['recruit_roster_recheck'] = True
     if mem.get('house'):
         mem['house']['roster_invalidated'] = True
 
 
 def surveyed(mem):
-    """A completed walk of the current chapter/month roster already exists."""
+    """The known current roster's statuses were walked; total may be unknown."""
+    if run_identity(mem.get('_run_identity')) is not None:
+        return reusable_survey(mem) is not None
+    if (mem.get('survey_run_identity') is not None or mem.get('roster_survey') is not None
+            or mem.get('roster_status_walk') is not None):
+        return False
     scope = mem.get('roster_survey_scope')
     return (mem.get('month') is not None and scope == [mem.get('chapter'), mem.get('month')])
 
@@ -185,14 +195,130 @@ def begin(mem, state):
     state['roster_started'] = int(mem.get('tick') or 0)
     state['roster_month'] = mem.get('month')
     mem['recruit_roster'] = {'chapter': mem.get('chapter'), 'month': mem.get('month'),
-                             'tick': state['roster_started'], 'names': [], 'wages': {}, 'complete': False}
+                             'tick': state['roster_started'], 'names': [], 'wages': {}, 'complete': False,
+                             'identity': run_identity(mem.get('_run_identity'))}
 
 
-def fresh(mem):
+def run_identity(raw):
+    if (not isinstance(raw, dict) or raw.get('game') != 'hanjuku-hero'
+            or type(raw.get('generation')) is not int or raw['generation'] <= 0
+            or any(not isinstance(raw.get(k), str) or not 1 <= len(raw[k]) <= 256
+                   for k in ('runtime_id', 'lease_id'))):
+        return None
+    return {k: raw[k] for k in ('game', 'runtime_id', 'generation', 'lease_id')}
+
+
+def completed_survey(mem):
+    """Only a complete named-status walk, in the current observation's run."""
+    return _status_survey(mem, 'roster_survey', complete=True)
+
+
+def reusable_survey(mem):
+    """Reuse actual individual readings without claiming global membership."""
+    return (completed_survey(mem)
+            or _status_survey(mem, 'roster_status_walk', complete=False))
+
+
+def _status_survey(mem, key, *, complete):
+    identity = run_identity(mem.get('_run_identity'))
+    survey = mem.get(key)
+    if (identity is None or not isinstance(survey, dict) or type(survey.get('schema')) is not int
+            or survey['schema'] != 1
+            or survey.get('identity') != identity
+            or survey.get('scope') != [mem.get('chapter'), mem.get('month')]
+            or not isinstance(mem.get('month'), str) or not mem['month']):
+        return None
+    receipt = survey.get('receipt')
+    statuses, dirty = survey.get('statuses'), survey.get('dirty')
+    if (not isinstance(receipt, dict) or not isinstance(statuses, dict)
+            or not isinstance(dirty, dict)):
+        return None
+    names = receipt.get('names')
+    if (receipt.get('complete') is not complete or not isinstance(names, list)
+            or not 1 <= len(names) <= MAX_GENERALS
+            or any(not isinstance(n, str) or not 1 <= len(n) <= 32 or '\ufffd' in n for n in names)
+            or len(set(names)) != len(names) or set(statuses) != set(names)
+            or receipt.get('identity') != identity
+            or receipt.get('chapter') != mem.get('chapter') or receipt.get('month') != mem.get('month')
+            or type(receipt.get('tick')) is not int or type(mem.get('tick')) is not int
+            or not 0 <= receipt['tick'] <= mem['tick']
+            or not set(dirty) <= set(names)
+            or any(not isinstance(fields, list) or any(not isinstance(f, str) for f in fields)
+                   or not set(fields) <= {'hp', 'location', 'egg'}
+                   for fields in dirty.values())
+            or any(not isinstance(row, dict) or row.get('general') != name
+                   or row.get('month') != mem.get('month')
+                   or row.get('observed_chapter') != mem.get('chapter')
+                   or type(row.get('observed_tick')) is not int
+                   or not receipt['tick'] <= row['observed_tick'] <= mem['tick']
+                   or type(row.get('broken')) is not bool for name, row in statuses.items())):
+        return None
+    for key in ('dirty_revisions', 'read_revisions'):
+        revisions = survey.get(key, {})
+        if (not isinstance(revisions, dict) or not set(revisions) <= set(names)
+                or any(type(v) is not int or not 0 <= v <= 10**6 for v in revisions.values())):
+            return None
+    return survey
+
+
+def dirty_status(mem, names=None, fields=('hp', 'location', 'egg')):
+    """A change invalidates only the participant's affected status fields."""
+    survey = reusable_survey(mem)
+    if survey is None:
+        return
+    selected = survey['receipt']['names'] if names is None else names
+    for name in selected:
+        if name in survey['statuses']:
+            dirty = set(survey.setdefault('dirty', {}).get(name) or [])
+            survey['dirty'][name] = sorted(dirty | set(fields))
+            revisions = survey.setdefault('dirty_revisions', {})
+            revisions[name] = revisions.get(name, 0) + 1
+    mem['house_status_recheck'] = bool(survey.get('dirty'))
+
+
+def status_observed(mem, info):
+    survey = reusable_survey(mem)
+    name = info.get('general')
+    if survey is None or name not in survey['statuses']:
+        return
+    survey['statuses'][name] = deepcopy(info)
+    missing = [] if (type(info.get('hp')) is int and type(info.get('max_hp')) is int
+                     and 0 <= info['hp'] <= info['max_hp'] and info['max_hp'] > 0) else ['hp']
+    if (info.get('location_observed') is False
+            or ('location' in survey.get('dirty', {}).get(name, [])
+                and info.get('location_observed') is not True)):
+        missing.append('location')
+    if missing:
+        survey.setdefault('dirty', {})[name] = missing
+    else:
+        survey.setdefault('dirty', {}).pop(name, None)
+    survey.setdefault('read_revisions', {})[name] = survey.get('dirty_revisions', {}).get(name, 0)
+    mem['house_status_recheck'] = bool(survey['dirty'])
+
+
+def recheck_targets(mem):
+    """One read per actual change; unknown fields stay unknown after a read."""
+    survey = reusable_survey(mem)
+    if survey is None:
+        return []
+    return [name for name in survey['dirty']
+            if name not in survey.get('read_revisions', {})
+            or survey.get('read_revisions', {}).get(name)
+               != survey.get('dirty_revisions', {}).get(name, 0)]
+
+
+def fresh(mem, *, include_completed=True):
+    survey = completed_survey(mem) if include_completed else None
+    if survey is not None and 'roster_started' not in (mem.get('house') or {}):
+        return survey['receipt']  # names/fixed wages, never cached HP/soldiers
     receipt = mem.get('recruit_roster')
     if not isinstance(receipt, dict):
         return None
     names, tick, now = receipt.get('names'), receipt.get('tick'), mem.get('tick')
+    identity = run_identity(mem.get('_run_identity'))
+    if ((identity is not None or receipt.get('identity') is not None)
+            and receipt.get('identity') != identity):
+        return None
     if (receipt.get('chapter') != mem.get('chapter') or receipt.get('month') != mem.get('month')
             or type(tick) is not int or type(now) is not int or not 0 <= now - tick < FRESH_TICKS
             or not isinstance(names, list) or not 1 <= len(names) <= MAX_GENERALS
@@ -205,6 +331,9 @@ def fresh(mem):
 def page(mem, names):
     if names is None or not names or len(set(names)) != len(names):
         return
+    survey = reusable_survey(mem)
+    if survey is not None and not set(names) <= set(survey['receipt']['names']):
+        invalidate(mem)  # a new actual name needs a new complete membership walk
     state = mem.get('house') or {}
     scanning = state.get('phase') in {'roster', 'roster_next', 'roster_advance', 'status'}
     receipt = mem.get('recruit_roster')
@@ -223,21 +352,22 @@ def page(mem, names):
     if not state:
         mem['recruit_roster'] = {'chapter': mem.get('chapter'), 'month': mem.get('month'),
                                  'tick': int(mem.get('tick') or 0), 'names': list(names),
-                                 'complete': False}
+                                 'complete': False, 'identity': run_identity(mem.get('_run_identity'))}
 
 
 def complete(mem, state):
-    receipt = fresh(mem)
+    receipt = fresh(mem, include_completed=False)
     # Measured roster: Down on the final row never wraps the cursor
     # (tests/test_hanjuku_recruit_roster.py::_month_roster), so the wrap is
     # not the only proof of a full walk. Reading every listed name on a page
     # that ends on screen proves there is no further entry; a page still
     # filling the last row keeps the conservative wrap proof only.
     whole_page = receipt is not None and len(receipt['names']) < VISIBLE_NAME_ROWS
-    if (receipt and not state.get('roster_invalidated')
+    full = (receipt and not state.get('roster_invalidated')
             and (state.get('roster_wrapped') or whole_page)
             and receipt['tick'] == state.get('roster_started')
-            and set(receipt['names']) == set(state.get('seen') or ())):
+            and set(receipt['names']) == set(state.get('seen') or ()))
+    if full:
         receipt['complete'] = True
         # Prior-stage employed names may still be waiting for arrival. The
         # active list cannot prove they stopped receiving wages. Resolve only
@@ -247,13 +377,33 @@ def complete(mem, state):
             mem.pop('recruit_payroll_pending', None)
         mem['recruit_roster_recheck'] = False
         mem['roster_survey_scope'] = [receipt.get('chapter'), receipt.get('month')]
+    identity = run_identity(mem.get('_run_identity'))
+    if (receipt and not state.get('roster_invalidated')
+            and receipt['tick'] == state.get('roster_started')
+            and set(receipt['names']) == set(state.get('seen') or ())):
+        statuses = {name: (mem.get('house_eggs') or {}).get(name) for name in receipt['names']}
+        if (identity is not None and all(isinstance(row, dict)
+                and row.get('general') == name and row.get('month') == mem.get('month')
+                and row.get('observed_chapter') == mem.get('chapter')
+                and type(row.get('observed_tick')) is int
+                and receipt['tick'] <= row['observed_tick'] <= int(mem.get('tick') or 0)
+                for name, row in statuses.items())):
+            key = 'roster_survey' if full else 'roster_status_walk'
+            mem[key] = {'schema': 1, 'identity': identity,
+                'scope': [mem.get('chapter'), mem.get('month')], 'receipt': deepcopy(receipt),
+                'statuses': deepcopy(statuses), 'dirty': {}}
+            if full:
+                mem.pop('roster_status_walk', None)
+            for info in statuses.values():
+                status_observed(mem, info)
+    if full:
         return True
     mem['recruit_roster_recheck'] = True
     return False
 
 
 def wage(mem, info):
-    receipt = fresh(mem)
+    receipt = fresh(mem, include_completed=False)
     state = mem.get('house') or {}
     value = info.get('wage')
     if (receipt and state.get('phase') == 'status' and not state.get('roster_invalidated')
@@ -263,8 +413,15 @@ def wage(mem, info):
         receipt.setdefault('wages', {})[info['general']] = value
 
 
-def economics(mem, owned):
-    """Fresh complete actual wages and current-owned castle income only."""
+def economics(mem, owned, *, lower_bound=False):
+    """Fresh complete actual wages and current-owned castle income only.
+
+    ``lower_bound``: an owned castle without a valid reading is left out
+    instead of voiding the whole result. Income is never negative, so the sum
+    of the readings is a sound lower bound (g684 2-1..2-2: ゴーメン changed
+    hands repeatedly, was never read, and every month's recruitment was held
+    although the read castles alone covered the payroll). Wages stay exact.
+    """
     receipt = fresh(mem)
     if (not receipt or receipt.get('complete') is not True
             or mem.get('recruit_payroll_pending')):
@@ -280,16 +437,24 @@ def economics(mem, owned):
         if (not isinstance(row, dict) or row.get('chapter') != mem.get('chapter')
                 or type(row.get('tick')) is not int or not 0 <= row['tick'] <= mem['tick']
                 or type(row.get('income')) is not int or not 0 <= row['income'] <= 999):
+            if lower_bound:
+                continue
             return None
         recent = row.get('month') == mem.get('month') and mem['tick'] - row['tick'] < FRESH_TICKS
         expected = NORMAL_CASTLE_INCOME.get(mem.get('chapter'), {}).get(castle)
         property_read = (expected is not None and row['income'] == expected
                          and owned_fresh(mem, castle))
         if not recent and not property_read:
+            if lower_bound:
+                continue
             return None
         observed.append(row['income'])
     total = sum(observed)
-    return {'income': total, 'wages': sum(wages.values()), 'additional_wage_max': MAX_RECRUIT_WAGE}
+    result = {'income': total, 'wages': sum(wages.values()), 'additional_wage_max': MAX_RECRUIT_WAGE}
+    if lower_bound:
+        result['income_lower_bound'] = True
+        result['castles_read'] = len(observed)
+    return result
 
 
 def owner(mem, castle, kind):

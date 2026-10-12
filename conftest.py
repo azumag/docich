@@ -21,10 +21,18 @@ and the ``sun_path`` limit (104 bytes on macOS) is exceeded when the full
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
+
+# Canonical pytest runner contract: every test file can rely on
+# ``from docich import ...`` without its own sys.path bootstrap and
+# regardless of collection order or standalone invocation
+# (``pytest tests/test_x.py``).  Per-file bootstraps remain harmless.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 _TMP_ENV_VARS = ("TMPDIR", "TEMP", "TMP")
 _LINK_PREFIX = "pyt-"
@@ -51,7 +59,13 @@ def _redirect_tempfile_to_pytest_basetemp(tmp_path_factory: pytest.TempPathFacto
 
     original_tmp = Path(tempfile.gettempdir())
     _prune_dangling_links(original_tmp)
-    link = original_tmp / f"{_LINK_PREFIX}{os.getpid()}"
+    # NOTE: ``os.getpid()`` alone is not unique when pytest runs in separate
+    # PID namespaces sharing one filesystem (e.g. parallel ``exec_command``
+    # sandboxes where every process sees pid 2).  A bare ``pyt-<pid>`` link
+    # would then be unlinked by a peer session while still in use.  Append a
+    # random suffix so each session owns its link, and only ever remove it
+    # when it still points at our own basetemp target.
+    link = original_tmp / f"{_LINK_PREFIX}{os.getpid()}-{uuid.uuid4().hex[:8]}"
     if link.is_symlink() or link.exists():
         link.unlink()
     link.symlink_to(target, target_is_directory=True)
@@ -76,6 +90,10 @@ def _redirect_tempfile_to_pytest_basetemp(tmp_path_factory: pytest.TempPathFacto
                 os.environ[name] = value
         tempfile.tempdir = saved_tempdir
         try:
-            link.unlink()
+            # Only remove the link we created: a peer in another PID
+            # namespace may share our pid but never our uuid suffix, and a
+            # stale path must never delete someone else's live link.
+            if link.is_symlink() and os.readlink(link) == str(target):
+                link.unlink()
         except OSError:
             pass

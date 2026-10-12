@@ -198,7 +198,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
     def __init__(self, g, game, spec: RuntimeSpec):
         super().__init__(g, game, spec)
         # Soren91 has no round boundary yet (Phase 3 owns the Soren本編
-        # boundary linkage).  Hide the capability like CLI games with
+        # boundary linkage). Hide the capability like CLI games with
         # require_round_boundary=false so the coordinator takes the
         # immediate-quiesce path.
         self.agent_enabled = bool(game.agent.enabled)
@@ -232,8 +232,19 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         }
         # Host this instance talks to; resolved lazily (see _host_for_call).
         self._host: str | None = None
+        self._agent_capture_settings: dict[str, object] | None = None
         self.srt_port = _validated_port(raw.get("srt_port"), key="srt_port", default=DEFAULT_SRT_PORT)
         self.cdp_port = _validated_port(raw.get("cdp_port"), key="cdp_port", default=DEFAULT_CDP_PORT)
+        # Keep the measured FlyHome change opt-in here until Soren91 has its
+        # own A/V and CPU acceptance. Only the local presentation is affected;
+        # the remote renderer and the main sorengame WebGL path are unchanged.
+        self.sdl_software_render = raw.get("sdl_software_render", False)
+        if type(self.sdl_software_render) is not bool:
+            raise AdapterError("[soren91].sdl_software_render は真偽値である必要があります")
+        if self.sdl_software_render and (
+            g.display.viewport_width <= 0 or g.display.viewport_height <= 0
+        ):
+            raise AdapterError("[soren91].sdl_software_render にはdisplay viewportが必要です")
         self.ffplay_bin = str(raw.get("ffplay_bin", DEFAULT_FFPLAY_BIN))
         if not self.ffplay_bin.strip() or "\x00" in self.ffplay_bin:
             raise AdapterError("[soren91].ffplay_bin は空でない実行ファイル名である必要があります")
@@ -415,6 +426,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                 # arrives (Chrome boot + game load take a minute or more), so
                 # the presenter gets a longer viewer budget than local games.
                 "--viewer-wait-sec", str(self.viewer_wait_sec),
+                *(["--sdl-software-render"] if self.sdl_software_render else []),
                 *(["--audio-sink", self.audio_sink] if self.audio_sink else []),
                 "--", *inner,
             ]
@@ -499,7 +511,22 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
 
     def _agent_running(self, deadline: float, cancel) -> bool:
         _status, payload = self._agent_request("GET", "/v1/status", deadline, cancel)
+        settings = payload.get("captureSettings")
+        self._agent_capture_settings = settings if isinstance(settings, dict) else None
         return payload.get("running") is True
+
+    @staticmethod
+    def _capture_profile_requested() -> bool:
+        profile = os.environ.get("SOREN91_CAPTURE_PROFILE")
+        if profile not in {None, "", "rejected_png_v1"}:
+            raise AdapterError("unsupported Soren91 capture profile")
+        return profile == "rejected_png_v1"
+
+    def _capture_profile_is_active(self) -> bool:
+        settings = self._agent_capture_settings
+        return (isinstance(settings, dict)
+                and settings.get("format") == "png"
+                and settings.get("rejectedFrameDiagnostics") is True)
 
     def _listener_bound(self) -> bool:
         try:
@@ -706,10 +733,17 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
 
     def _start_remote_renderer(self, deadline: float, cancel) -> None:
         """Ask the current host to dial our listener; wait for its CDP proxy."""
+        diagnostic_profile = self._capture_profile_requested()
         renderer_running = self._agent_running(deadline, cancel)
+        if renderer_running and diagnostic_profile and not self._capture_profile_is_active():
+            # Do not restart/reconfigure an active renderer to obtain diagnostics.
+            raise AdapterError("active renderer has a different capture profile")
         if not renderer_running:
+            body = {"srtUrl": self.caller_srt_url()}
+            if diagnostic_profile:
+                body["captureProfile"] = "rejected_png_v1"
             _status, payload = self._agent_request(
-                "POST", "/v1/start", deadline, cancel, body={"srtUrl": self.caller_srt_url()}
+                "POST", "/v1/start", deadline, cancel, body=body
             )
             if _status == 409:
                 pass
@@ -726,7 +760,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
     def readiness(self, deadline: float, cancel) -> None:
         # The contained presenter window must exist (super), the Mac renderer
         # must report running, and our listener port must accept — all three
-        # before the coordinator may commit.  Anything else fails closed.
+        # before the coordinator may commit. Anything else fails closed.
         super().readiness(deadline, cancel)
         while True:
             try:
@@ -738,6 +772,8 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                     raise
                 running = False
             bound = self._listener_bound()
+            if running and self._capture_profile_requested() and not self._capture_profile_is_active():
+                raise AdapterError("renderer capture profile verification failed")
             if running and bound:
                 if not self._twitch_synced:
                     self._sync_twitch(self.twitch_game)

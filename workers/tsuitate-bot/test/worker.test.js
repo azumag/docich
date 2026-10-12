@@ -1049,22 +1049,27 @@ test("viewer check and consecutive foul feedback reach the shared brain", async 
     const initial = structuredClone(initialFixture);
     initial.color = color;
     initial.positions["0"] = {
-      sfen: color === "b" ? "9/9/9/9/4K4/9/4P4/9/9 b - 1" : "9/9/9/9/4k4/9/4p4/9/9 w - 1",
+      sfen: color === "b" ? "9/9/9/9/4K4/9/4P4/9/9 b - 1" : "9/9/4p4/9/4k4/9/9/9/9 w - 1",
       lastMove: `${own === "+" ? "-" : "+"}0000ZZ`, lastInfo: 3, fouls: { b: 9, w: 9 },
     };
     let reply = await post(initial, { binding });
     const attempts = [];
-    for (let ply = 1; ply <= 8; ply += 1) {
+    // v11: 脱出候補がどれも露出過多で残り予算が3以上のときは、王手の幾何を満たす
+    // ブロックを先に試し、その後は応手内の玉移動を試す。9手で応手を尽くす。
+    for (let ply = 1; ply <= 9; ply += 1) {
       const move = (await reply.json()).move;
-      assert.ok(move.endsWith("OU"));
+      if (ply === 1) assert.ok(!move.endsWith("OU"));
+      else assert.ok(move.endsWith("OU"));
       assert.ok(!attempts.includes(move));
       attempts.push(move);
       reply = await post({ ...initial, requestId: `check-${color}-${ply}`, basePly: ply - 1, ply,
         game: undefined, positions: { [ply]: { ...initial.positions["0"], lastMove: move, lastInfo: 2,
           fouls: { ...initial.positions["0"].fouls, [color]: 9 - ply } } } }, { binding });
-      assert.equal(reply.status, 200);
+      if (ply < 9) assert.equal(reply.status, 200);
     }
-    assert.ok(!(await reply.json()).move.endsWith("OU"));
+    // 全応手を拒否された後は、観測済みで除外されていない手が無い。
+    assert.equal(reply.status, 422);
+    assert.deepEqual(await reply.json(), { error: "no_observed_move" });
   }
 });
 
@@ -1491,7 +1496,7 @@ test("offline review classifies incomplete stored positions without making them 
   assert.equal(exported.trainingEligible, false);
 });
 
-for (const previous of ["tsuitate-brain-v1", "tsuitate-brain-v2", "tsuitate-brain-v3", "tsuitate-brain-v4", "tsuitate-brain-v5", "tsuitate-brain-v6", "tsuitate-brain-v7", "tsuitate-brain-v8", "tsuitate-brain-v9"]) {
+for (const previous of ["tsuitate-brain-v1", "tsuitate-brain-v2", "tsuitate-brain-v3", "tsuitate-brain-v4", "tsuitate-brain-v5", "tsuitate-brain-v6", "tsuitate-brain-v7", "tsuitate-brain-v8", "tsuitate-brain-v9", "tsuitate-brain-v10"]) {
 test(`${previous} sessions cannot change brain midgame but their terminal records remain reviewable`, async () => {
   const binding = stateBinding();
   assert.equal((await post(initialFixture, { binding })).status, 200);

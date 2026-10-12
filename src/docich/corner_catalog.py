@@ -107,9 +107,9 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     "weather requires id=weather, game=weather-view, boolean audio_enabled/fetch_on_start, and duration_minutes 1-14 when enabled"
                 )
         elif item.adapter == "tsuitate":
-            if item.id != "tsuitate" or item.game != "tsuitate-view" or item.manual_only is not True:
+            if item.id != "tsuitate" or item.game != "tsuitate-view":
                 raise CornerCatalogError(
-                    "tsuitate requires id=tsuitate, game=tsuitate-view and manual_only=true"
+                    "tsuitate requires id=tsuitate and game=tsuitate-view"
                 )
             if item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
                 raise CornerCatalogError("tsuitate does not accept weather-only settings")

@@ -377,6 +377,8 @@ def test_field_scan_then_month_boundary_rescans_and_reaches_paid_recruitment(nam
     actions,state=decide(month_canvas(250,on='メインメニュー',month=7),state)
     assert actions==[] and not state['policy'].get('house')
     assert r.fresh(state['policy'])['complete']
+    # Recruitment is tested after the game's recovery-not-needed receipt.
+    p._plan(state['policy'], {'year': 1, 'month': 7, 'gold': 250})['egg'] = 'not_needed'
     # Native monthly frames navigate to, and actually open, recruitment.
     actions,state=decide(month_canvas(250,on='しょうぐんぼしゅう',month=7),state)
     assert actions==[p.pad('a')]
@@ -639,3 +641,32 @@ def test_hotload_freezes_legacy_field_exhaustion_before_two_new_month_scans():
     actions,state=decide(_survey_field(),state)
     assert not state['policy'].get('house')
     assert state['policy']['recruit_field_scan_attempts']['count']==2
+
+
+@pytest.mark.parametrize('egg,opens', [('unverified', True), ('pending', False), ('check', False)])
+def test_an_unverified_egg_recovery_does_not_block_the_month_roster_scan(egg, opens):
+    # g684 1-12 / 2-1: recovery paid (309->259) but 'unverified'; the month
+    # roster scan never ran and recruitment stayed deferred_roster.
+    from test_hanjuku_chart_bot import month_canvas
+    from docich.hanjuku_screen import parse
+    mem=memory(names=['どうし','ゼウス'],income=22);mem.update(month='1-7',tick=500)
+    p._apply_world_flags(mem,{'アルマムーン':'own'})
+    mem['egg_uses']={'ゼウス':3}
+    mem['shop']={'key':'1-7','egg':egg,'recruit':'deferred_roster'}
+    actions=house.step(parse(month_canvas(250,on='メインメニュー',month=7)),mem,None)
+    assert (actions==[p.pad('a')])==opens
+
+
+@pytest.mark.parametrize('income,held', [(40, False), (5, True)])
+def test_an_unread_castle_does_not_hold_a_payroll_the_read_castles_cover(income, held):
+    # g684 2-2: ゴーメン (owned, never read) made economics None and every
+    # month's recruitment was 'deferred_economy' although 74G covered 25+15.
+    mem = memory(castles=3, income=income)
+    mem['castle_income'].pop('ジョンリギ')
+    owned = {p.STATUS_NAMES.get(c, c) for c in p._owned(mem)}
+    assert r.economics(mem, owned) is None
+    bound = r.economics(mem, owned, lower_bound=True)
+    assert bound['castles_read'] == 2 and bound['income'] == 2 * income
+    s = {'key': '1-7', 'recruit': 'pending'}
+    assert p._stop_uneconomic_recruit(mem, s) is held
+    assert (s['recruit'] == 'deferred_economy') is held

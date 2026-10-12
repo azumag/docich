@@ -170,6 +170,13 @@ def terminal_identity(run, runtime_id):
     elif reason == "screen_stalled":
         if run.get("unchanged_seconds", 0) < 300:
             _fail("invalid_terminal")
+    elif reason == "input_stalled":
+        last_at = run.get("last_input_monotonic", 0)
+        last_obs = run.get("last_input_observations", 0)
+        if (not _number(last_at) or type(last_obs) is not int or last_obs < 0
+                or run.get("observed_monotonic", 0) - last_at < 600
+                or run.get("observations", 0) - last_obs < 120):
+            _fail("invalid_terminal")
     else:
         _fail("not_completed")
     return {key: run[key] for key in ("game", "runtime_id", "generation", "lease_id")}

@@ -46,6 +46,7 @@ class ManualSoren91CornerManager(RetroCornerManager):
         active_game_reader=None,
         ensure_runtime=None,
         voice=None,
+        capture_profile: str | None = None,
     ):
         if type(duration_minutes) is not int or not 1 <= duration_minutes <= 720:
             raise RetroCornerError("duration_minutes は1-720の整数である必要があります")
@@ -69,6 +70,9 @@ class ManualSoren91CornerManager(RetroCornerManager):
         if sleep is not None:
             kwargs["sleep"] = sleep
         super().__init__(g, **kwargs)
+        if capture_profile not in {None, "rejected_png_v1"}:
+            raise RetroCornerError("未対応のSoren91 capture profileです")
+        self.capture_profile = capture_profile
         self.state_path = Path(g.state_dir) / MANUAL_STATE_FILE
         self.lock_path = Path(g.state_dir) / MANUAL_LOCK_FILE
         try:
@@ -138,6 +142,7 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     start = sub.add_parser("start")
     start.add_argument("--duration-minutes", type=int, default=5)
+    start.add_argument("--capture-profile", choices=("rejected_png_v1",))
     sub.add_parser("stop")
     sub.add_parser("recover")
     status = sub.add_parser("status")
@@ -166,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         manager = ManualSoren91CornerManager(
             g,
             duration_minutes=getattr(args, "duration_minutes", 5),
+            capture_profile=getattr(args, "capture_profile", None),
         )
         if args.command == "status":
             state = manager.status()

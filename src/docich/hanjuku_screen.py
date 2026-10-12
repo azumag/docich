@@ -291,6 +291,28 @@ class Screen:
         return needle.replace(' ', '') in self.text
 
 
+def fake_hero_announcement_chapter(screen: Screen) -> int | None:
+    """The measured chapter-2 castle reveal, never arbitrary map dialogue.
+
+    g700 draws this two-row message over an animated map without a chapter
+    header or hand. Require both complete native glyph rows before confirming
+    it or using it as a paused-checkpoint chapter cue.
+    """
+    if screen.kind != 'text' or screen.hand is not None or screen.header is not None:
+        return None
+    # Border/map tiles also produce UNKNOWN glyphs. Read only the measured
+    # message interior, retaining unknown glyphs on either actual text row.
+    rows = [(line.y, line.span(72, 232).replace(' ', '')) for line in screen.lines
+            if line.y in (167, 183)]
+    if any(any(ch != '\ufffd' for x, ch in line.cells if 72 <= x < 232)
+           for line in screen.lines if 160 <= line.y <= 208 and line.y not in (167, 183)):
+        return None
+    if rows == [(167, 'にせヒーローはそのしろまで'),
+                (183, 'わがくにのにせものだった!')]:
+        return 2
+    return None
+
+
 def _selected(lines: list[TextLine], hand) -> str | None:
     if not hand:
         return None
@@ -647,8 +669,25 @@ def summer_bonus_seen(text: str) -> bool:
         any(v in flat for v in SUMMER_BONUS_CHOICES['bonus'])
 
 
+def resume_sortie_panel(s: Screen) -> bool:
+    """A measured HUD-less sortie menu can be cancelled without knowing chapter."""
+    rows = {line.y: line for line in s.lines}
+    if 31 not in rows or rows[31].span(80, 128) != 'しょうぐん':
+        return False
+    if s.kind == 'card_select':
+        return re.fullmatch(r'きりふだセレクト あと[0-3]こ', rows[31].span(136, 240)) is not None
+    return (s.kind in {'sortie_confirm', 'yes_no', 'text', 'unknown'}
+            and 47 in rows and rows[47].span(136, 176) == 'きりふだ'
+            and 111 in rows and rows[111].span(160, 200) == 'うむッ!'
+            and 127 in rows and rows[127].span(160, 208) == 'いかんッ!')
+
+
 def classify_text(s: Screen) -> str:
     t = s.text
+    from .hanjuku_starter import kind as starter_kind
+    starter = starter_kind(s)
+    if starter:
+        return starter
     if t in ('いばらのとうをとりまいていたすべてのいばらがしょうめつしました!',
              'いばらとともにけっかいもしょうめつしたようです!'):
         return 'barrier_removed'
@@ -726,6 +765,8 @@ def classify_text(s: Screen) -> str:
         return 'castle_menu'
     if re.fullmatch(r'[^\ufffd\s]+しょうぐんがボスじょうにせめこんだ!!', t):
         return 'boss_attack_started'
+    if re.fullmatch(r'[^\ufffd\s]+しょうぐんがてきとそうぐうしました!!', t):
+        return 'field_encounter_started'
     if 'のりこんだ' in t:
         return 'attack_started'
     if 'せめこまれ' in t:

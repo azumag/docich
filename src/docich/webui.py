@@ -36,6 +36,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -703,7 +704,7 @@ CSRF_TTL_SEC = 4 * 3600  # 4時間
 # (method, path) の組。フロントエンドは既存の window.confirm() ダイアログ
 # (streamAction/workerControl) または「保存」操作自体を再確認とみなし、
 # confirm:true を body に含める。
-CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config"), ("POST", "/api/corners"), ("POST", "/api/tsuitate-beta")}
+CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config"), ("POST", "/api/corners"), ("POST", "/api/tsuitate-beta"), ("POST", "/api/special-corner/end"), ("PUT", "/api/special-corner/settings"), ("POST", "/api/special-corner/receiver"), ("POST", "/api/special-corner/start")}
 
 
 def _make_csrf_token(secret: bytes, ttl: int = CSRF_TTL_SEC, now: int | None = None) -> str:
@@ -1000,6 +1001,9 @@ def _work_indicator_path(soren_root: Path) -> Path:
 def _comment_gen_state_path(soren_root: Path) -> Path:
     return shared_overlay_queue.comment_gen_state_path(soren_root)
 
+def _comment_gen_detail_path(soren_root: Path) -> Path:
+    return shared_overlay_queue.comment_gen_detail_path(soren_root)
+
 def _radio_state_path(soren_root: Path) -> Path:
     return shared_overlay_queue.radio_state_path(soren_root)
 
@@ -1072,6 +1076,49 @@ def _validate_audio_delivery_key(delivery_key: str) -> str:
     return value
 
 
+def _stage_speaker_sidecar(queue_dir: Path, dest: Path, speaker: str) -> None:
+    """Atomically publish ``dest.speaker`` before the queue payload is visible.
+
+    The audio worker claims ``*.txt`` only, so a sidecar that becomes visible
+    first can never trigger consumption on its own. Publication is best-effort:
+    a staging failure falls back to publishing the payload without a speaker,
+    matching the previous contract.
+    """
+    if not speaker:
+        return
+    sidecar = Path(str(dest) + ".speaker")
+    tmp_spk: Path | None = None
+    try:
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        fd, tmp_spk_str = tempfile.mkstemp(dir=str(queue_dir), prefix=".speaker.")
+        tmp_spk = Path(tmp_spk_str)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(speaker)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp_spk.chmod(0o644)
+        os.replace(str(tmp_spk), str(sidecar))
+    except Exception:
+        pass
+    finally:
+        if tmp_spk is not None:
+            try:
+                if tmp_spk.exists():
+                    tmp_spk.unlink()
+            except Exception:
+                pass
+
+
+def _cleanup_orphan_speaker_sidecar(dest: Path, speaker: str) -> None:
+    """Remove a staged sidecar whose payload never became visible."""
+    if not speaker:
+        return
+    try:
+        Path(str(dest) + ".speaker").unlink()
+    except Exception:
+        pass
+
+
 def _enqueue_audio_delivery(
     soren_root: Path, text: str, delivery: str, *, source: str = "crypto_paper", speaker: str = "",
     wait_for_lock: bool = True,
@@ -1086,7 +1133,9 @@ def _enqueue_audio_delivery(
     exactly-once playback or recovery from filesystem/power loss.
 
     ``speaker`` (when non-empty) is published as a ``.speaker`` sidecar next
-    to the queue file, mirroring the claim path. The Soren audio worker reads
+    to the queue file, mirroring the claim path. The sidecar is staged before
+    the payload becomes visible so an immediate worker claim cannot miss the
+    voice override. The Soren audio worker reads
     the sidecar to pick the voice. A redelivery of the same event reuses the
     same speaker because callers derive it deterministically from ``delivery``.
     """
@@ -1141,14 +1190,17 @@ def _enqueue_audio_delivery(
         if not payload.exists():
             return {"ok": True, "dedup": True, "filename": None}
         dest = queue / filename
+        # The sidecar goes first: the worker claims *.txt only, so an early
+        # sidecar cannot trigger consumption, while a late one could be missed
+        # by an immediate claim.
+        _stage_speaker_sidecar(queue, dest, speaker)
         # This rename is both publication and the durable committed state.
         # Do not recreate/remove the receipt on any exception after this point.
-        os.replace(payload, dest)
-        if speaker:
-            try:
-                (Path(str(dest) + ".speaker")).write_text(speaker, encoding="utf-8")
-            except Exception:
-                pass
+        try:
+            os.replace(payload, dest)
+        except Exception:
+            _cleanup_orphan_speaker_sidecar(dest, speaker)
+            raise
         return {"ok": True, "dedup": False, "filename": filename, "path": str(dest)}
 
 
@@ -1339,12 +1391,14 @@ def _enqueue_audio_text(
             os.fsync(fh.fileno())
         tmp_fd = None
         tmp_path.chmod(0o644)
-        os.replace(str(tmp_path), str(dest))
-        if spk:
-            try:
-                (Path(str(dest) + ".speaker")).write_text(spk, encoding="utf-8")
-            except Exception:
-                pass
+        # Same ordering contract as the durable path: sidecar first, payload
+        # publication second, so an immediate worker claim keeps the voice.
+        _stage_speaker_sidecar(queue_dir, dest, spk)
+        try:
+            os.replace(str(tmp_path), str(dest))
+        except Exception:
+            _cleanup_orphan_speaker_sidecar(dest, spk)
+            raise
         return {"ok": True, "dedup": False, "filename": filename, "path": str(dest)}
     except Exception:
         _comment_audio_release_enqueue_key(soren_root, cleaned)
@@ -1513,14 +1567,31 @@ def _get_gen_indicators(soren_root: Path, now: int | None = None) -> list[dict[s
     if now is None:
         now = int(time.time())
     indicators: list[dict[str, Any]] = []
-    # comment
+    # comment — detail JSON and owner-PID liveness extend the stale window
+    # so the indicator does not vanish mid-generation (#1182)
     try:
         c_path = _comment_gen_state_path(soren_root)
-        stale = 90
+        d_path = _comment_gen_detail_path(soren_root)
+        alive_stale = 300
+        dead_stale = 90
         try:
-            stale = int(os.environ.get("EVENT_OVERLAY_COMMENT_GEN_STALE_SEC", "90") or "90")
+            alive_stale = int(os.environ.get("EVENT_OVERLAY_COMMENT_GEN_ALIVE_STALE_SEC", "300") or "300")
         except Exception:
-            stale = 90
+            alive_stale = 300
+        try:
+            dead_stale = int(os.environ.get("EVENT_OVERLAY_COMMENT_GEN_DEAD_STALE_SEC", "90") or "90")
+        except Exception:
+            dead_stale = 90
+        try:
+            old = os.environ.get("EVENT_OVERLAY_COMMENT_GEN_STALE_SEC", "")
+            if old and str(old).strip().isdigit():
+                old_v = int(str(old).strip())
+                if dead_stale == 90 and old_v != 90:
+                    dead_stale = old_v
+                    if alive_stale == 300 and old_v > 300:
+                        alive_stale = old_v
+        except Exception:
+            pass
         try:
             line = c_path.read_text(encoding="utf-8", errors="ignore").strip()
         except Exception:
@@ -1528,7 +1599,12 @@ def _get_gen_indicators(soren_root: Path, now: int | None = None) -> list[dict[s
         if line.startswith("generating:"):
             parts = line.split(":")
             ts = 0
-            if len(parts) >= 3 and parts[-1].isdigit():
+            if len(parts) >= 3 and parts[2].isdigit():
+                try:
+                    ts = int(parts[2])
+                except Exception:
+                    ts = 0
+            elif len(parts) >= 3 and parts[-1].isdigit():
                 try:
                     ts = int(parts[-1])
                 except Exception:
@@ -1538,8 +1614,63 @@ def _get_gen_indicators(soren_root: Path, now: int | None = None) -> list[dict[s
                     ts = int(c_path.stat().st_mtime)
                 except Exception:
                     ts = now
+            # Detail JSON written by the soviet_now comment worker
+            # (model/preview/count/attempt/max_retry/batch_hash/mode/owner_pid).
+            detail: dict[str, Any] = {}
+            try:
+                if d_path.is_file():
+                    txt = d_path.read_text(encoding="utf-8", errors="ignore").strip()
+                    if txt:
+                        j = json.loads(txt)
+                        if isinstance(j, dict):
+                            detail = j
+                            try:
+                                dts = int(j.get("ts") or 0)
+                                if dts > 0:
+                                    ts = dts
+                            except Exception:
+                                pass
+            except Exception:
+                detail = {}
+            owner_pid = 0
+            try:
+                owner_pid = int(detail.get("owner_pid") or 0) if isinstance(detail, dict) else 0
+            except Exception:
+                owner_pid = 0
+            if owner_pid == 0:
+                try:
+                    pid_file = soren_root / "tmp/.twitch_chat/comment_gen.pid"
+                    if pid_file.is_file():
+                        raw = pid_file.read_text(encoding="utf-8", errors="ignore").strip().split("|")[0]
+                        if raw.isdigit():
+                            owner_pid = int(raw)
+                except Exception:
+                    pass
+            if owner_pid == 0 and len(parts) >= 4 and parts[3].isdigit():
+                try:
+                    owner_pid = int(parts[3])
+                except Exception:
+                    pass
+            alive = bool(owner_pid) and _is_pid_alive(owner_pid)
+            window = alive_stale if alive else dead_stale
             age = now - ts
-            fresh = 0 <= age <= stale
+            fresh = 0 <= age <= window
+            model = str(detail.get("model") or "") if isinstance(detail, dict) else ""
+            preview = str(detail.get("preview") or "") if isinstance(detail, dict) else ""
+            count = 0
+            attempt = 0
+            max_retry = 0
+            batch_hash = ""
+            mode = ""
+            try:
+                if isinstance(detail, dict):
+                    count = int(detail.get("count") or 0)
+                    attempt = int(detail.get("attempt") or 0)
+                    max_retry = int(detail.get("max_retry") or 0)
+                    batch_hash = str(detail.get("batch_hash") or "")
+                    mode = str(detail.get("mode") or "")
+            except Exception:
+                pass
             indicators.append({
                 "key": "comment",
                 "icon": "💬",
@@ -1547,8 +1678,18 @@ def _get_gen_indicators(soren_root: Path, now: int | None = None) -> list[dict[s
                 "ts": ts,
                 "age": age,
                 "fresh": fresh,
-                "stale_sec": stale,
+                "stale_sec": window,
                 "raw": line,
+                "owner_pid": owner_pid,
+                "owner_alive": alive,
+                "model": model,
+                "preview": preview,
+                "count": count,
+                "attempt": attempt,
+                "max_retry": max_retry,
+                "batch_hash": batch_hash,
+                "mode": mode,
+                "detail_raw": detail,
             })
     except Exception:
         pass
@@ -2017,7 +2158,7 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                                 and not isinstance(target, bool) and 1 <= target <= 100 else None),
                 stop_retryable=_hanjuku_stop_retryable(g, raw),
                 end_reason=(raw.get("end_reason") if raw.get("end_reason") in
-                            {"game_over", "screen_stalled", "manual_saved_stop",
+                            {"game_over", "screen_stalled", "input_stalled", "manual_saved_stop",
                              "manual_forced_stop",
                              "switch-terminal-before-corner-active", "game-completed",
                              "queue-timeout", "beta-stopped", "manual", "match-timeout",
@@ -2113,6 +2254,19 @@ def _corner_manual_argv(g: GlobalConfig, corner_id: str, action: str,
     if spec is None:
         raise ValueError("corner has no manual runner")
     launcher, supports_duration, needs_game = spec
+    if row.adapter == "game" and action == "start":
+        # The one-off retro runner is CLI-only and refuses others only after
+        # the rotation reservation exists, latching rotation (2026-10-11).
+        from .config import load_game
+        try:
+            game_adapter = load_game(g, row.game).adapter
+        except Exception:
+            game_adapter = None  # the runner re-validates before reserving
+        if game_adapter not in (None, "cli"):
+            raise ValueError(
+                f"{row.game} は手動開始できません ({game_adapter})。半熟英雄は GitHub Actions の "
+                "Corner rotation operator → start-hanjuku で起動してください"
+            )
     argv = [str(Path(g.repo_root) / "bin" / launcher)]
     # runner は既定で config/docich.toml を読む。webui と同じ config（本番は
     # docich.soren-live.toml）を明示しないと別の state_dir を操作してしまう。
@@ -2981,6 +3135,8 @@ def _log_authz_event(soren_root: Path, method: str, path: str, identity: str, de
 # --- HTTP handler --------------------------------------------------------
 
 MAX_BODY_BYTES = 256 * 1024
+# One Twitch category search at a time (it runs the Soren updater's --resolve).
+_SPECIAL_CATEGORY_SEARCH_LOCK = threading.Lock()
 
 _RESOURCES = ResourceLoader(Path(__file__).with_name("webui_resources"), WEBUI_ALLOWLIST, _validate_value)
 # Compatibility exports for callers inspecting the packaged initial snapshot.
@@ -3277,6 +3433,10 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_get_predictions()
             elif path == "/api/corners":
                 status = self._handle_get_corners()
+            elif path == "/api/special-corner":
+                status = self._handle_get_special_corner()
+            elif path == "/api/special-corner/settings":
+                status = self._handle_get_special_corner_settings()
             elif path == "/api/soren91/renderer":
                 status = self._handle_get_soren91_renderer()
             else:
@@ -3306,6 +3466,8 @@ class _Handler(BaseHTTPRequestHandler):
             elif parsed.path.startswith("/api/prompts/"):
                 prompt_id = urllib.parse.unquote(parsed.path[len("/api/prompts/") :])
                 status = self._handle_put_prompt(prompt_id)
+            elif parsed.path == "/api/special-corner/settings":
+                status = self._handle_put_special_corner_settings()
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -3392,6 +3554,14 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_post_prediction_action()
             elif parsed.path == "/api/corners":
                 status = self._handle_post_corners()
+            elif parsed.path == "/api/special-corner/end":
+                status = self._handle_post_special_corner_end()
+            elif parsed.path == "/api/special-corner/receiver":
+                status = self._handle_post_special_corner_receiver()
+            elif parsed.path == "/api/special-corner/start":
+                status = self._handle_post_special_corner_start()
+            elif parsed.path == "/api/special-corner/category-search":
+                status = self._handle_post_special_corner_category_search()
             elif parsed.path == "/api/soren91/renderer":
                 status = self._handle_post_soren91_renderer()
             else:
@@ -4331,6 +4501,174 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(500, "corners_unavailable", str(exc)[:200])
             return 500
         self._send_json(200, view)
+        return 200
+
+    def _handle_get_special_corner(self) -> int:
+        """Read-only projection of the Fly Me To The Home! special corner (no ids)."""
+        state = _load_json_file(Path(self.g.state_dir) / "external_video_corner.json")
+        state = state if isinstance(state, dict) else {}
+        status = state.get("status") if isinstance(state.get("status"), str) else "idle"
+        closing = state.get("closing") if isinstance(state.get("closing"), dict) else {}
+        from .special_corner import control_view, load_settings
+        try:
+            control = control_view(self.g)
+        except Exception:
+            control = None
+        self._send_json(200, {
+            "title": load_settings(self.g.state_dir)["title"],
+            "control": control,
+            "status": status[:32],
+            "can_end": status in ("waiting", "starting", "active"),
+            "started_at": state.get("started_at") if isinstance(state.get("started_at"), (int, float)) else None,
+            "ends_at": state.get("ends_at") if isinstance(state.get("ends_at"), (int, float)) else None,
+            "wait_deadline_at": state.get("wait_deadline_at") if isinstance(state.get("wait_deadline_at"), (int, float)) else None,
+            "end_reason": state.get("end_reason") if isinstance(state.get("end_reason"), str) else None,
+            "closing": str(closing.get("status") or "")[:32] or None,
+        })
+        return 200
+
+    def _handle_post_special_corner_end(self) -> int:
+        """終了ボタン: クリアとして特別コーナーを終え、Soren へ復帰して感想を話す。"""
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8")) if body else {}
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict) or set(data) - {"confirm"}:
+            self._send_error_json(400, "validation_error", "body must be {confirm:true}")
+            return 400
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "特別コーナーの終了には confirm:true が必要です")
+            return 428
+        from .external_video_corner import OPERATOR_END, request_end
+        from .external_video_receiver import ExternalVideoError
+        state = _load_json_file(Path(self.g.state_dir) / "external_video_corner.json")
+        try:
+            if not isinstance(state, dict):
+                raise ExternalVideoError("no special corner is running")
+            request_end(self.g, state, OPERATOR_END)
+        except ExternalVideoError as exc:
+            self._send_error_json(409, "special_corner_not_running", str(exc)[:200])
+            return 409
+        self._send_json(200, {"ok": True, "action": "end"})
+        return 200
+
+    def _read_json_object(self, allowed: set[str]) -> tuple[dict | None, int]:
+        """Small JSON object body with a fixed key set; error already sent on failure."""
+        body, err = self._read_body()
+        if err:
+            return None, err
+        try:
+            data = json.loads(body.decode("utf-8")) if body else {}
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc)[:200])
+            return None, 400
+        if not isinstance(data, dict) or set(data) - allowed:
+            self._send_error_json(400, "validation_error", "unexpected body fields")
+            return None, 400
+        return data, 0
+
+    def _handle_get_special_corner_settings(self) -> int:
+        """特別コーナー設定の読み取り (viewer も可。秘密は含まない)。"""
+        from .special_corner import LIMITS, load_settings
+        settings = load_settings(self.g.state_dir)
+        self._send_json(200, {
+            "settings": {key: settings[key] for key in LIMITS},
+            "is_default": settings["is_default"],
+            "updated_at": settings["updated_at"],
+            "limits": {key: {"min": lo, "max": hi, "multiline": multi}
+                       for key, (lo, hi, multi) in LIMITS.items()},
+        })
+        return 200
+
+    def _handle_put_special_corner_settings(self) -> int:
+        """特別コーナー設定の保存 (operator + CSRF + confirm。保存操作自体が再確認)。"""
+        from .special_corner import LIMITS, SpecialCornerSettingsError, save_settings
+        data, err = self._read_json_object(set(LIMITS) | {"confirm"})
+        if err:
+            return err
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "特別コーナー設定の保存には confirm:true が必要です")
+            return 428
+        data.pop("confirm", None)
+        try:
+            saved = save_settings(self.g.state_dir, data)
+        except SpecialCornerSettingsError as exc:
+            self._send_error_json(400, "validation_error", str(exc)[:200], exc.field)
+            return 400
+        except OSError as exc:
+            self._send_error_json(500, "settings_write_failed", type(exc).__name__)
+            return 500
+        self._send_json(200, {
+            "ok": True,
+            "settings": {key: saved[key] for key in LIMITS},
+            "is_default": False,
+            "updated_at": saved["updated_at"],
+        })
+        return 200
+
+    def _handle_post_special_corner_receiver(self) -> int:
+        """SRT 受付の開始/停止 (operator + CSRF + confirm)。正規 CLI prepare/receiver-stop を使う。"""
+        from .special_corner import SpecialCornerControlError, prepare_receiver, stop_receiver
+        data, err = self._read_json_object({"action", "confirm"})
+        if err:
+            return err
+        action = data.get("action")
+        if action not in ("prepare", "stop"):
+            self._send_error_json(400, "invalid_action", "action must be prepare or stop")
+            return 400
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "SRT 受付の操作には confirm:true が必要です")
+            return 428
+        try:
+            receiver = prepare_receiver(self.g) if action == "prepare" else stop_receiver(self.g)
+        except SpecialCornerControlError as exc:
+            self._send_error_json(409, exc.code, str(exc)[:200])
+            return 409
+        self._send_json(200, {"ok": True, "action": action, "receiver": receiver})
+        return 200
+
+    def _handle_post_special_corner_start(self) -> int:
+        """手動開始: 受信中(音声あり)のときだけ start --wait-for-idle を独立 user unit で予約する。"""
+        from .special_corner import SpecialCornerControlError, launch_corner
+        data, err = self._read_json_object({"confirm"})
+        if err:
+            return err
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "特別コーナーの開始には confirm:true が必要です")
+            return 428
+        try:
+            launch_corner(self.g)
+        except SpecialCornerControlError as exc:
+            self._send_error_json(409, exc.code, str(exc)[:200])
+            return 409
+        self._send_json(200, {"ok": True, "action": "start"})
+        return 200
+
+    def _handle_post_special_corner_category_search(self) -> int:
+        """Twitch カテゴリ候補の検索 (operator のみ。updater の読み取り専用 --resolve)。"""
+        from .special_corner import CategorySearchError, SpecialCornerSettingsError, search_categories
+        data, err = self._read_json_object({"query"})
+        if err:
+            return err
+        lock = _SPECIAL_CATEGORY_SEARCH_LOCK
+        if not lock.acquire(blocking=False):
+            self._send_error_json(429, "search_busy", "別のカテゴリ検索を実行中です")
+            return 429
+        try:
+            candidates = search_categories(self.g, data.get("query"))
+        except SpecialCornerSettingsError as exc:
+            self._send_error_json(400, "validation_error", str(exc)[:200], exc.field)
+            return 400
+        except CategorySearchError as exc:
+            self._send_error_json(502, "category_search_failed", str(exc)[:200])
+            return 502
+        finally:
+            lock.release()
+        self._send_json(200, {"candidates": candidates})
         return 200
 
     def _handle_get_soren91_renderer(self) -> int:

@@ -1,0 +1,18 @@
+{
+  "date": "2026-10-11",
+  "tests": {
+    "passed": 109,
+    "skipped": 1,
+    "deselected": 4,
+    "simulator_used": false
+  },
+  "profile_compile_count": 9,
+  "secret_pattern_scan": "passed",
+  "independent_review": false,
+  "ci_run_confirmed": false,
+  "game_window_present": false,
+  "actual_replay_during_archive": false,
+  "fresh_restore": "passed",
+  "repeat_restore": "passed",
+  "conflicting_existing_settings": "preserved_without_partial_copy"
+}

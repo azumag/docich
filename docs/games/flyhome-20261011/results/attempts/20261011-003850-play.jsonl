@@ -1,0 +1,11 @@
+{"attempt": 1, "outcome": "stuck", "duration_s": 8.0, "best_dist": 144.1, "level_sig": 264344807964941, "events": 30}
+{"attempt": 2, "outcome": "stuck", "duration_s": 8.017, "best_dist": 144.1, "level_sig": 264344807964941, "events": 36}
+{"attempt": 3, "outcome": "stuck", "duration_s": 8.048, "best_dist": 142.1, "level_sig": 264344807964941, "events": 42}
+{"attempt": 4, "outcome": "stuck", "duration_s": 11.334, "best_dist": 144.1, "level_sig": 264344807964941, "events": 56}
+{"attempt": 5, "outcome": "stuck", "duration_s": 8.051, "best_dist": 144.1, "level_sig": 264344807964941, "events": 28}
+{"attempt": 6, "outcome": "stuck", "duration_s": 8.034, "best_dist": 143.1, "level_sig": 264344807964941, "events": 40}
+{"attempt": 7, "outcome": "stuck", "duration_s": 8.032, "best_dist": 144.1, "level_sig": 264344807964941, "events": 39}
+{"attempt": 8, "outcome": "stuck", "duration_s": 8.047, "best_dist": 144.1, "level_sig": 264344807964941, "events": 40}
+{"attempt": 9, "outcome": "stuck", "duration_s": 8.017, "best_dist": 143.2, "level_sig": 264344807964941, "events": 34}
+{"attempt": 10, "outcome": "stuck", "duration_s": 8.033, "best_dist": 143.1, "level_sig": 264344807964941, "events": 42}
+{"attempt": 11, "outcome": "stuck", "duration_s": 8.033, "best_dist": 141.3, "level_sig": 201242086434216, "events": 28}

@@ -101,6 +101,8 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         self.assertIn(diag["status"], ("ok", "warn", "critical"))
         for section in ("meta", "workers", "queues", "ai", "improvement", "corners", "semantic_decision"):
             self.assertIn(section, diag)
+        self.assertIn("nethack_rotation_evidence", diag)
+        self.assertFalse(diag["nethack_rotation_evidence"]["recovery_authority"])
         self.assertEqual(diag["workers"]["expected"] >= 10, True)
         self.assertEqual(diag["semantic_decision"], {"present": False, "readable": False})
         self.assertEqual(diag["supervisor_identity"]["loaded_functions_status"], "unverified")
@@ -290,18 +292,29 @@ class DiagnosticsAuthorizeTests(unittest.TestCase):
         proc = self.run_auth(INPUT_TARGET="preview")
         self.assertNotEqual(proc.returncode, 0)
 
+    def test_cpu_profile_is_owner_only_production_main_without_extra_confirm(self):
+        proc = self.run_auth(INPUT_OPERATION="cpu_profile")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout)
+        self.assertEqual((data["operation"], data["target"], data["ref"]),
+                         ("cpu_profile", "production", "main"))
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="cpu_profile", INPUT_TARGET="preview").returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="cpu_profile", INPUT_REF="feature").returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="cpu_profile", GITHUB_TRIGGERING_ACTOR="collab").returncode, 0)
+
 
 class DiagnosticsWorkflowTests(unittest.TestCase):
     def test_workflow_exposes_diagnostics_operation(self):
         text = WF.read_text(encoding="utf-8")
         self.assertIn(
             "options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, "
-            "configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, reclaim, rebaseline, "
-            "market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_webui, recover_soren_game, recover_soren_round]", text
+            "configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, "
+            "market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute]", text
         )
         self.assertIn("Query read-only runtime diagnostics", text)
         self.assertIn('"diagnostics docich production $SHA"', text)
         self.assertIn("steps.auth.outputs.operation == 'diagnostics'", text)
+        self.assertIn("steps.auth.outputs.operation == 'cpu_profile'", text)
 
     def test_workflow_explains_stale_installed_gateway_without_relaxing_exec_boundary(self):
         text = WF.read_text(encoding="utf-8")

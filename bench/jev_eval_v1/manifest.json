@@ -1,0 +1,17 @@
+{
+  "schema": "docich.eval.suite.v1",
+  "suite": "jev-live-v1",
+  "seed": 33,
+  "ratios": {
+    "train": 0.6,
+    "validation": 0.2,
+    "sealed_test": 0.2
+  },
+  "rubric_version": "jev-category-v1",
+  "grader_versions": {
+    "deterministic": "deterministic-v1",
+    "classifier": "classifier-v1"
+  },
+  "public_cases": "public_cases.jsonl",
+  "critical_cases": "critical_cases.jsonl"
+}

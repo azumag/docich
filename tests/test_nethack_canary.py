@@ -111,9 +111,29 @@ class TestNethackControlledCanary(unittest.TestCase):
             required_isolation_mode="container",
         )
         self.now = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
+        self.inactive_run_id = "inactive-run-1"
+        self.write_inactive_canonical_state()
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
+
+    def write_inactive_canonical_state(self) -> None:
+        """production inactiveを正しく確認できるcanonical stateを用意する。"""
+        self.g.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.g.state_dir / "game_switch.json").write_text(
+            json.dumps({"phase": "idle", "active": None}),
+            encoding="utf-8",
+        )
+        runs_dir = self.nh / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        (self.nh / "current.json").write_text(
+            json.dumps({"schema_version": 1, "run_id": self.inactive_run_id}),
+            encoding="utf-8",
+        )
+        (runs_dir / f"{self.inactive_run_id}.json").write_text(
+            json.dumps({"schema_version": 1, "run_id": self.inactive_run_id, "status": "ended"}),
+            encoding="utf-8",
+        )
 
     def worker_result(self, request, *, status="dead", score=100, depth=3, death="killed by a grid bug"):
         arm = request["arm"]
@@ -237,6 +257,96 @@ class TestNethackControlledCanary(unittest.TestCase):
         self.assertFalse(report["performance_evidence_available"])
         self.assertEqual(report["baseline"]["timeouts"], 1)
         self.assertEqual(report["candidate"]["timeouts"], 1)
+
+    def test_missing_canonical_state_is_fail_closed(self) -> None:
+        (self.g.state_dir / "game_switch.json").unlink()
+        with patch("docich.nethack_canary._run_worker") as worker:
+            with self.assertRaises(NethackCanaryError):
+                run_canary(self.g, self.plan, now=self.now)
+        worker.assert_not_called()
+
+    def test_malformed_canonical_state_is_fail_closed(self) -> None:
+        for target, payload in (
+            (self.g.state_dir / "game_switch.json", "{not-json"),
+            (self.nh / "current.json", "{not-json"),
+            (self.nh / "runs" / f"{self.inactive_run_id}.json", "{not-json"),
+        ):
+            with self.subTest(target=str(target)):
+                original = target.read_text(encoding="utf-8")
+                target.write_text(payload, encoding="utf-8")
+                try:
+                    with patch("docich.nethack_canary._run_worker") as worker:
+                        with self.assertRaises(NethackCanaryError):
+                            run_canary(self.g, self.plan, now=self.now)
+                    worker.assert_not_called()
+                finally:
+                    target.write_text(original, encoding="utf-8")
+
+    def test_missing_nethack_current_is_fail_closed(self) -> None:
+        (self.nh / "current.json").unlink()
+        with patch("docich.nethack_canary._run_worker") as worker:
+            with self.assertRaises(NethackCanaryError):
+                run_canary(self.g, self.plan, now=self.now)
+        worker.assert_not_called()
+
+    def test_run_identity_mismatch_is_fail_closed(self) -> None:
+        (self.nh / "runs" / f"{self.inactive_run_id}.json").write_text(
+            json.dumps({"schema_version": 1, "run_id": "other-run-9", "status": "ended"}),
+            encoding="utf-8",
+        )
+        with patch("docich.nethack_canary._run_worker") as worker:
+            with self.assertRaises(NethackCanaryError):
+                run_canary(self.g, self.plan, now=self.now)
+        worker.assert_not_called()
+
+    def test_active_run_via_current_blocks_even_when_switch_idle(self) -> None:
+        (self.nh / "runs" / f"{self.inactive_run_id}.json").write_text(
+            json.dumps({"schema_version": 1, "run_id": self.inactive_run_id, "status": "active"}),
+            encoding="utf-8",
+        )
+        with patch("docich.nethack_canary._run_worker") as worker:
+            with self.assertRaises(NethackCanaryError):
+                run_canary(self.g, self.plan, now=self.now)
+        worker.assert_not_called()
+
+    def test_worker_stderr_and_oserror_never_persist_raw_detail(self) -> None:
+        from docich.nethack_canary import _run_worker
+
+        sentinel = "SNTL-SECRET-585-9f8e7d6c5b4a"
+        stderr_plan = NethackCanaryPlan(
+            **{**self.plan.__dict__, "worker_command": ("sh", "-c", f"echo {sentinel} >&2; exit 3")}
+        )
+        failed = _run_worker(self.g, stderr_plan, {})
+        self.assertEqual(failed.get("error"), "worker_exit_failed")
+        self.assertNotIn(sentinel, json.dumps(failed))
+
+        launch_plan = NethackCanaryPlan(
+            **{**self.plan.__dict__, "worker_command": (f"missing-binary-{sentinel}",)}
+        )
+        launch_failed = _run_worker(self.g, launch_plan, {})
+        self.assertEqual(launch_failed.get("error"), "worker_launch_failed")
+        self.assertNotIn(sentinel, json.dumps(launch_failed))
+
+    def test_worker_supplied_raw_error_is_sanitized_in_report(self) -> None:
+        sentinel = "SNTL-SECRET-585-4a4b4c4d4e4f"
+        plan = NethackCanaryPlan(
+            **{**self.plan.__dict__, "episodes_per_arm": 1, "min_completed_per_arm": 1, "require_seed_control": False}
+        )
+
+        def leaking_worker(g, plan, request):
+            return {"schema_version": 1, "worker_status": "error", "error": f"boom {sentinel} token=xyz"}
+
+        with patch("docich.nethack_canary._run_worker", side_effect=leaking_worker):
+            report = run_canary(self.g, plan, now=self.now)
+        encoded = json.dumps(report)
+        self.assertNotIn(sentinel, encoded)
+        results = report["results"]
+        self.assertIsInstance(results, dict)
+        assert isinstance(results, dict)
+        for arm in ("baseline", "candidate"):
+            for item in results[arm]:
+                assert isinstance(item, dict)
+                self.assertEqual(item["error"], "worker_response_invalid")
 
     def test_plan_is_strict_and_bounded(self) -> None:
         path = Path(self.tempdir.name) / "plan.json"

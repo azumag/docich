@@ -50,11 +50,11 @@ def test_paid_egg_estimate_is_not_reserved_again_alongside_hero_repair():
     policy.month_step(parse(month_canvas(180, on='たまごのかいふく', month=8)), mem)
     mem['month_sub'].update(full_selected=True, quoted_cost=50, left_menu=True)
     actions = policy.month_step(parse(month_canvas(130, on='へいしほじゅう', month=8)), mem)
-    assert actions == [policy.pad('a')]
+    assert actions == []
     assert mem['shop']['reserve'] == 0
     assert mem['shop']['hero_repair_reserve'] == 50
-    assert mem['shop']['soldiers'] == 24
-    assert mem['shop']['soldiers_done'] is False
+    assert mem['shop']['soldiers'] == 0
+    assert mem['shop']['soldiers_done'] is True
 
 
 @pytest.mark.parametrize('gold', [45, 79])
@@ -71,13 +71,23 @@ def test_insufficient_recovery_money_is_never_spent_on_more_soldiers(gold):
 
 @pytest.mark.parametrize('count,seen,eggs', [
     (49, '1-8', {'ココット': 0}), (60, '1-7', {'ココット': 0}),
-    (None, None, {'ココット': 0}), (60, '1-8', {'ココット': 4}),
+    (None, None, {'ココット': 0}),
 ])
-def test_small_stale_or_unknown_army_and_full_eggs_keep_existing_refill(count, seen, eggs):
+def test_small_stale_or_unknown_army_does_not_waive_needed_recovery(count, seen, eggs):
     mem = memory(count, seen)
     mem['egg_uses'] = eggs
-    assert policy.quantity_step(quantity(), mem, soldiers=True) == [policy.pad('a')]
-    assert not mem['shop'].get('egg_priority')
+    assert policy.quantity_step(quantity(), mem, soldiers=True) == [policy.pad('b')]
+    assert mem['shop'].get('egg_priority')
+    assert not mem['shop'].get('soldier_receipt')
+
+
+def test_a_sufficient_current_army_buys_no_soldiers_even_with_full_eggs():
+    # Owner 2026-10-11: そもそも兵士も十分いるから兵士も買わなくていい.
+    mem = memory(60, '1-8')
+    mem['egg_uses'] = {'ココット': 4}
+    assert policy.quantity_step(quantity(), mem, soldiers=True) == [policy.pad('b')]
+    assert mem['shop']['soldiers'] == 0 and mem['shop']['soldiers_done'] is True
+    assert any(r['decision'] == 'soldier_refill_skip' for r in mem['_records'])
 
 
 def test_50_is_sufficient_and_cached_skipped_egg_is_reconsidered_once():
@@ -123,6 +133,6 @@ def test_failed_priority_recovery_money_is_also_protected_from_recruitment():
                    'recruit': 'check', 'recruit_priority': True, 'recruit_reserve': 20,
                    'egg': 'unverified', 'egg_priority': True, 'reserve': 50}
     policy.month_step(parse(month_canvas(100, on='しょうぐんぼしゅう')), mem)
-    assert mem['shop']['recruit'] == 'skipped'
+    assert mem['shop']['recruit'] == 'deferred_egg'
     assert 'month_sub' not in mem
     assert mem['shop']['reserve'] == 50

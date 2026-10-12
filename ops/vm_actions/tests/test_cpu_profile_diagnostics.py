@@ -149,15 +149,17 @@ class CpuProfileOperationContractTests(unittest.TestCase):
         for forbidden in ("sudo ", " kill ", "renice", "systemctl"):
             self.assertNotIn(forbidden, text)
 
-    def test_workflow_runs_only_for_explicit_epoch_change(self):
+    def test_workflow_profiles_only_for_explicit_epoch_change_or_owner_request(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertTrue(EPOCH.is_file())
         self.assertIn("ops/runtime_context/cpu_profile_epoch", text)
-        self.assertIn("Run one-shot production CPU profile for reviewed epoch", text)
+        self.assertIn("Run one-shot production CPU profile", text)
         self.assertIn("run_cpu_profile_once.sh", text)
         self.assertIn("github.event_name == 'push'", text)
         self.assertIn("steps.auth.outputs.operation == 'deploy'", text)
         self.assertIn("steps.auth.outputs.target == 'production'", text)
+        self.assertIn("steps.auth.outputs.operation == 'cpu_profile'", text)
+        self.assertIn("elif [[ \"$OPERATION\" != cpu_profile ]]", text)
         self.assertIn('profile.get("status") != "ok"', text)
         self.assertIn('(data.get("diagnostics") or {}).get("cpu_profile")', text)
         self.assertNotIn("profile_cpu.py sample --scenario", text)

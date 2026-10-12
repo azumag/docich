@@ -28,7 +28,8 @@ def _global(tmp_path):
         state_dir=tmp_path / "run",
         config_path=tmp_path / "docich.toml",
         display=SimpleNamespace(
-            name=":98", viewport_x=0, viewport_y=90,
+            name=":98", width=1280, height=720,
+            viewport_x=0, viewport_y=90,
             viewport_width=960, viewport_height=540,
         ),
     )
@@ -62,7 +63,7 @@ def _response(data, status=200):
     return Response()
 
 
-def test_weather_view_factory_is_generation_owned_and_uses_existing_viewport(tmp_path, monkeypatch):
+def test_weather_view_factory_is_generation_owned_and_uses_full_broadcast_frame(tmp_path, monkeypatch):
     g = _global(tmp_path)
     spec = _spec(tmp_path)
     monkeypatch.setattr(weather_program, "_browser_bin", lambda: "/usr/bin/chromium")
@@ -79,10 +80,15 @@ def test_weather_view_factory_is_generation_owned_and_uses_existing_viewport(tmp
     ]
     viewer = adapter._viewer_command()
     assert viewer[0] == sys.executable
-    assert "--width" in viewer and viewer[viewer.index("--width") + 1] == "960"
-    assert "--height" in viewer and viewer[viewer.index("--height") + 1] == "540"
+    assert "--x" in viewer and viewer[viewer.index("--x") + 1] == "0"
+    assert "--y" in viewer and viewer[viewer.index("--y") + 1] == "0"
+    assert "--width" in viewer and viewer[viewer.index("--width") + 1] == "1280"
+    assert "--height" in viewer and viewer[viewer.index("--height") + 1] == "720"
     assert "--app=http://127.0.0.1:8803/broadcast" in viewer
-    assert "--window-size=960,540" in viewer
+    assert "--window-size=1280,720" in viewer
+    assert "--lang=ja-JP" in viewer
+    assert "--disable-translate" in viewer
+    assert "--disable-features=Translate,TranslateUI,BackForwardCache" in viewer
     assert spec.runtime_id in " ".join(viewer)
     assert "serve" not in viewer and "enqueue_audio_text" not in " ".join(viewer)
 

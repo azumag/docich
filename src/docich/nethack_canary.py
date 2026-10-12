@@ -177,26 +177,62 @@ def _under(child: Path, parent: Path) -> bool:
         return False
 
 
+def _read_canonical_state(path: Path, *, what: str) -> object:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise NethackCanaryError(
+            f"production canonical stateを確認できません: {what}を読めません"
+        ) from exc
+    try:
+        return json.loads(text)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise NethackCanaryError(
+            f"production canonical stateを確認できません: {what}が壊れています"
+        ) from exc
+
+
 def _production_live(state_dir: Path) -> bool:
-    try:
-        switch = json.loads((state_dir / "game_switch.json").read_text(encoding="utf-8"))
-        if isinstance(switch, dict):
-            active = switch.get("active")
-            if switch.get("phase") == "ready" and isinstance(active, dict) and active.get("game") == "nethack":
-                return True
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        pass
+    """production NetHackが稼働中の場合だけTrueを返す。
+
+    fail-closed: canonical stateがmissing/unreadable/malformed/identity不整合で
+    inactiveを確認できない場合はFalseを返さずNethackCanaryErrorを送出する。
+    """
+    switch = _read_canonical_state(state_dir / "game_switch.json", what="game_switch.json")
+    if not isinstance(switch, dict):
+        raise NethackCanaryError(
+            "production canonical stateを確認できません: game_switch.jsonが不正です"
+        )
+    active = switch.get("active")
+    if switch.get("phase") == "ready" and isinstance(active, dict) and active.get("game") == "nethack":
+        return True
     root = state_dir / "nethack"
-    try:
-        current = json.loads((root / "current.json").read_text(encoding="utf-8"))
-        run_id = current.get("run_id") if isinstance(current, dict) else None
-        if isinstance(run_id, str):
-            run = json.loads((root / "runs" / f"{run_id}.json").read_text(encoding="utf-8"))
-            if isinstance(run, dict) and run.get("status") == "active":
-                return True
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        pass
-    return False
+    current = _read_canonical_state(root / "current.json", what="nethack/current.json")
+    if not isinstance(current, dict):
+        raise NethackCanaryError(
+            "production canonical stateを確認できません: nethack/current.jsonが不正です"
+        )
+    run_id = current.get("run_id")
+    if (
+        not isinstance(run_id, str)
+        or not run_id
+        or run_id in {".", ".."}
+        or "/" in run_id
+        or "\\" in run_id
+    ):
+        raise NethackCanaryError(
+            "production canonical stateを確認できません: nethack/current.jsonのrun_idが不正です"
+        )
+    run = _read_canonical_state(root / "runs" / f"{run_id}.json", what="nethack/runs/<run_id>.json")
+    if not isinstance(run, dict):
+        raise NethackCanaryError(
+            "production canonical stateを確認できません: nethack run stateが不正です"
+        )
+    if run.get("run_id") != run_id:
+        raise NethackCanaryError(
+            "production canonical stateを確認できません: run identityが不整合です"
+        )
+    return run.get("status") == "active"
 
 
 def _path_fingerprint(path: Path) -> object:
@@ -299,6 +335,17 @@ def _request(
     return payload, paths
 
 
+_WORKER_ERROR_CATEGORIES = frozenset(
+    {
+        "worker_timeout",
+        "worker_launch_failed",
+        "worker_exit_failed",
+        "worker_response_too_large",
+        "worker_response_invalid",
+    }
+)
+
+
 def _run_worker(
     g: GlobalConfig,
     plan: NethackCanaryPlan,
@@ -320,28 +367,28 @@ def _run_worker(
         return {
             "schema_version": WORKER_RESULT_SCHEMA_VERSION,
             "worker_status": "timeout",
-            "error": "worker timeout",
+            "error": "worker_timeout",
         }
-    except OSError as exc:
+    except OSError:
         return {
             "schema_version": WORKER_RESULT_SCHEMA_VERSION,
             "worker_status": "error",
-            "error": str(exc).replace("\n", " ")[:240],
+            "error": "worker_launch_failed",
         }
     if len(completed.stdout.encode("utf-8", errors="replace")) > MAX_WORKER_RESPONSE_BYTES:
-        return {"schema_version": WORKER_RESULT_SCHEMA_VERSION, "worker_status": "error", "error": "worker response too large"}
+        return {"schema_version": WORKER_RESULT_SCHEMA_VERSION, "worker_status": "error", "error": "worker_response_too_large"}
     if completed.returncode != 0:
         return {
             "schema_version": WORKER_RESULT_SCHEMA_VERSION,
             "worker_status": "error",
-            "error": f"worker exit {completed.returncode}: {completed.stderr.strip()[:200]}",
+            "error": "worker_exit_failed",
         }
     try:
         raw = json.loads(completed.stdout)
     except json.JSONDecodeError:
-        return {"schema_version": WORKER_RESULT_SCHEMA_VERSION, "worker_status": "error", "error": "worker returned invalid JSON"}
+        return {"schema_version": WORKER_RESULT_SCHEMA_VERSION, "worker_status": "error", "error": "worker_response_invalid"}
     if not isinstance(raw, dict):
-        return {"schema_version": WORKER_RESULT_SCHEMA_VERSION, "worker_status": "error", "error": "worker result must be object"}
+        return {"schema_version": WORKER_RESULT_SCHEMA_VERSION, "worker_status": "error", "error": "worker_response_invalid"}
     return raw
 
 
@@ -355,10 +402,14 @@ def _validate_worker_result(
 ) -> dict[str, object]:
     worker_status = raw.get("worker_status")
     if worker_status in {"timeout", "error"}:
+        error = raw.get("error")
+        if error not in _WORKER_ERROR_CATEGORIES:
+            # worker由来のerror文言(raw stderr相当)をevidenceへ残さない。
+            error = "worker_timeout" if worker_status == "timeout" else "worker_response_invalid"
         return {
             "worker_status": worker_status,
             "terminal_status": worker_status,
-            "error": str(raw.get("error", "worker failure"))[:240],
+            "error": error,
             "integrity_ok": True,
             "seed_applied": False,
         }

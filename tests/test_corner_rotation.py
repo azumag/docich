@@ -77,7 +77,7 @@ def test_flat_live_catalog_and_financial_boundary():
     assert all(c.target_matches is None for c in catalog if c.id != "nsnake")
 
 
-def test_production_profile_marks_common_rotation_enabled_with_manual_tsuitate():
+def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     from docich.corner_catalog import rotation_config
 
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
@@ -92,7 +92,7 @@ def test_production_profile_marks_common_rotation_enabled_with_manual_tsuitate()
     assert paper.enabled is True
     assert paper.live_eligible is False
     tsuitate = next(c for c in catalog if c.id == "tsuitate")
-    assert tsuitate.enabled is True and tsuitate.manual_only is True
+    assert tsuitate.enabled is True and tsuitate.manual_only is False
     assert tsuitate.game == "tsuitate-view"
     assert {c.id for c in catalog} >= {
         "ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
@@ -214,10 +214,19 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
     monkeypatch.setattr("docich.adapters.retroarch.resolve_rom", lambda *_: ROOT / "vm-only.sfc")
     monkeypatch.setattr("docich.adapters.retroarch.resolve_core", lambda *_: "/vm-only/core.so")
     manager = CornerRotationManager(g)
+    monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
+        "state": "finished", "readyForNextRun": True,
+    })
     eligible, excluded = manager._eligible()
-    assert len(eligible) == 10
-    assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero"} <= set(eligible)
-    assert excluded == {"tsuitate": "manual-only"}
+    assert len(eligible) == 11
+    assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate"} <= set(eligible)
+    assert excluded == {}
+    monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
+        "state": "playing", "readyForNextRun": False,
+    })
+    eligible, excluded = manager._eligible()
+    assert len(eligible) == 10 and "tsuitate" not in eligible
+    assert excluded == {"tsuitate": "adapter-unavailable"}
 
 
 def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):
@@ -277,37 +286,207 @@ def test_manual_meriken_start_scopes_runtime_environment(tmp_path, monkeypatch):
     captured = {}
 
     class Executor:
+        def __init__(self):
+            self.results = ["queued", "completed"]
+            self.requests = []
+
         def execute(self, adapter, request):
+            self.requests.append(dict(request))
             scope_factory = getattr(adapter, "runtime_environment", None)
-            scope = scope_factory() if callable(scope_factory) else nullcontext()
+            scope = scope_factory(request) if callable(scope_factory) else nullcontext()
             with scope:
                 captured["inside"] = os.environ.get("SOREN91_LOCAL_AGENT_TOKEN")
+                captured["capture"] = (
+                    os.environ.get("SOREN91_CAPTURE_FORMAT"),
+                    os.environ.get("SOREN91_REJECT_FRAME_DIAGNOSTICS"),
+                )
             captured["after"] = os.environ.get("SOREN91_LOCAL_AGENT_TOKEN")
-            return "completed"
+            captured["capture_after"] = (
+                os.environ.get("SOREN91_CAPTURE_FORMAT"),
+                os.environ.get("SOREN91_REJECT_FRAME_DIAGNOSTICS"),
+            )
+            result = self.results.pop(0)
+            return result(adapter, request) if callable(result) else result
 
     original_manager = corner_rotation.CornerRotationManager
     holder = {}
+    executor = Executor()
+    clock = [1000000.0]
 
     def build_manager(g):
         if "manager" not in holder:
             holder["manager"] = original_manager(
                 g,
-                clock=lambda: 1000000.0,
+                clock=lambda: clock[0],
                 seed="manual-meriken-env",
-                executor=Executor(),
+                executor=executor,
             )
-            holder["manager"]._eligible = lambda: (["meriken"], {})
+            holder["manager"]._eligible = lambda **_kwargs: (["meriken"], {})
         return holder["manager"]
 
     monkeypatch.setattr(corner_rotation, "CornerRotationManager", build_manager)
-    manager = holder.setdefault(
-        "owner", build_manager(config).adapters["meriken"].manager
-    )
+    from docich.soren91_corner_manual import ManualSoren91CornerManager
+    manager = ManualSoren91CornerManager(config, capture_profile="rejected_png_v1")
+    manager.capture_profile = "rejected_png_v1"
 
     result = corner_rotation.run_manual(config, manager, ["soren91"])
 
+    assert result.status == "queued"
+    pending = json.loads((tmp_path / "corner_rotation.json").read_text())
+    assert pending["manual_pending"]["capture_profile"] == "rejected_png_v1"
+    assert pending["manual_pending"]["capture_profile_expires_at"] == 1000060.0
+    assert executor.requests[-1]["capture_profile"] == "rejected_png_v1"
+
+    # A prompt common-rotation retry remains bound to the same fixed profile.
+    manager.capture_profile = None
+    clock[0] = 1000010.0
+    result = corner_rotation.run_manual(config, manager, ["soren91"])
     assert result.status == "completed"
-    assert captured == {"inside": "manual-test-token", "after": None}
+    assert executor.requests[-1]["capture_profile"] == "rejected_png_v1"
+
+    # An expired unstarted one-shot profile cannot be re-dispatched. Once the
+    # exact manual owner is stable and absent, rotation may release the stale
+    # reservation safely.
+    manager.capture_profile = "rejected_png_v1"
+    executor.results.append("queued")
+    clock[0] = 1000010.0
+    result = corner_rotation.run_manual(config, manager, ["soren91"])
+    assert result.status == "queued"
+    clock[0] = 1000071.0
+    with pytest.raises(RotationError, match="authorization expired"):
+        corner_rotation.run_manual(config, manager, ["soren91"])
+    holder["manager"].schedule_mode = "queue"
+    executor.results.append("completed")
+    outcome = holder["manager"].tick()
+    assert outcome.get("reason") != "manual-capture-profile-expired"
+    assert len(executor.requests) == 3
+    assert json.loads((tmp_path / "corner_rotation.json").read_text())["manual_pending"] is None
+
+    manager.capture_profile = "rejected_png_v1"
+    dispatched = []
+    manager.run_rotation = lambda request_id: dispatched.append(request_id) or "completed"
+
+    def expire_inside_executor(adapter, request):
+        clock[0] = request["capture_profile_expires_at"] + 1
+        return adapter.run(request)
+
+    executor.results = [expire_inside_executor]
+    result = corner_rotation.run_manual(config, manager, ["soren91"])
+    assert result.status == "expired"
+    assert dispatched == []
+    assert json.loads((tmp_path / "corner_rotation.json").read_text())["manual_pending"] is None
+    assert captured == {
+        "inside": "manual-test-token",
+        "capture": ("png", "1"),
+        "after": None,
+        "capture_after": (None, None),
+    }
+
+
+def test_expired_capture_profile_still_reconciles_an_on_time_restoring_run(setup):
+    _, clock, _, _, make = setup
+    manager = make()
+    request_id = "41dd6742-7b1d-4f06-a4cd-78b75dd3bfcf"
+    request = {
+        "corner": "meriken", "state_file": "meriken_corner_manual.json",
+        "request_id": request_id, "selected_at": clock[0],
+        "capture_profile": "rejected_png_v1", "capture_profile_expires_at": clock[0] + 60,
+    }
+    current = manager.load(clock[0])
+    current.update(manual_pending=request, status="waiting")
+    manager.save(current)
+    adapter = manager.adapters["meriken"]
+    adapter.state_path = Path("meriken_corner_manual.json")
+    adapter.manager = SimpleNamespace(run_rotation=lambda _request_id: None)
+    adapter.states = [{
+        "rotation_request_id": request_id, "status": "restoring", "started_at": clock[0] + 10,
+    }]
+
+    class ResumeExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, target, persisted):
+            self.calls.append(dict(persisted))
+            target.states = [{
+                "rotation_request_id": request_id, "status": "completed",
+                "started_at": clock[0] + 10, "completed_at": clock[0] + 70,
+            }]
+            return "completed"
+
+    executor = ResumeExecutor()
+    manager.executor = executor
+    clock[0] += 61
+    result = manager.tick()
+    assert result["status"] == "ready"
+    assert executor.calls == [request]
+    assert state(manager)["manual_pending"] is None
+
+
+def test_expired_unstarted_capture_reservation_releases_and_rotation_continues(setup):
+    from contextlib import nullcontext
+
+    _, clock, _, executor, make = setup
+    manager = make()
+    request = {
+        "corner": "meriken", "state_file": "soren91_corner_manual.json",
+        "request_id": "c61a6685-5808-4ae4-b2df-211f03157893",
+        "selected_at": clock[0], "capture_profile": "rejected_png_v1",
+        "capture_profile_expires_at": clock[0] + 60,
+    }
+    current = manager.load(clock[0])
+    current.update(manual_pending=request, status="waiting", next_due_at=clock[0])
+    current["history"].append({"corner": "meriken", "at": clock[0], "source": "manual-reservation"})
+    manager.save(current)
+
+    class Store:
+        class Canonical:
+            @staticmethod
+            def load():
+                return {"phase": "ready", "active": {"game": "nsnake"}}, False
+
+        canonical = Canonical()
+
+        @staticmethod
+        def lock(*, exclusive=False):
+            return nullcontext()
+
+    adapter = manager.adapters["meriken"]
+    adapter.states = []
+    owner = SimpleNamespace(state_path=Path("soren91_corner_manual.json"), store=Store())
+    adapter._manager_for_state_file = lambda name: owner if name == owner.state_path.name else None
+
+    clock[0] += 61
+    result = manager.tick()
+    assert result["status"] == "ready"
+    assert result["result"] == "completed"
+    assert state(manager)["manual_pending"] is None
+    assert executor.calls and "capture_profile" not in executor.calls[-1]
+    assert state(manager)["last_result"]["status"] == "completed"
+
+
+def test_expired_capture_profile_commits_exact_terminal_observation_without_dispatch(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    request_id = "19ff10c5-d9a2-4bb8-bc3f-45b375449f12"
+    request = {
+        "corner": "meriken", "state_file": "meriken_corner_manual.json",
+        "request_id": request_id, "selected_at": clock[0],
+        "capture_profile": "rejected_png_v1", "capture_profile_expires_at": clock[0] + 60,
+    }
+    current = manager.load(clock[0])
+    current.update(manual_pending=request, status="waiting")
+    manager.save(current)
+    manager.adapters["meriken"].states = [{
+        "rotation_request_id": request_id, "status": "completed",
+        "started_at": clock[0] + 10, "completed_at": clock[0] + 70,
+    }]
+
+    clock[0] += 61
+    result = manager.tick()
+    assert result["status"] == "ready"
+    assert executor.calls == []
+    assert state(manager)["manual_pending"] is None
 
 
 def test_nethack_legacy_state_is_visible_to_unified_rotation(tmp_path, monkeypatch):
@@ -1325,6 +1504,30 @@ def test_recover_never_launches_while_the_pending_corner_is_still_running(setup)
     assert len(executor.calls) == calls
 
 
+def test_recover_refusal_preserves_original_reservation_and_history(setup, monkeypatch):
+    _, clock, _, executor, make = setup
+    manager = make()
+    _latch(manager, executor, clock)
+    before = state(manager)
+    calls = len(executor.calls)
+
+    def mutate_then_refuse(ledger, reservation, now, *, manual):
+        ledger["pending"] = None
+        ledger["history"].append(dict(corner="foreign", at=now))
+        ledger["last_slot_at"] = now
+        raise RotationError("synthetic refusal", kind="execution-unverified")
+
+    monkeypatch.setattr(manager, "_resolve_reservation", mutate_then_refuse)
+    with pytest.raises(RotationError):
+        manager.recover()
+    refused = state(manager)
+    for key in ("pending", "history", "last_slot_at", "last_seen_at", "slot"):
+        assert refused[key] == before[key]
+    assert refused["status"] == "recovery_required"
+    assert refused["error_kind"] == before["error_kind"]
+    assert len(executor.calls) == calls
+
+
 def test_recover_waits_while_another_corner_holds_the_program_slot(setup):
     _, clock, _, executor, make = setup
     manager = make()
@@ -2303,3 +2506,37 @@ def test_reconcile_settled_at_is_clamped_to_tick_now():
         FakeAdapter(), reservation, manual=True, now=tick_now
     )
     assert settled == tick_now
+
+
+def test_resume_queue_is_explicit_single_request_before_normal_dispatch(setup):
+    from unittest import mock
+    g, clock, catalog, executor, make=setup
+    item=Corner('hanjuku-hero','game','hanjuku-hero')
+    manager=make([item])
+    with mock.patch('docich.config.load_game',return_value=object()), mock.patch('docich.hanjuku_resume.prepare') as prepare, mock.patch('docich.hanjuku_resume.publish'):
+        request=manager.queue_manual('hanjuku-hero',resume_latest=True)
+        assert request['status']=='queued' and not executor.calls
+        prepare.assert_called_once()
+        assert prepare.call_args.args[2]['request_id']==request['request_id']
+        assert manager.queue_manual('hanjuku-hero',resume_latest=True)==request
+        prepare.assert_called_once()
+        with pytest.raises(RotationError):manager.queue_manual('hanjuku-hero')
+        manager.tick()
+    assert executor.calls[0]['request_id']==request['request_id']
+    assert executor.calls[0]['resume_latest'] is True
+    assert executor.calls[0]['source']=='manual'
+
+
+def test_failed_preservation_does_not_queue_fresh_game(setup):
+    from unittest import mock
+    g, clock, catalog, executor, make=setup
+    manager=make([Corner('hanjuku-hero','game','hanjuku-hero')])
+    with mock.patch('docich.config.load_game',return_value=object()), mock.patch('docich.hanjuku_resume.prepare',side_effect=RuntimeError('save failed')):
+        with pytest.raises(RuntimeError):manager.queue_manual('hanjuku-hero',resume_latest=True)
+    assert not manager._manual_queue_path.exists() and not executor.calls
+
+
+@pytest.mark.parametrize('game,trigger', [('nsnake',None),('hanjuku-hero',1000001)])
+def test_resume_rejects_unrelated_or_scheduled_requests(setup,game,trigger):
+    *_,make=setup
+    with pytest.raises(RotationError):make().queue_manual(game,resume_latest=True,trigger_at=trigger)

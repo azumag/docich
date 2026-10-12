@@ -67,11 +67,59 @@ def test_sample_break_resets_stasis_instead_of_false_game_over(tmp_path,break_ki
     assert result['unchanged_seconds']==0
 
 
-def test_animated_screen_keeps_playing_beyond_twenty_minutes(tmp_path):
-    for now in range(0,1301,10):
+def test_animated_screen_with_live_input_keeps_playing_beyond_twenty_minutes(tmp_path):
+    # #1369 without input would now end as input_stalled; a bot that keeps
+    # sending input while the screen animates must keep playing.
+    from types import SimpleNamespace
+    action=SimpleNamespace(type='pad',buttons=['a'],hold_ms=100)
+    result=None
+    for step,now in enumerate(range(0,1301,10)):
         result=hanjuku_run.observe(tmp_path,IDENTITY,frame((now%255,90,50)),now=now,wall=1000+now)
+        assert result['terminal_reason'] is None
+        if step%5==0:
+            hanjuku_run.action_sent(tmp_path,IDENTITY,action,now=now)
+    assert result is not None and result['observations']==131
+
+
+def test_animated_screen_without_input_ends_as_input_stalled(tmp_path):
+    # #1369: the merchant confirm screen animated for ~16 min with no input
+    # sent, so screen_stalled never fired. 600 s of active observing with
+    # 120+ further observations and no input ends the run instead.
+    for now in range(1000,1600,5):
+        result=hanjuku_run.observe(tmp_path,IDENTITY,frame((now%255,90,50)),now=now,wall=now)
+        assert result['terminal_reason'] is None
+    result=hanjuku_run.observe(tmp_path,IDENTITY,frame((70,90,50)),now=1600,wall=1600)
+    assert result['terminal_reason']=='input_stalled'
+    assert result['terminal_evidence']=='no_input_sent_while_observing'
+    assert result['observed_monotonic']-result['last_input_monotonic']>=600
+    assert result['observations']-result['last_input_observations']>=120
+    terminal_state=hanjuku_run.terminal(tmp_path,IDENTITY)
+    assert terminal_state is not None and terminal_state['terminal_reason']=='input_stalled'
+
+
+def test_sent_input_restarts_the_input_stall_clock(tmp_path):
+    from types import SimpleNamespace
+    action=SimpleNamespace(type='pad',buttons=['a'],hold_ms=100)
+    for now in range(1000,1590,5):
+        result=hanjuku_run.observe(tmp_path,IDENTITY,frame((now%255,90,50)),now=now,wall=now)
+        assert result['terminal_reason'] is None
+    hanjuku_run.action_sent(tmp_path,IDENTITY,action,now=1590)
+    result=hanjuku_run.observe(tmp_path,IDENTITY,frame(),now=1595,wall=1595)
     assert result['terminal_reason'] is None
-    assert result['observations']==131
+    assert result['last_input_observations']==result['observations']-1
+
+
+def test_pause_and_sample_gap_reanchor_the_input_stall_clock(tmp_path):
+    for now in range(1000,1590,5):
+        result=hanjuku_run.observe(tmp_path,IDENTITY,frame((now%255,90,50)),now=now,wall=now)
+        assert result['terminal_reason'] is None
+    paused=hanjuku_run.observe(tmp_path,IDENTITY,frame(),now=1595,wall=1595,playing=False)
+    assert paused['terminal_reason'] is None
+    # A long pause then a sample gap must not end the run on stale markers.
+    resumed=hanjuku_run.observe(tmp_path,IDENTITY,frame(),now=3595,wall=3595)
+    assert resumed['terminal_reason'] is None
+    again=hanjuku_run.observe(tmp_path,IDENTITY,frame((7,90,50)),now=3600,wall=3600)
+    assert again['terminal_reason'] is None
 
 
 def test_other_generation_or_symlink_cannot_supply_terminal_evidence(tmp_path):
@@ -247,7 +295,7 @@ def test_non_logo_skips_full_frame_neutral_scan(monkeypatch):
     assert calls == [(108, 108, 124, 120), (76, 102, 180, 120)]
 
 
-def test_waiting_boundary_keeps_bot_live_until_stasis_then_needs_no_save(adapter):
+def test_waiting_boundary_keeps_bot_live_until_stasis_then_saves(adapter, monkeypatch):
     import time
     from docich import game_switch
     from docich.retroarch_boundary import read_record, BOUNDARY_FILE, require_input_open
@@ -258,9 +306,14 @@ def test_waiting_boundary_keeps_bot_live_until_stasis_then_needs_no_save(adapter
     require_input_open(adapter.spec.runtime_dir)
     for now in range(0,301,10):
         hanjuku_run.observe(adapter.spec.runtime_dir,identity,frame(),now=now,wall=1000+now)
+    from test_hanjuku_saved_stop import emulator
+    from docich.retroarch_boundary import MANUAL_SAVE_FILE
+    calls = emulator(adapter, monkeypatch)
+    (adapter.spec.runtime_dir / MANUAL_SAVE_FILE).unlink()
     adapter.request_round_boundary('script-end',time.monotonic()+1,None)
+    assert calls.count('SAVE_STATE') == 1
     boundary=read_record(adapter.spec.runtime_dir/BOUNDARY_FILE)
-    assert boundary['outcome']=='screen_stalled' and 'checkpoint' not in boundary
+    assert boundary['outcome']=='screen_stalled' and boundary['checkpoint']=='hanjuku.state'
     with pytest.raises(AdapterError,match='holds input'):
         require_input_open(adapter.spec.runtime_dir)
     assert not any(call[0].startswith('kill') for call in adapter.tmux.calls)
@@ -764,6 +817,14 @@ def test_third_image_resets_two_image_stasis(tmp_path):
 
 def test_game_over_writes_a_grounded_recap_candidate(tmp_path):
     """Owner rule 2026-09-28: a game over narrates a recap of the run."""
+    from types import SimpleNamespace
+    import datetime as dt
+    from docich.naming import runtime_directory
+    from docich.retro_corner import RetroCornerConfig, RetroCornerManager
+
+    g = SimpleNamespace(state_dir=tmp_path)
+    tmp_path = runtime_directory(g.state_dir, IDENTITY['runtime_id'])
+    tmp_path.mkdir(parents=True)
     title = title_frame()
     for now in range(4):
         hanjuku_run.observe(tmp_path, IDENTITY, title, now=now, wall=1000 + now)
@@ -786,8 +847,16 @@ def test_game_over_writes_a_grounded_recap_candidate(tmp_path):
     item = recap[0]
     assert item['key'] == 'game_over_recap' and item['seq'] == 1
     assert item['game'] == IDENTITY['game'] and item['runtime_id'] == IDENTITY['runtime_id']
-    assert '第1章' in item['text'] and '1年5月' in item['text'] and '出撃1回' in item['text']
-    assert item['text'].startswith('記録では')
+    assert '第1章' in item['text'] and '1年5月' in item['text']
+    assert '出撃1回' not in item['text']
+    assert item['text'].startswith('今回はゲームオーバーとなり、')
+    from docich.hanjuku_commentary import summarize_recap
+    assert item['text'] == summarize_recap(tmp_path, run)[1]
+    manager = RetroCornerManager(g, config=RetroCornerConfig(), coordinator=SimpleNamespace())
+    chat_text = manager._end_result_text(
+        {'game': 'hanjuku-hero', 'bot_identity': IDENTITY, 'end_reason': 'game_over'},
+        dt.datetime.now(dt.timezone.utc))
+    assert item['text'] == chat_text
     assert item['text'].endswith('今回の挑戦はここまでです。')
     assert len(item['text']) <= 1000
     # The terminal latch returns the old state: never a second recap.
