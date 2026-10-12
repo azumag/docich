@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from docich.nethack_run import (  # noqa: E402
     classify_terminal_record,
     parse_xlog_line,
 )
+from docich.nethack_source import new_session_context  # noqa: E402
 
 
 class NethackRunStoreTest(unittest.TestCase):
@@ -357,6 +359,170 @@ class NethackRunStoreTest(unittest.TestCase):
         self.assertEqual(finished["max_depth"], 5)
         self.assertEqual(finished["role"], "Val")
         self.assertIsNone(self.store.current())
+
+    RUNTIME = {"game": "nethack", "generation": 10, "runtime_id": "g10-0123abcd"}
+
+    def start_with_context(self, origin="scheduled", runtime=None, now=None):
+        context = new_session_context(origin, str(uuid.uuid4()))
+        now = now or self.now
+        probe = self.store.prepare_start(current_is_nethack=False, now=now)
+        run = self.store.record_started(
+            probe, now=now, corner_context=context, runtime=runtime or self.RUNTIME
+        )
+        return run, context
+
+    def restoration(self, restored=None):
+        return {
+            "request_id": str(uuid.uuid4()), "source_runtime": dict(self.RUNTIME),
+            "restored_runtime": restored if restored is not None else {
+                "game": "robots", "generation": 12, "runtime_id": "g12-abcd0123"},
+            "restore_generation": 12, "canonical_revision": 42,
+            "completed_at": (self.now + timedelta(hours=1, seconds=1)).isoformat(),
+            "cleanup_completed": True, "source_binding_verified": True,
+        }
+
+    def test_multiple_new_player_records_keep_terminal_but_unverify_source(self):
+        run, context = self.start_with_context()
+        self.append_xlog(death="quit", points=123, turns=4)
+        self.append_xlog(
+            death="killed by a water elemental", points=972, turns=3711, maxlvl=5
+        )
+        finished = self.store.record_finished(
+            now=self.now + timedelta(hours=1), nethack_still_active=False,
+        )
+        self.assertEqual(finished["run_id"], run["run_id"])
+        self.assertEqual(finished["status"], "dead")
+        self.assertEqual(finished["score"], 972)
+        self.assertEqual(finished["death_reason"], "killed by a water elemental")
+        self.assertFalse(finished["terminal"]["identity_verified"])
+        sealed = self.store.attach_post_restore_source(
+            run_id=run["run_id"], session_id=context["session_id"],
+            restoration=self.restoration(), finish_reason="terminal",
+        )
+        self.assertEqual(sealed["post_restore_source"]["eligibility"], "terminal_unverified")
+
+    def test_unique_new_record_verifies_terminal_identity(self):
+        self.start_with_context()
+        born = int(self.now.timestamp()) + 30  # character birth after start
+        self.append_xlog(starttime=born, endtime=born + 3000)
+        finished = self.store.record_finished(
+            now=self.now + timedelta(hours=1), nethack_still_active=False,
+        )
+        self.assertTrue(finished["terminal"]["identity_verified"])
+
+    def test_birth_before_the_trusted_start_is_not_verified(self):
+        self.start_with_context()
+        born = int(self.now.timestamp()) - 1
+        self.append_xlog(starttime=born, endtime=born + 3000)
+        finished = self.store.record_finished(
+            now=self.now + timedelta(hours=1), nethack_still_active=False,
+        )
+        self.assertEqual(finished["status"], "dead")
+        self.assertFalse(finished["terminal"]["identity_verified"])
+
+    def test_terminal_and_source_are_sealed_without_changing_history(self):
+        run, context = self.start_with_context()
+        self.append_xlog()
+        finished = self.store.record_finished(
+            now=self.now + timedelta(hours=1), nethack_still_active=False,
+        )
+        sealed = self.store.attach_post_restore_source(
+            run_id=run["run_id"], session_id=context["session_id"],
+            restoration=self.restoration(), finish_reason="terminal",
+        )
+        source = sealed["post_restore_source"]
+        self.assertEqual(source["run_id"], run["run_id"])
+        self.assertEqual(source["origin"], "scheduled")
+        self.assertEqual(source["authorized_mode"], "off")
+        self.assertFalse(source["slot_release_verified"])
+        self.assertEqual(sealed["sessions"][-1]["post_restore_source"], source)
+        for key in ("status", "terminal", "score", "death_reason"):
+            self.assertEqual(sealed[key], finished[key])
+        self.assertIsNone(self.store.current())
+        # Replays never re-seal or overwrite the first observation.
+        again = self.store.attach_post_restore_source(
+            run_id=run["run_id"], session_id=context["session_id"],
+            restoration=None, finish_reason="operator_stop",
+        )
+        self.assertEqual(again["post_restore_source"], source)
+        self.assertNotIn("post_restore_source_error", again["sessions"][-1])
+
+    def test_bad_source_does_not_undo_terminal_history(self):
+        run, context = self.start_with_context("manual")
+        self.append_xlog()
+        self.store.record_finished(
+            now=self.now + timedelta(hours=1), nethack_still_active=False,
+        )
+        sealed = self.store.attach_post_restore_source(
+            run_id=run["run_id"], session_id=context["session_id"],
+            restoration={"untrusted": "data"}, finish_reason="terminal",
+        )
+        self.assertEqual(sealed["status"], "dead")
+        self.assertNotIn("post_restore_source", sealed)
+        self.assertEqual(
+            sealed["sessions"][-1]["post_restore_source_error"], "restore_unverified"
+        )
+        self.assertIsNone(self.store.current())
+
+    def test_unverified_restore_is_recorded_as_a_fixed_reason(self):
+        run, context = self.start_with_context()
+        self.append_xlog()
+        self.store.record_finished(
+            now=self.now + timedelta(hours=1), nethack_still_active=False,
+        )
+        sealed = self.store.attach_post_restore_source(
+            run_id=run["run_id"], session_id=context["session_id"],
+            restoration=None, finish_reason="terminal",
+        )
+        self.assertEqual(
+            sealed["sessions"][-1]["post_restore_source_error"], "restore_unverified"
+        )
+        self.assertNotIn("post_restore_source", sealed)
+
+    def test_saved_expedition_records_observation_without_terminal_source(self):
+        run, context = self.start_with_context()
+        (self.save_dir / "1000docich").write_bytes(b"save")
+        suspended = self.store.record_finished(
+            now=self.now + timedelta(hours=1), nethack_still_active=False,
+        )
+        self.assertEqual(suspended["status"], "suspended")
+        sealed = self.store.attach_post_restore_source(
+            run_id=run["run_id"], session_id=context["session_id"],
+            restoration=self.restoration(restored=None) | {"restored_runtime": None},
+            finish_reason="unknown",
+        )
+        self.assertEqual(
+            sealed["sessions"][-1]["post_restore_source"]["eligibility"],
+            "expedition_not_terminal",
+        )
+        self.assertNotIn("post_restore_source", sealed)
+        self.assertEqual(self.store.current()["run_id"], suspended["run_id"])
+
+    def test_source_cannot_attach_to_a_resumed_or_open_session(self):
+        first, first_context = self.start_with_context()
+        (self.save_dir / "1000docich").write_bytes(b"save")
+        self.store.record_finished(
+            now=self.now + timedelta(hours=1), nethack_still_active=False,
+            expected_run_id=first["run_id"],
+        )
+        second_context = new_session_context("manual", str(uuid.uuid4()))
+        probe = self.store.prepare_start(
+            current_is_nethack=False, now=self.now + timedelta(hours=2)
+        )
+        self.store.record_started(
+            probe, now=self.now + timedelta(hours=2), corner_context=second_context,
+            runtime={**self.RUNTIME, "generation": 12, "runtime_id": "g12-abcd0123"},
+        )
+        for session_id in (first_context["session_id"], second_context["session_id"]):
+            with self.subTest(session_id=session_id), self.assertRaises(NethackRunError):
+                self.store.attach_post_restore_source(
+                    run_id=first["run_id"], session_id=session_id,
+                    restoration=self.restoration(), finish_reason="terminal",
+                )
+        current = self.store.current()
+        self.assertEqual(current["status"], "active")
+        self.assertIsNone(current["sessions"][-1]["ended_at"])
+        self.assertNotIn("post_restore_source_error", current["sessions"][-1])
 
     def test_ascension_and_amulet_bits_are_recorded(self):
         self.start()

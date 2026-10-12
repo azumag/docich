@@ -1223,7 +1223,7 @@ def run_manual(g, manager, games):
     the latch/pending gates, the common lock and the program slot still apply.
     """
     from types import SimpleNamespace
-    from .retro_corner import CornerResult
+    from .retro_corner import CornerResult, RetroCornerManager
     rotation = CornerRotationManager(g)
     requested_capture_profile = getattr(manager, "capture_profile", None)
     if requested_capture_profile not in {None, "rejected_png_v1"}:
@@ -1302,6 +1302,9 @@ def run_manual(g, manager, games):
             if (request.get("capture_profile") == "rejected_png_v1"
                     and timestamp(rotation.clock()) > timestamp(request["capture_profile_expires_at"])):
                 return "capture-profile-expired"
+            if isinstance(manager, RetroCornerManager):
+                # Record the trusted manual entry as this run's origin.
+                return manager.run_rotation(request["request_id"], origin="manual")
             return manager.run_rotation(request["request_id"])
 
         adapter = SimpleNamespace(
