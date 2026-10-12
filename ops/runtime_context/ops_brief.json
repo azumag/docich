@@ -1,11 +1,11 @@
 {
-  "output_sha256": "b65ecc95fe8af54a2bfe598e2cbccc843dd677be1c99a5c09673b4fbef17ae60",
+  "output_sha256": "52e4d1e1d98c25be521d64c3995609d9c788f1fd0921e7392c05d6fdfaca1425",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "09d9492514a4b31a793a20c88e0542e13ccc47ca746d2b4b281a347929fa88d9",
+  "source_sha256": "b61c5d390de17b15eba1f3b7bf8d2fd0a21bd367cc78da10ad7c4337def10475",
   "topics": [
-    "半熟v176の同ラン反映と築城のmain同期",
-    "個別卵回復のレビュー修正と築城往復の改善",
-    "半熟v175を同じランへ無停止反映、個別卵回復v176を準備"
+    "HP1停滞仮説の撤回と個別回復の実見積修正",
+    "築城v177の同ラン反映とHP1シャウト反復の修正準備",
+    "半熟v176の同ラン反映と築城のmain同期"
   ]
 }
