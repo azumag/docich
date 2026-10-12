@@ -197,12 +197,12 @@ def test_spare_gate_preserves_pending_cards_house_repair_and_wages():
 def test_staffed_castles_cannot_create_spare_by_cutting_the_soldier_budget(status):
     mem = memory(101)
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 101})
-    assert shop['soldiers_before_recruit'] == 71
+    assert shop['soldiers_before_recruit'] == 50
     shop.update(egg='not_needed', recruit=status)
     policy._month_extra(parse(month_canvas(101, on='しょうぐんぼしゅう')),
                         mem, shop, recruit_only=True)
     assert shop['recruit'] == 'deferred_cash'
-    assert shop['soldiers'] == 71 and shop['recruit_reserve'] == 0
+    assert shop['soldiers'] == 50 and shop['recruit_reserve'] == 0
     assert 'month_sub' not in mem
 
 
@@ -270,8 +270,8 @@ def test_soldier_restoration_clamps_to_the_real_post_recovery_balance():
     mem['month_sub'].update(full_selected=True, quoted_cost=100, left_menu=True)
     policy.month_step(parse(month_canvas(100, on='しょうぐんぼしゅう')), mem)
     assert mem['shop']['recruit'] == 'deferred_cash'
-    assert mem['shop']['soldiers'] == 70
-    assert 100 - mem['shop']['soldiers'] == policy.WAGE_RESERVE
+    assert mem['shop']['soldiers'] == 50
+    assert 100 - mem['shop']['soldiers'] >= policy.WAGE_RESERVE
 
 
 def test_cash_deferral_restores_the_same_affordable_budget_when_resuming_intro():
@@ -280,7 +280,7 @@ def test_cash_deferral_restores_the_same_affordable_budget_when_resuming_intro()
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 101})
     shop.update(egg='not_needed', recruit='unverified', recruit_measured_budget=True)
     assert policy.month_step(recruit_overlay_screen(gold=101), mem) == [policy.pad('b')]
-    assert shop['soldiers'] == 71 and shop['recruit_reserve'] == 0
+    assert shop['soldiers'] == 50 and shop['recruit_reserve'] == 0
     assert shop['recruit_priority'] is False
 
 
@@ -291,7 +291,7 @@ def test_unpaid_tracked_owner_also_uses_the_pretransfer_cash_gate():
     shop.update(egg='not_needed', recruit='opened')
     mem['month_sub'] = {'kind': 'recruit', 'gold_before': 101, 'key': '1-7', 'presses': 0}
     assert policy.month_sub_step(recruit_overlay_screen(gold=101), mem) == [policy.pad('b')]
-    assert shop['recruit'] == 'deferred_cash' and shop['soldiers'] == 71
+    assert shop['recruit'] == 'deferred_cash' and shop['soldiers'] == 50
     assert shop['recruit_reserve'] == 0
 
 

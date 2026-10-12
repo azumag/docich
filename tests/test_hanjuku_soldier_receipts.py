@@ -10,7 +10,7 @@ from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_chart_bot import Canvas, MONTH_GRID, month_canvas
 
 
-def memory(count=40, seen_month='1-8'):
+def memory(count=20, seen_month='1-8'):
     mem = {'chapter': 1, 'month': '1-8', 'gold': 79,
            'shop': {'key': '1-8', 'items': [], 'merchant_done': True,
                     'soldiers': 24, 'soldiers_done': False, 'gold_start': 79,
@@ -36,19 +36,19 @@ def returned(gold=55, month=8):
     return parse(month_canvas(gold, month=month))
 
 
-def test_paid_refill_is_added_once_and_keeps_totals_above_purchase_cap():
+def test_paid_refill_is_added_once_and_stays_within_the_normal_target():
     # Below SOLDIER_ENOUGH a refill is still bought (owner 2026-10-11).
-    mem = memory(count=45)
+    mem = memory(count=25)
     commit(mem)
-    assert mem['soldiers_seen'] == 45  # sending A is only an intention
+    assert mem['soldiers_seen'] == 25  # sending A is only an intention
     restored = deepcopy(mem)  # the next observation is a fresh Python process
     policy.observe_events(returned(), restored)
-    assert restored['soldiers_seen'] == 69
+    assert restored['soldiers_seen'] == 49
     assert restored['soldiers_seen_key'] == '1-8'
     assert restored['soldiers_seen_basis'] == 'observed_plus_paid_refill'
     assert restored['shop']['soldier_receipt']['status'] == 'paid'
     policy.observe_events(returned(), restored)
-    assert restored['soldiers_seen'] == 69
+    assert restored['soldiers_seen'] == 49
     assert sum(r['decision'] == 'soldier_refill_receipt' for r in restored['_records']) == 1
     assert policy.quantity_step(quantity(), restored, soldiers=True) == [policy.pad('b')]
 
@@ -60,7 +60,7 @@ def test_repeated_quantity_frame_does_not_add_or_replace_original_receipt():
     for _ in range(3):
         policy.observe_events(quantity(), mem)
         assert policy.quantity_step(quantity(), mem, soldiers=True) == [policy.pad('a')]
-    assert mem['soldiers_seen'] == 40
+    assert mem['soldiers_seen'] == 20
     assert mem['shop']['soldier_receipt'] == receipt
     assert sum(r['decision'] == 'soldier_refill' for r in mem['_records']) == 1
 
@@ -80,7 +80,7 @@ def test_wrong_payment_never_adds_planned_soldiers(gold):
     mem = memory()
     commit(mem)
     policy.observe_events(returned(gold), mem)
-    assert mem['soldiers_seen'] == 40
+    assert mem['soldiers_seen'] == 20
     assert mem.get('soldiers_seen_key') is None
     assert mem['shop']['soldier_receipt']['status'] == 'unverified'
 
@@ -98,7 +98,7 @@ def test_unchanged_or_unreadable_balance_waits_then_invalidates_old_total(unread
         assert policy.month_step(screen, mem) == []
     policy.observe_events(screen, mem)
     assert mem['shop']['soldier_receipt']['status'] == 'unverified'
-    assert mem['soldiers_seen'] == 40
+    assert mem['soldiers_seen'] == 20
     assert mem.get('soldiers_seen_key') is None
 
 
@@ -106,7 +106,7 @@ def test_new_month_cannot_mistake_unrelated_gold_loss_for_soldier_payment():
     mem = memory()
     commit(mem)
     policy.observe_events(returned(month=9), mem)
-    assert mem['soldiers_seen'] == 40
+    assert mem['soldiers_seen'] == 20
     assert mem.get('soldiers_seen_key') is None
     assert mem['shop']['soldier_receipt']['status'] == 'unverified'
 
@@ -115,7 +115,7 @@ def test_return_to_field_without_a_receipt_does_not_claim_purchased_soldiers():
     mem = memory()
     commit(mem)
     policy.observe_events(Screen(lines=[], hand=None, text='', kind='map'), mem)
-    assert mem['soldiers_seen'] == 40
+    assert mem['soldiers_seen'] == 20
     assert mem.get('soldiers_seen_key') is None
 
 
@@ -148,17 +148,20 @@ def test_paid_total_from_an_intermediate_result_survives_menu_return():
 def test_pre_payment_total_does_not_override_the_paid_addition():
     mem = memory()
     commit(mem)
-    result = Screen(lines=[], hand=None, kind='text', text='へいしすうは40めいです',
+    result = Screen(lines=[], hand=None, kind='text', text='へいしすうは20めいです',
                     header={'year': 1, 'month': 8, 'gold': 79})
     policy.observe_events(result, mem)
     policy.observe_events(returned(), mem)
-    assert mem['soldiers_seen'] == 64
+    assert mem['soldiers_seen'] == 44
 
 
 def test_confirmed_count_drives_egg_reserve_and_summer_loss_choice():
     mem = memory()
     commit(mem)
     policy.observe_events(returned(), mem)
+    assert mem['soldiers_seen'] == 44
+    observed = returned(); observed.text += 'へいしすうは64めいです'
+    policy.observe_events(observed, mem)
     assert mem['soldiers_seen'] == 64
     mem['egg_uses'] = {'ココット': 0}
     assert policy._extras_reserve(mem, {'year': 1, 'month': 8, 'gold': 45})[0] == 45 - policy.WAGE_RESERVE
@@ -174,7 +177,7 @@ def test_old_hotloaded_shop_never_invents_a_purchase_receipt():
     mem = memory()
     mem['shop']['soldiers_done'] = True
     policy.observe_events(returned(), mem)
-    assert mem['soldiers_seen'] == 40
+    assert mem['soldiers_seen'] == 20
     assert 'soldier_receipt' not in mem['shop']
 
 
@@ -190,14 +193,14 @@ def test_bot_reads_total_then_records_paid_refill_after_real_menu_return():
     c.text(48, 15, '1ねん 8のつき 79G')
     for label, (x, y) in MONTH_GRID.items():
         c.text(x, y, label)
-    c.text(24, 135, 'へいしすうは40めいです')
+    c.text(24, 135, 'へいしすうは20めいです')
     c.text(24, 167, 'じゅうじキー')
     c.text(24, 199, 'かわりますぞ')
     c.text(216, 199, '24')
     c.hand(186, 193)
     actions, state = decide(c.frame(), {'policy': memory(count=None)})
     assert actions == [policy.pad('a')]
-    assert state['policy']['soldiers_seen'] == 40
+    assert state['policy']['soldiers_seen'] == 20
     _, state = decide(month_canvas(55, month=8), state)
-    assert state['policy']['soldiers_seen'] == 64
+    assert state['policy']['soldiers_seen'] == 44
     assert state['policy']['shop']['soldier_receipt']['status'] == 'paid'

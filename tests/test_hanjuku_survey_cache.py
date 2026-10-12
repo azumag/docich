@@ -46,6 +46,89 @@ def test_a_plain_field_return_does_not_reopen_any_general_status():
     assert not [rec for rec in mem.get('_records', []) if rec['decision'] == 'house_scan_started']
 
 
+def walked_large_roster(*, broken=False):
+    from test_hanjuku_recruit_roster import NAMES as large_names
+    names = large_names[:12]
+    mem = {'chapter': 1, 'month': '1-6', 'tick': 500, 'gold': 250,
+           '_run_identity': dict(IDENTITY), 'survey_run_identity': dict(IDENTITY),
+           'garrison': {'アルマムーン': list(names)},
+           'house': {'phase': 'status', 'chapter': 1, 'month_scan': True,
+                     'seen': [], 'pending': [], 'age': 0, 'total': 0}}
+    state = mem['house']
+    r.begin(mem, state)
+    for index, name in enumerate(names):
+        r.page(mem, names[:8] if index < 8 else names[4:])
+        state['selected'] = name
+        info = house._observe_status(parse(status(name,
+            egg='こわれている' if broken and name == 'ゼウス' else 'エラベルエッグ4')), mem)
+        assert info['general'] == name
+        state['seen'].append(name)
+        r.wage(mem, info)
+    assert not r.complete(mem, state)  # tail cursor did not prove the global total
+    house._finish(mem)
+    return mem
+
+
+def test_large_nonwrapping_roster_does_not_repeat_the_status_walk():
+    mem = walked_large_roster()
+    assert r.completed_survey(mem) is None
+    assert mem['recruit_roster']['complete'] is False
+    assert r.economics(mem, ['アルマムーン']) is None
+    assert r.reusable_survey(mem) is not None
+    assert house.step(MAP, mem, None) is None
+    assert 'house' not in mem
+
+
+def test_known_broken_general_in_partial_membership_skips_a_second_full_status_walk():
+    mem = walked_large_roster(broken=True)
+    assert house.step(MAP, mem, None) == []
+    assert mem['house']['phase'] == 'find_castle'
+    assert mem['house']['general'] == 'ゼウス'
+    assert mem['recruit_roster']['complete'] is False
+
+
+def test_changed_general_in_a_large_roster_is_the_only_status_target():
+    mem = walked_large_roster()
+    r.dirty_status(mem, ['ゼウス'], fields=('egg',))
+    assert house.step(MAP, mem, None) == [p.pad('x')]
+    assert mem['house']['status_targets'] == ['ゼウス']
+    mem['house']['phase'] = 'roster'
+    assert house.step(parse(roster(NAMES, 0)), mem, None) == [p.pad('down')]
+    assert house.step(parse(roster(NAMES, 1)), mem, None) == [p.pad('a')]
+    assert house.step(parse(status('ゼウス', egg='エラベルエッグ1')), mem, None) == [p.pad('b')]
+    assert r.recheck_targets(mem) == []
+    assert mem['recruit_roster']['complete'] is False
+
+
+def test_same_unread_location_is_not_immediately_reopened_after_one_recheck():
+    mem = completed()
+    r.dirty_status(mem, ['ゼウス'])
+    screen = parse(status('ゼウス', egg='エラベルエッグ4'))
+    screen.text = screen.text.replace('しろのなかにいます', '')
+    house._observe_status(screen, mem)
+    assert mem['roster_survey']['dirty'] == {'ゼウス': ['location']}
+    assert r.recheck_targets(mem) == []  # preserve unknown location, no blind repeat
+    assert house.step(MAP, mem, None) is None
+    r.dirty_status(mem, ['ゼウス'], fields=('location',))
+    assert r.recheck_targets(mem) == ['ゼウス']  # a new actual change permits a new read
+
+
+@pytest.mark.parametrize('change', ['run', 'month', 'chapter', 'join', 'unknown_page'])
+def test_partial_status_walk_never_survives_an_invalidated_scope_or_membership(change):
+    mem = walked_large_roster()
+    if change == 'run':
+        mem['_run_identity']['generation'] = 2
+    elif change == 'month':
+        mem['month'] = '1-7'
+    elif change == 'chapter':
+        mem['chapter'] = 2
+    elif change == 'join':
+        r.invalidate(mem)
+    else:
+        r.page(mem, ['エシャロット'])
+    assert r.reusable_survey(mem) is None
+
+
 def test_known_broken_egg_goes_directly_to_the_existing_repair_guards():
     mem = completed(broken=True)
     assert house.step(MAP, mem, None) == []

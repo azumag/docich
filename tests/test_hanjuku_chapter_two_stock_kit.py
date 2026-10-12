@@ -20,7 +20,7 @@ def order():
 
 def memory():
     return {'chapter': 2, 'active': '2-B1', 'tick': 5000,
-            'sortie_general': {'2-B1': p.NAME}, 'picked': [],
+            'sortie_general': {'2-B1': 'ゼウス'}, 'picked': [],
             'garrison': {'スペランザ': [p.NAME]}}
 
 
@@ -81,17 +81,21 @@ def test_other_chapters_orders_and_targets_keep_their_chart_kit(change):
     assert not mem.get('rare_card_kit')
 
 
-def test_native_three_card_receipt_confirms_the_installed_exact_kit():
+def test_native_hero_kit_is_read_but_cannot_authorize_a_hero_boss_departure():
     mem = memory(); p._chapter_two_balmung_inventory(mem, order(), inventory())
     screen = parse(read_png(F / 'g700-balmung-kit-confirm.png'))
     assert p._sortie_inventory(screen) == KIT
-    assert p.deploy_step(screen, mem) == [p.pad('a')]
-    assert mem['order_context']['2-B1']['observed_metric']['cards'] == sorted(KIT)
+    mem['sortie_general']['2-B1'] = p.NAME
+    assert p.deploy_step(screen, mem) == [p.pad('b'), p.pad('b')]
+    assert not mem.get('order_context')
+    assert mem['_records'][-1]['decision'] == 'boss_companion_required'
 
 
 def confirmed():
     mem = memory(); p._chapter_two_balmung_inventory(mem, order(), inventory())
-    p.deploy_step(parse(read_png(F / 'g700-balmung-kit-confirm.png')), mem)
+    from test_hanjuku_sortie_evidence import actor_panel
+    # Synthetic actor substitution retains the native card-slot calibration.
+    p.deploy_step(actor_panel(parse(read_png(F / 'g700-balmung-kit-confirm.png')), 'ゼウス'), mem)
     return mem
 
 
@@ -169,7 +173,8 @@ def test_restart_backs_out_before_reselecting_and_is_bounded():
 
 def test_restart_flag_is_cleared_on_full_backout_and_other_order(monkeypatch):
     mem = memory(); mem['boss_stock_restart'] = {'step': 'other', 'readings': 1}
-    p.deploy_step(parse(read_png(F / 'g700-balmung-stock-panel.png')), mem)
+    from test_hanjuku_sortie_evidence import actor_panel
+    p.deploy_step(actor_panel(parse(read_png(F / 'g700-balmung-stock-panel.png')), 'ゼウス'), mem)
     assert not mem.get('boss_stock_restart')
     assert p._deploy_cards(order(), mem) == KIT
     mem = memory(); mem['boss_stock_restart'] = {'step': '2-B1', 'readings': 2}
