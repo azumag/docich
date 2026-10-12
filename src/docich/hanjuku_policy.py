@@ -5935,6 +5935,10 @@ def _disabled_defense_probe(screen, mem, cur):
                    ('chapter', 'start_ally_hp', 'start_enemy_hp'))
             or probe.get('closed')
             or type(probe.get('downs')) is not int or not 0 <= probe['downs'] < 2):
+        # Exhaustion/malformed scope tightens into close-only ownership. A
+        # failed B must not release the next unread foreground to generic A.
+        cur['disabled_defense_probe'] = {**scope, 'downs': 2, 'closed': True,
+                                        'pending': True, 'unread': 3}
         return [pad('b')]  # no reset of a malformed, stale or exhausted persisted inspection
     probe['downs'] += 1
     probe.update(pending=True, unread=0)
@@ -5952,6 +5956,9 @@ def _disabled_defense_pending(screen, mem, cur):
     probe = cur.get('disabled_defense_probe')
     if not isinstance(probe, dict) or probe.get('pending') is not True:
         return None
+    if any(type(cur.get(k)) is int and cur[k] <= 0 for k in ('ally_hp', 'enemy_hp')):
+        probe.update(pending=False, closed=True)
+        return None  # a measured battle end belongs to the result/dialogue handler
     identity = run_identity(mem.get('_run_identity'))
     valid = (identity is not None and run_identity(probe.get('identity')) == identity
              and type(probe.get('chapter')) is int and probe['chapter'] == mem.get('chapter')
@@ -5961,11 +5968,13 @@ def _disabled_defense_pending(screen, mem, cur):
              and cur.get('side') == 'defense'
              and cur.get('ally') not in (None, NAME, 'しゅじんこう', 'だいじん'))
     if screen.kind in ('unknown', 'text', 'battle_menu_pending'):
+        if valid and probe.get('closed') is True:
+            return [pad('b')]  # a planned close is not evidence that the unread menu closed
         unread = probe.get('unread')
         if valid and type(unread) is int and 0 <= unread < 3:
             probe['unread'] = unread + 1
             return [{'type': 'wait', 'ms': 50}]
-        probe.update(pending=False, closed=True)
+        probe.update(pending=bool(valid), closed=True)
         return [pad('b')]
     probe['pending'] = False
     if not valid:

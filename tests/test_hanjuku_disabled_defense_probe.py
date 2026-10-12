@@ -142,6 +142,8 @@ def test_fading_probe_waits_boundedly_then_closes_without_unknown_a(kind):
         assert p.defender_egg_pending_step(fade, mem) == [{'type': 'wait', 'ms': 50}]
     mem = json.loads(json.dumps(mem))
     assert p.defender_egg_pending_step(fade, mem) == [p.pad('b')]
+    for _ in range(3):
+        assert p.defender_egg_pending_step(fade, mem) == [p.pad('b')]
     assert p.battle_menu_step(native(30774), mem) == [p.pad('b')]
 
 
@@ -176,5 +178,16 @@ def test_bot_integration_keeps_unknown_fade_from_default_confirmation():
         state = json.loads(json.dumps(state))
     actions, state = decide(fade, state, run_identity=IDENTITY)
     assert actions == [p.pad('b')]
+    for _ in range(3):
+        actions, state = decide(fade, state, run_identity=IDENTITY)
+        assert actions == [p.pad('b')]
     actions, state = decide(frame, state, run_identity=IDENTITY)
     assert actions == [p.pad('b')]
+
+
+def test_measured_battle_end_releases_close_only_owner_to_result_handler():
+    for field in ('ally_hp', 'enemy_hp'):
+        mem = memory(); p.battle_menu_step(native(30774), mem)
+        mem['battle'][field] = 0
+        assert p.defender_egg_pending_step(Screen([], None, '結果', kind='text'), mem) is None
+        assert not mem['battle']['disabled_defense_probe']['pending']
