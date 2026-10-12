@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v172-owned-sortie-backout'
+BOT_VERSION = 'hanjuku-chart-v173-resume-sortie-menu'
 
 # Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
 # frozen and the bot has planned no input for more than this many observations,
@@ -345,7 +345,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # A planned summon-preemption must not become a blind A on an unfinished
     # command menu, or be replaced by an old monthly/house transaction.
     policy.note_duel_event(screen, mem)
-    actions = policy.boss_stock_restart_step(screen, mem)
+    actions = policy.resume_sortie_step(screen, mem)
+    if actions is None:
+        actions = policy.boss_stock_restart_step(screen, mem)
     if actions is None:
         actions = policy.defender_egg_pending_step(screen, mem)
     if actions is None:

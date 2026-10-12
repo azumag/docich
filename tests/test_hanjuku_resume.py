@@ -332,6 +332,20 @@ def test_native_starter_checkpoint_restores_without_inventing_chapter(setup):
     assert 'garrison' not in policy and 'chapter' not in policy
 
 
+def test_native_mid_selection_checkpoint_restores_with_only_fresh_cancellation_owner(setup):
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_screen import parse
+    frame=read_png(Path(__file__).parent/'fixtures/hanjuku/g706-resume-card-select.png')
+    assert parse(frame).kind=='card_select' and not parse(frame).header
+    restore_test(setup,chapter=None,native_frame=frame)
+    receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
+    assert receipt['status']=='verified' and receipt['chapter'] is None
+    policy=read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy']
+    assert policy=={'name':{'done':True},'resume_chapter_pending':True,
+                   'resume_sortie_cancel':{'readings':0}}
+    assert setup.source.read_bytes()==compressed(state_bytes())
+
+
 def test_starter_resume_seed_uses_live_selected_row_and_never_issues_sortie(setup):
     from docich.hanjuku_pixels import read_png
     from docich.hanjuku_bot import decide

@@ -3511,6 +3511,41 @@ def _keep_sortie_defender(screen, mem, order):
         {'present': present[:8], 'available': sorted(available)})
 
 
+def resume_sortie_step(screen: Screen, mem):
+    """Close only the verified restored menu before fresh chapter/route survey."""
+    pending = mem.get('resume_sortie_cancel')
+    if not isinstance(pending, dict):
+        return None
+    if mem.get('chapter') and not mem.get('resume_chapter_pending'):
+        mem.pop('resume_sortie_cancel', None)
+        mem['world_map_due'] = True
+        return None
+    if screen.kind in {'battle', 'battle_menu', 'egg_battle_menu', 'egg_choice_menu',
+                       'monster_menu', 'okunote_menu', 'attack_started', 'defense_started',
+                       'field_encounter_started', 'month_menu'}:
+        return None
+    from .hanjuku_screen import resume_sortie_panel
+    pending['readings'] = min(12, int(pending.get('readings') or 0) + 1)
+    if screen.kind == 'castle_menu' and pending['readings'] < 12:
+        move = menu_to(screen, 'ステータス')
+        if move is not None:
+            _record(mem, 'resume_sortie_cancel', screen=screen.kind,
+                    observed_metric={'readings': pending['readings'], 'chapter': None,
+                                     'read_only_choice': 'ステータス'},
+                    reason='出撃を取り消した城の実ステータスを開いて章を確認する')
+            return [pad('a')] if move == 'here' else [move]
+    safe_cancel = (resume_sortie_panel(screen)
+                   or screen.kind == 'general_list')
+    if not safe_cancel or pending['readings'] >= 12:
+        _record(mem, 'situation_held', screen=screen.kind,
+                reason='復元後の出撃画面を閉じた証拠と章を確認できないため承認せず保留')
+        return []
+    _record(mem, 'resume_sortie_cancel', screen=screen.kind,
+            observed_metric={'readings': pending['readings'], 'chapter': None},
+            reason='章表示のない復元済み出撃メニューを承認せず閉じて再観測する')
+    return [pad('b')]
+
+
 def boss_stock_restart_step(screen: Screen, mem):
     """Keep ownership of a partly read sortie confirmation while backing out."""
     rows = {line.y: line for line in screen.lines}

@@ -333,13 +333,14 @@ def restore(adapter, deadline, cancel):
     send_ra_cmd('FRAMEADVANCE', port=adapter._network_port())
     from .xkit import XKit
     from .hanjuku_pixels import read_png
-    from .hanjuku_screen import fake_hero_announcement_chapter, parse
+    from .hanjuku_screen import fake_hero_announcement_chapter, parse, resume_sortie_panel
     native = read_record(spec.runtime_dir / 'presentation.json')
     capture = spec.runtime_dir / 'screenshots/resume.png'
     capture.parent.mkdir(exist_ok=True)
     chapter = None
     starter_without_chapter = False
-    while chapter is None and not starter_without_chapter:
+    sortie_without_chapter = False
+    while chapter is None and not starter_without_chapter and not sortie_without_chapter:
         adapter._check_active(deadline, cancel)
         time.sleep(.05)
         reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
@@ -360,13 +361,17 @@ def restore(adapter, deadline, cancel):
             from .hanjuku_starter import rows
             upper, lower = rows(screen), rows(screen, selected=True)
             starter_without_chapter = upper is not None and bool(upper) and lower is not None
-    # A transition's party picker does not display a chapter. Its visible
-    # names are sufficient to resume selection, never to seed old route state.
+        elif observed is None and resume_sortie_panel(screen):
+            sortie_without_chapter = True
+    # Party selection and verified sortie menus have no chapter. Seed only
+    # their measured foreground owner; chapter and route need fresh evidence.
     policy = {'name': {'done': True}}
     if chapter is not None:
         policy['chapter'] = chapter
     else:
         policy['resume_chapter_pending'] = True
+        if sortie_without_chapter:
+            policy['resume_sortie_cancel'] = {'readings': 0}
     atomic_write_json(spec.runtime_dir / 'hanjuku_bot.json', {'policy': policy})
     adapter._check_active(deadline, cancel)
     send_ra_cmd('PAUSE_TOGGLE', port=adapter._network_port())
