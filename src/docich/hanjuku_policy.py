@@ -8879,11 +8879,24 @@ def _egg_recovery_step(screen, mem, sub):
             move = menu_to(screen, actor)
             if move == 'here':
                 from .hanjuku_roster import run_identity
+                readings = [cells.get(104) for line in screen.lines
+                            if (cells := dict(line.spans())).get(32) == actor
+                            and 47 < line.y <= 199]
+                if len(readings) != 1 or readings[0] not in ('0', '1'):
+                    return []  # duplicate/unread named rows cannot bind an individual quote
+                # This is the actual list quantity, not a planned use/payment.
+                quantity = int(readings[0])
+                mem.setdefault('egg_uses', {})[actor] = quantity
+                if quantity == 0:
+                    mem['egg_zero_owners'] = sorted(set(mem.get('egg_zero_owners') or []) | {actor})[:32]
+                else:
+                    _own_egg_empty(mem, {'ally': actor})  # named actual positive may release a prior zero
                 sub.update(individual_actor=actor, individual_selected=True,
                            individual_identity=run_identity(mem.get('_run_identity')),
                            individual_chapter=mem['chapter'], full_selected=False)
                 _record(mem, 'egg_recover_select', choice=actor,
-                        observed_metric={'gold': sub.get('gold_before'), 'cost_pending_quote': EGG_RECOVER_COST},
+                        observed_metric={'gold': sub.get('gold_before'), 'quantity_seen': quantity,
+                                         'cost_pending_quote': EGG_RECOVER_COST},
                         reason='全回復を払えないため、実一覧の残数0・少数の将軍の卵だけを選び費用を確認する')
                 return [pad('a')]
             return [move] if move else []

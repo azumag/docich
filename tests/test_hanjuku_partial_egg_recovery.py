@@ -175,3 +175,20 @@ def test_fading_quote_after_individual_confirm_does_not_resubmit_or_drop_ownersh
         assert not sub.get('aborted') and sub['stage'] == 'recovering'
     assert p._finish_month_sub(ready_menu(), mem, mem['shop'])
     assert mem['shop']['egg_paid_actors'] == ['ココット']
+
+
+def test_actual_zero_list_overrules_stale_positive_and_survives_payment():
+    mem = memory(); mem['egg_uses']['ココット'] = 1
+    assert p._egg_recovery_step(recovery_list(), mem, mem['month_sub']) == [p.pad('a')]
+    assert mem['egg_uses']['ココット'] == 0 and p._own_egg_empty(mem, {'ally': 'ココット'})
+    p._egg_recovery_step(quote(), mem, mem['month_sub'])
+    p._finish_month_sub(ready_menu(), mem, mem['shop'])
+    assert p._own_egg_empty(mem, {'ally': 'ココット'})
+
+
+def test_duplicate_named_quantities_cannot_bind_an_individual_selection():
+    from docich.hanjuku_font import TextLine
+    mem = memory(); screen = recovery_list()
+    screen.lines.append(TextLine(119, tuple((32+8*i, ch) for i, ch in enumerate('ココット')) + ((104, '0'),)))
+    assert p._egg_recovery_step(screen, mem, mem['month_sub']) == []
+    assert not mem['month_sub'].get('individual_selected')
