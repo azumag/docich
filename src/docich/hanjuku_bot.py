@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v182-recovery-list-return'
+BOT_VERSION = 'hanjuku-chart-v184-ritual-foreground'
 
 # Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
 # frozen and the bot has planned no input for more than this many observations,
@@ -345,7 +345,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # A planned summon-preemption must not become a blind A on an unfinished
     # command menu, or be replaced by an old monthly/house transaction.
     policy.note_duel_event(screen, mem)
-    actions = policy.resume_sortie_step(screen, mem)
+    actions = policy.resume_egg_ritual_step(screen, mem)
+    if actions is None:
+        actions = policy.resume_sortie_step(screen, mem)
     if actions is None:
         actions = policy.boss_stock_restart_step(screen, mem)
     if actions is None:
@@ -487,7 +489,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         streak=int(updated.get('no_input_streak') or 0)+1
     else:
         streak=1
-    if not actions and streak>NO_INPUT_HOLD_MAX:
+    if (not actions and streak>NO_INPUT_HOLD_MAX
+            and not isinstance(mem.get('resume_egg_ritual'), dict)):
         # Even this last-resort path must not confirm an unread summer option:
         # the cursor may be on the mass-dismissal row. Reobserve after one move.
         # These recognized events must never borrow a scripted scene's blind A.
