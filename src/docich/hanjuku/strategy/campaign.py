@@ -42,7 +42,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                 'indep_menu_key', 'indep_menu_action',
                 'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
-                'monster_menu_choice', 'monster_menu_choice_key', 'monster_panel'):
+                'monster_menu_choice', 'monster_menu_choice_key', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_panel'):
         mem.pop(key, None)
     mem['chapter'] = chapter
     mem['chapter_evidence'] = evidence or 'header'

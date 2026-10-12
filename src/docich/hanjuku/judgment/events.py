@@ -65,3 +65,23 @@ def _monster_effectful(skill: str) -> bool:
 
 def _monster_heal(skill: str) -> bool:
     return _fold_skill(skill) in _MONSTER_HEALS
+
+
+def _monster_damage_second(owner, ally, enemy, skills) -> bool:
+    """Prefer an owned regular attack to instant death against a known monster.
+
+    Preserve Excalibur's existing rule. Unicorn needs positive measured HP
+    on both sides and its complete two-skill pair; unknown ownership or HP
+    never enables the new rule. Retreat remains the caller's priority.
+    """
+    if (owner != 'ally' or ally is None or enemy is None
+            or ally.name not in ('エクスカリバー', 'ユニコーン')
+            or enemy.name not in _MONSTER_SKILLS):
+        return False
+    if ally.name == 'ユニコーン' and not (
+            type(ally.hp) is int and ally.hp > 0
+            and type(enemy.hp) is int and enemy.hp > 0):
+        return False
+    return (len(skills) == 2
+            and [_fold_skill(s) for s in skills]
+            == [_fold_skill(s) for s in reference.MONSTER_SKILLS[ally.name]])
