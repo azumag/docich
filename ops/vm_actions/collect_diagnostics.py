@@ -6918,6 +6918,7 @@ def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=Non
                   owner_matches=None, owner_terminal=None, legacy_contract_applicable=None,
                   contract_conditions=None,
                   restore_recovery_present=None, cleanup_record_present=None,
+                  adopted_return_record_present=None,
                   cleanup_attempt_present=None, chronology_matches=None, terminal_chain_matches=None,
                   manual_clear=None, original_receipt=None, original_boundary=None,
                   return_receipt=None, return_boundary=None, canonical=None,
@@ -6945,12 +6946,13 @@ def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=Non
                                    and type(owner.get('schema_version')) is int
                                    and owner['schema_version'] == 1 and owner.get('game') == 'nethack')
         result['owner_terminal'] = owner.get('status') in {'failed', 'interrupted'}
-        result.update(restore_recovery_present='restore_recovery' in owner,
+        result.update(adopted_return_record_present='nethack_adopted_return' in owner,
+                      restore_recovery_present='restore_recovery' in owner,
                       cleanup_record_present='restore_cleanup' in owner,
                       cleanup_attempt_present='restore_cleanup_attempt' in owner)
         result['legacy_contract_applicable'] = (owner.get('previous_game', 'sorengame') == 'sorengame'
             and owner.get('finish_reason') == 'terminal'
-            and all(k not in owner for k in ('restore_recovery', 'restore_cleanup', 'restore_cleanup_attempt')))
+            and all(k not in owner for k in ('restore_recovery', 'restore_cleanup', 'restore_cleanup_attempt', 'nethack_adopted_return')))
         result['manual_clear'] = (ledger.get('manual_pending') is None
             and (manual is None or (type(manual.get('schema_version')) is int
                                    and manual['schema_version'] == 1

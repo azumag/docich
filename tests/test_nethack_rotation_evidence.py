@@ -94,6 +94,17 @@ class RotationEvidenceTests(unittest.TestCase):
         return diag._collect_nethack_rotation_evidence(self.root, self.now,
             player='fixture_player', probe=kwargs.pop('probe', lambda _: True), **kwargs)
 
+    def test_adopted_record_is_presence_only_and_never_exposes_its_contents(self):
+        self.owner['nethack_adopted_return'] = {'phase': 'committed', 'private': 'SECRET_ADOPTED_TOKEN'}
+        self.write('nethack_corner.json', self.owner)
+        before = self.snapshot()
+        result = self.collect()
+        self.assertIs(result['adopted_return_record_present'], True)
+        self.assertIs(result['recovery_authority'], False)
+        self.assertIs(result['legacy_contract_applicable'], False)
+        self.assertNotIn('SECRET_ADOPTED_TOKEN', json.dumps(result))
+        self.assertEqual(before, self.snapshot())
+
     def test_bound_terminal_chain_and_unknown_detached_resources(self):
         result = self.collect()
         self.assertEqual(result['status'], 'observed')

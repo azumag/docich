@@ -1,0 +1,11 @@
+# 稼働候補採用後の自動NetHack枠の確定
+
+自動NetHack枠の終了後にSorenへの復帰が失敗し、稼働中だった同じSoren候補を既存の `recover --adopt-failed-candidate` で採用すると、切替はreadyでも元のfailed receiptと予約が残る場合がある。通常の `recover-failed-rotation` はrolled_back receiptを対象としており、この別経路を同じものと扱わない。
+
+採用後の確定では、元予約・実終了時刻・元のfailed復帰receipt・そのreceiptと同じ世代とruntimeの稼働中Soren・canonicalの採用結果と完全なlease・後片付け完了を照合する。元NetHackのrequestに結合したboundaryと、元のprivate tmux sessionが消滅したことも確認する。boundaryのsuspendedは保存休止であり死亡を意味しない。未確認のprobe、別actor/予約/世代/lease、残存resource、manual枠、未知boundaryは拒否する。
+
+`nethack_adopted_return` をprepared→committedで記録し、元ownerだけをinterruptedとして確定する。ゲーム起動・再起動・入力・receipt改訂・保存データの改訂は行わない。途中の保存失敗や外部差分では、同じ証拠を再照合できるまで確定しない。rotationの予約commitにも既存のtick/corner/canonical lockを保持した確認を適用する。共有配信・音声・ユーザーの休止は操作しない。
+
+正規操作は既存の `corner-rotation-operator/recover-failed` を使う。操作前にcurrent protected mainとcanonical配備・対象旧SHA/backup/現物SHA、対象予約・同源runtime・probe・共有PIDを確認し、操作後に同じ予約の履歴確定と再実行なしを照合する。単にcore切替がreadyなだけではrotationを復旧済みとしない。診断の `adopted_return_record_present` は記録の存在のみで、復旧の許可や検証済みという意味ではない。
+
+現在のテストは合成caller/永続化境界であり実VM確定ではない。保存したVM metadataのローカル照合ではruntime_dirだけをローカルへ付け替えているため、その再生を実VM操作や自然-run受入とは扱わない。通常PR・最新HEADのCI・protected main・canonical gatewayを経て初めて本番操作を検証する。
