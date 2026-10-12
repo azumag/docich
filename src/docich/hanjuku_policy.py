@@ -5408,6 +5408,7 @@ def _hold_melee_egg(mem, cur, labels):
     Unknown/old counts or stats do not prove advantage; summons/critical HP win.
     """
     if (_critical_survival_needed(cur)
+            or _own_egg_empty(mem, cur)
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
             or cur.get('card_soldiers_current') is not True
             or cur.get('egg_battle') or mem.get('egg_battle')
@@ -5955,10 +5956,17 @@ def battle_menu_step(screen: Screen, mem):
     # chart-directed cards and never chosen blindly here).
     exp = mem.get('_experience')
     key = experience.situation_key('battle_menu', mem)
+    balance = _melee_balance(cur)
+    combat_unknown = (not (cur.get('egg_battle') or cur.get('card_summon_observed'))
+                      and all(isinstance(cur.get(k), str) for k in ('ally', 'enemy'))
+                      and all(type(cur.get(k)) is int and cur[k] > 0 for k in ('ally_hp', 'enemy_hp'))
+                      and any(balance[k] is None for k in ('ally_combat', 'enemy_combat')))
     if not mem.get('indep_menu'):
         mem['indep_menu'] = True
         default = 'use_egg' if _behind(cur) and not _own_egg_empty(mem, cur) else 'pass'
         action = experience.preferred(exp, key, default=default, kind='battle_menu')
+        if combat_unknown and not _own_egg_empty(mem, cur):
+            action = 'use_egg'
         if action == 'use_egg' and (_own_egg_empty(mem, cur)
                                   or _hold_melee_egg(mem, cur, {w for _, _, w in _options(screen)})):
             action = 'pass'
@@ -5982,6 +5990,13 @@ def battle_menu_step(screen: Screen, mem):
                 reason='チャートが当該フレームに切り札を指示していないための独自判断（原典戦術'
                        + pattern + 'に相当）')
     action = mem.get('indep_menu_action', 'pass')
+    if action == 'pass' and combat_unknown and not _own_egg_empty(mem, cur):
+        action = mem['indep_menu_action'] = 'use_egg'
+        mem['indep_menu_key'] = key
+        if isinstance(cur.get('independent'), dict):
+            cur['independent'].update(action=action, key=key)
+        _record(mem, 'battle_combat_recheck', observed_metric={'melee_balance': balance},
+                reason='将軍の戦闘値が未知のため、保存済みの見送りを実メニューの卵対処へ戻す')
     if action == 'use_egg' and _hold_melee_egg(mem, cur, {w for _, _, w in _options(screen)}):
         mem['indep_menu_action'] = 'pass'
         return [pad('b')]

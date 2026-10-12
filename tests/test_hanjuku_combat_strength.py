@@ -203,3 +203,52 @@ def test_conservation_stops_menu_tours_but_new_critical_hp_reopens_rescue(later_
             assert actions == [p.pad('b')]
             break
     assert cur['survival']['egg_attempted'] is False
+
+
+@pytest.mark.parametrize('uses', [0, 1, None])
+def test_observed_zero_is_not_a_conserved_rescue_resource(uses):
+    cur = duel(ally='チコリ', enemy='カシュー', hp=18, enemy_hp=24)
+    mem = {'chapter': 1, 'battle': cur, 'egg_uses': {'チコリ': uses}}
+    assert p.battle_menu_step(menu(('たまごをつかう', 'たいきゃく')), mem) == [p.pad('b')]
+    if uses == 0:
+        assert cur['survival']['exhausted'] is True
+        assert not cur['survival'].get('conserving_melee')
+        assert p._hero_retreat_needed(cur)
+    else:
+        assert cur['survival']['conserving_melee'] is True
+        assert cur['survival']['exhausted'] is False
+        assert not p._hero_retreat_needed(cur)
+    assert cur['survival']['egg_attempted'] is False
+
+
+def test_hotloaded_conservation_rechecks_a_new_named_zero_before_continuing():
+    from test_hanjuku_card_damage_gate import panel
+    cur = duel(ally='チコリ', enemy='カシュー', hp=18, enemy_hp=24)
+    cur.update(step=None, castle=None, tactics_done=[], cards_selected=[], cards_unclassified=[])
+    mem = {'chapter': 1, 'battle': cur, 'egg_uses': {'チコリ': 1}}
+    p.battle_menu_step(menu(('たまごをつかう', 'たいきゃく')), mem)
+    mem['egg_uses']['チコリ'] = 0
+    assert not p._hold_melee_egg(mem, cur, {'たまごをつかう'})
+    assert p.battle_step(panel(mem, soldiers=(0, 0)), mem) == [p.pad('b')]
+    p.battle_menu_step(menu(('たまごをつかう', 'たいきゃく')), mem)
+    assert cur['survival']['exhausted'] is True and p._hero_retreat_needed(cur)
+
+
+@pytest.mark.parametrize('cached', [False, True])
+@pytest.mark.parametrize('uses,expected', [(1, 'use_egg'), (0, 'pass')])
+def test_unknown_combat_overrides_learned_or_saved_pass_without_unlocking_zero(cached, uses, expected):
+    from docich import hanjuku_experience as e
+    cur = duel(ally='未確認', enemy='ミント', hp=39, enemy_hp=18)
+    mem = {'chapter': 1, 'battle': cur, 'egg_uses': {'未確認': uses}}
+    key = e.situation_key('battle_menu', mem)
+    mem['_experience'] = {'schema': 1, 'situations': {key: {'kind': 'battle_menu', 'actions': {
+        'pass': {'wins': 20, 'losses': 0}, 'use_egg': {'wins': 0, 'losses': 5}}}}}
+    if cached:
+        mem.update(indep_menu=True, indep_menu_action='pass', indep_menu_key=key)
+        cur['independent'] = {'kind': 'battle_menu', 'key': key, 'action': 'pass'}
+    actions = p.battle_menu_step(menu(('たまごをつかう',)), mem)
+    assert mem['indep_menu_action'] == expected
+    assert actions == [p.pad('a' if uses else 'b')]
+    assert mem['egg_uses']['未確認'] == uses
+    if cached:
+        assert cur['independent']['action'] == expected
