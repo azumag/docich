@@ -8928,7 +8928,8 @@ def _egg_recovery_step(screen, mem, sub):
             # g713 UID18041: an individually selected egg shows a priest's
             # flat fee, not the full-recovery NこでNG wording. One egg comes
             # from the bound actual actor, never from an invented screen count.
-            if ((individual or hero_bound) and sub.get('kind') == 'egg'
+            flat_owner_bound = hero_bound if hero_only else individual
+            if (flat_owner_bound and sub.get('kind') == 'egg'
                     and isinstance(sub.get('key'), str)
                     and sub.get('key') == mem.get('month') == (mem.get('shop') or {}).get('key')
                     and all(type((screen.header or {}).get(k)) is int for k in ('year', 'month'))
@@ -8986,6 +8987,9 @@ def _egg_recovery_step(screen, mem, sub):
                 from .hanjuku_roster import run_identity
                 sub['hero_selected'] = True
                 sub['full_selected'] = False
+                for key in ('individual_selected', 'individual_actor',
+                            'individual_identity', 'individual_chapter'):
+                    sub.pop(key, None)
                 sub.pop('hero_identity', None)
                 sub.pop('hero_chapter', None)
                 readings = [dict(l.spans()).get(104) for l in screen.lines

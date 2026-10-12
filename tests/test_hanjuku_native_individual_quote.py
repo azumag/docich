@@ -133,3 +133,43 @@ def test_reselecting_an_unread_hero_row_drops_the_prior_flat_fee_binding():
     assert p._egg_recovery_step(parse(c.frame()),m,m['month_sub'])==[p.pad('a')]
     assert 'hero_identity' not in m['month_sub']
     assert p._egg_recovery_step(fee(),m,m['month_sub'])==[p.pad('b')]
+
+
+def select_hero_after_general(m, quantity):
+    m['egg_uses'][p.NAME]=0
+    c=Canvas();c.text(48,15,'3ねん 12のつき 215G');c.text(32,47,'ぜんかいふく')
+    c.text(32,71,p.NAME);c.hand(10,65)
+    if quantity=='duplicate':
+        c.text(104,71,'0');c.text(32,95,p.NAME);c.text(104,95,'0')
+    elif quantity is not None:
+        c.text(104,71,quantity)
+    assert p._egg_recovery_step(parse(c.frame()),m,m['month_sub'])==[p.pad('a')]
+
+
+@pytest.mark.parametrize('quantity',[None,'duplicate'])
+def test_unread_or_duplicate_hero_cannot_borrow_the_previous_generals_binding(quantity):
+    m=selected();select_hero_after_general(m,quantity)
+    assert m['month_sub']['hero_selected']
+    assert not any(k in m['month_sub'] for k in
+                   ('individual_selected','individual_actor','individual_identity','individual_chapter'))
+    assert 'hero_identity' not in m['month_sub']
+    assert p._egg_recovery_step(fee(),m,m['month_sub'])==[p.pad('b')]
+    assert m['egg_uses']['ココット']==0 and not m['month_sub'].get('quoted_cost')
+
+
+def test_read_hero_replaces_general_binding_and_payment_belongs_only_to_hero():
+    m=selected();select_hero_after_general(m,'0')
+    assert m['month_sub']['hero_identity']==ID
+    assert not p._individual_egg_selected(m,m['month_sub'])
+    assert p._egg_recovery_step(fee(),m,m['month_sub'])==[p.pad('a')]
+    assert m['_records'][-1]['choice']==p.NAME
+    assert p._finish_month_sub(ready(),m,m['shop'])
+    assert m['shop']['egg_paid_actors']==[p.NAME]
+    assert m['egg_uses']['ココット']==0 and p._own_egg_empty(m,{'ally':p.NAME})
+
+
+def test_saved_mixed_flags_cannot_authorize_hero_fee_with_only_a_general_binding():
+    m=selected();m['month_sub']['hero_selected']=True
+    assert p._individual_egg_selected(m,m['month_sub'])
+    assert p._egg_recovery_step(fee(),m,m['month_sub'])==[p.pad('b')]
+    assert not m['month_sub'].get('quoted_cost')
