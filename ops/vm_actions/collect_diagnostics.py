@@ -3599,7 +3599,7 @@ def _project_corner_state(data):
                 "hanjuku-chart-v168-general-repair-budget",
                 "hanjuku-chart-v169-repair-interruption",
                 "hanjuku-chart-v170-chapter-two-boss",
-                "hanjuku-chart-v173-resume-sortie-menu", "hanjuku-chart-v174-status-reuse-hero-guard", "hanjuku-chart-v175-combat-aware-force", "hanjuku-chart-v176-individual-egg-recovery", "hanjuku-chart-v177-continuous-chikujou", "hanjuku-chart-v178-native-individual-quote", "hanjuku-chart-v179-soldier-team-reading", "hanjuku-chart-v180-disabled-defense-probe", "hanjuku-chart-v181-merchant-reserve", "hanjuku-chart-v182-recovery-list-return", "hanjuku-chart-v184-ritual-foreground"} else None),
+                "hanjuku-chart-v173-resume-sortie-menu", "hanjuku-chart-v174-status-reuse-hero-guard", "hanjuku-chart-v175-combat-aware-force", "hanjuku-chart-v176-individual-egg-recovery", "hanjuku-chart-v177-continuous-chikujou", "hanjuku-chart-v178-native-individual-quote", "hanjuku-chart-v179-soldier-team-reading", "hanjuku-chart-v180-disabled-defense-probe", "hanjuku-chart-v181-merchant-reserve", "hanjuku-chart-v182-recovery-list-return", "hanjuku-chart-v184-ritual-foreground", "hanjuku-chart-v185-layered"} else None),
         "bot_chart": _project_bot_chart(data.get("bot_chart")),
         "narration": _project_counts(data.get("narration"),
                                      ("enqueued", "delivery_failed", "skipped")),
@@ -4869,7 +4869,7 @@ HANJUKU_DECISION_TOP_KINDS = 6
 HANJUKU_DECISION_MAX_PERIOD = 4
 HANJUKU_DECISION_EVENTS = ("action_plan", "decision")
 # Owned by hanjuku_screen.classify_text plus the literal screen.kind overrides
-# in hanjuku_screen.parse, hanjuku_bot and hanjuku_policy.
+# in hanjuku_screen.parse and the layered docich.hanjuku package.
 # tests/test_hanjuku_decision_diagnostics.py re-derives that vocabulary from
 # source, so a new kind fails closed as "other" instead of being emitted.
 HANJUKU_DECISION_SCREEN_KINDS = frozenset({

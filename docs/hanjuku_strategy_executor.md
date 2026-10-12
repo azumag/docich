@@ -135,6 +135,10 @@ P2で解決する。journal上限128件に達した場合も、古い／未解�
 
 ## 旧実装との接続時に必要なこと
 
+旧実装は層構造へ分割済み（`docs/hanjuku_layered_architecture.md`。`target_step` は
+`src/docich/hanjuku/flows/map.py`、代役・出撃元・携行札の判断関数は `strategy/orders.py` /
+`strategy/kit.py`）。接続はその手順層・戦略層に対して行う。
+
 調査した旧実装では `hanjuku_policy.target_step()` が `_finish_order(..., 'launched')`
 を呼んだ後に `[pad('a')]` を返す。そのため `order_launched` 単体を新契約の出撃確認に
 変換しない。`brains/hanjuku/bot.py` の `action_plan`、既存writerの `input_sent`、

@@ -6,6 +6,11 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
 この設定からは実行されない。OpenCodeによる試合結果からの自動改善は後続作業（Issue #954）とし、
 今回のbot操作はそれに依存しない。bot版は `hanjuku-chart-v2`。
 
+コードはOS層・戦略層・判断層・手順層に分かれている（`src/docich/hanjuku/`）。
+本書で `hanjuku_policy.py` / `hanjuku_bot.py` の関数として記載している処理は、
+互換ファサード経由で同じ名前のまま参照できる。各処理の置き場所と、改善時にどの層を触るかは
+[層構造](hanjuku_layered_architecture.md) を参照。
+
 ## 画面の構造化（`hanjuku_font.py` / `hanjuku_screen.py`）
 
 - 半熟英雄の描画は `video_scale=1.0` と `video_force_aspect=true` を組み合わせる。
