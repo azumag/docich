@@ -592,3 +592,16 @@ def test_verified_native_restore_context_can_detect_subsequent_title_return(setu
         run = hanjuku_run.observe(setup.spec.runtime_dir, identity, title_frame(), now=now, wall=wall + now)
     assert run['terminal_reason'] == 'game_over'
     assert hanjuku_run.terminal(setup.spec.runtime_dir, identity) == run
+
+
+def test_native_priest_result_boundary_restores_bounded_dialogue_without_old_transaction(setup):
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_bot import decide
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g739-priest-recovery-dialogue.png')
+    restore_test(setup, chapter=None, native_frame=frame)
+    receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['status']=='verified' and receipt['chapter'] is None
+    assert receipt['gameplay_context']=='verified_checkpoint_foreground'
+    policy=read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
+    assert 'egg_uses' not in policy and 'month_sub' not in policy
+    assert decide(frame,{'policy':policy})[0] == [{'type':'pad','buttons':['a'],'hold_ms':100}]

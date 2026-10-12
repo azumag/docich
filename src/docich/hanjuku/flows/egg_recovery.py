@@ -104,6 +104,8 @@ def resume_egg_ritual_step(screen, mem):
     owner = mem.get('resume_egg_ritual')
     if not isinstance(owner, dict):
         return None
+    if screen.priest_ritual_scene and not screen.priest_ritual_dialogue:
+        return []
     if screen.kind in MONTH_SUB_EXIT_KINDS or month_menu_ready(screen):
         mem.pop('resume_egg_ritual', None)
         return None
@@ -132,6 +134,8 @@ def resume_egg_ritual_step(screen, mem):
 
 def _egg_recovery_step(screen, mem, sub):
     """Measured full-recovery list and NこでNG confirmation; never guess a row."""
+    if screen.priest_ritual_scene and not screen.priest_ritual_dialogue:
+        return []
     if not screen.text:
         # The paid ritual fades back into the month menu. A on that blank
         # frame can be buffered and open the newly focused merchant row.
