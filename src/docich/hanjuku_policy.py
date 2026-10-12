@@ -8787,8 +8787,8 @@ def _hero_only_egg_recovery(screen, mem, sub):
     nothing was recovered. Two battles later a defended castle (no たいきゃく)
     met チコリ's ダークエルフ (ひとだまくん = instant death, gcgx evil_egg) and
     the eggless hero died -> game over. The list shows one row per general
-    (ぜんかいふく at y=47, then names at x=32); the quote screen must still
-    read 1こで50G before anything is paid.
+    (ぜんかいふく at y=47, then names at x=32); the quote must bind the
+    selected owner and show its actual 50G fee before anything is paid.
     """
     if NAME not in _depleted_eggs(mem):
         return False
@@ -8912,12 +8912,36 @@ def _egg_recovery_step(screen, mem, sub):
         gold = (screen.header or {}).get('gold')
         hero_only = bool(sub.get('hero_selected'))
         individual = _individual_egg_selected(mem, sub)
-        if individual and sub.get('stage') == 'recovering':
+        if (individual or hero_only) and sub.get('stage') == 'recovering':
             return []  # owned confirmation already sent; a fading quote is not a new purchase
-        if (sub.get('full_selected') is True and sub.get('stage') != 'recovering' and quote and type(gold) is int
+        quoted_count = int(quote[1]) if quote else None
+        quoted_cost = int(quote[2]) if quote else None
+        count_basis = 'screen' if quote else None
+        if quote is None and sub.get('full_selected') is not True:
+            from .hanjuku_roster import run_identity
+            identity = run_identity(mem.get('_run_identity'))
+            hero_bound = (hero_only and identity is not None
+                          and sub.get('hero_identity') == identity
+                          and type(mem.get('chapter')) is int and 1 <= mem['chapter'] <= 12
+                          and sub.get('hero_chapter') == mem.get('chapter'))
+            fees = re.findall(r'(\d+)Gかかりますがよろしいですかな', body)
+            # g713 UID18041: an individually selected egg shows a priest's
+            # flat fee, not the full-recovery NこでNG wording. One egg comes
+            # from the bound actual actor, never from an invented screen count.
+            flat_owner_bound = hero_bound if hero_only else individual
+            if (flat_owner_bound and sub.get('kind') == 'egg'
+                    and isinstance(sub.get('key'), str)
+                    and sub.get('key') == mem.get('month') == (mem.get('shop') or {}).get('key')
+                    and all(type((screen.header or {}).get(k)) is int for k in ('year', 'month'))
+                    and _month_key(screen.header) == sub.get('key')
+                    and type(gold) is int and gold == sub.get('gold_before')
+                    and body.count('おはらいしをよぶのですな?') == 1 and len(fees) == 1):
+                quoted_count, quoted_cost = 1, int(fees[0])
+                count_basis = 'bound_actor_flat_fee'
+        if (sub.get('full_selected') is True and sub.get('stage') != 'recovering' and quoted_cost is not None and type(gold) is int
                 and sub.get('key') == mem.get('month') == _month_key(screen.header)
-                and int(quote[1]) > 1 and int(quote[2]) == int(quote[1]) * EGG_RECOVER_COST
-                and gold < int(quote[2]) + _egg_recovery_wage_floor(mem)
+                and quoted_count > 1 and quoted_cost == quoted_count * EGG_RECOVER_COST
+                and gold < quoted_cost + _egg_recovery_wage_floor(mem)
                            + (mem.get('shop') or {}).get('hero_repair_reserve', 0)
                 and gold >= EGG_RECOVER_COST + _egg_recovery_wage_floor(mem)
                             + (mem.get('shop') or {}).get('hero_repair_reserve', 0)
@@ -8925,28 +8949,29 @@ def _egg_recovery_step(screen, mem, sub):
                 and any(observed_uses((mem.get('egg_uses') or {}).get(n)) in (0, 1)
                         for n in _egg_recovery_targets(mem))):
             sub.update(full_selected=False, full_quote_short=True, gold_before=gold, stage='choosing')
-            _record(mem, 'egg_recover_partial_recheck', observed_metric={'gold': gold, 'full_cost': int(quote[2])},
+            _record(mem, 'egg_recover_partial_recheck', observed_metric={'gold': gold, 'full_cost': quoted_cost},
                     reason='全回復費は不足するが1個分と賃金を保持できるため、実一覧の残数0・少数の卵へ戻る')
             return [pad('b')]
-        if (not (sub.get('full_selected') or hero_only or individual) or not quote
-                or int(quote[1]) <= 0 or int(quote[2]) != int(quote[1]) * EGG_RECOVER_COST
-                or ((hero_only or individual) and int(quote[1]) != 1)
+        if (not (sub.get('full_selected') or hero_only or individual) or quoted_cost is None
+                or quoted_count <= 0 or quoted_cost != quoted_count * EGG_RECOVER_COST
+                or ((hero_only or individual) and quoted_count != 1)
                 or (individual and _month_key(screen.header) != sub.get('key'))
-                or type(gold) is not int or gold < int(quote[2])
+                or type(gold) is not int or gold < quoted_cost
                 + (mem.get('shop') or {}).get('hero_repair_reserve', 0)
                 # Owner (2026-09-28): 賃金リザーブは守る - the estimate that
                 # opened this screen is only a lower bound, so the floor is
                 # checked against the real quote, not the reservation.
                 + (_hero_egg_wage_floor(mem) if hero_only else _egg_recovery_wage_floor(mem))):
             sub['aborted'] = True
-            _record(mem, 'egg_recover_skip', observed_metric={'gold': gold, 'quote_read': bool(quote)},
+            _record(mem, 'egg_recover_skip', observed_metric={'gold': gold, 'quote_read': quoted_cost is not None},
                     reason='全回復の選択・費用・所持金を確認できないか、費用が足りないため戻る')
             return [pad('b')]
         move = menu_to(screen, 'うむッ!')
         if move == 'here':
-            sub.update(quoted_cost=int(quote[2]), stage='recovering')
+            sub.update(quoted_cost=quoted_cost, stage='recovering')
             _record(mem, 'egg_recover_confirm', choice=NAME if hero_only else sub['individual_actor'] if individual else 'ぜんかいふく',
-                    observed_metric={'eggs': int(quote[1]), 'cost': int(quote[2]), 'gold': gold},
+                    observed_metric={'eggs': quoted_count, 'cost': quoted_cost, 'gold': gold,
+                                         'count_basis': count_basis},
                     reason=('主人公1個分の表示費用が所持金以内なので決定。回復完了は未確定'
                             if hero_only else '残数の少ない本人1個の表示費用と賃金を確認して決定。回復完了は未確定'
                             if individual else
@@ -8959,7 +8984,19 @@ def _egg_recovery_step(screen, mem, sub):
         if sub.get('hero_selected') or _hero_only_egg_recovery(screen, mem, sub):
             move = menu_to(screen, NAME)
             if move == 'here':
+                from .hanjuku_roster import run_identity
                 sub['hero_selected'] = True
+                sub['full_selected'] = False
+                for key in ('individual_selected', 'individual_actor',
+                            'individual_identity', 'individual_chapter'):
+                    sub.pop(key, None)
+                sub.pop('hero_identity', None)
+                sub.pop('hero_chapter', None)
+                readings = [dict(l.spans()).get(104) for l in screen.lines
+                            if dict(l.spans()).get(32) == NAME and 47 < l.y <= 199]
+                if len(readings) == 1 and readings[0] in ('0', '1', '2', '3', '4'):
+                    sub['hero_identity'] = run_identity(mem.get('_run_identity'))
+                    sub['hero_chapter'] = mem.get('chapter')
                 _record(mem, 'egg_recover_select', choice=NAME,
                         observed_metric={'gold': sub.get('gold_before'),
                                          'full_estimate': _egg_measured_cost(mem)},
