@@ -691,19 +691,40 @@ def _hero_alternatives(mem, names):
 
 def _order_hero_alternatives(order, mem, names):
     candidates = _hero_alternatives(mem, names)
-    if (mem.get('chapter') != 2 or order.get('step') != '2-B1'
-            or order.get('target') != chart.boss_castle(2)):
+    if not _is_boss_order(order, mem):
         return candidates
     # g706's selected シェーブル (27 HP, combat 4) entered a long road egg
     # fight; the isolated-tested hero has 90 HP/combat 14. Keep companions
     # with comparable primary stats, using the existing strength-gap rules.
-    boss = reference.general_strength(chart.BOSSES[2])
+    boss = (reference.general_strength(chart.BOSSES.get(mem.get('chapter')))
+            or reference.general_strength('しゅじんこう'))
     if boss is None:
         return []
     return [name for name in candidates
             if (stats := reference.general_strength(name)) is not None
             and boss[0] - stats[0] < reference.STRONG_GENERAL_HP_GAP
-            and boss[1] - stats[1] < reference.STRONG_GENERAL_COMBAT_GAP]
+            and boss[1] - stats[1] < reference.STRONG_GENERAL_COMBAT_GAP
+            and not _boss_companion_unfit(mem, name)]
+
+
+def _boss_companion_unfit(mem, name):
+    status = (mem.get('house_eggs') or {}).get(name) or {}
+    # Known injuries and broken/depleted eggs are reasons to prepare first;
+    # absent readings never fabricate recovery or a full egg.
+    hp, maximum = status.get('hp'), status.get('max_hp')
+    return (status.get('broken') is True or status.get('uses') == 0
+            or (type(hp) is int and type(maximum) is int and maximum > 0
+                and hp * 10 < maximum * 6))
+
+
+def _boss_companion_source(order, mem):
+    """Recorded garrisons permit opening a list, never prove a departure."""
+    garrison = mem.get('garrison') or {}
+    source = _source(order, mem)
+    owned = _owned(mem)
+    castles = [source] + sorted(owned - {source})
+    return next((castle for castle in castles if castle in owned
+                 and _order_hero_alternatives(order, mem, garrison.get(castle))), None)
 
 
 def _hero_source_alternative(order, mem):
@@ -743,8 +764,13 @@ def _cancel_broken_hero_sortie(mem, order):
 
 
 def _ready(order, mem) -> bool:
+    if ('step' in order and _is_boss_order(order, mem) and order.get('purpose') != 'move'
+            and _boss_companion_source(order, mem) is None
+            and (mem.get('garrison') or {}).get(_source(order, mem)) is not None):
+        return False
     if ((_broken_hero_order(order, mem) or _boss_egg_depleted(order, mem))
-            and not _hero_source_alternative(order, mem)):
+            and not (_boss_companion_source(order, mem) if _is_boss_order(order, mem)
+                     else _hero_source_alternative(order, mem))):
         return False
     after = order['after']
     captured = set(mem.get('captured', []))
@@ -849,7 +875,7 @@ def next_order(mem):
             if o['step'] not in steps and o['target'] not in owned] if mem.get('chart_plan') else []
     chart_steps = {o['step'] for o in chart.orders(mem.get('chapter') or 0)}
     for order in (*current, *retries, *base):
-        if (order['step'] in chart_steps
+        if ((order['step'] in chart_steps or _is_boss_order(order, mem))
                 and (status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
                 and _ready(order, mem)):
             _follow_general(mem, order, garrison, owned)
@@ -873,6 +899,14 @@ def _follow_general(mem, order, garrison, owned):
     assumes どうし at スペンソニア, but he held ゴーメン)."""
     general = order.get('general')
     source = _source(order, mem)
+    if _is_boss_order(order, mem) and order.get('purpose') != 'move':
+        where = _boss_companion_source(order, mem)
+        if where and where != source:
+            mem.setdefault('source_override', {})[order['step']] = where
+            _record(mem, 'boss_companion_source', chart_step=order['step'],
+                    observed_metric={'source': source, 'companion_at': where},
+                    reason='主人公を出撃させず、十分な能力の代役が記録された城の実一覧を確認する')
+        return
     if general == NAME and _order_hero_alternatives(order, mem, garrison.get(source)):
         return  # inspect the chart source's companion rather than chase the hero
     if not general or general in (garrison.get(source) or ()):
@@ -2594,6 +2628,12 @@ def target_step(screen: Screen, mem, frame):
         # A marker we did not request: cancel instead of sending a general.
         _record(mem, 'unexpected_target', reason='指示中でない出撃先選択画面のためBで取消')
         return [pad('b')]
+    if (_is_boss_order(order, mem) and _sortie_general(order, mem) == NAME
+            and (mem.get('orders') or {}).get(order['step']) not in {'launched', 'launched_unconfirmed'}):
+        mem.pop('sortie_attempt', None)
+        return _hold_guarded_sortie(mem, order, 'boss_companion_required',
+            '未送信の主人公のボス目標を取り消し、十分な戦力の代役を待つ',
+            {'general': NAME, 'screen': screen.kind, 'hero_forbidden': True})
     if _broken_hero_order(order, mem):
         return _cancel_broken_hero_sortie(mem, order)
     if _is_boss_order(order, mem):
@@ -3025,7 +3065,7 @@ def _selected_actor_guard(screen, mem, order):
         return _hold_guarded_sortie(mem, order, 'sortie_actor_unconfirmed',
             '実一覧で選んだ将軍の証拠がないため配置確認の出撃を取り消す',
             {'selected': selected, 'observed': None, 'screen': screen.kind})
-    if (order['general'] != NAME and order.get('source_probe') is not True
+    if (order['general'] != NAME and order.get('source_probe') is not True and not _is_boss_order(order, mem)
             or not selected or selected == NAME):
         return None
     row = next((line for line in screen.lines if line.y == 31), None)
@@ -3652,7 +3692,12 @@ def deploy_step(screen: Screen, mem):
                         'しゅじんこう' if g == NAME else g) is None for g in present)):
                 return _hold_deploy(screen, mem, order, '出撃一覧の本人・カーソルを確認できないため保留')
             candidates = (_order_hero_alternatives(order, mem, present)
-                          if order['general'] == NAME or order.get('source_probe') is True else [])
+                          if order['general'] == NAME or _is_boss_order(order, mem)
+                          or order.get('source_probe') is True else [])
+            if _is_boss_order(order, mem) and not candidates:
+                return _hold_guarded_sortie(mem, order, 'boss_companion_required',
+                    '十分な能力の代役を実一覧で確認できないため主人公を出撃させず準備を待つ',
+                    {'present': present[:8], 'hero_forbidden': True})
             general = candidates[0] if candidates else order['general']
             # A stale override is not a receipt, and a companion selected in
             # this list must not inherit the hero's depleted-egg guard.
@@ -3728,6 +3773,11 @@ def deploy_step(screen: Screen, mem):
             return [pad('b')]
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move], '出撃将軍を選択')
     if kind in {'card_select', 'sortie_confirm'}:
+        if (_is_boss_order(order, mem) and _sortie_general(order, mem) == NAME
+                and (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
+            return _hold_guarded_sortie(mem, order, 'boss_companion_required',
+                '主人公のボス出撃を取り消し、十分な戦力の代役を待つ',
+                {'general': NAME, 'screen': kind, 'hero_forbidden': True})
         guard = _selected_actor_guard(screen, mem, order)
         if guard is not None:
             return guard
@@ -5416,7 +5466,8 @@ def _hero_retreat_needed(cur):
           and not cur.get('card_damage_rescue_needed'))
          or (cur.get('card_damage_rescue_needed') and _card_damage_probe_exhausted(cur)))
             and rescue.get('exhausted')
-            and not rescue.get('cards_uncertain')):
+            and not rescue.get('cards_uncertain')
+            and not _healthy_melee_advantage(cur)):
         return True  # no observed rescue remains; retreat before the summon
     if cur.get('egg_battle'):
         # An enemy summon we cannot answer (no egg left, no cards) is not a
@@ -5425,6 +5476,25 @@ def _hero_retreat_needed(cur):
         # her while the bot chose こうげき and the retreat came too late).
         return hp <= GENERAL_CRITICAL_RETREAT_HP or hp * 2 <= enemy or hp * 2 <= ref
     return hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 4 <= ref)
+
+
+def _healthy_melee_advantage(cur):
+    """A current ordinary panel can refute resource exhaustion as defeat.
+
+    Do not use remembered HP alone, a monster panel, unknown soldiers or a
+    hero's advantage to relax the hero's game-over protection.
+    """
+    if (cur.get('ally') == NAME or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('card_hp_unread') or cur.get('card_soldiers_current') is not True):
+        return False
+    hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
+    ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')
+    return (all(type(n) is int and n > 0 for n in (hp, enemy, start))
+            and all(type(n) is int and n >= 0 for n in (ours, theirs))
+            and hp + 10 * ours > 2 * (enemy + 10 * theirs)
+            and hp > GENERAL_CRITICAL_RETREAT_HP
+            and hp > enemy * 2 and hp * 10 > start * 7)
 
 
 def _human_menu_open(cur, owner):
@@ -6550,7 +6620,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip', 'recall_verification', 'retreat_rechecks', 'retreat_anonymous_budget',
                 'near_goal', 'align_steps', 'unanchored', 'select_tick',
                 'house', 'house_scan_tick', 'house_scan_month', 'house_field_scan', 'house_eggs',
-                'roster_survey', 'roster_survey_scope', 'house_status_recheck',
+                'roster_survey', 'roster_status_walk', 'roster_survey_scope', 'house_status_recheck',
                 'recruit_roster', 'recruit_roster_floor', 'recruit_roster_recheck', 'recruit_roster_attempts', 'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'castle_income', 'castle_ownership',
                 'select_used', 'castle_verified', 'last_castle_hold',
                 'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',

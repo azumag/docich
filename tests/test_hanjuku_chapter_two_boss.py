@@ -16,7 +16,7 @@ def ready_memory():
     return {'chapter': 2, 'month': '3-7', 'tick': 5000,
             'captured': [n for n in chart.castles(2)
                          if n not in (chart.home_castle(2), chart.boss_castle(2))],
-            'garrison': {'スペランザ': [chart.HERO]},
+            'garrison': {'スペランザ': ['ゼウス', chart.HERO]},
             'orders': {o['step']: 'done' for o in chart.orders(2)
                        if o['target'] != chart.boss_castle(2)}}
 

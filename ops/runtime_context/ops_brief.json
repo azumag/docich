@@ -1,11 +1,11 @@
 {
-  "output_sha256": "118c85b258a4078144b8675f9da50066b5889e92db314a60599976e9a87aa079",
+  "output_sha256": "a9f410ba2db82b37026ecee9a50fd03d736b8e44bc0c11c1d205474bed96a608",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "326c70be7d2753c1836ddf6b08778f84d33344513a4f74dc55ad82a53a3a8b8c",
+  "source_sha256": "4d5c256bc37e77f5ecc0d218f5e6a33dabbe78eb4bfffe5773caa7d24cf9063d",
   "topics": [
+    "将軍確認の再利用と主人公保護、優勢時の誤退却",
     "戦闘中の画面証拠を有限リングへ保存",
-    "半熟の監視引継ぎと停滞セーブ再開の照合",
-    "未マージPR棚卸し（32→14件）と #2007 の claim 競合修正"
+    "半熟の監視引継ぎと停滞セーブ再開の照合"
   ]
 }

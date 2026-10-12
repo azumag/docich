@@ -229,7 +229,7 @@ def _survey_work(mem, p):
     receipt. Those two jobs, and only those, justify a second walk.
     """
     month = mem.get('month')
-    if (receipts.completed_survey(mem) or {}).get('dirty'):
+    if receipts.recheck_targets(mem):
         return True
     if any(info.get('broken') and info.get('month') == month
            for info in (mem.get('house_eggs') or {}).values()):
@@ -350,13 +350,13 @@ def _next_general(mem):
 
 
 def _resume_completed_survey(screen, mem, p, scope, field_count, field_tick):
-    survey = receipts.completed_survey(mem)
+    survey = receipts.reusable_survey(mem)
     if survey is None:
         return False, None
     if (screen.kind != 'map' or mem.get('chapter') not in HOUSE_VIEW
             or any(mem.get(k) for k in ('active', 'recall', 'y_jump', 'sortie_attempt', 'month_sub', 'battle'))):
         return True, None
-    dirty = list(survey.get('dirty') or {})
+    dirty = receipts.recheck_targets(mem)
     pending = [name for name, info in survey['statuses'].items()
                if info.get('broken') is True and 'egg' not in survey.get('dirty', {}).get(name, [])]
     missing = ([c for c in sorted(p._owned(mem))
@@ -373,7 +373,7 @@ def _resume_completed_survey(screen, mem, p, scope, field_count, field_tick):
     mem['recruit_field_scan_attempts']['count'] = field_count + 1
     _record(mem, 'survey_reused', observed_metric={'status_targets': dirty,
             'broken': pending, 'missing_incomes': missing},
-            reason='同月・同ランの完了した月初確認を引き継ぎ、変化した本人や未読の城収入だけ確認する')
+            reason='同月・同ランで読めた本人の情報を引き継ぎ、変化した本人や未読の城収入だけ確認する')
     if dirty:
         return True, [p.pad('x')]
     if not missing:
@@ -496,7 +496,7 @@ def step(screen, mem, frame):
     if state.get('chapter') != mem.get('chapter'):
         _finish(mem)
         return None
-    if state.get('from_survey') and receipts.completed_survey(mem) is None:
+    if state.get('from_survey') and receipts.reusable_survey(mem) is None:
         if state.get('phase') == 'close':
             # g684 2-11 15:49:04-15:50+: already closed, this check re-ran
             # _exit every observation, held [] and swallowed a duel yes/no
