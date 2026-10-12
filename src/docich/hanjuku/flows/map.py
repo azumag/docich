@@ -4,6 +4,7 @@ Drives the cursor toward the strategy layer's next order, confirms the
 target under the sortie marker and reads world-map ownership surveys.
 """
 from __future__ import annotations
+from copy import deepcopy
 
 from ..os_layer.screen import Screen, castle_roofs
 from ... import hanjuku_chart as chart
@@ -19,6 +20,7 @@ from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roo
                                 world_flags, world_markers)
 from ..os_layer.world import NAME, _apply_world_flags, _hero_castle, _owned, update_world
 from ..strategy.kit import _deploy_cards, _is_boss_order
+from ..strategy.execution import departure_snapshot
 from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _sortie_general, _source, next_order)
@@ -76,11 +78,18 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     general = context.get('actual_general')
     if not general:
         return
-    mem.setdefault('launched_orders', {})[step] = dict(order)
+    snapshot = departure_snapshot(order, mem, general, _source(order, mem))
+    if snapshot is None:
+        return  # a foreign confirmation never becomes departure ownership
+    general = snapshot['general']
+    mem.setdefault('launched_orders', {})[step] = snapshot
     mem.setdefault('sorties', {})[step] = {
-        'general': general, 'source': _source(order, mem), 'target': None,
+        'general': general, 'source': snapshot['source'], 'target': None,
         'planned_target': order['target'], 'status': 'launched_unconfirmed',
-        'evidence': context, 'tick': int(mem.get('tick') or 0)}
+        'evidence': deepcopy({k: v for k, v in context.items() if k != 'departure_order'}),
+        'tick': int(mem.get('tick') or 0),
+        **({'confirmation_tick': snapshot['departure_binding']['confirm_tick']}
+           if 'departure_binding' in snapshot else {})}
     _finish_order(mem, 'launched_unconfirmed', general=general, target=None,
                   planned_target=order['target'], screen=screen.kind,
                   reason='目標決定前に出撃先選択を離れたため出撃の成否と行先を未確定として記録')
@@ -410,9 +419,12 @@ def target_step(screen: Screen, mem, frame):
     if result == 'arrived' and not _target_roof_under_marker(screen, mem, frame, order):
         return _unverified_target(screen, mem, order)
     if result == 'arrived':
+        context = _deploy_context(order, mem, expected_metric='のりこんだ表示で目標城を確認')
+        snapshot = departure_snapshot(order, mem, context['general'], _source(order, mem))
+        if snapshot is None:
+            return []
         mem.pop('sortie_attempt', None)
         (mem.get('target_miss') or {}).pop(order['step'], None)
-        context = _deploy_context(order, mem, expected_metric='のりこんだ表示で目標城を確認')
         _finish_order(mem, 'launched', **context, target=order['target'],
                       cursor=mem.get('cursor'), anchor=mem.get('anchor'),
                       reason=f"{context['general']}を{order['target']}へ出撃")
@@ -421,15 +433,19 @@ def target_step(screen: Screen, mem, frame):
         mem.setdefault('launched', {})[order['target']] = {'general': general, 'step': order['step']}
         # Snapshot: the battle, boss entry and retries of this sortie must not
         # depend on the plan still containing it.
-        mem.setdefault('launched_orders', {})[order['step']] = {
-            **order, 'cards': list(order['cards']),
-            'after': list(order['after']) if order['after'] else None}
+        mem.setdefault('launched_orders', {})[order['step']] = snapshot
         # Per execution id: ``launched`` keeps one sortie per castle, so a later
         # sortie to the same castle must not unbind an earlier unit en route.
         mem.setdefault('sorties', {})[order['step']] = {
-            'general': general, 'target': order['target'], 'status': 'en_route',
-            'evidence': (mem.get('order_context') or {}).get(order['step']),
-            'tick': int(mem.get('tick') or 0)}
+            'general': general, 'source': snapshot['source'],
+            'target': order['target'], 'status': 'en_route',
+            'evidence': deepcopy({k: v for k, v in
+                ((mem.get('order_context') or {}).get(order['step']) or {}).items()
+                if k != 'departure_order'}),
+            'tick': int(mem.get('tick') or 0),
+            **({'confirmation_tick': snapshot['departure_binding']['confirm_tick']}
+               if 'departure_binding' in snapshot else {})}
+        ((mem.get('order_context') or {}).get(order['step']) or {}).pop('departure_order', None)
         return [pad('a')]
     return _deploy_input(screen, mem, order, result or [], '出撃先へ目標カーソルを移動')
 

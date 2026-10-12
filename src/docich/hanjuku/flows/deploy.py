@@ -263,20 +263,23 @@ def _drop_card(screen, mem, order, card, inventory):
 
 
 def _selected_actor_guard(screen, mem, order):
-    """The priority substitute must be the actual named sortie-panel actor.
+    """A runtime sortie must show its actual named actor before confirmation.
 
     x16/80 y31 is the existing measured field/sortie status layout. A planned
     A on the list can miss; its stored name alone never authorizes card or
-    departure confirmation for the new substitute path.
+    departure confirmation. Untagged legacy calls acquire no scoped receipt.
     """
-    selected = (mem.get('sortie_general') or {}).get(order['step'])
+    from ..os_layer.roster import run_identity
+    scoped = run_identity(mem.get('_run_identity')) is not None
+    selected = (_sortie_general(order, mem) if scoped else
+                (mem.get('sortie_general') or {}).get(order['step']))
     if order.get('source_probe') is True and (not selected or selected == NAME):
         (mem.get('general_override') or {}).pop(order['step'], None)
         (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
         return _hold_guarded_sortie(mem, order, 'sortie_actor_unconfirmed',
             '実一覧で選んだ将軍の証拠がないため配置確認の出撃を取り消す',
             {'selected': selected, 'observed': None, 'screen': screen.kind})
-    if (order['general'] != NAME and order.get('source_probe') is not True and not _is_boss_order(order, mem)
+    if not scoped and (order['general'] != NAME and order.get('source_probe') is not True and not _is_boss_order(order, mem)
             or not selected or selected == NAME):
         return None
     row = next((line for line in screen.lines if line.y == 31), None)
@@ -886,19 +889,29 @@ def deploy_step(screen: Screen, mem):
             return _hold_deploy(screen, mem, order, '出撃確認カーソルまたは承認項目を読めないため保留', carried=carried)
         if move == 'here':
             context = _deploy_context(order, mem, expected_metric=want)
+            from ..strategy.execution import confirm_departure_order
+            from ..os_layer.roster import run_identity
+            source = _source(order, mem)
+            departure = confirm_departure_order(order, mem, context['general'], source, carried)
+            if run_identity(mem.get('_run_identity')) is not None and departure is None:
+                return _hold_guarded_sortie(mem, order, 'sortie_actor_unconfirmed',
+                    '確認した将軍・出撃元・持ち札が一致しないため出撃を取り消す',
+                    {'general': context['general'], 'source': source})
             mem['order_context'][order['step']] = {
                 'strategy_variant': context['strategy_variant'],
                 'deviation_reason': context['deviation_reason'],
                 'actual_general': context['general'], 'planned_general': order['general'],
                 'expected_metric': (context['expected_metric'] if (mem.get('retry_context') or {}).get(order['step'])
                                     else {'general': order['general'], 'cards': want}),
-                'observed_metric': {'general': context['general'], 'cards': got}}
+                'observed_metric': {'general': context['general'], 'cards': got},
+                **({'departure_order': departure} if departure is not None else {})}
             _record(mem, 'sortie_confirm', **context, cards=carried,
                     inventory_evidence=inventory_evidence,
                     observed_metric=got,
                     reason='出撃確認で読み取った切り札が計画と一致したため承認を予定')
-            source = mem.get('source_override', {}).get(order['step'], order['source'])
-            mem['sortie_attempt'] = {'step': order['step'], 'target_seen': False}
+            mem['sortie_attempt'] = {'step': order['step'], 'target_seen': False,
+                **({'confirmation_tick': departure['departure_binding']['confirm_tick']}
+                   if departure is not None else {})}
             mem['cursor'] = list(chart.castles(mem['chapter'])[source])
             mem['uncertain'] = False      # the target marker starts on the source castle
             mem.pop('nav_search', None)

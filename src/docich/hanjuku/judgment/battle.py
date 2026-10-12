@@ -197,6 +197,21 @@ def _strong_cards_carried(mem, cur):
     この出撃で消費済みのコピーを差し引いてから戦術にする。
     """
     step = cur.get('step')
+    from ..strategy.execution import bound_fields, execution_claimed
+    from ..strategy.orders import _order_for_step
+    order = _order_for_step(mem, step)
+    bound = bound_fields(order, mem)
+    if bound is not None:
+        if cur.get('ally') != bound['general']:
+            return []
+        kit = bound['roles']['strong']
+        carried = list(bound['cards'])
+        for card in (mem.get('kit_spent') or {}).get(step) or ():
+            if card in carried:
+                carried.remove(card)
+        return [kit] if kit is not None and kit in carried else []
+    if execution_claimed(mem, step):
+        return []
     kit = (mem.get('strong_card_kit') or {}).get(step)
     if not kit or not step:
         return []
