@@ -3,7 +3,7 @@
 半熟英雄の決定的bot（`brains/hanjuku/bot.py` → `docich.hanjuku_bot.decide`）は、
 1万行超の単一モジュール `hanjuku_policy.py` に画面読取・入力生成・チャート戦略・戦闘判断・
 メニュー手順が混在していた。改善のたびに無関係な箇所を読む必要があり、どこを直すべきかが
-分かりにくかったため、責務ごとの層へ分割した（`bot_version=hanjuku-chart-v183-layered`）。
+分かりにくかったため、責務ごとの層へ分割した（`bot_version=hanjuku-chart-v185-layered`）。
 
 本PRの第1段（方策の分割）と第2段（残りの半熟モジュールの編入）は **挙動を変えない機械的な移動** であり、
 判断・入力・記録は分割前と同一である。

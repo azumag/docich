@@ -534,3 +534,22 @@ def test_recovery_claim_requires_derived_attempt_and_retains_logical_uuid(recove
     before=snapshot_recovery(s)
     assert recover_startup(s,apply=True,expected=s.fingerprint)['status']=='already-dispatched'
     assert snapshot_recovery(s)==before
+
+
+def test_native_priest_stall_restores_without_inventing_chapter_or_old_payment(setup):
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_bot import decide
+    from docich.hanjuku_screen import parse, resume_egg_ritual_panel
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g725-priest-ritual-preparation.png')
+    assert resume_egg_ritual_panel(parse(frame))
+    restore_test(setup, chapter=None, native_frame=frame)
+    receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['status'] == 'verified' and receipt['chapter'] is None
+    policy = read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
+    assert policy == {'name': {'done': True}, 'resume_chapter_pending': True,
+                      'resume_egg_ritual': {'readings': 0, 'month': '1-5'}}
+    actions, state = decide(frame, {'policy': policy})
+    assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
+    assert state['policy'].get('chapter') is None
+    assert not state['policy'].get('month_sub') and not state['policy'].get('egg_uses')
+    assert not state['policy'].get('orders')

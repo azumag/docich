@@ -8,10 +8,11 @@ from ...hanjuku_egg_stock import observed_uses
 from ..decision_log import _record
 from ..judgment.battle import _own_egg_empty
 from ..os_layer.commands import menu_to, pad
-from ..os_layer.readers import _options
+from ..os_layer.readers import _current, _options, month_menu_ready
 from ..os_layer.world import NAME
-from ..strategy.economy import (EGG_RECOVER_COST, _depleted_eggs, _egg_measured_cost, _egg_recovery_targets,
-                                _egg_recovery_wage_floor, _hero_egg_wage_floor, _month_key)
+from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, _depleted_eggs, _egg_measured_cost,
+                                _egg_recovery_targets, _egg_recovery_wage_floor, _hero_egg_wage_floor,
+                                _month_key)
 
 
 def _hero_only_egg_recovery(screen, mem, sub):
@@ -98,6 +99,37 @@ def _individual_egg_candidate(screen, mem, sub):
     return min(candidates)[2] if candidates else None
 
 
+def resume_egg_ritual_step(screen, mem):
+    """Cold restored priest dialogue owns no remembered purchase receipt."""
+    owner = mem.get('resume_egg_ritual')
+    if not isinstance(owner, dict):
+        return None
+    if screen.kind in MONTH_SUB_EXIT_KINDS or month_menu_ready(screen):
+        mem.pop('resume_egg_ritual', None)
+        return None
+    header = screen.header or {}
+    if (all(type(header.get(k)) is int for k in ('year', 'month'))
+            and _month_key(header) != owner.get('month')):
+        mem.pop('resume_egg_ritual', None)
+        return None
+    readings = owner.get('readings')
+    if type(readings) is not int or readings < 0 or readings >= EGG_RITUAL_LIMIT:
+        return []
+    owner['readings'] = readings + 1
+    if screen.has('うむッ') or screen.has('いかんッ'):
+        return []  # no purchase ownership/fee authority survives restoration
+    current = _current(screen)
+    if screen.hand:
+        return [pad('b')] if current and current[0] == 32 and 47 <= current[1] <= 199 else []
+    if screen.has('どのしょうぐんのたまごを') and screen.has('おはらいしますか?'):
+        return []
+    if screen.kind != 'text' or not screen.text:
+        return []
+    _record(mem, 'resume_egg_ritual_dialogue', observed_metric={'readings': readings + 1},
+            reason='実儀式準備から復元したカーソル・確認のない会話だけ上限付きAで進める。旧支払い・数量・章は引き継がない')
+    return [pad('a')]
+
+
 def _egg_recovery_step(screen, mem, sub):
     """Measured full-recovery list and NこでNG confirmation; never guess a row."""
     if not screen.text:
@@ -109,7 +141,15 @@ def _egg_recovery_step(screen, mem, sub):
         return []  # paid quote, including a partial fade: no second confirmation
     full_rows = [(x, y, word) for x, y, word in _options(screen)
                  if x == 32 and y == 47 and word == 'ぜんかいふく']
-    if sub.get('stage') == 'recovering' and full_rows:
+    current = _current(screen)
+    recovery_cursor = (screen.hand is not None and screen.hand[2] <= 32
+                       and current is not None and current[0] == 32
+                       and 47 <= current[1] <= 199
+                       and any(x == 32 and y == current[1] for x, y, _ in _options(screen)))
+    # g725: the ritual preparation dialogue retains the list in the
+    # background, without its hand. Only an interactive left list can be
+    # closed; its background is not a payment/return receipt.
+    if sub.get('stage') == 'recovering' and full_rows and recovery_cursor:
         # g719 UID2981: an individual priest ritual returns to this list,
         # with the recovered actor omitted and the cursor on full recovery.
         # The old dialogue A reopened its quote and then waited to the cap.
@@ -293,8 +333,11 @@ def _egg_recovery_step(screen, mem, sub):
                     reason='残数が0でない卵も含めて全回復を選択し、次画面で費用を確認')
             return [pad('a')]
         return [move] if move else []
-    if screen.hand and sub.get('stage') != 'recovering':
-        return []  # unknown option: no default A on an individual egg
+    if screen.hand:
+        return []  # unknown option, including paid fades: never default A
+    if (sub.get('stage') == 'recovering' and full_rows
+            and screen.has('どのしょうぐんのたまごを') and screen.has('おはらいしますか?')):
+        return []  # returned-list question with an unread hand: do not buy again
     return [pad('a')]  # bounded introduction/paid ritual dialogue
 
 

@@ -835,3 +835,18 @@ def classify_text(s: Screen) -> str:
     if t:
         return 'text'
     return 'unknown'
+
+
+def resume_egg_ritual_panel(screen: Screen) -> bool:
+    """Measured g725 priest preparation; never infer chapter or payment."""
+    header = screen.header or {}
+    if (screen.kind != 'text' or screen.hand is not None
+            or any(type(header.get(k)) is not int for k in ('year', 'month', 'gold'))
+            or header['year'] < 1 or not 1 <= header['month'] <= 12 or header['gold'] < 0):
+        return False
+    rows = [(x, line.y, word) for line in screen.lines for x, word in line.spans()]
+    body = ''.join(line.known.replace(' ', '') for line in screen.lines if line.y >= 175)
+    return (rows.count((32, 47, 'ぜんかいふく')) == 1
+            and (136, 79, 'たまごのかいふく') in rows
+            and body == 'それではぎしきのじゅんびをいたしましょう!')
+

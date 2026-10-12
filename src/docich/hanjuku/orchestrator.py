@@ -11,8 +11,9 @@ from __future__ import annotations
 from .os_layer.pixels import Frame
 from . import decision_log
 from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
-                    deploy as deploy_flow, map as map_flow, month as month_flow, name as name_flow,
-                    prompts as prompts_flow, recall as recall_flow, shop as shop_flow)
+                    deploy as deploy_flow, egg_recovery as egg_recovery_flow, map as map_flow,
+                    month as month_flow, name as name_flow, prompts as prompts_flow,
+                    recall as recall_flow, shop as shop_flow)
 from .judgment import battle as battle_judgment
 from .os_layer import readers
 from .os_layer.phase import classify, shop_exit_confirmation
@@ -228,7 +229,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     # A planned summon-preemption must not become a blind A on an unfinished
     # command menu, or be replaced by an old monthly/house transaction.
     battle_flow.note_duel_event(screen, mem)
-    actions = deploy_flow.resume_sortie_step(screen, mem)
+    actions = egg_recovery_flow.resume_egg_ritual_step(screen, mem)
+    if actions is None:
+        actions = deploy_flow.resume_sortie_step(screen, mem)
     if actions is None:
         actions = deploy_flow.boss_stock_restart_step(screen, mem)
     if actions is None:
@@ -370,7 +373,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         streak=int(updated.get('no_input_streak') or 0)+1
     else:
         streak=1
-    if not actions and streak>NO_INPUT_HOLD_MAX:
+    if (not actions and streak>NO_INPUT_HOLD_MAX
+            and not isinstance(mem.get('resume_egg_ritual'), dict)):
         # Even this last-resort path must not confirm an unread summer option:
         # the cursor may be on the mass-dismissal row. Reobserve after one move.
         # These recognized events must never borrow a scripted scene's blind A.

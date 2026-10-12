@@ -131,6 +131,26 @@ def _violations():
     return out
 
 
+def test_every_relative_import_in_the_package_resolves():
+    # Function-level imports only fail when the function runs. Code ported
+    # from the pre-layer modules keeps ``from .hanjuku_roster import ...``,
+    # which inside the package names a module that does not exist.
+    missing = []
+    for name, path, is_package in _modules():
+        here = ['docich', 'hanjuku', *name.split('.')] if name else ['docich', 'hanjuku']
+        package = here if is_package else here[:-1]
+        for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
+            if isinstance(node, ast.ImportFrom) and node.level:
+                base = package[:len(package) - (node.level - 1)]
+                module = '.'.join(base + (node.module.split('.') if node.module else []))
+                if node.module and not _is_module(module):
+                    missing.append(f'{path.name}:{node.lineno} {module}')
+                elif not node.module:
+                    missing += [f'{path.name}:{node.lineno} {module}.{alias.name}' for alias in node.names
+                                if not _is_module(f'{module}.{alias.name}')]
+    assert not missing, f'unresolvable relative imports: {missing}'
+
+
 def test_every_layer_module_has_a_rank():
     for name, _, _ in _modules():
         if name:
