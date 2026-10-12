@@ -105,3 +105,12 @@ def test_first_checkpoint_context_cannot_borrow_an_unbound_played_flag(tmp_path)
         run = hanjuku_run.observe(tmp_path, IDENTITY, title_frame(), now=now, wall=1000 + now)
         assert run['checkpoint_started'] is True
         assert not run['gameplay_seen'] and not run['terminal_candidate']
+
+
+def test_input_gate_reproves_receipt_after_the_observation(tmp_path):
+    write(tmp_path, receipt())
+    hanjuku_run.observe(tmp_path, IDENTITY, gameplay_frame(), now=1, wall=1001)
+    hanjuku_run.require_checkpoint_context(tmp_path, IDENTITY)
+    (tmp_path / 'hanjuku_resume.json').unlink()
+    with pytest.raises(AdapterError, match='checkpoint context changed'):
+        hanjuku_run.require_checkpoint_context(tmp_path, IDENTITY)

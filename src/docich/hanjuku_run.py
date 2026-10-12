@@ -168,6 +168,15 @@ def terminal(runtime_dir: Path, identity: dict):
     return state
 
 
+def require_checkpoint_context(runtime_dir: Path, identity: dict):
+    """Reprove a bound restored context immediately before actual input."""
+    state = load(runtime_dir, identity)
+    bound = state.get('checkpoint_start_request')
+    if bound is not None and _checkpoint_start_request(runtime_dir, identity, time.time()) != bound:
+        raise AdapterError('verified Hanjuku checkpoint context changed')
+    return state
+
+
 def _next_commentary_seq(runtime_dir: Path) -> int:
     """One past the highest seq in the (bounded) commentary tail."""
     path = runtime_dir / 'hanjuku_commentary.jsonl'
