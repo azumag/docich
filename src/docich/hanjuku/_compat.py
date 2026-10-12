@@ -24,7 +24,12 @@ class _Facade(types.ModuleType):
     def __setattr__(self, name, value):
         old = self.__dict__.get(name, _MISSING)
         super().__setattr__(name, value)
-        if name.startswith('__') or old is _MISSING:
+        if name.startswith('__'):
+            return
+        if old is _MISSING:
+            for module in self._deleted_bindings.pop(name, ()):
+                if name not in module.__dict__:
+                    setattr(module, name, value)
             return
         for module in self._layer_modules:
             if module.__dict__.get(name, _MISSING) is old:
@@ -35,9 +40,12 @@ class _Facade(types.ModuleType):
         super().__delattr__(name)
         if old is _MISSING:
             return
+        deleted = []
         for module in self._layer_modules:
             if module.__dict__.get(name, _MISSING) is old:
                 delattr(module, name)
+                deleted.append(module)
+        self._deleted_bindings[name] = tuple(deleted)
 
 
 def install(facade_name: str, modules) -> None:
@@ -55,3 +63,4 @@ def install(facade_name: str, modules) -> None:
             namespace.setdefault(name, value)
     facade.__class__ = _Facade
     object.__setattr__(facade, '_layer_modules', tuple(modules))
+    object.__setattr__(facade, '_deleted_bindings', {})

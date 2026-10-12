@@ -221,3 +221,47 @@ def test_moved_modules_are_aliases_of_their_layer_module():
         legacy = importlib.import_module(f'docich.{old}')
         layered = importlib.import_module(f'docich.hanjuku.{new}')
         assert legacy is layered, old
+
+
+def test_facade_delete_undo_restores_real_caller(monkeypatch):
+    from docich import hanjuku_policy
+    from docich.hanjuku.os_layer import commands
+
+    original = hanjuku_policy.pad('a')
+    for _ in range(2):
+        monkeypatch.delattr(hanjuku_policy, 'FPS')
+        assert not hasattr(commands, 'FPS')
+        monkeypatch.undo()
+        assert commands.FPS == hanjuku_policy.FPS == 60
+        assert hanjuku_policy.pad('a') == original
+
+
+def test_facade_delete_restore_preserves_new_layer_value(monkeypatch):
+    from docich import hanjuku_policy
+    from docich.hanjuku.os_layer import commands
+
+    original = commands.FPS
+    monkeypatch.delattr(hanjuku_policy, 'FPS')
+    commands.FPS = 30
+    monkeypatch.undo()
+    try:
+        assert hanjuku_policy.FPS == original
+        assert commands.FPS == 30
+    finally:
+        commands.FPS = original
+
+
+def test_name_confirmation_uses_rebound_policy_chart(monkeypatch):
+    from types import SimpleNamespace
+    from docich import hanjuku_bot, hanjuku_policy
+    from test_hanjuku_chart_bot import name_screen
+
+    replacement = SimpleNamespace(orders=lambda chapter: [],
+                                  home_castle=lambda chapter: 'replacement-home',
+                                  castles=lambda chapter: {'replacement-home': (7, 9)})
+    monkeypatch.setattr(hanjuku_policy, 'chart', replacement)
+    actions, state = hanjuku_bot.decide(name_screen(typed='どうし', cell='ど'), {})
+    assert actions == [hanjuku_policy.pad('start')]
+    assert state['policy']['chapter'] == 1
+    assert state['policy']['variant'] == 'chart_unavailable'
+    assert state['policy']['cursor'] == [7, 9]

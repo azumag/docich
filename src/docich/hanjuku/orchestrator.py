@@ -15,6 +15,7 @@ from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
                     month as month_flow, name as name_flow, prompts as prompts_flow,
                     recall as recall_flow, shop as shop_flow)
 from .judgment import battle as battle_judgment
+from .strategy import campaign
 from .os_layer import readers
 from .os_layer.phase import classify, shop_exit_confirmation
 from .version import BOT_VERSION
@@ -281,9 +282,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=name_flow.name_step(screen,mem)
         if mem.get('name',{}).get('done') and not mem.get('chapter'):
             mem['chapter']=1
-            mem['variant']='chart' if hanjuku_chart.orders(1) else 'chart_unavailable'
-            home=hanjuku_chart.home_castle(1)
-            castles=hanjuku_chart.castles(1)
+            mem['variant']='chart' if campaign.chart.orders(1) else 'chart_unavailable'
+            home=campaign.chart.home_castle(1)
+            castles=campaign.chart.castles(1)
             if home in castles:
                 mem['cursor']=list(castles[home])
     elif card_list:
