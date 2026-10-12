@@ -1,11 +1,11 @@
 {
-  "output_sha256": "f54d535ee0367e034d647563b93a605b104df5f7eb6cabe01a6f166a8c6affc1",
+  "output_sha256": "118c85b258a4078144b8675f9da50066b5889e92db314a60599976e9a87aa079",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "6b12363f91ca84d57637b02aebf6309ccb48c4d095fe3d4f3f531119386bc3e0",
+  "source_sha256": "326c70be7d2753c1836ddf6b08778f84d33344513a4f74dc55ad82a53a3a8b8c",
   "topics": [
+    "戦闘中の画面証拠を有限リングへ保存",
     "半熟の監視引継ぎと停滞セーブ再開の照合",
-    "未マージPR棚卸し（32→14件）と #2007 の claim 競合修正",
-    "先発隊1人の灰色行停滞を修正、終了前の保存を実測"
+    "未マージPR棚卸し（32→14件）と #2007 の claim 競合修正"
   ]
 }

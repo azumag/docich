@@ -111,7 +111,10 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
         strategy_variant=input_context.get('strategy_variant',strategy_variant)
         deviation_reason=input_context.get('deviation_reason')
     card_flow=battle.get('card_flow')
-    capture=(bool(card_flow) or (bool(battle.get('survival')) and state.get('screen_kind') == 'battle_menu') or state.get('screen_kind') in {'general_list','card_select','sortie_confirm'} or any(
+    # battle_result is recorded after leaving combat and may already show
+    # the map. Keep combat pixels in the same bounded ring, including holds
+    # and enemy-owned menus, without claiming an input or a battle outcome.
+    capture=(bool(card_flow) or (bool(battle.get('survival')) and state.get('screen_kind') == 'battle_menu') or state.get('screen_kind') in {'general_list','card_select','sortie_confirm','battle','egg_battle_menu','monster_menu'} or any(
         r.get('decision') in {'name_confirm','chapter_seen','battle_result','barrier_removed','field_encounter_observed','resume_sortie_cancel',
                               'card_pick','card_missing','sortie_confirm','order_substitute',
                               'order_launched_unconfirmed','sortie_arrival_confirmed',
