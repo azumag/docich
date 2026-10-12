@@ -19,7 +19,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _migrate_card_evidence, _own_egg_empty, _own_egg_needed, _own_egg_positive,
                                _survival_needed, _survival_state, _watch_card_melee, _watch_egg_drop)
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
-                               _monster_owner)
+                               _monster_owner, _monster_damage_second)
 from ..os_layer.commands import _battle_menu_to, menu_to, pad
 from ..os_layer.readers import ALL_CARD_NAMES, BATTLE_MENU, _fold_skill, _options
 from ..os_layer.world import NAME
@@ -1032,7 +1032,7 @@ def monster_menu_step(screen: Screen, mem):
     if mem.get('monster_menu_key') != menu_key:
         mem['monster_menu_key'] = menu_key
         for key in ('monster_menu_cursor', 'monster_menu_choice', 'monster_menu_choice_key',
-                    'monster_menu_choice_hp', 'monster_ally_max_hp'):
+                    'monster_menu_choice_hp', 'monster_menu_choice_scope', 'monster_ally_max_hp'):
             mem.pop(key, None)
         mem['monster_menu_hold'] = 0
     skill_lines = [line for line, text in zip(rows, row_texts) if 'もどれ' not in text]
@@ -1050,6 +1050,11 @@ def monster_menu_step(screen: Screen, mem):
         mem['battle']['card_summon_observed'] = True
         mem['battle']['card_context_unclassified'] = False
     owner = _monster_owner(skill_lines, ally, enemy)
+    scope = [owner, ally.name if ally else None, enemy.name if enemy else None]
+    if mem.get('monster_menu_choice_scope') != scope:
+        mem.pop('monster_menu_choice', None)
+        mem.pop('monster_menu_cursor', None)
+        mem['monster_menu_choice_scope'] = scope
     if owner == 'enemy':
         hold = int(mem.get('monster_menu_hold') or 0) + 1
         mem['monster_menu_hold'] = hold
@@ -1075,11 +1080,8 @@ def monster_menu_step(screen: Screen, mem):
     # GCGX: エクスカリバる is instant death (11/current HP against
     # monsters), マサムネる hits four times. g498 used the former at
     # 282HP against a 240HP Dark Elf, then lost the summon and Venus.
-    damage_second = (owner == 'ally' and ally.name == 'エクスカリバー'
-                     and enemy is not None and enemy.name in _MONSTER_SKILLS
-                     and len(skill_lines) == 2
-                     and [_fold_skill(t) for t in row_texts[:2]]
-                     == [_fold_skill(t) for t in reference.MONSTER_SKILLS['エクスカリバー']])
+    damage_second = _monster_damage_second(
+        owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
     if (not mem.get('monster_menu_choice') or mem.get('monster_menu_choice_hp') != hp_state
             or (damage_second and mem.get('monster_menu_choice') not in ('skill2', 'retreat'))):
         ally_hp = ally.hp if ally else None
@@ -1152,7 +1154,9 @@ def monster_menu_step(screen: Screen, mem):
                        '「ふくらむ」で最大まで戻す')
         elif action == 'skill2' and len(skill_lines) >= 2:
             label = second
-            why = ('敵召喚獣には低確率の即死より4回攻撃を優先する' if damage_second else
+            why = ('敵召喚獣には即死の反復より通常2回攻撃を優先する'
+                   if damage_second and ally.name == 'ユニコーン' else
+                   '敵召喚獣には低確率の即死より4回攻撃を優先する' if damage_second else
                    '1技目が回復技のため敵を減らす2技目を選ぶ'
                    if heal_first and not behind else '味方が劣勢で効果付きの2技目')
         else:
