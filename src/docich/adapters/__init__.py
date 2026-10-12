@@ -68,6 +68,9 @@ def make_coordinator_adapter(g, spec: RuntimeSpec):
     """
     # Reserved program views are not games and must survive coordinator
     # recovery/restoration initiated by a different corner.
+    if spec.game == "external-video-view":
+        from .external_video_program import make_external_video_adapter
+        return make_external_video_adapter(g, spec)
     if spec.game in ("stock-paper-view", "fx-paper-view"):
         from ..trading.markets.program import make_market_view_adapter
         return make_market_view_adapter(g, spec)

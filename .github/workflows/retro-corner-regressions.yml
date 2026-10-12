@@ -4,35 +4,49 @@ on:
   pull_request:
     paths:
       - '.github/workflows/retro-corner-regressions.yml'
-      - 'src/docich/retro*.py'
-      - 'src/docich/hanjuku*.py'
-      - 'src/docich/nethack*.py'
-      - 'src/docich/ninvaders/**'
-      - 'src/docich/paper_corner*.py'
-      - 'src/docich/corner*.py'
-      - 'src/docich/adapters/**'
+      - 'src/docich/adapters/__init__.py'
+      - 'src/docich/adapters/base.py'
+      - 'src/docich/adapters/cli_game.py'
+      - 'src/docich/adapters/nethack.py'
+      - 'src/docich/adapters/program.py'
+      - 'src/docich/adapters/retroarch.py'
+      - 'src/docich/adapters/soren.py'
+      - 'src/docich/adapters/soren91.py'
+      - 'src/docich/adapters/soren91_graceful.py'
+      - 'src/docich/adapters/tsuitate_program.py'
       - 'src/docich/agent/**'
-      - 'src/docich/config.py'
-      - 'src/docich/game_switch.py'
-      - 'src/docich/watchdog.py'
+      - 'src/docich/ninvaders/**'
       - 'src/docich/actions.py'
-      - 'src/docich/state.py'
-      - 'src/docich/naming.py'
       - 'src/docich/cli.py'
-      - 'src/docich/tmux.py'
-      - 'src/docich/procs.py'
-      - 'src/docich/process_tree.py'
+      - 'src/docich/config.py'
+      - 'src/docich/corner*.py'
+      - 'src/docich/game_switch.py'
+      - 'src/docich/hanjuku*.py'
+      - 'src/docich/meriken_voice.py'
+      - 'src/docich/naming.py'
+      - 'src/docich/nethack*.py'
+      - 'src/docich/paper_corner.py'
+      - 'src/docich/paper_corner_fast.py'
+      - 'src/docich/paper_corner_manual.py'
+      - 'src/docich/paper_corner_operator.py'
       - 'src/docich/presentation.py'
+      - 'src/docich/process_tree.py'
+      - 'src/docich/procs.py'
+      - 'src/docich/retro_corner.py'
+      - 'src/docich/retro_corner_manual.py'
+      - 'src/docich/retroarch_boundary.py'
+      - 'ops/vm_actions/collect_diagnostics.py'
+      - 'ops/vm_actions/tests/test_hanjuku_checkpoint_diagnostics.py'
+      - 'ops/vm_actions/tests/test_hanjuku_resume_diagnostics.py'
+      - 'src/docich/soren_recovery_process.py'
+      - 'src/docich/soren_round_recovery.py'
+      - 'src/docich/soren91*.py'
+      - 'src/docich/state.py'
       - 'src/docich/stream_category.py'
       - 'src/docich/stream_title_context.py'
-      - 'src/docich/tsuitate_protocol.py'
-      - 'src/docich/tsuitate_corner.py'
-      - 'src/docich/tsuitate_beta_control.py'
-      - 'src/docich/tsuitate_view.py'
-      - 'src/docich/adapters/tsuitate_program.py'
-      - 'src/docich/soren91*.py'
-      - 'src/docich/meriken_voice.py'
-      - 'src/docich/soren_*recovery*.py'
+      - 'src/docich/tmux.py'
+      - 'src/docich/tsuitate*.py'
+      - 'src/docich/watchdog.py'
       - 'brains/**'
       - 'scripts/hanjuku_scene_generate.sh'
       - 'config/games/**'
@@ -72,39 +86,54 @@ on:
       - 'tests/test_tsuitate_corner.py'
       - 'tests/test_tsuitate_program.py'
       - 'requirements-test.txt'
+      - 'conftest.py'
   push:
     branches: [main]
     paths:
       - '.github/workflows/retro-corner-regressions.yml'
-      - 'src/docich/retro*.py'
-      - 'src/docich/hanjuku*.py'
-      - 'src/docich/nethack*.py'
-      - 'src/docich/ninvaders/**'
-      - 'src/docich/paper_corner*.py'
-      - 'src/docich/corner*.py'
-      - 'src/docich/adapters/**'
+      - 'src/docich/adapters/__init__.py'
+      - 'src/docich/adapters/base.py'
+      - 'src/docich/adapters/cli_game.py'
+      - 'src/docich/adapters/nethack.py'
+      - 'src/docich/adapters/program.py'
+      - 'src/docich/adapters/retroarch.py'
+      - 'src/docich/adapters/soren.py'
+      - 'src/docich/adapters/soren91.py'
+      - 'src/docich/adapters/soren91_graceful.py'
+      - 'src/docich/adapters/tsuitate_program.py'
       - 'src/docich/agent/**'
-      - 'src/docich/config.py'
-      - 'src/docich/game_switch.py'
-      - 'src/docich/watchdog.py'
+      - 'src/docich/ninvaders/**'
       - 'src/docich/actions.py'
-      - 'src/docich/state.py'
-      - 'src/docich/naming.py'
       - 'src/docich/cli.py'
-      - 'src/docich/tmux.py'
-      - 'src/docich/procs.py'
-      - 'src/docich/process_tree.py'
+      - 'src/docich/config.py'
+      - 'src/docich/corner*.py'
+      - 'src/docich/game_switch.py'
+      - 'src/docich/hanjuku*.py'
+      - 'src/docich/meriken_voice.py'
+      - 'src/docich/naming.py'
+      - 'src/docich/nethack*.py'
+      - 'src/docich/paper_corner.py'
+      - 'src/docich/paper_corner_fast.py'
+      - 'src/docich/paper_corner_manual.py'
+      - 'src/docich/paper_corner_operator.py'
       - 'src/docich/presentation.py'
+      - 'src/docich/process_tree.py'
+      - 'src/docich/procs.py'
+      - 'src/docich/retro_corner.py'
+      - 'src/docich/retro_corner_manual.py'
+      - 'src/docich/retroarch_boundary.py'
+      - 'ops/vm_actions/collect_diagnostics.py'
+      - 'ops/vm_actions/tests/test_hanjuku_checkpoint_diagnostics.py'
+      - 'ops/vm_actions/tests/test_hanjuku_resume_diagnostics.py'
+      - 'src/docich/soren_recovery_process.py'
+      - 'src/docich/soren_round_recovery.py'
+      - 'src/docich/soren91*.py'
+      - 'src/docich/state.py'
       - 'src/docich/stream_category.py'
       - 'src/docich/stream_title_context.py'
-      - 'src/docich/tsuitate_protocol.py'
-      - 'src/docich/tsuitate_corner.py'
-      - 'src/docich/tsuitate_beta_control.py'
-      - 'src/docich/tsuitate_view.py'
-      - 'src/docich/adapters/tsuitate_program.py'
-      - 'src/docich/soren91*.py'
-      - 'src/docich/meriken_voice.py'
-      - 'src/docich/soren_*recovery*.py'
+      - 'src/docich/tmux.py'
+      - 'src/docich/tsuitate*.py'
+      - 'src/docich/watchdog.py'
       - 'brains/**'
       - 'scripts/hanjuku_scene_generate.sh'
       - 'config/games/**'
@@ -144,6 +173,7 @@ on:
       - 'tests/test_tsuitate_corner.py'
       - 'tests/test_tsuitate_program.py'
       - 'requirements-test.txt'
+      - 'conftest.py'
 
 permissions:
   contents: read
@@ -175,62 +205,88 @@ jobs:
             --before "$BEFORE_SHA" \
             --after "$AFTER_SHA" \
             --root-path '.github/workflows/retro-corner-regressions.yml' \
-            --root-path 'src/docich/retro*.py' \
-            --root-path 'src/docich/hanjuku*.py' \
-            --root-path 'src/docich/nethack*.py' \
-            --root-path 'src/docich/ninvaders/**' \
-            --root-path 'src/docich/paper_corner*.py' \
-            --root-path 'src/docich/corner*.py' \
-            --root-path 'src/docich/adapters/**' \
+            --root-path 'src/docich/adapters/__init__.py' \
+            --root-path 'src/docich/adapters/base.py' \
+            --root-path 'src/docich/adapters/cli_game.py' \
+            --root-path 'src/docich/adapters/nethack.py' \
+            --root-path 'src/docich/adapters/program.py' \
+            --root-path 'src/docich/adapters/retroarch.py' \
+            --root-path 'src/docich/adapters/soren.py' \
+            --root-path 'src/docich/adapters/soren91.py' \
+            --root-path 'src/docich/adapters/soren91_graceful.py' \
+            --root-path 'src/docich/adapters/tsuitate_program.py' \
             --root-path 'src/docich/agent/**' \
-            --root-path 'src/docich/config.py' \
-            --root-path 'src/docich/game_switch.py' \
-            --root-path 'src/docich/watchdog.py' \
+            --root-path 'src/docich/ninvaders/**' \
             --root-path 'src/docich/actions.py' \
-            --root-path 'src/docich/state.py' \
-            --root-path 'src/docich/naming.py' \
             --root-path 'src/docich/cli.py' \
-            --root-path 'src/docich/tmux.py' \
-            --root-path 'src/docich/procs.py' \
-            --root-path 'src/docich/process_tree.py' \
+            --root-path 'src/docich/config.py' \
+            --root-path 'src/docich/corner*.py' \
+            --root-path 'src/docich/game_switch.py' \
+            --root-path 'src/docich/hanjuku*.py' \
+            --root-path 'src/docich/meriken_voice.py' \
+            --root-path 'src/docich/naming.py' \
+            --root-path 'src/docich/nethack*.py' \
+            --root-path 'src/docich/paper_corner.py' \
+            --root-path 'src/docich/paper_corner_fast.py' \
+            --root-path 'src/docich/paper_corner_manual.py' \
+            --root-path 'src/docich/paper_corner_operator.py' \
             --root-path 'src/docich/presentation.py' \
+            --root-path 'src/docich/process_tree.py' \
+            --root-path 'src/docich/procs.py' \
+            --root-path 'src/docich/retro_corner.py' \
+            --root-path 'src/docich/retro_corner_manual.py' \
+            --root-path 'src/docich/retroarch_boundary.py' \
+            --root-path 'ops/vm_actions/collect_diagnostics.py' \
+            --root-path 'ops/vm_actions/tests/test_hanjuku_checkpoint_diagnostics.py' \
+            --root-path 'ops/vm_actions/tests/test_hanjuku_resume_diagnostics.py' \
+            --root-path 'src/docich/soren_recovery_process.py' \
+            --root-path 'src/docich/soren_round_recovery.py' \
+            --root-path 'src/docich/soren91*.py' \
+            --root-path 'src/docich/state.py' \
             --root-path 'src/docich/stream_category.py' \
             --root-path 'src/docich/stream_title_context.py' \
-            --root-path 'src/docich/tsuitate_protocol.py' \
-            --root-path 'src/docich/tsuitate_corner.py' \
-            --root-path 'src/docich/tsuitate_beta_control.py' \
-            --root-path 'src/docich/tsuitate_view.py' \
-            --root-path 'src/docich/adapters/tsuitate_program.py' \
-            --root-path 'src/docich/soren91*.py' \
-            --root-path 'src/docich/meriken_voice.py' \
-            --root-path 'src/docich/soren_*recovery*.py' \
+            --root-path 'src/docich/tmux.py' \
+            --root-path 'src/docich/tsuitate*.py' \
+            --root-path 'src/docich/watchdog.py' \
             --root-path 'brains/**' \
             --root-path 'scripts/hanjuku_scene_generate.sh' \
             --root-path 'config/games/**' \
+            --root-path '.github/scripts/soren_gitlink_gate.py' \
             --root-path 'tests/test_retro*.py' \
             --root-path 'tests/test_hanjuku*.py' \
             --root-path 'tests/test_nethack*.py' \
             --root-path 'tests/test_ninvaders*.py' \
             --root-path 'tests/test_corner*.py' \
-            --root-path 'tests/test_tsuitate_corner.py' \
-            --root-path 'tests/test_tsuitate_program.py' \
             --root-path 'tests/test_agent*.py' \
             --root-path 'tests/test_paper_corner*.py' \
             --root-path 'tests/test_bastet*.py' \
             --root-path 'tests/test_moon_buggy*.py' \
             --root-path 'tests/test_pacman4console*.py' \
             --root-path 'tests/test_nsnake*.py' \
+            --root-path 'tests/test_bot_eval.py' \
+            --root-path 'tests/test_config.py' \
+            --root-path 'tests/test_robots_config.py' \
+            --root-path 'tests/test_stream_category.py' \
+            --root-path 'tests/test_stream_title_context.py' \
+            --root-path 'tests/test_procs.py' \
             --root-path 'tests/test_soren91*.py' \
             --root-path 'tests/test_soren_adapter.py' \
             --root-path 'tests/test_soren_round_recovery.py' \
             --root-path 'tests/test_presentation*.py' \
-            --root-path 'tests/test_round_boundary.py' \
-            --root-path 'tests/test_cli_adapter.py' \
-            --root-path 'tests/test_cli_coordinator.py' \
-            --root-path 'tests/test_coordinator*.py' \
+            --root-path 'tests/test_coordinator_adapter_retroarch.py' \
             --root-path 'tests/test_game_switch*.py' \
+            --root-path 'tests/test_coordinator*.py' \
+            --root-path 'tests/test_cli_coordinator.py' \
+            --root-path 'tests/test_cli_adapter.py' \
+            --root-path 'tests/test_round_boundary.py' \
+            --root-path 'tests/test_eval_tmux.py' \
+            --root-path 'tests/test_failed_improvement_terminal_recovery_required.py' \
+            --root-path 'tests/test_opencode_go_free_chain.py' \
+            --root-path 'tests/test_tsuitate_protocol.py' \
+            --root-path 'tests/test_tsuitate_corner.py' \
+            --root-path 'tests/test_tsuitate_program.py' \
             --root-path 'requirements-test.txt' \
-            --root-path '.github/scripts/soren_gitlink_gate.py' \
+            --root-path 'conftest.py' \
             --soren-path 'status_dashboard.py' \
             --soren-path 'update_stream_game.sh' \
             --soren-path 'start_all.sh' \
@@ -258,7 +314,7 @@ jobs:
           tests/test_corner_rotation.py tests/test_corner_rotation_execution.py tests/test_hanjuku_manual_cancel.py tests/test_hanjuku_manual_admin_release.py
           tests/test_failed_improvement_terminal_recovery_required.py
           tests/test_hanjuku_retro_registration.py tests/test_hanjuku_brain.py
-          tests/test_hanjuku_script.py tests/test_hanjuku_entry_return.py tests/test_hanjuku_defense_ownership.py tests/test_hanjuku_font_regions.py tests/test_hanjuku_commentary_evidence.py tests/test_hanjuku_chart_bot.py tests/test_hanjuku_empty_eggs.py tests/test_hanjuku_recovery_before_recruit.py tests/test_hanjuku_survey_cache.py tests/test_hanjuku_egg_timing.py tests/test_hanjuku_card_inventory_deadline.py tests/test_hanjuku_trade_refusal.py tests/test_hanjuku_goninja_cash_floor.py tests/test_hanjuku_camp_observation.py tests/test_hanjuku_critical_partial_state.py tests/test_hanjuku_retreat_recheck.py tests/test_hanjuku_retreat_egg_status.py tests/test_hanjuku_camp_proof_binding.py tests/test_hanjuku_defense_read_model.py tests/test_hanjuku_melee_cadence.py tests/test_hanjuku_egg_risk.py tests/test_hanjuku_hp_visibility.py tests/test_hanjuku_chart_chapters.py tests/test_hanjuku_survival.py tests/test_hanjuku_map_events.py
+          tests/test_hanjuku_script.py tests/test_hanjuku_combat_strength.py tests/test_hanjuku_partial_egg_recovery.py tests/test_hanjuku_native_individual_quote.py tests/test_hanjuku_continuous_chikujou.py tests/test_hanjuku_combat_frame_evidence.py tests/test_hanjuku_hero_guard.py tests/test_hanjuku_recovery_payroll.py tests/test_hanjuku_soldier_recovery_budget.py tests/test_hanjuku_pink_greeting_zero_egg.py tests/test_hanjuku_entry_return.py tests/test_hanjuku_defense_ownership.py tests/test_hanjuku_font_regions.py tests/test_hanjuku_commentary_evidence.py tests/test_hanjuku_chart_bot.py tests/test_hanjuku_empty_eggs.py tests/test_hanjuku_recovery_before_recruit.py tests/test_hanjuku_survey_cache.py tests/test_hanjuku_egg_timing.py tests/test_hanjuku_card_inventory_deadline.py tests/test_hanjuku_trade_refusal.py tests/test_hanjuku_goninja_cash_floor.py tests/test_hanjuku_camp_observation.py tests/test_hanjuku_critical_partial_state.py tests/test_hanjuku_retreat_recheck.py tests/test_hanjuku_retreat_egg_status.py tests/test_hanjuku_camp_proof_binding.py tests/test_hanjuku_defense_read_model.py tests/test_hanjuku_melee_cadence.py tests/test_hanjuku_egg_risk.py tests/test_hanjuku_hp_visibility.py tests/test_hanjuku_chart_chapters.py tests/test_hanjuku_survival.py tests/test_hanjuku_map_events.py
           tests/test_hanjuku_boss_events.py tests/test_hanjuku_sortie_evidence.py tests/test_hanjuku_sortie_interruption.py tests/test_hanjuku_chart_adjust.py tests/test_hanjuku_off_chart.py tests/test_hanjuku_castle_panel.py
           tests/test_hanjuku_house.py tests/test_hanjuku_recruit_roster.py tests/test_hanjuku_execution.py tests/test_hanjuku_cursor_components.py
           tests/test_hanjuku_loss_accounting.py
@@ -302,9 +358,11 @@ jobs:
         run: >-
           python3 -m pytest -q
           tests/test_retroarch_safe_boundary.py tests/test_retroarch_adapter.py
-          tests/test_hanjuku_saved_stop.py
+          tests/test_hanjuku_saved_stop.py tests/test_hanjuku_stall_checkpoint.py
           tests/test_coordinator_adapter_retroarch.py tests/test_retroarch_readiness_contract.py
           tests/test_presentation.py tests/test_presentation_viewer_wait.py tests/test_presentation_script_volume.py
+      - name: Hanjuku checkpoint diagnostics and redaction
+        run: python3 -m pytest -q ops/vm_actions/tests/test_hanjuku_checkpoint_diagnostics.py
       - name: Transactional switch contract
         run: >-
           python3 -m pytest -q
@@ -318,3 +376,6 @@ jobs:
           tests/test_soren_round_recovery.py
       - name: Round-boundary contract
         run: python3 -m pytest -q tests/test_round_boundary.py
+
+      - name: Hanjuku checkpoint resume metadata diagnostics
+        run: python3 -m pytest -q ops/vm_actions/tests/test_hanjuku_resume_diagnostics.py

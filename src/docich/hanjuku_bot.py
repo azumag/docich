@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v137-camp-recheck'
+BOT_VERSION = 'hanjuku-chart-v178-native-individual-quote'
 
 # Owner directive (2026-10-03): 保留 is not an end state. When one screen stays
 # frozen and the bot has planned no input for more than this many observations,
@@ -117,7 +117,7 @@ def classify(frame: Frame) -> str:
         return 'shop'
     # The red-curtain concert offers an optional looping music picker. B
     # closes it; repeatedly confirming track 00 would never resume the game.
-    curtain=lambda r,g,b:r>140 and r>g*3 and r>b*3
+    curtain=lambda r,g,b:r>140 and r>g*3 and r>b*1.5
     if (f.fraction((0,0,32,128),curtain)>.25
             and f.fraction((224,0,256,128),curtain)>.25
             and f.fraction((18,150,236,207),green)>.5):
@@ -205,7 +205,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     from . import hanjuku_house
     from . import hanjuku_roster
     from . import hanjuku_chart
-    from .hanjuku_screen import month_confirmation_positions, parse
+    from .hanjuku_screen import fake_hero_announcement_chapter, month_confirmation_positions, parse
     # State written before the castle-label rename still names chapter 1's home
     # castle ほんじょう. Rename it here, before anything reads or writes it, so
     # garrison keys, order sources and free-text notes all match the chart.
@@ -223,7 +223,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         if previous_identity != identity:
             for key in ('house', 'house_field_scan', 'house_scan_tick', 'house_scan_month',
                         'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'recruit_roster_attempts',
-                        'house_eggs', 'egg_uses', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership'):
+                        'house_eggs', 'egg_uses', 'egg_zero_owners', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership',
+                        'starter_party'):
                 mem.pop(key, None)
         # A matching old trace may retain observed zero counts, but never
         # upgrades an old unbound roster into a complete reusable snapshot.
@@ -242,6 +243,37 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     policy.observe_events(screen,mem)
     policy.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     kind=screen.kind
+    reveal_chapter = fake_hero_announcement_chapter(screen)
+    if reveal_chapter is not None:
+        # This explicit field transition owns the foreground even when a
+        # repair/recall or battle command was remembered before the reveal.
+        if mem.get('battle'):
+            policy.battle_end(mem, 'fake_hero_reveal')
+        policy.reset_battle_controls(mem)
+        mem['chapter'] = reveal_chapter
+        mem.pop('resume_chapter_pending', None)
+        policy._record(mem, 'fake_hero_reveal',
+                       reason='二行の城の正体告知を実画面で確認したため会話を進める',
+                       observed_metric={'chapter': reveal_chapter})
+        updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
+        for key in ('_adjusted', '_interim', '_recall_inputs'):
+            mem.pop(key, None)
+        updated['_records'] = mem.pop('_records')
+        updated['_experience'] = mem.pop('_experience', None)
+        updated['policy'] = mem
+        return [pad('a')], updated
+    from . import hanjuku_starter
+    starter_actions = hanjuku_starter.step(screen, mem, frame)
+    if starter_actions is not None:
+        # Never let the generic shop/event/no-input fallback skip this list,
+        # or let an old monthly/repair transaction own the chapter foreground.
+        updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
+        for key in ('_adjusted', '_interim', '_recall_inputs'):
+            mem.pop(key, None)
+        updated['_records'] = mem.pop('_records')
+        updated['_experience'] = mem.pop('_experience', None)
+        updated['policy'] = mem
+        return starter_actions, updated
     from . import hanjuku_camp_recheck
     hanjuku_camp_recheck.interrupt(screen, mem)
     if state.get('screen_kind') != kind:
@@ -312,7 +344,16 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         hanjuku_house.step(screen, mem, frame)
     # A planned summon-preemption must not become a blind A on an unfinished
     # command menu, or be replaced by an old monthly/house transaction.
-    actions = policy.defender_egg_pending_step(screen, mem)
+    policy.note_duel_event(screen, mem)
+    actions = policy.resume_sortie_step(screen, mem)
+    if actions is None:
+        actions = policy.boss_stock_restart_step(screen, mem)
+    if actions is None:
+        actions = policy.defender_egg_pending_step(screen, mem)
+    if actions is None:
+        actions = policy.command_open_pending_step(screen, mem)
+    if actions is None:
+        actions = policy.trade_guard_step(screen, mem)
     if actions is None and event_confirmation:
         # Owner (2026-10-06): trade refusal and the goninja cash floor outrank
         # a remembered monthly recruit/exit that could accept this yes/no.
@@ -375,7 +416,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=policy.battle_menu_pending_step(mem)
     elif kind=='battle_menu':
         actions=policy.battle_menu_step(screen,mem)
-    elif kind in {'attack_started','defense_started','boss_attack_started'}:
+    elif kind in {'attack_started','defense_started','boss_attack_started','field_encounter_started'}:
         actions=policy.message_step(screen,mem)
     elif kind=='barrier_removed':
         if mem.get('chapter') == 1:

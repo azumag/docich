@@ -3,6 +3,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 from docich import config
@@ -70,6 +71,22 @@ class ManualRetroCornerTests(unittest.TestCase):
         self.assertEqual(current[0], "sorengame")
         self.assertFalse((self.g.state_dir / "retro_corner.json").exists())
         self.assertTrue((self.g.state_dir / "retro_corner_manual.json").exists())
+
+    def test_non_cli_game_is_refused_before_the_rotation_reservation(self):
+        # 2026-10-11: the WebUI started hanjuku-hero (retroarch) here. The
+        # CLI-only check ran only after run_manual had written manual_pending,
+        # so the refusal latched the rotation on a slot that could never run.
+        (self.root / "config" / "games" / "hanjuku-hero.toml").write_text(
+            '[game]\nname="hanjuku-hero"\ntitle="Hanjuku"\nadapter="retroarch"\n'
+            '[retroarch]\nrom="games/roms/hanjuku-hero.sfc"\n[agent]\nenabled=true\n',
+            encoding="utf-8",
+        )
+        mgr = ManualRetroCornerManager(self.g, game="hanjuku-hero", duration_minutes=5)
+        with mock.patch("docich.corner_catalog.rotation_enabled", return_value=True), \
+                mock.patch("docich.corner_rotation.run_manual") as run_manual:
+            with self.assertRaisesRegex(RetroCornerError, "CLIゲームに限定"):
+                mgr.start()
+        run_manual.assert_not_called()
 
     def test_manual_runner_does_not_mutate_daily_schedule_config(self):
         daily = RetroCornerConfig(enabled=True, games=["robots"])

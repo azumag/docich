@@ -245,3 +245,16 @@ test('invalid scope and oversized replies fail closed', async () => {
     /conversation_failed/,
   );
 });
+
+
+test('game state is sent on generation only, and malformed state is rejected locally',async()=>{
+ const requests=[];
+ const client=new CloudflareConversationClient({env:{DOCICH_DISCORD_VOICE_CHAT_URL:'https://worker.example/voice/reply',DOCICH_DISCORD_VOICE_CHAT_TOKEN:'s'.repeat(48)},turnIdFactory:()=> 'state-turn',request:async req=>{requests.push(JSON.parse(req.body));return {status:200,body:new TextEncoder().encode(req.url.endsWith('/commit')?'{"status":"committed"}':'{"reply":"第3区間です。"}')};}});
+ const scope={guildId:'1',channelId:'10',userId:'7',signal:new AbortController().signal};
+ const state='現在は第3区間です。';const generated=await client.generate('同志、今どこ？',{...scope,gameState:state});
+ assert.equal(requests[0].gameState,state);assert.equal(requests[0].transcript,'同志、今どこ？');
+ await client.commit({...generated,transcript:'同志、今どこ？'},scope);
+ assert.equal(requests[1].gameState,undefined);
+ for(const gameState of [null,'',{},'x'.repeat(501),'line\nline'])await assert.rejects(client.generate('同志',{...scope,gameState}),/invalid_conversation_context/);
+ assert.equal(requests.length,2);
+});

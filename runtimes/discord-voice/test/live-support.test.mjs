@@ -144,6 +144,35 @@ test('live TTS is opt-in, requires conversation mode, and loopback stays explici
   );
 });
 
+test('memory scope channel defaults to the joined Voice channel and is explicitly overridable', () => {
+  const base = loadLiveVoiceConfig(baseEnv());
+  assert.equal(base.memoryChannelId, baseEnv().DOCICH_DISCORD_VOICE_CHANNEL_ID);
+
+  const shared = loadLiveVoiceConfig({
+    ...baseEnv(),
+    DOCICH_DISCORD_VOICE_MEMORY_CHANNEL_ID: '423456789012345678',
+  });
+  assert.equal(shared.memoryChannelId, '423456789012345678');
+  assert.equal(shared.channelId, baseEnv().DOCICH_DISCORD_VOICE_CHANNEL_ID);
+
+  assert.equal(
+    loadLiveVoiceConfig({
+      ...baseEnv(),
+      DOCICH_DISCORD_VOICE_MEMORY_CHANNEL_ID: '',
+    }).memoryChannelId,
+    baseEnv().DOCICH_DISCORD_VOICE_CHANNEL_ID,
+  );
+
+  assert.throws(
+    () =>
+      loadLiveVoiceConfig({
+        ...baseEnv(),
+        DOCICH_DISCORD_VOICE_MEMORY_CHANNEL_ID: 'voice',
+      }),
+    (error) => error instanceof LiveVoiceError && error.code === 'invalid_config',
+  );
+});
+
 test('transcript debug requires an explicit boolean flag', () => {
   const enabled = loadLiveVoiceConfig({
     ...baseEnv(),

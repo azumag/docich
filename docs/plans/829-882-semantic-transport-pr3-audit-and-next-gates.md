@@ -5,7 +5,44 @@ next PR does not have to re-derive scope from scratch, and so the one real
 open design question (control-plane script shape) gets a reviewed decision
 instead of a unilateral one.
 
-## State as of 2026-09-22
+## Final state (2026-10-08): every remaining gate closed
+
+This section supersedes the "State as of 2026-09-22" snapshot below and the
+"remaining gates" audit that follows it. Verified against `origin/main` =
+`bd2053d06d2cc869a49580ec29bebdc2e65e1a51` and against the production VM's
+read-only `diagnostics` operation (same day), not from memory.
+
+| step in "Suggested order" below | state | evidence |
+|---|---|---|
+| 1. review/merge soviet_now#492 + docich#965 | **done** | both merged 2026-09-22 |
+| 2. `games/soviet_now` gitlink bump | **done** | #990; gitlink = `fadbb7ce8baf3403c65cb8aa5b15702ddafa5e3d` |
+| 3. `configure_jev_route.py` owner-only control plane | **done** | #969 — `configure_jev_route_direct` / `configure_jev_route_vercel` / `disable_jev_route` in `.github/workflows/vm-operations.yml`, sharing the fixed-script/secret-on-stdin contract |
+| 3. `collect_diagnostics.py` wiring for `diagnostics.describe()` | **done** | #977, #987, #1025 — the `semantic_decision` section is projected from the live chat worker's environ, keyed on the live `COMMENT_CLASSIFIER_BACKEND` gate |
+| 4. owner-run real-API canary, `route=direct` | **done** | `Jev route canary` run [35824279547](https://github.com/azumag/docich/actions/runs/35824279547) (2026-09-23, `routes=both`): direct `status=ok`, resolved `jev-1.13.0`, 4/4 synthetic-fixture agreement |
+| 5. production enable + `route=vercel` | **done** | `configure_jev_route_vercel` (#969) + owner-configured `direct,vercel` failover (#1031). Production diagnostics now report `backend=jev`, `comment_classifier_backend=jev`, `route=direct`, `fallback_route=vercel`, `credential=present`, `fallback_credential=present` |
+| 6. remove soviet_now legacy HTTP | **done** | `azumag/soviet_now` `main` no longer contains `lib/comment_classifier_jev.py` (HTTP 404); the classifier now lives in `src/docich/comment_classifier/` (#988) |
+
+The Vercel route was probed in the **same** canary run [35824279547] with the
+same 4-comment synthetic fixture and returned `status=ok`, resolved
+`typesafe-ai/jev`, 4/4 agreement — no schema difference, so the issue's
+"schema差異があれば暗黙補完せずroute contractとしてレビュー" branch was never
+triggered.
+
+The compatibility-adapter checklist item this doc flagged as *intentionally
+not yet true* — "adapterがendpoint/model/key/validatorを独自実装しない" — is now
+satisfied trivially: there is no adapter file left to violate it.
+
+Left to other issues, **not** #882 gates:
+
+- Live-traffic route/latency/fallback/usage/cost measurement belongs to #678
+  ("精度・遅延・費用の実測"). `docich.comment_classifier.report` already emits
+  `route_counts`, `failover_batches`, per-batch latency quantiles and
+  known/unknown usage and cost (never 0 for unknown), so the tool exists; only
+  the production burn-in report is outstanding and it is #678's.
+- `DOCICH_JEV_TIMEOUT_MS` stays unmanaged: the classifier always passes its own
+  timeout, so this env default is still dead (open sub-question 3 below).
+
+## State as of 2026-09-22 (historical; superseded by "Final state" above)
 
 Merged into docich `main`:
 
@@ -45,34 +82,33 @@ real soviet_now file by soviet_now#492's own test suite.
 
 **Nothing outstanding here.**
 
-### "### compatibility adapter" regression list
+### "### compatibility adapter" regression list — **done** (see "Final state")
 
-All covered except one item, which is *intentionally* not yet true:
+All covered except one item, which was *intentionally* not yet true at the
+time this doc was written:
 
 > adapterがendpoint/model/key/validatorを独自実装しない
 
-soviet_now#492 adds `docich_transport()` as a second, delegating path, but
-**keeps** the file's own `request_once`/`http_worker`/fixed `ENDPOINT` as the
-default and rollback path, per #942's own plan doc ("must not be removed in
-this PR or before the later adapter/canary gates pass"). This checklist item
-is only fully satisfied at rollout step 6 (legacy HTTP removal), after a
-production canary — not before. Not a regression, just not done yet.
+That item is now satisfied: rollout step 6 (legacy HTTP removal) has happened
+— `lib/comment_classifier_jev.py` no longer exists in soviet_now `main`, so
+there is no adapter of its own to violate the checklist.
 
-### "### control plane" regression list — **nothing started**
+### "### control plane" regression list — **done** (#969; see "Final state")
 
 > direct -> vercel -> direct / disable / stale runtimeからcanonical設定を再読込 /
 > effective route/model/credential presence確認 / secret leakなし /
 > unrelated PID維持 / #829 purpose mode/question-setを変更しない
 
-No `configure_jev_*`/`disable_jev` owner-only operation exists yet. This is
-the biggest remaining gap and the next real PR. See design question below.
+`configure_jev_route.py` + the three `vm-operations` steps now exist (`#969`),
+the diagnostics wiring reads the effective route (`#977`/`#1025`), and
+production diagnostics report the effective route/model/credential presence.
+**Nothing outstanding here.**
 
-### "## 実API canary" — blocked, not attempted
+### "## 実API canary" — **done** (run 35824279547; see "Final state")
 
-No `TYPESAFE_API_KEY` / `DOCICH_JEV_VERCEL_API_KEY` is available outside the
-production secret store; this needs an owner running the canary directly
-once a control-plane path exists to do it safely (or a documented manual
-procedure). Nothing here can be done from an unattended coding session.
+Both routes passed one owner-dispatched synthetic canary with the same
+fixture (`direct` and `vercel`, both `status=ok`, 4/4 agreement). No schema
+difference was found, so no route-contract review was needed.
 
 ## Design question for the next PR: control-plane script shape
 
@@ -122,20 +158,17 @@ Open sub-questions worth a reviewer's opinion rather than a unilateral call:
    default is never read on that path. Worth deciding whether this script
    should manage it at all before a second consumer exists that needs it.
 
-## Wiring `diagnostics.describe()` into the real collector
+## Wiring `diagnostics.describe()` into the real collector — **done** (#977/#987/#1025)
 
-docich#965 lands the pure projection only. Wiring it into
-`ops/vm_actions/collect_diagnostics.py` needs a decision on *whose*
-environment is authoritative — the chat worker's own `/proc/<pid>/environ`
-(via a helper mirroring `configure_comment_classifier_jev._process_env`,
-restricted to a fixed key allowlist so no unrelated secret is ever read) is
-the only runtime that currently could read `DOCICH_SEMANTIC_BACKEND` at all,
-since docich's own transport has no long-running process of its own. That
-wiring should land together with (or right after) `configure_jev_route.py`,
-so the new diagnostics section has something real to report on day one
-instead of permanently reading `"legacy"`.
+docich#965 landed the pure projection only. The wiring into
+`ops/vm_actions/collect_diagnostics.py` is now shipped: the collector projects
+the live chat worker's own `/proc/<pid>/environ` through a fixed key
+allowlist, and #1025 re-keyed the whole section on the live
+`COMMENT_CLASSIFIER_BACKEND` gate (retiring the never-read
+`DOCICH_SEMANTIC_BACKEND`). Production reports it under the
+`semantic_decision` key.
 
-## Suggested order for what's left
+## Suggested order for what's left (all steps now done — see "Final state")
 
 1. Review/merge soviet_now#492 and docich#965 (independent of each other).
 2. Bump the `games/soviet_now` gitlink in docich to #492's merge commit, in
@@ -153,4 +186,6 @@ instead of permanently reading `"legacy"`.
    `lib/comment_classifier_jev.py` (rollout step 6), only after step 5 has
    run in production without rollback.
 
-Neither #829 nor #882 is complete at any point before step 6.
+Neither #829 nor #882 is complete at any point before step 6. Step 6 has now
+happened (see "Final state" at the top), so **#882's scope is complete**;
+#829's own remaining units are tracked in `829-staged-migration-status.md`.

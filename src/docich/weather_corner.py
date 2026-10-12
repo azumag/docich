@@ -18,6 +18,7 @@ from .game_switch import (
     ERROR_AGENT_START_FAILED,
     ERROR_QUIESCE_FAILED,
     ERROR_READINESS_TIMEOUT,
+    ERROR_ROLLBACK_FAILED,
     ERROR_SOURCE_FENCE_LOST,
     ERROR_START_FAILED,
     GameSwitchBusyError,
@@ -847,6 +848,34 @@ class WeatherCornerManager:
                             or not isinstance(canonical.get("active"), dict)
                             or _identity(canonical["active"]) != previous):
                         return False
+                elif code == ERROR_ROLLBACK_FAILED:
+                    # The start failed *and* its own rollback failed, so
+                    # game-switch was left in ``failed`` with the previous
+                    # runtime retained for a reviewed recovery.  A later
+                    # recovery restored it.  Accept a terminal ``failed``
+                    # receipt for this exact request only together with the
+                    # canonical state that proves the restore finished: a
+                    # stable owner running the exact previous game, nothing
+                    # still in flight (no candidate/previous/retiring), and a
+                    # generation that is not older than the one this corner
+                    # started from.  A canonical that owns any other game, a
+                    # lingering in-flight runtime, or a mismatched receipt
+                    # keeps the slot latched.
+                    if (result.get("status") != "failed"
+                            or result.get("from_game") not in (None, previous_game)
+                            or previous_game is None
+                            or not _stable(canonical)
+                            or not isinstance(canonical.get("active"), dict)
+                            or canonical["active"].get("game") != previous_game
+                            or type(canonical["active"].get("generation")) is not int
+                            or canonical["active"].get("generation") < 1):
+                        return False
+                    _identity(canonical["active"], expected_game=previous_game)
+                    if isinstance(previous, dict):
+                        prior_generation = previous.get("generation")
+                        if (type(prior_generation) is not int
+                                or canonical["active"]["generation"] < prior_generation):
+                            return False
                 else:
                     return False
                 state.update(status="interrupted", completed_at=state.get("completed_at", self.clock()),

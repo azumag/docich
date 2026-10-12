@@ -1,4 +1,6 @@
-# Discord voice: offline turn coordinator (#1628)
+# Discord voice runtime (#1628)
+
+**Resident invitation mode:** see [RESIDENT.md](./RESIDENT.md) for `/join` into the caller's VC, resident listening, the `同志` wake word, and bounded background topic context. This is opt-in and has separate deployment/credential prerequisites. The fixed-target acceptance and historical slice descriptions below remain available for isolated testing.
 
 This directory contains the synthetic/offline foundation for [Issue #1628](https://github.com/azumag/docich/issues/1628) plus a separately gated **live Discord join/playback bootstrap** for temporary Windows operation. The offline coordinator remains fake-only and does not receive network audio. The live bootstrap only logs into Discord, joins one explicitly configured Guild Voice channel with DAVE-capable `@discordjs/voice`, optionally plays a bounded generated PCM test tone, and stays connected until shutdown. It does not receive or record audio, run STT, call the conversation core, invoke TTS, or deploy itself as a service.
 
@@ -136,6 +138,8 @@ npm run start:live
 Conversation mode is fail-closed unless receive mode is also enabled. The Worker endpoint accepts only HTTPS client calls with the separate Bearer secret, forwards the request internally to the existing singleton Durable Object, and returns only the generated reply. Normal diagnostics emit fixed `llm_started / llm_completed / llm_failed / llm_cancelled` events and never include the transcript, reply, IDs or token. For a temporary owner-only acceptance session, `DOCICH_DISCORD_VOICE_REPLY_DEBUG=1` can expose the generated reply on stdout; leave it unset normally.
 
 The voice request reads existing text-memory history for the same full `guild + channel + user` scope and rechecks recalled sources after model generation so a concurrent delete suppresses the reply. This slice intentionally does **not** persist the new voice turn. Delivery acknowledgement does not exist until TTS + Discord playback are connected, so saving the turn now would create remembered replies that were never spoken. There is no automatic request retry in this slice.
+
+Memory scope is the full `guild + channel + user` tuple. By default it is the joined Voice channel, so voice and text history stay separate and no setting is needed. A deployment that intentionally wants the paired text channel and the voice channel to share one memory scope sets `DOCICH_DISCORD_VOICE_MEMORY_CHANNEL_ID` to that text channel's ID; TTS and playback still use the joined Voice channel scope. Sharing across guilds is not possible because the scope always includes the guild ID. See `docs/adr/0004-discord-voice-stt-tts-and-memory-scope.md` for the STT/TTS selection and the memory-scope decision.
 
 ### Slice 4: VOICEVOX + Discord playback + delivery memory
 
@@ -279,3 +283,13 @@ Application voice policy explicitly rejects a generated reply above **200 charac
 Only fixed event names, command names, result codes and bounded status counters appear on stdout. Raw controls/IDs, persona, transcript/reply, URLs, provider messages and credentials are not printed. Unknown keys (including raw audio/endpoint/credential fields) and malformed commands are rejected with fixed codes. Controls are local fixture commands, not a public/authenticated API or an authorization grant.
 
 Missing/unknown mode or endpoint options still fail the **offline** CLI with a fixed code; `cli.mjs` remains synthetic-only. Live Discord join/playback is intentionally a separate `live.mjs` entry point with an explicit enable flag and environment-only credentials. It does not expose a remote auth endpoint and still has no recording, external STT/LLM/TTS, persistent voice memory or automatic host deployment.
+
+### Local STT
+
+Resident mode defaults to local faster-whisper. See [LOCAL-STT.md](LOCAL-STT.md) for setup and the explicit provider switch. No Cloudflare API Token is required for local transcription.
+
+### Windowsコントロールパネルのゲーム状況
+
+所有者ローカルのパネルから状況説明を設定し、`runResident` / `runLiveVoice` の任意の `getGameState` 関数で、各返答の生成直前に読み込めます。通常の会話本文は変更せず、`CloudflareConversationClient.generate` の任意の `gameState` に添えます。未設定・読込失敗なら状況を添付せず、古い値へfallbackしません。呼びかけなしのSTTでは読み込んだりLLMを呼んだりしません。ゲーム状況はgeneration専用で、再生後のcommitには含めません。通常ログへ本文を出しません。
+
+Windows用パネルの「ゲーム状況」タブは適用・クリア・再読込とUTF-8テキストファイルの編集を提供します。空のファイルで添付停止、変更は次の返答から有効です。ファイルは500文字までの状況説明を一つの参考文として使います。パネルを閉じても設定ファイルは維持します。秘密値をこの状態ファイルへ入力しません。

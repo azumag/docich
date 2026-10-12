@@ -39,9 +39,20 @@ export function loadLiveVoiceConfig(env = process.env) {
     fail('invalid_config');
   }
 
+  // Memory scope channel. Defaults to the joined Voice channel, so voice and
+  // text history stay separate. Setting it to the paired text channel's ID
+  // opts this deployment into sharing one (guild, channel, user) memory scope.
+  const memoryChannelIdRaw = env.DOCICH_DISCORD_VOICE_MEMORY_CHANNEL_ID;
+  const memoryChannelId =
+    memoryChannelIdRaw === undefined || memoryChannelIdRaw === ''
+      ? channelId
+      : memoryChannelIdRaw;
+  if (!validSnowflake(memoryChannelId)) fail('invalid_config');
+
   const receiveEnabled = boolFlag(env.DOCICH_DISCORD_VOICE_RECEIVE_ENABLED, false);
+  const wakeEnabled = boolFlag(env.DOCICH_DISCORD_VOICE_WAKE_ENABLED, false);
   const receiveUserId = env.DOCICH_DISCORD_VOICE_RECEIVE_USER_ID;
-  if (receiveEnabled && !validSnowflake(receiveUserId)) fail('invalid_config');
+  if (receiveEnabled && !wakeEnabled && !validSnowflake(receiveUserId)) fail('invalid_config');
 
   const conversationEnabled = boolFlag(
     env.DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED,
@@ -55,10 +66,14 @@ export function loadLiveVoiceConfig(env = process.env) {
   );
   if (ttsEnabled && !conversationEnabled) fail('invalid_config');
 
+  if (wakeEnabled && (!receiveEnabled || !conversationEnabled || !ttsEnabled || boolFlag(env.DOCICH_DISCORD_VOICE_TRANSCRIPT_DEBUG) || boolFlag(env.DOCICH_DISCORD_VOICE_REPLY_DEBUG))) fail('invalid_config');
+
   return Object.freeze({
+    wakeEnabled,
     token,
     guildId,
     channelId,
+    memoryChannelId,
     playTestTone: boolFlag(env.DOCICH_DISCORD_VOICE_TEST_TONE, false),
     receiveEnabled,
     receiveUserId: receiveEnabled ? receiveUserId : null,

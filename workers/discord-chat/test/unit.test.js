@@ -190,6 +190,8 @@ test("Workers AI backend sends the canonical conversation shape without tools", 
   assert.equal(call.model, "@cf/deepseek-ai/deepseek-v4-flash-0731");
   assert.equal(call.input.tool_choice, "none");
   assert.equal(call.input.max_tokens, 500);
+  assert.equal(call.input.reasoning_effort, undefined);
+  assert.equal(call.input.chat_template_kwargs, undefined);
   assert.equal(call.input.messages[0].role, "system");
   assert.match(call.input.messages[0].content, /^canonical persona/);
   assert.equal(JSON.parse(call.input.messages.at(-1).content).text, "元気？");
@@ -227,4 +229,36 @@ test("unsafe or empty model output is rejected and long output is bounded", () =
   assert.throws(() => cleanReply("<analysis>private"), /empty_model_reply/);
   assert.throws(() => cleanReply(null), /invalid_model_reply/);
   assert.equal(cleanReply("x".repeat(1000)).length, 901);
+});
+
+
+test("voice DeepSeek requests body output without exhausting tokens on reasoning", async () => {
+  const inputs = [];
+  const result = await generateReply({DOCICH_PERSONA:"fixture persona", AI:{run:async (_model, input) => {
+    inputs.push(input);
+    return input.chat_template_kwargs?.enable_thinking === false
+      ? {choices:[{message:{content:"返答です"},finish_reason:"stop"}]}
+      : {choices:[{message:{content:"",reasoning_content:"EXAMPLE_PRIVATE_REASONING"},finish_reason:"length"}]};
+  }}}, [], {id:"voice:fixture",authorId:"7",content:"同志、おすすめは？",voice:true});
+  assert.equal(result,"返答です");
+  assert.equal(inputs.length,1);
+  assert.equal(inputs[0].reasoning_effort,"none");
+  assert.equal(inputs[0].tool_choice,"none");
+  assert.equal(inputs[0].max_tokens,500);
+});
+
+test("voice retry preserves non-thinking settings and other models receive no DeepSeek options", async () => {
+  const inputs = [];
+  await generateReply({DOCICH_PERSONA:"fixture", AI:{run:async (_model,input) => {
+    inputs.push(input);
+    return {choices:[{message:{content:inputs.length===1?"":"返答"},finish_reason:inputs.length===1?"length":"stop"}]};
+  }}}, [], {id:"voice:retry",authorId:"7",content:"同志",voice:true,voiceContext:[]});
+  assert.deepEqual(inputs.map(i=>i.max_tokens),[500,900]);
+  assert.ok(inputs.every(i=>i.reasoning_effort==="none"&&i.chat_template_kwargs.enable_thinking===false));
+  let other;
+  await generateReply({DOCICH_PERSONA:"fixture",WORKERS_AI_MODEL:"@cf/example/other-model",AI:{run:async (_model,input)=>{
+    other=input;return {choices:[{message:{content:"返答"},finish_reason:"stop"}]};
+  }}}, [], {id:"voice:other",authorId:"7",content:"同志",voice:true});
+  assert.equal(other.reasoning_effort,undefined);
+  assert.equal(other.chat_template_kwargs,undefined);
 });

@@ -4,6 +4,7 @@ This model consumes explicitly attributed UI receipts, not garrison predictions.
 It has no caller/input wiring until the receipt producer is independently verified.
 """
 from . import hanjuku_chart as chart, hanjuku_roster as roster
+from .hanjuku_egg_stock import observed_uses
 
 MAX_AGE = 16
 
@@ -56,7 +57,7 @@ def assess(context, castle, *, castle_status=None, castle_generals=None, hero_st
         hp, maximum, uses = (hero_status.get(k) for k in ('hp', 'max_hp', 'uses'))
         if type(hp) is int and type(maximum) is int and 0 <= hp <= maximum and maximum > 0:
             result['hero_hp'] = hp
-        if type(uses) is int and 0 <= uses <= 4:
+        if observed_uses(uses) is not None:
             result['hero_egg_uses'] = uses
     if result['hero_present'] is False:
         result['hero_protection_needed'] = False  # only this castle's hero-specific concern

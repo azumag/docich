@@ -6,7 +6,7 @@ coordinates are map-cursor cells measured in an isolated emulator from each
 castle's roof anchor; they are chart facts, not live RAM reads. The hero is
 the name the bot enters (``HERO``).
 
-Chapter 1 coordinates are measured. Chapters 2–12 ship with empty
+Chapter 1 and 2 coordinates are measured. Chapters 3–12 ship with empty
 ``CASTLES`` until ``hanjuku_measure`` records them from labeled frames:
 ``orders()`` returns nothing for an unmeasured chapter (``chart_unavailable``),
 so navigation never guesses coordinates. Orders, tactics and purchases for
@@ -37,7 +37,10 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
     # Measured 2026-09-28 in the isolated emulator from a g421 chapter 2
     # savestate: Y jump to each flag, cursor walked onto the roof, A showed
     # the castle's name (castle_info). Cells use the same Y frame as chapter 1
-    # (Y cursor = cell/8 + (63, 47.5)). The boss castle is not on the map yet.
+    # (Y cursor = cell/8 + (63, 47.5)). The boss cell was measured separately
+    # 2026-10-12 from g700 after all ordinary castles had been captured: Y
+    # ring (128, 72.5) lands on the tower; A repeatedly opens its unique
+    # water-receded castle description, while an off-tower control does not.
     2: {
         'アルマムーン': (522, 847),
         'アウスパジア': (298, 291),
@@ -47,6 +50,7 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
         'グロン': (762, 479),
         'フーリック': (358, 712),
         'ハドリバーグ': (742, 732),
+        'ボス': (520, 200),
     },
     # 3–12: measured at runtime / via hanjuku_measure; intentionally empty.
 }
@@ -843,10 +847,10 @@ def boss_castle(chapter: int) -> str:
 def orders(chapter: int):
     """Base orders for ``chapter``.
 
-    Returns an empty tuple until the chapter has measured castles AND every
-    order's source/target is present (``chart_unavailable`` / no navigation
-    without coordinates). Chapter 1 is fully measured and always returns its
-    chart orders.
+    Returns an empty tuple for an unmeasured chapter. In a partially measured
+    chapter, filters out each order whose source or target is absent, so no
+    navigation can use unmeasured coordinates. Fully measured chapters
+    return all their chart orders.
     """
     castles = CASTLES.get(chapter) or {}
     if not castles:

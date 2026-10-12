@@ -17,8 +17,13 @@ from test_hanjuku_month_foreground import monthly_canvas, monthly_memory
 
 
 def confirmation(*, background=False, cursor='accept', trade=True, both_choices=True,
-                 prompt='しょうぐんをぼしゅうしますか?'):
+                 prompt='しょうぐんをぼしゅうしますか?', gold=None):
     canvas = monthly_canvas() if background else Canvas((50, 30, 10))
+    if gold is not None:
+        for y in range(15, 23):
+            for x in range(48, 208):
+                canvas.put(x, y, (50, 30, 10))
+        canvas.text(48, 15, f'2ねん11のつき{gold}G')
     if not background:
         # A dialogue panel without merchant/monthly green rectangles above it.
         for y in range(128, 207):
@@ -112,8 +117,15 @@ def test_trade_with_unreadable_cursor_never_falls_back_to_accept(background, own
 ])
 def test_nontrade_confirmation_keeps_monthly_acceptance_owner(background, owner, prompt):
     # A regular recruit or owned monthly-exit confirmation is still accepted.
-    frame = confirmation(background=background, trade=False, prompt=prompt)
-    actions, state = decide(frame, owned_state(owner))
+    state = owned_state(owner)
+    gold = 180 if owner == 'recruit' else None
+    if owner == 'recruit':
+        # An unpaid approval must keep both its 50G fee and 30G wages.
+        state['policy']['month_sub']['gold_before'] = gold
+    frame = confirmation(background=background, trade=False, prompt=prompt, gold=gold)
+    if gold is not None:
+        assert parse(frame).header['gold'] == gold
+    actions, state = decide(frame, state)
     assert actions == [policy.pad('a')]
     assert not any(row['strategy_variant'] == 'decline_general_trade'
                    for row in state['_records'])
@@ -124,5 +136,16 @@ def test_trade_words_without_both_choices_do_not_take_over_recruit_dialogue():
     actions, state = decide(frame, owned_state('recruit'))
     assert actions == [policy.pad('a')]
     assert state['policy']['month_sub']['presses'] == 1
+    assert not any(row['strategy_variant'] == 'decline_general_trade'
+                   for row in state['_records'])
+
+
+@pytest.mark.parametrize('background', [False, True])
+@pytest.mark.parametrize('gold', [59, None])
+def test_nontrade_unpaid_recruit_confirmation_still_checks_its_balance(background, gold):
+    frame = confirmation(background=background, trade=False, gold=gold)
+    actions, state = decide(frame, owned_state('recruit'))
+    assert actions == ([] if gold is None and not background else [policy.pad('b')])
+    assert not state['policy']['month_sub'].get('recruit_paid_gold')
     assert not any(row['strategy_variant'] == 'decline_general_trade'
                    for row in state['_records'])

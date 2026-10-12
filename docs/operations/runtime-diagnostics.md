@@ -187,9 +187,56 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `corners.retro_corner.status`と`corners.retro_corner.game_audio.status`は別物で、
   `applied`は後者の音量適用結果。これらの診断値は復旧/再開の許可ではない。
   `recovery_required`は次cornerを停止する実行契約であり、診断自体は復旧操作をしない。
+  `nethack_rotation_evidence` は、このautomatic NetHack pendingのownerに結び付く
+  元restore receipt、元runtimeのrequest付き終了境界、rollback復元世代の唯一のruntime、
+  現在canonicalの復帰receipt・終了境界・lease/result一致を固定booleanで投影する。
+  ownerに`previous_game`がある場合、欠落を入口条件とするlegacy契約を適用可能とは表示しない。
+  保存済みrestore recovery/cleanup記録は有無だけを出す。UUID、runtime/lease/player、
+  path、prompt、argv、任意JSON本文・例外本文は出さない。
+
+  `contract_conditions` は同じ読取済みレコードから契約入力の内訳だけを追加する。
+  `previous_game` は `absent/null/sorengame/other/invalid`、`finish_reason` は
+  `absent/null/terminal/other/invalid`。キー不在と明示的nullは区別する。
+  `pending_source_absent`、元receiptの`original_source_absent` /
+  `original_restored_identity_absent`、復帰receiptの`return_source_absent`、
+  `restore_request_distinct`（元restore requestとrotation予約の相違）はboolean。
+  `original_cleanup_pending` は `absent/null/pending/clear`。
+  従来の`cleanup_clear=false`だけからcleanupがpendingだと推定しない。
+  legacy producerの履歴条件は `automatic_dispatch_history=matched/missing/invalid/scan_limit` と
+  `manual_reservation_since_selection=absent/present/invalid/scan_limit` に分ける。
+  ledger内のhistory最大512件、selected/started/last_seenと全履歴の時刻を確認し、
+  選択以降・開始以前のautomatic reservationと、選択以降のNetHack manual-reservationを
+  観測する。欠損・不正時刻・未来履歴・上限超過では部分的な肯定値を保持しない。
+  `legacy_contract_applicable`は入口条件の集約であり、全guardの成功を意味しない。
+  この内訳は現在の入力の観測であって、過去のexit 70の実際の拒否理由や
+  lock下での復旧可否を返すものではない。新しい読取対象・process走査は追加しない。
+
+  読取は固定state rootからdirfd/no-followで行い、regular JSON 64KiB以下・duplicate key拒否、
+  runtime探索4096 entries以下に制限する。resource probeの後に、読んだ全レコードと
+  runtime listingを再確認する。変更があれば肯定的投影を破棄し`snapshot_stable=false`。
+  欠落、不正schema/identity、曖昧なruntime、scan上限、読取拒否は固定理由とunknownで返す。
+  状態・lockを作らず、recover/coordinator/teardownを呼ばず、signalやtmux入力を送らない。
+  playerの比較元は固定のレビュー済み`config/games/nethack.toml`であり、証拠側のpathを使わない。
+
+  各runtimeの`presentation_stopped`、identity一致したtile manifestの`tiles_cleanup_complete`、
+  exact generationの既存tmux target不在を別々に出す。いずれか否定なら
+  `all_resources_released=false`。全て肯定でも、これらの記録からdetached/unregisteredな
+  game childや改善workerの不在を証明できないため`all_resources_released=null`を維持する。
+  各resourceの`unknown_reasons`は固定列挙値のみ。release記録の欠落は
+  `presentation_record_missing` / `tiles_record_missing`、identity一致したtile記録に
+  booleanのcleanup値がない場合は`tiles_cleanup_unproven`、tmux読取失敗・非boolean値は
+  `tmux_probe_unavailable`。既存観測の範囲外である`detached_children_unobserved` /
+  `unregistered_workers_unobserved`は常に残す。別資源に否定証拠がある場合も、
+  未観測範囲の理由を消さない。全レコードの再確認が失敗すれば内訳も破棄する。
+  `terminal_chain_matches`は終了証拠の一致のみであり、全資源解放や運用解除の許可ではない。
+  `recovery_authority`は常にfalse。安定した前後読取も原子的snapshotや将来のfenceではなく、
+  正規operatorは別承認後にwriter lock下で適用契約を再照合する必要がある。
+
   `corners.corner_rotation_timer` は支配的なtimer unit名（移行後は
   `docich-corner-rotation.timer`）、active/enabled、旧名が正しいaliasかを示す
   bounded boolean `legacy_alias` のみを出す。unit path・alias target・state pathは出さない。
+  alias pair投影も支配timer選択と同じ`PROD_ROOT.parent`のuser unit rootを使う。
+  gatewayのscrubbed `HOME=/tmp` をunit欠損の判定元にしない。
   時刻指定manual予約がある場合は、UUIDや任意payloadを出さずに
   `scheduled_manual`、固定corner名、`scheduled_manual_trigger_at`、`scheduled_manual_due`、
   7日で上限化したoverdue秒、固定 `scheduled_manual_blocked_reason`（`not_due` /
@@ -491,21 +538,32 @@ run終了処理や日次処理を起動しない。owner境界・既存lock・�
 
 ## tmux サーバ所有と resolver daemon の read-only 投影（#1286 follow-up）
 
-`tmux_servers` は本番コーナーが使う既定ソケット `docich` と評価ジョブ専用ソケット
-`docich-eval` の読取成否・セッション数・確認できた有無を投影する。
+`tmux_servers` は本番コーナーが使う tmux 既定サーバと評価ジョブ専用サーバ
+`docich-eval` の読取成否・セッション数・確認できた有無を投影する（`schema_version` は2）。
+本番サーバのサーバ名は `default`。tmux は `-L` を付けないときソケットを `default` と
+名付けるので `tmux -L default` が本番サーバそのものを読む。`docich` はその既定サーバ内の
+**セッション名**であり、サーバ名ではない。以前の `-L docich` は VM 上に存在せず、
+本番サーバを常に「不在」（`readable=false`）と誤報していた（2026-10-08 実測）。
 セッション名は取得せず、`list-sessions -F 1` の固定マーカーだけを数える。
 出力は4KiBまでを検証し、不正な行、上限超過、timeout、実行失敗、非zero終了は
 `readable=false / present=null / session_count=null` とする。不在や0件に推測変換しない。
 正常終了した空出力だけが `readable=true / present=false / session_count=0` になる。
 旧 `sessions` フィールドは出力しない。各サーバの結果は独立している。
 #1284 で評価用 tmux を専用サーバへ隔離したが、分離はプロセスツリーからは直接観測できなかった。
-この投影で「eval セッションが `docich-eval` 上に作られ、本番 `docich` サーバに現れない」ことを
+この投影で「eval セッションが `docich-eval` 上に作られ、本番 `default` サーバに現れない」ことを
 diagnostics で直接確認できる。`tmux -L <server> list-sessions` は read-only（入力送信なし）。
 
 `resolver_daemon` は `docich-resolver-improve.service` と
-`docich-resolver-improve-gnurobots.service` の active / enabled 状態を投影する。
-これらの長命 daemon が稼働していると、次回再起動まで本番既定 tmux サーバを共有し続ける
-（#1284 の対象外経路）。`systemctl --user is-active` / `is-enabled` は read-only。
+`docich-resolver-improve-gnurobots.service` の active / enabled 状態を投影する
+（`schema_version` は2）。これらの長命 daemon が稼働していると、次回再起動まで
+本番既定 tmux サーバを共有し続ける（#1284 の対象外経路）。
+2026-10-08 の VM 実測では両 unit は **system manager**（`/etc/systemd/system`、
+root所有、`WantedBy=default.target`）に install されており、`systemctl --user` だけを
+見ると `not-found`（= 未稼働に見える）になっていた。実際には
+`docich-resolver-improve.service` は 2026-10-01 06:18 JST から稼働中だった。
+そのため `active` / `enabled` は system / user 両 manager の集約（いずれかが true なら true、
+既知の false は unknown に隠されない）とし、manager ごとの生値は `scopes` に残す。
+`systemctl is-active` / `is-enabled`（system / `--user`）は read-only。
 
 
 ## YouTube / Kick title sync の read-only 投影
@@ -628,3 +686,14 @@ status 75は未実行/延期であり、serviceの異常終了ループを避け
 デプロイepoch=3の1回回収後はtimerが継続担当する。回収が失敗/延期ならcanonical runも非成功になり、`diagnostics`で段階・理由と容量を確認する。
 
 OpenCodeの `compact_storage` は `disk` / `memory` を区別する。圧縮コピーにtmpfsを利用した場合も、root空き1GiB・利用可能RAM4GiB（cgroup制限込み）を予約する。`insufficient_memory` / `memory_unknown` は成功ではなく延期で、次回の定期実行へ持ち越す。
+
+### 半熟英雄の停滞終了checkpoint
+
+`retro_corner.saved_checkpoint`は、cornerのruntime/generation/leaseと一致した固定保存境界を
+`save_status=waiting/failed/saved_receipt/unverified`へ投影する。ファイル存在・サイズ・保存時の
+metadataとの一致は別フィールドで示す。`saved_receipt`だけでは現ファイルのSHA再検証や復元成功を
+証明しない。ゲーム終了を許可するadapter側はpause・実ファイルSHAを再検証する。
+診断は保存ゲームの内容を読まず、checkpoint名を入力パスとして使用せず、ファイル名・パス・
+SHA・request/lease/runtime識別子・自由文を出力しない。worker/queue/manifestは追加しない。
+
+`hanjuku_resume` は固定保存再開のmetadataだけを報告します。`prepared` は未公開snapshotのみ、`queued` は標準manual queueに対応する予約、`claimed` は同候補への移行途中、`verified_receipt` は同active runtimeのcore roundtrip/native章/PLAYING検査を記録したreceiptです。公開直後に中断してprivate receiptが`prepared`のままでも、同IDの実manual queueがあれば`queued`を報告します。現在の保存の完全性やライブ画面の進行は別確認です。identity不一致・欠落はunavailable/unverifiedで、保存データ・ROM・source path・SHA・request/lease識別子・自由本文は出力しません。停止済みruntimeのreceiptを現在進行中として表示しません。

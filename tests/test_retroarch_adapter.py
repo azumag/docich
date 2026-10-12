@@ -77,6 +77,20 @@ class RetroArchTestBase(unittest.TestCase):
 
 
 class TestPrepareGeneratesCfg(RetroArchTestBase):
+    def test_osd_is_disabled_only_for_scripted_hanjuku(self):
+        ctx = self._make_ctx(retroarch_raw={"rom": "games/roms/hanjuku-hero.sfc",
+                                            "core": str(self.core_path)})
+        ctx.game.raw['hanjuku'] = {'script_bot': True}
+        retroarch.RetroArchAdapter(ctx).prepare()
+        self.assertIn('video_font_enable = "false"', self._cfg_text(ctx))
+        ctx.game.name = "other-retro-game"
+        retroarch.RetroArchAdapter(ctx).prepare()
+        self.assertNotIn('video_font_enable', self._cfg_text(ctx))
+        ctx.game.name = "hanjuku-hero"
+        ctx.game.raw['hanjuku']['script_bot'] = False
+        retroarch.RetroArchAdapter(ctx).prepare()
+        self.assertNotIn('video_font_enable', self._cfg_text(ctx))
+
     def test_cfg_has_required_drivers_and_settings(self):
         ctx = self._make_ctx(retroarch_raw={"rom": "games/roms/hanjuku-hero.sfc", "core": str(self.core_path)})
         adapter = retroarch.RetroArchAdapter(ctx)

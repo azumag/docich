@@ -77,7 +77,7 @@ def test_flat_live_catalog_and_financial_boundary():
     assert all(c.target_matches is None for c in catalog if c.id != "nsnake")
 
 
-def test_production_profile_marks_common_rotation_enabled_with_manual_tsuitate():
+def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     from docich.corner_catalog import rotation_config
 
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
@@ -92,7 +92,7 @@ def test_production_profile_marks_common_rotation_enabled_with_manual_tsuitate()
     assert paper.enabled is True
     assert paper.live_eligible is False
     tsuitate = next(c for c in catalog if c.id == "tsuitate")
-    assert tsuitate.enabled is True and tsuitate.manual_only is True
+    assert tsuitate.enabled is True and tsuitate.manual_only is False
     assert tsuitate.game == "tsuitate-view"
     assert {c.id for c in catalog} >= {
         "ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
@@ -214,10 +214,19 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
     monkeypatch.setattr("docich.adapters.retroarch.resolve_rom", lambda *_: ROOT / "vm-only.sfc")
     monkeypatch.setattr("docich.adapters.retroarch.resolve_core", lambda *_: "/vm-only/core.so")
     manager = CornerRotationManager(g)
+    monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
+        "state": "finished", "readyForNextRun": True,
+    })
     eligible, excluded = manager._eligible()
-    assert len(eligible) == 10
-    assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero"} <= set(eligible)
-    assert excluded == {"tsuitate": "manual-only"}
+    assert len(eligible) == 11
+    assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate"} <= set(eligible)
+    assert excluded == {}
+    monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
+        "state": "playing", "readyForNextRun": False,
+    })
+    eligible, excluded = manager._eligible()
+    assert len(eligible) == 10 and "tsuitate" not in eligible
+    assert excluded == {"tsuitate": "adapter-unavailable"}
 
 
 def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):
@@ -1495,6 +1504,30 @@ def test_recover_never_launches_while_the_pending_corner_is_still_running(setup)
     assert len(executor.calls) == calls
 
 
+def test_recover_refusal_preserves_original_reservation_and_history(setup, monkeypatch):
+    _, clock, _, executor, make = setup
+    manager = make()
+    _latch(manager, executor, clock)
+    before = state(manager)
+    calls = len(executor.calls)
+
+    def mutate_then_refuse(ledger, reservation, now, *, manual):
+        ledger["pending"] = None
+        ledger["history"].append(dict(corner="foreign", at=now))
+        ledger["last_slot_at"] = now
+        raise RotationError("synthetic refusal", kind="execution-unverified")
+
+    monkeypatch.setattr(manager, "_resolve_reservation", mutate_then_refuse)
+    with pytest.raises(RotationError):
+        manager.recover()
+    refused = state(manager)
+    for key in ("pending", "history", "last_slot_at", "last_seen_at", "slot"):
+        assert refused[key] == before[key]
+    assert refused["status"] == "recovery_required"
+    assert refused["error_kind"] == before["error_kind"]
+    assert len(executor.calls) == calls
+
+
 def test_recover_waits_while_another_corner_holds_the_program_slot(setup):
     _, clock, _, executor, make = setup
     manager = make()
@@ -2473,3 +2506,37 @@ def test_reconcile_settled_at_is_clamped_to_tick_now():
         FakeAdapter(), reservation, manual=True, now=tick_now
     )
     assert settled == tick_now
+
+
+def test_resume_queue_is_explicit_single_request_before_normal_dispatch(setup):
+    from unittest import mock
+    g, clock, catalog, executor, make=setup
+    item=Corner('hanjuku-hero','game','hanjuku-hero')
+    manager=make([item])
+    with mock.patch('docich.config.load_game',return_value=object()), mock.patch('docich.hanjuku_resume.prepare') as prepare, mock.patch('docich.hanjuku_resume.publish'):
+        request=manager.queue_manual('hanjuku-hero',resume_latest=True)
+        assert request['status']=='queued' and not executor.calls
+        prepare.assert_called_once()
+        assert prepare.call_args.args[2]['request_id']==request['request_id']
+        assert manager.queue_manual('hanjuku-hero',resume_latest=True)==request
+        prepare.assert_called_once()
+        with pytest.raises(RotationError):manager.queue_manual('hanjuku-hero')
+        manager.tick()
+    assert executor.calls[0]['request_id']==request['request_id']
+    assert executor.calls[0]['resume_latest'] is True
+    assert executor.calls[0]['source']=='manual'
+
+
+def test_failed_preservation_does_not_queue_fresh_game(setup):
+    from unittest import mock
+    g, clock, catalog, executor, make=setup
+    manager=make([Corner('hanjuku-hero','game','hanjuku-hero')])
+    with mock.patch('docich.config.load_game',return_value=object()), mock.patch('docich.hanjuku_resume.prepare',side_effect=RuntimeError('save failed')):
+        with pytest.raises(RuntimeError):manager.queue_manual('hanjuku-hero',resume_latest=True)
+    assert not manager._manual_queue_path.exists() and not executor.calls
+
+
+@pytest.mark.parametrize('game,trigger', [('nsnake',None),('hanjuku-hero',1000001)])
+def test_resume_rejects_unrelated_or_scheduled_requests(setup,game,trigger):
+    *_,make=setup
+    with pytest.raises(RotationError):make().queue_manual(game,resume_latest=True,trigger_at=trigger)

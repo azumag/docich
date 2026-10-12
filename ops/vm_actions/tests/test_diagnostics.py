@@ -101,6 +101,8 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         self.assertIn(diag["status"], ("ok", "warn", "critical"))
         for section in ("meta", "workers", "queues", "ai", "improvement", "corners", "semantic_decision"):
             self.assertIn(section, diag)
+        self.assertIn("nethack_rotation_evidence", diag)
+        self.assertFalse(diag["nethack_rotation_evidence"]["recovery_authority"])
         self.assertEqual(diag["workers"]["expected"] >= 10, True)
         self.assertEqual(diag["semantic_decision"], {"present": False, "readable": False})
         self.assertEqual(diag["supervisor_identity"]["loaded_functions_status"], "unverified")
@@ -307,7 +309,7 @@ class DiagnosticsWorkflowTests(unittest.TestCase):
         self.assertIn(
             "options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, "
             "configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, cpu_profile, reclaim, rebaseline, "
-            "market_paper, paper_ai_canary, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute]", text
+            "market_paper, paper_ai_canary, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute]", text
         )
         self.assertIn("Query read-only runtime diagnostics", text)
         self.assertIn('"diagnostics docich production $SHA"', text)

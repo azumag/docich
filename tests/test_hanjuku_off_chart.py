@@ -822,11 +822,11 @@ def test_a_boss_sortie_without_its_general_gives_up_and_a_cancelled_boss_retries
             TextLine(55, tuple((144 + 8 * i, ch) for i, ch in enumerate('リーキ')))]
     screen = Screen(lines=rows, hand=(122, 33, 139, 45), kind='general_list',
                     text='しゅつげきどうしリーキステータス')
-    for _ in range(policy.BOSS_ABSENT_LIMIT - 1):
-        assert policy.deploy_step(screen, mem) == []
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['orders']['F2'] == 'failed'
-    assert policy.next_order(mem)['step'] == 'F1'          # boss hero retry is still due
+    assert mem['orders']['F2'] == 'pending'
+    following = policy.next_order(mem)
+    assert following is None or following['step'] not in {'F1', 'F2'}
+    assert any(r['decision'] == 'boss_companion_required' for r in mem['_records'])
 
 
 def test_an_absent_boss_general_retires_an_old_target_cancel_retry():
@@ -842,14 +842,12 @@ def test_an_absent_boss_general_retires_an_old_target_cancel_retry():
             TextLine(39, tuple((144 + 8 * i, ch) for i, ch in enumerate('リーキ')))]
     screen = Screen(lines=rows, hand=(122, 33, 139, 45), kind='general_list',
                     text='しゅつげきリーキステータス')
-    assert policy.next_order(mem)['step'] == 'F1'
-    for _ in range(policy.BOSS_ABSENT_LIMIT - 1):
-        assert policy.deploy_step(screen, mem) == []
+    following = policy.next_order(mem)
+    assert following is None or following['step'] != 'F1'
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['orders']['F1'] == 'failed'
-    assert 'F1' not in mem.get('target_cancel', {})
-    # Current main may fall back to a base-chart order after the custom plan
-    # is exhausted; the retired F1 must never retain its retry entitlement.
+    assert mem['orders']['F1'] == 'pending'
+    assert any(r['decision'] == 'boss_companion_required' for r in mem['_records'])
+    # The old retry never authorizes a hero or weak substitute.
     following = policy.next_order(mem)
     assert following is None or following['step'] != 'F1'
 
@@ -898,7 +896,10 @@ def test_a_general_far_behind_opens_the_rescue_menu_before_the_melee_decides():
     far = {'ally_hp': 26, 'enemy_hp': 48, 'start_ally_hp': 26, 'enemy': 'ソーピニヨン', 'ally': 'キャンディー'}
     assert policy._survival_needed(far)
     close = {'ally_hp': 27, 'enemy_hp': 38, 'start_ally_hp': 27, 'enemy': 'コリアンダー', 'ally': 'ビシソワーズ'}
-    assert not policy._survival_needed(close)
+    # HP alone is just above 70%, but combat 3 vs 7 now opens rescue.
+    assert policy._survival_needed(close)
+    balanced = {**close, 'ally': 'タピオカ'}  # combat 7 vs 7: keep the HP boundary
+    assert not policy._survival_needed(balanced)
     close['ally_hp'] = 26                                  # after one clash: 26 <= 70% of 38
     assert policy._survival_needed(close)
     ahead = {'ally_hp': 82, 'enemy_hp': 39, 'start_ally_hp': 82, 'enemy': 'カシュー', 'ally': 'ヴィーナス'}
@@ -959,7 +960,7 @@ def test_chapter_2_cells_put_every_measured_flag_on_the_y_view_grid():
     for name, (fx, fy) in flags.items():
         x, y = chart.castles(2)[name]
         assert abs(x / 8 + ox - fx) <= 1 and abs(y / 8 + oy - fy) <= 1
-    assert [o['step'] for o in chart.orders(2)] == ['2-Z1', '2-C1', '2-V1', '2-S1', '2-Z2', '2-V2', '2-Z3']
+    assert [o['step'] for o in chart.orders(2)] == ['2-Z1', '2-C1', '2-V1', '2-S1', '2-Z2', '2-V2', '2-Z3', '2-B1']
 
 
 def test_the_island_picker_confirms_the_observed_owned_castle_with_a_twice(monkeypatch):
@@ -1359,14 +1360,13 @@ def test_unusable_plan_falls_back_to_boss_companion_before_following_hero(compan
                 'cards': [], 'after': None, 'note': 't', 'local_step': 'J1'}]}}
     assert not policy._plan_pending(mem)
     order = policy.next_order(mem)
-    assert order['target'] == policy.chart.boss_castle(1) and order['general'] == policy.NAME
     if companion:
+        assert order['target'] == policy.chart.boss_castle(1) and order['general'] == policy.NAME
         assert policy._source(order, mem) == 'スペンソニア'
         assert not mem.get('source_override')
     else:
-        assert policy._source(order, mem) == 'ゴーメン'
-        assert decisions(mem, 'order_source_changed')[0]['observed_metric'] == {
-            'source': 'スペンソニア', 'general_at': 'ゴーメン'}
+        assert order is None  # No hero fallback: wait for adequate companion.
+        assert not mem.get('source_override')
 
 
 def test_an_adjusted_boss_order_leaves_an_unowned_card_behind_but_the_base_boss_order_does_not():
@@ -1453,3 +1453,22 @@ def test_chikujou_refusal_without_alternative_or_selection_exits(monkeypatch):
         assert policy._chikujou_step(refused, mem, sub) == [policy.pad('b')]
         assert sub['declined']
 
+
+
+@pytest.mark.parametrize('flag_age,captured', [(50, False), (policy.WORLD_FLAG_TRUST + 1, True)])
+def test_a_recent_world_map_enemy_flag_vetoes_a_roof_capture(flag_age, captured):
+    # g684 2-8 15:12:45: roof reads said スペンソニア was ours while the world
+    # map (Y) flew its enemy flag; all_captured sent the hero to the boss.
+    home = CASTLES['アルマムーン']
+    cam = (home[0] - 100, home[1] - 100)
+    sp = CASTLES['スペンソニア']
+    pair = [{'kind': 'enemy', 'target': (100, 100), 'clipped': False},
+            {'kind': 'own', 'target': (sp[0] - cam[0], sp[1] - cam[1]), 'clipped': False}]
+    mem = {'chapter': 1, 'captured': [], '_records': [], 'tick': 100}
+    policy._apply_world_flags(mem, {'スペンソニア': 'enemy'})
+    mem['tick'] = 100 + flag_age
+    for _ in range(4):
+        policy.observe_owners(mem, pair, cam)
+    assert ('スペンソニア' in mem['captured']) is captured
+    vetoes = decisions(mem, 'castle_owned_vetoed')
+    assert (len(vetoes) == 1) is (not captured)

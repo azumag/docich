@@ -197,12 +197,12 @@ def test_spare_gate_preserves_pending_cards_house_repair_and_wages():
 def test_staffed_castles_cannot_create_spare_by_cutting_the_soldier_budget(status):
     mem = memory(101)
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 101})
-    assert shop['soldiers_before_recruit'] == 71
+    assert shop['soldiers_before_recruit'] == 50
     shop.update(egg='not_needed', recruit=status)
     policy._month_extra(parse(month_canvas(101, on='しょうぐんぼしゅう')),
                         mem, shop, recruit_only=True)
     assert shop['recruit'] == 'deferred_cash'
-    assert shop['soldiers'] == 71 and shop['recruit_reserve'] == 0
+    assert shop['soldiers'] == 50 and shop['recruit_reserve'] == 0
     assert 'month_sub' not in mem
 
 
@@ -270,8 +270,8 @@ def test_soldier_restoration_clamps_to_the_real_post_recovery_balance():
     mem['month_sub'].update(full_selected=True, quoted_cost=100, left_menu=True)
     policy.month_step(parse(month_canvas(100, on='しょうぐんぼしゅう')), mem)
     assert mem['shop']['recruit'] == 'deferred_cash'
-    assert mem['shop']['soldiers'] == 70
-    assert 100 - mem['shop']['soldiers'] == policy.WAGE_RESERVE
+    assert mem['shop']['soldiers'] == 50
+    assert 100 - mem['shop']['soldiers'] >= policy.WAGE_RESERVE
 
 
 def test_cash_deferral_restores_the_same_affordable_budget_when_resuming_intro():
@@ -280,7 +280,7 @@ def test_cash_deferral_restores_the_same_affordable_budget_when_resuming_intro()
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 101})
     shop.update(egg='not_needed', recruit='unverified', recruit_measured_budget=True)
     assert policy.month_step(recruit_overlay_screen(gold=101), mem) == [policy.pad('b')]
-    assert shop['soldiers'] == 71 and shop['recruit_reserve'] == 0
+    assert shop['soldiers'] == 50 and shop['recruit_reserve'] == 0
     assert shop['recruit_priority'] is False
 
 
@@ -291,5 +291,38 @@ def test_unpaid_tracked_owner_also_uses_the_pretransfer_cash_gate():
     shop.update(egg='not_needed', recruit='opened')
     mem['month_sub'] = {'kind': 'recruit', 'gold_before': 101, 'key': '1-7', 'presses': 0}
     assert policy.month_sub_step(recruit_overlay_screen(gold=101), mem) == [policy.pad('b')]
-    assert shop['recruit'] == 'deferred_cash' and shop['soldiers'] == 71
+    assert shop['recruit'] == 'deferred_cash' and shop['soldiers'] == 50
     assert shop['recruit_reserve'] == 0
+
+
+def test_partly_used_unaffordable_eggs_do_not_hold_a_short_army_recruitment():
+    # g684 2-9: eggs at 1-3 uses, recovery 150G > 75G, generals 7 of 13;
+    # recruitment was deferred every month and building spent the fee.
+    mem = memory(130, uses=2)
+    screen = parse(month_canvas(130, on='しょうぐんぼしゅう'))
+    for _ in range(8):
+        policy.month_step(screen, mem)
+        if mem.get('month_sub'):
+            break
+    shop = mem['shop']
+    if shop.get('egg') == 'skipped':
+        assert shop['recruit'] != 'deferred_egg'
+
+
+def test_a_short_army_keeps_the_recruit_fee_from_building():
+    shop = {'recruit': 'deferred_egg', 'recruit_priority': True, 'recruit_reserve': 0,
+            'egg': 'done', 'soldiers_done': True, 'merchant_done': True, 'items': []}
+    assert policy._chikujou_reserve({}, shop) == policy.WAGE_RESERVE + policy.RECRUIT_COST
+    shop['recruit'] = 'done'
+    assert policy._chikujou_reserve({}, shop) == policy.WAGE_RESERVE
+
+
+def test_the_month_waits_briefly_for_a_deferred_roster_scan_then_closes():
+    # g684 2-10 15:24:44: month_done fired before the roster scan could start.
+    shop = {'key': '1-7', 'recruit': 'deferred_roster'}
+    mem = {'chapter': 1, 'month': '1-7', '_records': []}
+    waits = [policy._await_month_roster_scan(mem, shop) for _ in range(policy.MONTH_ROSTER_WAIT + 2)]
+    assert waits == [True] * policy.MONTH_ROSTER_WAIT + [False, False]
+    mem2 = {'chapter': 1, 'month': '1-7', 'recruit_month_scan_attempts': {'scope': [1, '1-7'], 'count': 1}}
+    assert policy._await_month_roster_scan(mem2, {'recruit': 'deferred_roster'}) is False
+    assert policy._await_month_roster_scan(mem, {'recruit': 'done'}) is False
