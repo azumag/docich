@@ -140,6 +140,8 @@ class NethackPolicyBrain:
     observational only and are never translated into gameplay Actions here.
     """
 
+    _STALL_HOLD_REPEAT_THRESHOLD = 10
+
     def __init__(self, g: GlobalConfig, game: GameConfig):
         if game.name != "nethack" or game.adapter != "cli":
             raise AdapterError("brain='nethack' はCLI NetHack専用です")
@@ -165,6 +167,9 @@ class NethackPolicyBrain:
         self._progress_trace_error_logged = False
         self._last_progress_hold = None
         self._last_progress_hold_at = 0.0
+        self._stall_hold_fingerprint = None
+        self._stall_hold_repeats = 0
+        self._stall_hold_reported = False
         self._action_validated = False
         self._startup_checkpoint = None
         self.last_decision = None
@@ -203,8 +208,16 @@ class NethackPolicyBrain:
         startup_actions = self.startup.consider(normalized)
         if startup_actions is not None:
             if startup_actions:
+                self._reset_repeated_hold()
                 self._action_plan = (normalized, deepcopy(startup_actions), None)
                 self._startup_checkpoint = startup_before
+            else:
+                self._observe_repeated_hold(
+                    normalized,
+                    stage="startup",
+                    intent=f"startup_{self.startup.state}",
+                    resolved_intent="progress_blocked",
+                )
             return startup_actions
         self.progress.observe(normalized, self.policy.explorer)
         decision = self.policy.decide(normalized)
@@ -218,9 +231,16 @@ class NethackPolicyBrain:
         self.last_progress_decision = resolved
         production_actions = list(self.last_progress_decision.actions)
         if production_actions:
+            self._reset_repeated_hold()
             self._action_plan = (normalized, deepcopy(production_actions), deepcopy(resolved))
             self._progress_trace_plan = (normalized, decision, resolved)
         else:
+            self._observe_repeated_hold(
+                normalized,
+                stage="policy",
+                intent=decision.intent,
+                resolved_intent=resolved.intent,
+            )
             self._record_progress_sample(
                 normalized, decision, resolved, phase="hold", key=None
             )
@@ -271,6 +291,51 @@ class NethackPolicyBrain:
                 file=sys.stderr,
             )
         return production_actions
+
+    def _reset_repeated_hold(self) -> None:
+        self._stall_hold_fingerprint = None
+        self._stall_hold_repeats = 0
+        self._stall_hold_reported = False
+
+    def _observe_repeated_hold(
+        self,
+        obs,
+        *,
+        stage: str,
+        intent: str,
+        resolved_intent: str,
+    ) -> None:
+        """Report a stable no-input frame without ever inventing a recovery key."""
+        frame_hash = hashlib.sha256(obs.raw_text.encode("utf-8", "replace")).hexdigest()
+        fingerprint = (
+            stage,
+            obs.vitals.turn,
+            obs.prompt,
+            intent,
+            resolved_intent,
+            frame_hash,
+        )
+        if fingerprint != self._stall_hold_fingerprint:
+            self._stall_hold_fingerprint = fingerprint
+            self._stall_hold_repeats = 1
+            self._stall_hold_reported = False
+            return
+        self._stall_hold_repeats += 1
+        if (
+            self._stall_hold_reported
+            or self._stall_hold_repeats < self._STALL_HOLD_REPEAT_THRESHOLD
+        ):
+            return
+        self._stall_hold_reported = True
+        # Fixed enums/hashes only: raw prompt text never enters logs.
+        print(
+            "[nethack-stall] "
+            f"repeated_hold={self._stall_hold_repeats} "
+            f"stage={stage} prompt={obs.prompt} "
+            f"intent={intent} resolved={resolved_intent} "
+            f"frame={frame_hash[:12]}",
+            file=sys.stderr,
+        )
 
     def _record_progress_sample(self, obs, decision, resolved, *, phase: str, key: str | None) -> None:
         """Persist bounded, public turn telemetry; raw terminal text stays transient."""

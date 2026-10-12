@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 
 from .hanjuku_font import UNKNOWN
+from .hanjuku_egg_stock import observed_uses
 from . import hanjuku_roster as receipts
 
 HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5)}
@@ -21,6 +22,10 @@ STEP_LIMIT = 24
 TRAVEL_LIMIT = 240
 SESSION_LIMIT = 1200
 SCAN_INTERVAL = 200
+INTERRUPTION_RETRIES = 2
+PRE_DISPATCH_PHASES = frozenset({
+    'find_castle', 'castle_view', 'castle_open', 'castle_verify',
+    'castle_sortie', 'castle_pick', 'castle_kit', 'castle_confirm'})
 
 
 def general_status(screen):
@@ -43,7 +48,10 @@ def general_status(screen):
             continue
         body = text[len('たまご'):]
         broken = body == 'こわれている'
-        uses = re.fullmatch(r'(.+?)([0-4])', body)
+        # Angelin can leave five uses. Never fold extra digits into the egg name.
+        uses = re.fullmatch(r'([^\d]+)([0-9])', body)
+        if uses and observed_uses(int(uses[2])) is None:
+            uses = None
         if not broken and body != 'なし' and not uses:
             continue
         hp_row = next((r for r in screen.lines if r.y == y + 16), None)
@@ -315,6 +323,7 @@ def _next_general(mem):
     state.update(general=name, pending=pending, source=None, purchased=False, purchase=None,
                  returning=False)
     state.pop('return_goal', None)
+    state.pop('sole_defender', None)
     # Re-routing a marching army was measured not to reach the house: the
     # 2026-10-01 06:48 dispatch re-aimed ヴィーナス while en_route, and she
     # instead charged キカンドン at 07:08 instead of the house. Wait for her
@@ -372,6 +381,40 @@ def _resume_completed_survey(screen, mem, p, scope, field_count, field_tick):
     return True, []
 
 
+def _retry_target_current(mem):
+    state = mem['house']
+    name = state.get('general')
+    info = (mem.get('house_eggs') or {}).get(name) or {}
+    observed, now = info.get('observed_tick'), mem.get('tick')
+    return (isinstance(name, str) and name and UNKNOWN not in name
+            and isinstance(mem.get('month'), str) and bool(mem['month'])
+            and mem.get('chapter') in HOUSE_VIEW
+            and info.get('general') == name and info.get('broken') is True
+            and info.get('location') == 'castle' and info.get('location_observed') is True
+            and _repair_hp_ready(info) and not state.get('month_scan')
+            and state.get('chapter') == info.get('observed_chapter') == mem.get('chapter')
+            and state.get('roster_month') == info.get('month') == mem.get('month')
+            and type(observed) is int and type(now) is int and 0 <= observed <= now
+            and not any(state.get(k) for k in ('purchase', 'purchased', 'returning', 'departure_pending')))
+
+
+def _retry_interrupted_repair(mem):
+    state = mem['house']
+    retries = state.get('interruption_retries', 0)
+    if (state['phase'] not in PRE_DISPATCH_PHASES or not _retry_target_current(mem)
+            or type(retries) is not int or not 0 <= retries < INTERRUPTION_RETRIES
+            or state.get('total', 0) >= SESSION_LIMIT):
+        return False
+    prior = state['phase']
+    _phase(state, 'repair_recheck', interruption_retries=retries + 1)
+    state.pop('sole_defender', None)
+    _record(mem, 'interruption_retry', observed_metric={
+        'phase': prior, 'retry': retries + 1, 'limit': INTERRUPTION_RETRIES,
+        'total': state.get('total')},
+        reason='出撃前の修理が割り込まれたため、マップ復帰後に城・本人・卵・HPを再確認する')
+    return True
+
+
 def step(screen, mem, frame):
     """Actions, or None to let battle/month/ordinary map policy run.
 
@@ -399,8 +442,15 @@ def step(screen, mem, frame):
                     and (mem.get('shop') or {}).get('recruit') in ('opened', 'done', 'unverified')):
                 return None
             if (p._egg_recovery_targets(mem)
-                    and (mem.get('shop') or {}).get('egg') not in ('done', 'skipped', 'not_needed')):
-                return None  # existing recovery/reserve ordering precedes the free survey
+                    and (mem.get('shop') or {}).get('egg') not in ('done', 'skipped', 'not_needed',
+                                                                    'unverified')):
+                # Existing recovery/reserve ordering precedes the free survey.
+                # g684 1-12/2-1: a paid recovery whose debit could not be
+                # verified stayed 'unverified', this gate never opened, the
+                # roster was never re-read in the month and no general was
+                # recruited (owner 2026-10-11: 将軍たりてないのに募集かけてない).
+                # The attempt is over either way; only the receipt is unknown.
+                return None
             if (p._recruit_sufficient(mem) or receipts.surveyed(mem)
                     or (receipts.fresh(mem)
                         and receipts.fresh(mem).get('complete'))):
@@ -447,6 +497,12 @@ def step(screen, mem, frame):
         _finish(mem)
         return None
     if state.get('from_survey') and receipts.completed_survey(mem) is None:
+        if state.get('phase') == 'close':
+            # g684 2-11 15:49:04-15:50+: already closed, this check re-ran
+            # _exit every observation, held [] and swallowed a duel yes/no
+            # (「ごあいてねがえぬか?」). Release the screen to its owner.
+            _finish(mem)
+            return None
         return _exit(mem, '完了確認の月・ラン・名簿が無効になったため部分再確認を中断')
     phase = state['phase']
     # The monthly main-menu survey returns to the same monthly menu, never
@@ -504,7 +560,8 @@ def step(screen, mem, frame):
     receipts.page(mem, roster(screen))
     owns_observation = (bool(mem.get('battle')) or bool(mem.get('month_sub')) or screen.kind in {
         'battle', 'battle_menu', 'egg_battle_menu', 'egg_choice_menu', 'monster_menu',
-        'okunote_menu', 'attack_started', 'defense_started', 'boss_attack_started'})
+        'okunote_menu', 'attack_started', 'defense_started', 'boss_attack_started',
+        'field_encounter_started'})
     if not owns_observation:
         state['total'] += 1
     if mem.get('battle') and screen.kind == 'map':
@@ -512,12 +569,15 @@ def step(screen, mem, frame):
     # Repair must never consume unrelated battle commands or monthly menus.
     if (mem.get('battle') or screen.kind in {'battle', 'battle_menu', 'egg_battle_menu', 'egg_choice_menu',
             'monster_menu', 'okunote_menu', 'attack_started', 'defense_started', 'boss_attack_started',
+            'field_encounter_started',
             'month_menu', 'shop_quantity', 'shop_quantity_prompt', 'shop_exit_confirm', 'discharge_menu'}
             or mem.get('month_sub')):
-        if phase not in ('travel', 'close'):
+        if phase not in ('travel', 'close', 'repair_recheck'):
             state['interrupted'] = True
         return None
     if state.pop('interrupted', False):
+        if _retry_interrupted_repair(mem):
+            return []
         return _exit(mem, '割り込みでメニューの同一性を失ったため修理操作を中断')
     state['age'] += 1
     if state['total'] > SESSION_LIMIT:
@@ -535,6 +595,17 @@ def step(screen, mem, frame):
             return None
         limit = 'travel' if phase == 'travel' else 'step'
         return _exit(mem, '卵修理の観測回数上限に達したため入力を中止', limit=limit)
+    if phase == 'repair_recheck':
+        if not _retry_target_current(mem):
+            return _exit(mem, '修理対象の月・本人・卵状態が変わったため再試行しない')
+        if screen.kind == 'map':
+            name = state['general']
+            state['pending'] = [name, *(n for n in state.get('pending') or [] if n != name)]
+            _next_general(mem)  # rebuild owned castles; verify the resident before committing
+            return []
+        if screen.kind in {'world_map', 'castle_menu', 'general_list', 'card_select', 'sortie_confirm'}:
+            return [p.pad('y' if screen.kind == 'world_map' else 'b')]
+        return None  # unrelated dialogue keeps its ordinary handler
     if phase == 'close':
         if screen.kind == 'map':
             _finish(mem)
@@ -709,10 +780,26 @@ def _income_step(screen, mem, frame):
     return []
 
 
+def _sole_defender_repair_due(mem, name, source):
+    """Repair immediately unless this is the hero or our last castle.
+
+    Owner 2026-10-11: prioritize a broken-egg Venus even when she is the
+    only defender. A previous-month deferral is not permission to leave
+    the hero or the last castle unprotected, including after a hotload.
+    """
+    from . import hanjuku_policy as p
+    owned = p._owned(mem)
+    return name != p.NAME and source in owned and len(owned) > 1
+
+
 def _repair_step(screen, mem, frame):
     from . import hanjuku_policy as p
     state = mem['house']
     phase, name = state['phase'], state['general']
+    if (phase in ('castle_kit', 'castle_confirm', 'house_confirm')
+            and state.get('sole_defender')
+            and not _sole_defender_repair_due(mem, name, state.get('source'))):
+        return _exit(mem, '主人公または最後の自軍城の唯一の守将を修理へ派遣しない')
     if phase == 'find_castle':
         if screen.kind != 'map':
             if screen.kind == 'text' and roster(screen) is None:
@@ -754,10 +841,17 @@ def _repair_step(screen, mem, frame):
             mem.setdefault('garrison', {})[source] = names
             if name not in names:
                 _phase(state, 'find_castle')
-            elif len(names) < 2:
-                _record(mem, 'general_deferred', reason='修理派遣で城が無人になるため守備将軍を残す')
+            elif len(names) < 2 and not _sole_defender_repair_due(mem, name, source):
+                _record(mem, 'general_deferred', reason='主人公または最後の自軍城の唯一の守将を残す')
                 _next_general(mem)
             else:
+                if len(names) < 2:
+                    state['sole_defender'] = True
+                    _record(mem, 'repair_sole_defender', castle=source,
+                            observed_metric={'month': mem.get('month'), 'owned_castles': len(p._owned(mem))},
+                            reason='主人公でも最後の自軍城でもないため、城を空けても卵修復を優先する')
+                else:
+                    state.pop('sole_defender', None)
                 _phase(state, 'castle_sortie')
             return [p.pad('b')]
         if screen.kind == 'castle_menu':
@@ -779,8 +873,13 @@ def _repair_step(screen, mem, frame):
         present = p._present_generals(screen)
         if present is None:
             return []
-        if len(present) < 2 or name not in present or state['source'] not in p._owned(mem):
+        if ((len(present) < 2 and not _sole_defender_repair_due(mem, name, state['source'])) or name not in present
+                or state['source'] not in p._owned(mem)):
             return _exit(mem, '出撃直前の在城・守備条件を満たさないため派遣しない')
+        if len(present) < 2:
+            state['sole_defender'] = True
+        else:
+            state.pop('sole_defender', None)
         actions = _choose(screen, name)
         if actions == [p.pad('a')]:
             _phase(state, 'castle_kit')

@@ -160,6 +160,9 @@ test("internal voice reply reuses canonical memory read-only and does not persis
   assert.deepEqual(await response.json(), { reply: "タマです" });
   assert.equal(rows(f.sql).length, before);
   assert.ok(input.messages.some((message) => message.content.includes("猫の名前はタマ")));
+  assert.equal(input.reasoning_effort, "none");
+  assert.deepEqual(input.chat_template_kwargs, {enable_thinking: false});
+  assert.match(input.messages[0].content, /200文字以内/);
   assert.equal(f.logs.at(-1).status, "voice_reply_generated");
 });
 
@@ -346,4 +349,42 @@ test("fake voice caller uses same persona/core with its own limits; text 901 cha
     const voiceReply = (limit) => { if (reply.length > limit) throw new Error("voice_reply_limit"); return reply; };
     assert.throws(() => voiceReply(900), /voice_reply_limit/); assert.throws(() => voiceReply(200), /voice_reply_limit/);
   }
+});
+
+test('voice recent context reaches only model input, never delivery memory, and invalid context is rejected',async(t)=>{
+  let input; const f=await botFixture(t,async(_model,value)=>{input=value; return completion('京都のお寺がよさそうです。');});
+  const turn={guildId:'1',channelId:'10',userId:'7',turnId:'wake-context-fixture',transcript:'同志、どこへ行きますか？'};
+  const post=(path,body)=>f.bot.fetch(new Request('https://discord-bot.internal'+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}));
+  const result=await post('/voice/reply',{...turn,recentContext:[{userId:'8',text:'京都のお寺へ行こう。'}]});
+  assert.equal(result.status,200);
+  const latest=JSON.parse(input.messages.at(-1).content);
+  assert.equal(latest.text,turn.transcript); assert.equal(latest.source,'current_voice_call');
+  assert.equal(latest.recent_voice_context,undefined);
+  const background=JSON.parse(/<voice_background_context>\n([^]*?)\n<\/voice_background_context>/.exec(input.messages[0].content)[1]);
+  assert.equal(background.purpose,'reference_only');
+  assert.equal(background.recent_voice_context[0].userId,'8');
+  assert.equal(rows(f.sql).length,0);
+  const commit=await post('/voice/commit',{...turn,reply:'京都のお寺がよさそうです。'});
+  assert.equal(commit.status,200); assert.equal(rows(f.sql)[0].content,turn.transcript);
+  assert.equal(rows(f.sql).some(r=>r.content.includes('京都のお寺へ行こう')),false);
+  const bad=await post('/voice/reply',{...turn,recentContext:[{userId:'8',text:'a'.repeat(2001)}]}); assert.equal(bad.status,400);
+  const foreign=await post('/voice/reply',{...turn,recentContext:[{userId:'8',text:'fixture',guildId:'other'}]}); assert.equal(foreign.status,400);
+});
+
+
+test("owner game state reaches voice generation only and invalid values fail before AI", async(t)=>{
+  let input; let calls=0;
+  const f=await botFixture(t,async(_model,value)=>{calls++;input=value;return completion("第3区間です。");});
+  const turn={guildId:"1",channelId:"10",userId:"7",turnId:"game-state-fixture",transcript:"同志、今どこですか？"};
+  const post=(path,body)=>f.bot.fetch(new Request("https://discord-bot.internal"+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}));
+  const response=await post("/voice/reply",{...turn,gameState:"現在は第3区間です。"});
+  assert.equal(response.status,200);assert.match(input.messages[0].content,/現在は第3区間です/);
+  assert.equal(JSON.parse(input.messages.at(-1).content).text,turn.transcript);
+  assert.equal(rows(f.sql).length,0);
+  assert.equal((await post("/voice/commit",{...turn,reply:"第3区間です。"})).status,200);
+  assert.equal(rows(f.sql)[0].content,turn.transcript);
+  assert.equal(rows(f.sql).some(row=>row.content.includes("現在は第3区間です")),false);
+  for(const gameState of [null,[],{},"","x".repeat(501),"line\nline"])
+    assert.equal((await post("/voice/reply",{...turn,gameState})).status,400);
+  assert.equal(calls,1);
 });

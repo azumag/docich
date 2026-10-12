@@ -458,7 +458,27 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                 "hanjuku-chart-v134-month-nav-cursor-guard",
                 "hanjuku-chart-v135-month-foreground-state",
                 "hanjuku-chart-v136-resource-priority",
-                "hanjuku-chart-v137-camp-recheck")
+                "hanjuku-chart-v137-camp-recheck",
+                "hanjuku-chart-v150-summoned-monster-threat",
+                "hanjuku-chart-v151-chikujou-scroll",
+                "hanjuku-chart-v152-control-melee-followup",
+                "hanjuku-chart-v153-visible-castle-levels",
+                "hanjuku-chart-v154-nearest-recall",
+                "hanjuku-chart-v155-sortie-source-probe",
+                "hanjuku-chart-v156-starter-party",
+                "hanjuku-chart-v157-eggless-wall-risk",
+                "hanjuku-chart-v158-native-starter-pane",
+                "hanjuku-chart-v159-egg-recheck-wall-risk",
+                "hanjuku-chart-v162-starter-selected-row-cursor",
+                "hanjuku-chart-v163-recruit-dialog-eligibility",
+                "hanjuku-chart-v164-source-location-recheck",
+                "hanjuku-chart-v165-resume-starter-readiness",
+                "hanjuku-chart-v166-egg-recovery-receipt",
+                "hanjuku-chart-v167-fake-hero-reveal",
+                "hanjuku-chart-v168-general-repair-budget",
+                "hanjuku-chart-v169-repair-interruption",
+                "hanjuku-chart-v170-chapter-two-boss",
+                "hanjuku-chart-v173-resume-sortie-menu")
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',
@@ -2446,7 +2466,7 @@ def test_corner_rotation_timer_projection_reports_alias_state():
         (unit_dir / 'docich-corner-rotation.timer').write_text('[Unit]')
         (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
         (unit_dir / 'docich-retro-corner.timer').symlink_to(unit_dir / 'docich-corner-rotation.timer')
-        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+        with mock.patch.object(module, 'PROD_ROOT', Path(tmp) / 'docich'):
             result = module._collect_corner_rotation_timer_alias()
         assert result['legacy_service_alias'] is True
         assert result['legacy_timer_alias'] is True
@@ -2468,7 +2488,7 @@ def test_corner_rotation_timer_projection_detects_inconsistent_alias():
         (unit_dir / 'docich-corner-rotation.timer').write_text('[Unit]')
         # Only the service alias exists (timer is missing)
         (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
-        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+        with mock.patch.object(module, 'PROD_ROOT', Path(tmp) / 'docich'):
             result = module._collect_corner_rotation_timer_alias()
         assert result['legacy_service_alias'] is True
         assert result['legacy_timer_alias'] is False
@@ -2487,7 +2507,7 @@ def test_corner_rotation_timer_projection_detects_wrong_target():
         (unit_dir / 'docich-retro-corner.service').symlink_to(unit_dir / 'docich-corner-rotation.service')
         # Timer alias points to the wrong target
         (unit_dir / 'docich-retro-corner.timer').symlink_to(unit_dir / 'docich-corner-rotation.service')
-        with mock.patch.object(module.Path, 'home', return_value=Path(tmp)):
+        with mock.patch.object(module, 'PROD_ROOT', Path(tmp) / 'docich'):
             result = module._collect_corner_rotation_timer_alias()
         assert result['legacy_service_alias'] is True
         assert result['legacy_timer_alias'] is True

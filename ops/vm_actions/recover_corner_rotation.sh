@@ -63,8 +63,56 @@ if [[ ! -x "$launcher" || ! -f "$config" ]]; then
   fail "reviewed docich launcher or config missing; refusing to recover" 25
 fi
 
+# The automatic NetHack slot owns nethack_corner.json and the meriken slot owns
+# soren91_corner.json, not retro_corner.json.
+# The manual NetHack operator is deliberately not used for this reservation.
+# Read the existing rotation ledger and select only the fixed reviewed path.
+# Unreadable/missing/mixed reservation evidence must never become permission.
+if ! rotation_status="$("$launcher" --config "$config" corner-rotation status 2>/dev/null)"; then
+  fail "cannot verify corner rotation reservation" 26
+fi
+if ! recovery_owner="$(python3 -c '
+import json, sys
+try:
+    state = json.load(sys.stdin)
+    if not isinstance(state, dict) or state.get("status") != "recovery_required":
+        raise ValueError("no failed reservation")
+    pending = state.get("pending")
+    manual = state.get("manual_pending")
+    if pending is not None and manual is not None:
+        raise ValueError("ambiguous reservation")
+    if isinstance(pending, dict) and pending.get("corner") == "nethack":
+        if manual is not None or not isinstance(pending.get("request_id"), str) or not pending["request_id"]:
+            raise ValueError("invalid NetHack automatic reservation")
+        print("nethack")
+    elif isinstance(pending, dict) and pending.get("corner") == "meriken":
+        # meriken runs on the soren91 game: its failed slot lives in
+        # soren91_corner.json, which retro-corner cannot see (#1969).
+        if manual is not None or not isinstance(pending.get("request_id"), str) or not pending["request_id"]:
+            raise ValueError("invalid meriken automatic reservation")
+        print("meriken")
+    else:
+        print("other")
+except (TypeError, ValueError, KeyError):
+    raise SystemExit(1)
+' <<<"$rotation_status")"; then
+  fail "failed rotation owner is unproven" 26
+fi
+
+if [[ "$recovery_owner" == "nethack" ]]; then
+  # The dedicated manager checks the exact reservation, rolled-back restore
+  # receipt, generation-owned terminal pane and clean retirement. It cannot
+  # relaunch a new expedition or choose an arbitrary target game.
+  if ! "$launcher" --config "$config" nethack-corner recover-failed-rotation >/dev/null 2>&1; then
+    fail "automatic NetHack failed-slot restore refused or incomplete" 70
+  fi
+else
+corner_cli="retro-corner"
+if [[ "$recovery_owner" == "meriken" ]]; then
+  corner_cli="soren91-corner"
+fi
 set +e
-retro_json="$("$launcher" --config "$config" retro-corner recover-failed 2>/dev/null)"
+retro_json="$("$launcher" --config "$config" "$corner_cli" recover-failed 2>/dev/null)"
 retro_rc=$?
 set -e
 if (( retro_rc != 0 )); then
@@ -92,6 +140,7 @@ case "$retro_status" in
   queued) fail "retro corner recovery is not terminal yet" 70 ;;
   *) fail "retro corner recovery rejected" 71 ;;
 esac
+fi
 
 if ! "$launcher" --config "$config" corner-rotation recover >/dev/null 2>&1; then
   fail "corner rotation recovery rejected" 71

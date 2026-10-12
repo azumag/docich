@@ -25,13 +25,15 @@ WORKFLOWS = (
     ".github/workflows/retro-corner-operator.yml",
 )
 ALLOWED_OPERATIONS = {
-    "restart-service", "recover-failed", "rollback-timer", "start-hanjuku",
+    "restart-service", "recover-failed", "rollback-timer", "start-hanjuku", "resume-hanjuku-latest",
     "recover-runtime",
     "check-cancel-hanjuku", "cancel-hanjuku",
     "check-admin-release-hanjuku", "admin-release-hanjuku",
+    "check-recover-hanjuku-resume", "recover-hanjuku-resume",
 }
-CANONICAL_ONLY_OPERATIONS = {"start-hanjuku", "recover-runtime", "check-cancel-hanjuku", "cancel-hanjuku",
-                             "check-admin-release-hanjuku", "admin-release-hanjuku"}
+CANONICAL_ONLY_OPERATIONS = {"start-hanjuku", "resume-hanjuku-latest", "recover-runtime", "check-cancel-hanjuku", "cancel-hanjuku",
+                             "check-admin-release-hanjuku", "admin-release-hanjuku",
+                             "check-recover-hanjuku-resume", "recover-hanjuku-resume"}
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 
 
@@ -76,7 +78,8 @@ def main() -> None:
         expected = read_expected(env)
     except ValueError:
         fail("reservation input unavailable")
-    if operation in {"cancel-hanjuku", "check-admin-release-hanjuku", "admin-release-hanjuku"} and not re.fullmatch(r"[0-9a-f]{64}", expected):
+    if operation in {"cancel-hanjuku", "check-admin-release-hanjuku", "admin-release-hanjuku",
+                     "check-recover-hanjuku-resume", "recover-hanjuku-resume"} and not re.fullmatch(r"[0-9a-f]{64}", expected):
         fail("reviewed reservation fingerprint required")
     if operation == "check-cancel-hanjuku" and expected:
         fail("check accepts no reservation input")

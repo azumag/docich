@@ -3579,7 +3579,27 @@ def _project_corner_state(data):
             "hanjuku-chart-v134-month-nav-cursor-guard",
             "hanjuku-chart-v135-month-foreground-state",
             "hanjuku-chart-v136-resource-priority",
-            "hanjuku-chart-v137-camp-recheck"} else None),
+            "hanjuku-chart-v137-camp-recheck",
+            "hanjuku-chart-v150-summoned-monster-threat",
+            "hanjuku-chart-v151-chikujou-scroll",
+            "hanjuku-chart-v152-control-melee-followup",
+            "hanjuku-chart-v153-visible-castle-levels",
+                "hanjuku-chart-v154-nearest-recall",
+                "hanjuku-chart-v155-sortie-source-probe",
+                "hanjuku-chart-v156-starter-party",
+                "hanjuku-chart-v157-eggless-wall-risk",
+                "hanjuku-chart-v158-native-starter-pane",
+                "hanjuku-chart-v159-egg-recheck-wall-risk",
+                "hanjuku-chart-v162-starter-selected-row-cursor",
+                "hanjuku-chart-v163-recruit-dialog-eligibility",
+                "hanjuku-chart-v164-source-location-recheck",
+                "hanjuku-chart-v165-resume-starter-readiness",
+                "hanjuku-chart-v166-egg-recovery-receipt",
+                "hanjuku-chart-v167-fake-hero-reveal",
+                "hanjuku-chart-v168-general-repair-budget",
+                "hanjuku-chart-v169-repair-interruption",
+                "hanjuku-chart-v170-chapter-two-boss",
+                "hanjuku-chart-v173-resume-sortie-menu"} else None),
         "bot_chart": _project_bot_chart(data.get("bot_chart")),
         "narration": _project_counts(data.get("narration"),
                                      ("enqueued", "delivery_failed", "skipped")),
@@ -4079,6 +4099,57 @@ def _rotation_manual_pending_projection(state_dir, data, now):
     return out
 
 
+def _collect_hanjuku_checkpoint(state_dir, corner):
+    """Fixed receipt and file metadata only; never read/export saved game bytes."""
+    if not isinstance(corner, dict) or corner.get("game") != "hanjuku-hero":
+        return None
+    owner = corner.get("bot_identity")
+    if (not isinstance(owner, dict) or owner.get("game") != "hanjuku-hero"
+            or type(owner.get("generation")) is not int or owner["generation"] < 1
+            or not isinstance(owner.get("lease_id"), str) or not owner["lease_id"]
+            or not isinstance(owner.get("runtime_id"), str)
+            or not re.fullmatch(r"g[0-9]+-[a-f0-9]{8}", owner["runtime_id"])):
+        return None
+    runtime = Path(state_dir) / "runtimes" / owner["runtime_id"]
+    receipt = runtime / "retroarch_boundary.json"
+    if runtime.parent.is_symlink() or runtime.is_symlink() or receipt.is_symlink():
+        return None
+    present, readable, data = _load_state_file(receipt)
+    out = {"receipt_present": present, "receipt_readable": readable,
+           "save_status": "unverified", "file_present": None,
+           "file_bytes": None, "file_metadata_matches": None}
+    if not readable or any(data.get(k) != owner.get(k) for k in
+                           ("game", "runtime_id", "generation", "lease_id")):
+        return out
+    if data.get("outcome") not in {"screen_stalled", "input_stalled", "suspended"}:
+        return out
+    if data.get("status") == "waiting" and data.get("save_required") is True:
+        out["save_status"] = "failed" if data.get("save_error") in {
+            "save_timeout", "save_failed"} else "waiting"
+    sha = data.get("sha256")
+    if (data.get("status") == "reached" and data.get("checkpoint") == "hanjuku-hero.state"
+            and isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha)):
+        out["save_status"] = "saved_receipt"
+    # Do not accept a receipt-provided path or read the state contents/hash.
+    directory = runtime / "states"
+    path = directory / "hanjuku-hero.state"
+    try:
+        if directory.is_symlink() or path.is_symlink():
+            return out
+        st = path.stat()
+        if not stat.S_ISREG(st.st_mode) or not 0 < st.st_size <= 64 * 1024 * 1024:
+            out["file_present"] = False
+            return out
+        out.update(file_present=True, file_bytes=st.st_size)
+        if (type(data.get("checkpoint_bytes")) is int
+                and type(data.get("checkpoint_mtime_ns")) is int):
+            out["file_metadata_matches"] = (st.st_size == data["checkpoint_bytes"]
+                                           and st.st_mtime_ns == data["checkpoint_mtime_ns"])
+    except OSError:
+        out["file_present"] = False
+    return out
+
+
 def _collect_corner_files(state_dir, payload, now):
     present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["corner_rotation"])
     rotation_data = data if readable else None
@@ -4170,6 +4241,7 @@ def _collect_corner_files(state_dir, payload, now):
     payload["weather_corner"] = _weather_corner_projection(
         state_dir, rotation_data, rotation_data is not None
     )
+    payload["external_video"] = _collect_external_video(state_dir, now)
     payload["game_switch_fifo"] = _collect_game_switch_fifo(state_dir, now)
     payload["game_switch_watchdog"] = _collect_game_switch_watchdog()
     payload["corner_rotation_timer_alias"] = _collect_corner_rotation_timer_alias()
@@ -4186,6 +4258,8 @@ def _collect_corner_files(state_dir, payload, now):
         entry = {"present": present, "readable": readable}
         if readable:
             entry.update(_project_corner_state(data))
+            if name == "retro_corner":
+                entry["saved_checkpoint"] = _collect_hanjuku_checkpoint(state_dir, data)
         payload[name] = entry
 
     present, readable, data = _load_state_file(state_dir / "trading" / "presentation.json")
@@ -4201,6 +4275,65 @@ def _collect_corner_files(state_dir, payload, now):
     payload["paper_improve"] = _collect_paper_improve_status(state_dir, now)
     payload["paper_experiment"] = _collect_paper_experiment(state_dir, now)
     payload["rotation_evidence"] = _collect_rotation_evidence(state_dir)
+
+
+def _external_video_process_alive(receiver):
+    pid, ticks = receiver.get("pid"), receiver.get("start_ticks")
+    if type(pid) is not int or pid <= 1 or type(ticks) is not int or ticks <= 0:
+        return False
+    root = Path("/proc") / str(pid)
+    try:
+        before = (root / "stat").read_text().rsplit(") ", 1)[1].split()
+        argv = (root / "cmdline").read_bytes().split(b"\0")
+        after = (root / "stat").read_text().rsplit(") ", 1)[1].split()
+        return (before[0] not in {"Z", "X"} and after[0] not in {"Z", "X"}
+                and int(before[19]) == int(after[19]) == ticks
+                and b"external-video-corner" in argv and b"receive" in argv
+                and receiver["receiver_id"].encode() in argv)
+    except (OSError, ValueError, IndexError, KeyError):
+        return False
+
+
+def _collect_external_video(state_dir, now):
+    """Fixed enums/health only: no IP, request, PID, file body or argv output."""
+    entry = {"receiver_present": False, "receiver_readable": False,
+             "receiver_status": "absent", "receiver_alive": None,
+             "frame_fresh": None, "audio_present": None,
+             "corner_status": "absent", "recovery_required": None}
+    present, readable, corner = _load_state_file(Path(state_dir) / _REG.EXTERNAL_VIDEO["corner_file"])
+    if present:
+        entry["corner_status"] = "unknown"
+    if readable:
+        status = corner.get("status")
+        if status in {"waiting", "starting", "active", "restoring", "failed", "completed", "interrupted"}:
+            entry["corner_status"] = status
+        entry["recovery_required"] = corner.get("recovery_required") is True
+    receiver_path = Path(state_dir) / _REG.EXTERNAL_VIDEO["receiver_file"]
+    entry["receiver_present"] = receiver_path.exists()
+    if not entry["receiver_present"]:
+        return entry
+    entry["receiver_status"] = "unknown"
+    _, readable, receiver = _load_state_file(receiver_path)
+    if not readable:
+        return entry
+    rid = receiver.get("receiver_id")
+    expiry = receiver.get("expires_at")
+    if (receiver.get("schema_version") != 1 or not isinstance(rid, str)
+            or re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", rid) is None
+            or type(expiry) not in (int, float) or not math.isfinite(expiry)):
+        return entry
+    alive = _external_video_process_alive(receiver)
+    try:
+        age = now - (Path(state_dir) / "external-video" / rid / "current.png").stat().st_mtime
+    except OSError:
+        age = None
+    fresh = (alive and receiver.get("status") == "receiving" and now < expiry
+             and age is not None and 0 <= age <= _REG.EXTERNAL_VIDEO["frame_max_age_sec"])
+    entry.update(receiver_readable=True, receiver_alive=alive,
+                 frame_fresh=fresh, audio_present=receiver.get("audio_present") is True)
+    if receiver.get("status") in {"launching", "waiting", "receiving", "stopped", "failed"}:
+        entry["receiver_status"] = receiver["status"]
+    return entry
 
 
 def _collect_hanjuku_predictions(state_dir):
@@ -4741,7 +4874,7 @@ HANJUKU_DECISION_EVENTS = ("action_plan", "decision")
 # source, so a new kind fails closed as "other" instead of being emitted.
 HANJUKU_DECISION_SCREEN_KINDS = frozenset({
     "attack_started", "barrier_removed", "battle", "battle_menu",
-    "battle_menu_pending", "boss_attack_started", "card_select", "castle_info",
+    "battle_menu_pending", "boss_attack_started", "field_encounter_started", "card_select", "castle_info",
     "castle_menu", "defense_started", "discharge_menu", "egg_battle_menu",
     "egg_choice_menu", "general_list", "gift_request", "main_menu", "map",
     "map_target", "monster_menu", "month_menu", "name_entry", "okunote_menu",
@@ -5198,7 +5331,9 @@ def _collect_corner_rotation_timer_alias():
     target). This projection makes the alias state directly observable in
     diagnostics without publishing paths or unit file contents.
     """
-    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    # The gateway deliberately sets HOME=/tmp. Use the same reviewed user
+    # unit root as _rotation_timer_selection(), rather than that scrubbed HOME.
+    unit_dir = PROD_ROOT.parent / ".config" / "systemd" / "user"
     legacy_service = unit_dir / CORNER_ROTATION_LEGACY_SERVICE
     legacy_timer = unit_dir / CORNER_ROTATION_LEGACY_TIMER
     service_is_link = legacy_service.is_symlink()
@@ -6301,6 +6436,55 @@ def _project_hanjuku_card_assessment(value, tick):
     return out
 
 
+def _collect_hanjuku_resume(state_dir):
+    """Fixed metadata projection; does not read checkpoint/ROM bytes."""
+    unavailable = {'status': 'unavailable', 'basis': 'resume_receipt'}
+    try:
+        root = Path(state_dir)
+        canonical, _ = _read_hanjuku_record(root / 'game_switch.json')
+        request, _ = _read_hanjuku_record(root / 'hanjuku-resume/hanjuku_resume.json')
+        status = request.get('status')
+        if status in {'prepared', 'queued'}:
+            ledger = {}
+            try:
+                ledger, _ = _read_hanjuku_record(root / 'corner_rotation.json')
+            except (OSError, ValueError):
+                pass
+            inbox = None
+            try:
+                inbox, _ = _read_hanjuku_record(root / 'corner_manual_queue.json')
+            except (OSError, ValueError):
+                pass
+            choices = [inbox, ledger.get('queued_manual'), ledger.get('pending')]
+            if any(isinstance(q, dict) and q.get('resume_latest') is True
+                   and q.get('request_id') == request.get('request_id')
+                   and q.get('corner') == 'hanjuku-hero' for q in choices):
+                return {**unavailable, 'status': 'queued'}
+            return {**unavailable, 'status': 'prepared' if status == 'prepared' else 'unverified'}
+        owner = canonical.get('candidate') if status == 'claimed' else canonical.get('active')
+        keys = ('game', 'runtime_id', 'generation', 'lease_id', 'request_id')
+        if (not isinstance(owner, dict) or owner.get('game') != 'hanjuku-hero'
+                or not isinstance(owner.get('runtime_id'), str)
+                or not re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', owner['runtime_id'])
+                or any(request.get(k) != owner.get(k) for k in keys[:-1])):
+            return unavailable
+        receipt, _ = _read_hanjuku_record(root / 'runtimes' / owner['runtime_id'] / 'hanjuku_resume.json')
+        if any(receipt.get(k) != request.get(k) for k in keys) or receipt.get('status') != status:
+            return {**unavailable, 'status': 'unverified'}
+        again, _ = _read_hanjuku_record(root / 'game_switch.json')
+        if again != canonical:
+            return {**unavailable, 'status': 'identity_changed'}
+        if status == 'claimed':
+            return {**unavailable, 'status': 'claimed'}
+        chapter = receipt.get('chapter')
+        if status == 'verified' and type(chapter) is int and 1 <= chapter <= 12:
+            return {**unavailable, 'status': 'verified_receipt', 'chapter': chapter,
+                    'core_roundtrip_record': True}
+        return {**unavailable, 'status': 'unverified'}
+    except (OSError, ValueError, TypeError):
+        return unavailable
+
+
 def _collect_hanjuku_tactical(state_dir, now):
     """Chapter-1 fixed castle labels and last card prediction from a fresh run.
 
@@ -6382,6 +6566,503 @@ def _collect_hanjuku_tactical(state_dir, now):
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return out
 
+
+
+class _NethackEvidenceError(ValueError):
+    """Only fixed codes leave this read-only evidence reader."""
+
+
+class _NethackEvidenceReader:
+    """Pin every path component; never create a directory, lock or state file."""
+    FILE_BYTES = 65536
+    RUNTIME_LIMIT = 4096
+
+    def __init__(self, root):
+        self.root = Path(root).absolute()
+        self.records = {}
+        self.runtime_listing = None
+
+    def directory(self, parts=()):
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for part in (*self.root.parts[1:], *parts):
+                if part in {'.', '..'} or '/' in part:
+                    raise _NethackEvidenceError('unsafe_path')
+                following = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                    dir_fd=fd)
+                os.close(fd)
+                fd = following
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
+    @staticmethod
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise _NethackEvidenceError('invalid_record')
+            result[key] = value
+        return result
+
+    def read(self, parts):
+        parts = tuple(parts)
+        try:
+            directory = self.directory(parts[:-1])
+            try:
+                fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=directory)
+            finally:
+                os.close(directory)
+            with os.fdopen(fd, 'rb') as stream:
+                before = os.fstat(stream.fileno())
+                if not stat.S_ISREG(before.st_mode) or before.st_size > self.FILE_BYTES:
+                    raise _NethackEvidenceError('invalid_record')
+                raw = stream.read(self.FILE_BYTES + 1)
+                after = os.fstat(stream.fileno())
+                if ((before.st_ino, before.st_size, before.st_mtime_ns) !=
+                        (after.st_ino, after.st_size, after.st_mtime_ns)):
+                    raise _NethackEvidenceError('evidence_changed')
+                if len(raw) > self.FILE_BYTES:
+                    raise _NethackEvidenceError('invalid_record')
+            value = json.loads(raw, object_pairs_hook=self.unique_object,
+                               parse_constant=lambda _: (_ for _ in ()).throw(
+                                   _NethackEvidenceError('invalid_record')))
+            if not isinstance(value, dict):
+                raise _NethackEvidenceError('invalid_record')
+        except FileNotFoundError:
+            value, raw = None, None
+        if parts in self.records and self.records[parts] != raw:
+            raise _NethackEvidenceError('evidence_changed')
+        self.records[parts] = raw
+        return value
+
+    def restored_runtime(self, generation):
+        if type(generation) is not int or not 0 < generation < 10**9:
+            raise _NethackEvidenceError('invalid_identity')
+        directory = self.directory(('runtimes',))
+        try:
+            with os.scandir(directory) as entries:
+                names = []
+                for index, entry in enumerate(entries):
+                    if index >= self.RUNTIME_LIMIT:
+                        raise _NethackEvidenceError('scan_limit')
+                    names.append(entry.name)
+        finally:
+            os.close(directory)
+        names = sorted(names)
+        if self.runtime_listing is not None and names != self.runtime_listing:
+            raise _NethackEvidenceError('evidence_changed')
+        self.runtime_listing = names
+        matches = [name for name in names if name.startswith(f'g{generation}-')]
+        if len(matches) != 1:
+            raise _NethackEvidenceError('runtime_ambiguous')
+        return _nethack_evidence_runtime(matches[0])
+
+    def recheck(self):
+        for parts in tuple(self.records):
+            self.read(parts)
+        if self.runtime_listing is not None:
+            # Reuse one known generation only to verify the whole listing.
+            name = next((n for n in self.runtime_listing
+                         if re.fullmatch(r'g[1-9][0-9]{0,8}-[a-f0-9]{6,32}', n)), None)
+            if name is None:
+                raise _NethackEvidenceError('invalid_identity')
+            self.restored_runtime(int(name.split('-')[0][1:]))
+
+
+def _nethack_evidence_uuid(value):
+    if not isinstance(value, str) or re.fullmatch(
+            r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', value) is None:
+        raise _NethackEvidenceError('invalid_identity')
+    return value
+
+
+def _nethack_evidence_runtime(value):
+    if not isinstance(value, str) or re.fullmatch(r'g[1-9][0-9]{0,8}-[a-f0-9]{6,32}', value) is None:
+        raise _NethackEvidenceError('invalid_identity')
+    return value
+
+
+def _nethack_evidence_time(value):
+    if not isinstance(value, str):
+        raise _NethackEvidenceError('invalid_record')
+    parsed = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if parsed.tzinfo is None or parsed.timestamp() < 0:
+        raise _NethackEvidenceError('invalid_record')
+    return parsed.timestamp()
+
+
+def _nethack_evidence_player():
+    """Read the fixed reviewed game definition, never a boundary-selected path."""
+    try:
+        import tomllib
+        reader = _NethackEvidenceReader(PROD_ROOT)
+        directory = reader.directory(('config', 'games'))
+        try:
+            fd = os.open('nethack.toml', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         dir_fd=directory)
+        finally:
+            os.close(directory)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 16384:
+                return None
+            raw = stream.read(16385)
+        if len(raw) > 16384:
+            return None
+        value = tomllib.loads(raw.decode('utf-8')).get('nethack', {}).get('player_name')
+        return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_]{1,31}', value) else None
+    except (OSError, ValueError, TypeError, AttributeError, ImportError):
+        return None
+
+
+def _nethack_evidence_receipt(reader, request):
+    request = _nethack_evidence_uuid(request)
+    receipt = reader.read(('game-switch', 'requests', request + '.json'))
+    if receipt is None:
+        return None
+    result = receipt.get('result')
+    generation = receipt.get('generation')
+    runtime = _nethack_evidence_runtime(receipt.get('runtime_id'))
+    if (type(receipt.get('schema_version')) is not int or receipt['schema_version'] != 1
+            or receipt.get('request_id') != request or receipt.get('operation') != 'switch'
+            or receipt.get('target') != 'sorengame' or not isinstance(result, dict)
+            or receipt.get('status') not in {'succeeded', 'failed', 'rolled_back'}
+            or result.get('request_id') != request or result.get('operation') != 'switch'
+            or result.get('status') != receipt['status']
+            or result.get('from_game') != 'nethack' or result.get('to_game') != 'sorengame'
+            or type(generation) is not int or generation != int(runtime.split('-')[0][1:])
+            or type(result.get('generation')) is not int or result['generation'] != generation
+            or receipt.get('adapter_session') != f'docich-game-g{generation}'
+            or receipt.get('game_window') != f'game-g{generation}'
+            or receipt.get('agent_window') != f'agent-g{generation}'
+            or receipt.get('runtime_dir') != str(reader.root / 'runtimes' / runtime)
+            or (result.get('cleanup_pending') is not None
+                and type(result['cleanup_pending']) is not bool)
+            or _nethack_evidence_time(receipt.get('created_at')) >
+               _nethack_evidence_time(receipt.get('updated_at'))):
+        raise _NethackEvidenceError('receipt_mismatch')
+    return receipt
+
+
+def _nethack_evidence_boundary(reader, runtime, receipt, player, *, active_started=None):
+    boundary = reader.read(('runtimes', runtime, 'nethack_boundary.json'))
+    result = dict(present=boundary is not None, identity_matches=None,
+                  request_matches=None, player_matches=None, ended=None, time_matches=None)
+    if boundary is None:
+        return result
+    result.update(
+        identity_matches=(type(boundary.get('schema_version')) is int
+                          and boundary['schema_version'] == 1
+                          and boundary.get('game') == 'nethack'
+                          and boundary.get('runtime_id') == runtime
+                          and type(boundary.get('generation')) is int
+                          and boundary['generation'] == int(runtime.split('-')[0][1:])),
+        request_matches=boundary.get('request_id') == receipt['request_id'],
+        player_matches=bool(player) and boundary.get('player_name') == player,
+        ended=boundary.get('outcome') == 'ended',
+        time_matches=(_nethack_evidence_time(receipt['created_at']) <=
+                      _nethack_evidence_time(boundary.get('recorded_at')) <=
+                      (active_started if active_started is not None else
+                       _nethack_evidence_time(receipt['updated_at']))),
+    )
+    return result
+
+
+def _nethack_evidence_source(receipt, runtime):
+    """A present modern source must agree with the selected NetHack boundary."""
+    if 'source_runtime' not in receipt['result']:
+        return
+    source = receipt['result']['source_runtime']
+    if (not isinstance(source, dict)
+            or set(source) != {'game', 'adapter', 'runtime_id', 'generation', 'lease_id'}
+            or source.get('game') != 'nethack' or source.get('adapter') != 'cli'
+            or source.get('runtime_id') != runtime
+            or type(source.get('generation')) is not int
+            or source['generation'] != int(runtime.split('-')[0][1:])
+            or source['generation'] >= receipt['generation']):
+        raise _NethackEvidenceError('source_mismatch')
+    _nethack_evidence_uuid(source.get('lease_id'))
+
+
+def _nethack_evidence_tmux_absent(generation):
+    # Only exact-generation read-only targets. No recovery/teardown helper,
+    # input, shell, new-window or signal is invoked.
+    from docich.hanjuku_manual_cancel import _ProbeTmux
+    probe = _ProbeTmux()
+    return (not probe.window_target_exists(f'docich:game-g{generation}', strict=True)
+            and not probe.window_target_exists(f'docich:agent-g{generation}', strict=True)
+            and not probe.session_target_exists(f'docich-game-g{generation}', strict=True))
+
+
+def _nethack_evidence_resources(reader, runtime, probe):
+    generation = int(runtime.split('-')[0][1:])
+    presentation = reader.read(('runtimes', runtime, 'presentation.json'))
+    tiles = reader.read(('runtimes', runtime, 'nethack_tiles.json'))
+    result = dict(presentation_stopped=None, tiles_identity_matches=None,
+                  tiles_cleanup_complete=None, tmux_absent=None,
+                  all_resources_released=None, coverage='release_records_and_tmux',
+                  unknown_reasons=[])
+    if presentation is None:
+        result['unknown_reasons'].append('presentation_record_missing')
+    if presentation is not None:
+        result['presentation_stopped'] = presentation.get('status') == 'stopped'
+    if tiles is not None:
+        matches = (type(tiles.get('schema_version')) is int and tiles['schema_version'] == 1
+                   and tiles.get('runtime_id') == runtime
+                   and type(tiles.get('generation')) is int and tiles['generation'] == generation
+                   and tiles.get('adapter_session') == f'docich-game-g{generation}'
+                   and tiles.get('game_window') == f'game-g{generation}')
+        result['tiles_identity_matches'] = matches
+        if matches and type(tiles.get('cleanup_complete')) is bool:
+            result['tiles_cleanup_complete'] = (tiles['cleanup_complete']
+                                               and tiles.get('status') == 'stopped')
+        elif matches:
+            result['unknown_reasons'].append('tiles_cleanup_unproven')
+    else:
+        result['unknown_reasons'].append('tiles_record_missing')
+    try:
+        absent = probe(generation)
+        if type(absent) is bool:
+            result['tmux_absent'] = absent
+    except Exception:
+        pass
+    if result['tmux_absent'] is None:
+        result['unknown_reasons'].append('tmux_probe_unavailable')
+    result['unknown_reasons'] += ['detached_children_unobserved', 'unregistered_workers_unobserved']
+    # A stopped presenter / empty tmux cannot prove detached game children or
+    # an unregistered improvement worker gone. Preserve unknown; positive
+    # contrary evidence, however, can prove incomplete cleanup.
+    if any(result[k] is False for k in ('presentation_stopped', 'tiles_identity_matches',
+                                       'tiles_cleanup_complete', 'tmux_absent')):
+        result['all_resources_released'] = False
+    return result
+
+
+def _nethack_evidence_dispatch_history(owner, ledger, now):
+    """Observe the legacy producer checks in the already-read ledger only."""
+    unknown = ('invalid', 'invalid')
+    history = ledger.get('history')
+    if not isinstance(history, list):
+        return unknown
+    if len(history) > 512:
+        return ('scan_limit', 'scan_limit')
+
+    def stamp(value):
+        if isinstance(value, str):
+            return _nethack_evidence_time(value)
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            raise ValueError('invalid timestamp')
+        return value
+
+    try:
+        selected = stamp(ledger['pending']['selected_at'])
+        started = stamp(owner['started_at'])
+        if not selected <= started <= now or stamp(ledger['last_seen_at']) > now:
+            return unknown
+        automatic, manual = False, False
+        for row in history:
+            if not isinstance(row, dict):
+                return unknown
+            recorded = stamp(row.get('at'))
+            if recorded > now:
+                return unknown
+            if row.get('corner') == 'nethack' and recorded >= selected:
+                manual |= row.get('source') == 'manual-reservation'
+                automatic |= row.get('source') == 'reservation' and recorded <= started
+        return ('matched' if automatic else 'missing', 'present' if manual else 'absent')
+    except (KeyError, ValueError, TypeError, OverflowError):
+        return unknown
+
+
+def _nethack_evidence_contract_conditions(owner, ledger, original, landed, now):
+    """Fixed input observations, never a recovery verdict or a historical error."""
+    def category(key, expected):
+        if key not in owner:
+            return 'absent'
+        value = owner[key]
+        if value is None:
+            return 'null'
+        if not isinstance(value, str):
+            return 'invalid'
+        return expected if value == expected else 'other'
+
+    automatic, manual = _nethack_evidence_dispatch_history(owner, ledger, now)
+    result = original['result']
+    cleanup = result.get('cleanup_pending')
+    return dict(
+        previous_game=category('previous_game', 'sorengame'),
+        finish_reason=category('finish_reason', 'terminal'),
+        pending_source_absent='source' not in ledger['pending'],
+        original_source_absent='source_runtime' not in result,
+        original_restored_identity_absent='restored_runtime' not in result,
+        return_source_absent='source_runtime' not in landed['result'],
+        restore_request_distinct=original['request_id'] != ledger['pending']['request_id'],
+        original_cleanup_pending=('absent' if 'cleanup_pending' not in result else
+                                  'null' if cleanup is None else 'pending' if cleanup else 'clear'),
+        automatic_dispatch_history=automatic,
+        manual_reservation_since_selection=manual,
+    )
+
+
+def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=None):
+    """Observe one automatic failed owner; evidence is never recovery authority.
+
+    No locks/writes or manager constructors. Re-read every input after probes;
+    stable bytes are an observation, not an atomic snapshot or a future fence.
+    """
+    result = dict(schema_version=1, status='unavailable', reason='missing_evidence',
+                  recovery_authority=False, snapshot_stable=None,
+                  owner_matches=None, owner_terminal=None, legacy_contract_applicable=None,
+                  contract_conditions=None,
+                  restore_recovery_present=None, cleanup_record_present=None,
+                  cleanup_attempt_present=None, chronology_matches=None, terminal_chain_matches=None,
+                  manual_clear=None, original_receipt=None, original_boundary=None,
+                  return_receipt=None, return_boundary=None, canonical=None,
+                  original_resources=None, rollback_resources=None)
+    reader = _NethackEvidenceReader(state_dir)
+    try:
+        ledger = reader.read(('corner_rotation.json',))
+        if ledger is None:
+            return result
+        pending = ledger.get('pending')
+        if not isinstance(pending, dict) or pending.get('corner') != 'nethack':
+            result.update(status='not_applicable', reason='no_automatic_nethack_pending')
+            return result
+        slot = _nethack_evidence_uuid(pending.get('request_id'))
+        owner = reader.read(('nethack_corner.json',))
+        canonical = reader.read(('game_switch.json',))
+        manual = reader.read(('nethack_corner_manual.json',))
+        if owner is None or canonical is None:
+            return result
+        result['owner_matches'] = (type(ledger.get('schema_version')) is int
+                                   and ledger['schema_version'] == 1
+                                   and ledger.get('status') == 'recovery_required'
+                                   and pending.get('phase') == 'dispatched'
+                                   and owner.get('rotation_request_id') == slot
+                                   and type(owner.get('schema_version')) is int
+                                   and owner['schema_version'] == 1 and owner.get('game') == 'nethack')
+        result['owner_terminal'] = owner.get('status') in {'failed', 'interrupted'}
+        result.update(restore_recovery_present='restore_recovery' in owner,
+                      cleanup_record_present='restore_cleanup' in owner,
+                      cleanup_attempt_present='restore_cleanup_attempt' in owner)
+        result['legacy_contract_applicable'] = (owner.get('previous_game', 'sorengame') == 'sorengame'
+            and owner.get('finish_reason') == 'terminal'
+            and all(k not in owner for k in ('restore_recovery', 'restore_cleanup', 'restore_cleanup_attempt')))
+        result['manual_clear'] = (ledger.get('manual_pending') is None
+            and (manual is None or (type(manual.get('schema_version')) is int
+                                   and manual['schema_version'] == 1
+                                   and manual.get('status') in {'idle', 'completed', 'interrupted', 'expired'})))
+        if result['owner_matches'] is not True or result['owner_terminal'] is not True:
+            raise _NethackEvidenceError('owner_mismatch')
+        original = _nethack_evidence_receipt(reader, owner.get('switch_request_id'))
+        if original is None:
+            raise _NethackEvidenceError('missing_evidence')
+        result['original_receipt'] = dict(status=original['status'], request_matches=True,
+            cleanup_clear=original['result'].get('cleanup_pending') is False,
+            source_identity_present=isinstance(original['result'].get('source_runtime'), dict))
+        source = original['result'].get('source_runtime')
+        source_runtime = owner.get('rotation_runtime_id')
+        if isinstance(source, dict):
+            if source_runtime is not None and source.get('runtime_id') != source_runtime:
+                raise _NethackEvidenceError('source_mismatch')
+            source_runtime = source.get('runtime_id')
+        runtime = _nethack_evidence_runtime(source_runtime)
+        _nethack_evidence_source(original, runtime)
+        result['original_boundary'] = _nethack_evidence_boundary(reader, runtime, original, player)
+        last = canonical.get('last_result')
+        if not isinstance(last, dict):
+            raise _NethackEvidenceError('missing_evidence')
+        landed = _nethack_evidence_receipt(reader, last.get('request_id'))
+        if landed is None:
+            raise _NethackEvidenceError('missing_evidence')
+        active = canonical.get('active')
+        identity = landed['result'].get('active_runtime')
+        identity_fields = ('game', 'runtime_id', 'generation', 'lease_id')
+        identity_complete = isinstance(active, dict) and isinstance(identity, dict)
+        active_started = None
+        if identity_complete:
+            _nethack_evidence_runtime(active.get('runtime_id'))
+            _nethack_evidence_uuid(active.get('lease_id'))
+            active_started = _nethack_evidence_time(active.get('started_at'))
+            identity_complete = (active.get('game') == 'sorengame' and active.get('adapter') == 'soren'
+                and type(active.get('generation')) is int
+                and active['generation'] == int(active['runtime_id'].split('-')[0][1:])
+                and active.get('adapter_session') == f"docich-game-g{active['generation']}"
+                and active.get('game_window') == f"game-g{active['generation']}"
+                and active.get('agent_window') == f"agent-g{active['generation']}"
+                and _nethack_evidence_time(landed['created_at']) <= active_started <=
+                    _nethack_evidence_time(landed['updated_at']) <=
+                    _nethack_evidence_time(canonical.get('updated_at')) <= now)
+        result['return_receipt'] = dict(status=landed['status'],
+            distinct_request=landed['request_id'] not in {slot, original['request_id']},
+            result_matches=(json.dumps(last, sort_keys=True) == json.dumps(landed['result'], sort_keys=True)))
+        result['legacy_contract_applicable'] = (result['legacy_contract_applicable']
+            and 'source' not in pending
+            and all(k not in original['result'] for k in ('source_runtime', 'restored_runtime'))
+            and 'source_runtime' not in landed['result'])
+        result['canonical'] = dict(
+            identity_complete=identity_complete,
+            lease_matches=(identity_complete and all(type(active.get(k)) is type(identity.get(k))
+                                                   and active.get(k) == identity.get(k) for k in identity_fields)
+                           and active['runtime_id'] == landed['runtime_id']
+                           and active['generation'] == landed['generation']),
+            record_clear=(type(canonical.get('schema_version')) is int and canonical['schema_version'] == 2
+                   and canonical.get('phase') == 'ready'
+                   and all(k in canonical and canonical[k] is None
+                           for k in ('request_id', 'operation', 'candidate', 'previous', 'deadline_at'))
+                   and canonical.get('retiring') == []
+                   and type(canonical.get('revision')) is int and canonical['revision'] >= 0
+                   and _nethack_evidence_time(canonical.get('updated_at')) <= now
+                   and landed['result'].get('cleanup_pending') in (None, False)),
+        )
+        restored = reader.restored_runtime(original['result'].get('restored_generation'))
+        _nethack_evidence_source(landed, restored)
+        result['return_boundary'] = _nethack_evidence_boundary(
+            reader, restored, landed, player, active_started=active_started)
+        result['chronology_matches'] = (
+            _nethack_evidence_time(owner.get('started_at')) <=
+            _nethack_evidence_time(owner.get('completed_at')) <=
+            _nethack_evidence_time(original['created_at']) <=
+            _nethack_evidence_time(original['updated_at']) <=
+            _nethack_evidence_time(landed['created_at']) <=
+            _nethack_evidence_time(landed['updated_at']) <= now
+            and int(runtime.split('-')[0][1:]) < original['generation']
+                < original['result']['restored_generation'] < landed['generation'])
+        result['contract_conditions'] = _nethack_evidence_contract_conditions(
+            owner, ledger, original, landed, now)
+        probe = probe or _nethack_evidence_tmux_absent
+        result['original_resources'] = _nethack_evidence_resources(reader, runtime, probe)
+        result['rollback_resources'] = _nethack_evidence_resources(reader, restored, probe)
+        checks = [result['owner_matches'], result['owner_terminal'], result['manual_clear'],
+                  result['chronology_matches'], original['status'] == 'rolled_back',
+                  landed['status'] == 'succeeded', result['return_receipt']['distinct_request'],
+                  result['return_receipt']['result_matches'], result['canonical']['record_clear'],
+                  result['canonical']['identity_complete'], result['canonical']['lease_matches']]
+        checks += [v for b in (result['original_boundary'], result['return_boundary'])
+                   for v in b.values()]
+        result['terminal_chain_matches'] = (False if False in checks else
+                                            None if None in checks else True)
+        reader.recheck()
+        result.update(status='observed',
+                      reason=('resource_coverage_incomplete' if result['terminal_chain_matches'] is True
+                              else 'terminal_chain_unproven'), snapshot_stable=True)
+    except _NethackEvidenceError as exc:
+        # Any failed read/recheck can straddle a changed record. Never retain
+        # affirmative fields from an incomplete or unverified observation.
+        for key in tuple(result):
+            if key not in {'schema_version', 'recovery_authority', 'status', 'reason'}:
+                result[key] = None
+        result.update(status='unavailable', reason=str(exc), snapshot_stable=False)
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        for key in tuple(result):
+            if key not in {'schema_version', 'recovery_authority', 'status', 'reason'}:
+                result[key] = None
+        result.update(status='unavailable', reason='unreadable_or_invalid_evidence',
+                      snapshot_stable=False)
+    return result
 
 
 def _collect_nethack_boundary(state_dir, now):
@@ -6550,7 +7231,8 @@ def _nethack_progress(raw):
     result = {'status': _rotation_enum(raw.get('status'),
               {'ok', 'empty', 'missing', 'error', 'too_large', 'invalid_run_id'})}
     for key in ('sample_count', 'malformed_lines', 'first_turn', 'last_turn',
-                'max_turn', 'max_depth', 'same_frame_sent_pairs', 'max_same_frame_sent_streak'):
+                'max_turn', 'max_depth', 'same_frame_sent_pairs', 'max_same_frame_sent_streak',
+                'same_frame_hold_pairs', 'max_same_frame_hold_streak'):
         result[key] = _nethack_number(raw.get(key))
     for key in ('first_ts', 'last_ts', 'min_hp_ratio'):
         value = raw.get(key)
@@ -6558,6 +7240,11 @@ def _nethack_progress(raw):
     result['truncated'] = raw.get('truncated') if type(raw.get('truncated')) is bool else None
     result['phase_counts'] = {key: _nethack_number(raw.get('phase_counts', {}).get(key))
                              for key in ('sent', 'hold')} if isinstance(raw.get('phase_counts'), dict) else {}
+    result['prompt_counts'] = {
+        key: _nethack_number(raw.get('prompt_counts', {}).get(key))
+        for key in ('none', 'more', 'yes_no', 'direction', 'selection', 'text', 'unknown')
+        if _nethack_number(raw.get('prompt_counts', {}).get(key)) is not None
+    } if isinstance(raw.get('prompt_counts'), dict) else {}
     return result
 
 
@@ -6926,6 +7613,7 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": corners,
+        "hanjuku_resume": _collect_hanjuku_resume(_program_state_dir()),
         "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
         "tmux_servers": _collect_tmux_servers(),
         "pulse_sink_inputs": _collect_pulse_sink_inputs(),
@@ -6933,6 +7621,8 @@ def main(argv):
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
+        "nethack_rotation_evidence": _collect_nethack_rotation_evidence(
+            _program_state_dir(), now, player=_nethack_evidence_player()),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
         "nethack_tiles": _collect_nethack_tiles(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),

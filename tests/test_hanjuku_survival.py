@@ -160,10 +160,90 @@ def test_unreadable_cursor_and_missing_menu_are_bounded():
     mem = memory()
     for _ in range(3):
         assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+        for _ in range(2):
+            assert p.battle_step(battle(mem), mem) == [{'type': 'wait', 'ms': 50}]
     assert p.battle_step(battle(mem), mem)[0] == p.pad('a', 3)
     for _ in range(12):
         assert p.battle_menu_step(menu(selected=None), mem) == []
     assert p.battle_menu_step(menu(selected=None), mem) == [p.pad('b')]
+
+
+@pytest.mark.parametrize('owner', ['survival', 'retreat'])
+def test_opening_wait_keeps_current_hp_and_reaches_real_menu_after_json_restore(owner):
+    import json
+    mem = memory(23, 26)
+    mem['battle'].update(ally='クミン', enemy='キャンディー', start_ally_hp=23,
+                        start_enemy_hp=26, side='attack', planned_cards=[])
+    if owner == 'retreat':
+        mem['battle']['ally_hp'] = 9
+    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+    mem = json.loads(json.dumps(mem))
+    mem['battle']['ally_hp'] -= 1
+    assert p.battle_step(battle(mem), mem) == [{'type': 'wait', 'ms': 50}]
+    assert mem['battle']['command_open_pending']['owner'] == owner
+    assert mem['_records'][-1]['observed_metric']['ally_hp'] == mem['battle']['ally_hp']
+    # A clipped live row is neither an egg selection nor another B opening.
+    c = Canvas(); c.text(176, 212, 'たまごをつかう')
+    actions, state = decide(c.frame(), {'policy': mem, 'no_input_streak': 999})
+    assert parse(c.frame()).kind == 'battle_menu_pending'
+    assert actions == []
+    mem = state['policy']
+    assert p.battle_menu_step(menu(selected=0), mem) == [p.pad('down')]
+    assert 'command_open_pending' not in mem['battle']
+    assert mem['battle']['cards_used'] == []
+    assert not mem['battle'].get('egg_battle')
+
+
+def test_missing_retreat_menu_still_exhausts_its_original_three_openings():
+    mem = memory(9, 26)
+    mem['battle'].update(ally='クミン', enemy='キャンディー', start_ally_hp=23,
+                        start_enemy_hp=26, side='attack', planned_cards=[])
+    for _ in range(3):
+        assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+        for _ in range(2):
+            assert p.battle_step(battle(mem), mem) == [{'type': 'wait', 'ms': 50}]
+    assert mem['battle']['hero_retreat']['opens'] == 3
+    for _ in range(20):
+        p.battle_step(battle(mem), mem)
+    assert mem['battle']['hero_retreat']['opens'] == 3
+    assert not mem['battle'].get('command_open_pending')
+    assert not mem['battle']['hero_retreat'].get('selected')
+
+
+@pytest.mark.parametrize('hp,enemy', [(0, 26), (23, 0)])
+def test_zero_hp_panel_never_waits_for_an_old_opening(hp, enemy):
+    mem = memory(23, 26)
+    p._human_menu_open(mem['battle'], 'survival')
+    mem['battle'].update(ally_hp=hp, enemy_hp=enemy)
+    assert p.battle_step(battle(mem), mem) == []
+
+
+def test_opening_fade_with_high_no_input_streak_never_blindly_confirms():
+    mem = memory(23, 26)
+    p._human_menu_open(mem['battle'], 'survival')
+    frame = Canvas().frame()
+    state = {'policy': mem, 'no_input_streak': 999}
+    for _ in range(2):
+        actions, state = decide(frame, state)
+        assert actions == [{'type': 'wait', 'ms': 50}]
+    assert p.command_open_pending_step(parse(frame), state['policy']) is None
+    assert not state['policy']['battle'].get('command_open_pending')
+
+
+@pytest.mark.parametrize('kind', ['map', 'egg_choice_menu', 'monster_menu'])
+def test_another_foreground_clears_the_old_opening(kind):
+    mem = memory()
+    p._human_menu_open(mem['battle'], 'survival')
+    assert p.command_open_pending_step(Screen([], None, '', kind=kind), mem) is None
+    assert 'command_open_pending' not in mem['battle']
+
+
+def test_exhausted_opening_owner_cancels_its_wait_without_another_b():
+    mem = memory()
+    p._human_menu_open(mem['battle'], 'survival')
+    mem['battle']['survival'] = {'exhausted': True}
+    assert p._command_open_wait(mem, mem['battle']) is None
+    assert 'command_open_pending' not in mem['battle']
 
 
 def test_card_cursor_is_required_and_navigation_bounded():

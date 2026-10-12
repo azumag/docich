@@ -293,3 +293,36 @@ def test_unpaid_tracked_owner_also_uses_the_pretransfer_cash_gate():
     assert policy.month_sub_step(recruit_overlay_screen(gold=101), mem) == [policy.pad('b')]
     assert shop['recruit'] == 'deferred_cash' and shop['soldiers'] == 71
     assert shop['recruit_reserve'] == 0
+
+
+def test_partly_used_unaffordable_eggs_do_not_hold_a_short_army_recruitment():
+    # g684 2-9: eggs at 1-3 uses, recovery 150G > 75G, generals 7 of 13;
+    # recruitment was deferred every month and building spent the fee.
+    mem = memory(130, uses=2)
+    screen = parse(month_canvas(130, on='しょうぐんぼしゅう'))
+    for _ in range(8):
+        policy.month_step(screen, mem)
+        if mem.get('month_sub'):
+            break
+    shop = mem['shop']
+    if shop.get('egg') == 'skipped':
+        assert shop['recruit'] != 'deferred_egg'
+
+
+def test_a_short_army_keeps_the_recruit_fee_from_building():
+    shop = {'recruit': 'deferred_egg', 'recruit_priority': True, 'recruit_reserve': 0,
+            'egg': 'done', 'soldiers_done': True, 'merchant_done': True, 'items': []}
+    assert policy._chikujou_reserve({}, shop) == policy.WAGE_RESERVE + policy.RECRUIT_COST
+    shop['recruit'] = 'done'
+    assert policy._chikujou_reserve({}, shop) == policy.WAGE_RESERVE
+
+
+def test_the_month_waits_briefly_for_a_deferred_roster_scan_then_closes():
+    # g684 2-10 15:24:44: month_done fired before the roster scan could start.
+    shop = {'key': '1-7', 'recruit': 'deferred_roster'}
+    mem = {'chapter': 1, 'month': '1-7', '_records': []}
+    waits = [policy._await_month_roster_scan(mem, shop) for _ in range(policy.MONTH_ROSTER_WAIT + 2)]
+    assert waits == [True] * policy.MONTH_ROSTER_WAIT + [False, False]
+    mem2 = {'chapter': 1, 'month': '1-7', 'recruit_month_scan_attempts': {'scope': [1, '1-7'], 'count': 1}}
+    assert policy._await_month_roster_scan(mem2, {'recruit': 'deferred_roster'}) is False
+    assert policy._await_month_roster_scan(mem, {'recruit': 'done'}) is False

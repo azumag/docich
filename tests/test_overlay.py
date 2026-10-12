@@ -109,6 +109,7 @@ class TestCliOverlay(OverlayTestBase):
         self.assertEqual(rc, 0, err.getvalue())
         self.assertIn("docich: overlay dry-run:", out.getvalue())
         self.assertIn("./generate_status_overlay.sh", out.getvalue())
+        self.assertIn(f"cwd={self.submodule.resolve()}", out.getvalue())
 
 
 if __name__ == "__main__":

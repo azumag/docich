@@ -153,3 +153,46 @@ def test_is_boss_order_uses_chapter_boss_castle():
     assert policy._is_boss_order({'target': 'ボス'}, {'chapter': 5})
     assert not policy._is_boss_order({'target': 'けっかい'}, {'chapter': 5})
     assert not policy._is_boss_order(None, {'chapter': 1})
+
+
+def test_restored_native_intro_requires_both_independent_lines():
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_screen import parse
+    fixtures = Path(__file__).parent / 'fixtures/hanjuku'
+    queen = parse(read_png(fixtures / 'resume-intro-queen.png').resized())
+    double = parse(read_png(fixtures / 'resume-intro-double.png').resized())
+    assert queen.kind == double.kind == 'text'
+    assert queen.header is double.header is None
+    for first, second in ((queen, double), (double, queen)):
+        mem = {'resume_chapter_pending': True, 'name': {'done': True}}
+        policy.observe_events(first, mem)
+        assert not mem.get('chapter')
+        policy.observe_events(second, mem)
+        assert mem['chapter'] == 2
+        assert mem['chapter_evidence'] == 'native_chapter_2_intro'
+        assert 'resume_chapter_pending' not in mem
+        assert 'resume_intro_clues' not in mem
+        assert not mem.get('garrison') and not mem.get('captured')
+    # Ordinary dialogue and established chapters cannot be reassigned.
+    for mem in ({}, {'chapter': 6}, {'chapter': 6, 'resume_chapter_pending': True}):
+        before = mem.get('chapter')
+        policy.observe_events(queen, mem); policy.observe_events(double, mem)
+        assert mem.get('chapter') == before
+
+
+def test_native_resumed_party_and_intro_reach_map_with_actions():
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_screen import parse
+    from docich.hanjuku_bot import decide
+    from docich.hanjuku_starter import rows
+    fixtures = Path(__file__).parent / 'fixtures/hanjuku'
+    selected = parse(read_png(fixtures / 'resume-starter-three.png').resized())
+    assert selected.kind == 'starter_confirm'
+    assert len(rows(selected, selected=True)) == 3
+    state = {'policy': {'name': {'done': True}, 'resume_chapter_pending': True}}
+    for name in ('resume-intro-queen.png', 'resume-intro-double.png'):
+        _, state = decide(read_png(fixtures / name).resized(), state)
+    assert state['policy']['chapter'] == 2
+    actions, state = decide(read_png(fixtures / 'resume-chapter-2-map.png').resized(), state)
+    assert actions, 'the actual post-party map must not remain chapterless and held'
+    assert state['policy']['chapter'] == 2

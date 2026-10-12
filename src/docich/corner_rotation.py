@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from copy import deepcopy
+from contextlib import contextmanager, nullcontext
 import datetime as dt
 import fcntl
 import hashlib
@@ -345,7 +346,7 @@ class CornerRotationManager:
             self._manual_queue_path.unlink()
             return None
 
-    def queue_manual(self, game, *, trigger_at=None):
+    def queue_manual(self, game, *, trigger_at=None, resume_latest=False):
         """Queue one owner request, optionally with a not-before trigger.
 
         Immediate requests preserve the existing behavior. A future trigger is
@@ -353,6 +354,8 @@ class CornerRotationManager:
         continues normally before that time. Eligibility and pauses apply at
         reservation and again at dispatch; cooldown is bypassed.
         """
+        if type(resume_latest) is not bool or (resume_latest and (game != 'hanjuku-hero' or trigger_at is not None)):
+            raise RotationError('invalid resume request', reason_code='invalid_value')
         if not rotation_enabled(self.g):
             raise RotationError(
                 "common corner rotation is disabled", reason_code="rotation_disabled"
@@ -423,7 +426,8 @@ class CornerRotationManager:
                 existing_trigger = queued.get("trigger_at")
                 if existing_trigger is not None:
                     existing_trigger = timestamp(existing_trigger)
-                if queued["corner"] != chosen or existing_trigger != requested_trigger:
+                if (queued["corner"] != chosen or existing_trigger != requested_trigger
+                        or bool(queued.get("resume_latest")) != resume_latest):
                     raise RotationError(
                         "another manual corner or schedule is already queued",
                         reason_code="manual_queue_conflict",
@@ -432,7 +436,15 @@ class CornerRotationManager:
                 queued = dict(corner=chosen, selected_at=now, request_id=str(uuid.uuid4()))
                 if requested_trigger is not None:
                     queued["trigger_at"] = requested_trigger
+                if resume_latest:
+                    from .hanjuku_resume import prepare, recover_prepared
+                    from .config import load_game
+                    queued = recover_prepared(self.g, chosen) or dict(queued, resume_latest=True)
+                    prepare(self.g, load_game(self.g, game), queued)
                 atomic_write_json(self._manual_queue_path, queued)
+            if resume_latest:
+                from .hanjuku_resume import publish
+                publish(self.g, queued)
             result = {"status": ("scheduled" if requested_trigger is not None
                                   and requested_trigger > now else "queued"),
                       "corner": chosen, "request_id": queued["request_id"]}
@@ -963,6 +975,7 @@ class CornerRotationManager:
                 return {"status": "waiting", "reason": "already-running"}
             now = timestamp(self.clock())
             state = self.load(now)
+            recover_snapshot = deepcopy(state)
             self._remember_catalog(state)
             if state["status"] != "recovery_required":
                 raise RotationError("rotation state is not latched", kind="invalid-state")
@@ -986,6 +999,10 @@ class CornerRotationManager:
             if reservation.get("corner") not in self.adapters:
                 raise RotationError("pending corner removed from catalog",
                                     kind="catalog-mismatch")
+            commit_started = False
+            guard = None
+            guard_entered = False
+            terminal_verified = None
             try:
                 # A failed automatic start can already have a terminal
                 # rolled-back game-switch receipt while its corner state still
@@ -993,25 +1010,41 @@ class CornerRotationManager:
                 # request against the receipt and stable canonical owner; no
                 # retry or new execution is started by this path.
                 adapter = self.adapters[reservation["corner"]]
-                outcome = self._commit_verified_failed_start(
-                    state, reservation, adapter, manual=manual is not None, now=now
-                )
-                if outcome is not None:
+                guard = getattr(adapter, "recovery_guard", None) if manual is None else None
+                with (guard(reservation) if callable(guard) else nullcontext()) as terminal_verified:
+                    guard_entered = True
+                    outcome = None
+                    if terminal_verified is not True:
+                        outcome = self._commit_verified_failed_start(
+                            state, reservation, adapter, manual=manual is not None, now=now
+                        )
+                    if outcome is None:
+                        outcome = self._resolve_reservation(state, reservation, now,
+                                                           manual=manual is not None)
+                    # A persistence failure must never enter the refusal
+                    # writer with a consumed pending reservation/history.
+                    # Atomic save may have failed before or after replace;
+                    # leave its durable outcome intact and let the next read
+                    # determine whether this same reservation committed.
+                    commit_started = True
                     self.save(state)
                     return outcome
-                outcome = self._resolve_reservation(state, reservation, now,
-                                                    manual=manual is not None)
             except Exception as exc:
+                if (commit_started or terminal_verified is True
+                        or (callable(guard) and not guard_entered)):
+                    # Legacy proof binds the original ledger including error
+                    # metadata. A transient guard refusal cannot mutate that
+                    # input and make the same proof permanently unretryable.
+                    raise
                 # A refusal must not overwrite the classification of the
                 # original latch: that is the evidence operators diagnose from.
-                state.update(status="recovery_required",
-                             reason="execution-or-state-unverified")
-                if state.get("error_kind") is None:
-                    state["error_kind"] = _error_kind(exc)
-                self.save(state)
+                refused = deepcopy(recover_snapshot)
+                refused.update(status="recovery_required",
+                               reason="execution-or-state-unverified")
+                if refused.get("error_kind") is None:
+                    refused["error_kind"] = _error_kind(exc)
+                self.save(refused)
                 raise
-            self.save(state)
-            return outcome
 
     def _resolve_reservation(self, state, reservation, now, *, manual):
         corner_id = reservation["corner"]
