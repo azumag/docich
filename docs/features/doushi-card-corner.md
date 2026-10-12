@@ -13,9 +13,10 @@
 
 **その方針でよい。** 理由は、必要な集計がすべて TwiCa の正本 DB 側にあり、
 docich 側の判断だけでは指標の意味（N連の数え方・除外アカウント・期間境界）を決められないため。
-本ドキュメントがその「決めた仕様」であり、これ以上の実装着手は本ドキュメントの承認後に行う。
+本ドキュメントはその仕様案であり、これ以上の実装着手は本ドキュメントの承認後に行う。
 
-本ドキュメントで **決めたこと** と **オーナー判断が必要なこと** を分けて書く（§3・§7）。
+定義として固めた事項（§2.3・§3 の部門定義と §3.1 の順位則）と、**オーナー判断が必要な提案値**（§7）を分けて書く。
+§3・§4 のうち §7 の判断待ち項目に関わる値は「提案（§7-n）」と明示し、承認済みとして扱わない。
 
 ## 1. 何を作るか
 
@@ -44,7 +45,7 @@ gacha_history(
 )
 ```
 
-### 2.2 既存の集計（そのまま使える正本）
+### 2.2 既存の集計（参考。部門ごとに対象母集団が異なる）
 
 | 用途 | 関数 / テーブル | 返すもの | 並び順（正本） |
 | --- | --- | --- | --- |
@@ -57,6 +58,8 @@ gacha_history(
 `is_redemption_ranking_excluded` は `refresh_channel_point_usage_stat` から呼ばれ、
 除外対象が引き換えると `channel_point_usage_stats` の該当行が DELETE される（自己修復）。
 したがって全期間の `channel_point_usage_stats` は「除外済み」の値を返す。
+
+一方、現行の人気カード RPC `get_gacha_drop_stats` は `streamer_id`・期間・`event_id NOT LIKE 'manual:%'` だけで絞り、§2.3 の対象述語（`reward_cost > 0 OR reward_id IS NOT NULL`）も `is_redemption_ranking_excluded` も適用していない（[固定SHAの定義](https://github.com/azumag/twica/blob/d11540818ad5f6748b2f9a84640de692579fb628/db/planetscale/migrations/20260719180100_planetscale_public_schema_baseline.sql#L1089-L1108)）。このため期間内のレイドガチャ行（`reward_cost`/`reward_id` とも NULL）や配信者本人・BOT の通常 draw も `actual_count`/`drawer_count` に入り、①② と母集団が揃わない。④ にこの値をそのまま使わない。
 
 ### 2.3 集計述語（数え方の正本）
 
@@ -90,7 +93,7 @@ docich 側の既存接続は `SOREN_DIRECT_TWICA_OVERLAY_URL`（`/overlay/...`�
 docich は集計済み JSON を表示するだけにする。これが「指標の定義を TwiCa に一本化する」
 という本ドキュメントの中心的な決定である。
 
-## 3. 集計指標の定義（確定）
+## 3. 集計指標の定義（案）
 
 集計は `user_twitch_id` 単位（表示名が変わっても同一人物として合算）。
 
@@ -99,14 +102,14 @@ docich は集計済み JSON を表示するだけにする。これが「指標�
 | ① | 排出枚数 | 対象述語を満たす `gacha_history` 行数（`COUNT(*)`） | `channel_point_usage_stats.redemption_count`（全期間）/ 期間指定時の `COUNT(*)` | 枚。**N連は N 件**。2026-07-04 以前の N連2枚目以降は含まれない |
 | ② | 使用チャネルポイント | `SUM(reward_cost)` | `channel_point_usage_stats.total_points` / 期間指定時の `SUM(reward_cost)` | ポイント。N連の cost は先頭行のみなので二重計上しない |
 | ③ | 蒐集カード数 | 当該配信者の `is_active` なカードのうち所持している種類数（`COUNT(DISTINCT card_id)`） | `get_gacha_users_for_streamer.unique_card_ids` | 種類。**所持ベース（全期間）**であり期間集計ではない |
-| ④ | 人気カード | カード別の期間内 `COUNT(*)`（引かれた枚数）と `drawer_count`（引いた人数） | `get_gacha_drop_stats.card_stats.actual_count` / `.drawer_count` | 枚・人。`drawers[]` は上位のみ |
+| ④ | 人気カード | カード別の期間内 `COUNT(*)`（引かれた枚数）と `drawer_count`（引いた人数）。§2.3 の述語と除外判定を適用 | 新設 API で再集計（現行 `get_gacha_drop_stats` は述語・除外が未適用の参考値） | 枚・人。`drawers[]` は上位のみ |
 
-- ①②④ は §2.3 の対象述語と除外判定を共通に使う。③ は所持テーブル由来のため述語が異なる（下記の差異に注意）。
+- ①②④ は新設 API で §2.3 の対象述語と除外判定を共通に適用して集計する。① ② は既存 `channel_point_usage_stats` と一致するが、④ は現行 RPC と母集団が異なるため再集計が必要（§2.2）。③ は所持テーブル由来のため述語が異なる（下記の差異に注意）。
 - **人気カードの並び替えは TwiCa 側で行う**（現行 RPC はレアリティ順で返すため、人気順ソートを docich に押し付けない）。
 - **既知の差異（要対応）**: `get_gacha_users_for_streamer` は述語も除外判定も適用しておらず、
   手動 QA ドローと BOT 行も `draw_count` に数える。このため ① に `draw_count` を使うと
   `redemption_count` と一致しない。**① は `channel_point_usage_stats` 側の値を正本とする**こととし、
-  ③ のユニーク集計も新設 API 内で同じ除外判定を適用する（§7-8）。
+  ③ のユニーク集計に同じ除外判定を適用するかは **提案（§7-8、推奨は適用）** であり、オーナー判断待ち。
 
 ### 3.1 順位の決定則（同率の決定的順序）
 
@@ -122,7 +125,7 @@ TwiCa の既存並びを正本とし、docich 側で独自に並べ替えない�
 - `last_redeemed_at` も同値のときは `user_twitch_id` 昇順で確定させる（表示が run ごとに揺れないようにする）。
 - 取得点数は `limit`（既定 10）+ 同率判定用の余裕分。表示は上位 `limit` 件。
 
-## 4. 発表形式（確定）
+## 4. 発表形式（案）
 
 1コーナー = 4ページ、program slot を 1 つだけ使う読み取り専用 view。
 
@@ -131,9 +134,9 @@ TwiCa の既存並びを正本とし、docich 側で独自に並べ替えない�
 | 1 | 排出枚数 TOP10 | 順位 / 「同志◯◯」 / ◯枚 |
 | 2 | 使用チャネルポイント TOP10 | 順位 / 「同志◯◯」 / ◯pt |
 | 3 | 蒐集カード数 TOP10 | 順位 / 「同志◯◯」 / ◯種類 |
-| 4 | 人気カード TOP10 | 順位 / カード名 / ◯枚（◯人が獲得） |
+| 4 | 人気カード TOP10 | 順位 / カード名 / ◯枚（◯人が獲得）。並びは提案（§7-5）の枚数優先 |
 
-- **ページ送り**: 1ページ 15 秒 × 4 = 60 秒。コーナー上限は 2 分（既存 weather と同じ上限方式）。
+- **ページ送り**: 提案（§7-3）は 1ページ 15 秒 × 4 = 60 秒、コーナー上限 2 分（既存 weather と同じ上限方式）。
   上限に達したら自動終了し、既存の GameSwitch 復帰経路へ戻す。ページ送りは view の描画内で行い、
   コーナーは program slot を追加で消費しない。
 - **呼称**: 視聴者の呼称は既存契約に合わせ「同志◯◯」（`src/docich/comment/prompts/comment_reply_policy_contract.md`）。
@@ -148,7 +151,7 @@ TwiCa の既存並びを正本とし、docich 側で独自に並べ替えない�
 - **失敗時**: 取得失敗・schema 不一致・stale のときは前回値を出さず当該コーナーを skip して
   通常スロットへ戻す（fail-closed。既存コーナーの失敗時挙動に合わせる）。
 - **表示件数**: 上位 10 件（`limit`）。ページ3 は「◯/全カード種類数」も併記する（母数が分かるように）。
-- **期間**: 既定は全期間（`p_from_date = NULL` の累積値）。将来 7日 / 30日 窓を追加できる形にする（§7-1）。
+- **期間**: 提案（§7-1）は全期間（`p_from_date = NULL` の累積値）。将来 7日 / 30日 窓を追加できる形にする。
 
 ## 5. コーナー追加案（番組ローテーションへの接続）
 
@@ -178,14 +181,15 @@ GET /api/overlay/{streamerId}/card-ranking?period=all|7d|30d&limit=10
     "period": "all",
     "metric_labels": { ... },        # 表示用の固定文言（docich 側で文言を二重管理しない）
     "note": "N連はN件 / 配信者本人とBOTを除く / ...",
-    "by_count":   [{"rank":1,"user_twitch_id":"...","username":"...","redemption_count":12}],
-    "by_points":  [{"rank":1,"user_twitch_id":"...","username":"...","total_points":25000,"redemption_count":12}],
-    "by_unique":  [{"rank":1,"user_twitch_id":"...","username":"...","unique_count":40,"total_cards":120}],
-    "popular_cards": [{"rank":1,"card_id":"...","card_name":"...","actual_count":30,"drawer_count":18}]
+    "by_count":   [{"rank":1,"username":"...","redemption_count":12}],
+    "by_points":  [{"rank":1,"username":"...","total_points":25000,"redemption_count":12}],
+    "by_unique":  [{"rank":1,"username":"...","unique_count":40,"total_cards":120}],
+    "popular_cards": [{"rank":1,"card_name":"...","actual_count":30,"drawer_count":18}]
   }
 ```
 
-- 個人情報は Twitch の公開表示名と集計値のみ。token・IP・メール・内部 id 以外は返さない。
+- 返す field は上の例の allowlist のみ: 各配列の `rank` / `username`（Twitch の公開表示名）/ 集計値（`redemption_count` / `total_points` / `unique_count` / `total_cards` / `actual_count` / `drawer_count`）と `card_name`、および `generated_at` / `period` / `metric_labels` / `note`。
+- `user_twitch_id`・`card_id` などの内部 id、token・IP・メールは **返さない**。§3.1 の同率決定に使う id は API 内部でだけ参照する。
 - 返すのは集計済みの上位 `limit` 件のみ（生の履歴行・`drawers[]` 全文は返さない）。
 - 並び順は §3.1 を API 側で確定させる（クライアントにソートさせない）。
 - 認証は既存 `/api/overlay/{streamerId}/events` と同じ「streamerId を知っているだけ」の公開水準とし、
@@ -198,7 +202,7 @@ GET /api/overlay/{streamerId}/card-ranking?period=all|7d|30d&limit=10
 1. **集計期間**: 全期間（既定）か、直近 7日 / 30日 か。全期間は 2026-07-04 境界の影響を受ける。
 2. **最低ライン**: 1回だけ引いた人を TOP10 に載せるか（`min_redemptions` を入れるか。既定は導入しない）。
 3. **表示時間**: 1ページ 15 秒 × 4（=60 秒）と上限 2 分でよいか。
-4. **「数」の見せ方**: ページ1・2 は TwiCa 正本の「排出カード枚数（N連はN件）」で確定とした。
+4. **「数」の見せ方**: ページ1・2 は TwiCa 正本の「排出カード枚数（N連はN件）」を提案している。
    「引き換え回数」で見せたい場合は別定義が必要。
 5. **人気カードの主指標**: 枚数順（既定）か人数順か。両方出すか。
 6. **opt-out / 不適切名**: 表示名を配信画面へ出すための周知・非表示申請・不適切名の扱い（未確定）。
