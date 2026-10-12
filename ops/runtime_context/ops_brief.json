@@ -1,11 +1,11 @@
 {
-  "output_sha256": "46615e1409ba3a08ddd3f95b6caff854d0866f9428e42d2ecfff182269eea4c4",
+  "output_sha256": "f63ace21b62fd2ae74e3d66c228235a0ba95a01d2083327c0ce57993d476c352",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "c86a7e4fa7ad493763f1c3ec3bd25e2a5a544b73dcabdf283a2fb0a104ed5108",
+  "source_sha256": "2917c0c681bf99dc3187426824363746540855e044c72fa656755df79d23513e",
   "topics": [
-    "個別回復PR2078の本人切替レビュー修正",
-    "HP1停滞仮説の撤回と個別回復の実見積修正",
-    "築城v177の同ラン反映とHP1シャウト反復の修正準備"
+    "半熟の進軍時の軍識別と卵温存を修正",
+    "自然増築の一覧継続と全回復の実画面照合",
+    "個別卵回復v178のmain・VM・同ラン反映"
   ]
 }

@@ -1,6 +1,6 @@
 """自軍のたまごは「白兵で勝てそうなら温存」— HP と兵士数で判定する。
 
-- 兵士は戦闘フィールドのスプライトを数える (味方が左・敵が右)。
+- 兵士は戦闘フィールドのスプライトの軍色を数える。
 - 側ごとに重なりを見つけたらその側は None (読めない=推測しない)。
 - 合戦力が敵の7割を超えていて、自軍HPも最大の7割を超えている時だけ温存。
 - 片側の兵士が読めない戦闘では HP 比較へ退ける (推測しない)。
@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from docich.hanjuku_screen import _field_soldiers, parse
+from docich.hanjuku_screen import SOLDIER_TEAM_COLORS, _field_soldiers, parse
 from docich import hanjuku_policy as p
 from test_hanjuku_chart_bot import Canvas
 from test_hanjuku_survival import (battle, memory, wounded_egg_memory,
@@ -19,7 +19,6 @@ from test_hanjuku_survival import (battle, memory, wounded_egg_memory,
 # 実測で上位に入る背景4色 (band 内の最頻4色を背景として除く)。兵士色は
 # 5番目以下に置かないと背景扱いされて数えられないので、帯域は4色で埋める。
 BAND_TONES = ((16, 72, 57), (41, 97, 164), (24, 48, 106), (123, 141, 148))
-SOLDIER = (255, 80, 80)
 
 
 def _paint_band(canvas):
@@ -29,10 +28,12 @@ def _paint_band(canvas):
 
 
 def _bodies(canvas, bodies):
-    for x, y, w, h in bodies:
+    for body in bodies:
+        x, y, w, h = body[:4]
+        team = body[4] if len(body) > 4 else (0 if x < 128 else 1)
         for yy in range(y, y + h):
             for xx in range(x, x + w):
-                canvas.put(xx, yy, SOLDIER)
+                canvas.put(xx, yy, SOLDIER_TEAM_COLORS[team][(xx + yy) % 2])
 
 
 ALLIES = ((20, 60, 10, 10), (40, 60, 10, 10), (20, 84, 10, 10),
@@ -47,22 +48,37 @@ def field_frame(bodies):
     return c.frame()
 
 
-def test_field_soldier_sprites_are_counted_allies_left_and_enemies_right():
-    # HPパネルは「敵が左」だが、フィールドは味方が左 (実測: 勝利フレームで
-    # 右が空、敗戦フレームで左が空)。返り値は (味方, 敵)。
+def test_field_soldier_sprites_are_counted_by_team():
+    # Bodies carry the measured army colours; position does not identify them.
     assert _field_soldiers(field_frame(ALLIES + ENEMIES)) == (6, 1)
     assert _field_soldiers(field_frame(ENEMIES)) == (0, 1)
     assert _field_soldiers(field_frame(ALLIES)) == (6, 0)
     # 1体ぶん未満 (面積55未満) は兵士ではない。
     assert _field_soldiers(field_frame(((20, 60, 5, 5),))) == (0, 0)
-    # 帯域の左端に接する成分は壁なので数えない。
-    assert _field_soldiers(field_frame(((0, 60, 10, 10),))) == (0, 0)
+    # A clipped coloured soldier is unread, not evidence of zero soldiers.
+    assert _field_soldiers(field_frame(((0, 60, 10, 10),))) == (None, 0)
 
 
 def test_overlapping_soldiers_make_that_side_unknown_not_a_guess():
     # 20x20=400 は「2体以上が重なった」帯 (面積261..900)。その側は None。
     assert _field_soldiers(field_frame(((20, 60, 20, 20),) + ENEMIES)) == (None, 1)
     assert _field_soldiers(field_frame(ALLIES + ((160, 60, 20, 20),))) == (6, None)
+
+
+def test_crossing_the_middle_preserves_each_armys_palette():
+    assert _field_soldiers(field_frame(((160, 60, 10, 10, 0),
+                                       (20, 90, 10, 10, 1)))) == (1, 1)
+
+
+def test_mixed_collision_unknown_palette_and_over_six_are_not_force_counts():
+    assert _field_soldiers(field_frame(((100, 60, 10, 10, 0),
+                                       (108, 60, 10, 10, 1)))) == (None, None)
+    canvas = Canvas((238, 238, 238)); _paint_band(canvas)
+    for y in range(60, 70):
+        for x in range(20, 30):
+            canvas.put(x, y, (255, 80, 80))
+    assert _field_soldiers(canvas.frame()) == (None, None)
+    assert _field_soldiers(field_frame(ALLIES + ((70, 60, 10, 10),))) == (None, 0)
 
 
 def test_soldiers_are_read_only_off_a_real_battle_frame():
