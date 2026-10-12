@@ -2,7 +2,7 @@
   "output_sha256": "21203417fa63e318129a6b3a76b45ee109fe5af58e2ccd787bfbbab8bf3689a6",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "41972d81399add6768d18f4b7d2a567879e5d809fd850a0b44bc6974666017ac",
+  "source_sha256": "f22064602a7ba71007bc51ab792a8e2b572b7de9975043c1ce12423ab3baaa7a",
   "topics": [
     "半熟v175を同じランへ無停止反映、個別卵回復v176を準備",
     "将軍の戦闘力を有利不利と卵温存の判断へ反映",
