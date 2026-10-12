@@ -66,7 +66,7 @@ def test_individual_quote_does_not_release_zero_or_claim_completion():
     assert mem['egg_uses'] == before and p._own_egg_empty(mem, {'ally': 'ココット'})
 
 
-@pytest.mark.parametrize('change', ['multi', 'wrong_price', 'short', 'month', 'run', 'missing_selection'])
+@pytest.mark.parametrize('change', ['multi', 'wrong_price', 'short', 'month', 'run', 'chapter', 'missing_selection'])
 def test_quote_needs_exact_one_egg_price_current_owner_and_reserved_payroll(change):
     mem = selected_memory(); screen = quote()
     if change == 'multi': screen = quote(quantity=2, cost=100)
@@ -74,6 +74,7 @@ def test_quote_needs_exact_one_egg_price_current_owner_and_reserved_payroll(chan
     elif change == 'short': screen = quote(gold=57)  # actual full payroll8 -> needs58
     elif change == 'month': screen = quote(month=5)
     elif change == 'run': mem['_run_identity']['lease_id'] = 'other'
+    elif change == 'chapter': mem['chapter'] = 2
     else: mem['month_sub']['individual_selected'] = False
     assert p._egg_recovery_step(screen, mem, mem['month_sub']) == [p.pad('b')]
     assert not mem['month_sub'].get('quoted_cost')
@@ -164,3 +165,13 @@ def test_partial_payment_requires_its_single_quote_even_if_another_debit_matches
     mem = selected_memory(); sub = mem['month_sub']; sub.update(quoted_cost=100, stage='recovering')
     assert p._finish_month_sub(ready_menu(gold=30), mem, mem['shop'])
     assert not mem['shop'].get('egg_paid_actors') and mem['egg_uses']['ココット'] == 0
+
+
+def test_fading_quote_after_individual_confirm_does_not_resubmit_or_drop_ownership():
+    mem = selected_memory(); p._egg_recovery_step(quote(), mem, mem['month_sub'])
+    sub = mem['month_sub']
+    for gold in [130, 80]:
+        assert p._egg_recovery_step(quote(gold=gold), mem, sub) == []
+        assert not sub.get('aborted') and sub['stage'] == 'recovering'
+    assert p._finish_month_sub(ready_menu(), mem, mem['shop'])
+    assert mem['shop']['egg_paid_actors'] == ['ココット']

@@ -8775,6 +8775,8 @@ def _individual_egg_selected(mem, sub):
     identity = run_identity(mem.get('_run_identity'))
     actor = sub.get('individual_actor')
     return (identity is not None and sub.get('individual_identity') == identity
+            and type(mem.get('chapter')) is int and 1 <= mem['chapter'] <= 12
+            and sub.get('individual_chapter') == mem['chapter']
             and sub.get('individual_selected') is True and isinstance(actor, str) and actor not in (NAME, 'しゅじんこう')
             and general_max_hp(actor) is not None and sub.get('key') == mem.get('month'))
 
@@ -8787,6 +8789,7 @@ def _individual_egg_candidate(screen, mem, sub):
     repair = (mem.get('shop') or {}).get('hero_repair_reserve', 0)
     floor = _egg_recovery_wage_floor(mem)
     if (identity is None or sub.get('key') != mem.get('month')
+            or type(mem.get('chapter')) is not int or not 1 <= mem['chapter'] <= 12
             or type(gold) is not int or gold < EGG_RECOVER_COST + floor + repair
             or (not sub.get('full_quote_short') and gold >= _egg_measured_cost(mem) + floor + repair)):
         return None
@@ -8816,7 +8819,10 @@ def _egg_recovery_step(screen, mem, sub):
         gold = (screen.header or {}).get('gold')
         hero_only = bool(sub.get('hero_selected'))
         individual = _individual_egg_selected(mem, sub)
-        if (sub.get('full_selected') is True and quote and type(gold) is int
+        if individual and sub.get('stage') == 'recovering':
+            return []  # owned confirmation already sent; a fading quote is not a new purchase
+        if (sub.get('full_selected') is True and sub.get('stage') != 'recovering' and quote and type(gold) is int
+                and sub.get('key') == mem.get('month') == _month_key(screen.header)
                 and int(quote[1]) > 1 and int(quote[2]) == int(quote[1]) * EGG_RECOVER_COST
                 and gold < int(quote[2]) + _egg_recovery_wage_floor(mem)
                            + (mem.get('shop') or {}).get('hero_repair_reserve', 0)
@@ -8874,7 +8880,8 @@ def _egg_recovery_step(screen, mem, sub):
             if move == 'here':
                 from .hanjuku_roster import run_identity
                 sub.update(individual_actor=actor, individual_selected=True,
-                           individual_identity=run_identity(mem.get('_run_identity')), full_selected=False)
+                           individual_identity=run_identity(mem.get('_run_identity')),
+                           individual_chapter=mem['chapter'], full_selected=False)
                 _record(mem, 'egg_recover_select', choice=actor,
                         observed_metric={'gold': sub.get('gold_before'), 'cost_pending_quote': EGG_RECOVER_COST},
                         reason='全回復を払えないため、実一覧の残数0・少数の将軍の卵だけを選び費用を確認する')
