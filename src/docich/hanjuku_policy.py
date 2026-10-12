@@ -8971,7 +8971,8 @@ def _observe_recovery_list_quantities(screen, mem, sub):
     for line in screen.lines:
         cells = dict(line.spans())
         actor = cells.get(32)
-        if 47 < line.y <= 199 and actor and general_max_hp(actor) is not None:
+        if (47 < line.y <= 199 and actor
+                and (actor == NAME or general_max_hp(actor) is not None)):
             rows.setdefault(actor, []).append(cells.get(104))
     for actor, readings in rows.items():
         if len(readings) != 1 or readings[0] not in ('0', '1', '2', '3', '4'):
@@ -9048,17 +9049,24 @@ def _egg_recovery_step(screen, mem, sub):
                 == (mem.get('shop') or {}).get('key'))
         debit = (same and type(gold) is int and type(before) is int
                  and type(cost) is int and cost > 0 and before - gold == cost)
+        owner_still_listed = (not full and isinstance(actor, str)
+                              and any(47 < line.y <= 199 and dict(line.spans()).get(32) == actor
+                                      for line in screen.lines))
         if (not bound or len(full_rows) != 1
+                or owner_still_listed
                 or (all(type(header.get(k)) is int for k in ('year', 'month')) and not same)
                 or (same and type(gold) is int and not debit)):
             sub['payment_interrupted'] = True
-        if bound and debit and not sub.get('payment_interrupted'):
+        # Named current quantities remain evidence even when a debit cannot
+        # belong to this actor. An omitted different row is never paid for.
+        if bound and same and len(full_rows) == 1:
             _observe_recovery_list_quantities(screen, mem, sub)
         if not sub.get('recovery_list_return'):
             sub['recovery_list_return'] = True
             _record(mem, 'egg_recover_list_return', month=sub.get('key'),
                     observed_metric={'gold_before': before, 'gold_after': gold,
-                                     'quoted_cost': cost, 'debit_matches': bool(bound and debit)},
+                                     'quoted_cost': cost, 'debit_matches': bool(bound and debit),
+                                     'owner_still_listed': owner_still_listed},
                     reason='回復儀式後の実一覧をBで閉じる。支払いは静かな同月メニュー復帰で照合し、消えた本人の残数は推測しない')
         return [pad('b')]
     if screen.has('うむッ') and screen.has('いかんッ'):

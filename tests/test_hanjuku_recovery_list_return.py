@@ -148,3 +148,52 @@ def test_new_readable_other_zero_overwrites_old_positive_and_is_not_paid_for():
     assert p._egg_recovery_step(parse(c.frame()), m, m['month_sub']) == [p.pad('b')]
     assert m['egg_uses']['ゼウス'] == 0 and 'ゼウス' in m['egg_zero_owners']
     assert not m['shop'].get('egg_paid_actors')
+
+
+@pytest.mark.parametrize('quantity', ['0', '1', '2', '3', '4', None])
+def test_selected_actor_still_listed_cannot_receive_another_actors_50g_debit(quantity):
+    m = confirmed(); c = Canvas(); c.text(48, 15, '1ねん 9のつき 35G')
+    c.text(32, 47, 'ぜんかいふく'); c.text(32, 71, p.NAME)
+    if quantity is not None: c.text(104, 71, quantity)
+    # Zeus disappeared instead of the confirmed hero. Do not attribute that
+    # disappearance or an unrelated identical debit to the hero.
+    c.text(32, 95, 'アルファルファ'); c.text(104, 95, '2'); c.hand(10, 41)
+    assert p.month_sub_step(parse(c.frame()), m) == [p.pad('b')]
+    assert m['month_sub'].get('payment_interrupted') is True
+    assert p._finish_month_sub(native('month'), m, m['shop'])
+    assert not m['shop'].get('egg_paid_actors')
+    assert m['_records'][-1]['observed_metric']['payment_verified'] is False
+    assert m['egg_uses'][p.NAME] == (3 if quantity is None else int(quantity))
+    assert m['egg_uses']['ゼウス'] == 3 and m['egg_uses']['ココット'] == 0
+    assert m['shop']['reserve'] == 200
+
+
+def test_duplicate_selected_actor_is_not_a_payment_receipt_or_a_new_quantity():
+    m = confirmed(); c = Canvas(); c.text(48, 15, '1ねん 9のつき 35G')
+    c.text(32, 47, 'ぜんかいふく')
+    for y, q in ((71, '3'), (95, '0')):
+        c.text(32, y, p.NAME); c.text(104, y, q)
+    c.hand(10, 41)
+    assert p.month_sub_step(parse(c.frame()), m) == [p.pad('b')]
+    assert m['month_sub'].get('payment_interrupted') is True
+    assert m['egg_uses'][p.NAME] == 3
+    assert p._finish_month_sub(native('month'), m, m['shop'])
+    assert not m['shop'].get('egg_paid_actors')
+
+
+@pytest.mark.parametrize('quantity', ['0', '1', None])
+def test_bound_general_still_present_is_not_paid_and_keeps_actual_quantity(quantity):
+    from test_hanjuku_native_individual_quote import selected, native as old_native, ready
+    m = selected()
+    assert p._egg_recovery_step(old_native('fee'), m, m['month_sub']) == [p.pad('a')]
+    c = Canvas(); c.text(48, 15, '3ねん 12のつき 165G')
+    c.text(32, 47, 'ぜんかいふく'); c.text(32, 71, 'ココット')
+    if quantity is not None: c.text(104, 71, quantity)
+    c.hand(10, 41)
+    assert p.month_sub_step(parse(c.frame()), m) == [p.pad('b')]
+    assert m['month_sub'].get('payment_interrupted') is True
+    assert p._finish_month_sub(ready(), m, m['shop'])
+    assert not m['shop'].get('egg_paid_actors') and m['shop']['reserve'] == 250
+    assert m['egg_uses']['ココット'] == (0 if quantity is None else int(quantity))
+    assert p._own_egg_empty(m, {'ally': 'ココット'}) is (quantity != '1')
+    assert m['egg_uses']['ゼウス'] == 3
