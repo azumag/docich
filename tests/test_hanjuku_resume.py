@@ -571,3 +571,24 @@ def test_native_namaste_stall_can_restore_only_bounded_foreground(setup):
     actions, state = decide(frame, {'policy': policy})
     assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
     assert not state['policy'].get('egg_uses') and not state['policy'].get('month_sub')
+
+
+def test_verified_native_restore_context_can_detect_subsequent_title_return(setup):
+    from docich import hanjuku_run
+    from docich.hanjuku.os_layer.pixels import read_png
+    from test_hanjuku_script import title_frame
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g731-priest-namaste.png')
+    restore_test(setup, chapter=None, native_frame=frame)
+    receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['gameplay_context'] == 'verified_checkpoint_foreground'
+    identity = hanjuku_run.runtime_identity(setup.spec)
+    wall = receipt['verified_at'] + 1
+    run = hanjuku_run.observe(setup.spec.runtime_dir, identity, frame, now=0, wall=wall)
+    assert run['checkpoint_started'] and not run['name_entered'] and not run['gameplay_seen']
+    battle_frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g713-zeus-cumin-healthy.png')
+    run = hanjuku_run.observe(setup.spec.runtime_dir, identity, battle_frame, now=1, wall=wall + 1)
+    assert run['gameplay_seen'] and not run['name_entered']
+    for now in (2, 3, 4):
+        run = hanjuku_run.observe(setup.spec.runtime_dir, identity, title_frame(), now=now, wall=wall + now)
+    assert run['terminal_reason'] == 'game_over'
+    assert hanjuku_run.terminal(setup.spec.runtime_dir, identity) == run
