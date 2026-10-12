@@ -368,17 +368,24 @@ SOLDIER_BOX = (26, 26)
 # 2体以上が重なったとみなす成分。片側でも1つあればその側は計測をやめる。
 SOLDIER_MERGED_AREA = (261, 900)
 SOLDIER_MERGED_BOX = (60, 60)
+# g713 UID24397/24403: yellow/red allies and green/purple enemies keep their
+# palette while walking across x128. Screen halves do not identify the army.
+SOLDIER_TEAM_COLORS = (
+    ((255, 189, 65), (205, 133, 57), (205, 40, 0), (230, 80, 98)),
+    ((57, 165, 123), (98, 206, 164), (123, 56, 222), (148, 80, 230)),
+)
 
 
 def _field_soldiers(frame: Frame) -> tuple[int | None, int | None] | None:
     """フィールドに並ぶ兵士スプライトを数える。返り値は (味方, 敵)。
 
-    左右の割り当ては味方が左・敵が右で、HPパネル (敵が左) とは逆。実測:
-    どうし90 vs ロックフォール57 の新規戦で左6 (出撃確認のへいし6人と一致)、
-    どうし0 の敗戦フレームで左が空、ビシソワーズ0 の勝利フレームで右が空。
+    黄・赤の味方と緑・紫の敵を実測パレットで割り当てる。実測:
+    g713 ココット24 vs ガスパチョ37 と g692 ヴィーナス82 vs アルテミス49。
+    進軍で中央を越えても、画面左右を軍の識別に使わない。
     背景色 (上位4色) を完全一致で除いた連結成分のうち1体ぶんの寸法・面積に
     収まるものだけを兵士と数え、側ごとに2体以上の重なりを見つけたらその側は
-    None (読めない=推測しない) にする。フィールド計測が要る戦闘フレームでの
+    None (読めない=推測しない) にする。両軍の色が混ざった成分や未知の色は
+    数えず、未知の色では両軍を読取不能にする。フィールド計測が要る戦闘フレームでの
     み呼ばれる。
     """
     if frame.width < SOLDIER_BAND[2] or frame.height < SOLDIER_BAND[3]:
@@ -392,6 +399,10 @@ def _field_soldiers(frame: Frame) -> tuple[int | None, int | None] | None:
         for i in range(0, span, 3):
             tones[row[i:i + 3]] += 1
     background = {tone for tone, _ in tones.most_common(4)}
+    # Black outlines can fall out of the four most common colours as troops
+    # move. Leaving them in joins a soldier to the background's black border.
+    background.add(bytes((32, 32, 32)))
+    palettes = [{bytes(tone) for tone in colors} for colors in SOLDIER_TEAM_COLORS]
     mask = set()
     for y in range(y0, y1):
         row = rgb[y * stride + x0 * 3: y * stride + x0 * 3 + span]
@@ -414,25 +425,61 @@ def _field_soldiers(frame: Frame) -> tuple[int | None, int | None] | None:
                     if nxt in mask and nxt not in seen:
                         seen.add(nxt)
                         stack.append(nxt)
-        if len(cells) < SOLDIER_AREA[0]:
-            continue
         xs = [c[0] for c in cells]
         ys = [c[1] for c in cells]
-        # 上端・左右端に接する成分は壁や枠なので数えない。下端だけは
-        # ボックスに沿って切られる兵士を残すため除外しない。
-        if min(ys) <= y0 or min(xs) <= x0 or max(xs) >= x1 - 1:
-            continue
-        side = 0 if sum(xs) // len(cells) < (x0 + x1) // 2 else 1
+        colors = {rgb[y * stride + x * 3:y * stride + x * 3 + 3] for x, y in cells}
+        teams = [side for side, palette in enumerate(palettes)
+                 if len(colors & palette) >= 2]
         width, height = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+        if len(cells) < SOLDIER_AREA[0]:
+            if (width <= SOLDIER_BOX[0] and height <= SOLDIER_BOX[1]
+                    and (min(xs) <= x0 + 4 or max(xs) >= x1 - 5 or min(ys) <= y0)):
+                # Even one known army ink can be the last visible column of
+                # a clipped body. It cannot prove a body count, or zero.
+                for side, palette in enumerate(palettes):
+                    if not colors & palette:
+                        continue
+                    merged[side] += 1
+            continue
+        # Large edge-connected structures are walls. A clipped soldier-sized
+        # coloured body is not proof that its army has no unit there.
+        if min(ys) <= y0 or min(xs) <= x0 + 4 or max(xs) >= x1 - 5:
+            edge_colors = colors
+            if width > SOLDIER_BOX[0] or height > SOLDIER_BOX[1]:
+                # Castle decoration uses army inks too. In a large connected
+                # wall, only ink at the clipping boundary can establish a
+                # partial sprite; interior decoration cannot identify a unit.
+                edge_colors = {rgb[y * stride + x * 3:y * stride + x * 3 + 3]
+                               for x, y in cells
+                               if y == y0 or x <= x0 + 4 or x >= x1 - 5}
+            clipped_teams = [side for side, palette in enumerate(palettes)
+                             if edge_colors & palette]
+            if clipped_teams:
+                # A thin sprite may join a large edge-connected background.
+                # Army ink in that component still prevents a zero reading.
+                for side in clipped_teams:
+                    merged[side] += 1
+            elif width <= SOLDIER_BOX[0] and height <= SOLDIER_BOX[1]:
+                for side in (0, 1):
+                    merged[side] += 1
+            continue
+        if len(teams) != 1:
+            # A mixed collision cannot establish either army's count. Unknown
+            # silhouettes cannot identify either army.
+            uncertain = teams or (0, 1)
+            for side in uncertain:
+                merged[side] += 1
+            continue
+        side = teams[0]
         if (len(cells) > SOLDIER_AREA[1] or width > SOLDIER_BOX[0]
                 or height > SOLDIER_BOX[1]):
-            if (SOLDIER_AREA[1] < len(cells) <= SOLDIER_MERGED_AREA[1]
+            if (len(cells) <= SOLDIER_MERGED_AREA[1]
                     and width <= SOLDIER_MERGED_BOX[0] and height <= SOLDIER_MERGED_BOX[1]
                     and max(ys) < y1 - 1):
                 merged[side] += 1
             continue
         sides[side] += 1
-    return (None if merged[0] else sides[0], None if merged[1] else sides[1])
+    return tuple(None if merged[side] or sides[side] > 6 else sides[side] for side in (0, 1))
 
 
 def _menu_rows(lines: list[TextLine]) -> list[TextLine]:
