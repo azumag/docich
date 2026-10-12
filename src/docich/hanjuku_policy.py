@@ -4646,6 +4646,7 @@ def _card_damage_recheck_resources(mem, cur):
     if rescue:
         rescue.update(cards_exhausted=False, exhausted=False, cards_checked=0,
                       pending_opens=0, menu_ticks=0)
+        rescue.pop('conserving_melee', None)  # a changed panel permits this bounded real-card recheck
     _record(mem, 'battle_card_damage_recheck', **_battle_labels(cur),
             observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp'),
                              'ally_soldiers': cur.get('ally_soldiers'),
@@ -4926,7 +4927,9 @@ def battle_step(screen: Screen, mem):
             rescue.update(critical_open_recheck=True, exhausted=False,
                           pending_opens=1, menu_ticks=0, opens=rescue['opens'] + 1)
             return _human_menu_open(cur, 'survival')  # one final live inspection
-        if (not rescue.get('exhausted') and rescue['opens'] < 12
+        conserving = (rescue.get('conserving_melee') is True
+                      and _hold_melee_egg(mem, cur, set(rescue.get('conserved_labels') or ())))
+        if (not conserving and not rescue.get('exhausted') and rescue['opens'] < 12
                 and rescue.get('pending_opens', 0) < 3):
             rescue['opens'] += 1
             rescue['pending_opens'] = rescue.get('pending_opens', 0) + 1
@@ -5399,16 +5402,18 @@ def _critical_survival_needed(cur):
 
 
 def _hold_melee_egg(mem, cur, labels):
-    """Preserve only a healthy, measured advantage with a real card row.
+    """Preserve a healthy, measured ordinary-general melee advantage.
 
     Compare current HP pools weighted by each named general's combat stat.
     Unknown/old counts or stats do not prove advantage; summons/critical HP win.
     """
-    if ('きりふだ' not in labels or _critical_survival_needed(cur)
+    if (_critical_survival_needed(cur)
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
             or cur.get('card_soldiers_current') is not True
             or cur.get('egg_battle') or mem.get('egg_battle')
             or cur.get('card_summon_observed')):
+        return False
+    if 'きりふだ' not in labels and cur.get('ally') in (NAME, 'しゅじんこう'):
         return False
     hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
     ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')
@@ -5419,7 +5424,7 @@ def _hold_melee_egg(mem, cur, labels):
     balance = _melee_balance(cur)
     scores = balance['ally_melee_score'], balance['enemy_melee_score']
     return (all(type(n) is int and n > 0 for n in (hp, enemy, maximum, *scores))
-            and all(type(n) is int and n >= 0 for n in (ours, theirs))
+            and all(type(n) is int and 0 <= n <= 6 for n in (ours, theirs))
             and hp * 10 > maximum * BEHIND_EGG_RATIO_TENTHS
             and (hp + 10 * ours) * 10 > (enemy + 10 * theirs) * BEHIND_EGG_RATIO_TENTHS
             and scores[0] > scores[1])
@@ -5716,6 +5721,19 @@ def _survival_menu(screen, mem, cur):
     safe_card = critical and _critical_safe_card(mem, cur, rescue)
     egg_ready = ('たまごをつかう' in labels and not rescue['egg_attempted']
                  and not _own_egg_empty(mem, cur))
+    conserving = ('たまごをつかう' in labels and _hold_melee_egg(mem, cur, labels)
+                  and ('きりふだ' not in labels or rescue.get('cards_exhausted')
+                       or rescue['cards_checked'] >= 3))
+    if conserving:
+        # Keeping melee is not evidence that rescue resources are exhausted.
+        # Recheck this permission on every subsequent ordinary panel so HP
+        # loss/summons cannot retain it or trigger twelve repeated menu tours.
+        rescue.update(conserving_melee=True, conserved_labels=sorted(labels), exhausted=False)
+        _record(mem, 'battle_egg_conserve', **_battle_labels(cur),
+                observed_metric={'labels': sorted(labels), 'melee_balance': _melee_balance(cur)},
+                reason='実HP・戦闘力と現在兵数で白兵優位のため、切り札の有無にかかわらず卵を温存して戻る')
+        return [pad('b')]
+    rescue.pop('conserving_melee', None)
     if (critical and (egg_ready or (safe_card and 'きりふだ' in labels))
             and not rescue.get('critical_menu_recheck')
             and (rescue['menu_ticks'] > 12 or rescue.get('exhausted'))):
@@ -5734,12 +5752,12 @@ def _survival_menu(screen, mem, cur):
             and rescue['cards_checked'] < 3):
         label = 'きりふだ'
     elif ('たまごをつかう' in labels and not rescue['egg_attempted']
-          and not _own_egg_empty(mem, cur) and not _hold_melee_egg(mem, cur, labels)):
+          and not _own_egg_empty(mem, cur)):
         label = 'たまごをつかう'
     else:
         rescue['exhausted'] = True
         _record(mem, 'battle_survival_unavailable', **_battle_labels(cur),
-                observed_metric={'labels': sorted(labels)},
+                observed_metric={'labels': sorted(labels), 'melee_balance': _melee_balance(cur)},
                 reason='読み取れる未試行の救済手段がないため白兵へ戻る')
         return [pad('b')]
     move = _battle_menu_to(screen, label)

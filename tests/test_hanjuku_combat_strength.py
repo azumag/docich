@@ -162,3 +162,44 @@ def test_hotload_rechecks_an_existing_attack_without_unlocking_zero_eggs(egg_use
     p.egg_battle_step(screen, mem)
     assert mem['egg_action'] == expected
     assert mem['egg_uses']['カシュー'] == egg_uses
+
+
+def test_favorable_full_army_does_not_use_egg_when_card_row_is_missing():
+    cur = duel(ally='ヴィーナス', enemy='カシュー', hp=82, enemy_hp=39, soldiers=(6, 6))
+    mem = {'chapter': 1, 'battle': cur}
+    p._survival_state(mem, cur).update(cards_checked=3, cards_exhausted=True)
+    assert p.battle_menu_step(menu(('たまごをつかう', 'たいきゃく')), mem) == [p.pad('b')]
+    assert cur['survival']['egg_attempted'] is False
+    assert mem['_records'][-1]['decision'] == 'battle_egg_conserve'
+    assert not p._hero_retreat_needed(cur)  # conserving a real egg is not exhausted defeat
+    assert cur['cards_used'] == []
+
+
+@pytest.mark.parametrize('change', [{'ally_hp': 12}, {'ally_hp': 40}, {'ally': p.NAME},
+                                    {'card_soldiers_current': False}, {'card_summon_observed': True},
+                                    {'enemy_soldiers': None}, {'ally_soldiers': 7},
+                                    {'ally_soldiers': 3, 'enemy': 'ゼウス', 'enemy_hp': 85}])
+def test_missing_card_row_keeps_the_measured_health_and_attack_guards(change):
+    cur = duel(ally='ヴィーナス', enemy='カシュー', hp=82, enemy_hp=39, soldiers=(6, 6))
+    cur.update(change)
+    assert not p._hold_melee_egg({'battle': cur}, cur, {'たまごをつかう'})
+
+
+@pytest.mark.parametrize('later_hp', [82, 12])
+def test_conservation_stops_menu_tours_but_new_critical_hp_reopens_rescue(later_hp):
+    from test_hanjuku_card_damage_gate import panel
+    cur = duel(ally='ヴィーナス', enemy='カシュー', hp=82, enemy_hp=39, soldiers=(6, 6))
+    cur.update(step=None, castle=None, tactics_done=[], cards_selected=[], cards_unclassified=[])
+    mem = {'chapter': 1, 'tick': 12, 'battle': cur}
+    p._survival_state(mem, cur).update(cards_checked=3, cards_exhausted=True)
+    p.battle_menu_step(menu(('たまごをつかう', 'たいきゃく')), mem)
+    cur['ally_hp'] = later_hp
+    for _ in range(3):
+        actions = p.battle_step(panel(mem, soldiers=(6, 6)), mem)
+        if later_hp == 82:
+            assert all('b' not in action.get('buttons', []) for action in actions)
+            assert cur['survival']['opens'] == 0
+        else:
+            assert actions == [p.pad('b')]
+            break
+    assert cur['survival']['egg_attempted'] is False
