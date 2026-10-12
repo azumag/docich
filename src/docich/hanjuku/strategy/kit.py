@@ -41,6 +41,16 @@ def _strict_boss_cards(order, mem) -> bool:
 
 
 def _deploy_cards(order, mem):
+    from .execution import bound_fields
+    bound = bound_fields(order, mem)
+    if order.get('_execution_bound') is True and bound is None:
+        return []
+    if bound is not None:
+        cards = list(bound['cards'])  # actual carried copies, never a later kit
+        for card in (mem.get('kit_spent') or {}).get(order['step']) or ():
+            if card in cards:
+                cards.remove(card)
+        return cards
     rare_kit = (mem.get('rare_card_kit') or {}).get(order['step'])
     strong = (mem.get('strong_card_kit') or {}).get(order['step']) if rare_kit is None else None
     if _strict_boss_cards(order, mem) and rare_kit is None:

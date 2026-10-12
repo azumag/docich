@@ -11,14 +11,18 @@ from ...hanjuku_egg_reference import general_max_hp
 from ..decision_log import _record
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from .kit import _deploy_cards, _is_boss_order
+from .execution import bound_fields, execution_claimed, execution_order
 
 
 # ---------------------------------------------------------------- orders
 def _sortie_general(order, mem):
     """Keep a confirmed departure's actor even if a plan/override changes."""
     step = order.get('step')
+    bound = bound_fields(order, mem)
+    if order.get('_execution_bound') is True:
+        return bound['general'] if bound is not None else None
     context = (mem.get('order_context') or {}).get(step) or {}
-    if mem.get('active') == step:
+    if mem.get('active') == step and 'departure_order' not in context:
         selected = context.get('actual_general') or (mem.get('sortie_general') or {}).get(step)
         if selected:
             return selected
@@ -149,6 +153,11 @@ def _order_for_step(mem, step):
     """
     if not step:
         return None
+    frozen = execution_order(mem, step)
+    if frozen is not None:
+        return frozen
+    if execution_claimed(mem, step):
+        return None  # foreign/stale execution is not a fresh plan or actor
     return (next((o for o in (*_orders(mem), *chart.orders(mem.get('chapter') or 0))
                   if o['step'] == step), None)
             or (mem.get('launched_orders') or {}).get(step))
@@ -274,12 +283,18 @@ def _tactics(mem, step):
     """
     base = chart.tactics(mem.get('chapter') or 0)
     order = _order_for_step(mem, step)
-    rare_kit = (mem.get('rare_card_kit') or {}).get(step)
-    strong_kit = None if rare_kit is not None else (mem.get('strong_card_kit') or {}).get(step)
+    if order is None and execution_claimed(mem, step):
+        return ()
+    bound = bound_fields(order, mem)
+    roles = bound['roles'] if bound is not None else None
+    rare_kit = roles['rare'] if roles is not None else (mem.get('rare_card_kit') or {}).get(step)
+    strong_kit = (roles['strong'] if roles is not None else
+                  None if rare_kit is not None else (mem.get('strong_card_kit') or {}).get(step))
     rare = ()
     carried = None
     if rare_kit is not None and order:
-        carried = list(((mem.get('order_context') or {}).get(step) or {}).get('observed_metric', {}).get('cards') or [])
+        carried = (list(order['cards']) if bound_fields(order, mem) is not None else
+                   list(((mem.get('order_context') or {}).get(step) or {}).get('observed_metric', {}).get('cards') or []))
         for card in (mem.get('kit_spent') or {}).get(step) or ():
             if card in carried:
                 carried.remove(card)
@@ -300,7 +315,8 @@ def _tactics(mem, step):
                          for index in range(carried.count('バルムンク')))
     if order is None or any(o['step'] == step for o in chart.orders(mem.get('chapter') or 0)):
         return (*rare, *base)
-    override = set() if rare_kit is not None else set((mem.get('card_override') or {}).get(step) or ())
+    override = (set(roles['override']) if roles is not None else
+                set() if rare_kit is not None else set((mem.get('card_override') or {}).get(step) or ()))
     if carried is None:
         carried = _deploy_cards(order, mem)
     carried = [card for card in carried
@@ -470,6 +486,9 @@ SOURCE_MISS_LIMIT = 3         # failed castle menus per order before giving the 
 
 
 def _source(order, mem):
+    bound = bound_fields(order, mem)
+    if order.get('_execution_bound') is True:
+        return bound['source'] if bound is not None else None
     return mem.get('source_override', {}).get(order['step'], order['source'])
 
 

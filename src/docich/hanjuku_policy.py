@@ -43,12 +43,13 @@ from .hanjuku.judgment import battle as _judgment_battle, events as _judgment_ev
 from .hanjuku.os_layer import (commands as _os_commands, navigation as _os_navigation,
                                readers as _os_readers, world as _os_world)
 from .hanjuku.strategy import (campaign as _strategy_campaign, economy as _strategy_economy,
-                               kit as _strategy_kit, orders as _strategy_orders, replan as _strategy_replan)
+                               execution as _strategy_execution, kit as _strategy_kit,
+                               orders as _strategy_orders, replan as _strategy_replan)
 
 _LAYER_MODULES = (
     _decision_log,
     _os_readers, _os_world, _os_commands, _os_navigation,
-    _strategy_kit, _strategy_orders, _strategy_replan, _strategy_economy, _strategy_campaign,
+    _strategy_execution, _strategy_kit, _strategy_orders, _strategy_replan, _strategy_economy, _strategy_campaign,
     _judgment_battle, _judgment_events,
     _flow_name, _flow_map, _flow_recall, _flow_deploy, _flow_battle, _flow_battle_menus,
     _flow_month, _flow_egg_recovery, _flow_shop, _flow_prompts,
