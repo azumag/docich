@@ -99,20 +99,89 @@ decision_log   判断記録（全層から利用可）
 - 既存の半熟英雄テスト（`tests/*hanjuku*`）は変更なしで全件成功した（変更は `BOT_VERSION` の期待値のみ）。
 - 層契約テストは、上位層の import・画面引数・pad生成を混入させた場合に失敗することを確認した。
 
+## 既存の設計・Issueとの関係
+
+### #1353 戦略とexecutorの分離（`docs/hanjuku_strategy_executor.md`）
+
+オーナー承認済みの #1353 は、半熟英雄botを「戦略＝アプリケーション」「executor＝ゲーム操作OS」の境界で
+再構成する計画で、P1として純粋な契約核 `hanjuku_execution.py`（`WorldState` / `StrategyPlan` /
+`SortieCommand` / `InputIntent` / `CommandResult`）がmain統合済み・旧bot未接続である。
+本構造は、旧botのコードをその境界に沿って並べ直す段であり、次のように対応する。
+
+| #1353 の区分 | 本構造 |
+|---|---|
+| 戦略（将軍・出撃先・携行札・攻略順・資金配分・回復/撤退/防衛の好み） | 戦略層 `strategy/*`、状況判断は判断層 `judgment/*` |
+| executor（指定対象の選択、カーソル移動、割込み、中断、実行結果の確認） | 手順層 `flows/*` ＋ OS層 `commands` / `navigation` |
+| 観測（`WorldState`、`SortieEvidence` を作る測定済みobserver） | OS層 `phase` / `readers` / `world` |
+| 監督（証拠確定、入力権限、ラン終了・reset、次ランの版選択） | 調停 `orchestrator.py` と既存の `hanjuku_run` / コーナー側 |
+
+ユーザー指示の「OS層」は、#1353 のexecutorのうち画面理解と入力の基本操作にあたる。
+複数観測にまたがるメニュー操作は、改善の単位を分けるため手順層として独立させた。
+
+#1353 の注意点は本構造でも維持する。
+
+- `flows.map.target_step` の `order_launched` はA入力を返す時点の記録であり、出撃確認ではない。
+- `general_override` / `source_override` / 携行札補正は戦略判断である。判断関数
+  （`_order_hero_alternatives`、`_hero_source_alternative`、`_deploy_cards` 等）は戦略層へ置いたが、
+  呼び出しと結果の適用はまだ `flows.deploy.deploy_step` の中にある。第3段で、戦略層が確定した
+  `SortieCommand` を手順層へ渡す形に変え、手順層の中で代役・札削減を決め直さないようにする。
+
+### #1085 チャート外の動的調整（L0〜L4）
+
+| #1085 | 本構造 |
+|---|---|
+| L0 基準チャート `hanjuku_chart.py` | 静的データ（全層から参照） |
+| L1 非同期LLM調整 `hanjuku_chart_worker.py` / `hanjuku_chart_adjust.py` | 戦略層の外部入力。採用は `strategy/replan.py` |
+| L1b 暫定JEV `hanjuku_interim.py` | 候補生成 `strategy/replan.py:interim_candidates`、採用 `_adopt_interim` |
+| L2 決定的実行 `map_step` / `month_step` / `deploy_step` | 手順層 `flows/map.py` / `flows/month.py` / `flows/deploy.py` |
+| L3 実績履歴 `hanjuku_decisions.jsonl` | `decision_log.py` の判断記録（書出しは `brains/hanjuku/bot.py`） |
+| L4 GO後照合 `hanjuku_chart_review.py`、終了後改善 `hanjuku_improve.py`（#954） | 層の外（ラン終了後のみ） |
+
+#954 / #1353 P6 の改善ループは「戦略のみ／executorのみ／両方」の比較を求めている。層が分かれたことで、
+改善候補がどの層を変えるかを差分のパスで判定でき、比較評価の単位にできる。
+
+### 未解決の半熟英雄Issueの層への対応
+
+| Issue | 問題 | 主に触る層 |
+|---|---|---|
+| #2040 卵なし城防衛の召喚前救済がHP期限だけでは間に合わない | 救済を始める時期の判断 | 判断層 `judgment/battle.py`（`_defender_egg_window` / `_defender_last_resort`）。召喚選択中の識別はOS層 `readers` |
+| #2076 クイーン戦の将軍コマンドで下入力が効かない | メニュー所有者と入力受付区間、効かない入力の検出 | 手順層 `flows/battle_menus.py` とOS層 `commands`（`_battle_menu_to`）。#1353 の「入力意図・送信・効果の分離」を適用する候補 |
+| #1996 コンサート画面でB連打ループ | 画面分類と既定入力 | OS層 `os_layer/phase.py`（`classify` の concert 判定）と調停 `orchestrator.legacy_actions` |
+| #1553 青ゲージの画素検出と卵落札携行 | 画素の読取と携行札の計画 | OS層 `readers` と戦略層 `strategy/kit.py` |
+| #1608 夏イベントの応答文が未読の場合の復旧 | 未読の応答と復旧手順 | 手順層 `flows/prompts.py`（`summer_bonus_*`）とOS層 `readers` |
+
+### 並行中のPRとの関係
+
+- **#2058**（交換二択の検証）: `hanjuku_policy.trade_guard_step` と `hanjuku_bot.decide` を変更している。
+  本構造の後にマージする場合、変更先はそれぞれ `flows/prompts.py` と `orchestrator.py`。
+  テストは互換ファサード経由（`policy.trade_guard_step`、`monkeypatch.setattr(policy, ...)`）のままで動く。
+  先にマージされた場合は、本分割を新しいmainから生成し直す（分割は機械的な移動のため再生成で追従できる）。
+- **#1915 / #1469**（active runへのhot-load境界）: logic generation を `hanjuku_bot.py` / `hanjuku_run.py` の
+  ソースのバイト列から求める設計になっている。分割後の `hanjuku_bot.py` はファサードであり、`classify` /
+  `decide` / `BOT_VERSION` の変更はそのバイト列に現れない。hot-load境界を本構造の後に入れる場合は、
+  `hanjuku_run` が使う `src/docich/hanjuku/os_layer/phase.py`・`orchestrator.py`・`version.py`（または
+  `src/docich/hanjuku/` 全体）を世代計算の対象に含める必要がある。
+
 ## 既知の負債と次の段階
 
 第1段は「置き場所」を分けただけで、層の間は依然として共有の方策メモリ `mem`（辞書）でつながっている。
 次の段階で順に解消する。各段階は挙動を変えない変更と挙動を変える変更を混ぜない。
+第3段以降は #1353 の P2〜P6 と同じ作業であり、別の契約を新設せず `hanjuku_execution.py` の契約を使う。
 
-1. **残りのモジュールの編入**: `hanjuku_house`（あたしの家）、`hanjuku_camp_recheck`、`hanjuku_starter` を
-   `flows` へ、`hanjuku_screen` / `hanjuku_font` / `hanjuku_pixels` / `hanjuku_roster` を `os_layer` へ移す。
-   `strategy.economy` → `hanjuku_house` の依存（`KNOWN_DEBT`）は、家の画面定数をOS層へ移して解消する。
-   VMの診断・画像評価が参照するファイル一覧（`ops/vm_actions/gateway.py` の `DIAGNOSTICS_FILES`、
-   `evaluate_hanjuku_vision.py` の `PARSER_FILES`）を同時に更新する。
-2. **状態の分離**: `mem` を、世界状態（OS層が書く観測）、計画（戦略層が書く注文・予算）、
-   戦闘記録（判断層が読む）、手順の進行状態（手順層だけが持つ）に分け、他層の状態を書き換えないようにする。
+1. **残りのモジュールの編入**（挙動不変）: `hanjuku_house`（あたしの家）、`hanjuku_camp_recheck`、
+   `hanjuku_starter` を `flows` へ、`hanjuku_screen` / `hanjuku_font` / `hanjuku_pixels` / `hanjuku_roster` を
+   `os_layer` へ移す。`strategy.economy` → `hanjuku_house` の依存（`KNOWN_DEBT`）は、家の画面定数をOS層へ移して
+   解消する。VMの診断・画像評価が参照するファイル一覧（`ops/vm_actions/gateway.py` の `DIAGNOSTICS_FILES`、
+   `evaluate_hanjuku_vision.py` の `PARSER_FILES`）と、hot-load境界の世代計算対象を同時に更新する。
+2. **状態の分離**（挙動不変）: `mem` を、世界状態（OS層が書く観測。将来の `WorldState` の入力）、
+   計画（戦略層が書く注文・予算。`StrategyPlan`）、戦闘記録（判断層が読む）、手順の進行状態
+   （手順層だけが持つ。`Session.executions` に相当）に分け、他層の状態を書き換えないようにする。
    永続化済みの方策メモリとの互換（移行関数）を伴う。
-3. **意図と判断の型**: 戦略層は「出撃」「購入」などの意図、判断層は「この札を使う」「撤退する」などの判断を
-   値として返し、手順層はそれを受け取って実行する。手順層の中で戦略・判断を再計算しない。
+3. **意図と判断の型**（#1353 P2・P4）: 戦略層は出撃を `SortieCommand` として確定し、手順層
+   （`flows.deploy` / `flows.map`）はそれを測定済みdriverとして実行して `CommandResult` を返す。
+   代役・出撃元変更・札削減は戦略層で決め、手順層は黙って行わない。入力意図・送信・効果を分け、
+   #2076 のような「送ったが効かない入力」を手順層で検出する。購入・回復・戦闘・撤退も同じ形で小さく移す。
 4. **テストの移行とファサードの縮小**: テストを層モジュールへ直接向け、層ごとの単体テスト
    （判断層は画面なしの状態だけで検証できる）を増やす。参照がなくなった時点でファサードを削除する。
+5. **層単位の改善ループ**（#1353 P5・P6、#954）: 終了後の原因分類を層（観測／手順／判断／戦略）に対応させ、
+   改善候補が変更する層を明示して、戦略のみ・executorのみ・両方を比較評価する。
