@@ -1,11 +1,11 @@
 {
-  "output_sha256": "393e85d507bd8b30fb4dc9d67e9705bc6e78dd241211e4eb7ca4609b2d0beed3",
+  "output_sha256": "dcb606e847e008d152daf190e8fc5e3d37686582a944e49f4351ad73b34b252a",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "da4b6e2394f8298dee30be22dfe4241020b60515c08563ea0477165358fcf441",
+  "source_sha256": "04f107d73c408fae02d8cccdee5fba637860aca5a4269c1a8ae9bdcb72083af7",
   "topics": [
+    "将軍の戦闘力を有利不利と卵温存の判断へ反映",
     "半熟v174を無停止反映し、戦闘後と翌月への進行を確認",
-    "卵回復を先に確保し、通常50人・余裕時100人の兵士予算へ",
-    "将軍確認の再利用と主人公保護、優勢時の誤退却"
+    "卵回復を先に確保し、通常50人・余裕時100人の兵士予算へ"
   ]
 }

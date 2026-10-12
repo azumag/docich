@@ -95,7 +95,7 @@ def test_battle_step_keeps_the_measured_counts_on_the_battle():
 
 def egg_memory(ally_hp, enemy_hp, soldiers):
     mem = wounded_egg_memory()
-    mem['battle']['enemy_hp'] = enemy_hp
+    mem['battle'].update(enemy='マンゴスチン', enemy_hp=enemy_hp)  # same combat 12 as Venus
     screen = battle(mem)
     if soldiers is not None:
         screen.field_soldiers = soldiers

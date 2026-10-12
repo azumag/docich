@@ -896,7 +896,10 @@ def test_a_general_far_behind_opens_the_rescue_menu_before_the_melee_decides():
     far = {'ally_hp': 26, 'enemy_hp': 48, 'start_ally_hp': 26, 'enemy': 'ソーピニヨン', 'ally': 'キャンディー'}
     assert policy._survival_needed(far)
     close = {'ally_hp': 27, 'enemy_hp': 38, 'start_ally_hp': 27, 'enemy': 'コリアンダー', 'ally': 'ビシソワーズ'}
-    assert not policy._survival_needed(close)
+    # HP alone is just above 70%, but combat 3 vs 7 now opens rescue.
+    assert policy._survival_needed(close)
+    balanced = {**close, 'ally': 'タピオカ'}  # combat 7 vs 7: keep the HP boundary
+    assert not policy._survival_needed(balanced)
     close['ally_hp'] = 26                                  # after one clash: 26 <= 70% of 38
     assert policy._survival_needed(close)
     ahead = {'ally_hp': 82, 'enemy_hp': 39, 'start_ally_hp': 82, 'enemy': 'カシュー', 'ally': 'ヴィーナス'}

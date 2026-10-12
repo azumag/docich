@@ -4646,6 +4646,7 @@ def _card_damage_recheck_resources(mem, cur):
     if rescue:
         rescue.update(cards_exhausted=False, exhausted=False, cards_checked=0,
                       pending_opens=0, menu_ticks=0)
+        rescue.pop('conserving_melee', None)  # a changed panel permits this bounded real-card recheck
     _record(mem, 'battle_card_damage_recheck', **_battle_labels(cur),
             observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp'),
                              'ally_soldiers': cur.get('ally_soldiers'),
@@ -4926,7 +4927,9 @@ def battle_step(screen: Screen, mem):
             rescue.update(critical_open_recheck=True, exhausted=False,
                           pending_opens=1, menu_ticks=0, opens=rescue['opens'] + 1)
             return _human_menu_open(cur, 'survival')  # one final live inspection
-        if (not rescue.get('exhausted') and rescue['opens'] < 12
+        conserving = (rescue.get('conserving_melee') is True
+                      and _hold_melee_egg(mem, cur, set(rescue.get('conserved_labels') or ())))
+        if (not conserving and not rescue.get('exhausted') and rescue['opens'] < 12
                 and rescue.get('pending_opens', 0) < 3):
             rescue['opens'] += 1
             rescue['pending_opens'] = rescue.get('pending_opens', 0) + 1
@@ -5019,6 +5022,7 @@ def _melee_step(mem, cur):
     # requested A frames; the executor's fence/delivery result remains separate.
     _record(mem, 'battle_melee', **_battle_labels(cur),
             enemy=cur.get('enemy'), enemy_hp=cur.get('enemy_hp'), ally_hp=cur.get('ally_hp'),
+            observed_metric={'melee_balance': _melee_balance(cur)},
             egg_risk_flags=asdict(triggers), melee_control_mode=mode,
             enemy_egg_dropped=None,
             enemy_egg_drop_expected=cur.get('enemy_egg_drop_expected') is True,
@@ -5056,7 +5060,60 @@ def _power_mash(mem, cur, *, taps=POWER_TAPS):
             for action in (pad('a', 3), {'type': 'wait', 'ms': 50})]
 
 
+def _melee_balance(cur: dict) -> dict:
+    """Comparable general/army estimate, not the game's damage formula.
+
+    The fixed named-general combat stat affects attack, while the native
+    panel supplies current HP and (only when proven current) soldier counts.
+    Weight each side's existing HP pool by its own combat stat. Missing
+    stats never borrow the other side's value or an optimistic default.
+    Summoned-monster HP/attack and castle/terrain speed are not estimated.
+    """
+    combat = {}
+    for side in ('ally', 'enemy'):
+        name = cur.get(side)
+        name = 'しゅじんこう' if side == 'ally' and name == NAME else name
+        row = reference.general_strength(name) if isinstance(name, str) else None
+        value = row[1] if isinstance(row, (tuple, list)) and len(row) >= 2 else None
+        combat[side] = value if type(value) is int and 1 <= value <= 15 else None
+    measured = (cur.get('card_soldiers_current') is True
+                and not cur.get('card_hp_unread')
+                and not cur.get('card_context_unclassified')
+                and all(type(cur.get(side + '_soldiers')) is int
+                        and 0 <= cur[side + '_soldiers'] <= 6 for side in ('ally', 'enemy')))
+    out = {'assessment_method': 'hp_pool_times_combat_heuristic',
+           'assessment_scope': 'general_matchup', 'soldiers_current': measured}
+    for side in ('ally', 'enemy'):
+        hp = cur.get(side + '_hp')
+        force = (hp + (10 * cur[side + '_soldiers'] if measured else 0)
+                 if type(hp) is int and hp > 0 else None)
+        out[side + '_combat'] = combat[side]
+        out[side + '_force'] = force
+        out[side + '_melee_score'] = (force * combat[side]
+                                     if force is not None and combat[side] is not None else None)
+    return out
+
+
+def _combat_behind(cur):
+    if (cur.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('enemy') in chart.BOSSES.values()):
+        return False  # a general's attack is not a summoned monster's attack
+    balance = _melee_balance(cur)
+    ours, theirs = balance['ally_melee_score'], balance['enemy_melee_score']
+    return (ours is not None and theirs is not None
+            and ours * 10 <= theirs * BEHIND_EGG_RATIO_TENTHS)
+
+
 def _behind(cur: dict) -> bool:
+    if not (cur.get('egg_battle') or cur.get('card_summon_observed')):
+        balance = _melee_balance(cur)
+        ours, theirs = balance['ally_melee_score'], balance['enemy_melee_score']
+        if ours is not None and theirs is not None:
+            return ours < theirs
+        if (isinstance(cur.get('ally'), str) and isinstance(cur.get('enemy'), str)
+                and all(type(cur.get(k)) is int and cur[k] > 0 for k in ('ally_hp', 'enemy_hp'))):
+            return True  # unknown attack cannot license ordinary melee conservation
+    # Monster-menu comparisons intentionally supply HP alone, not generals.
     enemy_hp, ally_hp = cur.get('enemy_hp'), cur.get('ally_hp')
     if type(enemy_hp) is not int or type(ally_hp) is not int:
         return False
@@ -5292,7 +5349,8 @@ def _survival_needed(cur):
     return (hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 5 <= start * 2)
             or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS or behind_start
             or cur.get('card_damage_rescue_needed') is True
-            or _unarmed_clash_risk(cur) or _unarmed_wall_risk(cur))
+            or _unarmed_clash_risk(cur) or _unarmed_wall_risk(cur)
+            or (not cur.get('planned_cards') and _combat_behind(cur)))
 
 
 def _unarmed_wall_risk(cur):
@@ -5323,12 +5381,15 @@ def _survival_state(mem, cur):
         cur['survival'] = {'opens': 0, 'menu_ticks': 0, 'cards_checked': 0,
                            'cards_attempted': [], 'egg_attempted': False}
         _record(mem, 'battle_survival', **_battle_labels(cur),
-                observed_metric={'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp')},
+                observed_metric={'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp'),
+                                 'melee_balance': _melee_balance(cur)},
                 expected_metric='使用可能な切り札・たまごを確認して選択',
                 reason=('携行戦術のない卵持ち敵との衝突前に、戦闘メニューで救済手段を確認'
                         if _unarmed_clash_risk(cur)
                         else '初期卵なしまたは観測残数0の攻撃将軍は、敵の壁判定召喚より先に実資源を確認'
                         if _unarmed_wall_risk(cur)
+                        else 'HP・兵士数・将軍の戦闘力で不利なため、戦闘メニューで救済手段を確認'
+                        if _combat_behind(cur)
                         else 'HP低下のため温存を中止し、戦闘メニューで救済手段を確認'))
     return cur['survival']
 
@@ -5341,15 +5402,19 @@ def _critical_survival_needed(cur):
 
 
 def _hold_melee_egg(mem, cur, labels):
-    """Preserve only a healthy, measured advantage with a real card row.
+    """Preserve a healthy, measured ordinary-general melee advantage.
 
-    Reuse the existing HP + 10 per observed soldier model. Unknown or old
-    counts do not prove advantage, and an enemy summon/critical HP wins.
+    Compare current HP pools weighted by each named general's combat stat.
+    Unknown/old counts or stats do not prove advantage; summons/critical HP win.
     """
-    if ('きりふだ' not in labels or _critical_survival_needed(cur)
-            or cur.get('card_hp_unread') or cur.get('card_soldiers_current') is not True
+    if (_critical_survival_needed(cur)
+            or _own_egg_empty(mem, cur)
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('card_soldiers_current') is not True
             or cur.get('egg_battle') or mem.get('egg_battle')
             or cur.get('card_summon_observed')):
+        return False
+    if 'きりふだ' not in labels and cur.get('ally') in (NAME, 'しゅじんこう'):
         return False
     hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
     ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')
@@ -5357,10 +5422,13 @@ def _hold_melee_egg(mem, cur, labels):
                                              else cur.get('ally')),
                               cur.get('ref_ally_hp'), cur.get('start_ally_hp'))
                    if type(n) is int and n > 0), default=None)
-    return (all(type(n) is int and n > 0 for n in (hp, enemy, maximum))
-            and all(type(n) is int and n >= 0 for n in (ours, theirs))
+    balance = _melee_balance(cur)
+    scores = balance['ally_melee_score'], balance['enemy_melee_score']
+    return (all(type(n) is int and n > 0 for n in (hp, enemy, maximum, *scores))
+            and all(type(n) is int and 0 <= n <= 6 for n in (ours, theirs))
             and hp * 10 > maximum * BEHIND_EGG_RATIO_TENTHS
-            and hp + 10 * ours > enemy + 10 * theirs)
+            and (hp + 10 * ours) * 10 > (enemy + 10 * theirs) * BEHIND_EGG_RATIO_TENTHS
+            and scores[0] > scores[1])
 
 
 def _critical_safe_card(mem, cur, rescue):
@@ -5486,13 +5554,20 @@ def _healthy_melee_advantage(cur):
     """
     if (cur.get('ally') == NAME or cur.get('enemy') in chart.BOSSES.values()
             or cur.get('egg_battle') or cur.get('card_summon_observed')
-            or cur.get('card_hp_unread') or cur.get('card_soldiers_current') is not True):
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('card_soldiers_current') is not True):
         return False
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
     ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')
-    return (all(type(n) is int and n > 0 for n in (hp, enemy, start))
-            and all(type(n) is int and n >= 0 for n in (ours, theirs))
+    balance = _melee_balance(cur)
+    scores = balance['ally_melee_score'], balance['enemy_melee_score']
+    return (all(type(n) is int and n > 0 for n in (hp, enemy, start, *scores))
+            # The native g713 Zeus frame has seven silhouettes (the general
+            # can be counted too). Keep its old bounded retreat guard, but
+            # _melee_balance never credits a seven-count as seven soldiers.
+            and all(type(n) is int and 0 <= n <= 7 for n in (ours, theirs))
             and hp + 10 * ours > 2 * (enemy + 10 * theirs)
+            and scores[0] > 2 * scores[1]
             and hp > GENERAL_CRITICAL_RETREAT_HP
             and hp > enemy * 2 and hp * 10 > start * 7)
 
@@ -5571,7 +5646,8 @@ def _hero_retreat_open(mem, cur):
             general=cur.get('ally'), enemy=cur.get('enemy'),
             castle=cur.get('castle'), side=cur.get('side'),
             observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
-                             'start_ally_hp': cur.get('start_ally_hp')},
+                             'start_ally_hp': cur.get('start_ally_hp'),
+                             'melee_balance': _melee_balance(cur)},
             reason='主人公の敗北によるゲームオーバーまたは一般将軍の喪失を避けるため退却の可否を確認')
     return _human_menu_open(cur, 'retreat')
 
@@ -5646,6 +5722,19 @@ def _survival_menu(screen, mem, cur):
     safe_card = critical and _critical_safe_card(mem, cur, rescue)
     egg_ready = ('たまごをつかう' in labels and not rescue['egg_attempted']
                  and not _own_egg_empty(mem, cur))
+    conserving = ('たまごをつかう' in labels and _hold_melee_egg(mem, cur, labels)
+                  and ('きりふだ' not in labels or rescue.get('cards_exhausted')
+                       or rescue['cards_checked'] >= 3))
+    if conserving:
+        # Keeping melee is not evidence that rescue resources are exhausted.
+        # Recheck this permission on every subsequent ordinary panel so HP
+        # loss/summons cannot retain it or trigger twelve repeated menu tours.
+        rescue.update(conserving_melee=True, conserved_labels=sorted(labels), exhausted=False)
+        _record(mem, 'battle_egg_conserve', **_battle_labels(cur),
+                observed_metric={'labels': sorted(labels), 'melee_balance': _melee_balance(cur)},
+                reason='実HP・戦闘力と現在兵数で白兵優位のため、切り札の有無にかかわらず卵を温存して戻る')
+        return [pad('b')]
+    rescue.pop('conserving_melee', None)
     if (critical and (egg_ready or (safe_card and 'きりふだ' in labels))
             and not rescue.get('critical_menu_recheck')
             and (rescue['menu_ticks'] > 12 or rescue.get('exhausted'))):
@@ -5664,12 +5753,12 @@ def _survival_menu(screen, mem, cur):
             and rescue['cards_checked'] < 3):
         label = 'きりふだ'
     elif ('たまごをつかう' in labels and not rescue['egg_attempted']
-          and not _own_egg_empty(mem, cur) and not _hold_melee_egg(mem, cur, labels)):
+          and not _own_egg_empty(mem, cur)):
         label = 'たまごをつかう'
     else:
         rescue['exhausted'] = True
         _record(mem, 'battle_survival_unavailable', **_battle_labels(cur),
-                observed_metric={'labels': sorted(labels)},
+                observed_metric={'labels': sorted(labels), 'melee_balance': _melee_balance(cur)},
                 reason='読み取れる未試行の救済手段がないため白兵へ戻る')
         return [pad('b')]
     move = _battle_menu_to(screen, label)
@@ -5683,7 +5772,8 @@ def _survival_menu(screen, mem, cur):
         rescue['egg_attempted'] = True
         rescue['egg_pending'] = True
     _record(mem, 'battle_survival_select', **_battle_labels(cur),
-            observed_metric={'label': label}, resulting_event='selection_planned_not_yet_confirmed',
+            observed_metric={'label': label, 'melee_balance': _melee_balance(cur)},
+            resulting_event='selection_planned_not_yet_confirmed',
             reason='カーソルと有効な項目を確認して救済行動を選択')
     return [pad('a')]
 
@@ -5866,10 +5956,17 @@ def battle_menu_step(screen: Screen, mem):
     # chart-directed cards and never chosen blindly here).
     exp = mem.get('_experience')
     key = experience.situation_key('battle_menu', mem)
+    balance = _melee_balance(cur)
+    combat_unknown = (not (cur.get('egg_battle') or cur.get('card_summon_observed'))
+                      and all(isinstance(cur.get(k), str) for k in ('ally', 'enemy'))
+                      and all(type(cur.get(k)) is int and cur[k] > 0 for k in ('ally_hp', 'enemy_hp'))
+                      and any(balance[k] is None for k in ('ally_combat', 'enemy_combat')))
     if not mem.get('indep_menu'):
         mem['indep_menu'] = True
         default = 'use_egg' if _behind(cur) and not _own_egg_empty(mem, cur) else 'pass'
         action = experience.preferred(exp, key, default=default, kind='battle_menu')
+        if combat_unknown and not _own_egg_empty(mem, cur):
+            action = 'use_egg'
         if action == 'use_egg' and (_own_egg_empty(mem, cur)
                                   or _hold_melee_egg(mem, cur, {w for _, _, w in _options(screen)})):
             action = 'pass'
@@ -5887,11 +5984,19 @@ def battle_menu_step(screen: Screen, mem):
                 deviation_reason='チャートに戦術なし: 状況判断',
                 expected_metric='戦闘結果による判断の検証',
                 observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp'),
-                                 'experience_key': key, 'source_pattern': pattern},
+                                 'experience_key': key, 'source_pattern': pattern,
+                                 'melee_balance': _melee_balance(cur)},
                 source_pattern=pattern,
                 reason='チャートが当該フレームに切り札を指示していないための独自判断（原典戦術'
                        + pattern + 'に相当）')
     action = mem.get('indep_menu_action', 'pass')
+    if action == 'pass' and combat_unknown and not _own_egg_empty(mem, cur):
+        action = mem['indep_menu_action'] = 'use_egg'
+        mem['indep_menu_key'] = key
+        if isinstance(cur.get('independent'), dict):
+            cur['independent'].update(action=action, key=key)
+        _record(mem, 'battle_combat_recheck', observed_metric={'melee_balance': balance},
+                reason='将軍の戦闘値が未知のため、保存済みの見送りを実メニューの卵対処へ戻す')
     if action == 'use_egg' and _hold_melee_egg(mem, cur, {w for _, _, w in _options(screen)}):
         mem['indep_menu_action'] = 'pass'
         return [pad('b')]
@@ -9460,11 +9565,13 @@ def _egg_general_reading(screen, mem, battle):
 
 
 def _own_egg_needed(mem, battle, general_reading=None):
-    """自軍のたまごを使うべきかを、HPと兵士数で判定する。返り値は (要るか, 証拠)。
+    """自軍の卵の必要性を現在HP・兵士数・両将軍の戦闘値で判定する。
 
     正典 (docs/hanjuku_script_bot.md ⑥) は「HP不利かつチャートに切り札指示
     なし → use_egg」。合戦力は gcgx battle.html「兵士は1人ずつHP10を持っている」
-    に従い HP + 10×兵士で比べ、兵士が読めない戦闘では HP だけで判定する。
+    に従う HP + 10×兵士へ、両将軍本人の戦闘値をそれぞれ掛ける。
+    判断用の近似スコアであり、ゲームのダメージ式や勝利保証ではない。
+    兵士未読は両側ともHPのみ、戦闘値不明は温存を許可しない。
     加えて自軍のHPが最大の7割を超えていること（`general_reading`）も要る。
     オーナー確認 (2026-10-03): 30/82 のように自軍が大破していれば、敵将軍の
     絶対値HPが低くても勝てそうにはならず卵を使う。読み取れない時も温存しない。
@@ -9477,7 +9584,12 @@ def _own_egg_needed(mem, battle, general_reading=None):
                 'ratio_tenths': BEHIND_EGG_RATIO_TENTHS, 'rule': 'unknown_battle'}
     if not isinstance(battle, dict):
         return True, evidence
-    strong, strong_evidence = _strong_enemy(mem, battle)
+    balance = _melee_balance(battle)
+    combat_known = all(type(balance[side + '_combat']) is int for side in ('ally', 'enemy'))
+    strong, strong_evidence = (_strong_enemy(mem, battle) if combat_known else
+                               (False, {'rule': 'unknown'}))
+    if battle.get('enemy') in chart.BOSSES.values():
+        strong, strong_evidence = True, {**strong_evidence, 'rule': 'boss'}
     reading = general_reading if isinstance(general_reading, (tuple, list)) else None
     healthy = (bool(reading) and len(reading) == 2
                and type(reading[0]) is int and type(reading[1]) is int and reading[1] > 0
@@ -9487,26 +9599,22 @@ def _own_egg_needed(mem, battle, general_reading=None):
     # Use the same current-panel evidence as learned tactics (ctx3). A
     # partial/foreign panel invalidates its marker but retains old counts.
     # Missing or invalid armies fall back to HP only, never one-sided credit.
-    measured = (battle.get('card_soldiers_current') is True
-                and not battle.get('card_hp_unread')
-                and not battle.get('card_context_unclassified')
-                and all(type(count) is int and 0 <= count <= 6
-                        for count in (ally_soldiers, enemy_soldiers)))
-    if type(ally_hp) is int and type(enemy_hp) is int and measured:
-        ally_force = ally_hp + 10 * ally_soldiers
-        enemy_force = enemy_hp + 10 * enemy_soldiers
-    else:
-        ally_force, enemy_force = ally_hp, enemy_hp
-    comfortable = (healthy and type(ally_force) is int and type(enemy_force) is int
-                   and ally_force * 10 > enemy_force * BEHIND_EGG_RATIO_TENTHS)
+    measured = balance['soldiers_current']
+    ally_force, enemy_force = balance['ally_force'], balance['enemy_force']
+    ours, theirs = balance['ally_melee_score'], balance['enemy_melee_score']
+    comfortable = (healthy and type(ours) is int and type(theirs) is int
+                   and ours * 10 > theirs * BEHIND_EGG_RATIO_TENTHS)
     if not healthy:
         rule = 'ally_wounded'    # 大破中は敵より上でも温存しない
+    elif not combat_known:
+        rule = 'combat_unknown'
     elif measured:
         rule = 'soldier_force'
     else:
         rule = 'hp_only'
     return (strong or not comfortable), {
         **strong_evidence,
+        **balance,
         'strong_rule': strong_evidence.get('rule'),
         'strong_general': strong, 'ally_hp': ally_hp,
         'ally_max_hp': reading[1] if isinstance(reading, (tuple, list)) and len(reading) == 2
@@ -9564,6 +9672,11 @@ def egg_battle_step(screen: Screen, mem):
         # hero ends the run, so he always answers a summon with his egg.
         wants_egg = True
         egg_evidence = {**egg_evidence, 'rule': 'hero_vs_summon'}
+    combat_danger = (not all(type(egg_evidence.get(k)) is int for k in ('ally_combat', 'enemy_combat'))
+                     or (all(type(egg_evidence.get(k)) is int for k in
+                             ('ally_melee_score', 'enemy_melee_score'))
+                         and egg_evidence['ally_melee_score'] * 10
+                         <= egg_evidence['enemy_melee_score'] * BEHIND_EGG_RATIO_TENTHS))
     if not mem.get('egg_battle'):
         mem['egg_battle'] = True
         exp = mem.get('_experience')
@@ -9571,7 +9684,7 @@ def egg_battle_step(screen: Screen, mem):
         # ⑥の写像: HP不利ならたまご、勝てそうなら温存 (attack) から始める。
         action = experience.preferred(exp, key, default='use_egg' if wants_egg and not empty_egg else 'attack',
                                       kind='egg_summon')
-        if (hero_summon or summon_threat) and not empty_egg:
+        if (hero_summon or summon_threat or combat_danger) and not empty_egg:
             action = 'use_egg'  # learned attacks cannot overrule a measured summon threat
         if action == 'use_egg' and empty_egg:
             action = 'attack'
@@ -9588,7 +9701,7 @@ def egg_battle_step(screen: Screen, mem):
                 observed_metric={'experience_key': key, 'egg_need': egg_evidence},
                 source_pattern='⑥',
                 reason=('チャートに召喚戦の指示がないための独自判断（原典戦術⑥、'
-                        '自軍が健在でHPと兵士が勝てそうならたまごを温存）'
+                        '自軍が健在でHP・兵士数・戦闘力から白兵を続けられそうならたまごを温存）'
                         if not wants_egg else
                         'チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）'))
     attack = mem.get('attack') or {}
@@ -9615,7 +9728,7 @@ def egg_battle_step(screen: Screen, mem):
         return [pad('b')]
     # 途中昇格: 温存していた (前回まで勝てていた) のに劣勢になったら、たまごを
     # 使う判断へ切り替える。回復しても温存へは戻さない (一方向だけ)。
-    if ((mem.get('egg_needed') is False or summon_threat) and wants_egg and not empty_egg
+    if ((mem.get('egg_needed') is False or summon_threat or combat_danger) and wants_egg and not empty_egg
             and mem.get('egg_action') == 'attack'):
         mem['egg_action'] = 'use_egg'
         if isinstance(battle.get('independent'), dict):
@@ -9625,7 +9738,9 @@ def egg_battle_step(screen: Screen, mem):
                 expected_metric='召喚獣への対処と戦闘結果',
                 observed_metric={'egg_need': egg_evidence}, source_pattern='⑥',
                 reason=('実画面の敵召喚獣が将軍より強いか即死攻撃を持つため、卵の温存を取り消す'
-                        if summon_threat else '温存していたが、自軍のHPが最大の7割以下になるか、'
+                        if summon_threat else
+                        '両軍の戦闘力比較が不利または未確認のため、既存の卵温存判断を取り消す'
+                        if combat_danger else '温存していたが、自軍のHPが最大の7割以下になるか、'
                         'HPと兵士の合戦力が敵の7割を下回ったため途中でたまごを'
                         '使う判断へ切り替える'))
     mem['egg_needed'] = wants_egg

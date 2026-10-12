@@ -367,7 +367,7 @@ def test_ctx2_statistics_are_preserved_but_never_relabelled_as_current_counts(ki
     exp = learned(legacy, {'use_egg': {'wins': 0, 'losses': 5},
                           'attack': {'wins': 20, 'losses': 0}, 'pass': {'wins': 20, 'losses': 0}})
     before = copy.deepcopy(exp)
-    assert 'ctx3' in key.split('|') and key != legacy
+    assert 'ctx4' in key.split('|') and key != legacy
     assert experience.preferred(exp, key, default='use_egg', kind=kind) == 'use_egg'
     assert experience._clean(exp) == before
     assert exp == before
