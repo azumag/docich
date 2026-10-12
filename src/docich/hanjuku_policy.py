@@ -8529,6 +8529,25 @@ def _hero_egg_wage_floor(mem):
     return min(WAGE_RESERVE, sum(wages.values()))
 
 
+def _egg_recovery_wage_floor(mem):
+    """Use measured full current payroll for recovery, never a partial walk.
+
+    g713 had a real 100G quote, 112G, and the four-member payroll was 8G.
+    A blind 30G floor declined the affordable recovery. Large known payrolls
+    still reserve their entire sum instead of capping it at the fallback.
+    """
+    from .hanjuku_roster import MAX_RECRUIT_WAGE, fresh, run_identity
+    receipt = fresh(mem)
+    identity = run_identity(mem.get('_run_identity'))
+    wages = (receipt or {}).get('wages')
+    if (identity is None or not receipt or receipt.get('identity') != identity
+            or receipt.get('complete') is not True or mem.get('recruit_payroll_pending')
+            or not isinstance(wages, dict) or set(wages) != set(receipt.get('names') or ())
+            or any(type(v) is not int or not 0 <= v <= MAX_RECRUIT_WAGE for v in wages.values())):
+        return WAGE_RESERVE
+    return sum(wages.values())
+
+
 def _egg_recovery_step(screen, mem, sub):
     """Measured full-recovery list and NこでNG confirmation; never guess a row."""
     if not screen.text:
@@ -8548,7 +8567,7 @@ def _egg_recovery_step(screen, mem, sub):
                 # Owner (2026-09-28): 賃金リザーブは守る - the estimate that
                 # opened this screen is only a lower bound, so the floor is
                 # checked against the real quote, not the reservation.
-                + (_hero_egg_wage_floor(mem) if hero_only else WAGE_RESERVE)):
+                + (_hero_egg_wage_floor(mem) if hero_only else _egg_recovery_wage_floor(mem))):
             sub['aborted'] = True
             _record(mem, 'egg_recover_skip', observed_metric={'gold': gold, 'quote_read': bool(quote)},
                     reason='全回復の選択・費用・所持金を確認できないか、費用が足りないため戻る')
