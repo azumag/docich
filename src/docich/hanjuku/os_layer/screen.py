@@ -851,7 +851,9 @@ def egg_ritual_recitation_panel(screen: Screen) -> bool:
             or header['year'] < 1 or not 1 <= header['month'] <= 12 or header['gold'] < 0):
         return False
     rows = [(line.y, line.spans()) for line in screen.lines if line.y >= 31 and line.spans()]
-    return rows == [(151, [(24, '「ナマステ!')])]
+    body = ''.join(line.span(24, 232).replace(' ', '') for line in screen.lines
+                   if 135 <= line.y <= 215)
+    return rows == [(151, [(24, '「ナマステ!')])] and body == '「ナマステ!'
 
 
 def resume_egg_ritual_panel(screen: Screen) -> bool:

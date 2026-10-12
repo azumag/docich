@@ -62,3 +62,14 @@ def test_cold_recital_keeps_the_existing_finite_bound():
     m = {'resume_egg_ritual': {'readings': EGG_RITUAL_LIMIT, 'month': '1-5'}}
     assert resume_egg_ritual_step(parse(native()), m) == []
     assert m['resume_egg_ritual']['readings'] == EGG_RITUAL_LIMIT
+
+
+@pytest.mark.parametrize('y', [151, 175])
+def test_unknown_message_glyph_is_not_dropped_to_accept_the_recital(y):
+    c = Canvas()
+    c.rgb = bytearray(native().rgb)
+    c.tile(128, y, 0x0123456789ABCDEF)
+    s = parse(c.frame(), phase='concert')
+    assert not egg_ritual_recitation_panel(s)
+    assert not resume_egg_ritual_panel(s)
+    assert s.hand is not None  # no cursor suppression on a partial reading
