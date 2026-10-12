@@ -21,8 +21,9 @@ from docich.hanjuku_screen import Screen
 def menu(kind, words, hand=True):
     lines = [TextLine(47 + 16 * index, tuple((144 + 8 * i, ch) for i, ch in enumerate(word)))
              for index, word in enumerate(words)]
-    return Screen(lines=lines, text=''.join(words), kind=kind,
+    screen = Screen(lines=lines, text=''.join(words), kind=kind,
                   hand=(122, 41, 139, 53) if hand else None)
+    return actor_panel(screen, 'ゼウス') if kind in {'card_select', 'sortie_confirm'} else screen
 
 
 def measured_card_select(names=('イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース'),
@@ -44,14 +45,14 @@ def measured_card_select(names=('イッテツーン', 'ダイチスイム', 'ブ
                  (160, 63), (160, 79), (32, 87), (184, 95), (32, 103), (208, 119)]:
         rows.setdefault(y, []).append((x, UNKNOWN))
     lines = [TextLine(y, tuple(sorted(cells))) for y, cells in sorted(rows.items())]
-    return Screen(lines=lines, text=''.join(line.known for line in lines), kind='card_select',
-                  hand=(138, 49 + selected*16, 158, 62 + selected*16))
+    return actor_panel(Screen(lines=lines, text=''.join(line.known for line in lines), kind='card_select',
+                  hand=(138, 49 + selected*16, 158, 62 + selected*16)), 'ゼウス')
 
 
 def memory():
     # These contracts start after the separate rare-inventory discovery pass.
     return {'rare_scan_month': 'chapter-1:unknown', 'chapter': 1, 'active': '1-B1', 'variant': 'chart',
-            'orders': {'1-B1': 'pending'}, 'picked': [], 'sortie_general': {'1-B1': 'どうし'}}
+            'orders': {'1-B1': 'pending'}, 'picked': [], 'sortie_general': {'1-B1': 'ゼウス'}}
 
 
 @pytest.mark.parametrize('word,hand', [('クースカン', False), ('クースカン1', True),
@@ -77,7 +78,7 @@ def test_exact_card_selection_is_only_a_plan_and_clears_stale_context():
     mem['order_context'] = {'1-B1': {'actual_general': 'old'}}
     assert policy.deploy_step(measured_card_select(('クースカン', 'ノリウツール', 'イッテツーン', 'ダイチスイム')), mem) == [policy.pad('a')]
     assert mem['picked'] == ['クースカン']
-    assert '1-B1' not in mem['order_context']
+    assert '1-B1' not in mem.get('order_context', {})
     assert mem['_records'][-1]['resulting_event'] == 'selection_planned_not_yet_confirmed'
 
 
@@ -250,15 +251,16 @@ def test_boss_visible_hero_does_not_authorize_an_uncalibrated_kit(monkeypatch):
     assert policy.target_step(menu('map_target', []), mem, None) == []
 
 
-def test_boss_target_uses_existing_context_without_relabeling_hero(monkeypatch):
+def test_boss_target_uses_existing_context_without_relabeling_companion(monkeypatch):
     # Unit-test an already supplied context; this does not calibrate a receipt.
     mem = memory()
-    mem['order_context'] = {'1-B1': {'actual_general': 'どうし',
+    mem['sortie_general']['1-B1'] = 'ゼウス'
+    mem['order_context'] = {'1-B1': {'actual_general': 'ゼウス',
                                    'observed_metric': {'cards': ['クースカン', 'ノリウツール']}}}
-    mem['general_override'] = {'1-B1': 'ゼウス'}
+    mem['general_override'] = {'1-B1': 'どうし'}
     monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
-    assert mem['launched']['けっかい']['general'] == 'どうし'
+    assert mem['launched']['けっかい']['general'] == 'ゼウス'
 
 
 @pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm', 'map_target'])
@@ -419,7 +421,7 @@ def test_measured_empty_receipt_does_not_approve_boss_without_its_kit():
     assert policy._empty_sortie_inventory(measured_empty_sortie())
     assert policy.deploy_step(measured_empty_sortie(), mem) == []
     assert mem['_records'][-1]['decision'] == 'situation_held'
-    assert '1-B1' not in mem['order_context']
+    assert '1-B1' not in mem.get('order_context', {})
 
 
 def test_nonempty_uncalibrated_unknowns_remain_held():
@@ -602,7 +604,7 @@ def measured_loaded_sortie(cards=('フットバース',)):
     rows.setdefault(31, {}).update({136: 'へ', 144: 'い', 152: 'し', 208: '6', 224: 'に', 232: 'ん'})
     screen.lines = [TextLine(y, tuple(sorted(cells.items()))) for y, cells in sorted(rows.items())]
     screen.text = ''.join(line.known for line in screen.lines)
-    return screen
+    return actor_panel(screen, 'ゼウス')
 
 
 @pytest.mark.parametrize('right_edge', [156, 158])
@@ -656,7 +658,7 @@ def test_additional_card_requires_exact_plan_or_rejects_unmeasured_row(y):
 
 
 @pytest.mark.parametrize('step,cards,general', [
-    ('1-B1', ('クースカン', 'ノリウツール'), 'どうし'),
+    ('1-B1', ('クースカン', 'ノリウツール'), 'ゼウス'),
     ('1-C2', ('ダイチスイム', 'ダイチスイム', 'ブラッキー'), 'ココット'),
 ])
 def test_structured_multi_card_slots_are_only_approved_on_exact_chart_match(step, cards, general):
@@ -1003,9 +1005,11 @@ def test_priority_selection_input_missing_never_relabels_actual_hero(kind):
 def test_priority_actor_unknown_is_bounded_and_does_not_issue_more_a():
     mem = memory()
     policy.deploy_step(selected_list(['ゼウス']), mem)
+    screen = measured_card_select()
+    screen.lines = [line for line in screen.lines if line.y != 31]
     for _ in range(2):
-        assert policy.deploy_step(measured_card_select(), mem) == []
-    assert policy.deploy_step(measured_card_select(), mem) == [policy.pad('b'), policy.pad('b')]
+        assert policy.deploy_step(screen, mem) == []
+    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
     assert mem['active'] is None and not mem['sortie_actor_miss']
 
 
@@ -1039,7 +1043,7 @@ def test_broken_or_depleted_hero_may_open_list_but_only_companion_can_commit():
     other = memory()
     other.update(egg_uses={'どうし': 0}, house_eggs={'どうし': {'broken': True}},
                  garrison={'スペンソニア': ['どうし', 'ゼウス']})
-    assert policy.deploy_step(selected_list(['どうし']), other) == [policy.pad('b')]
+    assert policy.deploy_step(selected_list(['どうし']), other) == [policy.pad('b'), policy.pad('b')]
     assert other['active'] is None and not other.get('sortie_general')
 
 

@@ -68,6 +68,13 @@ class ManualRetroCornerManager(RetroCornerManager):
         self.state_path = Path(g.state_dir) / MANUAL_STATE_FILE
         self.lock_path = Path(g.state_dir) / MANUAL_LOCK_FILE
 
+    def start(self) -> CornerResult:
+        # Refuse before run_manual writes the rotation reservation: a refusal
+        # after it latches the rotation on a slot that can never run
+        # (hanjuku-hero from the WebUI, 2026-10-11).
+        self._validate_games()
+        return super().start()
+
     def _validate_games(self, names: list[str] | None = None) -> None:
         # Same ``(names=None)`` contract as the fixed managers: a rotation
         # dispatch may hand over the selected target, and every requested

@@ -43,6 +43,8 @@ from .naming import (
     validate_game_name,
     validate_runtime_id,
 )
+from .teardown_evidence import TeardownEvidence, bind_recorder
+from .log_redaction import redact_log_detail
 
 
 SCHEMA_VERSION = 2
@@ -133,46 +135,10 @@ def _safe_detail(exc: BaseException) -> str:
     return str(exc).replace("\n", " ")[:240]
 
 
-_AUTH_HEADER_CREDENTIAL = re.compile(
-    r"(?i)\b(?P<header>authorization\s*[:=]\s*)"
-    r"(?:bearer|basic|digest|negotiate)\s+\S+"
-)
-_STANDALONE_AUTH_CREDENTIAL = re.compile(
-    r"(?i)(?<![\w\-])(?:bearer|basic|digest|negotiate)\s+\S+"
-)
-_SECRET_KEY_VALUE = re.compile(
-    r"(?i)\b(?P<key>token|api[_-]?key|password|passwd|pwd|secret|"
-    r"stream[_-]?key|auth|authorization|bearer|session[_-]?key|"
-    r"private[_-]?key|client[_-]?secret)\b(?P<sep>\s*[:=]\s*)"
-    r"(?P<value>\"[^\"]*\"|'[^']*'|\S+)"
-)
-_ARGV_EXPR = re.compile(
-    r"(?i)\b(?:argv|command|cmd|args)\s*[:=]\s*"
-    r"(?:\[[^\]\n]*\]|\([^)\n]*\)|\"[^\"]*\"|'[^']*'|\S+)"
-)
-_URL_WHOLE = re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://[^\s\"']+")
-_LONG_OPAQUE_TOKEN = re.compile(r"\b(?:[0-9a-f]{32,}|[0-9A-Za-z+/]{24,}={0,2})\b")
-
-
 def _sanitize_log_detail(detail: str | None) -> str | None:
-    """Redact secrets from an event-log detail (design v2 §9).
+    """Redact complete input before enforcing the event log's 240-char limit."""
 
-    The log contract records no URLs, tokens, or argv: command expressions
-    and whole URLs are replaced outright, credential key=value pairs keep
-    only a redacted value, and leftover long opaque tokens are replaced.
-    Hosts are not preserved (a URL is a URL).  Game/window names,
-    generations, request ids and error codes survive.
-    """
-    if not detail:
-        return None
-    text = _safe_detail(detail)
-    text = _AUTH_HEADER_CREDENTIAL.sub(lambda m: f"{m['header']}<redacted>", text)
-    text = _STANDALONE_AUTH_CREDENTIAL.sub("<redacted>", text)
-    text = _ARGV_EXPR.sub("<redacted>", text)
-    text = _URL_WHOLE.sub("<redacted-url>", text)
-    text = _SECRET_KEY_VALUE.sub(lambda m: f"{m['key']}{m['sep']}<redacted>", text)
-    text = _LONG_OPAQUE_TOKEN.sub("<redacted>", text)
-    return text
+    return _safe_detail(redact_log_detail(detail)) if detail else None
 
 
 def _prepare_private_dir(path: Path) -> None:
@@ -575,7 +541,8 @@ def validate_receipt(
     missing = sorted(required - receipt.keys())
     if missing:
         raise StateCorruptError(f"request receiptに必須項目がありません: {missing}")
-    if receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION:
+    if (type(receipt.get("schema_version")) is not int
+            or receipt["schema_version"] != RECEIPT_SCHEMA_VERSION):
         raise StateCorruptError("request receiptのschemaが不正です")
     try:
         request_id = validate_request_id(receipt.get("request_id"))
@@ -633,6 +600,82 @@ def validate_receipt(
     for label in ("created_at", "updated_at"):
         if not isinstance(receipt.get(label), str) or not receipt.get(label):
             raise StateCorruptError(f"request receiptの{label}が不正です")
+
+
+RUNTIME_IDENTITY_KEYS = ("game", "adapter", "runtime_id", "generation", "lease_id")
+
+
+def committed_retirement_result(
+    runtime: Mapping[str, object],
+    receipt: Mapping[str, object] | None,
+    *,
+    require_terminal: bool = True,
+) -> Mapping[str, object] | None:
+    """Validate the immutable normal-commit proof on a retiring runtime.
+
+    The canonical commit and its terminal receipt bind *both* runtime
+    identities to the original request. Neither current active nor
+    last_result is authority for delayed retirement. An accepted receipt is
+    usable only by the locked coordinator to close the commit/receipt crash
+    window, never directly by an adapter to authorize a stop.
+    """
+    if "retirement" not in runtime:
+        return None
+    result = runtime["retirement"]
+    if not isinstance(result, dict) or not isinstance(receipt, Mapping):
+        raise StateCorruptError("retirement commit/receiptがありません")
+    # This proof boundary can also be called with a receipt already in memory.
+    if (type(receipt.get("schema_version")) is not int
+            or receipt["schema_version"] != RECEIPT_SCHEMA_VERSION):
+        raise StateCorruptError("retirement receiptのschemaが不正です")
+    source = result.get("source_runtime")
+    active = result.get("active_runtime")
+    if (not isinstance(source, dict) or set(source) != set(RUNTIME_IDENTITY_KEYS)
+            or type(source.get("generation")) is not int
+            or source != {key: runtime.get(key) for key in RUNTIME_IDENTITY_KEYS}
+            or not isinstance(active, dict)
+            or set(active) != {"game", "runtime_id", "generation", "lease_id"}
+            or type(active.get("generation")) is not int
+            or type(result.get("generation")) is not int
+            or result["generation"] != active["generation"]
+            or active["generation"] <= source["generation"]):
+        raise StateCorruptError("retirement source/destination identityが一致しません")
+    try:
+        request_id = validate_request_id(result.get("request_id"))
+        validate_game_name(source["game"])
+        validate_game_name(active["game"])
+        validate_request_id(active["lease_id"])
+        if source["lease_id"] is not None:
+            validate_request_id(source["lease_id"])
+        if (runtime_id_generation(source["runtime_id"]) != source["generation"]
+                or runtime_id_generation(active["runtime_id"]) != active["generation"]):
+            raise NameValidationError("retirement generation mismatch")
+    except (NameValidationError, TypeError) as exc:
+        raise StateCorruptError("retirement identityの形式が不正です") from exc
+    operation = result.get("operation")
+    if (operation not in {"start", "switch", "restart", "rotate"}
+            or result.get("status") != "succeeded"
+            or result.get("from_game") != source["game"]
+            or result.get("to_game") != active["game"]
+            or receipt.get("request_id") != request_id
+            or receipt.get("operation") != operation
+            or receipt.get("target") != (None if operation == "rotate" else active["game"])
+            or type(receipt.get("generation")) is not int
+            or receipt["generation"] != active["generation"]
+            or receipt.get("runtime_id") != active["runtime_id"]):
+        raise StateCorruptError("retirement request/receipt identityが一致しません")
+    if receipt.get("status") == "succeeded":
+        saved_result = receipt.get("result")
+        # Python equality aliases True/1 and 3.0/3. Reject those in each
+        # copy of the proof instead of treating dict equality as type proof.
+        if (not isinstance(saved_result, dict) or saved_result != result
+                or type(saved_result.get("generation")) is not int
+                or type(saved_result.get("source_runtime", {}).get("generation")) is not int
+                or type(saved_result.get("active_runtime", {}).get("generation")) is not int):
+            raise StateCorruptError("terminal retirement receiptの証拠が一致しません")
+    elif require_terminal or receipt.get("status") != "accepted" or receipt.get("result") is not None:
+        raise StateCorruptError("retirement receiptは成功済みではありません")
+    return result
 
 
 class RequestReceiptStore:
@@ -711,8 +754,23 @@ class RequestReceiptStore:
         receipts = self.receipts()
         if len(receipts) <= max_receipts:
             return 0
+        # A pending retirement still needs its original terminal receipt.
+        # Retention is a soft cap until those exact identities are cleaned.
+        state, _missing = CanonicalStateStore(self.state_dir).load()
+        pinned: set[str] = set()
+        for runtime in state.get("retiring") or []:
+            if "retirement" not in runtime:
+                continue
+            proof = runtime["retirement"]
+            if not isinstance(proof, dict):
+                raise StateCorruptError("retirement receipt pinが不正です")
+            try:
+                pinned.add(validate_request_id(proof.get("request_id")))
+            except NameValidationError as exc:
+                raise StateCorruptError("retirement receipt pinが不正です") from exc
         terminal = sorted(
-            (r for r in receipts if r.get("status") in TERMINAL_RECEIPT_STATUSES),
+            (r for r in receipts if r.get("status") in TERMINAL_RECEIPT_STATUSES
+             and r.get("request_id") not in pinned),
             key=lambda r: str(r.get("updated_at", "")),
         )
         removable = min(len(terminal), len(receipts) - max_receipts)
@@ -1126,10 +1184,12 @@ class GameSwitchStore:
                 ):
                     last_result = state.get("last_result")
                     if (
-                        isinstance(last_result, dict)
-                        and last_result.get("request_id") == request_id
-                        and last_result.get("status")
-                        in TERMINAL_RECEIPT_STATUSES
+                        (isinstance(last_result, dict)
+                         and last_result.get("request_id") == request_id
+                         and last_result.get("status") in TERMINAL_RECEIPT_STATUSES)
+                        or any(isinstance(rt.get("retirement"), dict)
+                               and rt["retirement"].get("request_id") == request_id
+                               for rt in state.get("retiring") or [])
                     ):
                         # The commit already landed (crash between the
                         # commit write and the receipt finish): canonical
@@ -1821,6 +1881,10 @@ class GameSwitchCoordinator:
         self.event_log = event_log or EventLog(store.state_dir)
         self.mirror_writer = mirror_writer
         self.mirror_path = store.state_dir / "current_game"
+        # Evidence from the most recent _teardown_runtime call (Issue #1936).
+        # The retiring loop is serial under the game-switch lock, so one slot
+        # is enough: each teardown overwrites it and is read right after.
+        self.last_teardown_evidence: TeardownEvidence | None = None
 
     def _log_reset(self, request_id: str, operation: str, target: str | None) -> None:
         _log_ctx_var.set(
@@ -1999,13 +2063,34 @@ class GameSwitchCoordinator:
         *,
         timeout_s: float | None = None,
         abandon_program_view: bool = False,
+        expected_snapshot: Mapping[str, object] | None = None,
+        adopt_failed_candidate: bool = False,
     ) -> SwitchResult:
         self._log_reset("", "recover", None)
         try:
             with self.store.transaction() as tx:
                 deadline = time.monotonic() + (timeout_s if timeout_s is not None else self.default_timeout_s)
+                if expected_snapshot is not None:
+                    # An owner-only recovery can read a stable snapshot and a
+                    # terminal game, but another legitimate switch may start
+                    # before it acquires the canonical writer lock. Refuse to
+                    # act on any changed state *inside* that same transaction.
+                    # Do not log/surface either snapshot; runtime metadata
+                    # belongs to the private store.
+                    observed, missing = self.store.canonical.load()
+                    if missing or observed != expected_snapshot:
+                        self._log("rejected", phase="", result="failed",
+                                  error_code=ERROR_SOURCE_FENCE_LOST)
+                        return SwitchResult(
+                            request_id="", operation="recover", status="failed",
+                            target=None, from_game=None, to_game=None,
+                            generation=None, error_code=ERROR_SOURCE_FENCE_LOST,
+                            detail="recover source changed before execution",
+                            warnings=(), cleanup_pending=True, receipt=None,
+                        )
                 recovered = self._recover_locked(
-                    tx, deadline=deadline, abandon_program_view=abandon_program_view
+                    tx, deadline=deadline, abandon_program_view=abandon_program_view,
+                    adopt_failed_candidate=adopt_failed_candidate,
                 )
                 self._log(
                     "recovery_finished", phase="",
@@ -3148,6 +3233,18 @@ class GameSwitchCoordinator:
         request; anything else fails closed with StateCorruptError."""
         state, _migrated = self.store.canonical.load()
         last_result = state.get("last_result")
+        from_retirement = False
+        for runtime in state.get("retiring") or []:
+            proof = runtime.get("retirement")
+            if isinstance(proof, dict) and proof.get("request_id") == request_id:
+                last_result = committed_retirement_result(
+                    runtime, self.store.receipts.load(request_id), require_terminal=False,
+                )
+                from_retirement = True
+                break
+        if (isinstance(last_result, dict) and last_result.get("source_runtime") is not None
+                and last_result.get("request_id") == request_id and not from_retirement):
+            raise StateCorruptError("正常退役のcommit markerがありません")
         if not isinstance(last_result, dict) or last_result.get("request_id") != request_id:
             return None
         status = last_result.get("status")
@@ -4021,8 +4118,6 @@ class GameSwitchCoordinator:
         state, _migrated = self.store.canonical.load()
         old_for_retiring = state.get("previous")
         retiring = state.get("retiring") or []
-        if old_for_retiring is not None:
-            retiring = [old_for_retiring, *retiring]
         from_game = old_active["game"] if old_active is not None else None
         last_result = {
             "request_id": acceptance.request_id,
@@ -4031,9 +4126,18 @@ class GameSwitchCoordinator:
             "from_game": from_game,
             "to_game": target,
             "generation": acceptance.generation,
+            "source_runtime": ({k: old_for_retiring[k] for k in RUNTIME_IDENTITY_KEYS}
+                               if old_for_retiring is not None else None),
             "active_runtime": {k: candidate_rd[k] for k in
                                ("game", "runtime_id", "generation", "lease_id")},
         }
+        if old_for_retiring is not None:
+            # Publish source identity + R atomically with the new active.
+            # Keep the complete commit result to reconcile a crash before
+            # finish_request even if a subsequent recovery loses active.
+            retired = copy.deepcopy(old_for_retiring)
+            retired["retirement"] = copy.deepcopy(last_result)
+            retiring = [retired, *retiring]
         # The single atomic commit write is the commit point (design §5 E).
         tx.transition(
             {"probing"}, "ready",
@@ -4093,8 +4197,18 @@ class GameSwitchCoordinator:
 
         A cleanup that returns without raising is not enough: the runtime
         must be observed dead before the coordinator drops it from tracking.
+
+        The teardown runs inside an evidence recorder (Issue #1936) so the
+        events the caller emits can state *what* was stopped and *how* it was
+        proven gone, instead of reporting a bare success or failure.
         """
+
+        evidence = TeardownEvidence()
         try:
+            # Bind the recorder to the adapter, not a contextvar: the
+            # coordinator runs each step in its own worker thread and a thread
+            # does not inherit the caller's contextvar values.
+            bind_recorder(adapter, evidence)
             self._call_adapter(
                 lambda cancel: adapter.stop_agent(deadline, cancel),
                 deadline,
@@ -4107,9 +4221,21 @@ class GameSwitchCoordinator:
                 self.step_timeouts.cleanup_s,
                 "cleanup",
             )
-            return self._wait_stopped(adapter, deadline)
-        except Exception:
-            return False
+            stopped = self._wait_stopped(adapter, deadline)
+        except Exception as exc:
+            stopped = False
+            evidence.error_code = _failure_code(exc, ERROR_INTERNAL)
+            evidence.add_remark(str(exc))
+        # The liveness probe is the proof of teardown, so it is recorded as
+        # such: a confirmed-dead teardown reports how it was confirmed, and a
+        # failed one reports why it could not be.
+        evidence.confirmed = stopped
+        if stopped:
+            evidence.probe = "adapter.alive=false"
+        else:
+            evidence.probe = evidence.probe or "消滅を確認できませんでした"
+        self.last_teardown_evidence = evidence
+        return stopped
 
     # --- stop ---------------------------------------------------------------
 
@@ -4288,7 +4414,8 @@ class GameSwitchCoordinator:
                     {"rolling_back"}, "rolling_back",
                     updates={
                         "candidate": None,
-                        "retiring": [candidate, *(state.get("retiring") or [])],
+                        "retiring": [{**candidate, "cleanup_role": "failed_candidate"},
+                                     *(state.get("retiring") or [])],
                     },
                     crash_hook=self.crash_hook,
                 )
@@ -4381,6 +4508,27 @@ class GameSwitchCoordinator:
     ) -> Mapping[str, object] | None:
         """Restore the previous runtime.  Returns the terminal receipt when
         the restore commits, or None when the restore failed."""
+        # A failed candidate may still be running (notably the external Soren
+        # singleton). Tracking it as retiring is NOT proof that it stopped.
+        # Both rollback and explicit recovery must finish cleanup before they
+        # start/re-lease another game. Recovery retries leftovers first.
+        state, _migrated = self.store.canonical.load()
+        live_singleton_only = False
+        if state.get("candidate") is None and state.get("retiring") and previous.get("adapter") == "soren":
+            try:
+                proof_adapter = self._make_adapter(RuntimeSpec.from_runtime(self.store.state_dir, previous), deadline)
+                proof = getattr(proof_adapter, "can_restore_live_singleton", None)
+                live_singleton_only = callable(proof) and self._call_adapter(
+                    lambda cancel: proof(deadline, cancel), deadline,
+                    self.step_timeouts.probe_s, "restore_singleton_identity",
+                ) is True
+            except Exception:
+                live_singleton_only = False
+        if state.get("candidate") is not None or (state.get("retiring") and not live_singleton_only):
+            warnings.append("未停止runtimeがあるためpreviousの再起動を拒否しました")
+            if cleanup_pending_out is not None:
+                cleanup_pending_out.append(True)
+            return None
         # Issue a fresh lease up front and bind the adapter to it, so an
         # agent started by the restore carries the lease that canonical
         # active will publish (no lease mismatch on rollback).
@@ -4393,6 +4541,9 @@ class GameSwitchCoordinator:
             warnings.append(f"previous adapter生成失敗: {_safe_detail(exc)}")
             return None
         previous_alive = self._probe_alive(previous_adapter, deadline)
+        if live_singleton_only and previous_alive is not True:
+            warnings.append("共有singletonの再起動は許可されていません")
+            return None
         if previous_alive is None:
             if previous_adapter.name == "program":
                 # The synthetic PAPER dashboard has no game state and is always
@@ -4428,6 +4579,17 @@ class GameSwitchCoordinator:
             except Exception as exc:
                 warnings.append(f"previous readiness確認失敗: {_safe_detail(exc)}")
                 return None
+            if live_singleton_only:
+                try:
+                    proven = self._call_adapter(
+                        lambda cancel: proof(deadline, cancel), deadline,
+                        self.step_timeouts.probe_s, "restore_singleton_recheck",
+                    )
+                except Exception:
+                    proven = False
+                if proven is not True:
+                    warnings.append("共有singletonの復帰直前照合に失敗しました")
+                    return None
             # Persist the new lease in previous BEFORE starting the agent so
             # the new worker can await a canonical identity and the old lease
             # is fenced out immediately (design v2 §5 F / §6).
@@ -4490,6 +4652,24 @@ class GameSwitchCoordinator:
             if cleanup_pending_out is not None:
                 cleanup_pending_out.append(pending)
             return receipt_done
+
+        # A stopped game need not be restartable: NetHack without its save
+        # would create a NEW adventure after death, not restore the old one.
+        # Adapters may require positive continuation evidence. Do not allocate
+        # a generation or start anything when that evidence is unknown.
+        can_restore = getattr(previous_adapter, "can_restore_stopped_runtime", None)
+        if callable(can_restore):
+            try:
+                allowed = self._call_adapter(
+                    lambda cancel: can_restore(deadline, cancel),
+                    deadline, self.step_timeouts.probe_s, "restore_continuity",
+                )
+            except Exception as exc:
+                warnings.append(f"previousの継続証拠を確認できません: {_safe_detail(exc)}")
+                return None
+            if allowed is not True:
+                warnings.append("previousの継続証拠がないため新規ゲームへの置換を拒否しました")
+                return None
 
         # Replace mode: the previous game was stopped, so restore it as a
         # fresh generation (design §5 F).
@@ -4566,7 +4746,8 @@ class GameSwitchCoordinator:
                         {"rolling_back"}, "rolling_back",
                         updates={
                             "candidate": None,
-                            "retiring": [state["candidate"], *(state.get("retiring") or [])],
+                            "retiring": [{**state["candidate"], "cleanup_role": "failed_candidate"},
+                                         *(state.get("retiring") or [])],
                         },
                         crash_hook=self.crash_hook,
                     )
@@ -4677,23 +4858,44 @@ class GameSwitchCoordinator:
                 "cleanup_started", phase=str(state.get("phase")),
                 generation=runtime.get("generation"),
                 runtime_id=runtime.get("runtime_id"),
+                detail=_retiring_targets_detail(runtime),
             )
+            evidence: TeardownEvidence | None = None
             try:
+                if "retirement" in runtime:
+                    proof = runtime["retirement"]
+                    if not isinstance(proof, dict):
+                        raise StateCorruptError("retirement commitが不正です")
+                    original = self.store.receipts.load(proof.get("request_id"))
+                    result = committed_retirement_result(runtime, original, require_terminal=False)
+                    if original["status"] == "accepted":
+                        tx.finish_request(original["request_id"], "succeeded", result)
                 adapter = self._make_adapter(
                     RuntimeSpec.from_runtime(self.store.state_dir, runtime), deadline
                 )
                 torn_down = self._teardown_runtime(adapter, deadline)
-            except Exception:
+                evidence = self.last_teardown_evidence
+            except Exception as exc:
                 torn_down = False
+                evidence = _evidence_from_exception(exc)
             if not torn_down:
                 cleanup_pending = True
                 remaining.append(runtime)
                 warnings.append("retiring runtimeの停止を確認できませんでした")
+                self._log(
+                    "cleanup_failed", phase=str(state.get("phase")),
+                    generation=runtime.get("generation"),
+                    runtime_id=runtime.get("runtime_id"),
+                    result="failed", cleanup_pending=True,
+                    detail=_teardown_detail(evidence, runtime),
+                )
             else:
                 self._log(
                     "cleaned", phase=str(state.get("phase")),
                     generation=runtime.get("generation"),
                     runtime_id=runtime.get("runtime_id"),
+                    result="cleaned",
+                    detail=_teardown_detail(evidence, runtime),
                 )
         if len(remaining) != len(retiring):
             tx.transition(
@@ -4705,6 +4907,9 @@ class GameSwitchCoordinator:
             self._log(
                 "cleanup_pending", phase=str(state.get("phase")),
                 cleanup_pending=True,
+                detail="未回収のretiring runtime=" + ",".join(
+                    _retiring_label(runtime) for runtime in remaining
+                ),
             )
         return cleanup_pending
 
@@ -4878,6 +5083,7 @@ class GameSwitchCoordinator:
         *,
         deadline: float,
         abandon_program_view: bool = False,
+        adopt_failed_candidate: bool = False,
     ) -> SwitchResult:
         state = self.store.canonical.initialize()
         phase = state["phase"]
@@ -4928,6 +5134,8 @@ class GameSwitchCoordinator:
                 cleanup_pending=False,
                 receipt=None,
             )
+        if phase == "failed" and adopt_failed_candidate:
+            return self._recover_adopt_failed_candidate_locked(tx, deadline, warnings)
         if phase == "failed":
             state, _migrated = self.store.canonical.load()
             cleanup_pending = self._cleanup_leftovers_locked(tx, state, deadline, warnings)
@@ -4940,6 +5148,26 @@ class GameSwitchCoordinator:
                 and previous.get("adapter") == "program"
                 and active is None
             )
+            released_terminal = None
+            if (isinstance(previous, Mapping) and active is None and not cleanup_pending
+                    and state.get("candidate") is None and not state.get("retiring")
+                    and previous.get("adapter") == "retroarch"
+                    and previous.get("game") == "hanjuku-hero"):
+                try:
+                    adapter = self._make_adapter(
+                        RuntimeSpec.from_runtime(self.store.state_dir, previous), deadline)
+                    verify = getattr(adapter, "can_release_terminal_previous", None)
+                    if callable(verify) and self._call_adapter(
+                            lambda cancel: verify(deadline, cancel), deadline,
+                            self.step_timeouts.probe_s, "terminal_previous"):
+                        if not self._teardown_runtime(adapter, deadline):
+                            raise AdapterError("terminal previous cleanup is unconfirmed")
+                        released_terminal = {key: previous[key] for key in
+                                             ("game", "runtime_id", "generation", "lease_id")}
+                        abandon = True
+                except Exception as exc:
+                    return self._recover_fail_locked(
+                        tx, state, warnings, _safe_detail(exc), ERROR_QUIESCE_FAILED)
             if previous is not None and not abandon:
                 return self._recover_from_previous_locked(
                     tx, previous, deadline, warnings, cleanup_pending
@@ -4956,6 +5184,10 @@ class GameSwitchCoordinator:
                 "error_code": None,
                 "detail": "failed状態から復旧しました",
             }
+            if released_terminal is not None:
+                prior = state.get("last_result") or {}
+                last_result.update(released_terminal=released_terminal,
+                                   restore_request_id=prior.get("request_id"))
             tx.transition(
                 {"failed"}, "idle",
                 updates={
@@ -5013,6 +5245,7 @@ class GameSwitchCoordinator:
                         torn_down = self._teardown_runtime(adapter, deadline)
                     except Exception:
                         torn_down = False
+                    cleanup_pending = not torn_down or bool(state.get("retiring"))
                     last_result = {
                         "request_id": "",
                         "operation": "recover",
@@ -5022,7 +5255,7 @@ class GameSwitchCoordinator:
                         "generation": active["generation"],
                         "error_code": ERROR_START_FAILED,
                         "detail": "active runtimeが失われています",
-                        "cleanup_pending": None if torn_down else True,
+                        "cleanup_pending": True if cleanup_pending else None,
                     }
                     updates = {
                         "active": None,
@@ -5056,7 +5289,7 @@ class GameSwitchCoordinator:
                         error_code=ERROR_START_FAILED,
                         detail="active runtimeが失われています",
                         warnings=tuple(warnings),
-                        cleanup_pending=not torn_down,
+                        cleanup_pending=cleanup_pending,
                         receipt=None,
                     )
                 if alive is None:
@@ -5199,6 +5432,103 @@ class GameSwitchCoordinator:
             detail="crash後にrecoveryで復旧しました",
         )
 
+    def _recover_adopt_failed_candidate_locked(
+        self,
+        tx: GameSwitchTransaction,
+        deadline: float,
+        warnings: list[str],
+    ) -> SwitchResult:
+        """Publish a failed-but-running candidate as active instead of killing it.
+
+        A rollback that could not stop the candidate leaves ``failed`` with
+        ``previous`` held and the candidate in ``retiring``. When that
+        candidate is in fact the live, wanted game, the ordinary recovery
+        would stop it and restart ``previous``. This operator-selected path
+        instead lets the adapter prove (canonical, immutable failed receipt,
+        broker, processes) that it is the same running candidate, and only
+        then commits it. Anything unproven leaves canonical untouched.
+        """
+
+        def refused(detail: str) -> SwitchResult:
+            self._log("recovery_adopt_refused", phase="failed", detail=detail)
+            return SwitchResult(
+                request_id="", operation="recover", status="failed", target=None,
+                from_game=None, to_game=None, generation=None,
+                error_code=ERROR_RECOVERY_REQUIRED, detail=detail,
+                warnings=tuple(warnings), cleanup_pending=True, receipt=None,
+            )
+
+        state, _migrated = self.store.canonical.load()
+        previous = state.get("previous")
+        retiring = state.get("retiring") or []
+        if (state.get("phase") != "failed" or not isinstance(previous, Mapping)
+                or state.get("active") is not None or state.get("candidate") is not None
+                or len(retiring) != 1
+                or retiring[0].get("cleanup_role") != "failed_candidate"):
+            return refused("採用できるfailed candidateの形ではありません")
+        failed = dict(retiring[0])
+        try:
+            adapter = self._make_adapter(RuntimeSpec.from_runtime(self.store.state_dir, failed), deadline)
+        except Exception as exc:
+            return refused(f"failed candidate adapter生成失敗: {_safe_detail(exc)}")
+        adopt = getattr(adapter, "adopt_failed_candidate", None)
+        if not callable(adopt):
+            return refused("このadapterはfailed candidateの採用に対応していません")
+        try:
+            adopted_ok = self._call_adapter(
+                lambda cancel: adopt(deadline, cancel), deadline,
+                max(deadline - time.monotonic(), 0.0), "adopt_failed_candidate",
+            )
+        except Exception as exc:
+            return refused(f"failed candidateの採用証明に失敗しました: {_safe_detail(exc)}")
+        if adopted_ok is not True:
+            return refused("failed candidateが稼働中の同一candidateであることを証明できません")
+        # The adapter settled its own residue; canonical must be unchanged.
+        current, _migrated = self.store.canonical.load()
+        if current != state:
+            return refused("採用の証明中にcanonical stateが変化しました")
+
+        active = {k: v for k, v in failed.items() if k != "cleanup_role"}
+        last_result = {
+            "request_id": "",
+            "operation": "recover",
+            "status": "succeeded",
+            "from_game": previous.get("game"),
+            "to_game": active["game"],
+            "generation": active["generation"],
+            "active_runtime": {k: active[k] for k in
+                               ("game", "runtime_id", "generation", "lease_id")},
+            "error_code": None,
+            "detail": "failed candidateを稼働中のまま採用しました",
+        }
+        # ``previous`` was already quiesced by the failed switch; retire it so
+        # finalize confirms its resources are released (idempotent teardown).
+        tx.transition(
+            {"failed"}, "ready",
+            updates={
+                "active": active,
+                "candidate": None,
+                "previous": None,
+                "retiring": [dict(previous)],
+                "operation": None,
+                "request_id": None,
+                "deadline_at": None,
+                "last_result": last_result,
+                "last_error": None,
+            },
+            crash_hook=self.crash_hook,
+        )
+        self._log("committed", phase="ready", result="succeeded")
+        self._emit_post_commit(active["game"])
+        cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings)
+        return SwitchResult(
+            request_id="", operation="recover", status="succeeded", target=None,
+            from_game=previous.get("game"), to_game=active["game"],
+            generation=active["generation"], error_code=None,
+            detail=last_result["detail"], warnings=tuple(warnings),
+            cleanup_pending=cleanup_pending, receipt=None,
+        )
+
     def _recover_from_previous_locked(
         self,
         tx: GameSwitchTransaction,
@@ -5240,10 +5570,11 @@ class GameSwitchCoordinator:
                 tx, state, warnings, "previous runtimeの復旧に失敗しました", "rollback_failed"
             )
         self._reconcile_dangling_receipt_locked(tx)
+        current, _migrated = self.store.canonical.load()
         return _result_from_receipt(
             restored,
             warnings=tuple(warnings),
-            cleanup_pending=cleanup_pending or any(pending_out),
+            cleanup_pending=bool(current.get("candidate") or current.get("retiring")) or any(pending_out),
         )
 
     def _recover_stop_locked(
@@ -5341,6 +5672,8 @@ class GameSwitchCoordinator:
         # ``recover`` result loses the generation/request needed by the next
         # recovery attempt and turns a transient readiness failure into
         # permanent canonical corruption.
+        current, _migrated = self.store.canonical.load()
+        cleanup_pending = bool(current.get("candidate") or current.get("retiring"))
         prior = state.get("last_result")
         prior = prior if isinstance(prior, Mapping) else {}
         last_result = {
@@ -5352,7 +5685,7 @@ class GameSwitchCoordinator:
             "generation": prior.get("generation"),
             "error_code": error_code,
             "detail": detail,
-            "cleanup_pending": None,
+            "cleanup_pending": True if cleanup_pending else None,
         }
         try:
             tx.transition(
@@ -5376,7 +5709,7 @@ class GameSwitchCoordinator:
             error_code=error_code,
             detail=detail,
             warnings=tuple(warnings),
-            cleanup_pending=False,
+            cleanup_pending=cleanup_pending,
             receipt=None,
         )
 
@@ -5408,7 +5741,8 @@ class GameSwitchCoordinator:
                     {str(current["phase"])}, str(current["phase"]),
                     updates={
                         "candidate": None,
-                        "retiring": [candidate, *(current.get("retiring") or [])],
+                        "retiring": [{**candidate, "cleanup_role": "failed_candidate"},
+                                     *(current.get("retiring") or [])],
                     },
                     crash_hook=self.crash_hook,
                 )
@@ -5420,7 +5754,9 @@ class GameSwitchCoordinator:
                         updates={"candidate": None},
                         crash_hook=self.crash_hook,
                     )
-        return cleanup_pending
+        # Failed candidates can already have been moved to retiring by an
+        # earlier rollback. Retry those BEFORE trying to restore previous.
+        return self._retry_retiring_locked(tx, deadline, warnings) or cleanup_pending
 
     def _finish_recovering_receipt(
         self,
@@ -5441,6 +5777,11 @@ class GameSwitchCoordinator:
         last_result = state.get("last_result")
         if not isinstance(last_result, dict):
             return
+        # New normal retirements are reconciled in _finalize_locked from
+        # their full commit/receipt identity. If that validation failed,
+        # mutable last_result must not silently authorize the same receipt.
+        if last_result.get("source_runtime") is not None:
+            return
         status = last_result.get("status")
         if status not in TERMINAL_RECEIPT_STATUSES:
             return
@@ -5459,3 +5800,56 @@ def _failure_code(exc: BaseException, default: str = ERROR_START_FAILED) -> str:
     if isinstance(exc, DeadlineExceededError):
         return ERROR_TIMEOUT
     return default
+
+
+# --- teardown evidence rendering (Issue #1936) ---------------------------
+
+
+def _retiring_label(runtime: Mapping[str, object]) -> str:
+    """Short identity of a retiring runtime (``g339-ba49eb5b``)."""
+
+    runtime_id = str(runtime.get("runtime_id") or "")
+    generation = runtime.get("generation")
+    return runtime_id or (f"gen={generation}" if generation is not None else "unknown")
+
+
+def _retiring_targets_detail(runtime: Mapping[str, object]) -> str:
+    """What a retiring runtime claims as its own tmux objects.
+
+    Recorded at ``cleanup_started`` because the objects are still readable
+    then; after the teardown they are gone, so the pre-teardown record is the
+    only way to know which windows/session were meant to be reclaimed.
+    """
+
+    parts = [_retiring_label(runtime)]
+    for key in ("game_window", "agent_window", "adapter_session"):
+        value = runtime.get(key)
+        if isinstance(value, str) and value:
+            parts.append(f"{key}={value}")
+    return " ".join(parts)
+
+
+def _evidence_from_exception(exc: BaseException) -> TeardownEvidence:
+    """Evidence for a teardown that could not even be started."""
+
+    evidence = TeardownEvidence()
+    evidence.error_code = _failure_code(exc, ERROR_INTERNAL)
+    evidence.add_remark(str(exc))
+    return evidence
+
+
+def _teardown_detail(
+    evidence: TeardownEvidence | None, runtime: Mapping[str, object]
+) -> str:
+    """Render teardown evidence as the event log's ``detail``.
+
+    The rendered line always starts with the runtime identity so a log reader
+    can group a ``cleanup_started`` / ``cleaned`` pair without cross-checking
+    the other fields.  Evidence an adapter did not produce is simply absent.
+    """
+
+    label = _retiring_label(runtime)
+    if evidence is None:
+        return label
+    rendered = evidence.render()
+    return f"{label} {rendered}".strip()

@@ -4,6 +4,7 @@ The roster/SELECT/status route reuses the measured broken-egg repair UI.
 No game/provider I/O lives here. Only the existing recall sender owns dispatch.
 """
 from . import hanjuku_roster as roster_receipts
+from .hanjuku_egg_stock import observed_uses
 
 RETRY_TICKS = 30
 ATTEMPT_LIMIT = 3
@@ -272,7 +273,7 @@ def _observe_egg(mem, info):
     """Store only a verified named panel's real quantity; never derive a zero."""
     from . import hanjuku_policy as p
     actor, uses, egg = info['general'], info.get('uses'), info.get('egg')
-    if type(uses) is not int or not 0 <= uses <= 4 or not _clean_name(egg):
+    if observed_uses(uses) is None or not _clean_name(egg):
         return
     counts, types = mem.setdefault('egg_uses', {}), mem.setdefault('egg_types', {})
     changed = counts.get(actor) != uses or types.get(actor) != egg
@@ -334,6 +335,7 @@ def _named_step(screen, mem, frame, state):
         if len(under) != 1:
             return _wait(mem, state, '本人focus後の現在tentとcursorが一致せず決定しない')
         state['target'] = list(under[0]['target'])
+        p._observe_recall_origin(screen, mem, frame, state)
         state['camp_observation'] = _observe_camp(screen, mem, frame, state, 'named_focus')
         if not _valid_camp(mem, state):
             _defer(mem, state, '現在tentと同episodeを束縛できず選択しない')

@@ -51,6 +51,16 @@ def _groups_stopped(children):
     return True
 
 
+# SDL2 の ffplay は、窓の framebuffer 用に OpenGL レンダラ(Mesa llvmpipe =
+# CPU のソフトウェア GL)を内部で作る。SDL_RENDER_DRIVER=software だけでは
+# 抑止できず(llvmpipe スレッドが居残る)、SDL_FRAMEBUFFER_ACCELERATION=0 も
+# 要る。VM(4 vCPU / Xvfb)での FlyHome 実測では、表示 ffplay 2 本の CPU のほぼ
+# 全て(約 1 コア)が llvmpipe だった。--sdl-software-render で両方を設定する。
+SDL_SOFTWARE_RENDER_ENV = {
+    'SDL_RENDER_DRIVER': 'software',
+    'SDL_FRAMEBUFFER_ACCELERATION': '0',
+}
+
 CELL_ASPECT_MIN = 0.25
 CELL_ASPECT_MAX = 4.0
 
@@ -192,6 +202,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument('--rebind-window', action='store_true')
     parser.add_argument('--align', choices=('center', 'left', 'right'), default='center')
     parser.add_argument('--runtime-state')
+    # Opt-in: make the viewer ffplay and the x11grab projection ffplay use
+    # SDL's CPU renderer instead of Mesa llvmpipe (software OpenGL, which burns
+    # ~1 core on a 4 vCPU VM for 960x540). Off by default so other games keep
+    # their current rendering path until each is measured.
+    parser.add_argument('--sdl-software-render', action='store_true')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     return parser
 
@@ -256,6 +271,8 @@ def main(argv=None) -> int:
                 os.close(write_fd)
         source_env = dict(os.environ, DISPLAY=f':{number}')
         source_env.pop('TMUX', None)
+        if args.sdl_software_render:
+            source_env.update(SDL_SOFTWARE_RENDER_ENV)
         # Route the viewer's audio to the requested PulseAudio sink (the
         # broadcast encoder captures `<sink>.monitor`). Only the viewer gets
         # this; the x11grab projection below stays video-only.
@@ -322,6 +339,8 @@ def main(argv=None) -> int:
         if not window:
             raise RuntimeError('native game viewer did not appear')
         output_env = dict(os.environ, DISPLAY=args.display)
+        if args.sdl_software_render:
+            output_env.update(SDL_SOFTWARE_RENDER_ENV)
 
         projection = {}
 
@@ -335,6 +354,8 @@ def main(argv=None) -> int:
             if width > 4096 or height > 2160:
                 raise RuntimeError('native viewer exceeds private display capacity')
             cell_note = '' if args.cell_stretch is None else f' cell-stretch={args.cell_stretch:g}'
+            if args.sdl_software_render:
+                cell_note += ' sdl=software'
             print(f'native={width}x{height} output={args.width}x{args.height} fit={args.fit}'
                   f' fps={args.framerate}{cell_note}', flush=True)
             player_width = args.width

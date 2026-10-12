@@ -316,6 +316,9 @@ class MerikenCornerAdapter(GameCornerAdapter):
 
 
 class NethackCornerAdapter(GameCornerAdapter):
+    def recovery_guard(self, reservation):
+        return self.manager.legacy_return_recovery_guard(reservation)
+
     def __init__(self, g, corner):
         from .nethack_corner import NethackCornerManager, GAME_NAME
         from .nethack_corner import load_nethack_corner_config

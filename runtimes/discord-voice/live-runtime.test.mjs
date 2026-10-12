@@ -490,6 +490,69 @@ test('barge-in during playback cancels output and never commits memory', async (
   assert.equal(await running, 0);
 });
 
+test('resident wake mode uses prior ambient context, answers only a wake, and commits only the delivered wake',async()=>{
+  const h=makeHarness('none'); const calls=[]; let receiver; let allow;
+  const originalResolve=h.runtimeOps.resolveVoiceChannel;
+  h.runtimeOps.resolveVoiceChannel=async()=>{
+    const result=await originalResolve();
+    result.channel.members=new Map([
+      ['3',{user:{bot:false},voice:{channelId:result.channel.id}}],
+      ['4',{user:{bot:false},voice:{channelId:result.channel.id}}],
+      ['5',{user:{bot:true},voice:{channelId:result.channel.id}}],
+      ['6',{user:{bot:false},voice:{channelId:'other'}}],
+    ]); return result;
+  };
+  const running=runLiveVoice({...env(),DOCICH_DISCORD_VOICE_TEST_TONE:'0',DOCICH_DISCORD_VOICE_WAKE_ENABLED:'1',
+    DOCICH_DISCORD_VOICE_RECEIVE_ENABLED:'1',DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED:'1',DOCICH_DISCORD_VOICE_TTS_ENABLED:'1'}, {
+    ...h.runtimeOps,emit:()=>{},
+    createStt:()=>({transcribe:async()=>''}),
+    createConversation:()=>({generate:async(text,ctx)=>{calls.push(['generate',text,ctx]);return {turnId:'wake-turn',reply:'返答です'};},
+      commit:async(turn,ctx)=>{calls.push(['commit',turn,ctx]);return 'committed';}}),
+    createTts:()=>({synthesize:async()=>new Int16Array(960)}),
+    createPlayback:()=>({play:async()=>{calls.push(['play']);},close(){}}),
+    attachReceiver:o=>{receiver=o.onTranscript;allow=o.allowSpeaker;assert.equal(o.onTargetSpeechStart,null);assert.equal(o.speechThreshold,200);assert.equal(o.subscribeOptions.end.duration,500);return {stop(){}};},
+  });
+  await waitFor(()=>receiver);
+  assert.equal(allow('3'),true); assert.equal(allow('5'),false); assert.equal(allow('6'),false); assert.equal(allow('99'),false);
+  const signal=new AbortController().signal;
+  await receiver('京都のお寺に行こう',{userId:'3',signal});
+  await new Promise(r=>setImmediate(r)); assert.equal(calls.length,0);
+  await receiver('同志、おすすめは？',{userId:'4',signal});
+  await waitFor(()=>calls.some(c=>c[0]==='commit'));
+  const gen=calls.find(c=>c[0]==='generate');
+  assert.equal(gen[2].userId,'4'); assert.deepEqual(gen[2].recentContext,[{userId:'3',text:'京都のお寺に行こう'}]);
+  const commit=calls.find(c=>c[0]==='commit'); assert.equal(commit[1].transcript,'同志、おすすめは？'); assert.equal(commit[1].recentContext,undefined);
+  assert.ok(calls.findIndex(c=>c[0]==='play')<calls.findIndex(c=>c[0]==='commit'));
+  h.signalTarget.emit('SIGINT'); assert.equal(await running,0);
+});
+
+test('resident A finishes playback and commit before B starts, with no cross-speaker interruption',async()=>{
+  const h=makeHarness('none');let receiver,releasePlay,releaseCommit;const order=[],events=[];let plays=0;
+  const heldPlay=new Promise(r=>{releasePlay=r;}),heldCommit=new Promise(r=>{releaseCommit=r;});
+  const resolve=h.runtimeOps.resolveVoiceChannel;
+  h.runtimeOps.resolveVoiceChannel=async()=>{const result=await resolve();result.channel.members=new Map([
+    ['3',{user:{bot:false},voice:{channelId:result.channel.id}}],['4',{user:{bot:false},voice:{channelId:result.channel.id}}],
+  ]);return result;};
+  const running=runLiveVoice({...env(),DOCICH_DISCORD_VOICE_TEST_TONE:'0',DOCICH_DISCORD_VOICE_WAKE_ENABLED:'1',
+    DOCICH_DISCORD_VOICE_RECEIVE_ENABLED:'1',DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED:'1',DOCICH_DISCORD_VOICE_TTS_ENABLED:'1'}, {
+    ...h.runtimeOps,emit:e=>events.push(e.event),createStt:()=>({transcribe:async()=>''}),
+    createConversation:()=>({generate:async(text,ctx)=>{order.push('generate:'+ctx.userId);return {turnId:ctx.userId,reply:'返答'};},
+      commit:async turn=>{order.push('commit-start:'+turn.turnId);if(turn.turnId==='3')await heldCommit;order.push('commit-end:'+turn.turnId);}}),
+    createTts:()=>({synthesize:async()=>new Int16Array(960)}),
+    createPlayback:()=>({play:async(_pcm,{signal})=>{plays++;order.push('play:'+plays);if(plays===1){await heldPlay;assert.equal(signal.aborted,false);}order.push('played:'+plays);},close(){}}),
+    attachReceiver:o=>{receiver=o.onTranscript;return {stop(){}};},
+  });
+  await waitFor(()=>receiver);const signal=new AbortController().signal;
+  await receiver('同志、Aの質問',{userId:'3',signal});await waitFor(()=>plays===1);
+  await receiver('背景の会話',{userId:'4',signal});
+  await receiver('同志、Bの質問',{userId:'4',signal});await new Promise(r=>setImmediate(r));
+  assert.equal(plays,1);assert.equal(order.includes('generate:4'),false);assert.equal(events.includes('playback_interrupted'),false);
+  releasePlay();await waitFor(()=>order.includes('commit-start:3'));assert.equal(order.includes('generate:4'),false);
+  releaseCommit();await waitFor(()=>order.includes('commit-end:4'));
+  assert.deepEqual(order,['generate:3','play:1','played:1','commit-start:3','commit-end:3','generate:4','play:2','played:2','commit-start:4','commit-end:4']);
+  assert.equal(events.includes('playback_interrupted'),false);assert.equal(events.includes('turn_interrupted'),false);
+  h.signalTarget.emit('SIGINT');assert.equal(await running,0);
+});
 
 test('memory scope channel is overridable for conversation and commit only', async () => {
   const signalTarget = new EventEmitter();
@@ -576,4 +639,114 @@ test('memory scope channel is overridable for conversation and commit only', asy
 
   signalTarget.emit('SIGINT');
   assert.equal(await running, 0);
+});
+
+for (const scenario of ['reply_after_12s', 'deadline_after_30s']) {
+  test(`live reply ${scenario} preserves bounded generation and playback-before-commit`, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const h = makeHarness('none');
+    const events = [];
+    let receiver;
+    let commits = 0;
+    let plays = 0;
+    let generationSignal;
+    const running = runLiveVoice({
+      ...env(), DOCICH_DISCORD_VOICE_TEST_TONE: '0',
+      DOCICH_DISCORD_VOICE_RECEIVE_ENABLED: '1',
+      DOCICH_DISCORD_VOICE_RECEIVE_USER_ID: '323456789012345678',
+      DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED: '1',
+      DOCICH_DISCORD_VOICE_TTS_ENABLED: '1',
+    }, {
+      ...h.runtimeOps, emit: e => events.push(e.event),
+      createStt: () => ({ transcribe: async () => '' }),
+      createConversation: () => ({
+        generate: (_text, {signal}) => {
+          generationSignal = signal;
+          return new Promise((resolve, reject) => {
+            const timer = scenario === 'reply_after_12s'
+              ? setTimeout(() => resolve({turnId: 'slow-valid', reply: '返答です'}), 12_000)
+              : null;
+            signal.addEventListener('abort', () => {
+              clearTimeout(timer);
+              reject(Error('fixture_cancelled'));
+            }, {once: true});
+          });
+        },
+        commit: async () => { assert.equal(plays, 1); commits++; return 'committed'; },
+      }),
+      createTts: () => ({ synthesize: async () => new Int16Array(960) }),
+      createPlayback: () => ({ play: async () => { plays++; }, close() {} }),
+      attachReceiver: options => { receiver = options.onTranscript; return {stop() {}}; },
+    });
+    try {
+      await waitFor(() => receiver);
+      const turn = receiver('artificial deadline fixture', {signal: new AbortController().signal});
+      await waitFor(() => generationSignal);
+      if (scenario === 'reply_after_12s') t.mock.timers.tick(12_000);
+      else {
+        t.mock.timers.tick(29_999);
+        assert.equal(generationSignal.aborted, false);
+        t.mock.timers.tick(1);
+      }
+      await turn;
+      if (scenario === 'reply_after_12s') {
+        assert.equal(commits, 1);
+        assert.ok(events.includes('llm_completed'));
+        assert.ok(!events.includes('llm_failed'));
+      } else {
+        assert.ok(generationSignal.aborted);
+        assert.equal(plays, 0);
+        assert.equal(commits, 0);
+        assert.ok(events.includes('llm_failed'));
+      }
+    } finally {
+      h.signalTarget.emit('SIGINT');
+      assert.equal(await running, 0);
+    }
+  });
+}
+
+for (const observerMode of ['normal', 'throws', 'rejects']) {
+  test(`local text observers preserve reply flow and keep normal logs text-free (${observerMode})`, async()=>{
+    const h=makeHarness('none');let receiver;const seen=[],events=[],synthesized=[];let commits=0;
+    const resolve=h.runtimeOps.resolveVoiceChannel;
+    h.runtimeOps.resolveVoiceChannel=async()=>{const r=await resolve();r.channel.members=new Map([['3',{user:{bot:false},voice:{channelId:r.channel.id}}]]);return r;};
+    const observer=kind=>text=>{seen.push([kind,text]);if(observerMode==='throws')throw Error('observer fixture');if(observerMode==='rejects')return Promise.reject(Error('observer fixture'));};
+    const running=runLiveVoice({...env(),DOCICH_DISCORD_VOICE_TEST_TONE:'0',DOCICH_DISCORD_VOICE_WAKE_ENABLED:'1',DOCICH_DISCORD_VOICE_RECEIVE_ENABLED:'1',DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED:'1',DOCICH_DISCORD_VOICE_TTS_ENABLED:'1'}, {
+      ...h.runtimeOps,emit:e=>events.push(e),createStt:()=>({transcribe:async()=>''}),
+      onTranscriptText:observer('transcript'),onSynthesisText:observer('tts_text'),
+      createConversation:()=>({generate:async()=>({turnId:'fixture-turn',reply:'人工の再生用本文'}),commit:async()=>{commits++;}}),
+      createTts:()=>({synthesize:async text=>{synthesized.push(text);return new Int16Array(960);}}),
+      createPlayback:()=>({play:async()=>{},close(){}}),attachReceiver:o=>{receiver=o.onTranscript;return {stop(){}};},
+    });
+    try{
+      await waitFor(()=>receiver);const signal=new AbortController().signal;
+      await receiver('人工の背景の会話',{userId:'3',signal});
+      assert.deepEqual(seen,[['transcript','人工の背景の会話']]);assert.equal(synthesized.length,0);
+      await receiver('同志、人工の質問',{userId:'3',signal});await waitFor(()=>commits===1);
+      assert.deepEqual(seen,[['transcript','人工の背景の会話'],['transcript','同志、人工の質問'],['tts_text','人工の再生用本文']]);
+      assert.deepEqual(synthesized,['人工の再生用本文']);
+      assert.ok(events.some(e=>e.event==='playback_completed'));assert.ok(events.some(e=>e.event==='memory_commit_completed'));
+      assert.ok(events.every(e=>!Object.hasOwn(e,'transcript')&&!Object.hasOwn(e,'reply')));
+    }finally{h.signalTarget.emit('SIGINT');assert.equal(await running,0);}
+  });
+}
+
+
+test('game state is sampled for each generated call without changing transcript, commits or logs',async()=>{
+ const h=makeHarness('none');let receiver;const payloads=[],events=[],commitTexts=[];let state='第3区間です。';let reads=0;
+ const running=runLiveVoice({...env(),DOCICH_DISCORD_VOICE_TEST_TONE:'0',DOCICH_DISCORD_VOICE_RECEIVE_ENABLED:'1',DOCICH_DISCORD_VOICE_RECEIVE_USER_ID:'323456789012345678',DOCICH_DISCORD_VOICE_CONVERSATION_ENABLED:'1',DOCICH_DISCORD_VOICE_TTS_ENABLED:'1'}, {
+  ...h.runtimeOps,emit:e=>events.push(e),getGameState:()=>{reads++;if(state==='throws')throw Error('fixture');return state;},
+  createStt:()=>({transcribe:async()=>''}),createConversation:()=>({generate:async(text,context)=>{payloads.push({text,gameState:context.gameState});return {turnId:'fixture-'+reads,reply:'返答です。'};},commit:async turn=>{commitTexts.push(turn.transcript);}}),
+  createTts:()=>({synthesize:async()=>new Int16Array(960)}),createPlayback:()=>({play:async()=>{},close(){}}),attachReceiver:o=>{receiver=o.onTranscript;return {stop(){}};},
+ });
+ try{
+  await waitFor(()=>receiver);const signal=new AbortController().signal;
+  for(const next of ['第3区間です。','休憩中です。',undefined,'throws']){state=next;await receiver('同志、現在の状況は？',{signal});}
+  assert.deepEqual(payloads.map(p=>p.gameState),['第3区間です。','休憩中です。',undefined,undefined]);
+  assert.ok(payloads.every(p=>p.text==='同志、現在の状況は？'));
+  assert.equal(commitTexts.length,4);assert.ok(commitTexts.every(text=>text==='同志、現在の状況は？'));
+  assert.ok(events.some(e=>e.event==='game_state_unavailable'));
+  assert.ok(events.every(e=>!JSON.stringify(e).includes('第3区間')&&!JSON.stringify(e).includes('休憩中')));
+ }finally{h.signalTarget.emit('SIGINT');assert.equal(await running,0);}
 });

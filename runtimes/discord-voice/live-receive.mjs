@@ -61,10 +61,10 @@ export function stereoPcm16ToMono(decoded) {
   return mono;
 }
 
-function voicedSamples(samples) {
+function voicedSamples(samples, threshold) {
   let energy = 0;
   for (const sample of samples) energy += sample * sample;
-  return energy / samples.length >= SPEECH_THRESHOLD ** 2
+  return energy / samples.length >= threshold ** 2
     ? samples.length
     : 0;
 }
@@ -72,12 +72,14 @@ function voicedSamples(samples) {
 export function attachLiveSttReceiver({
   connection,
   targetUserId,
+  allowSpeaker = null,
   stt,
   emit = () => {},
   debugTranscript = false,
   onTranscript = null,
   onTargetSpeechStart = null,
   createDecoder = defaultDecoder,
+  speechThreshold = SPEECH_THRESHOLD,
   subscribeOptions = Object.freeze({
     end: Object.freeze({
       behavior: EndBehaviorType.AfterSilence,
@@ -91,19 +93,27 @@ export function attachLiveSttReceiver({
     typeof receiver.speaking.on !== 'function' ||
     typeof receiver.speaking.off !== 'function' ||
     typeof receiver.subscribe !== 'function' ||
-    typeof targetUserId !== 'string' ||
-    !/^[1-9][0-9]{0,19}$/.test(targetUserId) ||
+    (allowSpeaker === null
+      ? (typeof targetUserId !== 'string' || !/^[1-9][0-9]{0,19}$/.test(targetUserId))
+      : typeof allowSpeaker !== 'function') ||
     typeof stt?.transcribe !== 'function' ||
     typeof emit !== 'function' ||
     (onTranscript !== null && typeof onTranscript !== 'function') ||
     (onTargetSpeechStart !== null && typeof onTargetSpeechStart !== 'function') ||
-    typeof createDecoder !== 'function'
+    typeof createDecoder !== 'function' ||
+    !Number.isFinite(speechThreshold) || speechThreshold < 50 || speechThreshold > 2000
   ) {
     throw new TypeError('invalid_live_receive_config');
   }
 
   let stopped = false;
-  let captureActive = null;
+  const captures = new Map();
+  const admitted = (id) => {
+    try { return !stopped && (allowSpeaker ? allowSpeaker(id) === true : id === targetUserId); }
+    catch { return false; }
+  };
+  const maxCaptures = allowSpeaker ? 4 : 1;
+  const maxPending = allowSpeaker ? 4 : MAX_PENDING_STT;
   let sttActive = null;
   const sttQueue = [];
 
@@ -120,12 +130,14 @@ export function attachLiveSttReceiver({
 
     const item = sttQueue.shift();
     const controller = new AbortController();
-    const state = { controller, pcm: item.pcm };
+    const state = { controller, pcm: item.pcm, userId:item.userId };
     sttActive = state;
 
     void (async () => {
       try {
-        safeEmit({ event: 'stt_started' });
+        if (!admitted(state.userId)) return;
+        const sttStarted = performance.now();
+        safeEmit({ event: 'stt_started', queueWaitMs: Math.max(0, Math.round(sttStarted - item.queuedAt)) });
         let transcript;
         const sttTimeout = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
         sttTimeout.unref?.();
@@ -134,8 +146,8 @@ export function attachLiveSttReceiver({
             format: PCM,
             signal: controller.signal,
           });
-          if (controller.signal.aborted || stopped) return;
-          safeEmit({ event: 'stt_completed' });
+          if (controller.signal.aborted || !admitted(state.userId)) return;
+          safeEmit({ event: 'stt_completed', elapsedMs: Math.max(0, Math.round(performance.now() - sttStarted)) });
           if (debugTranscript) {
             safeEmit({ event: 'stt_debug_transcript', transcript });
           }
@@ -150,7 +162,7 @@ export function attachLiveSttReceiver({
 
         if (onTranscript && !controller.signal.aborted && !stopped) {
           try {
-            await onTranscript(transcript, { signal: controller.signal });
+            await onTranscript(transcript, { signal: controller.signal, userId:state.userId });
           } catch {
             // The trusted transcript handler owns sanitized stage diagnostics.
           }
@@ -164,22 +176,31 @@ export function attachLiveSttReceiver({
     })();
   };
 
-  const enqueueStt = (pcm) => {
+  const enqueueStt = (pcm, userId) => {
     if (stopped) {
       erase(pcm);
       return;
     }
-    if (sttActive && sttQueue.length >= MAX_PENDING_STT) {
+    const last = sttQueue.at(-1);
+    const gap = PCM.sampleRate / 5; // 200ms separator; never merge different humans.
+    if (allowSpeaker && last?.userId === userId &&
+        last.pcm.length + gap + pcm.length <= MAX_UTTERANCE_SAMPLES) {
+      const joined = new Int16Array(last.pcm.length + gap + pcm.length);
+      joined.set(last.pcm); joined.set(pcm, last.pcm.length + gap);
+      erase(last.pcm); erase(pcm); last.pcm = joined;
+      return;
+    }
+    if (sttActive && sttQueue.length >= maxPending) {
       erase(pcm);
       safeEmit({ event: 'stt_queue_full' });
       return;
     }
-    sttQueue.push({ pcm });
+    sttQueue.push({ pcm, userId, queuedAt: performance.now() });
     drainStt();
   };
 
   const capture = async (userId) => {
-    if (stopped || captureActive || userId !== targetUserId) return;
+    if (!admitted(userId) || captures.has(userId) || captures.size >= maxCaptures) return;
 
     const controller = new AbortController();
     let decoder;
@@ -205,12 +226,12 @@ export function attachLiveSttReceiver({
       samples: 0,
       voiced: 0,
     };
-    captureActive = state;
+    captures.set(userId, state);
     safeEmit({ event: 'utterance_started' });
 
     try {
       for await (const packet of stream) {
-        if (controller.signal.aborted || stopped) break;
+        if (controller.signal.aborted || !admitted(userId)) { controller.abort(); break; }
 
         let decoded;
         let mono;
@@ -229,7 +250,7 @@ export function attachLiveSttReceiver({
         }
 
         state.samples += mono.length;
-        state.voiced += voicedSamples(mono);
+        state.voiced += voicedSamples(mono, speechThreshold);
         state.chunks.push(mono);
       }
 
@@ -249,7 +270,7 @@ export function attachLiveSttReceiver({
       state.chunks = [];
 
       safeEmit({ event: 'utterance_finished' });
-      enqueueStt(pcm);
+      enqueueStt(pcm, userId);
     } catch {
       if (!controller.signal.aborted && !stopped) {
         safeEmit({ event: 'voice_receive_failed' });
@@ -268,12 +289,12 @@ export function attachLiveSttReceiver({
       }
       for (const chunk of state.chunks) erase(chunk);
       state.chunks = [];
-      if (captureActive === state) captureActive = null;
+      if (captures.get(userId) === state) captures.delete(userId);
     }
   };
 
   const onSpeakingStart = (userId) => {
-    if (userId === targetUserId && onTargetSpeechStart) {
+    if (admitted(userId) && onTargetSpeechStart) {
       try {
         onTargetSpeechStart();
       } catch {
@@ -290,10 +311,10 @@ export function attachLiveSttReceiver({
       stopped = true;
       receiver.speaking.off('start', onSpeakingStart);
 
-      if (captureActive) {
-        captureActive.controller.abort();
+      for (const capture of captures.values()) {
+        capture.controller.abort();
         try {
-          captureActive.stream.destroy?.();
+          capture.stream.destroy?.();
         } catch {
           // Fixed cleanup path.
         }
@@ -305,8 +326,8 @@ export function attachLiveSttReceiver({
     status() {
       return Object.freeze({
         enabled: !stopped,
-        active: Boolean(captureActive || sttActive),
-        capturing: Boolean(captureActive),
+        active: Boolean(captures.size || sttActive),
+        capturing: Boolean(captures.size),
         transcribing: Boolean(sttActive),
         queued: sttQueue.length,
       });

@@ -402,6 +402,141 @@ def test_rotation_adapter_loads_only_beta_control_env(tmp_path, monkeypatch):
     assert os.environ.get("DOCICH_BETA_CONTROL_URL") is None
 
 
+def _failed_rollback_setup(tmp_path):
+    """Craft the prod latch shape on disk: a start that failed *and* whose
+    rollback failed (``rollback_failed``), since recovered by a later
+    reviewed recovery back to the previous game."""
+    from docich.game_switch import runtime_names
+
+    g = _global(tmp_path)
+    manager = TsuitateCornerManager(g, coordinator=object())
+    request_id = str(uuid.uuid4())
+    previous_identity = {
+        "game": "sorengame",
+        "runtime_id": "g1-abcdef",
+        "generation": 1,
+        "lease_id": str(uuid.uuid4()),
+    }
+    manager._save({
+        "schema_version": 1,
+        "game": VIEW_NAME,
+        "status": "failed",
+        "rotation_request_id": request_id,
+        "start_request_id": request_id,
+        "switch_request_id": request_id,
+        "previous_game": "sorengame",
+        "previous_runtime_identity": previous_identity,
+        "requested_at": 1000.0,
+        "starting_at": 1000.0,
+        "completed_at": 1001.0,
+        "last_error_code": "rollback_failed",
+    })
+    names = runtime_names(1)
+    canonical = manager.store.initialize()
+    canonical.update(phase="ready", next_generation=2, active={
+        **previous_identity,
+        "adapter": "cli",
+        "game_window": names.game_window,
+        "agent_window": names.agent_window,
+        "adapter_session": names.adapter_session,
+        "started_at": "2026-10-07T05:19:02Z",
+    })
+    manager.store.canonical.save(canonical)
+    accepted = manager.store.accept_request(request_id, "switch", VIEW_NAME)
+    result = {
+        "request_id": request_id,
+        "operation": "switch",
+        "status": "failed",
+        "from_game": None,
+        "to_game": VIEW_NAME,
+        "generation": accepted.generation,
+        "error_code": "rollback_failed",
+    }
+    # The failed receipt never changed the owner: the previous game is still
+    # the stable active runtime after the reviewed recovery.
+    canonical, _ = manager.store.canonical.load()
+    canonical.update(phase="ready", operation=None, request_id=None,
+                     deadline_at=None, candidate=None, previous=None,
+                     retiring=[], next_generation=accepted.generation + 1,
+                     active={
+                         **previous_identity,
+                         "adapter": "cli",
+                         "game_window": names.game_window,
+                         "agent_window": names.agent_window,
+                         "adapter_session": names.adapter_session,
+                         "started_at": "2026-10-07T05:19:02Z",
+                     },
+                     last_result=result)
+    manager.store.canonical.save(canonical)
+    manager.store.finish_request(request_id, "failed", result)
+    return manager, request_id, previous_identity
+
+
+def test_rollback_failed_start_terminalizes_the_exact_previous_game(tmp_path):
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+
+    assert manager.reconcile_failed_start(request_id) is True
+
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == "interrupted"
+    assert state["end_reason"] == "switch-terminal-before-corner-active"
+    assert state["completed_at"] == 1001.0
+    assert state["rotation_request_id"] == request_id
+    # The terminal failed receipt is the evidence and is never rewritten.
+    assert manager.store.receipts.load(request_id)["status"] == "failed"
+
+
+def test_rollback_failed_start_stays_latched_when_another_game_owns_the_canonical(tmp_path):
+    from docich.game_switch import runtime_names
+
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    canonical, _ = manager.store.canonical.load()
+    names = runtime_names(2)
+    canonical["active"] = {
+        "game": "nethack", "runtime_id": "g2-abcdef", "generation": 2,
+        "lease_id": str(uuid.uuid4()), "adapter": "cli",
+        "game_window": names.game_window, "agent_window": names.agent_window,
+        "adapter_session": names.adapter_session,
+        "started_at": "2026-10-07T05:20:00Z",
+    }
+    canonical["next_generation"] = 3
+    manager.store.canonical.save(canonical)
+
+    assert manager.reconcile_failed_start(request_id) is False
+    assert json.loads(manager.path.read_text())["status"] == "failed"
+
+
+def test_rollback_failed_start_stays_latched_when_the_previous_game_generation_regressed(tmp_path):
+    manager, request_id, previous = _failed_rollback_setup(tmp_path)
+    state = json.loads(manager.path.read_text())
+    state["previous_runtime_identity"] = {**previous, "generation": 5}
+    manager._save(state)
+
+    assert manager.reconcile_failed_start(request_id) is False
+    assert json.loads(manager.path.read_text())["status"] == "failed"
+
+
+def test_rollback_failed_start_stays_latched_when_the_receipt_error_code_disagrees(tmp_path):
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    receipt = manager.store.receipts.load(request_id)
+    receipt["result"]["error_code"] = "start_failed"
+    manager.store.receipts.save(receipt)
+
+    assert manager.reconcile_failed_start(request_id) is False
+    assert json.loads(manager.path.read_text())["status"] == "failed"
+
+
+def test_rollback_failed_start_stays_latched_while_the_plane_needs_recovery(tmp_path):
+    manager, request_id, _previous = _failed_rollback_setup(tmp_path)
+    canonical, _ = manager.store.canonical.load()
+    canonical.update(phase="failed", operation="switch", request_id=str(uuid.uuid4()),
+                     deadline_at=None)
+    manager.store.canonical.save(canonical)
+
+    assert manager.reconcile_failed_start(request_id) is False
+    assert json.loads(manager.path.read_text())["status"] == "failed"
+
+
 def test_rotation_adapter_rejects_control_secret_reusing_webui_token(tmp_path, monkeypatch):
     home = tmp_path / "home"
     env_file = home / ".config" / "docich" / "webui.env"

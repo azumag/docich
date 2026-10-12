@@ -580,6 +580,18 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             if entry.is_file() and self._save_name_matches_player(entry.name)
         )
 
+    def can_restore_stopped_runtime(self, deadline: float, cancel) -> bool:
+        """Refuse rollback launches without a restore-only launcher contract.
+
+        Save names/size (even a structurally valid save) cannot prove that the
+        normal launcher will resume: NetHack may reject the save and fall back
+        to creating a new hero. Until launch can enforce continuation only,
+        a stopped adventure requires operator recovery. Living-runtime
+        rollback and explicit starts do not use this gate.
+        """
+        self._check_active(deadline, cancel)
+        return False
+
     def _save_signatures(self) -> dict[str, tuple[int, int]]:
         signatures: dict[str, tuple[int, int]] = {}
         for path in self._matching_save_files():

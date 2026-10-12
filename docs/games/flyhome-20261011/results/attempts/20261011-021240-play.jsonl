@@ -1,0 +1,11 @@
+{"attempt": 1, "outcome": "dead", "duration_s": 15.641, "best_dist": 108.8, "level_sig": 202777432201117, "events": 109}
+{"attempt": 2, "outcome": "dead", "duration_s": 13.556, "best_dist": 137.9, "level_sig": 202777432201117, "events": 124}
+{"attempt": 3, "outcome": "dead", "duration_s": 18.966, "best_dist": 58.2, "level_sig": 202777432201117, "events": 153}
+{"attempt": 4, "outcome": "dead", "duration_s": 14.54, "best_dist": 132.7, "level_sig": 202777432201117, "events": 130}
+{"attempt": 5, "outcome": "dead", "duration_s": 12.199, "best_dist": 141.4, "level_sig": 202777432201117, "events": 108}
+{"attempt": 6, "outcome": "dead", "duration_s": 21.085, "best_dist": 58.5, "level_sig": 138398039607659, "events": 210}
+{"attempt": 7, "outcome": "dead", "duration_s": 14.7, "best_dist": 132.8, "level_sig": 202777432201117, "events": 165}
+{"attempt": 8, "outcome": "dead", "duration_s": 13.591, "best_dist": 139.9, "level_sig": 202777432201117, "events": 157}
+{"attempt": 9, "outcome": "dead", "duration_s": 22.559, "best_dist": 54.0, "level_sig": 202777432201117, "events": 236}
+{"attempt": 10, "outcome": "dead", "duration_s": 22.609, "best_dist": 63.9, "level_sig": 202777432201117, "events": 204}
+{"attempt": 11, "outcome": "dead", "duration_s": 14.409, "best_dist": 135.8, "level_sig": 71704274604245, "events": 132}

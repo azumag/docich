@@ -17,7 +17,13 @@ from docich import cli, config, tts  # noqa: E402
 class TtsTestBase(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
         self.repo_root = Path(self._tmpdir.name)
+        # An in-checkout basetemp still belongs to this synthetic repository.
+        # Keep CLI calls on the same root as self.g, without changing CLI policy.
+        root_patch = mock.patch.object(cli, "_repo_root", return_value=self.repo_root)
+        self.addCleanup(root_patch.stop)
+        root_patch.start()
         self.games_dir = self.repo_root / "config" / "games"
         self.games_dir.mkdir(parents=True)
         self.submodule = self.repo_root / "games" / "soviet_now"
@@ -31,9 +37,6 @@ class TtsTestBase(unittest.TestCase):
             encoding="utf-8",
         )
         self.g = config.load_global(self.repo_root, config_path=self.toml)
-
-    def tearDown(self):
-        self._tmpdir.cleanup()
 
     def _write_game(self, name="sorengame", *, submodule="games/soviet_now"):
         (self.games_dir / f"{name}.toml").write_text(
@@ -54,6 +57,32 @@ class TtsTestBase(unittest.TestCase):
         path = self.repo_root / "input.txt"
         path.write_text(text, encoding="utf-8")
         return path
+
+
+class TestTtsFixtureIsolation(unittest.TestCase):
+    def test_cli_root_and_tempdir_are_restored_after_success_or_failure(self):
+        original_root = cli._repo_root
+        for failure in (None, "setUp", "runTest"):
+            with self.subTest(failure=failure):
+                class Probe(TtsTestBase):
+                    def setUp(self):
+                        super().setUp()
+                        self.assertEqual(cli._repo_root(), self.repo_root)
+                        if failure == "setUp":
+                            raise RuntimeError("synthetic setup failure")
+
+                    def runTest(self):
+                        self.assertEqual(cli._repo_root(), self.repo_root)
+                        if failure == "runTest":
+                            self.fail("synthetic test failure")
+
+                probe = Probe()
+                result = unittest.TestResult()
+                probe.run(result)
+                self.assertEqual(len(result.errors), int(failure == "setUp"))
+                self.assertEqual(len(result.failures), int(failure == "runTest"))
+                self.assertIs(cli._repo_root, original_root)
+                self.assertFalse(Path(probe._tmpdir.name).exists())
 
 
 class TestGameSubmodule(TtsTestBase):
@@ -453,6 +482,8 @@ class TestCliSay(TtsTestBase):
         self.assertEqual(rc, 0, err.getvalue())
         self.assertIn("docich: dry-run:", out.getvalue())
         self.assertIn("say_enqueue.sh", out.getvalue())
+        self.assertIn(f"cwd={self.submodule.resolve()}", out.getvalue())
+        self.assertIn(str((self.submodule / "say_enqueue.sh").resolve()), out.getvalue())
 
     def test_say_unknown_game_exits_2(self):
         out, err = io.StringIO(), io.StringIO()
@@ -474,6 +505,8 @@ class TestCliSay(TtsTestBase):
         content = out.getvalue()
         self.assertIn("docich: dry-run:", content)
         self.assertIn("content.txt", content)
+        self.assertIn(f"cwd={self.submodule.resolve()}", content)
+        self.assertIn(str((self.submodule / "say_enqueue.sh").resolve()), content)
 
     def test_say_text_content_written_to_private_file(self):
         from docich import tts as tts_mod

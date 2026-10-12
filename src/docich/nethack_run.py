@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .config import GlobalConfig, load_game
-from .game_switch import atomic_write_json
+from .game_switch import GameSwitchBusyError, GameSwitchStore, atomic_write_json
 
 SCHEMA_VERSION = 1
 PROGRESS_SCHEMA_VERSION = 1
@@ -165,6 +165,10 @@ class NethackRunStore:
         self.meta_path = self.root / "meta.json"
         self.current_path = self.root / "current.json"
         self.lock_path = self.root / ".lock"
+        # Capture the worker's own runtime, not whichever session is current
+        # when a delayed observation is eventually published.
+        self._progress_session = os.environ.get("DOCICH_GAME_SESSION")
+        self._progress_identity: tuple[object, ...] | None = None
 
     @classmethod
     def from_global(cls, g: GlobalConfig) -> "NethackRunStore | None":
@@ -180,12 +184,11 @@ class NethackRunStore:
         os.chmod(self.progress_dir, 0o700)
 
     def append_progress_sample(self, sample: dict[str, object]) -> bool:
-        """Append one bounded public-state sample without taking the run lock.
+        """Append a bounded sample and publish its observed turn without waiting.
 
-        The current pointer/run JSON are atomically replaced by lifecycle code,
-        so a best-effort read is enough here. Avoiding the shared run lock keeps
-        telemetry from waiting behind a save/finish transaction in the game
-        input path. A trace is deliberately capped and never stores raw TTY.
+        The trace remains best effort, capped, and free of raw TTY. The small
+        display update tries the lifecycle locks nonblockingly; it must never
+        wait behind a save/finish transaction in the game input path.
         """
         allowed = {
             "ts", "phase", "turn", "depth", "hp", "hp_max", "conditions",
@@ -260,6 +263,9 @@ class NethackRunStore:
             line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
             if len(line) > MAX_PROGRESS_LINE_BYTES:
                 raise NethackRunError("progress sample exceeds line size limit")
+            # The display must keep advancing even after the trace is capped.
+            # Only an observed T: value is published, never a sent-key count.
+            self._publish_observed_turn(run_id, sample)
             self._ensure_private_dirs()
             path = self.progress_dir / f"{run_id}.jsonl"
             flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
@@ -289,12 +295,68 @@ class NethackRunStore:
         except OSError as exc:
             raise NethackRunError("progress sample could not be written") from exc
 
+    def _publish_observed_turn(self, run_id: str, sample: dict[str, object]) -> None:
+        """Update the existing sidebar source for this worker's active run only.
+
+        Lock order matches the agent: game-switch shared, then run exclusive.
+        Both acquisitions are nonblocking. Xlog import remains authoritative
+        at termination; telemetry never changes lifecycle or terminal facts.
+        """
+        turn = sample["turn"]
+        if turn is None or not self._progress_session:
+            return
+        switch = GameSwitchStore(Path(self.g.state_dir))
+        try:
+            with switch.lock(exclusive=False):
+                state, _ = switch.canonical.load()
+                active = state.get("active")
+                if (
+                    state.get("phase") != "ready"
+                    or not isinstance(active, dict)
+                    or active.get("game") != "nethack"
+                    or active.get("adapter_session") != self._progress_session
+                    or not isinstance(active.get("runtime_id"), str)
+                    or not active["runtime_id"]
+                    or type(active.get("generation")) is not int
+                    or active["generation"] < 1
+                ):
+                    return
+                identity = (
+                    run_id, active["runtime_id"], active["generation"],
+                    active.get("lease_id"),
+                )
+                if self._progress_identity not in (None, identity):
+                    return
+                with self._locked(blocking=False):
+                    run = self._current_unlocked()
+                    if (
+                        run is None
+                        or run.get("run_id") != run_id
+                        or run.get("status") != "active"
+                    ):
+                        return
+                    started = dt.datetime.fromisoformat(str(run.get("last_started_at")))
+                    if started.tzinfo is None or sample["ts"] < started.timestamp():
+                        return
+                    self._progress_identity = identity
+                    previous = run.get("turns")
+                    if previous is not None and (
+                        type(previous) is not int or previous < 0 or turn <= previous
+                    ):
+                        return
+                    run["turns"] = turn
+                    self._write_run_unlocked(run)
+        except (BlockingIOError, GameSwitchBusyError):
+            # Display telemetry cannot stall gameplay or save/finish handling.
+            return
+
     @contextmanager
-    def _locked(self) -> Iterator[None]:
+    def _locked(self, *, blocking: bool = True) -> Iterator[None]:
         self._ensure_private_dirs()
         with self.lock_path.open("a+", encoding="utf-8") as handle:
             os.chmod(self.lock_path, 0o600)
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+            fcntl.flock(handle.fileno(), flags)
             try:
                 yield
             finally:
@@ -665,14 +727,20 @@ class NethackRunStore:
     def _terminal_record_since(
         self, offset: int
     ) -> tuple[dict[str, str] | None, str | None]:
+        records, error = self._terminal_records_since(offset)
+        return (records[-1], None) if records else (None, error)
+
+    def _terminal_records_since(
+        self, offset: int, *, complete_only: bool = False
+    ) -> tuple[list[dict[str, str]], str | None]:
         try:
             size = self.settings.xlogfile.stat().st_size
         except FileNotFoundError:
-            return None, "xlogfile-missing"
+            return [], "xlogfile-missing"
         except OSError as exc:
             raise NethackRunError("NetHack xlogfileを検査できません") from exc
         if size < offset:
-            return None, "xlogfile-truncated"
+            return [], "xlogfile-truncated"
         try:
             with self.settings.xlogfile.open("rb") as stream:
                 stream.seek(offset)
@@ -680,13 +748,63 @@ class NethackRunStore:
         except OSError as exc:
             raise NethackRunError("NetHack xlogfileを読めません") from exc
         records: list[dict[str, str]] = []
+        if complete_only and not raw.endswith(b"\n"):
+            raw = raw[:raw.rfind(b"\n") + 1]
         for line in raw.decode("utf-8", errors="replace").splitlines():
             record = parse_xlog_line(line)
             if record.get("name") == self.settings.player_name:
                 records.append(record)
         if not records:
-            return None, "no-new-player-xlog-record"
-        return records[-1], None
+            return [], "no-new-player-xlog-record"
+        return records, None
+
+    def record_confirmed_terminal(
+        self, *, expected_run_id: str, now: dt.datetime,
+        terminal_observed_at: dt.datetime,
+    ) -> dict[str, object] | None:
+        """Persist positive terminal evidence independently of restore success.
+
+        A screen marker alone is insufficient. Require the corner's run, one
+        complete player record after its xlog baseline, and an end between the
+        ledger start and the original terminal observation. Character selection
+        may finish after the ledger start; ubirthday is not a process start.
+        Ambiguous/missing evidence leaves the ledger untouched.
+        Later writes/retries cannot extend that observation window for rollback.
+        """
+        with self._locked():
+            run = self._current_unlocked()
+            if run is None:
+                path = self._run_path(expected_run_id)
+                if not path.is_file():
+                    return None
+                run = self._load_run_unlocked(expected_run_id)
+            if run.get("run_id") != expected_run_id:
+                return None
+            if run.get("status") in {"dead", "ascended", "ended"}:
+                # Repair/replay a terminal write followed by a crash before
+                # pointer unlink or before the corner persisted run_status.
+                if self._current_id_unlocked() == expected_run_id:
+                    self._clear_current_unlocked()
+                return dict(run)
+            if run.get("status") != "active" or self._current_id_unlocked() is None:
+                return None
+            offset = run.get("xlog_offset")
+            started = run.get("started_epoch")
+            if type(offset) is not int or offset < 0 or type(started) is not int:
+                raise NethackRunError("run terminal baselineが不正です")
+            records, _error = self._terminal_records_since(offset, complete_only=True)
+            if len(records) != 1:
+                return None
+            record = records[0]
+            start = _int_field(record, "starttime")
+            end = _int_field(record, "endtime")
+            observed = int(terminal_observed_at.timestamp())
+            if (terminal_observed_at.tzinfo is None or now.tzinfo is None
+                    or observed > int(now.timestamp())
+                    or start is None or end is None or start > end
+                    or not started <= end <= observed or not record.get("death")):
+                return None
+            return self._record_terminal_unlocked(run, now, record, None)
 
     @staticmethod
     def _terminal_payload(record: dict[str, str]) -> dict[str, object]:
@@ -715,12 +833,19 @@ class NethackRunStore:
         *,
         now: dt.datetime,
         nethack_still_active: bool,
+        expected_run_id: str | None = None,
     ) -> dict[str, object]:
-        """Close one program session and reconcile save/xlog evidence."""
+        """Close one program session and reconcile save/xlog evidence.
+
+        An asynchronous/failed restore may only finish its original expedition;
+        validate that identity inside the same lock as the terminal write.
+        """
         with self._locked():
             run = self._current_unlocked()
             if run is None:
                 raise NethackRunError("終了対象のcurrent NetHack runがありません")
+            if expected_run_id is not None and run.get("run_id") != expected_run_id:
+                raise NethackRunError("終了対象のNetHack run identityが変化しました")
             if run.get("status") not in {"active", "suspended"}:
                 raise NethackRunError("終了対象runのstatusが不正です")
 
@@ -742,42 +867,48 @@ class NethackRunStore:
             if type(offset) is not int or offset < 0:
                 raise NethackRunError("run xlog_offsetが不正です")
             record, analysis_error = self._terminal_record_since(offset)
-            self._close_open_session_unlocked(run, now, "terminal")
-            run["last_finished_at"] = now.isoformat()
-            if record is None:
-                run["status"] = "ended_unknown"
-                run["terminal"] = {
-                    "source": "xlogfile",
-                    "analysis_error": analysis_error,
-                }
-            else:
-                status = classify_terminal_record(record)
-                terminal = self._terminal_payload(record)
-                run["status"] = status
-                run["terminal"] = terminal
-                run["score"] = terminal["points"]
-                run["turns"] = terminal["turns"]
-                run["max_depth"] = terminal["maxlvl"]
-                run["death_reason"] = terminal["death"]
-                run["role"] = terminal["role"]
-                run["race"] = terminal["race"]
-                run["gender"] = terminal["gender"]
-                run["alignment"] = terminal["align"]
-                bits = terminal["achievement_bits"]
-                run["achievement_bits"] = bits
-                run["got_amulet"] = bool(
-                    isinstance(bits, int) and bits & AMULET_ACHIEVEMENT
-                )
+            return self._record_terminal_unlocked(run, now, record, analysis_error)
 
-            baseline = run.get("dump_baseline_mtime_ns")
-            if type(baseline) is int and baseline >= 0:
-                dump = self._new_dump_file(baseline)
-                if dump is not None:
-                    run["dump_file"] = dump.name
+    def _record_terminal_unlocked(
+        self, run: dict[str, object], now: dt.datetime,
+        record: dict[str, str] | None, analysis_error: str | None,
+    ) -> dict[str, object]:
+        self._close_open_session_unlocked(run, now, "terminal")
+        run["last_finished_at"] = now.isoformat()
+        if record is None:
+            run["status"] = "ended_unknown"
+            run["terminal"] = {
+                "source": "xlogfile",
+                "analysis_error": analysis_error,
+            }
+        else:
+            status = classify_terminal_record(record)
+            terminal = self._terminal_payload(record)
+            run["status"] = status
+            run["terminal"] = terminal
+            run["score"] = terminal["points"]
+            run["turns"] = terminal["turns"]
+            run["max_depth"] = terminal["maxlvl"]
+            run["death_reason"] = terminal["death"]
+            run["role"] = terminal["role"]
+            run["race"] = terminal["race"]
+            run["gender"] = terminal["gender"]
+            run["alignment"] = terminal["align"]
+            bits = terminal["achievement_bits"]
+            run["achievement_bits"] = bits
+            run["got_amulet"] = bool(
+                isinstance(bits, int) and bits & AMULET_ACHIEVEMENT
+            )
 
-            # Persist the terminal body before clearing the public current
-            # pointer. A crash between these writes leaves a stale pointer to a
-            # complete terminal run; prepare_start repairs that case safely.
-            self._write_run_unlocked(run)
-            self._clear_current_unlocked()
-            return dict(run)
+        baseline = run.get("dump_baseline_mtime_ns")
+        if type(baseline) is int and baseline >= 0:
+            dump = self._new_dump_file(baseline)
+            if dump is not None:
+                run["dump_file"] = dump.name
+
+        # Persist the terminal body before clearing the public current
+        # pointer. A crash between these writes leaves a stale pointer to a
+        # complete terminal run; prepare_start repairs that case safely.
+        self._write_run_unlocked(run)
+        self._clear_current_unlocked()
+        return dict(run)

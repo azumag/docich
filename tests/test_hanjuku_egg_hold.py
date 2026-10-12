@@ -95,7 +95,7 @@ def test_battle_step_keeps_the_measured_counts_on_the_battle():
 
 def egg_memory(ally_hp, enemy_hp, soldiers):
     mem = wounded_egg_memory()
-    mem['battle']['enemy_hp'] = enemy_hp
+    mem['battle'].update(enemy='マンゴスチン', enemy_hp=enemy_hp)  # same combat 12 as Venus
     screen = battle(mem)
     if soldiers is not None:
         screen.field_soldiers = soldiers
@@ -105,7 +105,10 @@ def egg_memory(ally_hp, enemy_hp, soldiers):
 
 
 def egg_screen(hp):
-    screen = wounded_egg_screen(hp)
+    # These tests isolate the general/army comparison. A dangerous summoned
+    # opponent has its own guard, exercised by test_hanjuku_summon_threat.
+    screen = wounded_egg_screen(hp, enemy='エッグスライム')
+    screen.egg_rows[1].hp = 45
     screen.text += 'たまごをつかう'
     return screen
 
