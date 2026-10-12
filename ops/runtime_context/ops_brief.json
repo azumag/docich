@@ -1,11 +1,11 @@
 {
-  "output_sha256": "3bc195d3f93b67ebfb7e01397bd46f56451b644832a87da40711affe930efa97",
+  "output_sha256": "b65ecc95fe8af54a2bfe598e2cbccc843dd677be1c99a5c09673b4fbef17ae60",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "924894da9c6df18fd36f4a94208029e433540794e14dbbeaa06e0ebfcd9134f6",
+  "source_sha256": "09d9492514a4b31a793a20c88e0542e13ccc47ca746d2b4b281a347929fa88d9",
   "topics": [
+    "半熟v176の同ラン反映と築城のmain同期",
     "個別卵回復のレビュー修正と築城往復の改善",
-    "半熟v175を同じランへ無停止反映、個別卵回復v176を準備",
-    "将軍の戦闘力を有利不利と卵温存の判断へ反映"
+    "半熟v175を同じランへ無停止反映、個別卵回復v176を準備"
   ]
 }
