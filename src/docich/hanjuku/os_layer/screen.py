@@ -666,6 +666,11 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         white = row_masks(frame, lambda r, g, b: min(r, g, b) > 200)
         screen.cursor = _free_cursor(white, frame)
     screen.kind = classify_text(screen)
+    if phase in (None, 'concert') and egg_ritual_recitation_panel(screen):
+        # g731: the priest sprite matches the orange hand colors. The exact
+        # recital has no selectable row; keep the sprite out of cursor input.
+        screen.hand = None
+        screen.selected = None
     if screen.kind == 'month_menu':
         positions = month_confirmation_positions(screen)
         if positions:
@@ -837,6 +842,20 @@ def classify_text(s: Screen) -> str:
     return 'unknown'
 
 
+def egg_ritual_recitation_panel(screen: Screen) -> bool:
+    """The measured g731 Namaste recital, including its false hand sprite."""
+    header = screen.header or {}
+    if (screen.kind != 'text' or screen.battle is not None or screen.egg_rows
+            or screen.hand not in (None, (116, 82, 137, 96))
+            or any(type(header.get(k)) is not int for k in ('year', 'month', 'gold'))
+            or header['year'] < 1 or not 1 <= header['month'] <= 12 or header['gold'] < 0):
+        return False
+    rows = [(line.y, line.spans()) for line in screen.lines if line.y >= 31 and line.spans()]
+    body = ''.join(line.span(24, 232).replace(' ', '') for line in screen.lines
+                   if 135 <= line.y <= 215)
+    return rows == [(151, [(24, '「ナマステ!')])] and body == '「ナマステ!'
+
+
 def resume_egg_ritual_panel(screen: Screen) -> bool:
     """Measured g725 priest preparation; never infer chapter or payment."""
     header = screen.header or {}
@@ -844,6 +863,8 @@ def resume_egg_ritual_panel(screen: Screen) -> bool:
             or any(type(header.get(k)) is not int for k in ('year', 'month', 'gold'))
             or header['year'] < 1 or not 1 <= header['month'] <= 12 or header['gold'] < 0):
         return False
+    if egg_ritual_recitation_panel(screen):
+        return True  # bounded foreground only; no chapter/payment/quantity
     rows = [(x, line.y, word) for line in screen.lines for x, word in line.spans()]
     body = ''.join(line.known.replace(' ', '') for line in screen.lines if line.y >= 175)
     return (rows.count((32, 47, 'ぜんかいふく')) == 1

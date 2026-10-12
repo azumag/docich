@@ -553,3 +553,21 @@ def test_native_priest_stall_restores_without_inventing_chapter_or_old_payment(s
     assert state['policy'].get('chapter') is None
     assert not state['policy'].get('month_sub') and not state['policy'].get('egg_uses')
     assert not state['policy'].get('orders')
+
+
+def test_native_namaste_stall_can_restore_only_bounded_foreground(setup):
+    from docich.hanjuku.os_layer.pixels import read_png
+    from docich.hanjuku.os_layer.screen import parse, resume_egg_ritual_panel
+    from docich.hanjuku.orchestrator import decide
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g731-priest-namaste.png')
+    assert frame.digest() == '7b0af6558effa6e61a270c3de4bd1bff7815d00e41fc23a44452c2159a37817a'
+    assert resume_egg_ritual_panel(parse(frame))
+    restore_test(setup, chapter=None, native_frame=frame)
+    receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['status'] == 'verified' and receipt['chapter'] is None
+    policy = read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
+    assert policy == {'name': {'done': True}, 'resume_chapter_pending': True,
+                      'resume_egg_ritual': {'readings': 0, 'month': '1-5'}}
+    actions, state = decide(frame, {'policy': policy})
+    assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
+    assert not state['policy'].get('egg_uses') and not state['policy'].get('month_sub')
