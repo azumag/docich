@@ -334,6 +334,9 @@ class NethackCornerManager(RetroCornerManager):
                     return CornerResult("queued", game=GAME_NAME, detail="NetHack tick is active")
                 with self._locked():
                     state = self._read_state()
+                    adopted = self._reconcile_adopted_return_locked(state, rotation)
+                    if adopted is not None:
+                        return adopted
                     if (state.get("game") == GAME_NAME
                             and state.get("status") in {"failed", "interrupted"}
                             and self._legacy_return_applies(state, rotation)):
@@ -650,6 +653,101 @@ class NethackCornerManager(RetroCornerManager):
         except Exception:
             return False
 
+    def _adopted_return_runtime_checks(self, state, canonical):
+        """Bounded read-only source absence and target liveness; never cleanup."""
+        from .adapters.soren import SorenCoordinatorAdapter
+        from .game_switch import RuntimeSpec
+        from .naming import runtime_id_generation, validate_runtime_id
+        from .tmux import Tmux
+        import time
+        original = validate_runtime_id(state.get("rotation_runtime_id"))
+        # CLI generations have private sessions; a failed tmux inventory must
+        # not be mistaken for an absent source. The normal shared server is
+        # the one used by this coordinator's automatic CLI runtimes.
+        raw = Tmux._run_bounded(["list-sessions", "-F", "#{session_name}"],
+                                operation="automatic return source inventory",
+                                max_output_bytes=65536, timeout_s=5.0)
+        absent = f"docich-game-g{runtime_id_generation(original)}" not in raw.decode().splitlines()
+        active = canonical.get("active") or {}
+        if active.get("game") != "sorengame" or active.get("adapter") != "soren":
+            return {"source_absent": absent, "target_alive": False}
+        adapter = SorenCoordinatorAdapter(self.g, load_game(self.g, "sorengame"),
+                    RuntimeSpec.from_runtime(Path(self.g.state_dir), active))
+        return {"source_absent": absent, "target_alive": adapter.alive(time.monotonic() + 15, None)}
+
+    def _reconcile_adopted_return_locked(self, state, rotation) -> CornerResult | None:
+        """Owner-fenced adopted candidate return reconciliation; never replay a game.
+
+        Caller holds rotation, tick and corner locks. The shared canonical
+        lock remains held through evidence preparation and the terminal write.
+        A crash may leave only a prepared record; retries must reprove the same
+        complete snapshot and immutable evidence before committing it.
+        """
+        from .game_switch import GameSwitchBusyError
+        from .corner_rotation import timestamp
+        from .nethack_return import ADOPTED_RECORD_KEY, ReturnUnproven, adopted_return_proof, adopted_record_matches
+
+        tracked = ADOPTED_RECORD_KEY in state
+        eligible = False
+        try:
+            with self.store.lock(exclusive=False):
+                canonical, missing = self.store.canonical.load()
+                result = canonical.get("last_result")
+                eligible = (not missing and isinstance(result, dict)
+                            and result.get("operation") == "recover"
+                            and isinstance(result.get("active_runtime"), dict))
+                if not tracked and not eligible:
+                    return None
+                now = self._local_now().astimezone(dt.timezone.utc)
+                ledger = rotation.load(timestamp(rotation.clock()))
+                player = self._run_store.settings.player_name
+
+                def prove():
+                    return adopted_return_proof(
+                        Path(self.g.state_dir), state, ledger, player=player, now=now,
+                        **self._adopted_return_runtime_checks(state, canonical),
+                    )
+
+                proof = prove()
+                record = state.get(ADOPTED_RECORD_KEY)
+                if record is not None:
+                    phase = adopted_record_matches(record, proof, now=now)
+                    if state["status"] == "interrupted" and phase == "committed":
+                        if prove() != proof:
+                            raise ReturnUnproven("adopted return evidence changed")
+                        return CornerResult("succeeded", game=GAME_NAME,
+                                            previous_game="sorengame",
+                                            detail="same adopted return already committed")
+                    if state["status"] != "failed" or phase != "prepared":
+                        raise ReturnUnproven("adopted return record phase differs")
+                else:
+                    if state["status"] != "failed":
+                        raise ReturnUnproven("adopted terminal evidence missing")
+                    # Re-read all evidence even with the honest-actor locks:
+                    # external file drift is never silently accepted.
+                    if prove() != proof:
+                        raise ReturnUnproven("adopted return evidence changed")
+                    state[ADOPTED_RECORD_KEY] = {
+                        **proof, "phase": "prepared", "prepared_at": now.isoformat(),
+                    }
+                    self._write_state(state)
+                if prove() != proof:
+                    raise ReturnUnproven("adopted return evidence changed")
+                state[ADOPTED_RECORD_KEY]["phase"] = "committed"
+                state["status"] = "interrupted"
+                self._write_state(state)
+                return CornerResult("succeeded", game=GAME_NAME,
+                                    previous_game="sorengame",
+                                    detail="adopted return reconciled without resource operations")
+        except GameSwitchBusyError:
+            return CornerResult("queued", game=GAME_NAME, detail="canonical lock busy")
+        except Exception:
+            # Ordinary legacy/rollback callers never enter this separate proof.
+            if not tracked and not eligible:
+                return None
+            return CornerResult("failed", game=GAME_NAME,
+                                detail="adopted return evidence unproven or changed")
+
     def _reconcile_legacy_return_locked(self, state, rotation) -> CornerResult:
         """Owner-approved legacy metadata reconciliation; never replay a game.
 
@@ -723,10 +821,15 @@ class NethackCornerManager(RetroCornerManager):
         from .corner_rotation import RotationError
         from .nethack_return import (
             RECORD_KEY, legacy_return_proof, read_record, saved_record_matches,
+            ADOPTED_RECORD_KEY, adopted_return_proof, adopted_record_matches,
         )
 
         state = self._read_state()
-        if (RECORD_KEY not in state and
+        adopted = ADOPTED_RECORD_KEY in state
+        record_key = ADOPTED_RECORD_KEY if adopted else RECORD_KEY
+        proof_fn = adopted_return_proof if adopted else legacy_return_proof
+        record_fn = adopted_record_matches if adopted else saved_record_matches
+        if (not adopted and RECORD_KEY not in state and
                 ("previous_game" in state or state.get("game") != GAME_NAME)):
             yield
             return
@@ -745,14 +848,15 @@ class NethackCornerManager(RetroCornerManager):
                 if ledger.get("pending") != reservation:
                     raise ValueError("legacy rotation reservation changed")
                 now = self._local_now().astimezone(dt.timezone.utc)
-                proof = legacy_return_proof(
-                    root, state, ledger, player=self._run_store.settings.player_name, now=now,
-                )
+                canonical, _missing = self.store.canonical.load()
+                def prove():
+                    facts = self._adopted_return_runtime_checks(state, canonical) if adopted else {}
+                    return proof_fn(root, state, ledger,
+                                    player=self._run_store.settings.player_name, now=now, **facts)
+                proof = prove()
                 if (state.get("status") != "interrupted"
-                        or saved_record_matches(state.get(RECORD_KEY), proof, now=now) != "committed"
-                        or legacy_return_proof(
-                            root, state, ledger, player=self._run_store.settings.player_name, now=now,
-                        ) != proof):
+                        or record_fn(state.get(record_key), proof, now=now) != "committed"
+                        or prove() != proof):
                     raise ValueError("legacy terminal return unproven")
             except Exception:
                 raise RotationError("legacy terminal return unproven or changed",
