@@ -90,9 +90,34 @@ def test_same_hp_owner_or_actor_change_discards_cached_damage_and_predicted_curs
     s = native(); s.menu_cursor = None
     # Counterfactual parsed panel: actor changed with identical old HP.
     s.egg_rows = [replace(r, name=enemy) if r.side == 'enemy' else r for r in s.egg_rows]
-    monster_menu_step(s, m)
+    assert monster_menu_step(s, m) == []
     assert m.get('monster_menu_choice') != 'skill2'
     assert m.get('monster_menu_cursor') != 192
+    assert m['monster_menu_cursor_recheck'] is True
+
+
+def test_changed_scope_waits_across_saved_unread_frames_then_uses_measured_row():
+    m = memory()
+    assert monster_menu_step(native(), m) == [pad('down')]
+    s = native(); s.menu_cursor = None
+    s.egg_rows = [replace(r, name='不明') if r.side == 'enemy' else r for r in s.egg_rows]
+    for _ in range(3):
+        m = json.loads(json.dumps(m))
+        assert monster_menu_step(s, m) == []
+        assert m['monster_menu_cursor_recheck'] is True
+    # Synthetic next reading confirms that the earlier down reached row192.
+    s.menu_cursor = 192
+    assert monster_menu_step(s, m) == [pad('up')]
+    assert m['monster_menu_choice'] == 'skill1'
+    s.menu_cursor = 176
+    assert monster_menu_step(s, m) == [pad('a')]
+
+
+def test_old_unbound_cached_choice_never_assumes_first_row_when_cursor_is_unread():
+    m = memory(); s = native(); s.menu_cursor = None
+    m['monster_menu_choice'] = 'skill2'  # old persisted version without scope
+    assert monster_menu_step(s, m) == []
+    assert m['monster_menu_cursor_recheck'] is True
 
 
 def test_unread_second_skill_does_not_activate_a_named_rule():

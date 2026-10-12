@@ -1029,10 +1029,13 @@ def monster_menu_step(screen: Screen, mem):
         return []
     row_texts = [''.join(line.known.split()) for line in rows]
     menu_key = tuple(row_texts)
+    had_cursor_context = (mem.get('monster_menu_choice_scope') is not None
+                          or mem.get('monster_menu_cursor') is not None
+                          or mem.get('monster_menu_choice') is not None)
     if mem.get('monster_menu_key') != menu_key:
         mem['monster_menu_key'] = menu_key
         for key in ('monster_menu_cursor', 'monster_menu_choice', 'monster_menu_choice_key',
-                    'monster_menu_choice_hp', 'monster_menu_choice_scope', 'monster_ally_max_hp'):
+                    'monster_menu_choice_hp', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_ally_max_hp'):
             mem.pop(key, None)
         mem['monster_menu_hold'] = 0
     skill_lines = [line for line, text in zip(rows, row_texts) if 'もどれ' not in text]
@@ -1055,6 +1058,16 @@ def monster_menu_step(screen: Screen, mem):
         mem.pop('monster_menu_choice', None)
         mem.pop('monster_menu_cursor', None)
         mem['monster_menu_choice_scope'] = scope
+        if had_cursor_context:
+            mem['monster_menu_cursor_recheck'] = True
+    if mem.get('monster_menu_cursor_recheck'):
+        if (type(screen.menu_cursor) is not int
+                or screen.menu_cursor not in {line.y for line in rows}):
+            _record(mem, 'monster_menu_wait', deviation_reason='scope_cursor_unread',
+                    observed_metric={'owner': owner, 'scope': scope},
+                    reason='所有者・召喚獣が変わり旧予測を破棄したため、実カーソルを再観測するまで確定しない')
+            return []
+        mem.pop('monster_menu_cursor_recheck', None)
     if owner == 'enemy':
         hold = int(mem.get('monster_menu_hold') or 0) + 1
         mem['monster_menu_hold'] = hold
