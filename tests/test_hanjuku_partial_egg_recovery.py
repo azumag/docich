@@ -192,3 +192,114 @@ def test_duplicate_named_quantities_cannot_bind_an_individual_selection():
     screen.lines.append(TextLine(119, tuple((32+8*i, ch) for i, ch in enumerate('ココット')) + ((104, '0'),)))
     assert p._egg_recovery_step(screen, mem, mem['month_sub']) == []
     assert not mem['month_sub'].get('individual_selected')
+
+
+def hero_list():
+    from docich.hanjuku_font import TextLine
+    screen = recovery_list(selected=119)
+    screen.lines.append(TextLine(119, tuple((32+8*i, ch) for i, ch in enumerate(p.NAME)) + ((104, '0'),)))
+    return screen
+
+
+def hero_memory(gold=130):
+    mem = memory(gold); mem['egg_uses'].update({'どうし': 0, 'ヴィーナス': 4})
+    return mem
+
+
+def test_hero_payment_keeps_other_zero_and_leaves_budget_for_next_actor():
+    mem = hero_memory()
+    assert p._egg_recovery_step(hero_list(), mem, mem['month_sub']) == [p.pad('a')]
+    assert mem['month_sub']['hero_selected'] is True
+    p._egg_recovery_step(quote(), mem, mem['month_sub'])
+    assert p._finish_month_sub(ready_menu(), mem, mem['shop'])
+    assert mem['shop']['egg_paid_actors'] == ['どうし']
+    assert mem['egg_uses'] == {'ゼウス': 1, 'ヴィーナス': 4, 'ココット': 0}
+    assert mem['shop']['egg'] == 'check' and mem['shop']['reserve'] == 100
+    assert mem['shop']['soldiers'] == 0 and p._own_egg_empty(mem, {'ally': 'どうし'})
+    mem['month_sub'] = {'kind': 'egg', 'gold_before': 80, 'presses': 0, 'key': '1-6', 'left_menu': True}
+    assert p._egg_recovery_step(recovery_list(), mem, mem['month_sub']) == [p.pad('a')]
+    assert mem['month_sub']['individual_actor'] == 'ココット'
+
+
+@pytest.mark.parametrize('gold,allowed', [(94, False), (95, True)])
+def test_hero_single_quote_reserves_the_entire_known_payroll(gold, allowed):
+    mem = hero_memory(gold)
+    mem['recruit_roster']['wages'] = {n: 0 if n == p.NAME else 15 for n in mem['recruit_roster']['names']}
+    assert p._hero_egg_wage_floor(mem) == 45
+    mem['month_sub']['hero_selected'] = True
+    assert p._egg_recovery_step(quote(gold), mem, mem['month_sub']) == [p.pad('a' if allowed else 'b')]
+    assert bool(mem['month_sub'].get('quoted_cost')) is allowed
+
+
+def test_large_known_payroll_keeps_hero_priority_when_full_quote_is_short():
+    mem = hero_memory(180)  # full150 + actual45 >180, but50 +45 fits
+    mem['recruit_roster']['wages'] = {n: 0 if n == p.NAME else 15 for n in mem['recruit_roster']['names']}
+    assert p._egg_recovery_step(hero_list(), mem, mem['month_sub']) == [p.pad('a')]
+    assert mem['month_sub']['hero_selected'] is True
+    assert not mem['month_sub'].get('individual_actor')
+
+
+def test_hero_selected_flag_cannot_verify_a_two_egg_debit():
+    mem = hero_memory(); mem['month_sub'].update(hero_selected=True, full_selected=False, quoted_cost=100, stage='recovering')
+    assert p._finish_month_sub(ready_menu(30), mem, mem['shop'])
+    assert mem['shop']['egg'] == 'unverified' and not mem['shop'].get('egg_paid_actors')
+    assert mem['egg_uses']['どうし'] == 0 and mem['egg_uses']['ココット'] == 0
+
+
+def test_unselected_actual_low_row_keeps_its_unpaid_reserve_after_partial_payment():
+    mem = memory(80)
+    mem['egg_uses'] = {'どうし': 4, 'ゼウス': 4, 'ヴィーナス': 4, 'ココット': 0}
+    mem['egg_recheck'] = []
+    mem['shop'].update(reserve=50, egg_cost=50)
+    # First inspect the list and actual full quote, then return to its low rows.
+    assert p._egg_recovery_step(recovery_list(selected=47), mem, mem['month_sub']) == [p.pad('down')]
+    # A hotloaded transaction may already have selected full recovery.
+    mem['month_sub']['full_selected'] = True
+    assert p._egg_recovery_step(quote(80, 2, 100), mem, mem['month_sub']) == [p.pad('b')]
+    assert p._egg_recovery_step(recovery_list(), mem, mem['month_sub']) == [p.pad('a')]
+    assert p._egg_recovery_step(quote(80), mem, mem['month_sub']) == [p.pad('a')]
+    assert p._finish_month_sub(ready_menu(30), mem, mem['shop'])
+    assert mem['egg_uses']['ゼウス'] == 1
+    assert p._egg_recovery_targets(mem) == ['ゼウス']
+    assert mem['shop']['egg'] == 'check' and mem['shop']['reserve'] == 50
+    assert mem['shop']['soldiers'] == 0
+
+
+def large_payroll_memory():
+    from docich import hanjuku_roster as r
+    mem = memory(112)
+    names = ['どうし', 'ココット', 'ゼウス', 'カシス', 'マスカット', 'カイン', 'サフラン']
+    mem['recruit_roster'].update(names=names, wages={n: r.fixed_wage(n) for n in names})
+    mem['egg_uses'] = {n: 4 for n in names}; mem['egg_uses']['ココット'] = 0
+    mem['egg_recheck'] = []; mem['shop'].update(reserve=50, egg_cost=50)
+    assert p._egg_recovery_wage_floor(mem) == 62
+    return mem
+
+
+def test_partial_payment_keeps_all_62g_payroll_before_a_soldier_confirmation():
+    from docich.hanjuku_font import TextLine
+    from test_hanjuku_soldier_receipts import quantity
+    mem = large_payroll_memory()
+    screen = recovery_list()
+    screen.lines = [TextLine(l.y, tuple((x, '4' if x == 104 else ch) for x, ch in l.cells))
+                    if l.y == 71 else l for l in screen.lines]
+    mem['month_sub']['full_selected'] = True
+    assert p._egg_recovery_step(quote(112, 2, 100), mem, mem['month_sub']) == [p.pad('b')]
+    assert p._egg_recovery_step(screen, mem, mem['month_sub']) == [p.pad('a')]
+    assert p._egg_recovery_step(quote(112), mem, mem['month_sub']) == [p.pad('a')]
+    assert p._finish_month_sub(ready_menu(62), mem, mem['shop'])
+    assert mem['shop']['egg'] == 'done' and mem['shop']['soldiers'] == 0
+    q = quantity(62); q.header['month'] = 6
+    p.quantity_step(q, mem, soldiers=True)
+    assert not mem['shop'].get('soldier_receipt')
+
+
+def test_hotloaded_old_soldier_plan_cannot_spend_known_62g_payroll():
+    from test_hanjuku_soldier_receipts import quantity
+    mem = large_payroll_memory(); mem.pop('month_sub')
+    mem['egg_uses']['ココット'] = 4
+    mem['shop'].update(egg='done', reserve=0, soldiers=32, soldier_tens=3,
+                       soldiers_done=False)
+    q = quantity(62); q.header['month'] = 6
+    p.quantity_step(q, mem, soldiers=True)
+    assert mem['shop']['soldiers'] == 0 and not mem['shop'].get('soldier_receipt')

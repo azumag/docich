@@ -6887,6 +6887,11 @@ def _limit_soldier_refill(mem, shop, header):
              and mem.get('soldiers_seen_key') == key
              and type(count) is int and count >= 0)
     cap = min(SOLDIER_CAP, max(0, target - count) if known else target)
+    payroll = _egg_recovery_wage_floor(mem)
+    gold = (header or {}).get('gold')
+    if payroll > WAGE_RESERVE and type(gold) is int:
+        cap = min(cap, max(0, gold - payroll - _month_held_reserve(shop)
+                           - shop.get('recruit_reserve', 0)))
     for field in ('soldiers', 'soldiers_target', 'soldiers_before_recruit'):
         value = shop.get(field)
         if type(value) is int and value >= 0:
@@ -8366,7 +8371,8 @@ def _finish_month_sub(screen, mem, shop) -> bool:
             and type(cost) is int and cost > 0 and type(gold) is int and type(before) is int
             and before - gold == cost)
     if sub['kind'] == 'egg':
-        receipt = (paid and (sub.get('full_selected') is True or sub.get('hero_selected') is True
+        receipt = (paid and (sub.get('full_selected') is True
+                            or (sub.get('hero_selected') is True and cost == EGG_RECOVER_COST)
                             or (_individual_egg_selected(mem, sub) and cost == EGG_RECOVER_COST
                                 and sub.get('stage') == 'recovering'))
                    and sub.get('left_menu') is True and not sub.get('aborted')
@@ -8410,7 +8416,9 @@ def _finish_month_sub(screen, mem, shop) -> bool:
     sub = mem.pop('month_sub')
     if sub['kind'] == 'egg' and sub.get('key') == mem.get('month'):
         from .hanjuku_roster import dirty_status
-        dirty_status(mem, [sub['individual_actor']] if _individual_egg_selected(mem, sub)
+        actor = (NAME if sub.get('hero_selected') is True and sub.get('full_selected') is not True
+                 else sub['individual_actor'] if _individual_egg_selected(mem, sub) else None)
+        dirty_status(mem, [actor] if actor
                      else _egg_recovery_targets(mem), fields=('egg',))
     if shop and shop.get(sub['kind']) == 'opened':
         shop[sub['kind']] = 'done' if paid else 'unverified'
@@ -8453,7 +8461,8 @@ def _finish_month_sub(screen, mem, shop) -> bool:
                                      'soldiers': shop['soldiers'], 'wage_reserve': WAGE_RESERVE},
                     reason='募集後の実残金から兵士予算を再計算し、追加出費で賃金予備を使い込まない')
     if paid and sub['kind'] == 'egg':
-        actor = sub.get('individual_actor') if _individual_egg_selected(mem, sub) else None
+        actor = (NAME if sub.get('hero_selected') is True and sub.get('full_selected') is not True
+                 else sub.get('individual_actor') if _individual_egg_selected(mem, sub) else None)
         if actor:
             # Only this actor's real payment was observed. Other generals'
             # counts/rechecks and every known zero retain their evidence.
@@ -8476,7 +8485,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
             mem.pop('egg_recheck', None)
         if shop and (shop.get('egg_priority') or shop.get('egg_before_recruit')):
             if not shop.get('soldiers_done'):
-                shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - WAGE_RESERVE - shop.get('reserve', 0)
+                shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - max(WAGE_RESERVE, _egg_recovery_wage_floor(mem)) - shop.get('reserve', 0)
                     - _house_repair_reserve(shop) - shop.get('recruit_reserve', 0)))
                 shop['soldiers_done'] = shop['soldiers'] == 0
     if sub['kind'] == 'chikujou':
@@ -8725,18 +8734,21 @@ def _hero_only_egg_recovery(screen, mem, sub):
     """
     if NAME not in _depleted_eggs(mem):
         return False
+    shop = mem.get('shop') or {}
+    if shop.get('key') == mem.get('month') and NAME in (shop.get('egg_paid_actors') or []):
+        return False
     if not any(x == 32 and word == NAME for x, y, word in _options(screen)):
         return False
     gold = sub.get('gold_before')
     repair = (mem.get('shop') or {}).get('hero_repair_reserve', 0)
     return (type(gold) is int and gold >= EGG_RECOVER_COST + repair + _hero_egg_wage_floor(mem)
-            and gold < _egg_measured_cost(mem) + repair + WAGE_RESERVE)
+            and (sub.get('full_quote_short') or gold < _egg_measured_cost(mem) + repair + _hero_egg_wage_floor(mem)))
 
 
 def _hero_egg_wage_floor(mem):
     """Wage floor for the hero's own egg: this month's measured payroll.
 
-    WAGE_RESERVE (30G) is a blind upper bound that keeps generals from being
+    WAGE_RESERVE (30G) is the unknown-payroll fallback that keeps generals from being
     fired. g604 3-11 had 68G and a measured payroll of 16G (0+4+4+5+3), so the
     blind floor refused the 50G that would have kept the hero alive. Only a
     fresh, complete roster with every wage read lowers it; otherwise 30G.
@@ -8748,7 +8760,7 @@ def _hero_egg_wage_floor(mem):
             or not isinstance(wages, dict) or set(wages) != set(receipt.get('names') or ())
             or any(type(v) is not int or not 0 <= v <= MAX_RECRUIT_WAGE for v in wages.values())):
         return WAGE_RESERVE
-    return min(WAGE_RESERVE, sum(wages.values()))
+    return sum(wages.values())
 
 
 def _egg_recovery_wage_floor(mem):
@@ -8779,6 +8791,29 @@ def _individual_egg_selected(mem, sub):
             and sub.get('individual_chapter') == mem['chapter']
             and sub.get('individual_selected') is True and isinstance(actor, str) and actor not in (NAME, 'しゅじんこう')
             and general_max_hp(actor) is not None and sub.get('key') == mem.get('month'))
+
+
+def _observe_recovery_list_quantities(screen, mem, sub):
+    """Retain each unique actual named row, including unpaid low-use eggs."""
+    from .hanjuku_roster import run_identity
+    if (run_identity(mem.get('_run_identity')) is None or sub.get('key') != mem.get('month')
+            or (mem.get('shop') or {}).get('key') != sub.get('key')):
+        return
+    rows = {}
+    for line in screen.lines:
+        cells = dict(line.spans())
+        actor = cells.get(32)
+        if 47 < line.y <= 199 and actor and general_max_hp(actor) is not None:
+            rows.setdefault(actor, []).append(cells.get(104))
+    for actor, readings in rows.items():
+        if len(readings) != 1 or readings[0] not in ('0', '1', '2', '3', '4'):
+            continue
+        quantity = int(readings[0])
+        mem.setdefault('egg_uses', {})[actor] = quantity
+        if quantity == 0:
+            mem['egg_zero_owners'] = sorted(set(mem.get('egg_zero_owners') or []) | {actor})[:32]
+        else:
+            _own_egg_empty(mem, {'ally': actor})
 
 
 def _individual_egg_candidate(screen, mem, sub):
@@ -8862,6 +8897,7 @@ def _egg_recovery_step(screen, mem, sub):
         return [move] if move else []
     if sub.get('stage') != 'recovering' and any(
             x == 32 and y == 47 and word == 'ぜんかいふく' for x, y, word in _options(screen)):
+        _observe_recovery_list_quantities(screen, mem, sub)
         if sub.get('hero_selected') or _hero_only_egg_recovery(screen, mem, sub):
             move = menu_to(screen, NAME)
             if move == 'here':
