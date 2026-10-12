@@ -6436,6 +6436,78 @@ def _project_hanjuku_card_assessment(value, tick):
     return out
 
 
+def _collect_hanjuku_projection_recovery(state_dir):
+    """Current adopted mirror/guard births only; no identifiers or argv emitted."""
+    result = {'status': 'unavailable', 'present': False, 'identity_matches': None,
+              'guard_alive': None, 'player_alive': None}
+    try:
+        root = Path(state_dir)
+        canonical, _ = _read_hanjuku_record(root / 'game_switch.json')
+        active = canonical.get('active')
+        if (not isinstance(active, dict) or active.get('game') != 'hanjuku-hero'
+                or type(active.get('generation')) is not int
+                or not isinstance(active.get('runtime_id'), str)
+                or not re.fullmatch(r'g[1-9][0-9]*-[a-f0-9]{8}', active['runtime_id'])
+                or active['generation'] != int(active['runtime_id'].split('-')[0][1:])
+                or not isinstance(active.get('lease_id'), str) or not active['lease_id']):
+            return result
+        runtime = root / 'runtimes' / active['runtime_id']
+        if runtime.is_symlink():
+            return result
+        path = runtime / _REG.HANJUKU_PROJECTION_RECOVERY['receipt_file']
+        if not path.exists():
+            return result
+        result['present'] = True
+        record, _ = _read_hanjuku_record(path)
+        expected = {k: active[k] for k in ('game', 'runtime_id', 'generation', 'lease_id')}
+        result['identity_matches'] = record.get('identity') == expected
+        if not result['identity_matches']:
+            result['status'] = 'unverified'
+            return result
+        def alive(entry, role):
+            if (not isinstance(entry, dict) or type(entry.get('pid')) is not int
+                    or entry['pid'] < 2 or not isinstance(entry.get('start'), str)
+                    or not entry['start'].isdecimal()):
+                return False
+            try:
+                raw = (Path('/proc') / str(entry['pid']) / 'stat').read_text()
+                fields = raw[raw.rfind(')')+2:].split()
+                if fields[0] == 'Z' or fields[19] != entry['start']:
+                    return False
+                argv_raw = (Path('/proc') / str(entry['pid']) / 'cmdline').read_bytes()
+                if len(argv_raw) > 8192:
+                    return False
+                argv = [word.decode() for word in argv_raw.split(b'\0') if word]
+                if role == 'guard':
+                    owner=record.get('game_owner') or {}
+                    return argv[1:] == ['-m', _REG.HANJUKU_PROJECTION_RECOVERY['module'], 'guard',
+                                        active['runtime_id'],str(owner.get('pid')),str(owner.get('start'))]
+                digest = record.get('player_argv_sha256')
+                if not argv or Path(argv[0]).name != 'ffplay' or not isinstance(digest, str):
+                    return False
+                argv[0] = 'ffplay'
+                return hashlib.sha256(json.dumps(argv).encode()).hexdigest() == digest
+            except (OSError, ValueError, IndexError):
+                return False
+        result['guard_alive'] = alive(record.get('guard'), 'guard')
+        result['player_alive'] = alive(record.get('player'), 'player')
+        status = record.get('status')
+        result['status'] = status if status in {'prepared', 'stopped', 'failed', 'cleanup_failed'} else 'unverified'
+        if status == 'ready' and result['guard_alive'] and result['player_alive']:
+            presentation, _ = _read_hanjuku_record(runtime / 'presentation.json')
+            recovery = presentation.get('recovery')
+            if (presentation.get('status') == 'ready' and presentation.get('projection') == record.get('projection')
+                    and isinstance(recovery, dict) and recovery.get('identity') == expected
+                    and recovery.get('player') == record.get('player') and recovery.get('guard') == record.get('guard')):
+                result['status'] = 'healthy'
+        again, _ = _read_hanjuku_record(root / 'game_switch.json')
+        if again != canonical:
+            result.update(status='unverified', identity_matches=False)
+        return result
+    except (OSError, ValueError, KeyError, TypeError):
+        return {**result, 'status': 'unverified'}
+
+
 def _collect_hanjuku_resume(state_dir):
     """Fixed metadata projection; does not read checkpoint/ROM bytes."""
     unavailable = {'status': 'unavailable', 'basis': 'resume_receipt'}
@@ -7617,6 +7689,7 @@ def main(argv):
         "corners": corners,
         "hanjuku_resume": _collect_hanjuku_resume(_program_state_dir()),
         "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
+        "hanjuku_projection_recovery": _collect_hanjuku_projection_recovery(_program_state_dir()),
         "tmux_servers": _collect_tmux_servers(),
         "pulse_sink_inputs": _collect_pulse_sink_inputs(),
         "resolver_daemon": _collect_resolver_daemon(),

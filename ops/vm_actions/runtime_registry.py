@@ -153,3 +153,14 @@ HANJUKU_DECISION_EVIDENCE = {
     "diagnostics_key": "corners.retro_corner.decision_plans",
     "queue_lane": None,
 }
+
+# Opt-in runtime-owned game pane. It replaces a structurally verified existing
+# video-only ffplay through a physical child of the existing game window.
+HANJUKU_PROJECTION_RECOVERY = {
+    "game": "hanjuku-hero",
+    "module": "docich.presentation_recovery",
+    "role": "game",
+    "receipt_file": "presentation_recovery.json",
+    "diagnostics_key": "hanjuku_projection_recovery",
+    "queue_lane": None,
+}
