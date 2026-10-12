@@ -11,7 +11,7 @@ import pytest
 
 from docich import hanjuku_policy as p
 from docich.hanjuku_font import TextLine
-from docich.hanjuku_pixels import read_png
+from docich.hanjuku_pixels import Frame, read_png
 from docich.hanjuku_screen import Screen, parse
 
 ROOT = Path(__file__).parent / 'fixtures/hanjuku'
@@ -132,3 +132,49 @@ def test_bool_in_saved_scope_cannot_match_the_integer_chapter():
     mem = memory(); p.battle_menu_step(native(30774), mem)
     mem['battle']['disabled_defense_probe']['chapter'] = True
     assert p.battle_menu_step(native(30774), mem) == [p.pad('b')]
+
+
+@pytest.mark.parametrize('kind', ['unknown', 'text', 'battle_menu_pending'])
+def test_fading_probe_waits_boundedly_then_closes_without_unknown_a(kind):
+    mem = memory(); p.battle_menu_step(native(30774), mem)
+    fade = Screen([], None, '', kind=kind)
+    for _ in range(3):
+        assert p.defender_egg_pending_step(fade, mem) == [{'type': 'wait', 'ms': 50}]
+    mem = json.loads(json.dumps(mem))
+    assert p.defender_egg_pending_step(fade, mem) == [p.pad('b')]
+    assert p.battle_menu_step(native(30774), mem) == [p.pad('b')]
+
+
+def test_pending_gray_return_uses_remaining_budget_without_reset():
+    mem = memory(); menu = native(30774)
+    p.battle_menu_step(menu, mem)
+    assert p.defender_egg_pending_step(menu, mem) == [p.pad('down')]
+    assert p.defender_egg_pending_step(menu, mem) == [p.pad('b')]
+    assert mem['battle']['disabled_defense_probe']['downs'] == 2
+
+
+def test_pending_probe_does_not_borrow_a_different_actor_or_run():
+    for field, value in [('ally', 'どうし'), ('enemy', 'クミン')]:
+        mem = memory(); p.battle_menu_step(native(30774), mem)
+        mem['battle'][field] = value
+        assert p.defender_egg_pending_step(Screen([], None, '', kind='text'), mem) == [p.pad('b')]
+    mem = memory(); p.battle_menu_step(native(30774), mem)
+    mem['_run_identity']['generation'] += 1
+    assert p.defender_egg_pending_step(Screen([], None, '', kind='unknown'), mem) == [p.pad('b')]
+
+
+def test_bot_integration_keeps_unknown_fade_from_default_confirmation():
+    from docich.hanjuku_bot import decide
+    frame = read_png(ROOT / 'g713-chevre-tartar-30774.png')
+    actions, state = decide(frame, {'policy': memory()}, run_identity=IDENTITY)
+    assert actions == [p.pad('down')]
+    # Derived blank fade, not an original battle screenshot.
+    fade = Frame(256, 224, bytes(256*224*3))
+    for _ in range(3):
+        actions, state = decide(fade, state, run_identity=IDENTITY)
+        assert actions == [{'type': 'wait', 'ms': 50}]
+        state = json.loads(json.dumps(state))
+    actions, state = decide(fade, state, run_identity=IDENTITY)
+    assert actions == [p.pad('b')]
+    actions, state = decide(frame, state, run_identity=IDENTITY)
+    assert actions == [p.pad('b')]

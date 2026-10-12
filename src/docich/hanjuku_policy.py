@@ -5933,15 +5933,49 @@ def _disabled_defense_probe(screen, mem, cur):
             or run_identity(probe.get('identity')) != identity
             or any(type(probe.get(k)) is not int for k in
                    ('chapter', 'start_ally_hp', 'start_enemy_hp'))
+            or probe.get('closed')
             or type(probe.get('downs')) is not int or not 0 <= probe['downs'] < 2):
         return [pad('b')]  # no reset of a malformed, stale or exhausted persisted inspection
     probe['downs'] += 1
+    probe.update(pending=True, unread=0)
     _record(mem, 'battle_disabled_defense_probe', **_battle_labels(cur),
             observed_metric={'ally_hp': hp, 'enemy_hp': enemy, 'melee_balance': balance,
                              'cursor_y': screen.menu_cursor, 'down_attempt': probe['downs']},
             resulting_event='row_inspection_only',
             reason='卵と札が実2行で使用不能の一般守備将軍が劣勢のため、下の奥の手行を有限で確認。存在・破損・選択は未確認')
     return [pad('down')]
+
+
+def _disabled_defense_pending(screen, mem, cur):
+    """A fading inspection cannot fall through to generic unknown/text A."""
+    from .hanjuku_roster import run_identity
+    probe = cur.get('disabled_defense_probe')
+    if not isinstance(probe, dict) or probe.get('pending') is not True:
+        return None
+    identity = run_identity(mem.get('_run_identity'))
+    valid = (identity is not None and run_identity(probe.get('identity')) == identity
+             and type(probe.get('chapter')) is int and probe['chapter'] == mem.get('chapter')
+             and type(probe.get('downs')) is int and 1 <= probe['downs'] <= 2
+             and all(probe.get(k) == cur.get(k) for k in
+                     ('ally', 'enemy', 'start_ally_hp', 'start_enemy_hp'))
+             and cur.get('side') == 'defense'
+             and cur.get('ally') not in (None, NAME, 'しゅじんこう', 'だいじん'))
+    if screen.kind in ('unknown', 'text', 'battle_menu_pending'):
+        unread = probe.get('unread')
+        if valid and type(unread) is int and 0 <= unread < 3:
+            probe['unread'] = unread + 1
+            return [{'type': 'wait', 'ms': 50}]
+        probe.update(pending=False, closed=True)
+        return [pad('b')]
+    probe['pending'] = False
+    if not valid:
+        probe['closed'] = True
+        return [pad('b')] if screen.kind == 'battle_menu' else None
+    if screen.kind == 'battle_menu':
+        return battle_menu_step(screen, mem)
+    # Complete combat/another foreground has its own handler. The original
+    # two-down allowance is retained; no stale observation resets it.
+    return None
 
 
 def battle_menu_step(screen: Screen, mem):
@@ -6167,6 +6201,9 @@ def _defender_egg_open(mem, cur):
 def defender_egg_pending_step(screen, mem):
     """Keep the selected rescue route across menus and incomplete frames."""
     cur = mem.get('battle') or {}
+    probe = _disabled_defense_pending(screen, mem, cur)
+    if probe is not None:
+        return probe
     guard = cur.get('okunote_egg_preempt') or {}
     if (cur.get('card_flow') or cur.get('egg_battle') or mem.get('egg_battle')
             or not all(type(cur.get(k)) is int and cur[k] > 0 for k in ('ally_hp', 'enemy_hp'))):
