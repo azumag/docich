@@ -8040,7 +8040,7 @@ def _chikujou_reserve(mem, shop):
     cards = [] if shop.get('merchant_done') else shop.get('items') or []
     if any(name not in KNOWN_PRICES for name, _ in cards):
         return None  # an unpriced required purchase is not spare money
-    return (WAGE_RESERVE + egg + repair + recruit + soldiers
+    return (max(WAGE_RESERVE, _egg_recovery_wage_floor(mem)) + egg + repair + recruit + soldiers
             + sum(KNOWN_PRICES[name] * quantity for name, quantity in cards))
 
 
@@ -8116,9 +8116,10 @@ def _month_chikujou(screen, mem, shop):
     2): ちくじょう lists our castles (the first row is the home castle),
     「NGかかりますがよろしいですかな」 asks うむッ!/いかんッ!. gcgx info.html:
     one level per castle per month. Owner (2026-10-04): upgrade other holdings
-    too when affordable. Return after each castle to verify the actual debit,
-    then reopen with that month's tried castles retained.
+    too when affordable. Verify each result and actual debit in the native
+    castle list, then continue without closing it when another castle is affordable.
     """
+    from .hanjuku_roster import run_identity
     if shop.get('chikujou') != 'check':
         return None
     tried = shop.setdefault('chikujou_tried', [])
@@ -8143,7 +8144,9 @@ def _month_chikujou(screen, mem, shop):
         return [move]
     shop['chikujou'] = 'opened'
     mem['month_sub'] = {'kind': 'chikujou', 'gold_before': gold, 'presses': 0, 'key': shop.get('key'),
-                        'left_menu': False, 'chikujou_version': 2, 'rows_tried': list(tried)}
+                        'left_menu': False, 'chikujou_version': 2, 'rows_tried': list(tried),
+                        'chikujou_identity': run_identity(mem.get('_run_identity')),
+                        'chikujou_chapter': mem.get('chapter')}
     _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice='ちくじょう',
             observed_metric={'reserve': reserve, 'tried': list(tried)},
             reason='必要資金を残して、当月まだ増築していない所有城の防衛力を上げる')
@@ -8169,7 +8172,60 @@ def _chikujou_visible_maxed(screen, mem):
     return levels
 
 
+def _chikujou_continue_list(screen, mem, sub):
+    """Continue only after this castle's result and exact native-list debit."""
+    from .hanjuku_roster import run_identity
+    shop = mem.get('shop') or {}
+    identity = run_identity(mem.get('_run_identity'))
+    key = sub.get('key')
+    header = screen.header or {}
+    known = {STATUS_NAMES.get(c, c) for c in chart.CASTLE_NAMES.get(mem.get('chapter') or 1, ())}
+    rows = sorted((x, y, word) for x, y, word in _options(screen) if word in known)
+    if (identity is None or identity != run_identity(sub.get('chikujou_identity'))
+            or sub.get('chikujou_chapter') != mem.get('chapter')
+            or key is None or key != mem.get('month') or key != shop.get('key')
+            or any(type(header.get(k)) is not int for k in ('year', 'month', 'gold'))
+            or _month_key(header) != key or sub.get('payment_interrupted')
+            or 'ぞうちくなさいます' not in screen.text
+            or screen.has('うむッ') or screen.has('いかんッ')
+            or not 1 <= len(rows) <= 4 or len({r[2] for r in rows}) != len(rows)
+            or any(x != 168 or y != 39 + i * 16 for i, (x, y, _) in enumerate(rows))
+            or _current(screen) not in rows):
+        return None
+    cost, before, gold = sub.get('quoted_cost'), sub.get('confirm_gold'), header['gold']
+    if not (sub.get('confirm_sent') and sub.get('upgraded') and sub.get('chosen')
+            and type(cost) is int and cost >= 0 and type(before) is int and before - gold == cost):
+        return _chikujou_wait(screen, mem, sub, 'list_payment_unconfirmed')
+    tried = set(sub.get('rows_tried') or []) | set(shop.get('chikujou_tried') or []) | {sub['chosen']}
+    if (not _chikujou_affordable(gold, _chikujou_reserve(mem, shop))
+            or not any(c not in tried for c in _chikujou_candidates(mem))):
+        return None  # one final B returns for the existing final receipt
+    presses = sub.get('presses', 0)
+    sub['receipt_on_list'] = True
+    if not _finish_month_sub(screen, mem, shop):
+        return []
+    if shop.get('chikujou') != 'check':
+        return [pad('b')]
+    next_sub = {'kind': 'chikujou', 'gold_before': gold, 'presses': presses,
+                'key': key, 'left_menu': True, 'chikujou_version': 2,
+                'rows_tried': list(shop.get('chikujou_tried') or []),
+                'chikujou_identity': identity, 'chikujou_chapter': mem.get('chapter')}
+    shop['chikujou'] = 'opened'
+    mem['month_sub'] = next_sub
+    _record(mem, 'chikujou_continue', month=key,
+            observed_metric={'gold': gold, 'tried': next_sub['rows_tried'], 'presses': presses},
+            reason='実一覧で増築結果と実費減少を照合したため、月メニューへ戻らず次の城を選ぶ')
+    return _chikujou_step(screen, mem, next_sub)
+
+
 def _chikujou_step(screen, mem, sub):
+    from .hanjuku_roster import run_identity
+    if (sub.get('chikujou_identity') is not None and (
+            run_identity(sub['chikujou_identity']) != run_identity(mem.get('_run_identity'))
+            or sub.get('chikujou_chapter') != mem.get('chapter'))):
+        sub['declined'] = True
+        sub['payment_interrupted'] = True
+        return [pad('b')]
     text = screen.text
     header = screen.header or {}
     current = (_month_key(header) if header.get('year') is not None
@@ -8195,7 +8251,8 @@ def _chikujou_step(screen, mem, sub):
     if sub.get('upgraded'):
         if 'になりましたぞ' in text:
             return _chikujou_wait(screen, mem, sub, 'result_frame_unchanged')
-        return [pad('b')]
+        continuation = _chikujou_continue_list(screen, mem, sub)
+        return continuation if continuation is not None else [pad('b')]
     if 'になりましたぞ' in text:
         chosen = sub.get('chosen')
         if not (sub.get('confirm_sent') and chosen
@@ -8244,7 +8301,7 @@ def _chikujou_step(screen, mem, sub):
             sub['build_wait'] = 0
             _record(mem, 'chikujou_confirm',
                     observed_metric={'castle': chosen, 'cost': cost, 'gold': gold, 'reserve': reserve},
-                    reason=f'{chosen}を{cost}Gで増築し、月イチへ戻って実際の支払いを照合する')
+                    reason=f'{chosen}を{cost}Gで増築し、実際の支払いを照合して次の城へ進む')
             return [pad('a')]
         return [move] if move else _chikujou_wait(screen, mem, sub, 'quote_cursor_unread')
     if sub.get('declined'):
@@ -8522,6 +8579,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
                 observed_metric={'castle': chosen, 'gold_before': before, 'gold_after': gold,
                                  'quoted_cost': cost, 'payment_verified': bool(paid),
                                  'upgrade_verified': verified,
+                                 'receipt_screen': 'castle_list' if sub.get('receipt_on_list') else 'month_menu',
                                  'declined': sub.get('declined', False),
                                  'upgrades': list((shop or {}).get('chikujou_upgrades') or [])},
                 deviation_reason=(None if verified or sub.get('declined') else
