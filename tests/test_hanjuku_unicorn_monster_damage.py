@@ -120,6 +120,27 @@ def test_old_unbound_cached_choice_never_assumes_first_row_when_cursor_is_unread
     assert m['monster_menu_cursor_recheck'] is True
 
 
+@pytest.mark.parametrize('partial', ['return_only', 'blank'])
+def test_pending_cursor_recheck_survives_partial_redraw_and_saved_reload(partial):
+    m = memory()
+    assert monster_menu_step(native(), m) == [pad('down')]
+    s = native(); s.menu_cursor = None
+    s.egg_rows = [replace(r, name='不明') if r.side == 'enemy' else r for r in s.egg_rows]
+    assert monster_menu_step(s, m) == []
+    scope = list(m['monster_menu_choice_scope'])
+    redrawn = replace(s, menu_rows=[s.menu_rows[-1]] if partial == 'return_only' else [])
+    assert monster_menu_step(redrawn, m) == []
+    assert m['monster_menu_cursor_recheck'] is True
+    assert m['monster_menu_choice_scope'] == scope
+    m = json.loads(json.dumps(m))
+    assert monster_menu_step(s, m) == []
+    assert m['monster_menu_cursor_recheck'] is True
+    s.menu_cursor = 192
+    assert monster_menu_step(s, m) == [pad('up')]
+    s.menu_cursor = 176
+    assert monster_menu_step(s, m) == [pad('a')]
+
+
 def test_unread_second_skill_does_not_activate_a_named_rule():
     s = native(); s.menu_rows = [s.menu_rows[0], s.menu_rows[2]]
     m = memory(); monster_menu_step(s, m)

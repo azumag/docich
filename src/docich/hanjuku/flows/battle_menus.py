@@ -1031,12 +1031,17 @@ def monster_menu_step(screen: Screen, mem):
     menu_key = tuple(row_texts)
     had_cursor_context = (mem.get('monster_menu_choice_scope') is not None
                           or mem.get('monster_menu_cursor') is not None
-                          or mem.get('monster_menu_choice') is not None)
+                          or mem.get('monster_menu_choice') is not None
+                          or mem.get('monster_menu_cursor_recheck') is True)
     if mem.get('monster_menu_key') != menu_key:
         mem['monster_menu_key'] = menu_key
         for key in ('monster_menu_cursor', 'monster_menu_choice', 'monster_menu_choice_key',
-                    'monster_menu_choice_hp', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_ally_max_hp'):
+                    'monster_menu_choice_hp', 'monster_ally_max_hp'):
             mem.pop(key, None)
+        if had_cursor_context:
+            # A partial redraw (even only the return row) cannot release the
+            # requirement to reobserve a cursor after discarding a prediction.
+            mem['monster_menu_cursor_recheck'] = True
         mem['monster_menu_hold'] = 0
     skill_lines = [line for line, text in zip(rows, row_texts) if 'もどれ' not in text]
     if not skill_lines:
