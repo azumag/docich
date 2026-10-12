@@ -1,11 +1,11 @@
 {
-  "output_sha256": "b65ecc95fe8af54a2bfe598e2cbccc843dd677be1c99a5c09673b4fbef17ae60",
+  "output_sha256": "c0574711038c1aed7ca6054455ad390114c65b96421320e6d633d6274abc6a36",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "09d9492514a4b31a793a20c88e0542e13ccc47ca746d2b4b281a347929fa88d9",
+  "source_sha256": "05ac1cd918cd561d99e338c1052caf08ccab95aeeb7049de6b42f6f52de8bf5d",
   "topics": [
+    "築城v177の同ラン反映とHP1シャウト反復の修正準備",
     "半熟v176の同ラン反映と築城のmain同期",
-    "個別卵回復のレビュー修正と築城往復の改善",
-    "半熟v175を同じランへ無停止反映、個別卵回復v176を準備"
+    "個別卵回復のレビュー修正と築城往復の改善"
   ]
 }

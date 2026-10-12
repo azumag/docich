@@ -4191,7 +4191,7 @@ def reset_battle_controls(mem):
                 'egg_retreat_tried', 'egg_retreat_flow', 'egg_choice', 'egg_row_dead',
                 'indep_menu', 'indep_menu_key', 'indep_menu_action',
                 'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
-                'monster_menu_choice', 'monster_menu_choice_key', 'monster_panel'):
+                'monster_menu_choice', 'monster_menu_choice_key', 'monster_general_finish', 'monster_panel'):
         mem.pop(key, None)
 
 
@@ -6735,7 +6735,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                 'indep_menu_key', 'indep_menu_action',
                 'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
-                'monster_menu_choice', 'monster_menu_choice_key', 'monster_panel'):
+                'monster_menu_choice', 'monster_menu_choice_key', 'monster_general_finish', 'monster_panel'):
         mem.pop(key, None)
     mem['chapter'] = chapter
     mem['chapter_evidence'] = evidence or 'header'
@@ -10116,7 +10116,7 @@ def monster_menu_step(screen: Screen, mem):
     if mem.get('monster_menu_key') != menu_key:
         mem['monster_menu_key'] = menu_key
         for key in ('monster_menu_cursor', 'monster_menu_choice', 'monster_menu_choice_key',
-                    'monster_menu_choice_hp', 'monster_ally_max_hp'):
+                    'monster_menu_choice_hp', 'monster_general_finish', 'monster_ally_max_hp'):
             mem.pop(key, None)
         mem['monster_menu_hold'] = 0
     skill_lines = [line for line, text in zip(rows, row_texts) if 'もどれ' not in text]
@@ -10164,7 +10164,24 @@ def monster_menu_step(screen: Screen, mem):
                      and len(skill_lines) == 2
                      and [_fold_skill(t) for t in row_texts[:2]]
                      == [_fold_skill(t) for t in reference.MONSTER_SKILLS['エクスカリバー']])
+    cur = mem.get('battle') or {}
+    # g713: Shout left the actual ordinary general at 1 HP. Repeating
+    # inflate/Shout could not finish that general. Return only with a named
+    # live enemy, full Finch, and a viable named non-hero human from this fight.
+    finish_general = bool(owner == 'ally' and ally is not None and enemy is not None
+                          and ally.name == 'バルーンフィンチ' and ally.hp == BALLOON_FINCH_MAX_HP
+                          and enemy.hp == 1 and enemy.name == cur.get('enemy')
+                          and enemy.name not in _MONSTER_SKILLS and enemy.name not in chart.BOSSES.values()
+                          and general_max_hp(enemy.name) is not None
+                          and cur.get('ally') not in (NAME, 'しゅじんこう')
+                          and general_max_hp(cur.get('ally')) is not None
+                          and type(cur.get('ally_hp')) is int and cur['ally_hp'] >= 10
+                          and return_index is not None and len(skill_lines) == 2
+                          and [_fold_skill(t) for t in row_texts[:2]]
+                          == [_fold_skill(t) for t in reference.MONSTER_SKILLS['バルーンフィンチ']])
     if (not mem.get('monster_menu_choice') or mem.get('monster_menu_choice_hp') != hp_state
+            or bool(mem.get('monster_general_finish')) != finish_general
+            or (finish_general and mem.get('monster_menu_choice') != 'retreat')
             or (damage_second and mem.get('monster_menu_choice') not in ('skill2', 'retreat'))):
         ally_hp = ally.hp if ally else None
         enemy_hp = enemy.hp if enemy else None
@@ -10213,10 +10230,11 @@ def monster_menu_step(screen: Screen, mem):
         # Balloon Finch is an explicit owner tactic, not an exploratory choice:
         # do not let generic retreat heuristics or learned experience replace
         # ふくらむ before cap / シャウト at cap.
-        action = (default if balloon_cycle else
+        action = ('retreat' if finish_general else default if balloon_cycle else
                   'retreat' if retreat or powerless else 'skill2' if damage_second
                   else experience.preferred(exp, key, default=default, kind='monster_menu'))
         mem['monster_menu_choice'] = action
+        mem['monster_general_finish'] = finish_general
         mem['monster_menu_choice_key'] = key
         mem['monster_menu_choice_hp'] = hp_state
         battle = mem.get('battle')
@@ -10224,7 +10242,8 @@ def monster_menu_step(screen: Screen, mem):
             battle['independent'] = {'kind': 'monster_menu', 'key': key, 'action': action}
         if action == 'retreat':
             label = 'たまごに もどれ'
-            why = ('両技に攻撃性能がない召喚獣のため、無効な攻撃を繰り返さず戻す'
+            why = ('敵将軍の実HPが1でシャウトの半減が止まるため、卵へ戻して本人の白兵へ続ける'
+                   if finish_general else '両技に攻撃性能がない召喚獣のため、無効な攻撃を繰り返さず戻す'
                    if powerless else '味方HPが敵の半分以下なので撤退して見守る')
         elif balloon_cycle:
             if action == 'skill2':
@@ -10250,6 +10269,7 @@ def monster_menu_step(screen: Screen, mem):
                 observed_metric={'action': action, 'owner': owner, 'menu': list(menu_key),
                                  'ally_hp': ally_hp, 'enemy_hp': enemy_hp,
                                  'target_hp': BALLOON_FINCH_MAX_HP if balloon_cycle else None,
+                                 'finish_general': finish_general,
                                  'experience_key': key},
                 reason=f'召喚獣の技メニューで「{label}」を選択: {why}')
     action = mem.get('monster_menu_choice')
