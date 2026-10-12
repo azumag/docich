@@ -81,11 +81,18 @@ def test_receipt_change_cannot_reuse_old_played_context(tmp_path):
     first = hanjuku_run.observe(tmp_path, IDENTITY, gameplay_frame(), now=1, wall=1001)
     assert first['gameplay_seen']
     changed = deepcopy(r); changed['request_id'] = str(uuid.uuid4()); write(tmp_path, changed)
-    for now in (2, 3, 4):
-        run = hanjuku_run.observe(tmp_path, IDENTITY, title_frame(), now=now, wall=1000 + now)
-        assert run['checkpoint_start_request'] == r['request_id']
-        assert run['checkpoint_started'] is False and not run['terminal_candidate']
-        assert run['terminal_reason'] is None
+    with pytest.raises(AdapterError, match='checkpoint context changed'):
+        hanjuku_run.observe(tmp_path, IDENTITY, title_frame(), now=2, wall=1002)
+    assert hanjuku_run.load(tmp_path, IDENTITY) == first
+
+
+def test_lost_established_receipt_holds_observation_instead_of_reopening_title(tmp_path):
+    write(tmp_path, receipt())
+    first = hanjuku_run.observe(tmp_path, IDENTITY, gameplay_frame(), now=1, wall=1001)
+    (tmp_path / 'hanjuku_resume.json').unlink()
+    with pytest.raises(AdapterError, match='checkpoint context changed'):
+        hanjuku_run.observe(tmp_path, IDENTITY, title_frame(), now=2, wall=1002)
+    assert hanjuku_run.load(tmp_path, IDENTITY) == first
 
 
 def test_first_checkpoint_context_cannot_borrow_an_unbound_played_flag(tmp_path):

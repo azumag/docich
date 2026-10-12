@@ -214,6 +214,11 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     # with game over. Hold input on the first candidate, confirm across time.
     named=old.get('name_entered',False) or phase=='name'
     checkpoint = _checkpoint_start_request(runtime_dir, identity, wall)
+    if (old.get('checkpoint_start_request') is not None
+            and checkpoint != old['checkpoint_start_request']):
+        # Losing/changing an established receipt must not turn a title return
+        # back into a fresh title that the agent could blindly confirm.
+        raise AdapterError('verified Hanjuku checkpoint context changed')
     checkpoint_bound = old.get('checkpoint_start_request') or checkpoint
     restored = checkpoint is not None and checkpoint_bound == checkpoint
     started = named or restored
