@@ -5799,6 +5799,10 @@ def battle_menu_step(screen: Screen, mem):
     flow = cur.get('card_flow')
     if screen.kind != 'battle_menu':
         return []
+    if _screen_egg_empty(screen, mem, cur) and not _own_egg_empty(mem, cur):
+        _record(mem, 'battle_egg_actor_unconfirmed',
+                reason='実画面の本人は残数0のため、旧戦闘文脈で卵を選ばず戻る')
+        return [pad('b')]
     cur.pop('command_open_pending', None)  # foreground receipt, not a planned B
     _card_battle_reading(screen, cur, mem)
     cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)
@@ -6620,7 +6624,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip', 'recall_verification', 'retreat_rechecks', 'retreat_anonymous_budget',
                 'near_goal', 'align_steps', 'unanchored', 'select_tick',
                 'house', 'house_scan_tick', 'house_scan_month', 'house_field_scan', 'house_eggs',
-                'roster_survey', 'roster_status_walk', 'roster_survey_scope', 'house_status_recheck',
+                'roster_survey', 'roster_status_walk', 'roster_survey_scope', 'house_status_recheck', 'egg_zero_owners',
                 'recruit_roster', 'recruit_roster_floor', 'recruit_roster_recheck', 'recruit_roster_attempts', 'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'castle_income', 'castle_ownership',
                 'select_used', 'castle_verified', 'last_castle_hold',
                 'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
@@ -6743,11 +6747,59 @@ SOLDIER_CAP = 99
 SOLDIER_ENOUGH = 50   # owner 2026-10-11: with this many on hand, buy no more soldiers
 
 
+def _soldier_target(mem, shop, header):
+    """Normally 50 on hand; about 100 only after necessities and spare cash."""
+    gold = (header or {}).get('gold')
+    if type(gold) is not int:
+        return SOLDIER_ENOUGH
+    cards = [] if shop.get('merchant_done') else shop.get('items') or []
+    if any(name not in KNOWN_PRICES for name, _ in cards):
+        return SOLDIER_ENOUGH
+    repair = _house_repair_reserve(shop)
+    if type(repair) is not int:
+        return SOLDIER_ENOUGH
+    egg = (0 if shop.get('egg') in ('done', 'not_needed') else
+           max(shop.get('reserve', 0), EGG_RECOVER_COST * len(_egg_recovery_targets(mem))))
+    held = (egg + repair + WAGE_RESERVE + shop.get('recruit_reserve', 0)
+            + sum(KNOWN_PRICES[name] * qty for name, qty in cards))
+    key = _month_key(header) if header else None
+    count = mem.get('soldiers_seen')
+    known = (key is not None and mem.get('soldiers_seen_key') == key
+             and type(count) is int and count >= 0)
+    extra = max(0, 100 - count) if known else 100
+    return 100 if gold - held >= extra + RECRUIT_COST else SOLDIER_ENOUGH
+
+
+def _limit_soldier_refill(mem, shop, header):
+    # Never rewrite a dispatched purchase or its pending payment receipt.
+    if (shop.get('soldier_receipt') or shop.get('soldiers_done') is True
+            or mem.get('month_sub')):
+        return
+    target = _soldier_target(mem, shop, header)
+    key = _month_key(header) if header else None
+    count = mem.get('soldiers_seen')
+    known = (key is not None and key == shop.get('key')
+             and mem.get('soldiers_seen_key') == key
+             and type(count) is int and count >= 0)
+    cap = min(SOLDIER_CAP, max(0, target - count) if known else target)
+    for field in ('soldiers', 'soldiers_target', 'soldiers_before_recruit'):
+        value = shop.get(field)
+        if type(value) is int and value >= 0:
+            shop[field] = min(value, cap)
+    if not shop.get('soldiers'):
+        shop['soldiers_done'] = True
+        if known and count >= target:
+            _record(mem, 'soldier_refill_skip', month=shop.get('key'),
+                    observed_metric={'soldiers': count, 'enough': target},
+                    reason='当月の実兵士数が予算に応じた目標人数を満たすため資金を残す')
+    shop['soldier_total_target'] = target
+
+
 def _soldiers_enough(mem, shop, header):
     key = _month_key(header) if header else None
     count = mem.get('soldiers_seen')
     return (key is not None and key == shop.get('key') and mem.get('soldiers_seen_key') == key
-            and type(count) is int and count >= SOLDIER_ENOUGH)
+            and type(count) is int and count >= _soldier_target(mem, shop, header))
 # The month boundary pays 収入 − 総賃金; ending a month at 0G forced a
 # dismissal in g358 (-1G) and g407 (-3G, 6 generals lost). Keep this much
 # gold unspent so a shortfall month cannot push the balance negative
@@ -6843,18 +6895,13 @@ def _extras_reserve(mem, header):
     # measured eggs only - see _egg_estimate.
     cost = EGG_RECOVER_COST * len(targets)
     gold = (header or {}).get('gold')
-    # Owner (2026-09-29): 兵士の数を確認せず卵回復した - the army is read on the
-    # soldier screen, so without this month's count the soldiers go first and
-    # the eggs are recovered from what is left (_plan_extras: egg 'check').
-    counted = (mem.get('soldiers_seen_key') == _month_key(header) if header else False)
-    big_army = counted and (mem.get('soldiers_seen') or 0) >= 50
+    # Owner (2026-10-12): depleted eggs take their money before troops,
+    # including armies below fifty. An unknown count cannot waive recovery.
     if type(gold) is not int or gold < 0 or not cost:
         reserve = 0
-    elif NAME in targets or big_army:
+    else:
         # 卵へ温存（兵士は今月見送り）。賃金リザーブは守る。
         reserve = cost if gold >= cost else max(0, gold - WAGE_RESERVE)
-    else:
-        reserve = 0
     return reserve, not _charted_purchase_ahead(mem, header)
 
 
@@ -6875,8 +6922,40 @@ def _own_egg_empty(mem, battle):
     receipt, so neither this gate nor _egg_recheck invents a decrement.
     """
     ally = battle.get('ally') if isinstance(battle, dict) else None
-    uses = (mem.get('egg_uses') or {}).get(ally) if ally else None
+    uses = observed_uses((mem.get('egg_uses') or {}).get(ally)) if ally else None
+    if uses is not None and uses > 0:
+        if ally in (mem.get('egg_zero_owners') or []):
+            mem['egg_zero_owners'] = [n for n in mem['egg_zero_owners'] if n != ally]
+        return False
+    if ally and ally in (mem.get('egg_zero_owners') or []):
+        return True
+    if uses is None and ally:
+        # A bulk recovery/unknown reading does not prove this actor has uses.
+        # A later named positive quantity remains the only release here.
+        uses = ((mem.get('house_eggs') or {}).get(ally) or {}).get('uses')
     return type(uses) is int and uses == 0
+
+
+def _egg_quantities_unknown(mem):
+    """An aggregate receipt invalidates counts but cannot release a zero."""
+    counts = mem.get('egg_uses') or {}
+    blocked = {n for n in mem.get('egg_zero_owners') or []
+               if observed_uses(counts.get(n)) in (None, 0)}
+    blocked.update(n for n, value in counts.items() if type(value) is int and value == 0)
+    mem['egg_zero_owners'] = sorted(blocked)[:32]
+    mem['egg_uses'] = {}
+
+
+def _screen_egg_empty(screen, mem, battle):
+    """The actual named foreground actor outranks missing battle bookkeeping."""
+    names = []
+    if screen.battle and general_max_hp(screen.battle.ally) is not None:
+        names = [screen.battle.ally]
+    else:
+        names = [row.name for row in screen.egg_rows if row.side == 'ally'
+                 and general_max_hp('しゅじんこう' if row.name == NAME else row.name) is not None]
+    return (_own_egg_empty(mem, {'ally': names[0]}) if len(names) == 1
+            else _own_egg_empty(mem, battle))
 
 
 def _own_egg_positive(mem, battle):
@@ -6893,11 +6972,9 @@ def _own_egg_positive(mem, battle):
 
 
 def _refresh_egg_priority(mem, shop, header):
-    """Revisit a cached purchase plan after this month's army count is read."""
+    """Keep depleted eggs ahead of a cached troop purchase."""
     key = _month_key(header) if header else None
-    count = mem.get('soldiers_seen')
-    if (key is None or key != shop.get('key') or mem.get('soldiers_seen_key') != key
-            or type(count) is not int or count < 50
+    if (key is None or key != shop.get('key')
             or shop.get('egg') in ('done', 'not_needed')):
         return
     targets = _egg_recovery_targets(mem)
@@ -6908,9 +6985,9 @@ def _refresh_egg_priority(mem, shop, header):
         if shop.get('egg') not in ('opened', 'unverified'):
             shop['egg'] = 'pending'
         _record(mem, 'egg_priority_replan', month=key,
-                observed_metric={'soldiers': count, 'gold': (header or {}).get('gold'),
+                observed_metric={'soldiers': mem.get('soldiers_seen'), 'gold': (header or {}).get('gold'),
                                  'targets': targets, 'soldiers_planned': shop.get('soldiers')},
-                reason='当月の兵士が50人以上と実読できたため、保存済みの購入計画を卵回復優先へ変更')
+                reason='卵の回復対象が残るため、保存済みの購入計画も兵士補充より回復を優先する')
     shop['egg_cost'] = _egg_measured_cost(mem)
     reserve, _ = _extras_reserve(mem, header)
     shop['reserve'] = max(shop.get('reserve', 0), reserve)
@@ -7251,11 +7328,14 @@ def _plan_extras(mem, shop, reserve, recruit):
     egg_cost = _egg_measured_cost(mem)
     shop['egg'] = 'pending' if reserve else ('check' if _egg_recovery_targets(mem) else None)
     shop['egg_cost'] = egg_cost
+    shop['egg_priority'] = bool(_egg_recovery_targets(mem))
     shop['recruit'] = 'check' if recruit else None
     shop['chikujou'] = 'check'
     _reserve_hero_repair(mem, shop, shop.get('gold_start'))
     _reserve_general_repair(mem, shop, shop.get('gold_start'))
     _prioritise_recruit(mem, shop, shop.get('gold_start'))
+    _limit_soldier_refill(mem, shop, {'year': int(shop['key'].split('-')[0]),
+        'month': int(shop['key'].split('-')[1]), 'gold': shop.get('gold_start')})
     if reserve or recruit:
         _record(mem, 'month_extras_plan', chart_step='1-month', month=shop['key'],
                 strategy_variant=shop.get('variant', 'chart'),
@@ -7268,7 +7348,7 @@ def _plan_extras(mem, shop, reserve, recruit):
                       'recruit_reserve': shop.get('recruit_reserve', 0)},
                 reason=('将軍不足時は募集費を兵士より先に確保し、卵回復・賃金予備も維持する'
                         if shop.get('recruit_priority') else
-                        '使用回数が減った卵の全回復費を兵士より先に確保し、兵士99人分の後に余りがあれば将軍を募集'))
+                        '使用回数が減った卵の全回復費を兵士より先に確保し、必要な兵士の補充の後に余りがあれば将軍を募集'))
 
 
 def _adjusted_plan(mem, header, key):
@@ -7348,6 +7428,7 @@ def _plan(mem, header):
     if shop and shop.get('key') == key:
         _reserve_hero_repair(mem, shop, (header or {}).get('gold'))
         _reserve_general_repair(mem, shop, (header or {}).get('gold'))
+        _limit_soldier_refill(mem, shop, header)
         return shop
     adjusted = _adjusted_plan(mem, header, key) if header else None
     if adjusted:
@@ -7399,7 +7480,7 @@ def _plan(mem, header):
                           'soldiers_done': soldiers == 0, 'gold_start': gold}
     _plan_extras(mem, shop, reserve, recruit)
     _record(mem, 'month_plan', chart_step='1-month', strategy_variant=variant, month=key, gold=gold,
-            plan={'cards': items, 'soldiers': soldiers}, deviation_reason=deviation,
+            plan={'cards': items, 'soldiers': shop['soldiers']}, deviation_reason=deviation,
             expected_metric={'chart_cards': [list(i) for i in spec['cards']],
                              'chart_soldiers': spec['soldiers'], 'chart_gold': spec['chart_gold']},
             reason=spec['note'])
@@ -7409,8 +7490,8 @@ def _plan(mem, header):
 def _soldier_refill_plan(mem, header, key):
     """Months the chart has no purchase for: spend the gold left on soldiers.
 
-    The owner policy (2026-09-25) is 毎月・残金で99人まで: without this the
-    month menu exits before へいしほじゅう and the army empties.
+    The owner policy (2026-10-12) aims at fifty, or about a hundred
+    with surplus after recovery and other necessities.
     """
     if not header:
         return None
@@ -7422,7 +7503,7 @@ def _soldier_refill_plan(mem, header, key):
                           'gold_start': gold}
     _plan_extras(mem, shop, reserve, recruit)
     _record(mem, 'month_plan', chart_step='1-month', strategy_variant='soldier_refill_only',
-            month=key, gold=gold, plan={'cards': [], 'soldiers': soldiers},
+            month=key, gold=gold, plan={'cards': [], 'soldiers': shop['soldiers']},
             deviation_reason='chart_month_uncovered',
             expected_metric={'soldier_cap': SOLDIER_CAP},
             reason='チャートに当月の購入計画がないため残金で兵士を補充')
@@ -7483,7 +7564,7 @@ def month_step(screen: Screen, mem):
             return [pad('b')]
         if (shop and shop.get('recruit') == 'unverified' and type(gold) is int
                 and gold >= RECRUIT_COST and (shop.get('recruit_priority')
-                                             or shop.get('soldiers', 0) >= SOLDIER_CAP)):
+                                             or shop.get('soldiers', 0) >= SOLDIER_ENOUGH or _soldiers_enough(mem, shop, screen.header))):
             mem['month_sub'] = {'kind': 'recruit', 'gold_before': gold, 'presses': 0,
                                 'key': shop['key'], 'left_menu': False}
             shop['recruit'] = 'opened'
@@ -7520,7 +7601,7 @@ def month_step(screen: Screen, mem):
         from .hanjuku_roster import dirty_status
         dirty_status(mem, _egg_recovery_targets(mem), fields=('egg',))
         mem.pop('egg_recheck', None)
-        mem['egg_uses'] = {}  # the game says none need recovery; reobserve quantities
+        _egg_quantities_unknown(mem)  # reobserve each owner's quantity
         if shop:
             shop['egg'] = 'not_needed'
             if shop.get('egg_priority') or shop.get('egg_before_recruit'):
@@ -7531,6 +7612,8 @@ def month_step(screen: Screen, mem):
     # after an egg-cost deferral recruitment is still pending here.
     if mem.get('month_sub') and not _finish_month_sub(screen, mem, shop):
         return []
+    if shop:
+        _limit_soldier_refill(mem, shop, screen.header)
     if shop:
         _prepare_recruit_egg_check(mem, shop, (screen.header or {}).get('gold'))
     if (shop and shop.get('recruit_priority') and not shop.get('recruit_measured_budget')
@@ -7658,7 +7741,8 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
             # Owner rule (2026-09-27): recruit only when the soldiers got
             # their full 99 and the fee plus the wage reserve is still left.
             floor = _recruit_cash_floor(shop)
-            if (type(gold) is not int or (not shop.get('recruit_priority') and shop.get('soldiers', 0) < SOLDIER_CAP)
+            if (type(gold) is not int or (not shop.get('recruit_priority') and shop.get('soldiers', 0) < SOLDIER_ENOUGH
+                    and not _soldiers_enough(mem, shop, screen.header))
                     or floor is None or gold < floor):
                 if (shop.get('recruit_priority') and type(gold) is int
                         and gold >= RECRUIT_COST + WAGE_RESERVE + _house_repair_reserve(shop)
@@ -7676,7 +7760,7 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
                         observed_metric={'soldiers': shop.get('soldiers'), 'gold': gold},
                         reason=('募集費と卵回復・賃金リザーブが足りないため資金を温存して次月へ待つ'
                                 if shop.get('recruit_priority') else
-                                '兵士99人分と賃金リザーブの後に募集費が残っていないため将軍を募集しない'))
+                                '必要な兵士の補充と賃金リザーブの後に募集費が残っていないため将軍を募集しない'))
                 continue
         elif (type(gold) is not int or gold < cost + shop.get('hero_repair_reserve', 0)
               + (WAGE_RESERVE if shop.get('hero_repair_reserve') or shop.get('egg_priority')
@@ -8251,7 +8335,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
                                      'soldiers': shop['soldiers'], 'wage_reserve': WAGE_RESERVE},
                     reason='募集後の実残金から兵士予算を再計算し、追加出費で賃金予備を使い込まない')
     if paid and sub['kind'] == 'egg':
-        mem['egg_uses'] = {}      # counts are re-read at the next sorties
+        _egg_quantities_unknown(mem)  # zero is released only by a named positive reading
         mem.pop('egg_recheck', None)
         if shop and (shop.get('egg_priority') or shop.get('egg_before_recruit')):
             if not shop.get('soldiers_done'):
@@ -8713,6 +8797,7 @@ def quantity_step(screen: Screen, mem, soldiers=False):
     if soldiers:
         _reserve_general_repair(mem, shop, (screen.header or {}).get('gold'))
         _refresh_egg_priority(mem, shop, screen.header)
+        _limit_soldier_refill(mem, shop, screen.header)
         if _egg_before_soldiers(shop) and not shop.get('soldier_receipt'):
             # This is where the army total first becomes visible. Leave the
             # old quantity plan before sending a purchase confirmation.
@@ -9325,7 +9410,7 @@ def summary(mem: dict | None) -> dict:
 
 def egg_choice_step(screen: Screen, mem):
     """Choose a real offered summon; never type a name or infer an egg result."""
-    if _own_egg_empty(mem, mem.get('battle')):
+    if _screen_egg_empty(screen, mem, mem.get('battle')):
         return [pad('b')]
     from .hanjuku_screen import egg_choice_names
     names = egg_choice_names(screen)
@@ -9470,7 +9555,7 @@ def egg_battle_step(screen: Screen, mem):
         egg_evidence = {**egg_evidence, 'rule': 'enemy_monster_threat',
                         'enemy_monster': enemy_monsters[0].name,
                         'enemy_monster_hp': enemy_monsters[0].hp}
-    empty_egg = _own_egg_empty(mem, battle)
+    empty_egg = _screen_egg_empty(screen, mem, battle)
     hero_summon = isinstance(battle, dict) and battle.get('ally') == NAME
     if hero_summon and not wants_egg:
         # g604 3-11: どうし 66/90 looked healthy against チコリ (HP11), so the

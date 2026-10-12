@@ -117,7 +117,7 @@ def classify(frame: Frame) -> str:
         return 'shop'
     # The red-curtain concert offers an optional looping music picker. B
     # closes it; repeatedly confirming track 00 would never resume the game.
-    curtain=lambda r,g,b:r>140 and r>g*3 and r>b*3
+    curtain=lambda r,g,b:r>140 and r>g*3 and r>b*1.5
     if (f.fraction((0,0,32,128),curtain)>.25
             and f.fraction((224,0,256,128),curtain)>.25
             and f.fraction((18,150,236,207),green)>.5):
@@ -223,7 +223,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         if previous_identity != identity:
             for key in ('house', 'house_field_scan', 'house_scan_tick', 'house_scan_month',
                         'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'recruit_roster_attempts',
-                        'house_eggs', 'egg_uses', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership',
+                        'house_eggs', 'egg_uses', 'egg_zero_owners', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership',
                         'starter_party'):
                 mem.pop(key, None)
         # A matching old trace may retain observed zero counts, but never
