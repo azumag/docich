@@ -669,6 +669,19 @@ def summer_bonus_seen(text: str) -> bool:
         any(v in flat for v in SUMMER_BONUS_CHOICES['bonus'])
 
 
+def resume_sortie_panel(s: Screen) -> bool:
+    """A measured HUD-less sortie menu can be cancelled without knowing chapter."""
+    rows = {line.y: line for line in s.lines}
+    if 31 not in rows or rows[31].span(80, 128) != 'しょうぐん':
+        return False
+    if s.kind == 'card_select':
+        return re.fullmatch(r'きりふだセレクト あと[0-3]こ', rows[31].span(136, 240)) is not None
+    return (s.kind in {'sortie_confirm', 'yes_no', 'text', 'unknown'}
+            and 47 in rows and rows[47].span(136, 176) == 'きりふだ'
+            and 111 in rows and rows[111].span(160, 200) == 'うむッ!'
+            and 127 in rows and rows[127].span(160, 208) == 'いかんッ!')
+
+
 def classify_text(s: Screen) -> str:
     t = s.text
     from .hanjuku_starter import kind as starter_kind
