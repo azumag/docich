@@ -166,3 +166,25 @@ def find(lines: list[TextLine], needle: str) -> TextLine | None:
 
 def joined(lines: list[TextLine]) -> str:
     return ''.join(line.known.replace(' ', '') for line in lines)
+
+
+def without_attached_marks(frame: Frame, lines: list[TextLine], *, rect) -> list[TextLine]:
+    """Remove only exact accent tiles already consumed by a known voiced glyph.
+
+    A separate row containing dakuten is not an unread message character.
+    Isolated marks, marks over digits and genuinely unknown tiles stay unknown.
+    """
+    masks = row_masks(frame, light)
+    x0, y0, x1, y1 = rect
+    out = []
+    for line in lines:
+        cells = []
+        for x, ch in line.cells:
+            if ch == UNKNOWN and x0 <= x < x1 and y0 <= line.y < y1 and line.y + 15 < frame.height:
+                mark = MARKS.get(_tile(masks, frame.width, x, line.y))
+                base = GLYPHS.get(_tile(masks, frame.width, x, line.y + 8))
+                if mark and base and base.translate(_COMBINE[mark]) != base:
+                    continue
+            cells.append((x, ch))
+        out.append(TextLine(line.y, tuple(cells)))
+    return out

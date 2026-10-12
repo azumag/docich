@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import collections
+import hashlib
 import re
 
-from .font import TextLine, dark, joined, light, read_lines, row_masks
+from .font import UNKNOWN, TextLine, dark, joined, light, read_lines, row_masks
 from .pixels import Frame
 
 HEADER = re.compile(r'(?:(\d+)わ)?(\d+)ねん(\d+)のつき(\d+)G')
@@ -286,6 +287,8 @@ class Screen:
     hidden_battle_commands: bool = False
     # The two-row item box with every row disabled (measured g534 07:51).
     disabled_item_box: bool = False
+    priest_ritual_scene: bool = False
+    priest_ritual_dialogue: bool = False
 
     def has(self, needle: str) -> bool:
         return needle.replace(' ', '') in self.text
@@ -666,11 +669,18 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         white = row_masks(frame, lambda r, g, b: min(r, g, b) > 200)
         screen.cursor = _free_cursor(white, frame)
     screen.kind = classify_text(screen)
-    if phase in (None, 'concert') and egg_ritual_recitation_panel(screen):
-        # g731: the priest sprite matches the orange hand colors. The exact
-        # recital has no selectable row; keep the sprite out of cursor input.
-        screen.hand = None
-        screen.selected = None
+    if phase in (None, 'concert') and _priest_sprite(frame):
+        from .font import without_attached_marks
+        screen.priest_ritual_scene = True
+        screen.lines = without_attached_marks(frame, screen.lines, rect=(16, 135, 240, 215))
+        # The same sprite remains through the chant and the result dialogue.
+        # It is not a menu cursor. Ambiguous/other hands and incomplete text
+        # cannot become permission to acknowledge an unread option.
+        screen.priest_ritual_dialogue = (
+            screen.hand == (116, 82, 137, 96) and _priest_dialogue_body(screen))
+        if screen.priest_ritual_dialogue:
+            screen.hand = None
+            screen.selected = None
     if screen.kind == 'month_menu':
         positions = month_confirmation_positions(screen)
         if positions:
@@ -856,6 +866,28 @@ def egg_ritual_recitation_panel(screen: Screen) -> bool:
     return rows == [(151, [(24, '「ナマステ!')])] and body == '「ナマステ!'
 
 
+def _priest_sprite(frame: Frame) -> bool:
+    """Measured g731/g739 ritual priest art, independent of the dialogue text."""
+    if (frame.width, frame.height) != (256, 224):
+        return False
+    raw = bytes(c for y in range(80, 104) for x in range(108, 148) for c in frame.pixel(x, y))
+    return hashlib.sha256(raw).hexdigest() == '021ae70f38cddd6a354d1aee2a508db7f57ca05dfd743f795745ad68da76f980'
+
+
+def _priest_dialogue_body(screen: Screen) -> bool:
+    header = screen.header or {}
+    if (screen.kind != 'text' or screen.battle is not None or screen.egg_rows
+            or any(type(header.get(k)) is not int for k in ('year', 'month', 'gold'))
+            or header['year'] < 1 or not 1 <= header['month'] <= 12 or header['gold'] < 0):
+        return False
+    body = ''.join(line.span(16, 240).replace(' ', '') for line in screen.lines
+                   if 135 <= line.y <= 215)
+    return (bool(body) and UNKNOWN not in body and '?' not in body and '？' not in body
+            and not any(word in body for word in ('うむッ', 'いかんッ', 'よろしい', 'かかります'))
+            and re.search(r'[0-9]+[GＧg]', body) is None
+            and not any(line.spans() for line in screen.lines if 31 <= line.y < 127))
+
+
 def resume_egg_ritual_panel(screen: Screen) -> bool:
     """Measured g725 priest preparation; never infer chapter or payment."""
     header = screen.header or {}
@@ -863,6 +895,8 @@ def resume_egg_ritual_panel(screen: Screen) -> bool:
             or any(type(header.get(k)) is not int for k in ('year', 'month', 'gold'))
             or header['year'] < 1 or not 1 <= header['month'] <= 12 or header['gold'] < 0):
         return False
+    if screen.priest_ritual_scene:
+        return screen.priest_ritual_dialogue and _priest_dialogue_body(screen)
     if egg_ritual_recitation_panel(screen):
         return True  # bounded foreground only; no chapter/payment/quantity
     rows = [(x, line.y, word) for line in screen.lines for x, word in line.spans()]
