@@ -9161,6 +9161,38 @@ MONTH_SUB_EXIT_KINDS = frozenset({'map', 'map_target', 'battle', 'battle_menu', 
                                   'boss_attack_started', 'name_entry', 'castle_menu'})
 
 
+def _merchant_spendable(mem, shop, header):
+    """Cash after the same payroll and unpaid necessities used by recovery.
+
+    A chart/adjusted/cached card plan is not authority to spend the wage or
+    egg reserve. Unknown/malformed month, money or reserves cannot confirm.
+    Soldier refills remain optional and are recalculated after the merchant.
+    """
+    if (not isinstance(header, dict)
+            or any(type(header.get(k)) is not int for k in ('year', 'month', 'gold'))
+            or header['year'] < 1 or not 1 <= header['month'] <= 12 or header['gold'] < 0
+            or shop.get('key') != _month_key(header)
+            or mem.get('month') not in (None, shop.get('key'))):
+        return None
+    repair = _house_repair_reserve(shop)
+    egg, recruit = shop.get('reserve', 0), shop.get('recruit_reserve', 0)
+    if repair is None or any(type(v) is not int or v < 0 for v in (egg, recruit)):
+        return None
+    return max(0, header['gold'] - _egg_recovery_wage_floor(mem) - egg - repair - recruit)
+
+
+def _merchant_quote_decline(screen, mem, shop, want, reason):
+    # Close the rejected quote and its digit editor instead of reopening the
+    # same cached target on the next frame. Other cards/owners/reserves stay.
+    if shop.get('items') and shop['items'][0][0] == want[0]:
+        shop['items'].pop(0)
+    shop['want'] = None
+    _record(mem, 'buy_skip', card=want[0], qty=want[1], price=want[2],
+            gold=(screen.header or {}).get('gold'), deviation_reason=reason,
+            reason='商人の実見積・同月所持金と、全賃金・未払回復等の予約を照合できないため購入を見送る')
+    return [pad('b')]
+
+
 def shop_step(screen: Screen, mem):
     shop = mem.get('shop')
     kind = screen.kind
@@ -9178,6 +9210,9 @@ def shop_step(screen: Screen, mem):
     gold = (screen.header or {}).get('gold')
     if not shop or shop.get('key') != _month_key(screen.header) or not shop['items']:
         return [pad('b')]
+    spendable = _merchant_spendable(mem, shop, screen.header)
+    if spendable is None:
+        return [pad('b')]  # a faded header is not permission or evidence of missing stock
     listed = {}
     for line in screen.lines:
         joined = ''.join(line.words(120, 256))
@@ -9187,13 +9222,14 @@ def shop_step(screen: Screen, mem):
     while shop['items']:
         name, qty = shop['items'][0]
         price = listed.get(name)
-        if price is None or gold is None or price > gold:
+        if type(qty) is not int or qty <= 0 or price is None or price <= 0 or price > spendable:
             _record(mem, 'buy_skip', card=name, qty=qty, price=price, gold=gold,
-                    deviation_reason='not_listed' if price is None else 'insufficient_gold',
-                    reason='商人の品揃えまたは所持金の制約')
+                    deviation_reason='invalid_quantity' if type(qty) is not int or qty <= 0
+                                     else 'not_listed' if price is None else 'reserved_funds',
+                    reason='商人の品揃えまたは全賃金・未払回復等を保持した購入予算の制約')
             shop['items'].pop(0)
             continue
-        n = min(qty, gold // price)
+        n = min(qty, spendable // price)
         shop['items'][0] = [name, n]
         shop['want'] = [name, n, price]
         move = menu_to(screen, name)
@@ -9309,6 +9345,14 @@ def quantity_step(screen: Screen, mem, soldiers=False):
         target = want[1]
         if screen.hand and 'うむッ' in screen.text and screen.selected in ('うむッ!', 'いかんッ!'):
             if value == target and target:
+                quotes = re.findall(r'(\d+)こで(\d+)Gになりまんな', ''.join(screen.text.split()))
+                spendable = _merchant_spendable(mem, shop, screen.header)
+                if (type(target) is not int or target <= 0
+                        or type(want[2]) is not int or want[2] <= 0
+                        or len(quotes) != 1 or int(quotes[0][0]) != value
+                        or int(quotes[0][1]) != value * want[2]
+                        or spendable is None or int(quotes[0][1]) > spendable):
+                    return _merchant_quote_decline(screen, mem, shop, want, 'quote_or_reserved_funds')
                 move = menu_to(screen, 'うむッ!')
                 if move == 'here':
                     bought = shop.setdefault('bought', [])
