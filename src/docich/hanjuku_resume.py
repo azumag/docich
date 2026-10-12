@@ -391,6 +391,7 @@ def restore(adapter, deadline, cancel):
             break
         time.sleep(.05)
     verified_receipt = dict(request, status='verified', chapter=chapter,
+                            gameplay_context='verified_checkpoint_foreground',
                             frame_sha256=frame.digest(), verified_at=time.time())
     atomic_write_json(receipt_path, verified_receipt)
     with _lock(adapter.g) as root:
