@@ -14,6 +14,7 @@ from docich import hanjuku_policy as p
 from test_hanjuku_chart_bot import Canvas
 from test_hanjuku_survival import (battle, memory, wounded_egg_memory,
                                    wounded_egg_screen)
+import pytest
 
 
 # 実測で上位に入る背景4色 (band 内の最頻4色を背景として除く)。兵士色は
@@ -79,6 +80,16 @@ def test_mixed_collision_unknown_palette_and_over_six_are_not_force_counts():
             canvas.put(x, y, (255, 80, 80))
     assert _field_soldiers(canvas.frame()) == (None, None)
     assert _field_soldiers(field_frame(ALLIES + ((70, 60, 10, 10),))) == (None, 0)
+
+
+@pytest.mark.parametrize('team', [0, 1])
+@pytest.mark.parametrize('body', [(0, 60, 1, 15), (250, 60, 6, 7),
+                                  (20, 40, 13, 1), (255, 60, 1, 2),
+                                  (0, 60, 1, 1), (255, 60, 1, 1), (20, 40, 1, 1)])
+def test_thin_clipped_team_colours_are_unread_not_zero(team, body):
+    other = ((160, 110, 10, 10, 1-team),)
+    counts = _field_soldiers(field_frame(((*body, team),) + other))
+    assert counts[team] is None and counts[1-team] == 1
 
 
 def test_soldiers_are_read_only_off_a_real_battle_frame():

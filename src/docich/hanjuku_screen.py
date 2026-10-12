@@ -432,16 +432,35 @@ def _field_soldiers(frame: Frame) -> tuple[int | None, int | None] | None:
                  if len(colors & palette) >= 2]
         width, height = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
         if len(cells) < SOLDIER_AREA[0]:
-            if (8 <= width <= SOLDIER_BOX[0] and 8 <= height <= SOLDIER_BOX[1]
+            if (width <= SOLDIER_BOX[0] and height <= SOLDIER_BOX[1]
                     and (min(xs) <= x0 + 4 or max(xs) >= x1 - 5 or min(ys) <= y0)):
-                for side in teams:
+                # Even one known army ink can be the last visible column of
+                # a clipped body. It cannot prove a body count, or zero.
+                for side, palette in enumerate(palettes):
+                    if not colors & palette:
+                        continue
                     merged[side] += 1
             continue
         # Large edge-connected structures are walls. A clipped soldier-sized
         # coloured body is not proof that its army has no unit there.
         if min(ys) <= y0 or min(xs) <= x0 + 4 or max(xs) >= x1 - 5:
-            if width <= SOLDIER_BOX[0] and height <= SOLDIER_BOX[1]:
-                for side in teams or (0, 1):
+            edge_colors = colors
+            if width > SOLDIER_BOX[0] or height > SOLDIER_BOX[1]:
+                # Castle decoration uses army inks too. In a large connected
+                # wall, only ink at the clipping boundary can establish a
+                # partial sprite; interior decoration cannot identify a unit.
+                edge_colors = {rgb[y * stride + x * 3:y * stride + x * 3 + 3]
+                               for x, y in cells
+                               if y == y0 or x <= x0 + 4 or x >= x1 - 5}
+            clipped_teams = [side for side, palette in enumerate(palettes)
+                             if edge_colors & palette]
+            if clipped_teams:
+                # A thin sprite may join a large edge-connected background.
+                # Army ink in that component still prevents a zero reading.
+                for side in clipped_teams:
+                    merged[side] += 1
+            elif width <= SOLDIER_BOX[0] and height <= SOLDIER_BOX[1]:
+                for side in (0, 1):
                     merged[side] += 1
             continue
         if len(teams) != 1:

@@ -1,8 +1,9 @@
 """g713 natural B conservation was lost when troops crossed x128, with HP unchanged."""
 from pathlib import Path
+import pytest
 
 from docich import hanjuku_policy as p
-from docich.hanjuku_pixels import read_png
+from docich.hanjuku_pixels import Frame, read_png
 from docich.hanjuku_screen import parse
 from test_hanjuku_combat_strength import duel
 
@@ -61,3 +62,34 @@ def test_current_owner_zero_is_not_unlocked_by_native_army_advantage():
     p.battle_step(native(24397), mem)
     assert p.battle_menu_step(native(24407), mem) == [p.pad('b')]
     assert p._own_egg_empty(mem, mem['battle'])
+
+
+def translated_enemy_boundary(x, y):
+    """Derived RGB-preserving boundary, not a naturally observed screenshot."""
+    frame = read_png(ROOT / 'g713-coco-gaspacho-24397.png')
+    assert frame.digest() == DIGESTS[24397]
+    rgb = bytearray(frame.rgb)
+    # Remove the initial enemy formation, keeping all six native ally bodies
+    # and the original HP panel. Reinsert the actual (41,69)..(53,83) body.
+    for yy in range(64, 150):
+        for xx in range(0, 100):
+            i = (yy * frame.width + xx) * 3
+            rgb[i:i+3] = bytes((106, 40, 49))
+    for dy in range(15):
+        for dx in range(13):
+            xx, yy = x + dx, y + dy
+            if 0 <= xx < frame.width and 0 <= yy < frame.height:
+                i = (yy * frame.width + xx) * 3
+                rgb[i:i+3] = bytes(frame.pixel(41+dx, 69+dy))
+    return Frame(frame.width, frame.height, bytes(rgb))
+
+
+@pytest.mark.parametrize('x,y', [(245, 69), (250, 69), (254, 69),
+                                (-7, 69), (-11, 69), (41, 27), (41, 30), (41, 36)])
+def test_rgb_preserved_thin_enemy_edges_never_license_conservation(x, y):
+    screen = parse(translated_enemy_boundary(x, y))
+    assert screen.battle == native(24397).battle
+    assert screen.field_soldiers == (6, None)
+    mem = memory()
+    p._card_battle_reading(screen, mem['battle'], mem)
+    assert p.battle_menu_step(native(24407), mem) == [p.pad('a')]

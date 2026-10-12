@@ -1,11 +1,11 @@
 {
-  "output_sha256": "f63ace21b62fd2ae74e3d66c228235a0ba95a01d2083327c0ce57993d476c352",
+  "output_sha256": "ea01a74a75496b3a00e8286975fedade5c5da4c4e3f67ff5b1de61cfe4e57ef0",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "e03aa24d09e8d31e4d41cb0ec0cb5620b15bb04bff9b7d13c7a0ee81bd5848fb",
+  "source_sha256": "ca4cd97e836f6a93ff75174c5ec5bb0aa9d9050579c90f7d97bc0c5f592d19c8",
   "topics": [
+    "半熟兵士認識の端切れレビュー修正",
     "半熟の進軍時の軍識別と卵温存を修正",
-    "自然増築の一覧継続と全回復の実画面照合",
-    "個別卵回復v178のmain・VM・同ラン反映"
+    "自然増築の一覧継続と全回復の実画面照合"
   ]
 }
