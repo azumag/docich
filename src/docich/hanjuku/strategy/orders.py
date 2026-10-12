@@ -10,7 +10,7 @@ from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust, ha
 from ...hanjuku_egg_reference import general_max_hp
 from ..decision_log import _record
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
-from ..strategy.kit import _deploy_cards, _is_boss_order
+from .kit import _deploy_cards, _is_boss_order
 
 
 # ---------------------------------------------------------------- orders
@@ -538,7 +538,7 @@ BOSS_TARGET_CANCEL_LIMIT = 4   # the boss sortie is worth more retries
 
 def _garrison_move(mem, general, source=None, target=None):
     """A general left ``source`` and/or now holds ``target`` (known lists only)."""
-    from ...hanjuku_roster import dirty_status
+    from ..os_layer.roster import dirty_status
     dirty_status(mem, [general] if general else None, fields=('hp', 'location'))
     garrison = mem.setdefault('garrison', {})
     # Movement-derived roster changes are not new observations.

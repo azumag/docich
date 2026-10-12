@@ -5,11 +5,11 @@ selects the option the judgment layer chose.
 """
 from __future__ import annotations
 
-from ...hanjuku_screen import OKUNOTE_CHOICES, Screen
+from ..os_layer.screen import OKUNOTE_CHOICES, Screen
 from ... import hanjuku_chart as chart, hanjuku_experience as experience, hanjuku_reference as reference
 from ...hanjuku_egg_reference import general_max_hp
 from ..decision_log import _record
-from ..flows.battle import _card_battle_reading, _card_gate_close, _hero_retreat_open
+from .battle import _card_battle_reading, _card_gate_close, _hero_retreat_open
 from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CARD_LIST_CURSOR_LIMIT,
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
                                _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
@@ -259,7 +259,7 @@ def _disabled_defense_probe(screen, mem, cur):
     an egg broke or that an okunote exists. Its actual row and the existing
     last-resort guards still own any irreversible A.
     """
-    from ...hanjuku_roster import run_identity
+    from ..os_layer.roster import run_identity
     identity = run_identity(mem.get('_run_identity'))
     if (not screen.disabled_item_box or screen.hidden_battle_commands
             or screen.menu_cursor not in (192, 208, 196, 212)
@@ -319,7 +319,7 @@ def _disabled_defense_probe(screen, mem, cur):
 
 def _disabled_defense_pending(screen, mem, cur):
     """A fading inspection cannot fall through to generic unknown/text A."""
-    from ...hanjuku_roster import run_identity
+    from ..os_layer.roster import run_identity
     probe = cur.get('disabled_defense_probe')
     if not isinstance(probe, dict) or probe.get('pending') is not True:
         return None
@@ -755,7 +755,7 @@ def egg_choice_step(screen: Screen, mem):
     """Choose a real offered summon; never type a name or infer an egg result."""
     if _screen_egg_empty(screen, mem, mem.get('battle')):
         return [pad('b')]
-    from ...hanjuku_screen import egg_choice_names
+    from ..os_layer.screen import egg_choice_names
     names = egg_choice_names(screen)
     if not names or screen.menu_cursor not in (176, 192, 208):
         return []

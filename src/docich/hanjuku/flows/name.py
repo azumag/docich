@@ -1,8 +1,8 @@
 """手順層: the hero name-entry procedure."""
 from __future__ import annotations
 
-from ...hanjuku_screen import Screen
-from ...hanjuku_font import UNKNOWN
+from ..os_layer.screen import Screen
+from ..os_layer.font import UNKNOWN
 from ..decision_log import _record
 from ..os_layer.commands import kana_cell, pad
 from ..os_layer.readers import _current, _options

@@ -1,8 +1,8 @@
 """手順層: camp recall and the hero's return to a castle."""
 from __future__ import annotations
 
-from ...hanjuku_pixels import Frame
-from ...hanjuku_screen import Screen, castle_roofs, own_camps
+from ..os_layer.pixels import Frame
+from ..os_layer.screen import Screen, castle_roofs, own_camps
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
 from ..os_layer.commands import menu_to, pad
@@ -22,7 +22,7 @@ RECALL_SKIP_TICKS = 400        # observations without recalls after a skipped pi
 
 def camp_recall_step(screen: Screen, mem, frame):
     """Observe named retreaters before reusing the existing camp recall route."""
-    from ... import hanjuku_camp_recheck
+    from . import camp_recheck as hanjuku_camp_recheck
     return hanjuku_camp_recheck.step(screen, mem, frame, _camp_recall_step)
 
 
@@ -253,7 +253,7 @@ def _recall_dispatch_step(screen, mem, state):
             and receipt.get('a_inputs', 0) >= state.get('a_inputs', 1)):
         if not state.get('input_sent'):
             state['input_sent'] = True
-            from ...hanjuku_roster import dirty_status
+            from ..os_layer.roster import dirty_status
             general = state.get('general') or (NAME if state.get('hero') else None)
             dirty_status(mem, [general] if general else None, fields=('hp', 'location'))
             _record(mem, 'camp_recall_input_sent', observed_metric={'castle': state.get('goal'),

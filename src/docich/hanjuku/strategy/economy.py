@@ -11,7 +11,7 @@ from ...hanjuku_egg_reference import general_max_hp
 from ..decision_log import _record
 from ..os_layer.readers import STATUS_NAMES
 from ..os_layer.world import NAME, _owned
-from ..strategy.orders import _hero_egg_broken
+from .orders import _hero_egg_broken
 
 
 # ---------------------------------------------------------------- month
@@ -137,7 +137,7 @@ def _egg_recovery_targets(mem):
     # An attempted summon makes the sortie count stale. Check the recovery
     # screen; this flag is not proof of consumption and never decrements stock.
     targets.update(mem.get('egg_recheck') or [])
-    from ...hanjuku_roster import completed_survey
+    from ..os_layer.roster import completed_survey
     survey = completed_survey(mem)
     if survey is not None:
         targets.update(name for name, fields in survey.get('dirty', {}).items() if 'egg' in fields)
@@ -180,7 +180,7 @@ def _extras_reserve(mem, header):
 def _egg_recheck(mem):
     ally = (mem.get('battle') or {}).get('ally')
     if ally:
-        from ...hanjuku_roster import dirty_status
+        from ..os_layer.roster import dirty_status
         dirty_status(mem, [ally], fields=('egg',))
         pending = mem.setdefault('egg_recheck', [])
         if ally not in pending:
@@ -250,7 +250,7 @@ def _recruit_spare_after_necessities(mem, shop, gold):
     Keep the existing demand/economy checks. This extra gate reserves pending
     purchases, soldiers, repair and wages; it never borrows the goninja floor.
     """
-    from ...hanjuku_roster import fresh
+    from ..os_layer.roster import fresh
     seen = fresh(mem)
     owned = {STATUS_NAMES.get(c, c) for c in _owned(mem)}
     known = {STATUS_NAMES.get(c, c) for c in chart.CASTLE_NAMES.get(mem.get('chapter'), ())}
@@ -316,7 +316,7 @@ def _defer_recruit_cash(mem, shop, gold, evidence):
 
 
 def _recruit_target(mem):
-    from ...hanjuku_roster import roles
+    from ..os_layer.roster import roles
     chapter = mem.get('chapter')
     expected = set(chart.CASTLE_NAMES.get(chapter, ())) - {chart.boss_castle(chapter)}
     owned = _owned(mem)
@@ -333,18 +333,18 @@ def _recruit_target(mem):
     except ValueError:
         return None
     target = spec['per_castle'] * len(owned) + spec['attack']
-    from ...hanjuku_roster import MAX_GENERALS
+    from ..os_layer.roster import MAX_GENERALS
     return min(target, MAX_GENERALS) if target > 0 else None
 
 
 def _recruit_sufficient(mem):
-    from ...hanjuku_roster import fresh
+    from ..os_layer.roster import fresh
     seen, target = fresh(mem), _recruit_target(mem)
     return seen is not None and target is not None and len(seen['names']) >= target
 
 
 def _stop_unneeded_recruit(mem, shop):
-    from ...hanjuku_roster import fresh
+    from ..os_layer.roster import fresh
     if shop.get('recruit') in ('opened', 'done', 'unverified'):
         return True  # finish the existing transaction; do not invent a refund
     seen, target = fresh(mem), _recruit_target(mem)
@@ -373,7 +373,7 @@ def _stop_unneeded_recruit(mem, shop):
 
 
 def _recruit_shortage(mem):
-    from ...hanjuku_roster import fresh
+    from ..os_layer.roster import fresh
     seen, target = fresh(mem), _recruit_target(mem)
     if (seen is None or target is None or seen.get('complete') is not True
             or len(seen['names']) >= target):
@@ -384,7 +384,7 @@ def _recruit_shortage(mem):
 
 
 def _stop_uneconomic_recruit(mem, shop):
-    from ...hanjuku_roster import economics
+    from ..os_layer.roster import economics
     if shop.get('recruit') in ('opened', 'done', 'unverified'):
         return False  # finish the existing conversation without guessing refunds
     owned = {STATUS_NAMES.get(c, c) for c in _owned(mem)}
@@ -430,7 +430,7 @@ def _month_held_reserve(shop):
 
 def _general_repair_targets(mem):
     """Named current castle statuses that the house route can safely recheck."""
-    from ...hanjuku_house import HOUSE_VIEW, _castle_status_after_sortie, _repair_hp_ready
+    from ..os_layer.world import HOUSE_VIEW, _castle_status_after_sortie, _repair_hp_ready
     if mem.get('chapter') not in HOUSE_VIEW:
         return []
     owned = _owned(mem)
@@ -820,7 +820,7 @@ def _hero_egg_wage_floor(mem):
     blind floor refused the 50G that would have kept the hero alive. Only a
     fresh, complete roster with every wage read lowers it; otherwise 30G.
     """
-    from ...hanjuku_roster import MAX_RECRUIT_WAGE, fresh
+    from ..os_layer.roster import MAX_RECRUIT_WAGE, fresh
     receipt = fresh(mem)
     wages = (receipt or {}).get('wages')
     if (not receipt or receipt.get('complete') is not True or mem.get('recruit_payroll_pending')
@@ -837,7 +837,7 @@ def _egg_recovery_wage_floor(mem):
     A blind 30G floor declined the affordable recovery. Large known payrolls
     still reserve their entire sum instead of capping it at the fallback.
     """
-    from ...hanjuku_roster import MAX_RECRUIT_WAGE, fresh, run_identity
+    from ..os_layer.roster import MAX_RECRUIT_WAGE, fresh, run_identity
     receipt = fresh(mem)
     identity = run_identity(mem.get('_run_identity'))
     wages = (receipt or {}).get('wages')

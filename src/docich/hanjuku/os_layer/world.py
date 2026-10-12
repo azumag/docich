@@ -7,10 +7,10 @@ plans: the strategy layer reads them to choose orders.
 """
 from __future__ import annotations
 
-from ...hanjuku_screen import Screen, castle_roofs
+from .screen import Screen, castle_roofs
 from ... import hanjuku_chart as chart
 from ..decision_log import _record, _tally
-from ..os_layer.readers import STATUS_NAMES, _cursor
+from .readers import STATUS_NAMES, _cursor
 
 
 NAME = chart.HERO
@@ -180,7 +180,7 @@ def observe_owners(mem, roofs, cam):
                              and prev.get('kind') == kind else {})}
         if count < OWNER_CONFIRM:
             continue
-        from ...hanjuku_roster import owner
+        from .roster import owner
         owner(mem, STATUS_NAMES.get(castle, castle), kind)
         if castle in fixed:
             continue
@@ -244,7 +244,7 @@ WORLD_FLAG_TRUST = 200   # observations a world-map (Y) flag outranks a roof rea
 
 def _apply_world_flags(mem, flags):
     chapter = mem.get('chapter') or 0
-    from ...hanjuku_roster import owner
+    from .roster import owner
     seen = mem.setdefault('world_flags', {})
     for name, kind in flags.items():
         if name in chart.castles(chapter):
@@ -327,3 +327,33 @@ def _hero_castle(mem):
         if castle in owned and castle in castles and NAME in (present or ()):
             return castle
     return None
+
+
+# ---------------------------------------------------------------- house (あたしの家)
+# Measured field view position of the house per chapter (moved from the
+# house flow so the economy strategy can read it without importing a flow).
+HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5)}
+
+
+def _repair_hp_ready(info):
+    hp, maximum = info.get('hp'), info.get('max_hp')
+    return type(hp) is int and type(maximum) is int and maximum > 0 and hp == maximum
+
+
+def _castle_status_after_sortie(info, sortie, mem):
+    """A fresh named status permits rechecking a castle, not assuming arrival.
+
+    A missing arrival toast must not make an old en_route hint permanent.
+    The later castle picker still requires the actual named resident and a
+    remaining defender before it permits any dispatch.
+    """
+    now, observed, launched = mem.get('tick'), info.get('observed_tick'), sortie.get('tick')
+    return (info.get('location') == 'castle'
+            and info.get('general') == sortie.get('general')
+            and type(mem.get('chapter')) is int and mem['chapter'] > 0
+            and type(info.get('observed_chapter')) is int
+            and info['observed_chapter'] == mem.get('chapter')
+            and isinstance(mem.get('month'), str) and bool(mem['month'])
+            and info.get('month') == mem.get('month')
+            and all(type(value) is int for value in (now, observed, launched))
+            and 0 <= launched < observed <= now and now - observed <= 400)

@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import re
 
-from ...hanjuku_screen import Screen
-from ...hanjuku_font import UNKNOWN
+from ..os_layer.screen import Screen
+from ..os_layer.font import UNKNOWN
 from ... import hanjuku_chart as chart
 from ...hanjuku_egg_stock import observed_uses
 from ..decision_log import _record
-from ..flows.egg_recovery import MONTH_SUB_EXIT_KINDS, _egg_recovery_step, _individual_egg_selected
-from ..flows.shop import quantity_step
+from .egg_recovery import MONTH_SUB_EXIT_KINDS, _egg_recovery_step, _individual_egg_selected
+from .shop import quantity_step
 from ..judgment.battle import _egg_quantities_unknown, _own_egg_empty
 from ..os_layer.commands import MENU_NAV_PRESS_LIMIT, guarded_menu_to, menu_to, pad
 from ..os_layer.readers import (RECRUIT_GOODBYE, RECRUIT_INTRO, STATUS_NAMES, _current, _month_dialog_body,
@@ -153,7 +153,7 @@ def month_step(screen: Screen, mem):
     if (mem.get('month_sub', {}).get('kind') == 'egg'
             and screen.has('おはらいのひつような') and screen.has('たまごはありませんぞ')):
         mem.pop('month_sub')
-        from ...hanjuku_roster import dirty_status
+        from ..os_layer.roster import dirty_status
         dirty_status(mem, _egg_recovery_targets(mem), fields=('egg',))
         mem.pop('egg_recheck', None)
         _egg_quantities_unknown(mem)  # reobserve each owner's quantity
@@ -463,7 +463,7 @@ def _month_chikujou(screen, mem, shop):
     too when affordable. Verify each result and actual debit in the native
     castle list, then continue without closing it when another castle is affordable.
     """
-    from ...hanjuku_roster import run_identity
+    from ..os_layer.roster import run_identity
     if shop.get('chikujou') != 'check':
         return None
     tried = shop.setdefault('chikujou_tried', [])
@@ -518,7 +518,7 @@ def _chikujou_visible_maxed(screen, mem):
 
 def _chikujou_continue_list(screen, mem, sub):
     """Continue only after this castle's result and exact native-list debit."""
-    from ...hanjuku_roster import run_identity
+    from ..os_layer.roster import run_identity
     shop = mem.get('shop') or {}
     identity = run_identity(mem.get('_run_identity'))
     key = sub.get('key')
@@ -563,7 +563,7 @@ def _chikujou_continue_list(screen, mem, sub):
 
 
 def _chikujou_step(screen, mem, sub):
-    from ...hanjuku_roster import run_identity
+    from ..os_layer.roster import run_identity
     if (sub.get('chikujou_identity') is not None and (
             run_identity(sub['chikujou_identity']) != run_identity(mem.get('_run_identity'))
             or sub.get('chikujou_chapter') != mem.get('chapter'))):
@@ -810,7 +810,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
             return False
     sub = mem.pop('month_sub')
     if sub['kind'] == 'egg' and sub.get('key') == mem.get('month'):
-        from ...hanjuku_roster import dirty_status
+        from ..os_layer.roster import dirty_status
         actor = (NAME if sub.get('hero_selected') is True and sub.get('full_selected') is not True
                  else sub['individual_actor'] if _individual_egg_selected(mem, sub) else None)
         dirty_status(mem, [actor] if actor
@@ -818,7 +818,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
     if shop and shop.get(sub['kind']) == 'opened':
         shop[sub['kind']] = 'done' if paid else 'unverified'
     if sub['kind'] == 'recruit':
-        from ...hanjuku_roster import invalidate
+        from ..os_layer.roster import invalidate
         invalidate(mem)  # payment/return never proves an extra general
         if shop and paid:
             shop['recruit_reserve'] = 0
@@ -1063,7 +1063,7 @@ def month_sub_step(screen: Screen, mem):
             joined = re.fullmatch(r'([^�]+)がはいかにくわわった!', line.known.replace(' ', '').replace('！', '!'))
             if joined and joined[1] not in sub.setdefault('joined_names', []):
                 sub['joined_names'].append(joined[1])
-                from ...hanjuku_roster import invalidate
+                from ..os_layer.roster import invalidate
                 invalidate(mem)
                 _record(mem, 'recruit_join_announced', general=joined[1], month=sub.get('key'),
                         observed_metric={'placement': 'unclassified'},

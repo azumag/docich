@@ -38,7 +38,7 @@ def _hero_only_egg_recovery(screen, mem, sub):
 
 
 def _individual_egg_selected(mem, sub):
-    from ...hanjuku_roster import run_identity
+    from ..os_layer.roster import run_identity
     identity = run_identity(mem.get('_run_identity'))
     actor = sub.get('individual_actor')
     return (identity is not None and sub.get('individual_identity') == identity
@@ -50,7 +50,7 @@ def _individual_egg_selected(mem, sub):
 
 def _observe_recovery_list_quantities(screen, mem, sub):
     """Retain each unique actual named row, including unpaid low-use eggs."""
-    from ...hanjuku_roster import run_identity
+    from ..os_layer.roster import run_identity
     if (run_identity(mem.get('_run_identity')) is None or sub.get('key') != mem.get('month')
             or (mem.get('shop') or {}).get('key') != sub.get('key')):
         return
@@ -74,7 +74,7 @@ def _observe_recovery_list_quantities(screen, mem, sub):
 
 def _individual_egg_candidate(screen, mem, sub):
     """Actual visible low-use non-hero rows, only when full recovery is short."""
-    from ...hanjuku_roster import run_identity
+    from ..os_layer.roster import run_identity
     identity = run_identity(mem.get('_run_identity'))
     gold = sub.get('gold_before')
     repair = (mem.get('shop') or {}).get('hero_repair_reserve', 0)
@@ -115,7 +115,7 @@ def _egg_recovery_step(screen, mem, sub):
         # The old dialogue A reopened its quote and then waited to the cap.
         # Close the list; only the existing quiet month-menu receipt may
         # establish payment. Absence of an actor never establishes quantity.
-        from ...hanjuku_roster import run_identity
+        from ..os_layer.roster import run_identity
         identity = run_identity(mem.get('_run_identity'))
         header = screen.header or {}
         gold, before, cost = header.get('gold'), sub.get('gold_before'), sub.get('quoted_cost')
@@ -166,7 +166,7 @@ def _egg_recovery_step(screen, mem, sub):
         quoted_cost = int(quote[2]) if quote else None
         count_basis = 'screen' if quote else None
         if quote is None and sub.get('full_selected') is not True:
-            from ...hanjuku_roster import run_identity
+            from ..os_layer.roster import run_identity
             identity = run_identity(mem.get('_run_identity'))
             hero_bound = (hero_only and identity is not None
                           and sub.get('hero_identity') == identity
@@ -217,7 +217,7 @@ def _egg_recovery_step(screen, mem, sub):
         move = menu_to(screen, 'うむッ!')
         if move == 'here':
             sub.update(quoted_cost=quoted_cost, stage='recovering')
-            from ...hanjuku_roster import run_identity
+            from ..os_layer.roster import run_identity
             sub.update(confirm_identity=run_identity(mem.get('_run_identity')),
                        confirm_chapter=mem.get('chapter'),
                        confirm_actor=NAME if hero_only else sub['individual_actor'] if individual else 'ぜんかいふく')
@@ -236,7 +236,7 @@ def _egg_recovery_step(screen, mem, sub):
         if sub.get('hero_selected') or _hero_only_egg_recovery(screen, mem, sub):
             move = menu_to(screen, NAME)
             if move == 'here':
-                from ...hanjuku_roster import run_identity
+                from ..os_layer.roster import run_identity
                 sub['hero_selected'] = True
                 sub['full_selected'] = False
                 for key in ('individual_selected', 'individual_actor',
@@ -261,7 +261,7 @@ def _egg_recovery_step(screen, mem, sub):
         if actor:
             move = menu_to(screen, actor)
             if move == 'here':
-                from ...hanjuku_roster import run_identity
+                from ..os_layer.roster import run_identity
                 readings = [cells.get(104) for line in screen.lines
                             if (cells := dict(line.spans())).get(32) == actor
                             and 47 < line.y <= 199]

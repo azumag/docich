@@ -8,9 +8,9 @@ from __future__ import annotations
 import random
 import re
 
-from ...hanjuku_screen import HEADER as HEADER_RE, SUMMER_BONUS_CHOICES, Screen
+from ..os_layer.screen import HEADER as HEADER_RE, SUMMER_BONUS_CHOICES, Screen
 from ..decision_log import _record
-from ..flows.shop import _observe_soldier_receipt
+from .shop import _observe_soldier_receipt
 from ..judgment.battle import _hold_general_loss_metric, _migrate_card_evidence
 from ..judgment.events import trade_accept_weak
 from ..os_layer.commands import menu_to, pad
@@ -303,10 +303,10 @@ def observe_events(screen: Screen, mem):
             mem.setdefault('castle_income', {})[label] = {
                 'chapter': mem['chapter'], 'month': mem['month'], 'tick': mem['tick'], 'income': int(income[1])}
     if 'がはいかにくわわった!' in screen.text.replace('！', '!'):
-        from ...hanjuku_roster import invalidate
+        from ..os_layer.roster import invalidate
         invalidate(mem)
-    from ...hanjuku_house import roster
-    from ...hanjuku_roster import page
+    from .house import roster
+    from ..os_layer.roster import page
     page(mem, roster(screen))
     if 'きょうさく' in screen.text and not mem.get('poor_harvest_' + str(mem.get('month'))):
         mem['poor_harvest_' + str(mem.get('month'))] = True

@@ -7,9 +7,9 @@ layers want.
 """
 from __future__ import annotations
 
-from ...hanjuku_screen import Screen, month_confirmation_positions
+from .screen import Screen, month_confirmation_positions
 from ..decision_log import _record
-from ..os_layer.readers import _current, _options
+from .readers import _current, _options
 
 
 FPS = 60

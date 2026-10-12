@@ -8,7 +8,7 @@ from __future__ import annotations
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust
 from ..decision_log import _record
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
-from ..strategy.orders import (_arrival_castle, _boss_egg_depleted, _distance, _hero_egg_broken,
+from .orders import (_arrival_castle, _boss_egg_depleted, _distance, _hero_egg_broken,
                                _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets, _source,
                                _source_location_recheck, _source_location_recheck_due, _unplaced_castle_generals)
 

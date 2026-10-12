@@ -8,7 +8,7 @@ returned records and sends the bounded pad actions.
 """
 from __future__ import annotations
 
-from ..hanjuku_pixels import Frame
+from .os_layer.pixels import Frame
 from . import decision_log
 from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
                     deploy as deploy_flow, map as map_flow, month as month_flow, name as name_flow,
@@ -85,10 +85,10 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     is returned in ``state['_experience']``. Neither is memory.
     """
     from .. import hanjuku_experience as experience_module
-    from .. import hanjuku_house
-    from .. import hanjuku_roster
+    from .flows import house as hanjuku_house
+    from .os_layer import roster as hanjuku_roster
     from .. import hanjuku_chart
-    from ..hanjuku_screen import fake_hero_announcement_chapter, month_confirmation_positions, parse
+    from .os_layer.screen import fake_hero_announcement_chapter, month_confirmation_positions, parse
     # State written before the castle-label rename still names chapter 1's home
     # castle ほんじょう. Rename it here, before anything reads or writes it, so
     # garrison keys, order sources and free-text notes all match the chart.
@@ -145,7 +145,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         updated['_experience'] = mem.pop('_experience', None)
         updated['policy'] = mem
         return [pad('a')], updated
-    from .. import hanjuku_starter
+    from .flows import starter as hanjuku_starter
     starter_actions = hanjuku_starter.step(screen, mem, frame)
     if starter_actions is not None:
         # Never let the generic shop/event/no-input fallback skip this list,
@@ -157,7 +157,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         updated['_experience'] = mem.pop('_experience', None)
         updated['policy'] = mem
         return starter_actions, updated
-    from .. import hanjuku_camp_recheck
+    from .flows import camp_recheck as hanjuku_camp_recheck
     hanjuku_camp_recheck.interrupt(screen, mem)
     if state.get('screen_kind') != kind:
         # A shop/information/confirmation round trip starts a new navigation

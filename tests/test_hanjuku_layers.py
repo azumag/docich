@@ -36,21 +36,23 @@ LAYER_RANK = {
 LEGACY_LAYER = {
     'hanjuku_chart': 'data', 'hanjuku_reference': 'data', 'hanjuku_egg_reference': 'data',
     'hanjuku_egg_stock': 'data',
-    'hanjuku_pixels': 'os_layer', 'hanjuku_font': 'os_layer', 'hanjuku_glyphs': 'os_layer',
-    'hanjuku_screen': 'os_layer', 'hanjuku_roster': 'os_layer',
     'hanjuku_chart_adjust': 'strategy', 'hanjuku_experience': 'strategy',
-    'hanjuku_house': 'flows', 'hanjuku_camp_recheck': 'flows', 'hanjuku_starter': 'flows',
 }
 LEGACY_RANK = {'data': 0, 'os_layer': 1, 'strategy': 2, 'flows': 4}
-# Compatibility facades over this package; no layer module may depend on them.
+# Compatibility names over this package; no layer module may depend on them.
+# hanjuku_policy/hanjuku_bot re-export the split modules; the others are
+# sys.modules aliases of the module that moved into the package.
 FACADES = {'hanjuku_policy', 'hanjuku_bot'}
+MOVED = {
+    'hanjuku_pixels': 'os_layer.pixels', 'hanjuku_glyphs': 'os_layer.glyphs',
+    'hanjuku_font': 'os_layer.font', 'hanjuku_screen': 'os_layer.screen',
+    'hanjuku_roster': 'os_layer.roster',
+    'hanjuku_house': 'flows.house', 'hanjuku_camp_recheck': 'flows.camp_recheck',
+    'hanjuku_starter': 'flows.starter',
+}
 
 # (importing module, imported module): why it is still allowed.
-KNOWN_DEBT = {
-    ('strategy.economy', 'hanjuku_house'):
-        '_general_repair_targets reads the house flow\'s view/status helpers; '
-        'move them to os_layer when the house flow joins the package',
-}
+KNOWN_DEBT = {}
 
 # Modules that turn intents into pad input; strategy/judgment must not use them.
 INPUT_MODULES = {'os_layer.commands', 'os_layer.navigation'}
@@ -111,7 +113,7 @@ def _violations():
             continue
         layer = _layer(name)
         for target in _imports(name, path, is_package):
-            if target in FACADES:
+            if target in FACADES or target in MOVED:
                 out.add((name, target))
             elif target.startswith('hanjuku_'):
                 legacy = LEGACY_LAYER.get(target)
@@ -190,3 +192,12 @@ def test_facade_rebinding_skips_unrelated_objects(monkeypatch):
     assert hanjuku_bot.pad is orchestrator.pad is not commands.pad
     monkeypatch.setattr(hanjuku_policy, 'pad', object())
     assert orchestrator.pad is hanjuku_bot.pad
+
+
+def test_moved_modules_are_aliases_of_their_layer_module():
+    import importlib
+
+    for old, new in MOVED.items():
+        legacy = importlib.import_module(f'docich.{old}')
+        layered = importlib.import_module(f'docich.hanjuku.{new}')
+        assert legacy is layered, old

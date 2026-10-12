@@ -5,12 +5,12 @@ target under the sortie marker and reads world-map ownership surveys.
 """
 from __future__ import annotations
 
-from ...hanjuku_screen import Screen, castle_roofs
+from ..os_layer.screen import Screen, castle_roofs
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
-from ..flows.deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
+from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
                             _hold_guarded_sortie)
-from ..flows.recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _recall_dispatch_step, _request_recall,
+from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _recall_dispatch_step, _request_recall,
                             camp_recall_step)
 from ..os_layer.commands import pad
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, _align_on_roof, _drop_stale_y_jump, _start_y_jump,

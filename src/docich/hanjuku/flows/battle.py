@@ -10,8 +10,8 @@ import re
 import time
 from dataclasses import asdict
 
-from ...hanjuku_screen import Screen
-from ...hanjuku_font import UNKNOWN
+from ..os_layer.screen import Screen
+from ..os_layer.font import UNKNOWN
 from ... import hanjuku_chart as chart, hanjuku_experience as experience
 from ...hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
 from ..decision_log import _record, _tally
@@ -265,7 +265,7 @@ def battle_step(screen: Screen, mem):
     _card_battle_reading(screen, cur, mem)
     cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)
     cur['own_egg_positive_observed'] = _own_egg_positive(mem, cur)
-    from ...hanjuku_roster import dirty_status
+    from ..os_layer.roster import dirty_status
     dirty_status(mem, [cur.get('ally')])
     if b.enemy_hp is not None and cur.get('start_enemy_hp') is not None and b.enemy_hp < cur['start_enemy_hp']:
         cur['clashed'] = True
@@ -611,7 +611,7 @@ def battle_end(mem, next_kind, *, defense_continues=False):
     cur['away'] = cur.get('away', 0) + 1
     if cur['away'] < 2 and not defense_continues:
         return
-    from ...hanjuku_roster import dirty_status
+    from ..os_layer.roster import dirty_status
     dirty_status(mem, [cur.get('ally')])
     if (cur.get('card_flow') or {}).get('stage') == 'announce':
         _card_use_unclassified(mem, cur, '実使用告知がないまま戦闘が終了')
@@ -620,7 +620,7 @@ def battle_end(mem, next_kind, *, defense_continues=False):
     mem['attack'] = None
     enemy_hp, ally_hp = cur.get('enemy_hp'), cur.get('ally_hp')
     if ally_hp == 0:
-        from ...hanjuku_roster import invalidate
+        from ..os_layer.roster import invalidate
         invalidate(mem)  # HP defeat makes membership uncertain; it is not proof of death.
     if enemy_hp == 0 and ally_hp not in (None, 0):
         outcome = 'win'
@@ -767,7 +767,7 @@ def battle_end(mem, next_kind, *, defense_continues=False):
     # One judged battle per started battle, whatever the verdict. The gap
     # against battles_started is the set the status panel must disclose.
     _tally(mem, 'battles_judged')
-    from ... import hanjuku_camp_recheck
+    from . import camp_recheck as hanjuku_camp_recheck
     hanjuku_camp_recheck.capture(mem, cur)
     _maybe_recall_weak_hero(mem, cur, outcome, ally_hp)
 

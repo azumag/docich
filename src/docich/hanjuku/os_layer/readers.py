@@ -8,8 +8,12 @@ from __future__ import annotations
 
 import re
 
-from ...hanjuku_screen import SUMMER_BONUS_CHOICES, Screen, castle_roofs, month_confirmation_positions
-from ...hanjuku_font import TextLine, UNKNOWN
+from .screen import SUMMER_BONUS_CHOICES, Screen, castle_roofs, month_confirmation_positions
+# The policy's map readers. Flows import them from here (not from .screen) so a
+# rebinding through the hanjuku_policy facade reaches every policy caller while
+# screen.parse keeps its own binding, as in the single-module policy.
+from .screen import own_camps  # noqa: F401
+from .font import TextLine, UNKNOWN
 from ... import hanjuku_chart as chart, hanjuku_reference as reference
 from ...hanjuku_egg_stock import observed_uses
 

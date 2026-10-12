@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import re
 
-from ...hanjuku_screen import Screen
+from ..os_layer.screen import Screen
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
-from ..flows.egg_recovery import MONTH_SUB_EXIT_KINDS
+from .egg_recovery import MONTH_SUB_EXIT_KINDS
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import month_menu_ready
 from ..strategy.economy import (MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _egg_before_soldiers, _limit_soldier_refill,

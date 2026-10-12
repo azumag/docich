@@ -5,7 +5,8 @@
 メニュー手順が混在していた。改善のたびに無関係な箇所を読む必要があり、どこを直すべきかが
 分かりにくかったため、責務ごとの層へ分割した（`bot_version=hanjuku-chart-v183-layered`）。
 
-この段階（第1段）は **挙動を変えない機械的な分割** であり、判断・入力・記録は分割前と同一である。
+本PRの第1段（方策の分割）と第2段（残りの半熟モジュールの編入）は **挙動を変えない機械的な移動** であり、
+判断・入力・記録は分割前と同一である。
 
 ## 層と依存の向き
 
@@ -36,9 +37,13 @@ decision_log   判断記録（全層から利用可）
 
 | 層 | モジュール | 責務 |
 |---|---|---|
+| OS層 | `hanjuku/os_layer/pixels.py` / `glyphs.py` / `font.py` | PNG読込、8×8字形の照合による文字読取 |
+| OS層 | `hanjuku/os_layer/screen.py` | 1フレームの構造化（文字・手カーソル・マップカーソル・城の屋根・戦闘パネル）と画面種別 |
+| OS層 | `hanjuku/os_layer/starter_view.py` | 先発隊画面の名前欄と確認画面の読取 |
 | OS層 | `hanjuku/os_layer/phase.py` | フレーム全体の分類（タイトル・戦闘・メニュー・フィールド等） |
 | OS層 | `hanjuku/os_layer/readers.py` | 解析済み画面からの読取（メニュー項目と手カーソル、ワールドマップの旗・カーソル、出撃携行札、月次会話、定型語彙） |
-| OS層 | `hanjuku/os_layer/world.py` | 観測した世界状態（マップの自己位置推定、城の所有、進軍中の将軍、主人公の城） |
+| OS層 | `hanjuku/os_layer/world.py` | 観測した世界状態（マップの自己位置推定、城の所有、進軍中の将軍、主人公の城、あたしの家の位置） |
+| OS層 | `hanjuku/os_layer/roster.py` | 将軍名簿・卵・賃金の新鮮な観測記録（同一ラン・同月に束縛） |
 | OS層 | `hanjuku/os_layer/commands.py` | pad入力の生成、見えているラベルへの手カーソル移動 |
 | OS層 | `hanjuku/os_layer/navigation.py` | 目標セルへのマップカーソル移動、停滞検出、Yジャンプ、屋根合わせ |
 | 戦略層 | `hanjuku/strategy/orders.py` | チャート注文の選択、出撃元・代役・予約、最後の城の保持 |
@@ -58,6 +63,9 @@ decision_log   判断記録（全層から利用可）
 | 手順層 | `hanjuku/flows/egg_recovery.py` | 月次の卵回復取引 |
 | 手順層 | `hanjuku/flows/shop.py` | 商人の一覧・個数入力・兵士解雇 |
 | 手順層 | `hanjuku/flows/prompts.py` | 交換・はい/いいえ・夏のボーナス・ギフト等のイベント文 |
+| 手順層 | `hanjuku/flows/house.py` | あたしの家での卵修理、名簿・城収入の巡回 |
+| 手順層 | `hanjuku/flows/camp_recheck.py` | 野営・帰還の再確認 |
+| 手順層 | `hanjuku/flows/starter.py` | 章開始時の先発隊の選択 |
 | 調停 | `hanjuku/orchestrator.py` | `decide`：前景の所有者の優先順位と画面種別による振り分け、入力0件ゲート |
 | 共通 | `hanjuku/decision_log.py` / `reporting.py` / `version.py` | 判断記録、状態パネル用の集計、`BOT_VERSION` |
 
@@ -65,7 +73,7 @@ decision_log   判断記録（全層から利用可）
 
 | 起きている問題 | 触る層 |
 |---|---|
-| 画面の種類・文字・カーソル・HPを読み違える | OS層（`phase` / `readers`、文字は `hanjuku_screen` / `hanjuku_font`） |
+| 画面の種類・文字・カーソル・HPを読み違える | OS層（`phase` / `screen` / `font` / `readers`） |
 | カーソルが目標に届かない、マップで迷う | OS層（`navigation` / `world`） |
 | 出撃する将軍・行き先・携行札・買う量が悪い | 戦略層（`orders` / `kit` / `economy` / `replan`） |
 | 戦闘で切り札・卵・撤退の選択が悪い | 判断層（`judgment/battle.py`） |
@@ -87,10 +95,16 @@ decision_log   判断記録（全層から利用可）
 - 層モジュールはファサードを import しない（層契約テストで禁止）。新しいコードとテストは、
   名前を定義している層モジュールを直接 import する。
 
+パッケージへ移した旧モジュール（`hanjuku_pixels` / `hanjuku_glyphs` / `hanjuku_font` / `hanjuku_screen` /
+`hanjuku_roster` / `hanjuku_house` / `hanjuku_camp_recheck` / `hanjuku_starter`）の旧パスは、移動先モジュールの
+`sys.modules` 別名として残す。`import docich.hanjuku_screen` は `docich.hanjuku.os_layer.screen` そのものを返すため、
+属性の参照・monkeypatch・`isinstance` はどちらの名前でも同じオブジェクトに効く。層モジュールは旧パスを
+import しない（層契約テストで禁止）。
+
 `BOT_VERSION` は `hanjuku/version.py` に移した。挙動を変える変更ではここを更新し、
 従来どおり `ops/vm_actions/collect_diagnostics.py` の既知版一覧とテストにも追加する。
 
-## 第1段の検証方法
+## 検証方法
 
 - 分割は生成スクリプトで行い、旧 `hanjuku_policy.py` の全トップレベル文453個が、関数内の相対 import の
   深さを除いて逐語的に一つの層モジュールへ移ったことをASTで照合した（多重集合として完全一致）。
@@ -98,6 +112,12 @@ decision_log   判断記録（全層から利用可）
   確認した。
 - 既存の半熟英雄テスト（`tests/*hanjuku*`）は変更なしで全件成功した（変更は `BOT_VERSION` の期待値のみ）。
 - 層契約テストは、上位層の import・画面引数・pad生成を混入させた場合に失敗することを確認した。
+- 第2段で移したOS層のファイルは import 行以外がバイト単位で同一。手順層の3ファイルは、旧ファサード経由の
+  `p.X` 参照を所有する層モジュールからの呼出し時 import に置き換えただけで、`p.X`→`X` と import を正規化すると
+  全関数がASTで一致する。あたしの家の位置・HP満タン判定・出撃後の城ステータス判定、先発隊画面の読取は、
+  移動先でASTが一致する。
+- 旧ファサード経由で `policy.own_camps` 等を差し替える既存テストの意味を保つため、手順層は地図の読取関数を
+  `os_layer.readers` の束縛から読む（`screen.parse` 自身の束縛は従来どおり差し替えの影響を受けない）。
 
 ## 既存の設計・Issueとの関係
 
@@ -159,8 +179,8 @@ decision_log   判断記録（全層から利用可）
 - **#1915 / #1469**（active runへのhot-load境界）: logic generation を `hanjuku_bot.py` / `hanjuku_run.py` の
   ソースのバイト列から求める設計になっている。分割後の `hanjuku_bot.py` はファサードであり、`classify` /
   `decide` / `BOT_VERSION` の変更はそのバイト列に現れない。hot-load境界を本構造の後に入れる場合は、
-  `hanjuku_run` が使う `src/docich/hanjuku/os_layer/phase.py`・`orchestrator.py`・`version.py`（または
-  `src/docich/hanjuku/` 全体）を世代計算の対象に含める必要がある。
+  `src/docich/hanjuku/` 全体を世代計算の対象に含める必要がある（`hanjuku_run` が使う `classify` は
+  `os_layer/phase.py`、画素読込は `os_layer/pixels.py` にあり、旧パスのファイルは別名・ファサードにすぎない）。
 
 ## 既知の負債と次の段階
 
@@ -168,11 +188,12 @@ decision_log   判断記録（全層から利用可）
 次の段階で順に解消する。各段階は挙動を変えない変更と挙動を変える変更を混ぜない。
 第3段以降は #1353 の P2〜P6 と同じ作業であり、別の契約を新設せず `hanjuku_execution.py` の契約を使う。
 
-1. **残りのモジュールの編入**（挙動不変）: `hanjuku_house`（あたしの家）、`hanjuku_camp_recheck`、
-   `hanjuku_starter` を `flows` へ、`hanjuku_screen` / `hanjuku_font` / `hanjuku_pixels` / `hanjuku_roster` を
-   `os_layer` へ移す。`strategy.economy` → `hanjuku_house` の依存（`KNOWN_DEBT`）は、家の画面定数をOS層へ移して
-   解消する。VMの診断・画像評価が参照するファイル一覧（`ops/vm_actions/gateway.py` の `DIAGNOSTICS_FILES`、
-   `evaluate_hanjuku_vision.py` の `PARSER_FILES`）と、hot-load境界の世代計算対象を同時に更新する。
+1. **残りのモジュールの編入**（挙動不変、**本PRで実施済み**）: あたしの家・野営再確認・先発隊を `flows` へ、
+   画面読取（`screen` / `font` / `glyphs` / `pixels`）と名簿観測（`roster`）を `os_layer` へ移した。
+   `strategy.economy` → `hanjuku_house` の依存は、家の位置等の世界状態を `os_layer.world` へ移して解消し、
+   `KNOWN_DEBT` は空になった。画像評価の `PARSER_FILES` は移動先の実ファイルを指す。
+   `ops/vm_actions/gateway.py` の `DIAGNOSTICS_FILES` にある `hanjuku_screen.py` / `hanjuku_policy.py` は
+   collectorが import しない改変検査対象で、旧パスのファイルは別名として残るため変更していない。
 2. **状態の分離**（挙動不変）: `mem` を、世界状態（OS層が書く観測。将来の `WorldState` の入力）、
    計画（戦略層が書く注文・予算。`StrategyPlan`）、戦闘記録（判断層が読む）、手順の進行状態
    （手順層だけが持つ。`Session.executions` に相当）に分け、他層の状態を書き換えないようにする。

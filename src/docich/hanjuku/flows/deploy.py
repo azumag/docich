@@ -9,8 +9,8 @@ from __future__ import annotations
 import re
 import time
 
-from ...hanjuku_screen import Screen
-from ...hanjuku_font import UNKNOWN
+from ..os_layer.screen import Screen
+from ..os_layer.font import UNKNOWN
 from ... import hanjuku_chart as chart, hanjuku_reference as reference
 from ...hanjuku_egg_reference import general_max_hp
 from ..decision_log import _record
@@ -525,7 +525,7 @@ def resume_sortie_step(screen: Screen, mem):
                        'monster_menu', 'okunote_menu', 'attack_started', 'defense_started',
                        'field_encounter_started', 'month_menu'}:
         return None
-    from ...hanjuku_screen import resume_sortie_panel
+    from ..os_layer.screen import resume_sortie_panel
     pending['readings'] = min(12, int(pending.get('readings') or 0) + 1)
     if screen.kind == 'castle_menu' and pending['readings'] < 12:
         move = menu_to(screen, 'ステータス')

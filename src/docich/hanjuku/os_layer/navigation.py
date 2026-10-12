@@ -6,12 +6,12 @@ does not pick the goal.
 """
 from __future__ import annotations
 
-from ...hanjuku_screen import Screen, castle_roofs
+from .screen import Screen, castle_roofs
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
-from ..os_layer.commands import pad
-from ..os_layer.readers import _cursor, world_cursor, world_flags
-from ..os_layer.world import _apply_world_flags, _hero_castle, update_world
+from .commands import pad
+from .readers import _cursor, world_cursor, world_flags
+from .world import _apply_world_flags, _hero_castle, update_world
 
 
 MAX_HOLD_FRAMES = 28          # 1 px/frame below 30 frames; beyond it accelerates

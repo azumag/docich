@@ -6,7 +6,7 @@ Screen features are measured in the native 256x224 SNES coordinate system.
 """
 from __future__ import annotations
 
-from ...hanjuku_pixels import Frame
+from .pixels import Frame
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match

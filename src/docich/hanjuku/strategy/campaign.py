@@ -13,7 +13,7 @@ from ..os_layer.readers import STATUS_NAMES
 
 def _enter_chapter(mem, chapter, *, reason, evidence=None):
     previous = mem.get('chapter')
-    from ...hanjuku_roster import fresh
+    from ..os_layer.roster import fresh
     previous_roster = fresh(mem)
     if previous_roster and previous_roster.get('complete') is True:
         mem['recruit_payroll_pending'] = list(previous_roster['names'])
