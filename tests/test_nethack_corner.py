@@ -737,6 +737,27 @@ class TestNethackRotationTargetValidation(NethackCornerTestBase):
         mgr._prepare_start_state(state, scheduled=False)
         self.assertEqual(state["corner_context"]["origin"], "rotation")
 
+    def test_unusable_request_id_omits_the_context_without_failing_the_start(self):
+        mgr, _ = self.manager([None])
+        state = {"switch_request_id": "not-a-uuid"}
+        mgr._prepare_start_state(state, scheduled=False)
+        self.assertNotIn("corner_context", state)
+
+    def test_missing_context_still_records_the_run_start(self):
+        # Evidence only: a start without a usable session context (e.g. a
+        # queued state written before this field existed) keeps its history.
+        current = [None]
+        mgr, _ = self.manager(current)
+        store = Mock()
+        store.prepare_start.return_value = {"kind": "new", "run_id": "r1",
+                                            "expected_expedition": 1}
+        mgr._run_store = store
+        result = mgr._transition_to(None, "nethack", request_id=str(uuid.uuid4()))
+        self.assertNotIn(getattr(result, "status", None), {"queued", "in_progress", "busy"})
+        store.record_started.assert_called_once()
+        self.assertIsNone(store.record_started.call_args.kwargs["corner_context"])
+        self.assertIsNone(mgr._run_history_error)
+
     def test_rejects_any_other_target(self):
         mgr, _ = self.manager([None])
         # #998: a superset must be rejected too -- membership checks passed

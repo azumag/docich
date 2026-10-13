@@ -938,9 +938,13 @@ class NethackCornerManager(RetroCornerManager):
                 origin = "unknown"
         else:
             origin = "scheduled" if scheduled else "manual"
-        state["corner_context"] = new_session_context(
-            origin, state["switch_request_id"]
-        )
+        try:
+            state["corner_context"] = new_session_context(
+                origin, state["switch_request_id"]
+            )
+        except Exception:
+            # Evidence only: an unusable request id must never fail the start.
+            state.pop("corner_context", None)
 
     def _transition_to(
         self,
@@ -965,9 +969,15 @@ class NethackCornerManager(RetroCornerManager):
         if self._run_store is not None and probe is not None:
             try:
                 state = self._read_state()
-                context = validate_session_context(state.get("corner_context"))
-                if context["start_request_id"] != request_id:
-                    raise NethackCornerError("NetHack start request identity changed")
+                # A missing or mismatched session context only loses the
+                # post-restore evidence binding; the run history is still
+                # recorded as before this evidence existed.
+                try:
+                    context = validate_session_context(state.get("corner_context"))
+                    if context["start_request_id"] != request_id:
+                        context = None
+                except Exception:
+                    context = None
                 self._run_store.record_started(
                     probe, now=self._local_now(), corner_context=context,
                     runtime=self._confirmed_started_runtime(result),
