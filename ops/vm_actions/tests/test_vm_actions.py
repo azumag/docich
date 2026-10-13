@@ -244,7 +244,7 @@ class AuthorizeTests(unittest.TestCase):
         self.assertIn('. "$env_file"', runner)
         self.assertIn('DOCICH_ALLOW_REAL_AI="1"', runner)
         self.assertIn('paper-ai-canary --execute', runner)
-        self.assertIn('exec env -i', runner)
+        self.assertIn('env -i', runner)
         for allowed in (
             'DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_ACCOUNT_ID',
             'DOCICH_REPLY_WEB_SEARCH_CLOUDFLARE_API_TOKEN',
@@ -258,6 +258,45 @@ class AuthorizeTests(unittest.TestCase):
         for forbidden in ("curl ", "wget ", "sudo ", "systemctl ", "tmux ", "kill ", "rm -", "VM_COMMAND"):
             self.assertNotIn(forbidden, runner)
         self.assertLess(len(runner.encode("utf-8")), 16384)
+
+    def test_paper_ai_enable_disable_are_fixed_production_main_operations(self):
+        for op in ("paper_ai_enable", "paper_ai_disable"):
+            for target, ref, confirm in (
+                ("preview", "main", "production"),
+                ("production", "feature", "production"),
+                ("production", "main", ""),
+            ):
+                p = self.run_auth(
+                    INPUT_OPERATION=op,
+                    INPUT_TARGET=target,
+                    INPUT_REF=ref,
+                    INPUT_CONFIRM=confirm,
+                )
+                self.assertNotEqual(p.returncode, 0)
+            p = self.run_auth(
+                GITHUB_REPOSITORY_PRIVATE="false",
+                INPUT_OPERATION=op,
+                INPUT_TARGET="production",
+                INPUT_REF="main",
+                INPUT_CONFIRM="production",
+            )
+            self.assertEqual(p.returncode, 0, p.stderr)
+
+        workflow = WF.read_text(encoding="utf-8")
+        enable = workflow.split(
+            "Enable PAPER Web Search and direct AI after exact-SHA canary", 1
+        )[1].split("- name:", 1)[0]
+        disable = workflow.split(
+            "Disable PAPER Web Search and direct AI for future ticks", 1
+        )[1].split("- name:", 1)[0]
+        self.assertIn("cat control/ops/vm_actions/enable_paper_ai.sh", enable)
+        self.assertIn("cat control/ops/vm_actions/disable_paper_ai.sh", disable)
+        for block in (enable, disable):
+            self.assertIn("EXPECTED_SHA=%s", block)
+            self.assertIn('"exec docich production $SHA"', block)
+            self.assertNotIn("VM_COMMAND", block)
+            self.assertNotIn("inputs.command", block)
+
 
     def test_restart_webui_requires_production_main_and_confirmation(self):
         p=self.run_auth(INPUT_OPERATION='restart_webui',INPUT_TARGET='preview',INPUT_REF='main',INPUT_CONFIRM='production')
@@ -410,6 +449,19 @@ class AuthorizeTests(unittest.TestCase):
         step = WF.read_text().split("Recover only the held Soren round after explicit confirmation", 1)[1].split("- name:", 1)[0]
         self.assertIn("cat control/ops/vm_actions/recover_soren_round.sh | ssh", step)
         self.assertNotIn("VM_COMMAND", step)
+
+
+    def test_hanjuku_projection_adoption_is_confirmed_fixed_main_only(self):
+        allowed=dict(INPUT_OPERATION="recover_hanjuku_projection",INPUT_TARGET="production",
+                     INPUT_REF="main",INPUT_CONFIRM="production",GITHUB_REPOSITORY_PRIVATE="false")
+        self.assertEqual(self.run_auth(**allowed).returncode,0)
+        for overrides in [dict(INPUT_TARGET="preview"),dict(INPUT_REF="feature"),dict(INPUT_CONFIRM=""),
+                          dict(GITHUB_TRIGGERING_ACTOR="collab"),dict(INPUT_OPERATION="recover_hanjuku_projection;id")]:
+            self.assertNotEqual(self.run_auth(**dict(allowed,**overrides)).returncode,0)
+        block=WF.read_text().split("- name: Recover only the verified active Hanjuku projection",1)[1].split("- name:",1)[0]
+        self.assertIn("cat control/ops/vm_actions/recover_hanjuku_projection.sh | ssh",block)
+        self.assertIn("cat control/ops/vm_actions/realign_hanjuku_presentation.sh | ssh",block)
+        self.assertNotIn("VM_COMMAND",block)
 
 
 class GatewayTests(unittest.TestCase):

@@ -1,0 +1,45 @@
+name: Jev baseline offline evidence
+
+on:
+  pull_request:
+    paths:
+      - 'bench/**'
+      - 'src/docich/eval/**'
+      - 'src/docich/comment_classifier/**'
+      - '.github/workflows/jev-baseline-offline.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'bench/**'
+      - 'src/docich/eval/**'
+      - 'src/docich/comment_classifier/**'
+      - '.github/workflows/jev-baseline-offline.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  saved-evidence-and-retry:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        python: ['3.11', '3.14']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Offline saved evidence and synthetic retry regressions
+        run: env -u PYTHONPATH python3 -m unittest discover -s bench/tests -v
+      - name: Reproduce committed reports
+        run: |
+          python3 bench/results/2026-10-09_jev_baseline/score_baseline.py
+          python3 bench/results/2026-10-09_jev_baseline/verify/score_independent.py
+          python3 bench/tools/reaggregate_ollama_results.py bench/results/2026-10-09_rtx3060_jev
+          git diff --exit-code -- bench/results/2026-10-09_jev_baseline/report.json bench/results/2026-10-09_jev_baseline/verify/independent_summary.json bench/results/2026-10-09_rtx3060_jev
+      - name: Collection shell syntax (no provider calls)
+        run: bash -n bench/results/2026-10-09_jev_baseline/run_baseline.sh

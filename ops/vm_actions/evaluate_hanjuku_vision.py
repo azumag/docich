@@ -26,9 +26,10 @@ DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 FIELDS = frozenset({"kind", "selected", "hand", "cursor", "marker", "menu_cursor",
                     "enemy", "enemy_hp", "ally", "ally_hp"})
 PARSER_FILES = (
-    "src/docich/hanjuku_bot.py", "src/docich/hanjuku_screen.py",
-    "src/docich/hanjuku_font.py", "src/docich/hanjuku_glyphs.py",
-    "src/docich/hanjuku_pixels.py",
+    "src/docich/hanjuku/os_layer/phase.py", "src/docich/hanjuku/os_layer/screen.py",
+    "src/docich/hanjuku/os_layer/starter_view.py",
+    "src/docich/hanjuku/os_layer/font.py", "src/docich/hanjuku/os_layer/glyphs.py",
+    "src/docich/hanjuku/os_layer/pixels.py",
 )
 COUNTS = ("labeled", "expected_present", "correct_present", "correct_absent",
           "wrong_value", "false_present", "abstained")

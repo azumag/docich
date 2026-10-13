@@ -223,6 +223,10 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
             lines.append('video_scale = "1.0"')
         # Stable native pixels for the deterministic screen signatures.
         lines += ['video_smooth = "false"',
+                  # Paused LOAD/SAVE/slot OSD persists over native dialogue
+                  # (g704: State slot #0 hid two glyphs). Keep the observed
+                  # game pixels readable without weakening restore evidence.
+                  'video_font_enable = "false"',
                   # Custom configs may have no core-info search directory. The
                   # loaded core still has to provide a nonzero serialize size.
                   'core_info_savestate_bypass = "true"',
@@ -396,7 +400,8 @@ class RetroArchAdapter(Adapter):
                 require_input_open(runtime_dir)
                 from .. import hanjuku_run
                 if hanjuku_run.enabled(self.ctx.game):
-                    run = hanjuku_run.load(runtime_dir, hanjuku_run.runtime_identity(self.ctx.fence))
+                    run = hanjuku_run.require_checkpoint_context(
+                        runtime_dir, hanjuku_run.runtime_identity(self.ctx.fence))
                     if run.get('terminal_reason') or run.get('terminal_candidate'):
                         raise AdapterError('Hanjuku terminal evidence holds input')
             source, native = self._source()
@@ -694,6 +699,22 @@ class RetroArchCoordinatorAdapter:
                         self._require_paused(deadline, cancel)
                         if checkpoint_digest(self._checkpoint(record["checkpoint"]), deadline, cancel) != record.get("sha256"):
                             raise AdapterError("RetroArch checkpoint changed before cleanup")
+
+    def can_release_terminal_previous(self, deadline: float, cancel) -> bool:
+        """Only an identity-bound, acknowledged Hanjuku terminal may be released."""
+        self._check_active(deadline, cancel)
+        from .. import hanjuku_run
+        if not self._contained() or not hanjuku_run.enabled(self.game):
+            return False
+        run = hanjuku_run.load(self.spec.runtime_dir, hanjuku_run.runtime_identity(self.spec))
+        if run.get('terminal_reason') is not None and run['terminal_reason'] not in hanjuku_run.TERMINAL_REASONS:
+            raise AdapterError('unknown Hanjuku terminal reason')
+        terminal = hanjuku_run.terminal(
+            self.spec.runtime_dir, hanjuku_run.runtime_identity(self.spec))
+        if terminal is None:
+            return False
+        self._require_safe_cleanup(deadline, cancel)
+        return True
 
     def cleanup_runtime(self, deadline: float, cancel) -> None:
         self._require_safe_cleanup(deadline, cancel)

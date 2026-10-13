@@ -208,7 +208,7 @@ def test_claim_rejects_changed_rom_without_default_game(setup):
     assert not (s.spec.runtime_dir/resume.RECEIPT_FILE).exists()
 
 
-def restore_test(s, *, valid=True, ack=True, chapter=1):
+def restore_test(s, *, valid=True, ack=True, chapter=1, native_frame=None):
     stage(s);commands=[];writes=[]
     path=s.spec.runtime_dir/'states/hanjuku-hero.state1'
     slots=[0]
@@ -235,11 +235,17 @@ def restore_test(s, *, valid=True, ack=True, chapter=1):
             output.write_bytes(state_bytes(payload));writes.append(payload)
         return None
     frame=SimpleNamespace(digest=lambda:'loaded-native-rgb',resized=lambda:frame)
+    if native_frame is not None:
+        from docich.hanjuku_screen import parse
+        loaded_screen = parse(native_frame.resized())
+        frame = native_frame
+    else:
+        loaded_screen = SimpleNamespace(header={'chapter':chapter},kind='map',lines=[])
     with mock.patch('docich.adapters.retroarch.send_ra_cmd',side_effect=send), \
          mock.patch('docich.xkit.XKit.screenshot'), \
          mock.patch('docich.hanjuku_pixels.read_png',return_value=frame), \
-         mock.patch('docich.hanjuku_screen.parse',return_value=SimpleNamespace(header={'chapter':chapter})):
-        resume.restore(s.adapter,time.monotonic()+(.3 if not valid or valid=='unchanged_future' or chapter is None else 3),None)
+         mock.patch('docich.hanjuku_screen.parse',return_value=loaded_screen):
+        resume.restore(s.adapter,time.monotonic()+(.3 if not valid or valid=='unchanged_future' or chapter is None and native_frame is None else 3),None)
     return commands,writes
 
 
@@ -297,3 +303,321 @@ def test_verified_runtime_cannot_fall_back_to_fresh_when_pane_is_missing(setup):
     s.adapter._verify_window_ownership=mock.Mock()
     resume.claim(s.adapter,time.monotonic()+3,None)
     s.adapter._verify_window_ownership.assert_called_once_with('game-700','game')
+
+
+def test_native_fake_hero_checkpoint_restores_with_only_observed_chapter(setup):
+    from docich.hanjuku_pixels import read_png
+    frame=read_png(Path(__file__).parent/'fixtures/hanjuku/g700-fake-hero-announcement.png')
+    commands,writes=restore_test(setup,chapter=None,native_frame=frame)
+    assert writes==[b'boot state',b'serialized core',b'serialized core']
+    assert commands.index('FRAMEADVANCE') < commands.index('PAUSE_TOGGLE')
+    receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
+    assert receipt['status']=='verified' and receipt['chapter']==2
+    assert receipt['frame_sha256']==frame.digest()
+    assert read_record(setup.spec.runtime_dir/'hanjuku_bot.json')=={
+        'policy': {'name': {'done': True}, 'chapter': 2}}
+
+
+def test_native_starter_checkpoint_restores_without_inventing_chapter(setup):
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_screen import parse
+    frame=read_png(Path(__file__).parent/'fixtures/hanjuku/g698-resume-starter.png')
+    screen=parse(frame.resized())
+    assert screen.kind=='starter_list' and screen.header['chapter'] is None
+    restore_test(setup,chapter=None,native_frame=frame)
+    receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
+    assert receipt['status']=='verified' and receipt['chapter'] is None
+    policy=read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy']
+    assert policy=={'name':{'done':True},'resume_chapter_pending':True}
+    assert 'garrison' not in policy and 'chapter' not in policy
+
+
+def test_native_mid_selection_checkpoint_restores_with_only_fresh_cancellation_owner(setup):
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_screen import parse
+    frame=read_png(Path(__file__).parent/'fixtures/hanjuku/g706-resume-card-select.png')
+    assert parse(frame).kind=='card_select' and not parse(frame).header
+    restore_test(setup,chapter=None,native_frame=frame)
+    receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
+    assert receipt['status']=='verified' and receipt['chapter'] is None
+    policy=read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy']
+    assert policy=={'name':{'done':True},'resume_chapter_pending':True,
+                   'resume_sortie_cancel':{'readings':0}}
+    assert setup.source.read_bytes()==compressed(state_bytes())
+
+
+def test_starter_resume_seed_uses_live_selected_row_and_never_issues_sortie(setup):
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_bot import decide
+    frame=read_png(Path(__file__).parent/'fixtures/hanjuku/g698-resume-starter.png')
+    state={'policy':{'name':{'done':True},'resume_chapter_pending':True}}
+    actions,updated=decide(frame.resized(),state)
+    assert actions and actions[0]['buttons']==['down']
+    assert updated['policy']['starter_party']['selected']==['ゼウス']
+    assert updated['policy'].get('chapter') is None
+    assert not any(r['decision']=='order_launched' for r in updated['_records'])
+
+
+@pytest.mark.parametrize('castle', ['アルマムーン','あるまむーん','ボス','フー�リック','しゅじんこう'])
+def test_unknown_resume_chapter_never_resolves_common_or_unread_names(castle):
+    from docich.hanjuku_policy import observe_chapter_castle
+    mem={'resume_chapter_pending':True,'_records':[]}
+    observe_chapter_castle(mem,castle)
+    assert mem.get('chapter') is None and mem['resume_chapter_pending'] is True
+
+
+def test_unknown_resume_chapter_resolves_only_fresh_unique_castle():
+    from docich.hanjuku_policy import observe_chapter_castle
+    mem={'resume_chapter_pending':True,'_records':[]}
+    observe_chapter_castle(mem,'フーリック')
+    assert mem['chapter']==2 and mem['chapter_evidence']=='フーリック'
+    assert 'resume_chapter_pending' not in mem and 'garrison' not in mem
+    untouched={'_records':[]}
+    observe_chapter_castle(untouched,'フーリック')
+    assert untouched.get('chapter') is None
+
+
+@pytest.fixture
+def recovery_setup(setup, monkeypatch):
+    from docich import hanjuku_resume_recovery as op
+    from docich.corner_rotation import CornerRotationManager
+    from docich.corner_catalog import Corner
+    from docich.game_switch import GameSwitchStore, _initial_state
+    s = setup
+    config = s.g.repo_root / 'config.toml'
+    config.write_text('[corner_rotation]\nenabled=true\n')
+    s.g = load_global(s.g.repo_root, config); s.adapter.g = s.g
+    manager = CornerRotationManager(s.g, clock=lambda:1000000.0,
+        catalog=[Corner('hanjuku-hero','game','hanjuku-hero')],
+        adapter_factory=lambda *_:SimpleNamespace(eligible=lambda:True, observations=lambda:[]))
+    ledger = manager.load(1000000.0)
+    stage(s)
+    base = Path(s.g.state_dir)
+    claim = read_record(s.spec.runtime_dir / resume.RECEIPT_FILE)
+    ledger.update(status='recovery_required', pending=dict(s.queue,source='manual',phase='dispatched'))
+    manager.save(ledger)
+    owner = {'status':'failed','rotation_request_id':s.queue['request_id'],'game':'hanjuku-hero','detail':'retained'}
+    atomic_write_json(base/'retro_corner.json',owner)
+    atomic_write_json(s.spec.runtime_dir/'presentation.json',{'status':'stopped'})
+    soren = s.g.repo_root/'soren'; (soren/'tmp/state').mkdir(parents=True)
+    (soren/'tmp/state/docich_program.lock').touch()
+    (base/'corner-manual-queue.lock').touch()
+    for name in ('corner-rotation','retro-corner','retro-corner-manual'):
+        (base/'locks').mkdir(exist_ok=True); (base/f'locks/{name}.lock').touch()
+    store=GameSwitchStore(base);store.initialize()
+    idle = _initial_state();idle['next_generation']=700;store.canonical.save(idle)
+    terminal=dict(store.accept_request(s.queue['request_id'],'switch','hanjuku-hero').receipt)
+    terminal.update(runtime_id=s.spec.runtime_id,runtime_dir=str(s.spec.runtime_dir),status='rolled_back',
+        result={'request_id':s.queue['request_id'],'generation':700,'status':'rolled_back'})
+    store.receipts.save(terminal)
+    idle['next_generation']=701;store.canonical.save(idle)
+    monkeypatch.setattr(op,'CornerRotationManager',lambda g:manager)
+    monkeypatch.setattr(op,'resolve_soren_root',lambda g:soren)
+    class Absent:
+        def window_target_exists(self,*args,**kwargs):return False
+        def session_target_exists(self,*args,**kwargs):return False
+    s.tmux=Absent();s.op=op;s.store=store;s.manager=manager;s.claim=claim
+    s.fingerprint=op.fingerprint(claim)
+    return s
+
+
+def snapshot_recovery(s):
+    return {p:p.read_bytes() for p in Path(s.g.state_dir).rglob('*') if p.is_file()}
+
+
+def recover_startup(s, **kwargs):
+    return s.op.recover(s.g,tmux=s.tmux,now=lambda:1000000.0,**kwargs)
+
+
+def test_recovery_check_read_only_and_exact_logical_checkpoint_preserved(recovery_setup):
+    s=recovery_setup;before=snapshot_recovery(s)
+    assert recover_startup(s)=={'status':'recovery-eligible','fingerprint':s.fingerprint}
+    assert snapshot_recovery(s)==before
+    # A newer save must never replace the immutable selection.
+    s.older.write_bytes(state_bytes(b'newer'));os.utime(s.older,ns=(500,500))
+    result=recover_startup(s,apply=True,expected=s.fingerprint)
+    assert result['status']=='recovery-queued'
+    current=read_record(Path(s.g.state_dir)/'hanjuku-resume'/resume.REQUEST_FILE)
+    assert current['request_id']==s.queue['request_id']
+    assert current['sha256']==s.claim['sha256']
+    assert current['startup_recovery']['original']==s.claim
+    queued=s.manager.load(1000000.0)['queued_manual']
+    assert queued['request_id']!=s.queue['request_id']
+    assert queued['request_id']==current['startup_recovery']['attempt_id']
+    assert queued['resume_request_id']==s.queue['request_id']
+    unchanged=snapshot_recovery(s)
+    assert recover_startup(s,apply=True,expected=s.fingerprint)==result
+    assert snapshot_recovery(s)==unchanged
+    # Old local claim and terminal execution remain byte-for-byte immutable.
+    assert (s.spec.runtime_dir/resume.RECEIPT_FILE).read_bytes()==before[s.spec.runtime_dir/resume.RECEIPT_FILE]
+    path=s.store.receipts._path(s.queue['request_id'])
+    assert path.read_bytes()==before[path]
+    assert len(list((Path(s.g.state_dir)/'hanjuku-resume').glob('*.state')))==1
+
+
+@pytest.mark.parametrize('change', ['bot','run','events','wrong-fingerprint','local-mismatch',
+    'not-rolled-back','wrong-runtime','active','live-presentation','tmux','paused','checkpoint',
+    'queued-conflict','owner-active','automatic','wrong-generation','missing-lock'])
+def test_recovery_refuses_gameplay_uncertainty_drift_or_other_owner(recovery_setup,change):
+    from docich.hanjuku_manual_cancel import CancelRefused
+    from docich.game_switch import runtime_state_dict
+    s=recovery_setup;base=Path(s.g.state_dir);expected=s.fingerprint
+    if change in {'bot','run','events'}:
+        names={'bot':'hanjuku_bot.json','run':'hanjuku_run.json','events':'hanjuku_events.jsonl'}
+        (s.spec.runtime_dir/names[change]).touch()
+    elif change=='wrong-fingerprint':expected='a'*64
+    elif change=='local-mismatch':atomic_write_json(s.spec.runtime_dir/resume.RECEIPT_FILE,dict(s.claim,status='verified'))
+    elif change in {'not-rolled-back','wrong-runtime'}:
+        d=s.store.receipts.load(s.queue['request_id'])
+        if change=='not-rolled-back':d['status']='failed'
+        else:d.update(runtime_id='g700-ffffabcd',runtime_dir=str(base/'runtimes/g700-ffffabcd'))
+        s.store.receipts.save(d)
+    elif change=='active':
+        d,_=s.store.canonical.load();d.update(phase='ready',active=runtime_state_dict(RuntimeSpec.from_runtime(base, {**vars(s.spec)}),'2026-10-12T00:00:00Z'));s.store.canonical.save(d)
+    elif change=='live-presentation':atomic_write_json(s.spec.runtime_dir/'presentation.json',{'status':'ready'})
+    elif change=='tmux':s.tmux.window_target_exists=lambda *a,**k:True
+    elif change=='paused':
+        p=base/'corners/hanjuku-hero.paused';p.parent.mkdir();p.touch()
+    elif change=='checkpoint':(base/'hanjuku-resume'/(s.queue['request_id']+'.state')).write_bytes(state_bytes(b'changed'))
+    elif change=='queued-conflict':
+        d=s.manager.load(1000000.0);d['queued_manual']={'corner':'weather','request_id':str(uuid.uuid4()),'selected_at':1000000.0};s.manager.save(d)
+    elif change=='owner-active':atomic_write_json(base/'retro_corner.json',{'status':'active','rotation_request_id':s.queue['request_id']})
+    elif change=='automatic':
+        d=s.manager.load(1000000.0);d['pending']['source']='automatic';s.manager.save(d)
+    elif change=='wrong-generation':
+        d=dict(s.claim,generation=True);atomic_write_json(base/'hanjuku-resume'/resume.REQUEST_FILE,d)
+    elif change=='missing-lock':(base/'locks/retro-corner.lock').unlink()
+    before=snapshot_recovery(s)
+    with pytest.raises(CancelRefused):recover_startup(s,apply=True,expected=expected)
+    assert snapshot_recovery(s)==before
+
+
+@pytest.mark.parametrize('failed_write', ['owner','ledger'])
+def test_recovery_partial_publication_repairs_same_attempt(recovery_setup,failed_write):
+    s=recovery_setup;base=Path(s.g.state_dir)
+    from docich.game_switch import atomic_write_json as write
+    def fail(path,value):
+        if Path(path)==(base/'retro_corner.json' if failed_write=='owner' else s.manager.path):
+            raise OSError('interrupted')
+        return write(path,value)
+    target='docich.hanjuku_resume_recovery.atomic_write_json' if failed_write=='owner' else 'docich.corner_rotation.atomic_write_json'
+    with mock.patch(target,side_effect=fail):
+        with pytest.raises((OSError,s.op.CancelRefused)):recover_startup(s,apply=True,expected=s.fingerprint)
+    prepared=read_record(base/'hanjuku-resume'/resume.REQUEST_FILE)
+    assert prepared['request_id']==s.queue['request_id']
+    assert recover_startup(s,apply=True,expected=s.fingerprint)['status']=='recovery-queued'
+    queued=s.manager.load(1000000.0)['queued_manual']
+    assert queued['request_id']==prepared['startup_recovery']['attempt_id']
+
+
+def test_recovery_claim_requires_derived_attempt_and_retains_logical_uuid(recovery_setup):
+    s=recovery_setup;base=Path(s.g.state_dir)
+    recover_startup(s,apply=True,expected=s.fingerprint)
+    queued=s.manager.load(1000000.0)['queued_manual']
+    # Normal / natural starts cannot steal the queued recovery.
+    rd=base/'runtimes/g701-cafe1234';(rd/'states').mkdir(parents=True)
+    spec=replace(s.spec,generation=701,runtime_id=rd.name,runtime_dir=rd,lease_id=str(uuid.uuid4()))
+    adapter=SimpleNamespace(**{**vars(s.adapter),'spec':spec})
+    candidate={k:getattr(spec,k) for k in ('game','runtime_id','generation','lease_id')}
+    for pending in (dict(s.queue,source='manual'),dict(queued,source='automatic'),
+                    {k:v for k,v in dict(queued,source='manual').items() if k!='resume_request_id'}):
+        atomic_write_json(base/'corner_rotation.json',{'pending':pending})
+        with mock.patch('docich.agent.fence.read_canonical',return_value={'candidate':candidate}):
+            resume.claim(adapter,time.monotonic()+3,None)
+        assert not (rd/resume.RECEIPT_FILE).exists()
+    atomic_write_json(base/'corner_rotation.json',{'pending':dict(queued,source='manual')})
+    with mock.patch('docich.agent.fence.read_canonical',return_value={'candidate':candidate}):
+        resume.claim(adapter,time.monotonic()+3,None)
+    receipt=read_record(rd/resume.RECEIPT_FILE)
+    assert receipt['request_id']==s.queue['request_id'] and receipt['generation']==701
+    assert (rd/'states/hanjuku-hero.state').read_bytes()==s.source.read_bytes()
+    before=snapshot_recovery(s)
+    assert recover_startup(s,apply=True,expected=s.fingerprint)['status']=='already-dispatched'
+    assert snapshot_recovery(s)==before
+
+
+def test_native_priest_stall_restores_without_inventing_chapter_or_old_payment(setup):
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_bot import decide
+    from docich.hanjuku_screen import parse, resume_egg_ritual_panel
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g725-priest-ritual-preparation.png')
+    assert resume_egg_ritual_panel(parse(frame))
+    restore_test(setup, chapter=None, native_frame=frame)
+    receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['status'] == 'verified' and receipt['chapter'] is None
+    policy = read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
+    assert policy == {'name': {'done': True}, 'resume_chapter_pending': True,
+                      'resume_egg_ritual': {'readings': 0, 'month': '1-5'}}
+    actions, state = decide(frame, {'policy': policy})
+    assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
+    assert state['policy'].get('chapter') is None
+    assert not state['policy'].get('month_sub') and not state['policy'].get('egg_uses')
+    assert not state['policy'].get('orders')
+
+
+def test_native_namaste_stall_can_restore_only_bounded_foreground(setup):
+    from docich.hanjuku.os_layer.pixels import read_png
+    from docich.hanjuku.os_layer.screen import parse, resume_egg_ritual_panel
+    from docich.hanjuku.orchestrator import decide
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g731-priest-namaste.png')
+    assert frame.digest() == '7b0af6558effa6e61a270c3de4bd1bff7815d00e41fc23a44452c2159a37817a'
+    assert resume_egg_ritual_panel(parse(frame))
+    restore_test(setup, chapter=None, native_frame=frame)
+    receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['status'] == 'verified' and receipt['chapter'] is None
+    policy = read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
+    assert policy == {'name': {'done': True}, 'resume_chapter_pending': True,
+                      'resume_egg_ritual': {'readings': 0, 'month': '1-5'}}
+    actions, state = decide(frame, {'policy': policy})
+    assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
+    assert not state['policy'].get('egg_uses') and not state['policy'].get('month_sub')
+
+
+def test_verified_native_restore_context_can_detect_subsequent_title_return(setup):
+    from docich import hanjuku_run
+    from docich.hanjuku.os_layer.pixels import read_png
+    from test_hanjuku_script import title_frame
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g731-priest-namaste.png')
+    restore_test(setup, chapter=None, native_frame=frame)
+    receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['gameplay_context'] == 'verified_checkpoint_foreground'
+    identity = hanjuku_run.runtime_identity(setup.spec)
+    wall = receipt['verified_at'] + 1
+    run = hanjuku_run.observe(setup.spec.runtime_dir, identity, frame, now=0, wall=wall)
+    assert run['checkpoint_started'] and not run['name_entered'] and not run['gameplay_seen']
+    battle_frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g713-zeus-cumin-healthy.png')
+    run = hanjuku_run.observe(setup.spec.runtime_dir, identity, battle_frame, now=1, wall=wall + 1)
+    assert run['gameplay_seen'] and not run['name_entered']
+    for now in (2, 3, 4):
+        run = hanjuku_run.observe(setup.spec.runtime_dir, identity, title_frame(), now=now, wall=wall + now)
+    assert run['terminal_reason'] == 'game_over'
+    assert hanjuku_run.terminal(setup.spec.runtime_dir, identity) == run
+
+
+def test_native_priest_result_boundary_restores_bounded_dialogue_without_old_transaction(setup):
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_bot import decide
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g739-priest-recovery-dialogue.png')
+    restore_test(setup, chapter=None, native_frame=frame)
+    receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['status']=='verified' and receipt['chapter'] is None
+    assert receipt['gameplay_context']=='verified_checkpoint_foreground'
+    policy=read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
+    assert 'egg_uses' not in policy and 'month_sub' not in policy
+    assert decide(frame,{'policy':policy})[0] == [{'type':'pad','buttons':['a'],'hold_ms':100}]
+
+
+@pytest.mark.parametrize('uid', [8819, 8820])
+def test_disabled_battle_parent_checkpoint_seeds_only_finite_reobservation(setup, uid):
+    from docich.hanjuku_pixels import read_png
+    frame=read_png(Path(__file__).parent/f'fixtures/hanjuku/g741-orphan-menu-{uid}.png')
+    commands,writes=restore_test(setup,chapter=None,native_frame=frame)
+    receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
+    assert receipt['status']=='verified' and receipt['chapter'] is None
+    assert receipt['frame_sha256']==frame.resized().digest()
+    assert commands.count('LOAD_STATE_SLOT 0')==1
+    assert writes[0]==b'boot state' and all(b==b'serialized core' for b in writes[1:])
+    assert read_record(setup.spec.runtime_dir/'hanjuku_bot.json')=={'policy':{
+        'name':{'done':True},'resume_chapter_pending':True,
+        'resume_battle_menu':{'readings':0}}}
+    assert setup.source.read_bytes()==compressed(state_bytes())

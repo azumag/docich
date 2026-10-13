@@ -49,7 +49,7 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'battle_hero_retreat_unavailable','battle_hero_retreat_cancel_card',
     'name_wait','name_confirm','name_delete','name_type','order_start',
     'unexpected_target','order_substitute','order_source_changed','order_launched','order_failed',
-    'attack_observed','defense_observed','card_missing',
+    'attack_observed','field_encounter_observed','resume_sortie_cancel','defense_observed','card_missing',
     'card_pick','sortie_confirm','sortie_input','battle_card','battle_card_missing','battle_card_selected','battle_card_list_unclassified','battle_card_open_unclassified',
     'barrier_removed','month_plan','month_confirm','month_done','buy_skip','buy',
     'soldier_refill','prompt','egg_battle','gift','close_panel','situation_held',
@@ -111,8 +111,11 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
         strategy_variant=input_context.get('strategy_variant',strategy_variant)
         deviation_reason=input_context.get('deviation_reason')
     card_flow=battle.get('card_flow')
-    capture=(bool(card_flow) or (bool(battle.get('survival')) and state.get('screen_kind') == 'battle_menu') or state.get('screen_kind') in {'general_list','card_select','sortie_confirm'} or any(
-        r.get('decision') in {'name_confirm','chapter_seen','battle_result','barrier_removed',
+    # battle_result is recorded after leaving combat and may already show
+    # the map. Keep combat pixels in the same bounded ring, including holds
+    # and enemy-owned menus, without claiming an input or a battle outcome.
+    capture=(bool(card_flow) or (bool(battle.get('survival')) and state.get('screen_kind') == 'battle_menu') or state.get('screen_kind') in {'general_list','card_select','sortie_confirm','battle','egg_battle_menu','monster_menu'} or any(
+        r.get('decision') in {'name_confirm','chapter_seen','battle_result','barrier_removed','field_encounter_observed','resume_sortie_cancel',
                               'card_pick','card_missing','sortie_confirm','order_substitute',
                               'order_launched_unconfirmed','sortie_arrival_confirmed',
                               'sortie_departed_observed','sortie_cancelled_observed',

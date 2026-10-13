@@ -44,7 +44,9 @@ def test_native_late_fresh_advantage_can_follow_up_without_inventing_card_use():
     mem = delayed_selection()
     screen = native('followup-panel')
     assert screen.battle.enemy_hp == 23 and screen.battle.ally_hp == 82
-    assert screen.field_soldiers == (3, 3)
+    # The five yellow/red allies and one green/purple enemy have crossed the
+    # screen centre. The old x128 split incorrectly assigned them 3 vs 3.
+    assert screen.field_soldiers == (5, 1)
     actions = p.battle_step(screen, mem)
     assert actions == p._power_mash(mem, mem['battle'])
     assert mem['battle']['card_melee_followup']['bursts'] == 1
@@ -54,10 +56,10 @@ def test_native_late_fresh_advantage_can_follow_up_without_inventing_card_use():
     assert not mem['battle'].get('enemy_egg_dropped')
 
 
-def test_native_late_hp_drop_with_unfavourable_army_still_cannot_force_followup():
+def test_native_late_hp_drop_with_clipped_enemy_still_cannot_force_followup():
     mem = delayed_selection()
     screen = native('unbalanced-panel')
-    assert screen.battle.enemy_hp == 23 and screen.field_soldiers == (2, 5)
+    assert screen.battle.enemy_hp == 23 and screen.field_soldiers == (5, None)
     control = json.loads(json.dumps(mem))
     control['battle'].pop('card_melee_followup')
     expected = p.battle_step(screen, control)

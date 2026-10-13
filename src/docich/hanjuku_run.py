@@ -10,12 +10,14 @@ import math
 import os
 from pathlib import Path
 import time
+import uuid
 
 from .adapters.base import AdapterError
 from .game_switch import atomic_write_json
 from .hanjuku_bot import BOT_VERSION, classify
 from .hanjuku_pixels import Frame
 from .retroarch_boundary import read_record
+from .naming import runtime_id_generation
 
 RUN_FILE='hanjuku_run.json'
 TERMINAL_REASONS=frozenset({'game_over','screen_stalled','input_stalled'})
@@ -70,6 +72,15 @@ def load(runtime_dir: Path, identity: dict):
     if state and any(state.get(k)!=v for k,v in identity.items()):
         raise AdapterError('Hanjuku run identity mismatch')
     if state:
+        if ('checkpoint_started' in state and type(state['checkpoint_started']) is not bool):
+            raise AdapterError('invalid Hanjuku checkpoint context')
+        bound = state.get('checkpoint_start_request')
+        if bound is not None:
+            try:
+                if not isinstance(bound, str) or str(uuid.UUID(bound)) != bound:
+                    raise ValueError('invalid request')
+            except ValueError as exc:
+                raise AdapterError('invalid Hanjuku checkpoint context') from exc
         for key in ('observations', 'actions_sent', 'battles_started', 'battles_finished',
                     'phase_transitions', 'snapshots', 'title_count'):
             value = state.get(key, 0)
@@ -86,6 +97,45 @@ def load(runtime_dir: Path, identity: dict):
             if type(value) is not int or value < 0:
                 raise AdapterError('invalid Hanjuku counter')
     return state
+
+
+def _checkpoint_start_request(runtime_dir: Path, identity: dict, wall: float):
+    """A same-runtime restored foreground; never a name-entry observation."""
+    try:
+        receipt = read_record(runtime_dir / 'hanjuku_resume.json')
+    except AdapterError:
+        return None
+    try:
+        if (type(identity.get('generation')) is not int or identity['generation'] < 1
+                or runtime_id_generation(identity.get('runtime_id')) != identity['generation']
+                or not isinstance(identity.get('lease_id'), str) or not identity['lease_id']):
+            return None
+    except (TypeError, ValueError):
+        return None
+    if (type(receipt.get('schema')) is not int or receipt['schema'] != 1
+            or receipt.get('status') != 'verified'
+            or receipt.get('gameplay_context') != 'verified_checkpoint_foreground'
+            or identity.get('game') != 'hanjuku-hero'
+            or any(type(receipt.get(k)) is not type(v) or receipt.get(k) != v
+                   for k, v in identity.items())):
+        return None
+    request = receipt.get('request_id')
+    try:
+        if not isinstance(request, str) or str(uuid.UUID(request)) != request:
+            return None
+    except ValueError:
+        return None
+    at = receipt.get('verified_at')
+    chapter = receipt.get('chapter')
+    if (type(at) not in (int, float) or not math.isfinite(at) or not 0 < at <= wall
+            or (chapter is not None and (type(chapter) is not int or not 1 <= chapter <= 12))):
+        return None
+    for key in ('sha256', 'core_state_sha256', 'frame_sha256'):
+        digest = receipt.get(key)
+        if (not isinstance(digest, str) or len(digest) != 64
+                or any(c not in '0123456789abcdef' for c in digest)):
+            return None
+    return request
 
 
 def terminal(runtime_dir: Path, identity: dict):
@@ -106,11 +156,24 @@ def terminal(runtime_dir: Path, identity: dict):
                and state.get('observed_monotonic',0)-last_at>=INPUT_STALL_SECONDS
                and state.get('observations',0)-last_obs>=INPUT_STALL_OBSERVATIONS)
     else:
-        valid=(valid and state.get('name_entered') is True and state.get('gameplay_seen') is True
+        restored = (state.get('checkpoint_started') is True
+                    and state.get('checkpoint_start_request') is not None
+                    and state['checkpoint_start_request'] == _checkpoint_start_request(
+                        runtime_dir, identity, state.get('observed_at', 0)))
+        valid=(valid and (state.get('name_entered') is True or restored) and state.get('gameplay_seen') is True
                and state.get('phase')=='title' and state.get('title_count',0)>=3
                and state.get('observed_monotonic',0)-state.get('title_since',0)>=2)
     if not valid:
         raise AdapterError('invalid Hanjuku terminal evidence')
+    return state
+
+
+def require_checkpoint_context(runtime_dir: Path, identity: dict):
+    """Reprove a bound restored context immediately before actual input."""
+    state = load(runtime_dir, identity)
+    bound = state.get('checkpoint_start_request')
+    if bound is not None and _checkpoint_start_request(runtime_dir, identity, time.time()) != bound:
+        raise AdapterError('verified Hanjuku checkpoint context changed')
     return state
 
 
@@ -154,12 +217,25 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     if type(since) not in (int,float) or not math.isfinite(since):
         raise AdapterError('invalid Hanjuku stasis evidence')
     duration=max(0.,now-since)
-    # A title return after name entry and gameplay ends the attempt. Do not
+    # A title return after name entry or a verified restored foreground and
+    # subsequently observed gameplay ends the attempt. Do not
     # confuse the initial title/attract demo or an intermediate black scene
     # with game over. Hold input on the first candidate, confirm across time.
     named=old.get('name_entered',False) or phase=='name'
-    played=old.get('gameplay_seen',False) or (named and phase in {'battle','field'})
-    candidate=phase=='title' and played and playing
+    checkpoint = _checkpoint_start_request(runtime_dir, identity, wall)
+    if (old.get('checkpoint_start_request') is not None
+            and checkpoint != old['checkpoint_start_request']):
+        # Losing/changing an established receipt must not turn a title return
+        # back into a fresh title that the agent could blindly confirm.
+        raise AdapterError('verified Hanjuku checkpoint context changed')
+    checkpoint_bound = old.get('checkpoint_start_request') or checkpoint
+    restored = checkpoint is not None and checkpoint_bound == checkpoint
+    started = named or restored
+    prior_played = (old.get('gameplay_seen') is True
+                    and (named or (checkpoint_bound is not None
+                                   and old.get('checkpoint_start_request') == checkpoint_bound)))
+    played=prior_played or (started and phase in {'battle','field'})
+    candidate=phase=='title' and started and played and playing
     title_since=old.get('title_since',now) if candidate and consecutive and old.get('terminal_candidate') else now
     title_count=int(old.get('title_count',0))+1 if candidate and consecutive and old.get('terminal_candidate') else int(candidate)
     reason='game_over' if candidate and title_count>=3 and now-title_since>=2 else None
@@ -227,6 +303,7 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
            'observed_at':wall,'unchanged_since':since,'unchanged_seconds':duration,
            'playing':playing,'terminal_reason':reason,
            'name_entered':named,'gameplay_seen':played,
+           'checkpoint_started':restored,'checkpoint_start_request':checkpoint_bound,
            'terminal_candidate':candidate,'title_since':title_since,'title_count':title_count,
            'terminal_evidence':'title_return_after_gameplay' if reason=='game_over'
                              else 'no_input_sent_while_observing' if reason=='input_stalled'

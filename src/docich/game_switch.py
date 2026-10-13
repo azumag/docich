@@ -5148,6 +5148,26 @@ class GameSwitchCoordinator:
                 and previous.get("adapter") == "program"
                 and active is None
             )
+            released_terminal = None
+            if (isinstance(previous, Mapping) and active is None and not cleanup_pending
+                    and state.get("candidate") is None and not state.get("retiring")
+                    and previous.get("adapter") == "retroarch"
+                    and previous.get("game") == "hanjuku-hero"):
+                try:
+                    adapter = self._make_adapter(
+                        RuntimeSpec.from_runtime(self.store.state_dir, previous), deadline)
+                    verify = getattr(adapter, "can_release_terminal_previous", None)
+                    if callable(verify) and self._call_adapter(
+                            lambda cancel: verify(deadline, cancel), deadline,
+                            self.step_timeouts.probe_s, "terminal_previous"):
+                        if not self._teardown_runtime(adapter, deadline):
+                            raise AdapterError("terminal previous cleanup is unconfirmed")
+                        released_terminal = {key: previous[key] for key in
+                                             ("game", "runtime_id", "generation", "lease_id")}
+                        abandon = True
+                except Exception as exc:
+                    return self._recover_fail_locked(
+                        tx, state, warnings, _safe_detail(exc), ERROR_QUIESCE_FAILED)
             if previous is not None and not abandon:
                 return self._recover_from_previous_locked(
                     tx, previous, deadline, warnings, cleanup_pending
@@ -5164,6 +5184,10 @@ class GameSwitchCoordinator:
                 "error_code": None,
                 "detail": "failed状態から復旧しました",
             }
+            if released_terminal is not None:
+                prior = state.get("last_result") or {}
+                last_result.update(released_terminal=released_terminal,
+                                   restore_request_id=prior.get("request_id"))
             tx.transition(
                 {"failed"}, "idle",
                 updates={

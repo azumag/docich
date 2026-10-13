@@ -104,6 +104,15 @@ opencode-go:muse-spark-1.2-contributor
   `hanjuku.chart_adjust.agents` に、有料 `opencode-go` より前の無料枠として加えた。
   `AI_BACKOFF_SEC_ITEMS` にも 1日 backoff を入れて 429 連打を止める。
   VM の `.env` に値が設定されていればそちらが優先される（既定値は webui の表示・空のとき）。
+- **`Mimo-v2.6-flash` 追加 (2026-10-12、PR #1003)**: docich 側の既定チェーン
+  (`src/docich/webui_resources/defaults.json` の `AI_COMMON_AGENTS` / `MODEL_IMPROVE_LIST` /
+  `PEAK_HOURS_AGENT_PREFERENCE`、live profile の `paper_corner.script_agents`、
+  `retro_corner.improve_agents` / `paper_corner.improve_agents`、`ops/shadow_once/run.py` の固定リスト)に
+  `opencode:mimo-v2.6-flash-free` (opencode zen の free 枠) と `opencode-go:mimo-v2.6-flash` (有料) を、
+  muse の直後・最初の deepseek 系エントリの直前に追加した (`improve_agents` は deepseek が muse より
+  前のため末尾追加)。2026-10-12 に free 枠へ1回の実呼び出しで応答を確認（opencode stats 上 $0）。
+  free 枠の提供終了・課金化は事前告知なく起こりうるので、429/課金が出たら backoff か除去で対応する。
+  VM の `.env` に値があればそちらが優先され、`.env` / `core/config.sh` へは反映していない。
 - **モデル別バックオフ (2026-08-19)**: `deepseek-v4-flash-free` / `amd-token-factory…` /
   `openrouter/free` / `muse-spark-1.2-contributor` = 1日、`local` = 30分、
   `deepseek-v4-flash` / `minimax-m3` = 5時間。

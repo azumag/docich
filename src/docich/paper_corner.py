@@ -715,8 +715,12 @@ class PaperCornerManager:
             # inherit it, so default it here and keep systemd's own stderr in
             # the durable failure record (#947).
             try:
+                wrapper = self.g.repo_root / "ops" / "vm_actions" / "run_paper_improve_with_ai_env.sh"
+                if not wrapper.is_file():
+                    raise PaperCornerError("PAPER AI改善wrapperが見つかりません")
                 submitted = subprocess.run(
-                    [*command, '--', *argv], check=False, timeout=30,
+                    [*command, '--', '/usr/bin/bash', str(wrapper), '--', *argv],
+                    check=False, timeout=30,
                     stdin=subprocess.DEVNULL, capture_output=True, text=True,
                     env=user_bus_env(),
                 )
