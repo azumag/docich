@@ -148,7 +148,7 @@ def quantity_step(screen: Screen, mem, soldiers=False):
             return [pad('b')]  # a reopened unread editor still cannot authorize payment
         if (scope is not None and isinstance(state, dict) and state.get('scope') == scope
                 and state.get('stage') != 'measured'):
-            if state.get('stage') not in ('opening', 'requested', 'closing'):
+            if state.get('stage') not in ('opening', 'requested', 'quantity_requested', 'closing'):
                 state.update(stage='closing', result='unverified')
             if state.get('stage') == 'closing':
                 return [pad('b')] if _army_count_increment(state, 'exit_presses', 4) <= 3 else []

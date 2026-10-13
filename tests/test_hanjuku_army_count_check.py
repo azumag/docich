@@ -205,3 +205,33 @@ def test_corrupt_closing_result_cannot_become_a_measured_total():
     monthly._month_army_count_check(screen(),mem,mem['shop'])
     assert mem['army_count_check']['stage']=='unverified'
     assert mem.get('soldiers_seen') is None
+
+
+def test_native_count_intro_a_only_opens_editor_then_inspection_uses_b():
+    from pathlib import Path
+    from docich.hanjuku_pixels import read_png
+    root=Path(__file__).parent/'fixtures/hanjuku'
+    d=json.loads((root/'g741-army-count-evidence.json').read_text())
+    frames={}
+    for e in d['evidence']:
+        frame=read_png(root/e['fixture'])
+        assert frame.digest()==e['rgb_sha256']==e['decision']['frame_sha256']
+        uid=int(e['decision']['decision_id'].rsplit(':',1)[1]);frames[uid]=parse(frame)
+    # Original A at the count question did not pay; editor still shows131G.
+    e=next(e for e in d['evidence'] if e['decision']['decision_id'].endswith(':7458'))
+    assert any(r['buttons']==['a'] and r['decision_id']==e['decision']['decision_id']
+               and r['decision_frame_sha256']==r['frame_sha256']==e['rgb_sha256']
+               for r in e['input_receipts'])
+    assert frames[7458].header['gold']==frames[7460].header['gold']==131
+    mem=memory(131);mem.update(month='2-2',_run_identity={k:e['decision'][k]
+                             for k in ('game','runtime_id','generation','lease_id')})
+    mem['shop']['key']='2-2'
+    p.observe_events(frames[7458],mem)
+    assert mem['soldiers_seen']==0
+    assert monthly._month_army_count_check(frames[7458],mem,mem['shop'])==[p.pad('a')]
+    for _ in range(3):assert monthly._month_army_count_check(frames[7458],mem,mem['shop'])==[]
+    assert p.quantity_step(frames[7460],mem,soldiers=True)==[p.pad('b')]
+    assert not mem['shop'].get('soldier_receipt')
+    assert mem['army_count_check']['result']=='measured'
+    # Original7460 used A and paid1G; the new B above is counterfactual,
+    # not a naturally accepted cancellation or purchase receipt.

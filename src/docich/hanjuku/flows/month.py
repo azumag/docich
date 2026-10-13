@@ -41,12 +41,17 @@ def _month_army_count_check(screen, mem, shop):
     scope = _soldier_count_scope(mem, screen.header)
     if scope is None or mem.get('month_sub') or (shop or {}).get('soldier_receipt'):
         return None
+    intro = (screen.selected == 'へいしほじゅう' and re.fullmatch(
+        r'げんざいわがぐんのへいしすうは[0-9０-９]+めいですがなんめいほじゅうされますかな\?',
+        _month_dialog_body(screen)) is not None)
+    known = _soldier_count_current(mem, screen.header)
     state = mem.get('army_count_check')
     if not isinstance(state, dict) or state.get('scope') != scope:
-        if _soldier_count_current(mem, screen.header):
+        if known and not intro:
             return None
         state = mem['army_count_check'] = {'scope': scope, 'stage': 'opening', 'observations': 0}
-        mem.pop('soldiers_seen_key', None)  # an old total is history, not this scope
+        if not known:
+            mem.pop('soldiers_seen_key', None)  # an old total is history, not this scope
         _record(mem, 'army_count_check', month=scope[-1],
                 observed_metric={'planned_refill': (shop or {}).get('soldiers')},
                 reason='兵数未確認のため補充予定0でも実人数を確認する。確認入力では購入しない')
@@ -58,7 +63,17 @@ def _month_army_count_check(screen, mem, shop):
                               and _soldier_count_current(mem, screen.header) else 'unverified')
             return None
         return [pad('b')] if _army_count_increment(state, 'exit_presses', 4) <= 3 else []
+    if state.get('stage') == 'quantity_requested':
+        # The real stock question needs one A to reach the digit editor.
+        # Repeating that A on a delayed editor could confirm its default 01.
+        if _army_count_increment(state, 'waits', 4) >= 4:
+            state.update(stage='closing', result='unverified')
+            return [pad('b')]
+        return []
     if _soldier_count_current(mem, screen.header):
+        if intro:
+            state.update(stage='quantity_requested', result='measured')
+            return [pad('a')]  # native g7417458->7460: opens editor without payment
         state.update(stage='closing', result='measured')
         return [pad('b')]  # the count dialogue/quantity editor is still open
     if _army_count_increment(state, 'observations', 24) >= 24:
