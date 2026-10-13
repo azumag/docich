@@ -13,6 +13,7 @@ from ..decision_log import _record
 from .shop import _observe_soldier_receipt
 from ..judgment.battle import _hold_general_loss_metric, _migrate_card_evidence
 from ..judgment.events import trade_accept_weak
+from ..os_layer.font import UNKNOWN
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _current, _egg_row, _is_general_trade_prompt,
                                 _is_goninja_prompt, _options, _summer_bonus_rows, _trade_named_general)
@@ -27,7 +28,27 @@ TRADE_GUARD_OBSERVATIONS = 40   # ~60 s: lead-in, the offer and its choice
 TRADE_GUARD_TOKENS = ('トレード', 'いちもんめ', 'イキのいいの', 'いきのいいの')
 
 
-def trade_guard_step(screen: Screen, mem):
+TRADE_CHOICE_PAIRS = (('OK', 'NO'), ('そうする', 'やめる'))
+
+
+def _trade_choice_pair(options):
+    band = [(x, y, word) for x, y, word in options if 176 <= y <= 207]
+    pairs = []
+    for yes, no in TRADE_CHOICE_PAIRS:
+        accepts = [row for row in band if row[2] == yes]
+        declines = [row for row in band if row[2] == no]
+        if len(accepts) != 1 or len(declines) != 1:
+            continue
+        accept, decline = accepts[0], declines[0]
+        if accept[0] != decline[0] or abs(accept[1] - decline[1]) != 16:
+            continue
+        if len(band) == 2:
+            pairs.append((accept, decline))
+    return pairs[0] if len(pairs) == 1 else None
+
+
+
+def trade_guard_step(screen: Screen, mem, *, phase=None):
     """Fail closed on a 花いちもんめ offer whose choice is not a measured yes/no.
 
     g684 1-10 13:05: 「ここで しょうぐんどうしの トレードを しようじゃないか。」
@@ -37,15 +58,18 @@ def trade_guard_step(screen: Screen, mem):
     trade swaps strong generals for weak ones; refuse when a strong general
     is named (always declined here, as before).
 
-    After trade wording is seen, a choice with a readable hand cursor is
-    moved off its first (default, accepting) row and the lower row is chosen.
-    Plain text still advances with A. The screen text is recorded so the
-    real choice wording can be measured.
+    Only an explicit, complete label pair in the bottom choice band permits
+    selecting. Its hand must match one of those exact rows. Readable trade
+    dialogue advances with A before any choice is seen; incomplete labels,
+    missing hands and unknown wording hold for measurement.
     """
-    if mem.get('month_sub'):
+    guard = mem.get('trade_guard')
+    if isinstance(guard, dict):
+        guard.pop('held', None)  # ownership is recomputed for this observation
+    if mem.get('month_sub') or phase not in (None, 'dialogue'):
+        mem.pop('trade_guard', None)
         return None   # a monthly owner keeps its dialogue (measured yes/no still declines)
     tick = int(mem.get('tick') or 0)
-    guard = mem.get('trade_guard')
     flat = ''.join(screen.text.split())
     if (any(tok in flat for tok in TRADE_GUARD_TOKENS)
             and screen.kind in ('text', 'unknown')):
@@ -62,32 +86,58 @@ def trade_guard_step(screen: Screen, mem):
             guard['accept'], guard['strength'] = trade_accept_weak(mem, named)
     if not isinstance(guard, dict):
         return None
-    if guard.get('chosen') or tick - int(guard.get('tick') or 0) > TRADE_GUARD_OBSERVATIONS \
-            or screen.kind in ('map', 'map_target', 'month_menu', 'battle', 'world_map'):
+    if guard.get('chosen') or screen.kind in ('map', 'map_target', 'month_menu', 'battle', 'world_map'):
+        mem.pop('trade_guard', None)
+        return None
+    # The lead-in lease expires as before. Once a choice is seen, time alone
+    # is not evidence that it ended: a blinking hand or partial OCR must not
+    # release the same pending dialogue to the generic A.
+    if tick - int(guard.get('tick') or 0) > TRADE_GUARD_OBSERVATIONS and not guard.get('choice_seen'):
         mem.pop('trade_guard', None)
         return None
     if screen.kind == 'yes_no':
         return None   # the measured yes/no path declines the trade itself
-    if screen.kind not in ('text', 'unknown') or screen.hand is None:
-        return None   # plain dialogue: the normal A advances it
+    if screen.kind not in ('text', 'unknown'):
+        return None
+    options = _options(screen)
+    pair = (None if any(UNKNOWN in line.text for line in screen.lines if 176 <= line.y <= 207)
+            else _trade_choice_pair(options))
+    labels = {word for words in TRADE_CHOICE_PAIRS for word in words}
+    if (guard.get('choice_seen') and screen.kind == 'text' and screen.hand is None
+            and flat and UNKNOWN not in flat and not _trade_named_general(flat)
+            and not any(tok in flat for tok in TRADE_GUARD_TOKENS)
+            and not any(word in labels for _, _, word in options)
+            and not any(176 <= line.y <= 207 for line in screen.lines)):
+        mem.pop('trade_guard', None)  # a readable different prose screen
+        return None
+    suspect_choice = (screen.hand is not None or pair is not None
+                      or any(word in labels for _, _, word in options)
+                      or any(176 <= y <= 207 and not (
+                          _trade_named_general(word) or any(tok in word for tok in TRADE_GUARD_TOKENS))
+                             for _, y, word in options))
+    if suspect_choice:
+        guard['choice_seen'] = True
+    if (not guard.get('choice_seen') and screen.hand is None and screen.kind == 'text'
+            and flat and UNKNOWN not in flat and any(tok in flat for tok in TRADE_GUARD_TOKENS)):
+        return None   # positively readable trade prose, before a choice
     cur = _current(screen)
-    rows = sorted({y for x, y, w in _options(screen)
-                   if cur and abs(x - cur[0]) <= 24 and w and not w.isdigit()})
-    if not cur or len(rows) < 2:
+    if pair is None or cur not in pair or not 0 <= cur[0] - screen.hand[2] <= 8:
+        guard['held'] = True
         if not guard.get('unread_choice_recorded'):
             guard['unread_choice_recorded'] = True
             _record(mem, 'situation_held', screen=screen.kind,
                     observed_metric={'trade_guard': True, 'text': screen.text[-80:]},
-                    reason='トレードの選択肢の行を読めないため決定せず再観測')
+                    reason='トレードの二択・現在の選択行を確定できないため決定せず再観測')
         return []
     accept = guard.get('accept') is True
-    on_first = abs(cur[1] - rows[0]) <= 2
-    if accept != on_first:
-        return [pad('up' if accept else 'down')]   # first row = default (accept)
+    target = pair[0] if accept else pair[1]
+    if cur != target:
+        return [pad('down' if target[1] > cur[1] else 'up')]
     guard['chosen'] = True
     _record(mem, 'prompt', choice=cur[2], prompt=screen.text[-60:],
             strategy_variant='accept_weak_general_trade' if accept else 'decline_general_trade',
-            observed_metric={'rows': rows, 'cursor_y': cur[1], 'strength': guard.get('strength')},
+            observed_metric={'rows': sorted(row[1] for row in pair), 'cursor_y': cur[1],
+                             'strength': guard.get('strength')},
             reason=('指定された将軍が弱い（最大HP50未満・戦闘10未満、チャート外）ため花いちもんめを受ける'
                     if accept else
                     '花いちもんめで強い将軍・主人公・チャートの将軍・判定不能の将軍が指定されたため断る'))

@@ -61,8 +61,12 @@ def test_torn_middle_gold_digit_is_not_a_smaller_balance(occlusion):
     if occlusion=='unknown':
         i=(15*256+168)*3;data[i:i+3]=b'\xff\xff\xff'
     screen=view.parse(Frame(256,224,bytes(data)))
-    # joined() discards an UNKNOWN or a blank between digits: 131 becomes 11.
-    assert view.HEADER.search(screen.text).group(4)=='11'
+    # UNKNOWN must remain a barrier; a blank gap still compacts to 11.
+    match=view.HEADER.search(screen.text)
+    if occlusion=='unknown':
+        assert match is None
+    else:
+        assert match is not None and match.group(4)=='11'
     assert screen.header is None
 
 

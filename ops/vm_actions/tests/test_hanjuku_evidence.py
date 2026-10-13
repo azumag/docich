@@ -67,6 +67,19 @@ INVALID_TERMINAL = [
 ]
 
 
+def repetition_state(pure):
+    repetition = None
+    for i in range(20):
+        repetition = pure.observe(repetition, str(i % 2) * 64, "dialogue",
+                      pure.add_input({}, "pad", ["a" if i % 2 else "b"]), now=i * 20, continuous=True, max_gap=30)
+    proof = pure.confirmed(repetition, now=380)
+    assert proof is not None
+    loop = run_state(terminal_reason="screen_stalled", terminal_evidence=pure.EVIDENCE,
+             playing=True, observed_monotonic=380, unchanged_since=proof["since"],
+             unchanged_seconds=proof["seconds"], repetition=repetition, repetition_evidence=proof)
+    return loop
+
+
 class EvidenceFixture:
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -138,15 +151,27 @@ class EvidenceTests(EvidenceFixture, unittest.TestCase):
                  (isinstance(n, ast.FunctionDef) and n.name in {"load", "terminal"}) or
                  (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in n.targets))]
         self.assertEqual(len(nodes), 7)
+        pure_path = source.with_name("hanjuku_repetition.py")
+        pure_spec = importlib.util.spec_from_file_location("evidence_native_repetition", pure_path)
+        pure = importlib.util.module_from_spec(pure_spec)
+        pure_spec.loader.exec_module(pure)
         native = {"Path": Path, "math": math, "AdapterError": ValueError,
+                  "hanjuku_repetition": pure,
                   "read_record": lambda path: json.loads(path.read_bytes())}
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), "exec"), native)
         identity = e.terminal_identity(run_state(), RID)
         input_stalled = run_state(terminal_reason="input_stalled", observed_monotonic=612,
                                   last_input_monotonic=10, observations=130,
                                   last_input_observations=5)
+        loop = repetition_state(pure)
+        proof = loop["repetition_evidence"]
+        malformed = []
+        for changes in ({"playing": False}, {"repetition": None}, {"repetition_evidence": {}},
+                        {"unchanged_since": proof["since"] + 1}, {"unchanged_seconds": 999},
+                        {"observed_monotonic": 381}):
+            malformed.append({**loop, **changes})
         for index, state in enumerate([run_state(), run_state(terminal_reason="screen_stalled", unchanged_seconds=300),
-                      input_stalled,
+                      input_stalled, loop, *malformed,
                       *(run_state(**v) for v in INVALID_TERMINAL)]):
             (self.run / "hanjuku_run.json").write_text(json.dumps(state))
             try:
@@ -160,8 +185,26 @@ class EvidenceTests(EvidenceFixture, unittest.TestCase):
             with self.subTest(state=state):
                 # Export is intentionally stricter for legacy schema/no lease.
                 self.assertFalse(exported and not native_ok)
-                if index < 3:
+                if index < 4:
                     self.assertTrue(exported and native_ok)
+                elif index < 10:
+                    self.assertFalse(exported or native_ok)
+
+    def test_repetition_archive_roundtrip_and_missing_validator_fail_closed(self):
+        path = MODULE.parents[2] / "src/docich/hanjuku_repetition.py"
+        spec = importlib.util.spec_from_file_location("evidence_loop_fixture", path)
+        pure = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pure)
+        state = repetition_state(pure)
+        (self.run / "hanjuku_run.json").write_bytes(e._dump(state))
+        clear = self.pack()
+        self.assertEqual(r.verify_archive(clear)["identity"]["runtime_id"], RID)
+        with patch.object(e, "_read", side_effect=OSError("unavailable")):
+            with self.assertRaisesRegex(e.EvidenceError, "invalid_terminal"):
+                e.terminal_identity(state, RID)
+        with patch.object(e, "_read", side_effect=e.EvidenceError("unsafe_file")):
+            with self.assertRaisesRegex(e.EvidenceError, "unsafe_file"):
+                e.terminal_identity(state, RID)
 
     def test_bad_runtime_selector(self):
         for value in ("latest", "../g7-1234abcd", "g7-1234abcd/../x", "g07-1234abcd", "g7-1234abcg"):

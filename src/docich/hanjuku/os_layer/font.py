@@ -159,13 +159,22 @@ def read_lines(frame: Frame, *, predicate=light, rect=(0, 0, 256, 224),
 def find(lines: list[TextLine], needle: str) -> TextLine | None:
     compact = needle.replace(' ', '')
     for line in lines:
-        if compact in line.known.replace(' ', ''):
+        if compact in line.text.replace(' ', ''):
             return line
     return None
 
 
 def joined(lines: list[TextLine]) -> str:
-    return ''.join(line.known.replace(' ', '') for line in lines)
+    """Compact decision text without bridging an unread tile inside a row.
+
+    ``known`` is for readable presentation: removing its separator spaces
+    would silently turn ``ゼ�ウス`` into ``ゼウス`` or ``14�4G`` into ``144G``.
+    Keep internal UNKNOWN cells as match barriers. As before, edge decoration
+    and rows containing only border/accent tiles do not become message text.
+    This does not certify clipped names, numeric fields, or row boundaries;
+    those readers must still validate their own region and complete layout.
+    """
+    return ''.join(line.text.replace(' ', '').strip(UNKNOWN) for line in lines)
 
 
 def without_attached_marks(frame: Frame, lines: list[TextLine], *, rect) -> list[TextLine]:
