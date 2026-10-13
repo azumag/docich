@@ -121,6 +121,20 @@ def _entered_battle_successor(mem, cur, b):
     return True
 
 
+def _remember_general_for_summon(mem, cur, name, hp):
+    """Bind a real general panel before a monster can hide its HP."""
+    from ..os_layer.roster import run_identity
+    identity = run_identity(mem.get('_run_identity'))
+    full = mem.get('hero_max_hp') if name == NAME else general_max_hp(name)
+    if (identity is None or name != cur.get('ally') or not cur.get('enemy')
+            or type(hp) is not int or type(full) is not int or not 0 < hp <= full):
+        cur.pop('summon_general_reading', None)
+        return
+    cur['summon_general_reading'] = {
+        'identity': dict(identity), 'ally': name, 'enemy': cur['enemy'],
+        'hp': hp, 'max_hp': full}
+
+
 def _card_battle_reading(screen, cur, mem=None):
     """Refresh the inputs used by damage prediction, never soldier HP guesses.
 
@@ -153,6 +167,8 @@ def _card_battle_reading(screen, cur, mem=None):
     if mem is not None:
         mem['egg_battle'] = False
     cur['enemy_hp'], cur['ally_hp'] = b.enemy_hp, b.ally_hp
+    if mem is not None:
+        _remember_general_for_summon(mem, cur, b.ally, b.ally_hp)
     cur['hp_observed_at'] = time.time()
     counts = getattr(screen, 'field_soldiers', None)
     if not isinstance(counts, (tuple, list)) or len(counts) != 2:

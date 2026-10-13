@@ -922,22 +922,44 @@ def _survival_state(mem, cur):
     return cur['survival']
 
 
-def _wounded_summoner(mem, owner, ally, enemy):
-    """A living owned summon still shields its measured wounded general."""
+def _bound_summoner_general(mem, owner, ally, enemy):
+    """Return only a valid, same-runtime general reading for this battle."""
+    from ..os_layer.roster import run_identity
     battle = mem.get('battle') or {}
     reading = battle.get('summon_general_reading')
     if (owner != 'ally' or ally is None or enemy is None
             or ally.name not in reference.MONSTER_SKILLS or enemy.name not in reference.MONSTER_SKILLS
             or any(type(hp) is not int or hp <= 0 for hp in (ally.hp, enemy.hp))
             or not isinstance(reading, dict)
-            or not reading.get('identity') or reading['identity'] != mem.get('_run_identity')
+            or run_identity(reading.get('identity')) is None
+            or run_identity(reading['identity']) != run_identity(mem.get('_run_identity'))
             or not battle.get('ally') or not battle.get('enemy')
             or (reading.get('ally'), reading.get('enemy')) != (battle['ally'], battle['enemy'])
             or reading.get('hp') != battle.get('ally_hp')):
-        return False
+        return None
     hp, full = reading.get('hp'), reading.get('max_hp')
-    return (type(hp) is int and type(full) is int and 0 < hp <= full
-            and (hp <= GENERAL_CRITICAL_RETREAT_HP or hp * 2 <= full))
+    return reading if type(hp) is int and type(full) is int and 0 < hp <= full else None
+
+
+def _wounded_summoner(mem, owner, ally, enemy):
+    """A living owned summon still shields its measured wounded general."""
+    reading = _bound_summoner_general(mem, owner, ally, enemy)
+    return bool(reading and (reading['hp'] <= GENERAL_CRITICAL_RETREAT_HP
+                            or reading['hp'] * 2 <= reading['max_hp']))
+
+
+def _summoner_return_risk(mem, owner, ally, enemy):
+    """HP-pool exposure risk, not a prediction of monster skill damage."""
+    reading = _bound_summoner_general(mem, owner, ally, enemy)
+    if reading is None:
+        return None
+    hp, full = reading['hp'], reading['max_hp']
+    wounded = hp <= GENERAL_CRITICAL_RETREAT_HP or hp * 2 <= full
+    if not wounded and hp * 2 > enemy.hp:
+        return None
+    return {'rule': 'wounded_general' if wounded else 'general_vs_monster_hp',
+            'general': reading['ally'], 'general_hp': hp, 'general_max_hp': full,
+            'enemy_monster': enemy.name, 'enemy_monster_hp': enemy.hp}
 
 
 def _critical_survival_needed(cur):
