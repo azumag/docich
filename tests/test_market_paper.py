@@ -517,8 +517,10 @@ class PaperTests(unittest.TestCase):
         self.assertEqual(corner._speech_calls, [])
 
         from docich.corner_boundary import _owner_free
+        from docich.trading.soren_output import resolve_soren_root
         other_state_path = corner.r.g.state_dir / "other-market-corner.json"
-        self.assertTrue(_owner_free(corner.r.g.state_dir, other_state_path))
+        program_root = resolve_soren_root(corner.r.g) / "tmp" / "state"
+        self.assertTrue(_owner_free(program_root, other_state_path))
 
         third = corner.tick()
         self.assertEqual(third, "not_due")
