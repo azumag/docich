@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""Private shared handoff -> reviewed public projection -> runtime markdown.
+"""Reviewed public projection -> runtime markdown.
 
-Never print source/projection text. The private handoff is deliberately not in
-Git; check-source proves provenance locally, check-artifact works in clean CI.
+The projection may be derived from either the private shared handoff
+(``handoff.md``, referenced by ``DOCICH_HANDOFF_PATH`` and deliberately not in Git)
+or a small tracked source (``ops/runtime_context/ops_brief_source.md``). The tracked
+source exists so an ordinary handoff edit cannot churn the committed projection and
+collide with concurrent branches; it stays public-safe by construction.
+
+Never print source/projection text. check-source proves provenance locally (and in
+clean CI once the tracked source is the input); check-artifact works in clean CI.
 """
 from __future__ import annotations
 
@@ -18,6 +24,11 @@ ARTIFACT = "ops/runtime_context/ops_brief.json"
 PROJECTION = "games/soviet_now"
 DESTINATION = "prompts/ops_brief.md"
 CAPABILITY = "parent_ops_brief_v1"
+CAPABILITY_TRACKED_SOURCE = "parent_ops_brief_tracked_source_v1"
+SOURCE_LEGACY = "handoff.md"
+SOURCE_TRACKED = "ops/runtime_context/ops_brief_source.md"
+ALLOWED_SOURCES = (SOURCE_LEGACY, SOURCE_TRACKED)
+DEFAULT_SOURCE = SOURCE_LEGACY
 MAX_SOURCE = 4 * 1024 * 1024
 MAX_ARTIFACT = 4096
 HEADER = "# 直近の裏側の改修 (docich handoff.md から自動生成。手で編集しない)\n"
@@ -72,9 +83,11 @@ def encode(value: dict) -> bytes:
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
 
 
-def build(source: bytes) -> bytes:
+def build(source: bytes, source_name: str = SOURCE_LEGACY) -> bytes:
+    if source_name not in ALLOWED_SOURCES:
+        raise ValueError("unknown ops brief source")
     topics = extract_topics(source)
-    data = encode({"schema": 1, "source": "handoff.md", "source_sha256": digest(source),
+    data = encode({"schema": 1, "source": source_name, "source_sha256": digest(source),
                    "topics": topics, "output_sha256": digest(markdown(topics))})
     validate(data)
     return data
@@ -86,7 +99,7 @@ def validate(data: bytes) -> dict:
     value = json.loads(data)
     if not isinstance(value, dict) or set(value) != {"schema", "source", "source_sha256", "topics", "output_sha256"}:
         raise ValueError("invalid ops brief schema")
-    if type(value["schema"]) is not int or value["schema"] != 1 or value["source"] != "handoff.md":
+    if type(value["schema"]) is not int or value["schema"] != 1 or value["source"] not in ALLOWED_SOURCES:
         raise ValueError("invalid ops brief source")
     for field in ("source_sha256", "output_sha256"):
         if not isinstance(value[field], str) or not re.fullmatch(r"[a-f0-9]{64}", value[field]):
@@ -119,31 +132,67 @@ def read_regular(path: Path, limit: int) -> bytes:
 
 
 def handoff_path(explicit: Path | None) -> Path:
-    """Use an explicitly configured source; never infer a checkout-local copy."""
+    """Legacy shared handoff; never infer a checkout-local copy."""
     if explicit is None:
         configured = os.environ.get(HANDOFF_ENV)
         if not configured:
             raise ValueError("shared handoff source not configured")
         explicit = Path(configured)
-    if not explicit.is_absolute() or explicit.name != "handoff.md":
-        raise ValueError("explicit absolute handoff.md path required")
+    if not explicit.is_absolute() or explicit.name != SOURCE_LEGACY:
+        raise ValueError(f"explicit absolute {SOURCE_LEGACY} path required")
     return explicit
+
+
+def classify_source(path: Path, root: Path) -> str:
+    """Map a source path to the identity stored in the artifact."""
+    if path.name == SOURCE_LEGACY and path.is_absolute():
+        return SOURCE_LEGACY
+    try:
+        if path.resolve() == (root / SOURCE_TRACKED).resolve():
+            return SOURCE_TRACKED
+    except OSError:
+        pass
+    raise ValueError("unsupported ops brief source path")
+
+
+def source_path(root: Path, explicit: Path | None, required: str | None = None) -> tuple[Path, str]:
+    """Resolve the source file and identity, failing closed on a mismatch.
+
+    ``required`` is the identity the artifact demands; a different file is never
+    silently verified in its place.
+    """
+    if explicit is not None:
+        path = explicit
+    elif required == SOURCE_TRACKED or (required is None and DEFAULT_SOURCE == SOURCE_TRACKED):
+        path = root / SOURCE_TRACKED
+    else:
+        path = handoff_path(None)
+    identity = classify_source(path, root)
+    if required is not None and identity != required:
+        raise ValueError("ops brief source does not match the artifact")
+    return path, identity
 
 
 def main() -> int:
     root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("build", "check-source", "check-artifact", "materialize"))
-    parser.add_argument("--handoff", type=Path,
-                        help="absolute shared handoff.md path (overrides DOCICH_HANDOFF_PATH)")
+    parser.add_argument("--source", "--handoff", dest="source", type=Path,
+                        help=f"explicit source file (default: {DEFAULT_SOURCE})")
     parser.add_argument("--artifact", type=Path, default=root / ARTIFACT)
     parser.add_argument("--output", type=Path, help="explicit local runtime markdown output")
     args = parser.parse_args()
     try:
         if args.operation in {"build", "check-source"}:
-            expected = build(read_regular(handoff_path(args.handoff), MAX_SOURCE))
+            current = None
+            required = None
             if args.operation == "check-source":
-                if read_regular(args.artifact, MAX_ARTIFACT) != expected:
+                current = read_regular(args.artifact, MAX_ARTIFACT)
+                required = validate(current)["source"]
+            path, identity = source_path(root, args.source, required)
+            expected = build(read_regular(path, MAX_SOURCE), identity)
+            if args.operation == "check-source":
+                if current != expected:
                     raise ValueError("stale ops brief source")
             else:
                 if args.artifact.is_symlink():

@@ -18,6 +18,21 @@ SOURCE = "## 2026-09-22 — 最新の修正 Issue #123\nprivate body\n## 2026-09
 
 
 class BriefGenerationTests(unittest.TestCase):
+    def clean_env(self):
+        env = dict(os.environ)
+        env.pop(brief.HANDOFF_ENV, None)
+        return env
+
+    def tracked_source_root(self, temp):
+        root = Path(temp)
+        script = root / "ops/vm_actions/ops_brief.py"
+        script.parent.mkdir(parents=True)
+        shutil.copyfile(ROOT / "ops/vm_actions/ops_brief.py", script)
+        tracked = root / brief.SOURCE_TRACKED
+        tracked.parent.mkdir(parents=True)
+        tracked.write_bytes(SOURCE)
+        return root, script, tracked
+
     def test_deterministic_public_projection_omits_body(self):
         data = brief.build(SOURCE)
         self.assertEqual(data, brief.build(SOURCE))
@@ -164,6 +179,52 @@ class BriefGenerationTests(unittest.TestCase):
             for explicit in (Path("handoff.md"), Path("/shared/other.md")):
                 with self.subTest(explicit=explicit), self.assertRaises(ValueError):
                     brief.handoff_path(explicit)
+
+    def test_tracked_source_is_a_first_class_projection_input(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, script, tracked = self.tracked_source_root(temp)
+            artifact = root / "brief.json"
+            base = [sys.executable, str(script)]
+            built = subprocess.run(base + ["build", "--source", str(tracked), "--artifact", str(artifact)],
+                                   env=self.clean_env(), capture_output=True, text=True)
+            self.assertEqual(built.returncode, 0)
+            value = brief.validate(artifact.read_bytes())
+            self.assertEqual(value["source"], brief.SOURCE_TRACKED)
+            self.assertEqual(value["topics"], ["最新の修正", "配信復旧"])
+
+            # The artifact's identity alone resolves the tracked file; no private
+            # source or environment configuration is needed.
+            checked = subprocess.run(base + ["check-source", "--artifact", str(artifact)],
+                                     env=self.clean_env(), capture_output=True, text=True)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            tracked.write_bytes(SOURCE + b"private changed\n")
+            drifted = subprocess.run(base + ["check-source", "--artifact", str(artifact)],
+                                     env=self.clean_env(), capture_output=True, text=True)
+            self.assertNotEqual(drifted.returncode, 0)
+            self.assertNotIn("private changed", drifted.stdout + drifted.stderr)
+
+    def test_tracked_source_identity_mismatch_and_unknown_paths_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, script, tracked = self.tracked_source_root(temp)
+            artifact = root / "brief.json"
+            artifact.write_bytes(brief.build(SOURCE, brief.SOURCE_TRACKED))
+            other = root / "handoff.md"
+            other.write_bytes(SOURCE)
+            result = subprocess.run(
+                [sys.executable, str(script), "check-source", "--source", str(other),
+                 "--artifact", str(artifact)],
+                env=self.clean_env(), capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(artifact.read_bytes(), brief.build(SOURCE, brief.SOURCE_TRACKED))
+
+            tracked.unlink()
+            missing = subprocess.run(
+                [sys.executable, str(script), "check-source", "--artifact", str(artifact)],
+                env=self.clean_env(), capture_output=True, text=True)
+            self.assertNotEqual(missing.returncode, 0)
+
+            with self.assertRaises(ValueError):
+                brief.build(SOURCE, "ops/runtime_context/unknown.md")
 
     def test_artifact_operations_do_not_need_shared_source_configuration(self):
         with tempfile.TemporaryDirectory() as temp:

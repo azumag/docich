@@ -362,7 +362,8 @@ docs/architecture.md          canonical architecture
 docs/multi_repo_plan.md       submodule 構成と共通部品化ロードマップ
 docs/games/                   per-game contracts
 docs/twitch_closed_captions.md caption architecture and production evidence
-handoff.md                    current Soren/docich operational handoff
+handoff.md                    private Soren/docich operational handoff (not in Git; kept to the newest 30
+                              sections, older ones archived next to it by ops/local/handoff_rotate.py)
 ```
 
 ## Development and verification

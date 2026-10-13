@@ -597,6 +597,10 @@ def _verify_pending_live(cfg,repo,pending):
                 raise ValueError('pending repair drift before state commit')
 
 
+def _brief_capabilities():
+    return [ops_brief.CAPABILITY, ops_brief.CAPABILITY_TRACKED_SOURCE, projection_io.CAPABILITY]
+
+
 def _verify_managed_projections(cfg,repo,state):
     mappings=cfg['repos'][repo].get('projections',{})
     pending={(r['projection'],p) for r in state.get('pending_repairs',[]) for p in r['files']}
@@ -1582,7 +1586,7 @@ def status_result(cfg,repo,target,sha):
         except (ValueError,subprocess.CalledProcessError,FileNotFoundError): ready=False
         return {'status':'ready' if ready else 'drift','sha':sha}
     cur=read_json(current_file(cfg,repo))
-    if cur is None: return {'status':'bootstrap_required','sha':None,'capabilities':[ops_brief.CAPABILITY,projection_io.CAPABILITY]}
+    if cur is None: return {'status':'bootstrap_required','sha':None,'capabilities':_brief_capabilities()}
     root=Path(cfg['repos'][repo]['production']); head=git(root,'rev-parse','HEAD')
     clean=git_clean(root); expected=cur.get('sha')
     health_status='configured' if clean and head==expected else 'drift'
@@ -1593,7 +1597,7 @@ def status_result(cfg,repo,target,sha):
             _verify_pending_live(cfg,repo,cur.get('pending_repairs',[]))
             _verify_managed_projections(cfg,repo,cur)
         except Exception: health_status='drift'
-    return {'status':health_status,'sha':head,'storage':_filesystem_status(root),'capabilities':[ops_brief.CAPABILITY,projection_io.CAPABILITY],
+    return {'status':health_status,'sha':head,'storage':_filesystem_status(root),'capabilities':_brief_capabilities(),
             'ops_brief_projection':{'status':_ops_brief_health(cfg,repo,expected)},
             'pending_repairs':[{k:r.get(k) for k in ('id','status','candidate_sha','pr_url')} for r in cur.get('pending_repairs',[])]}
 
