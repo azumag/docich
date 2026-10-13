@@ -1,0 +1,1483 @@
+{
+  "active": {
+    "game": "hanjuku-hero",
+    "runtime_id": "g749-d8571de0",
+    "generation": 749,
+    "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f"
+  },
+  "observation_matches_active": false,
+  "observation_source": "ended_run_archive",
+  "evidence": [
+    {
+      "decision": {
+        "at": 1791934579.8456802,
+        "bot_version": "hanjuku-chart-v220-finishing-resources",
+        "chart_step": null,
+        "decision_id": "g749-d8571de0:749:30322",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": "使用可能な切り札・たまごを確認して選択",
+        "frame_sha256": "9f817b9b0df0effedf968fc590d2a62032efe2b6608b6a5b11f5e7c3979de662",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "b"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "battle_start",
+          "battle_egg_plan",
+          "battle_survival"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-082.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791934579.8456802,
+          "decision_id": "g749-d8571de0:749:30322",
+          "frame_sha256": "9f817b9b0df0effedf968fc590d2a62032efe2b6608b6a5b11f5e7c3979de662",
+          "decision": "battle_start",
+          "reason": "戦闘パネルの将軍名とHPを確認",
+          "observed_metric": {
+            "ally_hp": 90,
+            "enemy_hp": 66
+          },
+          "ally": "どうし",
+          "enemy": "アテナ",
+          "castle": "アルマムーン",
+          "side": null,
+          "general": null,
+          "choice": null
+        },
+        {
+          "at": 1791934579.8456802,
+          "decision_id": "g749-d8571de0:749:30322",
+          "frame_sha256": "9f817b9b0df0effedf968fc590d2a62032efe2b6608b6a5b11f5e7c3979de662",
+          "decision": "battle_egg_plan",
+          "reason": "将軍の最大HPと携行切り札の卵落・ID合計から卵ディニアル方針を決定",
+          "observed_metric": {
+            "carried": [],
+            "deny_opening_egg": null,
+            "dropper": null,
+            "droppers": [],
+            "egg_drop": null,
+            "has_egg": true,
+            "id_sum": null,
+            "kit_known": false,
+            "max_hp_sum": null,
+            "threat": true,
+            "threshold": null,
+            "triggers": {
+              "clash_position": true,
+              "has_egg": true,
+              "opening_card_sum": true,
+              "wall_critical": true,
+              "wall_mod4": false
+            }
+          },
+          "ally": "どうし",
+          "enemy": "アテナ",
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        },
+        {
+          "at": 1791934579.8456802,
+          "decision_id": "g749-d8571de0:749:30322",
+          "frame_sha256": "9f817b9b0df0effedf968fc590d2a62032efe2b6608b6a5b11f5e7c3979de662",
+          "decision": "battle_survival",
+          "reason": "携行戦術のない卵持ち敵との衝突前に、戦闘メニューで救済手段を確認",
+          "observed_metric": {
+            "ally_hp": 90,
+            "enemy_hp": 66,
+            "melee_balance": {
+              "ally_combat": 14,
+              "ally_force": 100,
+              "ally_melee_score": 1400,
+              "assessment_method": "hp_pool_times_combat_heuristic",
+              "assessment_scope": "general_matchup",
+              "enemy_combat": 11,
+              "enemy_force": 126,
+              "enemy_melee_score": 1386,
+              "soldiers_current": true
+            }
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-082.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791934580.0267065,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "b"
+          ],
+          "decision_frame_sha256": "9f817b9b0df0effedf968fc590d2a62032efe2b6608b6a5b11f5e7c3979de662",
+          "decision_id": "g749-d8571de0:749:30322",
+          "event": "input_sent",
+          "frame_sha256": "9f817b9b0df0effedf968fc590d2a62032efe2b6608b6a5b11f5e7c3979de662",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "9f817b9b0df0effedf968fc590d2a62032efe2b6608b6a5b11f5e7c3979de662",
+      "fixture": "g749-hero-athena-30322.png"
+    },
+    {
+      "decision": {
+        "at": 1791934596.3533328,
+        "bot_version": "hanjuku-chart-v220-finishing-resources",
+        "chart_step": null,
+        "decision_id": "g749-d8571de0:749:30339",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 50,
+            "type": "pad"
+          },
+          {
+            "ms": 50,
+            "type": "wait"
+          },
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 50,
+            "type": "pad"
+          },
+          {
+            "ms": 50,
+            "type": "wait"
+          },
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 50,
+            "type": "pad"
+          },
+          {
+            "ms": 50,
+            "type": "wait"
+          },
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 50,
+            "type": "pad"
+          },
+          {
+            "ms": 50,
+            "type": "wait"
+          }
+        ],
+        "reason_decisions": [
+          "battle_melee"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-099.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791934596.3533328,
+          "decision_id": "g749-d8571de0:749:30339",
+          "frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+          "decision": "battle_melee",
+          "reason": "保持中のHP劣化が予算に達したため押し込む",
+          "observed_metric": {
+            "melee_balance": {
+              "ally_combat": 14,
+              "ally_force": 16,
+              "ally_melee_score": 224,
+              "assessment_method": "hp_pool_times_combat_heuristic",
+              "assessment_scope": "general_matchup",
+              "enemy_combat": 11,
+              "enemy_force": 62,
+              "enemy_melee_score": 682,
+              "soldiers_current": true
+            }
+          },
+          "ally": null,
+          "enemy": "アテナ",
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-099.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791934596.4685626,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+          "decision_id": "g749-d8571de0:749:30339",
+          "event": "input_sent",
+          "frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "at": 1791934596.5905533,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+          "decision_id": "g749-d8571de0:749:30339",
+          "event": "input_sent",
+          "frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "at": 1791934596.7087011,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+          "decision_id": "g749-d8571de0:749:30339",
+          "event": "input_sent",
+          "frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "at": 1791934596.832085,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+          "decision_id": "g749-d8571de0:749:30339",
+          "event": "input_sent",
+          "frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+          "hold_ms": 50,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+      "fixture": "g749-hero-athena-30339.png"
+    },
+    {
+      "decision": {
+        "at": 1791934597.4688332,
+        "bot_version": "hanjuku-chart-v220-finishing-resources",
+        "chart_step": null,
+        "decision_id": "g749-d8571de0:749:30340",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "a68c96fa452e8b8542a036557064f3e8c2aef6b4b9440e354ffe7c52a100e47d",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [],
+        "reason_decisions": [],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-100.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [],
+      "source_snapshot": "decision-100.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [],
+      "rgb_sha256": "a68c96fa452e8b8542a036557064f3e8c2aef6b4b9440e354ffe7c52a100e47d",
+      "fixture": "g749-hero-athena-30340.png"
+    },
+    {
+      "decision": {
+        "at": 1791934618.3469915,
+        "bot_version": "hanjuku-chart-v220-finishing-resources",
+        "chart_step": null,
+        "decision_id": "g749-d8571de0:749:30354",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "082b374ddfa203ecaa1e12f6074a72d893cc3161a4303005ab8bd5b2f0f028b0",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "text",
+        "snapshot": null,
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [],
+      "source_snapshot": "frame-082.png",
+      "capture_binding": "runtime_observation_RGB_matched_plan",
+      "input_receipts": [
+        {
+          "at": 1791934618.5163345,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "082b374ddfa203ecaa1e12f6074a72d893cc3161a4303005ab8bd5b2f0f028b0",
+          "decision_id": "g749-d8571de0:749:30354",
+          "event": "input_sent",
+          "frame_sha256": "082b374ddfa203ecaa1e12f6074a72d893cc3161a4303005ab8bd5b2f0f028b0",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "082b374ddfa203ecaa1e12f6074a72d893cc3161a4303005ab8bd5b2f0f028b0",
+      "fixture": "g749-hero-athena-30354.png"
+    }
+  ],
+  "range_action_plans": [
+    {
+      "at": 1791934579.1982193,
+      "decision_id": "g749-d8571de0:749:30321",
+      "frame_sha256": "0c958312fe1a027584a6dc72d1fd469674619f701a0484623970c9992187a7d0",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [],
+      "reason_decisions": []
+    },
+    {
+      "at": 1791934579.8456802,
+      "decision_id": "g749-d8571de0:749:30322",
+      "frame_sha256": "9f817b9b0df0effedf968fc590d2a62032efe2b6608b6a5b11f5e7c3979de662",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "buttons": [
+            "b"
+          ],
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "reason_decisions": [
+        "battle_start",
+        "battle_egg_plan",
+        "battle_survival"
+      ]
+    },
+    {
+      "at": 1791934580.6500962,
+      "decision_id": "g749-d8571de0:749:30323",
+      "frame_sha256": "9f817b9b0df0effedf968fc590d2a62032efe2b6608b6a5b11f5e7c3979de662",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "ms": 50,
+          "type": "wait"
+        }
+      ],
+      "reason_decisions": [
+        "battle_command_open_wait"
+      ]
+    },
+    {
+      "at": 1791934581.6311755,
+      "decision_id": "g749-d8571de0:749:30324",
+      "frame_sha256": "9296d160848c133479a55956b661b9ab59262c74fbd8383e2a3de3af7335e292",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "ms": 50,
+          "type": "wait"
+        }
+      ],
+      "reason_decisions": [
+        "battle_command_open_wait"
+      ]
+    },
+    {
+      "at": 1791934582.2592287,
+      "decision_id": "g749-d8571de0:749:30325",
+      "frame_sha256": "f41a443428a874143f85c20b021e5e20f96941f6fabd0bc0593aec2a977a947f",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "buttons": [
+            "b"
+          ],
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "reason_decisions": []
+    },
+    {
+      "at": 1791934583.064039,
+      "decision_id": "g749-d8571de0:749:30326",
+      "frame_sha256": "ed82ff02276b9f93edb452e1b95b031bc10ec0b4f6a801b554ca9fd90111867f",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "ms": 50,
+          "type": "wait"
+        }
+      ],
+      "reason_decisions": [
+        "battle_command_open_wait"
+      ]
+    },
+    {
+      "at": 1791934583.9679627,
+      "decision_id": "g749-d8571de0:749:30327",
+      "frame_sha256": "4b8c2b9ae7a0835b3aab11ed1ce9da4d0aecb5476d49847d5eca724cac965084",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "ms": 50,
+          "type": "wait"
+        }
+      ],
+      "reason_decisions": [
+        "battle_command_open_wait"
+      ]
+    },
+    {
+      "at": 1791934584.7528033,
+      "decision_id": "g749-d8571de0:749:30328",
+      "frame_sha256": "30143da25226d2d66ce2686c905a8466c51b3939eca7e40d8a3eb4432d725bb3",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "buttons": [
+            "b"
+          ],
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "reason_decisions": []
+    },
+    {
+      "at": 1791934586.0394802,
+      "decision_id": "g749-d8571de0:749:30329",
+      "frame_sha256": "30143da25226d2d66ce2686c905a8466c51b3939eca7e40d8a3eb4432d725bb3",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "ms": 50,
+          "type": "wait"
+        }
+      ],
+      "reason_decisions": [
+        "battle_command_open_wait"
+      ]
+    },
+    {
+      "at": 1791934586.8409812,
+      "decision_id": "g749-d8571de0:749:30330",
+      "frame_sha256": "24328887fe245c0ee8492b8b54898588d8c7a614410f34e73bcc3aaff8d039a0",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "ms": 50,
+          "type": "wait"
+        }
+      ],
+      "reason_decisions": [
+        "battle_command_open_wait"
+      ]
+    },
+    {
+      "at": 1791934587.56236,
+      "decision_id": "g749-d8571de0:749:30331",
+      "frame_sha256": "86205796ffcdda9f341e2c474bcdd68732f3c0da780b5ea9f3a898254514ccc0",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [],
+      "reason_decisions": []
+    },
+    {
+      "at": 1791934588.1782727,
+      "decision_id": "g749-d8571de0:749:30332",
+      "frame_sha256": "bd41e3524f59c4e8d27d5a85a28cc65d44ef9c9ee25c675bf2c611079295afcd",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        }
+      ],
+      "reason_decisions": [
+        "battle_power",
+        "battle_melee"
+      ]
+    },
+    {
+      "at": 1791934589.4411201,
+      "decision_id": "g749-d8571de0:749:30333",
+      "frame_sha256": "c082f562d50dc5cca471eaf057fd5cb0f42f6167b74bca28809b1df88bec8d0e",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        }
+      ],
+      "reason_decisions": [
+        "battle_melee"
+      ]
+    },
+    {
+      "at": 1791934590.7163455,
+      "decision_id": "g749-d8571de0:749:30334",
+      "frame_sha256": "01d7c75a5f8511dae8a6d32925fb2e978d48e326255a77d9377e7e72a94f3c83",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        }
+      ],
+      "reason_decisions": [
+        "battle_melee"
+      ]
+    },
+    {
+      "at": 1791934591.8143797,
+      "decision_id": "g749-d8571de0:749:30335",
+      "frame_sha256": "291a3987684c9ed1b6ebf1803816c3c1a586fbcd86029a62495effdc0d121c74",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        }
+      ],
+      "reason_decisions": [
+        "battle_melee"
+      ]
+    },
+    {
+      "at": 1791934592.9671242,
+      "decision_id": "g749-d8571de0:749:30336",
+      "frame_sha256": "dc83e71b8552902ebc474ae298a6e8554d44a6d8fa44d9baa48da0def7c90c2b",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        }
+      ],
+      "reason_decisions": [
+        "battle_melee"
+      ]
+    },
+    {
+      "at": 1791934594.1155584,
+      "decision_id": "g749-d8571de0:749:30337",
+      "frame_sha256": "50e53c85d596beefd73cdae83969f2ac4b975ec621c85d0716007c51c910441a",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        }
+      ],
+      "reason_decisions": [
+        "battle_melee"
+      ]
+    },
+    {
+      "at": 1791934595.1542327,
+      "decision_id": "g749-d8571de0:749:30338",
+      "frame_sha256": "cb0a7418abccf914b67219c5988f30274a767b931c5f79d8d2ec6dda71dab8ed",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        }
+      ],
+      "reason_decisions": [
+        "battle_melee"
+      ]
+    },
+    {
+      "at": 1791934596.3533328,
+      "decision_id": "g749-d8571de0:749:30339",
+      "frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        },
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 50,
+          "type": "pad"
+        },
+        {
+          "ms": 50,
+          "type": "wait"
+        }
+      ],
+      "reason_decisions": [
+        "battle_melee"
+      ]
+    },
+    {
+      "at": 1791934597.4688332,
+      "decision_id": "g749-d8571de0:749:30340",
+      "frame_sha256": "a68c96fa452e8b8542a036557064f3e8c2aef6b4b9440e354ffe7c52a100e47d",
+      "bot_version": "hanjuku-chart-v220-finishing-resources",
+      "screen_kind": "battle",
+      "planned_actions": [],
+      "reason_decisions": []
+    }
+  ],
+  "range_input_receipts": [
+    {
+      "at": 1791934580.0267065,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "b"
+      ],
+      "decision_frame_sha256": "9f817b9b0df0effedf968fc590d2a62032efe2b6608b6a5b11f5e7c3979de662",
+      "decision_id": "g749-d8571de0:749:30322",
+      "event": "input_sent",
+      "frame_sha256": "9f817b9b0df0effedf968fc590d2a62032efe2b6608b6a5b11f5e7c3979de662",
+      "hold_ms": 100,
+      "type": "pad"
+    },
+    {
+      "at": 1791934582.4392295,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "b"
+      ],
+      "decision_frame_sha256": "f41a443428a874143f85c20b021e5e20f96941f6fabd0bc0593aec2a977a947f",
+      "decision_id": "g749-d8571de0:749:30325",
+      "event": "input_sent",
+      "frame_sha256": "f41a443428a874143f85c20b021e5e20f96941f6fabd0bc0593aec2a977a947f",
+      "hold_ms": 100,
+      "type": "pad"
+    },
+    {
+      "at": 1791934585.074542,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "b"
+      ],
+      "decision_frame_sha256": "30143da25226d2d66ce2686c905a8466c51b3939eca7e40d8a3eb4432d725bb3",
+      "decision_id": "g749-d8571de0:749:30328",
+      "event": "input_sent",
+      "frame_sha256": "30143da25226d2d66ce2686c905a8466c51b3939eca7e40d8a3eb4432d725bb3",
+      "hold_ms": 100,
+      "type": "pad"
+    },
+    {
+      "at": 1791934588.376669,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "bd41e3524f59c4e8d27d5a85a28cc65d44ef9c9ee25c675bf2c611079295afcd",
+      "decision_id": "g749-d8571de0:749:30332",
+      "event": "input_sent",
+      "frame_sha256": "0df6bd24d1442a3782a4b8cc35f88c53a3aedbb582fb3d278583df720a46edd7",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934588.5034642,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "bd41e3524f59c4e8d27d5a85a28cc65d44ef9c9ee25c675bf2c611079295afcd",
+      "decision_id": "g749-d8571de0:749:30332",
+      "event": "input_sent",
+      "frame_sha256": "0df6bd24d1442a3782a4b8cc35f88c53a3aedbb582fb3d278583df720a46edd7",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934588.6519773,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "bd41e3524f59c4e8d27d5a85a28cc65d44ef9c9ee25c675bf2c611079295afcd",
+      "decision_id": "g749-d8571de0:749:30332",
+      "event": "input_sent",
+      "frame_sha256": "0df6bd24d1442a3782a4b8cc35f88c53a3aedbb582fb3d278583df720a46edd7",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934588.816177,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "bd41e3524f59c4e8d27d5a85a28cc65d44ef9c9ee25c675bf2c611079295afcd",
+      "decision_id": "g749-d8571de0:749:30332",
+      "event": "input_sent",
+      "frame_sha256": "0df6bd24d1442a3782a4b8cc35f88c53a3aedbb582fb3d278583df720a46edd7",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934589.5745792,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "c082f562d50dc5cca471eaf057fd5cb0f42f6167b74bca28809b1df88bec8d0e",
+      "decision_id": "g749-d8571de0:749:30333",
+      "event": "input_sent",
+      "frame_sha256": "c082f562d50dc5cca471eaf057fd5cb0f42f6167b74bca28809b1df88bec8d0e",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934589.7080443,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "c082f562d50dc5cca471eaf057fd5cb0f42f6167b74bca28809b1df88bec8d0e",
+      "decision_id": "g749-d8571de0:749:30333",
+      "event": "input_sent",
+      "frame_sha256": "c082f562d50dc5cca471eaf057fd5cb0f42f6167b74bca28809b1df88bec8d0e",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934589.8361204,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "c082f562d50dc5cca471eaf057fd5cb0f42f6167b74bca28809b1df88bec8d0e",
+      "decision_id": "g749-d8571de0:749:30333",
+      "event": "input_sent",
+      "frame_sha256": "c082f562d50dc5cca471eaf057fd5cb0f42f6167b74bca28809b1df88bec8d0e",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934590.1597703,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "c082f562d50dc5cca471eaf057fd5cb0f42f6167b74bca28809b1df88bec8d0e",
+      "decision_id": "g749-d8571de0:749:30333",
+      "event": "input_sent",
+      "frame_sha256": "c082f562d50dc5cca471eaf057fd5cb0f42f6167b74bca28809b1df88bec8d0e",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934590.886493,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "01d7c75a5f8511dae8a6d32925fb2e978d48e326255a77d9377e7e72a94f3c83",
+      "decision_id": "g749-d8571de0:749:30334",
+      "event": "input_sent",
+      "frame_sha256": "5d45f2d39cfef52bcac93a3c0b1c1eb686b3de54f4d8b065299e8575da239920",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934591.0079808,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "01d7c75a5f8511dae8a6d32925fb2e978d48e326255a77d9377e7e72a94f3c83",
+      "decision_id": "g749-d8571de0:749:30334",
+      "event": "input_sent",
+      "frame_sha256": "5d45f2d39cfef52bcac93a3c0b1c1eb686b3de54f4d8b065299e8575da239920",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934591.1421442,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "01d7c75a5f8511dae8a6d32925fb2e978d48e326255a77d9377e7e72a94f3c83",
+      "decision_id": "g749-d8571de0:749:30334",
+      "event": "input_sent",
+      "frame_sha256": "5d45f2d39cfef52bcac93a3c0b1c1eb686b3de54f4d8b065299e8575da239920",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934591.2703545,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "01d7c75a5f8511dae8a6d32925fb2e978d48e326255a77d9377e7e72a94f3c83",
+      "decision_id": "g749-d8571de0:749:30334",
+      "event": "input_sent",
+      "frame_sha256": "5d45f2d39cfef52bcac93a3c0b1c1eb686b3de54f4d8b065299e8575da239920",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934591.944088,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "291a3987684c9ed1b6ebf1803816c3c1a586fbcd86029a62495effdc0d121c74",
+      "decision_id": "g749-d8571de0:749:30335",
+      "event": "input_sent",
+      "frame_sha256": "291a3987684c9ed1b6ebf1803816c3c1a586fbcd86029a62495effdc0d121c74",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934592.0620778,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "291a3987684c9ed1b6ebf1803816c3c1a586fbcd86029a62495effdc0d121c74",
+      "decision_id": "g749-d8571de0:749:30335",
+      "event": "input_sent",
+      "frame_sha256": "291a3987684c9ed1b6ebf1803816c3c1a586fbcd86029a62495effdc0d121c74",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934592.1811893,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "291a3987684c9ed1b6ebf1803816c3c1a586fbcd86029a62495effdc0d121c74",
+      "decision_id": "g749-d8571de0:749:30335",
+      "event": "input_sent",
+      "frame_sha256": "291a3987684c9ed1b6ebf1803816c3c1a586fbcd86029a62495effdc0d121c74",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934592.296578,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "291a3987684c9ed1b6ebf1803816c3c1a586fbcd86029a62495effdc0d121c74",
+      "decision_id": "g749-d8571de0:749:30335",
+      "event": "input_sent",
+      "frame_sha256": "291a3987684c9ed1b6ebf1803816c3c1a586fbcd86029a62495effdc0d121c74",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934593.1389744,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "dc83e71b8552902ebc474ae298a6e8554d44a6d8fa44d9baa48da0def7c90c2b",
+      "decision_id": "g749-d8571de0:749:30336",
+      "event": "input_sent",
+      "frame_sha256": "d1dee05388c693740652c44d51445c1e246d95f0c794948b7bc9a064c14d5880",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934593.2906432,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "dc83e71b8552902ebc474ae298a6e8554d44a6d8fa44d9baa48da0def7c90c2b",
+      "decision_id": "g749-d8571de0:749:30336",
+      "event": "input_sent",
+      "frame_sha256": "d1dee05388c693740652c44d51445c1e246d95f0c794948b7bc9a064c14d5880",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934593.4188101,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "dc83e71b8552902ebc474ae298a6e8554d44a6d8fa44d9baa48da0def7c90c2b",
+      "decision_id": "g749-d8571de0:749:30336",
+      "event": "input_sent",
+      "frame_sha256": "d1dee05388c693740652c44d51445c1e246d95f0c794948b7bc9a064c14d5880",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934593.5486963,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "dc83e71b8552902ebc474ae298a6e8554d44a6d8fa44d9baa48da0def7c90c2b",
+      "decision_id": "g749-d8571de0:749:30336",
+      "event": "input_sent",
+      "frame_sha256": "d1dee05388c693740652c44d51445c1e246d95f0c794948b7bc9a064c14d5880",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934594.2342381,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "50e53c85d596beefd73cdae83969f2ac4b975ec621c85d0716007c51c910441a",
+      "decision_id": "g749-d8571de0:749:30337",
+      "event": "input_sent",
+      "frame_sha256": "50e53c85d596beefd73cdae83969f2ac4b975ec621c85d0716007c51c910441a",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934594.3542745,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "50e53c85d596beefd73cdae83969f2ac4b975ec621c85d0716007c51c910441a",
+      "decision_id": "g749-d8571de0:749:30337",
+      "event": "input_sent",
+      "frame_sha256": "50e53c85d596beefd73cdae83969f2ac4b975ec621c85d0716007c51c910441a",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934594.4750056,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "50e53c85d596beefd73cdae83969f2ac4b975ec621c85d0716007c51c910441a",
+      "decision_id": "g749-d8571de0:749:30337",
+      "event": "input_sent",
+      "frame_sha256": "50e53c85d596beefd73cdae83969f2ac4b975ec621c85d0716007c51c910441a",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934594.6071062,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "50e53c85d596beefd73cdae83969f2ac4b975ec621c85d0716007c51c910441a",
+      "decision_id": "g749-d8571de0:749:30337",
+      "event": "input_sent",
+      "frame_sha256": "50e53c85d596beefd73cdae83969f2ac4b975ec621c85d0716007c51c910441a",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934595.4412265,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "cb0a7418abccf914b67219c5988f30274a767b931c5f79d8d2ec6dda71dab8ed",
+      "decision_id": "g749-d8571de0:749:30338",
+      "event": "input_sent",
+      "frame_sha256": "17380e1de33be9f2585ea6fe9d77febf9413eba760d6ed82e622d76409d0d6ac",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934595.5628362,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "cb0a7418abccf914b67219c5988f30274a767b931c5f79d8d2ec6dda71dab8ed",
+      "decision_id": "g749-d8571de0:749:30338",
+      "event": "input_sent",
+      "frame_sha256": "17380e1de33be9f2585ea6fe9d77febf9413eba760d6ed82e622d76409d0d6ac",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934595.6946192,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "cb0a7418abccf914b67219c5988f30274a767b931c5f79d8d2ec6dda71dab8ed",
+      "decision_id": "g749-d8571de0:749:30338",
+      "event": "input_sent",
+      "frame_sha256": "17380e1de33be9f2585ea6fe9d77febf9413eba760d6ed82e622d76409d0d6ac",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934595.8156042,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "cb0a7418abccf914b67219c5988f30274a767b931c5f79d8d2ec6dda71dab8ed",
+      "decision_id": "g749-d8571de0:749:30338",
+      "event": "input_sent",
+      "frame_sha256": "17380e1de33be9f2585ea6fe9d77febf9413eba760d6ed82e622d76409d0d6ac",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934596.4685626,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+      "decision_id": "g749-d8571de0:749:30339",
+      "event": "input_sent",
+      "frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934596.5905533,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+      "decision_id": "g749-d8571de0:749:30339",
+      "event": "input_sent",
+      "frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934596.7087011,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+      "decision_id": "g749-d8571de0:749:30339",
+      "event": "input_sent",
+      "frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+      "hold_ms": 50,
+      "type": "pad"
+    },
+    {
+      "at": 1791934596.832085,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+      "decision_id": "g749-d8571de0:749:30339",
+      "event": "input_sent",
+      "frame_sha256": "303ac78ab8c83f9ec28292252ac452027635077663861548d8ea8d598460a0b1",
+      "hold_ms": 50,
+      "type": "pad"
+    }
+  ],
+  "limits": "Original ended-run screens and sender receipts; no proof that a B was accepted or an egg remained usable. New behavior is counterfactual."
+}

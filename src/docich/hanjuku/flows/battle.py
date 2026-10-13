@@ -569,9 +569,17 @@ def battle_step(screen: Screen, mem):
         rescue = _survival_state(mem, cur)
         if (_critical_survival_needed(cur) and not rescue.get('critical_open_recheck')
                 and not rescue.get('egg_attempted')
-                and (rescue.get('exhausted') or rescue['opens'] >= 12)):
+                and (rescue.get('exhausted') or rescue['opens'] >= 12
+                     or rescue.get('pending_opens', 0) >= 3)):
+            # g749 hero/Athena: three unacknowledged B requests exhausted
+            # pending_opens at opens=3. That is also a failed opening budget,
+            # so it must allow the existing single critical live inspection.
             rescue.update(critical_open_recheck=True, exhausted=False,
-                          pending_opens=1, menu_ticks=0, opens=rescue['opens'] + 1)
+                          pending_opens=3, menu_ticks=0, opens=rescue['opens'] + 1)
+            _record(mem, 'battle_survival_critical_recheck', **_battle_labels(cur),
+                    observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
+                                     'open_attempt': rescue['opens']},
+                    reason='救済メニューの未確認表示予算を使い切った後、危険HPで一度だけ再確認')
             return _human_menu_open(cur, 'survival')  # one final live inspection
         conserving = (rescue.get('conserving_melee') is True
                       and _hold_melee_egg(mem, cur, set(rescue.get('conserved_labels') or ())))

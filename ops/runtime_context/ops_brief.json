@@ -1,11 +1,11 @@
 {
-  "output_sha256": "853d00e4069dce5e264511422f6fc7e8ac5a1aa7625c62f529686d30d7215bf5",
+  "output_sha256": "997b585e85baeeb643904155c2629d29cdf22baaed657e1da10d2052346d5683",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "c2128eea7e93acd764227e0c45f28ea45a7d5e2ccebe1ca1f9245bac682838c6",
+  "source_sha256": "b2b303f9c4774c915f8d3de1cb50535f0e8b909f6a2704e4b9ba964ff59a1b1c",
   "topics": [
+    "半熟英雄の帰還後に本人の現在在城状態を確認する",
     "半熟英雄のHP比退却を撤回し実携行の致死札を優先",
-    "半熟英雄の卵救済反映と未到着給与のユーザー訂正",
-    "半熟英雄の未使用卵を退却より先に確認する戦闘修正"
+    "半熟英雄の卵救済反映と未到着給与のユーザー訂正"
   ]
 }

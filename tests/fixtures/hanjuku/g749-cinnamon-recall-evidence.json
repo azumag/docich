@@ -1,0 +1,118 @@
+{
+  "fixture": "g749-cinnamon-recall-picker-29564.png",
+  "decision": {
+    "at": 1791933656.5654979,
+    "bot_version": "hanjuku-chart-v220-finishing-resources",
+    "chart_step": null,
+    "decision_id": "g749-d8571de0:749:29564",
+    "deviation_reason": null,
+    "dispatch_status": "planned_not_yet_sent",
+    "event": "action_plan",
+    "expected_metric": null,
+    "frame_sha256": "950f466a2300b453b2f3812613efaaf0587fc99664557e4ca52c35e42acb4ea1",
+    "game": "hanjuku-hero",
+    "generation": 749,
+    "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+    "menu_navigation_feedback": null,
+    "observation_interval_ms": 1500,
+    "planned_actions": [
+      {
+        "buttons": [
+          "a"
+        ],
+        "hold_ms": 100,
+        "type": "pad"
+      },
+      {
+        "ms": 700,
+        "type": "wait"
+      },
+      {
+        "buttons": [
+          "a"
+        ],
+        "hold_ms": 100,
+        "type": "pad"
+      }
+    ],
+    "reason_decisions": [
+      "world_map_owners",
+      "camp_recall_destination",
+      "camp_recall_requested"
+    ],
+    "runtime_id": "g749-d8571de0",
+    "schema": 1,
+    "screen_kind": "world_map",
+    "snapshot": "decision-044.png",
+    "strategy_variant": "chart_adjusted"
+  },
+  "input_receipts": [
+    {
+      "at": 1791933656.81641,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "950f466a2300b453b2f3812613efaaf0587fc99664557e4ca52c35e42acb4ea1",
+      "decision_id": "g749-d8571de0:749:29564",
+      "event": "input_sent",
+      "frame_sha256": "950f466a2300b453b2f3812613efaaf0587fc99664557e4ca52c35e42acb4ea1",
+      "hold_ms": 100,
+      "type": "pad"
+    },
+    {
+      "at": 1791933657.9519167,
+      "bot_version": "hanjuku-chart-v205-unlocated-successor",
+      "buttons": [
+        "a"
+      ],
+      "decision_frame_sha256": "950f466a2300b453b2f3812613efaaf0587fc99664557e4ca52c35e42acb4ea1",
+      "decision_id": "g749-d8571de0:749:29564",
+      "event": "input_sent",
+      "frame_sha256": "aa339b97cef67e6a08031d1343acdd3004072da3d44991f4300c3a89fcedaf55",
+      "hold_ms": 100,
+      "type": "pad"
+    }
+  ],
+  "rgb_sha256": "950f466a2300b453b2f3812613efaaf0587fc99664557e4ca52c35e42acb4ea1",
+  "capture_binding": "original_decision_snapshot",
+  "dispatch_verification": {
+    "identity": {
+      "game": "hanjuku-hero",
+      "generation": 749,
+      "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+      "runtime_id": "g749-d8571de0"
+    },
+    "chapter": 2,
+    "general": "シナモン",
+    "input_sent": true,
+    "status": "arrival_unconfirmed",
+    "requested_tick": 29564,
+    "request_trace": {
+      "decision_id": "g749-d8571de0:749:29564",
+      "frame_sha256": "950f466a2300b453b2f3812613efaaf0587fc99664557e4ca52c35e42acb4ea1",
+      "game": "hanjuku-hero",
+      "generation": 749,
+      "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+      "planned_at": 1791933656.5654979,
+      "runtime_id": "g749-d8571de0"
+    }
+  },
+  "named_status": {
+    "camp_frame_sha256": "2c59a0e4220a468684b2f195d7c58de1ad9f5ca45a392bdc458b79c26c7b15eb",
+    "camp_observed_tick": 29556,
+    "chapter": 2,
+    "episode": 31,
+    "general": "シナモン",
+    "hp": 16,
+    "identity": {
+      "game": "hanjuku-hero",
+      "generation": 749,
+      "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+      "runtime_id": "g749-d8571de0"
+    },
+    "schema": 1,
+    "tick": 29559
+  },
+  "limit": "R picker and two actual A receipts; name comes from structured status receipt; arrival remains unconfirmed."
+}
