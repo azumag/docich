@@ -892,6 +892,32 @@ def _enemy_general_command(screen):
     return ally, enemy
 
 
+def _partial_enemy_general_command(screen):
+    """Recognize the left command transition without inventing our missing HP.
+
+    g749/5561 hides our monster panel while the blue enemy general's panel
+    and left fierce-attack row are still visible. This is only a reason to
+    withhold input, not evidence of our current monster or its health.
+    """
+    if screen.kind != 'egg_battle_menu' or len(screen.egg_rows) != 1:
+        return None
+    enemy = screen.egg_rows[0]
+    full = general_max_hp(enemy.name)
+    if (enemy.side != 'enemy' or type(enemy.hp) is not int
+            or type(full) is not int or not 0 < enemy.hp <= full):
+        return None
+    rows = screen.menu_rows
+    labels = [r.known for r in rows]
+    commands = ['こうげき', 'もうこうげき', 'たまごをつかう']
+    if not labels or not any(labels == commands[i:j]
+                             for i in range(3) for j in range(i + 1, 4)):
+        return None
+    if (any(r.spans() != [(40, r.known)] or not 144 <= r.y <= 216 for r in rows)
+            or any(b.y - a.y != 16 for a, b in zip(rows, rows[1:]))):
+        return None
+    return enemy
+
+
 def egg_battle_step(screen: Screen, mem):
     """Summoned-monster battle: a turn menu that waits for a command.
 
@@ -904,7 +930,29 @@ def egg_battle_step(screen: Screen, mem):
     if screen.kind != 'egg_battle_menu':
         mem.pop('egg_menu_stage', None)
         mem.pop('enemy_general_menu', None)
+        mem.pop('enemy_general_menu_pending', None)
         return [pad('a')]
+    partial_enemy = _partial_enemy_general_command(screen)
+    if partial_enemy:
+        for key in ('egg_battle', 'egg_action', 'egg_key', 'egg_needed',
+                    'egg_menu_stage', 'egg_battle_row_dead', 'enemy_general_menu'):
+            mem.pop(key, None)
+        scope = [partial_enemy.name, partial_enemy.hp]
+        previous = mem.get('enemy_general_menu_pending')
+        count = (previous.get('observations') if isinstance(previous, dict)
+                 and previous.get('scope') == scope else 0)
+        count = count if type(count) is int and 0 <= count <= 30 else 30
+        count = min(count + 1, 31)
+        mem['enemy_general_menu_pending'] = {'scope': scope, 'observations': count}
+        if count in (1, 31) and previous != mem['enemy_general_menu_pending']:
+            _record(mem, 'enemy_general_menu_pending',
+                    deviation_reason='enemy_command_unconfirmed' if count == 31 else None,
+                    observed_metric={'enemy': partial_enemy.name,
+                                     'enemy_hp': partial_enemy.hp,
+                                     'observations': count, 'ally_panel_unread': True},
+                    reason='敵将軍の実HP欄と左コマンドの途中表示。味方HPを補完せず入力を保留する')
+        return []
+    mem.pop('enemy_general_menu_pending', None)
     enemy_command = _enemy_general_command(screen)
     if enemy_command:
         ally, enemy = enemy_command
