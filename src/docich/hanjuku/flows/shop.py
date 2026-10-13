@@ -135,6 +135,8 @@ def quantity_step(screen: Screen, mem, soldiers=False):
         _limit_soldier_refill(mem, shop, screen.header)
         state = mem.get('army_count_check')
         scope = _soldier_count_scope(mem, screen.header)
+        if mem.get('_run_identity') is not None and scope is None:
+            return []  # a faded month/header cannot authorize a runtime purchase
         if (scope is not None and not _soldier_count_current(mem, screen.header)
                 and not shop.get('soldier_receipt')
                 and (not isinstance(state, dict) or state.get('scope') != scope)):

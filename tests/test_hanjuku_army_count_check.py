@@ -244,3 +244,10 @@ def test_finished_recruitment_receipt_is_kept_while_remaining_cash_refills_zero_
     assert shop['soldiers']==50 and shop['soldiers_done'] is False
     assert shop['recruit']=='done' and shop['recruit_receipt']=={'payment_verified':True,'cost':50}
     assert not shop.get('soldier_receipt')
+
+
+def test_unread_header_cannot_confirm_a_runtime_editor_even_with_old_digits():
+    mem=memory();mem['shop'].update(soldiers=24,soldiers_done=False)
+    q=quantity();q.header=None
+    assert p.quantity_step(q,mem,soldiers=True)==[]
+    assert not mem['shop'].get('soldier_receipt')
