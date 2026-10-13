@@ -1,6 +1,9 @@
+"""Hanjuku fixed-recovery query contracts; synthetic, no production access."""
 import json
 import os
 import subprocess
+import tempfile
+import unittest
 from pathlib import Path
 
 
@@ -11,6 +14,11 @@ WORKFLOW = ROOT / ".github/workflows/hanjuku-recover-query.yml"
 WORKFLOW_REF = (
     "azumag/docich/.github/workflows/hanjuku-recover-query.yml@refs/heads/main"
 )
+
+RESERVED_RETRO = {
+    "status": "recovery_required",
+    "pending": {"corner": "hanjuku-hero", "request_id": "req-synthetic"},
+}
 
 
 def auth_env(**overrides):
@@ -38,38 +46,7 @@ def auth_env(**overrides):
     return env
 
 
-def test_recovery_query_authorizes_only_exact_owner_command():
-    result = subprocess.run(
-        ["python3", str(AUTH)], env=auth_env(), text=True, capture_output=True
-    )
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {
-        "operation": "recover-failed",
-        "target": "production",
-        "ref": "main",
-    }
-    rejected = (
-        {"COMMENT_BODY": "/hanjuku-recover production "},
-        {"COMMENT_BODY": "/hanjuku-start production"},
-        {"COMMENT_AUTHOR_ID": "42"},
-        {"GITHUB_ACTOR_ID": "42"},
-        {"GITHUB_TRIGGERING_ACTOR": "other"},
-        {"GITHUB_REF_PROTECTED": "false"},
-        {"GITHUB_SHA": "not-a-sha"},
-        {"ISSUE_NUMBER": "1681"},
-        {"GITHUB_WORKFLOW_REF": "azumag/docich/.github/workflows/other.yml@refs/heads/main"},
-    )
-    for overrides in rejected:
-        denied = subprocess.run(
-            ["python3", str(AUTH)],
-            env=auth_env(**overrides),
-            text=True,
-            capture_output=True,
-        )
-        assert denied.returncode != 0, overrides
-
-
-def _fake_recovery_tree(tmp_path, retro_status="succeeded"):
+def _fake_recovery_tree(tmp_path, retro_status="succeeded", reservation=None):
     root = tmp_path / "docich"
     (root / "bin").mkdir(parents=True)
     (root / "config").mkdir()
@@ -81,8 +58,15 @@ def _fake_recovery_tree(tmp_path, retro_status="succeeded"):
 import json, os, sys
 with open(os.environ["CALL_LOG"], "a", encoding="utf-8") as out:
     out.write(json.dumps(sys.argv[1:]) + "\\n")
-if sys.argv[-2:] == ["retro-corner", "recover-failed"]:
+if sys.argv[-2:] == ["corner-rotation", "status"]:
+    # The reviewed recovery path only commits a proven, single reservation.
+    print(os.environ["RESERVATION"])
+    raise SystemExit(0)
+if sys.argv[-2:] in (["retro-corner", "recover-failed"],
+                     ["soren91-corner", "recover-failed"]):
     print(json.dumps({"status": os.environ["RETRO_STATUS"]}))
+    raise SystemExit(0)
+if sys.argv[-2:] == ["nethack-corner", "recover-failed-rotation"]:
     raise SystemExit(0)
 if sys.argv[-2:] == ["corner-rotation", "recover"]:
     raise SystemExit(0)
@@ -118,76 +102,169 @@ with open(os.environ["CALL_LOG"], "a", encoding="utf-8") as out:
         "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
         "CALL_LOG": str(log),
         "RETRO_STATUS": retro_status,
+        "RESERVATION": json.dumps(
+            RESERVED_RETRO if reservation is None else reservation
+        ),
     }
     return env, log
 
 
-def test_recovery_script_terminalizes_adapter_before_rotation_and_restart(tmp_path):
-    env, log = _fake_recovery_tree(tmp_path)
-    result = subprocess.run(
-        ["bash", str(SCRIPT)], env=env, text=True, capture_output=True
-    )
-    assert result.returncode == 0, result.stderr
-    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-    assert calls[0] == ["systemctl", "--user", "show", "docich-corner-rotation.service"]
-    assert calls[1][-2:] == ["retro-corner", "recover-failed"]
-    assert calls[2][-2:] == ["corner-rotation", "recover"]
-    assert calls[3] == [
-        "systemctl", "--user", "--no-block", "restart",
-        "docich-corner-rotation.service",
-    ]
+def recorded(log):
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
 
 
-def test_recovery_script_refuses_nonterminal_adapter_without_rotation_restart(tmp_path):
-    env, log = _fake_recovery_tree(tmp_path, retro_status="queued")
-    result = subprocess.run(
-        ["bash", str(SCRIPT)], env=env, text=True, capture_output=True
-    )
-    assert result.returncode == 70
-    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-    assert calls[1][-2:] == ["retro-corner", "recover-failed"]
-    assert not any(call[-2:] == ["corner-rotation", "recover"] for call in calls)
-    assert not any("restart" in call for call in calls)
+def launcher_calls(calls):
+    """Launcher invocations in order, reduced to their fixed subcommand pair."""
+    return [call[-2:] for call in calls if call[:1] == ["--config"]]
 
 
-def test_recovery_query_workflow_is_fixed_and_withholds_vm_output():
-    text = WORKFLOW.read_text(encoding="utf-8")
-    required = (
-        "github.event.issue.number == 1657",
-        "github.event.comment.body == '/hanjuku-recover production'",
-        "github.actor_id == 9018513",
-        "github.event.comment.user.id == 9018513",
-        "github.ref_protected",
-        "Require production to equal event SHA",
-        "control/ops/vm_actions/authorize_hanjuku_recover_query.py",
-        "control/ops/vm_actions/recover_corner_rotation.sh",
-        "exec docich production $SHA",
-        'data.get("output") == "withheld"',
-        "group: retro-corner-operator-${{ github.repository }}",
-    )
-    for marker in required:
-        assert marker in text
-    forbidden = (
-        "inputs.command",
-        "pull_request_target",
-        "event.issue.body",
-        "workflow_dispatch",
-        "cat $work/recover.stdout",
-        "cat $work/recover.stderr",
-    )
-    for marker in forbidden:
-        assert marker not in text
+class RecoveryQueryAuthorizationTests(unittest.TestCase):
+    def test_recovery_query_authorizes_only_exact_owner_command(self):
+        result = subprocess.run(
+            ["python3", str(AUTH)], env=auth_env(), text=True, capture_output=True
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {
+            "operation": "recover-failed",
+            "target": "production",
+            "ref": "main",
+        })
+        rejected = (
+            {"COMMENT_BODY": "/hanjuku-recover production "},
+            {"COMMENT_BODY": "/hanjuku-start production"},
+            {"COMMENT_AUTHOR_ID": "42"},
+            {"GITHUB_ACTOR_ID": "42"},
+            {"GITHUB_TRIGGERING_ACTOR": "other"},
+            {"GITHUB_REF_PROTECTED": "false"},
+            {"GITHUB_SHA": "not-a-sha"},
+            {"ISSUE_NUMBER": "1681"},
+            {"GITHUB_WORKFLOW_REF": "azumag/docich/.github/workflows/other.yml@refs/heads/main"},
+        )
+        for overrides in rejected:
+            denied = subprocess.run(
+                ["python3", str(AUTH)],
+                env=auth_env(**overrides),
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(denied.returncode, 0, overrides)
 
 
-def test_recovery_script_noop_is_idempotent_second_stage_retry(tmp_path):
-    env, log = _fake_recovery_tree(tmp_path, retro_status="noop")
-    result = subprocess.run(
-        ["bash", str(SCRIPT)], env=env, text=True, capture_output=True
-    )
-    assert result.returncode == 0, result.stderr
-    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-    assert calls[1][-2:] == ["retro-corner", "recover-failed"]
-    assert calls[2][-2:] == ["corner-rotation", "recover"]
-    assert calls[3][-3:] == [
-        "--no-block", "restart", "docich-corner-rotation.service",
-    ]
+class RecoveryScriptTests(unittest.TestCase):
+    def run_script(self, **kwargs):
+        with tempfile.TemporaryDirectory() as directory:
+            env, log = _fake_recovery_tree(Path(directory), **kwargs)
+            result = subprocess.run(
+                ["bash", str(SCRIPT)], env=env, text=True, capture_output=True
+            )
+            return result, recorded(log)
+
+    def test_terminalizes_adapter_before_rotation_and_restart(self):
+        result, calls = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            calls[0], ["systemctl", "--user", "show", "docich-corner-rotation.service"]
+        )
+        # The reservation is proven before any adapter is settled.
+        self.assertEqual(launcher_calls(calls), [
+            ["corner-rotation", "status"],
+            ["retro-corner", "recover-failed"],
+            ["corner-rotation", "recover"],
+        ])
+        self.assertEqual(calls[-1], [
+            "systemctl", "--user", "--no-block", "restart",
+            "docich-corner-rotation.service",
+        ])
+
+    def test_refuses_nonterminal_adapter_without_rotation_restart(self):
+        result, calls = self.run_script(retro_status="queued")
+        self.assertEqual(result.returncode, 70, result.stderr)
+        self.assertEqual(launcher_calls(calls), [
+            ["corner-rotation", "status"],
+            ["retro-corner", "recover-failed"],
+        ])
+        self.assertFalse(any("restart" in call for call in calls))
+
+    def test_noop_is_idempotent_second_stage_retry(self):
+        result, calls = self.run_script(retro_status="noop")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(launcher_calls(calls), [
+            ["corner-rotation", "status"],
+            ["retro-corner", "recover-failed"],
+            ["corner-rotation", "recover"],
+        ])
+        self.assertEqual(calls[-1][-3:], [
+            "--no-block", "restart", "docich-corner-rotation.service",
+        ])
+
+    def test_meriken_reservation_uses_the_soren91_corner_cli(self):
+        result, calls = self.run_script(reservation={
+            "status": "recovery_required",
+            "pending": {"corner": "meriken", "request_id": "req-meriken"},
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(launcher_calls(calls), [
+            ["corner-rotation", "status"],
+            ["soren91-corner", "recover-failed"],
+            ["corner-rotation", "recover"],
+        ])
+
+    def test_nethack_reservation_uses_the_dedicated_manager(self):
+        result, calls = self.run_script(reservation={
+            "status": "recovery_required",
+            "pending": {"corner": "nethack", "request_id": "req-nethack"},
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(launcher_calls(calls), [
+            ["corner-rotation", "status"],
+            ["nethack-corner", "recover-failed-rotation"],
+            ["corner-rotation", "recover"],
+        ])
+
+    def test_absent_reservation_is_refused_before_any_restart(self):
+        result, calls = self.run_script(reservation={"status": "ready"})
+        self.assertEqual(result.returncode, 26, result.stderr)
+        self.assertIn("failed rotation owner is unproven", result.stderr)
+        self.assertEqual(launcher_calls(calls), [["corner-rotation", "status"]])
+        self.assertFalse(any("restart" in call for call in calls))
+
+    def test_ambiguous_reservation_is_refused_before_any_restart(self):
+        result, calls = self.run_script(reservation={
+            "status": "recovery_required",
+            "pending": {"corner": "nethack", "request_id": "req-nethack"},
+            "manual_pending": {"corner": "hanjuku-hero", "request_id": "req-manual"},
+        })
+        self.assertEqual(result.returncode, 26, result.stderr)
+        self.assertIn("failed rotation owner is unproven", result.stderr)
+        self.assertEqual(launcher_calls(calls), [["corner-rotation", "status"]])
+        self.assertFalse(any("restart" in call for call in calls))
+
+
+class RecoveryWorkflowTests(unittest.TestCase):
+    def test_recovery_query_workflow_is_fixed_and_withholds_vm_output(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        required = (
+            "github.event.issue.number == 1657",
+            "github.event.comment.body == '/hanjuku-recover production'",
+            "github.actor_id == 9018513",
+            "github.event.comment.user.id == 9018513",
+            "github.ref_protected",
+            "Require production to equal event SHA",
+            "control/ops/vm_actions/authorize_hanjuku_recover_query.py",
+            "control/ops/vm_actions/recover_corner_rotation.sh",
+            "exec docich production $SHA",
+            'data.get("output") == "withheld"',
+            "group: retro-corner-operator-${{ github.repository }}",
+        )
+        for marker in required:
+            self.assertIn(marker, text)
+        forbidden = (
+            "inputs.command",
+            "pull_request_target",
+            "event.issue.body",
+            "workflow_dispatch",
+            "cat $work/recover.stdout",
+            "cat $work/recover.stderr",
+        )
+        for marker in forbidden:
+            self.assertNotIn(marker, text)
