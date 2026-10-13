@@ -922,6 +922,24 @@ def _survival_state(mem, cur):
     return cur['survival']
 
 
+def _wounded_summoner(mem, owner, ally, enemy):
+    """A living owned summon still shields its measured wounded general."""
+    battle = mem.get('battle') or {}
+    reading = battle.get('summon_general_reading')
+    if (owner != 'ally' or ally is None or enemy is None
+            or ally.name not in reference.MONSTER_SKILLS or enemy.name not in reference.MONSTER_SKILLS
+            or any(type(hp) is not int or hp <= 0 for hp in (ally.hp, enemy.hp))
+            or not isinstance(reading, dict)
+            or not reading.get('identity') or reading['identity'] != mem.get('_run_identity')
+            or not battle.get('ally') or not battle.get('enemy')
+            or (reading.get('ally'), reading.get('enemy')) != (battle['ally'], battle['enemy'])
+            or reading.get('hp') != battle.get('ally_hp')):
+        return False
+    hp, full = reading.get('hp'), reading.get('max_hp')
+    return (type(hp) is int and type(full) is int and 0 < hp <= full
+            and (hp <= GENERAL_CRITICAL_RETREAT_HP or hp * 2 <= full))
+
+
 def _critical_survival_needed(cur):
     hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
     return (not cur.get('card_hp_unread') and type(hp) is int
