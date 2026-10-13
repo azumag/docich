@@ -350,6 +350,7 @@ def test_native_fake_hero_checkpoint_restores_with_only_observed_chapter(setup):
     # legitimate SAVE retry (stale mtime under load) is not a failure (#2138).
     assert writes[0]==b'boot state'
     assert set(writes[1:])=={b'serialized core'}
+    assert len(writes)==commands.count('SAVE_STATE')
     assert set(setup.slots_written)=={0,1}
     assert commands.count('LOAD_STATE_SLOT 0')==1
     assert commands.index('FRAMEADVANCE') < commands.index('PAUSE_TOGGLE')
@@ -358,6 +359,34 @@ def test_native_fake_hero_checkpoint_restores_with_only_observed_chapter(setup):
     assert receipt['frame_sha256']==frame.digest()
     assert read_record(setup.spec.runtime_dir/'hanjuku_bot.json')=={
         'policy': {'name': {'done': True}, 'chapter': 2}}
+
+
+def test_fake_hero_stale_core_write_is_retried_without_a_second_load(setup):
+    """A SAVE whose file mtime predates the request cannot prove the roundtrip.
+
+    CI mtime granularity can make a legitimate slot-1 SAVE look older than the
+    request, so production repeats the SAVE instead of trusting it. That retry
+    must still end with exactly one LOAD, a verified receipt naming the observed
+    chapter and an unchanged sealed source (#2099, #2138).
+    """
+    from docich.hanjuku_pixels import read_png
+    frame=read_png(Path(__file__).parent/'fixtures/hanjuku/g700-fake-hero-announcement.png')
+    commands,writes=restore_test(setup,chapter=None,native_frame=frame,
+                                 stale_writes=(2,),seconds=8)
+    assert writes[0]==b'boot state'
+    assert set(writes[1:])=={b'serialized core'}
+    assert len(writes)==commands.count('SAVE_STATE')
+    assert setup.slots_written.count(1)>=3  # the unprovable slot-1 save was repeated
+    assert setup.slots_written.count(0)>=1
+    assert commands.count('LOAD_STATE_SLOT 0')==1
+    assert commands.index('FRAMEADVANCE') < commands.index('PAUSE_TOGGLE')
+    receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
+    assert receipt['status']=='verified' and receipt['chapter']==2
+    assert receipt['frame_sha256']==frame.digest()
+    assert read_record(setup.spec.runtime_dir/'hanjuku_bot.json')=={
+        'policy': {'name': {'done': True}, 'chapter': 2}}
+    assert setup.source.read_bytes()==compressed(state_bytes())
+    resume.require_verified(setup.spec)
 
 
 def test_native_starter_checkpoint_restores_without_inventing_chapter(setup):
