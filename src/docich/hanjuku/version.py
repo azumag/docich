@@ -3,4 +3,4 @@
 Bump it with every behaviour change so production logs show which policy
 produced a decision (the bot is hot-loaded per observation).
 """
-BOT_VERSION = 'hanjuku-chart-v208-control-melee-option'
+BOT_VERSION = 'hanjuku-chart-v209-zero-army-egg-skip'

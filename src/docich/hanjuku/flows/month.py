@@ -338,8 +338,13 @@ def month_step(screen: Screen, mem):
             return extra
         # Too little money, unreadable recovery, or an unverified attempt:
         # preserve the recovery money instead of spending it on more troops.
-        shop['soldiers'] = 0
-        shop['soldiers_done'] = True
+        # A measured empty army is the exception: its refill already holds
+        # the recovery reserve, and zeroing it here while _zero_army_refill
+        # re-armed it every frame looped the month menu (g747 2-4, #2116).
+        if not (_soldier_count_current(mem, screen.header) and mem.get('soldiers_seen') == 0
+                and shop.get('zero_army_refill_recorded')):
+            shop['soldiers'] = 0
+            shop['soldiers_done'] = True
     if (shop and shop.get('recruit_priority')
             and shop.get('recruit') in ('check', 'pending')):
         extra = _month_extra(screen, mem, shop, recruit_only=True)
