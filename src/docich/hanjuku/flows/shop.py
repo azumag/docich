@@ -128,6 +128,11 @@ def _observe_soldier_receipt(screen, mem, directly_seen=None):
 def quantity_step(screen: Screen, mem, soldiers=False):
     shop = mem.get('shop') or {}
     if soldiers:
+        # Keep full wage/egg/repair clamps even while the free inspection is
+        # in charge: its early return must not retain an unsafe saved budget.
+        _reserve_general_repair(mem, shop, (screen.header or {}).get('gold'))
+        _refresh_egg_priority(mem, shop, screen.header)
+        _limit_soldier_refill(mem, shop, screen.header)
         state = mem.get('army_count_check')
         scope = _soldier_count_scope(mem, screen.header)
         if (scope is not None and not _soldier_count_current(mem, screen.header)
@@ -156,9 +161,6 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                         reason='実人数を読み取れないため補充の確定をせず戻る。兵数は未確認のまま保持')
                 return [pad('b')]
             return []
-        _reserve_general_repair(mem, shop, (screen.header or {}).get('gold'))
-        _refresh_egg_priority(mem, shop, screen.header)
-        _limit_soldier_refill(mem, shop, screen.header)
         if _egg_before_soldiers(shop) and not shop.get('soldier_receipt'):
             # This is where the army total first becomes visible. Leave the
             # old quantity plan before sending a purchase confirmation.
