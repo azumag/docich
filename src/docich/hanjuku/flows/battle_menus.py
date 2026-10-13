@@ -859,6 +859,39 @@ def _egg_general_reading(screen, mem, battle):
     return rows[0].hp, full
 
 
+def _enemy_general_command(screen):
+    """A complete left command box belongs to the enemy facing our monster.
+
+    g747 1310/17492 show our red monster and the blue enemy general in the
+    right HP panel. The left box is the general's attack/fierce/egg menu,
+    not a second summon command for our already-present monster.
+    """
+    if screen.kind != 'egg_battle_menu' or len(screen.egg_rows) != 2:
+        return None
+    allies = [r for r in screen.egg_rows if r.side == 'ally']
+    enemies = [r for r in screen.egg_rows if r.side == 'enemy']
+    if len(allies) != 1 or len(enemies) != 1:
+        return None
+    ally, enemy = allies[0], enemies[0]
+    full = general_max_hp(enemy.name)
+    # Exact native spelling at g747/1310; no fuzzy name matching.
+    monster_name = {'てつじん8ごう': 'てつじん８ごう'}.get(ally.name, ally.name)
+    if (monster_name not in _MONSTER_SKILLS or type(ally.hp) is not int or ally.hp <= 0
+            or type(enemy.hp) is not int or type(full) is not int
+            or not 0 < enemy.hp <= full):
+        return None
+    rows = screen.menu_rows
+    labels = [r.known for r in rows]
+    if labels not in (['こうげき', 'もうこうげき'],
+                      ['こうげき', 'もうこうげき', 'たまごをつかう']):
+        return None
+    spans = [r.spans() for r in rows]
+    if (any(len(s) != 1 or s[0][0] != 40 for s in spans)
+            or any(b.y - a.y != 16 for a, b in zip(rows, rows[1:]))):
+        return None
+    return ally, enemy
+
+
 def egg_battle_step(screen: Screen, mem):
     """Summoned-monster battle: a turn menu that waits for a command.
 
@@ -870,7 +903,34 @@ def egg_battle_step(screen: Screen, mem):
     """
     if screen.kind != 'egg_battle_menu':
         mem.pop('egg_menu_stage', None)
+        mem.pop('enemy_general_menu', None)
         return [pad('a')]
+    enemy_command = _enemy_general_command(screen)
+    if enemy_command:
+        ally, enemy = enemy_command
+        # Invalidate our old navigation before returning; no stale down/down/A
+        # sequence, empty-egg recheck or learned own action belongs to this turn.
+        for key in ('egg_battle', 'egg_action', 'egg_key', 'egg_needed',
+                    'egg_menu_stage', 'egg_battle_row_dead'):
+            mem.pop(key, None)
+        scope = [ally.name, ally.hp, enemy.name, enemy.hp]
+        previous = mem.get('enemy_general_menu')
+        count = (previous.get('observations') if isinstance(previous, dict)
+                 and previous.get('scope') == scope else 0)
+        count = count if type(count) is int and 0 <= count <= 30 else 30
+        count = min(count + 1, 31)
+        mem['enemy_general_menu'] = {'scope': scope, 'observations': count}
+        if count in (1, 31) and previous != mem['enemy_general_menu']:
+            _record(mem, 'enemy_general_menu_wait',
+                    deviation_reason='enemy_command_unconfirmed' if count == 31 else None,
+                    observed_metric={'owner': 'enemy', 'ally_monster': ally.name,
+                                     'ally_hp': ally.hp, 'enemy': enemy.name,
+                                     'enemy_hp': enemy.hp, 'observations': count},
+                    reason=('敵将軍の実コマンド表示のため、敵の操作終了を待つ'
+                            if count == 1 else
+                            '敵コマンド表示の再観測上限。味方の卵や攻撃を推測入力せず、既存の画面停滞検出へ委ねる'))
+        return []
+    mem.pop('enemy_general_menu', None)
     # 将軍HPをこの召喚戦のメニュー行から最新化してから、勝てそうかを判定する。
     battle = mem.get('battle') or {}
     if battle:

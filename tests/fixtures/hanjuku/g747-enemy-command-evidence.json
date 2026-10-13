@@ -1,0 +1,494 @@
+{
+  "boundary": "Original v194/v204 observations and old actual inputs; new no-input output is a counterfactual, not natural acceptance. No extra egg consumption or battle outcome established.",
+  "frames": [
+    {
+      "decision": {
+        "at": 1791873848.2189758,
+        "bot_version": "hanjuku-chart-v195-melee-hp-continuation",
+        "chart_step": "I:e95d01:1",
+        "decision_id": "g747-0fd8cf05:747:1310",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "1e0942a1f38f3e8da00d9af31bec5fd30bfbff842a2ee38f9f6b6dc3ccfe4d0e",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "egg_battle",
+          "situation_held",
+          "battle_egg_general_attack"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "egg_battle_menu",
+        "snapshot": "decision-110.png",
+        "strategy_variant": "egg_unavailable"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791873848.2189758,
+          "decision_id": "g747-0fd8cf05:747:1310",
+          "frame_sha256": "1e0942a1f38f3e8da00d9af31bec5fd30bfbff842a2ee38f9f6b6dc3ccfe4d0e",
+          "decision": "egg_battle",
+          "reason": "チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）",
+          "observed_metric": {
+            "egg_need": {
+              "ally": {
+                "bonus": "3",
+                "combat": 8,
+                "egg": "カラフル",
+                "hp": 24,
+                "name": "ココット",
+                "thought": 3
+              },
+              "ally_combat": 8,
+              "ally_force": 8,
+              "ally_hp": 8,
+              "ally_max_hp": null,
+              "ally_melee_score": 64,
+              "ally_soldiers": null,
+              "assessment_method": "hp_pool_times_combat_heuristic",
+              "assessment_scope": "general_matchup",
+              "enemy": {
+                "bonus": "0",
+                "combat": 6,
+                "egg": "－",
+                "hp": 66,
+                "name": "トレビス",
+                "thought": 3
+              },
+              "enemy_combat": 6,
+              "enemy_force": 66,
+              "enemy_hp": 66,
+              "enemy_melee_score": 396,
+              "enemy_soldiers": null,
+              "healthy": false,
+              "ratio_tenths": 7,
+              "rule": "ally_wounded",
+              "soldiers_current": false,
+              "strong_general": true,
+              "strong_rule": "hp"
+            },
+            "experience_key": "egg_summon|1|トレビス|ココット|1-C2|behind|ctx4|side=attack|risk=normal|egg=unknown|ally_soldiers=unknown|enemy_soldiers=5|ally_combat=8|enemy_combat=6"
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        },
+        {
+          "at": 1791873848.2189758,
+          "decision_id": "g747-0fd8cf05:747:1310",
+          "frame_sha256": "1e0942a1f38f3e8da00d9af31bec5fd30bfbff842a2ee38f9f6b6dc3ccfe4d0e",
+          "decision": "situation_held",
+          "reason": "たまごをつかうが使えない表示のため卵を諦めてこうげきで応戦する",
+          "observed_metric": null,
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        },
+        {
+          "at": 1791873848.2189758,
+          "decision_id": "g747-0fd8cf05:747:1310",
+          "frame_sha256": "1e0942a1f38f3e8da00d9af31bec5fd30bfbff842a2ee38f9f6b6dc3ccfe4d0e",
+          "decision": "battle_egg_general_attack",
+          "reason": "実コマンド位置を確認して通常攻撃へ戻す",
+          "observed_metric": {
+            "command": "こうげき",
+            "enemy_monster": null,
+            "general_hp": 8,
+            "max_hp": null
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-110.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791873848.3809004,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "1e0942a1f38f3e8da00d9af31bec5fd30bfbff842a2ee38f9f6b6dc3ccfe4d0e",
+          "decision_id": "g747-0fd8cf05:747:1310",
+          "event": "input_sent",
+          "frame_sha256": "1e0942a1f38f3e8da00d9af31bec5fd30bfbff842a2ee38f9f6b6dc3ccfe4d0e",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "1e0942a1f38f3e8da00d9af31bec5fd30bfbff842a2ee38f9f6b6dc3ccfe4d0e",
+      "uid": 1310,
+      "fixture": "g747-enemy-command-1310.png"
+    },
+    {
+      "decision": {
+        "at": 1791894322.066838,
+        "bot_version": "hanjuku-chart-v204-observed-monster-alias",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:17492",
+        "deviation_reason": "チャート外: 敵の卵召喚戦",
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": "召喚獣への対処と戦闘結果",
+        "frame_sha256": "ff7ed935092a5ee63806eb1f6151b7462110a2bd9e1cb82f0c64c25754b928e0",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "down"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "egg_battle"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "egg_battle_menu",
+        "snapshot": "decision-092.png",
+        "strategy_variant": "egg_battle_use_egg"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791894322.066838,
+          "decision_id": "g747-0fd8cf05:747:17492",
+          "frame_sha256": "ff7ed935092a5ee63806eb1f6151b7462110a2bd9e1cb82f0c64c25754b928e0",
+          "decision": "egg_battle",
+          "reason": "チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）",
+          "observed_metric": {
+            "egg_need": {
+              "ally": {
+                "bonus": "0",
+                "combat": 14,
+                "egg": "エラベル",
+                "hp": 90,
+                "name": "しゅじんこう",
+                "thought": 2
+              },
+              "ally_combat": 14,
+              "ally_force": 90,
+              "ally_hp": 90,
+              "ally_max_hp": null,
+              "ally_melee_score": 1260,
+              "ally_soldiers": null,
+              "assessment_method": "hp_pool_times_combat_heuristic",
+              "assessment_scope": "general_matchup",
+              "enemy": {
+                "bonus": "0",
+                "combat": 1,
+                "egg": "イビル",
+                "hp": 39,
+                "name": "カシュー",
+                "thought": 3
+              },
+              "enemy_combat": 1,
+              "enemy_force": 39,
+              "enemy_hp": 39,
+              "enemy_melee_score": 39,
+              "enemy_soldiers": null,
+              "healthy": false,
+              "ratio_tenths": 7,
+              "rule": "ally_wounded",
+              "soldiers_current": false,
+              "strong_general": false,
+              "strong_rule": "weaker"
+            },
+            "experience_key": "egg_summon|1|カシュー|どうし||ahead|ctx4|side=defense|risk=normal|egg=unknown|ally_soldiers=unknown|enemy_soldiers=unknown|ally_combat=14|enemy_combat=1"
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-092.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791894322.2396858,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "down"
+          ],
+          "decision_frame_sha256": "ff7ed935092a5ee63806eb1f6151b7462110a2bd9e1cb82f0c64c25754b928e0",
+          "decision_id": "g747-0fd8cf05:747:17492",
+          "event": "input_sent",
+          "frame_sha256": "ff7ed935092a5ee63806eb1f6151b7462110a2bd9e1cb82f0c64c25754b928e0",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "ff7ed935092a5ee63806eb1f6151b7462110a2bd9e1cb82f0c64c25754b928e0",
+      "uid": 17492,
+      "fixture": "g747-enemy-command-17492.png"
+    },
+    {
+      "decision": {
+        "at": 1791894344.48212,
+        "bot_version": "hanjuku-chart-v204-observed-monster-alias",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:17507",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "596474786f91de1b0547669be6a17dad3763e289f135ecc3b8b44070a44309d8",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "monster_menu_choice"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "monster_menu",
+        "snapshot": "decision-107.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791894344.48212,
+          "decision_id": "g747-0fd8cf05:747:17507",
+          "frame_sha256": "596474786f91de1b0547669be6a17dad3763e289f135ecc3b8b44070a44309d8",
+          "decision": "monster_menu_choice",
+          "reason": "召喚獣の技メニューで「まきつく」を選択: 先手を取れる1技目を続ける",
+          "observed_metric": {
+            "action": "skill1",
+            "ally_hp": 396,
+            "enemy_hp": 39,
+            "experience_key": "monster_menu|1|カシュー|どうし||ヒュドラ|カシュー|ahead",
+            "general_return_blocked": false,
+            "general_return_risk": null,
+            "menu": [
+              "まきつく",
+              "ウォーター",
+              "たまごにもどれ"
+            ],
+            "owner": "ally",
+            "target_hp": null,
+            "wounded_general_return_blocked": false
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-107.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791894344.6501777,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "596474786f91de1b0547669be6a17dad3763e289f135ecc3b8b44070a44309d8",
+          "decision_id": "g747-0fd8cf05:747:17507",
+          "event": "input_sent",
+          "frame_sha256": "596474786f91de1b0547669be6a17dad3763e289f135ecc3b8b44070a44309d8",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "596474786f91de1b0547669be6a17dad3763e289f135ecc3b8b44070a44309d8",
+      "uid": 17507,
+      "fixture": "g747-enemy-command-17507.png"
+    },
+    {
+      "decision": {
+        "at": 1791894586.1932702,
+        "bot_version": "hanjuku-chart-v204-observed-monster-alias",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:17700",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "ac03ab71f9ac83c64d92db86d28c2139014751344c58e9d1657f7ec7f87e27f3",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "egg_battle",
+          "situation_held",
+          "battle_egg_general_attack"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "egg_battle_menu",
+        "snapshot": "decision-060.png",
+        "strategy_variant": "egg_unavailable"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791894586.1932702,
+          "decision_id": "g747-0fd8cf05:747:17700",
+          "frame_sha256": "ac03ab71f9ac83c64d92db86d28c2139014751344c58e9d1657f7ec7f87e27f3",
+          "decision": "egg_battle",
+          "reason": "チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）",
+          "observed_metric": {
+            "egg_need": {
+              "ally": {
+                "bonus": "0",
+                "combat": 14,
+                "egg": "エラベル",
+                "hp": 90,
+                "name": "しゅじんこう",
+                "thought": 2
+              },
+              "ally_combat": 14,
+              "ally_force": 90,
+              "ally_hp": 90,
+              "ally_max_hp": 90,
+              "ally_melee_score": 1260,
+              "ally_soldiers": null,
+              "assessment_method": "hp_pool_times_combat_heuristic",
+              "assessment_scope": "general_matchup",
+              "enemy": {
+                "bonus": "2",
+                "combat": 4,
+                "egg": "ワンダー",
+                "hp": 27,
+                "name": "シェーブル",
+                "thought": 3
+              },
+              "enemy_combat": 4,
+              "enemy_force": 17,
+              "enemy_hp": 17,
+              "enemy_melee_score": 68,
+              "enemy_monster": "ドラゴンフライ",
+              "enemy_monster_hp": 263,
+              "enemy_soldiers": null,
+              "healthy": true,
+              "ratio_tenths": 7,
+              "rule": "enemy_monster_threat",
+              "soldiers_current": false,
+              "strong_general": false,
+              "strong_rule": "weaker"
+            },
+            "experience_key": "egg_summon|1|シェーブル|どうし||ahead|ctx4|side=defense|risk=normal|egg=unknown|ally_soldiers=unknown|enemy_soldiers=unknown|ally_combat=14|enemy_combat=4"
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        },
+        {
+          "at": 1791894586.1932702,
+          "decision_id": "g747-0fd8cf05:747:17700",
+          "frame_sha256": "ac03ab71f9ac83c64d92db86d28c2139014751344c58e9d1657f7ec7f87e27f3",
+          "decision": "situation_held",
+          "reason": "たまごをつかうが使えない表示のため卵を諦めてこうげきで応戦する",
+          "observed_metric": null,
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        },
+        {
+          "at": 1791894586.1932702,
+          "decision_id": "g747-0fd8cf05:747:17700",
+          "frame_sha256": "ac03ab71f9ac83c64d92db86d28c2139014751344c58e9d1657f7ec7f87e27f3",
+          "decision": "battle_egg_general_attack",
+          "reason": "実コマンド位置を確認して通常攻撃へ戻す",
+          "observed_metric": {
+            "command": "こうげき",
+            "enemy_monster": "ドラゴンフライ",
+            "general_hp": 90,
+            "max_hp": 90
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-060.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791894586.357363,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "ac03ab71f9ac83c64d92db86d28c2139014751344c58e9d1657f7ec7f87e27f3",
+          "decision_id": "g747-0fd8cf05:747:17700",
+          "event": "input_sent",
+          "frame_sha256": "ac03ab71f9ac83c64d92db86d28c2139014751344c58e9d1657f7ec7f87e27f3",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "ac03ab71f9ac83c64d92db86d28c2139014751344c58e9d1657f7ec7f87e27f3",
+      "uid": 17700,
+      "fixture": "g747-enemy-command-17700.png"
+    }
+  ]
+}
