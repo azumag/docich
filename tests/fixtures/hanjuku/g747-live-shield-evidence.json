@@ -1,0 +1,552 @@
+{
+  "identity": {
+    "game": "hanjuku-hero",
+    "runtime_id": "g747-0fd8cf05",
+    "generation": 747,
+    "lease_id": "28284317-f2d0-488c-af16-2d8666389504"
+  },
+  "evidence": [
+    {
+      "decision": {
+        "at": 1791881190.0826614,
+        "bot_version": "hanjuku-chart-v197-unread-battle-force",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:6757",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "09ff4667ed0cea4e35d38a1fe4a107976e01f5af9e60e5eeb95fb417749f2870",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [],
+        "reason_decisions": [],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-037.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [],
+      "source_snapshot": "decision-037.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [],
+      "rgb_sha256": "09ff4667ed0cea4e35d38a1fe4a107976e01f5af9e60e5eeb95fb417749f2870",
+      "fixture": "g747-live-shield-6757.png"
+    },
+    {
+      "decision": {
+        "at": 1791881191.4865654,
+        "bot_version": "hanjuku-chart-v197-unread-battle-force",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:6758",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": "使用可能な切り札・たまごを確認して選択",
+        "frame_sha256": "e90335965fb1d99db31046dca24cb04c0f36641d5bc97354731ab21c28151346",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "b"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "battle_start",
+          "battle_egg_plan",
+          "battle_survival"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-038.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791881191.4865654,
+          "decision_id": "g747-0fd8cf05:747:6758",
+          "frame_sha256": "e90335965fb1d99db31046dca24cb04c0f36641d5bc97354731ab21c28151346",
+          "decision": "battle_start",
+          "reason": "戦闘パネルの将軍名とHPを確認",
+          "observed_metric": {
+            "ally_hp": 30,
+            "enemy_hp": 27
+          },
+          "ally": "ガルバンゾー",
+          "enemy": "ビシソワーズ",
+          "castle": "ナキューメラ",
+          "side": null,
+          "general": null,
+          "choice": null
+        },
+        {
+          "at": 1791881191.4865654,
+          "decision_id": "g747-0fd8cf05:747:6758",
+          "frame_sha256": "e90335965fb1d99db31046dca24cb04c0f36641d5bc97354731ab21c28151346",
+          "decision": "battle_egg_plan",
+          "reason": "将軍の最大HPと携行切り札の卵落・ID合計から卵ディニアル方針を決定",
+          "observed_metric": {
+            "carried": [],
+            "deny_opening_egg": null,
+            "dropper": null,
+            "droppers": [],
+            "egg_drop": null,
+            "has_egg": true,
+            "id_sum": null,
+            "kit_known": false,
+            "max_hp_sum": null,
+            "threat": true,
+            "threshold": null,
+            "triggers": {
+              "clash_position": true,
+              "has_egg": true,
+              "opening_card_sum": true,
+              "wall_critical": true,
+              "wall_mod4": false
+            }
+          },
+          "ally": "ガルバンゾー",
+          "enemy": "ビシソワーズ",
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        },
+        {
+          "at": 1791881191.4865654,
+          "decision_id": "g747-0fd8cf05:747:6758",
+          "frame_sha256": "e90335965fb1d99db31046dca24cb04c0f36641d5bc97354731ab21c28151346",
+          "decision": "battle_survival",
+          "reason": "携行戦術のない卵持ち敵との衝突前に、戦闘メニューで救済手段を確認",
+          "observed_metric": {
+            "ally_hp": 30,
+            "enemy_hp": 27,
+            "melee_balance": {
+              "ally_combat": 3,
+              "ally_force": 90,
+              "ally_melee_score": 270,
+              "assessment_method": "hp_pool_times_combat_heuristic",
+              "assessment_scope": "general_matchup",
+              "enemy_combat": 3,
+              "enemy_force": 87,
+              "enemy_melee_score": 261,
+              "soldiers_current": true
+            }
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-038.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791881191.6710622,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "b"
+          ],
+          "decision_frame_sha256": "e90335965fb1d99db31046dca24cb04c0f36641d5bc97354731ab21c28151346",
+          "decision_id": "g747-0fd8cf05:747:6758",
+          "event": "input_sent",
+          "frame_sha256": "e90335965fb1d99db31046dca24cb04c0f36641d5bc97354731ab21c28151346",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "e90335965fb1d99db31046dca24cb04c0f36641d5bc97354731ab21c28151346",
+      "fixture": "g747-live-shield-6758.png"
+    },
+    {
+      "decision": {
+        "at": 1791881291.198912,
+        "bot_version": "hanjuku-chart-v197-unread-battle-force",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:6855",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "84e3b2291bc2fb2945beaec5dca925fb9bfa06f138ca4bfa6fdeac7c8a1c0b57",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": {
+          "cursor": [
+            176,
+            176
+          ],
+          "directions": [
+            "down"
+          ],
+          "kind": "monster_menu",
+          "step": 6855
+        },
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "down"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "monster_menu_choice"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "monster_menu",
+        "snapshot": "decision-015.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791881291.198912,
+          "decision_id": "g747-0fd8cf05:747:6855",
+          "frame_sha256": "84e3b2291bc2fb2945beaec5dca925fb9bfa06f138ca4bfa6fdeac7c8a1c0b57",
+          "decision": "monster_menu_choice",
+          "reason": "召喚獣の技メニューで「たまごに もどれ」を選択: 味方HPが敵の半分以下なので撤退して見守る",
+          "observed_metric": {
+            "action": "retreat",
+            "ally_hp": 76,
+            "enemy_hp": 193,
+            "experience_key": "monster_menu|1|ビシソワーズ|ガルバンゾー||ファイナルゼリー|コマイヌ|behind",
+            "menu": [
+              "けんかをうる",
+              "へばりつく",
+              "たまごにもどれ"
+            ],
+            "owner": "ally",
+            "target_hp": null,
+            "wounded_general_return_blocked": false
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-015.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791881291.364152,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "down"
+          ],
+          "decision_frame_sha256": "84e3b2291bc2fb2945beaec5dca925fb9bfa06f138ca4bfa6fdeac7c8a1c0b57",
+          "decision_id": "g747-0fd8cf05:747:6855",
+          "event": "input_sent",
+          "frame_sha256": "84e3b2291bc2fb2945beaec5dca925fb9bfa06f138ca4bfa6fdeac7c8a1c0b57",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "84e3b2291bc2fb2945beaec5dca925fb9bfa06f138ca4bfa6fdeac7c8a1c0b57",
+      "fixture": "g747-live-shield-6855.png"
+    },
+    {
+      "decision": {
+        "at": 1791881291.8242185,
+        "bot_version": "hanjuku-chart-v197-unread-battle-force",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:6856",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "0a6d305ef678bd6b327ded6e3b608ec1b25d62617c2dd35d9c2674848f4443da",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": {
+          "cursor": [
+            176,
+            192
+          ],
+          "directions": [
+            "up",
+            "down"
+          ],
+          "kind": "monster_menu",
+          "step": 6856
+        },
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "down"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "monster_menu_choice"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "monster_menu",
+        "snapshot": "decision-016.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791881291.8242185,
+          "decision_id": "g747-0fd8cf05:747:6856",
+          "frame_sha256": "0a6d305ef678bd6b327ded6e3b608ec1b25d62617c2dd35d9c2674848f4443da",
+          "decision": "monster_menu_choice",
+          "reason": "召喚獣の技メニューで「たまごに もどれ」を選択: 味方HPが敵の半分以下なので撤退して見守る",
+          "observed_metric": {
+            "action": "retreat",
+            "ally_hp": 76,
+            "enemy_hp": 193,
+            "experience_key": "monster_menu|1|ビシソワーズ|ガルバンゾー||ファイナルゼリー|コマイヌ|behind",
+            "menu": [
+              "けんかをうる",
+              "へばりつく",
+              "たまごにもどれ"
+            ],
+            "owner": "ally",
+            "target_hp": null,
+            "wounded_general_return_blocked": false
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-016.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791881292.000232,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "down"
+          ],
+          "decision_frame_sha256": "0a6d305ef678bd6b327ded6e3b608ec1b25d62617c2dd35d9c2674848f4443da",
+          "decision_id": "g747-0fd8cf05:747:6856",
+          "event": "input_sent",
+          "frame_sha256": "0a6d305ef678bd6b327ded6e3b608ec1b25d62617c2dd35d9c2674848f4443da",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "0a6d305ef678bd6b327ded6e3b608ec1b25d62617c2dd35d9c2674848f4443da",
+      "fixture": "g747-live-shield-6856.png"
+    },
+    {
+      "decision": {
+        "at": 1791881292.453012,
+        "bot_version": "hanjuku-chart-v197-unread-battle-force",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:6857",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "eb23fcb92e35dc5c12c7b27297ac2ada3769940a332284817a23dc950c25fcb1",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "monster_menu_choice"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "monster_menu",
+        "snapshot": "decision-017.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791881292.453012,
+          "decision_id": "g747-0fd8cf05:747:6857",
+          "frame_sha256": "eb23fcb92e35dc5c12c7b27297ac2ada3769940a332284817a23dc950c25fcb1",
+          "decision": "monster_menu_choice",
+          "reason": "召喚獣の技メニューで「たまごに もどれ」を選択: 味方HPが敵の半分以下なので撤退して見守る",
+          "observed_metric": {
+            "action": "retreat",
+            "ally_hp": 76,
+            "enemy_hp": 193,
+            "experience_key": "monster_menu|1|ビシソワーズ|ガルバンゾー||ファイナルゼリー|コマイヌ|behind",
+            "menu": [
+              "けんかをうる",
+              "へばりつく",
+              "たまごにもどれ"
+            ],
+            "owner": "ally",
+            "target_hp": null,
+            "wounded_general_return_blocked": false
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-017.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791881292.6178403,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "eb23fcb92e35dc5c12c7b27297ac2ada3769940a332284817a23dc950c25fcb1",
+          "decision_id": "g747-0fd8cf05:747:6857",
+          "event": "input_sent",
+          "frame_sha256": "eb23fcb92e35dc5c12c7b27297ac2ada3769940a332284817a23dc950c25fcb1",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "eb23fcb92e35dc5c12c7b27297ac2ada3769940a332284817a23dc950c25fcb1",
+      "fixture": "g747-live-shield-6857.png"
+    },
+    {
+      "decision": {
+        "at": 1791881305.9967883,
+        "bot_version": "hanjuku-chart-v197-unread-battle-force",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:6866",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "d7a582267b055d866ec07ef01527a68eb708001c2986eec371620f32ac043cb4",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": {
+          "cursor": [
+            176,
+            176
+          ],
+          "directions": [
+            "down"
+          ],
+          "kind": "egg_battle_menu",
+          "step": 6866
+        },
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "down"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "egg_battle_menu",
+        "snapshot": "decision-026.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [],
+      "source_snapshot": "decision-026.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791881306.1634166,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "down"
+          ],
+          "decision_frame_sha256": "d7a582267b055d866ec07ef01527a68eb708001c2986eec371620f32ac043cb4",
+          "decision_id": "g747-0fd8cf05:747:6866",
+          "event": "input_sent",
+          "frame_sha256": "d7a582267b055d866ec07ef01527a68eb708001c2986eec371620f32ac043cb4",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "d7a582267b055d866ec07ef01527a68eb708001c2986eec371620f32ac043cb4",
+      "fixture": "g747-live-shield-6866.png"
+    },
+    {
+      "decision": {
+        "at": 1791881391.408159,
+        "bot_version": "hanjuku-chart-v197-unread-battle-force",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:6924",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "b7877ce777ded9952d7dfcd76b5ac049501faf0264f9f10501d97fa453235b22",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [],
+        "reason_decisions": [],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-084.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [],
+      "source_snapshot": "decision-084.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [],
+      "rgb_sha256": "b7877ce777ded9952d7dfcd76b5ac049501faf0264f9f10501d97fa453235b22",
+      "fixture": "g747-live-shield-6924.png"
+    }
+  ],
+  "boundary": "Original v197 return selection and later general30/monster193 panel. New response is counterfactual. HP0 panel has no inputs; death/cause and new victory unconfirmed."
+}
