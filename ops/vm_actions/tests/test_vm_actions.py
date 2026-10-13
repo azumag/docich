@@ -451,6 +451,19 @@ class AuthorizeTests(unittest.TestCase):
         self.assertNotIn("VM_COMMAND", step)
 
 
+    def test_hanjuku_projection_adoption_is_confirmed_fixed_main_only(self):
+        allowed=dict(INPUT_OPERATION="recover_hanjuku_projection",INPUT_TARGET="production",
+                     INPUT_REF="main",INPUT_CONFIRM="production",GITHUB_REPOSITORY_PRIVATE="false")
+        self.assertEqual(self.run_auth(**allowed).returncode,0)
+        for overrides in [dict(INPUT_TARGET="preview"),dict(INPUT_REF="feature"),dict(INPUT_CONFIRM=""),
+                          dict(GITHUB_TRIGGERING_ACTOR="collab"),dict(INPUT_OPERATION="recover_hanjuku_projection;id")]:
+            self.assertNotEqual(self.run_auth(**dict(allowed,**overrides)).returncode,0)
+        block=WF.read_text().split("- name: Recover only the verified active Hanjuku projection",1)[1].split("- name:",1)[0]
+        self.assertIn("cat control/ops/vm_actions/recover_hanjuku_projection.sh | ssh",block)
+        self.assertIn("cat control/ops/vm_actions/realign_hanjuku_presentation.sh | ssh",block)
+        self.assertNotIn("VM_COMMAND",block)
+
+
 class GatewayTests(unittest.TestCase):
     def test_gateway_accepts_docich_only_config_and_rejects_soviet_now(self):
         base=Path(tempfile.mkdtemp(prefix='vmops-config-'))

@@ -400,7 +400,8 @@ class RetroArchAdapter(Adapter):
                 require_input_open(runtime_dir)
                 from .. import hanjuku_run
                 if hanjuku_run.enabled(self.ctx.game):
-                    run = hanjuku_run.load(runtime_dir, hanjuku_run.runtime_identity(self.ctx.fence))
+                    run = hanjuku_run.require_checkpoint_context(
+                        runtime_dir, hanjuku_run.runtime_identity(self.ctx.fence))
                     if run.get('terminal_reason') or run.get('terminal_candidate'):
                         raise AdapterError('Hanjuku terminal evidence holds input')
             source, native = self._source()
