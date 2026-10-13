@@ -188,3 +188,20 @@ def test_conflicting_total_rows_invalidate_freshness_without_claiming_zero():
     p.observe_events(s,mem)
     assert mem['soldiers_seen']==60  # history only
     assert not economy._soldier_count_current(mem,s.header)
+
+
+@pytest.mark.parametrize('old_state',[None,True,{'scope':['foreign'],'stage':'measured'}])
+def test_hotload_inside_an_unknown_editor_starts_an_inspection_without_payment(old_state):
+    mem=memory();mem['shop'].update(soldiers=24,soldiers_done=False)
+    mem['army_count_check']=old_state
+    for _ in range(3):assert p.quantity_step(quantity(),mem,soldiers=True)==[]
+    assert p.quantity_step(quantity(),mem,soldiers=True)==[p.pad('b')]
+    assert not mem['shop'].get('soldier_receipt')
+
+
+def test_corrupt_closing_result_cannot_become_a_measured_total():
+    mem=memory();p.month_step(screen(),mem)
+    mem['army_count_check'].update(stage='closing');mem['army_count_check'].pop('result',None)
+    monthly._month_army_count_check(screen(),mem,mem['shop'])
+    assert mem['army_count_check']['stage']=='unverified'
+    assert mem.get('soldiers_seen') is None

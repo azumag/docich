@@ -54,7 +54,8 @@ def _month_army_count_check(screen, mem, shop):
         return None
     if state.get('stage') == 'closing':
         if month_menu_ready(screen) and _month_menu_quiet(screen):
-            state['stage'] = state['result']
+            state['stage'] = ('measured' if state.get('result') == 'measured'
+                              and _soldier_count_current(mem, screen.header) else 'unverified')
             return None
         return [pad('b')] if _army_count_increment(state, 'exit_presses', 4) <= 3 else []
     if _soldier_count_current(mem, screen.header):
@@ -180,7 +181,8 @@ def month_step(screen: Screen, mem):
         # "よろしいですかな?" after も〜おしまい!: confirm only our own exit.
         choice = 'うむッ!' if mem.get('month_exit') or mem.get('month_sub') else 'いかんッ!'
         scope = _soldier_count_scope(mem, screen.header)
-        check = mem.get('army_count_check') or {}
+        check = mem.get('army_count_check')
+        check = check if isinstance(check, dict) else {}
         unchecked = (not _soldier_count_current(mem, screen.header)
                      and (check.get('scope') != scope or check.get('stage') not in ('measured', 'unverified')))
         if (scope is not None and mem.get('month_exit') and not mem.get('month_sub')
