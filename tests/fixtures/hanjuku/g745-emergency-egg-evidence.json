@@ -1,0 +1,464 @@
+{
+  "identity": {
+    "game": "hanjuku-hero",
+    "runtime_id": "g745-18f84db7",
+    "generation": 745,
+    "lease_id": "4abd000e-9826-4033-984b-ac6432655332"
+  },
+  "evidence": [
+    {
+      "decision": {
+        "at": 1791855592.9076226,
+        "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+        "chart_step": null,
+        "decision_id": "g745-18f84db7:745:763",
+        "deviation_reason": "チャート外: 敵の卵召喚戦",
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": "召喚獣への対処と戦闘結果",
+        "frame_sha256": "e3154f0f520a98ab83839c87ff1ea095b04b65e2a1f45e56e7ef6169731020ce",
+        "game": "hanjuku-hero",
+        "generation": 745,
+        "lease_id": "4abd000e-9826-4033-984b-ac6432655332",
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "down"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "egg_battle"
+        ],
+        "runtime_id": "g745-18f84db7",
+        "schema": 1,
+        "screen_kind": "egg_battle_menu",
+        "snapshot": "decision-043.png",
+        "strategy_variant": "egg_battle_use_egg"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791855592.9076226,
+          "decision_id": "g745-18f84db7:745:763",
+          "frame_sha256": "e3154f0f520a98ab83839c87ff1ea095b04b65e2a1f45e56e7ef6169731020ce",
+          "decision": "egg_battle",
+          "reason": "チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）",
+          "observed_metric": {
+            "egg_need": {
+              "ally": {
+                "bonus": "0",
+                "combat": 13,
+                "egg": "ワンダー",
+                "hp": 85,
+                "name": "ゼウス",
+                "thought": 2
+              },
+              "ally_combat": 13,
+              "ally_force": 34,
+              "ally_hp": 34,
+              "ally_max_hp": 85,
+              "ally_melee_score": 442,
+              "ally_soldiers": 0,
+              "assessment_method": "hp_pool_times_combat_heuristic",
+              "assessment_scope": "general_matchup",
+              "enemy": {
+                "bonus": "3",
+                "combat": 12,
+                "egg": "スーパー",
+                "hp": 82,
+                "name": "ヴィーナス",
+                "thought": 2
+              },
+              "enemy_combat": 12,
+              "enemy_force": 39,
+              "enemy_hp": 19,
+              "enemy_melee_score": 468,
+              "enemy_monster": "なると",
+              "enemy_monster_hp": 298,
+              "enemy_soldiers": 2,
+              "healthy": false,
+              "ratio_tenths": 7,
+              "rule": "enemy_monster_threat",
+              "soldiers_current": true,
+              "strong_general": false,
+              "strong_rule": "weaker"
+            },
+            "experience_key": "egg_summon|2|ヴィーナス|ゼウス|2-Z1|ahead|ctx4|side=attack|risk=normal|egg=available|ally_soldiers=0|enemy_soldiers=2|ally_combat=13|enemy_combat=12"
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791855593.0772288,
+          "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+          "buttons": [
+            "down"
+          ],
+          "decision_frame_sha256": "e3154f0f520a98ab83839c87ff1ea095b04b65e2a1f45e56e7ef6169731020ce",
+          "decision_id": "g745-18f84db7:745:763",
+          "event": "input_sent",
+          "frame_sha256": "e3154f0f520a98ab83839c87ff1ea095b04b65e2a1f45e56e7ef6169731020ce",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "e3154f0f520a98ab83839c87ff1ea095b04b65e2a1f45e56e7ef6169731020ce",
+      "fixture": "g745-emergency-egg-763.png"
+    },
+    {
+      "decision": {
+        "at": 1791855630.4078155,
+        "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+        "chart_step": "2-Z1",
+        "decision_id": "g745-18f84db7:745:788",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "cards": [],
+          "general": "ゼウス"
+        },
+        "frame_sha256": "8c84c44ae34dd03df1a957661d20ea06dedce45bd5f0bd398ae8f5327c62b518",
+        "game": "hanjuku-hero",
+        "generation": 745,
+        "lease_id": "4abd000e-9826-4033-984b-ac6432655332",
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "down"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "monster_menu_choice"
+        ],
+        "runtime_id": "g745-18f84db7",
+        "schema": 1,
+        "screen_kind": "monster_menu",
+        "snapshot": "decision-068.png",
+        "strategy_variant": "chart"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791855630.4078155,
+          "decision_id": "g745-18f84db7:745:788",
+          "frame_sha256": "8c84c44ae34dd03df1a957661d20ea06dedce45bd5f0bd398ae8f5327c62b518",
+          "decision": "monster_menu_choice",
+          "reason": "召喚獣の技メニューで「たまごに もどれ」を選択: 味方HPが敵の半分以下なので撤退して見守る",
+          "observed_metric": {
+            "action": "retreat",
+            "ally_hp": 97,
+            "enemy_hp": 226,
+            "experience_key": "monster_menu|2|ヴィーナス|ゼウス|2-Z1|ベビーモス|なると|behind",
+            "menu": [
+              "でんぐりがえし",
+              "おぶさる",
+              "たまごにもどれ"
+            ],
+            "owner": "ally",
+            "target_hp": null
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791855630.5814183,
+          "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+          "buttons": [
+            "down"
+          ],
+          "decision_frame_sha256": "8c84c44ae34dd03df1a957661d20ea06dedce45bd5f0bd398ae8f5327c62b518",
+          "decision_id": "g745-18f84db7:745:788",
+          "event": "input_sent",
+          "frame_sha256": "8c84c44ae34dd03df1a957661d20ea06dedce45bd5f0bd398ae8f5327c62b518",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "8c84c44ae34dd03df1a957661d20ea06dedce45bd5f0bd398ae8f5327c62b518",
+      "fixture": "g745-emergency-egg-788.png"
+    },
+    {
+      "decision": {
+        "at": 1791855633.3837085,
+        "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+        "chart_step": "2-Z1",
+        "decision_id": "g745-18f84db7:745:790",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "cards": [],
+          "general": "ゼウス"
+        },
+        "frame_sha256": "2079adb497900f58ef19ada231125d1ed64d36ca60464aaebcfd34e58500662e",
+        "game": "hanjuku-hero",
+        "generation": 745,
+        "lease_id": "4abd000e-9826-4033-984b-ac6432655332",
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "monster_menu_choice"
+        ],
+        "runtime_id": "g745-18f84db7",
+        "schema": 1,
+        "screen_kind": "monster_menu",
+        "snapshot": "decision-070.png",
+        "strategy_variant": "chart"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791855633.3837085,
+          "decision_id": "g745-18f84db7:745:790",
+          "frame_sha256": "2079adb497900f58ef19ada231125d1ed64d36ca60464aaebcfd34e58500662e",
+          "decision": "monster_menu_choice",
+          "reason": "召喚獣の技メニューで「たまごに もどれ」を選択: 味方HPが敵の半分以下なので撤退して見守る",
+          "observed_metric": {
+            "action": "retreat",
+            "ally_hp": 97,
+            "enemy_hp": 226,
+            "experience_key": "monster_menu|2|ヴィーナス|ゼウス|2-Z1|ベビーモス|なると|behind",
+            "menu": [
+              "でんぐりがえし",
+              "おぶさる",
+              "たまごにもどれ"
+            ],
+            "owner": "ally",
+            "target_hp": null
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791855633.5444977,
+          "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "2079adb497900f58ef19ada231125d1ed64d36ca60464aaebcfd34e58500662e",
+          "decision_id": "g745-18f84db7:745:790",
+          "event": "input_sent",
+          "frame_sha256": "2079adb497900f58ef19ada231125d1ed64d36ca60464aaebcfd34e58500662e",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "2079adb497900f58ef19ada231125d1ed64d36ca60464aaebcfd34e58500662e",
+      "fixture": "g745-emergency-egg-790.png"
+    },
+    {
+      "decision": {
+        "at": 1791855699.369944,
+        "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+        "chart_step": null,
+        "decision_id": "g745-18f84db7:745:834",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "07843d79a52f47e2b82604f10c55918fcb57285466dd9059e429ab73bd80f15f",
+        "game": "hanjuku-hero",
+        "generation": 745,
+        "lease_id": "4abd000e-9826-4033-984b-ac6432655332",
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "b"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "situation_held",
+          "battle_egg_retreat_attempt"
+        ],
+        "runtime_id": "g745-18f84db7",
+        "schema": 1,
+        "screen_kind": "egg_battle_menu",
+        "snapshot": "decision-114.png",
+        "strategy_variant": "egg_unavailable"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791855699.369944,
+          "decision_id": "g745-18f84db7:745:834",
+          "frame_sha256": "07843d79a52f47e2b82604f10c55918fcb57285466dd9059e429ab73bd80f15f",
+          "decision": "situation_held",
+          "reason": "たまごをつかうが使えない表示のため卵を諦めてこうげきで応戦する",
+          "observed_metric": null,
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        },
+        {
+          "at": 1791855699.369944,
+          "decision_id": "g745-18f84db7:745:834",
+          "frame_sha256": "07843d79a52f47e2b82604f10c55918fcb57285466dd9059e429ab73bd80f15f",
+          "decision": "battle_egg_retreat_attempt",
+          "reason": "卵も札もない召喚戦のため、通常の退却メニューへの復帰を再確認する",
+          "observed_metric": {
+            "ally_hp": 13,
+            "attempt": 1,
+            "enemy": "ヴィーナス",
+            "enemy_hp": 19
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791855699.52883,
+          "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+          "buttons": [
+            "b"
+          ],
+          "decision_frame_sha256": "07843d79a52f47e2b82604f10c55918fcb57285466dd9059e429ab73bd80f15f",
+          "decision_id": "g745-18f84db7:745:834",
+          "event": "input_sent",
+          "frame_sha256": "07843d79a52f47e2b82604f10c55918fcb57285466dd9059e429ab73bd80f15f",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "07843d79a52f47e2b82604f10c55918fcb57285466dd9059e429ab73bd80f15f",
+      "fixture": "g745-emergency-egg-834.png"
+    },
+    {
+      "decision": {
+        "at": 1791857246.760575,
+        "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+        "chart_step": null,
+        "decision_id": "g745-18f84db7:745:1955",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "9cf533ab70f8150e35a6b974cea4935f302a4ca5b53c96dfcef6df035c9300fb",
+        "game": "hanjuku-hero",
+        "generation": 745,
+        "lease_id": "4abd000e-9826-4033-984b-ac6432655332",
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "b"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "battle_okunote_egg_wait"
+        ],
+        "runtime_id": "g745-18f84db7",
+        "schema": 1,
+        "screen_kind": "battle_menu",
+        "snapshot": "decision-035.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791857246.760575,
+          "decision_id": "g745-18f84db7:745:1955",
+          "frame_sha256": "9cf533ab70f8150e35a6b974cea4935f302a4ca5b53c96dfcef6df035c9300fb",
+          "decision": "battle_okunote_egg_wait",
+          "reason": "奥の手だけが有効だが召喚前の期限には未到達のため、白兵のHPと位置リスクを再観測する",
+          "observed_metric": {
+            "ally_hp": 56,
+            "clash_internal_x_threshold": 40,
+            "clash_position_measured": false,
+            "due": false,
+            "enemy_egg_basis": "static_general_data",
+            "enemy_hp": 27,
+            "hold_count": 0,
+            "hold_hp_bled": 0,
+            "hold_hp_budget": 5,
+            "input_margin_hp": 8,
+            "observed_hp_drop": 0,
+            "open_at_hp": 12,
+            "own_egg_usable": false,
+            "reason": null,
+            "resources_basis": "observed_okunote_only",
+            "short_burst": false,
+            "thought": 1,
+            "thought_basis": "player_castle_defense",
+            "wall_critical_hp": 4,
+            "wall_damage": 4
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791857247.0454822,
+          "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+          "buttons": [
+            "b"
+          ],
+          "decision_frame_sha256": "9cf533ab70f8150e35a6b974cea4935f302a4ca5b53c96dfcef6df035c9300fb",
+          "decision_id": "g745-18f84db7:745:1955",
+          "event": "input_sent",
+          "frame_sha256": "b293bce30230f857f3ec77bea60064f8f48ce2fe508de8face4d84c7e61062eb",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "9cf533ab70f8150e35a6b974cea4935f302a4ca5b53c96dfcef6df035c9300fb",
+      "fixture": "g745-emergency-egg-1955.png"
+    }
+  ]
+}
