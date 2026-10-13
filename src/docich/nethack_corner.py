@@ -17,6 +17,7 @@ import os
 import stat
 import sys
 import tomllib
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .config import ConfigError, GlobalConfig, load_game, load_global
 from .corner_boundary import CornerWaitExpired, program_slot
 from .nethack_run import NethackRunError, NethackRunStore
+from .nethack_source import (
+    SourceEvidenceError, new_session_context, runtime_identity,
+    validate_session_context, verify_restoration,
+)
 from .retro_corner import CornerResult, RetroCornerError, RetroCornerManager, _safe_detail
 from .trading.soren_output import enqueue_audio_text, enqueue_chat
 
@@ -914,6 +919,33 @@ class NethackCornerManager(RetroCornerManager):
         else:
             state.pop("run_history_error", None)
 
+    def _prepare_start_state(self, state: dict[str, object], *, scheduled: bool) -> None:
+        if "rotation_request_id" in state:
+            origin = state.get("rotation_origin", "rotation")
+            try:
+                ledger = json.loads(
+                    (Path(self.g.state_dir) / "corner_rotation.json").read_text(encoding="utf-8")
+                )
+                reservation = ledger.get(
+                    "manual_pending" if origin == "manual" else "pending"
+                )
+                if (origin not in {"manual", "rotation"}
+                        or not isinstance(reservation, dict)
+                        or reservation.get("corner") != GAME_NAME
+                        or reservation.get("request_id") != state["rotation_request_id"]):
+                    origin = "unknown"
+            except (OSError, ValueError, AttributeError, TypeError):
+                origin = "unknown"
+        else:
+            origin = "scheduled" if scheduled else "manual"
+        try:
+            state["corner_context"] = new_session_context(
+                origin, state["switch_request_id"]
+            )
+        except Exception:
+            # Evidence only: an unusable request id must never fail the start.
+            state.pop("corner_context", None)
+
     def _transition_to(
         self,
         current: str | None,
@@ -936,7 +968,20 @@ class NethackCornerManager(RetroCornerManager):
 
         if self._run_store is not None and probe is not None:
             try:
-                self._run_store.record_started(probe, now=self._local_now())
+                state = self._read_state()
+                # A missing or mismatched session context only loses the
+                # post-restore evidence binding; the run history is still
+                # recorded as before this evidence existed.
+                try:
+                    context = validate_session_context(state.get("corner_context"))
+                    if context["start_request_id"] != request_id:
+                        context = None
+                except Exception:
+                    context = None
+                self._run_store.record_started(
+                    probe, now=self._local_now(), corner_context=context,
+                    runtime=self._confirmed_started_runtime(result),
+                )
                 self._run_history_error = None
             except Exception as exc:
                 # The coordinator transition already succeeded. Do not destroy
@@ -944,6 +989,26 @@ class NethackCornerManager(RetroCornerManager):
                 # persistence failed; surface the error in corner state instead.
                 self._run_history_error = _safe_detail(exc)
         return result
+
+    def _confirmed_started_runtime(self, result) -> dict[str, object] | None:
+        """Pin a start to the committed canonical runtime, if readable."""
+        receipt = getattr(result, "receipt", None)
+        store = getattr(self.coordinator, "store", None)
+        if not isinstance(receipt, Mapping) or store is None:
+            return None
+        try:
+            with store.lock(exclusive=False):
+                canonical, _ = store.canonical.load()
+                active = runtime_identity(canonical.get("active"))
+                if (active["game"] == GAME_NAME
+                        and active["generation"] == receipt.get("generation")
+                        and active["runtime_id"] == receipt.get("runtime_id")
+                        and receipt.get("request_id") == result.request_id
+                        and receipt.get("status") == "succeeded"):
+                    return active
+        except Exception:
+            return None
+        return None
 
     def _prepare_start_with_reconcile(self, current: str | None) -> dict[str, object]:
         """Close an unreachable leftover run before starting a new expedition.
@@ -1041,6 +1106,7 @@ class NethackCornerManager(RetroCornerManager):
     def _finish_locked(
         self, state: dict[str, object], completed_at: dt.datetime
     ) -> CornerResult:
+        source_session = self._source_session_before_restore(state)
         source = None
         if self._run_store is not None:
             try:
@@ -1114,6 +1180,8 @@ class NethackCornerManager(RetroCornerManager):
                 # disturb the saved/terminal game state after the fact.
                 self._run_history_error = _safe_detail(exc)
                 state["run_history_error"] = self._run_history_error
+        if result.status == "completed":
+            self._record_post_restore_source(state, source_session)
         if result.status in {"completed", "interrupted"}:
             self._announce_end_locked(state)
         try:
@@ -1176,6 +1244,89 @@ class NethackCornerManager(RetroCornerManager):
                 self._write_state(state)
             except Exception:
                 pass
+
+    def _observed_runtime(self) -> dict[str, object] | None:
+        store = getattr(self.coordinator, "store", None)
+        if store is None:
+            return None
+        try:
+            with store.lock(exclusive=False):
+                canonical, _ = store.canonical.load()
+                return runtime_identity(canonical.get("active"))
+        except Exception:
+            return None
+
+    def _source_session_before_restore(
+        self, state: dict[str, object]
+    ) -> dict[str, object] | None:
+        """Pin the run/session and NetHack runtime before the restore runs.
+
+        Analytics only: any failure leaves the snapshot empty and the source
+        unrecorded; it never affects the switch or terminal history.
+        """
+        if self._run_store is None or not isinstance(state.get("run_id"), str):
+            return None
+        try:
+            run = self._run_store.load_run(state["run_id"])
+            sessions = run.get("sessions")
+            session = sessions[-1] if isinstance(sessions, list) and sessions else None
+            if not isinstance(session, dict) or not isinstance(session.get("session_id"), str):
+                return None
+            return {
+                "run_id": run["run_id"],
+                "session_id": session["session_id"],
+                "runtime": session.get("runtime"),
+                "before": self._observed_runtime(),
+            }
+        except Exception:
+            return None
+
+    def _record_post_restore_source(
+        self, state: dict[str, object], snapshot: dict[str, object] | None
+    ) -> None:
+        """Seal a post-restore observation onto the finished session.
+
+        Never authorizes improvement (authorized_mode=off). The restore has
+        already completed; failures are recorded as a fixed status only.
+        """
+        if self._run_store is None:
+            return
+        if snapshot is None:
+            state["source_evidence_status"] = "session_unverified"
+            return
+        restoration = None
+        store = getattr(self.coordinator, "store", None)
+        request_id = state.get("restore_request_id")
+        try:
+            if store is None or not isinstance(request_id, str):
+                raise SourceEvidenceError("restore_unverified")
+            with store.lock(exclusive=False):
+                receipt = store.receipts.load(request_id)
+                canonical, _ = store.canonical.load()
+            restoration = verify_restoration(
+                request_id=request_id, source_runtime=snapshot["runtime"],
+                before=snapshot["before"], receipt=receipt, canonical=canonical,
+                previous_game=state.get("previous_game"),
+            )
+            status = "recorded"
+        except SourceEvidenceError as exc:
+            status = str(exc)
+        except Exception:
+            status = "source_internal_error"
+        try:
+            run = self._run_store.attach_post_restore_source(
+                run_id=snapshot["run_id"], session_id=snapshot["session_id"],
+                restoration=restoration,
+                finish_reason=state.get("finish_reason", "unknown"),
+            )
+            sessions = run.get("sessions")
+            session = sessions[-1] if isinstance(sessions, list) and sessions else {}
+            if restoration is not None:
+                status = ("recorded" if session.get("post_restore_source")
+                          else session.get("post_restore_source_error", "unverified"))
+        except Exception:
+            status = "source_internal_error" if restoration is not None else status
+        state["source_evidence_status"] = status
 
     def _spawn_improve_once(self, state: dict[str, object]) -> None:
         # P1 records evidence only. P3/P5 add a bounded, testable strategy

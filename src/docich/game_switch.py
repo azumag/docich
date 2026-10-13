@@ -4348,6 +4348,13 @@ class GameSwitchCoordinator:
             "to_game": None,
             "generation": active["generation"] if active is not None else None,
         }
+        if active is not None:
+            # The runtime this transaction actually quiesced and confirmed
+            # stopped (above). Additive evidence only: cleanup completion is
+            # proven later by an empty canonical ``retiring``, not claimed here.
+            last_result["stopped_runtime"] = {
+                key: active[key] for key in RUNTIME_IDENTITY_KEYS
+            }
         tx.transition(
             {"stopping"}, "idle",
             updates={

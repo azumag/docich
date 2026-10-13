@@ -21,6 +21,10 @@ from typing import Iterator
 
 from .config import GlobalConfig, load_game
 from .game_switch import GameSwitchBusyError, GameSwitchStore, atomic_write_json
+from .nethack_source import (
+    SourceEvidenceError, build_post_restore_source, runtime_identity,
+    validate_session_context,
+)
 
 SCHEMA_VERSION = 1
 PROGRESS_SCHEMA_VERSION = 1
@@ -549,6 +553,11 @@ class NethackRunStore:
             run = self._current_unlocked()
             return None if run is None else dict(run)
 
+    def load_run(self, run_id: str) -> dict[str, object]:
+        """Read one run body (current or finished) under the store lock."""
+        with self._locked():
+            return dict(self._load_run_unlocked(run_id))
+
     def prepare_start(
         self,
         *,
@@ -610,6 +619,10 @@ class NethackRunStore:
                 "run_id": str(uuid.uuid4()),
                 "expected_expedition": expedition,
                 "xlog_offset": self._xlog_offset(),
+                # NetHack sets xlog starttime when the character is born, which
+                # may be after the terminal process/runtime has started. Keep
+                # the earlier trusted start request as its lower time bound.
+                "birth_not_before_epoch": int(now.timestamp()) if kind == "new" else None,
                 "dump_baseline_mtime_ns": self._dump_baseline(),
             }
 
@@ -618,6 +631,8 @@ class NethackRunStore:
         probe: dict[str, object],
         *,
         now: dt.datetime,
+        corner_context: dict[str, object] | None = None,
+        runtime: dict[str, object] | None = None,
     ) -> dict[str, object]:
         """Commit a start/resume only after the coordinator transition succeeded."""
         with self._locked():
@@ -646,9 +661,17 @@ class NethackRunStore:
                 ):
                     raise NethackRunError("expedition counterがstart中に変更されました")
                 xlog_offset = probe.get("xlog_offset")
+                birth_not_before_epoch = probe.get("birth_not_before_epoch")
                 dump_baseline = probe.get("dump_baseline_mtime_ns")
                 if type(xlog_offset) is not int or xlog_offset < 0:
                     raise NethackRunError("xlog baselineが不正です")
+                if kind == "new":
+                    if (type(birth_not_before_epoch) is not int
+                            or birth_not_before_epoch < 0
+                            or birth_not_before_epoch > int(now.timestamp())):
+                        raise NethackRunError("NetHack birth timeの下限が不正です")
+                elif birth_not_before_epoch is not None:
+                    raise NethackRunError("新規run以外にbirth time下限を設定できません")
                 if type(dump_baseline) is not int or dump_baseline < 0:
                     raise NethackRunError("dump baselineが不正です")
                 run = {
@@ -662,6 +685,7 @@ class NethackRunStore:
                     "last_started_at": now.isoformat(),
                     "last_finished_at": None,
                     "xlog_offset": xlog_offset,
+                    "birth_not_before_epoch": birth_not_before_epoch,
                     "dump_baseline_mtime_ns": dump_baseline,
                     "recovered_existing_save": kind == "recovered_save",
                     "adopted_active_runtime": kind == "adopted_active_runtime",
@@ -691,6 +715,10 @@ class NethackRunStore:
                 raise NethackRunError("run sessionsが不正です")
             sessions.append(
                 {
+                    "run_id": run_id,
+                    "session_id": corner_context["session_id"] if corner_context else None,
+                    "corner_context": validate_session_context(corner_context) if corner_context else None,
+                    "runtime": runtime_identity(runtime) if runtime else None,
                     "started_at": now.isoformat(),
                     "ended_at": None,
                     "outcome": None,
@@ -804,13 +832,86 @@ class NethackRunStore:
                     or start is None or end is None or start > end
                     or not started <= end <= observed or not record.get("death")):
                 return None
-            return self._record_terminal_unlocked(run, now, record, None)
+            return self._record_terminal_unlocked(
+                run, now, record, None, single_new_player_record=True
+            )
 
     @staticmethod
-    def _terminal_payload(record: dict[str, str]) -> dict[str, object]:
+    def _terminal_identity_verified(
+        record: dict[str, str],
+        run: dict[str, object],
+        now: dt.datetime,
+        *,
+        single_new_player_record: bool,
+    ) -> bool:
+        """Prove a unique new xlog row fits this tracked, newly born run."""
+        birth_floor = run.get("birth_not_before_epoch")
+        start = _int_field(record, "starttime")
+        end = _int_field(record, "endtime")
+        if (
+            not single_new_player_record
+            or run.get("recovered_existing_save") is not False
+            or run.get("adopted_active_runtime") is not False
+            or type(birth_floor) is not int
+            or type(start) is not int
+            or type(end) is not int
+        ):
+            return False
+        return 0 <= birth_floor <= start <= end <= int(now.timestamp())
+
+    def attach_post_restore_source(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        restoration: dict[str, object] | None,
+        finish_reason: str,
+    ) -> dict[str, object]:
+        """Seal evidence onto an already-finished session after the restore.
+
+        The terminal/save write happens first (possibly before the restore,
+        see record_confirmed_terminal); this separate write only adds the
+        observation and never changes run status, terminal history or the
+        current pointer. Unverifiable evidence is recorded as a fixed reason.
+        """
+        with self._locked():
+            path = self._run_path(run_id)
+            if not path.is_file():
+                raise NethackRunError("source対象のNetHack runがありません")
+            run = self._load_run_unlocked(run_id)
+            sessions = run.get("sessions")
+            session = sessions[-1] if isinstance(sessions, list) and sessions else None
+            if (not isinstance(session, dict) or session.get("session_id") != session_id
+                    or session.get("ended_at") is None):
+                raise NethackRunError("source対象のNetHack sessionが一致しません")
+            if "post_restore_source" in session or "post_restore_source_error" in session:
+                return dict(run)  # first sealed observation wins; replay is a no-op
+            if restoration is None:
+                session["post_restore_source_error"] = "restore_unverified"
+            else:
+                try:
+                    source = build_post_restore_source(
+                        run, session, restoration, finish_reason=finish_reason
+                    )
+                except SourceEvidenceError as exc:
+                    session["post_restore_source_error"] = str(exc)
+                except Exception:
+                    session["post_restore_source_error"] = "source_internal_error"
+                else:
+                    session["post_restore_source"] = source
+                    if run.get("status") in TERMINAL_STATUSES:
+                        run["post_restore_source"] = source
+            self._write_run_unlocked(run)
+            return dict(run)
+
+    @staticmethod
+    def _terminal_payload(
+        record: dict[str, str], *, identity_verified: bool
+    ) -> dict[str, object]:
         bits = _achievement_bits(record)
         return {
             "source": "xlogfile",
+            "identity_verified": identity_verified,
             "death": record.get("death"),
             "points": _int_field(record, "points"),
             "turns": _int_field(record, "turns"),
@@ -866,12 +967,18 @@ class NethackRunStore:
             offset = run.get("xlog_offset")
             if type(offset) is not int or offset < 0:
                 raise NethackRunError("run xlog_offsetが不正です")
-            record, analysis_error = self._terminal_record_since(offset)
-            return self._record_terminal_unlocked(run, now, record, analysis_error)
+            records, analysis_error = self._terminal_records_since(offset)
+            # Preserve the canonical terminal-history selection (last row).
+            # Candidate ambiguity affects source identity, not the result.
+            return self._record_terminal_unlocked(
+                run, now, records[-1] if records else None, analysis_error,
+                single_new_player_record=len(records) == 1,
+            )
 
     def _record_terminal_unlocked(
         self, run: dict[str, object], now: dt.datetime,
         record: dict[str, str] | None, analysis_error: str | None,
+        *, single_new_player_record: bool = False,
     ) -> dict[str, object]:
         self._close_open_session_unlocked(run, now, "terminal")
         run["last_finished_at"] = now.isoformat()
@@ -883,7 +990,13 @@ class NethackRunStore:
             }
         else:
             status = classify_terminal_record(record)
-            terminal = self._terminal_payload(record)
+            terminal = self._terminal_payload(
+                record,
+                identity_verified=self._terminal_identity_verified(
+                    record, run, now,
+                    single_new_player_record=single_new_player_record,
+                ),
+            )
             run["status"] = status
             run["terminal"] = terminal
             run["score"] = terminal["points"]
