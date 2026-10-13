@@ -604,6 +604,16 @@ def _prioritise_recruit(mem, shop, gold):
             reason='確認できる将軍が不足しているため募集費を兵士補充より先に確保する。総人数や死亡は未確定')
 
 
+def month_chart_step(mem) -> str:
+    """Chart step label of a month plan: the current chapter's, not chapter 1's.
+
+    Chapter 2 runs recorded their month plans as ``1-month`` (g745), which
+    attributed them to chapter 1 in the decision log and chart review.
+    """
+    chapter = mem.get('chapter')
+    return f'{chapter}-month' if type(chapter) is int and chapter > 0 else 'month'
+
+
 def _plan_extras(mem, shop, reserve, recruit):
     shop['reserve'] = reserve
     egg_cost = _egg_measured_cost(mem)
@@ -618,7 +628,7 @@ def _plan_extras(mem, shop, reserve, recruit):
     _limit_soldier_refill(mem, shop, {'year': int(shop['key'].split('-')[0]),
         'month': int(shop['key'].split('-')[1]), 'gold': shop.get('gold_start')})
     if reserve or recruit:
-        _record(mem, 'month_extras_plan', chart_step='1-month', month=shop['key'],
+        _record(mem, 'month_extras_plan', chart_step=month_chart_step(mem), month=shop['key'],
                 strategy_variant=shop.get('variant', 'chart'),
                 observed_metric={'egg_uses': dict(mem.get('egg_uses') or {})},
                 plan={'egg_recover': bool(reserve), 'egg_recover_budget': reserve,
@@ -743,7 +753,7 @@ def _plan(mem, header):
                           'variant': variant,
                           'soldiers_done': soldiers == 0, 'gold_start': gold}
     _plan_extras(mem, shop, reserve, recruit)
-    _record(mem, 'month_plan', chart_step='1-month', strategy_variant=variant, month=key, gold=gold,
+    _record(mem, 'month_plan', chart_step=month_chart_step(mem), strategy_variant=variant, month=key, gold=gold,
             plan={'cards': items, 'soldiers': shop['soldiers']}, deviation_reason=deviation,
             expected_metric={'chart_cards': [list(i) for i in spec['cards']],
                              'chart_soldiers': spec['soldiers'], 'chart_gold': spec['chart_gold']},
@@ -766,7 +776,7 @@ def _soldier_refill_plan(mem, header, key):
                           'variant': 'soldier_refill_only', 'soldiers_done': soldiers == 0,
                           'gold_start': gold}
     _plan_extras(mem, shop, reserve, recruit)
-    _record(mem, 'month_plan', chart_step='1-month', strategy_variant='soldier_refill_only',
+    _record(mem, 'month_plan', chart_step=month_chart_step(mem), strategy_variant='soldier_refill_only',
             month=key, gold=gold, plan={'cards': [], 'soldiers': shop['soldiers']},
             deviation_reason='chart_month_uncovered',
             expected_metric={'soldier_cap': SOLDIER_CAP},

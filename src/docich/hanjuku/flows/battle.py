@@ -759,6 +759,15 @@ def battle_end(mem, next_kind, *, defense_continues=False):
                     expected_metric={'enemy_hp_after_open': max(0, (enemy_hp or 0) - 20)},
                     observed_metric={'outcome': outcome, 'enemy_hp': enemy_hp, 'ally_hp': ally_hp},
                     resulting_event=f'retry:{retries[step]}', reason='城を取らないと後続手順とボスへ進めない')
+        else:
+            # Leaving the exhausted step 'launched' made it look like a march
+            # still heading for the target: steps waiting on that capture and
+            # the off-chart planner kept waiting on a sortie that had ended.
+            mem.setdefault('orders', {})[step] = 'failed'
+            _record(mem, 'situation_held', chart_step=step, strategy_variant='attack_retry_exhausted',
+                    observed_metric={'retries': retries[step], 'outcome': outcome,
+                                     'enemy_hp': enemy_hp, 'ally_hp': ally_hp},
+                    reason='攻撃の再試行上限に到達したため、この手順を打ち切って計画外の判断へ渡す')
     boss = chart.BOSSES.get(mem.get('chapter') or 0)
     resulting = None
     if outcome == 'win' and boss and cur.get('enemy') == boss:
