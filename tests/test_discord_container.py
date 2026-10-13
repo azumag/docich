@@ -105,7 +105,19 @@ class ShutdownTests(unittest.IsolatedAsyncioTestCase):
                 store.close()
 
 
+_DISCORD_SDK_AVAILABLE = False
+try:
+    import discord as _discord
+    _DISCORD_SDK_AVAILABLE = _discord.__version__ == "2.7.1"
+except Exception:
+    _DISCORD_SDK_AVAILABLE = False
+
+
 class RuntimeTests(unittest.TestCase):
+    @unittest.skipUnless(
+        _DISCORD_SDK_AVAILABLE,
+        "discord 2.7.1 and matching SDK are available only in the test image",
+    )
     def test_linux_sqlite_sdk_and_flock_available(self):
         import discord
         import fcntl

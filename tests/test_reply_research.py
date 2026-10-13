@@ -36,6 +36,15 @@ def transcript(sources, tools=(), notes="確認した根拠", finished=True):
 
 
 WEB = {"kind": "web", "ref": "https://example.org/source", "quote": "確認した資料"}
+
+
+@pytest.fixture
+def isolated_tmp_path():
+    # Snapshot validation rejects roots inside a repository checkout. Keep the
+    # fixture in the platform temp directory so worktree/basetemp location does
+    # not become part of the source-path portability contract.
+    with tempfile.TemporaryDirectory(dir='/tmp') as directory:
+        yield Path(directory).resolve()
 CODE = {"kind": "code", "ref": "logic.py", "line": 1, "quote": "answer = 42"}
 # Official rust-v0.157.1 exec_events.rs / protocol models.rs shape.
 # results are opaque JSON; even URL/snippet/body-like values do not establish
@@ -50,51 +59,51 @@ READ = {"type": "command_execution", "status": "completed", "command": "cat sour
         "exit_code": 0, "aggregated_output": "answer = 42"}
 
 
-def test_snapshot_copies_only_manifest_files(tmp_path):
-    root, dest, manifest = source(tmp_path)
+def test_snapshot_copies_only_manifest_files(isolated_tmp_path):
+    root, dest, manifest = source(isolated_tmp_path)
     (root / "NOT_APPROVED").write_text("secret")
     assert r.snapshot(root, dest, deadline=time.monotonic() + 10) == manifest
     assert list(dest.iterdir()) == [dest / "logic.py"]
 
 
 @pytest.mark.parametrize("name", ["../logic.py", "/etc/passwd", ".env", "a/.opencode/config.toml", "a//b", "a\\b", "AGENTS.md", "a/AGENTS.override.md"])
-def test_manifest_path_cannot_expand_permissions(tmp_path, name):
-    root, dest, manifest = source(tmp_path)
+def test_manifest_path_cannot_expand_permissions(isolated_tmp_path, name):
+    root, dest, manifest = source(isolated_tmp_path)
     manifest["files"] = {name: "a" * 64}
     (root / "manifest.json").write_text(json.dumps(manifest))
     with pytest.raises((ValueError, OSError)):
         r.snapshot(root, dest, deadline=time.monotonic() + 10)
 
 
-def test_source_hash_change_is_not_silently_read(tmp_path):
-    root, dest, _ = source(tmp_path)
+def test_source_hash_change_is_not_silently_read(isolated_tmp_path):
+    root, dest, _ = source(isolated_tmp_path)
     (root / "logic.py").write_text("different")
     with pytest.raises(ValueError, match="mismatch"):
         r.snapshot(root, dest, deadline=time.monotonic() + 10)
 
 
 @pytest.mark.parametrize("parent", [False, True])
-def test_symlink_leaf_or_parent_is_rejected(tmp_path, parent):
-    root, dest, _ = source(tmp_path)
+def test_symlink_leaf_or_parent_is_rejected(isolated_tmp_path, parent):
+    root, dest, _ = source(isolated_tmp_path)
     if parent:
-        link = tmp_path / "link"; link.symlink_to(root, target_is_directory=True)
+        link = isolated_tmp_path / "link"; link.symlink_to(root, target_is_directory=True)
         root = link
     else:
         (root / "logic.py").unlink()
-        (tmp_path / "elsewhere").write_text("answer = 42\n")
-        (root / "logic.py").symlink_to(tmp_path / "elsewhere")
+        (isolated_tmp_path / "elsewhere").write_text("answer = 42\n")
+        (root / "logic.py").symlink_to(isolated_tmp_path / "elsewhere")
     with pytest.raises(ValueError, match="unsafe"):
         r.snapshot(root, dest, deadline=time.monotonic() + 10)
 
 
-def test_snapshot_deadline(tmp_path):
-    root, dest, _ = source(tmp_path)
+def test_snapshot_deadline(isolated_tmp_path):
+    root, dest, _ = source(isolated_tmp_path)
     with pytest.raises(ValueError, match="timeout"):
         r.snapshot(root, dest, deadline=time.monotonic() - 1)
 
 
-def test_source_root_cannot_traverse_parent_components(tmp_path):
-    root, dest, _ = source(tmp_path)
+def test_source_root_cannot_traverse_parent_components(isolated_tmp_path):
+    root, dest, _ = source(isolated_tmp_path)
     traversing = root.parent / "unused" / ".." / root.name
     with pytest.raises(ValueError, match="unsafe_source"):
         r.snapshot(traversing, dest, deadline=time.monotonic() + 10)
