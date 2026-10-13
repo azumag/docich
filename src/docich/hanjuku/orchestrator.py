@@ -209,6 +209,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         mem.pop('egg_menu_stage',None)
         mem.pop('egg_battle_row_dead',None)
         mem.pop('enemy_general_menu', None)
+        mem.pop('enemy_general_menu_pending', None)
     if kind != 'monster_menu':
         for key in ('monster_menu_key','monster_menu_cursor','monster_menu_hold',
                     'monster_menu_choice','monster_menu_choice_key','monster_panel'):
@@ -397,7 +398,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
             and not isinstance(mem.get('resume_egg_ritual'), dict)
             and not isinstance(mem.get('orphan_battle_menu'), dict)
             and not (kind == 'egg_battle_menu'
-                     and battle_menus_flow._enemy_general_command(screen) is not None)
+                     and (battle_menus_flow._enemy_general_command(screen) is not None
+                          or battle_menus_flow._partial_enemy_general_command(screen) is not None))
             and not month_flow.army_count_owned(mem)
             and month_flow.recruit_input_guard(screen, mem) is None):
         # Even this last-resort path must not confirm an unread summer option:
