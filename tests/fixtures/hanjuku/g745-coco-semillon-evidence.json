@@ -1,0 +1,486 @@
+{
+  "identity": {
+    "game": "hanjuku-hero",
+    "runtime_id": "g745-18f84db7",
+    "generation": 745,
+    "lease_id": "4abd000e-9826-4033-984b-ac6432655332"
+  },
+  "evidence": [
+    {
+      "decision": {
+        "at": 1791856539.749453,
+        "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+        "chart_step": null,
+        "decision_id": "g745-18f84db7:745:1432",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": "使用可能な切り札・たまごを確認して選択",
+        "frame_sha256": "b1baf9881af8a04f0bc9398df686cf589eef53f57ed5071c4e64565ccee9aa81",
+        "game": "hanjuku-hero",
+        "generation": 745,
+        "lease_id": "4abd000e-9826-4033-984b-ac6432655332",
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "b"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "battle_start",
+          "battle_egg_plan",
+          "battle_survival"
+        ],
+        "runtime_id": "g745-18f84db7",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-112.png",
+        "strategy_variant": "chart"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791856539.749453,
+          "decision_id": "g745-18f84db7:745:1432",
+          "frame_sha256": "b1baf9881af8a04f0bc9398df686cf589eef53f57ed5071c4e64565ccee9aa81",
+          "decision": "battle_start",
+          "reason": "戦闘パネルの将軍名とHPを確認",
+          "observed_metric": {
+            "ally_hp": 24,
+            "enemy_hp": 36
+          },
+          "ally": "ココット",
+          "enemy": "セミヨン",
+          "castle": "アルマムーン",
+          "side": null,
+          "general": null,
+          "choice": null
+        },
+        {
+          "at": 1791856539.749453,
+          "decision_id": "g745-18f84db7:745:1432",
+          "frame_sha256": "b1baf9881af8a04f0bc9398df686cf589eef53f57ed5071c4e64565ccee9aa81",
+          "decision": "battle_egg_plan",
+          "reason": "将軍の最大HPと携行切り札の卵落・ID合計から卵ディニアル方針を決定",
+          "observed_metric": {
+            "carried": [],
+            "deny_opening_egg": null,
+            "dropper": null,
+            "droppers": [],
+            "egg_drop": null,
+            "has_egg": true,
+            "id_sum": null,
+            "kit_known": false,
+            "max_hp_sum": null,
+            "threat": true,
+            "threshold": null,
+            "triggers": {
+              "clash_position": true,
+              "has_egg": true,
+              "opening_card_sum": true,
+              "wall_critical": true,
+              "wall_mod4": false
+            }
+          },
+          "ally": "ココット",
+          "enemy": "セミヨン",
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        },
+        {
+          "at": 1791856539.749453,
+          "decision_id": "g745-18f84db7:745:1432",
+          "frame_sha256": "b1baf9881af8a04f0bc9398df686cf589eef53f57ed5071c4e64565ccee9aa81",
+          "decision": "battle_survival",
+          "reason": "携行戦術のない卵持ち敵との衝突前に、戦闘メニューで救済手段を確認",
+          "observed_metric": {
+            "ally_hp": 24,
+            "enemy_hp": 36,
+            "melee_balance": {
+              "ally_combat": 8,
+              "ally_force": 24,
+              "ally_melee_score": 192,
+              "assessment_method": "hp_pool_times_combat_heuristic",
+              "assessment_scope": "general_matchup",
+              "enemy_combat": 5,
+              "enemy_force": 36,
+              "enemy_melee_score": 180,
+              "soldiers_current": false
+            }
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-112.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791856539.9282084,
+          "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+          "buttons": [
+            "b"
+          ],
+          "decision_frame_sha256": "b1baf9881af8a04f0bc9398df686cf589eef53f57ed5071c4e64565ccee9aa81",
+          "decision_id": "g745-18f84db7:745:1432",
+          "event": "input_sent",
+          "frame_sha256": "b1baf9881af8a04f0bc9398df686cf589eef53f57ed5071c4e64565ccee9aa81",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "b1baf9881af8a04f0bc9398df686cf589eef53f57ed5071c4e64565ccee9aa81",
+      "fixture": "g745-coco-semillon-1432.png"
+    },
+    {
+      "decision": {
+        "at": 1791856541.6414883,
+        "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+        "chart_step": null,
+        "decision_id": "g745-18f84db7:745:1435",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "b90f398ab8d43720500ebe130a9270b604476de9d91c98d6ce4e02f7b1a0a061",
+        "game": "hanjuku-hero",
+        "generation": 745,
+        "lease_id": "4abd000e-9826-4033-984b-ac6432655332",
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "ms": 50,
+            "type": "wait"
+          }
+        ],
+        "reason_decisions": [
+          "battle_command_open_wait"
+        ],
+        "runtime_id": "g745-18f84db7",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-115.png",
+        "strategy_variant": "chart"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791856541.6414883,
+          "decision_id": "g745-18f84db7:745:1435",
+          "frame_sha256": "b90f398ab8d43720500ebe130a9270b604476de9d91c98d6ce4e02f7b1a0a061",
+          "decision": "battle_command_open_wait",
+          "reason": "戦闘メニューの表示を短く再観測し、未確認の再BやAを送らない",
+          "observed_metric": {
+            "ally_hp": 24,
+            "enemy_hp": 36,
+            "owner": "survival",
+            "waits": 2
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-115.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [],
+      "rgb_sha256": "b90f398ab8d43720500ebe130a9270b604476de9d91c98d6ce4e02f7b1a0a061",
+      "fixture": "g745-coco-semillon-1435.png"
+    },
+    {
+      "decision": {
+        "at": 1791856542.3304067,
+        "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+        "chart_step": null,
+        "decision_id": "g745-18f84db7:745:1436",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "ce06bf5876acf22a40c3c65489a1cfc550e9a836dcfcce5029cbfabba1d88ca7",
+        "game": "hanjuku-hero",
+        "generation": 745,
+        "lease_id": "4abd000e-9826-4033-984b-ac6432655332",
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "b"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "battle_egg_conserve"
+        ],
+        "runtime_id": "g745-18f84db7",
+        "schema": 1,
+        "screen_kind": "battle_menu",
+        "snapshot": "decision-116.png",
+        "strategy_variant": "chart"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791856542.3304067,
+          "decision_id": "g745-18f84db7:745:1436",
+          "frame_sha256": "ce06bf5876acf22a40c3c65489a1cfc550e9a836dcfcce5029cbfabba1d88ca7",
+          "decision": "battle_egg_conserve",
+          "reason": "実HP・戦闘力と現在兵数で白兵優位のため、切り札の有無にかかわらず卵を温存して戻る",
+          "observed_metric": {
+            "labels": [
+              "たまごをつかう"
+            ],
+            "melee_balance": {
+              "ally_combat": 8,
+              "ally_force": 84,
+              "ally_melee_score": 672,
+              "assessment_method": "hp_pool_times_combat_heuristic",
+              "assessment_scope": "general_matchup",
+              "enemy_combat": 5,
+              "enemy_force": 56,
+              "enemy_melee_score": 280,
+              "soldiers_current": true
+            }
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-116.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791856542.504299,
+          "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+          "buttons": [
+            "b"
+          ],
+          "decision_frame_sha256": "ce06bf5876acf22a40c3c65489a1cfc550e9a836dcfcce5029cbfabba1d88ca7",
+          "decision_id": "g745-18f84db7:745:1436",
+          "event": "input_sent",
+          "frame_sha256": "ce06bf5876acf22a40c3c65489a1cfc550e9a836dcfcce5029cbfabba1d88ca7",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "ce06bf5876acf22a40c3c65489a1cfc550e9a836dcfcce5029cbfabba1d88ca7",
+      "fixture": "g745-coco-semillon-1436.png"
+    },
+    {
+      "decision": {
+        "at": 1791856547.6416903,
+        "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+        "chart_step": null,
+        "decision_id": "g745-18f84db7:745:1445",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "874192c383d032829d179ab43f8279f81ce4d80763b932fc70fc5b3bf634286d",
+        "game": "hanjuku-hero",
+        "generation": 745,
+        "lease_id": "4abd000e-9826-4033-984b-ac6432655332",
+        "observation_interval_ms": 500,
+        "planned_actions": [],
+        "reason_decisions": [
+          "battle_melee"
+        ],
+        "runtime_id": "g745-18f84db7",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-005.png",
+        "strategy_variant": "chart"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791856547.6416903,
+          "decision_id": "g745-18f84db7:745:1445",
+          "frame_sha256": "874192c383d032829d179ab43f8279f81ce4d80763b932fc70fc5b3bf634286d",
+          "decision": "battle_melee",
+          "reason": "卵の激突リスクあり・戦線位置未校正のため入力保留",
+          "observed_metric": {
+            "melee_balance": {
+              "ally_combat": 8,
+              "ally_force": 64,
+              "ally_melee_score": 512,
+              "assessment_method": "hp_pool_times_combat_heuristic",
+              "assessment_scope": "general_matchup",
+              "enemy_combat": 5,
+              "enemy_force": 43,
+              "enemy_melee_score": 215,
+              "soldiers_current": true
+            }
+          },
+          "ally": null,
+          "enemy": "セミヨン",
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-005.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [],
+      "rgb_sha256": "874192c383d032829d179ab43f8279f81ce4d80763b932fc70fc5b3bf634286d",
+      "fixture": "g745-coco-semillon-1445.png"
+    },
+    {
+      "decision": {
+        "at": 1791856548.157678,
+        "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+        "chart_step": null,
+        "decision_id": "g745-18f84db7:745:1446",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "5c160ab0a835237e9914503de154dea1a8e3c98818c4ddcdffc7ce03453e5f4d",
+        "game": "hanjuku-hero",
+        "generation": 745,
+        "lease_id": "4abd000e-9826-4033-984b-ac6432655332",
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "b"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [],
+        "runtime_id": "g745-18f84db7",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-006.png",
+        "strategy_variant": "chart"
+      },
+      "policy_decisions": [],
+      "source_snapshot": "decision-006.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791856548.323584,
+          "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+          "buttons": [
+            "b"
+          ],
+          "decision_frame_sha256": "5c160ab0a835237e9914503de154dea1a8e3c98818c4ddcdffc7ce03453e5f4d",
+          "decision_id": "g745-18f84db7:745:1446",
+          "event": "input_sent",
+          "frame_sha256": "5c160ab0a835237e9914503de154dea1a8e3c98818c4ddcdffc7ce03453e5f4d",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "5c160ab0a835237e9914503de154dea1a8e3c98818c4ddcdffc7ce03453e5f4d",
+      "fixture": "g745-coco-semillon-1446.png"
+    },
+    {
+      "decision": {
+        "at": 1791856549.651846,
+        "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+        "chart_step": null,
+        "decision_id": "g745-18f84db7:745:1448",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "ae58e643b65af9edf34efcbdd40ea5aa18765ffe89835ddfb9cb58e93a2915f3",
+        "game": "hanjuku-hero",
+        "generation": 745,
+        "lease_id": "4abd000e-9826-4033-984b-ac6432655332",
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "battle_survival_select"
+        ],
+        "runtime_id": "g745-18f84db7",
+        "schema": 1,
+        "screen_kind": "battle_menu",
+        "snapshot": "decision-008.png",
+        "strategy_variant": "chart"
+      },
+      "policy_decisions": [
+        {
+          "at": 1791856549.651846,
+          "decision_id": "g745-18f84db7:745:1448",
+          "frame_sha256": "ae58e643b65af9edf34efcbdd40ea5aa18765ffe89835ddfb9cb58e93a2915f3",
+          "decision": "battle_survival_select",
+          "reason": "カーソルと有効な項目を確認して救済行動を選択",
+          "observed_metric": {
+            "label": "たまごをつかう",
+            "melee_balance": {
+              "ally_combat": 8,
+              "ally_force": 24,
+              "ally_melee_score": 192,
+              "assessment_method": "hp_pool_times_combat_heuristic",
+              "assessment_scope": "general_matchup",
+              "enemy_combat": 5,
+              "enemy_force": 24,
+              "enemy_melee_score": 120,
+              "soldiers_current": false
+            }
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ],
+      "source_snapshot": "decision-008.png",
+      "capture_binding": "original_decision_snapshot",
+      "input_receipts": [
+        {
+          "at": 1791856549.9620237,
+          "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "ae58e643b65af9edf34efcbdd40ea5aa18765ffe89835ddfb9cb58e93a2915f3",
+          "decision_id": "g745-18f84db7:745:1448",
+          "event": "input_sent",
+          "frame_sha256": "ae58e643b65af9edf34efcbdd40ea5aa18765ffe89835ddfb9cb58e93a2915f3",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "ae58e643b65af9edf34efcbdd40ea5aa18765ffe89835ddfb9cb58e93a2915f3",
+      "fixture": "g745-coco-semillon-1448.png"
+    }
+  ],
+  "scope": "Original runtime frames and receipts. Alternate post-wait sequences in tests are counterfactual, not naturally observed."
+}

@@ -38,6 +38,26 @@ RuleSpecの全フィールドと型は `Rules.parse` を正本とし、fixture�
 PYTHONPATH=src python3 -m unittest discover -s tests -p test_selfmade_contract.py -v
 ```
 
+## 非本番 run coordinator（build→review→freeze→play→replay）
+
+`src/docich/selfmade_run.py` は、隔離された非本番runnerで1本通し（制作→検証→固定→攻略→再現判定）を実行し、Issueの非本番受入条件5点を明示的に評価する。外部LLM/API・子プロセス・ネットワーク・本番コーナー登録のいずれにも接続しない（固定コーナー枠は未登録＝`enabled=false`相当のまま）。生成コードは読み込まず実行しないため、`start_generated` は常に `sandbox_violation` で閉じる。
+
+- 制作: `BuildSpec`（artifact_id／seed／rules／game.mjs bytes／assets）を `ReferenceBuilder` が決定的にbundle化する。同じspecは同じバイト列とidentityを再現する。`ReferenceBuilder` はAIではなくモデル呼出しもしない。将来のAI制作は同じ `BuildSpec`／`build` の口へ入り、以降の検証・固定・攻略・再現判定の同じゲートを通る必要がある
+- 検証: `review_bundle` が不変snapshotに対して、rules.json／manifest.jsonのbyte正規JSON、game.mjsの存在・長さ、ファイル数・合計サイズを機械検査する。byte正規JSONは再現可能identityのための制作契約であり安全性の証明ではない。`source_flags` は宣言済みトークンの観測記録で、判定には使わない。コードレビューと起動スモークはサンドボックスとレビュアーが無いため未実施として記録し、実施済みとは表示しない
+- 固定: `freeze` がディスクと不変snapshotを再照合し、書込み口を保持しない。攻略開始前・replay前にも再照合する
+- 検査probe: `probe_input_contract` が使い捨ての信頼側sessionで、宣言した状態書換え入力7種（`success`／`event`／`win`／`player`／`key`／`switch`／`state`）がすべて拒否され、かつ正規のcontrol入力は受理されてtickが進むことを確認する。bundleは変更しない
+- 攻略: `run_fixture` の `inputs` は生の厳密JSON bytes列、または `next_input(observation) -> bytes | None`。終端後の入力は適用せず破棄として数える
+- 再現判定: `session.verify()` の新しい信頼側engineが受理入力列を先頭から再生し、全tick hashと終端を照合する。`candidate_win` は `verified_win` になった時だけ勝利。不一致は `replay_mismatch` で未検証
+- 終了/復帰: 全経路で子プロセス0・所有権二重取得0。コーナーを切り替えた経路では所有権解除と元画面復帰を一度だけ行う（切り替えていない `build_failed`／`invalid_artifact`／`run_generated` の `sandbox_violation` は復帰不要で、終了・復帰の証拠は無い）。復帰不成立なら `verified_win` でも `success=false`
+
+`RunReport.acceptance` は受入条件5点を次の3状態で返す。`verified`＝今回の実行の機械検査で示せた、`partial`＝実装・実行済みだが宣言済みの外部前提（モデル呼出し、OS隔離）が無いため成立としない、`not_satisfied`＝実行の証拠が条件に届かない。現時点で `one_game_built` はAI著作が未実施のため `partial`、`freeze_blocks_write`／`win_is_distinguished`／`reproducible` は `verified`、`isolation_and_restore` はコーナーを切り替えた実行で復帰のみ確認（OS隔離・資源制限・実kill/reapが未実装）のため `partial`、切り替えていない経路（`build_failed`／`invalid_artifact`／`run_generated` の `sandbox_violation`）では終了・復帰の証拠が無いため `not_satisfied` になる。
+
+`run_generated` は同じゲートを通したうえで生成実行の口を閉じる。適合する `validate_preflight` reportを渡しても実行は許可されず（reportは`validated`として記録）、`sandbox_violation` で終わる。preflight不適合は理由コードを記録して同じくfail-closed。
+
+```sh
+PYTHONPATH=src python3 -m pytest -q tests/test_selfmade_run.py
+```
+
 ## fail-closed と未完範囲
 
 `start_generated(path)` は常にsandbox_violationを返す。隔離環境を用意していないため、生成コードのimport/eval/子プロセス起動/host fallbackは存在しない。無限loop/crash/外部アクセスのsourceを渡す回帰も起動前に拒否する。OSによるnetwork/HOME/秘密/Docker socket遮断、資源上限・実子プロセスkill/reapを実測したという主張ではない。
@@ -45,3 +65,5 @@ PYTHONPATH=src python3 -m unittest discover -s tests -p test_selfmade_contract.p
 `MockCorner` は所有権取得、キー解除→子停止/reap→所有権解除→元画面復帰の順序をメモリ内で一度だけ記録する。共通PID/子プロセスは模擬値。復帰不成立時にはverified_winでもreport.success=falseにする。生成失敗・timeout・invalid_artifact/input・sandbox_violation・replay_mismatch・取消の模擬cleanupを検証する。本番のCornerExecutionCoordinator/GameSwitchCoordinator契約へ接続していない。
 
 残件: 巡回敵と接触死、生成固有コードの制作/レビュー/隔離スモーク、非root/networkなし/CPU/RAM/process/出力制限を保証するrunnerとIPC、毎tick生成提案との実照合、隔離プロセスでのreplay、controllerの壁時計watchdog、証拠の永続化、実アダプタによる子プロセス終了と元画面復帰。モデル/provider/課金枠と本番枠の決定も別工程。これらを既に動かしたと扱わず、初回PRの境界として明記する。
+
+非本番run coordinatorで1本通しの骨格は動くが、AIによる制作・攻略は未実施で、モデル呼出し・OSサンドボックス・資源制限・実kill/reapは存在しない。`RunReport` の受入条件は `partial`／`not_satisfied` を明示し、`success` は復帰確認済みの `verified_win` だけを指す。モデル呼出しを伴う実制作・攻略と、隔離実行を伴う検証は別途の承認（Issueの②）を必要とする。

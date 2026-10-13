@@ -394,29 +394,46 @@ def test_boundary_override_post_boundary_deadline_is_durable():
 
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
-        factory = HangingTargetFactory("robots", boundary_timeout_s=30.0)
+        request_timeout_s = 30.0
+        factory = HangingTargetFactory("robots", boundary_timeout_s=120.0)
         store, coordinator = _coordinator(factory, state_dir)
         _assert_started(coordinator)
-        factory.adapters[("nethack", 1)].boundary_release.set()
+        old = factory.adapters[("nethack", 1)]
+        old.boundary_release.set()
+        request_id = str(uuid.uuid4())
         seen = []
 
-        def watch():
-            limit = time.monotonic() + 3.0
-            while time.monotonic() < limit:
-                state, _ = store.canonical.load()
-                if state["phase"] == "probing":
-                    seen.append((state["deadline_at"], _dt.datetime.now(_dt.timezone.utc)))
-                    return
-                time.sleep(0.005)
+        def observe_readiness(deadline, cancel):
+            # The coordinator durably saves probing before invoking readiness.
+            # Read that file in the adapter call itself, so an observer thread
+            # cannot miss the phase on a loaded runner (#2052).
+            state, _ = store.canonical.load()
+            seen.append((state, _dt.datetime.now(_dt.timezone.utc)))
+            # Exercise the real failure/rollback path without waiting out the
+            # generous request budget used to reach the observation point.
+            raise game_switch.ReadinessTimeoutError("fixture target never became ready")
 
-        watcher = threading.Thread(target=watch)
-        watcher.start()
-        coordinator.switch("robots", timeout_s=0.6)
-        watcher.join(4.0)
-        assert seen, "probing phase was not observed"
-        raw, observed_at = seen[0]
-        deadline_at = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        assert deadline_at < observed_at + _dt.timedelta(seconds=5.0)
+        with patch.object(HangingReadinessAdapter, "readiness", side_effect=observe_readiness):
+            result = coordinator.switch(
+                "robots", request_id=request_id, timeout_s=request_timeout_s,
+            )
+        final, _ = store.canonical.load()
+        assert len(seen) == 1, (
+            result.status, result.error_code, result.detail, final["phase"],
+        )
+        state, observed_at = seen[0]
+        assert state["phase"] == "probing"
+        assert state["request_id"] == request_id
+        assert state["candidate"]["game"] == "robots"
+        deadline_at = _dt.datetime.fromisoformat(state["deadline_at"].replace("Z", "+00:00"))
+        assert deadline_at < observed_at + _dt.timedelta(seconds=request_timeout_s + 1.0)
+        assert result.status == "rolled_back"
+        assert result.error_code == game_switch.ERROR_READINESS_TIMEOUT
+        assert store.receipts.load(request_id)["status"] == "rolled_back"
+        assert final["phase"] == "ready"
+        assert final["active"]["game"] == "nethack"
+        restored = factory.adapters[("nethack", final["active"]["generation"])]
+        assert restored.runtime.alive
 
 
 def test_boundary_without_override_times_out_at_request_deadline():
@@ -757,7 +774,9 @@ def test_expired_draining_recovery_cancels_stale_driver_without_stop(legacy_canc
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
-        store, coordinator = _coordinator(factory, state_dir)
+        # Keep the fake driver alive until this test explicitly expires its
+        # durable deadline; its default 0.2s step budget races a loaded runner.
+        store, coordinator = _coordinator(factory, state_dir, round_boundary_s=30.0)
         _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         request_id = str(uuid.uuid4())
@@ -771,30 +790,32 @@ def test_expired_draining_recovery_cancels_stale_driver_without_stop(legacy_canc
             )
         )
         worker.start()
-        _wait_for_phase(store, "draining")
-        assert old.boundary_entered.wait(1.0)
-        # Simulate a controller crash whose durable deadline has elapsed;
-        # the adapter worker itself is still waiting and will acknowledge
-        # late, after recovery has cancelled the request.
-        with store.lock(exclusive=True, blocking=False):
+        try:
+            _wait_for_phase(store, "draining")
+            assert old.boundary_entered.wait(1.0)
+            # Simulate a controller crash whose durable deadline has elapsed;
+            # the adapter worker itself is still waiting and will acknowledge
+            # late, after recovery has cancelled the request.
+            with store.lock(exclusive=True, blocking=False):
+                state, _ = store.canonical.load()
+                state["deadline_at"] = "2000-01-01T00:00:00Z"
+                store.canonical.save(state)
+
+            recovered = coordinator.recover()
+            assert recovered.status == "failed"
+            assert recovered.error_code == game_switch.ERROR_TIMEOUT
             state, _ = store.canonical.load()
-            state["deadline_at"] = "2000-01-01T00:00:00Z"
-            store.canonical.save(state)
+            assert state["phase"] == "ready"
+            assert state["active"]["game"] == "nethack"
+            assert old.runtime.alive
 
-        recovered = coordinator.recover()
-        assert recovered.status == "failed"
-        assert recovered.error_code == game_switch.ERROR_TIMEOUT
-        state, _ = store.canonical.load()
-        assert state["phase"] == "ready"
-        assert state["active"]["game"] == "nethack"
-        assert old.runtime.alive
-
-        # A delayed adapter acknowledgement is stale after recovery and must
-        # not stop the game.  The real adapter follows the same request/active
-        # identity check before any quiesce call.
-        old.boundary_release.set()
-        worker.join(2.0)
-        assert not worker.is_alive()
+        finally:
+            # A late acknowledgement is stale and must not stop the game.
+            # Join before TemporaryDirectory removes the request receipts,
+            # including when an assertion fails. Keep the original 2s bound.
+            old.boundary_release.set()
+            worker.join(2.0)
+            assert not worker.is_alive(), "stale boundary driver did not finish during fixture cleanup"
         assert "stop_agent" not in old.runtime.events
         assert "cleanup" not in old.runtime.events
         assert result_box[0].status == "failed"

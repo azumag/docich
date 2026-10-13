@@ -534,3 +534,90 @@ def test_recovery_claim_requires_derived_attempt_and_retains_logical_uuid(recove
     before=snapshot_recovery(s)
     assert recover_startup(s,apply=True,expected=s.fingerprint)['status']=='already-dispatched'
     assert snapshot_recovery(s)==before
+
+
+def test_native_priest_stall_restores_without_inventing_chapter_or_old_payment(setup):
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_bot import decide
+    from docich.hanjuku_screen import parse, resume_egg_ritual_panel
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g725-priest-ritual-preparation.png')
+    assert resume_egg_ritual_panel(parse(frame))
+    restore_test(setup, chapter=None, native_frame=frame)
+    receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['status'] == 'verified' and receipt['chapter'] is None
+    policy = read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
+    assert policy == {'name': {'done': True}, 'resume_chapter_pending': True,
+                      'resume_egg_ritual': {'readings': 0, 'month': '1-5'}}
+    actions, state = decide(frame, {'policy': policy})
+    assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
+    assert state['policy'].get('chapter') is None
+    assert not state['policy'].get('month_sub') and not state['policy'].get('egg_uses')
+    assert not state['policy'].get('orders')
+
+
+def test_native_namaste_stall_can_restore_only_bounded_foreground(setup):
+    from docich.hanjuku.os_layer.pixels import read_png
+    from docich.hanjuku.os_layer.screen import parse, resume_egg_ritual_panel
+    from docich.hanjuku.orchestrator import decide
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g731-priest-namaste.png')
+    assert frame.digest() == '7b0af6558effa6e61a270c3de4bd1bff7815d00e41fc23a44452c2159a37817a'
+    assert resume_egg_ritual_panel(parse(frame))
+    restore_test(setup, chapter=None, native_frame=frame)
+    receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['status'] == 'verified' and receipt['chapter'] is None
+    policy = read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
+    assert policy == {'name': {'done': True}, 'resume_chapter_pending': True,
+                      'resume_egg_ritual': {'readings': 0, 'month': '1-5'}}
+    actions, state = decide(frame, {'policy': policy})
+    assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
+    assert not state['policy'].get('egg_uses') and not state['policy'].get('month_sub')
+
+
+def test_verified_native_restore_context_can_detect_subsequent_title_return(setup):
+    from docich import hanjuku_run
+    from docich.hanjuku.os_layer.pixels import read_png
+    from test_hanjuku_script import title_frame
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g731-priest-namaste.png')
+    restore_test(setup, chapter=None, native_frame=frame)
+    receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['gameplay_context'] == 'verified_checkpoint_foreground'
+    identity = hanjuku_run.runtime_identity(setup.spec)
+    wall = receipt['verified_at'] + 1
+    run = hanjuku_run.observe(setup.spec.runtime_dir, identity, frame, now=0, wall=wall)
+    assert run['checkpoint_started'] and not run['name_entered'] and not run['gameplay_seen']
+    battle_frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g713-zeus-cumin-healthy.png')
+    run = hanjuku_run.observe(setup.spec.runtime_dir, identity, battle_frame, now=1, wall=wall + 1)
+    assert run['gameplay_seen'] and not run['name_entered']
+    for now in (2, 3, 4):
+        run = hanjuku_run.observe(setup.spec.runtime_dir, identity, title_frame(), now=now, wall=wall + now)
+    assert run['terminal_reason'] == 'game_over'
+    assert hanjuku_run.terminal(setup.spec.runtime_dir, identity) == run
+
+
+def test_native_priest_result_boundary_restores_bounded_dialogue_without_old_transaction(setup):
+    from docich.hanjuku_pixels import read_png
+    from docich.hanjuku_bot import decide
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g739-priest-recovery-dialogue.png')
+    restore_test(setup, chapter=None, native_frame=frame)
+    receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
+    assert receipt['status']=='verified' and receipt['chapter'] is None
+    assert receipt['gameplay_context']=='verified_checkpoint_foreground'
+    policy=read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
+    assert 'egg_uses' not in policy and 'month_sub' not in policy
+    assert decide(frame,{'policy':policy})[0] == [{'type':'pad','buttons':['a'],'hold_ms':100}]
+
+
+@pytest.mark.parametrize('uid', [8819, 8820])
+def test_disabled_battle_parent_checkpoint_seeds_only_finite_reobservation(setup, uid):
+    from docich.hanjuku_pixels import read_png
+    frame=read_png(Path(__file__).parent/f'fixtures/hanjuku/g741-orphan-menu-{uid}.png')
+    commands,writes=restore_test(setup,chapter=None,native_frame=frame)
+    receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
+    assert receipt['status']=='verified' and receipt['chapter'] is None
+    assert receipt['frame_sha256']==frame.resized().digest()
+    assert commands.count('LOAD_STATE_SLOT 0')==1
+    assert writes[0]==b'boot state' and all(b==b'serialized core' for b in writes[1:])
+    assert read_record(setup.spec.runtime_dir/'hanjuku_bot.json')=={'policy':{
+        'name':{'done':True},'resume_chapter_pending':True,
+        'resume_battle_menu':{'readings':0}}}
+    assert setup.source.read_bytes()==compressed(state_bytes())

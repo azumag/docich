@@ -72,11 +72,13 @@ def test_extra_known_card_outside_slot_is_not_ignored():
 def boss_memory():
     return {'chapter': 2, 'active': '2-B1', 'tick': 3000,
             'garrison': {'スペランザ': [policy.NAME]},
-            'sortie_general': {'2-B1': policy.NAME}}
+            'sortie_general': {'2-B1': 'ゼウス'}}
 
 
 def test_native_card_receipt_cannot_approve_a_different_boss_kit():
-    screen = parse(read_png(FIXTURE))
+    from test_hanjuku_sortie_evidence import actor_panel
+    # Original card cells plus an explicitly synthetic companion header.
+    screen = actor_panel(parse(read_png(FIXTURE)), 'ゼウス')
     mem = boss_memory()
     assert policy.deploy_step(screen, mem) == []
     record = mem['_records'][-1]
@@ -89,12 +91,14 @@ def test_native_exact_kit_can_be_confirmed_when_that_is_the_actual_plan(monkeypa
     from docich import hanjuku_chart as chart
     order = next(o for o in chart.orders(2) if o['step'] == '2-B1')
     monkeypatch.setattr(policy, '_order', lambda mem: {**order, 'cards': ('バルムンク',)})
-    screen = parse(read_png(FIXTURE))
+    from test_hanjuku_sortie_evidence import actor_panel
+    # Original card cells plus an explicitly synthetic companion header.
+    screen = actor_panel(parse(read_png(FIXTURE)), 'ゼウス')
     mem = boss_memory()
     assert policy.deploy_step(screen, mem) == [policy.pad('a')]
     context = mem['order_context']['2-B1']
     assert context['observed_metric']['cards'] == ['バルムンク']
-    assert context['actual_general'] == policy.NAME
+    assert context['actual_general'] == 'ゼウス'
     assert mem['_records'][-1]['inventory_evidence'] == 'measured_single_card_sortie'
 
 

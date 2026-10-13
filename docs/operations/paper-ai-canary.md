@@ -123,15 +123,68 @@ The operation does not install or create credentials. Missing Cloudflare search
 or direct-AI capability therefore fails closed. Installing/rotating those
 credentials remains a separate owner action.
 
-## Production enablement
+A successful real canary atomically replaces
+`$HOME/.config/docich/paper-ai-canary.json` with a mode-0600, secret-free
+receipt. The receipt contains the exact deployed docich SHA, timestamp,
+verified-source count, direct model identifier, output length/hash and
+`publishing=false`; it never contains model text or credential values. A new
+canary invalidates the previous receipt before making network/provider calls,
+so a failed re-check cannot leave an older success as the current acceptance
+record.
 
-A successful canary is **not** permission to enable production. PAPER research
-and narration remain independently controlled:
+## Production enablement and rollback
+
+A successful canary does **not** automatically enable production. After the
+reviewed enable/rollback code is on protected main and deployed, use the
+separate owner-only fixed operation:
+
+```console
+gh workflow run "VM operations" --repo azumag/docich --ref main \
+  -f operation=paper_ai_enable \
+  -f target=production \
+  -f ref=main \
+  -f confirm=production
+```
+
+`paper_ai_enable` requires a canary receipt from the **same current deployed
+SHA**, no older than 24 hours. It re-reads only the fixed owner-managed
+`/home/ubuntu/soren/.env`, validates the required Cloudflare capabilities,
+then atomically creates `$HOME/.config/docich/paper-ai.env` mode 0600. The
+file contains only the reviewed PAPER capabilities and flags:
 
 - `DOCICH_PAPER_RESEARCH_BACKEND=websearch`
+- Cloudflare Web Search backend/provider/gateway/account/token
 - `DOCICH_PAPER_SCRIPT_DIRECT_ENABLED=1`
+- `DOCICH_PAPER_IMPROVE_DIRECT_ENABLED=1`
+- Workers AI account and exactly one direct token or token-file path
 
-They should be changed only after their reviewed code is on main, the intended
-credentials are installed through the existing secret mechanism, and the
-one-shot canary succeeds on that same deployed revision. Rollback remains the
-legacy RSS/Wikipedia research backend and existing `script_agents` chain.
+The canonical rotation unit, its legacy-compatible unit name, and the dedicated
+PAPER unit load this file as an **optional** `EnvironmentFile`. Missing file
+therefore means the existing legacy behavior. No active service/corner is
+restarted by enable: the next oneshot PAPER/rotation invocation reads the new
+capability file.
+
+PAPER improvement runs that are detached with `systemd-run` do not put secret
+values in transient-unit argv or properties. A fixed reviewed wrapper reads the
+same `paper-ai.env` inside the child immediately before exec.
+
+Rollback is a separate fixed operation:
+
+```console
+gh workflow run "VM operations" --repo azumag/docich --ref main \
+  -f operation=paper_ai_disable \
+  -f target=production \
+  -f ref=main \
+  -f confirm=production
+```
+
+`paper_ai_disable` removes only the fixed regular
+`$HOME/.config/docich/paper-ai.env` file and refuses symlinks or unexpected
+types. It does not stop an already-running PAPER corner. Future invocations
+fall back to Google News RSS/Wikipedia, existing `script_agents`, and existing
+`improve_agents`.
+
+Activation is exact-SHA-gated at the time of enable. A later ordinary docich
+deploy does not silently rewrite or delete the capability file; if a fresh
+acceptance is desired after relevant AI-path changes, run the canary again
+before a new enable decision.

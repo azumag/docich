@@ -15,12 +15,13 @@ from pathlib import Path
 
 from .game_switch import atomic_write_json
 from .hanjuku_chart import HERO
+from . import hanjuku_reference as reference
 
 SCHEMA = 1
 EXPERIENCE_FILE = 'hanjuku_experience.json'
 MAX_SITUATIONS = 200
 MAX_ACTIONS = 8
-SITUATION_CONTEXT = 'ctx3'
+SITUATION_CONTEXT = 'ctx4'
 
 # Known independent choices per situation kind, used when the default is
 # losing and an alternative has not been tried yet. Map to the original six
@@ -124,6 +125,13 @@ def situation_key(kind: str, mem: dict) -> str:
                   f'egg={_resource_band(egg_count)}',
                   f'ally_soldiers={_soldier_count(battle, "ally_soldiers")}',
                   f'enemy_soldiers={_soldier_count(battle, "enemy_soldiers")}'))
+    for side in ('ally', 'enemy'):
+        name = battle.get(side)
+        name = 'しゅじんこう' if side == 'ally' and name == HERO else name
+        row = reference.general_strength(name) if isinstance(name, str) else None
+        combat = row[1] if isinstance(row, (tuple, list)) and len(row) >= 2 else None
+        combat = combat if type(combat) is int and 1 <= combat <= 15 else 'unknown'
+        parts.append(f'{side}_combat={combat}')
     return '|'.join(part.replace('|', '/') for part in parts)
 
 

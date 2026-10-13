@@ -88,7 +88,9 @@ def test_hero_only_recovery_uses_the_same_return_readiness_guard():
     mem['month_sub'].update(full_selected=False, hero_selected=True, gold_before=84, quoted_cost=50)
     assert p._finish_month_sub(native_return(), mem, mem['shop']) is False
     assert p._finish_month_sub(ready_menu(), mem, mem['shop']) is True
-    assert mem['shop']['egg'] == 'done'
+    assert mem['shop']['egg'] == 'check'
+    assert mem['egg_uses'] == {'ココット': 2}
+    assert mem['shop']['reserve'] == 50
 
 
 def test_month_step_sends_no_input_while_the_paid_menu_cursor_is_missing():
