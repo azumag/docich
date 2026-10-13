@@ -64,18 +64,13 @@ def _zero_army_refill(mem, shop, header):
     if (not _soldier_count_current(mem, header) or mem['soldiers_seen'] != 0
             or not shop or shop.get('key') != _month_key(header)
             or shop.get('soldier_receipt') or mem.get('month_sub')
-            or shop.get('recruit') in ('opened', 'unverified')):
+            or shop.get('recruit') in ('opened', 'unverified')
+            or _egg_before_soldiers(shop)):
         return
     gold = (header or {}).get('gold')
-    cards = [] if shop.get('merchant_done') else shop.get('items') or []
-    repair, egg = _house_repair_reserve(shop), shop.get('reserve', 0)
-    if (type(gold) is not int or any(type(n) is not int or n < 0 for n in (repair, egg))
-            or any(name not in KNOWN_PRICES or type(qty) is not int or qty < 0
-                   for name, qty in cards)):
+    available = _soldier_spendable(mem, shop, header, recruit=False)
+    if available is None:
         return
-    reserve = repair + egg
-    available = max(0, gold - _egg_recovery_wage_floor(mem) - reserve
-                    - sum(KNOWN_PRICES[name] * qty for name, qty in cards))
     target = min(SOLDIER_CAP, _soldier_target(mem, shop, header))
     amount = min(target, available)
     if amount <= 0:
@@ -84,7 +79,7 @@ def _zero_army_refill(mem, shop, header):
         shop['recruit'] = 'deferred_army'
     shop.update(recruit_priority=False, recruit_reserve=0)
     previous = shop.get('soldiers')
-    shop.update(soldiers=amount, soldiers_done=False, soldiers_target=target,
+    shop.update(soldiers=amount, soldiers_done=False, soldiers_target=target, closed=False,
                 soldier_total_target=target)
     if previous != amount or not shop.get('zero_army_refill_recorded'):
         shop['zero_army_refill_recorded'] = True
@@ -100,14 +95,19 @@ def _soldier_target(mem, shop, header):
     if type(gold) is not int:
         return SOLDIER_ENOUGH
     cards = [] if shop.get('merchant_done') else shop.get('items') or []
-    if any(name not in KNOWN_PRICES for name, _ in cards):
+    if (not isinstance(cards, (list, tuple))
+            or any(not isinstance(row, (list, tuple)) or len(row) != 2
+                   or not isinstance(row[0], str) or row[0] not in KNOWN_PRICES
+                   or type(row[1]) is not int or row[1] < 0 for row in cards)
+            or any(type(n) is not int or n < 0
+                   for n in (shop.get('reserve', 0), shop.get('recruit_reserve', 0)))):
         return SOLDIER_ENOUGH
     repair = _house_repair_reserve(shop)
     if type(repair) is not int:
         return SOLDIER_ENOUGH
     egg = (0 if shop.get('egg') in ('done', 'not_needed') else
            max(shop.get('reserve', 0), EGG_RECOVER_COST * len(_egg_recovery_targets(mem))))
-    held = (egg + repair + WAGE_RESERVE + shop.get('recruit_reserve', 0)
+    held = (egg + repair + _egg_recovery_wage_floor(mem) + shop.get('recruit_reserve', 0)
             + sum(KNOWN_PRICES[name] * qty for name, qty in cards))
     key = _month_key(header) if header else None
     count = mem.get('soldiers_seen')
@@ -117,7 +117,30 @@ def _soldier_target(mem, shop, header):
     return 100 if gold - held >= extra + RECRUIT_COST else SOLDIER_ENOUGH
 
 
-def _limit_soldier_refill(mem, shop, header):
+def _soldier_spendable(mem, shop, header, *, recruit=True):
+    """One actual cash/payroll/reservation gate for planning and payment."""
+    if (not isinstance(header, dict)
+            or any(type(header.get(k)) is not int for k in ('year', 'month', 'gold'))
+            or header['year'] < 1 or not 1 <= header['month'] <= 12 or header['gold'] < 0
+            or shop.get('key') != _month_key(header)
+            or (mem.get('_run_identity') is not None
+                and mem.get('month') not in (None, shop.get('key')))
+            or mem.get('recruit_payroll_pending')):
+        return None
+    repair = _house_repair_reserve(shop)
+    egg, hiring = shop.get('reserve', 0), shop.get('recruit_reserve', 0) if recruit else 0
+    cards = [] if shop.get('merchant_done') else shop.get('items') or []
+    if (repair is None or any(type(v) is not int or v < 0 for v in (egg, hiring))
+            or not isinstance(cards, (list, tuple))
+            or any(not isinstance(row, (list, tuple)) or len(row) != 2
+                   or not isinstance(row[0], str) or row[0] not in KNOWN_PRICES
+                   or type(row[1]) is not int or row[1] < 0 for row in cards)):
+        return None
+    return max(0, header['gold'] - _egg_recovery_wage_floor(mem) - egg - repair - hiring
+               - sum(KNOWN_PRICES[name] * qty for name, qty in cards))
+
+
+def _limit_soldier_refill(mem, shop, header, *, payment=False):
     # Never rewrite a dispatched purchase or its pending payment receipt.
     if (shop.get('soldier_receipt') or shop.get('soldiers_done') is True
             or mem.get('month_sub')):
@@ -129,9 +152,14 @@ def _limit_soldier_refill(mem, shop, header):
              and mem.get('soldiers_seen_key') == key
              and type(count) is int and count >= 0)
     cap = min(SOLDIER_CAP, max(0, target - count) if known else target)
-    payroll = _egg_recovery_wage_floor(mem)
-    gold = (header or {}).get('gold')
-    if payroll > WAGE_RESERVE and type(gold) is int:
+    # An unauthorised hiring fee must not shrink the necessary army and then
+    # use that artificial spare cash to authorise itself. Keep the provisional
+    # requirement for that gate; the actual digit confirmation is cash-capped.
+    payroll, gold = _egg_recovery_wage_floor(mem), (header or {}).get('gold')
+    if payment:
+        available = _soldier_spendable(mem, shop, header)
+        cap = min(cap, available if available is not None else 0)
+    elif payroll > WAGE_RESERVE and type(gold) is int:
         cap = min(cap, max(0, gold - payroll - _month_held_reserve(shop)
                            - shop.get('recruit_reserve', 0)))
     for field in ('soldiers', 'soldiers_target', 'soldiers_before_recruit'):
@@ -174,13 +202,23 @@ EGG_RITUAL_LIMIT = 64            # measured paid recovery includes a long chant
 MONTH_SUB_ABORT_B_LIMIT = 12     # ignored Bs (~18 s) before plain text is advanced with A (g662)
 
 
+def _eligible_recovery_actors(mem, actors):
+    """A complete current survey limits payable owners, not historical stock."""
+    from ..os_layer.roster import completed_survey
+    survey = completed_survey(mem)
+    if (survey is None or mem.get('recruit_payroll_pending')
+            or 'roster_started' in (mem.get('house') or {})):
+        return set(actors)
+    return set(actors).intersection(survey['receipt']['names'])
+
+
 def _depleted_eggs(mem):
     # Ordinary eggs recover to four, while one-shot/king eggs hold only one.
     types = mem.get('egg_types') or {}
     counts = mem.get('egg_uses') or {}
-    return {name for name, uses in counts.items()
+    return _eligible_recovery_actors(mem, {name for name, uses in counts.items()
             if type(uses) is int and 0 <= uses < (
-                1 if types.get(name) in {'いっぱつエッグ', 'キングエッグ'} else 4)}
+                1 if types.get(name) in {'いっぱつエッグ', 'キングエッグ'} else 4)})
 
 
 def _egg_measured_cost(mem):
@@ -208,7 +246,7 @@ def _egg_recovery_targets(mem):
         targets.update(name for name, fields in survey.get('dirty', {}).items() if 'egg' in fields)
     shop = mem.get('shop') or {}
     paid = (shop.get('egg_paid_actors') or []) if shop.get('key') == mem.get('month') else []
-    return sorted(targets.difference(paid))
+    return sorted(_eligible_recovery_actors(mem, targets).difference(paid))
 
 
 def _extras_reserve(mem, header):
@@ -260,6 +298,20 @@ def _refresh_egg_priority(mem, shop, header):
         return
     targets = _egg_recovery_targets(mem)
     if not targets:
+        from ..os_layer.roster import completed_survey
+        if (completed_survey(mem) is not None and not mem.get('recruit_payroll_pending')
+                and 'roster_started' not in (mem.get('house') or {})
+                and shop.get('egg') not in ('opened', 'unverified')
+                and (mem.get('month_sub') or {}).get('kind') != 'egg'
+                and (shop.get('reserve', 0) or shop.get('egg_priority'))):
+            previous = shop.get('reserve', 0)
+            shop.update(reserve=0, egg_cost=0, egg_priority=False)
+            if shop.get('egg_before_recruit') and shop.get('egg') == 'skipped':
+                shop['egg'] = 'check'  # a probe, never an inferred full egg
+            _record(mem, 'egg_reserve_roster_reconciled', month=key,
+                    observed_metric={'previous_reserve': previous,
+                                     'current_members': completed_survey(mem)['receipt']['names']},
+                    reason='同ラン同月の完全実名簿に回復対象がいないため、履歴を残して旧卵予算だけ再照合する')
         return
     if not shop.get('egg_priority'):
         shop['egg_priority'] = True
@@ -370,7 +422,7 @@ def _defer_recruit_cash(mem, shop, gold, evidence):
                  or (shop.get('soldier_receipt') or {}).get('status') == 'paid')
     cards = [] if shop.get('merchant_done') else shop.get('items') or []
     if not completed and type(original) is int and original >= 0:
-        affordable = (max(0, gold - WAGE_RESERVE - _month_held_reserve(shop)
+        affordable = (max(0, gold - _egg_recovery_wage_floor(mem) - _month_held_reserve(shop)
                          - sum(KNOWN_PRICES[name] * qty for name, qty in cards))
                       if type(gold) is int and all(name in KNOWN_PRICES for name, _ in cards) else 0)
         shop['soldiers'] = min(original, affordable)
@@ -534,7 +586,7 @@ def _reserve_general_repair(mem, shop, gold):
         if all(n in KNOWN_PRICES for n, _ in cards):
             card_cost = sum(KNOWN_PRICES[n] * qty for n, qty in cards)
             shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - card_cost
-                - _month_held_reserve(shop) - WAGE_RESERVE - shop.get('recruit_reserve', 0)))
+                - _month_held_reserve(shop) - _egg_recovery_wage_floor(mem) - shop.get('recruit_reserve', 0)))
             shop['soldiers_done'] = shop['soldiers'] == 0
     if changed:
         _record(mem, 'general_repair_funds_reserved', month=shop.get('key'),
@@ -552,7 +604,7 @@ def _reserve_hero_repair(mem, shop, gold):
                  if all(n in KNOWN_PRICES for n, _ in items) else None)
     if not shop.get('soldiers_done') and type(gold) is int and card_cost is not None:
         shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - card_cost
-                               - _month_held_reserve(shop) - WAGE_RESERVE
+                               - _month_held_reserve(shop) - _egg_recovery_wage_floor(mem)
                                - shop.get('recruit_reserve', 0)))
         shop['soldiers_done'] = shop['soldiers'] == 0
     _record(mem, 'hero_repair_funds_reserved', month=shop.get('key'),
@@ -897,13 +949,13 @@ def _hero_egg_wage_floor(mem):
     blind floor refused the 50G that would have kept the hero alive. Only a
     fresh, complete roster with every wage read lowers it; otherwise 30G.
     """
-    from ..os_layer.roster import MAX_RECRUIT_WAGE, fresh
+    from ..os_layer.roster import MAX_RECRUIT_WAGE, fresh, payroll_hold
     receipt = fresh(mem)
     wages = (receipt or {}).get('wages')
     if (not receipt or receipt.get('complete') is not True or mem.get('recruit_payroll_pending')
             or not isinstance(wages, dict) or set(wages) != set(receipt.get('names') or ())
             or any(type(v) is not int or not 0 <= v <= MAX_RECRUIT_WAGE for v in wages.values())):
-        return WAGE_RESERVE
+        return max(WAGE_RESERVE, payroll_hold(mem))
     return sum(wages.values())
 
 
@@ -914,7 +966,7 @@ def _egg_recovery_wage_floor(mem):
     A blind 30G floor declined the affordable recovery. Large known payrolls
     still reserve their entire sum instead of capping it at the fallback.
     """
-    from ..os_layer.roster import MAX_RECRUIT_WAGE, fresh, run_identity
+    from ..os_layer.roster import MAX_RECRUIT_WAGE, fresh, run_identity, payroll_hold
     receipt = fresh(mem)
     identity = run_identity(mem.get('_run_identity'))
     wages = (receipt or {}).get('wages')
@@ -922,7 +974,7 @@ def _egg_recovery_wage_floor(mem):
             or receipt.get('complete') is not True or mem.get('recruit_payroll_pending')
             or not isinstance(wages, dict) or set(wages) != set(receipt.get('names') or ())
             or any(type(v) is not int or not 0 <= v <= MAX_RECRUIT_WAGE for v in wages.values())):
-        return WAGE_RESERVE
+        return max(WAGE_RESERVE, payroll_hold(mem))
     return sum(wages.values())
 
 

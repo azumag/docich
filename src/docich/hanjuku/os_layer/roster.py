@@ -180,6 +180,65 @@ def invalidate(mem):
         mem['house']['roster_invalidated'] = True
 
 
+def _payroll_hold_wages(mem):
+    hold = mem.get('payroll_membership_hold')
+    identity = run_identity(mem.get('_run_identity'))
+    if (identity is None or not isinstance(hold, dict) or hold.get('identity') != identity
+            or type(hold.get('schema')) is not int or hold['schema'] != 1
+            or hold.get('scope') != [mem.get('chapter'), mem.get('month')]):
+        return None
+    wages = hold.get('wages')
+    if (not isinstance(wages, dict) or not 1 <= len(wages) <= MAX_GENERALS
+            or any(not isinstance(n, str) or not 1 <= len(n) <= 32 for n in wages)
+            or any(type(v) is not int or not 0 <= v <= MAX_RECRUIT_WAGE for v in wages.values())
+            or type(hold.get('saturated')) is not bool):
+        return None
+    return wages
+
+
+def payroll_hold(mem):
+    """A retained bill is a spending floor, never a current roster receipt."""
+    wages = _payroll_hold_wages(mem)
+    if wages is None:
+        return 0
+    return (MAX_GENERALS * MAX_RECRUIT_WAGE
+            if mem['payroll_membership_hold']['saturated'] else sum(wages.values()))
+
+
+def observed_member(mem, names):
+    """New actual members invalidate membership without forgetting known wages."""
+    if (not names or len(names) > MAX_GENERALS or len(set(names)) != len(names)
+            or any(not isinstance(n, str) or not 1 <= len(n) <= 32 for n in names)):
+        return
+    survey = completed_survey(mem)
+    held = _payroll_hold_wages(mem)
+    if survey is None and held is None:
+        return
+    if survey is not None and set(names) <= set(survey['receipt']['names']):
+        return
+    wages = dict(held or {})
+    if survey is not None:
+        receipt = survey['receipt']
+        actual = receipt.get('wages')
+        if (isinstance(actual, dict) and set(actual) == set(receipt['names'])
+                and all(type(v) is int and 0 <= v <= MAX_RECRUIT_WAGE for v in actual.values())):
+            wages.update(actual)
+    saturated = bool(held and mem['payroll_membership_hold']['saturated'])
+    for name in names:
+        if name in wages:
+            continue
+        if len(wages) == MAX_GENERALS:
+            saturated = True
+            continue
+        value = fixed_wage(name)
+        wages[name] = MAX_RECRUIT_WAGE if value is None else value
+    mem['payroll_membership_hold'] = {
+        'schema': 1, 'identity': run_identity(mem.get('_run_identity')),
+        'scope': [mem.get('chapter'), mem.get('month')],
+        'wages': wages, 'saturated': saturated}
+    invalidate(mem)
+
+
 def surveyed(mem):
     """The known current roster's statuses were walked; total may be unknown."""
     if run_identity(mem.get('_run_identity')) is not None:
@@ -331,6 +390,7 @@ def fresh(mem, *, include_completed=True):
 def page(mem, names):
     if names is None or not names or len(set(names)) != len(names):
         return
+    observed_member(mem, names)
     survey = reusable_survey(mem)
     if survey is not None and not set(names) <= set(survey['receipt']['names']):
         invalidate(mem)  # a new actual name needs a new complete membership walk
@@ -394,6 +454,11 @@ def complete(mem, state):
                 'statuses': deepcopy(statuses), 'dirty': {}}
             if full:
                 mem.pop('roster_status_walk', None)
+                wages = receipt.get('wages')
+                if (isinstance(wages, dict) and set(wages) == set(receipt['names'])
+                        and all(type(v) is int and 0 <= v <= MAX_RECRUIT_WAGE
+                                for v in wages.values())):
+                    mem.pop('payroll_membership_hold', None)
             for info in statuses.values():
                 status_observed(mem, info)
     if full:

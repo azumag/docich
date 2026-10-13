@@ -132,7 +132,7 @@ def quantity_step(screen: Screen, mem, soldiers=False):
         # in charge: its early return must not retain an unsafe saved budget.
         _reserve_general_repair(mem, shop, (screen.header or {}).get('gold'))
         _refresh_egg_priority(mem, shop, screen.header)
-        _limit_soldier_refill(mem, shop, screen.header)
+        _limit_soldier_refill(mem, shop, screen.header, payment=True)
         state = mem.get('army_count_check')
         scope = _soldier_count_scope(mem, screen.header)
         if mem.get('_run_identity') is not None and scope is None:
@@ -196,6 +196,24 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                 shop['recruit'] = 'pending'
             return [pad('b')]
         receipt = shop.get('soldier_receipt') or {}
+        if scope is not None and receipt:
+            if (receipt.get('key') != scope[-1] or type(receipt.get('qty')) is not int
+                    or not 0 < receipt['qty'] <= 99
+                    or type(receipt.get('gold_before')) is not int
+                    or receipt['gold_before'] < 0):
+                return [pad('b')]
+            if receipt.get('status') == 'pending':
+                # Wait for the actual debit once; an unchanged editor must
+                # neither repeat A nor strand this month indefinitely.
+                waits = receipt.get('quantity_waits', 0)
+                if type(waits) is not int or not 0 <= waits < 3:
+                    receipt['status'] = 'unverified'
+                    shop['soldiers_done'] = True
+                    return [pad('b')]
+                receipt['quantity_waits'] = waits + 1
+                return []
+        if scope is not None and shop.get('soldiers_done') and not receipt:
+            return [pad('b')]  # a saved done flag is not a new payment request
         if receipt.get('status') in ('paid', 'unverified') or receipt.get('payment_seen'):
             return [pad('b')]
         # Digits sit at x=216 (tens) and x=224 (ones). The hand on the ones
