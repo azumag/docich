@@ -16,6 +16,7 @@ from ... import hanjuku_chart as chart, hanjuku_experience as experience
 from ...hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
 from ..decision_log import _record, _tally
 from ..judgment.battle import (CARD_MENU_OPEN_RETRIES, DEFENDER_EGG_OPEN_LIMIT, DUEL_EVENT_TOKENS,
+                               _conserved_army_recheck,
                                ENTRY_RETURN_KINDS, GENERAL_CRITICAL_RETREAT_HP, HERO_RECALL_MIN_HP,
                                HERO_RECALL_RATIO_TENTHS, MELEE_HOLD_LIMIT, MELEE_HP_HOLD_DIVISOR,
                                MELEE_HP_HOLD_FLOOR, _battle_context, _battle_labels, _bind_battle_strategy,
@@ -443,6 +444,15 @@ def battle_step(screen: Screen, mem):
             return _human_menu_open(cur, 'survival')  # one final live inspection
         conserving = (rescue.get('conserving_melee') is True
                       and _hold_melee_egg(mem, cur, set(rescue.get('conserved_labels') or ())))
+        if not conserving and _conserved_army_recheck(mem, cur):
+            _record(mem, 'battle_conserved_army_recheck', **_battle_labels(cur),
+                    observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
+                                     'ally_soldiers': cur.get('ally_soldiers'),
+                                     'enemy_soldiers': cur.get('enemy_soldiers'),
+                                     'observations': cur['conserved_army_recheck']['observations'],
+                                     'limit': 2, 'army_advantage': 'unconfirmed'},
+                    reason='実メニューで温存した健全な将軍の兵数が一時未読のため、旧兵数を使わず有限で再観測')
+            return [{'type': 'wait', 'ms': 50}]
         if (not conserving and not rescue.get('exhausted') and rescue['opens'] < 12
                 and rescue.get('pending_opens', 0) < 3):
             rescue['opens'] += 1

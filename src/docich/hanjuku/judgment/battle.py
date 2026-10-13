@@ -959,6 +959,51 @@ def _hold_melee_egg(mem, cur, labels):
             and scores[0] > scores[1])
 
 
+def _conserved_army_recheck(mem, cur):
+    """Briefly reobserve unread troops after a real healthy conservation menu.
+
+    g745 Coco/Semillon1436 conserved; 1446's clipped army invalidated both
+    counts and immediately reopened the egg. This grants two observations
+    per battle, not stale troop counts or permission to continue melee.
+    HP danger, a summon, a pending tactic or a spent egg bypasses the wait.
+    """
+    from ..os_layer.roster import run_identity
+    rescue = cur.get('survival') or {}
+    identity = run_identity(mem.get('_run_identity'))
+    hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
+    maximum = general_max_hp('しゅじんこう' if cur.get('ally') == NAME else cur.get('ally'))
+    balance = _melee_balance(cur)
+    ac, ec = balance.get('ally_combat'), balance.get('enemy_combat')
+    if (identity is None or rescue.get('conserving_melee') is not True
+            or rescue.get('exhausted') or rescue.get('egg_attempted')
+            or _critical_survival_needed(cur) or _own_egg_empty(mem, cur)
+            or cur.get('card_flow') or cur.get('command_open_pending')
+            or cur.get('card_damage_rescue_needed')
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('card_soldiers_current') is not True
+            or any(cur.get(k) is not None and
+                   (type(cur.get(k)) is not int or not 0 <= cur[k] <= 6)
+                   for k in ('ally_soldiers', 'enemy_soldiers'))
+            or all(type(cur.get(k)) is int for k in ('ally_soldiers', 'enemy_soldiers'))
+            or any(type(n) is not int or n <= 0 for n in (hp, enemy, maximum, ac, ec))
+            or hp > maximum or hp * 10 <= maximum * BEHIND_EGG_RATIO_TENTHS
+            or hp * ac <= enemy * ec):
+        return False
+    scope = [identity, cur.get('ally'), cur.get('enemy'),
+             cur.get('start_ally_hp'), cur.get('start_enemy_hp')]
+    claim = cur.get('conserved_army_recheck')
+    if claim is None:
+        claim = cur['conserved_army_recheck'] = {'scope': scope, 'observations': 0}
+    if (not isinstance(claim, dict) or claim.get('scope') != scope
+            or type(claim.get('observations')) is not int
+            or not 0 <= claim['observations'] < 2):
+        cur['conserved_army_recheck'] = {'scope': scope, 'observations': 2}
+        return False  # corrupt/foreign/exhausted claims never refill on animation
+    claim['observations'] += 1
+    return True
+
+
 def _critical_safe_card(mem, cur, rescue):
     # Only the observed list, not a chart kit, licenses delaying an active
     # egg for a heal/proven finishing blow. Selection is still not a use.
