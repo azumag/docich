@@ -137,6 +137,16 @@ def quantity_step(screen: Screen, mem, soldiers=False):
         scope = _soldier_count_scope(mem, screen.header)
         if mem.get('_run_identity') is not None and scope is None:
             return []  # a faded month/header cannot authorize a runtime purchase
+        if (scope is not None and isinstance(state, dict) and state.get('scope') == scope
+                and state.get('stage') == 'measured'
+                and not _soldier_count_current(mem, screen.header)
+                and not shop.get('soldier_receipt')):
+            # A prior inspection is not authority to pay after its actual
+            # total becomes unreadable. Preserve the exhausted read budget.
+            state.update(stage='closing', result='unverified')
+            shop['soldiers_done'] = True
+            _record(mem, 'army_count_unverified', month=scope[-1],
+                    reason='確認後の実兵数が未読になったため補充を確定せず戻る。確認予算を増やさない')
         if (scope is not None and not _soldier_count_current(mem, screen.header)
                 and not shop.get('soldier_receipt')
                 and (not isinstance(state, dict) or state.get('scope') != scope)):

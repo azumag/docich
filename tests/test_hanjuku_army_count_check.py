@@ -190,6 +190,71 @@ def test_conflicting_total_rows_invalidate_freshness_without_claiming_zero():
     assert not economy._soldier_count_current(mem,s.header)
 
 
+@pytest.mark.parametrize('invalid',['unknown','multiple'])
+@pytest.mark.parametrize('persist',[False,True])
+def test_reentered_quantity_cannot_pay_after_measured_total_is_invalidated(invalid,persist):
+    from docich.hanjuku_font import TextLine, UNKNOWN
+    mem=memory();p.month_step(screen(),mem)
+    assert p.month_step(observe_count(mem,0),mem)==[p.pad('b')]
+    assert p.month_step(screen(),mem)==[p.pad('a')]
+    state=deepcopy(mem['army_count_check'])
+    q=quantity(gold=72)
+    q.lines[0]=TextLine(199,tuple((24+i*8,ch) for i,ch in enumerate('かわりますぞ'))
+                        +((216,'4'),(224,'2')))
+    text=('へいしすうは0'+UNKNOWN+'めいです' if invalid=='unknown' else
+          'へいしすうは0めいですへいしすうは60めいです')
+    q.lines.append(TextLine(135,tuple((24+i*8,ch) for i,ch in enumerate(text))))
+    q.text+='へいしすうは0めいです' if invalid=='unknown' else text
+    p.observe_events(q,mem)
+    assert not economy._soldier_count_current(mem,q.header)
+    if persist:mem=json.loads(json.dumps(mem))
+    assert p.quantity_step(q,mem,soldiers=True)==[p.pad('b')]
+    assert mem['army_count_check']['result']=='unverified'
+    assert mem['army_count_check']['observations']==state['observations']
+    assert not mem['shop'].get('soldier_receipt')
+    for _ in range(7):
+        assert p.quantity_step(q,mem,soldiers=True) in ([],[p.pad('b')])
+    p.month_step(screen(),mem)
+    assert mem['army_count_check']['stage']=='unverified'
+    assert mem['shop']['soldiers_done'] is True
+    assert not mem['shop'].get('soldier_receipt')
+
+
+def test_invalidated_total_at_quiet_parent_does_not_reopen_a_paid_refill():
+    mem=memory();p.month_step(screen(),mem)
+    p.month_step(observe_count(mem,0),mem)
+    p.month_step(screen(),mem)
+    mem.pop('soldiers_seen_key');mem.pop('soldiers_seen_scope')
+    p.month_step(screen(),mem)
+    assert mem['army_count_check']['stage']=='unverified'
+    assert mem['shop']['soldiers_done'] is True
+    assert not mem['shop'].get('soldier_receipt')
+
+
+def test_measured_refill_request_cannot_repeat_a_on_the_delayed_parent():
+    mem=memory();p.month_step(screen(),mem)
+    p.month_step(observe_count(mem,0),mem)
+    assert p.month_step(screen(),mem)==[p.pad('a')]
+    assert monthly.army_count_owned(mem)
+    for _ in range(3):assert p.month_step(screen(),mem)==[]
+    assert p.month_step(screen(),mem)==[p.pad('b')]
+    assert not mem['shop'].get('soldier_receipt')
+
+
+def test_measured_refill_request_owns_unread_frames_before_payment():
+    from docich.hanjuku_bot import decide
+    from test_hanjuku_chart_bot import Canvas
+    mem=memory();p.month_step(screen(),mem)
+    p.month_step(observe_count(mem,0),mem);p.month_step(screen(),mem)
+    frame=Canvas((0,0,0)).frame()
+    state={'policy':mem,'phase':'transition','no_input_streak':1000,
+           'no_input_frames':[frame.digest()]}
+    actions,out=decide(frame,state,run_identity=IDENTITY)
+    assert actions==[]
+    assert not any(r['decision']=='no_input_fallback' for r in out['_records'])
+    assert not out['policy']['shop'].get('soldier_receipt')
+
+
 @pytest.mark.parametrize('old_state',[None,True,{'scope':['foreign'],'stage':'measured'}])
 def test_hotload_inside_an_unknown_editor_starts_an_inspection_without_payment(old_state):
     mem=memory();mem['shop'].update(soldiers=24,soldiers_done=False)

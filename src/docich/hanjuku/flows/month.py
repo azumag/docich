@@ -40,12 +40,15 @@ def army_count_owned(mem):
     from ..os_layer.roster import run_identity
     identity = run_identity(mem.get('_run_identity'))
     state = mem.get('army_count_check')
+    shop = mem.get('shop') or {}
     return (identity is not None and isinstance(state, dict) and not mem.get('month_sub')
             and type(mem.get('chapter')) is int and 1 <= mem['chapter'] <= 12
             and isinstance(mem.get('month'), str)
             and re.fullmatch(r'[1-9][0-9]*-(?:[1-9]|1[0-2])', mem['month']) is not None
             and state.get('scope') == [identity, mem.get('chapter'), mem.get('month')]
-            and state.get('stage') not in ('measured', 'unverified'))
+            and (state.get('stage') not in ('measured', 'unverified')
+                 or (state.get('stage') == 'measured' and state.get('refill_requested') is True
+                     and not shop.get('soldier_receipt') and not shop.get('soldiers_done'))))
 
 
 def army_count_pending_step(screen, mem):
@@ -82,6 +85,20 @@ def _month_army_count_check(screen, mem, shop):
         _record(mem, 'army_count_check', month=scope[-1],
                 observed_metric={'planned_refill': (shop or {}).get('soldiers')},
                 reason='兵数未確認のため補充予定0でも実人数を確認する。確認入力では購入しない')
+    if state.get('stage') == 'measured' and not known:
+        state.update(stage='closing', result='unverified')
+        if shop:
+            shop['soldiers_done'] = True
+        _record(mem, 'army_count_unverified', month=scope[-1],
+                reason='確認後の実兵数が未読になったため補充を止める。確認予算を増やさない')
+    if (state.get('stage') == 'measured' and state.get('refill_requested') is True
+            and not intro and month_menu_ready(screen) and _month_menu_quiet(screen)):
+        if _army_count_increment(state, 'refill_waits', 4) >= 4:
+            state.update(stage='closing', result='unverified')
+            if shop:
+                shop['soldiers_done'] = True
+            return [pad('b')]
+        return []  # the A that opens the editor must not be sent again
     if state.get('stage') in ('measured', 'unverified'):
         return None
     if state.get('stage') == 'closing':
@@ -306,6 +323,11 @@ def month_step(screen: Screen, mem):
         move = _month_menu_move(screen, mem, 'へいしほじゅう')
         if isinstance(move, list):
             return move
+        if move == 'here':
+            check = mem.get('army_count_check')
+            if (isinstance(check, dict) and check.get('stage') == 'measured'
+                    and check.get('scope') == _soldier_count_scope(mem, screen.header)):
+                check['refill_requested'] = True
         return [pad('a')] if move == 'here' else [move] if move else []
     if mem.get('month_sub') and not _finish_month_sub(screen, mem, shop):
         # g462 18:06:04: the menu frame still predates the game's reaction to
