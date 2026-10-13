@@ -807,8 +807,12 @@ def test_the_boss_tower_target_needs_a_y_jump_and_a_cancel_resets_the_jumps(monk
     assert mem['y_jumps'] == {'G:map': 1}                     # the retry may jump again
 
 
-def test_a_boss_sortie_without_its_general_gives_up_and_a_cancelled_boss_retries():
-    """g421 14:08: ココット was not at スペンソニア and the boss backup held 12+ minutes."""
+def test_a_boss_sortie_without_its_general_continues_with_the_listed_substitute():
+    """g421 14:08: ココット was not at スペンソニア while リーキ was on the list.
+
+    Owner (2026-10-14): the listed fit substitute attacks instead of the boss
+    backup holding for 12 minutes, and the hero is still never the actor.
+    """
     from docich.hanjuku_font import TextLine
     order = {'step': 'F2', 'general': 'ココット', 'source': 'スペンソニア', 'target': 'けっかい',
              'cards': [], 'after': None, 'note': 't'}
@@ -822,15 +826,18 @@ def test_a_boss_sortie_without_its_general_gives_up_and_a_cancelled_boss_retries
             TextLine(55, tuple((144 + 8 * i, ch) for i, ch in enumerate('リーキ')))]
     screen = Screen(lines=rows, hand=(122, 33, 139, 45), kind='general_list',
                     text='しゅつげきどうしリーキステータス')
-    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['orders']['F2'] == 'pending'
-    following = policy.next_order(mem)
-    assert following is None or following['step'] not in {'F1', 'F2'}
-    assert any(r['decision'] == 'boss_companion_required' for r in mem['_records'])
+    assert policy.deploy_step(screen, mem) != [policy.pad('b'), policy.pad('b')]
+    assert mem['general_override']['F2'] == 'リーキ'
+    assert policy.NAME not in mem['general_override'].values()
+    assert policy._order_hero_alternatives(order, mem, [policy.NAME]) == []
 
 
-def test_an_absent_boss_general_retires_an_old_target_cancel_retry():
-    """A target-cancel retry must not loop forever after its general is confirmed absent."""
+def test_an_absent_boss_general_retries_with_the_listed_fit_substitute():
+    """A target-cancel retry must not loop on the general who is not there.
+
+    Owner (2026-10-14): it attacks with the fit general the list actually
+    shows, and never with the hero.
+    """
     from docich.hanjuku_font import TextLine
     order = {'step': 'F1', 'general': 'ココット', 'source': 'スペンソニア', 'target': 'けっかい',
              'cards': [], 'after': None, 'note': 't'}
@@ -843,13 +850,12 @@ def test_an_absent_boss_general_retires_an_old_target_cancel_retry():
     screen = Screen(lines=rows, hand=(122, 33, 139, 45), kind='general_list',
                     text='しゅつげきリーキステータス')
     following = policy.next_order(mem)
-    assert following is None or following['step'] != 'F1'
-    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['orders']['F1'] == 'pending'
-    assert any(r['decision'] == 'boss_companion_required' for r in mem['_records'])
-    # The old retry never authorizes a hero or weak substitute.
-    following = policy.next_order(mem)
-    assert following is None or following['step'] != 'F1'
+    assert following is not None and following['step'] == 'F1'
+    assert policy.deploy_step(screen, mem) == [policy.pad('a')]
+    # The absent ココット is replaced, never re-tried, and the hero is not sent.
+    assert mem['general_override']['F1'] == 'リーキ'
+    assert policy.NAME not in mem['general_override'].values()
+    assert policy._order_hero_alternatives(order, mem, [policy.NAME]) == []
 
 
 def test_after_a_y_jump_the_cursor_is_walked_onto_the_nearest_roof_then_selects(monkeypatch):

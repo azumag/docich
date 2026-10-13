@@ -53,11 +53,21 @@ def _order_hero_alternatives(order, mem, names):
             or reference.general_strength('しゅじんこう'))
     if boss is None:
         return []
-    return [name for name in candidates
-            if (stats := reference.general_strength(name)) is not None
-            and boss[0] - stats[0] < reference.STRONG_GENERAL_HP_GAP
-            and boss[1] - stats[1] < reference.STRONG_GENERAL_COMBAT_GAP
-            and not _boss_companion_unfit(mem, name)]
+    fit = [name for name in candidates
+           if reference.general_strength(name) is not None and not _boss_companion_unfit(mem, name)]
+    strong = [name for name in fit
+              if (stats := reference.general_strength(name)) is not None
+              and boss[0] - stats[0] < reference.STRONG_GENERAL_HP_GAP
+              and boss[1] - stats[1] < reference.STRONG_GENERAL_COMBAT_GAP]
+    if strong:
+        return strong
+    # Owner (2026-10-14): waiting for a comparable companion left the boss
+    # castle unattacked for a whole run while healthy generals sat in other
+    # castles. A fit but weaker substitute still attacks, strongest first.
+    # The hero is never sent (owner: 主人公boss禁止), and an injured or
+    # egg-depleted substitute is still left to recover.
+    return sorted(fit, key=lambda name: (reference.general_strength(name) or (0, 0))[:2],
+                  reverse=True)
 
 
 def _boss_companion_unfit(mem, name):
@@ -619,12 +629,25 @@ def _match_sortie(mem, castle, general):
     Returns ``(step, status)``: exactly one en-route sortie of this general to
     this castle is ``matched``; several are ``ambiguous`` (never guessed);
     none falls back to the legacy per-castle record.
+
+    Only recent sorties count, with the same bound as ``_en_route``. An
+    arrival that was never read leaves its ``en_route`` record behind (g749
+    2026-10-14: sixty of them, including two ヴィーナス waves to けっかい and a
+    キッシュ/ゴーメン pair from an older interim order). Without the bound the
+    second record made every later entry message ``ambiguous``, so the arrival
+    was never bound, the castle list never recorded the army that had actually
+    arrived, and no further sortie could start.
     """
     sorties = mem.get('sorties') or {}
+    now = int(mem.get('tick') or 0)
     candidates = [step for step, sortie in sorties.items()
                   if sortie.get('status') in ('en_route', 'launched_unconfirmed')
                   and sortie.get('target') in (None, castle)
-                  and sortie.get('general') == general]
+                  and sortie.get('general') == general
+                  # A record with no tick predates the bound: it stays a
+                  # candidate so two of them are still ambiguous, never guessed.
+                  and (sortie.get('tick') is None
+                       or 0 <= now - int(sortie['tick']) < SORTIE_BUSY_TICKS)]
     if len(candidates) == 1:
         return candidates[0], 'matched'
     if candidates:
@@ -648,6 +671,65 @@ def _bind_sortie(mem, step, castle):
             if (mem.get('sortie_attempt') or {}).get('step') == step:
                 mem.pop('sortie_attempt', None)
         sortie.update(status='arrived', target=castle)
+
+
+def _transit_sorties(mem, castle, names):
+    """In-flight sorties whose general is listed inside ``castle`` right now.
+
+    The game stops a marching general inside any of our own castles on the
+    route and announces nothing (owner 2026-10-14: only an enemy entry or an
+    enemy attack prints a message), so the general list of that castle is the
+    only measurement. A general still recorded as marching to another castle
+    while his name is on this list has arrived here instead.
+    """
+    now = int(mem.get('tick') or 0)
+    listed = set(names or ())
+    out = []
+    for step, sortie in (mem.get('sorties') or {}).items():
+        source = sortie.get('source')
+        if (sortie.get('status') not in ('en_route', 'launched_unconfirmed')
+                or sortie.get('general') not in listed
+                or sortie.get('purpose') in ('house', 'move')
+                or sortie.get('target') in (None, castle)
+                # The castle he left is not a transit: a sortie still listed at
+                # its own source never departed, and the source verification
+                # owns that case. An unrecorded source is not route evidence.
+                or not source or source == castle
+                or sortie.get('tick') is None
+                or not 0 <= now - int(sortie['tick']) < SORTIE_BUSY_TICKS):
+            continue
+        out.append(step)
+    return out
+
+
+def _continue_transit_sorties(mem, castle, names):
+    """Re-issue each order from the castle its general actually stopped in.
+
+    Owner (2026-10-14): with the army scattered over several castles there was
+    no route that carried an order through an intervening own castle; the
+    sortie simply ended there. The same order keeps its general, cards and
+    target, and runs again from this castle (``source_override``), so the
+    march continues toward the original destination instead of idling.
+    """
+    changed = []
+    listed = sorted(set(names or ()))
+    for step in _transit_sorties(mem, castle, names):
+        sortie = mem['sorties'][step]
+        planned = sortie.get('target')
+        _garrison_move(mem, sortie['general'], source=sortie.get('source'), target=castle)
+        sortie.update(status='arrived', target=castle, transit_to=planned)
+        mem.setdefault('source_override', {})[step] = castle
+        mem.setdefault('orders', {})[step] = 'pending'
+        if mem.get('active') == step:
+            mem['active'] = None
+        if (mem.get('sortie_attempt') or {}).get('step') == step:
+            mem.pop('sortie_attempt', None)
+        _record(mem, 'sortie_transit_continue', chart_step=step, general=sortie['general'],
+                castle=castle, expected_metric={'target': planned},
+                observed_metric=listed[:8],
+                reason='経由した自城の一覧で将軍を確認したため、その城から目的地へ出撃し直す')
+        changed.append(step)
+    return changed
 
 
 def _sortie_step_for(mem, general, castle):

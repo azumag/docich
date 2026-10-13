@@ -921,9 +921,11 @@ def test_ambiguous_boss_entry_fights_with_the_marching_sorties_kit():
                 'after': ['captured', 'スペンソニア'], 'note': '卵落としにイッテツーンを携行'}
     mem['orders'].update({'1-B1': 'launched', k1: 'launched'})
     mem['launched_orders'] = {'1-B1': base, k1: adjusted}
+    # Both waves are still on the road: recent enough to count as marching.
+    mem['tick'] = 3000
     mem['sorties'] = {
-        '1-B1': {'general': chart.HERO, 'target': 'けっかい', 'status': 'en_route', 'tick': 1684},
-        k1: {'general': chart.HERO, 'target': 'けっかい', 'status': 'en_route', 'tick': 2292}}
+        '1-B1': {'general': chart.HERO, 'target': 'けっかい', 'status': 'en_route', 'tick': 2900},
+        k1: {'general': chart.HERO, 'target': 'けっかい', 'status': 'en_route', 'tick': 2990}}
     mem['_records'] = []
     entry = f'{chart.HERO}しょうぐんがボスじょうにせめこんだ!!'
     assert policy.message_step(_text_screen(entry), mem) == [policy.pad('a')]

@@ -183,18 +183,30 @@ def test_restart_flag_is_cleared_on_full_backout_and_other_order(monkeypatch):
     assert not mem.get('boss_stock_restart') and mem['active'] == '2-B1'
 
 
-def test_chapter_two_boss_keeps_comparable_companions_and_rejects_weak_one():
+def test_chapter_two_boss_keeps_comparable_companions_and_accepts_a_weaker_fit_one():
     mem = memory()
     assert p._order_hero_alternatives(order(), mem, ['どうし', 'シェーブル', 'ゼウス']) == ['ゼウス']
-    assert p._order_hero_alternatives(order(), mem, ['どうし', 'シェーブル']) == []
+    # Owner (2026-10-14): with no comparable general the fit one still attacks.
+    assert p._order_hero_alternatives(order(), mem, ['どうし', 'シェーブル']) == ['シェーブル']
     assert p._hero_alternatives(mem, ['どうし', 'シェーブル']) == ['シェーブル']
     road = {**order(), 'step': '2-S1', 'target': 'スペランザ'}
     assert p._order_hero_alternatives(road, mem, ['どうし', 'シェーブル']) == ['シェーブル']
 
 
-def test_broken_hero_is_not_licensed_by_a_weak_boss_companion():
+def test_an_injured_companion_is_still_left_to_recover_before_the_boss():
+    mem = memory()
+    mem['house_eggs'] = {'シェーブル': {'broken': True}}
+    assert p._order_hero_alternatives(order(), mem, ['どうし', 'シェーブル']) == []
+
+
+def test_broken_hero_is_replaced_by_a_fit_companion_and_never_sent():
+    """Owner (2026-10-14): the substitute attacks even below the gap.
+
+    The hero's own broken egg still never licenses sending the hero himself.
+    """
     mem = memory(); mem['garrison'] = {'スペランザ': ['どうし', 'シェーブル']}
     mem['house_eggs'] = {'どうし': {'broken': True}}
     mem['captured'] = [n for n in chart.castles(2) if n not in ('アルマムーン', 'ボス')]
-    assert not p._hero_source_alternative(order(), mem)
-    assert not p._ready(order(), mem)
+    assert p._hero_source_alternative(order(), mem)
+    assert p._ready(order(), mem)
+    assert p._order_hero_alternatives(order(), mem, ['どうし', 'シェーブル']) == ['シェーブル']

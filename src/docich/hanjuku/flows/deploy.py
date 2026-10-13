@@ -21,7 +21,8 @@ from ..os_layer.world import NAME, _en_route, _owned
 from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_UNREADABLE_LIMIT, CARRY_SLOTS,
                             ENEMY_EGG_CARD_ID_SUM, RARE_SCAN_LIMIT, SORTIE_CONFIRM_LIMIT, _cap_card_ids,
                             _deploy_cards, _is_boss_order, _observe_card_stock, _strict_boss_cards)
-from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, _boss_egg_depleted, _broken_hero_order, _few_castles,
+from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, _boss_egg_depleted, _broken_hero_order,
+                               _continue_transit_sorties, _few_castles,
                                _finish_order, _garrison_move, _hero_source_alternative, _order,
                                _order_hero_alternatives, _reserve_source_guard, _retake_reserved, _sortie_general,
                                _source, _source_location_recheck, _source_spare_missing, _staffed_elsewhere,
@@ -396,6 +397,11 @@ def _observe_garrison(screen, mem, order):
         garrison[castle] = present
         _record(mem, 'garrison_seen', **_deploy_context(order, mem), castle=castle,
                 observed_metric=present[:8], reason='出撃元の将軍一覧から駐留将軍を記録')
+    if castle in _owned(mem):
+        # A marching general the game stopped inside this castle is only
+        # visible here: our own castles print no entry message. Continue his
+        # order from this castle toward its original destination.
+        _continue_transit_sorties(mem, castle, present)
 
 
 def _check_source_castle(screen, mem, order):

@@ -100,8 +100,10 @@ def test_no_runtime_identity_or_header_cannot_bind_a_count_inspection():
 
 
 @pytest.mark.parametrize('gold,reserve,wages,expected',[(45,15,30,0),(100,50,30,20),
-                                                    (100,0,62,38),(500,50,30,99)])
-def test_zero_refill_keeps_egg_repair_and_complete_wages(monkeypatch,gold,reserve,wages,expected):
+                                                    (70,0,62,40),(500,50,30,99)])
+def test_zero_refill_keeps_egg_repair_and_the_shortfall_floor(monkeypatch,gold,reserve,wages,expected):
+    # Owner (2026-10-14): a soldier refill does not reserve the whole measured
+    # payroll, only the documented month-end shortfall floor.
     mem=memory(gold);observe_count(mem,0,gold)
     shop=mem['shop'];shop['reserve']=reserve
     monkeypatch.setattr(economy,'_egg_recovery_wage_floor',lambda m:wages)

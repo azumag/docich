@@ -294,12 +294,16 @@ def test_partial_payment_keeps_all_62g_payroll_before_a_soldier_confirmation():
     assert not mem['shop'].get('soldier_receipt')
 
 
-def test_hotloaded_old_soldier_plan_cannot_spend_known_62g_payroll():
+def test_hotloaded_old_soldier_plan_is_recapped_to_the_shortfall_floor():
+    from docich.hanjuku.strategy import economy
     from test_hanjuku_soldier_receipts import quantity
     mem = large_payroll_memory(); mem.pop('month_sub')
     mem['egg_uses']['ココット'] = 4
-    mem['shop'].update(egg='done', reserve=0, soldiers=32, soldier_tens=3,
+    mem['shop'].update(egg='done', reserve=0, soldiers=99, soldier_tens=9,
                        soldiers_done=False)
     q = quantity(62); q.header['month'] = 6
     p.quantity_step(q, mem, soldiers=True)
-    assert mem['shop']['soldiers'] == 0 and not mem['shop'].get('soldier_receipt')
+    # Owner (2026-10-14): the known 62G payroll is not reserved in full, but
+    # the documented shortfall floor is, and the receipt is still required.
+    assert mem['shop']['soldiers'] == 62 - economy.WAGE_RESERVE
+    assert not mem['shop'].get('soldier_receipt')
