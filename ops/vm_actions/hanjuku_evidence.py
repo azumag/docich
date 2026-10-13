@@ -149,6 +149,8 @@ def _repetition_proof(run):
         exec(compile(raw, str(path), "exec"), module.__dict__)
         proof = module.confirmed(run.get("repetition"),
                                  now=run.get("observed_monotonic"), seconds=300)
+    except EvidenceError:
+        raise  # preserve the reader's fixed unsafe/source-change failure code
     except (OSError, ValueError, TypeError, SyntaxError, AttributeError,
             ImportError, OverflowError, KeyError, IndexError):
         _fail("invalid_terminal")
