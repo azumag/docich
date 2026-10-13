@@ -743,7 +743,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     assert '_records' not in state['policy']
 
 
-def test_bot_version_marks_the_boss_attack_without_a_comparable_companion():
+def test_bot_version_marks_the_boss_attack_and_the_army_refill():
     from docich.hanjuku_bot import BOT_VERSION
     assert BOT_VERSION == 'hanjuku-chart-v219-boss-and-army-refill'
 

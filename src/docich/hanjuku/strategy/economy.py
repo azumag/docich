@@ -117,6 +117,20 @@ def _soldier_target(mem, shop, header):
     return 100 if gold - held >= extra + RECRUIT_COST else SOLDIER_ENOUGH
 
 
+def _soldier_wage_hold(mem):
+    """Wages a soldier refill leaves in hand — never the whole payroll.
+
+    ``_egg_recovery_wage_floor`` reserves the entire measured payroll so a
+    paid egg recovery is never declined (g713). Reusing it for soldiers kept
+    90G of 99G in hand while the measured army was 0 (g749 4-10), so only 9 of
+    the 50 target could be bought. Wages are settled at the month boundary out
+    of 収入 − 総賃金, and the documented buffer against a shortfall month is
+    ``WAGE_RESERVE`` (owner 2026-09-28: 将軍解雇はしない). A smaller measured
+    payroll is not over-reserved.
+    """
+    return min(_egg_recovery_wage_floor(mem), WAGE_RESERVE)
+
+
 def _soldier_spendable(mem, shop, header, *, recruit=True):
     """One actual cash/payroll/reservation gate for planning and payment."""
     if (not isinstance(header, dict)
@@ -136,7 +150,7 @@ def _soldier_spendable(mem, shop, header, *, recruit=True):
                    or not isinstance(row[0], str) or row[0] not in KNOWN_PRICES
                    or type(row[1]) is not int or row[1] < 0 for row in cards)):
         return None
-    return max(0, header['gold'] - _egg_recovery_wage_floor(mem) - egg - repair - hiring
+    return max(0, header['gold'] - _soldier_wage_hold(mem) - egg - repair - hiring
                - sum(KNOWN_PRICES[name] * qty for name, qty in cards))
 
 
@@ -160,7 +174,9 @@ def _limit_soldier_refill(mem, shop, header, *, payment=False):
         available = _soldier_spendable(mem, shop, header)
         cap = min(cap, available if available is not None else 0)
     elif payroll > WAGE_RESERVE and type(gold) is int:
-        cap = min(cap, max(0, gold - payroll - _month_held_reserve(shop)
+        # A large payroll reserves the documented shortfall floor, not its own
+        # full sum: the plan must not starve the army the same way payment would.
+        cap = min(cap, max(0, gold - _soldier_wage_hold(mem) - _month_held_reserve(shop)
                            - shop.get('recruit_reserve', 0)))
     for field in ('soldiers', 'soldiers_target', 'soldiers_before_recruit'):
         value = shop.get(field)

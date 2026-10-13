@@ -155,18 +155,41 @@ def test_known_full_six_gold_payroll_is_the_same_before_and_at_editor(gold, rese
     assert shop['soldiers'] == min(50, expected)
 
 
-def test_complete_large_bill_and_unpaid_prices_are_all_reserved():
+def test_complete_large_bill_keeps_the_shortfall_floor_and_every_other_reserve():
     mem = memory(); roster.invalidate(mem)
     names = ['どうし','ゼウス','ヴィーナス','ココット','シナモン','ミント']
     mem['recruit_roster'] = {'chapter':1, 'month':'2-4', 'identity':deepcopy(mem['_run_identity']),
         'tick':mem['tick'], 'complete':True, 'names':names,
         'wages':dict(zip(names, [0,15,15,15,15,2]))}
     assert economy._egg_recovery_wage_floor(mem) == 62
+    # Owner (2026-10-14): a measured army is not starved by reserving the whole
+    # payroll; a refill keeps the documented shortfall floor in hand instead.
+    assert economy._soldier_wage_hold(mem) == economy.WAGE_RESERVE
     shop = mem['shop']; shop.update(reserve=50, items=[['イッテツーン', 1]],
         merchant_done=False, general_repair_reserve=50, hero_repair_reserve=0, recruit_reserve=42)
     price = p.KNOWN_PRICES['イッテツーン']
-    assert economy._soldier_spendable(mem, shop, {'year':2,'month':4,'gold':300}) == 300-62-50-50-42-price
+    assert economy._soldier_spendable(mem, shop, {'year':2,'month':4,'gold':300}) \
+        == 300-economy.WAGE_RESERVE-50-50-42-price
     assert economy._soldier_spendable(mem, shop, {'year':2,'month':4,'gold':70}) == 0
+
+
+def test_measured_zero_army_is_refilled_past_a_large_payroll():
+    """g749 4-10: 99G in hand and a 90G payroll refilled only 9 of 50 soldiers.
+
+    The measured 0 army must reach the target while the egg and repair reserves
+    keep their own money.
+    """
+    mem = large_payroll_memory()
+    shop = mem['shop']
+    shop.update(egg='not_needed', egg_priority=False, reserve=0, recruit_reserve=0,
+                general_repair_reserve=0, hero_repair_reserve=0, items=[], merchant_done=False,
+                soldiers=0, soldier_receipt=False, recruit='not_needed', key='2-4')
+    mem['soldiers_seen'] = 0
+    mem['soldiers_seen_key'] = '2-4'
+    mem['soldiers_seen_scope'] = economy._soldier_count_scope(mem, {'year':2,'month':4,'gold':99})
+    economy._zero_army_refill(mem, shop, {'year':2,'month':4,'gold':99})
+    assert shop['soldiers'] == economy.SOLDIER_ENOUGH
+    assert shop['soldiers_target'] == economy.SOLDIER_ENOUGH
 
 
 @pytest.mark.parametrize('change', ['no_survey', 'partial', 'missing_wage', 'bool_wage', 'foreign'])
@@ -240,7 +263,7 @@ def large_payroll_memory():
     return mem
 
 
-def test_new_actual_member_retains_entire_large_bill_and_deduplicates():
+def test_new_actual_member_keeps_the_shortfall_floor_for_soldiers_and_deduplicates():
     mem = large_payroll_memory()
     assert economy._egg_recovery_wage_floor(mem) == 62
     roster.observed_member(mem, ['ゼウス'])
@@ -250,7 +273,11 @@ def test_new_actual_member_retains_entire_large_bill_and_deduplicates():
     roster.observed_member(mem, ['ゼウス'])
     assert roster.payroll_hold(mem) == 66
     mem = json.loads(json.dumps(mem))
-    assert economy._soldier_spendable(mem, mem['shop'], {'year':2,'month':4,'gold':100}) == 0
+    # The egg-recovery floor keeps the whole 66G bill; the soldier refill keeps
+    # the documented shortfall floor and the shop's own egg reserve.
+    assert economy._soldier_wage_hold(mem) == economy.WAGE_RESERVE
+    assert economy._soldier_spendable(mem, mem['shop'], {'year':2,'month':4,'gold':100}) \
+        == 100 - economy.WAGE_RESERVE - mem['shop']['reserve']
 
 
 @pytest.mark.parametrize('change', ['identity', 'month', 'bool', 'oversize', 'shape'])
