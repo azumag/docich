@@ -10,6 +10,11 @@ rows = 24
 font = "monospace"
 font_size = 18
 
+# PR3: natural NetHack corner runs the graphical tiles presentation by default.
+# Restore to native tty by changing this single line to mode = "tty".
+[nethack.presentation]
+mode = "tiles"
+
 # 長期攻略コーナーでは通常の NetHack save/restore を使う。
 # persistent_run=true のときだけ coordinator lifecycle をNetHack専用にする。
 # -u player_name は coordinator adapter が付与し、この名前とUIDでsaveが識別される。
