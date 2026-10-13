@@ -1146,7 +1146,10 @@ def recruit_input_guard(screen, mem):
         return None
     if screen.kind in RECRUIT_SHOP_KINDS or screen.has('じゅうじキー'):
         return 'foreign_purchase'
-    if (screen.kind == 'unknown' or (screen.kind == 'text'
+    if (screen.kind == 'unknown'
+            or (screen.kind == 'month_menu' and _month_menu_quiet(screen)
+                and not month_menu_ready(screen))
+            or (screen.kind == 'text'
             and not any(line.known.strip() for line in screen.lines if line.y > 30))):
         return 'unread'
     if sub.get('recruit_foreign_screen') and not month_menu_ready(screen):

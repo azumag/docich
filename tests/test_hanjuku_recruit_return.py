@@ -145,3 +145,14 @@ def test_repeated_blank_logs_only_first_and_bound_and_readable_intro_recovers():
         assert month_sub_step(s, m) == []
     assert len([r for r in m['_records'] if r['decision'] == 'recruit_return_guard']) == 2
     assert month_sub_step(paid_recruit_screen(gold=182), m) == [policy.pad('a')]
+
+
+def test_bright_month_background_without_restored_cursor_also_waits():
+    # Missing hand is a synthetic boundary variant of the original quiet menu.
+    s = parse(native(1936)); s.hand = None; s.selected = None
+    # Remove the selected merchant's help; it is not an active dialogue.
+    s.lines = [line for line in s.lines if line.y < 175]
+    m = memory()
+    assert month_sub_step(s, m) == []
+    assert m['month_sub']['recruit_paid_gold'] == 182
+    assert not m['month_sub'].get('aborted')
