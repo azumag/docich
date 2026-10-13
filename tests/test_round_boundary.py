@@ -159,7 +159,11 @@ def test_boundary_wait_releases_writer_and_orders_stop_after_ack():
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
-        store, coordinator = _coordinator(factory, state_dir)
+        # This test holds the one-game boundary on purpose while it asserts the
+        # lock/queue ordering. Keep the 0.2 s boundary step timeout out of that
+        # race so a loaded CI runner cannot time out the step first (the same
+        # reason the FIFO maintenance tests raise it).
+        store, coordinator = _coordinator(factory, state_dir, round_boundary_s=5.0)
         _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         request_id = str(uuid.uuid4())
@@ -167,7 +171,10 @@ def test_boundary_wait_releases_writer_and_orders_stop_after_ack():
 
         worker = threading.Thread(
             target=lambda: result_box.append(
-                coordinator.switch("robots", request_id=request_id)
+                # The boundary is held on purpose so the lock/queue ordering can
+                # be asserted; keep the request-wide budget out of that race
+                # (a loaded CI runner otherwise expires the 2 s default).
+                coordinator.switch("robots", request_id=request_id, timeout_s=60.0)
             )
         )
         worker.start()
@@ -199,7 +206,8 @@ def test_boundary_wait_releases_writer_and_orders_stop_after_ack():
         queued_box = []
         queued_worker = threading.Thread(
             target=lambda: queued_box.append(
-                coordinator.switch("hanjuku", request_id=other.request_id)
+                # Same held-boundary pattern for the replay of the FIFO head.
+                coordinator.switch("hanjuku", request_id=other.request_id, timeout_s=60.0)
             )
         )
         queued_worker.start()
