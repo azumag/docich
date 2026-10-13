@@ -75,7 +75,8 @@ def roster(screen):
     if 'Aボタンでステータスひょうじ' not in screen.text or not screen.hand:
         return None
     names = _names_at(screen, 168, 39, 151)
-    if not names or any(UNKNOWN in n or re.search(r'[\d\s]', n) for n in names):
+    if not names or any(UNKNOWN in n or re.search(r'[\d\s]', n)
+                        or receipts.fixed_wage(n) is None for n in names):
         return None
     return names
 
