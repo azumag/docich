@@ -1,11 +1,11 @@
 {
-  "output_sha256": "ea01a74a75496b3a00e8286975fedade5c5da4c4e3f67ff5b1de61cfe4e57ef0",
+  "output_sha256": "9f550566ed3f0c7fabd3d23ebd0a22863b4549a2ee0edf3fb6f94b78cd21c88a",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "ca4cd97e836f6a93ff75174c5ec5bb0aa9d9050579c90f7d97bc0c5f592d19c8",
+  "source_sha256": "4a72bb196c45ed4173cd082ad099e17ce97be2c4f23318e2b3351b640fe48dac",
   "topics": [
-    "半熟兵士認識の端切れレビュー修正",
-    "半熟の進軍時の軍識別と卵温存を修正",
-    "自然増築の一覧継続と全回復の実画面照合"
+    "半熟英雄の未使用卵を退却より先に確認する戦闘修正",
+    "半熟英雄第2話進行の実測と代役能力ガード案の撤回",
+    "handoff正本を最新30節へ有界化し、ops_brief.jsonを非公開handoffから切離し"
   ]
 }

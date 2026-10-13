@@ -15,7 +15,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _critical_safe_card,
                                _critical_survival_needed, _defender_egg_window, _defender_last_resort,
-                               _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
+                               _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
                                _melee_continuation_evidence,
                                _migrate_card_evidence, _own_egg_empty, _own_egg_needed, _own_egg_positive,
                                _survival_needed, _survival_state, _watch_card_melee, _watch_egg_drop,
@@ -96,6 +96,15 @@ def _hero_retreat_menu(screen, mem, cur):
     # たいきゃく row there), so never try to select it.
     if not _hero_retreat_needed(cur) or cur.get('side') == 'defense':
         return None
+    if _egg_rescue_pending(cur):
+        return []
+    if _egg_before_retreat(mem, cur, menu=True) and 'たまごをつかう' in {w for _, _, w in _options(screen)}:
+        if (cur.get('card_flow') or {}).get('stage') == 'announce':
+            _card_use_unclassified(mem, cur, '本人の未試行の卵を優先し、切り札の使用告知は未確認として保持')
+        else:
+            cur['card_flow'] = None
+        _survival_state(mem, cur)['egg_priority'] = True
+        return _survival_menu(screen, mem, cur)
     flow = cur.setdefault('hero_retreat', {})
     if flow.get('unavailable') or flow.get('exhausted'):
         return None
@@ -176,7 +185,7 @@ def _survival_menu(screen, mem, cur):
     # Cards first, then the egg (owner: 切り札が先 - the chart's order).
     # At critical HP do not spend more live melee frames scouting an unknown
     # card inventory when a usable egg is already on the current menu.
-    if critical and egg_ready and not safe_card:
+    if (critical or rescue.get('egg_priority')) and egg_ready and not safe_card:
         label = 'たまごをつかう'
     elif ('きりふだ' in labels and (safe_card or not rescue.get('cards_exhausted'))
             and rescue['cards_checked'] < 3):

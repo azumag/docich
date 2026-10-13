@@ -20,7 +20,7 @@ def test_critical_defense_can_use_a_current_egg_even_with_unknown_start(start):
 
 
 @pytest.mark.parametrize('start', [None, 'missing'])
-def test_attack_retreat_still_precedes_an_egg_with_unknown_start(start):
+def test_known_positive_egg_precedes_attack_retreat_with_unknown_start(start):
     mem = memory(3, 2)
     cur = mem['battle']
     cur['side'] = 'attack'
@@ -28,9 +28,12 @@ def test_attack_retreat_still_precedes_an_egg_with_unknown_start(start):
         cur.pop('start_ally_hp')
     else:
         cur['start_ally_hp'] = start
-    assert p._hero_retreat_open(mem, cur) == [p.pad('b')]
-    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
-    assert cur['hero_retreat']['selected'] == 1 and 'egg_recheck' not in mem
+    assert p._hero_retreat_open(mem, cur) is None
+    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('up')]
+    assert p.battle_menu_step(menu(selected=1), mem) == [p.pad('up')]
+    assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
+    assert cur['survival']['egg_attempted'] and not cur.get('hero_retreat')
+    assert mem['egg_uses'][p.NAME] == 2
 
 
 def test_known_zero_egg_is_unavailable_even_when_start_hp_is_unknown():

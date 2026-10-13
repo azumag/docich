@@ -45,7 +45,7 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'starter_unread','starter_navigation','starter_navigation_stalled',
     'battle_command_open_wait',
     'battle_card_damage_rejected','battle_card_damage_replan','battle_card_damage_recheck',
-    'battle_survival','battle_survival_select','battle_survival_unavailable',
+    'battle_survival','battle_survival_select','battle_survival_unavailable','battle_egg_before_retreat',
     'egg_recover_select','egg_recover_confirm','egg_recover_skip',
     'battle_okunote_scroll','battle_okunote_select','battle_okunote_risk_declined',
     'battle_hero_retreat_open','battle_hero_retreat_select',
@@ -231,6 +231,11 @@ def observation_interval_ms(state, actions=None):
         return 500
     policy=state.get('policy') or {}
     battle=policy.get('battle') or {}
+    if state.get('screen_kind') == 'battle' and not battle and policy.get('battle_seen'):
+        # g749 Quiche: the first complete HP17 panel still awaits the second
+        # name reading. A 1500ms observation gap let HP fall to8 before B,
+        # then0 before a menu. Keep the confirmation gate, shorten its wait.
+        return 500
     preempt=battle.get('okunote_egg_preempt') or {}
     rescue=battle.get('survival') or {}
     retreat=battle.get('hero_retreat') or {}

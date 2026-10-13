@@ -1179,6 +1179,34 @@ def _bind_substitute_defender(mem, cur, b):
             reason='チャート想定と別の将軍が守るが、HPが自軍の1.5倍以上のため同じ手順の開幕切り札を使う')
 
 
+def _egg_before_retreat(mem, cur, *, menu=False):
+    """Inspect this actor's untried positive egg before fleeing ordinary melee.
+
+    A count requests the menu; only its usable row licenses selection.
+    Exhausted/failed attempts and summons keep the existing retreat route.
+    """
+    rescue = cur.get('survival') or {}
+    return (not cur.get('egg_battle') and _survival_needed(cur)
+            and (_critical_survival_needed(cur) or not cur.get('planned_cards'))
+            and _own_egg_positive(mem, cur) and not _own_egg_empty(mem, cur)
+            and not rescue.get('egg_attempted') and not rescue.get('exhausted')
+            and (menu or (int(rescue.get('opens') or 0) < 12
+                          and int(rescue.get('pending_opens') or 0) < 3))
+            and not (cur.get('hero_retreat') or {}).get('selected'))
+
+
+def _egg_rescue_pending(cur):
+    """Allow the one selected egg a bounded fade without toggling its menu."""
+    rescue = cur.get('survival') or {}
+    if not (rescue.get('egg_priority') and rescue.get('egg_pending')):
+        return False
+    rescue['egg_wait'] = int(rescue.get('egg_wait') or 0) + 1
+    if rescue['egg_wait'] <= 3:
+        return True
+    rescue['egg_pending'] = False
+    return False
+
+
 def _hero_retreat_needed(cur):
     """Any general's retreat threshold in an attack battle.
 
