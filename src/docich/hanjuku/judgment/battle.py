@@ -947,8 +947,59 @@ def _critical_survival_needed(cur):
             and type(enemy) is int and enemy > 0)
 
 
+def _melee_continuation_evidence(mem, cur):
+    """A wounded ordinary general can finish a measured, one-sided melee.
+
+    This compares remaining forces, not a damage formula or a promised win.
+    Only this runtime's observed healthy opening, our HP loss and a current
+    enemy HP/troop reduction can relax the full-HP conservation gate.
+    """
+    from ..os_layer.roster import run_identity
+    identity = run_identity(mem.get('_run_identity'))
+    if not all(isinstance(cur.get(k), str) for k in ('ally', 'enemy')):
+        return None
+    opening = cur.get('melee_opening_scope')
+    if (not isinstance(opening, list) or len(opening) != 5
+            or run_identity(opening[0]) != identity):
+        return None
+    hp, enemy, start, enemy_start = (cur.get(k) for k in
+                                    ('ally_hp', 'enemy_hp', 'start_ally_hp', 'start_enemy_hp'))
+    maximum = general_max_hp(cur.get('ally'))
+    enemy_maximum = general_max_hp(cur.get('enemy'))
+    scope = [identity, cur.get('ally'), cur.get('enemy'), start, enemy_start]
+    if (identity is None or cur.get('melee_opening_scope') != scope
+            or cur.get('ally') in (NAME, 'しゅじんこう') or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('card_flow') or cur.get('card_damage_rescue_needed')
+            or any(type(n) is not int or n <= 0 for n in
+                   (hp, enemy, start, enemy_start, maximum, enemy_maximum))
+            or not GENERAL_CRITICAL_RETREAT_HP < hp < start <= maximum
+            or not enemy <= enemy_start <= enemy_maximum
+            or start * 10 <= maximum * BEHIND_EGG_RATIO_TENTHS
+            or hp <= enemy * 2):
+        return None
+    balance = _melee_balance(cur)
+    values = [balance[k] for k in ('ally_force', 'enemy_force', 'ally_melee_score', 'enemy_melee_score')]
+    if (balance['soldiers_current'] is not True
+            or any(type(n) is not int or n <= 0 for n in values)
+            or values[0] <= 2 * values[1] or values[2] <= 2 * values[3]):
+        return None
+    opening_army = cur.get('melee_opening_army')
+    army_known = (isinstance(opening_army, list) and len(opening_army) == 2
+                  and all(type(n) is int and 0 <= n <= 6 for n in opening_army))
+    soldier_progress = army_known and cur['enemy_soldiers'] < opening_army[1]
+    if enemy >= enemy_start and not soldier_progress:
+        return None
+    return {'rule': 'melee_finish_after_damage', 'ally_hp': hp, 'enemy_hp': enemy,
+            'ally_opening_hp': start, 'enemy_opening_hp': enemy_start,
+            'opening_soldiers': list(opening_army) if army_known else None,
+            'enemy_progress': 'hp' if enemy < enemy_start else 'soldiers',
+            'ally_max_hp': maximum, **balance}
+
+
 def _hold_melee_egg(mem, cur, labels):
-    """Preserve a healthy, measured ordinary-general melee advantage.
+    """Preserve a healthy advantage or a scoped, measured melee finish.
 
     Compare current HP pools weighted by each named general's combat stat.
     Unknown/old counts or stats do not prove advantage; summons/critical HP win.
@@ -970,11 +1021,12 @@ def _hold_melee_egg(mem, cur, labels):
                    if type(n) is int and n > 0), default=None)
     balance = _melee_balance(cur)
     scores = balance['ally_melee_score'], balance['enemy_melee_score']
-    return (all(type(n) is int and n > 0 for n in (hp, enemy, maximum, *scores))
+    healthy = (all(type(n) is int and n > 0 for n in (hp, enemy, maximum, *scores))
             and all(type(n) is int and 0 <= n <= 6 for n in (ours, theirs))
             and hp * 10 > maximum * BEHIND_EGG_RATIO_TENTHS
             and (hp + 10 * ours) * 10 > (enemy + 10 * theirs) * BEHIND_EGG_RATIO_TENTHS
             and scores[0] > scores[1])
+    return healthy or _melee_continuation_evidence(mem, cur) is not None
 
 
 def _conserved_army_recheck(mem, cur):
