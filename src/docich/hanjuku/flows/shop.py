@@ -9,9 +9,9 @@ from ..decision_log import _record
 from .egg_recovery import MONTH_SUB_EXIT_KINDS
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import month_menu_ready
-from ..strategy.economy import (MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _egg_before_soldiers, _limit_soldier_refill,
+from ..strategy.economy import (MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _army_count_increment, _egg_before_soldiers, _limit_soldier_refill,
                                 _merchant_spendable, _month_key, _refresh_egg_priority, _reserve_general_repair,
-                                _soldiers_enough)
+                                _soldier_count_current, _soldier_count_scope, _soldiers_enough)
 
 
 def _merchant_quote_decline(screen, mem, shop, want, reason):
@@ -128,6 +128,29 @@ def _observe_soldier_receipt(screen, mem, directly_seen=None):
 def quantity_step(screen: Screen, mem, soldiers=False):
     shop = mem.get('shop') or {}
     if soldiers:
+        state = mem.get('army_count_check')
+        scope = _soldier_count_scope(mem, screen.header)
+        if (scope is not None and isinstance(state, dict) and state.get('scope') == scope
+                and state.get('stage') == 'unverified'
+                and not _soldier_count_current(mem, screen.header)):
+            shop['soldiers_done'] = True
+            state.update(stage='closing', result='unverified')
+            return [pad('b')]  # a reopened unread editor still cannot authorize payment
+        if (scope is not None and isinstance(state, dict) and state.get('scope') == scope
+                and state.get('stage') != 'measured'):
+            if state.get('stage') not in ('opening', 'requested', 'closing'):
+                state.update(stage='closing', result='unverified')
+            if state.get('stage') == 'closing':
+                return [pad('b')] if _army_count_increment(state, 'exit_presses', 4) <= 3 else []
+            if _soldier_count_current(mem, screen.header):
+                state.update(stage='closing', result='measured')
+                return [pad('b')]
+            if _army_count_increment(state, 'quantity_reads', 4) >= 4:
+                state.update(stage='closing', result='unverified')
+                _record(mem, 'army_count_unverified', month=scope[-1],
+                        reason='実人数を読み取れないため補充の確定をせず戻る。兵数は未確認のまま保持')
+                return [pad('b')]
+            return []
         _reserve_general_repair(mem, shop, (screen.header or {}).get('gold'))
         _refresh_egg_priority(mem, shop, screen.header)
         _limit_soldier_refill(mem, shop, screen.header)

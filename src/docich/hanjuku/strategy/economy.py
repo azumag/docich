@@ -29,6 +29,64 @@ SOLDIER_CAP = 99
 SOLDIER_ENOUGH = 50   # owner 2026-10-11: with this many on hand, buy no more soldiers
 
 
+def _soldier_count_scope(mem, header):
+    from ..os_layer.roster import run_identity
+    identity = run_identity(mem.get('_run_identity'))
+    key = _month_key(header)
+    chapter = mem.get('chapter')
+    return ([identity, chapter, key] if identity is not None
+            and type(chapter) is int and 1 <= chapter <= 12
+            and key is not None and key == mem.get('month') else None)
+
+
+def _soldier_count_current(mem, header):
+    scope = _soldier_count_scope(mem, header)
+    count = mem.get('soldiers_seen')
+    return (scope is not None and mem.get('soldiers_seen_scope') == scope
+            and mem.get('soldiers_seen_key') == scope[-1]
+            and type(count) is int and count >= 0)
+
+
+def _army_count_increment(state, field, limit):
+    value = state.get(field, 0)
+    value = value + 1 if type(value) is int and 0 <= value < limit else limit
+    state[field] = value
+    return value
+
+
+def _zero_army_refill(mem, shop, header):
+    """A measured empty army takes spare cash before a new recruitment fee."""
+    if (not _soldier_count_current(mem, header) or mem['soldiers_seen'] != 0
+            or not shop or shop.get('key') != _month_key(header)
+            or shop.get('soldier_receipt') or mem.get('month_sub')
+            or shop.get('recruit') in ('opened', 'unverified', 'done')):
+        return
+    gold = (header or {}).get('gold')
+    cards = [] if shop.get('merchant_done') else shop.get('items') or []
+    repair, egg = _house_repair_reserve(shop), shop.get('reserve', 0)
+    if (type(gold) is not int or any(type(n) is not int or n < 0 for n in (repair, egg))
+            or any(name not in KNOWN_PRICES or type(qty) is not int or qty < 0
+                   for name, qty in cards)):
+        return
+    reserve = repair + egg
+    available = max(0, gold - _egg_recovery_wage_floor(mem) - reserve
+                    - sum(KNOWN_PRICES[name] * qty for name, qty in cards))
+    target = min(SOLDIER_CAP, _soldier_target(mem, shop, header))
+    amount = min(target, available)
+    if amount <= 0:
+        return  # no permission to spend wages, recovery or repair money
+    shop.update(recruit='deferred_army', recruit_priority=False, recruit_reserve=0)
+    previous = shop.get('soldiers')
+    shop.update(soldiers=amount, soldiers_done=False, soldiers_target=target,
+                soldier_total_target=target)
+    if previous != amount or not shop.get('zero_army_refill_recorded'):
+        shop['zero_army_refill_recorded'] = True
+        _record(mem, 'zero_army_refill_plan', month=shop['key'],
+                observed_metric={'soldiers': 0, 'gold': gold, 'refill': amount,
+                                 'target': target, 'held': gold - available},
+                reason='実人数0のため調整チャートの補充0を見直し、卵・修理・全賃金を残した資金で兵士を先に補充する')
+
+
 def _soldier_target(mem, shop, header):
     """Normally 50 on hand; about 100 only after necessities and spare cash."""
     gold = (header or {}).get('gold')
@@ -501,7 +559,7 @@ def _prioritise_recruit(mem, shop, gold):
     Includes existing cached shops on hotload. Original card purchases and
     the existing egg/wage reserves are kept; unconfirmed deaths are not used.
     """
-    if shop.get('recruit') in ('deferred_egg', 'deferred_cash') or _stop_unneeded_recruit(mem, shop):
+    if shop.get('recruit') in ('deferred_egg', 'deferred_cash', 'deferred_army') or _stop_unneeded_recruit(mem, shop):
         return
     if 'soldiers_before_recruit' not in shop:
         shop['soldiers_before_recruit'] = (None if shop.get('recruit_budget_version') == 2
@@ -636,6 +694,8 @@ def _plan(mem, header):
     ahead = _charted_purchase_ahead(mem, header)
     if not spec:
         if ahead:
+            if _soldier_count_current(mem, header) and mem['soldiers_seen'] == 0:
+                return _soldier_refill_plan(mem, header, key)
             reserve, _ = _extras_reserve(mem, header)
             if not reserve and not _recruit_shortage(mem):
                 return None
