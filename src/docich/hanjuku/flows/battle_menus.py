@@ -1090,7 +1090,10 @@ def monster_menu_step(screen: Screen, mem):
                           or mem.get('monster_menu_cursor') is not None
                           or mem.get('monster_menu_choice') is not None
                           or mem.get('monster_menu_cursor_recheck') is True)
-    if mem.get('monster_menu_key') != menu_key:
+    # JSON persistence turns the tuple into a list. The same observed menu
+    # must retain its finite enemy hold across process/observation reloads.
+    previous_menu = mem.get('monster_menu_key')
+    if previous_menu != menu_key and previous_menu != list(menu_key):
         mem['monster_menu_key'] = menu_key
         for key in ('monster_menu_cursor', 'monster_menu_choice', 'monster_menu_choice_key',
                     'monster_menu_choice_hp', 'monster_ally_max_hp'):
