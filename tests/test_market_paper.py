@@ -410,5 +410,84 @@ class PaperTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "provider_unavailable")
 
+    def _fake_corner(self, *, available, initial=None, current="fx-paper-view"):
+        import types, json
+        from docich.corner_boundary import REGISTRY_FILE
+        g_state = self.root / "state"
+        g_state.mkdir(parents=True, exist_ok=True)
+        (self.root / "soren" / "tmp" / "state").mkdir(parents=True, exist_ok=True)
+        g = SimpleNamespace(state_dir=g_state, repo_root=self.root,
+                            webui=SimpleNamespace(soren_root=str(self.root / "soren")),
+                            config_path=self.root / "docich.toml")
+        report_calls = []
+        def report_fn(cutoff):
+            report_calls.append(cutoff)
+            return {"title": "FXで大儲け結果発表", "period_pnl_jpy": 0, "complete": True,
+                    "closed_trades": 0, "closed_net_pnl_jpy": 0, "last": {"positions": {}}}
+        book = SimpleNamespace(report=report_fn, snapshot=lambda now: {})
+        runtime = SimpleNamespace(market="fx", config={"enabled": True}, g=g,
+                                 corner_path=g_state / "market-fx-corner.json",
+                                 data_root=g_state / "market-data", settings_path=self.root / "market.toml",
+                                 book=book)
+        calls = []
+        coordinator = SimpleNamespace(
+            switch=lambda game: calls.append(("switch", game)) or SimpleNamespace(status="succeeded"),
+            start=lambda game: calls.append(("start", game)) or SimpleNamespace(status="succeeded"),
+            stop=lambda: calls.append(("stop",)) or SimpleNamespace(status="succeeded"),
+        )
+        overlay_calls = []
+        speech_calls = []
+        corner = MarketCorner(runtime, clock=lambda: self._now, sleep=lambda s: None,
+                              coordinator=coordinator, overlay=lambda *a, **k: overlay_calls.append((a, k)),
+                              speech=lambda *a, **k: speech_calls.append((a, k)))
+        corner._availability_check = (lambda now, state=None: (available, "provider_unavailable"))
+        corner.current = (lambda: (None if current is None else current))
+        now = self._now
+        corner.clock = (lambda: now)
+        if initial is not None:
+            corner.path.write_text(json.dumps(initial))
+        corner._report_calls = report_calls
+        corner._calls = calls
+        corner._overlay_calls = overlay_calls
+        corner._speech_calls = speech_calls
+        return corner
+
+    def test_prestart_unavailable_skips_through_real_tick(self):
+        self._now = moment("2026-09-16T03:10:00+09:00")
+        begin, end = report_window("fx", self._now)
+        corner = self._fake_corner(available=False, initial=None, current=None)
+        first = corner.tick()
+        state = json.loads(corner.path.read_text())
+        self.assertEqual(first, "skipped_unavailable")
+        self.assertEqual(state["status"], "skipped_unavailable")
+        self.assertEqual(state["outcome"], "skipped_unavailable")
+        self.assertEqual(state.get("unavailable_reason"), "provider_unavailable")
+        self.assertEqual(corner._calls, [])
+        self.assertEqual(corner._report_calls, [])
+        self.assertEqual(corner._overlay_calls, [])
+        self.assertEqual(corner._speech_calls, [])
+        second = corner.tick()
+        self.assertEqual(second, "not_due")
+
+    def test_active_unavailable_cancels_through_real_tick(self):
+        self._now = moment("2026-09-16T03:10:00+09:00")
+        begin, end = report_window("fx", self._now)
+        initial = {"status": "active", "requested_at": self._now - 600, "ends_at": end,
+                   "started_at": self._now - 600, "heartbeat": self._now - 1,
+                   "previous_game": "sorengame", "deliveries": {}}
+        corner = self._fake_corner(available=False, initial=initial, current="fx-paper-view")
+        result = corner.tick()
+        state = json.loads(corner.path.read_text())
+        self.assertEqual(result, "cancelled_unavailable")
+        self.assertEqual(state["status"], "cancelled_unavailable")
+        self.assertEqual(state["outcome"], "cancelled_unavailable")
+        self.assertEqual(state["restore_phase"], "completed")
+        self.assertEqual(state.get("previous_game"), "sorengame")
+        self.assertEqual(corner._calls, [("switch", "sorengame")])
+        self.assertEqual(len(corner._report_calls), 1)
+        self.assertEqual(corner._overlay_calls, [])
+        self.assertEqual(corner._speech_calls, [])
+        self.assertEqual(corner.tick(), "not_due")
+
 if __name__ == "__main__":
     unittest.main()
