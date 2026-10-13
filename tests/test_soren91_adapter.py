@@ -53,7 +53,7 @@ class FakeTmux:
     def window_target_exists(self, target, strict=False):
         return target in self.windows
 
-    def create_game_session_owned(self, session, cmd, cols, rows, ownership):
+    def create_game_session_owned(self, session, cmd, cols, rows, ownership, env=None):
         self.sessions[session] = self._expected(ownership)
         self.session_cmds[session] = list(cmd)
 

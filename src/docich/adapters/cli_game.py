@@ -443,6 +443,17 @@ class CliCoordinatorAdapter:
             raise AdapterError(f"docich executable が見つかりません: {_docich_bin()}")
         self._check_active(deadline, cancel)
 
+    def _game_session_env(self) -> dict[str, str] | None:
+        """Extra environment for this runtime's own tmux session command.
+
+        tmux builds a new session's environment from the *server*, never from
+        the client that asked for it, so a game command that imports the
+        docich package cannot rely on the operator's ``PYTHONPATH`` reaching
+        its pane.  A view whose command needs an import path must carry it
+        here; every real game keeps the default of ``None``.
+        """
+        return None
+
     def materialize_runtime(self, deadline: float, cancel) -> None:
         self._check_active(deadline, cancel)
         self.spec.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -458,6 +469,7 @@ class CliCoordinatorAdapter:
                 cli_cols(self.game),
                 cli_rows(self.game),
                 self._ownership("adapter"),
+                env=self._game_session_env(),
             )
         self._check_active(deadline, cancel)
 

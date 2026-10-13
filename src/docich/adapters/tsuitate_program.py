@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from time import monotonic, sleep
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -14,6 +15,9 @@ from ..tsuitate_view import DEFAULT_PORT, VIEW_NAME
 from .base import AdapterError
 from .cli_game import CliCoordinatorAdapter
 from .program import ProgramViewAdapter, _browser_bin
+
+#: ``src/`` of this checkout, the import path the view needs at runtime.
+DOCICH_SRC = Path(__file__).resolve().parents[2]
 
 
 def tsuitate_view_game_config() -> GameConfig:
@@ -41,6 +45,16 @@ class TsuitateProgramViewAdapter(ProgramViewAdapter):
             "--generation", str(self.spec.generation),
             "--lease-id", self.spec.lease_id,
         ]
+
+    def _game_session_env(self) -> dict[str, str]:
+        # The view runs as ``python -m docich.tsuitate_view`` inside this
+        # generation's own tmux session.  tmux starts that command from the
+        # server environment and never inherits the operator's PYTHONPATH, so
+        # without this the pane dies on ModuleNotFoundError before ownership can
+        # be verified — the session is already gone by the time
+        # create_game_session_owned reads it back, which surfaces as
+        # "no such session: $N" and rolls the whole switch back.
+        return {"PYTHONPATH": str(DOCICH_SRC)}
 
     def _viewer_command(self) -> list[str]:
         browser = _browser_bin()

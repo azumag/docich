@@ -92,7 +92,7 @@ class FakeTmux:
             raise OwnershipMismatchError("missing window")
         return self._ownership(self.windows[target])
 
-    def create_game_session_owned(self, session, cmd, cols, rows, ownership):
+    def create_game_session_owned(self, session, cmd, cols, rows, ownership, env=None):
         self.calls.append(("create_game_session_owned", session, list(cmd), cols, rows, self._expected(ownership)))
         if session in self.sessions:
             raise RuntimeError(f"duplicate session {session}")
