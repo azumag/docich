@@ -34,6 +34,8 @@ BOT_STATE_LIMIT = 256 * 1024   # the bot's own memory file, not a boundary recor
 CHART_DECISIONS=frozenset({
     'chart_adjust_request','chart_adjust_applied',
     'chart_interim_order','chart_interim_hold',
+    # The A/B edition of the run must survive decision-log rotation.
+    'chart_edition_pinned',
 })
 
 # Only records that explain this observation's planned input/hold may override
@@ -184,6 +186,17 @@ def chart_adjust_settings():
         return hanjuku_chart_adjust.settings(None)
 
 
+def chart_edition_setting():
+    """``[hanjuku].chart_edition``; read every observation, applied at a new game."""
+    try:
+        with (ROOT/'config/games/hanjuku-hero.toml').open('rb') as stream:
+            raw=tomllib.load(stream)
+        value=(raw.get('hanjuku') or {}).get('chart_edition')
+        return value if isinstance(value,str) else None
+    except (OSError,tomllib.TOMLDecodeError):
+        return None
+
+
 def ask_interim(runtime: Path, state: dict, obs_meta: dict, *, settings=None, ask=None):
     """Ask JEV once for the pending interim choice; the answer is applied next cycle."""
     policy=state.get('policy') or {}
@@ -315,7 +328,8 @@ def main():
                                  interim=state.get('chart_interim_answer'),
                                  experience=experience,
                                  recall_inputs=recall_input_receipts(runtime, state, meta),
-                                 run_identity=meta.get('hanjuku'))
+                                 run_identity=meta.get('hanjuku'),
+                                 chart_edition=chart_edition_setting())
             interval_ms=observation_interval_ms(state, actions)
             records=state.pop('_records',[])
             updated_experience=state.pop('_experience',None)

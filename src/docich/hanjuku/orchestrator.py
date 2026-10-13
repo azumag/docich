@@ -15,7 +15,7 @@ from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
                     month as month_flow, name as name_flow, prompts as prompts_flow,
                     recall as recall_flow, shop as shop_flow)
 from .judgment import battle as battle_judgment
-from .strategy import campaign
+from .strategy import campaign, edition
 from .os_layer import readers
 from .os_layer.phase import classify, shop_exit_confirmation
 from .version import BOT_VERSION
@@ -73,7 +73,8 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
 
 def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
            interim: dict | None = None, experience: dict | None = None,
-           recall_inputs: dict | None = None, run_identity: dict | None = None) -> tuple[list[dict], dict]:
+           recall_inputs: dict | None = None, run_identity: dict | None = None,
+           chart_edition: str | None = None) -> tuple[list[dict], dict]:
     """Return bounded pad actions and new policy memory; never write or send.
 
     ``adjusted`` is a validated runtime-adjusted chart (``hanjuku_chart_adjust``)
@@ -289,6 +290,14 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=name_flow.name_step(screen,mem)
         if mem.get('name',{}).get('done') and not mem.get('chapter'):
             mem['chapter']=1
+            # Pin the chart edition for this game only; hot-loaded config
+            # changes never switch a game already in progress.
+            mem['chart_edition']=edition.resolve(chart_edition,(identity or {}).get('runtime_id'))
+            decision_log._record(mem,'chart_edition_pinned',chart_step='name',
+                           strategy_variant=mem['chart_edition'],
+                           observed_metric={'setting':edition.setting(chart_edition),
+                                            'runtime_id':(identity or {}).get('runtime_id')},
+                           reason='新しいゲームの開始時にチャート版を固定する')
             mem['variant']='chart' if campaign.chart.orders(1) else 'chart_unavailable'
             home=campaign.chart.home_castle(1)
             castles=campaign.chart.castles(1)

@@ -11,6 +11,7 @@ from ...hanjuku_egg_reference import general_max_hp
 from ..decision_log import _record
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from .kit import _deploy_cards, _is_boss_order
+from . import edition
 from .execution import bound_fields, execution_claimed, execution_order
 
 
@@ -379,7 +380,12 @@ def _reserve_source_guard(order, mem):
     # Original chart offensives and boss waves retain their sequences. A
     # recapture or an off-chart attack must leave a measured idle defender.
     # Adjusted orders normally omit purpose; only explicit moves are exempt.
+    # The steady edition holds base chart advances to the same rule: a
+    # captured castle is not left empty to keep the speedrun line moving.
     return (_retake_order(order, mem)
+            or (edition.steady(mem) and not _is_boss_order(order, mem)
+                and order.get('purpose') != 'move'
+                and not order['step'].startswith((chart_adjust.PLAN_PREFIX, chart_adjust.INTERIM_PREFIX)))
             or (not _is_boss_order(order, mem) and order.get('purpose') != 'move'
                 and order['step'].startswith(chart_adjust.PLAN_PREFIX))
             or (order.get('purpose') == 'attack' and order['step'].startswith('I:')))
