@@ -61,6 +61,29 @@ markdownのローカル照合が必要なら `materialize --output run/ops_brief
 正本を参照できない場合は既存投影を維持し、未読・更新未実施・最新性未確認をPRへ残す。
 ソース欠落や照合失敗を成功扱いせず、ソース照合成功をコード・文書に恒久的な事実として残さない。
 
+## handoff の有界化とアーカイブ
+
+非公開 `handoff.md` は更新のたびに先頭へ節が増えるだけで、放置すると際限なく育つ。
+セッション開始時に全体を読むコストが見合わなくなるため、正本は **最新30節** に保つ。
+
+```bash
+python3 ops/local/handoff_rotate.py check    # 回転が必要なら exit 1（読み取りのみ）
+python3 ops/local/handoff_rotate.py rotate   # あふれた節を退避（既定 --keep 30）
+python3 ops/local/handoff_rotate.py verify   # 記録した節がアーカイブに残っているか
+```
+
+- ソースは `--handoff`、次に `DOCICH_HANDOFF_PATH`。絶対パスの `handoff.md` のみ。
+  checkoutからの暗黙fallbackをしない（`ops_brief.py` と同じ契約）。
+- あふれた節は正本の隣の `handoff-archive/YYYY-MM.md` へ **バイトそのまま** 追記する。
+  アーカイブがGit管理下に入る場合は書き込みを拒否する。checkout外か、ignore済みの
+  パスを `--archive-dir` で指定する。
+- 追記は一時ファイル + `os.replace` で行い、アーカイブを検証してから正本を書き換える。
+  書き換え直前に正本を読み直し、他エージェントの追記を検出したら何も書かずに中止する。
+- 各節のSHA-256を `handoff-archive/INDEX.jsonl` に記録する。`verify` は記録した節が
+  アーカイブに残っているかを再確認する。過去の節を探すときはアーカイブをgrepする。
+- 運用: 引き継ぎ更新の区切りで `rotate` を一度実行し、`check` が通る状態を保つ。
+  再開時は正本の先頭から読み、必要ならアーカイブを検索する。
+
 ## 共通正本への移行の境界
 
 参照方法の整備と、非公開正本の移行は別の作業である。既存の承認済み共有場所・アクセス方法が
