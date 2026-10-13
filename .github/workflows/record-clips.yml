@@ -7,6 +7,11 @@ on:
     paths: ['src/docich/record_clips.py', 'src/docich/adapters/cli_game.py', 'src/docich/retro_corner.py', 'games/cli-wrappers/**', 'config/docich.soren-live.toml', 'tests/test_record_clips.py', '.github/workflows/record-clips.yml']
 permissions:
   contents: read
+
+concurrency:
+  group: record-clips-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   record-clips:
     runs-on: ubuntu-24.04

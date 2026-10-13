@@ -47,7 +47,7 @@ docich は名前空間を分離して同居する:
 4. **AI の頭脳 (brain) は外部コマンドとして差し替え可能にする。**
    docich は「観測 JSON を stdin に渡し、行動 JSON を stdout から受け取る」境界だけを定義する。`claude` CLI・自作スクリプト・ランダムテスト器を同じ口に差せる。soren game のように**ゲーム側に既存の自動化システムがある場合は agent を無効化**し、外部システムに運転を任せる。
 5. **依存は最小に。**
-   オーケストレータは Python 3.11+ **標準ライブラリのみ** (tomllib/argparse/subprocess/json)。外部はコマンド (tmux/ffmpeg/Xvfb/pulseaudio/xdotool/retroarch/xterm) のみで、pip 依存ゼロ。Ubuntu 24.04 の python3 (3.12) でそのまま動く。
+   オーケストレータは Python 3.12+ **標準ライブラリのみ** (tomllib/argparse/subprocess/json)。外部はコマンド (tmux/ffmpeg/Xvfb/pulseaudio/xdotool/retroarch/xterm) のみで、pip 依存ゼロ。Ubuntu 24.04 の python3 (3.12) でそのまま動く。
 6. **ROM・ストリームキーはリポジトリに置かない。**
    ROM は自己吸い出し品を `games/roms/` (gitignore 済) に配置。ストリームキーは環境変数 (`DOCICH_STREAM_KEY`) のみ。
 

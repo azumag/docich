@@ -49,7 +49,7 @@ Steam の「Fly Me To The Home!」を AI が Windows 上でプレイするため
 
 ## 2. 実装（`src/docich/flyhome/`）
 
-docich 本体と同じく **Python 3.11+ 標準ライブラリのみ**（Pillow / numpy 不要）。
+docich 本体と同じく **Python 3.12+ 標準ライブラリのみ**（Pillow / numpy 不要）。
 
 ```
 取得 (GDI StretchBlt で 320x180 へ直接縮小)

@@ -8,7 +8,7 @@ docich との境界は CommandBrain のまま変えない: stdin から Observat
 新規プロセスとして起動されるステートレスなコマンドであり、記憶 (state.json /
 notes.md) や LLM 呼び出しはすべてこのスクリプト自身の責務である。
 
-Python 3.11+ 標準ライブラリのみで動く。`DOCICH_BRAIN_LLM=api` を選んだときだけ、
+Python 3.12+ 標準ライブラリのみで動く。`DOCICH_BRAIN_LLM=api` を選んだときだけ、
 呼び出し関数の内部で `anthropic` を import する (未導入なら pip 案内を出して exit 3)。
 
 終了コード:

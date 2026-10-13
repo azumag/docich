@@ -10,6 +10,11 @@ on:
       - '.github/workflows/comment-screen-context.yml'
 permissions:
   contents: read
+
+concurrency:
+  group: comment-screen-context-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   screen-context:
     runs-on: ubuntu-24.04

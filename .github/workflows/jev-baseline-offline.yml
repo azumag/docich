@@ -18,13 +18,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: jev-baseline-offline-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   saved-evidence-and-retry:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     strategy:
       matrix:
-        python: ['3.11', '3.14']
+        python: ['3.12', '3.14']
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:

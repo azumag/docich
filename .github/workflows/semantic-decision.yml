@@ -46,6 +46,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: semantic-decision-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   soren-gitlink-gate:
     runs-on: ubuntu-24.04

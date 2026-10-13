@@ -119,7 +119,7 @@ Populated Places 1:10m の位置データを同梱し、画面用に簡略化し
 
 ## ローカルでの確認
 
-Linux/macOS、Python 3.11以降。`fcntl` によるfetch排他を利用する。
+Linux/macOS、Python 3.12以降。`fcntl` によるfetch排他を利用する。
 本番stateディレクトリではなく、検証用の専用ディレクトリを指定する。
 
 ```bash

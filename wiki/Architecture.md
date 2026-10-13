@@ -20,7 +20,7 @@
 4. **brain (AI の頭脳) は外部コマンドとして差し替え可能にする**: 「観測 JSON を stdin に渡し、
    行動 JSON を stdout から受け取る」境界だけを定義する。`claude` CLI・自作スクリプト・
    ランダムテスト器を同じ口に差せる。
-5. **依存は最小に**: オーケストレータは Python 3.11+ 標準ライブラリのみ (tomllib/argparse/
+5. **依存は最小に**: オーケストレータは Python 3.12+ 標準ライブラリのみ (tomllib/argparse/
    subprocess/json)。外部コマンド (tmux/ffmpeg/Xvfb/pulseaudio/xdotool/retroarch/xterm) の
    みに依存し、pip 依存はゼロ。
 

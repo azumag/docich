@@ -482,8 +482,8 @@ def cmd_doctor(g: GlobalConfig) -> int:
     core_ok = True
 
     print("\n[コア]")
-    py_ok = sys.version_info >= (3, 11)
-    _print_row(py_ok, "python", f"{sys.version.split()[0]} (>=3.11 必須)")
+    py_ok = sys.version_info >= (3, 12)
+    _print_row(py_ok, "python", f"{sys.version.split()[0]} (>=3.12 必須)")
     core_ok = core_ok and py_ok
     for name in CORE_BINARIES:
         path = procs.which(name)

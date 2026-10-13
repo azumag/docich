@@ -3,6 +3,10 @@
 # the entire suite: `python3 -m pytest -q tests/`.
 # Version pins for SDKs live in their own files (single source of truth).
 pytest==9.1.1
+# Spreads the full suite over the runner's vCPUs. Collection must stay
+# deterministic: node ids that depend on uuid4()/time at import time make the
+# workers disagree and pytest-xdist aborts the run.
+pytest-xdist==3.8.0
 -r requirements-discord.txt
 -r requirements-screen.txt
 -r requirements-twica-overlay.txt
