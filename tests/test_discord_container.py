@@ -105,18 +105,18 @@ class ShutdownTests(unittest.IsolatedAsyncioTestCase):
                 store.close()
 
 
-_DISCORD_SDK_AVAILABLE = False
-try:
-    import discord as _discord
-    _DISCORD_SDK_AVAILABLE = _discord.__version__ == "2.7.1"
-except Exception:
-    _DISCORD_SDK_AVAILABLE = False
+# この検証はテストイメージ (containers/discord-chat/Dockerfile の test stage,
+# uid:gid 65532:65532) 内でのみ意味を持つ。skip 条件を discord の版数に
+# 依存させると pin 変更時に regression が skip で隠れるため、ここでは
+# 実行環境 (テストイメージ) かどうかだけを見る。discord の版数 assertion は
+# 本体のまま load-bearing に残す。
+_IN_TEST_IMAGE = os.getuid() == 65532 and os.getgid() == 65532
 
 
 class RuntimeTests(unittest.TestCase):
     @unittest.skipUnless(
-        _DISCORD_SDK_AVAILABLE,
-        "discord 2.7.1 and matching SDK are available only in the test image",
+        _IN_TEST_IMAGE,
+        'テストイメージ内でのみ実行 (uid:gid 65532:65532 の container user)',
     )
     def test_linux_sqlite_sdk_and_flock_available(self):
         import discord
