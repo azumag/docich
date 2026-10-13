@@ -1,0 +1,142 @@
+{
+  "scope": "Original native enemy-menu observations and exact inputs. New wait behavior is a policy replay, not a natural outcome or defeat cause.",
+  "frames": [
+    {
+      "uid": 8867,
+      "frame": "g747-freeziboy-8867.png",
+      "decision": {
+        "at": 1791884021.2160714,
+        "bot_version": "hanjuku-chart-v199-no-hero-substitute",
+        "chart_step": "A:87cb5c10:J1",
+        "decision_id": "g747-0fd8cf05:747:8867",
+        "deviation_reason": "計画のどうしに代わりリーキを出撃させる",
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "cards": [
+            "イッテツーン"
+          ],
+          "general": "どうし"
+        },
+        "frame_sha256": "f83c7d5d116daa9456a26bfd05565d6f5df14c78ffce29cecc95f615aa2d01cb",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": {
+          "cursor": [
+            40,
+            176
+          ],
+          "directions": [
+            "down"
+          ],
+          "kind": "monster_menu",
+          "step": 8867
+        },
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "down"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "monster_menu_choice"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "monster_menu",
+        "snapshot": "decision-107.png",
+        "strategy_variant": "substitute_general"
+      },
+      "rgb_sha256": "f83c7d5d116daa9456a26bfd05565d6f5df14c78ffce29cecc95f615aa2d01cb",
+      "exact_inputs": [
+        {
+          "at": 1791884021.4041817,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "down"
+          ],
+          "decision_frame_sha256": "f83c7d5d116daa9456a26bfd05565d6f5df14c78ffce29cecc95f615aa2d01cb",
+          "decision_id": "g747-0fd8cf05:747:8867",
+          "event": "input_sent",
+          "frame_sha256": "f83c7d5d116daa9456a26bfd05565d6f5df14c78ffce29cecc95f615aa2d01cb",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ]
+    },
+    {
+      "uid": 8868,
+      "frame": "g747-freeziboy-8868.png",
+      "decision": {
+        "at": 1791884021.8925927,
+        "bot_version": "hanjuku-chart-v199-no-hero-substitute",
+        "chart_step": "A:87cb5c10:J1",
+        "decision_id": "g747-0fd8cf05:747:8868",
+        "deviation_reason": "計画のどうしに代わりリーキを出撃させる",
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "cards": [
+            "イッテツーン"
+          ],
+          "general": "どうし"
+        },
+        "frame_sha256": "dcbb956341ad9ec7a3b4d55830fad68bd6dbe9e6f27c1f7ada47520a263e1462",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": {
+          "cursor": [
+            40,
+            176
+          ],
+          "directions": [
+            "up",
+            "down"
+          ],
+          "kind": "monster_menu",
+          "step": 8868
+        },
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "up"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "monster_menu_choice"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "monster_menu",
+        "snapshot": "decision-108.png",
+        "strategy_variant": "substitute_general"
+      },
+      "rgb_sha256": "dcbb956341ad9ec7a3b4d55830fad68bd6dbe9e6f27c1f7ada47520a263e1462",
+      "exact_inputs": [
+        {
+          "at": 1791884022.0641663,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "up"
+          ],
+          "decision_frame_sha256": "dcbb956341ad9ec7a3b4d55830fad68bd6dbe9e6f27c1f7ada47520a263e1462",
+          "decision_id": "g747-0fd8cf05:747:8868",
+          "event": "input_sent",
+          "frame_sha256": "dcbb956341ad9ec7a3b4d55830fad68bd6dbe9e6f27c1f7ada47520a263e1462",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ]
+    }
+  ]
+}

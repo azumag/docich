@@ -41,6 +41,9 @@ BALLOON_FINCH_MAX_HP = 9999
 
 _MONSTER_SKILLS = {name: frozenset(_fold_skill(s) for s in skills)
                    for name, skills in reference.MONSTER_SKILLS.items()}
+# Exact observed display spelling (g747 native frames 8867/8868). Keep the
+# reference name and unrelated monster policies unchanged; no fuzzy matching.
+_MONSTER_DISPLAY_ALIASES = {'フリージボーイ': 'フリージーボーイ'}
 _MONSTER_EFFECTS = frozenset(_fold_skill(s) for s in reference.MONSTER_EFFECT_SKILLS)
 _MONSTER_HEALS = frozenset(_fold_skill(s) for s in reference.MONSTER_HEAL_SKILLS)
 
@@ -48,8 +51,10 @@ _MONSTER_HEALS = frozenset(_fold_skill(s) for s in reference.MONSTER_HEAL_SKILLS
 def _monster_owner(skill_lines, ally, enemy) -> str | None:
     """Which side the visible skill rows belong to, or None when ambiguous."""
     shown = {_fold_skill(''.join(line.known.split())) for line in skill_lines}
-    ally_set = _MONSTER_SKILLS.get(ally.name) if ally else None
-    enemy_set = _MONSTER_SKILLS.get(enemy.name) if enemy else None
+    ally_set = _MONSTER_SKILLS.get(
+        _MONSTER_DISPLAY_ALIASES.get(ally.name, ally.name)) if ally else None
+    enemy_set = _MONSTER_SKILLS.get(
+        _MONSTER_DISPLAY_ALIASES.get(enemy.name, enemy.name)) if enemy else None
     hit_ally = bool(shown & ally_set) if ally_set else False
     hit_enemy = bool(shown & enemy_set) if enemy_set else False
     if hit_ally and not hit_enemy:
