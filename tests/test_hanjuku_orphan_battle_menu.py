@@ -72,7 +72,18 @@ def test_fades_and_irreversible_lists_keep_close_budget_without_input():
     assert mem['orphan_battle_menu']['attempts'] == 2
 
 
-@pytest.mark.parametrize('bad', [None, True, -1, 4, '1'])
+def test_exact_frozen_parent_cannot_borrow_generic_confirm_after_budget():
+    frame = native(8820)
+    state = {'policy': {'chapter': 2, 'name': {'done': True},
+             'orphan_battle_menu': {'identity': IDENTITY, 'attempts': 3}}}
+    for _ in range(90):
+        actions, state = decide(frame, json.loads(json.dumps(state)), run_identity=IDENTITY)
+        assert actions == []
+        assert 'no_input_fallback' not in [r['decision'] for r in state['_records']]
+    assert state['policy']['orphan_battle_menu']['attempts'] == 3
+
+
+@pytest.mark.parametrize('bad', [None, True, -1, 4, 3.0, '1'])
 def test_corrupt_persisted_budget_does_not_get_more_cancels(bad):
     mem = {'_run_identity': IDENTITY, '_records': [],
            'orphan_battle_menu': {'identity': IDENTITY, 'attempts': bad}}
