@@ -1,0 +1,201 @@
+[
+  {
+    "file": "g745-monster-row1-8064.png",
+    "runtime": {
+      "game": "hanjuku-hero",
+      "runtime_id": "g745-18f84db7",
+      "generation": 745,
+      "lease_id": "4abd000e-9826-4033-984b-ac6432655332"
+    },
+    "decision": {
+      "at": 1791865493.2231624,
+      "bot_version": "hanjuku-chart-v192-conserved-army-reobserve",
+      "chart_step": null,
+      "decision_id": "g745-18f84db7:745:8064",
+      "deviation_reason": null,
+      "dispatch_status": "planned_not_yet_sent",
+      "event": "action_plan",
+      "expected_metric": {
+        "goal": "チャート戦術による戦闘勝利"
+      },
+      "frame_sha256": "3e369d9d1c3a3988fd412562ccc4a81f64874b42c9598106bd69c1788a8466ae",
+      "game": "hanjuku-hero",
+      "generation": 745,
+      "lease_id": "4abd000e-9826-4033-984b-ac6432655332",
+      "observation_interval_ms": 1500,
+      "planned_actions": [
+        {
+          "buttons": [
+            "down"
+          ],
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "reason_decisions": [
+        "monster_menu_choice"
+      ],
+      "runtime_id": "g745-18f84db7",
+      "schema": 1,
+      "screen_kind": "monster_menu",
+      "snapshot": "decision-024.png",
+      "strategy_variant": "chart_adjusted"
+    },
+    "input_receipts": [
+      {
+        "at": 1791865493.3875966,
+        "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+        "buttons": [
+          "down"
+        ],
+        "decision_frame_sha256": "3e369d9d1c3a3988fd412562ccc4a81f64874b42c9598106bd69c1788a8466ae",
+        "decision_id": "g745-18f84db7:745:8064",
+        "event": "input_sent",
+        "frame_sha256": "3e369d9d1c3a3988fd412562ccc4a81f64874b42c9598106bd69c1788a8466ae",
+        "hold_ms": 100,
+        "type": "pad"
+      }
+    ],
+    "rgb_sha256": "3e369d9d1c3a3988fd412562ccc4a81f64874b42c9598106bd69c1788a8466ae",
+    "png_sha256": "0ed8c488e31aad19ea66f677d6365fd5b0f7377c7949aec570b875f62ba165d9",
+    "source_snapshot": "decision-024.png",
+    "capture_binding": "original_decision_snapshot",
+    "ground_truth": {
+      "screen_kind": "monster_menu",
+      "menu_cursor": 176
+    },
+    "ground_truth_origin": "manual inspection of original image; not parser prediction"
+  },
+  {
+    "file": "g745-monster-row2-8065.png",
+    "runtime": {
+      "game": "hanjuku-hero",
+      "runtime_id": "g745-18f84db7",
+      "generation": 745,
+      "lease_id": "4abd000e-9826-4033-984b-ac6432655332"
+    },
+    "decision": {
+      "at": 1791865494.7362716,
+      "bot_version": "hanjuku-chart-v192-conserved-army-reobserve",
+      "chart_step": null,
+      "decision_id": "g745-18f84db7:745:8065",
+      "deviation_reason": null,
+      "dispatch_status": "planned_not_yet_sent",
+      "event": "action_plan",
+      "expected_metric": {
+        "goal": "チャート戦術による戦闘勝利"
+      },
+      "frame_sha256": "2e4317e5b5a691408cb03f05e4ac912cc93e44e2a49b77549f92a17f418a21f2",
+      "game": "hanjuku-hero",
+      "generation": 745,
+      "lease_id": "4abd000e-9826-4033-984b-ac6432655332",
+      "observation_interval_ms": 1500,
+      "planned_actions": [
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "reason_decisions": [
+        "monster_menu_choice"
+      ],
+      "runtime_id": "g745-18f84db7",
+      "schema": 1,
+      "screen_kind": "monster_menu",
+      "snapshot": "decision-025.png",
+      "strategy_variant": "chart_adjusted"
+    },
+    "input_receipts": [
+      {
+        "at": 1791865494.900626,
+        "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+        "buttons": [
+          "a"
+        ],
+        "decision_frame_sha256": "2e4317e5b5a691408cb03f05e4ac912cc93e44e2a49b77549f92a17f418a21f2",
+        "decision_id": "g745-18f84db7:745:8065",
+        "event": "input_sent",
+        "frame_sha256": "2e4317e5b5a691408cb03f05e4ac912cc93e44e2a49b77549f92a17f418a21f2",
+        "hold_ms": 100,
+        "type": "pad"
+      }
+    ],
+    "rgb_sha256": "2e4317e5b5a691408cb03f05e4ac912cc93e44e2a49b77549f92a17f418a21f2",
+    "png_sha256": "58b016b5c467402abdfab15ce1ce5c710711ca866ca53ed19de533191446cbc6",
+    "source_snapshot": "decision-025.png",
+    "capture_binding": "original_decision_snapshot",
+    "ground_truth": {
+      "screen_kind": "monster_menu",
+      "menu_cursor": 192
+    },
+    "ground_truth_origin": "manual inspection of original image; not parser prediction"
+  },
+  {
+    "file": "g745-god-dialogue-8128.png",
+    "runtime": {
+      "game": "hanjuku-hero",
+      "runtime_id": "g745-18f84db7",
+      "generation": 745,
+      "lease_id": "4abd000e-9826-4033-984b-ac6432655332"
+    },
+    "decision": {
+      "at": 1791865568.0060184,
+      "bot_version": "hanjuku-chart-v192-conserved-army-reobserve",
+      "chart_step": null,
+      "decision_id": "g745-18f84db7:745:8128",
+      "deviation_reason": null,
+      "dispatch_status": "planned_not_yet_sent",
+      "event": "action_plan",
+      "expected_metric": {
+        "goal": "チャート戦術による戦闘勝利"
+      },
+      "frame_sha256": "e396482fe5f4d3997104d8163863ed88f2e3417d2d7e6c6b76cca216fab3c5ad",
+      "game": "hanjuku-hero",
+      "generation": 745,
+      "lease_id": "4abd000e-9826-4033-984b-ac6432655332",
+      "observation_interval_ms": 1500,
+      "planned_actions": [
+        {
+          "buttons": [
+            "a"
+          ],
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "reason_decisions": [],
+      "runtime_id": "g745-18f84db7",
+      "schema": 1,
+      "screen_kind": "text",
+      "snapshot": null,
+      "strategy_variant": "chart_adjusted"
+    },
+    "input_receipts": [
+      {
+        "at": 1791865568.2372568,
+        "bot_version": "hanjuku-chart-v191-orphan-battle-menu",
+        "buttons": [
+          "a"
+        ],
+        "decision_frame_sha256": "e396482fe5f4d3997104d8163863ed88f2e3417d2d7e6c6b76cca216fab3c5ad",
+        "decision_id": "g745-18f84db7:745:8128",
+        "event": "input_sent",
+        "frame_sha256": "e396482fe5f4d3997104d8163863ed88f2e3417d2d7e6c6b76cca216fab3c5ad",
+        "hold_ms": 100,
+        "type": "pad"
+      }
+    ],
+    "rgb_sha256": "e396482fe5f4d3997104d8163863ed88f2e3417d2d7e6c6b76cca216fab3c5ad",
+    "png_sha256": "c09c42b941a7f500c4a90831953cc70c176525bb2da74f24dd4f38cb03099621",
+    "source_snapshot": "frame-038.png",
+    "capture_binding": "runtime_observation_RGB_matched_plan",
+    "ground_truth": {
+      "screen_kind": "text",
+      "menu_cursor": null
+    },
+    "ground_truth_origin": "manual inspection of original image; not parser prediction"
+  }
+]
