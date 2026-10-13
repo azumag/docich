@@ -1,11 +1,11 @@
 {
-  "output_sha256": "197c3c2d8eddccebc8678c356aeb681f39364d4f6a8464c9f50a0f039bd5f16b",
+  "output_sha256": "5c55bbb68e27d0ea83ef04e9cd636eb24da83912774b13735094e7e5f9427b10",
   "schema": 1,
-  "source": "handoff.md",
-  "source_sha256": "662567e96fad1449e32ce35ffa44366976450399b6e4ed198cd4a599e1cec691",
+  "source": "ops/runtime_context/ops_brief_source.md",
+  "source_sha256": "0cfa01b74c6def86d6b0fa8623c02a5cbe02c52becd0207258e183183715cb44",
   "topics": [
-    "同志カードのtimer設定参照を正規配備、自然実行の受入待ち",
-    "半熟英雄: 主人公の押し負け救済（v222）を main 統合・本番配備、次の自然発火を監視中",
-    "通常コーナーBGMの接続先を修正し、NetHackとTwitch公開音声で復旧確認"
+    "ゲーム再開時の文字ページ処理と表示を検証",
+    "PAPERコーナーの設定読み込みを統一",
+    "公開用の運用情報を専用ファイルで管理"
   ]
 }
