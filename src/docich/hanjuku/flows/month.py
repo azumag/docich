@@ -210,6 +210,10 @@ def month_step(screen: Screen, mem):
         _zero_army_refill(mem, shop, screen.header)
         _prioritise_recruit(mem, shop, (screen.header or {}).get('gold'))
         _limit_soldier_refill(mem, shop, screen.header)
+    if (mem.get('month_sub', {}).get('kind') == 'recruit'
+            and month_menu_ready(screen) and _month_menu_quiet(screen)):
+        if not _finish_month_sub(screen, mem, shop):
+            return []
     if body == RECRUIT_GOODBYE:
         _record(mem, 'month_recruit_goodbye', reason='実測した募集終了文を閉じて本メニューへ戻る')
         return [pad('a')]
@@ -1130,6 +1134,57 @@ def _paid_recruit_candidate(screen, sub):
     return match[1]
 
 
+RECRUIT_RETURN_LIMIT = 32
+RECRUIT_SHOP_KINDS = frozenset({'shop_list', 'shop_quantity_prompt',
+                               'shop_quantity', 'shop_exit_confirm'})
+
+
+def recruit_input_guard(screen, mem):
+    """A remembered recruitment does not own a fade or a merchant purchase."""
+    sub = mem.get('month_sub')
+    if not isinstance(sub, dict) or sub.get('kind') != 'recruit':
+        return None
+    if screen.kind in RECRUIT_SHOP_KINDS or screen.has('じゅうじキー'):
+        return 'foreign_purchase'
+    if (screen.kind == 'unknown'
+            or (screen.kind == 'month_menu' and _month_menu_quiet(screen)
+                and not month_menu_ready(screen))
+            or (screen.kind == 'text'
+            and not any(line.known.strip() for line in screen.lines if line.y > 30))):
+        return 'unread'
+    if sub.get('recruit_foreign_screen') and not month_menu_ready(screen):
+        return 'foreign_return'
+    return None
+
+
+def _recruit_guard_step(screen, mem, reason):
+    sub = mem['month_sub']
+    # Saturate across JSON saves. Returning to a readable recruitment dialogue
+    # does not replenish this budget; a new month creates a new transaction.
+    previous = sub.get('return_observations', 0)
+    count = previous
+    count = count + 1 if type(count) is int and 0 <= count < RECRUIT_RETURN_LIMIT else RECRUIT_RETURN_LIMIT
+    sub['return_observations'] = count
+    if reason == 'foreign_purchase':
+        sub['recruit_foreign_screen'] = True
+        sub['aborted'] = True
+    if count == 1 or (count == RECRUIT_RETURN_LIMIT and previous != RECRUIT_RETURN_LIMIT):
+        _record(mem, 'recruit_return_guard', screen=screen.kind,
+                deviation_reason=reason,
+                observed_metric={'observations': count, 'fee_observed': _recruit_fee_observed(sub)},
+                reason='募集の暗転では決定せず、別の購入画面は閉じて月初への復帰を確認する')
+    if count >= RECRUIT_RETURN_LIMIT or reason == 'unread':
+        return []
+    if screen.kind == 'shop_exit_confirm':
+        # Only an observed shop-closing choice may take A. Never guess the
+        # default cursor, nor delegate a stale purchase plan to shop_step.
+        if not (screen.has('みせじまい') and screen.has('うむッ') and screen.has('いかんッ')):
+            return []
+        move = menu_to(screen, 'うむッ!')
+        return [pad('a')] if move == 'here' else [move] if move else []
+    return [pad('b')]
+
+
 def month_sub_step(screen: Screen, mem):
     """Screens inside measured egg recovery / unmeasured general recruitment.
 
@@ -1146,6 +1201,9 @@ def month_sub_step(screen: Screen, mem):
         _record(mem, 'month_sub_lost', screen=kind, observed_metric=sub,
                 reason='月一の実行中に月一メニューへ戻らず別画面になったため追跡をやめる')
         return None
+    guard = recruit_input_guard(screen, mem)
+    if guard is not None:
+        return _recruit_guard_step(screen, mem, guard)
     if sub.get('payment_interrupted') and not _recruit_fee_observed(sub):
         if not sub.get('aborted'):
             _record(mem, 'month_sub_abort', screen=kind,

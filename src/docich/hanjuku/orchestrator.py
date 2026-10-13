@@ -398,7 +398,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
             and not isinstance(mem.get('orphan_battle_menu'), dict)
             and not (kind == 'egg_battle_menu'
                      and battle_menus_flow._enemy_general_command(screen) is not None)
-            and not month_flow.army_count_owned(mem)):
+            and not month_flow.army_count_owned(mem)
+            and month_flow.recruit_input_guard(screen, mem) is None):
         # Even this last-resort path must not confirm an unread summer option:
         # the cursor may be on the mass-dismissal row. Reobserve after one move.
         # These recognized events must never borrow a scripted scene's blind A.

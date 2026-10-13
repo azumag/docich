@@ -126,7 +126,14 @@ def test_nontrade_confirmation_keeps_monthly_acceptance_owner(background, owner,
     if gold is not None:
         assert parse(frame).header['gold'] == gold
     actions, state = decide(frame, state)
-    assert actions == [policy.pad('a')]
+    if owner == 'recruit' and background and prompt == 'これでもうみせじまいしますが':
+        # Both background and foreground hands are present: the closing
+        # choice is unreadable. A recruitment receipt cannot guess it.
+        assert policy.menu_to(parse(frame), 'うむッ!') is None
+        assert actions == []
+        assert state['policy']['month_sub']['recruit_foreign_screen']
+    else:
+        assert actions == [policy.pad('a')]
     assert not any(row['strategy_variant'] == 'decline_general_trade'
                    for row in state['_records'])
 

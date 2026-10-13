@@ -1,0 +1,281 @@
+{
+  "boundary": "Original v206 inputs; new-policy responses in tests are counterfactual, not natural acceptance or purchases.",
+  "frames": [
+    {
+      "uid": 1883,
+      "fixture": "g749-recruit-return-1883.png",
+      "rgb_sha256": "60a85ad61fbd0febac5416fcbcb251c50e13d6c375f407012dc6bf7956ee5270",
+      "decision": {
+        "at": 1791897549.3699508,
+        "bot_version": "hanjuku-chart-v206-enemy-general-command",
+        "chart_step": null,
+        "decision_id": "g749-d8571de0:749:1883",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "60a85ad61fbd0febac5416fcbcb251c50e13d6c375f407012dc6bf7956ee5270",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "month_sub_step"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "text",
+        "snapshot": null,
+        "strategy_variant": "chart_adjusted"
+      },
+      "input_receipts": [
+        {
+          "at": 1791897549.5248852,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "60a85ad61fbd0febac5416fcbcb251c50e13d6c375f407012dc6bf7956ee5270",
+          "decision_id": "g749-d8571de0:749:1883",
+          "event": "input_sent",
+          "frame_sha256": "60a85ad61fbd0febac5416fcbcb251c50e13d6c375f407012dc6bf7956ee5270",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ]
+    },
+    {
+      "uid": 1885,
+      "fixture": "g749-recruit-return-1885.png",
+      "rgb_sha256": "2cbbeef1249170a43854962fa5b19fba628470c70beb9ce23e15a0f05cb891f2",
+      "decision": {
+        "at": 1791897552.308959,
+        "bot_version": "hanjuku-chart-v206-enemy-general-command",
+        "chart_step": null,
+        "decision_id": "g749-d8571de0:749:1885",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "2cbbeef1249170a43854962fa5b19fba628470c70beb9ce23e15a0f05cb891f2",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "month_sub_step"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "unknown",
+        "snapshot": null,
+        "strategy_variant": "chart_adjusted"
+      },
+      "input_receipts": [
+        {
+          "at": 1791897552.541982,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "2cbbeef1249170a43854962fa5b19fba628470c70beb9ce23e15a0f05cb891f2",
+          "decision_id": "g749-d8571de0:749:1885",
+          "event": "input_sent",
+          "frame_sha256": "2cbbeef1249170a43854962fa5b19fba628470c70beb9ce23e15a0f05cb891f2",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ]
+    },
+    {
+      "uid": 1886,
+      "fixture": "g749-recruit-return-1886.png",
+      "rgb_sha256": "0f26b1658c3ba9afb3374af2f58284c4623eaa28007ecf5360aaeccf3af3162c",
+      "decision": {
+        "at": 1791897553.853204,
+        "bot_version": "hanjuku-chart-v206-enemy-general-command",
+        "chart_step": null,
+        "decision_id": "g749-d8571de0:749:1886",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "0f26b1658c3ba9afb3374af2f58284c4623eaa28007ecf5360aaeccf3af3162c",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "month_sub_step"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "unknown",
+        "snapshot": null,
+        "strategy_variant": "chart_adjusted"
+      },
+      "input_receipts": [
+        {
+          "at": 1791897554.0512426,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "0f26b1658c3ba9afb3374af2f58284c4623eaa28007ecf5360aaeccf3af3162c",
+          "decision_id": "g749-d8571de0:749:1886",
+          "event": "input_sent",
+          "frame_sha256": "0f26b1658c3ba9afb3374af2f58284c4623eaa28007ecf5360aaeccf3af3162c",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ]
+    },
+    {
+      "uid": 1927,
+      "fixture": "g749-recruit-return-1927.png",
+      "rgb_sha256": "1a72a97d13fd15e7da0b9b307b9f6ebeabf95ae2b2082a0edb0b79559d8de593",
+      "decision": {
+        "at": 1791897615.2909346,
+        "bot_version": "hanjuku-chart-v206-enemy-general-command",
+        "chart_step": null,
+        "decision_id": "g749-d8571de0:749:1927",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "1a72a97d13fd15e7da0b9b307b9f6ebeabf95ae2b2082a0edb0b79559d8de593",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "month_sub_step"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "shop_list",
+        "snapshot": null,
+        "strategy_variant": "chart_adjusted"
+      },
+      "input_receipts": [
+        {
+          "at": 1791897615.4641044,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "1a72a97d13fd15e7da0b9b307b9f6ebeabf95ae2b2082a0edb0b79559d8de593",
+          "decision_id": "g749-d8571de0:749:1927",
+          "event": "input_sent",
+          "frame_sha256": "1a72a97d13fd15e7da0b9b307b9f6ebeabf95ae2b2082a0edb0b79559d8de593",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ]
+    },
+    {
+      "uid": 1936,
+      "fixture": "g749-recruit-return-1936.png",
+      "rgb_sha256": "7d4ed9ed7f51dbdc291db439a21f84bea18c2bb8d0239ff24052da2bda92c163",
+      "decision": {
+        "at": 1791897628.844768,
+        "bot_version": "hanjuku-chart-v206-enemy-general-command",
+        "chart_step": null,
+        "decision_id": "g749-d8571de0:749:1936",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "7d4ed9ed7f51dbdc291db439a21f84bea18c2bb8d0239ff24052da2bda92c163",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": {
+          "cursor": [
+            56,
+            47
+          ],
+          "directions": [
+            "down"
+          ],
+          "kind": "month_menu",
+          "step": 1936
+        },
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "down"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "soldier_budget_after_recruit",
+          "recruit"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "month_menu",
+        "snapshot": "decision-016.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "input_receipts": [
+        {
+          "at": 1791897629.0166636,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "down"
+          ],
+          "decision_frame_sha256": "7d4ed9ed7f51dbdc291db439a21f84bea18c2bb8d0239ff24052da2bda92c163",
+          "decision_id": "g749-d8571de0:749:1936",
+          "event": "input_sent",
+          "frame_sha256": "7d4ed9ed7f51dbdc291db439a21f84bea18c2bb8d0239ff24052da2bda92c163",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ]
+    }
+  ]
+}
