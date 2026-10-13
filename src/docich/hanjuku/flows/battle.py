@@ -23,7 +23,7 @@ from ..judgment.battle import (CARD_MENU_OPEN_RETRIES, DEFENDER_EGG_OPEN_LIMIT, 
                                _bind_event_duel, _bind_substitute_defender, _boss_tactics_allowed,
                                _card_damage_gate, _card_damage_key, _card_damage_recheck_resources,
                                _card_melee_ready, _card_use_unclassified, _charted_melee, _command_open_wait,
-                               _critical_survival_needed, _defender_egg_window, _defender_last_resort,
+                               _critical_safe_card, _critical_survival_needed, _defender_egg_window, _defender_last_resort,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _egg_drop_tactics, _egg_plan, _hero_marching,
                                _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
                                _migrate_card_evidence, _observe_egg_drop_candidate, _own_egg_empty,
@@ -687,6 +687,8 @@ def note_duel_event(screen, mem):
 
 def _hero_retreat_open(mem, cur):
     if not _hero_retreat_needed(cur) or cur.get('side') == 'defense':
+        return None
+    if _critical_safe_card(mem, cur, cur.get('survival') or {}, for_retreat=True):
         return None
     if _egg_before_retreat(mem, cur):
         return None

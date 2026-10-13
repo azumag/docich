@@ -1104,9 +1104,13 @@ def _conserved_army_recheck(mem, cur):
     return True
 
 
-def _critical_safe_card(mem, cur, rescue):
+def _critical_safe_card(mem, cur, rescue, *, for_retreat=False):
     # Only the observed list, not a chart kit, licenses delaying an active
     # egg for a heal/proven finishing blow. Selection is still not a use.
+    if for_retreat and (rescue.get('cards_checked', 0) >= 3
+            or rescue.get('cards_exhausted')
+            or (rescue.get('exhausted') and rescue.get('critical_menu_recheck'))):
+        return False  # stale inventory must not suppress retreat indefinitely
     names = rescue.get('listed_cards') or []
     for card in names:
         if (card not in SURVIVAL_CARDS or card in rescue.get('cards_attempted', [])

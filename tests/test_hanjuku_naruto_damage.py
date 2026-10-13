@@ -31,7 +31,8 @@ def test_native_owned_menu_chooses_damage_and_preserves_wounded_shield(uid,move)
     assert m['monster_menu_choice']=='skill1'
     assert m['_records'][-1]['observed_metric']['damage_first'] is True
     if uid in (8562,8563):
-        assert m['_records'][-1]['observed_metric']['general_return_blocked'] is True
+        assert m['_records'][-1]['observed_metric']['general_return_risk'] is not None
+        assert m['_records'][-1]['observed_metric']['general_return_blocked'] is False
 
 def test_hotload_saved_same_hp_old_swirl_choice_is_invalidated():
     s=native(8550);m=memory();monster_menu_step(s,m)
@@ -40,13 +41,13 @@ def test_hotload_saved_same_hp_old_swirl_choice_is_invalidated():
     assert monster_menu_step(s,m)==[pad('up')]
     assert m['monster_menu_choice']=='skill1'
 
-def test_healthy_general_can_still_return_low_hp_monster():
+def test_healthy_general_does_not_make_hp_only_return_a_winning_tactic():
     s=native(8562);m=memory();m['battle']['ally_hp']=82
     m['battle']['summon_general_reading']['hp']=82
     # Counterfactual opponent small enough to remove summoner return risk.
     s.egg_rows=[replace(r,hp=160) if r.side=='enemy' else replace(r,hp=8) for r in s.egg_rows]
-    assert monster_menu_step(s,m)==[pad('down')]
-    assert m['monster_menu_choice']=='retreat'
+    assert monster_menu_step(s,m)==[pad('a')]
+    assert m['monster_menu_choice']=='skill1'
 
 def test_enemy_owned_native_menu_waits():
     s=native(8551);m=memory()

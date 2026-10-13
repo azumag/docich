@@ -56,7 +56,8 @@ def test_ordinary_opening_binds_healthy_general_before_either_summon():
     p.monster_menu_step(native(6855), mem)
     assert mem['monster_menu_choice'] == 'skill2'
     metric = mem['_records'][-1]['observed_metric']
-    assert metric['general_return_blocked']
+    assert metric['general_return_risk'] is not None
+    assert not metric['general_return_blocked']
     assert not metric['wounded_general_return_blocked']
     assert metric['general_return_risk']['rule'] == 'general_vs_monster_hp'
     assert mem['battle']['ally_hp'] == 30  # never replace by Final Jelly76
@@ -90,7 +91,7 @@ def test_unbound_or_corrupt_general_cannot_authorize_new_protection(change):
     elif change == 'max': r['max_hp'] = 29
     else: r['identity'] = {'runtime_id': 'x', 'generation': True, 'lease_id': 'y'}
     p.monster_menu_step(native(6855), mem)
-    assert mem['monster_menu_choice'] == 'retreat'
+    assert mem['monster_menu_choice'] == 'skill2'
 
 
 @pytest.mark.parametrize('own_hp,enemy_hp,expected', [(30,59,False), (30,60,True),
@@ -119,7 +120,7 @@ def test_both_monsters_must_be_live_and_read(side, hp):
 def test_current_native_general_panel_refreshes_binding_but_old_memory_is_not_backfilled():
     mem = memory(); cur = mem['battle']; cur.pop('summon_general_reading')
     p.monster_menu_step(native(6855), mem)
-    assert mem['monster_menu_choice'] == 'retreat'
+    assert mem['monster_menu_choice'] == 'skill2'
     assert 'summon_general_reading' not in cur
     assert battle_menus._egg_general_reading(native(6866), mem, cur) == (30, 30)
     p.monster_menu_step(native(6855), mem)

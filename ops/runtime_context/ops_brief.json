@@ -1,11 +1,11 @@
 {
-  "output_sha256": "9f550566ed3f0c7fabd3d23ebd0a22863b4549a2ee0edf3fb6f94b78cd21c88a",
+  "output_sha256": "853d00e4069dce5e264511422f6fc7e8ac5a1aa7625c62f529686d30d7215bf5",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "4a72bb196c45ed4173cd082ad099e17ce97be2c4f23318e2b3351b640fe48dac",
+  "source_sha256": "c2128eea7e93acd764227e0c45f28ea45a7d5e2ccebe1ca1f9245bac682838c6",
   "topics": [
-    "半熟英雄の未使用卵を退却より先に確認する戦闘修正",
-    "半熟英雄第2話進行の実測と代役能力ガード案の撤回",
-    "handoff正本を最新30節へ有界化し、ops_brief.jsonを非公開handoffから切離し"
+    "半熟英雄のHP比退却を撤回し実携行の致死札を優先",
+    "半熟英雄の卵救済反映と未到着給与のユーザー訂正",
+    "半熟英雄の未使用卵を退却より先に確認する戦闘修正"
   ]
 }

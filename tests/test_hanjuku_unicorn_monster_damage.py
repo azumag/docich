@@ -51,10 +51,10 @@ def test_same_hp_old_cached_first_skill_migrates_on_hotload_and_saved_replay():
     assert m['monster_menu_choice'] == 'skill2'
 
 
-def test_native_low_hp_still_returns_to_egg_instead_of_forcing_damage():
+def test_native_low_hp_keeps_regular_attack_instead_of_hp_only_return():
     m = memory(); s = native(5301)
-    assert monster_menu_step(s, m) == [pad('a')]
-    assert m['monster_menu_choice'] == 'retreat'
+    assert monster_menu_step(s, m) == [pad('up')]
+    assert m['monster_menu_choice'] == 'skill2'
 
 
 def test_general_opponent_does_not_receive_the_monster_damage_rule():

@@ -50,7 +50,8 @@ def test_native_summon_keeps_a_skill_instead_of_exposing_wounded_general():
     mem = memory()
     p.monster_menu_step(native(788), mem)
     assert mem['monster_menu_choice'] == 'skill2'
-    assert mem['_records'][-1]['observed_metric']['wounded_general_return_blocked']
+    assert mem['_records'][-1]['observed_metric']['general_return_risk']['rule']=='wounded_general'
+    assert not mem['_records'][-1]['observed_metric']['wounded_general_return_blocked']
     assert mem['battle']['ally_hp'] == 34  # never replace with Baby Moth97
     assert mem['battle']['summon_general_reading']['max_hp'] == 85
     # Counterfactual input from the old return cursor, not a natural new action.
@@ -77,7 +78,7 @@ def test_foreign_or_unbound_reading_does_not_create_general_protection(change):
     elif change == 'missing': cur.pop('summon_general_reading')
     else: cur['summon_general_reading'] = True
     p.monster_menu_step(native(788), mem)
-    assert mem['monster_menu_choice'] == 'retreat'
+    assert mem['monster_menu_choice'] == 'skill2'
 
 
 @pytest.mark.parametrize('hp,full,expected', [(12,20,True),(13,20,False),(42,85,True),
