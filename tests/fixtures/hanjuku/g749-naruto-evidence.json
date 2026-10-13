@@ -1,0 +1,511 @@
+{
+  "active": {
+    "game": "hanjuku-hero",
+    "runtime_id": "g749-d8571de0",
+    "generation": 749,
+    "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f"
+  },
+  "evidence": [
+    {
+      "decision": {
+        "at": 1791906232.177844,
+        "bot_version": "hanjuku-chart-v209-partial-enemy-command",
+        "chart_step": "A:b4176951:J2",
+        "decision_id": "g749-d8571de0:749:8549",
+        "deviation_reason": "計画のココットに代わりヴィーナスを出撃させる",
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "cards": [
+            "イッテツーン",
+            "キャトルミュー",
+            "ブラッキー"
+          ],
+          "general": "ココット"
+        },
+        "frame_sha256": "6b2a60206c4b17085760ba1705c328bd89f0e5d641a99e03c2e1e25416664f27",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": {
+          "cursor": [
+            176,
+            176
+          ],
+          "directions": [
+            "down"
+          ],
+          "kind": "monster_menu",
+          "step": 8549
+        },
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "down"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "monster_menu_choice"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "monster_menu",
+        "snapshot": "decision-029.png",
+        "strategy_variant": "substitute_general"
+      },
+      "rgb_sha256": "6b2a60206c4b17085760ba1705c328bd89f0e5d641a99e03c2e1e25416664f27",
+      "input_receipts": [
+        {
+          "at": 1791906232.3402917,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "down"
+          ],
+          "decision_frame_sha256": "6b2a60206c4b17085760ba1705c328bd89f0e5d641a99e03c2e1e25416664f27",
+          "decision_id": "g749-d8571de0:749:8549",
+          "event": "input_sent",
+          "frame_sha256": "6b2a60206c4b17085760ba1705c328bd89f0e5d641a99e03c2e1e25416664f27",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "policy_decisions": [
+        {
+          "at": 1791906232.177844,
+          "decision_id": "g749-d8571de0:749:8549",
+          "frame_sha256": "6b2a60206c4b17085760ba1705c328bd89f0e5d641a99e03c2e1e25416664f27",
+          "decision": "monster_menu_choice",
+          "reason": "召喚獣の技メニューで「うずまき」を選択: 味方が劣勢で効果付きの2技目",
+          "observed_metric": {
+            "action": "skill2",
+            "ally_hp": 330,
+            "enemy_hp": 367,
+            "experience_key": "monster_menu|1|クイーン|ヴィーナス|A:b4176951:J2|なると|ヒュドラ|behind",
+            "general_return_blocked": false,
+            "general_return_risk": {
+              "enemy_monster": "ヒュドラ",
+              "enemy_monster_hp": 367,
+              "general": "ヴィーナス",
+              "general_hp": 23,
+              "general_max_hp": 82,
+              "rule": "wounded_general"
+            },
+            "menu": [
+              "ぎざぎざ",
+              "うずまき",
+              "たまごにもどれ"
+            ],
+            "owner": "ally",
+            "target_hp": null,
+            "wounded_general_return_blocked": false
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ]
+    },
+    {
+      "decision": {
+        "at": 1791906232.806407,
+        "bot_version": "hanjuku-chart-v209-partial-enemy-command",
+        "chart_step": "A:b4176951:J2",
+        "decision_id": "g749-d8571de0:749:8550",
+        "deviation_reason": "計画のココットに代わりヴィーナスを出撃させる",
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "cards": [
+            "イッテツーン",
+            "キャトルミュー",
+            "ブラッキー"
+          ],
+          "general": "ココット"
+        },
+        "frame_sha256": "1b23b4588b8729b5abc8eb34605fbea52f9738ee09ec2f01d4a48e79fcdf9a56",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "monster_menu_choice"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "monster_menu",
+        "snapshot": "decision-030.png",
+        "strategy_variant": "substitute_general"
+      },
+      "rgb_sha256": "1b23b4588b8729b5abc8eb34605fbea52f9738ee09ec2f01d4a48e79fcdf9a56",
+      "input_receipts": [
+        {
+          "at": 1791906232.9714072,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "1b23b4588b8729b5abc8eb34605fbea52f9738ee09ec2f01d4a48e79fcdf9a56",
+          "decision_id": "g749-d8571de0:749:8550",
+          "event": "input_sent",
+          "frame_sha256": "1b23b4588b8729b5abc8eb34605fbea52f9738ee09ec2f01d4a48e79fcdf9a56",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "policy_decisions": [
+        {
+          "at": 1791906232.806407,
+          "decision_id": "g749-d8571de0:749:8550",
+          "frame_sha256": "1b23b4588b8729b5abc8eb34605fbea52f9738ee09ec2f01d4a48e79fcdf9a56",
+          "decision": "monster_menu_choice",
+          "reason": "召喚獣の技メニューで「うずまき」を選択: 味方が劣勢で効果付きの2技目",
+          "observed_metric": {
+            "action": "skill2",
+            "ally_hp": 330,
+            "enemy_hp": 367,
+            "experience_key": "monster_menu|1|クイーン|ヴィーナス|A:b4176951:J2|なると|ヒュドラ|behind",
+            "general_return_blocked": false,
+            "general_return_risk": {
+              "enemy_monster": "ヒュドラ",
+              "enemy_monster_hp": 367,
+              "general": "ヴィーナス",
+              "general_hp": 23,
+              "general_max_hp": 82,
+              "rule": "wounded_general"
+            },
+            "menu": [
+              "ぎざぎざ",
+              "うずまき",
+              "たまごにもどれ"
+            ],
+            "owner": "ally",
+            "target_hp": null,
+            "wounded_general_return_blocked": false
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ]
+    },
+    {
+      "decision": {
+        "at": 1791906234.3224118,
+        "bot_version": "hanjuku-chart-v209-partial-enemy-command",
+        "chart_step": "A:b4176951:J2",
+        "decision_id": "g749-d8571de0:749:8551",
+        "deviation_reason": "計画のココットに代わりヴィーナスを出撃させる",
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "cards": [
+            "イッテツーン",
+            "キャトルミュー",
+            "ブラッキー"
+          ],
+          "general": "ココット"
+        },
+        "frame_sha256": "d8afde10b40af6db664fe6b67425174f035043fc92dd1b0d075e4a987e2a6a56",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [],
+        "reason_decisions": [
+          "monster_menu_wait"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "monster_menu",
+        "snapshot": "decision-031.png",
+        "strategy_variant": "substitute_general"
+      },
+      "rgb_sha256": "d8afde10b40af6db664fe6b67425174f035043fc92dd1b0d075e4a987e2a6a56",
+      "input_receipts": [],
+      "policy_decisions": [
+        {
+          "at": 1791906234.3224118,
+          "decision_id": "g749-d8571de0:749:8551",
+          "frame_sha256": "d8afde10b40af6db664fe6b67425174f035043fc92dd1b0d075e4a987e2a6a56",
+          "decision": "monster_menu_wait",
+          "reason": "技選択は敵側の表示（敵AIが選ぶ）ため入力を保留",
+          "observed_metric": {
+            "enemy": "ヒュドラ",
+            "enemy_hp": 367,
+            "menu": [
+              "まきつく",
+              "ウォーター",
+              "たまごにもどれ"
+            ],
+            "owner": "enemy"
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ]
+    },
+    {
+      "decision": {
+        "at": 1791906250.8235536,
+        "bot_version": "hanjuku-chart-v209-partial-enemy-command",
+        "chart_step": "A:b4176951:J2",
+        "decision_id": "g749-d8571de0:749:8562",
+        "deviation_reason": "計画のココットに代わりヴィーナスを出撃させる",
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "cards": [
+            "イッテツーン",
+            "キャトルミュー",
+            "ブラッキー"
+          ],
+          "general": "ココット"
+        },
+        "frame_sha256": "ef4dbcc6215a055eb65583f26396948b0e9fc2e9150bade334cfc1406f1734a9",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": {
+          "cursor": [
+            176,
+            176
+          ],
+          "directions": [
+            "down"
+          ],
+          "kind": "monster_menu",
+          "step": 8562
+        },
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "down"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "monster_menu_choice"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "monster_menu",
+        "snapshot": "decision-042.png",
+        "strategy_variant": "substitute_general"
+      },
+      "rgb_sha256": "ef4dbcc6215a055eb65583f26396948b0e9fc2e9150bade334cfc1406f1734a9",
+      "input_receipts": [
+        {
+          "at": 1791906250.9861023,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "down"
+          ],
+          "decision_frame_sha256": "ef4dbcc6215a055eb65583f26396948b0e9fc2e9150bade334cfc1406f1734a9",
+          "decision_id": "g749-d8571de0:749:8562",
+          "event": "input_sent",
+          "frame_sha256": "ef4dbcc6215a055eb65583f26396948b0e9fc2e9150bade334cfc1406f1734a9",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "policy_decisions": [
+        {
+          "at": 1791906250.8235536,
+          "decision_id": "g749-d8571de0:749:8562",
+          "frame_sha256": "ef4dbcc6215a055eb65583f26396948b0e9fc2e9150bade334cfc1406f1734a9",
+          "decision": "monster_menu_choice",
+          "reason": "召喚獣の技メニューで「うずまき」を選択: 実測で負傷した本人を敵召喚獣へ露出させないため、存命の味方召喚獣で応戦する",
+          "observed_metric": {
+            "action": "skill2",
+            "ally_hp": 146,
+            "enemy_hp": 367,
+            "experience_key": "monster_menu|1|クイーン|ヴィーナス|A:b4176951:J2|なると|ヒュドラ|behind",
+            "general_return_blocked": true,
+            "general_return_risk": {
+              "enemy_monster": "ヒュドラ",
+              "enemy_monster_hp": 367,
+              "general": "ヴィーナス",
+              "general_hp": 23,
+              "general_max_hp": 82,
+              "rule": "wounded_general"
+            },
+            "menu": [
+              "ぎざぎざ",
+              "うずまき",
+              "たまごにもどれ"
+            ],
+            "owner": "ally",
+            "target_hp": null,
+            "wounded_general_return_blocked": true
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ]
+    },
+    {
+      "decision": {
+        "at": 1791906251.458334,
+        "bot_version": "hanjuku-chart-v209-partial-enemy-command",
+        "chart_step": "A:b4176951:J2",
+        "decision_id": "g749-d8571de0:749:8563",
+        "deviation_reason": "計画のココットに代わりヴィーナスを出撃させる",
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "cards": [
+            "イッテツーン",
+            "キャトルミュー",
+            "ブラッキー"
+          ],
+          "general": "ココット"
+        },
+        "frame_sha256": "ca21ef7733230ee60ad0c1373ba9adbe09c0e944bdd896b38d96d655d38f09b5",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "monster_menu_choice"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "monster_menu",
+        "snapshot": "decision-043.png",
+        "strategy_variant": "substitute_general"
+      },
+      "rgb_sha256": "ca21ef7733230ee60ad0c1373ba9adbe09c0e944bdd896b38d96d655d38f09b5",
+      "input_receipts": [
+        {
+          "at": 1791906251.6204836,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "ca21ef7733230ee60ad0c1373ba9adbe09c0e944bdd896b38d96d655d38f09b5",
+          "decision_id": "g749-d8571de0:749:8563",
+          "event": "input_sent",
+          "frame_sha256": "ca21ef7733230ee60ad0c1373ba9adbe09c0e944bdd896b38d96d655d38f09b5",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "policy_decisions": [
+        {
+          "at": 1791906251.458334,
+          "decision_id": "g749-d8571de0:749:8563",
+          "frame_sha256": "ca21ef7733230ee60ad0c1373ba9adbe09c0e944bdd896b38d96d655d38f09b5",
+          "decision": "monster_menu_choice",
+          "reason": "召喚獣の技メニューで「うずまき」を選択: 実測で負傷した本人を敵召喚獣へ露出させないため、存命の味方召喚獣で応戦する",
+          "observed_metric": {
+            "action": "skill2",
+            "ally_hp": 146,
+            "enemy_hp": 367,
+            "experience_key": "monster_menu|1|クイーン|ヴィーナス|A:b4176951:J2|なると|ヒュドラ|behind",
+            "general_return_blocked": true,
+            "general_return_risk": {
+              "enemy_monster": "ヒュドラ",
+              "enemy_monster_hp": 367,
+              "general": "ヴィーナス",
+              "general_hp": 23,
+              "general_max_hp": 82,
+              "rule": "wounded_general"
+            },
+            "menu": [
+              "ぎざぎざ",
+              "うずまき",
+              "たまごにもどれ"
+            ],
+            "owner": "ally",
+            "target_hp": null,
+            "wounded_general_return_blocked": true
+          },
+          "ally": null,
+          "enemy": null,
+          "castle": null,
+          "side": null,
+          "general": null,
+          "choice": null
+        }
+      ]
+    },
+    {
+      "decision": {
+        "at": 1791906317.1463342,
+        "bot_version": "hanjuku-chart-v209-partial-enemy-command",
+        "chart_step": "A:b4176951:J2",
+        "decision_id": "g749-d8571de0:749:8609",
+        "deviation_reason": "計画のココットに代わりヴィーナスを出撃させる",
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "cards": [
+            "イッテツーン",
+            "キャトルミュー",
+            "ブラッキー"
+          ],
+          "general": "ココット"
+        },
+        "frame_sha256": "322e73d5dfecb5a402575ee19d896565cef9b80336dcc72df0caad6780ac2a3f",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [],
+        "reason_decisions": [],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-089.png",
+        "strategy_variant": "substitute_general"
+      },
+      "rgb_sha256": "322e73d5dfecb5a402575ee19d896565cef9b80336dcc72df0caad6780ac2a3f",
+      "input_receipts": [],
+      "policy_decisions": []
+    }
+  ],
+  "boundary": "Originals with actual inputs. New skill1 replay is counterfactual; no guaranteed win or causal attribution."
+}
