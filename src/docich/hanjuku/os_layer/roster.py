@@ -390,7 +390,8 @@ def fresh(mem, *, include_completed=True):
 
 
 def page(mem, names):
-    if names is None or not names or len(set(names)) != len(names):
+    if (names is None or not names or len(set(names)) != len(names)
+            or any(not isinstance(n, str) or fixed_wage(n) is None for n in names)):
         return
     observed_member(mem, names)
     survey = reusable_survey(mem)

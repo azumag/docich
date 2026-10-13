@@ -84,3 +84,30 @@ def test_end_flag_does_not_override_invalidated_or_unread_membership():
         state['roster_invalidated']=invalidated
         if not invalidated:state['seen']=NAMES[:-1]
         assert not r.complete(mem,state)
+
+
+@pytest.mark.parametrize('bad', ['シャルトネ', 'シャルネ', 'シャルド'])
+def test_unidentified_page_does_not_poison_same_scan(bad):
+    from test_hanjuku_house import roster
+    mem = scan()
+    before = list(mem['recruit_roster']['names'])
+    names = [*NAMES[-8:]]
+    names[names.index('シャルドネ')] = bad
+    screen = parse(roster(names, 7))
+    assert house.roster(screen) is None
+    r.page(mem, names)
+    assert mem['recruit_roster']['names'] == before
+    # A later fully identified native page can finish the original scan;
+    # no unknown spelling is folded into a known member.
+    for _ in range(6):
+        feed(mem, native())
+    house.step(Screen([], None, '', kind='map'), mem, None)
+    assert mem['recruit_roster']['complete']
+    assert mem['recruit_roster']['names'] == NAMES
+
+
+def test_known_members_and_hero_remain_readable():
+    from test_hanjuku_house import roster
+    names = ['どうし', 'シャルドネ', 'ヴィーナス', 'クイーン',
+             'ヘルメス', 'ゼウス', 'クランベリー', 'タルタル']
+    assert house.roster(parse(roster(names, 0))) == names
