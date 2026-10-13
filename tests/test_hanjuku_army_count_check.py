@@ -251,3 +251,27 @@ def test_unread_header_cannot_confirm_a_runtime_editor_even_with_old_digits():
     q=quantity();q.header=None
     assert p.quantity_step(q,mem,soldiers=True)==[]
     assert not mem['shop'].get('soldier_receipt')
+
+
+def test_unread_pending_check_owns_input_and_cannot_become_a_blind_purchase():
+    from docich.hanjuku_screen import Screen
+    mem=memory();p.month_step(screen(),mem)
+    unknown=Screen([],None,'',kind='unknown')
+    for _ in range(3):assert monthly.army_count_pending_step(unknown,mem)==[]
+    for _ in range(3):assert monthly.army_count_pending_step(unknown,mem)==[p.pad('b')]
+    for _ in range(5):assert monthly.army_count_pending_step(unknown,mem)==[]
+    assert monthly.army_count_owned(mem)
+    assert not mem['shop'].get('soldier_receipt')
+
+
+def test_orchestrator_does_not_fallback_to_a_on_a_frozen_unread_count_check():
+    from docich.hanjuku_bot import decide
+    from test_hanjuku_chart_bot import Canvas
+    frame=Canvas((0,0,0)).frame()
+    mem=memory();p.month_step(screen(),mem)
+    mem['army_count_check'].update(stage='closing',result='unverified',exit_presses=4)
+    state={'policy':mem,'phase':'transition','no_input_streak':1000,
+           'no_input_frames':[frame.digest()]}
+    actions,out=decide(frame,state,run_identity=IDENTITY)
+    assert actions==[]
+    assert not any(r['decision']=='no_input_fallback' for r in out['_records'])

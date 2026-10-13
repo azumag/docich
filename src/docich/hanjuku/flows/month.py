@@ -36,6 +36,33 @@ from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, MONTH_SUB_AB
 MONTH_TEXT_ADVANCE_LIMIT = 6    # A presses per unread message over the month menu
 
 
+def army_count_owned(mem):
+    from ..os_layer.roster import run_identity
+    identity = run_identity(mem.get('_run_identity'))
+    state = mem.get('army_count_check')
+    return (identity is not None and isinstance(state, dict) and not mem.get('month_sub')
+            and type(mem.get('chapter')) is int and 1 <= mem['chapter'] <= 12
+            and isinstance(mem.get('month'), str)
+            and re.fullmatch(r'[1-9][0-9]*-(?:[1-9]|1[0-2])', mem['month']) is not None
+            and state.get('scope') == [identity, mem.get('chapter'), mem.get('month')]
+            and state.get('stage') not in ('measured', 'unverified'))
+
+
+def army_count_pending_step(screen, mem):
+    """Unrecognized frames in this free check must never borrow a paid A."""
+    if not army_count_owned(mem) or screen.kind == 'month_menu':
+        return None
+    state = mem['army_count_check']
+    if screen.kind not in ('text', 'unknown'):
+        state.update(stage='unverified', result='unverified')
+        return None  # a recognized battle/event keeps its own input owner
+    if state.get('stage') != 'closing':
+        if _army_count_increment(state, 'unread_frames', 4) < 4:
+            return []
+        state.update(stage='closing', result='unverified')
+    return [pad('b')] if _army_count_increment(state, 'exit_presses', 4) <= 3 else []
+
+
 def _month_army_count_check(screen, mem, shop):
     """Read the stock even when the purchase plan is zero; never pay here."""
     scope = _soldier_count_scope(mem, screen.header)
