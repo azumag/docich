@@ -177,6 +177,7 @@ def battle_step(screen: Screen, mem):
     if (b is None or not b.enemy or not b.ally or UNKNOWN in b.enemy or UNKNOWN in b.ally
             or any(type(hp) is not int or hp < 0 for hp in (b.enemy_hp, b.ally_hp))):
         mem['battle_seen'] = None
+        mem.pop('melee_opening_candidate', None)
         if mem.get('battle'):
             _card_battle_reading(screen, mem['battle'], mem)
             mem['battle'].pop('successor_seen', None)
@@ -198,10 +199,15 @@ def battle_step(screen: Screen, mem):
         # Fades dim the panel and can drop dakuten; open a battle record only
         # after two consecutive identical readings of both names.
         reading = [b.enemy, b.ally]
+        from ..os_layer.roster import run_identity
+        identity = run_identity(mem.get('_run_identity'))
+        candidate = [identity, b.ally, b.enemy] if identity is not None else None
         if mem.get('battle_seen') != reading:
             mem['battle_seen'] = reading
+            mem['melee_opening_candidate'] = candidate
             return []
         mem['battle_seen'] = None
+        previous_candidate = mem.pop('melee_opening_candidate', None)
         # The panel's opponent is a chapter fact: a general whose debut
         # chapter is later than ours proves the game advanced (g454: ピオーネ/
         # ヘラ after the chapter 1 boss). This resets the chapter state, so it
@@ -213,9 +219,10 @@ def battle_step(screen: Screen, mem):
                                'cards_selected': [], 'cards_missing': [], 'cards_unclassified': [],
                                'card_consumption_complete': True, 'card_evidence_version': 1,
                                **context}
-        from ..os_layer.roster import run_identity
-        identity = run_identity(mem.get('_run_identity'))
-        if identity is not None:
+        if (identity is not None and isinstance(previous_candidate, list)
+                and len(previous_candidate) == 3
+                and run_identity(previous_candidate[0]) == identity
+                and previous_candidate == candidate):
             # Captured only at the two-panel battle opening. A hotloaded old
             # battle cannot invent an earlier healthy opening from current HP.
             cur['melee_opening_scope'] = [identity, b.ally, b.enemy, b.ally_hp, b.enemy_hp]

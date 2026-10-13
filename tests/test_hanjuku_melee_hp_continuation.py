@@ -116,6 +116,33 @@ def test_no_new_receipt_is_created_when_hotloading_an_existing_battle():
     assert not p._hold_melee_egg(mem,mem['battle'],{'たまごをつかう'})
 
 
+@pytest.mark.parametrize('change',['legacy','generation','lease','unread','invalid'])
+def test_first_panel_must_already_belong_to_the_current_opening(change):
+    screen=parse(read_png(Path(__file__).parent/'fixtures/hanjuku/g713-zeus-cumin-healthy.png'))
+    mem={'chapter':1,'tick':10,'_run_identity':deepcopy(IDENTITY)}
+    p.battle_step(screen,mem)
+    mem=json.loads(json.dumps(mem))
+    if change=='legacy':mem.pop('melee_opening_candidate')
+    elif change=='generation':mem['_run_identity'].update(runtime_id='g714-next',generation=714)
+    elif change=='lease':mem['_run_identity']['lease_id']='11111111-1111-1111-1111-111111111111'
+    elif change=='unread':
+        p.battle_step(p.Screen([],None,'',kind='battle'),mem)
+        # Even a retained legacy name-only debounce cannot create permission.
+        mem['battle_seen']=[screen.battle.enemy,screen.battle.ally]
+    else:mem['melee_opening_candidate'][0]['generation']=True
+    p.battle_step(screen,mem)
+    assert 'melee_opening_scope' not in mem['battle']
+
+
+def test_same_run_complete_first_panel_survives_json_before_second_panel():
+    screen=parse(read_png(Path(__file__).parent/'fixtures/hanjuku/g713-zeus-cumin-healthy.png'))
+    mem={'chapter':1,'tick':10,'_run_identity':deepcopy(IDENTITY)}
+    p.battle_step(screen,mem)
+    mem=json.loads(json.dumps(mem));p.battle_step(screen,mem)
+    assert mem['battle']['melee_opening_scope']==[IDENTITY,'ゼウス','クミン',85,23]
+    assert 'melee_opening_candidate' not in mem
+
+
 def test_saved_boolean_generation_cannot_match_integer_one_by_python_equality():
     mem=continuing()
     mem['_run_identity'].update(runtime_id='g1-replay',generation=1)
