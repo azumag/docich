@@ -127,12 +127,12 @@ def test_deep_json_diagnostics_cannot_change_runner_result(monkeypatch):
     assert any(row.get('reason') == 'invalid_json' for row in rows)
 
 
-@pytest.mark.parametrize('code,reason', [('import time;time.sleep(10)', 'timeout'),
-                                        ('print("x" * 300000)', 'output_limit')])
-def test_process_bounds_record_failure_then_reap(code, reason):
+@pytest.mark.parametrize('code,reason,timeout', [('import time;time.sleep(10)', 'timeout', .15),
+                                                ('print("x" * 300000)', 'output_limit', 5)])
+def test_process_bounds_record_failure_then_reap(code, reason, timeout):
     rows = []
     with pytest.raises(ValueError, match=reason):
-        local_run(code, rows, timeout=.15)
+        local_run(code, rows, timeout=timeout)
     assert any(row.get('reason') == reason for row in rows)
     assert rows[-1]['stage'] == 'cli_reaped'
 
@@ -184,20 +184,23 @@ def test_coordinate_records_invalid_proposal_while_result_stays_fail_closed(tmp_
 
 
 def test_different_failures_keep_same_terminal_result_and_safe_inner_metadata(tmp_path):
-    cases = [("raise SystemExit(2)", 'provider_failed'), ("print('not JSON')", 'invalid_json'),
-             ('import time;time.sleep(10)', 'timeout'),
-             ("print('{\"type\":\"error\",\"error\":{\"name\":\"APIError\",\"data\":{\"statusCode\":401}}}')", 'model_auth'),
-             ("print('{\"type\":\"error\",\"error\":{\"name\":\"APIError\",\"data\":{\"code\":\"ECONNRESET\"}}}')", 'network_tls')]
-    for code, expected in cases:
+    # Only the sleeping case needs a tight child budget; the classifying cases
+    # must finish a real interpreter start, which a loaded parallel runner can
+    # stretch well past 100ms.
+    cases = [("raise SystemExit(2)", 'provider_failed', 5), ("print('not JSON')", 'invalid_json', 5),
+             ('import time;time.sleep(10)', 'timeout', .1),
+             ("print('{\"type\":\"error\",\"error\":{\"name\":\"APIError\",\"data\":{\"statusCode\":401}}}')", 'model_auth', 5),
+             ("print('{\"type\":\"error\",\"error\":{\"name\":\"APIError\",\"data\":{\"code\":\"ECONNRESET\"}}}')", 'network_tls', 5)]
+    for code, expected, timeout in cases:
         rows = []
         def call(*args):
             def observer(event):
                 if event.get('type') == 'error':
                     raise ValueError('unexpected_event')
-            return local_run(code, rows, observer=observer, timeout=.1)
+            return local_run(code, rows, observer=observer, timeout=timeout)
         result = r.coordinate([], 'web', source=tmp_path, manifest=None, model_call=call,
             broker=None, searcher=lambda *_: pytest.fail('search called'),
-            deadline=time.monotonic()+1, diagnostic=rows.append)
+            deadline=time.monotonic()+5, diagnostic=rows.append)
         assert result.status == 'research_unavailable' and not result.notes
         assert any(row.get('reason') == expected or row.get('category') == expected for row in rows)
         assert any(row.get('stage') == 'cli_reaped' for row in rows)

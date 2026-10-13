@@ -124,7 +124,13 @@ def test_live_or_unknown_program_queue_still_refuses(detached, filename, status,
     assert snapshot(f) == before
 
 
-@pytest.mark.parametrize("field,value", [("request_id", str(uuid.uuid4())), ("selected_at", 11),
+# A stable literal keeps collected node ids identical in every process. A
+# fresh ``uuid.uuid4()`` at import time makes collection differ per process,
+# which pytest-xdist rejects as "Different tests were collected".
+_OTHER_REQUEST_ID = "00000000-0000-4000-8000-000000000001"
+
+
+@pytest.mark.parametrize("field,value", [("request_id", _OTHER_REQUEST_ID), ("selected_at", 11),
                                          ("extra", "new-payload")])
 @pytest.mark.parametrize("apply", [False, True])
 def test_changed_reservation_including_selected_at_refuses(detached, field, value, apply):

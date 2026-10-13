@@ -54,7 +54,7 @@ viewer専用定義で、Sorenの `start_all.sh` は呼びません。詳しく�
 
 ## クイックスタート
 
-対象は Ubuntu 24.04 (arm64/amd64)、Python 3.11以上です。
+対象は Ubuntu 24.04 (arm64/amd64)、Python 3.12以上です。
 
 ```bash
 # リポジトリを clone する (ゲーム実装はサブモジュールなので --recurse-submodules を付ける)

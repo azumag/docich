@@ -1,6 +1,7 @@
 """Keep full-suite coverage while measuring runtime and avoiding redundant setup."""
 from __future__ import annotations
 
+import ast
 import os
 from pathlib import Path
 import re
@@ -18,22 +19,56 @@ def _system_setup() -> str:
     return '\n'.join(line[10:] for line in body.splitlines())
 
 
-def test_full_suite_keeps_both_python_versions_and_all_tests():
+def test_full_suite_runs_every_test_on_the_supported_python():
     text = WORKFLOW.read_text()
-    assert "python: ['3.11', '3.12']" in text
-    assert 'fail-fast: false' in text
+    # Python 3.11 is no longer a supported target: the suite runs once, on the
+    # interpreter the production hosts actually provide.
+    assert "python: ['3.11', '3.12']" not in text
+    assert "          python-version: '3.12'\n" in text
     command = next(line.strip()[5:] for line in text.splitlines()
                    if line.strip().startswith('run: python3 -m pytest'))
     assert command.split() == ['python3', '-m', 'pytest', '-q', 'tests/',
-                               '--durations=50', '--durations-min=0.1']
+                               '--durations=50', '--durations-min=0.1',
+                               '-n', '4', '--dist', 'loadfile']
     assert 'continue-on-error:' not in text
 
 
-def test_dependency_changes_trigger_both_pr_and_main_checks():
+def test_dependency_changes_gate_pull_requests_only():
     text = WORKFLOW.read_text().split('\npermissions:', 1)[0]
     for pattern in ('src/**/*.py', 'tests/**/*.py', 'conftest.py',
                     'requirements*.txt', '.github/workflows/ci.yml'):
-        assert text.count(f"      - '{pattern}'") == 2
+        assert text.count(f"      - '{pattern}'") == 1
+    # A push to main does not re-run the full suite: the per-area workflows
+    # cover the areas a push actually touched, and workflow_dispatch is the
+    # manual entry point for a full-suite run on main.
+    assert '\n  push:' not in text
+    assert '\n  workflow_dispatch:' in text
+
+
+def test_parallel_collection_ids_are_deterministic():
+    # pytest-xdist aborts the entire run when workers collect different node
+    # ids. That happens when a parametrize value is built from uuid4()/time at
+    # import time, so keep those out of parametrize arguments.
+    volatile = {'uuid1', 'uuid4', 'time', 'now', 'today', 'utcnow'}
+    offenders = []
+    for path in sorted(Path(__file__).resolve().parent.glob('test_*.py')):
+        source = path.read_text()
+        if 'parametrize' not in source:
+            continue
+        tree = ast.parse(source, filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not isinstance(decorator, ast.Call):
+                    continue
+                if 'parametrize' not in ast.unparse(decorator.func):
+                    continue
+                for call in ast.walk(decorator):
+                    if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                            and call.func.attr in volatile):
+                        offenders.append(f'{path.name}::{node.name}')
+    assert offenders == []
 
 
 def test_pip_cache_tracks_all_root_requirements_files():

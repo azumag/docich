@@ -112,7 +112,7 @@ shell captureからVM stdinへ渡す。`GITHUB_ENV`・step output・診断JSON�
 scriptの固定preflight失敗は`helper_preflight_failed`（25）、引数拒否は`helper_arguments_invalid`（64）。
 既存失敗runの終了コード1だけから過去の判定理由を復元できない。check失敗はrelease許可にならず、
 新しい診断の実行も別途許可された段階で行う。gatewayの非公開ログ契約や保護条件は維持する。
-新admin scriptだけPython 3.11以上をisolated probeで必須確認し、safe-path `-P` でmoduleを起動する。
+新admin scriptだけPython 3.12以上をisolated probeで必須確認し、safe-path `-P` でmoduleを起動する。
 PYTHONPATHは配布済みsrcに固定し、untrackedなCWDのdocich packageを読み込まない。非対応版へfallbackしない。
 
 全writer lockを非待機で保持し、waiting理由・automatic pending不在・weather予約保持、

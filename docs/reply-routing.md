@@ -60,7 +60,7 @@ namespaceには公開worker/chat/memory/packageの4ファイルだけをread-onl
 
 独立レビューのP1/P2に対応し、Discordの実`Conversation.handle → asyncio.to_thread → decide/request_once`経路を合成JEV HTTP workerで検証する。threaded transportはmain loopのsignal handlerを変更せず、同じdeadline/selected-key-only環境と全終了時のkill/reapを維持し、Discordがcancel/shutdown時にthreadをjoinする。main-thread transportのTERM/INT cleanup契約も維持する。
 
-Python 3.11のurllib既定CONNECT（HTTP/1.0/Hostなし）には依存せず、研究専用HTTPS handlerが固定`CONNECT opencode.ai:443 HTTP/1.1`と単一Hostだけを送る。bridge/egressの拒否条件を緩めない。private/他authority・追加認証headerを拒否し、CONNECT応答header8KiB上限・TLS証明書/hostname検証・既存wall deadlineを維持する。認証なしの実localhost→Unix bridge handshakeと、Python 3.11/3.12 Ubuntu CIで互換性を検査する。
+Python 3.11のurllib既定CONNECT（HTTP/1.0/Hostなし）には依存せず、研究専用HTTPS handlerが固定`CONNECT opencode.ai:443 HTTP/1.1`と単一Hostだけを送る。bridge/egressの拒否条件を緩めない。private/他authority・追加認証headerを拒否し、CONNECT応答header8KiB上限・TLS証明書/hostname検証・既存wall deadlineを維持する。認証なしの実localhost→Unix bridge handshakeと、Python 3.12 Ubuntu CIで互換性を検査する。
 
 旧4host allowlistを撤廃。既定の検索backendは従来どおり、公式OpenCodeと同じ既存Exa hosted MCPの固定 `https://mcp.exa.ai/mcp` に認証なし・固定 `web_search_exa` requestを送る。新しい検索キー、有料契約、Google scrapingは既定経路へ追加しない。未確認の契約条件・料金を無料と断言しない。後続のkeyless公開preflightは検索1回・RFC本文GET1回で候補を取得したが、本文brokerは拒否しreceiptは得られなかった。拒否原因は旧診断から確定できず、上限・SSRF・charset等の検証を緩和しない。
 
