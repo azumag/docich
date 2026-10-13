@@ -236,7 +236,7 @@ P3cのstrategic schemaはこの横にある**未接続のadvisory境界**。次�
 | gameplay前に `Restoring save file...--More--`（program boundary で保存した run の復元） | Space（1画面1回） |
 | normalize_ttyで一意のplayerとHPが見える（起動質問なし） | gameplayへ不可逆移行、以降はP3bだけ |
 | 未知画面・質問・save/restore/recover質問（上の復元バナーの `--More--` を除く） | 無入力、policyへも渡さず待機 |
-| 60秒 / 40観測 / 12応答のいずれかを消費 | `exhausted`、以降このbrainは無入力 |
+| 60秒 / 40観測 / 12応答のいずれかを消費 | `exhausted`、以降このbrainは起動質問へ無入力。ただし質問なし・一意のplayer・階層・正のHP/最大HPが揃った完全なgameplay画面は gameplay へ移行しP3bへ委譲する（この分岐はキーを送らず、上限を回復しない。#2085） |
 
 時間は初回観測からmonotonic計測、1観測1キーまで。同一画面への再応答は抑止する。
 未知画面は上限内なら次の既知画面を待てるが、上限超過は自動リセットしない。

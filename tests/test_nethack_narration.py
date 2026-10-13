@@ -138,7 +138,13 @@ def test_startup_bounds_latch_closed(kind):
             assert startup.consider(normalized(f"Character {i}\nIs this ok? [yn]"))
     assert startup.consider(normalized("Pick a character? [yn]")) == []
     assert startup.state == "exhausted"
-    assert startup.consider(normalized(frame())) == []
+    # The budget latch keeps blocking prompts, even over a gameplay map.
+    assert startup.consider(normalized(frame("Is this ok? [yn]"))) == []
+    assert startup.state == "exhausted"
+    # A complete gameplay frame is recognised, not answered: it delegates to
+    # the normal policy without replenishing any startup budget.
+    assert startup.consider(normalized(frame())) is None
+    assert startup.state == "gameplay"
 
 
 def test_brain_startup_and_loop_use_normal_action_path():
