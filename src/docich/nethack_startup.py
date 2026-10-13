@@ -23,6 +23,8 @@ from .nethack_observation import NethackObservation
 # resume, so without this the gate held the frame until it was exhausted.
 # Deliberately specific: only this fixed NetHack message, only before gameplay.
 _RESTORE_MORE_RE = re.compile(r"restoring save file\.*\s*--more--")
+# The tutorial y/n can be drawn on a lower row over the first map.
+_TUTORIAL_RE = re.compile(r"do you want a tutorial\?\s*\[yn")
 
 
 class NethackStartup:
@@ -50,6 +52,24 @@ class NethackStartup:
         """None delegates to P3b; [] holds without falling through to policy."""
         if self.state in {"disabled", "gameplay"}:
             return None
+        # Budgets bound startup answers, not recognition that startup finished.
+        # A delayed redraw (or an externally cleared overlay) can reveal a
+        # complete gameplay frame after a timeout. Delegate it to the normal
+        # policy instead of latching [] forever. This sends no key, does not
+        # replenish any budget, and cannot rearm character-creation answers.
+        # Prompts, ambiguous players, missing vitals and death remain blocked.
+        # obs.prompt reads only row 0, so a tutorial question drawn on a lower
+        # row must still reach the startup answer below, not the policy.
+        if (
+            obs.prompt == "none"
+            and not _TUTORIAL_RE.search(" ".join(obs.raw_text.lower().split()))
+            and obs.player is not None
+            and obs.vitals.dungeon_level is not None
+            and obs.vitals.hp is not None and obs.vitals.hp > 0
+            and obs.vitals.hp_max is not None and obs.vitals.hp_max > 0
+        ):
+            self._state("gameplay")
+            return None
         if self.state == "exhausted":
             return []
         now = self.clock()
@@ -70,7 +90,7 @@ class NethackStartup:
         # pick a character" deliberately does not match unrelated prompts such
         # as "Shall I pick your weapon? [yn]".
         patterns = (
-            (r"do you want a tutorial\?\s*\[yn", "n"),
+            (_TUTORIAL_RE.pattern, "n"),
             (r"shall i pick (?:a )?character[^?]*\?\s*\[yn", "y"),
             (r"pick a character\?\s*\[yn", "y"),
             (r"is this ok\?\s*\[yn", "y"),
