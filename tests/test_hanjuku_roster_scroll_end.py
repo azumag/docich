@@ -94,7 +94,7 @@ def test_unidentified_page_does_not_poison_same_scan(bad):
     names = [*NAMES[-8:]]
     names[names.index('シャルドネ')] = bad
     screen = parse(roster(names, 7))
-    assert house.roster(screen) is None
+    assert house.roster(screen) == names  # selected row is known; no alias correction
     r.page(mem, names)
     assert mem['recruit_roster']['names'] == before
     # A later fully identified native page can finish the original scan;
@@ -111,3 +111,39 @@ def test_known_members_and_hero_remain_readable():
     names = ['どうし', 'シャルドネ', 'ヴィーナス', 'クイーン',
              'ヘルメス', 'ゼウス', 'クランベリー', 'タルタル']
     assert house.roster(parse(roster(names, 0))) == names
+
+
+@pytest.mark.parametrize('bad', ['シャルトネ', 'シャルネ', 'シャルド'])
+def test_unknown_selected_name_never_opens_status(bad):
+    from test_hanjuku_house import roster
+    mem = scan()
+    names = list(NAMES[-8:])
+    row = names.index('シャルドネ')
+    names[row] = bad
+    screen = parse(roster(names, row))
+    mem['house']['phase'] = 'roster'
+    assert house.roster(screen) is None
+    assert house.step(screen, mem, None) == []
+    assert mem['house']['phase'] == 'roster'
+
+
+def test_native_unknown_unselected_row_does_not_block_known_next_member():
+    from docich.hanjuku.os_layer.commands import pad
+    frame = read_png(ROOT / 'g749-20298.png')
+    screen = parse(frame)
+    names = house._names_at(screen, 168, 39, 151)
+    assert names[0] == 'シャルトネ'
+    assert screen.selected == 'クランベリー'
+    seen = ['どうし','ココット','リーキ','ヘルメス','アルテミス','ラズベリー',
+            'キッシュ','シャルドネ','ビシソワーズ','シナモン','ビーツ','ガスパチョ',
+            'クミン','ヴィーナス']
+    mem = memory('roster_advance', selected='ヴィーナス', seen=seen)
+    r.begin(mem, mem['house'])
+    r.page(mem, seen)
+    assert feed(mem, frame) == []
+    assert mem['house']['phase'] == 'roster'
+    assert feed(mem, frame) == [pad('a')]
+    assert mem['house']['selected'] == 'クランベリー'
+    assert mem['recruit_roster']['names'] == seen
+    assert 'シャルトネ' not in mem['recruit_roster']['names']
+    assert not mem['recruit_roster']['complete']
