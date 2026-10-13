@@ -128,6 +128,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     prompts_flow.observe_events(screen,mem)
     map_flow.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     kind=screen.kind
+    from .os_layer.commands import menu_navigation_reading
+    navigation = menu_navigation_reading(screen)
+    updated['menu_navigation_reading'] = {**navigation, 'step': step} if navigation else None
     reveal_chapter = fake_hero_announcement_chapter(screen)
     if reveal_chapter is not None:
         # This explicit field transition owns the foreground even when a

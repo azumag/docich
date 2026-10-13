@@ -2,6 +2,7 @@
 
 `config/games/hanjuku-hero.toml` は `brains/hanjuku/bot.py` を1.5秒間隔で起動する。
 Python標準ライブラリだけで画像を判定し、決定的なルールでSNESのpad入力を返す。
+実メニューで単独の短い上下移動を計画した直後は500msで再観測する。到着の実画面を読んでから確定し、A/Bや未読/暗転はこの高速化の対象にしない（v196）。
 Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain.py`は互換テスト用に残すが、
 この設定からは実行されない。OpenCodeによる試合結果からの自動改善は後続作業（Issue #954）とし、
 今回のbot操作はそれに依存しない。bot版は `hanjuku-chart-v2`。
