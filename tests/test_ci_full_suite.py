@@ -29,8 +29,20 @@ def test_full_suite_runs_every_test_on_the_supported_python():
                    if line.strip().startswith('run: python3 -m pytest'))
     assert command.split() == ['python3', '-m', 'pytest', '-q', 'tests/',
                                '--durations=50', '--durations-min=0.1',
-                               '-n', '4', '--dist', 'loadfile']
+                               '-n', '4', '--dist', 'loadfile',
+                               '--ignore=tests/test_hanjuku_scene_process.py']
     assert 'continue-on-error:' not in text
+
+
+def test_single_thread_sensitive_file_runs_on_the_serial_runner():
+    text = WORKFLOW.read_text()
+    ignored = 'tests/test_hanjuku_scene_process.py'
+    assert (WORKFLOW.parents[2] / ignored).is_file(), ignored
+    # Excluded from the parallel step, but covered by its own serial step: the
+    # module proves the scene owner runs in a one-thread process, and every
+    # pytest-xdist worker carries an execnet receiver thread.
+    assert f'--ignore={ignored}' in text
+    assert f'run: python3 -m pytest -q {ignored}\n' in text
 
 
 def test_dependency_changes_gate_pull_requests_only():
