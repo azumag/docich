@@ -773,7 +773,9 @@ def test_expired_draining_recovery_cancels_stale_driver_without_stop(legacy_canc
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
-        store, coordinator = _coordinator(factory, state_dir)
+        # Keep the fake driver alive until this test explicitly expires its
+        # durable deadline; its default 0.2s step budget races a loaded runner.
+        store, coordinator = _coordinator(factory, state_dir, round_boundary_s=30.0)
         _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         request_id = str(uuid.uuid4())
@@ -787,30 +789,32 @@ def test_expired_draining_recovery_cancels_stale_driver_without_stop(legacy_canc
             )
         )
         worker.start()
-        _wait_for_phase(store, "draining")
-        assert old.boundary_entered.wait(1.0)
-        # Simulate a controller crash whose durable deadline has elapsed;
-        # the adapter worker itself is still waiting and will acknowledge
-        # late, after recovery has cancelled the request.
-        with store.lock(exclusive=True, blocking=False):
+        try:
+            _wait_for_phase(store, "draining")
+            assert old.boundary_entered.wait(1.0)
+            # Simulate a controller crash whose durable deadline has elapsed;
+            # the adapter worker itself is still waiting and will acknowledge
+            # late, after recovery has cancelled the request.
+            with store.lock(exclusive=True, blocking=False):
+                state, _ = store.canonical.load()
+                state["deadline_at"] = "2000-01-01T00:00:00Z"
+                store.canonical.save(state)
+
+            recovered = coordinator.recover()
+            assert recovered.status == "failed"
+            assert recovered.error_code == game_switch.ERROR_TIMEOUT
             state, _ = store.canonical.load()
-            state["deadline_at"] = "2000-01-01T00:00:00Z"
-            store.canonical.save(state)
+            assert state["phase"] == "ready"
+            assert state["active"]["game"] == "nethack"
+            assert old.runtime.alive
 
-        recovered = coordinator.recover()
-        assert recovered.status == "failed"
-        assert recovered.error_code == game_switch.ERROR_TIMEOUT
-        state, _ = store.canonical.load()
-        assert state["phase"] == "ready"
-        assert state["active"]["game"] == "nethack"
-        assert old.runtime.alive
-
-        # A delayed adapter acknowledgement is stale after recovery and must
-        # not stop the game.  The real adapter follows the same request/active
-        # identity check before any quiesce call.
-        old.boundary_release.set()
-        worker.join(2.0)
-        assert not worker.is_alive()
+        finally:
+            # A late acknowledgement is stale and must not stop the game.
+            # Join before TemporaryDirectory removes the request receipts,
+            # including when an assertion fails. Keep the original 2s bound.
+            old.boundary_release.set()
+            worker.join(2.0)
+            assert not worker.is_alive(), "stale boundary driver did not finish during fixture cleanup"
         assert "stop_agent" not in old.runtime.events
         assert "cleanup" not in old.runtime.events
         assert result_box[0].status == "failed"

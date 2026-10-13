@@ -341,6 +341,39 @@ def test_accept_duels_and_do_not_confirm_unrequested_month_exit():
     assert policy.month_step(parse(c2.frame()), {'chapter': 2, 'month_exit': True})[0]['buttons'] == ['a']
 
 
+def test_month_exit_refusal_for_an_unfinished_refill_is_bounded():
+    # g747 2-4: the soldier refill never reached its quantity screen and every
+    # exit confirmation was refused, looping the month menu for an hour.
+    c = Canvas()
+    c.text(48, 15, '2ねん 4のつき 70G')
+    c.text(48, 47, 'しょうにん')
+    c.text(24, 183, 'よろしいですかな?')
+    c.text(184, 183, 'うむッ!')
+    c.text(184, 199, 'いかんッ!')
+    c.hand(162, 177)
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g747-test', 'generation': 747,
+                'lease_id': 'lease'}
+    scope = [identity, 1, '2-4']
+    mem = {'chapter': 1, 'month': '2-4', '_run_identity': identity, 'soldiers_seen': 0,
+           'soldiers_seen_key': '2-4', 'soldiers_seen_scope': scope}
+    refused = 0
+    for _ in range(10):
+        mem['month_exit'] = True
+        shop = mem.setdefault('shop', {})
+        shop.update(key='2-4', soldiers=24, soldiers_done=False, merchant_done=True, items=[])
+        actions = policy.month_step(parse(c.frame()), mem)
+        if actions and actions[0]['buttons'] == ['down']:
+            refused += 1
+            continue
+        assert actions[0]['buttons'] == ['a']
+        break
+    else:
+        raise AssertionError('month exit never accepted')
+    assert refused == 3
+    assert mem['shop']['soldiers_done'] is True
+    assert any(r['decision'] == 'month_exit_refusal_bound' for r in mem['_records'])
+
+
 def test_decline_the_general_trade_prompt():
     # Owner rule 2026-09-28: 花いちもんめ (将軍トレード) is always declined —
     # the offers are almost always unfair. Question wording measured on
@@ -706,13 +739,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v200-live-summon-shield'
+    assert state['bot_version'] == 'hanjuku-chart-v202-steady-edition'
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_chikujou_scroll_release():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v200-live-summon-shield'
+    assert BOT_VERSION == 'hanjuku-chart-v202-steady-edition'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():

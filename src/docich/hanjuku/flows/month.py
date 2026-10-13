@@ -200,6 +200,8 @@ def _recalc_soldiers(screen, mem, shop):
     return True
 
 
+MONTH_EXIT_REFUSAL_LIMIT = 3   # refused month exits per month before leaving anyway
+
 def month_step(screen: Screen, mem):
     shop = _plan(mem, screen.header)
     body = _month_dialog_body(screen)
@@ -251,8 +253,25 @@ def month_step(screen: Screen, mem):
                      and (check.get('scope') != scope or check.get('stage') not in ('measured', 'unverified')))
         if (scope is not None and mem.get('month_exit') and not mem.get('month_sub')
                 and (unchecked or (shop and not shop.get('soldiers_done')))):
-            choice = 'いかんッ!'
-            mem['month_exit'] = False
+            # g747 2-4 (18:40-19:45): the refill never reached its quantity
+            # screen, so every exit was refused and the menu looped for an
+            # hour. Refuse a bounded number of times per month, then leave.
+            month_key = (shop or {}).get('key') or str(scope)
+            refusals = mem.get('month_exit_refusals')
+            refusals = refusals if isinstance(refusals, dict) and refusals.get('key') == month_key else {
+                'key': month_key, 'count': 0}
+            refusals['count'] = int(refusals.get('count') or 0) + 1
+            mem['month_exit_refusals'] = refusals
+            if refusals['count'] <= MONTH_EXIT_REFUSAL_LIMIT:
+                choice = 'いかんッ!'
+                mem['month_exit'] = False
+            else:
+                if shop:
+                    shop['soldiers_done'] = True
+                _record(mem, 'month_exit_refusal_bound', month=month_key,
+                        observed_metric={'refusals': refusals['count'] - 1, 'unchecked': bool(unchecked),
+                                         'soldiers_planned': (shop or {}).get('soldiers')},
+                        reason='兵士補充・兵数確認が月初メニュー内で完了しないため、上限回数で打ち切って月を進める')
         move = _month_menu_move(screen, mem, choice)
         if isinstance(move, list):
             return move
