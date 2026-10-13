@@ -98,6 +98,9 @@ def _hero_retreat_menu(screen, mem, cur):
         return None
     if _egg_rescue_pending(cur):
         return []
+    if ('きりふだ' in {w for _, _, w in _options(screen)}
+            and _critical_safe_card(mem, cur, cur.get('survival') or {}, for_retreat=True)):
+        return _survival_menu(screen, mem, cur)
     if _egg_before_retreat(mem, cur, menu=True) and 'たまごをつかう' in {w for _, _, w in _options(screen)}:
         if (cur.get('card_flow') or {}).get('stage') == 'announce':
             _card_use_unclassified(mem, cur, '本人の未試行の卵を優先し、切り札の使用告知は未確認として保持')
@@ -697,8 +700,11 @@ def card_list_step(screen: Screen, mem):
     cur = mem.get('battle') or {}
     _card_battle_reading(screen, cur, mem)
     flow = cur.get('card_flow')
+    names = [w for _, _, w in _options(screen) if w in ALL_CARD_NAMES]
+    rescue = {**(cur.get('survival') or {}), 'listed_cards': names}
     if (cur.get('side') != 'defense' and _hero_retreat_needed(cur)
             and flow and flow.get('stage') == 'list'
+            and not _critical_safe_card(mem, cur, rescue)
             and not (cur.get('hero_retreat') or {}).get('unavailable')
             and not (cur.get('hero_retreat') or {}).get('exhausted')):
         cur['card_flow'] = None
@@ -707,7 +713,6 @@ def card_list_step(screen: Screen, mem):
         return [pad('b')]
     # Recognition follows the real catalogue; tactic/rescue selection retains
     # its own planning and damage gates. A held event card must be visible.
-    names = [w for _, _, w in _options(screen) if w in ALL_CARD_NAMES]
     if not flow:
         return [pad('b')]
     if flow['stage'] == 'list' and flow.get('survival'):
@@ -1294,15 +1299,13 @@ def monster_menu_step(screen: Screen, mem):
     damage_first = _monster_damage_first(
         owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
     return_risk = _summoner_return_risk(mem, owner, ally, enemy)
-    protect_general = return_risk is not None
     if (not mem.get('monster_menu_choice') or mem.get('monster_menu_choice_hp') != hp_state
-            or (protect_general and mem.get('monster_menu_choice') == 'retreat')
+            or mem.get('monster_menu_choice') == 'retreat'
             or (damage_second and mem.get('monster_menu_choice') not in ('skill2', 'retreat'))
             or (damage_first and mem.get('monster_menu_choice') not in ('skill1', 'retreat'))):
         ally_hp = ally.hp if ally else None
         enemy_hp = enemy.hp if enemy else None
         behind = _behind({'ally_hp': ally_hp, 'enemy_hp': enemy_hp})
-        retreat = type(ally_hp) is int and type(enemy_hp) is int and ally_hp * 2 <= enemy_hp
         first = ''.join(skill_lines[0].known.split())
         second = ''.join(skill_lines[1].known.split()) if len(skill_lines) >= 2 else ''
         # g496: ウゴカザル's two commands do nothing; spending turns on
@@ -1349,14 +1352,18 @@ def monster_menu_step(screen: Screen, mem):
         # do not let generic retreat heuristics or learned experience replace
         # ふくらむ before cap / シャウト at cap.
         action = (default if balloon_cycle else
-                  'retreat' if retreat or powerless else 'skill1' if damage_first else 'skill2' if damage_second
+                  'retreat' if powerless else 'skill1' if damage_first else 'skill2' if damage_second
                   else experience.preferred(exp, key, default=default, kind='monster_menu'))
-        # Keep a useful living shield when the bound general is wounded or
-        # has at most half the current enemy monster's HP. This HP-pool risk
-        # comparison does not predict skill damage or a guaranteed loss.
-        protected_return = protect_general and not powerless and action == 'retreat'
-        if protected_return:
+        # HP pools alone do not establish that this monster cannot win: a
+        # living summon can attack, heal or disable the opponent. Returning
+        # also exposes its general. Discard saved/learned HP-only retreats;
+        # retain the explicit, measured two-useless-skills exception.
+        if action == 'retreat' and not powerless:
             action = default
+        # Keep the existing telemetry shape. The general's exposure risk is
+        # still reported, but useful summons no longer request a return that
+        # needs to be blocked by that separate guard.
+        protected_return = False
         mem['monster_menu_choice'] = action
         mem['monster_menu_choice_key'] = key
         mem['monster_menu_choice_hp'] = hp_state
@@ -1365,8 +1372,7 @@ def monster_menu_step(screen: Screen, mem):
             battle['independent'] = {'kind': 'monster_menu', 'key': key, 'action': action}
         if action == 'retreat':
             label = 'たまごに もどれ'
-            why = ('両技に攻撃性能がない召喚獣のため、無効な攻撃を繰り返さず戻す'
-                   if powerless else '味方HPが敵の半分以下なので撤退して見守る')
+            why = '両技に攻撃性能がない召喚獣のため、無効な攻撃を繰り返さず戻す'
         elif balloon_cycle:
             if action == 'skill2':
                 label = second
@@ -1387,10 +1393,6 @@ def monster_menu_step(screen: Screen, mem):
                                  if damage_first else '先手を取れる1技目を続ける')
         if not balloon_cycle and action != default and action != 'retreat':
             why = f'過去の結果に基づく経験の選択（既定 {default}）'
-        if protected_return:
-            why = ('実測で負傷した本人を敵召喚獣へ露出させないため、存命の味方召喚獣で応戦する'
-                   if return_risk['rule'] == 'wounded_general' else
-                   '実本人HPが敵召喚獣の半分以下のため、存命の味方召喚獣を戻さず応戦する')
         _record(mem, 'monster_menu_choice',
                 strategy_variant=f'monster_menu_{action}',
                 deviation_reason='チャートに召喚獣ターンの指示がない',

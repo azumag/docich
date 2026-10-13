@@ -739,13 +739,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v219-boss-and-army-refill'
+    assert state['bot_version'] == 'hanjuku-chart-v220-finishing-resources'
     assert '_records' not in state['policy']
 
 
-def test_bot_version_marks_the_boss_attack_and_the_army_refill():
+def test_bot_version_marks_the_finishing_resource_policy():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v219-boss-and-army-refill'
+    assert BOT_VERSION == 'hanjuku-chart-v220-finishing-resources'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -1805,15 +1805,14 @@ def test_monster_menu_uses_the_first_skill_on_our_turn():
     assert not [r for r in state['_records'] if r['decision'] == 'monster_menu_choice']
 
 
-def test_monster_menu_retreats_at_half_hp_or_less():
+def test_monster_menu_keeps_useful_attack_despite_half_hp_or_less():
     frame = monster_menu_frame(['ダッシュプレス', 'メガトンプレス'],
                                ally=('ローラーキラー', 40), enemy=('クイーン', 100), cursor=0)
     actions, state = decide(frame, {'policy': {'chapter': 1}})
     choice = next(r for r in state['_records'] if r['decision'] == 'monster_menu_choice')
-    assert choice['strategy_variant'] == 'monster_menu_retreat'
-    # The knight sits on row 0, so the retreat row needs a step down.
+    assert choice['strategy_variant'] == 'monster_menu_skill2'
     assert actions[0]['buttons'] == ['down']
-    # HP exactly at half still retreats; above half does not.
+    # HP pools alone do not establish that the available attack cannot win.
     ok = monster_menu_frame(['ダッシュプレス'], ally=('ローラーキラー', 51),
                             enemy=('クイーン', 100), cursor=0)
     _, state = decide(ok, {'policy': {'chapter': 1}})
@@ -1885,10 +1884,10 @@ def test_monster_menu_without_a_knight_steps_rows_then_confirms():
     frame = monster_menu_frame(['ダッシュプレス', 'メガトンプレス'],
                                ally=('ローラーキラー', 40), enemy=('クイーン', 100), cursor=None)
     state = {'policy': {'chapter': 1}}
-    for expected in ('down', 'down', 'a'):
+    for expected in ('down', 'a', 'a'):
         actions, state = decide(frame, state)
         assert actions[0]['buttons'] == [expected]
-    assert state['policy']['monster_menu_choice'] == 'retreat'
+    assert state['policy']['monster_menu_choice'] == 'skill2'
 
 
 def test_monster_menu_memory_is_cleared_once_the_menu_leaves():
@@ -3762,11 +3761,11 @@ def test_excalibur_keeps_first_skill_against_a_general_and_waits_on_enemy_menu()
     assert actions == [] and 'monster_menu_choice' not in state['policy']
 
 
-def test_excalibur_low_hp_still_returns_instead_of_forced_four_hits():
+def test_excalibur_low_hp_keeps_available_four_hits():
     frame = monster_menu_frame(['エクスカリバる', 'マサムネる'],
                                ally=('エクスカリバー', 80), enemy=('ダークエルフ', 240), cursor=0)
     _, state = decide(frame, {'policy': {'chapter': 1}})
-    assert state['policy']['monster_menu_choice'] == 'retreat'
+    assert state['policy']['monster_menu_choice'] == 'skill2'
 
 
 def test_deferred_recruit_does_not_replace_the_egg_payment_tracker():
