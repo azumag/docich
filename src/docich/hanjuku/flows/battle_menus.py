@@ -899,9 +899,12 @@ def _partial_enemy_general_command(screen):
     and left fierce-attack row are still visible. This is only a reason to
     withhold input, not evidence of our current monster or its health.
     """
-    if screen.kind != 'egg_battle_menu' or len(screen.egg_rows) != 1:
+    if screen.kind != 'egg_battle_menu' or len(screen.egg_rows) not in (1, 2):
         return None
-    enemy = screen.egg_rows[0]
+    enemies = [r for r in screen.egg_rows if r.side == 'enemy']
+    if len(enemies) != 1:
+        return None
+    enemy = enemies[0]
     full = general_max_hp(enemy.name)
     if (enemy.side != 'enemy' or type(enemy.hp) is not int
             or type(full) is not int or not 0 < enemy.hp <= full):
@@ -912,7 +915,17 @@ def _partial_enemy_general_command(screen):
     if not labels or not any(labels == commands[i:j]
                              for i in range(3) for j in range(i + 1, 4)):
         return None
-    if (any(r.spans() != [(40, r.known)] or not 144 <= r.y <= 216 for r in rows)
+    # g749/6027 has both panels, but the left box is still eight pixels
+    # from its settled column. Do not relax the complete-owner guard.
+    columns = (32, 40)
+    if len(screen.egg_rows) == 2:
+        allies = [r for r in screen.egg_rows if r.side == 'ally']
+        if (len(allies) != 1 or allies[0].name not in _MONSTER_SKILLS
+                or type(allies[0].hp) is not int or allies[0].hp <= 0):
+            return None
+        columns = (32,)
+    if (not any(all(r.spans() == [(x, r.known)] for r in rows) for x in columns)
+            or any(not 144 <= r.y <= 216 for r in rows)
             or any(b.y - a.y != 16 for a, b in zip(rows, rows[1:]))):
         return None
     return enemy
@@ -949,7 +962,8 @@ def egg_battle_step(screen: Screen, mem):
                     deviation_reason='enemy_command_unconfirmed' if count == 31 else None,
                     observed_metric={'enemy': partial_enemy.name,
                                      'enemy_hp': partial_enemy.hp,
-                                     'observations': count, 'ally_panel_unread': True},
+                                     'observations': count,
+                                     'ally_panel_unread': len(screen.egg_rows) == 1},
                     reason='敵将軍の実HP欄と左コマンドの途中表示。味方HPを補完せず入力を保留する')
         return []
     mem.pop('enemy_general_menu_pending', None)

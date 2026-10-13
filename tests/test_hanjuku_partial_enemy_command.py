@@ -116,3 +116,33 @@ def test_orchestrator_wait_survives_no_input_limit_then_releases_own_turn():
     actions, state = decide(frame(5560), state)
     assert actions
     assert 'enemy_general_menu_pending' not in state['policy']
+
+
+def test_original_sliding_complete_panels_wait_then_settle_without_own_input():
+    s = parse(frame(6027)); m = memory(); before = deepcopy(m['battle'])
+    assert [r.name for r in s.egg_rows] == ['はんぎょじん', 'ロックフォール']
+    assert egg_battle_step(s, m) == []
+    assert m['battle'] == before
+    assert m['_records'][-1]['observed_metric']['ally_panel_unread'] is False
+    # 6044 is an original wait with no input receipts, not an exact input sample.
+    settled = parse(read_png(ROOT / 'g749-enemy-command-6044.png'))
+    assert _partial_enemy_general_command(settled) is None
+    assert egg_battle_step(settled, m) == []
+    assert 'enemy_general_menu_pending' not in m
+    assert m['_records'][-1]['decision'] == 'enemy_general_menu_wait'
+
+
+@pytest.mark.parametrize('change', ['no_ally_color', 'unknown_monster', 'general_ally',
+                                   'zero_ally', 'bool_ally', 'split_columns', 'settled'])
+def test_two_panel_transition_requires_real_ally_monster_and_single_sliding_column(change):
+    s = parse(frame(6027)); a = s.egg_rows[0]
+    if change == 'no_ally_color': a.side = None
+    elif change == 'unknown_monster': a.name = 'はんきょしん'
+    elif change == 'general_ally': a.name = 'シナモン'; a.hp = 39
+    elif change == 'zero_ally': a.hp = 0
+    elif change == 'bool_ally': a.hp = True
+    elif change == 'split_columns':
+        r = s.menu_rows[0]; s.menu_rows[0] = TextLine(r.y, tuple((x + 8, c) for x, c in r.cells))
+    elif change == 'settled':
+        s.menu_rows = [TextLine(r.y, tuple((x + 8, c) for x, c in r.cells)) for r in s.menu_rows]
+    assert _partial_enemy_general_command(s) is None

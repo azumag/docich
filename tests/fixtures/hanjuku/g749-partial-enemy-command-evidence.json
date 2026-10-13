@@ -108,6 +108,94 @@
           "type": "pad"
         }
       ]
+    },
+    {
+      "uid": 6027,
+      "fixture": "g749-enemy-command-6027.png",
+      "rgb_sha256": "6c758056fb125d97dd9348a88498e9f431cf91c1740d1970b86b314449134a8e",
+      "decision": {
+        "at": 1791903201.3662865,
+        "bot_version": "hanjuku-chart-v207-recruit-return-ownership",
+        "chart_step": null,
+        "decision_id": "g749-d8571de0:749:6027",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "6c758056fb125d97dd9348a88498e9f431cf91c1740d1970b86b314449134a8e",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "egg_battle",
+          "situation_held",
+          "battle_egg_general_attack"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "egg_battle_menu",
+        "snapshot": "decision-027.png",
+        "strategy_variant": "egg_unavailable"
+      },
+      "input_receipts": [
+        {
+          "at": 1791903201.5809422,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "6c758056fb125d97dd9348a88498e9f431cf91c1740d1970b86b314449134a8e",
+          "decision_id": "g749-d8571de0:749:6027",
+          "event": "input_sent",
+          "frame_sha256": "6c758056fb125d97dd9348a88498e9f431cf91c1740d1970b86b314449134a8e",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ]
+    },
+    {
+      "uid": 6044,
+      "fixture": "g749-enemy-command-6044.png",
+      "rgb_sha256": "ca21591b265409611ee4701cab97498d69460257667eb13cf23cecd3cebad18a",
+      "decision": {
+        "at": 1791903227.1971414,
+        "bot_version": "hanjuku-chart-v207-recruit-return-ownership",
+        "chart_step": null,
+        "decision_id": "g749-d8571de0:749:6044",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "ca21591b265409611ee4701cab97498d69460257667eb13cf23cecd3cebad18a",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [],
+        "reason_decisions": [
+          "enemy_general_menu_wait"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "egg_battle_menu",
+        "snapshot": "decision-044.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "input_receipts": []
     }
   ],
   "boundary": "Original RGB and matching input metadata; expected new wait is counterfactual, not a natural input or battle outcome."
