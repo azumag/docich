@@ -20,6 +20,7 @@ import zipfile
 import zlib
 
 from temp_roots import real_tempdir
+from openssl_support import LIBRESSL_SKIP_REASON, system_openssl_is_libressl
 
 MODULE = Path(__file__).resolve().parents[1] / "hanjuku_evidence.py"
 spec = importlib.util.spec_from_file_location("hanjuku_evidence_test_target", MODULE)
@@ -424,6 +425,7 @@ class CryptoTests(EvidenceFixture, unittest.TestCase):
         if result.returncode:
             raise RuntimeError("OpenSSL test certificate generation failed")
 
+    @unittest.skipIf(system_openssl_is_libressl(), LIBRESSL_SKIP_REASON)
     def test_real_crypto_roundtrip_and_tamper(self):
         clear = self.pack()
         encrypted = e.encrypt(clear, self.cert.read_bytes())
@@ -435,6 +437,7 @@ class CryptoTests(EvidenceFixture, unittest.TestCase):
         with self.assertRaisesRegex(e.EvidenceError, "crypto_failed"):
             e._openssl(args, bytes(corrupted))
 
+    @unittest.skipIf(system_openssl_is_libressl(), LIBRESSL_SKIP_REASON)
     def test_recipient_cli_verifies_before_writing(self):
         directory = self.root / "receive"
         directory.mkdir(mode=0o700)

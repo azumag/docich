@@ -26,6 +26,7 @@ import receive_hanjuku_evidence as receiver
 import validate_hanjuku_ciphertext as transport
 from test_hanjuku_evidence import EvidenceFixture, RID, canonical, run_state
 from temp_roots import real_tempdir
+from openssl_support import LIBRESSL_SKIP_REASON, system_openssl_is_libressl
 
 
 class GatewayTests(EvidenceFixture, unittest.TestCase):
@@ -88,6 +89,7 @@ class GatewayTests(EvidenceFixture, unittest.TestCase):
         return g.export(self.core, self.cfg_path, self.command,
                         self.request if raw is None else raw)
 
+    @unittest.skipIf(system_openssl_is_libressl(), LIBRESSL_SKIP_REASON)
     def test_encrypted_roundtrip_without_state_mutation(self):
         before = {p: p.read_bytes() for p in self.state.rglob("*") if p.is_file()}
         ciphertext = self.export()
@@ -253,6 +255,7 @@ class GatewayTests(EvidenceFixture, unittest.TestCase):
                 receiver.decrypt(cbc, self.key, self.cert, runtime_id=RID)
             openssl.assert_not_called()
 
+    @unittest.skipIf(system_openssl_is_libressl(), LIBRESSL_SKIP_REASON)
     def test_receiver_runtime_and_wrong_recipient(self):
         encrypted = self.export()
         with self.assertRaisesRegex(g.evidence.EvidenceError, "unexpected_runtime"):
@@ -264,6 +267,7 @@ class GatewayTests(EvidenceFixture, unittest.TestCase):
         with self.assertRaisesRegex(g.evidence.EvidenceError, "crypto_failed"):
             receiver.decrypt(encrypted, other, self.cert, runtime_id=RID)
 
+    @unittest.skipIf(system_openssl_is_libressl(), LIBRESSL_SKIP_REASON)
     def test_transport_cli_has_no_payload_output(self):
         path = self.root / "input.cms"
         path.write_bytes(self.export())
@@ -292,6 +296,7 @@ raise SystemExit(g.main(None, '/not-production'))
         self.assertEqual(result.stdout, b"")
         self.assertEqual(result.stderr, b"Hanjuku evidence export rejected\n")
 
+    @unittest.skipIf(system_openssl_is_libressl(), LIBRESSL_SKIP_REASON)
     def test_main_success_emits_only_returned_ciphertext(self):
         script = """
 import sys
