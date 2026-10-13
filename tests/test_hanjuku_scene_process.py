@@ -326,6 +326,21 @@ def test_unreadable_process_is_not_assumed_to_be_unrelated(tmp_path, monkeypatch
 
 
 @linux_only
+def test_multi_threaded_caller_is_rejected_before_any_probe(monkeypatch):
+    """The dedicated-worker precondition refuses before any pidfd probe.
+
+    CI runs this file on the serial runner, so the ambient process is always
+    single-threaded and this fail-closed branch would otherwise stay untested.
+    Fix the observation instead of depending on the runner's thread count.
+    """
+    monkeypatch.setattr(processes._ProcView, 'single_threaded', lambda self: False)
+    monkeypatch.setattr(processes.os, 'pidfd_open', lambda pid: pytest.fail('pidfd probed before the precondition'))
+    monkeypatch.setattr(processes, '_prctl', lambda *a: pytest.fail('unsupported containment was enabled'))
+    with pytest.raises(processes.SceneProcessUnavailable, match='single-thread'):
+        processes.enable_subreaper()
+
+
+@linux_only
 @pytest.mark.parametrize('unsupported', ['signal', 'waitid'])
 def test_unusable_pidfd_syscalls_reject_before_subreaper_or_launch(monkeypatch, unsupported):
     monkeypatch.setattr(processes.os, 'pidfd_open', lambda pid: 123)
