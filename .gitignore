@@ -20,6 +20,11 @@ games/roms/*
 # 公開用の見出し投影だけを ops/runtime_context/ops_brief.json として親で追跡する。
 /handoff.md
 
+# 有界化した handoff.md からあふれた節の追記型アーカイブ。
+# 正本は共通領域にあるため通常ここには作らない。旧ローカルファイルを回転した
+# 場合の再混入防止ガードとして残す。
+/handoff-archive/
+
 # Local Discord Voice acceptance logs are sanitized but remain machine-local.
 /runtimes/discord-voice/acceptance-logs/
 
