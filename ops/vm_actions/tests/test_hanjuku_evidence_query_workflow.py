@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import tempfile
 import sys
 import textwrap
 import unittest
@@ -20,6 +19,7 @@ sys.path.insert(0, str(HERE))
 import hanjuku_evidence_gateway as gateway
 import gateway_entry as entry
 from test_hanjuku_evidence import EvidenceFixture, RID, canonical, run_state
+from temp_roots import real_tempdir
 
 AUTH_PATH = HERE / "authorize_hanjuku_evidence_query.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "hanjuku-evidence-query.yml"
@@ -272,7 +272,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertLess(transport, self.workflow.index('status_json='))
         self.assertGreater(publish, self.workflow.index('from receive_hanjuku_evidence import verify_archive'))
         self.assertLess(publish, self.workflow.index('uses: actions/upload-artifact@'))
-        with tempfile.TemporaryDirectory() as directory:
+        with real_tempdir() as directory:
             fake = Path(directory) / 'git'
             fake.write_text('#!/bin/bash\nprintf "%s\\trefs/heads/main\\n" "$REMOTE_SHA"\nexit "${REMOTE_RC:-0}"\n')
             fake.chmod(0o700)
