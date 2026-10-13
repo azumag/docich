@@ -58,11 +58,16 @@ def army_count_pending_step(screen, mem):
     state = mem['army_count_check']
     if screen.kind not in ('text', 'unknown'):
         state.update(stage='unverified', result='unverified')
+        if isinstance(mem.get('shop'), dict) and not mem['shop'].get('soldier_receipt'):
+            mem['shop']['soldiers_done'] = True
         return None  # a recognized battle/event keeps its own input owner
     if state.get('stage') != 'closing':
         if _army_count_increment(state, 'unread_frames', 4) < 4:
             return []
         state.update(stage='closing', result='unverified')
+    if (state.get('result') == 'unverified' and isinstance(mem.get('shop'), dict)
+            and not mem['shop'].get('soldier_receipt')):
+        mem['shop']['soldiers_done'] = True
     return [pad('b')] if _army_count_increment(state, 'exit_presses', 4) <= 3 else []
 
 

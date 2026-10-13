@@ -56,6 +56,11 @@ def _army_count_increment(state, field, limit):
 
 def _zero_army_refill(mem, shop, header):
     """A measured empty army takes spare cash before a new recruitment fee."""
+    check = mem.get('army_count_check')
+    if (isinstance(check, dict) and check.get('scope') == _soldier_count_scope(mem, header)
+            and (check.get('stage') == 'unverified'
+                 or (check.get('stage') == 'closing' and check.get('result') == 'unverified'))):
+        return  # an aborted inspection/refill cannot renew its monthly budget
     if (not _soldier_count_current(mem, header) or mem['soldiers_seen'] != 0
             or not shop or shop.get('key') != _month_key(header)
             or shop.get('soldier_receipt') or mem.get('month_sub')

@@ -255,6 +255,24 @@ def test_measured_refill_request_owns_unread_frames_before_payment():
     assert not out['policy']['shop'].get('soldier_receipt')
 
 
+@pytest.mark.parametrize('kind',['unknown','battle'])
+def test_unread_refill_request_ends_without_reopening_on_quiet_return(kind):
+    from docich.hanjuku_screen import Screen
+    mem=memory();p.month_step(screen(),mem)
+    p.month_step(observe_count(mem,0),mem);p.month_step(screen(),mem)
+    unknown=Screen(kind=kind,lines=[],text='',hand=None)
+    if kind=='unknown':
+        for _ in range(3):assert monthly.army_count_pending_step(unknown,mem)==[]
+        assert monthly.army_count_pending_step(unknown,mem)==[p.pad('b')]
+    else:
+        assert monthly.army_count_pending_step(unknown,mem) is None
+    assert mem['shop']['soldiers_done'] is True
+    p.month_step(screen(),mem)
+    assert mem['army_count_check']['stage']=='unverified'
+    assert mem['shop']['soldiers_done'] is True
+    assert not mem['shop'].get('soldier_receipt')
+
+
 @pytest.mark.parametrize('old_state',[None,True,{'scope':['foreign'],'stage':'measured'}])
 def test_hotload_inside_an_unknown_editor_starts_an_inspection_without_payment(old_state):
     mem=memory();mem['shop'].update(soldiers=24,soldiers_done=False)
