@@ -242,6 +242,24 @@ def test_busy_lifecycle_never_prepares_or_adopts(effects):
     finally:held.release()
 
 
+def test_ack_deadline_preserves_pending_guard_and_manual_projection(effects,monkeypatch):
+    effects.spawn=lambda claim:effects.spawned.append(copy.deepcopy(claim))
+    clock=iter([0,31]);monkeypatch.setattr(mod.time,'monotonic',lambda:next(clock))
+    result=mod.adopt(effects)
+    assert result['status']=='pending_guard' and result['projection_restarted'] is None
+    assert len(effects.spawned)==1 and effects.terminated==[]
+    assert mod.read_record(effects.runtime/mod.RECEIPT)[0]['status']=='prepared'
+    assert mod.read_record(effects.runtime/'presentation.json')[0]==effects.native
+
+
+def test_foreign_recovery_receipt_is_not_overwritten(effects):
+    claim=mod.prepare(effects);path=effects.runtime/mod.RECEIPT
+    foreign=dict(claim,identity=dict(effects.identity,lease_id='foreign'))
+    write(path,foreign);before=path.read_bytes()
+    with pytest.raises(mod.RecoveryRefused):mod.write_receipt(effects.runtime,claim,dict(claim,status='failed'))
+    assert path.read_bytes()==before
+
+
 @pytest.mark.parametrize('fault',[None,'guard_birth','player_birth','guard_argv','player_argv','lease','presentation'])
 def test_diagnostics_are_current_bounded_and_read_only(effects,monkeypatch,fault):
     mod.adopt(effects)
