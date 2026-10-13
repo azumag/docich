@@ -93,19 +93,50 @@ class MarketCorner:
         if result.status != "succeeded":
             raise RuntimeError("market program switch not completed")
 
+    def _corner_outcome(self, state):
+        explicit = state.get("outcome")
+        normalized = str(explicit).strip().lower() if isinstance(explicit, str) else ""
+        if normalized in ("completed", "skipped_unavailable", "cancelled_unavailable", "cancelled"):
+            return "cancelled_unavailable" if normalized in ("cancelled_unavailable", "cancelled") else normalized
+        previous_status = str(state.get("status") or "").strip().lower()
+        if previous_status.startswith("cancel") or "unavailable" in previous_status:
+            return "cancelled_unavailable"
+        if previous_status == "skipped_unavailable":
+            return "skipped_unavailable"
+        if previous_status == "failed":
+            return "failed"
+        return "completed"
+
     def restore(self, state):
-        state.update(status="restoring", heartbeat=0)
+        state.update(status="restoring", restore_phase="in_progress", heartbeat=0)
         self.save(state)
         current, previous = self.current(), state.get("previous_game")
-        if current == self.view or current is None:
-            if previous and previous != self.view:
-                self.require(self.coordinator.switch(previous))
-            else:
-                self.require(self.coordinator.stop())
+        try:
+            if current == self.view or current is None:
+                if previous and previous != self.view:
+                    self.require(self.coordinator.switch(previous))
+                else:
+                    self.require(self.coordinator.stop())
+        except BaseException:
+            state.update(status="restoring", restore_phase="failed", heartbeat=0)
+            if self._corner_outcome(state) != "completed":
+                state["outcome"] = self._corner_outcome(state)
+            self.save(state)
+            raise
         # If the operator chose another game, never pull it back.
-        state.update(status="completed", completed_at=self.clock())
+        outcome = self._corner_outcome(state)
+        if outcome == "completed" and state.get("outcome") in ("cancelled_unavailable", "skipped_unavailable", "failed"):
+            outcome = state["outcome"]
+        terminal_status = "completed" if outcome == "failed" else outcome
+        state.update(status=terminal_status, outcome=outcome, restore_phase="completed", completed_at=self.clock())
         self.save(state)
-        return "completed"
+        return outcome
+
+    def _availability_check(self, now, state=None):
+        # Extension point for readiness / fake-provider fault injection. The
+        # Windows/MT5 bridge is intentionally not wired here yet; until a real
+        # provider exists, callers can monkeypatch this method to inject failure.
+        return True, "ok"
 
     def tick(self):
         from ...corner_boundary import CornerWaitExpired, program_slot
@@ -139,6 +170,14 @@ class MarketCorner:
                         self.save(state)
                         return "expired"
                     if state["status"] != "active":
+                        available, availability_reason = self._availability_check(self.clock(), state)
+                        if not available:
+                            state.update(status="skipped_unavailable", outcome="skipped_unavailable",
+                                        unavailable_reason=availability_reason, heartbeat=self.clock())
+                            if "previous_game" not in state:
+                                state["previous_game"] = self.current()
+                            self.save(state)
+                            return "skipped_unavailable"
                         state.update(status="starting")
                         if "previous_game" not in state:
                             state["previous_game"] = self.current()
@@ -152,6 +191,12 @@ class MarketCorner:
                         self.announce(state, "opening", TITLES[self.r.market] + "です。実資金を使わず、相場とBOTの判断、損益を見ていきます。")
                     frozen = self.r.book.report(begin) if self.r.market == "fx" else None
                     while self.clock() < state["ends_at"]:
+                        available, availability_reason = self._availability_check(self.clock(), state)
+                        if not available:
+                            state.update(status="cancelling", outcome="cancelled_unavailable",
+                                        unavailable_reason=availability_reason, heartbeat=self.clock())
+                            self.save(state)
+                            return self.restore(state)
                         if self.current() != self.view:
                             return self.restore(state)
                         state["heartbeat"] = self.clock()
@@ -179,7 +224,9 @@ class MarketCorner:
                 self.save(state)
                 return "expired"
             except BaseException:
-                state.update(status="failed", heartbeat=0)
+                if "outcome" not in state:
+                    state["outcome"] = "failed"
+                state.update(status="failed", restore_phase="failed", heartbeat=0)
                 self.save(state)
                 raise
 
