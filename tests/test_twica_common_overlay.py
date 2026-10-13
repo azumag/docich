@@ -130,6 +130,19 @@ def read_exact(fd, size):
     return bytes(data)
 
 
+def read_until_transparent(consumer, *, limit=64):
+    """Drain frames already queued in the pipe until one is transparent.
+
+    ``SnapshotPublisher.clear()`` cannot recall frames the feeder already wrote,
+    so a reader that arrives late must consume a bounded number of them before
+    transparency is observable.
+    """
+    for index in range(limit):
+        if read_exact(consumer, 4) == bytes(4):
+            return index
+    raise AssertionError(f'no transparent frame within {limit} queued frames')
+
+
 def test_pipe_keeps_sending_after_renderer_disappears(tmp_path):
     directory = tmp_path / 'overlay'
     with SnapshotPublisher(directory, 1, 1) as publisher:
@@ -140,7 +153,35 @@ def test_pipe_keeps_sending_after_renderer_disappears(tmp_path):
                 feed.start()
                 assert read_exact(consumer, 4) == bytes([255, 0, 0, 128])
                 publisher.clear()
+                # Frames sent before clear() are still in the pipe; drain them
+                # before requiring transparency, then require the feed to keep
+                # producing transparent frames while the renderer is gone.
+                read_until_transparent(consumer)
                 assert read_exact(consumer, 4) == bytes(4)
+                assert feed._thread.is_alive()
+            finally:
+                os.close(consumer)
+
+
+def test_pipe_drains_frames_sent_before_renderer_clear(tmp_path):
+    """Regression for #2105: a late consumer must still reach transparency.
+
+    The first read deliberately happens after several red frames were queued, so
+    the old assertion (transparent on the very next read) reproduces the CI
+    flake. Only bounded draining is allowed: the feed must not replay red
+    frames forever, and the thread must keep running.
+    """
+    directory = tmp_path / 'overlay'
+    with SnapshotPublisher(directory, 1, 1) as publisher:
+        publisher.publish(bytes([255, 0, 0, 128]), time.monotonic_ns())
+        with OverlayPipe(SnapshotReader(directory, 1, 1), 10) as feed:
+            consumer = os.dup(feed.read_fd)
+            try:
+                feed.start()
+                time.sleep(0.35)  # consumer reads late: red frames are already sent
+                publisher.clear()
+                queued = read_until_transparent(consumer)
+                assert 1 <= queued < 64
                 assert read_exact(consumer, 4) == bytes(4)
                 assert feed._thread.is_alive()
             finally:
