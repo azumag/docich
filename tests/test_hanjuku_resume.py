@@ -208,8 +208,13 @@ def test_claim_rejects_changed_rom_without_default_game(setup):
     assert not (s.spec.runtime_dir/resume.RECEIPT_FILE).exists()
 
 
-def restore_test(s, *, valid=True, ack=True, chapter=1, native_frame=None):
-    stage(s);commands=[];writes=[]
+def restore_test(s, *, valid=True, ack=True, chapter=1, native_frame=None,
+                 stale_writes=(), seconds=None):
+    """Exercise restore. ``stale_writes`` lists 1-based SAVE writes whose file
+    mtime must predate the request, so the production loop legitimately retries
+    the roundtrip instead of accepting an unprovable save."""
+    stage(s);commands=[];writes=[];slots_written=[]
+    s.slots_written=slots_written
     path=s.spec.runtime_dir/'states/hanjuku-hero.state1'
     slots=[0]
     load_source=s.spec.runtime_dir/'states/hanjuku-hero.state'
@@ -232,7 +237,12 @@ def restore_test(s, *, valid=True, ack=True, chapter=1, native_frame=None):
             # accepted solely because the LOAD receipt/mtime exist.
             payload=b'boot state' if not valid or not writes else b'serialized core'
             output=s.spec.runtime_dir/('states/hanjuku-hero.state'+(str(slots[0]) if slots[0] else ''))
-            output.write_bytes(state_bytes(payload));writes.append(payload)
+            output.write_bytes(state_bytes(payload));writes.append(payload);slots_written.append(slots[0])
+            if len(writes) in stale_writes:
+                # A file update older than the request proves nothing: the
+                # production verification loop must retry, not trust it.
+                stale=time.time_ns()-5_000_000_000
+                os.utime(output,ns=(stale,stale))
         return None
     frame=SimpleNamespace(digest=lambda:'loaded-native-rgb',resized=lambda:frame)
     if native_frame is not None:
@@ -245,18 +255,44 @@ def restore_test(s, *, valid=True, ack=True, chapter=1, native_frame=None):
          mock.patch('docich.xkit.XKit.screenshot'), \
          mock.patch('docich.hanjuku_pixels.read_png',return_value=frame), \
          mock.patch('docich.hanjuku_screen.parse',return_value=loaded_screen):
-        resume.restore(s.adapter,time.monotonic()+(.3 if not valid or valid=='unchanged_future' or chapter is None and native_frame is None else 3),None)
+        budget=seconds if seconds is not None else (.3 if not valid or valid=='unchanged_future' or chapter is None and native_frame is None else 3)
+        resume.restore(s.adapter,time.monotonic()+budget,None)
     return commands,writes
 
 
 def test_native_roundtrip_must_match_before_ai_unpause_and_fresh_policy(setup):
     s=setup;commands,writes=restore_test(s)
-    assert writes==[b'boot state',b'serialized core',b'serialized core']
+    # The pre-load SAVE is never accepted as proof; every later SAVE re-proves
+    # the core in its own slot before the next slot is touched.
+    assert writes[0]==b'boot state'
+    assert set(writes[1:])=={b'serialized core'}
+    assert len(writes)==commands.count('SAVE_STATE')
+    assert set(s.slots_written)=={0,1}  # both slots are proven independently
+    assert commands.count('LOAD_STATE_SLOT 0')==1
     assert commands.index('STATE_SLOT_PLUS')<commands.index('SAVE_STATE')<commands.index('STATE_SLOT_MINUS')
     assert commands.index('LOAD_STATE_SLOT 0')<commands.index('SAVE_STATE')<commands.index('FRAMEADVANCE')<commands.index('PAUSE_TOGGLE')
     receipt=read_record(s.spec.runtime_dir/resume.RECEIPT_FILE)
     assert receipt['status']=='verified' and receipt['chapter']==1
     assert read_record(s.spec.runtime_dir/'hanjuku_bot.json')=={'policy':{'chapter':1,'name':{'done':True}}}
+    assert s.source.read_bytes()==compressed(state_bytes())
+    resume.require_verified(s.spec)
+
+
+def test_stale_core_write_is_retried_without_a_second_load(setup):
+    """A SAVE whose file mtime predates the request cannot prove the roundtrip.
+
+    Production repeats the SAVE until a stable core is observed, so the test
+    must accept that retry while still requiring exactly one LOAD, an unchanged
+    sealed source and a verified receipt (#2099).
+    """
+    s=setup;commands,writes=restore_test(s,stale_writes=(2,),seconds=8)
+    assert writes[0]==b'boot state'
+    assert set(writes[1:])=={b'serialized core'}
+    assert s.slots_written.count(1)>=3  # the unprovable slot-1 save was repeated
+    assert s.slots_written.count(0)>=1
+    assert commands.count('LOAD_STATE_SLOT 0')==1
+    receipt=read_record(s.spec.runtime_dir/resume.RECEIPT_FILE)
+    assert receipt['status']=='verified' and receipt['chapter']==1
     assert s.source.read_bytes()==compressed(state_bytes())
     resume.require_verified(s.spec)
 
