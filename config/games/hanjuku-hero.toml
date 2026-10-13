@@ -25,6 +25,9 @@ interval_ms = 1500
 
 [hanjuku]
 script_bot = true
+# チャート版: speedrun（既定・従来の速攻チャート）/ steady（堅実: 基礎チャートの前進でも出撃元に守備1人を残す）/
+# ab（世代番号の偶数=steady・奇数=speedrun で交互）。新しいゲームの名前入力完了時に固定し、進行中のゲームは切り替えない。
+chart_edition = "ab"
 # チャート準拠の決定的状態機械(hanjuku-chart-v14-visible-hp)。操作経路(キー送信)にLLMは入れない。
 # 20分の時間制限なし。ゲームオーバー、または実ゲーム画面が300秒不変で終了。
 # OpenCodeによる試合後の自動改善は別途実装。操作中のLLM呼出しは行わない。
