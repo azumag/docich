@@ -251,6 +251,8 @@ def surveyed(mem):
 
 
 def begin(mem, state):
+    for key in ('roster_end_observed', 'roster_end_observations', 'roster_first_general'):
+        state.pop(key, None)
     state['roster_started'] = int(mem.get('tick') or 0)
     state['roster_month'] = mem.get('month')
     mem['recruit_roster'] = {'chapter': mem.get('chapter'), 'month': mem.get('month'),
@@ -421,10 +423,10 @@ def complete(mem, state):
     # (tests/test_hanjuku_recruit_roster.py::_month_roster), so the wrap is
     # not the only proof of a full walk. Reading every listed name on a page
     # that ends on screen proves there is no further entry; a page still
-    # filling the last row keeps the conservative wrap proof only.
+    # filling the last row needs a wrap or the native scroll-end proof.
     whole_page = receipt is not None and len(receipt['names']) < VISIBLE_NAME_ROWS
     full = (receipt and not state.get('roster_invalidated')
-            and (state.get('roster_wrapped') or whole_page)
+            and (state.get('roster_wrapped') or state.get('roster_end_observed') or whole_page)
             and receipt['tick'] == state.get('roster_started')
             and set(receipt['names']) == set(state.get('seen') or ()))
     if full:
