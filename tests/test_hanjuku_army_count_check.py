@@ -358,3 +358,32 @@ def test_orchestrator_does_not_fallback_to_a_on_a_frozen_unread_count_check():
     actions,out=decide(frame,state,run_identity=IDENTITY)
     assert actions==[]
     assert not any(r['decision']=='no_input_fallback' for r in out['_records'])
+
+
+def test_skipped_egg_priority_does_not_cancel_the_measured_zero_army_refill():
+    # g747 2-4 (2026-10-13 18:40-19:50): an egg recovery skipped as
+    # unaffordable zeroed the refill (soldiers_done) while the zero-army plan
+    # re-armed it on the next frame, so the bot walked to も〜おしまい!, then
+    # refused its own exit for an hour (#2116). The zero-army plan already
+    # holds the recovery reserve, so it must win and the refill must open.
+    mem=memory()
+    p.month_step(screen(),mem)
+    s=observe_count(mem,0)
+    p.month_step(s,mem)
+    mem['shop'].update(egg_priority=True, egg='skipped', reserve=20)
+    assert p.month_step(screen(),mem)==[p.pad('a')]
+    # 72G minus the full 30G wage floor and the 20G recovery reserve.
+    assert mem['shop']['soldiers']==22 and mem['shop']['soldiers_done'] is False
+    assert not mem.get('month_exit')
+    assert mem['shop']['reserve']==20       # the recovery money stays held
+
+
+def test_skipped_egg_priority_still_preserves_money_without_a_measured_zero_army():
+    mem=memory()
+    p.month_step(screen(),mem)
+    s=observe_count(mem,10)
+    p.month_step(s,mem)
+    mem['shop'].update(soldiers=30, soldiers_done=False, soldiers_recalculated=True,
+                       egg_priority=True, egg='skipped', reserve=20)
+    p.month_step(screen(),mem)
+    assert mem['shop']['soldiers']==0 and mem['shop']['soldiers_done'] is True
