@@ -236,6 +236,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     if actions is None:
         actions = deploy_flow.boss_stock_restart_step(screen, mem)
     if actions is None:
+        actions = battle_menus_flow.orphan_battle_menu_step(screen, mem)
+    if actions is None:
         actions = battle_menus_flow.defender_egg_pending_step(screen, mem)
     if actions is None:
         actions = battle_menus_flow.command_open_pending_step(screen, mem)
@@ -375,7 +377,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     else:
         streak=1
     if (not actions and streak>NO_INPUT_HOLD_MAX
-            and not isinstance(mem.get('resume_egg_ritual'), dict)):
+            and not isinstance(mem.get('resume_egg_ritual'), dict)
+            and not isinstance(mem.get('orphan_battle_menu'), dict)):
         # Even this last-resort path must not confirm an unread summer option:
         # the cursor may be on the mass-dismissal row. Reobserve after one move.
         # These recognized events must never borrow a scripted scene's blind A.

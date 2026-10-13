@@ -605,3 +605,19 @@ def test_native_priest_result_boundary_restores_bounded_dialogue_without_old_tra
     policy=read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
     assert 'egg_uses' not in policy and 'month_sub' not in policy
     assert decide(frame,{'policy':policy})[0] == [{'type':'pad','buttons':['a'],'hold_ms':100}]
+
+
+@pytest.mark.parametrize('uid', [8819, 8820])
+def test_disabled_battle_parent_checkpoint_seeds_only_finite_reobservation(setup, uid):
+    from docich.hanjuku_pixels import read_png
+    frame=read_png(Path(__file__).parent/f'fixtures/hanjuku/g741-orphan-menu-{uid}.png')
+    commands,writes=restore_test(setup,chapter=None,native_frame=frame)
+    receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
+    assert receipt['status']=='verified' and receipt['chapter'] is None
+    assert receipt['frame_sha256']==frame.resized().digest()
+    assert commands.count('LOAD_STATE_SLOT 0')==1
+    assert writes[0]==b'boot state' and all(b==b'serialized core' for b in writes[1:])
+    assert read_record(setup.spec.runtime_dir/'hanjuku_bot.json')=={'policy':{
+        'name':{'done':True},'resume_chapter_pending':True,
+        'resume_battle_menu':{'readings':0}}}
+    assert setup.source.read_bytes()==compressed(state_bytes())

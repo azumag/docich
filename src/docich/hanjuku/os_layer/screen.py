@@ -731,6 +731,13 @@ def summer_bonus_seen(text: str) -> bool:
         any(v in flat for v in SUMMER_BONUS_CHOICES['bonus'])
 
 
+def resume_battle_menu_panel(s: Screen) -> bool:
+    """A chapterless disabled human parent menu, never an Okunote list."""
+    return (s.kind == 'battle_menu' and s.header is None and s.battle is None
+            and type(s.menu_cursor) is int and s.menu_cursor in (176, 192, 208, 196, 212)
+            and (s.hidden_battle_commands or s.disabled_item_box))
+
+
 def resume_sortie_panel(s: Screen) -> bool:
     """A measured HUD-less sortie menu can be cancelled without knowing chapter."""
     rows = {line.y: line for line in s.lines}

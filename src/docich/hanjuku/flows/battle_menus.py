@@ -26,6 +26,56 @@ from ..os_layer.world import NAME
 from ..strategy.economy import _egg_recheck
 
 
+def orphan_battle_menu_step(screen, mem):
+    """Close an unbound parent menu finitely, then require new native context.
+
+    The gray commands do not identify an actor, HP or a usable Okunote. A
+    background animation/fade must neither refill the cancellation budget nor
+    release an exhausted episode to the generic scene-confirm fallback.
+    """
+    flow = mem.get('orphan_battle_menu')
+    restored = isinstance(mem.get('resume_battle_menu'), dict)
+    if mem.get('battle'):
+        mem.pop('orphan_battle_menu', None)
+        mem.pop('resume_battle_menu', None)
+        return None
+    parent = screen.kind == 'battle_menu'
+    if not parent and flow is None and not restored:
+        return None
+    if not parent and screen.kind not in {
+            'unknown', 'text', 'battle_menu_pending', 'okunote_menu',
+            'monster_menu', 'egg_choice_menu', 'egg_battle_menu'}:
+        mem.pop('orphan_battle_menu', None)
+        mem.pop('resume_battle_menu', None)
+        _record(mem, 'battle_menu_reobserved',
+                observed_metric={'screen': screen.kind},
+                reason='文脈未確認の戦闘メニューから別の実前面へ戻ったため、その読取手順へ渡す')
+        return None
+    from ..os_layer.roster import run_identity
+    identity = run_identity(mem.get('_run_identity'))
+    if flow is None:
+        flow = mem['orphan_battle_menu'] = {'identity': identity, 'attempts': 0}
+    elif (not isinstance(flow, dict) or flow.get('identity') != identity
+          or type(flow.get('attempts')) is not int or not 0 <= flow['attempts'] <= 3):
+        # A persisted foreign/corrupt claim cannot acquire a new allowance.
+        flow = mem['orphan_battle_menu'] = {'identity': identity, 'attempts': 3}
+    if not parent:
+        return []  # a fade or an irreversible list is not another parent B
+    if flow['attempts'] < 3:
+        flow['attempts'] += 1
+        _record(mem, 'battle_menu_context_recheck',
+                observed_metric={'close_attempt': flow['attempts'], 'limit': 3,
+                                 'cursor_y': screen.menu_cursor},
+                reason='将軍とHPの文脈がない実戦闘メニューを閉じ、実戦闘パネルで再確認する')
+        return [pad('b')]
+    if not flow.get('unconfirmed'):
+        flow['unconfirmed'] = True
+        _record(mem, 'battle_menu_recheck_unconfirmed',
+                observed_metric={'close_attempts': 3},
+                reason='有限の閉じる入力後も実戦闘メニューが残るため、卵や奥の手を推測して選ばない')
+    return []
+
+
 def command_open_pending_step(screen, mem):
     cur = mem.get('battle') or {}
     if not cur.get('command_open_pending'):
