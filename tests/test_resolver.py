@@ -342,6 +342,62 @@ class PerturbTest(unittest.TestCase):
 
 
 class ImprovementLifecycleFenceTest(unittest.TestCase):
+    def _wait_for_restart_winner(self, marker):
+        # Reads may straddle the child's marker update; readiness still needs
+        # an observed winner within the original 100 x 20 ms poll budget.
+        for _ in range(100):
+            try:
+                ready = json.loads(marker.read_text()).get("lease_id") == "winner"
+            except (FileNotFoundError, json.JSONDecodeError):
+                ready = False
+            if ready:
+                return
+            time.sleep(0.02)
+        self.fail("restart child did not claim marker within the existing 100-poll budget")
+
+    def test_restart_winner_poll_reobserves_transient_reads(self):
+        for transient in ("", '{"lease_id":', FileNotFoundError()):
+            with self.subTest(transient=repr(transient)):
+                marker = mock.Mock()
+                marker.read_text.side_effect = ['{"lease_id":"old"}', transient,
+                                                '{"lease_id":"winner"}']
+                with mock.patch.object(time, "sleep") as sleep:
+                    self._wait_for_restart_winner(marker)
+                self.assertEqual(marker.read_text.call_count, 3)
+                self.assertEqual(sleep.call_args_list, [mock.call(0.02)] * 2)
+                marker.write_text.assert_not_called()
+
+    def test_restart_winner_poll_rejects_permanent_unready_reads(self):
+        for unready in ("", '{"lease_id":', FileNotFoundError(), '{"lease_id":"old"}'):
+            with self.subTest(unready=repr(unready)):
+                marker = mock.Mock()
+                marker.read_text.side_effect = [unready] * 100
+                with mock.patch.object(time, "sleep") as sleep:
+                    with self.assertRaisesRegex(AssertionError, "100-poll budget"):
+                        self._wait_for_restart_winner(marker)
+                self.assertEqual(marker.read_text.call_count, 100)
+                self.assertEqual(sleep.call_args_list, [mock.call(0.02)] * 100)
+                marker.write_text.assert_not_called()
+
+    def test_restart_winner_poll_does_not_hide_unexpected_io_errors(self):
+        for error in (PermissionError("denied"), OSError("I/O failure")):
+            with self.subTest(error=type(error).__name__):
+                marker = mock.Mock()
+                marker.read_text.side_effect = error
+                with mock.patch.object(time, "sleep") as sleep:
+                    with self.assertRaises(type(error)):
+                        self._wait_for_restart_winner(marker)
+                self.assertEqual(marker.read_text.call_count, 1)
+                sleep.assert_not_called()
+
+    def test_restart_winner_poll_accepts_final_budget_observation(self):
+        marker = mock.Mock()
+        marker.read_text.side_effect = [""] * 99 + ['{"lease_id":"winner"}']
+        with mock.patch.object(time, "sleep") as sleep:
+            self._wait_for_restart_winner(marker)
+        self.assertEqual(marker.read_text.call_count, 100)
+        self.assertEqual(sleep.call_args_list, [mock.call(0.02)] * 99)
+
     def test_only_one_restart_claims_stale_marker(self):
         from docich.resolver import improve
         from docich.resolver.runner import EvaluationCleanupError
@@ -354,9 +410,7 @@ class ImprovementLifecycleFenceTest(unittest.TestCase):
                   "p=Path(sys.argv[1]);_claim_activity_marker(p,{'pid':os.getpid(),'game':'robots','generation':2,'lease_id':'winner','sessions':[]});time.sleep(10)")
             child=subprocess.Popen([sys.executable,"-c",code,str(marker)],env={**__import__("os").environ,"PYTHONPATH":str(Path(__file__).resolve().parents[1]/"src")})
             try:
-                for _ in range(100):
-                    if json.loads(marker.read_text()).get("lease_id")=="winner": break
-                    time.sleep(0.02)
+                self._wait_for_restart_winner(marker)
                 with self.assertRaises(EvaluationCleanupError):
                     improve._claim_activity_marker(marker,{"pid":__import__("os").getpid(),"game":"robots","generation":2,"lease_id":"loser","sessions":[]})
                 self.assertEqual(json.loads(marker.read_text())["lease_id"],"winner")
