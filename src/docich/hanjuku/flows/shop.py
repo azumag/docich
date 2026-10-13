@@ -9,7 +9,7 @@ from ..decision_log import _record
 from .egg_recovery import MONTH_SUB_EXIT_KINDS
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import month_menu_ready
-from ..strategy.economy import (MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _army_count_increment, _egg_before_soldiers, _limit_soldier_refill,
+from ..strategy.economy import (month_chart_step, MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _army_count_increment, _egg_before_soldiers, _limit_soldier_refill,
                                 _merchant_spendable, _month_key, _refresh_egg_priority, _reserve_general_repair,
                                 _soldier_count_current, _soldier_count_scope, _soldiers_enough)
 
@@ -233,7 +233,7 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                     bought = shop.setdefault('bought', [])
                     bought.append([want[0], value, want[2]])
                     _record(mem, 'buy', card=want[0], qty=value, price=want[2],
-                            chart_step='1-month', strategy_variant=shop.get('variant', 'chart'),
+                            chart_step=month_chart_step(mem), strategy_variant=shop.get('variant', 'chart'),
                             reason='チャート/予算計画どおりの個数を確認して購入')
                     if shop.get('items') and shop['items'][0][0] == want[0]:
                         shop['items'].pop(0)
@@ -274,7 +274,7 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                 'soldiers_before': count if fresh else None}
             year, month = (int(p) for p in shop.get('key', '0-0').split('-'))
             expected = (chart.purchase_for(mem.get('chapter') or 0, year, month) or {}).get('soldiers')
-            _record(mem, 'soldier_refill', qty=value, chart_step='1-month',
+            _record(mem, 'soldier_refill', qty=value, chart_step=month_chart_step(mem),
                     strategy_variant=shop.get('variant', 'chart'),
                     expected_metric=expected,
                     observed_metric=value, reason='兵士補充数を確認して確定を要求。支払いは次の画面で照合')

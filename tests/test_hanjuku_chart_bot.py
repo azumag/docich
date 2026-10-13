@@ -239,7 +239,17 @@ def test_attack_loss_requeues_the_chart_order_with_bounded_retries():
                'battle': {'enemy': 'ラズベリー', 'ally': 'ココット', 'enemy_hp': 45, 'ally_hp': 0,
                           'castle': 'ジョンリギ', 'side': 'attack', 'step': '1-C1', 'cards_used': []}}
         policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
-        assert (mem['orders']['1-C1'] == 'pending') is (attempt <= 2)
+        assert mem['orders']['1-C1'] == ('pending' if attempt <= 2 else 'failed')
+    held = [r for r in mem['_records'] if r.get('strategy_variant') == 'attack_retry_exhausted']
+    assert held and held[-1]['chart_step'] == '1-C1'
+
+
+def test_month_plan_step_names_the_current_chapter():
+    from docich.hanjuku.strategy.economy import month_chart_step
+    assert month_chart_step({'chapter': 2}) == '2-month'
+    assert month_chart_step({'chapter': 1}) == '1-month'
+    for unknown in ({}, {'chapter': None}, {'chapter': 0}, {'chapter': True}):
+        assert month_chart_step(unknown) == 'month'
 
 
 def test_chart_orders_follow_the_chart_and_unlock_on_captures():
@@ -696,13 +706,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v197-unread-battle-force'
+    assert state['bot_version'] == 'hanjuku-chart-v198-retry-exhaust-month-step'
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_chikujou_scroll_release():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v197-unread-battle-force'
+    assert BOT_VERSION == 'hanjuku-chart-v198-retry-exhaust-month-step'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
