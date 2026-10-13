@@ -127,7 +127,8 @@ class MarketCorner:
         outcome = self._corner_outcome(state)
         if outcome == "completed" and state.get("outcome") in ("cancelled_unavailable", "skipped_unavailable", "failed"):
             outcome = state["outcome"]
-        state.update(status=outcome, outcome=outcome, restore_phase="completed", completed_at=self.clock())
+        terminal_status = "completed" if outcome == "failed" else outcome
+        state.update(status=terminal_status, outcome=outcome, restore_phase="completed", completed_at=self.clock())
         self.save(state)
         return outcome
 
