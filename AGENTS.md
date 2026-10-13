@@ -54,10 +54,10 @@
 
 - 対象コミット、決定、実行コマンドと結果、未確認事項、残件、次の具体的な一手を事実ベースで残す。デプロイしただけ、テストが緑なだけで「直った」と書かない。
 - `handoff` スキルがある場合は `/handoff` の保存モードを使ってよい。
-- 引き継ぎ更新の区切りで `python3 ops/local/handoff_rotate.py rotate` を一度実行し、正本を最新30節に保つ。あふれた節は正本の隣の `handoff-archive/` へバイトそのまま退避され、`verify` で残存を確認できる。詳細は `docs/operations/ops-brief.md`。
 - 運用正本は承認済みの非公開共通領域で管理する。内部記録のため公開Gitへ追加せず、checkoutごとの複製やSorenサブモジュール・VM側への独立更新を行わない。共有場所・アクセス権の新設や正本移行は別途確認し、参照方法の整備だけで移行済みと書かない。
-- 公開投影 `ops/runtime_context/ops_brief.json` を更新する場合は、docichの `python3 ops/vm_actions/ops_brief.py build` と `check-source` を共通正本から実行する。`--handoff /絶対パス/共通領域/handoff.md` は `DOCICH_HANDOFF_PATH` より優先する。公開可能な最新見出し3件・ソースSHA-256・出力SHA-256だけを決定的に生成し、見出しに機密情報を含めず、docichの作業ブランチでレビュー・コミットする。
-- CIは `check-artifact` とstale検知回帰テストを実行する。非公開ソースがないCIは正本の最新性までは証明できない。最終commit・push直前の `build` / `check-source` は公開投影を更新する作業だけで必要とし、通常のコード・テスト・文書変更へ一律に要求しない。正本の欠落・照合失敗を成功扱いせず、参照できない場合は既存投影を維持して正本との一致は未確認と記録する。並行更新され得る正本に対して過去の照合成功を恒久的な保証としてコードや文書に記録しない。
+- 引き継ぎ更新の区切りで `python3 ops/local/handoff_rotate.py rotate` を一度実行し、正本を最新30節に保つ。あふれた節は正本の隣の `handoff-archive/` へバイトそのまま退避され、`verify` で残存を確認できる。詳細は `docs/operations/ops-brief.md`。
+- 公開投影 `ops/runtime_context/ops_brief.json` の入力は tracked `ops/runtime_context/ops_brief_source.md` であり、非公開 handoff ではない。配信で触れる価値があるときだけ同ファイルの先頭3見出しを編集し、`python3 ops/vm_actions/ops_brief.py build` と `check-source` を実行して、公開可能なtopic・ソースSHA-256・出力SHA-256だけを決定的に生成し、見出しに機密情報を含めず、docichの作業ブランチでレビュー・コミットする。非公開 handoff を入力にするのは旧artifactを検証する場合だけで、`--source`（別名 `--handoff`）または `DOCICH_HANDOFF_PATH` で明示参照する。
+- CIは `check-artifact`・`check-source` とstale検知回帰テストを実行する。tracked sourceはcheckoutに含まれるため、CIでも投影の一致を検証できる。旧handoff由来artifactの検証は非公開ソースが要るため、参照できない場合は既存投影を維持し、未読・未確認と記録する。正本の欠落・照合失敗を成功扱いしない。
 - runtimeの `prompts/ops_brief.md` は親の生成物を入力にcanonical gatewayが同一deploy transactionで生成・検証する。`games/soviet_now/prompts/ops_brief.md` の既存tracked copyはlegacyであり、以後の配布元ではない。Soren側で手動再生成・コミット・VMコピーは不要。旧 `games/soviet_now/tools/build_ops_brief.sh` はこの経路では使用しない。
 - gateway初回切替・drift・未配布の扱いは `docs/operations/ops-brief.md` を参照する。生成だけでVM反映済みと書かない。
 - GitHub上の文書改訂だけで運用状況に変更がない場合は、PR本文を引き継ぎとし、運用中の `handoff.md` / `ops_brief.md` を書き換えない。生成・配布環境がない場合は未実施と記録し、配布済みと書かない。
