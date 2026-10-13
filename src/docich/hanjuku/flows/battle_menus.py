@@ -9,15 +9,17 @@ from ..os_layer.screen import OKUNOTE_CHOICES, Screen
 from ... import hanjuku_chart as chart, hanjuku_experience as experience, hanjuku_reference as reference
 from ...hanjuku_egg_reference import general_max_hp
 from ..decision_log import _record
-from .battle import _card_battle_reading, _card_gate_close, _hero_retreat_open
+from .battle import _card_battle_reading, _card_gate_close, _hero_retreat_open, _remember_general_for_summon
 from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CARD_LIST_CURSOR_LIMIT,
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
                                _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _critical_safe_card,
                                _critical_survival_needed, _defender_egg_window, _defender_last_resort,
                                _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
+                               _melee_continuation_evidence,
                                _migrate_card_evidence, _own_egg_empty, _own_egg_needed, _own_egg_positive,
-                               _survival_needed, _survival_state, _watch_card_melee, _watch_egg_drop)
+                               _survival_needed, _survival_state, _watch_card_melee, _watch_egg_drop,
+                               _wounded_summoner, _summoner_return_risk)
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
                                _monster_owner, _monster_damage_second)
 from ..os_layer.commands import _battle_menu_to, menu_to, pad
@@ -156,7 +158,9 @@ def _survival_menu(screen, mem, cur):
         # loss/summons cannot retain it or trigger twelve repeated menu tours.
         rescue.update(conserving_melee=True, conserved_labels=sorted(labels), exhausted=False)
         _record(mem, 'battle_egg_conserve', **_battle_labels(cur),
-                observed_metric={'labels': sorted(labels), 'melee_balance': _melee_balance(cur)},
+                observed_metric={'labels': sorted(labels), 'melee_balance': _melee_balance(cur),
+                                 'conservation': (_melee_continuation_evidence(mem, cur)
+                                                  or {'rule': 'healthy_melee_advantage'})},
                 reason='実HP・戦闘力と現在兵数で白兵優位のため、切り札の有無にかかわらず卵を温存して戻る')
         return [pad('b')]
     rescue.pop('conserving_melee', None)
@@ -849,6 +853,9 @@ def _egg_general_reading(screen, mem, battle):
     if type(full) is not int or full <= 0 or rows[0].hp > full:
         return None
     battle['ally_hp'] = rows[0].hp
+    # Keep the general's own panel separate from the summoned monster's HP.
+    # The battle object is replaced at every opponent/general transition.
+    _remember_general_for_summon(mem, battle, ally, rows[0].hp)
     return rows[0].hp, full
 
 
@@ -1068,7 +1075,7 @@ def monster_menu_step(screen: Screen, mem):
     The chart has no command for this menu. The owner is decided from the
     skill table: an enemy-owned menu waits for the enemy AI, bounded by
     MONSTER_MENU_HOLD_LIMIT so a stuck screen cannot freeze the bot. An
-    allied menu retreats at half HP or less, keeps the special second skill
+    allied menu checks the exposed general before retreating, keeps the special second skill
     while behind, skips a heal-first skill while ahead so damage still
     happens, otherwise uses the first skill, refined by measured
     experience. Movement follows the knight cursor when visible and a
@@ -1083,7 +1090,10 @@ def monster_menu_step(screen: Screen, mem):
                           or mem.get('monster_menu_cursor') is not None
                           or mem.get('monster_menu_choice') is not None
                           or mem.get('monster_menu_cursor_recheck') is True)
-    if mem.get('monster_menu_key') != menu_key:
+    # JSON persistence turns the tuple into a list. The same observed menu
+    # must retain its finite enemy hold across process/observation reloads.
+    previous_menu = mem.get('monster_menu_key')
+    if previous_menu != menu_key and previous_menu != list(menu_key):
         mem['monster_menu_key'] = menu_key
         for key in ('monster_menu_cursor', 'monster_menu_choice', 'monster_menu_choice_key',
                     'monster_menu_choice_hp', 'monster_ally_max_hp'):
@@ -1150,7 +1160,10 @@ def monster_menu_step(screen: Screen, mem):
     # 282HP against a 240HP Dark Elf, then lost the summon and Venus.
     damage_second = _monster_damage_second(
         owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
+    return_risk = _summoner_return_risk(mem, owner, ally, enemy)
+    protect_general = return_risk is not None
     if (not mem.get('monster_menu_choice') or mem.get('monster_menu_choice_hp') != hp_state
+            or (protect_general and mem.get('monster_menu_choice') == 'retreat')
             or (damage_second and mem.get('monster_menu_choice') not in ('skill2', 'retreat'))):
         ally_hp = ally.hp if ally else None
         enemy_hp = enemy.hp if enemy else None
@@ -1202,6 +1215,12 @@ def monster_menu_step(screen: Screen, mem):
         action = (default if balloon_cycle else
                   'retreat' if retreat or powerless else 'skill2' if damage_second
                   else experience.preferred(exp, key, default=default, kind='monster_menu'))
+        # Keep a useful living shield when the bound general is wounded or
+        # has at most half the current enemy monster's HP. This HP-pool risk
+        # comparison does not predict skill damage or a guaranteed loss.
+        protected_return = protect_general and not powerless and action == 'retreat'
+        if protected_return:
+            action = default
         mem['monster_menu_choice'] = action
         mem['monster_menu_choice_key'] = key
         mem['monster_menu_choice_hp'] = hp_state
@@ -1231,6 +1250,10 @@ def monster_menu_step(screen: Screen, mem):
             label, why = first, '先手を取れる1技目を続ける'
         if not balloon_cycle and action != default and action != 'retreat':
             why = f'過去の結果に基づく経験の選択（既定 {default}）'
+        if protected_return:
+            why = ('実測で負傷した本人を敵召喚獣へ露出させないため、存命の味方召喚獣で応戦する'
+                   if return_risk['rule'] == 'wounded_general' else
+                   '実本人HPが敵召喚獣の半分以下のため、存命の味方召喚獣を戻さず応戦する')
         _record(mem, 'monster_menu_choice',
                 strategy_variant=f'monster_menu_{action}',
                 deviation_reason='チャートに召喚獣ターンの指示がない',
@@ -1238,6 +1261,10 @@ def monster_menu_step(screen: Screen, mem):
                 observed_metric={'action': action, 'owner': owner, 'menu': list(menu_key),
                                  'ally_hp': ally_hp, 'enemy_hp': enemy_hp,
                                  'target_hp': BALLOON_FINCH_MAX_HP if balloon_cycle else None,
+                                 'wounded_general_return_blocked': bool(protected_return
+                                     and return_risk['rule'] == 'wounded_general'),
+                                 'general_return_blocked': protected_return,
+                                 'general_return_risk': return_risk,
                                  'experience_key': key},
                 reason=f'召喚獣の技メニューで「{label}」を選択: {why}')
     action = mem.get('monster_menu_choice')

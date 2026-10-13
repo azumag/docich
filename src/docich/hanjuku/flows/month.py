@@ -21,18 +21,125 @@ from ..os_layer.readers import (RECRUIT_GOODBYE, RECRUIT_INTRO, STATUS_NAMES, _c
 from ..os_layer.world import NAME
 from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, MONTH_SUB_ABORT_B_LIMIT, MONTH_SUB_LIMIT,
                                 MONTH_SUB_MENU_WAIT, RECRUIT_CANDIDATE_LIMIT, RECRUIT_COST, SOLDIER_ENOUGH,
-                                WAGE_RESERVE, _chikujou_affordable, _chikujou_candidates, _chikujou_reserve,
+                                WAGE_RESERVE, _army_count_increment, _chikujou_affordable, _chikujou_candidates, _chikujou_reserve,
                                 _defer_recruit_cash, _defer_recruit_for_egg, _depleted_eggs, _egg_before_soldiers,
                                 _egg_estimate, _egg_measured_cost, _egg_recovery_targets, _egg_recovery_wage_floor,
-                                _hero_egg_wage_floor, _house_repair_reserve, _limit_soldier_refill,
+                                _hero_egg_wage_floor, _house_repair_reserve, _limit_soldier_refill, _soldier_spendable,
                                 _month_held_reserve, _month_key, _plan, _prepare_recruit_egg_check,
                                 _prioritise_recruit, _recruit_cash_floor, _recruit_dialog_cash_ready,
                                 _recruit_egg_ready, _recruit_fee_observed, _recruit_spare_after_necessities,
-                                _refresh_egg_priority, _soldiers_enough, _stop_uneconomic_recruit,
-                                _stop_unneeded_recruit)
+                                _refresh_egg_priority, _soldier_count_current, _soldier_count_scope,
+                                _soldiers_enough, _stop_uneconomic_recruit, _stop_unneeded_recruit,
+                                _zero_army_refill)
 
 
 MONTH_TEXT_ADVANCE_LIMIT = 6    # A presses per unread message over the month menu
+
+
+def army_count_owned(mem):
+    from ..os_layer.roster import run_identity
+    identity = run_identity(mem.get('_run_identity'))
+    state = mem.get('army_count_check')
+    shop = mem.get('shop') or {}
+    return (identity is not None and isinstance(state, dict) and not mem.get('month_sub')
+            and type(mem.get('chapter')) is int and 1 <= mem['chapter'] <= 12
+            and isinstance(mem.get('month'), str)
+            and re.fullmatch(r'[1-9][0-9]*-(?:[1-9]|1[0-2])', mem['month']) is not None
+            and state.get('scope') == [identity, mem.get('chapter'), mem.get('month')]
+            and (state.get('stage') not in ('measured', 'unverified')
+                 or (state.get('stage') == 'measured' and state.get('refill_requested') is True
+                     and not shop.get('soldier_receipt') and not shop.get('soldiers_done'))))
+
+
+def army_count_pending_step(screen, mem):
+    """Unrecognized frames in this free check must never borrow a paid A."""
+    if not army_count_owned(mem) or screen.kind == 'month_menu':
+        return None
+    state = mem['army_count_check']
+    if screen.kind not in ('text', 'unknown'):
+        state.update(stage='unverified', result='unverified')
+        if isinstance(mem.get('shop'), dict) and not mem['shop'].get('soldier_receipt'):
+            mem['shop']['soldiers_done'] = True
+        return None  # a recognized battle/event keeps its own input owner
+    if state.get('stage') != 'closing':
+        if _army_count_increment(state, 'unread_frames', 4) < 4:
+            return []
+        state.update(stage='closing', result='unverified')
+    if (state.get('result') == 'unverified' and isinstance(mem.get('shop'), dict)
+            and not mem['shop'].get('soldier_receipt')):
+        mem['shop']['soldiers_done'] = True
+    return [pad('b')] if _army_count_increment(state, 'exit_presses', 4) <= 3 else []
+
+
+def _month_army_count_check(screen, mem, shop):
+    """Read the stock even when the purchase plan is zero; never pay here."""
+    scope = _soldier_count_scope(mem, screen.header)
+    if scope is None or mem.get('month_sub') or (shop or {}).get('soldier_receipt'):
+        return None
+    intro = (screen.selected == 'へいしほじゅう' and re.fullmatch(
+        r'げんざいわがぐんのへいしすうは[0-9０-９]+めいですがなんめいほじゅうされますかな\?',
+        _month_dialog_body(screen)) is not None)
+    known = _soldier_count_current(mem, screen.header)
+    state = mem.get('army_count_check')
+    if not isinstance(state, dict) or state.get('scope') != scope:
+        if known and not intro:
+            return None
+        state = mem['army_count_check'] = {'scope': scope, 'stage': 'opening', 'observations': 0}
+        if not known:
+            mem.pop('soldiers_seen_key', None)  # an old total is history, not this scope
+        _record(mem, 'army_count_check', month=scope[-1],
+                observed_metric={'planned_refill': (shop or {}).get('soldiers')},
+                reason='兵数未確認のため補充予定0でも実人数を確認する。確認入力では購入しない')
+    if state.get('stage') == 'measured' and not known:
+        state.update(stage='closing', result='unverified')
+        if shop:
+            shop['soldiers_done'] = True
+        _record(mem, 'army_count_unverified', month=scope[-1],
+                reason='確認後の実兵数が未読になったため補充を止める。確認予算を増やさない')
+    if (state.get('stage') == 'measured' and state.get('refill_requested') is True
+            and not intro and month_menu_ready(screen) and _month_menu_quiet(screen)):
+        if _army_count_increment(state, 'refill_waits', 4) >= 4:
+            state.update(stage='closing', result='unverified')
+            if shop:
+                shop['soldiers_done'] = True
+            return [pad('b')]
+        return []  # the A that opens the editor must not be sent again
+    if state.get('stage') in ('measured', 'unverified'):
+        return None
+    if state.get('stage') == 'closing':
+        if month_menu_ready(screen) and _month_menu_quiet(screen):
+            state['stage'] = ('measured' if state.get('result') == 'measured'
+                              and _soldier_count_current(mem, screen.header) else 'unverified')
+            return None
+        return [pad('b')] if _army_count_increment(state, 'exit_presses', 4) <= 3 else []
+    if state.get('stage') == 'quantity_requested':
+        # The real stock question needs one A to reach the digit editor.
+        # Repeating that A on a delayed editor could confirm its default 01.
+        if _army_count_increment(state, 'waits', 4) >= 4:
+            state.update(stage='closing', result='unverified')
+            return [pad('b')]
+        return []
+    if _soldier_count_current(mem, screen.header):
+        if intro:
+            state.update(stage='quantity_requested', result='measured')
+            return [pad('a')]  # native g7417458->7460: opens editor without payment
+        state.update(stage='closing', result='measured')
+        return [pad('b')]  # the count dialogue/quantity editor is still open
+    if _army_count_increment(state, 'observations', 24) >= 24:
+        state.update(stage='closing', result='unverified')
+        _record(mem, 'army_count_unverified', month=scope[-1],
+                reason='兵数の確認が有限上限に達したため購入せず戻る。未読を0や充足と扱わない')
+        return [pad('b')]
+    if state.get('stage') == 'requested':
+        if _army_count_increment(state, 'waits', 4) >= 4:
+            state.update(stage='closing', result='unverified')
+            return [pad('b')]
+        return []  # do not repeat A over a still-visible parent menu
+    move = _month_menu_move(screen, mem, 'へいしほじゅう')
+    if move == 'here':
+        state['stage'] = 'requested'
+        return [pad('a')]
+    return move if isinstance(move, list) else [move] if move else []
 
 
 def _month_menu_move(screen: Screen, mem, label: str):
@@ -81,8 +188,8 @@ def _recalc_soldiers(screen, mem, shop):
     gold = (screen.header or {}).get('gold')
     if type(gold) is not int:
         return False
-    shop['soldiers'] = max(0, min(shop.get('soldiers_target', 0),
-                                  gold - _month_held_reserve(shop) - shop.get('recruit_reserve', 0) - WAGE_RESERVE))
+    available = _soldier_spendable(mem, shop, screen.header)
+    shop['soldiers'] = min(shop.get('soldiers_target', 0), available if available is not None else 0)
     shop['soldiers_done'] = shop['soldiers'] == 0
     shop['soldiers_recalculated'] = True
     _record(mem, 'soldier_plan_recalc', chart_step='adjusted-month',
@@ -93,12 +200,16 @@ def _recalc_soldiers(screen, mem, shop):
     return True
 
 
+MONTH_EXIT_REFUSAL_LIMIT = 3   # refused month exits per month before leaving anyway
+
 def month_step(screen: Screen, mem):
     shop = _plan(mem, screen.header)
     body = _month_dialog_body(screen)
     if shop:
         _refresh_egg_priority(mem, shop, screen.header)
+        _zero_army_refill(mem, shop, screen.header)
         _prioritise_recruit(mem, shop, (screen.header or {}).get('gold'))
+        _limit_soldier_refill(mem, shop, screen.header)
     if body == RECRUIT_GOODBYE:
         _record(mem, 'month_recruit_goodbye', reason='実測した募集終了文を閉じて本メニューへ戻る')
         return [pad('a')]
@@ -136,6 +247,32 @@ def month_step(screen: Screen, mem):
     if screen.has('うむッ') and screen.has('いかんッ'):
         # "よろしいですかな?" after も〜おしまい!: confirm only our own exit.
         choice = 'うむッ!' if mem.get('month_exit') or mem.get('month_sub') else 'いかんッ!'
+        scope = _soldier_count_scope(mem, screen.header)
+        check = mem.get('army_count_check')
+        check = check if isinstance(check, dict) else {}
+        unchecked = (not _soldier_count_current(mem, screen.header)
+                     and (check.get('scope') != scope or check.get('stage') not in ('measured', 'unverified')))
+        if (scope is not None and mem.get('month_exit') and not mem.get('month_sub')
+                and (unchecked or (shop and not shop.get('soldiers_done')))):
+            # g747 2-4 (18:40-19:45): the refill never reached its quantity
+            # screen, so every exit was refused and the menu looped for an
+            # hour. Refuse a bounded number of times per month, then leave.
+            month_key = (shop or {}).get('key') or str(scope)
+            refusals = mem.get('month_exit_refusals')
+            refusals = refusals if isinstance(refusals, dict) and refusals.get('key') == month_key else {
+                'key': month_key, 'count': 0}
+            refusals['count'] = int(refusals.get('count') or 0) + 1
+            mem['month_exit_refusals'] = refusals
+            if refusals['count'] <= MONTH_EXIT_REFUSAL_LIMIT:
+                choice = 'いかんッ!'
+                mem['month_exit'] = False
+            else:
+                if shop:
+                    shop['soldiers_done'] = True
+                _record(mem, 'month_exit_refusal_bound', month=month_key,
+                        observed_metric={'refusals': refusals['count'] - 1, 'unchecked': bool(unchecked),
+                                         'soldiers_planned': (shop or {}).get('soldiers')},
+                        reason='兵士補充・兵数確認が月初メニュー内で完了しないため、上限回数で打ち切って月を進める')
         move = _month_menu_move(screen, mem, choice)
         if isinstance(move, list):
             return move
@@ -145,6 +282,9 @@ def month_step(screen: Screen, mem):
             _record(mem, 'month_confirm', choice=choice, reason='月初メニュー終了の確認')
             return [pad('a')]
         return [move] if move else [pad('b')]
+    count_check = _month_army_count_check(screen, mem, shop)
+    if count_check is not None:
+        return count_check
     if shop and not shop['merchant_done'] and shop['items']:
         move = _month_menu_move(screen, mem, 'しょうにん')
         if isinstance(move, list):
@@ -208,6 +348,11 @@ def month_step(screen: Screen, mem):
         move = _month_menu_move(screen, mem, 'へいしほじゅう')
         if isinstance(move, list):
             return move
+        if move == 'here':
+            check = mem.get('army_count_check')
+            if (isinstance(check, dict) and check.get('stage') == 'measured'
+                    and check.get('scope') == _soldier_count_scope(mem, screen.header)):
+                check['refill_requested'] = True
         return [pad('a')] if move == 'here' else [move] if move else []
     if mem.get('month_sub') and not _finish_month_sub(screen, mem, shop):
         # g462 18:06:04: the menu frame still predates the game's reaction to
@@ -847,13 +992,13 @@ def _finish_month_sub(screen, mem, shop) -> bool:
         # All paid recruits need the actual balance, not only broken heroes.
         previous_soldiers = shop.get('soldiers', 0)
         shop['soldiers'] = min(previous_soldiers, max(0, gold
-                               - _month_held_reserve(shop) - WAGE_RESERVE
+                               - _month_held_reserve(shop) - _egg_recovery_wage_floor(mem)
                                - shop.get('recruit_reserve', 0)))
         shop['soldiers_done'] = shop['soldiers'] == 0
         if paid and sub['kind'] == 'recruit':
             _record(mem, 'soldier_budget_after_recruit', month=sub.get('key'),
                     observed_metric={'gold_after': gold, 'soldiers_before': previous_soldiers,
-                                     'soldiers': shop['soldiers'], 'wage_reserve': WAGE_RESERVE},
+                                     'soldiers': shop['soldiers'], 'wage_reserve': _egg_recovery_wage_floor(mem)},
                     reason='募集後の実残金から兵士予算を再計算し、追加出費で賃金予備を使い込まない')
     if paid and sub['kind'] == 'egg':
         actor = (NAME if sub.get('hero_selected') is True and sub.get('full_selected') is not True
@@ -880,7 +1025,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
             mem.pop('egg_recheck', None)
         if shop and (shop.get('egg_priority') or shop.get('egg_before_recruit')):
             if not shop.get('soldiers_done'):
-                shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - max(WAGE_RESERVE, _egg_recovery_wage_floor(mem)) - shop.get('reserve', 0)
+                shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - _egg_recovery_wage_floor(mem) - shop.get('reserve', 0)
                     - _house_repair_reserve(shop) - shop.get('recruit_reserve', 0)))
                 shop['soldiers_done'] = shop['soldiers'] == 0
     if sub['kind'] == 'chikujou':

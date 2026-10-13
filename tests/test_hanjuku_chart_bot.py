@@ -239,7 +239,17 @@ def test_attack_loss_requeues_the_chart_order_with_bounded_retries():
                'battle': {'enemy': 'ラズベリー', 'ally': 'ココット', 'enemy_hp': 45, 'ally_hp': 0,
                           'castle': 'ジョンリギ', 'side': 'attack', 'step': '1-C1', 'cards_used': []}}
         policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
-        assert (mem['orders']['1-C1'] == 'pending') is (attempt <= 2)
+        assert mem['orders']['1-C1'] == ('pending' if attempt <= 2 else 'failed')
+    held = [r for r in mem['_records'] if r.get('strategy_variant') == 'attack_retry_exhausted']
+    assert held and held[-1]['chart_step'] == '1-C1'
+
+
+def test_month_plan_step_names_the_current_chapter():
+    from docich.hanjuku.strategy.economy import month_chart_step
+    assert month_chart_step({'chapter': 2}) == '2-month'
+    assert month_chart_step({'chapter': 1}) == '1-month'
+    for unknown in ({}, {'chapter': None}, {'chapter': 0}, {'chapter': True}):
+        assert month_chart_step(unknown) == 'month'
 
 
 def test_chart_orders_follow_the_chart_and_unlock_on_captures():
@@ -329,6 +339,39 @@ def test_accept_duels_and_do_not_confirm_unrequested_month_exit():
     c2.hand(162, 177)
     assert policy.month_step(parse(c2.frame()), {'chapter': 2})[0]['buttons'] == ['down']
     assert policy.month_step(parse(c2.frame()), {'chapter': 2, 'month_exit': True})[0]['buttons'] == ['a']
+
+
+def test_month_exit_refusal_for_an_unfinished_refill_is_bounded():
+    # g747 2-4: the soldier refill never reached its quantity screen and every
+    # exit confirmation was refused, looping the month menu for an hour.
+    c = Canvas()
+    c.text(48, 15, '2ねん 4のつき 70G')
+    c.text(48, 47, 'しょうにん')
+    c.text(24, 183, 'よろしいですかな?')
+    c.text(184, 183, 'うむッ!')
+    c.text(184, 199, 'いかんッ!')
+    c.hand(162, 177)
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g747-test', 'generation': 747,
+                'lease_id': 'lease'}
+    scope = [identity, 1, '2-4']
+    mem = {'chapter': 1, 'month': '2-4', '_run_identity': identity, 'soldiers_seen': 0,
+           'soldiers_seen_key': '2-4', 'soldiers_seen_scope': scope}
+    refused = 0
+    for _ in range(10):
+        mem['month_exit'] = True
+        shop = mem.setdefault('shop', {})
+        shop.update(key='2-4', soldiers=24, soldiers_done=False, merchant_done=True, items=[])
+        actions = policy.month_step(parse(c.frame()), mem)
+        if actions and actions[0]['buttons'] == ['down']:
+            refused += 1
+            continue
+        assert actions[0]['buttons'] == ['a']
+        break
+    else:
+        raise AssertionError('month exit never accepted')
+    assert refused == 3
+    assert mem['shop']['soldiers_done'] is True
+    assert any(r['decision'] == 'month_exit_refusal_bound' for r in mem['_records'])
 
 
 def test_decline_the_general_trade_prompt():
@@ -696,13 +739,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v191-orphan-battle-menu'
+    assert state['bot_version'] == 'hanjuku-chart-v204-observed-monster-alias'
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_chikujou_scroll_release():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v191-orphan-battle-menu'
+    assert BOT_VERSION == 'hanjuku-chart-v204-observed-monster-alias'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -941,6 +984,30 @@ def test_missing_chart_general_is_replaced_by_a_non_hero_present_at_the_source()
     assert policy.deploy_step(s, mem)[0]['buttons'] == ['down']
     rec = mem['_records'][-1]
     assert rec['strategy_variant'] == 'substitute_general' and mem['general_override']['1-C1'] == 'ゼウス'
+
+
+def test_missing_chart_general_is_never_replaced_by_the_hero():
+    c = Canvas()
+    c.text(64, 31, 'しゅつげき')
+    c.text(64, 47, 'ステータス')
+    c.text(144, 39, 'どうし')
+    c.hand(122, 33)
+    # Three owned castles: the last-castle guard does not apply here.
+    mem = {'chapter': 1, 'active': '1-C1', 'orders': {'1-C1': 'pending'},
+           'captured': ['キカンドン', 'ナキューメラ', 'ゴーメン']}
+    s = parse(c.frame())
+    assert s.kind == 'general_list'
+    actions = policy.deploy_step(s, mem)
+    assert actions == [policy.pad('b'), policy.pad('b')]
+    assert not (mem.get('general_override') or {}).get('1-C1')
+    assert mem['source_override']['1-C1'] == 'アルマムーン'
+    decisions = [r['decision'] for r in mem['_records']]
+    assert 'hero_substitute_refused' in decisions and 'order_substitute' not in decisions
+    # Second visit with only the hero again: the order fails, the hero stays.
+    mem['active'] = '1-C1'
+    actions = policy.deploy_step(parse(c.frame()), mem)
+    assert not (mem.get('general_override') or {}).get('1-C1')
+    assert mem['orders']['1-C1'] == 'failed'
 
 
 def test_empty_general_list_canvas_parses_as_general_list_without_hand():

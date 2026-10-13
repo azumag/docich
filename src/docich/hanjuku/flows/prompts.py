@@ -316,11 +316,30 @@ def observe_events(screen: Screen, mem):
     # Owner rule (2026-09-28): with 50+ soldiers on hand, egg recovery wins
     # over buying more soldiers. The army total is read wherever the game
     # states it (e.g. 「げんざい わがぐんの へいしすうは Nめいです」).
-    m = re.search(r'へいしすうは([0-9０-９]+)めい', screen.text.replace(' ', ''))
+    pattern = r'へいしすうは([0-9０-９]+)めい'
+    compact = screen.text.replace(' ', '')
+    matches = list(re.finditer(pattern, compact))
+    m = matches[0] if len(matches) == 1 else None
+    # Screen.text joins known glyphs and drops UNKNOWN. A partial "0?" must
+    # never collapse to an actual zero count. Retain unknown cells when
+    # validating the count row; unrelated unknown background glyphs are fine.
+    raw = ''.join(line.text.replace(' ', '') for line in screen.lines)
+    raw_counts = re.findall(pattern, raw)
+    if len(matches) > 1 or ('へいしすうは' in raw and raw_counts != [m.group(1) if m else None]):
+        m = None
+        mem.pop('soldiers_seen_key', None)
+        mem.pop('soldiers_seen_scope', None)
+        mem['soldiers_seen_basis'] = 'unread_total'
     if m:
         seen = int(m.group(1).translate(str.maketrans('０１２３４５６７８９', '0123456789')))
         mem['soldiers_seen_key'] = mem.get('month')
         mem['soldiers_seen_basis'] = 'screen_total'
+        from ..strategy.economy import _soldier_count_scope
+        scope = _soldier_count_scope(mem, screen.header)
+        if scope is not None:
+            mem['soldiers_seen_scope'] = scope
+        else:
+            mem.pop('soldiers_seen_scope', None)
         if seen != mem.get('soldiers_seen'):
             mem['soldiers_seen'] = seen
             _record(mem, 'soldiers_seen', observed_metric={'soldiers': seen},

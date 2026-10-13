@@ -922,6 +922,46 @@ def _survival_state(mem, cur):
     return cur['survival']
 
 
+def _bound_summoner_general(mem, owner, ally, enemy):
+    """Return only a valid, same-runtime general reading for this battle."""
+    from ..os_layer.roster import run_identity
+    battle = mem.get('battle') or {}
+    reading = battle.get('summon_general_reading')
+    if (owner != 'ally' or ally is None or enemy is None
+            or ally.name not in reference.MONSTER_SKILLS or enemy.name not in reference.MONSTER_SKILLS
+            or any(type(hp) is not int or hp <= 0 for hp in (ally.hp, enemy.hp))
+            or not isinstance(reading, dict)
+            or run_identity(reading.get('identity')) is None
+            or run_identity(reading['identity']) != run_identity(mem.get('_run_identity'))
+            or not battle.get('ally') or not battle.get('enemy')
+            or (reading.get('ally'), reading.get('enemy')) != (battle['ally'], battle['enemy'])
+            or reading.get('hp') != battle.get('ally_hp')):
+        return None
+    hp, full = reading.get('hp'), reading.get('max_hp')
+    return reading if type(hp) is int and type(full) is int and 0 < hp <= full else None
+
+
+def _wounded_summoner(mem, owner, ally, enemy):
+    """A living owned summon still shields its measured wounded general."""
+    reading = _bound_summoner_general(mem, owner, ally, enemy)
+    return bool(reading and (reading['hp'] <= GENERAL_CRITICAL_RETREAT_HP
+                            or reading['hp'] * 2 <= reading['max_hp']))
+
+
+def _summoner_return_risk(mem, owner, ally, enemy):
+    """HP-pool exposure risk, not a prediction of monster skill damage."""
+    reading = _bound_summoner_general(mem, owner, ally, enemy)
+    if reading is None:
+        return None
+    hp, full = reading['hp'], reading['max_hp']
+    wounded = hp <= GENERAL_CRITICAL_RETREAT_HP or hp * 2 <= full
+    if not wounded and hp * 2 > enemy.hp:
+        return None
+    return {'rule': 'wounded_general' if wounded else 'general_vs_monster_hp',
+            'general': reading['ally'], 'general_hp': hp, 'general_max_hp': full,
+            'enemy_monster': enemy.name, 'enemy_monster_hp': enemy.hp}
+
+
 def _critical_survival_needed(cur):
     hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
     return (not cur.get('card_hp_unread') and type(hp) is int
@@ -929,8 +969,59 @@ def _critical_survival_needed(cur):
             and type(enemy) is int and enemy > 0)
 
 
+def _melee_continuation_evidence(mem, cur):
+    """A wounded ordinary general can finish a measured, one-sided melee.
+
+    This compares remaining forces, not a damage formula or a promised win.
+    Only this runtime's observed healthy opening, our HP loss and a current
+    enemy HP/troop reduction can relax the full-HP conservation gate.
+    """
+    from ..os_layer.roster import run_identity
+    identity = run_identity(mem.get('_run_identity'))
+    if not all(isinstance(cur.get(k), str) for k in ('ally', 'enemy')):
+        return None
+    opening = cur.get('melee_opening_scope')
+    if (not isinstance(opening, list) or len(opening) != 5
+            or run_identity(opening[0]) != identity):
+        return None
+    hp, enemy, start, enemy_start = (cur.get(k) for k in
+                                    ('ally_hp', 'enemy_hp', 'start_ally_hp', 'start_enemy_hp'))
+    maximum = general_max_hp(cur.get('ally'))
+    enemy_maximum = general_max_hp(cur.get('enemy'))
+    scope = [identity, cur.get('ally'), cur.get('enemy'), start, enemy_start]
+    if (identity is None or cur.get('melee_opening_scope') != scope
+            or cur.get('ally') in (NAME, 'しゅじんこう') or cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('card_flow') or cur.get('card_damage_rescue_needed')
+            or any(type(n) is not int or n <= 0 for n in
+                   (hp, enemy, start, enemy_start, maximum, enemy_maximum))
+            or not GENERAL_CRITICAL_RETREAT_HP < hp < start <= maximum
+            or not enemy <= enemy_start <= enemy_maximum
+            or start * 10 <= maximum * BEHIND_EGG_RATIO_TENTHS
+            or hp <= enemy * 2):
+        return None
+    balance = _melee_balance(cur)
+    values = [balance[k] for k in ('ally_force', 'enemy_force', 'ally_melee_score', 'enemy_melee_score')]
+    if (balance['soldiers_current'] is not True
+            or any(type(n) is not int or n <= 0 for n in values)
+            or values[0] <= 2 * values[1] or values[2] <= 2 * values[3]):
+        return None
+    opening_army = cur.get('melee_opening_army')
+    army_known = (isinstance(opening_army, list) and len(opening_army) == 2
+                  and all(type(n) is int and 0 <= n <= 6 for n in opening_army))
+    soldier_progress = army_known and cur['enemy_soldiers'] < opening_army[1]
+    if enemy >= enemy_start and not soldier_progress:
+        return None
+    return {'rule': 'melee_finish_after_damage', 'ally_hp': hp, 'enemy_hp': enemy,
+            'ally_opening_hp': start, 'enemy_opening_hp': enemy_start,
+            'opening_soldiers': list(opening_army) if army_known else None,
+            'enemy_progress': 'hp' if enemy < enemy_start else 'soldiers',
+            'ally_max_hp': maximum, **balance}
+
+
 def _hold_melee_egg(mem, cur, labels):
-    """Preserve a healthy, measured ordinary-general melee advantage.
+    """Preserve a healthy advantage or a scoped, measured melee finish.
 
     Compare current HP pools weighted by each named general's combat stat.
     Unknown/old counts or stats do not prove advantage; summons/critical HP win.
@@ -952,11 +1043,57 @@ def _hold_melee_egg(mem, cur, labels):
                    if type(n) is int and n > 0), default=None)
     balance = _melee_balance(cur)
     scores = balance['ally_melee_score'], balance['enemy_melee_score']
-    return (all(type(n) is int and n > 0 for n in (hp, enemy, maximum, *scores))
+    healthy = (all(type(n) is int and n > 0 for n in (hp, enemy, maximum, *scores))
             and all(type(n) is int and 0 <= n <= 6 for n in (ours, theirs))
             and hp * 10 > maximum * BEHIND_EGG_RATIO_TENTHS
             and (hp + 10 * ours) * 10 > (enemy + 10 * theirs) * BEHIND_EGG_RATIO_TENTHS
             and scores[0] > scores[1])
+    return healthy or _melee_continuation_evidence(mem, cur) is not None
+
+
+def _conserved_army_recheck(mem, cur):
+    """Briefly reobserve unread troops after a real healthy conservation menu.
+
+    g745 Coco/Semillon1436 conserved; 1446's clipped army invalidated both
+    counts and immediately reopened the egg. This grants two observations
+    per battle, not stale troop counts or permission to continue melee.
+    HP danger, a summon, a pending tactic or a spent egg bypasses the wait.
+    """
+    from ..os_layer.roster import run_identity
+    rescue = cur.get('survival') or {}
+    identity = run_identity(mem.get('_run_identity'))
+    hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
+    maximum = general_max_hp('しゅじんこう' if cur.get('ally') == NAME else cur.get('ally'))
+    balance = _melee_balance(cur)
+    ac, ec = balance.get('ally_combat'), balance.get('enemy_combat')
+    if (identity is None or rescue.get('conserving_melee') is not True
+            or rescue.get('exhausted') or rescue.get('egg_attempted')
+            or _critical_survival_needed(cur) or _own_egg_empty(mem, cur)
+            or cur.get('card_flow') or cur.get('command_open_pending')
+            or cur.get('card_damage_rescue_needed')
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('card_soldiers_current') is not True
+            or any(cur.get(k) is not None and
+                   (type(cur.get(k)) is not int or not 0 <= cur[k] <= 6)
+                   for k in ('ally_soldiers', 'enemy_soldiers'))
+            or all(type(cur.get(k)) is int for k in ('ally_soldiers', 'enemy_soldiers'))
+            or any(type(n) is not int or n <= 0 for n in (hp, enemy, maximum, ac, ec))
+            or hp > maximum or hp * 10 <= maximum * BEHIND_EGG_RATIO_TENTHS
+            or hp * ac <= enemy * ec):
+        return False
+    scope = [identity, cur.get('ally'), cur.get('enemy'),
+             cur.get('start_ally_hp'), cur.get('start_enemy_hp')]
+    claim = cur.get('conserved_army_recheck')
+    if claim is None:
+        claim = cur['conserved_army_recheck'] = {'scope': scope, 'observations': 0}
+    if (not isinstance(claim, dict) or claim.get('scope') != scope
+            or type(claim.get('observations')) is not int
+            or not 0 <= claim['observations'] < 2):
+        cur['conserved_army_recheck'] = {'scope': scope, 'observations': 2}
+        return False  # corrupt/foreign/exhausted claims never refill on animation
+    claim['observations'] += 1
+    return True
 
 
 def _critical_safe_card(mem, cur, rescue):

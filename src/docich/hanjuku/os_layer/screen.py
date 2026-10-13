@@ -33,7 +33,9 @@ OKUNOTE_CHOICES = ('ヤケクソ', 'おどす', 'よたる', 'あやまる', '�
 
 
 def _near(pixel, color, tolerance=10):
-    return all(abs(a - b) <= tolerance for a, b in zip(pixel, color))
+    return (abs(pixel[0] - color[0]) <= tolerance
+            and abs(pixel[1] - color[1]) <= tolerance
+            and abs(pixel[2] - color[2]) <= tolerance)
 
 
 def find_hand(frame: Frame, *, option_positions=None):
@@ -413,7 +415,7 @@ def _field_soldiers(frame: Frame) -> tuple[int | None, int | None] | None:
             if row[i:i + 3] not in background:
                 mask.add((x0 + i // 3, y))
     seen: set[tuple[int, int]] = set()
-    sides, merged = [0, 0], [0, 0]
+    sides, merged, fragments = [0, 0], [0, 0], [0, 0]
     for seed in mask:
         if seed in seen:
             continue
@@ -435,6 +437,12 @@ def _field_soldiers(frame: Frame) -> tuple[int | None, int | None] | None:
                  if len(colors & palette) >= 2]
         width, height = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
         if len(cells) < SOLDIER_AREA[0]:
+            # g747/2751: walking enemy bodies split from their feet into
+            # 54-pixel, 11x9 components. Dropping these as background turns
+            # the visible army into a false count of two. A body-sized known
+            # army fragment is unread, rather than a confirmed extra body.
+            if len(teams) == 1 and width >= 8 and height >= 8:
+                fragments[teams[0]] += 1
             if (width <= SOLDIER_BOX[0] and height <= SOLDIER_BOX[1]
                     and (min(xs) <= x0 + 4 or max(xs) >= x1 - 5 or min(ys) <= y0)):
                 # Even one known army ink can be the last visible column of
@@ -482,7 +490,12 @@ def _field_soldiers(frame: Frame) -> tuple[int | None, int | None] | None:
                 merged[side] += 1
             continue
         sides[side] += 1
-    return tuple(None if merged[side] or sides[side] > 6 else sides[side] for side in (0, 1))
+    # Six complete bodies already reach the game's per-army limit. Extra
+    # small animation/general fragments cannot change that total; below the
+    # limit they prevent certifying that the observed army is complete.
+    return tuple(None if (merged[side] or sides[side] > 6
+                          or (fragments[side] and sides[side] < 6))
+                 else sides[side] for side in (0, 1))
 
 
 def _menu_rows(lines: list[TextLine]) -> list[TextLine]:
@@ -513,12 +526,14 @@ def _knight_count(frame: Frame, line: TextLine) -> int:
 
 def _menu_cursor(frame: Frame, rows: list[TextLine]) -> int | None:
     """Row y whose knight sprite sits just left of that row's first word."""
-    best_y, best_n = None, 0
+    best_y, best_n, tied = None, 0, False
     for line in rows:
         n = _knight_count(frame, line)
         if n > best_n:
-            best_y, best_n = line.y, n
-    return best_y if best_n >= 8 else None
+            best_y, best_n, tied = line.y, n, False
+        elif n == best_n and n >= 8 and line.y != best_y:
+            tied = True
+    return best_y if best_n >= 8 and not tied else None
 
 
 def _egg_rows(frame: Frame) -> list[EggRow]:
@@ -617,17 +632,45 @@ def month_confirmation_positions(screen):
     return [(x, y) for x, y, _ in choices]
 
 
+_HUD_HEADER = re.compile(r'(?:(\d+)わ *)?(\d+)ねん *(\d+)のつき *(\d+)G')
+_KNIGHT_MENU_KINDS = frozenset({'battle_menu', 'battle_menu_pending', 'monster_menu',
+                              'egg_battle_menu', 'okunote_menu', 'egg_choice_menu', 'card_select'})
+
+
+def _card_picker_rows(screen):
+    # The human in-battle card picker can classify as text (g684/g692).
+    # Its exact card labels are real options even without a picker title.
+    from ...hanjuku_reference import ALL_CARD_IDS
+    return any(x == 176 and line.y in (176, 192, 208) and word in ALL_CARD_IDS
+               for line in screen.menu_rows for x, word in line.spans())
+
+
+def _header(lines):
+    """Read one complete HUD row without joining across unknown/blank digits."""
+    matches = []
+    for line in lines:
+        if line.y >= 32:
+            continue
+        text = line.text
+        for match in _HUD_HEADER.finditer(text):
+            # A torn leading year/chapter digit cannot become a smaller number.
+            if match.start() and text[match.start() - 1] in UNKNOWN + '0123456789':
+                continue
+            matches.append(match.groups())
+    if len(matches) != 1:
+        return None
+    chapter, year, month, gold = matches[0]
+    return {'chapter': int(chapter) if chapter else None,
+            'year': int(year), 'month': int(month), 'gold': int(gold)}
+
+
 def parse(frame: Frame, *, phase: str | None = None) -> Screen:
     masks = row_masks(frame, light)
     lines = read_lines(frame, masks=masks)
     text = joined(lines)
     hand = find_hand(frame)
     screen = Screen(lines=lines, hand=hand, text=text)
-    match = HEADER.search(text)
-    if match:
-        chapter, year, month, gold = match.groups()
-        screen.header = {'chapter': int(chapter) if chapter else None,
-                         'year': int(year), 'month': int(month), 'gold': int(gold)}
+    screen.header = _header(lines)
     screen.selected = _selected(lines, hand)
     screen.battle = _battle(frame)
     if screen.battle is not None:
@@ -664,11 +707,19 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         screen.hidden_battle_commands &= screen.menu_cursor is not None
         screen.disabled_item_box &= screen.menu_cursor is not None
         screen.egg_rows = _egg_rows(frame)
-    if phase in (None, 'field', 'field_menu', 'battle_intro', 'event'):
+    command_menu = classify_text(screen) in (_KNIGHT_MENU_KINDS - {'card_select'})
+    if phase in (None, 'field', 'field_menu', 'battle_intro', 'event') and not command_menu:
+        # Command menus have no map-selection cursor. Their coarse phase can
+        # still be 'event'; do not scan the entire battle art for a map G.
+        # Sortie/card/castle panels retain their actual background map reads.
         screen.marker = _target_marker(frame)
         white = row_masks(frame, lambda r, g, b: min(r, g, b) > 200)
         screen.cursor = _free_cursor(white, frame)
     screen.kind = classify_text(screen)
+    if screen.kind not in _KNIGHT_MENU_KINDS and not _card_picker_rows(screen):
+        # Palette pixels beside dialogue words are not a command cursor
+        # (g745: the God's dialogue contributed nine knight-colour pixels).
+        screen.menu_cursor = None
     if phase in (None, 'concert') and _priest_sprite(frame):
         from .font import without_attached_marks
         screen.priest_ritual_scene = True

@@ -21,6 +21,7 @@ from docich import hanjuku_experience
 from docich.hanjuku_bot import BOT_VERSION, decide
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_run import append_log
+from docich.hanjuku.os_layer.commands import menu_navigation_feedback
 from docich.retroarch_boundary import read_record
 
 BOT_STATE_LIMIT = 256 * 1024   # the bot's own memory file, not a boundary record
@@ -33,6 +34,8 @@ BOT_STATE_LIMIT = 256 * 1024   # the bot's own memory file, not a boundary recor
 CHART_DECISIONS=frozenset({
     'chart_adjust_request','chart_adjust_applied',
     'chart_interim_order','chart_interim_hold',
+    # The A/B edition of the run must survive decision-log rotation.
+    'chart_edition_pinned',
 })
 
 # Only records that explain this observation's planned input/hold may override
@@ -114,7 +117,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     # battle_result is recorded after leaving combat and may already show
     # the map. Keep combat pixels in the same bounded ring, including holds
     # and enemy-owned menus, without claiming an input or a battle outcome.
-    capture=(bool(card_flow) or (bool(battle.get('survival')) and state.get('screen_kind') == 'battle_menu') or state.get('screen_kind') in {'general_list','card_select','sortie_confirm','battle','egg_battle_menu','monster_menu'} or any(
+    capture=(menu_navigation_feedback(state, actions) or bool(card_flow) or (bool(battle.get('survival')) and state.get('screen_kind') == 'battle_menu') or state.get('screen_kind') in {'general_list','card_select','sortie_confirm','battle','egg_battle_menu','monster_menu'} or any(
         r.get('decision') in {'name_confirm','chapter_seen','battle_result','barrier_removed','field_encounter_observed','resume_sortie_cancel',
                               'card_pick','card_missing','sortie_confirm','order_substitute',
                               'order_launched_unconfirmed','sortie_arrival_confirmed',
@@ -139,7 +142,8 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
         'schema':1,'event':'action_plan','at':now,'bot_version':BOT_VERSION,**identity,
         'decision_id':decision_id,'frame_sha256':frame_sha256,'snapshot':snapshot,
         'screen_kind':state.get('screen_kind'),'chart_step':chart_step,
-        'observation_interval_ms':observation_interval_ms(state),
+        'observation_interval_ms':observation_interval_ms(state, actions),
+        'menu_navigation_feedback': state.get('menu_navigation_reading') if menu_navigation_feedback(state, actions) else None,
         'strategy_variant':strategy_variant,'deviation_reason':deviation_reason,
         'expected_metric':input_context.get('expected_metric') if input_context is not None else battle.get('strategy_expected'),
         'planned_actions':actions,
@@ -182,6 +186,17 @@ def chart_adjust_settings():
         return hanjuku_chart_adjust.settings(None)
 
 
+def chart_edition_setting():
+    """``[hanjuku].chart_edition``; read every observation, applied at a new game."""
+    try:
+        with (ROOT/'config/games/hanjuku-hero.toml').open('rb') as stream:
+            raw=tomllib.load(stream)
+        value=(raw.get('hanjuku') or {}).get('chart_edition')
+        return value if isinstance(value,str) else None
+    except (OSError,tomllib.TOMLDecodeError):
+        return None
+
+
 def ask_interim(runtime: Path, state: dict, obs_meta: dict, *, settings=None, ask=None):
     """Ask JEV once for the pending interim choice; the answer is applied next cycle."""
     policy=state.get('policy') or {}
@@ -205,13 +220,15 @@ def ask_interim(runtime: Path, state: dict, obs_meta: dict, *, settings=None, as
     return answer
 
 
-def observation_interval_ms(state):
+def observation_interval_ms(state, actions=None):
     """Short feedback for living melee and its in-flight rescue commands.
 
     g486: slowing to 1500 ms as soon as B planned a card let the Queen
     summon between the chained B and its next readable command menu.
     Keep the existing allowed 500 ms cycle across card-menu fades too.
     """
+    if menu_navigation_feedback(state, actions):
+        return 500
     policy=state.get('policy') or {}
     battle=policy.get('battle') or {}
     preempt=battle.get('okunote_egg_preempt') or {}
@@ -311,8 +328,9 @@ def main():
                                  interim=state.get('chart_interim_answer'),
                                  experience=experience,
                                  recall_inputs=recall_input_receipts(runtime, state, meta),
-                                 run_identity=meta.get('hanjuku'))
-            interval_ms=observation_interval_ms(state)
+                                 run_identity=meta.get('hanjuku'),
+                                 chart_edition=chart_edition_setting())
+            interval_ms=observation_interval_ms(state, actions)
             records=state.pop('_records',[])
             updated_experience=state.pop('_experience',None)
             persist(runtime,state,records,meta,actions=actions,frame_sha256=frame.digest(),frame=frame)

@@ -16,6 +16,7 @@ from ... import hanjuku_chart as chart, hanjuku_experience as experience
 from ...hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
 from ..decision_log import _record, _tally
 from ..judgment.battle import (CARD_MENU_OPEN_RETRIES, DEFENDER_EGG_OPEN_LIMIT, DUEL_EVENT_TOKENS,
+                               _conserved_army_recheck,
                                ENTRY_RETURN_KINDS, GENERAL_CRITICAL_RETREAT_HP, HERO_RECALL_MIN_HP,
                                HERO_RECALL_RATIO_TENTHS, MELEE_HOLD_LIMIT, MELEE_HP_HOLD_DIVISOR,
                                MELEE_HP_HOLD_FLOOR, _battle_context, _battle_labels, _bind_battle_strategy,
@@ -120,6 +121,22 @@ def _entered_battle_successor(mem, cur, b):
     return True
 
 
+def _remember_general_for_summon(mem, cur, name, hp):
+    """Bind a real general panel before a monster can hide its HP."""
+    from ..os_layer.roster import run_identity
+    identity = run_identity(mem.get('_run_identity'))
+    full = mem.get('hero_max_hp') if name == NAME else general_max_hp(name)
+    if (identity is None or name != cur.get('ally') or not cur.get('enemy')
+            or type(hp) is not int or type(full) is not int or not 0 < hp <= full):
+        cur.pop('summon_general_reading', None)
+        return
+    from ..os_layer.roster import observed_member
+    observed_member(mem, [name])
+    cur['summon_general_reading'] = {
+        'identity': dict(identity), 'ally': name, 'enemy': cur['enemy'],
+        'hp': hp, 'max_hp': full}
+
+
 def _card_battle_reading(screen, cur, mem=None):
     """Refresh the inputs used by damage prediction, never soldier HP guesses.
 
@@ -152,6 +169,8 @@ def _card_battle_reading(screen, cur, mem=None):
     if mem is not None:
         mem['egg_battle'] = False
     cur['enemy_hp'], cur['ally_hp'] = b.enemy_hp, b.ally_hp
+    if mem is not None:
+        _remember_general_for_summon(mem, cur, b.ally, b.ally_hp)
     cur['hp_observed_at'] = time.time()
     counts = getattr(screen, 'field_soldiers', None)
     if not isinstance(counts, (tuple, list)) or len(counts) != 2:
@@ -176,6 +195,7 @@ def battle_step(screen: Screen, mem):
     if (b is None or not b.enemy or not b.ally or UNKNOWN in b.enemy or UNKNOWN in b.ally
             or any(type(hp) is not int or hp < 0 for hp in (b.enemy_hp, b.ally_hp))):
         mem['battle_seen'] = None
+        mem.pop('melee_opening_candidate', None)
         if mem.get('battle'):
             _card_battle_reading(screen, mem['battle'], mem)
             mem['battle'].pop('successor_seen', None)
@@ -197,10 +217,15 @@ def battle_step(screen: Screen, mem):
         # Fades dim the panel and can drop dakuten; open a battle record only
         # after two consecutive identical readings of both names.
         reading = [b.enemy, b.ally]
+        from ..os_layer.roster import run_identity
+        identity = run_identity(mem.get('_run_identity'))
+        candidate = [identity, b.ally, b.enemy] if identity is not None else None
         if mem.get('battle_seen') != reading:
             mem['battle_seen'] = reading
+            mem['melee_opening_candidate'] = candidate
             return []
         mem['battle_seen'] = None
+        previous_candidate = mem.pop('melee_opening_candidate', None)
         # The panel's opponent is a chapter fact: a general whose debut
         # chapter is later than ours proves the game advanced (g454: ピオーネ/
         # ヘラ after the chapter 1 boss). This resets the chapter state, so it
@@ -212,6 +237,17 @@ def battle_step(screen: Screen, mem):
                                'cards_selected': [], 'cards_missing': [], 'cards_unclassified': [],
                                'card_consumption_complete': True, 'card_evidence_version': 1,
                                **context}
+        if (identity is not None and isinstance(previous_candidate, list)
+                and len(previous_candidate) == 3
+                and run_identity(previous_candidate[0]) == identity
+                and previous_candidate == candidate):
+            # Captured only at the two-panel battle opening. A hotloaded old
+            # battle cannot invent an earlier healthy opening from current HP.
+            cur['melee_opening_scope'] = [identity, b.ally, b.enemy, b.ally_hp, b.enemy_hp]
+            army = screen.field_soldiers
+            if (isinstance(army, (tuple, list)) and len(army) == 2
+                    and all(type(n) is int and 0 <= n <= 6 for n in army)):
+                cur['melee_opening_army'] = list(army)
         if b.ally == NAME and type(b.ally_hp) is int:
             # The hero's full strength, remembered across battles: a hero who
             # starts a fight already weak never looks "far down" against his
@@ -443,6 +479,15 @@ def battle_step(screen: Screen, mem):
             return _human_menu_open(cur, 'survival')  # one final live inspection
         conserving = (rescue.get('conserving_melee') is True
                       and _hold_melee_egg(mem, cur, set(rescue.get('conserved_labels') or ())))
+        if not conserving and _conserved_army_recheck(mem, cur):
+            _record(mem, 'battle_conserved_army_recheck', **_battle_labels(cur),
+                    observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
+                                     'ally_soldiers': cur.get('ally_soldiers'),
+                                     'enemy_soldiers': cur.get('enemy_soldiers'),
+                                     'observations': cur['conserved_army_recheck']['observations'],
+                                     'limit': 2, 'army_advantage': 'unconfirmed'},
+                    reason='実メニューで温存した健全な将軍の兵数が一時未読のため、旧兵数を使わず有限で再観測')
+            return [{'type': 'wait', 'ms': 50}]
         if (not conserving and not rescue.get('exhausted') and rescue['opens'] < 12
                 and rescue.get('pending_opens', 0) < 3):
             rescue['opens'] += 1
@@ -732,6 +777,15 @@ def battle_end(mem, next_kind, *, defense_continues=False):
                     expected_metric={'enemy_hp_after_open': max(0, (enemy_hp or 0) - 20)},
                     observed_metric={'outcome': outcome, 'enemy_hp': enemy_hp, 'ally_hp': ally_hp},
                     resulting_event=f'retry:{retries[step]}', reason='城を取らないと後続手順とボスへ進めない')
+        else:
+            # Leaving the exhausted step 'launched' made it look like a march
+            # still heading for the target: steps waiting on that capture and
+            # the off-chart planner kept waiting on a sortie that had ended.
+            mem.setdefault('orders', {})[step] = 'failed'
+            _record(mem, 'situation_held', chart_step=step, strategy_variant='attack_retry_exhausted',
+                    observed_metric={'retries': retries[step], 'outcome': outcome,
+                                     'enemy_hp': enemy_hp, 'ally_hp': ally_hp},
+                    reason='攻撃の再試行上限に到達したため、この手順を打ち切って計画外の判断へ渡す')
     boss = chart.BOSSES.get(mem.get('chapter') or 0)
     resulting = None
     if outcome == 'win' and boss and cur.get('enemy') == boss:

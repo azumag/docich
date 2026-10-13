@@ -9,9 +9,9 @@ from ..decision_log import _record
 from .egg_recovery import MONTH_SUB_EXIT_KINDS
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import month_menu_ready
-from ..strategy.economy import (MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _egg_before_soldiers, _limit_soldier_refill,
+from ..strategy.economy import (month_chart_step, MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _army_count_increment, _egg_before_soldiers, _limit_soldier_refill,
                                 _merchant_spendable, _month_key, _refresh_egg_priority, _reserve_general_repair,
-                                _soldiers_enough)
+                                _soldier_count_current, _soldier_count_scope, _soldiers_enough)
 
 
 def _merchant_quote_decline(screen, mem, shop, want, reason):
@@ -128,9 +128,51 @@ def _observe_soldier_receipt(screen, mem, directly_seen=None):
 def quantity_step(screen: Screen, mem, soldiers=False):
     shop = mem.get('shop') or {}
     if soldiers:
+        # Keep full wage/egg/repair clamps even while the free inspection is
+        # in charge: its early return must not retain an unsafe saved budget.
         _reserve_general_repair(mem, shop, (screen.header or {}).get('gold'))
         _refresh_egg_priority(mem, shop, screen.header)
-        _limit_soldier_refill(mem, shop, screen.header)
+        _limit_soldier_refill(mem, shop, screen.header, payment=True)
+        state = mem.get('army_count_check')
+        scope = _soldier_count_scope(mem, screen.header)
+        if mem.get('_run_identity') is not None and scope is None:
+            return []  # a faded month/header cannot authorize a runtime purchase
+        if (scope is not None and isinstance(state, dict) and state.get('scope') == scope
+                and state.get('stage') == 'measured'
+                and not _soldier_count_current(mem, screen.header)
+                and not shop.get('soldier_receipt')):
+            # A prior inspection is not authority to pay after its actual
+            # total becomes unreadable. Preserve the exhausted read budget.
+            state.update(stage='closing', result='unverified')
+            shop['soldiers_done'] = True
+            _record(mem, 'army_count_unverified', month=scope[-1],
+                    reason='確認後の実兵数が未読になったため補充を確定せず戻る。確認予算を増やさない')
+        if (scope is not None and not _soldier_count_current(mem, screen.header)
+                and not shop.get('soldier_receipt')
+                and (not isinstance(state, dict) or state.get('scope') != scope)):
+            state = mem['army_count_check'] = {'scope': scope, 'stage': 'requested', 'observations': 0}
+            mem.pop('soldiers_seen_key', None)
+        if (scope is not None and isinstance(state, dict) and state.get('scope') == scope
+                and state.get('stage') == 'unverified'
+                and not _soldier_count_current(mem, screen.header)):
+            shop['soldiers_done'] = True
+            state.update(stage='closing', result='unverified')
+            return [pad('b')]  # a reopened unread editor still cannot authorize payment
+        if (scope is not None and isinstance(state, dict) and state.get('scope') == scope
+                and state.get('stage') != 'measured'):
+            if state.get('stage') not in ('opening', 'requested', 'quantity_requested', 'closing'):
+                state.update(stage='closing', result='unverified')
+            if state.get('stage') == 'closing':
+                return [pad('b')] if _army_count_increment(state, 'exit_presses', 4) <= 3 else []
+            if _soldier_count_current(mem, screen.header):
+                state.update(stage='closing', result='measured')
+                return [pad('b')]
+            if _army_count_increment(state, 'quantity_reads', 4) >= 4:
+                state.update(stage='closing', result='unverified')
+                _record(mem, 'army_count_unverified', month=scope[-1],
+                        reason='実人数を読み取れないため補充の確定をせず戻る。兵数は未確認のまま保持')
+                return [pad('b')]
+            return []
         if _egg_before_soldiers(shop) and not shop.get('soldier_receipt'):
             # This is where the army total first becomes visible. Leave the
             # old quantity plan before sending a purchase confirmation.
@@ -154,6 +196,24 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                 shop['recruit'] = 'pending'
             return [pad('b')]
         receipt = shop.get('soldier_receipt') or {}
+        if scope is not None and receipt:
+            if (receipt.get('key') != scope[-1] or type(receipt.get('qty')) is not int
+                    or not 0 < receipt['qty'] <= 99
+                    or type(receipt.get('gold_before')) is not int
+                    or receipt['gold_before'] < 0):
+                return [pad('b')]
+            if receipt.get('status') == 'pending':
+                # Wait for the actual debit once; an unchanged editor must
+                # neither repeat A nor strand this month indefinitely.
+                waits = receipt.get('quantity_waits', 0)
+                if type(waits) is not int or not 0 <= waits < 3:
+                    receipt['status'] = 'unverified'
+                    shop['soldiers_done'] = True
+                    return [pad('b')]
+                receipt['quantity_waits'] = waits + 1
+                return []
+        if scope is not None and shop.get('soldiers_done') and not receipt:
+            return [pad('b')]  # a saved done flag is not a new payment request
         if receipt.get('status') in ('paid', 'unverified') or receipt.get('payment_seen'):
             return [pad('b')]
         # Digits sit at x=216 (tens) and x=224 (ones). The hand on the ones
@@ -191,7 +251,7 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                     bought = shop.setdefault('bought', [])
                     bought.append([want[0], value, want[2]])
                     _record(mem, 'buy', card=want[0], qty=value, price=want[2],
-                            chart_step='1-month', strategy_variant=shop.get('variant', 'chart'),
+                            chart_step=month_chart_step(mem), strategy_variant=shop.get('variant', 'chart'),
                             reason='チャート/予算計画どおりの個数を確認して購入')
                     if shop.get('items') and shop['items'][0][0] == want[0]:
                         shop['items'].pop(0)
@@ -232,7 +292,7 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                 'soldiers_before': count if fresh else None}
             year, month = (int(p) for p in shop.get('key', '0-0').split('-'))
             expected = (chart.purchase_for(mem.get('chapter') or 0, year, month) or {}).get('soldiers')
-            _record(mem, 'soldier_refill', qty=value, chart_step='1-month',
+            _record(mem, 'soldier_refill', qty=value, chart_step=month_chart_step(mem),
                     strategy_variant=shop.get('variant', 'chart'),
                     expected_metric=expected,
                     observed_metric=value, reason='兵士補充数を確認して確定を要求。支払いは次の画面で照合')
