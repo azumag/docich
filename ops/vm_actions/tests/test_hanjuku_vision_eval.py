@@ -10,11 +10,12 @@ import os
 from pathlib import Path
 import struct
 import sys
-import tempfile
 import unittest
 from unittest.mock import Mock, patch
 import zipfile
 import zlib
+
+from temp_roots import real_tempdir
 
 OPS = Path(__file__).resolve().parents[1]
 ROOT = OPS.parents[1]
@@ -377,7 +378,7 @@ class ArchiveAndParserIntegrationTests(unittest.TestCase):
 
     def test_cli_private_output_and_no_overwrite(self):
         raw, _ = self.bundle()
-        with tempfile.TemporaryDirectory() as tmp:
+        with real_tempdir() as tmp:
             root = Path(tmp)
             source, output = root / "evidence.zip", root / "labels.json"
             source.write_bytes(raw)
@@ -394,7 +395,7 @@ class ArchiveAndParserIntegrationTests(unittest.TestCase):
 
     def test_cli_unlabelled_data_returns_two_not_success(self):
         raw, _ = self.bundle()
-        with tempfile.TemporaryDirectory() as tmp:
+        with real_tempdir() as tmp:
             root = Path(tmp)
             (root / "evidence.zip").write_bytes(raw)
             (root / "labels.json").write_text(json.dumps(vision.prepare(raw, RUN, "holdout")))
@@ -407,7 +408,7 @@ class ArchiveAndParserIntegrationTests(unittest.TestCase):
     def test_cli_symlink_and_hardlink_source_rejected(self):
         raw, _ = self.bundle()
         for kind in ("symlink", "hardlink"):
-            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+            with self.subTest(kind=kind), real_tempdir() as tmp:
                 root = Path(tmp)
                 (root / "real.zip").write_bytes(raw)
                 source, output = root / "linked.zip", root / "out.json"
@@ -422,7 +423,7 @@ class ArchiveAndParserIntegrationTests(unittest.TestCase):
 
     def test_cli_bad_labels_have_no_partial_or_verbose_output(self):
         raw, _ = self.bundle()
-        with tempfile.TemporaryDirectory() as tmp:
+        with real_tempdir() as tmp:
             root = Path(tmp)
             (root / "evidence.zip").write_bytes(raw)
             (root / "labels.json").write_text('{"private":"do-not-print", "private": 1}')

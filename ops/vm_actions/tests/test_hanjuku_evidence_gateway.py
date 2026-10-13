@@ -13,7 +13,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import textwrap
 import unittest
 from unittest.mock import Mock, patch
@@ -26,12 +25,13 @@ import gateway_entry as entry
 import receive_hanjuku_evidence as receiver
 import validate_hanjuku_ciphertext as transport
 from test_hanjuku_evidence import EvidenceFixture, RID, canonical, run_state
+from temp_roots import real_tempdir
 
 
 class GatewayTests(EvidenceFixture, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.keys = tempfile.TemporaryDirectory()
+        cls.keys = real_tempdir()
         cls.addClassCleanup(cls.keys.cleanup)
         cls.key = Path(cls.keys.name) / "private.pem"
         cls.cert = Path(cls.keys.name) / "recipient.pem"

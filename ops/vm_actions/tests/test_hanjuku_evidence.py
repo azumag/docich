@@ -14,11 +14,12 @@ import os
 from pathlib import Path
 import struct
 import subprocess
-import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
 import zlib
+
+from temp_roots import real_tempdir
 
 MODULE = Path(__file__).resolve().parents[1] / "hanjuku_evidence.py"
 spec = importlib.util.spec_from_file_location("hanjuku_evidence_test_target", MODULE)
@@ -82,7 +83,7 @@ def repetition_state(pure):
 
 class EvidenceFixture:
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = real_tempdir()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.state = self.root / "state"
@@ -413,7 +414,7 @@ class EvidenceTests(EvidenceFixture, unittest.TestCase):
 class CryptoTests(EvidenceFixture, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.keys = tempfile.TemporaryDirectory()
+        cls.keys = real_tempdir()
         cls.addClassCleanup(cls.keys.cleanup)
         cls.key = Path(cls.keys.name) / "private.pem"
         cls.cert = Path(cls.keys.name) / "recipient.pem"
