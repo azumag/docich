@@ -1,0 +1,86 @@
+"""Global list completion from native end markers, never a stalled input."""
+from pathlib import Path
+import pytest
+from docich.hanjuku.flows import house
+from docich.hanjuku.os_layer import roster as r
+from docich.hanjuku_screen import parse, Screen
+from docich.hanjuku_pixels import read_png, Frame
+from test_hanjuku_house import memory, feed
+
+ROOT = Path(__file__).parent / 'fixtures/hanjuku-roster-end'
+NAMES = ['どうし','ココット','コリアンダー','リーキ','ヘルメス','アルテミス','ラズベリー','キッシュ','シャルドネ','リースリング','ビシソワーズ']
+
+def native(uid=11093):
+    return read_png(ROOT / f'g749-{uid}.png')
+
+def scan(*, first=True, seen=None):
+    mem=memory('roster_advance', selected='ビシソワーズ', seen=list(NAMES if seen is None else seen), roster_first_general='どうし' if first else None)
+    r.begin(mem,mem['house']);r.page(mem,NAMES)
+    mem['house']['roster_first_general']='どうし' if first else None
+    return mem
+
+def test_native_end_and_continuing_pages():
+    assert house._roster_scroll_end(parse(native()), native())
+    assert not house._roster_scroll_end(parse(native(11428)), native(11428))
+
+@pytest.mark.parametrize('first,seen', [(False,None),(True,NAMES[:-1])])
+def test_end_does_not_complete_walk_starting_midway_or_missing_status(first,seen):
+    mem=scan(first=first,seen=seen)
+    for _ in range(9):feed(mem,native())
+    assert not mem['house'].get('roster_end_observed')
+    house.step(Screen([],None,'',kind='map'),mem,None)
+    assert not mem['recruit_roster']['complete']
+
+def test_full_native_walk_completes_after_repeated_actual_end_frames():
+    mem=scan()
+    for _ in range(6):feed(mem,native())
+    assert mem['house']['roster_end_observed']
+    house.step(Screen([],None,'',kind='map'),mem,None)
+    assert mem['recruit_roster']['complete']
+    assert mem['recruit_roster']['names']==NAMES
+
+@pytest.mark.parametrize('rgb', [(0,0,0),(8,36,28),(255,254,255)])
+def test_missing_faded_or_present_down_marker_is_not_empty(rgb):
+    f=native();data=bytearray(f.rgb)
+    for y in range(161,165):
+        for x in range(192,199):
+            i=(y*f.width+x)*3;data[i:i+3]=bytes(rgb)
+    changed=Frame(f.width,f.height,bytes(data))
+    assert not house._roster_scroll_end(parse(changed),changed)
+
+def test_changed_scope_invalidates_physical_end_receipt():
+    mem=scan()
+    for _ in range(6):feed(mem,native())
+    mem['month']='3-1'
+    assert not r.complete(mem,mem['house'])
+
+def test_no_frame_or_wrong_cursor_cannot_prove_end():
+    s=parse(native())
+    assert not house._roster_scroll_end(s,None)
+    s.selected='リーキ'
+    assert not house._roster_scroll_end(s,native())
+
+def test_first_general_is_recorded_only_on_opened_global_list():
+    from test_hanjuku_house import roster
+    mem=memory('roster', roster_opened=True)
+    r.begin(mem,mem['house'])
+    feed(mem,roster(NAMES[:8],0))
+    assert mem['house']['roster_first_general']=='どうし'
+    mem=memory('roster', roster_opened=True)
+    r.begin(mem,mem['house'])
+    feed(mem,roster(NAMES[3:11],0))
+    assert mem['house']['roster_first_general'] is None
+
+def test_continuation_frame_clears_end_confirmation():
+    mem=scan()
+    for _ in range(2):feed(mem,native())
+    feed(mem,native(11428))
+    assert mem['house']['roster_end_observations']==0
+    assert not mem['house'].get('roster_end_observed')
+
+def test_end_flag_does_not_override_invalidated_or_unread_membership():
+    for invalidated in (False,True):
+        mem=scan();state=mem['house'];state['roster_end_observed']=True
+        state['roster_invalidated']=invalidated
+        if not invalidated:state['seen']=NAMES[:-1]
+        assert not r.complete(mem,state)

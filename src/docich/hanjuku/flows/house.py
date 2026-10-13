@@ -93,6 +93,28 @@ def _singleton_page(screen, frame):
                     for y in range(47, 159) for x in range(168, 232)))
 
 
+def _roster_scroll_end(screen, frame):
+    """Native final eight-row page: up arrow present, down slot empty.
+
+    A stopped cursor or OCR alone is insufficient. Both the visible arrow
+    and the green empty down-arrow slot must be drawn on this same frame.
+    """
+    from ..os_layer.phase import green
+    names = roster(screen)
+    return (frame is not None and frame.width == 256 and frame.height == 224
+            and names is not None and len(names) == 8
+            and screen.selected == names[-1] and screen.hand[1] in (145, 147)
+            and all(min(frame.pixel(x, y)) >= 240
+                    for y in range(30, 34) for x in range(195 - (y - 30), 196 + (y - 30)))
+            and all(green(*frame.pixel(x, y))
+                    for y in range(159, 162) for x in range(192, 199))
+            and all(max(frame.pixel(x, 162)) <= 8 for x in range(192, 199))
+            and all(170 <= frame.pixel(x, 163)[0] <= 220
+                    and 110 <= frame.pixel(x, 163)[1] <= 170
+                    and 50 <= frame.pixel(x, 163)[2] <= 100
+                    for x in range(192, 199)))
+
+
 def _names_at(screen, x, y0, y1):
     from ..os_layer.readers import _name_read_cleanly
     names = []
@@ -639,6 +661,7 @@ def step(screen, mem, frame):
             return actions
         if not state['seen'] and state.get('roster_opened'):
             state['singleton_first_page'] = _singleton_page(screen, frame)
+            state['roster_first_general'] = selected if selected == 'どうし' and screen.hand[1] == 33 else None
         if selected in state['seen'] or len(state['seen']) >= ROSTER_LIMIT:
             state['roster_wrapped'] = (len(state['seen']) >= 2 and selected == state['seen'][0]
                                        and len(state['seen']) <= ROSTER_LIMIT)
@@ -671,11 +694,22 @@ def step(screen, mem, frame):
     if phase == 'roster_advance':
         names = roster(screen)
         if names is None:
+            state['roster_end_observations'] = 0
             return []
         if screen.selected != state['selected']:
+            state['roster_end_observations'] = 0
             state.pop('singleton_first_page', None)
             _phase(state, 'roster')
             return []
+        end = (state.get('roster_first_general') == 'どうし'
+               and state.get('seen', [])[:1] == ['どうし']
+               and set(names) <= set(state['seen'])
+               and _roster_scroll_end(screen, frame))
+        state['roster_end_observations'] = state.get('roster_end_observations', 0) + 1 if end else 0
+        if state['age'] >= 6 and state['roster_end_observations'] >= 3:
+            state['roster_end_observed'] = True
+            _phase(state, 'leave_roster')
+            return [pad('b')]
         single = (state.get('singleton_first_page') and state['seen'] == ['どうし']
                   and _singleton_page(screen, frame))
         state['singleton_observations'] = state.get('singleton_observations', 0) + 1 if single else 0
