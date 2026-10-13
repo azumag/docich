@@ -31,10 +31,19 @@ def conserved():
                       'start_ally_hp': 24, 'start_enemy_hp': 36,
                       'cards_used': [], 'cards_selected': [], 'planned_cards': [],
                       'card_evidence_version': 1}}
-    # Original1435 is the current complete army reading before the real menu.
-    p._card_battle_reading(native(1435), mem['battle'], mem)
+    # 1435's walking enemy fragments are unread (formerly misread as two).
+    # Use the later complete1445 panel for this isolated budget replay. This
+    # is counterfactual chronology, not the original path into menu1436.
+    p._card_battle_reading(native(1445), mem['battle'], mem)
     assert p.battle_menu_step(native(1436), mem) == [p.pad('b')]
     return mem
+
+
+def test_original_opening_fragments_do_not_recreate_the_old_conservation():
+    mem = conserved()
+    p._card_battle_reading(native(1435), mem['battle'], mem)
+    assert mem['battle']['enemy_soldiers'] is None
+    assert not p._hold_melee_egg(mem, mem['battle'], {'たまごをつかう'})
 
 
 def test_real_conservation_and_later_egg_a_have_exact_frame_receipts():

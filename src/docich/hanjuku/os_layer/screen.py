@@ -415,7 +415,7 @@ def _field_soldiers(frame: Frame) -> tuple[int | None, int | None] | None:
             if row[i:i + 3] not in background:
                 mask.add((x0 + i // 3, y))
     seen: set[tuple[int, int]] = set()
-    sides, merged = [0, 0], [0, 0]
+    sides, merged, fragments = [0, 0], [0, 0], [0, 0]
     for seed in mask:
         if seed in seen:
             continue
@@ -437,6 +437,12 @@ def _field_soldiers(frame: Frame) -> tuple[int | None, int | None] | None:
                  if len(colors & palette) >= 2]
         width, height = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
         if len(cells) < SOLDIER_AREA[0]:
+            # g747/2751: walking enemy bodies split from their feet into
+            # 54-pixel, 11x9 components. Dropping these as background turns
+            # the visible army into a false count of two. A body-sized known
+            # army fragment is unread, rather than a confirmed extra body.
+            if len(teams) == 1 and width >= 8 and height >= 8:
+                fragments[teams[0]] += 1
             if (width <= SOLDIER_BOX[0] and height <= SOLDIER_BOX[1]
                     and (min(xs) <= x0 + 4 or max(xs) >= x1 - 5 or min(ys) <= y0)):
                 # Even one known army ink can be the last visible column of
@@ -484,7 +490,12 @@ def _field_soldiers(frame: Frame) -> tuple[int | None, int | None] | None:
                 merged[side] += 1
             continue
         sides[side] += 1
-    return tuple(None if merged[side] or sides[side] > 6 else sides[side] for side in (0, 1))
+    # Six complete bodies already reach the game's per-army limit. Extra
+    # small animation/general fragments cannot change that total; below the
+    # limit they prevent certifying that the observed army is complete.
+    return tuple(None if (merged[side] or sides[side] > 6
+                          or (fragments[side] and sides[side] < 6))
+                 else sides[side] for side in (0, 1))
 
 
 def _menu_rows(lines: list[TextLine]) -> list[TextLine]:
