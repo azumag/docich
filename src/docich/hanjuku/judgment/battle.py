@@ -317,7 +317,8 @@ def _card_melee_projection(cur, card, context, estimate):
 
 
 def _watch_card_melee(mem, cur, gate):
-    if gate['role'] == 'control_then_melee_not_a_kill':
+    if (gate['role'] in ('control_then_melee_not_a_kill', 'observed_control_chain_not_a_kill')
+            and gate.get('melee_followup')):
         cur['card_melee_followup'] = {**gate['melee_followup'],
             'ally': cur.get('ally'), 'enemy': cur.get('enemy'),
             'selected_tick': int(mem.get('tick') or 0), 'bursts': 0}
@@ -395,6 +396,13 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
         if followups:
             result.update(allowed=True, role='observed_control_chain_not_a_kill',
                           listed_followups=followups)
+            # g749: carrying a weak Footbath must not erase a healthy
+            # post-control melee option. The next complete panel still has
+            # to prove HP progress and current army/combat advantage; this
+            # projection is neither a card-use receipt nor permission now.
+            melee = _card_melee_projection(cur, card, context, estimate)
+            if melee:
+                result['melee_followup'] = melee
         else:
             melee = _card_melee_projection(cur, card, context, estimate)
             if melee:

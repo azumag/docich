@@ -1,0 +1,148 @@
+{
+  "boundary": "Original frames and inputs only. New policy outputs in tests are counterfactual; selected card use and victory are not established. Followup4338 current-input SHA differs and is not strict input acceptance.",
+  "evidence": [
+    {
+      "fixture": "g749-roquefort-control-opening.png",
+      "decision": {
+        "at": 1791900853.348963,
+        "bot_version": "hanjuku-chart-v207-recruit-return-ownership",
+        "chart_step": "I:6eca00:6",
+        "decision_id": "g749-d8571de0:749:4322",
+        "deviation_reason": "計画のしょうぐんに代わりロックフォールを出撃させる",
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": null,
+        "frame_sha256": "04e3a188863a0b122361e0f197615b9528522518393a4ba4a86847e1ced71a26",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "ms": 50,
+            "type": "wait"
+          }
+        ],
+        "reason_decisions": [
+          "battle_command_open_wait"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-002.png",
+        "strategy_variant": "substitute_general"
+      },
+      "input_receipts": [],
+      "rgb_sha256": "04e3a188863a0b122361e0f197615b9528522518393a4ba4a86847e1ced71a26"
+    },
+    {
+      "fixture": "g749-roquefort-control-card-list.png",
+      "decision": {
+        "at": 1791900856.8483124,
+        "bot_version": "hanjuku-chart-v207-recruit-return-ownership",
+        "chart_step": "I:6eca00:6",
+        "decision_id": "g749-d8571de0:749:4327",
+        "deviation_reason": "計画のしょうぐんに代わりロックフォールを出撃させる",
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": "実使用告知",
+        "frame_sha256": "27e51cef5257cc3fd321f6add7f26596e9522052b0c0a309a8cac4210ec33076",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "a"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "battle_card_selected"
+        ],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "text",
+        "snapshot": "decision-007.png",
+        "strategy_variant": "substitute_general"
+      },
+      "input_receipts": [
+        {
+          "at": 1791900857.0125027,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "a"
+          ],
+          "decision_frame_sha256": "27e51cef5257cc3fd321f6add7f26596e9522052b0c0a309a8cac4210ec33076",
+          "decision_id": "g749-d8571de0:749:4327",
+          "event": "input_sent",
+          "frame_sha256": "27e51cef5257cc3fd321f6add7f26596e9522052b0c0a309a8cac4210ec33076",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "27e51cef5257cc3fd321f6add7f26596e9522052b0c0a309a8cac4210ec33076"
+    },
+    {
+      "fixture": "g749-roquefort-control-followup.png",
+      "decision": {
+        "at": 1791900863.6346745,
+        "bot_version": "hanjuku-chart-v207-recruit-return-ownership",
+        "chart_step": "I:6eca00:6",
+        "decision_id": "g749-d8571de0:749:4338",
+        "deviation_reason": "計画のしょうぐんに代わりロックフォールを出撃させる",
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "cards": [
+            "クースカン",
+            "フットバース"
+          ],
+          "general": "しょうぐん"
+        },
+        "frame_sha256": "6106dc9915a37e61e0faa4200a4f35d24b9b93481ee4dcbea9f18890d6cc95fc",
+        "game": "hanjuku-hero",
+        "generation": 749,
+        "lease_id": "9863b5cb-d288-4954-af16-0614426f0c5f",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "b"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [],
+        "runtime_id": "g749-d8571de0",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-018.png",
+        "strategy_variant": "substitute_general"
+      },
+      "input_receipts": [
+        {
+          "at": 1791900863.7964954,
+          "bot_version": "hanjuku-chart-v205-unlocated-successor",
+          "buttons": [
+            "b"
+          ],
+          "decision_frame_sha256": "6106dc9915a37e61e0faa4200a4f35d24b9b93481ee4dcbea9f18890d6cc95fc",
+          "decision_id": "g749-d8571de0:749:4338",
+          "event": "input_sent",
+          "frame_sha256": "baab4f845ba0921dab5ba5f8713d600ae4f369c2183ac34a1ee34d0f1d431434",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ],
+      "rgb_sha256": "6106dc9915a37e61e0faa4200a4f35d24b9b93481ee4dcbea9f18890d6cc95fc"
+    }
+  ]
+}
