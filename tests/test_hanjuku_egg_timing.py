@@ -135,9 +135,12 @@ def test_a_previous_exhaustion_opens_one_final_emergency_menu_only():
     assert rescue['opens'] == before['opens']
 
 
-def test_critical_attack_retreat_stays_before_egg_use():
+def test_critical_attack_uses_known_positive_egg_before_retreat():
     mem = memory(3, 2)
     mem['battle']['side'] = 'attack'
-    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
-    assert mem['battle']['hero_retreat']['selected'] == 1
-    assert 'egg_recheck' not in mem
+    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('up')]
+    assert p.battle_menu_step(menu(selected=1), mem) == [p.pad('up')]
+    assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
+    assert mem['battle']['survival']['egg_attempted']
+    assert not mem['battle'].get('hero_retreat')
+    assert mem['egg_uses'][p.NAME] == 2

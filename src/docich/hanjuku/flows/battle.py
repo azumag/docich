@@ -24,7 +24,7 @@ from ..judgment.battle import (CARD_MENU_OPEN_RETRIES, DEFENDER_EGG_OPEN_LIMIT, 
                                _card_damage_gate, _card_damage_key, _card_damage_recheck_resources,
                                _card_melee_ready, _card_use_unclassified, _charted_melee, _command_open_wait,
                                _critical_survival_needed, _defender_egg_window, _defender_last_resort,
-                               _egg_drop_evidence, _egg_drop_tactics, _egg_plan, _hero_marching,
+                               _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _egg_drop_tactics, _egg_plan, _hero_marching,
                                _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
                                _migrate_card_evidence, _observe_egg_drop_candidate, _own_egg_empty,
                                _own_egg_positive, _strong_card_tactics, _strong_enemy, _survival_needed,
@@ -406,6 +406,22 @@ def battle_step(screen: Screen, mem):
     opening_wait = _command_open_wait(mem, cur)
     if opening_wait is not None:
         return opening_wait
+    if _egg_rescue_pending(cur):
+        return [{'type': 'wait', 'ms': 50}]
+    if not melee_followup and _egg_before_retreat(mem, cur):
+        if (cur.get('card_flow') or {}).get('stage') == 'announce':
+            _card_use_unclassified(mem, cur, '危険HPで本人の卵を確認するため、未確認の切り札使用は未分類として保持')
+        else:
+            cur['card_flow'] = None
+        rescue = _survival_state(mem, cur)
+        rescue.update(egg_priority=True, opens=rescue['opens'] + 1,
+                      pending_opens=rescue.get('pending_opens', 0) + 1, menu_ticks=0)
+        _record(mem, 'battle_egg_before_retreat', **_battle_labels(cur),
+                general=cur.get('ally'), enemy=cur.get('enemy'),
+                observed_metric={'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp'),
+                                 'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally'))},
+                reason='本人の卵残数が正数で未試行のため、退却より先に実メニューの召喚可否を確認')
+        return _human_menu_open(cur, 'survival')
     retreat = None if melee_followup else _hero_retreat_open(mem, cur)
     if retreat is not None:
         return retreat
@@ -671,6 +687,8 @@ def note_duel_event(screen, mem):
 
 def _hero_retreat_open(mem, cur):
     if not _hero_retreat_needed(cur) or cur.get('side') == 'defense':
+        return None
+    if _egg_before_retreat(mem, cur):
         return None
     flow = cur.get('hero_retreat') or {}
     if flow.get('unavailable') or flow.get('exhausted') or flow.get('opens', 0) >= 3:
