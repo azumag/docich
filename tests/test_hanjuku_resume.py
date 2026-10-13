@@ -345,7 +345,13 @@ def test_native_fake_hero_checkpoint_restores_with_only_observed_chapter(setup):
     from docich.hanjuku_pixels import read_png
     frame=read_png(Path(__file__).parent/'fixtures/hanjuku/g700-fake-hero-announcement.png')
     commands,writes=restore_test(setup,chapter=None,native_frame=frame)
-    assert writes==[b'boot state',b'serialized core',b'serialized core']
+    # Same proof-ordering contract as the other roundtrip tests: only the
+    # pre-load write may differ, both slots are proven independently, and a
+    # legitimate SAVE retry (stale mtime under load) is not a failure (#2138).
+    assert writes[0]==b'boot state'
+    assert set(writes[1:])=={b'serialized core'}
+    assert set(setup.slots_written)=={0,1}
+    assert commands.count('LOAD_STATE_SLOT 0')==1
     assert commands.index('FRAMEADVANCE') < commands.index('PAUSE_TOGGLE')
     receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
     assert receipt['status']=='verified' and receipt['chapter']==2
