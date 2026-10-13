@@ -673,23 +673,23 @@ def test_adjusted_boss_order_reaches_boss_entry_and_battle_tactics(monkeypatch):
     mem = stuck_memory()
     mem['captured'] += ['スペンソニア', 'ジョンリギ']
     mem['orders']['1-B1'] = 'failed'
-    rid = _adopt(mem, [{'step': 'J2', 'general': chart.HERO, 'source': 'スペンソニア',
+    rid = _adopt(mem, [{'step': 'J2', 'general': 'ゼウス', 'source': 'スペンソニア',
                         'target': 'けっかい', 'cards': ['クースカン', 'ノリウツール']}])
     j2 = adjust.execution_step(rid, 'J2')
     assert mem['active'] == j2
-    # Boss guard still applies: no hero/cards evidence, no target confirmation.
+    # Boss guard still applies: no companion/cards evidence, no target confirmation.
     assert _launch(monkeypatch, mem) == []
-    mem['order_context'] = {j2: {'actual_general': chart.HERO,
+    mem['order_context'] = {j2: {'actual_general': 'ゼウス',
                                  'observed_metric': {'cards': sorted(['クースカン', 'ノリウツール'])}}}
-    mem['sortie_general'] = {j2: chart.HERO}
+    mem['sortie_general'] = {j2: 'ゼウス'}
     assert _launch(monkeypatch, mem) == [policy.pad('a')]
-    assert mem['launched']['けっかい'] == {'general': chart.HERO, 'step': j2}
+    assert mem['launched']['けっかい'] == {'general': 'ゼウス', 'step': j2}
     # Unknown general on the measured boss entry text is still refused.
     assert policy.message_step(_text_screen('ココットしょうぐんがボスじょうにせめこんだ!!'), mem) == []
-    entry = f'{chart.HERO}しょうぐんがボスじょうにせめこんだ!!'
+    entry = 'ゼウスしょうぐんがボスじょうにせめこんだ!!'
     assert policy.message_step(_text_screen(entry), mem) == [policy.pad('a')]
     assert mem['attack']['step'] == j2 and mem['attack']['entry_evidence'] == 'measured_boss_entry'
-    assert _battle(mem, 'クイーン', chart.HERO, [90, 90, 85])[-1] == [policy.pad('b')]
+    assert _battle(mem, 'クイーン', 'ゼウス', [85, 85, 80])[-1] == [policy.pad('b')]
     assert mem['battle']['card_flow']['card'] == 'クースカン'
     # A lost boss battle retries the same adjusted order with its own kit.
     mem['battle'].update(enemy_hp=40, ally_hp=0, card_flow=None)

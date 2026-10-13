@@ -1,0 +1,188 @@
+"""Recover one failed-before-AI checkpoint transfer, never a game over.
+
+The logical resume and sealed checkpoint stay unchanged. The archived switch
+receipt stays terminal; a single derived execution attempt has its own receipt.
+No process is stopped, no state is loaded here, and no newer save is selected.
+"""
+from __future__ import annotations
+
+import argparse
+from contextlib import ExitStack
+import hashlib
+import json
+from pathlib import Path
+import time
+import uuid
+
+from .config import load_global, load_game
+from .corner_catalog import rotation_enabled
+from .corner_rotation import CornerRotationManager, timestamp
+from .game_switch import GameSwitchStore, atomic_write_json, validate_request_id
+from .hanjuku_manual_cancel import (
+    CancelRefused, DIGEST, _existing_lock, _object, _released_runtime, _ProbeTmux,
+)
+from .hanjuku_resume import REQUEST_FILE, RECEIPT_FILE, core_digest
+from .naming import runtime_directory, runtime_id_generation
+from .retroarch_boundary import checkpoint_digest
+from .trading.soren_output import resolve_soren_root
+
+
+def fingerprint(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
+                                     allow_nan=False).encode()).hexdigest()
+
+
+def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
+    if apply and (not isinstance(expected, str) or not DIGEST.fullmatch(expected)):
+        raise CancelRefused('expected_reservation_required')
+    base = Path(g.state_dir)
+    manager = CornerRotationManager(g)
+    store = GameSwitchStore(base)
+    tmux = tmux or _ProbeTmux()
+    with ExitStack() as held:
+        for path in (
+            base / 'locks/corner-rotation.lock',
+            base / 'corner-manual-queue.lock',
+            base / 'locks/retro-corner.lock',
+            base / 'locks/retro-corner-manual.lock',
+            resolve_soren_root(g) / 'tmp/state/docich_program.lock',
+            base / 'locks/game-switch.lock',
+        ):
+            held.enter_context(_existing_lock(path))
+        root = base / 'hanjuku-resume'
+        held.enter_context(_existing_lock(root / 'request.lock'))
+        request = _object(root / REQUEST_FILE)
+        recovery = request.get('startup_recovery')
+        original = recovery.get('original') if isinstance(recovery, dict) else request
+        if (not isinstance(original, dict) or original.get('schema') != 1
+                or original.get('game') != 'hanjuku-hero'
+                or original.get('corner') != 'hanjuku-hero'
+                or original.get('status') != 'claimed'
+                or type(original.get('generation')) is not int):
+            raise CancelRefused('reservation_not_in_scope')
+        logical = validate_request_id(original.get('request_id'))
+        validate_request_id(original.get('lease_id'))
+        if runtime_id_generation(original.get('runtime_id')) != original['generation']:
+            raise CancelRefused('invalid_evidence')
+        digest = fingerprint(original)
+        if expected is not None and expected != digest:
+            raise CancelRefused('reservation_changed')
+        attempt = str(uuid.uuid5(uuid.UUID(logical), 'failed-before-ai-recovery-1'))
+        if recovery is not None:
+            if (recovery.get('attempt_id') != attempt or recovery.get('fingerprint') != digest
+                    or request.get('request_id') != logical):
+                raise CancelRefused('invalid_evidence')
+            # An operator retry cannot rewind an already claimed/verified
+            # attempt, create another UUID, or reset its execution receipt.
+            if request.get('status') in {'claimed', 'verified'}:
+                return {'status': 'already-dispatched', 'fingerprint': digest}
+            if request.get('status') != 'queued':
+                raise CancelRefused('reservation_not_in_scope')
+        elif request.get('status') != 'claimed':
+            raise CancelRefused('reservation_not_in_scope')
+        runtime = runtime_directory(base, original.get('runtime_id'))
+        if _object(runtime / RECEIPT_FILE) != original:
+            raise CancelRefused('context_changed')
+        # These are created before the AI can issue gameplay. Any such evidence
+        # (including an empty file) excludes game over, stall and partial play.
+        for name in ('hanjuku_bot.json', 'hanjuku_run.json', 'hanjuku_events.jsonl'):
+            path = runtime / name
+            if path.exists() or path.is_symlink():
+                raise CancelRefused('gameplay_started')
+        _released_runtime(base, runtime.name, tmux)
+        terminal = store.receipts.load(logical)
+        result = terminal.get('result') if terminal else None
+        if (not terminal or terminal.get('operation') != 'switch'
+                or terminal.get('target') != 'hanjuku-hero'
+                or terminal.get('status') != 'rolled_back'
+                or terminal.get('generation') != original['generation']
+                or terminal.get('runtime_id') != original['runtime_id']
+                or not isinstance(result, dict) or result.get('status') != 'rolled_back'
+                or result.get('request_id') != logical
+                or result.get('generation') != original['generation']):
+            raise CancelRefused('startup_rollback_unverified')
+        canonical, missing = store.canonical.load()
+        if (missing or canonical.get('phase') not in {'ready', 'idle'}
+                or canonical.get('candidate') is not None or canonical.get('previous') is not None
+                or canonical.get('retiring') or canonical.get('operation') is not None
+                or canonical.get('request_id') is not None
+                or (canonical.get('active') or {}).get('game') == 'hanjuku-hero'):
+            raise CancelRefused('switch_not_stable')
+        if not rotation_enabled(g) or 'hanjuku-hero' not in manager._eligible(include_manual_only=True)[0]:
+            raise CancelRefused('target_paused_or_unavailable')
+        from .adapters.retroarch import resolve_rom, resolve_core
+        game = load_game(g, 'hanjuku-hero')
+        sealed = root / (logical + '.state')
+        if (checkpoint_digest(sealed) != original.get('sha256')
+                or core_digest(sealed) != original.get('core_state_sha256')
+                or checkpoint_digest(resolve_rom(g, game)) != original.get('rom_sha256')
+                or checkpoint_digest(Path(resolve_core(game))) != original.get('core_sha256')):
+            raise CancelRefused('checkpoint_changed')
+        recovery_at = timestamp(now())
+        state = manager.load(recovery_at)
+        if recovery_at < max(timestamp(original['selected_at']), timestamp(state['last_seen_at'])):
+            raise CancelRefused('clock_regressed')
+        owner_path = base / 'retro_corner.json'
+        owner = _object(owner_path)
+        # A crash after any of the writes below is repairable with the same
+        # attempt. It must still own the failed reservation or this recovery.
+        pending = state.get('pending') or {}
+        queued = state.get('queued_manual') or {}
+        if state.get('manual_pending') or manager._read_manual_queue():
+            raise CancelRefused('manual_queue_conflict')
+        original_pending = (state.get('status') == 'recovery_required'
+                            and pending.get('request_id') == logical
+                            and pending.get('corner') == 'hanjuku-hero'
+                            and pending.get('source') == 'manual'
+                            and pending.get('phase') == 'dispatched'
+                            and pending.get('resume_latest') is True and not queued)
+        recovered_pending = (recovery is not None and not pending
+                             and queued.get('request_id') == attempt
+                             and queued.get('resume_request_id') == logical
+                             and state.get('status') == 'waiting')
+        if not original_pending and not recovered_pending:
+            raise CancelRefused('reservation_not_in_scope')
+        if (owner.get('rotation_request_id') != logical or owner.get('game') != 'hanjuku-hero'
+                or owner.get('status') not in {'failed', 'interrupted'}
+                or (owner.get('status') == 'interrupted'
+                    and owner.get('startup_resume_recovery') != attempt)):
+            raise CancelRefused('owner_not_terminal')
+        if not apply:
+            return {'status': 'recovery-eligible', 'fingerprint': digest}
+        if recovery is None:
+            recovery = {'original': original, 'attempt_id': attempt, 'fingerprint': digest}
+            request = {k: v for k, v in original.items()
+                       if k not in {'runtime_id', 'generation', 'lease_id', 'game'}}
+            request.update(status='queued', startup_recovery=recovery)
+            atomic_write_json(root / REQUEST_FILE, request)
+        if owner['status'] == 'failed':
+            atomic_write_json(owner_path, dict(owner, status='interrupted',
+                                               startup_resume_recovery=attempt))
+        if not recovered_pending:
+            queued = dict(corner='hanjuku-hero', selected_at=recovery_at,
+                          request_id=attempt, resume_request_id=logical, resume_latest=True)
+            state.update(status='waiting', reason='startup-resume-recovery-queued',
+                         error_kind=None, pending=None, queued_manual=queued)
+            manager.save(state)
+        return {'status': 'recovery-queued', 'fingerprint': digest}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('mode', choices=('check', 'recover'))
+    parser.add_argument('--expected')
+    args = parser.parse_args(argv)
+    try:
+        root = Path(__file__).resolve().parents[2]
+        g = load_global(root, root / 'config/docich.soren-live.toml')
+        result = recover(g, expected=args.expected, apply=args.mode == 'recover')
+    except Exception:
+        # Never publish raw exception text, private checkpoint paths or bytes.
+        print(json.dumps({'status': 'refused'}))
+        return 77
+    print(json.dumps(result, separators=(',', ':')))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

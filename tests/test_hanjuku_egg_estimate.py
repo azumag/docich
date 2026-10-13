@@ -39,12 +39,12 @@ def test_read_counts_are_priced_and_unread_recheck_names_are_not():
     # The hold is the worst case: money the refill may not touch.
     assert shop['reserve'] == 150
     assert shop['egg'] == 'pending'
-    assert shop['soldiers'] == policy.SOLDIER_CAP
+    assert shop['soldiers'] == 40
 
 
 def test_recheck_only_month_gates_on_zero_and_still_opens_the_check():
     mem, shop = plan(55, uses={'どうし': 4}, recheck=['ピスタチオ'])
-    assert shop['egg'] == 'check' and shop['egg_cost'] == 0 and shop['reserve'] == 0
+    assert shop['egg'] == 'pending' and shop['egg_cost'] == 0 and shop['reserve'] == 50
     screen = parse(month_canvas(55, on='たまごのかいふく'))
     assert policy._month_extra(screen, mem, shop) == [policy.pad('a')]
     assert mem['month_sub']['kind'] == 'egg'
@@ -60,9 +60,9 @@ def test_recheck_only_check_still_yields_to_the_wage_reserve():
 
 def test_measured_price_refuses_a_screen_it_cannot_finish():
     mem, shop = plan(70, uses={'キッシュ': 2, 'ゼウス': 1})
-    assert shop['egg_cost'] == 100 and shop['egg'] == 'check'
+    assert shop['egg_cost'] == 100 and shop['egg'] == 'pending'
     screen = parse(month_canvas(70, on='たまごのかいふく'))
-    assert policy._month_extra(screen, mem, shop) is None
+    assert policy._month_extra(screen, mem, shop, egg_only=True) is None
     assert shop['egg'] == 'skipped'
 
 

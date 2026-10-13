@@ -308,3 +308,32 @@ def test_stop_receiver_refuses_while_reserved(tmp_path, monkeypatch):
     sc.stop_receiver(g, run=lambda argv, **k: seen.append(argv) or subprocess.CompletedProcess(argv, 0, "", ""),
                      now=1000)
     assert seen[0][-1] == "receiver-stop"
+
+
+# --- comment-reply memo (PR 4) ---------------------------------------------
+
+def test_saving_settings_writes_the_gated_comment_memo(tmp_path):
+    sc.save_settings(tmp_path, _valid(comment_prompt="ゲームAの映像です。\n目標はクリア。"))
+    memo = (tmp_path / sc.MEMO_FILE).read_text()
+    lines = memo.splitlines()
+    assert lines[0].startswith("- 【いまのメイン画面が external-video-view（特別コーナー）のときだけ有効】")
+    assert "「ゲームA」" in lines[0]
+    assert lines[1:3] == ["  ゲームAの映像です。", "  目標はクリア。"]
+    assert lines[-1] == "  いまのメイン画面が external-video-view 以外のときは、この節を無視する"
+    assert all(line.startswith("  ") for line in lines[1:])
+    assert "$" not in memo and "`" not in memo
+    assert (tmp_path / sc.MEMO_FILE).stat().st_mode & 0o777 == 0o600
+
+
+def test_default_memo_describes_flyhome_and_empty_prompt_keeps_the_guards(tmp_path):
+    sc.write_comment_memo(tmp_path)
+    assert "「Fly Me To The Home!」" in (tmp_path / sc.MEMO_FILE).read_text()
+    memo = sc.render_comment_memo(dict(_valid(comment_prompt="")))
+    assert len(memo.splitlines()) == 4 and "推測で補わず" in memo
+
+
+def test_launch_writes_the_memo_before_reserving(tmp_path, monkeypatch):
+    g = _ctl_g(tmp_path)
+    _receiver(monkeypatch, alive=True, status="receiving", fresh=True, audio_present=True, expires_at=9e9)
+    sc.launch_corner(g, run=lambda argv, **k: subprocess.CompletedProcess(argv, 0, "", ""), now=1000)
+    assert "Fly Me To The Home!" in (Path(g.state_dir) / sc.MEMO_FILE).read_text()

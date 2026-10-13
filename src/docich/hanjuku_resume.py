@@ -231,7 +231,11 @@ def claim(adapter, deadline, cancel):
             return
         ledger = read_record(Path(g.state_dir) / 'corner_rotation.json', limit=1024 * 1024)
         pending = ledger.get('pending') or {}
-        if (pending.get('request_id') != request.get('request_id')
+        recovery = request.get('startup_recovery')
+        attempt_id = (recovery.get('attempt_id') if isinstance(recovery, dict)
+                      else request.get('request_id'))
+        if (pending.get('request_id') != attempt_id
+                or (recovery is not None and pending.get('resume_request_id') != request.get('request_id'))
                 or pending.get('corner') != request.get('corner')
                 or pending.get('source') != 'manual' or pending.get('resume_latest') is not True):
             return  # another legitimate corner start cannot steal the request
@@ -329,12 +333,18 @@ def restore(adapter, deadline, cancel):
     send_ra_cmd('FRAMEADVANCE', port=adapter._network_port())
     from .xkit import XKit
     from .hanjuku_pixels import read_png
-    from .hanjuku_screen import parse
+    from .hanjuku_screen import (fake_hero_announcement_chapter, parse, resume_sortie_panel,
+                                resume_egg_ritual_panel, resume_battle_menu_panel)
     native = read_record(spec.runtime_dir / 'presentation.json')
     capture = spec.runtime_dir / 'screenshots/resume.png'
     capture.parent.mkdir(exist_ok=True)
     chapter = None
-    while chapter is None:
+    starter_without_chapter = False
+    sortie_without_chapter = False
+    ritual_without_chapter = False
+    battle_menu_without_chapter = False
+    while (chapter is None and not starter_without_chapter and not sortie_without_chapter
+           and not ritual_without_chapter and not battle_menu_without_chapter):
         adapter._check_active(deadline, cancel)
         time.sleep(.05)
         reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
@@ -344,12 +354,37 @@ def restore(adapter, deadline, cancel):
         XKit(native['display']).screenshot(capture, native['width'], native['height'],
                                          window_id=native['window'], low_latency=True)
         frame = read_png(capture).resized()
-        header = parse(frame).header or {}
+        screen = parse(frame)
+        header = screen.header or {}
         observed = header.get('chapter')
         if type(observed) is int and 1 <= observed <= 12:
             chapter = observed
-    atomic_write_json(spec.runtime_dir / 'hanjuku_bot.json',
-                      {'policy': {'chapter': chapter, 'name': {'done': True}}})
+        elif fake_hero_announcement_chapter(screen) is not None:
+            chapter = fake_hero_announcement_chapter(screen)
+        elif observed is None and screen.kind in {'starter_list', 'starter_confirm'}:
+            from .hanjuku_starter import rows
+            upper, lower = rows(screen), rows(screen, selected=True)
+            starter_without_chapter = upper is not None and bool(upper) and lower is not None
+        elif observed is None and resume_egg_ritual_panel(screen):
+            ritual_without_chapter = True
+        elif observed is None and resume_sortie_panel(screen):
+            sortie_without_chapter = True
+        elif observed is None and resume_battle_menu_panel(screen):
+            battle_menu_without_chapter = True
+    # These verified chapterless panels seed only their measured foreground
+    # owner; chapter, route and any old transaction need fresh evidence.
+    policy = {'name': {'done': True}}
+    if chapter is not None:
+        policy['chapter'] = chapter
+    else:
+        policy['resume_chapter_pending'] = True
+        if ritual_without_chapter:
+            policy['resume_egg_ritual'] = {'readings': 0, 'month': f"{header['year']}-{header['month']}"}
+        if sortie_without_chapter:
+            policy['resume_sortie_cancel'] = {'readings': 0}
+        if battle_menu_without_chapter:
+            policy['resume_battle_menu'] = {'readings': 0}
+    atomic_write_json(spec.runtime_dir / 'hanjuku_bot.json', {'policy': policy})
     adapter._check_active(deadline, cancel)
     send_ra_cmd('PAUSE_TOGGLE', port=adapter._network_port())
     from .adapters.retroarch import resolve_rom
@@ -362,6 +397,7 @@ def restore(adapter, deadline, cancel):
             break
         time.sleep(.05)
     verified_receipt = dict(request, status='verified', chapter=chapter,
+                            gameplay_context='verified_checkpoint_foreground',
                             frame_sha256=frame.digest(), verified_at=time.time())
     atomic_write_json(receipt_path, verified_receipt)
     with _lock(adapter.g) as root:

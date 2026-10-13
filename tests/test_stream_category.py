@@ -152,6 +152,41 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
         self.assertTrue(announce_running_view(self.g, "nethack", spawn=self._recorder))
         self.assertEqual(self.spawned[-1]["argv"][1:3], ["--game", "nethack"])
 
+    def test_special_category_and_title_share_one_settings_read(self) -> None:
+        from docich import special_corner as sc, stream_category as category
+
+        script = self._install_script()
+        first = dict(sc.DEFAULTS, title="ゲームA", title_suffix="挑戦A",
+                     category_id="33214", category_name="Game A")
+        second = dict(first, title="ゲームB", title_suffix="挑戦B",
+                      category_id="33215", category_name="Game B")
+        sc.save_settings(self.g.state_dir, first)
+        original = category._special_settings
+
+        def edit_after_read(g):
+            loaded = original(g)
+            sc.save_settings(g.state_dir, second)
+            return loaded
+
+        with mock.patch.object(category, "_special_settings", side_effect=edit_after_read) as read:
+            self.assertTrue(announce_stream_flyhome(self.g, spawn=self._recorder))
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(self.spawned[-1]["argv"], [
+            str(script.resolve()), "--category-id", "33214", "--category-name", "Game A",
+            "--activity", "ゲームA", "--strategy", "挑戦A",
+        ])
+
+    def test_explicit_committed_settings_do_not_read_future_settings(self) -> None:
+        from docich import special_corner as sc, stream_category as category
+
+        self._install_script()
+        snapshot = dict(sc.DEFAULTS, title="ゲームA", title_suffix="挑戦A")
+        with mock.patch.object(category, "_special_settings", side_effect=AssertionError("future read")):
+            self.assertTrue(category.announce_stream_special(self.g, settings=snapshot,
+                                                            spawn=self._recorder))
+        self.assertEqual(self.spawned[-1]["argv"][-4:],
+                         ["--activity", "ゲームA", "--strategy", "挑戦A"])
+
     def test_commit_follow_routes_flyhome_and_restores_the_previous_game(self) -> None:
         self._install_script()
         self.assertTrue(announce_running_view(self.g, "external-video-view", spawn=self._recorder))

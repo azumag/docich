@@ -16,9 +16,12 @@ COLLECTOR = ROOT / "ops" / "vm_actions" / "collect_diagnostics.py"
 def _source_screen_kinds():
     """Re-derive the screen-kind vocabulary the runtime can actually emit."""
     kinds = set()
+    # The policy and bot live in the layered docich.hanjuku package; the old
+    # hanjuku_bot/hanjuku_policy modules are facades kept in the scan.
     for path in (ROOT / "src" / "docich" / "hanjuku_screen.py",
                  ROOT / "src" / "docich" / "hanjuku_bot.py",
-                 ROOT / "src" / "docich" / "hanjuku_policy.py"):
+                 ROOT / "src" / "docich" / "hanjuku_policy.py",
+                 *sorted((ROOT / "src" / "docich" / "hanjuku").rglob("*.py"))):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))

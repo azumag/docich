@@ -108,14 +108,14 @@ def _receipt(root, request_id, status):
     return value
 
 
-def _boundary(root, runtime_id, request_id, player, receipt):
+def _boundary(root, runtime_id, request_id, player, receipt, *, outcomes=("ended",)):
     validate_runtime_id(runtime_id)
     value = read_record(root, ("runtimes", runtime_id, "nethack_boundary.json"))
     _require(type(value.get("schema_version")) is int and value["schema_version"] == 1
              and type(value.get("generation")) is int
              and value["generation"] == runtime_id_generation(runtime_id)
              and value.get("runtime_id") == runtime_id and value.get("game") == "nethack"
-             and value.get("request_id") == request_id and value.get("outcome") == "ended"
+             and value.get("request_id") == request_id and value.get("outcome") in outcomes
              and value.get("player_name") == player)
     _require(_instant(receipt["created_at"]) <= _instant(value.get("recorded_at"))
              <= _instant(receipt["updated_at"]))
@@ -255,4 +255,107 @@ def saved_record_matches(record, proof, *, now):
              and _instant(proof["return_completed_at"]) <= _instant(record.get("prepared_at")) <= now)
     # Equality alone accepts bool/float generations; compare canonical JSON too.
     _require(_digest({key: record[key] for key in proof}) == _digest(proof))
+    return record["phase"]
+
+
+ADOPTED_RECORD_KEY = "nethack_adopted_return"
+
+
+def adopted_return_proof(root: Path, owner, ledger, *, player, now,
+                         source_absent, target_alive):
+    """Read-only return proof after the existing failed-candidate adoption.
+
+    A completed automatic slot can have a failed immutable return receipt
+    even though that *same* Soren candidate was subsequently adopted alive.
+    Preserve that failure; only its exact ready/clean candidate, source
+    boundary, released source session and live target may settle this slot.
+    Suspended is a saved adventure, not a death or an ended-game receipt.
+    """
+    from .corner_rotation import timestamp
+    from .retro_corner import RetroCornerManager
+    _require(source_absent is True and target_alive is True)
+    _require(type(owner.get("schema_version")) is int and owner["schema_version"] == 1
+             and owner.get("game") == "nethack" and owner.get("previous_game") == "sorengame"
+             and owner.get("status") in {"failed", "interrupted"}
+             and owner.get("finish_reason") in {"stalled", "terminal", "expired"}
+             and all(key not in owner for key in
+                     (RECORD_KEY, "restore_recovery", "restore_cleanup", "restore_cleanup_attempt")))
+    _require(_digest(read_record(root, ("nethack_corner.json",))) == _digest(owner)
+             and _digest(read_record(root, ("corner_rotation.json",))) == _digest(ledger))
+    reservation = validate_request_id(owner.get("rotation_request_id"))
+    restore_id = validate_request_id(owner.get("switch_request_id"))
+    original_runtime = validate_runtime_id(owner.get("rotation_runtime_id"))
+    pending = ledger.get("pending")
+    _require(type(ledger.get("schema_version")) is int and ledger["schema_version"] == 1
+             and ledger.get("status") == "recovery_required" and ledger.get("manual_pending") is None
+             and isinstance(pending, dict) and pending.get("corner") == "nethack"
+             and pending.get("phase") == "dispatched" and pending.get("request_id") == reservation
+             and "source" not in pending and reservation != restore_id)
+    manual = read_record(root, ("nethack_corner_manual.json",), optional=True)
+    if manual is not None:
+        _require(type(manual.get("schema_version")) is int and manual["schema_version"] == 1
+                 and manual.get("status") in {"idle", "completed", "interrupted", "expired"})
+    canonical = read_record(root, ("game_switch.json",))
+    validate_state(canonical)
+    _require(RetroCornerManager._restore_canonical_clean(canonical)
+             and canonical.get("deadline_at") is None)
+    active = canonical.get("active") or {}
+    landed = canonical.get("last_result") or {}
+    identity = RetroCornerManager._restore_source_identity(active)
+    _require(identity is not None and active.get("adapter") == "soren"
+             and identity["game"] == "sorengame" and landed.get("operation") == "recover"
+             and landed.get("status") == "succeeded" and landed.get("request_id") == ""
+             and landed.get("from_game") == "nethack" and landed.get("to_game") == "sorengame"
+             and type(landed.get("generation")) is int and landed["generation"] == identity["generation"]
+             and _digest(landed.get("active_runtime")) == _digest(identity))
+    original = read_record(root, ("game-switch", "requests", f"{restore_id}.json"))
+    validate_receipt(original, root, expected_request_id=restore_id)
+    result = original.get("result") or {}
+    _require(original.get("status") == "failed" and original.get("operation") == "switch"
+             and original.get("target") == "sorengame" and original.get("runtime_id") == identity["runtime_id"]
+             and type(original.get("generation")) is int and original["generation"] == identity["generation"]
+             and result.get("status") == "failed" and result.get("operation") == "switch"
+             and result.get("request_id") == restore_id and result.get("to_game") == "sorengame"
+             and result.get("from_game") in {None, "nethack"}
+             and result.get("error_code") == "rollback_failed"
+             and type(result.get("generation")) is int and result["generation"] == identity["generation"]
+             and result.get("cleanup_pending") is True
+             and result.get("source_runtime") is None and result.get("restored_runtime") is None
+             and result.get("restored_generation") is None
+             and (owner.get("last_error_code") is None or owner["last_error_code"] == result["error_code"])
+             and runtime_id_generation(original_runtime) < identity["generation"])
+    started, completed = _instant(owner.get("started_at")), _instant(owner.get("completed_at"))
+    _require(started <= completed <= _instant(original["created_at"])
+             <= _instant(original["updated_at"]) <= _instant(canonical["updated_at"]) <= now
+             and _instant(original["created_at"]) <= _instant(active.get("started_at"))
+             <= _instant(original["updated_at"])
+             and timestamp(pending.get("selected_at")) <= started.timestamp())
+    history = ledger.get("history")
+    _require(isinstance(history, list))
+    dispatch = [row for row in history if isinstance(row, dict)
+                and row.get("corner") == "nethack"
+                and timestamp(pending["selected_at"]) <= timestamp(row.get("at")) <= started.timestamp()]
+    _require(any(row.get("source") == "reservation" for row in dispatch)
+             and not any(row.get("source") == "manual-reservation" for row in dispatch))
+    boundary = _boundary(root, original_runtime, restore_id, player, original,
+                         outcomes=("ended", "suspended"))
+    owner_input = {key: value for key, value in owner.items()
+                   if key not in {ADOPTED_RECORD_KEY, "status"}}
+    stable_ledger = {"pending": pending, "manual_pending": None, "dispatch": dispatch}
+    stable_landing = {"active_runtime": identity, "operation": "recover", "status": "succeeded",
+                      "from_game": "nethack", "to_game": "sorengame"}
+    return {"schema_version": 1, "kind": "adopted_failed_candidate_return",
+            "reservation_id": reservation, "restore_request_id": restore_id,
+            "original_source": {"game": "nethack", "runtime_id": original_runtime,
+                                "generation": runtime_id_generation(original_runtime)},
+            "source_outcome": boundary["outcome"], "landed_identity": identity,
+            "original_restore_failed_at": original["updated_at"],
+            "evidence_sha256": _digest([owner_input, stable_ledger, original, boundary, manual, stable_landing])}
+
+
+def adopted_record_matches(record, proof, *, now):
+    _require(isinstance(record, dict) and set(record) == set(proof) | {"phase", "prepared_at"}
+             and record.get("phase") in {"prepared", "committed"}
+             and _instant(proof["original_restore_failed_at"]) <= _instant(record.get("prepared_at")) <= now
+             and _digest({key: record[key] for key in proof}) == _digest(proof))
     return record["phase"]

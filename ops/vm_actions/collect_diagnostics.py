@@ -3590,7 +3590,16 @@ def _project_corner_state(data):
                 "hanjuku-chart-v157-eggless-wall-risk",
                 "hanjuku-chart-v158-native-starter-pane",
                 "hanjuku-chart-v159-egg-recheck-wall-risk",
-                "hanjuku-chart-v162-starter-selected-row-cursor"} else None),
+                "hanjuku-chart-v162-starter-selected-row-cursor",
+                "hanjuku-chart-v163-recruit-dialog-eligibility",
+                "hanjuku-chart-v164-source-location-recheck",
+                "hanjuku-chart-v165-resume-starter-readiness",
+                "hanjuku-chart-v166-egg-recovery-receipt",
+                "hanjuku-chart-v167-fake-hero-reveal",
+                "hanjuku-chart-v168-general-repair-budget",
+                "hanjuku-chart-v169-repair-interruption",
+                "hanjuku-chart-v170-chapter-two-boss",
+                "hanjuku-chart-v173-resume-sortie-menu", "hanjuku-chart-v174-status-reuse-hero-guard", "hanjuku-chart-v175-combat-aware-force", "hanjuku-chart-v176-individual-egg-recovery", "hanjuku-chart-v177-continuous-chikujou", "hanjuku-chart-v178-native-individual-quote", "hanjuku-chart-v179-soldier-team-reading", "hanjuku-chart-v180-disabled-defense-probe", "hanjuku-chart-v181-merchant-reserve", "hanjuku-chart-v182-recovery-list-return", "hanjuku-chart-v184-ritual-foreground", "hanjuku-chart-v185-layered", "hanjuku-chart-v186-unicorn-layered", "hanjuku-chart-v187-ritual-recitation", "hanjuku-chart-v188-restored-terminal-context", "hanjuku-chart-v189-priest-sprite-dialogue", "hanjuku-chart-v190-bound-sortie-execution", "hanjuku-chart-v191-orphan-battle-menu", "hanjuku-chart-v192-conserved-army-reobserve", "hanjuku-chart-v193-wounded-summoner", "hanjuku-chart-v194-army-count-check", "hanjuku-chart-v195-melee-hp-continuation", "hanjuku-chart-v196-observed-menu-feedback", "hanjuku-chart-v197-unread-battle-force", "hanjuku-chart-v198-retry-exhaust-month-step", "hanjuku-chart-v199-no-hero-substitute", "hanjuku-chart-v200-live-summon-shield"} else None),
         "bot_chart": _project_bot_chart(data.get("bot_chart")),
         "narration": _project_counts(data.get("narration"),
                                      ("enqueued", "delivery_failed", "skipped")),
@@ -4860,12 +4869,12 @@ HANJUKU_DECISION_TOP_KINDS = 6
 HANJUKU_DECISION_MAX_PERIOD = 4
 HANJUKU_DECISION_EVENTS = ("action_plan", "decision")
 # Owned by hanjuku_screen.classify_text plus the literal screen.kind overrides
-# in hanjuku_screen.parse, hanjuku_bot and hanjuku_policy.
+# in hanjuku_screen.parse and the layered docich.hanjuku package.
 # tests/test_hanjuku_decision_diagnostics.py re-derives that vocabulary from
 # source, so a new kind fails closed as "other" instead of being emitted.
 HANJUKU_DECISION_SCREEN_KINDS = frozenset({
     "attack_started", "barrier_removed", "battle", "battle_menu",
-    "battle_menu_pending", "boss_attack_started", "card_select", "castle_info",
+    "battle_menu_pending", "boss_attack_started", "field_encounter_started", "card_select", "castle_info",
     "castle_menu", "defense_started", "discharge_menu", "egg_battle_menu",
     "egg_choice_menu", "general_list", "gift_request", "main_menu", "map",
     "map_target", "monster_menu", "month_menu", "name_entry", "okunote_menu",
@@ -6427,6 +6436,78 @@ def _project_hanjuku_card_assessment(value, tick):
     return out
 
 
+def _collect_hanjuku_projection_recovery(state_dir):
+    """Current adopted mirror/guard births only; no identifiers or argv emitted."""
+    result = {'status': 'unavailable', 'present': False, 'identity_matches': None,
+              'guard_alive': None, 'player_alive': None}
+    try:
+        root = Path(state_dir)
+        canonical, _ = _read_hanjuku_record(root / 'game_switch.json')
+        active = canonical.get('active')
+        if (not isinstance(active, dict) or active.get('game') != 'hanjuku-hero'
+                or type(active.get('generation')) is not int
+                or not isinstance(active.get('runtime_id'), str)
+                or not re.fullmatch(r'g[1-9][0-9]*-[a-f0-9]{8}', active['runtime_id'])
+                or active['generation'] != int(active['runtime_id'].split('-')[0][1:])
+                or not isinstance(active.get('lease_id'), str) or not active['lease_id']):
+            return result
+        runtime = root / 'runtimes' / active['runtime_id']
+        if runtime.is_symlink():
+            return result
+        path = runtime / _REG.HANJUKU_PROJECTION_RECOVERY['receipt_file']
+        if not path.exists():
+            return result
+        result['present'] = True
+        record, _ = _read_hanjuku_record(path)
+        expected = {k: active[k] for k in ('game', 'runtime_id', 'generation', 'lease_id')}
+        result['identity_matches'] = record.get('identity') == expected
+        if not result['identity_matches']:
+            result['status'] = 'unverified'
+            return result
+        def alive(entry, role):
+            if (not isinstance(entry, dict) or type(entry.get('pid')) is not int
+                    or entry['pid'] < 2 or not isinstance(entry.get('start'), str)
+                    or not entry['start'].isdecimal()):
+                return False
+            try:
+                raw = (Path('/proc') / str(entry['pid']) / 'stat').read_text()
+                fields = raw[raw.rfind(')')+2:].split()
+                if fields[0] == 'Z' or fields[19] != entry['start']:
+                    return False
+                argv_raw = (Path('/proc') / str(entry['pid']) / 'cmdline').read_bytes()
+                if len(argv_raw) > 8192:
+                    return False
+                argv = [word.decode() for word in argv_raw.split(b'\0') if word]
+                if role == 'guard':
+                    owner=record.get('game_owner') or {}
+                    return argv[1:] == ['-m', _REG.HANJUKU_PROJECTION_RECOVERY['module'], 'guard',
+                                        active['runtime_id'],str(owner.get('pid')),str(owner.get('start'))]
+                digest = record.get('player_argv_sha256')
+                if not argv or Path(argv[0]).name != 'ffplay' or not isinstance(digest, str):
+                    return False
+                argv[0] = 'ffplay'
+                return hashlib.sha256(json.dumps(argv).encode()).hexdigest() == digest
+            except (OSError, ValueError, IndexError):
+                return False
+        result['guard_alive'] = alive(record.get('guard'), 'guard')
+        result['player_alive'] = alive(record.get('player'), 'player')
+        status = record.get('status')
+        result['status'] = status if status in {'prepared', 'stopped', 'failed', 'cleanup_failed'} else 'unverified'
+        if status == 'ready' and result['guard_alive'] and result['player_alive']:
+            presentation, _ = _read_hanjuku_record(runtime / 'presentation.json')
+            recovery = presentation.get('recovery')
+            if (presentation.get('status') == 'ready' and presentation.get('projection') == record.get('projection')
+                    and isinstance(recovery, dict) and recovery.get('identity') == expected
+                    and recovery.get('player') == record.get('player') and recovery.get('guard') == record.get('guard')):
+                result['status'] = 'healthy'
+        again, _ = _read_hanjuku_record(root / 'game_switch.json')
+        if again != canonical:
+            result.update(status='unverified', identity_matches=False)
+        return result
+    except (OSError, ValueError, KeyError, TypeError):
+        return {**result, 'status': 'unverified'}
+
+
 def _collect_hanjuku_resume(state_dir):
     """Fixed metadata projection; does not read checkpoint/ROM bytes."""
     unavailable = {'status': 'unavailable', 'basis': 'resume_receipt'}
@@ -6909,6 +6990,7 @@ def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=Non
                   owner_matches=None, owner_terminal=None, legacy_contract_applicable=None,
                   contract_conditions=None,
                   restore_recovery_present=None, cleanup_record_present=None,
+                  adopted_return_record_present=None,
                   cleanup_attempt_present=None, chronology_matches=None, terminal_chain_matches=None,
                   manual_clear=None, original_receipt=None, original_boundary=None,
                   return_receipt=None, return_boundary=None, canonical=None,
@@ -6936,12 +7018,13 @@ def _collect_nethack_rotation_evidence(state_dir, now, *, player=None, probe=Non
                                    and type(owner.get('schema_version')) is int
                                    and owner['schema_version'] == 1 and owner.get('game') == 'nethack')
         result['owner_terminal'] = owner.get('status') in {'failed', 'interrupted'}
-        result.update(restore_recovery_present='restore_recovery' in owner,
+        result.update(adopted_return_record_present='nethack_adopted_return' in owner,
+                      restore_recovery_present='restore_recovery' in owner,
                       cleanup_record_present='restore_cleanup' in owner,
                       cleanup_attempt_present='restore_cleanup_attempt' in owner)
         result['legacy_contract_applicable'] = (owner.get('previous_game', 'sorengame') == 'sorengame'
             and owner.get('finish_reason') == 'terminal'
-            and all(k not in owner for k in ('restore_recovery', 'restore_cleanup', 'restore_cleanup_attempt')))
+            and all(k not in owner for k in ('restore_recovery', 'restore_cleanup', 'restore_cleanup_attempt', 'nethack_adopted_return')))
         result['manual_clear'] = (ledger.get('manual_pending') is None
             and (manual is None or (type(manual.get('schema_version')) is int
                                    and manual['schema_version'] == 1
@@ -7606,6 +7689,7 @@ def main(argv):
         "corners": corners,
         "hanjuku_resume": _collect_hanjuku_resume(_program_state_dir()),
         "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
+        "hanjuku_projection_recovery": _collect_hanjuku_projection_recovery(_program_state_dir()),
         "tmux_servers": _collect_tmux_servers(),
         "pulse_sink_inputs": _collect_pulse_sink_inputs(),
         "resolver_daemon": _collect_resolver_daemon(),

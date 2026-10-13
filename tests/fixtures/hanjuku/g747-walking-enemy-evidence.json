@@ -1,0 +1,44 @@
+{
+  "runtime_id": "g747-0fd8cf05",
+  "generation": 747,
+  "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+  "decision": {
+    "at": 1791875906.2520916,
+    "bot_version": "hanjuku-chart-v196-observed-menu-feedback",
+    "chart_step": null,
+    "decision_id": "g747-0fd8cf05:747:2751",
+    "deviation_reason": null,
+    "dispatch_status": "planned_not_yet_sent",
+    "event": "action_plan",
+    "expected_metric": null,
+    "frame_sha256": "7e2b7d62c3fd2e1546233d55583c5f9b92efd07eb845c4688de6e74e7c984b40",
+    "game": "hanjuku-hero",
+    "generation": 747,
+    "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+    "menu_navigation_feedback": null,
+    "observation_interval_ms": 500,
+    "planned_actions": [
+      {
+        "ms": 50,
+        "type": "wait"
+      }
+    ],
+    "reason_decisions": [
+      "battle_command_open_wait"
+    ],
+    "runtime_id": "g747-0fd8cf05",
+    "schema": 1,
+    "screen_kind": "battle",
+    "snapshot": "decision-111.png",
+    "strategy_variant": "chart_adjusted"
+  },
+  "input_receipts": [],
+  "rgb_sha256": "7e2b7d62c3fd2e1546233d55583c5f9b92efd07eb845c4688de6e74e7c984b40",
+  "png_sha256": "e0e059745981b43053545cc28423a3094ec68a27385b11a1e4757ecb00643bb8",
+  "expected": {
+    "ally_hp": 24,
+    "enemy_hp": 66,
+    "enemy_soldiers": null
+  },
+  "manual_evidence": "Multiple distinct enemy bodies include known army-colour 54px/11x9 fragments. Exact total is not independently verified; old count2 is unsafe. Original plan waited and has no input receipt; changed policy is counterfactual, not a natural input or win."
+}

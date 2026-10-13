@@ -22,6 +22,10 @@ import unicodedata
 from pathlib import Path
 
 SETTINGS_FILE = "special_corner.json"
+# Rendered comment-reply note, re-read by Soren's comment.sh on every reply and
+# used only while the canonical active game is the special view.
+MEMO_FILE = "special_corner_memo.md"
+VIEW_NAME = "external-video-view"
 SCHEMA_VERSION = 1
 
 # Backward-compatible defaults: the corner that existed before this module.
@@ -154,7 +158,47 @@ def save_settings(state_dir, data, *, clock=time.time) -> dict:
     clean = validate_settings(data)
     payload = dict(clean, schema_version=SCHEMA_VERSION, updated_at=clock())
     atomic_write_json(settings_path(state_dir), payload)
+    write_comment_memo(state_dir, clean)
     return dict(clean, is_default=False, updated_at=payload["updated_at"])
+
+
+def render_comment_memo(settings) -> str:
+    """The comment-reply note (a ``comment_ui_memo`` style bullet).
+
+    Only validated settings text is embedded (no ``$``/backquote/markup), and
+    the gate sentence keeps it inert if it were ever shown on another screen.
+    """
+    lines = [f"- 【いまのメイン画面が {VIEW_NAME}（特別コーナー）のときだけ有効】"
+             f"特別コーナー「{settings['title']}」の説明"]
+    lines += ["  " + line for line in settings["comment_prompt"].split("\n") if line.strip()]
+    lines += [
+        "  ソ連ゲームのスコア・盤面・戦略改善の話ではない（その話題を聞かれたら、ソ連ゲームの話として別に答えてよい）",
+        "  このメモに書いていないこと（何面か・操作・仕掛け・残り時間など）は推測で補わず、「ちょっと分からないな」と正直に答える。"
+        "そのうえで「画面を見ていてね」「応援しているよ」と視聴者と一緒に見守る言い方にする",
+        f"  いまのメイン画面が {VIEW_NAME} 以外のときは、この節を無視する",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def write_comment_memo(state_dir, settings=None) -> Path:
+    """Atomically (re)write the hot-read memo from the given or saved settings."""
+    import tempfile
+
+    settings = settings or load_settings(state_dir)
+    path = Path(state_dir) / MEMO_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{MEMO_FILE}.", dir=str(path.parent))
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(render_comment_memo(settings))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+    return path
 
 
 def validate_query(query) -> str:
@@ -375,6 +419,11 @@ def launch_corner(g, *, run=subprocess.run, now=None, unit_suffix=None) -> str:
                                         "OBS の映像と音声を受信中になってから開始してください")
     import uuid
 
+    try:
+        # The memo must exist even when the operator never saved settings.
+        write_comment_memo(g.state_dir)
+    except OSError:
+        pass
     unit = "docich-external-video-corner-" + (unit_suffix or str(uuid.uuid4()))
     repo = Path(g.repo_root).resolve()
     command = ["systemd-run", "--user", "--quiet", "--collect", f"--unit={unit}",

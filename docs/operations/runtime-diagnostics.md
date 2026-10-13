@@ -697,3 +697,6 @@ metadataとの一致は別フィールドで示す。`saved_receipt`だけでは
 SHA・request/lease/runtime識別子・自由文を出力しない。worker/queue/manifestは追加しない。
 
 `hanjuku_resume` は固定保存再開のmetadataだけを報告します。`prepared` は未公開snapshotのみ、`queued` は標準manual queueに対応する予約、`claimed` は同候補への移行途中、`verified_receipt` は同active runtimeのcore roundtrip/native章/PLAYING検査を記録したreceiptです。公開直後に中断してprivate receiptが`prepared`のままでも、同IDの実manual queueがあれば`queued`を報告します。現在の保存の完全性やライブ画面の進行は別確認です。identity不一致・欠落はunavailable/unverifiedで、保存データ・ROM・source path・SHA・request/lease識別子・自由本文は出力しません。停止済みruntimeのreceiptを現在進行中として表示しません。
+
+
+半熟の投影採用は `HANJUKU_PROJECTION_RECOVERY` に登録する既存game windowに属するguard paneです。共有19worker表やAI queueを増やしません。`hanjuku_projection_recovery` は同active identityのreceiptとguard/playerのkernel起動時刻を照合し、固定status・presence・identity一致・生存booleanだけを返します。PID・argv・native source・runtime/lease識別子・自由文は出力しません。`healthy` はready receiptとlive process birth/投影stateの一致であり、公開映像・音声の視聴証明ではありません。別epoch・欠落・symlink・PID再利用・state不同はunavailable/unverifiedです。

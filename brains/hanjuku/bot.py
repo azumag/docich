@@ -21,6 +21,7 @@ from docich import hanjuku_experience
 from docich.hanjuku_bot import BOT_VERSION, decide
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_run import append_log
+from docich.hanjuku.os_layer.commands import menu_navigation_feedback
 from docich.retroarch_boundary import read_record
 
 BOT_STATE_LIMIT = 256 * 1024   # the bot's own memory file, not a boundary record
@@ -49,7 +50,7 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'battle_hero_retreat_unavailable','battle_hero_retreat_cancel_card',
     'name_wait','name_confirm','name_delete','name_type','order_start',
     'unexpected_target','order_substitute','order_source_changed','order_launched','order_failed',
-    'attack_observed','defense_observed','card_missing',
+    'attack_observed','field_encounter_observed','resume_sortie_cancel','defense_observed','card_missing',
     'card_pick','sortie_confirm','sortie_input','battle_card','battle_card_missing','battle_card_selected','battle_card_list_unclassified','battle_card_open_unclassified',
     'barrier_removed','month_plan','month_confirm','month_done','buy_skip','buy',
     'soldier_refill','prompt','egg_battle','gift','close_panel','situation_held',
@@ -111,8 +112,11 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
         strategy_variant=input_context.get('strategy_variant',strategy_variant)
         deviation_reason=input_context.get('deviation_reason')
     card_flow=battle.get('card_flow')
-    capture=(bool(card_flow) or (bool(battle.get('survival')) and state.get('screen_kind') == 'battle_menu') or state.get('screen_kind') in {'general_list','card_select','sortie_confirm'} or any(
-        r.get('decision') in {'name_confirm','chapter_seen','battle_result','barrier_removed',
+    # battle_result is recorded after leaving combat and may already show
+    # the map. Keep combat pixels in the same bounded ring, including holds
+    # and enemy-owned menus, without claiming an input or a battle outcome.
+    capture=(menu_navigation_feedback(state, actions) or bool(card_flow) or (bool(battle.get('survival')) and state.get('screen_kind') == 'battle_menu') or state.get('screen_kind') in {'general_list','card_select','sortie_confirm','battle','egg_battle_menu','monster_menu'} or any(
+        r.get('decision') in {'name_confirm','chapter_seen','battle_result','barrier_removed','field_encounter_observed','resume_sortie_cancel',
                               'card_pick','card_missing','sortie_confirm','order_substitute',
                               'order_launched_unconfirmed','sortie_arrival_confirmed',
                               'sortie_departed_observed','sortie_cancelled_observed',
@@ -136,7 +140,8 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
         'schema':1,'event':'action_plan','at':now,'bot_version':BOT_VERSION,**identity,
         'decision_id':decision_id,'frame_sha256':frame_sha256,'snapshot':snapshot,
         'screen_kind':state.get('screen_kind'),'chart_step':chart_step,
-        'observation_interval_ms':observation_interval_ms(state),
+        'observation_interval_ms':observation_interval_ms(state, actions),
+        'menu_navigation_feedback': state.get('menu_navigation_reading') if menu_navigation_feedback(state, actions) else None,
         'strategy_variant':strategy_variant,'deviation_reason':deviation_reason,
         'expected_metric':input_context.get('expected_metric') if input_context is not None else battle.get('strategy_expected'),
         'planned_actions':actions,
@@ -202,13 +207,15 @@ def ask_interim(runtime: Path, state: dict, obs_meta: dict, *, settings=None, as
     return answer
 
 
-def observation_interval_ms(state):
+def observation_interval_ms(state, actions=None):
     """Short feedback for living melee and its in-flight rescue commands.
 
     g486: slowing to 1500 ms as soon as B planned a card let the Queen
     summon between the chained B and its next readable command menu.
     Keep the existing allowed 500 ms cycle across card-menu fades too.
     """
+    if menu_navigation_feedback(state, actions):
+        return 500
     policy=state.get('policy') or {}
     battle=policy.get('battle') or {}
     preempt=battle.get('okunote_egg_preempt') or {}
@@ -309,7 +316,7 @@ def main():
                                  experience=experience,
                                  recall_inputs=recall_input_receipts(runtime, state, meta),
                                  run_identity=meta.get('hanjuku'))
-            interval_ms=observation_interval_ms(state)
+            interval_ms=observation_interval_ms(state, actions)
             records=state.pop('_records',[])
             updated_experience=state.pop('_experience',None)
             persist(runtime,state,records,meta,actions=actions,frame_sha256=frame.digest(),frame=frame)

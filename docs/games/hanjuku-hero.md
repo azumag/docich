@@ -243,8 +243,17 @@ owner-only `corner-rotation-operator.yml` の `resume-hanjuku-latest` は、今�
 
 固定runtime配下のslot 0/番号付きstateから最新の非空保存を選び、原本を保持してprivate snapshotへコピー・SHA検証・fsyncします。最新が64MiB上限を超える場合も、古い保存へfallbackせず拒否します。snapshot準備時は`prepared`、manual inboxの永続化後は`queued`を記録します。inbox公開前の失敗は同じID・同じsnapshotで再試行し、公開直後の中断も実inbox/dispatchと照合して継続できます。`prepared`だけではdispatchや復元の証拠にしません。共通のdurable manual queueが既存コーナーの完走・休止・実行枠を守り、予約IDに対応する新canonical candidateだけがsnapshotを消費します。旧runtimeの最終bot/terminal/名簿は移行しません。
 
-新候補はAI開始前に内容・core一致を確認し、pause→`LOAD_STATE_SLOT 0`→別slot 1への新規書込みを確認した`SAVE_STATE`→RASTATEのcore MEM SHA一致→slot 0へ戻して再度保存・一致を確認します。非同期loadが読み終わるまでslot 0を上書きしません。LOADのUDP返信は非同期task受付だけなので、復元成功の根拠にはしません。その後1frameを描画してnative画面の章番号を読み、観測した章だけを新方策へ初期設定し、PLAYING確認後にagentを許可します。内部検証済み・予約済み・実配信での再開は区別します。
+新候補はAI開始前に内容・core一致を確認し、pause→`LOAD_STATE_SLOT 0`→別slot 1への新規書込みを確認した`SAVE_STATE`→RASTATEのcore MEM SHA一致→slot 0へ戻して再度保存・一致を確認します。非同期loadが読み終わるまでslot 0を上書きしません。LOADのUDP返信は非同期task受付だけなので、復元成功の根拠にはしません。その後1frameを描画してnative画面の章番号を読み、観測した章だけを新方策へ初期設定し、PLAYING確認後にagentを許可します。章番号が表示されない先発隊画面は、実際の上下の名簿を読めた場合に限って `resume_chapter_pending` と名前入力済みだけを初期設定します。先発隊を3人選択後、実城名が一つの章だけに属するか、第2話の導入会話のクイーン撃破・主人公の偽物の両方を新しい実画面から確認して章を確定します。年/月や旧botの章からは推測しません。内部検証済み・予約済み・実配信での再開は区別します。
 
-対応形式はbounded RZIP v1/RASTATE1です。nativeの章表示を読めない保存、内容/core差分、未更新state、ロード失敗、timeoutではcandidateを成功扱いせず、元保存を保持します。一度claimした候補を新規開始へfallbackしたり、次の自然発火で自動巻戻ししたりしません。ゲームオーバー後は改善だけ行って自然発火を待つ運用を維持します。保存データ・ROM・private snapshotはGit/Actions出力へ含めません。
+対応形式はbounded RZIP v1/RASTATE1です。nativeの章表示も先発隊も確認できない保存、内容/core差分、未更新state、ロード失敗、timeoutではcandidateを成功扱いせず、元保存を保持します。一度claimした候補を新規開始へfallbackしたり、次の自然発火で自動巻戻ししたりしません。ゲームオーバー後は改善だけ行って自然発火を待つ運用を維持します。保存データ・ROM・private snapshotはGit/Actions出力へ含めません。
 
 実装根拠: [RetroArch v1.18 task_save.c](https://github.com/libretro/RetroArch/blob/v1.18.0/tasks/task_save.c) のRASTATE/core deserialize、[command.c](https://github.com/libretro/RetroArch/blob/v1.18.0/command.c) の非同期LOAD_STATE_SLOT、[rzip_stream.c](https://github.com/libretro/RetroArch/blob/v1.18.0/libretro-common/streams/rzip_stream.c) のbounded形式を使用します。
+
+
+### AI開始前に失敗した同じ再開要求の復旧
+
+`check-recover-hanjuku-resume` / `recover-hanjuku-resume` は、owner-only canonical operator の固定操作です。`expected_reservation` に、元のprivate `claimed` receipt全体（型を保持したJSON）のSHA-256を指定します。checkは読み取り専用です。runtime/core/ROM/封印保存を保ち、別の最新保存を選び直しません。
+
+復旧は元要求の正しい `rolled_back` switch receipt、同一候補の `claimed` receipt、presentation停止とtmux資源解放、bot/run/eventsファイルの不存在、stableなcanonical、対象が未休止、競合予約なしを全て確認した場合に限ります。元のGameSwitch終端receiptと候補receiptを変更せず、同じ論理UUIDに結び付けたUUID5の一回だけの実行attemptを予約します。globalの復旧準備→failed ownerの終了記録→rotation予約の途中で中断しても、同じattemptだけを修復します。通常の自然発火はこの保存を消費できません。claim/verified後のoperator再試行は読み取り専用で、追加attemptを作りません。
+
+ゲームオーバー、プレイ開始済み、復旧attempt自体の失敗はこの操作で再起動しません。配信・音声を停止せず、現コーナーの自然完走と共通の実行枠を待ちます。native fixtureによる選択3人・導入会話・地図での操作発行の検証と、実配信での3人選択/章進行/全ゲームクリアは区別します。

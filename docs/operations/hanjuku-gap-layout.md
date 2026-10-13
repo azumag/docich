@@ -37,3 +37,16 @@ Sorenの左余白対応をmainへ統合してから親のgitlinkを更新し、�
 ## Runtime checklist
 
 既存presentation状態の幾何情報と既存bot stateの表示専用観測時刻を使う。worker/queue/model/providerは追加・変更しない。表示面は共有overlayの固定route・幾何・readiness契約に登録し、既存shared-overlay diagnosticsでservice healthを確認する。秘密情報/本文ログ/任意execの公開は追加しない。投影・state fencing・期限・共有面・切替の回帰テストを実行する。
+
+
+## 失敗記録と手動復旧投影の管理置換
+
+`presentation_failed` の元ゲームが稼働し、同じ元窓を正規profileで表示する手動復旧ffplayがある場合、owner-only `recover_hanjuku_projection` をproduction/main・confirm=productionで実行する。元game/privateX/agent、共有encoder・音声・ユーザー休止を維持する。healthyな通常投影は対象外。
+
+現在run/generation/lease、元game paneのPID起動時刻、元Xvfb/viewerの親とgroup、唯一の元窓、終了済み旧player group、手動ffplayの完全argv・UID・PID起動時刻・単独group・唯一windowと実geometryを照合する。未知・重複・変更・terminal・別epochは拒否。元stateをバイト単位でバックアップし、同runtimeの`presentation_recovery.json`を排他作成する。転送中はgame-switch lockを保持するが入力・休止は操作しない。
+
+既存game tmux windowへgame所属guard paneを追加し、正規ffplayをその実子として起動する。元private窓から同filterで得たRGBと、新しい投影windowのRGBを有限時間で比較する。blank/fadeを拒否し、同source/geometryと情報のある最初の表示を確認してから、PIDfdで本人へ束縛した手動ffplayだけを終了する。新表示のsceneと実inputとの完全結合は別の受入であり、99%画素許容比較を同frame入力証明とは扱わない。
+
+新guardとffplayは同じgame windowの物理子なので、既に生存する旧coordinatorの終了処理にも含まれる。元presenterのgroupsを水増しせず、guard/playerは`recovery`に別記する。投影のstartup/実行失敗では、元game anchorが生存する限りguard paneも生存する。旧adapterのany-dead判定で元ゲームを誤って終端へ追い込まない。投影失敗は固定receiptへ記録し、通常realignの拒否を維持する。
+
+guard停止又は元game終了では、本人のPIDfd/起動時刻/argvを再照合して所有する投影だけを回収する。共有基盤や未知groupへsignalを送らない。正規operator後のrealign、初期表示・動く実映像、同gamePID、共有PID・音声・休止、旧cleanupの資源回収を別々に検証する。sourceSHA一致・visible window・ready記録だけで全受入とはしない。

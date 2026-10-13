@@ -1,0 +1,25 @@
+{
+  "kind": "read_only_policy_snapshot_not_an_observed_army_total",
+  "at": 1791859468.821304,
+  "identity": {
+    "game": "hanjuku-hero",
+    "runtime_id": "g745-18f84db7",
+    "generation": 745,
+    "lease_id": "4abd000e-9826-4033-984b-ac6432655332"
+  },
+  "chapter": 2,
+  "month": "2-10",
+  "gold": 72,
+  "soldiers_seen": null,
+  "soldiers_seen_key": null,
+  "shop": {
+    "egg": "done",
+    "gold_start": 172,
+    "key": "2-10",
+    "recruit_reserve": 42,
+    "reserve": 0,
+    "soldiers": 0,
+    "soldiers_done": true,
+    "soldiers_target": 0
+  }
+}
