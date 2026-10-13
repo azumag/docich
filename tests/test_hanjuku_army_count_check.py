@@ -235,3 +235,12 @@ def test_native_count_intro_a_only_opens_editor_then_inspection_uses_b():
     assert mem['army_count_check']['result']=='measured'
     # Original7460 used A and paid1G; the new B above is counterfactual,
     # not a naturally accepted cancellation or purchase receipt.
+
+
+def test_finished_recruitment_receipt_is_kept_while_remaining_cash_refills_zero_army():
+    mem=memory(100);observe_count(mem,0,100);shop=mem['shop']
+    shop.update(recruit='done',recruit_receipt={'payment_verified':True,'cost':50})
+    economy._zero_army_refill(mem,shop,screen(100).header)
+    assert shop['soldiers']==50 and shop['soldiers_done'] is False
+    assert shop['recruit']=='done' and shop['recruit_receipt']=={'payment_verified':True,'cost':50}
+    assert not shop.get('soldier_receipt')

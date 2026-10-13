@@ -59,7 +59,7 @@ def _zero_army_refill(mem, shop, header):
     if (not _soldier_count_current(mem, header) or mem['soldiers_seen'] != 0
             or not shop or shop.get('key') != _month_key(header)
             or shop.get('soldier_receipt') or mem.get('month_sub')
-            or shop.get('recruit') in ('opened', 'unverified', 'done')):
+            or shop.get('recruit') in ('opened', 'unverified')):
         return
     gold = (header or {}).get('gold')
     cards = [] if shop.get('merchant_done') else shop.get('items') or []
@@ -75,7 +75,9 @@ def _zero_army_refill(mem, shop, header):
     amount = min(target, available)
     if amount <= 0:
         return  # no permission to spend wages, recovery or repair money
-    shop.update(recruit='deferred_army', recruit_priority=False, recruit_reserve=0)
+    if shop.get('recruit') != 'done':
+        shop['recruit'] = 'deferred_army'
+    shop.update(recruit_priority=False, recruit_reserve=0)
     previous = shop.get('soldiers')
     shop.update(soldiers=amount, soldiers_done=False, soldiers_target=target,
                 soldier_total_target=target)
