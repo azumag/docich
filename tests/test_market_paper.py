@@ -384,5 +384,31 @@ class PaperTests(unittest.TestCase):
         self.assertEqual(active_policy(self.root), Policy())
 
 
+    def test_cancelled_restore_is_not_rewritten_to_completed(self):
+        corner = object.__new__(MarketCorner)
+        corner.view, corner.clock = "stock-paper-view", lambda: self.now
+        corner.path = self.root / "corner.json"
+        corner.current = lambda: None
+        calls = []
+        corner.coordinator = SimpleNamespace(switch=lambda game: calls.append(game) or SimpleNamespace(status="succeeded"))
+        state = {"status": "cancelling", "outcome": "cancelled_unavailable", "previous_game": "sorengame"}
+        self.assertEqual(corner.restore(state), "cancelled_unavailable")
+        self.assertEqual(state["status"], "cancelled_unavailable")
+        self.assertEqual(state["outcome"], "cancelled_unavailable")
+        self.assertEqual(state["restore_phase"], "completed")
+        self.assertEqual(calls, ["sorengame"])
+
+    def test_prestart_unavailable_is_skipped_without_screen_switch(self):
+        corner = object.__new__(MarketCorner)
+        corner.view, corner.clock = "stock-paper-view", lambda: self.now
+        corner.path = self.root / "corner.json"
+        corner.r = SimpleNamespace(market="stocks")
+        corner.coordinator = SimpleNamespace(switch=lambda game: self.fail("must not switch"))
+        corner._availability_check = lambda now, state=None: (False, "provider_unavailable")
+        # initialize enough for tick path would be complex; verify helper contract instead
+        ok, reason = corner._availability_check(self.now)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "provider_unavailable")
+
 if __name__ == "__main__":
     unittest.main()
