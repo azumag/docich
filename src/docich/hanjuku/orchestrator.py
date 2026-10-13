@@ -292,11 +292,11 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
             mem['chapter']=1
             # Pin the chart edition for this game only; hot-loaded config
             # changes never switch a game already in progress.
-            mem['chart_edition']=edition.resolve(chart_edition,(identity or {}).get('generation'))
+            mem['chart_edition']=edition.resolve(chart_edition,(identity or {}).get('runtime_id'))
             decision_log._record(mem,'chart_edition_pinned',chart_step='name',
                            strategy_variant=mem['chart_edition'],
                            observed_metric={'setting':edition.setting(chart_edition),
-                                            'generation':(identity or {}).get('generation')},
+                                            'runtime_id':(identity or {}).get('runtime_id')},
                            reason='新しいゲームの開始時にチャート版を固定する')
             mem['variant']='chart' if campaign.chart.orders(1) else 'chart_unavailable'
             home=campaign.chart.home_castle(1)

@@ -34,6 +34,8 @@ BOT_STATE_LIMIT = 256 * 1024   # the bot's own memory file, not a boundary recor
 CHART_DECISIONS=frozenset({
     'chart_adjust_request','chart_adjust_applied',
     'chart_interim_order','chart_interim_hold',
+    # The A/B edition of the run must survive decision-log rotation.
+    'chart_edition_pinned',
 })
 
 # Only records that explain this observation's planned input/hold may override

@@ -21,11 +21,18 @@ def test_setting_and_resolve_fall_back_to_speedrun():
     for raw in (None, '', 'STEADY', 'fast', 1, True):
         assert edition.setting(raw) == 'speedrun'
     assert edition.resolve('steady', None) == 'steady'
-    assert edition.resolve('speedrun', 4) == 'speedrun'
-    assert edition.resolve('ab', 748) == 'steady'
-    assert edition.resolve('ab', 749) == 'speedrun'
-    for generation in (None, 0, -2, '748', True):
-        assert edition.resolve('ab', generation) == 'speedrun'
+    assert edition.resolve('speedrun', 'g748-0fd8cf05') == 'speedrun'
+    for runtime_id in (None, '', 748, True):
+        assert edition.resolve('ab', runtime_id) == 'speedrun'
+
+
+def test_ab_split_is_deterministic_and_not_tied_to_generation_parity():
+    assert edition.resolve('ab', 'g748-0fd8cf05') == edition.resolve('ab', 'g748-0fd8cf05')
+    # Generation parity follows the rotation order (41 of 63 production runs
+    # were even). Runs with only even generations must still split evenly.
+    ids = [f'g{gen}-{gen * 2654435761 % 16**8:08x}' for gen in range(2, 2002, 2)]
+    steady = sum(edition.resolve('ab', rid) == 'steady' for rid in ids)
+    assert 400 <= steady <= 600
 
 
 def test_memory_without_a_pinned_edition_is_speedrun():
@@ -67,8 +74,13 @@ def test_steady_keeps_boss_and_move_orders_unchanged():
     assert p._source_spare_missing(move, _sole_defender_memory(chart_edition='steady')) is False
 
 
-def _enter_name(state, *, chart_edition, generation=748):
-    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g748-test', 'generation': generation,
+def _ab_runtime_id(want):
+    return next(f'g748-{i:08x}' for i in range(1000)
+                if edition.resolve('ab', f'g748-{i:08x}') == want)
+
+
+def _enter_name(state, *, chart_edition, runtime_id='g748-test'):
+    identity = {'game': 'hanjuku-hero', 'runtime_id': runtime_id, 'generation': 748,
                 'lease_id': 'lease'}
     frames = [name_screen(menu=True), name_screen(cell='あ'), name_screen(cell='だ'),
               name_screen(cell='ど'), name_screen('ど', cell='え'),
@@ -82,20 +94,21 @@ def _enter_name(state, *, chart_edition, generation=748):
 
 
 def test_new_game_pins_the_edition_once_at_name_entry():
-    state, records = _enter_name({}, chart_edition='ab', generation=748)
+    runtime_id = _ab_runtime_id('steady')
+    state, records = _enter_name({}, chart_edition='ab', runtime_id=runtime_id)
     assert state['policy']['chapter'] == 1
     assert state['policy']['chart_edition'] == 'steady'
     pinned = [r for r in records if r['decision'] == 'chart_edition_pinned']
     assert len(pinned) == 1 and pinned[0]['strategy_variant'] == 'steady'
-    assert pinned[0]['observed_metric'] == {'setting': 'ab', 'generation': 748}
+    assert pinned[0]['observed_metric'] == {'setting': 'ab', 'runtime_id': runtime_id}
     # A later config change does not switch the game in progress.
     _, state = orchestrator.decide(Canvas((0, 0, 0)).frame(), state, chart_edition='speedrun')
     assert state['policy']['chart_edition'] == 'steady'
     # A second name screen is a new game: it re-pins from the current setting.
-    state, _ = _enter_name(state, chart_edition='speedrun', generation=750)
+    state, _ = _enter_name(state, chart_edition='speedrun')
     assert state['policy']['chart_edition'] == 'speedrun'
 
 
 def test_default_setting_pins_speedrun():
-    state, _ = _enter_name({}, chart_edition=None, generation=748)
+    state, _ = _enter_name({}, chart_edition=None)
     assert state['policy']['chart_edition'] == 'speedrun'
