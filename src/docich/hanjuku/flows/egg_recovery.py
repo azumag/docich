@@ -65,6 +65,8 @@ def _observe_recovery_list_quantities(screen, mem, sub):
     for actor, readings in rows.items():
         if len(readings) != 1 or readings[0] not in ('0', '1', '2', '3', '4'):
             continue
+        from ..os_layer.roster import observed_member
+        observed_member(mem, [actor])
         quantity = int(readings[0])
         mem.setdefault('egg_uses', {})[actor] = quantity
         if quantity == 0:

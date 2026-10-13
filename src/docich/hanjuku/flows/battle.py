@@ -130,6 +130,8 @@ def _remember_general_for_summon(mem, cur, name, hp):
             or type(hp) is not int or type(full) is not int or not 0 < hp <= full):
         cur.pop('summon_general_reading', None)
         return
+    from ..os_layer.roster import observed_member
+    observed_member(mem, [name])
     cur['summon_general_reading'] = {
         'identity': dict(identity), 'ally': name, 'enemy': cur['enemy'],
         'hp': hp, 'max_hp': full}
