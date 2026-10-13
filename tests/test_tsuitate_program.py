@@ -1,10 +1,13 @@
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import time
 import uuid
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -229,3 +232,68 @@ def test_tsuitate_readiness_requires_exact_runtime_identity(tmp_path, monkeypatc
     monkeypatch.setattr(tsuitate_program, "monotonic", lambda: next(checks))
     with pytest.raises(ReadinessTimeoutError, match="not ready"):
         adapter.readiness(now + 5, None)
+
+
+def test_tsuitate_materialize_runtime_carries_the_import_path(tmp_path, monkeypatch):
+    g = _global(tmp_path)
+    spec = _spec(tmp_path)
+    monkeypatch.setattr(tsuitate_program, "_browser_bin", lambda: "/usr/bin/chromium")
+    adapter = make_coordinator_adapter(g, spec)
+
+    recorded: dict[str, Any] = {}
+
+    class _RecordingTmux:
+        def session_target_exists(self, _name):
+            return False
+
+        def window_target_exists(self, _target):
+            return False
+
+        def create_game_session_owned(self, session, cmd, cols, rows, ownership, env=None):
+            recorded["session"] = session
+            recorded["session_env"] = env
+
+        def create_window_owned(self, name, cmd, ownership, env=None):
+            recorded["window_env"] = env
+
+    monkeypatch.setattr(adapter, "tmux", _RecordingTmux())
+    adapter.materialize_runtime(time.monotonic() + 5, None)
+
+    # The pane that imports docich must receive the import path from the
+    # command itself: tmux builds a new session's environment from the server
+    # and never inherits the operator's PYTHONPATH.
+    assert recorded["session"] == spec.adapter_session
+    assert recorded["session_env"] == {"PYTHONPATH": str(tsuitate_program.DOCICH_SRC)}
+    # The viewer window is a browser, so it needs no import path.
+    assert "PYTHONPATH" not in (recorded["window_env"] or {})
+
+
+def test_tsuitate_session_env_is_what_makes_the_view_importable(tmp_path):
+    g = _global(tmp_path)
+    adapter = make_coordinator_adapter(g, _spec(tmp_path))
+    carried = adapter._game_session_env()
+    assert carried is not None
+    assert carried == {"PYTHONPATH": str(tsuitate_program.DOCICH_SRC)}
+    assert (Path(carried["PYTHONPATH"]) / "docich" / "tsuitate_view.py").is_file()
+
+    def _import(extra):
+        return subprocess.run(
+            [sys.executable, "-c", "import docich.tsuitate_view"],
+            env={"PATH": os.environ["PATH"], **extra},
+            capture_output=True,
+        ).returncode
+
+    # Without the carried path the pane dies exactly as it did in production:
+    # ModuleNotFoundError, the session disappears before create_game_session_
+    # owned can read its ownership back, and the whole switch rolls back with
+    # "no such session: $N".
+    assert _import({}) != 0
+    assert _import(carried) == 0
+
+
+def test_real_cli_games_keep_no_extra_session_env():
+    class _Plain(cli_game.CliCoordinatorAdapter):
+        def __init__(self):
+            pass
+
+    assert _Plain()._game_session_env() is None

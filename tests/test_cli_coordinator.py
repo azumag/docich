@@ -33,7 +33,7 @@ class FakeTmux:
     def window_target_exists(self, target):
         return target in self.windows
 
-    def create_game_session_owned(self, session, cmd, cols, rows, ownership):
+    def create_game_session_owned(self, session, cmd, cols, rows, ownership, env=None):
         if session in self.sessions:
             raise RuntimeError(f"duplicate session {session}")
         self.sessions[session] = self._expected(ownership)
