@@ -1,7 +1,8 @@
 """Generation-bound Hanjuku observations and actual-input records.
 
-The corner's time limit is a consecutive unchanged-screen interval, never a
-fixed session duration. Missing captures and observation gaps are not stasis.
+The corner's time limit is consecutive screen stasis (a static image or a
+proven repeated screen/input cycle), never a fixed session duration. Missing
+captures and observation gaps are not stasis.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from .hanjuku_bot import BOT_VERSION, classify
 from .hanjuku_pixels import Frame
 from .retroarch_boundary import read_record
 from .naming import runtime_id_generation
+from . import hanjuku_repetition
 
 RUN_FILE='hanjuku_run.json'
 TERMINAL_REASONS=frozenset({'game_over','screen_stalled','input_stalled'})
@@ -148,6 +150,14 @@ def terminal(runtime_dir: Path, identity: dict):
            and all(c in '0123456789abcdef' for c in digest))
     if reason=='screen_stalled':
         valid=valid and state.get('unchanged_seconds',0)>=STALL_SECONDS
+        if state.get('terminal_evidence') == hanjuku_repetition.EVIDENCE:
+            proof = hanjuku_repetition.confirmed(
+                state.get('repetition'), now=state.get('observed_monotonic'),
+                seconds=STALL_SECONDS)
+            valid = (valid and proof is not None and state.get('playing') is True
+                     and state.get('repetition_evidence') == proof
+                     and state.get('unchanged_since') == proof['since']
+                     and state.get('unchanged_seconds') == proof['seconds'])
     elif reason=='input_stalled':
         last_at=state.get('last_input_monotonic',0)
         last_obs=state.get('last_input_observations',0)
@@ -298,16 +308,35 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     battle_ended=battle_active and away_streak>=BATTLE_PHASE_DEBOUNCE
     if battle_started: battle_active=True
     if battle_ended: battle_active=False
+    # Owner request (2026-10-14): an input-driven menu/confirmation cycle is
+    # stasis too, even though its individual images keep changing. Reuse the
+    # existing screen_stalled -> durable checkpoint -> safe cleanup route.
+    # Keep the literal frame-stasis clock separate; the compatibility stasis
+    # fields describe the proven cycle interval ONLY when a loop terminates.
+    repetition = hanjuku_repetition.observe(
+        old.get('repetition'), digest, phase, old.get('repetition_input'), now=now,
+        continuous=(consecutive and playing and old.get('playing') is True
+                    and not battle_started and not battle_ended),
+        max_gap=MAX_SAMPLE_GAP)
+    loop_proof = (hanjuku_repetition.confirmed(repetition, now=now, seconds=STALL_SECONDS)
+                  if playing and not reason and not candidate else None)
+    frame_since, frame_duration = since, duration
+    if loop_proof:
+        reason = 'screen_stalled'
+        since, duration = loop_proof['since'], loop_proof['seconds']
     state={**identity,'schema':1,'bot_version':BOT_VERSION,
            'phase':phase,'frame_sha256':digest,'recent_frame_sha256':recent,'observed_monotonic':now,
            'observed_at':wall,'unchanged_since':since,'unchanged_seconds':duration,
            'playing':playing,'terminal_reason':reason,
+           'frame_unchanged_since':frame_since,'frame_unchanged_seconds':frame_duration,
+           'repetition':repetition,'repetition_input':{},
+           'repetition_evidence':loop_proof,
            'name_entered':named,'gameplay_seen':played,
            'checkpoint_started':restored,'checkpoint_start_request':checkpoint_bound,
            'terminal_candidate':candidate,'title_since':title_since,'title_count':title_count,
            'terminal_evidence':'title_return_after_gameplay' if reason=='game_over'
                              else 'no_input_sent_while_observing' if reason=='input_stalled'
-                             else None,
+                             else hanjuku_repetition.EVIDENCE if loop_proof else None,
            'battle_active':battle_active,'battle_streak':battle_streak,
            'battle_away_streak':away_streak,
            'battles_started':int(old.get('battles_started',0))+int(battle_started),
@@ -339,6 +368,8 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
         'frame_sha256': digest, 'unchanged_seconds': round(duration, 3),
         'playing': playing, 'terminal_reason': reason, 'bot_version': BOT_VERSION,
         'terminal_candidate': candidate, 'terminal_evidence': state['terminal_evidence'],
+        'frame_unchanged_seconds': round(frame_duration, 3),
+        'repetition_evidence': loop_proof,
         'snapshot': snapshot, 'previous_phase': old.get('phase'),
         'battle_started': battle_started, 'battle_ended': battle_ended,
         'battle_outcome': 'unclassified' if battle_ended else None,
@@ -361,5 +392,7 @@ def action_sent(runtime_dir: Path, identity: dict, action, *, now=None):
                       'decision_frame_sha256':trace.get('frame_sha256')})
     if state:
         atomic_write_json(runtime_dir/RUN_FILE,{**state,'actions_sent':int(state.get('actions_sent',0))+1,
+                                                'repetition_input':hanjuku_repetition.add_input(
+                                                    state.get('repetition_input'), action.type, action.buttons),
                                                 'last_input_monotonic':now,
                                                 'last_input_observations':int(state.get('observations',0))})
