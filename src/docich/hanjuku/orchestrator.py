@@ -243,6 +243,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions = battle_menus_flow.command_open_pending_step(screen, mem)
     if actions is None:
         actions = prompts_flow.trade_guard_step(screen, mem)
+    if actions is None:
+        actions = month_flow.army_count_pending_step(screen, mem)
     if actions is None and event_confirmation:
         # Owner (2026-10-06): trade refusal and the goninja cash floor outrank
         # a remembered monthly recruit/exit that could accept this yes/no.
@@ -378,7 +380,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         streak=1
     if (not actions and streak>NO_INPUT_HOLD_MAX
             and not isinstance(mem.get('resume_egg_ritual'), dict)
-            and not isinstance(mem.get('orphan_battle_menu'), dict)):
+            and not isinstance(mem.get('orphan_battle_menu'), dict)
+            and not month_flow.army_count_owned(mem)):
         # Even this last-resort path must not confirm an unread summer option:
         # the cursor may be on the mass-dismissal row. Reobserve after one move.
         # These recognized events must never borrow a scripted scene's blind A.

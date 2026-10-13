@@ -9,9 +9,9 @@ from ..decision_log import _record
 from .egg_recovery import MONTH_SUB_EXIT_KINDS
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import month_menu_ready
-from ..strategy.economy import (MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _egg_before_soldiers, _limit_soldier_refill,
+from ..strategy.economy import (MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _army_count_increment, _egg_before_soldiers, _limit_soldier_refill,
                                 _merchant_spendable, _month_key, _refresh_egg_priority, _reserve_general_repair,
-                                _soldiers_enough)
+                                _soldier_count_current, _soldier_count_scope, _soldiers_enough)
 
 
 def _merchant_quote_decline(screen, mem, shop, want, reason):
@@ -128,9 +128,51 @@ def _observe_soldier_receipt(screen, mem, directly_seen=None):
 def quantity_step(screen: Screen, mem, soldiers=False):
     shop = mem.get('shop') or {}
     if soldiers:
+        # Keep full wage/egg/repair clamps even while the free inspection is
+        # in charge: its early return must not retain an unsafe saved budget.
         _reserve_general_repair(mem, shop, (screen.header or {}).get('gold'))
         _refresh_egg_priority(mem, shop, screen.header)
         _limit_soldier_refill(mem, shop, screen.header)
+        state = mem.get('army_count_check')
+        scope = _soldier_count_scope(mem, screen.header)
+        if mem.get('_run_identity') is not None and scope is None:
+            return []  # a faded month/header cannot authorize a runtime purchase
+        if (scope is not None and isinstance(state, dict) and state.get('scope') == scope
+                and state.get('stage') == 'measured'
+                and not _soldier_count_current(mem, screen.header)
+                and not shop.get('soldier_receipt')):
+            # A prior inspection is not authority to pay after its actual
+            # total becomes unreadable. Preserve the exhausted read budget.
+            state.update(stage='closing', result='unverified')
+            shop['soldiers_done'] = True
+            _record(mem, 'army_count_unverified', month=scope[-1],
+                    reason='確認後の実兵数が未読になったため補充を確定せず戻る。確認予算を増やさない')
+        if (scope is not None and not _soldier_count_current(mem, screen.header)
+                and not shop.get('soldier_receipt')
+                and (not isinstance(state, dict) or state.get('scope') != scope)):
+            state = mem['army_count_check'] = {'scope': scope, 'stage': 'requested', 'observations': 0}
+            mem.pop('soldiers_seen_key', None)
+        if (scope is not None and isinstance(state, dict) and state.get('scope') == scope
+                and state.get('stage') == 'unverified'
+                and not _soldier_count_current(mem, screen.header)):
+            shop['soldiers_done'] = True
+            state.update(stage='closing', result='unverified')
+            return [pad('b')]  # a reopened unread editor still cannot authorize payment
+        if (scope is not None and isinstance(state, dict) and state.get('scope') == scope
+                and state.get('stage') != 'measured'):
+            if state.get('stage') not in ('opening', 'requested', 'quantity_requested', 'closing'):
+                state.update(stage='closing', result='unverified')
+            if state.get('stage') == 'closing':
+                return [pad('b')] if _army_count_increment(state, 'exit_presses', 4) <= 3 else []
+            if _soldier_count_current(mem, screen.header):
+                state.update(stage='closing', result='measured')
+                return [pad('b')]
+            if _army_count_increment(state, 'quantity_reads', 4) >= 4:
+                state.update(stage='closing', result='unverified')
+                _record(mem, 'army_count_unverified', month=scope[-1],
+                        reason='実人数を読み取れないため補充の確定をせず戻る。兵数は未確認のまま保持')
+                return [pad('b')]
+            return []
         if _egg_before_soldiers(shop) and not shop.get('soldier_receipt'):
             # This is where the army total first becomes visible. Leave the
             # old quantity plan before sending a purchase confirmation.
