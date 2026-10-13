@@ -138,12 +138,6 @@ class MarketCorner:
         # provider exists, callers can monkeypatch this method to inject failure.
         return True, "ok"
 
-    def availability(self, now, state=None):
-        return self._availability_check(now, state)
-
-    def provider_readiness(self, now, state=None):
-        return self._availability_check(now, state)
-
     def tick(self):
         from ...corner_boundary import CornerWaitExpired, program_slot
         with guard(self.g.state_dir / "locks" / f"market-{self.r.market}-corner.lock"):
