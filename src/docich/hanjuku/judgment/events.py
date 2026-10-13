@@ -90,3 +90,20 @@ def _monster_damage_second(owner, ally, enemy, skills) -> bool:
     return (len(skills) == 2
             and [_fold_skill(s) for s in skills]
             == [_fold_skill(s) for s in reference.MONSTER_SKILLS[ally.name]])
+
+
+def _monster_damage_first(owner, ally, enemy, skills) -> bool:
+    """Naruto's owned complete menu attacks instead of repeating confusion.
+
+    g749 Venus/Queen: repeated swirl selections left Hydra at 367 while
+    Naruto fell 330 -> 146 -> 8. Require both current living monster panels;
+    a general, unknown owner, partial menu or unread HP keeps existing policy.
+    Returning to the egg remains the caller's decision.
+    """
+    return (owner == 'ally' and ally is not None and enemy is not None
+            and ally.name == 'なると' and enemy.name in _MONSTER_SKILLS
+            and type(ally.hp) is int and ally.hp > 0
+            and type(enemy.hp) is int and enemy.hp > 0
+            and len(skills) == 2
+            and [_fold_skill(s) for s in skills]
+            == [_fold_skill(s) for s in reference.MONSTER_SKILLS['なると']])

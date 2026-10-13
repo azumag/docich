@@ -21,7 +21,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _survival_needed, _survival_state, _watch_card_melee, _watch_egg_drop,
                                _wounded_summoner, _summoner_return_risk)
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
-                               _monster_owner, _monster_damage_second)
+                               _monster_owner, _monster_damage_second, _monster_damage_first)
 from ..os_layer.commands import _battle_menu_to, menu_to, pad
 from ..os_layer.readers import ALL_CARD_NAMES, BATTLE_MENU, _fold_skill, _options
 from ..os_layer.world import NAME
@@ -1282,11 +1282,14 @@ def monster_menu_step(screen: Screen, mem):
     # 282HP against a 240HP Dark Elf, then lost the summon and Venus.
     damage_second = _monster_damage_second(
         owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
+    damage_first = _monster_damage_first(
+        owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
     return_risk = _summoner_return_risk(mem, owner, ally, enemy)
     protect_general = return_risk is not None
     if (not mem.get('monster_menu_choice') or mem.get('monster_menu_choice_hp') != hp_state
             or (protect_general and mem.get('monster_menu_choice') == 'retreat')
-            or (damage_second and mem.get('monster_menu_choice') not in ('skill2', 'retreat'))):
+            or (damage_second and mem.get('monster_menu_choice') not in ('skill2', 'retreat'))
+            or (damage_first and mem.get('monster_menu_choice') not in ('skill1', 'retreat'))):
         ally_hp = ally.hp if ally else None
         enemy_hp = enemy.hp if enemy else None
         behind = _behind({'ally_hp': ally_hp, 'enemy_hp': enemy_hp})
@@ -1305,7 +1308,9 @@ def monster_menu_step(screen: Screen, mem):
                          and _fold_skill(second) == _fold_skill('シャウト'))
         heal_first = bool(second) and _monster_heal(first) and not _monster_heal(second)
         default = 'skill1'
-        if damage_second:
+        if damage_first:
+            default = 'skill1'
+        elif damage_second:
             default = 'skill2'
         elif balloon_cycle:
             # Owner rule 2026-10-06: Balloon Finch must inflate all the way to
@@ -1335,7 +1340,7 @@ def monster_menu_step(screen: Screen, mem):
         # do not let generic retreat heuristics or learned experience replace
         # ふくらむ before cap / シャウト at cap.
         action = (default if balloon_cycle else
-                  'retreat' if retreat or powerless else 'skill2' if damage_second
+                  'retreat' if retreat or powerless else 'skill1' if damage_first else 'skill2' if damage_second
                   else experience.preferred(exp, key, default=default, kind='monster_menu'))
         # Keep a useful living shield when the bound general is wounded or
         # has at most half the current enemy monster's HP. This HP-pool risk
@@ -1369,7 +1374,8 @@ def monster_menu_step(screen: Screen, mem):
                    '1技目が回復技のため敵を減らす2技目を選ぶ'
                    if heal_first and not behind else '味方が劣勢で効果付きの2技目')
         else:
-            label, why = first, '先手を取れる1技目を続ける'
+            label, why = first, ('敵召喚獣には混乱技の反復より実ダメージの1技目を優先する'
+                                 if damage_first else '先手を取れる1技目を続ける')
         if not balloon_cycle and action != default and action != 'retreat':
             why = f'過去の結果に基づく経験の選択（既定 {default}）'
         if protected_return:
@@ -1383,6 +1389,7 @@ def monster_menu_step(screen: Screen, mem):
                 observed_metric={'action': action, 'owner': owner, 'menu': list(menu_key),
                                  'ally_hp': ally_hp, 'enemy_hp': enemy_hp,
                                  'target_hp': BALLOON_FINCH_MAX_HP if balloon_cycle else None,
+                                 'damage_first': damage_first,
                                  'wounded_general_return_blocked': bool(protected_return
                                      and return_risk['rule'] == 'wounded_general'),
                                  'general_return_blocked': protected_return,
