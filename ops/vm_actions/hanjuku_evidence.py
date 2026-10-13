@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import zipfile
 import zlib
 
@@ -133,6 +134,32 @@ def _number(value):
     return type(value) in (int, float) and math.isfinite(value)
 
 
+def _repetition_proof(run):
+    """Use the shipped pure validator without importing the gameplay stack.
+
+    The path is fixed inside the protected artifact, never runtime-controlled.
+    Read once and compile those exact bytes; no timestamp-based bytecode cache
+    or shared module namespace can substitute a different validator generation.
+    """
+    path = Path(__file__).resolve().parents[2] / "src/docich/hanjuku_repetition.py"
+    try:
+        with _directory(path.parent) as parent:
+            raw = _read(parent, path.name, 65536)
+        module = types.ModuleType("hanjuku_evidence_pure_repetition")
+        exec(compile(raw, str(path), "exec"), module.__dict__)
+        proof = module.confirmed(run.get("repetition"),
+                                 now=run.get("observed_monotonic"), seconds=300)
+    except (OSError, ValueError, TypeError, SyntaxError, AttributeError,
+            ImportError, OverflowError, KeyError, IndexError):
+        _fail("invalid_terminal")
+    if (proof is None or run.get("playing") is not True
+            or run.get("repetition_evidence") != proof
+            or run.get("unchanged_since") != proof["since"]
+            or run.get("unchanged_seconds") != proof["seconds"]):
+        _fail("invalid_terminal")
+    return proof
+
+
 def terminal_identity(run, runtime_id):
     """Conservative schema-1 mirror of hanjuku_run.terminal, without bot imports.
 
@@ -170,6 +197,8 @@ def terminal_identity(run, runtime_id):
     elif reason == "screen_stalled":
         if run.get("unchanged_seconds", 0) < 300:
             _fail("invalid_terminal")
+        if run.get("terminal_evidence") == "repeated_screen_input_cycle":
+            _repetition_proof(run)
     elif reason == "input_stalled":
         last_at = run.get("last_input_monotonic", 0)
         last_obs = run.get("last_input_observations", 0)
