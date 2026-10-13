@@ -398,17 +398,6 @@ class PaperTests(unittest.TestCase):
         self.assertEqual(state["restore_phase"], "completed")
         self.assertEqual(calls, ["sorengame"])
 
-    def test_prestart_unavailable_is_skipped_without_screen_switch(self):
-        corner = object.__new__(MarketCorner)
-        corner.view, corner.clock = "stock-paper-view", lambda: self.now
-        corner.path = self.root / "corner.json"
-        corner.r = SimpleNamespace(market="stocks")
-        corner.coordinator = SimpleNamespace(switch=lambda game: self.fail("must not switch"))
-        corner._availability_check = lambda now, state=None: (False, "provider_unavailable")
-        # initialize enough for tick path would be complex; verify helper contract instead
-        ok, reason = corner._availability_check(self.now)
-        self.assertFalse(ok)
-        self.assertEqual(reason, "provider_unavailable")
 
     def _fake_corner(self, *, available, initial=None, current="fx-paper-view"):
         import types, json
@@ -488,6 +477,52 @@ class PaperTests(unittest.TestCase):
         self.assertEqual(corner._overlay_calls, [])
         self.assertEqual(corner._speech_calls, [])
         self.assertEqual(corner.tick(), "not_due")
+
+    def test_failed_restore_settles_without_locking_program_slot(self):
+        self._now = moment("2026-09-16T03:10:00+09:00")
+        begin, end = report_window("fx", self._now)
+        initial = {"status": "active", "requested_at": self._now - 600, "ends_at": end,
+                   "started_at": self._now - 600, "heartbeat": self._now - 1,
+                   "previous_game": "sorengame", "deliveries": {}}
+        corner = self._fake_corner(available=True, initial=initial, current="fx-paper-view")
+
+        snapshot_calls = {"n": 0}
+
+        def snapshot(now):
+            snapshot_calls["n"] += 1
+            if snapshot_calls["n"] == 1:
+                raise RuntimeError("market book snapshot failed")
+            return {}
+
+        corner.r.book.snapshot = snapshot
+        corner.r.book.report = lambda cutoff: {"title": "FXで大儲け結果発表", "period_pnl_jpy": 0,
+                                             "complete": True, "closed_trades": 0,
+                                             "closed_net_pnl_jpy": 0, "last": {"positions": {}}}
+
+        with self.assertRaises(RuntimeError):
+            corner.tick()
+        failed_state = json.loads(corner.path.read_text())
+        self.assertEqual(failed_state["status"], "failed")
+        self.assertEqual(failed_state["outcome"], "failed")
+        self.assertEqual(failed_state["restore_phase"], "failed")
+
+        second = corner.tick()
+        recovered_state = json.loads(corner.path.read_text())
+        self.assertEqual(second, "failed")
+        self.assertEqual(recovered_state["status"], "completed")
+        self.assertEqual(recovered_state["outcome"], "failed")
+        self.assertEqual(recovered_state["restore_phase"], "completed")
+        self.assertEqual(corner._report_calls, [])
+        self.assertEqual(corner._overlay_calls, [])
+        self.assertEqual(corner._speech_calls, [])
+
+        from docich.corner_boundary import _owner_free
+        other_state_path = corner.r.g.state_dir / "other-market-corner.json"
+        self.assertTrue(_owner_free(corner.r.g.state_dir, other_state_path))
+
+        third = corner.tick()
+        self.assertEqual(third, "not_due")
+
 
 if __name__ == "__main__":
     unittest.main()
