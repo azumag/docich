@@ -75,8 +75,13 @@ def roster(screen):
     if 'Aボタンでステータスひょうじ' not in screen.text or not screen.hand:
         return None
     names = _names_at(screen, 168, 39, 151)
-    if not names or any(UNKNOWN in n or re.search(r'[\d\s]', n)
-                        or receipts.fixed_wage(n) is None for n in names):
+    if not names or any(UNKNOWN in n or re.search(r'[\d\s]', n) for n in names):
+        return None
+    # An unread unselected name must not block a positively identified row.
+    # page() still rejects the whole page for membership/payroll accumulation;
+    # the selected person's actual status must confirm its name before reuse.
+    if (any(receipts.fixed_wage(n) is None for n in names)
+            and (screen.selected not in names or receipts.fixed_wage(screen.selected) is None)):
         return None
     return names
 
