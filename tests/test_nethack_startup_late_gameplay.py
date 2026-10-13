@@ -148,3 +148,17 @@ def test_late_completion_logs_only_fixed_state(capsys):
     output = capsys.readouterr().err
     assert output == "[nethack-startup] state=gameplay\n"
     assert "PRIVATE_SENTINEL" not in output
+
+
+def test_tutorial_question_below_row_zero_is_still_answered_before_gameplay():
+    # obs.prompt reads only row 0: a tutorial y/n on a lower row over a drawn
+    # map must keep its startup answer instead of delegating to the policy.
+    lines = [""] * 24
+    lines[1] = "Do you want a tutorial? [yn] (n)"
+    lines[3] = " |..@....|"
+    lines[22] = "Docich the Rambler St:13 Dx:14 Co:14 In:13 Wi:9 Ch:12 Neutral"
+    lines[23] = "Dlvl:1 $:474 HP:8(10) Pw:2(2) AC:10 Xp:1"
+    startup = NethackStartup(enabled=True, clock=lambda: 0.0)
+    actions = startup.consider(normalize_tty("\n".join(lines)))
+    assert actions and actions[0].text == "n"
+    assert startup.state != "gameplay"
