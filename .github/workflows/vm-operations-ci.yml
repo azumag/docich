@@ -52,8 +52,10 @@ jobs:
         env:
           PYTHONPATH: src
         run: python3 -m pytest -ra -v ops/vm_actions/tests/test_supervisor_identity_diagnostics.py
-      - name: Validate parent-owned operations brief (private handoff stays local)
-        run: python3 ops/vm_actions/ops_brief.py check-artifact
+      - name: Validate parent-owned operations brief (tracked source, no private handoff)
+        run: |
+          python3 ops/vm_actions/ops_brief.py check-artifact
+          python3 ops/vm_actions/ops_brief.py check-source
       - run: python3 -m unittest discover -s ops/self_repair/tests -v
       - name: Broadcast audio-path priority keeper
         run: python3 -m unittest discover -s ops/audio_priority/tests -v

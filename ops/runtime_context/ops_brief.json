@@ -1,8 +1,8 @@
 {
-  "output_sha256": "71309b77617bc63caee74c367737ad852b2cefae44f5f5d3133bb49cae5d1157",
+  "output_sha256": "8f881acfc2d2d50392466935fc01fbe8c15302f3dd0483a0d937199feaea2db1",
   "schema": 1,
-  "source": "handoff.md",
-  "source_sha256": "07083a2188e1fd97cec5bb968ffd198070b97f3f48f6e56be4071dcf8057b8e1",
+  "source": "ops/runtime_context/ops_brief_source.md",
+  "source_sha256": "4230d922f5e92852fa5eec9412cf9b27b47a0a25c13cfe42797f5b7f14e7c992",
   "topics": [
     "未マージPRの精査・マージと本番反映",
     "半熟英雄の帰還後に本人の現在在城状態を確認する",

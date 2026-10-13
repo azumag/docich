@@ -94,14 +94,25 @@ class BriefGenerationTests(unittest.TestCase):
             self.assertEqual(run("check-artifact"), 0)
 
     def test_repository_artifact_and_workflow_gate(self):
-        brief.validate((ROOT / brief.ARTIFACT).read_bytes())
+        artifact = brief.validate((ROOT / brief.ARTIFACT).read_bytes())
+        self.assertEqual(artifact["source"], brief.SOURCE_TRACKED)
+        self.assertTrue((ROOT / brief.SOURCE_TRACKED).is_file())
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "ops/vm_actions/ops_brief.py"), "check-source"],
+            env=self.clean_env(), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
         workflow = (ROOT / ".github/workflows/vm-operations.yml").read_text()
         self.assertLess(workflow.index("Require parent operations brief gateway capability"),
                         workflow.index("Upload candidate to VM staging"))
-        self.assertIn(brief.CAPABILITY, workflow)
-        self.assertIn(gw.projection_io.CAPABILITY, workflow)
+        for capability in (brief.CAPABILITY, brief.CAPABILITY_TRACKED_SOURCE, gw.projection_io.CAPABILITY):
+            self.assertIn(capability, workflow)
         self.assertIn("check-artifact --artifact candidate/" + brief.ARTIFACT, workflow)
         self.assertIn("/handoff.md", (ROOT / ".gitignore").read_text())
+        self.assertIn("/handoff-archive/", (ROOT / ".gitignore").read_text())
+        ops_ci = (ROOT / ".github/workflows/vm-operations-ci.yml").read_text()
+        self.assertIn("ops_brief.py check-artifact", ops_ci)
+        self.assertIn("ops_brief.py check-source", ops_ci)
         self.assertIn('"$source_dir/ops_brief.py"', (ROOT / "ops/vm_actions/install_vm_gateway.sh").read_text())
         self.assertIn('"$source_dir/projection_io.py"', (ROOT / "ops/vm_actions/install_vm_gateway.sh").read_text())
 
@@ -122,28 +133,44 @@ class BriefGenerationTests(unittest.TestCase):
                 self.assertNotIn(str(shared), result.stdout + result.stderr)
                 self.assertNotIn("private body", result.stdout + result.stderr)
 
-    def test_environment_shared_source_builds_and_checks_without_checkout_copy(self):
+    def test_legacy_shared_source_still_verifies_from_the_environment(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             shared = root / "shared" / "handoff.md"
             shared.parent.mkdir()
             shared.write_bytes(SOURCE)
             artifact = root / "brief.json"
+            artifact.write_bytes(brief.build(SOURCE))
             env = {**os.environ, brief.HANDOFF_ENV: str(shared)}
             base = [sys.executable, str(ROOT / "ops/vm_actions/ops_brief.py")]
-            for op in ("build", "check-source"):
-                result = subprocess.run(base + [op, "--artifact", str(artifact)],
-                                        env=env, cwd=root, capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0)
-                self.assertNotIn(str(shared), result.stdout + result.stderr)
-                self.assertNotIn("private body", result.stdout + result.stderr)
-            self.assertEqual(artifact.read_bytes(), brief.build(SOURCE))
-            self.assertFalse((root / "handoff.md").exists())
+            result = subprocess.run(base + ["check-source", "--artifact", str(artifact)],
+                                    env=env, cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn(str(shared), result.stdout + result.stderr)
+            self.assertNotIn("private body", result.stdout + result.stderr)
+
             shared.write_bytes(SOURCE + b"private changed\n")
             result = subprocess.run(base + ["check-source", "--artifact", str(artifact)],
                                     env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn("private changed", result.stdout + result.stderr)
+
+    def test_default_build_no_longer_reads_any_private_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            script = root / "ops/vm_actions/ops_brief.py"
+            script.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / "ops/vm_actions/ops_brief.py", script)
+            (root / "ops/runtime_context").mkdir(parents=True)
+            shutil.copyfile(ROOT / brief.SOURCE_TRACKED, root / brief.SOURCE_TRACKED)
+            env = {**os.environ, brief.HANDOFF_ENV: "unset/relative/path"}
+            artifact = root / "brief.json"
+            base = [sys.executable, str(script)]
+            for op in ("build", "check-source"):
+                result = subprocess.run(base + [op, "--artifact", str(artifact)],
+                                        env=env, cwd=root, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(brief.validate(artifact.read_bytes())["source"], brief.SOURCE_TRACKED)
 
     def test_missing_shared_source_never_falls_back_to_checkout(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -256,7 +283,8 @@ class BriefGenerationTests(unittest.TestCase):
             for op in ("build", "check-source"):
                 result = subprocess.run(
                     [sys.executable, str(ROOT / "ops/vm_actions/ops_brief.py"), op,
-                     "--artifact", str(artifact)], env=env, capture_output=True, text=True)
+                     "--source", str(source), "--artifact", str(artifact)],
+                    env=env, capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(artifact.read_bytes(), before)
                 self.assertNotIn(str(source), result.stdout + result.stderr)
