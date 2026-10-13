@@ -85,6 +85,81 @@ def _defender_successor(mem, cur, b):
     return True
 
 
+def _unlocated_scope(mem, cur):
+    """Only this run's measured ordinary opening can bind a neutral handoff."""
+    from ..os_layer.roster import run_identity
+    identity = run_identity(mem.get('_run_identity'))
+    if not all(isinstance(cur.get(k), str) for k in ('ally', 'enemy')):
+        return None
+    start, enemy_start = cur.get('start_ally_hp'), cur.get('start_enemy_hp')
+    maximum, enemy_maximum = general_max_hp(cur.get('ally')), general_max_hp(cur.get('enemy'))
+    if (identity is None or type(mem.get('tick')) is not int
+            or type(mem.get('chapter')) is not int or mem['chapter'] <= 0
+            or cur.get('side') is not None or cur.get('castle') is not None
+            or cur.get('ally') in (NAME, 'しゅじんこう') or cur.get('event_duel')
+            or any(type(n) is not int or n <= 0 for n in
+                   (start, enemy_start, maximum, enemy_maximum))
+            or start > maximum or enemy_start > enemy_maximum
+            or cur.get('melee_opening_scope') != [identity, cur.get('ally'), cur.get('enemy'), start, enemy_start]):
+        return None
+    return [identity, mem['chapter'], cur['ally'], cur['enemy'], start, enemy_start]
+
+
+def _observe_unlocated_zero(mem, cur, b):
+    scope = _unlocated_scope(mem, cur)
+    previous = cur.pop('unlocated_zero_candidate', None)
+    if (scope is None or b.ally_hp != 0 or b.enemy_hp <= 0
+            or b.enemy_hp > cur['start_enemy_hp']
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')):
+        cur.pop('unlocated_zero', None)
+        return
+    now = mem['tick']
+    cur['unlocated_zero_candidate'] = [scope, now]
+    if previous == [scope, now - 1]:
+        cur['unlocated_zero'] = {'scope': scope, 'tick': now, 'enemy_hp': b.enemy_hp}
+
+
+def _unlocated_successor(mem, cur, b):
+    """Accept an observed replacement without manufacturing a castle defense.
+
+    Two current HP0 panels, then two living known-general panels against the
+    same enemy, bound to this run and opening. Old hotloaded/unbound records
+    cannot acquire this receipt from their saved HP alone.
+    """
+    scope = _unlocated_scope(mem, cur)
+    proof = cur.get('unlocated_zero')
+    maximum = general_max_hp('しゅじんこう' if b.ally == NAME else b.ally)
+    now = mem.get('tick')
+    eligible = (scope is not None and isinstance(proof, dict) and proof.get('scope') == scope
+                and type(proof.get('tick')) is int and 0 < now - proof['tick'] <= 32
+                and type(proof.get('enemy_hp')) is int
+                and type(cur.get('ally_hp')) is int and cur['ally_hp'] == 0
+                and type(cur.get('enemy_hp')) is int and cur['enemy_hp'] > 0
+                and b.enemy == cur['enemy'] and b.ally != cur['ally']
+                and type(maximum) is int and 0 < b.ally_hp <= maximum
+                and 0 < b.enemy_hp <= proof['enemy_hp'] <= cur['start_enemy_hp']
+                and not (cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')))
+    previous = cur.pop('unlocated_successor_seen', None)
+    if not eligible:
+        return False
+    reading = [scope, b.ally, b.enemy, now]
+    cur['unlocated_successor_seen'] = reading
+    if previous != [scope, b.ally, b.enemy, now - 1]:
+        return False
+    predecessor = cur['ally']
+    battle_end(mem, 'unlocated_successor', actor_continues=True)
+    reset_battle_controls(mem)
+    # Match only the new actor and deliberately carry no location or route.
+    mem['attack'] = {'general': b.ally, 'side': None, 'castle': None, 'step': None}
+    mem['battle_seen'] = [b.enemy, b.ally]
+    mem['melee_opening_candidate'] = [scope[0], b.ally, b.enemy]
+    _record(mem, 'unlocated_successor', ally=b.ally, enemy=b.enemy,
+            previous_ally=predecessor, castle=None, side=None,
+            observed_metric={'ally_hp': b.ally_hp, 'enemy_hp': b.enemy_hp},
+            reason='同じランの実HP0と連続した新将軍パネルから操作対象を交代。城と攻守は未分類')
+    return True
+
+
 def _entered_battle_successor(mem, cur, b):
     """A measured new entry and two complete panels release a finished win.
 
@@ -200,19 +275,23 @@ def battle_step(screen: Screen, mem):
             _card_battle_reading(screen, mem['battle'], mem)
             mem['battle'].pop('successor_seen', None)
             mem['battle'].pop('entry_successor_seen', None)
+            mem['battle'].pop('unlocated_successor_seen', None)
+            mem['battle'].pop('unlocated_zero_candidate', None)
         return []  # partial panel must not replace the last clear HP/context
     _migrate_card_evidence(mem)
     cur = mem.get('battle')
     if cur:
         cur.pop('defeat_owner', None)  # a later complete combat panel invalidates the post-combat flag
     if cur and (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
-        if not (_entered_battle_successor(mem, cur, b) or _defender_successor(mem, cur, b)):
+        if not (_entered_battle_successor(mem, cur, b) or _defender_successor(mem, cur, b)
+                or _unlocated_successor(mem, cur, b)):
             _card_battle_reading(screen, cur, mem)
             return []
         cur = None
     elif cur:
         cur.pop('successor_seen', None)
         cur.pop('entry_successor_seen', None)
+        cur.pop('unlocated_successor_seen', None)
     if cur is None:
         # Fades dim the panel and can drop dakuten; open a battle record only
         # after two consecutive identical readings of both names.
@@ -298,6 +377,7 @@ def battle_step(screen: Screen, mem):
         preempt_guard['stage'] = 'completed'
         preempt_guard.pop('close_pending', None)
         preempt_guard.pop('unread_ticks', None)
+    _observe_unlocated_zero(mem, cur, b)
     _card_battle_reading(screen, cur, mem)
     cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)
     cur['own_egg_positive_observed'] = _own_egg_positive(mem, cur)
@@ -645,7 +725,7 @@ def _defender_egg_open(mem, cur):
     return _human_menu_open(cur, 'defender_egg')
 
 
-def battle_end(mem, next_kind, *, defense_continues=False):
+def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False):
     _hold_general_loss_metric(mem)
     _migrate_card_evidence(mem)
     cur = mem.get('battle')
@@ -654,7 +734,7 @@ def battle_end(mem, next_kind, *, defense_continues=False):
     # A panel can blink during the melee; end only on the second
     # consecutive observation without it.
     cur['away'] = cur.get('away', 0) + 1
-    if cur['away'] < 2 and not defense_continues:
+    if cur['away'] < 2 and not (defense_continues or actor_continues):
         return
     from ..os_layer.roster import dirty_status
     dirty_status(mem, [cur.get('ally')])
@@ -701,7 +781,7 @@ def battle_end(mem, next_kind, *, defense_continues=False):
         lost = mem.setdefault('lost', [])
         if castle not in lost:
             lost.append(castle)
-    if outcome == 'loss' and (cur.get('side') == 'attack' or defense_continues or defense_retained) and cur.get('ally'):
+    if outcome == 'loss' and (cur.get('side') == 'attack' or defense_continues or defense_retained or actor_continues) and cur.get('ally'):
         general = cur['ally']
         for source in list(mem.get('garrison') or {}):
             _garrison_move(mem, general, source=source)
