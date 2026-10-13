@@ -19,14 +19,28 @@ def boss_memory(chapter=2):
                    'captured': list(chart.castles(chapter)), 'picked': []}
 
 
-@pytest.mark.parametrize('names', [[p.NAME], [p.NAME, 'シェーブル'], ['シェーブル']])
-def test_readable_boss_list_without_adequate_companion_never_selects_hero(names):
+@pytest.mark.parametrize('names', [[p.NAME]])
+def test_readable_boss_list_without_any_companion_never_selects_hero(names):
     order, mem = boss_memory(); mem['orders'][order['step']] = 'pending'
     actions = p.deploy_step(selected_list(names), mem)
     assert actions == [p.pad('b'), p.pad('b')]
     assert mem['active'] is None and mem['orders'][order['step']] == 'pending'
     assert not mem.get('sortie_general') and not mem.get('order_context')
     assert mem['_records'][-1]['decision'] == 'boss_companion_required'
+
+
+@pytest.mark.parametrize('names', [[p.NAME, 'シェーブル'], ['シェーブル']])
+def test_weak_but_fit_companion_is_sent_and_the_hero_never_is(names):
+    """Owner (2026-10-14): an unfavourable substitute still attacks the boss.
+
+    Waiting for a comparable general left the boss castle unattacked for a
+    whole run. The hero is still never the actor (主人公boss禁止).
+    """
+    order, mem = boss_memory(); mem['orders'][order['step']] = 'pending'
+    actions = p.deploy_step(selected_list(names), mem)
+    assert p.pad('b') not in actions
+    assert mem['general_override'][order['step']] == 'シェーブル'
+    assert p.NAME not in mem['general_override'].values()
 
 
 @pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm'])

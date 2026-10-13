@@ -80,6 +80,51 @@ def test_ambiguous_general_does_not_bind_unknown_destination():
     assert p._match_sortie(mem, 'ジョンリギ', 'ゼウス') == (None, 'ambiguous')
 
 
+def test_a_stale_unread_arrival_no_longer_makes_the_next_entry_ambiguous():
+    """g749 2026-10-14: sixty unread ``en_route`` records, two of them ヴィーナス
+    to けっかい and a キッシュ/ゴーメン pair, made every later entry message
+    ambiguous, so the arrival was never bound and no sortie could start."""
+    mem = memory(); mem['tick'] = 100000
+    stale = {'general': 'ゼウス', 'target': 'ジョンリギ', 'status': 'en_route',
+             'source': 'アルマムーン', 'tick': mem['tick'] - p.SORTIE_BUSY_TICKS - 1}
+    fresh = {**stale, 'tick': mem['tick'] - 1}
+    mem['sorties'] = {'old': stale, 'new': fresh}
+    assert p._match_sortie(mem, 'ジョンリギ', 'ゼウス') == ('new', 'matched')
+
+
+def test_a_general_listed_in_an_intervening_own_castle_continues_his_order():
+    """Owner (2026-10-14): our own castles print no entry message, so the
+    general list of the castle he stopped in is the only measurement."""
+    mem = memory(); mem['tick'] = 5000
+    mem['captured'] = ['アルマムーン', 'ジョンリギ']
+    mem['sorties'] = {'A:1:J1': {'general': 'ゼウス', 'target': 'けっかい', 'status': 'en_route',
+                                 'source': 'スペンソニア', 'tick': mem['tick'] - 10}}
+    order = {'step': 'A:1:J1', 'general': 'ゼウス', 'source': 'スペンソニア', 'target': 'けっかい',
+             'cards': [], 'after': None, 'note': 't'}
+    mem['chart_plan'] = {'request_id': 'x', 'orders': [order]}
+    assert p._continue_transit_sorties(mem, 'ジョンリギ', ['ゼウス', 'リーキ']) == ['A:1:J1']
+    sortie = mem['sorties']['A:1:J1']
+    assert sortie['status'] == 'arrived' and sortie['target'] == 'ジョンリギ'
+    assert sortie['transit_to'] == 'けっかい'
+    assert mem['source_override']['A:1:J1'] == 'ジョンリギ'
+    assert mem['orders']['A:1:J1'] == 'pending'
+    assert mem['garrison']['ジョンリギ'] == ['ゼウス']
+    assert any(r['decision'] == 'sortie_transit_continue' for r in mem['_records'])
+    # The same order runs again, now from the castle he actually stopped in.
+    assert p.next_order(mem) == order
+
+
+def test_a_stale_or_unlisted_general_is_not_a_transit_arrival():
+    mem = memory(); mem['tick'] = 5000
+    sortie = {'general': 'ゼウス', 'target': 'けっかい', 'status': 'en_route',
+              'source': 'スペンソニア', 'tick': mem['tick'] - p.SORTIE_BUSY_TICKS - 1}
+    mem['sorties'] = {'A:1:J1': dict(sortie)}
+    assert p._continue_transit_sorties(mem, 'ジョンリギ', ['ゼウス']) == []
+    mem['sorties']['A:1:J1']['tick'] = mem['tick'] - 1
+    assert p._continue_transit_sorties(mem, 'ジョンリギ', ['リーキ']) == []
+    assert mem['sorties']['A:1:J1'] == {**sortie, 'tick': mem['tick'] - 1}
+
+
 @pytest.mark.parametrize('words,expected', [(['ゼウス','どうし'], 'pending'),
                                           (['しょうぐんはおりません'], 'launched')])
 def test_source_evidence_allows_retry_only_when_general_is_still_there(words, expected):
