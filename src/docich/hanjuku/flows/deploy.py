@@ -710,7 +710,16 @@ def deploy_step(screen: Screen, mem):
             present = [] if empty_list else [w for x, y, w in _options(screen) if x > 100 and w not in ui
                                              and not re.search(r'\d', w) and 'おりません' not in w]
             present = [g for g in present if g not in _en_route(mem)[0]]
-            present.sort(key=lambda w: w == NAME)      # risk the hero last
+            # Never send the hero in place of a missing general: a lost
+            # attack ends the game, and the hero alone at the source would
+            # leave it empty (2-C1 in g421 sent どうし 22 times this way).
+            # The source fallback or the order's failure takes over instead.
+            if NAME in present:
+                present.remove(NAME)
+                _record(mem, 'hero_substitute_refused', chart_step=order['step'],
+                        strategy_variant='hero_substitute_refused',
+                        observed_metric={'present': [NAME, *present][:8]},
+                        reason='計画の将軍がいないため、主人公を代役にせず他の将軍か出撃元の変更を待つ')
             if present and not mem.get('general_override', {}).get(order['step']):
                 mem.setdefault('general_override', {})[order['step']] = present[0]
                 _record(mem, 'order_substitute', strategy_variant='substitute_general',

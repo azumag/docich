@@ -706,13 +706,13 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v198-retry-exhaust-month-step'
+    assert state['bot_version'] == 'hanjuku-chart-v199-no-hero-substitute'
     assert '_records' not in state['policy']
 
 
 def test_bot_version_marks_chikujou_scroll_release():
     from docich.hanjuku_bot import BOT_VERSION
-    assert BOT_VERSION == 'hanjuku-chart-v198-retry-exhaust-month-step'
+    assert BOT_VERSION == 'hanjuku-chart-v199-no-hero-substitute'
 
 
 def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle():
@@ -951,6 +951,30 @@ def test_missing_chart_general_is_replaced_by_a_non_hero_present_at_the_source()
     assert policy.deploy_step(s, mem)[0]['buttons'] == ['down']
     rec = mem['_records'][-1]
     assert rec['strategy_variant'] == 'substitute_general' and mem['general_override']['1-C1'] == 'ゼウス'
+
+
+def test_missing_chart_general_is_never_replaced_by_the_hero():
+    c = Canvas()
+    c.text(64, 31, 'しゅつげき')
+    c.text(64, 47, 'ステータス')
+    c.text(144, 39, 'どうし')
+    c.hand(122, 33)
+    # Three owned castles: the last-castle guard does not apply here.
+    mem = {'chapter': 1, 'active': '1-C1', 'orders': {'1-C1': 'pending'},
+           'captured': ['キカンドン', 'ナキューメラ', 'ゴーメン']}
+    s = parse(c.frame())
+    assert s.kind == 'general_list'
+    actions = policy.deploy_step(s, mem)
+    assert actions == [policy.pad('b'), policy.pad('b')]
+    assert not (mem.get('general_override') or {}).get('1-C1')
+    assert mem['source_override']['1-C1'] == 'アルマムーン'
+    decisions = [r['decision'] for r in mem['_records']]
+    assert 'hero_substitute_refused' in decisions and 'order_substitute' not in decisions
+    # Second visit with only the hero again: the order fails, the hero stays.
+    mem['active'] = '1-C1'
+    actions = policy.deploy_step(parse(c.frame()), mem)
+    assert not (mem.get('general_override') or {}).get('1-C1')
+    assert mem['orders']['1-C1'] == 'failed'
 
 
 def test_empty_general_list_canvas_parses_as_general_list_without_hand():
