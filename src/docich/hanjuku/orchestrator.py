@@ -195,6 +195,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     if kind != 'battle' and mem.get('battle'):
         mem['battle'].pop('successor_seen', None)
         mem['battle'].pop('entry_successor_seen', None)
+        mem['battle'].pop('unlocated_successor_seen', None)
+        mem['battle'].pop('unlocated_zero_candidate', None)
     after_battle = kind in readers.AFTER_BATTLE_KINDS or kind == 'barrier_removed'
     if mem.get('battle') and after_battle:
         battle_flow.battle_end(mem,kind)

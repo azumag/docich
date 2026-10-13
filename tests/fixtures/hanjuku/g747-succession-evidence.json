@@ -1,0 +1,220 @@
+{
+  "active": {
+    "game": "hanjuku-hero",
+    "runtime_id": "g747-0fd8cf05",
+    "generation": 747,
+    "lease_id": "28284317-f2d0-488c-af16-2d8666389504"
+  },
+  "scope": "Original panels; zero/new actor panels have no input receipt. Repeated opening, minimal memory, and policy outputs are offline counterfactuals, not new live results.",
+  "frames": [
+    {
+      "uid": 15495,
+      "frame": "g747-succession-15495.png",
+      "rgb_sha256": "9cc3da21d6239e1595bd4b010e1777cfaaff89bde12d1ff035ad48dc9384bc11",
+      "decision": {
+        "at": 1791891679.5157216,
+        "bot_version": "hanjuku-chart-v203-current-roster-budget",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:15495",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": "使用可能な切り札・たまごを確認して選択",
+        "frame_sha256": "9cc3da21d6239e1595bd4b010e1777cfaaff89bde12d1ff035ad48dc9384bc11",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 500,
+        "planned_actions": [
+          {
+            "buttons": [
+              "b"
+            ],
+            "hold_ms": 100,
+            "type": "pad"
+          }
+        ],
+        "reason_decisions": [
+          "battle_start",
+          "battle_survival"
+        ],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-015.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "input_receipts": [
+        {
+          "at": 1791891679.873755,
+          "bot_version": "hanjuku-chart-v194-army-count-check",
+          "buttons": [
+            "b"
+          ],
+          "decision_frame_sha256": "9cc3da21d6239e1595bd4b010e1777cfaaff89bde12d1ff035ad48dc9384bc11",
+          "decision_id": "g747-0fd8cf05:747:15495",
+          "event": "input_sent",
+          "frame_sha256": "9cc3da21d6239e1595bd4b010e1777cfaaff89bde12d1ff035ad48dc9384bc11",
+          "hold_ms": 100,
+          "type": "pad"
+        }
+      ]
+    },
+    {
+      "uid": 15502,
+      "frame": "g747-succession-15502.png",
+      "rgb_sha256": "e55b9441bb74d24d58f77d5f2c7fd820db85d9578ac9aaa574854d226c639c66",
+      "decision": {
+        "at": 1791891685.7670236,
+        "bot_version": "hanjuku-chart-v203-current-roster-budget",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:15502",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "e55b9441bb74d24d58f77d5f2c7fd820db85d9578ac9aaa574854d226c639c66",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [],
+        "reason_decisions": [],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-022.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "input_receipts": []
+    },
+    {
+      "uid": 15503,
+      "frame": "g747-succession-15503.png",
+      "rgb_sha256": "5778cbe36877b42a8be36c80a02dd4cfa1e76420a165b89a687d5f0434ed6519",
+      "decision": {
+        "at": 1791891687.2749696,
+        "bot_version": "hanjuku-chart-v203-current-roster-budget",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:15503",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "5778cbe36877b42a8be36c80a02dd4cfa1e76420a165b89a687d5f0434ed6519",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [],
+        "reason_decisions": [],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-023.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "input_receipts": []
+    },
+    {
+      "uid": 15509,
+      "frame": "g747-succession-15509.png",
+      "rgb_sha256": "fbc270be859b47cb3334a1417b9cfecc041c69a5f9150d7911f2d9e465a515ac",
+      "decision": {
+        "at": 1791891696.2838736,
+        "bot_version": "hanjuku-chart-v203-current-roster-budget",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:15509",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "fbc270be859b47cb3334a1417b9cfecc041c69a5f9150d7911f2d9e465a515ac",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [],
+        "reason_decisions": [],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-029.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "input_receipts": []
+    },
+    {
+      "uid": 15510,
+      "frame": "g747-succession-15510.png",
+      "rgb_sha256": "33b3e55c577f2615ea055c94b76db8769f7c1215e55e3e70ec56dd33fc2eafe6",
+      "decision": {
+        "at": 1791891697.7279508,
+        "bot_version": "hanjuku-chart-v203-current-roster-budget",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:15510",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "33b3e55c577f2615ea055c94b76db8769f7c1215e55e3e70ec56dd33fc2eafe6",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [],
+        "reason_decisions": [],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-030.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "input_receipts": []
+    },
+    {
+      "uid": 15517,
+      "frame": "g747-succession-15517.png",
+      "rgb_sha256": "92c80304a3da84883b5b9dc707ea18b9281fcf9a1e5d9da161c34401cb7d2550",
+      "decision": {
+        "at": 1791891708.4002697,
+        "bot_version": "hanjuku-chart-v203-current-roster-budget",
+        "chart_step": null,
+        "decision_id": "g747-0fd8cf05:747:15517",
+        "deviation_reason": null,
+        "dispatch_status": "planned_not_yet_sent",
+        "event": "action_plan",
+        "expected_metric": {
+          "goal": "チャート戦術による戦闘勝利"
+        },
+        "frame_sha256": "92c80304a3da84883b5b9dc707ea18b9281fcf9a1e5d9da161c34401cb7d2550",
+        "game": "hanjuku-hero",
+        "generation": 747,
+        "lease_id": "28284317-f2d0-488c-af16-2d8666389504",
+        "menu_navigation_feedback": null,
+        "observation_interval_ms": 1500,
+        "planned_actions": [],
+        "reason_decisions": [],
+        "runtime_id": "g747-0fd8cf05",
+        "schema": 1,
+        "screen_kind": "battle",
+        "snapshot": "decision-037.png",
+        "strategy_variant": "chart_adjusted"
+      },
+      "input_receipts": []
+    }
+  ]
+}
