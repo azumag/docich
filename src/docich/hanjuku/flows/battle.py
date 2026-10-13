@@ -213,6 +213,16 @@ def battle_step(screen: Screen, mem):
                                'cards_selected': [], 'cards_missing': [], 'cards_unclassified': [],
                                'card_consumption_complete': True, 'card_evidence_version': 1,
                                **context}
+        from ..os_layer.roster import run_identity
+        identity = run_identity(mem.get('_run_identity'))
+        if identity is not None:
+            # Captured only at the two-panel battle opening. A hotloaded old
+            # battle cannot invent an earlier healthy opening from current HP.
+            cur['melee_opening_scope'] = [identity, b.ally, b.enemy, b.ally_hp, b.enemy_hp]
+            army = screen.field_soldiers
+            if (isinstance(army, (tuple, list)) and len(army) == 2
+                    and all(type(n) is int and 0 <= n <= 6 for n in army)):
+                cur['melee_opening_army'] = list(army)
         if b.ally == NAME and type(b.ally_hp) is int:
             # The hero's full strength, remembered across battles: a hero who
             # starts a fight already weak never looks "far down" against his

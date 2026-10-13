@@ -16,6 +16,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _critical_safe_card,
                                _critical_survival_needed, _defender_egg_window, _defender_last_resort,
                                _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
+                               _melee_continuation_evidence,
                                _migrate_card_evidence, _own_egg_empty, _own_egg_needed, _own_egg_positive,
                                _survival_needed, _survival_state, _watch_card_melee, _watch_egg_drop, _wounded_summoner)
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
@@ -156,7 +157,9 @@ def _survival_menu(screen, mem, cur):
         # loss/summons cannot retain it or trigger twelve repeated menu tours.
         rescue.update(conserving_melee=True, conserved_labels=sorted(labels), exhausted=False)
         _record(mem, 'battle_egg_conserve', **_battle_labels(cur),
-                observed_metric={'labels': sorted(labels), 'melee_balance': _melee_balance(cur)},
+                observed_metric={'labels': sorted(labels), 'melee_balance': _melee_balance(cur),
+                                 'conservation': (_melee_continuation_evidence(mem, cur)
+                                                  or {'rule': 'healthy_melee_advantage'})},
                 reason='実HP・戦闘力と現在兵数で白兵優位のため、切り札の有無にかかわらず卵を温存して戻る')
         return [pad('b')]
     rescue.pop('conserving_melee', None)
