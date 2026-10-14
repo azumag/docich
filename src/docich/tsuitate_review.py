@@ -16,6 +16,7 @@ the move list itself never reaches the view, the diagnostics or a file.
 """
 from __future__ import annotations
 
+import datetime as _datetime
 import json
 import re
 import urllib.error
@@ -226,21 +227,53 @@ def _outcome_for_bot(result: str, color: str) -> str:
     return "win" if (result == "sente_win") == (color == "sente") else "loss"
 
 
+#: The Worker's own site-reason vocabulary. Anything else is ``unknown`` there,
+#: so the replay is normalized the same way before it is compared.
+SITE_REASONS = {
+    "checkmate": "checkmate",
+    "resign": "resign",
+    "timeout": "timeout",
+    "foul_limit": "foul_limit",
+    "disconnect": "disconnect",
+    "stalemate": "stalemate",
+}
+
+
+def normalized_reason(review: dict) -> str:
+    return SITE_REASONS.get(review.get("reason"), "unknown")
+
+
+def _same_instant(left, right) -> bool:
+    """Compare two ISO timestamps by instant, not by string spelling.
+
+    The control projection normalizes the site's date through ``Date.toISOString``
+    while this reader keeps the raw string, so an equivalent instant written with
+    another offset must still identify the same match.
+    """
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    try:
+        return (_datetime.datetime.fromisoformat(left.replace("Z", "+00:00"))
+                == _datetime.datetime.fromisoformat(right.replace("Z", "+00:00")))
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
 def verify(review: dict, terminal: dict, *, color: str | None = None) -> bool:
     """Whether the replay is the very match the corner already settled.
 
-    The identity is the game id plus the settled end time; when the owner
-    projection still carries the bot's colour, the outcome is cross-checked too.
-    A mismatch means the replay belongs to another match and must not be
-    narrated.
+    The identity is the game id plus the settled end instant and the normalized
+    end reason; when the owner projection still carries the bot's colour, the
+    outcome is cross-checked too.  A mismatch means the replay belongs to
+    another match and must not be narrated.
     """
     if not isinstance(review, dict) or not isinstance(terminal, dict):
         return False
     if review.get("gameId") != terminal.get("gameId"):
         return False
-    if review.get("endedAt") != terminal.get("endedAt"):
+    if not _same_instant(review.get("endedAt"), terminal.get("endedAt")):
         return False
-    if review.get("reason") != terminal.get("reason"):
+    if normalized_reason(review) != terminal.get("reason"):
         return False
     if color in COLORS:
         return _outcome_for_bot(review["result"], color) == terminal.get("outcome")

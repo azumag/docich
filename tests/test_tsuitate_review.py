@@ -186,6 +186,23 @@ def test_verify_pins_the_replay_to_the_settled_match():
     assert review.verify(parsed, _terminal(outcome="loss")) is True
 
 
+def test_verify_accepts_an_equivalent_instant_and_normalizes_the_reason():
+    parsed = review.parse_review(_fixture(), GAME_ID)
+
+    # The control projection normalizes the date through Date.toISOString while
+    # this reader keeps the site's raw string: the same instant still matches.
+    assert review.verify(parsed, _terminal(endedAt="2026-10-14T20:38:05.153+00:00")) is True
+    assert review.verify(parsed, _terminal(endedAt="2026-10-14T20:38:05Z")) is False
+    assert review.verify(parsed, _terminal(endedAt="not-a-date")) is False
+
+    # The Worker publishes its own reason vocabulary; an unmapped site reason is
+    # "unknown" there and must be "unknown" here too.
+    unmapped = review.parse_review(_fixture(reason="repetition"), GAME_ID)
+    assert review.normalized_reason(unmapped) == "unknown"
+    assert review.verify(unmapped, _terminal(reason="unknown")) is True
+    assert review.verify(unmapped, _terminal(reason="repetition")) is False
+
+
 def test_summary_for_bot_keeps_only_counts_and_timings():
     parsed = review.parse_review(_fixture(), GAME_ID)
     summary = review.summary_for_bot(parsed, color="gote")
