@@ -4,6 +4,9 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import contextmanager
+from types import SimpleNamespace
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -304,6 +307,105 @@ class StorageBreakdownTests(unittest.TestCase):
         self.assertEqual(item["formats"]["plain"]["count"], 0)
         self.assertEqual(item["formats"]["compressed"]["count"], 0)
         self.assertNotIn(str(outside), json.dumps(result))
+
+
+class StorageArchiveFormatContractTests(unittest.TestCase):
+    """Format accounting contracts with exclusively virtual filesystem input."""
+
+    ROOT = "/virtual-archive"
+
+    @staticmethod
+    def metadata(mode, inode, blocks=0):
+        return SimpleNamespace(
+            st_mode=mode, st_dev=1, st_ino=inode, st_blocks=blocks, st_size=0
+        )
+
+    def entry(self, name, mode, inode, blocks=0, parent=None):
+        metadata = self.metadata(mode, inode, blocks)
+
+        def entry_stat(*, follow_symlinks):
+            self.assertFalse(follow_symlinks)
+            return metadata
+
+        return SimpleNamespace(
+            name=name, path=f"{parent or self.ROOT}/{name}", stat=entry_stat
+        )
+
+    def collect_virtual(self, directories, *, max_entries=100):
+        visited = []
+
+        @contextmanager
+        def scandir(path):
+            visited.append(path)
+            entries = directories[path]
+            if isinstance(entries, OSError):
+                raise entries
+            yield iter(entries)
+
+        virtual_os = SimpleNamespace(
+            lstat=lambda path: self.metadata(0o040000, 1), scandir=scandir
+        )
+        with patch.object(collector, "os", virtual_os), patch.object(
+            collector, "Path", lambda path: path
+        ):
+            result = collector._storage_suffix_usage(
+                self.ROOT, collector.STRATEGY_ARCHIVE_FORMATS, max_entries=max_entries
+            )
+        self.assertNotIn(self.ROOT, json.dumps(result))
+        return result, visited
+
+    def test_nested_formats_are_counted(self):
+        child = f"{self.ROOT}/shard"
+        directories = {
+            self.ROOT: [self.entry("shard", 0o040000, 2)],
+            child: [
+                self.entry("alpha.py", 0o100000, 3, 16, child),
+                self.entry("beta.py.gz", 0o100000, 4, 8, child),
+                self.entry("notes.txt", 0o100000, 5, 8, child),
+            ],
+        }
+        result, visited = self.collect_virtual(directories)
+        self.assertTrue(result["scan_complete"])
+        self.assertEqual(visited, [self.ROOT, child])
+        self.assertEqual(result["formats"]["plain"], {"count": 1, "allocated_bytes": 8192})
+        self.assertEqual(result["formats"]["compressed"], {"count": 1, "allocated_bytes": 4096})
+
+    def test_unknown_suffix_hardlink_never_consumes_matched_inode(self):
+        entries = [
+            self.entry("notes.txt", 0o100000, 3, 16),
+            self.entry("alpha.py", 0o100000, 3, 16),
+        ]
+        for order in (entries, list(reversed(entries))):
+            with self.subTest(first=order[0].name):
+                result, _visited = self.collect_virtual({self.ROOT: order})
+                self.assertTrue(result["scan_complete"])
+                self.assertEqual(result["formats"]["plain"], {"count": 1, "allocated_bytes": 8192})
+                self.assertEqual(result["formats"]["compressed"], {"count": 0, "allocated_bytes": 0})
+
+    def test_nested_bound_marks_partial_scan_incomplete(self):
+        child = f"{self.ROOT}/shard"
+        result, _visited = self.collect_virtual({
+            self.ROOT: [self.entry("shard", 0o040000, 2)],
+            child: [self.entry("alpha.py", 0o100000, 3, 16, child)],
+        }, max_entries=1)
+        self.assertFalse(result["scan_complete"])
+        self.assertEqual(result["formats"]["plain"], {"count": 0, "allocated_bytes": 0})
+
+    def test_child_symlink_directory_is_not_followed(self):
+        result, visited = self.collect_virtual({
+            self.ROOT: [self.entry("outside", 0o120000, 2)],
+        })
+        self.assertTrue(result["scan_complete"])
+        self.assertEqual(visited, [self.ROOT])
+        self.assertEqual(result["formats"]["plain"], {"count": 0, "allocated_bytes": 0})
+
+    def test_nested_scandir_failure_is_incomplete(self):
+        child = f"{self.ROOT}/shard"
+        result, _visited = self.collect_virtual({
+            self.ROOT: [self.entry("shard", 0o040000, 2)],
+            child: PermissionError("virtual scan denied"),
+        })
+        self.assertFalse(result["scan_complete"])
 
 
 class StorageSummaryTests(unittest.TestCase):
