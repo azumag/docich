@@ -121,6 +121,48 @@ def test_rotation_projection_reports_overdue_inbox_waiting_for_slot(tmp_path):
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
+def test_failed_corner_rows_are_fixed_shape_and_never_publish_request_identity(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting",
+        "reason": "failed-corner-slot-released",
+        "failed_corners": [
+            {"corner": "tsuitate", "request_id": "DO-NOT-PUBLISH-REQUEST", "at": 90,
+             "resolution": "released-unverified", "reason_code": "failed-corner-slot-released",
+             "error_kind": "execution-unverified", "detail": "SECRET-DETAIL"},
+            {"corner": "weather", "request_id": "DO-NOT-PUBLISH-REQUEST-2", "at": 95,
+             "resolution": "not-a-resolution", "error_kind": "not-a-kind"},
+            "not-a-row",
+        ],
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rows = output["corner_rotation"]["failed_corners"]
+    assert rows == [
+        {"corner": "tsuitate", "at": 90, "resolution": "released-unverified",
+         "error_kind": "execution-unverified"},
+        {"corner": "weather", "at": 95, "resolution": "unknown", "error_kind": "unknown"},
+    ]
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+    assert "SECRET" not in json.dumps(output)
+
+
+def test_failed_corner_projection_is_bounded(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "failed_corners": [
+            {"corner": "c%d" % n, "at": n, "resolution": "recovery-required",
+             "error_kind": "execution-error"}
+            for n in range(module.ROTATION_FAILED_CORNER_MAX + 5)
+        ],
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rows = output["corner_rotation"]["failed_corners"]
+    assert len(rows) == module.ROTATION_FAILED_CORNER_MAX
+    assert rows[-1]["corner"] == "c%d" % (module.ROTATION_FAILED_CORNER_MAX + 4)
+
+
 def test_corner_match_target_projection_is_bounded_and_does_not_change_n(tmp_path):
     module = load_collector()
     for value in (1, 3, 100, 0, 101, True, "SECRET-TARGET", None):

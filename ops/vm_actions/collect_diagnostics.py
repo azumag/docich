@@ -2883,6 +2883,12 @@ ROTATION_ERROR_KINDS = frozenset({
     "unexpected",
 })
 ROTATION_PENDING_PHASES = frozenset({"selected", "dispatched"})
+# Fixed resolutions of the `failed_corners` ledger rows (#2187). `released`
+# means the scheduler settled the failed corner and kept rotating; the other
+# value means the shared slot could not be proven free, so the fail-closed
+# latch stayed.
+ROTATION_FAILED_CORNER_RESOLUTIONS = frozenset({"released-unverified", "recovery-required"})
+ROTATION_FAILED_CORNER_MAX = 8
 
 WEATHER_CORNER_STATUSES = frozenset({
     "idle", "starting", "active", "restoring", "completed", "interrupted", "failed",
@@ -3953,6 +3959,32 @@ def _rotation_error_kind(value):
     return "unknown"
 
 
+def _rotation_failed_corners_projection(data):
+    """Bounded, fixed-shape corner failures that no longer stop the rotation.
+
+    Never emits request identity, payloads or exception text: the ledger row's
+    corner id, time, fixed resolution, fixed reason code and fixed error kind
+    are enough for an operator to find the failing corner and fix it (#2187).
+    """
+    rows = data.get("failed_corners")
+    projected = []
+    if isinstance(rows, list):
+        for row in rows[-ROTATION_FAILED_CORNER_MAX:]:
+            if not isinstance(row, dict):
+                continue
+            resolution = row.get("resolution")
+            projected.append({
+                "corner": _bounded_str(row.get("corner"), 64),
+                "at": _bounded_time(row.get("at")),
+                "resolution": (
+                    resolution if resolution in ROTATION_FAILED_CORNER_RESOLUTIONS
+                    else "unknown"
+                ),
+                "error_kind": _rotation_error_kind(row.get("error_kind")),
+            })
+    return {"failed_corners": projected}
+
+
 def _rotation_pending_projection(state_dir, data, now):
     """Bounded identity of the latched reservation (#986), request id never emitted.
 
@@ -4240,6 +4272,7 @@ def _collect_corner_files(state_dir, payload, now):
         )
         rotation.update(_rotation_pending_projection(state_dir, data, now))
         rotation.update(_rotation_manual_pending_projection(state_dir, data, now))
+        rotation.update(_rotation_failed_corners_projection(data))
     mode, cooldown = _rotation_policy()
     rotation.update(schedule_mode=mode, cooldown_seconds=cooldown)
     payload["corner_rotation"] = rotation
