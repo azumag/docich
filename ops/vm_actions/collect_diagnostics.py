@@ -467,7 +467,14 @@ def _storage_suffix_usage(path, formats, *, max_entries=STORAGE_MAX_ENTRIES):
                     except OSError:
                         result["scan_complete"] = False
                         continue
-                    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+                    if stat.S_ISLNK(st.st_mode):
+                        continue
+                    if stat.S_ISDIR(st.st_mode):
+                        stack.append(Path(entry.path))
+                        continue
+                    if not stat.S_ISREG(st.st_mode) or not any(
+                        entry.name.endswith(suffix) for _name, suffix in suffixes
+                    ):
                         continue
                     key = (int(st.st_dev), int(st.st_ino))
                     if key in seen:
