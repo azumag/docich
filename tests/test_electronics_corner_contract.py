@@ -17,6 +17,13 @@ REQUIRED_TOPIC_FIELDS = {
     "topicId",
     "thirtySecondSummary",
     "oneLineSummary",
+    "inputOutput",
+    "electricalPrinciples",
+    "circuitTopology",
+    "lossesNoiseThermal",
+    "failureModesAndProtection",
+    "designRationale",
+    "tradeoffs",
     "limitations",
     "figureOrDiagram",
     "youtubeIndependentDraft",
@@ -42,6 +49,26 @@ def test_top_level_contract():
     assert t["citationKeepUrl"] is True
     assert isinstance(t["primarySources"], list) and t["primarySources"]
     assert isinstance(t["requirementsAndConstraints"], list) and t["requirementsAndConstraints"]
+    assert t["inputOutput"]
+    assert t["electricalPrinciples"]
+    assert t["circuitTopology"]
+    assert t["lossesNoiseThermal"]
+    assert t["failureModesAndProtection"]
+    assert t["designRationale"]
+    assert t["tradeoffs"]
+
+def test_source_priority_and_circuit_power_are_explicit():
+    data = load_fixture()
+    t = data["topic"]
+    assert "manufacturer-technical-material" in t["sourcePriority"]
+    assert t["requirementsAndConstraints"]
+    assert t["circuitTopology"]
+    assert t["designRationale"]
+    assert t["limitations"]
+    acceptance = data["nonProductionAcceptance"]
+    assert acceptance["mustPrioritizePrimaryTechnicalSources"] is True
+    assert acceptance["mustIncludeCircuitAndPower"] is True
+    assert acceptance["mustNotPresentSyntheticAsReal"] is True
 
 def test_source_urls_are_https():
     data = load_fixture()
