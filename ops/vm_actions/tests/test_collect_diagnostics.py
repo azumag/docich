@@ -3056,3 +3056,101 @@ class StreamTitleSyncProjectionTests(CollectorFixture):
             self.soren, module.PROD_ROOT / "games" / "soviet_now", gitlink_sha
         )
         self.assertEqual(git_text.call_count, 3)
+
+
+_HANJUKU_ROUND_IDENTITY = {"game": "hanjuku-hero", "runtime_id": "rt-1",
+                           "generation": 3, "lease_id": "lease-1"}
+
+
+def _prediction_round(root, row, *, next_poll_in=300.0):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "hanjuku_predictions.json").write_text(json.dumps({
+        "schema": 1, "mode": "error", "error": "invalid_state", "best_cleared": 1,
+        "next_poll_at": time.time() + next_poll_in, "round": row}))
+
+
+def _prediction_runtime(root, files):
+    runtime = root / "runtimes" / _HANJUKU_ROUND_IDENTITY["runtime_id"]
+    runtime.mkdir(parents=True)
+    for name, payload in files.items():
+        text = payload if isinstance(payload, str) else json.dumps(payload)
+        (runtime / name).write_text(text)
+    return runtime
+
+
+def _round_row(**extra):
+    return {**_HANJUKU_ROUND_IDENTITY, "status": "LOCKED", "target": 2,
+            "middle": 1, "window": 600, **extra}
+
+
+def _ownership(module, root, row):
+    return module._collect_hanjuku_predictions(root)["ownership"]
+
+
+def test_hanjuku_prediction_ownership_reports_the_decisive_record(tmp_path):
+    module = load_collector()
+    run_name, result_name, progress_name = (
+        "hanjuku_run.json", "hanjuku_prediction_result.json", "hanjuku_progress.json")
+    digest = "a" * 64
+
+    _prediction_round(tmp_path, _round_row())
+    ownership = _ownership(module, tmp_path, _round_row())
+    assert ownership["blocker"] == "runtime-missing"
+    assert 295 <= ownership["retry_delay_seconds"] <= 300
+    assert "rt-1" not in json.dumps(ownership)
+
+    state = tmp_path / "identity"
+    _prediction_round(state, _round_row())
+    _prediction_runtime(state, {run_name: {**_HANJUKU_ROUND_IDENTITY, "lease_id": "other"}})
+    assert _ownership(module, state, _round_row())["blocker"] == "run-record-identity-mismatch"
+
+    state = tmp_path / "malformed"
+    _prediction_round(state, _round_row())
+    _prediction_runtime(state, {run_name: {**_HANJUKU_ROUND_IDENTITY,
+                                          "terminal_reason": "game_over",
+                                          "frame_sha256": "bad"}})
+    assert _ownership(module, state, _round_row())["blocker"] == "terminal-evidence-malformed"
+
+    state = tmp_path / "mismatch"
+    _prediction_round(state, _round_row())
+    _prediction_runtime(state, {
+        run_name: {**_HANJUKU_ROUND_IDENTITY, "terminal_reason": "game_over",
+                   "frame_sha256": digest},
+        result_name: {**_HANJUKU_ROUND_IDENTITY, "reason": "screen_stalled",
+                      "frame_sha256": digest, "cleared": 1, "secret": "DO-NOT-PUBLISH"},
+    })
+    ownership = _ownership(module, state, _round_row())
+    assert ownership["blocker"] == "result-record-mismatch"
+    assert "DO-NOT-PUBLISH" not in json.dumps(ownership)
+
+    state = tmp_path / "unreadable"
+    _prediction_round(state, _round_row())
+    _prediction_runtime(state, {
+        run_name: {**_HANJUKU_ROUND_IDENTITY, "terminal_reason": "game_over",
+                   "frame_sha256": digest},
+        progress_name: "{not-json",
+    })
+    assert _ownership(module, state, _round_row())["blocker"] == "progress-record-unreadable"
+
+    state = tmp_path / "waiting"
+    _prediction_round(state, _round_row())
+    _prediction_runtime(state, {run_name: dict(_HANJUKU_ROUND_IDENTITY)})
+    ownership = _ownership(module, state, _round_row())
+    assert ownership["blocker"] is None and ownership["terminal_reason"] is None
+    assert ownership["runtime_present"] is True and ownership["run_record_present"] is True
+
+
+def test_hanjuku_prediction_ownership_rejects_an_unusable_runtime_identity(tmp_path):
+    module = load_collector()
+    row = {**_HANJUKU_ROUND_IDENTITY, "runtime_id": "../escape"}
+    _prediction_round(tmp_path, row)
+    ownership = module._collect_hanjuku_predictions(tmp_path)["ownership"]
+    assert ownership["blocker"] == "runtime-identity-invalid"
+    assert "escape" not in json.dumps(ownership)
+
+
+def test_hanjuku_prediction_ownership_is_absent_without_an_owned_round(tmp_path):
+    module = load_collector()
+    assert "ownership" not in module._collect_hanjuku_predictions(tmp_path)
+    _prediction_round(tmp_path, None)
+    assert "ownership" not in module._collect_hanjuku_predictions(tmp_path)

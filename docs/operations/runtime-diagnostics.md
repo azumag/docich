@@ -736,3 +736,24 @@ SHA・request/lease/runtime識別子・自由文を出力しない。worker/queu
 
 
 半熟の投影採用は `HANJUKU_PROJECTION_RECOVERY` に登録する既存game windowに属するguard paneです。共有19worker表やAI queueを増やしません。`hanjuku_projection_recovery` は同active identityのreceiptとguard/playerのkernel起動時刻を照合し、固定status・presence・identity一致・生存booleanだけを返します。PID・argv・native source・runtime/lease識別子・自由文は出力しません。`healthy` はready receiptとlive process birth/投影stateの一致であり、公開映像・音声の視聴証明ではありません。別epoch・欠落・symlink・PID再利用・state不同はunavailable/unverifiedです。
+
+### 半熟英雄の予想が所有する round の停滞分類
+
+`hanjuku_predictions` に `ownership` を足す（round を所有している＝`round` が在り state が読める場合だけ）。
+`hanjuku_predictions` は外部記録が検証を通らなくなると round の所有を維持したまま
+`error=invalid_state` で固定300秒の retry を回すため、「どの記録が決定的か」と
+「次の poll が retry backoff（約300秒）か通常 poll（約30秒）か」を固定 enum /
+boolean / 有界整数だけで示す。出すのは `retry_delay_seconds`（0〜86400に clamp）、
+`blocker`（`runtime-identity-invalid` / `runtime-missing` / `run-record-missing` /
+`run-record-unreadable` / `run-record-identity-mismatch` / `terminal-evidence-malformed` /
+`result-record-unreadable` / `result-record-mismatch` / `progress-record-unreadable`、
+決定的な記録が無ければ null）、`runtime_present` / `run_record_present` /
+`run_record_readable` / `result_record_present` / `progress_record_present`、
+`terminal_reason`（`game_over` / `screen_stalled` / `input_stalled` のみ）。
+
+読み取りは runtime 配下の `hanjuku_run.json` / `hanjuku_prediction_result.json` /
+`hanjuku_progress.json` の3つだけで、各16KiB上限・regular file・symlink拒否・
+`runtime_id` は `..` と区切り文字を拒否する。`runtime_id`・lease・frame SHA・
+記録の本文・視聴者名は出力しない。これは検証ロジックの再実装ではなく、
+決定的な記録の所在を示す有界な分類であり、修正の要否は実測と
+`docs/features/yosou-oh-corner.md` の記録契約に従って判断する。
