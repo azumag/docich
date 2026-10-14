@@ -27,7 +27,6 @@
     "mustNotClaimRealSpecimen": true,
     "mustNotPresentSyntheticAsReal": true,
     "mustKeepSourceUrls": true,
-    "mustPrioritizePrimaryDocuments": true,
     "mustPrioritizePrimaryTechnicalSources": true,
     "mustKeepShortQuotes": true,
     "mustKeepCitations": true,
