@@ -173,6 +173,10 @@ def test_view_serves_broadcast_html_and_a_runtime_bound_projection(served):
     status, html = _get(port, "/broadcast")
     assert status == 200 and "予想王" in html and "上位予想者のみ集計" in html
     assert "GET /helix/predictions" in html
+    # 日本語UIのブラウザ翻訳コントロール（日本語/English）を出さない。
+    # 予想王は常に日本語表示で、翻訳した表示は集計の意味を変えてしまう。
+    assert 'lang="ja" translate="no"' in html
+    assert '<meta name="google" content="notranslate">' in html
 
     status, raw = _get(port, "/api/yosou")
     data = json.loads(raw)
