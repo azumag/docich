@@ -240,6 +240,8 @@ SITE_REASONS = {
 
 
 def normalized_reason(review: dict) -> str:
+    if review.get("result") == "aborted":
+        return "interrupted"
     return SITE_REASONS.get(review.get("reason"), "unknown")
 
 
@@ -328,17 +330,59 @@ def summary_for_bot(review: dict, *, color: str) -> dict:
     }
 
 
-def read_summary(game_id: str, terminal: dict, *, color: str, opener=None) -> dict | None:
-    """Read, verify and summarize the public replay, or ``None``.
+#: Fixed vocabulary for why a 感想戦 could not use the public replay.  The
+#: corner records it so a silent fallback is diagnosable without a log.
+REVIEW_FAILURES = frozenset({
+    "ok", "read-failed", "verify-failed", "invalid-color", "invalid-game-id",
+})
 
-    Every failure (network, drift, another match) is a ``None`` here: the
-    narration falls back to the reviewed facts and the corner is never failed by
-    a public page.
+
+def _infer_color(review: dict, outcome) -> str | None:
+    """Recover the bot's side from the settled outcome and the replay result.
+
+    The owner projection carries the colour while the match is live, but the
+    public replay plus the settled outcome are enough on their own, so the 感想戦
+    never depends on a player view that may already be cleaned up.
     """
+    result = review.get("result")
+    if result not in {"sente_win", "gote_win"} or outcome not in {"win", "loss"}:
+        return None
+    won = outcome == "win"
+    if result == "sente_win":
+        return "sente" if won else "gote"
+    return "gote" if won else "sente"
+
+
+def read_summary_detail(game_id: str, terminal: dict, *, color: str | None = None,
+                        opener=None) -> tuple[dict | None, str]:
+    """Read, verify and summarize one public replay, with a fixed failure code.
+
+    ``terminal`` is the settled control result (outcome/reason/endedAt/...); the
+    game id is the argument, because the projection does not carry it.  Every
+    failure returns ``(None, code)``: the narration falls back to the reviewed
+    facts and the corner is never failed by a public page.
+    """
+    if not isinstance(game_id, str) or not GAME_ID.fullmatch(game_id):
+        return None, "invalid-game-id"
     try:
         review = read_replay(game_id, opener=opener)
-        if not verify(review, terminal, color=color):
-            return None
-        return summary_for_bot(review, color=color)
     except (ReviewError, KeyError, TypeError, ValueError):
-        return None
+        return None, "read-failed"
+    settled = dict(terminal) if isinstance(terminal, dict) else {}
+    # The id identifies the replay; it is never taken from the result projection.
+    settled["gameId"] = game_id
+    resolved = color if color in COLORS else _infer_color(review, settled.get("outcome"))
+    if resolved not in COLORS:
+        return None, "invalid-color"
+    if not verify(review, settled, color=resolved):
+        return None, "verify-failed"
+    try:
+        return summary_for_bot(review, color=resolved), "ok"
+    except (ReviewError, KeyError, TypeError, ValueError):
+        return None, "read-failed"
+
+
+def read_summary(game_id: str, terminal: dict, *, color: str | None = None,
+                 opener=None) -> dict | None:
+    """Read, verify and summarize the public replay, or ``None``."""
+    return read_summary_detail(game_id, terminal, color=color, opener=opener)[0]

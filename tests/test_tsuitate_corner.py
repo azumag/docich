@@ -771,6 +771,34 @@ def test_tsuitate_restore_replay_waits_for_an_in_flight_switch(tmp_path):
     assert manager.recover_failed_restore() == "queued"
 
 
+def _review_fixture():
+    """A synthetic public replay in the site's flat ``__data.json`` shape."""
+    table = [{"game": 1, "senteName": None, "goteName": None}, None]
+
+    def add(value):
+        table.append(value)
+        return len(table) - 1
+
+    move_refs = []
+    for index in range(50):
+        move_refs.append(add({"usi": add("7g7f"), "byColor": add("sente"),
+                              "ms": add(300), "foulsBefore": add(0)}))
+    game = {
+        "id": add("fixtureGame01"), "result": add("gote_win"), "reason": add("foul_limit"),
+        "moves": add(move_refs), "foulAttempts": add([]), "senteFouls": add(10),
+        "goteFouls": add(0), "senteRatingBefore": add(1005), "senteRatingAfter": add(1003),
+        "goteRatingBefore": add(1471), "goteRatingAfter": add(1473),
+        "startedAt": add(["Date", "2026-10-14T20:36:48.743Z"]),
+        "endedAt": add(["Date", "2026-10-14T20:38:05.153Z"]),
+    }
+    table[1] = game
+    table[0]["senteName"] = add("DoCiAI")
+    table[0]["goteName"] = add("kakuren_bot")
+    return {"type": "data", "nodes": [{"type": "data", "data": [{"user": 1}, None]},
+                                      {"type": "data", "data": table}]}
+
+
+
 # --- narration: the corner introduction and the 感想戦 ----------------------
 
 _COUNTS = {"overlay": {"sent": 1, "failed": 0, "skipped": 0},
@@ -850,7 +878,7 @@ def test_review_is_announced_once_from_the_verified_public_replay(tmp_path):
     assert published[0][1].startswith("AIは反則を重ねて")
     assert published[0][2].startswith("AIの負け / 反則負け / 50手")
     saved = json.loads(manager.path.read_text())
-    assert saved["review"] == {"source": "replay", "kind": "ai", "moves": 50}
+    assert saved["review"] == {"source": "replay", "kind": "ai", "failure": "ok", "moves": 50}
     assert saved["review_request_id"] == REQ
     # The raw move list, the board and the model prompt never reach the state.
     raw = manager.path.read_text()
@@ -959,3 +987,73 @@ def test_announcement_counters_survive_a_failed_sink(tmp_path):
     saved = json.loads(manager.path.read_text())
     assert saved["overlay_announcements"] == {"sent": 0, "failed": 1, "skipped": 0}
     assert saved["narration"] == {"enqueued": 0, "delivery_failed": 1, "skipped": 0}
+
+
+def test_review_reads_the_public_replay_end_to_end(tmp_path, monkeypatch):
+    """Regression: the corner must hand the game id to the identity check.
+
+    The settled-result projection has no `gameId`, so passing it alone made every
+    real 感想戦 fall back to the result-only text.  This test runs the real
+    reader (only the HTTP fetch is stubbed) so the whole path is exercised.
+    """
+    from docich import tsuitate_review as review_module
+
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(
+        beta_result={"outcome": "loss", "reason": "foul_limit",
+                     "endedAt": "2026-10-14T20:38:05.153Z", "moveNumber": 50,
+                     "resultConfidence": "verified"},
+        beta_game_id="fixtureGame01", beta_color="sente", beta_active_since=1000.0,
+    )
+    payload = review_module.parse_review(_review_fixture(), "fixtureGame01")
+    monkeypatch.setattr(review_module, "read_replay", lambda game_id, **kwargs: payload)
+    published = []
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(),
+        review_text=lambda g, summary, terminal, *, agents: (
+            "感想戦です。今回は50手、反則10回で反則負けでした。"
+            "持ち時間の使い方を見直して次につなげます。", "fallback"),
+        announce_review=lambda g, text, *, request_id, body, audio_enabled: (
+            published.append((text, body)) or dict(_COUNTS)),
+    )
+    manager._save(state)
+
+    manager._announce_review_once(state)
+
+    saved = json.loads(manager.path.read_text())
+    assert saved["review"] == {"source": "replay", "kind": "fallback",
+                               "failure": "ok", "moves": 50}
+    assert published and published[0][1].startswith("AIの負け / 反則負け / 50手")
+
+
+def test_review_records_why_the_public_replay_was_unusable(tmp_path, monkeypatch):
+    from docich import tsuitate_review as review_module
+
+    g = _global(tmp_path)
+    state, _identity = _active_state()
+    state.update(beta_result={"outcome": "loss", "reason": "foul_limit",
+                              "endedAt": "2026-10-14T20:38:05.153Z", "moveNumber": 50},
+                 beta_game_id="fixtureGame01", beta_color="sente", beta_active_since=1000.0)
+    monkeypatch.setattr(review_module, "read_replay",
+                        lambda game_id, **kwargs: (_ for _ in ()).throw(
+                            review_module.ReviewError("site down")))
+    manager = TsuitateCornerManager(
+        g, coordinator=object(), control=lambda *_: _status(),
+        review_text=lambda g, summary, terminal, *, agents: ("定型の感想戦です。" * 5, "fallback"),
+        announce_review=lambda *a, **k: dict(_COUNTS),
+    )
+    manager._save(state)
+
+    manager._announce_review_once(state)
+
+    saved = json.loads(manager.path.read_text())
+    assert saved["review"]["source"] == "result-only"
+    assert saved["review"]["failure"] == "read-failed"
+
+    # Without a game id there is nothing to read at all.
+    state.pop("review_request_id", None)
+    state["beta_game_id"] = None
+    manager._save(state)
+    manager._announce_review_once(state)
+    assert json.loads(manager.path.read_text())["review"]["failure"] == "invalid-game-id"

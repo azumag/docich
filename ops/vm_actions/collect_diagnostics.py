@@ -3861,10 +3861,15 @@ def _project_review(value):
         return None
     source = value.get("source")
     kind = value.get("kind")
+    failure = value.get("failure")
     moves = value.get("moves")
     return {
         "source": source if source in {"replay", "result-only"} else None,
         "kind": kind if kind in {"ai", "fallback"} else None,
+        # Why the public replay was unusable: a fixed code, never a message.
+        "failure": failure if failure in {"ok", "read-failed", "verify-failed",
+                                          "invalid-color", "invalid-game-id",
+                                          "unavailable"} else None,
         "moves": moves if type(moves) is int and 0 <= moves <= 100000 else None,
     }
 
