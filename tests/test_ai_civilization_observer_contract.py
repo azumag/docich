@@ -64,6 +64,8 @@ def test_previous_shape():
     prev = data["previous"]
     assert isinstance(prev, dict)
     assert isinstance(prev["tick"], int)
+    assert isinstance(prev.get("livingAgentIds"), list)
+    assert all(isinstance(x, str) and x for x in prev["livingAgentIds"])
     metrics = prev["metrics"]
     assert isinstance(metrics, dict)
     # 保存スキーマ (ai_civ_observer_last.json) に合わせる
@@ -72,6 +74,21 @@ def test_previous_shape():
     for optional in ("births", "deaths"):
         if optional in metrics:
             assert isinstance(metrics[optional], int), optional
+
+
+def test_window_births_deaths_derived():
+    data = load_fixture()
+    snap = data["snapshot"]
+    prev = data["previous"]
+    current_alive = {a["id"] for a in snap["agents"] if isinstance(a, dict) and (a.get("hp") or 0) > 0}
+    previous_living = set(prev["livingAgentIds"])
+    births = len(current_alive - previous_living)
+    deaths = len(previous_living - current_alive)
+    exp = data.get("derivedExpectations", {})
+    if "windowBirths" in exp:
+        assert births == exp["windowBirths"], (births, exp["windowBirths"])
+    if "windowDeaths" in exp:
+        assert deaths == exp["windowDeaths"], (deaths, exp["windowDeaths"])
 
 
 def test_events_bounds_and_uniqueness():

@@ -31,9 +31,10 @@
   "derivedExpectations": {
     "layer": "observer-derived",
     "living": 3,
-    "previousAgentIds": ["agent-0", "agent-1", "agent-2"],
-    "expectedNewAgentIdsThisWindow": ["agent-3", "agent-4"],
     "windowBirthsCandidate": 2,
+    "windowBirths": 2,
+    "windowDeaths": 2,
+    "livingAgentIds": ["agent-1", "agent-3", "agent-4"],
     "note": "births/deaths は window 増分であり、previous metrics との累積和とは一致しない（migration により分離し得る）。"
   },
   "previous": {
@@ -43,7 +44,8 @@
       "births": 5,
       "deaths": 1,
       "regionPopulation": {"garden-1": 100}
-    }
+    },
+    "livingAgentIds": ["agent-0", "agent-1", "agent-2"]
   },
   "events": [
     {"id": "evt-1", "tick": 35, "kind": "agent_conversation", "message": "食料不足を起点に西部から大規模な移住", "agentId": "agent-7"},

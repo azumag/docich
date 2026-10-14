@@ -92,6 +92,7 @@ WorldState から抽出するのは以下のみで、それ以外は保存しな
     "deaths": 1,
     "regionPopulation": {"garden-1": 100}
   },
+  "livingAgentIds": ["agent-..."],
   "topicSeeds": [
     {"eventId": "evt-...", "kind": "agent_conversation", "title": "食料不足を起点に西部から大規模な移住", "firstSeenTick": 123}
   ],
@@ -99,7 +100,8 @@ WorldState から抽出するのは以下のみで、それ以外は保存しな
 }
 ```
 
-- 前回 diff は `observedAt` / `tick` / `metrics` のみを diff 計算に使う。LLM 文言は保存しない。
+- 前回 diff は `observedAt` / `tick` / `metrics` / `livingAgentIds` / `seenEventIds` を使う。`births` / `deaths` はこの保存レコードの `livingAgentIds` と今回 snapshot の `agents[]` から観測側で導出する（前回 id 集合を持てない場合は `births`/`deaths` を計算できない旨を明記して MVP 対象外とする）。LLM 文言は保存しない。
+- 保存契約では `livingAgentIds`（前回観測時の living agent id 集合）を保持する。上限 `OBSERVER_MAX_TRACKED_AGENT_IDS`（MVP では 10000）を超えたら最古から削除（FIFO）。これにより `births = |currentAlive \\ previousLivingAgentIds|`、`deaths = |previousLivingAgentIds \\ currentAlive|` を same run で再計算できる。
 - 保存失敗時は observation を `draft` にとどめ、公開しない。
 - 同一 tick の再観測でも `observedAt` を更新しない（idempotent）。差分が 0 なら「変化なし」として topic 0 件で終端。
 
@@ -125,8 +127,10 @@ fixture の `snapshot` は上流 `WorldState` の **bounded サンプル（raw u
 1. schema validation: 必須キー・型・上限が満たされる。
 2. 入力 bound: `events` 配列長 <= 1000、snapshot の JSON bytes <= 256 KiB。
 3. 重複排除契約: fixture の event id が unique（same run での topic 再選出を防ぐ前提）。
-4. read-only: fixture 基盤テストには HTTP mutation が存在しない（静的検査）。
-5. MoYoGarden activity: administer tick counter は変化しない（fixture で N/A、実測は後続）。
+4. MoYoGarden activity: administer tick counter は変化しない（fixture で N/A、実測は後続）。
+
+read-only 性（HTTP mutation が発生しない）は、このテストファイルおよび fixture 経路に HTTP 呼び出し/
+POST が存在しないことをコードレビューで確認する（静的検査テストは任意）。
 
 fixture には個人を特定しうる raw BOT データを含めない。集計値と合成 id のみ。
 `births` / `deaths` は window 増分として扱うため、fixture の living/births/deaths が feeding 相当に見えても
