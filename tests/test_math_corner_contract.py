@@ -21,7 +21,6 @@ REQUIRED_TOPIC_FIELDS = {
     "intuitivePrediction",
     "observedPhenomenon",
     "smallExample",
-    "physicalLaw",
     "mathematicalPrinciple",
     "mathematicalModel",
     "mathematicalLaw",
@@ -92,9 +91,13 @@ def test_narrative_sections_are_explicit():
     assert topic["intuitivePrediction"]
     assert topic["observedPhenomenon"]
     assert topic["smallExample"]
+    assert topic["mathematicalPrinciple"]
+    assert topic["mathematicalLaw"]
     assert topic["mathematicalModel"]
     assert topic["formulaAndModel"]
     assert topic["generalization"]
+    assert topic["application"]
+    assert topic["experimentAndTechnologyApplication"]
     assert topic["realWorldApplication"]
     assert topic["intuitiveSummary"]
     acceptance = data["nonProductionAcceptance"]
@@ -107,6 +110,10 @@ def test_narrative_sections_are_explicit():
     assert acceptance["mustIncludeGeneralization"] is True
     assert acceptance["mustIncludeRealWorldApplication"] is True
     assert acceptance["mustIncludeIntuitionFailurePoint"] is True
+    assert acceptance["mustIncludeExperimentAndTechnologyApplication"] is True
+    assert acceptance["mustIncludeIntuitiveSummary"] is True
+    assert acceptance["mustIncludeMathematicalLaw"] is True
+    assert acceptance["mustIncludeMathematicalPrinciple"] is True
 
 
 def test_source_priority_favors_public_research_and_standards_sources():
@@ -192,7 +199,6 @@ def test_non_production_acceptance_boundary():
     acceptance = data["nonProductionAcceptance"]
     assert acceptance["requiresReviewerApproval"] is True
     assert acceptance["mustNotClaimRealMathematics"] is True
-    assert acceptance["mustNotClaimRealPhysics"] is True
     assert acceptance["mustNotPresentSyntheticAsReal"] is True
     assert acceptance["mustKeepSourceUrls"] is True
     assert acceptance["mustNotClaimRealPublication"] is True
@@ -200,3 +206,22 @@ def test_non_production_acceptance_boundary():
     assert acceptance["overlayAndProgressSplitAfterInputContract"] is True
     assert acceptance["partialCompletionAllowed"] is True
     assert acceptance["independentYouTubeDraftRequired"] is True
+
+
+def test_every_declared_acceptance_flag_is_enforced():
+    """Fail closed: every flag the fixture ships must be asserted as True.
+
+    The physics contract precedent (merged) asserts each flag it declares, so a
+    flag flipped to False anywhere in the fixture is a test failure, not a
+    silent pass.
+    """
+    data = load_fixture()
+    acceptance = data["nonProductionAcceptance"]
+    flags = {
+        key: value
+        for key, value in acceptance.items()
+        if key.startswith("must")
+    }
+    assert len(flags) >= 20
+    flipped = sorted(key for key, value in flags.items() if value is not True)
+    assert flipped == [], flipped

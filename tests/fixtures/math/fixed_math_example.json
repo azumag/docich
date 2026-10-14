@@ -16,8 +16,8 @@
           0
         ],
         "excerpt": "Verified short excerpt (synthetic): in the birthday problem, the probability of a shared birthday among n independent uniform choices from k days grows roughly as 1 minus exp of minus n(n minus 1) over 2k, so 23 people already reach about one half. 100 days of naive linear intuition is not the right scale. Use this as contract material only.",
-        "body_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "text_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "excerpt_sha256": "1ca5957fd7963a009116d414cd6f9b1122acb57b7f64ed67b2c16e4e8305d031"
       }
     ]
@@ -25,7 +25,6 @@
   "nonProductionAcceptance": {
     "requiresReviewerApproval": true,
     "mustNotClaimRealMathematics": true,
-    "mustNotClaimRealPhysics": true,
     "mustNotPresentSyntheticAsReal": true,
     "mustKeepSourceUrls": true,
     "mustPrioritizePublicResearchAndStandardsSources": true,
@@ -33,7 +32,6 @@
     "mustIncludeIntuitivePrediction": true,
     "mustIncludeObservedPhenomenon": true,
     "mustIncludeSmallExample": true,
-    "mustIncludePhysicalLaw": true,
     "mustIncludeMathematicalPrinciple": true,
     "mustIncludeMathematicalModel": true,
     "mustIncludeMathematicalLaw": true,
@@ -62,7 +60,6 @@
     "intuitivePrediction": "合成fixture: 多くの聴衆は「365日あるから23人では重ならない」と答える。これは365と23を直接比べた直感的な予想である。",
     "observedPhenomenon": "合成fixture: 23人の集まりでは、誕生日が重なる確率が約0.507となり、50%を越える。人数を増やすと確率は急に上がり、70人では約0.999に近づく。",
     "smallExample": "合成fixture: 2人なら重なる確率は1/365≈0.0027。3人なら1 − (365/365)(364/365)(363/365)≈0.0082。小さい例を順に並べると、確率の伸び方が線形ではなく累積的であることが見える。",
-    "physicalLaw": "合成fixture: 鳩の巣原理ではなく、独立同分布を仮定した確率の積 (順序付き抽選) として birthday collision を扱う。",
     "mathematicalPrinciple": "合成fixture: 重ならない側の確率を積で表し、1から引くという相補事象の考え方。",
     "mathematicalModel": "合成fixture: n人がk個の日 (k=365) から独立に選んだとき、少なくとも2人が同じ値を引く確率 p(n,k) = 1 − ∏_{i=0}^{n−1}(1 − i/k)。",
     "mathematicalLaw": "合成fixture: 相補事象と独立同分布の下での乗法原理。",
