@@ -305,7 +305,10 @@ class YosoCornerManager:
             ends_at=started + self.duration_minutes * 60,
         )
         self._save(state)
-        self._announce_once(state)
+        # A replay may finish starting after its stop marker or display deadline.
+        # Restore that durable owner without publishing a new announcement.
+        if not self._stop_requested() and self.clock() < state["ends_at"]:
+            self._announce_once(state)
         return "queued" if canonical.get("phase") == "draining" else None
 
     def _announce_once(self, state):

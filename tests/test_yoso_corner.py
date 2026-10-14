@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import threading
 import time
+from types import SimpleNamespace
 import uuid
 
 import pytest
@@ -421,3 +422,61 @@ def test_a_failing_announcer_never_fails_the_corner(tmp_path):
     assert "SECRET-ANNOUNCER-BODY" not in json.dumps(state)
     canonical, _ = store.canonical.load()
     assert canonical["active"]["game"] == "robots"
+
+
+@pytest.mark.parametrize(
+    "stop_requested, elapsed, end_reason",
+    [(True, 1.0, "manual"), (False, 60.0, "duration"), (False, 61.0, "duration")],
+)
+def test_yoso_accepted_start_replay_skips_announcements_when_ending(
+        stop_requested, elapsed, end_reason):
+    # Replay the exact successful start receipt with only memory fakes. A stop
+    # cannot cancel an accepted GameSwitch request, so its owner still restores.
+    request_id = "11111111-1111-4111-8111-111111111111"
+    identity = {"game": VIEW_NAME, "runtime_id": "memory-yoso",
+                "generation": 2, "lease_id": request_id}
+    receipt = {
+        "request_id": request_id, "status": "succeeded", "target": VIEW_NAME,
+        "operation": "start", "generation": 2, "updated_at": "1970-01-01T00:16:40Z",
+        "result": {"request_id": request_id, "status": "succeeded",
+                   "to_game": VIEW_NAME, "active_runtime": identity},
+    }
+    result = SimpleNamespace(status="succeeded", request_id=request_id,
+                             to_game=VIEW_NAME, generation=2, receipt=receipt)
+    state = {
+        "rotation_request_id": request_id, "start_request_id": request_id,
+        "switch_request_id": request_id, "status": "starting",
+        "previous_runtime_identity": None,
+    }
+    announcements, restores = [], []
+    manager = object.__new__(YosoCornerManager)
+    manager.g = SimpleNamespace()
+    manager.duration_minutes = 1
+    manager.audio_enabled = True
+    manager.clock = lambda: 1000.0 + elapsed
+    manager.poll_s = 1.0
+    manager.store = SimpleNamespace(
+        receipts=SimpleNamespace(load=lambda _request_id: receipt))
+    manager.coordinator = SimpleNamespace(start=lambda *_a, **_k: result)
+    manager._read_state = lambda: state
+    manager._save = lambda _state: None
+    manager._stop_requested = lambda: stop_requested
+    manager._canonical = lambda: {
+        "phase": "ready", "active": identity, "candidate": None,
+        "previous": None, "retiring": [],
+    }
+    manager.announce = lambda *_a, **_k: announcements.append(_k) or {
+        "overlay": "sent", "speech": "sent"}
+
+    def restore(_state, *, end_reason):
+        restores.append(end_reason)
+        _state.update(status="completed", end_reason=end_reason)
+        return "completed"
+
+    manager._restore = restore
+
+    assert manager.run_rotation(request_id) == "completed"
+    assert announcements == []
+    assert restores == [end_reason]
+    assert state["status"] == "completed" and state["end_reason"] == end_reason
+    assert "announce_request_id" not in state
