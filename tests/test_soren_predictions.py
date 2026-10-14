@@ -125,3 +125,51 @@ def test_rotation_timer_runs_the_soren_reader_beside_the_hanjuku_tick():
     assert "prediction_tick(self.g)" in source
     assert "soren_prediction_tick(self.g)" in source
     assert source.index("prediction_tick(self.g)") < source.index("soren_prediction_tick(self.g)")
+
+
+@pytest.mark.parametrize("damage", [
+    "negative-used", "invalid-login", "non-list-predictors",
+    "duplicate-predictor", "invalid-outcome-users",
+])
+def test_malformed_settled_row_refuses_whole_handoff_before_recording(env, monkeypatch, damage):
+    bad = row("bad")
+    predictors = bad["outcomes"][1]["top_predictors"]
+    if damage == "negative-used":
+        predictors[0]["channel_points_used"] = -1
+    elif damage == "invalid-login":
+        predictors[0]["user_login"] = None
+    elif damage == "non-list-predictors":
+        bad["outcomes"][1]["top_predictors"] = "broken"
+    elif damage == "duplicate-predictor":
+        predictors.append(dict(predictors[0]))
+    else:
+        bad["outcomes"][0]["users"] = True
+    env.write(row("before"), bad, row("after"))
+
+    def unexpected_record(*args, **kwargs):
+        pytest.fail("a malformed handoff must be validated before any ledger work")
+
+    monkeypatch.setattr(sp, "record_resolved", unexpected_record)
+    for _ in range(2):
+        assert sp.tick(env.g) == {"status": "error", "reason": "handoff-invalid"}
+        assert not (env.state / lb.FILE).exists()
+        assert not sp.cursor_path(env.g).exists()
+
+
+def test_malformed_recorded_id_still_refuses_whole_handoff_without_changing_state(env, monkeypatch):
+    env.write(row("existing"))
+    assert sp.tick(env.g, clock=lambda: 5) == {"status": "recorded", "recorded": 1}
+    ledger_before = (env.state / lb.FILE).read_bytes()
+    cursor_before = sp.cursor_path(env.g).read_bytes()
+    bad = row("existing")
+    bad["outcomes"][1]["top_predictors"][0]["user_login"] = None
+    env.write(row("before"), bad, row("after"))
+
+    def unexpected_record(*args, **kwargs):
+        pytest.fail("even an already-recorded id must be validated before ledger work")
+
+    monkeypatch.setattr(sp, "record_resolved", unexpected_record)
+    for _ in range(2):
+        assert sp.tick(env.g) == {"status": "error", "reason": "handoff-invalid"}
+        assert (env.state / lb.FILE).read_bytes() == ledger_before
+        assert sp.cursor_path(env.g).read_bytes() == cursor_before
