@@ -1,11 +1,12 @@
 # 予想王コーナー — チャネルポイント予想の的中率ランキング（設計案）
 
 - Status: **PR-1（オフライン中核）／PR-2a（半熟英雄の記録フック）／PR-2b（Soren の記録フック）／
-  PR-3（`yoso` adapter・view・catalog登録）実装済み**。
+  PR-3（`yoso` adapter・view・catalog登録）／PR-4 の実装部分（読み上げ・eventOverlay）実装済み**。
   production catalog には **既定無効（`enabled = false`）・`manual_only = true`** で登録済みで、
   自動抽選には入らない。有効化（手動予約の受付）はオーナー承認後に
-  `config/docich.soren-live.toml` の当該行を `enabled = true` へ変える1行の変更で行う（§4参照）。
-  PR-4（読み上げ/overlay・本番反映）は未着手。
+  `config/docich.soren-live.toml` の当該行を `enabled = true` へ変える1行の変更で行い、
+  読み上げも行う場合は `audio_enabled = true` を足す（§4参照）。TwiCa 前景への表示は
+  TwiCa 側の正本が必要なため未着手。
 - 関連 Issue: [azumag/docich#933](https://github.com/azumag/docich/issues/933)（番組コーナー（24時間中ローテーション）に追加）、
   [azumag/docich#9](https://github.com/azumag/docich/issues/9)（自動チャネルポイント予想）
 - 関連実装: `src/docich/prediction_leaderboard.py`（記録・集計・ランキングの契約）、
@@ -102,6 +103,10 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 - 集計期間: 台帳全体（全期間）。将来「直近 N 日」窓を追加できる。
 - 更新: 新しい予想が `RESOLVED` になるたび再計算。進行中の予想があるときは前回確定分を表示する。
 - 読み上げ: 上位 3 件程度を実況。視聴者の呼称は既存契約に合わせ「同志◯◯」。
+  実装は `yoso_narration.narration_text`（上限300字・1発話）で、`audio_enabled` の
+  opt-in があるときだけ共有 audio worker へ enqueue する。
+- overlay: corner 開始直後に `prediction` category の event を1件だけ積む
+  （`yoso_narration.overlay_body`、上位5件＋件数、本文は `OVERLAY_BODY_LIMIT` 以内）。
 
 ## 4. コーナー追加案（番組ローテーションへの接続）
 
@@ -148,8 +153,8 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 - [x] 予想精算時の記録フック（Soren `twitch_predictions.sh` ＋ `soren_predictions.py`、PR-2b）
 - [x] `yoso` adapter ＋ 読み取り専用 view（`yoso_view.py` / `adapters/yoso_program.py` / `yoso_corner.py`、PR-3）
 - [x] corner catalog 登録（既定無効・`manual_only`。手動予約の受付は `enabled = true` で有効化、PR-3）
-- [ ] 読み上げ原稿
-- [ ] overlay / Twica 表示
+- [x] 読み上げ原稿（`yoso_narration.py`、`audio_enabled` opt-in、PR-4）
+- [x] overlay 表示（共通 eventOverlay の `prediction` category、PR-4）／ TwiCa 前景は別リポジトリ作業
 
 ## 7. 実装ステップ（PR 分割案）
 
@@ -184,7 +189,23 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
    - `src/docich/webui.py`: 既存の durable manual queue 経由で予約・停止（専用 runner は追加しない）。
      `ops/vm_actions/collect_diagnostics.py` は `yoso_corner.json` の状態のみを投影する。
    - 回帰: `tests/test_yoso_view.py` / `tests/test_yoso_corner.py` / `tests/test_webui.py`（`yosou`）。
-4. **PR-4**: 読み上げ・overlay、オーナー承認後の有効化と VM 反映。
+4. **PR-4（実装部分は実装済み）**: 読み上げ・overlay、オーナー承認後の有効化と VM 反映。
+   - `src/docich/yoso_narration.py`: 台帳のサニタイズ済み board から読み上げ原稿と
+     overlay 本文を組み立てる。読み上げは上位3件を「第n位、同志◯◯、的中率◯◯パーセント、
+     ◯回中◯回的中、純増◯ポイント」の形で1発話（上限300字）。overlay は
+     `overlay_queue.append_event` の既存 `prediction` category へ「予想王」+ 上位5件 +
+     件数を bounded に出す（`source_id = yosou:<request_id>` で同一runの重複を防ぐ）。
+   - 発話は catalog の `audio_enabled` を明示したときだけ（既定 false）。共有 audio worker の
+     既定音声（`speaker=""`）へ `context="yosou:ranking"` で1件 enqueue する。独自の再生・
+     再試行・バックログは持たない。
+   - 呼び出しは corner が active になった直後の1回だけ。`announce_request_id` を副作用の前に
+     保存するため、crash / resume で同じランキングを二度読むことはない（at-most-once）。
+     sink 失敗は `overlay_announcements` / `narration` の件数カウンタに残し、corner は
+     失敗させない（診断は件数のみで、例外本文・視聴者名は出さない）。
+   - **TwiCa 前景への表示は docich 単独では実装しない**（TwiCa 側の正本・配信フィードが
+     必要。`docs/features/doushi-card-corner.md` と同じく別リポジトリの作業）。docich 側は
+     共通 eventOverlay までを担当する。
+   - 有効化と VM 反映はオーナー承認後（`enabled = true`、発話するなら `audio_enabled = true`）。
 
 ## 8. 未確定・オーナー判断が要る点
 

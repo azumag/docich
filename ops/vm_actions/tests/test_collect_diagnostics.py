@@ -356,6 +356,23 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
         'present':False,'readable':False,'rounds':0,'viewers':0}
 
 
+def test_yosou_announcement_counters_are_projected_and_bounded():
+    # The 予想王 corner publishes one overlay event and (opt-in) one utterance per
+    # run. Diagnostics must show whether each sink accepted it, and nothing else.
+    module=load_collector()
+    output=module._project_corner_state({
+        'status':'completed','game':'yosou-view',
+        'overlay_announcements':{'sent':1,'failed':0,'skipped':0,'secret':'DO-NOT-PUBLISH'},
+        'narration':{'enqueued':1,'delivery_failed':0,'skipped':0}})
+    assert output['overlay_announcements']=={'sent':1,'failed':0,'skipped':0}
+    assert output['narration']=={'enqueued':1,'delivery_failed':0,'skipped':0}
+    assert 'DO-NOT-PUBLISH' not in json.dumps(output)
+
+    assert module._project_corner_state(
+        {'status':'completed','overlay_announcements':'SECRET'})['overlay_announcements'] is None
+    assert module._project_corner_state({'status':'idle'})['overlay_announcements'] is None
+
+
 PULSE_SINK_INPUTS = (
     'Sink Input #41\n'
     '\tDriver: protocol-native.c\n'

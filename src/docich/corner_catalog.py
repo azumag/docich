@@ -136,11 +136,14 @@ def load_catalog(g) -> tuple[Corner, ...]:
         elif item.adapter == "yoso":
             # Default-disabled, manual-only leaderboard view. The duration is an
             # optional upper bound (1-14 minutes, same ceiling as weather); the
-            # entry runs only when the owner reserves it.
+            # entry runs only when the owner reserves it. Speech is a separate
+            # opt-in because it reads viewer display names aloud.
             if item.id != "yosou-oh" or item.game != "yosou-view":
                 raise CornerCatalogError("yoso requires id=yosou-oh and game=yosou-view")
-            if item.audio_enabled or item.fetch_on_start:
-                raise CornerCatalogError("yoso does not accept weather-only settings")
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "yoso accepts only a boolean audio_enabled (fetch_on_start requires weather)"
+                )
             if item.duration_minutes is not None and (
                     type(item.duration_minutes) is not int
                     or not 1 <= item.duration_minutes <= 14):

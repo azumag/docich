@@ -81,15 +81,22 @@ class YosoCornerManager:
     """Run one bounded 予想王 display under the shared GameSwitch slot."""
 
     def __init__(self, g, *, duration_minutes=DEFAULT_DURATION_MINUTES, coordinator=None,
-                 clock=time.time, sleep=time.sleep, poll_s=1.0):
+                 audio_enabled=False, announce=None, clock=time.time, sleep=time.sleep,
+                 poll_s=1.0):
         if (type(duration_minutes) is not int
                 or not 1 <= duration_minutes <= MAX_DURATION_MINUTES):
             raise YosoCornerError(
                 f"yosou duration must be an integer from 1 to {MAX_DURATION_MINUTES} minutes")
         if type(poll_s) not in (int, float) or poll_s <= 0:
             raise YosoCornerError("yosou poll interval must be positive")
+        if type(audio_enabled) is not bool:
+            raise YosoCornerError("yosou audio setting must be boolean")
+        if announce is not None and not callable(announce):
+            raise YosoCornerError("yosou announcer must be callable")
         self.g = g
         self.duration_minutes = duration_minutes
+        self.audio_enabled = audio_enabled
+        self.announce = announce
         self.clock, self.sleep, self.poll_s = clock, sleep, float(poll_s)
         self.path = Path(g.state_dir) / STATE_FILENAME
         self.state_path = self.path
@@ -298,7 +305,48 @@ class YosoCornerManager:
             ends_at=started + self.duration_minutes * 60,
         )
         self._save(state)
+        self._announce_once(state)
         return "queued" if canonical.get("phase") == "draining" else None
+
+    def _announce_once(self, state):
+        """Publish the ranking once per corner request (best-effort, at-most-once).
+
+        The attempt is recorded before the side effect so a crash or a resumed
+        owner can never speak the same ranking twice. A sink failure is stored as
+        a fixed status for diagnostics and never fails the corner.
+        """
+        request_id = state.get("rotation_request_id")
+        if not isinstance(request_id, str) or state.get("announce_request_id") == request_id:
+            return
+        state["announce_request_id"] = request_id
+        self._save(state)
+        try:
+            if self.announce is None:
+                from .yoso_narration import announcement
+
+                result = announcement(self.g, request_id=request_id,
+                                      audio_enabled=self.audio_enabled)
+            else:
+                result = self.announce(self.g, request_id=request_id,
+                                       audio_enabled=self.audio_enabled)
+        except Exception:
+            result = {"overlay": "failed", "speech": "failed"}
+        overlay = result.get("overlay") if isinstance(result, dict) else None
+        speech = result.get("speech") if isinstance(result, dict) else None
+        # Counters only: diagnostics already projects `narration`, and the
+        # overlay status gets the same bounded shape.
+        state["overlay_announcements"] = {
+            "sent": 1 if overlay == "sent" else 0,
+            "failed": 1 if overlay == "failed" else 0,
+            "skipped": 1 if overlay == "skipped" else 0,
+        }
+        if self.audio_enabled:
+            state["narration"] = {
+                "enqueued": 1 if speech == "sent" else 0,
+                "delivery_failed": 1 if speech == "failed" else 0,
+                "skipped": 1 if speech == "skipped" else 0,
+            }
+        self._save(state)
 
     @staticmethod
     def _matches_active(canonical, identity):
