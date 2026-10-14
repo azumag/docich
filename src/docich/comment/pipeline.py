@@ -5,9 +5,10 @@ One batch end to end:
     intake DTO → classification → contexts → prompt → LLM dispatch (+retry) →
     output guard → translation (C-S4) → delivery contract → ack
 
-Nothing here imports soviet_now. The LLM stage is pluggable so fixtures and
-unit tests can complete without provider credentials; production callers
-pass the native ``docich.llm`` dispatcher through ``dispatch``.
+Nothing here imports soviet_now. The LLM stage can be injected or wired
+to the native ``docich.llm`` dispatcher/gate by ``make_llm_dispatch_generator``;
+offline fixtures and tests default to ``stub_generator`` unless the operator
+explicitly enables real dispatch (``DOCICH_ALLOW_REAL_AI=1`` plus agents).
 """
 
 from __future__ import annotations
@@ -16,11 +17,13 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 from . import contexts, guard, prompt
 from . import intake
 from docich.comment_classifier import heuristic
+from docich.llm.contracts import DispatchRequest, DispatchResult
+from docich.llm.policy import parse_agents
 from .contracts import (
     CommentDiagnosis,
     CommentIntake,
@@ -29,7 +32,7 @@ from .contracts import (
 )
 from .translation import translate_reply
 
-GenerateFn = Callable[[str], tuple[str, object]]
+GenerateFn = Callable[[str], Any]
 
 def cli_comment(args) -> int:
     import pathlib
@@ -47,6 +50,10 @@ def cli_comment(args) -> int:
     if args.dry_run:
         print(f"docich: comment dry-run: comments={len(intake.comments)} host_mode={intake.host_mode}")
         return 0
+
+    if not getattr(args, "output_dir", None) and not os.environ.get("DOCICH_COMMENT_OUTPUT_DIR"):
+        print("docich: comment requires --output-dir or DOCICH_COMMENT_OUTPUT_DIR; use --dry-run to only validate")
+        return 64
 
     if getattr(args, "output_dir", None):
         os.environ["DOCICH_COMMENT_OUTPUT_DIR"] = args.output_dir
@@ -144,26 +151,99 @@ def stub_generator(candidate: str = "コメント返しのテスト返答です�
     return _generator
 
 
+def make_llm_dispatch_generator(*, env=None, agents=None, timeout_sec=None, g=None):
+    """Build a native dispatch adapter using docich.llm.
+
+    Real generation is opt-in: without ``DOCICH_ALLOW_REAL_AI=1`` and an
+    agent chain this falls back to ``stub_generator``, so fixtures and tests
+    remain offline. When enabled, retry/backoff/queue behaviour lives in
+    the native dispatcher and is not reimplemented here.
+    """
+
+    effective_env = dict(os.environ if env is None else (env or {}))
+    raw_agents = agents if agents is not None else (
+        effective_env.get("DOCICH_COMMENT_AGENTS")
+        or effective_env.get("COMMENT_AI_AGENTS")
+        or effective_env.get("COMMENT_CODEX_AGENTS")
+        or effective_env.get("LLM_COMMENT_AGENTS")
+    )
+    if effective_env.get("DOCICH_ALLOW_REAL_AI") != "1" or not raw_agents:
+        return stub_generator()
+
+    try:
+        specs = parse_agents(str(raw_agents), effective_env)
+    except Exception:
+        return stub_generator()
+
+    if timeout_sec is None:
+        raw_timeout = effective_env.get("COMMENT_CODEX_TIMEOUT", "90")
+        try:
+            timeout_sec = int(str(raw_timeout))
+        except (TypeError, ValueError):
+            timeout_sec = 90
+    timeout_sec = max(1, int(timeout_sec))
+
+    state = {"dispatcher": None}
+
+    def _generator(prompt: str):
+        if state["dispatcher"] is None:
+            from docich.llm.dispatch import Dispatcher
+
+            state["dispatcher"] = Dispatcher(env=effective_env, g=g)
+        request = DispatchRequest(
+            "COMMENT",
+            prompt,
+            specs,
+            timeout_sec=timeout_sec,
+            validator=(
+                guard.is_valid_generation_candidate
+                if hasattr(guard, "is_valid_generation_candidate")
+                else None
+            ),
+        )
+        result = state["dispatcher"].dispatch(
+            request, overall_timeout_sec=float(timeout_sec)
+        )
+        text = result.output if isinstance(result.output, str) else str(result.output or "")
+        return text, result
+
+    return _generator
+
+
 def run_pipeline(
     intake: CommentIntake,
     *,
     game_context=None,
     env=None,
     generator: GenerateFn | None = None,
+    dispatch: GenerateFn | None = None,
     delivery_sink=None,
     retries: int = 1,
     translator=None,
     gacha_list_file=None,
+    use_llm: bool = False,
+    llm_agents=None,
+    llm_timeout_sec=None,
 ) -> CommentPipelineResult:
     env = os.environ if env is None else env
     rows = classify_intake(intake)
     prompt_text, category = build_prompt_for(intake, rows, game_context=game_context, env=env,
                                             gacha_list_file=gacha_list_file)
 
+    if generator is None and dispatch is not None:
+        generator = dispatch
+
     if generator is None:
-        # Offline by default: never accidentally invoke a real model. Callers
-        # that want real dispatch inject a generator wrapping docich.ai_generate.
-        generator = stub_generator()
+        if use_llm or llm_agents is not None or env.get("DOCICH_COMMENT_AGENTS") or env.get("COMMENT_AI_AGENTS") or env.get(
+            "COMMENT_CODEX_AGENTS"
+        ) or env.get("LLM_COMMENT_AGENTS") or env.get("DOCICH_ALLOW_REAL_AI") == "1":
+            generator = make_llm_dispatch_generator(
+                env=dict(env if isinstance(env, dict) else os.environ),
+                agents=llm_agents,
+                timeout_sec=llm_timeout_sec,
+            )
+        else:
+            generator = stub_generator()
 
     reply_text = ""
     dispatch_detail = ""
@@ -223,7 +303,12 @@ def run_pipeline(
         "translated_chars": len(translated),
     }
     if delivery_sink is None:
-        delivery_sink = FileDeliverySink(root=Path(env.get("DOCICH_COMMENT_OUTPUT_DIR", ".")).resolve() / "comment_delivery")
+        output_dir = env.get("DOCICH_COMMENT_OUTPUT_DIR") if hasattr(env, "get") else None
+        if not output_dir:
+            raise ValueError("output_dir_required: set --output-dir or DOCICH_COMMENT_OUTPUT_DIR")
+        delivery_sink = FileDeliverySink(
+            root=Path(output_dir).resolve() / "comment_delivery"
+        )
     files = delivery_sink.deliver(intake=intake, text=translated or reply_text, metadata=metadata)
 
     ok = bool(reply_text) and (guard.is_valid_comment_talk(reply_text) if reply_text else False)
